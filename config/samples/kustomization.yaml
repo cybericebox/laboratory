@@ -1,0 +1,8 @@
+## Append samples of your project ##
+resources:
+- allocation_v1alpha1_pool.yaml
+- laboratory_v1alpha1_laboratory.yaml
+- laboratory_v1alpha1_connection.yaml
+- laboratory_v1alpha1_unmanagedswitch.yaml
+- laboratory_v1alpha1_device.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

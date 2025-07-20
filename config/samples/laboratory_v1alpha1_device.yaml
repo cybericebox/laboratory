@@ -1,0 +1,9 @@
+apiVersion: laboratory.cybericebox.com/v1alpha1
+kind: Device
+metadata:
+  labels:
+    app.kubernetes.io/name: laboratory
+    app.kubernetes.io/managed-by: kustomize
+  name: device-sample
+spec:
+  # TODO(user): Add fields here

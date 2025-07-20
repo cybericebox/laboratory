@@ -36,6 +36,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+
+	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
+	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	laboratorycontroller "github.com/cybericebox/laboratory/internal/controller/laboratory"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -47,6 +51,8 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
+	utilruntime.Must(allocationv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(laboratoryv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -198,6 +204,34 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err = (&laboratorycontroller.LaboratoryReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Laboratory")
+		os.Exit(1)
+	}
+	if err = (&laboratorycontroller.ConnectionReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Connection")
+		os.Exit(1)
+	}
+	if err = (&laboratorycontroller.UnmanagedSwitchReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "UnmanagedSwitch")
+		os.Exit(1)
+	}
+	if err = (&laboratorycontroller.DeviceReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Device")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if metricsCertWatcher != nil {

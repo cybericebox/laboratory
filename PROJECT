@@ -8,4 +8,48 @@ layout:
 multigroup: true
 projectName: laboratory
 repo: github.com/cybericebox/laboratory
+resources:
+- api:
+    crdVersion: v1
+  domain: cybericebox.com
+  group: allocation
+  kind: Pool
+  path: github.com/cybericebox/laboratory/api/allocation/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: cybericebox.com
+  group: laboratory
+  kind: Laboratory
+  path: github.com/cybericebox/laboratory/api/laboratory/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: cybericebox.com
+  group: laboratory
+  kind: Connection
+  path: github.com/cybericebox/laboratory/api/laboratory/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: cybericebox.com
+  group: laboratory
+  kind: UnmanagedSwitch
+  path: github.com/cybericebox/laboratory/api/laboratory/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: cybericebox.com
+  group: laboratory
+  kind: Device
+  path: github.com/cybericebox/laboratory/api/laboratory/v1alpha1
+  version: v1alpha1
 version: "3"

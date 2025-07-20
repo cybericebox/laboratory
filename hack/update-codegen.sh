@@ -34,5 +34,5 @@ kube::codegen::gen_client \
     --output-dir "${SCRIPT_ROOT}/clientset" \
     --output-pkg "${THIS_PKG}/clientset" \
     --boilerplate "${SCRIPT_ROOT}/hack/boilerplate.go.txt" \
-    "${SCRIPT_ROOT}/"
+    "${SCRIPT_ROOT}/api"
 
