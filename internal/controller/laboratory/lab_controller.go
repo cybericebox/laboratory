@@ -1,0 +1,304 @@
+package laboratory
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
+)
+
+const (
+	finalizerLab  = "cybericebox.com/lab"
+	vniPoolNS     = "lab-system"
+	vniPoolPrefix = "vni-"
+	vniPoolSize   = uint(65000)
+)
+
+// LabReconciler reconciles a Lab object.
+type LabReconciler struct {
+	client.Client
+	Scheme *runtime.Scheme
+}
+
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs/finalizers,verbs=update
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices;connections,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices/status;connections/status,verbs=get;update;patch
+
+func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	var lab laboratoryv1alpha1.Lab
+	if err := r.Get(ctx, req.NamespacedName, &lab); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	if !lab.DeletionTimestamp.IsZero() {
+		return r.reconcileDelete(ctx, &lab)
+	}
+
+	if !controllerutil.ContainsFinalizer(&lab, finalizerLab) {
+		controllerutil.AddFinalizer(&lab, finalizerLab)
+		if err := r.Update(ctx, &lab); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	if err := r.validateGraph(&lab); err != nil {
+		lab.Status.Phase = laboratoryv1alpha1.PhaseFailed
+		_ = r.Status().Update(ctx, &lab)
+		return ctrl.Result{}, nil
+	}
+
+	if err := r.materializeDevices(ctx, &lab); err != nil {
+		logger.Error(err, "materialize devices")
+		return ctrl.Result{}, err
+	}
+
+	if err := r.materializeConnections(ctx, &lab); err != nil {
+		logger.Error(err, "materialize connections")
+		return ctrl.Result{}, err
+	}
+
+	return r.updateStatus(ctx, &lab)
+}
+
+// validateGraph checks for switch/hub cycles in the connection graph.
+func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
+	switchDevices := map[string]bool{}
+	for _, d := range lab.Spec.Devices {
+		if d.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch || d.Type == laboratoryv1alpha1.DeviceTypeHub {
+			switchDevices[d.Name] = true
+		}
+	}
+
+	adj := map[string][]string{}
+	for _, conn := range lab.Spec.Connections {
+		var switches []string
+		for _, ep := range conn.Endpoints {
+			if switchDevices[ep.Device] {
+				switches = append(switches, ep.Device)
+			}
+		}
+		for i := 0; i < len(switches); i++ {
+			for j := i + 1; j < len(switches); j++ {
+				adj[switches[i]] = append(adj[switches[i]], switches[j])
+				adj[switches[j]] = append(adj[switches[j]], switches[i])
+			}
+		}
+	}
+
+	visited := map[string]bool{}
+	var dfs func(node, parent string) bool
+	dfs = func(node, parent string) bool {
+		visited[node] = true
+		for _, neighbor := range adj[node] {
+			if neighbor == parent {
+				continue
+			}
+			if visited[neighbor] || dfs(neighbor, node) {
+				return true
+			}
+		}
+		return false
+	}
+
+	for node := range switchDevices {
+		if !visited[node] {
+			if dfs(node, "") {
+				return fmt.Errorf("SwitchCycleDetected: connection graph contains a switch/hub cycle")
+			}
+		}
+	}
+	return nil
+}
+
+func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
+	for _, tmpl := range lab.Spec.Devices {
+		deviceName := fmt.Sprintf("%s-%s", lab.Name, tmpl.Name)
+		var existing laboratoryv1alpha1.Device
+		if err := r.Get(ctx, types.NamespacedName{Name: deviceName, Namespace: lab.Namespace}, &existing); err == nil {
+			continue
+		} else if !errors.IsNotFound(err) {
+			return err
+		}
+
+		d := &laboratoryv1alpha1.Device{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       deviceName,
+				Namespace:  lab.Namespace,
+				Labels:     map[string]string{laboratoryv1alpha1.LabelLab: lab.Name},
+				Finalizers: []string{laboratoryv1alpha1.FinalizerOVSCleanup},
+			},
+			Spec: laboratoryv1alpha1.DeviceSpec{
+				LabRef:     lab.Name,
+				Name:       tmpl.Name,
+				Type:       tmpl.Type,
+				Image:      tmpl.Image,
+				Interfaces: tmpl.Interfaces,
+				Exposure:   tmpl.Exposure,
+			},
+		}
+		if err := controllerutil.SetOwnerReference(lab, d, r.Scheme); err != nil {
+			return err
+		}
+		if err := r.Create(ctx, d); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func isSwitchDevice(name string, lab *laboratoryv1alpha1.Lab) bool {
+	for _, d := range lab.Spec.Devices {
+		if d.Name == name {
+			return d.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch || d.Type == laboratoryv1alpha1.DeviceTypeHub
+		}
+	}
+	return false
+}
+
+func (r *LabReconciler) materializeConnections(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
+	vniAllocator := poolpkg.NewAllocator(r.Client, vniPoolPrefix, vniPoolNS, vniPoolSize)
+
+	for _, tmpl := range lab.Spec.Connections {
+		connName := connectionName(lab.Name, tmpl.Endpoints)
+		var existing laboratoryv1alpha1.Connection
+		if err := r.Get(ctx, types.NamespacedName{Name: connName, Namespace: lab.Namespace}, &existing); err == nil {
+			continue
+		} else if !errors.IsNotFound(err) {
+			return err
+		}
+
+		isDirect := true
+		for _, ep := range tmpl.Endpoints {
+			if isSwitchDevice(ep.Device, lab) {
+				isDirect = false
+				break
+			}
+		}
+
+		conn := &laboratoryv1alpha1.Connection{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       connName,
+				Namespace:  lab.Namespace,
+				Labels:     map[string]string{laboratoryv1alpha1.LabelLab: lab.Name},
+				Finalizers: []string{laboratoryv1alpha1.FinalizerOVSCleanup},
+			},
+			Spec: laboratoryv1alpha1.ConnectionSpec{
+				LabRef:    lab.Name,
+				Endpoints: tmpl.Endpoints,
+			},
+		}
+		if err := controllerutil.SetOwnerReference(lab, conn, r.Scheme); err != nil {
+			return err
+		}
+
+		if isDirect {
+			vni, vniErr := vniAllocator.AllocateIndex(ctx)
+			if vniErr != nil {
+				return fmt.Errorf("allocate VNI for connection %s: %w", connName, vniErr)
+			}
+			conn.Status.VNI = &vni
+		}
+
+		if err := r.Create(ctx, conn); err != nil {
+			return err
+		}
+		if conn.Status.VNI != nil {
+			if err := r.Status().Update(ctx, conn); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// connectionName produces a deterministic Connection name from lab name + endpoints.
+func connectionName(labName string, endpoints []laboratoryv1alpha1.EndpointSpec) string {
+	parts := []string{labName}
+	for _, ep := range endpoints {
+		if ep.Interface != "" {
+			parts = append(parts, ep.Device+"-"+ep.Interface)
+		} else {
+			parts = append(parts, ep.Device)
+		}
+	}
+	return strings.Join(parts, "--")
+}
+
+func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha1.Lab) (ctrl.Result, error) {
+	var deviceList laboratoryv1alpha1.DeviceList
+	if err := r.List(ctx, &deviceList, client.InNamespace(lab.Namespace),
+		client.MatchingLabels{laboratoryv1alpha1.LabelLab: lab.Name}); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	var refs []laboratoryv1alpha1.DeviceRef
+	allReady := len(deviceList.Items) > 0
+	for _, d := range deviceList.Items {
+		refs = append(refs, laboratoryv1alpha1.DeviceRef{Name: d.Spec.Name, Ready: d.Status.Ready})
+		if !d.Status.Ready {
+			allReady = false
+		}
+	}
+
+	var connList laboratoryv1alpha1.ConnectionList
+	if err := r.List(ctx, &connList, client.InNamespace(lab.Namespace),
+		client.MatchingLabels{laboratoryv1alpha1.LabelLab: lab.Name}); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	var connRefs []laboratoryv1alpha1.ConnectionRef
+	for _, c := range connList.Items {
+		connRefs = append(connRefs, laboratoryv1alpha1.ConnectionRef{Name: c.Name, Ready: c.Status.Ready})
+		if !c.Status.Ready {
+			allReady = false
+		}
+	}
+
+	lab.Status.Devices = refs
+	lab.Status.Connections = connRefs
+	if allReady {
+		lab.Status.Phase = laboratoryv1alpha1.PhaseReady
+	} else {
+		lab.Status.Phase = laboratoryv1alpha1.PhaseProvisioning
+	}
+
+	return ctrl.Result{}, r.Status().Update(ctx, lab)
+}
+
+func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1alpha1.Lab) (ctrl.Result, error) {
+	var deviceList laboratoryv1alpha1.DeviceList
+	if err := r.List(ctx, &deviceList, client.InNamespace(lab.Namespace),
+		client.MatchingLabels{laboratoryv1alpha1.LabelLab: lab.Name}); err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(deviceList.Items) > 0 {
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	controllerutil.RemoveFinalizer(lab, finalizerLab)
+	return ctrl.Result{}, r.Update(ctx, lab)
+}
+
+func (r *LabReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&laboratoryv1alpha1.Lab{}).
+		Owns(&laboratoryv1alpha1.Device{}).
+		Owns(&laboratoryv1alpha1.Connection{}).
+		Complete(r)
+}
