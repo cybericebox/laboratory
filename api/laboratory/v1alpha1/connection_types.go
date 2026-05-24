@@ -1,19 +1,3 @@
-/*
-Copyright 2025.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package v1alpha1
 
 import (
@@ -22,31 +6,31 @@ import (
 
 // ConnectionSpec defines the desired state of Connection.
 type ConnectionSpec struct {
-	Ports []ConnectionPortSpec `json:"ports,omitempty"` // List of ports to be connected
-}
-
-// ConnectionPortSpec defines the desired state of a port in a connection.
-type ConnectionPortSpec struct {
+	// LabRef is the name of the parent Lab.
 	// +kubebuilder:validation:Required
-	Device string `json:"device,omitempty"` // Device identifier for the port
-	// +kubebuilder:validation:Required
-	Port string `json:"port,omitempty"` // Unique identifier for the port
+	LabRef string `json:"labRef"`
+	// +kubebuilder:validation:MinItems=2
+	Endpoints []EndpointSpec `json:"endpoints"`
 }
 
 // ConnectionStatus defines the observed state of Connection.
 type ConnectionStatus struct {
-	ConnectionID string                 `json:"connectionID,omitempty"`
-	Ports        []ConnectionPortStatus `json:"ports,omitempty"` // List of ports in the
+	// VNI is the allocated VXLAN Network Identifier for direct (non-switch) connections.
+	// Nil for switch-to-device and switch-to-switch connections.
+	VNI   *uint                  `json:"vni,omitempty"`
+	Ports []ConnectionPortStatus `json:"ports,omitempty"`
+	Ready bool                   `json:"ready,omitempty"`
 }
 
+// ConnectionPortStatus is written by the node-agent for each endpoint.
 type ConnectionPortStatus struct {
-	Device string `json:"device,omitempty"` // Device identifier for the port
-	Port   string `json:"port,omitempty"`
-	PortID string `json:"portID,omitempty"` // Unique identifier for the port
-	// Name of the port
-	Connected   bool   `json:"connected,omitempty"`   // Indicates if the port is connected
-	NodeName    string `json:"nodeName,omitempty"`    // Name of the node where the port is located
-	NodeAddress string `json:"nodeAddress,omitempty"` // Address of the node where the port is located
+	Device    string `json:"device"`
+	Interface string `json:"interface,omitempty"`
+	// PortID is the OVS port name assigned by node-agent.
+	PortID      string `json:"portID,omitempty"`
+	NodeName    string `json:"nodeName,omitempty"`
+	NodeAddress string `json:"nodeAddress,omitempty"`
+	Connected   bool   `json:"connected,omitempty"`
 }
 
 // +genclient
