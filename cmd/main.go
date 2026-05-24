@@ -178,7 +178,7 @@ func main() {
 		metricsServerOptions.TLSOpts = append(metricsServerOptions.TLSOpts, func(config *tls.Config) {
 			config.GetCertificate = metricsCertWatcher.GetCertificate
 		})
-	}
+	}                
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
@@ -216,13 +216,6 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Connection")
-		os.Exit(1)
-	}
-	if err = (&laboratorycontroller.UnmanagedSwitchReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "UnmanagedSwitch")
 		os.Exit(1)
 	}
 	if err = (&laboratorycontroller.DeviceReconciler{
