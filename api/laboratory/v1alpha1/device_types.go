@@ -1,19 +1,3 @@
-/*
-Copyright 2025.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package v1alpha1
 
 import (
@@ -22,16 +6,29 @@ import (
 
 // DeviceSpec defines the desired state of Device.
 type DeviceSpec struct {
-}
-
-// DevicePort defines the structure for a device port.
-type DevicePort struct {
-	// Name is the name of the port.
-	Name string `json:"name,omitempty"`
+	// LabRef is the name of the parent Lab.
+	// +kubebuilder:validation:Required
+	LabRef string `json:"labRef"`
+	// Name is the logical device name within the lab (matches DeviceTemplate.name).
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+	// +kubebuilder:validation:Required
+	Type       DeviceType      `json:"type"`
+	Image      string          `json:"image,omitempty"`
+	Interfaces []InterfaceSpec `json:"interfaces,omitempty"`
+	Exposure   *ExposureSpec   `json:"exposure,omitempty"`
 }
 
 // DeviceStatus defines the observed state of Device.
 type DeviceStatus struct {
+	Ready    bool   `json:"ready,omitempty"`
+	NodeName string `json:"nodeName,omitempty"`
+	// NodeAddress is the node IP used as Geneve VTEP address.
+	NodeAddress string `json:"nodeAddress,omitempty"`
+	PodIP       string `json:"podIP,omitempty"`
+	// VNI is set only for unmanaged-switch and hub device types.
+	VNI    *uint  `json:"vni,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // +genclient
