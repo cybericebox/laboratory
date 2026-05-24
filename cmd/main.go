@@ -204,18 +204,25 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&laboratorycontroller.LaboratoryReconciler{
+	if err = (&laboratorycontroller.LabGroupReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Laboratory")
+		setupLog.Error(err, "unable to create controller", "controller", "LabGroup")
 		os.Exit(1)
 	}
-	if err = (&laboratorycontroller.ConnectionReconciler{
+	if err = (&laboratorycontroller.LabGroupClientReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Connection")
+		setupLog.Error(err, "unable to create controller", "controller", "LabGroupClient")
+		os.Exit(1)
+	}
+	if err = (&laboratorycontroller.LabReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Lab")
 		os.Exit(1)
 	}
 	if err = (&laboratorycontroller.DeviceReconciler{
@@ -223,6 +230,13 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Device")
+		os.Exit(1)
+	}
+	if err = (&laboratorycontroller.ConnectionReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Connection")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
