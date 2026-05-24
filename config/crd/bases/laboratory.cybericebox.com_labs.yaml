@@ -1,0 +1,279 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: labs.laboratory.cybericebox.com
+spec:
+  group: laboratory.cybericebox.com
+  names:
+    kind: Lab
+    listKind: LabList
+    plural: labs
+    singular: lab
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Lab is the Schema for the labs API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: LabSpec defines the desired state of Lab.
+            properties:
+              connections:
+                items:
+                  description: ConnectionTemplate is an inline connection declaration
+                    inside Lab.spec.connections[].
+                  properties:
+                    endpoints:
+                      items:
+                        description: EndpointSpec references a device interface in
+                          a Connection.
+                        properties:
+                          device:
+                            description: Device is the name of the Device CRD within
+                              the same Lab.
+                            type: string
+                          interface:
+                            description: Interface is the interface name on the device;
+                              omit for unmanaged-switch/hub.
+                            type: string
+                        required:
+                        - device
+                        type: object
+                      minItems: 2
+                      type: array
+                  required:
+                  - endpoints
+                  type: object
+                type: array
+              devices:
+                items:
+                  description: DeviceTemplate is an inline device declaration inside
+                    Lab.spec.devices[].
+                  properties:
+                    exposure:
+                      description: ExposureSpec declares how a device is externally
+                        reachable.
+                      properties:
+                        web:
+                          description: WebExposure publishes a device port via an
+                            L7 proxy.
+                          properties:
+                            port:
+                              format: int32
+                              type: integer
+                            protocol:
+                              default: http
+                              description: Protocol is "http" or "https".
+                              type: string
+                          required:
+                          - port
+                          type: object
+                      type: object
+                    image:
+                      type: string
+                    interfaces:
+                      items:
+                        description: InterfaceSpec defines a network interface on
+                          a device.
+                        properties:
+                          addr:
+                            description: AddrSpec defines static or DHCP address configuration.
+                            properties:
+                              gateway:
+                                type: string
+                              ip:
+                                type: string
+                              routes:
+                                items:
+                                  description: Route is a static route entry.
+                                  properties:
+                                    dst:
+                                      type: string
+                                    via:
+                                      type: string
+                                  required:
+                                  - dst
+                                  type: object
+                                type: array
+                              type:
+                                description: AddrType controls how an interface gets
+                                  its address.
+                                enum:
+                                - static
+                                - dhcp
+                                type: string
+                            required:
+                            - type
+                            type: object
+                          mac:
+                            description: MAC is "random" or an explicit MAC address.
+                            type: string
+                          name:
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      type: array
+                    name:
+                      type: string
+                    type:
+                      description: DeviceType distinguishes network device kinds.
+                      enum:
+                      - container
+                      - vm
+                      - unmanaged-switch
+                      - hub
+                      type: string
+                  required:
+                  - name
+                  - type
+                  type: object
+                type: array
+              internet:
+                description: LabNetworkSpec configures a network segment (VPN or internet)
+                  attached to the lab.
+                properties:
+                  dhcpServer:
+                    description: DHCPServer configures the embedded DHCP server for
+                      a network segment.
+                    properties:
+                      dns:
+                        type: string
+                      enabled:
+                        type: boolean
+                      gateway:
+                        type: string
+                      range:
+                        type: string
+                      subnet:
+                        type: string
+                    type: object
+                  enabled:
+                    type: boolean
+                type: object
+              vpn:
+                description: LabNetworkSpec configures a network segment (VPN or internet)
+                  attached to the lab.
+                properties:
+                  dhcpServer:
+                    description: DHCPServer configures the embedded DHCP server for
+                      a network segment.
+                    properties:
+                      dns:
+                        type: string
+                      enabled:
+                        type: boolean
+                      gateway:
+                        type: string
+                      range:
+                        type: string
+                      subnet:
+                        type: string
+                    type: object
+                  enabled:
+                    type: boolean
+                type: object
+            type: object
+          status:
+            description: LabStatus defines the observed state of Lab.
+            properties:
+              access:
+                items:
+                  description: AccessEntry describes a single externally reachable
+                    endpoint.
+                  properties:
+                    device:
+                      type: string
+                    port:
+                      format: int32
+                      type: integer
+                    protocol:
+                      type: string
+                    url:
+                      type: string
+                  required:
+                  - device
+                  - port
+                  - protocol
+                  - url
+                  type: object
+                type: array
+              connections:
+                items:
+                  description: ConnectionRef summarises a materialised Connection's
+                    readiness.
+                  properties:
+                    name:
+                      type: string
+                    ready:
+                      type: boolean
+                  required:
+                  - name
+                  type: object
+                type: array
+              devices:
+                items:
+                  description: DeviceRef summarises a materialised Device's readiness.
+                  properties:
+                    name:
+                      type: string
+                    ready:
+                      type: boolean
+                  required:
+                  - name
+                  type: object
+                type: array
+              internet:
+                description: LabNetworkStatus reports the allocated CIDR for a network
+                  segment.
+                properties:
+                  cidr:
+                    type: string
+                  ready:
+                    type: boolean
+                type: object
+              phase:
+                description: Phase is the lifecycle phase of a resource.
+                enum:
+                - Pending
+                - Provisioning
+                - Ready
+                - Failed
+                - Error
+                type: string
+              vpn:
+                description: LabNetworkStatus reports the allocated CIDR for a network
+                  segment.
+                properties:
+                  cidr:
+                    type: string
+                  ready:
+                    type: boolean
+                type: object
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

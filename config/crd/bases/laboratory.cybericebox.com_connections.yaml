@@ -1,0 +1,103 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: connections.laboratory.cybericebox.com
+spec:
+  group: laboratory.cybericebox.com
+  names:
+    kind: Connection
+    listKind: ConnectionList
+    plural: connections
+    singular: connection
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Connection is the Schema for the connections API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ConnectionSpec defines the desired state of Connection.
+            properties:
+              endpoints:
+                items:
+                  description: EndpointSpec references a device interface in a Connection.
+                  properties:
+                    device:
+                      description: Device is the name of the Device CRD within the
+                        same Lab.
+                      type: string
+                    interface:
+                      description: Interface is the interface name on the device;
+                        omit for unmanaged-switch/hub.
+                      type: string
+                  required:
+                  - device
+                  type: object
+                minItems: 2
+                type: array
+              labRef:
+                description: LabRef is the name of the parent Lab.
+                type: string
+            required:
+            - endpoints
+            - labRef
+            type: object
+          status:
+            description: ConnectionStatus defines the observed state of Connection.
+            properties:
+              ports:
+                items:
+                  description: ConnectionPortStatus is written by the node-agent for
+                    each endpoint.
+                  properties:
+                    connected:
+                      type: boolean
+                    device:
+                      type: string
+                    interface:
+                      type: string
+                    nodeAddress:
+                      type: string
+                    nodeName:
+                      type: string
+                    portID:
+                      description: PortID is the OVS port name assigned by node-agent.
+                      type: string
+                  required:
+                  - device
+                  type: object
+                type: array
+              ready:
+                type: boolean
+              vni:
+                description: |-
+                  VNI is the allocated VXLAN Network Identifier for direct (non-switch) connections.
+                  Nil for switch-to-device and switch-to-switch connections.
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
