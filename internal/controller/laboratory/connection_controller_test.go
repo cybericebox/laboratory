@@ -51,7 +51,12 @@ var _ = Describe("Connection Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: laboratoryv1alpha1.ConnectionSpec{
+						Endpoints: []laboratoryv1alpha1.EndpointSpec{
+							{Device: "dev1", Interface: "eth0"},
+							{Device: "dev2", Interface: "eth0"},
+						},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}

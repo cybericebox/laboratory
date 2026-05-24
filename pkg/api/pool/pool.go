@@ -13,8 +13,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const (
@@ -129,7 +129,7 @@ func (a *allocator) ReleaseIndex(ctx context.Context, index uint) error {
 	poolID := index / a.poolSize
 	var pool allocationv1alpha1.Pool
 	if err := a.Get(ctx, client.ObjectKey{
-		Name:      fmt.Sprintf("%s%d", a.poolNamePrefix, poolID),
+		Name:      fmt.Sprintf("%s-%d", a.poolNamePrefix, poolID),
 		Namespace: a.namespace,
 	}, &pool); err != nil {
 		if errors.IsNotFound(err) {
@@ -227,7 +227,7 @@ func (a *allocator) createPool(ctx context.Context) (*allocationv1alpha1.Pool, e
 
 	newPool := &allocationv1alpha1.Pool{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s%d", a.poolNamePrefix, poolIndex),
+			Name:      fmt.Sprintf("%s-%d", a.poolNamePrefix, poolIndex),
 			Namespace: a.namespace,
 			Labels: map[string]string{
 				PoolStateLabel:  PoolStateEmpty,

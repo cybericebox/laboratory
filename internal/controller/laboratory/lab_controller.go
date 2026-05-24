@@ -22,7 +22,7 @@ import (
 const (
 	finalizerLab  = "cybericebox.com/lab"
 	vniPoolNS     = "lab-system"
-	vniPoolPrefix = "vni-"
+	vniPoolPrefix = "vni"
 	vniPoolSize   = uint(65000)
 )
 
@@ -207,18 +207,21 @@ func (r *LabReconciler) materializeConnections(ctx context.Context, lab *laborat
 			return err
 		}
 
+		// Allocate VNI before Create; save it because Create() zeroes Status from server response.
+		var allocatedVNI *uint
 		if isDirect {
 			vni, vniErr := vniAllocator.AllocateIndex(ctx)
 			if vniErr != nil {
 				return fmt.Errorf("allocate VNI for connection %s: %w", connName, vniErr)
 			}
-			conn.Status.VNI = &vni
+			allocatedVNI = &vni
 		}
 
 		if err := r.Create(ctx, conn); err != nil {
 			return err
 		}
-		if conn.Status.VNI != nil {
+		if allocatedVNI != nil {
+			conn.Status.VNI = allocatedVNI
 			if err := r.Status().Update(ctx, conn); err != nil {
 				return err
 			}

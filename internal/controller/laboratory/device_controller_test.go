@@ -51,7 +51,9 @@ var _ = Describe("Device Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: laboratoryv1alpha1.DeviceSpec{
+						Type: laboratoryv1alpha1.DeviceTypeUnmanagedSwitch,
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
