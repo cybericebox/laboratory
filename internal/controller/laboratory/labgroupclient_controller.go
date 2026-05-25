@@ -1,8 +1,11 @@
 package laboratory
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"text/template"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -12,12 +15,19 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 )
 
-const finalizerLabGroupClient = "cybericebox.com/labgroupclient"
+const (
+	finalizerLabGroupClient = "cybericebox.com/labgroupclient"
+
+	// VPN supernet that clients route into the tunnel. Matches cmd/vpn/config.go.
+	clientAllowedIPs = "10.8.0.0/16"
+)
 
 // LabGroupClientReconciler reconciles a LabGroupClient object.
 type LabGroupClientReconciler struct {
@@ -51,36 +61,69 @@ func (r *LabGroupClientReconciler) reconcileCreate(ctx context.Context, lgc *lab
 		}
 	}
 
-	if lgc.Status.AssignedIP != "" {
-		return ctrl.Result{}, nil
-	}
-
+	// Allocate IP + generate keypair on first pass only.
 	pubKey := lgc.Spec.PublicKey
 	var privKeyB64 []byte
-	if pubKey == "" {
-		priv, pub, err := generateWireGuardKeypair()
-		if err != nil {
-			return ctrl.Result{}, err
+	assignedIP := lgc.Status.AssignedIP
+
+	if assignedIP == "" {
+		if pubKey == "" {
+			priv, pub, err := generateWireGuardKeypair()
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			pubKey = string(pub)
+			privKeyB64 = priv
 		}
-		pubKey = string(pub)
-		privKeyB64 = priv
+		allocator := poolpkg.NewAllocator(r.Client, "vpn-clients", lgc.Namespace, 254)
+		idx, err := allocator.AllocateIndex(ctx)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("allocate VPN IP: %w", err)
+		}
+		assignedIP = fmt.Sprintf("10.8.0.%d/32", idx)
 	}
 
-	allocator := poolpkg.NewAllocator(r.Client, "vpn-clients", lgc.Namespace, 254)
-	idx, err := allocator.AllocateIndex(ctx)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("allocate VPN IP: %w", err)
+	// Fetch parent LabGroup so we can populate serverPublicKey + endpoint in the
+	// Secret. If the LabGroup is not yet Ready we still write what we have.
+	serverPubKey, endpoint, lgErr := r.lookupParentVPN(ctx, lgc.Namespace)
+	if lgErr != nil {
+		// Don't fail hard — Secret is still useful with publicKey/assignedIP/privateKey.
+		ctrl.LoggerFrom(ctx).V(1).Info("parent LabGroup not yet readable", "reason", lgErr.Error())
 	}
-	assignedIP := fmt.Sprintf("10.8.0.%d/32", idx)
 
 	secretName := fmt.Sprintf("client-%s", lgc.Name)
-	if err = r.ensureClientSecret(ctx, lgc, secretName, pubKey, string(privKeyB64), assignedIP); err != nil {
+	if err := r.ensureClientSecret(ctx, lgc, secretName, secretParams{
+		PublicKey:       pubKey,
+		PrivateKey:      string(privKeyB64),
+		AssignedIP:      assignedIP,
+		ServerPublicKey: serverPubKey,
+		Endpoint:        endpoint,
+		AllowedIPs:      clientAllowedIPs,
+	}); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	lgc.Status.AssignedIP = assignedIP
-	lgc.Status.SecretRef = secretName
-	return ctrl.Result{}, r.Status().Update(ctx, lgc)
+	updated := false
+	if lgc.Status.AssignedIP != assignedIP {
+		lgc.Status.AssignedIP = assignedIP
+		updated = true
+	}
+	if lgc.Status.SecretRef != secretName {
+		lgc.Status.SecretRef = secretName
+		updated = true
+	}
+	if updated {
+		if err := r.Status().Update(ctx, lgc); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Requeue softly until LabGroup endpoint/server pubkey land so the wg.conf
+	// gets refreshed without depending solely on the cross-resource watch.
+	if serverPubKey == "" || endpoint == "" {
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+	return ctrl.Result{}, nil
 }
 
 func (r *LabGroupClientReconciler) reconcileDelete(ctx context.Context, lgc *laboratoryv1alpha1.LabGroupClient) (ctrl.Result, error) {
@@ -107,27 +150,117 @@ func (r *LabGroupClientReconciler) reconcileDelete(ctx context.Context, lgc *lab
 	return ctrl.Result{}, r.Update(ctx, lgc)
 }
 
-func (r *LabGroupClientReconciler) ensureClientSecret(ctx context.Context, lgc *laboratoryv1alpha1.LabGroupClient, name, pubKey, privKey, assignedIP string) error {
-	data := map[string][]byte{
-		"publicKey":  []byte(pubKey),
-		"assignedIP": []byte(assignedIP),
+// lookupParentVPN finds the LabGroup that owns the given namespace and returns
+// its current VPN public key + endpoint. The namespace label
+// "laboratory.cybericebox.com/group" points to the owning LabGroup name.
+func (r *LabGroupClientReconciler) lookupParentVPN(ctx context.Context, ns string) (pubKey, endpoint string, err error) {
+	var nsObj corev1.Namespace
+	if err := r.Get(ctx, types.NamespacedName{Name: ns}, &nsObj); err != nil {
+		return "", "", err
 	}
-	if privKey != "" {
-		data["privateKey"] = []byte(privKey)
+	owner := nsObj.Labels["laboratory.cybericebox.com/group"]
+	if owner == "" {
+		return "", "", fmt.Errorf("namespace %q missing group label", ns)
+	}
+	var lg laboratoryv1alpha1.LabGroup
+	if err := r.Get(ctx, types.NamespacedName{Name: owner}, &lg); err != nil {
+		return "", "", err
+	}
+	return lg.Status.VPN.PublicKey, lg.Status.VPN.Endpoint, nil
+}
+
+type secretParams struct {
+	PublicKey       string
+	PrivateKey      string // may be empty (user-supplied keypair)
+	AssignedIP      string
+	ServerPublicKey string // empty until LabGroup is Ready
+	Endpoint        string // empty until LabGroup is Ready
+	AllowedIPs      string
+}
+
+func (r *LabGroupClientReconciler) ensureClientSecret(ctx context.Context, lgc *laboratoryv1alpha1.LabGroupClient, name string, p secretParams) error {
+	desired := map[string][]byte{
+		"publicKey":  []byte(p.PublicKey),
+		"assignedIP": []byte(p.AssignedIP),
+		"allowedIPs": []byte(p.AllowedIPs),
+	}
+	if p.PrivateKey != "" {
+		desired["privateKey"] = []byte(p.PrivateKey)
+	}
+	if p.ServerPublicKey != "" {
+		desired["serverPublicKey"] = []byte(p.ServerPublicKey)
+	}
+	if p.Endpoint != "" {
+		desired["endpoint"] = []byte(p.Endpoint)
+	}
+	if conf, err := renderWGConf(p); err == nil {
+		desired["wg.conf"] = []byte(conf)
 	}
 
 	var existing corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: lgc.Namespace}, &existing); err == nil {
-		return nil
-	} else if !errors.IsNotFound(err) {
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: lgc.Namespace}, &existing)
+	if errors.IsNotFound(err) {
+		s := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: lgc.Namespace},
+			Data:       desired,
+		}
+		return r.Create(ctx, s)
+	}
+	if err != nil {
 		return err
 	}
 
-	s := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: lgc.Namespace},
-		Data:       data,
+	if dataEqual(existing.Data, desired) {
+		return nil
 	}
-	return r.Create(ctx, s)
+	existing.Data = desired
+	return r.Update(ctx, &existing)
+}
+
+func dataEqual(a, b map[string][]byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if !bytes.Equal(b[k], v) {
+			return false
+		}
+	}
+	return true
+}
+
+// wgConfTemplate renders a WireGuard client config.
+//
+// Spec §4: no DNS= section (Apple-clients trigger a NetworkExtension bug).
+// PersistentKeepalive 15 s — §4 recommends 10–25 s for roaming recovery.
+// PrivateKey is the system-generated value when present; otherwise a literal
+// placeholder is left so the user pastes their own.
+var wgConfTemplate = template.Must(template.New("wg.conf").Parse(`[Interface]
+PrivateKey = {{ .PrivateKey }}
+Address = {{ .AssignedIP }}
+
+[Peer]
+PublicKey = {{ .ServerPublicKey }}
+Endpoint = {{ .Endpoint }}
+AllowedIPs = {{ .AllowedIPs }}
+PersistentKeepalive = 15
+`))
+
+func renderWGConf(p secretParams) (string, error) {
+	if p.ServerPublicKey == "" || p.Endpoint == "" || p.AssignedIP == "" || p.AllowedIPs == "" {
+		return "", fmt.Errorf("incomplete params")
+	}
+	priv := p.PrivateKey
+	if priv == "" {
+		priv = "<YOUR_PRIVATE_KEY>"
+	}
+	var buf bytes.Buffer
+	if err := wgConfTemplate.Execute(&buf, struct {
+		PrivateKey, AssignedIP, ServerPublicKey, Endpoint, AllowedIPs string
+	}{priv, p.AssignedIP, p.ServerPublicKey, p.Endpoint, p.AllowedIPs}); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
 }
 
 // ipToIndex extracts the last octet of a CIDR like "10.8.0.5/32" as pool index.
@@ -140,7 +273,32 @@ func ipToIndex(cidr string) (uint, error) {
 }
 
 func (r *LabGroupClientReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Re-reconcile all LabGroupClient in a group's namespace when the parent
+	// LabGroup status changes (so wg.conf picks up server pubkey / endpoint).
+	groupMap := func(ctx context.Context, obj client.Object) []reconcile.Request {
+		lg, ok := obj.(*laboratoryv1alpha1.LabGroup)
+		if !ok {
+			return nil
+		}
+		ns := lg.Status.Namespace
+		if ns == "" {
+			return nil
+		}
+		var lgcList laboratoryv1alpha1.LabGroupClientList
+		if err := r.List(ctx, &lgcList, client.InNamespace(ns)); err != nil {
+			return nil
+		}
+		reqs := make([]reconcile.Request, 0, len(lgcList.Items))
+		for _, lgc := range lgcList.Items {
+			reqs = append(reqs, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: lgc.Name, Namespace: lgc.Namespace},
+			})
+		}
+		return reqs
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.LabGroupClient{}).
+		Watches(&laboratoryv1alpha1.LabGroup{}, handler.EnqueueRequestsFromMapFunc(groupMap)).
 		Complete(r)
 }
