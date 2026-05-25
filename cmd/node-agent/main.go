@@ -43,6 +43,7 @@ func main() {
 		log.Error(err, "init OVS manager")
 		os.Exit(1)
 	}
+	defer ovs.Close()
 
 	ovsRunDir := filepath.Dir(cfg.OVSSock)
 	flows, err := newFlowManager(ovsRunDir, cfg.Bridge)
