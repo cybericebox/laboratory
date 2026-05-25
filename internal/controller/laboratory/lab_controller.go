@@ -36,8 +36,8 @@ const (
 	vniPoolSize   = uint(65000)
 
 	labSubnetPool    = "lab-subnets"
-	vpnSubnetOctet2  = 8  // 10.8.N.0/24
-	inetSubnetOctet2 = 9  // 10.9.N.0/24
+	vpnSubnetOctet2  = 8 // 10.8.N.0/24
+	inetSubnetOctet2 = 9 // 10.9.N.0/24
 )
 
 // LabReconciler reconciles a Lab object.

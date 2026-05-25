@@ -178,7 +178,7 @@ func main() {
 		metricsServerOptions.TLSOpts = append(metricsServerOptions.TLSOpts, func(config *tls.Config) {
 			config.GetCertificate = metricsCertWatcher.GetCertificate
 		})
-	}                
+	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,

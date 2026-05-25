@@ -11,6 +11,7 @@ repo: github.com/cybericebox/laboratory
 resources:
 - api:
     crdVersion: v1
+     namespaced: true
   domain: cybericebox.com
   group: allocation
   kind: Pool
