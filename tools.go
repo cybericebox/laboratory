@@ -6,6 +6,7 @@ package main
 
 import (
 	_ "github.com/cilium/ebpf"
+	_ "github.com/containernetworking/cni/pkg/skel"
 	_ "github.com/coreos/go-iptables/iptables"
 	_ "github.com/insomniacslk/dhcp/dhcpv4"
 	_ "github.com/vishvananda/netlink"
