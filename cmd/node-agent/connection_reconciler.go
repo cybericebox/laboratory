@@ -25,6 +25,7 @@ type ConnectionReconciler struct {
 	NodeAddress string
 	OVS         *OVSManager
 	Flows       *FlowManager
+	ProcRoot    string
 }
 
 func (r *ConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -120,7 +121,7 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 				return ctrl.Result{}, fmt.Errorf("add OVS port %q: %w", pKey, err)
 			}
 
-			netnsPath, err := FindPodNetNS(string(ep.device.UID))
+			netnsPath, err := FindPodNetNS(r.ProcRoot, string(ep.device.UID))
 			if err != nil {
 				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 			}

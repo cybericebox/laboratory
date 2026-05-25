@@ -81,6 +81,7 @@ func main() {
 		NodeAddress: nodeAddr,
 		OVS:         ovs,
 		Flows:       flows,
+		ProcRoot:    cfg.ProcRoot,
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "setup ConnectionReconciler")
 		os.Exit(1)
@@ -91,6 +92,7 @@ func main() {
 		NodeName: cfg.NodeName,
 		OVS:      ovs,
 		Server:   grpcSrv,
+		ProcRoot: cfg.ProcRoot,
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "setup LabIfaceReconciler")
 		os.Exit(1)

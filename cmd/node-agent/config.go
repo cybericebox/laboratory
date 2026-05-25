@@ -12,6 +12,7 @@ type Config struct {
 	OVSSock  string
 	GRPCSock string
 	Bridge   string
+	ProcRoot string
 }
 
 func loadConfig() (*Config, error) {
@@ -24,6 +25,7 @@ func loadConfig() (*Config, error) {
 		OVSSock:  getEnvOr("OVS_SOCK", "/run/openvswitch/db.sock"),
 		GRPCSock: getEnvOr("GRPC_SOCK", "/run/cybericebox/node-agent.sock"),
 		Bridge:   "br-ovs",
+		ProcRoot: getEnvOr("PROC_ROOT", "/proc"),
 	}, nil
 }
 

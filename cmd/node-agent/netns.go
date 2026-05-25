@@ -15,9 +15,9 @@ import (
 	"github.com/vishvananda/netns"
 )
 
-// FindPodNetNS scans /proc to find the netns path for a pod by matching its UID in cgroup entries.
-func FindPodNetNS(podUID string) (string, error) {
-	return findPodNetNSIn("/proc", podUID)
+// FindPodNetNS scans procRoot to find the netns path for a pod by matching its UID in cgroup entries.
+func FindPodNetNS(procRoot, podUID string) (string, error) {
+	return findPodNetNSIn(procRoot, podUID)
 }
 
 func findPodNetNSIn(procRoot, podUID string) (string, error) {

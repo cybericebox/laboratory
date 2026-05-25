@@ -24,6 +24,7 @@ type LabIfaceReconciler struct {
 	NodeName string
 	OVS      *OVSManager
 	Server   *NodeAgentServer
+	ProcRoot string
 }
 
 func (r *LabIfaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -85,7 +86,7 @@ func (r *LabIfaceReconciler) ensureLabIface(ctx context.Context, namespace, appL
 	netnsPath, ok := r.Server.GetPodNetNS(string(localPod.UID))
 	if !ok {
 		var err error
-		netnsPath, err = FindPodNetNS(string(localPod.UID))
+		netnsPath, err = FindPodNetNS(r.ProcRoot, string(localPod.UID))
 		if err != nil {
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
