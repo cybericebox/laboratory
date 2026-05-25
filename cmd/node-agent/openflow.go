@@ -29,13 +29,25 @@ func (f *FlowManager) Close() error {
 	return f.client.Close()
 }
 
+// portNo resolves a named port, refreshing portMap once on miss.
+func (f *FlowManager) portNo(name string) (uint32, error) {
+	no, err := f.client.PortNo(name)
+	if err != nil {
+		if rerr := f.client.RefreshPorts(); rerr != nil {
+			return 0, rerr
+		}
+		return f.client.PortNo(name)
+	}
+	return no, nil
+}
+
 // AddEgressFlow: local port → set tunnel_id=VNI → output via geneve port.
 func (f *FlowManager) AddEgressFlow(localPort, genevePort string, vni uint) error {
-	localNo, err := f.client.PortNo(localPort)
+	localNo, err := f.portNo(localPort)
 	if err != nil {
 		return err
 	}
-	geneveNo, err := f.client.PortNo(genevePort)
+	geneveNo, err := f.portNo(genevePort)
 	if err != nil {
 		return err
 	}
@@ -48,11 +60,11 @@ func (f *FlowManager) AddEgressFlow(localPort, genevePort string, vni uint) erro
 
 // AddIngressFlow: geneve port + tun_id=VNI → output to local port.
 func (f *FlowManager) AddIngressFlow(genevePort, localPort string, vni uint) error {
-	geneveNo, err := f.client.PortNo(genevePort)
+	geneveNo, err := f.portNo(genevePort)
 	if err != nil {
 		return err
 	}
-	localNo, err := f.client.PortNo(localPort)
+	localNo, err := f.portNo(localPort)
 	if err != nil {
 		return err
 	}
@@ -63,7 +75,7 @@ func (f *FlowManager) AddIngressFlow(genevePort, localPort string, vni uint) err
 
 // AddLocalSwitchFlow: port in VNI segment → set tunnel_id + normal L2 forwarding (same-node pods).
 func (f *FlowManager) AddLocalSwitchFlow(localPort string, vni uint) error {
-	localNo, err := f.client.PortNo(localPort)
+	localNo, err := f.portNo(localPort)
 	if err != nil {
 		return err
 	}
@@ -76,7 +88,7 @@ func (f *FlowManager) AddLocalSwitchFlow(localPort string, vni uint) error {
 
 // DelFlowsByPort removes all table=0 flows matching in_port=portName.
 func (f *FlowManager) DelFlowsByPort(portName string) error {
-	portNo, err := f.client.PortNo(portName)
+	portNo, err := f.portNo(portName)
 	if err != nil {
 		return err
 	}
@@ -86,7 +98,7 @@ func (f *FlowManager) DelFlowsByPort(portName string) error {
 
 // DelFlowsByVNI removes table=0 flows matching in_port=genevePort and tunnel_id=VNI.
 func (f *FlowManager) DelFlowsByVNI(vni uint, genevePort string) error {
-	geneveNo, err := f.client.PortNo(genevePort)
+	geneveNo, err := f.portNo(genevePort)
 	if err != nil {
 		return err
 	}

@@ -44,7 +44,7 @@ COPY --from=go-builder /out/node-agent /node-agent/bin/node-agent
 COPY --from=go-builder /out/cni-gate   /node-agent/bin/cni-gate
 
 # OVS startup script.
-COPY scripts/start-ovs.sh /node-agent/bin/start-ovs.sh
+COPY --chmod=0755 scripts/start-ovs.sh /node-agent/bin/start-ovs.sh
 
 # CNI conflist (copied to host by initContainer).
 COPY config/cni/10-cybericebox.conflist /node-agent/cni/10-cybericebox.conflist

@@ -11,10 +11,10 @@ metadata:
   name: node-agent
 rules:
   - apiGroups: ["laboratory.cybericebox.com"]
-    resources: ["labifaces", "deviceports", "connections", "laboratories"]
+    resources: ["labs", "devices", "connections"]
     verbs: ["get", "list", "watch", "update", "patch"]
   - apiGroups: ["laboratory.cybericebox.com"]
-    resources: ["labifaces/status", "deviceports/status", "connections/status"]
+    resources: ["connections/status"]
     verbs: ["get", "update", "patch"]
   - apiGroups: [""]
     resources: ["nodes"]

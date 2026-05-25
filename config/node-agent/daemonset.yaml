@@ -32,22 +32,28 @@ spec:
               cp /node-agent/cni/10-cybericebox.conflist /etc/cni/net.d/10-cybericebox.conflist
 
               APISERVER="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
-              CA=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
               TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
               KUBECONFIG=/etc/cni/net.d/cybericebox-kubeconfig.conf
 
-              kubectl config set-cluster k8s \
-                --server="$APISERVER" \
-                --certificate-authority="$CA" \
-                --kubeconfig="$KUBECONFIG"
-              kubectl config set-credentials node-agent \
-                --token="$TOKEN" \
-                --kubeconfig="$KUBECONFIG"
-              kubectl config set-context default \
-                --cluster=k8s --user=node-agent \
-                --kubeconfig="$KUBECONFIG"
-              kubectl config use-context default \
-                --kubeconfig="$KUBECONFIG"
+              cat > "$KUBECONFIG" << EOFKUBE
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - name: k8s
+                cluster:
+                  server: ${APISERVER}
+                  certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+              users:
+              - name: node-agent
+                user:
+                  token: ${TOKEN}
+              contexts:
+              - name: default
+                context:
+                  cluster: k8s
+                  user: node-agent
+              current-context: default
+              EOFKUBE
           securityContext:
             runAsUser: 0
           volumeMounts:
