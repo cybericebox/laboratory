@@ -89,12 +89,11 @@ func (d *Demux) handleType1(pkt []byte, src *net.UDPAddr) {
 	if err != nil {
 		return
 	}
-	serverConn, err := net.DialUDP("udp4", nil, resolved)
-	if err != nil {
+	// Send via main listen socket so backend's type-2 response returns to it,
+	// not to an ephemeral socket that would be closed before the reply arrives.
+	if _, err := d.conn.WriteToUDP(pkt, resolved); err != nil {
 		return
 	}
-	_, _ = serverConn.Write(pkt)
-	serverConn.Close()
 
 	if len(pkt) < 8 {
 		return
