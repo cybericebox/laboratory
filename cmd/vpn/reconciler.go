@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/vishvananda/netlink"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -92,9 +93,10 @@ func (r *LabVPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	ifaceName := "lab-" + lab.Name
-	link, err := waitForInterface(ctx, ifaceName)
+	link, err := netlink.LinkByName(ifaceName)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("wait for interface %s: %w", ifaceName, err)
+		// Interface not yet created by node-agent; requeue.
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
 	if err := addLabRoute(link, cidr); err != nil {
@@ -107,7 +109,9 @@ func (r *LabVPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 func (r *LabVPNReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1alpha1.Lab) (ctrl.Result, error) {
 	if lab.Status.VPN.CIDR != "" {
-		_ = delLabRoute(lab.Status.VPN.CIDR)
+		if err := delLabRoute(lab.Status.VPN.CIDR); err != nil {
+			ctrl.Log.WithName("vpn").Error(err, "delete lab route", "cidr", lab.Status.VPN.CIDR)
+		}
 	}
 	controllerutil.RemoveFinalizer(lab, finalizerVPN)
 	return ctrl.Result{}, r.Update(ctx, lab)
