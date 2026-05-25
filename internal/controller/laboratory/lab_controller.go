@@ -168,6 +168,21 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 		deviceName := fmt.Sprintf("%s-%s", lab.Name, tmpl.Name)
 		var existing laboratoryv1alpha1.Device
 		if err := r.Get(ctx, types.NamespacedName{Name: deviceName, Namespace: lab.Namespace}, &existing); err == nil {
+			// For switch/hub devices, ensure VNI is written even if the status update failed on a previous reconcile.
+			isSwitch := existing.Spec.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch ||
+				existing.Spec.Type == laboratoryv1alpha1.DeviceTypeHub
+			if !isSwitch || existing.Status.VNI != nil {
+				continue
+			}
+			// Device exists but VNI was not written — allocate and write it now.
+			vni, err := vniAllocator.AllocateIndex(ctx)
+			if err != nil {
+				return fmt.Errorf("allocate VNI for switch %s: %w", deviceName, err)
+			}
+			existing.Status.VNI = &vni
+			if err := r.Status().Update(ctx, &existing); err != nil {
+				return err
+			}
 			continue
 		} else if !errors.IsNotFound(err) {
 			return err
@@ -365,7 +380,7 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 			continue
 		}
 		if err := vniAllocator.ReleaseIndex(ctx, *d.Status.VNI); err != nil {
-			logger.Error(err, "release switch VNI", "device", d.Name, "vni", *d.Status.VNI)
+			return ctrl.Result{}, fmt.Errorf("release switch VNI %d for device %s: %w", *d.Status.VNI, d.Name, err)
 		}
 		d.Status.VNI = nil
 		if err := r.Status().Update(ctx, d); err != nil {
