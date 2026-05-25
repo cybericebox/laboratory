@@ -93,19 +93,25 @@ func (d *Demux) handleType1(pkt []byte, src *net.UDPAddr) {
 	if err != nil {
 		return
 	}
+	if len(pkt) < 8 {
+		return
+	}
+	ci := binary.LittleEndian.Uint32(pkt[4:8])
+
+	// Reserve Ci before forwarding — spec §4 says collision with another live
+	// session is fatal for this handshake; let the client retry with a new index
+	// instead of clobbering an unrelated peer.
+	if !d.conntrack.AddPartial(ci,
+		Socket{IP: src.IP, Port: uint16(src.Port)},
+		Socket{IP: resolved.IP, Port: uint16(resolved.Port)}) {
+		return
+	}
+
 	// Send via main listen socket so backend's type-2 response returns to it,
 	// not to an ephemeral socket that would be closed before the reply arrives.
 	if _, err := d.conn.WriteToUDP(pkt, resolved); err != nil {
 		return
 	}
-
-	if len(pkt) < 8 {
-		return
-	}
-	ci := binary.LittleEndian.Uint32(pkt[4:8])
-	d.conntrack.AddPartial(ci,
-		Socket{IP: src.IP, Port: uint16(src.Port)},
-		Socket{IP: resolved.IP, Port: uint16(resolved.Port)})
 }
 
 func (d *Demux) handleType2(pkt []byte, src *net.UDPAddr) {
@@ -119,11 +125,16 @@ func (d *Demux) handleType2(pkt []byte, src *net.UDPAddr) {
 	if !found {
 		return
 	}
-	dst := &net.UDPAddr{IP: clientDst.IP, Port: int(clientDst.Port)}
-	_, _ = d.conn.WriteToUDP(pkt, dst)
 
 	serverSocket := Socket{IP: src.IP, Port: uint16(src.Port)}
-	d.conntrack.Complete(si, ci, clientDst, serverSocket)
+	// Reserve Si before forwarding to the client — if another live session owns
+	// this index, drop the response so upstream WG retries with a fresh index.
+	if !d.conntrack.Complete(si, ci, clientDst, serverSocket) {
+		return
+	}
+
+	dst := &net.UDPAddr{IP: clientDst.IP, Port: int(clientDst.Port)}
+	_, _ = d.conn.WriteToUDP(pkt, dst)
 }
 
 func (d *Demux) handleType4Userspace(pkt []byte, src *net.UDPAddr) {
@@ -131,7 +142,8 @@ func (d *Demux) handleType4Userspace(pkt []byte, src *net.UDPAddr) {
 		return
 	}
 	receiverIndex := binary.LittleEndian.Uint32(pkt[4:8])
-	dst, found := d.conntrack.Lookup(receiverIndex)
+	dst, found := d.conntrack.LookupForward(receiverIndex,
+		Socket{IP: src.IP, Port: uint16(src.Port)})
 	if !found {
 		return
 	}
