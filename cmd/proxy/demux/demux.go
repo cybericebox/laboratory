@@ -18,6 +18,7 @@ type Demux struct {
 	table     *Table
 	conntrack *ConnTrack
 	conn      *net.UDPConn
+	xdpHandle *xdp.XDPHandle
 }
 
 func New(listenAddr string, table *Table, ct *ConnTrack) (*Demux, error) {
@@ -30,14 +31,17 @@ func New(listenAddr string, table *Table, ct *ConnTrack) (*Demux, error) {
 		return nil, fmt.Errorf("listen UDP %s: %w", listenAddr, err)
 	}
 
+	d := &Demux{table: table, conntrack: ct, conn: conn}
+
 	// Best-effort XDP load; failure is non-fatal — proxy continues with userspace demux.
 	if h, err := xdp.Load("eth0", wgPort); err != nil {
 		ctrl.Log.WithName("demux").Info("XDP not loaded, using userspace fallback", "reason", err)
 	} else if h != nil {
 		ct.SetXDP(h)
+		d.xdpHandle = h
 	}
 
-	return &Demux{table: table, conntrack: ct, conn: conn}, nil
+	return d, nil
 }
 
 // Run processes incoming WireGuard packets (type 1, 2, and 4 fallback).
@@ -133,4 +137,7 @@ func (d *Demux) handleType4Userspace(pkt []byte, src *net.UDPAddr) {
 
 func (d *Demux) Close() {
 	d.conn.Close()
+	if d.xdpHandle != nil {
+		_ = d.xdpHandle.Close()
+	}
 }
