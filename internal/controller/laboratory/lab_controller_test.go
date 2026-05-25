@@ -1,6 +1,7 @@
 package laboratory
 
 import (
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -85,6 +86,39 @@ var _ = Describe("Lab controller", func() {
 			}
 			return list.Items[0].Status.VNI != nil
 		}, timeout, interval).Should(BeTrue())
+	})
+
+	It("allocates VNI for UnmanagedSwitch device", func() {
+		lab := &laboratoryv1alpha1.Lab{
+			ObjectMeta: metav1.ObjectMeta{Name: "vni-test", Namespace: ns},
+			Spec: laboratoryv1alpha1.LabSpec{
+				Devices: []laboratoryv1alpha1.DeviceTemplate{
+					{Name: "sw1", Type: laboratoryv1alpha1.DeviceTypeUnmanagedSwitch},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, lab)).To(Succeed())
+		DeferCleanup(func() {
+			var devList laboratoryv1alpha1.DeviceList
+			_ = k8sClient.List(ctx, &devList, client.InNamespace(ns),
+				client.MatchingLabels{laboratoryv1alpha1.LabelLab: "vni-test"})
+			for i := range devList.Items {
+				devList.Items[i].Finalizers = nil
+				_ = k8sClient.Update(ctx, &devList.Items[i])
+			}
+			var l laboratoryv1alpha1.Lab
+			_ = k8sClient.Get(ctx, types.NamespacedName{Name: "vni-test", Namespace: ns}, &l)
+			l.Finalizers = nil
+			_ = k8sClient.Update(ctx, &l)
+			_ = k8sClient.Delete(ctx, &l)
+		})
+
+		deviceName := fmt.Sprintf("%s-%s", "vni-test", "sw1")
+		Eventually(func() *uint {
+			var d laboratoryv1alpha1.Device
+			_ = k8sClient.Get(ctx, types.NamespacedName{Name: deviceName, Namespace: ns}, &d)
+			return d.Status.VNI
+		}, timeout, interval).ShouldNot(BeNil())
 	})
 
 	It("sets status=Failed when the switch topology contains a cycle", func() {

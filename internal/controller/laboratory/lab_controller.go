@@ -162,6 +162,8 @@ func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
 }
 
 func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
+	vniAllocator := poolpkg.NewAllocator(r.Client, vniPoolPrefix, vniPoolNS, vniPoolSize)
+
 	for _, tmpl := range lab.Spec.Devices {
 		deviceName := fmt.Sprintf("%s-%s", lab.Name, tmpl.Name)
 		var existing laboratoryv1alpha1.Device
@@ -192,6 +194,17 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 		}
 		if err := r.Create(ctx, d); err != nil {
 			return err
+		}
+
+		if tmpl.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch || tmpl.Type == laboratoryv1alpha1.DeviceTypeHub {
+			vni, err := vniAllocator.AllocateIndex(ctx)
+			if err != nil {
+				return fmt.Errorf("allocate VNI for switch %s: %w", deviceName, err)
+			}
+			d.Status.VNI = &vni
+			if err := r.Status().Update(ctx, d); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -343,6 +356,23 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 		client.MatchingLabels{laboratoryv1alpha1.LabelLab: lab.Name}); err != nil {
 		return ctrl.Result{}, err
 	}
+
+	// Release VNIs for switch/hub devices before they are garbage-collected.
+	vniAllocator := poolpkg.NewAllocator(r.Client, vniPoolPrefix, vniPoolNS, vniPoolSize)
+	for i := range deviceList.Items {
+		d := &deviceList.Items[i]
+		if d.Status.VNI == nil {
+			continue
+		}
+		if err := vniAllocator.ReleaseIndex(ctx, *d.Status.VNI); err != nil {
+			logger.Error(err, "release switch VNI", "device", d.Name, "vni", *d.Status.VNI)
+		}
+		d.Status.VNI = nil
+		if err := r.Status().Update(ctx, d); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	if len(deviceList.Items) > 0 {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
@@ -353,7 +383,6 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 		return ctrl.Result{}, err
 	}
 	if len(connList.Items) > 0 {
-		vniAllocator := poolpkg.NewAllocator(r.Client, vniPoolPrefix, vniPoolNS, vniPoolSize)
 		for i := range connList.Items {
 			c := &connList.Items[i]
 			if c.Status.VNI == nil {
