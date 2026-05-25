@@ -14,7 +14,8 @@ RUN curl -fsSL \
 RUN cd /tmp/openvswitch-${OVS_VERSION} \
     && ./configure --prefix=/usr --localstatedir=/var --sysconfdir=/etc \
     && make -j"$(nproc)" \
-    && make install DESTDIR=/ovs-install
+    && make install DESTDIR=/ovs-install \
+    && rm -rf /tmp/openvswitch-${OVS_VERSION}
 
 # Stage 2: build Go binaries.
 FROM golang:1.24 AS go-builder
