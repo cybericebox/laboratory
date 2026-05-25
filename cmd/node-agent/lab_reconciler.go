@@ -35,20 +35,31 @@ func (r *LabIfaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return r.reconcileDelete(ctx, &lab)
 	}
 
-	ifaceName := labIfaceName(lab.Name)
+	needsRequeue := false
 
 	if lab.Spec.VPN.Enabled && lab.Status.VPN.CIDR != "" {
-		if result, err := r.ensureLabIface(ctx, lab.Namespace, "vpn", ifaceName); err != nil || result.RequeueAfter > 0 {
-			return result, err
+		result, err := r.ensureLabIface(ctx, lab.Namespace, "vpn", labIfaceName(lab.Name))
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if result.RequeueAfter > 0 {
+			needsRequeue = true
 		}
 	}
 
 	if lab.Spec.Internet.Enabled && lab.Status.Internet.CIDR != "" {
-		if result, err := r.ensureLabIface(ctx, lab.Namespace, "gateway", ifaceName); err != nil || result.RequeueAfter > 0 {
-			return result, err
+		result, err := r.ensureLabIface(ctx, lab.Namespace, "gateway", labGWIfaceName(lab.Name))
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if result.RequeueAfter > 0 {
+			needsRequeue = true
 		}
 	}
 
+	if needsRequeue {
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
 	return ctrl.Result{}, nil
 }
 
@@ -90,8 +101,8 @@ func (r *LabIfaceReconciler) ensureLabIface(ctx context.Context, namespace, appL
 }
 
 func (r *LabIfaceReconciler) reconcileDelete(_ context.Context, lab *laboratoryv1alpha1.Lab) (ctrl.Result, error) {
-	ifaceName := labIfaceName(lab.Name)
-	_ = r.OVS.DelPort(ifaceName)
+	_ = r.OVS.DelPort(labIfaceName(lab.Name))
+	_ = r.OVS.DelPort(labGWIfaceName(lab.Name))
 	return ctrl.Result{}, nil
 }
 

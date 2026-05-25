@@ -74,6 +74,7 @@ func cmdADD(args *skel.CmdArgs) error {
 
 	client := nodev1.NewNodeAgentClient(grpcConn)
 
+	var added int
 	for _, att := range attachments {
 		_, err := client.AddPort(context.Background(), &nodev1.AddPortRequest{
 			PodUid:        podUID,
@@ -83,8 +84,12 @@ func cmdADD(args *skel.CmdArgs) error {
 			NetnsPath:     args.Netns,
 		})
 		if err != nil {
+			if added > 0 {
+				_, _ = client.DeletePort(context.Background(), &nodev1.DeletePortRequest{PodUid: podUID})
+			}
 			return fmt.Errorf("AddPort conn=%q iface=%q: %w", att.Connection, att.Interface, err)
 		}
+		added++
 	}
 
 	return nil
