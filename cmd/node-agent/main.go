@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -43,7 +44,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	flows := newFlowManager(cfg.Bridge)
+	ovsRunDir := filepath.Dir(cfg.OVSSock)
+	flows, err := newFlowManager(ovsRunDir, cfg.Bridge)
+	if err != nil {
+		log.Error(err, "init flow manager")
+		os.Exit(1)
+	}
 
 	grpcSrv := newNodeAgentServer(ovs)
 	gs, err := startGRPCServer(cfg.GRPCSock, grpcSrv)

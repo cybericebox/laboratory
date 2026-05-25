@@ -4,57 +4,87 @@ package main
 
 import (
 	"fmt"
-	"os/exec"
-	"strings"
+	"path/filepath"
+
+	"github.com/cybericebox/laboratory/cmd/node-agent/ofclient"
 )
 
-// FlowManager programs OpenFlow rules on br-ovs via ovs-ofctl exec.
+// FlowManager programs OpenFlow rules on br-ovs via the Go OF 1.3 client.
 // Table 0: ingress — classify by in_port or tun_id.
 type FlowManager struct {
-	bridge string
+	client *ofclient.Client
 }
 
-func newFlowManager(bridge string) *FlowManager {
-	return &FlowManager{bridge: bridge}
-}
-
-func (f *FlowManager) ofctl(args ...string) error {
-	out, err := exec.Command("ovs-ofctl", args...).CombinedOutput()
+func newFlowManager(ovsRunDir, bridge string) (*FlowManager, error) {
+	sockPath := filepath.Join(ovsRunDir, bridge+".mgmt")
+	c, err := ofclient.Connect(sockPath)
 	if err != nil {
-		return fmt.Errorf("ovs-ofctl %v: %w: %s", args, err, strings.TrimSpace(string(out)))
+		return nil, fmt.Errorf("OF client connect to %s: %w", sockPath, err)
 	}
-	return nil
+	return &FlowManager{client: c}, nil
 }
 
-// AddEgressFlow: local port → load VNI into tun_id → send via geneve port.
+// AddEgressFlow: local port → set tunnel_id=VNI → output via geneve port.
 func (f *FlowManager) AddEgressFlow(localPort, genevePort string, vni uint) error {
-	return f.ofctl("add-flow", f.bridge,
-		fmt.Sprintf("table=0,priority=100,in_port=%s,actions=load:%d->NXM_NX_TUN_ID[],output:%s",
-			localPort, vni, genevePort))
+	localNo, err := f.client.PortNo(localPort)
+	if err != nil {
+		return err
+	}
+	geneveNo, err := f.client.PortNo(genevePort)
+	if err != nil {
+		return err
+	}
+	match := ofclient.BuildMatch(localNo, 0, false)
+	var actions []byte
+	actions = append(actions, ofclient.BuildActionsSetFieldTunnelID(uint64(vni))...)
+	actions = append(actions, ofclient.BuildActionsOutput(geneveNo)...)
+	return f.client.FlowAdd(0, 100, match, actions)
 }
 
-// AddIngressFlow: geneve port + tun_id=VNI → output local port.
+// AddIngressFlow: geneve port + tun_id=VNI → output to local port.
 func (f *FlowManager) AddIngressFlow(genevePort, localPort string, vni uint) error {
-	return f.ofctl("add-flow", f.bridge,
-		fmt.Sprintf("table=0,priority=100,in_port=%s,tun_id=%d,actions=output:%s",
-			genevePort, vni, localPort))
+	geneveNo, err := f.client.PortNo(genevePort)
+	if err != nil {
+		return err
+	}
+	localNo, err := f.client.PortNo(localPort)
+	if err != nil {
+		return err
+	}
+	match := ofclient.BuildMatch(geneveNo, uint64(vni), true)
+	actions := ofclient.BuildActionsOutput(localNo)
+	return f.client.FlowAdd(0, 100, match, actions)
 }
 
-// AddLocalSwitchFlow: port in VNI segment → flood within the VNI (L2 switch behaviour for same-node pods).
+// AddLocalSwitchFlow: port in VNI segment → set tunnel_id + normal L2 forwarding (same-node pods).
 func (f *FlowManager) AddLocalSwitchFlow(localPort string, vni uint) error {
-	return f.ofctl("add-flow", f.bridge,
-		fmt.Sprintf("table=0,priority=90,in_port=%s,actions=load:%d->NXM_NX_TUN_ID[],normal",
-			localPort, vni))
+	localNo, err := f.client.PortNo(localPort)
+	if err != nil {
+		return err
+	}
+	match := ofclient.BuildMatch(localNo, 0, false)
+	var actions []byte
+	actions = append(actions, ofclient.BuildActionsSetFieldTunnelID(uint64(vni))...)
+	actions = append(actions, ofclient.BuildActionsGroupNormal()...)
+	return f.client.FlowAdd(0, 90, match, actions)
 }
 
-// DelFlowsByPort removes all table=0 flows with the given in_port.
+// DelFlowsByPort removes all table=0 flows matching in_port=portName.
 func (f *FlowManager) DelFlowsByPort(portName string) error {
-	return f.ofctl("del-flows", f.bridge,
-		fmt.Sprintf("table=0,in_port=%s", portName))
+	portNo, err := f.client.PortNo(portName)
+	if err != nil {
+		return err
+	}
+	match := ofclient.BuildMatch(portNo, 0, false)
+	return f.client.FlowDelete(0, match)
 }
 
-// DelFlowsByVNI removes table=0 flows matching a given tun_id on a geneve port.
+// DelFlowsByVNI removes table=0 flows matching in_port=genevePort and tunnel_id=VNI.
 func (f *FlowManager) DelFlowsByVNI(vni uint, genevePort string) error {
-	return f.ofctl("del-flows", f.bridge,
-		fmt.Sprintf("table=0,in_port=%s,tun_id=%d", genevePort, vni))
+	geneveNo, err := f.client.PortNo(genevePort)
+	if err != nil {
+		return err
+	}
+	match := ofclient.BuildMatch(geneveNo, uint64(vni), true)
+	return f.client.FlowDelete(0, match)
 }
