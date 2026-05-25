@@ -75,6 +75,18 @@ func (r *LabGroupClientReconciler) reconcileCreate(ctx context.Context, lgc *lab
 			pubKey = string(pub)
 			privKeyB64 = priv
 		}
+
+		// Reject duplicate pubkey in the same group — peers are identified by
+		// pubkey + assignedIP on the VPN server, so two LGCs with the same key
+		// would race for the peer slot.
+		if dup, dupErr := r.findDuplicatePubKey(ctx, pubKey, lgc); dupErr != nil {
+			return ctrl.Result{}, dupErr
+		} else if dup != "" {
+			ctrl.LoggerFrom(ctx).Error(fmt.Errorf("pubkey collision with %q", dup),
+				"refusing to allocate duplicate VPN client", "client", lgc.Name)
+			return ctrl.Result{}, nil
+		}
+
 		allocator := poolpkg.NewAllocator(r.Client, "vpn-clients", lgc.Namespace, 254)
 		idx, err := allocator.AllocateIndex(ctx)
 		if err != nil {
@@ -148,6 +160,29 @@ func (r *LabGroupClientReconciler) reconcileDelete(ctx context.Context, lgc *lab
 
 	controllerutil.RemoveFinalizer(lgc, finalizerLabGroupClient)
 	return ctrl.Result{}, r.Update(ctx, lgc)
+}
+
+// findDuplicatePubKey returns the name of another LabGroupClient in the same
+// namespace that already uses pubKey, or "" if it's free. Checks both
+// Spec.PublicKey (already-allocated peers) and skips the caller itself.
+func (r *LabGroupClientReconciler) findDuplicatePubKey(ctx context.Context, pubKey string, self *laboratoryv1alpha1.LabGroupClient) (string, error) {
+	if pubKey == "" {
+		return "", nil
+	}
+	var list laboratoryv1alpha1.LabGroupClientList
+	if err := r.List(ctx, &list, client.InNamespace(self.Namespace)); err != nil {
+		return "", err
+	}
+	for i := range list.Items {
+		other := &list.Items[i]
+		if other.Name == self.Name {
+			continue
+		}
+		if other.Spec.PublicKey == pubKey {
+			return other.Name, nil
+		}
+	}
+	return "", nil
 }
 
 // lookupParentVPN finds the LabGroup that owns the given namespace and returns

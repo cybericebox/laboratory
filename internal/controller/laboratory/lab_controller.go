@@ -163,6 +163,92 @@ func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
 			}
 		}
 	}
+	return r.validateBroadcastDomains(lab, switchDevices)
+}
+
+// validateBroadcastDomains groups Connections into broadcast components
+// (transitively merged through shared switch/hub endpoints) and rejects:
+//   - REQ-OP-026: same domain contains both VPN and Internet singletons.
+//   - REQ-OP-027: same domain has more than one DHCP source.
+//
+// A non-switch device (container/vm) does not propagate the domain — it sits
+// as a leaf in whichever single connection it appears.
+func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, switchDevices map[string]bool) error {
+	n := len(lab.Spec.Connections)
+	if n == 0 {
+		return nil
+	}
+	// Union-Find over Connection indices; merge through shared switch/hub.
+	parent := make([]int, n)
+	for i := range parent {
+		parent[i] = i
+	}
+	var find func(int) int
+	find = func(i int) int {
+		if parent[i] != i {
+			parent[i] = find(parent[i])
+		}
+		return parent[i]
+	}
+	union := func(a, b int) {
+		ra, rb := find(a), find(b)
+		if ra != rb {
+			parent[ra] = rb
+		}
+	}
+
+	// switchEnds[device] = list of connection indices touching that switch.
+	switchEnds := map[string][]int{}
+	for ci, conn := range lab.Spec.Connections {
+		for _, ep := range conn.Endpoints {
+			if switchDevices[ep.Device] {
+				switchEnds[ep.Device] = append(switchEnds[ep.Device], ci)
+			}
+		}
+	}
+	for _, conns := range switchEnds {
+		for i := 1; i < len(conns); i++ {
+			union(conns[0], conns[i])
+		}
+	}
+
+	// Per-component flags.
+	type domainFlags struct {
+		hasVPN, hasInternet bool
+		dhcpSources         int
+	}
+	domains := map[int]*domainFlags{}
+	for ci, conn := range lab.Spec.Connections {
+		root := find(ci)
+		d, ok := domains[root]
+		if !ok {
+			d = &domainFlags{}
+			domains[root] = d
+		}
+		for _, ep := range conn.Endpoints {
+			switch ep.Device {
+			case "vpn":
+				d.hasVPN = true
+				if lab.Spec.VPN.DHCPServer != nil && lab.Spec.VPN.DHCPServer.Enabled {
+					d.dhcpSources++
+				}
+			case "internet":
+				d.hasInternet = true
+				if lab.Spec.Internet.DHCPServer != nil && lab.Spec.Internet.DHCPServer.Enabled {
+					d.dhcpSources++
+				}
+			}
+		}
+	}
+
+	for _, d := range domains {
+		if d.hasVPN && d.hasInternet {
+			return fmt.Errorf("BroadcastDomainSpansVPNAndInternet: VPN and Internet singletons must live in separate broadcast domains")
+		}
+		if d.dhcpSources > 1 {
+			return fmt.Errorf("MultipleDHCPServersInBroadcastDomain: at most one DHCP server is allowed per broadcast domain (found %d)", d.dhcpSources)
+		}
+	}
 	return nil
 }
 

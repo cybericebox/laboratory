@@ -77,6 +77,18 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
+	// Reject duplicate routing key — demux uses LabGroup.status.vpn.publicKey
+	// as the per-group identity; a collision would silently merge two groups.
+	if dup, dupErr := r.findDuplicatePubKey(ctx, pubKey, lg.Name); dupErr != nil {
+		return ctrl.Result{}, dupErr
+	} else if dup != "" {
+		lg.Status.Phase = laboratoryv1alpha1.PhaseFailed
+		_ = r.Status().Update(ctx, &lg)
+		logger.Error(fmt.Errorf("pubkey collision with LabGroup %q", dup),
+			"refusing to register duplicate VPN public key", "labgroup", lg.Name)
+		return ctrl.Result{}, nil
+	}
+
 	if err = r.ensureVPNDeployment(ctx, ns); err != nil {
 		logger.Error(err, "ensure VPN deployment")
 		return ctrl.Result{}, err
@@ -120,6 +132,30 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+// findDuplicatePubKey returns the name of another LabGroup that already
+// publishes the same pubKey, or "" if pubKey is unique. The reconciler is
+// serialised (MaxConcurrentReconciles=1 + leader election), so the
+// list-then-write window is safe.
+func (r *LabGroupReconciler) findDuplicatePubKey(ctx context.Context, pubKey, self string) (string, error) {
+	if pubKey == "" {
+		return "", nil
+	}
+	var list laboratoryv1alpha1.LabGroupList
+	if err := r.List(ctx, &list); err != nil {
+		return "", err
+	}
+	for i := range list.Items {
+		other := &list.Items[i]
+		if other.Name == self {
+			continue
+		}
+		if other.Status.VPN.PublicKey == pubKey {
+			return other.Name, nil
+		}
+	}
+	return "", nil
 }
 
 // discoverVPNBackend returns the podIP:port of a Running VPN pod in ns, or
