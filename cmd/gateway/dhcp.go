@@ -14,11 +14,16 @@ import (
 
 type DHCPManager struct {
 	mu      sync.Mutex
-	servers map[string]context.CancelFunc
+	servers map[string]*serverEntry
+}
+
+type serverEntry struct {
+	cancel context.CancelFunc
+	pool   *ipPool
 }
 
 func newDHCPManager() *DHCPManager {
-	return &DHCPManager{servers: make(map[string]context.CancelFunc)}
+	return &DHCPManager{servers: make(map[string]*serverEntry)}
 }
 
 type DHCPConfig struct {
@@ -41,25 +46,36 @@ func (m *DHCPManager) Start(labName string, cfg DHCPConfig) error {
 	}
 	gw := net.ParseIP(cfg.Gateway)
 	dns := net.ParseIP(cfg.DNS)
+	if gw == nil {
+		return fmt.Errorf("invalid gateway %q", cfg.Gateway)
+	}
+
+	pool := newIPPool(subnet, gw)
 
 	handler := func(conn net.PacketConn, peer net.Addr, msg *dhcpv4.DHCPv4) {
+		assigned, err := pool.Allocate(msg.ClientHWAddr)
+		if err != nil {
+			return
+		}
 		var reply *dhcpv4.DHCPv4
 		switch msg.MessageType() {
 		case dhcpv4.MessageTypeDiscover:
 			reply, _ = dhcpv4.NewReplyFromRequest(msg,
 				dhcpv4.WithMessageType(dhcpv4.MessageTypeOffer),
+				dhcpv4.WithYourIP(assigned),
 				dhcpv4.WithNetmask(subnet.Mask),
 				dhcpv4.WithRouter(gw),
 				dhcpv4.WithDNS(dns),
-				dhcpv4.WithLeaseTime(86400), // 24 hours in seconds
+				dhcpv4.WithLeaseTime(86400),
 			)
 		case dhcpv4.MessageTypeRequest:
 			reply, _ = dhcpv4.NewReplyFromRequest(msg,
 				dhcpv4.WithMessageType(dhcpv4.MessageTypeAck),
+				dhcpv4.WithYourIP(assigned),
 				dhcpv4.WithNetmask(subnet.Mask),
 				dhcpv4.WithRouter(gw),
 				dhcpv4.WithDNS(dns),
-				dhcpv4.WithLeaseTime(86400), // 24 hours in seconds
+				dhcpv4.WithLeaseTime(86400),
 			)
 		}
 		if reply != nil {
@@ -74,7 +90,7 @@ func (m *DHCPManager) Start(labName string, cfg DHCPConfig) error {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	m.servers[labName] = cancel
+	m.servers[labName] = &serverEntry{cancel: cancel, pool: pool}
 	go func() {
 		<-ctx.Done()
 		srv.Close()
@@ -86,8 +102,75 @@ func (m *DHCPManager) Start(labName string, cfg DHCPConfig) error {
 func (m *DHCPManager) Stop(labName string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if cancel, ok := m.servers[labName]; ok {
-		cancel()
+	if e, ok := m.servers[labName]; ok {
+		e.cancel()
 		delete(m.servers, labName)
 	}
+}
+
+// ipPool allocates IPv4 addresses out of a /24 subnet, skipping the network
+// address, the broadcast address, and the configured gateway.
+// Allocation is sticky per MAC for the lifetime of the server (renewals get
+// the same IP); state is in-memory only, lost on restart.
+type ipPool struct {
+	mu     sync.Mutex
+	subnet *net.IPNet
+	gw     net.IP
+	byMAC  map[string]net.IP // hex MAC → IP
+	used   map[string]bool   // IP.String() → true
+}
+
+func newIPPool(subnet *net.IPNet, gw net.IP) *ipPool {
+	return &ipPool{
+		subnet: subnet,
+		gw:     gw.To4(),
+		byMAC:  make(map[string]net.IP),
+		used:   make(map[string]bool),
+	}
+}
+
+func (p *ipPool) Allocate(mac net.HardwareAddr) (net.IP, error) {
+	if mac == nil {
+		return nil, fmt.Errorf("nil MAC")
+	}
+	key := mac.String()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if ip, ok := p.byMAC[key]; ok {
+		return ip, nil
+	}
+
+	base := p.subnet.IP.To4()
+	ones, bits := p.subnet.Mask.Size()
+	hostBits := bits - ones
+	if hostBits < 2 {
+		return nil, fmt.Errorf("subnet %s too small for DHCP", p.subnet)
+	}
+	total := uint32(1) << uint32(hostBits)
+
+	// Walk host range: skip 0 (network) and total-1 (broadcast); skip gateway.
+	for i := uint32(1); i < total-1; i++ {
+		cand := makeIP(base, i)
+		if cand.Equal(p.gw) {
+			continue
+		}
+		s := cand.String()
+		if p.used[s] {
+			continue
+		}
+		p.used[s] = true
+		p.byMAC[key] = cand
+		return cand, nil
+	}
+	return nil, fmt.Errorf("pool exhausted for subnet %s", p.subnet)
+}
+
+// makeIP returns base + offset as a 4-byte IPv4 address.
+func makeIP(base net.IP, offset uint32) net.IP {
+	b := base.To4()
+	v := uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
+	v += offset
+	return net.IPv4(byte(v>>24), byte(v>>16), byte(v>>8), byte(v)).To4()
 }

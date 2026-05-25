@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/ovsnames"
 )
 
 const finalizerGateway = "cybericebox.com/gateway"
@@ -41,7 +42,7 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 
-	ifaceName := "lab-" + lab.Name
+	ifaceName := ovsnames.LabGWIfaceName(lab.Name)
 	if err := assignGatewayIP(ifaceName, cidr); err != nil {
 		// Interface not yet created by node-agent; requeue.
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil

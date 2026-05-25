@@ -75,6 +75,11 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
+	if err = r.ensureGatewayDeployment(ctx, ns); err != nil {
+		logger.Error(err, "ensure gateway deployment")
+		return ctrl.Result{}, err
+	}
+
 	if err = r.ensurePool(ctx, ns, "vpn-clients", poolpkg.PoolTypeVPNClients, 0, 254); err != nil {
 		logger.Error(err, "ensure vpn-clients pool")
 		return ctrl.Result{}, err
@@ -198,6 +203,40 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string)
 								LocalObjectReference: corev1.LocalObjectReference{Name: "vpn-server-keypair"},
 							},
 						}},
+					}},
+				},
+			},
+		},
+	}
+	return r.Create(ctx, d)
+}
+
+// ensureGatewayDeployment creates the per-LabGroup internet-gateway pod.
+// One replica per group, namespace-scoped, mirrors the VPN deployment shape so
+// node-agent's LabIfaceReconciler attaches a gw-<labname> OVS port into its
+// netns for each lab with Spec.Internet.Enabled.
+func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns string) error {
+	var existing appsv1.Deployment
+	if err := r.Get(ctx, types.NamespacedName{Name: "gateway", Namespace: ns}, &existing); err == nil {
+		return nil
+	} else if !errors.IsNotFound(err) {
+		return err
+	}
+	replicas := int32(1)
+	d := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: ns},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "gateway"}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "gateway"}},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:  "gateway",
+						Image: "cybericebox/gateway:latest",
+						Env: []corev1.EnvVar{
+							{Name: "NAMESPACE", Value: ns},
+						},
 					}},
 				},
 			},
