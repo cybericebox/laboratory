@@ -87,6 +87,7 @@ func (m *OVSManager) findBridge() (*OVSBridge, error) {
 	return nil, nil
 }
 
+// ensureBridge is only called from newOVSManager before the client is shared — no mutex needed.
 func (m *OVSManager) ensureBridge() error {
 	if br, err := m.findBridge(); err != nil {
 		return err
@@ -261,6 +262,11 @@ func (m *OVSManager) DelPort(name string) error {
 		return fmt.Errorf("delPort %q result: %w", name, err)
 	}
 	return nil
+}
+
+// Close disconnects from the OVSDB server.
+func (m *OVSManager) Close() {
+	m.client.Close()
 }
 
 // PortExists checks whether a named port exists on br-ovs.
