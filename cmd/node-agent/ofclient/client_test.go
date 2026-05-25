@@ -64,3 +64,57 @@ func TestBuildActionsOutput_Encoding(t *testing.T) {
 		t.Errorf("port = %d, want 1", binary.BigEndian.Uint32(a[4:8]))
 	}
 }
+
+func TestBuildActionsSetFieldTunnelID_Encoding(t *testing.T) {
+	a := BuildActionsSetFieldTunnelID(999)
+	// OFPAT_SET_FIELD: type=25(2) + len=16(2) + OXM_TUNNEL_ID(12) = 16 bytes total
+	if len(a) != 16 {
+		t.Errorf("SetField action len = %d, want 16", len(a))
+	}
+	if binary.BigEndian.Uint16(a[0:2]) != 25 {
+		t.Errorf("action type = %d, want 25 (OFPAT_SET_FIELD)", binary.BigEndian.Uint16(a[0:2]))
+	}
+	if binary.BigEndian.Uint16(a[2:4]) != 16 {
+		t.Errorf("action len = %d, want 16", binary.BigEndian.Uint16(a[2:4]))
+	}
+	// OXM header for TUNNEL_ID embedded at a[4:8]
+	if binary.BigEndian.Uint32(a[4:8]) != 0x80004C08 {
+		t.Errorf("OXM header in SET_FIELD = 0x%08x, want 0x80004C08", binary.BigEndian.Uint32(a[4:8]))
+	}
+	// Value at a[8:16]
+	if binary.BigEndian.Uint64(a[8:16]) != 999 {
+		t.Errorf("tunnel_id value = %d, want 999", binary.BigEndian.Uint64(a[8:16]))
+	}
+}
+
+func TestBuildActionsGroupNormal_Encoding(t *testing.T) {
+	a := BuildActionsGroupNormal()
+	// OFPAT_GROUP: type=22(2) + len=8(2) + group_id=OFPG_NORMAL(4) = 8 bytes
+	if len(a) != 8 {
+		t.Errorf("group action len = %d, want 8", len(a))
+	}
+	if binary.BigEndian.Uint16(a[0:2]) != 22 {
+		t.Errorf("action type = %d, want 22 (OFPAT_GROUP)", binary.BigEndian.Uint16(a[0:2]))
+	}
+	if binary.BigEndian.Uint32(a[4:8]) != 0xfffffffc {
+		t.Errorf("group_id = 0x%08x, want 0xfffffffc (OFPG_NORMAL)", binary.BigEndian.Uint32(a[4:8]))
+	}
+}
+
+func TestBuildActionsOutput_MultipleActions(t *testing.T) {
+	// Verify actions can be concatenated correctly (egress flow: SET_FIELD + OUTPUT)
+	setField := BuildActionsSetFieldTunnelID(42)
+	output := BuildActionsOutput(5)
+	actions := append(setField, output...)
+	if len(actions) != 32 { // 16 + 16
+		t.Errorf("combined actions len = %d, want 32", len(actions))
+	}
+	// First action is SET_FIELD
+	if binary.BigEndian.Uint16(actions[0:2]) != 25 {
+		t.Errorf("first action type = %d, want 25", binary.BigEndian.Uint16(actions[0:2]))
+	}
+	// Second action is OUTPUT
+	if binary.BigEndian.Uint16(actions[16:18]) != 0 {
+		t.Errorf("second action type = %d, want 0 (OUTPUT)", binary.BigEndian.Uint16(actions[16:18]))
+	}
+}

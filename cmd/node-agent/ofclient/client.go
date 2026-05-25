@@ -152,6 +152,9 @@ func (c *Client) queryPortDesc() error {
 		if msg[1] != ofptMultipartReply {
 			continue
 		}
+		if binary.BigEndian.Uint16(msg[8:10]) != ofpmpPortDesc {
+			continue
+		}
 		// Parse port entries. Each ofp_port is 64 bytes.
 		// Reply body starts at byte 16 (after 8 header + 4 type+flags + 4 pad).
 		body := msg[16:]
@@ -215,8 +218,8 @@ func (c *Client) sendFlowMod(cmd uint8, tableID uint8, priority uint16, match, a
 }
 
 func (c *Client) send(msg []byte) error {
-	c.xid.Add(1)
-	binary.BigEndian.PutUint32(msg[4:8], c.xid.Load())
+	xid := c.xid.Add(1)
+	binary.BigEndian.PutUint32(msg[4:8], xid)
 	_, err := c.conn.Write(msg)
 	return err
 }
