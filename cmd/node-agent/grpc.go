@@ -41,7 +41,8 @@ func newNodeAgentServer(ovs *OVSManager) *NodeAgentServer {
 }
 
 // AddPort creates an OVS internal port and moves it into the pod netns.
-// Called by cni-ovs during CNI ADD.
+// Reserved for external CNI-style callers; current lab-port wiring runs
+// inline in ConnectionReconciler.reconcileCreate.
 func (s *NodeAgentServer) AddPort(ctx context.Context, req *nodev1.AddPortRequest) (*nodev1.AddPortResponse, error) {
 	portName := portKey(req.Namespace, req.Connection, req.InterfaceName)
 
