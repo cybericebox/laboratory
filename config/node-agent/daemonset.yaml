@@ -1,0 +1,113 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-agent
+  namespace: system
+  labels:
+    app: node-agent
+spec:
+  selector:
+    matchLabels:
+      app: node-agent
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: node-agent
+    spec:
+      serviceAccountName: node-agent
+      hostNetwork: false
+      hostPID: false
+      tolerations:
+        - operator: Exists
+      initContainers:
+        - name: install-cni
+          image: ghcr.io/cybericebox/laboratory/node-agent:latest
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              cp /node-agent/bin/cni-gate /opt/cni/bin/cni-gate
+              cp /node-agent/cni/10-cybericebox.conflist /etc/cni/net.d/10-cybericebox.conflist
+
+              APISERVER="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
+              CA=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+              TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+              KUBECONFIG=/etc/cni/net.d/cybericebox-kubeconfig.conf
+
+              kubectl config set-cluster k8s \
+                --server="$APISERVER" \
+                --certificate-authority="$CA" \
+                --kubeconfig="$KUBECONFIG"
+              kubectl config set-credentials node-agent \
+                --token="$TOKEN" \
+                --kubeconfig="$KUBECONFIG"
+              kubectl config set-context default \
+                --cluster=k8s --user=node-agent \
+                --kubeconfig="$KUBECONFIG"
+              kubectl config use-context default \
+                --kubeconfig="$KUBECONFIG"
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: cni-bin
+              mountPath: /opt/cni/bin
+            - name: cni-conf
+              mountPath: /etc/cni/net.d
+      containers:
+        - name: ovs
+          image: ghcr.io/cybericebox/laboratory/node-agent:latest
+          command: ["/node-agent/bin/start-ovs.sh"]
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: ovs-run
+              mountPath: /run/openvswitch
+        - name: node-agent
+          image: ghcr.io/cybericebox/laboratory/node-agent:latest
+          command: ["/node-agent/bin/node-agent"]
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: OVS_SOCK
+              value: /run/openvswitch/db.sock
+            - name: GRPC_SOCK
+              value: /run/openvswitch/node-agent.sock
+            - name: PROC_ROOT
+              value: /host/proc
+          securityContext:
+            capabilities:
+              add:
+                - NET_ADMIN
+                - SYS_PTRACE
+          volumeMounts:
+            - name: ovs-run
+              mountPath: /run/openvswitch
+            - name: host-proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: host-netns
+              mountPath: /run/netns
+              readOnly: true
+      volumes:
+        - name: cni-bin
+          hostPath:
+            path: /opt/cni/bin
+            type: DirectoryOrCreate
+        - name: cni-conf
+          hostPath:
+            path: /etc/cni/net.d
+            type: DirectoryOrCreate
+        - name: ovs-run
+          emptyDir: {}
+        - name: host-proc
+          hostPath:
+            path: /proc
+            type: Directory
+        - name: host-netns
+          hostPath:
+            path: /run/netns
+            type: DirectoryOrCreate

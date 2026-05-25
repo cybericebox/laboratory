@@ -1,0 +1,21 @@
+{
+  "cniVersion": "1.0.0",
+  "name": "cybericebox",
+  "plugins": [
+    {
+      "type": "cni-gate",
+      "kubeconfig": "/etc/cni/net.d/cybericebox-kubeconfig.conf",
+      "delegate": {
+        "type": "bridge",
+        "bridge": "cni0",
+        "isGateway": true,
+        "ipMasq": true,
+        "ipam": {
+          "type": "host-local",
+          "subnet": "10.244.0.0/16",
+          "routes": [{"dst": "0.0.0.0/0"}]
+        }
+      }
+    }
+  ]
+}
