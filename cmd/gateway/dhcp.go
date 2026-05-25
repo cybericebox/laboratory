@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
@@ -27,10 +28,12 @@ func newDHCPManager() *DHCPManager {
 }
 
 type DHCPConfig struct {
-	Iface   string
-	Subnet  string
-	Gateway string
-	DNS     string
+	Iface    string
+	Subnet   string
+	Gateway  string
+	DNS      string
+	Range    string   // "start,end" inclusive; empty = full host range
+	Reserved []net.IP // static-addressed devices to skip in allocation
 }
 
 func (m *DHCPManager) Start(labName string, cfg DHCPConfig) error {
@@ -50,7 +53,10 @@ func (m *DHCPManager) Start(labName string, cfg DHCPConfig) error {
 		return fmt.Errorf("invalid gateway %q", cfg.Gateway)
 	}
 
-	pool := newIPPool(subnet, gw)
+	pool, err := newIPPool(subnet, gw, cfg.Range, cfg.Reserved)
+	if err != nil {
+		return fmt.Errorf("init IP pool: %w", err)
+	}
 
 	handler := func(conn net.PacketConn, peer net.Addr, msg *dhcpv4.DHCPv4) {
 		assigned, err := pool.Allocate(msg.ClientHWAddr)
@@ -108,25 +114,80 @@ func (m *DHCPManager) Stop(labName string) {
 	}
 }
 
-// ipPool allocates IPv4 addresses out of a /24 subnet, skipping the network
-// address, the broadcast address, and the configured gateway.
+// ipPool allocates IPv4 addresses inside a /24-like subnet. When rangeStart /
+// rangeEnd are set the pool only hands out IPs in [start, end] inclusive;
+// otherwise the full host range is used. The gateway plus any explicitly
+// reserved IPs (devices with static addressing on the same broadcast domain)
+// are always skipped.
+//
 // Allocation is sticky per MAC for the lifetime of the server (renewals get
-// the same IP); state is in-memory only, lost on restart.
+// the same IP); state is in-memory only, lost on restart (REQ-GW-038).
 type ipPool struct {
-	mu     sync.Mutex
-	subnet *net.IPNet
-	gw     net.IP
-	byMAC  map[string]net.IP // hex MAC → IP
-	used   map[string]bool   // IP.String() → true
+	mu                 sync.Mutex
+	subnet             *net.IPNet
+	gw                 net.IP
+	rangeStart         net.IP // inclusive; nil → first host
+	rangeEnd           net.IP // inclusive; nil → last host
+	byMAC              map[string]net.IP
+	used               map[string]bool
 }
 
-func newIPPool(subnet *net.IPNet, gw net.IP) *ipPool {
-	return &ipPool{
+// newIPPool returns an allocator over subnet.
+// rangeSpec: empty → full host range; "ip1,ip2" → bounded inclusive.
+// reserved: IPs to mark used at construction time (static-addressed devices).
+func newIPPool(subnet *net.IPNet, gw net.IP, rangeSpec string, reserved []net.IP) (*ipPool, error) {
+	p := &ipPool{
 		subnet: subnet,
 		gw:     gw.To4(),
 		byMAC:  make(map[string]net.IP),
 		used:   make(map[string]bool),
 	}
+	if rangeSpec != "" {
+		start, end, err := parseRange(rangeSpec, subnet)
+		if err != nil {
+			return nil, err
+		}
+		p.rangeStart = start
+		p.rangeEnd = end
+	}
+	for _, ip := range reserved {
+		if ip4 := ip.To4(); ip4 != nil {
+			p.used[ip4.String()] = true
+		}
+	}
+	return p, nil
+}
+
+// parseRange interprets "ip1,ip2" within subnet and returns inclusive bounds.
+func parseRange(spec string, subnet *net.IPNet) (net.IP, net.IP, error) {
+	parts := strings.SplitN(spec, ",", 2)
+	if len(parts) != 2 {
+		return nil, nil, fmt.Errorf("range %q: expected \"start,end\"", spec)
+	}
+	startStr := strings.TrimSpace(parts[0])
+	endStr := strings.TrimSpace(parts[1])
+	start := net.ParseIP(startStr)
+	end := net.ParseIP(endStr)
+	if start == nil || end == nil {
+		return nil, nil, fmt.Errorf("range %q: invalid IPs", spec)
+	}
+	start = start.To4()
+	end = end.To4()
+	if start == nil || end == nil {
+		return nil, nil, fmt.Errorf("range %q: IPv4 required", spec)
+	}
+	if !subnet.Contains(start) || !subnet.Contains(end) {
+		return nil, nil, fmt.Errorf("range %q: IPs outside subnet %s", spec, subnet)
+	}
+	if ipToUint(start) > ipToUint(end) {
+		return nil, nil, fmt.Errorf("range %q: start > end", spec)
+	}
+	return start, end, nil
+}
+
+func ipToUint(ip net.IP) uint32 {
+	b := ip.To4()
+	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
 }
 
 func (p *ipPool) Allocate(mac net.HardwareAddr) (net.IP, error) {
@@ -150,8 +211,16 @@ func (p *ipPool) Allocate(mac net.HardwareAddr) (net.IP, error) {
 	}
 	total := uint32(1) << uint32(hostBits)
 
-	// Walk host range: skip 0 (network) and total-1 (broadcast); skip gateway.
-	for i := uint32(1); i < total-1; i++ {
+	startOff := uint32(1)
+	endOff := total - 2 // last host
+	if p.rangeStart != nil {
+		startOff = ipToUint(p.rangeStart) - ipToUint(base)
+	}
+	if p.rangeEnd != nil {
+		endOff = ipToUint(p.rangeEnd) - ipToUint(base)
+	}
+
+	for i := startOff; i <= endOff; i++ {
 		cand := makeIP(base, i)
 		if cand.Equal(p.gw) {
 			continue

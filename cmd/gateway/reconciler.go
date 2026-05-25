@@ -55,26 +55,25 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Start DHCP server if configured and enabled.
 	if ds := lab.Spec.Internet.DHCPServer; ds != nil && ds.Enabled {
 		gwIP := nextIPFromCIDR(cidr)
-		// Use DNS from spec if provided, fall back to 8.8.8.8.
 		dnsIP := ds.DNS
 		if dnsIP == "" {
 			dnsIP = "8.8.8.8"
 		}
-		// Use subnet from spec if provided, fall back to the allocated CIDR.
 		subnet := ds.Subnet
 		if subnet == "" {
 			subnet = cidr
 		}
-		// Use gateway from spec if provided, fall back to computed gateway IP.
 		gw := ds.Gateway
 		if gw == "" {
 			gw = gwIP
 		}
 		if err := r.DHCP.Start(lab.Name, DHCPConfig{
-			Iface:   ifaceName,
-			Subnet:  subnet,
-			Gateway: gw,
-			DNS:     dnsIP,
+			Iface:    ifaceName,
+			Subnet:   subnet,
+			Gateway:  gw,
+			DNS:      dnsIP,
+			Range:    ds.Range,
+			Reserved: collectStaticIPs(&lab, subnet),
 		}); err != nil {
 			ctrl.Log.WithName("gateway").Error(err, "start DHCP", "lab", lab.Name)
 		}
@@ -103,4 +102,34 @@ func (r *LabGatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 func nextIPFromCIDR(cidr string) string {
 	ip, _, _ := net.ParseCIDR(cidr)
 	return nextIP(ip).String()
+}
+
+// collectStaticIPs returns IPs of all statically-addressed device interfaces
+// whose IP falls inside subnetCIDR. Spec §8 — static devices must be excluded
+// from DHCP allocation to avoid duplicate-IP races.
+func collectStaticIPs(lab *laboratoryv1alpha1.Lab, subnetCIDR string) []net.IP {
+	_, subnet, err := net.ParseCIDR(subnetCIDR)
+	if err != nil {
+		return nil
+	}
+	var out []net.IP
+	for _, d := range lab.Spec.Devices {
+		for _, iface := range d.Interfaces {
+			if iface.Addr.Type != laboratoryv1alpha1.AddrTypeStatic {
+				continue
+			}
+			ip, _, err := net.ParseCIDR(iface.Addr.IP)
+			if err != nil {
+				// Allow bare IPs too (without prefix).
+				ip = net.ParseIP(iface.Addr.IP)
+				if ip == nil {
+					continue
+				}
+			}
+			if subnet.Contains(ip) {
+				out = append(out, ip)
+			}
+		}
+	}
+	return out
 }
