@@ -55,18 +55,28 @@ type (
 	}
 )
 
+// InitBitmap initialises a pool's bitmap and returns (encodedBitmap, freeCount).
+// Bit 0 is reserved when offset == 0 to avoid assigning the network-address index.
+func InitBitmap(size, offset uint) (string, uint) {
+	bm := bitset.New(size).Compact()
+	free := size
+	if offset == 0 {
+		bm.Set(0)
+		free--
+	}
+	return encodeBitmap(bm), free
+}
+
 func NewAllocator(c client.Client, poolNamePrefix, namespace string, poolSize uint) Allocator {
 	lr := labelRequests{}
 	var err error
 	lr.NotFull, err = labels.NewRequirement(PoolStateLabel, selection.NotEquals, []string{PoolStateFull})
 	if err != nil {
-		logf.Log.Error(err, "failed to create NotFull label requirement")
-		return nil
+		panic(fmt.Sprintf("build NotFull label requirement: %v", err))
 	}
 	lr.Latest, err = labels.NewRequirement(LatestPoolLabel, selection.Equals, []string{"true"})
 	if err != nil {
-		logf.Log.Error(err, "failed to create Latest label requirement")
-		return nil
+		panic(fmt.Sprintf("build Latest label requirement: %v", err))
 	}
 	return &allocator{
 		Client:         c,
@@ -177,11 +187,19 @@ func (a *allocator) syncStateLabel(ctx context.Context, poolName string, free ui
 	if err := a.Get(ctx, client.ObjectKey{Name: poolName, Namespace: a.namespace}, &pool); err != nil {
 		return err
 	}
+	// Capacity accounts for the reserved bit-0 in the first pool (offset == 0).
+	capacity := pool.Spec.Size
+	if pool.Spec.Offset == 0 {
+		capacity--
+	}
 	state := PoolStatePartial
 	if free == 0 {
 		state = PoolStateFull
-	} else if free == pool.Spec.Size {
+	} else if free == capacity {
 		state = PoolStateEmpty
+	}
+	if pool.Labels == nil {
+		pool.Labels = map[string]string{}
 	}
 	if pool.Labels[PoolStateLabel] == state {
 		return nil
@@ -217,13 +235,7 @@ func (a *allocator) createPool(ctx context.Context) (*allocationv1alpha1.Pool, e
 	}
 
 	poolIndex := offset / a.poolSize
-	free := a.poolSize
-	bm := bitset.New(a.poolSize).Compact()
-	if offset == 0 {
-		// Reserve index 0 (conventionally unused in pool sequences).
-		bm.Set(0)
-		free--
-	}
+	bitmapStr, free := InitBitmap(a.poolSize, offset)
 
 	newPool := &allocationv1alpha1.Pool{
 		ObjectMeta: metav1.ObjectMeta{
@@ -247,7 +259,7 @@ func (a *allocator) createPool(ctx context.Context) (*allocationv1alpha1.Pool, e
 
 	// Status must be set via subresource update after the object exists.
 	newPool.Status.Free = free
-	newPool.Status.BitMap = encodeBitmap(bm)
+	newPool.Status.BitMap = bitmapStr
 	if err = a.Status().Update(ctx, newPool); err != nil {
 		return nil, fmt.Errorf("init pool status: %w", err)
 	}

@@ -2,7 +2,11 @@ package laboratory
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -59,7 +63,9 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	if err := r.validateGraph(&lab); err != nil {
 		lab.Status.Phase = laboratoryv1alpha1.PhaseFailed
-		_ = r.Status().Update(ctx, &lab)
+		if statusErr := r.Status().Update(ctx, &lab); statusErr != nil {
+			logger.Error(statusErr, "update status after graph validation failure")
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -230,9 +236,10 @@ func (r *LabReconciler) materializeConnections(ctx context.Context, lab *laborat
 	return nil
 }
 
-// connectionName produces a deterministic Connection name from lab name + endpoints.
+// connectionName produces a deterministic, length-bounded Connection name from lab name + endpoints.
+// Endpoints are sorted so ordering differences in the spec don't produce different names.
 func connectionName(labName string, endpoints []laboratoryv1alpha1.EndpointSpec) string {
-	parts := []string{labName}
+	parts := make([]string, 0, len(endpoints))
 	for _, ep := range endpoints {
 		if ep.Interface != "" {
 			parts = append(parts, ep.Device+"-"+ep.Interface)
@@ -240,7 +247,15 @@ func connectionName(labName string, endpoints []laboratoryv1alpha1.EndpointSpec)
 			parts = append(parts, ep.Device)
 		}
 	}
-	return strings.Join(parts, "--")
+	sort.Strings(parts)
+	full := labName + "--" + strings.Join(parts, "--")
+	if len(full) <= 253 {
+		return full
+	}
+	sum := sha256.Sum256([]byte(full))
+	suffix := hex.EncodeToString(sum[:4])
+	prefix := strings.TrimRight(full[:243], "-")
+	return prefix + "--" + suffix
 }
 
 func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha1.Lab) (ctrl.Result, error) {
@@ -273,24 +288,56 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		}
 	}
 
+	newPhase := laboratoryv1alpha1.PhaseProvisioning
+	if allReady {
+		newPhase = laboratoryv1alpha1.PhaseReady
+	}
+
+	if newPhase == lab.Status.Phase &&
+		reflect.DeepEqual(refs, lab.Status.Devices) &&
+		reflect.DeepEqual(connRefs, lab.Status.Connections) {
+		return ctrl.Result{}, nil
+	}
+
 	lab.Status.Devices = refs
 	lab.Status.Connections = connRefs
-	if allReady {
-		lab.Status.Phase = laboratoryv1alpha1.PhaseReady
-	} else {
-		lab.Status.Phase = laboratoryv1alpha1.PhaseProvisioning
-	}
+	lab.Status.Phase = newPhase
 
 	return ctrl.Result{}, r.Status().Update(ctx, lab)
 }
 
 func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1alpha1.Lab) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
 	var deviceList laboratoryv1alpha1.DeviceList
 	if err := r.List(ctx, &deviceList, client.InNamespace(lab.Namespace),
 		client.MatchingLabels{laboratoryv1alpha1.LabelLab: lab.Name}); err != nil {
 		return ctrl.Result{}, err
 	}
 	if len(deviceList.Items) > 0 {
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	var connList laboratoryv1alpha1.ConnectionList
+	if err := r.List(ctx, &connList, client.InNamespace(lab.Namespace),
+		client.MatchingLabels{laboratoryv1alpha1.LabelLab: lab.Name}); err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(connList.Items) > 0 {
+		vniAllocator := poolpkg.NewAllocator(r.Client, vniPoolPrefix, vniPoolNS, vniPoolSize)
+		for i := range connList.Items {
+			c := &connList.Items[i]
+			if c.Status.VNI == nil {
+				continue
+			}
+			if err := vniAllocator.ReleaseIndex(ctx, *c.Status.VNI); err != nil {
+				logger.Error(err, "release VNI", "connection", c.Name, "vni", *c.Status.VNI)
+			}
+			c.Status.VNI = nil
+			if err := r.Status().Update(ctx, c); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 

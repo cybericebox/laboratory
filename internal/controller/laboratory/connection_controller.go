@@ -2,6 +2,7 @@ package laboratory
 
 import (
 	"context"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -31,7 +32,7 @@ func (r *ConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	if !conn.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&conn, laboratoryv1alpha1.FinalizerOVSCleanup) {
-			return ctrl.Result{RequeueAfter: 2e9}, nil
+			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 		}
 		return ctrl.Result{}, nil
 	}

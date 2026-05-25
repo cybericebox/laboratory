@@ -86,7 +86,10 @@ func (r *LabGroupClientReconciler) reconcileCreate(ctx context.Context, lgc *lab
 func (r *LabGroupClientReconciler) reconcileDelete(ctx context.Context, lgc *laboratoryv1alpha1.LabGroupClient) (ctrl.Result, error) {
 	if lgc.Status.AssignedIP != "" {
 		allocator := poolpkg.NewAllocator(r.Client, "vpn-clients", lgc.Namespace, 254)
-		idx := ipToIndex(lgc.Status.AssignedIP)
+		idx, err := ipToIndex(lgc.Status.AssignedIP)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 		if err := allocator.ReleaseIndex(ctx, idx); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -128,10 +131,12 @@ func (r *LabGroupClientReconciler) ensureClientSecret(ctx context.Context, lgc *
 }
 
 // ipToIndex extracts the last octet of a CIDR like "10.8.0.5/32" as pool index.
-func ipToIndex(cidr string) uint {
+func ipToIndex(cidr string) (uint, error) {
 	var a, b, c, d uint
-	fmt.Sscanf(cidr, "%d.%d.%d.%d/32", &a, &b, &c, &d)
-	return d
+	if n, err := fmt.Sscanf(cidr, "%d.%d.%d.%d/32", &a, &b, &c, &d); err != nil || n != 4 {
+		return 0, fmt.Errorf("invalid CIDR %q", cidr)
+	}
+	return d, nil
 }
 
 func (r *LabGroupClientReconciler) SetupWithManager(mgr ctrl.Manager) error {

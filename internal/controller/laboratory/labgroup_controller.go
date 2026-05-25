@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -14,12 +15,15 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 )
+
+const finalizerLabGroup = "cybericebox.com/labgroup"
 
 // LabGroupReconciler reconciles a LabGroup object.
 type LabGroupReconciler struct {
@@ -44,7 +48,14 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	if !lg.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, nil
+		return r.reconcileDelete(ctx, &lg)
+	}
+
+	if !controllerutil.ContainsFinalizer(&lg, finalizerLabGroup) {
+		controllerutil.AddFinalizer(&lg, finalizerLabGroup)
+		if err := r.Update(ctx, &lg); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	ns := fmt.Sprintf("labgroup-%s", lg.UID)
@@ -84,6 +95,24 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *LabGroupReconciler) reconcileDelete(ctx context.Context, lg *laboratoryv1alpha1.LabGroup) (ctrl.Result, error) {
+	ns := fmt.Sprintf("labgroup-%s", lg.UID)
+	var namespace corev1.Namespace
+	if err := r.Get(ctx, types.NamespacedName{Name: ns}, &namespace); err != nil {
+		if errors.IsNotFound(err) {
+			controllerutil.RemoveFinalizer(lg, finalizerLabGroup)
+			return ctrl.Result{}, r.Update(ctx, lg)
+		}
+		return ctrl.Result{}, err
+	}
+	if namespace.DeletionTimestamp.IsZero() {
+		if err := r.Delete(ctx, &namespace); err != nil && !errors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+	}
+	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 }
 
 func (r *LabGroupReconciler) ensureNamespace(ctx context.Context, ns string, owner *laboratoryv1alpha1.LabGroup) error {
@@ -181,21 +210,26 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string)
 	return r.Create(ctx, d)
 }
 
+// ensurePool creates pool "{name}-0" if it doesn't exist, with the allocator-compatible naming
+// and bitmap initialised (bit 0 reserved when offset == 0).
 func (r *LabGroupReconciler) ensurePool(ctx context.Context, ns, name, poolType string, offset, size uint) error {
+	poolName := fmt.Sprintf("%s-0", name)
 	var existing allocationv1alpha1.Pool
-	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &existing); err == nil {
+	if err := r.Get(ctx, types.NamespacedName{Name: poolName, Namespace: ns}, &existing); err == nil {
 		return nil
 	} else if !errors.IsNotFound(err) {
 		return err
 	}
+	bitmapStr, free := poolpkg.InitBitmap(size, offset)
 	p := &allocationv1alpha1.Pool{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
+			Name:      poolName,
 			Namespace: ns,
 			Labels: map[string]string{
-				poolpkg.PoolTypeLabel:  poolType,
-				poolpkg.PoolStateLabel: poolpkg.PoolStateEmpty,
-				poolpkg.PoolGroupLabel: name,
+				poolpkg.PoolTypeLabel:   poolType,
+				poolpkg.PoolStateLabel:  poolpkg.PoolStateEmpty,
+				poolpkg.PoolGroupLabel:  name,
+				poolpkg.LatestPoolLabel: "true",
 			},
 		},
 		Spec: allocationv1alpha1.PoolSpec{Size: size, Offset: offset},
@@ -203,7 +237,8 @@ func (r *LabGroupReconciler) ensurePool(ctx context.Context, ns, name, poolType 
 	if err := r.Create(ctx, p); err != nil {
 		return err
 	}
-	p.Status.Free = size
+	p.Status.Free = free
+	p.Status.BitMap = bitmapStr
 	return r.Status().Update(ctx, p)
 }
 

@@ -2,6 +2,7 @@ package laboratory
 
 import (
 	"context"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -35,7 +36,7 @@ func (r *DeviceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if !device.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&device, laboratoryv1alpha1.FinalizerOVSCleanup) {
 			// node-agent removes this finalizer after OVS cleanup; poll.
-			return ctrl.Result{RequeueAfter: 2e9}, nil
+			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 		}
 		return ctrl.Result{}, nil
 	}
