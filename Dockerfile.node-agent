@@ -1,0 +1,49 @@
+# syntax=docker/dockerfile:1
+
+# Stage 1: compile OVS 3.3 from source.
+FROM ubuntu:22.04 AS ovs-builder
+ARG OVS_VERSION=3.3.2
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential curl ca-certificates \
+        libssl-dev libcap-ng-dev libnuma-dev \
+        python3 python3-sortedcontainers \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL \
+    "https://www.openvswitch.org/releases/openvswitch-${OVS_VERSION}.tar.gz" \
+    | tar -xz -C /tmp
+RUN cd /tmp/openvswitch-${OVS_VERSION} \
+    && ./configure --prefix=/usr --localstatedir=/var --sysconfdir=/etc \
+    && make -j"$(nproc)" \
+    && make install DESTDIR=/ovs-install
+
+# Stage 2: build Go binaries.
+FROM golang:1.24 AS go-builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/node-agent ./cmd/node-agent/
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/cni-gate  ./cmd/cni-gate/
+
+# Stage 3: final image.
+FROM ubuntu:22.04
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libssl3 libcap-ng0 libnuma1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# OVS binaries and schema.
+COPY --from=ovs-builder /ovs-install/usr/sbin/ovsdb-server   /usr/sbin/ovsdb-server
+COPY --from=ovs-builder /ovs-install/usr/sbin/ovs-vswitchd   /usr/sbin/ovs-vswitchd
+COPY --from=ovs-builder /ovs-install/usr/sbin/ovs-vsctl      /usr/sbin/ovs-vsctl
+COPY --from=ovs-builder /ovs-install/usr/share/openvswitch/  /usr/share/openvswitch/
+COPY --from=ovs-builder /ovs-install/usr/lib/openvswitch/    /usr/lib/openvswitch/
+
+# Go binaries.
+COPY --from=go-builder /out/node-agent /node-agent/bin/node-agent
+COPY --from=go-builder /out/cni-gate   /node-agent/bin/cni-gate
+
+# OVS startup script.
+COPY scripts/start-ovs.sh /node-agent/bin/start-ovs.sh
+
+# CNI conflist (copied to host by initContainer).
+COPY config/cni/10-cybericebox.conflist /node-agent/cni/10-cybericebox.conflist
