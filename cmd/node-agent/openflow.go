@@ -3,7 +3,9 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
+	"net"
 	"path/filepath"
 
 	"github.com/cybericebox/laboratory/cmd/node-agent/ofclient"
@@ -41,8 +43,11 @@ func (f *FlowManager) portNo(name string) (uint32, error) {
 	return no, nil
 }
 
-// AddEgressFlow: local port → set tunnel_id=VNI → output via geneve port.
-func (f *FlowManager) AddEgressFlow(localPort, genevePort string, vni uint) error {
+// AddEgressFlow: local port → set tun_id=VNI + tun_dst=remoteVTEP → output via
+// the single shared Geneve port. Uses NXM_NX_TUN_IPV4_DST (Nicira extension)
+// so one Geneve port serves every remote VTEP — spec §7 "Один Geneve-порт на
+// ноде".
+func (f *FlowManager) AddEgressFlow(localPort, genevePort string, vni uint, remoteVTEP string) error {
 	localNo, err := f.portNo(localPort)
 	if err != nil {
 		return err
@@ -51,11 +56,32 @@ func (f *FlowManager) AddEgressFlow(localPort, genevePort string, vni uint) erro
 	if err != nil {
 		return err
 	}
+	vtepBE, err := ipv4BE(remoteVTEP)
+	if err != nil {
+		return fmt.Errorf("parse remote VTEP %q: %w", remoteVTEP, err)
+	}
+	// Match on in_port=local + dst-VTEP would over-narrow without MAC learning;
+	// match in_port=local only and let the action set tun_dst.
 	match := ofclient.BuildMatch(localNo, 0, false)
 	var actions []byte
 	actions = append(actions, ofclient.BuildActionsSetFieldTunnelID(uint64(vni))...)
+	actions = append(actions, ofclient.BuildActionsSetTunDst(vtepBE)...)
 	actions = append(actions, ofclient.BuildActionsOutput(geneveNo)...)
 	return f.client.FlowAdd(0, 100, match, actions)
+}
+
+// ipv4BE parses a dotted-quad IPv4 address into a big-endian uint32 suitable
+// for NXM_NX_TUN_IPV4_DST / NXM_NX_TUN_IPV4_SRC values.
+func ipv4BE(s string) (uint32, error) {
+	ip := net.ParseIP(s)
+	if ip == nil {
+		return 0, fmt.Errorf("invalid IP")
+	}
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return 0, fmt.Errorf("IPv4 required")
+	}
+	return binary.BigEndian.Uint32(ip4), nil
 }
 
 // AddIngressFlow: geneve port + tun_id=VNI → output to local port.

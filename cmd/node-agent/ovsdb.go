@@ -20,16 +20,15 @@ func portKey(namespace, connection, iface string) string {
 	return fmt.Sprintf("p%x", h[:4])
 }
 
-// genevePortName computes a stable OVS Geneve port name for a remote node address.
-//
-// Spec §7 calls for a single port with remote_ip=flow + per-flow set_field:tun_dst,
-// but the current ofclient only encodes OXM_OF_TUNNEL_ID. Until Nicira
-// extensions (NXM_NX_TUN_IPV4_DST) land in ofclient (see REQ-NA-121), we keep
-// one Geneve port per remote VTEP.
-func genevePortName(remoteAddr string) string {
-	h := sha256.Sum256([]byte(remoteAddr))
-	return fmt.Sprintf("gv%x", h[:4])
-}
+// GenevePort is the single per-node Geneve VTEP (spec §7: "Один Geneve-порт
+// на ноде: options:remote_ip=flow, options:key=flow. Адрес удалённого VTEP и
+// VNI проставляются во flow"). All cross-node tunnels share this port; flow
+// rules set tun_dst (NXM_NX_TUN_IPV4_DST) and tun_id per packet.
+const GenevePort = "ovsgnv0"
+
+// genevePortName is retained for transitional call sites and returns the
+// shared port name regardless of the remote address argument.
+func genevePortName(string) string { return GenevePort }
 
 // OVSManager programs the single br-ovs bridge via libovsdb (OVSDB JSON-RPC over Unix socket).
 type OVSManager struct {
@@ -144,12 +143,15 @@ func (m *OVSManager) AddInternalPort(name string) error {
 	return m.addPort(name, "internal", nil)
 }
 
-// AddGenevePort creates a Geneve tunnel port (idempotent). key=flow means per-flow tun_id.
-func (m *OVSManager) AddGenevePort(name, remoteIP string) error {
+// AddGenevePort creates the single shared Geneve VTEP. The arguments are
+// retained for source compatibility with older call sites and ignored; the
+// concrete VTEP target is driven from flow rules (NXM_NX_TUN_IPV4_DST) so
+// only one port is needed per node.
+func (m *OVSManager) AddGenevePort(_, _ string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.addPort(name, "geneve", map[string]string{
-		"remote_ip": remoteIP,
+	return m.addPort(GenevePort, "geneve", map[string]string{
+		"remote_ip": "flow",
 		"key":       "flow",
 	})
 }

@@ -187,16 +187,17 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 				}
 			}
 
-			// Program Geneve tunnels for remote endpoints.
+			// Program Geneve tunnels for remote endpoints. One shared Geneve
+			// port per node; tun_dst is set per-flow.
 			for _, remote := range eps {
 				if remote.isSwitch || remote.device.Status.NodeName == r.NodeName || remote.device.Status.NodeAddress == "" {
 					continue
 				}
-				gvPort := genevePortName(remote.device.Status.NodeAddress)
-				if err := r.OVS.AddGenevePort(gvPort, remote.device.Status.NodeAddress); err != nil {
-					return ctrl.Result{}, fmt.Errorf("add geneve port %q: %w", gvPort, err)
+				if err := r.OVS.AddGenevePort("", ""); err != nil {
+					return ctrl.Result{}, fmt.Errorf("ensure geneve port: %w", err)
 				}
-				if err := r.Flows.AddEgressFlow(pKey, gvPort, vni); err != nil {
+				gvPort := genevePortName(remote.device.Status.NodeAddress)
+				if err := r.Flows.AddEgressFlow(pKey, gvPort, vni, remote.device.Status.NodeAddress); err != nil {
 					return ctrl.Result{}, err
 				}
 				if err := r.Flows.AddIngressFlow(gvPort, pKey, vni); err != nil {
