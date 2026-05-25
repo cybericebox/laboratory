@@ -80,12 +80,16 @@ func (d *Demux) Run(stop <-chan struct{}) {
 }
 
 func (d *Demux) handleType1(pkt []byte, src *net.UDPAddr) {
-	uid, found := d.table.FindByMac1(pkt)
+	_, backend, found := d.table.FindByMac1(pkt)
 	if !found {
 		return
 	}
-	serverAddrStr := fmt.Sprintf("vpn.labgroup-%s.svc.cluster.local:%d", uid, wgPort)
-	resolved, err := net.ResolveUDPAddr("udp4", serverAddrStr)
+	if backend == "" {
+		// Operator has not observed a Running VPN pod yet; drop the handshake.
+		// The client will retry; the next reconcile will populate Backend.
+		return
+	}
+	resolved, err := net.ResolveUDPAddr("udp4", backend)
 	if err != nil {
 		return
 	}

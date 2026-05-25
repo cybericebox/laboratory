@@ -19,9 +19,12 @@ type Mac1Key [32]byte
 type TableEntry struct {
 	UID     string
 	Mac1Key Mac1Key
+	// Backend is the routable target (podIP:port) for the VPN server of this
+	// group. Empty when the operator has not yet observed a Running pod.
+	Backend string
 }
 
-// Table is an in-memory mac1_key→UID mapping, rebuilt from LabGroup watches.
+// Table is an in-memory mac1_key→UID/backend mapping, rebuilt from LabGroup watches.
 // Brute-force scan is O(n) but handshake init is rare (~once per 2 min per peer).
 type Table struct {
 	mu      sync.RWMutex
@@ -50,7 +53,7 @@ func computeMac1Key(pubKeyBase64 string) (Mac1Key, error) {
 }
 
 // Update inserts or replaces the entry for uid.
-func (t *Table) Update(uid, pubKey string) error {
+func (t *Table) Update(uid, pubKey, backend string) error {
 	k, err := computeMac1Key(pubKey)
 	if err != nil {
 		return err
@@ -60,10 +63,11 @@ func (t *Table) Update(uid, pubKey string) error {
 	for i, e := range t.entries {
 		if e.UID == uid {
 			t.entries[i].Mac1Key = k
+			t.entries[i].Backend = backend
 			return nil
 		}
 	}
-	t.entries = append(t.entries, TableEntry{UID: uid, Mac1Key: k})
+	t.entries = append(t.entries, TableEntry{UID: uid, Mac1Key: k, Backend: backend})
 	return nil
 }
 
@@ -82,9 +86,11 @@ func (t *Table) Delete(uid string) {
 // FindByMac1 brute-forces mac1 verification.
 // packet is the raw WireGuard type-1 packet (UDP payload).
 // mac1 occupies bytes [len-32 : len-16]; the message body for MAC is packet[:len-32].
-func (t *Table) FindByMac1(packet []byte) (uid string, found bool) {
+// Returns the matched group UID and its registered backend (podIP:port); backend
+// is empty when the operator has not yet seen a Running VPN pod.
+func (t *Table) FindByMac1(packet []byte) (uid, backend string, found bool) {
 	if len(packet) < 32 {
-		return "", false
+		return "", "", false
 	}
 	msgBody := packet[:len(packet)-32]
 	mac1InPkt := packet[len(packet)-32 : len(packet)-16]
@@ -97,10 +103,10 @@ func (t *Table) FindByMac1(packet []byte) (uid string, found bool) {
 	for _, e := range entries {
 		mac := computeMAC(e.Mac1Key[:], msgBody)
 		if bytesEqual(mac[:16], mac1InPkt) {
-			return e.UID, true
+			return e.UID, e.Backend, true
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 func computeMAC(key, msg []byte) [32]byte {
@@ -144,7 +150,7 @@ func (w *LabGroupWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if lg.Status.VPN.PublicKey == "" {
 		return ctrl.Result{}, nil
 	}
-	if err := w.Table.Update(string(lg.UID), lg.Status.VPN.PublicKey); err != nil {
+	if err := w.Table.Update(string(lg.UID), lg.Status.VPN.PublicKey, lg.Status.VPN.Backend); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
