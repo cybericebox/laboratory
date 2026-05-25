@@ -22,13 +22,15 @@ type NodeAgentServer struct {
 	ovs *OVSManager
 
 	mu       sync.RWMutex
-	podNetNS map[string]string // podUID → netns path
+	podNetNS map[string]string   // podUID → netns path
+	podPorts map[string][]string // podUID → OVS port names
 }
 
 func newNodeAgentServer(ovs *OVSManager) *NodeAgentServer {
 	return &NodeAgentServer{
 		ovs:      ovs,
 		podNetNS: make(map[string]string),
+		podPorts: make(map[string][]string),
 	}
 }
 
@@ -55,16 +57,21 @@ func (s *NodeAgentServer) AddPort(ctx context.Context, req *nodev1.AddPortReques
 
 	s.mu.Lock()
 	s.podNetNS[req.PodUid] = req.NetnsPath
+	s.podPorts[req.PodUid] = append(s.podPorts[req.PodUid], portName)
 	s.mu.Unlock()
 
 	return &nodev1.AddPortResponse{PortId: portName}, nil
 }
 
-// DeletePort cleans up the podNetNS cache entry.
-// OVS port deletion is handled by ConnectionReconciler on Connection DELETE.
+// DeletePort cleans up OVS ports and cache entries.
+// Deletes all OVS ports tracked for the pod, then removes netns and port caches.
 func (s *NodeAgentServer) DeletePort(_ context.Context, req *nodev1.DeletePortRequest) (*emptypb.Empty, error) {
 	s.mu.Lock()
+	for _, p := range s.podPorts[req.PodUid] {
+		_ = s.ovs.DelPort(p)
+	}
 	delete(s.podNetNS, req.PodUid)
+	delete(s.podPorts, req.PodUid)
 	s.mu.Unlock()
 	return &emptypb.Empty{}, nil
 }
