@@ -24,10 +24,17 @@ import (
 )
 
 const (
-	finalizerLab  = "cybericebox.com/lab"
+	finalizerLab     = "cybericebox.com/lab"
+	finalizerVPN     = "cybericebox.com/vpn"
+	finalizerGateway = "cybericebox.com/gateway"
+
 	vniPoolNS     = "lab-system"
 	vniPoolPrefix = "vni"
 	vniPoolSize   = uint(65000)
+
+	labSubnetPool    = "lab-subnets"
+	vpnSubnetOctet2  = 8  // 10.8.N.0/24
+	inetSubnetOctet2 = 9  // 10.9.N.0/24
 )
 
 // LabReconciler reconciles a Lab object.
@@ -58,6 +65,18 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		controllerutil.AddFinalizer(&lab, finalizerLab)
 		if err := r.Update(ctx, &lab); err != nil {
 			return ctrl.Result{}, err
+		}
+	}
+
+	if err := r.ensureNetworkFinalizers(ctx, &lab); err != nil {
+		return ctrl.Result{}, err
+	}
+	if updated, err := r.ensureSubnetAllocation(ctx, &lab); err != nil {
+		return ctrl.Result{}, err
+	} else if updated {
+		// Re-fetch after status update so we have the latest resourceVersion.
+		if err := r.Get(ctx, req.NamespacedName, &lab); err != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
 	}
 
@@ -341,8 +360,66 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
+	// Release lab subnet index if allocated.
+	if lab.Status.VPN.CIDR != "" || lab.Status.Internet.CIDR != "" {
+		cidr := lab.Status.VPN.CIDR
+		if cidr == "" {
+			cidr = lab.Status.Internet.CIDR
+		}
+		parts := strings.Split(cidr, ".")
+		if len(parts) >= 3 {
+			var n uint
+			if _, scanErr := fmt.Sscanf(parts[2], "%d", &n); scanErr == nil {
+				subnetAllocator := poolpkg.NewAllocator(r.Client, labSubnetPool, lab.Namespace, 254)
+				if releaseErr := subnetAllocator.ReleaseIndex(ctx, n); releaseErr != nil {
+					logger.Error(releaseErr, "release lab subnet", "n", n)
+				}
+			}
+		}
+	}
+
 	controllerutil.RemoveFinalizer(lab, finalizerLab)
 	return ctrl.Result{}, r.Update(ctx, lab)
+}
+
+// ensureSubnetAllocation allocates a /24 index N from the lab-subnets pool,
+// writes Status.VPN.CIDR and/or Status.Internet.CIDR, and updates status.
+// VPN and Internet share the same N for a given Lab.
+func (r *LabReconciler) ensureSubnetAllocation(ctx context.Context, lab *laboratoryv1alpha1.Lab) (updated bool, err error) {
+	needsVPN := lab.Spec.VPN.Enabled && lab.Status.VPN.CIDR == ""
+	needsInet := lab.Spec.Internet.Enabled && lab.Status.Internet.CIDR == ""
+	if !needsVPN && !needsInet {
+		return false, nil
+	}
+
+	subnetAllocator := poolpkg.NewAllocator(r.Client, labSubnetPool, lab.Namespace, 254)
+	n, err := subnetAllocator.AllocateIndex(ctx)
+	if err != nil {
+		return false, fmt.Errorf("allocate lab subnet: %w", err)
+	}
+	if needsVPN {
+		lab.Status.VPN.CIDR = fmt.Sprintf("10.%d.%d.0/24", vpnSubnetOctet2, n)
+	}
+	if needsInet {
+		lab.Status.Internet.CIDR = fmt.Sprintf("10.%d.%d.0/24", inetSubnetOctet2, n)
+	}
+	return true, r.Status().Update(ctx, lab)
+}
+
+func (r *LabReconciler) ensureNetworkFinalizers(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
+	changed := false
+	if lab.Spec.VPN.Enabled && !controllerutil.ContainsFinalizer(lab, finalizerVPN) {
+		controllerutil.AddFinalizer(lab, finalizerVPN)
+		changed = true
+	}
+	if lab.Spec.Internet.Enabled && !controllerutil.ContainsFinalizer(lab, finalizerGateway) {
+		controllerutil.AddFinalizer(lab, finalizerGateway)
+		changed = true
+	}
+	if changed {
+		return r.Update(ctx, lab)
+	}
+	return nil
 }
 
 func (r *LabReconciler) SetupWithManager(mgr ctrl.Manager) error {
