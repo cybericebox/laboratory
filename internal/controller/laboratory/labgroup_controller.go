@@ -14,7 +14,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
@@ -28,7 +30,12 @@ const finalizerLabGroup = "cybericebox.com/labgroup"
 type LabGroupReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// PublicVPNEndpoint is the publicly reachable host:port that clients dial
+	// (host of the WireGuard demux). Written verbatim to LabGroup.Status.VPN.Endpoint.
+	PublicVPNEndpoint string
 }
+
+const vpnListenPort = 51820
 
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labgroups,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labgroups/status,verbs=get;update;patch
@@ -90,15 +97,45 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
+	backend, backendReady, err := r.discoverVPNBackend(ctx, ns)
+	if err != nil {
+		logger.Error(err, "discover VPN backend")
+		return ctrl.Result{}, err
+	}
+
 	lg.Status.Phase = laboratoryv1alpha1.PhaseReady
 	lg.Status.Namespace = ns
 	lg.Status.VPN.PublicKey = pubKey
 	lg.Status.VPN.SecretRef = fmt.Sprintf("%s/%s", ns, secretName)
+	lg.Status.VPN.Endpoint = r.PublicVPNEndpoint
+	lg.Status.VPN.Backend = backend
+	lg.Status.VPN.Registered = backendReady
 	if err = r.Status().Update(ctx, &lg); err != nil {
 		return ctrl.Result{}, err
 	}
 
+	// Re-reconcile soon while waiting for the VPN pod to become Running so
+	// Backend gets populated without a Pod-watch trigger.
+	if !backendReady {
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
 	return ctrl.Result{}, nil
+}
+
+// discoverVPNBackend returns the podIP:port of a Running VPN pod in ns, or
+// ("", false, nil) if no pod is ready yet.
+func (r *LabGroupReconciler) discoverVPNBackend(ctx context.Context, ns string) (string, bool, error) {
+	var podList corev1.PodList
+	if err := r.List(ctx, &podList, client.InNamespace(ns), client.MatchingLabels{"app": "vpn"}); err != nil {
+		return "", false, err
+	}
+	for i := range podList.Items {
+		p := &podList.Items[i]
+		if p.Status.Phase == corev1.PodRunning && p.Status.PodIP != "" {
+			return fmt.Sprintf("%s:%d", p.Status.PodIP, vpnListenPort), true, nil
+		}
+	}
+	return "", false, nil
 }
 
 func (r *LabGroupReconciler) reconcileDelete(ctx context.Context, lg *laboratoryv1alpha1.LabGroup) (ctrl.Result, error) {
@@ -278,7 +315,29 @@ func (r *LabGroupReconciler) ensurePool(ctx context.Context, ns, name, poolType 
 }
 
 func (r *LabGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Reconcile the owning LabGroup whenever its VPN pod changes phase or IP,
+	// so Status.VPN.Backend follows pod rescheduling without polling.
+	vpnPodMap := func(ctx context.Context, obj client.Object) []reconcile.Request {
+		pod, ok := obj.(*corev1.Pod)
+		if !ok {
+			return nil
+		}
+		if pod.Labels["app"] != "vpn" {
+			return nil
+		}
+		var nsObj corev1.Namespace
+		if err := r.Get(ctx, types.NamespacedName{Name: pod.Namespace}, &nsObj); err != nil {
+			return nil
+		}
+		owner := nsObj.Labels["laboratory.cybericebox.com/group"]
+		if owner == "" {
+			return nil
+		}
+		return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: owner}}}
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.LabGroup{}).
+		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(vpnPodMap)).
 		Complete(r)
 }

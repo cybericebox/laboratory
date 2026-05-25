@@ -28,10 +28,16 @@ type LabGroupStatus struct {
 type LabGroupVPNStatus struct {
 	// PublicKey is the WireGuard public key used as routing key for demux.
 	PublicKey string `json:"publicKey,omitempty"`
-	// Endpoint is the public UDP address of the VPN server.
+	// Endpoint is the public UDP address of the VPN server (host:port) advertised to clients.
 	Endpoint string `json:"endpoint,omitempty"`
 	// SecretRef is "<namespace>/<name>" of the vpn-server-keypair Secret.
 	SecretRef string `json:"secretRef,omitempty"`
+	// Backend is the in-cluster routable target for the demux (podIP:port).
+	// Updated when the VPN pod is rescheduled; the demux follows via watch.
+	Backend string `json:"backend,omitempty"`
+	// Registered is true once the demux has been informed of (PublicKey, Backend).
+	// Operator sets this after Backend has been populated from a Running pod.
+	Registered bool `json:"registered,omitempty"`
 }
 
 // +genclient

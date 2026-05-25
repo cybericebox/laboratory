@@ -44,6 +44,11 @@ const (
 type LabReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// BaseDomain is the public DNS suffix under which task URLs are advertised,
+	// e.g. "challenges.cybericebox.com". An exposed device named "ssh" inside
+	// any lab is reachable as https://ssh.<BaseDomain>. Written to
+	// Lab.Status.Access on Ready.
+	BaseDomain string
 }
 
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
@@ -350,17 +355,46 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		newPhase = laboratoryv1alpha1.PhaseReady
 	}
 
+	access := r.buildAccessEntries(lab)
+
 	if newPhase == lab.Status.Phase &&
 		reflect.DeepEqual(refs, lab.Status.Devices) &&
-		reflect.DeepEqual(connRefs, lab.Status.Connections) {
+		reflect.DeepEqual(connRefs, lab.Status.Connections) &&
+		reflect.DeepEqual(access, lab.Status.Access) {
 		return ctrl.Result{}, nil
 	}
 
 	lab.Status.Devices = refs
 	lab.Status.Connections = connRefs
 	lab.Status.Phase = newPhase
+	lab.Status.Access = access
 
 	return ctrl.Result{}, r.Status().Update(ctx, lab)
+}
+
+// buildAccessEntries returns the externally-visible URL for each web-exposed
+// device in the lab. Empty if BaseDomain is unset.
+func (r *LabReconciler) buildAccessEntries(lab *laboratoryv1alpha1.Lab) []laboratoryv1alpha1.AccessEntry {
+	if r.BaseDomain == "" {
+		return nil
+	}
+	var out []laboratoryv1alpha1.AccessEntry
+	for _, d := range lab.Spec.Devices {
+		if d.Exposure == nil || d.Exposure.Web == nil {
+			continue
+		}
+		proto := d.Exposure.Web.Protocol
+		if proto == "" {
+			proto = "http"
+		}
+		out = append(out, laboratoryv1alpha1.AccessEntry{
+			Device:   d.Name,
+			Port:     d.Exposure.Web.Port,
+			Protocol: proto,
+			URL:      fmt.Sprintf("https://%s.%s", d.Name, r.BaseDomain),
+		})
+	}
+	return out
 }
 
 func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1alpha1.Lab) (ctrl.Result, error) {

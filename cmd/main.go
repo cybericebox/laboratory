@@ -205,8 +205,9 @@ func main() {
 	}
 
 	if err = (&laboratorycontroller.LabGroupReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		PublicVPNEndpoint: os.Getenv("PUBLIC_VPN_ENDPOINT"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LabGroup")
 		os.Exit(1)
@@ -219,8 +220,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&laboratorycontroller.LabReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		BaseDomain: os.Getenv("BASE_DOMAIN"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Lab")
 		os.Exit(1)
