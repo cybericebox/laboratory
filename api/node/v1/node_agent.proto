@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package node.v1;
+
+option go_package = "github.com/cybericebox/laboratory/api/node/v1";
+
+import "google/protobuf/empty.proto";
+
+service NodeAgent {
+  // AddPort creates an OVS internal port for a pod's lab interface and moves it into the pod netns.
+  rpc AddPort(AddPortRequest) returns (AddPortResponse);
+  // DeletePort removes all OVS ports associated with a pod.
+  rpc DeletePort(DeletePortRequest) returns (google.protobuf.Empty);
+}
+
+message AddPortRequest {
+  string pod_uid        = 1;
+  string connection     = 2;  // Connection CRD name
+  string interface_name = 3;  // target iface name inside pod netns (e.g. "eth0")
+  string namespace      = 4;  // pod namespace
+  string netns_path     = 5;  // netns path from CNI args (e.g. /var/run/netns/cni-xxx)
+}
+
+message AddPortResponse {
+  string port_id = 1;  // OVS port name (e.g. "pa1b2c3d4")
+  string mac     = 2;  // assigned MAC address
+}
+
+message DeletePortRequest {
+  string pod_uid = 1;
+}
