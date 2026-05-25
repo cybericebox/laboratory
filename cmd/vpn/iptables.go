@@ -37,7 +37,10 @@ func (m *IPTablesManager) SetupForwardPolicy() error {
 			return fmt.Errorf("append FORWARD rule %v: %w", rule, err)
 		}
 	}
-	exists, _ := m.ipt.Exists("filter", "FORWARD", "-j", "DROP")
+	exists, err := m.ipt.Exists("filter", "FORWARD", "-j", "DROP")
+	if err != nil {
+		return fmt.Errorf("check FORWARD DROP rule: %w", err)
+	}
 	if !exists {
 		return m.ipt.Append("filter", "FORWARD", "-j", "DROP")
 	}

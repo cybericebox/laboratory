@@ -43,8 +43,14 @@ func loadConfig() (*Config, error) {
 		}
 		statsInterval = d
 	}
-	_, clientSubnet, _ := net.ParseCIDR("10.8.0.0/24")
-	_, vpnSupernet, _ := net.ParseCIDR("10.8.0.0/16")
+	_, clientSubnet, err := net.ParseCIDR("10.8.0.0/24")
+	if err != nil {
+		return nil, fmt.Errorf("parse clientSubnet: %w", err)
+	}
+	_, vpnSupernet, err := net.ParseCIDR("10.8.0.0/16")
+	if err != nil {
+		return nil, fmt.Errorf("parse vpnSupernet: %w", err)
+	}
 	return &Config{
 		PrivateKey:    privKey,
 		ListenPort:    port,
