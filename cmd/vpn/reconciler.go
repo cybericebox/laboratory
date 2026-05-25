@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"time"
 
@@ -15,23 +14,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/ovsnames"
 )
 
 const (
 	finalizerVPNPeer = "cybericebox.com/vpn-peer"
 	finalizerVPN     = "cybericebox.com/vpn"
 )
-
-// labIfaceName returns the OVS interface name for a lab's VPN/gateway access port.
-// Truncates with a sha256 suffix when "lab-"+name would exceed 15 chars (Linux IFNAMSIZ).
-func labIfaceName(name string) string {
-	full := "lab-" + name
-	if len(full) <= 15 {
-		return full
-	}
-	h := sha256.Sum256([]byte(name))
-	return fmt.Sprintf("lb-%x", h[:4]) // "lb-" + 8 hex chars = 11 chars
-}
 
 // LabGroupClientReconciler watches LabGroupClient and manages WireGuard peers.
 type LabGroupClientReconciler struct {
@@ -104,7 +93,7 @@ func (r *LabVPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 
-	ifaceName := labIfaceName(lab.Name)
+	ifaceName := ovsnames.LabIfaceName(lab.Name)
 	link, err := netlink.LinkByName(ifaceName)
 	if err != nil {
 		// Interface not yet created by node-agent; requeue.

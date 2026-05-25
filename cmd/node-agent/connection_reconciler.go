@@ -70,6 +70,17 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
+	// Add finalizer before any OVS work so cleanup runs even if we crash mid-reconcile.
+	if !controllerutil.ContainsFinalizer(conn, laboratoryv1alpha1.FinalizerOVSCleanup) {
+		controllerutil.AddFinalizer(conn, laboratoryv1alpha1.FinalizerOVSCleanup)
+		if err := r.Update(ctx, conn); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.Get(ctx, types.NamespacedName{Name: conn.Name, Namespace: conn.Namespace}, conn); err != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
+	}
+
 	// Determine VNI.
 	var vni uint
 	for _, ep := range eps {
@@ -177,17 +188,6 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 		}
 
 		desired = append(desired, portStatus)
-	}
-
-	// Add finalizer.
-	if !controllerutil.ContainsFinalizer(conn, laboratoryv1alpha1.FinalizerOVSCleanup) {
-		controllerutil.AddFinalizer(conn, laboratoryv1alpha1.FinalizerOVSCleanup)
-		if err := r.Update(ctx, conn); err != nil {
-			return ctrl.Result{}, err
-		}
-		if err := r.Get(ctx, types.NamespacedName{Name: conn.Name, Namespace: conn.Namespace}, conn); err != nil {
-			return ctrl.Result{}, client.IgnoreNotFound(err)
-		}
 	}
 
 	if reflect.DeepEqual(conn.Status.Ports, desired) {

@@ -101,25 +101,37 @@ func ConfigureInNetNS(netnsPath, ifaceName, mac, cidr string) error {
 
 // inNetNS executes fn inside the netns at netnsPath, restoring the caller's netns on return.
 // The OS thread is locked for the duration to prevent goroutine migration.
+// Panics if the original netns cannot be restored — continuing in the wrong netns would
+// silently corrupt all subsequent network operations on this goroutine.
 func inNetNS(netnsPath string, fn func() error) error {
 	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
 
 	origNS, err := netns.Get()
 	if err != nil {
+		runtime.UnlockOSThread()
 		return fmt.Errorf("get current netns: %w", err)
 	}
 	defer origNS.Close()
-	defer netns.Set(origNS) //nolint:errcheck
 
 	targetNS, err := netns.GetFromPath(netnsPath)
 	if err != nil {
+		runtime.UnlockOSThread()
 		return fmt.Errorf("open netns %s: %w", netnsPath, err)
 	}
 	defer targetNS.Close()
 
 	if err := netns.Set(targetNS); err != nil {
+		runtime.UnlockOSThread()
 		return fmt.Errorf("set netns: %w", err)
 	}
-	return fn()
+
+	fnErr := fn()
+
+	if err := netns.Set(origNS); err != nil {
+		// Cannot restore original netns — thread is stuck in wrong namespace.
+		// Any further network syscalls from this goroutine would operate in the wrong netns.
+		panic(fmt.Sprintf("inNetNS: failed to restore original netns: %v", err))
+	}
+	runtime.UnlockOSThread()
+	return fnErr
 }

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -105,7 +106,11 @@ func main() {
 	}
 }
 
-// nodeAddress returns the first non-loopback IPv4 address of this host (Geneve VTEP).
+// containerIfacePrefixes lists interface name prefixes created by container runtimes and overlay
+// networks. These must not be used as the Geneve VTEP address.
+var containerIfacePrefixes = []string{"docker", "cni", "flannel", "weave", "veth", "br-", "ovs"}
+
+// nodeAddress returns the first non-loopback, non-container-bridge IPv4 of this host (Geneve VTEP).
 // Can be overridden with NODE_ADDRESS env var.
 func nodeAddress() (string, error) {
 	if addr := os.Getenv("NODE_ADDRESS"); addr != "" {
@@ -117,6 +122,16 @@ func nodeAddress() (string, error) {
 	}
 	for _, iface := range ifaces {
 		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		skip := false
+		for _, prefix := range containerIfacePrefixes {
+			if strings.HasPrefix(iface.Name, prefix) {
+				skip = true
+				break
+			}
+		}
+		if skip {
 			continue
 		}
 		addrs, _ := iface.Addrs()

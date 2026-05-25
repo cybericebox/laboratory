@@ -40,16 +40,3 @@ func TestGenevePortName_Length(t *testing.T) {
 	}
 }
 
-func TestLabIfaceName_Short(t *testing.T) {
-	name := labIfaceName("mylab")
-	if name != "lab-mylab" {
-		t.Errorf("got %q, want lab-mylab", name)
-	}
-}
-
-func TestLabIfaceName_Long(t *testing.T) {
-	name := labIfaceName("very-long-lab-name-that-exceeds-limit")
-	if len(name) > 15 {
-		t.Errorf("labIfaceName len = %d, want ≤15: %q", len(name), name)
-	}
-}

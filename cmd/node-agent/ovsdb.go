@@ -21,28 +21,6 @@ func genevePortName(remoteAddr string) string {
 	return fmt.Sprintf("gv%x", h[:4])
 }
 
-// labIfaceName computes the OVS internal port name for a lab's VPN/gateway access iface.
-// Stays within Linux IFNAMSIZ (15 usable chars).
-func labIfaceName(labName string) string {
-	full := "lab-" + labName
-	if len(full) <= 15 {
-		return full
-	}
-	h := sha256.Sum256([]byte(labName))
-	return fmt.Sprintf("lb-%x", h[:4]) // 11 chars
-}
-
-// labGWIfaceName computes the OVS internal port name for a lab's gateway access iface.
-// Uses "gw-" prefix distinct from labIfaceName's "lab-" to avoid collisions on same node.
-func labGWIfaceName(labName string) string {
-	full := "gw-" + labName
-	if len(full) <= 15 {
-		return full
-	}
-	h := sha256.Sum256([]byte("gw:" + labName))
-	return fmt.Sprintf("gw%x", h[:4]) // 10 chars
-}
-
 // OVSManager programs the single br-ovs bridge via ovs-vsctl exec.
 type OVSManager struct {
 	bridge string

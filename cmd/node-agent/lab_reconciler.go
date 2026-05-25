@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/ovsnames"
 )
 
 // LabIfaceReconciler creates the lab-<name> OVS internal port for each Lab's VPN and gateway pods.
@@ -38,7 +39,7 @@ func (r *LabIfaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	needsRequeue := false
 
 	if lab.Spec.VPN.Enabled && lab.Status.VPN.CIDR != "" {
-		result, err := r.ensureLabIface(ctx, lab.Namespace, "vpn", labIfaceName(lab.Name))
+		result, err := r.ensureLabIface(ctx, lab.Namespace, "vpn", ovsnames.LabIfaceName(lab.Name))
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -48,7 +49,7 @@ func (r *LabIfaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	if lab.Spec.Internet.Enabled && lab.Status.Internet.CIDR != "" {
-		result, err := r.ensureLabIface(ctx, lab.Namespace, "gateway", labGWIfaceName(lab.Name))
+		result, err := r.ensureLabIface(ctx, lab.Namespace, "gateway", ovsnames.LabGWIfaceName(lab.Name))
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -101,8 +102,8 @@ func (r *LabIfaceReconciler) ensureLabIface(ctx context.Context, namespace, appL
 }
 
 func (r *LabIfaceReconciler) reconcileDelete(_ context.Context, lab *laboratoryv1alpha1.Lab) (ctrl.Result, error) {
-	_ = r.OVS.DelPort(labIfaceName(lab.Name))
-	_ = r.OVS.DelPort(labGWIfaceName(lab.Name))
+	_ = r.OVS.DelPort(ovsnames.LabIfaceName(lab.Name))
+	_ = r.OVS.DelPort(ovsnames.LabGWIfaceName(lab.Name))
 	return ctrl.Result{}, nil
 }
 

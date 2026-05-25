@@ -56,7 +56,11 @@ func cmdADD(args *skel.CmdArgs) error {
 		}
 		result = &cniv1.Result{CNIVersion: conf.CNIVersion}
 	} else {
-		delegateResult, err := invoke.DelegateAdd(context.Background(), delegateType(conf), marshalDelegate(conf), nil)
+		dt := delegateType(conf)
+		if dt == "" {
+			return fmt.Errorf("cni-gate: delegate.type is required when annotation is not empty-string")
+		}
+		delegateResult, err := invoke.DelegateAdd(context.Background(), dt, marshalDelegate(conf), nil)
 		if err != nil {
 			return fmt.Errorf("delegate ADD: %w", err)
 		}
@@ -168,7 +172,10 @@ func parsePodArgs(cniArgs string) (namespace, name string) {
 }
 
 func createDummyEth0(netnsPath string) error {
-	return execInNetns(netnsPath, "ip", "link", "add", "eth0", "type", "dummy")
+	if err := execInNetns(netnsPath, "ip", "link", "add", "eth0", "type", "dummy"); err != nil {
+		return err
+	}
+	return execInNetns(netnsPath, "ip", "link", "set", "eth0", "up")
 }
 
 func renameIface(netnsPath, oldName, newName string) error {

@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"time"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -27,6 +28,19 @@ func (r *DevicePortReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	if !device.DeletionTimestamp.IsZero() {
+		// Wait for ConnectionReconciler to finish OVS cleanup for all connections
+		// that include this device before removing the finalizer.
+		var connList laboratoryv1alpha1.ConnectionList
+		if err := r.List(ctx, &connList,
+			client.InNamespace(device.Namespace),
+			client.MatchingLabels{laboratoryv1alpha1.LabelLab: device.Spec.LabRef}); err != nil {
+			return ctrl.Result{}, err
+		}
+		for _, conn := range connList.Items {
+			if controllerutil.ContainsFinalizer(&conn, laboratoryv1alpha1.FinalizerOVSCleanup) {
+				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			}
+		}
 		controllerutil.RemoveFinalizer(&device, laboratoryv1alpha1.FinalizerOVSCleanup)
 		return ctrl.Result{}, r.Update(ctx, &device)
 	}
