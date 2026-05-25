@@ -16,6 +16,7 @@ import (
 // OpenFlow 1.3 message types.
 const (
 	ofptHello            = 0
+	ofptError            = 1
 	ofptFeaturesRequest  = 5
 	ofptFeaturesReply    = 6
 	ofptFlowMod          = 14
@@ -151,6 +152,11 @@ func (c *Client) queryPortDesc() error {
 			return fmt.Errorf("recv PORT_DESC reply: %w", err)
 		}
 		if msg[1] != ofptMultipartReply {
+			if msg[1] == ofptError && len(msg) >= 12 {
+				return fmt.Errorf("ofclient: PORT_DESC query: OFPT_ERROR type=%d code=%d",
+					binary.BigEndian.Uint16(msg[8:10]),
+					binary.BigEndian.Uint16(msg[10:12]))
+			}
 			continue
 		}
 		if binary.BigEndian.Uint16(msg[8:10]) != ofpmpPortDesc {

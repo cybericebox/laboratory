@@ -82,6 +82,10 @@ spec:
               value: /run/openvswitch/db.sock
             - name: GRPC_SOCK
               value: /run/openvswitch/node-agent.sock
+            - name: NODE_ADDRESS
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
             - name: PROC_ROOT
               value: /host/proc
           securityContext:

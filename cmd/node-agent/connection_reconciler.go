@@ -78,7 +78,7 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 			return ctrl.Result{}, err
 		}
 		if err := r.Get(ctx, types.NamespacedName{Name: conn.Name, Namespace: conn.Namespace}, conn); err != nil {
-			return ctrl.Result{}, client.IgnoreNotFound(err)
+			return ctrl.Result{}, err
 		}
 	}
 
@@ -126,12 +126,18 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 			}
 
-			// Move port to pod netns (idempotent — ignore if already moved).
-			_ = MoveToNetNS(pKey, netnsPath)
+			log := ctrl.LoggerFrom(ctx)
+
+			// Move port to pod netns (idempotent — link absent from host netns when already moved).
+			if err := MoveToNetNS(pKey, netnsPath); err != nil {
+				log.V(1).Info("MoveToNetNS skipped", "port", pKey, "reason", err)
+			}
 
 			// Rename inside netns to desired interface name.
 			if ep.endpoint.Interface != "" && ep.endpoint.Interface != pKey {
-				_ = RenameInNetNS(netnsPath, pKey, ep.endpoint.Interface)
+				if err := RenameInNetNS(netnsPath, pKey, ep.endpoint.Interface); err != nil {
+					log.V(1).Info("RenameInNetNS skipped", "port", pKey, "iface", ep.endpoint.Interface, "reason", err)
+				}
 			}
 
 			// Configure IP/MAC from device spec if available.
@@ -150,7 +156,9 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 				if ifName == "" {
 					ifName = pKey
 				}
-				_ = ConfigureInNetNS(netnsPath, ifName, mac, cidr)
+				if err := ConfigureInNetNS(netnsPath, ifName, mac, cidr); err != nil {
+					log.V(1).Info("ConfigureInNetNS skipped", "port", pKey, "reason", err)
+				}
 			}
 
 			// Program Geneve tunnels for remote endpoints.

@@ -36,7 +36,8 @@ func findPodNetNSIn(procRoot, podUID string) (string, error) {
 		if err != nil {
 			continue
 		}
-		if strings.Contains(string(cgroup), podUID) {
+		cgroupStr := string(cgroup)
+		if strings.Contains(cgroupStr, podUID) || strings.Contains(cgroupStr, strings.ReplaceAll(podUID, "-", "_")) {
 			return filepath.Join(procRoot, e.Name(), "ns", "net"), nil
 		}
 	}
