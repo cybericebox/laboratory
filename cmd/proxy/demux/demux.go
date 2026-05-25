@@ -4,6 +4,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+
+	"github.com/cybericebox/laboratory/cmd/proxy/demux/xdp"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 const wgPort = 51820
@@ -26,6 +29,14 @@ func New(listenAddr string, table *Table, ct *ConnTrack) (*Demux, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen UDP %s: %w", listenAddr, err)
 	}
+
+	// Best-effort XDP load; failure is non-fatal — proxy continues with userspace demux.
+	if h, err := xdp.Load("eth0", wgPort); err != nil {
+		ctrl.Log.WithName("demux").Info("XDP not loaded, using userspace fallback", "reason", err)
+	} else if h != nil {
+		ct.SetXDP(h)
+	}
+
 	return &Demux{table: table, conntrack: ct, conn: conn}, nil
 }
 
