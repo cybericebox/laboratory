@@ -10,10 +10,13 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -43,6 +46,8 @@ type LabReconciler struct {
 	Scheme *runtime.Scheme
 }
 
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs/finalizers,verbs=update
@@ -78,6 +83,11 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		if err := r.Get(ctx, req.NamespacedName, &lab); err != nil {
 			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
+	}
+
+	if err := r.ensureWebServices(ctx, &lab); err != nil {
+		logger.Error(err, "ensure web services")
+		return ctrl.Result{}, err
 	}
 
 	if err := r.validateGraph(&lab); err != nil {
@@ -422,10 +432,80 @@ func (r *LabReconciler) ensureNetworkFinalizers(ctx context.Context, lab *labora
 	return nil
 }
 
+func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
+	for _, d := range lab.Spec.Devices {
+		if d.Exposure == nil || d.Exposure.Web == nil {
+			continue
+		}
+		web := d.Exposure.Web
+		svcName := d.Name
+
+		svc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: svcName, Namespace: lab.Namespace},
+		}
+		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+			svc.Spec.Selector = map[string]string{
+				laboratoryv1alpha1.LabelLab: lab.Name,
+				"app":                       d.Name,
+			}
+			protocol := web.Protocol
+			if protocol == "" {
+				protocol = "http"
+			}
+			svc.Spec.Ports = []corev1.ServicePort{{
+				Name:       protocol,
+				Port:       web.Port,
+				TargetPort: intstr.FromInt32(web.Port),
+				Protocol:   corev1.ProtocolTCP,
+			}}
+			svc.Spec.Type = corev1.ServiceTypeClusterIP
+			return controllerutil.SetOwnerReference(lab, svc, r.Scheme)
+		})
+		if err != nil {
+			return fmt.Errorf("ensure Service %s: %w", svcName, err)
+		}
+
+		np := &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: svcName + "-web", Namespace: lab.Namespace},
+		}
+		_, err = controllerutil.CreateOrUpdate(ctx, r.Client, np, func() error {
+			np.Spec = networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": d.Name}},
+				PolicyTypes: []networkingv1.PolicyType{
+					networkingv1.PolicyTypeIngress,
+					networkingv1.PolicyTypeEgress,
+				},
+				Ingress: []networkingv1.NetworkPolicyIngressRule{{
+					From: []networkingv1.NetworkPolicyPeer{{
+						NamespaceSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"kubernetes.io/metadata.name": "proxy-system"},
+						},
+						PodSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"app": "proxy"},
+						},
+					}},
+					Ports: []networkingv1.NetworkPolicyPort{{
+						Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: web.Port},
+						Protocol: func() *corev1.Protocol { p := corev1.ProtocolTCP; return &p }(),
+					}},
+				}},
+				Egress: []networkingv1.NetworkPolicyEgressRule{},
+			}
+			return controllerutil.SetOwnerReference(lab, np, r.Scheme)
+		})
+		if err != nil {
+			return fmt.Errorf("ensure NetworkPolicy %s: %w", svcName, err)
+		}
+	}
+	return nil
+}
+
 func (r *LabReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.Lab{}).
 		Owns(&laboratoryv1alpha1.Device{}).
 		Owns(&laboratoryv1alpha1.Connection{}).
+		Owns(&corev1.Service{}).
+		Owns(&networkingv1.NetworkPolicy{}).
 		Complete(r)
 }
