@@ -4,6 +4,7 @@ package xdp
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 
@@ -64,6 +65,7 @@ func Load(iface string, proxyPort uint16) (*XDPHandle, error) {
 		Flags:     link.XDPDriverMode,
 	})
 	if err != nil {
+		nativeErr := err
 		l, err = link.AttachXDP(link.XDPOptions{
 			Program:   objs.WgDemux,
 			Interface: nl.Attrs().Index,
@@ -71,7 +73,7 @@ func Load(iface string, proxyPort uint16) (*XDPHandle, error) {
 		})
 		if err != nil {
 			objs.Close()
-			return nil, fmt.Errorf("attach XDP to %q: %w", iface, err)
+			return nil, fmt.Errorf("attach XDP to %q (native: %v, generic: %w)", iface, nativeErr, err)
 		}
 		ctrl.Log.WithName("xdp").Info("XDP attached in generic (SKB) mode", "iface", iface)
 	} else {
@@ -83,8 +85,12 @@ func Load(iface string, proxyPort uint16) (*XDPHandle, error) {
 
 // Update inserts or updates a forwarding entry for receiverIndex.
 func (h *XDPHandle) Update(receiverIndex uint32, ip net.IP, port uint16) error {
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return fmt.Errorf("xdp.Update: %v is not an IPv4 address", ip)
+	}
 	v := WgDemuxDstEntry{
-		Ip:   binary.BigEndian.Uint32(ip.To4()),
+		Ip:   binary.BigEndian.Uint32(ip4),
 		Port: htons(port),
 	}
 	return h.objs.WgSessions.Put(receiverIndex, v)
@@ -97,8 +103,7 @@ func (h *XDPHandle) Delete(receiverIndex uint32) error {
 
 // Close detaches the XDP program and releases all BPF resources.
 func (h *XDPHandle) Close() error {
-	h.xdpLink.Close()
-	return h.objs.Close()
+	return errors.Join(h.xdpLink.Close(), h.objs.Close())
 }
 
 func htons(v uint16) uint16 { return (v >> 8) | (v << 8) }
