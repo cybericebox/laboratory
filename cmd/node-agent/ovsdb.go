@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/ovn-org/libovsdb/client"
@@ -30,6 +31,7 @@ type OVSManager struct {
 	bridge string
 	client client.Client
 	ctx    context.Context
+	mu     sync.Mutex
 }
 
 func newOVSManager(bridge, sockPath string) (*OVSManager, error) {
@@ -131,11 +133,15 @@ func (m *OVSManager) ensureBridge() error {
 
 // AddInternalPort creates an OVS internal port in br-ovs (idempotent).
 func (m *OVSManager) AddInternalPort(name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.addPort(name, "internal", nil)
 }
 
 // AddGenevePort creates a Geneve tunnel port (idempotent). key=flow means per-flow tun_id.
 func (m *OVSManager) AddGenevePort(name, remoteIP string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.addPort(name, "geneve", map[string]string{
 		"remote_ip": remoteIP,
 		"key":       "flow",
@@ -211,6 +217,8 @@ func (m *OVSManager) addPort(name, ifaceType string, options map[string]string) 
 
 // DelPort removes a port from br-ovs (idempotent).
 func (m *OVSManager) DelPort(name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	p, err := m.findPort(name)
 	if err != nil {
 		return err
@@ -257,6 +265,8 @@ func (m *OVSManager) DelPort(name string) error {
 
 // PortExists checks whether a named port exists on br-ovs.
 func (m *OVSManager) PortExists(name string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	p, err := m.findPort(name)
 	if err != nil {
 		return false, err
