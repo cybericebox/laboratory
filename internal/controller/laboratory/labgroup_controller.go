@@ -2,8 +2,6 @@ package laboratory
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"fmt"
 	"time"
 
@@ -21,6 +19,7 @@ import (
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 const finalizerLabGroup = "cybericebox.com/labgroup"
@@ -168,14 +167,11 @@ func (r *LabGroupReconciler) ensureVPNKeypair(ctx context.Context, ns string, lg
 // generateWireGuardKeypair returns (privateKeyB64, publicKeyB64, error).
 // Production code should use golang.zx2c4.com/wireguard/wgctrl/wgtypes for real Curve25519 keys.
 func generateWireGuardKeypair() ([]byte, []byte, error) {
-	priv := make([]byte, 32)
-	if _, err := rand.Read(priv); err != nil {
+	key, err := wgtypes.GeneratePrivateKey()
+	if err != nil {
 		return nil, nil, err
 	}
-	pub := make([]byte, 32)
-	copy(pub, priv) // placeholder — replace with actual Curve25519 scalar multiply
-	return []byte(base64.StdEncoding.EncodeToString(priv)),
-		[]byte(base64.StdEncoding.EncodeToString(pub)), nil
+	return []byte(key.String()), []byte(key.PublicKey().String()), nil
 }
 
 func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string) error {
