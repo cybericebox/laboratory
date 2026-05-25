@@ -50,6 +50,7 @@ func main() {
 		log.Error(err, "init flow manager")
 		os.Exit(1)
 	}
+	defer flows.Close()
 
 	grpcSrv := newNodeAgentServer(ovs)
 	gs, err := startGRPCServer(cfg.GRPCSock, grpcSrv)

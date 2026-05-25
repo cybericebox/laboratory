@@ -24,6 +24,11 @@ func newFlowManager(ovsRunDir, bridge string) (*FlowManager, error) {
 	return &FlowManager{client: c}, nil
 }
 
+// Close closes the underlying OpenFlow connection.
+func (f *FlowManager) Close() error {
+	return f.client.Close()
+}
+
 // AddEgressFlow: local port → set tunnel_id=VNI → output via geneve port.
 func (f *FlowManager) AddEgressFlow(localPort, genevePort string, vni uint) error {
 	localNo, err := f.client.PortNo(localPort)
