@@ -99,6 +99,32 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 
 	desired := make([]laboratoryv1alpha1.ConnectionPortStatus, 0, len(eps))
 
+	// switch↔switch — materialise the patch-pair locally (spec §7: "Patch —
+	// всегда внутри ноды"). Each node runs the same logic and gets its own
+	// local pair so that cross-VNI L2 transit works wherever members live.
+	if len(eps) == 2 && eps[0].isSwitch && eps[1].isSwitch {
+		nameA := patchPortName(conn.Name, eps[0].endpoint.Device)
+		nameB := patchPortName(conn.Name, eps[1].endpoint.Device)
+		if err := r.OVS.AddPatchPair(nameA, nameB); err != nil {
+			return ctrl.Result{}, fmt.Errorf("add patch pair: %w", err)
+		}
+		// Flow rules that bind each patch port to its switch's VNI live in
+		// the 7-table pipeline (REQ-NA-030..038), not yet implemented. The
+		// patch wires exist; they will start carrying L2 once that lands.
+		for _, ep := range eps {
+			desired = append(desired, laboratoryv1alpha1.ConnectionPortStatus{
+				Device:    ep.endpoint.Device,
+				Interface: ep.endpoint.Interface,
+				Connected: true,
+			})
+		}
+		if reflect.DeepEqual(conn.Status.Ports, desired) {
+			return ctrl.Result{}, nil
+		}
+		conn.Status.Ports = desired
+		return ctrl.Result{}, r.Status().Update(ctx, conn)
+	}
+
 	for _, ep := range eps {
 		portStatus := laboratoryv1alpha1.ConnectionPortStatus{
 			Device:    ep.endpoint.Device,
@@ -214,6 +240,18 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 		}
 		_ = r.Flows.DelFlowsByPort(port.PortID)
 		_ = r.OVS.DelPort(port.PortID)
+	}
+
+	// switch↔switch patch ports are local to every node — clean ours up.
+	if len(conn.Spec.Endpoints) == 2 {
+		var devs []string
+		for _, ep := range conn.Spec.Endpoints {
+			devs = append(devs, ep.Device)
+		}
+		if len(devs) == 2 {
+			_ = r.OVS.DelPort(patchPortName(conn.Name, devs[0]))
+			_ = r.OVS.DelPort(patchPortName(conn.Name, devs[1]))
+		}
 	}
 
 	if conn.Status.VNI != nil {

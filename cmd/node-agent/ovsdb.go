@@ -21,6 +21,11 @@ func portKey(namespace, connection, iface string) string {
 }
 
 // genevePortName computes a stable OVS Geneve port name for a remote node address.
+//
+// Spec §7 calls for a single port with remote_ip=flow + per-flow set_field:tun_dst,
+// but the current ofclient only encodes OXM_OF_TUNNEL_ID. Until Nicira
+// extensions (NXM_NX_TUN_IPV4_DST) land in ofclient (see REQ-NA-121), we keep
+// one Geneve port per remote VTEP.
 func genevePortName(remoteAddr string) string {
 	h := sha256.Sum256([]byte(remoteAddr))
 	return fmt.Sprintf("gv%x", h[:4])
@@ -147,6 +152,29 @@ func (m *OVSManager) AddGenevePort(name, remoteIP string) error {
 		"remote_ip": remoteIP,
 		"key":       "flow",
 	})
+}
+
+// AddPatchPair creates two paired patch ports — spec §7-§8: switch↔switch
+// connections materialise as a patch-pair (each end is a port in its own
+// switch's VNI; no third VNI is introduced). Patch is always intra-node;
+// cross-node hops travel via the partner switch's Geneve mesh.
+//
+// Idempotent: re-creating an existing pair is a no-op.
+func (m *OVSManager) AddPatchPair(nameA, nameB string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.addPort(nameA, "patch", map[string]string{"peer": nameB}); err != nil {
+		return err
+	}
+	return m.addPort(nameB, "patch", map[string]string{"peer": nameA})
+}
+
+// patchPortName computes a stable OVS patch-end name for one end of a
+// switch↔switch link, keyed by the connection name + switch device. Result is
+// ≤15 chars (Linux IFNAMSIZ).
+func patchPortName(connName, switchDevice string) string {
+	h := sha256.Sum256([]byte(connName + "/" + switchDevice))
+	return fmt.Sprintf("pt%x", h[:5])
 }
 
 // findPort returns the first Port matching by name, or nil if not found.
