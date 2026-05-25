@@ -4,7 +4,7 @@
   "plugins": [
     {
       "type": "cni-gate",
-      "kubeconfig": "/etc/cni/net.d/cybericebox-kubeconfig.conf",
+      "agentSocket": "/run/cybericebox/node-agent.sock",
       "delegate": {
         "type": "bridge",
         "bridge": "cni0",

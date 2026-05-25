@@ -20,8 +20,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	NodeAgent_AddPort_FullMethodName    = "/node.v1.NodeAgent/AddPort"
-	NodeAgent_DeletePort_FullMethodName = "/node.v1.NodeAgent/DeletePort"
+	NodeAgent_AddPort_FullMethodName          = "/node.v1.NodeAgent/AddPort"
+	NodeAgent_DeletePort_FullMethodName       = "/node.v1.NodeAgent/DeletePort"
+	NodeAgent_GetPodAnnotation_FullMethodName = "/node.v1.NodeAgent/GetPodAnnotation"
 )
 
 // NodeAgentClient is the client API for NodeAgent service.
@@ -32,6 +33,9 @@ type NodeAgentClient interface {
 	AddPort(ctx context.Context, in *AddPortRequest, opts ...grpc.CallOption) (*AddPortResponse, error)
 	// DeletePort removes all OVS ports associated with a pod.
 	DeletePort(ctx context.Context, in *DeletePortRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// GetPodAnnotation reads a single pod annotation; the CNI plugin uses this instead of
+	// talking to the Kubernetes API directly.
+	GetPodAnnotation(ctx context.Context, in *GetPodAnnotationRequest, opts ...grpc.CallOption) (*GetPodAnnotationResponse, error)
 }
 
 type nodeAgentClient struct {
@@ -62,6 +66,16 @@ func (c *nodeAgentClient) DeletePort(ctx context.Context, in *DeletePortRequest,
 	return out, nil
 }
 
+func (c *nodeAgentClient) GetPodAnnotation(ctx context.Context, in *GetPodAnnotationRequest, opts ...grpc.CallOption) (*GetPodAnnotationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetPodAnnotationResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_GetPodAnnotation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // NodeAgentServer is the server API for NodeAgent service.
 // All implementations must embed UnimplementedNodeAgentServer
 // for forward compatibility.
@@ -70,6 +84,9 @@ type NodeAgentServer interface {
 	AddPort(context.Context, *AddPortRequest) (*AddPortResponse, error)
 	// DeletePort removes all OVS ports associated with a pod.
 	DeletePort(context.Context, *DeletePortRequest) (*emptypb.Empty, error)
+	// GetPodAnnotation reads a single pod annotation; the CNI plugin uses this instead of
+	// talking to the Kubernetes API directly.
+	GetPodAnnotation(context.Context, *GetPodAnnotationRequest) (*GetPodAnnotationResponse, error)
 	mustEmbedUnimplementedNodeAgentServer()
 }
 
@@ -85,6 +102,9 @@ func (UnimplementedNodeAgentServer) AddPort(context.Context, *AddPortRequest) (*
 }
 func (UnimplementedNodeAgentServer) DeletePort(context.Context, *DeletePortRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeletePort not implemented")
+}
+func (UnimplementedNodeAgentServer) GetPodAnnotation(context.Context, *GetPodAnnotationRequest) (*GetPodAnnotationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetPodAnnotation not implemented")
 }
 func (UnimplementedNodeAgentServer) mustEmbedUnimplementedNodeAgentServer() {}
 func (UnimplementedNodeAgentServer) testEmbeddedByValue()                   {}
@@ -143,6 +163,24 @@ func _NodeAgent_DeletePort_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeAgent_GetPodAnnotation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetPodAnnotationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).GetPodAnnotation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_GetPodAnnotation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).GetPodAnnotation(ctx, req.(*GetPodAnnotationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // NodeAgent_ServiceDesc is the grpc.ServiceDesc for NodeAgent service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -157,6 +195,10 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeletePort",
 			Handler:    _NodeAgent_DeletePort_Handler,
+		},
+		{
+			MethodName: "GetPodAnnotation",
+			Handler:    _NodeAgent_GetPodAnnotation_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

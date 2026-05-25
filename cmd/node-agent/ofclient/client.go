@@ -1,6 +1,7 @@
 // Package ofclient implements a minimal OpenFlow 1.3 client over a Unix socket.
 // Supports: Hello handshake, PORT_DESC multipart for name→number resolution,
-// FLOW_MOD add and delete with OXM_OF_IN_PORT and OXM_OF_TUNNEL_ID fields.
+// FLOW_MOD add and delete with OXM_OF_IN_PORT and OXM_OF_TUNNEL_ID fields,
+// and automatic OFPT_ECHO_REPLY to keep the OVS connection alive.
 package ofclient
 
 import (
@@ -17,6 +18,8 @@ import (
 const (
 	ofptHello            = 0
 	ofptError            = 1
+	ofptEchoRequest      = 2
+	ofptEchoReply        = 3
 	ofptFeaturesRequest  = 5
 	ofptFeaturesReply    = 6
 	ofptFlowMod          = 14
@@ -52,12 +55,29 @@ const (
 	ofpNoBuffer = 0xffffffff
 )
 
+// portDescMsg carries one chunk of a PORT_DESC multipart reply from the background reader.
+type portDescMsg struct {
+	body []byte
+	more bool
+	err  error
+}
+
 // Client is a minimal OpenFlow 1.3 client connected to an OVS bridge management socket.
+// A background goroutine reads all incoming messages, replies to OFPT_ECHO_REQUEST
+// automatically, and dispatches PORT_DESC replies to a waiting queryPortDesc call.
 type Client struct {
 	conn    net.Conn
-	mu      sync.Mutex
-	xid     atomic.Uint32
+	writeMu sync.Mutex // serialises all writes; never held while blocked on recv
+
+	xid atomic.Uint32
+
+	mapMu   sync.RWMutex
 	portMap map[string]uint32 // port name → port number
+
+	pdMu      sync.Mutex
+	pendingPD chan portDescMsg // non-nil while queryPortDesc is active
+
+	closeOnce sync.Once
 }
 
 // Connect connects to the OVS bridge management socket and performs the OF 1.3 handshake.
@@ -78,20 +98,35 @@ func Connect(sockPath string) (*Client, error) {
 	}
 
 	c := &Client{conn: conn, portMap: make(map[string]uint32)}
+
+	// HELLO exchange runs synchronously before background reader starts.
 	if err := c.handshake(); err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	// Background reader: handles echo replies, dispatches PORT_DESC chunks.
+	go c.readLoop()
+
+	// Initial PORT_DESC query via channel (readLoop is now running).
+	if err := c.queryPortDesc(); err != nil {
 		conn.Close()
 		return nil, err
 	}
 	return c, nil
 }
 
-// Close closes the connection.
-func (c *Client) Close() error { return c.conn.Close() }
+// Close closes the connection and stops the background reader.
+func (c *Client) Close() error {
+	var err error
+	c.closeOnce.Do(func() { err = c.conn.Close() })
+	return err
+}
 
 // PortNo returns the OpenFlow port number for a named port, or error if unknown.
 func (c *Client) PortNo(name string) (uint32, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mapMu.RLock()
+	defer c.mapMu.RUnlock()
 	no, ok := c.portMap[name]
 	if !ok {
 		return 0, fmt.Errorf("ofclient: port %q not found; known ports: %v", name, c.portMap)
@@ -101,73 +136,149 @@ func (c *Client) PortNo(name string) (uint32, error) {
 
 // RefreshPorts re-sends PORT_DESC multipart and updates the portMap.
 func (c *Client) RefreshPorts() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	return c.queryPortDesc()
 }
 
 // FlowAdd sends an OFPT_FLOW_MOD OFPFC_ADD for a flow with the given match and actions.
 func (c *Client) FlowAdd(tableID uint8, priority uint16, match, actions []byte) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	return c.sendFlowMod(ofpfcAdd, tableID, priority, match, actions)
 }
 
 // FlowDelete sends an OFPT_FLOW_MOD OFPFC_DELETE (non-strict) for a flow matching match.
 func (c *Client) FlowDelete(tableID uint8, match []byte) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	return c.sendFlowMod(ofpfcDelete, tableID, 0, match, nil)
 }
 
-func (c *Client) handshake() error {
-	// Send OFPT_HELLO.
-	if err := c.send(buildHeader(ofptHello, 8)); err != nil {
-		return fmt.Errorf("send hello: %w", err)
+// readLoop runs as a goroutine. It reads all incoming OF messages and:
+//   - replies to OFPT_ECHO_REQUEST (keeps OVS connection alive)
+//   - dispatches OFPT_MULTIPART_REPLY PORT_DESC chunks to a waiting queryPortDesc call
+//
+// Exits when the connection is closed.
+func (c *Client) readLoop() {
+	for {
+		msg, err := c.rawRecv()
+		if err != nil {
+			// Connection closed (or fatal read error) — notify any waiting query.
+			c.pdMu.Lock()
+			if c.pendingPD != nil {
+				select {
+				case c.pendingPD <- portDescMsg{err: err}:
+				default:
+				}
+			}
+			c.pdMu.Unlock()
+			return
+		}
+
+		switch msg[1] {
+		case ofptEchoRequest:
+			// Reply with same body, changing only the type byte.
+			reply := make([]byte, len(msg))
+			copy(reply, msg)
+			reply[1] = ofptEchoReply
+			c.writeMu.Lock()
+			_, _ = c.conn.Write(reply) // best-effort; ignore error
+			c.writeMu.Unlock()
+
+		case ofptMultipartReply:
+			if len(msg) < 12 {
+				continue
+			}
+			if binary.BigEndian.Uint16(msg[8:10]) != ofpmpPortDesc {
+				continue
+			}
+			var body []byte
+			if len(msg) > 16 {
+				body = make([]byte, len(msg)-16)
+				copy(body, msg[16:])
+			}
+			flags := binary.BigEndian.Uint16(msg[10:12])
+			c.pdMu.Lock()
+			if c.pendingPD != nil {
+				c.pendingPD <- portDescMsg{body: body, more: flags&0x01 != 0}
+			}
+			c.pdMu.Unlock()
+
+		case ofptError:
+			// Propagate to a pending PORT_DESC query; discard otherwise.
+			if len(msg) >= 12 {
+				c.pdMu.Lock()
+				if c.pendingPD != nil {
+					select {
+					case c.pendingPD <- portDescMsg{err: fmt.Errorf("OFPT_ERROR type=%d code=%d",
+						binary.BigEndian.Uint16(msg[8:10]),
+						binary.BigEndian.Uint16(msg[10:12]))}:
+					default:
+					}
+				}
+				c.pdMu.Unlock()
+			}
+		}
 	}
-	// Read server OFPT_HELLO (ignore body).
-	if _, err := c.recv(); err != nil {
-		return fmt.Errorf("recv hello: %w", err)
-	}
-	// Query port descriptions.
-	return c.queryPortDesc()
 }
 
+// handshake performs the OF 1.3 HELLO exchange synchronously, before readLoop starts.
+func (c *Client) handshake() error {
+	hello := buildHeader(ofptHello, 8)
+	xid := c.xid.Add(1)
+	binary.BigEndian.PutUint32(hello[4:8], xid)
+	if _, err := c.conn.Write(hello); err != nil {
+		return fmt.Errorf("send hello: %w", err)
+	}
+	// Read until we get a HELLO back (ignore other messages at this stage).
+	for {
+		msg, err := c.rawRecv()
+		if err != nil {
+			return fmt.Errorf("recv hello: %w", err)
+		}
+		if msg[1] == ofptHello {
+			return nil
+		}
+	}
+}
+
+// queryPortDesc sends a PORT_DESC multipart request and collects the replies via the
+// channel that readLoop dispatches to. Safe to call concurrently with readLoop.
 func (c *Client) queryPortDesc() error {
-	// OFPT_MULTIPART_REQUEST for OFPMP_PORT_DESC.
+	ch := make(chan portDescMsg, 8)
+	c.pdMu.Lock()
+	c.pendingPD = ch
+	c.pdMu.Unlock()
+	defer func() {
+		c.pdMu.Lock()
+		c.pendingPD = nil
+		c.pdMu.Unlock()
+	}()
+
 	req := make([]byte, 16) // 8 header + 4 type+flags + 4 pad
 	putHeader(req, ofptMultipartRequest, 16)
 	binary.BigEndian.PutUint16(req[8:10], ofpmpPortDesc)
-	// flags and pad are zero
 
-	if err := c.send(req); err != nil {
-		return fmt.Errorf("send PORT_DESC request: %w", err)
+	c.writeMu.Lock()
+	xid := c.xid.Add(1)
+	binary.BigEndian.PutUint32(req[4:8], xid)
+	_, writeErr := c.conn.Write(req)
+	c.writeMu.Unlock()
+	if writeErr != nil {
+		return fmt.Errorf("send PORT_DESC request: %w", writeErr)
 	}
 
-	// Read reply (may be multi-part; flags bit 0 = more).
 	newPortMap := make(map[string]uint32)
 	for {
-		msg, err := c.recv()
-		if err != nil {
-			return fmt.Errorf("recv PORT_DESC reply: %w", err)
+		m, ok := <-ch
+		if !ok {
+			return fmt.Errorf("ofclient: PORT_DESC channel closed unexpectedly")
 		}
-		if msg[1] != ofptMultipartReply {
-			if msg[1] == ofptError && len(msg) >= 12 {
-				return fmt.Errorf("ofclient: PORT_DESC query: OFPT_ERROR type=%d code=%d",
-					binary.BigEndian.Uint16(msg[8:10]),
-					binary.BigEndian.Uint16(msg[10:12]))
-			}
-			continue
+		if m.err != nil {
+			return fmt.Errorf("recv PORT_DESC reply: %w", m.err)
 		}
-		if binary.BigEndian.Uint16(msg[8:10]) != ofpmpPortDesc {
-			continue
-		}
-		// Parse port entries. Each ofp_port is 64 bytes.
-		// Reply body starts at byte 16 (after 8 header + 4 type+flags + 4 pad).
-		body := msg[16:]
+		body := m.body
 		for len(body) >= 64 {
 			portNo := binary.BigEndian.Uint32(body[0:4])
-			// name is at offset 16, 16 bytes, NUL-terminated.
 			nameBytes := body[16:32]
 			n := 0
 			for n < 16 && nameBytes[n] != 0 {
@@ -179,12 +290,14 @@ func (c *Client) queryPortDesc() error {
 			}
 			body = body[64:]
 		}
-		flags := binary.BigEndian.Uint16(msg[10:12])
-		if flags&0x01 == 0 { // OFPMPF_REPLY_MORE = 0x01
+		if !m.more {
 			break
 		}
 	}
+
+	c.mapMu.Lock()
 	c.portMap = newPortMap
+	c.mapMu.Unlock()
 	return nil
 }
 
@@ -221,20 +334,17 @@ func (c *Client) sendFlowMod(cmd uint8, tableID uint8, priority uint16, match, a
 	off += len(match)
 	copy(msg[off:], instr)
 
-	return c.send(msg)
-}
-
-// send writes msg to the connection. Callers must hold c.mu or call before concurrent access begins.
-func (c *Client) send(msg []byte) error {
 	xid := c.xid.Add(1)
 	binary.BigEndian.PutUint32(msg[4:8], xid)
 	_, err := c.conn.Write(msg)
 	return err
 }
 
-func (c *Client) recv() ([]byte, error) {
+// rawRecv reads one complete OF message from the connection.
+// Only called from handshake (before readLoop) and from readLoop itself.
+func (c *Client) rawRecv() ([]byte, error) {
 	hdr := make([]byte, 8)
-	if _, err := readFull(c.conn, hdr); err != nil {
+	if _, err := io.ReadFull(c.conn, hdr); err != nil {
 		return nil, err
 	}
 	length := int(binary.BigEndian.Uint16(hdr[2:4]))
@@ -244,7 +354,7 @@ func (c *Client) recv() ([]byte, error) {
 	msg := make([]byte, length)
 	copy(msg, hdr)
 	if length > 8 {
-		if _, err := readFull(c.conn, msg[8:]); err != nil {
+		if _, err := io.ReadFull(c.conn, msg[8:]); err != nil {
 			return nil, err
 		}
 	}
@@ -264,7 +374,7 @@ func putHeader(b []byte, msgType uint8, totalLen int) {
 	b[0] = 4 // version = OF 1.3
 	b[1] = msgType
 	binary.BigEndian.PutUint16(b[2:4], uint16(totalLen))
-	// xid filled in by send()
+	// xid filled in by caller
 }
 
 // BuildMatch builds an ofp_match (OXM type) for in_port and optionally tunnel_id.
@@ -341,8 +451,4 @@ func buildInstruction(instrType uint16, actions []byte) []byte {
 	binary.BigEndian.PutUint16(instr[2:4], uint16(totalLen))
 	copy(instr[8:], actions)
 	return instr
-}
-
-func readFull(conn net.Conn, buf []byte) (int, error) {
-	return io.ReadFull(conn, buf)
 }

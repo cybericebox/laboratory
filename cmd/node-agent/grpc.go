@@ -12,6 +12,9 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	nodev1 "github.com/cybericebox/laboratory/api/node/v1"
 )
@@ -20,6 +23,9 @@ import (
 type NodeAgentServer struct {
 	nodev1.UnimplementedNodeAgentServer
 	ovs *OVSManager
+
+	k8sMu sync.RWMutex
+	k8s   client.Client // set via SetK8sClient after manager is ready
 
 	mu       sync.RWMutex
 	podNetNS map[string]string   // podUID → netns path
@@ -74,6 +80,33 @@ func (s *NodeAgentServer) DeletePort(_ context.Context, req *nodev1.DeletePortRe
 	delete(s.podPorts, req.PodUid)
 	s.mu.Unlock()
 	return &emptypb.Empty{}, nil
+}
+
+// SetK8sClient provides the Kubernetes API client. Called from main after the manager is created.
+func (s *NodeAgentServer) SetK8sClient(c client.Client) {
+	s.k8sMu.Lock()
+	s.k8s = c
+	s.k8sMu.Unlock()
+}
+
+// GetPodAnnotation reads a single pod annotation on behalf of the CNI plugin, which has no
+// direct access to the Kubernetes API.
+func (s *NodeAgentServer) GetPodAnnotation(ctx context.Context, req *nodev1.GetPodAnnotationRequest) (*nodev1.GetPodAnnotationResponse, error) {
+	s.k8sMu.RLock()
+	k8s := s.k8s
+	s.k8sMu.RUnlock()
+	if k8s == nil {
+		return nil, fmt.Errorf("node-agent: not ready")
+	}
+	var pod corev1.Pod
+	if err := k8s.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name}, &pod); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			return &nodev1.GetPodAnnotationResponse{Found: false}, nil
+		}
+		return nil, err
+	}
+	val, found := pod.Annotations[req.Key]
+	return &nodev1.GetPodAnnotationResponse{Value: val, Found: found}, nil
 }
 
 // GetPodNetNS returns the cached netns path for a pod UID (used by LabIfaceReconciler).

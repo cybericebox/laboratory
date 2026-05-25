@@ -30,30 +30,6 @@ spec:
               set -e
               cp /node-agent/bin/cni-gate /opt/cni/bin/cni-gate
               cp /node-agent/cni/10-cybericebox.conflist /etc/cni/net.d/10-cybericebox.conflist
-
-              APISERVER="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
-              TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-              KUBECONFIG=/etc/cni/net.d/cybericebox-kubeconfig.conf
-
-              cat > "$KUBECONFIG" << EOFKUBE
-              apiVersion: v1
-              kind: Config
-              clusters:
-              - name: k8s
-                cluster:
-                  server: ${APISERVER}
-                  certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-              users:
-              - name: node-agent
-                user:
-                  token: ${TOKEN}
-              contexts:
-              - name: default
-                context:
-                  cluster: k8s
-                  user: node-agent
-              current-context: default
-              EOFKUBE
           securityContext:
             runAsUser: 0
           volumeMounts:
@@ -81,7 +57,7 @@ spec:
             - name: OVS_SOCK
               value: /run/openvswitch/db.sock
             - name: GRPC_SOCK
-              value: /run/openvswitch/node-agent.sock
+              value: /run/cybericebox/node-agent.sock
             - name: NODE_ADDRESS
               valueFrom:
                 fieldRef:
@@ -96,6 +72,8 @@ spec:
           volumeMounts:
             - name: ovs-run
               mountPath: /run/openvswitch
+            - name: grpc-dir
+              mountPath: /run/cybericebox
             - name: host-proc
               mountPath: /host/proc
               readOnly: true
@@ -113,6 +91,10 @@ spec:
             type: DirectoryOrCreate
         - name: ovs-run
           emptyDir: {}
+        - name: grpc-dir
+          hostPath:
+            path: /run/cybericebox
+            type: DirectoryOrCreate
         - name: host-proc
           hostPath:
             path: /proc

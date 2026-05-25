@@ -13,22 +13,22 @@ import (
 	cnitypes "github.com/containernetworking/cni/pkg/types"
 	cniv1 "github.com/containernetworking/cni/pkg/types/100"
 	"github.com/containernetworking/cni/pkg/version"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
+	nodev1 "github.com/cybericebox/laboratory/api/node/v1"
 )
 
 const (
-	annotationDefault = "network.cybericebox.com/default"
-	defaultKubeconfig = "/etc/cni/net.d/cybericebox-kubeconfig.conf"
+	annotationDefault  = "network.cybericebox.com/default"
+	defaultAgentSocket = "/run/openvswitch/node-agent.sock"
 )
 
 // NetConf is the CNI config for cni-gate.
 type NetConf struct {
 	cnitypes.NetConf
-	Delegate   map[string]interface{} `json:"delegate,omitempty"`
-	Kubeconfig string                 `json:"kubeconfig,omitempty"`
+	Delegate    map[string]interface{} `json:"delegate,omitempty"`
+	AgentSocket string                 `json:"agentSocket,omitempty"`
 }
 
 func main() {
@@ -128,29 +128,32 @@ func marshalDelegate(conf *NetConf) []byte {
 	return b
 }
 
+// getPodAnnotation fetches a pod annotation via the node-agent gRPC socket.
+// The CNI plugin must not access the Kubernetes API directly.
 func getPodAnnotation(conf *NetConf, cniArgs, key string) (value string, found bool, err error) {
-	kubeconfigPath := conf.Kubeconfig
-	if kubeconfigPath == "" {
-		kubeconfigPath = defaultKubeconfig
+	socketPath := conf.AgentSocket
+	if socketPath == "" {
+		socketPath = defaultAgentSocket
 	}
-	k8sCfg, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+
+	conn, err := grpc.NewClient("unix://"+socketPath,
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return "", false, fmt.Errorf("build kubeconfig: %w", err)
+		return "", false, fmt.Errorf("dial node-agent %s: %w", socketPath, err)
 	}
-	k8s, err := kubernetes.NewForConfig(k8sCfg)
-	if err != nil {
-		return "", false, fmt.Errorf("k8s client: %w", err)
-	}
+	defer conn.Close()
+
 	ns, name := parsePodArgs(cniArgs)
 	if ns == "" || name == "" {
 		return "", false, nil
 	}
-	pod, err := k8s.CoreV1().Pods(ns).Get(context.Background(), name, metav1.GetOptions{})
+
+	resp, err := nodev1.NewNodeAgentClient(conn).GetPodAnnotation(context.Background(),
+		&nodev1.GetPodAnnotationRequest{Namespace: ns, Name: name, Key: key})
 	if err != nil {
-		return "", false, fmt.Errorf("get pod %s/%s: %w", ns, name, err)
+		return "", false, fmt.Errorf("GetPodAnnotation %s/%s: %w", ns, name, err)
 	}
-	val, ok := pod.Annotations[key]
-	return val, ok, nil
+	return resp.Value, resp.Found, nil
 }
 
 // parsePodArgs extracts K8S_POD_NAMESPACE and K8S_POD_NAME from CNI_ARGS.
@@ -192,7 +195,6 @@ func execInNetns(netnsPath, cmd string, args ...string) error {
 }
 
 func init() {
-	// Ensure CNI_PATH is set for delegate invocation.
 	if os.Getenv("CNI_PATH") == "" {
 		_ = os.Setenv("CNI_PATH", "/opt/cni/bin")
 	}

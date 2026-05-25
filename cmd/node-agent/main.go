@@ -74,6 +74,7 @@ func main() {
 		log.Error(err, "create manager")
 		os.Exit(1)
 	}
+	grpcSrv.SetK8sClient(mgr.GetClient())
 
 	if err := (&DevicePortReconciler{
 		Client:   mgr.GetClient(),

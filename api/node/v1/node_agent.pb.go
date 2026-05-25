@@ -194,6 +194,118 @@ func (x *DeletePortRequest) GetPodUid() string {
 	return ""
 }
 
+type GetPodAnnotationRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Key           string                 `protobuf:"bytes,3,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetPodAnnotationRequest) Reset() {
+	*x = GetPodAnnotationRequest{}
+	mi := &file_api_node_v1_node_agent_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetPodAnnotationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetPodAnnotationRequest) ProtoMessage() {}
+
+func (x *GetPodAnnotationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_node_v1_node_agent_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetPodAnnotationRequest.ProtoReflect.Descriptor instead.
+func (*GetPodAnnotationRequest) Descriptor() ([]byte, []int) {
+	return file_api_node_v1_node_agent_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *GetPodAnnotationRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *GetPodAnnotationRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *GetPodAnnotationRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+type GetPodAnnotationResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Value         string                 `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"`
+	Found         bool                   `protobuf:"varint,2,opt,name=found,proto3" json:"found,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetPodAnnotationResponse) Reset() {
+	*x = GetPodAnnotationResponse{}
+	mi := &file_api_node_v1_node_agent_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetPodAnnotationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetPodAnnotationResponse) ProtoMessage() {}
+
+func (x *GetPodAnnotationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_api_node_v1_node_agent_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetPodAnnotationResponse.ProtoReflect.Descriptor instead.
+func (*GetPodAnnotationResponse) Descriptor() ([]byte, []int) {
+	return file_api_node_v1_node_agent_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *GetPodAnnotationResponse) GetValue() string {
+	if x != nil {
+		return x.Value
+	}
+	return ""
+}
+
+func (x *GetPodAnnotationResponse) GetFound() bool {
+	if x != nil {
+		return x.Found
+	}
+	return false
+}
+
 var File_api_node_v1_node_agent_proto protoreflect.FileDescriptor
 
 const file_api_node_v1_node_agent_proto_rawDesc = "" +
@@ -212,11 +324,19 @@ const file_api_node_v1_node_agent_proto_rawDesc = "" +
 	"\aport_id\x18\x01 \x01(\tR\x06portId\x12\x10\n" +
 	"\x03mac\x18\x02 \x01(\tR\x03mac\",\n" +
 	"\x11DeletePortRequest\x12\x17\n" +
-	"\apod_uid\x18\x01 \x01(\tR\x06podUid2\x8b\x01\n" +
+	"\apod_uid\x18\x01 \x01(\tR\x06podUid\"]\n" +
+	"\x17GetPodAnnotationRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x10\n" +
+	"\x03key\x18\x03 \x01(\tR\x03key\"F\n" +
+	"\x18GetPodAnnotationResponse\x12\x14\n" +
+	"\x05value\x18\x01 \x01(\tR\x05value\x12\x14\n" +
+	"\x05found\x18\x02 \x01(\bR\x05found2\xe4\x01\n" +
 	"\tNodeAgent\x12<\n" +
 	"\aAddPort\x12\x17.node.v1.AddPortRequest\x1a\x18.node.v1.AddPortResponse\x12@\n" +
 	"\n" +
-	"DeletePort\x12\x1a.node.v1.DeletePortRequest\x1a\x16.google.protobuf.EmptyB/Z-github.com/cybericebox/laboratory/api/node/v1b\x06proto3"
+	"DeletePort\x12\x1a.node.v1.DeletePortRequest\x1a\x16.google.protobuf.Empty\x12W\n" +
+	"\x10GetPodAnnotation\x12 .node.v1.GetPodAnnotationRequest\x1a!.node.v1.GetPodAnnotationResponseB/Z-github.com/cybericebox/laboratory/api/node/v1b\x06proto3"
 
 var (
 	file_api_node_v1_node_agent_proto_rawDescOnce sync.Once
@@ -230,20 +350,24 @@ func file_api_node_v1_node_agent_proto_rawDescGZIP() []byte {
 	return file_api_node_v1_node_agent_proto_rawDescData
 }
 
-var file_api_node_v1_node_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_api_node_v1_node_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_api_node_v1_node_agent_proto_goTypes = []any{
-	(*AddPortRequest)(nil),    // 0: node.v1.AddPortRequest
-	(*AddPortResponse)(nil),   // 1: node.v1.AddPortResponse
-	(*DeletePortRequest)(nil), // 2: node.v1.DeletePortRequest
-	(*emptypb.Empty)(nil),     // 3: google.protobuf.Empty
+	(*AddPortRequest)(nil),           // 0: node.v1.AddPortRequest
+	(*AddPortResponse)(nil),          // 1: node.v1.AddPortResponse
+	(*DeletePortRequest)(nil),        // 2: node.v1.DeletePortRequest
+	(*GetPodAnnotationRequest)(nil),  // 3: node.v1.GetPodAnnotationRequest
+	(*GetPodAnnotationResponse)(nil), // 4: node.v1.GetPodAnnotationResponse
+	(*emptypb.Empty)(nil),            // 5: google.protobuf.Empty
 }
 var file_api_node_v1_node_agent_proto_depIdxs = []int32{
 	0, // 0: node.v1.NodeAgent.AddPort:input_type -> node.v1.AddPortRequest
 	2, // 1: node.v1.NodeAgent.DeletePort:input_type -> node.v1.DeletePortRequest
-	1, // 2: node.v1.NodeAgent.AddPort:output_type -> node.v1.AddPortResponse
-	3, // 3: node.v1.NodeAgent.DeletePort:output_type -> google.protobuf.Empty
-	2, // [2:4] is the sub-list for method output_type
-	0, // [0:2] is the sub-list for method input_type
+	3, // 2: node.v1.NodeAgent.GetPodAnnotation:input_type -> node.v1.GetPodAnnotationRequest
+	1, // 3: node.v1.NodeAgent.AddPort:output_type -> node.v1.AddPortResponse
+	5, // 4: node.v1.NodeAgent.DeletePort:output_type -> google.protobuf.Empty
+	4, // 5: node.v1.NodeAgent.GetPodAnnotation:output_type -> node.v1.GetPodAnnotationResponse
+	3, // [3:6] is the sub-list for method output_type
+	0, // [0:3] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
@@ -260,7 +384,7 @@ func file_api_node_v1_node_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_node_v1_node_agent_proto_rawDesc), len(file_api_node_v1_node_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

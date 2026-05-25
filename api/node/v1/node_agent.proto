@@ -11,6 +11,9 @@ service NodeAgent {
   rpc AddPort(AddPortRequest) returns (AddPortResponse);
   // DeletePort removes all OVS ports associated with a pod.
   rpc DeletePort(DeletePortRequest) returns (google.protobuf.Empty);
+  // GetPodAnnotation reads a single pod annotation; the CNI plugin uses this instead of
+  // talking to the Kubernetes API directly.
+  rpc GetPodAnnotation(GetPodAnnotationRequest) returns (GetPodAnnotationResponse);
 }
 
 message AddPortRequest {
@@ -28,4 +31,15 @@ message AddPortResponse {
 
 message DeletePortRequest {
   string pod_uid = 1;
+}
+
+message GetPodAnnotationRequest {
+  string namespace = 1;
+  string name      = 2;
+  string key       = 3;
+}
+
+message GetPodAnnotationResponse {
+  string value = 1;
+  bool   found = 2;
 }
