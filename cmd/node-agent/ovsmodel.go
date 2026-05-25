@@ -1,0 +1,30 @@
+//go:build linux
+
+package main
+
+// OVS OVSDB schema model types used by libovsdb.
+// Field tags match the OVS 3.3 schema column names exactly.
+
+type OVSOpen_vSwitch struct {
+	UUID    string   `ovsdb:"_uuid"`
+	Bridges []string `ovsdb:"bridges"`
+}
+
+type OVSBridge struct {
+	UUID  string   `ovsdb:"_uuid"`
+	Name  string   `ovsdb:"name"`
+	Ports []string `ovsdb:"ports"`
+}
+
+type OVSPort struct {
+	UUID       string   `ovsdb:"_uuid"`
+	Name       string   `ovsdb:"name"`
+	Interfaces []string `ovsdb:"interfaces"`
+}
+
+type OVSInterface struct {
+	UUID    string            `ovsdb:"_uuid"`
+	Name    string            `ovsdb:"name"`
+	Type    string            `ovsdb:"type"`
+	Options map[string]string `ovsdb:"options"`
+}
