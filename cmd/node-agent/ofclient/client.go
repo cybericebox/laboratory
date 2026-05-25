@@ -6,6 +6,7 @@ package ofclient
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -217,6 +218,7 @@ func (c *Client) sendFlowMod(cmd uint8, tableID uint8, priority uint16, match, a
 	return c.send(msg)
 }
 
+// send writes msg to the connection. Callers must hold c.mu or call before concurrent access begins.
 func (c *Client) send(msg []byte) error {
 	xid := c.xid.Add(1)
 	binary.BigEndian.PutUint32(msg[4:8], xid)
@@ -336,13 +338,5 @@ func buildInstruction(instrType uint16, actions []byte) []byte {
 }
 
 func readFull(conn net.Conn, buf []byte) (int, error) {
-	total := 0
-	for total < len(buf) {
-		n, err := conn.Read(buf[total:])
-		total += n
-		if err != nil {
-			return total, err
-		}
-	}
-	return total, nil
+	return io.ReadFull(conn, buf)
 }
