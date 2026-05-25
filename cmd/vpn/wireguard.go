@@ -5,10 +5,16 @@ package main
 import (
 	"fmt"
 	"net"
+	"time"
 
 	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
+
+// persistentKeepalive matches spec §4 recommendation of 10-25 s for roaming
+// recovery. 15 s is the midpoint and matches the client-side wg.conf rendered
+// by the operator (see internal/controller/laboratory/labgroupclient_controller.go).
+const persistentKeepalive = 15 * time.Second
 
 type WGManager struct {
 	client *wgctrl.Client
@@ -43,11 +49,13 @@ func (m *WGManager) AddPeer(pubKeyBase64 string, allowedIP string) error {
 	if err != nil {
 		return fmt.Errorf("parse allowedIP %q: %w", allowedIP, err)
 	}
+	keepalive := persistentKeepalive
 	return m.client.ConfigureDevice(m.iface, wgtypes.Config{
 		Peers: []wgtypes.PeerConfig{{
-			PublicKey:         key,
-			ReplaceAllowedIPs: true,
-			AllowedIPs:        []net.IPNet{*ipNet},
+			PublicKey:                   key,
+			ReplaceAllowedIPs:           true,
+			AllowedIPs:                  []net.IPNet{*ipNet},
+			PersistentKeepaliveInterval: &keepalive,
 		}},
 	})
 }

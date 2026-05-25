@@ -177,6 +177,41 @@ func (a *allocator) ReleaseIndex(ctx context.Context, index uint) error {
 		logf.FromContext(ctx).Error(err, "failed to sync pool state label after release", "pool", pool.Name)
 	}
 
+	// Lazy GC: keep at most one empty pool per group as buffer (spec §11 —
+	// "буфер из одного пустого пула, чтобы не дребезжать"). The "latest" pool
+	// is preserved so newly-created allocations land contiguously; any other
+	// empty pool is collected.
+	if err = a.collectRedundantEmptyPools(ctx); err != nil {
+		logf.FromContext(ctx).Error(err, "failed to collect redundant empty pools")
+	}
+
+	return nil
+}
+
+// collectRedundantEmptyPools deletes empty non-latest pools when an empty
+// latest pool already exists. The latest pool serves as the single-empty
+// buffer.
+func (a *allocator) collectRedundantEmptyPools(ctx context.Context) error {
+	emptyReq, err := labels.NewRequirement(PoolStateLabel, selection.Equals, []string{PoolStateEmpty})
+	if err != nil {
+		return err
+	}
+	pools, err := a.listPools(ctx, *emptyReq)
+	if err != nil {
+		return err
+	}
+	if len(pools.Items) < 2 {
+		return nil
+	}
+	for i := range pools.Items {
+		p := &pools.Items[i]
+		if p.Labels[LatestPoolLabel] == "true" {
+			continue
+		}
+		if err := a.Delete(ctx, p); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("delete empty pool %s: %w", p.Name, err)
+		}
+	}
 	return nil
 }
 

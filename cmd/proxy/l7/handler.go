@@ -62,13 +62,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	groupID, err := validateCookie(r, h.pubKey, h.cookieName)
+	claims, err := validateCookie(r, h.pubKey, h.cookieName)
 	if err != nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	backendURL, err := h.resolver(task, groupID)
+	// Expose claims to downstream (audit / per-user rate limiting). Routing
+	// still uses group_id only — moving a user between groups is by design
+	// impossible per spec §3, so user_id is metadata, not authorisation.
+	if claims.UserID != "" {
+		r.Header.Set("X-User-ID", claims.UserID)
+	}
+	r.Header.Set("X-Group-ID", claims.GroupID)
+
+	backendURL, err := h.resolver(task, claims.GroupID)
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return

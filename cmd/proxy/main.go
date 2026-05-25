@@ -15,6 +15,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
@@ -84,17 +85,20 @@ func main() {
 	handler := l7.NewHandler(cfg.Ed25519PubKey, cfg.BaseDomain, cfg.CookieName,
 		l7.ServiceResolver(svcResolver))
 
-	tlsCert, err := tls.LoadX509KeyPair(cfg.TLSCertPath, cfg.TLSKeyPath)
+	// certwatcher reloads the wildcard cert when cert-manager renews the
+	// underlying Secret — no restart required. Falls back to a load error if
+	// the files don't exist on boot.
+	certWatcher, err := certwatcher.New(cfg.TLSCertPath, cfg.TLSKeyPath)
 	if err != nil {
-		log.Error(err, "load TLS cert")
+		log.Error(err, "init TLS cert watcher")
 		os.Exit(1)
 	}
 	httpsSrv := &http.Server{
 		Addr:    cfg.ListenHTTPS,
 		Handler: handler,
 		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{tlsCert},
-			MinVersion:   tls.VersionTLS12,
+			GetCertificate: certWatcher.GetCertificate,
+			MinVersion:     tls.VersionTLS12,
 		},
 	}
 
@@ -116,6 +120,11 @@ func main() {
 
 	go ct.RunTTLCleanup(stop)
 	go dmx.Run(stop)
+	go func() {
+		if err := certWatcher.Start(ctx); err != nil {
+			log.Error(err, "cert watcher error")
+		}
+	}()
 	go func() {
 		if err := httpsSrv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
 			log.Error(err, "HTTPS server error")
