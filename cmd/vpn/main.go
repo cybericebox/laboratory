@@ -49,6 +49,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Assign client-subnet gateway IP (e.g. 10.8.0.1/24) to wg0 so clients can
+	// reach the VPN server itself and so the kernel routes traffic for the
+	// client subnet via wg0. wgctrl only configures crypto/port; netlink does
+	// addressing.
+	gwCIDR := firstHostCIDR(cfg.ClientSubnet)
+	if err := assignIfaceIP(cfg.WGInterface, gwCIDR); err != nil {
+		log.Error(err, "assign gateway IP on wg interface", "iface", cfg.WGInterface, "cidr", gwCIDR)
+		os.Exit(1)
+	}
+
 	ipt, err := newIPTablesManager(cfg.ClientSubnet)
 	if err != nil {
 		log.Error(err, "init iptables manager")

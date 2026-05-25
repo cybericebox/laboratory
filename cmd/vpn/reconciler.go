@@ -100,6 +100,13 @@ func (r *LabVPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
+	// Assign 10.{vpn}.N.1/24 to the lab interface so the kernel routes
+	// VPN traffic into the lab segment. Without this the route below
+	// is dead-end and packets to 10.{vpn}.N.0/24 are not forwarded.
+	if err := assignGatewayIP(link, cidr); err != nil {
+		return ctrl.Result{}, fmt.Errorf("assign gateway IP for %s: %w", cidr, err)
+	}
+
 	if err := addLabRoute(link, cidr); err != nil {
 		return ctrl.Result{}, fmt.Errorf("add route for %s: %w", cidr, err)
 	}
