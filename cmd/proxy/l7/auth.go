@@ -43,7 +43,7 @@ func validateCookie(r *http.Request, pubKey ed25519.PublicKey, cookieName string
 	if err := json.Unmarshal(rawJSON, &claims); err != nil {
 		return "", fmt.Errorf("unmarshal claims: %w", err)
 	}
-	if time.Now().Unix() > claims.Exp {
+	if time.Now().Unix() >= claims.Exp {
 		return "", fmt.Errorf("token expired")
 	}
 	if claims.GroupID == "" {
