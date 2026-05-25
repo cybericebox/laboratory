@@ -125,11 +125,14 @@ func (c *ConnTrack) RunTTLCleanup(stop <-chan struct{}) {
 			return
 		case <-ticker.C:
 			c.mu.Lock()
+			var expired []uint32
 			for idx, e := range c.entries {
 				if time.Since(e.LastSeen) > conntrackTTL {
-					c.evictEntry(idx)
-					_ = e
+					expired = append(expired, idx)
 				}
+			}
+			for _, idx := range expired {
+				c.evictEntry(idx)
 			}
 			c.mu.Unlock()
 		}

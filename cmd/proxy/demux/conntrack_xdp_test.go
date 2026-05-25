@@ -4,6 +4,7 @@ import (
 	"net"
 	"sync"
 	"testing"
+	"time"
 )
 
 type mockXDP struct {
@@ -70,12 +71,30 @@ func TestXDP_TTLCleanup_DeletesBothEntries(t *testing.T) {
 	serverSock := Socket{IP: net.ParseIP("10.1.0.1"), Port: 51820}
 	ct.Complete(33, 44, clientSock, serverSock)
 
-	// Clear update tracking, reset deletes
+	// Backdate both entries past TTL.
+	ct.mu.Lock()
+	for _, e := range ct.entries {
+		e.LastSeen = time.Now().Add(-(conntrackTTL + time.Second))
+	}
+	ct.mu.Unlock()
+
+	// Reset delete tracking.
 	xdp.mu.Lock()
 	xdp.deleted = nil
 	xdp.mu.Unlock()
 
-	ct.evictEntry(33)
+	// Exercise the collect-then-evict path directly (mirrors RunTTLCleanup's inner logic).
+	ct.mu.Lock()
+	var expired []uint32
+	for idx, e := range ct.entries {
+		if time.Since(e.LastSeen) > conntrackTTL {
+			expired = append(expired, idx)
+		}
+	}
+	for _, idx := range expired {
+		ct.evictEntry(idx)
+	}
+	ct.mu.Unlock()
 
 	xdp.mu.Lock()
 	defer xdp.mu.Unlock()
