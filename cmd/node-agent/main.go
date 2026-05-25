@@ -37,7 +37,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	ovs, err := newOVSManager(cfg.Bridge)
+	ovs, err := newOVSManager(cfg.Bridge, cfg.OVSSock)
 	if err != nil {
 		log.Error(err, "init OVS manager")
 		os.Exit(1)
