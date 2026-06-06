@@ -18,6 +18,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/gateway"
+	"github.com/cybericebox/laboratory/pkg/dhcp"
 )
 
 var scheme = runtime.NewScheme()
@@ -31,19 +33,17 @@ func main() {
 	ctrl.SetLogger(zap.New())
 	log := ctrl.Log.WithName("gateway")
 
-	cfg, err := loadConfig()
+	cfg, err := gateway.LoadConfig()
 	if err != nil {
 		log.Error(err, "load config")
 		os.Exit(1)
 	}
 
-	ipt, err := newIPTablesManager(cfg.ExternalInterface)
+	ipt, err := gateway.NewIPTablesManager(cfg.ExternalInterface)
 	if err != nil {
 		log.Error(err, "init iptables")
 		os.Exit(1)
 	}
-
-	dhcp := newDHCPManager()
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
@@ -56,13 +56,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&LabGatewayReconciler{
+	if err := (&gateway.LabGatewayReconciler{
 		Client: mgr.GetClient(),
-		DHCP:   dhcp,
+		DHCP:   dhcp.NewManager(),
 		IPT:    ipt,
 		Cfg:    cfg,
 	}).SetupWithManager(mgr); err != nil {
-		log.Error(err, "setup reconciler")
+		log.Error(err, "unable to create controller", "controller", "LabGateway")
 		os.Exit(1)
 	}
 

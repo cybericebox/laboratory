@@ -16,7 +16,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	nodev1 "github.com/cybericebox/laboratory/api/node/v1"
+	nodev1 "github.com/cybericebox/laboratory/pkg/rpc/node/v1"
 )
 
 const (

@@ -19,6 +19,11 @@ go.work
 # Kubernetes Generated files - skip generated files, except for vendored files
 !vendor/**/zz_generated.*
 
+# Kubeconfig files — may contain private keys and cluster credentials
+kubeconfig
+*.kubeconfig
+kubeconfig.*
+
 # editor and IDE paraphernalia
 .idea
 .vscode

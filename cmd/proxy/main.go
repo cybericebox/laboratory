@@ -20,8 +20,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
-	"github.com/cybericebox/laboratory/cmd/proxy/demux"
-	"github.com/cybericebox/laboratory/cmd/proxy/l7"
+	"github.com/cybericebox/laboratory/internal/proxy/demux"
+	"github.com/cybericebox/laboratory/internal/proxy/l7"
+	proxy "github.com/cybericebox/laboratory/internal/proxy"
 )
 
 var scheme = runtime.NewScheme()
@@ -35,7 +36,7 @@ func main() {
 	ctrl.SetLogger(zap.New())
 	log := ctrl.Log.WithName("proxy")
 
-	cfg, err := loadConfig()
+	cfg, err := proxy.LoadConfig()
 	if err != nil {
 		log.Error(err, "load config")
 		os.Exit(1)

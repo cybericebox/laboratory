@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	nodeagent "github.com/cybericebox/laboratory/internal/nodeagent"
 )
 
 var scheme = runtime.NewScheme()
@@ -32,13 +33,13 @@ func main() {
 	ctrl.SetLogger(zap.New())
 	log := ctrl.Log.WithName("node-agent")
 
-	cfg, err := loadConfig()
+	cfg, err := nodeagent.LoadConfig()
 	if err != nil {
 		log.Error(err, "load config")
 		os.Exit(1)
 	}
 
-	ovs, err := newOVSManager(cfg.Bridge, cfg.OVSSock)
+	ovs, err := nodeagent.NewOVSManager(cfg.Bridge, cfg.OVSSock)
 	if err != nil {
 		log.Error(err, "init OVS manager")
 		os.Exit(1)
@@ -46,15 +47,15 @@ func main() {
 	defer ovs.Close()
 
 	ovsRunDir := filepath.Dir(cfg.OVSSock)
-	flows, err := newFlowManager(ovsRunDir, cfg.Bridge)
+	flows, err := nodeagent.NewFlowManager(ovsRunDir, cfg.Bridge)
 	if err != nil {
 		log.Error(err, "init flow manager")
 		os.Exit(1)
 	}
 	defer flows.Close()
 
-	grpcSrv := newNodeAgentServer(ovs)
-	gs, err := startGRPCServer(cfg.GRPCSock, grpcSrv)
+	grpcSrv := nodeagent.NewNodeAgentServer(ovs)
+	gs, err := nodeagent.StartGRPCServer(cfg.GRPCSock, grpcSrv)
 	if err != nil {
 		log.Error(err, "start gRPC server")
 		os.Exit(1)
@@ -76,7 +77,7 @@ func main() {
 	}
 	grpcSrv.SetK8sClient(mgr.GetClient())
 
-	if err := (&DevicePortReconciler{
+	if err := (&nodeagent.DevicePortReconciler{
 		Client:   mgr.GetClient(),
 		NodeName: cfg.NodeName,
 	}).SetupWithManager(mgr); err != nil {
@@ -84,7 +85,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&ConnectionReconciler{
+	if err := (&nodeagent.ConnectionReconciler{
 		Client:      mgr.GetClient(),
 		NodeName:    cfg.NodeName,
 		NodeAddress: nodeAddr,
@@ -96,7 +97,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&LabIfaceReconciler{
+	if err := (&nodeagent.LabIfaceReconciler{
 		Client:   mgr.GetClient(),
 		NodeName: cfg.NodeName,
 		OVS:      ovs,

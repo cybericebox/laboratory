@@ -18,13 +18,10 @@ type LabNetworkSpec struct {
 	DHCPServer *DHCPServer `json:"dhcpServer,omitempty"`
 }
 
-// DHCPServer configures the embedded DHCP server for a network segment.
+// DHCPServer enables the embedded DHCP server for a network segment.
+// Subnet and gateway are derived from the lab's allocated CIDR (Status.*.CIDR).
 type DHCPServer struct {
-	Enabled bool   `json:"enabled,omitempty"`
-	Subnet  string `json:"subnet,omitempty"`
-	Range   string `json:"range,omitempty"`
-	Gateway string `json:"gateway,omitempty"`
-	DNS     string `json:"dns,omitempty"`
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 // DeviceTemplate is an inline device declaration inside Lab.spec.devices[].
