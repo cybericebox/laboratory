@@ -83,7 +83,7 @@ func main() {
 		return "", fmt.Errorf("service %s not found in %s", task, namespace)
 	}
 
-	handler := l7.NewHandler(cfg.Ed25519PubKey, cfg.BaseDomain, cfg.CookieName,
+	handler := l7.NewHandler(cfg.JWTPublicKey, cfg.BaseDomain, cfg.CookieName,
 		l7.ServiceResolver(svcResolver))
 
 	// certwatcher reloads the wildcard cert when cert-manager renews the

@@ -1,57 +1,40 @@
 package l7
 
 import (
-	"crypto/ed25519"
-	"encoding/base64"
-	"encoding/json"
+	"crypto/rsa"
 	"fmt"
 	"net/http"
-	"strings"
-	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
-// challengeClaims mirrors spec §3: { user_id, group_id, exp }. user_id is
-// preserved for downstream audit (access logs, abuse correlation) but routing
-// uses only group_id — moving a user between groups is by design impossible.
-type challengeClaims struct {
+type jwtClaims struct {
 	UserID  string `json:"user_id"`
 	GroupID string `json:"group_id"`
-	Exp     int64  `json:"exp"`
+	jwt.RegisteredClaims
 }
 
-// validateCookie reads the challenge cookie, verifies the Ed25519 signature,
-// checks expiry, and returns the parsed claims.
-// Cookie format: base64(json_payload).base64(ed25519_signature)
-func validateCookie(r *http.Request, pubKey ed25519.PublicKey, cookieName string) (challengeClaims, error) {
+func validateCookie(r *http.Request, pubKey *rsa.PublicKey, cookieName string) (jwtClaims, error) {
 	cookie, err := r.Cookie(cookieName)
 	if err != nil {
-		return challengeClaims{}, fmt.Errorf("no %s cookie", cookieName)
+		return jwtClaims{}, fmt.Errorf("no %s cookie", cookieName)
 	}
 
-	parts := strings.SplitN(cookie.Value, ".", 2)
-	if len(parts) != 2 {
-		return challengeClaims{}, fmt.Errorf("malformed cookie")
-	}
-	rawJSON, err := base64.StdEncoding.DecodeString(parts[0])
+	var claims jwtClaims
+	token, err := jwt.ParseWithClaims(cookie.Value, &claims, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+		}
+		return pubKey, nil
+	})
 	if err != nil {
-		return challengeClaims{}, fmt.Errorf("decode payload: %w", err)
+		return jwtClaims{}, fmt.Errorf("invalid token: %w", err)
 	}
-	sig, err := base64.StdEncoding.DecodeString(parts[1])
-	if err != nil {
-		return challengeClaims{}, fmt.Errorf("decode signature: %w", err)
-	}
-	if !ed25519.Verify(pubKey, rawJSON, sig) {
-		return challengeClaims{}, fmt.Errorf("invalid signature")
-	}
-	var claims challengeClaims
-	if err := json.Unmarshal(rawJSON, &claims); err != nil {
-		return challengeClaims{}, fmt.Errorf("unmarshal claims: %w", err)
-	}
-	if time.Now().Unix() >= claims.Exp {
-		return challengeClaims{}, fmt.Errorf("token expired")
+	if !token.Valid {
+		return jwtClaims{}, fmt.Errorf("invalid token")
 	}
 	if claims.GroupID == "" {
-		return challengeClaims{}, fmt.Errorf("empty group_id")
+		return jwtClaims{}, fmt.Errorf("empty group_id")
 	}
 	return claims, nil
 }

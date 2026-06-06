@@ -1,7 +1,7 @@
 package l7
 
 import (
-	"crypto/ed25519"
+	"crypto/rsa"
 	"crypto/tls"
 	"fmt"
 	"net/http"
@@ -18,25 +18,23 @@ type BackendResolver func(task, groupID string) (string, error)
 var validTaskRE = regexp.MustCompile(`^[a-z0-9][a-z0-9\-]{0,62}$`)
 
 type Handler struct {
-	pubKey     ed25519.PublicKey
+	pubKey     *rsa.PublicKey
 	baseDomain string
 	cookieName string
 	resolver   BackendResolver
 	transport  http.RoundTripper
 }
 
-// upstreamTransport accepts self-signed certificates on lab instance Services.
-// Spec §5: "https (re-encrypt) — прокси заново шифрует к инстансу (свой серт
-// инстанса, можно self-signed)". The hop is in-cluster (ClusterIP Service),
-// trust boundary is the NetworkPolicy that admits only proxy-system/app=proxy.
+// upstreamTransport skips certificate verification for in-cluster backends
+// that may use self-signed certificates. The trust boundary is the
+// NetworkPolicy that admits only proxy-system/app=proxy.
 var upstreamTransport = &http.Transport{
-	TLSClientConfig:   &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}, // #nosec G402 — see comment above
-	ForceAttemptHTTP2: true,
-	MaxIdleConns:      100,
-	IdleConnTimeout:   90 * time.Second,
+	TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}, // #nosec G402 — see comment above
+	MaxIdleConns:    100,
+	IdleConnTimeout: 90 * time.Second,
 }
 
-func NewHandler(pubKey ed25519.PublicKey, baseDomain, cookieName string, resolver BackendResolver) *Handler {
+func NewHandler(pubKey *rsa.PublicKey, baseDomain, cookieName string, resolver BackendResolver) *Handler {
 	return &Handler{
 		pubKey:     pubKey,
 		baseDomain: baseDomain,
@@ -67,14 +65,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-
-	// Expose claims to downstream (audit / per-user rate limiting). Routing
-	// still uses group_id only — moving a user between groups is by design
-	// impossible per spec §3, so user_id is metadata, not authorisation.
-	if claims.UserID != "" {
-		r.Header.Set("X-User-ID", claims.UserID)
-	}
-	r.Header.Set("X-Group-ID", claims.GroupID)
 
 	backendURL, err := h.resolver(task, claims.GroupID)
 	if err != nil {
