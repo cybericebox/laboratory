@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/ovsnames"
 )
 
 // ConnectionReconciler programs br-ovs based on Connection CRDs.
@@ -141,50 +142,18 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 		portStatus.NodeAddress = ep.device.Status.NodeAddress
 
 		if ep.device.Status.NodeName == r.NodeName {
-			pKey := portKey(conn.Namespace, conn.Name, ep.endpoint.Interface)
+			// Port key is keyed by pod identity (not connection name) so it matches
+			// the key computed by NetworkAttachReconciler from the pod annotation.
+			// NetworkAttachReconciler owns port creation/movement; we only program flows.
+			pKey := ovsnames.DevicePortKey(conn.Namespace, ep.device.Name, ep.endpoint.Interface)
 
-			if err := r.OVS.AddInternalPort(pKey); err != nil {
-				return ctrl.Result{}, fmt.Errorf("add OVS port %q: %w", pKey, err)
-			}
-
-			netnsPath, err := FindPodNetNS(r.ProcRoot, string(ep.device.UID))
+			// Wait for NetworkAttachReconciler to create the OVS port before programming flows.
+			exists, err := r.OVS.PortExists(pKey)
 			if err != nil {
-				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+				return ctrl.Result{}, fmt.Errorf("check OVS port %q: %w", pKey, err)
 			}
-
-			log := ctrl.LoggerFrom(ctx)
-
-			// Move port to pod netns (idempotent — link absent from host netns when already moved).
-			if err := MoveToNetNS(pKey, netnsPath); err != nil {
-				log.V(1).Info("MoveToNetNS skipped", "port", pKey, "reason", err)
-			}
-
-			// Rename inside netns to desired interface name.
-			if ep.endpoint.Interface != "" && ep.endpoint.Interface != pKey {
-				if err := RenameInNetNS(netnsPath, pKey, ep.endpoint.Interface); err != nil {
-					log.V(1).Info("RenameInNetNS skipped", "port", pKey, "iface", ep.endpoint.Interface, "reason", err)
-				}
-			}
-
-			// Configure IP/MAC from device spec if available.
-			var mac, cidr string
-			for _, iface := range ep.device.Spec.Interfaces {
-				if iface.Name == ep.endpoint.Interface {
-					mac = iface.MAC
-					if iface.Addr.Type == laboratoryv1alpha1.AddrTypeStatic {
-						cidr = iface.Addr.IP
-					}
-					break
-				}
-			}
-			if mac != "" || cidr != "" {
-				ifName := ep.endpoint.Interface
-				if ifName == "" {
-					ifName = pKey
-				}
-				if err := ConfigureInNetNS(netnsPath, ifName, mac, cidr); err != nil {
-					log.V(1).Info("ConfigureInNetNS skipped", "port", pKey, "reason", err)
-				}
+			if !exists {
+				return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
 			}
 
 			// Program Geneve tunnels for remote endpoints. One shared Geneve

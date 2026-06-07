@@ -14,7 +14,7 @@ rules:
     resources: ["labs", "devices", "connections"]
     verbs: ["get", "list", "watch", "update", "patch"]
   - apiGroups: ["laboratory.cybericebox.com"]
-    resources: ["connections/status"]
+    resources: ["connections/status", "devices/status"]
     verbs: ["get", "update", "patch"]
   - apiGroups: [""]
     resources: ["nodes"]

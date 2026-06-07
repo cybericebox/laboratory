@@ -43,14 +43,11 @@ const ofpitApplyActions = 4
 const (
 	ofpatOutput   = 0
 	ofpatSetField = 25
-	ofpatGroup    = 22
 )
-
-// OFPG group identifiers.
-const ofpgNormal = 0xfffffffc
 
 // OFPP special port numbers.
 const (
+	ofppNormal  = 0xfffffffa // submit to normal L2/L3 processing
 	ofppAny     = 0xffffffff
 	ofpNoBuffer = 0xffffffff
 )
@@ -434,13 +431,10 @@ func BuildActionsSetFieldTunnelID(vni uint64) []byte {
 	return a
 }
 
-// BuildActionsGroupNormal encodes OFPAT_GROUP with group=OFPG_NORMAL (8 bytes).
+// BuildActionsGroupNormal encodes OFPAT_OUTPUT to OFPP_NORMAL (normal L2/L3 processing, 16 bytes).
+// OFPAT_GROUP with OFPG_NORMAL is not supported by OVS; OFPP_NORMAL output is the correct equivalent.
 func BuildActionsGroupNormal() []byte {
-	a := make([]byte, 8)
-	binary.BigEndian.PutUint16(a[0:2], ofpatGroup)
-	binary.BigEndian.PutUint16(a[2:4], 8)
-	binary.BigEndian.PutUint32(a[4:8], ofpgNormal)
-	return a
+	return BuildActionsOutput(ofppNormal)
 }
 
 // buildInstruction wraps actions in an OFPIT instruction.

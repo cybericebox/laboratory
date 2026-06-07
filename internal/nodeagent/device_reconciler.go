@@ -13,12 +13,15 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
-// DevicePortReconciler manages the ovs-cleanup finalizer on Device CRDs.
+// DevicePortReconciler manages the ovs-cleanup finalizer on Device CRDs and
+// stamps each local device with the node's Geneve VTEP address so that
+// ConnectionReconciler on peer nodes can determine the tunnel destination.
 // OVS port creation/deletion for container/vm devices is handled by ConnectionReconciler.
 // Switch/hub devices have no physical OVS resource; their finalizer is removed immediately on delete.
 type DevicePortReconciler struct {
 	client.Client
-	NodeName string
+	NodeName    string
+	NodeAddress string
 }
 
 func (r *DevicePortReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -53,6 +56,13 @@ func (r *DevicePortReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if (isSwitch || isLocal) && !controllerutil.ContainsFinalizer(&device, laboratoryv1alpha1.FinalizerOVSCleanup) {
 		controllerutil.AddFinalizer(&device, laboratoryv1alpha1.FinalizerOVSCleanup)
 		return ctrl.Result{}, r.Update(ctx, &device)
+	}
+
+	// Stamp the Geneve VTEP address on the device status so that peer nodes'
+	// ConnectionReconcilers can build the correct tunnel destination.
+	if isLocal && r.NodeAddress != "" && device.Status.NodeAddress != r.NodeAddress {
+		device.Status.NodeAddress = r.NodeAddress
+		return ctrl.Result{}, r.Status().Update(ctx, &device)
 	}
 
 	return ctrl.Result{}, nil

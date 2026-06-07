@@ -17,9 +17,10 @@ type OVSBridge struct {
 }
 
 type OVSPort struct {
-	UUID       string   `ovsdb:"_uuid"`
-	Name       string   `ovsdb:"name"`
-	Interfaces []string `ovsdb:"interfaces"`
+	UUID        string            `ovsdb:"_uuid"`
+	Name        string            `ovsdb:"name"`
+	Interfaces  []string          `ovsdb:"interfaces"`
+	ExternalIDs map[string]string `ovsdb:"external_ids"`
 }
 
 type OVSInterface struct {
@@ -27,4 +28,5 @@ type OVSInterface struct {
 	Name    string            `ovsdb:"name"`
 	Type    string            `ovsdb:"type"`
 	Options map[string]string `ovsdb:"options"`
+	Ifindex *int              `ovsdb:"ifindex"`
 }

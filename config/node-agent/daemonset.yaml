@@ -17,8 +17,9 @@ spec:
         app: node-agent
     spec:
       serviceAccountName: node-agent
-      hostNetwork: false
+      hostNetwork: true
       hostPID: false
+      dnsPolicy: ClusterFirstWithHostNet
       tolerations:
         - operator: Exists
       initContainers:
@@ -29,7 +30,20 @@ spec:
             - |
               set -e
               cp /node-agent/bin/cni-gate /opt/cni/bin/cni-gate
-              cp /node-agent/cni/10-cybericebox.conflist /etc/cni/net.d/10-cybericebox.conflist
+              # copy standard plugins (needed as delegate targets)
+              for p in bridge ptp loopback host-local portmap; do
+                [ -f /usr/lib/cni/$p ] && cp /usr/lib/cni/$p /opt/cni/bin/$p
+              done
+              # build conflist: wrap the base CNI (kindnet/first-found) with cni-gate
+              BASE=""
+              for f in /etc/cni/net.d/*.conflist /etc/cni/net.d/*.conf; do
+                [ -f "$f" ] && [ "$f" != "/etc/cni/net.d/10-cybericebox.conflist" ] && BASE="$f" && break
+              done
+              if [ -n "$BASE" ]; then
+                jq '{cniVersion: .cniVersion, name: "cybericebox", plugins: [{"type": "cni-gate", "agentSocket": "/run/cybericebox/node-agent.sock", "delegate": .plugins[0]}]}' "$BASE" > /etc/cni/net.d/10-cybericebox.conflist
+              else
+                cp /node-agent/cni/10-cybericebox.conflist /etc/cni/net.d/10-cybericebox.conflist
+              fi
           securityContext:
             runAsUser: 0
           volumeMounts:
@@ -68,6 +82,7 @@ spec:
             capabilities:
               add:
                 - NET_ADMIN
+                - SYS_ADMIN
                 - SYS_PTRACE
           volumeMounts:
             - name: ovs-run

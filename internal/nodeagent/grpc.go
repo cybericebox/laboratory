@@ -40,34 +40,38 @@ func NewNodeAgentServer(ovs *OVSManager) *NodeAgentServer {
 	}
 }
 
-// AddPort creates an OVS internal port and moves it into the pod netns.
+// AddPort creates a veth pair and moves the pod-side into the pod netns.
 // Reserved for external CNI-style callers; current lab-port wiring runs
 // inline in ConnectionReconciler.reconcileCreate.
 func (s *NodeAgentServer) AddPort(ctx context.Context, req *nodev1.AddPortRequest) (*nodev1.AddPortResponse, error) {
-	portName := portKey(req.Namespace, req.Connection, req.InterfaceName)
+	stableKey := portKey(req.Namespace, req.Connection, req.InterfaceName)
+	podSide := VethPeerName(stableKey)
 
-	if err := s.ovs.AddInternalPort(portName); err != nil {
-		return nil, fmt.Errorf("add OVS port %q: %w", portName, err)
+	if err := s.ovs.AddVethPort(stableKey); err != nil {
+		return nil, fmt.Errorf("add veth port %q: %w", stableKey, err)
 	}
 
-	if err := MoveToNetNS(portName, req.NetnsPath); err != nil {
-		_ = s.ovs.DelPort(portName)
-		return nil, fmt.Errorf("move %q to netns: %w", portName, err)
+	if err := MoveToNetNS(podSide, req.NetnsPath); err != nil {
+		_ = s.ovs.DelVethPort(stableKey)
+		return nil, fmt.Errorf("move %q to netns: %w", podSide, err)
 	}
 
-	// Rename the interface inside the pod netns to the desired name.
-	if req.InterfaceName != portName {
-		if err := RenameInNetNS(req.NetnsPath, portName, req.InterfaceName); err != nil {
-			return nil, fmt.Errorf("rename %q → %q in netns: %w", portName, req.InterfaceName, err)
+	// Rename the pod-side inside the pod netns to the desired name.
+	if req.InterfaceName != podSide {
+		if err := RenameInNetNS(req.NetnsPath, podSide, req.InterfaceName); err != nil {
+			return nil, fmt.Errorf("rename %q → %q in netns: %w", podSide, req.InterfaceName, err)
 		}
+	}
+	if err := BringUpInNetNS(req.NetnsPath, req.InterfaceName); err != nil {
+		return nil, fmt.Errorf("bring up %q in netns: %w", req.InterfaceName, err)
 	}
 
 	s.mu.Lock()
 	s.podNetNS[req.PodUid] = req.NetnsPath
-	s.podPorts[req.PodUid] = append(s.podPorts[req.PodUid], portName)
+	s.podPorts[req.PodUid] = append(s.podPorts[req.PodUid], stableKey)
 	s.mu.Unlock()
 
-	return &nodev1.AddPortResponse{PortId: portName}, nil
+	return &nodev1.AddPortResponse{PortId: stableKey}, nil
 }
 
 // DeletePort cleans up OVS ports and cache entries.
@@ -75,7 +79,7 @@ func (s *NodeAgentServer) AddPort(ctx context.Context, req *nodev1.AddPortReques
 func (s *NodeAgentServer) DeletePort(_ context.Context, req *nodev1.DeletePortRequest) (*emptypb.Empty, error) {
 	s.mu.Lock()
 	for _, p := range s.podPorts[req.PodUid] {
-		_ = s.ovs.DelPort(p)
+		_ = s.ovs.DelVethPort(p)
 	}
 	delete(s.podNetNS, req.PodUid)
 	delete(s.podPorts, req.PodUid)

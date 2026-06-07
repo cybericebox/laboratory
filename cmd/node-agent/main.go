@@ -3,6 +3,8 @@
 package main
 
 import (
+	_ "github.com/cybericebox/laboratory/pkg/runtime"
+
 	"context"
 	"fmt"
 	"net"
@@ -78,8 +80,9 @@ func main() {
 	grpcSrv.SetK8sClient(mgr.GetClient())
 
 	if err := (&nodeagent.DevicePortReconciler{
-		Client:   mgr.GetClient(),
-		NodeName: cfg.NodeName,
+		Client:      mgr.GetClient(),
+		NodeName:    cfg.NodeName,
+		NodeAddress: nodeAddr,
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "setup DevicePortReconciler")
 		os.Exit(1)
@@ -97,14 +100,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&nodeagent.LabIfaceReconciler{
+	if err := (&nodeagent.NetworkAttachReconciler{
 		Client:   mgr.GetClient(),
 		NodeName: cfg.NodeName,
 		OVS:      ovs,
 		Server:   grpcSrv,
 		ProcRoot: cfg.ProcRoot,
 	}).SetupWithManager(mgr); err != nil {
-		log.Error(err, "setup LabIfaceReconciler")
+		log.Error(err, "setup NetworkAttachReconciler")
 		os.Exit(1)
 	}
 

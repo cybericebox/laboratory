@@ -26,3 +26,11 @@ func LabGWIfaceName(labName string) string {
 	h := sha256.Sum256([]byte("gw:" + labName))
 	return fmt.Sprintf("gw%x", h[:4]) // 10 chars
 }
+
+// DevicePortKey computes a stable OVS port name (≤15 chars) for a device interface.
+// Keyed by namespace + pod name + interface name — stable across reconciles and
+// independent of the Connection CRD name (which may not exist yet at pod creation).
+func DevicePortKey(namespace, podName, ifaceName string) string {
+	h := sha256.Sum256([]byte(namespace + "/" + podName + "/" + ifaceName))
+	return fmt.Sprintf("p%x", h[:4]) // 9 chars
+}

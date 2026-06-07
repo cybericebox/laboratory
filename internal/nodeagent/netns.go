@@ -4,15 +4,14 @@ package nodeagent
 
 import (
 	"fmt"
-	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/vishvananda/netlink"
-	"github.com/vishvananda/netns"
 )
 
 // FindPodNetNS scans procRoot to find the netns path for a pod by matching its UID in cgroup entries.
@@ -44,95 +43,69 @@ func findPodNetNSIn(procRoot, podUID string) (string, error) {
 	return "", fmt.Errorf("pod %s netns not found in %s", podUID, procRoot)
 }
 
+// WaitForLink polls until the named link appears in the current netns or the deadline passes.
+func WaitForLink(name string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := netlink.LinkByName(name); err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("link %q did not appear within %s", name, timeout)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// SetMACInNetNS sets the hardware address of an interface inside the target netns.
+func SetMACInNetNS(netnsPath, ifaceName, mac string) error {
+	return nsenterRun(netnsPath, "ip", "link", "set", ifaceName, "address", mac)
+}
+
 // MoveToNetNS moves an interface from the host netns to the target netns by path.
 func MoveToNetNS(ifaceName, netnsPath string) error {
-	ns, err := netns.GetFromPath(netnsPath)
+	out, err := exec.Command("ip", "link", "set", ifaceName, "netns", netnsPath).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("open netns %s: %w", netnsPath, err)
+		return fmt.Errorf("ip link set %s netns %s: %w: %s", ifaceName, netnsPath, err, strings.TrimSpace(string(out)))
 	}
-	defer ns.Close()
-
-	link, err := netlink.LinkByName(ifaceName)
-	if err != nil {
-		return fmt.Errorf("link %q not found in host netns: %w", ifaceName, err)
-	}
-	return netlink.LinkSetNsFd(link, int(ns))
+	return nil
 }
 
 // RenameInNetNS renames an interface inside a target netns.
+// Does not change UP/DOWN state — interface stays UP if it was UP before the move.
 func RenameInNetNS(netnsPath, oldName, newName string) error {
-	return inNetNS(netnsPath, func() error {
-		link, err := netlink.LinkByName(oldName)
-		if err != nil {
-			return fmt.Errorf("link %q: %w", oldName, err)
-		}
-		return netlink.LinkSetName(link, newName)
-	})
+	return nsenterRun(netnsPath, "ip", "link", "set", oldName, "name", newName)
 }
 
-// ConfigureInNetNS sets MAC, IP/prefix, and brings the interface up inside target netns.
-// mac may be empty (skip). cidr is e.g. "192.168.1.1/24".
-func ConfigureInNetNS(netnsPath, ifaceName, mac, cidr string) error {
-	return inNetNS(netnsPath, func() error {
-		link, err := netlink.LinkByName(ifaceName)
-		if err != nil {
-			return fmt.Errorf("link %q: %w", ifaceName, err)
-		}
-		if mac != "" {
-			hw, err := net.ParseMAC(mac)
-			if err != nil {
-				return fmt.Errorf("parse MAC %q: %w", mac, err)
-			}
-			if err := netlink.LinkSetHardwareAddr(link, hw); err != nil {
-				return err
-			}
-		}
-		if cidr != "" {
-			addr, err := netlink.ParseAddr(cidr)
-			if err != nil {
-				return fmt.Errorf("parse addr %q: %w", cidr, err)
-			}
-			if err := netlink.AddrAdd(link, addr); err != nil {
-				return err
-			}
-		}
-		return netlink.LinkSetUp(link)
-	})
+// ConfigureInNetNS assigns an optional IP/prefix inside the target netns.
+// cidr may be empty (skip). Example: "192.168.1.1/24".
+func ConfigureInNetNS(netnsPath, ifaceName, cidr string) error {
+	if cidr == "" {
+		return nil
+	}
+	return nsenterRun(netnsPath, "ip", "addr", "add", cidr, "dev", ifaceName)
 }
 
-// inNetNS executes fn inside the netns at netnsPath, restoring the caller's netns on return.
-// The OS thread is locked for the duration to prevent goroutine migration.
-// Panics if the original netns cannot be restored — continuing in the wrong netns would
-// silently corrupt all subsequent network operations on this goroutine.
-func inNetNS(netnsPath string, fn func() error) error {
-	runtime.LockOSThread()
+// CheckInNetNS returns nil if the named interface exists inside the target netns.
+func CheckInNetNS(netnsPath, ifaceName string) error {
+	return nsenterRun(netnsPath, "ip", "link", "show", ifaceName)
+}
 
-	origNS, err := netns.Get()
+// DeleteInNetNS deletes an interface inside the target netns.
+func DeleteInNetNS(netnsPath, ifaceName string) error {
+	return nsenterRun(netnsPath, "ip", "link", "del", ifaceName)
+}
+
+// BringUpInNetNS brings an interface UP inside the target netns.
+func BringUpInNetNS(netnsPath, ifaceName string) error {
+	return nsenterRun(netnsPath, "ip", "link", "set", ifaceName, "up")
+}
+
+func nsenterRun(netnsPath string, args ...string) error {
+	full := append([]string{"--net=" + netnsPath, "--"}, args...)
+	out, err := exec.Command("nsenter", full...).CombinedOutput()
 	if err != nil {
-		runtime.UnlockOSThread()
-		return fmt.Errorf("get current netns: %w", err)
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
-	defer origNS.Close()
-
-	targetNS, err := netns.GetFromPath(netnsPath)
-	if err != nil {
-		runtime.UnlockOSThread()
-		return fmt.Errorf("open netns %s: %w", netnsPath, err)
-	}
-	defer targetNS.Close()
-
-	if err := netns.Set(targetNS); err != nil {
-		runtime.UnlockOSThread()
-		return fmt.Errorf("set netns: %w", err)
-	}
-
-	fnErr := fn()
-
-	if err := netns.Set(origNS); err != nil {
-		// Cannot restore original netns — thread is stuck in wrong namespace.
-		// Any further network syscalls from this goroutine would operate in the wrong netns.
-		panic(fmt.Sprintf("inNetNS: failed to restore original netns: %v", err))
-	}
-	runtime.UnlockOSThread()
-	return fnErr
+	return nil
 }

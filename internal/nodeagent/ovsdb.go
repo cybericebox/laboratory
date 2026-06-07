@@ -4,14 +4,18 @@ package nodeagent
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/ovn-org/libovsdb/client"
 	"github.com/ovn-org/libovsdb/model"
 	"github.com/ovn-org/libovsdb/ovsdb"
+	"github.com/vishvananda/netlink"
 )
 
 // portKey computes a stable OVS port name (max 15 chars) for a device interface.
@@ -136,11 +140,113 @@ func (m *OVSManager) ensureBridge() error {
 	return nil
 }
 
-// AddInternalPort creates an OVS internal port in br-ovs (idempotent).
-func (m *OVSManager) AddInternalPort(name string) error {
+// VethPeerName returns the pod-side name of the veth pair for a given host-side (stableKey).
+func VethPeerName(stableKey string) string { return "v" + stableKey }
+
+// AddVethPort creates a veth pair where stableKey is the host-side name (stays in OVS/root
+// netns) and VethPeerName(stableKey) is the pod-side (moved to pod netns by the caller).
+// Idempotent: EEXIST on kernel side is ignored; port already in OVS is a no-op.
+// Stores stableKey in external_ids so FindPortByKey can locate it.
+func (m *OVSManager) AddVethPort(stableKey string) error {
+	podSide := VethPeerName(stableKey)
+	veth := &netlink.Veth{
+		LinkAttrs: netlink.LinkAttrs{Name: stableKey},
+		PeerName:  podSide,
+	}
+	if err := netlink.LinkAdd(veth); err != nil && !errors.Is(err, syscall.EEXIST) {
+		return fmt.Errorf("create veth %q/%q: %w", stableKey, podSide, err)
+	}
+	// Bring host-side up so OVS can use it.
+	link, err := netlink.LinkByName(stableKey)
+	if err != nil {
+		return fmt.Errorf("get host-side veth %q: %w", stableKey, err)
+	}
+	if err := netlink.LinkSetUp(link); err != nil {
+		return fmt.Errorf("set up host-side veth %q: %w", stableKey, err)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.addPort(name, "internal", nil)
+	return m.addPort(stableKey, "system", nil, map[string]string{portKeyExternalID: stableKey})
+}
+
+// DelVethPort removes the OVS port and deletes the kernel veth pair for stableKey.
+// Deleting the host-side also removes the pod-side (veth pair invariant).
+// Idempotent: no-op if already gone.
+func (m *OVSManager) DelVethPort(stableKey string) error {
+	if err := m.DelPort(stableKey); err != nil {
+		return err
+	}
+	link, err := netlink.LinkByName(stableKey)
+	if err != nil {
+		return nil // already gone
+	}
+	return netlink.LinkDel(link)
+}
+
+// portKeyExternalID is the external_ids key used to store the stable port key.
+const portKeyExternalID = "port-key"
+
+// randomPortName generates a unique OVS internal port name: "ice" + 12 random hex chars = 15 chars (IFNAMSIZ max).
+// The name is used only as the kernel interface name; the stable port key is stored in external_ids.
+func randomPortName() (string, error) {
+	var b [6]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("random port name: %w", err)
+	}
+	return fmt.Sprintf("ice%x", b), nil
+}
+
+// AddInternalPort creates an OVS internal port in br-ovs with a random kernel interface name.
+// The stableKey (used for reconcile idempotency and cleanup) is stored in external_ids["port-key"].
+// Returns the random kernel interface name that will appear in the host netns.
+func (m *OVSManager) AddInternalPort(stableKey string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	name, err := randomPortName()
+	if err != nil {
+		return "", err
+	}
+	return name, m.addPort(name, "internal", nil, map[string]string{portKeyExternalID: stableKey})
+}
+
+// FindPortByKey returns the OVS port name whose external_ids["port-key"] matches stableKey.
+// Returns ("", false, nil) if not found.
+func (m *OVSManager) FindPortByKey(stableKey string) (string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, err := m.findPortByKey(stableKey)
+	if err != nil || p == nil {
+		return "", false, err
+	}
+	return p.Name, true, nil
+}
+
+func (m *OVSManager) findPortByKey(stableKey string) (*OVSPort, error) {
+	ports := []OVSPort{}
+	if err := m.client.List(m.ctx, &ports); err != nil {
+		return nil, fmt.Errorf("list ports: %w", err)
+	}
+	for i := range ports {
+		if ports[i].ExternalIDs[portKeyExternalID] == stableKey {
+			return &ports[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// DelPortByKey removes the OVS port whose external_ids["port-key"] matches stableKey.
+// Idempotent: no-op if not found.
+func (m *OVSManager) DelPortByKey(stableKey string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, err := m.findPortByKey(stableKey)
+	if err != nil {
+		return err
+	}
+	if p == nil {
+		return nil
+	}
+	return m.delPortLocked(p)
 }
 
 // AddGenevePort creates the single shared Geneve VTEP. The arguments are
@@ -153,7 +259,7 @@ func (m *OVSManager) AddGenevePort(_, _ string) error {
 	return m.addPort(GenevePort, "geneve", map[string]string{
 		"remote_ip": "flow",
 		"key":       "flow",
-	})
+	}, nil)
 }
 
 // AddPatchPair creates two paired patch ports — spec §7-§8: switch↔switch
@@ -165,10 +271,10 @@ func (m *OVSManager) AddGenevePort(_, _ string) error {
 func (m *OVSManager) AddPatchPair(nameA, nameB string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.addPort(nameA, "patch", map[string]string{"peer": nameB}); err != nil {
+	if err := m.addPort(nameA, "patch", map[string]string{"peer": nameB}, nil); err != nil {
 		return err
 	}
-	return m.addPort(nameB, "patch", map[string]string{"peer": nameA})
+	return m.addPort(nameB, "patch", map[string]string{"peer": nameA}, nil)
 }
 
 // patchPortName computes a stable OVS patch-end name for one end of a
@@ -193,7 +299,7 @@ func (m *OVSManager) findPort(name string) (*OVSPort, error) {
 	return nil, nil
 }
 
-func (m *OVSManager) addPort(name, ifaceType string, options map[string]string) error {
+func (m *OVSManager) addPort(name, ifaceType string, options, externalIDs map[string]string) error {
 	// Idempotency: check if port already exists in cache.
 	if p, err := m.findPort(name); err != nil {
 		return err
@@ -218,7 +324,7 @@ func (m *OVSManager) addPort(name, ifaceType string, options map[string]string) 
 		return fmt.Errorf("create interface op: %w", err)
 	}
 
-	port := OVSPort{UUID: portNamedUUID, Name: name, Interfaces: []string{ifaceNamedUUID}}
+	port := OVSPort{UUID: portNamedUUID, Name: name, Interfaces: []string{ifaceNamedUUID}, ExternalIDs: externalIDs}
 	portOps, err := m.client.Create(&port)
 	if err != nil {
 		return fmt.Errorf("create port op: %w", err)
@@ -246,7 +352,7 @@ func (m *OVSManager) addPort(name, ifaceType string, options map[string]string) 
 	return nil
 }
 
-// DelPort removes a port from br-ovs (idempotent).
+// DelPort removes a port from br-ovs by name (idempotent).
 func (m *OVSManager) DelPort(name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -255,9 +361,12 @@ func (m *OVSManager) DelPort(name string) error {
 		return err
 	}
 	if p == nil {
-		return nil // already gone
+		return nil
 	}
+	return m.delPortLocked(p)
+}
 
+func (m *OVSManager) delPortLocked(p *OVSPort) error {
 	br, err := m.findBridge()
 	if err != nil {
 		return err
@@ -286,12 +395,51 @@ func (m *OVSManager) DelPort(name string) error {
 
 	results, err := m.client.Transact(m.ctx, ops...)
 	if err != nil {
-		return fmt.Errorf("transact delPort %q: %w", name, err)
+		return fmt.Errorf("transact delPort %q: %w", p.Name, err)
 	}
 	if _, err := ovsdb.CheckOperationResults(results, ops); err != nil {
-		return fmt.Errorf("delPort %q result: %w", name, err)
+		return fmt.Errorf("delPort %q result: %w", p.Name, err)
 	}
 	return nil
+}
+
+// WaitForPortSetup polls netlink until the kernel interface portName has type "openvswitch"
+// with a stable ifindex for at least 300ms.
+//
+// Why ifindex stability matters: vswitchd may delete+recreate the vport during its initial
+// dpif_port_add setup when it detects the interface left root netns (OVS_VPORT_CMD_DEL +
+// OVS_VPORT_CMD_NEW in rapid succession, logged as "deleted→added" in vswitchd). The
+// recreated interface has a different ifindex. Waiting for ifindex stability ensures we move
+// the interface only after vswitchd has entered its "Phase 2" (established) state, where a
+// netns move causes it to set ifindex=0 rather than trigger another delete+recreate.
+func (m *OVSManager) WaitForPortSetup(portName string, timeout time.Duration) error {
+	const stableDuration = 300 * time.Millisecond
+	deadline := time.Now().Add(timeout)
+	var stableIdx int
+	var stableSince time.Time
+	for {
+		link, err := netlink.LinkByName(portName)
+		if err == nil && link.Type() == "openvswitch" {
+			idx := link.Attrs().Index
+			if idx != stableIdx {
+				stableIdx = idx
+				stableSince = time.Now()
+			} else if time.Since(stableSince) >= stableDuration {
+				return nil
+			}
+		} else {
+			stableIdx = 0
+			stableSince = time.Time{}
+		}
+		if time.Now().After(deadline) {
+			linkType := ""
+			if link != nil {
+				linkType = link.Type()
+			}
+			return fmt.Errorf("interface %q did not stabilize as openvswitch type within %s (type=%q, err=%v)", portName, timeout, linkType, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // Close disconnects from the OVSDB server.
