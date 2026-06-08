@@ -1,10 +1,26 @@
 package v1alpha1
 
 const (
-	FinalizerOVSCleanup = "cybericebox.com/ovs-cleanup"
+	// SystemNamespace is the namespace where the operator and all its components (proxy, etc.) run.
+	SystemNamespace = "laboratory-system"
 
 	LabelLab = "laboratory.cybericebox.com/lab"
+
+	// AnnotationNetworks is the pod annotation listing OVS network attachments.
+	// Format: comma-separated "iface@name[|MAC]" entries.
+	// Use "iface@default" to request the real Kubernetes CNI network on that interface.
+	AnnotationNetworks = "network.cybericebox.com/networks"
+
+	// DefaultNetworkValue is the magic connection name meaning "delegate to the k8s CNI plugin".
+	DefaultNetworkValue = "default"
 )
+
+// LabGroupNamespace returns the Kubernetes namespace for a LabGroup.
+// The namespace is identical to the group name — no prefix — so users can
+// derive it trivially: group "team-alpha" → namespace "team-alpha".
+func LabGroupNamespace(groupName string) string {
+	return groupName
+}
 
 // Phase is the lifecycle phase of a resource.
 // +kubebuilder:validation:Enum=Pending;Provisioning;Ready;Failed;Error

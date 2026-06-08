@@ -7,6 +7,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -20,11 +21,10 @@ import (
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/finalizers"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
-
-const finalizerLabGroup = "cybericebox.com/labgroup"
 
 // LabGroupReconciler reconciles a LabGroup object.
 type LabGroupReconciler struct {
@@ -33,20 +33,22 @@ type LabGroupReconciler struct {
 	// PublicVPNEndpoint is the publicly reachable host:port that clients dial
 	// (host of the WireGuard demux). Written verbatim to LabGroup.Status.VPN.Endpoint.
 	PublicVPNEndpoint string
+	// VPNServicePort is the UDP port the VPN server listens on. Defaults to 51820.
+	VPNServicePort int
 }
-
-const vpnListenPort = 51820
 
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labgroups,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labgroups/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labgroups/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=namespaces;secrets;services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=namespaces;secrets;services;serviceaccounts;endpoints,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=allocation.cybericebox.com,resources=pools,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=allocation.cybericebox.com,resources=pools/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
 
 func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+	logger.Info("reconciling LabGroup", "name", req.Name)
 
 	var lg laboratoryv1alpha1.LabGroup
 	if err := r.Get(ctx, req.NamespacedName, &lg); err != nil {
@@ -57,14 +59,14 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return r.reconcileDelete(ctx, &lg)
 	}
 
-	if !controllerutil.ContainsFinalizer(&lg, finalizerLabGroup) {
-		controllerutil.AddFinalizer(&lg, finalizerLabGroup)
+	if !controllerutil.ContainsFinalizer(&lg, finalizers.LabGroup) {
+		controllerutil.AddFinalizer(&lg, finalizers.LabGroup)
 		if err := r.Update(ctx, &lg); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 
-	ns := fmt.Sprintf("labgroup-%s", lg.UID)
+	ns := laboratoryv1alpha1.LabGroupNamespace(lg.Name)
 
 	if err := r.ensureNamespace(ctx, ns, &lg); err != nil {
 		logger.Error(err, "ensure namespace")
@@ -89,11 +91,32 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, nil
 	}
 
-	if err = r.ensureVPNDeployment(ctx, ns); err != nil {
+	if err = r.ensureVPNService(ctx, ns); err != nil {
+		logger.Error(err, "ensure VPN service")
+		return ctrl.Result{}, err
+	}
+
+	if err = r.ensureServiceAccount(ctx, ns, "vpn"); err != nil {
+		logger.Error(err, "ensure VPN service account")
+		return ctrl.Result{}, err
+	}
+	if err = r.ensureRoleBinding(ctx, ns, "vpn", "laboratory-manager-role"); err != nil {
+		logger.Error(err, "ensure VPN role binding")
+		return ctrl.Result{}, err
+	}
+	if err = r.ensureVPNDeployment(ctx, ns, &lg); err != nil {
 		logger.Error(err, "ensure VPN deployment")
 		return ctrl.Result{}, err
 	}
 
+	if err = r.ensureServiceAccount(ctx, ns, "gateway"); err != nil {
+		logger.Error(err, "ensure gateway service account")
+		return ctrl.Result{}, err
+	}
+	if err = r.ensureRoleBinding(ctx, ns, "gateway", "laboratory-manager-role"); err != nil {
+		logger.Error(err, "ensure gateway role binding")
+		return ctrl.Result{}, err
+	}
 	if err = r.ensureGatewayDeployment(ctx, ns); err != nil {
 		logger.Error(err, "ensure gateway deployment")
 		return ctrl.Result{}, err
@@ -109,9 +132,9 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	backend, backendReady, err := r.discoverVPNBackend(ctx, ns)
+	vpnReady, vpnBackend, err := r.vpnReadyState(ctx, ns)
 	if err != nil {
-		logger.Error(err, "discover VPN backend")
+		logger.Error(err, "check VPN readiness")
 		return ctrl.Result{}, err
 	}
 
@@ -120,15 +143,13 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	lg.Status.VPN.PublicKey = pubKey
 	lg.Status.VPN.SecretRef = fmt.Sprintf("%s/%s", ns, secretName)
 	lg.Status.VPN.Endpoint = r.PublicVPNEndpoint
-	lg.Status.VPN.Backend = backend
-	lg.Status.VPN.Registered = backendReady
+	lg.Status.VPN.Backend = vpnBackend
+	lg.Status.VPN.Registered = vpnReady
 	if err = r.Status().Update(ctx, &lg); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Re-reconcile soon while waiting for the VPN pod to become Running so
-	// Backend gets populated without a Pod-watch trigger.
-	if !backendReady {
+	if !vpnReady {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
@@ -158,28 +179,43 @@ func (r *LabGroupReconciler) findDuplicatePubKey(ctx context.Context, pubKey, se
 	return "", nil
 }
 
-// discoverVPNBackend returns the podIP:port of a Running VPN pod in ns, or
-// ("", false, nil) if no pod is ready yet.
-func (r *LabGroupReconciler) discoverVPNBackend(ctx context.Context, ns string) (string, bool, error) {
-	var podList corev1.PodList
-	if err := r.List(ctx, &podList, client.InNamespace(ns), client.MatchingLabels{"app": "vpn"}); err != nil {
-		return "", false, err
+func (r *LabGroupReconciler) vpnPort() int32 {
+	if r.VPNServicePort > 0 {
+		return int32(r.VPNServicePort)
 	}
-	for i := range podList.Items {
-		p := &podList.Items[i]
-		if p.Status.Phase == corev1.PodRunning && p.Status.PodIP != "" {
-			return fmt.Sprintf("%s:%d", p.Status.PodIP, vpnListenPort), true, nil
+	return 51820
+}
+
+// vpnReadyState returns (ready, podIP:port, error).
+// Lists VPN pods directly — no DNS, no Endpoints, no ClusterIP needed.
+func (r *LabGroupReconciler) vpnReadyState(ctx context.Context, ns string) (ready bool, backend string, err error) {
+	var podList corev1.PodList
+	if err := r.List(ctx, &podList,
+		client.InNamespace(ns),
+		client.MatchingLabels{"app": "vpn"},
+	); err != nil {
+		return false, "", err
+	}
+	for _, pod := range podList.Items {
+		if pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP != "" {
+			for _, cs := range pod.Status.ContainerStatuses {
+				if !cs.Ready {
+					goto next
+				}
+			}
+			return true, fmt.Sprintf("%s:%d", pod.Status.PodIP, r.vpnPort()), nil
+		next:
 		}
 	}
-	return "", false, nil
+	return false, "", nil
 }
 
 func (r *LabGroupReconciler) reconcileDelete(ctx context.Context, lg *laboratoryv1alpha1.LabGroup) (ctrl.Result, error) {
-	ns := fmt.Sprintf("labgroup-%s", lg.UID)
+	ns := laboratoryv1alpha1.LabGroupNamespace(lg.Name)
 	var namespace corev1.Namespace
 	if err := r.Get(ctx, types.NamespacedName{Name: ns}, &namespace); err != nil {
 		if errors.IsNotFound(err) {
-			controllerutil.RemoveFinalizer(lg, finalizerLabGroup)
+			controllerutil.RemoveFinalizer(lg, finalizers.LabGroup)
 			return ctrl.Result{}, r.Update(ctx, lg)
 		}
 		return ctrl.Result{}, err
@@ -252,7 +288,29 @@ func generateWireGuardKeypair() ([]byte, []byte, error) {
 	return []byte(key.String()), []byte(key.PublicKey().String()), nil
 }
 
-func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string) error {
+func (r *LabGroupReconciler) ensureVPNService(ctx context.Context, ns string) error {
+	var existing corev1.Service
+	if err := r.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: ns}, &existing); err == nil {
+		return nil
+	} else if !errors.IsNotFound(err) {
+		return err
+	}
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "vpn", Namespace: ns},
+		Spec: corev1.ServiceSpec{
+			ClusterIP: "None", // headless — DNS returns pod IP directly, no ClusterIP NAT
+			Selector:  map[string]string{"app": "vpn"},
+			Ports: []corev1.ServicePort{{
+				Name:     "wireguard",
+				Protocol: corev1.ProtocolUDP,
+				Port:     r.vpnPort(),
+			}},
+		},
+	}
+	return r.Create(ctx, svc)
+}
+
+func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string, lg *laboratoryv1alpha1.LabGroup) error {
 	var existing appsv1.Deployment
 	if err := r.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: ns}, &existing); err == nil {
 		return nil
@@ -266,16 +324,35 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string)
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "vpn"}},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "vpn"}},
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      map[string]string{"app": "vpn"},
+					Annotations: map[string]string{laboratoryv1alpha1.AnnotationNetworks: "eth0@" + laboratoryv1alpha1.DefaultNetworkValue},
+				},
 				Spec: corev1.PodSpec{
+					ServiceAccountName: "vpn",
 					Containers: []corev1.Container{{
-						Name:  "vpn",
-						Image: "cybericebox/vpn:latest",
-						EnvFrom: []corev1.EnvFromSource{{
-							SecretRef: &corev1.SecretEnvSource{
-								LocalObjectReference: corev1.LocalObjectReference{Name: "vpn-server-keypair"},
+						Name:            "vpn",
+						Image:           "cybericebox/vpn:latest",
+						ImagePullPolicy: corev1.PullIfNotPresent,
+						SecurityContext: &corev1.SecurityContext{
+							Capabilities: &corev1.Capabilities{
+								Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
 							},
-						}},
+						},
+						Env: []corev1.EnvVar{
+							{
+								Name: "PRIVATE_KEY",
+								ValueFrom: &corev1.EnvVarSource{
+									SecretKeyRef: &corev1.SecretKeySelector{
+										LocalObjectReference: corev1.LocalObjectReference{Name: "vpn-server-keypair"},
+										Key:                  "privateKey",
+									},
+								},
+							},
+							{Name: "NAMESPACE", Value: ns},
+							{Name: "CLIENT_SUBNET", Value: lg.Spec.VPN.ClientSubnet},
+							{Name: "VPN_SUPERNET", Value: lg.Spec.VPN.Supernet},
+						},
 					}},
 				},
 			},
@@ -302,11 +379,21 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "gateway"}},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "gateway"}},
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      map[string]string{"app": "gateway"},
+					Annotations: map[string]string{laboratoryv1alpha1.AnnotationNetworks: "eth0@" + laboratoryv1alpha1.DefaultNetworkValue},
+				},
 				Spec: corev1.PodSpec{
+					ServiceAccountName: "gateway",
 					Containers: []corev1.Container{{
-						Name:  "gateway",
-						Image: "cybericebox/gateway:latest",
+						Name:            "gateway",
+						Image:           "cybericebox/gateway:latest",
+						ImagePullPolicy: corev1.PullIfNotPresent,
+						SecurityContext: &corev1.SecurityContext{
+							Capabilities: &corev1.Capabilities{
+								Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
+							},
+						},
 						Env: []corev1.EnvVar{
 							{Name: "NAMESPACE", Value: ns},
 						},
@@ -316,6 +403,43 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 		},
 	}
 	return r.Create(ctx, d)
+}
+
+func (r *LabGroupReconciler) ensureServiceAccount(ctx context.Context, ns, name string) error {
+	var existing corev1.ServiceAccount
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &existing); err == nil {
+		return nil
+	} else if !errors.IsNotFound(err) {
+		return err
+	}
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+	}
+	return r.Create(ctx, sa)
+}
+
+func (r *LabGroupReconciler) ensureRoleBinding(ctx context.Context, ns, saName, clusterRoleName string) error {
+	bindingName := fmt.Sprintf("%s-binding", saName)
+	var existing rbacv1.RoleBinding
+	if err := r.Get(ctx, types.NamespacedName{Name: bindingName, Namespace: ns}, &existing); err == nil {
+		return nil
+	} else if !errors.IsNotFound(err) {
+		return err
+	}
+	rb := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: bindingName, Namespace: ns},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     clusterRoleName,
+		},
+		Subjects: []rbacv1.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      saName,
+			Namespace: ns,
+		}},
+	}
+	return r.Create(ctx, rb)
 }
 
 // ensurePool creates pool "{name}-0" if it doesn't exist, with the allocator-compatible naming
@@ -351,14 +475,10 @@ func (r *LabGroupReconciler) ensurePool(ctx context.Context, ns, name, poolType 
 }
 
 func (r *LabGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Reconcile the owning LabGroup whenever its VPN pod changes phase or IP,
-	// so Status.VPN.Backend follows pod rescheduling without polling.
+	// Re-reconcile LabGroup when its VPN Pod changes (ready, restart, new IP).
 	vpnPodMap := func(ctx context.Context, obj client.Object) []reconcile.Request {
 		pod, ok := obj.(*corev1.Pod)
-		if !ok {
-			return nil
-		}
-		if pod.Labels["app"] != "vpn" {
+		if !ok || pod.Labels["app"] != "vpn" {
 			return nil
 		}
 		var nsObj corev1.Namespace

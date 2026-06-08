@@ -16,15 +16,11 @@ import (
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/finalizers"
 	"github.com/cybericebox/laboratory/internal/ovsnames"
 	"github.com/cybericebox/laboratory/internal/vpn"
 	"github.com/cybericebox/laboratory/pkg/dhcp"
 	"github.com/cybericebox/laboratory/pkg/netutil"
-)
-
-const (
-	finalizerController = "cybericebox.com/controller"
-	finalizerVPN        = "cybericebox.com/vpn"
 )
 
 // LabVPNReconciler manages per-lab WireGuard routing and optional DHCP.
@@ -44,21 +40,21 @@ func (r *LabVPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	// Main controller must have processed this first.
-	if !controllerutil.ContainsFinalizer(&labvpn, finalizerController) {
+	if !controllerutil.ContainsFinalizer(&labvpn, finalizers.Controller) {
 		return ctrl.Result{}, nil
 	}
 
 	// Deletion path.
 	if !labvpn.DeletionTimestamp.IsZero() {
-		if controllerutil.ContainsFinalizer(&labvpn, finalizerVPN) {
+		if controllerutil.ContainsFinalizer(&labvpn, finalizers.VPN) {
 			return r.reconcileDelete(ctx, &labvpn)
 		}
 		return ctrl.Result{}, nil
 	}
 
 	// Add own finalizer on first observation.
-	if !controllerutil.ContainsFinalizer(&labvpn, finalizerVPN) {
-		controllerutil.AddFinalizer(&labvpn, finalizerVPN)
+	if !controllerutil.ContainsFinalizer(&labvpn, finalizers.VPN) {
+		controllerutil.AddFinalizer(&labvpn, finalizers.VPN)
 		return ctrl.Result{}, r.Update(ctx, &labvpn)
 	}
 
@@ -102,7 +98,7 @@ func (r *LabVPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 func (r *LabVPNReconciler) reconcileDelete(ctx context.Context, labvpn *laboratoryv1alpha1.LabVPN) (ctrl.Result, error) {
 	r.DHCP.Stop(labvpn.Spec.LabName)
-	controllerutil.RemoveFinalizer(labvpn, finalizerVPN)
+	controllerutil.RemoveFinalizer(labvpn, finalizers.VPN)
 	return ctrl.Result{}, r.Update(ctx, labvpn)
 }
 

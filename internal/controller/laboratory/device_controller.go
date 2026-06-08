@@ -2,6 +2,7 @@ package laboratory
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -14,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/finalizers"
 )
 
 // DeviceReconciler reconciles a Device object.
@@ -34,7 +36,7 @@ func (r *DeviceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	if !device.DeletionTimestamp.IsZero() {
-		if controllerutil.ContainsFinalizer(&device, laboratoryv1alpha1.FinalizerOVSCleanup) {
+		if controllerutil.ContainsFinalizer(&device, finalizers.OVSCleanup) {
 			// node-agent removes this finalizer after OVS cleanup; poll.
 			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 		}
@@ -80,9 +82,35 @@ func (r *DeviceReconciler) reconcilePod(ctx context.Context, device *laboratoryv
 		updated = true
 	}
 	if updated {
+		if !ready {
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, r.Status().Update(ctx, device)
+		}
 		return ctrl.Result{}, r.Status().Update(ctx, device)
 	}
+	if !ready {
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
 	return ctrl.Result{}, nil
+}
+
+// deviceNetworkAnnotation builds the network.cybericebox.com/networks annotation value.
+// Format per entry: "iface@[connection][|MAC]"
+// At pod creation time we don't know the Connection name yet, so entries are "iface@" or "iface@|MAC".
+// ConnectionReconciler/NetworkAttachReconciler fill in the connection name later.
+// The "@default" suffix is reserved for the Kubernetes default network (handled by cni-gate).
+func deviceNetworkAnnotation(device *laboratoryv1alpha1.Device) string {
+	var entries []string
+	for _, iface := range device.Spec.Interfaces {
+		entry := iface.Name + "@"
+		if iface.MAC != "" {
+			entry += "|" + iface.MAC
+		}
+		entries = append(entries, entry)
+	}
+	if device.Spec.Exposure != nil {
+		entries = append(entries, "accessport@default")
+	}
+	return strings.Join(entries, ",")
 }
 
 func (r *DeviceReconciler) createPod(ctx context.Context, device *laboratoryv1alpha1.Device) error {
@@ -91,19 +119,29 @@ func (r *DeviceReconciler) createPod(ctx context.Context, device *laboratoryv1al
 			Name:      device.Name,
 			Namespace: device.Namespace,
 			Labels: map[string]string{
-				laboratoryv1alpha1.LabelLab: device.Spec.LabRef,
-				"app":                       device.Spec.Name,
+				laboratoryv1alpha1.LabelLab:               device.Spec.LabRef,
+				"app":                                     device.Spec.Name,
+				"laboratory.cybericebox.com/device":       device.Spec.Name,
 			},
-			Annotations: map[string]string{"cybericebox.com/device": device.Spec.Name},
+			Annotations: map[string]string{
+				"cybericebox.com/device":                  device.Spec.Name,
+				laboratoryv1alpha1.AnnotationNetworks:     deviceNetworkAnnotation(device),
+			},
 		},
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{{
-				Name:  device.Spec.Name,
-				Image: device.Spec.Image,
+				Name:    device.Spec.Name,
+				Image:   device.Spec.Image,
+				Command: []string{"sleep", "infinity"},
+				SecurityContext: &corev1.SecurityContext{
+					Capabilities: &corev1.Capabilities{
+						Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
+					},
+				},
 			}},
 		},
 	}
-	if err := controllerutil.SetOwnerReference(device, pod, r.Scheme); err != nil {
+	if err := controllerutil.SetControllerReference(device, pod, r.Scheme); err != nil {
 		return err
 	}
 	return r.Create(ctx, pod)

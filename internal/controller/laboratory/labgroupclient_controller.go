@@ -19,11 +19,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/finalizers"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 )
 
 const (
-	finalizerLabGroupClient = "cybericebox.com/labgroupclient"
 
 	// VPN supernet that clients route into the tunnel. Matches cmd/vpn/config.go.
 	clientAllowedIPs = "10.8.0.0/16"
@@ -54,8 +54,8 @@ func (r *LabGroupClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 }
 
 func (r *LabGroupClientReconciler) reconcileCreate(ctx context.Context, lgc *laboratoryv1alpha1.LabGroupClient) (ctrl.Result, error) {
-	if !controllerutil.ContainsFinalizer(lgc, finalizerLabGroupClient) {
-		controllerutil.AddFinalizer(lgc, finalizerLabGroupClient)
+	if !controllerutil.ContainsFinalizer(lgc, finalizers.LabGroupClient) {
+		controllerutil.AddFinalizer(lgc, finalizers.LabGroupClient)
 		if err := r.Update(ctx, lgc); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -74,6 +74,11 @@ func (r *LabGroupClientReconciler) reconcileCreate(ctx context.Context, lgc *lab
 			}
 			pubKey = string(pub)
 			privKeyB64 = priv
+			// Persist generated pubkey into Spec so the VPN reconciler can register the peer.
+			lgc.Spec.PublicKey = pubKey
+			if err := r.Update(ctx, lgc); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 
 		// Reject duplicate pubkey in the same group — peers are identified by
@@ -92,7 +97,7 @@ func (r *LabGroupClientReconciler) reconcileCreate(ctx context.Context, lgc *lab
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("allocate VPN IP: %w", err)
 		}
-		assignedIP = fmt.Sprintf("10.8.0.%d/32", idx)
+		assignedIP = fmt.Sprintf("10.8.0.%d/32", idx+1) // idx+1: skip 10.8.0.1 (VPN gateway)
 	}
 
 	// Fetch parent LabGroup so we can populate serverPublicKey + endpoint in the
@@ -158,7 +163,7 @@ func (r *LabGroupClientReconciler) reconcileDelete(ctx context.Context, lgc *lab
 		}
 	}
 
-	controllerutil.RemoveFinalizer(lgc, finalizerLabGroupClient)
+	controllerutil.RemoveFinalizer(lgc, finalizers.LabGroupClient)
 	return ctrl.Result{}, r.Update(ctx, lgc)
 }
 
@@ -245,6 +250,20 @@ func (r *LabGroupClientReconciler) ensureClientSecret(ctx context.Context, lgc *
 		return err
 	}
 
+	// Preserve existing privateKey across reconciles — it's generated once and never regenerated.
+	if _, ok := desired["privateKey"]; !ok {
+		if pk, ok := existing.Data["privateKey"]; ok {
+			desired["privateKey"] = pk
+			// Re-render wg.conf with the preserved privateKey if endpoint is now available.
+			if p.Endpoint != "" && p.ServerPublicKey != "" {
+				p.PrivateKey = string(pk)
+				if conf, cerr := renderWGConf(p); cerr == nil {
+					desired["wg.conf"] = []byte(conf)
+				}
+			}
+		}
+	}
+
 	if dataEqual(existing.Data, desired) {
 		return nil
 	}
@@ -298,13 +317,17 @@ func renderWGConf(p secretParams) (string, error) {
 	return buf.String(), nil
 }
 
-// ipToIndex extracts the last octet of a CIDR like "10.8.0.5/32" as pool index.
+// ipToIndex extracts the pool index from a CIDR like "10.8.0.5/32".
+// Inverse of the assignment formula "10.8.0.{idx+1}/32" → returns idx = last_octet - 1.
 func ipToIndex(cidr string) (uint, error) {
 	var a, b, c, d uint
 	if n, err := fmt.Sscanf(cidr, "%d.%d.%d.%d/32", &a, &b, &c, &d); err != nil || n != 4 {
 		return 0, fmt.Errorf("invalid CIDR %q", cidr)
 	}
-	return d, nil
+	if d == 0 {
+		return 0, fmt.Errorf("invalid CIDR %q: last octet is 0", cidr)
+	}
+	return d - 1, nil
 }
 
 func (r *LabGroupClientReconciler) SetupWithManager(mgr ctrl.Manager) error {

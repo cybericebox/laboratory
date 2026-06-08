@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/finalizers"
 )
 
 // DevicePortReconciler manages the ovs-cleanup finalizer on Device CRDs and
@@ -40,11 +41,11 @@ func (r *DevicePortReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return ctrl.Result{}, err
 		}
 		for _, conn := range connList.Items {
-			if controllerutil.ContainsFinalizer(&conn, laboratoryv1alpha1.FinalizerOVSCleanup) {
+			if controllerutil.ContainsFinalizer(&conn, finalizers.OVSCleanup) {
 				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 			}
 		}
-		controllerutil.RemoveFinalizer(&device, laboratoryv1alpha1.FinalizerOVSCleanup)
+		controllerutil.RemoveFinalizer(&device, finalizers.OVSCleanup)
 		return ctrl.Result{}, r.Update(ctx, &device)
 	}
 
@@ -53,8 +54,8 @@ func (r *DevicePortReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		device.Spec.Type == laboratoryv1alpha1.DeviceTypeHub
 	isLocal := device.Status.NodeName == r.NodeName
 
-	if (isSwitch || isLocal) && !controllerutil.ContainsFinalizer(&device, laboratoryv1alpha1.FinalizerOVSCleanup) {
-		controllerutil.AddFinalizer(&device, laboratoryv1alpha1.FinalizerOVSCleanup)
+	if (isSwitch || isLocal) && !controllerutil.ContainsFinalizer(&device, finalizers.OVSCleanup) {
+		controllerutil.AddFinalizer(&device, finalizers.OVSCleanup)
 		return ctrl.Result{}, r.Update(ctx, &device)
 	}
 

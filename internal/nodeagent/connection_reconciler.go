@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -16,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/finalizers"
 	"github.com/cybericebox/laboratory/internal/ovsnames"
 )
 
@@ -54,6 +56,34 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 	needsRequeue := false
 
 	for _, ep := range conn.Spec.Endpoints {
+		// Virtual singletons (vpn, internet) have no Device CRD — synthesize from their pods.
+		if ep.Device == "vpn" || ep.Device == "internet" {
+			appLabel := ep.Device
+			var pods corev1.PodList
+			if err := r.List(ctx, &pods,
+				client.InNamespace(conn.Namespace),
+				client.MatchingLabels{"app": appLabel},
+				client.Limit(1),
+			); err != nil {
+				return ctrl.Result{}, err
+			}
+			if len(pods.Items) == 0 || pods.Items[0].Spec.NodeName == "" {
+				needsRequeue = true
+				// Synthesize empty device so the slice length stays consistent.
+				eps = append(eps, epInfo{ep, laboratoryv1alpha1.Device{}, false, false})
+				continue
+			}
+			pod := pods.Items[0]
+			synth := laboratoryv1alpha1.Device{}
+			synth.Spec.Type = laboratoryv1alpha1.DeviceTypeContainer
+			synth.Status.NodeName = pod.Spec.NodeName
+			synth.Status.NodeAddress = r.nodeAddressForNode(pod.Spec.NodeName)
+			// OVS port for vpn/internet is the lab iface name (not DevicePortKey hash).
+			synth.Name = fmt.Sprintf("%s-%s", conn.Spec.LabRef, ep.Device)
+			eps = append(eps, epInfo{ep, synth, false, true})
+			continue
+		}
+
 		deviceName := fmt.Sprintf("%s-%s", conn.Spec.LabRef, ep.Device)
 		var dev laboratoryv1alpha1.Device
 		if err := r.Get(ctx, types.NamespacedName{Name: deviceName, Namespace: conn.Namespace}, &dev); err != nil {
@@ -73,8 +103,8 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 	}
 
 	// Add finalizer before any OVS work so cleanup runs even if we crash mid-reconcile.
-	if !controllerutil.ContainsFinalizer(conn, laboratoryv1alpha1.FinalizerOVSCleanup) {
-		controllerutil.AddFinalizer(conn, laboratoryv1alpha1.FinalizerOVSCleanup)
+	if !controllerutil.ContainsFinalizer(conn, finalizers.OVSCleanup) {
+		controllerutil.AddFinalizer(conn, finalizers.OVSCleanup)
 		if err := r.Update(ctx, conn); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -142,10 +172,16 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 		portStatus.NodeAddress = ep.device.Status.NodeAddress
 
 		if ep.device.Status.NodeName == r.NodeName {
-			// Port key is keyed by pod identity (not connection name) so it matches
-			// the key computed by NetworkAttachReconciler from the pod annotation.
-			// NetworkAttachReconciler owns port creation/movement; we only program flows.
-			pKey := ovsnames.DevicePortKey(conn.Namespace, ep.device.Name, ep.endpoint.Interface)
+			// Virtual singletons (vpn, internet) use a fixed OVS port named by LabIfaceName,
+			// not the hash-based DevicePortKey used for regular container/vm devices.
+			var pKey string
+			if ep.endpoint.Device == "vpn" {
+				pKey = ovsnames.LabIfaceName(conn.Spec.LabRef)
+			} else if ep.endpoint.Device == "internet" {
+				pKey = ovsnames.LabGWIfaceName(conn.Spec.LabRef)
+			} else {
+				pKey = ovsnames.DevicePortKey(conn.Namespace, ep.device.Name, ep.endpoint.Interface)
+			}
 
 			// Wait for NetworkAttachReconciler to create the OVS port before programming flows.
 			exists, err := r.OVS.PortExists(pKey)
@@ -234,8 +270,27 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 		}
 	}
 
-	controllerutil.RemoveFinalizer(conn, laboratoryv1alpha1.FinalizerOVSCleanup)
+	controllerutil.RemoveFinalizer(conn, finalizers.OVSCleanup)
 	return ctrl.Result{}, r.Update(ctx, conn)
+}
+
+// nodeAddressForNode returns the cached NodeAddress for the given node name by
+// checking Device status records. Falls back to empty string (Geneve skipped for same-node).
+func (r *ConnectionReconciler) nodeAddressForNode(nodeName string) string {
+	if nodeName == r.NodeName {
+		return r.NodeAddress
+	}
+	// For remote nodes, look up any device that runs there to get its NodeAddress.
+	var devList laboratoryv1alpha1.DeviceList
+	if err := r.List(context.Background(), &devList); err != nil {
+		return ""
+	}
+	for _, d := range devList.Items {
+		if d.Status.NodeName == nodeName && d.Status.NodeAddress != "" {
+			return d.Status.NodeAddress
+		}
+	}
+	return ""
 }
 
 func (r *ConnectionReconciler) SetupWithManager(mgr ctrl.Manager) error {

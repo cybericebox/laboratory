@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/finalizers"
 	"github.com/cybericebox/laboratory/internal/vpn"
 )
 
@@ -30,7 +31,7 @@ func (r *LabGroupClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	// Main controller must have processed this first.
-	if !controllerutil.ContainsFinalizer(&lgc, finalizerController) {
+	if !controllerutil.ContainsFinalizer(&lgc, finalizers.Controller) {
 		return ctrl.Result{}, nil
 	}
 
@@ -39,13 +40,13 @@ func (r *LabGroupClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		if lgc.Spec.PublicKey != "" {
 			_ = r.WG.RemovePeer(lgc.Spec.PublicKey)
 		}
-		controllerutil.RemoveFinalizer(&lgc, finalizerVPN)
+		controllerutil.RemoveFinalizer(&lgc, finalizers.VPN)
 		return ctrl.Result{}, r.Update(ctx, &lgc)
 	}
 
 	// Add own finalizer on first observation.
-	if !controllerutil.ContainsFinalizer(&lgc, finalizerVPN) {
-		controllerutil.AddFinalizer(&lgc, finalizerVPN)
+	if !controllerutil.ContainsFinalizer(&lgc, finalizers.VPN) {
+		controllerutil.AddFinalizer(&lgc, finalizers.VPN)
 		return ctrl.Result{}, r.Update(ctx, &lgc)
 	}
 

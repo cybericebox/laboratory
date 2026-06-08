@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -23,13 +24,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/finalizers"
+	"github.com/cybericebox/laboratory/internal/ovsnames"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 )
 
 const (
-	finalizerLab     = "cybericebox.com/lab"
-	finalizerVPN     = "cybericebox.com/vpn"
-	finalizerGateway = "cybericebox.com/gateway"
 
 	vniPoolNS     = "lab-system"
 	vniPoolPrefix = "vni"
@@ -49,6 +49,10 @@ type LabReconciler struct {
 	// any lab is reachable as https://ssh.<BaseDomain>. Written to
 	// Lab.Status.Access on Ready.
 	BaseDomain string
+	// ProxySourceCIDRs is an optional list of CIDRs added as ipBlock peers in the
+	// web-exposure NetworkPolicy. Required when the proxy runs with hostNetwork (its
+	// source IP is the node IP, not a pod IP, so namespace/label selectors don't apply).
+	ProxySourceCIDRs []string
 }
 
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
@@ -61,6 +65,7 @@ type LabReconciler struct {
 
 func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+	logger.Info("reconciling Lab", "name", req.Name, "namespace", req.Namespace)
 
 	var lab laboratoryv1alpha1.Lab
 	if err := r.Get(ctx, req.NamespacedName, &lab); err != nil {
@@ -68,11 +73,12 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	if !lab.DeletionTimestamp.IsZero() {
+		logger.Info("lab is being deleted", "name", lab.Name)
 		return r.reconcileDelete(ctx, &lab)
 	}
 
-	if !controllerutil.ContainsFinalizer(&lab, finalizerLab) {
-		controllerutil.AddFinalizer(&lab, finalizerLab)
+	if !controllerutil.ContainsFinalizer(&lab, finalizers.Lab) {
+		controllerutil.AddFinalizer(&lab, finalizers.Lab)
 		if err := r.Update(ctx, &lab); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -110,6 +116,11 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	if err := r.materializeConnections(ctx, &lab); err != nil {
 		logger.Error(err, "materialize connections")
+		return ctrl.Result{}, err
+	}
+
+	if err := r.ensureDeploymentAnnotations(ctx, &lab); err != nil {
+		logger.Error(err, "ensure deployment annotations")
 		return ctrl.Result{}, err
 	}
 
@@ -284,7 +295,7 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 				Name:       deviceName,
 				Namespace:  lab.Namespace,
 				Labels:     map[string]string{laboratoryv1alpha1.LabelLab: lab.Name},
-				Finalizers: []string{laboratoryv1alpha1.FinalizerOVSCleanup},
+				Finalizers: []string{finalizers.OVSCleanup},
 			},
 			Spec: laboratoryv1alpha1.DeviceSpec{
 				LabRef:     lab.Name,
@@ -350,7 +361,7 @@ func (r *LabReconciler) materializeConnections(ctx context.Context, lab *laborat
 				Name:       connName,
 				Namespace:  lab.Namespace,
 				Labels:     map[string]string{laboratoryv1alpha1.LabelLab: lab.Name},
-				Finalizers: []string{laboratoryv1alpha1.FinalizerOVSCleanup},
+				Finalizers: []string{finalizers.OVSCleanup},
 			},
 			Spec: laboratoryv1alpha1.ConnectionSpec{
 				LabRef:    lab.Name,
@@ -447,6 +458,9 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		reflect.DeepEqual(refs, lab.Status.Devices) &&
 		reflect.DeepEqual(connRefs, lab.Status.Connections) &&
 		reflect.DeepEqual(access, lab.Status.Access) {
+		if newPhase != laboratoryv1alpha1.PhaseReady {
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -455,6 +469,9 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 	lab.Status.Phase = newPhase
 	lab.Status.Access = access
 
+	if newPhase != laboratoryv1alpha1.PhaseReady {
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, r.Status().Update(ctx, lab)
+	}
 	return ctrl.Result{}, r.Status().Update(ctx, lab)
 }
 
@@ -491,38 +508,22 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 		client.MatchingLabels{laboratoryv1alpha1.LabelLab: lab.Name}); err != nil {
 		return ctrl.Result{}, err
 	}
+	logger.Info("reconcileDelete: listed devices", "count", len(deviceList.Items))
 
-	// Release VNIs for switch/hub devices before they are garbage-collected.
+	// Delete connections and devices concurrently. Connections must be deleted
+	// alongside devices (not after) to avoid a deadlock: DevicePortReconciler
+	// waits for Connection OVS-cleanup finalizers before removing the Device
+	// finalizer, but connections are only deleted by this function.
 	vniAllocator := poolpkg.NewAllocator(r.Client, vniPoolPrefix, vniPoolNS, vniPoolSize)
-	for i := range deviceList.Items {
-		d := &deviceList.Items[i]
-		if d.Status.VNI == nil {
-			continue
-		}
-		if err := vniAllocator.ReleaseIndex(ctx, *d.Status.VNI); err != nil {
-			return ctrl.Result{}, fmt.Errorf("release switch VNI %d for device %s: %w", *d.Status.VNI, d.Name, err)
-		}
-		d.Status.VNI = nil
-		if err := r.Status().Update(ctx, d); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
-
-	if len(deviceList.Items) > 0 {
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-	}
 
 	var connList laboratoryv1alpha1.ConnectionList
 	if err := r.List(ctx, &connList, client.InNamespace(lab.Namespace),
 		client.MatchingLabels{laboratoryv1alpha1.LabelLab: lab.Name}); err != nil {
 		return ctrl.Result{}, err
 	}
-	if len(connList.Items) > 0 {
-		for i := range connList.Items {
-			c := &connList.Items[i]
-			if c.Status.VNI == nil {
-				continue
-			}
+	for i := range connList.Items {
+		c := &connList.Items[i]
+		if c.Status.VNI != nil {
 			if err := vniAllocator.ReleaseIndex(ctx, *c.Status.VNI); err != nil {
 				logger.Error(err, "release VNI", "connection", c.Name, "vni", *c.Status.VNI)
 			}
@@ -531,6 +532,34 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 				return ctrl.Result{}, err
 			}
 		}
+		if c.DeletionTimestamp.IsZero() {
+			if err := r.Delete(ctx, c); client.IgnoreNotFound(err) != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	}
+
+	deletedAny := false
+	for i := range deviceList.Items {
+		d := &deviceList.Items[i]
+		if d.Status.VNI != nil {
+			if err := vniAllocator.ReleaseIndex(ctx, *d.Status.VNI); err != nil {
+				return ctrl.Result{}, fmt.Errorf("release switch VNI %d for device %s: %w", *d.Status.VNI, d.Name, err)
+			}
+			d.Status.VNI = nil
+			if err := r.Status().Update(ctx, d); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		if d.DeletionTimestamp.IsZero() {
+			if err := r.Delete(ctx, d); client.IgnoreNotFound(err) != nil {
+				return ctrl.Result{}, err
+			}
+			deletedAny = true
+		}
+	}
+
+	if len(deviceList.Items) > 0 || deletedAny || len(connList.Items) > 0 {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
@@ -552,7 +581,10 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 		}
 	}
 
-	controllerutil.RemoveFinalizer(lab, finalizerLab)
+	_ = r.patchDeploymentNetworks(ctx, lab.Namespace, "vpn", ovsnames.LabIfaceName(lab.Name), false)
+	_ = r.patchDeploymentNetworks(ctx, lab.Namespace, "gateway", ovsnames.LabGWIfaceName(lab.Name), false)
+
+	controllerutil.RemoveFinalizer(lab, finalizers.Lab)
 	return ctrl.Result{}, r.Update(ctx, lab)
 }
 
@@ -582,12 +614,12 @@ func (r *LabReconciler) ensureSubnetAllocation(ctx context.Context, lab *laborat
 
 func (r *LabReconciler) ensureNetworkFinalizers(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
 	changed := false
-	if lab.Spec.VPN.Enabled && !controllerutil.ContainsFinalizer(lab, finalizerVPN) {
-		controllerutil.AddFinalizer(lab, finalizerVPN)
+	if lab.Spec.VPN.Enabled && !controllerutil.ContainsFinalizer(lab, finalizers.VPN) {
+		controllerutil.AddFinalizer(lab, finalizers.VPN)
 		changed = true
 	}
-	if lab.Spec.Internet.Enabled && !controllerutil.ContainsFinalizer(lab, finalizerGateway) {
-		controllerutil.AddFinalizer(lab, finalizerGateway)
+	if lab.Spec.Internet.Enabled && !controllerutil.ContainsFinalizer(lab, finalizers.Gateway) {
+		controllerutil.AddFinalizer(lab, finalizers.Gateway)
 		changed = true
 	}
 	if changed {
@@ -623,6 +655,7 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 				Protocol:   corev1.ProtocolTCP,
 			}}
 			svc.Spec.Type = corev1.ServiceTypeClusterIP
+			svc.Spec.ClusterIP = "None" // headless: DNS returns pod IP directly
 			return controllerutil.SetOwnerReference(lab, svc, r.Scheme)
 		})
 		if err != nil {
@@ -633,6 +666,23 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 			ObjectMeta: metav1.ObjectMeta{Name: svcName + "-web", Namespace: lab.Namespace},
 		}
 		_, err = controllerutil.CreateOrUpdate(ctx, r.Client, np, func() error {
+			// Allow ingress from the proxy pod identified by namespace+label.
+			peers := []networkingv1.NetworkPolicyPeer{{
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"kubernetes.io/metadata.name": laboratoryv1alpha1.SystemNamespace},
+				},
+				PodSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": "proxy"},
+				},
+			}}
+			// When the proxy uses hostNetwork its source IP is the node IP, not a pod
+			// IP, so the namespace/label selector above is ineffective for that traffic.
+			// Add explicit ipBlock peers for each configured CIDR.
+			for _, cidr := range r.ProxySourceCIDRs {
+				peers = append(peers, networkingv1.NetworkPolicyPeer{
+					IPBlock: &networkingv1.IPBlock{CIDR: cidr},
+				})
+			}
 			np.Spec = networkingv1.NetworkPolicySpec{
 				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": d.Name}},
 				PolicyTypes: []networkingv1.PolicyType{
@@ -640,14 +690,7 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 					networkingv1.PolicyTypeEgress,
 				},
 				Ingress: []networkingv1.NetworkPolicyIngressRule{{
-					From: []networkingv1.NetworkPolicyPeer{{
-						NamespaceSelector: &metav1.LabelSelector{
-							MatchLabels: map[string]string{"kubernetes.io/metadata.name": "proxy-system"},
-						},
-						PodSelector: &metav1.LabelSelector{
-							MatchLabels: map[string]string{"app": "proxy"},
-						},
-					}},
+					From: peers,
 					Ports: []networkingv1.NetworkPolicyPort{{
 						Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: web.Port},
 						Protocol: func() *corev1.Protocol { p := corev1.ProtocolTCP; return &p }(),
@@ -662,6 +705,71 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 		}
 	}
 	return nil
+}
+
+// ensureDeploymentAnnotations adds the lab's OVS interface entries to the VPN and/or
+// gateway Deployment pod-template annotation so node-agent attaches them.
+func (r *LabReconciler) ensureDeploymentAnnotations(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
+	if lab.Spec.VPN.Enabled {
+		if err := r.patchDeploymentNetworks(ctx, lab.Namespace, "vpn", ovsnames.LabIfaceName(lab.Name), true); err != nil {
+			return err
+		}
+	}
+	if lab.Spec.Internet.Enabled {
+		if err := r.patchDeploymentNetworks(ctx, lab.Namespace, "gateway", ovsnames.LabGWIfaceName(lab.Name), true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// patchDeploymentNetworks adds or removes an OVS port entry from the
+// network.cybericebox.com/networks annotation on a Deployment pod template.
+// Entry format: "ifaceName@ifaceName" (iface == OVS port name, no rename).
+// Patching the template triggers a Deployment rollout, which is intentional —
+// the new pod picks up the updated annotation and node-agent attaches the port.
+func (r *LabReconciler) patchDeploymentNetworks(ctx context.Context, ns, deployName, ifaceName string, add bool) error {
+	var dep appsv1.Deployment
+	if err := r.Get(ctx, types.NamespacedName{Name: deployName, Namespace: ns}, &dep); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+
+	entry := ifaceName + "@" + ifaceName
+	original := dep.DeepCopy()
+
+	ann := dep.Spec.Template.Annotations[laboratoryv1alpha1.AnnotationNetworks]
+	var entries []string
+	for _, e := range strings.Split(ann, ",") {
+		if e = strings.TrimSpace(e); e != "" {
+			entries = append(entries, e)
+		}
+	}
+
+	if add {
+		for _, e := range entries {
+			if e == entry {
+				return nil // already present
+			}
+		}
+		entries = append(entries, entry)
+	} else {
+		filtered := entries[:0]
+		for _, e := range entries {
+			if e != entry {
+				filtered = append(filtered, e)
+			}
+		}
+		if len(filtered) == len(entries) {
+			return nil // not present, nothing to do
+		}
+		entries = filtered
+	}
+
+	if dep.Spec.Template.Annotations == nil {
+		dep.Spec.Template.Annotations = map[string]string{}
+	}
+	dep.Spec.Template.Annotations[laboratoryv1alpha1.AnnotationNetworks] = strings.Join(entries, ",")
+	return r.Patch(ctx, &dep, client.MergeFrom(original))
 }
 
 func (r *LabReconciler) SetupWithManager(mgr ctrl.Manager) error {

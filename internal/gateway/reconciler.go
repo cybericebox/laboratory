@@ -16,14 +16,10 @@ import (
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/finalizers"
 	"github.com/cybericebox/laboratory/internal/ovsnames"
 	"github.com/cybericebox/laboratory/pkg/dhcp"
 	"github.com/cybericebox/laboratory/pkg/netutil"
-)
-
-const (
-	finalizerController = "cybericebox.com/controller"
-	finalizerGateway    = "cybericebox.com/gateway"
 )
 
 type LabGatewayReconciler struct {
@@ -42,21 +38,21 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// Main controller must have processed this first.
-	if !controllerutil.ContainsFinalizer(&gw, finalizerController) {
+	if !controllerutil.ContainsFinalizer(&gw, finalizers.Controller) {
 		return ctrl.Result{}, nil
 	}
 
 	// Deletion path.
 	if !gw.DeletionTimestamp.IsZero() {
-		if controllerutil.ContainsFinalizer(&gw, finalizerGateway) {
+		if controllerutil.ContainsFinalizer(&gw, finalizers.Gateway) {
 			return r.reconcileDelete(ctx, &gw)
 		}
 		return ctrl.Result{}, nil
 	}
 
 	// Add own finalizer on first observation.
-	if !controllerutil.ContainsFinalizer(&gw, finalizerGateway) {
-		controllerutil.AddFinalizer(&gw, finalizerGateway)
+	if !controllerutil.ContainsFinalizer(&gw, finalizers.Gateway) {
+		controllerutil.AddFinalizer(&gw, finalizers.Gateway)
 		return ctrl.Result{}, r.Update(ctx, &gw)
 	}
 
@@ -109,7 +105,7 @@ func (r *LabGatewayReconciler) reconcileDelete(ctx context.Context, gw *laborato
 	if gw.Spec.CIDR != "" {
 		r.IPT.DelMasquerade(gw.Spec.CIDR)
 	}
-	controllerutil.RemoveFinalizer(gw, finalizerGateway)
+	controllerutil.RemoveFinalizer(gw, finalizers.Gateway)
 	return ctrl.Result{}, r.Update(ctx, gw)
 }
 
