@@ -1,6 +1,8 @@
 package main
 
 import (
+	_ "github.com/cybericebox/laboratory/pkg/runtime"
+
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -18,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/proxy/demux"
@@ -43,7 +46,10 @@ func main() {
 	}
 
 	// Cluster-singleton: watch all namespaces (no DefaultNamespaces restriction).
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{Scheme: scheme})
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+		Scheme: scheme,
+		Metrics: metricsserver.Options{BindAddress: "0"},
+	})
 	if err != nil {
 		log.Error(err, "create manager")
 		os.Exit(1)
@@ -53,8 +59,9 @@ func main() {
 	ct := demux.NewConnTrack()
 
 	if err := (&demux.LabGroupWatcher{
-		Client: mgr.GetClient(),
-		Table:  table,
+		Client:         mgr.GetClient(),
+		Table:          table,
+		VPNServicePort: cfg.WG.VPNServicePort,
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "setup LabGroupWatcher")
 		os.Exit(1)
@@ -83,19 +90,25 @@ func main() {
 		return "", fmt.Errorf("service %s not found in %s", task, namespace)
 	}
 
-	handler := l7.NewHandler(cfg.JWTPublicKey, cfg.BaseDomain, cfg.CookieName,
+	jwtPubKey, err := cfg.L7.ParsedJWTPublicKey()
+	if err != nil {
+		log.Error(err, "parse JWT public key")
+		os.Exit(1)
+	}
+
+	handler := l7.NewHandler(jwtPubKey, cfg.L7.BaseDomain, cfg.L7.CookieName,
 		l7.ServiceResolver(svcResolver))
 
 	// certwatcher reloads the wildcard cert when cert-manager renews the
 	// underlying Secret — no restart required. Falls back to a load error if
 	// the files don't exist on boot.
-	certWatcher, err := certwatcher.New(cfg.TLSCertPath, cfg.TLSKeyPath)
+	certWatcher, err := certwatcher.New(cfg.L7.TLSCertPath, cfg.L7.TLSKeyPath)
 	if err != nil {
 		log.Error(err, "init TLS cert watcher")
 		os.Exit(1)
 	}
 	httpsSrv := &http.Server{
-		Addr:    cfg.ListenHTTPS,
+		Addr:    cfg.L7.Listen,
 		Handler: handler,
 		TLSConfig: &tls.Config{
 			GetCertificate: certWatcher.GetCertificate,
@@ -103,7 +116,7 @@ func main() {
 		},
 	}
 
-	dmx, err := demux.New(cfg.UDPListenAddr, table, ct)
+	dmx, err := demux.New(cfg.WG.ListenAddr, cfg.WG.ExternalInterface, table, ct)
 	if err != nil {
 		log.Error(err, "create demux")
 		os.Exit(1)
@@ -132,7 +145,7 @@ func main() {
 		}
 	}()
 
-	log.Info("starting proxy", "https", cfg.ListenHTTPS, "udp", cfg.UDPListenAddr)
+	log.Info("starting proxy", "https", cfg.L7.Listen, "udp", cfg.WG.ListenAddr)
 	if err := mgr.Start(ctx); err != nil {
 		log.Error(err, "manager error")
 		os.Exit(1)

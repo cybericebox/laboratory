@@ -17,8 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
-	"github.com/cybericebox/laboratory/internal/finalizers"
-	"github.com/cybericebox/laboratory/internal/ovsnames"
+	"github.com/cybericebox/laboratory/internal/names"
 )
 
 // ConnectionReconciler programs br-ovs based on Connection CRDs.
@@ -103,8 +102,8 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 	}
 
 	// Add finalizer before any OVS work so cleanup runs even if we crash mid-reconcile.
-	if !controllerutil.ContainsFinalizer(conn, finalizers.OVSCleanup) {
-		controllerutil.AddFinalizer(conn, finalizers.OVSCleanup)
+	if !controllerutil.ContainsFinalizer(conn, names.FinalizerOVSCleanup) {
+		controllerutil.AddFinalizer(conn, names.FinalizerOVSCleanup)
 		if err := r.Update(ctx, conn); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -176,11 +175,11 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 			// not the hash-based DevicePortKey used for regular container/vm devices.
 			var pKey string
 			if ep.endpoint.Device == "vpn" {
-				pKey = ovsnames.LabIfaceName(conn.Spec.LabRef)
+				pKey = names.LabIfaceName(conn.Spec.LabRef)
 			} else if ep.endpoint.Device == "internet" {
-				pKey = ovsnames.LabGWIfaceName(conn.Spec.LabRef)
+				pKey = names.LabGWIfaceName(conn.Spec.LabRef)
 			} else {
-				pKey = ovsnames.DevicePortKey(conn.Namespace, ep.device.Name, ep.endpoint.Interface)
+				pKey = names.DevicePortKey(conn.Namespace, ep.device.Name, ep.endpoint.Interface)
 			}
 
 			// Wait for NetworkAttachReconciler to create the OVS port before programming flows.
@@ -270,7 +269,7 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 		}
 	}
 
-	controllerutil.RemoveFinalizer(conn, finalizers.OVSCleanup)
+	controllerutil.RemoveFinalizer(conn, names.FinalizerOVSCleanup)
 	return ctrl.Result{}, r.Update(ctx, conn)
 }
 
@@ -307,7 +306,7 @@ func (r *ConnectionReconciler) connectionsForDevice(ctx context.Context, obj cli
 	dev := obj.(*laboratoryv1alpha1.Device)
 	var connList laboratoryv1alpha1.ConnectionList
 	if err := r.List(ctx, &connList, client.InNamespace(dev.Namespace),
-		client.MatchingLabels{laboratoryv1alpha1.LabelLab: dev.Spec.LabRef}); err != nil {
+		client.MatchingLabels{names.LabelLab: dev.Spec.LabRef}); err != nil {
 		return nil
 	}
 	var reqs []reconcile.Request

@@ -1,0 +1,8 @@
+# Namespace: labgroup-<UID> — filled by scenario scripts via LAB_NS env var
+# Operator assigns IP and writes WireGuard config to Secret client-tester
+apiVersion: laboratory.cybericebox.com/v1alpha1
+kind: LabGroupClient
+metadata:
+  name: tester
+  namespace: ${LAB_NS}
+spec: {}

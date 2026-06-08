@@ -1,18 +1,20 @@
 {
-  "cniVersion": "1.0.0",
+  "cniVersion": "0.3.1",
   "name": "cybericebox",
   "plugins": [
     {
       "type": "cni-gate",
       "agentSocket": "/run/cybericebox/node-agent.sock",
       "delegate": {
-        "type": "bridge",
-        "bridge": "cni0",
-        "isGateway": true,
+        "type": "ptp",
         "ipMasq": true,
+        "mtu": 1500,
         "ipam": {
           "type": "host-local",
-          "subnet": "10.244.0.0/16",
+          "dataDir": "/run/cni-ipam-state",
+          "ranges": [
+            [{"subnet": "10.244.0.0/16"}]
+          ],
           "routes": [{"dst": "0.0.0.0/0"}]
         }
       }

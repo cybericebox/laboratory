@@ -1,0 +1,29 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: icebox
+nodes:
+- role: control-plane
+  extraPortMappings:
+  - containerPort: 443
+    hostPort: 443
+    protocol: TCP
+  - containerPort: 80
+    hostPort: 80
+    protocol: TCP
+  - containerPort: 51820
+    hostPort: 51820
+    protocol: UDP
+- role: worker
+- role: worker
+networking:
+  podSubnet: "10.244.0.0/16"
+  serviceSubnet: "10.96.0.0/12"
+  apiServerAddress: "0.0.0.0"
+  apiServerPort: 6443
+kubeadmConfigPatches:
+- |
+  kind: ClusterConfiguration
+  apiServer:
+    certSANs:
+    - "127.0.0.1"
+    - "0.0.0.0"

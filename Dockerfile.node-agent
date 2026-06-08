@@ -18,7 +18,7 @@ RUN cd /tmp/openvswitch-${OVS_VERSION} \
     && rm -rf /tmp/openvswitch-${OVS_VERSION}
 
 # Stage 2: build Go binaries.
-FROM golang:1.24 AS go-builder
+FROM golang:1.26 AS go-builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -29,15 +29,18 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/cni-gate  ./cmd/cni-gate
 # Stage 3: final image.
 FROM ubuntu:22.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libssl3 libcap-ng0 libnuma1 \
+        libssl3 libcap-ng0 libnuma1 containernetworking-plugins jq \
+        iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
 # OVS binaries and schema.
 COPY --from=ovs-builder /ovs-install/usr/sbin/ovsdb-server   /usr/sbin/ovsdb-server
 COPY --from=ovs-builder /ovs-install/usr/sbin/ovs-vswitchd   /usr/sbin/ovs-vswitchd
-COPY --from=ovs-builder /ovs-install/usr/sbin/ovs-vsctl      /usr/sbin/ovs-vsctl
+COPY --from=ovs-builder /ovs-install/usr/bin/ovs-vsctl       /usr/bin/ovs-vsctl
+COPY --from=ovs-builder /ovs-install/usr/bin/ovs-appctl      /usr/bin/ovs-appctl
+COPY --from=ovs-builder /ovs-install/usr/bin/ovsdb-client    /usr/bin/ovsdb-client
+COPY --from=ovs-builder /ovs-install/usr/bin/ovsdb-tool      /usr/bin/ovsdb-tool
 COPY --from=ovs-builder /ovs-install/usr/share/openvswitch/  /usr/share/openvswitch/
-COPY --from=ovs-builder /ovs-install/usr/lib/openvswitch/    /usr/lib/openvswitch/
 
 # Go binaries.
 COPY --from=go-builder /out/node-agent /node-agent/bin/node-agent

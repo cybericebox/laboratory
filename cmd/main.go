@@ -17,6 +17,8 @@ limitations under the License.
 package main
 
 import (
+	_ "github.com/cybericebox/laboratory/pkg/runtime"
+
 	"crypto/tls"
 	"flag"
 	"os"
@@ -40,6 +42,7 @@ import (
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	laboratorycontroller "github.com/cybericebox/laboratory/internal/controller/laboratory"
+	"github.com/cybericebox/laboratory/internal/operator"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -90,6 +93,12 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	cfg, err := operator.LoadConfig()
+	if err != nil {
+		setupLog.Error(err, "load config")
+		os.Exit(1)
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -207,7 +216,8 @@ func main() {
 	if err = (&laboratorycontroller.LabGroupReconciler{
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
-		PublicVPNEndpoint: os.Getenv("PUBLIC_VPN_ENDPOINT"),
+		PublicVPNEndpoint: cfg.PublicVPNEndpoint,
+		VPNServicePort:    cfg.VPNServicePort,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LabGroup")
 		os.Exit(1)
@@ -220,9 +230,10 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&laboratorycontroller.LabReconciler{
-		Client:     mgr.GetClient(),
-		Scheme:     mgr.GetScheme(),
-		BaseDomain: os.Getenv("BASE_DOMAIN"),
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		BaseDomain:       cfg.BaseDomain,
+		ProxySourceCIDRs: cfg.ProxySourceCIDRs,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Lab")
 		os.Exit(1)

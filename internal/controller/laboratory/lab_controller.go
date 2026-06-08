@@ -24,18 +24,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
-	"github.com/cybericebox/laboratory/internal/finalizers"
-	"github.com/cybericebox/laboratory/internal/ovsnames"
+	"github.com/cybericebox/laboratory/internal/names"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 )
 
 const (
-
-	vniPoolNS     = "lab-system"
-	vniPoolPrefix = "vni"
-	vniPoolSize   = uint(65000)
-
-	labSubnetPool    = "lab-subnets"
 	vpnSubnetOctet2  = 8 // 10.8.N.0/24
 	inetSubnetOctet2 = 9 // 10.9.N.0/24
 )
@@ -77,8 +70,8 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return r.reconcileDelete(ctx, &lab)
 	}
 
-	if !controllerutil.ContainsFinalizer(&lab, finalizers.Lab) {
-		controllerutil.AddFinalizer(&lab, finalizers.Lab)
+	if !controllerutil.ContainsFinalizer(&lab, names.FinalizerLab) {
+		controllerutil.AddFinalizer(&lab, names.FinalizerLab)
 		if err := r.Update(ctx, &lab); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -264,7 +257,7 @@ func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, sw
 }
 
 func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
-	vniAllocator := poolpkg.NewAllocator(r.Client, vniPoolPrefix, vniPoolNS, vniPoolSize)
+	vniAllocator := poolpkg.NewAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
 
 	for _, tmpl := range lab.Spec.Devices {
 		deviceName := fmt.Sprintf("%s-%s", lab.Name, tmpl.Name)
@@ -294,8 +287,8 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 			ObjectMeta: metav1.ObjectMeta{
 				Name:       deviceName,
 				Namespace:  lab.Namespace,
-				Labels:     map[string]string{laboratoryv1alpha1.LabelLab: lab.Name},
-				Finalizers: []string{finalizers.OVSCleanup},
+				Labels:     map[string]string{names.LabelLab: lab.Name},
+				Finalizers: []string{names.FinalizerOVSCleanup},
 			},
 			Spec: laboratoryv1alpha1.DeviceSpec{
 				LabRef:     lab.Name,
@@ -337,7 +330,7 @@ func isSwitchDevice(name string, lab *laboratoryv1alpha1.Lab) bool {
 }
 
 func (r *LabReconciler) materializeConnections(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
-	vniAllocator := poolpkg.NewAllocator(r.Client, vniPoolPrefix, vniPoolNS, vniPoolSize)
+	vniAllocator := poolpkg.NewAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
 
 	for _, tmpl := range lab.Spec.Connections {
 		connName := connectionName(lab.Name, tmpl.Endpoints)
@@ -360,8 +353,8 @@ func (r *LabReconciler) materializeConnections(ctx context.Context, lab *laborat
 			ObjectMeta: metav1.ObjectMeta{
 				Name:       connName,
 				Namespace:  lab.Namespace,
-				Labels:     map[string]string{laboratoryv1alpha1.LabelLab: lab.Name},
-				Finalizers: []string{finalizers.OVSCleanup},
+				Labels:     map[string]string{names.LabelLab: lab.Name},
+				Finalizers: []string{names.FinalizerOVSCleanup},
 			},
 			Spec: laboratoryv1alpha1.ConnectionSpec{
 				LabRef:    lab.Name,
@@ -420,7 +413,7 @@ func connectionName(labName string, endpoints []laboratoryv1alpha1.EndpointSpec)
 func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha1.Lab) (ctrl.Result, error) {
 	var deviceList laboratoryv1alpha1.DeviceList
 	if err := r.List(ctx, &deviceList, client.InNamespace(lab.Namespace),
-		client.MatchingLabels{laboratoryv1alpha1.LabelLab: lab.Name}); err != nil {
+		client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -435,7 +428,7 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 
 	var connList laboratoryv1alpha1.ConnectionList
 	if err := r.List(ctx, &connList, client.InNamespace(lab.Namespace),
-		client.MatchingLabels{laboratoryv1alpha1.LabelLab: lab.Name}); err != nil {
+		client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -505,7 +498,7 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 
 	var deviceList laboratoryv1alpha1.DeviceList
 	if err := r.List(ctx, &deviceList, client.InNamespace(lab.Namespace),
-		client.MatchingLabels{laboratoryv1alpha1.LabelLab: lab.Name}); err != nil {
+		client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
 		return ctrl.Result{}, err
 	}
 	logger.Info("reconcileDelete: listed devices", "count", len(deviceList.Items))
@@ -514,11 +507,11 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 	// alongside devices (not after) to avoid a deadlock: DevicePortReconciler
 	// waits for Connection OVS-cleanup finalizers before removing the Device
 	// finalizer, but connections are only deleted by this function.
-	vniAllocator := poolpkg.NewAllocator(r.Client, vniPoolPrefix, vniPoolNS, vniPoolSize)
+	vniAllocator := poolpkg.NewAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
 
 	var connList laboratoryv1alpha1.ConnectionList
 	if err := r.List(ctx, &connList, client.InNamespace(lab.Namespace),
-		client.MatchingLabels{laboratoryv1alpha1.LabelLab: lab.Name}); err != nil {
+		client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
 		return ctrl.Result{}, err
 	}
 	for i := range connList.Items {
@@ -573,7 +566,7 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 		if len(parts) >= 3 {
 			var n uint
 			if _, scanErr := fmt.Sscanf(parts[2], "%d", &n); scanErr == nil {
-				subnetAllocator := poolpkg.NewAllocator(r.Client, labSubnetPool, lab.Namespace, 254)
+				subnetAllocator := poolpkg.NewAllocator(r.Client, names.PoolLabSubnets, lab.Namespace, 254)
 				if releaseErr := subnetAllocator.ReleaseIndex(ctx, n); releaseErr != nil {
 					logger.Error(releaseErr, "release lab subnet", "n", n)
 				}
@@ -581,10 +574,10 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 		}
 	}
 
-	_ = r.patchDeploymentNetworks(ctx, lab.Namespace, "vpn", ovsnames.LabIfaceName(lab.Name), false)
-	_ = r.patchDeploymentNetworks(ctx, lab.Namespace, "gateway", ovsnames.LabGWIfaceName(lab.Name), false)
+	_ = r.patchDeploymentNetworks(ctx, lab.Namespace, "vpn", names.LabIfaceName(lab.Name), false)
+	_ = r.patchDeploymentNetworks(ctx, lab.Namespace, "gateway", names.LabGWIfaceName(lab.Name), false)
 
-	controllerutil.RemoveFinalizer(lab, finalizers.Lab)
+	controllerutil.RemoveFinalizer(lab, names.FinalizerLab)
 	return ctrl.Result{}, r.Update(ctx, lab)
 }
 
@@ -598,7 +591,7 @@ func (r *LabReconciler) ensureSubnetAllocation(ctx context.Context, lab *laborat
 		return false, nil
 	}
 
-	subnetAllocator := poolpkg.NewAllocator(r.Client, labSubnetPool, lab.Namespace, 254)
+	subnetAllocator := poolpkg.NewAllocator(r.Client, names.PoolLabSubnets, lab.Namespace, 254)
 	n, err := subnetAllocator.AllocateIndex(ctx)
 	if err != nil {
 		return false, fmt.Errorf("allocate lab subnet: %w", err)
@@ -614,12 +607,12 @@ func (r *LabReconciler) ensureSubnetAllocation(ctx context.Context, lab *laborat
 
 func (r *LabReconciler) ensureNetworkFinalizers(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
 	changed := false
-	if lab.Spec.VPN.Enabled && !controllerutil.ContainsFinalizer(lab, finalizers.VPN) {
-		controllerutil.AddFinalizer(lab, finalizers.VPN)
+	if lab.Spec.VPN.Enabled && !controllerutil.ContainsFinalizer(lab, names.FinalizerVPN) {
+		controllerutil.AddFinalizer(lab, names.FinalizerVPN)
 		changed = true
 	}
-	if lab.Spec.Internet.Enabled && !controllerutil.ContainsFinalizer(lab, finalizers.Gateway) {
-		controllerutil.AddFinalizer(lab, finalizers.Gateway)
+	if lab.Spec.Internet.Enabled && !controllerutil.ContainsFinalizer(lab, names.FinalizerGateway) {
+		controllerutil.AddFinalizer(lab, names.FinalizerGateway)
 		changed = true
 	}
 	if changed {
@@ -641,7 +634,7 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 		}
 		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
 			svc.Spec.Selector = map[string]string{
-				laboratoryv1alpha1.LabelLab: lab.Name,
+				names.LabelLab: lab.Name,
 				"app":                       d.Name,
 			}
 			protocol := web.Protocol
@@ -669,7 +662,7 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 			// Allow ingress from the proxy pod identified by namespace+label.
 			peers := []networkingv1.NetworkPolicyPeer{{
 				NamespaceSelector: &metav1.LabelSelector{
-					MatchLabels: map[string]string{"kubernetes.io/metadata.name": laboratoryv1alpha1.SystemNamespace},
+					MatchLabels: map[string]string{"kubernetes.io/metadata.name": names.SystemNamespace},
 				},
 				PodSelector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{"app": "proxy"},
@@ -711,12 +704,12 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 // gateway Deployment pod-template annotation so node-agent attaches them.
 func (r *LabReconciler) ensureDeploymentAnnotations(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
 	if lab.Spec.VPN.Enabled {
-		if err := r.patchDeploymentNetworks(ctx, lab.Namespace, "vpn", ovsnames.LabIfaceName(lab.Name), true); err != nil {
+		if err := r.patchDeploymentNetworks(ctx, lab.Namespace, "vpn", names.LabIfaceName(lab.Name), true); err != nil {
 			return err
 		}
 	}
 	if lab.Spec.Internet.Enabled {
-		if err := r.patchDeploymentNetworks(ctx, lab.Namespace, "gateway", ovsnames.LabGWIfaceName(lab.Name), true); err != nil {
+		if err := r.patchDeploymentNetworks(ctx, lab.Namespace, "gateway", names.LabGWIfaceName(lab.Name), true); err != nil {
 			return err
 		}
 	}
@@ -737,7 +730,7 @@ func (r *LabReconciler) patchDeploymentNetworks(ctx context.Context, ns, deployN
 	entry := ifaceName + "@" + ifaceName
 	original := dep.DeepCopy()
 
-	ann := dep.Spec.Template.Annotations[laboratoryv1alpha1.AnnotationNetworks]
+	ann := dep.Spec.Template.Annotations[names.AnnotationNetworks]
 	var entries []string
 	for _, e := range strings.Split(ann, ",") {
 		if e = strings.TrimSpace(e); e != "" {
@@ -768,7 +761,7 @@ func (r *LabReconciler) patchDeploymentNetworks(ctx context.Context, ns, deployN
 	if dep.Spec.Template.Annotations == nil {
 		dep.Spec.Template.Annotations = map[string]string{}
 	}
-	dep.Spec.Template.Annotations[laboratoryv1alpha1.AnnotationNetworks] = strings.Join(entries, ",")
+	dep.Spec.Template.Annotations[names.AnnotationNetworks] = strings.Join(entries, ",")
 	return r.Patch(ctx, &dep, client.MergeFrom(original))
 }
 

@@ -9,7 +9,6 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 
-#define WG_PORT      bpf_htons(51820)
 #define WG_TYPE_DATA 4
 
 /* Fragment flag bits in ip->frag_off */
@@ -76,11 +75,17 @@ int wg_demux(struct xdp_md *ctx)
 	if (ip->frag_off & bpf_htons(IP_MF | IP_OFFSET))
 		return XDP_PASS;
 
+	/* Load config — needed for port filter and header rewrite */
+	__u32 cfg_key = 0;
+	struct xdp_cfg *cfg = bpf_map_lookup_elem(&xdp_cfg_map, &cfg_key);
+	if (!cfg)
+		return XDP_PASS;
+
 	/* Parse UDP */
 	struct udphdr *udp = (void *)(ip + 1);
 	if ((void *)(udp + 1) > data_end)
 		return XDP_PASS;
-	if (udp->dest != WG_PORT)
+	if (udp->dest != cfg->proxy_port)
 		return XDP_PASS;
 
 	/* Parse WireGuard header: type byte + 3 reserved + receiver_index (4 bytes) */
@@ -96,11 +101,6 @@ int wg_demux(struct xdp_md *ctx)
 
 	struct dst_entry *dst = bpf_map_lookup_elem(&wg_sessions, &ri);
 	if (!dst)
-		return XDP_PASS;
-
-	__u32 cfg_key = 0;
-	struct xdp_cfg *cfg = bpf_map_lookup_elem(&xdp_cfg_map, &cfg_key);
-	if (!cfg)
 		return XDP_PASS;
 
 	/* Rewrite Ethernet destination to gateway MAC */

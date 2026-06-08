@@ -155,19 +155,12 @@ spec:
                   attached to the lab.
                 properties:
                   dhcpServer:
-                    description: DHCPServer configures the embedded DHCP server for
-                      a network segment.
+                    description: |-
+                      DHCPServer enables the embedded DHCP server for a network segment.
+                      Subnet and gateway are derived from the lab's allocated CIDR (Status.*.CIDR).
                     properties:
-                      dns:
-                        type: string
                       enabled:
                         type: boolean
-                      gateway:
-                        type: string
-                      range:
-                        type: string
-                      subnet:
-                        type: string
                     type: object
                   enabled:
                     type: boolean
@@ -177,19 +170,12 @@ spec:
                   attached to the lab.
                 properties:
                   dhcpServer:
-                    description: DHCPServer configures the embedded DHCP server for
-                      a network segment.
+                    description: |-
+                      DHCPServer enables the embedded DHCP server for a network segment.
+                      Subnet and gateway are derived from the lab's allocated CIDR (Status.*.CIDR).
                     properties:
-                      dns:
-                        type: string
                       enabled:
                         type: boolean
-                      gateway:
-                        type: string
-                      range:
-                        type: string
-                      subnet:
-                        type: string
                     type: object
                   enabled:
                     type: boolean

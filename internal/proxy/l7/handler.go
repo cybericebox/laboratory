@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
 // BackendResolver maps (task, groupID) to a backend URL string.
@@ -97,7 +99,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // getServiceProtocol(task, namespace) returns the Service's first port name ("http" or "https").
 func ServiceResolver(getServiceProtocol func(task, namespace string) (string, error)) BackendResolver {
 	return func(task, groupID string) (string, error) {
-		ns := fmt.Sprintf("labgroup-%s", groupID)
+		ns := laboratoryv1alpha1.LabGroupNamespace(groupID)
 		proto, err := getServiceProtocol(task, ns)
 		if err != nil {
 			return "", err

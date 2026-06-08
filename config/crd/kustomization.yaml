@@ -3,9 +3,10 @@
 # It should be run by config/default
 resources:
 - bases/allocation.cybericebox.com_pools.yaml
-- bases/laboratory.cybericebox.com_laboratories.yaml
+- bases/laboratory.cybericebox.com_labs.yaml
+- bases/laboratory.cybericebox.com_labgroups.yaml
+- bases/laboratory.cybericebox.com_labgroupclients.yaml
 - bases/laboratory.cybericebox.com_connections.yaml
-- bases/laboratory.cybericebox.com_unmanagedswitches.yaml
 - bases/laboratory.cybericebox.com_devices.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 

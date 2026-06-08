@@ -1,0 +1,87 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: laboratory-proxy
+  namespace: laboratory-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: laboratory-proxy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: laboratory-manager-role
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-proxy
+    namespace: laboratory-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: laboratory-proxy
+  namespace: laboratory-system
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: laboratory-proxy
+  template:
+    metadata:
+      labels:
+        app: laboratory-proxy
+    spec:
+      serviceAccountName: laboratory-proxy
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: proxy
+          image: cybericebox/proxy:latest
+          imagePullPolicy: Never
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN"]
+          ports:
+            - name: https
+              containerPort: 443
+              hostPort: 443
+            - name: wg-udp
+              containerPort: 51820
+              protocol: UDP
+              hostPort: 51820
+          env:
+            - name: KUBERNETES_SERVICE_HOST
+              value: "127.0.0.1"
+            - name: KUBERNETES_SERVICE_PORT
+              value: "6443"
+            - name: TLS_CERT_PATH
+              value: /certs/tls.crt
+            - name: TLS_KEY_PATH
+              value: /certs/tls.key
+            - name: JWT_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: proxy-jwt
+                  key: jwt_public.pem
+            - name: BASE_DOMAIN
+              value: test.local
+            - name: UDP_LISTEN_ADDR
+              value: "0.0.0.0:51820"
+            - name: EXTERNAL_INTERFACE
+              value: eth0
+          volumeMounts:
+            - name: tls
+              mountPath: /certs
+              readOnly: true
+      volumes:
+        - name: tls
+          secret:
+            secretName: proxy-tls
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          effect: NoSchedule

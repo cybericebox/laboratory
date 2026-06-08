@@ -15,7 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
-	"github.com/cybericebox/laboratory/internal/finalizers"
+	"github.com/cybericebox/laboratory/internal/names"
 )
 
 // DeviceReconciler reconciles a Device object.
@@ -36,7 +36,7 @@ func (r *DeviceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	if !device.DeletionTimestamp.IsZero() {
-		if controllerutil.ContainsFinalizer(&device, finalizers.OVSCleanup) {
+		if controllerutil.ContainsFinalizer(&device, names.FinalizerOVSCleanup) {
 			// node-agent removes this finalizer after OVS cleanup; poll.
 			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 		}
@@ -119,13 +119,13 @@ func (r *DeviceReconciler) createPod(ctx context.Context, device *laboratoryv1al
 			Name:      device.Name,
 			Namespace: device.Namespace,
 			Labels: map[string]string{
-				laboratoryv1alpha1.LabelLab:               device.Spec.LabRef,
-				"app":                                     device.Spec.Name,
-				"laboratory.cybericebox.com/device":       device.Spec.Name,
+				names.LabelLab:    device.Spec.LabRef,
+				"app":             device.Spec.Name,
+				names.LabelDevice: device.Spec.Name,
 			},
 			Annotations: map[string]string{
-				"cybericebox.com/device":                  device.Spec.Name,
-				laboratoryv1alpha1.AnnotationNetworks:     deviceNetworkAnnotation(device),
+				names.AnnotationDevice:   device.Spec.Name,
+				names.AnnotationNetworks: deviceNetworkAnnotation(device),
 			},
 		},
 		Spec: corev1.PodSpec{

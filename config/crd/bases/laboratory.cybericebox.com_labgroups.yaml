@@ -40,8 +40,12 @@ spec:
             description: LabGroupSpec defines the desired state of LabGroup.
             properties:
               vpn:
-                description: LabGroupVPNSpec holds optional VPN keypair reference.
+                description: LabGroupVPNSpec holds VPN server configuration.
                 properties:
+                  clientSubnet:
+                    description: ClientSubnet is the WireGuard address pool for VPN
+                      clients (e.g. "10.8.0.0/24").
+                    type: string
                   keypairSecretRef:
                     description: |-
                       KeypairSecretRef points to an existing WireGuard keypair Secret.
@@ -57,6 +61,10 @@ spec:
                         type: string
                     type: object
                     x-kubernetes-map-type: atomic
+                  supernet:
+                    description: Supernet is the larger network that encompasses all
+                      lab subnets (e.g. "10.8.0.0/16").
+                    type: string
                 type: object
             type: object
           status:
@@ -76,13 +84,23 @@ spec:
               vpn:
                 description: LabGroupVPNStatus exposes VPN server connection details.
                 properties:
+                  backend:
+                    description: |-
+                      Backend is the in-cluster pod address (podIP:port) of the VPN server, used by the demux proxy.
+                      Set by the controller from the VPN pod's IP; empty when no ready replica exists.
+                    type: string
                   endpoint:
-                    description: Endpoint is the public UDP address of the VPN server.
+                    description: Endpoint is the public UDP address of the VPN server
+                      (host:port) advertised to clients.
                     type: string
                   publicKey:
                     description: PublicKey is the WireGuard public key used as routing
                       key for demux.
                     type: string
+                  registered:
+                    description: Registered is true when the VPN deployment has at
+                      least one ready replica.
+                    type: boolean
                   secretRef:
                     description: SecretRef is "<namespace>/<name>" of the vpn-server-keypair
                       Secret.

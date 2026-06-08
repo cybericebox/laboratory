@@ -9,8 +9,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
-const wgPort = 51820
-
 // Demux handles incoming WireGuard UDP packets.
 // Type 1 (handshake init) and Type 2 (handshake response) are handled in userspace.
 // Type 4 (transport data) is handled by XDP when loaded; falls back to userspace.
@@ -21,7 +19,7 @@ type Demux struct {
 	xdpHandle *xdp.XDPHandle
 }
 
-func New(listenAddr string, table *Table, ct *ConnTrack) (*Demux, error) {
+func New(listenAddr, iface string, table *Table, ct *ConnTrack) (*Demux, error) {
 	addr, err := net.ResolveUDPAddr("udp4", listenAddr)
 	if err != nil {
 		return nil, fmt.Errorf("resolve addr %s: %w", listenAddr, err)
@@ -34,7 +32,7 @@ func New(listenAddr string, table *Table, ct *ConnTrack) (*Demux, error) {
 	d := &Demux{table: table, conntrack: ct, conn: conn}
 
 	// Best-effort XDP load; failure is non-fatal — proxy continues with userspace demux.
-	if h, err := xdp.Load("eth0", wgPort); err != nil {
+	if h, err := xdp.Load(iface, uint16(addr.Port)); err != nil {
 		ctrl.Log.WithName("demux").Info("XDP not loaded, using userspace fallback", "reason", err)
 	} else if h != nil {
 		ct.SetXDP(h)
@@ -68,6 +66,7 @@ func (d *Demux) Run(stop <-chan struct{}) {
 		if len(pkt) < 1 {
 			continue
 		}
+		ctrl.Log.WithName("demux").Info("recv", "src", src, "type", pkt[0], "len", n)
 		switch pkt[0] {
 		case 1:
 			d.handleType1(pkt, src)
@@ -80,17 +79,19 @@ func (d *Demux) Run(stop <-chan struct{}) {
 }
 
 func (d *Demux) handleType1(pkt []byte, src *net.UDPAddr) {
+	log := ctrl.Log.WithName("demux")
 	_, backend, found := d.table.FindByMac1(pkt)
 	if !found {
+		log.V(1).Info("no table entry matched mac1", "src", src)
 		return
 	}
 	if backend == "" {
-		// Operator has not observed a Running VPN pod yet; drop the handshake.
-		// The client will retry; the next reconcile will populate Backend.
+		log.Info("backend empty, dropping handshake", "src", src)
 		return
 	}
 	resolved, err := net.ResolveUDPAddr("udp4", backend)
 	if err != nil {
+		log.Error(err, "resolve backend failed", "backend", backend, "src", src)
 		return
 	}
 	if len(pkt) < 8 {
@@ -110,8 +111,10 @@ func (d *Demux) handleType1(pkt []byte, src *net.UDPAddr) {
 	// Send via main listen socket so backend's type-2 response returns to it,
 	// not to an ephemeral socket that would be closed before the reply arrives.
 	if _, err := d.conn.WriteToUDP(pkt, resolved); err != nil {
+		log.Error(err, "forward type1 failed", "dst", resolved)
 		return
 	}
+	log.Info("forwarded handshake init", "src", src, "backend", resolved)
 }
 
 func (d *Demux) handleType2(pkt []byte, src *net.UDPAddr) {
@@ -121,7 +124,7 @@ func (d *Demux) handleType2(pkt []byte, src *net.UDPAddr) {
 	si := binary.LittleEndian.Uint32(pkt[4:8])
 	ci := binary.LittleEndian.Uint32(pkt[8:12])
 
-	clientDst, found := d.conntrack.Lookup(ci)
+	clientDst, found := d.conntrack.LookupSender(ci)
 	if !found {
 		return
 	}

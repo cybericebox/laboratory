@@ -21,7 +21,7 @@ import (
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
-	"github.com/cybericebox/laboratory/internal/finalizers"
+	"github.com/cybericebox/laboratory/internal/names"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
@@ -59,8 +59,8 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return r.reconcileDelete(ctx, &lg)
 	}
 
-	if !controllerutil.ContainsFinalizer(&lg, finalizers.LabGroup) {
-		controllerutil.AddFinalizer(&lg, finalizers.LabGroup)
+	if !controllerutil.ContainsFinalizer(&lg, names.FinalizerLabGroup) {
+		controllerutil.AddFinalizer(&lg, names.FinalizerLabGroup)
 		if err := r.Update(ctx, &lg); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -100,7 +100,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Error(err, "ensure VPN service account")
 		return ctrl.Result{}, err
 	}
-	if err = r.ensureRoleBinding(ctx, ns, "vpn", "laboratory-manager-role"); err != nil {
+	if err = r.ensureRoleBinding(ctx, ns, "vpn", names.RoleManagerName); err != nil {
 		logger.Error(err, "ensure VPN role binding")
 		return ctrl.Result{}, err
 	}
@@ -113,7 +113,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Error(err, "ensure gateway service account")
 		return ctrl.Result{}, err
 	}
-	if err = r.ensureRoleBinding(ctx, ns, "gateway", "laboratory-manager-role"); err != nil {
+	if err = r.ensureRoleBinding(ctx, ns, "gateway", names.RoleManagerName); err != nil {
 		logger.Error(err, "ensure gateway role binding")
 		return ctrl.Result{}, err
 	}
@@ -122,12 +122,12 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	if err = r.ensurePool(ctx, ns, "vpn-clients", poolpkg.PoolTypeVPNClients, 0, 254); err != nil {
+	if err = r.ensurePool(ctx, ns, names.PoolVPNClients, poolpkg.PoolTypeVPNClients, 0, 254); err != nil {
 		logger.Error(err, "ensure vpn-clients pool")
 		return ctrl.Result{}, err
 	}
 
-	if err = r.ensurePool(ctx, ns, "lab-subnets", poolpkg.PoolTypeLabSubnets, 1, 254); err != nil {
+	if err = r.ensurePool(ctx, ns, names.PoolLabSubnets, poolpkg.PoolTypeLabSubnets, 1, 254); err != nil {
 		logger.Error(err, "ensure lab-subnets pool")
 		return ctrl.Result{}, err
 	}
@@ -215,7 +215,7 @@ func (r *LabGroupReconciler) reconcileDelete(ctx context.Context, lg *laboratory
 	var namespace corev1.Namespace
 	if err := r.Get(ctx, types.NamespacedName{Name: ns}, &namespace); err != nil {
 		if errors.IsNotFound(err) {
-			controllerutil.RemoveFinalizer(lg, finalizers.LabGroup)
+			controllerutil.RemoveFinalizer(lg, names.FinalizerLabGroup)
 			return ctrl.Result{}, r.Update(ctx, lg)
 		}
 		return ctrl.Result{}, err
@@ -238,14 +238,14 @@ func (r *LabGroupReconciler) ensureNamespace(ctx context.Context, ns string, own
 	n := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   ns,
-			Labels: map[string]string{"laboratory.cybericebox.com/group": owner.Name},
+			Labels: map[string]string{names.LabelGroup: owner.Name},
 		},
 	}
 	return r.Create(ctx, n)
 }
 
 func (r *LabGroupReconciler) ensureVPNKeypair(ctx context.Context, ns string, lg *laboratoryv1alpha1.LabGroup) (pubKey, secretName string, err error) {
-	secretName = "vpn-server-keypair"
+	secretName = names.SecretVPNKeypair
 
 	if lg.Spec.VPN.KeypairSecretRef != nil {
 		ref := lg.Spec.VPN.KeypairSecretRef
@@ -326,7 +326,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      map[string]string{"app": "vpn"},
-					Annotations: map[string]string{laboratoryv1alpha1.AnnotationNetworks: "eth0@" + laboratoryv1alpha1.DefaultNetworkValue},
+					Annotations: map[string]string{names.AnnotationNetworks: "eth0@" + names.DefaultNetworkValue},
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: "vpn",
@@ -344,7 +344,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 								Name: "PRIVATE_KEY",
 								ValueFrom: &corev1.EnvVarSource{
 									SecretKeyRef: &corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{Name: "vpn-server-keypair"},
+										LocalObjectReference: corev1.LocalObjectReference{Name: names.SecretVPNKeypair},
 										Key:                  "privateKey",
 									},
 								},
@@ -381,7 +381,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      map[string]string{"app": "gateway"},
-					Annotations: map[string]string{laboratoryv1alpha1.AnnotationNetworks: "eth0@" + laboratoryv1alpha1.DefaultNetworkValue},
+					Annotations: map[string]string{names.AnnotationNetworks: "eth0@" + names.DefaultNetworkValue},
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: "gateway",
@@ -485,7 +485,7 @@ func (r *LabGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		if err := r.Get(ctx, types.NamespacedName{Name: pod.Namespace}, &nsObj); err != nil {
 			return nil
 		}
-		owner := nsObj.Labels["laboratory.cybericebox.com/group"]
+		owner := nsObj.Labels[names.LabelGroup]
 		if owner == "" {
 			return nil
 		}

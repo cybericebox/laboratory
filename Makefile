@@ -1,5 +1,11 @@
 # Image URL to use all building/pushing image targets
-IMG ?= controller:latest
+IMG       ?= controller:latest
+AGENT_IMG ?= ghcr.io/cybericebox/laboratory/node-agent:local
+VPN_IMG   ?= cybericebox/vpn:latest
+GW_IMG    ?= cybericebox/gateway:latest
+PROXY_IMG ?= cybericebox/proxy:latest
+
+KIND_CLUSTER_NAME ?= icebox
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -52,6 +58,78 @@ generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and
 .PHONY: generate-api
 generate-api:
 	./hack/update-codegen.sh ## Generate code API client, lister, and informer implementations.
+
+##@ Kind (local testing)
+
+.PHONY: cluster-up
+cluster-up: ## Create 3-node Kind cluster (1 control-plane + 2 workers)
+	$(KIND) create cluster --config hack/kind-config.yaml --name $(KIND_CLUSTER_NAME)
+	$(KUBECTL) create namespace lab-system --dry-run=client -o yaml | $(KUBECTL) apply -f -
+
+.PHONY: cluster-down
+cluster-down: ## Delete Kind cluster
+	$(KIND) delete cluster --name $(KIND_CLUSTER_NAME)
+
+.PHONY: docker-build-agent
+docker-build-agent: ## Build node-agent Docker image
+	$(CONTAINER_TOOL) build -t $(AGENT_IMG) -f Dockerfile.node-agent .
+
+.PHONY: docker-build-vpn
+docker-build-vpn: ## Build VPN server Docker image
+	$(CONTAINER_TOOL) build -t $(VPN_IMG) -f Dockerfile.vpn .
+
+.PHONY: docker-build-gateway
+docker-build-gateway: ## Build gateway Docker image
+	$(CONTAINER_TOOL) build -t $(GW_IMG) -f Dockerfile.gateway .
+
+.PHONY: docker-build-proxy
+docker-build-proxy: ## Build proxy Docker image
+	$(CONTAINER_TOOL) build -t $(PROXY_IMG) -f Dockerfile.proxy .
+
+.PHONY: kind-load-proxy
+kind-load-proxy: docker-build-proxy ## Build and load proxy image into Kind cluster
+	$(KIND) load docker-image $(PROXY_IMG) --name $(KIND_CLUSTER_NAME)
+
+.PHONY: docker-build-all
+docker-build-all: docker-build docker-build-agent docker-build-vpn docker-build-gateway docker-build-proxy ## Build all service images
+
+.PHONY: kind-load
+kind-load: docker-build-all ## Build and load all images into Kind cluster
+	$(KIND) load docker-image $(IMG)       --name $(KIND_CLUSTER_NAME)
+	$(KIND) load docker-image $(AGENT_IMG) --name $(KIND_CLUSTER_NAME)
+	$(KIND) load docker-image $(VPN_IMG)   --name $(KIND_CLUSTER_NAME)
+	$(KIND) load docker-image $(PROXY_IMG) --name $(KIND_CLUSTER_NAME)
+	$(KIND) load docker-image $(GW_IMG)    --name $(KIND_CLUSTER_NAME)
+
+.PHONY: kind-patch-agent
+kind-patch-agent: ## Patch node-agent DaemonSet to use local image
+	$(KUBECTL) set image daemonset/laboratory-node-agent \
+		node-agent=$(AGENT_IMG) ovs=$(AGENT_IMG) install-cni=$(AGENT_IMG) \
+		-n laboratory-system
+	$(KUBECTL) patch daemonset laboratory-node-agent -n laboratory-system \
+		--type=json -p='[{"op":"replace","path":"/spec/template/spec/initContainers/0/imagePullPolicy","value":"Never"},{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"Never"},{"op":"replace","path":"/spec/template/spec/containers/1/imagePullPolicy","value":"Never"}]'
+
+.PHONY: kind-deploy
+kind-deploy: kind-load install deploy ## Full local deploy: build all + load + CRDs + controller + node-agent
+	$(KUBECTL) create namespace lab-system --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUSTOMIZE) build config/node-agent | $(KUBECTL) apply -f -
+	$(MAKE) kind-patch-agent
+	@echo ""
+	@echo "Cluster ready. Run tests:"
+	@echo "  hack/test/run.sh single-node"
+	@echo "  hack/test/run.sh multi-node"
+	@echo "  hack/test/run.sh vpn"
+
+.PHONY: generate-bpf
+generate-bpf: ## Regenerate XDP BPF objects — runs in Docker (needs clang + libbpf)
+	$(CONTAINER_TOOL) run --rm \
+		-v "$(CURDIR):/workspace" \
+		-w /workspace/internal/proxy/demux/xdp \
+		-e GOPATH=/go \
+		-e GOMODCACHE=/go/pkg/mod \
+		-v "$(shell go env GOPATH)/pkg/mod:/go/pkg/mod:ro" \
+		golang:1.26-bookworm \
+		bash -c "apt-get update -q && apt-get install -y -q clang libbpf-dev linux-libc-dev && go generate ."
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.

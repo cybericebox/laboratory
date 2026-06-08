@@ -13,14 +13,14 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
+
 // Mac1Key is the 32-byte key used to compute and verify mac1 in WireGuard handshake init.
 type Mac1Key [32]byte
 
 type TableEntry struct {
 	UID     string
 	Mac1Key Mac1Key
-	// Backend is the routable target (podIP:port) for the VPN server of this
-	// group. Empty when the operator has not yet observed a Running pod.
+	// Backend is the in-cluster Service address (host:port) for the VPN server of this group.
 	Backend string
 }
 
@@ -86,8 +86,7 @@ func (t *Table) Delete(uid string) {
 // FindByMac1 brute-forces mac1 verification.
 // packet is the raw WireGuard type-1 packet (UDP payload).
 // mac1 occupies bytes [len-32 : len-16]; the message body for MAC is packet[:len-32].
-// Returns the matched group UID and its registered backend (podIP:port); backend
-// is empty when the operator has not yet seen a Running VPN pod.
+// Returns the matched group UID and its VPN Service backend (host:port).
 func (t *Table) FindByMac1(packet []byte) (uid, backend string, found bool) {
 	if len(packet) < 32 {
 		return "", "", false
@@ -102,17 +101,19 @@ func (t *Table) FindByMac1(packet []byte) (uid, backend string, found bool) {
 
 	for _, e := range entries {
 		mac := computeMAC(e.Mac1Key[:], msgBody)
-		if bytesEqual(mac[:16], mac1InPkt) {
+		if bytesEqual(mac[:], mac1InPkt) {
 			return e.UID, e.Backend, true
 		}
 	}
 	return "", "", false
 }
 
-func computeMAC(key, msg []byte) [32]byte {
-	h, _ := blake2s.New256(key)
+// computeMAC computes BLAKE2s-128 (WireGuard "MAC" function per the spec).
+// Using New128 — NOT New256 truncated; the output is different.
+func computeMAC(key, msg []byte) [16]byte {
+	h, _ := blake2s.New128(key)
 	h.Write(msg)
-	var out [32]byte
+	var out [16]byte
 	copy(out[:], h.Sum(nil))
 	return out
 }
@@ -132,14 +133,17 @@ func bytesEqual(a, b []byte) bool {
 // LabGroupWatcher is a controller-runtime reconciler keeping Table in sync with LabGroups.
 type LabGroupWatcher struct {
 	client.Client
-	Table *Table
+	Table          *Table
+	VPNServicePort int
 }
 
 func (w *LabGroupWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := ctrl.LoggerFrom(ctx)
+
 	var lg laboratoryv1alpha1.LabGroup
 	if err := w.Get(ctx, req.NamespacedName, &lg); err != nil {
 		if client.IgnoreNotFound(err) == nil {
-			w.Table.Delete(req.Name) // use name as UID fallback on 404
+			w.Table.Delete(req.Name)
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -147,10 +151,17 @@ func (w *LabGroupWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		w.Table.Delete(string(lg.UID))
 		return ctrl.Result{}, nil
 	}
-	if lg.Status.VPN.PublicKey == "" {
+
+	pubKey := lg.Status.VPN.PublicKey
+	backend := lg.Status.VPN.Backend
+	if pubKey == "" || backend == "" {
+		// VPN not yet ready — remove stale entry if present.
+		w.Table.Delete(string(lg.UID))
 		return ctrl.Result{}, nil
 	}
-	if err := w.Table.Update(string(lg.UID), lg.Status.VPN.PublicKey, lg.Status.VPN.Backend); err != nil {
+
+	log.Info("updating demux table", "group", lg.Name, "backend", backend)
+	if err := w.Table.Update(string(lg.UID), pubKey, backend); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil

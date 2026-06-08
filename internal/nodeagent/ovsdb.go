@@ -141,7 +141,15 @@ func (m *OVSManager) ensureBridge() error {
 }
 
 // VethPeerName returns the pod-side name of the veth pair for a given host-side (stableKey).
-func VethPeerName(stableKey string) string { return "v" + stableKey }
+// Always ≤15 chars (Linux IFNAMSIZ limit). Falls back to "v"+sha256[:6] when the naive
+// "v"+stableKey would exceed the limit.
+func VethPeerName(stableKey string) string {
+	if peer := "v" + stableKey; len(peer) <= 15 {
+		return peer
+	}
+	h := sha256.Sum256([]byte(stableKey))
+	return fmt.Sprintf("v%x", h[:6]) // 13 chars, collision-free
+}
 
 // AddVethPort creates a veth pair where stableKey is the host-side name (stays in OVS/root
 // netns) and VethPeerName(stableKey) is the pod-side (moved to pod netns by the caller).

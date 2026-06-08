@@ -19,7 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
-	"github.com/cybericebox/laboratory/internal/finalizers"
+	"github.com/cybericebox/laboratory/internal/names"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 )
 
@@ -54,8 +54,8 @@ func (r *LabGroupClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 }
 
 func (r *LabGroupClientReconciler) reconcileCreate(ctx context.Context, lgc *laboratoryv1alpha1.LabGroupClient) (ctrl.Result, error) {
-	if !controllerutil.ContainsFinalizer(lgc, finalizers.LabGroupClient) {
-		controllerutil.AddFinalizer(lgc, finalizers.LabGroupClient)
+	if !controllerutil.ContainsFinalizer(lgc, names.FinalizerLabGroupClient) {
+		controllerutil.AddFinalizer(lgc, names.FinalizerLabGroupClient)
 		if err := r.Update(ctx, lgc); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -92,7 +92,7 @@ func (r *LabGroupClientReconciler) reconcileCreate(ctx context.Context, lgc *lab
 			return ctrl.Result{}, nil
 		}
 
-		allocator := poolpkg.NewAllocator(r.Client, "vpn-clients", lgc.Namespace, 254)
+		allocator := poolpkg.NewAllocator(r.Client, names.PoolVPNClients, lgc.Namespace, 254)
 		idx, err := allocator.AllocateIndex(ctx)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("allocate VPN IP: %w", err)
@@ -108,7 +108,7 @@ func (r *LabGroupClientReconciler) reconcileCreate(ctx context.Context, lgc *lab
 		ctrl.LoggerFrom(ctx).V(1).Info("parent LabGroup not yet readable", "reason", lgErr.Error())
 	}
 
-	secretName := fmt.Sprintf("client-%s", lgc.Name)
+	secretName := names.SecretClientPrefix + lgc.Name
 	if err := r.ensureClientSecret(ctx, lgc, secretName, secretParams{
 		PublicKey:       pubKey,
 		PrivateKey:      string(privKeyB64),
@@ -145,7 +145,7 @@ func (r *LabGroupClientReconciler) reconcileCreate(ctx context.Context, lgc *lab
 
 func (r *LabGroupClientReconciler) reconcileDelete(ctx context.Context, lgc *laboratoryv1alpha1.LabGroupClient) (ctrl.Result, error) {
 	if lgc.Status.AssignedIP != "" {
-		allocator := poolpkg.NewAllocator(r.Client, "vpn-clients", lgc.Namespace, 254)
+		allocator := poolpkg.NewAllocator(r.Client, names.PoolVPNClients, lgc.Namespace, 254)
 		idx, err := ipToIndex(lgc.Status.AssignedIP)
 		if err != nil {
 			return ctrl.Result{}, err
@@ -155,7 +155,7 @@ func (r *LabGroupClientReconciler) reconcileDelete(ctx context.Context, lgc *lab
 		}
 	}
 
-	secretName := fmt.Sprintf("client-%s", lgc.Name)
+	secretName := names.SecretClientPrefix + lgc.Name
 	var s corev1.Secret
 	if err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: lgc.Namespace}, &s); err == nil {
 		if err = r.Delete(ctx, &s); err != nil && !errors.IsNotFound(err) {
@@ -163,7 +163,7 @@ func (r *LabGroupClientReconciler) reconcileDelete(ctx context.Context, lgc *lab
 		}
 	}
 
-	controllerutil.RemoveFinalizer(lgc, finalizers.LabGroupClient)
+	controllerutil.RemoveFinalizer(lgc, names.FinalizerLabGroupClient)
 	return ctrl.Result{}, r.Update(ctx, lgc)
 }
 
@@ -198,7 +198,7 @@ func (r *LabGroupClientReconciler) lookupParentVPN(ctx context.Context, ns strin
 	if err := r.Get(ctx, types.NamespacedName{Name: ns}, &nsObj); err != nil {
 		return "", "", err
 	}
-	owner := nsObj.Labels["laboratory.cybericebox.com/group"]
+	owner := nsObj.Labels[names.LabelGroup]
 	if owner == "" {
 		return "", "", fmt.Errorf("namespace %q missing group label", ns)
 	}

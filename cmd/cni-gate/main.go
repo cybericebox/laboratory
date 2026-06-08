@@ -1,11 +1,13 @@
 package main
 
 import (
+	_ "github.com/cybericebox/laboratory/pkg/runtime"
+
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/containernetworking/cni/pkg/invoke"
@@ -20,7 +22,8 @@ import (
 )
 
 const (
-	annotationDefault  = "network.cybericebox.com/default"
+	annotationNetworks = "network.cybericebox.com/networks"
+	defaultNetworkName = "default"
 	defaultAgentSocket = "/run/openvswitch/node-agent.sock"
 )
 
@@ -41,24 +44,21 @@ func cmdADD(args *skel.CmdArgs) error {
 		return err
 	}
 
-	annotation, hasAnnotation, err := getPodAnnotation(conf, args.Args, annotationDefault)
+	annotation, hasAnnotation, err := getPodAnnotation(conf, args.Args, annotationNetworks)
 	if err != nil {
 		return err
 	}
 
-	skipDelegate, targetIface := parseDefaultAnnotation(annotation, !hasAnnotation)
+	accessIface := findDefaultIface(annotation) // "" if no iface@default entry
 
 	var result *cniv1.Result
 
-	if skipDelegate {
-		if err := createDummyEth0(args.Netns); err != nil {
-			return fmt.Errorf("create dummy eth0: %w", err)
-		}
-		result = &cniv1.Result{CNIVersion: conf.CNIVersion}
-	} else {
+	switch {
+	case !hasAnnotation || accessIface == "eth0":
+		// Regular pod (no annotation) or explicit eth0@default → delegate to k8s CNI normally.
 		dt := delegateType(conf)
 		if dt == "" {
-			return fmt.Errorf("cni-gate: delegate.type is required when annotation is not empty-string")
+			return fmt.Errorf("cni-gate: delegate.type is required for pods with default network")
 		}
 		delegateResult, err := invoke.DelegateAdd(context.Background(), dt, marshalDelegate(conf), nil)
 		if err != nil {
@@ -69,14 +69,48 @@ func cmdADD(args *skel.CmdArgs) error {
 			return fmt.Errorf("convert delegate result: %w", err)
 		}
 
-		if targetIface != "eth0" && targetIface != "" {
-			if err := renameIface(args.Netns, "eth0", targetIface); err != nil {
-				return fmt.Errorf("rename eth0→%s: %w", targetIface, err)
-			}
-			if err := createDummyEth0(args.Netns); err != nil {
-				return fmt.Errorf("create dummy eth0 after rename: %w", err)
+	case accessIface != "":
+		// Device pod with external access (e.g. "accessport@default"):
+		// delegate to k8s CNI for the named access interface, then prepend
+		// eth0 stub so containerd's selectPodIP can find a sandbox interface.
+		// The real IP is moved to IPs[0] so Kubernetes reports the correct
+		// podIP (not 127.0.0.1 from the stub).
+		dt := delegateType(conf)
+		if dt == "" {
+			return fmt.Errorf("cni-gate: delegate.type is required for access port")
+		}
+		orig := os.Getenv("CNI_IFNAME")
+		os.Setenv("CNI_IFNAME", accessIface)
+		delegateResult, delegateErr := invoke.DelegateAdd(context.Background(), dt, marshalDelegate(conf), nil)
+		os.Setenv("CNI_IFNAME", orig)
+		if delegateErr != nil {
+			return fmt.Errorf("delegate ADD for %s: %w", accessIface, delegateErr)
+		}
+		result, err = cniv1.NewResultFromResult(delegateResult)
+		if err != nil {
+			return fmt.Errorf("convert delegate result: %w", err)
+		}
+		// extendWithEth0 prepends eth0 stub (Interfaces[0], Sandbox=netns) and
+		// adds 127.0.0.1 as IPs[0] pointing to it. selectPodIP in containerd
+		// iterates sandbox interfaces in order, so it picks eth0 first and uses
+		// IPs[0] (127.0.0.1) as podIP. To make it use the real IP instead,
+		// redirect the real IP entry (IPs[1+]) to point to eth0 (index 0) and
+		// drop the stub IP entry.
+		result = extendWithEth0(result, args.Netns)
+		// Find the real IP (points to shifted interface index ≥1) and redirect
+		// it to eth0 (index 0). Keep only that one IP entry.
+		for _, ip := range result.IPs {
+			if ip.Interface != nil && *ip.Interface != 0 {
+				ip.Interface = cniv1.Int(0) // attribute real IP to eth0
+				result.IPs = []*cniv1.IPConfig{ip}
+				break
 			}
 		}
+
+	default:
+		// Device pod: annotation present, no @default entry.
+		// Return stub eth0 so containerd stores NetworkInfo; real interfaces wired by node-agent.
+		result = extendWithEth0(&cniv1.Result{CNIVersion: conf.CNIVersion}, args.Netns)
 	}
 
 	return cnitypes.PrintResult(result, conf.CNIVersion)
@@ -92,22 +126,34 @@ func cmdDEL(args *skel.CmdArgs) error {
 	if len(conf.Delegate) == 0 {
 		return nil
 	}
-	return invoke.DelegateDel(context.Background(), delegateType(conf), marshalDelegate(conf), nil)
+
+	annotation, hasAnnotation, _ := getPodAnnotation(conf, args.Args, annotationNetworks)
+	accessIface := findDefaultIface(annotation)
+
+	switch {
+	case !hasAnnotation || accessIface == "eth0":
+		return invoke.DelegateDel(context.Background(), delegateType(conf), marshalDelegate(conf), nil)
+	case accessIface != "":
+		orig := os.Getenv("CNI_IFNAME")
+		os.Setenv("CNI_IFNAME", accessIface)
+		err := invoke.DelegateDel(context.Background(), delegateType(conf), marshalDelegate(conf), nil)
+		os.Setenv("CNI_IFNAME", orig)
+		return err
+	}
+	return nil
 }
 
-// parseDefaultAnnotation interprets the network.cybericebox.com/default annotation.
-// noAnnotation=true means the key was absent → default eth0 behaviour.
-// annotation="" (explicitly set) → skipDelegate=true (no k8s network).
-// annotation="eth0" or noAnnotation → skipDelegate=false, targetIface="eth0".
-// annotation="custom" → skipDelegate=false, targetIface="custom".
-func parseDefaultAnnotation(annotation string, noAnnotation bool) (skipDelegate bool, targetIface string) {
-	if noAnnotation || annotation == "eth0" {
-		return false, "eth0"
+// findDefaultIface returns the interface name bound to @default in the annotation,
+// or "" if no such entry exists. Used to detect whether a pod needs Kubernetes
+// network (and on which interface) vs. a dummy eth0 stub.
+func findDefaultIface(annotation string) string {
+	for _, entry := range strings.Split(annotation, ",") {
+		iface, name, ok := strings.Cut(strings.TrimSpace(entry), "@")
+		if ok && iface != "" && name == defaultNetworkName {
+			return iface
+		}
 	}
-	if annotation == "" {
-		return true, ""
-	}
-	return false, annotation
+	return ""
 }
 
 func loadConf(data []byte) (*NetConf, error) {
@@ -124,7 +170,13 @@ func delegateType(conf *NetConf) string {
 }
 
 func marshalDelegate(conf *NetConf) []byte {
-	b, _ := json.Marshal(conf.Delegate)
+	d := make(map[string]interface{}, len(conf.Delegate)+2)
+	for k, v := range conf.Delegate {
+		d[k] = v
+	}
+	d["name"] = conf.Name
+	d["cniVersion"] = conf.CNIVersion
+	b, _ := json.Marshal(d)
 	return b
 }
 
@@ -174,25 +226,27 @@ func parsePodArgs(cniArgs string) (namespace, name string) {
 	return
 }
 
-func createDummyEth0(netnsPath string) error {
-	if err := execInNetns(netnsPath, "ip", "link", "add", "eth0", "type", "dummy"); err != nil {
-		return err
+// extendWithEth0 prepends a stub eth0 interface (127.0.0.1/32) to base, shifting
+// existing IP interface indices by +1. containerd requires at least one interface+IP
+// in the CNI result to persist NetworkInfo; without it teardown fails with
+// "failed to find network info for sandbox". The eth0 is a logical stub only —
+// no interface is created in the pod netns; real lab interfaces are wired by node-agent.
+func extendWithEth0(base *cniv1.Result, netns string) *cniv1.Result {
+	_, stub, _ := net.ParseCIDR("127.0.0.1/32")
+
+	// Shift existing IP interface pointers to account for the new eth0 at index 0.
+	for _, ipc := range base.IPs {
+		if ipc.Interface != nil {
+			shifted := *ipc.Interface + 1
+			ipc.Interface = &shifted
+		}
 	}
-	return execInNetns(netnsPath, "ip", "link", "set", "eth0", "up")
+
+	base.Interfaces = append([]*cniv1.Interface{{Name: "eth0", Sandbox: netns}}, base.Interfaces...)
+	base.IPs = append([]*cniv1.IPConfig{{Interface: cniv1.Int(0), Address: *stub}}, base.IPs...)
+	return base
 }
 
-func renameIface(netnsPath, oldName, newName string) error {
-	return execInNetns(netnsPath, "ip", "link", "set", oldName, "name", newName)
-}
-
-func execInNetns(netnsPath, cmd string, args ...string) error {
-	allArgs := append([]string{"netns", "exec", netnsPath, cmd}, args...)
-	out, err := exec.Command("ip", allArgs...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s %v: %w: %s", cmd, args, err, out)
-	}
-	return nil
-}
 
 func init() {
 	if os.Getenv("CNI_PATH") == "" {

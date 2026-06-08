@@ -3,10 +3,13 @@
 package vpn
 
 import (
+	"errors"
 	"fmt"
 	"net"
+	"syscall"
 	"time"
 
+	"github.com/vishvananda/netlink"
 	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
@@ -30,6 +33,21 @@ func NewWGManager(iface string) (*WGManager, error) {
 }
 
 func (m *WGManager) Init(privKeyBase64 string, listenPort int) error {
+	// Create WireGuard interface if it doesn't exist yet.
+	la := netlink.NewLinkAttrs()
+	la.Name = m.iface
+	wgLink := &netlink.GenericLink{LinkAttrs: la, LinkType: "wireguard"}
+	if err := netlink.LinkAdd(wgLink); err != nil && !errors.Is(err, syscall.EEXIST) {
+		return fmt.Errorf("create wg interface %q: %w", m.iface, err)
+	}
+	link, err := netlink.LinkByName(m.iface)
+	if err != nil {
+		return fmt.Errorf("get wg interface %q: %w", m.iface, err)
+	}
+	if err := netlink.LinkSetUp(link); err != nil {
+		return fmt.Errorf("set wg interface up: %w", err)
+	}
+
 	key, err := wgtypes.ParseKey(privKeyBase64)
 	if err != nil {
 		return fmt.Errorf("parse private key: %w", err)

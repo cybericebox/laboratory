@@ -22,9 +22,12 @@ type ParserFunc = env.ParserFunc
 // Pass extra to register additional type parsers.
 func Load[T any](cfg *T, extra ...map[reflect.Type]env.ParserFunc) error {
 	m := map[reflect.Type]env.ParserFunc{
-		reflect.TypeOf((*net.IPNet)(nil)): func(v string) (interface{}, error) {
+		reflect.TypeOf(net.IPNet{}): func(v string) (interface{}, error) {
 			_, ipNet, err := net.ParseCIDR(v)
-			return ipNet, err
+			if err != nil {
+				return nil, err
+			}
+			return *ipNet, nil
 		},
 		reflect.TypeOf(ed25519.PublicKey(nil)): func(v string) (interface{}, error) {
 			b, err := base64.StdEncoding.DecodeString(v)

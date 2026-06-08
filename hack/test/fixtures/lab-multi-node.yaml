@@ -1,0 +1,62 @@
+# Namespace: labgroup-<UID> — filled by scenario scripts via LAB_NS env var
+# Four devices — scheduler spreads across both workers (worker-0 and worker-1)
+apiVersion: laboratory.cybericebox.com/v1alpha1
+kind: Lab
+metadata:
+  name: ctf-multi
+  namespace: ${LAB_NS}
+spec:
+  devices:
+  - name: router
+    type: container
+    image: alpine:3.20
+    interfaces:
+    - name: eth1
+      addr:
+        type: static
+        ip: 10.1.0.1/24
+    - name: eth2
+      addr:
+        type: static
+        ip: 10.2.0.1/24
+  - name: client-a
+    type: container
+    image: alpine:3.20
+    interfaces:
+    - name: eth1
+      addr:
+        type: static
+        ip: 10.1.0.10/24
+        gateway: 10.1.0.1
+  - name: server-b
+    type: container
+    image: alpine:3.20
+    interfaces:
+    - name: eth1
+      addr:
+        type: static
+        ip: 10.2.0.10/24
+        gateway: 10.2.0.1
+  - name: monitor
+    type: container
+    image: alpine:3.20
+    interfaces:
+    - name: eth1
+      addr:
+        type: dhcp
+  connections:
+  - endpoints:
+    - device: router
+      interface: eth1
+    - device: client-a
+      interface: eth1
+  - endpoints:
+    - device: router
+      interface: eth2
+    - device: server-b
+      interface: eth1
+  - endpoints:
+    - device: client-a
+      interface: eth1
+    - device: monitor
+      interface: eth1

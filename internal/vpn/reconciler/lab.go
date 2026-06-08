@@ -16,8 +16,7 @@ import (
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
-	"github.com/cybericebox/laboratory/internal/finalizers"
-	"github.com/cybericebox/laboratory/internal/ovsnames"
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/vpn"
 	"github.com/cybericebox/laboratory/pkg/dhcp"
 	"github.com/cybericebox/laboratory/pkg/netutil"
@@ -40,26 +39,26 @@ func (r *LabVPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	// Main controller must have processed this first.
-	if !controllerutil.ContainsFinalizer(&labvpn, finalizers.Controller) {
+	if !controllerutil.ContainsFinalizer(&labvpn, names.FinalizerController) {
 		return ctrl.Result{}, nil
 	}
 
 	// Deletion path.
 	if !labvpn.DeletionTimestamp.IsZero() {
-		if controllerutil.ContainsFinalizer(&labvpn, finalizers.VPN) {
+		if controllerutil.ContainsFinalizer(&labvpn, names.FinalizerVPN) {
 			return r.reconcileDelete(ctx, &labvpn)
 		}
 		return ctrl.Result{}, nil
 	}
 
 	// Add own finalizer on first observation.
-	if !controllerutil.ContainsFinalizer(&labvpn, finalizers.VPN) {
-		controllerutil.AddFinalizer(&labvpn, finalizers.VPN)
+	if !controllerutil.ContainsFinalizer(&labvpn, names.FinalizerVPN) {
+		controllerutil.AddFinalizer(&labvpn, names.FinalizerVPN)
 		return ctrl.Result{}, r.Update(ctx, &labvpn)
 	}
 
 	// Wait for lab{N} interface (created by node-agent via OVS).
-	ifaceName := ovsnames.LabIfaceNameByIndex(labvpn.Spec.NetworkIndex)
+	ifaceName := names.LabIfaceNameByIndex(labvpn.Spec.NetworkIndex)
 	if _, err := netlink.LinkByName(ifaceName); err != nil {
 		if labvpn.Status.Phase != laboratoryv1alpha1.LabVPNPhaseWaitingForInterface {
 			if patchErr := r.patchPhase(ctx, &labvpn, laboratoryv1alpha1.LabVPNPhaseWaitingForInterface); patchErr != nil {
@@ -98,7 +97,7 @@ func (r *LabVPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 func (r *LabVPNReconciler) reconcileDelete(ctx context.Context, labvpn *laboratoryv1alpha1.LabVPN) (ctrl.Result, error) {
 	r.DHCP.Stop(labvpn.Spec.LabName)
-	controllerutil.RemoveFinalizer(labvpn, finalizers.VPN)
+	controllerutil.RemoveFinalizer(labvpn, names.FinalizerVPN)
 	return ctrl.Result{}, r.Update(ctx, labvpn)
 }
 

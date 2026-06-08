@@ -1,0 +1,8 @@
+apiVersion: laboratory.cybericebox.com/v1alpha1
+kind: LabGroup
+metadata:
+  name: team-alpha
+spec:
+  vpn:
+    clientSubnet: "10.8.0.0/24"
+    supernet: "10.8.0.0/16"

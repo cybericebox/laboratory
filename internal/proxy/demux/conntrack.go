@@ -65,7 +65,7 @@ func (c *ConnTrack) AddPartial(ci uint32, clientSocket, serverSocket Socket) boo
 }
 
 // Complete fills in Si after type 2 response, creating mirror entry.
-// XDP map: ci → serverSocket (client→server), si → clientSocket (server→client).
+// XDP map: si → serverSocket (client→server), ci → clientSocket (server→client).
 // Returns false when Si collides with a live session that is not the matching
 // peer — drop the response and let the handshake fail; upstream WG retries.
 func (c *ConnTrack) Complete(si, ci uint32, clientSocket, serverSocket Socket) bool {
@@ -88,8 +88,10 @@ func (c *ConnTrack) Complete(si, ci uint32, clientSocket, serverSocket Socket) b
 		e.PeerIndex = si
 	}
 	if c.xdp != nil {
-		_ = c.xdp.Update(ci, serverSocket.IP, serverSocket.Port)
-		_ = c.xdp.Update(si, clientSocket.IP, clientSocket.Port)
+		// receiver_index=si in type-4 from client → forward to server
+		// receiver_index=ci in type-4 from server → forward to client
+		_ = c.xdp.Update(si, serverSocket.IP, serverSocket.Port)
+		_ = c.xdp.Update(ci, clientSocket.IP, clientSocket.Port)
 	}
 	return true
 }
@@ -104,7 +106,8 @@ func sameClient(e *ConnEntry, s Socket) bool {
 	return e.SenderSocket.Port == s.Port && e.SenderSocket.IP.Equal(s.IP)
 }
 
-// Lookup finds the entry and updates LastSeen.
+// Lookup finds the entry, updates LastSeen, and returns ReceiverSocket.
+// Used for type-4 userspace fallback: receiverIndex → forward to ReceiverSocket.
 func (c *ConnTrack) Lookup(receiverIndex uint32) (dst Socket, found bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -116,11 +119,25 @@ func (c *ConnTrack) Lookup(receiverIndex uint32) (dst Socket, found bool) {
 	return e.ReceiverSocket, true
 }
 
-// LookupForward is Lookup with roaming detection: if src doesn't match the
-// entry's recorded sender, the sender is updated on this entry and the peer's
-// receiver is updated to match. XDP map is synced for the peer index. Spec §4:
-// "src пакета ≠ sender_socket → форвардим (индекс уникален → backend известен)
-// и обновляем сокет".
+// LookupSender returns SenderSocket for the given index without updating LastSeen.
+// Used for type-2: ci entry holds SenderSocket = original WireGuard client.
+func (c *ConnTrack) LookupSender(index uint32) (Socket, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	e, ok := c.entries[index]
+	if !ok {
+		return Socket{}, false
+	}
+	return e.SenderSocket, true
+}
+
+// LookupForward returns the forwarding destination for a type-4 transport packet.
+// receiver_index identifies the session:
+//   - entries[Si].SenderSocket = serverSocket  → forward client→server traffic
+//   - entries[Ci].SenderSocket = clientSocket  → forward server→client traffic
+//
+// If the source no longer matches the expected socket we update for roaming.
+// XDP map entry for the peer index is also updated on roam.
 func (c *ConnTrack) LookupForward(receiverIndex uint32, src Socket) (dst Socket, found bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -129,16 +146,19 @@ func (c *ConnTrack) LookupForward(receiverIndex uint32, src Socket) (dst Socket,
 		return Socket{}, false
 	}
 	e.LastSeen = time.Now()
-	if !sameClient(e, src) {
-		e.SenderSocket = src
+	// SenderSocket is the owner of receiverIndex — the correct forward target.
+	// ReceiverSocket is the expected source of packets carrying this index.
+	if !e.ReceiverSocket.IP.Equal(src.IP) || e.ReceiverSocket.Port != src.Port {
+		// Client (or server) has roamed — update both endpoints.
+		e.ReceiverSocket = src
 		if peer, peerOk := c.entries[e.PeerIndex]; peerOk {
-			peer.ReceiverSocket = src
+			peer.SenderSocket = src
 		}
 		if c.xdp != nil && e.PeerIndex != 0 {
 			_ = c.xdp.Update(e.PeerIndex, src.IP, src.Port)
 		}
 	}
-	return e.ReceiverSocket, true
+	return e.SenderSocket, true
 }
 
 // UpdateRoaming updates sender socket when client IP changes.

@@ -16,8 +16,7 @@ import (
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
-	"github.com/cybericebox/laboratory/internal/finalizers"
-	"github.com/cybericebox/laboratory/internal/ovsnames"
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/dhcp"
 	"github.com/cybericebox/laboratory/pkg/netutil"
 )
@@ -38,26 +37,26 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// Main controller must have processed this first.
-	if !controllerutil.ContainsFinalizer(&gw, finalizers.Controller) {
+	if !controllerutil.ContainsFinalizer(&gw, names.FinalizerController) {
 		return ctrl.Result{}, nil
 	}
 
 	// Deletion path.
 	if !gw.DeletionTimestamp.IsZero() {
-		if controllerutil.ContainsFinalizer(&gw, finalizers.Gateway) {
+		if controllerutil.ContainsFinalizer(&gw, names.FinalizerGateway) {
 			return r.reconcileDelete(ctx, &gw)
 		}
 		return ctrl.Result{}, nil
 	}
 
 	// Add own finalizer on first observation.
-	if !controllerutil.ContainsFinalizer(&gw, finalizers.Gateway) {
-		controllerutil.AddFinalizer(&gw, finalizers.Gateway)
+	if !controllerutil.ContainsFinalizer(&gw, names.FinalizerGateway) {
+		controllerutil.AddFinalizer(&gw, names.FinalizerGateway)
 		return ctrl.Result{}, r.Update(ctx, &gw)
 	}
 
 	// Wait for lab{N} interface to appear (created by node-agent via OVS).
-	ifaceName := ovsnames.LabIfaceNameByIndex(gw.Spec.NetworkIndex)
+	ifaceName := names.LabIfaceNameByIndex(gw.Spec.NetworkIndex)
 	if _, err := netlink.LinkByName(ifaceName); err != nil {
 		if gw.Status.Phase != laboratoryv1alpha1.LabGatewayPhaseWaitingForInterface {
 			if patchErr := r.patchPhase(ctx, &gw, laboratoryv1alpha1.LabGatewayPhaseWaitingForInterface); patchErr != nil {
@@ -105,7 +104,7 @@ func (r *LabGatewayReconciler) reconcileDelete(ctx context.Context, gw *laborato
 	if gw.Spec.CIDR != "" {
 		r.IPT.DelMasquerade(gw.Spec.CIDR)
 	}
-	controllerutil.RemoveFinalizer(gw, finalizers.Gateway)
+	controllerutil.RemoveFinalizer(gw, names.FinalizerGateway)
 	return ctrl.Result{}, r.Update(ctx, gw)
 }
 

@@ -14,14 +14,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
-	"github.com/cybericebox/laboratory/internal/ovsnames"
+	"github.com/cybericebox/laboratory/internal/names"
 )
 
-// AnnotationNetworks and DefaultNetworkValue are defined in api/laboratory/v1alpha1/shared_types.go.
-// Re-exported here as package-level aliases for convenience.
+// AnnotationNetworks and DefaultNetworkValue are sourced from internal/names.
 const (
-	AnnotationNetworks = laboratoryv1alpha1.AnnotationNetworks
-	DefaultNetworkName = laboratoryv1alpha1.DefaultNetworkValue
+	AnnotationNetworks = names.AnnotationNetworks
+	DefaultNetworkName = names.DefaultNetworkValue
 )
 
 // NetAttachment is one parsed entry from the networks annotation.
@@ -227,7 +226,7 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 // resolveOVSPort returns the stable OVS port key for an attachment.
 func (r *NetworkAttachReconciler) resolveOVSPort(ctx context.Context, namespace, podName string, att NetAttachment) string {
 	if att.Name == "" {
-		return ovsnames.DevicePortKey(namespace, podName, att.Iface)
+		return names.DevicePortKey(namespace, podName, att.Iface)
 	}
 	var conn laboratoryv1alpha1.Connection
 	if err := r.Get(ctx, types.NamespacedName{Name: att.Name, Namespace: namespace}, &conn); err != nil {
