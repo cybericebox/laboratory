@@ -13,12 +13,12 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -67,27 +67,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Service resolver: look up Service by name in the labgroup namespace.
+	// Service resolver: direct Get by name — informer cache, no List needed.
 	svcResolver := func(task, namespace string) (string, error) {
-		var svcList corev1.ServiceList
-		if err := mgr.GetClient().List(context.Background(), &svcList,
-			client.InNamespace(namespace),
+		var svc corev1.Service
+		if err := mgr.GetClient().Get(context.Background(),
+			types.NamespacedName{Name: task, Namespace: namespace}, &svc,
 		); err != nil {
-			return "", fmt.Errorf("list services in %s: %w", namespace, err)
+			return "", fmt.Errorf("service %s not found in %s: %w", task, namespace, err)
 		}
-		for _, svc := range svcList.Items {
-			if svc.Name == task {
-				if len(svc.Spec.Ports) == 0 {
-					return "", fmt.Errorf("service %s has no ports", task)
-				}
-				proto := svc.Spec.Ports[0].Name
-				if proto == "" {
-					proto = "http"
-				}
-				return proto, nil
-			}
+		if len(svc.Spec.Ports) == 0 {
+			return "", fmt.Errorf("service %s has no ports", task)
 		}
-		return "", fmt.Errorf("service %s not found in %s", task, namespace)
+		proto := svc.Spec.Ports[0].Name
+		if proto == "" {
+			proto = "http"
+		}
+		return proto, nil
 	}
 
 	jwtPubKey, err := cfg.L7.ParsedJWTPublicKey()
