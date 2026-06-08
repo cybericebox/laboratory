@@ -563,14 +563,14 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 	// Remove annotation entries so node-agent stops maintaining the veths.
 	if lab.Status.VPN.CIDR != "" {
 		if n, ok := indexFromCIDR(lab.Status.VPN.CIDR); ok {
-			_ = r.patchDeploymentNetworks(ctx, lab.Namespace, "vpn",
-				names.LabIfaceNameByIndex(n), names.LabIfaceName(lab.Name), false)
+			iface := names.LabIfaceNameByIndex(n)
+			_ = r.patchDeploymentNetworks(ctx, lab.Namespace, "vpn", iface, iface, false)
 		}
 	}
 	if lab.Status.Internet.CIDR != "" {
 		if n, ok := indexFromCIDR(lab.Status.Internet.CIDR); ok {
-			_ = r.patchDeploymentNetworks(ctx, lab.Namespace, "gateway",
-				names.LabIfaceNameByIndex(n), names.LabGWIfaceName(lab.Name), false)
+			iface := names.LabIfaceNameByIndex(n)
+			_ = r.patchDeploymentNetworks(ctx, lab.Namespace, "gateway", iface, iface, false)
 		}
 	}
 
@@ -675,7 +675,7 @@ func (r *LabReconciler) ensureLabNetworkObjects(ctx context.Context, lab *labora
 }
 
 func (r *LabReconciler) ensureLabVPN(ctx context.Context, lab *laboratoryv1alpha1.Lab, n uint) error {
-	name := "labvpn-" + lab.Name
+	name := names.LabVPNObjectName(lab.Name)
 	var existing laboratoryv1alpha1.LabVPN
 	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: lab.Namespace}, &existing); err == nil {
 		return nil
@@ -700,7 +700,7 @@ func (r *LabReconciler) ensureLabVPN(ctx context.Context, lab *laboratoryv1alpha
 }
 
 func (r *LabReconciler) ensureLabGateway(ctx context.Context, lab *laboratoryv1alpha1.Lab, n uint) error {
-	name := "labgw-" + lab.Name
+	name := names.LabGatewayObjectName(lab.Name)
 	var existing laboratoryv1alpha1.LabGateway
 	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: lab.Namespace}, &existing); err == nil {
 		return nil
@@ -732,7 +732,7 @@ func (r *LabReconciler) ensureLabVPNDeleted(ctx context.Context, lab *laboratory
 	if !lab.Spec.VPN.Enabled {
 		return true, nil
 	}
-	name := "labvpn-" + lab.Name
+	name := names.LabVPNObjectName(lab.Name)
 	var obj laboratoryv1alpha1.LabVPN
 	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: lab.Namespace}, &obj); err != nil {
 		return true, client.IgnoreNotFound(err)
@@ -755,7 +755,7 @@ func (r *LabReconciler) ensureLabGatewayDeleted(ctx context.Context, lab *labora
 	if !lab.Spec.Internet.Enabled {
 		return true, nil
 	}
-	name := "labgw-" + lab.Name
+	name := names.LabGatewayObjectName(lab.Name)
 	var obj laboratoryv1alpha1.LabGateway
 	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: lab.Namespace}, &obj); err != nil {
 		return true, client.IgnoreNotFound(err)
@@ -858,8 +858,8 @@ func (r *LabReconciler) ensureDeploymentAnnotations(ctx context.Context, lab *la
 	if lab.Spec.VPN.Enabled && lab.Status.VPN.CIDR != "" {
 		n, ok := indexFromCIDR(lab.Status.VPN.CIDR)
 		if ok {
-			if err := r.patchDeploymentNetworks(ctx, lab.Namespace, "vpn",
-				names.LabIfaceNameByIndex(n), names.LabIfaceName(lab.Name), true); err != nil {
+			iface := names.LabIfaceNameByIndex(n)
+			if err := r.patchDeploymentNetworks(ctx, lab.Namespace, "vpn", iface, iface, true); err != nil {
 				return err
 			}
 		}
@@ -867,8 +867,8 @@ func (r *LabReconciler) ensureDeploymentAnnotations(ctx context.Context, lab *la
 	if lab.Spec.Internet.Enabled && lab.Status.Internet.CIDR != "" {
 		n, ok := indexFromCIDR(lab.Status.Internet.CIDR)
 		if ok {
-			if err := r.patchDeploymentNetworks(ctx, lab.Namespace, "gateway",
-				names.LabIfaceNameByIndex(n), names.LabGWIfaceName(lab.Name), true); err != nil {
+			iface := names.LabIfaceNameByIndex(n)
+			if err := r.patchDeploymentNetworks(ctx, lab.Namespace, "gateway", iface, iface, true); err != nil {
 				return err
 			}
 		}

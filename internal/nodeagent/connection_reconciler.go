@@ -171,13 +171,27 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 		portStatus.NodeAddress = ep.device.Status.NodeAddress
 
 		if ep.device.Status.NodeName == r.NodeName {
-			// Virtual singletons (vpn, internet) use a fixed OVS port named by LabIfaceName,
-			// not the hash-based DevicePortKey used for regular container/vm devices.
+			// Virtual singletons (vpn, internet) use a fixed OVS port named lab{N},
+			// looked up from the LabVPN/LabGateway CRD. Regular devices use DevicePortKey.
 			var pKey string
 			if ep.endpoint.Device == "vpn" {
-				pKey = names.LabIfaceName(conn.Spec.LabRef)
+				var labvpn laboratoryv1alpha1.LabVPN
+				if err := r.Get(ctx, types.NamespacedName{Name: names.LabVPNObjectName(conn.Spec.LabRef), Namespace: conn.Namespace}, &labvpn); err != nil {
+					if client.IgnoreNotFound(err) != nil {
+						return ctrl.Result{}, err
+					}
+					return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+				}
+				pKey = names.LabIfaceNameByIndex(labvpn.Spec.NetworkIndex)
 			} else if ep.endpoint.Device == "internet" {
-				pKey = names.LabGWIfaceName(conn.Spec.LabRef)
+				var labgw laboratoryv1alpha1.LabGateway
+				if err := r.Get(ctx, types.NamespacedName{Name: names.LabGatewayObjectName(conn.Spec.LabRef), Namespace: conn.Namespace}, &labgw); err != nil {
+					if client.IgnoreNotFound(err) != nil {
+						return ctrl.Result{}, err
+					}
+					return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+				}
+				pKey = names.LabIfaceNameByIndex(labgw.Spec.NetworkIndex)
 			} else {
 				pKey = names.DevicePortKey(conn.Namespace, ep.device.Name, ep.endpoint.Interface)
 			}

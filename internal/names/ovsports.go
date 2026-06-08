@@ -5,36 +5,18 @@ import (
 	"fmt"
 )
 
-// LabIfaceNameByIndex returns the interface name for lab N inside the VPN or Gateway
-// pod network namespace (e.g. lab1, lab2, ... lab254). Both pod types use identical
-// names because they run in separate network namespaces — no collision.
+// LabIfaceNameByIndex returns the OVS port name and in-netns interface name for
+// lab N inside VPN or Gateway pods (e.g. lab1 … lab254). Both pod types use the
+// same name because they run in separate network namespaces — no collision.
 func LabIfaceNameByIndex(n uint) string {
 	return fmt.Sprintf("lab%d", n)
 }
 
-// LabIfaceName computes the OVS internal port name for a lab's VPN access interface
-// from the lab name string.
-// Deprecated: use LabIfaceNameByIndex when networkIndex is available.
-func LabIfaceName(labName string) string {
-	full := "lab-" + labName
-	if len(full) <= 15 {
-		return full
-	}
-	h := sha256.Sum256([]byte(labName))
-	return fmt.Sprintf("lb-%x", h[:4]) // 11 chars
-}
+// LabVPNObjectName returns the Kubernetes object name for the LabVPN belonging to lab.
+func LabVPNObjectName(labName string) string { return "labvpn-" + labName }
 
-// LabGWIfaceName computes the OVS internal port name for a lab's gateway access
-// interface from the lab name string.
-// Deprecated: use LabIfaceNameByIndex when networkIndex is available.
-func LabGWIfaceName(labName string) string {
-	full := "gw-" + labName
-	if len(full) <= 15 {
-		return full
-	}
-	h := sha256.Sum256([]byte("gw:" + labName))
-	return fmt.Sprintf("gw%x", h[:4]) // 10 chars
-}
+// LabGatewayObjectName returns the Kubernetes object name for the LabGateway belonging to lab.
+func LabGatewayObjectName(labName string) string { return "labgw-" + labName }
 
 // DevicePortKey computes a stable OVS port name (≤15 chars) for a device interface.
 // Keyed by namespace + pod name + interface name — stable across reconciles and
