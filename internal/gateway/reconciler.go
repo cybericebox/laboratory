@@ -36,16 +36,17 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Main controller must have processed this first.
-	if !controllerutil.ContainsFinalizer(&gw, names.FinalizerController) {
-		return ctrl.Result{}, nil
-	}
-
-	// Deletion path.
+	// Deletion path — checked before the guard so cleanup runs even after
+	// main controller removes FinalizerController to unblock this reconciler.
 	if !gw.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&gw, names.FinalizerGateway) {
 			return r.reconcileDelete(ctx, &gw)
 		}
+		return ctrl.Result{}, nil
+	}
+
+	// Main controller must have processed this first.
+	if !controllerutil.ContainsFinalizer(&gw, names.FinalizerController) {
 		return ctrl.Result{}, nil
 	}
 

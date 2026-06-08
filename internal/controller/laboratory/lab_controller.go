@@ -55,6 +55,9 @@ type LabReconciler struct {
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs/finalizers,verbs=update
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices;connections,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices/status;connections/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labvpns;labgateways,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labvpns/status;labgateways/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labvpns/finalizers;labgateways/finalizers,verbs=update
 
 func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -77,9 +80,6 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 	}
 
-	if err := r.ensureNetworkFinalizers(ctx, &lab); err != nil {
-		return ctrl.Result{}, err
-	}
 	if updated, err := r.ensureSubnetAllocation(ctx, &lab); err != nil {
 		return ctrl.Result{}, err
 	} else if updated {
@@ -87,6 +87,10 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		if err := r.Get(ctx, req.NamespacedName, &lab); err != nil {
 			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
+	}
+
+	if err := r.ensureLabNetworkObjects(ctx, &lab); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	if err := r.ensureWebServices(ctx, &lab); err != nil {
@@ -556,26 +560,47 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
+	// Remove annotation entries so node-agent stops maintaining the veths.
+	if lab.Status.VPN.CIDR != "" {
+		if n, ok := indexFromCIDR(lab.Status.VPN.CIDR); ok {
+			_ = r.patchDeploymentNetworks(ctx, lab.Namespace, "vpn",
+				names.LabIfaceNameByIndex(n), names.LabIfaceName(lab.Name), false)
+		}
+	}
+	if lab.Status.Internet.CIDR != "" {
+		if n, ok := indexFromCIDR(lab.Status.Internet.CIDR); ok {
+			_ = r.patchDeploymentNetworks(ctx, lab.Namespace, "gateway",
+				names.LabIfaceNameByIndex(n), names.LabGWIfaceName(lab.Name), false)
+		}
+	}
+
+	// Delete LabVPN and wait for VPN binary to complete cleanup.
+	if done, err := r.ensureLabVPNDeleted(ctx, lab); err != nil {
+		return ctrl.Result{}, err
+	} else if !done {
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	}
+
+	// Delete LabGateway and wait for gateway binary to complete cleanup.
+	if done, err := r.ensureLabGatewayDeleted(ctx, lab); err != nil {
+		return ctrl.Result{}, err
+	} else if !done {
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	}
+
 	// Release lab subnet index if allocated.
 	if lab.Status.VPN.CIDR != "" || lab.Status.Internet.CIDR != "" {
 		cidr := lab.Status.VPN.CIDR
 		if cidr == "" {
 			cidr = lab.Status.Internet.CIDR
 		}
-		parts := strings.Split(cidr, ".")
-		if len(parts) >= 3 {
-			var n uint
-			if _, scanErr := fmt.Sscanf(parts[2], "%d", &n); scanErr == nil {
-				subnetAllocator := poolpkg.NewAllocator(r.Client, names.PoolLabSubnets, lab.Namespace, 254)
-				if releaseErr := subnetAllocator.ReleaseIndex(ctx, n); releaseErr != nil {
-					logger.Error(releaseErr, "release lab subnet", "n", n)
-				}
+		if n, ok := indexFromCIDR(cidr); ok {
+			subnetAllocator := poolpkg.NewAllocator(r.Client, names.PoolLabSubnets, lab.Namespace, 254)
+			if releaseErr := subnetAllocator.ReleaseIndex(ctx, n); releaseErr != nil {
+				logger.Error(releaseErr, "release lab subnet", "n", n)
 			}
 		}
 	}
-
-	_ = r.patchDeploymentNetworks(ctx, lab.Namespace, "vpn", names.LabIfaceName(lab.Name), false)
-	_ = r.patchDeploymentNetworks(ctx, lab.Namespace, "gateway", names.LabGWIfaceName(lab.Name), false)
 
 	controllerutil.RemoveFinalizer(lab, names.FinalizerLab)
 	return ctrl.Result{}, r.Update(ctx, lab)
@@ -605,20 +630,134 @@ func (r *LabReconciler) ensureSubnetAllocation(ctx context.Context, lab *laborat
 	return true, r.Status().Update(ctx, lab)
 }
 
-func (r *LabReconciler) ensureNetworkFinalizers(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
-	changed := false
-	if lab.Spec.VPN.Enabled && !controllerutil.ContainsFinalizer(lab, names.FinalizerVPN) {
-		controllerutil.AddFinalizer(lab, names.FinalizerVPN)
-		changed = true
+// indexFromCIDR extracts the subnet index N from a CIDR like "10.X.N.0/24".
+func indexFromCIDR(cidr string) (uint, bool) {
+	parts := strings.Split(cidr, ".")
+	if len(parts) < 3 {
+		return 0, false
 	}
-	if lab.Spec.Internet.Enabled && !controllerutil.ContainsFinalizer(lab, names.FinalizerGateway) {
-		controllerutil.AddFinalizer(lab, names.FinalizerGateway)
-		changed = true
+	var n uint
+	_, err := fmt.Sscanf(parts[2], "%d", &n)
+	return n, err == nil
+}
+
+// ensureLabNetworkObjects creates LabVPN and/or LabGateway CRDs once the subnet
+// index is known. The FinalizerController on each object signals VPN/gateway
+// binaries that the spec is complete and they may start reconciling.
+func (r *LabReconciler) ensureLabNetworkObjects(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
+	if lab.Spec.VPN.Enabled && lab.Status.VPN.CIDR != "" {
+		n, ok := indexFromCIDR(lab.Status.VPN.CIDR)
+		if !ok {
+			return fmt.Errorf("invalid VPN CIDR %q", lab.Status.VPN.CIDR)
+		}
+		if err := r.ensureLabVPN(ctx, lab, n); err != nil {
+			return err
+		}
 	}
-	if changed {
-		return r.Update(ctx, lab)
+	if lab.Spec.Internet.Enabled && lab.Status.Internet.CIDR != "" {
+		n, ok := indexFromCIDR(lab.Status.Internet.CIDR)
+		if !ok {
+			return fmt.Errorf("invalid Internet CIDR %q", lab.Status.Internet.CIDR)
+		}
+		if err := r.ensureLabGateway(ctx, lab, n); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func (r *LabReconciler) ensureLabVPN(ctx context.Context, lab *laboratoryv1alpha1.Lab, n uint) error {
+	name := "labvpn-" + lab.Name
+	var existing laboratoryv1alpha1.LabVPN
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: lab.Namespace}, &existing); err == nil {
+		return nil
+	} else if !errors.IsNotFound(err) {
+		return err
+	}
+	obj := &laboratoryv1alpha1.LabVPN{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       name,
+			Namespace:  lab.Namespace,
+			Finalizers: []string{names.FinalizerController},
+		},
+		Spec: laboratoryv1alpha1.LabVPNSpec{
+			LabName:      lab.Name,
+			NetworkIndex: n,
+			CIDR:         lab.Status.VPN.CIDR,
+		},
+	}
+	if err := controllerutil.SetOwnerReference(lab, obj, r.Scheme); err != nil {
+		return err
+	}
+	return r.Create(ctx, obj)
+}
+
+func (r *LabReconciler) ensureLabGateway(ctx context.Context, lab *laboratoryv1alpha1.Lab, n uint) error {
+	name := "labgw-" + lab.Name
+	var existing laboratoryv1alpha1.LabGateway
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: lab.Namespace}, &existing); err == nil {
+		return nil
+	} else if !errors.IsNotFound(err) {
+		return err
+	}
+	obj := &laboratoryv1alpha1.LabGateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       name,
+			Namespace:  lab.Namespace,
+			Finalizers: []string{names.FinalizerController},
+		},
+		Spec: laboratoryv1alpha1.LabGatewaySpec{
+			LabName:      lab.Name,
+			NetworkIndex: n,
+			CIDR:         lab.Status.Internet.CIDR,
+		},
+	}
+	if err := controllerutil.SetOwnerReference(lab, obj, r.Scheme); err != nil {
+		return err
+	}
+	return r.Create(ctx, obj)
+}
+
+// ensureLabVPNDeleted triggers deletion of the LabVPN object and removes
+// FinalizerController once deletion is in progress, unblocking the VPN binary's
+// reconcileDelete. Returns true when the object no longer exists.
+func (r *LabReconciler) ensureLabVPNDeleted(ctx context.Context, lab *laboratoryv1alpha1.Lab) (bool, error) {
+	if !lab.Spec.VPN.Enabled {
+		return true, nil
+	}
+	name := "labvpn-" + lab.Name
+	var obj laboratoryv1alpha1.LabVPN
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: lab.Namespace}, &obj); err != nil {
+		return true, client.IgnoreNotFound(err)
+	}
+	if obj.DeletionTimestamp.IsZero() {
+		return false, r.Delete(ctx, &obj)
+	}
+	if controllerutil.ContainsFinalizer(&obj, names.FinalizerController) {
+		controllerutil.RemoveFinalizer(&obj, names.FinalizerController)
+		return false, r.Update(ctx, &obj)
+	}
+	return false, nil
+}
+
+// ensureLabGatewayDeleted is ensureLabVPNDeleted's counterpart for LabGateway.
+func (r *LabReconciler) ensureLabGatewayDeleted(ctx context.Context, lab *laboratoryv1alpha1.Lab) (bool, error) {
+	if !lab.Spec.Internet.Enabled {
+		return true, nil
+	}
+	name := "labgw-" + lab.Name
+	var obj laboratoryv1alpha1.LabGateway
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: lab.Namespace}, &obj); err != nil {
+		return true, client.IgnoreNotFound(err)
+	}
+	if obj.DeletionTimestamp.IsZero() {
+		return false, r.Delete(ctx, &obj)
+	}
+	if controllerutil.ContainsFinalizer(&obj, names.FinalizerController) {
+		controllerutil.RemoveFinalizer(&obj, names.FinalizerController)
+		return false, r.Update(ctx, &obj)
+	}
+	return false, nil
 }
 
 func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
@@ -702,32 +841,41 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 
 // ensureDeploymentAnnotations adds the lab's OVS interface entries to the VPN and/or
 // gateway Deployment pod-template annotation so node-agent attaches them.
+// The annotation entry format is "lab{N}@{ovsPortName}" so node-agent creates a
+// veth with ovsPortName as the OVS port and renames the pod-side to lab{N}.
 func (r *LabReconciler) ensureDeploymentAnnotations(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
-	if lab.Spec.VPN.Enabled {
-		if err := r.patchDeploymentNetworks(ctx, lab.Namespace, "vpn", names.LabIfaceName(lab.Name), true); err != nil {
-			return err
+	if lab.Spec.VPN.Enabled && lab.Status.VPN.CIDR != "" {
+		n, ok := indexFromCIDR(lab.Status.VPN.CIDR)
+		if ok {
+			if err := r.patchDeploymentNetworks(ctx, lab.Namespace, "vpn",
+				names.LabIfaceNameByIndex(n), names.LabIfaceName(lab.Name), true); err != nil {
+				return err
+			}
 		}
 	}
-	if lab.Spec.Internet.Enabled {
-		if err := r.patchDeploymentNetworks(ctx, lab.Namespace, "gateway", names.LabGWIfaceName(lab.Name), true); err != nil {
-			return err
+	if lab.Spec.Internet.Enabled && lab.Status.Internet.CIDR != "" {
+		n, ok := indexFromCIDR(lab.Status.Internet.CIDR)
+		if ok {
+			if err := r.patchDeploymentNetworks(ctx, lab.Namespace, "gateway",
+				names.LabIfaceNameByIndex(n), names.LabGWIfaceName(lab.Name), true); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
-// patchDeploymentNetworks adds or removes an OVS port entry from the
-// network.cybericebox.com/networks annotation on a Deployment pod template.
-// Entry format: "ifaceName@ifaceName" (iface == OVS port name, no rename).
-// Patching the template triggers a Deployment rollout, which is intentional —
-// the new pod picks up the updated annotation and node-agent attaches the port.
-func (r *LabReconciler) patchDeploymentNetworks(ctx context.Context, ns, deployName, ifaceName string, add bool) error {
+// patchDeploymentNetworks adds or removes a "{podIfaceName}@{ovsPortName}" entry from
+// the network.cybericebox.com/networks annotation on a Deployment pod template.
+// node-agent creates a veth whose host side is registered in OVS as ovsPortName and
+// whose pod side is moved into the pod netns and renamed to podIfaceName.
+func (r *LabReconciler) patchDeploymentNetworks(ctx context.Context, ns, deployName, podIfaceName, ovsPortName string, add bool) error {
 	var dep appsv1.Deployment
 	if err := r.Get(ctx, types.NamespacedName{Name: deployName, Namespace: ns}, &dep); err != nil {
 		return client.IgnoreNotFound(err)
 	}
 
-	entry := ifaceName + "@" + ifaceName
+	entry := podIfaceName + "@" + ovsPortName
 	original := dep.DeepCopy()
 
 	ann := dep.Spec.Template.Annotations[names.AnnotationNetworks]
@@ -770,6 +918,8 @@ func (r *LabReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&laboratoryv1alpha1.Lab{}).
 		Owns(&laboratoryv1alpha1.Device{}).
 		Owns(&laboratoryv1alpha1.Connection{}).
+		Owns(&laboratoryv1alpha1.LabVPN{}).
+		Owns(&laboratoryv1alpha1.LabGateway{}).
 		Owns(&corev1.Service{}).
 		Owns(&networkingv1.NetworkPolicy{}).
 		Complete(r)

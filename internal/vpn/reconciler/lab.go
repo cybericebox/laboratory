@@ -38,16 +38,17 @@ func (r *LabVPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Main controller must have processed this first.
-	if !controllerutil.ContainsFinalizer(&labvpn, names.FinalizerController) {
-		return ctrl.Result{}, nil
-	}
-
-	// Deletion path.
+	// Deletion path — checked before the guard so cleanup runs even after
+	// main controller removes FinalizerController to unblock this reconciler.
 	if !labvpn.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&labvpn, names.FinalizerVPN) {
 			return r.reconcileDelete(ctx, &labvpn)
 		}
+		return ctrl.Result{}, nil
+	}
+
+	// Main controller must have processed this first.
+	if !controllerutil.ContainsFinalizer(&labvpn, names.FinalizerController) {
 		return ctrl.Result{}, nil
 	}
 
