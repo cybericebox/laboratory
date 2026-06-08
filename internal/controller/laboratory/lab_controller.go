@@ -812,7 +812,7 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 			// Allow ingress from the proxy pod identified by namespace+label.
 			peers := []networkingv1.NetworkPolicyPeer{{
 				NamespaceSelector: &metav1.LabelSelector{
-					MatchLabels: map[string]string{"kubernetes.io/metadata.name": names.SystemNamespace},
+					MatchLabels: map[string]string{"kubernetes.io/metadata.name": names.ProxyNamespace},
 				},
 				PodSelector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{"app": "proxy"},

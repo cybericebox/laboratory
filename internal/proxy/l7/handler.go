@@ -29,7 +29,7 @@ type Handler struct {
 
 // upstreamTransport skips certificate verification for in-cluster backends
 // that may use self-signed certificates. The trust boundary is the
-// NetworkPolicy that admits only proxy-system/app=proxy.
+// NetworkPolicy that admits only laboratory-proxy/app=proxy.
 var upstreamTransport = &http.Transport{
 	TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}, // #nosec G402 — see comment above
 	MaxIdleConns:    100,
