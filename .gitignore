@@ -30,3 +30,4 @@ kubeconfig.*
 *.swp
 *.swo
 *~
+internal/proxy/demux/xdp/llvm-strip
