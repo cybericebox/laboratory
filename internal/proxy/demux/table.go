@@ -153,13 +153,14 @@ func (w *LabGroupWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	pubKey := lg.Status.VPN.PublicKey
-	backend := lg.Status.VPN.Backend
-	if pubKey == "" || backend == "" {
+	if pubKey == "" || !lg.Status.VPN.Registered {
 		// VPN not yet ready — remove stale entry if present.
 		w.Table.Delete(string(lg.UID))
 		return ctrl.Result{}, nil
 	}
 
+	ns := laboratoryv1alpha1.LabGroupNamespace(lg.Name)
+	backend := fmt.Sprintf("vpn.%s.svc.cluster.local:%d", ns, w.VPNServicePort)
 	log.Info("updating demux table", "group", lg.Name, "backend", backend)
 	if err := w.Table.Update(string(lg.UID), pubKey, backend); err != nil {
 		return ctrl.Result{}, err

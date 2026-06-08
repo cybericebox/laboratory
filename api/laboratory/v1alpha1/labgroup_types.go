@@ -34,9 +34,6 @@ type LabGroupVPNStatus struct {
 	PublicKey string `json:"publicKey,omitempty"`
 	// Endpoint is the public UDP address of the VPN server (host:port) advertised to clients.
 	Endpoint string `json:"endpoint,omitempty"`
-	// Backend is the in-cluster pod address (podIP:port) of the VPN server, used by the demux proxy.
-	// Set by the controller from the VPN pod's IP; empty when no ready replica exists.
-	Backend string `json:"backend,omitempty"`
 	// SecretRef is "<namespace>/<name>" of the vpn-server-keypair Secret.
 	SecretRef string `json:"secretRef,omitempty"`
 	// Registered is true when the VPN deployment has at least one ready replica.

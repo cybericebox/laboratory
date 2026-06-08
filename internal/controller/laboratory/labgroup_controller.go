@@ -132,7 +132,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	vpnReady, vpnBackend, err := r.vpnReadyState(ctx, ns)
+	vpnReady, err := r.vpnReadyState(ctx, ns)
 	if err != nil {
 		logger.Error(err, "check VPN readiness")
 		return ctrl.Result{}, err
@@ -143,7 +143,6 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	lg.Status.VPN.PublicKey = pubKey
 	lg.Status.VPN.SecretRef = fmt.Sprintf("%s/%s", ns, secretName)
 	lg.Status.VPN.Endpoint = r.PublicVPNEndpoint
-	lg.Status.VPN.Backend = vpnBackend
 	lg.Status.VPN.Registered = vpnReady
 	if err = r.Status().Update(ctx, &lg); err != nil {
 		return ctrl.Result{}, err
@@ -186,28 +185,13 @@ func (r *LabGroupReconciler) vpnPort() int32 {
 	return 51820
 }
 
-// vpnReadyState returns (ready, podIP:port, error).
-// Lists VPN pods directly — no DNS, no Endpoints, no ClusterIP needed.
-func (r *LabGroupReconciler) vpnReadyState(ctx context.Context, ns string) (ready bool, backend string, err error) {
-	var podList corev1.PodList
-	if err := r.List(ctx, &podList,
-		client.InNamespace(ns),
-		client.MatchingLabels{"app": "vpn"},
-	); err != nil {
-		return false, "", err
+// vpnReadyState returns true when the VPN Deployment has at least one ready replica.
+func (r *LabGroupReconciler) vpnReadyState(ctx context.Context, ns string) (bool, error) {
+	var dep appsv1.Deployment
+	if err := r.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: ns}, &dep); err != nil {
+		return false, client.IgnoreNotFound(err)
 	}
-	for _, pod := range podList.Items {
-		if pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP != "" {
-			for _, cs := range pod.Status.ContainerStatuses {
-				if !cs.Ready {
-					goto next
-				}
-			}
-			return true, fmt.Sprintf("%s:%d", pod.Status.PodIP, r.vpnPort()), nil
-		next:
-		}
-	}
-	return false, "", nil
+	return dep.Status.ReadyReplicas > 0, nil
 }
 
 func (r *LabGroupReconciler) reconcileDelete(ctx context.Context, lg *laboratoryv1alpha1.LabGroup) (ctrl.Result, error) {
