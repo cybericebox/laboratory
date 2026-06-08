@@ -20,7 +20,7 @@ type BackendResolver func(task, groupID string) (string, error)
 var validTaskRE = regexp.MustCompile(`^[a-z0-9][a-z0-9\-]{0,62}$`)
 
 type Handler struct {
-	pubKey     *rsa.PublicKey
+	key        func() *rsa.PublicKey
 	baseDomain string
 	cookieName string
 	resolver   BackendResolver
@@ -36,9 +36,9 @@ var upstreamTransport = &http.Transport{
 	IdleConnTimeout: 90 * time.Second,
 }
 
-func NewHandler(pubKey *rsa.PublicKey, baseDomain, cookieName string, resolver BackendResolver) *Handler {
+func NewHandler(key func() *rsa.PublicKey, baseDomain, cookieName string, resolver BackendResolver) *Handler {
 	return &Handler{
-		pubKey:     pubKey,
+		key:        key,
 		baseDomain: baseDomain,
 		cookieName: cookieName,
 		resolver:   resolver,
@@ -62,7 +62,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims, err := validateCookie(r, h.pubKey, h.cookieName)
+	claims, err := validateCookie(r, h.key, h.cookieName)
 	if err != nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return

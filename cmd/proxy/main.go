@@ -67,6 +67,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
+	stop := make(chan struct{})
+
 	// Service resolver: direct Get by name — informer cache, no List needed.
 	svcResolver := func(task, namespace string) (string, error) {
 		var svc corev1.Service
@@ -85,13 +89,13 @@ func main() {
 		return proto, nil
 	}
 
-	jwtPubKey, err := cfg.L7.ParsedJWTPublicKey()
+	keyWatcher, err := proxy.NewKeyWatcher(cfg.L7.JWTPublicKeyPath, stop)
 	if err != nil {
-		log.Error(err, "parse JWT public key")
+		log.Error(err, "init JWT key watcher")
 		os.Exit(1)
 	}
 
-	handler := l7.NewHandler(jwtPubKey, cfg.L7.BaseDomain, cfg.L7.CookieName,
+	handler := l7.NewHandler(keyWatcher.Key, cfg.L7.BaseDomain, cfg.L7.CookieName,
 		l7.ServiceResolver(svcResolver))
 
 	// certwatcher reloads the wildcard cert when cert-manager renews the
@@ -117,10 +121,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer cancel()
-
-	stop := make(chan struct{})
 	go func() {
 		<-ctx.Done()
 		close(stop)

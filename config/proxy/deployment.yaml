@@ -1,8 +1,29 @@
+# Namespace for the proxy singleton pod.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: laboratory-proxy
+---
+# ServiceAccount used by the proxy pod.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
+  name: proxy
+  namespace: laboratory-proxy
+---
+# ClusterRole: proxy needs cluster-wide read on LabGroups (demux table)
+# and Services (L7 service resolver informer cache).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
   name: laboratory-proxy
-  namespace: laboratory-system
+rules:
+  - apiGroups: ["laboratory.cybericebox.com"]
+    resources: ["labgroups"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -11,30 +32,56 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: laboratory-manager-role
+  name: laboratory-proxy
 subjects:
   - kind: ServiceAccount
-    name: laboratory-proxy
-    namespace: laboratory-system
+    name: proxy
+    namespace: laboratory-proxy
+---
+# Role: proxy reads only its own credentials Secret.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: proxy-credentials-reader
+  namespace: laboratory-proxy
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["proxy-credentials"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: proxy-credentials-reader
+  namespace: laboratory-proxy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: proxy-credentials-reader
+subjects:
+  - kind: ServiceAccount
+    name: proxy
+    namespace: laboratory-proxy
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: laboratory-proxy
-  namespace: laboratory-system
+  name: proxy
+  namespace: laboratory-proxy
 spec:
   replicas: 1
   strategy:
     type: Recreate
   selector:
     matchLabels:
-      app: laboratory-proxy
+      app: proxy
   template:
     metadata:
       labels:
-        app: laboratory-proxy
+        app: proxy
     spec:
-      serviceAccountName: laboratory-proxy
+      serviceAccountName: proxy
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       containers:
@@ -58,14 +105,11 @@ spec:
             - name: KUBERNETES_SERVICE_PORT
               value: "6443"
             - name: TLS_CERT_PATH
-              value: /certs/tls.crt
+              value: /etc/proxy/tls/tls.crt
             - name: TLS_KEY_PATH
-              value: /certs/tls.key
-            - name: JWT_PUBLIC_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: proxy-jwt
-                  key: jwt_public.pem
+              value: /etc/proxy/tls/tls.key
+            - name: JWT_PUBLIC_KEY_PATH
+              value: /etc/proxy/credentials/jwt-public-key.pem
             - name: BASE_DOMAIN
               value: test.local
             - name: UDP_LISTEN_ADDR
@@ -74,12 +118,18 @@ spec:
               value: eth0
           volumeMounts:
             - name: tls
-              mountPath: /certs
+              mountPath: /etc/proxy/tls
+              readOnly: true
+            - name: credentials
+              mountPath: /etc/proxy/credentials
               readOnly: true
       volumes:
         - name: tls
           secret:
             secretName: proxy-tls
+        - name: credentials
+          secret:
+            secretName: proxy-credentials
       nodeSelector:
         node-role.kubernetes.io/control-plane: ""
       tolerations:

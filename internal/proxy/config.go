@@ -5,18 +5,18 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
-	"strings"
+	"os"
 
 	"github.com/cybericebox/laboratory/pkg/config"
 )
 
 type L7Config struct {
-	TLSCertPath     string `env:"TLS_CERT_PATH,required"`
-	TLSKeyPath      string `env:"TLS_KEY_PATH,required"`
-	JWTPublicKeyPEM string `env:"JWT_PUBLIC_KEY,required"`
-	BaseDomain      string `env:"BASE_DOMAIN,required"`
-	Listen          string `env:"LISTEN_HTTPS"  envDefault:":443"`
-	CookieName      string `env:"COOKIE_NAME"   envDefault:"challenge"`
+	TLSCertPath        string `env:"TLS_CERT_PATH,required"`
+	TLSKeyPath         string `env:"TLS_KEY_PATH,required"`
+	JWTPublicKeyPath   string `env:"JWT_PUBLIC_KEY_PATH,required"`
+	BaseDomain         string `env:"BASE_DOMAIN,required"`
+	Listen             string `env:"LISTEN_HTTPS"  envDefault:":443"`
+	CookieName         string `env:"COOKIE_NAME"   envDefault:"challenge"`
 }
 
 type WGConfig struct {
@@ -30,11 +30,17 @@ type Config struct {
 	WG WGConfig
 }
 
-func (l *L7Config) ParsedJWTPublicKey() (*rsa.PublicKey, error) {
-	v := strings.ReplaceAll(l.JWTPublicKeyPEM, `\n`, "\n")
-	block, _ := pem.Decode([]byte(v))
+// LoadJWTPublicKey reads the RSA public key PEM from the configured path.
+// Called on each request so that kubelet secret-volume updates are picked up
+// without a pod restart.
+func (l *L7Config) LoadJWTPublicKey() (*rsa.PublicKey, error) {
+	data, err := os.ReadFile(l.JWTPublicKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("read JWT public key %s: %w", l.JWTPublicKeyPath, err)
+	}
+	block, _ := pem.Decode(data)
 	if block == nil {
-		return nil, fmt.Errorf("failed to decode PEM block from JWT_PUBLIC_KEY")
+		return nil, fmt.Errorf("no PEM block in %s", l.JWTPublicKeyPath)
 	}
 	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
@@ -42,7 +48,7 @@ func (l *L7Config) ParsedJWTPublicKey() (*rsa.PublicKey, error) {
 	}
 	rsaPub, ok := pub.(*rsa.PublicKey)
 	if !ok {
-		return nil, fmt.Errorf("JWT_PUBLIC_KEY is not an RSA public key")
+		return nil, fmt.Errorf("JWT public key is not RSA")
 	}
 	return rsaPub, nil
 }

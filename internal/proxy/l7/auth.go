@@ -14,11 +14,13 @@ type jwtClaims struct {
 	jwt.RegisteredClaims
 }
 
-func validateCookie(r *http.Request, pubKey *rsa.PublicKey, cookieName string) (jwtClaims, error) {
+func validateCookie(r *http.Request, key func() *rsa.PublicKey, cookieName string) (jwtClaims, error) {
 	cookie, err := r.Cookie(cookieName)
 	if err != nil {
 		return jwtClaims{}, fmt.Errorf("no %s cookie", cookieName)
 	}
+
+	pubKey := key()
 
 	var claims jwtClaims
 	token, err := jwt.ParseWithClaims(cookie.Value, &claims, func(t *jwt.Token) (interface{}, error) {
