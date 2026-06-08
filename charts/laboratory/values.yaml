@@ -60,7 +60,7 @@ gateway:
     tag: "latest"
 
 # ============================================================
-# Proxy (L7 HTTPS + WireGuard demux, hostNetwork on control-plane)
+# Proxy (L7 HTTPS + WireGuard demux, DaemonSet on worker nodes)
 # ============================================================
 proxy:
   enabled: true
@@ -80,14 +80,16 @@ proxy:
   # Set true when running in Kind: overrides API server address to 127.0.0.1:6443.
   kindMode: false
 
-  # Node where the proxy pod is scheduled (must have a public IP).
-  nodeSelector:
-    node-role.kubernetes.io/control-plane: ""
+  # Restrict proxy DaemonSet to specific nodes (e.g. nodes with public IPs).
+  # Leave empty to run on all worker nodes.
+  # Example: {"proxy-node": "true"}
+  nodeSelector: {}
 
-  tolerations:
-  - key: node-role.kubernetes.io/control-plane
-    operator: Exists
-    effect: NoSchedule
+  tolerations: []
+
+  # LoadBalancer Service annotations (e.g. cloud-specific LB config).
+  service:
+    annotations: {}
 
   resources:
     limits:
@@ -96,6 +98,28 @@ proxy:
     requests:
       cpu: 50m
       memory: 64Mi
+
+# ============================================================
+# Cilium Gateway API (TLS passthrough, shared LB IP)
+# ============================================================
+gateway:
+  enabled: true
+
+  # GatewayClass name (cilium is installed with Cilium).
+  gatewayClassName: "cilium"
+
+  # Set true to create GatewayClass resource.
+  # Set false if GatewayClass already exists in the cluster.
+  createGatewayClass: false
+
+  # Additional annotations on the Gateway (e.g. for cloud LB config).
+  annotations: {}
+
+  # Optional: route a second domain to the cluster agent.
+  # Leave empty to skip creating the agent TLSRoute.
+  agentDomain: ""
+  agentNamespace: "agent"
+  agentService: "cluster-agent"
 
 # ============================================================
 # cert-manager integration (issues TLS cert for proxy)

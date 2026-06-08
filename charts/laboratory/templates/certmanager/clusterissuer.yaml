@@ -22,10 +22,12 @@ spec:
           podTemplate:
             spec:
               hostNetwork: true
-              tolerations:
-              - key: node-role.kubernetes.io/control-plane
-                operator: Exists
-                effect: NoSchedule
+              {{- with .Values.proxy.nodeSelector }}
               nodeSelector:
-                {{- toYaml .Values.proxy.nodeSelector | nindent 16 }}
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              {{- with .Values.proxy.tolerations }}
+              tolerations:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
 {{- end }}

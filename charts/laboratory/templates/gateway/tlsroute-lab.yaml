@@ -1,0 +1,19 @@
+{{- if and .Values.gateway.enabled .Values.proxy.enabled }}
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TLSRoute
+metadata:
+  name: laboratory-lab
+  namespace: laboratory-proxy
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+  - name: laboratory-gateway
+    namespace: {{ .Release.Namespace }}
+  hostnames:
+  - "*.{{ .Values.operator.baseDomain }}"
+  rules:
+  - backendRefs:
+    - name: laboratory-proxy-l7
+      port: 443
+{{- end }}

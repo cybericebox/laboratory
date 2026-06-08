@@ -1,0 +1,24 @@
+{{- if .Values.gateway.enabled }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: laboratory-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+  {{- with .Values.gateway.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  gatewayClassName: {{ .Values.gateway.gatewayClassName }}
+  listeners:
+  - name: tls-passthrough
+    protocol: TLS
+    port: 443
+    tls:
+      mode: Passthrough
+    allowedRoutes:
+      namespaces:
+        from: All
+{{- end }}

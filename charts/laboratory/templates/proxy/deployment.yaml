@@ -1,6 +1,6 @@
 {{- if .Values.proxy.enabled }}
 apiVersion: apps/v1
-kind: Deployment
+kind: DaemonSet
 metadata:
   name: laboratory-proxy
   namespace: laboratory-proxy
@@ -8,7 +8,6 @@ metadata:
     app: laboratory-proxy
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
-  replicas: 1
   selector:
     matchLabels:
       app: laboratory-proxy
