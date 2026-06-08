@@ -5,6 +5,6 @@ const (
 	VNIPoolPrefix = "vni"
 	VNIPoolSize   = uint(65000)
 
-	PoolLabSubnets  = "lab-subnets"
-	PoolVPNClients  = "vpn-clients"
+	PoolLabSubnets = "lab-subnets"
+	PoolVPNClients = "vpn-clients"
 )

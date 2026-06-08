@@ -18,11 +18,9 @@ type LabGatewaySpec struct {
 	// LabName is the name of the parent Lab.
 	// +kubebuilder:validation:Required
 	LabName string `json:"labName"`
-	// NetworkIndex is the subnet index N from the lab-subnets pool (10.192.N.0/24).
-	// Filled by main controller before setting its finalizer. Immutable after that.
+	// NetworkIndex is the subnet index N from the lab-subnets pool.
+	// Internet CIDR is derived as 10.9.N.0/24. Immutable after FinalizerController is set.
 	NetworkIndex uint `json:"networkIndex,omitempty"`
-	// CIDR is the internet segment CIDR (10.192.N.0/24). Filled by main controller.
-	CIDR string `json:"cidr,omitempty"`
 }
 
 // LabGatewayStatus defines the observed state of LabGateway.

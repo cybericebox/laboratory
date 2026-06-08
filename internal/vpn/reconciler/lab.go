@@ -69,18 +69,23 @@ func (r *LabVPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	// Assign 10.128.N.1/24 to interface (idempotent).
-	if err := netutil.AssignFirstHostIP(ifaceName, labvpn.Spec.CIDR); err != nil {
+	cidr, err := netutil.SubnetForIndex(r.Cfg.VPNBaseNetwork, 24, labvpn.Spec.NetworkIndex)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("compute VPN CIDR: %w", err)
+	}
+
+	// Assign first host IP of the lab's /24 to the interface (idempotent).
+	if err := netutil.AssignFirstHostIP(ifaceName, cidr); err != nil {
 		return ctrl.Result{}, fmt.Errorf("assign IP to %s: %w", ifaceName, err)
 	}
 
 	// DHCP: optional, only if pool exists.
 	dhcpEnabled := r.dhcpPoolExists(ctx, labvpn.Spec.LabName, labvpn.Namespace)
 	if dhcpEnabled {
-		gwIP := firstHostIP(labvpn.Spec.CIDR)
+		gwIP := firstHostIP(cidr)
 		if err := r.DHCP.Start(labvpn.Spec.LabName, dhcp.Config{
 			Iface:   ifaceName,
-			Subnet:  labvpn.Spec.CIDR,
+			Subnet:  cidr,
 			Gateway: gwIP,
 			BindIP:  gwIP,
 			DNS:     r.Cfg.DHCPDNS,

@@ -15,8 +15,9 @@ type Config struct {
 	Namespace     string        `env:"NAMESPACE,required"`
 	ClientSubnet  *net.IPNet    `env:"CLIENT_SUBNET,required"`
 	StatsInterval time.Duration `env:"STATS_INTERVAL" envDefault:"30s"`
-	WGInterface   string        `env:"WG_INTERFACE"   envDefault:"wg0"`
-	DHCPDNS       string        `env:"DHCP_DNS"`
+	WGInterface    string        `env:"WG_INTERFACE"     envDefault:"wg0"`
+	DHCPDNS        string        `env:"DHCP_DNS"`
+	VPNBaseNetwork string        `env:"VPN_BASE_NETWORK,required"`
 }
 
 func LoadConfig() (*Config, error) {

@@ -67,23 +67,28 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	// Assign 10.192.N.1/24 to interface (idempotent).
-	if err := netutil.AssignFirstHostIP(ifaceName, gw.Spec.CIDR); err != nil {
+	cidr, err := netutil.SubnetForIndex(r.Cfg.InetBaseNetwork, 24, gw.Spec.NetworkIndex)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("compute inet CIDR: %w", err)
+	}
+
+	// Assign first host IP of the lab's /24 to the interface (idempotent).
+	if err := netutil.AssignFirstHostIP(ifaceName, cidr); err != nil {
 		return ctrl.Result{}, fmt.Errorf("assign IP to %s: %w", ifaceName, err)
 	}
 
 	// NAT: POSTROUTING MASQUERADE for this lab's subnet.
-	if err := r.IPT.AddMasquerade(gw.Spec.CIDR); err != nil {
-		return ctrl.Result{}, fmt.Errorf("add masquerade %s: %w", gw.Spec.CIDR, err)
+	if err := r.IPT.AddMasquerade(cidr); err != nil {
+		return ctrl.Result{}, fmt.Errorf("add masquerade %s: %w", cidr, err)
 	}
 
 	// DHCP: optional, only if pool exists.
 	dhcpEnabled := r.dhcpPoolExists(ctx, gw.Spec.LabName, gw.Namespace)
 	if dhcpEnabled {
-		gwIP := firstHostIP(gw.Spec.CIDR)
+		gwIP := firstHostIP(cidr)
 		if err := r.DHCP.Start(gw.Spec.LabName, dhcp.Config{
 			Iface:   ifaceName,
-			Subnet:  gw.Spec.CIDR,
+			Subnet:  cidr,
 			Gateway: gwIP,
 			BindIP:  gwIP,
 			DNS:     r.Cfg.DHCPDNS,
@@ -102,8 +107,8 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 func (r *LabGatewayReconciler) reconcileDelete(ctx context.Context, gw *laboratoryv1alpha1.LabGateway) (ctrl.Result, error) {
 	r.DHCP.Stop(gw.Spec.LabName)
-	if gw.Spec.CIDR != "" {
-		r.IPT.DelMasquerade(gw.Spec.CIDR)
+	if cidr, err := netutil.SubnetForIndex(r.Cfg.InetBaseNetwork, 24, gw.Spec.NetworkIndex); err == nil {
+		r.IPT.DelMasquerade(cidr)
 	}
 	controllerutil.RemoveFinalizer(gw, names.FinalizerGateway)
 	return ctrl.Result{}, r.Update(ctx, gw)

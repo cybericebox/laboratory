@@ -26,11 +26,7 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
-)
-
-const (
-	vpnSubnetOctet2  = 8 // 10.8.N.0/24
-	inetSubnetOctet2 = 9 // 10.9.N.0/24
+	"github.com/cybericebox/laboratory/pkg/netutil"
 )
 
 // LabReconciler reconciles a Lab object.
@@ -46,6 +42,10 @@ type LabReconciler struct {
 	// web-exposure NetworkPolicy. Required when the proxy runs with hostNetwork (its
 	// source IP is the node IP, not a pod IP, so namespace/label selectors don't apply).
 	ProxySourceCIDRs []string
+	// VPNBaseNetwork is the base address space for per-lab VPN subnets (e.g. "10.8.0.0/16").
+	VPNBaseNetwork string
+	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets (e.g. "10.9.0.0/16").
+	InetBaseNetwork string
 }
 
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
@@ -622,10 +622,18 @@ func (r *LabReconciler) ensureSubnetAllocation(ctx context.Context, lab *laborat
 		return false, fmt.Errorf("allocate lab subnet: %w", err)
 	}
 	if needsVPN {
-		lab.Status.VPN.CIDR = fmt.Sprintf("10.%d.%d.0/24", vpnSubnetOctet2, n)
+		cidr, err := netutil.SubnetForIndex(r.VPNBaseNetwork, 24, n)
+		if err != nil {
+			return false, fmt.Errorf("compute VPN subnet: %w", err)
+		}
+		lab.Status.VPN.CIDR = cidr
 	}
 	if needsInet {
-		lab.Status.Internet.CIDR = fmt.Sprintf("10.%d.%d.0/24", inetSubnetOctet2, n)
+		cidr, err := netutil.SubnetForIndex(r.InetBaseNetwork, 24, n)
+		if err != nil {
+			return false, fmt.Errorf("compute inet subnet: %w", err)
+		}
+		lab.Status.Internet.CIDR = cidr
 	}
 	return true, r.Status().Update(ctx, lab)
 }
@@ -683,7 +691,6 @@ func (r *LabReconciler) ensureLabVPN(ctx context.Context, lab *laboratoryv1alpha
 		Spec: laboratoryv1alpha1.LabVPNSpec{
 			LabName:      lab.Name,
 			NetworkIndex: n,
-			CIDR:         lab.Status.VPN.CIDR,
 		},
 	}
 	if err := controllerutil.SetOwnerReference(lab, obj, r.Scheme); err != nil {
@@ -709,7 +716,6 @@ func (r *LabReconciler) ensureLabGateway(ctx context.Context, lab *laboratoryv1a
 		Spec: laboratoryv1alpha1.LabGatewaySpec{
 			LabName:      lab.Name,
 			NetworkIndex: n,
-			CIDR:         lab.Status.Internet.CIDR,
 		},
 	}
 	if err := controllerutil.SetOwnerReference(lab, obj, r.Scheme); err != nil {
@@ -718,9 +724,10 @@ func (r *LabReconciler) ensureLabGateway(ctx context.Context, lab *laboratoryv1a
 	return r.Create(ctx, obj)
 }
 
-// ensureLabVPNDeleted triggers deletion of the LabVPN object and removes
-// FinalizerController once deletion is in progress, unblocking the VPN binary's
-// reconcileDelete. Returns true when the object no longer exists.
+// ensureLabVPNDeleted triggers deletion of the LabVPN object and, once the VPN
+// binary has removed its own finalizer (leaving only FinalizerController), removes
+// FinalizerController so the object can be garbage-collected.
+// Returns true when the object no longer exists.
 func (r *LabReconciler) ensureLabVPNDeleted(ctx context.Context, lab *laboratoryv1alpha1.Lab) (bool, error) {
 	if !lab.Spec.VPN.Enabled {
 		return true, nil
@@ -733,7 +740,10 @@ func (r *LabReconciler) ensureLabVPNDeleted(ctx context.Context, lab *laboratory
 	if obj.DeletionTimestamp.IsZero() {
 		return false, r.Delete(ctx, &obj)
 	}
-	if controllerutil.ContainsFinalizer(&obj, names.FinalizerController) {
+	// Only remove FinalizerController when it is the sole remaining finalizer —
+	// i.e. the VPN binary has already finished cleanup and removed its own finalizer.
+	f := obj.GetFinalizers()
+	if len(f) == 1 && f[0] == names.FinalizerController {
 		controllerutil.RemoveFinalizer(&obj, names.FinalizerController)
 		return false, r.Update(ctx, &obj)
 	}
@@ -753,7 +763,8 @@ func (r *LabReconciler) ensureLabGatewayDeleted(ctx context.Context, lab *labora
 	if obj.DeletionTimestamp.IsZero() {
 		return false, r.Delete(ctx, &obj)
 	}
-	if controllerutil.ContainsFinalizer(&obj, names.FinalizerController) {
+	f := obj.GetFinalizers()
+	if len(f) == 1 && f[0] == names.FinalizerController {
 		controllerutil.RemoveFinalizer(&obj, names.FinalizerController)
 		return false, r.Update(ctx, &obj)
 	}

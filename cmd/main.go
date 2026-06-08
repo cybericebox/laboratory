@@ -230,10 +230,12 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&laboratorycontroller.LabReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		BaseDomain:       cfg.BaseDomain,
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		BaseDomain:      cfg.BaseDomain,
 		ProxySourceCIDRs: cfg.ProxySourceCIDRs,
+		VPNBaseNetwork:  cfg.VPNBaseNetwork,
+		InetBaseNetwork: cfg.InetBaseNetwork,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Lab")
 		os.Exit(1)
