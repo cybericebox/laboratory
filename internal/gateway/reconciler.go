@@ -4,20 +4,27 @@ package gateway
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"time"
 
+	"github.com/vishvananda/netlink"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"k8s.io/apimachinery/pkg/types"
 
+	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/ovsnames"
 	"github.com/cybericebox/laboratory/pkg/dhcp"
 	"github.com/cybericebox/laboratory/pkg/netutil"
 )
 
-const finalizerGateway = "cybericebox.com/gateway"
+const (
+	finalizerController = "cybericebox.com/controller"
+	finalizerGateway    = "cybericebox.com/gateway"
+)
 
 type LabGatewayReconciler struct {
 	client.Client
@@ -27,64 +34,113 @@ type LabGatewayReconciler struct {
 }
 
 func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	var lab laboratoryv1alpha1.Lab
-	if err := r.Get(ctx, req.NamespacedName, &lab); err != nil {
+	log := ctrl.Log.WithName("gateway").WithValues("labgateway", req.NamespacedName)
+
+	var gw laboratoryv1alpha1.LabGateway
+	if err := r.Get(ctx, req.NamespacedName, &gw); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if !lab.Spec.Internet.Enabled {
+
+	// Main controller must have processed this first.
+	if !controllerutil.ContainsFinalizer(&gw, finalizerController) {
 		return ctrl.Result{}, nil
 	}
 
-	if !lab.DeletionTimestamp.IsZero() {
-		return r.reconcileDelete(ctx, &lab)
+	// Deletion path.
+	if !gw.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(&gw, finalizerGateway) {
+			return r.reconcileDelete(ctx, &gw)
+		}
+		return ctrl.Result{}, nil
 	}
 
-	cidr := lab.Status.Internet.CIDR
-	if cidr == "" {
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	// Add own finalizer on first observation.
+	if !controllerutil.ContainsFinalizer(&gw, finalizerGateway) {
+		controllerutil.AddFinalizer(&gw, finalizerGateway)
+		return ctrl.Result{}, r.Update(ctx, &gw)
 	}
 
-	ifaceName := ovsnames.LabGWIfaceName(lab.Name)
-	if err := netutil.AssignFirstHostIP(ifaceName, cidr); err != nil {
-		// Interface not yet created by node-agent; requeue.
+	// Wait for lab{N} interface to appear (created by node-agent via OVS).
+	ifaceName := ovsnames.LabIfaceNameByIndex(gw.Spec.NetworkIndex)
+	if _, err := netlink.LinkByName(ifaceName); err != nil {
+		if gw.Status.Phase != laboratoryv1alpha1.LabGatewayPhaseWaitingForInterface {
+			if patchErr := r.patchPhase(ctx, &gw, laboratoryv1alpha1.LabGatewayPhaseWaitingForInterface); patchErr != nil {
+				log.Error(patchErr, "patch phase WaitingForInterface")
+			}
+		}
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	if err := r.IPT.AddMasquerade(cidr); err != nil {
-		return ctrl.Result{}, err
+	// Assign 10.192.N.1/24 to interface (idempotent).
+	if err := netutil.AssignFirstHostIP(ifaceName, gw.Spec.CIDR); err != nil {
+		return ctrl.Result{}, fmt.Errorf("assign IP to %s: %w", ifaceName, err)
 	}
 
-	if ds := lab.Spec.Internet.DHCPServer; ds != nil && ds.Enabled {
-		if err := r.DHCP.Start(lab.Name, gatewayDHCPConfig(cidr, ifaceName, r.Cfg.DHCPDNS)); err != nil {
-			ctrl.Log.WithName("gateway").Error(err, "start DHCP", "lab", lab.Name)
+	// NAT: POSTROUTING MASQUERADE for this lab's subnet.
+	if err := r.IPT.AddMasquerade(gw.Spec.CIDR); err != nil {
+		return ctrl.Result{}, fmt.Errorf("add masquerade %s: %w", gw.Spec.CIDR, err)
+	}
+
+	// DHCP: optional, only if pool exists.
+	dhcpEnabled := r.dhcpPoolExists(ctx, gw.Spec.LabName, gw.Namespace)
+	if dhcpEnabled {
+		gwIP := firstHostIP(gw.Spec.CIDR)
+		if err := r.DHCP.Start(gw.Spec.LabName, dhcp.Config{
+			Iface:   ifaceName,
+			Subnet:  gw.Spec.CIDR,
+			Gateway: gwIP,
+			BindIP:  gwIP,
+			DNS:     r.Cfg.DHCPDNS,
+		}); err != nil {
+			log.Error(err, "start DHCP", "lab", gw.Spec.LabName)
 		}
 	}
 
-	lab.Status.Internet.Ready = true
-	return ctrl.Result{}, r.Status().Update(ctx, &lab)
+	return ctrl.Result{}, r.patchStatus(ctx, &gw, laboratoryv1alpha1.LabGatewayStatus{
+		Phase:       laboratoryv1alpha1.LabGatewayPhaseReady,
+		NATReady:    true,
+		DHCPEnabled: dhcpEnabled,
+		DHCPReady:   dhcpEnabled,
+	})
 }
 
-func (r *LabGatewayReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1alpha1.Lab) (ctrl.Result, error) {
-	r.DHCP.Stop(lab.Name)
-	if lab.Status.Internet.CIDR != "" {
-		r.IPT.DelMasquerade(lab.Status.Internet.CIDR)
+func (r *LabGatewayReconciler) reconcileDelete(ctx context.Context, gw *laboratoryv1alpha1.LabGateway) (ctrl.Result, error) {
+	r.DHCP.Stop(gw.Spec.LabName)
+	if gw.Spec.CIDR != "" {
+		r.IPT.DelMasquerade(gw.Spec.CIDR)
 	}
-	controllerutil.RemoveFinalizer(lab, finalizerGateway)
-	return ctrl.Result{}, r.Update(ctx, lab)
+	controllerutil.RemoveFinalizer(gw, finalizerGateway)
+	return ctrl.Result{}, r.Update(ctx, gw)
+}
+
+func (r *LabGatewayReconciler) dhcpPoolExists(ctx context.Context, labName, namespace string) bool {
+	var pool allocationv1alpha1.Pool
+	err := r.Get(ctx, types.NamespacedName{
+		Name:      fmt.Sprintf("dhcp-inet-%s-0", labName),
+		Namespace: namespace,
+	}, &pool)
+	return err == nil
+}
+
+func (r *LabGatewayReconciler) patchPhase(ctx context.Context, gw *laboratoryv1alpha1.LabGateway, phase laboratoryv1alpha1.LabGatewayPhase) error {
+	patch := client.MergeFrom(gw.DeepCopy())
+	gw.Status.Phase = phase
+	return r.Status().Patch(ctx, gw, patch)
+}
+
+func (r *LabGatewayReconciler) patchStatus(ctx context.Context, gw *laboratoryv1alpha1.LabGateway, s laboratoryv1alpha1.LabGatewayStatus) error {
+	patch := client.MergeFrom(gw.DeepCopy())
+	gw.Status = s
+	return r.Status().Patch(ctx, gw, patch)
 }
 
 func (r *LabGatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&laboratoryv1alpha1.Lab{}).
+		For(&laboratoryv1alpha1.LabGateway{}).
 		Complete(r)
 }
 
-func gatewayDHCPConfig(cidr, iface, dns string) dhcp.Config {
+func firstHostIP(cidr string) string {
 	ip, _, _ := net.ParseCIDR(cidr)
-	return dhcp.Config{
-		Iface:   iface,
-		Subnet:  cidr,
-		Gateway: netutil.NextIP(ip).String(),
-		DNS:     dns,
-	}
+	return netutil.NextIP(ip).String()
 }

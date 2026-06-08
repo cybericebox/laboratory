@@ -29,11 +29,14 @@ func NewManager() *Manager {
 // Config describes a DHCP server for one network interface.
 // Subnet and Gateway are derived from the lab's allocated CIDR by the caller.
 // DNS is optional — omit to suppress the DNS option in responses.
+// BindIP must be the interface-specific IP (e.g. 10.192.N.1) to avoid port 67 conflicts
+// when multiple DHCP servers run on the same pod. Empty string falls back to 0.0.0.0.
 type Config struct {
 	Iface   string
 	Subnet  string
 	Gateway string
 	DNS     string
+	BindIP  string
 }
 
 func (m *Manager) Start(name string, cfg Config) error {
@@ -90,7 +93,13 @@ func (m *Manager) Start(name string, cfg Config) error {
 		}
 	}
 
-	laddr := &net.UDPAddr{Port: 67, IP: net.ParseIP("0.0.0.0")}
+	bindIP := net.ParseIP("0.0.0.0")
+	if cfg.BindIP != "" {
+		if ip := net.ParseIP(cfg.BindIP); ip != nil {
+			bindIP = ip
+		}
+	}
+	laddr := &net.UDPAddr{Port: 67, IP: bindIP}
 	srv, err := server4.NewServer(cfg.Iface, laddr, handler)
 	if err != nil {
 		return fmt.Errorf("new DHCP server on %s: %w", cfg.Iface, err)

@@ -5,8 +5,15 @@ import (
 	"fmt"
 )
 
-// LabIfaceName computes the OVS internal port name for a lab's VPN access iface.
-// Stays within Linux IFNAMSIZ (15 usable chars).
+// LabIfaceNameByIndex returns the interface name for lab N inside VPN or Gateway pod
+// network namespace (e.g. lab1, lab2, ... lab254). Both pod types use identical names
+// because they run in separate network namespaces — no collision.
+func LabIfaceNameByIndex(n uint) string {
+	return fmt.Sprintf("lab%d", n)
+}
+
+// LabIfaceName computes the OVS internal port name for a lab's VPN access iface
+// from the lab name string. Deprecated: use LabIfaceNameByIndex when networkIndex is available.
 func LabIfaceName(labName string) string {
 	full := "lab-" + labName
 	if len(full) <= 15 {
@@ -16,8 +23,8 @@ func LabIfaceName(labName string) string {
 	return fmt.Sprintf("lb-%x", h[:4]) // 11 chars
 }
 
-// LabGWIfaceName computes the OVS internal port name for a lab's gateway access iface.
-// Uses "gw-" prefix to avoid collision with LabIfaceName on the same node.
+// LabGWIfaceName computes the OVS internal port name for a lab's gateway access iface
+// from the lab name string. Deprecated: use LabIfaceNameByIndex when networkIndex is available.
 func LabGWIfaceName(labName string) string {
 	full := "gw-" + labName
 	if len(full) <= 15 {
