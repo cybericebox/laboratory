@@ -1,0 +1,16 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: laboratory-gateway-role
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+- apiGroups: [laboratory.cybericebox.com]
+  resources: [labgateways]
+  verbs: [get, list, watch, update]
+- apiGroups: [laboratory.cybericebox.com]
+  resources: [labgateways/status]
+  verbs: [get, patch, update]
+- apiGroups: [allocation.cybericebox.com]
+  resources: [pools]
+  verbs: [get]

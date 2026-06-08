@@ -1,0 +1,134 @@
+//go:build linux
+
+package nodeagent
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+)
+
+const (
+	// CNIConfDir is the standard directory kubelet scans for CNI configs.
+	CNIConfDir = "/etc/cni/net.d"
+
+	// CNIConfFile is our CNI conflist filename. The "00-" prefix guarantees
+	// lexicographic priority over all other CNI configs (Multus uses "00-multus.conf",
+	// but "00-cybericebox" < "00-multus" alphabetically).
+	CNIConfFile = "00-cybericebox.conflist"
+
+	// CNIBinDir is where CNI plugin binaries are installed.
+	CNIBinDir = "/opt/cni/bin"
+
+	cniRetryInterval = 5 * time.Second
+)
+
+// InstallCNIConf writes CNIConfFile into confDir by wrapping the first
+// existing CNI config it finds with cni-gate. Blocks until a base config
+// appears (retry every 5 s). Falls back to a built-in ptp delegate if no
+// base config is found within fallbackTimeout.
+func InstallCNIConf(confDir, agentSocket string, fallbackTimeout time.Duration) error {
+	deadline := time.Now().Add(fallbackTimeout)
+	for {
+		base, err := findBaseCNIConf(confDir)
+		if err == nil {
+			return writeCNIConf(confDir, agentSocket, base)
+		}
+		if time.Now().After(deadline) {
+			return writeFallbackCNIConf(confDir, agentSocket)
+		}
+		fmt.Fprintf(os.Stderr, "install-cni: waiting for base CNI config in %s: %v\n", confDir, err)
+		time.Sleep(cniRetryInterval)
+	}
+}
+
+// findBaseCNIConf scans confDir for the first CNI config that is not ours,
+// sorted lexicographically (so the currently-active CNI is picked up).
+func findBaseCNIConf(confDir string) (map[string]interface{}, error) {
+	entries, err := os.ReadDir(confDir)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", confDir, err)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name() < entries[j].Name()
+	})
+	for _, e := range entries {
+		name := e.Name()
+		if name == CNIConfFile {
+			continue
+		}
+		if !strings.HasSuffix(name, ".conflist") && !strings.HasSuffix(name, ".conf") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(confDir, name))
+		if err != nil {
+			continue
+		}
+		var conf map[string]interface{}
+		if err := json.Unmarshal(data, &conf); err != nil {
+			continue
+		}
+		return conf, nil
+	}
+	return nil, fmt.Errorf("no base CNI config found")
+}
+
+func writeCNIConf(confDir, agentSocket string, base map[string]interface{}) error {
+	delegate := extractFirstPlugin(base)
+	return writeConf(confDir, agentSocket, base["cniVersion"], delegate)
+}
+
+// writeFallbackCNIConf writes a self-contained conflist using ptp+host-local
+// when no base CNI is available (e.g. fresh node before any other CNI is installed).
+func writeFallbackCNIConf(confDir, agentSocket string) error {
+	delegate := map[string]interface{}{
+		"type":   "ptp",
+		"ipMasq": true,
+		"mtu":    1500,
+		"ipam": map[string]interface{}{
+			"type":    "host-local",
+			"dataDir": "/run/cni-ipam-state",
+			"ranges": []interface{}{
+				[]interface{}{map[string]interface{}{"subnet": "10.244.0.0/16"}},
+			},
+			"routes": []interface{}{map[string]interface{}{"dst": "0.0.0.0/0"}},
+		},
+	}
+	return writeConf(confDir, agentSocket, "0.3.1", delegate)
+}
+
+func writeConf(confDir, agentSocket string, cniVersion, delegate interface{}) error {
+	conf := map[string]interface{}{
+		"cniVersion": cniVersion,
+		"name":       "cybericebox",
+		"plugins": []interface{}{
+			map[string]interface{}{
+				"type":        "cni-gate",
+				"agentSocket": agentSocket,
+				"delegate":    delegate,
+			},
+		},
+	}
+	data, err := json.MarshalIndent(conf, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal CNI conf: %w", err)
+	}
+	dst := filepath.Join(confDir, CNIConfFile)
+	if err := os.WriteFile(dst, data, 0644); err != nil {
+		return fmt.Errorf("write %s: %w", dst, err)
+	}
+	return nil
+}
+
+// extractFirstPlugin returns the first plugin entry from a conflist, or the
+// entire config when the file is a plain .conf (no "plugins" array).
+func extractFirstPlugin(conf map[string]interface{}) interface{} {
+	if plugins, ok := conf["plugins"].([]interface{}); ok && len(plugins) > 0 {
+		return plugins[0]
+	}
+	return conf
+}

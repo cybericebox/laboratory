@@ -23,8 +23,9 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/node-agent ./cmd/node-agent/
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/cni-gate  ./cmd/cni-gate/
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/node-agent   ./cmd/node-agent/
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/cni-gate    ./cmd/cni-gate/
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/install-cni ./cmd/install-cni/
 
 # Stage 3: final image.
 FROM ubuntu:22.04
@@ -43,11 +44,9 @@ COPY --from=ovs-builder /ovs-install/usr/bin/ovsdb-tool      /usr/bin/ovsdb-tool
 COPY --from=ovs-builder /ovs-install/usr/share/openvswitch/  /usr/share/openvswitch/
 
 # Go binaries.
-COPY --from=go-builder /out/node-agent /node-agent/bin/node-agent
-COPY --from=go-builder /out/cni-gate   /node-agent/bin/cni-gate
+COPY --from=go-builder /out/node-agent   /node-agent/bin/node-agent
+COPY --from=go-builder /out/cni-gate     /node-agent/bin/cni-gate
+COPY --from=go-builder /out/install-cni  /node-agent/bin/install-cni
 
 # OVS startup script.
 COPY --chmod=0755 scripts/start-ovs.sh /node-agent/bin/start-ovs.sh
-
-# CNI conflist (copied to host by initContainer).
-COPY config/cni/10-cybericebox.conflist /node-agent/cni/10-cybericebox.conflist

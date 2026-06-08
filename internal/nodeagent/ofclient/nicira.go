@@ -95,6 +95,17 @@ func OxmIDInPort() uint32 { return oxmHeader(0x8000, 0, false, 4) }
 
 // --- Set-field convenience wrappers ---
 
+// BuildActionsSetReg0 encodes OFPAT_SET_FIELD for NXM_NX_REG0.
+// 4-byte action header + 4 OXM hdr + 4 value = 12 bytes; pad to 16 (8-aligned).
+// Used in t0 to mark packet origin: 0 = local port, 1 = arrived from Geneve.
+func BuildActionsSetReg0(value uint32) []byte {
+	a := make([]byte, 16)
+	binary.BigEndian.PutUint16(a[0:2], ofpatSetField)
+	binary.BigEndian.PutUint16(a[2:4], 16)
+	copy(a[4:], OxmReg0(value))
+	return a
+}
+
 // BuildActionsSetTunDst encodes OFPAT_SET_FIELD for NXM_NX_TUN_IPV4_DST.
 // 4-byte action header + 4 OXM hdr + 4 IP = 12 bytes; pad to 16 (8-aligned).
 func BuildActionsSetTunDst(ipBE uint32) []byte {

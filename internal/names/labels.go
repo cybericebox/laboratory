@@ -30,6 +30,8 @@ const (
 // RBAC resource names created per LabGroup namespace.
 const (
 	RoleManagerName = "laboratory-manager-role"
+	RoleVPNName     = "laboratory-vpn-role"
+	RoleGatewayName = "laboratory-gateway-role"
 )
 
 // Secret name patterns.

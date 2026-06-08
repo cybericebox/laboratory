@@ -15,10 +15,6 @@ type LabGroupVPNSpec struct {
 	// KeypairSecretRef points to an existing WireGuard keypair Secret.
 	// If omitted, operator generates a keypair and stores it in Secret vpn-server-keypair.
 	KeypairSecretRef *corev1.SecretReference `json:"keypairSecretRef,omitempty"`
-	// ClientSubnet is the WireGuard address pool for VPN clients (e.g. "10.8.0.0/24").
-	ClientSubnet string `json:"clientSubnet,omitempty"`
-	// Supernet is the larger network that encompasses all lab subnets (e.g. "10.8.0.0/16").
-	Supernet string `json:"supernet,omitempty"`
 }
 
 // LabGroupStatus defines the observed state of LabGroup.

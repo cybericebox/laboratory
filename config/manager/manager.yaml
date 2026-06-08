@@ -66,6 +66,9 @@ spec:
         image: controller:latest
         name: manager
         ports: []
+        envFrom:
+        - configMapRef:
+            name: laboratory-config
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

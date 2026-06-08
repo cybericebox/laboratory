@@ -1,0 +1,13 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: laboratory-vpn-role
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+- apiGroups: [laboratory.cybericebox.com]
+  resources: [labgroupclients]
+  verbs: [get, list, watch, update]
+- apiGroups: [laboratory.cybericebox.com]
+  resources: [labgroupclients/status]
+  verbs: [get, patch, update]

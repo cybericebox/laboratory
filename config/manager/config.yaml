@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: laboratory-config
+  namespace: system
+data:
+  # REQUIRED: host:port advertised to WireGuard clients (demux public address).
+  # Example: "vpn.example.com:51820" or "$NODE_IP:51820" for Kind.
+  PUBLIC_VPN_ENDPOINT: ""
+
+  # REQUIRED: cluster ingress base domain for device exposure URLs.
+  # Example: "lab.example.com"
+  BASE_DOMAIN: ""
+
+  # UDP port the VPN server listens on.
+  VPN_SERVICE_PORT: "51820"
+
+  # Base address space for VPN subnets.
+  # Client subnet = first /24 (e.g. 10.8.0.0/24).
+  # Per-lab VPN subnets = subsequent /24 blocks (10.8.N.0/24, N >= 1).
+  VPN_BASE_NETWORK: "10.8.0.0/10"
+
+  # Base address space for internet-gateway subnets.
+  INET_BASE_NETWORK: "10.9.0.0/10"
+
+  # Comma-separated CIDR list of proxy source IPs (hostNetwork proxy, e.g. Kind).
+  # Leave empty in standard clusters.
+  PROXY_SOURCE_CIDRS: ""
+
+  # DNS server advertised to WireGuard clients via DHCP option (optional).
+  DHCP_DNS: ""
+
+  # Container images for runtime-created pods (overridable per deployment).
+  VPN_IMAGE: "ghcr.io/cybericebox/laboratory/vpn:latest"
+  GATEWAY_IMAGE: "ghcr.io/cybericebox/laboratory/gateway:latest"
+
+  # JSON-encoded nodeSelector and tolerations for all runtime lab pods.
+  LAB_NODE_SELECTOR: "{}"
+  LAB_TOLERATIONS: "[]"

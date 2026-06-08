@@ -1,0 +1,151 @@
+# ============================================================
+# Operator configuration
+# ============================================================
+operator:
+  image:
+    repository: ghcr.io/cybericebox/laboratory/controller
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  # REQUIRED: host:port advertised to WireGuard clients (demux public address).
+  # Example: "vpn.example.com:51820"
+  publicVPNEndpoint: ""
+
+  # REQUIRED: cluster ingress base domain for device exposure URLs.
+  # Example: "lab.example.com"
+  baseDomain: ""
+
+  # UDP port the VPN server listens on.
+  vpnServicePort: 51820
+
+  # Base address space for all VPN subnets.
+  # Client subnet = first /24 (e.g. 10.8.0.0/24).
+  # Per-lab VPN subnets = 10.8.N.0/24, N >= 1.
+  vpnBaseNetwork: "10.8.0.0/10"
+
+  # Base address space for internet-gateway subnets.
+  inetBaseNetwork: "10.9.0.0/10"
+
+  # Comma-separated CIDRs of proxy source IPs for hostNetwork proxy (e.g. Kind).
+  # Leave empty in standard clusters.
+  proxySourceCIDRs: ""
+
+  # DNS server advertised to WireGuard clients via DHCP option (optional).
+  dhcpDns: ""
+
+  leaderElection: true
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 128Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+
+# ============================================================
+# VPN pod image (created at runtime by operator per LabGroup)
+# ============================================================
+vpn:
+  image:
+    repository: ghcr.io/cybericebox/laboratory/vpn
+    tag: "latest"
+
+# ============================================================
+# Gateway pod image (created at runtime by operator per LabGroup)
+# ============================================================
+gateway:
+  image:
+    repository: ghcr.io/cybericebox/laboratory/gateway
+    tag: "latest"
+
+# ============================================================
+# Proxy (L7 HTTPS + WireGuard demux, hostNetwork on control-plane)
+# ============================================================
+proxy:
+  enabled: true
+
+  image:
+    repository: ghcr.io/cybericebox/laboratory/proxy
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  # HTTPS listen address (binds on host network).
+  listen: ":443"
+  # WireGuard demux UDP listen address (binds on host network).
+  udpListen: ":51820"
+  cookieName: "challenge"
+  externalInterface: "eth0"
+
+  # Set true when running in Kind: overrides API server address to 127.0.0.1:6443.
+  kindMode: false
+
+  # Node where the proxy pod is scheduled (must have a public IP).
+  nodeSelector:
+    node-role.kubernetes.io/control-plane: ""
+
+  tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+# ============================================================
+# cert-manager integration (issues TLS cert for proxy)
+# ============================================================
+certManager:
+  # Set true to create ClusterIssuer and Certificate resources.
+  enabled: true
+
+  # REQUIRED when enabled: email for ACME account registration.
+  email: ""
+
+  # Use Let's Encrypt staging (recommended for testing).
+  # Set false for production certificates.
+  staging: true
+
+  # Name of the ClusterIssuer to create.
+  issuerName: "letsencrypt"
+
+# ============================================================
+# Node-agent DaemonSet configuration
+# ============================================================
+nodeAgent:
+  enabled: true
+
+  image:
+    repository: ghcr.io/cybericebox/laboratory/node-agent
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  # Exclude control-plane nodes from the DaemonSet (set false for single-node Kind).
+  excludeControlPlane: true
+
+  ovsSocket: "/run/openvswitch/db.sock"
+  grpcSocket: "/run/cybericebox/node-agent.sock"
+  procRoot: "/host/proc"
+
+# ============================================================
+# Lab workload scheduling (VPN, gateway, device pods)
+# ============================================================
+labWorkloads:
+  # nodeSelector applied to all runtime lab pods.
+  # Example: {"lab-node": "true"} — only schedule on nodes labelled lab-node=true.
+  nodeSelector: {}
+  # tolerations applied to all runtime lab pods.
+  tolerations: []
+
+# ============================================================
+# Common
+# ============================================================
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""

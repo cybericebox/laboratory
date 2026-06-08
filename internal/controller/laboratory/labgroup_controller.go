@@ -23,8 +23,12 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
+	"github.com/cybericebox/laboratory/pkg/netutil"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
+
+// labSubnetPrefixLen is the prefix length of per-lab and per-client subnets within VPNBaseNetwork.
+const labSubnetPrefixLen = 24
 
 // LabGroupReconciler reconciles a LabGroup object.
 type LabGroupReconciler struct {
@@ -35,6 +39,20 @@ type LabGroupReconciler struct {
 	PublicVPNEndpoint string
 	// VPNServicePort is the UDP port the VPN server listens on. Defaults to 51820.
 	VPNServicePort int
+	// VPNBaseNetwork is the base address space for all VPN subnets (e.g. "10.8.0.0/10").
+	VPNBaseNetwork string
+	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets (e.g. "10.9.0.0/10").
+	InetBaseNetwork string
+	// DHCPDNS is the DNS server address advertised to WireGuard clients (optional).
+	DHCPDNS string
+	// VPNImage is the container image for VPN pods.
+	VPNImage string
+	// GatewayImage is the container image for gateway pods.
+	GatewayImage string
+	// LabNodeSelector is applied to VPN and gateway pod specs.
+	LabNodeSelector map[string]string
+	// LabTolerations is applied to VPN and gateway pod specs.
+	LabTolerations []corev1.Toleration
 }
 
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labgroups,verbs=get;list;watch;create;update;patch;delete
@@ -100,11 +118,11 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Error(err, "ensure VPN service account")
 		return ctrl.Result{}, err
 	}
-	if err = r.ensureRoleBinding(ctx, ns, "vpn", names.RoleManagerName); err != nil {
+	if err = r.ensureRoleBinding(ctx, ns, "vpn", names.RoleVPNName); err != nil {
 		logger.Error(err, "ensure VPN role binding")
 		return ctrl.Result{}, err
 	}
-	if err = r.ensureVPNDeployment(ctx, ns, &lg); err != nil {
+	if err = r.ensureVPNDeployment(ctx, ns); err != nil {
 		logger.Error(err, "ensure VPN deployment")
 		return ctrl.Result{}, err
 	}
@@ -113,7 +131,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Error(err, "ensure gateway service account")
 		return ctrl.Result{}, err
 	}
-	if err = r.ensureRoleBinding(ctx, ns, "gateway", names.RoleManagerName); err != nil {
+	if err = r.ensureRoleBinding(ctx, ns, "gateway", names.RoleGatewayName); err != nil {
 		logger.Error(err, "ensure gateway role binding")
 		return ctrl.Result{}, err
 	}
@@ -294,12 +312,16 @@ func (r *LabGroupReconciler) ensureVPNService(ctx context.Context, ns string) er
 	return r.Create(ctx, svc)
 }
 
-func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string, lg *laboratoryv1alpha1.LabGroup) error {
+func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string) error {
 	var existing appsv1.Deployment
 	if err := r.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: ns}, &existing); err == nil {
 		return nil
 	} else if !errors.IsNotFound(err) {
 		return err
+	}
+	clientSubnet, err := netutil.SubnetForIndex(r.VPNBaseNetwork, labSubnetPrefixLen, 0)
+	if err != nil {
+		return fmt.Errorf("derive VPN client subnet: %w", err)
 	}
 	replicas := int32(1)
 	d := &appsv1.Deployment{
@@ -314,9 +336,11 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: "vpn",
+					NodeSelector:       r.LabNodeSelector,
+					Tolerations:        r.LabTolerations,
 					Containers: []corev1.Container{{
 						Name:            "vpn",
-						Image:           "cybericebox/vpn:latest",
+						Image:           r.VPNImage,
 						ImagePullPolicy: corev1.PullIfNotPresent,
 						SecurityContext: &corev1.SecurityContext{
 							Capabilities: &corev1.Capabilities{
@@ -334,8 +358,10 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 								},
 							},
 							{Name: "NAMESPACE", Value: ns},
-							{Name: "CLIENT_SUBNET", Value: lg.Spec.VPN.ClientSubnet},
-							{Name: "VPN_SUPERNET", Value: lg.Spec.VPN.Supernet},
+							{Name: "CLIENT_SUBNET", Value: clientSubnet},
+							{Name: "VPN_BASE_NETWORK", Value: r.VPNBaseNetwork},
+							{Name: "LISTEN_PORT", Value: fmt.Sprint(r.vpnPort())},
+							{Name: "DHCP_DNS", Value: r.DHCPDNS},
 						},
 					}},
 				},
@@ -369,9 +395,11 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: "gateway",
+					NodeSelector:       r.LabNodeSelector,
+					Tolerations:        r.LabTolerations,
 					Containers: []corev1.Container{{
 						Name:            "gateway",
-						Image:           "cybericebox/gateway:latest",
+						Image:           r.GatewayImage,
 						ImagePullPolicy: corev1.PullIfNotPresent,
 						SecurityContext: &corev1.SecurityContext{
 							Capabilities: &corev1.Capabilities{
@@ -380,6 +408,8 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 						},
 						Env: []corev1.EnvVar{
 							{Name: "NAMESPACE", Value: ns},
+							{Name: "INET_BASE_NETWORK", Value: r.InetBaseNetwork},
+							{Name: "DHCP_DNS", Value: r.DHCPDNS},
 						},
 					}},
 				},

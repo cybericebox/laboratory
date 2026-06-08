@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: laboratory-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+data:
+  PUBLIC_VPN_ENDPOINT: {{ .Values.operator.publicVPNEndpoint | quote }}
+  BASE_DOMAIN: {{ .Values.operator.baseDomain | quote }}
+  VPN_SERVICE_PORT: {{ .Values.operator.vpnServicePort | quote }}
+  VPN_BASE_NETWORK: {{ .Values.operator.vpnBaseNetwork | quote }}
+  INET_BASE_NETWORK: {{ .Values.operator.inetBaseNetwork | quote }}
+  PROXY_SOURCE_CIDRS: {{ .Values.operator.proxySourceCIDRs | quote }}
+  DHCP_DNS: {{ .Values.operator.dhcpDns | quote }}
+  VPN_IMAGE: "{{ .Values.vpn.image.repository }}:{{ .Values.vpn.image.tag }}"
+  GATEWAY_IMAGE: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
+  LAB_NODE_SELECTOR: {{ .Values.labWorkloads.nodeSelector | toJson | quote }}
+  LAB_TOLERATIONS: {{ .Values.labWorkloads.tolerations | toJson | quote }}

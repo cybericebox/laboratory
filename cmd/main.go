@@ -100,6 +100,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	labNodeSelector, labTolerations, err := operator.ParseLabScheduling(cfg)
+	if err != nil {
+		setupLog.Error(err, "parse lab scheduling config")
+		os.Exit(1)
+	}
+
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
 	// prevent from being vulnerable to the HTTP/2 Stream Cancellation and
@@ -218,13 +224,21 @@ func main() {
 		Scheme:            mgr.GetScheme(),
 		PublicVPNEndpoint: cfg.PublicVPNEndpoint,
 		VPNServicePort:    cfg.VPNServicePort,
+		VPNBaseNetwork:    cfg.VPNBaseNetwork,
+		InetBaseNetwork:   cfg.InetBaseNetwork,
+		DHCPDNS:           cfg.DHCPDNS,
+		VPNImage:          cfg.VPNImage,
+		GatewayImage:      cfg.GatewayImage,
+		LabNodeSelector:   labNodeSelector,
+		LabTolerations:    labTolerations,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LabGroup")
 		os.Exit(1)
 	}
 	if err = (&laboratorycontroller.LabGroupClientReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		VPNBaseNetwork: cfg.VPNBaseNetwork,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LabGroupClient")
 		os.Exit(1)
@@ -241,8 +255,10 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&laboratorycontroller.DeviceReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		LabNodeSelector: labNodeSelector,
+		LabTolerations:  labTolerations,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Device")
 		os.Exit(1)

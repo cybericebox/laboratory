@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"text/template"
 	"time"
 
@@ -21,18 +22,15 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
-)
-
-const (
-
-	// VPN supernet that clients route into the tunnel. Matches cmd/vpn/config.go.
-	clientAllowedIPs = "10.8.0.0/16"
+	"github.com/cybericebox/laboratory/pkg/netutil"
 )
 
 // LabGroupClientReconciler reconciles a LabGroupClient object.
 type LabGroupClientReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// VPNBaseNetwork is the full VPN address space advertised to WireGuard clients (e.g. "10.8.0.0/10").
+	VPNBaseNetwork string
 }
 
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labgroupclients,verbs=get;list;watch;create;update;patch;delete
@@ -97,7 +95,10 @@ func (r *LabGroupClientReconciler) reconcileCreate(ctx context.Context, lgc *lab
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("allocate VPN IP: %w", err)
 		}
-		assignedIP = fmt.Sprintf("10.8.0.%d/32", idx+1) // idx+1: skip 10.8.0.1 (VPN gateway)
+		assignedIP, err = r.vpnClientIP(idx)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("compute client IP: %w", err)
+		}
 	}
 
 	// Fetch parent LabGroup so we can populate serverPublicKey + endpoint in the
@@ -115,7 +116,7 @@ func (r *LabGroupClientReconciler) reconcileCreate(ctx context.Context, lgc *lab
 		AssignedIP:      assignedIP,
 		ServerPublicKey: serverPubKey,
 		Endpoint:        endpoint,
-		AllowedIPs:      clientAllowedIPs,
+		AllowedIPs:      r.VPNBaseNetwork,
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -315,6 +316,18 @@ func renderWGConf(p secretParams) (string, error) {
 		return "", err
 	}
 	return buf.String(), nil
+}
+
+// vpnClientIP computes the /32 address for pool slot idx within the first /24 of vpnBaseNet.
+// idx=0 → .1 (first client; .0 is the subnet address, VPN gateway uses .1 conventionally).
+func (r *LabGroupClientReconciler) vpnClientIP(idx uint) (string, error) {
+	s, err := netutil.SubnetForIndex(r.VPNBaseNetwork, labSubnetPrefixLen, 0)
+	if err != nil {
+		return "", fmt.Errorf("derive client subnet: %w", err)
+	}
+	ip, _, _ := net.ParseCIDR(s)
+	base := ip.To4()
+	return fmt.Sprintf("%d.%d.%d.%d/32", base[0], base[1], base[2], int(base[3])+int(idx)+1), nil
 }
 
 // ipToIndex extracts the pool index from a CIDR like "10.8.0.5/32".

@@ -21,7 +21,9 @@ import (
 // DeviceReconciler reconciles a Device object.
 type DeviceReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme          *runtime.Scheme
+	LabNodeSelector map[string]string
+	LabTolerations  []corev1.Toleration
 }
 
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices,verbs=get;list;watch;create;update;patch;delete
@@ -129,6 +131,8 @@ func (r *DeviceReconciler) createPod(ctx context.Context, device *laboratoryv1al
 			},
 		},
 		Spec: corev1.PodSpec{
+			NodeSelector: r.LabNodeSelector,
+			Tolerations:  r.LabTolerations,
 			Containers: []corev1.Container{{
 				Name:    device.Spec.Name,
 				Image:   device.Spec.Image,

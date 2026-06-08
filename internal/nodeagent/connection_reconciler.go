@@ -21,6 +21,19 @@ import (
 )
 
 // ConnectionReconciler programs br-ovs based on Connection CRDs.
+//
+// Three connection scenarios (spec §8):
+//
+//  1. Device↔Device   — both ports in connVNI; t6 floods within connVNI.
+//  2. Device↔Switch   — device port enters SW_VNI; t6 is rebuilt by aggregating
+//     ALL connections to that switch (devices on any node).
+//  3. Switch↔Switch   — local patch-pair; each end registers in its switch's VNI;
+//     t6 for each switch VNI is rebuilt to include the patch port.
+//
+// Pod migration is handled by the DevicePortReconciler stamping a new NodeAddress
+// on the Device, which triggers connectionsForDevice → requeue this reconciler.
+// reconcileCreate is fully idempotent: it removes and re-adds t0 before setting
+// a new value, and atomically replaces the t6 flood entry for the affected VNI.
 type ConnectionReconciler struct {
 	client.Client
 	NodeName    string
@@ -30,78 +43,36 @@ type ConnectionReconciler struct {
 	ProcRoot    string
 }
 
+// epInfo holds resolved endpoint state for one reconcile cycle.
+type epInfo struct {
+	endpoint  laboratoryv1alpha1.EndpointSpec
+	device    laboratoryv1alpha1.Device
+	isSwitch  bool
+	nodeReady bool
+}
+
 func (r *ConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var conn laboratoryv1alpha1.Connection
 	if err := r.Get(ctx, req.NamespacedName, &conn); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-
 	if !conn.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, &conn)
 	}
-
 	return r.reconcileCreate(ctx, &conn)
 }
 
+// reconcileCreate dispatches to the appropriate scenario handler after loading
+// endpoints and ensuring the shared Geneve port + its t0 ingress entry exist.
 func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *laboratoryv1alpha1.Connection) (ctrl.Result, error) {
-	type epInfo struct {
-		endpoint  laboratoryv1alpha1.EndpointSpec
-		device    laboratoryv1alpha1.Device
-		isSwitch  bool
-		nodeReady bool
+	eps, needsRequeue, err := r.loadEndpoints(ctx, conn)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
-
-	eps := make([]epInfo, 0, len(conn.Spec.Endpoints))
-	needsRequeue := false
-
-	for _, ep := range conn.Spec.Endpoints {
-		// Virtual singletons (vpn, internet) have no Device CRD — synthesize from their pods.
-		if ep.Device == "vpn" || ep.Device == "internet" {
-			appLabel := ep.Device
-			var pods corev1.PodList
-			if err := r.List(ctx, &pods,
-				client.InNamespace(conn.Namespace),
-				client.MatchingLabels{"app": appLabel},
-				client.Limit(1),
-			); err != nil {
-				return ctrl.Result{}, err
-			}
-			if len(pods.Items) == 0 || pods.Items[0].Spec.NodeName == "" {
-				needsRequeue = true
-				// Synthesize empty device so the slice length stays consistent.
-				eps = append(eps, epInfo{ep, laboratoryv1alpha1.Device{}, false, false})
-				continue
-			}
-			pod := pods.Items[0]
-			synth := laboratoryv1alpha1.Device{}
-			synth.Spec.Type = laboratoryv1alpha1.DeviceTypeContainer
-			synth.Status.NodeName = pod.Spec.NodeName
-			synth.Status.NodeAddress = r.nodeAddressForNode(pod.Spec.NodeName)
-			// OVS port for vpn/internet is the lab iface name (not DevicePortKey hash).
-			synth.Name = fmt.Sprintf("%s-%s", conn.Spec.LabRef, ep.Device)
-			eps = append(eps, epInfo{ep, synth, false, true})
-			continue
-		}
-
-		deviceName := fmt.Sprintf("%s-%s", conn.Spec.LabRef, ep.Device)
-		var dev laboratoryv1alpha1.Device
-		if err := r.Get(ctx, types.NamespacedName{Name: deviceName, Namespace: conn.Namespace}, &dev); err != nil {
-			return ctrl.Result{}, client.IgnoreNotFound(err)
-		}
-		isSwitch := dev.Spec.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch ||
-			dev.Spec.Type == laboratoryv1alpha1.DeviceTypeHub
-		nodeReady := isSwitch || dev.Status.NodeName != ""
-		if !nodeReady {
-			needsRequeue = true
-		}
-		eps = append(eps, epInfo{ep, dev, isSwitch, nodeReady})
-	}
-
 	if needsRequeue {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	// Add finalizer before any OVS work so cleanup runs even if we crash mid-reconcile.
 	if !controllerutil.ContainsFinalizer(conn, names.FinalizerOVSCleanup) {
 		controllerutil.AddFinalizer(conn, names.FinalizerOVSCleanup)
 		if err := r.Update(ctx, conn); err != nil {
@@ -112,15 +83,30 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 		}
 	}
 
-	// Determine VNI.
-	var vni uint
-	for _, ep := range eps {
-		if ep.isSwitch && ep.device.Status.VNI != nil {
-			vni = *ep.device.Status.VNI
-			break
-		}
+	// Ensure shared Geneve port and its permanent t0 rule.
+	if err := r.OVS.AddGenevePort("", ""); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure geneve port: %w", err)
 	}
-	if vni == 0 && conn.Status.VNI != nil {
+	if err := r.Flows.InitGeneveIngress(); err != nil {
+		return ctrl.Result{}, fmt.Errorf("init geneve ingress: %w", err)
+	}
+
+	sw0, sw1 := eps[0].isSwitch, eps[1].isSwitch
+	switch {
+	case sw0 && sw1:
+		return r.reconcileSwitchSwitch(ctx, conn, eps)
+	case sw0 || sw1:
+		return r.reconcileDeviceSwitch(ctx, conn, eps)
+	default:
+		return r.reconcileDeviceDevice(ctx, conn, eps)
+	}
+}
+
+// reconcileDeviceDevice handles direct device-to-device connections.
+// Both device ports go into connVNI; t6 floods within that VNI.
+func (r *ConnectionReconciler) reconcileDeviceDevice(ctx context.Context, conn *laboratoryv1alpha1.Connection, eps []epInfo) (ctrl.Result, error) {
+	var vni uint
+	if conn.Status.VNI != nil {
 		vni = *conn.Status.VNI
 	}
 	if vni == 0 {
@@ -128,110 +114,42 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 	}
 
 	desired := make([]laboratoryv1alpha1.ConnectionPortStatus, 0, len(eps))
-
-	// switch↔switch — materialise the patch-pair locally (spec §7: "Patch —
-	// всегда внутри ноды"). Each node runs the same logic and gets its own
-	// local pair so that cross-VNI L2 transit works wherever members live.
-	if len(eps) == 2 && eps[0].isSwitch && eps[1].isSwitch {
-		nameA := patchPortName(conn.Name, eps[0].endpoint.Device)
-		nameB := patchPortName(conn.Name, eps[1].endpoint.Device)
-		if err := r.OVS.AddPatchPair(nameA, nameB); err != nil {
-			return ctrl.Result{}, fmt.Errorf("add patch pair: %w", err)
-		}
-		// Flow rules that bind each patch port to its switch's VNI live in
-		// the 7-table pipeline (REQ-NA-030..038), not yet implemented. The
-		// patch wires exist; they will start carrying L2 once that lands.
-		for _, ep := range eps {
-			desired = append(desired, laboratoryv1alpha1.ConnectionPortStatus{
-				Device:    ep.endpoint.Device,
-				Interface: ep.endpoint.Interface,
-				Connected: true,
-			})
-		}
-		if reflect.DeepEqual(conn.Status.Ports, desired) {
-			return ctrl.Result{}, nil
-		}
-		conn.Status.Ports = desired
-		return ctrl.Result{}, r.Status().Update(ctx, conn)
-	}
+	var localPorts []string
+	seenVTEPs := make(map[string]struct{})
+	var remoteVTEPs []string
 
 	for _, ep := range eps {
 		portStatus := laboratoryv1alpha1.ConnectionPortStatus{
-			Device:    ep.endpoint.Device,
-			Interface: ep.endpoint.Interface,
+			Device:      ep.endpoint.Device,
+			Interface:   ep.endpoint.Interface,
+			NodeName:    ep.device.Status.NodeName,
+			NodeAddress: ep.device.Status.NodeAddress,
 		}
-
-		if ep.isSwitch {
-			portStatus.Connected = true
-			desired = append(desired, portStatus)
-			continue
-		}
-
-		portStatus.NodeName = ep.device.Status.NodeName
-		portStatus.NodeAddress = ep.device.Status.NodeAddress
 
 		if ep.device.Status.NodeName == r.NodeName {
-			// Virtual singletons (vpn, internet) use a fixed OVS port named lab{N},
-			// looked up from the LabVPN/LabGateway CRD. Regular devices use DevicePortKey.
-			var pKey string
-			if ep.endpoint.Device == "vpn" {
-				var labvpn laboratoryv1alpha1.LabVPN
-				if err := r.Get(ctx, types.NamespacedName{Name: names.LabVPNObjectName(conn.Spec.LabRef), Namespace: conn.Namespace}, &labvpn); err != nil {
-					if client.IgnoreNotFound(err) != nil {
-						return ctrl.Result{}, err
-					}
-					return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
-				}
-				pKey = names.LabIfaceNameByIndex(labvpn.Spec.NetworkIndex)
-			} else if ep.endpoint.Device == "internet" {
-				var labgw laboratoryv1alpha1.LabGateway
-				if err := r.Get(ctx, types.NamespacedName{Name: names.LabGatewayObjectName(conn.Spec.LabRef), Namespace: conn.Namespace}, &labgw); err != nil {
-					if client.IgnoreNotFound(err) != nil {
-						return ctrl.Result{}, err
-					}
-					return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
-				}
-				pKey = names.LabIfaceNameByIndex(labgw.Spec.NetworkIndex)
-			} else {
-				pKey = names.DevicePortKey(conn.Namespace, ep.device.Name, ep.endpoint.Interface)
+			pKey, requeue, err := r.resolveLocalPortKey(ctx, conn, ep)
+			if err != nil {
+				return ctrl.Result{}, err
 			}
-
-			// Wait for NetworkAttachReconciler to create the OVS port before programming flows.
+			if requeue {
+				return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+			}
 			exists, err := r.OVS.PortExists(pKey)
 			if err != nil {
-				return ctrl.Result{}, fmt.Errorf("check OVS port %q: %w", pKey, err)
+				return ctrl.Result{}, fmt.Errorf("check port %q: %w", pKey, err)
 			}
 			if !exists {
 				return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
 			}
 
-			// Program Geneve tunnels for remote endpoints. One shared Geneve
-			// port per node; tun_dst is set per-flow.
-			for _, remote := range eps {
-				if remote.isSwitch || remote.device.Status.NodeName == r.NodeName || remote.device.Status.NodeAddress == "" {
-					continue
-				}
-				if err := r.OVS.AddGenevePort("", ""); err != nil {
-					return ctrl.Result{}, fmt.Errorf("ensure geneve port: %w", err)
-				}
-				gvPort := genevePortName(remote.device.Status.NodeAddress)
-				if err := r.Flows.AddEgressFlow(pKey, gvPort, vni, remote.device.Status.NodeAddress); err != nil {
-					return ctrl.Result{}, err
-				}
-				if err := r.Flows.AddIngressFlow(gvPort, pKey, vni); err != nil {
-					return ctrl.Result{}, err
-				}
-			}
-
-			// Program local switch flow (same-node VNI flooding).
-			if err := r.Flows.AddLocalSwitchFlow(pKey, vni); err != nil {
+			_ = r.Flows.DelT0Port(pKey)
+			if err := r.Flows.AddT0Port(pKey, vni); err != nil {
 				return ctrl.Result{}, err
 			}
-
+			localPorts = append(localPorts, pKey)
 			portStatus.PortID = pKey
 			portStatus.Connected = true
 		} else {
-			// Preserve existing portID/connected state for remote endpoints.
 			for _, existing := range conn.Status.Ports {
 				if existing.Device == ep.endpoint.Device && existing.Interface == ep.endpoint.Interface {
 					portStatus.PortID = existing.PortID
@@ -239,47 +157,327 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 					break
 				}
 			}
+			if ep.device.Status.NodeAddress != "" {
+				if _, seen := seenVTEPs[ep.device.Status.NodeAddress]; !seen {
+					seenVTEPs[ep.device.Status.NodeAddress] = struct{}{}
+					remoteVTEPs = append(remoteVTEPs, ep.device.Status.NodeAddress)
+				}
+			}
 		}
-
 		desired = append(desired, portStatus)
+	}
+
+	if len(localPorts) > 0 {
+		if err := r.Flows.RebuildT6Flood(vni, localPorts, remoteVTEPs); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	if reflect.DeepEqual(conn.Status.Ports, desired) {
 		return ctrl.Result{}, nil
 	}
-
 	conn.Status.Ports = desired
 	return ctrl.Result{}, r.Status().Update(ctx, conn)
 }
 
+// reconcileDeviceSwitch handles device-to-switch/hub connections.
+// The device port enters the switch's VNI (SW_VNI); t6 for SW_VNI is rebuilt
+// by aggregating all connections that share the same switch endpoint.
+func (r *ConnectionReconciler) reconcileDeviceSwitch(ctx context.Context, conn *laboratoryv1alpha1.Connection, eps []epInfo) (ctrl.Result, error) {
+	var swEp, devEp epInfo
+	for _, ep := range eps {
+		if ep.isSwitch {
+			swEp = ep
+		} else {
+			devEp = ep
+		}
+	}
+
+	var vni uint
+	if swEp.device.Status.VNI != nil {
+		vni = *swEp.device.Status.VNI
+	}
+	if vni == 0 {
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	desired := make([]laboratoryv1alpha1.ConnectionPortStatus, 0, 2)
+	desired = append(desired, laboratoryv1alpha1.ConnectionPortStatus{
+		Device:    swEp.endpoint.Device,
+		Interface: swEp.endpoint.Interface,
+		Connected: true,
+	})
+
+	portStatus := laboratoryv1alpha1.ConnectionPortStatus{
+		Device:      devEp.endpoint.Device,
+		Interface:   devEp.endpoint.Interface,
+		NodeName:    devEp.device.Status.NodeName,
+		NodeAddress: devEp.device.Status.NodeAddress,
+	}
+
+	var currentLocalPort string
+
+	if devEp.device.Status.NodeName == r.NodeName {
+		pKey, requeue, err := r.resolveLocalPortKey(ctx, conn, devEp)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if requeue {
+			return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+		}
+		exists, err := r.OVS.PortExists(pKey)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("check port %q: %w", pKey, err)
+		}
+		if !exists {
+			return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+		}
+
+		_ = r.Flows.DelT0Port(pKey)
+		if err := r.Flows.AddT0Port(pKey, vni); err != nil {
+			return ctrl.Result{}, err
+		}
+		currentLocalPort = pKey
+		portStatus.PortID = pKey
+		portStatus.Connected = true
+	} else {
+		for _, existing := range conn.Status.Ports {
+			if existing.Device == devEp.endpoint.Device && existing.Interface == devEp.endpoint.Interface {
+				portStatus.PortID = existing.PortID
+				portStatus.Connected = existing.Connected
+				break
+			}
+		}
+	}
+	desired = append(desired, portStatus)
+
+	// Rebuild t6 for SW_VNI aggregating all connections to this switch.
+	// Inject currentLocalPort in case Status.Ports hasn't been written yet.
+	localPorts, remoteVTEPs, err := r.buildSwitchVNIFlood(ctx, conn.Namespace, conn.Spec.LabRef, swEp.endpoint.Device)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if currentLocalPort != "" {
+		found := false
+		for _, p := range localPorts {
+			if p == currentLocalPort {
+				found = true
+				break
+			}
+		}
+		if !found {
+			localPorts = append(localPorts, currentLocalPort)
+		}
+	}
+	if len(localPorts) > 0 {
+		if err := r.Flows.RebuildT6Flood(vni, localPorts, remoteVTEPs); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	if reflect.DeepEqual(conn.Status.Ports, desired) {
+		return ctrl.Result{}, nil
+	}
+	conn.Status.Ports = desired
+	return ctrl.Result{}, r.Status().Update(ctx, conn)
+}
+
+// reconcileSwitchSwitch handles switch-to-switch connections.
+// A patch-pair is created on every node (pair is intra-node per spec §7).
+// Each patch port is registered in its switch's VNI via t0, and t6 for both
+// switch VNIs is rebuilt to include the patch ports and all member devices.
+func (r *ConnectionReconciler) reconcileSwitchSwitch(ctx context.Context, conn *laboratoryv1alpha1.Connection, eps []epInfo) (ctrl.Result, error) {
+	ep0, ep1 := eps[0], eps[1]
+
+	var vni0, vni1 uint
+	if ep0.device.Status.VNI != nil {
+		vni0 = *ep0.device.Status.VNI
+	}
+	if ep1.device.Status.VNI != nil {
+		vni1 = *ep1.device.Status.VNI
+	}
+	if vni0 == 0 || vni1 == 0 {
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	// Patch port names: each end lives in its switch's VNI domain.
+	patchA := patchPortName(conn.Name, ep0.endpoint.Device) // registered in vni0
+	patchB := patchPortName(conn.Name, ep1.endpoint.Device) // registered in vni1
+
+	if err := r.OVS.AddPatchPair(patchA, patchB); err != nil {
+		return ctrl.Result{}, fmt.Errorf("add patch pair: %w", err)
+	}
+
+	// Bind each patch port to its switch's VNI in t0 (idempotent via AddT0Port).
+	if err := r.Flows.AddT0Port(patchA, vni0); err != nil {
+		return ctrl.Result{}, fmt.Errorf("t0 %s→VNI%d: %w", patchA, vni0, err)
+	}
+	if err := r.Flows.AddT0Port(patchB, vni1); err != nil {
+		return ctrl.Result{}, fmt.Errorf("t0 %s→VNI%d: %w", patchB, vni1, err)
+	}
+
+	// Rebuild t6 for both switch VNIs (patches are now in OVS; buildSwitchVNIFlood
+	// will find them via PortExists).
+	localPorts0, remoteVTEPs0, err := r.buildSwitchVNIFlood(ctx, conn.Namespace, conn.Spec.LabRef, ep0.endpoint.Device)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(localPorts0) > 0 {
+		if err := r.Flows.RebuildT6Flood(vni0, localPorts0, remoteVTEPs0); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	localPorts1, remoteVTEPs1, err := r.buildSwitchVNIFlood(ctx, conn.Namespace, conn.Spec.LabRef, ep1.endpoint.Device)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(localPorts1) > 0 {
+		if err := r.Flows.RebuildT6Flood(vni1, localPorts1, remoteVTEPs1); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	desired := []laboratoryv1alpha1.ConnectionPortStatus{
+		{Device: ep0.endpoint.Device, Interface: ep0.endpoint.Interface, Connected: true},
+		{Device: ep1.endpoint.Device, Interface: ep1.endpoint.Interface, Connected: true},
+	}
+	if reflect.DeepEqual(conn.Status.Ports, desired) {
+		return ctrl.Result{}, nil
+	}
+	conn.Status.Ports = desired
+	return ctrl.Result{}, r.Status().Update(ctx, conn)
+}
+
+// buildSwitchVNIFlood collects all local OVS port names and remote VTEP IPs
+// for a given switch's VNI domain by inspecting every connection in the lab
+// that has switchLogicalName as an endpoint.
+//
+// Device↔Switch connections: port IDs are read from conn.Status.Ports.
+// Switch↔Switch connections: the local patch port is checked via OVS PortExists.
+//
+// Connections with a non-nil DeletionTimestamp are skipped so that in-progress
+// deletions do not appear in the rebuilt flood list.
+func (r *ConnectionReconciler) buildSwitchVNIFlood(ctx context.Context, namespace, labRef, switchLogicalName string) (localPorts, remoteVTEPs []string, _ error) {
+	var connList laboratoryv1alpha1.ConnectionList
+	if err := r.List(ctx, &connList,
+		client.InNamespace(namespace),
+		client.MatchingLabels{names.LabelLab: labRef},
+	); err != nil {
+		return nil, nil, err
+	}
+
+	seenVTEPs := make(map[string]struct{})
+
+	for i := range connList.Items {
+		c := &connList.Items[i]
+		if c.DeletionTimestamp != nil {
+			continue
+		}
+
+		// Skip connections that don't involve our switch.
+		hasSw := false
+		for _, ep := range c.Spec.Endpoints {
+			if ep.Device == switchLogicalName {
+				hasSw = true
+				break
+			}
+		}
+		if !hasSw {
+			continue
+		}
+
+		// Determine whether all other endpoints are also switches.
+		allOtherSwitches := true
+		for _, ep := range c.Spec.Endpoints {
+			if ep.Device == switchLogicalName {
+				continue
+			}
+			devName := fmt.Sprintf("%s-%s", labRef, ep.Device)
+			var dev laboratoryv1alpha1.Device
+			if err := r.Get(ctx, types.NamespacedName{Name: devName, Namespace: namespace}, &dev); err != nil {
+				allOtherSwitches = false
+				break
+			}
+			if dev.Spec.Type != laboratoryv1alpha1.DeviceTypeUnmanagedSwitch &&
+				dev.Spec.Type != laboratoryv1alpha1.DeviceTypeHub {
+				allOtherSwitches = false
+				break
+			}
+		}
+
+		if allOtherSwitches {
+			// Switch↔Switch: include patch port on our switch's side if it exists.
+			pName := patchPortName(c.Name, switchLogicalName)
+			if exists, err := r.OVS.PortExists(pName); err == nil && exists {
+				localPorts = append(localPorts, pName)
+			}
+		} else {
+			// Device↔Switch: read recorded port IDs from Status.Ports.
+			for _, sp := range c.Status.Ports {
+				if sp.Device == switchLogicalName || sp.PortID == "" {
+					continue
+				}
+				if sp.NodeName == r.NodeName {
+					if exists, _ := r.OVS.PortExists(sp.PortID); exists {
+						localPorts = append(localPorts, sp.PortID)
+					}
+				} else if sp.NodeAddress != "" {
+					if _, seen := seenVTEPs[sp.NodeAddress]; !seen {
+						seenVTEPs[sp.NodeAddress] = struct{}{}
+						remoteVTEPs = append(remoteVTEPs, sp.NodeAddress)
+					}
+				}
+			}
+		}
+	}
+
+	return localPorts, remoteVTEPs, nil
+}
+
 func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *laboratoryv1alpha1.Connection) (ctrl.Result, error) {
+	// Remove local device ports from OVS and their t0 entries.
 	for _, port := range conn.Status.Ports {
 		if port.NodeName != r.NodeName || port.PortID == "" {
 			continue
 		}
-		_ = r.Flows.DelFlowsByPort(port.PortID)
+		_ = r.Flows.DelT0Port(port.PortID)
 		_ = r.OVS.DelPort(port.PortID)
 	}
 
-	// switch↔switch patch ports are local to every node — clean ours up.
-	if len(conn.Spec.Endpoints) == 2 {
-		var devs []string
-		for _, ep := range conn.Spec.Endpoints {
-			devs = append(devs, ep.Device)
-		}
-		if len(devs) == 2 {
-			_ = r.OVS.DelPort(patchPortName(conn.Name, devs[0]))
-			_ = r.OVS.DelPort(patchPortName(conn.Name, devs[1]))
-		}
+	// Remove t6 flood for the connection's own VNI (device↔device case).
+	if conn.Status.VNI != nil {
+		_ = r.Flows.DelT6Flood(*conn.Status.VNI)
 	}
 
-	if conn.Status.VNI != nil {
-		for _, port := range conn.Status.Ports {
-			if port.NodeName == r.NodeName || port.NodeAddress == "" {
-				continue
+	// For each switch endpoint: remove patch port + rebuild t6 from remaining connections.
+	for _, ep := range conn.Spec.Endpoints {
+		devName := fmt.Sprintf("%s-%s", conn.Spec.LabRef, ep.Device)
+		var dev laboratoryv1alpha1.Device
+		if err := r.Get(ctx, types.NamespacedName{Name: devName, Namespace: conn.Namespace}, &dev); err != nil {
+			continue
+		}
+		isSwitch := dev.Spec.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch ||
+			dev.Spec.Type == laboratoryv1alpha1.DeviceTypeHub
+		if !isSwitch {
+			continue
+		}
+
+		// Remove patch port for this side (switch↔switch case).
+		pName := patchPortName(conn.Name, ep.Device)
+		_ = r.Flows.DelT0Port(pName)
+		_ = r.OVS.DelPort(pName)
+
+		// Rebuild t6 for this switch's VNI from the remaining connections.
+		if dev.Status.VNI != nil {
+			localPorts, remoteVTEPs, err := r.buildSwitchVNIFlood(ctx, conn.Namespace, conn.Spec.LabRef, ep.Device)
+			if err == nil {
+				if len(localPorts) > 0 {
+					_ = r.Flows.RebuildT6Flood(*dev.Status.VNI, localPorts, remoteVTEPs)
+				} else {
+					_ = r.Flows.DelT6Flood(*dev.Status.VNI)
+				}
 			}
-			gvPort := genevePortName(port.NodeAddress)
-			_ = r.Flows.DelFlowsByVNI(*conn.Status.VNI, gvPort)
 		}
 	}
 
@@ -287,13 +485,97 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 	return ctrl.Result{}, r.Update(ctx, conn)
 }
 
-// nodeAddressForNode returns the cached NodeAddress for the given node name by
-// checking Device status records. Falls back to empty string (Geneve skipped for same-node).
+// loadEndpoints fetches Device objects for all endpoints in a connection and
+// returns them as []epInfo. needsRequeue=true means at least one endpoint is not
+// yet ready (pod not scheduled or VNI not allocated); the caller should requeue.
+func (r *ConnectionReconciler) loadEndpoints(ctx context.Context, conn *laboratoryv1alpha1.Connection) ([]epInfo, bool, error) {
+	eps := make([]epInfo, 0, len(conn.Spec.Endpoints))
+	needsRequeue := false
+
+	for _, ep := range conn.Spec.Endpoints {
+		// Virtual singletons (vpn, internet) have no Device CRD — synthesize.
+		if ep.Device == "vpn" || ep.Device == "internet" {
+			appLabel := ep.Device
+			var pods corev1.PodList
+			if err := r.List(ctx, &pods,
+				client.InNamespace(conn.Namespace),
+				client.MatchingLabels{"app": appLabel},
+				client.Limit(1),
+			); err != nil {
+				return nil, false, err
+			}
+			if len(pods.Items) == 0 || pods.Items[0].Spec.NodeName == "" {
+				needsRequeue = true
+				eps = append(eps, epInfo{ep, laboratoryv1alpha1.Device{}, false, false})
+				continue
+			}
+			pod := pods.Items[0]
+			synth := laboratoryv1alpha1.Device{}
+			synth.Spec.Type = laboratoryv1alpha1.DeviceTypeContainer
+			synth.Status.NodeName = pod.Spec.NodeName
+			synth.Status.NodeAddress = r.nodeAddressForNode(pod.Spec.NodeName)
+			synth.Name = fmt.Sprintf("%s-%s", conn.Spec.LabRef, ep.Device)
+			eps = append(eps, epInfo{ep, synth, false, true})
+			continue
+		}
+
+		deviceName := fmt.Sprintf("%s-%s", conn.Spec.LabRef, ep.Device)
+		var dev laboratoryv1alpha1.Device
+		if err := r.Get(ctx, types.NamespacedName{Name: deviceName, Namespace: conn.Namespace}, &dev); err != nil {
+			return nil, false, client.IgnoreNotFound(err)
+		}
+		isSwitch := dev.Spec.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch ||
+			dev.Spec.Type == laboratoryv1alpha1.DeviceTypeHub
+		nodeReady := isSwitch || dev.Status.NodeName != ""
+		if !nodeReady {
+			needsRequeue = true
+		}
+		eps = append(eps, epInfo{ep, dev, isSwitch, nodeReady})
+	}
+
+	return eps, needsRequeue, nil
+}
+
+// resolveLocalPortKey returns the OVS port key for a local endpoint.
+// For vpn/internet singletons the key comes from the LabVPN/LabGateway CRD;
+// for regular devices it is derived via names.DevicePortKey.
+func (r *ConnectionReconciler) resolveLocalPortKey(ctx context.Context, conn *laboratoryv1alpha1.Connection, ep epInfo) (pKey string, requeue bool, err error) {
+	switch ep.endpoint.Device {
+	case "vpn":
+		var labvpn laboratoryv1alpha1.LabVPN
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      names.LabVPNObjectName(conn.Spec.LabRef),
+			Namespace: conn.Namespace,
+		}, &labvpn); err != nil {
+			if client.IgnoreNotFound(err) != nil {
+				return "", false, err
+			}
+			return "", true, nil
+		}
+		return names.LabIfaceNameByIndex(labvpn.Spec.NetworkIndex), false, nil
+	case "internet":
+		var labgw laboratoryv1alpha1.LabGateway
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      names.LabGatewayObjectName(conn.Spec.LabRef),
+			Namespace: conn.Namespace,
+		}, &labgw); err != nil {
+			if client.IgnoreNotFound(err) != nil {
+				return "", false, err
+			}
+			return "", true, nil
+		}
+		return names.LabIfaceNameByIndex(labgw.Spec.NetworkIndex), false, nil
+	default:
+		return names.DevicePortKey(conn.Namespace, ep.device.Name, ep.endpoint.Interface), false, nil
+	}
+}
+
+// nodeAddressForNode returns the Geneve VTEP address for the given node name.
+// Falls back to empty string when the node cannot be found among Device statuses.
 func (r *ConnectionReconciler) nodeAddressForNode(nodeName string) string {
 	if nodeName == r.NodeName {
 		return r.NodeAddress
 	}
-	// For remote nodes, look up any device that runs there to get its NodeAddress.
 	var devList laboratoryv1alpha1.DeviceList
 	if err := r.List(context.Background(), &devList); err != nil {
 		return ""

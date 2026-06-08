@@ -1,6 +1,13 @@
 package operator
 
-import "github.com/cybericebox/laboratory/pkg/config"
+import (
+	"encoding/json"
+	"fmt"
+
+	corev1 "k8s.io/api/core/v1"
+
+	"github.com/cybericebox/laboratory/pkg/config"
+)
 
 type Config struct {
 	// PublicVPNEndpoint is the host:port advertised to WireGuard clients (demux public address).
@@ -20,9 +27,32 @@ type Config struct {
 	VPNBaseNetwork string `env:"VPN_BASE_NETWORK" envDefault:"10.8.0.0/10"`
 	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets (e.g. "10.9.0.0/10").
 	InetBaseNetwork string `env:"INET_BASE_NETWORK" envDefault:"10.9.0.0/10"`
+	// DHCPDNS is the DNS server address advertised to WireGuard clients via DHCP option (optional).
+	DHCPDNS string `env:"DHCP_DNS"`
+	// VPNImage is the container image for per-LabGroup VPN pods.
+	VPNImage string `env:"VPN_IMAGE" envDefault:"ghcr.io/cybericebox/laboratory/vpn:latest"`
+	// GatewayImage is the container image for per-LabGroup gateway pods.
+	GatewayImage string `env:"GATEWAY_IMAGE" envDefault:"ghcr.io/cybericebox/laboratory/gateway:latest"`
+	// LabNodeSelectorJSON is a JSON-encoded map[string]string of nodeSelector labels
+	// applied to all runtime lab pods (VPN, gateway, device).
+	LabNodeSelectorJSON string `env:"LAB_NODE_SELECTOR" envDefault:"{}"`
+	// LabTolerationsJSON is a JSON-encoded []corev1.Toleration applied to all runtime lab pods.
+	LabTolerationsJSON string `env:"LAB_TOLERATIONS" envDefault:"[]"`
 }
 
 func LoadConfig() (*Config, error) {
 	cfg := &Config{}
 	return cfg, config.Load(cfg)
+}
+
+// ParseLabScheduling deserialises the JSON-encoded nodeSelector and tolerations
+// from the operator config into typed values ready for pod specs.
+func ParseLabScheduling(cfg *Config) (nodeSelector map[string]string, tolerations []corev1.Toleration, err error) {
+	if err = json.Unmarshal([]byte(cfg.LabNodeSelectorJSON), &nodeSelector); err != nil {
+		return nil, nil, fmt.Errorf("parse LAB_NODE_SELECTOR: %w", err)
+	}
+	if err = json.Unmarshal([]byte(cfg.LabTolerationsJSON), &tolerations); err != nil {
+		return nil, nil, fmt.Errorf("parse LAB_TOLERATIONS: %w", err)
+	}
+	return nodeSelector, tolerations, nil
 }

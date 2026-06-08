@@ -1,0 +1,139 @@
+{{- if .Values.nodeAgent.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: laboratory-node-agent
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: node-agent
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app: node-agent
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: node-agent
+    spec:
+      serviceAccountName: laboratory-node-agent
+      hostNetwork: true
+      hostPID: false
+      dnsPolicy: ClusterFirstWithHostNet
+      tolerations:
+      - operator: Exists
+      {{- if .Values.nodeAgent.excludeControlPlane }}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/control-plane
+                operator: DoesNotExist
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+      - name: install-cni-bins
+        image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
+        imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -e
+          cp /node-agent/bin/cni-gate /opt/cni/bin/cni-gate
+          for p in bridge ptp loopback host-local portmap; do
+            [ -f /usr/lib/cni/$p ] && cp /usr/lib/cni/$p /opt/cni/bin/$p
+          done
+        securityContext:
+          runAsUser: 0
+        volumeMounts:
+        - name: cni-bin
+          mountPath: /opt/cni/bin
+      - name: install-cni-conf
+        image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
+        imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
+        command: ["/node-agent/bin/install-cni"]
+        env:
+        - name: GRPC_SOCK
+          value: {{ .Values.nodeAgent.grpcSocket | quote }}
+        - name: CNI_CONF_DIR
+          value: /etc/cni/net.d
+        - name: CNI_FALLBACK_TIMEOUT
+          value: "60s"
+        securityContext:
+          runAsUser: 0
+        volumeMounts:
+        - name: cni-conf
+          mountPath: /etc/cni/net.d
+      containers:
+      - name: ovs
+        image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
+        imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
+        command: ["/node-agent/bin/start-ovs.sh"]
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: ovs-run
+          mountPath: /run/openvswitch
+      - name: node-agent
+        image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
+        imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
+        command: ["/node-agent/bin/node-agent"]
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: OVS_SOCK
+          value: {{ .Values.nodeAgent.ovsSocket | quote }}
+        - name: GRPC_SOCK
+          value: {{ .Values.nodeAgent.grpcSocket | quote }}
+        - name: NODE_ADDRESS
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        - name: PROC_ROOT
+          value: {{ .Values.nodeAgent.procRoot | quote }}
+        securityContext:
+          capabilities:
+            add: [NET_ADMIN, SYS_ADMIN, SYS_PTRACE]
+        volumeMounts:
+        - name: ovs-run
+          mountPath: /run/openvswitch
+        - name: grpc-dir
+          mountPath: /run/cybericebox
+        - name: host-proc
+          mountPath: /host/proc
+          readOnly: true
+        - name: host-netns
+          mountPath: /run/netns
+          readOnly: true
+      volumes:
+      - name: cni-bin
+        hostPath:
+          path: /opt/cni/bin
+          type: DirectoryOrCreate
+      - name: cni-conf
+        hostPath:
+          path: /etc/cni/net.d
+          type: DirectoryOrCreate
+      - name: ovs-run
+        emptyDir: {}
+      - name: grpc-dir
+        hostPath:
+          path: /run/cybericebox
+          type: DirectoryOrCreate
+      - name: host-proc
+        hostPath:
+          path: /proc
+          type: Directory
+      - name: host-netns
+        hostPath:
+          path: /run/netns
+          type: DirectoryOrCreate
+{{- end }}

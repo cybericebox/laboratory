@@ -58,9 +58,11 @@ rules:
   resources:
   - connections
   - devices
+  - labgateways
   - labgroupclients
   - labgroups
   - labs
+  - labvpns
   verbs:
   - create
   - delete
@@ -74,9 +76,11 @@ rules:
   resources:
   - connections/finalizers
   - devices/finalizers
+  - labgateways/finalizers
   - labgroupclients/finalizers
   - labgroups/finalizers
   - labs/finalizers
+  - labvpns/finalizers
   verbs:
   - update
 - apiGroups:
@@ -84,9 +88,11 @@ rules:
   resources:
   - connections/status
   - devices/status
+  - labgateways/status
   - labgroupclients/status
   - labgroups/status
   - labs/status
+  - labvpns/status
   verbs:
   - get
   - patch

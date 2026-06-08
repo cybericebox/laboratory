@@ -11,8 +11,19 @@ import (
 	"github.com/cybericebox/laboratory/internal/nodeagent/ofclient"
 )
 
-// FlowManager programs OpenFlow rules on br-ovs via the Go OF 1.3 client.
-// Table 0: ingress — classify by in_port or tun_id.
+// FlowManager programs tables 0 and 6 of the OVS pipeline on br-ovs.
+//
+// v1 pipeline (MAC learning deferred to a future version):
+//
+//	t0 — normalise in_port → set metadata=VNI, reg0=origin, resubmit(,6)
+//	  local port:  reg0=0  (local origin)
+//	  Geneve port: reg0=1  (remote origin), move tun_id→metadata
+//	t6 — flood by (metadata=VNI, reg0):
+//	  reg0=0 (local):  all local ports + Geneve to each remote VTEP
+//	  reg0=1 (remote): all local ports only  — prevents Geneve re-flood loops
+//
+// All t6 entries for a given VNI are rebuilt atomically (delete-all-for-VNI
+// then re-add), so reconcileCreate can be called idempotently.
 type FlowManager struct {
 	client *ofclient.Client
 }
@@ -27,9 +38,7 @@ func NewFlowManager(ovsRunDir, bridge string) (*FlowManager, error) {
 }
 
 // Close closes the underlying OpenFlow connection.
-func (f *FlowManager) Close() error {
-	return f.client.Close()
-}
+func (f *FlowManager) Close() error { return f.client.Close() }
 
 // portNo resolves a named port, refreshing portMap once on miss.
 func (f *FlowManager) portNo(name string) (uint32, error) {
@@ -43,35 +52,134 @@ func (f *FlowManager) portNo(name string) (uint32, error) {
 	return no, nil
 }
 
-// AddEgressFlow: local port → set tun_id=VNI + tun_dst=remoteVTEP → output via
-// the single shared Geneve port. Uses NXM_NX_TUN_IPV4_DST (Nicira extension)
-// so one Geneve port serves every remote VTEP — spec §7 "Один Geneve-порт на
-// ноде".
-func (f *FlowManager) AddEgressFlow(localPort, genevePort string, vni uint, remoteVTEP string) error {
-	localNo, err := f.portNo(localPort)
+// InitGeneveIngress installs the permanent t0 entry for the shared Geneve port:
+//
+//	t0, priority=100, in_port=GENEVE → set reg0=1, move tun_id→metadata, resubmit(,6)
+//
+// Safe to call multiple times; OFPFC_ADD replaces the existing entry.
+// Must be called after AddGenevePort so the port is visible to OVS.
+func (f *FlowManager) InitGeneveIngress() error {
+	geneveNo, err := f.portNo(GenevePort)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolve geneve port: %w", err)
 	}
-	geneveNo, err := f.portNo(genevePort)
-	if err != nil {
-		return err
-	}
-	vtepBE, err := ipv4BE(remoteVTEP)
-	if err != nil {
-		return fmt.Errorf("parse remote VTEP %q: %w", remoteVTEP, err)
-	}
-	// Match on in_port=local + dst-VTEP would over-narrow without MAC learning;
-	// match in_port=local only and let the action set tun_dst.
-	match := ofclient.BuildMatch(localNo, 0, false)
+	match := ofclient.BuildMatch(geneveNo, 0, false)
 	var actions []byte
-	actions = append(actions, ofclient.BuildActionsSetFieldTunnelID(uint64(vni))...)
-	actions = append(actions, ofclient.BuildActionsSetTunDst(vtepBE)...)
-	actions = append(actions, ofclient.BuildActionsOutput(geneveNo)...)
+	actions = append(actions, ofclient.BuildActionsSetReg0(1)...)
+	actions = append(actions, ofclient.BuildActionsRegMove(
+		64, 0, 0,
+		ofclient.OxmIDTunnelID(), ofclient.OxmIDMetadata(),
+	)...)
+	actions = append(actions, ofclient.BuildActionsResubmitTable(6)...)
 	return f.client.FlowAdd(0, 100, match, actions)
 }
 
-// ipv4BE parses a dotted-quad IPv4 address into a big-endian uint32 suitable
-// for NXM_NX_TUN_IPV4_DST / NXM_NX_TUN_IPV4_SRC values.
+// AddT0Port installs a t0 entry for a local device or patch port:
+//
+//	t0, priority=90, in_port=PORT → set reg0=0, load VNI→metadata, resubmit(,6)
+//
+// Idempotent: deletes any existing t0 entry for this port before adding.
+func (f *FlowManager) AddT0Port(portName string, vni uint) error {
+	portNo, err := f.portNo(portName)
+	if err != nil {
+		return fmt.Errorf("resolve port %q: %w", portName, err)
+	}
+	match := ofclient.BuildMatch(portNo, 0, false)
+	if err := f.client.FlowDelete(0, match); err != nil {
+		return fmt.Errorf("delete stale t0 for %q: %w", portName, err)
+	}
+	var actions []byte
+	actions = append(actions, ofclient.BuildActionsSetReg0(0)...)
+	actions = append(actions, ofclient.BuildActionsSetMetadata(uint64(vni))...)
+	actions = append(actions, ofclient.BuildActionsResubmitTable(6)...)
+	return f.client.FlowAdd(0, 90, match, actions)
+}
+
+// DelT0Port removes the t0 entry for portName.
+// No-op if the port is already gone from the port map.
+func (f *FlowManager) DelT0Port(portName string) error {
+	portNo, err := f.portNo(portName)
+	if err != nil {
+		return nil // port already absent — nothing to delete
+	}
+	return f.client.FlowDelete(0, ofclient.BuildMatch(portNo, 0, false))
+}
+
+// RebuildT6Flood atomically replaces the t6 flood entries for vni:
+//
+//	priority=110, metadata=VNI, reg0=0 → output all localPorts + Geneve to each remoteVTEP
+//	priority=100, metadata=VNI, reg0=1 → output all localPorts only
+//
+// Deletes any previous t6 entries for this VNI first.
+// No-op (deletes only) when localPorts is empty.
+func (f *FlowManager) RebuildT6Flood(vni uint, localPorts, remoteVTEPs []string) error {
+	if err := f.DelT6Flood(vni); err != nil {
+		return err
+	}
+	if len(localPorts) == 0 {
+		return nil
+	}
+
+	localNos := make([]uint32, 0, len(localPorts))
+	for _, p := range localPorts {
+		no, err := f.portNo(p)
+		if err != nil {
+			return fmt.Errorf("resolve local port %q: %w", p, err)
+		}
+		localNos = append(localNos, no)
+	}
+
+	var geneveNo uint32
+	if len(remoteVTEPs) > 0 {
+		var err error
+		if geneveNo, err = f.portNo(GenevePort); err != nil {
+			return fmt.Errorf("resolve geneve port: %w", err)
+		}
+	}
+
+	// Local-only actions (used by the reg0=1 entry and as base for reg0=0).
+	var localActions []byte
+	for _, no := range localNos {
+		localActions = append(localActions, ofclient.BuildActionsOutput(no)...)
+	}
+
+	// Full-flood actions: local ports + Geneve to each VTEP.
+	fullActions := append([]byte(nil), localActions...) // copy
+	for _, vtep := range remoteVTEPs {
+		ipBE, err := ipv4BE(vtep)
+		if err != nil {
+			return fmt.Errorf("parse VTEP %q: %w", vtep, err)
+		}
+		fullActions = append(fullActions, ofclient.BuildActionsSetFieldTunnelID(uint64(vni))...)
+		fullActions = append(fullActions, ofclient.BuildActionsSetTunDst(ipBE)...)
+		fullActions = append(fullActions, ofclient.BuildActionsOutput(geneveNo)...)
+	}
+
+	// priority=110, metadata=VNI, reg0=0 → full flood (local + Geneve)
+	matchLocal := ofclient.BuildMatchAdvanced(0, uint64(vni), true, 0, true, 0, false, 0, false)
+	if err := f.client.FlowAdd(6, 110, matchLocal, fullActions); err != nil {
+		return fmt.Errorf("add t6 local-origin flood VNI %d: %w", vni, err)
+	}
+
+	// priority=100, metadata=VNI, reg0=1 → local only (no Geneve re-flood)
+	matchRemote := ofclient.BuildMatchAdvanced(0, uint64(vni), true, 1, true, 0, false, 0, false)
+	if err := f.client.FlowAdd(6, 100, matchRemote, localActions); err != nil {
+		return fmt.Errorf("add t6 remote-origin flood VNI %d: %w", vni, err)
+	}
+
+	return nil
+}
+
+// DelT6Flood removes all t6 entries matching metadata=VNI (both reg0=0 and reg0=1).
+func (f *FlowManager) DelT6Flood(vni uint) error {
+	// Match on metadata=VNI only (no reg0 constraint) so non-strict delete
+	// removes both the reg0=0 and reg0=1 entries in one operation.
+	match := ofclient.BuildMatchAdvanced(0, uint64(vni), true, 0, false, 0, false, 0, false)
+	return f.client.FlowDelete(6, match)
+}
+
+// ipv4BE parses a dotted-quad IPv4 address into a big-endian uint32 for
+// NXM_NX_TUN_IPV4_DST / NXM_NX_TUN_IPV4_SRC values.
 func ipv4BE(s string) (uint32, error) {
 	ip := net.ParseIP(s)
 	if ip == nil {
@@ -84,50 +192,26 @@ func ipv4BE(s string) (uint32, error) {
 	return binary.BigEndian.Uint32(ip4), nil
 }
 
-// AddIngressFlow: geneve port + tun_id=VNI → output to local port.
-func (f *FlowManager) AddIngressFlow(genevePort, localPort string, vni uint) error {
-	geneveNo, err := f.portNo(genevePort)
-	if err != nil {
-		return err
-	}
-	localNo, err := f.portNo(localPort)
-	if err != nil {
-		return err
-	}
-	match := ofclient.BuildMatch(geneveNo, uint64(vni), true)
-	actions := ofclient.BuildActionsOutput(localNo)
-	return f.client.FlowAdd(0, 100, match, actions)
+// --- Compatibility shims for call sites not yet migrated ---
+
+// AddEgressFlow replaces the old per-remote-node egress rule.
+// Now just binds the local port to its VNI via t0; Geneve flood is handled by
+// RebuildT6Flood called from the connection reconciler.
+func (f *FlowManager) AddEgressFlow(localPort, _ string, vni uint, _ string) error {
+	return f.AddT0Port(localPort, vni)
 }
 
-// AddLocalSwitchFlow: port in VNI segment → set tunnel_id + normal L2 forwarding (same-node pods).
+// AddIngressFlow is a no-op in the new pipeline.
+// The single Geneve t0 entry installed by InitGeneveIngress handles all ingress.
+func (f *FlowManager) AddIngressFlow(_, _ string, _ uint) error { return nil }
+
+// AddLocalSwitchFlow binds a local port to its VNI via t0 (same as AddT0Port).
 func (f *FlowManager) AddLocalSwitchFlow(localPort string, vni uint) error {
-	localNo, err := f.portNo(localPort)
-	if err != nil {
-		return err
-	}
-	match := ofclient.BuildMatch(localNo, 0, false)
-	var actions []byte
-	actions = append(actions, ofclient.BuildActionsSetFieldTunnelID(uint64(vni))...)
-	actions = append(actions, ofclient.BuildActionsGroupNormal()...)
-	return f.client.FlowAdd(0, 90, match, actions)
+	return f.AddT0Port(localPort, vni)
 }
 
-// DelFlowsByPort removes all table=0 flows matching in_port=portName.
-func (f *FlowManager) DelFlowsByPort(portName string) error {
-	portNo, err := f.portNo(portName)
-	if err != nil {
-		return err
-	}
-	match := ofclient.BuildMatch(portNo, 0, false)
-	return f.client.FlowDelete(0, match)
-}
+// DelFlowsByPort removes the t0 entry for portName.
+func (f *FlowManager) DelFlowsByPort(portName string) error { return f.DelT0Port(portName) }
 
-// DelFlowsByVNI removes table=0 flows matching in_port=genevePort and tunnel_id=VNI.
-func (f *FlowManager) DelFlowsByVNI(vni uint, genevePort string) error {
-	geneveNo, err := f.portNo(genevePort)
-	if err != nil {
-		return err
-	}
-	match := ofclient.BuildMatch(geneveNo, uint64(vni), true)
-	return f.client.FlowDelete(0, match)
-}
+// DelFlowsByVNI removes all t6 flood entries for vni.
+func (f *FlowManager) DelFlowsByVNI(vni uint, _ string) error { return f.DelT6Flood(vni) }

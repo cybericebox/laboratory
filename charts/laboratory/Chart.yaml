@@ -1,0 +1,14 @@
+apiVersion: v2
+name: laboratory
+description: CyberICEBox Laboratory operator — manages lab groups, VPN, OVS networking, and device lifecycle.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - cybericebox
+  - laboratory
+  - ctf
+  - wireguard
+  - ovs
+sources:
+  - https://github.com/cybericebox/laboratory

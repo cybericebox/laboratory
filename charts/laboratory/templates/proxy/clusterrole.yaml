@@ -1,0 +1,15 @@
+{{- if .Values.proxy.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: laboratory-proxy
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+- apiGroups: ["laboratory.cybericebox.com"]
+  resources: ["labgroups"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch"]
+{{- end }}

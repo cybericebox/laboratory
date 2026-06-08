@@ -1,0 +1,31 @@
+{{- if and .Values.certManager.enabled .Values.proxy.enabled }}
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: {{ .Values.certManager.issuerName }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  acme:
+    {{- if .Values.certManager.staging }}
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    {{- else }}
+    server: https://acme-v02.api.letsencrypt.org/directory
+    {{- end }}
+    email: {{ .Values.certManager.email | quote }}
+    privateKeySecretRef:
+      name: {{ .Values.certManager.issuerName }}-account-key
+    solvers:
+    - http01:
+        ingress:
+          class: ""
+          podTemplate:
+            spec:
+              hostNetwork: true
+              tolerations:
+              - key: node-role.kubernetes.io/control-plane
+                operator: Exists
+                effect: NoSchedule
+              nodeSelector:
+                {{- toYaml .Values.proxy.nodeSelector | nindent 16 }}
+{{- end }}

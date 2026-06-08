@@ -23,32 +23,34 @@ spec:
       tolerations:
         - operator: Exists
       initContainers:
-        - name: install-cni
+        - name: install-cni-bins
           image: ghcr.io/cybericebox/laboratory/node-agent:latest
           command: ["/bin/sh", "-c"]
           args:
             - |
               set -e
               cp /node-agent/bin/cni-gate /opt/cni/bin/cni-gate
-              # copy standard plugins (needed as delegate targets)
               for p in bridge ptp loopback host-local portmap; do
                 [ -f /usr/lib/cni/$p ] && cp /usr/lib/cni/$p /opt/cni/bin/$p
               done
-              # build conflist: wrap the base CNI (kindnet/first-found) with cni-gate
-              BASE=""
-              for f in /etc/cni/net.d/*.conflist /etc/cni/net.d/*.conf; do
-                [ -f "$f" ] && [ "$f" != "/etc/cni/net.d/10-cybericebox.conflist" ] && BASE="$f" && break
-              done
-              if [ -n "$BASE" ]; then
-                jq '{cniVersion: .cniVersion, name: "cybericebox", plugins: [{"type": "cni-gate", "agentSocket": "/run/cybericebox/node-agent.sock", "delegate": .plugins[0]}]}' "$BASE" > /etc/cni/net.d/10-cybericebox.conflist
-              else
-                cp /node-agent/cni/10-cybericebox.conflist /etc/cni/net.d/10-cybericebox.conflist
-              fi
           securityContext:
             runAsUser: 0
           volumeMounts:
             - name: cni-bin
               mountPath: /opt/cni/bin
+        - name: install-cni-conf
+          image: ghcr.io/cybericebox/laboratory/node-agent:latest
+          command: ["/node-agent/bin/install-cni"]
+          env:
+            - name: GRPC_SOCK
+              value: /run/cybericebox/node-agent.sock
+            - name: CNI_CONF_DIR
+              value: /etc/cni/net.d
+            - name: CNI_FALLBACK_TIMEOUT
+              value: "60s"
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
             - name: cni-conf
               mountPath: /etc/cni/net.d
       containers:
