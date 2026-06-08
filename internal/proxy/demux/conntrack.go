@@ -10,7 +10,7 @@ const conntrackTTL = 3 * time.Minute
 
 // XDPSessions is implemented by xdp.XDPHandle on linux and a nil-safe no-op otherwise.
 type XDPSessions interface {
-	Update(receiverIndex uint32, ip net.IP, port uint16) error
+	Update(receiverIndex uint32, dstIP net.IP, dstPort uint16, srcIP net.IP, srcPort uint16) error
 	Delete(receiverIndex uint32) error
 }
 
@@ -65,7 +65,7 @@ func (c *ConnTrack) AddPartial(ci uint32, clientSocket, serverSocket Socket) boo
 }
 
 // Complete fills in Si after type 2 response, creating mirror entry.
-// XDP map: si → serverSocket (client→server), ci → clientSocket (server→client).
+// XDP map: si → (dst=server, src=client), ci → (dst=client, src=server).
 // Returns false when Si collides with a live session that is not the matching
 // peer — drop the response and let the handshake fail; upstream WG retries.
 func (c *ConnTrack) Complete(si, ci uint32, clientSocket, serverSocket Socket) bool {
@@ -88,10 +88,10 @@ func (c *ConnTrack) Complete(si, ci uint32, clientSocket, serverSocket Socket) b
 		e.PeerIndex = si
 	}
 	if c.xdp != nil {
-		// receiver_index=si in type-4 from client → forward to server
-		// receiver_index=ci in type-4 from server → forward to client
-		_ = c.xdp.Update(si, serverSocket.IP, serverSocket.Port)
-		_ = c.xdp.Update(ci, clientSocket.IP, clientSocket.Port)
+		// si: type-4 from client (src=client) → forward to server
+		_ = c.xdp.Update(si, serverSocket.IP, serverSocket.Port, clientSocket.IP, clientSocket.Port)
+		// ci: type-4 from server (src=server) → forward to client
+		_ = c.xdp.Update(ci, clientSocket.IP, clientSocket.Port, serverSocket.IP, serverSocket.Port)
 	}
 	return true
 }
@@ -136,8 +136,8 @@ func (c *ConnTrack) LookupSender(index uint32) (Socket, bool) {
 //   - entries[Si].SenderSocket = serverSocket  → forward client→server traffic
 //   - entries[Ci].SenderSocket = clientSocket  → forward server→client traffic
 //
-// If the source no longer matches the expected socket we update for roaming.
-// XDP map entry for the peer index is also updated on roam.
+// If the source no longer matches the expected socket we update for roaming and
+// refresh both XDP map entries so the fast-path resumes on the next packet.
 func (c *ConnTrack) LookupForward(receiverIndex uint32, src Socket) (dst Socket, found bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -151,11 +151,20 @@ func (c *ConnTrack) LookupForward(receiverIndex uint32, src Socket) (dst Socket,
 	if !e.ReceiverSocket.IP.Equal(src.IP) || e.ReceiverSocket.Port != src.Port {
 		// Client (or server) has roamed — update both endpoints.
 		e.ReceiverSocket = src
+		// Always refresh own XDP entry with new expected src so fast-path resumes.
+		if c.xdp != nil {
+			_ = c.xdp.Update(receiverIndex,
+				e.SenderSocket.IP, e.SenderSocket.Port,
+				src.IP, src.Port)
+		}
 		if peer, peerOk := c.entries[e.PeerIndex]; peerOk {
 			peer.SenderSocket = src
-		}
-		if c.xdp != nil && e.PeerIndex != 0 {
-			_ = c.xdp.Update(e.PeerIndex, src.IP, src.Port)
+			if c.xdp != nil {
+				// peer entry: new dst (roamed addr), same expected src (unchanged)
+				_ = c.xdp.Update(e.PeerIndex,
+					src.IP, src.Port,
+					peer.ReceiverSocket.IP, peer.ReceiverSocket.Port)
+			}
 		}
 	}
 	return e.SenderSocket, true
@@ -174,7 +183,8 @@ func (c *ConnTrack) UpdateRoaming(receiverIndex uint32, newSender Socket) {
 		peer.ReceiverSocket = newSender
 	}
 	if c.xdp != nil && e.PeerIndex != 0 {
-		_ = c.xdp.Update(e.PeerIndex, newSender.IP, newSender.Port)
+		_ = c.xdp.Update(e.PeerIndex, newSender.IP, newSender.Port,
+			e.ReceiverSocket.IP, e.ReceiverSocket.Port)
 	}
 }
 

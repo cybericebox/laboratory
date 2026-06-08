@@ -14,10 +14,13 @@ import (
 )
 
 type WgDemuxDstEntry struct {
-	_    structs.HostLayout
-	Ip   uint32
-	Port uint16
-	Pad  uint16
+	_       structs.HostLayout
+	Ip      uint32
+	Port    uint16
+	Pad     uint16
+	SrcIp   uint32
+	SrcPort uint16
+	Pad2    uint16
 }
 
 type WgDemuxXdpCfg struct {

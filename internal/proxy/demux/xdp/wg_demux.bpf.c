@@ -20,9 +20,12 @@
 #endif
 
 struct dst_entry {
-	__u32 ip;
-	__u16 port;
+	__u32 ip;       /* forward destination IP   (network byte order) */
+	__u16 port;     /* forward destination port (network byte order) */
 	__u16 pad;
+	__u32 src_ip;   /* expected source IP   (network byte order); 0 = skip */
+	__u16 src_port; /* expected source port (network byte order); 0 = skip */
+	__u16 pad2;
 };
 
 struct xdp_cfg {
@@ -101,6 +104,12 @@ int wg_demux(struct xdp_md *ctx)
 
 	struct dst_entry *dst = bpf_map_lookup_elem(&wg_sessions, &ri);
 	if (!dst)
+		return XDP_PASS;
+
+	/* Roaming: if source doesn't match the expected address, pass to userspace
+	 * so LookupForward can update conntrack and XDP maps for the new address. */
+	if (dst->src_ip != 0 &&
+	    (ip->saddr != dst->src_ip || udp->source != dst->src_port))
 		return XDP_PASS;
 
 	/* Rewrite Ethernet destination to gateway MAC */

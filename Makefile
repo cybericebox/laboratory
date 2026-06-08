@@ -129,7 +129,7 @@ generate-bpf: ## Regenerate XDP BPF objects — runs in Docker (needs clang + li
 		-e GOMODCACHE=/go/pkg/mod \
 		-v "$(shell go env GOPATH)/pkg/mod:/go/pkg/mod:ro" \
 		golang:1.26-bookworm \
-		bash -c "apt-get update -q && apt-get install -y -q clang libbpf-dev linux-libc-dev && go generate ."
+		bash -c 'apt-get update -q && apt-get install -y -q clang libbpf-dev linux-libc-dev dpkg-dev && ARCH=$$(dpkg-architecture -q DEB_HOST_MULTIARCH) && ln -sfn /usr/include/$$ARCH/asm /usr/include/asm && find /usr/bin -name "llvm-strip-*" | head -1 | xargs -I{} ln -sf {} /usr/local/bin/llvm-strip && go generate .'
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.

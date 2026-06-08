@@ -16,4 +16,4 @@
 // the output file prefix, producing wgdemux_bpfel.go / wgdemux_bpfeb.go.
 package xdp
 
-//go:generate sh -c "go run github.com/cilium/ebpf/cmd/bpf2go -go-package xdp WgDemux ./wg_demux.bpf.c -- -target bpf -I/usr/include -I/usr/include/$(dpkg-architecture -q DEB_HOST_MULTIARCH 2>/dev/null || echo x86_64-linux-gnu)"
+//go:generate sh -c "MULTIARCH=$(dpkg-architecture -q DEB_HOST_MULTIARCH 2>/dev/null || echo x86_64-linux-gnu) && go run github.com/cilium/ebpf/cmd/bpf2go -go-package xdp WgDemux ./wg_demux.bpf.c -- -target bpf -I/usr/include/$MULTIARCH -I/usr/include"

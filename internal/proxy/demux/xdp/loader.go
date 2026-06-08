@@ -47,7 +47,7 @@ func Load(iface string, proxyPort uint16) (*XDPHandle, error) {
 	}
 
 	cfg := WgDemuxXdpCfg{
-		ProxyIp:   binary.BigEndian.Uint32(proxyIP.To4()),
+		ProxyIp:   binary.LittleEndian.Uint32(proxyIP.To4()),
 		ProxyPort: htons(proxyPort),
 	}
 	copy(cfg.GwMac[:], gwMAC)
@@ -84,14 +84,24 @@ func Load(iface string, proxyPort uint16) (*XDPHandle, error) {
 }
 
 // Update inserts or updates a forwarding entry for receiverIndex.
-func (h *XDPHandle) Update(receiverIndex uint32, ip net.IP, port uint16) error {
-	ip4 := ip.To4()
-	if ip4 == nil {
-		return fmt.Errorf("xdp.Update: %v is not an IPv4 address", ip)
+// dstIP/dstPort: where to forward the packet.
+// srcIP/srcPort: expected source; mismatch triggers XDP_PASS for roaming detection.
+func (h *XDPHandle) Update(receiverIndex uint32, dstIP net.IP, dstPort uint16, srcIP net.IP, srcPort uint16) error {
+	dst4 := dstIP.To4()
+	if dst4 == nil {
+		return fmt.Errorf("xdp.Update: dst %v is not an IPv4 address", dstIP)
 	}
+	src4 := srcIP.To4()
+	if src4 == nil {
+		return fmt.Errorf("xdp.Update: src %v is not an IPv4 address", srcIP)
+	}
+	// IPs stored as LittleEndian uint32 so BPF can compare directly with iphdr.saddr/daddr
+	// (network-order bytes read as LE uint32 on x86-64 match LittleEndian.Uint32 of the same bytes).
 	v := WgDemuxDstEntry{
-		Ip:   binary.BigEndian.Uint32(ip4),
-		Port: htons(port),
+		Ip:      binary.LittleEndian.Uint32(dst4),
+		Port:    htons(dstPort),
+		SrcIp:   binary.LittleEndian.Uint32(src4),
+		SrcPort: htons(srcPort),
 	}
 	return h.objs.WgSessions.Put(receiverIndex, v)
 }
