@@ -4,59 +4,55 @@ package vpn
 
 import (
 	"fmt"
-	"net"
+	"strings"
 
 	"github.com/coreos/go-iptables/iptables"
 )
 
+func splitArgs(s string) []string { return strings.Fields(s) }
+
 type IPTablesManager struct {
-	ipt          *iptables.IPTables
-	clientSubnet string
+	ipt     *iptables.IPTables
+	wgIface string
 }
 
-func NewIPTablesManager(clientSubnet *net.IPNet) (*IPTablesManager, error) {
+func NewIPTablesManager(wgIface string) (*IPTablesManager, error) {
 	ipt, err := iptables.New()
 	if err != nil {
 		return nil, fmt.Errorf("iptables.New: %w", err)
 	}
-	return &IPTablesManager{ipt: ipt, clientSubnet: clientSubnet.String()}, nil
+	return &IPTablesManager{ipt: ipt, wgIface: wgIface}, nil
 }
 
-// SetupForwardPolicy installs invariant FORWARD rules:
-//
-//	ESTABLISHED,RELATED → ACCEPT
-//	src ∈ clientSubnet  → ACCEPT (user→lab)
-//	dst ∈ clientSubnet  → ACCEPT (lab→user)
-//	DROP
+// SetupForwardPolicy sets FORWARD policy to DROP and installs interface-based rules
+// that allow WireGuard clients to reach lab segments and vice versa.
+// Called once on pod start before the reconcile loop begins.
 func (m *IPTablesManager) SetupForwardPolicy() error {
-	rules := [][]string{
-		{"-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"},
-		{"-s", m.clientSubnet, "-j", "ACCEPT"},
-		{"-d", m.clientSubnet, "-j", "ACCEPT"},
+	if err := m.ipt.ChangePolicy("filter", "FORWARD", "DROP"); err != nil {
+		return fmt.Errorf("set FORWARD DROP: %w", err)
 	}
-	for _, rule := range rules {
-		if err := m.ipt.AppendUnique("filter", "FORWARD", rule...); err != nil {
-			return fmt.Errorf("append FORWARD rule %v: %w", rule, err)
+	rules := []string{
+		"-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
+		fmt.Sprintf("-i %s -o lab+ -j ACCEPT", m.wgIface),
+		fmt.Sprintf("-i lab+ -o %s -j ACCEPT", m.wgIface),
+		fmt.Sprintf("-i %s -o %s -j DROP", m.wgIface, m.wgIface),
+	}
+	for _, r := range rules {
+		if err := m.ipt.AppendUnique("filter", "FORWARD", splitArgs(r)...); err != nil {
+			return fmt.Errorf("iptables FORWARD %s: %w", r, err)
 		}
-	}
-	exists, err := m.ipt.Exists("filter", "FORWARD", "-j", "DROP")
-	if err != nil {
-		return fmt.Errorf("check FORWARD DROP rule: %w", err)
-	}
-	if !exists {
-		return m.ipt.Append("filter", "FORWARD", "-j", "DROP")
 	}
 	return nil
 }
 
 func (m *IPTablesManager) Cleanup() {
-	rules := [][]string{
-		{"-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"},
-		{"-s", m.clientSubnet, "-j", "ACCEPT"},
-		{"-d", m.clientSubnet, "-j", "ACCEPT"},
-		{"-j", "DROP"},
+	rules := []string{
+		"-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
+		fmt.Sprintf("-i %s -o lab+ -j ACCEPT", m.wgIface),
+		fmt.Sprintf("-i lab+ -o %s -j ACCEPT", m.wgIface),
+		fmt.Sprintf("-i %s -o %s -j DROP", m.wgIface, m.wgIface),
 	}
-	for _, rule := range rules {
-		_ = m.ipt.Delete("filter", "FORWARD", rule...)
+	for _, r := range rules {
+		_ = m.ipt.Delete("filter", "FORWARD", splitArgs(r)...)
 	}
 }

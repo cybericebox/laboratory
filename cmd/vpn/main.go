@@ -3,6 +3,8 @@
 package main
 
 import (
+	_ "github.com/cybericebox/laboratory/pkg/runtime"
+
 	"context"
 	"fmt"
 	"os"
@@ -16,7 +18,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/vpn"
 	vpnreconciler "github.com/cybericebox/laboratory/internal/vpn/reconciler"
@@ -26,6 +30,7 @@ var scheme = runtime.NewScheme()
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(allocationv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(laboratoryv1alpha1.AddToScheme(scheme))
 }
 
@@ -51,6 +56,8 @@ func main() {
 		Cache: cache.Options{
 			DefaultNamespaces: map[string]cache.Config{cfg.Namespace: {}},
 		},
+		Metrics:                server.Options{BindAddress: "0"},
+		HealthProbeBindAddress: "0",
 	})
 	if err != nil {
 		log.Error(err, "create manager")

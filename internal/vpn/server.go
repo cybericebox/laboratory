@@ -35,7 +35,7 @@ func InitServer(cfg *Config) (*Server, error) {
 		return nil, fmt.Errorf("assign gateway IP on %s: %w", cfg.WGInterface, err)
 	}
 
-	ipt, err := NewIPTablesManager(cfg.ClientSubnet)
+	ipt, err := NewIPTablesManager(cfg.WGInterface)
 	if err != nil {
 		wg.Close()
 		return nil, fmt.Errorf("init iptables: %w", err)

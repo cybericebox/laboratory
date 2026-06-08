@@ -9,10 +9,12 @@ import (
 	"time"
 
 	"github.com/vishvananda/netlink"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/ovsnames"
 	"github.com/cybericebox/laboratory/internal/vpn"
@@ -20,7 +22,10 @@ import (
 	"github.com/cybericebox/laboratory/pkg/netutil"
 )
 
-const finalizerVPN = "cybericebox.com/vpn"
+const (
+	finalizerController = "cybericebox.com/controller"
+	finalizerVPN        = "cybericebox.com/vpn"
+)
 
 // LabVPNReconciler manages per-lab WireGuard routing and optional DHCP.
 type LabVPNReconciler struct {
@@ -31,71 +36,104 @@ type LabVPNReconciler struct {
 }
 
 func (r *LabVPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	var lab laboratoryv1alpha1.Lab
-	if err := r.Get(ctx, req.NamespacedName, &lab); err != nil {
+	log := ctrl.Log.WithName("vpn").WithValues("labvpn", req.NamespacedName)
+
+	var labvpn laboratoryv1alpha1.LabVPN
+	if err := r.Get(ctx, req.NamespacedName, &labvpn); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if !lab.Spec.VPN.Enabled {
+
+	// Main controller must have processed this first.
+	if !controllerutil.ContainsFinalizer(&labvpn, finalizerController) {
 		return ctrl.Result{}, nil
 	}
 
-	if !lab.DeletionTimestamp.IsZero() {
-		return r.reconcileDelete(ctx, &lab)
+	// Deletion path.
+	if !labvpn.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(&labvpn, finalizerVPN) {
+			return r.reconcileDelete(ctx, &labvpn)
+		}
+		return ctrl.Result{}, nil
 	}
 
-	cidr := lab.Status.VPN.CIDR
-	if cidr == "" {
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	// Add own finalizer on first observation.
+	if !controllerutil.ContainsFinalizer(&labvpn, finalizerVPN) {
+		controllerutil.AddFinalizer(&labvpn, finalizerVPN)
+		return ctrl.Result{}, r.Update(ctx, &labvpn)
 	}
 
-	ifaceName := ovsnames.LabIfaceName(lab.Name)
-	link, err := netlink.LinkByName(ifaceName)
-	if err != nil {
-		// Interface not yet created by node-agent; requeue.
+	// Wait for lab{N} interface (created by node-agent via OVS).
+	ifaceName := ovsnames.LabIfaceNameByIndex(labvpn.Spec.NetworkIndex)
+	if _, err := netlink.LinkByName(ifaceName); err != nil {
+		if labvpn.Status.Phase != laboratoryv1alpha1.LabVPNPhaseWaitingForInterface {
+			if patchErr := r.patchPhase(ctx, &labvpn, laboratoryv1alpha1.LabVPNPhaseWaitingForInterface); patchErr != nil {
+				log.Error(patchErr, "patch phase WaitingForInterface")
+			}
+		}
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	// Assign first host IP so the kernel routes VPN traffic into the lab segment.
-	if err := netutil.AssignFirstHostIPToLink(link, cidr); err != nil {
-		return ctrl.Result{}, fmt.Errorf("assign gateway IP for %s: %w", cidr, err)
+	// Assign 10.128.N.1/24 to interface (idempotent).
+	if err := netutil.AssignFirstHostIP(ifaceName, labvpn.Spec.CIDR); err != nil {
+		return ctrl.Result{}, fmt.Errorf("assign IP to %s: %w", ifaceName, err)
 	}
 
-	if err := vpn.AddLabRoute(link, cidr); err != nil {
-		return ctrl.Result{}, fmt.Errorf("add route for %s: %w", cidr, err)
-	}
-
-	if ds := lab.Spec.VPN.DHCPServer; ds != nil && ds.Enabled {
-		if err := r.DHCP.Start(lab.Name, vpnDHCPConfig(cidr, ifaceName)); err != nil {
-			ctrl.Log.WithName("vpn").Error(err, "start DHCP", "lab", lab.Name)
+	// DHCP: optional, only if pool exists.
+	dhcpEnabled := r.dhcpPoolExists(ctx, labvpn.Spec.LabName, labvpn.Namespace)
+	if dhcpEnabled {
+		gwIP := firstHostIP(labvpn.Spec.CIDR)
+		if err := r.DHCP.Start(labvpn.Spec.LabName, dhcp.Config{
+			Iface:   ifaceName,
+			Subnet:  labvpn.Spec.CIDR,
+			Gateway: gwIP,
+			BindIP:  gwIP,
+			DNS:     r.Cfg.DHCPDNS,
+		}); err != nil {
+			log.Error(err, "start DHCP", "lab", labvpn.Spec.LabName)
 		}
 	}
 
-	lab.Status.VPN.Ready = true
-	return ctrl.Result{}, r.Status().Update(ctx, &lab)
+	return ctrl.Result{}, r.patchStatus(ctx, &labvpn, laboratoryv1alpha1.LabVPNStatus{
+		Phase:       laboratoryv1alpha1.LabVPNPhaseReady,
+		DHCPEnabled: dhcpEnabled,
+		DHCPReady:   dhcpEnabled,
+	})
 }
 
-func (r *LabVPNReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1alpha1.Lab) (ctrl.Result, error) {
-	r.DHCP.Stop(lab.Name)
-	if lab.Status.VPN.CIDR != "" {
-		if err := vpn.DelLabRoute(lab.Status.VPN.CIDR); err != nil {
-			ctrl.Log.WithName("vpn").Error(err, "delete lab route", "cidr", lab.Status.VPN.CIDR)
-		}
-	}
-	controllerutil.RemoveFinalizer(lab, finalizerVPN)
-	return ctrl.Result{}, r.Update(ctx, lab)
+func (r *LabVPNReconciler) reconcileDelete(ctx context.Context, labvpn *laboratoryv1alpha1.LabVPN) (ctrl.Result, error) {
+	r.DHCP.Stop(labvpn.Spec.LabName)
+	controllerutil.RemoveFinalizer(labvpn, finalizerVPN)
+	return ctrl.Result{}, r.Update(ctx, labvpn)
+}
+
+func (r *LabVPNReconciler) dhcpPoolExists(ctx context.Context, labName, namespace string) bool {
+	var pool allocationv1alpha1.Pool
+	err := r.Get(ctx, types.NamespacedName{
+		Name:      fmt.Sprintf("dhcp-vpn-%s-0", labName),
+		Namespace: namespace,
+	}, &pool)
+	return err == nil
+}
+
+func (r *LabVPNReconciler) patchPhase(ctx context.Context, labvpn *laboratoryv1alpha1.LabVPN, phase laboratoryv1alpha1.LabVPNPhase) error {
+	patch := client.MergeFrom(labvpn.DeepCopy())
+	labvpn.Status.Phase = phase
+	return r.Status().Patch(ctx, labvpn, patch)
+}
+
+func (r *LabVPNReconciler) patchStatus(ctx context.Context, labvpn *laboratoryv1alpha1.LabVPN, s laboratoryv1alpha1.LabVPNStatus) error {
+	patch := client.MergeFrom(labvpn.DeepCopy())
+	labvpn.Status = s
+	return r.Status().Patch(ctx, labvpn, patch)
 }
 
 func (r *LabVPNReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&laboratoryv1alpha1.Lab{}).
+		For(&laboratoryv1alpha1.LabVPN{}).
 		Complete(r)
 }
 
-func vpnDHCPConfig(cidr, iface string) dhcp.Config {
+func firstHostIP(cidr string) string {
 	ip, _, _ := net.ParseCIDR(cidr)
-	return dhcp.Config{
-		Iface:   iface,
-		Subnet:  cidr,
-		Gateway: netutil.NextIP(ip).String(),
-	}
+	return netutil.NextIP(ip).String()
 }

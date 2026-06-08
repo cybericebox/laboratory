@@ -16,8 +16,6 @@ import (
 	"github.com/cybericebox/laboratory/internal/vpn"
 )
 
-const finalizerVPNPeer = "cybericebox.com/vpn-peer"
-
 // LabGroupClientReconciler manages WireGuard peers for LabGroupClient resources.
 type LabGroupClientReconciler struct {
 	client.Client
@@ -31,19 +29,24 @@ func (r *LabGroupClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Main controller must have processed this first.
+	if !controllerutil.ContainsFinalizer(&lgc, finalizerController) {
+		return ctrl.Result{}, nil
+	}
+
+	// Deletion path.
 	if !lgc.DeletionTimestamp.IsZero() {
 		if lgc.Spec.PublicKey != "" {
 			_ = r.WG.RemovePeer(lgc.Spec.PublicKey)
 		}
-		controllerutil.RemoveFinalizer(&lgc, finalizerVPNPeer)
+		controllerutil.RemoveFinalizer(&lgc, finalizerVPN)
 		return ctrl.Result{}, r.Update(ctx, &lgc)
 	}
 
-	if !controllerutil.ContainsFinalizer(&lgc, finalizerVPNPeer) {
-		controllerutil.AddFinalizer(&lgc, finalizerVPNPeer)
-		if err := r.Update(ctx, &lgc); err != nil {
-			return ctrl.Result{}, err
-		}
+	// Add own finalizer on first observation.
+	if !controllerutil.ContainsFinalizer(&lgc, finalizerVPN) {
+		controllerutil.AddFinalizer(&lgc, finalizerVPN)
+		return ctrl.Result{}, r.Update(ctx, &lgc)
 	}
 
 	pubKey := lgc.Spec.PublicKey
@@ -85,12 +88,13 @@ func RunStats(ctx context.Context, c client.Client, wg *vpn.WGManager, cfg *vpn.
 				pubKey := peer.PublicKey.String()
 				for i := range lgcList.Items {
 					if lgcList.Items[i].Spec.PublicKey == pubKey {
+						patch := client.MergeFrom(lgcList.Items[i].DeepCopy())
 						lgcList.Items[i].Status.Statistics = laboratoryv1alpha1.LabGroupClientStatistics{
 							LastHandshake: metav1.NewTime(peer.LastHandshakeTime),
 							RxBytes:       peer.ReceiveBytes,
 							TxBytes:       peer.TransmitBytes,
 						}
-						_ = c.Status().Update(ctx, &lgcList.Items[i])
+						_ = c.Status().Patch(ctx, &lgcList.Items[i], patch)
 						break
 					}
 				}
