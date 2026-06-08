@@ -1,4 +1,4 @@
-{{- if and .Values.certManager.enabled .Values.proxy.enabled }}
+{{- if and .Values.certManager.enabled .Values.proxy.enabled .Values.proxy.l7.enabled }}
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:

@@ -57,3 +57,13 @@ func LoadConfig() (*Config, error) {
 	cfg := &Config{}
 	return cfg, config.Load(cfg)
 }
+
+func LoadL7Config() (*L7Config, error) {
+	cfg := &L7Config{}
+	return cfg, config.Load(cfg)
+}
+
+func LoadWGConfig() (*WGConfig, error) {
+	cfg := &WGConfig{}
+	return cfg, config.Load(cfg)
+}

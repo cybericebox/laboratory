@@ -20,12 +20,12 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
-	"github.com/cybericebox/laboratory/internal/proxy/demux"
-	"github.com/cybericebox/laboratory/internal/proxy/l7"
 	proxy "github.com/cybericebox/laboratory/internal/proxy"
+	"github.com/cybericebox/laboratory/internal/proxy/l7"
 )
 
 var scheme = runtime.NewScheme()
@@ -37,17 +37,16 @@ func init() {
 
 func main() {
 	ctrl.SetLogger(zap.New())
-	log := ctrl.Log.WithName("proxy")
+	log := ctrl.Log.WithName("proxy-l7")
 
-	cfg, err := proxy.LoadConfig()
+	cfg, err := proxy.LoadL7Config()
 	if err != nil {
 		log.Error(err, "load config")
 		os.Exit(1)
 	}
 
-	// Cluster-singleton: watch all namespaces (no DefaultNamespaces restriction).
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme: scheme,
+		Scheme:  scheme,
 		Metrics: metricsserver.Options{BindAddress: "0"},
 	})
 	if err != nil {
@@ -55,23 +54,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	table := demux.NewTable()
-	ct := demux.NewConnTrack()
-
-	if err := (&demux.LabGroupWatcher{
-		Client:         mgr.GetClient(),
-		Table:          table,
-		VPNServicePort: cfg.WG.VPNServicePort,
-	}).SetupWithManager(mgr); err != nil {
-		log.Error(err, "setup LabGroupWatcher")
-		os.Exit(1)
-	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer cancel()
-	stop := make(chan struct{})
-
-	// Service resolver: direct Get by name — informer cache, no List needed.
 	svcResolver := func(task, namespace string) (string, error) {
 		var svc corev1.Service
 		if err := mgr.GetClient().Get(context.Background(),
@@ -89,25 +71,23 @@ func main() {
 		return proto, nil
 	}
 
-	keyWatcher, err := proxy.NewKeyWatcher(cfg.L7.JWTPublicKeyPath, stop)
+	keyWatcher, err := proxy.NewKeyWatcher(cfg.JWTPublicKeyPath)
 	if err != nil {
 		log.Error(err, "init JWT key watcher")
 		os.Exit(1)
 	}
 
-	handler := l7.NewHandler(keyWatcher.Key, cfg.L7.BaseDomain, cfg.L7.CookieName,
+	handler := l7.NewHandler(keyWatcher.Key, cfg.BaseDomain, cfg.CookieName,
 		l7.ServiceResolver(svcResolver))
 
-	// certwatcher reloads the wildcard cert when cert-manager renews the
-	// underlying Secret — no restart required. Falls back to a load error if
-	// the files don't exist on boot.
-	certWatcher, err := certwatcher.New(cfg.L7.TLSCertPath, cfg.L7.TLSKeyPath)
+	certWatcher, err := certwatcher.New(cfg.TLSCertPath, cfg.TLSKeyPath)
 	if err != nil {
 		log.Error(err, "init TLS cert watcher")
 		os.Exit(1)
 	}
+
 	httpsSrv := &http.Server{
-		Addr:    cfg.L7.Listen,
+		Addr:    cfg.Listen,
 		Handler: handler,
 		TLSConfig: &tls.Config{
 			GetCertificate: certWatcher.GetCertificate,
@@ -115,32 +95,33 @@ func main() {
 		},
 	}
 
-	dmx, err := demux.New(cfg.WG.ListenAddr, cfg.WG.ExternalInterface, table, ct)
-	if err != nil {
-		log.Error(err, "create demux")
-		os.Exit(1)
+	for _, r := range []struct {
+		runnable manager.Runnable
+		name     string
+	}{
+		{certWatcher, "cert-watcher"},
+		{keyWatcher, "key-watcher"},
+		{manager.RunnableFunc(func(ctx context.Context) error {
+			go func() {
+				<-ctx.Done()
+				_ = httpsSrv.Shutdown(context.Background())
+			}()
+			if err := httpsSrv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+				return err
+			}
+			return nil
+		}), "https-server"},
+	} {
+		if err := mgr.Add(r.runnable); err != nil {
+			log.Error(err, "add runnable", "name", r.name)
+			os.Exit(1)
+		}
 	}
 
-	go func() {
-		<-ctx.Done()
-		close(stop)
-		_ = httpsSrv.Shutdown(context.Background())
-	}()
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
 
-	go ct.RunTTLCleanup(stop)
-	go dmx.Run(stop)
-	go func() {
-		if err := certWatcher.Start(ctx); err != nil {
-			log.Error(err, "cert watcher error")
-		}
-	}()
-	go func() {
-		if err := httpsSrv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-			log.Error(err, "HTTPS server error")
-		}
-	}()
-
-	log.Info("starting proxy", "https", cfg.L7.Listen, "udp", cfg.WG.ListenAddr)
+	log.Info("starting l7 proxy", "listen", cfg.Listen)
 	if err := mgr.Start(ctx); err != nil {
 		log.Error(err, "manager error")
 		os.Exit(1)

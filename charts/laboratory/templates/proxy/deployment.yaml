@@ -1,52 +1,38 @@
-{{- if .Values.proxy.enabled }}
+{{- if and .Values.proxy.enabled .Values.proxy.l7.enabled }}
 apiVersion: apps/v1
-kind: DaemonSet
+kind: Deployment
 metadata:
-  name: laboratory-proxy
+  name: laboratory-proxy-l7
   namespace: laboratory-proxy
   labels:
-    app: laboratory-proxy
+    app: laboratory-proxy-l7
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
+  replicas: {{ .Values.proxy.l7.replicas }}
   selector:
     matchLabels:
-      app: laboratory-proxy
+      app: laboratory-proxy-l7
   template:
     metadata:
       labels:
-        app: laboratory-proxy
+        app: laboratory-proxy-l7
     spec:
       serviceAccountName: laboratory-proxy
-      hostNetwork: true
-      dnsPolicy: ClusterFirstWithHostNet
-      nodeSelector:
-        {{- toYaml .Values.proxy.nodeSelector | nindent 8 }}
-      tolerations:
-        {{- toYaml .Values.proxy.tolerations | nindent 8 }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
-      - name: proxy
-        image: "{{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag }}"
-        imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
-        securityContext:
-          capabilities:
-            add: ["NET_ADMIN", "NET_RAW", "NET_BIND_SERVICE"]
+      - name: proxy-l7
+        image: "{{ .Values.proxy.l7.image.repository }}:{{ .Values.proxy.l7.image.tag }}"
+        imagePullPolicy: {{ .Values.proxy.l7.image.pullPolicy }}
         env:
         - name: BASE_DOMAIN
           value: {{ .Values.operator.baseDomain | quote }}
-        - name: VPN_SERVICE_PORT
-          value: {{ .Values.operator.vpnServicePort | quote }}
         - name: LISTEN_HTTPS
-          value: {{ .Values.proxy.listen | quote }}
-        - name: UDP_LISTEN_ADDR
-          value: {{ .Values.proxy.udpListen | quote }}
+          value: {{ .Values.proxy.l7.listen | quote }}
         - name: COOKIE_NAME
-          value: {{ .Values.proxy.cookieName | quote }}
-        - name: EXTERNAL_INTERFACE
-          value: {{ .Values.proxy.externalInterface | quote }}
+          value: {{ .Values.proxy.l7.cookieName | quote }}
         - name: TLS_CERT_PATH
           value: /etc/proxy/tls/tls.crt
         - name: TLS_KEY_PATH
@@ -67,7 +53,7 @@ spec:
           mountPath: /etc/proxy/jwt
           readOnly: true
         resources:
-          {{- toYaml .Values.proxy.resources | nindent 10 }}
+          {{- toYaml .Values.proxy.l7.resources | nindent 10 }}
       volumes:
       - name: tls
         secret:

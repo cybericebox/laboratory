@@ -22,11 +22,11 @@ spec:
           podTemplate:
             spec:
               hostNetwork: true
-              {{- with .Values.proxy.nodeSelector }}
+              {{- with .Values.proxy.wg.nodeSelector }}
               nodeSelector:
                 {{- toYaml . | nindent 16 }}
               {{- end }}
-              {{- with .Values.proxy.tolerations }}
+              {{- with .Values.proxy.wg.tolerations }}
               tolerations:
                 {{- toYaml . | nindent 16 }}
               {{- end }}

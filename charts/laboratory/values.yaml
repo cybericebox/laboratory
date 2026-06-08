@@ -60,44 +60,57 @@ gateway:
     tag: "latest"
 
 # ============================================================
-# Proxy (L7 HTTPS + WireGuard demux, DaemonSet on worker nodes)
+# Proxy: proxy-l7 (Deployment) + proxy-wg (DaemonSet)
 # ============================================================
 proxy:
   enabled: true
 
-  image:
-    repository: ghcr.io/cybericebox/laboratory/proxy
-    tag: "latest"
-    pullPolicy: IfNotPresent
-
-  # HTTPS listen address (binds on host network).
-  listen: ":443"
-  # WireGuard demux UDP listen address (binds on host network).
-  udpListen: ":51820"
-  cookieName: "challenge"
-  externalInterface: "eth0"
-
   # Set true when running in Kind: overrides API server address to 127.0.0.1:6443.
   kindMode: false
 
-  # Restrict proxy DaemonSet to specific nodes (e.g. nodes with public IPs).
-  # Leave empty to run on all worker nodes.
-  # Example: {"proxy-node": "true"}
-  nodeSelector: {}
+  # L7 HTTPS proxy — Deployment, receives TLS passthrough from Cilium Gateway.
+  l7:
+    enabled: true
+    image:
+      repository: ghcr.io/cybericebox/laboratory/proxy-l7
+      tag: "latest"
+      pullPolicy: IfNotPresent
+    listen: ":443"
+    cookieName: "challenge"
+    replicas: 1
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
 
-  tolerations: []
+  # WireGuard demux — DaemonSet, hostNetwork, XDP on eth0.
+  wg:
+    enabled: true
+    image:
+      repository: ghcr.io/cybericebox/laboratory/proxy-wg
+      tag: "latest"
+      pullPolicy: IfNotPresent
+    udpListen: ":51820"
+    externalInterface: "eth0"
+    # Restrict proxy-wg DaemonSet to specific nodes (e.g. nodes with public IPs).
+    # Leave empty to run on all worker nodes.
+    # Example: {"proxy-node": "true"}
+    nodeSelector: {}
+    tolerations: []
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
 
   # LoadBalancer Service annotations (e.g. cloud-specific LB config).
   service:
     annotations: {}
-
-  resources:
-    limits:
-      cpu: 500m
-      memory: 256Mi
-    requests:
-      cpu: 50m
-      memory: 64Mi
 
 # ============================================================
 # Cilium Gateway API (TLS passthrough, shared LB IP)
@@ -114,12 +127,6 @@ gateway:
 
   # Additional annotations on the Gateway (e.g. for cloud LB config).
   annotations: {}
-
-  # Optional: route a second domain to the cluster agent.
-  # Leave empty to skip creating the agent TLSRoute.
-  agentDomain: ""
-  agentNamespace: "agent"
-  agentService: "cluster-agent"
 
 # ============================================================
 # cert-manager integration (issues TLS cert for proxy)

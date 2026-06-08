@@ -1,4 +1,4 @@
-{{- if .Values.proxy.enabled }}
+{{- if and .Values.proxy.enabled .Values.proxy.l7.enabled }}
 # ClusterIP: receives TLS passthrough traffic from Cilium Gateway
 apiVersion: v1
 kind: Service
@@ -11,12 +11,14 @@ metadata:
 spec:
   type: ClusterIP
   selector:
-    app: laboratory-proxy
+    app: laboratory-proxy-l7
   ports:
   - name: https
     port: 443
     targetPort: 443
     protocol: TCP
+{{- end }}
+{{- if and .Values.proxy.enabled .Values.proxy.wg.enabled }}
 ---
 # LoadBalancer: WireGuard demux, direct external access with source-IP preserved
 apiVersion: v1
@@ -35,7 +37,7 @@ spec:
   type: LoadBalancer
   externalTrafficPolicy: Local
   selector:
-    app: laboratory-proxy
+    app: laboratory-proxy-wg
   ports:
   - name: wireguard
     port: {{ .Values.operator.vpnServicePort }}
