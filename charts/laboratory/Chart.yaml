@@ -12,3 +12,9 @@ keywords:
   - ovs
 sources:
   - https://github.com/cybericebox/laboratory
+
+dependencies:
+  - name: cert-manager
+    version: "v1.17.1"
+    repository: "https://charts.jetstack.io"
+    condition: certManager.install

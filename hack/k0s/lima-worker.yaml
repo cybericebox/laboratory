@@ -1,0 +1,35 @@
+vmType: vz
+os: Linux
+arch: aarch64
+cpus: 4
+memory: "4GiB"
+disk: "20GiB"
+
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: aarch64
+
+mounts:
+  - location: "$HOME/Projects/My/CyberICEBox"
+    mountPoint: "/projects/cybericebox"
+    writable: true
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux
+      export DEBIAN_FRONTEND=noninteractive
+
+      apt-get update -qq
+      apt-get install -y --no-install-recommends \
+        openvswitch-switch openvswitch-common \
+        wireguard wireguard-tools \
+        iptables nftables iproute2 \
+        jq curl ca-certificates
+
+      systemctl enable openvswitch-switch
+      systemctl start openvswitch-switch
+
+hostResolver:
+  enabled: true

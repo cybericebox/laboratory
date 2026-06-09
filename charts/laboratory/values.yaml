@@ -93,7 +93,11 @@ proxy:
       repository: ghcr.io/cybericebox/laboratory/proxy-wg
       tag: "latest"
       pullPolicy: IfNotPresent
-    udpListen: ":51820"
+    # Internal UDP port the proxy-wg pod binds to on the host.
+    # The LoadBalancer Service maps operator.vpnServicePort → this port.
+    # Set to a different value than vpnServicePort to avoid bind conflicts
+    # when the host already occupies 51820 (e.g. Kind with WireGuard).
+    listenPort: 51820
     externalInterface: "eth0"
     # Restrict proxy-wg DaemonSet to specific nodes (e.g. nodes with public IPs).
     # Leave empty to run on all worker nodes.
@@ -136,6 +140,10 @@ gateway:
 # cert-manager integration (issues TLS cert for proxy)
 # ============================================================
 certManager:
+  # Set true to install cert-manager as a Helm subchart dependency.
+  # Set false if cert-manager is already installed in the cluster.
+  install: false
+
   # Set true to create ClusterIssuer and Certificate resources.
   enabled: true
 
@@ -184,3 +192,10 @@ imagePullSecrets: []
 
 nameOverride: ""
 fullnameOverride: ""
+
+# ============================================================
+# cert-manager subchart values (used when certManager.install=true)
+# ============================================================
+cert-manager:
+  crds:
+    enabled: true

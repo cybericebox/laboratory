@@ -47,6 +47,6 @@ spec:
   ports:
   - name: wireguard
     port: {{ .Values.operator.vpnServicePort }}
-    targetPort: {{ .Values.operator.vpnServicePort }}
+    targetPort: {{ .Values.proxy.wg.listenPort }}
     protocol: UDP
 {{- end }}

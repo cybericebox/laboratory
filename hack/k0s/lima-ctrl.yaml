@@ -1,0 +1,42 @@
+vmType: vz
+os: Linux
+arch: aarch64
+cpus: 4
+memory: "6GiB"
+disk: "30GiB"
+
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: aarch64
+
+mounts:
+  - location: "$HOME/Projects/My/CyberICEBox"
+    mountPoint: "/projects/cybericebox"
+    writable: true
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux
+      export DEBIAN_FRONTEND=noninteractive
+
+      apt-get update -qq
+      apt-get install -y --no-install-recommends \
+        openvswitch-switch openvswitch-common \
+        wireguard wireguard-tools \
+        iptables nftables iproute2 \
+        jq curl ca-certificates
+
+      systemctl enable openvswitch-switch
+      systemctl start openvswitch-switch
+
+      curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      KUBECTL_VER=$(curl -fsSL https://dl.k8s.io/release/stable.txt)
+      curl -fsSLo /usr/local/bin/kubectl \
+        "https://dl.k8s.io/release/${KUBECTL_VER}/bin/linux/arm64/kubectl"
+      chmod +x /usr/local/bin/kubectl
+
+hostResolver:
+  enabled: true

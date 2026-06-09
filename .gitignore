@@ -24,6 +24,9 @@ kubeconfig
 *.kubeconfig
 kubeconfig.*
 
+# k0s dev cluster artifacts (join tokens, kubeconfig)
+.k0s/
+
 # editor and IDE paraphernalia
 .idea
 .vscode

@@ -40,7 +40,7 @@ spec:
             add: ["NET_ADMIN", "SYS_ADMIN"]
         env:
         - name: UDP_LISTEN_ADDR
-          value: {{ .Values.proxy.wg.udpListen | quote }}
+          value: {{ printf ":%d" (.Values.proxy.wg.listenPort | int) | quote }}
         - name: VPN_SERVICE_PORT
           value: {{ .Values.operator.vpnServicePort | quote }}
         - name: EXTERNAL_INTERFACE
