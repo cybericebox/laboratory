@@ -1,4 +1,10 @@
 {{- if .Values.gateway.enabled }}
+{{- $annotations := dict }}
+{{- if and .Values.proxy.enabled .Values.proxy.wg.enabled .Values.proxy.service.sharedLBKey }}
+{{- $_ := set $annotations "lbipam.cilium.io/sharing-key" .Values.proxy.service.sharedLBKey }}
+{{- $_ := set $annotations "lbipam.cilium.io/sharing-cross-namespace" "laboratory-proxy" }}
+{{- end }}
+{{- $annotations = mergeOverwrite $annotations .Values.gateway.annotations }}
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -6,7 +12,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
-  {{- with .Values.gateway.annotations }}
+  {{- with $annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
