@@ -1,5 +1,5 @@
 {{- if and .Values.gateway.enabled .Values.proxy.enabled .Values.proxy.l7.enabled }}
-apiVersion: gateway.networking.k8s.io/v1alpha2
+apiVersion: gateway.networking.k8s.io/v1
 kind: TLSRoute
 metadata:
   name: laboratory-lab

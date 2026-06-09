@@ -5,6 +5,9 @@ cpus: 4
 memory: "6GiB"
 disk: "30GiB"
 
+networks:
+  - lima: shared
+
 images:
   - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
     arch: aarch64
@@ -30,13 +33,6 @@ provision:
 
       systemctl enable openvswitch-switch
       systemctl start openvswitch-switch
-
-      curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-
-      KUBECTL_VER=$(curl -fsSL https://dl.k8s.io/release/stable.txt)
-      curl -fsSLo /usr/local/bin/kubectl \
-        "https://dl.k8s.io/release/${KUBECTL_VER}/bin/linux/arm64/kubectl"
-      chmod +x /usr/local/bin/kubectl
 
 hostResolver:
   enabled: true

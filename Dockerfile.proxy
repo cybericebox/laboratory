@@ -1,0 +1,12 @@
+FROM golang:1.26 AS builder
+WORKDIR /workspace
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o proxy-l7 ./cmd/proxy-l7 && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -o proxy-wg ./cmd/proxy-wg
+
+FROM debian:12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /workspace/proxy-l7 /proxy-l7
+COPY --from=builder /workspace/proxy-wg /proxy-wg

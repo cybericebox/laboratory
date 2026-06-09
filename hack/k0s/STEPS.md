@@ -3,9 +3,9 @@
 Variables filled by `./1-vms.sh` and saved to `.k0s/commands.md`.
 
 ```
-CTRL_IP        — controller VM IP (Lima VZ network)
+CTRL_IP        — controller VM IP (Lima shared network, 192.168.105.x)
 WORKER_IP      — worker VM IP
-LB_POOL_CIDR   — last /29 of Lima subnet, e.g. 192.168.105.240/29
+LB_POOL_CIDR   — 192.168.105.240/29 (last /29 of shared subnet)
 K0SCTL_CFG     — .k0s/k0sctl.yaml
 KUBECONFIG     — .k0s/kubeconfig.yaml
 CHART_PATH     — charts/laboratory
@@ -19,9 +19,18 @@ CHART_PATH     — charts/laboratory
 ./hack/k0s/1-vms.sh
 ```
 
-Creates `lab-ctrl` (4CPU/6GiB) and `lab-worker` (4CPU/4GiB) Lima VMs.
-Installs: OVS, WireGuard, Helm, kubectl.
+Creates `lab-ctrl` (4CPU/6GiB) and `lab-worker` (4CPU/4GiB) Lima VMs via socket_vmnet (unique IPs).
+Installs: OVS, WireGuard on each VM.
 Generates `.k0s/k0sctl.yaml` and `.k0s/commands.md` with real IPs.
+
+**Prerequisites on Mac host:**
+```bash
+brew install socket_vmnet helm kubectl k0sproject/tap/k0sctl
+sudo mkdir -p /opt/socket_vmnet/bin
+sudo cp $(brew --prefix)/opt/socket_vmnet/bin/socket_vmnet /opt/socket_vmnet/bin/socket_vmnet
+sudo chown -R root:wheel /opt/socket_vmnet
+limactl sudoers | sudo tee /private/etc/sudoers.d/lima
+```
 
 ---
 
@@ -37,26 +46,37 @@ k0sctl kubeconfig --config $K0SCTL_CFG > $KUBECONFIG
 export KUBECONFIG=$KUBECONFIG
 
 kubectl wait --for=condition=Ready node --all --timeout=300s
-kubectl get nodes -o wide
-kubectl get pods -n kube-system
-kubectl get pods -n cert-manager
+kubectl rollout status daemonset/cilium -n kube-system --timeout=120s
+kubectl rollout status deployment/cilium-operator -n kube-system --timeout=120s
+kubectl rollout status deployment/cert-manager -n cert-manager --timeout=120s
 ```
 
 ---
 
-## Step 3 — Gateway API CRDs + LB pool + laboratory chart
+## Step 3 — Gateway API CRDs
 
-Gateway API experimental CRDs (TLSRoute is not in stable channel):
+Cilium uses Gateway API CRDs but does NOT install them.
+Must be installed before the laboratory chart.
+`--server-side` avoids annotation-size limit; `--force-conflicts` handles re-apply.
 
 ```bash
-kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/experimental-install.yaml
+kubectl apply --server-side --force-conflicts \
+  -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.1/experimental-install.yaml
+
+# Restart Cilium operator to start watching Gateway API resources
+kubectl rollout restart deployment/cilium-operator -n kube-system
+kubectl rollout status deployment/cilium-operator -n kube-system --timeout=60s
 ```
+
+---
+
+## Step 4 — LB pool
 
 Cilium LB IP pool + L2 announcement policy:
 
 ```bash
 kubectl apply -f - <<YAML
-apiVersion: cilium.io/v2alpha1
+apiVersion: cilium.io/v2
 kind: CiliumLoadBalancerIPPool
 metadata:
   name: lab-pool
@@ -76,46 +96,86 @@ spec:
 YAML
 ```
 
-Laboratory chart (cert-manager already installed by k0s → `install=false`):
+---
+
+## Step 5 — Import images
+
+`k0sctl reset` wipes containerd storage — re-import after every cluster reset.
+Images must be built first: `make docker-build-all` in the laboratory repo root.
+
+Images are imported into the `k8s.io` containerd namespace (the CRI namespace).
 
 ```bash
-helm repo add jetstack https://charts.jetstack.io
-helm dependency update $CHART_PATH
-
-helm upgrade --install laboratory $CHART_PATH \
-  --namespace laboratory --create-namespace \
-  --set operator.baseDomain=lab.test \
-  --set operator.publicVPNEndpoint=$CTRL_IP:51820 \
-  --set certManager.install=false \
-  --set certManager.staging=true \
-  --set certManager.email=test@lab.test \
-  --wait --timeout=3m
+for img in \
+  cybericebox/laboratory-controller:latest \
+  cybericebox/laboratory-node-agent:latest \
+  cybericebox/laboratory-lab:latest \
+  cybericebox/laboratory-proxy:latest; do
+  docker save "$img" | limactl shell lab-ctrl   -- sudo k0s ctr --namespace k8s.io images import -
+  docker save "$img" | limactl shell lab-worker -- sudo k0s ctr --namespace k8s.io images import -
+done
 ```
-
-> To install cert-manager via the chart instead of k0s:
-> remove it from `k0sctl.yaml` extensions and pass `--set certManager.install=true`.
 
 ---
 
-## Step 4 — verify
+## Step 6 — laboratory chart
+
+The chart creates `lab-platform-secret` automatically when `platform.jwtPublicKey` is passed.
+The operator then syncs it to `proxy-credentials` in `laboratory-proxy`.
+Without it `proxy-l7` pod will not start.
+
+For local testing, generate a throwaway keypair:
+
+```bash
+openssl genrsa -out /tmp/jwt-private.pem 2048
+openssl rsa -in /tmp/jwt-private.pem -pubout -out /tmp/jwt-public-key.pem
+```
+
+```bash
+CTRL_IP=$(limactl shell lab-ctrl -- ip -4 addr show scope global 2>/dev/null \
+  | awk '/inet / && !/192\.168\.5\./{gsub(/\/[0-9]+/,"",$2); print $2; exit}')
+
+helm upgrade --install laboratory $CHART_PATH \
+  --namespace laboratory-system --create-namespace \
+  --set operator.baseDomain=lab.test \
+  --set operator.publicVPNEndpoint=$CTRL_IP:51820 \
+  --set proxy.wg.externalInterface=lima0 \
+  --set certManager.selfSigned=true \
+  --set-file platform.jwtPublicKey=/tmp/jwt-public-key.pem \
+  --wait --timeout=5m
+```
+
+---
+
+## Step 7 — verify
 
 ```bash
 kubectl get nodes -o wide
 kubectl get pods -n kube-system -l app.kubernetes.io/name=cilium
-kubectl get pods -n laboratory
+kubectl get pods -n laboratory-system
+kubectl get pods -n laboratory-proxy
 kubectl get svc -A
 
 # sharing-key: both services must show the same EXTERNAL-IP
-kubectl get svc -n laboratory      laboratory-gateway
-kubectl get svc -n laboratory-proxy laboratory-proxy-wg
+kubectl get svc -n laboratory-system laboratory-gateway
+kubectl get svc -n laboratory-proxy  laboratory-proxy-wg
 ```
 
 ---
 
-## Teardown
+## Rebuild cluster (keep VMs, reset k0s only)
 
 ```bash
-limactl delete -f lab-ctrl
-limactl delete -f lab-worker
+k0sctl reset --force --config $K0SCTL_CFG
+rm -f $KUBECONFIG
+# re-run steps 2–6
+```
+
+---
+
+## Full teardown
+
+```bash
+limactl delete -f lab-ctrl lab-worker
 rm -rf .k0s/
 ```

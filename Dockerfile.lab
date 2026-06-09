@@ -1,0 +1,12 @@
+FROM golang:1.26 AS builder
+WORKDIR /workspace
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o vpn ./cmd/vpn && \
+    CGO_ENABLED=0 GOOS=linux go build -o gateway ./cmd/gateway
+
+FROM debian:12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends iptables iproute2 && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /workspace/vpn     /vpn
+COPY --from=builder /workspace/gateway /gateway

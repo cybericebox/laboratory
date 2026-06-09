@@ -3,7 +3,7 @@
 # ============================================================
 operator:
   image:
-    repository: ghcr.io/cybericebox/laboratory/controller
+    repository: cybericebox/laboratory-controller
     tag: "latest"
     pullPolicy: IfNotPresent
 
@@ -48,15 +48,15 @@ operator:
 # ============================================================
 vpn:
   image:
-    repository: ghcr.io/cybericebox/laboratory/vpn
+    repository: cybericebox/laboratory-lab
     tag: "latest"
 
 # ============================================================
 # Gateway pod image (created at runtime by operator per LabGroup)
 # ============================================================
-gateway:
+inetGateway:
   image:
-    repository: ghcr.io/cybericebox/laboratory/gateway
+    repository: cybericebox/laboratory-lab
     tag: "latest"
 
 # ============================================================
@@ -72,7 +72,7 @@ proxy:
   l7:
     enabled: true
     image:
-      repository: ghcr.io/cybericebox/laboratory/proxy-l7
+      repository: cybericebox/laboratory-proxy
       tag: "latest"
       pullPolicy: IfNotPresent
     listen: ":443"
@@ -90,7 +90,7 @@ proxy:
   wg:
     enabled: true
     image:
-      repository: ghcr.io/cybericebox/laboratory/proxy-wg
+      repository: cybericebox/laboratory-proxy
       tag: "latest"
       pullPolicy: IfNotPresent
     # Internal UDP port the proxy-wg pod binds to on the host.
@@ -98,7 +98,7 @@ proxy:
     # Set to a different value than vpnServicePort to avoid bind conflicts
     # when the host already occupies 51820 (e.g. Kind with WireGuard).
     listenPort: 51820
-    externalInterface: "eth0"
+    externalInterface: "lima0"
     # Restrict proxy-wg DaemonSet to specific nodes (e.g. nodes with public IPs).
     # Leave empty to run on all worker nodes.
     # Example: {"proxy-node": "true"}
@@ -150,6 +150,10 @@ certManager:
   # REQUIRED when enabled: email for ACME account registration.
   email: ""
 
+  # Set true to use cert-manager SelfSigned issuer (local dev, no public domain needed).
+  # Set false to use ACME (Let's Encrypt) — requires a real public domain and email.
+  selfSigned: false
+
   # Use Let's Encrypt staging (recommended for testing).
   # Set false for production certificates.
   staging: true
@@ -164,7 +168,7 @@ nodeAgent:
   enabled: true
 
   image:
-    repository: ghcr.io/cybericebox/laboratory/node-agent
+    repository: cybericebox/laboratory-node-agent
     tag: "latest"
     pullPolicy: IfNotPresent
 
@@ -184,6 +188,15 @@ labWorkloads:
   nodeSelector: {}
   # tolerations applied to all runtime lab pods.
   tolerations: []
+
+# ============================================================
+# Platform credentials
+# ============================================================
+platform:
+  # RSA public key (PEM) used by proxy-l7 to verify JWT tokens issued by the daemon.
+  # The operator syncs this into proxy-credentials secret in laboratory-proxy namespace.
+  # Pass via: --set-file platform.jwtPublicKey=/path/to/jwt-public-key.pem
+  jwtPublicKey: ""
 
 # ============================================================
 # Common

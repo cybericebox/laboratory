@@ -14,6 +14,6 @@ data:
   PROXY_SOURCE_CIDRS: {{ .Values.operator.proxySourceCIDRs | quote }}
   DHCP_DNS: {{ .Values.operator.dhcpDns | quote }}
   VPN_IMAGE: "{{ .Values.vpn.image.repository }}:{{ .Values.vpn.image.tag }}"
-  GATEWAY_IMAGE: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
+  GATEWAY_IMAGE: "{{ .Values.inetGateway.image.repository }}:{{ .Values.inetGateway.image.tag }}"
   LAB_NODE_SELECTOR: {{ .Values.labWorkloads.nodeSelector | toJson | quote }}
   LAB_TOLERATIONS: {{ .Values.labWorkloads.tolerations | toJson | quote }}

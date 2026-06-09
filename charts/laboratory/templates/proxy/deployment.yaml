@@ -26,6 +26,7 @@ spec:
       - name: proxy-l7
         image: "{{ .Values.proxy.l7.image.repository }}:{{ .Values.proxy.l7.image.tag }}"
         imagePullPolicy: {{ .Values.proxy.l7.image.pullPolicy }}
+        command: ["/proxy-l7"]
         env:
         - name: BASE_DOMAIN
           value: {{ .Values.operator.baseDomain | quote }}

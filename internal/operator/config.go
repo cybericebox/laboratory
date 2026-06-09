@@ -30,9 +30,9 @@ type Config struct {
 	// DHCPDNS is the DNS server address advertised to WireGuard clients via DHCP option (optional).
 	DHCPDNS string `env:"DHCP_DNS"`
 	// VPNImage is the container image for per-LabGroup VPN pods.
-	VPNImage string `env:"VPN_IMAGE" envDefault:"ghcr.io/cybericebox/laboratory/vpn:latest"`
+	VPNImage string `env:"VPN_IMAGE" envDefault:"cybericebox/laboratory-lab:latest"`
 	// GatewayImage is the container image for per-LabGroup gateway pods.
-	GatewayImage string `env:"GATEWAY_IMAGE" envDefault:"ghcr.io/cybericebox/laboratory/gateway:latest"`
+	GatewayImage string `env:"GATEWAY_IMAGE" envDefault:"cybericebox/laboratory-lab:latest"`
 	// LabNodeSelectorJSON is a JSON-encoded map[string]string of nodeSelector labels
 	// applied to all runtime lab pods (VPN, gateway, device).
 	LabNodeSelectorJSON string `env:"LAB_NODE_SELECTOR" envDefault:"{}"`

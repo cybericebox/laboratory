@@ -4,10 +4,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-K0S_VERSION="v1.32.5+k0s.0"
-CILIUM_VERSION="1.17.0"
-CERT_MANAGER_VERSION="v1.17.1"
-GATEWAY_API_VERSION="v1.2.1"
+K0S_VERSION="v1.35.4+k0s.0"
+CILIUM_VERSION="1.19.4"
+CERT_MANAGER_VERSION="v1.20.2"
+GATEWAY_API_VERSION="v1.5.1"
 SSH_USER="$(id -un)"
 SHARE_DIR="$HOME/Projects/My/CyberICEBox/laboratory/.k0s"
 CHART_PATH="$HOME/Projects/My/CyberICEBox/laboratory/charts/laboratory"
@@ -26,12 +26,13 @@ for vm in lab-ctrl lab-worker; do
     echo "→ $vm already running"
   else
     echo "→ starting $vm (provision ~3 min)"
-    limactl start --name="$vm" "$template"
+    limactl start --tty=false --timeout 20m --name="$vm" "$template"
   fi
 done
 
 # ── discover IPs and ports ─────────────────────────────────────────────────────
-get_ip()       { limactl shell "$1" -- ip route get 8.8.8.8 2>/dev/null | awk '/src/{print $7; exit}'; }
+# Skip 192.168.5.x (Lima usernet) — use shared network IP (192.168.105.x)
+get_ip()       { limactl shell "$1" -- ip -4 addr show scope global 2>/dev/null | awk '/inet / && !/192\.168\.5\./{gsub(/\/[0-9]+/, "", $2); print $2; exit}'; }
 get_ssh_port() { limactl list "$1" --format '{{.SSHLocalPort}}'; }
 
 CTRL_IP=$(get_ip lab-ctrl)
@@ -39,9 +40,8 @@ WORKER_IP=$(get_ip lab-worker)
 CTRL_SSH_PORT=$(get_ssh_port lab-ctrl)
 WORKER_SSH_PORT=$(get_ssh_port lab-worker)
 
-LIMA_GW=$(limactl shell lab-ctrl -- ip route show default | awk '/default/{print $3}')
-LB_BASE=$(echo "$LIMA_GW" | sed 's/\.[0-9]*$//')
-LB_POOL_CIDR="${LB_BASE}.240/29"
+# shared network is always 192.168.105.x; use last /29 for LB pool
+LB_POOL_CIDR="192.168.105.240/29"
 
 # ── pre-add SSH host keys ──────────────────────────────────────────────────────
 ssh-keyscan -p "$CTRL_SSH_PORT"   -H 127.0.0.1 >> ~/.ssh/known_hosts 2>/dev/null || true
@@ -118,6 +118,7 @@ spec:
                     enabled: true
                   externalIPs:
                     enabled: true
+                  l7Proxy: true
                   ipam:
                     mode: kubernetes
                   operator:
@@ -138,21 +139,31 @@ k0sctl apply --config ${K0SCTL_CFG}
 k0sctl kubeconfig --config ${K0SCTL_CFG} > ${SHARE_DIR}/kubeconfig.yaml
 export KUBECONFIG=${SHARE_DIR}/kubeconfig.yaml
 
-# wait for nodes, Cilium, cert-manager
+# wait for nodes + Cilium + cert-manager
 kubectl wait --for=condition=Ready node --all --timeout=300s
-kubectl get nodes -o wide
-kubectl get pods -n kube-system
-kubectl get pods -n cert-manager
+kubectl rollout status daemonset/cilium -n kube-system --timeout=120s
+kubectl rollout status deployment/cilium-operator -n kube-system --timeout=120s
+kubectl rollout status deployment/cert-manager -n cert-manager --timeout=120s
 
 
-## Step 3 — Gateway API CRDs + LB pool + laboratory chart
+## Step 3 — Gateway API CRDs
 
-# Gateway API experimental CRDs (TLSRoute; not installable via k0s extensions)
-kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/experimental-install.yaml
+# Must be installed BEFORE laboratory chart (Cilium picks them up automatically)
+# --server-side avoids annotation-size limit on large CRD schemas
+# --force-conflicts handles re-apply over existing state
+kubectl apply --server-side --force-conflicts \\
+  -f https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/experimental-install.yaml
 
-# Cilium LB IP pool
+# Restart Cilium operator so it starts watching Gateway API resources immediately
+kubectl rollout restart deployment/cilium-operator -n kube-system
+kubectl rollout status deployment/cilium-operator -n kube-system --timeout=60s
+
+
+## Step 4 — LB pool + laboratory chart
+
+# Cilium L2 LB pool (MetalLB-style, via socket_vmnet shared subnet)
 kubectl apply -f - <<YAML
-apiVersion: cilium.io/v2alpha1
+apiVersion: cilium.io/v2
 kind: CiliumLoadBalancerIPPool
 metadata:
   name: lab-pool
@@ -171,33 +182,34 @@ spec:
   loadBalancerIPs: true
 YAML
 
-# resolve cert-manager subchart (needed once; fetches chart archive into charts/)
-helm repo add jetstack https://charts.jetstack.io 2>/dev/null || true
-helm dependency update ${CHART_PATH}
-
 # laboratory chart
-# certManager.install=false  → cert-manager already installed by k0s above
-# certManager.install=true   → chart installs cert-manager itself (no k0s needed)
 helm upgrade --install laboratory ${CHART_PATH} \\
   --namespace laboratory --create-namespace \\
   --set operator.baseDomain=lab.test \\
   --set operator.publicVPNEndpoint=${CTRL_IP}:51820 \\
-  --set certManager.install=false \\
   --set certManager.staging=true \\
   --set certManager.email=test@lab.test \\
-  --wait --timeout=3m
+  --wait --timeout=5m
 
 
-## Step 4 — verify
+## Step 5 — verify
 
 kubectl get nodes -o wide
 kubectl get pods -n kube-system -l app.kubernetes.io/name=cilium
 kubectl get pods -n laboratory
 kubectl get svc -A
 
-# sharing-key check: both must have the same EXTERNAL-IP
-kubectl get svc -n laboratory     laboratory-gateway
+# sharing-key check: both must show the same EXTERNAL-IP
+kubectl get svc -n laboratory       laboratory-gateway
 kubectl get svc -n laboratory-proxy laboratory-proxy-wg
+
+
+## Rebuild cluster (keep VMs, reset k0s only)
+
+k0sctl reset --config ${K0SCTL_CFG}
+rm -f ${SHARE_DIR}/kubeconfig.yaml
+# then re-run steps 2–5
+
 EOF
 
 # ── print ──────────────────────────────────────────────────────────────────────

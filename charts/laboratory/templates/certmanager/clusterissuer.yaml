@@ -6,6 +6,9 @@ metadata:
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
+  {{- if .Values.certManager.selfSigned }}
+  selfSigned: {}
+  {{- else }}
   acme:
     {{- if .Values.certManager.staging }}
     server: https://acme-staging-v02.api.letsencrypt.org/directory
@@ -19,9 +22,9 @@ spec:
     - http01:
         ingress:
           class: ""
+          {{- if or .Values.proxy.wg.nodeSelector .Values.proxy.wg.tolerations }}
           podTemplate:
             spec:
-              hostNetwork: true
               {{- with .Values.proxy.wg.nodeSelector }}
               nodeSelector:
                 {{- toYaml . | nindent 16 }}
@@ -30,4 +33,6 @@ spec:
               tolerations:
                 {{- toYaml . | nindent 16 }}
               {{- end }}
+          {{- end }}
+  {{- end }}
 {{- end }}

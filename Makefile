@@ -1,10 +1,8 @@
 # Image URL to use all building/pushing image targets
-IMG       ?= controller:latest
-AGENT_IMG ?= ghcr.io/cybericebox/laboratory/node-agent:local
-VPN_IMG   ?= cybericebox/vpn:latest
-GW_IMG    ?= cybericebox/gateway:latest
-PROXY_L7_IMG ?= cybericebox/proxy-l7:latest
-PROXY_WG_IMG ?= cybericebox/proxy-wg:latest
+IMG          ?= cybericebox/laboratory-controller:latest
+AGENT_IMG    ?= cybericebox/laboratory-node-agent:latest
+LAB_IMG      ?= cybericebox/laboratory-lab:latest
+PROXY_IMG    ?= cybericebox/laboratory-proxy:latest
 
 KIND_CLUSTER_NAME ?= icebox
 
@@ -75,38 +73,27 @@ cluster-down: ## Delete Kind cluster
 docker-build-agent: ## Build node-agent Docker image
 	$(CONTAINER_TOOL) build -t $(AGENT_IMG) -f Dockerfile.node-agent .
 
-.PHONY: docker-build-vpn
-docker-build-vpn: ## Build VPN server Docker image
-	$(CONTAINER_TOOL) build -t $(VPN_IMG) -f Dockerfile.vpn .
+.PHONY: docker-build-lab
+docker-build-lab: ## Build lab (vpn + gateway) Docker image
+	$(CONTAINER_TOOL) build -t $(LAB_IMG) -f Dockerfile.lab .
 
-.PHONY: docker-build-gateway
-docker-build-gateway: ## Build gateway Docker image
-	$(CONTAINER_TOOL) build -t $(GW_IMG) -f Dockerfile.gateway .
-
-.PHONY: docker-build-proxy-l7
-docker-build-proxy-l7: ## Build proxy-l7 Docker image
-	$(CONTAINER_TOOL) build -t $(PROXY_L7_IMG) -f Dockerfile.proxy-l7 .
-
-.PHONY: docker-build-proxy-wg
-docker-build-proxy-wg: ## Build proxy-wg Docker image
-	$(CONTAINER_TOOL) build -t $(PROXY_WG_IMG) -f Dockerfile.proxy-wg .
+.PHONY: docker-build-proxy
+docker-build-proxy: ## Build proxy (proxy-l7 + proxy-wg) Docker image
+	$(CONTAINER_TOOL) build -t $(PROXY_IMG) -f Dockerfile.proxy .
 
 .PHONY: kind-load-proxy
-kind-load-proxy: docker-build-proxy-l7 docker-build-proxy-wg ## Build and load proxy images into Kind cluster
-	$(KIND) load docker-image $(PROXY_L7_IMG) --name $(KIND_CLUSTER_NAME)
-	$(KIND) load docker-image $(PROXY_WG_IMG) --name $(KIND_CLUSTER_NAME)
+kind-load-proxy: docker-build-proxy ## Build and load proxy image into Kind cluster
+	$(KIND) load docker-image $(PROXY_IMG) --name $(KIND_CLUSTER_NAME)
 
 .PHONY: docker-build-all
-docker-build-all: docker-build docker-build-agent docker-build-vpn docker-build-gateway docker-build-proxy-l7 docker-build-proxy-wg ## Build all service images
+docker-build-all: docker-build docker-build-agent docker-build-lab docker-build-proxy ## Build all service images
 
 .PHONY: kind-load
 kind-load: docker-build-all ## Build and load all images into Kind cluster
-	$(KIND) load docker-image $(IMG)          --name $(KIND_CLUSTER_NAME)
-	$(KIND) load docker-image $(AGENT_IMG)    --name $(KIND_CLUSTER_NAME)
-	$(KIND) load docker-image $(VPN_IMG)      --name $(KIND_CLUSTER_NAME)
-	$(KIND) load docker-image $(PROXY_L7_IMG) --name $(KIND_CLUSTER_NAME)
-	$(KIND) load docker-image $(PROXY_WG_IMG) --name $(KIND_CLUSTER_NAME)
-	$(KIND) load docker-image $(GW_IMG)       --name $(KIND_CLUSTER_NAME)
+	$(KIND) load docker-image $(IMG)       --name $(KIND_CLUSTER_NAME)
+	$(KIND) load docker-image $(AGENT_IMG) --name $(KIND_CLUSTER_NAME)
+	$(KIND) load docker-image $(LAB_IMG)   --name $(KIND_CLUSTER_NAME)
+	$(KIND) load docker-image $(PROXY_IMG) --name $(KIND_CLUSTER_NAME)
 
 .PHONY: kind-patch-agent
 kind-patch-agent: ## Patch node-agent DaemonSet to use local image

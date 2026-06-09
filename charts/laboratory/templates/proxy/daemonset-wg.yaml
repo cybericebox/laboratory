@@ -35,6 +35,7 @@ spec:
       - name: proxy-wg
         image: "{{ .Values.proxy.wg.image.repository }}:{{ .Values.proxy.wg.image.tag }}"
         imagePullPolicy: {{ .Values.proxy.wg.image.pullPolicy }}
+        command: ["/proxy-wg"]
         securityContext:
           capabilities:
             add: ["NET_ADMIN", "SYS_ADMIN"]

@@ -30,7 +30,7 @@ const (
 	ProxyCredentialsName = "proxy-credentials"
 
 	// JWTPublicKeyField is the key within both Secrets that holds the RSA PEM.
-	JWTPublicKeyField = "jwt-public-key.pem"
+	JWTPublicKeyField = "publicKey"
 )
 
 // PlatformReconciler watches the admin-managed platform Secret in
