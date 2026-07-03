@@ -29,8 +29,11 @@ func NewManager() *Manager {
 // Config describes a DHCP server for one network interface.
 // Subnet and Gateway are derived from the lab's allocated CIDR by the caller.
 // DNS is optional — omit to suppress the DNS option in responses.
-// BindIP must be the interface-specific IP (e.g. 10.192.N.1) to avoid port 67 conflicts
-// when multiple DHCP servers run on the same pod. Empty string falls back to 0.0.0.0.
+// BindIP is used as the DHCP Server Identifier (option 54) in replies; the
+// socket itself always binds 0.0.0.0:67 — binding the unicast address would
+// stop broadcast DISCOVERs (dst 255.255.255.255) from ever reaching the
+// server. Per-lab isolation on a shared pod comes from SO_BINDTODEVICE
+// (server4 sets it from Iface) plus SO_REUSEADDR.
 type Config struct {
 	Iface   string
 	Subnet  string
@@ -61,12 +64,21 @@ func (m *Manager) Start(name string, cfg Config) error {
 
 	pool := newIPPool(subnet, gw)
 
+	serverID := gw
+	if cfg.BindIP != "" {
+		if ip := net.ParseIP(cfg.BindIP); ip != nil {
+			serverID = ip
+		}
+	}
+
 	baseOpts := func(assigned net.IP) []dhcpv4.Modifier {
 		opts := []dhcpv4.Modifier{
 			dhcpv4.WithYourIP(assigned),
 			dhcpv4.WithNetmask(subnet.Mask),
 			dhcpv4.WithRouter(gw),
 			dhcpv4.WithLeaseTime(86400),
+			dhcpv4.WithServerIP(serverID),
+			dhcpv4.WithOption(dhcpv4.OptServerIdentifier(serverID)),
 		}
 		if dns != nil {
 			opts = append(opts, dhcpv4.WithDNS(dns))
@@ -93,13 +105,7 @@ func (m *Manager) Start(name string, cfg Config) error {
 		}
 	}
 
-	bindIP := net.ParseIP("0.0.0.0")
-	if cfg.BindIP != "" {
-		if ip := net.ParseIP(cfg.BindIP); ip != nil {
-			bindIP = ip
-		}
-	}
-	laddr := &net.UDPAddr{Port: 67, IP: bindIP}
+	laddr := &net.UDPAddr{Port: 67, IP: net.IPv4zero}
 	srv, err := server4.NewServer(cfg.Iface, laddr, handler)
 	if err != nil {
 		return fmt.Errorf("new DHCP server on %s: %w", cfg.Iface, err)

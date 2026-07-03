@@ -207,9 +207,17 @@ func (c *Client) readLoop() {
 				copy(body, msg[16:])
 			}
 			flags := binary.BigEndian.Uint16(msg[10:12])
+			// Non-blocking send: a blocking send while holding pdMu deadlocks
+			// against queryPortDesc's deferred pendingPD=nil (which needs pdMu)
+			// if the query already returned. The buffer is sized so a drop only
+			// happens for a stale/abandoned query — that query times out and the
+			// caller retries with a fresh one.
 			c.pdMu.Lock()
 			if c.pendingPD != nil {
-				c.pendingPD <- portDescMsg{body: body, more: flags&0x01 != 0}
+				select {
+				case c.pendingPD <- portDescMsg{body: body, more: flags&0x01 != 0}:
+				default:
+				}
 			}
 			c.pdMu.Unlock()
 
@@ -268,7 +276,7 @@ func (c *Client) queryPortDesc() error {
 	c.queryMu.Lock()
 	defer c.queryMu.Unlock()
 
-	ch := make(chan portDescMsg, 8)
+	ch := make(chan portDescMsg, 64)
 
 	req := make([]byte, 16) // 8 header + 4 type+flags + 4 pad
 	putHeader(req, ofptMultipartRequest, 16)
@@ -295,8 +303,18 @@ func (c *Client) queryPortDesc() error {
 	}
 
 	newPortMap := make(map[string]uint32)
+	timeout := time.NewTimer(5 * time.Second)
+	defer timeout.Stop()
 	for {
-		m, ok := <-ch
+		var m portDescMsg
+		var ok bool
+		select {
+		case m, ok = <-ch:
+		case <-timeout.C:
+			// No reply (dropped chunk, wedged OVS, lost socket): fail the query
+			// instead of blocking the caller — and everything behind queryMu — forever.
+			return fmt.Errorf("ofclient: PORT_DESC reply timed out after 5s")
+		}
 		if !ok {
 			return fmt.Errorf("ofclient: PORT_DESC channel closed unexpectedly")
 		}

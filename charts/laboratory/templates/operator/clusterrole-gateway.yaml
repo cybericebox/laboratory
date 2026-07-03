@@ -13,4 +13,4 @@ rules:
   verbs: [get, patch, update]
 - apiGroups: [allocation.cybericebox.com]
   resources: [pools]
-  verbs: [get]
+  verbs: [get, list, watch]

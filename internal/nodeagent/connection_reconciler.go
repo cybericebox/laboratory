@@ -503,7 +503,12 @@ func (r *ConnectionReconciler) loadEndpoints(ctx context.Context, conn *laborato
 	for _, ep := range conn.Spec.Endpoints {
 		// Virtual singletons (vpn, internet) have no Device CRD — synthesize.
 		if ep.Device == "vpn" || ep.Device == "internet" {
+			// The "internet" endpoint is served by the gateway Deployment,
+			// whose pods carry app=gateway — not app=internet.
 			appLabel := ep.Device
+			if ep.Device == "internet" {
+				appLabel = names.ComponentGateway
+			}
 			var pods corev1.PodList
 			if err := r.List(ctx, &pods,
 				client.InNamespace(conn.Namespace),
