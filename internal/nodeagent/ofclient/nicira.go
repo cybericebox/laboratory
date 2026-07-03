@@ -32,11 +32,12 @@ func oxmHeader(class uint16, field uint8, hasMask bool, length uint8) uint32 {
 
 // --- OXM matchers ---
 
-// OxmMetadata encodes OXM_OF_METADATA (class=0x8000, field=4, 8 bytes).
-// Used as the canonical VNI carrier across the pipeline.
+// OxmMetadata encodes OXM_OF_METADATA (class=0x8000, field=2, 8 bytes).
+// Used as the canonical VNI carrier across the pipeline. Field code 2 is
+// OFPXMT_OFB_METADATA; field 4 is ETH_SRC and made OVS reject the FLOW_MOD.
 func OxmMetadata(value uint64) []byte {
 	b := make([]byte, 12)
-	binary.BigEndian.PutUint32(b[0:4], oxmHeader(0x8000, 4, false, 8))
+	binary.BigEndian.PutUint32(b[0:4], oxmHeader(0x8000, 2, false, 8))
 	binary.BigEndian.PutUint64(b[4:12], value)
 	return b
 }
@@ -78,8 +79,8 @@ func OxmIDReg0() uint32 { return oxmHeader(0x0001, 0, false, 4) }
 // OxmIDReg1 is the 4-byte header for NXM_NX_REG1.
 func OxmIDReg1() uint32 { return oxmHeader(0x0001, 1, false, 4) }
 
-// OxmIDMetadata is the 4-byte header for OXM_OF_METADATA.
-func OxmIDMetadata() uint32 { return oxmHeader(0x8000, 4, false, 8) }
+// OxmIDMetadata is the 4-byte header for OXM_OF_METADATA (field 2).
+func OxmIDMetadata() uint32 { return oxmHeader(0x8000, 2, false, 8) }
 
 // OxmIDTunnelID is the 4-byte header for OXM_OF_TUNNEL_ID.
 func OxmIDTunnelID() uint32 { return oxmHeader(0x8000, 38, false, 8) }

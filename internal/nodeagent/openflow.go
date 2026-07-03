@@ -8,6 +8,8 @@ import (
 	"net"
 	"path/filepath"
 
+	ctrl "sigs.k8s.io/controller-runtime"
+
 	"github.com/cybericebox/laboratory/internal/nodeagent/ofclient"
 )
 
@@ -34,6 +36,13 @@ func NewFlowManager(ovsRunDir, bridge string) (*FlowManager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("OF client connect to %s: %w", sockPath, err)
 	}
+	log := ctrl.Log.WithName("openflow")
+	c.SetErrorHandler(func(xid uint32, errType, errCode uint16) {
+		// FLOW_MOD is fire-and-forget; a rejected flow (bad OXM field, etc.)
+		// would otherwise be invisible while traffic silently falls back to NORMAL.
+		log.Error(fmt.Errorf("OFPT_ERROR type=%d code=%d", errType, errCode),
+			"OpenFlow request rejected by OVS", "xid", xid)
+	})
 	return &FlowManager{client: c}, nil
 }
 

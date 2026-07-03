@@ -119,3 +119,26 @@ func TestBuildActionsOutput_MultipleActions(t *testing.T) {
 		t.Errorf("second action type = %d, want 0 (OUTPUT)", binary.BigEndian.Uint16(actions[16:18]))
 	}
 }
+
+func TestOxmMetadata_Encoding(t *testing.T) {
+	b := OxmMetadata(0x1234)
+	// OXM_OF_METADATA: class=0x8000, field=2, has_mask=0, length=8
+	// = (0x8000 << 16) | (2 << 9) | 8 = 0x80000000 | 0x400 | 0x08 = 0x80000408
+	if got := binary.BigEndian.Uint32(b[0:4]); got != 0x80000408 {
+		t.Errorf("OxmMetadata header = 0x%08x, want 0x80000408 (field=2, len=8)", got)
+	}
+	if got := binary.BigEndian.Uint64(b[4:12]); got != 0x1234 {
+		t.Errorf("OxmMetadata value = %d, want 0x1234", got)
+	}
+	if len(b) != 12 {
+		t.Errorf("OxmMetadata len = %d, want 12", len(b))
+	}
+}
+
+func TestOxmReg0_Encoding(t *testing.T) {
+	b := OxmReg0(5)
+	// NXM_NX_REG0: class=0x0001, field=0, has_mask=0, length=4 = 0x00010004
+	if got := binary.BigEndian.Uint32(b[0:4]); got != 0x00010004 {
+		t.Errorf("OxmReg0 header = 0x%08x, want 0x00010004", got)
+	}
+}

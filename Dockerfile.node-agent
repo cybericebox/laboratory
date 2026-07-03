@@ -39,6 +39,7 @@ COPY --from=ovs-builder /ovs-install/usr/sbin/ovsdb-server   /usr/sbin/ovsdb-ser
 COPY --from=ovs-builder /ovs-install/usr/sbin/ovs-vswitchd   /usr/sbin/ovs-vswitchd
 COPY --from=ovs-builder /ovs-install/usr/bin/ovs-vsctl       /usr/bin/ovs-vsctl
 COPY --from=ovs-builder /ovs-install/usr/bin/ovs-appctl      /usr/bin/ovs-appctl
+COPY --from=ovs-builder /ovs-install/usr/bin/ovs-ofctl       /usr/bin/ovs-ofctl
 COPY --from=ovs-builder /ovs-install/usr/bin/ovsdb-client    /usr/bin/ovsdb-client
 COPY --from=ovs-builder /ovs-install/usr/bin/ovsdb-tool      /usr/bin/ovsdb-tool
 COPY --from=ovs-builder /ovs-install/usr/share/openvswitch/  /usr/share/openvswitch/

@@ -71,10 +71,23 @@ type Client struct {
 	mapMu   sync.RWMutex
 	portMap map[string]uint32 // port name → port number
 
-	pdMu      sync.Mutex
-	pendingPD chan portDescMsg // non-nil while queryPortDesc is active
+	queryMu sync.Mutex // serialises queryPortDesc: only one PORT_DESC in flight
+
+	pdMu       sync.Mutex
+	pendingPD  chan portDescMsg // non-nil while queryPortDesc is active
+	pendingXID uint32           // xid of the in-flight PORT_DESC request
+
+	// onError, if set, is invoked for every OFPT_ERROR not consumed by a
+	// pending PORT_DESC query (e.g. a rejected FLOW_MOD). Set via SetErrorHandler.
+	onError func(xid uint32, errType, errCode uint16)
 
 	closeOnce sync.Once
+}
+
+// SetErrorHandler registers a callback for asynchronous OFPT_ERROR messages
+// (rejected FLOW_MODs, etc.). Must be set before flows are programmed.
+func (c *Client) SetErrorHandler(h func(xid uint32, errType, errCode uint16)) {
+	c.onError = h
 }
 
 // Connect connects to the OVS bridge management socket and performs the OF 1.3 handshake.
@@ -201,18 +214,27 @@ func (c *Client) readLoop() {
 			c.pdMu.Unlock()
 
 		case ofptError:
-			// Propagate to a pending PORT_DESC query; discard otherwise.
+			// Only propagate to a pending PORT_DESC query when the error's xid
+			// matches the in-flight request. Errors for other requests (e.g. a
+			// FlowMod rejected by OVS) must not fail an unrelated PORT_DESC —
+			// but they must not be silent either: FLOW_MOD is fire-and-forget,
+			// so a rejected flow would otherwise vanish without a trace.
 			if len(msg) >= 12 {
+				errXID := binary.BigEndian.Uint32(msg[4:8])
+				errType := binary.BigEndian.Uint16(msg[8:10])
+				errCode := binary.BigEndian.Uint16(msg[10:12])
 				c.pdMu.Lock()
-				if c.pendingPD != nil {
+				matchedPD := c.pendingPD != nil && errXID == c.pendingXID
+				if matchedPD {
 					select {
-					case c.pendingPD <- portDescMsg{err: fmt.Errorf("OFPT_ERROR type=%d code=%d",
-						binary.BigEndian.Uint16(msg[8:10]),
-						binary.BigEndian.Uint16(msg[10:12]))}:
+					case c.pendingPD <- portDescMsg{err: fmt.Errorf("OFPT_ERROR type=%d code=%d", errType, errCode)}:
 					default:
 					}
 				}
 				c.pdMu.Unlock()
+				if !matchedPD && c.onError != nil {
+					c.onError(errXID, errType, errCode)
+				}
 			}
 		}
 	}
@@ -241,15 +263,12 @@ func (c *Client) handshake() error {
 // queryPortDesc sends a PORT_DESC multipart request and collects the replies via the
 // channel that readLoop dispatches to. Safe to call concurrently with readLoop.
 func (c *Client) queryPortDesc() error {
+	// Serialise: OVS rejects overlapping multipart requests on one connection,
+	// and a second in-flight PORT_DESC would clobber pendingPD.
+	c.queryMu.Lock()
+	defer c.queryMu.Unlock()
+
 	ch := make(chan portDescMsg, 8)
-	c.pdMu.Lock()
-	c.pendingPD = ch
-	c.pdMu.Unlock()
-	defer func() {
-		c.pdMu.Lock()
-		c.pendingPD = nil
-		c.pdMu.Unlock()
-	}()
 
 	req := make([]byte, 16) // 8 header + 4 type+flags + 4 pad
 	putHeader(req, ofptMultipartRequest, 16)
@@ -258,8 +277,19 @@ func (c *Client) queryPortDesc() error {
 	c.writeMu.Lock()
 	xid := c.xid.Add(1)
 	binary.BigEndian.PutUint32(req[4:8], xid)
+	// Register the pending query under the write lock so the reply cannot be
+	// dispatched (and dropped) before pendingPD is set.
+	c.pdMu.Lock()
+	c.pendingPD = ch
+	c.pendingXID = xid
+	c.pdMu.Unlock()
 	_, writeErr := c.conn.Write(req)
 	c.writeMu.Unlock()
+	defer func() {
+		c.pdMu.Lock()
+		c.pendingPD = nil
+		c.pdMu.Unlock()
+	}()
 	if writeErr != nil {
 		return fmt.Errorf("send PORT_DESC request: %w", writeErr)
 	}
