@@ -1,0 +1,10 @@
+{{- /*
+The operator hardcodes its system namespace as "laboratory-system"
+(internal/names/namespaces.go): it reads the platform JWT secret from there and
+allocates the cluster VNI pool there. Installing into any other namespace makes
+JWT sync silently no-op and VNI allocation target a missing namespace. Fail loud
+at install time instead of shipping a broken deployment.
+*/ -}}
+{{- if ne .Release.Namespace "laboratory-system" }}
+{{- fail (printf "laboratory must be installed into the 'laboratory-system' namespace (got %q). Re-run with --namespace laboratory-system --create-namespace." .Release.Namespace) }}
+{{- end }}

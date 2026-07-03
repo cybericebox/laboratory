@@ -18,13 +18,13 @@ operator:
   # UDP port the VPN server listens on.
   vpnServicePort: 51820
 
-  # Base address space for all VPN subnets.
-  # Client subnet = first /24 (e.g. 10.8.0.0/24).
-  # Per-lab VPN subnets = 10.8.N.0/24, N >= 1.
-  vpnBaseNetwork: "10.8.0.0/10"
+  # Global lab network 10.128.0.0/9 is split into two non-overlapping /10 halves:
+  # VPN = 10.128.0.0/10 (10.128.0.0-10.191.255.255), internet = 10.192.0.0/10.
+  # Client subnet = first /24 (10.128.0.0/24); per-lab VPN subnets = 10.128.N.0/24, N >= 1.
+  vpnBaseNetwork: "10.128.0.0/10"
 
-  # Base address space for internet-gateway subnets.
-  inetBaseNetwork: "10.9.0.0/10"
+  # Internet-gateway half of the global network (per-lab = 10.192.N.0/24).
+  inetBaseNetwork: "10.192.0.0/10"
 
   # Comma-separated CIDRs of proxy source IPs for hostNetwork proxy (e.g. Kind).
   # Leave empty in standard clusters.

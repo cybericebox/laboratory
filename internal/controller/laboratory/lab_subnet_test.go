@@ -39,3 +39,25 @@ func TestSubnetForIndexEscapesBase(t *testing.T) {
 		t.Errorf("last in-range index must succeed: %v", err)
 	}
 }
+
+func TestVPNInetHalvesNonOverlapping(t *testing.T) {
+	// Global 10.128.0.0/9 split into VPN 10.128.0.0/10 and internet 10.192.0.0/10.
+	// For every lab index N the two /24 subnets must differ.
+	for _, n := range []uint{0, 1, 5, 254, 255, 4095} {
+		vpn, err := netutil.SubnetForIndex("10.128.0.0/10", 24, n)
+		if err != nil {
+			t.Fatalf("vpn N=%d: %v", n, err)
+		}
+		inet, err := netutil.SubnetForIndex("10.192.0.0/10", 24, n)
+		if err != nil {
+			t.Fatalf("inet N=%d: %v", n, err)
+		}
+		if vpn == inet {
+			t.Errorf("N=%d: vpn and inet subnets overlap: %s", n, vpn)
+		}
+	}
+	// First VPN /24 is the client subnet.
+	if got, _ := netutil.SubnetForIndex("10.128.0.0/10", 24, 0); got != "10.128.0.0/24" {
+		t.Errorf("client subnet = %s, want 10.128.0.0/24", got)
+	}
+}

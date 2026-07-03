@@ -22,11 +22,11 @@ type Config struct {
 	// Each CIDR is added as an ipBlock peer in the generated web-exposure NetworkPolicy.
 	// Format: comma-separated CIDR strings, e.g. "172.18.0.4/32".
 	ProxySourceCIDRs []string `env:"PROXY_SOURCE_CIDRS" envSeparator:","`
-	// VPNBaseNetwork is the base address space for per-lab VPN subnets (e.g. "10.8.0.0/16").
+	// VPNBaseNetwork is the base address space for per-lab VPN subnets, VPN half of 10.128.0.0/9 (e.g. "10.128.0.0/10").
 	// Each lab is assigned a /24 child subnet by adding its index to the base address.
-	VPNBaseNetwork string `env:"VPN_BASE_NETWORK" envDefault:"10.8.0.0/10"`
-	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets (e.g. "10.9.0.0/10").
-	InetBaseNetwork string `env:"INET_BASE_NETWORK" envDefault:"10.9.0.0/10"`
+	VPNBaseNetwork string `env:"VPN_BASE_NETWORK" envDefault:"10.128.0.0/10"`
+	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets, internet half (e.g. "10.192.0.0/10").
+	InetBaseNetwork string `env:"INET_BASE_NETWORK" envDefault:"10.192.0.0/10"`
 	// DHCPDNS is the DNS server address advertised to WireGuard clients via DHCP option (optional).
 	DHCPDNS string `env:"DHCP_DNS"`
 	// VPNImage is the container image for per-LabGroup VPN pods.
