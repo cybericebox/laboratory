@@ -1,0 +1,31 @@
+# Scenario 2: L2 cross-node — two containers on different nodes via VXLAN
+# With ctrl + worker nodes the scheduler should spread them; verify with kubectl get pods -o wide
+apiVersion: laboratory.cybericebox.com/v1alpha1
+kind: Lab
+metadata:
+  name: ctf-test2
+  namespace: ${LAB_NS}
+spec:
+  devices:
+  - name: node-a
+    type: container
+    image: alpine:3.20
+    interfaces:
+    - name: eth1
+      addr:
+        type: static
+        ip: 10.10.2.10/24
+  - name: node-b
+    type: container
+    image: alpine:3.20
+    interfaces:
+    - name: eth1
+      addr:
+        type: static
+        ip: 10.10.2.20/24
+  connections:
+  - endpoints:
+    - device: node-a
+      interface: eth1
+    - device: node-b
+      interface: eth1

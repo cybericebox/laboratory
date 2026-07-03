@@ -11,12 +11,12 @@ import (
 )
 
 type L7Config struct {
-	TLSCertPath        string `env:"TLS_CERT_PATH,required"`
-	TLSKeyPath         string `env:"TLS_KEY_PATH,required"`
-	JWTPublicKeyPath   string `env:"JWT_PUBLIC_KEY_PATH,required"`
-	BaseDomain         string `env:"BASE_DOMAIN,required"`
-	Listen             string `env:"LISTEN_HTTPS"  envDefault:":443"`
-	CookieName         string `env:"COOKIE_NAME"   envDefault:"challenge"`
+	TLSCertPath      string `env:"TLS_CERT_PATH,required"`
+	TLSKeyPath       string `env:"TLS_KEY_PATH,required"`
+	JWTPublicKeyPath string `env:"JWT_PUBLIC_KEY_PATH,required"`
+	BaseDomain       string `env:"BASE_DOMAIN,required"`
+	Listen           string `env:"LISTEN_HTTPS"  envDefault:":443"`
+	CookieName       string `env:"COOKIE_NAME"   envDefault:"challenge"`
 }
 
 type WGConfig struct {

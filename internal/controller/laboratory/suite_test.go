@@ -38,6 +38,7 @@ import (
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -92,8 +93,8 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
 
-	// lab-system namespace is required by the VNI pool allocator (vniPoolNS).
-	labSystemNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "lab-system"}}
+	// The operator system namespace is required by the VNI pool allocator.
+	labSystemNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: names.SystemNamespace}}
 	Expect(k8sClient.Create(ctx, labSystemNS)).To(Succeed())
 
 	// Manager runs LabGroup/Lab reconcilers so async Eventually-based tests work.
@@ -105,20 +106,27 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	err = (&LabGroupReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		VPNBaseNetwork:  "10.8.0.0/10",
+		InetBaseNetwork: "10.9.0.0/10",
+		VPNImage:        "cybericebox/laboratory-lab:latest",
+		GatewayImage:    "cybericebox/laboratory-lab:latest",
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
 	err = (&LabGroupClientReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		VPNBaseNetwork: "10.8.0.0/10",
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
 	err = (&LabReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		VPNBaseNetwork:  "10.8.0.0/10",
+		InetBaseNetwork: "10.9.0.0/10",
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 

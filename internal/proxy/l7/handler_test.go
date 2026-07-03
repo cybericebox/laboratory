@@ -1,27 +1,33 @@
 package l7
 
 import (
-	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/base64"
-	"encoding/json"
+	"crypto/rsa"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
-func makeToken(t *testing.T, priv ed25519.PrivateKey, groupID string) string {
+func makeToken(t *testing.T, priv *rsa.PrivateKey, groupID string) string {
 	t.Helper()
-	payload := map[string]interface{}{"group_id": groupID, "exp": time.Now().Add(time.Hour).Unix()}
-	raw, _ := json.Marshal(payload)
-	sig := ed25519.Sign(priv, raw)
-	return base64.StdEncoding.EncodeToString(raw) + "." + base64.StdEncoding.EncodeToString(sig)
+	token, err := jwt.NewWithClaims(jwt.SigningMethodRS256, jwtClaims{
+		GroupID: groupID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		},
+	}).SignedString(priv)
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+	return token
 }
 
 func TestHandler_StripsCookie(t *testing.T) {
-	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
 
 	var gotCookieHeader string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -34,7 +40,7 @@ func TestHandler_StripsCookie(t *testing.T) {
 		return backend.URL, nil
 	}
 
-	h := NewHandler(pub, "challenges.example.com", "challenge", resolver)
+	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, "challenges.example.com", "challenge", resolver)
 
 	req := httptest.NewRequest("GET", "http://mytask.challenges.example.com/path", nil)
 	req.Host = "mytask.challenges.example.com"
@@ -56,8 +62,8 @@ func TestHandler_StripsCookie(t *testing.T) {
 }
 
 func TestHandler_InvalidHost(t *testing.T) {
-	pub, _, _ := ed25519.GenerateKey(rand.Reader)
-	h := NewHandler(pub, "challenges.example.com", "challenge", nil)
+	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, "challenges.example.com", "challenge", nil)
 
 	req := httptest.NewRequest("GET", "http://evil.com/", nil)
 	req.Host = "evil.com"

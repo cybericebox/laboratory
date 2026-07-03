@@ -6,42 +6,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/vishvananda/netlink"
 )
-
-// FindPodNetNS scans procRoot to find the netns path for a pod by matching its UID in cgroup entries.
-func FindPodNetNS(procRoot, podUID string) (string, error) {
-	return findPodNetNSIn(procRoot, podUID)
-}
-
-func findPodNetNSIn(procRoot, podUID string) (string, error) {
-	entries, err := os.ReadDir(procRoot)
-	if err != nil {
-		return "", fmt.Errorf("read %s: %w", procRoot, err)
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		if _, err := strconv.Atoi(e.Name()); err != nil {
-			continue
-		}
-		cgroup, err := os.ReadFile(filepath.Join(procRoot, e.Name(), "cgroup"))
-		if err != nil {
-			continue
-		}
-		cgroupStr := string(cgroup)
-		if strings.Contains(cgroupStr, podUID) || strings.Contains(cgroupStr, strings.ReplaceAll(podUID, "-", "_")) {
-			return filepath.Join(procRoot, e.Name(), "ns", "net"), nil
-		}
-	}
-	return "", fmt.Errorf("pod %s netns not found in %s", podUID, procRoot)
-}
 
 // WaitForLink polls until the named link appears in the current netns or the deadline passes.
 func WaitForLink(name string, timeout time.Duration) error {
@@ -63,10 +32,20 @@ func SetMACInNetNS(netnsPath, ifaceName, mac string) error {
 }
 
 // MoveToNetNS moves an interface from the host netns to the target netns by path.
+// Uses netlink directly to avoid iproute2 versions that reject absolute paths in
+// "ip link set netns <path>".
 func MoveToNetNS(ifaceName, netnsPath string) error {
-	out, err := exec.Command("ip", "link", "set", ifaceName, "netns", netnsPath).CombinedOutput()
+	link, err := netlink.LinkByName(ifaceName)
 	if err != nil {
-		return fmt.Errorf("ip link set %s netns %s: %w: %s", ifaceName, netnsPath, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("find link %s: %w", ifaceName, err)
+	}
+	f, err := os.Open(netnsPath)
+	if err != nil {
+		return fmt.Errorf("open netns %s: %w", netnsPath, err)
+	}
+	defer f.Close()
+	if err := netlink.LinkSetNsFd(link, int(f.Fd())); err != nil {
+		return fmt.Errorf("move %s to netns %s: %w", ifaceName, netnsPath, err)
 	}
 	return nil
 }

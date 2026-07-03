@@ -89,15 +89,16 @@ func TestBuildActionsSetFieldTunnelID_Encoding(t *testing.T) {
 
 func TestBuildActionsGroupNormal_Encoding(t *testing.T) {
 	a := BuildActionsGroupNormal()
-	// OFPAT_GROUP: type=22(2) + len=8(2) + group_id=OFPG_NORMAL(4) = 8 bytes
-	if len(a) != 8 {
-		t.Errorf("group action len = %d, want 8", len(a))
+	// OFPAT_OUTPUT to OFPP_NORMAL: type=0(2) + len=16(2) + port(4) + max_len(2) + pad(6) = 16 bytes.
+	// OFPAT_GROUP with OFPG_NORMAL is not supported by OVS; OFPP_NORMAL output is the equivalent.
+	if len(a) != 16 {
+		t.Errorf("normal action len = %d, want 16", len(a))
 	}
-	if binary.BigEndian.Uint16(a[0:2]) != 22 {
-		t.Errorf("action type = %d, want 22 (OFPAT_GROUP)", binary.BigEndian.Uint16(a[0:2]))
+	if binary.BigEndian.Uint16(a[0:2]) != 0 {
+		t.Errorf("action type = %d, want 0 (OFPAT_OUTPUT)", binary.BigEndian.Uint16(a[0:2]))
 	}
-	if binary.BigEndian.Uint32(a[4:8]) != 0xfffffffc {
-		t.Errorf("group_id = 0x%08x, want 0xfffffffc (OFPG_NORMAL)", binary.BigEndian.Uint32(a[4:8]))
+	if binary.BigEndian.Uint32(a[4:8]) != 0xfffffffa {
+		t.Errorf("port = 0x%08x, want 0xfffffffa (OFPP_NORMAL)", binary.BigEndian.Uint32(a[4:8]))
 	}
 }
 

@@ -38,6 +38,7 @@ type DeviceTemplate struct {
 // ConnectionTemplate is an inline connection declaration inside Lab.spec.connections[].
 type ConnectionTemplate struct {
 	// +kubebuilder:validation:MinItems=2
+	// +kubebuilder:validation:MaxItems=2
 	Endpoints []EndpointSpec `json:"endpoints"`
 }
 

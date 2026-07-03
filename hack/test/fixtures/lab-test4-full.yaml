@@ -1,0 +1,66 @@
+# Scenario 4: Full lab — VPN + internet gateway + switch + DHCP
+#
+# Broadcast domain 1 (VPN):
+#   vpn  <--p2p-->  vpn-client.eth1
+#   vpn-client gets IP from VPN segment DHCP
+#
+# Broadcast domain 2 (internet via switch):
+#   internet  <-->  sw1  <-->  gw-client-a.eth1
+#                        <-->  gw-client-b.eth1
+#   gw-client-a / gw-client-b get IPs from internet gateway DHCP
+apiVersion: laboratory.cybericebox.com/v1alpha1
+kind: Lab
+metadata:
+  name: ctf-test4
+  namespace: ${LAB_NS}
+spec:
+  vpn:
+    enabled: true
+    dhcpServer:
+      enabled: true
+  internet:
+    enabled: true
+    dhcpServer:
+      enabled: true
+  devices:
+  - name: vpn-client
+    type: container
+    image: alpine:3.20
+    interfaces:
+    - name: eth1
+      addr:
+        type: dhcp
+  - name: sw1
+    type: unmanaged-switch
+  - name: gw-client-a
+    type: container
+    image: alpine:3.20
+    interfaces:
+    - name: eth1
+      addr:
+        type: dhcp
+  - name: gw-client-b
+    type: container
+    image: alpine:3.20
+    interfaces:
+    - name: eth1
+      addr:
+        type: dhcp
+  connections:
+  # Domain 1: direct VPN ↔ vpn-client
+  - endpoints:
+    - device: vpn
+    - device: vpn-client
+      interface: eth1
+  # Domain 2: internet gateway via switch
+  - endpoints:
+    - device: internet
+    - device: sw1
+  - endpoints:
+    - device: sw1
+    - device: gw-client-a
+      interface: eth1
+  - endpoints:
+    - device: sw1
+    - device: gw-client-b
+      interface: eth1

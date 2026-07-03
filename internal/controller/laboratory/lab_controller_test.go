@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
 )
 
 var _ = Describe("Lab controller", func() {
@@ -25,8 +26,12 @@ var _ = Describe("Lab controller", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: "lab-sqli", Namespace: ns},
 			Spec: laboratoryv1alpha1.LabSpec{
 				Devices: []laboratoryv1alpha1.DeviceTemplate{
-					{Name: "router1", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx:latest"},
-					{Name: "target1", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx:latest"},
+					{Name: "router1", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx:latest",
+						Interfaces: []laboratoryv1alpha1.InterfaceSpec{{Name: "eth0",
+							Addr: laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeDHCP}}}},
+					{Name: "target1", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx:latest",
+						Interfaces: []laboratoryv1alpha1.InterfaceSpec{{Name: "eth0",
+							Addr: laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeDHCP}}}},
 				},
 				Connections: []laboratoryv1alpha1.ConnectionTemplate{
 					{Endpoints: []laboratoryv1alpha1.EndpointSpec{
@@ -41,14 +46,14 @@ var _ = Describe("Lab controller", func() {
 			// Clear OVS finalizers from Devices and Connections so they can be GC'd.
 			var devList laboratoryv1alpha1.DeviceList
 			_ = k8sClient.List(ctx, &devList, client.InNamespace(ns),
-				client.MatchingLabels{laboratoryv1alpha1.LabelLab: "lab-sqli"})
+				client.MatchingLabels{names.LabelLab: "lab-sqli"})
 			for i := range devList.Items {
 				devList.Items[i].Finalizers = nil
 				_ = k8sClient.Update(ctx, &devList.Items[i])
 			}
 			var connList laboratoryv1alpha1.ConnectionList
 			_ = k8sClient.List(ctx, &connList, client.InNamespace(ns),
-				client.MatchingLabels{laboratoryv1alpha1.LabelLab: "lab-sqli"})
+				client.MatchingLabels{names.LabelLab: "lab-sqli"})
 			for i := range connList.Items {
 				connList.Items[i].Finalizers = nil
 				_ = k8sClient.Update(ctx, &connList.Items[i])
@@ -64,7 +69,7 @@ var _ = Describe("Lab controller", func() {
 		Eventually(func() int {
 			var list laboratoryv1alpha1.DeviceList
 			_ = k8sClient.List(ctx, &list, client.InNamespace(ns),
-				client.MatchingLabels{laboratoryv1alpha1.LabelLab: "lab-sqli"})
+				client.MatchingLabels{names.LabelLab: "lab-sqli"})
 			return len(list.Items)
 		}, timeout, interval).Should(Equal(2))
 
@@ -72,7 +77,7 @@ var _ = Describe("Lab controller", func() {
 		Eventually(func() int {
 			var list laboratoryv1alpha1.ConnectionList
 			_ = k8sClient.List(ctx, &list, client.InNamespace(ns),
-				client.MatchingLabels{laboratoryv1alpha1.LabelLab: "lab-sqli"})
+				client.MatchingLabels{names.LabelLab: "lab-sqli"})
 			return len(list.Items)
 		}, timeout, interval).Should(Equal(1))
 
@@ -80,7 +85,7 @@ var _ = Describe("Lab controller", func() {
 		Eventually(func() bool {
 			var list laboratoryv1alpha1.ConnectionList
 			_ = k8sClient.List(ctx, &list, client.InNamespace(ns),
-				client.MatchingLabels{laboratoryv1alpha1.LabelLab: "lab-sqli"})
+				client.MatchingLabels{names.LabelLab: "lab-sqli"})
 			if len(list.Items) == 0 {
 				return false
 			}
@@ -101,7 +106,7 @@ var _ = Describe("Lab controller", func() {
 		DeferCleanup(func() {
 			var devList laboratoryv1alpha1.DeviceList
 			_ = k8sClient.List(ctx, &devList, client.InNamespace(ns),
-				client.MatchingLabels{laboratoryv1alpha1.LabelLab: "vni-test"})
+				client.MatchingLabels{names.LabelLab: "vni-test"})
 			for i := range devList.Items {
 				devList.Items[i].Finalizers = nil
 				_ = k8sClient.Update(ctx, &devList.Items[i])
@@ -155,7 +160,7 @@ var _ = Describe("Lab controller", func() {
 		// No Device or Connection CRDs must be created for a cyclic topology.
 		var devList laboratoryv1alpha1.DeviceList
 		Expect(k8sClient.List(ctx, &devList, client.InNamespace(ns),
-			client.MatchingLabels{laboratoryv1alpha1.LabelLab: "lab-cycle"})).To(Succeed())
+			client.MatchingLabels{names.LabelLab: "lab-cycle"})).To(Succeed())
 		Expect(devList.Items).To(BeEmpty())
 	})
 })

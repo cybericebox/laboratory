@@ -97,22 +97,25 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: status.hostIP
-        - name: PROC_ROOT
-          value: {{ .Values.nodeAgent.procRoot | quote }}
+        - name: CRI_SOCK
+          value: {{ .Values.nodeAgent.criSocket | quote }}
         securityContext:
           capabilities:
-            add: [NET_ADMIN, SYS_ADMIN, SYS_PTRACE]
+            add: [NET_ADMIN, SYS_ADMIN]
+            drop: [ALL]
         volumeMounts:
         - name: ovs-run
           mountPath: /run/openvswitch
         - name: grpc-dir
           mountPath: /run/cybericebox
-        - name: host-proc
-          mountPath: /host/proc
-          readOnly: true
+        - name: cri-sock
+          mountPath: {{ .Values.nodeAgent.criSocket | quote }}
         - name: host-netns
           mountPath: /run/netns
-          readOnly: true
+          # HostToContainer: propagate netns bind-mounts (cni-XXX) created on the
+          # host after this container starts. Without it the container sees an empty
+          # mountpoint instead of nsfs, and LinkSetNsFd fails with EINVAL.
+          mountPropagation: HostToContainer
       volumes:
       - name: cni-bin
         hostPath:
@@ -128,10 +131,10 @@ spec:
         hostPath:
           path: /run/cybericebox
           type: DirectoryOrCreate
-      - name: host-proc
+      - name: cri-sock
         hostPath:
-          path: /proc
-          type: Directory
+          path: {{ .Values.nodeAgent.criSocket }}
+          type: Socket
       - name: host-netns
         hostPath:
           path: /run/netns

@@ -56,7 +56,7 @@ func main() {
 	}
 	defer flows.Close()
 
-	grpcSrv := nodeagent.NewNodeAgentServer(ovs)
+	grpcSrv := nodeagent.NewNodeAgentServer(ovs, flows)
 	gs, err := nodeagent.StartGRPCServer(cfg.GRPCSock, grpcSrv)
 	if err != nil {
 		log.Error(err, "start gRPC server")
@@ -94,7 +94,6 @@ func main() {
 		NodeAddress: nodeAddr,
 		OVS:         ovs,
 		Flows:       flows,
-		ProcRoot:    cfg.ProcRoot,
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "setup ConnectionReconciler")
 		os.Exit(1)
@@ -104,8 +103,8 @@ func main() {
 		Client:   mgr.GetClient(),
 		NodeName: cfg.NodeName,
 		OVS:      ovs,
-		Server:   grpcSrv,
-		ProcRoot: cfg.ProcRoot,
+		Flows:    flows,
+		CRISock:  cfg.CRISock,
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "setup NetworkAttachReconciler")
 		os.Exit(1)

@@ -52,6 +52,18 @@ func (f *FlowManager) portNo(name string) (uint32, error) {
 	return no, nil
 }
 
+// refreshPorts re-queries PORT_DESC before an operation that resolves port names.
+// OVS recycles ofport numbers when a port is deleted and re-created under the
+// same name (veth recovery paths do exactly that), so a cache hit alone can
+// return a number that now belongs to a different interface. Every public
+// operation refreshes first to program flows against current numbers.
+func (f *FlowManager) refreshPorts() error {
+	if err := f.client.RefreshPorts(); err != nil {
+		return fmt.Errorf("refresh port map: %w", err)
+	}
+	return nil
+}
+
 // InitGeneveIngress installs the permanent t0 entry for the shared Geneve port:
 //
 //	t0, priority=100, in_port=GENEVE → set reg0=1, move tun_id→metadata, resubmit(,6)
@@ -59,6 +71,9 @@ func (f *FlowManager) portNo(name string) (uint32, error) {
 // Safe to call multiple times; OFPFC_ADD replaces the existing entry.
 // Must be called after AddGenevePort so the port is visible to OVS.
 func (f *FlowManager) InitGeneveIngress() error {
+	if err := f.refreshPorts(); err != nil {
+		return err
+	}
 	geneveNo, err := f.portNo(GenevePort)
 	if err != nil {
 		return fmt.Errorf("resolve geneve port: %w", err)
@@ -80,6 +95,9 @@ func (f *FlowManager) InitGeneveIngress() error {
 //
 // Idempotent: deletes any existing t0 entry for this port before adding.
 func (f *FlowManager) AddT0Port(portName string, vni uint) error {
+	if err := f.refreshPorts(); err != nil {
+		return err
+	}
 	portNo, err := f.portNo(portName)
 	if err != nil {
 		return fmt.Errorf("resolve port %q: %w", portName, err)
@@ -98,6 +116,9 @@ func (f *FlowManager) AddT0Port(portName string, vni uint) error {
 // DelT0Port removes the t0 entry for portName.
 // No-op if the port is already gone from the port map.
 func (f *FlowManager) DelT0Port(portName string) error {
+	if err := f.refreshPorts(); err != nil {
+		return err
+	}
 	portNo, err := f.portNo(portName)
 	if err != nil {
 		return nil // port already absent — nothing to delete
@@ -118,6 +139,9 @@ func (f *FlowManager) RebuildT6Flood(vni uint, localPorts, remoteVTEPs []string)
 	}
 	if len(localPorts) == 0 {
 		return nil
+	}
+	if err := f.refreshPorts(); err != nil {
+		return err
 	}
 
 	localNos := make([]uint32, 0, len(localPorts))

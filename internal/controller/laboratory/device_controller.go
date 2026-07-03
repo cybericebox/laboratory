@@ -96,10 +96,9 @@ func (r *DeviceReconciler) reconcilePod(ctx context.Context, device *laboratoryv
 }
 
 // deviceNetworkAnnotation builds the network.cybericebox.com/networks annotation value.
+// Lists OVS attachments only; default k8s network is controlled by AnnotationDefaultNetwork.
 // Format per entry: "iface@[connection][|MAC]"
 // At pod creation time we don't know the Connection name yet, so entries are "iface@" or "iface@|MAC".
-// ConnectionReconciler/NetworkAttachReconciler fill in the connection name later.
-// The "@default" suffix is reserved for the Kubernetes default network (handled by cni-gate).
 func deviceNetworkAnnotation(device *laboratoryv1alpha1.Device) string {
 	var entries []string
 	for _, iface := range device.Spec.Interfaces {
@@ -109,13 +108,20 @@ func deviceNetworkAnnotation(device *laboratoryv1alpha1.Device) string {
 		}
 		entries = append(entries, entry)
 	}
-	if device.Spec.Exposure != nil {
-		entries = append(entries, "accessport@default")
-	}
 	return strings.Join(entries, ",")
 }
 
 func (r *DeviceReconciler) createPod(ctx context.Context, device *laboratoryv1alpha1.Device) error {
+	annotations := map[string]string{
+		names.AnnotationDevice:   device.Spec.Name,
+		names.AnnotationNetworks: deviceNetworkAnnotation(device),
+	}
+	if device.Spec.Exposure != nil {
+		annotations[names.AnnotationDefaultNetwork] = names.AccessPortIface
+	} else if len(device.Spec.Interfaces) > 0 {
+		annotations[names.AnnotationDefaultNetwork] = ""
+	}
+
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      device.Name,
@@ -125,10 +131,7 @@ func (r *DeviceReconciler) createPod(ctx context.Context, device *laboratoryv1al
 				"app":             device.Spec.Name,
 				names.LabelDevice: device.Spec.Name,
 			},
-			Annotations: map[string]string{
-				names.AnnotationDevice:   device.Spec.Name,
-				names.AnnotationNetworks: deviceNetworkAnnotation(device),
-			},
+			Annotations: annotations,
 		},
 		Spec: corev1.PodSpec{
 			NodeSelector: r.LabNodeSelector,

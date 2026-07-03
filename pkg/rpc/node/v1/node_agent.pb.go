@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v7.35.0
-// source: api/node/v1/node_agent.proto
+// source: node_agent.proto
 
 package v1
 
@@ -35,7 +35,7 @@ type AddPortRequest struct {
 
 func (x *AddPortRequest) Reset() {
 	*x = AddPortRequest{}
-	mi := &file_api_node_v1_node_agent_proto_msgTypes[0]
+	mi := &file_node_agent_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -47,7 +47,7 @@ func (x *AddPortRequest) String() string {
 func (*AddPortRequest) ProtoMessage() {}
 
 func (x *AddPortRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_node_v1_node_agent_proto_msgTypes[0]
+	mi := &file_node_agent_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -60,7 +60,7 @@ func (x *AddPortRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddPortRequest.ProtoReflect.Descriptor instead.
 func (*AddPortRequest) Descriptor() ([]byte, []int) {
-	return file_api_node_v1_node_agent_proto_rawDescGZIP(), []int{0}
+	return file_node_agent_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *AddPortRequest) GetPodUid() string {
@@ -108,7 +108,7 @@ type AddPortResponse struct {
 
 func (x *AddPortResponse) Reset() {
 	*x = AddPortResponse{}
-	mi := &file_api_node_v1_node_agent_proto_msgTypes[1]
+	mi := &file_node_agent_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -120,7 +120,7 @@ func (x *AddPortResponse) String() string {
 func (*AddPortResponse) ProtoMessage() {}
 
 func (x *AddPortResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_node_v1_node_agent_proto_msgTypes[1]
+	mi := &file_node_agent_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -133,7 +133,7 @@ func (x *AddPortResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddPortResponse.ProtoReflect.Descriptor instead.
 func (*AddPortResponse) Descriptor() ([]byte, []int) {
-	return file_api_node_v1_node_agent_proto_rawDescGZIP(), []int{1}
+	return file_node_agent_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *AddPortResponse) GetPortId() string {
@@ -159,7 +159,7 @@ type DeletePortRequest struct {
 
 func (x *DeletePortRequest) Reset() {
 	*x = DeletePortRequest{}
-	mi := &file_api_node_v1_node_agent_proto_msgTypes[2]
+	mi := &file_node_agent_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -171,7 +171,7 @@ func (x *DeletePortRequest) String() string {
 func (*DeletePortRequest) ProtoMessage() {}
 
 func (x *DeletePortRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_node_v1_node_agent_proto_msgTypes[2]
+	mi := &file_node_agent_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -184,7 +184,7 @@ func (x *DeletePortRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeletePortRequest.ProtoReflect.Descriptor instead.
 func (*DeletePortRequest) Descriptor() ([]byte, []int) {
-	return file_api_node_v1_node_agent_proto_rawDescGZIP(), []int{2}
+	return file_node_agent_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *DeletePortRequest) GetPodUid() string {
@@ -205,7 +205,7 @@ type GetPodAnnotationRequest struct {
 
 func (x *GetPodAnnotationRequest) Reset() {
 	*x = GetPodAnnotationRequest{}
-	mi := &file_api_node_v1_node_agent_proto_msgTypes[3]
+	mi := &file_node_agent_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -217,7 +217,7 @@ func (x *GetPodAnnotationRequest) String() string {
 func (*GetPodAnnotationRequest) ProtoMessage() {}
 
 func (x *GetPodAnnotationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_node_v1_node_agent_proto_msgTypes[3]
+	mi := &file_node_agent_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -230,7 +230,7 @@ func (x *GetPodAnnotationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPodAnnotationRequest.ProtoReflect.Descriptor instead.
 func (*GetPodAnnotationRequest) Descriptor() ([]byte, []int) {
-	return file_api_node_v1_node_agent_proto_rawDescGZIP(), []int{3}
+	return file_node_agent_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *GetPodAnnotationRequest) GetNamespace() string {
@@ -264,7 +264,7 @@ type GetPodAnnotationResponse struct {
 
 func (x *GetPodAnnotationResponse) Reset() {
 	*x = GetPodAnnotationResponse{}
-	mi := &file_api_node_v1_node_agent_proto_msgTypes[4]
+	mi := &file_node_agent_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -276,7 +276,7 @@ func (x *GetPodAnnotationResponse) String() string {
 func (*GetPodAnnotationResponse) ProtoMessage() {}
 
 func (x *GetPodAnnotationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_node_v1_node_agent_proto_msgTypes[4]
+	mi := &file_node_agent_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -289,7 +289,7 @@ func (x *GetPodAnnotationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPodAnnotationResponse.ProtoReflect.Descriptor instead.
 func (*GetPodAnnotationResponse) Descriptor() ([]byte, []int) {
-	return file_api_node_v1_node_agent_proto_rawDescGZIP(), []int{4}
+	return file_node_agent_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *GetPodAnnotationResponse) GetValue() string {
@@ -306,11 +306,127 @@ func (x *GetPodAnnotationResponse) GetFound() bool {
 	return false
 }
 
-var File_api_node_v1_node_agent_proto protoreflect.FileDescriptor
+type SetupNetworksRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	PodUid        string                 `protobuf:"bytes,3,opt,name=pod_uid,json=podUid,proto3" json:"pod_uid,omitempty"`
+	NetnsPath     string                 `protobuf:"bytes,4,opt,name=netns_path,json=netnsPath,proto3" json:"netns_path,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
 
-const file_api_node_v1_node_agent_proto_rawDesc = "" +
+func (x *SetupNetworksRequest) Reset() {
+	*x = SetupNetworksRequest{}
+	mi := &file_node_agent_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetupNetworksRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetupNetworksRequest) ProtoMessage() {}
+
+func (x *SetupNetworksRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_node_agent_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetupNetworksRequest.ProtoReflect.Descriptor instead.
+func (*SetupNetworksRequest) Descriptor() ([]byte, []int) {
+	return file_node_agent_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *SetupNetworksRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *SetupNetworksRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SetupNetworksRequest) GetPodUid() string {
+	if x != nil {
+		return x.PodUid
+	}
+	return ""
+}
+
+func (x *SetupNetworksRequest) GetNetnsPath() string {
+	if x != nil {
+		return x.NetnsPath
+	}
+	return ""
+}
+
+type SetupNetworksResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// How cni-gate should handle the default k8s interface (eth0).
+	// "real"  — delegate to k8s CNI normally (no annotation or annotation == "eth0")
+	// "stub"  — stub eth0 only; all OVS interfaces already wired
+	// other   — access interface name; delegate k8s CNI to that iface + stub eth0
+	DefaultNetwork string `protobuf:"bytes,1,opt,name=default_network,json=defaultNetwork,proto3" json:"default_network,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *SetupNetworksResponse) Reset() {
+	*x = SetupNetworksResponse{}
+	mi := &file_node_agent_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetupNetworksResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetupNetworksResponse) ProtoMessage() {}
+
+func (x *SetupNetworksResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_node_agent_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetupNetworksResponse.ProtoReflect.Descriptor instead.
+func (*SetupNetworksResponse) Descriptor() ([]byte, []int) {
+	return file_node_agent_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *SetupNetworksResponse) GetDefaultNetwork() string {
+	if x != nil {
+		return x.DefaultNetwork
+	}
+	return ""
+}
+
+var File_node_agent_proto protoreflect.FileDescriptor
+
+const file_node_agent_proto_rawDesc = "" +
 	"\n" +
-	"\x1capi/node/v1/node_agent.proto\x12\anode.v1\x1a\x1bgoogle/protobuf/empty.proto\"\xad\x01\n" +
+	"\x10node_agent.proto\x12\anode.v1\x1a\x1bgoogle/protobuf/empty.proto\"\xad\x01\n" +
 	"\x0eAddPortRequest\x12\x17\n" +
 	"\apod_uid\x18\x01 \x01(\tR\x06podUid\x12\x1e\n" +
 	"\n" +
@@ -331,68 +447,81 @@ const file_api_node_v1_node_agent_proto_rawDesc = "" +
 	"\x03key\x18\x03 \x01(\tR\x03key\"F\n" +
 	"\x18GetPodAnnotationResponse\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\tR\x05value\x12\x14\n" +
-	"\x05found\x18\x02 \x01(\bR\x05found2\xe4\x01\n" +
-	"\tNodeAgent\x12<\n" +
+	"\x05found\x18\x02 \x01(\bR\x05found\"\x80\x01\n" +
+	"\x14SetupNetworksRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x17\n" +
+	"\apod_uid\x18\x03 \x01(\tR\x06podUid\x12\x1d\n" +
+	"\n" +
+	"netns_path\x18\x04 \x01(\tR\tnetnsPath\"@\n" +
+	"\x15SetupNetworksResponse\x12'\n" +
+	"\x0fdefault_network\x18\x01 \x01(\tR\x0edefaultNetwork2\xb4\x02\n" +
+	"\tNodeAgent\x12N\n" +
+	"\rSetupNetworks\x12\x1d.node.v1.SetupNetworksRequest\x1a\x1e.node.v1.SetupNetworksResponse\x12<\n" +
 	"\aAddPort\x12\x17.node.v1.AddPortRequest\x1a\x18.node.v1.AddPortResponse\x12@\n" +
 	"\n" +
 	"DeletePort\x12\x1a.node.v1.DeletePortRequest\x1a\x16.google.protobuf.Empty\x12W\n" +
 	"\x10GetPodAnnotation\x12 .node.v1.GetPodAnnotationRequest\x1a!.node.v1.GetPodAnnotationResponseB/Z-github.com/cybericebox/laboratory/api/node/v1b\x06proto3"
 
 var (
-	file_api_node_v1_node_agent_proto_rawDescOnce sync.Once
-	file_api_node_v1_node_agent_proto_rawDescData []byte
+	file_node_agent_proto_rawDescOnce sync.Once
+	file_node_agent_proto_rawDescData []byte
 )
 
-func file_api_node_v1_node_agent_proto_rawDescGZIP() []byte {
-	file_api_node_v1_node_agent_proto_rawDescOnce.Do(func() {
-		file_api_node_v1_node_agent_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_api_node_v1_node_agent_proto_rawDesc), len(file_api_node_v1_node_agent_proto_rawDesc)))
+func file_node_agent_proto_rawDescGZIP() []byte {
+	file_node_agent_proto_rawDescOnce.Do(func() {
+		file_node_agent_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_node_agent_proto_rawDesc), len(file_node_agent_proto_rawDesc)))
 	})
-	return file_api_node_v1_node_agent_proto_rawDescData
+	return file_node_agent_proto_rawDescData
 }
 
-var file_api_node_v1_node_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
-var file_api_node_v1_node_agent_proto_goTypes = []any{
+var file_node_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_node_agent_proto_goTypes = []any{
 	(*AddPortRequest)(nil),           // 0: node.v1.AddPortRequest
 	(*AddPortResponse)(nil),          // 1: node.v1.AddPortResponse
 	(*DeletePortRequest)(nil),        // 2: node.v1.DeletePortRequest
 	(*GetPodAnnotationRequest)(nil),  // 3: node.v1.GetPodAnnotationRequest
 	(*GetPodAnnotationResponse)(nil), // 4: node.v1.GetPodAnnotationResponse
-	(*emptypb.Empty)(nil),            // 5: google.protobuf.Empty
+	(*SetupNetworksRequest)(nil),     // 5: node.v1.SetupNetworksRequest
+	(*SetupNetworksResponse)(nil),    // 6: node.v1.SetupNetworksResponse
+	(*emptypb.Empty)(nil),            // 7: google.protobuf.Empty
 }
-var file_api_node_v1_node_agent_proto_depIdxs = []int32{
-	0, // 0: node.v1.NodeAgent.AddPort:input_type -> node.v1.AddPortRequest
-	2, // 1: node.v1.NodeAgent.DeletePort:input_type -> node.v1.DeletePortRequest
-	3, // 2: node.v1.NodeAgent.GetPodAnnotation:input_type -> node.v1.GetPodAnnotationRequest
-	1, // 3: node.v1.NodeAgent.AddPort:output_type -> node.v1.AddPortResponse
-	5, // 4: node.v1.NodeAgent.DeletePort:output_type -> google.protobuf.Empty
-	4, // 5: node.v1.NodeAgent.GetPodAnnotation:output_type -> node.v1.GetPodAnnotationResponse
-	3, // [3:6] is the sub-list for method output_type
-	0, // [0:3] is the sub-list for method input_type
+var file_node_agent_proto_depIdxs = []int32{
+	5, // 0: node.v1.NodeAgent.SetupNetworks:input_type -> node.v1.SetupNetworksRequest
+	0, // 1: node.v1.NodeAgent.AddPort:input_type -> node.v1.AddPortRequest
+	2, // 2: node.v1.NodeAgent.DeletePort:input_type -> node.v1.DeletePortRequest
+	3, // 3: node.v1.NodeAgent.GetPodAnnotation:input_type -> node.v1.GetPodAnnotationRequest
+	6, // 4: node.v1.NodeAgent.SetupNetworks:output_type -> node.v1.SetupNetworksResponse
+	1, // 5: node.v1.NodeAgent.AddPort:output_type -> node.v1.AddPortResponse
+	7, // 6: node.v1.NodeAgent.DeletePort:output_type -> google.protobuf.Empty
+	4, // 7: node.v1.NodeAgent.GetPodAnnotation:output_type -> node.v1.GetPodAnnotationResponse
+	4, // [4:8] is the sub-list for method output_type
+	0, // [0:4] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
 }
 
-func init() { file_api_node_v1_node_agent_proto_init() }
-func file_api_node_v1_node_agent_proto_init() {
-	if File_api_node_v1_node_agent_proto != nil {
+func init() { file_node_agent_proto_init() }
+func file_node_agent_proto_init() {
+	if File_node_agent_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_node_v1_node_agent_proto_rawDesc), len(file_api_node_v1_node_agent_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_node_agent_proto_rawDesc), len(file_node_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_api_node_v1_node_agent_proto_goTypes,
-		DependencyIndexes: file_api_node_v1_node_agent_proto_depIdxs,
-		MessageInfos:      file_api_node_v1_node_agent_proto_msgTypes,
+		GoTypes:           file_node_agent_proto_goTypes,
+		DependencyIndexes: file_node_agent_proto_depIdxs,
+		MessageInfos:      file_node_agent_proto_msgTypes,
 	}.Build()
-	File_api_node_v1_node_agent_proto = out.File
-	file_api_node_v1_node_agent_proto_goTypes = nil
-	file_api_node_v1_node_agent_proto_depIdxs = nil
+	File_node_agent_proto = out.File
+	file_node_agent_proto_goTypes = nil
+	file_node_agent_proto_depIdxs = nil
 }

@@ -13,7 +13,7 @@ operator:
 
   # REQUIRED: cluster ingress base domain for device exposure URLs.
   # Example: "lab.example.com"
-  baseDomain: ""
+  baseDomain: "lab.local"
 
   # UDP port the VPN server listens on.
   vpnServicePort: 51820
@@ -152,7 +152,7 @@ certManager:
 
   # Set true to use cert-manager SelfSigned issuer (local dev, no public domain needed).
   # Set false to use ACME (Let's Encrypt) — requires a real public domain and email.
-  selfSigned: false
+  selfSigned: true
 
   # Use Let's Encrypt staging (recommended for testing).
   # Set false for production certificates.
@@ -177,7 +177,7 @@ nodeAgent:
 
   ovsSocket: "/run/openvswitch/db.sock"
   grpcSocket: "/run/cybericebox/node-agent.sock"
-  procRoot: "/host/proc"
+  criSocket: "/run/k0s/containerd.sock"
 
 # ============================================================
 # Lab workload scheduling (VPN, gateway, device pods)

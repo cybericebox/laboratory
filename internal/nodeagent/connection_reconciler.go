@@ -40,7 +40,6 @@ type ConnectionReconciler struct {
 	NodeAddress string
 	OVS         *OVSManager
 	Flows       *FlowManager
-	ProcRoot    string
 }
 
 // epInfo holds resolved endpoint state for one reconcile cycle.
@@ -92,14 +91,23 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 	}
 
 	sw0, sw1 := eps[0].isSwitch, eps[1].isSwitch
+	var res ctrl.Result
 	switch {
 	case sw0 && sw1:
-		return r.reconcileSwitchSwitch(ctx, conn, eps)
+		res, err = r.reconcileSwitchSwitch(ctx, conn, eps)
 	case sw0 || sw1:
-		return r.reconcileDeviceSwitch(ctx, conn, eps)
+		res, err = r.reconcileDeviceSwitch(ctx, conn, eps)
 	default:
-		return r.reconcileDeviceDevice(ctx, conn, eps)
+		res, err = r.reconcileDeviceDevice(ctx, conn, eps)
 	}
+	// Self-healing resync: veth recovery paths (SetupNetworks, NetworkAttach)
+	// can delete and re-create ports, after which OVS assigns new ofport numbers.
+	// Nothing requeues this Connection on such events, so periodically re-program
+	// t0/t6 (idempotent) to converge flows onto the current numbers.
+	if err == nil && res.IsZero() {
+		res.RequeueAfter = 60 * time.Second
+	}
+	return res, err
 }
 
 // reconcileDeviceDevice handles direct device-to-device connections.
@@ -564,7 +572,7 @@ func (r *ConnectionReconciler) resolveLocalPortKey(ctx context.Context, conn *la
 			}
 			return "", true, nil
 		}
-		return names.LabIfaceNameByIndex(labgw.Spec.NetworkIndex), false, nil
+		return names.GWIfaceNameByIndex(labgw.Spec.NetworkIndex), false, nil
 	default:
 		return names.DevicePortKey(conn.Namespace, ep.device.Name, ep.endpoint.Interface), false, nil
 	}

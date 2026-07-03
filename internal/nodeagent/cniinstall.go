@@ -117,9 +117,17 @@ func writeConf(confDir, agentSocket string, cniVersion, delegate interface{}) er
 	if err != nil {
 		return fmt.Errorf("marshal CNI conf: %w", err)
 	}
+	// Write to a temp file and rename: kubelet rescans confDir continuously and
+	// must never observe a half-written conflist. Rename within the same dir is
+	// atomic; the ".tmp" suffix keeps kubelet from picking the temp file up
+	// (it only reads .conf/.conflist/.json).
 	dst := filepath.Join(confDir, CNIConfFile)
-	if err := os.WriteFile(dst, data, 0644); err != nil {
-		return fmt.Errorf("write %s: %w", dst, err)
+	tmp := dst + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return fmt.Errorf("write %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		return fmt.Errorf("rename %s → %s: %w", tmp, dst, err)
 	}
 	return nil
 }

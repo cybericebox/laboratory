@@ -17,10 +17,9 @@ import (
 	"github.com/cybericebox/laboratory/internal/names"
 )
 
-// AnnotationNetworks and DefaultNetworkValue are sourced from internal/names.
 const (
-	AnnotationNetworks = names.AnnotationNetworks
-	DefaultNetworkName = names.DefaultNetworkValue
+	AnnotationNetworks       = names.AnnotationNetworks
+	AnnotationDefaultNetwork = names.AnnotationDefaultNetwork
 )
 
 // NetAttachment is one parsed entry from the networks annotation.
@@ -45,23 +44,12 @@ func ParseNetworkAnnotation(annotation string) []NetAttachment {
 			continue
 		}
 		name, mac, _ := strings.Cut(rest, "|")
-		if name == DefaultNetworkName {
+		if name == "default" {
 			continue
 		}
 		result = append(result, NetAttachment{Iface: iface, Name: name, MAC: mac})
 	}
 	return result
-}
-
-// HasDefaultEth0 reports whether the annotation requests the real Kubernetes eth0.
-func HasDefaultEth0(annotation string) bool {
-	for _, entry := range strings.Split(annotation, ",") {
-		iface, name, ok := strings.Cut(strings.TrimSpace(entry), "@")
-		if ok && iface == "eth0" && name == DefaultNetworkName {
-			return true
-		}
-	}
-	return false
 }
 
 // NetworkAttachReconciler attaches veth ports to pods based on AnnotationNetworks.
@@ -71,8 +59,19 @@ type NetworkAttachReconciler struct {
 	client.Client
 	NodeName string
 	OVS      *OVSManager
-	Server   *NodeAgentServer
-	ProcRoot string
+	Flows    *FlowManager
+	CRISock  string
+}
+
+// delVethWithFlows removes the t0 entry for a veth port BEFORE deleting the
+// port itself. OVS does not remove flows referencing a deleted port, and once
+// the port is gone its name can no longer be resolved to an ofport — the stale
+// flow would then match whichever interface OVS recycles that number to.
+func (r *NetworkAttachReconciler) delVethWithFlows(stableKey string) {
+	if r.Flows != nil {
+		_ = r.Flows.DelT0Port(stableKey)
+	}
+	_ = r.OVS.DelVethPort(stableKey)
 }
 
 func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -96,7 +95,7 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if pod.DeletionTimestamp != nil {
 		for _, att := range attachments {
 			stableKey := r.resolveOVSPort(ctx, pod.Namespace, pod.Name, att)
-			_ = r.OVS.DelVethPort(stableKey)
+			r.delVethWithFlows(stableKey)
 		}
 		return ctrl.Result{}, nil
 	}
@@ -105,19 +104,21 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
+	// Reconciler is a conformance check, not a wiring path. Ports present at pod
+	// creation are wired synchronously by SetupNetworks during CNI ADD, which
+	// completes before the pod is Running — so by the time we run, those ifaces
+	// are already in the netns and the steady-state branch below is a no-op.
+	// The reconciler only moves a veth for ports added to the annotation AFTER
+	// the pod started (vpn/gateway lab interfaces), where SetupNetworks never re-runs.
 	if pod.Status.Phase != corev1.PodRunning {
 		log.Info("NetAttach: pod not running, requeueing")
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	netnsPath, ok := r.Server.GetPodNetNS(string(pod.UID))
-	if !ok {
-		var err error
-		netnsPath, err = FindPodNetNS(r.ProcRoot, string(pod.UID))
-		if err != nil {
-			log.Error(err, "NetAttach: FindPodNetNS failed, requeueing", "procRoot", r.ProcRoot, "uid", string(pod.UID))
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-		}
+	netnsPath, err := PodNetNSFromCRI(ctx, r.CRISock, string(pod.UID))
+	if err != nil {
+		log.Info("NetAttach: sandbox not ready, requeueing", "uid", string(pod.UID), "err", err)
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	log.Info("NetAttach: got netnsPath", "netnsPath", netnsPath)
 
@@ -214,16 +215,29 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			} else {
 				// Not in root netns, not in pod netns — stale veth, recreate.
 				log.Info("NetAttach: stale veth, recreating", "key", stableKey)
-				_ = r.OVS.DelVethPort(stableKey)
+				r.delVethWithFlows(stableKey)
 				return ctrl.Result{RequeueAfter: time.Second}, nil
 			}
 		}
 	}
 
+	// No eth0 cleanup here. SetupNetworks blocks pod startup until ports are wired
+	// and returns "stub" for pods with no default network, so cni-gate never creates
+	// a real eth0 for them — only the required stub eth0. Deleting eth0 here would
+	// remove that legitimate stub.
+
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
 // resolveOVSPort returns the stable OVS port key for an attachment.
+// Device-pod attachments ("iface@" or "iface@<connection>") always map to the
+// deterministic DevicePortKey — the same key SetupNetworks creates the veth
+// under. Names that do not resolve to a Connection CRD (vpn/gateway "labN@labN"
+// entries) are literal OVS port names and are returned as-is.
+//
+// Never pick a port from Connection.Status.Ports here: a connection can have
+// two local endpoints on this node, and any "first local port" heuristic wires
+// one pod's attachment to the other pod's port.
 func (r *NetworkAttachReconciler) resolveOVSPort(ctx context.Context, namespace, podName string, att NetAttachment) string {
 	if att.Name == "" {
 		return names.DevicePortKey(namespace, podName, att.Iface)
@@ -232,12 +246,7 @@ func (r *NetworkAttachReconciler) resolveOVSPort(ctx context.Context, namespace,
 	if err := r.Get(ctx, types.NamespacedName{Name: att.Name, Namespace: namespace}, &conn); err != nil {
 		return att.Name
 	}
-	for _, p := range conn.Status.Ports {
-		if p.NodeName == r.NodeName && p.PortID != "" {
-			return p.PortID
-		}
-	}
-	return att.Name
+	return names.DevicePortKey(namespace, podName, att.Iface)
 }
 
 func (r *NetworkAttachReconciler) SetupWithManager(mgr ctrl.Manager) error {

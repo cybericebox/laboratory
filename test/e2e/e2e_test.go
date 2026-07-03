@@ -27,12 +27,11 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/test/utils"
 )
 
 // namespace where the project is deployed in
-const namespace = laboratoryv1alpha1.SystemNamespace
+const namespace = "laboratory-system"
 
 // serviceAccountName created for the project
 const serviceAccountName = "laboratory-controller-manager"

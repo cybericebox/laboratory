@@ -11,14 +11,25 @@ const (
 const (
 	// AnnotationNetworks is the pod annotation listing OVS network attachments.
 	// Format: comma-separated "iface@name[|MAC]" entries.
-	// Use "iface@default" to request the real Kubernetes CNI network on that interface.
 	AnnotationNetworks = "network.cybericebox.com/networks"
+
+	// AnnotationDefaultNetwork controls how cni-gate handles the default k8s network.
+	// Missing: regular pod — delegate eth0 to k8s CNI as normal.
+	// Empty "": no default network — cni-gate returns stub eth0 only.
+	// Non-empty: interface name to wire via k8s CNI (e.g. "accessport").
+	AnnotationDefaultNetwork = "network.cybericebox.com/default-network"
 
 	// AnnotationDevice tags a pod/resource with its logical device name.
 	AnnotationDevice = "cybericebox.com/device"
 
-	// DefaultNetworkValue is the magic connection name meaning "delegate to the k8s CNI plugin".
-	DefaultNetworkValue = "default"
+	// DefaultEth0 is the standard container ethernet interface name.
+	DefaultEth0 = "eth0"
+
+	// AccessPortIface is the reserved in-pod interface name that carries the
+	// delegated Kubernetes network for web-exposed device pods. Lab interface
+	// names must not collide with it: SetupNetworks would delete/replace the
+	// delegated interface on a kubelet CNI retry.
+	AccessPortIface = "accessport"
 )
 
 // Component names used for Deployment names, Service names, and app label values.

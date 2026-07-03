@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.2
 // - protoc             v7.35.0
-// source: api/node/v1/node_agent.proto
+// source: node_agent.proto
 
 package v1
 
@@ -20,6 +20,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	NodeAgent_SetupNetworks_FullMethodName    = "/node.v1.NodeAgent/SetupNetworks"
 	NodeAgent_AddPort_FullMethodName          = "/node.v1.NodeAgent/AddPort"
 	NodeAgent_DeletePort_FullMethodName       = "/node.v1.NodeAgent/DeletePort"
 	NodeAgent_GetPodAnnotation_FullMethodName = "/node.v1.NodeAgent/GetPodAnnotation"
@@ -29,12 +30,16 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type NodeAgentClient interface {
-	// AddPort creates an OVS internal port for a pod's lab interface and moves it into the pod netns.
+	// SetupNetworks is called by cni-gate during CNI ADD.
+	// It waits for pod annotations to appear in cache, creates OVS veth pairs for all
+	// interfaces in the networks annotation, moves pod-side vetches into the pod netns,
+	// and returns how cni-gate should handle the default k8s interface (eth0).
+	SetupNetworks(ctx context.Context, in *SetupNetworksRequest, opts ...grpc.CallOption) (*SetupNetworksResponse, error)
+	// AddPort creates a veth pair and moves the pod-side into the pod netns.
 	AddPort(ctx context.Context, in *AddPortRequest, opts ...grpc.CallOption) (*AddPortResponse, error)
 	// DeletePort removes all OVS ports associated with a pod.
 	DeletePort(ctx context.Context, in *DeletePortRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
-	// GetPodAnnotation reads a single pod annotation; the CNI plugin uses this instead of
-	// talking to the Kubernetes API directly.
+	// GetPodAnnotation reads a single pod annotation; used by cni-gate during CNI DEL.
 	GetPodAnnotation(ctx context.Context, in *GetPodAnnotationRequest, opts ...grpc.CallOption) (*GetPodAnnotationResponse, error)
 }
 
@@ -44,6 +49,16 @@ type nodeAgentClient struct {
 
 func NewNodeAgentClient(cc grpc.ClientConnInterface) NodeAgentClient {
 	return &nodeAgentClient{cc}
+}
+
+func (c *nodeAgentClient) SetupNetworks(ctx context.Context, in *SetupNetworksRequest, opts ...grpc.CallOption) (*SetupNetworksResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetupNetworksResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_SetupNetworks_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *nodeAgentClient) AddPort(ctx context.Context, in *AddPortRequest, opts ...grpc.CallOption) (*AddPortResponse, error) {
@@ -80,12 +95,16 @@ func (c *nodeAgentClient) GetPodAnnotation(ctx context.Context, in *GetPodAnnota
 // All implementations must embed UnimplementedNodeAgentServer
 // for forward compatibility.
 type NodeAgentServer interface {
-	// AddPort creates an OVS internal port for a pod's lab interface and moves it into the pod netns.
+	// SetupNetworks is called by cni-gate during CNI ADD.
+	// It waits for pod annotations to appear in cache, creates OVS veth pairs for all
+	// interfaces in the networks annotation, moves pod-side vetches into the pod netns,
+	// and returns how cni-gate should handle the default k8s interface (eth0).
+	SetupNetworks(context.Context, *SetupNetworksRequest) (*SetupNetworksResponse, error)
+	// AddPort creates a veth pair and moves the pod-side into the pod netns.
 	AddPort(context.Context, *AddPortRequest) (*AddPortResponse, error)
 	// DeletePort removes all OVS ports associated with a pod.
 	DeletePort(context.Context, *DeletePortRequest) (*emptypb.Empty, error)
-	// GetPodAnnotation reads a single pod annotation; the CNI plugin uses this instead of
-	// talking to the Kubernetes API directly.
+	// GetPodAnnotation reads a single pod annotation; used by cni-gate during CNI DEL.
 	GetPodAnnotation(context.Context, *GetPodAnnotationRequest) (*GetPodAnnotationResponse, error)
 	mustEmbedUnimplementedNodeAgentServer()
 }
@@ -97,6 +116,9 @@ type NodeAgentServer interface {
 // pointer dereference when methods are called.
 type UnimplementedNodeAgentServer struct{}
 
+func (UnimplementedNodeAgentServer) SetupNetworks(context.Context, *SetupNetworksRequest) (*SetupNetworksResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetupNetworks not implemented")
+}
 func (UnimplementedNodeAgentServer) AddPort(context.Context, *AddPortRequest) (*AddPortResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddPort not implemented")
 }
@@ -125,6 +147,24 @@ func RegisterNodeAgentServer(s grpc.ServiceRegistrar, srv NodeAgentServer) {
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&NodeAgent_ServiceDesc, srv)
+}
+
+func _NodeAgent_SetupNetworks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetupNetworksRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).SetupNetworks(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_SetupNetworks_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).SetupNetworks(ctx, req.(*SetupNetworksRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _NodeAgent_AddPort_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -189,6 +229,10 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*NodeAgentServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
+			MethodName: "SetupNetworks",
+			Handler:    _NodeAgent_SetupNetworks_Handler,
+		},
+		{
 			MethodName: "AddPort",
 			Handler:    _NodeAgent_AddPort_Handler,
 		},
@@ -202,5 +246,5 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "api/node/v1/node_agent.proto",
+	Metadata: "node_agent.proto",
 }

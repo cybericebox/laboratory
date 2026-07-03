@@ -13,7 +13,6 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
-
 // Mac1Key is the 32-byte key used to compute and verify mac1 in WireGuard handshake init.
 type Mac1Key [32]byte
 

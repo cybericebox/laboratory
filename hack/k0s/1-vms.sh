@@ -112,6 +112,10 @@ spec:
                   kubeProxyReplacement: true
                   k8sServiceHost: "${CTRL_IP}"
                   k8sServicePort: "6443"
+                  # Do not let Cilium rename competing CNI conflists (.cilium_bak).
+                  # cni-gate must stay the active CNI and delegate to cilium-cni.
+                  cni:
+                    exclusive: false
                   gatewayAPI:
                     enabled: true
                   l2announcements:

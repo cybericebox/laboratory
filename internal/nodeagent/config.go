@@ -11,7 +11,7 @@ type Config struct {
 	OVSSock  string `env:"OVS_SOCK"   envDefault:"/run/openvswitch/db.sock"`
 	GRPCSock string `env:"GRPC_SOCK"  envDefault:"/run/cybericebox/node-agent.sock"`
 	Bridge   string `env:"OVS_BRIDGE" envDefault:"br-ovs"`
-	ProcRoot string `env:"PROC_ROOT"  envDefault:"/proc"`
+	CRISock  string `env:"CRI_SOCK"   envDefault:"/run/containerd/containerd.sock"`
 }
 
 func LoadConfig() (*Config, error) {

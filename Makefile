@@ -1,10 +1,21 @@
+# Timestamp-based image tag — evaluated once at parse time, same across all targets.
+BUILD_TAG    := $(shell date +%Y%m%d-%H%M%S)
+
 # Image URL to use all building/pushing image targets
-IMG          ?= cybericebox/laboratory-controller:latest
-AGENT_IMG    ?= cybericebox/laboratory-node-agent:latest
-LAB_IMG      ?= cybericebox/laboratory-lab:latest
-PROXY_IMG    ?= cybericebox/laboratory-proxy:latest
+IMG          ?= cybericebox/laboratory-controller:$(BUILD_TAG)
+AGENT_IMG    ?= cybericebox/laboratory-node-agent:$(BUILD_TAG)
+LAB_IMG      ?= cybericebox/laboratory-lab:$(BUILD_TAG)
+PROXY_IMG    ?= cybericebox/laboratory-proxy:$(BUILD_TAG)
 
 KIND_CLUSTER_NAME ?= icebox
+
+# Lima/k0s dev cluster
+LIMA_CTRL      ?= lab-ctrl
+LIMA_WORKER    ?= lab-worker
+CHART_PATH     ?= charts/laboratory
+HELM_NS        ?= laboratory-system
+JWT_PUBLIC_KEY  ?= /tmp/jwt-public-key.pem
+JWT_PRIVATE_KEY ?= /tmp/jwt-private-key.pem
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -102,6 +113,119 @@ kind-patch-agent: ## Patch node-agent DaemonSet to use local image
 		-n laboratory-system
 	$(KUBECTL) patch daemonset laboratory-node-agent -n laboratory-system \
 		--type=json -p='[{"op":"replace","path":"/spec/template/spec/initContainers/0/imagePullPolicy","value":"Never"},{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"Never"},{"op":"replace","path":"/spec/template/spec/containers/1/imagePullPolicy","value":"Never"}]'
+
+.PHONY: kind-reload-agent
+kind-reload-agent: docker-build-agent ## Rebuild node-agent image, reload into Kind, restart DaemonSet
+	$(KIND) load docker-image $(AGENT_IMG) --name $(KIND_CLUSTER_NAME)
+	$(MAKE) kind-patch-agent
+	$(KUBECTL) rollout restart daemonset/laboratory-node-agent -n laboratory-system
+	$(KUBECTL) rollout status  daemonset/laboratory-node-agent -n laboratory-system
+
+.PHONY: kind-reload-operator
+kind-reload-operator: docker-build ## Rebuild operator image, reload into Kind, restart controller
+	$(KIND) load docker-image $(IMG) --name $(KIND_CLUSTER_NAME)
+	$(KUBECTL) patch deployment laboratory-controller-manager -n laboratory-system \
+		--type=json -p='[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"Never"}]'
+	$(KUBECTL) rollout restart deployment/laboratory-controller-manager -n laboratory-system
+	$(KUBECTL) rollout status  deployment/laboratory-controller-manager -n laboratory-system
+
+.PHONY: kind-reload-lab
+kind-reload-lab: docker-build-lab ## Rebuild lab (vpn+gateway) image, reload into Kind
+	$(KIND) load docker-image $(LAB_IMG) --name $(KIND_CLUSTER_NAME)
+	@echo "Lab image loaded. Delete VPN/gateway pods to pick up new image:"
+	@echo "  kubectl delete pods -n <namespace> -l app=vpn"
+	@echo "  kubectl delete pods -n <namespace> -l app=gateway"
+
+.PHONY: kind-reload
+kind-reload: kind-reload-operator kind-reload-agent kind-reload-lab ## Rebuild and reload all components
+
+# ── Lima / k0s helpers ────────────────────────────────────────────────────────
+# Import a single image into both Lima VMs (ctrl + worker).
+# Usage: $(call k0s-import,$(AGENT_IMG))
+define k0s-import
+	docker save $(1) | limactl shell $(LIMA_CTRL)   -- sudo k0s ctr --namespace k8s.io images import -
+	docker save $(1) | limactl shell $(LIMA_WORKER) -- sudo k0s ctr --namespace k8s.io images import -
+endef
+
+##@ Lima / k0s (dev cluster)
+
+.PHONY: k0s-deploy
+k0s-deploy: docker-build-all ## Build ALL images, import into Lima, full helm install (use on fresh cluster)
+	$(call k0s-import,$(IMG))
+	$(call k0s-import,$(AGENT_IMG))
+	$(call k0s-import,$(LAB_IMG))
+	$(call k0s-import,$(PROXY_IMG))
+	helm upgrade --install laboratory $(CHART_PATH) \
+		--namespace $(HELM_NS) --create-namespace \
+		--values $(CHART_PATH)/values.yaml \
+		--set operator.image.tag=$(BUILD_TAG) \
+		--set nodeAgent.image.tag=$(BUILD_TAG) \
+		--set vpn.image.tag=$(BUILD_TAG) \
+		--set inetGateway.image.tag=$(BUILD_TAG) \
+		--set proxy.l7.image.tag=$(BUILD_TAG) \
+		--set proxy.wg.image.tag=$(BUILD_TAG) \
+		--set-file platform.jwtPublicKey=$(JWT_PUBLIC_KEY) \
+		--wait --timeout=5m
+	@echo ""
+	@echo "✓ deployed all: $(BUILD_TAG)"
+
+.PHONY: k0s-reload-operator
+k0s-reload-operator: docker-build ## Rebuild operator, import into Lima, update image tag
+	$(call k0s-import,$(IMG))
+	helm upgrade laboratory $(CHART_PATH) \
+		--namespace $(HELM_NS) \
+		--reuse-values \
+		--set operator.image.tag=$(BUILD_TAG) \
+		--wait --timeout=3m
+	@echo ""
+	@echo "✓ operator deployed: $(IMG)"
+
+.PHONY: k0s-reload-agent
+k0s-reload-agent: docker-build-agent ## Rebuild node-agent, import into Lima, update image tag
+	$(call k0s-import,$(AGENT_IMG))
+	helm upgrade laboratory $(CHART_PATH) \
+		--namespace $(HELM_NS) \
+		--reuse-values \
+		--set nodeAgent.image.tag=$(BUILD_TAG) \
+		--wait --timeout=3m
+	@echo ""
+	@echo "✓ node-agent deployed: $(AGENT_IMG)"
+
+.PHONY: k0s-reload-lab
+k0s-reload-lab: docker-build-lab ## Rebuild lab (vpn+gateway) image, import into Lima, update image tag
+	$(call k0s-import,$(LAB_IMG))
+	helm upgrade laboratory $(CHART_PATH) \
+		--namespace $(HELM_NS) \
+		--reuse-values \
+		--set vpn.image.tag=$(BUILD_TAG) \
+		--set inetGateway.image.tag=$(BUILD_TAG)
+	@echo ""
+	@echo "✓ lab image updated: $(LAB_IMG)"
+	@echo "  Restart vpn/gateway pods to apply: kubectl delete pods -n <ns> -l app=vpn,app=gateway"
+
+.PHONY: k0s-reload-proxy
+k0s-reload-proxy: docker-build-proxy ## Rebuild proxy image, import into Lima, update image tag
+	$(call k0s-import,$(PROXY_IMG))
+	helm upgrade laboratory $(CHART_PATH) \
+		--namespace $(HELM_NS) \
+		--reuse-values \
+		--set proxy.l7.image.tag=$(BUILD_TAG) \
+		--set proxy.wg.image.tag=$(BUILD_TAG) \
+		--wait --timeout=3m
+	@echo ""
+	@echo "✓ proxy deployed: $(PROXY_IMG)"
+
+.PHONY: k0s-reload
+k0s-reload: k0s-reload-operator k0s-reload-agent k0s-reload-lab k0s-reload-proxy ## Rebuild and reload all components
+
+.PHONY: k0s-upgrade-chart
+k0s-upgrade-chart: ## Apply values.yaml changes to existing cluster (preserves current image tags)
+	helm upgrade laboratory $(CHART_PATH) \
+		--namespace $(HELM_NS) \
+		--reuse-values \
+		--values $(CHART_PATH)/values.yaml \
+		--set-file platform.jwtPublicKey=$(JWT_PUBLIC_KEY) \
+		--wait --timeout=2m
 
 .PHONY: kind-deploy
 kind-deploy: kind-load install deploy ## Full local deploy: build all + load + CRDs + controller + node-agent

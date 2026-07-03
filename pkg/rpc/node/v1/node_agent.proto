@@ -7,12 +7,16 @@ option go_package = "github.com/cybericebox/laboratory/api/node/v1";
 import "google/protobuf/empty.proto";
 
 service NodeAgent {
-  // AddPort creates an OVS internal port for a pod's lab interface and moves it into the pod netns.
+  // SetupNetworks is called by cni-gate during CNI ADD.
+  // It waits for pod annotations to appear in cache, creates OVS veth pairs for all
+  // interfaces in the networks annotation, moves pod-side vetches into the pod netns,
+  // and returns how cni-gate should handle the default k8s interface (eth0).
+  rpc SetupNetworks(SetupNetworksRequest) returns (SetupNetworksResponse);
+  // AddPort creates a veth pair and moves the pod-side into the pod netns.
   rpc AddPort(AddPortRequest) returns (AddPortResponse);
   // DeletePort removes all OVS ports associated with a pod.
   rpc DeletePort(DeletePortRequest) returns (google.protobuf.Empty);
-  // GetPodAnnotation reads a single pod annotation; the CNI plugin uses this instead of
-  // talking to the Kubernetes API directly.
+  // GetPodAnnotation reads a single pod annotation; used by cni-gate during CNI DEL.
   rpc GetPodAnnotation(GetPodAnnotationRequest) returns (GetPodAnnotationResponse);
 }
 
@@ -42,4 +46,19 @@ message GetPodAnnotationRequest {
 message GetPodAnnotationResponse {
   string value = 1;
   bool   found = 2;
+}
+
+message SetupNetworksRequest {
+  string namespace  = 1;
+  string name       = 2;
+  string pod_uid    = 3;
+  string netns_path = 4;
+}
+
+message SetupNetworksResponse {
+  // How cni-gate should handle the default k8s interface (eth0).
+  // "real"  — delegate to k8s CNI normally (no annotation or annotation == "eth0")
+  // "stub"  — stub eth0 only; all OVS interfaces already wired
+  // other   — access interface name; delegate k8s CNI to that iface + stub eth0
+  string default_network = 1;
 }

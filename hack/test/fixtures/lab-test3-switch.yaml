@@ -1,0 +1,35 @@
+# Scenario 3: unmanaged-switch — two containers bridged via L2 switch
+apiVersion: laboratory.cybericebox.com/v1alpha1
+kind: Lab
+metadata:
+  name: ctf-test3
+  namespace: ${LAB_NS}
+spec:
+  devices:
+  - name: sw1
+    type: unmanaged-switch
+  - name: host-a
+    type: container
+    image: alpine:3.20
+    interfaces:
+    - name: eth1
+      addr:
+        type: static
+        ip: 10.10.3.10/24
+  - name: host-b
+    type: container
+    image: alpine:3.20
+    interfaces:
+    - name: eth1
+      addr:
+        type: static
+        ip: 10.10.3.20/24
+  connections:
+  - endpoints:
+    - device: sw1
+    - device: host-a
+      interface: eth1
+  - endpoints:
+    - device: sw1
+    - device: host-b
+      interface: eth1

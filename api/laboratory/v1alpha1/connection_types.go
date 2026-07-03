@@ -10,6 +10,7 @@ type ConnectionSpec struct {
 	// +kubebuilder:validation:Required
 	LabRef string `json:"labRef"`
 	// +kubebuilder:validation:MinItems=2
+	// +kubebuilder:validation:MaxItems=2
 	Endpoints []EndpointSpec `json:"endpoints"`
 }
 

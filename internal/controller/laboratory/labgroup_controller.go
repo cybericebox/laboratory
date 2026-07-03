@@ -332,7 +332,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string)
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      map[string]string{"app": "vpn"},
-					Annotations: map[string]string{names.AnnotationNetworks: "eth0@" + names.DefaultNetworkValue},
+					Annotations: map[string]string{names.AnnotationDefaultNetwork: "eth0"},
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: "vpn",
@@ -392,7 +392,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      map[string]string{"app": "gateway"},
-					Annotations: map[string]string{names.AnnotationNetworks: "eth0@" + names.DefaultNetworkValue},
+					Annotations: map[string]string{names.AnnotationDefaultNetwork: "eth0"},
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: "gateway",

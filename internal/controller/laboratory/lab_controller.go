@@ -127,9 +127,48 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 // validateGraph checks for switch/hub cycles in the connection graph.
 func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
 	switchDevices := map[string]bool{}
+	deviceIfaces := map[string]map[string]bool{}
 	for _, d := range lab.Spec.Devices {
 		if d.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch || d.Type == laboratoryv1alpha1.DeviceTypeHub {
 			switchDevices[d.Name] = true
+		}
+		ifaces := make(map[string]bool, len(d.Interfaces))
+		for _, iface := range d.Interfaces {
+			ifaces[iface.Name] = true
+		}
+		deviceIfaces[d.Name] = ifaces
+	}
+
+	// Lab interface names must not shadow the reserved access-port name:
+	// SetupNetworks would delete/replace the delegated interface on a CNI retry.
+	for _, d := range lab.Spec.Devices {
+		for _, iface := range d.Interfaces {
+			if iface.Name == names.AccessPortIface {
+				return fmt.Errorf("ReservedInterfaceName: device %q uses reserved interface name %q", d.Name, iface.Name)
+			}
+		}
+	}
+
+	// Every endpoint must reference a declared device, and for container/vm
+	// devices the endpoint interface must exist in the device's interface list.
+	// The OVS port key is derived from (pod, interface) on one side and
+	// (device, endpoint.Interface) on the other — a name mismatch would silently
+	// program flows against a port that was never created.
+	for _, conn := range lab.Spec.Connections {
+		for _, ep := range conn.Endpoints {
+			if ep.Device == "vpn" || ep.Device == "internet" {
+				continue // virtual singletons have no Device template
+			}
+			ifaces, ok := deviceIfaces[ep.Device]
+			if !ok {
+				return fmt.Errorf("UnknownEndpointDevice: connection endpoint references undeclared device %q", ep.Device)
+			}
+			if switchDevices[ep.Device] {
+				continue // switch/hub endpoints carry no pod interface
+			}
+			if !ifaces[ep.Interface] {
+				return fmt.Errorf("UnknownEndpointInterface: device %q has no interface %q declared", ep.Device, ep.Interface)
+			}
 		}
 	}
 
@@ -466,10 +505,13 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 	lab.Status.Phase = newPhase
 	lab.Status.Access = access
 
-	if newPhase != laboratoryv1alpha1.PhaseReady {
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, r.Status().Update(ctx, lab)
+	if err := r.Status().Update(ctx, lab); err != nil {
+		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, r.Status().Update(ctx, lab)
+	if newPhase != laboratoryv1alpha1.PhaseReady {
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+	return ctrl.Result{}, nil
 }
 
 // buildAccessEntries returns the externally-visible URL for each web-exposed
@@ -569,8 +611,8 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 	}
 	if lab.Status.Internet.CIDR != "" {
 		if n, ok := indexFromCIDR(lab.Status.Internet.CIDR); ok {
-			iface := names.LabIfaceNameByIndex(n)
-			_ = r.patchDeploymentNetworks(ctx, lab.Namespace, "gateway", iface, iface, false)
+			_ = r.patchDeploymentNetworks(ctx, lab.Namespace, "gateway",
+				names.LabIfaceNameByIndex(n), names.GWIfaceNameByIndex(n), false)
 		}
 	}
 
@@ -785,7 +827,7 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
 			svc.Spec.Selector = map[string]string{
 				names.LabelLab: lab.Name,
-				"app":                       d.Name,
+				"app":          d.Name,
 			}
 			protocol := web.Protocol
 			if protocol == "" {
@@ -867,8 +909,10 @@ func (r *LabReconciler) ensureDeploymentAnnotations(ctx context.Context, lab *la
 	if lab.Spec.Internet.Enabled && lab.Status.Internet.CIDR != "" {
 		n, ok := indexFromCIDR(lab.Status.Internet.CIDR)
 		if ok {
-			iface := names.LabIfaceNameByIndex(n)
-			if err := r.patchDeploymentNetworks(ctx, lab.Namespace, "gateway", iface, iface, true); err != nil {
+			// Pod-side iface is lab{N}; host-side OVS port must be gw{N} so it
+			// does not collide with the VPN leg's lab{N} port in root netns.
+			if err := r.patchDeploymentNetworks(ctx, lab.Namespace, "gateway",
+				names.LabIfaceNameByIndex(n), names.GWIfaceNameByIndex(n), true); err != nil {
 				return err
 			}
 		}
