@@ -2,9 +2,11 @@ package laboratory
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -146,18 +148,21 @@ func (r *DeviceReconciler) createPod(ctx context.Context, device *laboratoryv1al
 			Containers: []corev1.Container{{
 				Name:  device.Spec.Name,
 				Image: device.Spec.Image,
-				// Run the image as-is. Device pods get no elevated capabilities
-				// and no entrypoint override: interfaces are wired and addressed
-				// from outside the container. Only gateway/VPN pods (not devices)
-				// run privileged.
+				// Run the image as-is (no entrypoint override). Capabilities are
+				// opt-in: an image that only serves a port gets none; one that
+				// runs networking/testing tools or an in-image DHCP client gets
+				// the curated set it requested (plus NET_ADMIN+NET_RAW when it
+				// has a DHCP interface). Isolation is enforced host-side by OVS
+				// flows, so these caps cannot break a pod out of its VNI.
+				SecurityContext: deviceSecurityContext(device),
 			}},
 		},
 	}
-	// Optional init-container: assign static IP/routes inside the pod netns.
-	// node-agent only wires the L2 veth; addressing is applied here so device
-	// pods need no elevated capabilities of their own. DHCP interfaces are left
-	// for the in-pod client. Skipped entirely when no interface is static.
-	if ic := r.staticAddrInitContainer(device); ic != nil {
+	// Optional init-container: address static and dhcp-preset interfaces inside
+	// the pod netns (node-agent only wires the L2 veth), so those device pods
+	// need no capabilities of their own. addr.type=dhcp interfaces are handled by
+	// the image's own client instead. Skipped when neither mode is present.
+	if ic := r.netConfigInitContainer(device); ic != nil {
 		pod.Spec.InitContainers = append(pod.Spec.InitContainers, *ic)
 	}
 
@@ -198,62 +203,115 @@ func canonicalIP(s string) (string, bool) {
 	return ip.String(), true
 }
 
-// staticAddrInitContainer builds an init-container that waits for each
-// static-addressed interface (moved in by node-agent) and assigns its IP,
-// gateway, and routes. Returns nil when the device has no static interfaces or
-// no NetConfigImage is configured.
-func (r *DeviceReconciler) staticAddrInitContainer(device *laboratoryv1alpha1.Device) *corev1.Container {
+// netconfigIface is one entry passed to the netconfig binary via the NETCONFIG
+// env var (JSON). No user value is ever interpolated into a shell.
+type netconfigIface struct {
+	Name    string           `json:"name"`
+	Mode    string           `json:"mode"` // "static" | "dhcp-preset"
+	IP      string           `json:"ip,omitempty"`
+	Gateway string           `json:"gateway,omitempty"`
+	Routes  []netconfigRoute `json:"routes,omitempty"`
+}
+
+type netconfigRoute struct {
+	Dst string `json:"dst"`
+	Via string `json:"via"`
+}
+
+// netConfigInitContainer builds the init-container that addresses interfaces the
+// device image does not handle itself: static (apply the fixed IP/routes) and
+// dhcp-preset (lease a dynamic address for images with no DHCP client). Values
+// are canonicalised and passed as JSON, so nothing user-controlled reaches a
+// shell. Returns nil when there is no such interface or no NetConfigImage.
+func (r *DeviceReconciler) netConfigInitContainer(device *laboratoryv1alpha1.Device) *corev1.Container {
 	if r.NetConfigImage == "" {
 		return nil
 	}
-	var cmds []string
+	var ifaces []netconfigIface
 	for _, iface := range device.Spec.Interfaces {
-		if iface.Addr.Type != laboratoryv1alpha1.AddrTypeStatic || iface.Addr.IP == "" {
-			continue
-		}
-		// Every value is parsed and re-emitted in canonical form before it ever
-		// reaches the shell: CRD fields are user-controllable, so raw
-		// interpolation would be a command-injection vector. An invalid field
-		// skips the interface rather than emitting an unchecked string.
 		name, ok := validIfaceName(iface.Name)
 		if !ok {
 			continue
 		}
-		ipCIDR, ok := canonicalCIDR(iface.Addr.IP)
-		if !ok {
-			continue
-		}
-		// Wait up to ~5s for node-agent to move the veth into this netns.
-		cmds = append(cmds, "for i in $(seq 1 25); do ip link show "+name+" >/dev/null 2>&1 && break; sleep 0.2; done")
-		cmds = append(cmds, "ip addr replace "+ipCIDR+" dev "+name)
-		cmds = append(cmds, "ip link set "+name+" up")
-		if iface.Addr.Gateway != "" {
+		switch iface.Addr.Type {
+		case laboratoryv1alpha1.AddrTypeStatic:
+			ipCIDR, ok := canonicalCIDR(iface.Addr.IP)
+			if !ok {
+				continue
+			}
+			nc := netconfigIface{Name: name, Mode: "static", IP: ipCIDR}
 			if gw, ok := canonicalIP(iface.Addr.Gateway); ok {
-				cmds = append(cmds, "ip route replace default via "+gw)
+				nc.Gateway = gw
 			}
-		}
-		for _, rt := range iface.Addr.Routes {
-			dst, dok := canonicalCIDR(rt.Dst)
-			via, vok := canonicalIP(rt.Via)
-			if dok && vok {
-				cmds = append(cmds, "ip route replace "+dst+" via "+via)
+			for _, rt := range iface.Addr.Routes {
+				if dst, dok := canonicalCIDR(rt.Dst); dok {
+					if via, vok := canonicalIP(rt.Via); vok {
+						nc.Routes = append(nc.Routes, netconfigRoute{Dst: dst, Via: via})
+					}
+				}
 			}
+			ifaces = append(ifaces, nc)
+		case laboratoryv1alpha1.AddrTypeDHCPPreset:
+			ifaces = append(ifaces, netconfigIface{Name: name, Mode: "dhcp-preset"})
 		}
 	}
-	if len(cmds) == 0 {
+	if len(ifaces) == 0 {
+		return nil
+	}
+	cfg, err := json.Marshal(ifaces)
+	if err != nil {
 		return nil
 	}
 	return &corev1.Container{
 		Name:            "netconfig",
 		Image:           r.NetConfigImage,
 		ImagePullPolicy: corev1.PullIfNotPresent,
-		Command:         []string{"/bin/sh", "-c", strings.Join(cmds, "\n")},
+		Command:         []string{"/netconfig"},
+		Env:             []corev1.EnvVar{{Name: "NETCONFIG", Value: string(cfg)}},
 		SecurityContext: &corev1.SecurityContext{
-			Capabilities: &corev1.Capabilities{
-				Add: []corev1.Capability{"NET_ADMIN"},
-			},
+			// NET_ADMIN to set addresses/routes; NET_RAW for the DHCP raw socket.
+			Capabilities: &corev1.Capabilities{Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"}},
 		},
 	}
+}
+
+// deviceSecurityContext resolves the device's SecurityPreset to concrete
+// capabilities and adds the DHCP-implied caps when the image runs its own DHCP
+// client (addr.type=dhcp). Returns nil when nothing is needed, so a basic
+// service device stays fully unprivileged.
+func deviceSecurityContext(device *laboratoryv1alpha1.Device) *corev1.SecurityContext {
+	want := map[string]bool{}
+	for _, c := range names.CapabilitiesForPreset(string(device.Spec.SecurityPreset)) {
+		want[c] = true
+	}
+	if deviceHasInImageDHCP(device) {
+		for _, c := range names.DHCPImpliedCapabilities {
+			want[c] = true
+		}
+	}
+	if len(want) == 0 {
+		return nil
+	}
+	caps := make([]corev1.Capability, 0, len(want))
+	for c := range want {
+		caps = append(caps, corev1.Capability(c))
+	}
+	sort.Slice(caps, func(i, j int) bool { return caps[i] < caps[j] })
+	return &corev1.SecurityContext{
+		Capabilities: &corev1.Capabilities{Add: caps},
+	}
+}
+
+// deviceHasInImageDHCP reports whether any interface expects the image's own
+// DHCP client (addr.type=dhcp) — those need pod capabilities. "managed" DHCP is
+// handled by the netconfig init-container and needs no device-container caps.
+func deviceHasInImageDHCP(device *laboratoryv1alpha1.Device) bool {
+	for _, iface := range device.Spec.Interfaces {
+		if iface.Addr.Type == laboratoryv1alpha1.AddrTypeDHCP {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *DeviceReconciler) SetupWithManager(mgr ctrl.Manager) error {

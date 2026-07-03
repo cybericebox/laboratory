@@ -26,6 +26,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/node-agent   ./cmd/node-agent/
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/cni-gate    ./cmd/cni-gate/
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/install-cni ./cmd/install-cni/
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/netconfig   ./cmd/netconfig/
 
 # Stage 3: final image.
 FROM ubuntu:22.04
@@ -48,6 +49,7 @@ COPY --from=ovs-builder /ovs-install/usr/share/openvswitch/  /usr/share/openvswi
 COPY --from=go-builder /out/node-agent   /node-agent/bin/node-agent
 COPY --from=go-builder /out/cni-gate     /node-agent/bin/cni-gate
 COPY --from=go-builder /out/install-cni  /node-agent/bin/install-cni
+COPY --from=go-builder /out/netconfig    /netconfig
 
 # OVS startup script.
 COPY --chmod=0755 scripts/start-ovs.sh /node-agent/bin/start-ovs.sh

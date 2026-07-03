@@ -118,11 +118,18 @@ spec:
                                   type: object
                                 type: array
                               type:
-                                description: AddrType controls how an interface gets
-                                  its address.
+                                description: |-
+                                  AddrType controls how an interface gets its address.
+                                    - static:      fixed IP from spec; applied by the netconfig init-container.
+                                    - dhcp:        the image runs its own DHCP client; the device pod is granted
+                                      NET_ADMIN+NET_RAW so that client can lease and configure the interface.
+                                    - dhcp-preset: the image has no DHCP client but still needs a dynamic
+                                      address; the netconfig init-container leases one from the lab DHCP server
+                                      and applies it. The device container needs no capabilities.
                                 enum:
                                 - static
                                 - dhcp
+                                - dhcp-preset
                                 type: string
                             required:
                             - type
@@ -137,6 +144,17 @@ spec:
                         type: object
                       type: array
                     name:
+                      type: string
+                    securityPreset:
+                      description: |-
+                        SecurityPreset names a capability profile for the device container. Only
+                        the preset name is exposed here; the concrete Linux capabilities behind it
+                        are an internal platform decision. Empty means "basic" (no extra caps).
+                      enum:
+                      - basic
+                      - service
+                      - net
+                      - debug
                       type: string
                     type:
                       description: DeviceType distinguishes network device kinds.

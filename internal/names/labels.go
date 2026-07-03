@@ -32,6 +32,30 @@ const (
 	AccessPortIface = "accessport"
 )
 
+// securityPresetCaps maps a device SecurityPreset name to the concrete Linux
+// capabilities it grants. This mapping is internal — the public spec exposes
+// only the preset name — so the capability requirement surface stays hidden and
+// can be re-homed behind a custom agent later. Lab isolation is enforced by
+// host-side OVS flows, so NET_ADMIN inside a pod cannot break out of its VNI.
+var securityPresetCaps = map[string][]string{
+	"":        nil, // unset == basic
+	"basic":   nil,
+	"service": {"NET_BIND_SERVICE"},
+	"net":     {"NET_ADMIN", "NET_RAW", "NET_BIND_SERVICE", "NET_BROADCAST"},
+	"debug":   {"NET_ADMIN", "NET_RAW", "NET_BIND_SERVICE", "NET_BROADCAST", "SYS_PTRACE", "SYS_NICE", "IPC_LOCK"},
+}
+
+// CapabilitiesForPreset returns the capability list for a preset name (unknown
+// presets resolve to basic/none).
+func CapabilitiesForPreset(preset string) []string {
+	return securityPresetCaps[preset]
+}
+
+// DHCPImpliedCapabilities are added to any device with an in-image DHCP
+// interface (addr.type=dhcp) so its client can send raw broadcast DISCOVERs and
+// set the lease, regardless of the chosen preset.
+var DHCPImpliedCapabilities = []string{"NET_ADMIN", "NET_RAW"}
+
 // Component names used for Deployment names, Service names, and app label values.
 const (
 	ComponentVPN     = "vpn"

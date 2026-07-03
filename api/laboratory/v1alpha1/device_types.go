@@ -13,10 +13,13 @@ type DeviceSpec struct {
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 	// +kubebuilder:validation:Required
-	Type       DeviceType      `json:"type"`
-	Image      string          `json:"image,omitempty"`
-	Interfaces []InterfaceSpec `json:"interfaces,omitempty"`
-	Exposure   *ExposureSpec   `json:"exposure,omitempty"`
+	Type  DeviceType `json:"type"`
+	Image string     `json:"image,omitempty"`
+	// SecurityPreset names a capability profile (basic/service/net/debug); the
+	// concrete capabilities are resolved internally by the operator.
+	SecurityPreset SecurityPreset  `json:"securityPreset,omitempty"`
+	Interfaces     []InterfaceSpec `json:"interfaces,omitempty"`
+	Exposure       *ExposureSpec   `json:"exposure,omitempty"`
 }
 
 // DeviceStatus defines the observed state of Device.

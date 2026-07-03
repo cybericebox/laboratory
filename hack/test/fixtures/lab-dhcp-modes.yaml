@@ -1,0 +1,59 @@
+# DHCP addressing modes:
+#   vpn-client.eth1   -> dhcp        (in-image client; pod gets NET_ADMIN+NET_RAW)
+#   gw-client-a.eth1  -> dhcp-preset (netconfig init leases; pod has NO caps)
+#   gw-client-b.eth1  -> static
+apiVersion: laboratory.cybericebox.com/v1alpha1
+kind: Lab
+metadata:
+  name: ctf-dhcp
+  namespace: ${LAB_NS}
+spec:
+  vpn:
+    enabled: true
+    dhcpServer:
+      enabled: true
+  internet:
+    enabled: true
+    dhcpServer:
+      enabled: true
+  devices:
+  - name: vpn-client
+    type: container
+    image: wbitt/network-multitool:latest
+    interfaces:
+    - name: eth1
+      addr:
+        type: dhcp
+  - name: sw1
+    type: unmanaged-switch
+  - name: gw-client-a
+    type: container
+    image: wbitt/network-multitool:latest
+    interfaces:
+    - name: eth1
+      addr:
+        type: dhcp-preset
+  - name: gw-client-b
+    type: container
+    image: wbitt/network-multitool:latest
+    interfaces:
+    - name: eth1
+      addr:
+        type: static
+        ip: 10.192.1.50/24
+  connections:
+  - endpoints:
+    - device: vpn
+    - device: vpn-client
+      interface: eth1
+  - endpoints:
+    - device: internet
+    - device: sw1
+  - endpoints:
+    - device: sw1
+    - device: gw-client-a
+      interface: eth1
+  - endpoints:
+    - device: sw1
+    - device: gw-client-b
+      interface: eth1

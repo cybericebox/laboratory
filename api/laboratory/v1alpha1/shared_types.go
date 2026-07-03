@@ -31,12 +31,39 @@ const (
 )
 
 // AddrType controls how an interface gets its address.
-// +kubebuilder:validation:Enum=static;dhcp
+//   - static:      fixed IP from spec; applied by the netconfig init-container.
+//   - dhcp:        the image runs its own DHCP client; the device pod is granted
+//     NET_ADMIN+NET_RAW so that client can lease and configure the interface.
+//   - dhcp-preset: the image has no DHCP client but still needs a dynamic
+//     address; the netconfig init-container leases one from the lab DHCP server
+//     and applies it. The device container needs no capabilities.
+//
+// +kubebuilder:validation:Enum=static;dhcp;dhcp-preset
 type AddrType string
 
 const (
-	AddrTypeStatic AddrType = "static"
-	AddrTypeDHCP   AddrType = "dhcp"
+	AddrTypeStatic     AddrType = "static"
+	AddrTypeDHCP       AddrType = "dhcp"
+	AddrTypeDHCPPreset AddrType = "dhcp-preset"
+)
+
+// SecurityPreset selects a named capability profile for a device container.
+// The concrete Linux capabilities behind each preset are resolved internally by
+// the operator and are intentionally NOT part of the public spec, so the
+// requirement surface stays hidden and can move behind a custom agent later.
+//   - basic:   no extra capabilities (a plain service).
+//   - service: bind privileged ports.
+//   - net:     networking/testing tools (ping, tcpdump, ip, iptables, DHCP).
+//   - debug:   net plus process debugging (gdb/strace).
+//
+// +kubebuilder:validation:Enum=basic;service;net;debug
+type SecurityPreset string
+
+const (
+	SecurityPresetBasic   SecurityPreset = "basic"
+	SecurityPresetService SecurityPreset = "service"
+	SecurityPresetNet     SecurityPreset = "net"
+	SecurityPresetDebug   SecurityPreset = "debug"
 )
 
 // EndpointSpec references a device interface in a Connection.

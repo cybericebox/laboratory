@@ -29,10 +29,14 @@ type DeviceTemplate struct {
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 	// +kubebuilder:validation:Required
-	Type       DeviceType      `json:"type"`
-	Image      string          `json:"image,omitempty"`
-	Interfaces []InterfaceSpec `json:"interfaces,omitempty"`
-	Exposure   *ExposureSpec   `json:"exposure,omitempty"`
+	Type  DeviceType `json:"type"`
+	Image string     `json:"image,omitempty"`
+	// SecurityPreset names a capability profile for the device container. Only
+	// the preset name is exposed here; the concrete Linux capabilities behind it
+	// are an internal platform decision. Empty means "basic" (no extra caps).
+	SecurityPreset SecurityPreset  `json:"securityPreset,omitempty"`
+	Interfaces     []InterfaceSpec `json:"interfaces,omitempty"`
+	Exposure       *ExposureSpec   `json:"exposure,omitempty"`
 }
 
 // ConnectionTemplate is an inline connection declaration inside Lab.spec.connections[].

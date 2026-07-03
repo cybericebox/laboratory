@@ -351,12 +351,13 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 				Finalizers: []string{names.FinalizerOVSCleanup},
 			},
 			Spec: laboratoryv1alpha1.DeviceSpec{
-				LabRef:     lab.Name,
-				Name:       tmpl.Name,
-				Type:       tmpl.Type,
-				Image:      tmpl.Image,
-				Interfaces: tmpl.Interfaces,
-				Exposure:   tmpl.Exposure,
+				LabRef:         lab.Name,
+				Name:           tmpl.Name,
+				Type:           tmpl.Type,
+				Image:          tmpl.Image,
+				SecurityPreset: tmpl.SecurityPreset,
+				Interfaces:     tmpl.Interfaces,
+				Exposure:       tmpl.Exposure,
 			},
 		}
 		if err := controllerutil.SetOwnerReference(lab, d, r.Scheme); err != nil {
