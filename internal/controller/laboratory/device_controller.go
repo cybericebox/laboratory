@@ -24,6 +24,10 @@ type DeviceReconciler struct {
 	Scheme          *runtime.Scheme
 	LabNodeSelector map[string]string
 	LabTolerations  []corev1.Toleration
+	// NetConfigImage is the image used for the optional init-container that
+	// assigns static IP/routes inside a device pod. Must contain `ip` (iproute2)
+	// and `sh`. Empty disables static addressing via init-container.
+	NetConfigImage string
 }
 
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices,verbs=get;list;watch;create;update;patch;delete
@@ -137,21 +141,70 @@ func (r *DeviceReconciler) createPod(ctx context.Context, device *laboratoryv1al
 			NodeSelector: r.LabNodeSelector,
 			Tolerations:  r.LabTolerations,
 			Containers: []corev1.Container{{
-				Name:    device.Spec.Name,
-				Image:   device.Spec.Image,
-				Command: []string{"sleep", "infinity"},
-				SecurityContext: &corev1.SecurityContext{
-					Capabilities: &corev1.Capabilities{
-						Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
-					},
-				},
+				Name:  device.Spec.Name,
+				Image: device.Spec.Image,
+				// Run the image as-is. Device pods get no elevated capabilities
+				// and no entrypoint override: interfaces are wired and addressed
+				// from outside the container. Only gateway/VPN pods (not devices)
+				// run privileged.
 			}},
 		},
 	}
+	// Optional init-container: assign static IP/routes inside the pod netns.
+	// node-agent only wires the L2 veth; addressing is applied here so device
+	// pods need no elevated capabilities of their own. DHCP interfaces are left
+	// for the in-pod client. Skipped entirely when no interface is static.
+	if ic := r.staticAddrInitContainer(device); ic != nil {
+		pod.Spec.InitContainers = append(pod.Spec.InitContainers, *ic)
+	}
+
 	if err := controllerutil.SetControllerReference(device, pod, r.Scheme); err != nil {
 		return err
 	}
 	return r.Create(ctx, pod)
+}
+
+// staticAddrInitContainer builds an init-container that waits for each
+// static-addressed interface (moved in by node-agent) and assigns its IP,
+// gateway, and routes. Returns nil when the device has no static interfaces or
+// no NetConfigImage is configured.
+func (r *DeviceReconciler) staticAddrInitContainer(device *laboratoryv1alpha1.Device) *corev1.Container {
+	if r.NetConfigImage == "" {
+		return nil
+	}
+	var cmds []string
+	for _, iface := range device.Spec.Interfaces {
+		if iface.Addr.Type != laboratoryv1alpha1.AddrTypeStatic || iface.Addr.IP == "" {
+			continue
+		}
+		name := iface.Name
+		// Wait up to ~5s for node-agent to move the veth into this netns.
+		cmds = append(cmds, "for i in $(seq 1 25); do ip link show "+name+" >/dev/null 2>&1 && break; sleep 0.2; done")
+		cmds = append(cmds, "ip addr replace "+iface.Addr.IP+" dev "+name)
+		cmds = append(cmds, "ip link set "+name+" up")
+		if iface.Addr.Gateway != "" {
+			cmds = append(cmds, "ip route replace default via "+iface.Addr.Gateway)
+		}
+		for _, rt := range iface.Addr.Routes {
+			if rt.Dst != "" && rt.Via != "" {
+				cmds = append(cmds, "ip route replace "+rt.Dst+" via "+rt.Via)
+			}
+		}
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return &corev1.Container{
+		Name:            "netconfig",
+		Image:           r.NetConfigImage,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		Command:         []string{"/bin/sh", "-c", strings.Join(cmds, "\n")},
+		SecurityContext: &corev1.SecurityContext{
+			Capabilities: &corev1.Capabilities{
+				Add: []corev1.Capability{"NET_ADMIN"},
+			},
+		},
+	}
 }
 
 func (r *DeviceReconciler) SetupWithManager(mgr ctrl.Manager) error {

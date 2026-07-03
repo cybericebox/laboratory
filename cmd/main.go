@@ -259,6 +259,7 @@ func main() {
 		Scheme:          mgr.GetScheme(),
 		LabNodeSelector: labNodeSelector,
 		LabTolerations:  labTolerations,
+		NetConfigImage:  cfg.NetConfigImage,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Device")
 		os.Exit(1)

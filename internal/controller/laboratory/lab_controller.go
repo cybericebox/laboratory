@@ -943,7 +943,7 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 					MatchLabels: map[string]string{"kubernetes.io/metadata.name": names.ProxyNamespace},
 				},
 				PodSelector: &metav1.LabelSelector{
-					MatchLabels: map[string]string{"app": "proxy"},
+					MatchLabels: map[string]string{"app": names.ProxyL7App},
 				},
 			}}
 			// When the proxy uses hostNetwork its source IP is the node IP, not a pod

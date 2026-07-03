@@ -38,6 +38,12 @@ const (
 	ComponentGateway = "gateway"
 )
 
+// ProxyL7App is the `app` label value on the L7 proxy pod that terminates
+// external HTTPS and connects to exposed device Services. The web-exposure
+// NetworkPolicy must admit this exact value (the proxy split renamed it away
+// from the old "proxy").
+const ProxyL7App = "laboratory-proxy-l7"
+
 // RBAC resource names created per LabGroup namespace.
 const (
 	RoleManagerName = "laboratory-manager-role"

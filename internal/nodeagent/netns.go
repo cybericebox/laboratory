@@ -56,38 +56,6 @@ func RenameInNetNS(netnsPath, oldName, newName string) error {
 	return nsenterRun(netnsPath, "ip", "link", "set", oldName, "name", newName)
 }
 
-// ConfigureInNetNS assigns an optional IP/prefix inside the target netns.
-// cidr may be empty (skip). Example: "192.168.1.1/24".
-// Idempotent: an already-present address is not treated as an error.
-func ConfigureInNetNS(netnsPath, ifaceName, cidr string) error {
-	if cidr == "" {
-		return nil
-	}
-	err := nsenterRun(netnsPath, "ip", "addr", "add", cidr, "dev", ifaceName)
-	if err != nil && strings.Contains(err.Error(), "File exists") {
-		return nil
-	}
-	return err
-}
-
-// AddDefaultRouteInNetNS installs a default route via gw inside the target netns.
-// Idempotent: an existing identical route is not an error.
-func AddDefaultRouteInNetNS(netnsPath, gw string) error {
-	if gw == "" {
-		return nil
-	}
-	err := nsenterRun(netnsPath, "ip", "route", "replace", "default", "via", gw)
-	return err
-}
-
-// AddRouteInNetNS installs a route to dst (CIDR) via gw inside the target netns.
-func AddRouteInNetNS(netnsPath, dst, gw string) error {
-	if dst == "" || gw == "" {
-		return nil
-	}
-	return nsenterRun(netnsPath, "ip", "route", "replace", dst, "via", gw)
-}
-
 // CheckInNetNS returns nil if the named interface exists inside the target netns.
 func CheckInNetNS(netnsPath, ifaceName string) error {
 	return nsenterRun(netnsPath, "ip", "link", "show", ifaceName)

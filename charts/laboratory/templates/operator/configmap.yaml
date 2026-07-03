@@ -15,5 +15,6 @@ data:
   DHCP_DNS: {{ .Values.operator.dhcpDns | quote }}
   VPN_IMAGE: "{{ .Values.vpn.image.repository }}:{{ .Values.vpn.image.tag }}"
   GATEWAY_IMAGE: "{{ .Values.inetGateway.image.repository }}:{{ .Values.inetGateway.image.tag }}"
+  NETCONFIG_IMAGE: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
   LAB_NODE_SELECTOR: {{ .Values.labWorkloads.nodeSelector | toJson | quote }}
   LAB_TOLERATIONS: {{ .Values.labWorkloads.tolerations | toJson | quote }}

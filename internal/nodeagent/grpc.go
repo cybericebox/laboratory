@@ -149,11 +149,8 @@ func (s *NodeAgentServer) SetupNetworks(ctx context.Context, req *nodev1.SetupNe
 		if err := BringUpInNetNS(req.NetnsPath, targetIface); err != nil {
 			return nil, fmt.Errorf("bring up %q: %w", targetIface, err)
 		}
-		// Apply static addressing declared in the Device spec (DHCP interfaces
-		// configure themselves via the in-pod client and are left untouched).
-		if err := applyStaticAddr(ctx, k8s, req.Namespace, req.Name, att.Iface, req.NetnsPath); err != nil {
-			return nil, fmt.Errorf("apply static addr on %q: %w", targetIface, err)
-		}
+		// node-agent is L2 only: veth moved in, renamed, MAC set, link up.
+		// IP/route configuration is the device init-container's job.
 	}
 
 	if defaultIface == "" {

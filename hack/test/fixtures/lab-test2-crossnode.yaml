@@ -9,7 +9,7 @@ spec:
   devices:
   - name: node-a
     type: container
-    image: alpine:3.20
+    image: wbitt/network-multitool:latest
     interfaces:
     - name: eth1
       addr:
@@ -17,7 +17,7 @@ spec:
         ip: 10.10.2.10/24
   - name: node-b
     type: container
-    image: alpine:3.20
+    image: wbitt/network-multitool:latest
     interfaces:
     - name: eth1
       addr:

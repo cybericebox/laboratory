@@ -33,6 +33,9 @@ type Config struct {
 	VPNImage string `env:"VPN_IMAGE" envDefault:"cybericebox/laboratory-lab:latest"`
 	// GatewayImage is the container image for per-LabGroup gateway pods.
 	GatewayImage string `env:"GATEWAY_IMAGE" envDefault:"cybericebox/laboratory-lab:latest"`
+	// NetConfigImage is the image for the optional device init-container that
+	// assigns static IP/routes. Needs iproute2 + sh; node-agent image has both.
+	NetConfigImage string `env:"NETCONFIG_IMAGE" envDefault:"cybericebox/laboratory-node-agent:latest"`
 	// LabNodeSelectorJSON is a JSON-encoded map[string]string of nodeSelector labels
 	// applied to all runtime lab pods (VPN, gateway, device).
 	LabNodeSelectorJSON string `env:"LAB_NODE_SELECTOR" envDefault:"{}"`

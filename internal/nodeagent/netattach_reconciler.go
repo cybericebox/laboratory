@@ -52,39 +52,6 @@ func ParseNetworkAnnotation(annotation string) []NetAttachment {
 	return result
 }
 
-// applyStaticAddr reads the Device CRD (pod name == device name) and, for the
-// interface named ifaceName, applies its static IP, gateway, and routes inside
-// the pod netns. DHCP interfaces (and unknown devices) are left untouched so the
-// in-pod client can configure them. Idempotent across CNI retries and the
-// NetworkAttach repair loop.
-func applyStaticAddr(ctx context.Context, c client.Client, namespace, podName, ifaceName, netnsPath string) error {
-	var dev laboratoryv1alpha1.Device
-	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: podName}, &dev); err != nil {
-		return client.IgnoreNotFound(err) // no Device (vpn/gateway pods): nothing to apply
-	}
-	for _, iface := range dev.Spec.Interfaces {
-		if iface.Name != ifaceName {
-			continue
-		}
-		if iface.Addr.Type != laboratoryv1alpha1.AddrTypeStatic || iface.Addr.IP == "" {
-			return nil
-		}
-		if err := ConfigureInNetNS(netnsPath, ifaceName, iface.Addr.IP); err != nil {
-			return err
-		}
-		if err := AddDefaultRouteInNetNS(netnsPath, iface.Addr.Gateway); err != nil {
-			return err
-		}
-		for _, r := range iface.Addr.Routes {
-			if err := AddRouteInNetNS(netnsPath, r.Dst, r.Via); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	return nil
-}
-
 // NetworkAttachReconciler attaches veth ports to pods based on AnnotationNetworks.
 // The host-side of each veth stays in root netns and is added to the OVS bridge;
 // the pod-side is moved into the pod netns and renamed to the desired interface name.
@@ -217,10 +184,8 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				log.Error(err, "BringUpInNetNS failed, requeueing", "iface", targetIface)
 				return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 			}
-			if err := applyStaticAddr(ctx, r.Client, pod.Namespace, pod.Name, att.Iface, netnsPath); err != nil {
-				log.Error(err, "applyStaticAddr failed, requeueing", "iface", targetIface)
-				return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
-			}
+			// node-agent is L2 only: it moves the veth in and brings it up.
+			// IP/MAC/route configuration is the device init-container's job.
 			log.Info("NetAttach: veth setup complete", "iface", targetIface)
 		} else {
 			// Pod-side not in root netns — already moved or stale.

@@ -10,7 +10,7 @@ spec:
     type: unmanaged-switch
   - name: host-a
     type: container
-    image: alpine:3.20
+    image: wbitt/network-multitool:latest
     interfaces:
     - name: eth1
       addr:
@@ -18,7 +18,7 @@ spec:
         ip: 10.10.3.10/24
   - name: host-b
     type: container
-    image: alpine:3.20
+    image: wbitt/network-multitool:latest
     interfaces:
     - name: eth1
       addr:
