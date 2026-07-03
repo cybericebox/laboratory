@@ -23,6 +23,10 @@ type WGConfig struct {
 	ListenAddr        string `env:"UDP_LISTEN_ADDR"    envDefault:":51820"`
 	ExternalInterface string `env:"EXTERNAL_INTERFACE" envDefault:"eth0"`
 	VPNServicePort    int    `env:"VPN_SERVICE_PORT"   envDefault:"51820"`
+	// XDPEnabled opts into the eBPF/XDP fast path for type-4 transport packets.
+	// Off by default: the userspace demux is the primary path, and XDP commonly
+	// conflicts with the CNI (Cilium) already owning programs on the interface.
+	XDPEnabled bool `env:"XDP_ENABLED" envDefault:"false"`
 }
 
 type Config struct {

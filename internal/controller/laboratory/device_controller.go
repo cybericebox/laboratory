@@ -2,6 +2,9 @@ package laboratory
 
 import (
 	"context"
+	"fmt"
+	"net"
+	"regexp"
 	"strings"
 	"time"
 
@@ -164,6 +167,37 @@ func (r *DeviceReconciler) createPod(ctx context.Context, device *laboratoryv1al
 	return r.Create(ctx, pod)
 }
 
+// ifaceNameRE matches a valid Linux interface name (IFNAMSIZ-bounded, no shell
+// metacharacters) so it is safe to interpolate into the init-container script.
+var ifaceNameRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,14}$`)
+
+func validIfaceName(name string) (string, bool) {
+	if ifaceNameRE.MatchString(name) {
+		return name, true
+	}
+	return "", false
+}
+
+// canonicalCIDR parses a CIDR and returns its canonical "ip/prefix" form, which
+// by construction contains no shell metacharacters.
+func canonicalCIDR(s string) (string, bool) {
+	ip, ipNet, err := net.ParseCIDR(s)
+	if err != nil {
+		return "", false
+	}
+	ones, _ := ipNet.Mask.Size()
+	return fmt.Sprintf("%s/%d", ip.String(), ones), true
+}
+
+// canonicalIP parses a bare IP and returns its canonical string form.
+func canonicalIP(s string) (string, bool) {
+	ip := net.ParseIP(s)
+	if ip == nil {
+		return "", false
+	}
+	return ip.String(), true
+}
+
 // staticAddrInitContainer builds an init-container that waits for each
 // static-addressed interface (moved in by node-agent) and assigns its IP,
 // gateway, and routes. Returns nil when the device has no static interfaces or
@@ -177,17 +211,32 @@ func (r *DeviceReconciler) staticAddrInitContainer(device *laboratoryv1alpha1.De
 		if iface.Addr.Type != laboratoryv1alpha1.AddrTypeStatic || iface.Addr.IP == "" {
 			continue
 		}
-		name := iface.Name
+		// Every value is parsed and re-emitted in canonical form before it ever
+		// reaches the shell: CRD fields are user-controllable, so raw
+		// interpolation would be a command-injection vector. An invalid field
+		// skips the interface rather than emitting an unchecked string.
+		name, ok := validIfaceName(iface.Name)
+		if !ok {
+			continue
+		}
+		ipCIDR, ok := canonicalCIDR(iface.Addr.IP)
+		if !ok {
+			continue
+		}
 		// Wait up to ~5s for node-agent to move the veth into this netns.
 		cmds = append(cmds, "for i in $(seq 1 25); do ip link show "+name+" >/dev/null 2>&1 && break; sleep 0.2; done")
-		cmds = append(cmds, "ip addr replace "+iface.Addr.IP+" dev "+name)
+		cmds = append(cmds, "ip addr replace "+ipCIDR+" dev "+name)
 		cmds = append(cmds, "ip link set "+name+" up")
 		if iface.Addr.Gateway != "" {
-			cmds = append(cmds, "ip route replace default via "+iface.Addr.Gateway)
+			if gw, ok := canonicalIP(iface.Addr.Gateway); ok {
+				cmds = append(cmds, "ip route replace default via "+gw)
+			}
 		}
 		for _, rt := range iface.Addr.Routes {
-			if rt.Dst != "" && rt.Via != "" {
-				cmds = append(cmds, "ip route replace "+rt.Dst+" via "+rt.Via)
+			dst, dok := canonicalCIDR(rt.Dst)
+			via, vok := canonicalIP(rt.Via)
+			if dok && vok {
+				cmds = append(cmds, "ip route replace "+dst+" via "+via)
 			}
 		}
 	}

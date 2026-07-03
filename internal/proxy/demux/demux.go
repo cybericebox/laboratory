@@ -19,7 +19,7 @@ type Demux struct {
 	xdpHandle *xdp.XDPHandle
 }
 
-func New(listenAddr, iface string, table *Table, ct *ConnTrack) (*Demux, error) {
+func New(listenAddr, iface string, table *Table, ct *ConnTrack, xdpEnabled bool) (*Demux, error) {
 	addr, err := net.ResolveUDPAddr("udp4", listenAddr)
 	if err != nil {
 		return nil, fmt.Errorf("resolve addr %s: %w", listenAddr, err)
@@ -31,7 +31,14 @@ func New(listenAddr, iface string, table *Table, ct *ConnTrack) (*Demux, error) 
 
 	d := &Demux{table: table, conntrack: ct, conn: conn}
 
-	// Best-effort XDP load; failure is non-fatal — proxy continues with userspace demux.
+	// XDP is an opt-in fast path (XDP_ENABLED). The userspace demux is the
+	// primary, always-correct path; XDP commonly conflicts with the CNI already
+	// owning programs on the interface, so it is off by default.
+	if !xdpEnabled {
+		ctrl.Log.WithName("demux").Info("XDP disabled, using userspace demux")
+		return d, nil
+	}
+	// Best-effort load; failure is non-fatal — proxy continues with userspace demux.
 	if h, err := xdp.Load(iface, uint16(addr.Port)); err != nil {
 		ctrl.Log.WithName("demux").Info("XDP not loaded, using userspace fallback", "reason", err)
 	} else if h != nil {
