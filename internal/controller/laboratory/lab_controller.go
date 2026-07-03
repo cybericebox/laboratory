@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
@@ -154,6 +155,9 @@ func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
 	// The OVS port key is derived from (pod, interface) on one side and
 	// (device, endpoint.Interface) on the other — a name mismatch would silently
 	// program flows against a port that was never created.
+	// A device interface is one veth in one VNI: it may appear in at most one
+	// connection, otherwise the later t0 programming silently overwrites the earlier.
+	usedIfaces := map[string]bool{}
 	for _, conn := range lab.Spec.Connections {
 		for _, ep := range conn.Endpoints {
 			if ep.Device == "vpn" || ep.Device == "internet" {
@@ -169,6 +173,11 @@ func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
 			if !ifaces[ep.Interface] {
 				return fmt.Errorf("UnknownEndpointInterface: device %q has no interface %q declared", ep.Device, ep.Interface)
 			}
+			key := ep.Device + "/" + ep.Interface
+			if usedIfaces[key] {
+				return fmt.Errorf("DuplicateEndpointInterface: interface %q of device %q is used by more than one connection", ep.Interface, ep.Device)
+			}
+			usedIfaces[key] = true
 		}
 	}
 
@@ -377,12 +386,6 @@ func (r *LabReconciler) materializeConnections(ctx context.Context, lab *laborat
 
 	for _, tmpl := range lab.Spec.Connections {
 		connName := connectionName(lab.Name, tmpl.Endpoints)
-		var existing laboratoryv1alpha1.Connection
-		if err := r.Get(ctx, types.NamespacedName{Name: connName, Namespace: lab.Namespace}, &existing); err == nil {
-			continue
-		} else if !errors.IsNotFound(err) {
-			return err
-		}
 
 		isDirect := true
 		for _, ep := range tmpl.Endpoints {
@@ -390,6 +393,27 @@ func (r *LabReconciler) materializeConnections(ctx context.Context, lab *laborat
 				isDirect = false
 				break
 			}
+		}
+
+		var existing laboratoryv1alpha1.Connection
+		if err := r.Get(ctx, types.NamespacedName{Name: connName, Namespace: lab.Namespace}, &existing); err == nil {
+			// Repair: a direct connection whose VNI status write failed after
+			// Create would otherwise stay VNI-less forever, and the node-agent
+			// requeues indefinitely waiting for it.
+			if isDirect && existing.Status.VNI == nil {
+				vni, vniErr := vniAllocator.AllocateIndex(ctx)
+				if vniErr != nil {
+					return fmt.Errorf("allocate VNI for connection %s: %w", connName, vniErr)
+				}
+				existing.Status.VNI = &vni
+				if err := r.Status().Update(ctx, &existing); err != nil {
+					_ = vniAllocator.ReleaseIndex(ctx, vni)
+					return err
+				}
+			}
+			continue
+		} else if !errors.IsNotFound(err) {
+			return err
 		}
 
 		conn := &laboratoryv1alpha1.Connection{
@@ -419,6 +443,11 @@ func (r *LabReconciler) materializeConnections(ctx context.Context, lab *laborat
 		}
 
 		if err := r.Create(ctx, conn); err != nil {
+			// Return the VNI: the Connection does not exist, so nothing records
+			// this index and the delete path would never release it.
+			if allocatedVNI != nil {
+				_ = vniAllocator.ReleaseIndex(ctx, *allocatedVNI)
+			}
 			return err
 		}
 		if allocatedVNI != nil {
@@ -703,6 +732,9 @@ func (r *LabReconciler) ensureLabNetworkObjects(ctx context.Context, lab *labora
 		if err := r.ensureLabVPN(ctx, lab, n); err != nil {
 			return err
 		}
+		if err := r.ensureDHCPPool(ctx, lab, "dhcp-vpn"); err != nil {
+			return err
+		}
 	}
 	if lab.Spec.Internet.Enabled && lab.Status.Internet.CIDR != "" {
 		n, ok := indexFromCIDR(lab.Status.Internet.CIDR)
@@ -712,8 +744,62 @@ func (r *LabReconciler) ensureLabNetworkObjects(ctx context.Context, lab *labora
 		if err := r.ensureLabGateway(ctx, lab, n); err != nil {
 			return err
 		}
+		if err := r.ensureDHCPPool(ctx, lab, "dhcp-inet"); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// ensureDHCPPool creates the per-lab DHCP Pool that the VPN/gateway binaries
+// use as the enable-signal (and future lease allocator) for their embedded
+// DHCP server. Without this Pool the binaries silently never start DHCP.
+// prefix is "dhcp-vpn" or "dhcp-inet"; the segment's DHCPServer.Enabled
+// gates creation. Owner reference ties the Pool's lifecycle to the Lab.
+func (r *LabReconciler) ensureDHCPPool(ctx context.Context, lab *laboratoryv1alpha1.Lab, prefix string) error {
+	var dhcpSpec *laboratoryv1alpha1.DHCPServer
+	switch prefix {
+	case "dhcp-vpn":
+		dhcpSpec = lab.Spec.VPN.DHCPServer
+	case "dhcp-inet":
+		dhcpSpec = lab.Spec.Internet.DHCPServer
+	}
+	if dhcpSpec == nil || !dhcpSpec.Enabled {
+		return nil
+	}
+
+	poolName := fmt.Sprintf("%s-%s-0", prefix, lab.Name)
+	var existing allocationv1alpha1.Pool
+	if err := r.Get(ctx, types.NamespacedName{Name: poolName, Namespace: lab.Namespace}, &existing); err == nil {
+		return nil
+	} else if !errors.IsNotFound(err) {
+		return err
+	}
+
+	// Leases live in hosts .2‥.254 of the lab /24 — .1 is the gateway/VPN leg.
+	const dhcpPoolOffset, dhcpPoolSize = 2, 253
+	bitmapStr, free := poolpkg.InitBitmap(dhcpPoolSize, dhcpPoolOffset)
+	p := &allocationv1alpha1.Pool{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      poolName,
+			Namespace: lab.Namespace,
+			Labels: map[string]string{
+				poolpkg.PoolTypeLabel:   prefix,
+				poolpkg.PoolStateLabel:  poolpkg.PoolStateEmpty,
+				poolpkg.PoolGroupLabel:  fmt.Sprintf("%s-%s", prefix, lab.Name),
+				poolpkg.LatestPoolLabel: "true",
+			},
+		},
+		Spec: allocationv1alpha1.PoolSpec{Size: dhcpPoolSize, Offset: dhcpPoolOffset},
+	}
+	if err := controllerutil.SetOwnerReference(lab, p, r.Scheme); err != nil {
+		return err
+	}
+	if err := r.Create(ctx, p); err != nil {
+		return err
+	}
+	p.Status = allocationv1alpha1.PoolStatus{Free: free, BitMap: bitmapStr}
+	return r.Status().Update(ctx, p)
 }
 
 func (r *LabReconciler) ensureLabVPN(ctx context.Context, lab *laboratoryv1alpha1.Lab, n uint) error {
