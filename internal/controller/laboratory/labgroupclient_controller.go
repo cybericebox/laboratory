@@ -180,6 +180,10 @@ func (r *LabGroupClientReconciler) reconcileDelete(ctx context.Context, lgc *lab
 		}
 	}
 
+	// The cybericebox.com/vpn finalizer is removed by the VPN binary after it
+	// deletes the WireGuard peer. The VPN pod is a Deployment that always comes
+	// back, so this is processed eventually; group teardown (where the pod would
+	// not return) is handled by LabGroup.reconcileDelete draining clients first.
 	controllerutil.RemoveFinalizer(lgc, names.FinalizerLabGroupClient)
 	return ctrl.Result{}, r.Update(ctx, lgc)
 }

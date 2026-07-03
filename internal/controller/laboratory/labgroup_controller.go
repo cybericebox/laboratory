@@ -226,6 +226,20 @@ func (r *LabGroupReconciler) vpnReadyState(ctx context.Context, ns string) (bool
 
 func (r *LabGroupReconciler) reconcileDelete(ctx context.Context, lg *laboratoryv1alpha1.LabGroup) (ctrl.Result, error) {
 	ns := laboratoryv1alpha1.LabGroupNamespace(lg.Name)
+
+	// Drain Labs and LabGroupClients BEFORE deleting the namespace. Both carry
+	// finalizers cleaned up by the per-group VPN/gateway pods; deleting the
+	// namespace first would remove those Deployments before the finalizers
+	// cleared, hanging the namespace in Terminating forever. Draining them while
+	// the pods still run lets that graceful cleanup happen.
+	drained, err := r.drainGroupWorkloads(ctx, ns)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !drained {
+		return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+	}
+
 	var namespace corev1.Namespace
 	if err := r.Get(ctx, types.NamespacedName{Name: ns}, &namespace); err != nil {
 		if errors.IsNotFound(err) {
@@ -240,6 +254,37 @@ func (r *LabGroupReconciler) reconcileDelete(ctx context.Context, lg *laboratory
 		}
 	}
 	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+}
+
+// drainGroupWorkloads deletes every Lab and LabGroupClient in the group
+// namespace and reports whether they are all gone. Called before namespace
+// teardown so the still-running VPN/gateway pods clear their finalizers.
+func (r *LabGroupReconciler) drainGroupWorkloads(ctx context.Context, ns string) (bool, error) {
+	var labs laboratoryv1alpha1.LabList
+	if err := r.List(ctx, &labs, client.InNamespace(ns)); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	for i := range labs.Items {
+		if labs.Items[i].DeletionTimestamp.IsZero() {
+			if err := r.Delete(ctx, &labs.Items[i]); err != nil && !errors.IsNotFound(err) {
+				return false, err
+			}
+		}
+	}
+
+	var clients laboratoryv1alpha1.LabGroupClientList
+	if err := r.List(ctx, &clients, client.InNamespace(ns)); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	for i := range clients.Items {
+		if clients.Items[i].DeletionTimestamp.IsZero() {
+			if err := r.Delete(ctx, &clients.Items[i]); err != nil && !errors.IsNotFound(err) {
+				return false, err
+			}
+		}
+	}
+
+	return len(labs.Items) == 0 && len(clients.Items) == 0, nil
 }
 
 func (r *LabGroupReconciler) ensureNamespace(ctx context.Context, ns string, owner *laboratoryv1alpha1.LabGroup) error {

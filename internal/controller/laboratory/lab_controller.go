@@ -888,8 +888,11 @@ func (r *LabReconciler) ensureLabVPNDeleted(ctx context.Context, lab *laboratory
 	if obj.DeletionTimestamp.IsZero() {
 		return false, r.Delete(ctx, &obj)
 	}
-	// Only remove FinalizerController when it is the sole remaining finalizer —
-	// i.e. the VPN binary has already finished cleanup and removed its own finalizer.
+	// The VPN binary removes its own finalizer after in-pod cleanup, leaving
+	// only FinalizerController for us to strip. The VPN pod is a Deployment, so
+	// if it crashes a new one comes up and processes this — the only way it
+	// never runs is a group teardown, which LabGroup.reconcileDelete prevents by
+	// draining Labs before the namespace (and its VPN Deployment) is deleted.
 	f := obj.GetFinalizers()
 	if len(f) == 1 && f[0] == names.FinalizerController {
 		controllerutil.RemoveFinalizer(&obj, names.FinalizerController)
