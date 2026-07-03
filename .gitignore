@@ -34,3 +34,17 @@ kubeconfig.*
 *.swo
 *~
 internal/proxy/demux/xdp/llvm-strip
+
+# Stale root build artifacts (compiled fresh inside Docker images)
+/cni-gate
+/node-agent
+/gateway
+/proxy
+/cni-gate
+/ovs-diag
+/cover.out
+# captured node-agent logs
+laboratory-node-agent-*.log
+# helm dependency lock/vendor
+charts/laboratory/Chart.lock
+charts/laboratory/charts/
