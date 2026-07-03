@@ -4,13 +4,16 @@ import (
 	"context"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	labstatus "github.com/cybericebox/laboratory/internal/status"
 )
 
 // ConnectionReconciler reconciles a Connection object.
@@ -18,7 +21,8 @@ import (
 // this reconciler aggregates port readiness into Connection.status.ready.
 type ConnectionReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=connections,verbs=get;list;watch;create;update;patch;delete
@@ -48,6 +52,14 @@ func (r *ConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	if conn.Status.Ready != allConnected {
 		conn.Status.Ready = allConnected
+		if allConnected {
+			labstatus.SetReady(&conn.Status.Conditions, conn.Generation, true, labstatus.ReasonReady,
+				"all endpoint ports connected")
+			r.Recorder.Event(&conn, corev1.EventTypeNormal, labstatus.ReasonReady, "connection ready")
+		} else {
+			labstatus.SetReady(&conn.Status.Conditions, conn.Generation, false, labstatus.ReasonWaitingForPort,
+				"waiting for all endpoint ports to connect")
+		}
 		return ctrl.Result{}, r.Status().Update(ctx, &conn)
 	}
 

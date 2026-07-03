@@ -108,6 +108,7 @@ var _ = BeforeSuite(func() {
 	err = (&LabGroupReconciler{
 		Client:          mgr.GetClient(),
 		Scheme:          mgr.GetScheme(),
+		Recorder:        mgr.GetEventRecorderFor("labgroup"),
 		VPNBaseNetwork:  "10.8.0.0/10",
 		InetBaseNetwork: "10.9.0.0/10",
 		VPNImage:        "cybericebox/laboratory-lab:latest",
@@ -118,6 +119,7 @@ var _ = BeforeSuite(func() {
 	err = (&LabGroupClientReconciler{
 		Client:         mgr.GetClient(),
 		Scheme:         mgr.GetScheme(),
+		Recorder:       mgr.GetEventRecorderFor("labgroupclient"),
 		VPNBaseNetwork: "10.8.0.0/10",
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
@@ -125,6 +127,7 @@ var _ = BeforeSuite(func() {
 	err = (&LabReconciler{
 		Client:          mgr.GetClient(),
 		Scheme:          mgr.GetScheme(),
+		Recorder:        mgr.GetEventRecorderFor("lab"),
 		VPNBaseNetwork:  "10.8.0.0/10",
 		InetBaseNetwork: "10.9.0.0/10",
 	}).SetupWithManager(mgr)

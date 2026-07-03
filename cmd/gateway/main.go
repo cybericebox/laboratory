@@ -65,10 +65,11 @@ func main() {
 	}
 
 	if err := (&gateway.LabGatewayReconciler{
-		Client: mgr.GetClient(),
-		DHCP:   dhcp.NewManager(),
-		IPT:    ipt,
-		Cfg:    cfg,
+		Client:   mgr.GetClient(),
+		DHCP:     dhcp.NewManager(),
+		IPT:      ipt,
+		Cfg:      cfg,
+		Recorder: mgr.GetEventRecorderFor("labgateway"),
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "unable to create controller", "controller", "LabGateway")
 		os.Exit(1)

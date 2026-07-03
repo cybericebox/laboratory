@@ -222,6 +222,7 @@ func main() {
 	if err = (&laboratorycontroller.LabGroupReconciler{
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
+		Recorder:          mgr.GetEventRecorderFor("labgroup"),
 		PublicVPNEndpoint: cfg.PublicVPNEndpoint,
 		VPNServicePort:    cfg.VPNServicePort,
 		VPNBaseNetwork:    cfg.VPNBaseNetwork,
@@ -238,6 +239,7 @@ func main() {
 	if err = (&laboratorycontroller.LabGroupClientReconciler{
 		Client:         mgr.GetClient(),
 		Scheme:         mgr.GetScheme(),
+		Recorder:       mgr.GetEventRecorderFor("labgroupclient"),
 		VPNBaseNetwork: cfg.VPNBaseNetwork,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LabGroupClient")
@@ -246,6 +248,7 @@ func main() {
 	if err = (&laboratorycontroller.LabReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
+		Recorder:         mgr.GetEventRecorderFor("lab"),
 		BaseDomain:       cfg.BaseDomain,
 		ProxySourceCIDRs: cfg.ProxySourceCIDRs,
 		VPNBaseNetwork:   cfg.VPNBaseNetwork,
@@ -265,8 +268,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&laboratorycontroller.ConnectionReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("connection"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Connection")
 		os.Exit(1)

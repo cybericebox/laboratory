@@ -7,21 +7,25 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	labstatus "github.com/cybericebox/laboratory/internal/status"
 	"github.com/cybericebox/laboratory/internal/vpn"
 )
 
 // LabGroupClientReconciler manages WireGuard peers for LabGroupClient resources.
 type LabGroupClientReconciler struct {
 	client.Client
-	WG  *vpn.WGManager
-	Cfg *vpn.Config
+	WG       *vpn.WGManager
+	Cfg      *vpn.Config
+	Recorder record.EventRecorder
 }
 
 func (r *LabGroupClientReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -52,9 +56,12 @@ func (r *LabGroupClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 
+	// First registration = finalizer not yet present. Capture before adding it.
+	newPeer := !controllerutil.ContainsFinalizer(&lgc, names.FinalizerVPN)
+
 	// Add own finalizer once the peer is about to be programmed, so teardown
 	// removes the peer before the object is garbage-collected.
-	if !controllerutil.ContainsFinalizer(&lgc, names.FinalizerVPN) {
+	if newPeer {
 		controllerutil.AddFinalizer(&lgc, names.FinalizerVPN)
 		if err := r.Update(ctx, &lgc); err != nil {
 			return ctrl.Result{}, err
@@ -65,7 +72,13 @@ func (r *LabGroupClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	if err := r.WG.AddPeer(pubKey, assignedIP); err != nil {
+		r.Recorder.Eventf(&lgc, corev1.EventTypeWarning, labstatus.ReasonProgrammingFailed,
+			"failed to register WireGuard peer: %v", err)
 		return ctrl.Result{}, fmt.Errorf("add WG peer %s: %w", lgc.Name, err)
+	}
+	if newPeer {
+		r.Recorder.Eventf(&lgc, corev1.EventTypeNormal, labstatus.ReasonPeerRegistered,
+			"WireGuard peer registered (allowedIP %s)", assignedIP)
 	}
 	return ctrl.Result{}, nil
 }

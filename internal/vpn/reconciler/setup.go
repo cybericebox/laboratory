@@ -18,18 +18,20 @@ func Setup(ctx context.Context, mgr ctrl.Manager, wg *vpn.WGManager, cfg *vpn.Co
 	dhcpMgr := dhcp.NewManager()
 
 	if err := (&LabGroupClientReconciler{
-		Client: mgr.GetClient(),
-		WG:     wg,
-		Cfg:    cfg,
+		Client:   mgr.GetClient(),
+		WG:       wg,
+		Cfg:      cfg,
+		Recorder: mgr.GetEventRecorderFor("vpn-labgroupclient"),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setup LabGroupClientReconciler: %w", err)
 	}
 
 	if err := (&LabVPNReconciler{
-		Client: mgr.GetClient(),
-		WG:     wg,
-		DHCP:   dhcpMgr,
-		Cfg:    cfg,
+		Client:   mgr.GetClient(),
+		WG:       wg,
+		DHCP:     dhcpMgr,
+		Cfg:      cfg,
+		Recorder: mgr.GetEventRecorderFor("labvpn"),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setup LabVPNReconciler: %w", err)
 	}

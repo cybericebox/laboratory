@@ -28,6 +28,14 @@ type LabVPNStatus struct {
 	Phase       LabVPNPhase `json:"phase,omitempty"`
 	DHCPEnabled bool        `json:"dhcpEnabled,omitempty"`
 	DHCPReady   bool        `json:"dhcpReady,omitempty"`
+	// Conditions surfaces reconciler progress/blocking reasons
+	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
+	// +optional
+	// +patchMergeKey=type
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 }
 
 // +genclient

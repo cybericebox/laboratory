@@ -50,6 +50,14 @@ type LabStatus struct {
 	Devices     []DeviceRef      `json:"devices,omitempty"`
 	Connections []ConnectionRef  `json:"connections,omitempty"`
 	Access      []AccessEntry    `json:"access,omitempty"`
+	// Conditions surfaces reconciler progress/blocking reasons
+	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
+	// +optional
+	// +patchMergeKey=type
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 }
 
 // LabNetworkStatus reports the allocated CIDR for a network segment.

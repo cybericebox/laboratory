@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -26,6 +27,7 @@ import (
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	labstatus "github.com/cybericebox/laboratory/internal/status"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	"github.com/cybericebox/laboratory/pkg/netutil"
 )
@@ -33,7 +35,8 @@ import (
 // LabReconciler reconciles a Lab object.
 type LabReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 	// BaseDomain is the public DNS suffix under which task URLs are advertised,
 	// e.g. "challenges.cybericebox.com". An exposed device named "ssh" inside
 	// any lab is reachable as https://ssh.<BaseDomain>. Written to
@@ -100,7 +103,12 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	if err := r.validateGraph(&lab); err != nil {
+		// Surface the specific validation reason — it was previously discarded,
+		// leaving the Lab in Failed with no user-visible cause.
 		lab.Status.Phase = laboratoryv1alpha1.PhaseFailed
+		labstatus.SetReady(&lab.Status.Conditions, lab.Generation, false,
+			labstatus.ReasonValidationFailed, err.Error())
+		r.Recorder.Event(&lab, corev1.EventTypeWarning, labstatus.ReasonValidationFailed, err.Error())
 		if statusErr := r.Status().Update(ctx, &lab); statusErr != nil {
 			logger.Error(statusErr, "update status after graph validation failure")
 		}
@@ -519,10 +527,22 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 
 	access := r.buildAccessEntries(lab)
 
+	// Reflect readiness as a condition; on the Ready edge emit a Normal event.
+	wasReady := labstatus.IsReady(lab.Status.Conditions)
+	if allReady {
+		labstatus.SetReady(&lab.Status.Conditions, lab.Generation, true, labstatus.ReasonReady, "all devices and connections ready")
+		if !wasReady {
+			r.Recorder.Event(lab, corev1.EventTypeNormal, labstatus.ReasonReady, "lab is ready")
+		}
+	} else {
+		labstatus.SetReady(&lab.Status.Conditions, lab.Generation, false, labstatus.ReasonProvisioning, "waiting for devices and connections to become ready")
+	}
+
 	if newPhase == lab.Status.Phase &&
 		reflect.DeepEqual(refs, lab.Status.Devices) &&
 		reflect.DeepEqual(connRefs, lab.Status.Connections) &&
-		reflect.DeepEqual(access, lab.Status.Access) {
+		reflect.DeepEqual(access, lab.Status.Access) &&
+		wasReady == allReady {
 		if newPhase != laboratoryv1alpha1.PhaseReady {
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}

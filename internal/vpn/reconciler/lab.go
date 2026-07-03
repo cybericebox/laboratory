@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/vishvananda/netlink"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -17,6 +19,7 @@ import (
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	labstatus "github.com/cybericebox/laboratory/internal/status"
 	"github.com/cybericebox/laboratory/internal/vpn"
 	"github.com/cybericebox/laboratory/pkg/dhcp"
 	"github.com/cybericebox/laboratory/pkg/netutil"
@@ -25,9 +28,10 @@ import (
 // LabVPNReconciler manages per-lab WireGuard routing and optional DHCP.
 type LabVPNReconciler struct {
 	client.Client
-	WG   *vpn.WGManager
-	DHCP *dhcp.Manager
-	Cfg  *vpn.Config
+	WG       *vpn.WGManager
+	DHCP     *dhcp.Manager
+	Cfg      *vpn.Config
+	Recorder record.EventRecorder
 }
 
 func (r *LabVPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -62,6 +66,8 @@ func (r *LabVPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	ifaceName := names.LabIfaceNameByIndex(labvpn.Spec.NetworkIndex)
 	if _, err := netlink.LinkByName(ifaceName); err != nil {
 		if labvpn.Status.Phase != laboratoryv1alpha1.LabVPNPhaseWaitingForInterface {
+			r.Recorder.Eventf(&labvpn, corev1.EventTypeWarning, labstatus.ReasonWaitingForInterface,
+				"waiting for OVS interface %q (node-agent has not attached it yet)", ifaceName)
 			if patchErr := r.patchPhase(ctx, &labvpn, laboratoryv1alpha1.LabVPNPhaseWaitingForInterface); patchErr != nil {
 				log.Error(patchErr, "patch phase WaitingForInterface")
 			}
@@ -94,11 +100,18 @@ func (r *LabVPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 	}
 
-	return ctrl.Result{}, r.patchStatus(ctx, &labvpn, laboratoryv1alpha1.LabVPNStatus{
+	if labvpn.Status.Phase != laboratoryv1alpha1.LabVPNPhaseReady {
+		r.Recorder.Eventf(&labvpn, corev1.EventTypeNormal, labstatus.ReasonReady,
+			"lab VPN routing ready on %s (%s)", ifaceName, cidr)
+	}
+	newStatus := laboratoryv1alpha1.LabVPNStatus{
 		Phase:       laboratoryv1alpha1.LabVPNPhaseReady,
 		DHCPEnabled: dhcpEnabled,
 		DHCPReady:   dhcpEnabled,
-	})
+		Conditions:  labvpn.Status.Conditions,
+	}
+	labstatus.SetReady(&newStatus.Conditions, labvpn.Generation, true, labstatus.ReasonReady, "lab VPN routing ready")
+	return ctrl.Result{}, r.patchStatus(ctx, &labvpn, newStatus)
 }
 
 func (r *LabVPNReconciler) reconcileDelete(ctx context.Context, labvpn *laboratoryv1alpha1.LabVPN) (ctrl.Result, error) {

@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/vishvananda/netlink"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -17,15 +19,17 @@ import (
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	labstatus "github.com/cybericebox/laboratory/internal/status"
 	"github.com/cybericebox/laboratory/pkg/dhcp"
 	"github.com/cybericebox/laboratory/pkg/netutil"
 )
 
 type LabGatewayReconciler struct {
 	client.Client
-	DHCP *dhcp.Manager
-	IPT  *IPTablesManager
-	Cfg  *Config
+	DHCP     *dhcp.Manager
+	IPT      *IPTablesManager
+	Cfg      *Config
+	Recorder record.EventRecorder
 }
 
 func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -60,6 +64,8 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	ifaceName := names.LabIfaceNameByIndex(gw.Spec.NetworkIndex)
 	if _, err := netlink.LinkByName(ifaceName); err != nil {
 		if gw.Status.Phase != laboratoryv1alpha1.LabGatewayPhaseWaitingForInterface {
+			r.Recorder.Eventf(&gw, corev1.EventTypeWarning, labstatus.ReasonWaitingForInterface,
+				"waiting for OVS interface %q (node-agent has not attached it yet)", ifaceName)
 			if patchErr := r.patchPhase(ctx, &gw, laboratoryv1alpha1.LabGatewayPhaseWaitingForInterface); patchErr != nil {
 				log.Error(patchErr, "patch phase WaitingForInterface")
 			}
@@ -97,12 +103,19 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
-	return ctrl.Result{}, r.patchStatus(ctx, &gw, laboratoryv1alpha1.LabGatewayStatus{
+	if gw.Status.Phase != laboratoryv1alpha1.LabGatewayPhaseReady {
+		r.Recorder.Eventf(&gw, corev1.EventTypeNormal, labstatus.ReasonReady,
+			"lab internet gateway ready on %s (NAT active)", ifaceName)
+	}
+	newStatus := laboratoryv1alpha1.LabGatewayStatus{
 		Phase:       laboratoryv1alpha1.LabGatewayPhaseReady,
 		NATReady:    true,
 		DHCPEnabled: dhcpEnabled,
 		DHCPReady:   dhcpEnabled,
-	})
+		Conditions:  gw.Status.Conditions,
+	}
+	labstatus.SetReady(&newStatus.Conditions, gw.Generation, true, labstatus.ReasonReady, "lab internet gateway ready")
+	return ctrl.Result{}, r.patchStatus(ctx, &gw, newStatus)
 }
 
 func (r *LabGatewayReconciler) reconcileDelete(ctx context.Context, gw *laboratoryv1alpha1.LabGateway) (ctrl.Result, error) {

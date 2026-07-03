@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -22,6 +23,7 @@ import (
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	labstatus "github.com/cybericebox/laboratory/internal/status"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	"github.com/cybericebox/laboratory/pkg/netutil"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
@@ -33,7 +35,8 @@ const labSubnetPrefixLen = 24
 // LabGroupReconciler reconciles a LabGroup object.
 type LabGroupReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 	// PublicVPNEndpoint is the publicly reachable host:port that clients dial
 	// (host of the WireGuard demux). Written verbatim to LabGroup.Status.VPN.Endpoint.
 	PublicVPNEndpoint string
@@ -104,8 +107,9 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	} else if dup != "" {
 		lg.Status.Phase = laboratoryv1alpha1.PhaseFailed
 		_ = r.Status().Update(ctx, &lg)
-		logger.Error(fmt.Errorf("pubkey collision with LabGroup %q", dup),
-			"refusing to register duplicate VPN public key", "labgroup", lg.Name)
+		msg := fmt.Sprintf("VPN public key collides with LabGroup %q; refusing to register", dup)
+		r.Recorder.Event(&lg, corev1.EventTypeWarning, labstatus.ReasonPubKeyCollision, msg)
+		logger.Error(fmt.Errorf("%s", msg), "refusing to register duplicate VPN public key", "labgroup", lg.Name)
 		return ctrl.Result{}, nil
 	}
 
@@ -161,13 +165,21 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	lg.Status.VPN.PublicKey = pubKey
 	lg.Status.VPN.SecretRef = fmt.Sprintf("%s/%s", ns, secretName)
 	lg.Status.VPN.Endpoint = r.PublicVPNEndpoint
+	wasRegistered := lg.Status.VPN.Registered
 	lg.Status.VPN.Registered = vpnReady
 	if err = r.Status().Update(ctx, &lg); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	if !vpnReady {
+		if wasRegistered {
+			r.Recorder.Event(&lg, corev1.EventTypeWarning, labstatus.ReasonWaitingForVPNServer,
+				"VPN server has no ready replicas; group not registered in demux")
+		}
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+	if !wasRegistered {
+		r.Recorder.Event(&lg, corev1.EventTypeNormal, labstatus.ReasonReady, "VPN server registered in demux")
 	}
 	return ctrl.Result{}, nil
 }

@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -21,6 +22,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	labstatus "github.com/cybericebox/laboratory/internal/status"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	"github.com/cybericebox/laboratory/pkg/netutil"
 )
@@ -28,7 +30,8 @@ import (
 // LabGroupClientReconciler reconciles a LabGroupClient object.
 type LabGroupClientReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 	// VPNBaseNetwork is the full VPN address space advertised to WireGuard clients (e.g. "10.8.0.0/10").
 	VPNBaseNetwork string
 }
@@ -85,8 +88,11 @@ func (r *LabGroupClientReconciler) reconcileCreate(ctx context.Context, lgc *lab
 		if dup, dupErr := r.findDuplicatePubKey(ctx, pubKey, lgc); dupErr != nil {
 			return ctrl.Result{}, dupErr
 		} else if dup != "" {
-			ctrl.LoggerFrom(ctx).Error(fmt.Errorf("pubkey collision with %q", dup),
-				"refusing to allocate duplicate VPN client", "client", lgc.Name)
+			msg := fmt.Sprintf("public key collides with client %q; refusing to allocate", dup)
+			labstatus.SetReady(&lgc.Status.Conditions, lgc.Generation, false, labstatus.ReasonPubKeyCollision, msg)
+			_ = r.Status().Update(ctx, lgc)
+			r.Recorder.Event(lgc, corev1.EventTypeWarning, labstatus.ReasonPubKeyCollision, msg)
+			ctrl.LoggerFrom(ctx).Error(fmt.Errorf("%s", msg), "refusing to allocate duplicate VPN client", "client", lgc.Name)
 			return ctrl.Result{}, nil
 		}
 
@@ -139,7 +145,17 @@ func (r *LabGroupClientReconciler) reconcileCreate(ctx context.Context, lgc *lab
 	// Requeue softly until LabGroup endpoint/server pubkey land so the wg.conf
 	// gets refreshed without depending solely on the cross-resource watch.
 	if serverPubKey == "" || endpoint == "" {
+		if labstatus.IsReady(lgc.Status.Conditions) || len(lgc.Status.Conditions) == 0 {
+			labstatus.SetReady(&lgc.Status.Conditions, lgc.Generation, false, labstatus.ReasonWaitingForVPNServer,
+				"waiting for parent LabGroup VPN endpoint/public key")
+			_ = r.Status().Update(ctx, lgc)
+		}
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+	if !labstatus.IsReady(lgc.Status.Conditions) {
+		labstatus.SetReady(&lgc.Status.Conditions, lgc.Generation, true, labstatus.ReasonReady, "client config provisioned")
+		_ = r.Status().Update(ctx, lgc)
+		r.Recorder.Event(lgc, corev1.EventTypeNormal, labstatus.ReasonReady, "VPN client config ready")
 	}
 	return ctrl.Result{}, nil
 }

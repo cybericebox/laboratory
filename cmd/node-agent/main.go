@@ -94,6 +94,7 @@ func main() {
 		NodeAddress: nodeAddr,
 		OVS:         ovs,
 		Flows:       flows,
+		Recorder:    mgr.GetEventRecorderFor("node-agent-connection"),
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "setup ConnectionReconciler")
 		os.Exit(1)

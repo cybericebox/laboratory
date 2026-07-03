@@ -32,3 +32,8 @@ rules:
 - apiGroups: [rbac.authorization.k8s.io]
   resources: [rolebindings]
   verbs: [create, delete, get, list, patch, update, watch]
+
+# Events for reconciler diagnostics (kubectl describe / get events).
+- apiGroups: [""]
+  resources: [events]
+  verbs: [create, patch]

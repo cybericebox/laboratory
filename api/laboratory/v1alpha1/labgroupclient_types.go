@@ -18,6 +18,14 @@ type LabGroupClientStatus struct {
 	// SecretRef is the name of the Secret in the same namespace holding connection config.
 	SecretRef  string                   `json:"secretRef,omitempty"`
 	Statistics LabGroupClientStatistics `json:"statistics,omitempty"`
+	// Conditions surfaces reconciler progress/blocking reasons
+	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
+	// +optional
+	// +patchMergeKey=type
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 }
 
 // LabGroupClientStatistics is written periodically by the VPN server.

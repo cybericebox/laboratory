@@ -10,6 +10,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -18,6 +19,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	labstatus "github.com/cybericebox/laboratory/internal/status"
 )
 
 // ConnectionReconciler programs br-ovs based on Connection CRDs.
@@ -40,6 +42,15 @@ type ConnectionReconciler struct {
 	NodeAddress string
 	OVS         *OVSManager
 	Flows       *FlowManager
+	Recorder    record.EventRecorder
+}
+
+// warnf emits a Warning event on the Connection if a recorder is configured.
+// Used to surface programming failures that would otherwise be silent requeues.
+func (r *ConnectionReconciler) warnf(conn *laboratoryv1alpha1.Connection, reason, format string, args ...interface{}) {
+	if r.Recorder != nil {
+		r.Recorder.Eventf(conn, corev1.EventTypeWarning, reason, format, args...)
+	}
 }
 
 // epInfo holds resolved endpoint state for one reconcile cycle.
@@ -84,9 +95,11 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 
 	// Ensure shared Geneve port and its permanent t0 rule.
 	if err := r.OVS.AddGenevePort("", ""); err != nil {
+		r.warnf(conn, labstatus.ReasonProgrammingFailed, "ensure Geneve port failed: %v", err)
 		return ctrl.Result{}, fmt.Errorf("ensure geneve port: %w", err)
 	}
 	if err := r.Flows.InitGeneveIngress(); err != nil {
+		r.warnf(conn, labstatus.ReasonProgrammingFailed, "program Geneve ingress flow failed: %v", err)
 		return ctrl.Result{}, fmt.Errorf("init geneve ingress: %w", err)
 	}
 

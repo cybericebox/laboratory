@@ -14,3 +14,8 @@ rules:
 - apiGroups: [allocation.cybericebox.com]
   resources: [pools]
   verbs: [get, list, watch]
+
+# Events for reconciler diagnostics (kubectl describe / get events).
+- apiGroups: [""]
+  resources: [events]
+  verbs: [create, patch]
