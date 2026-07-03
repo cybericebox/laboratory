@@ -30,30 +30,38 @@ func (r *LabGroupClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Main controller must have processed this first.
-	if !controllerutil.ContainsFinalizer(&lgc, names.FinalizerController) {
+	// Deletion path — run before the finalizer add so cleanup happens even
+	// while the operator's own finalizer is still present.
+	if !lgc.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(&lgc, names.FinalizerVPN) {
+			if lgc.Spec.PublicKey != "" {
+				_ = r.WG.RemovePeer(lgc.Spec.PublicKey)
+			}
+			controllerutil.RemoveFinalizer(&lgc, names.FinalizerVPN)
+			return ctrl.Result{}, r.Update(ctx, &lgc)
+		}
 		return ctrl.Result{}, nil
 	}
 
-	// Deletion path.
-	if !lgc.DeletionTimestamp.IsZero() {
-		if lgc.Spec.PublicKey != "" {
-			_ = r.WG.RemovePeer(lgc.Spec.PublicKey)
-		}
-		controllerutil.RemoveFinalizer(&lgc, names.FinalizerVPN)
-		return ctrl.Result{}, r.Update(ctx, &lgc)
-	}
-
-	// Add own finalizer on first observation.
-	if !controllerutil.ContainsFinalizer(&lgc, names.FinalizerVPN) {
-		controllerutil.AddFinalizer(&lgc, names.FinalizerVPN)
-		return ctrl.Result{}, r.Update(ctx, &lgc)
-	}
-
+	// The operator allocates the IP and generates/persists the public key. Wait
+	// for both before adding the peer — do NOT gate on the operator's finalizer,
+	// which is a different finalizer than this reconciler's readiness signal.
 	pubKey := lgc.Spec.PublicKey
 	assignedIP := lgc.Status.AssignedIP
 	if pubKey == "" || assignedIP == "" {
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	}
+
+	// Add own finalizer once the peer is about to be programmed, so teardown
+	// removes the peer before the object is garbage-collected.
+	if !controllerutil.ContainsFinalizer(&lgc, names.FinalizerVPN) {
+		controllerutil.AddFinalizer(&lgc, names.FinalizerVPN)
+		if err := r.Update(ctx, &lgc); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.Get(ctx, req.NamespacedName, &lgc); err != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
 	}
 
 	if err := r.WG.AddPeer(pubKey, assignedIP); err != nil {
