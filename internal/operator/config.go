@@ -41,6 +41,14 @@ type Config struct {
 	LabNodeSelectorJSON string `env:"LAB_NODE_SELECTOR" envDefault:"{}"`
 	// LabTolerationsJSON is a JSON-encoded []corev1.Toleration applied to all runtime lab pods.
 	LabTolerationsJSON string `env:"LAB_TOLERATIONS" envDefault:"[]"`
+	// AgentEnabled gates creation of the management-agent RoleBinding in each
+	// LabGroup namespace.
+	AgentEnabled bool `env:"AGENT_ENABLED" envDefault:"false"`
+	// AgentServiceAccount is the name of the management-agent ServiceAccount
+	// bound by the per-group RoleBinding.
+	AgentServiceAccount string `env:"AGENT_SERVICE_ACCOUNT" envDefault:"laboratory-agent"`
+	// AgentServiceNamespace is the namespace of the management-agent ServiceAccount.
+	AgentServiceNamespace string `env:"AGENT_SERVICE_NAMESPACE" envDefault:"laboratory-agent"`
 }
 
 func LoadConfig() (*Config, error) {

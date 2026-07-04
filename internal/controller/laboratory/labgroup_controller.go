@@ -56,6 +56,10 @@ type LabGroupReconciler struct {
 	LabNodeSelector map[string]string
 	// LabTolerations is applied to VPN and gateway pod specs.
 	LabTolerations []corev1.Toleration
+	// AgentEnabled gates creation of the management-agent RoleBinding in each
+	// group namespace. AgentSA identifies the agent ServiceAccount to bind.
+	AgentEnabled bool
+	AgentSA      types.NamespacedName
 }
 
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labgroups,verbs=get;list;watch;create;update;patch;delete
@@ -141,6 +145,11 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 	if err = r.ensureGatewayDeployment(ctx, ns); err != nil {
 		logger.Error(err, "ensure gateway deployment")
+		return ctrl.Result{}, err
+	}
+
+	if err = r.ensureAgentRoleBinding(ctx, ns); err != nil {
+		logger.Error(err, "ensure agent role binding")
 		return ctrl.Result{}, err
 	}
 
@@ -510,6 +519,35 @@ func (r *LabGroupReconciler) ensureRoleBinding(ctx context.Context, ns, saName, 
 			Kind:      "ServiceAccount",
 			Name:      saName,
 			Namespace: ns,
+		}},
+	}
+	return r.Create(ctx, rb)
+}
+
+// ensureAgentRoleBinding creates the RoleBinding granting the management-agent
+// ServiceAccount access to a LabGroup namespace, gated by r.AgentEnabled. It is
+// a no-op when disabled, and idempotent when the RoleBinding already exists.
+func (r *LabGroupReconciler) ensureAgentRoleBinding(ctx context.Context, ns string) error {
+	if !r.AgentEnabled {
+		return nil
+	}
+	var existing rbacv1.RoleBinding
+	if err := r.Get(ctx, types.NamespacedName{Name: names.AgentRoleBindingName, Namespace: ns}, &existing); err == nil {
+		return nil
+	} else if !errors.IsNotFound(err) {
+		return err
+	}
+	rb := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: names.AgentRoleBindingName, Namespace: ns},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     names.RoleAgentName,
+		},
+		Subjects: []rbacv1.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      r.AgentSA.Name,
+			Namespace: r.AgentSA.Namespace,
 		}},
 	}
 	return r.Create(ctx, rb)

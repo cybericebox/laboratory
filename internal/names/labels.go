@@ -73,6 +73,12 @@ const (
 	RoleManagerName = "laboratory-manager-role"
 	RoleVPNName     = "laboratory-vpn-role"
 	RoleGatewayName = "laboratory-gateway-role"
+	RoleAgentName   = "laboratory-agent-role"
+
+	// AgentRoleBindingName is the RoleBinding created in each LabGroup namespace
+	// that grants the management-agent ServiceAccount access via RoleAgentName,
+	// gated by LabGroupReconciler.AgentEnabled.
+	AgentRoleBindingName = "laboratory-agent-binding"
 )
 
 // Secret name patterns.
