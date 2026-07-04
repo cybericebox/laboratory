@@ -17,11 +17,6 @@ import (
 	"github.com/cybericebox/laboratory/internal/names"
 )
 
-const (
-	AnnotationNetworks       = names.AnnotationNetworks
-	AnnotationDefaultNetwork = names.AnnotationDefaultNetwork
-)
-
 // NetAttachment is one parsed entry from the networks annotation.
 type NetAttachment struct {
 	Iface string // desired name inside pod netns (e.g. "eth1")
@@ -52,7 +47,7 @@ func ParseNetworkAnnotation(annotation string) []NetAttachment {
 	return result
 }
 
-// NetworkAttachReconciler attaches veth ports to pods based on AnnotationNetworks.
+// NetworkAttachReconciler attaches veth ports to pods based on names.AnnotationNetworks.
 // The host-side of each veth stays in root netns and is added to the OVS bridge;
 // the pod-side is moved into the pod netns and renamed to the desired interface name.
 type NetworkAttachReconciler struct {
@@ -88,7 +83,7 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
-	annotation := pod.Annotations[AnnotationNetworks]
+	annotation := pod.Annotations[names.AnnotationNetworks]
 	attachments := ParseNetworkAnnotation(annotation)
 	log.Info("NetAttach parsed", "annotation", annotation, "attachments", len(attachments), "phase", pod.Status.Phase)
 
