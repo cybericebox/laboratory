@@ -32,7 +32,6 @@ const (
 	// Semantic pool type values.
 	PoolTypeVPNClients = "vpn-clients"
 	PoolTypeLabSubnets = "lab-subnets"
-	PoolTypeVNI        = "vni"
 )
 
 type (

@@ -57,10 +57,7 @@ func CapabilitiesForPreset(preset string) []string {
 var DHCPImpliedCapabilities = []string{"NET_ADMIN", "NET_RAW"}
 
 // Component names used for Deployment names, Service names, and app label values.
-const (
-	ComponentVPN     = "vpn"
-	ComponentGateway = "gateway"
-)
+const ComponentGateway = "gateway"
 
 // ProxyL7App is the `app` label value on the L7 proxy pod that terminates
 // external HTTPS and connects to exposed device Services. The web-exposure
@@ -70,7 +67,6 @@ const ProxyL7App = "laboratory-proxy-l7"
 
 // RBAC resource names created per LabGroup namespace.
 const (
-	RoleManagerName = "laboratory-manager-role"
 	RoleVPNName     = "laboratory-vpn-role"
 	RoleGatewayName = "laboratory-gateway-role"
 	RoleAgentName   = "laboratory-agent-role"

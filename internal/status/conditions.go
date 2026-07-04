@@ -15,18 +15,15 @@ const ConditionReady = "Ready"
 
 // Common reasons — kept short and CamelCase per Kubernetes convention.
 const (
-	ReasonReady                = "Ready"
-	ReasonProvisioning         = "Provisioning"
-	ReasonValidationFailed     = "ValidationFailed"
-	ReasonWaitingForInterface  = "WaitingForInterface"
-	ReasonWaitingForVNI        = "WaitingForVNI"
-	ReasonWaitingForPort       = "WaitingForPort"
-	ReasonWaitingForEndpoint   = "WaitingForEndpoint"
-	ReasonWaitingForController = "WaitingForController"
-	ReasonWaitingForVPNServer  = "WaitingForVPNServer"
-	ReasonPubKeyCollision      = "PubKeyCollision"
-	ReasonProgrammingFailed    = "ProgrammingFailed"
-	ReasonPeerRegistered       = "PeerRegistered"
+	ReasonReady               = "Ready"
+	ReasonProvisioning        = "Provisioning"
+	ReasonValidationFailed    = "ValidationFailed"
+	ReasonWaitingForInterface = "WaitingForInterface"
+	ReasonWaitingForPort      = "WaitingForPort"
+	ReasonWaitingForVPNServer = "WaitingForVPNServer"
+	ReasonPubKeyCollision     = "PubKeyCollision"
+	ReasonProgrammingFailed   = "ProgrammingFailed"
+	ReasonPeerRegistered      = "PeerRegistered"
 )
 
 // SetReady sets (or updates) the Ready condition on conds. generation is the
