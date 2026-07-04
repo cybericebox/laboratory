@@ -18,6 +18,9 @@ metadata:
   {{- end }}
 spec:
   gatewayClassName: {{ .Values.gateway.gatewayClassName }}
+  infrastructure:
+    annotations:
+      io.cilium/lb-ipam-sharing-key: {{ .Values.proxy.sharingKey | quote }}
   listeners:
   - name: tls-passthrough
     protocol: TLS

@@ -110,6 +110,10 @@ proxy:
     # Leave empty to get a separate IP for WireGuard.
     sharedLBKey: "laboratory"
 
+  # Cilium LB-IPAM sharing key: makes the WG LoadBalancer Service and the
+  # Gateway's Service share one external IP (UDP 51820 + TCP 443 don't conflict).
+  sharingKey: "laboratory-edge"
+
 # ============================================================
 # Cilium Gateway API (TLS passthrough, shared LB IP)
 # ============================================================

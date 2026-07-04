@@ -1,0 +1,21 @@
+{{- if and .Values.proxy.enabled .Values.proxy.wg.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: laboratory-proxy-wg
+  namespace: laboratory-proxy
+  annotations:
+    io.cilium/lb-ipam-sharing-key: {{ .Values.proxy.sharingKey | quote }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector:
+    app: laboratory-proxy-l7
+  ports:
+    - name: wg
+      protocol: UDP
+      port: {{ .Values.operator.vpnServicePort }}
+      targetPort: {{ .Values.proxy.wg.listenPort }}
+{{- end }}
