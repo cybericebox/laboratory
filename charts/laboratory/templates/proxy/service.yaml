@@ -13,40 +13,8 @@ spec:
   selector:
     app: laboratory-proxy-l7
   ports:
-  - name: https
-    port: 443
-    targetPort: 443
-    protocol: TCP
-{{- end }}
-{{- if and .Values.proxy.enabled .Values.proxy.wg.enabled }}
----
-# LoadBalancer: WireGuard demux, direct external access with source-IP preserved
-{{- $annotations := dict }}
-{{- if .Values.proxy.service.sharedLBKey }}
-{{- $_ := set $annotations "lbipam.cilium.io/sharing-key" .Values.proxy.service.sharedLBKey }}
-{{- $_ := set $annotations "lbipam.cilium.io/sharing-cross-namespace" .Release.Namespace }}
-{{- end }}
-{{- $annotations = mergeOverwrite $annotations .Values.proxy.service.annotations }}
-apiVersion: v1
-kind: Service
-metadata:
-  name: laboratory-proxy-wg
-  namespace: laboratory-proxy
-  labels:
-    app: laboratory-proxy
-    {{- include "laboratory.labels" . | nindent 4 }}
-  {{- with $annotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
-spec:
-  type: LoadBalancer
-  externalTrafficPolicy: Local
-  selector:
-    app: laboratory-proxy-wg
-  ports:
-  - name: wireguard
-    port: {{ .Values.operator.vpnServicePort }}
-    targetPort: {{ .Values.proxy.wg.listenPort }}
-    protocol: UDP
+    - name: https
+      port: 443
+      targetPort: {{ trimPrefix ":" .Values.proxy.l7.listen | int }}
+      protocol: TCP
 {{- end }}

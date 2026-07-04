@@ -1,14 +1,13 @@
-{{- if and .Values.proxy.enabled .Values.proxy.l7.enabled }}
+{{- if .Values.proxy.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: laboratory-proxy-l7
+  name: laboratory-proxy
   namespace: laboratory-proxy
   labels:
-    app: laboratory-proxy-l7
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.proxy.l7.replicas }}
+  replicas: {{ .Values.proxy.replicas }}
   selector:
     matchLabels:
       app: laboratory-proxy-l7
@@ -16,16 +15,27 @@ spec:
     metadata:
       labels:
         app: laboratory-proxy-l7
+        {{- include "laboratory.labels" . | nindent 8 }}
     spec:
       serviceAccountName: laboratory-proxy
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: laboratory-proxy-l7
+              topologyKey: kubernetes.io/hostname
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
-      - name: proxy-l7
-        image: "{{ .Values.proxy.l7.image.repository }}:{{ .Values.proxy.l7.image.tag }}"
-        imagePullPolicy: {{ .Values.proxy.l7.image.pullPolicy }}
+      {{- if .Values.proxy.l7.enabled }}
+      - name: l7
+        image: "{{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag }}"
+        imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
         command: ["/proxy-l7"]
         env:
         - name: BASE_DOMAIN
@@ -46,6 +56,9 @@ spec:
         - name: KUBERNETES_SERVICE_PORT
           value: "6443"
         {{- end }}
+        ports:
+        - name: https
+          containerPort: {{ trimPrefix ":" .Values.proxy.l7.listen | int }}
         volumeMounts:
         - name: tls
           mountPath: /etc/proxy/tls
@@ -55,6 +68,31 @@ spec:
           readOnly: true
         resources:
           {{- toYaml .Values.proxy.l7.resources | nindent 10 }}
+      {{- end }}
+      {{- if .Values.proxy.wg.enabled }}
+      - name: wg-demux
+        image: "{{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag }}"
+        imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
+        command: ["/proxy-wg"]
+        env:
+        - name: UDP_LISTEN_ADDR
+          value: {{ printf ":%d" (.Values.proxy.wg.listenPort | int) | quote }}
+        - name: VPN_SERVICE_PORT
+          value: {{ .Values.operator.vpnServicePort | quote }}
+        {{- if .Values.proxy.kindMode }}
+        - name: KUBERNETES_SERVICE_HOST
+          value: "127.0.0.1"
+        - name: KUBERNETES_SERVICE_PORT
+          value: "6443"
+        {{- end }}
+        ports:
+        - name: wg
+          containerPort: {{ .Values.proxy.wg.listenPort }}
+          protocol: UDP
+        resources:
+          {{- toYaml .Values.proxy.wg.resources | nindent 10 }}
+      {{- end }}
+      {{- if .Values.proxy.l7.enabled }}
       volumes:
       - name: tls
         secret:
@@ -62,4 +100,5 @@ spec:
       - name: jwt
         secret:
           secretName: proxy-credentials
+      {{- end }}
 {{- end }}

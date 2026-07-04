@@ -60,7 +60,7 @@ inetGateway:
     tag: "latest"
 
 # ============================================================
-# Proxy: proxy-l7 (Deployment) + proxy-wg (DaemonSet)
+# Proxy: l7 + wg-demux containers in one unprivileged Deployment
 # ============================================================
 proxy:
   enabled: true
@@ -68,16 +68,18 @@ proxy:
   # Set true when running in Kind: overrides API server address to 127.0.0.1:6443.
   kindMode: false
 
-  # L7 HTTPS proxy — Deployment, receives TLS passthrough from Cilium Gateway.
+  # Shared image for both the l7 and wg-demux containers.
+  image:
+    repository: cybericebox/laboratory-proxy
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  replicas: 1
+
+  # L7 HTTPS proxy container — receives TLS passthrough from Cilium Gateway.
   l7:
     enabled: true
-    image:
-      repository: cybericebox/laboratory-proxy
-      tag: "latest"
-      pullPolicy: IfNotPresent
-    listen: ":443"
+    listen: ":8443"
     cookieName: "challenge"
-    replicas: 1
     resources:
       limits:
         cpu: 500m
@@ -86,24 +88,12 @@ proxy:
         cpu: 50m
         memory: 64Mi
 
-  # WireGuard demux — DaemonSet, hostNetwork, XDP on eth0.
+  # WireGuard demux container — plain userspace UDP, no hostNetwork/capabilities.
   wg:
     enabled: true
-    image:
-      repository: cybericebox/laboratory-proxy
-      tag: "latest"
-      pullPolicy: IfNotPresent
-    # Internal UDP port the proxy-wg pod binds to on the host.
+    # Internal UDP port the wg-demux container binds to.
     # The LoadBalancer Service maps operator.vpnServicePort → this port.
-    # Set to a different value than vpnServicePort to avoid bind conflicts
-    # when the host already occupies 51820 (e.g. Kind with WireGuard).
     listenPort: 51820
-    externalInterface: "lima0"
-    # Restrict proxy-wg DaemonSet to specific nodes (e.g. nodes with public IPs).
-    # Leave empty to run on all worker nodes.
-    # Example: {"proxy-node": "true"}
-    nodeSelector: {}
-    tolerations: []
     resources:
       limits:
         cpu: 500m
