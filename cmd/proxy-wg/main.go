@@ -65,7 +65,7 @@ func main() {
 	defer cancel()
 	stop := make(chan struct{})
 
-	dmx, err := demux.New(cfg.ListenAddr, cfg.ExternalInterface, table, ct, cfg.XDPEnabled)
+	dmx, err := demux.New(cfg.ListenAddr, table, ct)
 	if err != nil {
 		log.Error(err, "create demux")
 		os.Exit(1)

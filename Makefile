@@ -238,17 +238,6 @@ kind-deploy: kind-load install deploy ## Full local deploy: build all + load + C
 	@echo "  hack/test/run.sh multi-node"
 	@echo "  hack/test/run.sh vpn"
 
-.PHONY: generate-bpf
-generate-bpf: ## Regenerate XDP BPF objects — runs in Docker (needs clang + libbpf)
-	$(CONTAINER_TOOL) run --rm \
-		-v "$(CURDIR):/workspace" \
-		-w /workspace/internal/proxy/demux/xdp \
-		-e GOPATH=/go \
-		-e GOMODCACHE=/go/pkg/mod \
-		-v "$(shell go env GOPATH)/pkg/mod:/go/pkg/mod:ro" \
-		golang:1.26-bookworm \
-		bash -c 'apt-get update -q && apt-get install -y -q clang libbpf-dev linux-libc-dev dpkg-dev && ARCH=$$(dpkg-architecture -q DEB_HOST_MULTIARCH) && ln -sfn /usr/include/$$ARCH/asm /usr/include/asm && find /usr/bin -name "llvm-strip-*" | head -1 | xargs -I{} ln -sf {} /usr/local/bin/llvm-strip && go generate .'
-
 .PHONY: fmt
 fmt: ## Run go fmt against code.
 	go fmt ./...

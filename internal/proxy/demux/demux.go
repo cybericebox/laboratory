@@ -5,21 +5,19 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/cybericebox/laboratory/internal/proxy/demux/xdp"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 // Demux handles incoming WireGuard UDP packets.
 // Type 1 (handshake init) and Type 2 (handshake response) are handled in userspace.
-// Type 4 (transport data) is handled by XDP when loaded; falls back to userspace.
+// Type 4 (transport data) is handled in userspace.
 type Demux struct {
 	table     *Table
 	conntrack *ConnTrack
 	conn      *net.UDPConn
-	xdpHandle *xdp.XDPHandle
 }
 
-func New(listenAddr, iface string, table *Table, ct *ConnTrack, xdpEnabled bool) (*Demux, error) {
+func New(listenAddr string, table *Table, ct *ConnTrack) (*Demux, error) {
 	addr, err := net.ResolveUDPAddr("udp4", listenAddr)
 	if err != nil {
 		return nil, fmt.Errorf("resolve addr %s: %w", listenAddr, err)
@@ -28,25 +26,7 @@ func New(listenAddr, iface string, table *Table, ct *ConnTrack, xdpEnabled bool)
 	if err != nil {
 		return nil, fmt.Errorf("listen UDP %s: %w", listenAddr, err)
 	}
-
-	d := &Demux{table: table, conntrack: ct, conn: conn}
-
-	// XDP is an opt-in fast path (XDP_ENABLED). The userspace demux is the
-	// primary, always-correct path; XDP commonly conflicts with the CNI already
-	// owning programs on the interface, so it is off by default.
-	if !xdpEnabled {
-		ctrl.Log.WithName("demux").Info("XDP disabled, using userspace demux")
-		return d, nil
-	}
-	// Best-effort load; failure is non-fatal — proxy continues with userspace demux.
-	if h, err := xdp.Load(iface, uint16(addr.Port)); err != nil {
-		ctrl.Log.WithName("demux").Info("XDP not loaded, using userspace fallback", "reason", err)
-	} else if h != nil {
-		ct.SetXDP(h)
-		d.xdpHandle = h
-	}
-
-	return d, nil
+	return &Demux{table: table, conntrack: ct, conn: conn}, nil
 }
 
 // Run processes incoming WireGuard packets (type 1, 2, and 4 fallback).
@@ -162,7 +142,4 @@ func (d *Demux) handleType4Userspace(pkt []byte, src *net.UDPAddr) {
 
 func (d *Demux) Close() {
 	d.conn.Close()
-	if d.xdpHandle != nil {
-		_ = d.xdpHandle.Close()
-	}
 }

@@ -8,12 +8,6 @@ import (
 
 const conntrackTTL = 3 * time.Minute
 
-// XDPSessions is implemented by xdp.XDPHandle on linux and a nil-safe no-op otherwise.
-type XDPSessions interface {
-	Update(receiverIndex uint32, dstIP net.IP, dstPort uint16, srcIP net.IP, srcPort uint16) error
-	Delete(receiverIndex uint32) error
-}
-
 type Socket struct {
 	IP   net.IP
 	Port uint16
@@ -29,15 +23,11 @@ type ConnEntry struct {
 type ConnTrack struct {
 	mu      sync.RWMutex
 	entries map[uint32]*ConnEntry
-	xdp     XDPSessions
 }
 
 func NewConnTrack() *ConnTrack {
 	return &ConnTrack{entries: make(map[uint32]*ConnEntry)}
 }
-
-// SetXDP injects the XDP handle for BPF map synchronisation. Call once after xdp.Load().
-func (c *ConnTrack) SetXDP(x XDPSessions) { c.xdp = x }
 
 // AddPartial creates the Ci entry after type 1 forward (Si unknown yet).
 // Returns false (and changes nothing) when the index is already taken by a
@@ -65,7 +55,6 @@ func (c *ConnTrack) AddPartial(ci uint32, clientSocket, serverSocket Socket) boo
 }
 
 // Complete fills in Si after type 2 response, creating mirror entry.
-// XDP map: si → (dst=server, src=client), ci → (dst=client, src=server).
 // Returns false when Si collides with a live session that is not the matching
 // peer — drop the response and let the handshake fail; upstream WG retries.
 func (c *ConnTrack) Complete(si, ci uint32, clientSocket, serverSocket Socket) bool {
@@ -86,12 +75,6 @@ func (c *ConnTrack) Complete(si, ci uint32, clientSocket, serverSocket Socket) b
 	}
 	if e, ok := c.entries[ci]; ok {
 		e.PeerIndex = si
-	}
-	if c.xdp != nil {
-		// si: type-4 from client (src=client) → forward to server
-		_ = c.xdp.Update(si, serverSocket.IP, serverSocket.Port, clientSocket.IP, clientSocket.Port)
-		// ci: type-4 from server (src=server) → forward to client
-		_ = c.xdp.Update(ci, clientSocket.IP, clientSocket.Port, serverSocket.IP, serverSocket.Port)
 	}
 	return true
 }
@@ -136,8 +119,7 @@ func (c *ConnTrack) LookupSender(index uint32) (Socket, bool) {
 //   - entries[Si].SenderSocket = serverSocket  → forward client→server traffic
 //   - entries[Ci].SenderSocket = clientSocket  → forward server→client traffic
 //
-// If the source no longer matches the expected socket we update for roaming and
-// refresh both XDP map entries so the fast-path resumes on the next packet.
+// If the source no longer matches the expected socket we update for roaming.
 func (c *ConnTrack) LookupForward(receiverIndex uint32, src Socket) (dst Socket, found bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -151,20 +133,8 @@ func (c *ConnTrack) LookupForward(receiverIndex uint32, src Socket) (dst Socket,
 	if !e.ReceiverSocket.IP.Equal(src.IP) || e.ReceiverSocket.Port != src.Port {
 		// Client (or server) has roamed — update both endpoints.
 		e.ReceiverSocket = src
-		// Always refresh own XDP entry with new expected src so fast-path resumes.
-		if c.xdp != nil {
-			_ = c.xdp.Update(receiverIndex,
-				e.SenderSocket.IP, e.SenderSocket.Port,
-				src.IP, src.Port)
-		}
 		if peer, peerOk := c.entries[e.PeerIndex]; peerOk {
 			peer.SenderSocket = src
-			if c.xdp != nil {
-				// peer entry: new dst (roamed addr), same expected src (unchanged)
-				_ = c.xdp.Update(e.PeerIndex,
-					src.IP, src.Port,
-					peer.ReceiverSocket.IP, peer.ReceiverSocket.Port)
-			}
 		}
 	}
 	return e.SenderSocket, true
@@ -182,13 +152,9 @@ func (c *ConnTrack) UpdateRoaming(receiverIndex uint32, newSender Socket) {
 	if peer, ok := c.entries[e.PeerIndex]; ok {
 		peer.ReceiverSocket = newSender
 	}
-	if c.xdp != nil && e.PeerIndex != 0 {
-		_ = c.xdp.Update(e.PeerIndex, newSender.IP, newSender.Port,
-			e.ReceiverSocket.IP, e.ReceiverSocket.Port)
-	}
 }
 
-// evictEntry removes idx and its peer from the map, notifying XDP.
+// evictEntry removes idx and its peer from the map.
 // Must be called with c.mu held.
 func (c *ConnTrack) evictEntry(idx uint32) {
 	e, ok := c.entries[idx]
@@ -198,10 +164,6 @@ func (c *ConnTrack) evictEntry(idx uint32) {
 	peer := e.PeerIndex
 	delete(c.entries, idx)
 	delete(c.entries, peer)
-	if c.xdp != nil {
-		_ = c.xdp.Delete(idx)
-		_ = c.xdp.Delete(peer)
-	}
 }
 
 // RunTTLCleanup removes stale entries in a background goroutine.
