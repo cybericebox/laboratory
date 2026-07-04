@@ -10,8 +10,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
-
-	versioned "github.com/cybericebox/laboratory/clientset/client/versioned"
 )
 
 // newTestHandler bootstraps an envtest environment with the laboratory CRDs
@@ -48,9 +46,7 @@ func newTestHandler(t *testing.T) (*Handler, kubernetes.Interface) {
 	// marshalling interface and the API server does not serve CRDs over
 	// protobuf, so force JSON content-type for this clientset specifically
 	// (leaving cfg itself untouched for the built-in kubernetes clientset).
-	csCfg := *cfg
-	csCfg.ContentType = "application/json"
-	cs, err := versioned.NewForConfig(&csCfg)
+	cs, err := NewVersionedClientset(cfg)
 	if err != nil {
 		t.Fatalf("build versioned clientset: %v", err)
 	}
