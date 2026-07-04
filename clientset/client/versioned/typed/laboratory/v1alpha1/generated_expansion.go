@@ -23,6 +23,10 @@ type DeviceExpansion interface{}
 
 type LabExpansion interface{}
 
+type LabGatewayExpansion interface{}
+
 type LabGroupExpansion interface{}
 
 type LabGroupClientExpansion interface{}
+
+type LabVPNExpansion interface{}

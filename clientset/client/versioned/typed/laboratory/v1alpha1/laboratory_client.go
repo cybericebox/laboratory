@@ -30,8 +30,10 @@ type LaboratoryV1alpha1Interface interface {
 	ConnectionsGetter
 	DevicesGetter
 	LabsGetter
+	LabGatewaysGetter
 	LabGroupsGetter
 	LabGroupClientsGetter
+	LabVPNsGetter
 }
 
 // LaboratoryV1alpha1Client is used to interact with features provided by the laboratory group.
@@ -51,12 +53,20 @@ func (c *LaboratoryV1alpha1Client) Labs(namespace string) LabInterface {
 	return newLabs(c, namespace)
 }
 
+func (c *LaboratoryV1alpha1Client) LabGateways(namespace string) LabGatewayInterface {
+	return newLabGateways(c, namespace)
+}
+
 func (c *LaboratoryV1alpha1Client) LabGroups() LabGroupInterface {
 	return newLabGroups(c)
 }
 
 func (c *LaboratoryV1alpha1Client) LabGroupClients(namespace string) LabGroupClientInterface {
 	return newLabGroupClients(c, namespace)
+}
+
+func (c *LaboratoryV1alpha1Client) LabVPNs(namespace string) LabVPNInterface {
+	return newLabVPNs(c, namespace)
 }
 
 // NewForConfig creates a new LaboratoryV1alpha1Client for the given config.

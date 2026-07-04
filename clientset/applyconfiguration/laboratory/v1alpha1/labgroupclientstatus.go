@@ -17,12 +17,17 @@ limitations under the License.
 
 package v1alpha1
 
+import (
+	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
+)
+
 // LabGroupClientStatusApplyConfiguration represents a declarative configuration of the LabGroupClientStatus type for use
 // with apply.
 type LabGroupClientStatusApplyConfiguration struct {
 	AssignedIP *string                                     `json:"assignedIP,omitempty"`
 	SecretRef  *string                                     `json:"secretRef,omitempty"`
 	Statistics *LabGroupClientStatisticsApplyConfiguration `json:"statistics,omitempty"`
+	Conditions []v1.ConditionApplyConfiguration            `json:"conditions,omitempty"`
 }
 
 // LabGroupClientStatusApplyConfiguration constructs a declarative configuration of the LabGroupClientStatus type for use with
@@ -53,5 +58,18 @@ func (b *LabGroupClientStatusApplyConfiguration) WithSecretRef(value string) *La
 // If called multiple times, the Statistics field is set to the value of the last call.
 func (b *LabGroupClientStatusApplyConfiguration) WithStatistics(value *LabGroupClientStatisticsApplyConfiguration) *LabGroupClientStatusApplyConfiguration {
 	b.Statistics = value
+	return b
+}
+
+// WithConditions adds the given value to the Conditions field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Conditions field.
+func (b *LabGroupClientStatusApplyConfiguration) WithConditions(values ...*v1.ConditionApplyConfiguration) *LabGroupClientStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithConditions")
+		}
+		b.Conditions = append(b.Conditions, *values[i])
+	}
 	return b
 }

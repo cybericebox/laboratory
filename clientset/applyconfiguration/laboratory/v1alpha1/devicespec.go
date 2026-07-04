@@ -24,12 +24,13 @@ import (
 // DeviceSpecApplyConfiguration represents a declarative configuration of the DeviceSpec type for use
 // with apply.
 type DeviceSpecApplyConfiguration struct {
-	LabRef     *string                           `json:"labRef,omitempty"`
-	Name       *string                           `json:"name,omitempty"`
-	Type       *laboratoryv1alpha1.DeviceType    `json:"type,omitempty"`
-	Image      *string                           `json:"image,omitempty"`
-	Interfaces []InterfaceSpecApplyConfiguration `json:"interfaces,omitempty"`
-	Exposure   *ExposureSpecApplyConfiguration   `json:"exposure,omitempty"`
+	LabRef         *string                            `json:"labRef,omitempty"`
+	Name           *string                            `json:"name,omitempty"`
+	Type           *laboratoryv1alpha1.DeviceType     `json:"type,omitempty"`
+	Image          *string                            `json:"image,omitempty"`
+	SecurityPreset *laboratoryv1alpha1.SecurityPreset `json:"securityPreset,omitempty"`
+	Interfaces     []InterfaceSpecApplyConfiguration  `json:"interfaces,omitempty"`
+	Exposure       *ExposureSpecApplyConfiguration    `json:"exposure,omitempty"`
 }
 
 // DeviceSpecApplyConfiguration constructs a declarative configuration of the DeviceSpec type for use with
@@ -68,6 +69,14 @@ func (b *DeviceSpecApplyConfiguration) WithType(value laboratoryv1alpha1.DeviceT
 // If called multiple times, the Image field is set to the value of the last call.
 func (b *DeviceSpecApplyConfiguration) WithImage(value string) *DeviceSpecApplyConfiguration {
 	b.Image = &value
+	return b
+}
+
+// WithSecurityPreset sets the SecurityPreset field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the SecurityPreset field is set to the value of the last call.
+func (b *DeviceSpecApplyConfiguration) WithSecurityPreset(value laboratoryv1alpha1.SecurityPreset) *DeviceSpecApplyConfiguration {
+	b.SecurityPreset = &value
 	return b
 }
 

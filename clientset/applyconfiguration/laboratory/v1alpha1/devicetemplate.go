@@ -24,11 +24,12 @@ import (
 // DeviceTemplateApplyConfiguration represents a declarative configuration of the DeviceTemplate type for use
 // with apply.
 type DeviceTemplateApplyConfiguration struct {
-	Name       *string                           `json:"name,omitempty"`
-	Type       *laboratoryv1alpha1.DeviceType    `json:"type,omitempty"`
-	Image      *string                           `json:"image,omitempty"`
-	Interfaces []InterfaceSpecApplyConfiguration `json:"interfaces,omitempty"`
-	Exposure   *ExposureSpecApplyConfiguration   `json:"exposure,omitempty"`
+	Name           *string                            `json:"name,omitempty"`
+	Type           *laboratoryv1alpha1.DeviceType     `json:"type,omitempty"`
+	Image          *string                            `json:"image,omitempty"`
+	SecurityPreset *laboratoryv1alpha1.SecurityPreset `json:"securityPreset,omitempty"`
+	Interfaces     []InterfaceSpecApplyConfiguration  `json:"interfaces,omitempty"`
+	Exposure       *ExposureSpecApplyConfiguration    `json:"exposure,omitempty"`
 }
 
 // DeviceTemplateApplyConfiguration constructs a declarative configuration of the DeviceTemplate type for use with
@@ -59,6 +60,14 @@ func (b *DeviceTemplateApplyConfiguration) WithType(value laboratoryv1alpha1.Dev
 // If called multiple times, the Image field is set to the value of the last call.
 func (b *DeviceTemplateApplyConfiguration) WithImage(value string) *DeviceTemplateApplyConfiguration {
 	b.Image = &value
+	return b
+}
+
+// WithSecurityPreset sets the SecurityPreset field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the SecurityPreset field is set to the value of the last call.
+func (b *DeviceTemplateApplyConfiguration) WithSecurityPreset(value laboratoryv1alpha1.SecurityPreset) *DeviceTemplateApplyConfiguration {
+	b.SecurityPreset = &value
 	return b
 }
 

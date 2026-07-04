@@ -29,10 +29,14 @@ type Interface interface {
 	Devices() DeviceInformer
 	// Labs returns a LabInformer.
 	Labs() LabInformer
+	// LabGateways returns a LabGatewayInformer.
+	LabGateways() LabGatewayInformer
 	// LabGroups returns a LabGroupInformer.
 	LabGroups() LabGroupInformer
 	// LabGroupClients returns a LabGroupClientInformer.
 	LabGroupClients() LabGroupClientInformer
+	// LabVPNs returns a LabVPNInformer.
+	LabVPNs() LabVPNInformer
 }
 
 type version struct {
@@ -61,6 +65,11 @@ func (v *version) Labs() LabInformer {
 	return &labInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
+// LabGateways returns a LabGatewayInformer.
+func (v *version) LabGateways() LabGatewayInformer {
+	return &labGatewayInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
 // LabGroups returns a LabGroupInformer.
 func (v *version) LabGroups() LabGroupInformer {
 	return &labGroupInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
@@ -69,4 +78,9 @@ func (v *version) LabGroups() LabGroupInformer {
 // LabGroupClients returns a LabGroupClientInformer.
 func (v *version) LabGroupClients() LabGroupClientInformer {
 	return &labGroupClientInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// LabVPNs returns a LabVPNInformer.
+func (v *version) LabVPNs() LabVPNInformer {
+	return &labVPNInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }

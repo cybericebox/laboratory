@@ -78,6 +78,12 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.InterfaceSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("Lab"):
 		return &applyconfigurationlaboratoryv1alpha1.LabApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGateway"):
+		return &applyconfigurationlaboratoryv1alpha1.LabGatewayApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGatewaySpec"):
+		return &applyconfigurationlaboratoryv1alpha1.LabGatewaySpecApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGatewayStatus"):
+		return &applyconfigurationlaboratoryv1alpha1.LabGatewayStatusApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroup"):
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupClient"):
@@ -104,6 +110,12 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.LabSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabStatus"):
 		return &applyconfigurationlaboratoryv1alpha1.LabStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabVPN"):
+		return &applyconfigurationlaboratoryv1alpha1.LabVPNApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabVPNSpec"):
+		return &applyconfigurationlaboratoryv1alpha1.LabVPNSpecApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabVPNStatus"):
+		return &applyconfigurationlaboratoryv1alpha1.LabVPNStatusApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("Route"):
 		return &applyconfigurationlaboratoryv1alpha1.RouteApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("WebExposure"):

@@ -19,6 +19,7 @@ package v1alpha1
 
 import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
 // LabStatusApplyConfiguration represents a declarative configuration of the LabStatus type for use
@@ -30,6 +31,7 @@ type LabStatusApplyConfiguration struct {
 	Devices     []DeviceRefApplyConfiguration       `json:"devices,omitempty"`
 	Connections []ConnectionRefApplyConfiguration   `json:"connections,omitempty"`
 	Access      []AccessEntryApplyConfiguration     `json:"access,omitempty"`
+	Conditions  []v1.ConditionApplyConfiguration    `json:"conditions,omitempty"`
 }
 
 // LabStatusApplyConfiguration constructs a declarative configuration of the LabStatus type for use with
@@ -98,6 +100,19 @@ func (b *LabStatusApplyConfiguration) WithAccess(values ...*AccessEntryApplyConf
 			panic("nil value passed to WithAccess")
 		}
 		b.Access = append(b.Access, *values[i])
+	}
+	return b
+}
+
+// WithConditions adds the given value to the Conditions field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Conditions field.
+func (b *LabStatusApplyConfiguration) WithConditions(values ...*v1.ConditionApplyConfiguration) *LabStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithConditions")
+		}
+		b.Conditions = append(b.Conditions, *values[i])
 	}
 	return b
 }

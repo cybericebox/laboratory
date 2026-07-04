@@ -20,11 +20,7 @@ package v1alpha1
 // DHCPServerApplyConfiguration represents a declarative configuration of the DHCPServer type for use
 // with apply.
 type DHCPServerApplyConfiguration struct {
-	Enabled *bool   `json:"enabled,omitempty"`
-	Subnet  *string `json:"subnet,omitempty"`
-	Range   *string `json:"range,omitempty"`
-	Gateway *string `json:"gateway,omitempty"`
-	DNS     *string `json:"dns,omitempty"`
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 // DHCPServerApplyConfiguration constructs a declarative configuration of the DHCPServer type for use with
@@ -39,37 +35,5 @@ func (b DHCPServerApplyConfiguration) IsApplyConfiguration() {}
 // If called multiple times, the Enabled field is set to the value of the last call.
 func (b *DHCPServerApplyConfiguration) WithEnabled(value bool) *DHCPServerApplyConfiguration {
 	b.Enabled = &value
-	return b
-}
-
-// WithSubnet sets the Subnet field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Subnet field is set to the value of the last call.
-func (b *DHCPServerApplyConfiguration) WithSubnet(value string) *DHCPServerApplyConfiguration {
-	b.Subnet = &value
-	return b
-}
-
-// WithRange sets the Range field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Range field is set to the value of the last call.
-func (b *DHCPServerApplyConfiguration) WithRange(value string) *DHCPServerApplyConfiguration {
-	b.Range = &value
-	return b
-}
-
-// WithGateway sets the Gateway field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Gateway field is set to the value of the last call.
-func (b *DHCPServerApplyConfiguration) WithGateway(value string) *DHCPServerApplyConfiguration {
-	b.Gateway = &value
-	return b
-}
-
-// WithDNS sets the DNS field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the DNS field is set to the value of the last call.
-func (b *DHCPServerApplyConfiguration) WithDNS(value string) *DHCPServerApplyConfiguration {
-	b.DNS = &value
 	return b
 }

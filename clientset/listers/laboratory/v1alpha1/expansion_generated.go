@@ -41,6 +41,14 @@ type LabListerExpansion interface{}
 // LabNamespaceLister.
 type LabNamespaceListerExpansion interface{}
 
+// LabGatewayListerExpansion allows custom methods to be added to
+// LabGatewayLister.
+type LabGatewayListerExpansion interface{}
+
+// LabGatewayNamespaceListerExpansion allows custom methods to be added to
+// LabGatewayNamespaceLister.
+type LabGatewayNamespaceListerExpansion interface{}
+
 // LabGroupListerExpansion allows custom methods to be added to
 // LabGroupLister.
 type LabGroupListerExpansion interface{}
@@ -52,3 +60,11 @@ type LabGroupClientListerExpansion interface{}
 // LabGroupClientNamespaceListerExpansion allows custom methods to be added to
 // LabGroupClientNamespaceLister.
 type LabGroupClientNamespaceListerExpansion interface{}
+
+// LabVPNListerExpansion allows custom methods to be added to
+// LabVPNLister.
+type LabVPNListerExpansion interface{}
+
+// LabVPNNamespaceListerExpansion allows custom methods to be added to
+// LabVPNNamespaceLister.
+type LabVPNNamespaceListerExpansion interface{}

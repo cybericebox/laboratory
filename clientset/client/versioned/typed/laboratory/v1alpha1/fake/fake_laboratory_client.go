@@ -39,12 +39,20 @@ func (c *FakeLaboratoryV1alpha1) Labs(namespace string) v1alpha1.LabInterface {
 	return newFakeLabs(c, namespace)
 }
 
+func (c *FakeLaboratoryV1alpha1) LabGateways(namespace string) v1alpha1.LabGatewayInterface {
+	return newFakeLabGateways(c, namespace)
+}
+
 func (c *FakeLaboratoryV1alpha1) LabGroups() v1alpha1.LabGroupInterface {
 	return newFakeLabGroups(c)
 }
 
 func (c *FakeLaboratoryV1alpha1) LabGroupClients(namespace string) v1alpha1.LabGroupClientInterface {
 	return newFakeLabGroupClients(c, namespace)
+}
+
+func (c *FakeLaboratoryV1alpha1) LabVPNs(namespace string) v1alpha1.LabVPNInterface {
+	return newFakeLabVPNs(c, namespace)
 }
 
 // RESTClient returns a RESTClient that is used to communicate
