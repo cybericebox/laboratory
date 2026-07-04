@@ -1,0 +1,77 @@
+syntax = "proto3";
+package labmanager;
+option go_package = "github.com/cybericebox/laboratory/pkg/agent/protobuf";
+
+service LabManager {
+  rpc Ping(Empty) returns (Empty) {}
+
+  rpc CreateLabGroup(LabGroup) returns (LabGroup) {}
+  rpc GetLabGroup(IDRequest) returns (LabGroup) {}
+  rpc ListLabGroups(Empty) returns (LabGroupList) {}
+  rpc UpdateLabGroup(LabGroup) returns (LabGroup) {}
+  rpc DeleteLabGroup(IDRequest) returns (Empty) {}
+
+  rpc CreateLab(Lab) returns (Lab) {}
+  rpc GetLab(NamespacedIDRequest) returns (Lab) {}
+  rpc ListLabs(NamespaceRequest) returns (LabList) {}
+  rpc UpdateLab(Lab) returns (Lab) {}
+  rpc DeleteLab(NamespacedIDRequest) returns (Empty) {}
+
+  rpc CreateLabGroupClient(LabGroupClient) returns (LabGroupClient) {}
+  rpc GetLabGroupClient(NamespacedIDRequest) returns (LabGroupClient) {}
+  rpc ListLabGroupClients(NamespaceRequest) returns (LabGroupClientList) {}
+  rpc DeleteLabGroupClient(NamespacedIDRequest) returns (Empty) {}
+
+  rpc Monitoring(stream Empty) returns (stream MonitoringUpdate) {}
+}
+
+message Empty {}
+message IDRequest { string name = 1; }
+message NamespaceRequest { string namespace = 1; }
+message NamespacedIDRequest { string namespace = 1; string name = 2; }
+
+message LabGroup {
+  string name = 1;
+  LabGroupStatus status = 2;
+}
+message LabGroupStatus {
+  string phase = 1;
+  string namespace = 2;
+  bool vpn_registered = 3;
+}
+message LabGroupList { repeated LabGroup items = 1; }
+
+message Lab {
+  string namespace = 1;
+  string name = 2;
+  bytes spec_json = 3;   // Lab.spec serialized; agent is a thin wrapper, spec passes through
+  LabStatus status = 4;
+}
+message LabStatus {
+  string phase = 1;
+  string vpn_cidr = 2;
+  string internet_cidr = 3;
+  bool ready = 4;
+  repeated string access_urls = 5;
+}
+message LabList { repeated Lab items = 1; }
+
+message LabGroupClient {
+  string namespace = 1;
+  string name = 2;
+  string public_key = 3;
+  LabGroupClientStatus status = 4;
+}
+message LabGroupClientStatus {
+  string assigned_ip = 1;
+  string secret_ref = 2;
+  bool ready = 3;
+  bytes wg_conf = 4;   // populated on Get/Create from the client Secret
+}
+message LabGroupClientList { repeated LabGroupClient items = 1; }
+
+message MonitoringUpdate {
+  repeated LabGroup groups = 1;
+  repeated Lab labs = 2;
+  repeated LabGroupClient clients = 3;
+}
