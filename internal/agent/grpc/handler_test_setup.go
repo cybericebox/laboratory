@@ -1,10 +1,13 @@
 package grpc
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
@@ -12,10 +15,12 @@ import (
 )
 
 // newTestHandler bootstraps an envtest environment with the laboratory CRDs
-// and returns a Handler backed by a real typed clientset talking to it.
+// and returns a Handler backed by a real typed clientset talking to it,
+// along with a plain kubernetes clientset for setting up core resources
+// (e.g. namespaces) that tests need but the Handler itself doesn't manage.
 // Mirrors the envtest bootstrap in internal/controller/laboratory/suite_test.go,
 // but this package uses plain go test (not Ginkgo).
-func newTestHandler(t *testing.T) *Handler {
+func newTestHandler(t *testing.T) (*Handler, kubernetes.Interface) {
 	t.Helper()
 
 	testEnv := &envtest.Environment{
@@ -50,13 +55,26 @@ func newTestHandler(t *testing.T) *Handler {
 		t.Fatalf("build versioned clientset: %v", err)
 	}
 
-	// Built for parity with the controller suite bootstrap and for reuse by
-	// later handler tasks; not used by Task 6's Handler itself.
-	if _, err := kubernetes.NewForConfig(cfg); err != nil {
+	// Namespaces (and other core resources) are built-in API types and are
+	// served over protobuf, so the plain cfg is fine here.
+	k8s, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
 		t.Fatalf("build kubernetes clientset: %v", err)
 	}
 
-	return NewHandler(cs)
+	return NewHandler(cs), k8s
+}
+
+// mustNamespace creates a Namespace via the plain kubernetes clientset,
+// failing the test on error. Used to set up namespaces that namespace-scoped
+// custom resources (e.g. Lab) are created in.
+func mustNamespace(t *testing.T, k8s kubernetes.Interface, name string) {
+	t.Helper()
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	if _, err := k8s.CoreV1().Namespaces().Create(context.Background(), ns, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create namespace %q: %v", name, err)
+	}
 }
 
 // firstEnvTestBinaryDir locates the first binary dir under bin/k8s, mirroring

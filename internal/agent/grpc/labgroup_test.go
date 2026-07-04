@@ -10,7 +10,7 @@ import (
 )
 
 func TestCreateAndGetLabGroup(t *testing.T) {
-	h := newTestHandler(t) // sets up envtest + versioned clientset; see handler_test_setup.go
+	h, _ := newTestHandler(t) // sets up envtest + versioned clientset; see handler_test_setup.go
 	ctx := context.Background()
 
 	_, err := h.CreateLabGroup(ctx, &protobuf.LabGroup{Name: "team-x"})
