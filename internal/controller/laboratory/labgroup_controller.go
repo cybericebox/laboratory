@@ -7,6 +7,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -60,6 +61,9 @@ type LabGroupReconciler struct {
 	// group namespace. AgentSA identifies the agent ServiceAccount to bind.
 	AgentEnabled bool
 	AgentSA      types.NamespacedName
+	// NetworkPolicyEnabled gates creation of the default-deny NetworkPolicy
+	// baseline in each group namespace.
+	NetworkPolicyEnabled bool
 }
 
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labgroups,verbs=get;list;watch;create;update;patch;delete
@@ -95,6 +99,11 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	if err := r.ensureNamespace(ctx, ns, &lg); err != nil {
 		logger.Error(err, "ensure namespace")
+		return ctrl.Result{}, err
+	}
+
+	if err := r.ensureDefaultDeny(ctx, ns); err != nil {
+		logger.Error(err, "ensure default-deny network policy")
 		return ctrl.Result{}, err
 	}
 
@@ -551,6 +560,27 @@ func (r *LabGroupReconciler) ensureAgentRoleBinding(ctx context.Context, ns stri
 		}},
 	}
 	return r.Create(ctx, rb)
+}
+
+// ensureDefaultDeny creates a default-deny NetworkPolicy in the group
+// namespace, selecting all pods and denying all ingress and egress traffic by
+// default. It is a no-op when r.NetworkPolicyEnabled is false, and idempotent
+// otherwise (CreateOrUpdate).
+func (r *LabGroupReconciler) ensureDefaultDeny(ctx context.Context, ns string) error {
+	if !r.NetworkPolicyEnabled {
+		return nil
+	}
+	np := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: "default-deny", Namespace: ns}}
+	_, err := controllerutil.CreateOrUpdate(
+		ctx, r.Client, np, func() error {
+			np.Spec = networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress, networkingv1.PolicyTypeEgress},
+			}
+			return nil
+		},
+	)
+	return err
 }
 
 // ensurePool creates pool "{name}-0" if it doesn't exist, with the allocator-compatible naming

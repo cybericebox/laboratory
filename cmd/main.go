@@ -238,6 +238,7 @@ func main() {
 			Namespace: cfg.AgentServiceNamespace,
 			Name:      cfg.AgentServiceAccount,
 		},
+		NetworkPolicyEnabled: cfg.NetworkPolicyEnabled,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LabGroup")
 		os.Exit(1)

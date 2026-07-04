@@ -49,6 +49,9 @@ type Config struct {
 	AgentServiceAccount string `env:"AGENT_SERVICE_ACCOUNT" envDefault:"laboratory-agent"`
 	// AgentServiceNamespace is the namespace of the management-agent ServiceAccount.
 	AgentServiceNamespace string `env:"AGENT_SERVICE_NAMESPACE" envDefault:"laboratory-agent"`
+	// NetworkPolicyEnabled gates creation of the default-deny NetworkPolicy
+	// baseline in each LabGroup namespace.
+	NetworkPolicyEnabled bool `env:"NETWORK_POLICY_ENABLED" envDefault:"true"`
 }
 
 func LoadConfig() (*Config, error) {
