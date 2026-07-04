@@ -43,25 +43,27 @@
 #     match how Cilium's embedded Envoy actually sources the TLSRoute
 #     passthrough connection to the agent pod — it silently drops it.
 #     Disabled here for the same reason as (2).
-#  4. Cilium LB-IPAM sharing-key annotations must be `lbipam.cilium.io/
-#     sharing-key` + `lbipam.cilium.io/sharing-cross-namespace` (NOT
-#     `io.cilium/lb-ipam-sharing-key`, which Cilium 1.19 does not recognize
-#     for sharing). Also: sharing an IP with `externalTrafficPolicy: Local`
-#     requires BOTH services to select the same pods (Cilium's isCompatible
-#     check) — Cilium's own Gateway-generated Service has no selector at
-#     all, so it can only share with a peer using `externalTrafficPolicy:
-#     Cluster`. `charts/laboratory/templates/proxy/service-wg-lb.yaml` and
-#     `.../gateway/gateway.yaml` were patched accordingly (uncommitted —
-#     see task-4-report.md for the exact diffs).
+#  4. Cilium LB-IPAM cross-namespace IP sharing requires a MUTUAL
+#     `lbipam.cilium.io/sharing-cross-namespace` pair on BOTH services (the
+#     WG Service in laboratory-proxy and the Gateway's generated Service in
+#     the release namespace) — isCompatible() splits them onto separate IPs
+#     otherwise. `lbipam.cilium.io/sharing-key` is the canonical annotation
+#     domain (`io.cilium/` also works as a legacy alias). Also: sharing an
+#     IP with `externalTrafficPolicy: Local` requires BOTH services to
+#     select the same pods (same isCompatible check) — Cilium's own
+#     Gateway-generated Service has no selector at all, so it can only
+#     share with a peer using `externalTrafficPolicy: Cluster`.
+#     `charts/laboratory/templates/proxy/service-wg-lb.yaml` and
+#     `.../gateway/gateway.yaml` carry these fixes.
 #  5. Cluster setup: `hack/k0s/STEPS.md` / `1-vms.sh`'s
 #     CiliumL2AnnouncementPolicy only matches `^en.*`/`^eth.*` interfaces,
 #     but the Lima shared-vmnet interface where the LB pool CIDR
 #     (192.168.105.240/29) actually lives is named `lima0`. Without `^lima.*`
 #     in that list, Cilium ARP-announces the shared IP on the wrong
 #     interface (eth0, Lima's private NAT network) and it is unreachable
-#     from anywhere. This script patches the live CiliumL2AnnouncementPolicy
-#     (step2); the cluster-setup scripts should also be fixed for future
-#     `k0sctl apply` runs (not done here — out of this script's scope).
+#     from anywhere. The cluster-setup files now include `^lima.*`; step2
+#     also patches the live CiliumL2AnnouncementPolicy for clusters built
+#     before that fix.
 #  6. Do not run the WireGuard test client (or any "external" reachability
 #     probe) directly inside a Lima VM that is itself a cluster node
 #     (lima-lab-ctrl / lima-lab-worker) — Cilium's own host datapath
@@ -244,7 +246,7 @@ step4() {
     $KUBECTL exec wg-test-client -n default -- wg show | grep -q "latest handshake" || die "no WireGuard handshake"
     echo "PASS: WireGuard handshake completed through shared IP $ip:51820"
 
-    $KUBECTL exec wg-test-client -n default -- wg-quick down /tmp/wg-tester.conf
+    $KUBECTL exec wg-test-client -n default -- wg-quick down /tmp/wg-tester.conf || true
 }
 
 ###############################################################################
@@ -338,16 +340,20 @@ step6() {
         die "expected a 'certificate required' TLS alert without a client cert"
     echo "  PASS: rejected without client cert"
 
-    echo "  with valid client cert (CN=platform), same probe (expect no rejection):"
+    echo "  with valid client cert (CN=platform), same probe (expect completed handshake, no rejection):"
     local with_cert_out
     with_cert_out=$( (printf 'PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n' | \
         openssl s_client -connect "${ip}:443" -servername "$AGENT_DOMAIN" \
         -cert "$SCRATCH_DIR/agent-client.crt" -key "$SCRATCH_DIR/agent-client.key" \
-        -CAfile "$SCRATCH_DIR/agent-ca.crt" -quiet 2>&1 &
+        -CAfile "$SCRATCH_DIR/agent-ca.crt" 2>&1 &
         pid=$!; sleep 5; kill "$pid" 2>/dev/null || true) )
+    # Affirmative assertion first: require real handshake evidence in the output
+    # so an empty/failed openssl run can never produce a false PASS.
+    echo "$with_cert_out" | grep -q "Verify return code" || \
+        die "no completed TLS handshake with the valid client cert (empty/failed openssl output)"
     echo "$with_cert_out" | grep -q "certificate required" && \
         die "valid client cert (CN in allowlist) was still rejected"
-    echo "  PASS: accepted with a valid, allow-listed client cert"
+    echo "  PASS: handshake completed with a valid, allow-listed client cert (no cert-required alert)"
 }
 
 ###############################################################################

@@ -105,10 +105,6 @@ proxy:
   # LoadBalancer Service annotations (e.g. cloud-specific LB config).
   service:
     annotations: {}
-    # Share the same LB IP with the Cilium Gateway Service via lbipam.cilium.io/sharing-key.
-    # Both proxy-wg (UDP:51820) and Gateway (TCP:443) get the same external IP.
-    # Leave empty to get a separate IP for WireGuard.
-    sharedLBKey: "laboratory"
 
   # Cilium LB-IPAM sharing key: makes the WG LoadBalancer Service and the
   # Gateway's Service share one external IP (UDP 51820 + TCP 443 don't conflict).

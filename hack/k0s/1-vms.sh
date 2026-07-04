@@ -183,6 +183,9 @@ spec:
   interfaces:
     - "^en.*"
     - "^eth.*"
+    # Lima shared-vmnet interface — the LB pool CIDR lives here. Without it the
+    # shared IP is ARP-announced on eth0 (Lima NAT) and unreachable externally.
+    - "^lima.*"
   loadBalancerIPs: true
 YAML
 

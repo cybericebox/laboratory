@@ -5,12 +5,25 @@ metadata:
   name: laboratory-proxy-wg
   namespace: laboratory-proxy
   annotations:
-    io.cilium/lb-ipam-sharing-key: {{ .Values.proxy.sharingKey | quote }}
+    # lbipam.cilium.io/* is the canonical Cilium LB-IPAM annotation domain
+    # (io.cilium/ works too as a legacy alias). The load-bearing part is the
+    # MUTUAL sharing-cross-namespace pair with the Gateway's generated Service
+    # (release namespace): LB-IPAM's isCompatible() refuses cross-namespace IP
+    # sharing unless both services explicitly list each other's namespace.
+    lbipam.cilium.io/sharing-key: {{ .Values.proxy.sharingKey | quote }}
+    lbipam.cilium.io/sharing-cross-namespace: {{ .Release.Namespace | quote }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
   type: LoadBalancer
-  externalTrafficPolicy: Local
+  # Cluster (not Local): Cilium's LB-IPAM sharing-key mechanism only shares an IP
+  # between services with an identical externalTrafficPolicy, and when that policy
+  # is Local it additionally requires both services to have the *same* pod selector
+  # (see isCompatible() in operator/pkg/lbipam/service_store.go). The Gateway's
+  # auto-created Service has no selector at all (Envoy handles routing internally),
+  # so Local+Local can never satisfy that check — Cluster is required for this
+  # Service to share laboratory-gateway's external IP.
+  externalTrafficPolicy: Cluster
   selector:
     app: laboratory-proxy-l7
   ports:
