@@ -62,7 +62,7 @@ func newTestHandler(t *testing.T) (*Handler, kubernetes.Interface) {
 		t.Fatalf("build kubernetes clientset: %v", err)
 	}
 
-	return NewHandler(cs), k8s
+	return NewHandler(cs, k8s), k8s
 }
 
 // mustNamespace creates a Namespace via the plain kubernetes clientset,
