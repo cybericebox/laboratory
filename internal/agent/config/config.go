@@ -2,18 +2,24 @@ package config
 
 import "github.com/caarlos0/env/v11"
 
-type TLSConfig struct {
+// ServerTLSConfig is the agent's own TLS identity — a key pair only, no CA.
+type ServerTLSConfig struct {
 	Enabled  bool   `env:"AGENT_TLS_ENABLED" envDefault:"true"`
 	CertFile string `env:"AGENT_TLS_CERT"`
 	KeyFile  string `env:"AGENT_TLS_KEY"`
-	CAFile   string `env:"AGENT_TLS_CA"`
+}
+
+// MTLSConfig verifies CLIENT certificates against a separate client CA.
+type MTLSConfig struct {
+	Enabled          bool     `env:"AGENT_MTLS_ENABLED" envDefault:"true"`
+	ClientCAFile     string   `env:"AGENT_MTLS_CLIENT_CA"`
+	AllowedClientCNs []string `env:"AGENT_ALLOWED_CLIENT_CNS" envSeparator:","`
 }
 
 type Config struct {
-	GRPCPort         string   `env:"AGENT_GRPC_PORT" envDefault:"5454"`
-	TLS              TLSConfig
-	MTLSEnabled      bool     `env:"AGENT_MTLS_ENABLED" envDefault:"true"`
-	AllowedClientCNs []string `env:"AGENT_ALLOWED_CLIENT_CNS" envSeparator:","`
+	GRPCPort  string `env:"AGENT_GRPC_PORT" envDefault:"5454"`
+	ServerTLS ServerTLSConfig
+	MTLS      MTLSConfig
 }
 
 func Load() (*Config, error) {

@@ -15,13 +15,13 @@ import (
 )
 
 func serverCredentials(cfg *config.Config) (credentials.TransportCredentials, error) {
-	cert, err := tls.LoadX509KeyPair(cfg.TLS.CertFile, cfg.TLS.KeyFile)
+	cert, err := tls.LoadX509KeyPair(cfg.ServerTLS.CertFile, cfg.ServerTLS.KeyFile)
 	if err != nil {
 		return nil, fmt.Errorf("load server keypair: %w", err)
 	}
 	tc := &tls.Config{Certificates: []tls.Certificate{cert}}
-	if cfg.MTLSEnabled {
-		ca, err := os.ReadFile(cfg.TLS.CAFile)
+	if cfg.MTLS.Enabled {
+		ca, err := os.ReadFile(cfg.MTLS.ClientCAFile)
 		if err != nil {
 			return nil, fmt.Errorf("read client CA: %w", err)
 		}
@@ -38,23 +38,23 @@ func serverCredentials(cfg *config.Config) (credentials.TransportCredentials, er
 // New builds the gRPC server with mTLS creds and CN-allowlist interceptors.
 func New(cfg *config.Config, impl protobuf.LabManagerServer) (*grpc.Server, error) {
 	var opts []grpc.ServerOption
-	if cfg.TLS.Enabled {
+	if cfg.ServerTLS.Enabled {
 		creds, err := serverCredentials(cfg)
 		if err != nil {
 			return nil, err
 		}
 		opts = append(opts, grpc.Creds(creds))
 	}
-	if cfg.MTLSEnabled {
+	if cfg.MTLS.Enabled {
 		opts = append(opts,
 			grpc.UnaryInterceptor(func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
-				if err := authorizeCN(ctx, cfg.AllowedClientCNs); err != nil {
+				if err := authorizeCN(ctx, cfg.MTLS.AllowedClientCNs); err != nil {
 					return nil, err
 				}
 				return h(ctx, req)
 			}),
 			grpc.StreamInterceptor(func(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, h grpc.StreamHandler) error {
-				if err := authorizeCN(ss.Context(), cfg.AllowedClientCNs); err != nil {
+				if err := authorizeCN(ss.Context(), cfg.MTLS.AllowedClientCNs); err != nil {
 					return err
 				}
 				return h(srv, ss)

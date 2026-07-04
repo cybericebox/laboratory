@@ -38,7 +38,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
-	log.Printf("agent listening on port %s (mtls=%t)", cfg.GRPCPort, cfg.MTLSEnabled)
+	log.Printf("agent listening on port %s (mtls=%t)", cfg.GRPCPort, cfg.MTLS.Enabled)
 	if err := srv.Serve(lis); err != nil {
 		log.Printf("serve: %v", err)
 		os.Exit(1)
