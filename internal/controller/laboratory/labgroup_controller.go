@@ -11,7 +11,9 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -74,6 +76,7 @@ type LabGroupReconciler struct {
 // +kubebuilder:rbac:groups=allocation.cybericebox.com,resources=pools,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=allocation.cybericebox.com,resources=pools/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cilium.io,resources=ciliumnetworkpolicies,verbs=get;list;watch;create;update;patch;delete
 
 func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -154,6 +157,11 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 	if err = r.ensureGatewayDeployment(ctx, ns); err != nil {
 		logger.Error(err, "ensure gateway deployment")
+		return ctrl.Result{}, err
+	}
+
+	if err = r.ensureVPNGatewayPolicies(ctx, ns); err != nil {
+		logger.Error(err, "ensure vpn/gateway CiliumNetworkPolicies")
 		return ctrl.Result{}, err
 	}
 
@@ -581,6 +589,127 @@ func (r *LabGroupReconciler) ensureDefaultDeny(ctx context.Context, ns string) e
 		},
 	)
 	return err
+}
+
+// ciliumNetworkPolicyGVK is the GroupVersionKind of Cilium's CiliumNetworkPolicy
+// CRD. It has no typed Go struct in this repo (and its CRD is not installed in
+// envtest), so policies are built and applied as unstructured.Unstructured.
+var ciliumNetworkPolicyGVK = schema.GroupVersionKind{
+	Group:   "cilium.io",
+	Version: "v2",
+	Kind:    "CiliumNetworkPolicy",
+}
+
+// vpnCiliumPolicy builds the CiliumNetworkPolicy locking down the vpn pod's
+// egress to kube-apiserver only (its reconciler needs the API; no DNS, no
+// world). Ingress allows WireGuard UDP from anywhere: proxy-wg is
+// hostNetwork, so this stays permissive from outside the cluster and relies
+// on NAT/conntrack to handle replies.
+func vpnCiliumPolicy(ns string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "cilium.io/v2",
+			"kind":       "CiliumNetworkPolicy",
+			"metadata": map[string]interface{}{
+				"name":      "vpn-egress",
+				"namespace": ns,
+			},
+			"spec": map[string]interface{}{
+				"endpointSelector": map[string]interface{}{
+					"matchLabels": map[string]interface{}{
+						"app": "vpn",
+					},
+				},
+				"egress": []interface{}{
+					map[string]interface{}{
+						"toEntities": []interface{}{"kube-apiserver"},
+					},
+				},
+				"ingress": []interface{}{
+					map[string]interface{}{
+						"fromEntities": []interface{}{"world"},
+						"toPorts": []interface{}{
+							map[string]interface{}{
+								"ports": []interface{}{
+									map[string]interface{}{
+										"port":     "51820",
+										"protocol": "UDP",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// gatewayCiliumPolicy builds the CiliumNetworkPolicy for the gateway pod:
+// egress to kube-apiserver (its reconciler) and world (outside-cluster
+// internet — that's its job), but NOT to in-cluster pods. No DNS. No ingress
+// rule needed; replies flow back via conntrack.
+func gatewayCiliumPolicy(ns string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "cilium.io/v2",
+			"kind":       "CiliumNetworkPolicy",
+			"metadata": map[string]interface{}{
+				"name":      "gateway-egress",
+				"namespace": ns,
+			},
+			"spec": map[string]interface{}{
+				"endpointSelector": map[string]interface{}{
+					"matchLabels": map[string]interface{}{
+						"app": "gateway",
+					},
+				},
+				"egress": []interface{}{
+					map[string]interface{}{
+						"toEntities": []interface{}{"kube-apiserver"},
+					},
+					map[string]interface{}{
+						"toEntities": []interface{}{"world"},
+					},
+				},
+			},
+		},
+	}
+}
+
+// ensureVPNGatewayPolicies applies the vpn-egress and gateway-egress
+// CiliumNetworkPolicies in the group namespace, locking down vpn and gateway
+// pod egress per vpnCiliumPolicy/gatewayCiliumPolicy. It is a no-op when
+// r.NetworkPolicyEnabled is false, and idempotent otherwise (CreateOrUpdate).
+//
+// CiliumNetworkPolicy has no typed Go struct in this repo and its CRD is not
+// installed in envtest, so this applies unstructured.Unstructured objects and
+// is exercised in real clusters only; the policy content itself is covered by
+// plain-Go unit tests against vpnCiliumPolicy/gatewayCiliumPolicy.
+func (r *LabGroupReconciler) ensureVPNGatewayPolicies(ctx context.Context, ns string) error {
+	if !r.NetworkPolicyEnabled {
+		return nil
+	}
+	for _, desired := range []*unstructured.Unstructured{vpnCiliumPolicy(ns), gatewayCiliumPolicy(ns)} {
+		spec, found, err := unstructured.NestedMap(desired.Object, "spec")
+		if err != nil || !found {
+			return fmt.Errorf("cilium policy %s missing spec", desired.GetName())
+		}
+
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(ciliumNetworkPolicyGVK)
+		obj.SetName(desired.GetName())
+		obj.SetNamespace(ns)
+
+		if _, err = controllerutil.CreateOrUpdate(
+			ctx, r.Client, obj, func() error {
+				return unstructured.SetNestedMap(obj.Object, spec, "spec")
+			},
+		); err != nil {
+			return fmt.Errorf("apply cilium policy %s: %w", desired.GetName(), err)
+		}
+	}
+	return nil
 }
 
 // ensurePool creates pool "{name}-0" if it doesn't exist, with the allocator-compatible naming
