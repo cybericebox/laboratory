@@ -30,10 +30,6 @@ func portKey(namespace, connection, iface string) string {
 // rules set tun_dst (NXM_NX_TUN_IPV4_DST) and tun_id per packet.
 const GenevePort = "ovsgnv0"
 
-// genevePortName is retained for transitional call sites and returns the
-// shared port name regardless of the remote address argument.
-func genevePortName(string) string { return GenevePort }
-
 // OVSManager programs the single br-ovs bridge via libovsdb (OVSDB JSON-RPC over Unix socket).
 type OVSManager struct {
 	bridge string

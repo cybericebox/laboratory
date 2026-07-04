@@ -32,10 +32,3 @@ func TestPortKey_Unique(t *testing.T) {
 		t.Errorf("portKey collision for different interfaces")
 	}
 }
-
-func TestGenevePortName_Length(t *testing.T) {
-	name := genevePortName("192.168.1.100")
-	if len(name) > 15 {
-		t.Errorf("genevePortName len = %d, want ≤15: %q", len(name), name)
-	}
-}
