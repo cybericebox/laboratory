@@ -22,6 +22,11 @@ SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
 SCRIPT_ROOT="${SCRIPT_DIR}/.."
 CODEGEN_PKG="../develop/code-generator/"
 
+# NOTE: the sibling code-generator is pinned to a newer apimachinery (v0.33.3+)
+# and emits managedfields.NewSchemeTypeConverter() in clientset/applyconfiguration/utils.go,
+# which does not exist in this repo. After running this script, revert that call to
+# k8stesting.TypeConverter (see the existing NewTypeConverter func) or the build breaks.
+
 source "${CODEGEN_PKG}/kube_codegen.sh"
 
 THIS_PKG="github.com/cybericebox/laboratory"
