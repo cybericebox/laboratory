@@ -24,11 +24,6 @@ type WGConfig struct {
 	VPNServicePort int    `env:"VPN_SERVICE_PORT" envDefault:"51820"`
 }
 
-type Config struct {
-	L7 L7Config
-	WG WGConfig
-}
-
 // LoadJWTPublicKey reads the RSA public key PEM from the configured path.
 // Called on each request so that kubelet secret-volume updates are picked up
 // without a pod restart.
@@ -50,11 +45,6 @@ func (l *L7Config) LoadJWTPublicKey() (*rsa.PublicKey, error) {
 		return nil, fmt.Errorf("JWT public key is not RSA")
 	}
 	return rsaPub, nil
-}
-
-func LoadConfig() (*Config, error) {
-	cfg := &Config{}
-	return cfg, config.Load(cfg)
 }
 
 func LoadL7Config() (*L7Config, error) {
