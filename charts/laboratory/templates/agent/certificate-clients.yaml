@@ -1,0 +1,18 @@
+{{- if and .Values.agent.enabled .Values.agent.mtls.enabled }}
+{{- range .Values.agent.clients }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: laboratory-agent-client-{{ . }}
+  namespace: {{ $.Values.agent.namespace }}
+  labels:
+    {{- include "laboratory.labels" $ | nindent 4 }}
+spec:
+  secretName: laboratory-agent-client-{{ . }}-tls
+  commonName: {{ . | quote }}
+  issuerRef:
+    name: laboratory-agent-ca
+    kind: Issuer
+{{- end }}
+{{- end }}

@@ -1,0 +1,8 @@
+{{- if .Values.agent.enabled }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.agent.namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+{{- end }}

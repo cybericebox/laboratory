@@ -1,0 +1,29 @@
+{{- if .Values.agent.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: laboratory-agent-role
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  # cluster-scoped LabGroup + namespace resolution (effective via the ClusterRoleBinding).
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "labgroups", "labgroups/status" ]
+    verbs: [ "get", "list", "watch", "create", "update", "patch", "delete" ]
+  - apiGroups: [ "" ]
+    resources: [ "namespaces" ]
+    verbs: [ "get", "list", "watch" ]
+  # per-namespace resources (effective via the operator-created per-group-ns RoleBinding).
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "labs", "labs/status", "labgroupclients", "labgroupclients/status" ]
+    verbs: [ "get", "list", "watch", "create", "update", "patch", "delete" ]
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "devices", "devices/status", "connections", "connections/status", "labvpns", "labvpns/status", "labgateways", "labgateways/status" ]
+    verbs: [ "get", "list", "watch" ]
+  - apiGroups: [ "" ]
+    resources: [ "secrets" ]
+    verbs: [ "get" ]
+  - apiGroups: [ "" ]
+    resources: [ "events" ]
+    verbs: [ "get", "list", "watch" ]
+{{- end }}

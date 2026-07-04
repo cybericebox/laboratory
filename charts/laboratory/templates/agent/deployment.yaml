@@ -1,0 +1,75 @@
+{{- if .Values.agent.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: laboratory-agent
+  namespace: {{ .Values.agent.namespace }}
+  labels:
+    app: laboratory-agent
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: laboratory-agent
+  template:
+    metadata:
+      labels:
+        app: laboratory-agent
+    spec:
+      serviceAccountName: laboratory-agent
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: agent
+          image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}"
+          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.agent.grpcPort }}
+              protocol: TCP
+          env:
+            - name: AGENT_GRPC_PORT
+              value: {{ .Values.agent.grpcPort | quote }}
+            - name: AGENT_TLS_ENABLED
+              value: "true"
+            - name: AGENT_TLS_CERT
+              value: /tls/tls.crt
+            - name: AGENT_TLS_KEY
+              value: /tls/tls.key
+            - name: AGENT_MTLS_ENABLED
+              value: {{ .Values.agent.mtls.enabled | quote }}
+          {{- if .Values.agent.mtls.enabled }}
+            - name: AGENT_MTLS_CLIENT_CA
+              value: /ca/tls.crt
+            - name: AGENT_ALLOWED_CLIENT_CNS
+              value: {{ join "," .Values.agent.allowedClientCNs | quote }}
+          {{- end }}
+          volumeMounts:
+            - name: server-tls
+              mountPath: /tls
+              readOnly: true
+          {{- if .Values.agent.mtls.enabled }}
+            - name: client-ca
+              mountPath: /ca
+              readOnly: true
+          {{- end }}
+          resources:
+            limits:
+              cpu: 250m
+              memory: 128Mi
+            requests:
+              cpu: 10m
+              memory: 64Mi
+      volumes:
+        - name: server-tls
+          secret:
+            secretName: laboratory-agent-server-tls
+      {{- if .Values.agent.mtls.enabled }}
+        - name: client-ca
+          secret:
+            secretName: laboratory-agent-ca
+      {{- end }}
+{{- end }}

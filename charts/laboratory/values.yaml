@@ -190,6 +190,39 @@ labWorkloads:
   tolerations: []
 
 # ============================================================
+# Management agent: optional per-cluster gRPC agent for platform ops
+# ============================================================
+agent:
+  enabled: false
+  namespace: laboratory-agent
+
+  image:
+    repository: cybericebox/laboratory-agent
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  # gRPC port the agent listens on (TLS).
+  grpcPort: 5454
+
+  # Public domain for the agent's TLS certificate + TLSRoute hostname.
+  domain: agent.example.com
+
+  mtls:
+    enabled: true
+
+  # CNs of client certs allowed to call the agent (sent as AGENT_ALLOWED_CLIENT_CNS).
+  allowedClientCNs:
+    - platform
+
+  # Each entry becomes a cert-manager Certificate → Secret laboratory-agent-client-<name>-tls,
+  # issued by the private laboratory-agent-ca Issuer.
+  clients:
+    - platform
+
+  networkPolicy:
+    enabled: true
+
+# ============================================================
 # Platform credentials
 # ============================================================
 platform:

@@ -1,0 +1,37 @@
+{{- if and .Values.agent.enabled .Values.agent.mtls.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: laboratory-agent-selfsign
+  namespace: {{ .Values.agent.namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: laboratory-agent-ca
+  namespace: {{ .Values.agent.namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  isCA: true
+  commonName: laboratory-agent-ca
+  secretName: laboratory-agent-ca
+  issuerRef:
+    name: laboratory-agent-selfsign
+    kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: laboratory-agent-ca
+  namespace: {{ .Values.agent.namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  ca:
+    secretName: laboratory-agent-ca
+{{- end }}
