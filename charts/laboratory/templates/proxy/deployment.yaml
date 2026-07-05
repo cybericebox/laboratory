@@ -3,7 +3,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: laboratory-proxy
-  namespace: laboratory-proxy
+  namespace: {{ .Values.proxy.namespace }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:

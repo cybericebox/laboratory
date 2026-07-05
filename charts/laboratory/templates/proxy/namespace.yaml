@@ -2,7 +2,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: laboratory-proxy
+  name: {{ .Values.proxy.namespace }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 {{- end }}

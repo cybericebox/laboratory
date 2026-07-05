@@ -3,7 +3,7 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: TLSRoute
 metadata:
   name: laboratory-lab
-  namespace: laboratory-proxy
+  namespace: {{ .Values.proxy.namespace }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:

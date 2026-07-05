@@ -12,5 +12,5 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: laboratory-proxy
-  namespace: laboratory-proxy
+  namespace: {{ .Values.proxy.namespace }}
 {{- end }}

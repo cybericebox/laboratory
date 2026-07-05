@@ -1,6 +1,6 @@
 {{/*
 NetworkPolicy + CiliumNetworkPolicy for the proxy-l7 Deployment (singleton,
-fixed namespace "laboratory-proxy", pod label app: laboratory-proxy-l7 —
+namespace .Values.proxy.namespace (default "laboratory-proxy"), pod label app: laboratory-proxy-l7 —
 see charts/laboratory/templates/proxy/deployment.yaml and
 internal/names/labels.go:ProxyL7App). The Deployment's two containers — l7
 (:8443/TCP, terminates TLS + JWT-gated device proxying) and wg-demux
@@ -56,7 +56,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: laboratory-proxy-l7
-  namespace: laboratory-proxy
+  namespace: {{ .Values.proxy.namespace }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
@@ -95,7 +95,7 @@ apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
   name: laboratory-proxy-l7
-  namespace: laboratory-proxy
+  namespace: {{ .Values.proxy.namespace }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:

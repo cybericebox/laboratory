@@ -68,6 +68,19 @@ inetGateway:
 proxy:
   enabled: true
 
+  # Kubernetes namespace for the proxy Deployment/Service/ServiceAccount/NetworkPolicy
+  # and its own dedicated Namespace object (l7 + wg-demux containers). Also the value
+  # exchanged with the Gateway via the mutual lbipam.cilium.io/sharing-cross-namespace
+  # annotation pair (gateway/gateway.yaml names this namespace; proxy/service-wg-lb.yaml
+  # names the Gateway's namespace via .Release.Namespace) — both must stay in sync for
+  # Cilium's LB-IPAM cross-namespace IP sharing to work.
+  # KNOWN GAP: the operator's JWT-credential sync (platform_reconciler.go) and each
+  # Lab's web-exposure NetworkPolicy peer selector (lab_controller.go) still read the
+  # Go compile-time constant internal/names.ProxyNamespace ("laboratory-proxy") instead
+  # of this value. Changing this away from the default will break JWT credential sync
+  # and per-lab proxy ingress until that constant is also made configurable.
+  namespace: "laboratory-proxy"
+
   # Set true when running in Kind: overrides API server address to 127.0.0.1:6443.
   kindMode: false
 

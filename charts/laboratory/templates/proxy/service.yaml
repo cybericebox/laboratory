@@ -4,7 +4,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: laboratory-proxy-l7
-  namespace: laboratory-proxy
+  namespace: {{ .Values.proxy.namespace }}
   labels:
     app: laboratory-proxy
     {{- include "laboratory.labels" . | nindent 4 }}
