@@ -17,6 +17,7 @@ spec:
     metadata:
       labels:
         app: node-agent
+        {{- include "laboratory.labels" . | nindent 8 }}
     spec:
       serviceAccountName: laboratory-node-agent
       hostNetwork: true
@@ -54,6 +55,10 @@ spec:
         volumeMounts:
         - name: cni-bin
           mountPath: /opt/cni/bin
+        {{- with .Values.nodeAgent.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
       - name: install-cni-conf
         image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
         imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
@@ -70,6 +75,10 @@ spec:
         volumeMounts:
         - name: cni-conf
           mountPath: /etc/cni/net.d
+        {{- with .Values.nodeAgent.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
       containers:
       - name: ovs
         image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
@@ -80,6 +89,10 @@ spec:
         volumeMounts:
         - name: ovs-run
           mountPath: /run/openvswitch
+        {{- with .Values.nodeAgent.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
       - name: node-agent
         image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
         imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
@@ -116,6 +129,10 @@ spec:
           # host after this container starts. Without it the container sees an empty
           # mountpoint instead of nsfs, and LinkSetNsFd fails with EINVAL.
           mountPropagation: HostToContainer
+        {{- with .Values.nodeAgent.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
       volumes:
       - name: cni-bin
         hostPath:

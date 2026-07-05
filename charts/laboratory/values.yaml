@@ -169,6 +169,11 @@ nodeAgent:
   grpcSocket: "/run/cybericebox/node-agent.sock"
   criSocket: "/run/k0s/containerd.sock"
 
+  # Container resource requests/limits for all init/main containers (ovs,
+  # node-agent, cni installers). Empty by default: these are host-privileged
+  # system processes intentionally left unconstrained unless overridden.
+  resources: {}
+
 # ============================================================
 # Lab workload scheduling (VPN, gateway, device pods)
 # ============================================================
@@ -208,6 +213,15 @@ agent:
   # issued by the private laboratory-agent-ca Issuer.
   clients:
     - platform
+
+  # Container resource requests/limits.
+  resources:
+    limits:
+      cpu: 250m
+      memory: 128Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
 
   networkPolicy:
     enabled: true

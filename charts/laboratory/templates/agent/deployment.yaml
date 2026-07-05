@@ -16,6 +16,7 @@ spec:
     metadata:
       labels:
         app: laboratory-agent
+        {{- include "laboratory.labels" . | nindent 8 }}
     spec:
       serviceAccountName: laboratory-agent
       {{- with .Values.imagePullSecrets }}
@@ -57,12 +58,7 @@ spec:
               readOnly: true
           {{- end }}
           resources:
-            limits:
-              cpu: 250m
-              memory: 128Mi
-            requests:
-              cpu: 10m
-              memory: 64Mi
+            {{- toYaml .Values.agent.resources | nindent 12 }}
       volumes:
         - name: server-tls
           secret:
