@@ -27,7 +27,7 @@ type Config struct {
 	VPNBaseNetwork string `env:"VPN_BASE_NETWORK" envDefault:"10.128.0.0/10"`
 	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets, internet half (e.g. "10.192.0.0/10").
 	InetBaseNetwork string `env:"INET_BASE_NETWORK" envDefault:"10.192.0.0/10"`
-	// DHCPDNS is the DNS server address advertised to WireGuard clients via DHCP option (optional).
+	// DHCPDNS is the DNS server address advertised via DHCP to both VPN clients and internet-gateway lab clients (optional).
 	DHCPDNS string `env:"DHCP_DNS"`
 	// VPNImage is the container image for per-LabGroup VPN pods.
 	VPNImage string `env:"VPN_IMAGE" envDefault:"cybericebox/laboratory-lab:latest"`

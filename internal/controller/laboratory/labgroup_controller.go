@@ -49,7 +49,7 @@ type LabGroupReconciler struct {
 	VPNBaseNetwork string
 	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets (e.g. "10.9.0.0/10").
 	InetBaseNetwork string
-	// DHCPDNS is the DNS server address advertised to WireGuard clients (optional).
+	// DHCPDNS is the DNS server address advertised via DHCP to both VPN clients and internet-gateway lab clients (optional).
 	DHCPDNS string
 	// VPNImage is the container image for VPN pods.
 	VPNImage string
