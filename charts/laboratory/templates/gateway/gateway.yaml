@@ -12,6 +12,7 @@ metadata:
   {{- end }}
 spec:
   gatewayClassName: {{ .Values.gateway.gatewayClassName }}
+  {{- if and .Values.proxy.enabled .Values.proxy.wg.enabled }}
   infrastructure:
     annotations:
       # Cilium copies infrastructure.annotations onto the Gateway's generated
@@ -21,9 +22,11 @@ spec:
       # Service lives in laboratory-proxy while this Gateway's generated
       # Service lives in the release namespace, and LB-IPAM's isCompatible()
       # refuses cross-namespace IP sharing unless both services explicitly
-      # list each other's namespace.
+      # list each other's namespace. Only meaningful when the WG proxy
+      # Service actually exists to share the IP with.
       lbipam.cilium.io/sharing-key: {{ .Values.proxy.sharingKey | quote }}
       lbipam.cilium.io/sharing-cross-namespace: "laboratory-proxy"
+  {{- end }}
   listeners:
   - name: tls-passthrough
     protocol: TLS

@@ -17,7 +17,7 @@ spec:
     metadata:
       labels:
         app: node-agent
-        {{- include "laboratory.labels" . | nindent 8 }}
+        {{- include "laboratory.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: laboratory-node-agent
       hostNetwork: true

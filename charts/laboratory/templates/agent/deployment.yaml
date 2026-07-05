@@ -16,7 +16,7 @@ spec:
     metadata:
       labels:
         app: laboratory-agent
-        {{- include "laboratory.labels" . | nindent 8 }}
+        {{- include "laboratory.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: laboratory-agent
       {{- with .Values.imagePullSecrets }}

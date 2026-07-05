@@ -4,14 +4,16 @@ kind: Service
 metadata:
   name: laboratory-proxy-wg
   namespace: laboratory-proxy
+  {{- $annotations := merge (dict "lbipam.cilium.io/sharing-key" .Values.proxy.sharingKey "lbipam.cilium.io/sharing-cross-namespace" .Release.Namespace) .Values.proxy.service.annotations }}
   annotations:
     # lbipam.cilium.io/* is the canonical Cilium LB-IPAM annotation domain
     # (io.cilium/ works too as a legacy alias). The load-bearing part is the
     # MUTUAL sharing-cross-namespace pair with the Gateway's generated Service
     # (release namespace): LB-IPAM's isCompatible() refuses cross-namespace IP
     # sharing unless both services explicitly list each other's namespace.
-    lbipam.cilium.io/sharing-key: {{ .Values.proxy.sharingKey | quote }}
-    lbipam.cilium.io/sharing-cross-namespace: {{ .Release.Namespace | quote }}
+    # proxy.service.annotations lets callers add extra annotations; the
+    # lbipam pair above always wins on key collision (merge: dst wins).
+    {{- toYaml $annotations | nindent 4 }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:

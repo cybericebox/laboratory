@@ -22,17 +22,5 @@ spec:
     - http01:
         ingress:
           class: ""
-          {{- if or .Values.proxy.wg.nodeSelector .Values.proxy.wg.tolerations }}
-          podTemplate:
-            spec:
-              {{- with .Values.proxy.wg.nodeSelector }}
-              nodeSelector:
-                {{- toYaml . | nindent 16 }}
-              {{- end }}
-              {{- with .Values.proxy.wg.tolerations }}
-              tolerations:
-                {{- toYaml . | nindent 16 }}
-              {{- end }}
-          {{- end }}
   {{- end }}
 {{- end }}
