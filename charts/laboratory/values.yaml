@@ -30,7 +30,11 @@ operator:
   # Leave empty in standard clusters.
   proxySourceCIDRs: ""
 
-  # DNS server advertised to WireGuard clients via DHCP option (optional).
+  # DNS server advertised via DHCP to lab clients — issued by both the per-lab VPN pod
+  # (WireGuard clients) and the per-lab internet-gateway pod (internet-gateway clients),
+  # whenever that lab has a DHCP address pool configured. NOT limited to WireGuard/VPN
+  # clients (see internal/vpn/reconciler/lab.go and internal/gateway/reconciler.go,
+  # both of which call DHCP.Start(..., DNS: r.Cfg.DHCPDNS)). Optional.
   dhcpDns: ""
 
   leaderElection: true
@@ -53,6 +57,10 @@ vpn:
   image:
     repository: cybericebox/laboratory-lab
     tag: "latest"
+    # No pullPolicy key here (unlike operator/proxy/nodeAgent/agent): this image is
+    # only ever used to build a Pod spec directly in Go
+    # (internal/controller/laboratory/labgroup_controller.go), which hardcodes
+    # ImagePullPolicy: IfNotPresent. There is no chart-level knob to plumb it through.
 
 # ============================================================
 # Gateway pod image (created at runtime by operator per LabGroup)
@@ -61,6 +69,10 @@ inetGateway:
   image:
     repository: cybericebox/laboratory-lab
     tag: "latest"
+    # No pullPolicy key here (unlike operator/proxy/nodeAgent/agent): this image is
+    # only ever used to build a Pod spec directly in Go
+    # (internal/controller/laboratory/labgroup_controller.go), which hardcodes
+    # ImagePullPolicy: IfNotPresent. There is no chart-level knob to plumb it through.
 
 # ============================================================
 # Proxy: l7 + wg-demux containers in one unprivileged Deployment
@@ -151,6 +163,12 @@ gateway:
 certManager:
   # Set true to install cert-manager as a Helm subchart dependency.
   # Set false if cert-manager is already installed in the cluster.
+  # NOTE: currently has no effect either way — Chart.yaml does not declare cert-manager
+  # under `dependencies:` (only Chart.lock and the vendored
+  # charts/cert-manager-v1.20.2.tgz reference it), so the subchart never renders
+  # regardless of this value (verified: `helm template` produces zero
+  # laboratory/charts/cert-manager/* resources for both true and false). Until that
+  # dependencies entry is added, install cert-manager separately and leave this false.
   install: false
 
   # Set true to create ClusterIssuer and Certificate resources.
@@ -250,7 +268,9 @@ agent:
 # ============================================================
 platform:
   # RSA public key (PEM) used by proxy-l7 to verify JWT tokens issued by the daemon.
-  # The operator syncs this into proxy-credentials secret in laboratory-proxy namespace.
+  # The operator's PlatformReconciler syncs this into the proxy-credentials Secret in
+  # the proxy namespace (internal/names.ProxyNamespace — NOT currently wired to
+  # proxy.namespace above; see that key's KNOWN GAP note).
   # Pass via: --set-file platform.jwtPublicKey=/path/to/jwt-public-key.pem
   jwtPublicKey: ""
 
