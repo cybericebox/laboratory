@@ -31,18 +31,21 @@
 #     chart's values.yaml can disappear. First upgrade after this redesign
 #     must use --reset-values with explicit --set for every previously
 #     customized key (see step2). Subsequent upgrades may use --reuse-values.
-#  2. `proxy.networkPolicy.enabled` (default true): the generated
-#     NetworkPolicy only allows ingress on the L7 TCP port. Since the l7 and
-#     wg-demux containers now share one pod/label (app=laboratory-proxy-l7),
-#     the same policy object also governs wg-demux, but has no UDP 51820
-#     ingress rule — this silently drops all WireGuard traffic. Disabled
-#     here (--set proxy.networkPolicy.enabled=false) until the chart's
-#     netpol is extended with a WG ingress rule.
-#  3. `agent.networkPolicy.enabled` (default true): the generated
-#     NetworkPolicy's ingress selector (kube-system/k8s-app=cilium) does not
-#     match how Cilium's embedded Envoy actually sources the TLSRoute
-#     passthrough connection to the agent pod — it silently drops it.
-#     Disabled here for the same reason as (2).
+#  2. (FIXED — historical note) `proxy.networkPolicy.enabled` used to render
+#     a NetworkPolicy with no UDP 51820 ingress rule, silently dropping all
+#     WireGuard traffic to the wg-demux container (which shares the
+#     app=laboratory-proxy-l7 pod/label with l7). The chart's
+#     templates/netpol/proxy-l7.yaml now admits UDP 51820 from any identity
+#     (external VPN clients arrive world/host/remote-node depending on the
+#     ETP=Cluster SNAT path) and TCP 8443 from Cilium's Envoy via the
+#     `ingress` reserved entity. The policies stay ENABLED in step2 and all
+#     steps must pass with them enforcing.
+#  3. (FIXED — historical note) `agent.networkPolicy.enabled`'s original
+#     ingress selector (kube-system/k8s-app=cilium) could never match the
+#     Gateway's TLSRoute passthrough source: Cilium's Envoy runs hostNetwork
+#     and is not a CiliumEndpoint, so pod/namespace selectors don't apply to
+#     it. templates/netpol/agent.yaml now admits it via the `ingress`
+#     reserved entity (CiliumNetworkPolicy). Enabled in step2, same as (2).
 #  4. Cilium LB-IPAM cross-namespace IP sharing requires a MUTUAL
 #     `lbipam.cilium.io/sharing-cross-namespace` pair on BOTH services (the
 #     WG Service in laboratory-proxy and the Gateway's generated Service in
@@ -153,9 +156,7 @@ step2() {
         --set operator.publicVPNEndpoint="$(shared_ip 2>/dev/null || echo 0.0.0.0):51820" \
         --set-file platform.jwtPublicKey="$SCRATCH_DIR/jwt-public-key.pem" \
         --set proxy.enabled=true --set gateway.enabled=true \
-        --set proxy.networkPolicy.enabled=false \
         --set agent.enabled="${WITH_AGENT:-1}" --set agent.domain="$AGENT_DOMAIN" \
-        --set agent.networkPolicy.enabled=false \
         --wait --timeout="${TIMEOUT}s"
 
     # GatewayClass didn't exist yet on a fresh cluster (gateway.createGatewayClass

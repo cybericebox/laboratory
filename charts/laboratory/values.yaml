@@ -43,6 +43,9 @@ operator:
       cpu: 10m
       memory: 64Mi
 
+  networkPolicy:
+    enabled: true
+
 # ============================================================
 # VPN pod image (created at runtime by operator per LabGroup)
 # ============================================================
@@ -109,6 +112,9 @@ proxy:
   # Cilium LB-IPAM sharing key: makes the WG LoadBalancer Service and the
   # Gateway's Service share one external IP (UDP 51820 + TCP 443 don't conflict).
   sharingKey: "laboratory-edge"
+
+  networkPolicy:
+    enabled: true
 
 # ============================================================
 # Cilium Gateway API (TLS passthrough, shared LB IP)

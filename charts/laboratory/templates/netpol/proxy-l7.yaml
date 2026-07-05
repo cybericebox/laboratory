@@ -1,0 +1,114 @@
+{{/*
+NetworkPolicy + CiliumNetworkPolicy for the proxy-l7 Deployment (singleton,
+fixed namespace "laboratory-proxy", pod label app: laboratory-proxy-l7 —
+see charts/laboratory/templates/proxy/deployment.yaml and
+internal/names/labels.go:ProxyL7App). The Deployment's two containers — l7
+(:8443/TCP, terminates TLS + JWT-gated device proxying) and wg-demux
+(:{{ .Values.proxy.wg.listenPort }}/UDP, WireGuard endpoint) — share one
+pod/label, so this single policy pair governs both.
+
+Ingress:
+  - l7 (TCP): admitted from Cilium's own Envoy proxy acting as the
+    Gateway/TLSRoute data-path, via the `ingress` reserved entity
+    (CiliumNetworkPolicy only — live-cluster check with `cilium-dbg identity
+    list` confirms `reserved:ingress` = identity 8 whenever
+    gatewayAPI/l7Proxy is enabled). A podSelector/namespaceSelector peer for
+    kube-system (k8s-app=cilium or cilium-envoy) CANNOT work for a vanilla
+    NetworkPolicy here: Cilium's dedicated cilium-envoy DaemonSet pods run
+    hostNetwork: true and are verifiably NOT tracked as CiliumEndpoints
+    (`kubectl get ciliumendpoint -n kube-system` never lists them), so no
+    podSelector/namespaceSelector peer can ever match their traffic — this
+    was the original placeholder's bug. The vanilla NetworkPolicy below only
+    keeps an ipBlock peer for .Values.operator.proxySourceCIDRs, a fallback
+    for hostNetwork proxy sources on non-Cilium clusters (e.g. Kind).
+  - wg-demux (UDP): admitted from any identity (`all`). This is a
+    public-facing WireGuard endpoint by design — external VPN clients reach
+    it via the shared LoadBalancer Service. With
+    externalTrafficPolicy: Cluster on that Service, the source IP the pod
+    observes may be the client's real address (`world`) or SNAT'd to
+    whichever node's own address handled the LB hairpin (`host`/
+    `remote-node`), depending on which node received the packet — both
+    must be covered, so identity-based filtering here is not meaningful;
+    WireGuard's own handshake is the real security boundary for this port.
+
+Egress: kube-dns (vanilla NetworkPolicy — unrelated to Cilium identities)
+plus, via the CiliumNetworkPolicy, kube-apiserver (operator watch/leases)
+and `cluster` (l7 dials per-device Services and wg-demux dials per-lab-group
+`vpn` Services, both in namespaces the operator creates dynamically per
+LabGroup/Lab and that cannot be enumerated at chart-authoring time — see
+internal/proxy/l7/handler.go's ServiceResolver and
+internal/proxy/demux/table.go's vpn.<ns>.svc.cluster.local per-LabGroup
+target).
+*/}}
+{{- if and .Values.proxy.enabled .Values.proxy.l7.enabled .Values.proxy.networkPolicy.enabled }}
+{{- $l7Port := trimPrefix ":" .Values.proxy.l7.listen | int }}
+{{- $wgPort := .Values.proxy.wg.listenPort | int }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: laboratory-proxy-l7
+  namespace: laboratory-proxy
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: laboratory-proxy-l7
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- if .Values.operator.proxySourceCIDRs }}
+    - from:
+        {{- range splitList "," .Values.operator.proxySourceCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ $l7Port }}
+    {{- end }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: laboratory-proxy-l7
+  namespace: laboratory-proxy
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app: laboratory-proxy-l7
+  ingress:
+    - fromEntities:
+        - ingress
+      toPorts:
+        - ports:
+            - port: {{ $l7Port | quote }}
+              protocol: TCP
+    - fromEntities:
+        - all
+      toPorts:
+        - ports:
+            - port: {{ $wgPort | quote }}
+              protocol: UDP
+  egress:
+    - toEntities:
+        - kube-apiserver
+    - toEntities:
+        - cluster
+{{- end }}

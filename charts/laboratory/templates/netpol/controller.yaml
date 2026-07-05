@@ -1,0 +1,27 @@
+{{/*
+CiliumNetworkPolicy for the laboratory-controller-manager Deployment
+(singleton, namespace .Release.Namespace, pod labels
+control-plane: controller-manager + laboratory.selectorLabels — see
+charts/laboratory/templates/operator/deployment.yaml). No ingress: the
+controller is only ever a client (to the Kubernetes API server); egress is
+locked to kube-apiserver, mirroring the toEntities: [kube-apiserver] shape
+used by vpnCiliumPolicy/gatewayCiliumPolicy in
+internal/controller/laboratory/labgroup_controller.go.
+*/}}
+{{- if .Values.operator.networkPolicy.enabled }}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: laboratory-controller-manager
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      control-plane: controller-manager
+      {{- include "laboratory.selectorLabels" . | nindent 6 }}
+  egress:
+    - toEntities:
+        - kube-apiserver
+{{- end }}

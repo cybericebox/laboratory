@@ -1,0 +1,68 @@
+{{/*
+NetworkPolicy + CiliumNetworkPolicy for the laboratory-agent Deployment
+(singleton, namespace .Values.agent.namespace, pod label
+app: laboratory-agent — see charts/laboratory/templates/agent/deployment.yaml).
+
+Ingress (TCP .Values.agent.grpcPort): admitted from Cilium's own Envoy proxy
+via the `ingress` reserved entity — same reasoning as netpol/proxy-l7.yaml:
+the Gateway's TLSRoute passthrough connection to this pod is sourced by
+Cilium's dedicated cilium-envoy DaemonSet pods, which run hostNetwork: true
+and are NOT tracked as CiliumEndpoints, so a podSelector/namespaceSelector
+peer (the original kube-system/k8s-app=cilium placeholder) can never match
+their traffic. The vanilla NetworkPolicy below only keeps an ipBlock peer
+for .Values.operator.proxySourceCIDRs, a fallback for hostNetwork proxy
+sources on non-Cilium clusters (e.g. Kind).
+
+Egress is handled entirely by the CiliumNetworkPolicy below (toEntities:
+[kube-apiserver] only, mirroring vpnCiliumPolicy/gatewayCiliumPolicy in
+internal/controller/laboratory/labgroup_controller.go); the native
+NetworkPolicy here only governs ingress.
+*/}}
+{{- if and .Values.agent.enabled .Values.agent.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: laboratory-agent
+  namespace: {{ .Values.agent.namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: laboratory-agent
+  policyTypes:
+    - Ingress
+  ingress:
+    {{- if .Values.operator.proxySourceCIDRs }}
+    - from:
+        {{- range splitList "," .Values.operator.proxySourceCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.agent.grpcPort }}
+    {{- end }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: laboratory-agent
+  namespace: {{ .Values.agent.namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app: laboratory-agent
+  ingress:
+    - fromEntities:
+        - ingress
+      toPorts:
+        - ports:
+            - port: {{ .Values.agent.grpcPort | quote }}
+              protocol: TCP
+  egress:
+    - toEntities:
+        - kube-apiserver
+{{- end }}
