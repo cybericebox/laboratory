@@ -65,22 +65,22 @@ type portDescMsg struct {
 type Client struct {
 	conn    net.Conn
 	writeMu sync.Mutex // serialises all writes; never held while blocked on recv
-
+	
 	xid atomic.Uint32
-
+	
 	mapMu   sync.RWMutex
 	portMap map[string]uint32 // port name → port number
-
+	
 	queryMu sync.Mutex // serialises queryPortDesc: only one PORT_DESC in flight
-
+	
 	pdMu       sync.Mutex
 	pendingPD  chan portDescMsg // non-nil while queryPortDesc is active
 	pendingXID uint32           // xid of the in-flight PORT_DESC request
-
+	
 	// onError, if set, is invoked for every OFPT_ERROR not consumed by a
 	// pending PORT_DESC query (e.g. a rejected FLOW_MOD). Set via SetErrorHandler.
 	onError func(xid uint32, errType, errCode uint16)
-
+	
 	closeOnce sync.Once
 }
 
@@ -106,18 +106,18 @@ func Connect(sockPath string) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect to OF socket %s: %w", sockPath, err)
 	}
-
+	
 	c := &Client{conn: conn, portMap: make(map[string]uint32)}
-
+	
 	// HELLO exchange runs synchronously before background reader starts.
 	if err := c.handshake(); err != nil {
 		conn.Close()
 		return nil, err
 	}
-
+	
 	// Background reader: handles echo replies, dispatches PORT_DESC chunks.
 	go c.readLoop()
-
+	
 	// Initial PORT_DESC query via channel (readLoop is now running).
 	if err := c.queryPortDesc(); err != nil {
 		conn.Close()
@@ -183,7 +183,7 @@ func (c *Client) readLoop() {
 			c.pdMu.Unlock()
 			return
 		}
-
+		
 		switch msg[1] {
 		case ofptEchoRequest:
 			// Reply with same body, changing only the type byte.
@@ -193,7 +193,7 @@ func (c *Client) readLoop() {
 			c.writeMu.Lock()
 			_, _ = c.conn.Write(reply) // best-effort; ignore error
 			c.writeMu.Unlock()
-
+		
 		case ofptMultipartReply:
 			if len(msg) < 12 {
 				continue
@@ -220,7 +220,7 @@ func (c *Client) readLoop() {
 				}
 			}
 			c.pdMu.Unlock()
-
+		
 		case ofptError:
 			// Only propagate to a pending PORT_DESC query when the error's xid
 			// matches the in-flight request. Errors for other requests (e.g. a
@@ -275,13 +275,13 @@ func (c *Client) queryPortDesc() error {
 	// and a second in-flight PORT_DESC would clobber pendingPD.
 	c.queryMu.Lock()
 	defer c.queryMu.Unlock()
-
+	
 	ch := make(chan portDescMsg, 64)
-
+	
 	req := make([]byte, 16) // 8 header + 4 type+flags + 4 pad
 	putHeader(req, ofptMultipartRequest, 16)
 	binary.BigEndian.PutUint16(req[8:10], ofpmpPortDesc)
-
+	
 	c.writeMu.Lock()
 	xid := c.xid.Add(1)
 	binary.BigEndian.PutUint32(req[4:8], xid)
@@ -301,7 +301,7 @@ func (c *Client) queryPortDesc() error {
 	if writeErr != nil {
 		return fmt.Errorf("send PORT_DESC request: %w", writeErr)
 	}
-
+	
 	newPortMap := make(map[string]uint32)
 	timeout := time.NewTimer(5 * time.Second)
 	defer timeout.Stop()
@@ -339,7 +339,7 @@ func (c *Client) queryPortDesc() error {
 			break
 		}
 	}
-
+	
 	c.mapMu.Lock()
 	c.portMap = newPortMap
 	c.mapMu.Unlock()
@@ -355,7 +355,7 @@ func (c *Client) sendFlowMod(cmd uint8, tableID uint8, priority uint16, match, a
 	totalLen := 8 + bodyLen
 	msg := make([]byte, totalLen)
 	putHeader(msg, ofptFlowMod, totalLen)
-
+	
 	off := 8
 	// cookie, cookie_mask (8+8 = 16 bytes, all zero)
 	off += 16
@@ -378,7 +378,7 @@ func (c *Client) sendFlowMod(cmd uint8, tableID uint8, priority uint16, match, a
 	copy(msg[off:], match)
 	off += len(match)
 	copy(msg[off:], instr)
-
+	
 	xid := c.xid.Add(1)
 	binary.BigEndian.PutUint32(msg[4:8], xid)
 	_, err := c.conn.Write(msg)

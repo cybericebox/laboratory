@@ -13,21 +13,21 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: laboratory-connection-editor-role
 rules:
-- apiGroups:
-  - laboratory.cybericebox.com
-  resources:
-  - connections
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - laboratory.cybericebox.com
-  resources:
-  - connections/status
-  verbs:
-  - get
+  - apiGroups:
+      - laboratory.cybericebox.com
+    resources:
+      - connections
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - laboratory.cybericebox.com
+    resources:
+      - connections/status
+    verbs:
+      - get

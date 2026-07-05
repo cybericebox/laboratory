@@ -7,7 +7,7 @@ import (
 	"net"
 	"text/template"
 	"time"
-
+	
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,7 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
+	
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
@@ -46,27 +46,30 @@ func (r *LabGroupClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err := r.Get(ctx, req.NamespacedName, &lgc); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-
+	
 	if !lgc.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, &lgc)
 	}
-
+	
 	return r.reconcileCreate(ctx, &lgc)
 }
 
-func (r *LabGroupClientReconciler) reconcileCreate(ctx context.Context, lgc *laboratoryv1alpha1.LabGroupClient) (ctrl.Result, error) {
+func (r *LabGroupClientReconciler) reconcileCreate(
+	ctx context.Context,
+	lgc *laboratoryv1alpha1.LabGroupClient,
+) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(lgc, names.FinalizerLabGroupClient) {
 		controllerutil.AddFinalizer(lgc, names.FinalizerLabGroupClient)
 		if err := r.Update(ctx, lgc); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
-
+	
 	// Allocate IP + generate keypair on first pass only.
 	pubKey := lgc.Spec.PublicKey
 	var privKeyB64 []byte
 	assignedIP := lgc.Status.AssignedIP
-
+	
 	if assignedIP == "" {
 		if pubKey == "" {
 			priv, pub, err := generateWireGuardKeypair()
@@ -81,7 +84,7 @@ func (r *LabGroupClientReconciler) reconcileCreate(ctx context.Context, lgc *lab
 				return ctrl.Result{}, err
 			}
 		}
-
+		
 		// Reject duplicate pubkey in the same group — peers are identified by
 		// pubkey + assignedIP on the VPN server, so two LGCs with the same key
 		// would race for the peer slot.
@@ -92,10 +95,15 @@ func (r *LabGroupClientReconciler) reconcileCreate(ctx context.Context, lgc *lab
 			labstatus.SetReady(&lgc.Status.Conditions, lgc.Generation, false, labstatus.ReasonPubKeyCollision, msg)
 			_ = r.Status().Update(ctx, lgc)
 			r.Recorder.Event(lgc, corev1.EventTypeWarning, labstatus.ReasonPubKeyCollision, msg)
-			ctrl.LoggerFrom(ctx).Error(fmt.Errorf("%s", msg), "refusing to allocate duplicate VPN client", "client", lgc.Name)
+			ctrl.LoggerFrom(ctx).Error(
+				fmt.Errorf("%s", msg),
+				"refusing to allocate duplicate VPN client",
+				"client",
+				lgc.Name,
+			)
 			return ctrl.Result{}, nil
 		}
-
+		
 		allocator := poolpkg.NewAllocator(r.Client, names.PoolVPNClients, lgc.Namespace, 254)
 		idx, err := allocator.AllocateIndex(ctx)
 		if err != nil {
@@ -106,7 +114,7 @@ func (r *LabGroupClientReconciler) reconcileCreate(ctx context.Context, lgc *lab
 			return ctrl.Result{}, fmt.Errorf("compute client IP: %w", err)
 		}
 	}
-
+	
 	// Fetch parent LabGroup so we can populate serverPublicKey + endpoint in the
 	// Secret. If the LabGroup is not yet Ready we still write what we have.
 	serverPubKey, endpoint, lgErr := r.lookupParentVPN(ctx, lgc.Namespace)
@@ -114,19 +122,21 @@ func (r *LabGroupClientReconciler) reconcileCreate(ctx context.Context, lgc *lab
 		// Don't fail hard — Secret is still useful with publicKey/assignedIP/privateKey.
 		ctrl.LoggerFrom(ctx).V(1).Info("parent LabGroup not yet readable", "reason", lgErr.Error())
 	}
-
+	
 	secretName := names.SecretClientPrefix + lgc.Name
-	if err := r.ensureClientSecret(ctx, lgc, secretName, secretParams{
-		PublicKey:       pubKey,
-		PrivateKey:      string(privKeyB64),
-		AssignedIP:      assignedIP,
-		ServerPublicKey: serverPubKey,
-		Endpoint:        endpoint,
-		AllowedIPs:      r.VPNBaseNetwork,
-	}); err != nil {
+	if err := r.ensureClientSecret(
+		ctx, lgc, secretName, secretParams{
+			PublicKey:       pubKey,
+			PrivateKey:      string(privKeyB64),
+			AssignedIP:      assignedIP,
+			ServerPublicKey: serverPubKey,
+			Endpoint:        endpoint,
+			AllowedIPs:      r.VPNBaseNetwork,
+		},
+	); err != nil {
 		return ctrl.Result{}, err
 	}
-
+	
 	updated := false
 	if lgc.Status.AssignedIP != assignedIP {
 		lgc.Status.AssignedIP = assignedIP
@@ -141,26 +151,37 @@ func (r *LabGroupClientReconciler) reconcileCreate(ctx context.Context, lgc *lab
 			return ctrl.Result{}, err
 		}
 	}
-
+	
 	// Requeue softly until LabGroup endpoint/server pubkey land so the wg.conf
 	// gets refreshed without depending solely on the cross-resource watch.
 	if serverPubKey == "" || endpoint == "" {
 		if labstatus.IsReady(lgc.Status.Conditions) || len(lgc.Status.Conditions) == 0 {
-			labstatus.SetReady(&lgc.Status.Conditions, lgc.Generation, false, labstatus.ReasonWaitingForVPNServer,
-				"waiting for parent LabGroup VPN endpoint/public key")
+			labstatus.SetReady(
+				&lgc.Status.Conditions, lgc.Generation, false, labstatus.ReasonWaitingForVPNServer,
+				"waiting for parent LabGroup VPN endpoint/public key",
+			)
 			_ = r.Status().Update(ctx, lgc)
 		}
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	if !labstatus.IsReady(lgc.Status.Conditions) {
-		labstatus.SetReady(&lgc.Status.Conditions, lgc.Generation, true, labstatus.ReasonReady, "client config provisioned")
+		labstatus.SetReady(
+			&lgc.Status.Conditions,
+			lgc.Generation,
+			true,
+			labstatus.ReasonReady,
+			"client config provisioned",
+		)
 		_ = r.Status().Update(ctx, lgc)
 		r.Recorder.Event(lgc, corev1.EventTypeNormal, labstatus.ReasonReady, "VPN client config ready")
 	}
 	return ctrl.Result{}, nil
 }
 
-func (r *LabGroupClientReconciler) reconcileDelete(ctx context.Context, lgc *laboratoryv1alpha1.LabGroupClient) (ctrl.Result, error) {
+func (r *LabGroupClientReconciler) reconcileDelete(
+	ctx context.Context,
+	lgc *laboratoryv1alpha1.LabGroupClient,
+) (ctrl.Result, error) {
 	if lgc.Status.AssignedIP != "" {
 		allocator := poolpkg.NewAllocator(r.Client, names.PoolVPNClients, lgc.Namespace, 254)
 		idx, err := ipToIndex(lgc.Status.AssignedIP)
@@ -171,7 +192,7 @@ func (r *LabGroupClientReconciler) reconcileDelete(ctx context.Context, lgc *lab
 			return ctrl.Result{}, err
 		}
 	}
-
+	
 	secretName := names.SecretClientPrefix + lgc.Name
 	var s corev1.Secret
 	if err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: lgc.Namespace}, &s); err == nil {
@@ -179,7 +200,7 @@ func (r *LabGroupClientReconciler) reconcileDelete(ctx context.Context, lgc *lab
 			return ctrl.Result{}, err
 		}
 	}
-
+	
 	// The cybericebox.com/vpn finalizer is removed by the VPN binary after it
 	// deletes the WireGuard peer. The VPN pod is a Deployment that always comes
 	// back, so this is processed eventually; group teardown (where the pod would
@@ -191,7 +212,11 @@ func (r *LabGroupClientReconciler) reconcileDelete(ctx context.Context, lgc *lab
 // findDuplicatePubKey returns the name of another LabGroupClient in the same
 // namespace that already uses pubKey, or "" if it's free. Checks both
 // Spec.PublicKey (already-allocated peers) and skips the caller itself.
-func (r *LabGroupClientReconciler) findDuplicatePubKey(ctx context.Context, pubKey string, self *laboratoryv1alpha1.LabGroupClient) (string, error) {
+func (r *LabGroupClientReconciler) findDuplicatePubKey(
+	ctx context.Context,
+	pubKey string,
+	self *laboratoryv1alpha1.LabGroupClient,
+) (string, error) {
 	if pubKey == "" {
 		return "", nil
 	}
@@ -214,7 +239,10 @@ func (r *LabGroupClientReconciler) findDuplicatePubKey(ctx context.Context, pubK
 // lookupParentVPN finds the LabGroup that owns the given namespace and returns
 // its current VPN public key + endpoint. The namespace label
 // "laboratory.cybericebox.com/group" points to the owning LabGroup name.
-func (r *LabGroupClientReconciler) lookupParentVPN(ctx context.Context, ns string) (pubKey, endpoint string, err error) {
+func (r *LabGroupClientReconciler) lookupParentVPN(ctx context.Context, ns string) (
+	pubKey, endpoint string,
+	err error,
+) {
 	var nsObj corev1.Namespace
 	if err := r.Get(ctx, types.NamespacedName{Name: ns}, &nsObj); err != nil {
 		return "", "", err
@@ -239,7 +267,12 @@ type secretParams struct {
 	AllowedIPs      string
 }
 
-func (r *LabGroupClientReconciler) ensureClientSecret(ctx context.Context, lgc *laboratoryv1alpha1.LabGroupClient, name string, p secretParams) error {
+func (r *LabGroupClientReconciler) ensureClientSecret(
+	ctx context.Context,
+	lgc *laboratoryv1alpha1.LabGroupClient,
+	name string,
+	p secretParams,
+) error {
 	desired := map[string][]byte{
 		"publicKey":  []byte(p.PublicKey),
 		"assignedIP": []byte(p.AssignedIP),
@@ -257,7 +290,7 @@ func (r *LabGroupClientReconciler) ensureClientSecret(ctx context.Context, lgc *
 	if conf, err := renderWGConf(p); err == nil {
 		desired["wg.conf"] = []byte(conf)
 	}
-
+	
 	var existing corev1.Secret
 	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: lgc.Namespace}, &existing)
 	if errors.IsNotFound(err) {
@@ -270,7 +303,7 @@ func (r *LabGroupClientReconciler) ensureClientSecret(ctx context.Context, lgc *
 	if err != nil {
 		return err
 	}
-
+	
 	// Preserve existing privateKey across reconciles — it's generated once and never regenerated.
 	if _, ok := desired["privateKey"]; !ok {
 		if pk, ok := existing.Data["privateKey"]; ok {
@@ -284,7 +317,7 @@ func (r *LabGroupClientReconciler) ensureClientSecret(ctx context.Context, lgc *
 			}
 		}
 	}
-
+	
 	if dataEqual(existing.Data, desired) {
 		return nil
 	}
@@ -310,7 +343,9 @@ func dataEqual(a, b map[string][]byte) bool {
 // PersistentKeepalive 15 s — §4 recommends 10–25 s for roaming recovery.
 // PrivateKey is the system-generated value when present; otherwise a literal
 // placeholder is left so the user pastes their own.
-var wgConfTemplate = template.Must(template.New("wg.conf").Parse(`[Interface]
+var wgConfTemplate = template.Must(
+	template.New("wg.conf").Parse(
+		`[Interface]
 PrivateKey = {{ .PrivateKey }}
 Address = {{ .AssignedIP }}
 
@@ -319,7 +354,9 @@ PublicKey = {{ .ServerPublicKey }}
 Endpoint = {{ .Endpoint }}
 AllowedIPs = {{ .AllowedIPs }}
 PersistentKeepalive = 15
-`))
+`,
+	),
+)
 
 func renderWGConf(p secretParams) (string, error) {
 	if p.ServerPublicKey == "" || p.Endpoint == "" || p.AssignedIP == "" || p.AllowedIPs == "" {
@@ -330,9 +367,11 @@ func renderWGConf(p secretParams) (string, error) {
 		priv = "<YOUR_PRIVATE_KEY>"
 	}
 	var buf bytes.Buffer
-	if err := wgConfTemplate.Execute(&buf, struct {
-		PrivateKey, AssignedIP, ServerPublicKey, Endpoint, AllowedIPs string
-	}{priv, p.AssignedIP, p.ServerPublicKey, p.Endpoint, p.AllowedIPs}); err != nil {
+	if err := wgConfTemplate.Execute(
+		&buf, struct {
+			PrivateKey, AssignedIP, ServerPublicKey, Endpoint, AllowedIPs string
+		}{priv, p.AssignedIP, p.ServerPublicKey, p.Endpoint, p.AllowedIPs},
+	); err != nil {
 		return "", err
 	}
 	return buf.String(), nil
@@ -381,13 +420,15 @@ func (r *LabGroupClientReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 		reqs := make([]reconcile.Request, 0, len(lgcList.Items))
 		for _, lgc := range lgcList.Items {
-			reqs = append(reqs, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: lgc.Name, Namespace: lgc.Namespace},
-			})
+			reqs = append(
+				reqs, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: lgc.Name, Namespace: lgc.Namespace},
+				},
+			)
 		}
 		return reqs
 	}
-
+	
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.LabGroupClient{}).
 		Watches(&laboratoryv1alpha1.LabGroup{}, handler.EnqueueRequestsFromMapFunc(groupMap)).

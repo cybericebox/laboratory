@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"time"
-
+	
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
+	
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
@@ -74,7 +74,10 @@ func (r *ConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 // reconcileCreate dispatches to the appropriate scenario handler after loading
 // endpoints and ensuring the shared Geneve port + its t0 ingress entry exist.
-func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *laboratoryv1alpha1.Connection) (ctrl.Result, error) {
+func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *laboratoryv1alpha1.Connection) (
+	ctrl.Result,
+	error,
+) {
 	eps, needsRequeue, err := r.loadEndpoints(ctx, conn)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -82,7 +85,7 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 	if needsRequeue {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
-
+	
 	if !controllerutil.ContainsFinalizer(conn, names.FinalizerOVSCleanup) {
 		controllerutil.AddFinalizer(conn, names.FinalizerOVSCleanup)
 		if err := r.Update(ctx, conn); err != nil {
@@ -92,7 +95,7 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 			return ctrl.Result{}, err
 		}
 	}
-
+	
 	// Ensure shared Geneve port and its permanent t0 rule.
 	if err := r.OVS.AddGenevePort("", ""); err != nil {
 		r.warnf(conn, labstatus.ReasonProgrammingFailed, "ensure Geneve port failed: %v", err)
@@ -102,7 +105,7 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 		r.warnf(conn, labstatus.ReasonProgrammingFailed, "program Geneve ingress flow failed: %v", err)
 		return ctrl.Result{}, fmt.Errorf("init geneve ingress: %w", err)
 	}
-
+	
 	sw0, sw1 := eps[0].isSwitch, eps[1].isSwitch
 	var res ctrl.Result
 	switch {
@@ -125,7 +128,11 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 
 // reconcileDeviceDevice handles direct device-to-device connections.
 // Both device ports go into connVNI; t6 floods within that VNI.
-func (r *ConnectionReconciler) reconcileDeviceDevice(ctx context.Context, conn *laboratoryv1alpha1.Connection, eps []epInfo) (ctrl.Result, error) {
+func (r *ConnectionReconciler) reconcileDeviceDevice(
+	ctx context.Context,
+	conn *laboratoryv1alpha1.Connection,
+	eps []epInfo,
+) (ctrl.Result, error) {
 	var vni uint
 	if conn.Status.VNI != nil {
 		vni = *conn.Status.VNI
@@ -133,12 +140,12 @@ func (r *ConnectionReconciler) reconcileDeviceDevice(ctx context.Context, conn *
 	if vni == 0 {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
-
+	
 	desired := make([]laboratoryv1alpha1.ConnectionPortStatus, 0, len(eps))
 	var localPorts []string
 	seenVTEPs := make(map[string]struct{})
 	var remoteVTEPs []string
-
+	
 	for _, ep := range eps {
 		portStatus := laboratoryv1alpha1.ConnectionPortStatus{
 			Device:      ep.endpoint.Device,
@@ -146,7 +153,7 @@ func (r *ConnectionReconciler) reconcileDeviceDevice(ctx context.Context, conn *
 			NodeName:    ep.device.Status.NodeName,
 			NodeAddress: ep.device.Status.NodeAddress,
 		}
-
+		
 		if ep.device.Status.NodeName == r.NodeName {
 			pKey, requeue, err := r.resolveLocalPortKey(ctx, conn, ep)
 			if err != nil {
@@ -162,7 +169,7 @@ func (r *ConnectionReconciler) reconcileDeviceDevice(ctx context.Context, conn *
 			if !exists {
 				return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
 			}
-
+			
 			_ = r.Flows.DelT0Port(pKey)
 			if err := r.Flows.AddT0Port(pKey, vni); err != nil {
 				return ctrl.Result{}, err
@@ -187,13 +194,13 @@ func (r *ConnectionReconciler) reconcileDeviceDevice(ctx context.Context, conn *
 		}
 		desired = append(desired, portStatus)
 	}
-
+	
 	if len(localPorts) > 0 {
 		if err := r.Flows.RebuildT6Flood(vni, localPorts, remoteVTEPs); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
-
+	
 	if reflect.DeepEqual(conn.Status.Ports, desired) {
 		return ctrl.Result{}, nil
 	}
@@ -204,7 +211,11 @@ func (r *ConnectionReconciler) reconcileDeviceDevice(ctx context.Context, conn *
 // reconcileDeviceSwitch handles device-to-switch/hub connections.
 // The device port enters the switch's VNI (SW_VNI); t6 for SW_VNI is rebuilt
 // by aggregating all connections that share the same switch endpoint.
-func (r *ConnectionReconciler) reconcileDeviceSwitch(ctx context.Context, conn *laboratoryv1alpha1.Connection, eps []epInfo) (ctrl.Result, error) {
+func (r *ConnectionReconciler) reconcileDeviceSwitch(
+	ctx context.Context,
+	conn *laboratoryv1alpha1.Connection,
+	eps []epInfo,
+) (ctrl.Result, error) {
 	var swEp, devEp epInfo
 	for _, ep := range eps {
 		if ep.isSwitch {
@@ -213,7 +224,7 @@ func (r *ConnectionReconciler) reconcileDeviceSwitch(ctx context.Context, conn *
 			devEp = ep
 		}
 	}
-
+	
 	var vni uint
 	if swEp.device.Status.VNI != nil {
 		vni = *swEp.device.Status.VNI
@@ -221,23 +232,25 @@ func (r *ConnectionReconciler) reconcileDeviceSwitch(ctx context.Context, conn *
 	if vni == 0 {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
-
+	
 	desired := make([]laboratoryv1alpha1.ConnectionPortStatus, 0, 2)
-	desired = append(desired, laboratoryv1alpha1.ConnectionPortStatus{
-		Device:    swEp.endpoint.Device,
-		Interface: swEp.endpoint.Interface,
-		Connected: true,
-	})
-
+	desired = append(
+		desired, laboratoryv1alpha1.ConnectionPortStatus{
+			Device:    swEp.endpoint.Device,
+			Interface: swEp.endpoint.Interface,
+			Connected: true,
+		},
+	)
+	
 	portStatus := laboratoryv1alpha1.ConnectionPortStatus{
 		Device:      devEp.endpoint.Device,
 		Interface:   devEp.endpoint.Interface,
 		NodeName:    devEp.device.Status.NodeName,
 		NodeAddress: devEp.device.Status.NodeAddress,
 	}
-
+	
 	var currentLocalPort string
-
+	
 	if devEp.device.Status.NodeName == r.NodeName {
 		pKey, requeue, err := r.resolveLocalPortKey(ctx, conn, devEp)
 		if err != nil {
@@ -253,7 +266,7 @@ func (r *ConnectionReconciler) reconcileDeviceSwitch(ctx context.Context, conn *
 		if !exists {
 			return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
 		}
-
+		
 		_ = r.Flows.DelT0Port(pKey)
 		if err := r.Flows.AddT0Port(pKey, vni); err != nil {
 			return ctrl.Result{}, err
@@ -271,7 +284,7 @@ func (r *ConnectionReconciler) reconcileDeviceSwitch(ctx context.Context, conn *
 		}
 	}
 	desired = append(desired, portStatus)
-
+	
 	// Rebuild t6 for SW_VNI aggregating all connections to this switch.
 	// Inject currentLocalPort in case Status.Ports hasn't been written yet.
 	localPorts, remoteVTEPs, err := r.buildSwitchVNIFlood(ctx, conn.Namespace, conn.Spec.LabRef, swEp.endpoint.Device)
@@ -295,7 +308,7 @@ func (r *ConnectionReconciler) reconcileDeviceSwitch(ctx context.Context, conn *
 			return ctrl.Result{}, err
 		}
 	}
-
+	
 	if reflect.DeepEqual(conn.Status.Ports, desired) {
 		return ctrl.Result{}, nil
 	}
@@ -307,9 +320,13 @@ func (r *ConnectionReconciler) reconcileDeviceSwitch(ctx context.Context, conn *
 // A patch-pair is created on every node (pair is intra-node per spec §7).
 // Each patch port is registered in its switch's VNI via t0, and t6 for both
 // switch VNIs is rebuilt to include the patch ports and all member devices.
-func (r *ConnectionReconciler) reconcileSwitchSwitch(ctx context.Context, conn *laboratoryv1alpha1.Connection, eps []epInfo) (ctrl.Result, error) {
+func (r *ConnectionReconciler) reconcileSwitchSwitch(
+	ctx context.Context,
+	conn *laboratoryv1alpha1.Connection,
+	eps []epInfo,
+) (ctrl.Result, error) {
 	ep0, ep1 := eps[0], eps[1]
-
+	
 	var vni0, vni1 uint
 	if ep0.device.Status.VNI != nil {
 		vni0 = *ep0.device.Status.VNI
@@ -320,15 +337,15 @@ func (r *ConnectionReconciler) reconcileSwitchSwitch(ctx context.Context, conn *
 	if vni0 == 0 || vni1 == 0 {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
-
+	
 	// Patch port names: each end lives in its switch's VNI domain.
 	patchA := patchPortName(conn.Name, ep0.endpoint.Device) // registered in vni0
 	patchB := patchPortName(conn.Name, ep1.endpoint.Device) // registered in vni1
-
+	
 	if err := r.OVS.AddPatchPair(patchA, patchB); err != nil {
 		return ctrl.Result{}, fmt.Errorf("add patch pair: %w", err)
 	}
-
+	
 	// Bind each patch port to its switch's VNI in t0 (idempotent via AddT0Port).
 	if err := r.Flows.AddT0Port(patchA, vni0); err != nil {
 		return ctrl.Result{}, fmt.Errorf("t0 %s→VNI%d: %w", patchA, vni0, err)
@@ -336,7 +353,7 @@ func (r *ConnectionReconciler) reconcileSwitchSwitch(ctx context.Context, conn *
 	if err := r.Flows.AddT0Port(patchB, vni1); err != nil {
 		return ctrl.Result{}, fmt.Errorf("t0 %s→VNI%d: %w", patchB, vni1, err)
 	}
-
+	
 	// Rebuild t6 for both switch VNIs (patches are now in OVS; buildSwitchVNIFlood
 	// will find them via PortExists).
 	localPorts0, remoteVTEPs0, err := r.buildSwitchVNIFlood(ctx, conn.Namespace, conn.Spec.LabRef, ep0.endpoint.Device)
@@ -348,7 +365,7 @@ func (r *ConnectionReconciler) reconcileSwitchSwitch(ctx context.Context, conn *
 			return ctrl.Result{}, err
 		}
 	}
-
+	
 	localPorts1, remoteVTEPs1, err := r.buildSwitchVNIFlood(ctx, conn.Namespace, conn.Spec.LabRef, ep1.endpoint.Device)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -358,7 +375,7 @@ func (r *ConnectionReconciler) reconcileSwitchSwitch(ctx context.Context, conn *
 			return ctrl.Result{}, err
 		}
 	}
-
+	
 	desired := []laboratoryv1alpha1.ConnectionPortStatus{
 		{Device: ep0.endpoint.Device, Interface: ep0.endpoint.Interface, Connected: true},
 		{Device: ep1.endpoint.Device, Interface: ep1.endpoint.Interface, Connected: true},
@@ -379,23 +396,27 @@ func (r *ConnectionReconciler) reconcileSwitchSwitch(ctx context.Context, conn *
 //
 // Connections with a non-nil DeletionTimestamp are skipped so that in-progress
 // deletions do not appear in the rebuilt flood list.
-func (r *ConnectionReconciler) buildSwitchVNIFlood(ctx context.Context, namespace, labRef, switchLogicalName string) (localPorts, remoteVTEPs []string, _ error) {
+func (r *ConnectionReconciler) buildSwitchVNIFlood(
+	ctx context.Context,
+	namespace, labRef, switchLogicalName string,
+) (localPorts, remoteVTEPs []string, _ error) {
 	var connList laboratoryv1alpha1.ConnectionList
-	if err := r.List(ctx, &connList,
+	if err := r.List(
+		ctx, &connList,
 		client.InNamespace(namespace),
 		client.MatchingLabels{names.LabelLab: labRef},
 	); err != nil {
 		return nil, nil, err
 	}
-
+	
 	seenVTEPs := make(map[string]struct{})
-
+	
 	for i := range connList.Items {
 		c := &connList.Items[i]
 		if c.DeletionTimestamp != nil {
 			continue
 		}
-
+		
 		// Skip connections that don't involve our switch.
 		hasSw := false
 		for _, ep := range c.Spec.Endpoints {
@@ -407,7 +428,7 @@ func (r *ConnectionReconciler) buildSwitchVNIFlood(ctx context.Context, namespac
 		if !hasSw {
 			continue
 		}
-
+		
 		// Determine whether all other endpoints are also switches.
 		allOtherSwitches := true
 		for _, ep := range c.Spec.Endpoints {
@@ -426,7 +447,7 @@ func (r *ConnectionReconciler) buildSwitchVNIFlood(ctx context.Context, namespac
 				break
 			}
 		}
-
+		
 		if allOtherSwitches {
 			// Switch↔Switch: include patch port on our switch's side if it exists.
 			pName := patchPortName(c.Name, switchLogicalName)
@@ -452,11 +473,14 @@ func (r *ConnectionReconciler) buildSwitchVNIFlood(ctx context.Context, namespac
 			}
 		}
 	}
-
+	
 	return localPorts, remoteVTEPs, nil
 }
 
-func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *laboratoryv1alpha1.Connection) (ctrl.Result, error) {
+func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *laboratoryv1alpha1.Connection) (
+	ctrl.Result,
+	error,
+) {
 	// Remove local device ports from OVS and their t0 entries.
 	for _, port := range conn.Status.Ports {
 		if port.NodeName != r.NodeName || port.PortID == "" {
@@ -465,12 +489,12 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 		_ = r.Flows.DelT0Port(port.PortID)
 		_ = r.OVS.DelPort(port.PortID)
 	}
-
+	
 	// Remove t6 flood for the connection's own VNI (device↔device case).
 	if conn.Status.VNI != nil {
 		_ = r.Flows.DelT6Flood(*conn.Status.VNI)
 	}
-
+	
 	// For each switch endpoint: remove patch port + rebuild t6 from remaining connections.
 	for _, ep := range conn.Spec.Endpoints {
 		devName := fmt.Sprintf("%s-%s", conn.Spec.LabRef, ep.Device)
@@ -483,12 +507,12 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 		if !isSwitch {
 			continue
 		}
-
+		
 		// Remove patch port for this side (switch↔switch case).
 		pName := patchPortName(conn.Name, ep.Device)
 		_ = r.Flows.DelT0Port(pName)
 		_ = r.OVS.DelPort(pName)
-
+		
 		// Rebuild t6 for this switch's VNI from the remaining connections.
 		if dev.Status.VNI != nil {
 			localPorts, remoteVTEPs, err := r.buildSwitchVNIFlood(ctx, conn.Namespace, conn.Spec.LabRef, ep.Device)
@@ -501,7 +525,7 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 			}
 		}
 	}
-
+	
 	controllerutil.RemoveFinalizer(conn, names.FinalizerOVSCleanup)
 	return ctrl.Result{}, r.Update(ctx, conn)
 }
@@ -509,10 +533,14 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 // loadEndpoints fetches Device objects for all endpoints in a connection and
 // returns them as []epInfo. needsRequeue=true means at least one endpoint is not
 // yet ready (pod not scheduled or VNI not allocated); the caller should requeue.
-func (r *ConnectionReconciler) loadEndpoints(ctx context.Context, conn *laboratoryv1alpha1.Connection) ([]epInfo, bool, error) {
+func (r *ConnectionReconciler) loadEndpoints(ctx context.Context, conn *laboratoryv1alpha1.Connection) (
+	[]epInfo,
+	bool,
+	error,
+) {
 	eps := make([]epInfo, 0, len(conn.Spec.Endpoints))
 	needsRequeue := false
-
+	
 	for _, ep := range conn.Spec.Endpoints {
 		// Virtual singletons (vpn, internet) have no Device CRD — synthesize.
 		if ep.Device == "vpn" || ep.Device == "internet" {
@@ -523,7 +551,8 @@ func (r *ConnectionReconciler) loadEndpoints(ctx context.Context, conn *laborato
 				appLabel = names.ComponentGateway
 			}
 			var pods corev1.PodList
-			if err := r.List(ctx, &pods,
+			if err := r.List(
+				ctx, &pods,
 				client.InNamespace(conn.Namespace),
 				client.MatchingLabels{"app": appLabel},
 				client.Limit(1),
@@ -544,7 +573,7 @@ func (r *ConnectionReconciler) loadEndpoints(ctx context.Context, conn *laborato
 			eps = append(eps, epInfo{ep, synth, false, true})
 			continue
 		}
-
+		
 		deviceName := fmt.Sprintf("%s-%s", conn.Spec.LabRef, ep.Device)
 		var dev laboratoryv1alpha1.Device
 		if err := r.Get(ctx, types.NamespacedName{Name: deviceName, Namespace: conn.Namespace}, &dev); err != nil {
@@ -558,21 +587,27 @@ func (r *ConnectionReconciler) loadEndpoints(ctx context.Context, conn *laborato
 		}
 		eps = append(eps, epInfo{ep, dev, isSwitch, nodeReady})
 	}
-
+	
 	return eps, needsRequeue, nil
 }
 
 // resolveLocalPortKey returns the OVS port key for a local endpoint.
 // For vpn/internet singletons the key comes from the LabVPN/LabGateway CRD;
 // for regular devices it is derived via names.DevicePortKey.
-func (r *ConnectionReconciler) resolveLocalPortKey(ctx context.Context, conn *laboratoryv1alpha1.Connection, ep epInfo) (pKey string, requeue bool, err error) {
+func (r *ConnectionReconciler) resolveLocalPortKey(
+	ctx context.Context,
+	conn *laboratoryv1alpha1.Connection,
+	ep epInfo,
+) (pKey string, requeue bool, err error) {
 	switch ep.endpoint.Device {
 	case "vpn":
 		var labvpn laboratoryv1alpha1.LabVPN
-		if err := r.Get(ctx, types.NamespacedName{
-			Name:      names.LabVPNObjectName(conn.Spec.LabRef),
-			Namespace: conn.Namespace,
-		}, &labvpn); err != nil {
+		if err := r.Get(
+			ctx, types.NamespacedName{
+				Name:      names.LabVPNObjectName(conn.Spec.LabRef),
+				Namespace: conn.Namespace,
+			}, &labvpn,
+		); err != nil {
 			if client.IgnoreNotFound(err) != nil {
 				return "", false, err
 			}
@@ -581,10 +616,12 @@ func (r *ConnectionReconciler) resolveLocalPortKey(ctx context.Context, conn *la
 		return names.LabIfaceNameByIndex(labvpn.Spec.NetworkIndex), false, nil
 	case "internet":
 		var labgw laboratoryv1alpha1.LabGateway
-		if err := r.Get(ctx, types.NamespacedName{
-			Name:      names.LabGatewayObjectName(conn.Spec.LabRef),
-			Namespace: conn.Namespace,
-		}, &labgw); err != nil {
+		if err := r.Get(
+			ctx, types.NamespacedName{
+				Name:      names.LabGatewayObjectName(conn.Spec.LabRef),
+				Namespace: conn.Namespace,
+			}, &labgw,
+		); err != nil {
 			if client.IgnoreNotFound(err) != nil {
 				return "", false, err
 			}
@@ -627,17 +664,21 @@ func (r *ConnectionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 func (r *ConnectionReconciler) connectionsForDevice(ctx context.Context, obj client.Object) []reconcile.Request {
 	dev := obj.(*laboratoryv1alpha1.Device)
 	var connList laboratoryv1alpha1.ConnectionList
-	if err := r.List(ctx, &connList, client.InNamespace(dev.Namespace),
-		client.MatchingLabels{names.LabelLab: dev.Spec.LabRef}); err != nil {
+	if err := r.List(
+		ctx, &connList, client.InNamespace(dev.Namespace),
+		client.MatchingLabels{names.LabelLab: dev.Spec.LabRef},
+	); err != nil {
 		return nil
 	}
 	var reqs []reconcile.Request
 	for _, conn := range connList.Items {
 		for _, ep := range conn.Spec.Endpoints {
 			if ep.Device == dev.Spec.Name {
-				reqs = append(reqs, reconcile.Request{
-					NamespacedName: types.NamespacedName{Name: conn.Name, Namespace: conn.Namespace},
-				})
+				reqs = append(
+					reqs, reconcile.Request{
+						NamespacedName: types.NamespacedName{Name: conn.Name, Namespace: conn.Namespace},
+					},
+				)
 				break
 			}
 		}

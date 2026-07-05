@@ -8,7 +8,7 @@ import (
 	"net"
 	"syscall"
 	"time"
-
+	
 	"github.com/vishvananda/netlink"
 	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
@@ -47,15 +47,17 @@ func (m *WGManager) Init(privKeyBase64 string, listenPort int) error {
 	if err := netlink.LinkSetUp(link); err != nil {
 		return fmt.Errorf("set wg interface up: %w", err)
 	}
-
+	
 	key, err := wgtypes.ParseKey(privKeyBase64)
 	if err != nil {
 		return fmt.Errorf("parse private key: %w", err)
 	}
-	return m.client.ConfigureDevice(m.iface, wgtypes.Config{
-		PrivateKey: &key,
-		ListenPort: &listenPort,
-	})
+	return m.client.ConfigureDevice(
+		m.iface, wgtypes.Config{
+			PrivateKey: &key,
+			ListenPort: &listenPort,
+		},
+	)
 }
 
 func (m *WGManager) AddPeer(pubKeyBase64 string, allowedIP string) error {
@@ -68,14 +70,18 @@ func (m *WGManager) AddPeer(pubKeyBase64 string, allowedIP string) error {
 		return fmt.Errorf("parse allowedIP %q: %w", allowedIP, err)
 	}
 	keepalive := persistentKeepalive
-	return m.client.ConfigureDevice(m.iface, wgtypes.Config{
-		Peers: []wgtypes.PeerConfig{{
-			PublicKey:                   key,
-			ReplaceAllowedIPs:           true,
-			AllowedIPs:                  []net.IPNet{*ipNet},
-			PersistentKeepaliveInterval: &keepalive,
-		}},
-	})
+	return m.client.ConfigureDevice(
+		m.iface, wgtypes.Config{
+			Peers: []wgtypes.PeerConfig{
+				{
+					PublicKey:                   key,
+					ReplaceAllowedIPs:           true,
+					AllowedIPs:                  []net.IPNet{*ipNet},
+					PersistentKeepaliveInterval: &keepalive,
+				},
+			},
+		},
+	)
 }
 
 func (m *WGManager) RemovePeer(pubKeyBase64 string) error {
@@ -83,9 +89,11 @@ func (m *WGManager) RemovePeer(pubKeyBase64 string) error {
 	if err != nil {
 		return fmt.Errorf("parse peer public key: %w", err)
 	}
-	return m.client.ConfigureDevice(m.iface, wgtypes.Config{
-		Peers: []wgtypes.PeerConfig{{PublicKey: key, Remove: true}},
-	})
+	return m.client.ConfigureDevice(
+		m.iface, wgtypes.Config{
+			Peers: []wgtypes.PeerConfig{{PublicKey: key, Remove: true}},
+		},
+	)
 }
 
 func (m *WGManager) Device() (*wgtypes.Device, error) {

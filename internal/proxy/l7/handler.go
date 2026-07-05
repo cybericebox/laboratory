@@ -7,17 +7,16 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
-
+	
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
 // BackendResolver maps (task, groupID) to a backend URL string.
 type BackendResolver func(task, groupID string) (string, error)
 
-var validTaskRE = regexp.MustCompile(`^[a-z0-9][a-z0-9\-]{0,62}$`)
+
 
 type Handler struct {
 	key        func() *rsa.PublicKey
@@ -31,7 +30,10 @@ type Handler struct {
 // that may use self-signed certificates. The trust boundary is the
 // NetworkPolicy that admits only laboratory-proxy/app=proxy.
 var upstreamTransport = &http.Transport{
-	TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}, // #nosec G402 — see comment above
+	TLSClientConfig: &tls.Config{
+		InsecureSkipVerify: true,
+		MinVersion: tls.VersionTLS12,
+	}, // #nosec G402 — see comment above
 	MaxIdleConns:    100,
 	IdleConnTimeout: 90 * time.Second,
 }
@@ -47,27 +49,17 @@ func NewHandler(key func() *rsa.PublicKey, baseDomain, cookieName string, resolv
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	host := r.Host
-	if colonIdx := strings.IndexByte(host, ':'); colonIdx >= 0 {
-		host = host[:colonIdx]
-	}
-	suffix := "." + h.baseDomain
-	if !strings.HasSuffix(host, suffix) {
-		http.Error(w, "invalid host", http.StatusBadRequest)
+	task, err := getTaskName(r, h.baseDomain)
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	task := strings.TrimSuffix(host, suffix)
-	if !validTaskRE.MatchString(task) {
-		http.Error(w, "invalid task", http.StatusBadRequest)
-		return
-	}
-
 	claims, err := validateCookie(r, h.key, h.cookieName)
 	if err != nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-
+	
 	backendURL, err := h.resolver(task, claims.GroupID)
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -78,7 +70,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-
+	
 	// Strip challenge cookie before forwarding.
 	r = r.Clone(r.Context())
 	var kept []string
@@ -89,7 +81,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Header.Set("Cookie", strings.Join(kept, "; "))
 	r.Header.Set("X-Forwarded-Proto", "https")
-
+	
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Transport = h.transport
 	proxy.ServeHTTP(w, r)

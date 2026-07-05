@@ -4,13 +4,13 @@ package main
 
 import (
 	_ "github.com/cybericebox/laboratory/pkg/runtime"
-
+	
 	"context"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
-
+	
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -18,7 +18,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-
+	
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/gateway"
@@ -36,13 +36,13 @@ func init() {
 func main() {
 	ctrl.SetLogger(zap.New())
 	log := ctrl.Log.WithName("gateway")
-
+	
 	cfg, err := gateway.LoadConfig()
 	if err != nil {
 		log.Error(err, "load config")
 		os.Exit(1)
 	}
-
+	
 	ipt, err := gateway.NewIPTablesManager(cfg.ExternalInterface)
 	if err != nil {
 		log.Error(err, "init iptables")
@@ -52,18 +52,20 @@ func main() {
 		log.Error(err, "setup forward rules")
 		os.Exit(1)
 	}
-
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme: scheme,
-		Cache: cache.Options{
-			DefaultNamespaces: map[string]cache.Config{cfg.Namespace: {}},
+	
+	mgr, err := ctrl.NewManager(
+		ctrl.GetConfigOrDie(), ctrl.Options{
+			Scheme: scheme,
+			Cache: cache.Options{
+				DefaultNamespaces: map[string]cache.Config{cfg.Namespace: {}},
+			},
 		},
-	})
+	)
 	if err != nil {
 		log.Error(err, "create manager")
 		os.Exit(1)
 	}
-
+	
 	if err := (&gateway.LabGatewayReconciler{
 		Client:   mgr.GetClient(),
 		DHCP:     dhcp.NewManager(),
@@ -74,10 +76,10 @@ func main() {
 		log.Error(err, "unable to create controller", "controller", "LabGateway")
 		os.Exit(1)
 	}
-
+	
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
-
+	
 	log.Info("starting gateway manager", "namespace", cfg.Namespace)
 	if err := mgr.Start(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "manager error: %v\n", err)

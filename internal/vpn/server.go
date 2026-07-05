@@ -4,7 +4,7 @@ package vpn
 
 import (
 	"fmt"
-
+	
 	"github.com/cybericebox/laboratory/pkg/netutil"
 )
 
@@ -21,12 +21,12 @@ func InitServer(cfg *Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("init WG manager: %w", err)
 	}
-
+	
 	if err := wg.Init(cfg.PrivateKey, cfg.ListenPort); err != nil {
 		wg.Close()
 		return nil, fmt.Errorf("init WireGuard interface: %w", err)
 	}
-
+	
 	// Assign client-subnet gateway IP to the WG interface so the kernel routes
 	// client-subnet traffic via it (wgctrl only handles crypto/port).
 	gwCIDR := netutil.FirstHostCIDR(cfg.ClientSubnet)
@@ -34,7 +34,7 @@ func InitServer(cfg *Config) (*Server, error) {
 		wg.Close()
 		return nil, fmt.Errorf("assign gateway IP on %s: %w", cfg.WGInterface, err)
 	}
-
+	
 	ipt, err := NewIPTablesManager(cfg.WGInterface)
 	if err != nil {
 		wg.Close()
@@ -44,7 +44,7 @@ func InitServer(cfg *Config) (*Server, error) {
 		wg.Close()
 		return nil, fmt.Errorf("setup FORWARD policy: %w", err)
 	}
-
+	
 	return &Server{WG: wg, IPT: ipt}, nil
 }
 

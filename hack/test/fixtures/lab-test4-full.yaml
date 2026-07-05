@@ -23,44 +23,44 @@ spec:
     dhcpServer:
       enabled: true
   devices:
-  - name: vpn-client
-    type: container
-    image: wbitt/network-multitool:latest
-    interfaces:
-    - name: eth1
-      addr:
-        type: dhcp
-  - name: sw1
-    type: unmanaged-switch
-  - name: gw-client-a
-    type: container
-    image: wbitt/network-multitool:latest
-    interfaces:
-    - name: eth1
-      addr:
-        type: dhcp
-  - name: gw-client-b
-    type: container
-    image: wbitt/network-multitool:latest
-    interfaces:
-    - name: eth1
-      addr:
-        type: dhcp
+    - name: vpn-client
+      type: container
+      image: wbitt/network-multitool:latest
+      interfaces:
+        - name: eth1
+          addr:
+            type: dhcp
+    - name: sw1
+      type: unmanaged-switch
+    - name: gw-client-a
+      type: container
+      image: wbitt/network-multitool:latest
+      interfaces:
+        - name: eth1
+          addr:
+            type: dhcp
+    - name: gw-client-b
+      type: container
+      image: wbitt/network-multitool:latest
+      interfaces:
+        - name: eth1
+          addr:
+            type: dhcp
   connections:
-  # Domain 1: direct VPN ↔ vpn-client
-  - endpoints:
-    - device: vpn
-    - device: vpn-client
-      interface: eth1
-  # Domain 2: internet gateway via switch
-  - endpoints:
-    - device: internet
-    - device: sw1
-  - endpoints:
-    - device: sw1
-    - device: gw-client-a
-      interface: eth1
-  - endpoints:
-    - device: sw1
-    - device: gw-client-b
-      interface: eth1
+    # Domain 1: direct VPN ↔ vpn-client
+    - endpoints:
+        - device: vpn
+        - device: vpn-client
+          interface: eth1
+    # Domain 2: internet gateway via switch
+    - endpoints:
+        - device: internet
+        - device: sw1
+    - endpoints:
+        - device: sw1
+        - device: gw-client-a
+          interface: eth1
+    - endpoints:
+        - device: sw1
+        - device: gw-client-b
+          interface: eth1

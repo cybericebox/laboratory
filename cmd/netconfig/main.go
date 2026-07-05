@@ -18,7 +18,7 @@ import (
 	"net"
 	"os"
 	"time"
-
+	
 	"github.com/insomniacslk/dhcp/dhcpv4/nclient4"
 	"github.com/vishvananda/netlink"
 )
@@ -96,7 +96,7 @@ func applyDHCPPreset(link netlink.Link, c ifaceConfig) error {
 		return fmt.Errorf("dhcp client: %w", err)
 	}
 	defer cli.Close()
-
+	
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	lease, err := cli.Request(ctx)

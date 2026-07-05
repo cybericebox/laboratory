@@ -6,10 +6,10 @@ metadata:
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 rules:
-- apiGroups: ["laboratory.cybericebox.com"]
-  resources: ["labgroups"]
-  verbs: ["get", "list", "watch"]
-- apiGroups: [""]
-  resources: ["services"]
-  verbs: ["get", "list", "watch"]
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "labgroups" ]
+    verbs: [ "get", "list", "watch" ]
+  - apiGroups: [ "" ]
+    resources: [ "services" ]
+    verbs: [ "get", "list", "watch" ]
 {{- end }}

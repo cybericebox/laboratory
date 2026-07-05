@@ -17,143 +17,143 @@ spec:
     metadata:
       labels:
         app: node-agent
-        {{- include "laboratory.selectorLabels" . | nindent 8 }}
+        {{- include "laboratory.labels" . | nindent 8 }}
     spec:
       serviceAccountName: laboratory-node-agent
       hostNetwork: true
       hostPID: false
       dnsPolicy: ClusterFirstWithHostNet
       tolerations:
-      - operator: Exists
+        - operator: Exists
       {{- if .Values.nodeAgent.excludeControlPlane }}
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
             nodeSelectorTerms:
-            - matchExpressions:
-              - key: node-role.kubernetes.io/control-plane
-                operator: DoesNotExist
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
       {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       initContainers:
-      - name: install-cni-bins
-        image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
-        imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
-        command: ["/bin/sh", "-c"]
-        args:
-        - |
-          set -e
-          cp /node-agent/bin/cni-gate /opt/cni/bin/cni-gate
-          for p in bridge ptp loopback host-local portmap; do
-            [ -f /usr/lib/cni/$p ] && cp /usr/lib/cni/$p /opt/cni/bin/$p
-          done
-        securityContext:
-          runAsUser: 0
-        volumeMounts:
-        - name: cni-bin
-          mountPath: /opt/cni/bin
-        {{- with .Values.nodeAgent.resources }}
-        resources:
-          {{- toYaml . | nindent 10 }}
-        {{- end }}
-      - name: install-cni-conf
-        image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
-        imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
-        command: ["/node-agent/bin/install-cni"]
-        env:
-        - name: GRPC_SOCK
-          value: {{ .Values.nodeAgent.grpcSocket | quote }}
-        - name: CNI_CONF_DIR
-          value: /etc/cni/net.d
-        - name: CNI_FALLBACK_TIMEOUT
-          value: "60s"
-        securityContext:
-          runAsUser: 0
-        volumeMounts:
-        - name: cni-conf
-          mountPath: /etc/cni/net.d
-        {{- with .Values.nodeAgent.resources }}
-        resources:
-          {{- toYaml . | nindent 10 }}
-        {{- end }}
+        - name: install-cni-bins
+          image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
+          imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
+          command: [ "/bin/sh", "-c" ]
+          args:
+            - |
+              set -e
+              cp /node-agent/bin/cni-gate /opt/cni/bin/cni-gate
+              for p in bridge ptp loopback host-local portmap; do
+                [ -f /usr/lib/cni/$p ] && cp /usr/lib/cni/$p /opt/cni/bin/$p
+              done
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: cni-bin
+              mountPath: /opt/cni/bin
+          {{- with .Values.nodeAgent.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        - name: install-cni-conf
+          image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
+          imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
+          command: [ "/node-agent/bin/install-cni" ]
+          env:
+            - name: GRPC_SOCK
+              value: {{ .Values.nodeAgent.grpcSocket | quote }}
+            - name: CNI_CONF_DIR
+              value: /etc/cni/net.d
+            - name: CNI_FALLBACK_TIMEOUT
+              value: "60s"
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: cni-conf
+              mountPath: /etc/cni/net.d
+          {{- with .Values.nodeAgent.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
       containers:
-      - name: ovs
-        image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
-        imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
-        command: ["/node-agent/bin/start-ovs.sh"]
-        securityContext:
-          privileged: true
-        volumeMounts:
-        - name: ovs-run
-          mountPath: /run/openvswitch
-        {{- with .Values.nodeAgent.resources }}
-        resources:
-          {{- toYaml . | nindent 10 }}
-        {{- end }}
-      - name: node-agent
-        image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
-        imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
-        command: ["/node-agent/bin/node-agent"]
-        env:
-        - name: NODE_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: spec.nodeName
-        - name: OVS_SOCK
-          value: {{ .Values.nodeAgent.ovsSocket | quote }}
-        - name: GRPC_SOCK
-          value: {{ .Values.nodeAgent.grpcSocket | quote }}
-        - name: NODE_ADDRESS
-          valueFrom:
-            fieldRef:
-              fieldPath: status.hostIP
-        - name: CRI_SOCK
-          value: {{ .Values.nodeAgent.criSocket | quote }}
-        securityContext:
-          capabilities:
-            add: [NET_ADMIN, SYS_ADMIN]
-            drop: [ALL]
-        volumeMounts:
-        - name: ovs-run
-          mountPath: /run/openvswitch
-        - name: grpc-dir
-          mountPath: /run/cybericebox
-        - name: cri-sock
-          mountPath: {{ .Values.nodeAgent.criSocket | quote }}
-        - name: host-netns
-          mountPath: /run/netns
-          # HostToContainer: propagate netns bind-mounts (cni-XXX) created on the
-          # host after this container starts. Without it the container sees an empty
-          # mountpoint instead of nsfs, and LinkSetNsFd fails with EINVAL.
-          mountPropagation: HostToContainer
-        {{- with .Values.nodeAgent.resources }}
-        resources:
-          {{- toYaml . | nindent 10 }}
-        {{- end }}
+        - name: ovs
+          image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
+          imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
+          command: [ "/node-agent/bin/start-ovs.sh" ]
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: ovs-run
+              mountPath: /run/openvswitch
+          {{- with .Values.nodeAgent.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        - name: node-agent
+          image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
+          imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
+          command: [ "/node-agent/bin/node-agent" ]
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: OVS_SOCK
+              value: {{ .Values.nodeAgent.ovsSocket | quote }}
+            - name: GRPC_SOCK
+              value: {{ .Values.nodeAgent.grpcSocket | quote }}
+            - name: NODE_ADDRESS
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: CRI_SOCK
+              value: {{ .Values.nodeAgent.criSocket | quote }}
+          securityContext:
+            capabilities:
+              add: [ NET_ADMIN, SYS_ADMIN ]
+              drop: [ ALL ]
+          volumeMounts:
+            - name: ovs-run
+              mountPath: /run/openvswitch
+            - name: grpc-dir
+              mountPath: /run/cybericebox
+            - name: cri-sock
+              mountPath: {{ .Values.nodeAgent.criSocket | quote }}
+            - name: host-netns
+              mountPath: /run/netns
+              # HostToContainer: propagate netns bind-mounts (cni-XXX) created on the
+              # host after this container starts. Without it the container sees an empty
+              # mountpoint instead of nsfs, and LinkSetNsFd fails with EINVAL.
+              mountPropagation: HostToContainer
+          {{- with .Values.nodeAgent.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
       volumes:
-      - name: cni-bin
-        hostPath:
-          path: /opt/cni/bin
-          type: DirectoryOrCreate
-      - name: cni-conf
-        hostPath:
-          path: /etc/cni/net.d
-          type: DirectoryOrCreate
-      - name: ovs-run
-        emptyDir: {}
-      - name: grpc-dir
-        hostPath:
-          path: /run/cybericebox
-          type: DirectoryOrCreate
-      - name: cri-sock
-        hostPath:
-          path: {{ .Values.nodeAgent.criSocket }}
-          type: Socket
-      - name: host-netns
-        hostPath:
-          path: /run/netns
-          type: DirectoryOrCreate
+        - name: cni-bin
+          hostPath:
+            path: /opt/cni/bin
+            type: DirectoryOrCreate
+        - name: cni-conf
+          hostPath:
+            path: /etc/cni/net.d
+            type: DirectoryOrCreate
+        - name: ovs-run
+          emptyDir: { }
+        - name: grpc-dir
+          hostPath:
+            path: /run/cybericebox
+            type: DirectoryOrCreate
+        - name: cri-sock
+          hostPath:
+            path: {{ .Values.nodeAgent.criSocket }}
+            type: Socket
+        - name: host-netns
+          hostPath:
+            path: /run/netns
+            type: DirectoryOrCreate
 {{- end }}

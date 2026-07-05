@@ -7,14 +7,19 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
+	
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
+	
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+)
+
+const (
+	AnnotationNetworks = names.AnnotationNetworks
+	AnnotationDefaultNetwork = names.AnnotationDefaultNetwork
 )
 
 // NetAttachment is one parsed entry from the networks annotation.
@@ -47,7 +52,7 @@ func ParseNetworkAnnotation(annotation string) []NetAttachment {
 	return result
 }
 
-// NetworkAttachReconciler attaches veth ports to pods based on names.AnnotationNetworks.
+// NetworkAttachReconciler attaches veth ports to pods based on AnnotationNetworks.
 // The host-side of each veth stays in root netns and is added to the OVS bridge;
 // the pod-side is moved into the pod netns and renamed to the desired interface name.
 type NetworkAttachReconciler struct {
@@ -72,21 +77,21 @@ func (r *NetworkAttachReconciler) delVethWithFlows(stableKey string) {
 func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 	log.Info("NetAttach reconcile start", "pod", req.NamespacedName)
-
+	
 	var pod corev1.Pod
 	if err := r.Get(ctx, req.NamespacedName, &pod); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-
+	
 	if pod.Spec.NodeName != r.NodeName {
 		log.Info("NetAttach: skip, wrong node", "podNode", pod.Spec.NodeName, "myNode", r.NodeName)
 		return ctrl.Result{}, nil
 	}
-
-	annotation := pod.Annotations[names.AnnotationNetworks]
+	
+	annotation := pod.Annotations[AnnotationNetworks]
 	attachments := ParseNetworkAnnotation(annotation)
 	log.Info("NetAttach parsed", "annotation", annotation, "attachments", len(attachments), "phase", pod.Status.Phase)
-
+	
 	if pod.DeletionTimestamp != nil {
 		for _, att := range attachments {
 			stableKey := r.resolveOVSPort(ctx, pod.Namespace, pod.Name, att)
@@ -94,11 +99,11 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 		return ctrl.Result{}, nil
 	}
-
+	
 	if len(attachments) == 0 {
 		return ctrl.Result{}, nil
 	}
-
+	
 	// Reconciler is a conformance check, not a wiring path. Ports present at pod
 	// creation are wired synchronously by SetupNetworks during CNI ADD, which
 	// completes before the pod is Running — so by the time we run, those ifaces
@@ -109,14 +114,14 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		log.Info("NetAttach: pod not running, requeueing")
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
-
+	
 	netnsPath, err := PodNetNSFromCRI(ctx, r.CRISock, string(pod.UID))
 	if err != nil {
 		log.Info("NetAttach: sandbox not ready, requeueing", "uid", string(pod.UID), "err", err)
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	log.Info("NetAttach: got netnsPath", "netnsPath", netnsPath)
-
+	
 	for _, att := range attachments {
 		stableKey := r.resolveOVSPort(ctx, pod.Namespace, pod.Name, att)
 		podSide := VethPeerName(stableKey)
@@ -124,24 +129,34 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		if targetIface == "" {
 			targetIface = stableKey
 		}
-
+		
 		// Ensure the veth host-side is registered in OVS.
 		_, exists, err := r.OVS.FindPortByKey(stableKey)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("find veth port %q: %w", stableKey, err)
 		}
-		log.Info("NetAttach: attachment", "key", stableKey, "podSide", podSide, "targetIface", targetIface, "existsInOVS", exists)
+		log.Info(
+			"NetAttach: attachment",
+			"key",
+			stableKey,
+			"podSide",
+			podSide,
+			"targetIface",
+			targetIface,
+			"existsInOVS",
+			exists,
+		)
 		if !exists {
 			if err := r.OVS.AddVethPort(stableKey); err != nil {
 				return ctrl.Result{}, fmt.Errorf("add veth port %q: %w", stableKey, err)
 			}
 			log.Info("NetAttach: created veth pair", "hostSide", stableKey, "podSide", podSide)
 		}
-
+		
 		// Check whether pod-side veth is still in root netns.
 		podSideInRoot := WaitForLink(podSide, 200*time.Millisecond) == nil
 		log.Info("NetAttach: pod-side location", "podSide", podSide, "inRootNetns", podSideInRoot)
-
+		
 		if podSideInRoot {
 			// Pod-side in root netns — clear any stale targetIface in pod netns, then move.
 			if CheckInNetNS(netnsPath, targetIface) == nil {
@@ -196,7 +211,14 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				// Partial: moved to pod netns but not yet renamed.
 				if podSide != targetIface {
 					if err := RenameInNetNS(netnsPath, podSide, targetIface); err != nil {
-						log.Error(err, "RenameInNetNS (recovery) failed, requeueing", "from", podSide, "to", targetIface)
+						log.Error(
+							err,
+							"RenameInNetNS (recovery) failed, requeueing",
+							"from",
+							podSide,
+							"to",
+							targetIface,
+						)
 						return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 					}
 					log.Info("NetAttach: recovery rename OK", "from", podSide, "to", targetIface)
@@ -213,12 +235,12 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			}
 		}
 	}
-
+	
 	// No eth0 cleanup here. SetupNetworks blocks pod startup until ports are wired
 	// and returns "stub" for pods with no default network, so cni-gate never creates
 	// a real eth0 for them — only the required stub eth0. Deleting eth0 here would
 	// remove that legitimate stub.
-
+	
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
@@ -231,7 +253,11 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 // Never pick a port from Connection.Status.Ports here: a connection can have
 // two local endpoints on this node, and any "first local port" heuristic wires
 // one pod's attachment to the other pod's port.
-func (r *NetworkAttachReconciler) resolveOVSPort(ctx context.Context, namespace, podName string, att NetAttachment) string {
+func (r *NetworkAttachReconciler) resolveOVSPort(
+	ctx context.Context,
+	namespace, podName string,
+	att NetAttachment,
+) string {
 	if att.Name == "" {
 		return names.DevicePortKey(namespace, podName, att.Iface)
 	}

@@ -5,11 +5,11 @@ package nodeagent
 import (
 	"context"
 	"time"
-
+	
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-
+	
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 )
@@ -30,14 +30,16 @@ func (r *DevicePortReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err := r.Get(ctx, req.NamespacedName, &device); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-
+	
 	if !device.DeletionTimestamp.IsZero() {
 		// Wait for ConnectionReconciler to finish OVS cleanup for all connections
 		// that include this device before removing the finalizer.
 		var connList laboratoryv1alpha1.ConnectionList
-		if err := r.List(ctx, &connList,
+		if err := r.List(
+			ctx, &connList,
 			client.InNamespace(device.Namespace),
-			client.MatchingLabels{names.LabelLab: device.Spec.LabRef}); err != nil {
+			client.MatchingLabels{names.LabelLab: device.Spec.LabRef},
+		); err != nil {
 			return ctrl.Result{}, err
 		}
 		for _, conn := range connList.Items {
@@ -48,24 +50,24 @@ func (r *DevicePortReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		controllerutil.RemoveFinalizer(&device, names.FinalizerOVSCleanup)
 		return ctrl.Result{}, r.Update(ctx, &device)
 	}
-
+	
 	// Add finalizer for switch/hub devices (no node affinity) or devices on this node.
 	isSwitch := device.Spec.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch ||
 		device.Spec.Type == laboratoryv1alpha1.DeviceTypeHub
 	isLocal := device.Status.NodeName == r.NodeName
-
+	
 	if (isSwitch || isLocal) && !controllerutil.ContainsFinalizer(&device, names.FinalizerOVSCleanup) {
 		controllerutil.AddFinalizer(&device, names.FinalizerOVSCleanup)
 		return ctrl.Result{}, r.Update(ctx, &device)
 	}
-
+	
 	// Stamp the Geneve VTEP address on the device status so that peer nodes'
 	// ConnectionReconcilers can build the correct tunnel destination.
 	if isLocal && r.NodeAddress != "" && device.Status.NodeAddress != r.NodeAddress {
 		device.Status.NodeAddress = r.NodeAddress
 		return ctrl.Result{}, r.Status().Update(ctx, &device)
 	}
-
+	
 	return ctrl.Result{}, nil
 }
 

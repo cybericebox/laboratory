@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
-
+	
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -28,14 +28,20 @@ func requestWithCookie(token string) *http.Request {
 
 func TestValidateCookie_Valid(t *testing.T) {
 	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
-	token := signToken(t, priv, jwtClaims{
-		UserID:  "u-9",
-		GroupID: "abc-123",
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+	token := signToken(
+		t, priv, jwtClaims{
+			UserID: "u-9",
+			GroupID: "abc-123",
+			RegisteredClaims: jwt.RegisteredClaims{
+				ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+			},
 		},
-	})
-	claims, err := validateCookie(requestWithCookie(token), func() *rsa.PublicKey { return &priv.PublicKey }, "challenge")
+	)
+	claims, err := validateCookie(
+		requestWithCookie(token),
+		func() *rsa.PublicKey { return &priv.PublicKey },
+		"challenge",
+	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -49,13 +55,19 @@ func TestValidateCookie_Valid(t *testing.T) {
 
 func TestValidateCookie_Expired(t *testing.T) {
 	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
-	token := signToken(t, priv, jwtClaims{
-		GroupID: "abc-123",
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(-time.Hour)),
+	token := signToken(
+		t, priv, jwtClaims{
+			GroupID: "abc-123",
+			RegisteredClaims: jwt.RegisteredClaims{
+				ExpiresAt: jwt.NewNumericDate(time.Now().Add(-time.Hour)),
+			},
 		},
-	})
-	if _, err := validateCookie(requestWithCookie(token), func() *rsa.PublicKey { return &priv.PublicKey }, "challenge"); err == nil {
+	)
+	if _, err := validateCookie(
+		requestWithCookie(token),
+		func() *rsa.PublicKey { return &priv.PublicKey },
+		"challenge",
+	); err == nil {
 		t.Fatal("expected error for expired token")
 	}
 }
@@ -63,26 +75,38 @@ func TestValidateCookie_Expired(t *testing.T) {
 func TestValidateCookie_BadSig(t *testing.T) {
 	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
 	other, _ := rsa.GenerateKey(rand.Reader, 2048)
-	token := signToken(t, other, jwtClaims{
-		GroupID: "abc-123",
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+	token := signToken(
+		t, other, jwtClaims{
+			GroupID: "abc-123",
+			RegisteredClaims: jwt.RegisteredClaims{
+				ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+			},
 		},
-	})
-	if _, err := validateCookie(requestWithCookie(token), func() *rsa.PublicKey { return &priv.PublicKey }, "challenge"); err == nil {
+	)
+	if _, err := validateCookie(
+		requestWithCookie(token),
+		func() *rsa.PublicKey { return &priv.PublicKey },
+		"challenge",
+	); err == nil {
 		t.Fatal("expected error for bad signature")
 	}
 }
 
 func TestValidateCookie_EmptyGroupID(t *testing.T) {
 	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
-	token := signToken(t, priv, jwtClaims{
-		UserID: "u-9",
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+	token := signToken(
+		t, priv, jwtClaims{
+			UserID: "u-9",
+			RegisteredClaims: jwt.RegisteredClaims{
+				ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+			},
 		},
-	})
-	if _, err := validateCookie(requestWithCookie(token), func() *rsa.PublicKey { return &priv.PublicKey }, "challenge"); err == nil {
+	)
+	if _, err := validateCookie(
+		requestWithCookie(token),
+		func() *rsa.PublicKey { return &priv.PublicKey },
+		"challenge",
+	); err == nil {
 		t.Fatal("expected error for empty group_id")
 	}
 }
@@ -100,7 +124,11 @@ func TestValidateCookie_WrongAlg(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sign HS256 token: %v", err)
 	}
-	if _, err := validateCookie(requestWithCookie(token), func() *rsa.PublicKey { return &priv.PublicKey }, "challenge"); err == nil {
+	if _, err := validateCookie(
+		requestWithCookie(token),
+		func() *rsa.PublicKey { return &priv.PublicKey },
+		"challenge",
+	); err == nil {
 		t.Fatal("expected error for non-RSA signing method")
 	}
 }

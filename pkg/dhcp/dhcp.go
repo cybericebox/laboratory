@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
-
+	
 	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/dhcpv4/server4"
 )
@@ -48,7 +48,7 @@ func (m *Manager) Start(name string, cfg Config) error {
 	if _, ok := m.servers[name]; ok {
 		return nil
 	}
-
+	
 	_, subnet, err := net.ParseCIDR(cfg.Subnet)
 	if err != nil {
 		return fmt.Errorf("parse subnet %q: %w", cfg.Subnet, err)
@@ -61,16 +61,16 @@ func (m *Manager) Start(name string, cfg Config) error {
 	if cfg.DNS != "" {
 		dns = net.ParseIP(cfg.DNS)
 	}
-
+	
 	pool := newIPPool(subnet, gw)
-
+	
 	serverID := gw
 	if cfg.BindIP != "" {
 		if ip := net.ParseIP(cfg.BindIP); ip != nil {
 			serverID = ip
 		}
 	}
-
+	
 	baseOpts := func(assigned net.IP) []dhcpv4.Modifier {
 		opts := []dhcpv4.Modifier{
 			dhcpv4.WithYourIP(assigned),
@@ -85,7 +85,7 @@ func (m *Manager) Start(name string, cfg Config) error {
 		}
 		return opts
 	}
-
+	
 	handler := func(conn net.PacketConn, peer net.Addr, msg *dhcpv4.DHCPv4) {
 		assigned, err := pool.Allocate(msg.ClientHWAddr)
 		if err != nil {
@@ -104,13 +104,13 @@ func (m *Manager) Start(name string, cfg Config) error {
 			_, _ = conn.WriteTo(reply.ToBytes(), peer)
 		}
 	}
-
+	
 	laddr := &net.UDPAddr{Port: 67, IP: net.IPv4zero}
 	srv, err := server4.NewServer(cfg.Iface, laddr, handler)
 	if err != nil {
 		return fmt.Errorf("new DHCP server on %s: %w", cfg.Iface, err)
 	}
-
+	
 	ctx, cancel := context.WithCancel(context.Background())
 	m.servers[name] = &serverEntry{cancel: cancel}
 	go func() {
@@ -154,14 +154,14 @@ func (p *ipPool) Allocate(mac net.HardwareAddr) (net.IP, error) {
 		return nil, fmt.Errorf("nil MAC")
 	}
 	key := mac.String()
-
+	
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
+	
 	if ip, ok := p.byMAC[key]; ok {
 		return ip, nil
 	}
-
+	
 	base := p.subnet.IP.To4()
 	ones, bits := p.subnet.Mask.Size()
 	hostBits := bits - ones
@@ -169,7 +169,7 @@ func (p *ipPool) Allocate(mac net.HardwareAddr) (net.IP, error) {
 		return nil, fmt.Errorf("subnet %s too small for DHCP", p.subnet)
 	}
 	total := uint32(1) << uint32(hostBits)
-
+	
 	for i := uint32(1); i <= total-2; i++ {
 		cand := makeIP(base, i)
 		if cand.Equal(p.gw) {

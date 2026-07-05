@@ -4,7 +4,7 @@ package names
 const (
 	VNIPoolPrefix = "vni"
 	VNIPoolSize   = uint(65000)
-
+	
 	PoolLabSubnets = "lab-subnets"
 	PoolVPNClients = "vpn-clients"
 )

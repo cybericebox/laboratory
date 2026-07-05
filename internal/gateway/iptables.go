@@ -5,7 +5,7 @@ package gateway
 import (
 	"fmt"
 	"strings"
-
+	
 	"github.com/coreos/go-iptables/iptables"
 )
 
@@ -47,11 +47,15 @@ func (m *IPTablesManager) SetupForwardRules() error {
 }
 
 func (m *IPTablesManager) AddMasquerade(labCIDR string) error {
-	return m.ipt.AppendUnique("nat", "POSTROUTING",
-		"-s", labCIDR, "-o", m.extIface, "-j", "MASQUERADE")
+	return m.ipt.AppendUnique(
+		"nat", "POSTROUTING",
+		"-s", labCIDR, "-o", m.extIface, "-j", "MASQUERADE",
+	)
 }
 
 func (m *IPTablesManager) DelMasquerade(labCIDR string) {
-	_ = m.ipt.Delete("nat", "POSTROUTING",
-		"-s", labCIDR, "-o", m.extIface, "-j", "MASQUERADE")
+	_ = m.ipt.Delete(
+		"nat", "POSTROUTING",
+		"-s", labCIDR, "-o", m.extIface, "-j", "MASQUERADE",
+	)
 }

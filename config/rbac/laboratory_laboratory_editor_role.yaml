@@ -13,21 +13,21 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: laboratory-laboratory-editor-role
 rules:
-- apiGroups:
-  - laboratory.cybericebox.com
-  resources:
-  - laboratories
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - laboratory.cybericebox.com
-  resources:
-  - laboratories/status
-  verbs:
-  - get
+  - apiGroups:
+      - laboratory.cybericebox.com
+    resources:
+      - laboratories
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - laboratory.cybericebox.com
+    resources:
+      - laboratories/status
+    verbs:
+      - get

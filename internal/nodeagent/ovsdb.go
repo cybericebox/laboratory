@@ -11,7 +11,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
+	
 	"github.com/ovn-org/libovsdb/client"
 	"github.com/ovn-org/libovsdb/model"
 	"github.com/ovn-org/libovsdb/ovsdb"
@@ -30,6 +30,10 @@ func portKey(namespace, connection, iface string) string {
 // rules set tun_dst (NXM_NX_TUN_IPV4_DST) and tun_id per packet.
 const GenevePort = "ovsgnv0"
 
+// genevePortName is retained for transitional call sites and returns the
+// shared port name regardless of the remote address argument.
+func genevePortName(string) string { return GenevePort }
+
 // OVSManager programs the single br-ovs bridge via libovsdb (OVSDB JSON-RPC over Unix socket).
 type OVSManager struct {
 	bridge string
@@ -39,24 +43,27 @@ type OVSManager struct {
 }
 
 func NewOVSManager(bridge, sockPath string) (*OVSManager, error) {
-	dbModel, err := model.NewClientDBModel("Open_vSwitch", map[string]model.Model{
-		"Open_vSwitch": &OVSOpen_vSwitch{},
-		"Bridge":       &OVSBridge{},
-		"Port":         &OVSPort{},
-		"Interface":    &OVSInterface{},
-	})
+	dbModel, err := model.NewClientDBModel(
+		"Open_vSwitch", map[string]model.Model{
+			"Open_vSwitch": &OVSOpen_vSwitch{},
+			"Bridge":       &OVSBridge{},
+			"Port":         &OVSPort{},
+			"Interface":    &OVSInterface{},
+		},
+	)
 	if err != nil {
 		return nil, fmt.Errorf("build OVSDB model: %w", err)
 	}
-
-	ovs, err := client.NewOVSDBClient(dbModel,
+	
+	ovs, err := client.NewOVSDBClient(
+		dbModel,
 		client.WithEndpoint("unix:"+sockPath),
 		client.WithLeaderOnly(false),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create OVSDB client: %w", err)
 	}
-
+	
 	ctx := context.Background()
 	// Retry connect — ovsdb-server may still be starting.
 	var connErr error
@@ -69,11 +76,11 @@ func NewOVSManager(bridge, sockPath string) (*OVSManager, error) {
 	if connErr != nil {
 		return nil, fmt.Errorf("connect to OVSDB %s: %w", sockPath, connErr)
 	}
-
+	
 	if _, err := ovs.MonitorAll(ctx); err != nil {
 		return nil, fmt.Errorf("OVSDB monitor: %w", err)
 	}
-
+	
 	m := &OVSManager{bridge: bridge, client: ovs, ctx: ctx}
 	return m, m.ensureBridge()
 }
@@ -98,14 +105,14 @@ func (m *OVSManager) ensureBridge() error {
 	} else if br != nil {
 		return nil
 	}
-
+	
 	bridgeNamedUUID := "bridge_new"
 	bridge := OVSBridge{UUID: bridgeNamedUUID, Name: m.bridge}
 	bridgeOps, err := m.client.Create(&bridge)
 	if err != nil {
 		return fmt.Errorf("create bridge op: %w", err)
 	}
-
+	
 	// Mutate Open_vSwitch root row to add bridge reference.
 	roots := []OVSOpen_vSwitch{}
 	if err := m.client.List(m.ctx, &roots); err != nil {
@@ -114,7 +121,8 @@ func (m *OVSManager) ensureBridge() error {
 	if len(roots) == 0 {
 		return fmt.Errorf("Open_vSwitch root row not found")
 	}
-	mutOps, err := m.client.Where(&roots[0]).Mutate(&roots[0],
+	mutOps, err := m.client.Where(&roots[0]).Mutate(
+		&roots[0],
 		model.Mutation{
 			Field:   &roots[0].Bridges,
 			Mutator: ovsdb.MutateOperationInsert,
@@ -124,7 +132,7 @@ func (m *OVSManager) ensureBridge() error {
 	if err != nil {
 		return fmt.Errorf("mutate root bridges: %w", err)
 	}
-
+	
 	ops := append(bridgeOps, mutOps...)
 	results, err := m.client.Transact(m.ctx, ops...)
 	if err != nil {
@@ -260,10 +268,12 @@ func (m *OVSManager) DelPortByKey(stableKey string) error {
 func (m *OVSManager) AddGenevePort(_, _ string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.addPort(GenevePort, "geneve", map[string]string{
-		"remote_ip": "flow",
-		"key":       "flow",
-	}, nil)
+	return m.addPort(
+		GenevePort, "geneve", map[string]string{
+			"remote_ip": "flow",
+			"key":       "flow",
+		}, nil,
+	)
 }
 
 // AddPatchPair creates two paired patch ports — spec §7-§8: switch↔switch
@@ -310,7 +320,7 @@ func (m *OVSManager) addPort(name, ifaceType string, options, externalIDs map[st
 	} else if p != nil {
 		return nil
 	}
-
+	
 	br, err := m.findBridge()
 	if err != nil {
 		return err
@@ -318,23 +328,24 @@ func (m *OVSManager) addPort(name, ifaceType string, options, externalIDs map[st
 	if br == nil {
 		return fmt.Errorf("bridge %q not found", m.bridge)
 	}
-
+	
 	ifaceNamedUUID := "iface_new"
 	portNamedUUID := "port_new"
-
+	
 	iface := OVSInterface{UUID: ifaceNamedUUID, Name: name, Type: ifaceType, Options: options}
 	ifaceOps, err := m.client.Create(&iface)
 	if err != nil {
 		return fmt.Errorf("create interface op: %w", err)
 	}
-
+	
 	port := OVSPort{UUID: portNamedUUID, Name: name, Interfaces: []string{ifaceNamedUUID}, ExternalIDs: externalIDs}
 	portOps, err := m.client.Create(&port)
 	if err != nil {
 		return fmt.Errorf("create port op: %w", err)
 	}
-
-	mutOps, err := m.client.Where(br).Mutate(br,
+	
+	mutOps, err := m.client.Where(br).Mutate(
+		br,
 		model.Mutation{
 			Field:   &br.Ports,
 			Mutator: ovsdb.MutateOperationInsert,
@@ -344,7 +355,7 @@ func (m *OVSManager) addPort(name, ifaceType string, options, externalIDs map[st
 	if err != nil {
 		return fmt.Errorf("mutate bridge ports: %w", err)
 	}
-
+	
 	ops := append(ifaceOps, append(portOps, mutOps...)...)
 	results, err := m.client.Transact(m.ctx, ops...)
 	if err != nil {
@@ -375,10 +386,11 @@ func (m *OVSManager) delPortLocked(p *OVSPort) error {
 	if err != nil {
 		return err
 	}
-
+	
 	var ops []ovsdb.Operation
 	if br != nil {
-		mutOps, err := m.client.Where(br).Mutate(br,
+		mutOps, err := m.client.Where(br).Mutate(
+			br,
 			model.Mutation{
 				Field:   &br.Ports,
 				Mutator: ovsdb.MutateOperationDelete,
@@ -390,13 +402,13 @@ func (m *OVSManager) delPortLocked(p *OVSPort) error {
 		}
 		ops = append(ops, mutOps...)
 	}
-
+	
 	delOps, err := m.client.Where(p).Delete()
 	if err != nil {
 		return fmt.Errorf("delete port op: %w", err)
 	}
 	ops = append(ops, delOps...)
-
+	
 	results, err := m.client.Transact(m.ctx, ops...)
 	if err != nil {
 		return fmt.Errorf("transact delPort %q: %w", p.Name, err)
@@ -440,7 +452,13 @@ func (m *OVSManager) WaitForPortSetup(portName string, timeout time.Duration) er
 			if link != nil {
 				linkType = link.Type()
 			}
-			return fmt.Errorf("interface %q did not stabilize as openvswitch type within %s (type=%q, err=%v)", portName, timeout, linkType, err)
+			return fmt.Errorf(
+				"interface %q did not stabilize as openvswitch type within %s (type=%q, err=%v)",
+				portName,
+				timeout,
+				linkType,
+				err,
+			)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

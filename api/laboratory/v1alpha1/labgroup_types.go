@@ -47,7 +47,7 @@ type LabGroupVPNStatus struct {
 type LabGroup struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-
+	
 	Spec   LabGroupSpec   `json:"spec,omitempty"`
 	Status LabGroupStatus `json:"status,omitempty"`
 }

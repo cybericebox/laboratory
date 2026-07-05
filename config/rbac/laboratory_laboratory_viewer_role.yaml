@@ -13,17 +13,17 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: laboratory-laboratory-viewer-role
 rules:
-- apiGroups:
-  - laboratory.cybericebox.com
-  resources:
-  - laboratories
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - laboratory.cybericebox.com
-  resources:
-  - laboratories/status
-  verbs:
-  - get
+  - apiGroups:
+      - laboratory.cybericebox.com
+    resources:
+      - laboratories
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - laboratory.cybericebox.com
+    resources:
+      - laboratories/status
+    verbs:
+      - get

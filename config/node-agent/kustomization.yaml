@@ -1,5 +1,5 @@
 resources:
-- rbac.yaml
-- daemonset.yaml
+  - rbac.yaml
+  - daemonset.yaml
 namespace: laboratory-system
 namePrefix: laboratory-

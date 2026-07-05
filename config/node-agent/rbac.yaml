@@ -10,21 +10,21 @@ kind: ClusterRole
 metadata:
   name: node-agent
 rules:
-  - apiGroups: ["laboratory.cybericebox.com"]
-    resources: ["labs", "devices", "connections"]
-    verbs: ["get", "list", "watch", "update", "patch"]
-  - apiGroups: ["laboratory.cybericebox.com"]
-    resources: ["connections/status", "devices/status"]
-    verbs: ["get", "update", "patch"]
-  - apiGroups: [""]
-    resources: ["nodes"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["events"]
-    verbs: ["create", "patch"]
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "labs", "devices", "connections" ]
+    verbs: [ "get", "list", "watch", "update", "patch" ]
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "connections/status", "devices/status" ]
+    verbs: [ "get", "update", "patch" ]
+  - apiGroups: [ "" ]
+    resources: [ "nodes" ]
+    verbs: [ "get", "list", "watch" ]
+  - apiGroups: [ "" ]
+    resources: [ "pods" ]
+    verbs: [ "get", "list", "watch" ]
+  - apiGroups: [ "" ]
+    resources: [ "events" ]
+    verbs: [ "create", "patch" ]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

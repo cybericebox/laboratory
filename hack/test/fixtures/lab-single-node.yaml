@@ -7,23 +7,23 @@ metadata:
   namespace: ${LAB_NS}
 spec:
   devices:
-  - name: attacker
-    type: container
-    image: alpine:3.20
-    interfaces:
-    - name: eth1
-      addr:
-        type: dhcp
-  - name: victim
-    type: container
-    image: alpine:3.20
-    interfaces:
-    - name: eth1
-      addr:
-        type: dhcp
+    - name: attacker
+      type: container
+      image: alpine:3.20
+      interfaces:
+        - name: eth1
+          addr:
+            type: dhcp
+    - name: victim
+      type: container
+      image: alpine:3.20
+      interfaces:
+        - name: eth1
+          addr:
+            type: dhcp
   connections:
-  - endpoints:
-    - device: attacker
-      interface: eth1
-    - device: victim
-      interface: eth1
+    - endpoints:
+        - device: attacker
+          interface: eth1
+        - device: victim
+          interface: eth1

@@ -5,4 +5,4 @@ kind: LabGroupClient
 metadata:
   name: tester
   namespace: ${LAB_NS}
-spec: {}
+spec: { }

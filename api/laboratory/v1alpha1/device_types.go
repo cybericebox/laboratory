@@ -42,7 +42,7 @@ type DeviceStatus struct {
 type Device struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-
+	
 	Spec   DeviceSpec   `json:"spec,omitempty"`
 	Status DeviceStatus `json:"status,omitempty"`
 }

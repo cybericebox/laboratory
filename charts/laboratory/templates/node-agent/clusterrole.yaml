@@ -6,25 +6,25 @@ metadata:
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 rules:
-- apiGroups: [laboratory.cybericebox.com]
-  resources: [labs, devices, connections]
-  verbs: [get, list, watch, update, patch]
-# ConnectionReconciler resolves vpn/internet endpoints by reading the LabVPN/
-# LabGateway CRDs; the cached client needs list+watch or its informer never
-# syncs and Get blocks the reconcile worker forever.
-- apiGroups: [laboratory.cybericebox.com]
-  resources: [labvpns, labgateways]
-  verbs: [get, list, watch]
-- apiGroups: [laboratory.cybericebox.com]
-  resources: [connections/status, devices/status]
-  verbs: [get, update, patch]
-- apiGroups: [""]
-  resources: [nodes]
-  verbs: [get, list, watch]
-- apiGroups: [""]
-  resources: [pods]
-  verbs: [get, list, watch]
-- apiGroups: [""]
-  resources: [events]
-  verbs: [create, patch]
+  - apiGroups: [ laboratory.cybericebox.com ]
+    resources: [ labs, devices, connections ]
+    verbs: [ get, list, watch, update, patch ]
+  # ConnectionReconciler resolves vpn/internet endpoints by reading the LabVPN/
+  # LabGateway CRDs; the cached client needs list+watch or its informer never
+  # syncs and Get blocks the reconcile worker forever.
+  - apiGroups: [ laboratory.cybericebox.com ]
+    resources: [ labvpns, labgateways ]
+    verbs: [ get, list, watch ]
+  - apiGroups: [ laboratory.cybericebox.com ]
+    resources: [ connections/status, devices/status ]
+    verbs: [ get, update, patch ]
+  - apiGroups: [ "" ]
+    resources: [ nodes ]
+    verbs: [ get, list, watch ]
+  - apiGroups: [ "" ]
+    resources: [ pods ]
+    verbs: [ get, list, watch ]
+  - apiGroups: [ "" ]
+    resources: [ events ]
+    verbs: [ create, patch ]
 {{- end }}

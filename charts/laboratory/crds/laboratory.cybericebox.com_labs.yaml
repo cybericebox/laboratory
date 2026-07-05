@@ -14,333 +14,333 @@ spec:
     singular: lab
   scope: Namespaced
   versions:
-  - name: v1alpha1
-    schema:
-      openAPIV3Schema:
-        description: Lab is the Schema for the labs API.
-        properties:
-          apiVersion:
-            description: |-
-              APIVersion defines the versioned schema of this representation of an object.
-              Servers should convert recognized schemas to the latest internal value, and
-              may reject unrecognized values.
-              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
-            type: string
-          kind:
-            description: |-
-              Kind is a string value representing the REST resource this object represents.
-              Servers may infer this from the endpoint the client submits requests to.
-              Cannot be updated.
-              In CamelCase.
-              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
-            type: string
-          metadata:
-            type: object
-          spec:
-            description: LabSpec defines the desired state of Lab.
-            properties:
-              connections:
-                items:
-                  description: ConnectionTemplate is an inline connection declaration
-                    inside Lab.spec.connections[].
-                  properties:
-                    endpoints:
-                      items:
-                        description: EndpointSpec references a device interface in
-                          a Connection.
-                        properties:
-                          device:
-                            description: Device is the name of the Device CRD within
-                              the same Lab.
-                            type: string
-                          interface:
-                            description: Interface is the interface name on the device;
-                              omit for unmanaged-switch/hub.
-                            type: string
-                        required:
-                        - device
-                        type: object
-                      maxItems: 2
-                      minItems: 2
-                      type: array
-                  required:
-                  - endpoints
-                  type: object
-                type: array
-              devices:
-                items:
-                  description: DeviceTemplate is an inline device declaration inside
-                    Lab.spec.devices[].
-                  properties:
-                    exposure:
-                      description: ExposureSpec declares how a device is externally
-                        reachable.
-                      properties:
-                        web:
-                          description: WebExposure publishes a device port via an
-                            L7 proxy.
+    - name: v1alpha1
+      schema:
+        openAPIV3Schema:
+          description: Lab is the Schema for the labs API.
+          properties:
+            apiVersion:
+              description: |-
+                APIVersion defines the versioned schema of this representation of an object.
+                Servers should convert recognized schemas to the latest internal value, and
+                may reject unrecognized values.
+                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+              type: string
+            kind:
+              description: |-
+                Kind is a string value representing the REST resource this object represents.
+                Servers may infer this from the endpoint the client submits requests to.
+                Cannot be updated.
+                In CamelCase.
+                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+              type: string
+            metadata:
+              type: object
+            spec:
+              description: LabSpec defines the desired state of Lab.
+              properties:
+                connections:
+                  items:
+                    description: ConnectionTemplate is an inline connection declaration
+                      inside Lab.spec.connections[].
+                    properties:
+                      endpoints:
+                        items:
+                          description: EndpointSpec references a device interface in
+                            a Connection.
                           properties:
-                            port:
-                              format: int32
-                              type: integer
-                            protocol:
-                              default: http
-                              description: Protocol is "http" or "https".
+                            device:
+                              description: Device is the name of the Device CRD within
+                                the same Lab.
+                              type: string
+                            interface:
+                              description: Interface is the interface name on the device;
+                                omit for unmanaged-switch/hub.
                               type: string
                           required:
-                          - port
+                            - device
                           type: object
-                      type: object
-                    image:
-                      type: string
-                    interfaces:
-                      items:
-                        description: InterfaceSpec defines a network interface on
-                          a device.
+                        maxItems: 2
+                        minItems: 2
+                        type: array
+                    required:
+                      - endpoints
+                    type: object
+                  type: array
+                devices:
+                  items:
+                    description: DeviceTemplate is an inline device declaration inside
+                      Lab.spec.devices[].
+                    properties:
+                      exposure:
+                        description: ExposureSpec declares how a device is externally
+                          reachable.
                         properties:
-                          addr:
-                            description: AddrSpec defines static or DHCP address configuration.
+                          web:
+                            description: WebExposure publishes a device port via an
+                              L7 proxy.
                             properties:
-                              gateway:
-                                type: string
-                              ip:
-                                type: string
-                              routes:
-                                items:
-                                  description: Route is a static route entry.
-                                  properties:
-                                    dst:
-                                      type: string
-                                    via:
-                                      type: string
-                                  required:
-                                  - dst
-                                  type: object
-                                type: array
-                              type:
-                                description: |-
-                                  AddrType controls how an interface gets its address.
-                                    - static:      fixed IP from spec; applied by the netconfig init-container.
-                                    - dhcp:        the image runs its own DHCP client; the device pod is granted
-                                      NET_ADMIN+NET_RAW so that client can lease and configure the interface.
-                                    - dhcp-preset: the image has no DHCP client but still needs a dynamic
-                                      address; the netconfig init-container leases one from the lab DHCP server
-                                      and applies it. The device container needs no capabilities.
-                                enum:
-                                - static
-                                - dhcp
-                                - dhcp-preset
+                              port:
+                                format: int32
+                                type: integer
+                              protocol:
+                                default: http
+                                description: Protocol is "http" or "https".
                                 type: string
                             required:
-                            - type
+                              - port
                             type: object
-                          mac:
-                            description: MAC is "random" or an explicit MAC address.
-                            type: string
-                          name:
-                            type: string
-                        required:
-                        - name
                         type: object
-                      type: array
-                    name:
-                      type: string
-                    securityPreset:
-                      description: |-
-                        SecurityPreset names a capability profile for the device container. Only
-                        the preset name is exposed here; the concrete Linux capabilities behind it
-                        are an internal platform decision. Empty means "basic" (no extra caps).
-                      enum:
-                      - basic
-                      - service
-                      - net
-                      - debug
-                      type: string
-                    type:
-                      description: DeviceType distinguishes network device kinds.
-                      enum:
-                      - container
-                      - vm
-                      - unmanaged-switch
-                      - hub
-                      type: string
-                  required:
-                  - name
-                  - type
-                  type: object
-                type: array
-              internet:
-                description: LabNetworkSpec configures a network segment (VPN or internet)
-                  attached to the lab.
-                properties:
-                  dhcpServer:
-                    description: |-
-                      DHCPServer enables the embedded DHCP server for a network segment.
-                      Subnet and gateway are derived from the lab's allocated CIDR (Status.*.CIDR).
-                    properties:
-                      enabled:
-                        type: boolean
+                      image:
+                        type: string
+                      interfaces:
+                        items:
+                          description: InterfaceSpec defines a network interface on
+                            a device.
+                          properties:
+                            addr:
+                              description: AddrSpec defines static or DHCP address configuration.
+                              properties:
+                                gateway:
+                                  type: string
+                                ip:
+                                  type: string
+                                routes:
+                                  items:
+                                    description: Route is a static route entry.
+                                    properties:
+                                      dst:
+                                        type: string
+                                      via:
+                                        type: string
+                                    required:
+                                      - dst
+                                    type: object
+                                  type: array
+                                type:
+                                  description: |-
+                                    AddrType controls how an interface gets its address.
+                                      - static:      fixed IP from spec; applied by the netconfig init-container.
+                                      - dhcp:        the image runs its own DHCP client; the device pod is granted
+                                        NET_ADMIN+NET_RAW so that client can lease and configure the interface.
+                                      - dhcp-preset: the image has no DHCP client but still needs a dynamic
+                                        address; the netconfig init-container leases one from the lab DHCP server
+                                        and applies it. The device container needs no capabilities.
+                                  enum:
+                                    - static
+                                    - dhcp
+                                    - dhcp-preset
+                                  type: string
+                              required:
+                                - type
+                              type: object
+                            mac:
+                              description: MAC is "random" or an explicit MAC address.
+                              type: string
+                            name:
+                              type: string
+                          required:
+                            - name
+                          type: object
+                        type: array
+                      name:
+                        type: string
+                      securityPreset:
+                        description: |-
+                          SecurityPreset names a capability profile for the device container. Only
+                          the preset name is exposed here; the concrete Linux capabilities behind it
+                          are an internal platform decision. Empty means "basic" (no extra caps).
+                        enum:
+                          - basic
+                          - service
+                          - net
+                          - debug
+                        type: string
+                      type:
+                        description: DeviceType distinguishes network device kinds.
+                        enum:
+                          - container
+                          - vm
+                          - unmanaged-switch
+                          - hub
+                        type: string
+                    required:
+                      - name
+                      - type
                     type: object
-                  enabled:
-                    type: boolean
-                type: object
-              vpn:
-                description: LabNetworkSpec configures a network segment (VPN or internet)
-                  attached to the lab.
-                properties:
-                  dhcpServer:
-                    description: |-
-                      DHCPServer enables the embedded DHCP server for a network segment.
-                      Subnet and gateway are derived from the lab's allocated CIDR (Status.*.CIDR).
+                  type: array
+                internet:
+                  description: LabNetworkSpec configures a network segment (VPN or internet)
+                    attached to the lab.
+                  properties:
+                    dhcpServer:
+                      description: |-
+                        DHCPServer enables the embedded DHCP server for a network segment.
+                        Subnet and gateway are derived from the lab's allocated CIDR (Status.*.CIDR).
+                      properties:
+                        enabled:
+                          type: boolean
+                      type: object
+                    enabled:
+                      type: boolean
+                  type: object
+                vpn:
+                  description: LabNetworkSpec configures a network segment (VPN or internet)
+                    attached to the lab.
+                  properties:
+                    dhcpServer:
+                      description: |-
+                        DHCPServer enables the embedded DHCP server for a network segment.
+                        Subnet and gateway are derived from the lab's allocated CIDR (Status.*.CIDR).
+                      properties:
+                        enabled:
+                          type: boolean
+                      type: object
+                    enabled:
+                      type: boolean
+                  type: object
+              type: object
+            status:
+              description: LabStatus defines the observed state of Lab.
+              properties:
+                access:
+                  items:
+                    description: AccessEntry describes a single externally reachable
+                      endpoint.
                     properties:
-                      enabled:
-                        type: boolean
+                      device:
+                        type: string
+                      port:
+                        format: int32
+                        type: integer
+                      protocol:
+                        type: string
+                      url:
+                        type: string
+                    required:
+                      - device
+                      - port
+                      - protocol
+                      - url
                     type: object
-                  enabled:
-                    type: boolean
-                type: object
-            type: object
-          status:
-            description: LabStatus defines the observed state of Lab.
-            properties:
-              access:
-                items:
-                  description: AccessEntry describes a single externally reachable
-                    endpoint.
+                  type: array
+                conditions:
+                  description: |-
+                    Conditions surfaces reconciler progress/blocking reasons
+                    (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
+                  items:
+                    description: Condition contains details for one aspect of the current
+                      state of this API Resource.
+                    properties:
+                      lastTransitionTime:
+                        description: |-
+                          lastTransitionTime is the last time the condition transitioned from one status to another.
+                          This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                        format: date-time
+                        type: string
+                      message:
+                        description: |-
+                          message is a human readable message indicating details about the transition.
+                          This may be an empty string.
+                        maxLength: 32768
+                        type: string
+                      observedGeneration:
+                        description: |-
+                          observedGeneration represents the .metadata.generation that the condition was set based upon.
+                          For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                          with respect to the current state of the instance.
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      reason:
+                        description: |-
+                          reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                          Producers of specific condition types may define expected values and meanings for this field,
+                          and whether the values are considered a guaranteed API.
+                          The value should be a CamelCase string.
+                          This field may not be empty.
+                        maxLength: 1024
+                        minLength: 1
+                        pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                        type: string
+                      status:
+                        description: status of the condition, one of True, False, Unknown.
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                        type: string
+                      type:
+                        description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                        maxLength: 316
+                        pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                        type: string
+                    required:
+                      - lastTransitionTime
+                      - message
+                      - reason
+                      - status
+                      - type
+                    type: object
+                  type: array
+                  x-kubernetes-list-map-keys:
+                    - type
+                  x-kubernetes-list-type: map
+                connections:
+                  items:
+                    description: ConnectionRef summarises a materialised Connection's
+                      readiness.
+                    properties:
+                      name:
+                        type: string
+                      ready:
+                        type: boolean
+                    required:
+                      - name
+                    type: object
+                  type: array
+                devices:
+                  items:
+                    description: DeviceRef summarises a materialised Device's readiness.
+                    properties:
+                      name:
+                        type: string
+                      ready:
+                        type: boolean
+                    required:
+                      - name
+                    type: object
+                  type: array
+                internet:
+                  description: LabNetworkStatus reports the allocated CIDR for a network
+                    segment.
                   properties:
-                    device:
-                      type: string
-                    port:
-                      format: int32
-                      type: integer
-                    protocol:
-                      type: string
-                    url:
-                      type: string
-                  required:
-                  - device
-                  - port
-                  - protocol
-                  - url
-                  type: object
-                type: array
-              conditions:
-                description: |-
-                  Conditions surfaces reconciler progress/blocking reasons
-                  (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
-                items:
-                  description: Condition contains details for one aspect of the current
-                    state of this API Resource.
-                  properties:
-                    lastTransitionTime:
-                      description: |-
-                        lastTransitionTime is the last time the condition transitioned from one status to another.
-                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
-                      format: date-time
-                      type: string
-                    message:
-                      description: |-
-                        message is a human readable message indicating details about the transition.
-                        This may be an empty string.
-                      maxLength: 32768
-                      type: string
-                    observedGeneration:
-                      description: |-
-                        observedGeneration represents the .metadata.generation that the condition was set based upon.
-                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
-                        with respect to the current state of the instance.
-                      format: int64
-                      minimum: 0
-                      type: integer
-                    reason:
-                      description: |-
-                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
-                        Producers of specific condition types may define expected values and meanings for this field,
-                        and whether the values are considered a guaranteed API.
-                        The value should be a CamelCase string.
-                        This field may not be empty.
-                      maxLength: 1024
-                      minLength: 1
-                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
-                      type: string
-                    status:
-                      description: status of the condition, one of True, False, Unknown.
-                      enum:
-                      - "True"
-                      - "False"
-                      - Unknown
-                      type: string
-                    type:
-                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
-                      maxLength: 316
-                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
-                      type: string
-                  required:
-                  - lastTransitionTime
-                  - message
-                  - reason
-                  - status
-                  - type
-                  type: object
-                type: array
-                x-kubernetes-list-map-keys:
-                - type
-                x-kubernetes-list-type: map
-              connections:
-                items:
-                  description: ConnectionRef summarises a materialised Connection's
-                    readiness.
-                  properties:
-                    name:
+                    cidr:
                       type: string
                     ready:
                       type: boolean
-                  required:
-                  - name
                   type: object
-                type: array
-              devices:
-                items:
-                  description: DeviceRef summarises a materialised Device's readiness.
+                phase:
+                  description: Phase is the lifecycle phase of a resource.
+                  enum:
+                    - Pending
+                    - Provisioning
+                    - Ready
+                    - Failed
+                    - Error
+                  type: string
+                vpn:
+                  description: LabNetworkStatus reports the allocated CIDR for a network
+                    segment.
                   properties:
-                    name:
+                    cidr:
                       type: string
                     ready:
                       type: boolean
-                  required:
-                  - name
                   type: object
-                type: array
-              internet:
-                description: LabNetworkStatus reports the allocated CIDR for a network
-                  segment.
-                properties:
-                  cidr:
-                    type: string
-                  ready:
-                    type: boolean
-                type: object
-              phase:
-                description: Phase is the lifecycle phase of a resource.
-                enum:
-                - Pending
-                - Provisioning
-                - Ready
-                - Failed
-                - Error
-                type: string
-              vpn:
-                description: LabNetworkStatus reports the allocated CIDR for a network
-                  segment.
-                properties:
-                  cidr:
-                    type: string
-                  ready:
-                    type: boolean
-                type: object
-            type: object
-        type: object
-    served: true
-    storage: true
-    subresources:
-      status: {}
+              type: object
+          type: object
+      served: true
+      storage: true
+      subresources:
+        status: { }

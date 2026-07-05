@@ -7,25 +7,25 @@ metadata:
   namespace: ${LAB_NS}
 spec:
   devices:
-  - name: node-a
-    type: container
-    image: wbitt/network-multitool:latest
-    interfaces:
-    - name: eth1
-      addr:
-        type: static
-        ip: 10.10.2.10/24
-  - name: node-b
-    type: container
-    image: wbitt/network-multitool:latest
-    interfaces:
-    - name: eth1
-      addr:
-        type: static
-        ip: 10.10.2.20/24
+    - name: node-a
+      type: container
+      image: wbitt/network-multitool:latest
+      interfaces:
+        - name: eth1
+          addr:
+            type: static
+            ip: 10.10.2.10/24
+    - name: node-b
+      type: container
+      image: wbitt/network-multitool:latest
+      interfaces:
+        - name: eth1
+          addr:
+            type: static
+            ip: 10.10.2.20/24
   connections:
-  - endpoints:
-    - device: node-a
-      interface: eth1
-    - device: node-b
-      interface: eth1
+    - endpoints:
+        - device: node-a
+          interface: eth1
+        - device: node-b
+          interface: eth1

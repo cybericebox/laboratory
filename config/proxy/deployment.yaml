@@ -18,12 +18,12 @@ kind: ClusterRole
 metadata:
   name: laboratory-proxy
 rules:
-  - apiGroups: ["laboratory.cybericebox.com"]
-    resources: ["labgroups"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["services"]
-    verbs: ["get", "list", "watch"]
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "labgroups" ]
+    verbs: [ "get", "list", "watch" ]
+  - apiGroups: [ "" ]
+    resources: [ "services" ]
+    verbs: [ "get", "list", "watch" ]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -45,10 +45,10 @@ metadata:
   name: proxy-credentials-reader
   namespace: laboratory-proxy
 rules:
-  - apiGroups: [""]
-    resources: ["secrets"]
-    resourceNames: ["proxy-credentials"]
-    verbs: ["get"]
+  - apiGroups: [ "" ]
+    resources: [ "secrets" ]
+    resourceNames: [ "proxy-credentials" ]
+    verbs: [ "get" ]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -90,7 +90,7 @@ spec:
           imagePullPolicy: Never
           securityContext:
             capabilities:
-              add: ["NET_ADMIN"]
+              add: [ "NET_ADMIN" ]
           ports:
             - name: https
               containerPort: 443

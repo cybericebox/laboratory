@@ -5,17 +5,17 @@ metadata:
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 rules:
-- apiGroups: [laboratory.cybericebox.com]
-  resources: [labgateways]
-  verbs: [get, list, watch, update]
-- apiGroups: [laboratory.cybericebox.com]
-  resources: [labgateways/status]
-  verbs: [get, patch, update]
-- apiGroups: [allocation.cybericebox.com]
-  resources: [pools]
-  verbs: [get, list, watch]
+  - apiGroups: [ laboratory.cybericebox.com ]
+    resources: [ labgateways ]
+    verbs: [ get, list, watch, update ]
+  - apiGroups: [ laboratory.cybericebox.com ]
+    resources: [ labgateways/status ]
+    verbs: [ get, patch, update ]
+  - apiGroups: [ allocation.cybericebox.com ]
+    resources: [ pools ]
+    verbs: [ get, list, watch ]
 
-# Events for reconciler diagnostics (kubectl describe / get events).
-- apiGroups: [""]
-  resources: [events]
-  verbs: [create, patch]
+  # Events for reconciler diagnostics (kubectl describe / get events).
+  - apiGroups: [ "" ]
+    resources: [ events ]
+    verbs: [ create, patch ]

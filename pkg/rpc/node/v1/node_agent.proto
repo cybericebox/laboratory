@@ -21,16 +21,16 @@ service NodeAgent {
 }
 
 message AddPortRequest {
-  string pod_uid        = 1;
-  string connection     = 2;  // Connection CRD name
+  string pod_uid = 1;
+  string connection = 2;  // Connection CRD name
   string interface_name = 3;  // target iface name inside pod netns (e.g. "eth0")
-  string namespace      = 4;  // pod namespace
-  string netns_path     = 5;  // netns path from CNI args (e.g. /var/run/netns/cni-xxx)
+  string namespace = 4;  // pod namespace
+  string netns_path = 5;  // netns path from CNI args (e.g. /var/run/netns/cni-xxx)
 }
 
 message AddPortResponse {
   string port_id = 1;  // OVS port name (e.g. "pa1b2c3d4")
-  string mac     = 2;  // assigned MAC address
+  string mac = 2;  // assigned MAC address
 }
 
 message DeletePortRequest {
@@ -39,8 +39,8 @@ message DeletePortRequest {
 
 message GetPodAnnotationRequest {
   string namespace = 1;
-  string name      = 2;
-  string key       = 3;
+  string name = 2;
+  string key = 3;
 }
 
 message GetPodAnnotationResponse {
@@ -49,9 +49,9 @@ message GetPodAnnotationResponse {
 }
 
 message SetupNetworksRequest {
-  string namespace  = 1;
-  string name       = 2;
-  string pod_uid    = 3;
+  string namespace = 1;
+  string name = 2;
+  string pod_uid = 3;
   string netns_path = 4;
 }
 

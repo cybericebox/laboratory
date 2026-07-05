@@ -1,6 +1,7 @@
 # Deployment Guide
 
-CyberICEBox Laboratory installs via Helm. All configuration lives in `values.yaml` — no manual editing of YAML manifests.
+CyberICEBox Laboratory installs via Helm. All configuration lives in `values.yaml` — no manual editing of YAML
+manifests.
 
 ## Prerequisites
 
@@ -65,6 +66,7 @@ helm install laboratory ./charts/laboratory \
 ```
 
 What gets installed:
+
 - CRDs (Pools, LabGroups, LabGroupClients, Labs, Devices, Connections)
 - `laboratory-system` namespace
 - Operator (Deployment + RBAC)
@@ -105,7 +107,7 @@ kind: LabGroup
 metadata:
   name: team-alpha
 spec:
-  vpn: {}
+  vpn: { }
 ```
 
 ```bash
@@ -123,7 +125,7 @@ kind: LabGroupClient
 metadata:
   name: alice
   namespace: team-alpha-ns
-spec: {}
+spec: { }
 ```
 
 ```bash
@@ -145,17 +147,17 @@ spec:
   internet:
     enabled: false
   devices:
-  - name: attacker
-    image: kalilinux/kali-rolling:latest
-    type: Device
-  - name: target
-    image: ubuntu:22.04
-    type: Device
-  - name: sw1
-    type: Switch
+    - name: attacker
+      image: kalilinux/kali-rolling:latest
+      type: Device
+    - name: target
+      image: ubuntu:22.04
+      type: Device
+    - name: sw1
+      type: Switch
   connections:
-  - endpoints: [attacker, sw1]
-  - endpoints: [target, sw1]
+    - endpoints: [ attacker, sw1 ]
+    - endpoints: [ target, sw1 ]
 ```
 
 ```bash
@@ -184,13 +186,13 @@ kubectl delete crd \
 
 ## Network Layout
 
-| Network | Default | Usage |
-|---|---|---|
-| `vpnBaseNetwork` | `10.8.0.0/10` | Full VPN supernet; advertised as AllowedIPs to WireGuard clients |
-| Client subnet | `10.8.0.0/24` | First /24 of vpnBaseNetwork; VPN gateway at .1, clients at .2–.254 |
-| Per-lab VPN subnet | `10.8.N.0/24` | N=1..253 carved from vpnBaseNetwork |
-| `inetBaseNetwork` | `10.9.0.0/10` | Internet-gateway subnets |
-| Per-lab inet subnet | `10.9.N.0/24` | Mirrors VPN lab index |
+| Network             | Default       | Usage                                                              |
+|---------------------|---------------|--------------------------------------------------------------------|
+| `vpnBaseNetwork`    | `10.8.0.0/10` | Full VPN supernet; advertised as AllowedIPs to WireGuard clients   |
+| Client subnet       | `10.8.0.0/24` | First /24 of vpnBaseNetwork; VPN gateway at .1, clients at .2–.254 |
+| Per-lab VPN subnet  | `10.8.N.0/24` | N=1..253 carved from vpnBaseNetwork                                |
+| `inetBaseNetwork`   | `10.9.0.0/10` | Internet-gateway subnets                                           |
+| Per-lab inet subnet | `10.9.N.0/24` | Mirrors VPN lab index                                              |
 
 ---
 

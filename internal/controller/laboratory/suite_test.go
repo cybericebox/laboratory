@@ -21,10 +21,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
+	
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-
+	
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -35,7 +35,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-
+	
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -55,97 +55,103 @@ var (
 
 func TestControllers(t *testing.T) {
 	RegisterFailHandler(Fail)
-
+	
 	RunSpecs(t, "Controller Suite")
 }
 
-var _ = BeforeSuite(func() {
-	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
-
-	ctx, cancel = context.WithCancel(context.TODO())
-
-	var err error
-	err = laboratoryv1alpha1.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
-
-	err = allocationv1alpha1.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
-
-	// +kubebuilder:scaffold:scheme
-
-	By("bootstrapping test environment")
-	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd", "bases")},
-		ErrorIfCRDPathMissing: true,
-	}
-
-	// Retrieve the first found binary directory to allow running tests from IDEs
-	if getFirstFoundEnvTestBinaryDir() != "" {
-		testEnv.BinaryAssetsDirectory = getFirstFoundEnvTestBinaryDir()
-	}
-
-	// cfg is defined in this file globally.
-	cfg, err = testEnv.Start()
-	Expect(err).NotTo(HaveOccurred())
-	Expect(cfg).NotTo(BeNil())
-
-	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
-	Expect(err).NotTo(HaveOccurred())
-	Expect(k8sClient).NotTo(BeNil())
-
-	// The operator system namespace is required by the VNI pool allocator.
-	labSystemNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: names.SystemNamespace}}
-	Expect(k8sClient.Create(ctx, labSystemNS)).To(Succeed())
-
-	// Manager runs LabGroup/Lab reconcilers so async Eventually-based tests work.
-	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme:                 scheme.Scheme,
-		Metrics:                metricsserver.Options{BindAddress: "0"},
-		HealthProbeBindAddress: "0",
-	})
-	Expect(err).NotTo(HaveOccurred())
-
-	err = (&LabGroupReconciler{
-		Client:          mgr.GetClient(),
-		Scheme:          mgr.GetScheme(),
-		Recorder:        mgr.GetEventRecorderFor("labgroup"),
-		VPNBaseNetwork:  "10.8.0.0/10",
-		InetBaseNetwork: "10.9.0.0/10",
-		VPNImage:        "cybericebox/laboratory-lab:latest",
-		GatewayImage:    "cybericebox/laboratory-lab:latest",
-	}).SetupWithManager(mgr)
-	Expect(err).NotTo(HaveOccurred())
-
-	err = (&LabGroupClientReconciler{
-		Client:         mgr.GetClient(),
-		Scheme:         mgr.GetScheme(),
-		Recorder:       mgr.GetEventRecorderFor("labgroupclient"),
-		VPNBaseNetwork: "10.8.0.0/10",
-	}).SetupWithManager(mgr)
-	Expect(err).NotTo(HaveOccurred())
-
-	err = (&LabReconciler{
-		Client:          mgr.GetClient(),
-		Scheme:          mgr.GetScheme(),
-		Recorder:        mgr.GetEventRecorderFor("lab"),
-		VPNBaseNetwork:  "10.8.0.0/10",
-		InetBaseNetwork: "10.9.0.0/10",
-	}).SetupWithManager(mgr)
-	Expect(err).NotTo(HaveOccurred())
-
-	go func() {
-		defer GinkgoRecover()
-		err = mgr.Start(ctx)
+var _ = BeforeSuite(
+	func() {
+		logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
+		
+		ctx, cancel = context.WithCancel(context.TODO())
+		
+		var err error
+		err = laboratoryv1alpha1.AddToScheme(scheme.Scheme)
 		Expect(err).NotTo(HaveOccurred())
-	}()
-})
+		
+		err = allocationv1alpha1.AddToScheme(scheme.Scheme)
+		Expect(err).NotTo(HaveOccurred())
+		
+		// +kubebuilder:scaffold:scheme
+		
+		By("bootstrapping test environment")
+		testEnv = &envtest.Environment{
+			CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd", "bases")},
+			ErrorIfCRDPathMissing: true,
+		}
+		
+		// Retrieve the first found binary directory to allow running tests from IDEs
+		if getFirstFoundEnvTestBinaryDir() != "" {
+			testEnv.BinaryAssetsDirectory = getFirstFoundEnvTestBinaryDir()
+		}
+		
+		// cfg is defined in this file globally.
+		cfg, err = testEnv.Start()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg).NotTo(BeNil())
+		
+		k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient).NotTo(BeNil())
+		
+		// The operator system namespace is required by the VNI pool allocator.
+		labSystemNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: names.SystemNamespace}}
+		Expect(k8sClient.Create(ctx, labSystemNS)).To(Succeed())
+		
+		// Manager runs LabGroup/Lab reconcilers so async Eventually-based tests work.
+		mgr, err := ctrl.NewManager(
+			cfg, ctrl.Options{
+				Scheme:                 scheme.Scheme,
+				Metrics:                metricsserver.Options{BindAddress: "0"},
+				HealthProbeBindAddress: "0",
+			},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		
+		err = (&LabGroupReconciler{
+			Client:          mgr.GetClient(),
+			Scheme:          mgr.GetScheme(),
+			Recorder:        mgr.GetEventRecorderFor("labgroup"),
+			VPNBaseNetwork:  "10.8.0.0/10",
+			InetBaseNetwork: "10.9.0.0/10",
+			VPNImage:        "cybericebox/laboratory-lab:latest",
+			GatewayImage:    "cybericebox/laboratory-lab:latest",
+		}).SetupWithManager(mgr)
+		Expect(err).NotTo(HaveOccurred())
+		
+		err = (&LabGroupClientReconciler{
+			Client:         mgr.GetClient(),
+			Scheme:         mgr.GetScheme(),
+			Recorder:       mgr.GetEventRecorderFor("labgroupclient"),
+			VPNBaseNetwork: "10.8.0.0/10",
+		}).SetupWithManager(mgr)
+		Expect(err).NotTo(HaveOccurred())
+		
+		err = (&LabReconciler{
+			Client:          mgr.GetClient(),
+			Scheme:          mgr.GetScheme(),
+			Recorder:        mgr.GetEventRecorderFor("lab"),
+			VPNBaseNetwork:  "10.8.0.0/10",
+			InetBaseNetwork: "10.9.0.0/10",
+		}).SetupWithManager(mgr)
+		Expect(err).NotTo(HaveOccurred())
+		
+		go func() {
+			defer GinkgoRecover()
+			err = mgr.Start(ctx)
+			Expect(err).NotTo(HaveOccurred())
+		}()
+	},
+)
 
-var _ = AfterSuite(func() {
-	By("tearing down the test environment")
-	cancel()
-	err := testEnv.Stop()
-	Expect(err).NotTo(HaveOccurred())
-})
+var _ = AfterSuite(
+	func() {
+		By("tearing down the test environment")
+		cancel()
+		err := testEnv.Stop()
+		Expect(err).NotTo(HaveOccurred())
+	},
+)
 
 // getFirstFoundEnvTestBinaryDir locates the first binary in the specified path.
 // ENVTEST-based tests depend on specific binaries, usually located in paths set by

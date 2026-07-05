@@ -13,21 +13,21 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: allocation-pool-editor-role
 rules:
-- apiGroups:
-  - allocation.cybericebox.com
-  resources:
-  - pools
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - allocation.cybericebox.com
-  resources:
-  - pools/status
-  verbs:
-  - get
+  - apiGroups:
+      - allocation.cybericebox.com
+    resources:
+      - pools
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - allocation.cybericebox.com
+    resources:
+      - pools/status
+    verbs:
+      - get

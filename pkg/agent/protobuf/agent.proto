@@ -26,9 +26,9 @@ service LabManager {
 }
 
 message Empty {}
-message IDRequest { string name = 1; }
-message NamespaceRequest { string namespace = 1; }
-message NamespacedIDRequest { string namespace = 1; string name = 2; }
+message IDRequest {string name = 1;}
+message NamespaceRequest {string namespace = 1;}
+message NamespacedIDRequest {string namespace = 1; string name = 2;}
 
 message LabGroup {
   string name = 1;
@@ -39,7 +39,7 @@ message LabGroupStatus {
   string namespace = 2;
   bool vpn_registered = 3;
 }
-message LabGroupList { repeated LabGroup items = 1; }
+message LabGroupList {repeated LabGroup items = 1;}
 
 message Lab {
   string namespace = 1;
@@ -54,7 +54,7 @@ message LabStatus {
   bool ready = 4;
   repeated string access_urls = 5;
 }
-message LabList { repeated Lab items = 1; }
+message LabList {repeated Lab items = 1;}
 
 message LabGroupClient {
   string namespace = 1;
@@ -68,7 +68,7 @@ message LabGroupClientStatus {
   bool ready = 3;
   bytes wg_conf = 4;   // populated on Get/Create from the client Secret
 }
-message LabGroupClientList { repeated LabGroupClient items = 1; }
+message LabGroupClientList {repeated LabGroupClient items = 1;}
 
 message MonitoringUpdate {
   repeated LabGroup groups = 1;

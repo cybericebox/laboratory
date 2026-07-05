@@ -3,7 +3,7 @@ package laboratory
 import (
 	"context"
 	"fmt"
-
+	
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
+	
 	"github.com/cybericebox/laboratory/internal/names"
 )
 
@@ -24,11 +24,11 @@ const (
 	// PlatformSecretName is the admin-managed Secret in laboratory-system
 	// that holds platform-level credentials (JWT public key, etc.).
 	PlatformSecretName = "lab-platform-secret"
-
+	
 	// ProxyCredentialsName is the Secret in laboratory-proxy that the
 	// proxy pod mounts. Created and kept in sync by PlatformReconciler.
 	ProxyCredentialsName = "proxy-credentials"
-
+	
 	// JWTPublicKeyField is the key within both Secrets that holds the RSA PEM.
 	JWTPublicKeyField = "publicKey"
 )
@@ -45,24 +45,26 @@ type PlatformReconciler struct {
 
 func (r *PlatformReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.Log.WithName("platform")
-
+	
 	var src corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{
-		Name:      PlatformSecretName,
-		Namespace: names.SystemNamespace,
-	}, &src); err != nil {
+	if err := r.Get(
+		ctx, types.NamespacedName{
+			Name:      PlatformSecretName,
+			Namespace: names.SystemNamespace,
+		}, &src,
+	); err != nil {
 		if errors.IsNotFound(err) {
 			log.Info("platform secret not found, skipping", "secret", PlatformSecretName)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
-
+	
 	jwtKey, ok := src.Data[JWTPublicKeyField]
 	if !ok {
 		return ctrl.Result{}, fmt.Errorf("platform secret missing key %q", JWTPublicKeyField)
 	}
-
+	
 	dst := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      ProxyCredentialsName,
@@ -82,7 +84,7 @@ func (r *PlatformReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-
+	
 	patch := client.MergeFrom(existing.DeepCopy())
 	if existing.Data == nil {
 		existing.Data = make(map[string][]byte)
@@ -109,22 +111,27 @@ func (r *PlatformReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		DeleteFunc:  func(event.DeleteEvent) bool { return false },
 		GenericFunc: func(event.GenericEvent) bool { return false },
 	}
-
+	
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Secret{}, builder.WithPredicates(isPlatformSecret)).
 		// Also reconcile when proxy-credentials is deleted externally.
-		Watches(&corev1.Secret{},
-			handler.EnqueueRequestsFromMapFunc(func(_ context.Context, o client.Object) []reconcile.Request {
-				if o.GetName() == ProxyCredentialsName && o.GetNamespace() == names.ProxyNamespace {
-					return []reconcile.Request{{
-						NamespacedName: types.NamespacedName{
-							Name:      PlatformSecretName,
-							Namespace: names.SystemNamespace,
-						},
-					}}
-				}
-				return nil
-			}),
+		Watches(
+			&corev1.Secret{},
+			handler.EnqueueRequestsFromMapFunc(
+				func(_ context.Context, o client.Object) []reconcile.Request {
+					if o.GetName() == ProxyCredentialsName && o.GetNamespace() == names.ProxyNamespace {
+						return []reconcile.Request{
+							{
+								NamespacedName: types.NamespacedName{
+									Name:      PlatformSecretName,
+									Namespace: names.SystemNamespace,
+								},
+							},
+						}
+					}
+					return nil
+				},
+			),
 		).
 		Complete(r)
 }

@@ -13,15 +13,15 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: allocation-pool-admin-role
 rules:
-- apiGroups:
-  - allocation.cybericebox.com
-  resources:
-  - pools
-  verbs:
-  - '*'
-- apiGroups:
-  - allocation.cybericebox.com
-  resources:
-  - pools/status
-  verbs:
-  - get
+  - apiGroups:
+      - allocation.cybericebox.com
+    resources:
+      - pools
+    verbs:
+      - '*'
+  - apiGroups:
+      - allocation.cybericebox.com
+    resources:
+      - pools/status
+    verbs:
+      - get

@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
-
+	
 	ctrl "sigs.k8s.io/controller-runtime"
-
+	
 	"github.com/cybericebox/laboratory/internal/nodeagent/ofclient"
 )
 
@@ -37,12 +37,16 @@ func NewFlowManager(ovsRunDir, bridge string) (*FlowManager, error) {
 		return nil, fmt.Errorf("OF client connect to %s: %w", sockPath, err)
 	}
 	log := ctrl.Log.WithName("openflow")
-	c.SetErrorHandler(func(xid uint32, errType, errCode uint16) {
-		// FLOW_MOD is fire-and-forget; a rejected flow (bad OXM field, etc.)
-		// would otherwise be invisible while traffic silently falls back to NORMAL.
-		log.Error(fmt.Errorf("OFPT_ERROR type=%d code=%d", errType, errCode),
-			"OpenFlow request rejected by OVS", "xid", xid)
-	})
+	c.SetErrorHandler(
+		func(xid uint32, errType, errCode uint16) {
+			// FLOW_MOD is fire-and-forget; a rejected flow (bad OXM field, etc.)
+			// would otherwise be invisible while traffic silently falls back to NORMAL.
+			log.Error(
+				fmt.Errorf("OFPT_ERROR type=%d code=%d", errType, errCode),
+				"OpenFlow request rejected by OVS", "xid", xid,
+			)
+		},
+	)
 	return &FlowManager{client: c}, nil
 }
 
@@ -90,10 +94,12 @@ func (f *FlowManager) InitGeneveIngress() error {
 	match := ofclient.BuildMatch(geneveNo, 0, false)
 	var actions []byte
 	actions = append(actions, ofclient.BuildActionsSetReg0(1)...)
-	actions = append(actions, ofclient.BuildActionsRegMove(
-		64, 0, 0,
-		ofclient.OxmIDTunnelID(), ofclient.OxmIDMetadata(),
-	)...)
+	actions = append(
+		actions, ofclient.BuildActionsRegMove(
+			64, 0, 0,
+			ofclient.OxmIDTunnelID(), ofclient.OxmIDMetadata(),
+		)...,
+	)
 	actions = append(actions, ofclient.BuildActionsResubmitTable(6)...)
 	return f.client.FlowAdd(0, 100, match, actions)
 }
@@ -152,7 +158,7 @@ func (f *FlowManager) RebuildT6Flood(vni uint, localPorts, remoteVTEPs []string)
 	if err := f.refreshPorts(); err != nil {
 		return err
 	}
-
+	
 	localNos := make([]uint32, 0, len(localPorts))
 	for _, p := range localPorts {
 		no, err := f.portNo(p)
@@ -161,7 +167,7 @@ func (f *FlowManager) RebuildT6Flood(vni uint, localPorts, remoteVTEPs []string)
 		}
 		localNos = append(localNos, no)
 	}
-
+	
 	var geneveNo uint32
 	if len(remoteVTEPs) > 0 {
 		var err error
@@ -169,13 +175,13 @@ func (f *FlowManager) RebuildT6Flood(vni uint, localPorts, remoteVTEPs []string)
 			return fmt.Errorf("resolve geneve port: %w", err)
 		}
 	}
-
+	
 	// Local-only actions (used by the reg0=1 entry and as base for reg0=0).
 	var localActions []byte
 	for _, no := range localNos {
 		localActions = append(localActions, ofclient.BuildActionsOutput(no)...)
 	}
-
+	
 	// Full-flood actions: local ports + Geneve to each VTEP.
 	fullActions := append([]byte(nil), localActions...) // copy
 	for _, vtep := range remoteVTEPs {
@@ -187,19 +193,19 @@ func (f *FlowManager) RebuildT6Flood(vni uint, localPorts, remoteVTEPs []string)
 		fullActions = append(fullActions, ofclient.BuildActionsSetTunDst(ipBE)...)
 		fullActions = append(fullActions, ofclient.BuildActionsOutput(geneveNo)...)
 	}
-
+	
 	// priority=110, metadata=VNI, reg0=0 → full flood (local + Geneve)
 	matchLocal := ofclient.BuildMatchAdvanced(0, uint64(vni), true, 0, true, 0, false, 0, false)
 	if err := f.client.FlowAdd(6, 110, matchLocal, fullActions); err != nil {
 		return fmt.Errorf("add t6 local-origin flood VNI %d: %w", vni, err)
 	}
-
+	
 	// priority=100, metadata=VNI, reg0=1 → local only (no Geneve re-flood)
 	matchRemote := ofclient.BuildMatchAdvanced(0, uint64(vni), true, 1, true, 0, false, 0, false)
 	if err := f.client.FlowAdd(6, 100, matchRemote, localActions); err != nil {
 		return fmt.Errorf("add t6 remote-origin flood VNI %d: %w", vni, err)
 	}
-
+	
 	return nil
 }
 

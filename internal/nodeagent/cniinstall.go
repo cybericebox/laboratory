@@ -15,15 +15,15 @@ import (
 const (
 	// CNIConfDir is the standard directory kubelet scans for CNI configs.
 	CNIConfDir = "/etc/cni/net.d"
-
+	
 	// CNIConfFile is our CNI conflist filename. The "00-" prefix guarantees
 	// lexicographic priority over all other CNI configs (Multus uses "00-multus.conf",
 	// but "00-cybericebox" < "00-multus" alphabetically).
 	CNIConfFile = "00-cybericebox.conflist"
-
+	
 	// CNIBinDir is where CNI plugin binaries are installed.
 	CNIBinDir = "/opt/cni/bin"
-
+	
 	cniRetryInterval = 5 * time.Second
 )
 
@@ -53,9 +53,11 @@ func findBaseCNIConf(confDir string) (map[string]interface{}, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", confDir, err)
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Name() < entries[j].Name()
-	})
+	sort.Slice(
+		entries, func(i, j int) bool {
+			return entries[i].Name() < entries[j].Name()
+		},
+	)
 	for _, e := range entries {
 		name := e.Name()
 		if name == CNIConfFile {

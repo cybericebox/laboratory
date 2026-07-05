@@ -25,7 +25,7 @@ spec:
       initContainers:
         - name: install-cni-bins
           image: ghcr.io/cybericebox/laboratory/node-agent:latest
-          command: ["/bin/sh", "-c"]
+          command: [ "/bin/sh", "-c" ]
           args:
             - |
               set -e
@@ -40,7 +40,7 @@ spec:
               mountPath: /opt/cni/bin
         - name: install-cni-conf
           image: ghcr.io/cybericebox/laboratory/node-agent:latest
-          command: ["/node-agent/bin/install-cni"]
+          command: [ "/node-agent/bin/install-cni" ]
           env:
             - name: GRPC_SOCK
               value: /run/cybericebox/node-agent.sock
@@ -56,7 +56,7 @@ spec:
       containers:
         - name: ovs
           image: ghcr.io/cybericebox/laboratory/node-agent:latest
-          command: ["/node-agent/bin/start-ovs.sh"]
+          command: [ "/node-agent/bin/start-ovs.sh" ]
           securityContext:
             privileged: true
           volumeMounts:
@@ -64,7 +64,7 @@ spec:
               mountPath: /run/openvswitch
         - name: node-agent
           image: ghcr.io/cybericebox/laboratory/node-agent:latest
-          command: ["/node-agent/bin/node-agent"]
+          command: [ "/node-agent/bin/node-agent" ]
           env:
             - name: NODE_NAME
               valueFrom:
@@ -107,7 +107,7 @@ spec:
             path: /etc/cni/net.d
             type: DirectoryOrCreate
         - name: ovs-run
-          emptyDir: {}
+          emptyDir: { }
         - name: grpc-dir
           hostPath:
             path: /run/cybericebox

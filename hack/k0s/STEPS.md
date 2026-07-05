@@ -24,6 +24,7 @@ Installs: OVS, WireGuard on each VM.
 Generates `.k0s/k0sctl.yaml` and `.k0s/commands.md` with real IPs.
 
 **Prerequisites on Mac host:**
+
 ```bash
 brew install socket_vmnet helm kubectl k0sproject/tap/k0sctl
 sudo mkdir -p /opt/socket_vmnet/bin
@@ -263,6 +264,7 @@ kubectl exec -n $LAB_NS $HOST_A -- ping -c3 10.10.3.20
 ### 8.5 — Test 4: full (VPN + internet gateway + switch + DHCP)
 
 Topology:
+
 - **Domain 1**: `vpn` singleton ↔ `vpn-client` (VPN segment, DHCP)
 - **Domain 2**: `internet` singleton → `sw1` → `gw-client-a`, `gw-client-b` (internet gateway, DHCP)
 

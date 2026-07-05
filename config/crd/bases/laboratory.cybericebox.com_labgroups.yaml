@@ -14,91 +14,91 @@ spec:
     singular: labgroup
   scope: Cluster
   versions:
-  - name: v1alpha1
-    schema:
-      openAPIV3Schema:
-        description: LabGroup is the Schema for the labgroups API.
-        properties:
-          apiVersion:
-            description: |-
-              APIVersion defines the versioned schema of this representation of an object.
-              Servers should convert recognized schemas to the latest internal value, and
-              may reject unrecognized values.
-              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
-            type: string
-          kind:
-            description: |-
-              Kind is a string value representing the REST resource this object represents.
-              Servers may infer this from the endpoint the client submits requests to.
-              Cannot be updated.
-              In CamelCase.
-              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
-            type: string
-          metadata:
-            type: object
-          spec:
-            description: LabGroupSpec defines the desired state of LabGroup.
-            properties:
-              vpn:
-                description: LabGroupVPNSpec holds VPN server configuration.
-                properties:
-                  keypairSecretRef:
-                    description: |-
-                      KeypairSecretRef points to an existing WireGuard keypair Secret.
-                      If omitted, operator generates a keypair and stores it in Secret vpn-server-keypair.
-                    properties:
-                      name:
-                        description: name is unique within a namespace to reference
-                          a secret resource.
-                        type: string
-                      namespace:
-                        description: namespace defines the space within which the
-                          secret name must be unique.
-                        type: string
-                    type: object
-                    x-kubernetes-map-type: atomic
-                type: object
-            type: object
-          status:
-            description: LabGroupStatus defines the observed state of LabGroup.
-            properties:
-              namespace:
-                type: string
-              phase:
-                description: Phase is the lifecycle phase of a resource.
-                enum:
-                - Pending
-                - Provisioning
-                - Ready
-                - Failed
-                - Error
-                type: string
-              vpn:
-                description: LabGroupVPNStatus exposes VPN server connection details.
-                properties:
-                  endpoint:
-                    description: Endpoint is the public UDP address of the VPN server
-                      (host:port) advertised to clients.
-                    type: string
-                  publicKey:
-                    description: PublicKey is the WireGuard public key used as routing
-                      key for demux.
-                    type: string
-                  registered:
-                    description: Registered is true when the VPN deployment has at
-                      least one ready replica.
-                    type: boolean
-                  secretRef:
-                    description: SecretRef is "<namespace>/<name>" of the vpn-server-keypair
-                      Secret.
-                    type: string
-                type: object
-            type: object
-        type: object
-        x-kubernetes-validations:
-        - message: LabGroup name conflicts with a reserved Kubernetes namespace
-          rule: '!(self.metadata.name in [''default'',''kube-system'',''kube-public'',''kube-node-lease'',''laboratory-system''])'
-    served: true
-    storage: true
-    subresources:
-      status: {}
+    - name: v1alpha1
+      schema:
+        openAPIV3Schema:
+          description: LabGroup is the Schema for the labgroups API.
+          properties:
+            apiVersion:
+              description: |-
+                APIVersion defines the versioned schema of this representation of an object.
+                Servers should convert recognized schemas to the latest internal value, and
+                may reject unrecognized values.
+                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+              type: string
+            kind:
+              description: |-
+                Kind is a string value representing the REST resource this object represents.
+                Servers may infer this from the endpoint the client submits requests to.
+                Cannot be updated.
+                In CamelCase.
+                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+              type: string
+            metadata:
+              type: object
+            spec:
+              description: LabGroupSpec defines the desired state of LabGroup.
+              properties:
+                vpn:
+                  description: LabGroupVPNSpec holds VPN server configuration.
+                  properties:
+                    keypairSecretRef:
+                      description: |-
+                        KeypairSecretRef points to an existing WireGuard keypair Secret.
+                        If omitted, operator generates a keypair and stores it in Secret vpn-server-keypair.
+                      properties:
+                        name:
+                          description: name is unique within a namespace to reference
+                            a secret resource.
+                          type: string
+                        namespace:
+                          description: namespace defines the space within which the
+                            secret name must be unique.
+                          type: string
+                      type: object
+                      x-kubernetes-map-type: atomic
+                  type: object
+              type: object
+            status:
+              description: LabGroupStatus defines the observed state of LabGroup.
+              properties:
+                namespace:
+                  type: string
+                phase:
+                  description: Phase is the lifecycle phase of a resource.
+                  enum:
+                    - Pending
+                    - Provisioning
+                    - Ready
+                    - Failed
+                    - Error
+                  type: string
+                vpn:
+                  description: LabGroupVPNStatus exposes VPN server connection details.
+                  properties:
+                    endpoint:
+                      description: Endpoint is the public UDP address of the VPN server
+                        (host:port) advertised to clients.
+                      type: string
+                    publicKey:
+                      description: PublicKey is the WireGuard public key used as routing
+                        key for demux.
+                      type: string
+                    registered:
+                      description: Registered is true when the VPN deployment has at
+                        least one ready replica.
+                      type: boolean
+                    secretRef:
+                      description: SecretRef is "<namespace>/<name>" of the vpn-server-keypair
+                        Secret.
+                      type: string
+                  type: object
+              type: object
+          type: object
+          x-kubernetes-validations:
+            - message: LabGroup name conflicts with a reserved Kubernetes namespace
+              rule: '!(self.metadata.name in [''default'',''kube-system'',''kube-public'',''kube-node-lease'',''laboratory-system''])'
+      served: true
+      storage: true
+      subresources:
+        status: { }

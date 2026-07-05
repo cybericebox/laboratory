@@ -17,8 +17,8 @@ Both halves are derived from the single `/9` base. Configuration stores only the
 - Index `N` allocated from `lab-subnets` pool (namespace: LabGroup, offset=1, size=254)
 - `N=0` reserved: `10.128.0.0/24` = VPN clients subnet for LabGroup
 - Lab `N` gets:
-  - VPN segment:      `10.128.N.0/24`
-  - Internet segment: `10.192.N.0/24`
+    - VPN segment:      `10.128.N.0/24`
+    - Internet segment: `10.192.N.0/24`
 - VPN client IPs: `10.128.0.{idx}/32`, allocated from `vpn-clients` pool (offset=0, size=254)
 - Client `AllowedIPs` in WireGuard config: `10.128.0.0/9` (full range, routing rules on server enforce isolation)
 
@@ -30,9 +30,11 @@ Internet `N=0` is unused (reserved for symmetry, no pool needed).
 ### Configuration
 
 `operator.Config` must expose:
+
 ```go
 GlobalNetwork string `env:"GLOBAL_NETWORK" envDefault:"10.128.0.0/9"`
 ```
+
 VPN base = first /10 of GlobalNetwork. Internet base = second /10.
 
 ### Interface naming convention
@@ -43,6 +45,7 @@ lab{N}   interface inside Gateway pod (same name, different network namespace �
 ```
 
 `N` = subnet index from `lab-subnets` pool. From N, any component derives CIDRs:
+
 - VPN:      `10.128.N.0/24` (first /10 of GlobalNetwork)
 - Internet: `10.192.N.0/24` (second /10 of GlobalNetwork)
 
@@ -54,16 +57,16 @@ Binary extracts N from interface name by stripping prefix (`lab` or `gw`). No K8
 
 ## 2. CRD Inventory
 
-| CRD | Group | Who creates | Spec owner | Status owner |
-|---|---|---|---|---|
-| `LabGroup` | laboratory | user | main controller | main controller |
-| `LabGroupClient` | laboratory | user | main controller (fills) | main + VPN binary |
-| `Lab` | laboratory | user | main controller (fills) | main controller |
-| `LabVPN` | laboratory | main controller (from Lab) | main controller (fills) | VPN binary |
-| `LabGateway` | laboratory | main controller (from Lab) | main controller (fills) | Gateway binary |
-| `Device` | laboratory | main controller | main controller | main controller |
-| `Connection` | laboratory | main controller | main controller | node-agent |
-| `Pool` | allocation | main controller | — | allocator |
+| CRD              | Group      | Who creates                | Spec owner              | Status owner      |
+|------------------|------------|----------------------------|-------------------------|-------------------|
+| `LabGroup`       | laboratory | user                       | main controller         | main controller   |
+| `LabGroupClient` | laboratory | user                       | main controller (fills) | main + VPN binary |
+| `Lab`            | laboratory | user                       | main controller (fills) | main controller   |
+| `LabVPN`         | laboratory | main controller (from Lab) | main controller (fills) | VPN binary        |
+| `LabGateway`     | laboratory | main controller (from Lab) | main controller (fills) | Gateway binary    |
+| `Device`         | laboratory | main controller            | main controller         | main controller   |
+| `Connection`     | laboratory | main controller            | main controller         | node-agent        |
+| `Pool`           | allocation | main controller            | —                       | allocator         |
 
 ### Lab.Status (simplified)
 
@@ -83,34 +86,34 @@ VPN/Internet readiness is tracked in `LabVPN.Status` and `LabGateway.Status` res
 
 ### Main Controller (`laboratory-system`)
 
-| Controller | Resource | Actions |
-|---|---|---|
-| `LabGroupReconciler` | `LabGroup` | Namespace, VPN/Gateway Deployment, SA, RoleBindings, `lab-subnets-0` pool, VPN server keypair Secret |
-| `LabReconciler` | `Lab` | Subnet IPAM (sets `Lab.Status.Index`), web Service/NP/Ingress, Device+Connection CRs, DHCP pool creation, `LabVPN`/`LabGateway` CR creation, `Lab.Status.Phase` |
-| `LabGroupClientReconciler` | `LabGroupClient` | Keypair generation, Secret, IP allocation, Status fields, `cybericebox.com/controller` finalizer |
-| `DeviceReconciler` | `Device` | Pod lifecycle, `Device.Status.{PodIP,NodeName,Ready}` |
-| `ConnectionReconciler` | `Connection` | Reads `Connection.Status.Ports` → sets `Connection.Status.Ready` |
+| Controller                 | Resource         | Actions                                                                                                                                                         |
+|----------------------------|------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `LabGroupReconciler`       | `LabGroup`       | Namespace, VPN/Gateway Deployment, SA, RoleBindings, `lab-subnets-0` pool, VPN server keypair Secret                                                            |
+| `LabReconciler`            | `Lab`            | Subnet IPAM (sets `Lab.Status.Index`), web Service/NP/Ingress, Device+Connection CRs, DHCP pool creation, `LabVPN`/`LabGateway` CR creation, `Lab.Status.Phase` |
+| `LabGroupClientReconciler` | `LabGroupClient` | Keypair generation, Secret, IP allocation, Status fields, `cybericebox.com/controller` finalizer                                                                |
+| `DeviceReconciler`         | `Device`         | Pod lifecycle, `Device.Status.{PodIP,NodeName,Ready}`                                                                                                           |
+| `ConnectionReconciler`     | `Connection`     | Reads `Connection.Status.Ports` → sets `Connection.Status.Ready`                                                                                                |
 
 ### VPN Binary (pod in LabGroup namespace)
 
-| Controller | Resource | Actions |
-|---|---|---|
-| `LabGroupClientReconciler` | `LabGroupClient` | WG peer add/remove, `cybericebox.com/vpn` finalizer, `Status.Phase=Ready`, Statistics |
-| `LabVPNReconciler` | `LabVPN` | `cybericebox.com/vpn` finalizer, wait for `lab{N}` interface (netlink), IP assign, WG route, DHCP start/stop, `LabVPN.Status.Phase` |
+| Controller                 | Resource         | Actions                                                                                                                             |
+|----------------------------|------------------|-------------------------------------------------------------------------------------------------------------------------------------|
+| `LabGroupClientReconciler` | `LabGroupClient` | WG peer add/remove, `cybericebox.com/vpn` finalizer, `Status.Phase=Ready`, Statistics                                               |
+| `LabVPNReconciler`         | `LabVPN`         | `cybericebox.com/vpn` finalizer, wait for `lab{N}` interface (netlink), IP assign, WG route, DHCP start/stop, `LabVPN.Status.Phase` |
 
 ### Gateway Binary (pod in LabGroup namespace)
 
-| Controller | Resource | Actions |
-|---|---|---|
+| Controller             | Resource     | Actions                                                                                                                                          |
+|------------------------|--------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
 | `LabGatewayReconciler` | `LabGateway` | `cybericebox.com/gateway` finalizer, wait for `gw{N}` interface (netlink), IP assign, NAT/masquerade, DHCP start/stop, `LabGateway.Status.Phase` |
 
 ### Node-Agent (DaemonSet)
 
-| Controller | Resource | Actions |
-|---|---|---|
-| `ConnectionReconciler` | `Connection` | OVS flows, Geneve tunnels, `Connection.Status.Ports`, `cybericebox.com/node-agent` finalizer |
-| `DevicePortReconciler` | `Device` | OVS port lifecycle (does NOT patch Device.Status) |
-| `NetworkAttachReconciler` | NetworkAttach | OVS port for Multus attachments |
+| Controller                | Resource      | Actions                                                                                      |
+|---------------------------|---------------|----------------------------------------------------------------------------------------------|
+| `ConnectionReconciler`    | `Connection`  | OVS flows, Geneve tunnels, `Connection.Status.Ports`, `cybericebox.com/node-agent` finalizer |
+| `DevicePortReconciler`    | `Device`      | OVS port lifecycle (does NOT patch Device.Status)                                            |
+| `NetworkAttachReconciler` | NetworkAttach | OVS port for Multus attachments                                                              |
 
 ---
 
@@ -118,12 +121,12 @@ VPN/Internet readiness is tracked in `LabVPN.Status` and `LabGateway.Status` res
 
 One finalizer name per binary. Same finalizer reused across all resource types that binary owns.
 
-| Binary | Finalizer | Applied to |
-|---|---|---|
+| Binary          | Finalizer                    | Applied to                               |
+|-----------------|------------------------------|------------------------------------------|
 | Main controller | `cybericebox.com/controller` | `LabGroupClient`, `LabVPN`, `LabGateway` |
-| VPN binary | `cybericebox.com/vpn` | `LabGroupClient`, `LabVPN` |
-| Gateway binary | `cybericebox.com/gateway` | `LabGateway` |
-| Node-agent | `cybericebox.com/node-agent` | `Connection` |
+| VPN binary      | `cybericebox.com/vpn`        | `LabGroupClient`, `LabVPN`               |
+| Gateway binary  | `cybericebox.com/gateway`    | `LabGateway`                             |
+| Node-agent      | `cybericebox.com/node-agent` | `Connection`                             |
 
 No finalizers on Pods. Port cleanup for VPN/Gateway pods happens naturally when pod network namespace is destroyed.
 
@@ -319,6 +322,7 @@ MAC→IP mapping stored in `ConfigMap dhcp-{segment}-{labName}` (same namespace,
 ### DHCP server bind
 
 Bind to interface-specific IP, not `0.0.0.0:67`:
+
 - VPN DHCP: bind to `10.128.N.1:67`
 - Gateway DHCP: bind to `10.192.N.1:67`
 
@@ -368,6 +372,7 @@ Role gateway-access (namespace-scoped, dynamic resourceNames):
 ### Why resourceNames works here
 
 `list` + `watch` cannot be filtered by `resourceNames` in K8s RBAC. Mitigation:
+
 - Allocator uses `get` by known name (not `list`) when the pool name is deterministic
 - Pool names follow fixed convention → always computable from context
 
@@ -375,11 +380,15 @@ Role gateway-access (namespace-scoped, dynamic resourceNames):
 
 ## 10. Known Bugs / Conflicts (fix before new features)
 
-- [ ] `AllowedIPs` in LabGroupClient config: hardcoded `10.8.0.0/16`. Must change to `{GlobalNetwork}` (e.g. `10.128.0.0/9`).
-- [ ] Addressing: `vpnSubnetOctet2=8`, `inetSubnetOctet2=9` are hardcoded. Must be derived from configurable `GlobalNetwork`.
-- [ ] DHCP binds to `0.0.0.0:67` — conflicts when multiple labs have DHCP on same pod. Fix: bind to interface-specific IP.
+- [ ] `AllowedIPs` in LabGroupClient config: hardcoded `10.8.0.0/16`. Must change to `{GlobalNetwork}` (e.g.
+  `10.128.0.0/9`).
+- [ ] Addressing: `vpnSubnetOctet2=8`, `inetSubnetOctet2=9` are hardcoded. Must be derived from configurable
+  `GlobalNetwork`.
+- [ ] DHCP binds to `0.0.0.0:67` — conflicts when multiple labs have DHCP on same pod. Fix: bind to interface-specific
+  IP.
 
 Resolved by architecture (no longer bugs):
+
 - ~~`Lab.Status` concurrent write~~ → VPN/Gateway now write only to their own LabVPN/LabGateway CRDs
 
 ---
@@ -388,13 +397,15 @@ Resolved by architecture (no longer bugs):
 
 ### Q1: Who creates `LabGroupClient` resources?
 
-External API/frontend, or main controller auto-creates them? Current code: external creation assumed. Not yet decided for auto-provisioning flows.
+External API/frontend, or main controller auto-creates them? Current code: external creation assumed. Not yet decided
+for auto-provisioning flows.
 
 ### Q2+Q3: VPN routing isolation + LabGroupClient↔Lab association ✅ RESOLVED
 
 Each client has access to ALL labs in the LabGroup. No per-client lab restriction.
 
 Isolation rules:
+
 - Client → any lab in group: **ALLOW** (AllowedIPs = full `GlobalNetwork`)
 - Client → other clients: **BLOCK** via iptables on VPN pod: `FORWARD -i wg0 -o wg0 -j DROP`
 - Client → other LabGroups: **no routes** (each group has its own VPN pod, no cross-group routing)
@@ -405,7 +416,8 @@ No `Spec.LabName` field needed on `LabGroupClient`.
 
 ### Q4: `resourceNames` + `list` — Allocator redesign ✅ RESOLVED (Option B)
 
-Redesign allocator to `Get` by sequential names (`{prefix}-0`, `{prefix}-1`, ...) — no `list` needed. Full `resourceNames` isolation.
+Redesign allocator to `Get` by sequential names (`{prefix}-0`, `{prefix}-1`, ...) — no `list` needed. Full
+`resourceNames` isolation.
 
 Requires changing `pkg/api/pool/pool.go` allocator logic.
 
@@ -425,15 +437,19 @@ Option B: Single ConfigMap with `{mac: ip}` JSON. Simpler, self-contained.
 ## 12. Implementation Tasks
 
 ### New CRDs
+
 - [ ] Define `LabVPN` CRD (spec: labName, index, cidr; status: phase, dhcpEnabled, dhcpReady)
 - [ ] Define `LabGateway` CRD (spec: labName, index, cidr; status: phase, natReady, dhcpEnabled, dhcpReady)
-- [ ] Validation webhook: immutable `Spec` for `LabGroupClient`, `LabVPN`, `LabGateway` after `cybericebox.com/controller` finalizer set
+- [ ] Validation webhook: immutable `Spec` for `LabGroupClient`, `LabVPN`, `LabGateway` after
+  `cybericebox.com/controller` finalizer set
 
 ### Lab.Status
+
 - [ ] Remove VPN.CIDR, VPN.Ready, Internet.CIDR, Internet.Ready from Lab.Status
 - [ ] Add `Lab.Status.Index` (uint)
 
 ### Main Controller
+
 - [ ] `GlobalNetwork` config field, derive `/10` halves, replace hardcoded octets
 - [ ] `LabGroupClient` new lifecycle: finalizer-based (cybericebox.com/controller)
 - [ ] `LabGroupClientStatus`: add `Phase`, `ServerPublicKey`, `VPNEndpoint`, `AllowedIPs`, `PersistentKeepalive`
@@ -442,16 +458,19 @@ Option B: Single ConfigMap with `{mac: ip}` JSON. Simpler, self-contained.
 - [ ] Allocator redesign: `Get`-only by sequential names (Q4 resolved)
 
 ### VPN Binary
+
 - [ ] Switch from watching `Lab` → watch `LabVPN`
 - [ ] Implement `LabVPNReconciler` with finalizer-based lifecycle
 - [ ] Startup iptables FORWARD rules
 - [ ] Fix AllowedIPs: use `GlobalNetwork` instead of hardcoded `10.8.0.0/16`
 
 ### Gateway Binary
+
 - [ ] Switch from watching `Lab` → watch `LabGateway`
 - [ ] Implement `LabGatewayReconciler` with finalizer-based lifecycle
 - [ ] Startup iptables FORWARD + NAT rules
 
 ### Both Binaries
+
 - [ ] Fix DHCP bind: interface-specific IP instead of `0.0.0.0:67`
 - [ ] DHCP persistence: Pool CRD + ConfigMap (pending Q6 decision)

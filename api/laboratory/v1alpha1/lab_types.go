@@ -98,7 +98,7 @@ type AccessEntry struct {
 type Lab struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-
+	
 	Spec   LabSpec   `json:"spec,omitempty"`
 	Status LabStatus `json:"status,omitempty"`
 }

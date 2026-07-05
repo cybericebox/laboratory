@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
-
+	
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,7 +18,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-
+	
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 )
@@ -45,7 +45,7 @@ func (r *DeviceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err := r.Get(ctx, req.NamespacedName, &device); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-
+	
 	if !device.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&device, names.FinalizerOVSCleanup) {
 			// node-agent removes this finalizer after OVS cleanup; poll.
@@ -53,7 +53,7 @@ func (r *DeviceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 		return ctrl.Result{}, nil
 	}
-
+	
 	switch device.Spec.Type {
 	case laboratoryv1alpha1.DeviceTypeUnmanagedSwitch, laboratoryv1alpha1.DeviceTypeHub:
 		if !device.Status.Ready {
@@ -62,7 +62,7 @@ func (r *DeviceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 		return ctrl.Result{}, nil
 	}
-
+	
 	return r.reconcilePod(ctx, &device)
 }
 
@@ -70,14 +70,14 @@ func (r *DeviceReconciler) reconcilePod(ctx context.Context, device *laboratoryv
 	podName := device.Name
 	var pod corev1.Pod
 	err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: device.Namespace}, &pod)
-
+	
 	if errors.IsNotFound(err) {
 		return ctrl.Result{}, r.createPod(ctx, device)
 	}
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-
+	
 	updated := false
 	if pod.Spec.NodeName != device.Status.NodeName {
 		device.Status.NodeName = pod.Spec.NodeName
@@ -130,7 +130,7 @@ func (r *DeviceReconciler) createPod(ctx context.Context, device *laboratoryv1al
 	} else if len(device.Spec.Interfaces) > 0 {
 		annotations[names.AnnotationDefaultNetwork] = ""
 	}
-
+	
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      device.Name,
@@ -145,17 +145,19 @@ func (r *DeviceReconciler) createPod(ctx context.Context, device *laboratoryv1al
 		Spec: corev1.PodSpec{
 			NodeSelector: r.LabNodeSelector,
 			Tolerations:  r.LabTolerations,
-			Containers: []corev1.Container{{
-				Name:  device.Spec.Name,
-				Image: device.Spec.Image,
-				// Run the image as-is (no entrypoint override). Capabilities are
-				// opt-in: an image that only serves a port gets none; one that
-				// runs networking/testing tools or an in-image DHCP client gets
-				// the curated set it requested (plus NET_ADMIN+NET_RAW when it
-				// has a DHCP interface). Isolation is enforced host-side by OVS
-				// flows, so these caps cannot break a pod out of its VNI.
-				SecurityContext: deviceSecurityContext(device),
-			}},
+			Containers: []corev1.Container{
+				{
+					Name:  device.Spec.Name,
+					Image: device.Spec.Image,
+					// Run the image as-is (no entrypoint override). Capabilities are
+					// opt-in: an image that only serves a port gets none; one that
+					// runs networking/testing tools or an in-image DHCP client gets
+					// the curated set it requested (plus NET_ADMIN+NET_RAW when it
+					// has a DHCP interface). Isolation is enforced host-side by OVS
+					// flows, so these caps cannot break a pod out of its VNI.
+					SecurityContext: deviceSecurityContext(device),
+				},
+			},
 		},
 	}
 	// Optional init-container: address static and dhcp-preset interfaces inside
@@ -165,7 +167,7 @@ func (r *DeviceReconciler) createPod(ctx context.Context, device *laboratoryv1al
 	if ic := r.netConfigInitContainer(device); ic != nil {
 		pod.Spec.InitContainers = append(pod.Spec.InitContainers, *ic)
 	}
-
+	
 	if err := controllerutil.SetControllerReference(device, pod, r.Scheme); err != nil {
 		return err
 	}

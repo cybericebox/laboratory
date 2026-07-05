@@ -9,7 +9,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
-
+	
 	"github.com/fsnotify/fsnotify"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
@@ -78,7 +78,7 @@ func (kw *KeyWatcher) Start(ctx context.Context) error {
 func (kw *KeyWatcher) reload() error {
 	kw.mu.Lock()
 	defer kw.mu.Unlock()
-
+	
 	data, err := os.ReadFile(kw.path)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", kw.path, err)

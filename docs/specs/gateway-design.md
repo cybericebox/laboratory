@@ -3,6 +3,7 @@
 ## Overview
 
 Gateway binary runs as a pod in the LabGroup namespace. Manages per-lab internet connectivity:
+
 - Assigns `10.192.N.1/24` to `lab{N}` interface
 - Configures NAT (MASQUERADE) for lab subnet → internet
 - Optionally starts DHCP server bound to `10.192.N.1`
@@ -78,6 +79,7 @@ cybericebox.com/gateway     — gateway binary
 ```
 
 Gateway binary rule:
+
 - `cybericebox.com/controller` absent → skip entirely
 - `cybericebox.com/controller` present + own finalizer absent → add own finalizer → proceed
 - Own finalizer present → reconcile
@@ -171,6 +173,7 @@ iptables -A FORWARD -i {extIface} -m conntrack --ctstate ESTABLISHED,RELATED -j 
 ```
 
 Effect:
+
 - `lab{N} → eth0`: ALLOW (lab → internet)
 - `eth0 → lab{N}`: ALLOW only established/related (return traffic)
 - `lab{N} → gw{M}`: DROP (cross-lab blocked)
@@ -210,6 +213,7 @@ RBAC: Gateway SA has `get` on pools with `resourceNames: [dhcp-inet-*]`.
 Current bug: `net.UDPAddr{Port: 67, IP: net.ParseIP("0.0.0.0")}` — conflicts across labs.
 
 Fix: bind to interface-specific IP:
+
 ```go
 // In pkg/dhcp: add BindIP to Config
 laddr := &net.UDPAddr{Port: 67, IP: net.ParseIP(cfg.BindIP)}
@@ -236,6 +240,7 @@ Watch `LabGateway`, not `Lab`.
 ## 9. Config changes
 
 `internal/gateway/config.go` — no changes needed. Gateway binary already has:
+
 - `Namespace` — LabGroup namespace (for pool lookup)
 - `ExternalInterface` — default `eth0`
 - `DHCPDNS`
@@ -244,26 +249,27 @@ Watch `LabGateway`, not `Lab`.
 
 ## 10. Files to create/modify
 
-| File | Action |
-|---|---|
-| `api/laboratory/v1alpha1/labgateway_types.go` | CREATE — LabGateway CRD types |
-| `api/laboratory/v1alpha1/zz_generated.deepcopy.go` | REGENERATE — `make generate` |
-| `internal/ovsnames/names.go` | MODIFY — add `GatewayIfaceName(n uint)`, deprecate `LabGWIfaceName` |
-| `internal/gateway/reconciler.go` | REWRITE — watch LabGateway, finalizer lifecycle |
-| `internal/gateway/iptables.go` | MODIFY — add `SetupForwardRules()` startup method |
-| `pkg/dhcp/dhcp.go` | MODIFY — add `BindIP` to Config, fix `0.0.0.0` bind |
-| `cmd/gateway/main.go` | MODIFY — register LabGateway scheme, call `IPT.SetupForwardRules()` on start |
+| File                                               | Action                                                                       |
+|----------------------------------------------------|------------------------------------------------------------------------------|
+| `api/laboratory/v1alpha1/labgateway_types.go`      | CREATE — LabGateway CRD types                                                |
+| `api/laboratory/v1alpha1/zz_generated.deepcopy.go` | REGENERATE — `make generate`                                                 |
+| `internal/ovsnames/names.go`                       | MODIFY — add `GatewayIfaceName(n uint)`, deprecate `LabGWIfaceName`          |
+| `internal/gateway/reconciler.go`                   | REWRITE — watch LabGateway, finalizer lifecycle                              |
+| `internal/gateway/iptables.go`                     | MODIFY — add `SetupForwardRules()` startup method                            |
+| `pkg/dhcp/dhcp.go`                                 | MODIFY — add `BindIP` to Config, fix `0.0.0.0` bind                          |
+| `cmd/gateway/main.go`                              | MODIFY — register LabGateway scheme, call `IPT.SetupForwardRules()` on start |
 
 ---
 
 ## 11. What main controller must do (LabReconciler changes — implement later)
 
 When `Lab.Status.Index` is set:
+
 1. Create `LabGateway` in LabGroup namespace with:
-   - `spec.labName = lab.Name`
-   - `spec.networkIndex = lab.Status.Index`
-   - `spec.cidr = 10.192.{N}.0/24`
-   - `ownerRef = Lab`
+    - `spec.labName = lab.Name`
+    - `spec.networkIndex = lab.Status.Index`
+    - `spec.cidr = 10.192.{N}.0/24`
+    - `ownerRef = Lab`
 2. Add finalizer `cybericebox.com/controller`
 3. Patch VPN pod annotations to add OVS port `lab{N}`
 
@@ -273,5 +279,7 @@ When `LabGateway.Status.Phase == Ready` → contribute to `Lab.Status.Phase` agg
 
 ## 12. Open questions
 
-- **Q6 (DHCP persistence)**: Pool CRD bitmap + ConfigMap vs ConfigMap-only. DHCP still uses in-memory `byMAC map`. Decision needed before implementing DHCP persistence.
-- **Q_forward_rules**: Does Gateway pod need `NET_ADMIN` capability and `privileged: true` for iptables? Verify current pod SecurityContext in LabGroup Deployment template.
+- **Q6 (DHCP persistence)**: Pool CRD bitmap + ConfigMap vs ConfigMap-only. DHCP still uses in-memory `byMAC map`.
+  Decision needed before implementing DHCP persistence.
+- **Q_forward_rules**: Does Gateway pod need `NET_ADMIN` capability and `privileged: true` for iptables? Verify current
+  pod SecurityContext in LabGroup Deployment template.

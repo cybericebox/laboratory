@@ -170,7 +170,17 @@ func BuildActionsRegMove(nBits, srcOfs, dstOfs uint16, srcOXMID, dstOXMID uint32
 // BuildMatchAdvanced extends BuildMatch with metadata + reg0 + reg1 matches.
 // Any zero-value parameter (matchMetadata=false / hasReg0=false / hasReg1=false)
 // is omitted. inPort=0 means no in_port match.
-func BuildMatchAdvanced(inPort uint32, metadata uint64, hasMetadata bool, reg0 uint32, hasReg0 bool, reg1 uint32, hasReg1 bool, tunID uint64, hasTunID bool) []byte {
+func BuildMatchAdvanced(
+	inPort uint32,
+	metadata uint64,
+	hasMetadata bool,
+	reg0 uint32,
+	hasReg0 bool,
+	reg1 uint32,
+	hasReg1 bool,
+	tunID uint64,
+	hasTunID bool,
+) []byte {
 	var fields []byte
 	if inPort != 0 {
 		fields = append(fields, OxmInPort(inPort)...)

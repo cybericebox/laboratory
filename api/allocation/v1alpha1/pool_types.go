@@ -30,7 +30,7 @@ type PoolStatus struct {
 type Pool struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-
+	
 	Spec   PoolSpec   `json:"spec,omitempty"`
 	Status PoolStatus `json:"status,omitempty"`
 }

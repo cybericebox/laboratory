@@ -15,15 +15,18 @@ const ConditionReady = "Ready"
 
 // Common reasons — kept short and CamelCase per Kubernetes convention.
 const (
-	ReasonReady               = "Ready"
-	ReasonProvisioning        = "Provisioning"
-	ReasonValidationFailed    = "ValidationFailed"
-	ReasonWaitingForInterface = "WaitingForInterface"
-	ReasonWaitingForPort      = "WaitingForPort"
-	ReasonWaitingForVPNServer = "WaitingForVPNServer"
-	ReasonPubKeyCollision     = "PubKeyCollision"
-	ReasonProgrammingFailed   = "ProgrammingFailed"
-	ReasonPeerRegistered      = "PeerRegistered"
+	ReasonReady                = "Ready"
+	ReasonProvisioning         = "Provisioning"
+	ReasonValidationFailed     = "ValidationFailed"
+	ReasonWaitingForInterface  = "WaitingForInterface"
+	ReasonWaitingForVNI        = "WaitingForVNI"
+	ReasonWaitingForPort       = "WaitingForPort"
+	ReasonWaitingForEndpoint   = "WaitingForEndpoint"
+	ReasonWaitingForController = "WaitingForController"
+	ReasonWaitingForVPNServer  = "WaitingForVPNServer"
+	ReasonPubKeyCollision      = "PubKeyCollision"
+	ReasonProgrammingFailed    = "ProgrammingFailed"
+	ReasonPeerRegistered       = "PeerRegistered"
 )
 
 // SetReady sets (or updates) the Ready condition on conds. generation is the
@@ -33,13 +36,15 @@ func SetReady(conds *[]metav1.Condition, generation int64, ready bool, reason, m
 	if ready {
 		st = metav1.ConditionTrue
 	}
-	meta.SetStatusCondition(conds, metav1.Condition{
-		Type:               ConditionReady,
-		Status:             st,
-		ObservedGeneration: generation,
-		Reason:             reason,
-		Message:            message,
-	})
+	meta.SetStatusCondition(
+		conds, metav1.Condition{
+			Type:               ConditionReady,
+			Status:             st,
+			ObservedGeneration: generation,
+			Reason:             reason,
+			Message:            message,
+		},
+	)
 }
 
 // IsReady reports whether the Ready condition is currently True.

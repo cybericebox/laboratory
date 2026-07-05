@@ -13,21 +13,21 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: laboratory-unmanagedswitch-editor-role
 rules:
-- apiGroups:
-  - laboratory.cybericebox.com
-  resources:
-  - unmanagedswitches
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - laboratory.cybericebox.com
-  resources:
-  - unmanagedswitches/status
-  verbs:
-  - get
+  - apiGroups:
+      - laboratory.cybericebox.com
+    resources:
+      - unmanagedswitches
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - laboratory.cybericebox.com
+    resources:
+      - unmanagedswitches/status
+    verbs:
+      - get
