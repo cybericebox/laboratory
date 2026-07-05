@@ -1,9 +1,9 @@
 //go:build linux
 
-// ovs-diag проверяет каждый шаг перемещения OVS internal port в pod netns,
-// сравнивая библиотечный подход (vishvananda/netlink+netns) с CLI (ip / nsenter).
+// ovs-diag checks each step of moving an OVS internal port into a pod netns,
+// comparing the library approach (vishvananda/netlink+netns) with the CLI (ip / nsenter).
 //
-// Запуск (внутри node-agent контейнера):
+// Run (inside the node-agent container):
 //
 //	ovs-diag \
 //	  --netns  /host/proc/1234/ns/net \
@@ -25,13 +25,13 @@ import (
 )
 
 func main() {
-	netnsPath := flag.String("netns", "", "путь к netns пода (напр. /host/proc/1234/ns/net)")
-	bridge := flag.String("bridge", "br-ovs", "имя OVS-бриджа")
-	sock := flag.String("sock", "/var/run/openvswitch/db.sock", "путь к OVSDB сокету")
+	netnsPath := flag.String("netns", "", "path to the pod's netns (e.g. /host/proc/1234/ns/net)")
+	bridge := flag.String("bridge", "br-ovs", "OVS bridge name")
+	sock := flag.String("sock", "/var/run/openvswitch/db.sock", "path to the OVSDB socket")
 	flag.Parse()
 
 	if *netnsPath == "" {
-		fmt.Fprintln(os.Stderr, "ERROR: --netns обязателен")
+		fmt.Fprintln(os.Stderr, "ERROR: --netns is required")
 		os.Exit(1)
 	}
 
@@ -39,34 +39,32 @@ func main() {
 
 	const portName = "icediag000001"
 
-	// Убираем порт если остался с прошлого запуска.
+	// Remove any leftover port from a previous run.
 	runOVSCtl(*sock, "del-port", *bridge, portName)
 
-	// ─── Шаг 1: создание OVS internal port через ovs-vsctl ──────────────────
 	step("1. ovs-vsctl add-port (create internal port)")
 	if err := runOVSCtl(*sock, "add-port", *bridge, portName,
 		"--", "set", "interface", portName, "type=internal"); err != nil {
 		fatal("ovs-vsctl add-port: %v", err)
 	}
 
-	// Ждём появления kernel-интерфейса в root netns.
-	step("1b. WaitForLink в root netns")
+	// Wait for the kernel interface to appear in root netns.
+	step("1b. WaitForLink in root netns")
 	if err := waitForLink(portName, 5*time.Second); err != nil {
 		fatal("WaitForLink: %v", err)
 	}
 	printLink("root netns", portName)
 
-	// Ждём стабильного ifindex (vswitchd dpif_port_add).
-	step("1c. ожидание стабильного ifindex (300ms)")
+	// Wait for a stable ifindex (vswitchd dpif_port_add).
+	step("1c. waiting for a stable ifindex (300ms)")
 	if err := waitStableIfindex(portName, 5*time.Second); err != nil {
 		fatal("waitStableIfindex: %v", err)
 	}
 
-	// ─── Шаг 2a: LIBRARY — MoveToNetNS ──────────────────────────────────────
 	step("2a. [LIB] MoveToNetNS: netlink.LinkSetNsFd")
 	if err := libMoveToNetNS(portName, *netnsPath); err != nil {
 		fmt.Printf("  FAIL: %v\n", err)
-		fmt.Println("  → переходим к CLI-варианту")
+		fmt.Println("  → falling back to CLI")
 
 		step("2b. [CLI] MoveToNetNS: ip link set netns")
 		if err2 := cliMoveToNetNS(portName, *netnsPath); err2 != nil {
@@ -77,11 +75,11 @@ func main() {
 		fmt.Println("  LIB OK")
 	}
 
-	// Проверяем что интерфейс исчез из root netns и появился в pod netns.
+	// Check that the interface disappeared from root netns and appeared in pod netns.
 	if _, e := netlink.LinkByName(portName); e == nil {
-		fmt.Printf("  WARNING: %s всё ещё в root netns!\n", portName)
+		fmt.Printf("  WARNING: %s still in root netns!\n", portName)
 	} else {
-		fmt.Printf("  root netns: %s отсутствует (ожидаемо)\n", portName)
+		fmt.Printf("  root netns: %s absent (expected)\n", portName)
 	}
 	fmt.Printf("  pod netns: ")
 	if err := checkInNetNS(*netnsPath, portName); err != nil {
@@ -90,12 +88,11 @@ func main() {
 		fmt.Println("PRESENT")
 	}
 
-	// ─── Шаг 3a: LIBRARY — RenameInNetNS ────────────────────────────────────
 	const targetName = "diageth1"
 	step(fmt.Sprintf("3a. [LIB] RenameInNetNS: %s → %s", portName, targetName))
 	if err := libRenameInNetNS(*netnsPath, portName, targetName); err != nil {
 		fmt.Printf("  FAIL: %v\n", err)
-		fmt.Println("  → пробуем CLI")
+		fmt.Println("  → trying CLI")
 
 		step(fmt.Sprintf("3b. [CLI] RenameInNetNS: nsenter ip link set name"))
 		if err2 := cliRenameInNetNS(*netnsPath, portName, targetName); err2 != nil {
@@ -113,8 +110,7 @@ func main() {
 		fmt.Println("PRESENT")
 	}
 
-	// ─── Шаг 4: проверка как быстро vswitchd удаляет после move ──────────────
-	step("4. Timing: как быстро vswitchd удаляет интерфейс из pod netns?")
+	step("4. Timing: how fast does vswitchd remove the interface after move?")
 	t0 := time.Now()
 	for i := 0; i < 20; i++ {
 		time.Sleep(100 * time.Millisecond)
@@ -127,11 +123,10 @@ func main() {
 		fmt.Printf("  [%3dms] %s: present\n", elapsed.Milliseconds(), targetName)
 	}
 
-	// ─── Шаг 5: тест без LinkSetUp — выживает ли интерфейс дольше? ───────────
 	runOVSCtl(*sock, "del-port", *bridge, portName)
 	time.Sleep(500 * time.Millisecond)
 
-	step("5. ТЕСТ: move+rename БЕЗ LinkSetUp — сколько живёт?")
+	step("5. TEST: move+rename WITHOUT LinkSetUp — how long does it survive?")
 	if err := runOVSCtl(*sock, "add-port", *bridge, portName,
 		"--", "set", "interface", portName, "type=internal"); err != nil {
 		fatal("add-port: %v", err)
@@ -148,24 +143,22 @@ func main() {
 	if err := libRenameInNetNS(*netnsPath, portName, targetName); err != nil {
 		fatal("RenameInNetNS: %v", err)
 	}
-	fmt.Println("  moved+renamed, НЕ вызываем LinkSetUp")
+	fmt.Println("  moved+renamed, NOT calling LinkSetUp")
 	t0 = time.Now()
 	for i := 0; i < 60; i++ {
 		time.Sleep(500 * time.Millisecond)
 		err := checkInNetNS(*netnsPath, targetName)
 		elapsed := time.Since(t0)
 		if err != nil {
-			fmt.Printf("  [%4dms] %s: GONE — vswitchd удалил\n", elapsed.Milliseconds(), targetName)
+			fmt.Printf("  [%4dms] %s: GONE — vswitchd removed it\n", elapsed.Milliseconds(), targetName)
 			break
 		}
 		fmt.Printf("  [%4dms] %s: present\n", elapsed.Milliseconds(), targetName)
 	}
 
-	// ─── Итог ────────────────────────────────────────────────────────────────
-	fmt.Println("\n=== РЕЗУЛЬТАТ ===")
-	fmt.Printf("Смотри вывод выше: когда vswitchd удаляет и триггерит ли LinkSetUp немедленное удаление\n")
+	fmt.Println("\n=== RESULT ===")
+	fmt.Printf("See output above: when does vswitchd remove it, and does LinkSetUp trigger immediate removal\n")
 
-	// Чистка.
 	runOVSCtl(*sock, "del-port", *bridge, portName)
 	cliRunInNetNS(*netnsPath, "ip", "link", "del", targetName)
 }
@@ -195,7 +188,7 @@ func waitForLink(name string, timeout time.Duration) error {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("link %q не появился за %s", name, timeout)
+			return fmt.Errorf("link %q did not appear within %s", name, timeout)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -214,12 +207,12 @@ func waitStableIfindex(portName string, timeout time.Duration) error {
 				stableIdx = idx
 				stableSince = time.Now()
 			} else if time.Since(stableSince) >= stableDur {
-				fmt.Printf("  ifindex=%d стабильный %.0fms\n", stableIdx, stableDur.Seconds()*1000)
+				fmt.Printf("  ifindex=%d stable %.0fms\n", stableIdx, stableDur.Seconds()*1000)
 				return nil
 			}
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("ifindex не стабилизировался за %s", timeout)
+			return fmt.Errorf("ifindex did not stabilize within %s", timeout)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -294,7 +287,7 @@ func inNetNS(netnsPath string, fn func() error) error {
 	fnErr := fn()
 
 	if err := netns.Set(origNS); err != nil {
-		panic(fmt.Sprintf("inNetNS: не удалось восстановить origNS: %v", err))
+		panic(fmt.Sprintf("inNetNS: failed to restore origNS: %v", err))
 	}
 	runtime.UnlockOSThread()
 	return fnErr

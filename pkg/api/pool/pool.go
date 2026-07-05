@@ -176,8 +176,8 @@ func (a *allocator) ReleaseIndex(ctx context.Context, index uint) error {
 		logf.FromContext(ctx).Error(err, "failed to sync pool state label after release", "pool", pool.Name)
 	}
 
-	// Lazy GC: keep at most one empty pool per group as buffer (spec §11 —
-	// "буфер из одного пустого пула, чтобы не дребезжать"). The "latest" pool
+	// Lazy GC: keep at most one empty pool per group as a buffer (spec §11 —
+	// "one empty pool as a buffer, to avoid thrashing"). The "latest" pool
 	// is preserved so newly-created allocations land contiguously; any other
 	// empty pool is collected.
 	if err = a.collectRedundantEmptyPools(ctx); err != nil {

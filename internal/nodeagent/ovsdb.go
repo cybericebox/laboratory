@@ -24,9 +24,9 @@ func portKey(namespace, connection, iface string) string {
 	return fmt.Sprintf("p%x", h[:4])
 }
 
-// GenevePort is the single per-node Geneve VTEP (spec §7: "Один Geneve-порт
-// на ноде: options:remote_ip=flow, options:key=flow. Адрес удалённого VTEP и
-// VNI проставляются во flow"). All cross-node tunnels share this port; flow
+// GenevePort is the single per-node Geneve VTEP (spec §7: "One Geneve port
+// per node: options:remote_ip=flow, options:key=flow. The remote VTEP address
+// and VNI are set per-flow"). All cross-node tunnels share this port; flow
 // rules set tun_dst (NXM_NX_TUN_IPV4_DST) and tun_id per packet.
 const GenevePort = "ovsgnv0"
 

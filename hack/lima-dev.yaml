@@ -59,8 +59,8 @@ provision:
       #!/bin/bash
       mkdir -p ~/.kube
 
-# Kubernetes API server — доступний з Mac як 127.0.0.1:16443
-# Сервіси (443, 80, 51820) прокидаються прямо на Mac localhost
+# Kubernetes API server — reachable from the Mac as 127.0.0.1:16443
+# Services (443, 80, 51820) are forwarded directly to Mac localhost
 portForwards:
   - guestPort: 6443
     hostPort: 16443
