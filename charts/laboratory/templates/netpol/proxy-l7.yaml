@@ -33,12 +33,21 @@ Ingress:
 
 Egress: kube-dns (vanilla NetworkPolicy — unrelated to Cilium identities)
 plus, via the CiliumNetworkPolicy, kube-apiserver (operator watch/leases)
-and `cluster` (l7 dials per-device Services and wg-demux dials per-lab-group
-`vpn` Services, both in namespaces the operator creates dynamically per
-LabGroup/Lab and that cannot be enumerated at chart-authoring time — see
-internal/proxy/l7/handler.go's ServiceResolver and
-internal/proxy/demux/table.go's vpn.<ns>.svc.cluster.local per-LabGroup
-target).
+and endpoints in LabGroup namespaces only: l7 dials per-device Services and
+wg-demux dials per-lab-group `vpn` Services, both in namespaces the operator
+creates dynamically per LabGroup/Lab (see internal/proxy/l7/handler.go's
+ServiceResolver and internal/proxy/demux/table.go's
+vpn.<ns>.svc.cluster.local per-LabGroup target). Those namespaces can't be
+enumerated at chart-authoring time, but the operator stamps each one with
+the stable label laboratory.cybericebox.com/group
+(internal/names/labels.go:LabelGroup, applied in
+labgroup_controller.go:ensureNamespace), which Cilium folds into every
+endpoint identity in the namespace as
+k8s:io.cilium.k8s.namespace.labels.laboratory.cybericebox.com/group
+(live-verified with cilium-dbg identity get). Service ClusterIP translation
+happens before policy, so matching the backend endpoint identity works for
+both the UDP demux forward and the l7 dial. Everything else — including
+other in-cluster namespaces — is denied.
 */}}
 {{- if and .Values.proxy.enabled .Values.proxy.l7.enabled .Values.proxy.networkPolicy.enabled }}
 {{- $l7Port := trimPrefix ":" .Values.proxy.l7.listen | int }}
@@ -109,6 +118,8 @@ spec:
   egress:
     - toEntities:
         - kube-apiserver
-    - toEntities:
-        - cluster
+    - toEndpoints:
+        - matchExpressions:
+            - key: k8s:io.cilium.k8s.namespace.labels.laboratory.cybericebox.com/group
+              operator: Exists
 {{- end }}
