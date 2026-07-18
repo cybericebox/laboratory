@@ -4,6 +4,7 @@ import (
 	versioned "github.com/cybericebox/laboratory/clientset/client/versioned"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 	"k8s.io/client-go/kubernetes"
+	metricsclient "k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
 // Handler implements protobuf.LabManagerServer against the laboratory
@@ -14,10 +15,14 @@ type Handler struct {
 	protobuf.UnimplementedLabManagerServer
 	cs  versioned.Interface
 	k8s kubernetes.Interface
+	// metrics is optional: nil when metrics-server is not installed. Live
+	// resource-usage reporting then degrades to zero rather than failing.
+	metrics metricsclient.Interface
 }
 
-// NewHandler builds a Handler backed by the given typed clientset and
-// plain kubernetes clientset.
-func NewHandler(cs versioned.Interface, k8s kubernetes.Interface) *Handler {
-	return &Handler{cs: cs, k8s: k8s}
+// NewHandler builds a Handler backed by the given typed clientset, plain
+// kubernetes clientset, and (optionally) a metrics clientset. A nil metrics
+// client disables live usage reporting without erroring.
+func NewHandler(cs versioned.Interface, k8s kubernetes.Interface, metrics metricsclient.Interface) *Handler {
+	return &Handler{cs: cs, k8s: k8s, metrics: metrics}
 }

@@ -27,7 +27,9 @@ func (h *Handler) GetLab(ctx context.Context, in *protobuf.NamespacedIDRequest) 
 	if err != nil {
 		return nil, err
 	}
-	return labToProto(out), nil
+	p := labToProto(out)
+	fillLabUsage(p, h.namespaceUsage(ctx, in.Namespace))
+	return p, nil
 }
 
 // ListLabs lists all Lab custom resources in the given namespace.
@@ -36,9 +38,12 @@ func (h *Handler) ListLabs(ctx context.Context, in *protobuf.NamespaceRequest) (
 	if err != nil {
 		return nil, err
 	}
+	usage := h.namespaceUsage(ctx, in.Namespace)
 	out := &protobuf.LabList{}
 	for i := range list.Items {
-		out.Items = append(out.Items, labToProto(&list.Items[i]))
+		p := labToProto(&list.Items[i])
+		fillLabUsage(p, usage)
+		out.Items = append(out.Items, p)
 	}
 	return out, nil
 }

@@ -541,6 +541,8 @@ type LabDeviceStatus struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Ready         bool                   `protobuf:"varint,2,opt,name=ready,proto3" json:"ready,omitempty"`
+	CpuMillicores int64                  `protobuf:"varint,3,opt,name=cpu_millicores,json=cpuMillicores,proto3" json:"cpu_millicores,omitempty"` // live CPU usage in millicores (0 if metrics unavailable)
+	MemoryBytes   int64                  `protobuf:"varint,4,opt,name=memory_bytes,json=memoryBytes,proto3" json:"memory_bytes,omitempty"`       // live memory usage in bytes (0 if metrics unavailable)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -587,6 +589,20 @@ func (x *LabDeviceStatus) GetReady() bool {
 		return x.Ready
 	}
 	return false
+}
+
+func (x *LabDeviceStatus) GetCpuMillicores() int64 {
+	if x != nil {
+		return x.CpuMillicores
+	}
+	return 0
+}
+
+func (x *LabDeviceStatus) GetMemoryBytes() int64 {
+	if x != nil {
+		return x.MemoryBytes
+	}
+	return 0
 }
 
 type LabConnectionStatus struct {
@@ -1103,10 +1119,12 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\adevices\x18\b \x03(\v2\x1b.labmanager.LabDeviceStatusR\adevices\x12A\n" +
 	"\vconnections\x18\t \x03(\v2\x1f.labmanager.LabConnectionStatusR\vconnections\x122\n" +
 	"\x06access\x18\n" +
-	" \x03(\v2\x1a.labmanager.LabAccessEntryR\x06access\";\n" +
+	" \x03(\v2\x1a.labmanager.LabAccessEntryR\x06access\"\x85\x01\n" +
 	"\x0fLabDeviceStatus\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
-	"\x05ready\x18\x02 \x01(\bR\x05ready\"?\n" +
+	"\x05ready\x18\x02 \x01(\bR\x05ready\x12%\n" +
+	"\x0ecpu_millicores\x18\x03 \x01(\x03R\rcpuMillicores\x12!\n" +
+	"\fmemory_bytes\x18\x04 \x01(\x03R\vmemoryBytes\"?\n" +
 	"\x13LabConnectionStatus\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05ready\x18\x02 \x01(\bR\x05ready\"j\n" +

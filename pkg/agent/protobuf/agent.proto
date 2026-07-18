@@ -62,6 +62,8 @@ message LabStatus {
 message LabDeviceStatus {
   string name = 1;
   bool ready = 2;
+  int64 cpu_millicores = 3;   // live CPU usage in millicores (0 if metrics unavailable)
+  int64 memory_bytes = 4;     // live memory usage in bytes (0 if metrics unavailable)
 }
 message LabConnectionStatus {
   string name = 1;

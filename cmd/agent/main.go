@@ -7,6 +7,7 @@ import (
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	metricsclient "k8s.io/metrics/pkg/client/clientset/versioned"
 
 	"github.com/cybericebox/laboratory/internal/agent/config"
 	grpcserver "github.com/cybericebox/laboratory/internal/agent/grpc"
@@ -29,7 +30,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("core client: %v", err)
 	}
-	h := grpcserver.NewHandler(cs, k8s)
+	// Optional: live resource-usage reporting needs metrics-server. Building the
+	// client never contacts the API, so a failure here only means a malformed
+	// rest config; degrade to nil (usage reported as zero) rather than crash.
+	metrics, err := metricsclient.NewForConfig(restCfg)
+	if err != nil {
+		log.Printf("metrics client unavailable, live usage disabled: %v", err)
+		metrics = nil
+	}
+	h := grpcserver.NewHandler(cs, k8s, metrics)
 	srv, err := grpcserver.New(cfg, h)
 	if err != nil {
 		log.Fatalf("build server: %v", err)

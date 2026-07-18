@@ -58,7 +58,9 @@ func newTestHandler(t *testing.T) (*Handler, kubernetes.Interface) {
 		t.Fatalf("build kubernetes clientset: %v", err)
 	}
 
-	return NewHandler(cs, k8s), k8s
+	// nil metrics client: envtest has no metrics-server, so live usage
+	// degrades to zero. namespaceUsage tests inject a fake metrics client.
+	return NewHandler(cs, k8s, nil), k8s
 }
 
 // mustNamespace creates a Namespace via the plain kubernetes clientset,
