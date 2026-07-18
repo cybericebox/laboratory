@@ -229,9 +229,10 @@ func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laborat
 	}
 
 	labels := map[string]string{
-		names.LabelLab:    device.Spec.LabRef,
-		"app":             device.Spec.Name,
-		names.LabelDevice: device.Spec.Name,
+		names.LabelLab:        device.Spec.LabRef,
+		"app":                 device.Spec.Name,
+		names.LabelDevice:     device.Spec.Name,
+		names.LabelDeviceName: device.Name,
 	}
 	// The selector must be immutable and uniquely identify this device's pod:
 	// (lab, device-name) is unique within the namespace.

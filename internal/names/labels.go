@@ -5,6 +5,12 @@ const (
 	LabelLab    = "laboratory.cybericebox.com/lab"
 	LabelDevice = "laboratory.cybericebox.com/device"
 	LabelGroup  = "laboratory.cybericebox.com/group"
+	// LabelDeviceName carries the Device CR name on its pod(s). OVS ports are
+	// keyed on this stable identity, not the pod name, so a device's port key
+	// survives pod recreation under a Deployment (the pod name changes, the
+	// device name does not) and matches the key the Connection reconciler derives
+	// from the Device CR name.
+	LabelDeviceName = "laboratory.cybericebox.com/device-name"
 )
 
 // Kubernetes annotation keys.
