@@ -23,12 +23,12 @@ import (
 type (
 	// Config describes how to reach a LabManager agent.
 	Config struct {
-		// Endpoint is the agent address, host:port.
+		// Endpoint is the agent address, host:port. Dial the agent by its
+		// certificate hostname (the agent's domain): gRPC then uses that as the
+		// TLS SNI and verifies it against the server certificate SAN, so no
+		// separate server-name setting is needed.
 		Endpoint string
-		// ServerName is the TLS SNI / expected server-certificate SAN
-		// (the agent's configured domain). Required when TLS is enabled.
-		ServerName string
-		TLS        TLS
+		TLS      TLS
 	}
 
 	// TLS configures the transport. When Enabled, the connection is mutual
@@ -54,8 +54,9 @@ type (
 )
 
 // transportCredentials builds the client transport credentials: mutual TLS when
-// enabled (client keypair + server CA + SNI), or insecure for local/dev.
-func transportCredentials(conf TLS, serverName string) (credentials.TransportCredentials, error) {
+// enabled (client keypair + server CA), or insecure for local/dev. The verified
+// server name comes from the dial target authority (Endpoint host).
+func transportCredentials(conf TLS) (credentials.TransportCredentials, error) {
 	if !conf.Enabled {
 		return insecure.NewCredentials(), nil
 	}
@@ -77,7 +78,6 @@ func transportCredentials(conf TLS, serverName string) (credentials.TransportCre
 	tc := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		RootCAs:      pool,
-		ServerName:   serverName,
 		MinVersion:   tls.VersionTLS12,
 	}
 	return credentials.NewTLS(tc), nil
@@ -87,7 +87,7 @@ func transportCredentials(conf TLS, serverName string) (credentials.TransportCre
 // caller owns the connection and must Close it. grpc.NewClient is lazy — the
 // actual connection is established on the first RPC.
 func NewConnection(config Config) (Client, error) {
-	creds, err := transportCredentials(config.TLS, config.ServerName)
+	creds, err := transportCredentials(config.TLS)
 	if err != nil {
 		return nil, fmt.Errorf("build transport credentials: %w", err)
 	}
