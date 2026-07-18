@@ -9,8 +9,6 @@ import (
 	"time"
 	
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -65,26 +63,20 @@ func (r *LabGroupClientReconciler) reconcileCreate(
 		}
 	}
 	
-	// Allocate IP + generate keypair on first pass only.
+	// The caller generates the WireGuard keypair and provides the public key;
+	// the cluster never generates or holds the private key.
 	pubKey := lgc.Spec.PublicKey
-	var privKeyB64 []byte
+	if pubKey == "" {
+		msg := "spec.publicKey is required — the caller generates the keypair; the cluster never holds the private key"
+		labstatus.SetReady(&lgc.Status.Conditions, lgc.Generation, false, "PublicKeyRequired", msg)
+		_ = r.Status().Update(ctx, lgc)
+		r.Recorder.Event(lgc, corev1.EventTypeWarning, "PublicKeyRequired", msg)
+		return ctrl.Result{}, nil
+	}
 	assignedIP := lgc.Status.AssignedIP
-	
+
 	if assignedIP == "" {
-		if pubKey == "" {
-			priv, pub, err := generateWireGuardKeypair()
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-			pubKey = string(pub)
-			privKeyB64 = priv
-			// Persist generated pubkey into Spec so the VPN reconciler can register the peer.
-			lgc.Spec.PublicKey = pubKey
-			if err := r.Update(ctx, lgc); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-		
+
 		// Reject duplicate pubkey in the same group — peers are identified by
 		// pubkey + assignedIP on the VPN server, so two LGCs with the same key
 		// would race for the peer slot.
@@ -123,27 +115,23 @@ func (r *LabGroupClientReconciler) reconcileCreate(
 		ctrl.LoggerFrom(ctx).V(1).Info("parent LabGroup not yet readable", "reason", lgErr.Error())
 	}
 	
-	secretName := names.SecretClientPrefix + lgc.Name
-	if err := r.ensureClientSecret(
-		ctx, lgc, secretName, secretParams{
-			PublicKey:       pubKey,
-			PrivateKey:      string(privKeyB64),
-			AssignedIP:      assignedIP,
-			ServerPublicKey: serverPubKey,
-			Endpoint:        endpoint,
-			AllowedIPs:      r.VPNBaseNetwork,
-		},
-	); err != nil {
-		return ctrl.Result{}, err
-	}
-	
+	// Assemble the client config with a private-key PLACEHOLDER and store it in
+	// status — never in a Secret, so the cluster never holds the private key.
+	// Empty until the parent VPN endpoint/server key land (the requeue waits).
+	config, _ := renderWGConf(wgConfParams{
+		AssignedIP:      assignedIP,
+		ServerPublicKey: serverPubKey,
+		Endpoint:        endpoint,
+		AllowedIPs:      r.VPNBaseNetwork,
+	})
+
 	updated := false
 	if lgc.Status.AssignedIP != assignedIP {
 		lgc.Status.AssignedIP = assignedIP
 		updated = true
 	}
-	if lgc.Status.SecretRef != secretName {
-		lgc.Status.SecretRef = secretName
+	if lgc.Status.Config != config {
+		lgc.Status.Config = config
 		updated = true
 	}
 	if updated {
@@ -193,14 +181,8 @@ func (r *LabGroupClientReconciler) reconcileDelete(
 		}
 	}
 	
-	secretName := names.SecretClientPrefix + lgc.Name
-	var s corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: lgc.Namespace}, &s); err == nil {
-		if err = r.Delete(ctx, &s); err != nil && !errors.IsNotFound(err) {
-			return ctrl.Result{}, err
-		}
-	}
-	
+	// No client Secret to clean up — the config lives in status only.
+
 	// The cybericebox.com/vpn finalizer is removed by the VPN binary after it
 	// deletes the WireGuard peer. The VPN pod is a Deployment that always comes
 	// back, so this is processed eventually; group teardown (where the pod would
@@ -258,83 +240,11 @@ func (r *LabGroupClientReconciler) lookupParentVPN(ctx context.Context, ns strin
 	return lg.Status.VPN.PublicKey, lg.Status.VPN.Endpoint, nil
 }
 
-type secretParams struct {
-	PublicKey       string
-	PrivateKey      string // may be empty (user-supplied keypair)
+type wgConfParams struct {
 	AssignedIP      string
 	ServerPublicKey string // empty until LabGroup is Ready
 	Endpoint        string // empty until LabGroup is Ready
 	AllowedIPs      string
-}
-
-func (r *LabGroupClientReconciler) ensureClientSecret(
-	ctx context.Context,
-	lgc *laboratoryv1alpha1.LabGroupClient,
-	name string,
-	p secretParams,
-) error {
-	desired := map[string][]byte{
-		"publicKey":  []byte(p.PublicKey),
-		"assignedIP": []byte(p.AssignedIP),
-		"allowedIPs": []byte(p.AllowedIPs),
-	}
-	if p.PrivateKey != "" {
-		desired["privateKey"] = []byte(p.PrivateKey)
-	}
-	if p.ServerPublicKey != "" {
-		desired["serverPublicKey"] = []byte(p.ServerPublicKey)
-	}
-	if p.Endpoint != "" {
-		desired["endpoint"] = []byte(p.Endpoint)
-	}
-	if conf, err := renderWGConf(p); err == nil {
-		desired["wg.conf"] = []byte(conf)
-	}
-	
-	var existing corev1.Secret
-	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: lgc.Namespace}, &existing)
-	if errors.IsNotFound(err) {
-		s := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: lgc.Namespace},
-			Data:       desired,
-		}
-		return r.Create(ctx, s)
-	}
-	if err != nil {
-		return err
-	}
-	
-	// Preserve existing privateKey across reconciles — it's generated once and never regenerated.
-	if _, ok := desired["privateKey"]; !ok {
-		if pk, ok := existing.Data["privateKey"]; ok {
-			desired["privateKey"] = pk
-			// Re-render wg.conf with the preserved privateKey if endpoint is now available.
-			if p.Endpoint != "" && p.ServerPublicKey != "" {
-				p.PrivateKey = string(pk)
-				if conf, cerr := renderWGConf(p); cerr == nil {
-					desired["wg.conf"] = []byte(conf)
-				}
-			}
-		}
-	}
-	
-	if dataEqual(existing.Data, desired) {
-		return nil
-	}
-	existing.Data = desired
-	return r.Update(ctx, &existing)
-}
-
-func dataEqual(a, b map[string][]byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if !bytes.Equal(b[k], v) {
-			return false
-		}
-	}
-	return true
 }
 
 // wgConfTemplate renders a WireGuard client config.
@@ -358,19 +268,18 @@ PersistentKeepalive = 15
 	),
 )
 
-func renderWGConf(p secretParams) (string, error) {
+// renderWGConf assembles the client config with a private-key PLACEHOLDER — the
+// cluster never has the real private key; the caller substitutes it. Returns an
+// error (empty config) until the parent VPN endpoint/server key are known.
+func renderWGConf(p wgConfParams) (string, error) {
 	if p.ServerPublicKey == "" || p.Endpoint == "" || p.AssignedIP == "" || p.AllowedIPs == "" {
 		return "", fmt.Errorf("incomplete params")
-	}
-	priv := p.PrivateKey
-	if priv == "" {
-		priv = "<YOUR_PRIVATE_KEY>"
 	}
 	var buf bytes.Buffer
 	if err := wgConfTemplate.Execute(
 		&buf, struct {
 			PrivateKey, AssignedIP, ServerPublicKey, Endpoint, AllowedIPs string
-		}{priv, p.AssignedIP, p.ServerPublicKey, p.Endpoint, p.AllowedIPs},
+		}{names.WGPrivateKeyPlaceholder, p.AssignedIP, p.ServerPublicKey, p.Endpoint, p.AllowedIPs},
 	); err != nil {
 		return "", err
 	}

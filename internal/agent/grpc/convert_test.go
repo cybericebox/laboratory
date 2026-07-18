@@ -89,26 +89,25 @@ func TestClientToProto(t *testing.T) {
 	c.Namespace = "team-alpha"
 	c.Spec.PublicKey = "pubkey123"
 	c.Status.AssignedIP = "10.8.0.5/32"
-	c.Status.SecretRef = "team-alpha/client-client1"
+	c.Status.Config = "wireguard-config"
 	c.Status.Statistics = laboratoryv1alpha1.LabGroupClientStatistics{
 		LastHandshake: metav1.Unix(1700000000, 0),
 		RxBytes:       4096,
 		TxBytes:       8192,
 	}
 
-	wgConf := []byte("wireguard-config")
-	p := clientToProto(c, wgConf)
+	p := clientToProto(c)
 	if p.Name != "client1" || p.Namespace != "team-alpha" || p.PublicKey != "pubkey123" {
 		t.Errorf("client fields wrong: %+v", p)
 	}
-	if p.Status.AssignedIp != "10.8.0.5/32" || p.Status.SecretRef != "team-alpha/client-client1" {
+	if p.Status.AssignedIp != "10.8.0.5/32" {
 		t.Errorf("status wrong: %+v", p.Status)
 	}
 	if !p.Status.Ready {
 		t.Errorf("expected ready true when AssignedIP set: %+v", p.Status)
 	}
-	if string(p.Status.WgConf) != "wireguard-config" {
-		t.Errorf("wgConf wrong: %+v", p.Status)
+	if p.Status.Config != "wireguard-config" {
+		t.Errorf("config wrong: %+v", p.Status)
 	}
 	if p.Status.Statistics == nil {
 		t.Fatalf("expected statistics, got nil")
@@ -128,7 +127,7 @@ func TestClientToProtoZeroHandshake(t *testing.T) {
 	c.Name = "fresh"
 	c.Namespace = "team-alpha"
 
-	p := clientToProto(c, nil)
+	p := clientToProto(c)
 	if p.Status.Statistics == nil {
 		t.Fatalf("expected statistics, got nil")
 	}

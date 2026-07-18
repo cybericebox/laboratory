@@ -7,7 +7,6 @@ import (
 	
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -64,9 +63,10 @@ var _ = Describe(
 		)
 		
 		It(
-			"assigns a unique non-zero IP and creates client Secret on CREATE", func() {
+			"assigns a unique non-zero IP on CREATE", func() {
 				lgc := &laboratoryv1alpha1.LabGroupClient{
 					ObjectMeta: metav1.ObjectMeta{Name: "client-a", Namespace: lgNS},
+					Spec:       laboratoryv1alpha1.LabGroupClientSpec{PublicKey: "pk-a"},
 				}
 				Expect(k8sClient.Create(ctx, lgc)).To(Succeed())
 				DeferCleanup(
@@ -95,19 +95,6 @@ var _ = Describe(
 				
 				// IP must be a valid 10.8.0.X/32 and X must not be 0 (reserved).
 				Expect(updated.Status.AssignedIP).To(MatchRegexp(`^10\.8\.0\.[1-9][0-9]*/32$`))
-				Expect(updated.Status.SecretRef).NotTo(BeEmpty())
-				
-				// Secret must exist and contain the required keys.
-				var secret corev1.Secret
-				Expect(
-					k8sClient.Get(
-						ctx,
-						types.NamespacedName{Name: updated.Status.SecretRef, Namespace: lgNS},
-						&secret,
-					),
-				).To(Succeed())
-				Expect(secret.Data).To(HaveKey("publicKey"))
-				Expect(secret.Data).To(HaveKey("assignedIP"))
 			},
 		)
 		
@@ -115,9 +102,11 @@ var _ = Describe(
 			"assigns distinct IPs to two concurrent clients", func() {
 				lgcA := &laboratoryv1alpha1.LabGroupClient{
 					ObjectMeta: metav1.ObjectMeta{Name: "client-b", Namespace: lgNS},
+					Spec:       laboratoryv1alpha1.LabGroupClientSpec{PublicKey: "pk-b"},
 				}
 				lgcB := &laboratoryv1alpha1.LabGroupClient{
 					ObjectMeta: metav1.ObjectMeta{Name: "client-c", Namespace: lgNS},
+					Spec:       laboratoryv1alpha1.LabGroupClientSpec{PublicKey: "pk-c"},
 				}
 				Expect(k8sClient.Create(ctx, lgcA)).To(Succeed())
 				Expect(k8sClient.Create(ctx, lgcB)).To(Succeed())
@@ -148,6 +137,7 @@ var _ = Describe(
 			"releases the IP back to the pool on DELETE", func() {
 				lgc := &laboratoryv1alpha1.LabGroupClient{
 					ObjectMeta: metav1.ObjectMeta{Name: "client-d", Namespace: lgNS},
+					Spec:       laboratoryv1alpha1.LabGroupClientSpec{PublicKey: "pk-d"},
 				}
 				Expect(k8sClient.Create(ctx, lgc)).To(Succeed())
 				
@@ -192,6 +182,7 @@ var _ = Describe(
 				// The same IP must be reallocatable.
 				lgc2 := &laboratoryv1alpha1.LabGroupClient{
 					ObjectMeta: metav1.ObjectMeta{Name: "client-d2", Namespace: lgNS},
+					Spec:       laboratoryv1alpha1.LabGroupClientSpec{PublicKey: "pk-d2"},
 				}
 				Expect(k8sClient.Create(ctx, lgc2)).To(Succeed())
 				DeferCleanup(

@@ -2,58 +2,87 @@ package grpc
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
+// CreateLabGroupClient generates the keypair, registers the public key, waits
+// for the reconciler to assemble the config, and substitutes the real private
+// key for the placeholder. envtest has no reconciler, so a goroutine simulates
+// it (assigns an IP + writes a placeholder config into status).
 func TestCreateLabGroupClient(t *testing.T) {
 	h, k8s := newTestHandler(t)
 	ctx := context.Background()
 	mustNamespace(t, k8s, "team-cli")
 
-	_, err := h.CreateLabGroupClient(ctx, &protobuf.LabGroupClient{
-		Namespace: "team-cli", Name: "alice", PublicKey: "pk",
-	})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			c, err := h.cs.LaboratoryV1alpha1().LabGroupClients("team-cli").Get(ctx, "alice", metav1.GetOptions{})
+			if err == nil {
+				c.Status.AssignedIP = "10.8.0.5/32"
+				c.Status.Config = "[Interface]\nPrivateKey = " + names.WGPrivateKeyPlaceholder + "\nAddress = 10.8.0.5/32\n"
+				if _, uErr := h.cs.LaboratoryV1alpha1().LabGroupClients("team-cli").UpdateStatus(ctx, c, metav1.UpdateOptions{}); uErr == nil {
+					return
+				}
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+
+	out, err := h.CreateLabGroupClient(ctx, &protobuf.LabGroupClient{Namespace: "team-cli", Name: "alice"})
+	<-done
 	if err != nil {
 		t.Fatalf("CreateLabGroupClient: %v", err)
 	}
-	got, err := h.GetLabGroupClient(ctx, &protobuf.NamespacedIDRequest{Namespace: "team-cli", Name: "alice"})
+
+	cr, err := h.cs.LaboratoryV1alpha1().LabGroupClients("team-cli").Get(ctx, "alice", metav1.GetOptions{})
 	if err != nil {
-		t.Fatalf("Get: %v", err)
+		t.Fatalf("get cr: %v", err)
 	}
-	if got.PublicKey != "pk" {
-		t.Errorf("pk lost: %+v", got)
+	if cr.Spec.PublicKey == "" {
+		t.Errorf("expected a generated public key on the CR")
+	}
+	// The private key never touches the cluster: the CR config still holds the
+	// placeholder, but the returned config has the real key substituted in.
+	if !strings.Contains(cr.Status.Config, names.WGPrivateKeyPlaceholder) {
+		t.Errorf("CR config should keep the placeholder: %q", cr.Status.Config)
+	}
+	if strings.Contains(out.Status.Config, names.WGPrivateKeyPlaceholder) {
+		t.Errorf("returned config still has the placeholder: %q", out.Status.Config)
+	}
+	if !strings.Contains(out.Status.Config, "PrivateKey = ") {
+		t.Errorf("returned config missing PrivateKey line: %q", out.Status.Config)
 	}
 }
 
-// The VPN server writes WireGuard peer stats onto the CR status subresource;
-// the agent must surface them through GetLabGroupClient. Envtest catches CRD
-// status-schema drift that a pure converter test cannot.
 func TestGetLabGroupClientStatistics(t *testing.T) {
 	h, k8s := newTestHandler(t)
 	ctx := context.Background()
 	mustNamespace(t, k8s, "team-stats")
 
-	if _, err := h.CreateLabGroupClient(ctx, &protobuf.LabGroupClient{
-		Namespace: "team-stats", Name: "carol", PublicKey: "pk",
-	}); err != nil {
-		t.Fatalf("CreateLabGroupClient: %v", err)
-	}
-
-	cur, err := h.cs.LaboratoryV1alpha1().LabGroupClients("team-stats").Get(ctx, "carol", metav1.GetOptions{})
+	lgc := &laboratoryv1alpha1.LabGroupClient{ObjectMeta: metav1.ObjectMeta{Name: "carol", Namespace: "team-stats"}}
+	lgc.Spec.PublicKey = "pk"
+	created, err := h.cs.LaboratoryV1alpha1().LabGroupClients("team-stats").Create(ctx, lgc, metav1.CreateOptions{})
 	if err != nil {
-		t.Fatalf("get cr: %v", err)
+		t.Fatalf("create: %v", err)
 	}
-	cur.Status.Statistics = laboratoryv1alpha1.LabGroupClientStatistics{
+	created.Status.AssignedIP = "10.8.0.5/32"
+	created.Status.Config = "cfg"
+	created.Status.Statistics = laboratoryv1alpha1.LabGroupClientStatistics{
 		LastHandshake: metav1.Unix(1700000000, 0),
 		RxBytes:       1234,
 		TxBytes:       5678,
 	}
-	if _, err := h.cs.LaboratoryV1alpha1().LabGroupClients("team-stats").UpdateStatus(ctx, cur, metav1.UpdateOptions{}); err != nil {
+	if _, err := h.cs.LaboratoryV1alpha1().LabGroupClients("team-stats").UpdateStatus(ctx, created, metav1.UpdateOptions{}); err != nil {
 		t.Fatalf("update status: %v", err)
 	}
 
@@ -61,11 +90,11 @@ func TestGetLabGroupClientStatistics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.Status.Statistics == nil {
-		t.Fatalf("statistics not surfaced through agent: %+v", got.Status)
+	if got.Status.Config != "cfg" {
+		t.Errorf("config not surfaced: %q", got.Status.Config)
 	}
-	if got.Status.Statistics.RxBytes != 1234 || got.Status.Statistics.TxBytes != 5678 {
-		t.Errorf("stats bytes wrong: %+v", got.Status.Statistics)
+	if got.Status.Statistics == nil || got.Status.Statistics.RxBytes != 1234 || got.Status.Statistics.TxBytes != 5678 {
+		t.Errorf("stats wrong: %+v", got.Status.Statistics)
 	}
 	if got.Status.Statistics.LastHandshakeUnix != 1700000000 {
 		t.Errorf("last handshake wrong: %+v", got.Status.Statistics)
@@ -77,11 +106,10 @@ func TestListAndDeleteLabGroupClient(t *testing.T) {
 	ctx := context.Background()
 	mustNamespace(t, k8s, "team-cli-list")
 
-	_, err := h.CreateLabGroupClient(ctx, &protobuf.LabGroupClient{
-		Namespace: "team-cli-list", Name: "bob", PublicKey: "pk2",
-	})
-	if err != nil {
-		t.Fatalf("CreateLabGroupClient: %v", err)
+	lgc := &laboratoryv1alpha1.LabGroupClient{ObjectMeta: metav1.ObjectMeta{Name: "bob", Namespace: "team-cli-list"}}
+	lgc.Spec.PublicKey = "pk2"
+	if _, err := h.cs.LaboratoryV1alpha1().LabGroupClients("team-cli-list").Create(ctx, lgc, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create: %v", err)
 	}
 
 	list, err := h.ListLabGroupClients(ctx, &protobuf.NamespaceRequest{Namespace: "team-cli-list"})
@@ -95,7 +123,6 @@ func TestListAndDeleteLabGroupClient(t *testing.T) {
 	if _, err := h.DeleteLabGroupClient(ctx, &protobuf.NamespacedIDRequest{Namespace: "team-cli-list", Name: "bob"}); err != nil {
 		t.Fatalf("DeleteLabGroupClient: %v", err)
 	}
-
 	if _, err := h.GetLabGroupClient(ctx, &protobuf.NamespacedIDRequest{Namespace: "team-cli-list", Name: "bob"}); err == nil {
 		t.Fatalf("expected error getting deleted client, got nil")
 	}

@@ -69,7 +69,7 @@ func protoToLab(p *protobuf.Lab) (*laboratoryv1alpha1.Lab, error) {
 // representation. wgConf carries the rendered WireGuard client config,
 // which is not stored on the CR itself (it lives in a Secret) so it is
 // supplied by the caller.
-func clientToProto(c *laboratoryv1alpha1.LabGroupClient, wgConf []byte) *protobuf.LabGroupClient {
+func clientToProto(c *laboratoryv1alpha1.LabGroupClient) *protobuf.LabGroupClient {
 	// WireGuard exposes transfer bytes + last handshake per peer only (no packet
 	// counts). A zero handshake time (never connected) maps to 0.
 	stats := &protobuf.LabGroupClientStatistics{
@@ -85,9 +85,8 @@ func clientToProto(c *laboratoryv1alpha1.LabGroupClient, wgConf []byte) *protobu
 		PublicKey: c.Spec.PublicKey,
 		Status: &protobuf.LabGroupClientStatus{
 			AssignedIp: c.Status.AssignedIP,
-			SecretRef:  c.Status.SecretRef,
 			Ready:      c.Status.AssignedIP != "",
-			WgConf:     wgConf,
+			Config:     c.Status.Config,
 			Statistics: stats,
 		},
 	}

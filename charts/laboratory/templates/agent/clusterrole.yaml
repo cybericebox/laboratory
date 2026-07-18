@@ -41,12 +41,13 @@ rules:
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "devices", "devices/status", "connections", "connections/status", "labvpns", "labvpns/status", "labgateways", "labgateways/status" ]
     verbs: [ "get", "list", "watch" ]
-  # Env secrets: the agent CREATEs/DELETEs per-device env Secrets (write-only —
-  # overwrite is delete+create, so no read is needed). `get` here is only for the
-  # VPN client wg.conf today and is removed once that moves off Secrets.
+  # Env secrets are WRITE-ONLY for the agent: it CREATEs/DELETEs per-device env
+  # Secrets (overwrite is delete+create) and never reads them — so a device's
+  # env values (flags, licenses) are unreadable by the agent. No `get`/`list`:
+  # the VPN client config now lives in the CR status, not a Secret.
   - apiGroups: [ "" ]
     resources: [ "secrets" ]
-    verbs: [ "get", "create", "delete" ]
+    verbs: [ "create", "delete" ]
   - apiGroups: [ "" ]
     resources: [ "events" ]
     verbs: [ "get", "list", "watch" ]

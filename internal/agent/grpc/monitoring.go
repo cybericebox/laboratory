@@ -44,7 +44,7 @@ func (h *Handler) snapshot(ctx context.Context) (*protobuf.MonitoringUpdate, err
 		clients, err := h.cs.LaboratoryV1alpha1().LabGroupClients(ns).List(ctx, metav1.ListOptions{})
 		if err == nil {
 			for j := range clients.Items {
-				upd.Clients = append(upd.Clients, clientToProto(&clients.Items[j], nil))
+				upd.Clients = append(upd.Clients, clientToProto(&clients.Items[j]))
 			}
 		}
 	}

@@ -95,10 +95,13 @@ message LabGroupClient {
   LabGroupClientStatus status = 4;
 }
 message LabGroupClientStatus {
+  reserved 2;   // was secret_ref (client Secret removed)
   string assigned_ip = 1;
-  string secret_ref = 2;
   bool ready = 3;
-  bytes wg_conf = 4;   // populated on Get/Create from the client Secret
+  // Assembled WireGuard client config. On CreateLabGroupClient the agent fills
+  // in the real private key it generated; on Get it carries the placeholder
+  // (the cluster never holds the private key).
+  string config = 4;
   LabGroupClientStatistics statistics = 5;   // live WireGuard peer stats (bytes + handshake)
 }
 // LabGroupClientStatistics mirrors the CRD status the VPN server writes per peer.

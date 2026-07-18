@@ -902,12 +902,14 @@ func (x *LabGroupClient) GetStatus() *LabGroupClientStatus {
 }
 
 type LabGroupClientStatus struct {
-	state         protoimpl.MessageState    `protogen:"open.v1"`
-	AssignedIp    string                    `protobuf:"bytes,1,opt,name=assigned_ip,json=assignedIp,proto3" json:"assigned_ip,omitempty"`
-	SecretRef     string                    `protobuf:"bytes,2,opt,name=secret_ref,json=secretRef,proto3" json:"secret_ref,omitempty"`
-	Ready         bool                      `protobuf:"varint,3,opt,name=ready,proto3" json:"ready,omitempty"`
-	WgConf        []byte                    `protobuf:"bytes,4,opt,name=wg_conf,json=wgConf,proto3" json:"wg_conf,omitempty"` // populated on Get/Create from the client Secret
-	Statistics    *LabGroupClientStatistics `protobuf:"bytes,5,opt,name=statistics,proto3" json:"statistics,omitempty"`       // live WireGuard peer stats (bytes + handshake)
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	AssignedIp string                 `protobuf:"bytes,1,opt,name=assigned_ip,json=assignedIp,proto3" json:"assigned_ip,omitempty"`
+	Ready      bool                   `protobuf:"varint,3,opt,name=ready,proto3" json:"ready,omitempty"`
+	// Assembled WireGuard client config. On CreateLabGroupClient the agent fills
+	// in the real private key it generated; on Get it carries the placeholder
+	// (the cluster never holds the private key).
+	Config        string                    `protobuf:"bytes,4,opt,name=config,proto3" json:"config,omitempty"`
+	Statistics    *LabGroupClientStatistics `protobuf:"bytes,5,opt,name=statistics,proto3" json:"statistics,omitempty"` // live WireGuard peer stats (bytes + handshake)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -949,13 +951,6 @@ func (x *LabGroupClientStatus) GetAssignedIp() string {
 	return ""
 }
 
-func (x *LabGroupClientStatus) GetSecretRef() string {
-	if x != nil {
-		return x.SecretRef
-	}
-	return ""
-}
-
 func (x *LabGroupClientStatus) GetReady() bool {
 	if x != nil {
 		return x.Ready
@@ -963,11 +958,11 @@ func (x *LabGroupClientStatus) GetReady() bool {
 	return false
 }
 
-func (x *LabGroupClientStatus) GetWgConf() []byte {
+func (x *LabGroupClientStatus) GetConfig() string {
 	if x != nil {
-		return x.WgConf
+		return x.Config
 	}
-	return nil
+	return ""
 }
 
 func (x *LabGroupClientStatus) GetStatistics() *LabGroupClientStatistics {
@@ -1368,17 +1363,15 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
 	"public_key\x18\x03 \x01(\tR\tpublicKey\x128\n" +
-	"\x06status\x18\x04 \x01(\v2 .labmanager.LabGroupClientStatusR\x06status\"\xcb\x01\n" +
+	"\x06status\x18\x04 \x01(\v2 .labmanager.LabGroupClientStatusR\x06status\"\xb1\x01\n" +
 	"\x14LabGroupClientStatus\x12\x1f\n" +
 	"\vassigned_ip\x18\x01 \x01(\tR\n" +
-	"assignedIp\x12\x1d\n" +
-	"\n" +
-	"secret_ref\x18\x02 \x01(\tR\tsecretRef\x12\x14\n" +
-	"\x05ready\x18\x03 \x01(\bR\x05ready\x12\x17\n" +
-	"\awg_conf\x18\x04 \x01(\fR\x06wgConf\x12D\n" +
+	"assignedIp\x12\x14\n" +
+	"\x05ready\x18\x03 \x01(\bR\x05ready\x12\x16\n" +
+	"\x06config\x18\x04 \x01(\tR\x06config\x12D\n" +
 	"\n" +
 	"statistics\x18\x05 \x01(\v2$.labmanager.LabGroupClientStatisticsR\n" +
-	"statistics\"\x80\x01\n" +
+	"statisticsJ\x04\b\x02\x10\x03\"\x80\x01\n" +
 	"\x18LabGroupClientStatistics\x12.\n" +
 	"\x13last_handshake_unix\x18\x01 \x01(\x03R\x11lastHandshakeUnix\x12\x19\n" +
 	"\brx_bytes\x18\x02 \x01(\x03R\arxBytes\x12\x19\n" +

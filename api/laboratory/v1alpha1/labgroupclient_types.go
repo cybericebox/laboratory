@@ -15,8 +15,10 @@ type LabGroupClientSpec struct {
 type LabGroupClientStatus struct {
 	// AssignedIP is the VPN tunnel IP in CIDR notation, e.g. 10.8.0.5/32.
 	AssignedIP string `json:"assignedIP,omitempty"`
-	// SecretRef is the name of the Secret in the same namespace holding connection config.
-	SecretRef  string                   `json:"secretRef,omitempty"`
+	// Config is the assembled WireGuard client config, with a placeholder
+	// (names.WGPrivateKeyPlaceholder) where the private key goes — the cluster
+	// never holds the private key. The caller substitutes its own private key.
+	Config     string                   `json:"config,omitempty"`
 	Statistics LabGroupClientStatistics `json:"statistics,omitempty"`
 	// Conditions surfaces reconciler progress/blocking reasons
 	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
