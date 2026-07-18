@@ -21,6 +21,8 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -28,6 +30,57 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
+)
+
+var _ = Describe(
+	"Device Controller container workload", func() {
+		ctx := context.Background()
+
+		It(
+			"creates a Deployment with lab co-location affinity and a PDB", func() {
+				dev := &laboratoryv1alpha1.Device{
+					ObjectMeta: metav1.ObjectMeta{Name: "lab1-web", Namespace: "default"},
+					Spec: laboratoryv1alpha1.DeviceSpec{
+						Type:   laboratoryv1alpha1.DeviceTypeContainer,
+						Name:   "web",
+						LabRef: "lab1",
+						Image:  "nginx:alpine",
+					},
+				}
+				Expect(k8sClient.Create(ctx, dev)).To(Succeed())
+				DeferCleanup(func() { _ = k8sClient.Delete(ctx, dev) })
+
+				r := &DeviceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+				_, err := r.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: "lab1-web", Namespace: "default"},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				var dep appsv1.Deployment
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "lab1-web", Namespace: "default"}, &dep)).To(Succeed())
+				DeferCleanup(func() { _ = k8sClient.Delete(ctx, &dep) })
+				aff := dep.Spec.Template.Spec.Affinity
+				Expect(aff).NotTo(BeNil())
+				Expect(aff.PodAffinity).NotTo(BeNil())
+				terms := aff.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+				Expect(terms).To(HaveLen(1))
+				Expect(terms[0].PodAffinityTerm.TopologyKey).To(Equal(names.TopologyKeyHostname))
+				Expect(terms[0].PodAffinityTerm.LabelSelector.MatchLabels).To(HaveKeyWithValue(names.LabelLab, "lab1"))
+
+				// Reconcile again so the PDB is ensured (the deployment now exists).
+				_, err = r.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: "lab1-web", Namespace: "default"},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				var pdb policyv1.PodDisruptionBudget
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "lab1-web", Namespace: "default"}, &pdb)).To(Succeed())
+				DeferCleanup(func() { _ = k8sClient.Delete(ctx, &pdb) })
+				Expect(pdb.Spec.MinAvailable.IntValue()).To(Equal(1))
+				Expect(pdb.Spec.Selector.MatchLabels).To(HaveKeyWithValue(names.LabelDevice, "web"))
+			},
+		)
+	},
 )
 
 var _ = Describe(

@@ -12,11 +12,13 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -43,6 +45,7 @@ type DeviceReconciler struct {
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=connections,verbs=get;list;watch
 
@@ -142,6 +145,13 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 		return ctrl.Result{}, r.createDeployment(ctx, device)
 	}
 	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// A device is a single-replica workload: protect it from voluntary disruption
+	// (node drains, autoscaler) so a running lab is not silently torn down — a
+	// drain must be an explicit, force-deleting decision.
+	if err := r.ensurePodDisruptionBudget(ctx, device); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -248,6 +258,23 @@ func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laborat
 	podSpec := corev1.PodSpec{
 		NodeSelector: r.LabNodeSelector,
 		Tolerations:  r.LabTolerations,
+		// Best-effort co-location: prefer scheduling this device onto a node that
+		// already runs another device of the same lab, so a lab's intra-fabric
+		// traffic stays node-local (no Geneve hop) whenever capacity allows. Soft
+		// (preferred), so a full node never blocks a lab from being placed.
+		Affinity: &corev1.Affinity{
+			PodAffinity: &corev1.PodAffinity{
+				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{{
+					Weight: 100,
+					PodAffinityTerm: corev1.PodAffinityTerm{
+						LabelSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{names.LabelLab: device.Spec.LabRef},
+						},
+						TopologyKey: names.TopologyKeyHostname,
+					},
+				}},
+			},
+		},
 		Containers: []corev1.Container{
 			{
 				Name:  device.Spec.Name,
@@ -313,6 +340,43 @@ func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laborat
 
 func ptrBool(b bool) *bool    { return &b }
 func ptrInt32(i int32) *int32 { return &i }
+
+// ensurePodDisruptionBudget creates a minAvailable=1 PDB guarding the device's
+// (single-replica) pod, so voluntary evictions cannot take the device down. It
+// is created once and owned by the Device; the selector matches the Deployment's
+// pods. Idempotent: a NotFound triggers a create, an existing PDB is left as-is.
+func (r *DeviceReconciler) ensurePodDisruptionBudget(ctx context.Context, device *laboratoryv1alpha1.Device) error {
+	var existing policyv1.PodDisruptionBudget
+	err := r.Get(ctx, types.NamespacedName{Name: device.Name, Namespace: device.Namespace}, &existing)
+	if err == nil {
+		return nil
+	}
+	if !errors.IsNotFound(err) {
+		return err
+	}
+	minAvailable := intstr.FromInt32(1)
+	pdb := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      device.Name,
+			Namespace: device.Namespace,
+			Labels: map[string]string{
+				names.LabelLab:    device.Spec.LabRef,
+				names.LabelDevice: device.Spec.Name,
+			},
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MinAvailable: &minAvailable,
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{
+				names.LabelLab:    device.Spec.LabRef,
+				names.LabelDevice: device.Spec.Name,
+			}},
+		},
+	}
+	if err := controllerutil.SetControllerReference(device, pdb, r.Scheme); err != nil {
+		return err
+	}
+	return r.Create(ctx, pdb)
+}
 
 // deviceResources builds container resource requirements from the device's
 // optional Resources spec. Empty or unparseable quantity strings are skipped,

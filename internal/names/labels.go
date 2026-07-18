@@ -5,6 +5,10 @@ const (
 	LabelLab    = "laboratory.cybericebox.com/lab"
 	LabelDevice = "laboratory.cybericebox.com/device"
 	LabelGroup  = "laboratory.cybericebox.com/group"
+
+	// TopologyKeyHostname is the well-known node label used as the topology key
+	// for per-node scheduling constraints (device co-location).
+	TopologyKeyHostname = "kubernetes.io/hostname"
 )
 
 // Kubernetes annotation keys.
