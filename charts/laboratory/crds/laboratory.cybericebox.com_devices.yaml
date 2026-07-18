@@ -14,149 +14,162 @@ spec:
     singular: device
   scope: Namespaced
   versions:
-    - name: v1alpha1
-      schema:
-        openAPIV3Schema:
-          description: Device is the Schema for the devices API.
-          properties:
-            apiVersion:
-              description: |-
-                APIVersion defines the versioned schema of this representation of an object.
-                Servers should convert recognized schemas to the latest internal value, and
-                may reject unrecognized values.
-                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
-              type: string
-            kind:
-              description: |-
-                Kind is a string value representing the REST resource this object represents.
-                Servers may infer this from the endpoint the client submits requests to.
-                Cannot be updated.
-                In CamelCase.
-                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
-              type: string
-            metadata:
-              type: object
-            spec:
-              description: DeviceSpec defines the desired state of Device.
-              properties:
-                exposure:
-                  description: ExposureSpec declares how a device is externally reachable.
-                  properties:
-                    web:
-                      description: WebExposure publishes a device port via an L7 proxy.
-                      properties:
-                        port:
-                          format: int32
-                          type: integer
-                        protocol:
-                          default: http
-                          description: Protocol is "http" or "https".
-                          type: string
-                      required:
-                        - port
-                      type: object
-                  type: object
-                image:
-                  type: string
-                interfaces:
-                  items:
-                    description: InterfaceSpec defines a network interface on a device.
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Device is the Schema for the devices API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: DeviceSpec defines the desired state of Device.
+            properties:
+              exposure:
+                description: ExposureSpec declares how a device is externally reachable.
+                properties:
+                  web:
+                    description: WebExposure publishes a device port via an L7 proxy.
                     properties:
-                      addr:
-                        description: AddrSpec defines static or DHCP address configuration.
-                        properties:
-                          gateway:
-                            type: string
-                          ip:
-                            type: string
-                          routes:
-                            items:
-                              description: Route is a static route entry.
-                              properties:
-                                dst:
-                                  type: string
-                                via:
-                                  type: string
-                              required:
-                                - dst
-                              type: object
-                            type: array
-                          type:
-                            description: |-
-                              AddrType controls how an interface gets its address.
-                                - static:      fixed IP from spec; applied by the netconfig init-container.
-                                - dhcp:        the image runs its own DHCP client; the device pod is granted
-                                  NET_ADMIN+NET_RAW so that client can lease and configure the interface.
-                                - dhcp-preset: the image has no DHCP client but still needs a dynamic
-                                  address; the netconfig init-container leases one from the lab DHCP server
-                                  and applies it. The device container needs no capabilities.
-                            enum:
-                              - static
-                              - dhcp
-                              - dhcp-preset
-                            type: string
-                        required:
-                          - type
-                        type: object
-                      mac:
-                        description: MAC is "random" or an explicit MAC address.
-                        type: string
-                      name:
+                      port:
+                        format: int32
+                        type: integer
+                      protocol:
+                        default: http
+                        description: Protocol is "http" or "https".
                         type: string
                     required:
-                      - name
+                    - port
                     type: object
-                  type: array
-                labRef:
-                  description: LabRef is the name of the parent Lab.
-                  type: string
-                name:
-                  description: Name is the logical device name within the lab (matches
-                    DeviceTemplate.name).
-                  type: string
-                securityPreset:
-                  description: |-
-                    SecurityPreset names a capability profile (basic/service/net/debug); the
-                    concrete capabilities are resolved internally by the operator.
-                  enum:
-                    - basic
-                    - service
-                    - net
-                    - debug
-                  type: string
-                type:
-                  description: DeviceType distinguishes network device kinds.
-                  enum:
-                    - container
-                    - vm
-                    - unmanaged-switch
-                    - hub
-                  type: string
-              required:
-                - labRef
-                - name
-                - type
-              type: object
-            status:
-              description: DeviceStatus defines the observed state of Device.
-              properties:
-                nodeAddress:
-                  description: NodeAddress is the node IP used as Geneve VTEP address.
-                  type: string
-                nodeName:
-                  type: string
-                podIP:
-                  type: string
-                ready:
-                  type: boolean
-                reason:
-                  type: string
-                vni:
-                  description: VNI is set only for unmanaged-switch and hub device types.
-                  type: integer
-              type: object
-          type: object
-      served: true
-      storage: true
-      subresources:
-        status: { }
+                type: object
+              image:
+                type: string
+              interfaces:
+                items:
+                  description: InterfaceSpec defines a network interface on a device.
+                  properties:
+                    addr:
+                      description: AddrSpec defines static or DHCP address configuration.
+                      properties:
+                        gateway:
+                          type: string
+                        ip:
+                          type: string
+                        routes:
+                          items:
+                            description: Route is a static route entry.
+                            properties:
+                              dst:
+                                type: string
+                              via:
+                                type: string
+                            required:
+                            - dst
+                            type: object
+                          type: array
+                        type:
+                          description: |-
+                            AddrType controls how an interface gets its address.
+                              - static:      fixed IP from spec; applied by the netconfig init-container.
+                              - dhcp:        the image runs its own DHCP client; the device pod is granted
+                                NET_ADMIN+NET_RAW so that client can lease and configure the interface.
+                              - dhcp-preset: the image has no DHCP client but still needs a dynamic
+                                address; the netconfig init-container leases one from the lab DHCP server
+                                and applies it. The device container needs no capabilities.
+                          enum:
+                          - static
+                          - dhcp
+                          - dhcp-preset
+                          type: string
+                      required:
+                      - type
+                      type: object
+                    mac:
+                      description: MAC is "random" or an explicit MAC address.
+                      type: string
+                    name:
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              labRef:
+                description: LabRef is the name of the parent Lab.
+                type: string
+              name:
+                description: Name is the logical device name within the lab (matches
+                  DeviceTemplate.name).
+                type: string
+              resources:
+                description: Resources sets the container resource requests/limits
+                  for this device.
+                properties:
+                  cpuLimit:
+                    type: string
+                  cpuRequest:
+                    type: string
+                  memoryLimit:
+                    type: string
+                  memoryRequest:
+                    type: string
+                type: object
+              securityPreset:
+                description: |-
+                  SecurityPreset names a capability profile (basic/service/net/debug); the
+                  concrete capabilities are resolved internally by the operator.
+                enum:
+                - basic
+                - service
+                - net
+                - debug
+                type: string
+              type:
+                description: DeviceType distinguishes network device kinds.
+                enum:
+                - container
+                - vm
+                - unmanaged-switch
+                - hub
+                type: string
+            required:
+            - labRef
+            - name
+            - type
+            type: object
+          status:
+            description: DeviceStatus defines the observed state of Device.
+            properties:
+              nodeAddress:
+                description: NodeAddress is the node IP used as Geneve VTEP address.
+                type: string
+              nodeName:
+                type: string
+              podIP:
+                type: string
+              ready:
+                type: boolean
+              reason:
+                type: string
+              vni:
+                description: VNI is set only for unmanaged-switch and hub device types.
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
