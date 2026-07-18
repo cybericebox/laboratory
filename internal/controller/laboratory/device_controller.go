@@ -158,6 +158,7 @@ func (r *DeviceReconciler) createPod(ctx context.Context, device *laboratoryv1al
 					// flows, so these caps cannot break a pod out of its VNI.
 					SecurityContext: deviceSecurityContext(device),
 					Resources:       deviceResources(device),
+					Env:             deviceEnv(device),
 				},
 			},
 		},
@@ -203,6 +204,20 @@ func deviceResources(device *laboratoryv1alpha1.Device) corev1.ResourceRequireme
 	set(&rr.Limits, corev1.ResourceCPU, r.CPULimit)
 	set(&rr.Limits, corev1.ResourceMemory, r.MemoryLimit)
 	return rr
+}
+
+// deviceEnv maps the device's declared environment variables onto the
+// container. Values are passed through verbatim (already resolved by the
+// caller, e.g. an injected flag).
+func deviceEnv(device *laboratoryv1alpha1.Device) []corev1.EnvVar {
+	if len(device.Spec.Env) == 0 {
+		return nil
+	}
+	out := make([]corev1.EnvVar, 0, len(device.Spec.Env))
+	for i := range device.Spec.Env {
+		out = append(out, corev1.EnvVar{Name: device.Spec.Env[i].Name, Value: device.Spec.Env[i].Value})
+	}
+	return out
 }
 
 // ifaceNameRE matches a valid Linux interface name (IFNAMSIZ-bounded, no shell

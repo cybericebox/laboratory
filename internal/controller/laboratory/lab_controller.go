@@ -391,6 +391,7 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 				Interfaces:     tmpl.Interfaces,
 				Exposure:       tmpl.Exposure,
 				Resources:      tmpl.Resources,
+				Env:            tmpl.Env,
 			},
 		}
 		if err := controllerutil.SetOwnerReference(lab, d, r.Scheme); err != nil {
