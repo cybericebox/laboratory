@@ -55,6 +55,15 @@ func protoToLab(p *protobuf.Lab) (*laboratoryv1alpha1.Lab, error) {
 // which is not stored on the CR itself (it lives in a Secret) so it is
 // supplied by the caller.
 func clientToProto(c *laboratoryv1alpha1.LabGroupClient, wgConf []byte) *protobuf.LabGroupClient {
+	// WireGuard exposes transfer bytes + last handshake per peer only (no packet
+	// counts). A zero handshake time (never connected) maps to 0.
+	stats := &protobuf.LabGroupClientStatistics{
+		RxBytes: c.Status.Statistics.RxBytes,
+		TxBytes: c.Status.Statistics.TxBytes,
+	}
+	if !c.Status.Statistics.LastHandshake.IsZero() {
+		stats.LastHandshakeUnix = c.Status.Statistics.LastHandshake.Unix()
+	}
 	return &protobuf.LabGroupClient{
 		Namespace: c.Namespace,
 		Name:      c.Name,
@@ -64,6 +73,7 @@ func clientToProto(c *laboratoryv1alpha1.LabGroupClient, wgConf []byte) *protobu
 			SecretRef:  c.Status.SecretRef,
 			Ready:      c.Status.AssignedIP != "",
 			WgConf:     wgConf,
+			Statistics: stats,
 		},
 	}
 }

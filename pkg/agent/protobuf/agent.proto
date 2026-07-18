@@ -67,6 +67,14 @@ message LabGroupClientStatus {
   string secret_ref = 2;
   bool ready = 3;
   bytes wg_conf = 4;   // populated on Get/Create from the client Secret
+  LabGroupClientStatistics statistics = 5;   // live WireGuard peer stats (bytes + handshake)
+}
+// LabGroupClientStatistics mirrors the CRD status the VPN server writes per peer.
+// WireGuard natively exposes transfer bytes + last handshake only (no packet counts).
+message LabGroupClientStatistics {
+  int64 last_handshake_unix = 1;   // unix seconds; 0 = never handshaked
+  int64 rx_bytes = 2;
+  int64 tx_bytes = 3;
 }
 message LabGroupClientList {repeated LabGroupClient items = 1;}
 

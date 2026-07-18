@@ -3,6 +3,8 @@ package grpc
 import (
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
@@ -61,6 +63,11 @@ func TestClientToProto(t *testing.T) {
 	c.Spec.PublicKey = "pubkey123"
 	c.Status.AssignedIP = "10.8.0.5/32"
 	c.Status.SecretRef = "team-alpha/client-client1"
+	c.Status.Statistics = laboratoryv1alpha1.LabGroupClientStatistics{
+		LastHandshake: metav1.Unix(1700000000, 0),
+		RxBytes:       4096,
+		TxBytes:       8192,
+	}
 
 	wgConf := []byte("wireguard-config")
 	p := clientToProto(c, wgConf)
@@ -75,5 +82,33 @@ func TestClientToProto(t *testing.T) {
 	}
 	if string(p.Status.WgConf) != "wireguard-config" {
 		t.Errorf("wgConf wrong: %+v", p.Status)
+	}
+	if p.Status.Statistics == nil {
+		t.Fatalf("expected statistics, got nil")
+	}
+	if p.Status.Statistics.RxBytes != 4096 || p.Status.Statistics.TxBytes != 8192 {
+		t.Errorf("stats bytes wrong: %+v", p.Status.Statistics)
+	}
+	if p.Status.Statistics.LastHandshakeUnix != 1700000000 {
+		t.Errorf("last handshake wrong: %+v", p.Status.Statistics)
+	}
+}
+
+// A never-connected client must report a zero handshake (not a negative/garbage
+// unix stamp from a zero metav1.Time).
+func TestClientToProtoZeroHandshake(t *testing.T) {
+	c := &laboratoryv1alpha1.LabGroupClient{}
+	c.Name = "fresh"
+	c.Namespace = "team-alpha"
+
+	p := clientToProto(c, nil)
+	if p.Status.Statistics == nil {
+		t.Fatalf("expected statistics, got nil")
+	}
+	if p.Status.Statistics.LastHandshakeUnix != 0 {
+		t.Errorf("expected 0 handshake for fresh client, got %d", p.Status.Statistics.LastHandshakeUnix)
+	}
+	if p.Status.Statistics.RxBytes != 0 || p.Status.Statistics.TxBytes != 0 {
+		t.Errorf("expected zero bytes, got %+v", p.Status.Statistics)
 	}
 }

@@ -4,6 +4,9 @@ import (
 	"context"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -24,6 +27,48 @@ func TestCreateLabGroupClient(t *testing.T) {
 	}
 	if got.PublicKey != "pk" {
 		t.Errorf("pk lost: %+v", got)
+	}
+}
+
+// The VPN server writes WireGuard peer stats onto the CR status subresource;
+// the agent must surface them through GetLabGroupClient. Envtest catches CRD
+// status-schema drift that a pure converter test cannot.
+func TestGetLabGroupClientStatistics(t *testing.T) {
+	h, k8s := newTestHandler(t)
+	ctx := context.Background()
+	mustNamespace(t, k8s, "team-stats")
+
+	if _, err := h.CreateLabGroupClient(ctx, &protobuf.LabGroupClient{
+		Namespace: "team-stats", Name: "carol", PublicKey: "pk",
+	}); err != nil {
+		t.Fatalf("CreateLabGroupClient: %v", err)
+	}
+
+	cur, err := h.cs.LaboratoryV1alpha1().LabGroupClients("team-stats").Get(ctx, "carol", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get cr: %v", err)
+	}
+	cur.Status.Statistics = laboratoryv1alpha1.LabGroupClientStatistics{
+		LastHandshake: metav1.Unix(1700000000, 0),
+		RxBytes:       1234,
+		TxBytes:       5678,
+	}
+	if _, err := h.cs.LaboratoryV1alpha1().LabGroupClients("team-stats").UpdateStatus(ctx, cur, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	got, err := h.GetLabGroupClient(ctx, &protobuf.NamespacedIDRequest{Namespace: "team-stats", Name: "carol"})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status.Statistics == nil {
+		t.Fatalf("statistics not surfaced through agent: %+v", got.Status)
+	}
+	if got.Status.Statistics.RxBytes != 1234 || got.Status.Statistics.TxBytes != 5678 {
+		t.Errorf("stats bytes wrong: %+v", got.Status.Statistics)
+	}
+	if got.Status.Statistics.LastHandshakeUnix != 1700000000 {
+		t.Errorf("last handshake wrong: %+v", got.Status.Statistics)
 	}
 }
 
