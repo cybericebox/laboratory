@@ -126,7 +126,19 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		logger.Error(err, "materialize connections")
 		return ctrl.Result{}, err
 	}
-	
+
+	// Prune what the spec no longer wants (edit = add via materialize + remove
+	// via prune). Connections first so a removed device's link is gone before
+	// the device itself.
+	if err := r.pruneConnections(ctx, &lab); err != nil {
+		logger.Error(err, "prune connections")
+		return ctrl.Result{}, err
+	}
+	if err := r.pruneDevices(ctx, &lab); err != nil {
+		logger.Error(err, "prune devices")
+		return ctrl.Result{}, err
+	}
+
 	if err := r.ensureDeploymentAnnotations(ctx, &lab); err != nil {
 		logger.Error(err, "ensure deployment annotations")
 		return ctrl.Result{}, err
@@ -485,6 +497,76 @@ func (r *LabReconciler) materializeConnections(ctx context.Context, lab *laborat
 			if err := r.Status().Update(ctx, conn); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+// pruneConnections deletes Connection CRs owned by the lab whose names are no
+// longer produced by lab.Spec.Connections, releasing any direct-link VNI first.
+// This is what makes "remove a connection from the spec" tear down its OVS link
+// (materializeConnections only ever creates).
+func (r *LabReconciler) pruneConnections(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
+	desired := make(map[string]bool, len(lab.Spec.Connections))
+	for i := range lab.Spec.Connections {
+		desired[connectionName(lab.Name, lab.Spec.Connections[i].Endpoints)] = true
+	}
+	var list laboratoryv1alpha1.ConnectionList
+	if err := r.List(ctx, &list, client.InNamespace(lab.Namespace), client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
+		return err
+	}
+	vniAllocator := poolpkg.NewAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
+	for i := range list.Items {
+		c := &list.Items[i]
+		if desired[c.Name] || !c.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if c.Status.VNI != nil {
+			if err := vniAllocator.ReleaseIndex(ctx, *c.Status.VNI); err != nil {
+				return fmt.Errorf("release VNI %d for connection %s: %w", *c.Status.VNI, c.Name, err)
+			}
+			c.Status.VNI = nil
+			if err := r.Status().Update(ctx, c); err != nil {
+				return err
+			}
+		}
+		if err := r.Delete(ctx, c); client.IgnoreNotFound(err) != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// pruneDevices deletes Device CRs owned by the lab whose names are no longer in
+// lab.Spec.Devices, releasing any switch/hub VNI first. This is what makes
+// "remove a device from the spec" tear down its pod (materializeDevices only
+// ever creates).
+func (r *LabReconciler) pruneDevices(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
+	desired := make(map[string]bool, len(lab.Spec.Devices))
+	for i := range lab.Spec.Devices {
+		desired[fmt.Sprintf("%s-%s", lab.Name, lab.Spec.Devices[i].Name)] = true
+	}
+	var list laboratoryv1alpha1.DeviceList
+	if err := r.List(ctx, &list, client.InNamespace(lab.Namespace), client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
+		return err
+	}
+	vniAllocator := poolpkg.NewAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
+	for i := range list.Items {
+		d := &list.Items[i]
+		if desired[d.Name] || !d.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if d.Status.VNI != nil {
+			if err := vniAllocator.ReleaseIndex(ctx, *d.Status.VNI); err != nil {
+				return fmt.Errorf("release switch VNI %d for device %s: %w", *d.Status.VNI, d.Name, err)
+			}
+			d.Status.VNI = nil
+			if err := r.Status().Update(ctx, d); err != nil {
+				return err
+			}
+		}
+		if err := r.Delete(ctx, d); client.IgnoreNotFound(err) != nil {
+			return err
 		}
 	}
 	return nil
