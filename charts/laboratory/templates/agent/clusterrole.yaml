@@ -1,4 +1,33 @@
 {{- if .Values.agent.enabled }}
+# Cluster-scoped access for the agent: genuinely cluster-wide resources
+# (cluster-scoped LabGroups, namespace resolution) plus the capacity/usage reads
+# (nodes, pods, pod metrics) that span all namespaces. Bound cluster-wide by
+# clusterrolebinding.yaml.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: laboratory-agent-cluster
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "labgroups", "labgroups/status" ]
+    verbs: [ "get", "list", "watch", "create", "update", "patch", "delete" ]
+  - apiGroups: [ "" ]
+    resources: [ "namespaces" ]
+    verbs: [ "get", "list", "watch" ]
+  # capacity estimation: node allocatable + sum of scheduled pod requests (all namespaces).
+  - apiGroups: [ "" ]
+    resources: [ "nodes", "pods" ]
+    verbs: [ "get", "list" ]
+  # live resource usage (optional; requires metrics-server; all namespaces).
+  - apiGroups: [ "metrics.k8s.io" ]
+    resources: [ "pods" ]
+    verbs: [ "get", "list" ]
+---
+# Namespaced access for the agent: per-lab resources. Granted ONLY inside each
+# group namespace, via the RoleBinding the LabGroup reconciler creates — least
+# privilege, so the agent cannot touch these resources in non-lab namespaces.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -6,14 +35,6 @@ metadata:
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 rules:
-  # cluster-scoped LabGroup + namespace resolution (effective via the ClusterRoleBinding).
-  - apiGroups: [ "laboratory.cybericebox.com" ]
-    resources: [ "labgroups", "labgroups/status" ]
-    verbs: [ "get", "list", "watch", "create", "update", "patch", "delete" ]
-  - apiGroups: [ "" ]
-    resources: [ "namespaces" ]
-    verbs: [ "get", "list", "watch" ]
-  # per-namespace resources (effective via the operator-created per-group-ns RoleBinding).
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "labs", "labs/status", "labgroupclients", "labgroupclients/status" ]
     verbs: [ "get", "list", "watch", "create", "update", "patch", "delete" ]
@@ -26,12 +47,4 @@ rules:
   - apiGroups: [ "" ]
     resources: [ "events" ]
     verbs: [ "get", "list", "watch" ]
-  # capacity estimation: node allocatable + sum of scheduled pod requests.
-  - apiGroups: [ "" ]
-    resources: [ "nodes", "pods" ]
-    verbs: [ "get", "list" ]
-  # live resource usage (optional; requires metrics-server).
-  - apiGroups: [ "metrics.k8s.io" ]
-    resources: [ "pods" ]
-    verbs: [ "get", "list" ]
 {{- end }}

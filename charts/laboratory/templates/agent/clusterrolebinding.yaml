@@ -2,13 +2,13 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: laboratory-agent-role
+  name: laboratory-agent-cluster
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: laboratory-agent-role
+  name: laboratory-agent-cluster
 subjects:
   - kind: ServiceAccount
     name: laboratory-agent
