@@ -72,22 +72,6 @@ spec:
                   description: DeviceTemplate is an inline device declaration inside
                     Lab.spec.devices[].
                   properties:
-                    env:
-                      description: |-
-                        Env are environment variables injected into the device container (e.g. a
-                        task flag or per-device config).
-                      items:
-                        description: EnvVar is a plain environment variable for a
-                          device container.
-                        properties:
-                          name:
-                            type: string
-                          value:
-                            type: string
-                        required:
-                        - name
-                        type: object
-                      type: array
                     exposure:
                       description: ExposureSpec declares how a device is externally
                         reachable.

@@ -40,10 +40,6 @@ type DeviceTemplate struct {
 	// Resources sets the container resource requests/limits for this device.
 	// +optional
 	Resources *DeviceResources `json:"resources,omitempty"`
-	// Env are environment variables injected into the device container (e.g. a
-	// task flag or per-device config).
-	// +optional
-	Env []EnvVar `json:"env,omitempty"`
 }
 
 // ConnectionTemplate is an inline connection declaration inside Lab.spec.connections[].

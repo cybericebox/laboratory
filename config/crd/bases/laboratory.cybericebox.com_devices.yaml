@@ -39,24 +39,6 @@ spec:
           spec:
             description: DeviceSpec defines the desired state of Device.
             properties:
-              env:
-                description: |-
-                  Env are environment variables injected into the device container (e.g. a
-                  task flag or per-device config). Values are already resolved by the
-                  caller; the operator does not interpret them. Ignored for switch/hub
-                  devices, which have no container.
-                items:
-                  description: EnvVar is a plain environment variable for a device
-                    container.
-                  properties:
-                    name:
-                      type: string
-                    value:
-                      type: string
-                  required:
-                  - name
-                  type: object
-                type: array
               exposure:
                 description: ExposureSpec declares how a device is externally reachable.
                 properties:

@@ -158,7 +158,6 @@ func (r *DeviceReconciler) createPod(ctx context.Context, device *laboratoryv1al
 					// flows, so these caps cannot break a pod out of its VNI.
 					SecurityContext: deviceSecurityContext(device),
 					Resources:       deviceResources(device),
-					Env:             deviceEnv(device),
 				},
 			},
 		},
@@ -170,7 +169,19 @@ func (r *DeviceReconciler) createPod(ctx context.Context, device *laboratoryv1al
 	if ic := r.netConfigInitContainer(device); ic != nil {
 		pod.Spec.InitContainers = append(pod.Spec.InitContainers, *ic)
 	}
-	
+
+	// Env vars come from a per-device Secret (<device>-env) the agent wrote
+	// write-only — referenced here, never read by the controller (the kubelet
+	// resolves envFrom at pod start). optional=true so a device with no env
+	// simply has no secret; values never live in the CR spec.
+	optional := true
+	pod.Spec.Containers[0].EnvFrom = []corev1.EnvFromSource{
+		{SecretRef: &corev1.SecretEnvSource{
+			LocalObjectReference: corev1.LocalObjectReference{Name: device.Name + "-env"},
+			Optional:             &optional,
+		}},
+	}
+
 	if err := controllerutil.SetControllerReference(device, pod, r.Scheme); err != nil {
 		return err
 	}
@@ -206,19 +217,6 @@ func deviceResources(device *laboratoryv1alpha1.Device) corev1.ResourceRequireme
 	return rr
 }
 
-// deviceEnv maps the device's declared environment variables onto the
-// container. Values are passed through verbatim (already resolved by the
-// caller, e.g. an injected flag).
-func deviceEnv(device *laboratoryv1alpha1.Device) []corev1.EnvVar {
-	if len(device.Spec.Env) == 0 {
-		return nil
-	}
-	out := make([]corev1.EnvVar, 0, len(device.Spec.Env))
-	for i := range device.Spec.Env {
-		out = append(out, corev1.EnvVar{Name: device.Spec.Env[i].Name, Value: device.Spec.Env[i].Value})
-	}
-	return out
-}
 
 // ifaceNameRE matches a valid Linux interface name (IFNAMSIZ-bounded, no shell
 // metacharacters) so it is safe to interpolate into the init-container script.

@@ -48,6 +48,15 @@ message Lab {
   string name = 2;
   bytes spec_json = 3;   // Lab.spec serialized; agent is a thin wrapper, spec passes through
   LabStatus status = 4;
+  // Per-device environment variables. The agent materializes these into a
+  // write-only per-device Secret (referenced by the pod via envFrom) — the
+  // values never travel in spec_json and never land in the Lab/Device CR.
+  repeated DeviceEnv env = 5;
+}
+// DeviceEnv carries the env vars for one device (e.g. a task flag, a license).
+message DeviceEnv {
+  string device = 1;
+  map<string, string> vars = 2;
 }
 message LabStatus {
   string phase = 1;

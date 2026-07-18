@@ -23,19 +23,8 @@ type DeviceSpec struct {
 	// Resources sets the container resource requests/limits for this device.
 	// +optional
 	Resources *DeviceResources `json:"resources,omitempty"`
-	// Env are environment variables injected into the device container (e.g. a
-	// task flag or per-device config). Values are already resolved by the
-	// caller; the operator does not interpret them. Ignored for switch/hub
-	// devices, which have no container.
-	// +optional
-	Env []EnvVar `json:"env,omitempty"`
-}
-
-// EnvVar is a plain environment variable for a device container.
-type EnvVar struct {
-	// +kubebuilder:validation:Required
-	Name  string `json:"name"`
-	Value string `json:"value,omitempty"`
+	// Env values are NOT carried on the CR — they live only in a per-device
+	// Secret (<device>-env) the agent writes, referenced by the pod via envFrom.
 }
 
 // DeviceResources sets container resource requests/limits for a device pod.

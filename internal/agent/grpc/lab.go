@@ -18,6 +18,9 @@ func (h *Handler) CreateLab(ctx context.Context, in *protobuf.Lab) (*protobuf.La
 	if err != nil {
 		return nil, err
 	}
+	if err := h.reconcileEnvSecrets(ctx, out, in.Env); err != nil {
+		return nil, err
+	}
 	return labToProto(out), nil
 }
 
@@ -62,6 +65,9 @@ func (h *Handler) UpdateLab(ctx context.Context, in *protobuf.Lab) (*protobuf.La
 	cur.Spec = desired.Spec
 	out, err := h.cs.LaboratoryV1alpha1().Labs(in.Namespace).Update(ctx, cur, metav1.UpdateOptions{})
 	if err != nil {
+		return nil, err
+	}
+	if err := h.reconcileEnvSecrets(ctx, out, in.Env); err != nil {
 		return nil, err
 	}
 	return labToProto(out), nil
