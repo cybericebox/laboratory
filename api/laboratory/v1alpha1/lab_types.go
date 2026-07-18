@@ -37,6 +37,9 @@ type DeviceTemplate struct {
 	SecurityPreset SecurityPreset  `json:"securityPreset,omitempty"`
 	Interfaces     []InterfaceSpec `json:"interfaces,omitempty"`
 	Exposure       *ExposureSpec   `json:"exposure,omitempty"`
+	// Resources sets the container resource requests/limits for this device.
+	// +optional
+	Resources *DeviceResources `json:"resources,omitempty"`
 }
 
 // ConnectionTemplate is an inline connection declaration inside Lab.spec.connections[].

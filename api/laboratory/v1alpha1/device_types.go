@@ -20,6 +20,20 @@ type DeviceSpec struct {
 	SecurityPreset SecurityPreset  `json:"securityPreset,omitempty"`
 	Interfaces     []InterfaceSpec `json:"interfaces,omitempty"`
 	Exposure       *ExposureSpec   `json:"exposure,omitempty"`
+	// Resources sets the container resource requests/limits for this device.
+	// +optional
+	Resources *DeviceResources `json:"resources,omitempty"`
+}
+
+// DeviceResources sets container resource requests/limits for a device pod.
+// Values are Kubernetes quantity strings (e.g. "250m", "256Mi"); empty fields
+// are omitted so the scheduler treats them as best-effort. Requests are what
+// capacity planning sums against node allocatable.
+type DeviceResources struct {
+	CPURequest    string `json:"cpuRequest,omitempty"`
+	MemoryRequest string `json:"memoryRequest,omitempty"`
+	CPULimit      string `json:"cpuLimit,omitempty"`
+	MemoryLimit   string `json:"memoryLimit,omitempty"`
 }
 
 // DeviceStatus defines the observed state of Device.

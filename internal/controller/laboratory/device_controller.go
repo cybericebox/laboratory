@@ -12,6 +12,7 @@ import (
 	
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -156,6 +157,7 @@ func (r *DeviceReconciler) createPod(ctx context.Context, device *laboratoryv1al
 					// has a DHCP interface). Isolation is enforced host-side by OVS
 					// flows, so these caps cannot break a pod out of its VNI.
 					SecurityContext: deviceSecurityContext(device),
+					Resources:       deviceResources(device),
 				},
 			},
 		},
@@ -172,6 +174,35 @@ func (r *DeviceReconciler) createPod(ctx context.Context, device *laboratoryv1al
 		return err
 	}
 	return r.Create(ctx, pod)
+}
+
+// deviceResources builds container resource requirements from the device's
+// optional Resources spec. Empty or unparseable quantity strings are skipped,
+// so a device with no (or partial) resources set is best-effort scheduled.
+func deviceResources(device *laboratoryv1alpha1.Device) corev1.ResourceRequirements {
+	var rr corev1.ResourceRequirements
+	r := device.Spec.Resources
+	if r == nil {
+		return rr
+	}
+	set := func(list *corev1.ResourceList, name corev1.ResourceName, val string) {
+		if val == "" {
+			return
+		}
+		q, err := resource.ParseQuantity(val)
+		if err != nil {
+			return
+		}
+		if *list == nil {
+			*list = corev1.ResourceList{}
+		}
+		(*list)[name] = q
+	}
+	set(&rr.Requests, corev1.ResourceCPU, r.CPURequest)
+	set(&rr.Requests, corev1.ResourceMemory, r.MemoryRequest)
+	set(&rr.Limits, corev1.ResourceCPU, r.CPULimit)
+	set(&rr.Limits, corev1.ResourceMemory, r.MemoryLimit)
+	return rr
 }
 
 // ifaceNameRE matches a valid Linux interface name (IFNAMSIZ-bounded, no shell
