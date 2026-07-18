@@ -45,6 +45,10 @@ type DeviceStatus struct {
 	// NodeAddress is the node IP used as Geneve VTEP address.
 	NodeAddress string `json:"nodeAddress,omitempty"`
 	PodIP       string `json:"podIP,omitempty"`
+	// PodName is the current pod backing this device. A device runs one pod
+	// (Deployment, replicas=1) whose name changes on recreation, so the
+	// node-agent keys the device's per-pod OVS port on this stable pointer.
+	PodName string `json:"podName,omitempty"`
 	// VNI is set only for unmanaged-switch and hub device types.
 	VNI    *uint  `json:"vni,omitempty"`
 	Reason string `json:"reason,omitempty"`
@@ -58,7 +62,7 @@ type DeviceStatus struct {
 type Device struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	
+
 	Spec   DeviceSpec   `json:"spec,omitempty"`
 	Status DeviceStatus `json:"status,omitempty"`
 }

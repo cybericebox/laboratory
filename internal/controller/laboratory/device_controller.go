@@ -145,7 +145,7 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 		return ctrl.Result{}, err
 	}
 
-	nodeName, podIP := r.devicePodPlacement(ctx, device)
+	nodeName, podIP, podName := r.devicePodPlacement(ctx, device)
 	ready := dep.Status.AvailableReplicas >= 1
 
 	updated := false
@@ -155,6 +155,10 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 	}
 	if podIP != device.Status.PodIP {
 		device.Status.PodIP = podIP
+		updated = true
+	}
+	if podName != device.Status.PodName {
+		device.Status.PodName = podName
 		updated = true
 	}
 	if ready != device.Status.Ready {
@@ -169,16 +173,17 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 	// Deployment changes trigger reconcile, but a pod getting its IP does not
 	// (the pod is owned by the ReplicaSet, not the Device) — requeue until the
 	// placement is fully observed.
-	if !ready || podIP == "" {
+	if !ready || podIP == "" || podName == "" {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
 }
 
-// devicePodPlacement returns the NodeName/PodIP of the device's live pod, found
-// by label (the Deployment pod name carries a random suffix). On a brief overlap
-// during recreation it takes the last Running match (the newest pod).
-func (r *DeviceReconciler) devicePodPlacement(ctx context.Context, device *laboratoryv1alpha1.Device) (nodeName, podIP string) {
+// devicePodPlacement returns the NodeName/PodIP/PodName of the device's live pod,
+// found by label (the Deployment pod name carries a random suffix). On a brief
+// overlap during recreation it takes the last Running match (the newest pod), so
+// the node-agent binds the connection to the incoming pod's port.
+func (r *DeviceReconciler) devicePodPlacement(ctx context.Context, device *laboratoryv1alpha1.Device) (nodeName, podIP, podName string) {
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods,
 		client.InNamespace(device.Namespace),
@@ -187,7 +192,7 @@ func (r *DeviceReconciler) devicePodPlacement(ctx context.Context, device *labor
 			names.LabelDevice: device.Spec.Name,
 		},
 	); err != nil {
-		return "", ""
+		return "", "", ""
 	}
 	for i := range pods.Items {
 		p := &pods.Items[i]
@@ -195,10 +200,10 @@ func (r *DeviceReconciler) devicePodPlacement(ctx context.Context, device *labor
 			continue
 		}
 		if p.Status.Phase == corev1.PodRunning {
-			nodeName, podIP = p.Spec.NodeName, p.Status.PodIP
+			nodeName, podIP, podName = p.Spec.NodeName, p.Status.PodIP, p.Name
 		}
 	}
-	return nodeName, podIP
+	return nodeName, podIP, podName
 }
 
 // deviceNetworkAnnotation builds the network.cybericebox.com/networks annotation value.
@@ -229,10 +234,9 @@ func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laborat
 	}
 
 	labels := map[string]string{
-		names.LabelLab:        device.Spec.LabRef,
-		"app":                 device.Spec.Name,
-		names.LabelDevice:     device.Spec.Name,
-		names.LabelDeviceName: device.Name,
+		names.LabelLab:    device.Spec.LabRef,
+		"app":             device.Spec.Name,
+		names.LabelDevice: device.Spec.Name,
 	}
 	// The selector must be immutable and uniquely identify this device's pod:
 	// (lab, device-name) is unique within the namespace.

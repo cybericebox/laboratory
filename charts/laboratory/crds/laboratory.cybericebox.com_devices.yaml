@@ -160,6 +160,12 @@ spec:
                 type: string
               podIP:
                 type: string
+              podName:
+                description: |-
+                  PodName is the current pod backing this device. A device runs one pod
+                  (Deployment, replicas=1) whose name changes on recreation, so the
+                  node-agent keys the device's per-pod OVS port on this stable pointer.
+                type: string
               ready:
                 type: boolean
               reason:

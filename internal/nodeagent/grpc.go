@@ -107,7 +107,7 @@ func (s *NodeAgentServer) SetupNetworks(
 	attachments := ParseNetworkAnnotation(pod.Annotations[names.AnnotationNetworks])
 	log.Info("wiring OVS interfaces synchronously", "count", len(attachments))
 	for _, att := range attachments {
-		stableKey := names.DevicePortKey(req.Namespace, devicePortOwner(&pod), att.Iface)
+		stableKey := names.DevicePortKey(req.Namespace, req.Name, att.Iface)
 		podSide := VethPeerName(stableKey)
 		targetIface := att.Iface
 

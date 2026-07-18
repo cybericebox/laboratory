@@ -94,7 +94,7 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	if pod.DeletionTimestamp != nil {
 		for _, att := range attachments {
-			stableKey := r.resolveOVSPort(ctx, pod.Namespace, devicePortOwner(&pod), att)
+			stableKey := r.resolveOVSPort(ctx, pod.Namespace, pod.Name, att)
 			r.delVethWithFlows(stableKey)
 		}
 		return ctrl.Result{}, nil
@@ -123,7 +123,7 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	log.Info("NetAttach: got netnsPath", "netnsPath", netnsPath)
 
 	for _, att := range attachments {
-		stableKey := r.resolveOVSPort(ctx, pod.Namespace, devicePortOwner(&pod), att)
+		stableKey := r.resolveOVSPort(ctx, pod.Namespace, pod.Name, att)
 		podSide := VethPeerName(stableKey)
 		targetIface := att.Iface
 		if targetIface == "" {
@@ -244,41 +244,31 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
-// devicePortOwner returns the stable identity a device pod's OVS ports are keyed
-// on: the Device CR name (LabelDeviceName), which is invariant across pod
-// recreation under a Deployment and matches the key the Connection reconciler
-// derives from the Device CR name. Falls back to the pod name for pods without
-// the label (vpn/gateway and other non-device pods keep pod-scoped keys).
-func devicePortOwner(pod *corev1.Pod) string {
-	if dn := pod.Labels[names.LabelDeviceName]; dn != "" {
-		return dn
-	}
-	return pod.Name
-}
-
 // resolveOVSPort returns the stable OVS port key for an attachment.
 // Device-pod attachments ("iface@" or "iface@<connection>") always map to the
-// deterministic DevicePortKey — the same key SetupNetworks creates the veth
-// under. Names that do not resolve to a Connection CRD (vpn/gateway "labN@labN"
-// entries) are literal OVS port names and are returned as-is. keyOwner is the
-// port-key identity (see devicePortOwner), not necessarily the pod name.
+// per-pod DevicePortKey — the same key SetupNetworks creates the veth under, so
+// each pod owns its own port and a recreated pod gets a fresh one (no stale-port
+// overlap with the terminating pod). Names that do not resolve to a Connection
+// CRD (vpn/gateway "labN@labN" entries) are literal OVS port names, returned
+// as-is. The Connection reconciler binds whichever pod is current (Device
+// Status.PodName) into the VNI, so per-pod keys need no coordination here.
 //
 // Never pick a port from Connection.Status.Ports here: a connection can have
 // two local endpoints on this node, and any "first local port" heuristic wires
 // one pod's attachment to the other pod's port.
 func (r *NetworkAttachReconciler) resolveOVSPort(
 	ctx context.Context,
-	namespace, keyOwner string,
+	namespace, podName string,
 	att NetAttachment,
 ) string {
 	if att.Name == "" {
-		return names.DevicePortKey(namespace, keyOwner, att.Iface)
+		return names.DevicePortKey(namespace, podName, att.Iface)
 	}
 	var conn laboratoryv1alpha1.Connection
 	if err := r.Get(ctx, types.NamespacedName{Name: att.Name, Namespace: namespace}, &conn); err != nil {
 		return att.Name
 	}
-	return names.DevicePortKey(namespace, keyOwner, att.Iface)
+	return names.DevicePortKey(namespace, podName, att.Iface)
 }
 
 func (r *NetworkAttachReconciler) SetupWithManager(mgr ctrl.Manager) error {
