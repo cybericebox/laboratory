@@ -35,6 +35,7 @@ const (
 	LabManager_ListLabGroupClients_FullMethodName  = "/labmanager.LabManager/ListLabGroupClients"
 	LabManager_DeleteLabGroupClient_FullMethodName = "/labmanager.LabManager/DeleteLabGroupClient"
 	LabManager_Monitoring_FullMethodName           = "/labmanager.LabManager/Monitoring"
+	LabManager_GetCapacity_FullMethodName          = "/labmanager.LabManager/GetCapacity"
 )
 
 // LabManagerClient is the client API for LabManager service.
@@ -57,6 +58,7 @@ type LabManagerClient interface {
 	ListLabGroupClients(ctx context.Context, in *NamespaceRequest, opts ...grpc.CallOption) (*LabGroupClientList, error)
 	DeleteLabGroupClient(ctx context.Context, in *NamespacedIDRequest, opts ...grpc.CallOption) (*Empty, error)
 	Monitoring(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[Empty, MonitoringUpdate], error)
+	GetCapacity(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*CapacityResponse, error)
 }
 
 type labManagerClient struct {
@@ -230,6 +232,16 @@ func (c *labManagerClient) Monitoring(ctx context.Context, opts ...grpc.CallOpti
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type LabManager_MonitoringClient = grpc.BidiStreamingClient[Empty, MonitoringUpdate]
 
+func (c *labManagerClient) GetCapacity(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*CapacityResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CapacityResponse)
+	err := c.cc.Invoke(ctx, LabManager_GetCapacity_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LabManagerServer is the server API for LabManager service.
 // All implementations must embed UnimplementedLabManagerServer
 // for forward compatibility.
@@ -250,6 +262,7 @@ type LabManagerServer interface {
 	ListLabGroupClients(context.Context, *NamespaceRequest) (*LabGroupClientList, error)
 	DeleteLabGroupClient(context.Context, *NamespacedIDRequest) (*Empty, error)
 	Monitoring(grpc.BidiStreamingServer[Empty, MonitoringUpdate]) error
+	GetCapacity(context.Context, *Empty) (*CapacityResponse, error)
 	mustEmbedUnimplementedLabManagerServer()
 }
 
@@ -307,6 +320,9 @@ func (UnimplementedLabManagerServer) DeleteLabGroupClient(context.Context, *Name
 }
 func (UnimplementedLabManagerServer) Monitoring(grpc.BidiStreamingServer[Empty, MonitoringUpdate]) error {
 	return status.Errorf(codes.Unimplemented, "method Monitoring not implemented")
+}
+func (UnimplementedLabManagerServer) GetCapacity(context.Context, *Empty) (*CapacityResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetCapacity not implemented")
 }
 func (UnimplementedLabManagerServer) mustEmbedUnimplementedLabManagerServer() {}
 func (UnimplementedLabManagerServer) testEmbeddedByValue()                    {}
@@ -606,6 +622,24 @@ func _LabManager_Monitoring_Handler(srv interface{}, stream grpc.ServerStream) e
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type LabManager_MonitoringServer = grpc.BidiStreamingServer[Empty, MonitoringUpdate]
 
+func _LabManager_GetCapacity_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabManagerServer).GetCapacity(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LabManager_GetCapacity_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabManagerServer).GetCapacity(ctx, req.(*Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LabManager_ServiceDesc is the grpc.ServiceDesc for LabManager service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -672,6 +706,10 @@ var LabManager_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteLabGroupClient",
 			Handler:    _LabManager_DeleteLabGroupClient_Handler,
+		},
+		{
+			MethodName: "GetCapacity",
+			Handler:    _LabManager_GetCapacity_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

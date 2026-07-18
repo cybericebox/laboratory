@@ -23,6 +23,8 @@ service LabManager {
   rpc DeleteLabGroupClient(NamespacedIDRequest) returns (Empty) {}
 
   rpc Monitoring(stream Empty) returns (stream MonitoringUpdate) {}
+
+  rpc GetCapacity(Empty) returns (CapacityResponse) {}
 }
 
 message Empty {}
@@ -103,4 +105,24 @@ message MonitoringUpdate {
   repeated LabGroup groups = 1;
   repeated Lab labs = 2;
   repeated LabGroupClient clients = 3;
+}
+
+// NodeCapacity reports a node's allocatable resources and how much is already
+// requested by scheduled pods, so a caller can compute remaining headroom.
+message NodeCapacity {
+  string name = 1;
+  int64 allocatable_cpu_millicores = 2;
+  int64 allocatable_memory_bytes = 3;
+  int64 requested_cpu_millicores = 4;   // sum of scheduled pod container requests
+  int64 requested_memory_bytes = 5;
+}
+// CapacityResponse aggregates per-node capacity plus cluster totals. Remaining
+// headroom = allocatable - requested; divide by a lab's summed device requests
+// to estimate how many more labs fit.
+message CapacityResponse {
+  repeated NodeCapacity nodes = 1;
+  int64 allocatable_cpu_millicores = 2;
+  int64 allocatable_memory_bytes = 3;
+  int64 requested_cpu_millicores = 4;
+  int64 requested_memory_bytes = 5;
 }
