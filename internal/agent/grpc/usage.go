@@ -9,8 +9,8 @@ import (
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
-// deviceUsage is live resource consumption for one device, summed across its
-// pods and their containers.
+// deviceUsage is live resource consumption for one device, summed across a
+// single pod's containers.
 type deviceUsage struct {
 	cpuMillicores int64
 	memoryBytes   int64
@@ -44,7 +44,10 @@ func (h *Handler) namespaceUsage(ctx context.Context, ns string) map[usageKey]de
 			continue
 		}
 		key := usageKey{lab: lab, device: device}
-		u := out[key]
+		// A device runs exactly one pod (Deployment, replicas=1). During a brief
+		// recreation overlap two PodMetrics may share the (lab, device) labels —
+		// take the last one rather than summing, so usage reflects one pod, not two.
+		var u deviceUsage
 		for c := range pm.Containers {
 			usage := pm.Containers[c].Usage
 			u.cpuMillicores += usage.Cpu().MilliValue()

@@ -84,6 +84,26 @@ func TestNamespaceUsage(t *testing.T) {
 	}
 }
 
+// On a recreation overlap two pods share the (lab, device) labels; usage must
+// reflect the last one, not the sum of both.
+func TestNamespaceUsageOverlapTakesLast(t *testing.T) {
+	items := []metricsv1beta1.PodMetrics{
+		*podMetrics("team-alpha", "attacker-old", "ctf1", "attacker", rl("100m", "64Mi")),
+		*podMetrics("team-alpha", "attacker-new", "ctf1", "attacker", rl("300m", "256Mi")),
+	}
+	fake := metricsfake.NewSimpleClientset()
+	fake.PrependReactor("list", "*", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, &metricsv1beta1.PodMetricsList{Items: items}, nil
+	})
+	h := &Handler{metrics: fake}
+
+	usage := h.namespaceUsage(context.Background(), "team-alpha")
+	att := usage[usageKey{lab: "ctf1", device: "attacker"}]
+	if att.cpuMillicores != 300 || att.memoryBytes != 256*1024*1024 {
+		t.Errorf("overlap usage should be the last pod (300m/256Mi), got %+v", att)
+	}
+}
+
 // A nil metrics client (metrics-server absent) must not error — usage is simply
 // unavailable.
 func TestNamespaceUsageNilMetrics(t *testing.T) {

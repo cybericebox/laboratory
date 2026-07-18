@@ -9,7 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
-	
+
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -19,7 +20,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 )
@@ -39,14 +42,16 @@ type DeviceReconciler struct {
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=connections,verbs=get;list;watch
 
 func (r *DeviceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var device laboratoryv1alpha1.Device
 	if err := r.Get(ctx, req.NamespacedName, &device); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	
+
 	if !device.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&device, names.FinalizerOVSCleanup) {
 			// node-agent removes this finalizer after OVS cleanup; poll.
@@ -54,55 +59,146 @@ func (r *DeviceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 		return ctrl.Result{}, nil
 	}
-	
+
 	switch device.Spec.Type {
 	case laboratoryv1alpha1.DeviceTypeUnmanagedSwitch, laboratoryv1alpha1.DeviceTypeHub:
-		if !device.Status.Ready {
-			device.Status.Ready = true
-			return ctrl.Result{}, r.Status().Update(ctx, &device)
-		}
-		return ctrl.Result{}, nil
+		return r.reconcileSwitch(ctx, &device)
 	}
-	
-	return r.reconcilePod(ctx, &device)
+
+	return r.reconcileWorkload(ctx, &device)
 }
 
-func (r *DeviceReconciler) reconcilePod(ctx context.Context, device *laboratoryv1alpha1.Device) (ctrl.Result, error) {
-	podName := device.Name
-	var pod corev1.Pod
-	err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: device.Namespace}, &pod)
-	
+// reconcileSwitch resolves readiness for a switch/hub device, which runs no pod.
+// A switch is a broadcast domain: it is Ready only once its VNI is allocated AND
+// every Connection that attaches to it is wired (Ready) — with at least one such
+// Connection. An unwired switch (no Connection selected yet, or a link still
+// coming up) is NOT Ready, so the lab does not report a half-built fabric as up.
+func (r *DeviceReconciler) reconcileSwitch(ctx context.Context, device *laboratoryv1alpha1.Device) (ctrl.Result, error) {
+	ready, err := r.switchReady(ctx, device)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if ready != device.Status.Ready {
+		device.Status.Ready = ready
+		if err := r.Status().Update(ctx, device); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	// Connection changes enqueue this device (Watches), but requeue as a fallback
+	// while not ready in case a status write on the connection side is missed.
+	if !ready {
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+	return ctrl.Result{}, nil
+}
+
+// switchReady reports whether a switch/hub's fabric is fully established: its VNI
+// is allocated and every Connection in the lab that references it is Ready. False
+// when no Connection references it yet (nothing to be ready for).
+func (r *DeviceReconciler) switchReady(ctx context.Context, device *laboratoryv1alpha1.Device) (bool, error) {
+	if device.Status.VNI == nil {
+		return false, nil
+	}
+	var conns laboratoryv1alpha1.ConnectionList
+	if err := r.List(ctx, &conns, client.InNamespace(device.Namespace)); err != nil {
+		return false, err
+	}
+	found := false
+	for i := range conns.Items {
+		c := &conns.Items[i]
+		if c.Spec.LabRef != device.Spec.LabRef || !connectionRefsDevice(c, device.Spec.Name) {
+			continue
+		}
+		found = true
+		if !c.Status.Ready {
+			return false, nil
+		}
+	}
+	return found, nil
+}
+
+// connectionRefsDevice reports whether a Connection has the named device as one
+// of its endpoints.
+func connectionRefsDevice(c *laboratoryv1alpha1.Connection, deviceName string) bool {
+	for _, e := range c.Spec.Endpoints {
+		if e.Device == deviceName {
+			return true
+		}
+	}
+	return false
+}
+
+// reconcileWorkload ensures the device's Deployment exists (replicas=1, Recreate
+// strategy) and mirrors its readiness into the Device status. The ReplicaSet
+// keeps exactly one pod alive — recreating it on node loss/eviction — so the
+// device survives a pod death without the controller re-creating pods by hand.
+// NodeName/PodIP come from the live pod (looked up by label), since a Deployment
+// pod's name is non-deterministic.
+func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *laboratoryv1alpha1.Device) (ctrl.Result, error) {
+	var dep appsv1.Deployment
+	err := r.Get(ctx, types.NamespacedName{Name: device.Name, Namespace: device.Namespace}, &dep)
+
 	if errors.IsNotFound(err) {
-		return ctrl.Result{}, r.createPod(ctx, device)
+		return ctrl.Result{}, r.createDeployment(ctx, device)
 	}
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	
+
+	nodeName, podIP := r.devicePodPlacement(ctx, device)
+	ready := dep.Status.AvailableReplicas >= 1
+
 	updated := false
-	if pod.Spec.NodeName != device.Status.NodeName {
-		device.Status.NodeName = pod.Spec.NodeName
+	if nodeName != device.Status.NodeName {
+		device.Status.NodeName = nodeName
 		updated = true
 	}
-	if pod.Status.PodIP != device.Status.PodIP {
-		device.Status.PodIP = pod.Status.PodIP
+	if podIP != device.Status.PodIP {
+		device.Status.PodIP = podIP
 		updated = true
 	}
-	ready := pod.Status.Phase == corev1.PodRunning
 	if ready != device.Status.Ready {
 		device.Status.Ready = ready
 		updated = true
 	}
 	if updated {
-		if !ready {
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, r.Status().Update(ctx, device)
+		if err := r.Status().Update(ctx, device); err != nil {
+			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, r.Status().Update(ctx, device)
 	}
-	if !ready {
+	// Deployment changes trigger reconcile, but a pod getting its IP does not
+	// (the pod is owned by the ReplicaSet, not the Device) — requeue until the
+	// placement is fully observed.
+	if !ready || podIP == "" {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+// devicePodPlacement returns the NodeName/PodIP of the device's live pod, found
+// by label (the Deployment pod name carries a random suffix). On a brief overlap
+// during recreation it takes the last Running match (the newest pod).
+func (r *DeviceReconciler) devicePodPlacement(ctx context.Context, device *laboratoryv1alpha1.Device) (nodeName, podIP string) {
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods,
+		client.InNamespace(device.Namespace),
+		client.MatchingLabels{
+			names.LabelLab:    device.Spec.LabRef,
+			names.LabelDevice: device.Spec.Name,
+		},
+	); err != nil {
+		return "", ""
+	}
+	for i := range pods.Items {
+		p := &pods.Items[i]
+		if p.DeletionTimestamp != nil {
+			continue
+		}
+		if p.Status.Phase == corev1.PodRunning {
+			nodeName, podIP = p.Spec.NodeName, p.Status.PodIP
+		}
+	}
+	return nodeName, podIP
 }
 
 // deviceNetworkAnnotation builds the network.cybericebox.com/networks annotation value.
@@ -121,7 +217,7 @@ func deviceNetworkAnnotation(device *laboratoryv1alpha1.Device) string {
 	return strings.Join(entries, ",")
 }
 
-func (r *DeviceReconciler) createPod(ctx context.Context, device *laboratoryv1alpha1.Device) error {
+func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laboratoryv1alpha1.Device) error {
 	annotations := map[string]string{
 		names.AnnotationDevice:   device.Spec.Name,
 		names.AnnotationNetworks: deviceNetworkAnnotation(device),
@@ -131,33 +227,43 @@ func (r *DeviceReconciler) createPod(ctx context.Context, device *laboratoryv1al
 	} else if len(device.Spec.Interfaces) > 0 {
 		annotations[names.AnnotationDefaultNetwork] = ""
 	}
-	
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      device.Name,
-			Namespace: device.Namespace,
-			Labels: map[string]string{
-				names.LabelLab:    device.Spec.LabRef,
-				"app":             device.Spec.Name,
-				names.LabelDevice: device.Spec.Name,
-			},
-			Annotations: annotations,
-		},
-		Spec: corev1.PodSpec{
-			NodeSelector: r.LabNodeSelector,
-			Tolerations:  r.LabTolerations,
-			Containers: []corev1.Container{
-				{
-					Name:  device.Spec.Name,
-					Image: device.Spec.Image,
-					// Run the image as-is (no entrypoint override). Capabilities are
-					// opt-in: an image that only serves a port gets none; one that
-					// runs networking/testing tools or an in-image DHCP client gets
-					// the curated set it requested (plus NET_ADMIN+NET_RAW when it
-					// has a DHCP interface). Isolation is enforced host-side by OVS
-					// flows, so these caps cannot break a pod out of its VNI.
-					SecurityContext: deviceSecurityContext(device),
-					Resources:       deviceResources(device),
+
+	labels := map[string]string{
+		names.LabelLab:    device.Spec.LabRef,
+		"app":             device.Spec.Name,
+		names.LabelDevice: device.Spec.Name,
+	}
+	// The selector must be immutable and uniquely identify this device's pod:
+	// (lab, device-name) is unique within the namespace.
+	selectorLabels := map[string]string{
+		names.LabelLab:    device.Spec.LabRef,
+		names.LabelDevice: device.Spec.Name,
+	}
+
+	podSpec := corev1.PodSpec{
+		NodeSelector: r.LabNodeSelector,
+		Tolerations:  r.LabTolerations,
+		Containers: []corev1.Container{
+			{
+				Name:  device.Spec.Name,
+				Image: device.Spec.Image,
+				// Run the image as-is (no entrypoint override). Capabilities are
+				// opt-in: an image that only serves a port gets none; one that
+				// runs networking/testing tools or an in-image DHCP client gets
+				// the curated set it requested (plus NET_ADMIN+NET_RAW when it
+				// has a DHCP interface). Isolation is enforced host-side by OVS
+				// flows, so these caps cannot break a pod out of its VNI.
+				SecurityContext: deviceSecurityContext(device),
+				Resources:       deviceResources(device),
+				// Env vars come from a per-device Secret (<device>-env) the agent
+				// wrote write-only — referenced here, never read by the controller
+				// (the kubelet resolves envFrom at pod start). optional=true so a
+				// device with no env simply has no secret; values never live in the CR.
+				EnvFrom: []corev1.EnvFromSource{
+					{SecretRef: &corev1.SecretEnvSource{
+						LocalObjectReference: corev1.LocalObjectReference{Name: device.Name + "-env"},
+						Optional:             ptrBool(true),
+					}},
 				},
 			},
 		},
@@ -167,26 +273,41 @@ func (r *DeviceReconciler) createPod(ctx context.Context, device *laboratoryv1al
 	// need no capabilities of their own. addr.type=dhcp interfaces are handled by
 	// the image's own client instead. Skipped when neither mode is present.
 	if ic := r.netConfigInitContainer(device); ic != nil {
-		pod.Spec.InitContainers = append(pod.Spec.InitContainers, *ic)
+		podSpec.InitContainers = append(podSpec.InitContainers, *ic)
 	}
 
-	// Env vars come from a per-device Secret (<device>-env) the agent wrote
-	// write-only — referenced here, never read by the controller (the kubelet
-	// resolves envFrom at pod start). optional=true so a device with no env
-	// simply has no secret; values never live in the CR spec.
-	optional := true
-	pod.Spec.Containers[0].EnvFrom = []corev1.EnvFromSource{
-		{SecretRef: &corev1.SecretEnvSource{
-			LocalObjectReference: corev1.LocalObjectReference{Name: device.Name + "-env"},
-			Optional:             &optional,
-		}},
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      device.Name,
+			Namespace: device.Namespace,
+			Labels:    labels,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: ptrInt32(1),
+			Selector: &metav1.LabelSelector{MatchLabels: selectorLabels},
+			// Recreate, never RollingUpdate: a device is a single L2 identity with
+			// one OVS port — two pods cannot share it. The old pod (held by the OVS
+			// finalizer until node-agent cleanup) is fully torn down before the new
+			// one is scheduled, so the port is free to re-attach to the replacement.
+			Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      labels,
+					Annotations: annotations,
+				},
+				Spec: podSpec,
+			},
+		},
 	}
 
-	if err := controllerutil.SetControllerReference(device, pod, r.Scheme); err != nil {
+	if err := controllerutil.SetControllerReference(device, dep, r.Scheme); err != nil {
 		return err
 	}
-	return r.Create(ctx, pod)
+	return r.Create(ctx, dep)
 }
+
+func ptrBool(b bool) *bool    { return &b }
+func ptrInt32(i int32) *int32 { return &i }
 
 // deviceResources builds container resource requirements from the device's
 // optional Resources spec. Empty or unparseable quantity strings are skipped,
@@ -216,7 +337,6 @@ func deviceResources(device *laboratoryv1alpha1.Device) corev1.ResourceRequireme
 	set(&rr.Limits, corev1.ResourceMemory, r.MemoryLimit)
 	return rr
 }
-
 
 // ifaceNameRE matches a valid Linux interface name (IFNAMSIZ-bounded, no shell
 // metacharacters) so it is safe to interpolate into the init-container script.
@@ -363,6 +483,27 @@ func deviceHasInImageDHCP(device *laboratoryv1alpha1.Device) bool {
 func (r *DeviceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.Device{}).
-		Owns(&corev1.Pod{}).
+		Owns(&appsv1.Deployment{}).
+		// A switch/hub's readiness depends on its Connections — re-reconcile the
+		// referenced devices whenever a Connection changes.
+		Watches(&laboratoryv1alpha1.Connection{}, handler.EnqueueRequestsFromMapFunc(r.devicesForConnection)).
 		Complete(r)
+}
+
+// devicesForConnection maps a Connection to reconcile requests for the devices
+// at its endpoints (CR name is "<labRef>-<device>"). Enqueuing a non-switch
+// device is harmless — its reconcile ignores Connections.
+func (r *DeviceReconciler) devicesForConnection(_ context.Context, obj client.Object) []reconcile.Request {
+	conn, ok := obj.(*laboratoryv1alpha1.Connection)
+	if !ok {
+		return nil
+	}
+	reqs := make([]reconcile.Request, 0, len(conn.Spec.Endpoints))
+	for _, e := range conn.Spec.Endpoints {
+		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
+			Name:      fmt.Sprintf("%s-%s", conn.Spec.LabRef, e.Device),
+			Namespace: conn.Namespace,
+		}})
+	}
+	return reqs
 }
