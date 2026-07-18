@@ -52,7 +52,26 @@ message LabStatus {
   string vpn_cidr = 2;
   string internet_cidr = 3;
   bool ready = 4;
-  repeated string access_urls = 5;
+  repeated string access_urls = 5;          // flat list of exposed URLs (kept for convenience)
+  bool vpn_ready = 6;
+  bool internet_ready = 7;
+  repeated LabDeviceStatus devices = 8;      // per-device readiness
+  repeated LabConnectionStatus connections = 9;  // per-connection readiness
+  repeated LabAccessEntry access = 10;       // structured web-exposure entries
+}
+message LabDeviceStatus {
+  string name = 1;
+  bool ready = 2;
+}
+message LabConnectionStatus {
+  string name = 1;
+  bool ready = 2;
+}
+message LabAccessEntry {
+  string device = 1;
+  int32 port = 2;
+  string protocol = 3;
+  string url = 4;
 }
 message LabList {repeated Lab items = 1;}
 

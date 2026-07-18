@@ -14,6 +14,18 @@ func TestLabToProtoStatus(t *testing.T) {
 	lab.Namespace = "team-alpha"
 	lab.Status.Phase = laboratoryv1alpha1.PhaseReady
 	lab.Status.VPN.CIDR = "10.128.1.0/24"
+	lab.Status.VPN.Ready = true
+	lab.Status.Internet.Ready = true
+	lab.Status.Devices = []laboratoryv1alpha1.DeviceRef{
+		{Name: "attacker", Ready: true},
+		{Name: "victim", Ready: false},
+	}
+	lab.Status.Connections = []laboratoryv1alpha1.ConnectionRef{
+		{Name: "link-0", Ready: true},
+	}
+	lab.Status.Access = []laboratoryv1alpha1.AccessEntry{
+		{Device: "web", Port: 80, Protocol: "http", URL: "https://web.lab.test"},
+	}
 
 	p := labToProto(lab)
 	if p.Name != "ctf1" || p.Namespace != "team-alpha" {
@@ -21,6 +33,21 @@ func TestLabToProtoStatus(t *testing.T) {
 	}
 	if p.Status.Phase != "Ready" || p.Status.VpnCidr != "10.128.1.0/24" {
 		t.Errorf("status wrong: %+v", p.Status)
+	}
+	if !p.Status.VpnReady || !p.Status.InternetReady {
+		t.Errorf("network readiness lost: %+v", p.Status)
+	}
+	if len(p.Status.Devices) != 2 || p.Status.Devices[0].Name != "attacker" || !p.Status.Devices[0].Ready || p.Status.Devices[1].Ready {
+		t.Errorf("devices wrong: %+v", p.Status.Devices)
+	}
+	if len(p.Status.Connections) != 1 || p.Status.Connections[0].Name != "link-0" || !p.Status.Connections[0].Ready {
+		t.Errorf("connections wrong: %+v", p.Status.Connections)
+	}
+	if len(p.Status.Access) != 1 || p.Status.Access[0].Device != "web" || p.Status.Access[0].Port != 80 || p.Status.Access[0].Url != "https://web.lab.test" {
+		t.Errorf("access wrong: %+v", p.Status.Access)
+	}
+	if len(p.Status.AccessUrls) != 1 || p.Status.AccessUrls[0] != "https://web.lab.test" {
+		t.Errorf("access_urls wrong: %+v", p.Status.AccessUrls)
 	}
 }
 

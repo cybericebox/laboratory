@@ -23,16 +23,31 @@ func labGroupToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.LabGroup {
 // Spec is passed through as opaque JSON since the agent is a thin wrapper.
 func labToProto(l *laboratoryv1alpha1.Lab) *protobuf.Lab {
 	specJSON, _ := json.Marshal(l.Spec)
+	st := l.Status
+	status := &protobuf.LabStatus{
+		Phase:         string(st.Phase),
+		VpnCidr:       st.VPN.CIDR,
+		InternetCidr:  st.Internet.CIDR,
+		Ready:         st.Phase == laboratoryv1alpha1.PhaseReady,
+		VpnReady:      st.VPN.Ready,
+		InternetReady: st.Internet.Ready,
+	}
+	for i := range st.Devices {
+		status.Devices = append(status.Devices, &protobuf.LabDeviceStatus{Name: st.Devices[i].Name, Ready: st.Devices[i].Ready})
+	}
+	for i := range st.Connections {
+		status.Connections = append(status.Connections, &protobuf.LabConnectionStatus{Name: st.Connections[i].Name, Ready: st.Connections[i].Ready})
+	}
+	for i := range st.Access {
+		a := &st.Access[i]
+		status.Access = append(status.Access, &protobuf.LabAccessEntry{Device: a.Device, Port: a.Port, Protocol: a.Protocol, Url: a.URL})
+		status.AccessUrls = append(status.AccessUrls, a.URL)
+	}
 	return &protobuf.Lab{
 		Namespace: l.Namespace,
 		Name:      l.Name,
 		SpecJson:  specJSON,
-		Status: &protobuf.LabStatus{
-			Phase:        string(l.Status.Phase),
-			VpnCidr:      l.Status.VPN.CIDR,
-			InternetCidr: l.Status.Internet.CIDR,
-			Ready:        l.Status.Phase == laboratoryv1alpha1.PhaseReady,
-		},
+		Status:    status,
 	}
 }
 
