@@ -38,7 +38,7 @@ func main() {
 		log.Printf("metrics client unavailable, live usage disabled: %v", err)
 		metrics = nil
 	}
-	h := grpcserver.NewHandler(cs, k8s, metrics)
+	h := grpcserver.NewHandler(cs, k8s, metrics, cfg.AgentID)
 	srv, err := grpcserver.New(cfg, h)
 	if err != nil {
 		log.Fatalf("build server: %v", err)

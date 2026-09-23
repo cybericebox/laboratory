@@ -17,7 +17,10 @@ type MTLSConfig struct {
 }
 
 type Config struct {
-	GRPCPort  string `env:"AGENT_GRPC_PORT" envDefault:"5454"`
+	GRPCPort string `env:"AGENT_GRPC_PORT" envDefault:"5454"`
+	// AgentID is a stable, deployment-scoped identity used to make monitoring
+	// observations idempotent at the platform boundary.
+	AgentID   string `env:"AGENT_ID" envDefault:"laboratory-agent"`
 	ServerTLS ServerTLSConfig
 	MTLS      MTLSConfig
 }

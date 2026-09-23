@@ -61,7 +61,9 @@ type LabManagerClient interface {
 	// ReconcileLabGroupAccess atomically replaces the complete client-to-lab
 	// access policy of one LabGroup. Unlisted existing clients receive no labs.
 	ReconcileLabGroupAccess(ctx context.Context, in *LabGroupAccessPolicy, opts ...grpc.CallOption) (*Empty, error)
-	Monitoring(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[Empty, MonitoringUpdate], error)
+	// Monitoring is a server-push stream. Every subscription starts with a
+	// complete snapshot; subsequent messages are sequenced deltas or heartbeats.
+	Monitoring(ctx context.Context, in *MonitoringRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[MonitoringUpdate], error)
 	GetCapacity(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*CapacityResponse, error)
 }
 
@@ -233,18 +235,24 @@ func (c *labManagerClient) ReconcileLabGroupAccess(ctx context.Context, in *LabG
 	return out, nil
 }
 
-func (c *labManagerClient) Monitoring(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[Empty, MonitoringUpdate], error) {
+func (c *labManagerClient) Monitoring(ctx context.Context, in *MonitoringRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[MonitoringUpdate], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &LabManager_ServiceDesc.Streams[0], LabManager_Monitoring_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	x := &grpc.GenericClientStream[Empty, MonitoringUpdate]{ClientStream: stream}
+	x := &grpc.GenericClientStream[MonitoringRequest, MonitoringUpdate]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
 	return x, nil
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type LabManager_MonitoringClient = grpc.BidiStreamingClient[Empty, MonitoringUpdate]
+type LabManager_MonitoringClient = grpc.ServerStreamingClient[MonitoringUpdate]
 
 func (c *labManagerClient) GetCapacity(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*CapacityResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -278,7 +286,9 @@ type LabManagerServer interface {
 	// ReconcileLabGroupAccess atomically replaces the complete client-to-lab
 	// access policy of one LabGroup. Unlisted existing clients receive no labs.
 	ReconcileLabGroupAccess(context.Context, *LabGroupAccessPolicy) (*Empty, error)
-	Monitoring(grpc.BidiStreamingServer[Empty, MonitoringUpdate]) error
+	// Monitoring is a server-push stream. Every subscription starts with a
+	// complete snapshot; subsequent messages are sequenced deltas or heartbeats.
+	Monitoring(*MonitoringRequest, grpc.ServerStreamingServer[MonitoringUpdate]) error
 	GetCapacity(context.Context, *Empty) (*CapacityResponse, error)
 	mustEmbedUnimplementedLabManagerServer()
 }
@@ -338,7 +348,7 @@ func (UnimplementedLabManagerServer) DeleteLabGroupClient(context.Context, *Name
 func (UnimplementedLabManagerServer) ReconcileLabGroupAccess(context.Context, *LabGroupAccessPolicy) (*Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ReconcileLabGroupAccess not implemented")
 }
-func (UnimplementedLabManagerServer) Monitoring(grpc.BidiStreamingServer[Empty, MonitoringUpdate]) error {
+func (UnimplementedLabManagerServer) Monitoring(*MonitoringRequest, grpc.ServerStreamingServer[MonitoringUpdate]) error {
 	return status.Errorf(codes.Unimplemented, "method Monitoring not implemented")
 }
 func (UnimplementedLabManagerServer) GetCapacity(context.Context, *Empty) (*CapacityResponse, error) {
@@ -654,11 +664,15 @@ func _LabManager_ReconcileLabGroupAccess_Handler(srv interface{}, ctx context.Co
 }
 
 func _LabManager_Monitoring_Handler(srv interface{}, stream grpc.ServerStream) error {
-	return srv.(LabManagerServer).Monitoring(&grpc.GenericServerStream[Empty, MonitoringUpdate]{ServerStream: stream})
+	m := new(MonitoringRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(LabManagerServer).Monitoring(m, &grpc.GenericServerStream[MonitoringRequest, MonitoringUpdate]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type LabManager_MonitoringServer = grpc.BidiStreamingServer[Empty, MonitoringUpdate]
+type LabManager_MonitoringServer = grpc.ServerStreamingServer[MonitoringUpdate]
 
 func _LabManager_GetCapacity_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(Empty)
@@ -759,7 +773,6 @@ var LabManager_ServiceDesc = grpc.ServiceDesc{
 			StreamName:    "Monitoring",
 			Handler:       _LabManager_Monitoring_Handler,
 			ServerStreams: true,
-			ClientStreams: true,
 		},
 	},
 	Metadata: "pkg/agent/protobuf/agent.proto",

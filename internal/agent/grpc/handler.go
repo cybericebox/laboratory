@@ -18,11 +18,16 @@ type Handler struct {
 	// metrics is optional: nil when metrics-server is not installed. Live
 	// resource-usage reporting then degrades to zero rather than failing.
 	metrics metricsclient.Interface
+	agentID string
 }
 
 // NewHandler builds a Handler backed by the given typed clientset, plain
 // kubernetes clientset, and (optionally) a metrics clientset. A nil metrics
 // client disables live usage reporting without erroring.
-func NewHandler(cs versioned.Interface, k8s kubernetes.Interface, metrics metricsclient.Interface) *Handler {
-	return &Handler{cs: cs, k8s: k8s, metrics: metrics}
+func NewHandler(cs versioned.Interface, k8s kubernetes.Interface, metrics metricsclient.Interface, agentID ...string) *Handler {
+	id := "laboratory-agent"
+	if len(agentID) > 0 && agentID[0] != "" {
+		id = agentID[0]
+	}
+	return &Handler{cs: cs, k8s: k8s, metrics: metrics, agentID: id}
 }

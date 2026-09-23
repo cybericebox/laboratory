@@ -51,6 +51,16 @@ func labToProto(l *laboratoryv1alpha1.Lab) *protobuf.Lab {
 	}
 }
 
+// labMonitoringToProto projects runtime state without exposing the Lab spec
+// or write-only device environment values through the monitoring stream.
+func labMonitoringToProto(l *laboratoryv1alpha1.Lab, labGroupName string) *protobuf.Lab {
+	p := labToProto(l)
+	p.SpecJson = nil
+	p.Env = nil
+	p.LabGroupName = labGroupName
+	return p
+}
+
 // protoToLab maps a gRPC Lab message back to a Lab custom resource,
 // unmarshalling spec_json into the typed Spec field.
 func protoToLab(p *protobuf.Lab) (*laboratoryv1alpha1.Lab, error) {
@@ -90,4 +100,14 @@ func clientToProto(c *laboratoryv1alpha1.LabGroupClient) *protobuf.LabGroupClien
 			Statistics: stats,
 		},
 	}
+}
+
+// clientMonitoringToProto omits both rendered client configuration and public
+// key material. Monitoring needs connection and transfer status only.
+func clientMonitoringToProto(c *laboratoryv1alpha1.LabGroupClient, labGroupName string) *protobuf.LabGroupClient {
+	p := clientToProto(c)
+	p.PublicKey = ""
+	p.Status.Config = ""
+	p.LabGroupName = labGroupName
+	return p
 }

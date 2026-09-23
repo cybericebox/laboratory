@@ -26,7 +26,9 @@ service LabManager {
   // access policy of one LabGroup. Unlisted existing clients receive no labs.
   rpc ReconcileLabGroupAccess(LabGroupAccessPolicy) returns (Empty) {}
 
-  rpc Monitoring(stream Empty) returns (stream MonitoringUpdate) {}
+  // Monitoring is a server-push stream. Every subscription starts with a
+  // complete snapshot; subsequent messages are sequenced deltas or heartbeats.
+  rpc Monitoring(MonitoringRequest) returns (stream MonitoringUpdate) {}
 
   rpc GetCapacity(Empty) returns (CapacityResponse) {}
 }
@@ -56,6 +58,9 @@ message Lab {
   // write-only per-device Secret (referenced by the pod via envFrom) — the
   // values never travel in spec_json and never land in the Lab/Device CR.
   repeated DeviceEnv env = 5;
+  // Populated only by monitoring so the backend can associate a namespaced
+  // Lab record with its LabGroup without inferring it from a namespace.
+  string lab_group_name = 6;
 }
 // DeviceEnv carries the env vars for one device (e.g. a task flag, a license).
 message DeviceEnv {
@@ -97,6 +102,8 @@ message LabGroupClient {
   string name = 2;
   string public_key = 3;
   LabGroupClientStatus status = 4;
+  // Populated only by monitoring; CRUD callers resolve group scope themselves.
+  string lab_group_name = 5;
 }
 message LabGroupClientStatus {
   reserved 2;   // was secret_ref (client Secret removed)
@@ -136,10 +143,31 @@ message LabGroupAccessRule {
   repeated string lab_names = 3;
 }
 
+message MonitoringRequest {
+  // The agent bounds this to protect the Kubernetes API from a too-fast caller.
+  int64 min_interval_ms = 1;
+  // Reserved for a future resumable agent journal. Current agents always send
+  // a new snapshot on connection/reconnection.
+  int64 resume_after_sequence = 2;
+}
+
+message MonitoringDeletedKey {
+  string kind = 1;
+  string lab_group_name = 2;
+  string namespace = 3;
+  string name = 4;
+}
+
 message MonitoringUpdate {
-  repeated LabGroup groups = 1;
-  repeated Lab labs = 2;
-  repeated LabGroupClient clients = 3;
+  string agent_id = 1;
+  int64 sequence = 2;
+  int64 observed_at_unix_ms = 3;
+  uint32 schema_version = 4;
+  bool snapshot = 5;
+  repeated LabGroup groups = 10;
+  repeated Lab labs = 11;
+  repeated LabGroupClient clients = 12;
+  repeated MonitoringDeletedKey deleted_keys = 13;
 }
 
 // NodeCapacity reports a node's allocatable resources and how much is already
