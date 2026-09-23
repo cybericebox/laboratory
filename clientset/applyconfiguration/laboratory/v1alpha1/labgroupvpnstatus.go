@@ -19,11 +19,17 @@ package v1alpha1
 
 // LabGroupVPNStatusApplyConfiguration represents a declarative configuration of the LabGroupVPNStatus type for use
 // with apply.
+//
+// LabGroupVPNStatus exposes VPN server connection details.
 type LabGroupVPNStatusApplyConfiguration struct {
-	PublicKey  *string `json:"publicKey,omitempty"`
-	Endpoint   *string `json:"endpoint,omitempty"`
-	SecretRef  *string `json:"secretRef,omitempty"`
-	Registered *bool   `json:"registered,omitempty"`
+	// PublicKey is the WireGuard public key used as routing key for demux.
+	PublicKey *string `json:"publicKey,omitempty"`
+	// Endpoint is the public UDP address of the VPN server (host:port) advertised to clients.
+	Endpoint *string `json:"endpoint,omitempty"`
+	// SecretRef is "<namespace>/<name>" of the vpn-server-keypair Secret.
+	SecretRef *string `json:"secretRef,omitempty"`
+	// Registered is true when the VPN deployment has at least one ready replica.
+	Registered *bool `json:"registered,omitempty"`
 }
 
 // LabGroupVPNStatusApplyConfiguration constructs a declarative configuration of the LabGroupVPNStatus type for use with
@@ -31,7 +37,6 @@ type LabGroupVPNStatusApplyConfiguration struct {
 func LabGroupVPNStatus() *LabGroupVPNStatusApplyConfiguration {
 	return &LabGroupVPNStatusApplyConfiguration{}
 }
-func (b LabGroupVPNStatusApplyConfiguration) IsApplyConfiguration() {}
 
 // WithPublicKey sets the PublicKey field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

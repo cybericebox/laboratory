@@ -19,6 +19,9 @@ package v1alpha1
 
 // DHCPServerApplyConfiguration represents a declarative configuration of the DHCPServer type for use
 // with apply.
+//
+// DHCPServer enables the embedded DHCP server for a network segment.
+// Subnet and gateway are derived from the lab's allocated CIDR (Status.*.CIDR).
 type DHCPServerApplyConfiguration struct {
 	Enabled *bool `json:"enabled,omitempty"`
 }
@@ -28,7 +31,6 @@ type DHCPServerApplyConfiguration struct {
 func DHCPServer() *DHCPServerApplyConfiguration {
 	return &DHCPServerApplyConfiguration{}
 }
-func (b DHCPServerApplyConfiguration) IsApplyConfiguration() {}
 
 // WithEnabled sets the Enabled field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

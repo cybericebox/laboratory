@@ -20,12 +20,14 @@ set -o pipefail
 
 SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
 SCRIPT_ROOT="${SCRIPT_DIR}/.."
-CODEGEN_PKG="../develop/code-generator/"
+K8S_VERSION="$(go list -m -f '{{.Version}}' k8s.io/client-go)"
+CODEGEN_PKG="$(go env GOPATH)/pkg/mod/k8s.io/code-generator@${K8S_VERSION}"
 
-# NOTE: the sibling code-generator is pinned to a newer apimachinery (v0.33.3+)
-# and emits managedfields.NewSchemeTypeConverter() in clientset/applyconfiguration/utils.go,
-# which does not exist in this repo. After running this script, revert that call to
-# k8stesting.TypeConverter (see the existing NewTypeConverter func) or the build breaks.
+# Keep generated clients ABI-compatible with the Kubernetes libraries used by the
+# operator.  A sibling checkout may be from a different Kubernetes release.
+if [[ ! -f "${CODEGEN_PKG}/kube_codegen.sh" ]]; then
+    go mod download "k8s.io/code-generator@${K8S_VERSION}"
+fi
 
 source "${CODEGEN_PKG}/kube_codegen.sh"
 
@@ -40,4 +42,3 @@ kube::codegen::gen_client \
     --output-pkg "${THIS_PKG}/clientset" \
     --boilerplate "${SCRIPT_ROOT}/hack/boilerplate.go.txt" \
     "${SCRIPT_ROOT}/api"
-

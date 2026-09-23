@@ -23,6 +23,8 @@ import (
 
 // AddrSpecApplyConfiguration represents a declarative configuration of the AddrSpec type for use
 // with apply.
+//
+// AddrSpec defines static or DHCP address configuration.
 type AddrSpecApplyConfiguration struct {
 	Type    *laboratoryv1alpha1.AddrType `json:"type,omitempty"`
 	IP      *string                      `json:"ip,omitempty"`
@@ -35,7 +37,6 @@ type AddrSpecApplyConfiguration struct {
 func AddrSpec() *AddrSpecApplyConfiguration {
 	return &AddrSpecApplyConfiguration{}
 }
-func (b AddrSpecApplyConfiguration) IsApplyConfiguration() {}
 
 // WithType sets the Type field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

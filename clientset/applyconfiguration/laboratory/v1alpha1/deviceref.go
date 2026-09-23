@@ -19,6 +19,8 @@ package v1alpha1
 
 // DeviceRefApplyConfiguration represents a declarative configuration of the DeviceRef type for use
 // with apply.
+//
+// DeviceRef summarises a materialised Device's readiness.
 type DeviceRefApplyConfiguration struct {
 	Name  *string `json:"name,omitempty"`
 	Ready *bool   `json:"ready,omitempty"`
@@ -29,7 +31,6 @@ type DeviceRefApplyConfiguration struct {
 func DeviceRef() *DeviceRefApplyConfiguration {
 	return &DeviceRefApplyConfiguration{}
 }
-func (b DeviceRefApplyConfiguration) IsApplyConfiguration() {}
 
 // WithName sets the Name field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

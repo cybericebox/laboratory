@@ -19,6 +19,8 @@ package v1alpha1
 
 // LabNetworkSpecApplyConfiguration represents a declarative configuration of the LabNetworkSpec type for use
 // with apply.
+//
+// LabNetworkSpec configures a network segment (VPN or internet) attached to the lab.
 type LabNetworkSpecApplyConfiguration struct {
 	Enabled    *bool                         `json:"enabled,omitempty"`
 	DHCPServer *DHCPServerApplyConfiguration `json:"dhcpServer,omitempty"`
@@ -29,7 +31,6 @@ type LabNetworkSpecApplyConfiguration struct {
 func LabNetworkSpec() *LabNetworkSpecApplyConfiguration {
 	return &LabNetworkSpecApplyConfiguration{}
 }
-func (b LabNetworkSpecApplyConfiguration) IsApplyConfiguration() {}
 
 // WithEnabled sets the Enabled field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

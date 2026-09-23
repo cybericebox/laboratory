@@ -25,8 +25,10 @@ import (
 
 // PoolApplyConfiguration represents a declarative configuration of the Pool type for use
 // with apply.
+//
+// Pool is the Schema for the pools API.
 type PoolApplyConfiguration struct {
-	v1.TypeMetaApplyConfiguration    `json:",inline"`
+	v1.TypeMetaApplyConfiguration    `json:""`
 	*v1.ObjectMetaApplyConfiguration `json:"metadata,omitempty"`
 	Spec                             *PoolSpecApplyConfiguration   `json:"spec,omitempty"`
 	Status                           *PoolStatusApplyConfiguration `json:"status,omitempty"`
@@ -42,6 +44,7 @@ func Pool(name, namespace string) *PoolApplyConfiguration {
 	b.WithAPIVersion("allocation/v1alpha1")
 	return b
 }
+
 func (b PoolApplyConfiguration) IsApplyConfiguration() {}
 
 // WithKind sets the Kind field in the declarative configuration to the given value

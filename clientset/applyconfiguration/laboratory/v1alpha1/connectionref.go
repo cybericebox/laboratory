@@ -19,6 +19,8 @@ package v1alpha1
 
 // ConnectionRefApplyConfiguration represents a declarative configuration of the ConnectionRef type for use
 // with apply.
+//
+// ConnectionRef summarises a materialised Connection's readiness.
 type ConnectionRefApplyConfiguration struct {
 	Name  *string `json:"name,omitempty"`
 	Ready *bool   `json:"ready,omitempty"`
@@ -29,7 +31,6 @@ type ConnectionRefApplyConfiguration struct {
 func ConnectionRef() *ConnectionRefApplyConfiguration {
 	return &ConnectionRefApplyConfiguration{}
 }
-func (b ConnectionRefApplyConfiguration) IsApplyConfiguration() {}
 
 // WithName sets the Name field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

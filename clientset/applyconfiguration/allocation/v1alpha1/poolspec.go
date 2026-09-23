@@ -19,8 +19,12 @@ package v1alpha1
 
 // PoolSpecApplyConfiguration represents a declarative configuration of the PoolSpec type for use
 // with apply.
+//
+// PoolSpec defines the immutable configuration of a Pool.
 type PoolSpecApplyConfiguration struct {
-	Size   *uint `json:"size,omitempty"`
+	// Size is the total number of slots in this pool.
+	Size *uint `json:"size,omitempty"`
+	// Offset shifts allocated indices: real value = Offset + bit_index.
 	Offset *uint `json:"offset,omitempty"`
 }
 
@@ -29,7 +33,6 @@ type PoolSpecApplyConfiguration struct {
 func PoolSpec() *PoolSpecApplyConfiguration {
 	return &PoolSpecApplyConfiguration{}
 }
-func (b PoolSpecApplyConfiguration) IsApplyConfiguration() {}
 
 // WithSize sets the Size field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

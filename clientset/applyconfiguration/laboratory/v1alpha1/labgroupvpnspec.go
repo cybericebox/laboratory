@@ -23,7 +23,11 @@ import (
 
 // LabGroupVPNSpecApplyConfiguration represents a declarative configuration of the LabGroupVPNSpec type for use
 // with apply.
+//
+// LabGroupVPNSpec holds VPN server configuration.
 type LabGroupVPNSpecApplyConfiguration struct {
+	// KeypairSecretRef points to an existing WireGuard keypair Secret.
+	// If omitted, operator generates a keypair and stores it in Secret vpn-server-keypair.
 	KeypairSecretRef *v1.SecretReference `json:"keypairSecretRef,omitempty"`
 }
 
@@ -32,7 +36,6 @@ type LabGroupVPNSpecApplyConfiguration struct {
 func LabGroupVPNSpec() *LabGroupVPNSpecApplyConfiguration {
 	return &LabGroupVPNSpecApplyConfiguration{}
 }
-func (b LabGroupVPNSpecApplyConfiguration) IsApplyConfiguration() {}
 
 // WithKeypairSecretRef sets the KeypairSecretRef field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

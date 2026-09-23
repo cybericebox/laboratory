@@ -27,16 +27,45 @@ import (
 	allocationv1alpha1 "github.com/cybericebox/laboratory/clientset/listers/allocation/v1alpha1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
+	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	watch "k8s.io/apimachinery/pkg/watch"
 	cache "k8s.io/client-go/tools/cache"
 )
 
 // PoolInformer provides access to a shared informer and lister for
-// Pools.
+// Pools. Prefer using the type-safe variant (see [TypedPoolInformer]).
 type PoolInformer interface {
 	Informer() cache.SharedIndexInformer
 	Lister() allocationv1alpha1.PoolLister
 }
+
+// TypedPoolInformer provides access to a shared informer and lister for
+// Pools, including the type-safe TypedInformer variant.
+// It is a superset of PoolInformer.
+type TypedPoolInformer interface {
+	Informer() cache.SharedIndexInformer
+	TypedInformer() PoolIndexInformer
+	Lister() allocationv1alpha1.PoolLister
+}
+
+// PoolIndexInformer is a wrapper around the underlying [cache.SharedIndexInformer]
+// with type-safe variants of several methods.
+type PoolIndexInformer cache.TypedSharedIndexInformer[*apiallocationv1alpha1.Pool]
+
+// PoolHandlerFuncs is a specialization of [cache.TypedResourceEventHandlerFuncs] for Pool.
+type PoolHandlerFuncs = cache.TypedResourceEventHandlerFuncs[*apiallocationv1alpha1.Pool]
+
+// PoolDetailedHandlerFuncs is a specialization of [cache.TypedResourceEventHandlerDetailedFuncs] for Pool.
+type PoolDetailedHandlerFuncs = cache.TypedResourceEventHandlerDetailedFuncs[*apiallocationv1alpha1.Pool]
+
+// PoolFilteringHandler is a specialization of [cache.TypedFilteringResourceEventHandler] for Pool.
+type PoolFilteringHandler = cache.TypedFilteringResourceEventHandler[*apiallocationv1alpha1.Pool]
+
+// PoolIndexers is a specialization of [cache.TypedIndexers] for Pool.
+type PoolIndexers = cache.TypedIndexers[*apiallocationv1alpha1.Pool]
+
+// DeletedPool is a specialization of [cache.DeletedObject] for Pool.
+type DeletedPool = cache.DeletedObject[*apiallocationv1alpha1.Pool]
 
 type poolInformer struct {
 	factory          internalinterfaces.SharedInformerFactory
@@ -47,55 +76,132 @@ type poolInformer struct {
 // NewPoolInformer constructs a new informer for Pool type.
 // Always prefer using an informer factory to get a shared informer instead of getting an independent
 // one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedPoolInformer]).
 func NewPoolInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers) cache.SharedIndexInformer {
-	return NewFilteredPoolInformer(client, namespace, resyncPeriod, indexers, nil)
+	return NewPoolInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: indexers})
+}
+
+// NewTypedPoolInformer constructs a new informer for Pool type.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedPoolInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers PoolIndexers) PoolIndexInformer {
+	return NewTypedPoolInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.TypedIndexersToIndexers(indexers)})
 }
 
 // NewFilteredPoolInformer constructs a new informer for Pool type.
 // Always prefer using an informer factory to get a shared informer instead of getting an independent
 // one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedFilteredPoolInformer]).
 func NewFilteredPoolInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) cache.SharedIndexInformer {
-	return cache.NewSharedIndexInformer(
-		&cache.ListWatch{
-			ListFunc: func(options v1.ListOptions) (runtime.Object, error) {
+	return NewTypedPoolInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: indexers, TweakListOptions: tweakListOptions})
+}
+
+// NewTypedFilteredPoolInformer constructs a new informer for Pool type.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedFilteredPoolInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers PoolIndexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) PoolIndexInformer {
+	return NewTypedPoolInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.TypedIndexersToIndexers(indexers), TweakListOptions: tweakListOptions})
+}
+
+// NewPoolInformerWithOptions constructs a new informer for Pool type with additional options.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedPoolInformerWithOptions]).
+func NewPoolInformerWithOptions(client versioned.Interface, namespace string, options internalinterfaces.InformerOptions) cache.SharedIndexInformer {
+	return NewTypedPoolInformerWithOptions(client, namespace, options)
+}
+
+// NewTypedPoolInformerWithOptions constructs a new informer for Pool type with additional options.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedPoolInformerWithOptions(client versioned.Interface, namespace string, options internalinterfaces.InformerOptions) PoolIndexInformer {
+	gvr := schema.GroupVersionResource{Group: "allocation", Version: "v1alpha1", Resource: "pools"}
+	identifier := options.InformerName.WithResource(gvr)
+	tweakListOptions := options.TweakListOptions
+	return cache.NewTypedSharedIndexInformer[*apiallocationv1alpha1.Pool](cache.NewSharedIndexInformerWithOptions(
+		cache.ToListWatcherWithWatchListSemantics(&cache.ListWatch{
+			ListFunc: func(opts v1.ListOptions) (runtime.Object, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.AllocationV1alpha1().Pools(namespace).List(context.Background(), options)
+				return client.AllocationV1alpha1().Pools(namespace).List(context.Background(), opts)
 			},
-			WatchFunc: func(options v1.ListOptions) (watch.Interface, error) {
+			WatchFunc: func(opts v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.AllocationV1alpha1().Pools(namespace).Watch(context.Background(), options)
+				return client.AllocationV1alpha1().Pools(namespace).Watch(context.Background(), opts)
 			},
-			ListWithContextFunc: func(ctx context.Context, options v1.ListOptions) (runtime.Object, error) {
+			ListWithContextFunc: func(ctx context.Context, opts v1.ListOptions) (runtime.Object, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.AllocationV1alpha1().Pools(namespace).List(ctx, options)
+				return client.AllocationV1alpha1().Pools(namespace).List(ctx, opts)
 			},
-			WatchFuncWithContext: func(ctx context.Context, options v1.ListOptions) (watch.Interface, error) {
+			WatchFuncWithContext: func(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.AllocationV1alpha1().Pools(namespace).Watch(ctx, options)
+				return client.AllocationV1alpha1().Pools(namespace).Watch(ctx, opts)
 			},
-		},
+		}, client),
 		&apiallocationv1alpha1.Pool{},
-		resyncPeriod,
-		indexers,
-	)
+		cache.SharedIndexInformerOptions{
+			ResyncPeriod: options.ResyncPeriod,
+			Indexers:     options.Indexers,
+			Identifier:   identifier,
+		},
+	))
 }
 
 func (f *poolInformer) defaultInformer(client versioned.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
-	return NewFilteredPoolInformer(client, f.namespace, resyncPeriod, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}, f.tweakListOptions)
+	return NewTypedPoolInformerWithOptions(client, f.namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}, InformerName: f.factory.InformerName(), TweakListOptions: f.tweakListOptions})
 }
 
 func (f *poolInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&apiallocationv1alpha1.Pool{}, f.defaultInformer)
+	return f.TypedInformer()
+}
+
+func (f *poolInformer) TypedInformer() PoolIndexInformer {
+	return cache.NewTypedSharedIndexInformer[*apiallocationv1alpha1.Pool](f.factory.InformerFor(&apiallocationv1alpha1.Pool{}, f.defaultInformer))
 }
 
 func (f *poolInformer) Lister() allocationv1alpha1.PoolLister {
 	return allocationv1alpha1.NewPoolLister(f.Informer().GetIndexer())
+}
+
+// ToTypedPoolInformer converts an untyped informer into a TypedPoolInformer.
+//
+// WARNING: this conversion is only safe if the informer handles objects of type
+// *Pool. If that is not the case, calling type-safe methods of the returned
+// TypedPoolInformer leads to runtime panics. A safer alternative is to pass
+// around a TypedPoolInformer instances that was obtained from a
+// SharedInformerFactory.
+func ToTypedPoolInformer(informer PoolInformer) TypedPoolInformer {
+	if informer, ok := informer.(TypedPoolInformer); ok {
+		return informer
+	}
+	return &poolTypedInformerAdapter{informer}
+}
+
+type poolTypedInformerAdapter struct {
+	PoolInformer
+}
+
+func (a *poolTypedInformerAdapter) TypedInformer() PoolIndexInformer {
+	return cache.NewTypedSharedIndexInformer[*apiallocationv1alpha1.Pool](a.Informer())
+}
+
+// ToPoolIndexInformer converts an untyped informer into a PoolIndexInformer.
+//
+// WARNING: this conversion is only safe if the informer handles objects of type
+// *Pool. If that is not the case, calling type-safe methods of the returned
+// PoolIndexInformer leads to runtime panics. A safer alternative is to pass
+// around a PoolIndexInformer instances that was obtained from a
+// SharedInformerFactory.
+func ToPoolIndexInformer(informer cache.SharedIndexInformer) PoolIndexInformer {
+	if informer, ok := informer.(PoolIndexInformer); ok {
+		return informer
+	}
+	return cache.NewTypedSharedIndexInformer[*apiallocationv1alpha1.Pool](informer)
 }

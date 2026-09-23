@@ -19,14 +19,21 @@ package v1alpha1
 
 // DeviceStatusApplyConfiguration represents a declarative configuration of the DeviceStatus type for use
 // with apply.
+//
+// DeviceStatus defines the observed state of Device.
 type DeviceStatusApplyConfiguration struct {
-	Ready       *bool   `json:"ready,omitempty"`
-	NodeName    *string `json:"nodeName,omitempty"`
+	Ready    *bool   `json:"ready,omitempty"`
+	NodeName *string `json:"nodeName,omitempty"`
+	// NodeAddress is the node IP used as Geneve VTEP address.
 	NodeAddress *string `json:"nodeAddress,omitempty"`
 	PodIP       *string `json:"podIP,omitempty"`
-	PodName     *string `json:"podName,omitempty"`
-	VNI         *uint   `json:"vni,omitempty"`
-	Reason      *string `json:"reason,omitempty"`
+	// PodName is the current pod backing this device. A device runs one pod
+	// (Deployment, replicas=1) whose name changes on recreation, so the
+	// node-agent keys the device's per-pod OVS port on this stable pointer.
+	PodName *string `json:"podName,omitempty"`
+	// VNI is set only for unmanaged-switch and hub device types.
+	VNI    *uint   `json:"vni,omitempty"`
+	Reason *string `json:"reason,omitempty"`
 }
 
 // DeviceStatusApplyConfiguration constructs a declarative configuration of the DeviceStatus type for use with
@@ -34,7 +41,6 @@ type DeviceStatusApplyConfiguration struct {
 func DeviceStatus() *DeviceStatusApplyConfiguration {
 	return &DeviceStatusApplyConfiguration{}
 }
-func (b DeviceStatusApplyConfiguration) IsApplyConfiguration() {}
 
 // WithReady sets the Ready field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

@@ -19,8 +19,12 @@ package v1alpha1
 
 // EndpointSpecApplyConfiguration represents a declarative configuration of the EndpointSpec type for use
 // with apply.
+//
+// EndpointSpec references a device interface in a Connection.
 type EndpointSpecApplyConfiguration struct {
-	Device    *string `json:"device,omitempty"`
+	// Device is the name of the Device CRD within the same Lab.
+	Device *string `json:"device,omitempty"`
+	// Interface is the interface name on the device; omit for unmanaged-switch/hub.
 	Interface *string `json:"interface,omitempty"`
 }
 
@@ -29,7 +33,6 @@ type EndpointSpecApplyConfiguration struct {
 func EndpointSpec() *EndpointSpecApplyConfiguration {
 	return &EndpointSpecApplyConfiguration{}
 }
-func (b EndpointSpecApplyConfiguration) IsApplyConfiguration() {}
 
 // WithDevice sets the Device field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

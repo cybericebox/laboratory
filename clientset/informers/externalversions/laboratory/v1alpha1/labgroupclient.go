@@ -27,16 +27,45 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/clientset/listers/laboratory/v1alpha1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
+	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	watch "k8s.io/apimachinery/pkg/watch"
 	cache "k8s.io/client-go/tools/cache"
 )
 
 // LabGroupClientInformer provides access to a shared informer and lister for
-// LabGroupClients.
+// LabGroupClients. Prefer using the type-safe variant (see [TypedLabGroupClientInformer]).
 type LabGroupClientInformer interface {
 	Informer() cache.SharedIndexInformer
 	Lister() laboratoryv1alpha1.LabGroupClientLister
 }
+
+// TypedLabGroupClientInformer provides access to a shared informer and lister for
+// LabGroupClients, including the type-safe TypedInformer variant.
+// It is a superset of LabGroupClientInformer.
+type TypedLabGroupClientInformer interface {
+	Informer() cache.SharedIndexInformer
+	TypedInformer() LabGroupClientIndexInformer
+	Lister() laboratoryv1alpha1.LabGroupClientLister
+}
+
+// LabGroupClientIndexInformer is a wrapper around the underlying [cache.SharedIndexInformer]
+// with type-safe variants of several methods.
+type LabGroupClientIndexInformer cache.TypedSharedIndexInformer[*apilaboratoryv1alpha1.LabGroupClient]
+
+// LabGroupClientHandlerFuncs is a specialization of [cache.TypedResourceEventHandlerFuncs] for LabGroupClient.
+type LabGroupClientHandlerFuncs = cache.TypedResourceEventHandlerFuncs[*apilaboratoryv1alpha1.LabGroupClient]
+
+// LabGroupClientDetailedHandlerFuncs is a specialization of [cache.TypedResourceEventHandlerDetailedFuncs] for LabGroupClient.
+type LabGroupClientDetailedHandlerFuncs = cache.TypedResourceEventHandlerDetailedFuncs[*apilaboratoryv1alpha1.LabGroupClient]
+
+// LabGroupClientFilteringHandler is a specialization of [cache.TypedFilteringResourceEventHandler] for LabGroupClient.
+type LabGroupClientFilteringHandler = cache.TypedFilteringResourceEventHandler[*apilaboratoryv1alpha1.LabGroupClient]
+
+// LabGroupClientIndexers is a specialization of [cache.TypedIndexers] for LabGroupClient.
+type LabGroupClientIndexers = cache.TypedIndexers[*apilaboratoryv1alpha1.LabGroupClient]
+
+// DeletedLabGroupClient is a specialization of [cache.DeletedObject] for LabGroupClient.
+type DeletedLabGroupClient = cache.DeletedObject[*apilaboratoryv1alpha1.LabGroupClient]
 
 type labGroupClientInformer struct {
 	factory          internalinterfaces.SharedInformerFactory
@@ -47,55 +76,132 @@ type labGroupClientInformer struct {
 // NewLabGroupClientInformer constructs a new informer for LabGroupClient type.
 // Always prefer using an informer factory to get a shared informer instead of getting an independent
 // one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedLabGroupClientInformer]).
 func NewLabGroupClientInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers) cache.SharedIndexInformer {
-	return NewFilteredLabGroupClientInformer(client, namespace, resyncPeriod, indexers, nil)
+	return NewLabGroupClientInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: indexers})
+}
+
+// NewTypedLabGroupClientInformer constructs a new informer for LabGroupClient type.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedLabGroupClientInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers LabGroupClientIndexers) LabGroupClientIndexInformer {
+	return NewTypedLabGroupClientInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.TypedIndexersToIndexers(indexers)})
 }
 
 // NewFilteredLabGroupClientInformer constructs a new informer for LabGroupClient type.
 // Always prefer using an informer factory to get a shared informer instead of getting an independent
 // one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedFilteredLabGroupClientInformer]).
 func NewFilteredLabGroupClientInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) cache.SharedIndexInformer {
-	return cache.NewSharedIndexInformer(
-		&cache.ListWatch{
-			ListFunc: func(options v1.ListOptions) (runtime.Object, error) {
+	return NewTypedLabGroupClientInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: indexers, TweakListOptions: tweakListOptions})
+}
+
+// NewTypedFilteredLabGroupClientInformer constructs a new informer for LabGroupClient type.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedFilteredLabGroupClientInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers LabGroupClientIndexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) LabGroupClientIndexInformer {
+	return NewTypedLabGroupClientInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.TypedIndexersToIndexers(indexers), TweakListOptions: tweakListOptions})
+}
+
+// NewLabGroupClientInformerWithOptions constructs a new informer for LabGroupClient type with additional options.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedLabGroupClientInformerWithOptions]).
+func NewLabGroupClientInformerWithOptions(client versioned.Interface, namespace string, options internalinterfaces.InformerOptions) cache.SharedIndexInformer {
+	return NewTypedLabGroupClientInformerWithOptions(client, namespace, options)
+}
+
+// NewTypedLabGroupClientInformerWithOptions constructs a new informer for LabGroupClient type with additional options.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedLabGroupClientInformerWithOptions(client versioned.Interface, namespace string, options internalinterfaces.InformerOptions) LabGroupClientIndexInformer {
+	gvr := schema.GroupVersionResource{Group: "laboratory", Version: "v1alpha1", Resource: "labgroupclients"}
+	identifier := options.InformerName.WithResource(gvr)
+	tweakListOptions := options.TweakListOptions
+	return cache.NewTypedSharedIndexInformer[*apilaboratoryv1alpha1.LabGroupClient](cache.NewSharedIndexInformerWithOptions(
+		cache.ToListWatcherWithWatchListSemantics(&cache.ListWatch{
+			ListFunc: func(opts v1.ListOptions) (runtime.Object, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.LaboratoryV1alpha1().LabGroupClients(namespace).List(context.Background(), options)
+				return client.LaboratoryV1alpha1().LabGroupClients(namespace).List(context.Background(), opts)
 			},
-			WatchFunc: func(options v1.ListOptions) (watch.Interface, error) {
+			WatchFunc: func(opts v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.LaboratoryV1alpha1().LabGroupClients(namespace).Watch(context.Background(), options)
+				return client.LaboratoryV1alpha1().LabGroupClients(namespace).Watch(context.Background(), opts)
 			},
-			ListWithContextFunc: func(ctx context.Context, options v1.ListOptions) (runtime.Object, error) {
+			ListWithContextFunc: func(ctx context.Context, opts v1.ListOptions) (runtime.Object, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.LaboratoryV1alpha1().LabGroupClients(namespace).List(ctx, options)
+				return client.LaboratoryV1alpha1().LabGroupClients(namespace).List(ctx, opts)
 			},
-			WatchFuncWithContext: func(ctx context.Context, options v1.ListOptions) (watch.Interface, error) {
+			WatchFuncWithContext: func(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.LaboratoryV1alpha1().LabGroupClients(namespace).Watch(ctx, options)
+				return client.LaboratoryV1alpha1().LabGroupClients(namespace).Watch(ctx, opts)
 			},
-		},
+		}, client),
 		&apilaboratoryv1alpha1.LabGroupClient{},
-		resyncPeriod,
-		indexers,
-	)
+		cache.SharedIndexInformerOptions{
+			ResyncPeriod: options.ResyncPeriod,
+			Indexers:     options.Indexers,
+			Identifier:   identifier,
+		},
+	))
 }
 
 func (f *labGroupClientInformer) defaultInformer(client versioned.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
-	return NewFilteredLabGroupClientInformer(client, f.namespace, resyncPeriod, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}, f.tweakListOptions)
+	return NewTypedLabGroupClientInformerWithOptions(client, f.namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}, InformerName: f.factory.InformerName(), TweakListOptions: f.tweakListOptions})
 }
 
 func (f *labGroupClientInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&apilaboratoryv1alpha1.LabGroupClient{}, f.defaultInformer)
+	return f.TypedInformer()
+}
+
+func (f *labGroupClientInformer) TypedInformer() LabGroupClientIndexInformer {
+	return cache.NewTypedSharedIndexInformer[*apilaboratoryv1alpha1.LabGroupClient](f.factory.InformerFor(&apilaboratoryv1alpha1.LabGroupClient{}, f.defaultInformer))
 }
 
 func (f *labGroupClientInformer) Lister() laboratoryv1alpha1.LabGroupClientLister {
 	return laboratoryv1alpha1.NewLabGroupClientLister(f.Informer().GetIndexer())
+}
+
+// ToTypedLabGroupClientInformer converts an untyped informer into a TypedLabGroupClientInformer.
+//
+// WARNING: this conversion is only safe if the informer handles objects of type
+// *LabGroupClient. If that is not the case, calling type-safe methods of the returned
+// TypedLabGroupClientInformer leads to runtime panics. A safer alternative is to pass
+// around a TypedLabGroupClientInformer instances that was obtained from a
+// SharedInformerFactory.
+func ToTypedLabGroupClientInformer(informer LabGroupClientInformer) TypedLabGroupClientInformer {
+	if informer, ok := informer.(TypedLabGroupClientInformer); ok {
+		return informer
+	}
+	return &labGroupClientTypedInformerAdapter{informer}
+}
+
+type labGroupClientTypedInformerAdapter struct {
+	LabGroupClientInformer
+}
+
+func (a *labGroupClientTypedInformerAdapter) TypedInformer() LabGroupClientIndexInformer {
+	return cache.NewTypedSharedIndexInformer[*apilaboratoryv1alpha1.LabGroupClient](a.Informer())
+}
+
+// ToLabGroupClientIndexInformer converts an untyped informer into a LabGroupClientIndexInformer.
+//
+// WARNING: this conversion is only safe if the informer handles objects of type
+// *LabGroupClient. If that is not the case, calling type-safe methods of the returned
+// LabGroupClientIndexInformer leads to runtime panics. A safer alternative is to pass
+// around a LabGroupClientIndexInformer instances that was obtained from a
+// SharedInformerFactory.
+func ToLabGroupClientIndexInformer(informer cache.SharedIndexInformer) LabGroupClientIndexInformer {
+	if informer, ok := informer.(LabGroupClientIndexInformer); ok {
+		return informer
+	}
+	return cache.NewTypedSharedIndexInformer[*apilaboratoryv1alpha1.LabGroupClient](informer)
 }

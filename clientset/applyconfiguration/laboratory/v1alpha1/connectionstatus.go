@@ -23,11 +23,17 @@ import (
 
 // ConnectionStatusApplyConfiguration represents a declarative configuration of the ConnectionStatus type for use
 // with apply.
+//
+// ConnectionStatus defines the observed state of Connection.
 type ConnectionStatusApplyConfiguration struct {
-	VNI        *uint                                    `json:"vni,omitempty"`
-	Ports      []ConnectionPortStatusApplyConfiguration `json:"ports,omitempty"`
-	Ready      *bool                                    `json:"ready,omitempty"`
-	Conditions []v1.ConditionApplyConfiguration         `json:"conditions,omitempty"`
+	// VNI is the allocated VXLAN Network Identifier for direct (non-switch) connections.
+	// Nil for switch-to-device and switch-to-switch connections.
+	VNI   *uint                                    `json:"vni,omitempty"`
+	Ports []ConnectionPortStatusApplyConfiguration `json:"ports,omitempty"`
+	Ready *bool                                    `json:"ready,omitempty"`
+	// Conditions surfaces reconciler progress/blocking reasons
+	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
+	Conditions []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
 }
 
 // ConnectionStatusApplyConfiguration constructs a declarative configuration of the ConnectionStatus type for use with
@@ -35,7 +41,6 @@ type ConnectionStatusApplyConfiguration struct {
 func ConnectionStatus() *ConnectionStatusApplyConfiguration {
 	return &ConnectionStatusApplyConfiguration{}
 }
-func (b ConnectionStatusApplyConfiguration) IsApplyConfiguration() {}
 
 // WithVNI sets the VNI field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

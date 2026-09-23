@@ -25,8 +25,10 @@ import (
 
 // LabGroupApplyConfiguration represents a declarative configuration of the LabGroup type for use
 // with apply.
+//
+// LabGroup is the Schema for the labgroups API.
 type LabGroupApplyConfiguration struct {
-	v1.TypeMetaApplyConfiguration    `json:",inline"`
+	v1.TypeMetaApplyConfiguration    `json:""`
 	*v1.ObjectMetaApplyConfiguration `json:"metadata,omitempty"`
 	Spec                             *LabGroupSpecApplyConfiguration   `json:"spec,omitempty"`
 	Status                           *LabGroupStatusApplyConfiguration `json:"status,omitempty"`
@@ -41,6 +43,7 @@ func LabGroup(name string) *LabGroupApplyConfiguration {
 	b.WithAPIVersion("laboratory/v1alpha1")
 	return b
 }
+
 func (b LabGroupApplyConfiguration) IsApplyConfiguration() {}
 
 // WithKind sets the Kind field in the declarative configuration to the given value

@@ -19,6 +19,9 @@ package v1alpha1
 
 // LabGroupAccessPolicySpecApplyConfiguration represents a declarative configuration of the LabGroupAccessPolicySpec type for use
 // with apply.
+//
+// LabGroupAccessPolicySpec is a complete replacement desired policy. Empty is
+// intentional and means no VPN client can reach a laboratory.
 type LabGroupAccessPolicySpecApplyConfiguration struct {
 	Rules []LabGroupAccessRuleApplyConfiguration `json:"rules,omitempty"`
 }
@@ -28,7 +31,6 @@ type LabGroupAccessPolicySpecApplyConfiguration struct {
 func LabGroupAccessPolicySpec() *LabGroupAccessPolicySpecApplyConfiguration {
 	return &LabGroupAccessPolicySpecApplyConfiguration{}
 }
-func (b LabGroupAccessPolicySpecApplyConfiguration) IsApplyConfiguration() {}
 
 // WithRules adds the given value to the Rules field in the declarative configuration
 // and returns the receiver, so that objects can be build by chaining "With" function invocations.

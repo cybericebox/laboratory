@@ -19,6 +19,8 @@ package v1alpha1
 
 // ExposureSpecApplyConfiguration represents a declarative configuration of the ExposureSpec type for use
 // with apply.
+//
+// ExposureSpec declares how a device is externally reachable.
 type ExposureSpecApplyConfiguration struct {
 	Web *WebExposureApplyConfiguration `json:"web,omitempty"`
 }
@@ -28,7 +30,6 @@ type ExposureSpecApplyConfiguration struct {
 func ExposureSpec() *ExposureSpecApplyConfiguration {
 	return &ExposureSpecApplyConfiguration{}
 }
-func (b ExposureSpecApplyConfiguration) IsApplyConfiguration() {}
 
 // WithWeb sets the Web field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

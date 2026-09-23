@@ -27,16 +27,45 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/clientset/listers/laboratory/v1alpha1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
+	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	watch "k8s.io/apimachinery/pkg/watch"
 	cache "k8s.io/client-go/tools/cache"
 )
 
 // LabVPNInformer provides access to a shared informer and lister for
-// LabVPNs.
+// LabVPNs. Prefer using the type-safe variant (see [TypedLabVPNInformer]).
 type LabVPNInformer interface {
 	Informer() cache.SharedIndexInformer
 	Lister() laboratoryv1alpha1.LabVPNLister
 }
+
+// TypedLabVPNInformer provides access to a shared informer and lister for
+// LabVPNs, including the type-safe TypedInformer variant.
+// It is a superset of LabVPNInformer.
+type TypedLabVPNInformer interface {
+	Informer() cache.SharedIndexInformer
+	TypedInformer() LabVPNIndexInformer
+	Lister() laboratoryv1alpha1.LabVPNLister
+}
+
+// LabVPNIndexInformer is a wrapper around the underlying [cache.SharedIndexInformer]
+// with type-safe variants of several methods.
+type LabVPNIndexInformer cache.TypedSharedIndexInformer[*apilaboratoryv1alpha1.LabVPN]
+
+// LabVPNHandlerFuncs is a specialization of [cache.TypedResourceEventHandlerFuncs] for LabVPN.
+type LabVPNHandlerFuncs = cache.TypedResourceEventHandlerFuncs[*apilaboratoryv1alpha1.LabVPN]
+
+// LabVPNDetailedHandlerFuncs is a specialization of [cache.TypedResourceEventHandlerDetailedFuncs] for LabVPN.
+type LabVPNDetailedHandlerFuncs = cache.TypedResourceEventHandlerDetailedFuncs[*apilaboratoryv1alpha1.LabVPN]
+
+// LabVPNFilteringHandler is a specialization of [cache.TypedFilteringResourceEventHandler] for LabVPN.
+type LabVPNFilteringHandler = cache.TypedFilteringResourceEventHandler[*apilaboratoryv1alpha1.LabVPN]
+
+// LabVPNIndexers is a specialization of [cache.TypedIndexers] for LabVPN.
+type LabVPNIndexers = cache.TypedIndexers[*apilaboratoryv1alpha1.LabVPN]
+
+// DeletedLabVPN is a specialization of [cache.DeletedObject] for LabVPN.
+type DeletedLabVPN = cache.DeletedObject[*apilaboratoryv1alpha1.LabVPN]
 
 type labVPNInformer struct {
 	factory          internalinterfaces.SharedInformerFactory
@@ -47,55 +76,132 @@ type labVPNInformer struct {
 // NewLabVPNInformer constructs a new informer for LabVPN type.
 // Always prefer using an informer factory to get a shared informer instead of getting an independent
 // one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedLabVPNInformer]).
 func NewLabVPNInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers) cache.SharedIndexInformer {
-	return NewFilteredLabVPNInformer(client, namespace, resyncPeriod, indexers, nil)
+	return NewLabVPNInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: indexers})
+}
+
+// NewTypedLabVPNInformer constructs a new informer for LabVPN type.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedLabVPNInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers LabVPNIndexers) LabVPNIndexInformer {
+	return NewTypedLabVPNInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.TypedIndexersToIndexers(indexers)})
 }
 
 // NewFilteredLabVPNInformer constructs a new informer for LabVPN type.
 // Always prefer using an informer factory to get a shared informer instead of getting an independent
 // one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedFilteredLabVPNInformer]).
 func NewFilteredLabVPNInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) cache.SharedIndexInformer {
-	return cache.NewSharedIndexInformer(
-		&cache.ListWatch{
-			ListFunc: func(options v1.ListOptions) (runtime.Object, error) {
+	return NewTypedLabVPNInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: indexers, TweakListOptions: tweakListOptions})
+}
+
+// NewTypedFilteredLabVPNInformer constructs a new informer for LabVPN type.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedFilteredLabVPNInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers LabVPNIndexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) LabVPNIndexInformer {
+	return NewTypedLabVPNInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.TypedIndexersToIndexers(indexers), TweakListOptions: tweakListOptions})
+}
+
+// NewLabVPNInformerWithOptions constructs a new informer for LabVPN type with additional options.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedLabVPNInformerWithOptions]).
+func NewLabVPNInformerWithOptions(client versioned.Interface, namespace string, options internalinterfaces.InformerOptions) cache.SharedIndexInformer {
+	return NewTypedLabVPNInformerWithOptions(client, namespace, options)
+}
+
+// NewTypedLabVPNInformerWithOptions constructs a new informer for LabVPN type with additional options.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedLabVPNInformerWithOptions(client versioned.Interface, namespace string, options internalinterfaces.InformerOptions) LabVPNIndexInformer {
+	gvr := schema.GroupVersionResource{Group: "laboratory", Version: "v1alpha1", Resource: "labvpns"}
+	identifier := options.InformerName.WithResource(gvr)
+	tweakListOptions := options.TweakListOptions
+	return cache.NewTypedSharedIndexInformer[*apilaboratoryv1alpha1.LabVPN](cache.NewSharedIndexInformerWithOptions(
+		cache.ToListWatcherWithWatchListSemantics(&cache.ListWatch{
+			ListFunc: func(opts v1.ListOptions) (runtime.Object, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.LaboratoryV1alpha1().LabVPNs(namespace).List(context.Background(), options)
+				return client.LaboratoryV1alpha1().LabVPNs(namespace).List(context.Background(), opts)
 			},
-			WatchFunc: func(options v1.ListOptions) (watch.Interface, error) {
+			WatchFunc: func(opts v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.LaboratoryV1alpha1().LabVPNs(namespace).Watch(context.Background(), options)
+				return client.LaboratoryV1alpha1().LabVPNs(namespace).Watch(context.Background(), opts)
 			},
-			ListWithContextFunc: func(ctx context.Context, options v1.ListOptions) (runtime.Object, error) {
+			ListWithContextFunc: func(ctx context.Context, opts v1.ListOptions) (runtime.Object, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.LaboratoryV1alpha1().LabVPNs(namespace).List(ctx, options)
+				return client.LaboratoryV1alpha1().LabVPNs(namespace).List(ctx, opts)
 			},
-			WatchFuncWithContext: func(ctx context.Context, options v1.ListOptions) (watch.Interface, error) {
+			WatchFuncWithContext: func(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.LaboratoryV1alpha1().LabVPNs(namespace).Watch(ctx, options)
+				return client.LaboratoryV1alpha1().LabVPNs(namespace).Watch(ctx, opts)
 			},
-		},
+		}, client),
 		&apilaboratoryv1alpha1.LabVPN{},
-		resyncPeriod,
-		indexers,
-	)
+		cache.SharedIndexInformerOptions{
+			ResyncPeriod: options.ResyncPeriod,
+			Indexers:     options.Indexers,
+			Identifier:   identifier,
+		},
+	))
 }
 
 func (f *labVPNInformer) defaultInformer(client versioned.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
-	return NewFilteredLabVPNInformer(client, f.namespace, resyncPeriod, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}, f.tweakListOptions)
+	return NewTypedLabVPNInformerWithOptions(client, f.namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}, InformerName: f.factory.InformerName(), TweakListOptions: f.tweakListOptions})
 }
 
 func (f *labVPNInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&apilaboratoryv1alpha1.LabVPN{}, f.defaultInformer)
+	return f.TypedInformer()
+}
+
+func (f *labVPNInformer) TypedInformer() LabVPNIndexInformer {
+	return cache.NewTypedSharedIndexInformer[*apilaboratoryv1alpha1.LabVPN](f.factory.InformerFor(&apilaboratoryv1alpha1.LabVPN{}, f.defaultInformer))
 }
 
 func (f *labVPNInformer) Lister() laboratoryv1alpha1.LabVPNLister {
 	return laboratoryv1alpha1.NewLabVPNLister(f.Informer().GetIndexer())
+}
+
+// ToTypedLabVPNInformer converts an untyped informer into a TypedLabVPNInformer.
+//
+// WARNING: this conversion is only safe if the informer handles objects of type
+// *LabVPN. If that is not the case, calling type-safe methods of the returned
+// TypedLabVPNInformer leads to runtime panics. A safer alternative is to pass
+// around a TypedLabVPNInformer instances that was obtained from a
+// SharedInformerFactory.
+func ToTypedLabVPNInformer(informer LabVPNInformer) TypedLabVPNInformer {
+	if informer, ok := informer.(TypedLabVPNInformer); ok {
+		return informer
+	}
+	return &labVPNTypedInformerAdapter{informer}
+}
+
+type labVPNTypedInformerAdapter struct {
+	LabVPNInformer
+}
+
+func (a *labVPNTypedInformerAdapter) TypedInformer() LabVPNIndexInformer {
+	return cache.NewTypedSharedIndexInformer[*apilaboratoryv1alpha1.LabVPN](a.Informer())
+}
+
+// ToLabVPNIndexInformer converts an untyped informer into a LabVPNIndexInformer.
+//
+// WARNING: this conversion is only safe if the informer handles objects of type
+// *LabVPN. If that is not the case, calling type-safe methods of the returned
+// LabVPNIndexInformer leads to runtime panics. A safer alternative is to pass
+// around a LabVPNIndexInformer instances that was obtained from a
+// SharedInformerFactory.
+func ToLabVPNIndexInformer(informer cache.SharedIndexInformer) LabVPNIndexInformer {
+	if informer, ok := informer.(LabVPNIndexInformer); ok {
+		return informer
+	}
+	return cache.NewTypedSharedIndexInformer[*apilaboratoryv1alpha1.LabVPN](informer)
 }

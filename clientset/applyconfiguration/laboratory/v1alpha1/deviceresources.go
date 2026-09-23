@@ -19,6 +19,11 @@ package v1alpha1
 
 // DeviceResourcesApplyConfiguration represents a declarative configuration of the DeviceResources type for use
 // with apply.
+//
+// DeviceResources sets container resource requests/limits for a device pod.
+// Values are Kubernetes quantity strings (e.g. "250m", "256Mi"); empty fields
+// are omitted so the scheduler treats them as best-effort. Requests are what
+// capacity planning sums against node allocatable.
 type DeviceResourcesApplyConfiguration struct {
 	CPURequest    *string `json:"cpuRequest,omitempty"`
 	MemoryRequest *string `json:"memoryRequest,omitempty"`
@@ -31,7 +36,6 @@ type DeviceResourcesApplyConfiguration struct {
 func DeviceResources() *DeviceResourcesApplyConfiguration {
 	return &DeviceResourcesApplyConfiguration{}
 }
-func (b DeviceResourcesApplyConfiguration) IsApplyConfiguration() {}
 
 // WithCPURequest sets the CPURequest field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

@@ -25,8 +25,10 @@ import (
 
 // DeviceApplyConfiguration represents a declarative configuration of the Device type for use
 // with apply.
+//
+// Device is the Schema for the devices API.
 type DeviceApplyConfiguration struct {
-	v1.TypeMetaApplyConfiguration    `json:",inline"`
+	v1.TypeMetaApplyConfiguration    `json:""`
 	*v1.ObjectMetaApplyConfiguration `json:"metadata,omitempty"`
 	Spec                             *DeviceSpecApplyConfiguration   `json:"spec,omitempty"`
 	Status                           *DeviceStatusApplyConfiguration `json:"status,omitempty"`
@@ -42,6 +44,7 @@ func Device(name, namespace string) *DeviceApplyConfiguration {
 	b.WithAPIVersion("laboratory/v1alpha1")
 	return b
 }
+
 func (b DeviceApplyConfiguration) IsApplyConfiguration() {}
 
 // WithKind sets the Kind field in the declarative configuration to the given value

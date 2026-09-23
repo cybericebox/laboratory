@@ -24,12 +24,16 @@ import (
 
 // LabGatewayStatusApplyConfiguration represents a declarative configuration of the LabGatewayStatus type for use
 // with apply.
+//
+// LabGatewayStatus defines the observed state of LabGateway.
 type LabGatewayStatusApplyConfiguration struct {
 	Phase       *laboratoryv1alpha1.LabGatewayPhase `json:"phase,omitempty"`
 	NATReady    *bool                               `json:"natReady,omitempty"`
 	DHCPEnabled *bool                               `json:"dhcpEnabled,omitempty"`
 	DHCPReady   *bool                               `json:"dhcpReady,omitempty"`
-	Conditions  []v1.ConditionApplyConfiguration    `json:"conditions,omitempty"`
+	// Conditions surfaces reconciler progress/blocking reasons
+	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
+	Conditions []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
 }
 
 // LabGatewayStatusApplyConfiguration constructs a declarative configuration of the LabGatewayStatus type for use with
@@ -37,7 +41,6 @@ type LabGatewayStatusApplyConfiguration struct {
 func LabGatewayStatus() *LabGatewayStatusApplyConfiguration {
 	return &LabGatewayStatusApplyConfiguration{}
 }
-func (b LabGatewayStatusApplyConfiguration) IsApplyConfiguration() {}
 
 // WithPhase sets the Phase field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

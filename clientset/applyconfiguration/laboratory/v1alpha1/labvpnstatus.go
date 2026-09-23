@@ -24,11 +24,15 @@ import (
 
 // LabVPNStatusApplyConfiguration represents a declarative configuration of the LabVPNStatus type for use
 // with apply.
+//
+// LabVPNStatus defines the observed state of LabVPN.
 type LabVPNStatusApplyConfiguration struct {
-	Phase       *laboratoryv1alpha1.LabVPNPhase  `json:"phase,omitempty"`
-	DHCPEnabled *bool                            `json:"dhcpEnabled,omitempty"`
-	DHCPReady   *bool                            `json:"dhcpReady,omitempty"`
-	Conditions  []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
+	Phase       *laboratoryv1alpha1.LabVPNPhase `json:"phase,omitempty"`
+	DHCPEnabled *bool                           `json:"dhcpEnabled,omitempty"`
+	DHCPReady   *bool                           `json:"dhcpReady,omitempty"`
+	// Conditions surfaces reconciler progress/blocking reasons
+	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
+	Conditions []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
 }
 
 // LabVPNStatusApplyConfiguration constructs a declarative configuration of the LabVPNStatus type for use with
@@ -36,7 +40,6 @@ type LabVPNStatusApplyConfiguration struct {
 func LabVPNStatus() *LabVPNStatusApplyConfiguration {
 	return &LabVPNStatusApplyConfiguration{}
 }
-func (b LabVPNStatusApplyConfiguration) IsApplyConfiguration() {}
 
 // WithPhase sets the Phase field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

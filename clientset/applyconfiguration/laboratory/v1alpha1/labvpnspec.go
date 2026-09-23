@@ -19,9 +19,14 @@ package v1alpha1
 
 // LabVPNSpecApplyConfiguration represents a declarative configuration of the LabVPNSpec type for use
 // with apply.
+//
+// LabVPNSpec defines the desired state of LabVPN.
 type LabVPNSpecApplyConfiguration struct {
-	LabName      *string `json:"labName,omitempty"`
-	NetworkIndex *uint   `json:"networkIndex,omitempty"`
+	// LabName is the name of the parent Lab.
+	LabName *string `json:"labName,omitempty"`
+	// NetworkIndex is the subnet index N from the lab-subnets pool.
+	// VPN CIDR is derived as 10.8.N.0/24. Immutable after FinalizerController is set.
+	NetworkIndex *uint `json:"networkIndex,omitempty"`
 }
 
 // LabVPNSpecApplyConfiguration constructs a declarative configuration of the LabVPNSpec type for use with
@@ -29,7 +34,6 @@ type LabVPNSpecApplyConfiguration struct {
 func LabVPNSpec() *LabVPNSpecApplyConfiguration {
 	return &LabVPNSpecApplyConfiguration{}
 }
-func (b LabVPNSpecApplyConfiguration) IsApplyConfiguration() {}
 
 // WithLabName sets the LabName field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

@@ -24,6 +24,8 @@ import (
 
 // LabStatusApplyConfiguration represents a declarative configuration of the LabStatus type for use
 // with apply.
+//
+// LabStatus defines the observed state of Lab.
 type LabStatusApplyConfiguration struct {
 	Phase       *laboratoryv1alpha1.Phase           `json:"phase,omitempty"`
 	VPN         *LabNetworkStatusApplyConfiguration `json:"vpn,omitempty"`
@@ -31,7 +33,9 @@ type LabStatusApplyConfiguration struct {
 	Devices     []DeviceRefApplyConfiguration       `json:"devices,omitempty"`
 	Connections []ConnectionRefApplyConfiguration   `json:"connections,omitempty"`
 	Access      []AccessEntryApplyConfiguration     `json:"access,omitempty"`
-	Conditions  []v1.ConditionApplyConfiguration    `json:"conditions,omitempty"`
+	// Conditions surfaces reconciler progress/blocking reasons
+	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
+	Conditions []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
 }
 
 // LabStatusApplyConfiguration constructs a declarative configuration of the LabStatus type for use with
@@ -39,7 +43,6 @@ type LabStatusApplyConfiguration struct {
 func LabStatus() *LabStatusApplyConfiguration {
 	return &LabStatusApplyConfiguration{}
 }
-func (b LabStatusApplyConfiguration) IsApplyConfiguration() {}
 
 // WithPhase sets the Phase field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

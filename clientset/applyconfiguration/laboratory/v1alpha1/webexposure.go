@@ -19,8 +19,11 @@ package v1alpha1
 
 // WebExposureApplyConfiguration represents a declarative configuration of the WebExposure type for use
 // with apply.
+//
+// WebExposure publishes a device port via an L7 proxy.
 type WebExposureApplyConfiguration struct {
-	Port     *int32  `json:"port,omitempty"`
+	Port *int32 `json:"port,omitempty"`
+	// Protocol is "http" or "https".
 	Protocol *string `json:"protocol,omitempty"`
 }
 
@@ -29,7 +32,6 @@ type WebExposureApplyConfiguration struct {
 func WebExposure() *WebExposureApplyConfiguration {
 	return &WebExposureApplyConfiguration{}
 }
-func (b WebExposureApplyConfiguration) IsApplyConfiguration() {}
 
 // WithPort sets the Port field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

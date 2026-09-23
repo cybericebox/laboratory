@@ -23,14 +23,20 @@ import (
 
 // DeviceTemplateApplyConfiguration represents a declarative configuration of the DeviceTemplate type for use
 // with apply.
+//
+// DeviceTemplate is an inline device declaration inside Lab.spec.devices[].
 type DeviceTemplateApplyConfiguration struct {
-	Name           *string                            `json:"name,omitempty"`
-	Type           *laboratoryv1alpha1.DeviceType     `json:"type,omitempty"`
-	Image          *string                            `json:"image,omitempty"`
+	Name  *string                        `json:"name,omitempty"`
+	Type  *laboratoryv1alpha1.DeviceType `json:"type,omitempty"`
+	Image *string                        `json:"image,omitempty"`
+	// SecurityPreset names a capability profile for the device container. Only
+	// the preset name is exposed here; the concrete Linux capabilities behind it
+	// are an internal platform decision. Empty means "basic" (no extra caps).
 	SecurityPreset *laboratoryv1alpha1.SecurityPreset `json:"securityPreset,omitempty"`
 	Interfaces     []InterfaceSpecApplyConfiguration  `json:"interfaces,omitempty"`
 	Exposure       *ExposureSpecApplyConfiguration    `json:"exposure,omitempty"`
-	Resources      *DeviceResourcesApplyConfiguration `json:"resources,omitempty"`
+	// Resources sets the container resource requests/limits for this device.
+	Resources *DeviceResourcesApplyConfiguration `json:"resources,omitempty"`
 }
 
 // DeviceTemplateApplyConfiguration constructs a declarative configuration of the DeviceTemplate type for use with
@@ -38,7 +44,6 @@ type DeviceTemplateApplyConfiguration struct {
 func DeviceTemplate() *DeviceTemplateApplyConfiguration {
 	return &DeviceTemplateApplyConfiguration{}
 }
-func (b DeviceTemplateApplyConfiguration) IsApplyConfiguration() {}
 
 // WithName sets the Name field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

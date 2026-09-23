@@ -25,8 +25,12 @@ import (
 
 // LabGroupAccessPolicyApplyConfiguration represents a declarative configuration of the LabGroupAccessPolicy type for use
 // with apply.
+//
+// LabGroupAccessPolicy is the namespaced firewall policy of one LabGroup. The
+// agent owns a fixed object in the LabGroup namespace and replaces its Spec in
+// one Kubernetes update, while the VPN process watches this resource.
 type LabGroupAccessPolicyApplyConfiguration struct {
-	v1.TypeMetaApplyConfiguration    `json:",inline"`
+	v1.TypeMetaApplyConfiguration    `json:""`
 	*v1.ObjectMetaApplyConfiguration `json:"metadata,omitempty"`
 	Spec                             *LabGroupAccessPolicySpecApplyConfiguration   `json:"spec,omitempty"`
 	Status                           *LabGroupAccessPolicyStatusApplyConfiguration `json:"status,omitempty"`
@@ -42,6 +46,7 @@ func LabGroupAccessPolicy(name, namespace string) *LabGroupAccessPolicyApplyConf
 	b.WithAPIVersion("laboratory/v1alpha1")
 	return b
 }
+
 func (b LabGroupAccessPolicyApplyConfiguration) IsApplyConfiguration() {}
 
 // WithKind sets the Kind field in the declarative configuration to the given value

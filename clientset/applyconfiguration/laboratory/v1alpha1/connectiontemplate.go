@@ -19,6 +19,8 @@ package v1alpha1
 
 // ConnectionTemplateApplyConfiguration represents a declarative configuration of the ConnectionTemplate type for use
 // with apply.
+//
+// ConnectionTemplate is an inline connection declaration inside Lab.spec.connections[].
 type ConnectionTemplateApplyConfiguration struct {
 	Endpoints []EndpointSpecApplyConfiguration `json:"endpoints,omitempty"`
 }
@@ -28,7 +30,6 @@ type ConnectionTemplateApplyConfiguration struct {
 func ConnectionTemplate() *ConnectionTemplateApplyConfiguration {
 	return &ConnectionTemplateApplyConfiguration{}
 }
-func (b ConnectionTemplateApplyConfiguration) IsApplyConfiguration() {}
 
 // WithEndpoints adds the given value to the Endpoints field in the declarative configuration
 // and returns the receiver, so that objects can be build by chaining "With" function invocations.

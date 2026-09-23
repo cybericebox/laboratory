@@ -25,8 +25,10 @@ import (
 
 // LabGatewayApplyConfiguration represents a declarative configuration of the LabGateway type for use
 // with apply.
+//
+// LabGateway is the Schema for the labgateways API.
 type LabGatewayApplyConfiguration struct {
-	v1.TypeMetaApplyConfiguration    `json:",inline"`
+	v1.TypeMetaApplyConfiguration    `json:""`
 	*v1.ObjectMetaApplyConfiguration `json:"metadata,omitempty"`
 	Spec                             *LabGatewaySpecApplyConfiguration   `json:"spec,omitempty"`
 	Status                           *LabGatewayStatusApplyConfiguration `json:"status,omitempty"`
@@ -42,6 +44,7 @@ func LabGateway(name, namespace string) *LabGatewayApplyConfiguration {
 	b.WithAPIVersion("laboratory/v1alpha1")
 	return b
 }
+
 func (b LabGatewayApplyConfiguration) IsApplyConfiguration() {}
 
 // WithKind sets the Kind field in the declarative configuration to the given value

@@ -19,6 +19,8 @@ package v1alpha1
 
 // LabGroupSpecApplyConfiguration represents a declarative configuration of the LabGroupSpec type for use
 // with apply.
+//
+// LabGroupSpec defines the desired state of LabGroup.
 type LabGroupSpecApplyConfiguration struct {
 	VPN       *LabGroupVPNSpecApplyConfiguration `json:"vpn,omitempty"`
 	Suspended *bool                              `json:"suspended,omitempty"`
@@ -29,7 +31,6 @@ type LabGroupSpecApplyConfiguration struct {
 func LabGroupSpec() *LabGroupSpecApplyConfiguration {
 	return &LabGroupSpecApplyConfiguration{}
 }
-func (b LabGroupSpecApplyConfiguration) IsApplyConfiguration() {}
 
 // WithVPN sets the VPN field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

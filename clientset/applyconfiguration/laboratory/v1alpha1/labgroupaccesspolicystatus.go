@@ -23,6 +23,9 @@ import (
 
 // LabGroupAccessPolicyStatusApplyConfiguration represents a declarative configuration of the LabGroupAccessPolicyStatus type for use
 // with apply.
+//
+// LabGroupAccessPolicyStatus is written only by the in-namespace VPN
+// reconciler after it has applied the matching policy generation.
 type LabGroupAccessPolicyStatusApplyConfiguration struct {
 	ObservedGeneration *int64                                             `json:"observedGeneration,omitempty"`
 	State              *string                                            `json:"state,omitempty"`
@@ -36,7 +39,6 @@ type LabGroupAccessPolicyStatusApplyConfiguration struct {
 func LabGroupAccessPolicyStatus() *LabGroupAccessPolicyStatusApplyConfiguration {
 	return &LabGroupAccessPolicyStatusApplyConfiguration{}
 }
-func (b LabGroupAccessPolicyStatusApplyConfiguration) IsApplyConfiguration() {}
 
 // WithObservedGeneration sets the ObservedGeneration field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

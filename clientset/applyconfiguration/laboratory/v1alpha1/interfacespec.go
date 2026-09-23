@@ -19,10 +19,13 @@ package v1alpha1
 
 // InterfaceSpecApplyConfiguration represents a declarative configuration of the InterfaceSpec type for use
 // with apply.
+//
+// InterfaceSpec defines a network interface on a device.
 type InterfaceSpecApplyConfiguration struct {
 	Name *string                     `json:"name,omitempty"`
 	Addr *AddrSpecApplyConfiguration `json:"addr,omitempty"`
-	MAC  *string                     `json:"mac,omitempty"`
+	// MAC is "random" or an explicit MAC address.
+	MAC *string `json:"mac,omitempty"`
 }
 
 // InterfaceSpecApplyConfiguration constructs a declarative configuration of the InterfaceSpec type for use with
@@ -30,7 +33,6 @@ type InterfaceSpecApplyConfiguration struct {
 func InterfaceSpec() *InterfaceSpecApplyConfiguration {
 	return &InterfaceSpecApplyConfiguration{}
 }
-func (b InterfaceSpecApplyConfiguration) IsApplyConfiguration() {}
 
 // WithName sets the Name field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

@@ -25,8 +25,10 @@ import (
 
 // LabVPNApplyConfiguration represents a declarative configuration of the LabVPN type for use
 // with apply.
+//
+// LabVPN is the Schema for the labvpns API.
 type LabVPNApplyConfiguration struct {
-	v1.TypeMetaApplyConfiguration    `json:",inline"`
+	v1.TypeMetaApplyConfiguration    `json:""`
 	*v1.ObjectMetaApplyConfiguration `json:"metadata,omitempty"`
 	Spec                             *LabVPNSpecApplyConfiguration   `json:"spec,omitempty"`
 	Status                           *LabVPNStatusApplyConfiguration `json:"status,omitempty"`
@@ -42,6 +44,7 @@ func LabVPN(name, namespace string) *LabVPNApplyConfiguration {
 	b.WithAPIVersion("laboratory/v1alpha1")
 	return b
 }
+
 func (b LabVPNApplyConfiguration) IsApplyConfiguration() {}
 
 // WithKind sets the Kind field in the declarative configuration to the given value

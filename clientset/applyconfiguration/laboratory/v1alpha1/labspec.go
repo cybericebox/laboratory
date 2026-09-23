@@ -19,6 +19,8 @@ package v1alpha1
 
 // LabSpecApplyConfiguration represents a declarative configuration of the LabSpec type for use
 // with apply.
+//
+// LabSpec defines the desired state of Lab.
 type LabSpecApplyConfiguration struct {
 	VPN         *LabNetworkSpecApplyConfiguration      `json:"vpn,omitempty"`
 	Internet    *LabNetworkSpecApplyConfiguration      `json:"internet,omitempty"`
@@ -31,7 +33,6 @@ type LabSpecApplyConfiguration struct {
 func LabSpec() *LabSpecApplyConfiguration {
 	return &LabSpecApplyConfiguration{}
 }
-func (b LabSpecApplyConfiguration) IsApplyConfiguration() {}
 
 // WithVPN sets the VPN field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

@@ -27,16 +27,45 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/clientset/listers/laboratory/v1alpha1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
+	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	watch "k8s.io/apimachinery/pkg/watch"
 	cache "k8s.io/client-go/tools/cache"
 )
 
 // LabGroupAccessPolicyInformer provides access to a shared informer and lister for
-// LabGroupAccessPolicies.
+// LabGroupAccessPolicies. Prefer using the type-safe variant (see [TypedLabGroupAccessPolicyInformer]).
 type LabGroupAccessPolicyInformer interface {
 	Informer() cache.SharedIndexInformer
 	Lister() laboratoryv1alpha1.LabGroupAccessPolicyLister
 }
+
+// TypedLabGroupAccessPolicyInformer provides access to a shared informer and lister for
+// LabGroupAccessPolicies, including the type-safe TypedInformer variant.
+// It is a superset of LabGroupAccessPolicyInformer.
+type TypedLabGroupAccessPolicyInformer interface {
+	Informer() cache.SharedIndexInformer
+	TypedInformer() LabGroupAccessPolicyIndexInformer
+	Lister() laboratoryv1alpha1.LabGroupAccessPolicyLister
+}
+
+// LabGroupAccessPolicyIndexInformer is a wrapper around the underlying [cache.SharedIndexInformer]
+// with type-safe variants of several methods.
+type LabGroupAccessPolicyIndexInformer cache.TypedSharedIndexInformer[*apilaboratoryv1alpha1.LabGroupAccessPolicy]
+
+// LabGroupAccessPolicyHandlerFuncs is a specialization of [cache.TypedResourceEventHandlerFuncs] for LabGroupAccessPolicy.
+type LabGroupAccessPolicyHandlerFuncs = cache.TypedResourceEventHandlerFuncs[*apilaboratoryv1alpha1.LabGroupAccessPolicy]
+
+// LabGroupAccessPolicyDetailedHandlerFuncs is a specialization of [cache.TypedResourceEventHandlerDetailedFuncs] for LabGroupAccessPolicy.
+type LabGroupAccessPolicyDetailedHandlerFuncs = cache.TypedResourceEventHandlerDetailedFuncs[*apilaboratoryv1alpha1.LabGroupAccessPolicy]
+
+// LabGroupAccessPolicyFilteringHandler is a specialization of [cache.TypedFilteringResourceEventHandler] for LabGroupAccessPolicy.
+type LabGroupAccessPolicyFilteringHandler = cache.TypedFilteringResourceEventHandler[*apilaboratoryv1alpha1.LabGroupAccessPolicy]
+
+// LabGroupAccessPolicyIndexers is a specialization of [cache.TypedIndexers] for LabGroupAccessPolicy.
+type LabGroupAccessPolicyIndexers = cache.TypedIndexers[*apilaboratoryv1alpha1.LabGroupAccessPolicy]
+
+// DeletedLabGroupAccessPolicy is a specialization of [cache.DeletedObject] for LabGroupAccessPolicy.
+type DeletedLabGroupAccessPolicy = cache.DeletedObject[*apilaboratoryv1alpha1.LabGroupAccessPolicy]
 
 type labGroupAccessPolicyInformer struct {
 	factory          internalinterfaces.SharedInformerFactory
@@ -47,55 +76,132 @@ type labGroupAccessPolicyInformer struct {
 // NewLabGroupAccessPolicyInformer constructs a new informer for LabGroupAccessPolicy type.
 // Always prefer using an informer factory to get a shared informer instead of getting an independent
 // one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedLabGroupAccessPolicyInformer]).
 func NewLabGroupAccessPolicyInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers) cache.SharedIndexInformer {
-	return NewFilteredLabGroupAccessPolicyInformer(client, namespace, resyncPeriod, indexers, nil)
+	return NewLabGroupAccessPolicyInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: indexers})
+}
+
+// NewTypedLabGroupAccessPolicyInformer constructs a new informer for LabGroupAccessPolicy type.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedLabGroupAccessPolicyInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers LabGroupAccessPolicyIndexers) LabGroupAccessPolicyIndexInformer {
+	return NewTypedLabGroupAccessPolicyInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.TypedIndexersToIndexers(indexers)})
 }
 
 // NewFilteredLabGroupAccessPolicyInformer constructs a new informer for LabGroupAccessPolicy type.
 // Always prefer using an informer factory to get a shared informer instead of getting an independent
 // one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedFilteredLabGroupAccessPolicyInformer]).
 func NewFilteredLabGroupAccessPolicyInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) cache.SharedIndexInformer {
-	return cache.NewSharedIndexInformer(
-		&cache.ListWatch{
-			ListFunc: func(options v1.ListOptions) (runtime.Object, error) {
+	return NewTypedLabGroupAccessPolicyInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: indexers, TweakListOptions: tweakListOptions})
+}
+
+// NewTypedFilteredLabGroupAccessPolicyInformer constructs a new informer for LabGroupAccessPolicy type.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedFilteredLabGroupAccessPolicyInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers LabGroupAccessPolicyIndexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) LabGroupAccessPolicyIndexInformer {
+	return NewTypedLabGroupAccessPolicyInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.TypedIndexersToIndexers(indexers), TweakListOptions: tweakListOptions})
+}
+
+// NewLabGroupAccessPolicyInformerWithOptions constructs a new informer for LabGroupAccessPolicy type with additional options.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedLabGroupAccessPolicyInformerWithOptions]).
+func NewLabGroupAccessPolicyInformerWithOptions(client versioned.Interface, namespace string, options internalinterfaces.InformerOptions) cache.SharedIndexInformer {
+	return NewTypedLabGroupAccessPolicyInformerWithOptions(client, namespace, options)
+}
+
+// NewTypedLabGroupAccessPolicyInformerWithOptions constructs a new informer for LabGroupAccessPolicy type with additional options.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedLabGroupAccessPolicyInformerWithOptions(client versioned.Interface, namespace string, options internalinterfaces.InformerOptions) LabGroupAccessPolicyIndexInformer {
+	gvr := schema.GroupVersionResource{Group: "laboratory", Version: "v1alpha1", Resource: "labgroupaccesspolicys"}
+	identifier := options.InformerName.WithResource(gvr)
+	tweakListOptions := options.TweakListOptions
+	return cache.NewTypedSharedIndexInformer[*apilaboratoryv1alpha1.LabGroupAccessPolicy](cache.NewSharedIndexInformerWithOptions(
+		cache.ToListWatcherWithWatchListSemantics(&cache.ListWatch{
+			ListFunc: func(opts v1.ListOptions) (runtime.Object, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.LaboratoryV1alpha1().LabGroupAccessPolicies(namespace).List(context.Background(), options)
+				return client.LaboratoryV1alpha1().LabGroupAccessPolicies(namespace).List(context.Background(), opts)
 			},
-			WatchFunc: func(options v1.ListOptions) (watch.Interface, error) {
+			WatchFunc: func(opts v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.LaboratoryV1alpha1().LabGroupAccessPolicies(namespace).Watch(context.Background(), options)
+				return client.LaboratoryV1alpha1().LabGroupAccessPolicies(namespace).Watch(context.Background(), opts)
 			},
-			ListWithContextFunc: func(ctx context.Context, options v1.ListOptions) (runtime.Object, error) {
+			ListWithContextFunc: func(ctx context.Context, opts v1.ListOptions) (runtime.Object, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.LaboratoryV1alpha1().LabGroupAccessPolicies(namespace).List(ctx, options)
+				return client.LaboratoryV1alpha1().LabGroupAccessPolicies(namespace).List(ctx, opts)
 			},
-			WatchFuncWithContext: func(ctx context.Context, options v1.ListOptions) (watch.Interface, error) {
+			WatchFuncWithContext: func(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.LaboratoryV1alpha1().LabGroupAccessPolicies(namespace).Watch(ctx, options)
+				return client.LaboratoryV1alpha1().LabGroupAccessPolicies(namespace).Watch(ctx, opts)
 			},
-		},
+		}, client),
 		&apilaboratoryv1alpha1.LabGroupAccessPolicy{},
-		resyncPeriod,
-		indexers,
-	)
+		cache.SharedIndexInformerOptions{
+			ResyncPeriod: options.ResyncPeriod,
+			Indexers:     options.Indexers,
+			Identifier:   identifier,
+		},
+	))
 }
 
 func (f *labGroupAccessPolicyInformer) defaultInformer(client versioned.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
-	return NewFilteredLabGroupAccessPolicyInformer(client, f.namespace, resyncPeriod, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}, f.tweakListOptions)
+	return NewTypedLabGroupAccessPolicyInformerWithOptions(client, f.namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}, InformerName: f.factory.InformerName(), TweakListOptions: f.tweakListOptions})
 }
 
 func (f *labGroupAccessPolicyInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&apilaboratoryv1alpha1.LabGroupAccessPolicy{}, f.defaultInformer)
+	return f.TypedInformer()
+}
+
+func (f *labGroupAccessPolicyInformer) TypedInformer() LabGroupAccessPolicyIndexInformer {
+	return cache.NewTypedSharedIndexInformer[*apilaboratoryv1alpha1.LabGroupAccessPolicy](f.factory.InformerFor(&apilaboratoryv1alpha1.LabGroupAccessPolicy{}, f.defaultInformer))
 }
 
 func (f *labGroupAccessPolicyInformer) Lister() laboratoryv1alpha1.LabGroupAccessPolicyLister {
 	return laboratoryv1alpha1.NewLabGroupAccessPolicyLister(f.Informer().GetIndexer())
+}
+
+// ToTypedLabGroupAccessPolicyInformer converts an untyped informer into a TypedLabGroupAccessPolicyInformer.
+//
+// WARNING: this conversion is only safe if the informer handles objects of type
+// *LabGroupAccessPolicy. If that is not the case, calling type-safe methods of the returned
+// TypedLabGroupAccessPolicyInformer leads to runtime panics. A safer alternative is to pass
+// around a TypedLabGroupAccessPolicyInformer instances that was obtained from a
+// SharedInformerFactory.
+func ToTypedLabGroupAccessPolicyInformer(informer LabGroupAccessPolicyInformer) TypedLabGroupAccessPolicyInformer {
+	if informer, ok := informer.(TypedLabGroupAccessPolicyInformer); ok {
+		return informer
+	}
+	return &labGroupAccessPolicyTypedInformerAdapter{informer}
+}
+
+type labGroupAccessPolicyTypedInformerAdapter struct {
+	LabGroupAccessPolicyInformer
+}
+
+func (a *labGroupAccessPolicyTypedInformerAdapter) TypedInformer() LabGroupAccessPolicyIndexInformer {
+	return cache.NewTypedSharedIndexInformer[*apilaboratoryv1alpha1.LabGroupAccessPolicy](a.Informer())
+}
+
+// ToLabGroupAccessPolicyIndexInformer converts an untyped informer into a LabGroupAccessPolicyIndexInformer.
+//
+// WARNING: this conversion is only safe if the informer handles objects of type
+// *LabGroupAccessPolicy. If that is not the case, calling type-safe methods of the returned
+// LabGroupAccessPolicyIndexInformer leads to runtime panics. A safer alternative is to pass
+// around a LabGroupAccessPolicyIndexInformer instances that was obtained from a
+// SharedInformerFactory.
+func ToLabGroupAccessPolicyIndexInformer(informer cache.SharedIndexInformer) LabGroupAccessPolicyIndexInformer {
+	if informer, ok := informer.(LabGroupAccessPolicyIndexInformer); ok {
+		return informer
+	}
+	return cache.NewTypedSharedIndexInformer[*apilaboratoryv1alpha1.LabGroupAccessPolicy](informer)
 }

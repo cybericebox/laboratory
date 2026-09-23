@@ -19,7 +19,11 @@ package v1alpha1
 
 // LabGroupClientSpecApplyConfiguration represents a declarative configuration of the LabGroupClientSpec type for use
 // with apply.
+//
+// LabGroupClientSpec defines the desired state of LabGroupClient.
 type LabGroupClientSpecApplyConfiguration struct {
+	// PublicKey is the client's WireGuard public key.
+	// If empty, operator generates a keypair and stores private key in Secret client-<name>.
 	PublicKey *string `json:"publicKey,omitempty"`
 }
 
@@ -28,7 +32,6 @@ type LabGroupClientSpecApplyConfiguration struct {
 func LabGroupClientSpec() *LabGroupClientSpecApplyConfiguration {
 	return &LabGroupClientSpecApplyConfiguration{}
 }
-func (b LabGroupClientSpecApplyConfiguration) IsApplyConfiguration() {}
 
 // WithPublicKey sets the PublicKey field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

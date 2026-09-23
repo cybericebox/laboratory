@@ -19,6 +19,8 @@ package v1alpha1
 
 // RouteApplyConfiguration represents a declarative configuration of the Route type for use
 // with apply.
+//
+// Route is a static route entry.
 type RouteApplyConfiguration struct {
 	Dst *string `json:"dst,omitempty"`
 	Via *string `json:"via,omitempty"`
@@ -29,7 +31,6 @@ type RouteApplyConfiguration struct {
 func Route() *RouteApplyConfiguration {
 	return &RouteApplyConfiguration{}
 }
-func (b RouteApplyConfiguration) IsApplyConfiguration() {}
 
 // WithDst sets the Dst field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

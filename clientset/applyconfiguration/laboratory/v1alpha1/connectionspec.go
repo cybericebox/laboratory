@@ -19,7 +19,10 @@ package v1alpha1
 
 // ConnectionSpecApplyConfiguration represents a declarative configuration of the ConnectionSpec type for use
 // with apply.
+//
+// ConnectionSpec defines the desired state of Connection.
 type ConnectionSpecApplyConfiguration struct {
+	// LabRef is the name of the parent Lab.
 	LabRef    *string                          `json:"labRef,omitempty"`
 	Endpoints []EndpointSpecApplyConfiguration `json:"endpoints,omitempty"`
 }
@@ -29,7 +32,6 @@ type ConnectionSpecApplyConfiguration struct {
 func ConnectionSpec() *ConnectionSpecApplyConfiguration {
 	return &ConnectionSpecApplyConfiguration{}
 }
-func (b ConnectionSpecApplyConfiguration) IsApplyConfiguration() {}
 
 // WithLabRef sets the LabRef field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

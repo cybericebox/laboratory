@@ -27,16 +27,45 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/clientset/listers/laboratory/v1alpha1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
+	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	watch "k8s.io/apimachinery/pkg/watch"
 	cache "k8s.io/client-go/tools/cache"
 )
 
 // ConnectionInformer provides access to a shared informer and lister for
-// Connections.
+// Connections. Prefer using the type-safe variant (see [TypedConnectionInformer]).
 type ConnectionInformer interface {
 	Informer() cache.SharedIndexInformer
 	Lister() laboratoryv1alpha1.ConnectionLister
 }
+
+// TypedConnectionInformer provides access to a shared informer and lister for
+// Connections, including the type-safe TypedInformer variant.
+// It is a superset of ConnectionInformer.
+type TypedConnectionInformer interface {
+	Informer() cache.SharedIndexInformer
+	TypedInformer() ConnectionIndexInformer
+	Lister() laboratoryv1alpha1.ConnectionLister
+}
+
+// ConnectionIndexInformer is a wrapper around the underlying [cache.SharedIndexInformer]
+// with type-safe variants of several methods.
+type ConnectionIndexInformer cache.TypedSharedIndexInformer[*apilaboratoryv1alpha1.Connection]
+
+// ConnectionHandlerFuncs is a specialization of [cache.TypedResourceEventHandlerFuncs] for Connection.
+type ConnectionHandlerFuncs = cache.TypedResourceEventHandlerFuncs[*apilaboratoryv1alpha1.Connection]
+
+// ConnectionDetailedHandlerFuncs is a specialization of [cache.TypedResourceEventHandlerDetailedFuncs] for Connection.
+type ConnectionDetailedHandlerFuncs = cache.TypedResourceEventHandlerDetailedFuncs[*apilaboratoryv1alpha1.Connection]
+
+// ConnectionFilteringHandler is a specialization of [cache.TypedFilteringResourceEventHandler] for Connection.
+type ConnectionFilteringHandler = cache.TypedFilteringResourceEventHandler[*apilaboratoryv1alpha1.Connection]
+
+// ConnectionIndexers is a specialization of [cache.TypedIndexers] for Connection.
+type ConnectionIndexers = cache.TypedIndexers[*apilaboratoryv1alpha1.Connection]
+
+// DeletedConnection is a specialization of [cache.DeletedObject] for Connection.
+type DeletedConnection = cache.DeletedObject[*apilaboratoryv1alpha1.Connection]
 
 type connectionInformer struct {
 	factory          internalinterfaces.SharedInformerFactory
@@ -47,55 +76,132 @@ type connectionInformer struct {
 // NewConnectionInformer constructs a new informer for Connection type.
 // Always prefer using an informer factory to get a shared informer instead of getting an independent
 // one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedConnectionInformer]).
 func NewConnectionInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers) cache.SharedIndexInformer {
-	return NewFilteredConnectionInformer(client, namespace, resyncPeriod, indexers, nil)
+	return NewConnectionInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: indexers})
+}
+
+// NewTypedConnectionInformer constructs a new informer for Connection type.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedConnectionInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers ConnectionIndexers) ConnectionIndexInformer {
+	return NewTypedConnectionInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.TypedIndexersToIndexers(indexers)})
 }
 
 // NewFilteredConnectionInformer constructs a new informer for Connection type.
 // Always prefer using an informer factory to get a shared informer instead of getting an independent
 // one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedFilteredConnectionInformer]).
 func NewFilteredConnectionInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) cache.SharedIndexInformer {
-	return cache.NewSharedIndexInformer(
-		&cache.ListWatch{
-			ListFunc: func(options v1.ListOptions) (runtime.Object, error) {
+	return NewTypedConnectionInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: indexers, TweakListOptions: tweakListOptions})
+}
+
+// NewTypedFilteredConnectionInformer constructs a new informer for Connection type.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedFilteredConnectionInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers ConnectionIndexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) ConnectionIndexInformer {
+	return NewTypedConnectionInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.TypedIndexersToIndexers(indexers), TweakListOptions: tweakListOptions})
+}
+
+// NewConnectionInformerWithOptions constructs a new informer for Connection type with additional options.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedConnectionInformerWithOptions]).
+func NewConnectionInformerWithOptions(client versioned.Interface, namespace string, options internalinterfaces.InformerOptions) cache.SharedIndexInformer {
+	return NewTypedConnectionInformerWithOptions(client, namespace, options)
+}
+
+// NewTypedConnectionInformerWithOptions constructs a new informer for Connection type with additional options.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedConnectionInformerWithOptions(client versioned.Interface, namespace string, options internalinterfaces.InformerOptions) ConnectionIndexInformer {
+	gvr := schema.GroupVersionResource{Group: "laboratory", Version: "v1alpha1", Resource: "connections"}
+	identifier := options.InformerName.WithResource(gvr)
+	tweakListOptions := options.TweakListOptions
+	return cache.NewTypedSharedIndexInformer[*apilaboratoryv1alpha1.Connection](cache.NewSharedIndexInformerWithOptions(
+		cache.ToListWatcherWithWatchListSemantics(&cache.ListWatch{
+			ListFunc: func(opts v1.ListOptions) (runtime.Object, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.LaboratoryV1alpha1().Connections(namespace).List(context.Background(), options)
+				return client.LaboratoryV1alpha1().Connections(namespace).List(context.Background(), opts)
 			},
-			WatchFunc: func(options v1.ListOptions) (watch.Interface, error) {
+			WatchFunc: func(opts v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.LaboratoryV1alpha1().Connections(namespace).Watch(context.Background(), options)
+				return client.LaboratoryV1alpha1().Connections(namespace).Watch(context.Background(), opts)
 			},
-			ListWithContextFunc: func(ctx context.Context, options v1.ListOptions) (runtime.Object, error) {
+			ListWithContextFunc: func(ctx context.Context, opts v1.ListOptions) (runtime.Object, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.LaboratoryV1alpha1().Connections(namespace).List(ctx, options)
+				return client.LaboratoryV1alpha1().Connections(namespace).List(ctx, opts)
 			},
-			WatchFuncWithContext: func(ctx context.Context, options v1.ListOptions) (watch.Interface, error) {
+			WatchFuncWithContext: func(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.LaboratoryV1alpha1().Connections(namespace).Watch(ctx, options)
+				return client.LaboratoryV1alpha1().Connections(namespace).Watch(ctx, opts)
 			},
-		},
+		}, client),
 		&apilaboratoryv1alpha1.Connection{},
-		resyncPeriod,
-		indexers,
-	)
+		cache.SharedIndexInformerOptions{
+			ResyncPeriod: options.ResyncPeriod,
+			Indexers:     options.Indexers,
+			Identifier:   identifier,
+		},
+	))
 }
 
 func (f *connectionInformer) defaultInformer(client versioned.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
-	return NewFilteredConnectionInformer(client, f.namespace, resyncPeriod, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}, f.tweakListOptions)
+	return NewTypedConnectionInformerWithOptions(client, f.namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}, InformerName: f.factory.InformerName(), TweakListOptions: f.tweakListOptions})
 }
 
 func (f *connectionInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&apilaboratoryv1alpha1.Connection{}, f.defaultInformer)
+	return f.TypedInformer()
+}
+
+func (f *connectionInformer) TypedInformer() ConnectionIndexInformer {
+	return cache.NewTypedSharedIndexInformer[*apilaboratoryv1alpha1.Connection](f.factory.InformerFor(&apilaboratoryv1alpha1.Connection{}, f.defaultInformer))
 }
 
 func (f *connectionInformer) Lister() laboratoryv1alpha1.ConnectionLister {
 	return laboratoryv1alpha1.NewConnectionLister(f.Informer().GetIndexer())
+}
+
+// ToTypedConnectionInformer converts an untyped informer into a TypedConnectionInformer.
+//
+// WARNING: this conversion is only safe if the informer handles objects of type
+// *Connection. If that is not the case, calling type-safe methods of the returned
+// TypedConnectionInformer leads to runtime panics. A safer alternative is to pass
+// around a TypedConnectionInformer instances that was obtained from a
+// SharedInformerFactory.
+func ToTypedConnectionInformer(informer ConnectionInformer) TypedConnectionInformer {
+	if informer, ok := informer.(TypedConnectionInformer); ok {
+		return informer
+	}
+	return &connectionTypedInformerAdapter{informer}
+}
+
+type connectionTypedInformerAdapter struct {
+	ConnectionInformer
+}
+
+func (a *connectionTypedInformerAdapter) TypedInformer() ConnectionIndexInformer {
+	return cache.NewTypedSharedIndexInformer[*apilaboratoryv1alpha1.Connection](a.Informer())
+}
+
+// ToConnectionIndexInformer converts an untyped informer into a ConnectionIndexInformer.
+//
+// WARNING: this conversion is only safe if the informer handles objects of type
+// *Connection. If that is not the case, calling type-safe methods of the returned
+// ConnectionIndexInformer leads to runtime panics. A safer alternative is to pass
+// around a ConnectionIndexInformer instances that was obtained from a
+// SharedInformerFactory.
+func ToConnectionIndexInformer(informer cache.SharedIndexInformer) ConnectionIndexInformer {
+	if informer, ok := informer.(ConnectionIndexInformer); ok {
+		return informer
+	}
+	return cache.NewTypedSharedIndexInformer[*apilaboratoryv1alpha1.Connection](informer)
 }

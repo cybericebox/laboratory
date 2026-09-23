@@ -19,9 +19,12 @@ package v1alpha1
 
 // ConnectionPortStatusApplyConfiguration represents a declarative configuration of the ConnectionPortStatus type for use
 // with apply.
+//
+// ConnectionPortStatus is written by the node-agent for each endpoint.
 type ConnectionPortStatusApplyConfiguration struct {
-	Device      *string `json:"device,omitempty"`
-	Interface   *string `json:"interface,omitempty"`
+	Device    *string `json:"device,omitempty"`
+	Interface *string `json:"interface,omitempty"`
+	// PortID is the OVS port name assigned by node-agent.
 	PortID      *string `json:"portID,omitempty"`
 	NodeName    *string `json:"nodeName,omitempty"`
 	NodeAddress *string `json:"nodeAddress,omitempty"`
@@ -33,7 +36,6 @@ type ConnectionPortStatusApplyConfiguration struct {
 func ConnectionPortStatus() *ConnectionPortStatusApplyConfiguration {
 	return &ConnectionPortStatusApplyConfiguration{}
 }
-func (b ConnectionPortStatusApplyConfiguration) IsApplyConfiguration() {}
 
 // WithDevice sets the Device field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

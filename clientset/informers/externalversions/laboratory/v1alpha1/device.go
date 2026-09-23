@@ -27,16 +27,45 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/clientset/listers/laboratory/v1alpha1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
+	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	watch "k8s.io/apimachinery/pkg/watch"
 	cache "k8s.io/client-go/tools/cache"
 )
 
 // DeviceInformer provides access to a shared informer and lister for
-// Devices.
+// Devices. Prefer using the type-safe variant (see [TypedDeviceInformer]).
 type DeviceInformer interface {
 	Informer() cache.SharedIndexInformer
 	Lister() laboratoryv1alpha1.DeviceLister
 }
+
+// TypedDeviceInformer provides access to a shared informer and lister for
+// Devices, including the type-safe TypedInformer variant.
+// It is a superset of DeviceInformer.
+type TypedDeviceInformer interface {
+	Informer() cache.SharedIndexInformer
+	TypedInformer() DeviceIndexInformer
+	Lister() laboratoryv1alpha1.DeviceLister
+}
+
+// DeviceIndexInformer is a wrapper around the underlying [cache.SharedIndexInformer]
+// with type-safe variants of several methods.
+type DeviceIndexInformer cache.TypedSharedIndexInformer[*apilaboratoryv1alpha1.Device]
+
+// DeviceHandlerFuncs is a specialization of [cache.TypedResourceEventHandlerFuncs] for Device.
+type DeviceHandlerFuncs = cache.TypedResourceEventHandlerFuncs[*apilaboratoryv1alpha1.Device]
+
+// DeviceDetailedHandlerFuncs is a specialization of [cache.TypedResourceEventHandlerDetailedFuncs] for Device.
+type DeviceDetailedHandlerFuncs = cache.TypedResourceEventHandlerDetailedFuncs[*apilaboratoryv1alpha1.Device]
+
+// DeviceFilteringHandler is a specialization of [cache.TypedFilteringResourceEventHandler] for Device.
+type DeviceFilteringHandler = cache.TypedFilteringResourceEventHandler[*apilaboratoryv1alpha1.Device]
+
+// DeviceIndexers is a specialization of [cache.TypedIndexers] for Device.
+type DeviceIndexers = cache.TypedIndexers[*apilaboratoryv1alpha1.Device]
+
+// DeletedDevice is a specialization of [cache.DeletedObject] for Device.
+type DeletedDevice = cache.DeletedObject[*apilaboratoryv1alpha1.Device]
 
 type deviceInformer struct {
 	factory          internalinterfaces.SharedInformerFactory
@@ -47,55 +76,132 @@ type deviceInformer struct {
 // NewDeviceInformer constructs a new informer for Device type.
 // Always prefer using an informer factory to get a shared informer instead of getting an independent
 // one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedDeviceInformer]).
 func NewDeviceInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers) cache.SharedIndexInformer {
-	return NewFilteredDeviceInformer(client, namespace, resyncPeriod, indexers, nil)
+	return NewDeviceInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: indexers})
+}
+
+// NewTypedDeviceInformer constructs a new informer for Device type.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedDeviceInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers DeviceIndexers) DeviceIndexInformer {
+	return NewTypedDeviceInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.TypedIndexersToIndexers(indexers)})
 }
 
 // NewFilteredDeviceInformer constructs a new informer for Device type.
 // Always prefer using an informer factory to get a shared informer instead of getting an independent
 // one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedFilteredDeviceInformer]).
 func NewFilteredDeviceInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) cache.SharedIndexInformer {
-	return cache.NewSharedIndexInformer(
-		&cache.ListWatch{
-			ListFunc: func(options v1.ListOptions) (runtime.Object, error) {
+	return NewTypedDeviceInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: indexers, TweakListOptions: tweakListOptions})
+}
+
+// NewTypedFilteredDeviceInformer constructs a new informer for Device type.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedFilteredDeviceInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers DeviceIndexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) DeviceIndexInformer {
+	return NewTypedDeviceInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.TypedIndexersToIndexers(indexers), TweakListOptions: tweakListOptions})
+}
+
+// NewDeviceInformerWithOptions constructs a new informer for Device type with additional options.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedDeviceInformerWithOptions]).
+func NewDeviceInformerWithOptions(client versioned.Interface, namespace string, options internalinterfaces.InformerOptions) cache.SharedIndexInformer {
+	return NewTypedDeviceInformerWithOptions(client, namespace, options)
+}
+
+// NewTypedDeviceInformerWithOptions constructs a new informer for Device type with additional options.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedDeviceInformerWithOptions(client versioned.Interface, namespace string, options internalinterfaces.InformerOptions) DeviceIndexInformer {
+	gvr := schema.GroupVersionResource{Group: "laboratory", Version: "v1alpha1", Resource: "devices"}
+	identifier := options.InformerName.WithResource(gvr)
+	tweakListOptions := options.TweakListOptions
+	return cache.NewTypedSharedIndexInformer[*apilaboratoryv1alpha1.Device](cache.NewSharedIndexInformerWithOptions(
+		cache.ToListWatcherWithWatchListSemantics(&cache.ListWatch{
+			ListFunc: func(opts v1.ListOptions) (runtime.Object, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.LaboratoryV1alpha1().Devices(namespace).List(context.Background(), options)
+				return client.LaboratoryV1alpha1().Devices(namespace).List(context.Background(), opts)
 			},
-			WatchFunc: func(options v1.ListOptions) (watch.Interface, error) {
+			WatchFunc: func(opts v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.LaboratoryV1alpha1().Devices(namespace).Watch(context.Background(), options)
+				return client.LaboratoryV1alpha1().Devices(namespace).Watch(context.Background(), opts)
 			},
-			ListWithContextFunc: func(ctx context.Context, options v1.ListOptions) (runtime.Object, error) {
+			ListWithContextFunc: func(ctx context.Context, opts v1.ListOptions) (runtime.Object, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.LaboratoryV1alpha1().Devices(namespace).List(ctx, options)
+				return client.LaboratoryV1alpha1().Devices(namespace).List(ctx, opts)
 			},
-			WatchFuncWithContext: func(ctx context.Context, options v1.ListOptions) (watch.Interface, error) {
+			WatchFuncWithContext: func(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.LaboratoryV1alpha1().Devices(namespace).Watch(ctx, options)
+				return client.LaboratoryV1alpha1().Devices(namespace).Watch(ctx, opts)
 			},
-		},
+		}, client),
 		&apilaboratoryv1alpha1.Device{},
-		resyncPeriod,
-		indexers,
-	)
+		cache.SharedIndexInformerOptions{
+			ResyncPeriod: options.ResyncPeriod,
+			Indexers:     options.Indexers,
+			Identifier:   identifier,
+		},
+	))
 }
 
 func (f *deviceInformer) defaultInformer(client versioned.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
-	return NewFilteredDeviceInformer(client, f.namespace, resyncPeriod, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}, f.tweakListOptions)
+	return NewTypedDeviceInformerWithOptions(client, f.namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}, InformerName: f.factory.InformerName(), TweakListOptions: f.tweakListOptions})
 }
 
 func (f *deviceInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&apilaboratoryv1alpha1.Device{}, f.defaultInformer)
+	return f.TypedInformer()
+}
+
+func (f *deviceInformer) TypedInformer() DeviceIndexInformer {
+	return cache.NewTypedSharedIndexInformer[*apilaboratoryv1alpha1.Device](f.factory.InformerFor(&apilaboratoryv1alpha1.Device{}, f.defaultInformer))
 }
 
 func (f *deviceInformer) Lister() laboratoryv1alpha1.DeviceLister {
 	return laboratoryv1alpha1.NewDeviceLister(f.Informer().GetIndexer())
+}
+
+// ToTypedDeviceInformer converts an untyped informer into a TypedDeviceInformer.
+//
+// WARNING: this conversion is only safe if the informer handles objects of type
+// *Device. If that is not the case, calling type-safe methods of the returned
+// TypedDeviceInformer leads to runtime panics. A safer alternative is to pass
+// around a TypedDeviceInformer instances that was obtained from a
+// SharedInformerFactory.
+func ToTypedDeviceInformer(informer DeviceInformer) TypedDeviceInformer {
+	if informer, ok := informer.(TypedDeviceInformer); ok {
+		return informer
+	}
+	return &deviceTypedInformerAdapter{informer}
+}
+
+type deviceTypedInformerAdapter struct {
+	DeviceInformer
+}
+
+func (a *deviceTypedInformerAdapter) TypedInformer() DeviceIndexInformer {
+	return cache.NewTypedSharedIndexInformer[*apilaboratoryv1alpha1.Device](a.Informer())
+}
+
+// ToDeviceIndexInformer converts an untyped informer into a DeviceIndexInformer.
+//
+// WARNING: this conversion is only safe if the informer handles objects of type
+// *Device. If that is not the case, calling type-safe methods of the returned
+// DeviceIndexInformer leads to runtime panics. A safer alternative is to pass
+// around a DeviceIndexInformer instances that was obtained from a
+// SharedInformerFactory.
+func ToDeviceIndexInformer(informer cache.SharedIndexInformer) DeviceIndexInformer {
+	if informer, ok := informer.(DeviceIndexInformer); ok {
+		return informer
+	}
+	return cache.NewTypedSharedIndexInformer[*apilaboratoryv1alpha1.Device](informer)
 }

@@ -23,15 +23,22 @@ import (
 
 // DeviceSpecApplyConfiguration represents a declarative configuration of the DeviceSpec type for use
 // with apply.
+//
+// DeviceSpec defines the desired state of Device.
 type DeviceSpecApplyConfiguration struct {
-	LabRef         *string                            `json:"labRef,omitempty"`
-	Name           *string                            `json:"name,omitempty"`
-	Type           *laboratoryv1alpha1.DeviceType     `json:"type,omitempty"`
-	Image          *string                            `json:"image,omitempty"`
+	// LabRef is the name of the parent Lab.
+	LabRef *string `json:"labRef,omitempty"`
+	// Name is the logical device name within the lab (matches DeviceTemplate.name).
+	Name  *string                        `json:"name,omitempty"`
+	Type  *laboratoryv1alpha1.DeviceType `json:"type,omitempty"`
+	Image *string                        `json:"image,omitempty"`
+	// SecurityPreset names a capability profile (basic/service/net/debug); the
+	// concrete capabilities are resolved internally by the operator.
 	SecurityPreset *laboratoryv1alpha1.SecurityPreset `json:"securityPreset,omitempty"`
 	Interfaces     []InterfaceSpecApplyConfiguration  `json:"interfaces,omitempty"`
 	Exposure       *ExposureSpecApplyConfiguration    `json:"exposure,omitempty"`
-	Resources      *DeviceResourcesApplyConfiguration `json:"resources,omitempty"`
+	// Resources sets the container resource requests/limits for this device.
+	Resources *DeviceResourcesApplyConfiguration `json:"resources,omitempty"`
 }
 
 // DeviceSpecApplyConfiguration constructs a declarative configuration of the DeviceSpec type for use with
@@ -39,7 +46,6 @@ type DeviceSpecApplyConfiguration struct {
 func DeviceSpec() *DeviceSpecApplyConfiguration {
 	return &DeviceSpecApplyConfiguration{}
 }
-func (b DeviceSpecApplyConfiguration) IsApplyConfiguration() {}
 
 // WithLabRef sets the LabRef field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

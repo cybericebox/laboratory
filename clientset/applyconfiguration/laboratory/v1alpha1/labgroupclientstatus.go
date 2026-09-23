@@ -23,11 +23,19 @@ import (
 
 // LabGroupClientStatusApplyConfiguration represents a declarative configuration of the LabGroupClientStatus type for use
 // with apply.
+//
+// LabGroupClientStatus defines the observed state of LabGroupClient.
 type LabGroupClientStatusApplyConfiguration struct {
-	AssignedIP *string                                     `json:"assignedIP,omitempty"`
+	// AssignedIP is the VPN tunnel IP in CIDR notation, e.g. 10.8.0.5/32.
+	AssignedIP *string `json:"assignedIP,omitempty"`
+	// Config is the assembled WireGuard client config, with a placeholder
+	// (names.WGPrivateKeyPlaceholder) where the private key goes — the cluster
+	// never holds the private key. The caller substitutes its own private key.
 	Config     *string                                     `json:"config,omitempty"`
 	Statistics *LabGroupClientStatisticsApplyConfiguration `json:"statistics,omitempty"`
-	Conditions []v1.ConditionApplyConfiguration            `json:"conditions,omitempty"`
+	// Conditions surfaces reconciler progress/blocking reasons
+	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
+	Conditions []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
 }
 
 // LabGroupClientStatusApplyConfiguration constructs a declarative configuration of the LabGroupClientStatus type for use with
@@ -35,7 +43,6 @@ type LabGroupClientStatusApplyConfiguration struct {
 func LabGroupClientStatus() *LabGroupClientStatusApplyConfiguration {
 	return &LabGroupClientStatusApplyConfiguration{}
 }
-func (b LabGroupClientStatusApplyConfiguration) IsApplyConfiguration() {}
 
 // WithAssignedIP sets the AssignedIP field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

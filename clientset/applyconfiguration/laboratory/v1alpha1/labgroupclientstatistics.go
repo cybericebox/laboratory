@@ -23,6 +23,8 @@ import (
 
 // LabGroupClientStatisticsApplyConfiguration represents a declarative configuration of the LabGroupClientStatistics type for use
 // with apply.
+//
+// LabGroupClientStatistics is written periodically by the VPN server.
 type LabGroupClientStatisticsApplyConfiguration struct {
 	LastHandshake *v1.Time `json:"lastHandshake,omitempty"`
 	RxBytes       *int64   `json:"rxBytes,omitempty"`
@@ -34,7 +36,6 @@ type LabGroupClientStatisticsApplyConfiguration struct {
 func LabGroupClientStatistics() *LabGroupClientStatisticsApplyConfiguration {
 	return &LabGroupClientStatisticsApplyConfiguration{}
 }
-func (b LabGroupClientStatisticsApplyConfiguration) IsApplyConfiguration() {}
 
 // WithLastHandshake sets the LastHandshake field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

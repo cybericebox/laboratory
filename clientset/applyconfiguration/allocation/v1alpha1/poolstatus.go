@@ -19,8 +19,12 @@ package v1alpha1
 
 // PoolStatusApplyConfiguration represents a declarative configuration of the PoolStatus type for use
 // with apply.
+//
+// PoolStatus holds the mutable allocation state.
 type PoolStatusApplyConfiguration struct {
-	Free   *uint   `json:"free,omitempty"`
+	// Free is the count of unallocated slots; mirrored to label pool.cybericebox.com/free.
+	Free *uint `json:"free,omitempty"`
+	// BitMap is a base64-encoded bitset (one bit per slot, 1 = allocated).
 	BitMap *string `json:"bitMap,omitempty"`
 }
 
@@ -29,7 +33,6 @@ type PoolStatusApplyConfiguration struct {
 func PoolStatus() *PoolStatusApplyConfiguration {
 	return &PoolStatusApplyConfiguration{}
 }
-func (b PoolStatusApplyConfiguration) IsApplyConfiguration() {}
 
 // WithFree sets the Free field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

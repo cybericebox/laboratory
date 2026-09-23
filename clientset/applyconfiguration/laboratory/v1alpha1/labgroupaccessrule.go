@@ -23,6 +23,10 @@ import (
 
 // LabGroupAccessRuleApplyConfiguration represents a declarative configuration of the LabGroupAccessRule type for use
 // with apply.
+//
+// LabGroupAccessRule targets selected clients and laboratories in one group.
+// An empty ClientNames list means every LabGroupClient in this namespace.
+// An empty LabNames list means every Lab in this namespace.
 type LabGroupAccessRuleApplyConfiguration struct {
 	Action      *laboratoryv1alpha1.LabGroupAccessAction `json:"action,omitempty"`
 	ClientNames []string                                 `json:"clientNames,omitempty"`
@@ -34,7 +38,6 @@ type LabGroupAccessRuleApplyConfiguration struct {
 func LabGroupAccessRule() *LabGroupAccessRuleApplyConfiguration {
 	return &LabGroupAccessRuleApplyConfiguration{}
 }
-func (b LabGroupAccessRuleApplyConfiguration) IsApplyConfiguration() {}
 
 // WithAction sets the Action field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

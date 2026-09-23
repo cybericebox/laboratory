@@ -23,6 +23,10 @@ import (
 
 // LabGroupAccessPolicyRuleStatusApplyConfiguration represents a declarative configuration of the LabGroupAccessPolicyRuleStatus type for use
 // with apply.
+//
+// LabGroupAccessPolicyRuleStatus is one effective client-to-lab firewall
+// relation. Counters are cumulative kernel counters; CounterReset marks a
+// replacement/restart so downstream summaries never infer negative traffic.
 type LabGroupAccessPolicyRuleStatusApplyConfiguration struct {
 	ClientName   *string                                  `json:"clientName,omitempty"`
 	LabName      *string                                  `json:"labName,omitempty"`
@@ -37,7 +41,6 @@ type LabGroupAccessPolicyRuleStatusApplyConfiguration struct {
 func LabGroupAccessPolicyRuleStatus() *LabGroupAccessPolicyRuleStatusApplyConfiguration {
 	return &LabGroupAccessPolicyRuleStatusApplyConfiguration{}
 }
-func (b LabGroupAccessPolicyRuleStatusApplyConfiguration) IsApplyConfiguration() {}
 
 // WithClientName sets the ClientName field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

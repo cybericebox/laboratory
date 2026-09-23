@@ -19,9 +19,14 @@ package v1alpha1
 
 // LabGatewaySpecApplyConfiguration represents a declarative configuration of the LabGatewaySpec type for use
 // with apply.
+//
+// LabGatewaySpec defines the desired state of LabGateway.
 type LabGatewaySpecApplyConfiguration struct {
-	LabName      *string `json:"labName,omitempty"`
-	NetworkIndex *uint   `json:"networkIndex,omitempty"`
+	// LabName is the name of the parent Lab.
+	LabName *string `json:"labName,omitempty"`
+	// NetworkIndex is the subnet index N from the lab-subnets pool.
+	// Internet CIDR is derived as 10.9.N.0/24. Immutable after FinalizerController is set.
+	NetworkIndex *uint `json:"networkIndex,omitempty"`
 }
 
 // LabGatewaySpecApplyConfiguration constructs a declarative configuration of the LabGatewaySpec type for use with
@@ -29,7 +34,6 @@ type LabGatewaySpecApplyConfiguration struct {
 func LabGatewaySpec() *LabGatewaySpecApplyConfiguration {
 	return &LabGatewaySpecApplyConfiguration{}
 }
-func (b LabGatewaySpecApplyConfiguration) IsApplyConfiguration() {}
 
 // WithLabName sets the LabName field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

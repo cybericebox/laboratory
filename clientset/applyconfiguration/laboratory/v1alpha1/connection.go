@@ -25,8 +25,10 @@ import (
 
 // ConnectionApplyConfiguration represents a declarative configuration of the Connection type for use
 // with apply.
+//
+// Connection is the Schema for the connections API.
 type ConnectionApplyConfiguration struct {
-	v1.TypeMetaApplyConfiguration    `json:",inline"`
+	v1.TypeMetaApplyConfiguration    `json:""`
 	*v1.ObjectMetaApplyConfiguration `json:"metadata,omitempty"`
 	Spec                             *ConnectionSpecApplyConfiguration   `json:"spec,omitempty"`
 	Status                           *ConnectionStatusApplyConfiguration `json:"status,omitempty"`
@@ -42,6 +44,7 @@ func Connection(name, namespace string) *ConnectionApplyConfiguration {
 	b.WithAPIVersion("laboratory/v1alpha1")
 	return b
 }
+
 func (b ConnectionApplyConfiguration) IsApplyConfiguration() {}
 
 // WithKind sets the Kind field in the declarative configuration to the given value

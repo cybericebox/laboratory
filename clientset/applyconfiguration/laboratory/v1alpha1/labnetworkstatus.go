@@ -19,6 +19,8 @@ package v1alpha1
 
 // LabNetworkStatusApplyConfiguration represents a declarative configuration of the LabNetworkStatus type for use
 // with apply.
+//
+// LabNetworkStatus reports the allocated CIDR for a network segment.
 type LabNetworkStatusApplyConfiguration struct {
 	Ready *bool   `json:"ready,omitempty"`
 	CIDR  *string `json:"cidr,omitempty"`
@@ -29,7 +31,6 @@ type LabNetworkStatusApplyConfiguration struct {
 func LabNetworkStatus() *LabNetworkStatusApplyConfiguration {
 	return &LabNetworkStatusApplyConfiguration{}
 }
-func (b LabNetworkStatusApplyConfiguration) IsApplyConfiguration() {}
 
 // WithReady sets the Ready field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

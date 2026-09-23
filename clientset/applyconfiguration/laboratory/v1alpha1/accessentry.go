@@ -19,6 +19,8 @@ package v1alpha1
 
 // AccessEntryApplyConfiguration represents a declarative configuration of the AccessEntry type for use
 // with apply.
+//
+// AccessEntry describes a single externally reachable endpoint.
 type AccessEntryApplyConfiguration struct {
 	Device   *string `json:"device,omitempty"`
 	Port     *int32  `json:"port,omitempty"`
@@ -31,7 +33,6 @@ type AccessEntryApplyConfiguration struct {
 func AccessEntry() *AccessEntryApplyConfiguration {
 	return &AccessEntryApplyConfiguration{}
 }
-func (b AccessEntryApplyConfiguration) IsApplyConfiguration() {}
 
 // WithDevice sets the Device field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

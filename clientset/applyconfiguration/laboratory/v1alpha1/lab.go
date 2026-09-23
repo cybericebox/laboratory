@@ -25,8 +25,10 @@ import (
 
 // LabApplyConfiguration represents a declarative configuration of the Lab type for use
 // with apply.
+//
+// Lab is the Schema for the labs API.
 type LabApplyConfiguration struct {
-	v1.TypeMetaApplyConfiguration    `json:",inline"`
+	v1.TypeMetaApplyConfiguration    `json:""`
 	*v1.ObjectMetaApplyConfiguration `json:"metadata,omitempty"`
 	Spec                             *LabSpecApplyConfiguration   `json:"spec,omitempty"`
 	Status                           *LabStatusApplyConfiguration `json:"status,omitempty"`
@@ -42,6 +44,7 @@ func Lab(name, namespace string) *LabApplyConfiguration {
 	b.WithAPIVersion("laboratory/v1alpha1")
 	return b
 }
+
 func (b LabApplyConfiguration) IsApplyConfiguration() {}
 
 // WithKind sets the Kind field in the declarative configuration to the given value

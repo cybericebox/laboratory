@@ -23,6 +23,8 @@ import (
 
 // LabGroupStatusApplyConfiguration represents a declarative configuration of the LabGroupStatus type for use
 // with apply.
+//
+// LabGroupStatus defines the observed state of LabGroup.
 type LabGroupStatusApplyConfiguration struct {
 	Phase     *laboratoryv1alpha1.Phase            `json:"phase,omitempty"`
 	Namespace *string                              `json:"namespace,omitempty"`
@@ -35,7 +37,6 @@ type LabGroupStatusApplyConfiguration struct {
 func LabGroupStatus() *LabGroupStatusApplyConfiguration {
 	return &LabGroupStatusApplyConfiguration{}
 }
-func (b LabGroupStatusApplyConfiguration) IsApplyConfiguration() {}
 
 // WithPhase sets the Phase field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.

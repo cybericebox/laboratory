@@ -24,21 +24,21 @@ import (
 // Interface provides access to all the informers in this group version.
 type Interface interface {
 	// Connections returns a ConnectionInformer.
-	Connections() ConnectionInformer
+	Connections() TypedConnectionInformer
 	// Devices returns a DeviceInformer.
-	Devices() DeviceInformer
+	Devices() TypedDeviceInformer
 	// Labs returns a LabInformer.
-	Labs() LabInformer
+	Labs() TypedLabInformer
 	// LabGateways returns a LabGatewayInformer.
-	LabGateways() LabGatewayInformer
+	LabGateways() TypedLabGatewayInformer
 	// LabGroups returns a LabGroupInformer.
-	LabGroups() LabGroupInformer
+	LabGroups() TypedLabGroupInformer
 	// LabGroupAccessPolicies returns a LabGroupAccessPolicyInformer.
-	LabGroupAccessPolicies() LabGroupAccessPolicyInformer
+	LabGroupAccessPolicies() TypedLabGroupAccessPolicyInformer
 	// LabGroupClients returns a LabGroupClientInformer.
-	LabGroupClients() LabGroupClientInformer
+	LabGroupClients() TypedLabGroupClientInformer
 	// LabVPNs returns a LabVPNInformer.
-	LabVPNs() LabVPNInformer
+	LabVPNs() TypedLabVPNInformer
 }
 
 type version struct {
@@ -52,42 +52,42 @@ func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakList
 	return &version{factory: f, namespace: namespace, tweakListOptions: tweakListOptions}
 }
 
-// Connections returns a ConnectionInformer.
-func (v *version) Connections() ConnectionInformer {
+// Connections returns a TypedConnectionInformer.
+func (v *version) Connections() TypedConnectionInformer {
 	return &connectionInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
-// Devices returns a DeviceInformer.
-func (v *version) Devices() DeviceInformer {
+// Devices returns a TypedDeviceInformer.
+func (v *version) Devices() TypedDeviceInformer {
 	return &deviceInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
-// Labs returns a LabInformer.
-func (v *version) Labs() LabInformer {
+// Labs returns a TypedLabInformer.
+func (v *version) Labs() TypedLabInformer {
 	return &labInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
-// LabGateways returns a LabGatewayInformer.
-func (v *version) LabGateways() LabGatewayInformer {
+// LabGateways returns a TypedLabGatewayInformer.
+func (v *version) LabGateways() TypedLabGatewayInformer {
 	return &labGatewayInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
-// LabGroups returns a LabGroupInformer.
-func (v *version) LabGroups() LabGroupInformer {
+// LabGroups returns a TypedLabGroupInformer.
+func (v *version) LabGroups() TypedLabGroupInformer {
 	return &labGroupInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }
 
-// LabGroupAccessPolicies returns a LabGroupAccessPolicyInformer.
-func (v *version) LabGroupAccessPolicies() LabGroupAccessPolicyInformer {
+// LabGroupAccessPolicies returns a TypedLabGroupAccessPolicyInformer.
+func (v *version) LabGroupAccessPolicies() TypedLabGroupAccessPolicyInformer {
 	return &labGroupAccessPolicyInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
-// LabGroupClients returns a LabGroupClientInformer.
-func (v *version) LabGroupClients() LabGroupClientInformer {
+// LabGroupClients returns a TypedLabGroupClientInformer.
+func (v *version) LabGroupClients() TypedLabGroupClientInformer {
 	return &labGroupClientInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
-// LabVPNs returns a LabVPNInformer.
-func (v *version) LabVPNs() LabVPNInformer {
+// LabVPNs returns a TypedLabVPNInformer.
+func (v *version) LabVPNs() TypedLabVPNInformer {
 	return &labVPNInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
