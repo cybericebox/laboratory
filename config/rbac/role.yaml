@@ -4,120 +4,151 @@ kind: ClusterRole
 metadata:
   name: manager-role
 rules:
-  - apiGroups:
-      - ""
-    resources:
-      - endpoints
-      - namespaces
-      - pods
-      - secrets
-      - serviceaccounts
-      - services
-    verbs:
-      - create
-      - delete
-      - get
-      - list
-      - patch
-      - update
-      - watch
-  - apiGroups:
-      - allocation.cybericebox.com
-    resources:
-      - pools
-    verbs:
-      - create
-      - delete
-      - get
-      - list
-      - patch
-      - update
-      - watch
-  - apiGroups:
-      - allocation.cybericebox.com
-    resources:
-      - pools/status
-    verbs:
-      - get
-      - patch
-      - update
-  - apiGroups:
-      - apps
-    resources:
-      - deployments
-    verbs:
-      - create
-      - delete
-      - get
-      - list
-      - patch
-      - update
-      - watch
-  - apiGroups:
-      - laboratory.cybericebox.com
-    resources:
-      - connections
-      - devices
-      - labgateways
-      - labgroupclients
-      - labgroups
-      - labs
-      - labvpns
-    verbs:
-      - create
-      - delete
-      - get
-      - list
-      - patch
-      - update
-      - watch
-  - apiGroups:
-      - laboratory.cybericebox.com
-    resources:
-      - connections/finalizers
-      - devices/finalizers
-      - labgateways/finalizers
-      - labgroupclients/finalizers
-      - labgroups/finalizers
-      - labs/finalizers
-      - labvpns/finalizers
-    verbs:
-      - update
-  - apiGroups:
-      - laboratory.cybericebox.com
-    resources:
-      - connections/status
-      - devices/status
-      - labgateways/status
-      - labgroupclients/status
-      - labgroups/status
-      - labs/status
-      - labvpns/status
-    verbs:
-      - get
-      - patch
-      - update
-  - apiGroups:
-      - networking.k8s.io
-    resources:
-      - networkpolicies
-    verbs:
-      - create
-      - delete
-      - get
-      - list
-      - patch
-      - update
-      - watch
-  - apiGroups:
-      - rbac.authorization.k8s.io
-    resources:
-      - rolebindings
-    verbs:
-      - create
-      - delete
-      - get
-      - list
-      - patch
-      - update
-      - watch
+- apiGroups:
+  - ""
+  resources:
+  - endpoints
+  - namespaces
+  - secrets
+  - serviceaccounts
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - allocation.cybericebox.com
+  resources:
+  - pools
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - allocation.cybericebox.com
+  resources:
+  - pools/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - cilium.io
+  resources:
+  - ciliumnetworkpolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - laboratory.cybericebox.com
+  resources:
+  - connections
+  - devices
+  - labgateways
+  - labgroupclients
+  - labgroups
+  - labs
+  - labvpns
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - laboratory.cybericebox.com
+  resources:
+  - connections/finalizers
+  - devices/finalizers
+  - labgateways/finalizers
+  - labgroupclients/finalizers
+  - labgroups/finalizers
+  - labs/finalizers
+  - labvpns/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - laboratory.cybericebox.com
+  resources:
+  - connections/status
+  - devices/status
+  - labgateways/status
+  - labgroupclients/status
+  - labgroups/status
+  - labs/status
+  - labvpns/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - networkpolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - policy
+  resources:
+  - poddisruptionbudgets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - rolebindings
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch

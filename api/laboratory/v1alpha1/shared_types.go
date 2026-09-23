@@ -8,13 +8,14 @@ func LabGroupNamespace(groupName string) string {
 }
 
 // Phase is the lifecycle phase of a resource.
-// +kubebuilder:validation:Enum=Pending;Provisioning;Ready;Failed;Error
+// +kubebuilder:validation:Enum=Pending;Provisioning;Ready;Suspended;Failed;Error
 type Phase string
 
 const (
 	PhasePending      Phase = "Pending"
 	PhaseProvisioning Phase = "Provisioning"
 	PhaseReady        Phase = "Ready"
+	PhaseSuspended    Phase = "Suspended"
 	PhaseFailed       Phase = "Failed"
 	PhaseError        Phase = "Error"
 )

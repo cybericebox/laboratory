@@ -7,7 +7,8 @@ import (
 
 // LabGroupSpec defines the desired state of LabGroup.
 type LabGroupSpec struct {
-	VPN LabGroupVPNSpec `json:"vpn,omitempty"`
+	VPN       LabGroupVPNSpec `json:"vpn,omitempty"`
+	Suspended bool            `json:"suspended,omitempty"`
 }
 
 // LabGroupVPNSpec holds VPN server configuration.
@@ -21,6 +22,7 @@ type LabGroupVPNSpec struct {
 type LabGroupStatus struct {
 	Phase     Phase             `json:"phase,omitempty"`
 	Namespace string            `json:"namespace,omitempty"`
+	Suspended bool              `json:"suspended,omitempty"`
 	VPN       LabGroupVPNStatus `json:"vpn,omitempty"`
 }
 
@@ -47,7 +49,7 @@ type LabGroupVPNStatus struct {
 type LabGroup struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	
+
 	Spec   LabGroupSpec   `json:"spec,omitempty"`
 	Status LabGroupStatus `json:"status,omitempty"`
 }

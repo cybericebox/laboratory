@@ -26,6 +26,7 @@ import (
 type LabGroupStatusApplyConfiguration struct {
 	Phase     *laboratoryv1alpha1.Phase            `json:"phase,omitempty"`
 	Namespace *string                              `json:"namespace,omitempty"`
+	Suspended *bool                                `json:"suspended,omitempty"`
 	VPN       *LabGroupVPNStatusApplyConfiguration `json:"vpn,omitempty"`
 }
 
@@ -49,6 +50,14 @@ func (b *LabGroupStatusApplyConfiguration) WithPhase(value laboratoryv1alpha1.Ph
 // If called multiple times, the Namespace field is set to the value of the last call.
 func (b *LabGroupStatusApplyConfiguration) WithNamespace(value string) *LabGroupStatusApplyConfiguration {
 	b.Namespace = &value
+	return b
+}
+
+// WithSuspended sets the Suspended field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Suspended field is set to the value of the last call.
+func (b *LabGroupStatusApplyConfiguration) WithSuspended(value bool) *LabGroupStatusApplyConfiguration {
+	b.Suspended = &value
 	return b
 }
 

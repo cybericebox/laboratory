@@ -39,6 +39,8 @@ type LabGroupAccessPoliciesGetter interface {
 type LabGroupAccessPolicyInterface interface {
 	Create(ctx context.Context, labGroupAccessPolicy *laboratoryv1alpha1.LabGroupAccessPolicy, opts v1.CreateOptions) (*laboratoryv1alpha1.LabGroupAccessPolicy, error)
 	Update(ctx context.Context, labGroupAccessPolicy *laboratoryv1alpha1.LabGroupAccessPolicy, opts v1.UpdateOptions) (*laboratoryv1alpha1.LabGroupAccessPolicy, error)
+	// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
+	UpdateStatus(ctx context.Context, labGroupAccessPolicy *laboratoryv1alpha1.LabGroupAccessPolicy, opts v1.UpdateOptions) (*laboratoryv1alpha1.LabGroupAccessPolicy, error)
 	Delete(ctx context.Context, name string, opts v1.DeleteOptions) error
 	DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error
 	Get(ctx context.Context, name string, opts v1.GetOptions) (*laboratoryv1alpha1.LabGroupAccessPolicy, error)
@@ -46,6 +48,8 @@ type LabGroupAccessPolicyInterface interface {
 	Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error)
 	Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *laboratoryv1alpha1.LabGroupAccessPolicy, err error)
 	Apply(ctx context.Context, labGroupAccessPolicy *applyconfigurationlaboratoryv1alpha1.LabGroupAccessPolicyApplyConfiguration, opts v1.ApplyOptions) (result *laboratoryv1alpha1.LabGroupAccessPolicy, err error)
+	// Add a +genclient:noStatus comment above the type to avoid generating ApplyStatus().
+	ApplyStatus(ctx context.Context, labGroupAccessPolicy *applyconfigurationlaboratoryv1alpha1.LabGroupAccessPolicyApplyConfiguration, opts v1.ApplyOptions) (result *laboratoryv1alpha1.LabGroupAccessPolicy, err error)
 	LabGroupAccessPolicyExpansion
 }
 

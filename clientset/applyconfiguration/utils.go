@@ -26,7 +26,6 @@ import (
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	managedfields "k8s.io/apimachinery/pkg/util/managedfields"
-	k8stesting "k8s.io/client-go/testing"
 )
 
 // ForKind returns an apply configuration type for the given GroupVersionKind, or nil if no
@@ -62,6 +61,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.DeviceApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceRef"):
 		return &applyconfigurationlaboratoryv1alpha1.DeviceRefApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceResources"):
+		return &applyconfigurationlaboratoryv1alpha1.DeviceResourcesApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceSpec"):
 		return &applyconfigurationlaboratoryv1alpha1.DeviceSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceStatus"):
@@ -88,8 +89,12 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupAccessPolicy"):
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupAccessPolicyApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupAccessPolicyRuleStatus"):
+		return &applyconfigurationlaboratoryv1alpha1.LabGroupAccessPolicyRuleStatusApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupAccessPolicySpec"):
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupAccessPolicySpecApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupAccessPolicyStatus"):
+		return &applyconfigurationlaboratoryv1alpha1.LabGroupAccessPolicyStatusApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupAccessRule"):
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupAccessRuleApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupClient"):
@@ -132,5 +137,5 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 }
 
 func NewTypeConverter(scheme *runtime.Scheme) managedfields.TypeConverter {
-	return &k8stesting.TypeConverter{Scheme: scheme, TypeResolver: internal.Parser()}
+	return managedfields.NewSchemeTypeConverter(scheme, internal.Parser())
 }

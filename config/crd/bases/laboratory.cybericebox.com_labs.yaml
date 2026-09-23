@@ -339,6 +339,7 @@ spec:
                 - Pending
                 - Provisioning
                 - Ready
+                - Suspended
                 - Failed
                 - Error
                 type: string

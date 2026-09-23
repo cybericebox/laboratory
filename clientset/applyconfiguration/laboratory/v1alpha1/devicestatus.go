@@ -24,6 +24,7 @@ type DeviceStatusApplyConfiguration struct {
 	NodeName    *string `json:"nodeName,omitempty"`
 	NodeAddress *string `json:"nodeAddress,omitempty"`
 	PodIP       *string `json:"podIP,omitempty"`
+	PodName     *string `json:"podName,omitempty"`
 	VNI         *uint   `json:"vni,omitempty"`
 	Reason      *string `json:"reason,omitempty"`
 }
@@ -64,6 +65,14 @@ func (b *DeviceStatusApplyConfiguration) WithNodeAddress(value string) *DeviceSt
 // If called multiple times, the PodIP field is set to the value of the last call.
 func (b *DeviceStatusApplyConfiguration) WithPodIP(value string) *DeviceStatusApplyConfiguration {
 	b.PodIP = &value
+	return b
+}
+
+// WithPodName sets the PodName field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the PodName field is set to the value of the last call.
+func (b *DeviceStatusApplyConfiguration) WithPodName(value string) *DeviceStatusApplyConfiguration {
+	b.PodName = &value
 	return b
 }
 

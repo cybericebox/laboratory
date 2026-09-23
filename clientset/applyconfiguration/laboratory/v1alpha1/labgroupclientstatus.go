@@ -25,7 +25,7 @@ import (
 // with apply.
 type LabGroupClientStatusApplyConfiguration struct {
 	AssignedIP *string                                     `json:"assignedIP,omitempty"`
-	SecretRef  *string                                     `json:"secretRef,omitempty"`
+	Config     *string                                     `json:"config,omitempty"`
 	Statistics *LabGroupClientStatisticsApplyConfiguration `json:"statistics,omitempty"`
 	Conditions []v1.ConditionApplyConfiguration            `json:"conditions,omitempty"`
 }
@@ -45,11 +45,11 @@ func (b *LabGroupClientStatusApplyConfiguration) WithAssignedIP(value string) *L
 	return b
 }
 
-// WithSecretRef sets the SecretRef field in the declarative configuration to the given value
+// WithConfig sets the Config field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the SecretRef field is set to the value of the last call.
-func (b *LabGroupClientStatusApplyConfiguration) WithSecretRef(value string) *LabGroupClientStatusApplyConfiguration {
-	b.SecretRef = &value
+// If called multiple times, the Config field is set to the value of the last call.
+func (b *LabGroupClientStatusApplyConfiguration) WithConfig(value string) *LabGroupClientStatusApplyConfiguration {
+	b.Config = &value
 	return b
 }
 

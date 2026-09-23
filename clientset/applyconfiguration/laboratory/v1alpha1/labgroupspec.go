@@ -20,7 +20,8 @@ package v1alpha1
 // LabGroupSpecApplyConfiguration represents a declarative configuration of the LabGroupSpec type for use
 // with apply.
 type LabGroupSpecApplyConfiguration struct {
-	VPN *LabGroupVPNSpecApplyConfiguration `json:"vpn,omitempty"`
+	VPN       *LabGroupVPNSpecApplyConfiguration `json:"vpn,omitempty"`
+	Suspended *bool                              `json:"suspended,omitempty"`
 }
 
 // LabGroupSpecApplyConfiguration constructs a declarative configuration of the LabGroupSpec type for use with
@@ -35,5 +36,13 @@ func (b LabGroupSpecApplyConfiguration) IsApplyConfiguration() {}
 // If called multiple times, the VPN field is set to the value of the last call.
 func (b *LabGroupSpecApplyConfiguration) WithVPN(value *LabGroupVPNSpecApplyConfiguration) *LabGroupSpecApplyConfiguration {
 	b.VPN = value
+	return b
+}
+
+// WithSuspended sets the Suspended field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Suspended field is set to the value of the last call.
+func (b *LabGroupSpecApplyConfiguration) WithSuspended(value bool) *LabGroupSpecApplyConfiguration {
+	b.Suspended = &value
 	return b
 }

@@ -31,6 +31,7 @@ type DeviceSpecApplyConfiguration struct {
 	SecurityPreset *laboratoryv1alpha1.SecurityPreset `json:"securityPreset,omitempty"`
 	Interfaces     []InterfaceSpecApplyConfiguration  `json:"interfaces,omitempty"`
 	Exposure       *ExposureSpecApplyConfiguration    `json:"exposure,omitempty"`
+	Resources      *DeviceResourcesApplyConfiguration `json:"resources,omitempty"`
 }
 
 // DeviceSpecApplyConfiguration constructs a declarative configuration of the DeviceSpec type for use with
@@ -98,5 +99,13 @@ func (b *DeviceSpecApplyConfiguration) WithInterfaces(values ...*InterfaceSpecAp
 // If called multiple times, the Exposure field is set to the value of the last call.
 func (b *DeviceSpecApplyConfiguration) WithExposure(value *ExposureSpecApplyConfiguration) *DeviceSpecApplyConfiguration {
 	b.Exposure = value
+	return b
+}
+
+// WithResources sets the Resources field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Resources field is set to the value of the last call.
+func (b *DeviceSpecApplyConfiguration) WithResources(value *DeviceResourcesApplyConfiguration) *DeviceSpecApplyConfiguration {
+	b.Resources = value
 	return b
 }

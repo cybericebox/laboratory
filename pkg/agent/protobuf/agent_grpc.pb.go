@@ -24,6 +24,7 @@ const (
 	LabManager_GetLabGroup_FullMethodName             = "/labmanager.LabManager/GetLabGroup"
 	LabManager_ListLabGroups_FullMethodName           = "/labmanager.LabManager/ListLabGroups"
 	LabManager_UpdateLabGroup_FullMethodName          = "/labmanager.LabManager/UpdateLabGroup"
+	LabManager_SetLabGroupSuspended_FullMethodName    = "/labmanager.LabManager/SetLabGroupSuspended"
 	LabManager_DeleteLabGroup_FullMethodName          = "/labmanager.LabManager/DeleteLabGroup"
 	LabManager_CreateLab_FullMethodName               = "/labmanager.LabManager/CreateLab"
 	LabManager_GetLab_FullMethodName                  = "/labmanager.LabManager/GetLab"
@@ -48,6 +49,7 @@ type LabManagerClient interface {
 	GetLabGroup(ctx context.Context, in *IDRequest, opts ...grpc.CallOption) (*LabGroup, error)
 	ListLabGroups(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*LabGroupList, error)
 	UpdateLabGroup(ctx context.Context, in *LabGroup, opts ...grpc.CallOption) (*LabGroup, error)
+	SetLabGroupSuspended(ctx context.Context, in *LabGroupSuspendRequest, opts ...grpc.CallOption) (*LabGroup, error)
 	DeleteLabGroup(ctx context.Context, in *IDRequest, opts ...grpc.CallOption) (*Empty, error)
 	CreateLab(ctx context.Context, in *Lab, opts ...grpc.CallOption) (*Lab, error)
 	GetLab(ctx context.Context, in *NamespacedIDRequest, opts ...grpc.CallOption) (*Lab, error)
@@ -119,6 +121,16 @@ func (c *labManagerClient) UpdateLabGroup(ctx context.Context, in *LabGroup, opt
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(LabGroup)
 	err := c.cc.Invoke(ctx, LabManager_UpdateLabGroup_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *labManagerClient) SetLabGroupSuspended(ctx context.Context, in *LabGroupSuspendRequest, opts ...grpc.CallOption) (*LabGroup, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LabGroup)
+	err := c.cc.Invoke(ctx, LabManager_SetLabGroupSuspended_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -273,6 +285,7 @@ type LabManagerServer interface {
 	GetLabGroup(context.Context, *IDRequest) (*LabGroup, error)
 	ListLabGroups(context.Context, *Empty) (*LabGroupList, error)
 	UpdateLabGroup(context.Context, *LabGroup) (*LabGroup, error)
+	SetLabGroupSuspended(context.Context, *LabGroupSuspendRequest) (*LabGroup, error)
 	DeleteLabGroup(context.Context, *IDRequest) (*Empty, error)
 	CreateLab(context.Context, *Lab) (*Lab, error)
 	GetLab(context.Context, *NamespacedIDRequest) (*Lab, error)
@@ -314,6 +327,9 @@ func (UnimplementedLabManagerServer) ListLabGroups(context.Context, *Empty) (*La
 }
 func (UnimplementedLabManagerServer) UpdateLabGroup(context.Context, *LabGroup) (*LabGroup, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method UpdateLabGroup not implemented")
+}
+func (UnimplementedLabManagerServer) SetLabGroupSuspended(context.Context, *LabGroupSuspendRequest) (*LabGroup, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetLabGroupSuspended not implemented")
 }
 func (UnimplementedLabManagerServer) DeleteLabGroup(context.Context, *IDRequest) (*Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteLabGroup not implemented")
@@ -461,6 +477,24 @@ func _LabManager_UpdateLabGroup_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LabManagerServer).UpdateLabGroup(ctx, req.(*LabGroup))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LabManager_SetLabGroupSuspended_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LabGroupSuspendRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabManagerServer).SetLabGroupSuspended(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LabManager_SetLabGroupSuspended_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabManagerServer).SetLabGroupSuspended(ctx, req.(*LabGroupSuspendRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -718,6 +752,10 @@ var LabManager_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "UpdateLabGroup",
 			Handler:    _LabManager_UpdateLabGroup_Handler,
+		},
+		{
+			MethodName: "SetLabGroupSuspended",
+			Handler:    _LabManager_SetLabGroupSuspended_Handler,
 		},
 		{
 			MethodName: "DeleteLabGroup",
