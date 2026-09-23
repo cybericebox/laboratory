@@ -48,7 +48,7 @@ message LabGroupStatus {
   string phase = 1;
   string namespace = 2;
   bool vpn_registered = 3;
-	bool suspended = 4;
+  bool suspended = 4;
 }
 message LabGroupList {repeated LabGroup items = 1;}
 

@@ -42,6 +42,42 @@ var _ = Describe("LabGroup suspension", func() {
 			Expect(*dep.Spec.Replicas).To(Equal(int32(0)))
 		}
 	})
+
+	It("reports suspended only after group infrastructure is scaled down", func() {
+		const name = "suspend-status"
+		group := &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: name}}
+		Expect(k8sClient.Create(ctx, group)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, group) })
+
+		Eventually(func() laboratoryv1alpha1.Phase {
+			var current laboratoryv1alpha1.LabGroup
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, &current); err != nil {
+				return ""
+			}
+			return current.Status.Phase
+		}, 15*time.Second, 250*time.Millisecond).Should(Equal(laboratoryv1alpha1.PhaseReady))
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name}, group)).To(Succeed())
+		group.Spec.Suspended = true
+		Expect(k8sClient.Update(ctx, group)).To(Succeed())
+
+		Eventually(func() bool {
+			var current laboratoryv1alpha1.LabGroup
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, &current); err != nil {
+				return false
+			}
+			if current.Status.Phase != laboratoryv1alpha1.PhaseSuspended || !current.Status.Suspended || current.Status.VPN.Registered {
+				return false
+			}
+			for _, deploymentName := range []string{"vpn", "gateway"} {
+				var deployment appsv1.Deployment
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: name}, &deployment); err != nil || deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 0 {
+					return false
+				}
+			}
+			return true
+		}, 15*time.Second, 250*time.Millisecond).Should(BeTrue())
+	})
 })
 
 var _ = Describe(
