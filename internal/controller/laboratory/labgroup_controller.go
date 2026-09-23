@@ -142,7 +142,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Error(err, "ensure VPN role binding")
 		return ctrl.Result{}, err
 	}
-	if err = r.ensureVPNDeployment(ctx, ns); err != nil {
+	if err = r.ensureVPNDeployment(ctx, ns, lg.Spec.Suspended); err != nil {
 		logger.Error(err, "ensure VPN deployment")
 		return ctrl.Result{}, err
 	}
@@ -155,7 +155,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Error(err, "ensure gateway role binding")
 		return ctrl.Result{}, err
 	}
-	if err = r.ensureGatewayDeployment(ctx, ns); err != nil {
+	if err = r.ensureGatewayDeployment(ctx, ns, lg.Spec.Suspended); err != nil {
 		logger.Error(err, "ensure gateway deployment")
 		return ctrl.Result{}, err
 	}
@@ -180,6 +180,20 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
+	if lg.Spec.Suspended {
+		lg.Status.Phase = laboratoryv1alpha1.PhaseSuspended
+		lg.Status.Namespace = ns
+		lg.Status.Suspended = true
+		lg.Status.VPN.PublicKey = pubKey
+		lg.Status.VPN.SecretRef = fmt.Sprintf("%s/%s", ns, secretName)
+		lg.Status.VPN.Endpoint = r.PublicVPNEndpoint
+		lg.Status.VPN.Registered = false
+		if err = r.Status().Update(ctx, &lg); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
 	vpnReady, err := r.vpnReadyState(ctx, ns)
 	if err != nil {
 		logger.Error(err, "check VPN readiness")
@@ -188,6 +202,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	lg.Status.Phase = laboratoryv1alpha1.PhaseReady
 	lg.Status.Namespace = ns
+	lg.Status.Suspended = false
 	lg.Status.VPN.PublicKey = pubKey
 	lg.Status.VPN.SecretRef = fmt.Sprintf("%s/%s", ns, secretName)
 	lg.Status.VPN.Endpoint = r.PublicVPNEndpoint
@@ -395,10 +410,18 @@ func (r *LabGroupReconciler) ensureVPNService(ctx context.Context, ns string) er
 	return r.Create(ctx, svc)
 }
 
-func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string) error {
+func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string, suspended bool) error {
+	replicas := int32(1)
+	if suspended {
+		replicas = 0
+	}
 	var existing appsv1.Deployment
 	if err := r.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: ns}, &existing); err == nil {
-		return nil
+		if existing.Spec.Replicas != nil && *existing.Spec.Replicas == replicas {
+			return nil
+		}
+		existing.Spec.Replicas = ptrInt32(replicas)
+		return r.Update(ctx, &existing)
 	} else if !errors.IsNotFound(err) {
 		return err
 	}
@@ -406,7 +429,6 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string)
 	if err != nil {
 		return fmt.Errorf("derive VPN client subnet: %w", err)
 	}
-	replicas := int32(1)
 	d := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "vpn", Namespace: ns},
 		Spec: appsv1.DeploymentSpec{
@@ -459,14 +481,21 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string)
 // One replica per group, namespace-scoped, mirrors the VPN deployment shape so
 // node-agent's LabIfaceReconciler attaches a gw-<labname> OVS port into its
 // netns for each lab with Spec.Internet.Enabled.
-func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns string) error {
+func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns string, suspended bool) error {
+	replicas := int32(1)
+	if suspended {
+		replicas = 0
+	}
 	var existing appsv1.Deployment
 	if err := r.Get(ctx, types.NamespacedName{Name: "gateway", Namespace: ns}, &existing); err == nil {
-		return nil
+		if existing.Spec.Replicas != nil && *existing.Spec.Replicas == replicas {
+			return nil
+		}
+		existing.Spec.Replicas = ptrInt32(replicas)
+		return r.Update(ctx, &existing)
 	} else if !errors.IsNotFound(err) {
 		return err
 	}
-	replicas := int32(1)
 	d := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: ns},
 		Spec: appsv1.DeploymentSpec{

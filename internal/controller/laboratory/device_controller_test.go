@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -36,6 +37,46 @@ import (
 var _ = Describe(
 	"Device Controller container workload", func() {
 		ctx := context.Background()
+
+		It("keeps a suspended LabGroup device deployment at zero replicas", func() {
+			const namespace = "suspend-devices"
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
+			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, ns) })
+
+			group := &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
+			Expect(k8sClient.Create(ctx, group)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, group) })
+
+			dev := &laboratoryv1alpha1.Device{
+				ObjectMeta: metav1.ObjectMeta{Name: "lab-suspend-web", Namespace: namespace},
+				Spec: laboratoryv1alpha1.DeviceSpec{
+					Type:   laboratoryv1alpha1.DeviceTypeContainer,
+					Name:   "web",
+					LabRef: "lab-suspend",
+					Image:  "nginx:alpine",
+				},
+			}
+			Expect(k8sClient.Create(ctx, dev)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, dev) })
+
+			r := &DeviceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: dev.Name, Namespace: dev.Namespace}}
+			_, err := r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: group.Name}, group)).To(Succeed())
+			group.Spec.Suspended = true
+			Expect(k8sClient.Update(ctx, group)).To(Succeed())
+			_, err = r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, req.NamespacedName, &dep)).To(Succeed())
+			Expect(*dep.Spec.Replicas).To(Equal(int32(0)))
+		})
 
 		It(
 			"creates a Deployment with lab co-location affinity and a PDB", func() {

@@ -20,9 +20,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
@@ -138,11 +140,20 @@ func connectionRefsDevice(c *laboratoryv1alpha1.Connection, deviceName string) b
 // NodeName/PodIP come from the live pod (looked up by label), since a Deployment
 // pod's name is non-deterministic.
 func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *laboratoryv1alpha1.Device) (ctrl.Result, error) {
+	suspended, err := r.labGroupSuspended(ctx, device.Namespace)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	replicas := int32(1)
+	if suspended {
+		replicas = 0
+	}
+
 	var dep appsv1.Deployment
-	err := r.Get(ctx, types.NamespacedName{Name: device.Name, Namespace: device.Namespace}, &dep)
+	err = r.Get(ctx, types.NamespacedName{Name: device.Name, Namespace: device.Namespace}, &dep)
 
 	if errors.IsNotFound(err) {
-		return ctrl.Result{}, r.createDeployment(ctx, device)
+		return ctrl.Result{}, r.createDeployment(ctx, device, replicas)
 	}
 	if err != nil {
 		return ctrl.Result{}, err
@@ -153,6 +164,12 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 	// drain must be an explicit, force-deleting decision.
 	if err := r.ensurePodDisruptionBudget(ctx, device); err != nil {
 		return ctrl.Result{}, err
+	}
+	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != replicas {
+		dep.Spec.Replicas = ptrInt32(replicas)
+		if err := r.Update(ctx, &dep); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	nodeName, podIP, podName := r.devicePodPlacement(ctx, device)
@@ -183,7 +200,7 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 	// Deployment changes trigger reconcile, but a pod getting its IP does not
 	// (the pod is owned by the ReplicaSet, not the Device) — requeue until the
 	// placement is fully observed.
-	if !ready || podIP == "" || podName == "" {
+	if !suspended && (!ready || podIP == "" || podName == "") {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
@@ -232,7 +249,7 @@ func deviceNetworkAnnotation(device *laboratoryv1alpha1.Device) string {
 	return strings.Join(entries, ",")
 }
 
-func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laboratoryv1alpha1.Device) error {
+func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laboratoryv1alpha1.Device, replicas int32) error {
 	annotations := map[string]string{
 		names.AnnotationDevice:   device.Spec.Name,
 		names.AnnotationNetworks: deviceNetworkAnnotation(device),
@@ -315,7 +332,7 @@ func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laborat
 			Labels:    labels,
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: ptrInt32(1),
+			Replicas: ptrInt32(replicas),
 			Selector: &metav1.LabelSelector{MatchLabels: selectorLabels},
 			// Recreate, never RollingUpdate: a device is a single L2 identity with
 			// one OVS port — two pods cannot share it. The old pod (held by the OVS
@@ -553,10 +570,47 @@ func (r *DeviceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.Device{}).
 		Owns(&appsv1.Deployment{}).
+		Watches(&laboratoryv1alpha1.LabGroup{}, handler.EnqueueRequestsFromMapFunc(r.devicesForLabGroup), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		// A switch/hub's readiness depends on its Connections — re-reconcile the
 		// referenced devices whenever a Connection changes.
 		Watches(&laboratoryv1alpha1.Connection{}, handler.EnqueueRequestsFromMapFunc(r.devicesForConnection)).
 		Complete(r)
+}
+
+// labGroupSuspended resolves the LabGroup that owns this namespace. A namespace
+// without a LabGroup is retained for standalone controller tests and runs its
+// devices normally.
+func (r *DeviceReconciler) labGroupSuspended(ctx context.Context, namespace string) (bool, error) {
+	var group laboratoryv1alpha1.LabGroup
+	err := r.Get(ctx, types.NamespacedName{Name: namespace}, &group)
+	if errors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return group.Spec.Suspended, nil
+}
+
+// devicesForLabGroup enqueues every Device in the group's namespace when its
+// desired state changes, allowing resume without a user edit to a Device.
+func (r *DeviceReconciler) devicesForLabGroup(ctx context.Context, obj client.Object) []reconcile.Request {
+	group, ok := obj.(*laboratoryv1alpha1.LabGroup)
+	if !ok {
+		return nil
+	}
+	var devices laboratoryv1alpha1.DeviceList
+	if err := r.List(ctx, &devices, client.InNamespace(laboratoryv1alpha1.LabGroupNamespace(group.Name))); err != nil {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(devices.Items))
+	for i := range devices.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{
+			Name:      devices.Items[i].Name,
+			Namespace: devices.Items[i].Namespace,
+		}})
+	}
+	return requests
 }
 
 // devicesForConnection maps a Connection to reconcile requests for the devices
