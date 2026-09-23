@@ -21,6 +21,55 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type LabGroupAccessAction int32
+
+const (
+	LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_UNSPECIFIED LabGroupAccessAction = 0
+	LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_ALLOW       LabGroupAccessAction = 1
+	LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_DENY        LabGroupAccessAction = 2
+)
+
+// Enum value maps for LabGroupAccessAction.
+var (
+	LabGroupAccessAction_name = map[int32]string{
+		0: "LAB_GROUP_ACCESS_ACTION_UNSPECIFIED",
+		1: "LAB_GROUP_ACCESS_ACTION_ALLOW",
+		2: "LAB_GROUP_ACCESS_ACTION_DENY",
+	}
+	LabGroupAccessAction_value = map[string]int32{
+		"LAB_GROUP_ACCESS_ACTION_UNSPECIFIED": 0,
+		"LAB_GROUP_ACCESS_ACTION_ALLOW":       1,
+		"LAB_GROUP_ACCESS_ACTION_DENY":        2,
+	}
+)
+
+func (x LabGroupAccessAction) Enum() *LabGroupAccessAction {
+	p := new(LabGroupAccessAction)
+	*p = x
+	return p
+}
+
+func (x LabGroupAccessAction) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (LabGroupAccessAction) Descriptor() protoreflect.EnumDescriptor {
+	return file_pkg_agent_protobuf_agent_proto_enumTypes[0].Descriptor()
+}
+
+func (LabGroupAccessAction) Type() protoreflect.EnumType {
+	return &file_pkg_agent_protobuf_agent_proto_enumTypes[0]
+}
+
+func (x LabGroupAccessAction) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use LabGroupAccessAction.Descriptor instead.
+func (LabGroupAccessAction) EnumDescriptor() ([]byte, []int) {
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{0}
+}
+
 type Empty struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -1078,6 +1127,122 @@ func (x *LabGroupClientList) GetItems() []*LabGroupClient {
 	return nil
 }
 
+type LabGroupAccessPolicy struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The agent resolves the namespace from this LabGroup, preventing a caller
+	// from applying a policy to a namespace outside the group.
+	LabGroupName  string                `protobuf:"bytes,1,opt,name=lab_group_name,json=labGroupName,proto3" json:"lab_group_name,omitempty"`
+	Rules         []*LabGroupAccessRule `protobuf:"bytes,2,rep,name=rules,proto3" json:"rules,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LabGroupAccessPolicy) Reset() {
+	*x = LabGroupAccessPolicy{}
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LabGroupAccessPolicy) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LabGroupAccessPolicy) ProtoMessage() {}
+
+func (x *LabGroupAccessPolicy) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LabGroupAccessPolicy.ProtoReflect.Descriptor instead.
+func (*LabGroupAccessPolicy) Descriptor() ([]byte, []int) {
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *LabGroupAccessPolicy) GetLabGroupName() string {
+	if x != nil {
+		return x.LabGroupName
+	}
+	return ""
+}
+
+func (x *LabGroupAccessPolicy) GetRules() []*LabGroupAccessRule {
+	if x != nil {
+		return x.Rules
+	}
+	return nil
+}
+
+type LabGroupAccessRule struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Action LabGroupAccessAction   `protobuf:"varint,1,opt,name=action,proto3,enum=labmanager.LabGroupAccessAction" json:"action,omitempty"`
+	// Empty means every VPN client in the LabGroup.
+	ClientNames []string `protobuf:"bytes,2,rep,name=client_names,json=clientNames,proto3" json:"client_names,omitempty"`
+	// Empty means every Lab in the LabGroup.
+	LabNames      []string `protobuf:"bytes,3,rep,name=lab_names,json=labNames,proto3" json:"lab_names,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LabGroupAccessRule) Reset() {
+	*x = LabGroupAccessRule{}
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LabGroupAccessRule) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LabGroupAccessRule) ProtoMessage() {}
+
+func (x *LabGroupAccessRule) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LabGroupAccessRule.ProtoReflect.Descriptor instead.
+func (*LabGroupAccessRule) Descriptor() ([]byte, []int) {
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *LabGroupAccessRule) GetAction() LabGroupAccessAction {
+	if x != nil {
+		return x.Action
+	}
+	return LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_UNSPECIFIED
+}
+
+func (x *LabGroupAccessRule) GetClientNames() []string {
+	if x != nil {
+		return x.ClientNames
+	}
+	return nil
+}
+
+func (x *LabGroupAccessRule) GetLabNames() []string {
+	if x != nil {
+		return x.LabNames
+	}
+	return nil
+}
+
 type MonitoringUpdate struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Groups        []*LabGroup            `protobuf:"bytes,1,rep,name=groups,proto3" json:"groups,omitempty"`
@@ -1089,7 +1254,7 @@ type MonitoringUpdate struct {
 
 func (x *MonitoringUpdate) Reset() {
 	*x = MonitoringUpdate{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[18]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1101,7 +1266,7 @@ func (x *MonitoringUpdate) String() string {
 func (*MonitoringUpdate) ProtoMessage() {}
 
 func (x *MonitoringUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[18]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1114,7 +1279,7 @@ func (x *MonitoringUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitoringUpdate.ProtoReflect.Descriptor instead.
 func (*MonitoringUpdate) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{18}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *MonitoringUpdate) GetGroups() []*LabGroup {
@@ -1153,7 +1318,7 @@ type NodeCapacity struct {
 
 func (x *NodeCapacity) Reset() {
 	*x = NodeCapacity{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[19]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1165,7 +1330,7 @@ func (x *NodeCapacity) String() string {
 func (*NodeCapacity) ProtoMessage() {}
 
 func (x *NodeCapacity) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[19]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1178,7 +1343,7 @@ func (x *NodeCapacity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeCapacity.ProtoReflect.Descriptor instead.
 func (*NodeCapacity) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{19}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *NodeCapacity) GetName() string {
@@ -1232,7 +1397,7 @@ type CapacityResponse struct {
 
 func (x *CapacityResponse) Reset() {
 	*x = CapacityResponse{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[20]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1244,7 +1409,7 @@ func (x *CapacityResponse) String() string {
 func (*CapacityResponse) ProtoMessage() {}
 
 func (x *CapacityResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[20]
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1257,7 +1422,7 @@ func (x *CapacityResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CapacityResponse.ProtoReflect.Descriptor instead.
 func (*CapacityResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{20}
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *CapacityResponse) GetNodes() []*NodeCapacity {
@@ -1377,7 +1542,14 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\brx_bytes\x18\x02 \x01(\x03R\arxBytes\x12\x19\n" +
 	"\btx_bytes\x18\x03 \x01(\x03R\atxBytes\"F\n" +
 	"\x12LabGroupClientList\x120\n" +
-	"\x05items\x18\x01 \x03(\v2\x1a.labmanager.LabGroupClientR\x05items\"\x9b\x01\n" +
+	"\x05items\x18\x01 \x03(\v2\x1a.labmanager.LabGroupClientR\x05items\"r\n" +
+	"\x14LabGroupAccessPolicy\x12$\n" +
+	"\x0elab_group_name\x18\x01 \x01(\tR\flabGroupName\x124\n" +
+	"\x05rules\x18\x02 \x03(\v2\x1e.labmanager.LabGroupAccessRuleR\x05rules\"\x8e\x01\n" +
+	"\x12LabGroupAccessRule\x128\n" +
+	"\x06action\x18\x01 \x01(\x0e2 .labmanager.LabGroupAccessActionR\x06action\x12!\n" +
+	"\fclient_names\x18\x02 \x03(\tR\vclientNames\x12\x1b\n" +
+	"\tlab_names\x18\x03 \x03(\tR\blabNames\"\x9b\x01\n" +
 	"\x10MonitoringUpdate\x12,\n" +
 	"\x06groups\x18\x01 \x03(\v2\x14.labmanager.LabGroupR\x06groups\x12#\n" +
 	"\x04labs\x18\x02 \x03(\v2\x0f.labmanager.LabR\x04labs\x124\n" +
@@ -1393,7 +1565,11 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x1aallocatable_cpu_millicores\x18\x02 \x01(\x03R\x18allocatableCpuMillicores\x128\n" +
 	"\x18allocatable_memory_bytes\x18\x03 \x01(\x03R\x16allocatableMemoryBytes\x128\n" +
 	"\x18requested_cpu_millicores\x18\x04 \x01(\x03R\x16requestedCpuMillicores\x124\n" +
-	"\x16requested_memory_bytes\x18\x05 \x01(\x03R\x14requestedMemoryBytes2\xee\b\n" +
+	"\x16requested_memory_bytes\x18\x05 \x01(\x03R\x14requestedMemoryBytes*\x84\x01\n" +
+	"\x14LabGroupAccessAction\x12'\n" +
+	"#LAB_GROUP_ACCESS_ACTION_UNSPECIFIED\x10\x00\x12!\n" +
+	"\x1dLAB_GROUP_ACCESS_ACTION_ALLOW\x10\x01\x12 \n" +
+	"\x1cLAB_GROUP_ACCESS_ACTION_DENY\x10\x022\xc0\t\n" +
 	"\n" +
 	"LabManager\x12.\n" +
 	"\x04Ping\x12\x11.labmanager.Empty\x1a\x11.labmanager.Empty\"\x00\x12>\n" +
@@ -1410,7 +1586,8 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x14CreateLabGroupClient\x12\x1a.labmanager.LabGroupClient\x1a\x1a.labmanager.LabGroupClient\"\x00\x12R\n" +
 	"\x11GetLabGroupClient\x12\x1f.labmanager.NamespacedIDRequest\x1a\x1a.labmanager.LabGroupClient\"\x00\x12U\n" +
 	"\x13ListLabGroupClients\x12\x1c.labmanager.NamespaceRequest\x1a\x1e.labmanager.LabGroupClientList\"\x00\x12L\n" +
-	"\x14DeleteLabGroupClient\x12\x1f.labmanager.NamespacedIDRequest\x1a\x11.labmanager.Empty\"\x00\x12C\n" +
+	"\x14DeleteLabGroupClient\x12\x1f.labmanager.NamespacedIDRequest\x1a\x11.labmanager.Empty\"\x00\x12P\n" +
+	"\x17ReconcileLabGroupAccess\x12 .labmanager.LabGroupAccessPolicy\x1a\x11.labmanager.Empty\"\x00\x12C\n" +
 	"\n" +
 	"Monitoring\x12\x11.labmanager.Empty\x1a\x1c.labmanager.MonitoringUpdate\"\x00(\x010\x01\x12@\n" +
 	"\vGetCapacity\x12\x11.labmanager.Empty\x1a\x1c.labmanager.CapacityResponse\"\x00B6Z4github.com/cybericebox/laboratory/pkg/agent/protobufb\x06proto3"
@@ -1427,87 +1604,95 @@ func file_pkg_agent_protobuf_agent_proto_rawDescGZIP() []byte {
 	return file_pkg_agent_protobuf_agent_proto_rawDescData
 }
 
-var file_pkg_agent_protobuf_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_pkg_agent_protobuf_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_pkg_agent_protobuf_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
 var file_pkg_agent_protobuf_agent_proto_goTypes = []any{
-	(*Empty)(nil),                    // 0: labmanager.Empty
-	(*IDRequest)(nil),                // 1: labmanager.IDRequest
-	(*NamespaceRequest)(nil),         // 2: labmanager.NamespaceRequest
-	(*NamespacedIDRequest)(nil),      // 3: labmanager.NamespacedIDRequest
-	(*LabGroup)(nil),                 // 4: labmanager.LabGroup
-	(*LabGroupStatus)(nil),           // 5: labmanager.LabGroupStatus
-	(*LabGroupList)(nil),             // 6: labmanager.LabGroupList
-	(*Lab)(nil),                      // 7: labmanager.Lab
-	(*DeviceEnv)(nil),                // 8: labmanager.DeviceEnv
-	(*LabStatus)(nil),                // 9: labmanager.LabStatus
-	(*LabDeviceStatus)(nil),          // 10: labmanager.LabDeviceStatus
-	(*LabConnectionStatus)(nil),      // 11: labmanager.LabConnectionStatus
-	(*LabAccessEntry)(nil),           // 12: labmanager.LabAccessEntry
-	(*LabList)(nil),                  // 13: labmanager.LabList
-	(*LabGroupClient)(nil),           // 14: labmanager.LabGroupClient
-	(*LabGroupClientStatus)(nil),     // 15: labmanager.LabGroupClientStatus
-	(*LabGroupClientStatistics)(nil), // 16: labmanager.LabGroupClientStatistics
-	(*LabGroupClientList)(nil),       // 17: labmanager.LabGroupClientList
-	(*MonitoringUpdate)(nil),         // 18: labmanager.MonitoringUpdate
-	(*NodeCapacity)(nil),             // 19: labmanager.NodeCapacity
-	(*CapacityResponse)(nil),         // 20: labmanager.CapacityResponse
-	nil,                              // 21: labmanager.DeviceEnv.VarsEntry
+	(LabGroupAccessAction)(0),        // 0: labmanager.LabGroupAccessAction
+	(*Empty)(nil),                    // 1: labmanager.Empty
+	(*IDRequest)(nil),                // 2: labmanager.IDRequest
+	(*NamespaceRequest)(nil),         // 3: labmanager.NamespaceRequest
+	(*NamespacedIDRequest)(nil),      // 4: labmanager.NamespacedIDRequest
+	(*LabGroup)(nil),                 // 5: labmanager.LabGroup
+	(*LabGroupStatus)(nil),           // 6: labmanager.LabGroupStatus
+	(*LabGroupList)(nil),             // 7: labmanager.LabGroupList
+	(*Lab)(nil),                      // 8: labmanager.Lab
+	(*DeviceEnv)(nil),                // 9: labmanager.DeviceEnv
+	(*LabStatus)(nil),                // 10: labmanager.LabStatus
+	(*LabDeviceStatus)(nil),          // 11: labmanager.LabDeviceStatus
+	(*LabConnectionStatus)(nil),      // 12: labmanager.LabConnectionStatus
+	(*LabAccessEntry)(nil),           // 13: labmanager.LabAccessEntry
+	(*LabList)(nil),                  // 14: labmanager.LabList
+	(*LabGroupClient)(nil),           // 15: labmanager.LabGroupClient
+	(*LabGroupClientStatus)(nil),     // 16: labmanager.LabGroupClientStatus
+	(*LabGroupClientStatistics)(nil), // 17: labmanager.LabGroupClientStatistics
+	(*LabGroupClientList)(nil),       // 18: labmanager.LabGroupClientList
+	(*LabGroupAccessPolicy)(nil),     // 19: labmanager.LabGroupAccessPolicy
+	(*LabGroupAccessRule)(nil),       // 20: labmanager.LabGroupAccessRule
+	(*MonitoringUpdate)(nil),         // 21: labmanager.MonitoringUpdate
+	(*NodeCapacity)(nil),             // 22: labmanager.NodeCapacity
+	(*CapacityResponse)(nil),         // 23: labmanager.CapacityResponse
+	nil,                              // 24: labmanager.DeviceEnv.VarsEntry
 }
 var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
-	5,  // 0: labmanager.LabGroup.status:type_name -> labmanager.LabGroupStatus
-	4,  // 1: labmanager.LabGroupList.items:type_name -> labmanager.LabGroup
-	9,  // 2: labmanager.Lab.status:type_name -> labmanager.LabStatus
-	8,  // 3: labmanager.Lab.env:type_name -> labmanager.DeviceEnv
-	21, // 4: labmanager.DeviceEnv.vars:type_name -> labmanager.DeviceEnv.VarsEntry
-	10, // 5: labmanager.LabStatus.devices:type_name -> labmanager.LabDeviceStatus
-	11, // 6: labmanager.LabStatus.connections:type_name -> labmanager.LabConnectionStatus
-	12, // 7: labmanager.LabStatus.access:type_name -> labmanager.LabAccessEntry
-	7,  // 8: labmanager.LabList.items:type_name -> labmanager.Lab
-	15, // 9: labmanager.LabGroupClient.status:type_name -> labmanager.LabGroupClientStatus
-	16, // 10: labmanager.LabGroupClientStatus.statistics:type_name -> labmanager.LabGroupClientStatistics
-	14, // 11: labmanager.LabGroupClientList.items:type_name -> labmanager.LabGroupClient
-	4,  // 12: labmanager.MonitoringUpdate.groups:type_name -> labmanager.LabGroup
-	7,  // 13: labmanager.MonitoringUpdate.labs:type_name -> labmanager.Lab
-	14, // 14: labmanager.MonitoringUpdate.clients:type_name -> labmanager.LabGroupClient
-	19, // 15: labmanager.CapacityResponse.nodes:type_name -> labmanager.NodeCapacity
-	0,  // 16: labmanager.LabManager.Ping:input_type -> labmanager.Empty
-	4,  // 17: labmanager.LabManager.CreateLabGroup:input_type -> labmanager.LabGroup
-	1,  // 18: labmanager.LabManager.GetLabGroup:input_type -> labmanager.IDRequest
-	0,  // 19: labmanager.LabManager.ListLabGroups:input_type -> labmanager.Empty
-	4,  // 20: labmanager.LabManager.UpdateLabGroup:input_type -> labmanager.LabGroup
-	1,  // 21: labmanager.LabManager.DeleteLabGroup:input_type -> labmanager.IDRequest
-	7,  // 22: labmanager.LabManager.CreateLab:input_type -> labmanager.Lab
-	3,  // 23: labmanager.LabManager.GetLab:input_type -> labmanager.NamespacedIDRequest
-	2,  // 24: labmanager.LabManager.ListLabs:input_type -> labmanager.NamespaceRequest
-	7,  // 25: labmanager.LabManager.UpdateLab:input_type -> labmanager.Lab
-	3,  // 26: labmanager.LabManager.DeleteLab:input_type -> labmanager.NamespacedIDRequest
-	14, // 27: labmanager.LabManager.CreateLabGroupClient:input_type -> labmanager.LabGroupClient
-	3,  // 28: labmanager.LabManager.GetLabGroupClient:input_type -> labmanager.NamespacedIDRequest
-	2,  // 29: labmanager.LabManager.ListLabGroupClients:input_type -> labmanager.NamespaceRequest
-	3,  // 30: labmanager.LabManager.DeleteLabGroupClient:input_type -> labmanager.NamespacedIDRequest
-	0,  // 31: labmanager.LabManager.Monitoring:input_type -> labmanager.Empty
-	0,  // 32: labmanager.LabManager.GetCapacity:input_type -> labmanager.Empty
-	0,  // 33: labmanager.LabManager.Ping:output_type -> labmanager.Empty
-	4,  // 34: labmanager.LabManager.CreateLabGroup:output_type -> labmanager.LabGroup
-	4,  // 35: labmanager.LabManager.GetLabGroup:output_type -> labmanager.LabGroup
-	6,  // 36: labmanager.LabManager.ListLabGroups:output_type -> labmanager.LabGroupList
-	4,  // 37: labmanager.LabManager.UpdateLabGroup:output_type -> labmanager.LabGroup
-	0,  // 38: labmanager.LabManager.DeleteLabGroup:output_type -> labmanager.Empty
-	7,  // 39: labmanager.LabManager.CreateLab:output_type -> labmanager.Lab
-	7,  // 40: labmanager.LabManager.GetLab:output_type -> labmanager.Lab
-	13, // 41: labmanager.LabManager.ListLabs:output_type -> labmanager.LabList
-	7,  // 42: labmanager.LabManager.UpdateLab:output_type -> labmanager.Lab
-	0,  // 43: labmanager.LabManager.DeleteLab:output_type -> labmanager.Empty
-	14, // 44: labmanager.LabManager.CreateLabGroupClient:output_type -> labmanager.LabGroupClient
-	14, // 45: labmanager.LabManager.GetLabGroupClient:output_type -> labmanager.LabGroupClient
-	17, // 46: labmanager.LabManager.ListLabGroupClients:output_type -> labmanager.LabGroupClientList
-	0,  // 47: labmanager.LabManager.DeleteLabGroupClient:output_type -> labmanager.Empty
-	18, // 48: labmanager.LabManager.Monitoring:output_type -> labmanager.MonitoringUpdate
-	20, // 49: labmanager.LabManager.GetCapacity:output_type -> labmanager.CapacityResponse
-	33, // [33:50] is the sub-list for method output_type
-	16, // [16:33] is the sub-list for method input_type
-	16, // [16:16] is the sub-list for extension type_name
-	16, // [16:16] is the sub-list for extension extendee
-	0,  // [0:16] is the sub-list for field type_name
+	6,  // 0: labmanager.LabGroup.status:type_name -> labmanager.LabGroupStatus
+	5,  // 1: labmanager.LabGroupList.items:type_name -> labmanager.LabGroup
+	10, // 2: labmanager.Lab.status:type_name -> labmanager.LabStatus
+	9,  // 3: labmanager.Lab.env:type_name -> labmanager.DeviceEnv
+	24, // 4: labmanager.DeviceEnv.vars:type_name -> labmanager.DeviceEnv.VarsEntry
+	11, // 5: labmanager.LabStatus.devices:type_name -> labmanager.LabDeviceStatus
+	12, // 6: labmanager.LabStatus.connections:type_name -> labmanager.LabConnectionStatus
+	13, // 7: labmanager.LabStatus.access:type_name -> labmanager.LabAccessEntry
+	8,  // 8: labmanager.LabList.items:type_name -> labmanager.Lab
+	16, // 9: labmanager.LabGroupClient.status:type_name -> labmanager.LabGroupClientStatus
+	17, // 10: labmanager.LabGroupClientStatus.statistics:type_name -> labmanager.LabGroupClientStatistics
+	15, // 11: labmanager.LabGroupClientList.items:type_name -> labmanager.LabGroupClient
+	20, // 12: labmanager.LabGroupAccessPolicy.rules:type_name -> labmanager.LabGroupAccessRule
+	0,  // 13: labmanager.LabGroupAccessRule.action:type_name -> labmanager.LabGroupAccessAction
+	5,  // 14: labmanager.MonitoringUpdate.groups:type_name -> labmanager.LabGroup
+	8,  // 15: labmanager.MonitoringUpdate.labs:type_name -> labmanager.Lab
+	15, // 16: labmanager.MonitoringUpdate.clients:type_name -> labmanager.LabGroupClient
+	22, // 17: labmanager.CapacityResponse.nodes:type_name -> labmanager.NodeCapacity
+	1,  // 18: labmanager.LabManager.Ping:input_type -> labmanager.Empty
+	5,  // 19: labmanager.LabManager.CreateLabGroup:input_type -> labmanager.LabGroup
+	2,  // 20: labmanager.LabManager.GetLabGroup:input_type -> labmanager.IDRequest
+	1,  // 21: labmanager.LabManager.ListLabGroups:input_type -> labmanager.Empty
+	5,  // 22: labmanager.LabManager.UpdateLabGroup:input_type -> labmanager.LabGroup
+	2,  // 23: labmanager.LabManager.DeleteLabGroup:input_type -> labmanager.IDRequest
+	8,  // 24: labmanager.LabManager.CreateLab:input_type -> labmanager.Lab
+	4,  // 25: labmanager.LabManager.GetLab:input_type -> labmanager.NamespacedIDRequest
+	3,  // 26: labmanager.LabManager.ListLabs:input_type -> labmanager.NamespaceRequest
+	8,  // 27: labmanager.LabManager.UpdateLab:input_type -> labmanager.Lab
+	4,  // 28: labmanager.LabManager.DeleteLab:input_type -> labmanager.NamespacedIDRequest
+	15, // 29: labmanager.LabManager.CreateLabGroupClient:input_type -> labmanager.LabGroupClient
+	4,  // 30: labmanager.LabManager.GetLabGroupClient:input_type -> labmanager.NamespacedIDRequest
+	3,  // 31: labmanager.LabManager.ListLabGroupClients:input_type -> labmanager.NamespaceRequest
+	4,  // 32: labmanager.LabManager.DeleteLabGroupClient:input_type -> labmanager.NamespacedIDRequest
+	19, // 33: labmanager.LabManager.ReconcileLabGroupAccess:input_type -> labmanager.LabGroupAccessPolicy
+	1,  // 34: labmanager.LabManager.Monitoring:input_type -> labmanager.Empty
+	1,  // 35: labmanager.LabManager.GetCapacity:input_type -> labmanager.Empty
+	1,  // 36: labmanager.LabManager.Ping:output_type -> labmanager.Empty
+	5,  // 37: labmanager.LabManager.CreateLabGroup:output_type -> labmanager.LabGroup
+	5,  // 38: labmanager.LabManager.GetLabGroup:output_type -> labmanager.LabGroup
+	7,  // 39: labmanager.LabManager.ListLabGroups:output_type -> labmanager.LabGroupList
+	5,  // 40: labmanager.LabManager.UpdateLabGroup:output_type -> labmanager.LabGroup
+	1,  // 41: labmanager.LabManager.DeleteLabGroup:output_type -> labmanager.Empty
+	8,  // 42: labmanager.LabManager.CreateLab:output_type -> labmanager.Lab
+	8,  // 43: labmanager.LabManager.GetLab:output_type -> labmanager.Lab
+	14, // 44: labmanager.LabManager.ListLabs:output_type -> labmanager.LabList
+	8,  // 45: labmanager.LabManager.UpdateLab:output_type -> labmanager.Lab
+	1,  // 46: labmanager.LabManager.DeleteLab:output_type -> labmanager.Empty
+	15, // 47: labmanager.LabManager.CreateLabGroupClient:output_type -> labmanager.LabGroupClient
+	15, // 48: labmanager.LabManager.GetLabGroupClient:output_type -> labmanager.LabGroupClient
+	18, // 49: labmanager.LabManager.ListLabGroupClients:output_type -> labmanager.LabGroupClientList
+	1,  // 50: labmanager.LabManager.DeleteLabGroupClient:output_type -> labmanager.Empty
+	1,  // 51: labmanager.LabManager.ReconcileLabGroupAccess:output_type -> labmanager.Empty
+	21, // 52: labmanager.LabManager.Monitoring:output_type -> labmanager.MonitoringUpdate
+	23, // 53: labmanager.LabManager.GetCapacity:output_type -> labmanager.CapacityResponse
+	36, // [36:54] is the sub-list for method output_type
+	18, // [18:36] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_pkg_agent_protobuf_agent_proto_init() }
@@ -1520,13 +1705,14 @@ func file_pkg_agent_protobuf_agent_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_agent_protobuf_agent_proto_rawDesc), len(file_pkg_agent_protobuf_agent_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   22,
+			NumEnums:      1,
+			NumMessages:   24,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_pkg_agent_protobuf_agent_proto_goTypes,
 		DependencyIndexes: file_pkg_agent_protobuf_agent_proto_depIdxs,
+		EnumInfos:         file_pkg_agent_protobuf_agent_proto_enumTypes,
 		MessageInfos:      file_pkg_agent_protobuf_agent_proto_msgTypes,
 	}.Build()
 	File_pkg_agent_protobuf_agent_proto = out.File

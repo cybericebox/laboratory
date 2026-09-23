@@ -36,7 +36,7 @@ metadata:
     {{- include "laboratory.labels" . | nindent 4 }}
 rules:
   - apiGroups: [ "laboratory.cybericebox.com" ]
-    resources: [ "labs", "labs/status", "labgroupclients", "labgroupclients/status" ]
+    resources: [ "labs", "labs/status", "labgroupclients", "labgroupclients/status", "labgroupaccesspolicies" ]
     verbs: [ "get", "list", "watch", "create", "update", "patch", "delete" ]
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "devices", "devices/status", "connections", "connections/status", "labvpns", "labvpns/status", "labgateways", "labgateways/status" ]

@@ -47,6 +47,10 @@ func (c *FakeLaboratoryV1alpha1) LabGroups() v1alpha1.LabGroupInterface {
 	return newFakeLabGroups(c)
 }
 
+func (c *FakeLaboratoryV1alpha1) LabGroupAccessPolicies(namespace string) v1alpha1.LabGroupAccessPolicyInterface {
+	return newFakeLabGroupAccessPolicies(c, namespace)
+}
+
 func (c *FakeLaboratoryV1alpha1) LabGroupClients(namespace string) v1alpha1.LabGroupClientInterface {
 	return newFakeLabGroupClients(c, namespace)
 }

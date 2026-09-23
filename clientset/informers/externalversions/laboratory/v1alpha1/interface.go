@@ -33,6 +33,8 @@ type Interface interface {
 	LabGateways() LabGatewayInformer
 	// LabGroups returns a LabGroupInformer.
 	LabGroups() LabGroupInformer
+	// LabGroupAccessPolicies returns a LabGroupAccessPolicyInformer.
+	LabGroupAccessPolicies() LabGroupAccessPolicyInformer
 	// LabGroupClients returns a LabGroupClientInformer.
 	LabGroupClients() LabGroupClientInformer
 	// LabVPNs returns a LabVPNInformer.
@@ -73,6 +75,11 @@ func (v *version) LabGateways() LabGatewayInformer {
 // LabGroups returns a LabGroupInformer.
 func (v *version) LabGroups() LabGroupInformer {
 	return &labGroupInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// LabGroupAccessPolicies returns a LabGroupAccessPolicyInformer.
+func (v *version) LabGroupAccessPolicies() LabGroupAccessPolicyInformer {
+	return &labGroupAccessPolicyInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
 // LabGroupClients returns a LabGroupClientInformer.

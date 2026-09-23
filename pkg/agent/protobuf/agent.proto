@@ -22,6 +22,10 @@ service LabManager {
   rpc ListLabGroupClients(NamespaceRequest) returns (LabGroupClientList) {}
   rpc DeleteLabGroupClient(NamespacedIDRequest) returns (Empty) {}
 
+  // ReconcileLabGroupAccess atomically replaces the complete client-to-lab
+  // access policy of one LabGroup. Unlisted existing clients receive no labs.
+  rpc ReconcileLabGroupAccess(LabGroupAccessPolicy) returns (Empty) {}
+
   rpc Monitoring(stream Empty) returns (stream MonitoringUpdate) {}
 
   rpc GetCapacity(Empty) returns (CapacityResponse) {}
@@ -112,6 +116,25 @@ message LabGroupClientStatistics {
   int64 tx_bytes = 3;
 }
 message LabGroupClientList {repeated LabGroupClient items = 1;}
+
+message LabGroupAccessPolicy {
+  // The agent resolves the namespace from this LabGroup, preventing a caller
+  // from applying a policy to a namespace outside the group.
+  string lab_group_name = 1;
+  repeated LabGroupAccessRule rules = 2;
+}
+enum LabGroupAccessAction {
+  LAB_GROUP_ACCESS_ACTION_UNSPECIFIED = 0;
+  LAB_GROUP_ACCESS_ACTION_ALLOW = 1;
+  LAB_GROUP_ACCESS_ACTION_DENY = 2;
+}
+message LabGroupAccessRule {
+  LabGroupAccessAction action = 1;
+  // Empty means every VPN client in the LabGroup.
+  repeated string client_names = 2;
+  // Empty means every Lab in the LabGroup.
+  repeated string lab_names = 3;
+}
 
 message MonitoringUpdate {
   repeated LabGroup groups = 1;

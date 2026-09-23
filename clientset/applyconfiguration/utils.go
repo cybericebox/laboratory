@@ -86,6 +86,12 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.LabGatewayStatusApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroup"):
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupAccessPolicy"):
+		return &applyconfigurationlaboratoryv1alpha1.LabGroupAccessPolicyApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupAccessPolicySpec"):
+		return &applyconfigurationlaboratoryv1alpha1.LabGroupAccessPolicySpecApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupAccessRule"):
+		return &applyconfigurationlaboratoryv1alpha1.LabGroupAccessRuleApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupClient"):
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupClientApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupClientSpec"):

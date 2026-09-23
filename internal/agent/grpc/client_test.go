@@ -127,3 +127,68 @@ func TestListAndDeleteLabGroupClient(t *testing.T) {
 		t.Fatalf("expected error getting deleted client, got nil")
 	}
 }
+
+func TestReconcileLabGroupAccessReplacesOneGroupPolicy(t *testing.T) {
+	h, k8s := newTestHandler(t)
+	ctx := context.Background()
+	const namespace = "team-access"
+	mustNamespace(t, k8s, namespace)
+
+	group := &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: "event-team"}}
+	createdGroup, err := h.cs.LaboratoryV1alpha1().LabGroups().Create(ctx, group, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	createdGroup.Status.Namespace = namespace
+	if _, err := h.cs.LaboratoryV1alpha1().LabGroups().UpdateStatus(ctx, createdGroup, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("set group namespace: %v", err)
+	}
+	for _, name := range []string{"web", "forensics"} {
+		if _, err := h.cs.LaboratoryV1alpha1().Labs(namespace).Create(ctx, &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("create lab %q: %v", name, err)
+		}
+	}
+	for _, name := range []string{"alice", "bob"} {
+		if _, err := h.cs.LaboratoryV1alpha1().LabGroupClients(namespace).Create(ctx, &laboratoryv1alpha1.LabGroupClient{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("create client %q: %v", name, err)
+		}
+	}
+
+	_, err = h.ReconcileLabGroupAccess(ctx, &protobuf.LabGroupAccessPolicy{
+		LabGroupName: "event-team",
+		Rules: []*protobuf.LabGroupAccessRule{
+			{Action: protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_ALLOW, ClientNames: []string{"alice"}, LabNames: []string{"web"}},
+			{Action: protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_ALLOW, LabNames: []string{"forensics"}},
+			{Action: protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_DENY, ClientNames: []string{"alice"}, LabNames: []string{"forensics"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ReconcileLabGroupAccess: %v", err)
+	}
+	stored, err := h.cs.LaboratoryV1alpha1().LabGroupAccessPolicies(namespace).Get(ctx, "access-policy", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get group policy: %v", err)
+	}
+	if len(stored.Spec.Rules) != 3 || stored.Spec.Rules[1].Action != laboratoryv1alpha1.LabGroupAccessAllow || len(stored.Spec.Rules[1].ClientNames) != 0 {
+		t.Fatalf("stored rules = %#v", stored.Spec.Rules)
+	}
+}
+
+func TestReconcileLabGroupAccessRejectsUnknownLabWithoutPartialWrite(t *testing.T) {
+	h, k8s := newTestHandler(t)
+	ctx := context.Background()
+	const namespace = "team-access-invalid"
+	mustNamespace(t, k8s, namespace)
+	group := &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: "event-team-invalid"}}
+	group, _ = h.cs.LaboratoryV1alpha1().LabGroups().Create(ctx, group, metav1.CreateOptions{})
+	group.Status.Namespace = namespace
+	if _, err := h.cs.LaboratoryV1alpha1().LabGroups().UpdateStatus(ctx, group, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("set group namespace: %v", err)
+	}
+	if _, err := h.ReconcileLabGroupAccess(ctx, &protobuf.LabGroupAccessPolicy{LabGroupName: group.Name, Rules: []*protobuf.LabGroupAccessRule{{Action: protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_ALLOW, LabNames: []string{"missing"}}}}); err == nil {
+		t.Fatal("expected unknown lab to be rejected")
+	}
+	if _, err := h.cs.LaboratoryV1alpha1().LabGroupAccessPolicies(namespace).Get(ctx, "access-policy", metav1.GetOptions{}); err == nil {
+		t.Fatal("invalid policy created a group policy")
+	}
+}

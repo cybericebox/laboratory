@@ -3,9 +3,13 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
@@ -102,4 +106,88 @@ func (h *Handler) DeleteLabGroupClient(ctx context.Context, in *protobuf.Namespa
 		return nil, err
 	}
 	return &protobuf.Empty{}, nil
+}
+
+// ReconcileLabGroupAccess replaces the one namespaced access-policy CR of a
+// LabGroup. The VPN process watches that resource and applies its full
+// default-deny rule set. Client names need not exist yet: the policy is stored
+// at group scope and automatically applies once such a VPN client is created.
+func (h *Handler) ReconcileLabGroupAccess(ctx context.Context, in *protobuf.LabGroupAccessPolicy) (*protobuf.Empty, error) {
+	if in == nil || in.LabGroupName == "" {
+		return nil, status.Error(codes.InvalidArgument, "lab_group_name is required")
+	}
+	group, err := h.cs.LaboratoryV1alpha1().LabGroups().Get(ctx, in.LabGroupName, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	namespace := group.Status.Namespace
+	if namespace == "" {
+		return nil, status.Errorf(codes.FailedPrecondition, "lab group %q namespace is not ready", in.LabGroupName)
+	}
+
+	labs, err := h.cs.LaboratoryV1alpha1().Labs(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	knownLabs := make(map[string]struct{}, len(labs.Items))
+	for i := range labs.Items {
+		knownLabs[labs.Items[i].Name] = struct{}{}
+	}
+	rules := make([]laboratoryv1alpha1.LabGroupAccessRule, 0, len(in.Rules))
+	for _, rule := range in.Rules {
+		if rule == nil {
+			return nil, status.Error(codes.InvalidArgument, "access rules cannot be null")
+		}
+		var action laboratoryv1alpha1.LabGroupAccessAction
+		switch rule.Action {
+		case protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_ALLOW:
+			action = laboratoryv1alpha1.LabGroupAccessAllow
+		case protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_DENY:
+			action = laboratoryv1alpha1.LabGroupAccessDeny
+		default:
+			return nil, status.Error(codes.InvalidArgument, "every access rule requires allow or deny action")
+		}
+		labNames := uniqueSorted(rule.LabNames)
+		for _, name := range labNames {
+			if _, ok := knownLabs[name]; !ok {
+				return nil, status.Errorf(codes.InvalidArgument, "lab %q does not belong to group %q", name, in.LabGroupName)
+			}
+		}
+		rules = append(rules, laboratoryv1alpha1.LabGroupAccessRule{
+			Action:      action,
+			ClientNames: uniqueSorted(rule.ClientNames),
+			LabNames:    labNames,
+		})
+	}
+	policies := h.cs.LaboratoryV1alpha1().LabGroupAccessPolicies(namespace)
+	stored, err := policies.Get(ctx, names.LabGroupAccessPolicyName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		_, err = policies.Create(ctx, &laboratoryv1alpha1.LabGroupAccessPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: namespace},
+			Spec:       laboratoryv1alpha1.LabGroupAccessPolicySpec{Rules: rules},
+		}, metav1.CreateOptions{})
+	} else if err == nil {
+		stored.Spec.Rules = rules
+		_, err = policies.Update(ctx, stored, metav1.UpdateOptions{})
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &protobuf.Empty{}, nil
+}
+
+func uniqueSorted(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	unique := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		unique[value] = struct{}{}
+	}
+	out := make([]string, 0, len(unique))
+	for value := range unique {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }

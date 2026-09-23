@@ -19,23 +19,24 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	LabManager_Ping_FullMethodName                 = "/labmanager.LabManager/Ping"
-	LabManager_CreateLabGroup_FullMethodName       = "/labmanager.LabManager/CreateLabGroup"
-	LabManager_GetLabGroup_FullMethodName          = "/labmanager.LabManager/GetLabGroup"
-	LabManager_ListLabGroups_FullMethodName        = "/labmanager.LabManager/ListLabGroups"
-	LabManager_UpdateLabGroup_FullMethodName       = "/labmanager.LabManager/UpdateLabGroup"
-	LabManager_DeleteLabGroup_FullMethodName       = "/labmanager.LabManager/DeleteLabGroup"
-	LabManager_CreateLab_FullMethodName            = "/labmanager.LabManager/CreateLab"
-	LabManager_GetLab_FullMethodName               = "/labmanager.LabManager/GetLab"
-	LabManager_ListLabs_FullMethodName             = "/labmanager.LabManager/ListLabs"
-	LabManager_UpdateLab_FullMethodName            = "/labmanager.LabManager/UpdateLab"
-	LabManager_DeleteLab_FullMethodName            = "/labmanager.LabManager/DeleteLab"
-	LabManager_CreateLabGroupClient_FullMethodName = "/labmanager.LabManager/CreateLabGroupClient"
-	LabManager_GetLabGroupClient_FullMethodName    = "/labmanager.LabManager/GetLabGroupClient"
-	LabManager_ListLabGroupClients_FullMethodName  = "/labmanager.LabManager/ListLabGroupClients"
-	LabManager_DeleteLabGroupClient_FullMethodName = "/labmanager.LabManager/DeleteLabGroupClient"
-	LabManager_Monitoring_FullMethodName           = "/labmanager.LabManager/Monitoring"
-	LabManager_GetCapacity_FullMethodName          = "/labmanager.LabManager/GetCapacity"
+	LabManager_Ping_FullMethodName                    = "/labmanager.LabManager/Ping"
+	LabManager_CreateLabGroup_FullMethodName          = "/labmanager.LabManager/CreateLabGroup"
+	LabManager_GetLabGroup_FullMethodName             = "/labmanager.LabManager/GetLabGroup"
+	LabManager_ListLabGroups_FullMethodName           = "/labmanager.LabManager/ListLabGroups"
+	LabManager_UpdateLabGroup_FullMethodName          = "/labmanager.LabManager/UpdateLabGroup"
+	LabManager_DeleteLabGroup_FullMethodName          = "/labmanager.LabManager/DeleteLabGroup"
+	LabManager_CreateLab_FullMethodName               = "/labmanager.LabManager/CreateLab"
+	LabManager_GetLab_FullMethodName                  = "/labmanager.LabManager/GetLab"
+	LabManager_ListLabs_FullMethodName                = "/labmanager.LabManager/ListLabs"
+	LabManager_UpdateLab_FullMethodName               = "/labmanager.LabManager/UpdateLab"
+	LabManager_DeleteLab_FullMethodName               = "/labmanager.LabManager/DeleteLab"
+	LabManager_CreateLabGroupClient_FullMethodName    = "/labmanager.LabManager/CreateLabGroupClient"
+	LabManager_GetLabGroupClient_FullMethodName       = "/labmanager.LabManager/GetLabGroupClient"
+	LabManager_ListLabGroupClients_FullMethodName     = "/labmanager.LabManager/ListLabGroupClients"
+	LabManager_DeleteLabGroupClient_FullMethodName    = "/labmanager.LabManager/DeleteLabGroupClient"
+	LabManager_ReconcileLabGroupAccess_FullMethodName = "/labmanager.LabManager/ReconcileLabGroupAccess"
+	LabManager_Monitoring_FullMethodName              = "/labmanager.LabManager/Monitoring"
+	LabManager_GetCapacity_FullMethodName             = "/labmanager.LabManager/GetCapacity"
 )
 
 // LabManagerClient is the client API for LabManager service.
@@ -57,6 +58,9 @@ type LabManagerClient interface {
 	GetLabGroupClient(ctx context.Context, in *NamespacedIDRequest, opts ...grpc.CallOption) (*LabGroupClient, error)
 	ListLabGroupClients(ctx context.Context, in *NamespaceRequest, opts ...grpc.CallOption) (*LabGroupClientList, error)
 	DeleteLabGroupClient(ctx context.Context, in *NamespacedIDRequest, opts ...grpc.CallOption) (*Empty, error)
+	// ReconcileLabGroupAccess atomically replaces the complete client-to-lab
+	// access policy of one LabGroup. Unlisted existing clients receive no labs.
+	ReconcileLabGroupAccess(ctx context.Context, in *LabGroupAccessPolicy, opts ...grpc.CallOption) (*Empty, error)
 	Monitoring(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[Empty, MonitoringUpdate], error)
 	GetCapacity(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*CapacityResponse, error)
 }
@@ -219,6 +223,16 @@ func (c *labManagerClient) DeleteLabGroupClient(ctx context.Context, in *Namespa
 	return out, nil
 }
 
+func (c *labManagerClient) ReconcileLabGroupAccess(ctx context.Context, in *LabGroupAccessPolicy, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, LabManager_ReconcileLabGroupAccess_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *labManagerClient) Monitoring(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[Empty, MonitoringUpdate], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &LabManager_ServiceDesc.Streams[0], LabManager_Monitoring_FullMethodName, cOpts...)
@@ -261,6 +275,9 @@ type LabManagerServer interface {
 	GetLabGroupClient(context.Context, *NamespacedIDRequest) (*LabGroupClient, error)
 	ListLabGroupClients(context.Context, *NamespaceRequest) (*LabGroupClientList, error)
 	DeleteLabGroupClient(context.Context, *NamespacedIDRequest) (*Empty, error)
+	// ReconcileLabGroupAccess atomically replaces the complete client-to-lab
+	// access policy of one LabGroup. Unlisted existing clients receive no labs.
+	ReconcileLabGroupAccess(context.Context, *LabGroupAccessPolicy) (*Empty, error)
 	Monitoring(grpc.BidiStreamingServer[Empty, MonitoringUpdate]) error
 	GetCapacity(context.Context, *Empty) (*CapacityResponse, error)
 	mustEmbedUnimplementedLabManagerServer()
@@ -317,6 +334,9 @@ func (UnimplementedLabManagerServer) ListLabGroupClients(context.Context, *Names
 }
 func (UnimplementedLabManagerServer) DeleteLabGroupClient(context.Context, *NamespacedIDRequest) (*Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteLabGroupClient not implemented")
+}
+func (UnimplementedLabManagerServer) ReconcileLabGroupAccess(context.Context, *LabGroupAccessPolicy) (*Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReconcileLabGroupAccess not implemented")
 }
 func (UnimplementedLabManagerServer) Monitoring(grpc.BidiStreamingServer[Empty, MonitoringUpdate]) error {
 	return status.Errorf(codes.Unimplemented, "method Monitoring not implemented")
@@ -615,6 +635,24 @@ func _LabManager_DeleteLabGroupClient_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LabManager_ReconcileLabGroupAccess_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LabGroupAccessPolicy)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabManagerServer).ReconcileLabGroupAccess(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LabManager_ReconcileLabGroupAccess_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabManagerServer).ReconcileLabGroupAccess(ctx, req.(*LabGroupAccessPolicy))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _LabManager_Monitoring_Handler(srv interface{}, stream grpc.ServerStream) error {
 	return srv.(LabManagerServer).Monitoring(&grpc.GenericServerStream[Empty, MonitoringUpdate]{ServerStream: stream})
 }
@@ -706,6 +744,10 @@ var LabManager_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteLabGroupClient",
 			Handler:    _LabManager_DeleteLabGroupClient_Handler,
+		},
+		{
+			MethodName: "ReconcileLabGroupAccess",
+			Handler:    _LabManager_ReconcileLabGroupAccess_Handler,
 		},
 		{
 			MethodName: "GetCapacity",
