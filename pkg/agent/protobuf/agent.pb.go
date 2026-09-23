@@ -1638,8 +1638,11 @@ type MonitoringUpdate struct {
 	Clients          []*LabGroupClient       `protobuf:"bytes,12,rep,name=clients,proto3" json:"clients,omitempty"`
 	DeletedKeys      []*MonitoringDeletedKey `protobuf:"bytes,13,rep,name=deleted_keys,json=deletedKeys,proto3" json:"deleted_keys,omitempty"`
 	Policies         []*LabGroupAccessPolicy `protobuf:"bytes,14,rep,name=policies,proto3" json:"policies,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Cluster-wide capacity is not tied to any LabGroup. It lets the platform
+	// administrator see actual headroom even when no event is currently active.
+	Capacity      *CapacityResponse `protobuf:"bytes,15,opt,name=capacity,proto3" json:"capacity,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *MonitoringUpdate) Reset() {
@@ -1738,6 +1741,13 @@ func (x *MonitoringUpdate) GetDeletedKeys() []*MonitoringDeletedKey {
 func (x *MonitoringUpdate) GetPolicies() []*LabGroupAccessPolicy {
 	if x != nil {
 		return x.Policies
+	}
+	return nil
+}
+
+func (x *MonitoringUpdate) GetCapacity() *CapacityResponse {
+	if x != nil {
+		return x.Capacity
 	}
 	return nil
 }
@@ -2025,7 +2035,7 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12$\n" +
 	"\x0elab_group_name\x18\x02 \x01(\tR\flabGroupName\x12\x1c\n" +
 	"\tnamespace\x18\x03 \x01(\tR\tnamespace\x12\x12\n" +
-	"\x04name\x18\x04 \x01(\tR\x04name\"\xc7\x03\n" +
+	"\x04name\x18\x04 \x01(\tR\x04name\"\x81\x04\n" +
 	"\x10MonitoringUpdate\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x03R\bsequence\x12-\n" +
@@ -2037,7 +2047,8 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x04labs\x18\v \x03(\v2\x0f.labmanager.LabR\x04labs\x124\n" +
 	"\aclients\x18\f \x03(\v2\x1a.labmanager.LabGroupClientR\aclients\x12C\n" +
 	"\fdeleted_keys\x18\r \x03(\v2 .labmanager.MonitoringDeletedKeyR\vdeletedKeys\x12<\n" +
-	"\bpolicies\x18\x0e \x03(\v2 .labmanager.LabGroupAccessPolicyR\bpolicies\"\x8a\x02\n" +
+	"\bpolicies\x18\x0e \x03(\v2 .labmanager.LabGroupAccessPolicyR\bpolicies\x128\n" +
+	"\bcapacity\x18\x0f \x01(\v2\x1c.labmanager.CapacityResponseR\bcapacity\"\x8a\x02\n" +
 	"\fNodeCapacity\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12<\n" +
 	"\x1aallocatable_cpu_millicores\x18\x02 \x01(\x03R\x18allocatableCpuMillicores\x128\n" +
@@ -2144,48 +2155,49 @@ var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
 	15, // 19: labmanager.MonitoringUpdate.clients:type_name -> labmanager.LabGroupClient
 	24, // 20: labmanager.MonitoringUpdate.deleted_keys:type_name -> labmanager.MonitoringDeletedKey
 	19, // 21: labmanager.MonitoringUpdate.policies:type_name -> labmanager.LabGroupAccessPolicy
-	26, // 22: labmanager.CapacityResponse.nodes:type_name -> labmanager.NodeCapacity
-	1,  // 23: labmanager.LabManager.Ping:input_type -> labmanager.Empty
-	5,  // 24: labmanager.LabManager.CreateLabGroup:input_type -> labmanager.LabGroup
-	2,  // 25: labmanager.LabManager.GetLabGroup:input_type -> labmanager.IDRequest
-	1,  // 26: labmanager.LabManager.ListLabGroups:input_type -> labmanager.Empty
-	5,  // 27: labmanager.LabManager.UpdateLabGroup:input_type -> labmanager.LabGroup
-	2,  // 28: labmanager.LabManager.DeleteLabGroup:input_type -> labmanager.IDRequest
-	8,  // 29: labmanager.LabManager.CreateLab:input_type -> labmanager.Lab
-	4,  // 30: labmanager.LabManager.GetLab:input_type -> labmanager.NamespacedIDRequest
-	3,  // 31: labmanager.LabManager.ListLabs:input_type -> labmanager.NamespaceRequest
-	8,  // 32: labmanager.LabManager.UpdateLab:input_type -> labmanager.Lab
-	4,  // 33: labmanager.LabManager.DeleteLab:input_type -> labmanager.NamespacedIDRequest
-	15, // 34: labmanager.LabManager.CreateLabGroupClient:input_type -> labmanager.LabGroupClient
-	4,  // 35: labmanager.LabManager.GetLabGroupClient:input_type -> labmanager.NamespacedIDRequest
-	3,  // 36: labmanager.LabManager.ListLabGroupClients:input_type -> labmanager.NamespaceRequest
-	4,  // 37: labmanager.LabManager.DeleteLabGroupClient:input_type -> labmanager.NamespacedIDRequest
-	19, // 38: labmanager.LabManager.ReconcileLabGroupAccess:input_type -> labmanager.LabGroupAccessPolicy
-	23, // 39: labmanager.LabManager.Monitoring:input_type -> labmanager.MonitoringRequest
-	1,  // 40: labmanager.LabManager.GetCapacity:input_type -> labmanager.Empty
-	1,  // 41: labmanager.LabManager.Ping:output_type -> labmanager.Empty
-	5,  // 42: labmanager.LabManager.CreateLabGroup:output_type -> labmanager.LabGroup
-	5,  // 43: labmanager.LabManager.GetLabGroup:output_type -> labmanager.LabGroup
-	7,  // 44: labmanager.LabManager.ListLabGroups:output_type -> labmanager.LabGroupList
-	5,  // 45: labmanager.LabManager.UpdateLabGroup:output_type -> labmanager.LabGroup
-	1,  // 46: labmanager.LabManager.DeleteLabGroup:output_type -> labmanager.Empty
-	8,  // 47: labmanager.LabManager.CreateLab:output_type -> labmanager.Lab
-	8,  // 48: labmanager.LabManager.GetLab:output_type -> labmanager.Lab
-	14, // 49: labmanager.LabManager.ListLabs:output_type -> labmanager.LabList
-	8,  // 50: labmanager.LabManager.UpdateLab:output_type -> labmanager.Lab
-	1,  // 51: labmanager.LabManager.DeleteLab:output_type -> labmanager.Empty
-	15, // 52: labmanager.LabManager.CreateLabGroupClient:output_type -> labmanager.LabGroupClient
-	15, // 53: labmanager.LabManager.GetLabGroupClient:output_type -> labmanager.LabGroupClient
-	18, // 54: labmanager.LabManager.ListLabGroupClients:output_type -> labmanager.LabGroupClientList
-	1,  // 55: labmanager.LabManager.DeleteLabGroupClient:output_type -> labmanager.Empty
-	1,  // 56: labmanager.LabManager.ReconcileLabGroupAccess:output_type -> labmanager.Empty
-	25, // 57: labmanager.LabManager.Monitoring:output_type -> labmanager.MonitoringUpdate
-	27, // 58: labmanager.LabManager.GetCapacity:output_type -> labmanager.CapacityResponse
-	41, // [41:59] is the sub-list for method output_type
-	23, // [23:41] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	27, // 22: labmanager.MonitoringUpdate.capacity:type_name -> labmanager.CapacityResponse
+	26, // 23: labmanager.CapacityResponse.nodes:type_name -> labmanager.NodeCapacity
+	1,  // 24: labmanager.LabManager.Ping:input_type -> labmanager.Empty
+	5,  // 25: labmanager.LabManager.CreateLabGroup:input_type -> labmanager.LabGroup
+	2,  // 26: labmanager.LabManager.GetLabGroup:input_type -> labmanager.IDRequest
+	1,  // 27: labmanager.LabManager.ListLabGroups:input_type -> labmanager.Empty
+	5,  // 28: labmanager.LabManager.UpdateLabGroup:input_type -> labmanager.LabGroup
+	2,  // 29: labmanager.LabManager.DeleteLabGroup:input_type -> labmanager.IDRequest
+	8,  // 30: labmanager.LabManager.CreateLab:input_type -> labmanager.Lab
+	4,  // 31: labmanager.LabManager.GetLab:input_type -> labmanager.NamespacedIDRequest
+	3,  // 32: labmanager.LabManager.ListLabs:input_type -> labmanager.NamespaceRequest
+	8,  // 33: labmanager.LabManager.UpdateLab:input_type -> labmanager.Lab
+	4,  // 34: labmanager.LabManager.DeleteLab:input_type -> labmanager.NamespacedIDRequest
+	15, // 35: labmanager.LabManager.CreateLabGroupClient:input_type -> labmanager.LabGroupClient
+	4,  // 36: labmanager.LabManager.GetLabGroupClient:input_type -> labmanager.NamespacedIDRequest
+	3,  // 37: labmanager.LabManager.ListLabGroupClients:input_type -> labmanager.NamespaceRequest
+	4,  // 38: labmanager.LabManager.DeleteLabGroupClient:input_type -> labmanager.NamespacedIDRequest
+	19, // 39: labmanager.LabManager.ReconcileLabGroupAccess:input_type -> labmanager.LabGroupAccessPolicy
+	23, // 40: labmanager.LabManager.Monitoring:input_type -> labmanager.MonitoringRequest
+	1,  // 41: labmanager.LabManager.GetCapacity:input_type -> labmanager.Empty
+	1,  // 42: labmanager.LabManager.Ping:output_type -> labmanager.Empty
+	5,  // 43: labmanager.LabManager.CreateLabGroup:output_type -> labmanager.LabGroup
+	5,  // 44: labmanager.LabManager.GetLabGroup:output_type -> labmanager.LabGroup
+	7,  // 45: labmanager.LabManager.ListLabGroups:output_type -> labmanager.LabGroupList
+	5,  // 46: labmanager.LabManager.UpdateLabGroup:output_type -> labmanager.LabGroup
+	1,  // 47: labmanager.LabManager.DeleteLabGroup:output_type -> labmanager.Empty
+	8,  // 48: labmanager.LabManager.CreateLab:output_type -> labmanager.Lab
+	8,  // 49: labmanager.LabManager.GetLab:output_type -> labmanager.Lab
+	14, // 50: labmanager.LabManager.ListLabs:output_type -> labmanager.LabList
+	8,  // 51: labmanager.LabManager.UpdateLab:output_type -> labmanager.Lab
+	1,  // 52: labmanager.LabManager.DeleteLab:output_type -> labmanager.Empty
+	15, // 53: labmanager.LabManager.CreateLabGroupClient:output_type -> labmanager.LabGroupClient
+	15, // 54: labmanager.LabManager.GetLabGroupClient:output_type -> labmanager.LabGroupClient
+	18, // 55: labmanager.LabManager.ListLabGroupClients:output_type -> labmanager.LabGroupClientList
+	1,  // 56: labmanager.LabManager.DeleteLabGroupClient:output_type -> labmanager.Empty
+	1,  // 57: labmanager.LabManager.ReconcileLabGroupAccess:output_type -> labmanager.Empty
+	25, // 58: labmanager.LabManager.Monitoring:output_type -> labmanager.MonitoringUpdate
+	27, // 59: labmanager.LabManager.GetCapacity:output_type -> labmanager.CapacityResponse
+	42, // [42:60] is the sub-list for method output_type
+	24, // [24:42] is the sub-list for method input_type
+	24, // [24:24] is the sub-list for extension type_name
+	24, // [24:24] is the sub-list for extension extendee
+	0,  // [0:24] is the sub-list for field type_name
 }
 
 func init() { file_pkg_agent_protobuf_agent_proto_init() }

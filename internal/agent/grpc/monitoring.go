@@ -57,6 +57,11 @@ func (h *Handler) snapshot(ctx context.Context) (*protobuf.MonitoringUpdate, err
 			upd.Policies = append(upd.Policies, accessPolicyToProto(policy, g.Name))
 		}
 	}
+	capacity, err := h.GetCapacity(ctx, &protobuf.Empty{})
+	if err != nil {
+		return nil, err
+	}
+	upd.Capacity = capacity
 	sortMonitoringRecords(upd)
 	return upd, nil
 }
@@ -163,10 +168,13 @@ func monitoringDelta(previous, next *protobuf.MonitoringUpdate) (*protobuf.Monit
 		}
 		delta.DeletedKeys = append(delta.DeletedKeys, record.deletedKey())
 	}
+	if !proto.Equal(previous.GetCapacity(), next.GetCapacity()) {
+		delta.Capacity = next.GetCapacity()
+	}
 	sort.Slice(delta.DeletedKeys, func(i, j int) bool {
 		return monitoringDeletedKeyString(delta.DeletedKeys[i]) < monitoringDeletedKeyString(delta.DeletedKeys[j])
 	})
-	return delta, len(delta.Groups) > 0 || len(delta.Labs) > 0 || len(delta.Clients) > 0 || len(delta.Policies) > 0 || len(delta.DeletedKeys) > 0
+	return delta, len(delta.Groups) > 0 || len(delta.Labs) > 0 || len(delta.Clients) > 0 || len(delta.Policies) > 0 || len(delta.DeletedKeys) > 0 || delta.Capacity != nil
 }
 
 type monitoringRecord struct {

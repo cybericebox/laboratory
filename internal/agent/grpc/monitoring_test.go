@@ -41,6 +41,9 @@ func TestMonitoringSendsSnapshotThenOnlyChangedRecords(t *testing.T) {
 	if !first.GetSnapshot() {
 		t.Fatalf("first update must be a snapshot: %+v", first)
 	}
+	if first.GetCapacity() == nil {
+		t.Fatal("snapshot must include cluster capacity for platform monitoring")
+	}
 
 	if _, err := h.CreateLabGroup(ctx, &protobuf.LabGroup{Name: "team-mon"}); err != nil {
 		t.Fatal(err)

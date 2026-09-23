@@ -193,9 +193,12 @@ message MonitoringUpdate {
   bool snapshot = 5;
   repeated LabGroup groups = 10;
   repeated Lab labs = 11;
-	repeated LabGroupClient clients = 12;
+  repeated LabGroupClient clients = 12;
 	repeated MonitoringDeletedKey deleted_keys = 13;
 	repeated LabGroupAccessPolicy policies = 14;
+  // Cluster-wide capacity is not tied to any LabGroup. It lets the platform
+  // administrator see actual headroom even when no event is currently active.
+  CapacityResponse capacity = 15;
 }
 
 // NodeCapacity reports a node's allocatable resources and how much is already
