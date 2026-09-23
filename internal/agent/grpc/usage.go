@@ -61,10 +61,14 @@ func (h *Handler) namespaceUsage(ctx context.Context, ns string) map[usageKey]de
 // fillLabUsage sets live per-device usage on a proto Lab from a namespace usage
 // map. A nil map (metrics unavailable) leaves usage at zero.
 func fillLabUsage(lab *protobuf.Lab, usage map[usageKey]deviceUsage) {
-	if usage == nil || lab.GetStatus() == nil {
+	if lab.GetStatus() == nil {
 		return
 	}
 	for _, d := range lab.Status.Devices {
+		d.UsageAvailable = usage != nil
+		if usage == nil {
+			continue
+		}
 		if u, ok := usage[usageKey{lab: lab.Name, device: d.Name}]; ok {
 			d.CpuMillicores = u.cpuMillicores
 			d.MemoryBytes = u.memoryBytes

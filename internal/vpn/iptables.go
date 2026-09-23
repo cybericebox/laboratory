@@ -4,6 +4,8 @@ package vpn
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/coreos/go-iptables/iptables"
@@ -54,15 +56,60 @@ func (m *IPTablesManager) ReplaceAccessRules(rules []AccessRule) error {
 		return fmt.Errorf("clear access chain: %w", err)
 	}
 	for _, rule := range rules {
+		target := "DROP"
+		if rule.Action == AccessAllow {
+			target = "ACCEPT"
+		}
 		if err := m.ipt.AppendUnique("filter", accessChain,
 			"-s", rule.SourceCIDR,
 			"-d", rule.DestinationCIDR,
-			"-j", "ACCEPT",
+			"-m", "comment", "--comment", accessRuleComment(rule),
+			"-j", target,
 		); err != nil {
-			return fmt.Errorf("allow %s to %s: %w", rule.SourceCIDR, rule.DestinationCIDR, err)
+			return fmt.Errorf("apply %s %s to %s: %w", rule.Action, rule.SourceCIDR, rule.DestinationCIDR, err)
 		}
 	}
 	return nil
+}
+
+const accessRuleCommentPrefix = "cice:"
+
+func accessRuleComment(rule AccessRule) string {
+	return accessRuleCommentPrefix + rule.Identifier()
+}
+
+var accessCounterPattern = regexp.MustCompile(`(?:^|\s)-c\s+(\d+)\s+(\d+)(?:\s|$)`)
+
+// AccessCounters reads cumulative packet/byte counters from the dedicated
+// chain and associates them with stable relation IDs.
+func (m *IPTablesManager) AccessCounters() (map[string]TrafficCounter, error) {
+	lines, err := m.ipt.ListWithCounters("filter", accessChain)
+	if err != nil {
+		return nil, fmt.Errorf("list access counters: %w", err)
+	}
+	counters := make(map[string]TrafficCounter)
+	for _, line := range lines {
+		commentIndex := strings.Index(line, accessRuleCommentPrefix)
+		if commentIndex < 0 {
+			continue
+		}
+		id := line[commentIndex+len(accessRuleCommentPrefix):]
+		id = strings.Trim(id, "\" '")
+		if fieldEnd := strings.IndexAny(id, " \t"); fieldEnd >= 0 {
+			id = id[:fieldEnd]
+		}
+		match := accessCounterPattern.FindStringSubmatch(line)
+		if len(match) != 3 {
+			continue
+		}
+		packets, packetErr := strconv.ParseInt(match[1], 10, 64)
+		bytes, bytesErr := strconv.ParseInt(match[2], 10, 64)
+		if packetErr != nil || bytesErr != nil {
+			continue
+		}
+		counters[id] = TrafficCounter{Packets: packets, Bytes: bytes}
+	}
+	return counters, nil
 }
 
 func (m *IPTablesManager) Cleanup() {

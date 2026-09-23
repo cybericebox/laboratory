@@ -131,6 +131,9 @@ func TestFillLabUsage(t *testing.T) {
 	if lab.Status.Devices[0].CpuMillicores != 150 || lab.Status.Devices[0].MemoryBytes != 1024 {
 		t.Errorf("attacker usage not filled: %+v", lab.Status.Devices[0])
 	}
+	if !lab.Status.Devices[0].UsageAvailable || !lab.Status.Devices[1].UsageAvailable {
+		t.Errorf("metrics availability should be set for every device: %+v", lab.Status.Devices)
+	}
 	// victim had no metrics entry → stays zero
 	if lab.Status.Devices[1].CpuMillicores != 0 || lab.Status.Devices[1].MemoryBytes != 0 {
 		t.Errorf("victim should be zero: %+v", lab.Status.Devices[1])
@@ -145,5 +148,8 @@ func TestFillLabUsageNil(t *testing.T) {
 	fillLabUsage(lab, nil) // must not panic
 	if lab.Status.Devices[0].CpuMillicores != 0 {
 		t.Errorf("expected zero usage with nil map")
+	}
+	if lab.Status.Devices[0].UsageAvailable {
+		t.Errorf("usage must be marked unavailable without metrics API")
 	}
 }

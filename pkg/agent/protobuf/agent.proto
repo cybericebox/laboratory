@@ -80,10 +80,15 @@ message LabStatus {
   repeated LabAccessEntry access = 10;       // structured web-exposure entries
 }
 message LabDeviceStatus {
-  string name = 1;
-  bool ready = 2;
-  int64 cpu_millicores = 3;   // live CPU usage in millicores (0 if metrics unavailable)
-  int64 memory_bytes = 4;     // live memory usage in bytes (0 if metrics unavailable)
+	string name = 1;
+	bool ready = 2;
+	int64 cpu_millicores = 3;
+	int64 memory_bytes = 4;
+	bool usage_available = 5;
+	int64 cpu_request_millicores = 6;
+	int64 memory_request_bytes = 7;
+	int64 cpu_limit_millicores = 8;
+	int64 memory_limit_bytes = 9;
 }
 message LabConnectionStatus {
   string name = 1;
@@ -128,7 +133,10 @@ message LabGroupAccessPolicy {
   // The agent resolves the namespace from this LabGroup, preventing a caller
   // from applying a policy to a namespace outside the group.
   string lab_group_name = 1;
-  repeated LabGroupAccessRule rules = 2;
+	repeated LabGroupAccessRule rules = 2;
+	LabGroupAccessPolicyStatus status = 3;
+	// Populated only by monitoring; mutations resolve scope from LabGroup name.
+	string namespace = 4;
 }
 enum LabGroupAccessAction {
   LAB_GROUP_ACCESS_ACTION_UNSPECIFIED = 0;
@@ -141,6 +149,22 @@ message LabGroupAccessRule {
   repeated string client_names = 2;
   // Empty means every Lab in the LabGroup.
   repeated string lab_names = 3;
+}
+
+message LabGroupAccessPolicyStatus {
+	int64 observed_generation = 1;
+	string state = 2;
+	int64 applied_at_unix_ms = 3;
+	string last_error = 4;
+	repeated LabGroupAccessRuleStatistics rules = 5;
+}
+message LabGroupAccessRuleStatistics {
+	string client_name = 1;
+	string lab_name = 2;
+	LabGroupAccessAction action = 3;
+	int64 packets = 4;
+	int64 bytes = 5;
+	bool counter_reset = 6;
 }
 
 message MonitoringRequest {
@@ -166,8 +190,9 @@ message MonitoringUpdate {
   bool snapshot = 5;
   repeated LabGroup groups = 10;
   repeated Lab labs = 11;
-  repeated LabGroupClient clients = 12;
-  repeated MonitoringDeletedKey deleted_keys = 13;
+	repeated LabGroupClient clients = 12;
+	repeated MonitoringDeletedKey deleted_keys = 13;
+	repeated LabGroupAccessPolicy policies = 14;
 }
 
 // NodeCapacity reports a node's allocatable resources and how much is already

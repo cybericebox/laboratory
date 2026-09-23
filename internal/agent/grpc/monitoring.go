@@ -50,6 +50,10 @@ func (h *Handler) snapshot(ctx context.Context) (*protobuf.MonitoringUpdate, err
 				upd.Clients = append(upd.Clients, clientMonitoringToProto(&clients.Items[j], g.Name))
 			}
 		}
+		policy, err := h.cs.LaboratoryV1alpha1().LabGroupAccessPolicies(ns).Get(ctx, "access-policy", metav1.GetOptions{})
+		if err == nil {
+			upd.Policies = append(upd.Policies, accessPolicyToProto(policy, g.Name))
+		}
 	}
 	sortMonitoringRecords(upd)
 	return upd, nil
@@ -160,7 +164,7 @@ func monitoringDelta(previous, next *protobuf.MonitoringUpdate) (*protobuf.Monit
 	sort.Slice(delta.DeletedKeys, func(i, j int) bool {
 		return monitoringDeletedKeyString(delta.DeletedKeys[i]) < monitoringDeletedKeyString(delta.DeletedKeys[j])
 	})
-	return delta, len(delta.Groups) > 0 || len(delta.Labs) > 0 || len(delta.Clients) > 0 || len(delta.DeletedKeys) > 0
+	return delta, len(delta.Groups) > 0 || len(delta.Labs) > 0 || len(delta.Clients) > 0 || len(delta.Policies) > 0 || len(delta.DeletedKeys) > 0
 }
 
 type monitoringRecord struct {
@@ -180,7 +184,7 @@ func (r monitoringRecord) deletedKey() *protobuf.MonitoringDeletedKey {
 }
 
 func monitoringRecordIndex(update *protobuf.MonitoringUpdate) map[string]monitoringRecord {
-	records := make(map[string]monitoringRecord, len(update.Groups)+len(update.Labs)+len(update.Clients))
+	records := make(map[string]monitoringRecord, len(update.Groups)+len(update.Labs)+len(update.Clients)+len(update.Policies))
 	for _, group := range update.Groups {
 		record := monitoringRecord{kind: "lab_group", groupName: group.GetName(), name: group.GetName(), value: group}
 		records[record.key()] = record
@@ -191,6 +195,10 @@ func monitoringRecordIndex(update *protobuf.MonitoringUpdate) map[string]monitor
 	}
 	for _, client := range update.Clients {
 		record := monitoringRecord{kind: "client", groupName: client.GetLabGroupName(), namespace: client.GetNamespace(), name: client.GetName(), value: client}
+		records[record.key()] = record
+	}
+	for _, policy := range update.Policies {
+		record := monitoringRecord{kind: "access_policy", groupName: policy.GetLabGroupName(), namespace: policy.GetNamespace(), name: "access-policy", value: policy}
 		records[record.key()] = record
 	}
 	return records
@@ -204,6 +212,8 @@ func appendMonitoringRecord(update *protobuf.MonitoringUpdate, record monitoring
 		update.Labs = append(update.Labs, value)
 	case *protobuf.LabGroupClient:
 		update.Clients = append(update.Clients, value)
+	case *protobuf.LabGroupAccessPolicy:
+		update.Policies = append(update.Policies, value)
 	}
 }
 
@@ -214,6 +224,9 @@ func sortMonitoringRecords(update *protobuf.MonitoringUpdate) {
 	})
 	sort.Slice(update.Clients, func(i, j int) bool {
 		return update.Clients[i].GetLabGroupName()+"\x00"+update.Clients[i].GetNamespace()+"\x00"+update.Clients[i].GetName() < update.Clients[j].GetLabGroupName()+"\x00"+update.Clients[j].GetNamespace()+"\x00"+update.Clients[j].GetName()
+	})
+	sort.Slice(update.Policies, func(i, j int) bool {
+		return update.Policies[i].GetLabGroupName()+"\x00"+update.Policies[i].GetNamespace() < update.Policies[j].GetLabGroupName()+"\x00"+update.Policies[j].GetNamespace()
 	})
 }
 

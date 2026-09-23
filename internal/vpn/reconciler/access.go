@@ -5,8 +5,10 @@ package reconciler
 import (
 	"context"
 	"fmt"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -58,25 +60,107 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, fmt.Errorf("get group access policy: %w", err)
 	}
-	policyRules := make([]vpn.AccessPolicyRule, 0, len(policy.Spec.Rules))
-	if err == nil {
-		for _, rule := range policy.Spec.Rules {
-			var action vpn.AccessAction
-			switch rule.Action {
-			case laboratoryv1alpha1.LabGroupAccessAllow:
-				action = vpn.AccessAllow
-			case laboratoryv1alpha1.LabGroupAccessDeny:
-				action = vpn.AccessDeny
-			default:
-				continue
-			}
-			policyRules = append(policyRules, vpn.AccessPolicyRule{Action: action, ClientNames: rule.ClientNames, LabNames: rule.LabNames})
+	policyFound := err == nil
+	rules := vpn.BuildAccessRules(clientSnapshots, labsByName, policyRules(policy))
+	if err := r.IPT.ReplaceAccessRules(rules); err != nil {
+		if policyFound {
+			_ = r.writePolicyStatus(ctx, policy, rules, nil, "Failed", err.Error())
 		}
-	}
-	if err := r.IPT.ReplaceAccessRules(vpn.BuildAccessRules(clientSnapshots, labsByName, policyRules)); err != nil {
 		return ctrl.Result{}, err
 	}
+	if policyFound {
+		counters, countersErr := r.IPT.AccessCounters()
+		if countersErr != nil {
+			return ctrl.Result{}, r.writePolicyStatus(ctx, policy, rules, nil, "Failed", countersErr.Error())
+		}
+		if statusErr := r.writePolicyStatus(ctx, policy, rules, counters, "Applied", ""); statusErr != nil {
+			return ctrl.Result{}, statusErr
+		}
+	}
 	return ctrl.Result{}, nil
+}
+
+func policyRules(policy *laboratoryv1alpha1.LabGroupAccessPolicy) []vpn.AccessPolicyRule {
+	rules := make([]vpn.AccessPolicyRule, 0, len(policy.Spec.Rules))
+	for _, rule := range policy.Spec.Rules {
+		var action vpn.AccessAction
+		switch rule.Action {
+		case laboratoryv1alpha1.LabGroupAccessAllow:
+			action = vpn.AccessAllow
+		case laboratoryv1alpha1.LabGroupAccessDeny:
+			action = vpn.AccessDeny
+		default:
+			continue
+		}
+		rules = append(rules, vpn.AccessPolicyRule{Action: action, ClientNames: rule.ClientNames, LabNames: rule.LabNames})
+	}
+	return rules
+}
+
+func (r *AccessReconciler) writePolicyStatus(ctx context.Context, policy *laboratoryv1alpha1.LabGroupAccessPolicy, rules []vpn.AccessRule, counters map[string]vpn.TrafficCounter, state, lastError string) error {
+	previous := make(map[string]vpn.TrafficCounter, len(policy.Status.Rules))
+	for _, status := range policy.Status.Rules {
+		previous[vpn.AccessRule{ClientName: status.ClientName, LabName: status.LabName, Action: vpn.AccessAction(status.Action)}.Identifier()] = vpn.TrafficCounter{Packets: status.Packets, Bytes: status.Bytes}
+	}
+	statistics := vpn.ProjectAccessStatistics(rules, counters, previous)
+	base := policy.DeepCopy()
+	policy.Status.ObservedGeneration = policy.Generation
+	policy.Status.State = state
+	policy.Status.LastError = lastError
+	policy.Status.AppliedAt = metav1.Now()
+	policy.Status.Rules = make([]laboratoryv1alpha1.LabGroupAccessPolicyRuleStatus, 0, len(statistics))
+	for _, statistic := range statistics {
+		policy.Status.Rules = append(policy.Status.Rules, laboratoryv1alpha1.LabGroupAccessPolicyRuleStatus{
+			ClientName:   statistic.ClientName,
+			LabName:      statistic.LabName,
+			Action:       laboratoryv1alpha1.LabGroupAccessAction(statistic.Action),
+			Packets:      statistic.Packets,
+			Bytes:        statistic.Bytes,
+			CounterReset: statistic.CounterReset,
+		})
+	}
+	if err := r.Status().Patch(ctx, policy, client.MergeFrom(base)); err != nil {
+		return fmt.Errorf("patch access policy status: %w", err)
+	}
+	return nil
+}
+
+// RunAccessStats refreshes firewall counters without changing the policy. The
+// history is retained on the policy CR so the agent can relay it to the
+// platform while an event is active.
+func RunAccessStats(ctx context.Context, c client.Client, ipt *vpn.IPTablesManager, cfg *vpn.Config) {
+	ticker := time.NewTicker(cfg.StatsInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			policy := &laboratoryv1alpha1.LabGroupAccessPolicy{}
+			if err := c.Get(ctx, types.NamespacedName{Namespace: cfg.Namespace, Name: names.LabGroupAccessPolicyName}, policy); err != nil {
+				continue
+			}
+			var clients laboratoryv1alpha1.LabGroupClientList
+			var labs laboratoryv1alpha1.LabList
+			if c.List(ctx, &clients, client.InNamespace(cfg.Namespace)) != nil || c.List(ctx, &labs, client.InNamespace(cfg.Namespace)) != nil {
+				continue
+			}
+			labSnapshots := make(map[string]vpn.LabAccessSnapshot, len(labs.Items))
+			for i := range labs.Items {
+				labSnapshots[labs.Items[i].Name] = vpn.LabAccessSnapshot{VPNCIDR: labs.Items[i].Status.VPN.CIDR, Ready: labs.Items[i].Status.Phase == laboratoryv1alpha1.PhaseReady && labs.Items[i].Status.VPN.Ready}
+			}
+			clientSnapshots := make([]vpn.ClientAccessSnapshot, 0, len(clients.Items))
+			for i := range clients.Items {
+				clientSnapshots = append(clientSnapshots, vpn.ClientAccessSnapshot{Name: clients.Items[i].Name, AssignedIP: clients.Items[i].Status.AssignedIP})
+			}
+			counters, err := ipt.AccessCounters()
+			if err != nil {
+				continue
+			}
+			reconciler := &AccessReconciler{Client: c, IPT: ipt}
+			_ = reconciler.writePolicyStatus(ctx, policy, vpn.BuildAccessRules(clientSnapshots, labSnapshots, policyRules(policy)), counters, "Applied", "")
+		}
+	}
 }
 
 func (r *AccessReconciler) SetupWithManager(mgr ctrl.Manager) error {

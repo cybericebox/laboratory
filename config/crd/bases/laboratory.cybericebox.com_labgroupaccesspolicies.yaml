@@ -75,6 +75,58 @@ spec:
                   type: object
                 type: array
             type: object
+          status:
+            description: |-
+              LabGroupAccessPolicyStatus is written only by the in-namespace VPN
+              reconciler after it has applied the matching policy generation.
+            properties:
+              appliedAt:
+                format: date-time
+                type: string
+              lastError:
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              rules:
+                items:
+                  description: |-
+                    LabGroupAccessPolicyRuleStatus is one effective client-to-lab firewall
+                    relation. Counters are cumulative kernel counters; CounterReset marks a
+                    replacement/restart so downstream summaries never infer negative traffic.
+                  properties:
+                    action:
+                      description: |-
+                        LabGroupAccessAction is applied to every matching client/lab pair. Deny
+                        rules always take precedence over allow rules; a pair matching no allow rule
+                        is denied by default.
+                      enum:
+                      - allow
+                      - deny
+                      type: string
+                    bytes:
+                      format: int64
+                      type: integer
+                    clientName:
+                      type: string
+                    counterReset:
+                      type: boolean
+                    labName:
+                      type: string
+                    packets:
+                      format: int64
+                      type: integer
+                  required:
+                  - action
+                  - clientName
+                  - labName
+                  type: object
+                type: array
+              state:
+                type: string
+            type: object
         type: object
     served: true
     storage: true
+    subresources:
+      status: {}

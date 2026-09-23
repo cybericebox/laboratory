@@ -40,6 +40,7 @@ func Setup(ctx context.Context, mgr ctrl.Manager, wg *vpn.WGManager, ipt *vpn.IP
 	}
 
 	go RunStats(ctx, mgr.GetClient(), wg, cfg)
+	go RunAccessStats(ctx, mgr.GetClient(), ipt, cfg)
 
 	return nil
 }

@@ -31,9 +31,32 @@ type LabGroupAccessPolicySpec struct {
 	Rules []LabGroupAccessRule `json:"rules,omitempty"`
 }
 
+// LabGroupAccessPolicyRuleStatus is one effective client-to-lab firewall
+// relation. Counters are cumulative kernel counters; CounterReset marks a
+// replacement/restart so downstream summaries never infer negative traffic.
+type LabGroupAccessPolicyRuleStatus struct {
+	ClientName   string               `json:"clientName"`
+	LabName      string               `json:"labName"`
+	Action       LabGroupAccessAction `json:"action"`
+	Packets      int64                `json:"packets,omitempty"`
+	Bytes        int64                `json:"bytes,omitempty"`
+	CounterReset bool                 `json:"counterReset,omitempty"`
+}
+
+// LabGroupAccessPolicyStatus is written only by the in-namespace VPN
+// reconciler after it has applied the matching policy generation.
+type LabGroupAccessPolicyStatus struct {
+	ObservedGeneration int64                            `json:"observedGeneration,omitempty"`
+	State              string                           `json:"state,omitempty"`
+	AppliedAt          metav1.Time                      `json:"appliedAt,omitempty"`
+	LastError          string                           `json:"lastError,omitempty"`
+	Rules              []LabGroupAccessPolicyRuleStatus `json:"rules,omitempty"`
+}
+
 // +genclient
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:shortName=lgap
+// +kubebuilder:subresource:status
 
 // LabGroupAccessPolicy is the namespaced firewall policy of one LabGroup. The
 // agent owns a fixed object in the LabGroup namespace and replaces its Spec in
@@ -41,7 +64,8 @@ type LabGroupAccessPolicySpec struct {
 type LabGroupAccessPolicy struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec              LabGroupAccessPolicySpec `json:"spec,omitempty"`
+	Spec              LabGroupAccessPolicySpec   `json:"spec,omitempty"`
+	Status            LabGroupAccessPolicyStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true

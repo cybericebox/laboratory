@@ -111,3 +111,40 @@ func clientMonitoringToProto(c *laboratoryv1alpha1.LabGroupClient, labGroupName 
 	p.LabGroupName = labGroupName
 	return p
 }
+
+func accessPolicyToProto(policy *laboratoryv1alpha1.LabGroupAccessPolicy, labGroupName string) *protobuf.LabGroupAccessPolicy {
+	p := &protobuf.LabGroupAccessPolicy{
+		LabGroupName: labGroupName,
+		Namespace:    policy.Namespace,
+		Status: &protobuf.LabGroupAccessPolicyStatus{
+			ObservedGeneration: policy.Status.ObservedGeneration,
+			State:              policy.Status.State,
+			LastError:          policy.Status.LastError,
+		},
+	}
+	if !policy.Status.AppliedAt.IsZero() {
+		p.Status.AppliedAtUnixMs = policy.Status.AppliedAt.UnixMilli()
+	}
+	for _, rule := range policy.Spec.Rules {
+		action := protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_UNSPECIFIED
+		if rule.Action == laboratoryv1alpha1.LabGroupAccessAllow {
+			action = protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_ALLOW
+		} else if rule.Action == laboratoryv1alpha1.LabGroupAccessDeny {
+			action = protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_DENY
+		}
+		p.Rules = append(p.Rules, &protobuf.LabGroupAccessRule{Action: action, ClientNames: rule.ClientNames, LabNames: rule.LabNames})
+	}
+	for _, rule := range policy.Status.Rules {
+		action := protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_UNSPECIFIED
+		if rule.Action == laboratoryv1alpha1.LabGroupAccessAllow {
+			action = protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_ALLOW
+		} else if rule.Action == laboratoryv1alpha1.LabGroupAccessDeny {
+			action = protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_DENY
+		}
+		p.Status.Rules = append(p.Status.Rules, &protobuf.LabGroupAccessRuleStatistics{
+			ClientName: rule.ClientName, LabName: rule.LabName, Action: action,
+			Packets: rule.Packets, Bytes: rule.Bytes, CounterReset: rule.CounterReset,
+		})
+	}
+	return p
+}
