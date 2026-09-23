@@ -671,6 +671,9 @@ type LabDeviceStatus struct {
 	MemoryRequestBytes   int64                  `protobuf:"varint,7,opt,name=memory_request_bytes,json=memoryRequestBytes,proto3" json:"memory_request_bytes,omitempty"`
 	CpuLimitMillicores   int64                  `protobuf:"varint,8,opt,name=cpu_limit_millicores,json=cpuLimitMillicores,proto3" json:"cpu_limit_millicores,omitempty"`
 	MemoryLimitBytes     int64                  `protobuf:"varint,9,opt,name=memory_limit_bytes,json=memoryLimitBytes,proto3" json:"memory_limit_bytes,omitempty"`
+	PodPhase             string                 `protobuf:"bytes,10,opt,name=pod_phase,json=podPhase,proto3" json:"pod_phase,omitempty"`
+	PodReason            string                 `protobuf:"bytes,11,opt,name=pod_reason,json=podReason,proto3" json:"pod_reason,omitempty"`
+	RestartCount         int32                  `protobuf:"varint,12,opt,name=restart_count,json=restartCount,proto3" json:"restart_count,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -764,6 +767,27 @@ func (x *LabDeviceStatus) GetCpuLimitMillicores() int64 {
 func (x *LabDeviceStatus) GetMemoryLimitBytes() int64 {
 	if x != nil {
 		return x.MemoryLimitBytes
+	}
+	return 0
+}
+
+func (x *LabDeviceStatus) GetPodPhase() string {
+	if x != nil {
+		return x.PodPhase
+	}
+	return ""
+}
+
+func (x *LabDeviceStatus) GetPodReason() string {
+	if x != nil {
+		return x.PodReason
+	}
+	return ""
+}
+
+func (x *LabDeviceStatus) GetRestartCount() int32 {
+	if x != nil {
+		return x.RestartCount
 	}
 	return 0
 }
@@ -1923,7 +1947,7 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\adevices\x18\b \x03(\v2\x1b.labmanager.LabDeviceStatusR\adevices\x12A\n" +
 	"\vconnections\x18\t \x03(\v2\x1f.labmanager.LabConnectionStatusR\vconnections\x122\n" +
 	"\x06access\x18\n" +
-	" \x03(\v2\x1a.labmanager.LabAccessEntryR\x06access\"\xf6\x02\n" +
+	" \x03(\v2\x1a.labmanager.LabAccessEntryR\x06access\"\xd7\x03\n" +
 	"\x0fLabDeviceStatus\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05ready\x18\x02 \x01(\bR\x05ready\x12%\n" +
@@ -1933,7 +1957,12 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x16cpu_request_millicores\x18\x06 \x01(\x03R\x14cpuRequestMillicores\x120\n" +
 	"\x14memory_request_bytes\x18\a \x01(\x03R\x12memoryRequestBytes\x120\n" +
 	"\x14cpu_limit_millicores\x18\b \x01(\x03R\x12cpuLimitMillicores\x12,\n" +
-	"\x12memory_limit_bytes\x18\t \x01(\x03R\x10memoryLimitBytes\"?\n" +
+	"\x12memory_limit_bytes\x18\t \x01(\x03R\x10memoryLimitBytes\x12\x1b\n" +
+	"\tpod_phase\x18\n" +
+	" \x01(\tR\bpodPhase\x12\x1d\n" +
+	"\n" +
+	"pod_reason\x18\v \x01(\tR\tpodReason\x12#\n" +
+	"\rrestart_count\x18\f \x01(\x05R\frestartCount\"?\n" +
 	"\x13LabConnectionStatus\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05ready\x18\x02 \x01(\bR\x05ready\"j\n" +

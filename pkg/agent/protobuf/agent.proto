@@ -89,6 +89,9 @@ message LabDeviceStatus {
 	int64 memory_request_bytes = 7;
 	int64 cpu_limit_millicores = 8;
 	int64 memory_limit_bytes = 9;
+	string pod_phase = 10;
+	string pod_reason = 11;
+	int32 restart_count = 12;
 }
 message LabConnectionStatus {
   string name = 1;

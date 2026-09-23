@@ -8,6 +8,21 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
+func TestLabToProtoIncludesConfiguredResourceBounds(t *testing.T) {
+	lab := &laboratoryv1alpha1.Lab{
+		Spec: laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{{
+			Name:      "web",
+			Resources: &laboratoryv1alpha1.DeviceResources{CPURequest: "250m", MemoryRequest: "64Mi", CPULimit: "1", MemoryLimit: "128Mi"},
+		}}},
+		Status: laboratoryv1alpha1.LabStatus{Devices: []laboratoryv1alpha1.DeviceRef{{Name: "web"}}},
+	}
+
+	got := labToProto(lab).GetStatus().GetDevices()[0]
+	if got.GetCpuRequestMillicores() != 250 || got.GetMemoryRequestBytes() != 64*1024*1024 || got.GetCpuLimitMillicores() != 1000 || got.GetMemoryLimitBytes() != 128*1024*1024 {
+		t.Fatalf("resource bounds = %+v", got)
+	}
+}
+
 func TestLabToProtoStatus(t *testing.T) {
 	lab := &laboratoryv1alpha1.Lab{}
 	lab.Name = "ctf1"

@@ -3,6 +3,8 @@ package grpc
 import (
 	"encoding/json"
 
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
@@ -35,6 +37,20 @@ func labToProto(l *laboratoryv1alpha1.Lab) *protobuf.Lab {
 	for i := range st.Devices {
 		status.Devices = append(status.Devices, &protobuf.LabDeviceStatus{Name: st.Devices[i].Name, Ready: st.Devices[i].Ready})
 	}
+	for _, device := range l.Spec.Devices {
+		if device.Resources == nil {
+			continue
+		}
+		for _, statusDevice := range status.Devices {
+			if statusDevice.Name != device.Name {
+				continue
+			}
+			statusDevice.CpuRequestMillicores = quantityMilliValue(device.Resources.CPURequest)
+			statusDevice.MemoryRequestBytes = quantityValue(device.Resources.MemoryRequest)
+			statusDevice.CpuLimitMillicores = quantityMilliValue(device.Resources.CPULimit)
+			statusDevice.MemoryLimitBytes = quantityValue(device.Resources.MemoryLimit)
+		}
+	}
 	for i := range st.Connections {
 		status.Connections = append(status.Connections, &protobuf.LabConnectionStatus{Name: st.Connections[i].Name, Ready: st.Connections[i].Ready})
 	}
@@ -49,6 +65,28 @@ func labToProto(l *laboratoryv1alpha1.Lab) *protobuf.Lab {
 		SpecJson:  specJSON,
 		Status:    status,
 	}
+}
+
+func quantityMilliValue(value string) int64 {
+	if value == "" {
+		return 0
+	}
+	quantity, err := resource.ParseQuantity(value)
+	if err != nil {
+		return 0
+	}
+	return quantity.MilliValue()
+}
+
+func quantityValue(value string) int64 {
+	if value == "" {
+		return 0
+	}
+	quantity, err := resource.ParseQuantity(value)
+	if err != nil {
+		return 0
+	}
+	return quantity.Value()
 }
 
 // labMonitoringToProto projects runtime state without exposing the Lab spec

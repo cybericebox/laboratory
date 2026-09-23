@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/cybericebox/laboratory/internal/names"
@@ -20,6 +21,12 @@ type deviceUsage struct {
 type usageKey struct {
 	lab    string
 	device string
+}
+
+type devicePodStatus struct {
+	phase        string
+	reason       string
+	restartCount int32
 }
 
 // namespaceUsage returns live per-device usage for a namespace, keyed by
@@ -74,4 +81,65 @@ func fillLabUsage(lab *protobuf.Lab, usage map[usageKey]deviceUsage) {
 			d.MemoryBytes = u.memoryBytes
 		}
 	}
+}
+
+func (h *Handler) namespacePodStatus(ctx context.Context, ns string) map[usageKey]devicePodStatus {
+	if h.k8s == nil {
+		return nil
+	}
+	pods, err := h.k8s.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil
+	}
+	statuses := make(map[usageKey]devicePodStatus)
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		key := usageKey{lab: pod.Labels[names.LabelLab], device: pod.Labels[names.LabelDevice]}
+		if key.lab == "" || key.device == "" {
+			continue
+		}
+		statuses[key] = devicePodStatus{phase: string(pod.Status.Phase), reason: podReason(pod), restartCount: podRestartCount(pod)}
+	}
+	return statuses
+}
+
+func fillLabPodStatus(lab *protobuf.Lab, pods map[usageKey]devicePodStatus) {
+	if pods == nil || lab.GetStatus() == nil {
+		return
+	}
+	for _, device := range lab.Status.Devices {
+		status, found := pods[usageKey{lab: lab.Name, device: device.Name}]
+		if !found {
+			continue
+		}
+		device.PodPhase = status.phase
+		device.PodReason = status.reason
+		device.RestartCount = status.restartCount
+	}
+}
+
+func podReason(pod *corev1.Pod) string {
+	if pod.Status.Reason != "" {
+		return pod.Status.Reason
+	}
+	for _, status := range pod.Status.ContainerStatuses {
+		if status.State.Waiting != nil && status.State.Waiting.Reason != "" {
+			return status.State.Waiting.Reason
+		}
+		if status.State.Terminated != nil && status.State.Terminated.Reason != "" {
+			return status.State.Terminated.Reason
+		}
+	}
+	return ""
+}
+
+func podRestartCount(pod *corev1.Pod) int32 {
+	var restarts int32
+	for _, status := range pod.Status.InitContainerStatuses {
+		restarts += status.RestartCount
+	}
+	for _, status := range pod.Status.ContainerStatuses {
+		restarts += status.RestartCount
+	}
+	return restarts
 }

@@ -38,9 +38,11 @@ func (h *Handler) snapshot(ctx context.Context) (*protobuf.MonitoringUpdate, err
 		labs, err := h.cs.LaboratoryV1alpha1().Labs(ns).List(ctx, metav1.ListOptions{})
 		if err == nil {
 			usage := h.namespaceUsage(ctx, ns)
+			pods := h.namespacePodStatus(ctx, ns)
 			for j := range labs.Items {
 				p := labMonitoringToProto(&labs.Items[j], g.Name)
 				fillLabUsage(p, usage)
+				fillLabPodStatus(p, pods)
 				upd.Labs = append(upd.Labs, p)
 			}
 		}
