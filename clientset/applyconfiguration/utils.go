@@ -127,6 +127,10 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.LabVPNSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabVPNStatus"):
 		return &applyconfigurationlaboratoryv1alpha1.LabVPNStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("NetworkIPRef"):
+		return &applyconfigurationlaboratoryv1alpha1.NetworkIPRefApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("NetworkSubnetRef"):
+		return &applyconfigurationlaboratoryv1alpha1.NetworkSubnetRefApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("Route"):
 		return &applyconfigurationlaboratoryv1alpha1.RouteApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("WebExposure"):

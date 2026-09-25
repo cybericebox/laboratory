@@ -26,10 +26,12 @@ import (
 //
 // AddrSpec defines static or DHCP address configuration.
 type AddrSpecApplyConfiguration struct {
-	Type    *laboratoryv1alpha1.AddrType `json:"type,omitempty"`
-	IP      *string                      `json:"ip,omitempty"`
-	Gateway *string                      `json:"gateway,omitempty"`
-	Routes  []RouteApplyConfiguration    `json:"routes,omitempty"`
+	Type       *laboratoryv1alpha1.AddrType    `json:"type,omitempty"`
+	IP         *string                         `json:"ip,omitempty"`
+	AddressRef *NetworkIPRefApplyConfiguration `json:"addressRef,omitempty"`
+	Gateway    *string                         `json:"gateway,omitempty"`
+	GatewayRef *NetworkIPRefApplyConfiguration `json:"gatewayRef,omitempty"`
+	Routes     []RouteApplyConfiguration       `json:"routes,omitempty"`
 }
 
 // AddrSpecApplyConfiguration constructs a declarative configuration of the AddrSpec type for use with
@@ -54,11 +56,21 @@ func (b *AddrSpecApplyConfiguration) WithIP(value string) *AddrSpecApplyConfigur
 	return b
 }
 
+func (b *AddrSpecApplyConfiguration) WithAddressRef(value *NetworkIPRefApplyConfiguration) *AddrSpecApplyConfiguration {
+	b.AddressRef = value
+	return b
+}
+
 // WithGateway sets the Gateway field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Gateway field is set to the value of the last call.
 func (b *AddrSpecApplyConfiguration) WithGateway(value string) *AddrSpecApplyConfiguration {
 	b.Gateway = &value
+	return b
+}
+
+func (b *AddrSpecApplyConfiguration) WithGatewayRef(value *NetworkIPRefApplyConfiguration) *AddrSpecApplyConfiguration {
+	b.GatewayRef = value
 	return b
 }
 

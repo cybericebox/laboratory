@@ -103,22 +103,27 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, err
 	}
 
-	if err := r.validateGraph(&lab); err != nil {
+	validationErr := r.validateGraph(&lab)
+	var resolvedInterfaces map[string][]laboratoryv1alpha1.InterfaceSpec
+	if validationErr == nil {
+		resolvedInterfaces, validationErr = resolveLabDeviceInterfaces(&lab)
+	}
+	if validationErr != nil {
 		// Surface the specific validation reason — it was previously discarded,
 		// leaving the Lab in Failed with no user-visible cause.
 		lab.Status.Phase = laboratoryv1alpha1.PhaseFailed
 		labstatus.SetReady(
 			&lab.Status.Conditions, lab.Generation, false,
-			labstatus.ReasonValidationFailed, err.Error(),
+			labstatus.ReasonValidationFailed, validationErr.Error(),
 		)
-		r.Recorder.Event(&lab, corev1.EventTypeWarning, labstatus.ReasonValidationFailed, err.Error())
+		r.Recorder.Event(&lab, corev1.EventTypeWarning, labstatus.ReasonValidationFailed, validationErr.Error())
 		if statusErr := r.Status().Update(ctx, &lab); statusErr != nil {
 			logger.Error(statusErr, "update status after graph validation failure")
 		}
 		return ctrl.Result{}, nil
 	}
 
-	if err := r.materializeDevices(ctx, &lab); err != nil {
+	if err := r.materializeDevices(ctx, &lab, resolvedInterfaces); err != nil {
 		logger.Error(err, "materialize devices")
 		return ctrl.Result{}, err
 	}
@@ -368,7 +373,7 @@ func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, sw
 	return nil
 }
 
-func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
+func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv1alpha1.Lab, resolvedInterfaces map[string][]laboratoryv1alpha1.InterfaceSpec) error {
 	vniAllocator := poolpkg.NewAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
 
 	for _, tmpl := range lab.Spec.Devices {
@@ -408,7 +413,7 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 				Type:           tmpl.Type,
 				Image:          tmpl.Image,
 				SecurityPreset: tmpl.SecurityPreset,
-				Interfaces:     tmpl.Interfaces,
+				Interfaces:     resolvedInterfaces[tmpl.Name],
 				Exposure:       tmpl.Exposure,
 				Resources:      tmpl.Resources,
 			},

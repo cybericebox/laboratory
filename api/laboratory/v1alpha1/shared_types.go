@@ -88,17 +88,36 @@ type InterfaceSpec struct {
 // AddrSpec defines static or DHCP address configuration.
 type AddrSpec struct {
 	// +kubebuilder:validation:Required
-	Type    AddrType `json:"type"`
-	IP      string   `json:"ip,omitempty"`
-	Gateway string   `json:"gateway,omitempty"`
-	Routes  []Route  `json:"routes,omitempty"`
+	Type       AddrType      `json:"type"`
+	IP         string        `json:"ip,omitempty"`
+	AddressRef *NetworkIPRef `json:"addressRef,omitempty"`
+	Gateway    string        `json:"gateway,omitempty"`
+	GatewayRef *NetworkIPRef `json:"gatewayRef,omitempty"`
+	Routes     []Route       `json:"routes,omitempty"`
+}
+
+// NetworkIPRef selects a host address from a lab-allocated VPN or Internet /24.
+// The lab reconciler resolves it before creating a Device.
+type NetworkIPRef struct {
+	// +kubebuilder:validation:Enum=vpn;internet
+	Network string `json:"network"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=254
+	Host int32 `json:"host"`
+}
+
+// NetworkSubnetRef selects the full lab-allocated VPN or Internet /24.
+type NetworkSubnetRef struct {
+	// +kubebuilder:validation:Enum=vpn;internet
+	Network string `json:"network"`
 }
 
 // Route is a static route entry.
 type Route struct {
-	// +kubebuilder:validation:Required
-	Dst string `json:"dst"`
-	Via string `json:"via,omitempty"`
+	Dst    string            `json:"dst,omitempty"`
+	DstRef *NetworkSubnetRef `json:"dstRef,omitempty"`
+	Via    string            `json:"via,omitempty"`
+	ViaRef *NetworkIPRef     `json:"viaRef,omitempty"`
 }
 
 // ExposureSpec declares how a device is externally reachable.

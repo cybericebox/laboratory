@@ -102,8 +102,46 @@ spec:
                           addr:
                             description: AddrSpec defines static or DHCP address configuration.
                             properties:
+                              addressRef:
+                                description: |-
+                                  NetworkIPRef selects a host address from a lab-allocated VPN or Internet /24.
+                                  The lab reconciler resolves it before creating a Device.
+                                properties:
+                                  host:
+                                    format: int32
+                                    maximum: 254
+                                    minimum: 1
+                                    type: integer
+                                  network:
+                                    enum:
+                                    - vpn
+                                    - internet
+                                    type: string
+                                required:
+                                - host
+                                - network
+                                type: object
                               gateway:
                                 type: string
+                              gatewayRef:
+                                description: |-
+                                  NetworkIPRef selects a host address from a lab-allocated VPN or Internet /24.
+                                  The lab reconciler resolves it before creating a Device.
+                                properties:
+                                  host:
+                                    format: int32
+                                    maximum: 254
+                                    minimum: 1
+                                    type: integer
+                                  network:
+                                    enum:
+                                    - vpn
+                                    - internet
+                                    type: string
+                                required:
+                                - host
+                                - network
+                                type: object
                               ip:
                                 type: string
                               routes:
@@ -112,10 +150,39 @@ spec:
                                   properties:
                                     dst:
                                       type: string
+                                    dstRef:
+                                      description: NetworkSubnetRef selects the full
+                                        lab-allocated VPN or Internet /24.
+                                      properties:
+                                        network:
+                                          enum:
+                                          - vpn
+                                          - internet
+                                          type: string
+                                      required:
+                                      - network
+                                      type: object
                                     via:
                                       type: string
-                                  required:
-                                  - dst
+                                    viaRef:
+                                      description: |-
+                                        NetworkIPRef selects a host address from a lab-allocated VPN or Internet /24.
+                                        The lab reconciler resolves it before creating a Device.
+                                      properties:
+                                        host:
+                                          format: int32
+                                          maximum: 254
+                                          minimum: 1
+                                          type: integer
+                                        network:
+                                          enum:
+                                          - vpn
+                                          - internet
+                                          type: string
+                                      required:
+                                      - host
+                                      - network
+                                      type: object
                                   type: object
                                 type: array
                               type:

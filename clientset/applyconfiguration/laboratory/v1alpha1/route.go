@@ -22,8 +22,10 @@ package v1alpha1
 //
 // Route is a static route entry.
 type RouteApplyConfiguration struct {
-	Dst *string `json:"dst,omitempty"`
-	Via *string `json:"via,omitempty"`
+	Dst    *string                             `json:"dst,omitempty"`
+	DstRef *NetworkSubnetRefApplyConfiguration `json:"dstRef,omitempty"`
+	Via    *string                             `json:"via,omitempty"`
+	ViaRef *NetworkIPRefApplyConfiguration     `json:"viaRef,omitempty"`
 }
 
 // RouteApplyConfiguration constructs a declarative configuration of the Route type for use with
@@ -40,10 +42,20 @@ func (b *RouteApplyConfiguration) WithDst(value string) *RouteApplyConfiguration
 	return b
 }
 
+func (b *RouteApplyConfiguration) WithDstRef(value *NetworkSubnetRefApplyConfiguration) *RouteApplyConfiguration {
+	b.DstRef = value
+	return b
+}
+
 // WithVia sets the Via field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Via field is set to the value of the last call.
 func (b *RouteApplyConfiguration) WithVia(value string) *RouteApplyConfiguration {
 	b.Via = &value
+	return b
+}
+
+func (b *RouteApplyConfiguration) WithViaRef(value *NetworkIPRefApplyConfiguration) *RouteApplyConfiguration {
+	b.ViaRef = value
 	return b
 }
