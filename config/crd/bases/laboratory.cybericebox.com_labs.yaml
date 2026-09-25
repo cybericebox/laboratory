@@ -173,7 +173,6 @@ spec:
                       description: DeviceType distinguishes network device kinds.
                       enum:
                       - container
-                      - vm
                       - unmanaged-switch
                       - hub
                       type: string

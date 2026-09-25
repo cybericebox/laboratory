@@ -17,7 +17,7 @@ import (
 // DevicePortReconciler manages the ovs-cleanup finalizer on Device CRDs and
 // stamps each local device with the node's Geneve VTEP address so that
 // ConnectionReconciler on peer nodes can determine the tunnel destination.
-// OVS port creation/deletion for container/vm devices is handled by ConnectionReconciler.
+// OVS port creation/deletion for container devices is handled by ConnectionReconciler.
 // Switch/hub devices have no physical OVS resource; their finalizer is removed immediately on delete.
 type DevicePortReconciler struct {
 	client.Client

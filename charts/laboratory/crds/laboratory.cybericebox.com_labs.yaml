@@ -173,7 +173,6 @@ spec:
                       description: DeviceType distinguishes network device kinds.
                       enum:
                       - container
-                      - vm
                       - unmanaged-switch
                       - hub
                       type: string
@@ -339,6 +338,7 @@ spec:
                 - Pending
                 - Provisioning
                 - Ready
+                - Suspended
                 - Failed
                 - Error
                 type: string

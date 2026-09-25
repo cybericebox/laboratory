@@ -176,8 +176,8 @@ func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
 		}
 	}
 	
-	// Every endpoint must reference a declared device, and for container/vm
-	// devices the endpoint interface must exist in the device's interface list.
+	// Every endpoint must reference a declared device. For container devices,
+	// the endpoint interface must exist in the device's interface list.
 	// The OVS port key is derived from (pod, interface) on one side and
 	// (device, endpoint.Interface) on the other — a name mismatch would silently
 	// program flows against a port that was never created.
@@ -264,7 +264,7 @@ func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
 //   - REQ-OP-026: same domain contains both VPN and Internet singletons.
 //   - REQ-OP-027: same domain has more than one DHCP source.
 //
-// A non-switch device (container/vm) does not propagate the domain — it sits
+// A non-switch device (container) does not propagate the domain — it sits
 // as a leaf in whichever single connection it appears.
 func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, switchDevices map[string]bool) error {
 	n := len(lab.Spec.Connections)

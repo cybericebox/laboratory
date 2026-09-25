@@ -21,12 +21,11 @@ const (
 )
 
 // DeviceType distinguishes network device kinds.
-// +kubebuilder:validation:Enum=container;vm;unmanaged-switch;hub
+// +kubebuilder:validation:Enum=container;unmanaged-switch;hub
 type DeviceType string
 
 const (
 	DeviceTypeContainer       DeviceType = "container"
-	DeviceTypeVM              DeviceType = "vm"
 	DeviceTypeUnmanagedSwitch DeviceType = "unmanaged-switch"
 	DeviceTypeHub             DeviceType = "hub"
 )
