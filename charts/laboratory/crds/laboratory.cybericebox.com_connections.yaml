@@ -48,8 +48,9 @@ spec:
                           same Lab.
                         type: string
                       interface:
-                        description: Interface is the interface name on the device;
-                          omit for unmanaged-switch/hub.
+                        description: |-
+                          Interface is a declared interface on a container or a logical
+                          GigabitEthernet0/1..GigabitEthernet0/48 port on a switch/hub.
                         type: string
                     required:
                       - device
