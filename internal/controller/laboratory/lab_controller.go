@@ -189,9 +189,8 @@ func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
 	for _, conn := range lab.Spec.Connections {
 		for _, ep := range conn.Endpoints {
 			if ep.Device == "vpn" || ep.Device == "internet" {
-				// The logical singleton port is eth0. Older Labs omitted its
-				// name; both forms consume the same one available port.
-				if ep.Interface != "" && ep.Interface != "eth0" {
+				// Each singleton exposes exactly one logical port: eth0.
+				if ep.Interface != "eth0" {
 					return fmt.Errorf("InvalidGatewayPort: %s has no port %q", ep.Device, ep.Interface)
 				}
 				if usedGateways[ep.Device] {

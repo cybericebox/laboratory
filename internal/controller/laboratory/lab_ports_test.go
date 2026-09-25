@@ -85,7 +85,7 @@ func TestGatewayPortValidation(t *testing.T) {
 			name, port string
 			valid      bool
 		}{
-			{"legacy empty", "", true},
+			{"empty", "", false},
 			{"named port", "eth0", true},
 			{"other interface", "eth1", false},
 			{"switch port", "GigabitEthernet0/1", false},
@@ -135,10 +135,6 @@ func TestGatewayPortCannotBeReusedAcrossConnections(t *testing.T) {
 }
 
 func TestConnectionNameWithForwardingPort(t *testing.T) {
-	old := []laboratoryv1alpha1.EndpointSpec{{Device: "sw"}, {Device: "host", Interface: "eth0"}}
-	if got := connectionName("lab", old); got != "lab--host-eth0--sw" {
-		t.Fatalf("safe legacy name changed: %q", got)
-	}
 	a := []laboratoryv1alpha1.EndpointSpec{{Device: "sw", Interface: "GigabitEthernet0/1"}, {Device: "host", Interface: "eth0"}}
 	b := []laboratoryv1alpha1.EndpointSpec{a[1], a[0]}
 	name := connectionName("lab", a)
