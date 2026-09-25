@@ -185,9 +185,19 @@ func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
 	// A device interface is one veth in one VNI: it may appear in at most one
 	// connection, otherwise the later t0 programming silently overwrites the earlier.
 	usedIfaces := map[string]bool{}
+	usedGateways := map[string]bool{}
 	for _, conn := range lab.Spec.Connections {
 		for _, ep := range conn.Endpoints {
 			if ep.Device == "vpn" || ep.Device == "internet" {
+				// The logical singleton port is eth0. Older Labs omitted its
+				// name; both forms consume the same one available port.
+				if ep.Interface != "" && ep.Interface != "eth0" {
+					return fmt.Errorf("InvalidGatewayPort: %s has no port %q", ep.Device, ep.Interface)
+				}
+				if usedGateways[ep.Device] {
+					return fmt.Errorf("DuplicateGatewayPort: %s eth0 is used by more than one connection", ep.Device)
+				}
+				usedGateways[ep.Device] = true
 				continue // virtual singletons have no Device template
 			}
 			ifaces, ok := deviceIfaces[ep.Device]
