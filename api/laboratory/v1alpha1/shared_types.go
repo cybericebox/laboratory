@@ -71,7 +71,8 @@ type EndpointSpec struct {
 	// Device is the name of the Device CRD within the same Lab.
 	// +kubebuilder:validation:Required
 	Device string `json:"device"`
-	// Interface is the interface name on the device; omit for unmanaged-switch/hub.
+	// Interface is a declared interface on a container or a logical
+	// GigabitEthernet0/1..GigabitEthernet0/48 port on a switch/hub.
 	Interface string `json:"interface,omitempty"`
 }
 
