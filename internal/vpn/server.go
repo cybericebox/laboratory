@@ -45,7 +45,7 @@ func InitServer(cfg *Config) (*Server, error) {
 		wg.Close()
 		return nil, fmt.Errorf("setup FORWARD policy: %w", err)
 	}
-	probe, err := startProbe(cfg.ClientSubnet, ProbePort)
+	probe, err := startProbe(cfg.ClientSubnet, ProbePort, cfg.SupportEmail)
 	if err != nil {
 		ipt.Cleanup()
 		wg.Close()

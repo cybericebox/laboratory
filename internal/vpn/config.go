@@ -17,6 +17,7 @@ type Config struct {
 	StatsInterval  time.Duration `env:"STATS_INTERVAL" envDefault:"30s"`
 	WGInterface    string        `env:"WG_INTERFACE"     envDefault:"wg0"`
 	VPNBaseNetwork string        `env:"VPN_BASE_NETWORK,required"`
+	SupportEmail   string        `env:"SUPPORT_EMAIL"    envDefault:"support@cybericebox.com"`
 }
 
 func LoadConfig() (*Config, error) {

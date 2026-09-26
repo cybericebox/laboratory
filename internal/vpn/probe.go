@@ -10,17 +10,14 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/mail"
-	"os"
 	"time"
-
+	
 	"github.com/cybericebox/laboratory/pkg/vpnprobe"
 )
 
 // ProbePort is reachable through the WireGuard interface, never through the
 // public UDP service. Keep this in sync with the participant VPN status API.
 const ProbePort = vpnprobe.Port
-const DefaultSupportEmail = "support@cybericebox.com"
 
 type probeServer struct {
 	server   *http.Server
@@ -34,15 +31,11 @@ type probeServer struct {
 //go:embed probe_page.html
 var probePageHTML string
 
-func probeHandler() http.Handler {
-	email := os.Getenv("SUPPORT_EMAIL")
-	if address, err := mail.ParseAddress(email); err != nil || address.Address != email {
-		email = DefaultSupportEmail
-	}
+func probeHandler(supportEmail string) http.Handler {
 	pageTemplate, err := template.New("probe").Parse(probePageHTML)
 	var page bytes.Buffer
 	if err == nil {
-		err = pageTemplate.Execute(&page, struct{ SupportEmail string }{SupportEmail: email})
+		err = pageTemplate.Execute(&page, struct{ SupportEmail string }{SupportEmail: supportEmail})
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
@@ -62,7 +55,7 @@ func probeHandler() http.Handler {
 	})
 }
 
-func startProbe(subnet *net.IPNet, port int) (*probeServer, error) {
+func startProbe(subnet *net.IPNet, port int, supportEmail string) (*probeServer, error) {
 	if subnet == nil {
 		return nil, fmt.Errorf("VPN probe requires an IPv4 client subnet")
 	}
@@ -76,7 +69,7 @@ func startProbe(subnet *net.IPNet, port int) (*probeServer, error) {
 		return nil, fmt.Errorf("listen on VPN gateway %s: %w", gwIP, err)
 	}
 	p := &probeServer{
-		server:   &http.Server{Handler: probeHandler(), ReadHeaderTimeout: 5 * time.Second},
+		server:   &http.Server{Handler: probeHandler(supportEmail), ReadHeaderTimeout: 5 * time.Second},
 		listener: listener,
 		done:     make(chan struct{}),
 	}
