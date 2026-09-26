@@ -30,13 +30,6 @@ operator:
   # Leave empty in standard clusters.
   proxySourceCIDRs: ""
 
-  # DNS server advertised via DHCP to lab clients — issued by both the per-lab VPN pod
-  # (WireGuard clients) and the per-lab internet-gateway pod (internet-gateway clients),
-  # whenever that lab has a DHCP address pool configured. NOT limited to WireGuard/VPN
-  # clients (see internal/vpn/reconciler/lab.go and internal/gateway/reconciler.go,
-  # both of which call DHCP.Start(..., DNS: r.Cfg.DHCPDNS)). Optional.
-  dhcpDns: ""
-
   leaderElection: true
 
   resources:

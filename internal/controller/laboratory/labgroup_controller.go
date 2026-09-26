@@ -49,8 +49,6 @@ type LabGroupReconciler struct {
 	VPNBaseNetwork string
 	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets (e.g. "10.9.0.0/10").
 	InetBaseNetwork string
-	// DHCPDNS is the DNS server address advertised via DHCP to both VPN clients and internet-gateway lab clients (optional).
-	DHCPDNS string
 	// VPNImage is the container image for VPN pods.
 	VPNImage string
 	// GatewayImage is the container image for gateway pods.
@@ -467,7 +465,6 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 							{Name: "CLIENT_SUBNET", Value: clientSubnet},
 							{Name: "VPN_BASE_NETWORK", Value: r.VPNBaseNetwork},
 							{Name: "LISTEN_PORT", Value: fmt.Sprint(r.vpnPort())},
-							{Name: "DHCP_DNS", Value: r.DHCPDNS},
 						},
 					}},
 				},
@@ -523,7 +520,6 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 						Env: []corev1.EnvVar{
 							{Name: "NAMESPACE", Value: ns},
 							{Name: "INET_BASE_NETWORK", Value: r.InetBaseNetwork},
-							{Name: "DHCP_DNS", Value: r.DHCPDNS},
 						},
 					}},
 				},

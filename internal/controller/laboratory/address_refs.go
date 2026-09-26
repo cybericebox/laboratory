@@ -123,17 +123,6 @@ func resolveNetworkIP(lab *laboratoryv1alpha1.Lab, ref laboratoryv1alpha1.Networ
 	if err != nil {
 		return "", err
 	}
-	if interfaceAddress {
-		var network laboratoryv1alpha1.LabNetworkSpec
-		if ref.Network == "vpn" {
-			network = lab.Spec.VPN
-		} else {
-			network = lab.Spec.Internet
-		}
-		if network.DHCPServer != nil && network.DHCPServer.Enabled {
-			return "", fmt.Errorf("%s DHCP is enabled and may lease host %d", ref.Network, ref.Host)
-		}
-	}
 	ip := prefix.Addr().As4()
 	ip[3] = byte(ref.Host)
 	return netip.AddrFrom4(ip).String(), nil

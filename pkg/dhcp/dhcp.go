@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
-	
+
 	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/dhcpv4/server4"
 )
@@ -40,6 +40,7 @@ type Config struct {
 	Gateway string
 	DNS     string
 	BindIP  string
+	Ranges  []Range
 }
 
 func (m *Manager) Start(name string, cfg Config) error {
@@ -48,7 +49,7 @@ func (m *Manager) Start(name string, cfg Config) error {
 	if _, ok := m.servers[name]; ok {
 		return nil
 	}
-	
+
 	_, subnet, err := net.ParseCIDR(cfg.Subnet)
 	if err != nil {
 		return fmt.Errorf("parse subnet %q: %w", cfg.Subnet, err)
@@ -60,17 +61,23 @@ func (m *Manager) Start(name string, cfg Config) error {
 	var dns net.IP
 	if cfg.DNS != "" {
 		dns = net.ParseIP(cfg.DNS)
+		if dns == nil || dns.To4() == nil {
+			return fmt.Errorf("invalid DHCP DNS address %q", cfg.DNS)
+		}
 	}
-	
-	pool := newIPPool(subnet, gw)
-	
+	if err := ValidateRanges(cfg.Ranges); err != nil {
+		return err
+	}
+
+	pool := newIPPool(subnet, gw, cfg.Ranges)
+
 	serverID := gw
 	if cfg.BindIP != "" {
 		if ip := net.ParseIP(cfg.BindIP); ip != nil {
 			serverID = ip
 		}
 	}
-	
+
 	baseOpts := func(assigned net.IP) []dhcpv4.Modifier {
 		opts := []dhcpv4.Modifier{
 			dhcpv4.WithYourIP(assigned),
@@ -85,7 +92,7 @@ func (m *Manager) Start(name string, cfg Config) error {
 		}
 		return opts
 	}
-	
+
 	handler := func(conn net.PacketConn, peer net.Addr, msg *dhcpv4.DHCPv4) {
 		assigned, err := pool.Allocate(msg.ClientHWAddr)
 		if err != nil {
@@ -104,13 +111,13 @@ func (m *Manager) Start(name string, cfg Config) error {
 			_, _ = conn.WriteTo(reply.ToBytes(), peer)
 		}
 	}
-	
+
 	laddr := &net.UDPAddr{Port: 67, IP: net.IPv4zero}
 	srv, err := server4.NewServer(cfg.Iface, laddr, handler)
 	if err != nil {
 		return fmt.Errorf("new DHCP server on %s: %w", cfg.Iface, err)
 	}
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
 	m.servers[name] = &serverEntry{cancel: cancel}
 	go func() {
@@ -128,67 +135,4 @@ func (m *Manager) Stop(name string) {
 		e.cancel()
 		delete(m.servers, name)
 	}
-}
-
-// ipPool allocates IPv4 addresses from the full host range of subnet.
-// Gateway is always skipped. Allocation is sticky per MAC (in-memory only).
-type ipPool struct {
-	mu     sync.Mutex
-	subnet *net.IPNet
-	gw     net.IP
-	byMAC  map[string]net.IP
-	used   map[string]bool
-}
-
-func newIPPool(subnet *net.IPNet, gw net.IP) *ipPool {
-	return &ipPool{
-		subnet: subnet,
-		gw:     gw.To4(),
-		byMAC:  make(map[string]net.IP),
-		used:   make(map[string]bool),
-	}
-}
-
-func (p *ipPool) Allocate(mac net.HardwareAddr) (net.IP, error) {
-	if mac == nil {
-		return nil, fmt.Errorf("nil MAC")
-	}
-	key := mac.String()
-	
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	
-	if ip, ok := p.byMAC[key]; ok {
-		return ip, nil
-	}
-	
-	base := p.subnet.IP.To4()
-	ones, bits := p.subnet.Mask.Size()
-	hostBits := bits - ones
-	if hostBits < 2 {
-		return nil, fmt.Errorf("subnet %s too small for DHCP", p.subnet)
-	}
-	total := uint32(1) << uint32(hostBits)
-	
-	for i := uint32(1); i <= total-2; i++ {
-		cand := makeIP(base, i)
-		if cand.Equal(p.gw) {
-			continue
-		}
-		s := cand.String()
-		if p.used[s] {
-			continue
-		}
-		p.used[s] = true
-		p.byMAC[key] = cand
-		return cand, nil
-	}
-	return nil, fmt.Errorf("pool exhausted for subnet %s", p.subnet)
-}
-
-func makeIP(base net.IP, offset uint32) net.IP {
-	b := base.To4()
-	v := uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
-	v += offset
-	return net.IPv4(byte(v>>24), byte(v>>16), byte(v>>8), byte(v)).To4()
 }

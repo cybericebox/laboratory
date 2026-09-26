@@ -28,7 +28,6 @@ data:
   PROXY_SOURCE_CIDRS: ""
 
   # DNS server advertised to WireGuard clients via DHCP option (optional).
-  DHCP_DNS: ""
 
   # Container images for runtime-created pods (overridable per deployment).
   VPN_IMAGE: "ghcr.io/cybericebox/laboratory/vpn:latest"

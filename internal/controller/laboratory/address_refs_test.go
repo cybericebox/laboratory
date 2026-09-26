@@ -50,6 +50,10 @@ func TestResolveDeviceInterfaces(t *testing.T) {
 	if tmpl.Interfaces[0].Addr.AddressRef == nil || tmpl.Interfaces[0].Addr.Routes[0].DstRef == nil {
 		t.Fatal("resolver mutated the lab template")
 	}
+	lab.Spec.VPN.DHCPServer = &laboratoryv1alpha1.DHCPServer{Enabled: true}
+	if _, err := resolveDeviceInterfaces(tmpl, lab); err != nil {
+		t.Fatalf("static address must remain valid with DHCP enabled: %v", err)
+	}
 
 	lab.Status.VPN.CIDR = "10.128.44.0/24"
 	lab.Status.Internet.CIDR = "10.192.55.0/24"
@@ -81,13 +85,6 @@ func TestResolveDeviceInterfacesRejectsInvalidReferences(t *testing.T) {
 		{"gateway host as interface address", func(_ *laboratoryv1alpha1.Lab, a *laboratoryv1alpha1.AddrSpec) { a.AddressRef.Host = 1 }},
 		{"broadcast host", func(_ *laboratoryv1alpha1.Lab, a *laboratoryv1alpha1.AddrSpec) { a.AddressRef.Host = 255 }},
 		{"disabled source", func(l *laboratoryv1alpha1.Lab, _ *laboratoryv1alpha1.AddrSpec) { l.Spec.VPN.Enabled = false }},
-		{"DHCP conflict", func(l *laboratoryv1alpha1.Lab, _ *laboratoryv1alpha1.AddrSpec) {
-			l.Spec.VPN.DHCPServer = &laboratoryv1alpha1.DHCPServer{Enabled: true}
-		}},
-		{"Internet DHCP conflict", func(l *laboratoryv1alpha1.Lab, a *laboratoryv1alpha1.AddrSpec) {
-			a.AddressRef.Network = "internet"
-			l.Spec.Internet.DHCPServer = &laboratoryv1alpha1.DHCPServer{Enabled: true}
-		}},
 		{"missing allocation", func(l *laboratoryv1alpha1.Lab, _ *laboratoryv1alpha1.AddrSpec) { l.Status.VPN.CIDR = "" }},
 		{"not a /24", func(l *laboratoryv1alpha1.Lab, _ *laboratoryv1alpha1.AddrSpec) { l.Status.VPN.CIDR = "10.128.0.0/16" }},
 		{"literal and reference", func(_ *laboratoryv1alpha1.Lab, a *laboratoryv1alpha1.AddrSpec) { a.IP = "10.128.7.10/24" }},

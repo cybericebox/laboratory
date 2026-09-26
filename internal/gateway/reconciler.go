@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"net"
 	"time"
-	
+
 	"github.com/vishvananda/netlink"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -15,9 +15,10 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	
+
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/labdhcp"
 	"github.com/cybericebox/laboratory/internal/names"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 	"github.com/cybericebox/laboratory/pkg/dhcp"
@@ -34,12 +35,12 @@ type LabGatewayReconciler struct {
 
 func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.Log.WithName("gateway").WithValues("labgateway", req.NamespacedName)
-	
+
 	var gw laboratoryv1alpha1.LabGateway
 	if err := r.Get(ctx, req.NamespacedName, &gw); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	
+
 	// Deletion path — checked before the guard so cleanup runs even after
 	// main controller removes FinalizerController to unblock this reconciler.
 	if !gw.DeletionTimestamp.IsZero() {
@@ -48,18 +49,18 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 		return ctrl.Result{}, nil
 	}
-	
+
 	// Main controller must have processed this first.
 	if !controllerutil.ContainsFinalizer(&gw, names.FinalizerController) {
 		return ctrl.Result{}, nil
 	}
-	
+
 	// Add own finalizer on first observation.
 	if !controllerutil.ContainsFinalizer(&gw, names.FinalizerGateway) {
 		controllerutil.AddFinalizer(&gw, names.FinalizerGateway)
 		return ctrl.Result{}, r.Update(ctx, &gw)
 	}
-	
+
 	// Wait for lab{N} interface to appear (created by node-agent via OVS).
 	ifaceName := names.LabIfaceNameByIndex(gw.Spec.NetworkIndex)
 	if _, err := netlink.LinkByName(ifaceName); err != nil {
@@ -78,25 +79,33 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
-	
+
 	cidr, err := netutil.SubnetForIndex(r.Cfg.InetBaseNetwork, 24, gw.Spec.NetworkIndex)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("compute inet CIDR: %w", err)
 	}
-	
+
 	// Assign first host IP of the lab's /24 to the interface (idempotent).
 	if err := netutil.AssignFirstHostIP(ifaceName, cidr); err != nil {
 		return ctrl.Result{}, fmt.Errorf("assign IP to %s: %w", ifaceName, err)
 	}
-	
+
 	// NAT: POSTROUTING MASQUERADE for this lab's subnet.
 	if err := r.IPT.AddMasquerade(cidr); err != nil {
 		return ctrl.Result{}, fmt.Errorf("add masquerade %s: %w", cidr, err)
 	}
-	
+
 	// DHCP: optional, only if pool exists.
 	dhcpEnabled := r.dhcpPoolExists(ctx, gw.Spec.LabName, gw.Namespace)
 	if dhcpEnabled {
+		var lab laboratoryv1alpha1.Lab
+		if err := r.Get(ctx, types.NamespacedName{Name: gw.Spec.LabName, Namespace: gw.Namespace}, &lab); err != nil {
+			return ctrl.Result{}, fmt.Errorf("load lab DHCP settings: %w", err)
+		}
+		ranges, dns, err := labdhcp.Settings(&lab, "internet")
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("internet DHCP settings: %w", err)
+		}
 		gwIP := firstHostIP(cidr)
 		if err := r.DHCP.Start(
 			gw.Spec.LabName, dhcp.Config{
@@ -104,13 +113,14 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				Subnet:  cidr,
 				Gateway: gwIP,
 				BindIP:  gwIP,
-				DNS:     r.Cfg.DHCPDNS,
+				DNS:     dns,
+				Ranges:  ranges,
 			},
 		); err != nil {
-			log.Error(err, "start DHCP", "lab", gw.Spec.LabName)
+			return ctrl.Result{}, fmt.Errorf("start internet DHCP for lab %s: %w", gw.Spec.LabName, err)
 		}
 	}
-	
+
 	if gw.Status.Phase != laboratoryv1alpha1.LabGatewayPhaseReady {
 		r.Recorder.Eventf(
 			&gw, corev1.EventTypeNormal, labstatus.ReasonReady,

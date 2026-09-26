@@ -228,7 +228,6 @@ func main() {
 		VPNServicePort:    cfg.VPNServicePort,
 		VPNBaseNetwork:    cfg.VPNBaseNetwork,
 		InetBaseNetwork:   cfg.InetBaseNetwork,
-		DHCPDNS:           cfg.DHCPDNS,
 		VPNImage:          cfg.VPNImage,
 		GatewayImage:      cfg.GatewayImage,
 		LabNodeSelector:   labNodeSelector,

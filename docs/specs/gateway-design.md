@@ -129,12 +129,15 @@ Reconcile(ctx, req):
   poolName := fmt.Sprintf("dhcp-inet-%s-0", gw.Spec.LabName)
   dhcpEnabled := poolExists(ctx, poolName, gw.Namespace)
   if dhcpEnabled:
+    lab := getLab(gw.Spec.LabName, gw.Namespace)
+    ranges, dns := labdhcp.Settings(lab, "internet")
     DHCP.Start(gw.Spec.LabName, Config{
       Iface:   ifaceName,
       Subnet:  gw.Spec.CIDR,
       Gateway: gwIP,
-      BindIP:  gwIP,          // bind to 10.192.N.1:67, not 0.0.0.0:67
-      DNS:     cfg.DHCPDNS,
+      BindIP:  gwIP,          // DHCP server identifier; socket listens on broadcasts
+      Ranges:  ranges,
+      DNS:     dns,
     })
 
   // 8. Update status
@@ -239,11 +242,12 @@ Watch `LabGateway`, not `Lab`.
 
 ## 9. Config changes
 
-`internal/gateway/config.go` — no changes needed. Gateway binary already has:
+`internal/gateway/config.go` keeps network-level runtime settings. DHCP allocation comes from each Lab:
 
 - `Namespace` — LabGroup namespace (for pool lookup)
 - `ExternalInterface` — default `eth0`
-- `DHCPDNS`
+- `Lab.Spec.Internet.DHCPServer.Ranges` — one or more explicit host ranges
+- `Lab.Spec.Internet.DHCPServer.DNS` — optional per-lab DNS address advertised to clients
 
 ---
 

@@ -21,7 +21,21 @@ type LabNetworkSpec struct {
 // DHCPServer enables the embedded DHCP server for a network segment.
 // Subnet and gateway are derived from the lab's allocated CIDR (Status.*.CIDR).
 type DHCPServer struct {
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled bool        `json:"enabled,omitempty"`
+	Ranges  []DHCPRange `json:"ranges,omitempty"`
+	// DNS is advertised only by the internet gateway's DHCP server.
+	DNS string `json:"dns,omitempty"`
+}
+
+// DHCPRange is an inclusive host-offset interval within the lab /24.
+// An enabled DHCP server must have at least one range.
+type DHCPRange struct {
+	// +kubebuilder:validation:Minimum=2
+	// +kubebuilder:validation:Maximum=254
+	Start int32 `json:"start"`
+	// +kubebuilder:validation:Minimum=2
+	// +kubebuilder:validation:Maximum=254
+	End int32 `json:"end"`
 }
 
 // DeviceTemplate is an inline device declaration inside Lab.spec.devices[].
@@ -101,7 +115,7 @@ type AccessEntry struct {
 type Lab struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	
+
 	Spec   LabSpec   `json:"spec,omitempty"`
 	Status LabStatus `json:"status,omitempty"`
 }

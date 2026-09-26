@@ -258,8 +258,33 @@ spec:
                       DHCPServer enables the embedded DHCP server for a network segment.
                       Subnet and gateway are derived from the lab's allocated CIDR (Status.*.CIDR).
                     properties:
+                      dns:
+                        description: DNS is advertised only by the internet gateway's
+                          DHCP server.
+                        type: string
                       enabled:
                         type: boolean
+                      ranges:
+                        items:
+                          description: |-
+                            DHCPRange is an inclusive host-offset interval within the lab /24.
+                            An enabled DHCP server must have at least one range.
+                          properties:
+                            end:
+                              format: int32
+                              maximum: 254
+                              minimum: 2
+                              type: integer
+                            start:
+                              format: int32
+                              maximum: 254
+                              minimum: 2
+                              type: integer
+                          required:
+                          - end
+                          - start
+                          type: object
+                        type: array
                     type: object
                   enabled:
                     type: boolean
@@ -273,8 +298,33 @@ spec:
                       DHCPServer enables the embedded DHCP server for a network segment.
                       Subnet and gateway are derived from the lab's allocated CIDR (Status.*.CIDR).
                     properties:
+                      dns:
+                        description: DNS is advertised only by the internet gateway's
+                          DHCP server.
+                        type: string
                       enabled:
                         type: boolean
+                      ranges:
+                        items:
+                          description: |-
+                            DHCPRange is an inclusive host-offset interval within the lab /24.
+                            An enabled DHCP server must have at least one range.
+                          properties:
+                            end:
+                              format: int32
+                              maximum: 254
+                              minimum: 2
+                              type: integer
+                            start:
+                              format: int32
+                              maximum: 254
+                              minimum: 2
+                              type: integer
+                          required:
+                          - end
+                          - start
+                          type: object
+                        type: array
                     type: object
                   enabled:
                     type: boolean
