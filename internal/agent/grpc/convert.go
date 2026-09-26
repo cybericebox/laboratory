@@ -14,10 +14,11 @@ func labGroupToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.LabGroup {
 	return &protobuf.LabGroup{
 		Name: g.Name,
 		Status: &protobuf.LabGroupStatus{
-			Phase:         string(g.Status.Phase),
-			Namespace:     g.Status.Namespace,
-			VpnRegistered: g.Status.VPN.Registered,
-			Suspended:     g.Status.Suspended,
+			Phase:           string(g.Status.Phase),
+			Namespace:       g.Status.Namespace,
+			VpnRegistered:   g.Status.VPN.Registered,
+			Suspended:       g.Status.Suspended,
+			VpnClientSubnet: g.Status.VPN.ClientSubnet,
 		},
 	}
 }

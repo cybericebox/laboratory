@@ -44,6 +44,10 @@ spec:
               vpn:
                 description: LabGroupVPNSpec holds VPN server configuration.
                 properties:
+                  disabled:
+                    description: Disabled stops only the VPN server; internet gateway
+                      and Labs remain running.
+                    type: boolean
                   keypairSecretRef:
                     description: |-
                       KeypairSecretRef points to an existing WireGuard keypair Secret.
@@ -59,6 +63,11 @@ spec:
                         type: string
                     type: object
                     x-kubernetes-map-type: atomic
+                  probeWhileSuspended:
+                    description: |-
+                      ProbeWhileSuspended keeps WireGuard available for the test gateway while
+                      group suspension still stops the internet gateway and Lab devices.
+                    type: boolean
                 type: object
             type: object
           status:
@@ -81,6 +90,10 @@ spec:
               vpn:
                 description: LabGroupVPNStatus exposes VPN server connection details.
                 properties:
+                  clientSubnet:
+                    description: ClientSubnet is the group subnet containing the tunnel-only
+                      test gateway.
+                    type: string
                   endpoint:
                     description: Endpoint is the public UDP address of the VPN server
                       (host:port) advertised to clients.
@@ -90,8 +103,9 @@ spec:
                       key for demux.
                     type: string
                   registered:
-                    description: Registered is true when the VPN deployment has at
-                      least one ready replica.
+                    description: |-
+                      Registered is true when the VPN deployment has at least one ready replica,
+                      including a probe-only tunnel while Lab devices are suspended.
                     type: boolean
                   secretRef:
                     description: SecretRef is "<namespace>/<name>" of the vpn-server-keypair

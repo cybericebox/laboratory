@@ -14,6 +14,73 @@ import (
 )
 
 var _ = Describe("LabGroup suspension", func() {
+	It("keeps only the tunnel available for probing while Lab devices are suspended", func() {
+		const name = "probe-while-suspended"
+		group := &laboratoryv1alpha1.LabGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: laboratoryv1alpha1.LabGroupSpec{
+				Suspended: true,
+				VPN:       laboratoryv1alpha1.LabGroupVPNSpec{ProbeWhileSuspended: true},
+			},
+		}
+		Expect(k8sClient.Create(ctx, group)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, group) })
+		Eventually(func() bool {
+			var current laboratoryv1alpha1.LabGroup
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, &current); err != nil || current.Status.Phase != laboratoryv1alpha1.PhaseSuspended {
+				return false
+			}
+			var vpn, gateway appsv1.Deployment
+			var vpnService corev1.Service
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: name}, &vpnService); err != nil || len(vpnService.Spec.Ports) != 1 || vpnService.Spec.Ports[0].Protocol != corev1.ProtocolUDP || vpnService.Spec.Ports[0].Port != 51820 {
+				return false
+			}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: name}, &vpn); err != nil {
+				return false
+			}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "gateway", Namespace: name}, &gateway); err != nil {
+				return false
+			}
+			return current.Status.Suspended && current.Status.VPN.ClientSubnet == "10.8.0.0/24" && vpn.Spec.Replicas != nil && *vpn.Spec.Replicas == 1 && gateway.Spec.Replicas != nil && *gateway.Spec.Replicas == 0
+		}, 15*time.Second, 250*time.Millisecond).Should(BeTrue())
+		var vpn appsv1.Deployment
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: name}, &vpn)).To(Succeed())
+		vpn.Status.Replicas = 1
+		vpn.Status.ReadyReplicas = 1
+		Expect(k8sClient.Status().Update(ctx, &vpn)).To(Succeed())
+		Eventually(func() bool {
+			var current laboratoryv1alpha1.LabGroup
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, &current); err != nil {
+				return false
+			}
+			return current.Status.Suspended && current.Status.VPN.Registered
+		}, 15*time.Second, 250*time.Millisecond).Should(BeTrue())
+	})
+
+	It("keeps the internet gateway running when only VPN is disabled", func() {
+		const name = "vpn-only-disabled"
+		group := &laboratoryv1alpha1.LabGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec:       laboratoryv1alpha1.LabGroupSpec{VPN: laboratoryv1alpha1.LabGroupVPNSpec{Disabled: true}},
+		}
+		Expect(k8sClient.Create(ctx, group)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, group) })
+		Eventually(func() bool {
+			var current laboratoryv1alpha1.LabGroup
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, &current); err != nil || current.Status.Namespace == "" {
+				return false
+			}
+			var vpn, gateway appsv1.Deployment
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: name}, &vpn); err != nil {
+				return false
+			}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "gateway", Namespace: name}, &gateway); err != nil {
+				return false
+			}
+			return vpn.Spec.Replicas != nil && *vpn.Spec.Replicas == 0 && gateway.Spec.Replicas != nil && *gateway.Spec.Replicas == 1 && !current.Status.VPN.Registered && !current.Status.Suspended && current.Status.VPN.ClientSubnet == "10.8.0.0/24"
+		}, 15*time.Second, 250*time.Millisecond).Should(BeTrue())
+	})
+
 	It("scales existing VPN and gateway deployments down", func() {
 		const namespace = "default"
 		for _, name := range []string{"vpn", "gateway"} {

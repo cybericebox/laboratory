@@ -97,6 +97,10 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	ns := laboratoryv1alpha1.LabGroupNamespace(lg.Name)
+	clientSubnet, err := netutil.SubnetForIndex(r.VPNBaseNetwork, labSubnetPrefixLen, 0)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("derive VPN client subnet: %w", err)
+	}
 
 	if err := r.ensureNamespace(ctx, ns, &lg); err != nil {
 		logger.Error(err, "ensure namespace")
@@ -140,7 +144,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Error(err, "ensure VPN role binding")
 		return ctrl.Result{}, err
 	}
-	if err = r.ensureVPNDeployment(ctx, ns, lg.Spec.Suspended); err != nil {
+	if err = r.ensureVPNDeployment(ctx, ns, lg.Spec.VPN.Disabled || (lg.Spec.Suspended && !lg.Spec.VPN.ProbeWhileSuspended)); err != nil {
 		logger.Error(err, "ensure VPN deployment")
 		return ctrl.Result{}, err
 	}
@@ -179,23 +183,37 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	if lg.Spec.Suspended {
+		vpnReady := false
+		if lg.Spec.VPN.ProbeWhileSuspended && !lg.Spec.VPN.Disabled {
+			vpnReady, err = r.vpnReadyState(ctx, ns)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 		lg.Status.Phase = laboratoryv1alpha1.PhaseSuspended
 		lg.Status.Namespace = ns
 		lg.Status.Suspended = true
 		lg.Status.VPN.PublicKey = pubKey
 		lg.Status.VPN.SecretRef = fmt.Sprintf("%s/%s", ns, secretName)
 		lg.Status.VPN.Endpoint = r.PublicVPNEndpoint
-		lg.Status.VPN.Registered = false
+		lg.Status.VPN.ClientSubnet = clientSubnet
+		lg.Status.VPN.Registered = vpnReady
 		if err = r.Status().Update(ctx, &lg); err != nil {
 			return ctrl.Result{}, err
+		}
+		if lg.Spec.VPN.ProbeWhileSuspended && !lg.Spec.VPN.Disabled && !vpnReady {
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 		return ctrl.Result{}, nil
 	}
 
-	vpnReady, err := r.vpnReadyState(ctx, ns)
-	if err != nil {
-		logger.Error(err, "check VPN readiness")
-		return ctrl.Result{}, err
+	vpnReady := false
+	if !lg.Spec.VPN.Disabled {
+		vpnReady, err = r.vpnReadyState(ctx, ns)
+		if err != nil {
+			logger.Error(err, "check VPN readiness")
+			return ctrl.Result{}, err
+		}
 	}
 
 	lg.Status.Phase = laboratoryv1alpha1.PhaseReady
@@ -204,13 +222,14 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	lg.Status.VPN.PublicKey = pubKey
 	lg.Status.VPN.SecretRef = fmt.Sprintf("%s/%s", ns, secretName)
 	lg.Status.VPN.Endpoint = r.PublicVPNEndpoint
+	lg.Status.VPN.ClientSubnet = clientSubnet
 	wasRegistered := lg.Status.VPN.Registered
 	lg.Status.VPN.Registered = vpnReady
 	if err = r.Status().Update(ctx, &lg); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if !vpnReady {
+	if !vpnReady && !lg.Spec.VPN.Disabled {
 		if wasRegistered {
 			r.Recorder.Event(&lg, corev1.EventTypeWarning, labstatus.ReasonWaitingForVPNServer,
 				"VPN server has no ready replicas; group not registered in demux")

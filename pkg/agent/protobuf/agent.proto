@@ -10,6 +10,7 @@ service LabManager {
   rpc ListLabGroups(Empty) returns (LabGroupList) {}
   rpc UpdateLabGroup(LabGroup) returns (LabGroup) {}
   rpc SetLabGroupSuspended(LabGroupSuspendRequest) returns (LabGroup) {}
+  rpc SetLabGroupVPNDisabled(LabGroupVPNDisabledRequest) returns (LabGroup) {}
   rpc DeleteLabGroup(IDRequest) returns (Empty) {}
 
   rpc CreateLab(Lab) returns (Lab) {}
@@ -37,6 +38,7 @@ service LabManager {
 message Empty {}
 message IDRequest {string name = 1;}
 message LabGroupSuspendRequest {string name = 1; bool suspended = 2;}
+message LabGroupVPNDisabledRequest {string name = 1; bool disabled = 2; bool probe_while_suspended = 3;}
 message NamespaceRequest {string namespace = 1;}
 message NamespacedIDRequest {string namespace = 1; string name = 2;}
 
@@ -49,6 +51,7 @@ message LabGroupStatus {
   string namespace = 2;
   bool vpn_registered = 3;
   bool suspended = 4;
+  string vpn_client_subnet = 5;
 }
 message LabGroupList {repeated LabGroup items = 1;}
 

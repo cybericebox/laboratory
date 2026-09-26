@@ -22,6 +22,8 @@ package v1alpha1
 //
 // LabGroupVPNStatus exposes VPN server connection details.
 type LabGroupVPNStatusApplyConfiguration struct {
+	// ClientSubnet is the group subnet containing the tunnel-only test gateway.
+	ClientSubnet *string `json:"clientSubnet,omitempty"`
 	// PublicKey is the WireGuard public key used as routing key for demux.
 	PublicKey *string `json:"publicKey,omitempty"`
 	// Endpoint is the public UDP address of the VPN server (host:port) advertised to clients.
@@ -30,6 +32,12 @@ type LabGroupVPNStatusApplyConfiguration struct {
 	SecretRef *string `json:"secretRef,omitempty"`
 	// Registered is true when the VPN deployment has at least one ready replica.
 	Registered *bool `json:"registered,omitempty"`
+}
+
+// WithClientSubnet sets the ClientSubnet field in the declarative configuration.
+func (b *LabGroupVPNStatusApplyConfiguration) WithClientSubnet(value string) *LabGroupVPNStatusApplyConfiguration {
+	b.ClientSubnet = &value
+	return b
 }
 
 // LabGroupVPNStatusApplyConfiguration constructs a declarative configuration of the LabGroupVPNStatus type for use with

@@ -26,9 +26,26 @@ import (
 //
 // LabGroupVPNSpec holds VPN server configuration.
 type LabGroupVPNSpecApplyConfiguration struct {
+	// Disabled stops only the VPN server; internet gateway and Labs remain running.
+	Disabled *bool `json:"disabled,omitempty"`
+	// ProbeWhileSuspended keeps WireGuard available for the test gateway while
+	// group suspension still stops the internet gateway and Lab devices.
+	ProbeWhileSuspended *bool `json:"probeWhileSuspended,omitempty"`
 	// KeypairSecretRef points to an existing WireGuard keypair Secret.
 	// If omitted, operator generates a keypair and stores it in Secret vpn-server-keypair.
 	KeypairSecretRef *v1.SecretReference `json:"keypairSecretRef,omitempty"`
+}
+
+// WithDisabled sets the Disabled field in the declarative configuration.
+func (b *LabGroupVPNSpecApplyConfiguration) WithDisabled(value bool) *LabGroupVPNSpecApplyConfiguration {
+	b.Disabled = &value
+	return b
+}
+
+// WithProbeWhileSuspended sets the ProbeWhileSuspended field in the declarative configuration.
+func (b *LabGroupVPNSpecApplyConfiguration) WithProbeWhileSuspended(value bool) *LabGroupVPNSpecApplyConfiguration {
+	b.ProbeWhileSuspended = &value
+	return b
 }
 
 // LabGroupVPNSpecApplyConfiguration constructs a declarative configuration of the LabGroupVPNSpec type for use with

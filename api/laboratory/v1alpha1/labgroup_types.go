@@ -13,6 +13,11 @@ type LabGroupSpec struct {
 
 // LabGroupVPNSpec holds VPN server configuration.
 type LabGroupVPNSpec struct {
+	// Disabled stops only the VPN server; internet gateway and Labs remain running.
+	Disabled bool `json:"disabled,omitempty"`
+	// ProbeWhileSuspended keeps WireGuard available for the test gateway while
+	// group suspension still stops the internet gateway and Lab devices.
+	ProbeWhileSuspended bool `json:"probeWhileSuspended,omitempty"`
 	// KeypairSecretRef points to an existing WireGuard keypair Secret.
 	// If omitted, operator generates a keypair and stores it in Secret vpn-server-keypair.
 	KeypairSecretRef *corev1.SecretReference `json:"keypairSecretRef,omitempty"`
@@ -28,13 +33,16 @@ type LabGroupStatus struct {
 
 // LabGroupVPNStatus exposes VPN server connection details.
 type LabGroupVPNStatus struct {
+	// ClientSubnet is the group subnet containing the tunnel-only test gateway.
+	ClientSubnet string `json:"clientSubnet,omitempty"`
 	// PublicKey is the WireGuard public key used as routing key for demux.
 	PublicKey string `json:"publicKey,omitempty"`
 	// Endpoint is the public UDP address of the VPN server (host:port) advertised to clients.
 	Endpoint string `json:"endpoint,omitempty"`
 	// SecretRef is "<namespace>/<name>" of the vpn-server-keypair Secret.
 	SecretRef string `json:"secretRef,omitempty"`
-	// Registered is true when the VPN deployment has at least one ready replica.
+	// Registered is true when the VPN deployment has at least one ready replica,
+	// including a probe-only tunnel while Lab devices are suspended.
 	Registered bool `json:"registered,omitempty"`
 }
 

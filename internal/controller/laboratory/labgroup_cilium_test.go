@@ -63,6 +63,23 @@ func TestVPNCiliumPolicy(t *testing.T) {
 	if len(ingress) != 1 {
 		t.Fatalf("spec.ingress has %d rules, want 1", len(ingress))
 	}
+	ingressRule, ok := ingress[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("ingress[0] = %T", ingress[0])
+	}
+	toPorts, found, err := unstructured.NestedSlice(ingressRule, "toPorts")
+	if err != nil || !found || len(toPorts) != 1 {
+		t.Fatalf("VPN ingress ports = %#v, err=%v", toPorts, err)
+	}
+	portRule := toPorts[0].(map[string]interface{})
+	ports, found, err := unstructured.NestedSlice(portRule, "ports")
+	if err != nil || !found || len(ports) != 1 {
+		t.Fatalf("VPN ingress port set = %#v, err=%v", ports, err)
+	}
+	port := ports[0].(map[string]interface{})
+	if port["port"] != "51820" || port["protocol"] != "UDP" {
+		t.Fatalf("VPN probe must not be exposed on public ingress: %#v", port)
+	}
 }
 
 // TestGatewayCiliumPolicy asserts the gateway CiliumNetworkPolicy allows

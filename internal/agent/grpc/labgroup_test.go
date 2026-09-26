@@ -55,3 +55,30 @@ func TestSetLabGroupSuspendedPersistsOnlyDesiredState(t *testing.T) {
 		}
 	}
 }
+
+func TestSetLabGroupVPNDisabledPreservesGatewayState(t *testing.T) {
+	h, _ := newTestHandler(t)
+	ctx := context.Background()
+	if _, err := h.CreateLabGroup(ctx, &protobuf.LabGroup{Name: "team-vpn-toggle"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, disabled := range []bool{true, true, false} {
+		if _, err := h.SetLabGroupVPNDisabled(ctx, &protobuf.LabGroupVPNDisabledRequest{Name: "team-vpn-toggle", Disabled: disabled}); err != nil {
+			t.Fatal(err)
+		}
+		group, err := h.cs.LaboratoryV1alpha1().LabGroups().Get(ctx, "team-vpn-toggle", metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if group.Spec.VPN.Disabled != disabled || group.Spec.VPN.ProbeWhileSuspended || group.Spec.Suspended {
+			t.Fatalf("unexpected group spec: %+v", group.Spec)
+		}
+	}
+	if _, err := h.SetLabGroupVPNDisabled(ctx, &protobuf.LabGroupVPNDisabledRequest{Name: "team-vpn-toggle", ProbeWhileSuspended: true}); err != nil {
+		t.Fatal(err)
+	}
+	group, err := h.cs.LaboratoryV1alpha1().LabGroups().Get(ctx, "team-vpn-toggle", metav1.GetOptions{})
+	if err != nil || !group.Spec.VPN.ProbeWhileSuspended || group.Spec.VPN.Disabled || group.Spec.Suspended {
+		t.Fatalf("probe-only mode not stored independently: %+v %v", group, err)
+	}
+}

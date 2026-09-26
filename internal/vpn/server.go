@@ -4,14 +4,15 @@ package vpn
 
 import (
 	"fmt"
-	
+
 	"github.com/cybericebox/laboratory/pkg/netutil"
 )
 
 // Server holds the running VPN server components.
 type Server struct {
-	WG  *WGManager
-	IPT *IPTablesManager
+	WG    *WGManager
+	IPT   *IPTablesManager
+	Probe *probeServer
 }
 
 // InitServer configures the WireGuard interface and iptables for the VPN server.
@@ -21,12 +22,12 @@ func InitServer(cfg *Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("init WG manager: %w", err)
 	}
-	
+
 	if err := wg.Init(cfg.PrivateKey, cfg.ListenPort); err != nil {
 		wg.Close()
 		return nil, fmt.Errorf("init WireGuard interface: %w", err)
 	}
-	
+
 	// Assign client-subnet gateway IP to the WG interface so the kernel routes
 	// client-subnet traffic via it (wgctrl only handles crypto/port).
 	gwCIDR := netutil.FirstHostCIDR(cfg.ClientSubnet)
@@ -34,7 +35,7 @@ func InitServer(cfg *Config) (*Server, error) {
 		wg.Close()
 		return nil, fmt.Errorf("assign gateway IP on %s: %w", cfg.WGInterface, err)
 	}
-	
+
 	ipt, err := NewIPTablesManager(cfg.WGInterface)
 	if err != nil {
 		wg.Close()
@@ -44,12 +45,19 @@ func InitServer(cfg *Config) (*Server, error) {
 		wg.Close()
 		return nil, fmt.Errorf("setup FORWARD policy: %w", err)
 	}
-	
-	return &Server{WG: wg, IPT: ipt}, nil
+	probe, err := startProbe(cfg.ClientSubnet, ProbePort)
+	if err != nil {
+		ipt.Cleanup()
+		wg.Close()
+		return nil, fmt.Errorf("start VPN gateway probe: %w", err)
+	}
+
+	return &Server{WG: wg, IPT: ipt, Probe: probe}, nil
 }
 
 // Cleanup shuts down the WireGuard interface and removes iptables rules.
 func (s *Server) Cleanup() {
+	s.Probe.Close()
 	s.WG.Close()
 	s.IPT.Cleanup()
 }

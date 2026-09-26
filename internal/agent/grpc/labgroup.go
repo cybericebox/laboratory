@@ -69,6 +69,26 @@ func (h *Handler) SetLabGroupSuspended(ctx context.Context, in *protobuf.LabGrou
 	return labGroupToProto(group), nil
 }
 
+// SetLabGroupVPNDisabled changes only the VPN deployment's desired state.
+// The internet gateway and Labs continue to follow the independent group
+// suspension flag.
+func (h *Handler) SetLabGroupVPNDisabled(ctx context.Context, in *protobuf.LabGroupVPNDisabledRequest) (*protobuf.LabGroup, error) {
+	group, err := h.cs.LaboratoryV1alpha1().LabGroups().Get(ctx, in.Name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	if group.Spec.VPN.Disabled == in.Disabled && group.Spec.VPN.ProbeWhileSuspended == in.ProbeWhileSuspended {
+		return labGroupToProto(group), nil
+	}
+	group.Spec.VPN.Disabled = in.Disabled
+	group.Spec.VPN.ProbeWhileSuspended = in.ProbeWhileSuspended
+	group, err = h.cs.LaboratoryV1alpha1().LabGroups().Update(ctx, group, metav1.UpdateOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return labGroupToProto(group), nil
+}
+
 // DeleteLabGroup deletes a LabGroup custom resource by name.
 func (h *Handler) DeleteLabGroup(ctx context.Context, in *protobuf.IDRequest) (*protobuf.Empty, error) {
 	if err := h.cs.LaboratoryV1alpha1().LabGroups().Delete(ctx, in.Name, metav1.DeleteOptions{}); err != nil {
