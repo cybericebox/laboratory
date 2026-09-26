@@ -230,6 +230,7 @@ func main() {
 		InetBaseNetwork:   cfg.InetBaseNetwork,
 		VPNImage:          cfg.VPNImage,
 		GatewayImage:      cfg.GatewayImage,
+		SupportEmail:      cfg.SupportEmail,
 		LabNodeSelector:   labNodeSelector,
 		LabTolerations:    labTolerations,
 		AgentEnabled:      cfg.AgentEnabled,

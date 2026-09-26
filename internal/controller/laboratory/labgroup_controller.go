@@ -3,7 +3,6 @@ package laboratory
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -54,6 +53,8 @@ type LabGroupReconciler struct {
 	VPNImage string
 	// GatewayImage is the container image for gateway pods.
 	GatewayImage string
+	// SupportEmail is the contact address shown on the VPN probe page.
+	SupportEmail string
 	// LabNodeSelector is applied to VPN and gateway pod specs.
 	LabNodeSelector map[string]string
 	// LabTolerations is applied to VPN and gateway pod specs.
@@ -435,7 +436,6 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 	if suspended {
 		replicas = 0
 	}
-	supportEmail := os.Getenv("SUPPORT_EMAIL")
 	var existing appsv1.Deployment
 	if err := r.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: ns}, &existing); err == nil {
 		changed := existing.Spec.Replicas == nil || *existing.Spec.Replicas != replicas
@@ -446,15 +446,15 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 			for i := range container.Env {
 				if container.Env[i].Name == "SUPPORT_EMAIL" {
 					found = true
-					if container.Env[i].Value != supportEmail {
-						container.Env[i].Value = supportEmail
+					if container.Env[i].Value != r.SupportEmail {
+						container.Env[i].Value = r.SupportEmail
 						changed = true
 					}
 					break
 				}
 			}
 			if !found {
-				container.Env = append(container.Env, corev1.EnvVar{Name: "SUPPORT_EMAIL", Value: supportEmail})
+				container.Env = append(container.Env, corev1.EnvVar{Name: "SUPPORT_EMAIL", Value: r.SupportEmail})
 				changed = true
 			}
 		}
@@ -507,7 +507,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 							{Name: "CLIENT_SUBNET", Value: clientSubnet},
 							{Name: "VPN_BASE_NETWORK", Value: r.VPNBaseNetwork},
 							{Name: "LISTEN_PORT", Value: fmt.Sprint(r.vpnPort())},
-							{Name: "SUPPORT_EMAIL", Value: supportEmail},
+							{Name: "SUPPORT_EMAIL", Value: r.SupportEmail},
 						},
 					}},
 				},

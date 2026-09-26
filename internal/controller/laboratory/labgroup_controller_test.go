@@ -1,7 +1,6 @@
 package laboratory
 
 import (
-	"os"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -17,16 +16,7 @@ import (
 var _ = Describe("LabGroup suspension", func() {
 	It("passes the configured support address to the VPN server", func() {
 		const namespace = "default"
-		old, existed := os.LookupEnv("SUPPORT_EMAIL")
-		Expect(os.Setenv("SUPPORT_EMAIL", "help@example.org")).To(Succeed())
-		DeferCleanup(func() {
-			if existed {
-				_ = os.Setenv("SUPPORT_EMAIL", old)
-			} else {
-				_ = os.Unsetenv("SUPPORT_EMAIL")
-			}
-		})
-		r := &LabGroupReconciler{Client: k8sClient, VPNBaseNetwork: "10.8.0.0/10", VPNImage: "test"}
+		r := &LabGroupReconciler{Client: k8sClient, VPNBaseNetwork: "10.8.0.0/10", VPNImage: "test", SupportEmail: "help@example.org"}
 		Expect(r.ensureVPNDeployment(ctx, namespace, false)).To(Succeed())
 		DeferCleanup(func() {
 			var dep appsv1.Deployment
@@ -37,7 +27,7 @@ var _ = Describe("LabGroup suspension", func() {
 		var dep appsv1.Deployment
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: namespace}, &dep)).To(Succeed())
 		Expect(dep.Spec.Template.Spec.Containers[0].Env).To(ContainElement(corev1.EnvVar{Name: "SUPPORT_EMAIL", Value: "help@example.org"}))
-		Expect(os.Setenv("SUPPORT_EMAIL", "new-help@example.org")).To(Succeed())
+		r.SupportEmail = "new-help@example.org"
 		Expect(r.ensureVPNDeployment(ctx, namespace, false)).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: namespace}, &dep)).To(Succeed())
 		Expect(dep.Spec.Template.Spec.Containers[0].Env).To(ContainElement(corev1.EnvVar{Name: "SUPPORT_EMAIL", Value: "new-help@example.org"}))

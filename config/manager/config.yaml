@@ -27,6 +27,9 @@ data:
   # Leave empty in standard clusters.
   PROXY_SOURCE_CIDRS: ""
 
+  # REQUIRED: contact address shown to participants on the VPN probe page.
+  SUPPORT_EMAIL: "support@cybericebox.com"
+
   # DNS server advertised to WireGuard clients via DHCP option (optional).
 
   # Container images for runtime-created pods (overridable per deployment).

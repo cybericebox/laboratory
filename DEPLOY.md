@@ -38,6 +38,7 @@ Create your `values.yaml` override file — only set the two required fields:
 operator:
   publicVPNEndpoint: "vpn.example.com:51820"   # REQUIRED
   baseDomain: "lab.example.com"                 # REQUIRED
+  supportEmail: "support@example.com"           # shown on the VPN probe page; defaults to support@cybericebox.com
 ```
 
 For Kind, use the node IP:

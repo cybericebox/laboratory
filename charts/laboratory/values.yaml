@@ -30,6 +30,10 @@ operator:
   # Leave empty in standard clusters.
   proxySourceCIDRs: ""
 
+  # REQUIRED: contact address shown to participants on the VPN probe page.
+  # The operator passes it to every per-LabGroup VPN pod.
+  supportEmail: "support@cybericebox.com"
+
   leaderElection: true
 
   resources:

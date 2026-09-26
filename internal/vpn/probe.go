@@ -11,7 +11,7 @@ import (
 	"net"
 	"net/http"
 	"time"
-	
+
 	"github.com/cybericebox/laboratory/pkg/vpnprobe"
 )
 

@@ -20,3 +20,4 @@ data:
   AGENT_ENABLED: {{ .Values.agent.enabled | quote }}
   AGENT_SERVICE_ACCOUNT: "laboratory-agent"
   AGENT_SERVICE_NAMESPACE: {{ .Values.agent.namespace | quote }}
+  SUPPORT_EMAIL: {{ required "operator.supportEmail is required" .Values.operator.supportEmail | quote }}

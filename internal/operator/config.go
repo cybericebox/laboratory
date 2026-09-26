@@ -3,6 +3,7 @@ package operator
 import (
 	"encoding/json"
 	"fmt"
+	"net/mail"
 
 	corev1 "k8s.io/api/core/v1"
 
@@ -50,11 +51,20 @@ type Config struct {
 	// NetworkPolicyEnabled gates creation of the default-deny NetworkPolicy
 	// baseline in each LabGroup namespace.
 	NetworkPolicyEnabled bool `env:"NETWORK_POLICY_ENABLED" envDefault:"true"`
+	// SupportEmail is the contact address shown to participants on the VPN
+	// probe page. Passed to every per-LabGroup VPN pod as SUPPORT_EMAIL.
+	SupportEmail string `env:"SUPPORT_EMAIL,required"`
 }
 
 func LoadConfig() (*Config, error) {
 	cfg := &Config{}
-	return cfg, config.Load(cfg)
+	if err := config.Load(cfg); err != nil {
+		return nil, err
+	}
+	if address, err := mail.ParseAddress(cfg.SupportEmail); err != nil || address.Address != cfg.SupportEmail {
+		return nil, fmt.Errorf("SUPPORT_EMAIL %q is not a plain email address", cfg.SupportEmail)
+	}
+	return cfg, nil
 }
 
 // ParseLabScheduling deserialises the JSON-encoded nodeSelector and tolerations

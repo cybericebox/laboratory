@@ -13,7 +13,7 @@ import (
 
 func TestProbeHandlerShowsOnlyConnectionResult(t *testing.T) {
 	r := httptest.NewRecorder()
-	probeHandler().ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/", nil))
+	probeHandler("help@example.org").ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/", nil))
 	if r.Code != http.StatusOK {
 		t.Fatalf("status = %d", r.Code)
 	}
@@ -40,10 +40,9 @@ func TestProbeHandlerShowsOnlyConnectionResult(t *testing.T) {
 	}
 }
 
-func TestProbeHandlerUsesSupportEmailFromEnvironment(t *testing.T) {
-	t.Setenv("SUPPORT_EMAIL", "help@example.org")
+func TestProbeHandlerRendersSupportEmail(t *testing.T) {
 	r := httptest.NewRecorder()
-	probeHandler().ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/", nil))
+	probeHandler("help@example.org").ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/", nil))
 	if !strings.Contains(r.Body.String(), `href="mailto:help@example.org"`) ||
 		!strings.Contains(r.Body.String(), ">help@example.org</a>") {
 		t.Fatalf("support address missing: %q", r.Body.String())
@@ -55,7 +54,7 @@ func TestProbeBindsOnlyWireGuardGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	probe, err := startProbe(subnet, 0)
+	probe, err := startProbe(subnet, 0, "help@example.org")
 	if err != nil {
 		t.Fatal(err)
 	}
