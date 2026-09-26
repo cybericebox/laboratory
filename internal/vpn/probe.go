@@ -1,12 +1,16 @@
 package vpn
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"fmt"
+	"html/template"
 	"log"
 	"net"
 	"net/http"
+	"net/mail"
+	"os"
 	"time"
 
 	"github.com/cybericebox/laboratory/pkg/vpnprobe"
@@ -29,7 +33,20 @@ type probeServer struct {
 var probePageHTML string
 
 func probeHandler() http.Handler {
+	email := os.Getenv("SUPPORT_EMAIL")
+	if address, err := mail.ParseAddress(email); err != nil || address.Address != email {
+		email = "support@cybericebox.com"
+	}
+	pageTemplate, err := template.New("probe").Parse(probePageHTML)
+	var page bytes.Buffer
+	if err == nil {
+		err = pageTemplate.Execute(&page, struct{ SupportEmail string }{SupportEmail: email})
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err != nil {
+			http.Error(w, "probe page unavailable", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -39,7 +56,7 @@ func probeHandler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		_, _ = w.Write([]byte(probePageHTML))
+		_, _ = w.Write(page.Bytes())
 	})
 }
 

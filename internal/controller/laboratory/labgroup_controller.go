@@ -3,6 +3,7 @@ package laboratory
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -434,13 +435,33 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 	if suspended {
 		replicas = 0
 	}
+	supportEmail := os.Getenv("SUPPORT_EMAIL")
 	var existing appsv1.Deployment
 	if err := r.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: ns}, &existing); err == nil {
-		if existing.Spec.Replicas != nil && *existing.Spec.Replicas == replicas {
-			return nil
-		}
+		changed := existing.Spec.Replicas == nil || *existing.Spec.Replicas != replicas
 		existing.Spec.Replicas = ptrInt32(replicas)
-		return r.Update(ctx, &existing)
+		if len(existing.Spec.Template.Spec.Containers) > 0 {
+			container := &existing.Spec.Template.Spec.Containers[0]
+			found := false
+			for i := range container.Env {
+				if container.Env[i].Name == "SUPPORT_EMAIL" {
+					found = true
+					if container.Env[i].Value != supportEmail {
+						container.Env[i].Value = supportEmail
+						changed = true
+					}
+					break
+				}
+			}
+			if !found {
+				container.Env = append(container.Env, corev1.EnvVar{Name: "SUPPORT_EMAIL", Value: supportEmail})
+				changed = true
+			}
+		}
+		if changed {
+			return r.Update(ctx, &existing)
+		}
+		return nil
 	} else if !errors.IsNotFound(err) {
 		return err
 	}
@@ -486,6 +507,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 							{Name: "CLIENT_SUBNET", Value: clientSubnet},
 							{Name: "VPN_BASE_NETWORK", Value: r.VPNBaseNetwork},
 							{Name: "LISTEN_PORT", Value: fmt.Sprint(r.vpnPort())},
+							{Name: "SUPPORT_EMAIL", Value: supportEmail},
 						},
 					}},
 				},

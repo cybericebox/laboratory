@@ -40,6 +40,16 @@ func TestProbeHandlerShowsOnlyConnectionResult(t *testing.T) {
 	}
 }
 
+func TestProbeHandlerUsesSupportEmailFromEnvironment(t *testing.T) {
+	t.Setenv("SUPPORT_EMAIL", "help@example.org")
+	r := httptest.NewRecorder()
+	probeHandler().ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/", nil))
+	if !strings.Contains(r.Body.String(), `href="mailto:help@example.org"`) ||
+		!strings.Contains(r.Body.String(), ">help@example.org</a>") {
+		t.Fatalf("support address missing: %q", r.Body.String())
+	}
+}
+
 func TestProbeBindsOnlyWireGuardGateway(t *testing.T) {
 	_, subnet, err := net.ParseCIDR("127.0.0.0/30")
 	if err != nil {
