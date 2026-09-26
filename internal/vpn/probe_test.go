@@ -20,7 +20,8 @@ func TestProbeHandlerShowsOnlyConnectionResult(t *testing.T) {
 	if contentType := r.Header().Get("Content-Type"); contentType != "text/html; charset=utf-8" {
 		t.Fatalf("Content-Type = %q", contentType)
 	}
-	if !strings.Contains(r.Body.String(), "<h1>Вітаємо!</h1>") ||
+	if !strings.Contains(r.Body.String(), "<h1>") ||
+		!strings.Contains(r.Body.String(), "Вітаємо!</h1>") ||
 		!strings.Contains(r.Body.String(), "Ви успішно підключилися до групи лабораторій.") ||
 		!strings.Contains(r.Body.String(), "Доступ до окремих лабораторій (завдань) відкривається окремо.") {
 		t.Fatalf("unexpected body: %q", r.Body.String())

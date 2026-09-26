@@ -12,7 +12,7 @@
     .top{height:8px;background:var(--brand)}
     .frame{display:grid;grid-template-rows:1fr auto;justify-items:center;min-height:calc(100vh - 8px);padding:44px 32px 28px}
     main{align-self:center;width:min(100%,650px);padding:67px 55px 64px;border:1px solid var(--line);border-radius:16px;background:var(--surface);text-align:center}
-    .mark{display:grid;place-items:center;width:54px;height:54px;margin:0 auto 34px;border-radius:14px;background:var(--brand);color:#FFFFFF;font-size:30px;font-weight:700}
+    .mark{display:inline-block;margin-right:12px;color:var(--brand);font-size:.8em;font-weight:700;vertical-align:.04em}
     h1{margin:0;color:var(--ink);font-size:clamp(32px,5vw,42px);line-height:1.15;letter-spacing:-.035em}
     .intro{margin:22px 0 0;font-size:20px;line-height:1.4}
     .note{max-width:440px;margin:22px auto 0;color:var(--dim);font-size:15px}
@@ -32,8 +32,7 @@
   <div class="top" aria-hidden="true"></div>
   <div class="frame">
     <main>
-      <div class="mark" aria-hidden="true">✓</div>
-      <h1>Вітаємо!</h1>
+      <h1><span class="mark" aria-hidden="true">✓</span>Вітаємо!</h1>
       <p class="intro">Ви успішно підключилися до групи лабораторій.</p>
       <p class="note">Доступ до окремих лабораторій (завдань) відкривається окремо.</p>
     </main>
