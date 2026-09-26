@@ -20,11 +20,16 @@ func TestProbeHandlerShowsOnlyConnectionResult(t *testing.T) {
 	if contentType := r.Header().Get("Content-Type"); contentType != "text/html; charset=utf-8" {
 		t.Fatalf("Content-Type = %q", contentType)
 	}
-	if !strings.Contains(r.Body.String(), "Ви підключилися до своєї групи лабораторій") ||
-		!strings.Contains(r.Body.String(), "Доступ до окремих завдань відкривається окремо") {
+	if !strings.Contains(r.Body.String(), "<h1>Вітаємо!</h1>") ||
+		!strings.Contains(r.Body.String(), "Ви успішно підключилися до групи лабораторій.") ||
+		!strings.Contains(r.Body.String(), "Доступ до окремих лабораторій (завдань) відкривається окремо.") {
 		t.Fatalf("unexpected body: %q", r.Body.String())
 	}
-	if !strings.Contains(r.Body.String(), "#211A52") || !strings.Contains(r.Body.String(), "Світла тема") || !strings.Contains(r.Body.String(), "Темна тема") {
+	if strings.Count(r.Body.String(), "#211A52") != 1 ||
+		!strings.Contains(r.Body.String(), "--brand:#211A52") ||
+		!strings.Contains(r.Body.String(), "Системна") ||
+		!strings.Contains(r.Body.String(), "Світла") ||
+		!strings.Contains(r.Body.String(), "Темна") {
 		t.Fatalf("fixed platform palette or theme switcher missing")
 	}
 	if strings.Contains(r.Body.String(), "event") || strings.Contains(r.Body.String(), "team") {

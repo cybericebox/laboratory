@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Перевірка підключення</title>
+  <style>
+    :root{--brand:#211A52;color-scheme:light;--paper:#F7F7F9;--surface:#FFFFFF;--line:#E4E4EC;--ink:#16152B;--body:#2C2B42;--dim:#5A5A70;--soft:#F0F0F5}
+    :root[data-theme="dark"]{color-scheme:dark;--paper:#383645;--surface:#413F4E;--line:#53515F;--ink:#EEEDF6;--body:#DAD9E5;--dim:#BBB9CB;--soft:#4A4858}
+    *{box-sizing:border-box}
+    body{margin:0;min-height:100vh;background:var(--paper);color:var(--body);font:16px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    .top{height:8px;background:var(--brand)}
+    .frame{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:calc(100vh - 8px);padding:44px 20px}
+    main{width:min(100%,650px);padding:67px 55px 64px;border:1px solid var(--line);border-radius:16px;background:var(--surface);text-align:center}
+    .mark{display:grid;place-items:center;width:54px;height:54px;margin:0 auto 34px;border-radius:14px;background:var(--brand);color:#FFFFFF;font-size:30px;font-weight:700}
+    h1{margin:0;color:var(--ink);font-size:clamp(32px,5vw,42px);line-height:1.15;letter-spacing:-.035em}
+    .intro{margin:22px 0 0;font-size:20px;line-height:1.4}
+    .note{max-width:440px;margin:22px auto 0;color:var(--dim);font-size:15px}
+    .theme{display:flex;gap:4px;margin-top:32px;padding:4px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+    .theme button{min-width:88px;padding:8px 12px;border:0;border-radius:7px;background:transparent;color:var(--dim);font:inherit;font-size:13px;cursor:pointer}
+    .theme button:hover{background:var(--soft);color:var(--ink)}
+    .theme button[aria-pressed="true"]{background:var(--brand);color:#FFFFFF}
+    .theme button:focus-visible{outline:3px solid var(--brand);outline-offset:3px}
+    @media(max-width:640px){.frame{padding:32px 16px}main{padding:51px 26px}.intro{font-size:18px}.note{font-size:14px}}
+  </style>
+</head>
+<body>
+  <div class="top" aria-hidden="true"></div>
+  <div class="frame">
+    <main>
+      <div class="mark" aria-hidden="true">✓</div>
+      <h1>Вітаємо!</h1>
+      <p class="intro">Ви успішно підключилися до групи лабораторій.</p>
+      <p class="note">Доступ до окремих лабораторій (завдань) відкривається окремо.</p>
+    </main>
+    <div class="theme" role="group" aria-label="Тема сторінки">
+      <button type="button" data-choice="system">Системна</button>
+      <button type="button" data-choice="light">Світла</button>
+      <button type="button" data-choice="dark">Темна</button>
+    </div>
+  </div>
+  <script>
+    (function(){
+      var root=document.documentElement,buttons=document.querySelectorAll('[data-choice]');
+      var system=window.matchMedia('(prefers-color-scheme: dark)'),choice='system';
+      try{var saved=localStorage.getItem('lab-probe-theme');if(saved==='light'||saved==='dark')choice=saved}catch(_){}
+      function apply(){
+        root.dataset.theme=choice==='system'?(system.matches?'dark':'light'):choice;
+        buttons.forEach(function(button){button.setAttribute('aria-pressed',String(button.dataset.choice===choice))});
+      }
+      buttons.forEach(function(button){button.addEventListener('click',function(){
+        choice=button.dataset.choice;
+        try{localStorage.setItem('lab-probe-theme',choice)}catch(_){}
+        apply();
+      })});
+      system.addEventListener('change',function(){if(choice==='system')apply()});
+      apply();
+    })();
+  </script>
+</body>
+</html>
