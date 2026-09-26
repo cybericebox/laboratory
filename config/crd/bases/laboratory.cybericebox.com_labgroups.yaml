@@ -65,8 +65,8 @@ spec:
                     x-kubernetes-map-type: atomic
                   probeWhileSuspended:
                     description: |-
-                      ProbeWhileSuspended keeps WireGuard available for the test gateway while
-                      group suspension still stops the internet gateway and Lab devices.
+                      Deprecated: suspension now always keeps WireGuard and the internet
+                      gateway running while stopping only task devices.
                     type: boolean
                 type: object
             type: object

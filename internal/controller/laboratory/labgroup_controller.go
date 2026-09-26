@@ -144,7 +144,9 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Error(err, "ensure VPN role binding")
 		return ctrl.Result{}, err
 	}
-	if err = r.ensureVPNDeployment(ctx, ns, lg.Spec.VPN.Disabled || (lg.Spec.Suspended && !lg.Spec.VPN.ProbeWhileSuspended)); err != nil {
+	// Suspension stops task devices only. Keep the team's tunnel and internet
+	// gateway running so participants can test their connection during a pause.
+	if err = r.ensureVPNDeployment(ctx, ns, lg.Spec.VPN.Disabled); err != nil {
 		logger.Error(err, "ensure VPN deployment")
 		return ctrl.Result{}, err
 	}
@@ -157,7 +159,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Error(err, "ensure gateway role binding")
 		return ctrl.Result{}, err
 	}
-	if err = r.ensureGatewayDeployment(ctx, ns, lg.Spec.Suspended); err != nil {
+	if err = r.ensureGatewayDeployment(ctx, ns, false); err != nil {
 		logger.Error(err, "ensure gateway deployment")
 		return ctrl.Result{}, err
 	}
@@ -184,7 +186,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	if lg.Spec.Suspended {
 		vpnReady := false
-		if lg.Spec.VPN.ProbeWhileSuspended && !lg.Spec.VPN.Disabled {
+		if !lg.Spec.VPN.Disabled {
 			vpnReady, err = r.vpnReadyState(ctx, ns)
 			if err != nil {
 				return ctrl.Result{}, err
@@ -201,7 +203,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if err = r.Status().Update(ctx, &lg); err != nil {
 			return ctrl.Result{}, err
 		}
-		if lg.Spec.VPN.ProbeWhileSuspended && !lg.Spec.VPN.Disabled && !vpnReady {
+		if !lg.Spec.VPN.Disabled && !vpnReady {
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 		return ctrl.Result{}, nil

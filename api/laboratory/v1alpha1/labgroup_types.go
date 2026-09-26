@@ -15,8 +15,8 @@ type LabGroupSpec struct {
 type LabGroupVPNSpec struct {
 	// Disabled stops only the VPN server; internet gateway and Labs remain running.
 	Disabled bool `json:"disabled,omitempty"`
-	// ProbeWhileSuspended keeps WireGuard available for the test gateway while
-	// group suspension still stops the internet gateway and Lab devices.
+	// Deprecated: suspension now always keeps WireGuard and the internet
+	// gateway running while stopping only task devices.
 	ProbeWhileSuspended bool `json:"probeWhileSuspended,omitempty"`
 	// KeypairSecretRef points to an existing WireGuard keypair Secret.
 	// If omitted, operator generates a keypair and stores it in Secret vpn-server-keypair.
@@ -42,7 +42,7 @@ type LabGroupVPNStatus struct {
 	// SecretRef is "<namespace>/<name>" of the vpn-server-keypair Secret.
 	SecretRef string `json:"secretRef,omitempty"`
 	// Registered is true when the VPN deployment has at least one ready replica,
-	// including a probe-only tunnel while Lab devices are suspended.
+	// including while Lab devices are suspended.
 	Registered bool `json:"registered,omitempty"`
 }
 

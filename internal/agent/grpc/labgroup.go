@@ -70,8 +70,8 @@ func (h *Handler) SetLabGroupSuspended(ctx context.Context, in *protobuf.LabGrou
 }
 
 // SetLabGroupVPNDisabled changes only the VPN deployment's desired state.
-// The internet gateway and Labs continue to follow the independent group
-// suspension flag.
+// Labs continue to follow the independent group suspension flag; the internet
+// gateway stays running until the group is deleted.
 func (h *Handler) SetLabGroupVPNDisabled(ctx context.Context, in *protobuf.LabGroupVPNDisabledRequest) (*protobuf.LabGroup, error) {
 	group, err := h.cs.LaboratoryV1alpha1().LabGroups().Get(ctx, in.Name, metav1.GetOptions{})
 	if err != nil {

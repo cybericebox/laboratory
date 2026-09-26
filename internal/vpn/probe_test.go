@@ -20,8 +20,12 @@ func TestProbeHandlerShowsOnlyConnectionResult(t *testing.T) {
 	if contentType := r.Header().Get("Content-Type"); contentType != "text/html; charset=utf-8" {
 		t.Fatalf("Content-Type = %q", contentType)
 	}
-	if !strings.Contains(r.Body.String(), "VPN-з’єднання налаштовано успішно") {
+	if !strings.Contains(r.Body.String(), "Ви підключилися до своєї групи лабораторій") ||
+		!strings.Contains(r.Body.String(), "Доступ до окремих завдань відкривається окремо") {
 		t.Fatalf("unexpected body: %q", r.Body.String())
+	}
+	if !strings.Contains(r.Body.String(), "#211A52") || !strings.Contains(r.Body.String(), "Світла тема") || !strings.Contains(r.Body.String(), "Темна тема") {
+		t.Fatalf("fixed platform palette or theme switcher missing")
 	}
 	if strings.Contains(r.Body.String(), "event") || strings.Contains(r.Body.String(), "team") {
 		t.Fatalf("probe leaks event data: %q", r.Body.String())
