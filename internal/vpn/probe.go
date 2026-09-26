@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"html/template"
 	"log"
@@ -19,6 +20,7 @@ import (
 // ProbePort is reachable through the WireGuard interface, never through the
 // public UDP service. Keep this in sync with the participant VPN status API.
 const ProbePort = vpnprobe.Port
+const DefaultSupportEmail = "support@cybericebox.com"
 
 type probeServer struct {
 	server   *http.Server
@@ -35,7 +37,7 @@ var probePageHTML string
 func probeHandler() http.Handler {
 	email := os.Getenv("SUPPORT_EMAIL")
 	if address, err := mail.ParseAddress(email); err != nil || address.Address != email {
-		email = "support@cybericebox.com"
+		email = DefaultSupportEmail
 	}
 	pageTemplate, err := template.New("probe").Parse(probePageHTML)
 	var page bytes.Buffer
@@ -80,7 +82,7 @@ func startProbe(subnet *net.IPNet, port int) (*probeServer, error) {
 	}
 	go func() {
 		defer close(p.done)
-		if serveErr := p.server.Serve(listener); serveErr != nil && serveErr != http.ErrServerClosed {
+		if serveErr := p.server.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			log.Printf("VPN probe stopped: %v", serveErr)
 		}
 	}()
