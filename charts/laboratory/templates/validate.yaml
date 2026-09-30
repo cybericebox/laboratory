@@ -16,6 +16,9 @@ at install time instead of shipping a broken deployment.
 {{- if not .Values.operator.baseDomain }}
 {{- fail "operator.baseDomain is required: the base domain of lab web hosts, e.g. lab.example.com" }}
 {{- end }}
+{{- if and .Values.agent.enabled (not .Values.agent.domain) }}
+{{- fail "agent.domain is required when agent.enabled: the public host of the management agent (TLS certificate and TLSRoute)" }}
+{{- end }}
 {{- if ne .Values.proxy.namespace "laboratory-proxy" }}
 {{- fail (printf "proxy.namespace must be 'laboratory-proxy' (got %q): the operator uses that name as a compile-time constant." .Values.proxy.namespace) }}
 {{- end }}

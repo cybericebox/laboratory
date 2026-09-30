@@ -9,7 +9,7 @@ metadata:
 spec:
   secretName: laboratory-agent-server-tls
   dnsNames:
-    - {{ .Values.agent.domain | quote }}
+    - {{ required "agent.domain is required when agent.enabled" .Values.agent.domain | quote }}
   issuerRef:
     name: {{ .Values.certManager.issuerName }}
     kind: ClusterIssuer

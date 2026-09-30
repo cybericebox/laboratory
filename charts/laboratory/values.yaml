@@ -13,7 +13,7 @@ operator:
 
   # REQUIRED: cluster ingress base domain for device exposure URLs (also the proxy's
   # BASE_DOMAIN and the session cookie domain). Example: "lab.example.com"
-  baseDomain: "lab.local"
+  baseDomain: ""
 
   # UDP port the VPN server listens on.
   vpnServicePort: 51820
@@ -263,7 +263,8 @@ agent:
   grpcPort: 5454
 
   # Public domain for the agent's TLS certificate + TLSRoute hostname.
-  domain: agent.example.com
+  # REQUIRED when agent.enabled (no default).
+  domain: ""
 
   mtls:
     enabled: true

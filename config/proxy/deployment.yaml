@@ -82,8 +82,9 @@ spec:
           image: cybericebox/laboratory-proxy:latest
           command: [ "/proxy-l7" ]
           env:
+            # REQUIRED, no default: the overlay must set the lab base domain.
             - name: BASE_DOMAIN
-              value: lab.local
+              value: ""
             - name: LISTEN_HTTPS
               value: ":8443"
             - name: SESSION_COOKIE_NAME

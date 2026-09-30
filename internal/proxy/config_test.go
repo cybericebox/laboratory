@@ -57,3 +57,18 @@ func TestLoadL7Config_ShortSessionSecretIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestLoadL7Config_BaseDomainIsRequired(t *testing.T) {
+	t.Setenv("TLS_CERT_PATH", "a")
+	t.Setenv("TLS_KEY_PATH", "b")
+	t.Setenv("LAB_ACCESS_PUBLIC_KEY_PATH", "c")
+	t.Setenv("SESSION_SECRET", "0123456789abcdef0123456789abcdef")
+	for _, v := range []string{"unset", ""} {
+		if v == "" {
+			t.Setenv("BASE_DOMAIN", "")
+		}
+		if _, err := LoadL7Config(); err == nil {
+			t.Fatalf("BASE_DOMAIN %q must be refused", v)
+		}
+	}
+}

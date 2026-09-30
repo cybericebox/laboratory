@@ -6,8 +6,8 @@ metadata:
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 data:
-  PUBLIC_VPN_ENDPOINT: {{ .Values.operator.publicVPNEndpoint | quote }}
-  BASE_DOMAIN: {{ .Values.operator.baseDomain | quote }}
+  PUBLIC_VPN_ENDPOINT: {{ required "operator.publicVPNEndpoint is required" .Values.operator.publicVPNEndpoint | quote }}
+  BASE_DOMAIN: {{ required "operator.baseDomain is required" .Values.operator.baseDomain | quote }}
   VPN_SERVICE_PORT: {{ .Values.operator.vpnServicePort | quote }}
   VPN_BASE_NETWORK: {{ .Values.operator.vpnBaseNetwork | quote }}
   INET_BASE_NETWORK: {{ .Values.operator.inetBaseNetwork | quote }}

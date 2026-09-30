@@ -11,7 +11,7 @@ spec:
     - name: laboratory-gateway
       namespace: {{ .Release.Namespace }}
   hostnames:
-    - {{ .Values.agent.domain | quote }}
+    - {{ required "agent.domain is required when agent.enabled" .Values.agent.domain | quote }}
   rules:
     - backendRefs:
         - name: laboratory-agent

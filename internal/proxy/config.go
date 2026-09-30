@@ -17,7 +17,7 @@ type L7Config struct {
 	// LabAccessPublicKeyPath is the Ed25519 public key (PKIX PEM) that verifies the
 	// platform's lab access tokens (the handoff links).
 	LabAccessPublicKeyPath string `env:"LAB_ACCESS_PUBLIC_KEY_PATH,required"`
-	BaseDomain             string `env:"BASE_DOMAIN,required"`
+	BaseDomain             string `env:"BASE_DOMAIN,notEmpty"`
 	Listen                 string `env:"LISTEN_HTTPS"  envDefault:":443"`
 	CookieName             string `env:"SESSION_COOKIE_NAME" envDefault:"challenge"`
 	// SessionSecret signs the proxy's own session cookie (HMAC-SHA256, at least 32
