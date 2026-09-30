@@ -45,6 +45,9 @@ func (r *Reporter) Run(ctx context.Context, pollEvery, reportEvery time.Duration
 			onError(err)
 		}
 	}
+	if err := r.resume(ctx); err != nil && onError != nil {
+		onError(err)
+	}
 	if err := r.Collector.Poll(time.Now()); err != nil && onError != nil {
 		onError(err)
 	}
@@ -61,6 +64,29 @@ func (r *Reporter) Run(ctx context.Context, pollEvery, reportEvery time.Duration
 			publish()
 		}
 	}
+}
+
+// resume continues from the totals the previous run of this pod left in the
+// report, so a restart does not start from zero.
+func (r *Reporter) resume(ctx context.Context) error {
+	obj := &laboratoryv1alpha1.LabTrafficReport{}
+	err := r.Reader.Get(ctx, types.NamespacedName{Namespace: r.Namespace, Name: ReportName}, obj)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read previous traffic report: %w", err)
+	}
+	ledger := make([]Touch, 0, len(obj.Status.Ledger))
+	for _, t := range obj.Status.Ledger {
+		ledger = append(ledger, Touch{
+			Key: Key{Subject: t.Subject, Lab: t.LabName}, Attempts: t.Attempts,
+			PacketsOut: t.PacketsOut, PacketsIn: t.PacketsIn, BytesOut: t.BytesOut, BytesIn: t.BytesIn,
+			FirstSeenMs: t.FirstSeenMs, LastSeenMs: t.LastSeenMs, FirstRespondMs: t.FirstRespondedMs,
+		})
+	}
+	r.Collector.Resume(ledger, time.UnixMilli(obj.Status.CoveredToMs))
+	return nil
 }
 
 // Publish writes the current state; CoveredTo advances even when nothing
@@ -101,7 +127,7 @@ func ToStatus(report Report) laboratoryv1alpha1.LabTrafficReportStatus {
 	}
 	for _, t := range report.Ledger {
 		status.Ledger = append(status.Ledger, laboratoryv1alpha1.LabTrafficTouch{
-			Subject: t.Subject, LabName: t.Lab, DstIP: t.DstIP, Proto: t.Proto, DstPort: int32(t.DstPort),
+			Subject: t.Subject, LabName: t.Lab,
 			Attempts: t.Attempts, PacketsOut: t.PacketsOut, PacketsIn: t.PacketsIn,
 			BytesOut: t.BytesOut, BytesIn: t.BytesIn,
 			FirstSeenMs: t.FirstSeenMs, LastSeenMs: t.LastSeenMs, FirstRespondedMs: t.FirstRespondMs,

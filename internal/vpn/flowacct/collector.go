@@ -14,13 +14,9 @@ import (
 )
 
 const (
-	// MaxKeysPerPair bounds distinct (ip, proto, port) rows of one client and
-	// lab. A port scan therefore costs one folded row, not 65,000.
-	MaxKeysPerPair = 64
-	// MaxRows bounds the whole ledger so the custom resource stays small.
+	// MaxRows bounds the whole ledger (one row per client and lab) so the custom
+	// resource stays small.
 	MaxRows = 512
-	// OverflowProto marks the folded row of a pair that exceeded MaxKeysPerPair.
-	OverflowProto = "other"
 )
 
 // Flow is the payload-free view of one conntrack entry, in the original
@@ -65,13 +61,11 @@ func (t Topology) lab(addr netip.Addr) (string, bool) {
 	return "", false
 }
 
-// Key is the aggregate identity. Subject is the client name.
+// Key is the aggregate identity: one VPN client against one lab. Any traffic
+// from the client to any address of the lab's network counts as access to the lab.
 type Key struct {
 	Subject string
 	Lab     string
-	DstIP   string
-	Proto   string
-	DstPort uint16
 }
 
 // Touch is one cumulative aggregate. Times are Unix milliseconds.
@@ -121,11 +115,13 @@ type Collector struct {
 
 	mu          sync.Mutex
 	ledger      map[Key]*Touch
-	pairKeys    map[[2]string]int
 	flows       map[flowKey]*tracked
 	coveredFrom time.Time
 	lastGood    time.Time
 	truncated   bool
+	// resumedUntil is the last moment a previous run had reported (zero on a
+	// fresh start), so flows it already counted are not counted again.
+	resumedUntil time.Time
 }
 
 // New builds a collector. bootID must change on every process start.
@@ -133,8 +129,20 @@ func New(source Source, topology func() Topology, bootID string, pollEvery time.
 	return &Collector{
 		source: source, topology: topology, bootID: bootID,
 		gapAfter: 3 * pollEvery,
-		ledger:   map[Key]*Touch{}, pairKeys: map[[2]string]int{}, flows: map[flowKey]*tracked{},
+		ledger:   map[Key]*Touch{}, flows: map[flowKey]*tracked{},
 	}
+}
+
+// Resume seeds the ledger from the totals a previous run persisted and the
+// moment it last reported. Call it before the first Poll.
+func (c *Collector) Resume(ledger []Touch, reportedUntil time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, t := range ledger {
+		row := t
+		c.ledger[row.Key] = &row
+	}
+	c.resumedUntil = reportedUntil
 }
 
 // Poll reads the flows once and folds them into the ledger. A failed dump
@@ -170,9 +178,17 @@ func (c *Collector) Poll(now time.Time) error {
 		seen[fk] = struct{}{}
 		t := c.flows[fk]
 		if t == nil {
-			key := c.fold(Key{Subject: subject, Lab: lab, DstIP: f.Dst.String(), Proto: f.Proto, DstPort: f.DstPort})
+			key := Key{Subject: subject, Lab: lab}
 			t = &tracked{key: key}
 			c.flows[fk] = t
+			// A flow that started before the last report of a previous run was
+			// counted by that run: keep it, add nothing.
+			counted := !f.Start.IsZero() && !c.resumedUntil.IsZero() && !f.Start.After(c.resumedUntil)
+			if counted {
+				t.counters = [4]uint64{f.PacketsOut, f.PacketsIn, f.BytesOut, f.BytesIn}
+				t.responded = f.Replied || f.PacketsIn > 0
+				continue
+			}
 			row := c.row(key, firstSeen(f.Start, now))
 			if row == nil {
 				delete(c.flows, fk)
@@ -208,18 +224,6 @@ func (c *Collector) Poll(now time.Time) error {
 	return nil
 }
 
-// fold applies the per-pair key cap.
-func (c *Collector) fold(key Key) Key {
-	if _, ok := c.ledger[key]; ok {
-		return key
-	}
-	pair := [2]string{key.Subject, key.Lab}
-	if c.pairKeys[pair] >= MaxKeysPerPair {
-		key = Key{Subject: key.Subject, Lab: key.Lab, Proto: OverflowProto}
-	}
-	return key
-}
-
 func (c *Collector) row(key Key, first time.Time) *Touch {
 	if row, ok := c.ledger[key]; ok {
 		if ms := first.UnixMilli(); ms < row.FirstSeenMs {
@@ -233,9 +237,6 @@ func (c *Collector) row(key Key, first time.Time) *Touch {
 	}
 	row := &Touch{Key: key, FirstSeenMs: first.UnixMilli(), LastSeenMs: first.UnixMilli()}
 	c.ledger[key] = row
-	if key.Proto != OverflowProto {
-		c.pairKeys[[2]string{key.Subject, key.Lab}]++
-	}
 	return row
 }
 
@@ -259,13 +260,7 @@ func (c *Collector) Snapshot(now time.Time) Report {
 		if a.Lab != b.Lab {
 			return a.Lab < b.Lab
 		}
-		if a.DstIP != b.DstIP {
-			return a.DstIP < b.DstIP
-		}
-		if a.Proto != b.Proto {
-			return a.Proto < b.Proto
-		}
-		return a.DstPort < b.DstPort
+		return false
 	})
 	return report
 }

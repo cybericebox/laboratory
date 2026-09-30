@@ -83,3 +83,30 @@ func TestMonitoringDeltaSendsChangedTrafficOnly(t *testing.T) {
 		t.Fatalf("deleted = %+v", gone)
 	}
 }
+
+func TestMergeProxyReportsSumsReplicasAndUnionsCoverage(t *testing.T) {
+	a := &protobuf.TrafficReport{LabGroupName: "g", Namespace: "ns", Source: "proxy-a", Kind: "proxy", CoveredFromUnixMs: 1_000, CoveredToUnixMs: 500_000,
+		Ledger: []*protobuf.TrafficTouch{{Subject: "u1", LabName: "c-1", Attempts: 3, BytesIn: 10, FirstSeenUnixMs: 5_000, LastSeenUnixMs: 9_000, FirstRespondedUnixMs: 6_000}}}
+	b := &protobuf.TrafficReport{LabGroupName: "g", Namespace: "ns", Source: "proxy-b", Kind: "proxy", CoveredFromUnixMs: 200_000, CoveredToUnixMs: 500_000, Truncated: true,
+		Ledger: []*protobuf.TrafficTouch{
+			{Subject: "u1", LabName: "c-1", Attempts: 2, BytesIn: 5, FirstSeenUnixMs: 4_000, LastSeenUnixMs: 20_000, FirstRespondedUnixMs: 4_500},
+			{Subject: "u2", LabName: "c-1", Attempts: 1, FirstSeenUnixMs: 7_000, LastSeenUnixMs: 7_000},
+		}}
+	dead := &protobuf.TrafficReport{LabGroupName: "g", Namespace: "ns", Source: "proxy-old", Kind: "proxy", CoveredFromUnixMs: 0, CoveredToUnixMs: 10_000,
+		Ledger: []*protobuf.TrafficTouch{{Subject: "u1", LabName: "c-1", Attempts: 4, FirstSeenUnixMs: 2_000, LastSeenUnixMs: 3_000}}}
+
+	got := mergeProxyReports([]*protobuf.TrafficReport{a, b, dead})
+	if got.GetSource() != "proxy" || got.GetCoveredToUnixMs() != 500_000 || got.GetCoveredFromUnixMs() != 1_000 || !got.GetTruncated() {
+		t.Fatalf("header = %+v", got)
+	}
+	if len(got.GetLedger()) != 2 {
+		t.Fatalf("ledger = %+v", got.GetLedger())
+	}
+	u1 := got.GetLedger()[0]
+	if u1.GetAttempts() != 9 || u1.GetBytesIn() != 15 || u1.GetFirstSeenUnixMs() != 2_000 || u1.GetLastSeenUnixMs() != 20_000 || u1.GetFirstRespondedUnixMs() != 4_500 {
+		t.Fatalf("u1 = %+v", u1)
+	}
+	if mergeProxyReports(nil) != nil {
+		t.Fatal("no replicas, no report")
+	}
+}

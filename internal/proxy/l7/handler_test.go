@@ -96,7 +96,7 @@ func TestHandler_CountsPerUserRequestsAndBytes(t *testing.T) {
 	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return backend.URL, nil }).
 		WithTokenMode(ModeMixed).
-		WithAccounting(meter, func(task, groupID string) (string, string, bool) { return "c-1", "web", true })
+		WithAccounting(meter, func(task, groupID string) (string, bool) { return "c-1", true })
 
 	send := func(token, body string) int {
 		req := httptest.NewRequest("POST", "http://web-abc123.challenges.example.com/secret/path?q=1", strings.NewReader(body))
@@ -123,7 +123,7 @@ func TestHandler_CountsPerUserRequestsAndBytes(t *testing.T) {
 		t.Fatalf("rows = %+v", rows)
 	}
 	row := rows[0]
-	if row.Subject != "user-1" || row.Lab != "c-1" || row.Device != "web" || row.Attempts != 2 || row.BytesIn != 18 || row.BytesOut != 5 || row.RespondedMs == 0 {
+	if row.Subject != "user-1" || row.Lab != "c-1" || row.Attempts != 2 || row.BytesIn != 18 || row.BytesOut != 5 || row.RespondedMs == 0 {
 		t.Fatalf("row = %+v", row)
 	}
 	if meter.Legacy() != 1 {
@@ -141,7 +141,7 @@ func TestHandler_UpstreamFailureIsNotAResponse(t *testing.T) {
 	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return url, nil }).
 		WithTokenMode(ModePerUser).
-		WithAccounting(meter, func(task, groupID string) (string, string, bool) { return "c-1", "web", true })
+		WithAccounting(meter, func(task, groupID string) (string, bool) { return "c-1", true })
 	req := httptest.NewRequest("GET", "http://web-abc123.challenges.example.com/", nil)
 	req.Host = "web-abc123.challenges.example.com"
 	req.AddCookie(&http.Cookie{Name: "challenge", Value: signToken(t, priv, jwtClaims{GroupID: "g1", RegisteredClaims: jwt.RegisteredClaims{Subject: "user-1", ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})})
@@ -175,7 +175,7 @@ func TestHandler_TokenModesAndAuthorizer(t *testing.T) {
 		h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, "challenges.example.com", "challenge",
 			func(task, groupID string) (string, error) { return backend.URL, nil }).WithTokenMode(mode)
 		if authorize != nil {
-			h.WithAuthorizer(authorize).WithAccounting(NewMeter("b", time.Now()), func(task, groupID string) (string, string, bool) { return "c-1", "web", true })
+			h.WithAuthorizer(authorize).WithAccounting(NewMeter("b", time.Now()), func(task, groupID string) (string, bool) { return "c-1", true })
 		}
 		return h
 	}

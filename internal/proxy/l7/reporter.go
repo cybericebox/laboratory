@@ -74,7 +74,7 @@ func (w *ReportWriter) Publish(ctx context.Context, namespace string, now time.T
 	}
 	for _, t := range ledger {
 		status.Ledger = append(status.Ledger, laboratoryv1alpha1.LabTrafficTouch{
-			Subject: t.Subject, LabName: t.Lab, Device: t.Device,
+			Subject: t.Subject, LabName: t.Lab,
 			Attempts: t.Attempts, BytesIn: t.BytesIn, BytesOut: t.BytesOut,
 			FirstSeenMs: t.FirstSeenMs, LastSeenMs: t.LastSeenMs, FirstRespondedMs: t.RespondedMs,
 		})

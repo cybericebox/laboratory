@@ -26,7 +26,7 @@ func TestReportWriterPublishesLedgerAndHeartbeatForEveryNamespace(t *testing.T) 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&laboratoryv1alpha1.LabTrafficReport{}).Build()
 	started := time.UnixMilli(1_000)
 	meter := NewMeter("boot-1", started)
-	meter.Record("ns-busy", "user-1", "c-1", "web", time.UnixMilli(2_000), true, 7, 3)
+	meter.Record("ns-busy", "user-1", "c-1", time.UnixMilli(2_000), true, 7, 3)
 
 	w := &ReportWriter{Reader: c, Writer: c, Meter: meter, Instance: "proxy-abc",
 		Namespaces: func(context.Context) []string { return []string{"ns-busy", "ns-idle"} }}

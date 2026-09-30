@@ -8,13 +8,13 @@ import (
 )
 
 const (
-	// MaxMeterKeys bounds distinct (user, lab, device) rows per proxy replica.
+	// MaxMeterKeys bounds distinct (user, lab) rows per proxy replica.
 	MaxMeterKeys = 50_000
 	// MaxReportRows bounds one namespace's ledger so the custom resource stays small.
 	MaxReportRows = 512
 )
 
-type meterKey struct{ namespace, subject, lab, device string }
+type meterKey struct{ namespace, subject, lab string }
 
 type meterRow struct {
 	attempts, bytesIn, bytesOut       int64
@@ -24,12 +24,12 @@ type meterRow struct {
 // Touch is one cumulative row: what one token subject did against one lab
 // device since the proxy replica started.
 type Touch struct {
-	Subject, Lab, Device                 string
+	Subject, Lab                         string
 	Attempts, BytesIn, BytesOut          int64
 	FirstSeenMs, LastSeenMs, RespondedMs int64
 }
 
-// Meter counts requests per (namespace, user, lab, device). It keeps counts and
+// Meter counts requests per (namespace, user, lab). It keeps counts and
 // times only: no path, query, header, address or user agent ever reaches it.
 type Meter struct {
 	BootID  string
@@ -48,8 +48,8 @@ func NewMeter(bootID string, started time.Time) *Meter {
 // Record adds one finished request. start is when the request began; responded
 // is set when the lab itself answered (any status), not when the proxy failed
 // to reach it. bytesIn is lab to client, bytesOut client to lab.
-func (m *Meter) Record(namespace, subject, lab, device string, start time.Time, responded bool, bytesIn, bytesOut int64) {
-	key := meterKey{namespace, subject, lab, device}
+func (m *Meter) Record(namespace, subject, lab string, start time.Time, responded bool, bytesIn, bytesOut int64) {
+	key := meterKey{namespace, subject, lab}
 	ms := start.UnixMilli()
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -93,7 +93,7 @@ func (m *Meter) Ledger(namespace string) (rows []Touch, truncated bool) {
 			continue
 		}
 		rows = append(rows, Touch{
-			Subject: key.subject, Lab: key.lab, Device: key.device,
+			Subject: key.subject, Lab: key.lab,
 			Attempts: row.attempts, BytesIn: row.bytesIn, BytesOut: row.bytesOut,
 			FirstSeenMs: row.firstMs, LastSeenMs: row.lastMs, RespondedMs: row.firstRespondedMs,
 		})
@@ -102,7 +102,7 @@ func (m *Meter) Ledger(namespace string) (rows []Touch, truncated bool) {
 		if rows[i].Attempts != rows[j].Attempts {
 			return rows[i].Attempts > rows[j].Attempts
 		}
-		return rows[i].Subject+rows[i].Lab+rows[i].Device < rows[j].Subject+rows[j].Lab+rows[j].Device
+		return rows[i].Subject+rows[i].Lab < rows[j].Subject+rows[j].Lab
 	})
 	truncated = m.truncated
 	if len(rows) > MaxReportRows {

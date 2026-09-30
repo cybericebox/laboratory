@@ -58,8 +58,17 @@ func (h *Handler) snapshot(ctx context.Context) (*protobuf.MonitoringUpdate, err
 		}
 		reports, err := h.cs.LaboratoryV1alpha1().LabTrafficReports(ns).List(ctx, metav1.ListOptions{})
 		if err == nil {
+			var proxies []*protobuf.TrafficReport
 			for j := range reports.Items {
-				upd.Traffic = append(upd.Traffic, trafficReportToProto(&reports.Items[j], g.Name))
+				report := trafficReportToProto(&reports.Items[j], g.Name)
+				if report.GetKind() == "proxy" {
+					proxies = append(proxies, report)
+					continue
+				}
+				upd.Traffic = append(upd.Traffic, report)
+			}
+			if merged := mergeProxyReports(proxies); merged != nil {
+				upd.Traffic = append(upd.Traffic, merged)
 			}
 		}
 	}

@@ -18,8 +18,9 @@ import (
 // BackendResolver maps (task, groupID) to a backend URL string.
 type BackendResolver func(task, groupID string) (string, error)
 
-// Attribution maps (task, groupID) to the lab and device a request reaches.
-type Attribution func(task, groupID string) (lab, device string, ok bool)
+// Attribution maps (task, groupID) to the lab a request reaches. It fails when
+// the group does not own that lab.
+type Attribution func(task, groupID string) (lab string, ok bool)
 
 // Authorizer decides whether a token subject may reach a lab of a group. It is
 // called only for tokens that name a user.
@@ -113,9 +114,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	var lab, device string
+	var lab string
 	if h.attribute != nil {
-		lab, device, _ = h.attribute(task, claims.GroupID)
+		lab, _ = h.attribute(task, claims.GroupID)
+		if lab == "" && h.mode == ModePerUser {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
 	}
 	if subject != "" && h.authorize != nil && !h.authorize(claims.GroupID, subject, lab) {
 		http.Error(w, "forbidden", http.StatusForbidden)
@@ -159,7 +164,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
 	}
 	proxy.ServeHTTP(rec, r)
-	h.meter.Record(ns(claims.GroupID), subject, lab, device, start, !rec.upstreamFailed, rec.bytes, out.n.Load())
+	h.meter.Record(ns(claims.GroupID), subject, lab, start, !rec.upstreamFailed, rec.bytes, out.n.Load())
 }
 
 func ns(groupID string) string { return laboratoryv1alpha1.LabGroupNamespace(groupID) }

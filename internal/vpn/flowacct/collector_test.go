@@ -37,14 +37,14 @@ func flow(id uint32, src netip.Addr, dst netip.Addr, port uint16) Flow {
 	return Flow{ID: id, Proto: "tcp", Src: src, Dst: dst, SrcPort: 40000 + uint16(id), DstPort: port}
 }
 
-func findRow(t *testing.T, r Report, subject string, port uint16) Touch {
+func findRow(t *testing.T, r Report, subject string, _ uint16) Touch {
 	t.Helper()
 	for _, row := range r.Ledger {
-		if row.Subject == subject && row.DstPort == port {
+		if row.Subject == subject && row.Lab == "c-1" {
 			return row
 		}
 	}
-	t.Fatalf("no row for %s:%d in %+v", subject, port, r.Ledger)
+	t.Fatalf("no row for %s in %+v", subject, r.Ledger)
 	return Touch{}
 }
 
@@ -60,7 +60,7 @@ func TestFiltersOutsideClientToLabTraffic(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := c.Snapshot(t0)
-	if len(r.Ledger) != 1 || r.Ledger[0].Subject != "p-a" || r.Ledger[0].Lab != "c-1" || r.Ledger[0].DstIP != "10.9.1.5" {
+	if len(r.Ledger) != 1 || r.Ledger[0].Subject != "p-a" || r.Ledger[0].Lab != "c-1" {
 		t.Fatalf("unexpected ledger: %+v", r.Ledger)
 	}
 }
@@ -129,27 +129,35 @@ func TestSubjectsAreSeparate(t *testing.T) {
 	}
 }
 
-func TestPortScanFoldsIntoOneRow(t *testing.T) {
+func TestAnyPortAndAddressOfALabIsOneRow(t *testing.T) {
 	src := &fakeSource{}
 	for port := 1; port <= 1000; port++ {
-		src.flows = append(src.flows, flow(uint32(port), clientA, labIP, uint16(port)))
+		dst := netip.AddrFrom4([4]byte{10, 9, 1, byte(1 + port%200)})
+		src.flows = append(src.flows, flow(uint32(port), clientA, dst, uint16(port)))
 	}
 	c := newCollector(src)
 	_ = c.Poll(t0)
 	r := c.Snapshot(t0)
-	if len(r.Ledger) != MaxKeysPerPair+1 {
-		t.Fatalf("rows = %d, want %d", len(r.Ledger), MaxKeysPerPair+1)
+	if len(r.Ledger) != 1 || r.Ledger[0].Attempts != 1000 {
+		t.Fatalf("a scan of one lab must be one row: %+v", r.Ledger)
 	}
-	var overflow *Touch
-	var total int64
-	for i := range r.Ledger {
-		total += r.Ledger[i].Attempts
-		if r.Ledger[i].Proto == OverflowProto {
-			overflow = &r.Ledger[i]
-		}
-	}
-	if overflow == nil || overflow.Attempts != 1000-MaxKeysPerPair || total != 1000 {
-		t.Fatalf("overflow=%+v total=%d", overflow, total)
+}
+
+func TestResumeKeepsTotalsAndDoesNotRecountFlowsOfThePreviousRun(t *testing.T) {
+	src := &fakeSource{}
+	c := newCollector(src)
+	c.Resume([]Touch{{Key: Key{Subject: "p-a", Lab: "c-1"}, Attempts: 7, FirstSeenMs: 1_000, LastSeenMs: 2_000}}, t0)
+
+	old := flow(1, clientA, labIP, 80)
+	old.Start = t0.Add(-time.Minute) // counted by the previous run
+	fresh := flow(2, clientA, labIP, 80)
+	fresh.Start = t0.Add(3 * time.Second)
+	src.flows = []Flow{old, fresh}
+	_ = c.Poll(t0.Add(5 * time.Second))
+
+	row := findRow(t, c.Snapshot(t0), "p-a", 0)
+	if row.Attempts != 8 || row.FirstSeenMs != 1_000 {
+		t.Fatalf("attempts=%d first=%d, want 8 (7 resumed + 1 new) and the original first seen", row.Attempts, row.FirstSeenMs)
 	}
 }
 

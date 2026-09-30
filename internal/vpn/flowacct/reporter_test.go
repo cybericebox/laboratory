@@ -48,7 +48,7 @@ func TestPublishCreatesThenUpdatesTheReportAndAdvancesCoverage(t *testing.T) {
 		t.Fatalf("ledger = %+v", got.Status.Ledger)
 	}
 	row := got.Status.Ledger[0]
-	if row.Subject != "p-a" || row.LabName != "c-1" || row.DstIP != "10.9.1.5" || row.DstPort != 22 || row.Attempts != 1 || row.FirstRespondedMs != t0.UnixMilli() {
+	if row.Subject != "p-a" || row.LabName != "c-1" || row.Attempts != 1 || row.FirstRespondedMs != t0.UnixMilli() {
 		t.Fatalf("row = %+v", row)
 	}
 }
