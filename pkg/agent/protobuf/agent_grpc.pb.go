@@ -39,6 +39,8 @@ const (
 	LabManager_ReconcileLabGroupAccess_FullMethodName = "/labmanager.LabManager/ReconcileLabGroupAccess"
 	LabManager_Monitoring_FullMethodName              = "/labmanager.LabManager/Monitoring"
 	LabManager_GetCapacity_FullMethodName             = "/labmanager.LabManager/GetCapacity"
+	LabManager_ResetDevice_FullMethodName             = "/labmanager.LabManager/ResetDevice"
+	LabManager_RescueDevice_FullMethodName            = "/labmanager.LabManager/RescueDevice"
 )
 
 // LabManagerClient is the client API for LabManager service.
@@ -69,6 +71,16 @@ type LabManagerClient interface {
 	// complete snapshot; subsequent messages are sequenced deltas or heartbeats.
 	Monitoring(ctx context.Context, in *MonitoringRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[MonitoringUpdate], error)
 	GetCapacity(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*CapacityResponse, error)
+	// Device state persistence. Both calls act on one device of a lab and only
+	// make sense for labs that run with snapshot-backed state (LabDeviceStatus.snapshot
+	// is set). The backend restricts them to organizers and admins.
+	//
+	// ResetDevice discards the device's snapshots and restarts it from its base image.
+	ResetDevice(ctx context.Context, in *DeviceRequest, opts ...grpc.CallOption) (*Empty, error)
+	// RescueDevice starts the device from its latest snapshot with a shell instead
+	// of the image entrypoint (enable=true), or back to normal (enable=false), to
+	// repair a configuration that makes the service crash.
+	RescueDevice(ctx context.Context, in *RescueDeviceRequest, opts ...grpc.CallOption) (*Empty, error)
 }
 
 type labManagerClient struct {
@@ -288,6 +300,26 @@ func (c *labManagerClient) GetCapacity(ctx context.Context, in *Empty, opts ...g
 	return out, nil
 }
 
+func (c *labManagerClient) ResetDevice(ctx context.Context, in *DeviceRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, LabManager_ResetDevice_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *labManagerClient) RescueDevice(ctx context.Context, in *RescueDeviceRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, LabManager_RescueDevice_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LabManagerServer is the server API for LabManager service.
 // All implementations must embed UnimplementedLabManagerServer
 // for forward compatibility.
@@ -316,6 +348,16 @@ type LabManagerServer interface {
 	// complete snapshot; subsequent messages are sequenced deltas or heartbeats.
 	Monitoring(*MonitoringRequest, grpc.ServerStreamingServer[MonitoringUpdate]) error
 	GetCapacity(context.Context, *Empty) (*CapacityResponse, error)
+	// Device state persistence. Both calls act on one device of a lab and only
+	// make sense for labs that run with snapshot-backed state (LabDeviceStatus.snapshot
+	// is set). The backend restricts them to organizers and admins.
+	//
+	// ResetDevice discards the device's snapshots and restarts it from its base image.
+	ResetDevice(context.Context, *DeviceRequest) (*Empty, error)
+	// RescueDevice starts the device from its latest snapshot with a shell instead
+	// of the image entrypoint (enable=true), or back to normal (enable=false), to
+	// repair a configuration that makes the service crash.
+	RescueDevice(context.Context, *RescueDeviceRequest) (*Empty, error)
 	mustEmbedUnimplementedLabManagerServer()
 }
 
@@ -385,6 +427,12 @@ func (UnimplementedLabManagerServer) Monitoring(*MonitoringRequest, grpc.ServerS
 }
 func (UnimplementedLabManagerServer) GetCapacity(context.Context, *Empty) (*CapacityResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetCapacity not implemented")
+}
+func (UnimplementedLabManagerServer) ResetDevice(context.Context, *DeviceRequest) (*Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ResetDevice not implemented")
+}
+func (UnimplementedLabManagerServer) RescueDevice(context.Context, *RescueDeviceRequest) (*Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RescueDevice not implemented")
 }
 func (UnimplementedLabManagerServer) mustEmbedUnimplementedLabManagerServer() {}
 func (UnimplementedLabManagerServer) testEmbeddedByValue()                    {}
@@ -760,6 +808,42 @@ func _LabManager_GetCapacity_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LabManager_ResetDevice_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeviceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabManagerServer).ResetDevice(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LabManager_ResetDevice_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabManagerServer).ResetDevice(ctx, req.(*DeviceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LabManager_RescueDevice_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RescueDeviceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabManagerServer).RescueDevice(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LabManager_RescueDevice_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabManagerServer).RescueDevice(ctx, req.(*RescueDeviceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LabManager_ServiceDesc is the grpc.ServiceDesc for LabManager service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -842,6 +926,14 @@ var LabManager_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetCapacity",
 			Handler:    _LabManager_GetCapacity_Handler,
+		},
+		{
+			MethodName: "ResetDevice",
+			Handler:    _LabManager_ResetDevice_Handler,
+		},
+		{
+			MethodName: "RescueDevice",
+			Handler:    _LabManager_RescueDevice_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
