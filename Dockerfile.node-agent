@@ -32,7 +32,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/netconfig   ./cmd/netcon
 FROM ubuntu:22.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libssl3 libcap-ng0 libnuma1 containernetworking-plugins jq \
-        iproute2 \
+        iproute2 kmod \
     && rm -rf /var/lib/apt/lists/*
 
 # OVS binaries and schema.

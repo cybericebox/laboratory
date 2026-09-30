@@ -112,10 +112,10 @@ kind-load: docker-build-all ## Build and load all images into Kind cluster
 .PHONY: kind-patch-agent
 kind-patch-agent: ## Patch node-agent DaemonSet to use local image
 	$(KUBECTL) set image daemonset/laboratory-node-agent \
-		node-agent=$(AGENT_IMG) ovs=$(AGENT_IMG) install-cni=$(AGENT_IMG) \
+		node-agent=$(AGENT_IMG) ovs=$(AGENT_IMG) host-prep=$(AGENT_IMG) install-cni-bins=$(AGENT_IMG) install-cni-conf=$(AGENT_IMG) \
 		-n laboratory-system
 	$(KUBECTL) patch daemonset laboratory-node-agent -n laboratory-system \
-		--type=json -p='[{"op":"replace","path":"/spec/template/spec/initContainers/0/imagePullPolicy","value":"Never"},{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"Never"},{"op":"replace","path":"/spec/template/spec/containers/1/imagePullPolicy","value":"Never"}]'
+		--type=json -p='[{"op":"replace","path":"/spec/template/spec/initContainers/0/imagePullPolicy","value":"Never"},{"op":"replace","path":"/spec/template/spec/initContainers/1/imagePullPolicy","value":"Never"},{"op":"replace","path":"/spec/template/spec/initContainers/2/imagePullPolicy","value":"Never"},{"op":"replace","path":"/spec/template/spec/initContainers/3/imagePullPolicy","value":"Never"},{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"Never"}]'
 
 .PHONY: kind-reload-agent
 kind-reload-agent: docker-build-agent ## Rebuild node-agent image, reload into Kind, restart DaemonSet

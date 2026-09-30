@@ -228,12 +228,37 @@ nodeAgent:
   # Exclude control-plane nodes from the DaemonSet (set false for single-node Kind).
   excludeControlPlane: true
 
+  # The node is bare: Open vSwitch runs inside this DaemonSet (the "ovs" sidecar),
+  # and the host-prep init container loads the kernel modules and sets the sysctls
+  # below. Nothing but the kernel (with these modules) and k0s is installed on the host.
+  # Must stay inside ovsRunHostPath: templates/validate.yaml refuses anything else.
   ovsSocket: "/run/openvswitch/db.sock"
+  # hostPath of the OVS runtime dir (db socket, pid and control files).
+  ovsRunHostPath: "/run/openvswitch"
+  # hostPath of /etc/openvswitch: conf.db (bridges, ports) survives pod restarts.
+  ovsDBHostPath: "/var/lib/cybericebox/openvswitch"
+
+  hostPrep:
+    # Loaded with modprobe from the host's /lib/modules (mounted read-only). A module
+    # that cannot be loaded fails the init container, and the pod stays in Init:Error.
+    modules:
+      - openvswitch   # L2 datapath of the lab network
+      - geneve        # tunnel between nodes (OVS geneve port)
+      - wireguard     # VPN pods create wg interfaces in the host kernel
+      - br_netfilter  # needed by the bridge-nf-call-iptables sysctl
+      - nf_conntrack
+      - nf_conntrack_netlink  # flow accounting in the VPN pod (ctnetlink)
+    # Written to /proc/sys in the host network namespace (the pod is hostNetwork).
+    sysctls:
+      net.ipv4.ip_forward: "1"
+      net.ipv4.conf.all.rp_filter: "0"
+      net.ipv4.conf.default.rp_filter: "0"
+      net.bridge.bridge-nf-call-iptables: "1"
   grpcSocket: "/run/cybericebox/node-agent.sock"
   criSocket: "/run/k0s/containerd.sock"
 
-  # Container resource requests/limits for all init/main containers (ovs,
-  # node-agent, cni installers). Empty by default: these are host-privileged
+  # Container resource requests/limits for all init/main containers (host-prep,
+  # ovs, node-agent, cni installers). Empty by default: these are host-privileged
   # system processes intentionally left unconstrained unless overridden.
   resources: {}
 

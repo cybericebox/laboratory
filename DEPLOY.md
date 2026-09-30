@@ -7,7 +7,7 @@ manifests.
 
 - `kubectl` ≥ 1.28
 - `helm` ≥ 3.12
-- OVS installed on every worker node (required by node-agent)
+- Worker nodes need only k0s and a Linux kernel with the `openvswitch`, `geneve`, `wireguard`, `br_netfilter`, `nf_conntrack` and `nf_conntrack_netlink` modules (cgroup v2). Open vSwitch runs in the node-agent DaemonSet, which also loads the modules and sets the sysctls (`nodeAgent.hostPrep`).
 
 ---
 

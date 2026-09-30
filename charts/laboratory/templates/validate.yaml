@@ -30,3 +30,6 @@ at install time instead of shipping a broken deployment.
 {{- fail "certManager.email is required with an ACME issuer (Let's Encrypt account)" }}
 {{- end }}
 {{- end }}
+{{- if not (hasPrefix (printf "%s/" (trimSuffix "/" .Values.nodeAgent.ovsRunHostPath)) .Values.nodeAgent.ovsSocket) }}
+{{- fail (printf "nodeAgent.ovsSocket (%s) must be inside nodeAgent.ovsRunHostPath (%s): the ovs sidecar and the node-agent share that directory" .Values.nodeAgent.ovsSocket .Values.nodeAgent.ovsRunHostPath) }}
+{{- end }}

@@ -39,6 +39,64 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       initContainers:
+        # Host prep: kernel modules and sysctls. Nothing is installed on the node.
+        - name: host-prep
+          image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
+          imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
+          command: [ "/bin/sh", "-c" ]
+          args:
+            - |
+              set -eu
+              {{- range .Values.nodeAgent.hostPrep.modules }}
+              modprobe {{ . | quote }}
+              {{- end }}
+              {{- range $key, $val := .Values.nodeAgent.hostPrep.sysctls }}
+              echo {{ $val | quote }} > /proc/sys/{{ $key | replace "." "/" }}
+              {{- end }}
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: lib-modules
+              mountPath: /lib/modules
+              readOnly: true
+          {{- with .Values.nodeAgent.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        # Open vSwitch as a native sidecar (restartPolicy: Always): it starts before the
+        # next init containers and the node-agent, which wait for its startupProbe.
+        - name: ovs
+          image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
+          imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
+          restartPolicy: Always
+          command: [ "/node-agent/bin/start-ovs.sh" ]
+          env:
+            - name: OVS_SOCK
+              value: {{ .Values.nodeAgent.ovsSocket | quote }}
+          securityContext:
+            privileged: true
+          startupProbe:
+            exec:
+              command: [ "/bin/sh", "-c", "ovs-vsctl --timeout=2 --no-wait show >/dev/null && ovs-appctl -t ovs-vswitchd version >/dev/null" ]
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            exec:
+              command: [ "/bin/sh", "-c", "ovs-appctl -t ovs-vswitchd version >/dev/null" ]
+            periodSeconds: 20
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: ovs-run
+              mountPath: /run/openvswitch
+            - name: ovs-db
+              mountPath: /etc/openvswitch
+            - name: lib-modules
+              mountPath: /lib/modules
+              readOnly: true
+          {{- with .Values.nodeAgent.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
         - name: install-cni-bins
           image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
           imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
@@ -80,19 +138,6 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
       containers:
-        - name: ovs
-          image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
-          imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
-          command: [ "/node-agent/bin/start-ovs.sh" ]
-          securityContext:
-            privileged: true
-          volumeMounts:
-            - name: ovs-run
-              mountPath: /run/openvswitch
-          {{- with .Values.nodeAgent.resources }}
-          resources:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
         - name: node-agent
           image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
           imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
@@ -143,7 +188,17 @@ spec:
             path: /etc/cni/net.d
             type: DirectoryOrCreate
         - name: ovs-run
-          emptyDir: { }
+          hostPath:
+            path: {{ .Values.nodeAgent.ovsRunHostPath }}
+            type: DirectoryOrCreate
+        - name: ovs-db
+          hostPath:
+            path: {{ .Values.nodeAgent.ovsDBHostPath }}
+            type: DirectoryOrCreate
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+            type: Directory
         - name: grpc-dir
           hostPath:
             path: /run/cybericebox
