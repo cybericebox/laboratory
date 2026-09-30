@@ -1,4 +1,4 @@
-package main
+package cnigate
 
 import (
 	_ "github.com/cybericebox/laboratory/pkg/runtime"
@@ -55,7 +55,7 @@ type NetConf struct {
 	AgentSocket string                 `json:"agentSocket,omitempty"`
 }
 
-func main() {
+func Run() {
 	skel.PluginMainFuncs(skel.CNIFuncs{
 		Add:    cmdADD,
 		Del:    cmdDEL,

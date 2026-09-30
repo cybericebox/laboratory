@@ -1,6 +1,6 @@
 //go:build linux
 
-package main
+package installcni
 
 import (
 	"log"
@@ -10,7 +10,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/nodeagent"
 )
 
-func main() {
+func Run() {
 	confDir := envOrDefault("CNI_CONF_DIR", nodeagent.CNIConfDir)
 	agentSocket := envOrDefault("GRPC_SOCK", "/run/cybericebox/node-agent.sock")
 	fallbackStr := envOrDefault("CNI_FALLBACK_TIMEOUT", "60s")

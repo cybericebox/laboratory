@@ -1,4 +1,4 @@
-package main
+package proxyl7
 
 import (
 	"context"
@@ -38,7 +38,7 @@ func init() {
 	utilruntime.Must(laboratoryv1alpha1.AddToScheme(scheme))
 }
 
-func main() {
+func Run() {
 	ctrl.SetLogger(zap.New())
 	log := ctrl.Log.WithName("proxy-l7")
 	

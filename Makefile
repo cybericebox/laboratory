@@ -86,11 +86,11 @@ cluster-down: ## Delete Kind cluster
 
 .PHONY: docker-build-agent
 docker-build-agent: ## Build node-agent Docker image
-	$(CONTAINER_TOOL) build -t $(AGENT_IMG) -f Dockerfile.node .
+	$(CONTAINER_TOOL) build -t $(AGENT_IMG) --target node .
 
 .PHONY: docker-build-lab
 docker-build-lab: ## Build lab (vpn + gateway) Docker image
-	$(CONTAINER_TOOL) build -t $(LAB_IMG) -f Dockerfile.lab .
+	$(CONTAINER_TOOL) build -t $(LAB_IMG) --target lab .
 
 .PHONY: docker-build-proxy
 docker-build-proxy: docker-build ## Proxy binaries ship in the shared image: same build as docker-build
@@ -291,18 +291,18 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+	go build -o bin/laboratory ./cmd/laboratory
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/main.go
+	go run ./cmd/laboratory manager
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} .
+	$(CONTAINER_TOOL) build -t ${IMG} --target laboratory .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.

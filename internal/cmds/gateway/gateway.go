@@ -1,6 +1,6 @@
 //go:build linux
 
-package main
+package gateway
 
 import (
 	_ "github.com/cybericebox/laboratory/pkg/runtime"
@@ -33,7 +33,7 @@ func init() {
 	utilruntime.Must(laboratoryv1alpha1.AddToScheme(scheme))
 }
 
-func main() {
+func Run() {
 	ctrl.SetLogger(zap.New())
 	log := ctrl.Log.WithName("gateway")
 	

@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"log"
@@ -13,7 +13,7 @@ import (
 	grpcserver "github.com/cybericebox/laboratory/internal/agent/grpc"
 )
 
-func main() {
+func Run() {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("load config: %v", err)
