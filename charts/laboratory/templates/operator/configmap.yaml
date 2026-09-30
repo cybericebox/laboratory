@@ -22,3 +22,12 @@ data:
   AGENT_SERVICE_NAMESPACE: {{ .Values.agent.namespace | quote }}
   SUPPORT_EMAIL: {{ required "operator.supportEmail is required" .Values.operator.supportEmail | quote }}
   IMAGE_PULL_SECRETS: {{ include "laboratory.pullSecretNames" . | quote }}
+  LAUNCH_ENABLED: {{ .Values.launch.enabled | quote }}
+  LAUNCH_MAX_IN_FLIGHT: {{ .Values.launch.maxInFlight | quote }}
+  LAUNCH_WAVE_TIMEOUT: {{ .Values.launch.waveTimeout | quote }}
+  LAUNCH_HEADROOM_PERCENT: {{ .Values.launch.headroomPercent | quote }}
+  LAUNCH_RESOURCE_CHECK: {{ .Values.launch.resourceCheck | quote }}
+  LAUNCH_PREPULL: {{ .Values.launch.prepull.enabled | quote }}
+  LAUNCH_PREPULL_TIMEOUT: {{ .Values.launch.prepull.timeout | quote }}
+  DEVICE_DEFAULT_CPU: {{ .Values.launch.deviceDefaults.cpu | quote }}
+  DEVICE_DEFAULT_MEMORY: {{ .Values.launch.deviceDefaults.memory | quote }}

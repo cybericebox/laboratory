@@ -277,6 +277,43 @@ labWorkloads:
   tolerations: []
 
 # ============================================================
+# Launch pacing: how the operator brings up a burst of labs
+# ============================================================
+# A new Lab is created at once but stays Queued. The operator admits labs in launch
+# class order (then creation time), so the same lab type comes up for all teams at
+# about the same time, and only while
+#   - fewer than maxInFlight labs are provisioning (a lab holds its slot until it is
+#     Ready or waveTimeout passes),
+#   - the images of the lab's class are on the nodes (prepull), and
+#   - the schedulable nodes have free CPU and memory for the lab's requests, with
+#     headroomPercent of their allocatable resources still free afterwards.
+# The queue position, length and reason are in Lab.status.launch and the agent's LabStatus.
+launch:
+  # false: every lab is provisioned as soon as it is created.
+  enabled: true
+  # Largest number of labs provisioning at once; 0 sets no limit.
+  maxInFlight: 20
+  # How long an admitted lab holds its slot when it is not Ready (Go duration).
+  waveTimeout: 3m
+  # Share of the schedulable CPU and memory (0-99) kept free after an admission.
+  headroomPercent: 10
+  # false: admission does not look at the free CPU and memory of the nodes.
+  resourceCheck: true
+  # Pull the images of a class onto the eligible nodes before its first lab starts.
+  # A short-lived DaemonSet in laboratory-system runs the images with the command
+  # replaced by a sleep (no lab service starts) and uses imagePullSecrets below.
+  prepull:
+    enabled: true
+    # Admission goes on after this long even if some image is still not pulled.
+    timeout: 5m
+  # CPU and memory of a device container that declares none. Requests always equal
+  # limits (Guaranteed pods); a declared request and limit collapse to the limit.
+  # Empty string: a device without resources gets none (best effort).
+  deviceDefaults:
+    cpu: 250m
+    memory: 256Mi
+
+# ============================================================
 # Management agent: optional per-cluster gRPC agent for platform ops
 # ============================================================
 agent:

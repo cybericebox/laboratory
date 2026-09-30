@@ -33,3 +33,11 @@ at install time instead of shipping a broken deployment.
 {{- if not (hasPrefix (printf "%s/" (trimSuffix "/" .Values.nodeAgent.ovsRunHostPath)) .Values.nodeAgent.ovsSocket) }}
 {{- fail (printf "nodeAgent.ovsSocket (%s) must be inside nodeAgent.ovsRunHostPath (%s): the ovs sidecar and the node-agent share that directory" .Values.nodeAgent.ovsSocket .Values.nodeAgent.ovsRunHostPath) }}
 {{- end }}
+
+{{- /* Launch pacing values: the operator refuses to start on bad ones, so fail at install time. */ -}}
+{{- if lt (int .Values.launch.maxInFlight) 0 }}
+{{- fail "launch.maxInFlight must not be negative (0 sets no limit)" }}
+{{- end }}
+{{- if or (lt (int .Values.launch.headroomPercent) 0) (ge (int .Values.launch.headroomPercent) 100) }}
+{{- fail "launch.headroomPercent must be between 0 and 99" }}
+{{- end }}

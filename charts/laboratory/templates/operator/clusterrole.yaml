@@ -17,6 +17,13 @@ rules:
 - apiGroups: [apps]
   resources: [deployments]
   verbs: [create, delete, get, list, patch, update, watch]
+# Launch pacing: short-lived image prepull DaemonSets, and the free capacity of the nodes.
+- apiGroups: [apps]
+  resources: [daemonsets]
+  verbs: [create, delete, get, list, watch]
+- apiGroups: [""]
+  resources: [nodes]
+  verbs: [get, list, watch]
 - apiGroups: [cilium.io]
   resources: [ciliumnetworkpolicies]
   verbs: [create, delete, get, list, patch, update, watch]
