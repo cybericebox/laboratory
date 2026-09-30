@@ -10,8 +10,8 @@ PROXY_IMG    ?= cybericebox/laboratory-proxy:$(BUILD_TAG)
 KIND_CLUSTER_NAME ?= icebox
 
 # Lima/k0s dev cluster
-# Local cluster kit (Lima VMs, k0s, Kind config, lab scenarios) lives in the infrastructure repo.
-LOCAL_K0S      ?= ../infrastructure/local-k0s
+# Local cluster kit (Lima VMs, k0s, Kind config, lab scenarios) lives in the infrastructure repo (override LOCAL_K0S to point elsewhere).
+LOCAL_K0S      ?= ../infra/local/cluster
 LIMA_CTRL      ?= lab-ctrl
 LIMA_WORKER    ?= lab-worker
 CHART_PATH     ?= charts/laboratory

@@ -30,7 +30,7 @@ For a real cluster, skip this step and point `KUBECONFIG` at the existing config
 ---
 
 > A complete local k0s cluster (Lima VMs, Cilium Gateway, this chart, test lab and checklist) is in
-> `../infrastructure/local-k0s/README.md`; `make cluster-up` uses the Kind config from `../infrastructure/local-k0s/kind/`.
+> `$(LOCAL_K0S)/README.md` in the infrastructure repo (default `../infra/local/cluster`); `make cluster-up` uses the Kind config from `$(LOCAL_K0S)/kind/`.
 
 ---
 
@@ -220,11 +220,11 @@ kubectl delete crd \
 
 | Network             | Default       | Usage                                                              |
 |---------------------|---------------|--------------------------------------------------------------------|
-| `vpnBaseNetwork`    | `10.8.0.0/10` | Full VPN supernet; advertised as AllowedIPs to WireGuard clients   |
-| Client subnet       | `10.8.0.0/24` | First /24 of vpnBaseNetwork; VPN gateway at .1, clients at .2–.254 |
-| Per-lab VPN subnet  | `10.8.N.0/24` | N=1..253 carved from vpnBaseNetwork                                |
-| `inetBaseNetwork`   | `10.9.0.0/10` | Internet-gateway subnets                                           |
-| Per-lab inet subnet | `10.9.N.0/24` | Mirrors VPN lab index                                              |
+| `vpnBaseNetwork`    | `10.128.0.0/10` | Full VPN supernet; advertised as AllowedIPs to WireGuard clients   |
+| Client subnet       | `10.128.0.0/24` | First /24 of vpnBaseNetwork; VPN gateway at .1, clients at .2–.254 |
+| Per-lab VPN subnet  | `10.128.N.0/24` | N>=1 carved from vpnBaseNetwork                                |
+| `inetBaseNetwork`   | `10.192.0.0/10` | Internet-gateway subnets                                           |
+| Per-lab inet subnet | `10.192.N.0/24` | Mirrors VPN lab index                                              |
 
 ---
 
