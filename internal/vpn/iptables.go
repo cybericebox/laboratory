@@ -35,6 +35,12 @@ func (m *IPTablesManager) SetupForwardPolicy() error {
 	if err := m.ipt.ChangePolicy("filter", "FORWARD", "DROP"); err != nil {
 		return fmt.Errorf("set FORWARD DROP: %w", err)
 	}
+	// The FORWARD jump below references the access chain, and iptables rejects
+	// even checking a rule whose target chain does not exist yet: create it
+	// first (ClearChain creates it empty, i.e. deny-only).
+	if err := m.ipt.ClearChain("filter", accessChain); err != nil {
+		return fmt.Errorf("create access chain: %w", err)
+	}
 	rules := []string{
 		"-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
 		fmt.Sprintf("-i %s -o lab+ -j %s", m.wgIface, accessChain),
