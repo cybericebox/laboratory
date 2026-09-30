@@ -516,3 +516,7 @@ Namespace, Deployment, Service, NetworkPolicy, Secret). Не программи�
 - Программирование OVS и DHCP-сервер: см. [node-agent.md](./node-agent.md)
 - Демукс watch на LabGroup: см. [proxy.md](./proxy.md)
 - Gateway конфигурация per-lab: см. [gateway.md](./gateway.md)
+
+## Приватный реестр образов
+
+`IMAGE_PULL_SECRETS` (чарт: `imagePullSecrets`, список `- name: <secret>`) перечисляет Secret'ы типа `kubernetes.io/dockerconfigjson` в namespace оператора (`laboratory-system`); сами Secret'ы создаются вне чарта. Оператор копирует их в namespace каждой группы при каждом reconcile LabGroup и ставит `imagePullSecrets` на VPN-, gateway- и device-поды. Отсутствующий источник или Secret другого типа — ошибка reconcile, без подстановок. Поды самого чарта (оператор, прокси, node-agent, агент) берут тот же список; прокси и агент живут в своих namespace, Secret'ы нужны и там.

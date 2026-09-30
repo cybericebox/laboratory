@@ -53,6 +53,11 @@ type Config struct {
 	// NetworkPolicyEnabled gates creation of the default-deny NetworkPolicy
 	// baseline in each LabGroup namespace.
 	NetworkPolicyEnabled bool `env:"NETWORK_POLICY_ENABLED" envDefault:"true"`
+	// ImagePullSecrets lists registry Secrets (kubernetes.io/dockerconfigjson) in the
+	// operator namespace, created outside the chart. The operator copies them into
+	// every group namespace and sets them on the VPN, gateway and device pods, so a
+	// private registry works for lab workloads. Empty means public images only.
+	ImagePullSecrets []string `env:"IMAGE_PULL_SECRETS" envSeparator:","`
 	// SupportEmail is the contact address shown to participants on the VPN
 	// probe page. Passed to every per-LabGroup VPN pod as SUPPORT_EMAIL.
 	SupportEmail string `env:"SUPPORT_EMAIL,required"`

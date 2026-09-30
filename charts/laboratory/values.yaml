@@ -130,6 +130,10 @@ proxy:
     # Internal UDP port the wg-demux container binds to.
     # The LoadBalancer Service maps operator.vpnServicePort → this port.
     listenPort: 51820
+    # Optional fixed nodePort of the laboratory-proxy-wg Service (30000-32767),
+    # e.g. behind a cloud NLB that targets a known node port. Unset: Kubernetes
+    # assigns one.
+    nodePort: null
     resources:
       limits:
         cpu: 500m
@@ -331,6 +335,13 @@ platform:
 # ============================================================
 # Common
 # ============================================================
+# Registry Secrets (type kubernetes.io/dockerconfigjson) for private images, as a
+# list of `- name: <secret>`. Create them in the release namespace
+# (laboratory-system) outside the chart. They are referenced by the operator,
+# proxy, node-agent and agent pods, and the operator also copies them into every
+# lab group namespace and sets them on the VPN, gateway and device pods.
+# Proxy and agent run in their own namespaces (proxy.namespace, agent.namespace):
+# create the Secrets there too.
 imagePullSecrets: []
 
 nameOverride: ""

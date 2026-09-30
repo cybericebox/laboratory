@@ -41,6 +41,9 @@ type DeviceReconciler struct {
 	// assigns static IP/routes inside a device pod. Must contain `ip` (iproute2)
 	// and `sh`. Empty disables static addressing via init-container.
 	NetConfigImage string
+	// ImagePullSecrets names registry Secrets that the LabGroup controller copied
+	// into the group namespace; device pods reference them.
+	ImagePullSecrets []string
 }
 
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices,verbs=get;list;watch;create;update;patch;delete
@@ -273,8 +276,9 @@ func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laborat
 	}
 
 	podSpec := corev1.PodSpec{
-		NodeSelector: r.LabNodeSelector,
-		Tolerations:  r.LabTolerations,
+		ImagePullSecrets: pullSecretRefs(r.ImagePullSecrets),
+		NodeSelector:     r.LabNodeSelector,
+		Tolerations:      r.LabTolerations,
 		// Best-effort co-location: prefer scheduling this device onto a node that
 		// already runs another device of the same lab, so a lab's intra-fabric
 		// traffic stays node-local (no Geneve hop) whenever capacity allows. Soft

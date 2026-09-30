@@ -239,6 +239,7 @@ func main() {
 			Name:      cfg.AgentServiceAccount,
 		},
 		NetworkPolicyEnabled: cfg.NetworkPolicyEnabled,
+		ImagePullSecrets:     cfg.ImagePullSecrets,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LabGroup")
 		os.Exit(1)
@@ -265,11 +266,12 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&laboratorycontroller.DeviceReconciler{
-		Client:          mgr.GetClient(),
-		Scheme:          mgr.GetScheme(),
-		LabNodeSelector: labNodeSelector,
-		LabTolerations:  labTolerations,
-		NetConfigImage:  cfg.NetConfigImage,
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		LabNodeSelector:  labNodeSelector,
+		LabTolerations:   labTolerations,
+		NetConfigImage:   cfg.NetConfigImage,
+		ImagePullSecrets: cfg.ImagePullSecrets,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Device")
 		os.Exit(1)

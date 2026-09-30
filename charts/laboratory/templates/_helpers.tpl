@@ -47,3 +47,15 @@ Selector labels.
 app.kubernetes.io/name: {{ include "laboratory.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
+
+{{/*
+Comma-separated names of .Values.imagePullSecrets (a list of `- name: x`): what the
+operator copies into every lab group namespace and sets on lab pods.
+*/}}
+{{- define "laboratory.pullSecretNames" -}}
+{{- $n := list -}}
+{{- range .Values.imagePullSecrets -}}
+{{- $n = append $n (required "imagePullSecrets entries need a name" .name) -}}
+{{- end -}}
+{{- join "," $n -}}
+{{- end -}}

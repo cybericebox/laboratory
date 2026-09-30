@@ -22,3 +22,18 @@ func TestLoadConfigRequiresLabDomains(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadConfigImagePullSecrets(t *testing.T) {
+	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
+	t.Setenv("BASE_DOMAIN", "labs.example.com")
+	t.Setenv("SUPPORT_EMAIL", "support@example.com")
+	cfg, err := LoadConfig()
+	if err != nil || len(cfg.ImagePullSecrets) != 0 {
+		t.Fatalf("default: %v %v", cfg, err)
+	}
+	t.Setenv("IMAGE_PULL_SECRETS", "regcred,other")
+	cfg, err = LoadConfig()
+	if err != nil || len(cfg.ImagePullSecrets) != 2 || cfg.ImagePullSecrets[1] != "other" {
+		t.Fatalf("parsed: %v %v", cfg, err)
+	}
+}

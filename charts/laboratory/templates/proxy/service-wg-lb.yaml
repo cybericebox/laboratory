@@ -33,4 +33,7 @@ spec:
       protocol: UDP
       port: {{ .Values.operator.vpnServicePort }}
       targetPort: {{ .Values.proxy.wg.listenPort }}
+      {{- with .Values.proxy.wg.nodePort }}
+      nodePort: {{ . }}
+      {{- end }}
 {{- end }}

@@ -66,6 +66,9 @@ type LabGroupReconciler struct {
 	// NetworkPolicyEnabled gates creation of the default-deny NetworkPolicy
 	// baseline in each group namespace.
 	NetworkPolicyEnabled bool
+	// ImagePullSecrets names registry Secrets of the operator namespace. They are
+	// copied into every group namespace and referenced by the VPN and gateway pods.
+	ImagePullSecrets []string
 }
 
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labgroups,verbs=get;list;watch;create;update;patch;delete
@@ -106,6 +109,11 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	if err := r.ensureNamespace(ctx, ns, &lg); err != nil {
 		logger.Error(err, "ensure namespace")
+		return ctrl.Result{}, err
+	}
+
+	if err := copyPullSecrets(ctx, r.Client, r.ImagePullSecrets, ns); err != nil {
+		logger.Error(err, "copy image pull secrets")
 		return ctrl.Result{}, err
 	}
 
@@ -485,6 +493,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: "vpn",
+					ImagePullSecrets:   pullSecretRefs(r.ImagePullSecrets),
 					NodeSelector:       r.LabNodeSelector,
 					Tolerations:        r.LabTolerations,
 					InitContainers:     []corev1.Container{r.vpnAccountingInitContainer()},
@@ -578,6 +587,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: "gateway",
+					ImagePullSecrets:   pullSecretRefs(r.ImagePullSecrets),
 					NodeSelector:       r.LabNodeSelector,
 					Tolerations:        r.LabTolerations,
 					Containers: []corev1.Container{{
