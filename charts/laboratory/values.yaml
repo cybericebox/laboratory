@@ -5,7 +5,7 @@
 # ============================================================
 operator:
   image:
-    repository: cybericebox/laboratory-controller
+    repository: cybericebox/laboratory
     tag: ""
     pullPolicy: IfNotPresent
 
@@ -96,7 +96,7 @@ proxy:
 
   # Shared image for both the l7 and wg-demux containers.
   image:
-    repository: cybericebox/laboratory-proxy
+    repository: cybericebox/laboratory
     tag: ""
     pullPolicy: IfNotPresent
   replicas: 1
@@ -227,7 +227,7 @@ nodeAgent:
   enabled: true
 
   image:
-    repository: cybericebox/laboratory-node-agent
+    repository: cybericebox/laboratory-node
     tag: ""
     pullPolicy: IfNotPresent
 
@@ -286,7 +286,7 @@ agent:
   namespace: laboratory-agent
 
   image:
-    repository: cybericebox/laboratory-agent
+    repository: cybericebox/laboratory
     tag: ""
     pullPolicy: IfNotPresent
 

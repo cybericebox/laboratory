@@ -18,15 +18,16 @@ RUN cd /tmp/openvswitch-${OVS_VERSION} \
     && rm -rf /tmp/openvswitch-${OVS_VERSION}
 
 # Stage 2: build Go binaries.
-FROM golang:1.27.1 AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.27.1 AS go-builder
+ARG TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/node-agent   ./cmd/node-agent/
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/cni-gate    ./cmd/cni-gate/
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/install-cni ./cmd/install-cni/
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/netconfig   ./cmd/netconfig/
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -o /out/node-agent   ./cmd/node-agent/
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -o /out/cni-gate    ./cmd/cni-gate/
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -o /out/install-cni ./cmd/install-cni/
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -o /out/netconfig   ./cmd/netconfig/
 
 # Stage 3: final image.
 FROM ubuntu:22.04
