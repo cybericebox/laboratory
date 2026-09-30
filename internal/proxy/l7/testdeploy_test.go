@@ -25,14 +25,14 @@ func TestHandler_TestDeployTokenIsAuthorizedByPolicyAndReportedByClient(t *testi
 		Action: laboratoryv1alpha1.LabGroupAccessAllow, ClientNames: []string{"p-author"}, LabNames: []string{"lab"},
 	}}
 	meter := NewMeter("boot", time.Now())
-	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, "challenges.example.com", "challenge",
+	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, testSecret, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return backend.URL, nil }).
 		WithTokenMode(ModePerUser).
 		WithAccounting(meter, func(task, groupID string) (string, bool) { return "lab", true }).
 		WithAuthorizer(func(group, client, lab string) bool { return PolicyAllows(rules, client, lab, true) })
 
 	call := func(client string) int {
-		tok := signToken(t, priv, jwtClaims{GroupID: "t-1", Client: client, Version: 3, RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
+		tok := signCookie(t, jwtClaims{GroupID: "t-1", Client: client, Version: 3, RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
 		req := httptest.NewRequest("GET", "http://web-abc123.challenges.example.com/", nil)
 		req.Host = "web-abc123.challenges.example.com"
 		req.AddCookie(&http.Cookie{Name: "challenge", Value: tok})

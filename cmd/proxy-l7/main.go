@@ -134,7 +134,7 @@ func main() {
 		return l7.PolicyAllows(policy.Spec.Rules, clientName, lab, mode == l7.ModePerUser)
 	}
 	handler := l7.NewHandler(
-		keyWatcher.Key, cfg.BaseDomain, cfg.CookieName,
+		keyWatcher.Key, []byte(cfg.SessionSecret), cfg.BaseDomain, cfg.CookieName,
 		l7.ServiceResolver(svcResolver),
 	).WithTokenMode(mode).WithAccounting(meter, attribute).WithAuthorizer(authorize)
 

@@ -105,6 +105,9 @@ proxy:
     enabled: true
     listen: ":8443"
     cookieName: "challenge"
+    # HMAC key of the proxy's own session cookie (set on /_auth from the
+    # platform's handoff link). Empty: generated once and kept across upgrades.
+    sessionSecret: ""
     # legacy: one token per group, nothing counted per user (the old behaviour).
     # mixed: per-user tokens are counted and obey explicit deny rules; old tokens
     #   still work but are not counted. Rollout option.

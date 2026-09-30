@@ -18,6 +18,9 @@ type L7Config struct {
 	BaseDomain       string `env:"BASE_DOMAIN,required"`
 	Listen           string `env:"LISTEN_HTTPS"  envDefault:":443"`
 	CookieName       string `env:"COOKIE_NAME"   envDefault:"challenge"`
+	// SessionSecret signs the proxy's own session cookie (HMAC). It is shared by
+	// all replicas and never leaves the cluster; the platform does not know it.
+	SessionSecret string `env:"SESSION_SECRET,required"`
 	// TokenMode is legacy, mixed or per-user (see l7.TokenMode).
 	TokenMode string `env:"TOKEN_MODE" envDefault:"per-user"`
 	// Instance names this replica in its traffic reports (the pod name).

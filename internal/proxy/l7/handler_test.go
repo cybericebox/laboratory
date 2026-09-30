@@ -15,22 +15,6 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
-func makeToken(t *testing.T, priv *rsa.PrivateKey, groupID string) string {
-	t.Helper()
-	token, err := jwt.NewWithClaims(
-		jwt.SigningMethodRS256, jwtClaims{
-			GroupID: groupID,
-			RegisteredClaims: jwt.RegisteredClaims{
-				ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
-			},
-		},
-	).SignedString(priv)
-	if err != nil {
-		t.Fatalf("sign token: %v", err)
-	}
-	return token
-}
-
 func TestHandler_StripsCookie(t *testing.T) {
 	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
 
@@ -49,11 +33,11 @@ func TestHandler_StripsCookie(t *testing.T) {
 		return backend.URL, nil
 	}
 
-	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, "challenges.example.com", "challenge", resolver)
+	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, testSecret, "challenges.example.com", "challenge", resolver)
 
 	req := httptest.NewRequest("GET", "http://mytask.challenges.example.com/path", nil)
 	req.Host = "mytask.challenges.example.com"
-	req.AddCookie(&http.Cookie{Name: "challenge", Value: makeToken(t, priv, "grp1")})
+	req.AddCookie(&http.Cookie{Name: "challenge", Value: signCookie(t, jwtClaims{GroupID: "grp1", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})})
 	req.AddCookie(&http.Cookie{Name: "other", Value: "keep"})
 
 	rec := httptest.NewRecorder()
@@ -72,7 +56,7 @@ func TestHandler_StripsCookie(t *testing.T) {
 
 func TestHandler_InvalidHost(t *testing.T) {
 	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
-	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, "challenges.example.com", "challenge", nil)
+	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, testSecret, "challenges.example.com", "challenge", nil)
 
 	req := httptest.NewRequest("GET", "http://evil.com/", nil)
 	req.Host = "evil.com"
@@ -93,7 +77,7 @@ func TestHandler_CountsPerUserRequestsAndBytes(t *testing.T) {
 	defer backend.Close()
 
 	meter := NewMeter("boot-1", time.Now())
-	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, "challenges.example.com", "challenge",
+	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, testSecret, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return backend.URL, nil }).
 		WithTokenMode(ModeMixed).
 		WithAccounting(meter, func(task, groupID string) (string, bool) { return "c-1", true })
@@ -106,14 +90,14 @@ func TestHandler_CountsPerUserRequestsAndBytes(t *testing.T) {
 		h.ServeHTTP(rec, req)
 		return rec.Code
 	}
-	user := signToken(t, priv, jwtClaims{GroupID: "g1", Client: "p-user-1", RegisteredClaims: jwt.RegisteredClaims{ ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
+	user := signCookie(t, jwtClaims{GroupID: "g1", Client: "p-user-1", RegisteredClaims: jwt.RegisteredClaims{ ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
 	if code := send(user, "12345"); code != 200 {
 		t.Fatalf("code = %d", code)
 	}
 	if code := send(user, ""); code != 200 {
 		t.Fatalf("code = %d", code)
 	}
-	legacy := signToken(t, priv, jwtClaims{GroupID: "g1", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
+	legacy := signCookie(t, jwtClaims{GroupID: "g1", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
 	if code := send(legacy, ""); code != 200 {
 		t.Fatalf("legacy code = %d", code)
 	}
@@ -138,13 +122,13 @@ func TestHandler_UpstreamFailureIsNotAResponse(t *testing.T) {
 	dead.Close()
 
 	meter := NewMeter("boot-1", time.Now())
-	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, "challenges.example.com", "challenge",
+	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, testSecret, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return url, nil }).
 		WithTokenMode(ModePerUser).
 		WithAccounting(meter, func(task, groupID string) (string, bool) { return "c-1", true })
 	req := httptest.NewRequest("GET", "http://web-abc123.challenges.example.com/", nil)
 	req.Host = "web-abc123.challenges.example.com"
-	req.AddCookie(&http.Cookie{Name: "challenge", Value: signToken(t, priv, jwtClaims{GroupID: "g1", RegisteredClaims: jwt.RegisteredClaims{Subject: "user-1", ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})})
+	req.AddCookie(&http.Cookie{Name: "challenge", Value: signCookie(t, jwtClaims{GroupID: "g1", Client: "p-user-1", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadGateway {
@@ -161,7 +145,7 @@ func TestHandler_TokenModesAndAuthorizer(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
 	defer backend.Close()
 	token := func(sub string) string {
-		return signToken(t, priv, jwtClaims{GroupID: "g1", Client: sub, RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
+		return signCookie(t, jwtClaims{GroupID: "g1", Client: sub, RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
 	}
 	call := func(h *Handler, tok string) int {
 		req := httptest.NewRequest("GET", "http://web-abc123.challenges.example.com/", nil)
@@ -172,7 +156,7 @@ func TestHandler_TokenModesAndAuthorizer(t *testing.T) {
 		return rec.Code
 	}
 	build := func(mode TokenMode, authorize Authorizer) *Handler {
-		h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, "challenges.example.com", "challenge",
+		h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, testSecret, "challenges.example.com", "challenge",
 			func(task, groupID string) (string, error) { return backend.URL, nil }).WithTokenMode(mode)
 		if authorize != nil {
 			h.WithAuthorizer(authorize).WithAccounting(NewMeter("b", time.Now()), func(task, groupID string) (string, bool) { return "c-1", true })
@@ -204,13 +188,13 @@ func TestHandler_PerUserRefusesAValidTokenOfARemovedMember(t *testing.T) {
 		Action: laboratoryv1alpha1.LabGroupAccessAllow, ClientNames: []string{"c-member"}, LabNames: []string{"c-1"},
 	}}
 	authorize := func(group, client, lab string) bool { return PolicyAllows(rules, client, lab, true) }
-	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, "challenges.example.com", "challenge",
+	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, testSecret, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return backend.URL, nil }).
 		WithTokenMode(ModePerUser).
 		WithAccounting(NewMeter("b", time.Now()), func(task, groupID string) (string, bool) { return "c-1", true }).
 		WithAuthorizer(authorize)
 	call := func(sub string) int {
-		tok := signToken(t, priv, jwtClaims{GroupID: "g1", Client: sub, RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(72 * time.Hour))}})
+		tok := signCookie(t, jwtClaims{GroupID: "g1", Client: sub, RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(72 * time.Hour))}})
 		req := httptest.NewRequest("GET", "http://web-abc123.challenges.example.com/", nil)
 		req.Host = "web-abc123.challenges.example.com"
 		req.AddCookie(&http.Cookie{Name: "challenge", Value: tok})

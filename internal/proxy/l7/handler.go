@@ -27,7 +27,11 @@ type Attribution func(task, groupID string) (lab string, ok bool)
 type Authorizer func(groupID, client, lab string) bool
 
 type Handler struct {
+	// key verifies the platform's handoff tokens; secret signs and verifies the
+	// proxy's own session cookie.
 	key        func() *rsa.PublicKey
+	secret     []byte
+	replays    *replayCache
 	baseDomain string
 	cookieName string
 	resolver   BackendResolver
@@ -52,9 +56,11 @@ var upstreamTransport = &http.Transport{
 	IdleConnTimeout: 90 * time.Second,
 }
 
-func NewHandler(key func() *rsa.PublicKey, baseDomain, cookieName string, resolver BackendResolver) *Handler {
+func NewHandler(key func() *rsa.PublicKey, secret []byte, baseDomain, cookieName string, resolver BackendResolver) *Handler {
 	return &Handler{
 		key:        key,
+		secret:     secret,
+		replays:    newReplayCache(20000),
 		baseDomain: baseDomain,
 		cookieName: cookieName,
 		resolver:   resolver,
@@ -89,9 +95,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	claims, err := validateCookie(r, h.key, h.cookieName)
+	if r.URL.Path == AuthPath {
+		h.handoff(w, r, task)
+		return
+	}
+	claims, err := validateCookie(r, h.secret, h.cookieName, h.now)
 	if err != nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		h.expired(w, r)
 		return
 	}
 

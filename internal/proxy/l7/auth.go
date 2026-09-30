@@ -6,64 +6,111 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// SessionVersion marks the proxy's own session cookie.
+const SessionVersion = 1
+
+// HandoffVersion marks the platform's handoff token (RS256).
+const HandoffVersion = 4
+
+// maxHandoffLifetime bounds exp - iat of a handoff token: it is a one-click
+// link, never a session.
+const maxHandoffLifetime = 10 * time.Minute
+
+// jwtClaims is the proxy's own session cookie (HS256). It carries only what the
+// operator knows: the LabGroup and a LabGroupClient of that group.
 type jwtClaims struct {
 	GroupID string `json:"group_id"`
-	// Client is the LabGroupClient of the group this token acts as: the same
-	// object that is the participant's VPN peer. The proxy knows nothing else
-	// about who the holder is.
+	// Client is the LabGroupClient of the group the session acts as: the same
+	// object that is the participant's VPN peer.
 	Client  string `json:"client,omitempty"`
 	Version int    `json:"ver,omitempty"`
-	// UserID and RegisteredClaims.Subject belong to version 2 tokens (a user id,
-	// the client being "p-<user id>"); they are only read for compatibility.
-	UserID string `json:"user_id,omitempty"`
 	jwt.RegisteredClaims
 }
 
-// client is the LabGroupClient the token acts as; empty for a legacy token.
-func (c jwtClaims) client() string {
-	if c.Client != "" {
-		return c.Client
-	}
-	if c.Subject != "" {
-		return ClientName(c.Subject)
-	}
-	if c.UserID != "" {
-		return ClientName(c.UserID)
-	}
-	return ""
+func (c jwtClaims) client() string { return c.Client }
+
+// handoffClaims is the token in the /_auth link, signed by the platform (RS256).
+// exp is the lifetime of the link (about two minutes); Session is the end of the
+// session the proxy cookie gets.
+type handoffClaims struct {
+	GroupID string `json:"group_id"`
+	Client  string `json:"client"`
+	// Host is the device host label (<device>-<labid>) the link was issued for.
+	Host string `json:"host"`
+	// Session is the unix time the proxy cookie expires.
+	Session int64 `json:"sess"`
+	Version int   `json:"ver,omitempty"`
+	jwt.RegisteredClaims
 }
 
 var validTaskRE = regexp.MustCompile(`^[a-z0-9][a-z0-9\-]{0,62}$`)
 
-func validateCookie(r *http.Request, key func() *rsa.PublicKey, cookieName string) (jwtClaims, error) {
+// validateCookie verifies the proxy's own session cookie.
+func validateCookie(r *http.Request, secret []byte, cookieName string, now func() time.Time) (jwtClaims, error) {
 	cookie, err := r.Cookie(cookieName)
 	if err != nil {
 		return jwtClaims{}, fmt.Errorf("no %s cookie", cookieName)
 	}
-
-	pubKey := key()
-
+	if len(secret) == 0 {
+		return jwtClaims{}, fmt.Errorf("no session secret")
+	}
 	var claims jwtClaims
 	token, err := jwt.ParseWithClaims(
 		cookie.Value, &claims, func(t *jwt.Token) (interface{}, error) {
-			if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
+			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 			}
-			return pubKey, nil
+			return secret, nil
 		},
+		jwt.WithTimeFunc(now), jwt.WithExpirationRequired(),
 	)
 	if err != nil {
-		return jwtClaims{}, fmt.Errorf("invalid token: %w", err)
+		return jwtClaims{}, fmt.Errorf("invalid session: %w", err)
 	}
 	if !token.Valid {
-		return jwtClaims{}, fmt.Errorf("invalid token")
+		return jwtClaims{}, fmt.Errorf("invalid session")
 	}
 	if claims.GroupID == "" {
 		return jwtClaims{}, fmt.Errorf("empty group_id")
+	}
+	return claims, nil
+}
+
+// verifyHandoff checks the platform's signature offline, the link lifetime and
+// that the link was issued for this device host.
+func verifyHandoff(raw string, key *rsa.PublicKey, host string, now func() time.Time) (handoffClaims, error) {
+	var claims handoffClaims
+	token, err := jwt.ParseWithClaims(
+		raw, &claims, func(t *jwt.Token) (interface{}, error) {
+			if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+			}
+			return key, nil
+		},
+		jwt.WithTimeFunc(now), jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithLeeway(30*time.Second),
+	)
+	if err != nil {
+		return handoffClaims{}, fmt.Errorf("invalid handoff: %w", err)
+	}
+	if !token.Valid {
+		return handoffClaims{}, fmt.Errorf("invalid handoff")
+	}
+	if claims.GroupID == "" || claims.Client == "" || claims.ID == "" || claims.Host == "" {
+		return handoffClaims{}, fmt.Errorf("incomplete handoff")
+	}
+	if claims.IssuedAt == nil || claims.ExpiresAt.Sub(claims.IssuedAt.Time) > maxHandoffLifetime {
+		return handoffClaims{}, fmt.Errorf("handoff lives too long")
+	}
+	if claims.Host != host {
+		return handoffClaims{}, fmt.Errorf("handoff is for another host")
+	}
+	if !now().Before(time.Unix(claims.Session, 0)) {
+		return handoffClaims{}, fmt.Errorf("session already over")
 	}
 	return claims, nil
 }

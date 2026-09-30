@@ -7,15 +7,17 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
-	
+
 	"github.com/golang-jwt/jwt/v5"
 )
 
-func signToken(t *testing.T, priv *rsa.PrivateKey, claims jwtClaims) string {
+var testSecret = []byte("test-session-secret-0123456789abcdef")
+
+func signCookie(t *testing.T, claims jwtClaims) string {
 	t.Helper()
-	token, err := jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(priv)
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(testSecret)
 	if err != nil {
-		t.Fatalf("sign token: %v", err)
+		t.Fatalf("sign cookie: %v", err)
 	}
 	return token
 }
@@ -26,126 +28,57 @@ func requestWithCookie(token string) *http.Request {
 	return req
 }
 
+func hour() jwt.RegisteredClaims {
+	return jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}
+}
+
 func TestValidateCookie_Valid(t *testing.T) {
-	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
-	token := signToken(
-		t, priv, jwtClaims{
-			UserID: "u-9",
-			GroupID: "abc-123",
-			RegisteredClaims: jwt.RegisteredClaims{
-				ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
-			},
-		},
-	)
-	claims, err := validateCookie(
-		requestWithCookie(token),
-		func() *rsa.PublicKey { return &priv.PublicKey },
-		"challenge",
-	)
+	token := signCookie(t, jwtClaims{GroupID: "abc-123", Client: "p-u-9", RegisteredClaims: hour()})
+	claims, err := validateCookie(requestWithCookie(token), testSecret, "challenge", time.Now)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if claims.GroupID != "abc-123" {
-		t.Fatalf("expected GroupID abc-123, got %s", claims.GroupID)
-	}
-	if claims.UserID != "u-9" {
-		t.Fatalf("expected UserID u-9, got %s", claims.UserID)
+	if claims.GroupID != "abc-123" || claims.client() != "p-u-9" {
+		t.Fatalf("claims = %+v", claims)
 	}
 }
 
 func TestValidateCookie_Expired(t *testing.T) {
-	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
-	token := signToken(
-		t, priv, jwtClaims{
-			GroupID: "abc-123",
-			RegisteredClaims: jwt.RegisteredClaims{
-				ExpiresAt: jwt.NewNumericDate(time.Now().Add(-time.Hour)),
-			},
-		},
-	)
-	if _, err := validateCookie(
-		requestWithCookie(token),
-		func() *rsa.PublicKey { return &priv.PublicKey },
-		"challenge",
-	); err == nil {
-		t.Fatal("expected error for expired token")
+	token := signCookie(t, jwtClaims{GroupID: "abc-123", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(-time.Hour))}})
+	if _, err := validateCookie(requestWithCookie(token), testSecret, "challenge", time.Now); err == nil {
+		t.Fatal("expected error for expired cookie")
 	}
 }
 
-func TestValidateCookie_BadSig(t *testing.T) {
-	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
-	other, _ := rsa.GenerateKey(rand.Reader, 2048)
-	token := signToken(
-		t, other, jwtClaims{
-			GroupID: "abc-123",
-			RegisteredClaims: jwt.RegisteredClaims{
-				ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
-			},
-		},
-	)
-	if _, err := validateCookie(
-		requestWithCookie(token),
-		func() *rsa.PublicKey { return &priv.PublicKey },
-		"challenge",
-	); err == nil {
-		t.Fatal("expected error for bad signature")
+func TestValidateCookie_BadSecret(t *testing.T) {
+	token := signCookie(t, jwtClaims{GroupID: "abc-123", RegisteredClaims: hour()})
+	if _, err := validateCookie(requestWithCookie(token), []byte("another-secret"), "challenge", time.Now); err == nil {
+		t.Fatal("expected error for a cookie signed with another secret")
 	}
 }
 
 func TestValidateCookie_EmptyGroupID(t *testing.T) {
-	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
-	token := signToken(
-		t, priv, jwtClaims{
-			UserID: "u-9",
-			RegisteredClaims: jwt.RegisteredClaims{
-				ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
-			},
-		},
-	)
-	if _, err := validateCookie(
-		requestWithCookie(token),
-		func() *rsa.PublicKey { return &priv.PublicKey },
-		"challenge",
-	); err == nil {
+	token := signCookie(t, jwtClaims{Client: "p-u-9", RegisteredClaims: hour()})
+	if _, err := validateCookie(requestWithCookie(token), testSecret, "challenge", time.Now); err == nil {
 		t.Fatal("expected error for empty group_id")
 	}
 }
 
-func TestValidateCookie_WrongAlg(t *testing.T) {
-	// HS256 token signed with a shared secret must be rejected: only RSA allowed.
+// The platform's RS256 handoff token is not a session: the cookie takes HMAC only.
+func TestValidateCookie_RejectsAnRSAToken(t *testing.T) {
 	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
-	claims := jwtClaims{
-		GroupID: "abc-123",
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
-		},
-	}
-	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte("secret"))
+	token, err := jwt.NewWithClaims(jwt.SigningMethodRS256, jwtClaims{GroupID: "abc-123", RegisteredClaims: hour()}).SignedString(priv)
 	if err != nil {
-		t.Fatalf("sign HS256 token: %v", err)
+		t.Fatal(err)
 	}
-	if _, err := validateCookie(
-		requestWithCookie(token),
-		func() *rsa.PublicKey { return &priv.PublicKey },
-		"challenge",
-	); err == nil {
-		t.Fatal("expected error for non-RSA signing method")
+	if _, err := validateCookie(requestWithCookie(token), testSecret, "challenge", time.Now); err == nil {
+		t.Fatal("expected error for a non-HMAC cookie")
 	}
 }
 
-func TestJWTClaimsClient(t *testing.T) {
-	cases := []struct {
-		name   string
-		claims jwtClaims
-		want   string
-	}{
-		{"client claim", jwtClaims{Client: "p-u1"}, "p-u1"},
-		{"version 2 token: the user becomes its client", jwtClaims{RegisteredClaims: jwt.RegisteredClaims{Subject: "u1"}}, "p-u1"},
-		{"legacy token", jwtClaims{}, ""},
-	}
-	for _, c := range cases {
-		if got := c.claims.client(); got != c.want {
-			t.Errorf("%s: %q", c.name, got)
-		}
+func TestValidateCookie_NoSecretRefusesEverything(t *testing.T) {
+	token := signCookie(t, jwtClaims{GroupID: "abc-123", RegisteredClaims: hour()})
+	if _, err := validateCookie(requestWithCookie(token), nil, "challenge", time.Now); err == nil {
+		t.Fatal("expected error without a secret")
 	}
 }

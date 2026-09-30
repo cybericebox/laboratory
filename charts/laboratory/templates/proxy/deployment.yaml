@@ -44,6 +44,11 @@ spec:
           value: {{ .Values.proxy.l7.listen | quote }}
         - name: COOKIE_NAME
           value: {{ .Values.proxy.l7.cookieName | quote }}
+        - name: SESSION_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: proxy-session
+              key: sessionSecret
         - name: TOKEN_MODE
           value: {{ .Values.proxy.l7.tokenMode | quote }}
         - name: POD_NAME
