@@ -1,0 +1,21 @@
+{{- if .Values.devices.statePersistence.enabled }}
+{{- $r := .Values.devices.statePersistence.registry }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: laboratory-snapshots-registry
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+  annotations:
+    # The snapshots are the participants' work: they outlive an uninstall of the chart.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ ReadWriteOnce ]
+  {{- with $r.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $r.size | quote }}
+{{- end }}

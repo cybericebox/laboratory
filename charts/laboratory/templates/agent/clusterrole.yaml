@@ -41,6 +41,10 @@ rules:
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "labtrafficreports", "devices", "devices/status", "connections", "connections/status", "labvpns", "labvpns/status", "labgateways", "labgateways/status" ]
     verbs: [ "get", "list", "watch" ]
+  # ResetDevice / RescueDevice set the state controls in a device's spec.
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "devices" ]
+    verbs: [ "patch" ]
   # Env secrets are WRITE-ONLY for the agent: it CREATEs/DELETEs per-device env
   # Secrets (overwrite is delete+create) and never reads them — so a device's
   # env values (flags, licenses) are unreadable by the agent. No `get`/`list`:

@@ -1,0 +1,41 @@
+{{- if .Values.devices.statePersistence.enabled }}
+{{- $r := .Values.devices.statePersistence.registry }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: laboratory-snapshots-registry
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+data:
+  config.json: |
+    {
+      "distSpecVersion": "1.1.0",
+      "storage": {
+        "rootDirectory": "/var/lib/registry",
+        "dedupe": true,
+        "gc": true,
+        "gcDelay": {{ $r.gc.delay | quote }},
+        "gcInterval": {{ $r.gc.interval | quote }}
+      },
+      "http": {
+        "address": "0.0.0.0",
+        "port": "5000",
+        "auth": {
+          "htpasswd": { "path": "/etc/zot-auth/htpasswd" }
+        },
+        "accessControl": {
+          "repositories": {
+            "**": {
+              "anonymousPolicy": ["read"],
+              "policies": [
+                { "users": ["writer"], "actions": ["read", "create", "update", "delete"] }
+              ]
+            }
+          },
+          "adminPolicy": { "users": ["writer"], "actions": ["read", "create", "update", "delete"] }
+        }
+      },
+      "log": { "level": "info" }
+    }
+{{- end }}

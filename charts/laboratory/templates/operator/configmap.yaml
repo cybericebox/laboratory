@@ -22,3 +22,14 @@ data:
   AGENT_SERVICE_NAMESPACE: {{ .Values.agent.namespace | quote }}
   SUPPORT_EMAIL: {{ required "operator.supportEmail is required" .Values.operator.supportEmail | quote }}
   IMAGE_PULL_SECRETS: {{ include "laboratory.pullSecretNames" . | quote }}
+  {{- with .Values.devices.statePersistence }}
+  {{- if .enabled }}
+  STATE_PERSISTENCE_ENABLED: "true"
+  STATE_REGISTRY_ADDR: {{ include "laboratory.snapshotRegistryAddr" $ | quote }}
+  STATE_DEBOUNCE: {{ .debounce | quote }}
+  STATE_EXCLUDE_PATHS: {{ join "," .excludePaths | quote }}
+  STATE_MAX_SNAPSHOT_SIZE: {{ .maxSnapshotSize | quote }}
+  STATE_MAX_LAYERS: {{ .maxLayers | quote }}
+  STATE_RETENTION: {{ .retention | quote }}
+  {{- end }}
+  {{- end }}

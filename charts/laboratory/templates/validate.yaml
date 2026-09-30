@@ -33,3 +33,14 @@ at install time instead of shipping a broken deployment.
 {{- if not (hasPrefix (printf "%s/" (trimSuffix "/" .Values.nodeAgent.ovsRunHostPath)) .Values.nodeAgent.ovsSocket) }}
 {{- fail (printf "nodeAgent.ovsSocket (%s) must be inside nodeAgent.ovsRunHostPath (%s): the ovs sidecar and the node-agent share that directory" .Values.nodeAgent.ovsSocket .Values.nodeAgent.ovsRunHostPath) }}
 {{- end }}
+{{- if .Values.devices.statePersistence.enabled }}
+{{- if not .Values.nodeAgent.enabled }}
+{{- fail "devices.statePersistence.enabled needs nodeAgent.enabled: the node-agent takes the snapshots" }}
+{{- end }}
+{{- if not .Values.devices.statePersistence.registry.size }}
+{{- fail "devices.statePersistence.registry.size is required (volume size of the snapshot registry)" }}
+{{- end }}
+{{- if not (hasPrefix "/" .Values.devices.statePersistence.containerdRoot) }}
+{{- fail "devices.statePersistence.containerdRoot must be an absolute host path (the containerd root directory)" }}
+{{- end }}
+{{- end }}

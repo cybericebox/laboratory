@@ -267,6 +267,71 @@ nodeAgent:
   resources: {}
 
 # ============================================================
+# Devices: optional state persistence
+# ============================================================
+devices:
+  # Device state persistence: the writable layer of a device container survives an
+  # UNPLANNED container restart (crash, OOM, reschedule). The node-agent snapshots
+  # it into a registry the chart deploys (zot); the operator recreates the device
+  # from the latest snapshot. What is kept: files only. Memory, processes and live
+  # netfilter/route state are lost, as in a VM reboot; seconds of work are lost when
+  # a node dies. See DEPLOY.md, "Device state persistence".
+  #
+  # false: devices run as Deployments, exactly as without the feature.
+  # true: the labs CREATED from now on run their devices as bare Pods managed by the
+  # operator. The mode is fixed on each Lab when it is created; flipping this switch
+  # never changes existing labs.
+  statePersistence:
+    enabled: false
+
+    # The snapshot registry (zot) in the release namespace.
+    registry:
+      image:
+        repository: ghcr.io/project-zot/zot-linux-amd64
+        tag: "v2.1.21"
+        pullPolicy: IfNotPresent
+      # StorageClass of the registry volume; empty = the cluster default.
+      storageClass: ""
+      # Size of the registry volume. It holds the base image layers once and every
+      # device's snapshot layers: plan for (devices x maxSnapshotSize) at worst.
+      size: 20Gi
+      # Garbage collection of blobs no manifest references any more (snapshots are
+      # replaced all the time, and deleted labs are cleaned up by the retention job).
+      gc:
+        interval: 1h
+        delay: 1h
+      resources: {}
+      networkPolicy:
+        enabled: true
+
+    # How long a device's writable layer must stay quiet before a snapshot is taken.
+    debounce: 5s
+    # Paths inside the container that are never snapshotted.
+    excludePaths:
+      - /tmp
+      - /var/tmp
+      - /run
+    # Quota per device (uncompressed size of all its snapshot layers). Over quota the
+    # last good snapshot is kept and a warning shows in the lab status.
+    maxSnapshotSize: 512Mi
+    # Snapshot layers kept on top of the base image before they are squashed into one.
+    maxLayers: 10
+    # How long the snapshots of a deleted lab are kept before the repository is deleted
+    # (and the registry's GC frees the space).
+    retention: 168h
+
+    # Node-side access: the node-agent relays 127.0.0.1:<forwardPort> on each node to the
+    # registry Service, and snapshot images are referenced as localhost:<forwardPort>/...
+    # containerd treats localhost registries as plain HTTP, so the nodes need no
+    # configuration. The port must be free on the node.
+    forwardPort: 5035
+    # Host path of the containerd root (the overlayfs snapshotter keeps the writable
+    # layers below it), mounted read-only at the same path into the node-agent.
+    containerdRoot: /var/lib/k0s/containerd
+    # containerd namespace of the kubelet's CRI.
+    containerdNamespace: k8s.io
+
+# ============================================================
 # Lab workload scheduling (VPN, gateway, device pods)
 # ============================================================
 labWorkloads:
