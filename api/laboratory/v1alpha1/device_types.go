@@ -43,6 +43,9 @@ type DeviceResources struct {
 	MemoryLimit   string `json:"memoryLimit,omitempty"`
 }
 
+// StateEnabled reports whether the device is snapshot-backed.
+func (s DeviceSpec) StateEnabled() bool { return s.State != nil && s.State.Enabled }
+
 // DeviceStateSpec turns a device into a bare Pod whose writable layer is
 // snapshotted by the node-agent into the platform snapshot registry, so an
 // unplanned container restart does not lose the participant's work. The policy

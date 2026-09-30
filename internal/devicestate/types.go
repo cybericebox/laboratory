@@ -49,6 +49,10 @@ type Container struct {
 	UpperDir string
 	// Cgroup is the container's cgroup directory (cgroup v2), "" if unknown.
 	Cgroup string
+	// Snapshotter and SnapshotKey name the container's writable snapshot in the
+	// runtime; they are private to the Runtime implementation.
+	Snapshotter string
+	SnapshotKey string
 }
 
 // Runtime is the container runtime facade.

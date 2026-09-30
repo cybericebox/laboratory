@@ -55,6 +55,7 @@ type Engine struct {
 
 	mu      sync.Mutex
 	tracked map[string]*tracked // by container id
+	warned  map[string]bool
 }
 
 // tracked is one followed container.
@@ -164,6 +165,7 @@ func (e *Engine) ensureTracked(ctx context.Context, p PodInfo) {
 	c, err := e.Runtime.Inspect(ctx, p.ContainerID)
 	if err != nil {
 		e.Log.Error(err, "inspect device container", "pod", p.Pod, "container", p.ContainerID)
+		e.warnOnce(ctx, p, "state persistence unavailable: "+err.Error())
 		return
 	}
 	t := e.track(ctx, p, c)
@@ -171,6 +173,24 @@ func (e *Engine) ensureTracked(ctx context.Context, p PodInfo) {
 		return
 	}
 	e.Log.Info("following device", "device", p.Device, "pod", p.Pod, "container", p.ContainerID, "upper", c.UpperDir)
+}
+
+// warnOnce reports a warning for a pod that cannot be followed, once per message.
+func (e *Engine) warnOnce(ctx context.Context, p PodInfo, msg string) {
+	key := p.Pod + "\x00" + msg
+	e.mu.Lock()
+	if e.warned == nil {
+		e.warned = map[string]bool{}
+	}
+	seen := e.warned[key]
+	e.warned[key] = true
+	e.mu.Unlock()
+	if seen {
+		return
+	}
+	if err := e.Cluster.Warn(ctx, p, msg); err != nil && !errors.Is(err, ErrStale) {
+		e.Log.Error(err, "report warning", "pod", p.Pod)
+	}
 }
 
 // track registers the container and starts its change watcher.
