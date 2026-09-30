@@ -164,6 +164,13 @@ gateway:
   # Additional annotations on the Gateway (e.g. for cloud LB config).
   annotations: {}
 
+  # Extra annotations for the Gateway's generated LoadBalancer Service
+  # (spec.infrastructure.annotations), e.g. a fixed edge IP:
+  #   lbipam.cilium.io/ips: "192.168.105.241"
+  # Give the same lbipam.cilium.io/ips to proxy.service.annotations so the WG
+  # Service and the Gateway share that one IP.
+  serviceAnnotations: {}
+
 # ============================================================
 # cert-manager integration (issues TLS cert for proxy)
 # ============================================================
