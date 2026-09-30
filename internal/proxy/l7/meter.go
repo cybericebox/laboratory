@@ -14,15 +14,16 @@ const (
 	MaxReportRows = 512
 )
 
-type meterKey struct{ namespace, subject, lab string }
+type meterKey struct{ namespace, client, lab string }
 
 type meterRow struct {
 	attempts, bytesIn, bytesOut       int64
 	firstMs, lastMs, firstRespondedMs int64
 }
 
-// Touch is one cumulative row: what one token subject did against one lab
-// device since the proxy replica started.
+// Touch is one cumulative row: what one LabGroupClient did against one lab
+// device since the proxy replica started. Subject holds the client name, the
+// same value the VPN reports.
 type Touch struct {
 	Subject, Lab                         string
 	Attempts, BytesIn, BytesOut          int64
@@ -48,8 +49,8 @@ func NewMeter(bootID string, started time.Time) *Meter {
 // Record adds one finished request. start is when the request began; responded
 // is set when the lab itself answered (any status), not when the proxy failed
 // to reach it. bytesIn is lab to client, bytesOut client to lab.
-func (m *Meter) Record(namespace, subject, lab string, start time.Time, responded bool, bytesIn, bytesOut int64) {
-	key := meterKey{namespace, subject, lab}
+func (m *Meter) Record(namespace, client, lab string, start time.Time, responded bool, bytesIn, bytesOut int64) {
+	key := meterKey{namespace, client, lab}
 	ms := start.UnixMilli()
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -93,7 +94,7 @@ func (m *Meter) Ledger(namespace string) (rows []Touch, truncated bool) {
 			continue
 		}
 		rows = append(rows, Touch{
-			Subject: key.subject, Lab: key.lab,
+			Subject: key.client, Lab: key.lab,
 			Attempts: row.attempts, BytesIn: row.bytesIn, BytesOut: row.bytesOut,
 			FirstSeenMs: row.firstMs, LastSeenMs: row.lastMs, RespondedMs: row.firstRespondedMs,
 		})

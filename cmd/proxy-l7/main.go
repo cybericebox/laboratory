@@ -113,16 +113,25 @@ func main() {
 		lab := svc.Labels[names.LabelLab]
 		return lab, lab != "" && svc.Labels[names.LabelLabID] == hostID
 	}
-	// The group access policy is the same one the VPN enforces. In per-user mode
-	// a lab is reachable only while the policy allows this participant; in mixed
-	// mode only explicit denies apply.
-	authorize := func(groupID, subject, lab string) bool {
+	// The group access policy is the same one the VPN enforces, and the client
+	// is the same LabGroupClient. In per-user mode the client must exist in the
+	// token's group and the policy must allow it the lab, so blocking a client
+	// blocks the VPN and the web together; in mixed mode only explicit denies
+	// apply.
+	authorize := func(groupID, clientName, lab string) bool {
+		ns := laboratoryv1alpha1.LabGroupNamespace(groupID)
+		if mode == l7.ModePerUser {
+			var lgc laboratoryv1alpha1.LabGroupClient
+			if err := mgr.GetClient().Get(context.Background(), types.NamespacedName{Name: clientName, Namespace: ns}, &lgc); err != nil {
+				return false
+			}
+		}
 		var policy laboratoryv1alpha1.LabGroupAccessPolicy
-		key := types.NamespacedName{Name: names.LabGroupAccessPolicyName, Namespace: laboratoryv1alpha1.LabGroupNamespace(groupID)}
+		key := types.NamespacedName{Name: names.LabGroupAccessPolicyName, Namespace: ns}
 		if err := mgr.GetClient().Get(context.Background(), key, &policy); err != nil {
 			return mode != l7.ModePerUser
 		}
-		return l7.PolicyAllows(policy.Spec.Rules, l7.ClientName(subject), lab, mode == l7.ModePerUser)
+		return l7.PolicyAllows(policy.Spec.Rules, clientName, lab, mode == l7.ModePerUser)
 	}
 	handler := l7.NewHandler(
 		keyWatcher.Key, cfg.BaseDomain, cfg.CookieName,

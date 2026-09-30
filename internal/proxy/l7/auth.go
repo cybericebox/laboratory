@@ -11,26 +11,30 @@ import (
 )
 
 type jwtClaims struct {
-	// UserID is the original claim; per-user tokens carry the user in "sub"
-	// (RegisteredClaims.Subject) and keep user_id as an alias.
-	UserID  string `json:"user_id"`
 	GroupID string `json:"group_id"`
-	// EventID and TeamID are for reporting only. Authorization uses group_id.
-	EventID string `json:"evt,omitempty"`
-	TeamID  string `json:"team,omitempty"`
-	// TestDeploy is set on the token of a catalog test deploy (the id of the
-	// deploy). Such a token is authorized like any other but never counted.
-	TestDeploy string `json:"test,omitempty"`
-	Version    int    `json:"ver,omitempty"`
+	// Client is the LabGroupClient of the group this token acts as: the same
+	// object that is the participant's VPN peer. The proxy knows nothing else
+	// about who the holder is.
+	Client  string `json:"client,omitempty"`
+	Version int    `json:"ver,omitempty"`
+	// UserID and RegisteredClaims.Subject belong to version 2 tokens (a user id,
+	// the client being "p-<user id>"); they are only read for compatibility.
+	UserID string `json:"user_id,omitempty"`
 	jwt.RegisteredClaims
 }
 
-// subject is the user a token was issued to; empty for a legacy token.
-func (c jwtClaims) subject() string {
-	if c.Subject != "" {
-		return c.Subject
+// client is the LabGroupClient the token acts as; empty for a legacy token.
+func (c jwtClaims) client() string {
+	if c.Client != "" {
+		return c.Client
 	}
-	return c.UserID
+	if c.Subject != "" {
+		return ClientName(c.Subject)
+	}
+	if c.UserID != "" {
+		return ClientName(c.UserID)
+	}
+	return ""
 }
 
 var validTaskRE = regexp.MustCompile(`^[a-z0-9][a-z0-9\-]{0,62}$`)

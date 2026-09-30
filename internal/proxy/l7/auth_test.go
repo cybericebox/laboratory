@@ -132,3 +132,20 @@ func TestValidateCookie_WrongAlg(t *testing.T) {
 		t.Fatal("expected error for non-RSA signing method")
 	}
 }
+
+func TestJWTClaimsClient(t *testing.T) {
+	cases := []struct {
+		name   string
+		claims jwtClaims
+		want   string
+	}{
+		{"client claim", jwtClaims{Client: "p-u1"}, "p-u1"},
+		{"version 2 token: the user becomes its client", jwtClaims{RegisteredClaims: jwt.RegisteredClaims{Subject: "u1"}}, "p-u1"},
+		{"legacy token", jwtClaims{}, ""},
+	}
+	for _, c := range cases {
+		if got := c.claims.client(); got != c.want {
+			t.Errorf("%s: %q", c.name, got)
+		}
+	}
+}

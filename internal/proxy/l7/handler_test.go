@@ -106,7 +106,7 @@ func TestHandler_CountsPerUserRequestsAndBytes(t *testing.T) {
 		h.ServeHTTP(rec, req)
 		return rec.Code
 	}
-	user := signToken(t, priv, jwtClaims{GroupID: "g1", RegisteredClaims: jwt.RegisteredClaims{Subject: "user-1", ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
+	user := signToken(t, priv, jwtClaims{GroupID: "g1", Client: "p-user-1", RegisteredClaims: jwt.RegisteredClaims{ ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
 	if code := send(user, "12345"); code != 200 {
 		t.Fatalf("code = %d", code)
 	}
@@ -123,7 +123,7 @@ func TestHandler_CountsPerUserRequestsAndBytes(t *testing.T) {
 		t.Fatalf("rows = %+v", rows)
 	}
 	row := rows[0]
-	if row.Subject != "user-1" || row.Lab != "c-1" || row.Attempts != 2 || row.BytesIn != 18 || row.BytesOut != 5 || row.RespondedMs == 0 {
+	if row.Subject != "p-user-1" || row.Lab != "c-1" || row.Attempts != 2 || row.BytesIn != 18 || row.BytesOut != 5 || row.RespondedMs == 0 {
 		t.Fatalf("row = %+v", row)
 	}
 	if meter.Legacy() != 1 {
@@ -161,7 +161,7 @@ func TestHandler_TokenModesAndAuthorizer(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
 	defer backend.Close()
 	token := func(sub string) string {
-		return signToken(t, priv, jwtClaims{GroupID: "g1", RegisteredClaims: jwt.RegisteredClaims{Subject: sub, ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
+		return signToken(t, priv, jwtClaims{GroupID: "g1", Client: sub, RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
 	}
 	call := func(h *Handler, tok string) int {
 		req := httptest.NewRequest("GET", "http://web-abc123.challenges.example.com/", nil)
@@ -185,11 +185,11 @@ func TestHandler_TokenModesAndAuthorizer(t *testing.T) {
 	if code := call(build(ModeMixed, nil), token("")); code != 200 {
 		t.Fatalf("mixed without a subject: %d", code)
 	}
-	deny := func(group, subject, lab string) bool { return subject != "banned" }
-	if code := call(build(ModePerUser, deny), token("banned")); code != http.StatusForbidden {
+	deny := func(group, client, lab string) bool { return client != "c-banned" }
+	if code := call(build(ModePerUser, deny), token("c-banned")); code != http.StatusForbidden {
 		t.Fatalf("revoked participant: %d", code)
 	}
-	if code := call(build(ModePerUser, deny), token("user-1")); code != 200 {
+	if code := call(build(ModePerUser, deny), token("c-user-1")); code != 200 {
 		t.Fatalf("allowed participant: %d", code)
 	}
 }
@@ -201,16 +201,16 @@ func TestHandler_PerUserRefusesAValidTokenOfARemovedMember(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
 	defer backend.Close()
 	rules := []laboratoryv1alpha1.LabGroupAccessRule{{
-		Action: laboratoryv1alpha1.LabGroupAccessAllow, ClientNames: []string{ClientName("member")}, LabNames: []string{"c-1"},
+		Action: laboratoryv1alpha1.LabGroupAccessAllow, ClientNames: []string{"c-member"}, LabNames: []string{"c-1"},
 	}}
-	authorize := func(group, subject, lab string) bool { return PolicyAllows(rules, ClientName(subject), lab, true) }
+	authorize := func(group, client, lab string) bool { return PolicyAllows(rules, client, lab, true) }
 	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return backend.URL, nil }).
 		WithTokenMode(ModePerUser).
 		WithAccounting(NewMeter("b", time.Now()), func(task, groupID string) (string, bool) { return "c-1", true }).
 		WithAuthorizer(authorize)
 	call := func(sub string) int {
-		tok := signToken(t, priv, jwtClaims{GroupID: "g1", RegisteredClaims: jwt.RegisteredClaims{Subject: sub, ExpiresAt: jwt.NewNumericDate(time.Now().Add(72 * time.Hour))}})
+		tok := signToken(t, priv, jwtClaims{GroupID: "g1", Client: sub, RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(72 * time.Hour))}})
 		req := httptest.NewRequest("GET", "http://web-abc123.challenges.example.com/", nil)
 		req.Host = "web-abc123.challenges.example.com"
 		req.AddCookie(&http.Cookie{Name: "challenge", Value: tok})
@@ -218,10 +218,10 @@ func TestHandler_PerUserRefusesAValidTokenOfARemovedMember(t *testing.T) {
 		h.ServeHTTP(rec, req)
 		return rec.Code
 	}
-	if code := call("member"); code != 200 {
+	if code := call("c-member"); code != 200 {
 		t.Fatalf("member in the policy: %d", code)
 	}
-	if code := call("removed"); code != http.StatusForbidden {
+	if code := call("c-removed"); code != http.StatusForbidden {
 		t.Fatalf("removed member with a valid token must be refused: %d", code)
 	}
 }

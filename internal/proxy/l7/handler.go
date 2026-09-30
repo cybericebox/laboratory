@@ -22,9 +22,9 @@ type BackendResolver func(task, groupID string) (string, error)
 // the group does not own that lab.
 type Attribution func(task, groupID string) (lab string, ok bool)
 
-// Authorizer decides whether a token subject may reach a lab of a group. It is
-// called only for tokens that name a user.
-type Authorizer func(groupID, subject, lab string) bool
+// Authorizer decides whether a LabGroupClient of a group may reach a lab. It is
+// called only for tokens that name a client.
+type Authorizer func(groupID, client, lab string) bool
 
 type Handler struct {
 	key        func() *rsa.PublicKey
@@ -95,13 +95,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	subject := claims.subject()
-	if h.mode == ModePerUser && subject == "" {
+	client := claims.client()
+	if h.mode == ModePerUser && client == "" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	if h.mode == ModeLegacy {
-		subject = ""
+		client = ""
 	}
 
 	backendURL, err := h.resolver(task, claims.GroupID)
@@ -122,7 +122,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if subject != "" && h.authorize != nil && !h.authorize(claims.GroupID, subject, lab) {
+	if client != "" && h.authorize != nil && !h.authorize(claims.GroupID, client, lab) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -141,18 +141,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Transport = h.transport
 
-	// Count only what a per-user token did to a known lab device. A request
-	// without a user cannot be attributed to anybody.
+	// Count only what a client did to a known lab device, keyed by (group,
+	// client, lab); the platform decides which groups are event traffic. A
+	// request without a client cannot be attributed to anybody.
 	if h.meter == nil {
 		proxy.ServeHTTP(w, r)
 		return
 	}
-	if claims.TestDeploy != "" {
-		// A catalog author testing a lab is not an event participant.
-		proxy.ServeHTTP(w, r)
-		return
-	}
-	if subject == "" || lab == "" {
+	if client == "" || lab == "" {
 		h.meter.RecordLegacy()
 		proxy.ServeHTTP(w, r)
 		return
@@ -169,7 +165,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
 	}
 	proxy.ServeHTTP(rec, r)
-	h.meter.Record(ns(claims.GroupID), subject, lab, start, !rec.upstreamFailed, rec.bytes, out.n.Load())
+	h.meter.Record(ns(claims.GroupID), client, lab, start, !rec.upstreamFailed, rec.bytes, out.n.Load())
 }
 
 func ns(groupID string) string { return laboratoryv1alpha1.LabGroupNamespace(groupID) }
