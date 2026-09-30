@@ -20,10 +20,10 @@ COPY internal/ internal/
 COPY pkg/ pkg/
 
 ENV CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH}
-RUN go build -trimpath -o /out/manager  ./cmd/main.go && \
-    go build -trimpath -o /out/agent    ./cmd/agent && \
-    go build -trimpath -o /out/proxy-l7 ./cmd/proxy-l7 && \
-    go build -trimpath -o /out/proxy-wg ./cmd/proxy-wg
+RUN go build -trimpath -ldflags="-s -w" -o /out/manager  ./cmd/main.go && \
+    go build -trimpath -ldflags="-s -w" -o /out/agent    ./cmd/agent && \
+    go build -trimpath -ldflags="-s -w" -o /out/proxy-l7 ./cmd/proxy-l7 && \
+    go build -trimpath -ldflags="-s -w" -o /out/proxy-wg ./cmd/proxy-wg
 
 # Distroless static carries CA certificates, which proxy-l7 needs; none of the
 # binaries needs a shell or other tools.
