@@ -155,7 +155,8 @@ With `agent.enabled`, the chart deploys a gRPC server (default port 5454, TLS wi
 certificates are issued by the chart for the CNs listed in `agent.clients`). The service is `LabManager`, defined in
 [`pkg/agent/protobuf/agent.proto`](pkg/agent/protobuf/agent.proto). It covers `Ping`, CRUD for `LabGroup`, `Lab` and
 `LabGroupClient`, suspend and VPN-disable switches for a group, access-policy reconciliation, a `Monitoring` stream
-and `GetCapacity`. Go bindings are generated next to the proto file; a Go client is in [`pkg/agent/client`](pkg/agent/client).
+`GetCapacity`, and `ResetDevice` / `RescueDevice` for devices with state persistence (see
+[Device state persistence](DEPLOY.md#device-state-persistence-optional)). Go bindings are generated next to the proto file; a Go client is in [`pkg/agent/client`](pkg/agent/client).
 
 ## Development
 
@@ -181,7 +182,7 @@ make test-e2e        # e2e tests against a kind cluster (see test/e2e)
 
 ## Documentation
 
-- [`DEPLOY.md`](DEPLOY.md): install, configure, upgrade, use, uninstall.
+- [`DEPLOY.md`](DEPLOY.md): install, configure, upgrade, use, uninstall, optional device state persistence.
 - [`docs/specs/`](docs/specs/): component specifications (Russian): [operator](docs/specs/operator.md),
   [controller design](docs/specs/controller-design.md), [node-agent](docs/specs/node-agent.md),
   [CNI plugins](docs/specs/cni-plugins.md), [VPN](docs/specs/vpn.md), [proxy](docs/specs/proxy.md),
