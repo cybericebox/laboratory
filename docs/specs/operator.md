@@ -244,10 +244,12 @@ Namespace, Deployment, Service, NetworkPolicy, Secret). Не программи�
 - **Статус:** ✅ Implemented
 - **Реализация:** `lab_controller.go:ensureWebServices` (ClusterIP Service на `app=<device>`, NetworkPolicy с
   `ingress.from.namespaceSelector=proxy-system && podSelector=app:proxy`, `egress: []`).
-- **Имя Service и хост:** `<device>-<labid>` (`names.WebHostLabel`, `labid` = 25 символов base36 от UID объекта Lab,
-  с ведущими нулями). Это же первый лейбл публичного хоста `https://<device>-<labid>.<BASE_DOMAIN>`. Два Lab одной группы с
-  устройством `web` больше не делят Service и хост. У Service есть лейблы `laboratory.cybericebox.com/lab` и
-  `.../device` и `.../lab-id`, по ним прокси относит запрос к лаборатории (см. proxy.md, учёт обращений).
+- **Имя Service и хост:** `<device>-<code>` (`names.WebHostLabel`), `code` = 3 случайных символа base36 (`crypto/rand`). Это же
+  первый лейбл публичного хоста `https://<device>-<code>.<BASE_DOMAIN>`. Уникальность в namespace группы обеспечивает сам
+  Kubernetes: оператор создаёт Service с этим именем, на `AlreadyExists` берёт другой код; после 8 неудач код становится
+  4-символьным (длиннее не бывает). Имя нигде не хранится: следующий reconcile находит Service по лейблам
+  `laboratory.cybericebox.com/lab` и `.../device` плюс ownerReference на Lab и использует его имя; URL в `status.access`
+  строится из фактического имени Service. По этим же лейблам прокси относит запрос к лаборатории (см. proxy.md).
 - **Что считать выполненным:** для каждого Device с `exposure.web != nil` существует Service и NetworkPolicy; пакеты не
   от prox-pod-а отбрасываются; egress полностью запрещён.
 - **Заметки/gap:** spec §5 говорит о «второй ноге» (отдельный интерфейс) на под — здесь web-нога совпадает с дефолтным

@@ -117,9 +117,9 @@ demux — `LabGroup.Status.VPN.PublicKey`.
 - **Источник:** §3 (прокси держит только публичный ключ платформы) + решение владельца 2026-09-30: API и лабораторный
   домен разные, поэтому платформа cookie не ставит.
 - **Статус:** ✅ Implemented (нужна проверка на живом кластере)
-- **Реализация:** платформа по клику отдаёт ссылку `https://<device>-<labid>.<base>/_auth?t=<jwt>`. JWT (токен доступа к лаборатории)
+- **Реализация:** платформа по клику отдаёт ссылку `https://<device>-<code>.<base>/_auth?t=<jwt>`. JWT (токен доступа к лаборатории)
   подписан Ed25519 (alg `EdDSA`; RS256, HS256 и `none` отклоняются) ключом платформы (`auth.go:verifyHandoff`), несёт
-  `group_id`, `client`, `host` (метка `<device>-<labid>`), `sess` (конец сессии), `iat`, `exp` (~1 минута, `LAB_ACCESS_TOKEN_TTL`
+  `group_id`, `client`, `host` (метка `<device>-<code>`), `sess` (конец сессии), `iat`, `exp` (~1 минута, `LAB_ACCESS_TOKEN_TTL`
   на backend, не более 5). Токен без состояния: ни `jti`, ни привязки к браузеру, прокси ничего не запоминает. Прокси на
   `/_auth` (`session.go:handoff`) офлайн проверяет подпись, срок, что `host` совпадает с хостом запроса, и что сессия не
   закончилась. Затем ставит СВОЮ cookie (`Domain=<base>`, `HttpOnly`, `Secure`,
@@ -160,10 +160,10 @@ demux — `LabGroup.Status.VPN.PublicKey`.
 - **Статус:** ✅ Implemented (нужна проверка на живом кластере).
 - **Реализация:** `l7/meter.go` считает запросы клиента на пару (клиент, лаборатория): `attempts`
   (запросы), `firstSeen`, `lastSeen`, `firstResponded` (лаборатория сама ответила; 502 от прокси не считается), байты.
-  Хост веб-устройства `<device>-<labid>.<BASE_DOMAIN>`, где `labid` — 25 символов base36 от UUID Lab (`names.LabID`;
-  base64 непригоден: DNS-лейблы регистронезависимы и допускают только `[a-z0-9-]`). Прокси декодирует `labid`, ищет Service
-  с этим именем в namespace группы из токена и сверяет `laboratory.cybericebox.com/lab-id`: токен группы не достанет чужую
-  лабораторию. Каждая реплика раз в минуту пишет `LabTrafficReport/proxy-<pod>` в каждый namespace группы
+  Хост веб-устройства `<device>-<code>.<BASE_DOMAIN>`, где `code` — 3-4 случайных символа base36, выбранных оператором
+  при создании Service (имя Service = метка хоста). Прокси ничего не декодирует: ищет Service с этим именем в namespace
+  группы из токена и берёт лабораторию из его лейбла `laboratory.cybericebox.com/lab` (`l7.ServiceAttribution`, чтение из
+  кэша): токен группы не достанет чужую лабораторию. Каждая реплика раз в минуту пишет `LabTrafficReport/proxy-<pod>` в каждый namespace группы
   (`l7/reporter.go`): кумулятивный ledger и покрытие `coveredFrom..coveredTo` (heartbeat и для группы без запросов).
   Агент складывает отчёты реплик группы в одну серию `proxy` (суммы, min first, max last; покрытие — объединение живых
   реплик), поэтому замена пода итог не уменьшает. Не записываются: путь, query, заголовки, тела, адрес клиента,
@@ -419,7 +419,7 @@ demux — `LabGroup.Status.VPN.PublicKey`.
 - **Источник:** §3 «Domain=challenges.домен, HttpOnly + Secure + SameSite=Lax».
 - **Статус:** ✅ Implemented
 - **Реализация:** cookie ставит сам прокси на `/_auth` (`session.go`), домен `BASE_DOMAIN`, поэтому она уходит на все
-  `<device>-<labid>.<base>` и больше никуда. Платформа cookie не ставит и домена лабораторий не знает.
+  `<device>-<code>.<base>` и больше никуда. Платформа cookie не ставит и домена лабораторий не знает.
 
 ---
 

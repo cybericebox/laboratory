@@ -5,8 +5,6 @@ const (
 	LabelLab    = "laboratory.cybericebox.com/lab"
 	LabelDevice = "laboratory.cybericebox.com/device"
 	LabelGroup  = "laboratory.cybericebox.com/group"
-	// LabelLabID holds names.LabID(lab.UID) on the web Service of a device.
-	LabelLabID = "laboratory.cybericebox.com/lab-id"
 
 	// TopologyKeyHostname is the well-known node label used as the topology key
 	// for per-node scheduling constraints (device co-location).

@@ -33,7 +33,7 @@ func (c jwtClaims) client() string { return c.Client }
 type handoffClaims struct {
 	GroupID string `json:"group_id"`
 	Client  string `json:"client"`
-	// Host is the device host label (<device>-<labid>) the link was issued for.
+	// Host is the device host label (<device>-<code>) the link was issued for.
 	Host string `json:"host"`
 	// Session is the unix time the proxy cookie expires.
 	Session int64 `json:"sess"`

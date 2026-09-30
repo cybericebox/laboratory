@@ -8,7 +8,7 @@ import (
 )
 
 // AuthPath is the path of the handoff link the platform gives the participant:
-// https://<device>-<labid>.<base>/_auth?t=<jwt>. The proxy consumes it and never
+// https://<device>-<code>.<base>/_auth?t=<jwt>. The proxy consumes it and never
 // forwards it to a lab.
 const AuthPath = "/_auth"
 

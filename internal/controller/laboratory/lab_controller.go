@@ -40,13 +40,17 @@ type LabReconciler struct {
 	Recorder record.EventRecorder
 	// BaseDomain is the public DNS suffix under which task URLs are advertised,
 	// e.g. "challenges.cybericebox.com". An exposed device named "web" inside a
-	// lab is reachable as https://web-<labid>.<BaseDomain> (names.WebHostLabel; labid is the base36 of the Lab UID). Written to
+	// lab is reachable as https://web-<code>.<BaseDomain> (names.WebHostLabel; code is 3-4 random
+	// base36 chars fixed by the name of the device's Service). Written to
 	// Lab.Status.Access on Ready.
 	BaseDomain string
 	// ProxySourceCIDRs is an optional list of CIDRs added as ipBlock peers in the
 	// web-exposure NetworkPolicy. Required when the proxy runs with hostNetwork (its
 	// source IP is the node IP, not a pod IP, so namespace/label selectors don't apply).
 	ProxySourceCIDRs []string
+	// newWebCode draws the random code of a web host label; nil means
+	// names.NewWebCode. A field so tests can force collisions.
+	newWebCode func(n int) (string, error)
 	// VPNBaseNetwork is the base address space for per-lab VPN subnets (e.g. "10.8.0.0/16").
 	VPNBaseNetwork string
 	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets (e.g. "10.9.0.0/16").
@@ -118,7 +122,7 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 
-	// After validation: WebHostLabel relies on validated device names.
+	// After validation: the web host label relies on validated device names.
 	if err := r.ensureWebServices(ctx, &lab); err != nil {
 		logger.Error(err, "ensure web services")
 		return ctrl.Result{}, err
@@ -705,7 +709,7 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		newPhase = laboratoryv1alpha1.PhaseReady
 	}
 
-	access := r.buildAccessEntries(lab)
+	access := r.buildAccessEntries(ctx, lab)
 
 	// Reflect readiness as a condition; on the Ready edge emit a Normal event.
 	wasReady := labstatus.IsReady(lab.Status.Conditions)
@@ -782,7 +786,9 @@ func (r *LabReconciler) segmentReady(ctx context.Context, ns string, enabled boo
 
 // buildAccessEntries returns the externally-visible URL for each web-exposed
 // device in the lab. Empty if BaseDomain is unset.
-func (r *LabReconciler) buildAccessEntries(lab *laboratoryv1alpha1.Lab) []laboratoryv1alpha1.AccessEntry {
+// The host is the name of the device's existing web Service, never recomputed;
+// a device whose Service does not exist yet is skipped.
+func (r *LabReconciler) buildAccessEntries(ctx context.Context, lab *laboratoryv1alpha1.Lab) []laboratoryv1alpha1.AccessEntry {
 	if r.BaseDomain == "" {
 		return nil
 	}
@@ -795,12 +801,16 @@ func (r *LabReconciler) buildAccessEntries(lab *laboratoryv1alpha1.Lab) []labora
 		if proto == "" {
 			proto = "http"
 		}
+		svc, err := r.findWebService(ctx, lab, d.Name)
+		if err != nil || svc == nil {
+			continue
+		}
 		out = append(
 			out, laboratoryv1alpha1.AccessEntry{
 				Device:   d.Name,
 				Port:     d.Exposure.Web.Port,
 				Protocol: proto,
-				URL:      fmt.Sprintf("https://%s.%s", names.WebHostLabel(string(lab.UID), d.Name), r.BaseDomain),
+				URL:      fmt.Sprintf("https://%s.%s", svc.Name, r.BaseDomain),
 			},
 		)
 	}
@@ -1149,53 +1159,126 @@ func (r *LabReconciler) ensureLabGatewayDeleted(ctx context.Context, lab *labora
 	return false, nil
 }
 
+// findWebService returns the web Service of a device of the lab: the one with
+// the lab and device labels that the lab owns. Nothing else stores the name, so
+// this is how later reconciles keep the host label stable. nil if none exists.
+func (r *LabReconciler) findWebService(ctx context.Context, lab *laboratoryv1alpha1.Lab, device string) (*corev1.Service, error) {
+	var list corev1.ServiceList
+	if err := r.List(
+		ctx, &list, client.InNamespace(lab.Namespace),
+		client.MatchingLabels{names.LabelLab: lab.Name, names.LabelDevice: device},
+	); err != nil {
+		return nil, err
+	}
+	var found *corev1.Service
+	for i := range list.Items {
+		svc := &list.Items[i]
+		if !ownedByLab(svc, lab) {
+			continue
+		}
+		// Duplicates are not expected; stay deterministic if one ever appears.
+		if found == nil || svc.CreationTimestamp.Before(&found.CreationTimestamp) ||
+			(svc.CreationTimestamp.Equal(&found.CreationTimestamp) && svc.Name < found.Name) {
+			found = svc
+		}
+	}
+	return found, nil
+}
+
+func ownedByLab(obj metav1.Object, lab *laboratoryv1alpha1.Lab) bool {
+	for _, ref := range obj.GetOwnerReferences() {
+		if ref.UID == lab.UID && ref.Kind == "Lab" {
+			return true
+		}
+	}
+	return false
+}
+
+// createWebService creates the device's Service under a fresh random host
+// label. Kubernetes settles uniqueness in the group namespace: on AlreadyExists
+// another code is drawn, WebCodeAttempts times at WebCodeLen and then
+// WebCodeAttempts more at WebCodeMaxLen, never longer.
+func (r *LabReconciler) createWebService(ctx context.Context, lab *laboratoryv1alpha1.Lab, device string, fill func(*corev1.Service) error) (*corev1.Service, error) {
+	for attempt := 0; attempt < 2*names.WebCodeAttempts; attempt++ {
+		n := names.WebCodeLen
+		if attempt >= names.WebCodeAttempts {
+			n = names.WebCodeMaxLen
+		}
+		draw := r.newWebCode
+		if draw == nil {
+			draw = names.NewWebCode
+		}
+		code, err := draw(n)
+		if err != nil {
+			return nil, err
+		}
+		svc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: names.WebHostLabel(device, code), Namespace: lab.Namespace},
+		}
+		if err := fill(svc); err != nil {
+			return nil, err
+		}
+		err = r.Create(ctx, svc)
+		if err == nil {
+			return svc, nil
+		}
+		if !errors.IsAlreadyExists(err) {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("no free web host label for device %s", device)
+}
+
 func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
 	for _, d := range lab.Spec.Devices {
 		if d.Exposure == nil || d.Exposure.Web == nil {
 			continue
 		}
 		web := d.Exposure.Web
-		// Unique per lab: two labs of one group may both expose a device "web".
-		// The labels let the proxy attribute a request to the lab and the device.
-		svcName := names.WebHostLabel(string(lab.UID), d.Name)
+		// The Service name is the host label <device>-<code>. The labels let the
+		// proxy attribute a request to the lab and the device.
+		fill := func(svc *corev1.Service) error {
+			if svc.Labels == nil {
+				svc.Labels = map[string]string{}
+			}
+			svc.Labels[names.LabelLab] = lab.Name
+			svc.Labels[names.LabelDevice] = d.Name
+			svc.Spec.Selector = map[string]string{
+				names.LabelLab: lab.Name,
+				"app":          d.Name,
+			}
+			protocol := web.Protocol
+			if protocol == "" {
+				protocol = "http"
+			}
+			svc.Spec.Ports = []corev1.ServicePort{
+				{
+					Name:       protocol,
+					Port:       web.Port,
+					TargetPort: intstr.FromInt32(web.Port),
+					Protocol:   corev1.ProtocolTCP,
+				},
+			}
+			svc.Spec.Type = corev1.ServiceTypeClusterIP
+			svc.Spec.ClusterIP = "None" // headless: DNS returns pod IP directly
+			return controllerutil.SetOwnerReference(lab, svc, r.Scheme)
+		}
 
-		svc := &corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{Name: svcName, Namespace: lab.Namespace},
-		}
-		_, err := controllerutil.CreateOrUpdate(
-			ctx, r.Client, svc, func() error {
-				if svc.Labels == nil {
-					svc.Labels = map[string]string{}
-				}
-				svc.Labels[names.LabelLab] = lab.Name
-				if id, err := names.LabID(string(lab.UID)); err == nil {
-					svc.Labels[names.LabelLabID] = id
-				}
-				svc.Labels[names.LabelDevice] = d.Name
-				svc.Spec.Selector = map[string]string{
-					names.LabelLab: lab.Name,
-					"app":          d.Name,
-				}
-				protocol := web.Protocol
-				if protocol == "" {
-					protocol = "http"
-				}
-				svc.Spec.Ports = []corev1.ServicePort{
-					{
-						Name:       protocol,
-						Port:       web.Port,
-						TargetPort: intstr.FromInt32(web.Port),
-						Protocol:   corev1.ProtocolTCP,
-					},
-				}
-				svc.Spec.Type = corev1.ServiceTypeClusterIP
-				svc.Spec.ClusterIP = "None" // headless: DNS returns pod IP directly
-				return controllerutil.SetOwnerReference(lab, svc, r.Scheme)
-			},
-		)
+		existing, err := r.findWebService(ctx, lab, d.Name)
 		if err != nil {
-			return fmt.Errorf("ensure Service %s: %w", svcName, err)
+			return fmt.Errorf("find Service of device %s: %w", d.Name, err)
 		}
+		var svc *corev1.Service
+		if existing == nil {
+			svc, err = r.createWebService(ctx, lab, d.Name, fill)
+		} else {
+			svc = existing
+			_, err = controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error { return fill(svc) })
+		}
+		if err != nil {
+			return fmt.Errorf("ensure Service of device %s: %w", d.Name, err)
+		}
+		svcName := svc.Name
 
 		np := &networkingv1.NetworkPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: svcName + "-web", Namespace: lab.Namespace},

@@ -91,23 +91,9 @@ func main() {
 	meter := l7.NewMeter(fmt.Sprintf("%s-%d", instance, started.UnixNano()), started)
 
 	// A request is attributed to a lab through the labels the operator puts on
-	// the web Service of every exposed device. The host <device>-<labid> carries
-	// the base36 id of the Lab UID; the Service is looked up in the namespace of
-	// the token's own group, so a token can only reach labs its group owns, and
-	// the id in the host must match the one on the Service.
-	attribute := func(task, groupID string) (string, bool) {
-		hostID, ok := names.LabIDFromWebHostLabel(task)
-		if !ok {
-			return "", false
-		}
-		var svc corev1.Service
-		key := types.NamespacedName{Name: task, Namespace: laboratoryv1alpha1.LabGroupNamespace(groupID)}
-		if err := mgr.GetClient().Get(context.Background(), key, &svc); err != nil {
-			return "", false
-		}
-		lab := svc.Labels[names.LabelLab]
-		return lab, lab != "" && svc.Labels[names.LabelLabID] == hostID
-	}
+	// the web Service of every exposed device: the host label is the Service
+	// name, looked up in the namespace of the token's own group.
+	attribute := l7.ServiceAttribution(mgr.GetClient())
 	// The group access policy is the same one the VPN enforces, and the client
 	// is the same LabGroupClient: it must exist in the token's group and the
 	// policy must allow it the lab, so blocking a client blocks the VPN and the

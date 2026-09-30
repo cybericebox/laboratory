@@ -1,78 +1,49 @@
 package names
 
 import (
+	"crypto/rand"
 	"fmt"
 	"math/big"
-	"strings"
 )
 
 const (
-	// LabIDLen is the fixed width of a lab id: 36^25 > 2^128, so any UUID fits.
-	LabIDLen = 25
-	// maxDNSLabel is the DNS-1035 label limit that Service names and the first
-	// label of a web host share.
-	maxDNSLabel = 63
-
 	// MaxDeviceNameLen is the longest device name a lab may have. A web-exposed
-	// device is served at <device>-<labid>.<base domain>, and the wildcard cert
-	// covers one label level, so <device>-<labid> must fit one DNS label (<=63):
-	// device + "-" + 25-char base36 lab id, i.e. at most 63-1-25 = 37. We take 35
-	// for a round, predictable limit with headroom. Longer names are rejected,
-	// never truncated: truncation could make two devices collide.
+	// device is served at <device>-<code>.<base domain>, and the wildcard cert
+	// covers one label level, so <device>-<code> must fit one DNS label (<=63):
+	// device + "-" + a code of at most WebCodeMaxLen chars. 35 is a round,
+	// predictable limit with plenty of headroom. Longer names are rejected, never
+	// truncated: truncation could make two devices collide.
 	MaxDeviceNameLen = 35
+
+	// WebCodeLen is the usual length of the random code of a web host label.
+	WebCodeLen = 3
+	// WebCodeMaxLen is the longest code ever used; it is the fallback length
+	// after WebCodeAttempts collisions at WebCodeLen.
+	WebCodeMaxLen = 4
+	// WebCodeAttempts is how many codes of WebCodeLen are tried before the
+	// operator widens the code to WebCodeMaxLen.
+	WebCodeAttempts = 8
 
 	base36 = "0123456789abcdefghijklmnopqrstuvwxyz"
 )
 
-var (
-	base36Radix = big.NewInt(36)
-	maxUUID     = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 128), big.NewInt(1))
-)
+var base36Radix = big.NewInt(36)
 
-// LabID encodes a lab's UUID as 25 lowercase base36 characters, left-padded
-// with '0'. Base64 would be shorter, but DNS labels are case-insensitive and
-// allow only [a-z0-9-]. The UUID string may have dashes or not.
-func LabID(uuid string) (string, error) {
-	hexed := strings.ReplaceAll(strings.ToLower(uuid), "-", "")
-	if len(hexed) != 32 {
-		return "", fmt.Errorf("names: %q is not a UUID", uuid)
-	}
-	n, ok := new(big.Int).SetString(hexed, 16)
-	if !ok {
-		return "", fmt.Errorf("names: %q is not a UUID", uuid)
-	}
-	out := make([]byte, LabIDLen)
-	for i := LabIDLen - 1; i >= 0; i-- {
-		var digit big.Int
-		n.DivMod(n, base36Radix, &digit)
-		out[i] = base36[digit.Int64()]
+// NewWebCode returns n random lowercase base36 characters from crypto/rand.
+func NewWebCode(n int) (string, error) {
+	out := make([]byte, n)
+	for i := range out {
+		d, err := rand.Int(rand.Reader, base36Radix)
+		if err != nil {
+			return "", fmt.Errorf("names: random web code: %w", err)
+		}
+		out[i] = base36[d.Int64()]
 	}
 	return string(out), nil
 }
 
-// ParseLabID decodes a lab id back to the canonical lowercase UUID string.
-func ParseLabID(id string) (string, bool) {
-	if len(id) != LabIDLen {
-		return "", false
-	}
-	n := new(big.Int)
-	for _, c := range id {
-		d := strings.IndexRune(base36, c)
-		if d < 0 {
-			return "", false
-		}
-		n.Mul(n, base36Radix)
-		n.Add(n, big.NewInt(int64(d)))
-	}
-	if n.Cmp(maxUUID) > 0 {
-		return "", false
-	}
-	h := fmt.Sprintf("%032x", n)
-	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:], true
-}
-
 // ValidateDeviceName checks a device name against the DNS label rules that the
-// web host label <device>-<labid> imposes: at most MaxDeviceNameLen characters
+// web host label <device>-<code> imposes: at most MaxDeviceNameLen characters
 // of lowercase a-z, 0-9 and '-', not starting or ending with '-'.
 func ValidateDeviceName(name string) error {
 	if name == "" {
@@ -93,24 +64,11 @@ func ValidateDeviceName(name string) error {
 }
 
 // WebHostLabel is the first DNS label of a web-exposed device, both as the name
-// of its Service and as the host under the base domain: <device>-<labid>. Two
-// labs of one group may both have a device called "web"; their hosts and
-// Services never collide. The device name must already satisfy
-// ValidateDeviceName; it is not truncated here.
-func WebHostLabel(labUID, device string) string {
-	id, err := LabID(labUID)
-	if err != nil {
-		id = strings.Repeat("0", LabIDLen)
-	}
-	return device + "-" + id
-}
-
-// LabIDFromWebHostLabel extracts the lab id from a <device>-<labid> label.
-func LabIDFromWebHostLabel(label string) (string, bool) {
-	if len(label) < LabIDLen+2 || label[len(label)-LabIDLen-1] != '-' {
-		return "", false
-	}
-	id := label[len(label)-LabIDLen:]
-	_, ok := ParseLabID(id)
-	return id, ok
+// of its Service and as the host under the base domain: <device>-<code>. The
+// code is random and kept short; uniqueness inside the group namespace is
+// settled by Kubernetes itself, because the operator creates the Service with
+// this name and picks another code on AlreadyExists. The device name must
+// already satisfy ValidateDeviceName; it is not truncated here.
+func WebHostLabel(device, code string) string {
+	return device + "-" + code
 }
