@@ -14,57 +14,57 @@ spec:
     singular: pool
   scope: Namespaced
   versions:
-    - name: v1alpha1
-      schema:
-        openAPIV3Schema:
-          description: Pool is the Schema for the pools API.
-          properties:
-            apiVersion:
-              description: |-
-                APIVersion defines the versioned schema of this representation of an object.
-                Servers should convert recognized schemas to the latest internal value, and
-                may reject unrecognized values.
-                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
-              type: string
-            kind:
-              description: |-
-                Kind is a string value representing the REST resource this object represents.
-                Servers may infer this from the endpoint the client submits requests to.
-                Cannot be updated.
-                In CamelCase.
-                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
-              type: string
-            metadata:
-              type: object
-            spec:
-              description: PoolSpec defines the immutable configuration of a Pool.
-              properties:
-                offset:
-                  default: 0
-                  description: 'Offset shifts allocated indices: real value = Offset
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Pool is the Schema for the pools API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: PoolSpec defines the immutable configuration of a Pool.
+            properties:
+              offset:
+                default: 0
+                description: 'Offset shifts allocated indices: real value = Offset
                   + bit_index.'
-                  type: integer
-                size:
-                  description: Size is the total number of slots in this pool.
-                  minimum: 1
-                  type: integer
-              required:
-                - size
-              type: object
-            status:
-              description: PoolStatus holds the mutable allocation state.
-              properties:
-                bitMap:
-                  description: BitMap is a base64-encoded bitset (one bit per slot,
-                    1 = allocated).
-                  type: string
-                free:
-                  description: Free is the count of unallocated slots; mirrored to label
-                    pool.cybericebox.com/free.
-                  type: integer
-              type: object
-          type: object
-      served: true
-      storage: true
-      subresources:
-        status: { }
+                type: integer
+              size:
+                description: Size is the total number of slots in this pool.
+                minimum: 1
+                type: integer
+            required:
+            - size
+            type: object
+          status:
+            description: PoolStatus holds the mutable allocation state.
+            properties:
+              bitMap:
+                description: BitMap is a base64-encoded bitset (one bit per slot,
+                  1 = allocated).
+                type: string
+              free:
+                description: Free is the count of unallocated slots; mirrored to label
+                  pool.cybericebox.com/free.
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

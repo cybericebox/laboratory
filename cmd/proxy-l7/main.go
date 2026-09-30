@@ -83,11 +83,6 @@ func main() {
 		os.Exit(1)
 	}
 	
-	mode := l7.TokenMode(cfg.TokenMode)
-	if !mode.Valid() {
-		log.Error(fmt.Errorf("unknown TOKEN_MODE %q", cfg.TokenMode), "load config")
-		os.Exit(1)
-	}
 	instance := cfg.Instance
 	if instance == "" {
 		instance, _ = os.Hostname()
@@ -114,29 +109,26 @@ func main() {
 		return lab, lab != "" && svc.Labels[names.LabelLabID] == hostID
 	}
 	// The group access policy is the same one the VPN enforces, and the client
-	// is the same LabGroupClient. In per-user mode the client must exist in the
-	// token's group and the policy must allow it the lab, so blocking a client
-	// blocks the VPN and the web together; in mixed mode only explicit denies
-	// apply.
+	// is the same LabGroupClient: it must exist in the token's group and the
+	// policy must allow it the lab, so blocking a client blocks the VPN and the
+	// web together.
 	authorize := func(groupID, clientName, lab string) bool {
 		ns := laboratoryv1alpha1.LabGroupNamespace(groupID)
-		if mode == l7.ModePerUser {
-			var lgc laboratoryv1alpha1.LabGroupClient
-			if err := mgr.GetClient().Get(context.Background(), types.NamespacedName{Name: clientName, Namespace: ns}, &lgc); err != nil {
-				return false
-			}
+		var lgc laboratoryv1alpha1.LabGroupClient
+		if err := mgr.GetClient().Get(context.Background(), types.NamespacedName{Name: clientName, Namespace: ns}, &lgc); err != nil {
+			return false
 		}
 		var policy laboratoryv1alpha1.LabGroupAccessPolicy
 		key := types.NamespacedName{Name: names.LabGroupAccessPolicyName, Namespace: ns}
 		if err := mgr.GetClient().Get(context.Background(), key, &policy); err != nil {
-			return mode != l7.ModePerUser
+			return false
 		}
-		return l7.PolicyAllows(policy.Spec.Rules, clientName, lab, mode == l7.ModePerUser)
+		return l7.PolicyAllows(policy.Spec.Rules, clientName, lab)
 	}
 	handler := l7.NewHandler(
 		keyWatcher.Key, []byte(cfg.SessionSecret), cfg.BaseDomain, cfg.CookieName,
 		l7.ServiceResolver(svcResolver),
-	).WithTokenMode(mode).WithAccounting(meter, attribute).WithAuthorizer(authorize)
+	).WithAccounting(meter, attribute).WithAuthorizer(authorize)
 
 	reports := &l7.ReportWriter{
 		Reader: mgr.GetAPIReader(), Writer: mgr.GetClient(), Meter: meter, Instance: instance,

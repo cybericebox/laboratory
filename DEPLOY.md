@@ -31,7 +31,7 @@ For a real cluster, skip this step and point `KUBECONFIG` at the existing config
 
 ## 2. Configure
 
-Create your `values.yaml` override file — only set the two required fields:
+Create your `values.yaml` override file. Required: `operator.publicVPNEndpoint`, `operator.baseDomain`, and the lab access public key (below):
 
 ```yaml
 # my-values.yaml
@@ -53,6 +53,18 @@ operator:
 EOF
 ```
 
+The proxy verifies the platform's lab access tokens (Ed25519) with a public key. Generate the pair once,
+give the private key to the backend (`LAB_ACCESS_PRIVATE_KEY`) and pass the public one to the chart:
+
+```bash
+make lab-access-keys   # /tmp/lab-access-private.pem and /tmp/lab-access-public.pem
+# install with: --set-file platform.labAccessPublicKey=/tmp/lab-access-public.pem
+```
+
+The proxy's own session-cookie key (`SESSION_SECRET`) is generated once and kept across upgrades; to supply it
+yourself set `proxy.l7.sessionSecret.existingSecret` (a Secret with key `sessionSecret`, 32+ bytes) or
+`proxy.l7.sessionSecret.value`.
+
 Full list of available values: see `charts/laboratory/values.yaml`.
 
 ---
@@ -63,7 +75,8 @@ Full list of available values: see `charts/laboratory/values.yaml`.
 helm install laboratory ./charts/laboratory \
   --namespace laboratory-system \
   --create-namespace \
-  -f my-values.yaml
+  -f my-values.yaml \
+  --set-file platform.labAccessPublicKey=/tmp/lab-access-public.pem
 ```
 
 What gets installed:

@@ -25,8 +25,8 @@ type LabTrafficReportSpec struct {
 // no time series. Times are Unix milliseconds. Only lab-internal addresses are
 // ever recorded, never the address of a user.
 type LabTrafficTouch struct {
-	// Subject is the LabGroupClient name (VPN) or the token subject, a user id
-	// (proxy). An empty subject is a legacy token.
+	// Subject is the LabGroupClient name, for the VPN and for the proxy (the client
+	// of the lab access token).
 	// +optional
 	Subject string `json:"subject,omitempty"`
 	LabName string `json:"labName"`

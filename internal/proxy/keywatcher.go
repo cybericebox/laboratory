@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -15,7 +17,11 @@ import (
 // and reloads automatically when the file changes (kubelet secret-volume sync).
 // Safe for concurrent use. Implements manager.Runnable.
 type KeyWatcher struct {
-	path   string
+	path string
+	// poll re-reads the file now and then as well: a missed inotify event (or a
+	// platform whose directory events omit a replaced entry) must not leave a
+	// rotated key unnoticed.
+	poll   time.Duration
 	cached atomic.Pointer[ed25519.PublicKey]
 	mu     sync.Mutex
 }
@@ -23,7 +29,7 @@ type KeyWatcher struct {
 // NewKeyWatcher creates a KeyWatcher and performs the initial load.
 // Call mgr.Add(kw) to start background watching.
 func NewKeyWatcher(path string) (*KeyWatcher, error) {
-	kw := &KeyWatcher{path: path}
+	kw := &KeyWatcher{path: path, poll: 30 * time.Second}
 	if err := kw.reload(); err != nil {
 		return nil, err
 	}
@@ -41,17 +47,25 @@ func (kw *KeyWatcher) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("create fsnotify watcher: %w", err)
 	}
-	// Watch the directory — kubelet replaces the symlink, not the file itself.
-	if err := watcher.Add(kw.path); err != nil {
+	// Watch the directory — kubelet replaces the ..data symlink, not the file
+	// itself, so a watch on the file would go blind after the first rotation.
+	dir := filepath.Dir(kw.path)
+	if err := watcher.Add(dir); err != nil {
 		_ = watcher.Close()
-		return fmt.Errorf("watch %s: %w", kw.path, err)
+		return fmt.Errorf("watch %s: %w", dir, err)
 	}
 	log := ctrl.Log.WithName("keywatcher")
 	defer watcher.Close()
+	ticker := time.NewTicker(kw.poll)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-ticker.C:
+			if err := kw.reload(); err != nil {
+				log.Error(err, "reload lab access public key", "path", kw.path)
+			}
 		case ev, ok := <-watcher.Events:
 			if !ok {
 				return nil

@@ -30,7 +30,7 @@ func (h *Handler) handoff(w http.ResponseWriter, r *http.Request, host string) {
 	}
 	end := time.Unix(claims.Session, 0)
 	value, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwtClaims{
-		GroupID: claims.GroupID, Client: claims.Client, Version: SessionVersion,
+		GroupID: claims.GroupID, Client: claims.Client,
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(end),
 		},

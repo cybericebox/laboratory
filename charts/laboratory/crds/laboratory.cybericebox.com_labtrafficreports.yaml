@@ -130,8 +130,8 @@ spec:
                       type: string
                     subject:
                       description: |-
-                        Subject is the LabGroupClient name (VPN) or the token subject, a user id
-                        (proxy). An empty subject is a legacy token.
+                        Subject is the LabGroupClient name, for the VPN and for the proxy (the client
+                        of the lab access token).
                       type: string
                   required:
                   - attempts

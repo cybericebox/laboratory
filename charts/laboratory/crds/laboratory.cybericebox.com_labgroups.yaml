@@ -65,8 +65,8 @@ spec:
                     x-kubernetes-map-type: atomic
                   probeWhileSuspended:
                     description: |-
-                      ProbeWhileSuspended keeps WireGuard available for the test gateway while
-                      group suspension still stops the internet gateway and Lab devices.
+                      Deprecated: suspension now always keeps WireGuard and the internet
+                      gateway running while stopping only task devices.
                     type: boolean
                 type: object
             type: object
@@ -105,7 +105,7 @@ spec:
                   registered:
                     description: |-
                       Registered is true when the VPN deployment has at least one ready replica,
-                      including a probe-only tunnel while Lab devices are suspended.
+                      including while Lab devices are suspended.
                     type: boolean
                   secretRef:
                     description: SecretRef is "<namespace>/<name>" of the vpn-server-keypair
@@ -115,6 +115,8 @@ spec:
             type: object
         type: object
         x-kubernetes-validations:
+        - message: LabGroup name is the namespace name and must be at most 63 characters
+          rule: self.metadata.name.size() <= 63
         - message: LabGroup name conflicts with a reserved Kubernetes namespace
           rule: '!(self.metadata.name in [''default'',''kube-system'',''kube-public'',''kube-node-lease'',''laboratory-system''])'
     served: true

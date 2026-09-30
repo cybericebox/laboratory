@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/proxy"
 )
 
 const (
@@ -66,6 +67,12 @@ func (r *PlatformReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, fmt.Errorf("platform secret missing key %q", LabAccessPublicKeyField)
 	}
 	
+	// Never hand the proxy a key it cannot load (it would keep the old one and
+	// log an error, or fail to start).
+	if _, err := proxy.ParseLabAccessPublicKey(accessKey); err != nil {
+		return ctrl.Result{}, fmt.Errorf("platform secret %q: %w", PlatformSecretName, err)
+	}
+
 	dst := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      ProxyCredentialsName,

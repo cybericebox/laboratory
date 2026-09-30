@@ -27,12 +27,11 @@ func TestHandler_TestDeployTokenIsAuthorizedByPolicyAndReportedByClient(t *testi
 	meter := NewMeter("boot", time.Now())
 	h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return backend.URL, nil }).
-		WithTokenMode(ModePerUser).
 		WithAccounting(meter, func(task, groupID string) (string, bool) { return "lab", true }).
-		WithAuthorizer(func(group, client, lab string) bool { return PolicyAllows(rules, client, lab, true) })
+		WithAuthorizer(func(group, client, lab string) bool { return PolicyAllows(rules, client, lab) })
 
 	call := func(client string) int {
-		tok := signCookie(t, jwtClaims{GroupID: "t-1", Client: client, Version: 3, RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
+		tok := signCookie(t, jwtClaims{GroupID: "t-1", Client: client, RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
 		req := httptest.NewRequest("GET", "http://web-abc123.challenges.example.com/", nil)
 		req.Host = "web-abc123.challenges.example.com"
 		req.AddCookie(&http.Cookie{Name: "challenge", Value: tok})

@@ -24,8 +24,6 @@ type L7Config struct {
 	// bytes). It is shared by all replicas and never leaves the cluster; the
 	// platform does not know it and it is never the lab access key.
 	SessionSecret string `env:"SESSION_SECRET,required"`
-	// TokenMode is legacy, mixed or per-user (see l7.TokenMode).
-	TokenMode string `env:"TOKEN_MODE" envDefault:"per-user"`
 	// Instance names this replica in its traffic reports (the pod name).
 	Instance       string        `env:"POD_NAME"`
 	ReportInterval time.Duration `env:"REPORT_INTERVAL" envDefault:"1m"`
@@ -51,9 +49,19 @@ func ReadLabAccessPublicKey(path string) (ed25519.PublicKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read lab access public key %s: %w", path, err)
 	}
+	pub, err := ParseLabAccessPublicKey(data)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return pub, nil
+}
+
+// ParseLabAccessPublicKey parses a PKIX PEM Ed25519 public key. The operator
+// uses it to refuse a key the proxy could not load.
+func ParseLabAccessPublicKey(data []byte) (ed25519.PublicKey, error) {
 	block, _ := pem.Decode(data)
 	if block == nil {
-		return nil, fmt.Errorf("no PEM block in %s", path)
+		return nil, fmt.Errorf("no PEM block in the lab access public key")
 	}
 	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
@@ -61,7 +69,7 @@ func ReadLabAccessPublicKey(path string) (ed25519.PublicKey, error) {
 	}
 	edPub, ok := pub.(ed25519.PublicKey)
 	if !ok {
-		return nil, fmt.Errorf("lab access public key in %s is not Ed25519", path)
+		return nil, fmt.Errorf("the lab access public key is not Ed25519")
 	}
 	return edPub, nil
 }

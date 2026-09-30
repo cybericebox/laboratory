@@ -16,7 +16,7 @@ rules:
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "labgroupaccesspolicies" ]
     verbs: [ "get", "list", "watch" ]
-  # A token names a LabGroupClient; per-user mode checks that it exists.
+  # A token names a LabGroupClient; the proxy checks that it exists.
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "labgroupclients" ]
     verbs: [ "get", "list", "watch" ]

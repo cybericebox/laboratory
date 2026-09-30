@@ -40,6 +40,7 @@ type LabGroupClientStatistics struct {
 // +genclient
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:validation:XValidation:rule="self.metadata.name.size() <= 63",message="LabGroupClient name must be at most 63 characters"
 
 // LabGroupClient is the Schema for the labgroupclients API.
 type LabGroupClient struct {

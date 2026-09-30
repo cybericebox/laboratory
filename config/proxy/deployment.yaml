@@ -1,18 +1,25 @@
-# Namespace for the proxy singleton pod.
+# Plain-manifest twin of charts/laboratory/templates/proxy (values: defaults).
+# Not part of config/default; keep it in step with the chart.
+#
+# Prerequisites in laboratory-proxy:
+#   - Secret proxy-tls (tls.crt, tls.key): the wildcard certificate of BASE_DOMAIN.
+#   - Secret lab-access-public-key (public.pem): created by the operator from the
+#     Secret of the same name in laboratory-system (PlatformReconciler).
+#   - Secret proxy-session (sessionSecret): HMAC key (32+ bytes) of the proxy's own
+#     session cookie, shared by all replicas:
+#       kubectl -n laboratory-proxy create secret generic proxy-session \
+#         --from-literal=sessionSecret="$(openssl rand -base64 48)"
 apiVersion: v1
 kind: Namespace
 metadata:
   name: laboratory-proxy
 ---
-# ServiceAccount used by the proxy pod.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: proxy
+  name: laboratory-proxy
   namespace: laboratory-proxy
 ---
-# ClusterRole: proxy needs cluster-wide read on LabGroups (demux table)
-# and Services (L7 service resolver informer cache).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -24,6 +31,22 @@ rules:
   - apiGroups: [ "" ]
     resources: [ "services" ]
     verbs: [ "get", "list", "watch" ]
+  # The group access policy is the same one the VPN enforces.
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "labgroupaccesspolicies" ]
+    verbs: [ "get", "list", "watch" ]
+  # A token names a LabGroupClient; the proxy checks that it exists.
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "labgroupclients" ]
+    verbs: [ "get", "list", "watch" ]
+  # Each replica publishes its request counters as its own report in every group
+  # namespace.
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "labtrafficreports" ]
+    verbs: [ "get", "create", "update" ]
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "labtrafficreports/status" ]
+    verbs: [ "get", "patch", "update" ]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -35,103 +58,79 @@ roleRef:
   name: laboratory-proxy
 subjects:
   - kind: ServiceAccount
-    name: proxy
-    namespace: laboratory-proxy
----
-# Role: proxy reads only its own credentials Secret.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: lab-access-reader
-  namespace: laboratory-proxy
-rules:
-  - apiGroups: [ "" ]
-    resources: [ "secrets" ]
-    resourceNames: [ "lab-access-public-key" ]
-    verbs: [ "get" ]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: lab-access-reader
-  namespace: laboratory-proxy
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: lab-access-reader
-subjects:
-  - kind: ServiceAccount
-    name: proxy
+    name: laboratory-proxy
     namespace: laboratory-proxy
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: proxy
+  name: laboratory-proxy
   namespace: laboratory-proxy
 spec:
   replicas: 1
-  strategy:
-    type: Recreate
   selector:
     matchLabels:
-      app: proxy
+      app: laboratory-proxy-l7
   template:
     metadata:
       labels:
-        app: proxy
+        app: laboratory-proxy-l7
     spec:
-      serviceAccountName: proxy
-      hostNetwork: true
-      dnsPolicy: ClusterFirstWithHostNet
+      serviceAccountName: laboratory-proxy
       containers:
-        - name: proxy
-          image: cybericebox/proxy:latest
-          imagePullPolicy: Never
-          securityContext:
-            capabilities:
-              add: [ "NET_ADMIN" ]
-          ports:
-            - name: https
-              containerPort: 443
-              hostPort: 443
-            - name: wg-udp
-              containerPort: 51820
-              protocol: UDP
-              hostPort: 51820
+        - name: l7
+          image: cybericebox/laboratory-proxy:latest
+          command: [ "/proxy-l7" ]
           env:
-            - name: KUBERNETES_SERVICE_HOST
-              value: "127.0.0.1"
-            - name: KUBERNETES_SERVICE_PORT
-              value: "6443"
+            - name: BASE_DOMAIN
+              value: lab.local
+            - name: LISTEN_HTTPS
+              value: ":8443"
+            - name: SESSION_COOKIE_NAME
+              value: challenge
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: proxy-session
+                  key: sessionSecret
+            - name: REPORT_INTERVAL
+              value: 1m
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
             - name: TLS_CERT_PATH
               value: /etc/proxy/tls/tls.crt
             - name: TLS_KEY_PATH
               value: /etc/proxy/tls/tls.key
             - name: LAB_ACCESS_PUBLIC_KEY_PATH
-              value: /etc/proxy/credentials/public.pem
-            - name: BASE_DOMAIN
-              value: test.local
-            - name: UDP_LISTEN_ADDR
-              value: "0.0.0.0:51820"
-            - name: EXTERNAL_INTERFACE
-              value: eth0
+              value: /etc/proxy/lab-access/public.pem
+          ports:
+            - name: https
+              containerPort: 8443
           volumeMounts:
             - name: tls
               mountPath: /etc/proxy/tls
               readOnly: true
-            - name: credentials
-              mountPath: /etc/proxy/credentials
+            - name: lab-access
+              mountPath: /etc/proxy/lab-access
               readOnly: true
+        - name: wg-demux
+          image: cybericebox/laboratory-proxy:latest
+          command: [ "/proxy-wg" ]
+          env:
+            - name: UDP_LISTEN_ADDR
+              value: ":51820"
+            - name: VPN_SERVICE_PORT
+              value: "51820"
+          ports:
+            - name: wg
+              containerPort: 51820
+              protocol: UDP
       volumes:
         - name: tls
           secret:
             secretName: proxy-tls
-        - name: credentials
+        - name: lab-access
           secret:
             secretName: lab-access-public-key
-      nodeSelector:
-        node-role.kubernetes.io/control-plane: ""
-      tolerations:
-        - key: node-role.kubernetes.io/control-plane
-          effect: NoSchedule

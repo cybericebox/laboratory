@@ -49,8 +49,8 @@ spec:
             secretKeyRef:
               name: {{ default "proxy-session" .Values.proxy.l7.sessionSecret.existingSecret }}
               key: sessionSecret
-        - name: TOKEN_MODE
-          value: {{ .Values.proxy.l7.tokenMode | quote }}
+        - name: REPORT_INTERVAL
+          value: {{ .Values.proxy.l7.reportInterval | quote }}
         - name: POD_NAME
           valueFrom:
             fieldRef:

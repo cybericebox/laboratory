@@ -30,7 +30,7 @@ func newHandoffFixture(t *testing.T) *handoffFixture {
 	t.Cleanup(backend.Close)
 	f := &handoffFixture{priv: priv, backend: backend, now: time.Now()}
 	f.handler = NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge",
-		func(task, groupID string) (string, error) { return backend.URL, nil }).WithTokenMode(ModePerUser)
+		func(task, groupID string) (string, error) { return backend.URL, nil })
 	f.handler.now = func() time.Time { return f.now }
 	return f
 }
@@ -38,7 +38,7 @@ func newHandoffFixture(t *testing.T) *handoffFixture {
 func (f *handoffFixture) link(t *testing.T, mutate func(*handoffClaims)) string {
 	t.Helper()
 	claims := handoffClaims{
-		GroupID: "g1", Client: "p-u1", Host: "web-abc123", Session: f.now.Add(24 * time.Hour).Unix(), Version: HandoffVersion,
+		GroupID: "g1", Client: "p-u1", Host: "web-abc123", Session: f.now.Add(24 * time.Hour).Unix(),
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt: jwt.NewNumericDate(f.now), ExpiresAt: jwt.NewNumericDate(f.now.Add(time.Minute)),
 		},

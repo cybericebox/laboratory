@@ -190,12 +190,13 @@ spec:
 YAML
 
 # laboratory chart
+# (make lab-access-keys writes /tmp/lab-access-public.pem)
 helm upgrade --install laboratory ${CHART_PATH} \\
-  --namespace laboratory --create-namespace \\
+  --namespace laboratory-system --create-namespace \\
   --set operator.baseDomain=lab.test \\
   --set operator.publicVPNEndpoint=${CTRL_IP}:51820 \\
-  --set certManager.staging=true \\
-  --set certManager.email=test@lab.test \\
+  --set certManager.selfSigned=true \\
+  --set-file platform.labAccessPublicKey=/tmp/lab-access-public.pem \\
   --wait --timeout=5m
 
 

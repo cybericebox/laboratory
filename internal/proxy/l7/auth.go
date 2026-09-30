@@ -11,12 +11,6 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// SessionVersion marks the proxy's own session cookie.
-const SessionVersion = 1
-
-// HandoffVersion marks the platform's handoff token.
-const HandoffVersion = 5
-
 // maxHandoffLifetime bounds exp - iat of a handoff token: it is a one-click
 // link, never a session.
 const maxHandoffLifetime = 5 * time.Minute
@@ -28,7 +22,6 @@ type jwtClaims struct {
 	// Client is the LabGroupClient of the group the session acts as: the same
 	// object that is the participant's VPN peer.
 	Client  string `json:"client,omitempty"`
-	Version int    `json:"ver,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -44,7 +37,6 @@ type handoffClaims struct {
 	Host string `json:"host"`
 	// Session is the unix time the proxy cookie expires.
 	Session int64 `json:"sess"`
-	Version int   `json:"ver,omitempty"`
 	jwt.RegisteredClaims
 }
 

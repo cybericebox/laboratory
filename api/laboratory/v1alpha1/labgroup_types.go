@@ -51,6 +51,7 @@ type LabGroupVPNStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
+// +kubebuilder:validation:XValidation:rule="self.metadata.name.size() <= 63",message="LabGroup name is the namespace name and must be at most 63 characters"
 // +kubebuilder:validation:XValidation:rule="!(self.metadata.name in ['default','kube-system','kube-public','kube-node-lease','laboratory-system'])",message="LabGroup name conflicts with a reserved Kubernetes namespace"
 
 // LabGroup is the Schema for the labgroups API.

@@ -142,7 +142,6 @@ helm upgrade --install laboratory $CHART_PATH \
   --namespace laboratory-system --create-namespace \
   --set operator.baseDomain=lab.test \
   --set operator.publicVPNEndpoint=$CTRL_IP:51820 \
-  --set proxy.wg.externalInterface=lima0 \
   --set certManager.selfSigned=true \
   --set-file platform.labAccessPublicKey=/tmp/lab-access-public.pem \
   --wait --timeout=5m

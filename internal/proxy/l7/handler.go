@@ -23,7 +23,6 @@ type BackendResolver func(task, groupID string) (string, error)
 type Attribution func(task, groupID string) (lab string, ok bool)
 
 // Authorizer decides whether a LabGroupClient of a group may reach a lab. It is
-// called only for tokens that name a client.
 type Authorizer func(groupID, client, lab string) bool
 
 type Handler struct {
@@ -36,7 +35,6 @@ type Handler struct {
 	resolver   BackendResolver
 	transport  http.RoundTripper
 
-	mode      TokenMode
 	meter     *Meter
 	attribute Attribution
 	authorize Authorizer
@@ -63,25 +61,18 @@ func NewHandler(key func() ed25519.PublicKey, secret []byte, baseDomain, cookieN
 		cookieName: cookieName,
 		resolver:   resolver,
 		transport:  upstreamTransport,
-		mode:       ModeLegacy,
 		now:        time.Now,
 	}
 }
 
-// WithTokenMode sets how strictly tokens must name a user.
-func (h *Handler) WithTokenMode(mode TokenMode) *Handler {
-	h.mode = mode
-	return h
-}
-
-// WithAccounting counts requests of per-user tokens per lab device. attribute
+// WithAccounting counts requests of a client per lab device. attribute
 // maps the task host to the lab and device; without it nothing is counted.
 func (h *Handler) WithAccounting(meter *Meter, attribute Attribution) *Handler {
 	h.meter, h.attribute = meter, attribute
 	return h
 }
 
-// WithAuthorizer restricts per-user tokens to the labs the group policy allows.
+// WithAuthorizer restricts clients to the labs the group policy allows.
 func (h *Handler) WithAuthorizer(authorize Authorizer) *Handler {
 	h.authorize = authorize
 	return h
@@ -104,12 +95,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := claims.client()
-	if h.mode == ModePerUser && client == "" {
+	if client == "" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
-	}
-	if h.mode == ModeLegacy {
-		client = ""
 	}
 
 	backendURL, err := h.resolver(task, claims.GroupID)
@@ -125,12 +113,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var lab string
 	if h.attribute != nil {
 		lab, _ = h.attribute(task, claims.GroupID)
-		if lab == "" && h.mode == ModePerUser {
+		if lab == "" {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 	}
-	if client != "" && h.authorize != nil && !h.authorize(claims.GroupID, client, lab) {
+	if h.authorize != nil && !h.authorize(claims.GroupID, client, lab) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -150,14 +138,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	proxy.Transport = h.transport
 
 	// Count only what a client did to a known lab device, keyed by (group,
-	// client, lab); the platform decides which groups are event traffic. A
-	// request without a client cannot be attributed to anybody.
-	if h.meter == nil {
-		proxy.ServeHTTP(w, r)
-		return
-	}
-	if client == "" || lab == "" {
-		h.meter.RecordLegacy()
+	// client, lab); the platform decides which groups are event traffic.
+	if h.meter == nil || lab == "" {
 		proxy.ServeHTTP(w, r)
 		return
 	}

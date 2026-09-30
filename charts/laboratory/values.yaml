@@ -7,12 +7,12 @@ operator:
     tag: "latest"
     pullPolicy: IfNotPresent
 
-  # REQUIRED: host:port advertised to WireGuard clients (demux public address).
+  # REQUIRED (no default): host:port advertised to WireGuard clients (demux public address).
   # Example: "vpn.example.com:51820"
   publicVPNEndpoint: ""
 
-  # REQUIRED: cluster ingress base domain for device exposure URLs.
-  # Example: "lab.example.com"
+  # REQUIRED: cluster ingress base domain for device exposure URLs (also the proxy's
+  # BASE_DOMAIN and the session cookie domain). Example: "lab.example.com"
   baseDomain: "lab.local"
 
   # UDP port the VPN server listens on.
@@ -83,11 +83,10 @@ proxy:
   # annotation pair (gateway/gateway.yaml names this namespace; proxy/service-wg-lb.yaml
   # names the Gateway's namespace via .Release.Namespace) — both must stay in sync for
   # Cilium's LB-IPAM cross-namespace IP sharing to work.
-  # KNOWN GAP: the operator's lab access key sync (platform_reconciler.go) and each
-  # Lab's web-exposure NetworkPolicy peer selector (lab_controller.go) still read the
-  # Go compile-time constant internal/names.ProxyNamespace ("laboratory-proxy") instead
-  # of this value. Changing this away from the default will break the lab access key sync
-  # and per-lab proxy ingress until that constant is also made configurable.
+  # Must stay "laboratory-proxy": the operator's lab access key sync
+  # (platform_reconciler.go) and each Lab's web-exposure NetworkPolicy peer selector
+  # (lab_controller.go) use the compile-time constant internal/names.ProxyNamespace.
+  # templates/validate.yaml refuses any other value.
   namespace: "laboratory-proxy"
 
   # Set true when running in Kind: overrides API server address to 127.0.0.1:6443.
@@ -114,12 +113,8 @@ proxy:
     sessionSecret:
       existingSecret: ""
       value: ""
-    # legacy: one token per group, nothing counted per user (the old behaviour).
-    # mixed: per-user tokens are counted and obey explicit deny rules; old tokens
-    #   still work but are not counted. Rollout option.
-    # per-user: every token must name a user and the group access policy (the one
-    #   the VPN uses) must allow that participant the lab. Default.
-    tokenMode: "per-user"
+    # How often each replica publishes its request counters (REPORT_INTERVAL).
+    reportInterval: "1m"
     resources:
       limits:
         cpu: 500m
@@ -282,8 +277,7 @@ platform:
   # Ed25519 public key (PKIX PEM) that proxy-l7 uses to verify the lab access
   # tokens (handoff links) signed by the daemon (LAB_ACCESS_PRIVATE_KEY).
   # The operator's PlatformReconciler syncs this into the lab-access-public-key Secret in
-  # the proxy namespace (internal/names.ProxyNamespace — NOT currently wired to
-  # proxy.namespace above; see that key's KNOWN GAP note).
+  # the proxy namespace. REQUIRED while the proxy is enabled.
   # Pass via: --set-file platform.labAccessPublicKey=/path/to/lab-access-public.pem
   # (make lab-access-keys generates the pair).
   labAccessPublicKey: ""

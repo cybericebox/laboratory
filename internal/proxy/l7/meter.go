@@ -3,7 +3,6 @@ package l7
 import (
 	"sort"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -39,7 +38,6 @@ type Meter struct {
 	mu        sync.Mutex
 	rows      map[meterKey]*meterRow
 	truncated bool
-	legacy    atomic.Int64
 }
 
 func NewMeter(bootID string, started time.Time) *Meter {
@@ -76,13 +74,6 @@ func (m *Meter) Record(namespace, client, lab string, start time.Time, responded
 		row.firstRespondedMs = ms
 	}
 }
-
-// RecordLegacy counts a request with a token that names no user. It is only
-// an operational number; a legacy request cannot be attributed to anyone.
-func (m *Meter) RecordLegacy() { m.legacy.Add(1) }
-
-// Legacy is the number of unattributable requests since start.
-func (m *Meter) Legacy() int64 { return m.legacy.Load() }
 
 // Ledger returns the rows of one namespace, at most MaxReportRows (the busiest
 // first when it has to cut), and whether anything was dropped.

@@ -37,7 +37,7 @@ func TestHandler_StripsCookie(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "http://mytask.challenges.example.com/path", nil)
 	req.Host = "mytask.challenges.example.com"
-	req.AddCookie(&http.Cookie{Name: "challenge", Value: signCookie(t, jwtClaims{GroupID: "grp1", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})})
+	req.AddCookie(&http.Cookie{Name: "challenge", Value: signCookie(t, jwtClaims{GroupID: "grp1", Client: "p-u1", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})})
 	req.AddCookie(&http.Cookie{Name: "other", Value: "keep"})
 
 	rec := httptest.NewRecorder()
@@ -79,7 +79,6 @@ func TestHandler_CountsPerUserRequestsAndBytes(t *testing.T) {
 	meter := NewMeter("boot-1", time.Now())
 	h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return backend.URL, nil }).
-		WithTokenMode(ModeMixed).
 		WithAccounting(meter, func(task, groupID string) (string, bool) { return "c-1", true })
 
 	send := func(token, body string) int {
@@ -97,9 +96,9 @@ func TestHandler_CountsPerUserRequestsAndBytes(t *testing.T) {
 	if code := send(user, ""); code != 200 {
 		t.Fatalf("code = %d", code)
 	}
-	legacy := signCookie(t, jwtClaims{GroupID: "g1", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
-	if code := send(legacy, ""); code != 200 {
-		t.Fatalf("legacy code = %d", code)
+	noClient := signCookie(t, jwtClaims{GroupID: "g1", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
+	if code := send(noClient, ""); code != http.StatusUnauthorized {
+		t.Fatalf("a session without a client: code = %d", code)
 	}
 
 	rows, truncated := meter.Ledger(laboratoryv1alpha1.LabGroupNamespace("g1"))
@@ -109,9 +108,6 @@ func TestHandler_CountsPerUserRequestsAndBytes(t *testing.T) {
 	row := rows[0]
 	if row.Subject != "p-user-1" || row.Lab != "c-1" || row.Attempts != 2 || row.BytesIn != 18 || row.BytesOut != 5 || row.RespondedMs == 0 {
 		t.Fatalf("row = %+v", row)
-	}
-	if meter.Legacy() != 1 {
-		t.Fatalf("legacy requests = %d", meter.Legacy())
 	}
 }
 
@@ -124,7 +120,6 @@ func TestHandler_UpstreamFailureIsNotAResponse(t *testing.T) {
 	meter := NewMeter("boot-1", time.Now())
 	h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return url, nil }).
-		WithTokenMode(ModePerUser).
 		WithAccounting(meter, func(task, groupID string) (string, bool) { return "c-1", true })
 	req := httptest.NewRequest("GET", "http://web-abc123.challenges.example.com/", nil)
 	req.Host = "web-abc123.challenges.example.com"
@@ -140,7 +135,7 @@ func TestHandler_UpstreamFailureIsNotAResponse(t *testing.T) {
 	}
 }
 
-func TestHandler_TokenModesAndAuthorizer(t *testing.T) {
+func TestHandler_ClientAndAuthorizer(t *testing.T) {
 	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
 	defer backend.Close()
@@ -155,31 +150,28 @@ func TestHandler_TokenModesAndAuthorizer(t *testing.T) {
 		h.ServeHTTP(rec, req)
 		return rec.Code
 	}
-	build := func(mode TokenMode, authorize Authorizer) *Handler {
+	build := func(authorize Authorizer) *Handler {
 		h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge",
-			func(task, groupID string) (string, error) { return backend.URL, nil }).WithTokenMode(mode)
+			func(task, groupID string) (string, error) { return backend.URL, nil })
 		if authorize != nil {
 			h.WithAuthorizer(authorize).WithAccounting(NewMeter("b", time.Now()), func(task, groupID string) (string, bool) { return "c-1", true })
 		}
 		return h
 	}
-	if code := call(build(ModePerUser, nil), token("")); code != http.StatusUnauthorized {
-		t.Fatalf("per-user without a subject: %d", code)
-	}
-	if code := call(build(ModeMixed, nil), token("")); code != 200 {
-		t.Fatalf("mixed without a subject: %d", code)
+	if code := call(build(nil), token("")); code != http.StatusUnauthorized {
+		t.Fatalf("without a client: %d", code)
 	}
 	deny := func(group, client, lab string) bool { return client != "c-banned" }
-	if code := call(build(ModePerUser, deny), token("c-banned")); code != http.StatusForbidden {
+	if code := call(build(deny), token("c-banned")); code != http.StatusForbidden {
 		t.Fatalf("revoked participant: %d", code)
 	}
-	if code := call(build(ModePerUser, deny), token("c-user-1")); code != 200 {
+	if code := call(build(deny), token("c-user-1")); code != 200 {
 		t.Fatalf("allowed participant: %d", code)
 	}
 }
 
 // A valid, unexpired token of a member who is no longer in the group policy is
-// refused in per-user mode: revocation is done by the policy, not by the token.
+// refused: revocation is done by the policy, not by the token.
 func TestHandler_PerUserRefusesAValidTokenOfARemovedMember(t *testing.T) {
 	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
@@ -187,10 +179,9 @@ func TestHandler_PerUserRefusesAValidTokenOfARemovedMember(t *testing.T) {
 	rules := []laboratoryv1alpha1.LabGroupAccessRule{{
 		Action: laboratoryv1alpha1.LabGroupAccessAllow, ClientNames: []string{"c-member"}, LabNames: []string{"c-1"},
 	}}
-	authorize := func(group, client, lab string) bool { return PolicyAllows(rules, client, lab, true) }
+	authorize := func(group, client, lab string) bool { return PolicyAllows(rules, client, lab) }
 	h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return backend.URL, nil }).
-		WithTokenMode(ModePerUser).
 		WithAccounting(NewMeter("b", time.Now()), func(task, groupID string) (string, bool) { return "c-1", true }).
 		WithAuthorizer(authorize)
 	call := func(sub string) int {
