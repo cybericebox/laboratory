@@ -14,6 +14,9 @@ spec:
       {{- include "laboratory.selectorLabels" . | nindent 6 }}
   template:
     metadata:
+      annotations:
+        # The operator reads its settings as env vars: a changed ConfigMap rolls it.
+        checksum/config: {{ include (print $.Template.BasePath "/operator/configmap.yaml") . | sha256sum }}
       labels:
         control-plane: controller-manager
         {{- include "laboratory.selectorLabels" . | nindent 8 }}
