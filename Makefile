@@ -2,10 +2,11 @@
 BUILD_TAG    := $(shell date +%Y%m%d-%H%M%S)
 
 # Image URL to use all building/pushing image targets
-IMG          ?= cybericebox/laboratory-controller:$(BUILD_TAG)
-AGENT_IMG    ?= cybericebox/laboratory-node-agent:$(BUILD_TAG)
+# IMG is the shared image: operator, agent and proxy binaries (selected by each Deployment's command).
+IMG          ?= cybericebox/laboratory:$(BUILD_TAG)
+AGENT_IMG    ?= cybericebox/laboratory-node:$(BUILD_TAG)
 LAB_IMG      ?= cybericebox/laboratory-lab:$(BUILD_TAG)
-PROXY_IMG    ?= cybericebox/laboratory-proxy:$(BUILD_TAG)
+PROXY_IMG    ?= $(IMG)
 
 KIND_CLUSTER_NAME ?= icebox
 
@@ -85,15 +86,14 @@ cluster-down: ## Delete Kind cluster
 
 .PHONY: docker-build-agent
 docker-build-agent: ## Build node-agent Docker image
-	$(CONTAINER_TOOL) build -t $(AGENT_IMG) -f Dockerfile.node-agent .
+	$(CONTAINER_TOOL) build -t $(AGENT_IMG) --target node .
 
 .PHONY: docker-build-lab
 docker-build-lab: ## Build lab (vpn + gateway) Docker image
-	$(CONTAINER_TOOL) build -t $(LAB_IMG) -f Dockerfile.lab .
+	$(CONTAINER_TOOL) build -t $(LAB_IMG) --target lab .
 
 .PHONY: docker-build-proxy
-docker-build-proxy: ## Build proxy (proxy-l7 + proxy-wg) Docker image
-	$(CONTAINER_TOOL) build -t $(PROXY_IMG) -f Dockerfile.proxy .
+docker-build-proxy: docker-build ## Proxy binaries ship in the shared image: same build as docker-build
 
 .PHONY: kind-load-proxy
 kind-load-proxy: docker-build-proxy ## Build and load proxy image into Kind cluster
@@ -163,6 +163,7 @@ k0s-deploy: docker-build-all ## Build ALL images, import into Lima, full helm in
 		--values $(CHART_PATH)/values.yaml \
 		--set operator.image.tag=$(BUILD_TAG) \
 		--set nodeAgent.image.tag=$(BUILD_TAG) \
+		--set agent.image.tag=$(BUILD_TAG) \
 		--set vpn.image.tag=$(BUILD_TAG) \
 		--set inetGateway.image.tag=$(BUILD_TAG) \
 		--set proxy.l7.image.tag=$(BUILD_TAG) \
@@ -290,18 +291,18 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+	go build -o bin/laboratory ./cmd/laboratory
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/main.go
+	go run ./cmd/laboratory manager
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} .
+	$(CONTAINER_TOOL) build -t ${IMG} --target laboratory .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.

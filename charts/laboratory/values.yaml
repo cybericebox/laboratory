@@ -1,10 +1,12 @@
+# Image tags: an empty `tag` means the chart appVersion (the release version).
+# Set a tag explicitly to pin another build (e.g. `develop`).
 # ============================================================
 # Operator configuration
 # ============================================================
 operator:
   image:
-    repository: cybericebox/laboratory-controller
-    tag: "latest"
+    repository: cybericebox/laboratory
+    tag: ""
     pullPolicy: IfNotPresent
 
   # REQUIRED (no default): host:port advertised to WireGuard clients (demux public address).
@@ -53,7 +55,7 @@ operator:
 vpn:
   image:
     repository: cybericebox/laboratory-lab
-    tag: "latest"
+    tag: ""
     # No pullPolicy key here (unlike operator/proxy/nodeAgent/agent): this image is
     # only ever used to build a Pod spec directly in Go
     # (internal/controller/laboratory/labgroup_controller.go), which hardcodes
@@ -65,7 +67,7 @@ vpn:
 inetGateway:
   image:
     repository: cybericebox/laboratory-lab
-    tag: "latest"
+    tag: ""
     # No pullPolicy key here (unlike operator/proxy/nodeAgent/agent): this image is
     # only ever used to build a Pod spec directly in Go
     # (internal/controller/laboratory/labgroup_controller.go), which hardcodes
@@ -94,8 +96,8 @@ proxy:
 
   # Shared image for both the l7 and wg-demux containers.
   image:
-    repository: cybericebox/laboratory-proxy
-    tag: "latest"
+    repository: cybericebox/laboratory
+    tag: ""
     pullPolicy: IfNotPresent
   replicas: 1
 
@@ -225,8 +227,8 @@ nodeAgent:
   enabled: true
 
   image:
-    repository: cybericebox/laboratory-node-agent
-    tag: "latest"
+    repository: cybericebox/laboratory-node
+    tag: ""
     pullPolicy: IfNotPresent
 
   # Exclude control-plane nodes from the DaemonSet (set false for single-node Kind).
@@ -387,8 +389,8 @@ agent:
   namespace: laboratory-agent
 
   image:
-    repository: cybericebox/laboratory-agent
-    tag: "latest"
+    repository: cybericebox/laboratory
+    tag: ""
     pullPolicy: IfNotPresent
 
   # gRPC port the agent listens on (TLS).

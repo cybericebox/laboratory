@@ -9,7 +9,7 @@
 //
 // Config is a JSON array passed in the NETCONFIG env var so no user-controlled
 // value is ever interpolated into a shell.
-package main
+package netconfig
 
 import (
 	"context"
@@ -37,7 +37,7 @@ type route struct {
 	Via string `json:"via"`
 }
 
-func main() {
+func Run() {
 	raw := os.Getenv("NETCONFIG")
 	if raw == "" {
 		return // nothing to do

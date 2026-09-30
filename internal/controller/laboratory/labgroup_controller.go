@@ -507,7 +507,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 					Containers: []corev1.Container{{
 						Name:            "vpn",
 						Image:           r.VPNImage,
-						Command:         []string{"/vpn"},
+						Command:         []string{"/laboratory", "vpn"},
 						ImagePullPolicy: corev1.PullIfNotPresent,
 						SecurityContext: &corev1.SecurityContext{
 							Capabilities: &corev1.Capabilities{
@@ -600,7 +600,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 					Containers: []corev1.Container{{
 						Name:            "gateway",
 						Image:           r.GatewayImage,
-						Command:         []string{"/gateway"},
+						Command:         []string{"/laboratory", "gateway"},
 						ImagePullPolicy: corev1.PullIfNotPresent,
 						SecurityContext: &corev1.SecurityContext{
 							Capabilities: &corev1.Capabilities{

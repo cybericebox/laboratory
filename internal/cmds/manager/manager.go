@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package main
+package manager
 
 import (
 	_ "github.com/cybericebox/laboratory/pkg/runtime"
@@ -62,7 +62,7 @@ func init() {
 }
 
 // nolint:gocyclo
-func main() {
+func Run() {
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string

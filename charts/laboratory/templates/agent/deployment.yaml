@@ -25,8 +25,9 @@ spec:
       {{- end }}
       containers:
         - name: agent
-          image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}"
+          image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          command: ["/laboratory", "agent"]
           ports:
             - name: grpc
               containerPort: {{ .Values.agent.grpcPort }}

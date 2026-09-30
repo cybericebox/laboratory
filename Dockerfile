@@ -1,34 +1,52 @@
-# Build the manager binary
-FROM docker.io/golang:1.27.1 AS builder
-ARG TARGETOS
+# syntax=docker/dockerfile:1
+
+# One Dockerfile, three images (build targets): laboratory, node, lab.
+#
+# Every Laboratory component is one multicall binary, /laboratory. A component is
+# chosen by the first argument (`/laboratory manager`), or by the name the binary is
+# invoked as (cni-gate on the host).
+#
+# Layer order in every image: alpine base -> /laboratory -> per-image extras. The
+# first two layers are byte-identical across the images (the binary's mtime is fixed),
+# so a node that has pulled one image already holds them for the others.
+ARG ALPINE=alpine:3.24.2
+
+# The Go stage always runs on the build host and cross-compiles, so multi-arch builds
+# do not go through QEMU.
+FROM --platform=$BUILDPLATFORM docker.io/golang:1.27.1 AS builder
+ARG TARGETOS=linux
 ARG TARGETARCH
-
 WORKDIR /workspace
-# Copy the Go Modules manifests
-COPY go.mod go.mod
-COPY go.sum go.sum
-# cache deps before building and copying source so that we don't need to re-download as much
-# and so that source changes don't invalidate our downloaded layer
+COPY go.mod go.sum ./
 RUN go mod download
-
-# Copy the go source
-COPY cmd/main.go cmd/main.go
+COPY cmd/ cmd/
 COPY api/ api/
+COPY clientset/ clientset/
 COPY internal/ internal/
 COPY pkg/ pkg/
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /out/laboratory ./cmd/laboratory && \
+    touch -d @0 /out/laboratory
 
-# Build
-# the GOARCH has not a default value to allow the binary be built according to the host where the command
-# was called. For example, if we call make docker-build in a local env which has the Apple Silicon M1 SO
-# the docker BUILDPLATFORM arg will be linux/arm64 when for Apple x86 it will be linux/amd64. Therefore,
-# by leaving it empty we can ensure that the container and binary shipped on it will have the same platform.
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
+FROM ${ALPINE} AS base
+COPY --from=builder /out/laboratory /laboratory
 
-# Use distroless as minimal base image to package the manager binary
-# Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM gcr.io/distroless/static:nonroot
-WORKDIR /
-COPY --from=builder /workspace/manager .
+# CNI plugins for the node image: only the ones the node-agent installs on the host.
+FROM ${ALPINE} AS cni
+RUN apk add --no-cache cni-plugins
+
+# operator, agent, proxy (Deployments). Needs nothing but the binary and the CA bundle
+# that alpine ships.
+FROM base AS laboratory
 USER 65532:65532
 
-ENTRYPOINT ["/manager"]
+# Per lab group: VPN and gateway pods.
+FROM base AS lab
+RUN apk add --no-cache iptables iproute2 wireguard-tools-wg
+
+# One pod per node: node-agent, CNI helpers and Open vSwitch (alpine package, kernel datapath).
+FROM base AS node
+RUN apk add --no-cache openvswitch iproute2 kmod bash util-linux-misc
+COPY --from=cni /usr/libexec/cni/bridge /usr/libexec/cni/ptp /usr/libexec/cni/loopback \
+     /usr/libexec/cni/host-local /usr/libexec/cni/portmap /usr/libexec/cni/
+COPY --chmod=0755 scripts/start-ovs.sh /node-agent/bin/start-ovs.sh

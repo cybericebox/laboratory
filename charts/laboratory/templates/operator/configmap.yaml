@@ -12,9 +12,9 @@ data:
   VPN_BASE_NETWORK: {{ .Values.operator.vpnBaseNetwork | quote }}
   INET_BASE_NETWORK: {{ .Values.operator.inetBaseNetwork | quote }}
   PROXY_SOURCE_CIDRS: {{ .Values.operator.proxySourceCIDRs | quote }}
-  VPN_IMAGE: "{{ .Values.vpn.image.repository }}:{{ .Values.vpn.image.tag }}"
-  GATEWAY_IMAGE: "{{ .Values.inetGateway.image.repository }}:{{ .Values.inetGateway.image.tag }}"
-  NETCONFIG_IMAGE: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
+  VPN_IMAGE: "{{ .Values.vpn.image.repository }}:{{ .Values.vpn.image.tag | default .Chart.AppVersion }}"
+  GATEWAY_IMAGE: "{{ .Values.inetGateway.image.repository }}:{{ .Values.inetGateway.image.tag | default .Chart.AppVersion }}"
+  NETCONFIG_IMAGE: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag | default .Chart.AppVersion }}"
   LAB_NODE_SELECTOR: {{ .Values.labWorkloads.nodeSelector | toJson | quote }}
   LAB_TOLERATIONS: {{ .Values.labWorkloads.tolerations | toJson | quote }}
   AGENT_ENABLED: {{ .Values.agent.enabled | quote }}
