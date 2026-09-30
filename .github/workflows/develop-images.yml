@@ -13,9 +13,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: laboratory
-            target: laboratory
-            image: cybericebox/laboratory
+          - name: controller
+            target: controller
+            image: cybericebox/laboratory-controller
+          - name: agent
+            target: agent
+            image: cybericebox/laboratory-agent
+          - name: proxy
+            target: proxy
+            image: cybericebox/laboratory-proxy
           - name: node
             target: node
             image: cybericebox/laboratory-node
