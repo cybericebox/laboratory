@@ -700,9 +700,10 @@ var ciliumNetworkPolicyGVK = schema.GroupVersionKind{
 
 // vpnCiliumPolicy builds the CiliumNetworkPolicy locking down the vpn pod's
 // egress to kube-apiserver only (its reconciler needs the API; no DNS, no
-// world). Ingress allows WireGuard UDP from anywhere: proxy-wg is
-// hostNetwork, so this stays permissive from outside the cluster and relies
-// on NAT/conntrack to handle replies.
+// world). Ingress allows WireGuard UDP only from the proxy pod: its wg-demux
+// container receives every client packet on the shared edge IP and forwards
+// it to the group's vpn pod, so that pod (not "world") is the source. Replies
+// go back through conntrack.
 func vpnCiliumPolicy(ns string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{
 		Object: map[string]interface{}{
@@ -725,7 +726,14 @@ func vpnCiliumPolicy(ns string) *unstructured.Unstructured {
 				},
 				"ingress": []interface{}{
 					map[string]interface{}{
-						"fromEntities": []interface{}{"world"},
+						"fromEndpoints": []interface{}{
+							map[string]interface{}{
+								"matchLabels": map[string]interface{}{
+									"k8s:io.kubernetes.pod.namespace": names.ProxyNamespace,
+									"app":                             "laboratory-proxy-l7",
+								},
+							},
+						},
 						"toPorts": []interface{}{
 							map[string]interface{}{
 								"ports": []interface{}{

@@ -67,6 +67,18 @@ func TestVPNCiliumPolicy(t *testing.T) {
 	if !ok {
 		t.Fatalf("ingress[0] = %T", ingress[0])
 	}
+	// The source is the proxy's wg-demux (a pod in the proxy namespace), never "world".
+	if _, found := ingressRule["fromEntities"]; found {
+		t.Fatalf("VPN ingress must not use fromEntities: %#v", ingressRule["fromEntities"])
+	}
+	from, found, err := unstructured.NestedSlice(ingressRule, "fromEndpoints")
+	if err != nil || !found || len(from) != 1 {
+		t.Fatalf("VPN ingress fromEndpoints = %#v, err=%v", from, err)
+	}
+	labels, _, _ := unstructured.NestedStringMap(from[0].(map[string]interface{}), "matchLabels")
+	if labels["k8s:io.kubernetes.pod.namespace"] != "laboratory-proxy" || labels["app"] != "laboratory-proxy-l7" {
+		t.Fatalf("VPN ingress must come from the proxy pod, got %v", labels)
+	}
 	toPorts, found, err := unstructured.NestedSlice(ingressRule, "toPorts")
 	if err != nil || !found || len(toPorts) != 1 {
 		t.Fatalf("VPN ingress ports = %#v, err=%v", toPorts, err)
