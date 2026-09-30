@@ -56,11 +56,11 @@ func TestWebHostLabelIsUniquePerLabAndAValidDNSLabel(t *testing.T) {
 }
 
 func TestMaxDeviceNameLenFillsOneDNSLabel(t *testing.T) {
-	if MaxDeviceNameLen != 37 {
+	if MaxDeviceNameLen != 35 {
 		t.Fatalf("MaxDeviceNameLen = %d", MaxDeviceNameLen)
 	}
 	host := WebHostLabel("7f3c9a2e-4b1d-4e8a-9c6f-2d5b8e1a0c47", strings.Repeat("d", MaxDeviceNameLen))
-	if len(host) != 63 {
+	if len(host) != 61 {
 		t.Fatalf("len = %d", len(host))
 	}
 }
@@ -70,8 +70,8 @@ func TestValidateDeviceName(t *testing.T) {
 		"web":                   false,
 		"a":                     false,
 		"host-1":                false,
-		strings.Repeat("d", 37): false,
-		strings.Repeat("d", 38): true,
+		strings.Repeat("d", 35): false,
+		strings.Repeat("d", 36): true,
 		"":                      true,
 		"-web":                  true,
 		"web-":                  true,

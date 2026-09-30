@@ -151,7 +151,7 @@ func TestConnectionNameWithForwardingPort(t *testing.T) {
 }
 
 func TestInvalidDeviceNameFailsValidation(t *testing.T) {
-	for _, name := range []string{strings.Repeat("d", 38), "Web", "web_1", "-web"} {
+	for _, name := range []string{strings.Repeat("d", 36), "Web", "web_1", "-web"} {
 		lab := &laboratoryv1alpha1.Lab{}
 		lab.Spec.Devices = append(lab.Spec.Devices, laboratoryv1alpha1.DeviceTemplate{
 			Name: name, Type: laboratoryv1alpha1.DeviceTypeContainer,

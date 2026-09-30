@@ -15,10 +15,11 @@ const (
 
 	// MaxDeviceNameLen is the longest device name a lab may have. A web-exposed
 	// device is served at <device>-<labid>.<base domain>, and the wildcard cert
-	// covers one label level, so <device>-<labid> must fit one DNS label:
-	// maxDNSLabel - 1 (hyphen) - LabIDLen = 37. Longer names are rejected, never
-	// truncated: truncation could make two devices collide.
-	MaxDeviceNameLen = maxDNSLabel - 1 - LabIDLen
+	// covers one label level, so <device>-<labid> must fit one DNS label (<=63):
+	// device + "-" + 25-char base36 lab id, i.e. at most 63-1-25 = 37. We take 35
+	// for a round, predictable limit with headroom. Longer names are rejected,
+	// never truncated: truncation could make two devices collide.
+	MaxDeviceNameLen = 35
 
 	base36 = "0123456789abcdefghijklmnopqrstuvwxyz"
 )

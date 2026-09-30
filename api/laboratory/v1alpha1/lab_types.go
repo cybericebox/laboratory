@@ -41,10 +41,10 @@ type DHCPRange struct {
 // DeviceTemplate is an inline device declaration inside Lab.spec.devices[].
 type DeviceTemplate struct {
 	// Name becomes part of the lab's web address (<name>-<labid>.<domain>), so
-	// it is a DNS label of at most 37 characters (names.MaxDeviceNameLen).
+	// it is a DNS label of at most 35 characters (names.MaxDeviceNameLen).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=37
+	// +kubebuilder:validation:MaxLength=35
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
 	Name string `json:"name"`
 	// +kubebuilder:validation:Required
