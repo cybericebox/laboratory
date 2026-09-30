@@ -1,6 +1,7 @@
 package l7
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"net/http"
@@ -16,7 +17,7 @@ import (
 const labHost = "web-abc123.challenges.example.com"
 
 type handoffFixture struct {
-	priv    *rsa.PrivateKey
+	priv    ed25519.PrivateKey
 	handler *Handler
 	backend *httptest.Server
 	now     time.Time
@@ -24,11 +25,11 @@ type handoffFixture struct {
 
 func newHandoffFixture(t *testing.T) *handoffFixture {
 	t.Helper()
-	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("lab")) }))
 	t.Cleanup(backend.Close)
 	f := &handoffFixture{priv: priv, backend: backend, now: time.Now()}
-	f.handler = NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, testSecret, "challenges.example.com", "challenge",
+	f.handler = NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return backend.URL, nil }).WithTokenMode(ModePerUser)
 	f.handler.now = func() time.Time { return f.now }
 	return f
@@ -39,13 +40,13 @@ func (f *handoffFixture) link(t *testing.T, mutate func(*handoffClaims)) string 
 	claims := handoffClaims{
 		GroupID: "g1", Client: "p-u1", Host: "web-abc123", Session: f.now.Add(24 * time.Hour).Unix(), Version: HandoffVersion,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ID: "jti-1", IssuedAt: jwt.NewNumericDate(f.now), ExpiresAt: jwt.NewNumericDate(f.now.Add(2 * time.Minute)),
+			IssuedAt: jwt.NewNumericDate(f.now), ExpiresAt: jwt.NewNumericDate(f.now.Add(time.Minute)),
 		},
 	}
 	if mutate != nil {
 		mutate(&claims)
 	}
-	signed, err := jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(f.priv)
+	signed, err := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims).SignedString(f.priv)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,8 +109,7 @@ func TestHandoff_Refusals(t *testing.T) {
 		{"another device host", func(c *handoffClaims) { c.Host = "db-abc123" }},
 		{"session already over", func(c *handoffClaims) { c.Session = time.Now().Add(-time.Hour).Unix() }},
 		{"no client", func(c *handoffClaims) { c.Client = "" }},
-		{"no jti", func(c *handoffClaims) { c.ID = "" }},
-		{"link that lives too long", func(c *handoffClaims) { c.ExpiresAt = jwt.NewNumericDate(time.Now().Add(2 * time.Hour)) }},
+		{"link over the five minute cap", func(c *handoffClaims) { c.ExpiresAt = jwt.NewNumericDate(time.Now().Add(6 * time.Minute)) }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -130,40 +130,46 @@ func TestHandoff_TamperedSignature(t *testing.T) {
 	if rec := f.open(strings.Join(parts, ".")); rec.Code != http.StatusUnauthorized || len(rec.Result().Cookies()) != 0 {
 		t.Fatalf("tampered payload: %d", rec.Code)
 	}
-	other, _ := rsa.GenerateKey(rand.Reader, 2048)
-	signed, _ := jwt.NewWithClaims(jwt.SigningMethodRS256, handoffClaims{
+	_, other, _ := ed25519.GenerateKey(rand.Reader)
+	signed, _ := jwt.NewWithClaims(jwt.SigningMethodEdDSA, handoffClaims{
 		GroupID: "g1", Client: "p-u1", Host: "web-abc123", Session: f.now.Add(time.Hour).Unix(),
-		RegisteredClaims: jwt.RegisteredClaims{ID: "x", IssuedAt: jwt.NewNumericDate(f.now), ExpiresAt: jwt.NewNumericDate(f.now.Add(time.Minute))},
+		RegisteredClaims: jwt.RegisteredClaims{IssuedAt: jwt.NewNumericDate(f.now), ExpiresAt: jwt.NewNumericDate(f.now.Add(time.Minute))},
 	}).SignedString(other)
 	if rec := f.open(signed); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("foreign key: %d", rec.Code)
 	}
 }
 
-func TestHandoff_ReplayedJTIIsRefused(t *testing.T) {
+// The handoff is stateless: the same link opens again until its exp.
+func TestHandoff_IsStatelessAndOpensAgainUntilExp(t *testing.T) {
 	f := newHandoffFixture(t)
 	token := f.link(t, nil)
-	if rec := f.open(token); rec.Code != http.StatusSeeOther {
-		t.Fatalf("first use: %d", rec.Code)
+	for i := 0; i < 2; i++ {
+		if rec := f.open(token); rec.Code != http.StatusSeeOther {
+			t.Fatalf("open %d: %d", i, rec.Code)
+		}
 	}
-	if rec := f.open(token); rec.Code != http.StatusUnauthorized || len(rec.Result().Cookies()) != 0 {
-		t.Fatalf("replay: %d", rec.Code)
+	f.now = f.now.Add(2 * time.Minute)
+	if rec := f.open(token); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("after exp: %d", rec.Code)
 	}
 }
 
-func TestReplayCache_ForgetsAfterExpiryAndStaysBounded(t *testing.T) {
-	c := newReplayCache(2)
-	now := time.Now()
-	if !c.firstUse("a", now.Add(time.Minute), now) || c.firstUse("a", now.Add(time.Minute), now) {
-		t.Fatal("a seen id must be refused")
+// Only EdDSA counts: a token signed with RSA, HMAC (any secret) or "none" is refused.
+func TestHandoff_RefusesOtherAlgorithms(t *testing.T) {
+	f := newHandoffFixture(t)
+	claims := handoffClaims{
+		GroupID: "g1", Client: "p-u1", Host: "web-abc123", Session: f.now.Add(time.Hour).Unix(),
+		RegisteredClaims: jwt.RegisteredClaims{IssuedAt: jwt.NewNumericDate(f.now), ExpiresAt: jwt.NewNumericDate(f.now.Add(time.Minute))},
 	}
-	if !c.firstUse("a", now.Add(3*time.Minute), now.Add(2*time.Minute)) {
-		t.Fatal("an id past its exp is forgotten")
-	}
-	c.firstUse("b", now.Add(10*time.Minute), now)
-	c.firstUse("c", now.Add(10*time.Minute), now)
-	if c.order.Len() > 2 {
-		t.Fatalf("cache grew to %d", c.order.Len())
+	rsaKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	rs, _ := jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(rsaKey)
+	hs, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(testSecret)
+	none, _ := jwt.NewWithClaims(jwt.SigningMethodNone, claims).SignedString(jwt.UnsafeAllowNoneSignatureType)
+	for name, token := range map[string]string{"RS256": rs, "HS256": hs, "none": none} {
+		if rec := f.open(token); rec.Code != http.StatusUnauthorized || len(rec.Result().Cookies()) != 0 {
+			t.Fatalf("%s: %d", name, rec.Code)
+		}
 	}
 }
 

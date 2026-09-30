@@ -1,7 +1,7 @@
 package proxy
 
 import (
-	"crypto/rsa"
+	"crypto/ed25519"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
@@ -12,14 +12,17 @@ import (
 )
 
 type L7Config struct {
-	TLSCertPath      string `env:"TLS_CERT_PATH,required"`
-	TLSKeyPath       string `env:"TLS_KEY_PATH,required"`
-	JWTPublicKeyPath string `env:"JWT_PUBLIC_KEY_PATH,required"`
-	BaseDomain       string `env:"BASE_DOMAIN,required"`
-	Listen           string `env:"LISTEN_HTTPS"  envDefault:":443"`
-	CookieName       string `env:"COOKIE_NAME"   envDefault:"challenge"`
-	// SessionSecret signs the proxy's own session cookie (HMAC). It is shared by
-	// all replicas and never leaves the cluster; the platform does not know it.
+	TLSCertPath string `env:"TLS_CERT_PATH,required"`
+	TLSKeyPath  string `env:"TLS_KEY_PATH,required"`
+	// LabAccessPublicKeyPath is the Ed25519 public key (PKIX PEM) that verifies the
+	// platform's lab access tokens (the handoff links).
+	LabAccessPublicKeyPath string `env:"LAB_ACCESS_PUBLIC_KEY_PATH,required"`
+	BaseDomain             string `env:"BASE_DOMAIN,required"`
+	Listen                 string `env:"LISTEN_HTTPS"  envDefault:":443"`
+	CookieName             string `env:"SESSION_COOKIE_NAME" envDefault:"challenge"`
+	// SessionSecret signs the proxy's own session cookie (HMAC-SHA256, at least 32
+	// bytes). It is shared by all replicas and never leaves the cluster; the
+	// platform does not know it and it is never the lab access key.
 	SessionSecret string `env:"SESSION_SECRET,required"`
 	// TokenMode is legacy, mixed or per-user (see l7.TokenMode).
 	TokenMode string `env:"TOKEN_MODE" envDefault:"per-user"`
@@ -33,32 +36,45 @@ type WGConfig struct {
 	VPNServicePort int    `env:"VPN_SERVICE_PORT" envDefault:"51820"`
 }
 
-// LoadJWTPublicKey reads the RSA public key PEM from the configured path.
-// Called on each request so that kubelet secret-volume updates are picked up
-// without a pod restart.
-func (l *L7Config) LoadJWTPublicKey() (*rsa.PublicKey, error) {
-	data, err := os.ReadFile(l.JWTPublicKeyPath)
+// MinSessionSecretLen is the shortest accepted SESSION_SECRET.
+const MinSessionSecretLen = 32
+
+// LoadLabAccessPublicKey reads the Ed25519 public key PEM from the configured
+// path.
+func (l *L7Config) LoadLabAccessPublicKey() (ed25519.PublicKey, error) {
+	return ReadLabAccessPublicKey(l.LabAccessPublicKeyPath)
+}
+
+// ReadLabAccessPublicKey parses a PKIX PEM Ed25519 public key file.
+func ReadLabAccessPublicKey(path string) (ed25519.PublicKey, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read JWT public key %s: %w", l.JWTPublicKeyPath, err)
+		return nil, fmt.Errorf("read lab access public key %s: %w", path, err)
 	}
 	block, _ := pem.Decode(data)
 	if block == nil {
-		return nil, fmt.Errorf("no PEM block in %s", l.JWTPublicKeyPath)
+		return nil, fmt.Errorf("no PEM block in %s", path)
 	}
 	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("parse JWT public key: %w", err)
+		return nil, fmt.Errorf("parse lab access public key: %w", err)
 	}
-	rsaPub, ok := pub.(*rsa.PublicKey)
+	edPub, ok := pub.(ed25519.PublicKey)
 	if !ok {
-		return nil, fmt.Errorf("JWT public key is not RSA")
+		return nil, fmt.Errorf("lab access public key in %s is not Ed25519", path)
 	}
-	return rsaPub, nil
+	return edPub, nil
 }
 
 func LoadL7Config() (*L7Config, error) {
 	cfg := &L7Config{}
-	return cfg, config.Load(cfg)
+	if err := config.Load(cfg); err != nil {
+		return cfg, err
+	}
+	if len(cfg.SessionSecret) < MinSessionSecretLen {
+		return cfg, fmt.Errorf("SESSION_SECRET must be at least %d bytes", MinSessionSecretLen)
+	}
+	return cfg, nil
 }
 
 func LoadWGConfig() (*WGConfig, error) {

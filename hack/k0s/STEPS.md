@@ -124,15 +124,14 @@ done
 
 ## Step 6 — laboratory chart
 
-The chart creates `lab-platform-secret` automatically when `platform.jwtPublicKey` is passed.
-The operator then syncs it to `proxy-credentials` in `laboratory-proxy`.
+The chart creates `lab-access-public-key` automatically when `platform.labAccessPublicKey` is passed.
+The operator then syncs it to the same-named Secret in `laboratory-proxy`.
 Without it `proxy-l7` pod will not start.
 
 For local testing, generate a throwaway keypair:
 
 ```bash
-openssl genrsa -out /tmp/jwt-private.pem 2048
-openssl rsa -in /tmp/jwt-private.pem -pubout -out /tmp/jwt-public-key.pem
+make lab-access-keys   # /tmp/lab-access-private.pem (backend) and /tmp/lab-access-public.pem
 ```
 
 ```bash
@@ -145,7 +144,7 @@ helm upgrade --install laboratory $CHART_PATH \
   --set operator.publicVPNEndpoint=$CTRL_IP:51820 \
   --set proxy.wg.externalInterface=lima0 \
   --set certManager.selfSigned=true \
-  --set-file platform.jwtPublicKey=/tmp/jwt-public-key.pem \
+  --set-file platform.labAccessPublicKey=/tmp/lab-access-public.pem \
   --wait --timeout=5m
 ```
 

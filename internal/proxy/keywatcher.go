@@ -2,24 +2,21 @@ package proxy
 
 import (
 	"context"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
+	"crypto/ed25519"
 	"fmt"
-	"os"
 	"sync"
 	"sync/atomic"
-	
+
 	"github.com/fsnotify/fsnotify"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
-// KeyWatcher loads an RSA public key from a PEM file, caches it in memory,
+// KeyWatcher loads an Ed25519 public key from a PEM file, caches it in memory,
 // and reloads automatically when the file changes (kubelet secret-volume sync).
 // Safe for concurrent use. Implements manager.Runnable.
 type KeyWatcher struct {
 	path   string
-	cached atomic.Pointer[rsa.PublicKey]
+	cached atomic.Pointer[ed25519.PublicKey]
 	mu     sync.Mutex
 }
 
@@ -34,8 +31,8 @@ func NewKeyWatcher(path string) (*KeyWatcher, error) {
 }
 
 // Key returns the cached public key. Never nil after successful construction.
-func (kw *KeyWatcher) Key() *rsa.PublicKey {
-	return kw.cached.Load()
+func (kw *KeyWatcher) Key() ed25519.PublicKey {
+	return *kw.cached.Load()
 }
 
 // Start implements manager.Runnable. Blocks until ctx is cancelled.
@@ -61,9 +58,9 @@ func (kw *KeyWatcher) Start(ctx context.Context) error {
 			}
 			if ev.Has(fsnotify.Write) || ev.Has(fsnotify.Create) || ev.Has(fsnotify.Rename) {
 				if err := kw.reload(); err != nil {
-					log.Error(err, "reload JWT public key", "path", kw.path)
+					log.Error(err, "reload lab access public key", "path", kw.path)
 				} else {
-					log.Info("JWT public key reloaded", "path", kw.path)
+					log.Info("lab access public key reloaded", "path", kw.path)
 				}
 			}
 		case err, ok := <-watcher.Errors:
@@ -78,23 +75,11 @@ func (kw *KeyWatcher) Start(ctx context.Context) error {
 func (kw *KeyWatcher) reload() error {
 	kw.mu.Lock()
 	defer kw.mu.Unlock()
-	
-	data, err := os.ReadFile(kw.path)
+
+	pub, err := ReadLabAccessPublicKey(kw.path)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", kw.path, err)
+		return err
 	}
-	block, _ := pem.Decode(data)
-	if block == nil {
-		return fmt.Errorf("no PEM block in %s", kw.path)
-	}
-	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		return fmt.Errorf("parse key: %w", err)
-	}
-	rsaPub, ok := pub.(*rsa.PublicKey)
-	if !ok {
-		return fmt.Errorf("not an RSA public key in %s", kw.path)
-	}
-	kw.cached.Store(rsaPub)
+	kw.cached.Store(&pub)
 	return nil
 }

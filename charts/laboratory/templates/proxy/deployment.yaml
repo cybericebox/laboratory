@@ -42,12 +42,12 @@ spec:
           value: {{ .Values.operator.baseDomain | quote }}
         - name: LISTEN_HTTPS
           value: {{ .Values.proxy.l7.listen | quote }}
-        - name: COOKIE_NAME
-          value: {{ .Values.proxy.l7.cookieName | quote }}
+        - name: SESSION_COOKIE_NAME
+          value: {{ .Values.proxy.l7.sessionCookieName | quote }}
         - name: SESSION_SECRET
           valueFrom:
             secretKeyRef:
-              name: proxy-session
+              name: {{ default "proxy-session" .Values.proxy.l7.sessionSecret.existingSecret }}
               key: sessionSecret
         - name: TOKEN_MODE
           value: {{ .Values.proxy.l7.tokenMode | quote }}
@@ -59,8 +59,8 @@ spec:
           value: /etc/proxy/tls/tls.crt
         - name: TLS_KEY_PATH
           value: /etc/proxy/tls/tls.key
-        - name: JWT_PUBLIC_KEY_PATH
-          value: /etc/proxy/jwt/publicKey
+        - name: LAB_ACCESS_PUBLIC_KEY_PATH
+          value: /etc/proxy/lab-access/public.pem
         {{- if .Values.proxy.kindMode }}
         - name: KUBERNETES_SERVICE_HOST
           value: "127.0.0.1"
@@ -74,8 +74,8 @@ spec:
         - name: tls
           mountPath: /etc/proxy/tls
           readOnly: true
-        - name: jwt
-          mountPath: /etc/proxy/jwt
+        - name: lab-access
+          mountPath: /etc/proxy/lab-access
           readOnly: true
         resources:
           {{- toYaml .Values.proxy.l7.resources | nindent 10 }}
@@ -108,8 +108,8 @@ spec:
       - name: tls
         secret:
           secretName: proxy-tls
-      - name: jwt
+      - name: lab-access
         secret:
-          secretName: proxy-credentials
+          secretName: lab-access-public-key
       {{- end }}
 {{- end }}

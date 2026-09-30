@@ -14,8 +14,8 @@ LIMA_CTRL      ?= lab-ctrl
 LIMA_WORKER    ?= lab-worker
 CHART_PATH     ?= charts/laboratory
 HELM_NS        ?= laboratory-system
-JWT_PUBLIC_KEY  ?= /tmp/jwt-public-key.pem
-JWT_PRIVATE_KEY ?= /tmp/jwt-private-key.pem
+LAB_ACCESS_PUBLIC_KEY  ?= /tmp/lab-access-public.pem
+LAB_ACCESS_PRIVATE_KEY ?= /tmp/lab-access-private.pem
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -164,7 +164,7 @@ k0s-deploy: docker-build-all ## Build ALL images, import into Lima, full helm in
 		--set inetGateway.image.tag=$(BUILD_TAG) \
 		--set proxy.l7.image.tag=$(BUILD_TAG) \
 		--set proxy.wg.image.tag=$(BUILD_TAG) \
-		--set-file platform.jwtPublicKey=$(JWT_PUBLIC_KEY) \
+		--set-file platform.labAccessPublicKey=$(LAB_ACCESS_PUBLIC_KEY) \
 		--wait --timeout=5m
 	@echo ""
 	@echo "✓ deployed all: $(BUILD_TAG)"
@@ -224,8 +224,15 @@ k0s-upgrade-chart: ## Apply values.yaml changes to existing cluster (preserves c
 		--namespace $(HELM_NS) \
 		--reuse-values \
 		--values $(CHART_PATH)/values.yaml \
-		--set-file platform.jwtPublicKey=$(JWT_PUBLIC_KEY) \
+		--set-file platform.labAccessPublicKey=$(LAB_ACCESS_PUBLIC_KEY) \
 		--wait --timeout=2m
+
+.PHONY: lab-access-keys
+lab-access-keys: ## Generate the Ed25519 lab access key pair (private: backend LAB_ACCESS_PRIVATE_KEY, public: platform.labAccessPublicKey)
+	@test ! -e $(LAB_ACCESS_PRIVATE_KEY) || { echo "$(LAB_ACCESS_PRIVATE_KEY) exists, remove it to rotate"; exit 1; }
+	openssl genpkey -algorithm ed25519 -out $(LAB_ACCESS_PRIVATE_KEY)
+	openssl pkey -in $(LAB_ACCESS_PRIVATE_KEY) -pubout -out $(LAB_ACCESS_PUBLIC_KEY)
+	@echo "private: $(LAB_ACCESS_PRIVATE_KEY)  public: $(LAB_ACCESS_PUBLIC_KEY)"
 
 .PHONY: kind-deploy
 kind-deploy: kind-load install deploy ## Full local deploy: build all + load + CRDs + controller + node-agent

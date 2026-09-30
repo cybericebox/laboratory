@@ -21,20 +21,21 @@ import (
 )
 
 const (
-	// PlatformSecretName is the admin-managed Secret in laboratory-system
-	// that holds platform-level credentials (JWT public key, etc.).
-	PlatformSecretName = "lab-platform-secret"
+	// PlatformSecretName is the admin-managed Secret in laboratory-system that
+	// holds the platform's lab access public key (Ed25519).
+	PlatformSecretName = "lab-access-public-key"
 	
 	// ProxyCredentialsName is the Secret in laboratory-proxy that the
 	// proxy pod mounts. Created and kept in sync by PlatformReconciler.
-	ProxyCredentialsName = "proxy-credentials"
+	ProxyCredentialsName = "lab-access-public-key"
 	
-	// JWTPublicKeyField is the key within both Secrets that holds the RSA PEM.
-	JWTPublicKeyField = "publicKey"
+	// LabAccessPublicKeyField is the key within both Secrets that holds the
+	// Ed25519 public key PEM (a file named public.pem once mounted).
+	LabAccessPublicKeyField = "public.pem"
 )
 
 // PlatformReconciler watches the admin-managed platform Secret in
-// laboratory-system and syncs its JWT public key to laboratory-proxy.
+// laboratory-system and syncs its lab access public key to laboratory-proxy.
 //
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch,namespace=laboratory-system
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch,namespace=laboratory-proxy
@@ -60,9 +61,9 @@ func (r *PlatformReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 	
-	jwtKey, ok := src.Data[JWTPublicKeyField]
+	accessKey, ok := src.Data[LabAccessPublicKeyField]
 	if !ok {
-		return ctrl.Result{}, fmt.Errorf("platform secret missing key %q", JWTPublicKeyField)
+		return ctrl.Result{}, fmt.Errorf("platform secret missing key %q", LabAccessPublicKeyField)
 	}
 	
 	dst := &corev1.Secret{
@@ -74,11 +75,11 @@ func (r *PlatformReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	var existing corev1.Secret
 	err := r.Get(ctx, types.NamespacedName{Name: ProxyCredentialsName, Namespace: names.ProxyNamespace}, &existing)
 	if errors.IsNotFound(err) {
-		dst.Data = map[string][]byte{JWTPublicKeyField: jwtKey}
+		dst.Data = map[string][]byte{LabAccessPublicKeyField: accessKey}
 		if createErr := r.Create(ctx, dst); createErr != nil {
-			return ctrl.Result{}, fmt.Errorf("create proxy-credentials: %w", createErr)
+			return ctrl.Result{}, fmt.Errorf("create lab-access-public-key: %w", createErr)
 		}
-		log.Info("created proxy-credentials")
+		log.Info("created lab-access-public-key")
 		return ctrl.Result{}, nil
 	}
 	if err != nil {
@@ -89,11 +90,11 @@ func (r *PlatformReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if existing.Data == nil {
 		existing.Data = make(map[string][]byte)
 	}
-	existing.Data[JWTPublicKeyField] = jwtKey
+	existing.Data[LabAccessPublicKeyField] = accessKey
 	if err := r.Patch(ctx, &existing, patch); err != nil {
-		return ctrl.Result{}, fmt.Errorf("patch proxy-credentials: %w", err)
+		return ctrl.Result{}, fmt.Errorf("patch lab-access-public-key: %w", err)
 	}
-	log.Info("synced proxy-credentials")
+	log.Info("synced lab-access-public-key")
 	return ctrl.Result{}, nil
 }
 
@@ -114,7 +115,7 @@ func (r *PlatformReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Secret{}, builder.WithPredicates(isPlatformSecret)).
-		// Also reconcile when proxy-credentials is deleted externally.
+		// Also reconcile when the proxy copy is deleted externally.
 		Watches(
 			&corev1.Secret{},
 			handler.EnqueueRequestsFromMapFunc(

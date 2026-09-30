@@ -1,7 +1,7 @@
 package l7
 
 import (
-	"crypto/rsa"
+	"crypto/ed25519"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -14,12 +14,12 @@ import (
 // SessionVersion marks the proxy's own session cookie.
 const SessionVersion = 1
 
-// HandoffVersion marks the platform's handoff token (RS256).
-const HandoffVersion = 4
+// HandoffVersion marks the platform's handoff token.
+const HandoffVersion = 5
 
 // maxHandoffLifetime bounds exp - iat of a handoff token: it is a one-click
 // link, never a session.
-const maxHandoffLifetime = 10 * time.Minute
+const maxHandoffLifetime = 5 * time.Minute
 
 // jwtClaims is the proxy's own session cookie (HS256). It carries only what the
 // operator knows: the LabGroup and a LabGroupClient of that group.
@@ -34,8 +34,8 @@ type jwtClaims struct {
 
 func (c jwtClaims) client() string { return c.Client }
 
-// handoffClaims is the token in the /_auth link, signed by the platform (RS256).
-// exp is the lifetime of the link (about two minutes); Session is the end of the
+// handoffClaims is the token in the /_auth link, signed by the platform.
+// exp is the lifetime of the link (about a minute, five at most); Session is the end of the
 // session the proxy cookie gets.
 type handoffClaims struct {
 	GroupID string `json:"group_id"`
@@ -67,7 +67,7 @@ func validateCookie(r *http.Request, secret []byte, cookieName string, now func(
 			}
 			return secret, nil
 		},
-		jwt.WithTimeFunc(now), jwt.WithExpirationRequired(),
+		jwt.WithValidMethods([]string{"HS256"}), jwt.WithTimeFunc(now), jwt.WithExpirationRequired(),
 	)
 	if err != nil {
 		return jwtClaims{}, fmt.Errorf("invalid session: %w", err)
@@ -83,16 +83,16 @@ func validateCookie(r *http.Request, secret []byte, cookieName string, now func(
 
 // verifyHandoff checks the platform's signature offline, the link lifetime and
 // that the link was issued for this device host.
-func verifyHandoff(raw string, key *rsa.PublicKey, host string, now func() time.Time) (handoffClaims, error) {
+func verifyHandoff(raw string, key ed25519.PublicKey, host string, now func() time.Time) (handoffClaims, error) {
 	var claims handoffClaims
 	token, err := jwt.ParseWithClaims(
 		raw, &claims, func(t *jwt.Token) (interface{}, error) {
-			if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
+			if _, ok := t.Method.(*jwt.SigningMethodEd25519); !ok {
 				return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 			}
 			return key, nil
 		},
-		jwt.WithTimeFunc(now), jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithLeeway(30*time.Second),
+		jwt.WithValidMethods([]string{"EdDSA"}), jwt.WithTimeFunc(now), jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithLeeway(30*time.Second),
 	)
 	if err != nil {
 		return handoffClaims{}, fmt.Errorf("invalid handoff: %w", err)
@@ -100,7 +100,7 @@ func verifyHandoff(raw string, key *rsa.PublicKey, host string, now func() time.
 	if !token.Valid {
 		return handoffClaims{}, fmt.Errorf("invalid handoff")
 	}
-	if claims.GroupID == "" || claims.Client == "" || claims.ID == "" || claims.Host == "" {
+	if claims.GroupID == "" || claims.Client == "" || claims.Host == "" {
 		return handoffClaims{}, fmt.Errorf("incomplete handoff")
 	}
 	if claims.IssuedAt == nil || claims.ExpiresAt.Sub(claims.IssuedAt.Time) > maxHandoffLifetime {

@@ -1,8 +1,8 @@
 package l7
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/rsa"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,7 +16,7 @@ import (
 )
 
 func TestHandler_StripsCookie(t *testing.T) {
-	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 
 	var gotCookieHeader string
 	backend := httptest.NewServer(
@@ -33,7 +33,7 @@ func TestHandler_StripsCookie(t *testing.T) {
 		return backend.URL, nil
 	}
 
-	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, testSecret, "challenges.example.com", "challenge", resolver)
+	h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge", resolver)
 
 	req := httptest.NewRequest("GET", "http://mytask.challenges.example.com/path", nil)
 	req.Host = "mytask.challenges.example.com"
@@ -55,8 +55,8 @@ func TestHandler_StripsCookie(t *testing.T) {
 }
 
 func TestHandler_InvalidHost(t *testing.T) {
-	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
-	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, testSecret, "challenges.example.com", "challenge", nil)
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge", nil)
 
 	req := httptest.NewRequest("GET", "http://evil.com/", nil)
 	req.Host = "evil.com"
@@ -69,7 +69,7 @@ func TestHandler_InvalidHost(t *testing.T) {
 }
 
 func TestHandler_CountsPerUserRequestsAndBytes(t *testing.T) {
-	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		_, _ = w.Write([]byte("hello lab"))
@@ -77,7 +77,7 @@ func TestHandler_CountsPerUserRequestsAndBytes(t *testing.T) {
 	defer backend.Close()
 
 	meter := NewMeter("boot-1", time.Now())
-	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, testSecret, "challenges.example.com", "challenge",
+	h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return backend.URL, nil }).
 		WithTokenMode(ModeMixed).
 		WithAccounting(meter, func(task, groupID string) (string, bool) { return "c-1", true })
@@ -90,7 +90,7 @@ func TestHandler_CountsPerUserRequestsAndBytes(t *testing.T) {
 		h.ServeHTTP(rec, req)
 		return rec.Code
 	}
-	user := signCookie(t, jwtClaims{GroupID: "g1", Client: "p-user-1", RegisteredClaims: jwt.RegisteredClaims{ ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
+	user := signCookie(t, jwtClaims{GroupID: "g1", Client: "p-user-1", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})
 	if code := send(user, "12345"); code != 200 {
 		t.Fatalf("code = %d", code)
 	}
@@ -116,13 +116,13 @@ func TestHandler_CountsPerUserRequestsAndBytes(t *testing.T) {
 }
 
 func TestHandler_UpstreamFailureIsNotAResponse(t *testing.T) {
-	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	dead := httptest.NewServer(http.NotFoundHandler())
 	url := dead.URL
 	dead.Close()
 
 	meter := NewMeter("boot-1", time.Now())
-	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, testSecret, "challenges.example.com", "challenge",
+	h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return url, nil }).
 		WithTokenMode(ModePerUser).
 		WithAccounting(meter, func(task, groupID string) (string, bool) { return "c-1", true })
@@ -141,7 +141,7 @@ func TestHandler_UpstreamFailureIsNotAResponse(t *testing.T) {
 }
 
 func TestHandler_TokenModesAndAuthorizer(t *testing.T) {
-	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
 	defer backend.Close()
 	token := func(sub string) string {
@@ -156,7 +156,7 @@ func TestHandler_TokenModesAndAuthorizer(t *testing.T) {
 		return rec.Code
 	}
 	build := func(mode TokenMode, authorize Authorizer) *Handler {
-		h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, testSecret, "challenges.example.com", "challenge",
+		h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge",
 			func(task, groupID string) (string, error) { return backend.URL, nil }).WithTokenMode(mode)
 		if authorize != nil {
 			h.WithAuthorizer(authorize).WithAccounting(NewMeter("b", time.Now()), func(task, groupID string) (string, bool) { return "c-1", true })
@@ -181,14 +181,14 @@ func TestHandler_TokenModesAndAuthorizer(t *testing.T) {
 // A valid, unexpired token of a member who is no longer in the group policy is
 // refused in per-user mode: revocation is done by the policy, not by the token.
 func TestHandler_PerUserRefusesAValidTokenOfARemovedMember(t *testing.T) {
-	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
 	defer backend.Close()
 	rules := []laboratoryv1alpha1.LabGroupAccessRule{{
 		Action: laboratoryv1alpha1.LabGroupAccessAllow, ClientNames: []string{"c-member"}, LabNames: []string{"c-1"},
 	}}
 	authorize := func(group, client, lab string) bool { return PolicyAllows(rules, client, lab, true) }
-	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, testSecret, "challenges.example.com", "challenge",
+	h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return backend.URL, nil }).
 		WithTokenMode(ModePerUser).
 		WithAccounting(NewMeter("b", time.Now()), func(task, groupID string) (string, bool) { return "c-1", true }).

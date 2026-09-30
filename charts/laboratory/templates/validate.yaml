@@ -1,8 +1,8 @@
 {{- /*
 The operator hardcodes its system namespace as "laboratory-system"
-(internal/names/namespaces.go): it reads the platform JWT secret from there and
+(internal/names/namespaces.go): it reads the platform lab access key secret from there and
 allocates the cluster VNI pool there. Installing into any other namespace makes
-JWT sync silently no-op and VNI allocation target a missing namespace. Fail loud
+key sync silently no-op and VNI allocation target a missing namespace. Fail loud
 at install time instead of shipping a broken deployment.
 */ -}}
 {{- if ne .Release.Namespace "laboratory-system" }}

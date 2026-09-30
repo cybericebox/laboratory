@@ -64,7 +64,7 @@ func TestValidateCookie_EmptyGroupID(t *testing.T) {
 	}
 }
 
-// The platform's RS256 handoff token is not a session: the cookie takes HMAC only.
+// A token signed with a key (RS256)  is not a session: the cookie takes HMAC only.
 func TestValidateCookie_RejectsAnRSAToken(t *testing.T) {
 	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
 	token, err := jwt.NewWithClaims(jwt.SigningMethodRS256, jwtClaims{GroupID: "abc-123", RegisteredClaims: hour()}).SignedString(priv)

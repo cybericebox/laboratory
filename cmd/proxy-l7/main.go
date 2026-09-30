@@ -77,9 +77,9 @@ func main() {
 		return proto, nil
 	}
 	
-	keyWatcher, err := proxy.NewKeyWatcher(cfg.JWTPublicKeyPath)
+	keyWatcher, err := proxy.NewKeyWatcher(cfg.LabAccessPublicKeyPath)
 	if err != nil {
-		log.Error(err, "init JWT key watcher")
+		log.Error(err, "init lab access key watcher")
 		os.Exit(1)
 	}
 	

@@ -42,23 +42,23 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: proxy-credentials-reader
+  name: lab-access-reader
   namespace: laboratory-proxy
 rules:
   - apiGroups: [ "" ]
     resources: [ "secrets" ]
-    resourceNames: [ "proxy-credentials" ]
+    resourceNames: [ "lab-access-public-key" ]
     verbs: [ "get" ]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: proxy-credentials-reader
+  name: lab-access-reader
   namespace: laboratory-proxy
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: proxy-credentials-reader
+  name: lab-access-reader
 subjects:
   - kind: ServiceAccount
     name: proxy
@@ -108,8 +108,8 @@ spec:
               value: /etc/proxy/tls/tls.crt
             - name: TLS_KEY_PATH
               value: /etc/proxy/tls/tls.key
-            - name: JWT_PUBLIC_KEY_PATH
-              value: /etc/proxy/credentials/jwt-public-key.pem
+            - name: LAB_ACCESS_PUBLIC_KEY_PATH
+              value: /etc/proxy/credentials/public.pem
             - name: BASE_DOMAIN
               value: test.local
             - name: UDP_LISTEN_ADDR
@@ -129,7 +129,7 @@ spec:
             secretName: proxy-tls
         - name: credentials
           secret:
-            secretName: proxy-credentials
+            secretName: lab-access-public-key
       nodeSelector:
         node-role.kubernetes.io/control-plane: ""
       tolerations:

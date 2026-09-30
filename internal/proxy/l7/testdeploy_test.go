@@ -1,8 +1,8 @@
 package l7
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/rsa"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -17,7 +17,7 @@ import (
 // authorizes it by the group policy and reports it as (group, client, lab).
 // Telling test groups from event groups is the platform's job.
 func TestHandler_TestDeployTokenIsAuthorizedByPolicyAndReportedByClient(t *testing.T) {
-	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
 	defer backend.Close()
 
@@ -25,7 +25,7 @@ func TestHandler_TestDeployTokenIsAuthorizedByPolicyAndReportedByClient(t *testi
 		Action: laboratoryv1alpha1.LabGroupAccessAllow, ClientNames: []string{"p-author"}, LabNames: []string{"lab"},
 	}}
 	meter := NewMeter("boot", time.Now())
-	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, testSecret, "challenges.example.com", "challenge",
+	h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return backend.URL, nil }).
 		WithTokenMode(ModePerUser).
 		WithAccounting(meter, func(task, groupID string) (string, bool) { return "lab", true }).

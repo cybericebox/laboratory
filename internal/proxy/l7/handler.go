@@ -1,7 +1,7 @@
 package l7
 
 import (
-	"crypto/rsa"
+	"crypto/ed25519"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -29,9 +29,8 @@ type Authorizer func(groupID, client, lab string) bool
 type Handler struct {
 	// key verifies the platform's handoff tokens; secret signs and verifies the
 	// proxy's own session cookie.
-	key        func() *rsa.PublicKey
+	key        func() ed25519.PublicKey
 	secret     []byte
-	replays    *replayCache
 	baseDomain string
 	cookieName string
 	resolver   BackendResolver
@@ -56,11 +55,10 @@ var upstreamTransport = &http.Transport{
 	IdleConnTimeout: 90 * time.Second,
 }
 
-func NewHandler(key func() *rsa.PublicKey, secret []byte, baseDomain, cookieName string, resolver BackendResolver) *Handler {
+func NewHandler(key func() ed25519.PublicKey, secret []byte, baseDomain, cookieName string, resolver BackendResolver) *Handler {
 	return &Handler{
 		key:        key,
 		secret:     secret,
-		replays:    newReplayCache(20000),
 		baseDomain: baseDomain,
 		cookieName: cookieName,
 		resolver:   resolver,

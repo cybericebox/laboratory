@@ -83,10 +83,10 @@ proxy:
   # annotation pair (gateway/gateway.yaml names this namespace; proxy/service-wg-lb.yaml
   # names the Gateway's namespace via .Release.Namespace) — both must stay in sync for
   # Cilium's LB-IPAM cross-namespace IP sharing to work.
-  # KNOWN GAP: the operator's JWT-credential sync (platform_reconciler.go) and each
+  # KNOWN GAP: the operator's lab access key sync (platform_reconciler.go) and each
   # Lab's web-exposure NetworkPolicy peer selector (lab_controller.go) still read the
   # Go compile-time constant internal/names.ProxyNamespace ("laboratory-proxy") instead
-  # of this value. Changing this away from the default will break JWT credential sync
+  # of this value. Changing this away from the default will break the lab access key sync
   # and per-lab proxy ingress until that constant is also made configurable.
   namespace: "laboratory-proxy"
 
@@ -104,10 +104,16 @@ proxy:
   l7:
     enabled: true
     listen: ":8443"
-    cookieName: "challenge"
-    # HMAC key of the proxy's own session cookie (set on /_auth from the
-    # platform's handoff link). Empty: generated once and kept across upgrades.
-    sessionSecret: ""
+    # Name of the proxy's own session cookie (SESSION_COOKIE_NAME).
+    sessionCookieName: "challenge"
+    # HMAC-SHA256 key (32+ bytes) of the proxy's own session cookie, set on /_auth
+    # from the platform's lab access link. Never the lab access key. Shared by all
+    # replicas. existingSecret names a Secret with key `sessionSecret`; otherwise
+    # `value` is used, and when that is empty a key is generated once and kept
+    # across upgrades (lookup).
+    sessionSecret:
+      existingSecret: ""
+      value: ""
     # legacy: one token per group, nothing counted per user (the old behaviour).
     # mixed: per-user tokens are counted and obey explicit deny rules; old tokens
     #   still work but are not counted. Rollout option.
@@ -273,12 +279,14 @@ agent:
 # Platform credentials
 # ============================================================
 platform:
-  # RSA public key (PEM) used by proxy-l7 to verify JWT tokens issued by the daemon.
-  # The operator's PlatformReconciler syncs this into the proxy-credentials Secret in
+  # Ed25519 public key (PKIX PEM) that proxy-l7 uses to verify the lab access
+  # tokens (handoff links) signed by the daemon (LAB_ACCESS_PRIVATE_KEY).
+  # The operator's PlatformReconciler syncs this into the lab-access-public-key Secret in
   # the proxy namespace (internal/names.ProxyNamespace — NOT currently wired to
   # proxy.namespace above; see that key's KNOWN GAP note).
-  # Pass via: --set-file platform.jwtPublicKey=/path/to/jwt-public-key.pem
-  jwtPublicKey: ""
+  # Pass via: --set-file platform.labAccessPublicKey=/path/to/lab-access-public.pem
+  # (make lab-access-keys generates the pair).
+  labAccessPublicKey: ""
 
 # ============================================================
 # Common

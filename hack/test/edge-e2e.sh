@@ -13,7 +13,7 @@
 #   step2  helm upgrade with the merged edge topology
 #   step3  confirm the WG LoadBalancer Service and the Gateway share one IP
 #   step4  VPN path through the shared IP (WireGuard handshake + intra-lab ping)
-#   step5  web device (L7 + JWT cookie) through the Gateway
+#   step5  web device (L7 + lab access link) through the Gateway
 #   step6  agent reachable through the Gateway's TLSRoute (mTLS allow/deny)
 #   step7  lab internet-gateway egress (TCP curl, never ping — see note below)
 #
@@ -137,13 +137,13 @@ step1() {
 step2() {
     info "Step 2: helm upgrade laboratory with the merged edge"
 
-    # Fresh JWT keypair for platform.jwtPublicKey (regenerate if lost — the
-    # private key never lives in-cluster; keep it if you need to mint test
-    # JWTs against a value already deployed via `helm get values`).
+    # Fresh Ed25519 lab access keypair for platform.labAccessPublicKey (regenerate
+    # if lost — the private key never lives in-cluster; keep it if you need to
+    # mint test access links against a value already deployed via `helm get values`).
     mkdir -p "$SCRATCH_DIR"
-    if [[ ! -f "$SCRATCH_DIR/jwt-private.pem" ]]; then
-        openssl genrsa -out "$SCRATCH_DIR/jwt-private.pem" 2048 2>/dev/null
-        openssl rsa -in "$SCRATCH_DIR/jwt-private.pem" -pubout -out "$SCRATCH_DIR/jwt-public-key.pem" 2>/dev/null
+    if [[ ! -f "$SCRATCH_DIR/lab-access-private.pem" ]]; then
+        openssl genpkey -algorithm ed25519 -out "$SCRATCH_DIR/lab-access-private.pem" 2>/dev/null
+        openssl pkey -in "$SCRATCH_DIR/lab-access-private.pem" -pubout -out "$SCRATCH_DIR/lab-access-public.pem" 2>/dev/null
     fi
 
     # See caveat (1) above: use --reset-values + explicit --set for the
@@ -154,7 +154,8 @@ step2() {
         --set nodeAgent.excludeControlPlane=false \
         --set operator.baseDomain="$BASE_DOMAIN" \
         --set operator.publicVPNEndpoint="$(shared_ip 2>/dev/null || echo 0.0.0.0):51820" \
-        --set-file platform.jwtPublicKey="$SCRATCH_DIR/jwt-public-key.pem" \
+        --set-file platform.labAccessPublicKey="$SCRATCH_DIR/lab-access-public.pem" \
+        --set proxy.l7.tokenMode=legacy \
         --set proxy.enabled=true --set gateway.enabled=true \
         --set agent.enabled="${WITH_AGENT:-1}" --set agent.domain="$AGENT_DOMAIN" \
         --wait --timeout="${TIMEOUT}s"
@@ -251,10 +252,10 @@ step4() {
 }
 
 ###############################################################################
-# Step 5: web device (L7 + JWT) through the Gateway
+# Step 5: web device (L7 + lab access link) through the Gateway
 ###############################################################################
 step5() {
-    info "Step 5: web device (L7 + JWT) through the Gateway"
+    info "Step 5: web device (L7 + lab access link) through the Gateway"
     local ip="$(shared_ip)"
     local lab_ns="$GROUP_NAME"
     local device="e2ewebapp"
@@ -283,39 +284,51 @@ EOF
     fi
     $KUBECTL wait lab ctf-web -n "$lab_ns" --for=jsonpath='{.status.phase}'=Ready --timeout="${TIMEOUT}s"
 
-    # Mint an RS256 JWT for group_id=$GROUP_NAME using the private key from step2.
-    [[ -f "$SCRATCH_DIR/jwt-private.pem" ]] || die "run step2 first (need the matching JWT private key)"
+    # Mint an EdDSA lab access token (what the platform puts in the /_auth link).
+    [[ -f "$SCRATCH_DIR/lab-access-private.pem" ]] || die "run step2 first (need the matching lab access private key)"
     local token
-    token=$(python3 - "$SCRATCH_DIR/jwt-private.pem" "$GROUP_NAME" <<'PYEOF'
-import base64, json, subprocess, sys, time
+    token=$(python3 - "$SCRATCH_DIR/lab-access-private.pem" "$GROUP_NAME" "$device" <<'PYEOF'
+import base64, json, os, subprocess, sys, tempfile, time
 def b64url(b): return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
-priv, group = sys.argv[1], sys.argv[2]
-header = {"alg": "RS256", "typ": "JWT"}
+priv, group, host = sys.argv[1], sys.argv[2], sys.argv[3]
+header = {"alg": "EdDSA", "typ": "JWT"}
 now = int(time.time())
-payload = {"user_id": "e2e-tester", "group_id": group, "iat": now, "exp": now + 3600}
+payload = {"group_id": group, "client": "p-e2e-tester", "host": host, "sess": now + 3600,
+           "ver": 5, "iat": now, "exp": now + 60}
 signing_input = b64url(json.dumps(header, separators=(",", ":")).encode()) + "." + \
                 b64url(json.dumps(payload, separators=(",", ":")).encode())
-sig = subprocess.run(["openssl", "dgst", "-sha256", "-sign", priv], input=signing_input.encode(),
-                      stdout=subprocess.PIPE, check=True).stdout
+with tempfile.NamedTemporaryFile(delete=False) as f:
+    f.write(signing_input.encode())
+sig = subprocess.run(["openssl", "pkeyutl", "-sign", "-inkey", priv, "-rawin", "-in", f.name],
+                     stdout=subprocess.PIPE, check=True).stdout
+os.unlink(f.name)
 print(signing_input + "." + b64url(sig))
 PYEOF
 )
 
-    echo "  without cookie (expect 401):"
+    echo "  without a session (expect 401 card):"
     local code_401
     code_401=$(curl -sk -m8 --resolve "${device}.${BASE_DOMAIN}:443:${ip}" \
         "https://${device}.${BASE_DOMAIN}/" -o /dev/null -w '%{http_code}')
     echo "    -> $code_401"
-    [[ "$code_401" == "401" ]] || die "expected 401 without cookie, got $code_401"
+    [[ "$code_401" == "401" ]] || die "expected 401 without a session, got $code_401"
 
-    echo "  with valid JWT cookie (expect 200):"
+    echo "  /_auth with the access token (expect 303 and a session cookie):"
+    local jar="$SCRATCH_DIR/cookies.txt" code_303
+    rm -f "$jar"
+    code_303=$(curl -sk -m8 --resolve "${device}.${BASE_DOMAIN}:443:${ip}" -c "$jar" \
+        "https://${device}.${BASE_DOMAIN}/_auth?t=${token}" -o /dev/null -w '%{http_code}')
+    echo "    -> $code_303"
+    [[ "$code_303" == "303" ]] || die "expected 303 from /_auth, got $code_303"
+
+    echo "  with the session cookie (expect 200):"
     local code_200
-    code_200=$(curl -sk -m8 --resolve "${device}.${BASE_DOMAIN}:443:${ip}" \
-        "https://${device}.${BASE_DOMAIN}/" -H "Cookie: challenge=$token" -o /dev/null -w '%{http_code}')
+    code_200=$(curl -sk -m8 --resolve "${device}.${BASE_DOMAIN}:443:${ip}" -b "$jar" \
+        "https://${device}.${BASE_DOMAIN}/" -o /dev/null -w '%{http_code}')
     echo "    -> $code_200"
-    [[ "$code_200" == "200" ]] || die "expected 200 with valid cookie, got $code_200"
+    [[ "$code_200" == "200" ]] || die "expected 200 with a valid session, got $code_200"
 
-    echo "PASS: L7 + JWT gate working through the Gateway (401 -> 200)"
+    echo "PASS: L7 + lab access link working through the Gateway (401 -> 303 -> 200)"
 }
 
 ###############################################################################
@@ -407,7 +420,7 @@ main() {
         all)
             step1; step2; step3; step4; step5; step6; step7
             echo ""
-            echo "ALL STEPS PASSED. Scratch dir (JWT keys, wg configs): $SCRATCH_DIR"
+            echo "ALL STEPS PASSED. Scratch dir (lab access keys, wg configs): $SCRATCH_DIR"
             ;;
         *)
             echo "Usage: $0 <step1|step2|step3|step4|step5|step6|step7|all|cleanup>"

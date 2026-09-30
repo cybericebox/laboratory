@@ -3,7 +3,7 @@ NetworkPolicy + CiliumNetworkPolicy for the proxy-l7 Deployment (singleton,
 namespace .Values.proxy.namespace (default "laboratory-proxy"), pod label app: laboratory-proxy-l7 —
 see charts/laboratory/templates/proxy/deployment.yaml and
 internal/names/labels.go:ProxyL7App). The Deployment's two containers — l7
-(:8443/TCP, terminates TLS + JWT-gated device proxying) and wg-demux
+(:8443/TCP, terminates TLS + access-gated device proxying) and wg-demux
 (:{{ .Values.proxy.wg.listenPort }}/UDP, WireGuard endpoint) — share one
 pod/label, so this single policy pair governs both.
 
