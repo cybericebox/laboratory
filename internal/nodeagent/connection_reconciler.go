@@ -568,7 +568,7 @@ func (r *ConnectionReconciler) loadEndpoints(ctx context.Context, conn *laborato
 			synth := laboratoryv1alpha1.Device{}
 			synth.Spec.Type = laboratoryv1alpha1.DeviceTypeContainer
 			synth.Status.NodeName = pod.Spec.NodeName
-			synth.Status.NodeAddress = r.nodeAddressForNode(pod.Spec.NodeName)
+			synth.Status.NodeAddress = r.nodeAddressForNode(ctx, pod.Spec.NodeName)
 			synth.Name = fmt.Sprintf("%s-%s", conn.Spec.LabRef, ep.Device)
 			eps = append(eps, epInfo{ep, synth, false, true})
 			continue
@@ -642,14 +642,25 @@ func (r *ConnectionReconciler) resolveLocalPortKey(
 	}
 }
 
-// nodeAddressForNode returns the Geneve VTEP address for the given node name.
-// Falls back to empty string when the node cannot be found among Device statuses.
-func (r *ConnectionReconciler) nodeAddressForNode(nodeName string) string {
+// nodeAddressForNode returns the Geneve VTEP address for the given node name:
+// the node's InternalIP, which is what every node-agent uses as its own VTEP
+// (NODE_ADDRESS = status.hostIP). Device statuses are only a fallback: a vpn or
+// gateway pod may sit on a node where no Device of any lab runs yet, and an
+// empty address leaves that side without the tunnel back (one-way traffic).
+func (r *ConnectionReconciler) nodeAddressForNode(ctx context.Context, nodeName string) string {
 	if nodeName == r.NodeName {
 		return r.NodeAddress
 	}
+	var node corev1.Node
+	if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, &node); err == nil {
+		for _, addr := range node.Status.Addresses {
+			if addr.Type == corev1.NodeInternalIP && addr.Address != "" {
+				return addr.Address
+			}
+		}
+	}
 	var devList laboratoryv1alpha1.DeviceList
-	if err := r.List(context.Background(), &devList); err != nil {
+	if err := r.List(ctx, &devList); err != nil {
 		return ""
 	}
 	for _, d := range devList.Items {
