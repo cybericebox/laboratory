@@ -1,5 +1,0 @@
-apiVersion: laboratory.cybericebox.com/v1alpha1
-kind: LabGroup
-metadata:
-  name: team-alpha
-spec: { }

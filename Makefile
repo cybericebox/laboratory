@@ -10,6 +10,8 @@ PROXY_IMG    ?= cybericebox/laboratory-proxy:$(BUILD_TAG)
 KIND_CLUSTER_NAME ?= icebox
 
 # Lima/k0s dev cluster
+# Local cluster kit (Lima VMs, k0s, Kind config, lab scenarios) lives in the infrastructure repo.
+LOCAL_K0S      ?= ../infrastructure/local-k0s
 LIMA_CTRL      ?= lab-ctrl
 LIMA_WORKER    ?= lab-worker
 CHART_PATH     ?= charts/laboratory
@@ -74,7 +76,7 @@ generate-api:
 
 .PHONY: cluster-up
 cluster-up: ## Create 3-node Kind cluster (1 control-plane + 2 workers)
-	$(KIND) create cluster --config hack/kind-config.yaml --name $(KIND_CLUSTER_NAME)
+	$(KIND) create cluster --config $(LOCAL_K0S)/kind/kind-config.yaml --name $(KIND_CLUSTER_NAME)
 	$(KUBECTL) create namespace lab-system --dry-run=client -o yaml | $(KUBECTL) apply -f -
 
 .PHONY: cluster-down
@@ -242,9 +244,9 @@ kind-deploy: kind-load install deploy ## Full local deploy: build all + load + C
 	$(MAKE) kind-patch-agent
 	@echo ""
 	@echo "Cluster ready. Run tests:"
-	@echo "  hack/test/run.sh single-node"
-	@echo "  hack/test/run.sh multi-node"
-	@echo "  hack/test/run.sh vpn"
+	@echo "  $(LOCAL_K0S)/scenarios/run.sh single-node"
+	@echo "  $(LOCAL_K0S)/scenarios/run.sh multi-node"
+	@echo "  $(LOCAL_K0S)/scenarios/run.sh vpn"
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.

@@ -29,6 +29,11 @@ For a real cluster, skip this step and point `KUBECONFIG` at the existing config
 
 ---
 
+> A complete local k0s cluster (Lima VMs, Cilium Gateway, this chart, test lab and checklist) is in
+> `../infrastructure/local-k0s/README.md`; `make cluster-up` uses the Kind config from `../infrastructure/local-k0s/kind/`.
+
+---
+
 ## 2. Configure
 
 Create your `values.yaml` override file. Required: `operator.publicVPNEndpoint`, `operator.baseDomain`, and the lab access public key (below):
