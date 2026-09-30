@@ -318,12 +318,12 @@ of a node. Planned reboots of a whole OS are out of scope (such tasks belong in 
 ### Enable
 
 ```yaml
+registry:                     # the platform registry, shared with the image cache (below)
+  storageClass: ""            # empty = cluster default
+  size: 20Gi
 devices:
   statePersistence:
     enabled: true
-    registry:
-      storageClass: ""        # empty = cluster default
-      size: 20Gi
     debounce: 5s              # quiet time of the writable layer before a snapshot
     excludePaths: [/tmp, /var/tmp, /run]
     maxSnapshotSize: 512Mi    # quota per device
@@ -334,7 +334,7 @@ devices:
 
 `enabled: false` (the default) renders nothing of the feature and keeps today's behaviour. With `true`:
 
-- the chart deploys a snapshot registry ([zot](https://zotregistry.dev)) in `laboratory-system`: a
+- the chart deploys the platform registry ([zot](https://zotregistry.dev)) in `laboratory-system`: a
   PersistentVolumeClaim (`registry.storageClass`, `registry.size`; it is kept on `helm uninstall`), a Service, and a
   Secret with generated `htpasswd` credentials for the single writer;
 - the operator runs the devices of **new** labs as bare Pods (`restartPolicy: Never`) that it owns and recreates. The
@@ -346,7 +346,7 @@ Requirements on the nodes (nothing has to be installed or configured on the host
 
 - containerd 2.x with the default `overlayfs` snapshotter, cgroup v2, and the image layers kept in the content store
   (containerd's CRI option `discard_unpacked_layers` must be `false`, which is the default);
-- TCP port `devices.statePersistence.forwardPort` (default 5035) free on `127.0.0.1` of every node;
+- TCP port `registry.forwardPort` (default 5035) free on `127.0.0.1` of every node;
 - the node-agent DaemonSet mounts `containerdRoot` read-only and the host cgroup tree, and gets the
   `DAC_READ_SEARCH` capability. Set `containerdRoot` to the containerd root of your distribution (k0s:
   `/var/lib/k0s/containerd`; stock containerd: `/var/lib/containerd`).
@@ -409,8 +409,8 @@ name before the deadline cancels the deletion.
 kubectl -n <lab-namespace> get device <lab>-<device> -o jsonpath='{.status.state}{"\n"}'
 
 # Registry logs and volume usage
-kubectl -n laboratory-system logs deployment/laboratory-snapshots
-kubectl -n laboratory-system get pvc laboratory-snapshots-registry
+kubectl -n laboratory-system logs deployment/laboratory-registry
+kubectl -n laboratory-system get pvc laboratory-registry
 
 # Node-agent: snapshot activity of a node
 kubectl -n laboratory-system logs -l app=node-agent -c node-agent | grep device-state
@@ -421,6 +421,54 @@ Size the volume for the base images plus (devices x `maxSnapshotSize`) in the wo
 not mounted. A device whose snapshot image cannot be pulled stays in `ImagePullBackOff` and its status warning says
 `snapshot image unavailable`; the operator never falls back to the base image on its own (that would lose state
 silently). Fix the registry, or use `ResetDevice` to start it from the base image.
+
+---
+
+## Image cache (optional)
+
+Every lab pulls its images (device images, the VPN and gateway images, the netconfig init container) from their
+registries on every node. With the image cache on, the platform registry (zot) sits in between as a
+pull-through cache: the first node that needs an image makes zot fetch it from the upstream registry (on-demand
+sync), and every other node pulls it from zot, inside the cluster. It saves upstream bandwidth and rate limits
+(Docker Hub) and speeds up a burst of labs.
+
+```yaml
+registry:
+  cache:
+    enabled: true
+    maxAge: 720h            # cached content not pulled for this long is deleted
+    registries: [docker.io, ghcr.io, quay.io, registry.k8s.io]   # built in
+    extraRegistries: []     # - name: registry.example.com
+                            #   url: https://registry.example.com
+```
+
+It is independent of state persistence: either switch deploys the registry (the full zot image, about 70 MB
+compressed on amd64 and arm64; the cache needs its sync extension), both can be on. Needs `nodeAgent.enabled`.
+
+- **How the nodes reach it.** As for snapshots: the node-agent relays `127.0.0.1:<registry.forwardPort>` on every node
+  to the registry Service, and containerd reads `localhost:<port>` as a plain-HTTP registry, so nothing is configured
+  on the host.
+- **What is rewritten.** The operator rewrites `REG/repo:tag` (and `@sha256:` references) into
+  `localhost:<port>/REG/repo:tag`, for registries in `registry.cache.registries` and `extraRegistries` only. Names
+  follow Docker rules: `nginx` is `docker.io/library/nginx:latest`. Snapshot images and images of other registries
+  are pulled directly. zot maps the `REG/` prefix back to the upstream registry (one sync entry per upstream, with
+  the destination `/REG`).
+- **Fixed per lab.** The mode is recorded in `Lab.status.imageCache` when the lab is first reconciled, and the
+  device image is written to `Device.spec.imageMirror`; switching the cache on or off never changes existing labs.
+  The VPN and gateway images of a lab group are rewritten when the group's pods are created.
+- **Launch pacing.** With the cache on, the prepull DaemonSet pulls the rewritten images, so the first node warms
+  zot and the others pull from it.
+- **Snapshots.** The base layers of a device snapshot are mounted from the cached repository of the base image
+  instead of being uploaded.
+- **Upstream credentials.** zot reads them from a Secret in its sync credentials format. The chart builds it from
+  `imagePullSecrets` (dockerconfigjson Secrets in the release namespace) with `lookup`, which sees nothing under
+  `helm template` or GitOps renderers; there, create your own Secret with the key `credentials.json`
+  (`{"ghcr.io": {"username": "...", "password": "..."}}`; Docker Hub is `registry-1.docker.io`) and set
+  `registry.cache.credentialsSecret`. Restart the registry pod after the credentials change.
+- **Retention.** zot's retention policy deletes cached tags not pulled for `registry.cache.maxAge` (default 30 days),
+  and its garbage collection frees the blobs. Snapshot repositories (`lab/...`) are never touched by it.
+- **Size.** The registry volume (`registry.size`) holds the cached images as well: plan for the images of the labs you
+  run, next to the snapshots.
 
 ---
 

@@ -1,13 +1,13 @@
-{{- if .Values.devices.statePersistence.enabled }}
-{{- $r := .Values.devices.statePersistence.registry }}
+{{- if include "laboratory.registryEnabled" . }}
+{{- $r := .Values.registry }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: laboratory-snapshots
+  name: laboratory-registry
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
-    {{- include "laboratory.snapshotRegistrySelector" . | nindent 4 }}
+    {{- include "laboratory.registrySelector" . | nindent 4 }}
 spec:
   replicas: 1
   # One ReadWriteOnce volume: the old pod must be gone before the new one starts.
@@ -15,14 +15,14 @@ spec:
     type: Recreate
   selector:
     matchLabels:
-      {{- include "laboratory.snapshotRegistrySelector" . | nindent 6 }}
+      {{- include "laboratory.registrySelector" . | nindent 6 }}
   template:
     metadata:
       labels:
         {{- include "laboratory.labels" . | nindent 8 }}
-        {{- include "laboratory.snapshotRegistrySelector" . | nindent 8 }}
+        {{- include "laboratory.registrySelector" . | nindent 8 }}
       annotations:
-        checksum/config: {{ include (print $.Template.BasePath "/snapshots/configmap.yaml") . | sha256sum }}
+        checksum/config: {{ include (print $.Template.BasePath "/registry/configmap.yaml") . | sha256sum }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -58,6 +58,11 @@ spec:
               readOnly: true
             - name: data
               mountPath: /var/lib/registry
+            {{- if $r.cache.enabled }}
+            - name: sync-credentials
+              mountPath: /etc/zot-sync
+              readOnly: true
+            {{- end }}
           {{- with $r.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -65,14 +70,22 @@ spec:
       volumes:
         - name: config
           configMap:
-            name: laboratory-snapshots-registry
+            name: laboratory-registry
         - name: auth
           secret:
-            secretName: laboratory-snapshots-registry
+            secretName: laboratory-registry
             items:
               - key: htpasswd
                 path: htpasswd
         - name: data
           persistentVolumeClaim:
-            claimName: laboratory-snapshots-registry
+            claimName: laboratory-registry
+        {{- if $r.cache.enabled }}
+        - name: sync-credentials
+          secret:
+            secretName: {{ default "laboratory-registry-sync" $r.cache.credentialsSecret }}
+            items:
+              - key: credentials.json
+                path: credentials.json
+        {{- end }}
 {{- end }}

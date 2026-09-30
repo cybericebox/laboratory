@@ -63,13 +63,39 @@ operator copies into every lab group namespace and sets on lab pods.
 {{/*
 host:port of the snapshot registry Service inside the cluster.
 */}}
-{{- define "laboratory.snapshotRegistryAddr" -}}
-{{- printf "laboratory-snapshots.%s.svc:5000" .Release.Namespace -}}
+{{- define "laboratory.registryAddr" -}}
+{{- printf "laboratory-registry.%s.svc:5000" .Release.Namespace -}}
 {{- end }}
 
 {{/*
 Labels that select the snapshot registry pod.
 */}}
-{{- define "laboratory.snapshotRegistrySelector" -}}
-app: laboratory-snapshots
+{{- define "laboratory.registrySelector" -}}
+app: laboratory-registry
+{{- end }}
+
+{{/*
+Non-empty when the platform registry (zot) is deployed: device state persistence
+or the image cache is on.
+*/}}
+{{- define "laboratory.registryEnabled" -}}
+{{- if or .Values.devices.statePersistence.enabled .Values.registry.cache.enabled -}}true{{- end -}}
+{{- end }}
+
+{{/*
+Upstream registries of the image cache as a JSON list of {name, url}: the built-in
+ones named in registry.cache.registries, plus registry.cache.extraRegistries.
+*/}}
+{{- define "laboratory.cacheUpstreams" -}}
+{{- $known := dict "docker.io" "https://registry-1.docker.io" "ghcr.io" "https://ghcr.io" "quay.io" "https://quay.io" "registry.k8s.io" "https://registry.k8s.io" -}}
+{{- $out := list -}}
+{{- range .Values.registry.cache.registries -}}
+{{- $url := index $known . -}}
+{{- if not $url -}}{{- fail (printf "registry.cache.registries: %q is not built in; add it to registry.cache.extraRegistries with its url" .) -}}{{- end -}}
+{{- $out = append $out (dict "name" . "url" $url) -}}
+{{- end -}}
+{{- range .Values.registry.cache.extraRegistries -}}
+{{- $out = append $out (dict "name" (required "registry.cache.extraRegistries entries need a name" .name) "url" (required "registry.cache.extraRegistries entries need a url" .url)) -}}
+{{- end -}}
+{{- toJson $out -}}
 {{- end }}

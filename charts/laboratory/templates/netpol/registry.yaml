@@ -1,20 +1,20 @@
-{{- if and .Values.devices.statePersistence.enabled .Values.devices.statePersistence.registry.networkPolicy.enabled }}
+{{- if and (include "laboratory.registryEnabled" .) .Values.registry.networkPolicy.enabled }}
 {{- /*
 The snapshot registry accepts connections from the node-agents (hostNetwork pods: the
 Cilium entities "host" and "remote-node", because their forwarder dials the Service from
-the node) and from the operator (device reset, retention). It opens no connection itself.
+the node) and from the operator (device reset, retention). Its egress is open: the image cache fetches from the upstream registries.
 */ -}}
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
-  name: laboratory-snapshots
+  name: laboratory-registry
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
   endpointSelector:
     matchLabels:
-      {{- include "laboratory.snapshotRegistrySelector" . | nindent 6 }}
+      {{- include "laboratory.registrySelector" . | nindent 6 }}
   ingress:
     - fromEntities:
         - host

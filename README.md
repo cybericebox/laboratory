@@ -220,7 +220,7 @@ make test-e2e        # e2e tests against a kind cluster (see test/e2e)
 
 ## Documentation
 
-- [`DEPLOY.md`](DEPLOY.md): install, configure, upgrade, use, uninstall, optional device state persistence.
+- [`DEPLOY.md`](DEPLOY.md): install, configure, upgrade, use, uninstall, optional device state persistence and image cache.
 - [`docs/specs/`](docs/specs/): component specifications (Russian): [operator](docs/specs/operator.md),
   [controller design](docs/specs/controller-design.md), [node-agent](docs/specs/node-agent.md),
   [CNI plugins](docs/specs/cni-plugins.md), [VPN](docs/specs/vpn.md), [proxy](docs/specs/proxy.md),

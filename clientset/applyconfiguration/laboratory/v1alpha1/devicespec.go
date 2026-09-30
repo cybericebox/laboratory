@@ -43,6 +43,11 @@ type DeviceSpecApplyConfiguration struct {
 	// this device. Set once when the Device is materialised: a Lab created while
 	// the platform has device state persistence off never carries it.
 	State *DeviceStateSpecApplyConfiguration `json:"state,omitempty"`
+	// ImageMirror is the cache prefix (host:port, e.g. "localhost:5035") through
+	// which the node pulls the device image: the operator pulls REG/repo:tag as
+	// <prefix>/REG/repo:tag. Set once when the Device is materialised, only for
+	// labs created while the image cache is on; empty pulls Image directly.
+	ImageMirror *string `json:"imageMirror,omitempty"`
 }
 
 // DeviceSpecApplyConfiguration constructs a declarative configuration of the DeviceSpec type for use with
@@ -125,5 +130,13 @@ func (b *DeviceSpecApplyConfiguration) WithResources(value *DeviceResourcesApply
 // If called multiple times, the State field is set to the value of the last call.
 func (b *DeviceSpecApplyConfiguration) WithState(value *DeviceStateSpecApplyConfiguration) *DeviceSpecApplyConfiguration {
 	b.State = value
+	return b
+}
+
+// WithImageMirror sets the ImageMirror field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ImageMirror field is set to the value of the last call.
+func (b *DeviceSpecApplyConfiguration) WithImageMirror(value string) *DeviceSpecApplyConfiguration {
+	b.ImageMirror = &value
 	return b
 }

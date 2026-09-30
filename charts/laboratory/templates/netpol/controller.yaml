@@ -28,7 +28,7 @@ spec:
     # Snapshot registry (device reset, retention sweep) and the DNS lookup of its Service.
     - toEndpoints:
         - matchLabels:
-            {{- include "laboratory.snapshotRegistrySelector" . | nindent 12 }}
+            {{- include "laboratory.registrySelector" . | nindent 12 }}
       toPorts:
         - ports:
             - port: "5000"

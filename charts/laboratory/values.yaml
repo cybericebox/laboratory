@@ -269,12 +269,71 @@ nodeAgent:
   resources: {}
 
 # ============================================================
+# Platform registry (zot): device snapshots and the image cache
+# ============================================================
+# One zot in the release namespace serves two optional features, each with its own
+# switch: devices.statePersistence (snapshots of device state) and registry.cache
+# (a pull-through cache of the lab images). It is deployed when either is on.
+registry:
+  image:
+    # The full image: the image cache needs its sync extension. Multi-arch
+    # (linux/amd64 and linux/arm64); about 70 MB compressed.
+    repository: ghcr.io/project-zot/zot
+    tag: "v2.1.21"
+    pullPolicy: IfNotPresent
+  # StorageClass of the registry volume; empty = the cluster default.
+  storageClass: ""
+  # Size of the registry volume. It holds the cached images, the base image layers once
+  # and every device's snapshot layers: plan for the images of the labs plus
+  # (devices x maxSnapshotSize) at worst. The volume is kept on uninstall.
+  size: 20Gi
+  # Garbage collection of blobs no manifest references any more.
+  gc:
+    interval: 1h
+    delay: 1h
+  resources: {}
+  networkPolicy:
+    enabled: true
+  # Node-side access: the node-agent relays 127.0.0.1:<forwardPort> on each node to the
+  # registry Service, and images are referenced as localhost:<forwardPort>/...
+  # containerd treats localhost registries as plain HTTP, so the nodes need no
+  # configuration. The port must be free on the node.
+  forwardPort: 5035
+
+  # Pull-through cache of the lab images. The operator rewrites REG/repo:tag of the
+  # devices, VPN and gateway pods of labs created while the cache is on into
+  # localhost:<forwardPort>/REG/repo:tag; zot fetches each image from REG on the first
+  # pull (on-demand sync) and serves it from its volume afterwards. The mode is fixed
+  # on each lab at creation; flipping the switch never changes existing labs. Snapshot
+  # images and references to registries not listed below are pulled directly.
+  cache:
+    enabled: false
+    # Cached content not pulled for this long is deleted (zot retention, then GC).
+    maxAge: 720h
+    # Upstream registries to cache. docker.io, ghcr.io, quay.io and registry.k8s.io are
+    # built in; others go into extraRegistries.
+    registries:
+      - docker.io
+      - ghcr.io
+      - quay.io
+      - registry.k8s.io
+    # Additional upstream registries: - name: registry.example.com
+    #                                   url: https://registry.example.com
+    extraRegistries: []
+    # Upstream credentials (private registries, Docker Hub rate limits) come from the
+    # chart-level imagePullSecrets (dockerconfigjson Secrets in the release namespace),
+    # read at install time. To manage them yourself, name a Secret in the release
+    # namespace with the key credentials.json in zot's sync credentials format
+    # ({"host": {"username": "...", "password": "..."}}); imagePullSecrets is then ignored.
+    credentialsSecret: ""
+
+# ============================================================
 # Devices: optional state persistence
 # ============================================================
 devices:
   # Device state persistence: the writable layer of a device container survives an
   # UNPLANNED container restart (crash, OOM, reschedule). The node-agent snapshots
-  # it into a registry the chart deploys (zot); the operator recreates the device
+  # it into the platform registry above (zot); the operator recreates the device
   # from the latest snapshot. What is kept: files only. Memory, processes and live
   # netfilter/route state are lost, as in a VM reboot; seconds of work are lost when
   # a node dies. See DEPLOY.md, "Device state persistence".
@@ -285,27 +344,6 @@ devices:
   # never changes existing labs.
   statePersistence:
     enabled: false
-
-    # The snapshot registry (zot) in the release namespace.
-    registry:
-      image:
-        # Multi-arch (linux/amd64 and linux/arm64) image.
-        repository: ghcr.io/project-zot/zot
-        tag: "v2.1.21"
-        pullPolicy: IfNotPresent
-      # StorageClass of the registry volume; empty = the cluster default.
-      storageClass: ""
-      # Size of the registry volume. It holds the base image layers once and every
-      # device's snapshot layers: plan for (devices x maxSnapshotSize) at worst.
-      size: 20Gi
-      # Garbage collection of blobs no manifest references any more (snapshots are
-      # replaced all the time, and deleted labs are cleaned up by the retention job).
-      gc:
-        interval: 1h
-        delay: 1h
-      resources: {}
-      networkPolicy:
-        enabled: true
 
     # How long a device's writable layer must stay quiet before a snapshot is taken.
     debounce: 5s
@@ -323,11 +361,6 @@ devices:
     # (and the registry's GC frees the space).
     retention: 168h
 
-    # Node-side access: the node-agent relays 127.0.0.1:<forwardPort> on each node to the
-    # registry Service, and snapshot images are referenced as localhost:<forwardPort>/...
-    # containerd treats localhost registries as plain HTTP, so the nodes need no
-    # configuration. The port must be free on the node.
-    forwardPort: 5035
     # Host path of the containerd root (the overlayfs snapshotter keeps the writable
     # layers below it), mounted read-only at the same path into the node-agent.
     containerdRoot: /var/lib/k0s/containerd

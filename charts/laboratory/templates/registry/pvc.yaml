@@ -1,9 +1,9 @@
-{{- if .Values.devices.statePersistence.enabled }}
-{{- $r := .Values.devices.statePersistence.registry }}
+{{- if include "laboratory.registryEnabled" . }}
+{{- $r := .Values.registry }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: laboratory-snapshots-registry
+  name: laboratory-registry
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}

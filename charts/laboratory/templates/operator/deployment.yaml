@@ -51,12 +51,12 @@ spec:
             - name: STATE_REGISTRY_USER
               valueFrom:
                 secretKeyRef:
-                  name: laboratory-snapshots-registry
+                  name: laboratory-registry
                   key: username
             - name: STATE_REGISTRY_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: laboratory-snapshots-registry
+                  name: laboratory-registry
                   key: password
         {{- end }}
           securityContext:

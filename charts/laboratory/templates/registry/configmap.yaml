@@ -1,0 +1,36 @@
+{{- if include "laboratory.registryEnabled" . }}
+{{- $r := .Values.registry }}
+{{- $cache := $r.cache }}
+{{- $all := list "read" "create" "update" "delete" }}
+{{- $storage := dict "rootDirectory" "/var/lib/registry" "dedupe" true "gc" true "gcDelay" $r.gc.delay "gcInterval" $r.gc.interval }}
+{{- $access := dict "repositories" (dict "**" (dict "anonymousPolicy" (list "read") "policies" (list (dict "users" (list "writer") "actions" $all)))) "adminPolicy" (dict "users" (list "writer") "actions" $all) }}
+{{- $http := dict "address" "0.0.0.0" "port" "5000" "auth" (dict "htpasswd" (dict "path" "/etc/zot-auth/htpasswd")) "accessControl" $access }}
+{{- $cfg := dict "distSpecVersion" "1.1.0" "storage" $storage "http" $http "log" (dict "level" "info") }}
+{{- if $cache.enabled }}
+{{- /*
+On-demand sync, one entry per upstream registry. A pull of localhost:<port>/<REG>/<repo>
+reaches zot as the repository "<REG>/<repo>"; the entry whose destination is "/<REG>" takes the
+prefix off and fetches <repo> from the registry's URL on the first pull.
+*/}}
+{{- $upstreams := include "laboratory.cacheUpstreams" . | fromJsonArray }}
+{{- $entries := list }}
+{{- $globs := list }}
+{{- range $u := $upstreams }}
+{{- $entries = append $entries (dict "urls" (list $u.url) "onDemand" true "tlsVerify" true "maxRetries" 3 "retryDelay" "1m" "content" (list (dict "prefix" "**" "destination" (printf "/%s" $u.name) "stripPrefix" false))) }}
+{{- $globs = append $globs (printf "%s/**" $u.name) }}
+{{- end }}
+{{- $_ := set $cfg "extensions" (dict "sync" (dict "enable" true "credentialsFile" "/etc/zot-sync/credentials.json" "registries" $entries)) }}
+{{- /* Cached content not pulled for maxAge is deleted; snapshot repositories (lab/**) match no policy and are kept. */}}
+{{- $_ := set $storage "retention" (dict "dryRun" false "delay" "24h" "policies" (list (dict "repositories" $globs "deleteReferrers" false "deleteUntagged" true "keepTags" (list (dict "patterns" (list ".*") "pulledWithin" $cache.maxAge))))) }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: laboratory-registry
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+data:
+  config.json: |
+    {{- $cfg | toPrettyJson | nindent 4 }}
+{{- end }}

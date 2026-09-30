@@ -157,14 +157,18 @@ spec:
                   fieldPath: status.hostIP
             - name: CRI_SOCK
               value: {{ .Values.nodeAgent.criSocket | quote }}
-          {{- if .Values.devices.statePersistence.enabled }}
-            # Device state persistence: the registry Service is relayed to
+          {{- if include "laboratory.registryEnabled" . }}
+            # The platform registry (snapshots, image cache): its Service is relayed to
             # 127.0.0.1:STATE_FORWARD_PORT, where containerd reads it as a plain-HTTP
             # localhost registry.
             - name: STATE_REGISTRY_ADDR
-              value: {{ include "laboratory.snapshotRegistryAddr" . | quote }}
+              value: {{ include "laboratory.registryAddr" . | quote }}
             - name: STATE_FORWARD_PORT
-              value: {{ .Values.devices.statePersistence.forwardPort | quote }}
+              value: {{ .Values.registry.forwardPort | quote }}
+          {{- end }}
+          {{- if .Values.devices.statePersistence.enabled }}
+            - name: STATE_PERSISTENCE_ENABLED
+              value: "true"
             - name: CONTAINERD_NAMESPACE
               value: {{ .Values.devices.statePersistence.containerdNamespace | quote }}
             - name: CGROUP_ROOT
@@ -174,12 +178,12 @@ spec:
             - name: STATE_REGISTRY_USER
               valueFrom:
                 secretKeyRef:
-                  name: laboratory-snapshots-registry
+                  name: laboratory-registry
                   key: username
             - name: STATE_REGISTRY_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: laboratory-snapshots-registry
+                  name: laboratory-registry
                   key: password
           {{- end }}
           securityContext:

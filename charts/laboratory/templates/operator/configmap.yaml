@@ -34,11 +34,18 @@ data:
   {{- with .Values.devices.statePersistence }}
   {{- if .enabled }}
   STATE_PERSISTENCE_ENABLED: "true"
-  STATE_REGISTRY_ADDR: {{ include "laboratory.snapshotRegistryAddr" $ | quote }}
+  STATE_REGISTRY_ADDR: {{ include "laboratory.registryAddr" $ | quote }}
   STATE_DEBOUNCE: {{ .debounce | quote }}
   STATE_EXCLUDE_PATHS: {{ join "," .excludePaths | quote }}
   STATE_MAX_SNAPSHOT_SIZE: {{ .maxSnapshotSize | quote }}
   STATE_MAX_LAYERS: {{ .maxLayers | quote }}
   STATE_RETENTION: {{ .retention | quote }}
   {{- end }}
+  {{- end }}
+  {{- if .Values.registry.cache.enabled }}
+  {{- $names := list }}
+  {{- range (include "laboratory.cacheUpstreams" . | fromJsonArray) }}{{ $names = append $names .name }}{{ end }}
+  IMAGE_CACHE_ENABLED: "true"
+  IMAGE_CACHE_PREFIX: {{ printf "localhost:%v" .Values.registry.forwardPort | quote }}
+  IMAGE_CACHE_REGISTRIES: {{ join "," $names | quote }}
   {{- end }}

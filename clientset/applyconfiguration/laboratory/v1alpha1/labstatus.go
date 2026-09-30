@@ -40,6 +40,9 @@ type LabStatusApplyConfiguration struct {
 	// first reconcile: true = bare Pods with snapshot-backed state, false =
 	// Deployments. It never changes afterwards, whatever the platform switch says.
 	StatePersistence *bool `json:"statePersistence,omitempty"`
+	// ImageCache records whether this lab pulls its images through the platform
+	// image cache, decided once on the first reconcile like StatePersistence.
+	ImageCache *bool `json:"imageCache,omitempty"`
 	// Conditions surfaces reconciler progress/blocking reasons
 	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
 	Conditions []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
@@ -127,6 +130,14 @@ func (b *LabStatusApplyConfiguration) WithLaunch(value *LabLaunchStatusApplyConf
 // If called multiple times, the StatePersistence field is set to the value of the last call.
 func (b *LabStatusApplyConfiguration) WithStatePersistence(value bool) *LabStatusApplyConfiguration {
 	b.StatePersistence = &value
+	return b
+}
+
+// WithImageCache sets the ImageCache field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ImageCache field is set to the value of the last call.
+func (b *LabStatusApplyConfiguration) WithImageCache(value bool) *LabStatusApplyConfiguration {
+	b.ImageCache = &value
 	return b
 }
 
