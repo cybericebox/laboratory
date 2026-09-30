@@ -18,7 +18,10 @@ type jwtClaims struct {
 	// EventID and TeamID are for reporting only. Authorization uses group_id.
 	EventID string `json:"evt,omitempty"`
 	TeamID  string `json:"team,omitempty"`
-	Version int    `json:"ver,omitempty"`
+	// TestDeploy is set on the token of a catalog test deploy (the id of the
+	// deploy). Such a token is authorized like any other but never counted.
+	TestDeploy string `json:"test,omitempty"`
+	Version    int    `json:"ver,omitempty"`
 	jwt.RegisteredClaims
 }
 

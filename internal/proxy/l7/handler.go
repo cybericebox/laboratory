@@ -147,6 +147,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		proxy.ServeHTTP(w, r)
 		return
 	}
+	if claims.TestDeploy != "" {
+		// A catalog author testing a lab is not an event participant.
+		proxy.ServeHTTP(w, r)
+		return
+	}
 	if subject == "" || lab == "" {
 		h.meter.RecordLegacy()
 		proxy.ServeHTTP(w, r)
