@@ -8,6 +8,8 @@ import (
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
+const kindLab = "Lab"
+
 // CreateLab creates a new Lab custom resource in the given namespace.
 func (h *Handler) CreateLab(ctx context.Context, in *protobuf.Lab) (*protobuf.Lab, error) {
 	lab, err := protoToLab(in)
@@ -15,7 +17,9 @@ func (h *Handler) CreateLab(ctx context.Context, in *protobuf.Lab) (*protobuf.La
 		return nil, err
 	}
 	out, err := h.cs.LaboratoryV1alpha1().Labs(in.Namespace).Create(ctx, lab, metav1.CreateOptions{})
-	if err != nil {
+	if err := createErr(err, kindLab, in.Name, func() (metav1.Object, error) {
+		return h.cs.LaboratoryV1alpha1().Labs(in.Namespace).Get(ctx, in.Name, metav1.GetOptions{})
+	}); err != nil {
 		return nil, err
 	}
 	if err := h.reconcileEnvSecrets(ctx, out, in.Env); err != nil {
@@ -58,6 +62,9 @@ func (h *Handler) UpdateLab(ctx context.Context, in *protobuf.Lab) (*protobuf.La
 	if err != nil {
 		return nil, err
 	}
+	if err := rejectTerminating(kindLab, cur); err != nil {
+		return nil, err
+	}
 	desired, err := protoToLab(in)
 	if err != nil {
 		return nil, err
@@ -73,7 +80,9 @@ func (h *Handler) UpdateLab(ctx context.Context, in *protobuf.Lab) (*protobuf.La
 	return labToProto(out), nil
 }
 
-// DeleteLab deletes a Lab custom resource by namespace and name.
+// DeleteLab deletes a Lab custom resource by namespace and name. Deletion is
+// asynchronous: it is finished once GetLab returns NotFound; until then writes
+// on that name fail with a retryable Unavailable / TERMINATING error.
 func (h *Handler) DeleteLab(ctx context.Context, in *protobuf.NamespacedIDRequest) (*protobuf.Empty, error) {
 	if err := h.cs.LaboratoryV1alpha1().Labs(in.Namespace).Delete(ctx, in.Name, metav1.DeleteOptions{}); err != nil {
 		return nil, err

@@ -19,6 +19,11 @@ import (
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
+const (
+	kindLabGroupClient       = "LabGroupClient"
+	kindLabGroupAccessPolicy = "LabGroupAccessPolicy"
+)
+
 // CreateLabGroupClient provisions a WireGuard VPN client. The agent generates
 // the keypair — the PRIVATE key lives only in this call and never touches the
 // cluster. Only the public key is registered; the controller assigns an IP and
@@ -36,7 +41,10 @@ func (h *Handler) CreateLabGroupClient(ctx context.Context, in *protobuf.LabGrou
 		ObjectMeta: metav1.ObjectMeta{Name: in.Name, Namespace: in.Namespace},
 	}
 	lgc.Spec.PublicKey = priv.PublicKey().String()
-	if _, err := h.cs.LaboratoryV1alpha1().LabGroupClients(in.Namespace).Create(ctx, lgc, metav1.CreateOptions{}); err != nil {
+	_, err = h.cs.LaboratoryV1alpha1().LabGroupClients(in.Namespace).Create(ctx, lgc, metav1.CreateOptions{})
+	if err := createErr(err, kindLabGroupClient, in.Name, func() (metav1.Object, error) {
+		return h.cs.LaboratoryV1alpha1().LabGroupClients(in.Namespace).Get(ctx, in.Name, metav1.GetOptions{})
+	}); err != nil {
 		return nil, err
 	}
 
@@ -100,7 +108,9 @@ func (h *Handler) ListLabGroupClients(ctx context.Context, in *protobuf.Namespac
 	return out, nil
 }
 
-// DeleteLabGroupClient deletes a LabGroupClient custom resource by namespace and name.
+// DeleteLabGroupClient deletes a LabGroupClient custom resource by namespace and
+// name. Deletion is asynchronous: it is finished once GetLabGroupClient returns
+// NotFound; until then CreateLabGroupClient fails with Unavailable / TERMINATING.
 func (h *Handler) DeleteLabGroupClient(ctx context.Context, in *protobuf.NamespacedIDRequest) (*protobuf.Empty, error) {
 	if err := h.cs.LaboratoryV1alpha1().LabGroupClients(in.Namespace).Delete(ctx, in.Name, metav1.DeleteOptions{}); err != nil {
 		return nil, err
@@ -118,6 +128,9 @@ func (h *Handler) ReconcileLabGroupAccess(ctx context.Context, in *protobuf.LabG
 	}
 	group, err := h.cs.LaboratoryV1alpha1().LabGroups().Get(ctx, in.LabGroupName, metav1.GetOptions{})
 	if err != nil {
+		return nil, err
+	}
+	if err := rejectTerminating(kindLabGroup, group); err != nil {
 		return nil, err
 	}
 	namespace := group.Status.Namespace
@@ -167,10 +180,15 @@ func (h *Handler) ReconcileLabGroupAccess(ctx context.Context, in *protobuf.LabG
 			Spec:       laboratoryv1alpha1.LabGroupAccessPolicySpec{Rules: rules},
 		}, metav1.CreateOptions{})
 	} else if err == nil {
+		if err = rejectTerminating(kindLabGroupAccessPolicy, stored); err != nil {
+			return nil, err
+		}
 		stored.Spec.Rules = rules
 		_, err = policies.Update(ctx, stored, metav1.UpdateOptions{})
 	}
-	if err != nil {
+	if err = createErr(err, kindLabGroupAccessPolicy, names.LabGroupAccessPolicyName, func() (metav1.Object, error) {
+		return policies.Get(ctx, names.LabGroupAccessPolicyName, metav1.GetOptions{})
+	}); err != nil {
 		return nil, err
 	}
 	return &protobuf.Empty{}, nil

@@ -37,7 +37,7 @@ func serverCredentials(cfg *config.Config) (credentials.TransportCredentials, er
 
 // New builds the gRPC server with mTLS creds and CN-allowlist interceptors.
 func New(cfg *config.Config, impl protobuf.LabManagerServer) (*grpc.Server, error) {
-	var opts []grpc.ServerOption
+	opts := []grpc.ServerOption{grpc.ChainUnaryInterceptor(apiErrorInterceptor)}
 	if cfg.ServerTLS.Enabled {
 		creds, err := serverCredentials(cfg)
 		if err != nil {
@@ -47,7 +47,7 @@ func New(cfg *config.Config, impl protobuf.LabManagerServer) (*grpc.Server, erro
 	}
 	if cfg.MTLS.Enabled {
 		opts = append(opts,
-			grpc.UnaryInterceptor(func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
+			grpc.ChainUnaryInterceptor(func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
 				if err := authorizeCN(ctx, cfg.MTLS.AllowedClientCNs); err != nil {
 					return nil, err
 				}
