@@ -517,7 +517,7 @@ func (r *DeviceReconciler) netConfigInitContainer(device *laboratoryv1alpha1.Dev
 		Name:            "netconfig",
 		Image:           r.deviceImage(device, r.NetConfigImage),
 		ImagePullPolicy: corev1.PullIfNotPresent,
-		Command:         []string{"/laboratory", "netconfig"},
+		Command:         []string{"/node", "netconfig"},
 		Env:             []corev1.EnvVar{{Name: "NETCONFIG", Value: string(cfg)}},
 		SecurityContext: &corev1.SecurityContext{
 			// NET_ADMIN to set addresses/routes; NET_RAW for the DHCP raw socket.

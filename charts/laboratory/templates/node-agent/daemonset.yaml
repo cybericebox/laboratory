@@ -104,7 +104,7 @@ spec:
           args:
             - |
               set -e
-              cp /laboratory /opt/cni/bin/cni-gate
+              cp /node /opt/cni/bin/cni-gate
               for p in bridge ptp loopback host-local portmap; do
                 [ -f /usr/libexec/cni/$p ] && cp /usr/libexec/cni/$p /opt/cni/bin/$p
               done
@@ -120,7 +120,7 @@ spec:
         - name: install-cni-conf
           image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
-          command: [ "/laboratory", "install-cni" ]
+          command: [ "/node", "install-cni" ]
           env:
             - name: GRPC_SOCK
               value: {{ .Values.nodeAgent.grpcSocket | quote }}
@@ -141,7 +141,7 @@ spec:
         - name: node-agent
           image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
-          command: [ "/laboratory", "node-agent" ]
+          command: [ "/node", "node-agent" ]
           env:
             - name: NODE_NAME
               valueFrom:

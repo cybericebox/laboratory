@@ -2,11 +2,12 @@
 BUILD_TAG    := $(shell date +%Y%m%d-%H%M%S)
 
 # Image URL to use all building/pushing image targets
-# IMG is the shared image: operator, agent and proxy binaries (selected by each Deployment's command).
-IMG          ?= cybericebox/laboratory:$(BUILD_TAG)
+# One image per component domain. AGENT_IMG is the per-node image (node-agent + OVS); GRPC_IMG is the agent API service.
+IMG          ?= cybericebox/laboratory-controller:$(BUILD_TAG)
 AGENT_IMG    ?= cybericebox/laboratory-node:$(BUILD_TAG)
+GRPC_IMG     ?= cybericebox/laboratory-agent:$(BUILD_TAG)
 LAB_IMG      ?= cybericebox/laboratory-lab:$(BUILD_TAG)
-PROXY_IMG    ?= $(IMG)
+PROXY_IMG    ?= cybericebox/laboratory-proxy:$(BUILD_TAG)
 
 KIND_CLUSTER_NAME ?= icebox
 
@@ -93,14 +94,19 @@ docker-build-lab: ## Build lab (vpn + gateway) Docker image
 	$(CONTAINER_TOOL) build -t $(LAB_IMG) --target lab .
 
 .PHONY: docker-build-proxy
-docker-build-proxy: docker-build ## Proxy binaries ship in the shared image: same build as docker-build
+docker-build-proxy: ## Build proxy (proxy-l7 + proxy-wg) Docker image
+	$(CONTAINER_TOOL) build -t $(PROXY_IMG) --target proxy .
+
+.PHONY: docker-build-grpc
+docker-build-grpc: ## Build agent (gRPC API) Docker image
+	$(CONTAINER_TOOL) build -t $(GRPC_IMG) --target agent .
 
 .PHONY: kind-load-proxy
 kind-load-proxy: docker-build-proxy ## Build and load proxy image into Kind cluster
 	$(KIND) load docker-image $(PROXY_IMG) --name $(KIND_CLUSTER_NAME)
 
 .PHONY: docker-build-all
-docker-build-all: docker-build docker-build-agent docker-build-lab docker-build-proxy ## Build all service images
+docker-build-all: docker-build docker-build-agent docker-build-lab docker-build-proxy docker-build-grpc ## Build all service images
 
 .PHONY: kind-load
 kind-load: docker-build-all ## Build and load all images into Kind cluster
@@ -108,6 +114,7 @@ kind-load: docker-build-all ## Build and load all images into Kind cluster
 	$(KIND) load docker-image $(AGENT_IMG) --name $(KIND_CLUSTER_NAME)
 	$(KIND) load docker-image $(LAB_IMG)   --name $(KIND_CLUSTER_NAME)
 	$(KIND) load docker-image $(PROXY_IMG) --name $(KIND_CLUSTER_NAME)
+	$(KIND) load docker-image $(GRPC_IMG)  --name $(KIND_CLUSTER_NAME)
 
 .PHONY: kind-patch-agent
 kind-patch-agent: ## Patch node-agent DaemonSet to use local image
@@ -158,6 +165,7 @@ k0s-deploy: docker-build-all ## Build ALL images, import into Lima, full helm in
 	$(call k0s-import,$(AGENT_IMG))
 	$(call k0s-import,$(LAB_IMG))
 	$(call k0s-import,$(PROXY_IMG))
+	$(call k0s-import,$(GRPC_IMG))
 	helm upgrade --install laboratory $(CHART_PATH) \
 		--namespace $(HELM_NS) --create-namespace \
 		--values $(CHART_PATH)/values.yaml \
@@ -291,18 +299,18 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/laboratory ./cmd/laboratory
+	go build -o bin/manager ./cmd/manager
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/laboratory manager
+	go run ./cmd/manager
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} --target laboratory .
+	$(CONTAINER_TOOL) build -t ${IMG} --target controller .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.

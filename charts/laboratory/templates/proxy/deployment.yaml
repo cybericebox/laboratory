@@ -36,7 +36,7 @@ spec:
       - name: l7
         image: "{{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag | default .Chart.AppVersion }}"
         imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
-        command: ["/laboratory", "proxy-l7"]
+        command: ["/proxy", "proxy-l7"]
         env:
         - name: BASE_DOMAIN
           value: {{ required "operator.baseDomain is required" .Values.operator.baseDomain | quote }}
@@ -84,7 +84,7 @@ spec:
       - name: wg-demux
         image: "{{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag | default .Chart.AppVersion }}"
         imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
-        command: ["/laboratory", "proxy-wg"]
+        command: ["/proxy", "proxy-wg"]
         env:
         - name: UDP_LISTEN_ADDR
           value: {{ printf ":%d" (.Values.proxy.wg.listenPort | int) | quote }}

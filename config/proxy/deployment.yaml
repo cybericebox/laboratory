@@ -80,7 +80,7 @@ spec:
       containers:
         - name: l7
           image: cybericebox/laboratory-proxy:latest
-          command: [ "/laboratory", "proxy-l7" ]
+          command: [ "/proxy", "proxy-l7" ]
           env:
             # REQUIRED, no default: the overlay must set the lab base domain.
             - name: BASE_DOMAIN
@@ -118,7 +118,7 @@ spec:
               readOnly: true
         - name: wg-demux
           image: cybericebox/laboratory-proxy:latest
-          command: [ "/laboratory", "proxy-wg" ]
+          command: [ "/proxy", "proxy-wg" ]
           env:
             - name: UDP_LISTEN_ADDR
               value: ":51820"
