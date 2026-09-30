@@ -59,3 +59,17 @@ operator copies into every lab group namespace and sets on lab pods.
 {{- end -}}
 {{- join "," $n -}}
 {{- end -}}
+
+{{/*
+host:port of the snapshot registry Service inside the cluster.
+*/}}
+{{- define "laboratory.snapshotRegistryAddr" -}}
+{{- printf "laboratory-snapshots.%s.svc:5000" .Release.Namespace -}}
+{{- end }}
+
+{{/*
+Labels that select the snapshot registry pod.
+*/}}
+{{- define "laboratory.snapshotRegistrySelector" -}}
+app: laboratory-snapshots
+{{- end }}

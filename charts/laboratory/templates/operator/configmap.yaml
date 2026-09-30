@@ -31,3 +31,14 @@ data:
   LAUNCH_PREPULL_TIMEOUT: {{ .Values.launch.prepull.timeout | quote }}
   DEVICE_DEFAULT_CPU: {{ .Values.launch.deviceDefaults.cpu | quote }}
   DEVICE_DEFAULT_MEMORY: {{ .Values.launch.deviceDefaults.memory | quote }}
+  {{- with .Values.devices.statePersistence }}
+  {{- if .enabled }}
+  STATE_PERSISTENCE_ENABLED: "true"
+  STATE_REGISTRY_ADDR: {{ include "laboratory.snapshotRegistryAddr" $ | quote }}
+  STATE_DEBOUNCE: {{ .debounce | quote }}
+  STATE_EXCLUDE_PATHS: {{ join "," .excludePaths | quote }}
+  STATE_MAX_SNAPSHOT_SIZE: {{ .maxSnapshotSize | quote }}
+  STATE_MAX_LAYERS: {{ .maxLayers | quote }}
+  STATE_RETENTION: {{ .retention | quote }}
+  {{- end }}
+  {{- end }}

@@ -38,7 +38,10 @@ func labToProto(l *laboratoryv1alpha1.Lab) *protobuf.Lab {
 	}
 	status.Queue = labQueueToProto(st.Launch)
 	for i := range st.Devices {
-		status.Devices = append(status.Devices, &protobuf.LabDeviceStatus{Name: st.Devices[i].Name, Ready: st.Devices[i].Ready})
+		status.Devices = append(status.Devices, &protobuf.LabDeviceStatus{
+			Name: st.Devices[i].Name, Ready: st.Devices[i].Ready,
+			Snapshot: snapshotStatusToProto(st.Devices[i].State),
+		})
 	}
 	for _, device := range l.Spec.Devices {
 		if device.Resources == nil {

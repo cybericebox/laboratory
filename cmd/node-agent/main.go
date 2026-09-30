@@ -113,6 +113,11 @@ func main() {
 		os.Exit(1)
 	}
 	
+	if err := nodeagent.SetupDeviceState(mgr, cfg); err != nil {
+		log.Error(err, "setup device state persistence")
+		os.Exit(1)
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 	

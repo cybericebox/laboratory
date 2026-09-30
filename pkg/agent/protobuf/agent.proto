@@ -33,6 +33,17 @@ service LabManager {
   rpc Monitoring(MonitoringRequest) returns (stream MonitoringUpdate) {}
 
   rpc GetCapacity(Empty) returns (CapacityResponse) {}
+
+  // Device state persistence. Both calls act on one device of a lab and only
+  // make sense for labs that run with snapshot-backed state (LabDeviceStatus.snapshot
+  // is set). The backend restricts them to organizers and admins.
+  //
+  // ResetDevice discards the device's snapshots and restarts it from its base image.
+  rpc ResetDevice(DeviceRequest) returns (Empty) {}
+  // RescueDevice starts the device from its latest snapshot with a shell instead
+  // of the image entrypoint (enable=true), or back to normal (enable=false), to
+  // repair a configuration that makes the service crash.
+  rpc RescueDevice(RescueDeviceRequest) returns (Empty) {}
 }
 
 message Empty {}
@@ -54,6 +65,10 @@ message LabGroupStatus {
   string vpn_client_subnet = 5;
 }
 message LabGroupList {repeated LabGroup items = 1;}
+
+// DeviceRequest names one device of a lab.
+message DeviceRequest {string namespace = 1; string lab = 2; string device = 3;}
+message RescueDeviceRequest {string namespace = 1; string lab = 2; string device = 3; bool enable = 4;}
 
 message Lab {
   string namespace = 1;
@@ -113,6 +128,16 @@ message LabDeviceStatus {
 	string pod_phase = 10;
 	string pod_reason = 11;
 	int32 restart_count = 12;
+	// Set only for a device with state persistence.
+	DeviceSnapshotStatus snapshot = 30;
+}
+// DeviceSnapshotStatus is the state of a device's writable-layer snapshots.
+message DeviceSnapshotStatus {
+  int64 last_snapshot_unix_ms = 1;  // 0 = no snapshot yet
+  int64 restored_unix_ms = 2;       // when the device was last started from a snapshot; 0 = never
+  int64 size_bytes = 3;             // uncompressed size of the kept snapshot layers
+  string warning = 4;               // quota exceeded or snapshot failing; the last good snapshot is kept
+  bool rescue = 5;                  // the device runs in rescue mode
 }
 message LabConnectionStatus {
   string name = 1;

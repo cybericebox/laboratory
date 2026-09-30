@@ -24,4 +24,24 @@ spec:
   egress:
     - toEntities:
         - kube-apiserver
+{{- if .Values.devices.statePersistence.enabled }}
+    # Snapshot registry (device reset, retention sweep) and the DNS lookup of its Service.
+    - toEndpoints:
+        - matchLabels:
+            {{- include "laboratory.snapshotRegistrySelector" . | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: "5000"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+{{- end }}
 {{- end }}

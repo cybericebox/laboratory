@@ -41,3 +41,14 @@ at install time instead of shipping a broken deployment.
 {{- if or (lt (int .Values.launch.headroomPercent) 0) (ge (int .Values.launch.headroomPercent) 100) }}
 {{- fail "launch.headroomPercent must be between 0 and 99" }}
 {{- end }}
+{{- if .Values.devices.statePersistence.enabled }}
+{{- if not .Values.nodeAgent.enabled }}
+{{- fail "devices.statePersistence.enabled needs nodeAgent.enabled: the node-agent takes the snapshots" }}
+{{- end }}
+{{- if not .Values.devices.statePersistence.registry.size }}
+{{- fail "devices.statePersistence.registry.size is required (volume size of the snapshot registry)" }}
+{{- end }}
+{{- if not (hasPrefix "/" .Values.devices.statePersistence.containerdRoot) }}
+{{- fail "devices.statePersistence.containerdRoot must be an absolute host path (the containerd root directory)" }}
+{{- end }}
+{{- end }}

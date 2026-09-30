@@ -1,0 +1,78 @@
+{{- if .Values.devices.statePersistence.enabled }}
+{{- $r := .Values.devices.statePersistence.registry }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: laboratory-snapshots
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+    {{- include "laboratory.snapshotRegistrySelector" . | nindent 4 }}
+spec:
+  replicas: 1
+  # One ReadWriteOnce volume: the old pod must be gone before the new one starts.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "laboratory.snapshotRegistrySelector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "laboratory.labels" . | nindent 8 }}
+        {{- include "laboratory.snapshotRegistrySelector" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/snapshots/configmap.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: zot
+          image: "{{ $r.image.repository }}:{{ $r.image.tag }}"
+          imagePullPolicy: {{ $r.image.pullPolicy }}
+          args: [ "serve", "/etc/zot/config.json" ]
+          ports:
+            - name: registry
+              containerPort: 5000
+          readinessProbe:
+            tcpSocket:
+              port: registry
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: registry
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ ALL ]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/zot
+              readOnly: true
+            - name: auth
+              mountPath: /etc/zot-auth
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/registry
+          {{- with $r.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: laboratory-snapshots-registry
+        - name: auth
+          secret:
+            secretName: laboratory-snapshots-registry
+            items:
+              - key: htpasswd
+                path: htpasswd
+        - name: data
+          persistentVolumeClaim:
+            claimName: laboratory-snapshots-registry
+{{- end }}

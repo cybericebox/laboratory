@@ -298,6 +298,132 @@ kubectl delete crd \
 
 ---
 
+## Device state persistence (optional)
+
+By default a device is a container in a Deployment: when it restarts, it starts again from its image and the work
+done inside it (files, configuration, installed packages) is lost. With device state persistence the **writable
+layer** of a device container survives an *unplanned* restart: a crash, an out-of-memory kill, an eviction or the loss
+of a node. Planned reboots of a whole OS are out of scope (such tasks belong in VMs).
+
+### What is and is not kept
+
+- Kept: files of the container filesystem (everything except the excluded paths below), including deletions and
+  file ownership and attributes.
+- Not kept, exactly as in a VM reboot: memory, running processes, open connections, live netfilter rules and routes.
+  The device gets the same MAC address on every start, so its DHCP lease is the same.
+- When a node dies, the work of the last few seconds (the debounce period plus the snapshot time) is lost.
+- Flags and other secrets reach a device as environment variables from a per-device Secret and are never files of the
+  writable layer, so they are not part of a snapshot.
+
+### Enable
+
+```yaml
+devices:
+  statePersistence:
+    enabled: true
+    registry:
+      storageClass: ""        # empty = cluster default
+      size: 20Gi
+    debounce: 5s              # quiet time of the writable layer before a snapshot
+    excludePaths: [/tmp, /var/tmp, /run]
+    maxSnapshotSize: 512Mi    # quota per device
+    maxLayers: 10             # snapshot layers before they are squashed into one
+    retention: 168h           # how long a deleted lab's snapshots are kept
+    containerdRoot: /var/lib/k0s/containerd   # host path of the containerd root
+```
+
+`enabled: false` (the default) renders nothing of the feature and keeps today's behaviour. With `true`:
+
+- the chart deploys a snapshot registry ([zot](https://zotregistry.dev)) in `laboratory-system`: a
+  PersistentVolumeClaim (`registry.storageClass`, `registry.size`; it is kept on `helm uninstall`), a Service, and a
+  Secret with generated `htpasswd` credentials for the single writer;
+- the operator runs the devices of **new** labs as bare Pods (`restartPolicy: Never`) that it owns and recreates. The
+  mode is fixed on each Lab when it is first reconciled (`Lab.status.statePersistence`); flipping the switch never
+  changes an existing lab, in either direction;
+- the node-agent watches the devices of its node and snapshots them.
+
+Requirements on the nodes (nothing has to be installed or configured on the host):
+
+- containerd 2.x with the default `overlayfs` snapshotter, cgroup v2, and the image layers kept in the content store
+  (containerd's CRI option `discard_unpacked_layers` must be `false`, which is the default);
+- TCP port `devices.statePersistence.forwardPort` (default 5035) free on `127.0.0.1` of every node;
+- the node-agent DaemonSet mounts `containerdRoot` read-only and the host cgroup tree, and gets the
+  `DAC_READ_SEARCH` capability. Set `containerdRoot` to the containerd root of your distribution (k0s:
+  `/var/lib/k0s/containerd`; stock containerd: `/var/lib/containerd`).
+
+### How it works
+
+1. **Registry access without host setup.** The node-agent (host network) relays `127.0.0.1:<forwardPort>` to the registry
+   Service. Snapshot images are referenced as `localhost:<forwardPort>/lab/<namespace>/<lab>/<device>@sha256:...`;
+   containerd treats `localhost` registries as plain HTTP, so the kubelet pulls them with no `registries.yaml`,
+   certificates or DNS on the node. Reads are anonymous and reachable only from the node itself and the operator; writes
+   need the generated credentials (node-agent and operator).
+2. **When a snapshot is taken.** Changes of the container's overlay upper directory are detected with inotify plus a
+   periodic scan (the scan catches what events miss, for example when the kernel watch limit is reached). After the layer
+   has been quiet for `debounce` (at the latest after 30 seconds, or six debounce periods if longer, of continuous writes), the node-agent freezes
+   the container cgroup (`cgroup.freeze`), runs `syncfs`, asks containerd's diff service for the difference between the
+   container's active snapshot and its parent, and thaws the container. When the container exits (containerd
+   `TaskExit`) the layer is final, so the snapshot is taken without freezing, before the pod is removed.
+   Without a cgroup v2 freezer the snapshot is taken unfrozen (crash-consistent).
+3. **What a snapshot is.** An OCI image in the registry: the base image layers (uploaded once, shared by all devices
+   through cross-repository mounts from the `base` repository) plus one snapshot layer per container run, with the
+   base image configuration (entrypoint, environment, working directory) unchanged. `excludePaths` and the runtime's
+   own mount points (`/dev`, `/proc`, `/sys`, `/etc/hosts`, `/etc/hostname`, `/etc/resolv.conf`, the service account
+   directory) are left out of every layer. When the chain exceeds `maxLayers` the snapshot layers are squashed into
+   one (whiteouts are preserved, so deletions of files of the base image stay deleted).
+4. **Quota.** If a snapshot would make the kept layers larger than `maxSnapshotSize` (uncompressed), the last good
+   snapshot is kept and `status.state.warning` of the Device is set; the warning clears with the next good snapshot.
+5. **Recreate.** When the pod ends, the operator waits until the node-agent marks the exit snapshot done
+   (`status.state.exitSnapshotPod`) or 30 seconds have passed, deletes the pod and creates the next one from the latest
+   snapshot (`status.state.image`). Pods are named `<device>-<incarnation>`. A device that keeps ending within 30
+   seconds of its start is recreated with a growing back-off (2s, 4s, ... up to 2 minutes).
+
+### Status and controls
+
+`Lab.status.devices[].state` and the agent's `LabDeviceStatus.snapshot` report, per device: the time of the last
+snapshot, the time it was last restored from a snapshot, its size in bytes, a quota or failure warning, and whether
+rescue mode is on. The management agent has two calls, meant for organizers and admins only (the platform backend
+enforces who may call them):
+
+- `ResetDevice(namespace, lab, device)` deletes the device's snapshots and starts it from the base image again;
+- `RescueDevice(namespace, lab, device, enable)` starts the device from its latest snapshot with a shell
+  (`/bin/sh`, kept alive with `sleep`) instead of the image entrypoint, to repair a configuration that makes the
+  service crash. It needs a shell in the image. `enable=false` returns to the normal start. Snapshots keep being taken
+  while the device is in rescue mode.
+
+Both set fields on `Device.spec.state` (`resetToken`, `rescue`) that the operator acts on.
+
+### Retention of deleted labs
+
+The snapshots of a lab are not deleted with the lab. The operator runs a sweep every 10 minutes: for each snapshot
+repository whose Lab no longer exists it records the time it first noticed this in the ConfigMap
+`laboratory-snapshot-retention` (namespace `laboratory-system`), and once `retention` (default 168h) has passed it deletes
+the lab's repositories. zot's garbage collection (`registry.gc.interval` and `registry.gc.delay`, both 1h by default)
+then frees the blobs, so the space comes back within about `retention` plus two hours. A lab recreated under the same
+name before the deadline cancels the deletion.
+
+### Operating it
+
+```bash
+# Snapshot state of one device
+kubectl -n <lab-namespace> get device <lab>-<device> -o jsonpath='{.status.state}{"\n"}'
+
+# Registry logs and volume usage
+kubectl -n laboratory-system logs deployment/laboratory-snapshots
+kubectl -n laboratory-system get pvc laboratory-snapshots-registry
+
+# Node-agent: snapshot activity of a node
+kubectl -n laboratory-system logs -l app=node-agent -c node-agent | grep device-state
+```
+
+Size the volume for the base images plus (devices x `maxSnapshotSize`) in the worst case. If a device's warning says
+`state persistence unavailable`, the node's containerd does not use the overlayfs snapshotter or the paths above are
+not mounted. A device whose snapshot image cannot be pulled stays in `ImagePullBackOff` and its status warning says
+`snapshot image unavailable`; the operator never falls back to the base image on its own (that would lose state
+silently). Fix the registry, or use `ResetDevice` to start it from the base image.
+
+---
+
 ## Network Layout
 
 | Network             | Default       | Usage                                                              |

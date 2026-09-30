@@ -23,6 +23,11 @@ type DeviceSpec struct {
 	// Resources sets the container resource requests/limits for this device.
 	// +optional
 	Resources *DeviceResources `json:"resources,omitempty"`
+	// State is the optional state-persistence policy and operator controls of
+	// this device. Set once when the Device is materialised: a Lab created while
+	// the platform has device state persistence off never carries it.
+	// +optional
+	State *DeviceStateSpec `json:"state,omitempty"`
 	// Env values are NOT carried on the CR — they live only in a per-device
 	// Secret (<device>-env) the agent writes, referenced by the pod via envFrom.
 }
@@ -38,6 +43,85 @@ type DeviceResources struct {
 	MemoryLimit   string `json:"memoryLimit,omitempty"`
 }
 
+// StateEnabled reports whether the device is snapshot-backed.
+func (s DeviceSpec) StateEnabled() bool { return s.State != nil && s.State.Enabled }
+
+// DeviceStateSpec turns a device into a bare Pod whose writable layer is
+// snapshotted by the node-agent into the platform snapshot registry, so an
+// unplanned container restart does not lose the participant's work. The policy
+// fields are copied from the operator configuration when the Device is created
+// and never change afterwards; ResetToken and Rescue are operator controls.
+type DeviceStateSpec struct {
+	// Enabled marks the device as snapshot-backed. False or absent: the device
+	// runs as a Deployment exactly as without the feature.
+	Enabled bool `json:"enabled,omitempty"`
+	// Debounce is how long the writable layer must stay quiet after a change
+	// before the node-agent takes a snapshot.
+	// +optional
+	Debounce metav1.Duration `json:"debounce,omitempty"`
+	// ExcludePaths are absolute paths inside the container that are never
+	// snapshotted (temporary and runtime directories).
+	// +optional
+	ExcludePaths []string `json:"excludePaths,omitempty"`
+	// MaxSnapshotBytes is the quota of the state kept for this device (the
+	// uncompressed size of all snapshot layers). Over quota the last good
+	// snapshot is kept and a warning is reported.
+	// +optional
+	MaxSnapshotBytes int64 `json:"maxSnapshotBytes,omitempty"`
+	// MaxLayers is the number of snapshot layers after which the chain is
+	// squashed into one.
+	// +optional
+	MaxLayers int32 `json:"maxLayers,omitempty"`
+	// ResetToken: a new value discards the snapshots and starts the device from
+	// its base image again. Set by the management agent (ResetDevice).
+	// +optional
+	ResetToken string `json:"resetToken,omitempty"`
+	// Rescue starts the device from its snapshot with a shell instead of the
+	// image entrypoint, to repair a configuration that makes it crash. Set by
+	// the management agent (RescueDevice).
+	// +optional
+	Rescue bool `json:"rescue,omitempty"`
+}
+
+// DeviceStateStatus is the observed state of a snapshot-backed device. The
+// controller owns Epoch, Incarnation, StoppedAt, CrashStreak, RestoredAt,
+// ResetToken and Rescue; the node-agent owns the snapshot fields and
+// ExitSnapshotPod. Each side patches only its own fields.
+type DeviceStateStatus struct {
+	// Epoch counts resets. A pod carries the epoch it was created in; the
+	// node-agent ignores snapshots of pods from an older epoch.
+	Epoch int32 `json:"epoch,omitempty"`
+	// Incarnation numbers the pods of this device (pod name suffix).
+	Incarnation int32 `json:"incarnation,omitempty"`
+	// Image is the latest snapshot image (registry reference with digest). Empty
+	// before the first snapshot and after a reset: the pod starts from the base
+	// image.
+	Image string `json:"image,omitempty"`
+	// SnapshotAt is when Image was taken.
+	SnapshotAt *metav1.Time `json:"snapshotAt,omitempty"`
+	// SizeBytes is the uncompressed size of all snapshot layers of Image.
+	SizeBytes int64 `json:"sizeBytes,omitempty"`
+	// Layers is the number of snapshot layers on top of the base image.
+	Layers int32 `json:"layers,omitempty"`
+	// Warning is set while the last snapshot attempt failed or was refused
+	// (quota exceeded); the previous good snapshot stays in Image.
+	Warning string `json:"warning,omitempty"`
+	// ExitSnapshotPod is the pod whose exit snapshot is finished (taken or
+	// given up). The controller recreates the pod only after this marker.
+	ExitSnapshotPod string `json:"exitSnapshotPod,omitempty"`
+	// StoppedAt is when the controller saw the current pod end.
+	StoppedAt *metav1.Time `json:"stoppedAt,omitempty"`
+	// CrashStreak counts consecutive pods that ended within a short time of
+	// starting; it drives the recreation back-off.
+	CrashStreak int32 `json:"crashStreak,omitempty"`
+	// RestoredAt is when a pod was last created from a snapshot.
+	RestoredAt *metav1.Time `json:"restoredAt,omitempty"`
+	// ResetToken is the last ResetToken spec value acted on.
+	ResetToken string `json:"resetToken,omitempty"`
+	// Rescue reports whether the current pod runs in rescue mode.
+	Rescue bool `json:"rescue,omitempty"`
+}
+
 // DeviceStatus defines the observed state of Device.
 type DeviceStatus struct {
 	Ready    bool   `json:"ready,omitempty"`
@@ -46,12 +130,16 @@ type DeviceStatus struct {
 	NodeAddress string `json:"nodeAddress,omitempty"`
 	PodIP       string `json:"podIP,omitempty"`
 	// PodName is the current pod backing this device. A device runs one pod
-	// (Deployment, replicas=1) whose name changes on recreation, so the
+	// (Deployment, replicas=1, or a bare Pod with state persistence) whose name
+	// changes on recreation, so the
 	// node-agent keys the device's per-pod OVS port on this stable pointer.
 	PodName string `json:"podName,omitempty"`
 	// VNI is set only for unmanaged-switch and hub device types.
 	VNI    *uint  `json:"vni,omitempty"`
 	Reason string `json:"reason,omitempty"`
+	// State is the snapshot state of a device with spec.state.enabled.
+	// +optional
+	State *DeviceStateStatus `json:"state,omitempty"`
 }
 
 // +genclient
