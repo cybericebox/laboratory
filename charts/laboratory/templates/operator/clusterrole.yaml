@@ -45,11 +45,11 @@ rules:
   verbs: [create, patch]
 
 # The LabGroup reconciler binds the agent ServiceAccount to laboratory-agent-role
-# in each group namespace. The `bind` verb authorizes creating RoleBindings that
+# and the group's VPN ServiceAccount to laboratory-vpn-role in each group namespace. The `bind` verb authorizes creating RoleBindings that
 # reference this ClusterRole without the operator itself holding every permission
 # the role grants — otherwise RBAC escalation-prevention rejects the binding and
 # LabGroup provisioning fails whenever agent.enabled=true.
 - apiGroups: [rbac.authorization.k8s.io]
   resources: [clusterroles]
-  resourceNames: [laboratory-agent-role]
+  resourceNames: [laboratory-agent-role, laboratory-vpn-role]
   verbs: [bind]
