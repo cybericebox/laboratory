@@ -36,6 +36,10 @@ type LabStatusApplyConfiguration struct {
 	// Launch reports the launch pacing state: the resolved class, the admission
 	// time and, while the lab is Queued, its place in the queue.
 	Launch *LabLaunchStatusApplyConfiguration `json:"launch,omitempty"`
+	// StatePersistence records how this lab runs its devices, decided once on the
+	// first reconcile: true = bare Pods with snapshot-backed state, false =
+	// Deployments. It never changes afterwards, whatever the platform switch says.
+	StatePersistence *bool `json:"statePersistence,omitempty"`
 	// Conditions surfaces reconciler progress/blocking reasons
 	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
 	Conditions []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
@@ -115,6 +119,14 @@ func (b *LabStatusApplyConfiguration) WithAccess(values ...*AccessEntryApplyConf
 // If called multiple times, the Launch field is set to the value of the last call.
 func (b *LabStatusApplyConfiguration) WithLaunch(value *LabLaunchStatusApplyConfiguration) *LabStatusApplyConfiguration {
 	b.Launch = value
+	return b
+}
+
+// WithStatePersistence sets the StatePersistence field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the StatePersistence field is set to the value of the last call.
+func (b *LabStatusApplyConfiguration) WithStatePersistence(value bool) *LabStatusApplyConfiguration {
+	b.StatePersistence = &value
 	return b
 }
 

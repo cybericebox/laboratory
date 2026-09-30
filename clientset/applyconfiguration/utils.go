@@ -65,6 +65,12 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.DeviceResourcesApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceSpec"):
 		return &applyconfigurationlaboratoryv1alpha1.DeviceSpecApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceStateInfo"):
+		return &applyconfigurationlaboratoryv1alpha1.DeviceStateInfoApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceStateSpec"):
+		return &applyconfigurationlaboratoryv1alpha1.DeviceStateSpecApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceStateStatus"):
+		return &applyconfigurationlaboratoryv1alpha1.DeviceStateStatusApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceStatus"):
 		return &applyconfigurationlaboratoryv1alpha1.DeviceStatusApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceTemplate"):

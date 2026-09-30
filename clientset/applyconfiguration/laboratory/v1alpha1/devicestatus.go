@@ -28,12 +28,15 @@ type DeviceStatusApplyConfiguration struct {
 	NodeAddress *string `json:"nodeAddress,omitempty"`
 	PodIP       *string `json:"podIP,omitempty"`
 	// PodName is the current pod backing this device. A device runs one pod
-	// (Deployment, replicas=1) whose name changes on recreation, so the
+	// (Deployment, replicas=1, or a bare Pod with state persistence) whose name
+	// changes on recreation, so the
 	// node-agent keys the device's per-pod OVS port on this stable pointer.
 	PodName *string `json:"podName,omitempty"`
 	// VNI is set only for unmanaged-switch and hub device types.
 	VNI    *uint   `json:"vni,omitempty"`
 	Reason *string `json:"reason,omitempty"`
+	// State is the snapshot state of a device with spec.state.enabled.
+	State *DeviceStateStatusApplyConfiguration `json:"state,omitempty"`
 }
 
 // DeviceStatusApplyConfiguration constructs a declarative configuration of the DeviceStatus type for use with
@@ -95,5 +98,13 @@ func (b *DeviceStatusApplyConfiguration) WithVNI(value uint) *DeviceStatusApplyC
 // If called multiple times, the Reason field is set to the value of the last call.
 func (b *DeviceStatusApplyConfiguration) WithReason(value string) *DeviceStatusApplyConfiguration {
 	b.Reason = &value
+	return b
+}
+
+// WithState sets the State field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the State field is set to the value of the last call.
+func (b *DeviceStatusApplyConfiguration) WithState(value *DeviceStateStatusApplyConfiguration) *DeviceStatusApplyConfiguration {
+	b.State = value
 	return b
 }

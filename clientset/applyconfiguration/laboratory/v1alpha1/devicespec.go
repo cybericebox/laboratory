@@ -39,6 +39,10 @@ type DeviceSpecApplyConfiguration struct {
 	Exposure       *ExposureSpecApplyConfiguration    `json:"exposure,omitempty"`
 	// Resources sets the container resource requests/limits for this device.
 	Resources *DeviceResourcesApplyConfiguration `json:"resources,omitempty"`
+	// State is the optional state-persistence policy and operator controls of
+	// this device. Set once when the Device is materialised: a Lab created while
+	// the platform has device state persistence off never carries it.
+	State *DeviceStateSpecApplyConfiguration `json:"state,omitempty"`
 }
 
 // DeviceSpecApplyConfiguration constructs a declarative configuration of the DeviceSpec type for use with
@@ -113,5 +117,13 @@ func (b *DeviceSpecApplyConfiguration) WithExposure(value *ExposureSpecApplyConf
 // If called multiple times, the Resources field is set to the value of the last call.
 func (b *DeviceSpecApplyConfiguration) WithResources(value *DeviceResourcesApplyConfiguration) *DeviceSpecApplyConfiguration {
 	b.Resources = value
+	return b
+}
+
+// WithState sets the State field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the State field is set to the value of the last call.
+func (b *DeviceSpecApplyConfiguration) WithState(value *DeviceStateSpecApplyConfiguration) *DeviceSpecApplyConfiguration {
+	b.State = value
 	return b
 }
