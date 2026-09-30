@@ -2,37 +2,29 @@ package grpc
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"fmt"
-	"os"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
 	"github.com/cybericebox/laboratory/internal/agent/config"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
+	"github.com/cybericebox/laboratory/pkg/tlsreload"
 )
 
+// serverCredentials serves the cert-manager certificate from the mounted files
+// and re-reads it (and the client CA) when they change, so a renewal needs no
+// restart.
 func serverCredentials(cfg *config.Config) (credentials.TransportCredentials, error) {
-	cert, err := tls.LoadX509KeyPair(cfg.ServerTLS.CertFile, cfg.ServerTLS.KeyFile)
-	if err != nil {
-		return nil, fmt.Errorf("load server keypair: %w", err)
-	}
-	tc := &tls.Config{Certificates: []tls.Certificate{cert}}
+	caFile := ""
 	if cfg.MTLS.Enabled {
-		ca, err := os.ReadFile(cfg.MTLS.ClientCAFile)
-		if err != nil {
-			return nil, fmt.Errorf("read client CA: %w", err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(ca) {
-			return nil, fmt.Errorf("append client CA")
-		}
-		tc.ClientAuth = tls.RequireAndVerifyClientCert
-		tc.ClientCAs = pool
+		caFile = cfg.MTLS.ClientCAFile
 	}
-	return credentials.NewTLS(tc), nil
+	files, err := tlsreload.New(cfg.ServerTLS.CertFile, cfg.ServerTLS.KeyFile, caFile)
+	if err != nil {
+		return nil, fmt.Errorf("load server TLS: %w", err)
+	}
+	return credentials.NewTLS(files.ServerConfig("h2")), nil
 }
 
 // New builds the gRPC server with mTLS creds and CN-allowlist interceptors.

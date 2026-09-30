@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
+	"github.com/cybericebox/laboratory/pkg/tlsreload"
 )
 
 type (
@@ -61,7 +62,9 @@ func transportCredentials(conf TLS) (credentials.TransportCredentials, error) {
 		return insecure.NewCredentials(), nil
 	}
 
-	cert, err := tls.LoadX509KeyPair(conf.CertFile, conf.KeyFile)
+	// The client certificate is renewed in place by cert-manager: re-read it
+	// from the files when they change instead of pinning the first one.
+	files, err := tlsreload.New(conf.CertFile, conf.KeyFile, "")
 	if err != nil {
 		return nil, fmt.Errorf("load client keypair: %w", err)
 	}
@@ -76,9 +79,9 @@ func transportCredentials(conf TLS) (credentials.TransportCredentials, error) {
 	}
 
 	tc := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		RootCAs:      pool,
-		MinVersion:   tls.VersionTLS12,
+		GetClientCertificate: files.GetClientCertificate,
+		RootCAs:              pool,
+		MinVersion:           tls.VersionTLS12,
 	}
 	return credentials.NewTLS(tc), nil
 }
