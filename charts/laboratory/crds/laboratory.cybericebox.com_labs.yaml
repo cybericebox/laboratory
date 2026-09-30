@@ -443,6 +443,28 @@ spec:
                       type: string
                     ready:
                       type: boolean
+                    state:
+                      description: State summarises the snapshots of a device with
+                        state persistence.
+                      properties:
+                        lastSnapshotAt:
+                          format: date-time
+                          type: string
+                        quotaWarning:
+                          description: QuotaWarning is set while snapshots are refused
+                            or failing.
+                          type: string
+                        rescue:
+                          description: Rescue is true while the device runs in rescue
+                            mode.
+                          type: boolean
+                        restoredAt:
+                          format: date-time
+                          type: string
+                        sizeBytes:
+                          format: int64
+                          type: integer
+                      type: object
                   required:
                   - name
                   type: object
@@ -466,6 +488,12 @@ spec:
                 - Failed
                 - Error
                 type: string
+              statePersistence:
+                description: |-
+                  StatePersistence records how this lab runs its devices, decided once on the
+                  first reconcile: true = bare Pods with snapshot-backed state, false =
+                  Deployments. It never changes afterwards, whatever the platform switch says.
+                type: boolean
               vpn:
                 description: LabNetworkStatus reports the allocated CIDR for a network
                   segment.

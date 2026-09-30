@@ -76,6 +76,11 @@ type LabStatus struct {
 	Devices     []DeviceRef      `json:"devices,omitempty"`
 	Connections []ConnectionRef  `json:"connections,omitempty"`
 	Access      []AccessEntry    `json:"access,omitempty"`
+	// StatePersistence records how this lab runs its devices, decided once on the
+	// first reconcile: true = bare Pods with snapshot-backed state, false =
+	// Deployments. It never changes afterwards, whatever the platform switch says.
+	// +optional
+	StatePersistence *bool `json:"statePersistence,omitempty"`
 	// Conditions surfaces reconciler progress/blocking reasons
 	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
 	// +optional
@@ -96,6 +101,20 @@ type LabNetworkStatus struct {
 type DeviceRef struct {
 	Name  string `json:"name"`
 	Ready bool   `json:"ready,omitempty"`
+	// State summarises the snapshots of a device with state persistence.
+	// +optional
+	State *DeviceStateInfo `json:"state,omitempty"`
+}
+
+// DeviceStateInfo is the organizer-facing view of a device's snapshots.
+type DeviceStateInfo struct {
+	LastSnapshotAt *metav1.Time `json:"lastSnapshotAt,omitempty"`
+	RestoredAt     *metav1.Time `json:"restoredAt,omitempty"`
+	SizeBytes      int64        `json:"sizeBytes,omitempty"`
+	// QuotaWarning is set while snapshots are refused or failing.
+	QuotaWarning string `json:"quotaWarning,omitempty"`
+	// Rescue is true while the device runs in rescue mode.
+	Rescue bool `json:"rescue,omitempty"`
 }
 
 // ConnectionRef summarises a materialised Connection's readiness.
