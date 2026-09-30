@@ -16,6 +16,10 @@ rules:
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "labgroupaccesspolicies" ]
     verbs: [ "get", "list", "watch" ]
+  # A token names a LabGroupClient; per-user mode checks that it exists.
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "labgroupclients" ]
+    verbs: [ "get", "list", "watch" ]
   # Each replica publishes its request counters as its own report in every group
   # namespace.
   - apiGroups: [ "laboratory.cybericebox.com" ]
