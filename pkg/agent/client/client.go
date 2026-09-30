@@ -34,12 +34,13 @@ type (
 
 	// TLS configures the transport. When Enabled, the connection is mutual
 	// TLS: the client presents CertFile/KeyFile (whose CN must be in the
-	// agent's allowlist) and verifies the server against CAFile.
+	// agent's allowlist) and verifies the server against CAFile, or against the
+	// system roots when CAFile is empty (a publicly trusted certificate).
 	TLS struct {
 		Enabled  bool
 		CertFile string // client certificate (PEM) presented for mTLS
 		KeyFile  string // client private key (PEM)
-		CAFile   string // CA (PEM) that signed the agent's server certificate
+		CAFile   string // CA (PEM) that signed the agent's server certificate; empty = system roots
 	}
 
 	// Client is the typed LabManager client plus connection ownership.
@@ -55,7 +56,7 @@ type (
 )
 
 // transportCredentials builds the client transport credentials: mutual TLS when
-// enabled (client keypair + server CA), or insecure for local/dev. The verified
+// enabled (client keypair + server CA, or system roots without one), or insecure for local/dev. The verified
 // server name comes from the dial target authority (Endpoint host).
 func transportCredentials(conf TLS) (credentials.TransportCredentials, error) {
 	if !conf.Enabled {
@@ -69,13 +70,9 @@ func transportCredentials(conf TLS) (credentials.TransportCredentials, error) {
 		return nil, fmt.Errorf("load client keypair: %w", err)
 	}
 
-	ca, err := os.ReadFile(conf.CAFile)
+	pool, err := rootCAs(conf.CAFile)
 	if err != nil {
-		return nil, fmt.Errorf("read server CA: %w", err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(ca) {
-		return nil, fmt.Errorf("append server CA")
+		return nil, err
 	}
 
 	tc := &tls.Config{
@@ -84,6 +81,24 @@ func transportCredentials(conf TLS) (credentials.TransportCredentials, error) {
 		MinVersion:           tls.VersionTLS12,
 	}
 	return credentials.NewTLS(tc), nil
+}
+
+// rootCAs is the pool that verifies the agent's server certificate. An empty
+// file means nil, i.e. the system roots, for a certificate issued by a public CA
+// (Let's Encrypt); otherwise only the given CA is trusted.
+func rootCAs(caFile string) (*x509.CertPool, error) {
+	if caFile == "" {
+		return nil, nil
+	}
+	ca, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("read server CA: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(ca) {
+		return nil, fmt.Errorf("append server CA")
+	}
+	return pool, nil
 }
 
 // NewConnection dials the LabManager agent and returns a typed client. The
