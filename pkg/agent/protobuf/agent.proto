@@ -84,6 +84,21 @@ message LabStatus {
   repeated LabDeviceStatus devices = 8;      // per-device readiness
   repeated LabConnectionStatus connections = 9;  // per-connection readiness
   repeated LabAccessEntry access = 10;       // structured web-exposure entries
+  // Launch queue state. Set by the operator's launch pacing; absent (nil)
+  // for labs that were never queued. Numbers 20+ are reserved for launch pacing.
+  LabQueueStatus queue = 20;
+}
+// LabQueueStatus is the place of a Lab in the operator's launch queue. A lab is
+// queued while LabStatus.phase is "Queued"; once admitted, position and length
+// are 0 and reason is empty. The platform can show "in queue: position of length".
+message LabQueueStatus {
+  int32 position = 1;       // 1-based place in the queue, 0 = not queued
+  int32 length = 2;         // queued labs at the time position was written
+  // Why the queue does not admit the lab now: InFlightLimit | PreparingImages |
+  // InsufficientResources | NoSchedulableNodes. Empty when not queued.
+  string reason = 3;
+  string launch_class = 4;  // resolved launch class (spec launchClass or topology hash)
+  int64 admitted_at_unix_ms = 5;  // 0 = not admitted yet
 }
 message LabDeviceStatus {
 	string name = 1;
