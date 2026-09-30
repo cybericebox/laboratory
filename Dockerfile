@@ -30,9 +30,19 @@ RUN for c in manager agent proxy node lab; do \
       go build -trimpath -ldflags="-s -w" -o /out/$c ./cmd/$c || exit 1; \
     done
 
-# CNI plugins for the node image: only the ones the node-agent installs on the host.
+# CNI plugins for the node image: only the ones the node-agent installs on the host. They run on
+# the HOST, which is glibc, so they must be static: the alpine package builds them against musl
+# (they fail there with "fork/exec ...: no such file or directory"). The upstream release is
+# static; its checksum is verified.
 FROM ${ALPINE} AS cni
-RUN apk add --no-cache cni-plugins
+ARG TARGETARCH
+ARG CNI_PLUGINS=v1.8.0
+RUN set -eu; \
+    base=https://github.com/containernetworking/plugins/releases/download/${CNI_PLUGINS}; \
+    tgz=cni-plugins-linux-${TARGETARCH}-${CNI_PLUGINS}.tgz; \
+    wget -q -O /tmp/$tgz $base/$tgz; wget -q -O /tmp/$tgz.sha256 $base/$tgz.sha256; \
+    (cd /tmp && sha256sum -c $tgz.sha256); \
+    mkdir -p /cni && tar -xzf /tmp/$tgz -C /cni ./bridge ./ptp ./loopback ./host-local ./portmap
 
 FROM ${DISTROLESS} AS controller
 COPY --from=builder /out/manager /manager
@@ -54,7 +64,6 @@ COPY --from=builder /out/lab /lab
 # Open vSwitch comes from the alpine package (kernel datapath).
 FROM ${ALPINE} AS node
 RUN apk add --no-cache openvswitch iproute2 kmod bash util-linux-misc
-COPY --from=cni /usr/libexec/cni/bridge /usr/libexec/cni/ptp /usr/libexec/cni/loopback \
-     /usr/libexec/cni/host-local /usr/libexec/cni/portmap /usr/libexec/cni/
+COPY --from=cni /cni/ /usr/libexec/cni/
 COPY --chmod=0755 scripts/start-ovs.sh /node-agent/bin/start-ovs.sh
 COPY --from=builder /out/node /node
