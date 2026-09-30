@@ -58,9 +58,9 @@ It consists of:
 
 ## Components
 
-| Binary (`cmd/`) | Image | Role |
+| Command (`laboratory <cmd>`) | Image | Role |
 |---|---|---|
-| `main.go` (operator) | `laboratory` | controller-runtime manager with all reconcilers |
+| `manager` (operator) | `laboratory` | controller-runtime manager with all reconcilers |
 | `agent` | `laboratory` | gRPC management API (`LabManager`) in front of the CRDs |
 | `node-agent` | `laboratory-node` | per-node OVS programming, device port reconciliation, gRPC socket for the CNI gate |
 | `install-cni`, `cni-gate` | `laboratory-node` | installs and runs the meta-CNI that keeps the cluster CNI in charge of `eth0` |
@@ -70,18 +70,24 @@ It consists of:
 | `proxy-l7`, `proxy-wg` | `laboratory` | shared HTTPS front and WireGuard demultiplexer |
 | `ovs-diag` | - | diagnostic tool for moving OVS ports into pod network namespaces |
 
-The Dockerfiles are in the repository root (`Dockerfile*`), one per published image. Component specifications (in Russian) are in
+The single `Dockerfile` in the repository root builds all images (`--target laboratory|node|lab`). Component specifications (in Russian) are in
 [`docs/specs/`](docs/specs/).
 
 ## Releases & images
 
 Images are published to Docker Hub for `linux/amd64` and `linux/arm64`:
 
-| Image | Contents | Dockerfile |
+| Image | Contents | Target of `Dockerfile` |
 |---|---|---|
-| `cybericebox/laboratory` | operator (`/manager`), agent (`/agent`), proxy (`/proxy-l7`, `/proxy-wg`); each Deployment picks its binary through `command` | `Dockerfile` |
-| `cybericebox/laboratory-node` | node-agent, CNI gate, netconfig and Open vSwitch (one pod per node) | `Dockerfile.node` |
-| `cybericebox/laboratory-lab` | per-group VPN and gateway runtime (`/vpn`, `/gateway`, iptables, iproute2) | `Dockerfile.lab` |
+| `cybericebox/laboratory` | operator, agent, proxy | `laboratory` |
+| `cybericebox/laboratory-node` | node-agent, CNI helpers and Open vSwitch (one pod per node) | `node` |
+| `cybericebox/laboratory-lab` | per-group VPN and gateway runtime (iptables, iproute2, wg) | `lab` |
+
+All components are one multicall binary, `/laboratory`: the first argument picks the component
+(`/laboratory manager`, `agent`, `proxy-l7`, `proxy-wg`, `vpn`, `gateway`, `node-agent`, `install-cni`, `netconfig`),
+and the `cni-gate` copy that the node-agent installs on the host is the same binary started under that name.
+Every image is alpine (pinned) plus `/laboratory` plus its own extras, in that layer order, so the first two layers
+are shared between the images.
 
 - Every push to `develop` builds all images and tags them `develop` and `sha-<short commit>` (workflow `develop-images.yml`).
 - Publishing a GitHub release `vX.Y.Z` builds them with the tags `X.Y.Z` and `latest`, packages the Helm chart with

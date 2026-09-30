@@ -14,13 +14,13 @@ jobs:
       matrix:
         include:
           - name: laboratory
-            file: Dockerfile
+            target: laboratory
             image: cybericebox/laboratory
           - name: node
-            file: Dockerfile.node
+            target: node
             image: cybericebox/laboratory-node
           - name: lab
-            file: Dockerfile.lab
+            target: lab
             image: cybericebox/laboratory-lab
     steps:
       - name: Check repository
@@ -42,7 +42,8 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ${{ matrix.file }}
+          file: Dockerfile
+          target: ${{ matrix.target }}
           push: true
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha,scope=${{ matrix.name }}

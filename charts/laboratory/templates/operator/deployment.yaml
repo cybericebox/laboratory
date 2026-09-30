@@ -36,7 +36,8 @@ spec:
           image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
           command:
-            - /manager
+            - /laboratory
+            - manager
           args:
             - --health-probe-bind-address=:8081
         {{- if .Values.operator.leaderElection }}
