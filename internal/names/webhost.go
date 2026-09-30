@@ -13,6 +13,13 @@ const (
 	// label of a web host share.
 	maxDNSLabel = 63
 
+	// MaxDeviceNameLen is the longest device name a lab may have. A web-exposed
+	// device is served at <device>-<labid>.<base domain>, and the wildcard cert
+	// covers one label level, so <device>-<labid> must fit one DNS label:
+	// maxDNSLabel - 1 (hyphen) - LabIDLen = 37. Longer names are rejected, never
+	// truncated: truncation could make two devices collide.
+	MaxDeviceNameLen = maxDNSLabel - 1 - LabIDLen
+
 	base36 = "0123456789abcdefghijklmnopqrstuvwxyz"
 )
 
@@ -63,17 +70,36 @@ func ParseLabID(id string) (string, bool) {
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:], true
 }
 
+// ValidateDeviceName checks a device name against the DNS label rules that the
+// web host label <device>-<labid> imposes: at most MaxDeviceNameLen characters
+// of lowercase a-z, 0-9 and '-', not starting or ending with '-'.
+func ValidateDeviceName(name string) error {
+	if name == "" {
+		return fmt.Errorf("device name is empty")
+	}
+	if len(name) > MaxDeviceNameLen {
+		return fmt.Errorf("device name %q is %d characters, the limit is %d", name, len(name), MaxDeviceNameLen)
+	}
+	if name[0] == '-' || name[len(name)-1] == '-' {
+		return fmt.Errorf("device name %q must not start or end with '-'", name)
+	}
+	for _, c := range name {
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+			return fmt.Errorf("device name %q may contain only lowercase a-z, 0-9 and '-'", name)
+		}
+	}
+	return nil
+}
+
 // WebHostLabel is the first DNS label of a web-exposed device, both as the name
 // of its Service and as the host under the base domain: <device>-<labid>. Two
 // labs of one group may both have a device called "web"; their hosts and
-// Services never collide.
+// Services never collide. The device name must already satisfy
+// ValidateDeviceName; it is not truncated here.
 func WebHostLabel(labUID, device string) string {
 	id, err := LabID(labUID)
 	if err != nil {
 		id = strings.Repeat("0", LabIDLen)
-	}
-	if room := maxDNSLabel - 1 - LabIDLen; len(device) > room {
-		device = device[:room]
 	}
 	return device + "-" + id
 }

@@ -149,3 +149,16 @@ func TestConnectionNameWithForwardingPort(t *testing.T) {
 		t.Fatal("slash port collided with hyphen port")
 	}
 }
+
+func TestInvalidDeviceNameFailsValidation(t *testing.T) {
+	for _, name := range []string{strings.Repeat("d", 38), "Web", "web_1", "-web"} {
+		lab := &laboratoryv1alpha1.Lab{}
+		lab.Spec.Devices = append(lab.Spec.Devices, laboratoryv1alpha1.DeviceTemplate{
+			Name: name, Type: laboratoryv1alpha1.DeviceTypeContainer,
+		})
+		err := (&LabReconciler{}).validateGraph(lab)
+		if err == nil || !strings.Contains(err.Error(), "InvalidDeviceName") {
+			t.Errorf("%q: want InvalidDeviceName, got %v", name, err)
+		}
+	}
+}

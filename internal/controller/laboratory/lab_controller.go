@@ -98,11 +98,6 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, err
 	}
 
-	if err := r.ensureWebServices(ctx, &lab); err != nil {
-		logger.Error(err, "ensure web services")
-		return ctrl.Result{}, err
-	}
-
 	validationErr := r.validateGraph(&lab)
 	var resolvedInterfaces map[string][]laboratoryv1alpha1.InterfaceSpec
 	if validationErr == nil {
@@ -121,6 +116,12 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			logger.Error(statusErr, "update status after graph validation failure")
 		}
 		return ctrl.Result{}, nil
+	}
+
+	// After validation: WebHostLabel relies on validated device names.
+	if err := r.ensureWebServices(ctx, &lab); err != nil {
+		logger.Error(err, "ensure web services")
+		return ctrl.Result{}, err
 	}
 
 	if err := r.materializeDevices(ctx, &lab, resolvedInterfaces); err != nil {
@@ -153,8 +154,13 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	return r.updateStatus(ctx, &lab)
 }
 
-// validateGraph checks endpoint ports, occupancy and switch/hub cycles.
+// validateGraph checks device names, endpoint ports, occupancy and switch/hub cycles.
 func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
+	for _, d := range lab.Spec.Devices {
+		if err := names.ValidateDeviceName(d.Name); err != nil {
+			return fmt.Errorf("InvalidDeviceName: %w", err)
+		}
+	}
 	switchDevices := map[string]bool{}
 	deviceIfaces := map[string]map[string]bool{}
 	for _, d := range lab.Spec.Devices {

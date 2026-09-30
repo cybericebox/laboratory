@@ -44,7 +44,7 @@ func TestWebHostLabelIsUniquePerLabAndAValidDNSLabel(t *testing.T) {
 		t.Fatalf("labels: %s %s", a, b)
 	}
 	valid := regexp.MustCompile(`^[a-z0-9][a-z0-9\-]{0,62}$`)
-	for _, host := range []string{a, WebHostLabel("7f3c9a2e-4b1d-4e8a-9c6f-2d5b8e1a0c47", strings.Repeat("d", 80))} {
+	for _, host := range []string{a, WebHostLabel("7f3c9a2e-4b1d-4e8a-9c6f-2d5b8e1a0c47", strings.Repeat("d", MaxDeviceNameLen))} {
 		if !valid.MatchString(host) {
 			t.Fatalf("%q is not a valid label", host)
 		}
@@ -52,5 +52,36 @@ func TestWebHostLabelIsUniquePerLabAndAValidDNSLabel(t *testing.T) {
 	id, ok := LabIDFromWebHostLabel(a)
 	if !ok || id != "7j6eora4bm1lw7i6anorqigxz" {
 		t.Fatalf("LabIDFromWebHostLabel = %q %v", id, ok)
+	}
+}
+
+func TestMaxDeviceNameLenFillsOneDNSLabel(t *testing.T) {
+	if MaxDeviceNameLen != 37 {
+		t.Fatalf("MaxDeviceNameLen = %d", MaxDeviceNameLen)
+	}
+	host := WebHostLabel("7f3c9a2e-4b1d-4e8a-9c6f-2d5b8e1a0c47", strings.Repeat("d", MaxDeviceNameLen))
+	if len(host) != 63 {
+		t.Fatalf("len = %d", len(host))
+	}
+}
+
+func TestValidateDeviceName(t *testing.T) {
+	for name, wantErr := range map[string]bool{
+		"web":                   false,
+		"a":                     false,
+		"host-1":                false,
+		strings.Repeat("d", 37): false,
+		strings.Repeat("d", 38): true,
+		"":                      true,
+		"-web":                  true,
+		"web-":                  true,
+		"Web":                   true,
+		"web_1":                 true,
+		"web.1":                 true,
+		"веб":                   true,
+	} {
+		if err := ValidateDeviceName(name); (err != nil) != wantErr {
+			t.Errorf("ValidateDeviceName(%q) = %v, wantErr %v", name, err, wantErr)
+		}
 	}
 }

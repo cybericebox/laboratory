@@ -212,6 +212,12 @@ spec:
                         type: object
                       type: array
                     name:
+                      description: |-
+                        Name becomes part of the lab's web address (<name>-<labid>.<domain>), so
+                        it is a DNS label of at most 37 characters (names.MaxDeviceNameLen).
+                      maxLength: 37
+                      minLength: 1
+                      pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                       type: string
                     resources:
                       description: Resources sets the container resource requests/limits
