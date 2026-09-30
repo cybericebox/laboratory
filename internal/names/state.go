@@ -11,4 +11,7 @@ const (
 	// the name of the Device CR, so the node-agent finds the policy and the
 	// status without parsing pod names.
 	AnnotationStateDevice = "state.cybericebox.com/device"
+	// AnnotationStateIncarnation is the incarnation number of a snapshot-backed
+	// device pod; the node-agent records snapshots only for the current one.
+	AnnotationStateIncarnation = "state.cybericebox.com/incarnation"
 )

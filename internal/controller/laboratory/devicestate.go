@@ -377,6 +377,7 @@ func (r *DeviceReconciler) createDevicePod(ctx context.Context, device *laborato
 	labels, _, annotations, podSpec := r.workloadTemplate(device, true)
 	annotations[names.AnnotationStateEpoch] = fmt.Sprint(st.Epoch)
 	annotations[names.AnnotationStateDevice] = device.Name
+	annotations[names.AnnotationStateIncarnation] = fmt.Sprint(next)
 	if spec.Rescue {
 		annotations[names.AnnotationStateRescue] = "true"
 	}
