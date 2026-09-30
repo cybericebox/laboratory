@@ -679,6 +679,21 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		}
 	}
 
+	// The VPN and Internet segments are ready once their LabVPN / LabGateway
+	// report Ready. The VPN pod admits client traffic to a lab only while
+	// Status.VPN.Ready is true, so this must be kept in sync.
+	vpnReady, err := r.segmentReady(ctx, lab.Namespace, lab.Spec.VPN.Enabled, names.LabVPNObjectName(lab.Name), &laboratoryv1alpha1.LabVPN{})
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	inetReady, err := r.segmentReady(ctx, lab.Namespace, lab.Spec.Internet.Enabled, names.LabGatewayObjectName(lab.Name), &laboratoryv1alpha1.LabGateway{})
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if (lab.Spec.VPN.Enabled && !vpnReady) || (lab.Spec.Internet.Enabled && !inetReady) {
+		allReady = false
+	}
+
 	newPhase := laboratoryv1alpha1.PhaseProvisioning
 	if allReady {
 		newPhase = laboratoryv1alpha1.PhaseReady
@@ -710,6 +725,8 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 	}
 
 	if newPhase == lab.Status.Phase &&
+		vpnReady == lab.Status.VPN.Ready &&
+		inetReady == lab.Status.Internet.Ready &&
 		reflect.DeepEqual(refs, lab.Status.Devices) &&
 		reflect.DeepEqual(connRefs, lab.Status.Connections) &&
 		reflect.DeepEqual(access, lab.Status.Access) &&
@@ -720,6 +737,8 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		return ctrl.Result{}, nil
 	}
 
+	lab.Status.VPN.Ready = vpnReady
+	lab.Status.Internet.Ready = inetReady
 	lab.Status.Devices = refs
 	lab.Status.Connections = connRefs
 	lab.Status.Phase = newPhase
@@ -732,6 +751,27 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+// segmentReady reports whether the lab's LabVPN / LabGateway object is Ready.
+// A disabled segment is never ready; a missing object is not ready yet.
+func (r *LabReconciler) segmentReady(ctx context.Context, ns string, enabled bool, name string, obj client.Object) (bool, error) {
+	if !enabled {
+		return false, nil
+	}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, obj); err != nil {
+		if errors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	switch o := obj.(type) {
+	case *laboratoryv1alpha1.LabVPN:
+		return labstatus.IsReady(o.Status.Conditions), nil
+	case *laboratoryv1alpha1.LabGateway:
+		return labstatus.IsReady(o.Status.Conditions), nil
+	}
+	return false, nil
 }
 
 // buildAccessEntries returns the externally-visible URL for each web-exposed
