@@ -12,4 +12,16 @@ rules:
   - apiGroups: [ "" ]
     resources: [ "services" ]
     verbs: [ "get", "list", "watch" ]
+  # The group access policy is the same one the VPN enforces.
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "labgroupaccesspolicies" ]
+    verbs: [ "get", "list", "watch" ]
+  # Each replica publishes its request counters as its own report in every group
+  # namespace.
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "labtrafficreports" ]
+    verbs: [ "get", "create", "update" ]
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "labtrafficreports/status" ]
+    verbs: [ "get", "patch", "update" ]
 {{- end }}

@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/cybericebox/laboratory/pkg/config"
 )
@@ -17,6 +18,11 @@ type L7Config struct {
 	BaseDomain       string `env:"BASE_DOMAIN,required"`
 	Listen           string `env:"LISTEN_HTTPS"  envDefault:":443"`
 	CookieName       string `env:"COOKIE_NAME"   envDefault:"challenge"`
+	// TokenMode is legacy, mixed or per-user (see l7.TokenMode).
+	TokenMode string `env:"TOKEN_MODE" envDefault:"mixed"`
+	// Instance names this replica in its traffic reports (the pod name).
+	Instance       string        `env:"POD_NAME"`
+	ReportInterval time.Duration `env:"REPORT_INTERVAL" envDefault:"1m"`
 }
 
 type WGConfig struct {

@@ -6,14 +6,28 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
-	
+
 	"github.com/golang-jwt/jwt/v5"
 )
 
 type jwtClaims struct {
+	// UserID is the original claim; per-user tokens carry the user in "sub"
+	// (RegisteredClaims.Subject) and keep user_id as an alias.
 	UserID  string `json:"user_id"`
 	GroupID string `json:"group_id"`
+	// EventID and TeamID are for reporting only. Authorization uses group_id.
+	EventID string `json:"evt,omitempty"`
+	TeamID  string `json:"team,omitempty"`
+	Version int    `json:"ver,omitempty"`
 	jwt.RegisteredClaims
+}
+
+// subject is the user a token was issued to; empty for a legacy token.
+func (c jwtClaims) subject() string {
+	if c.Subject != "" {
+		return c.Subject
+	}
+	return c.UserID
 }
 
 var validTaskRE = regexp.MustCompile(`^[a-z0-9][a-z0-9\-]{0,62}$`)
@@ -23,9 +37,9 @@ func validateCookie(r *http.Request, key func() *rsa.PublicKey, cookieName strin
 	if err != nil {
 		return jwtClaims{}, fmt.Errorf("no %s cookie", cookieName)
 	}
-	
+
 	pubKey := key()
-	
+
 	var claims jwtClaims
 	token, err := jwt.ParseWithClaims(
 		cookie.Value, &claims, func(t *jwt.Token) (interface{}, error) {

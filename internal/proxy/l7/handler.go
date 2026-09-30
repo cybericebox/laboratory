@@ -4,19 +4,26 @@ import (
 	"crypto/rsa"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
-	
+
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
 // BackendResolver maps (task, groupID) to a backend URL string.
 type BackendResolver func(task, groupID string) (string, error)
 
+// Attribution maps (task, groupID) to the lab and device a request reaches.
+type Attribution func(task, groupID string) (lab, device string, ok bool)
 
+// Authorizer decides whether a token subject may reach a lab of a group. It is
+// called only for tokens that name a user.
+type Authorizer func(groupID, subject, lab string) bool
 
 type Handler struct {
 	key        func() *rsa.PublicKey
@@ -24,6 +31,12 @@ type Handler struct {
 	cookieName string
 	resolver   BackendResolver
 	transport  http.RoundTripper
+
+	mode      TokenMode
+	meter     *Meter
+	attribute Attribution
+	authorize Authorizer
+	now       func() time.Time
 }
 
 // upstreamTransport skips certificate verification for in-cluster backends
@@ -32,7 +45,7 @@ type Handler struct {
 var upstreamTransport = &http.Transport{
 	TLSClientConfig: &tls.Config{
 		InsecureSkipVerify: true,
-		MinVersion: tls.VersionTLS12,
+		MinVersion:         tls.VersionTLS12,
 	}, // #nosec G402 — see comment above
 	MaxIdleConns:    100,
 	IdleConnTimeout: 90 * time.Second,
@@ -45,7 +58,28 @@ func NewHandler(key func() *rsa.PublicKey, baseDomain, cookieName string, resolv
 		cookieName: cookieName,
 		resolver:   resolver,
 		transport:  upstreamTransport,
+		mode:       ModeLegacy,
+		now:        time.Now,
 	}
+}
+
+// WithTokenMode sets how strictly tokens must name a user.
+func (h *Handler) WithTokenMode(mode TokenMode) *Handler {
+	h.mode = mode
+	return h
+}
+
+// WithAccounting counts requests of per-user tokens per lab device. attribute
+// maps the task host to the lab and device; without it nothing is counted.
+func (h *Handler) WithAccounting(meter *Meter, attribute Attribution) *Handler {
+	h.meter, h.attribute = meter, attribute
+	return h
+}
+
+// WithAuthorizer restricts per-user tokens to the labs the group policy allows.
+func (h *Handler) WithAuthorizer(authorize Authorizer) *Handler {
+	h.authorize = authorize
+	return h
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -59,7 +93,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	
+
+	subject := claims.subject()
+	if h.mode == ModePerUser && subject == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if h.mode == ModeLegacy {
+		subject = ""
+	}
+
 	backendURL, err := h.resolver(task, claims.GroupID)
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -70,7 +113,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	
+	var lab, device string
+	if h.attribute != nil {
+		lab, device, _ = h.attribute(task, claims.GroupID)
+	}
+	if subject != "" && h.authorize != nil && !h.authorize(claims.GroupID, subject, lab) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	// Strip challenge cookie before forwarding.
 	r = r.Clone(r.Context())
 	var kept []string
@@ -81,10 +132,76 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Header.Set("Cookie", strings.Join(kept, "; "))
 	r.Header.Set("X-Forwarded-Proto", "https")
-	
+
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Transport = h.transport
-	proxy.ServeHTTP(w, r)
+
+	// Count only what a per-user token did to a known lab device. A request
+	// without a user cannot be attributed to anybody.
+	if h.meter == nil {
+		proxy.ServeHTTP(w, r)
+		return
+	}
+	if subject == "" || lab == "" {
+		h.meter.RecordLegacy()
+		proxy.ServeHTTP(w, r)
+		return
+	}
+	start := h.now()
+	out := &countingBody{}
+	if r.Body != nil && r.Body != http.NoBody {
+		out.ReadCloser = r.Body
+		r.Body = out
+	}
+	rec := &countingWriter{ResponseWriter: w}
+	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, _ error) {
+		rec.upstreamFailed = true
+		w.WriteHeader(http.StatusBadGateway)
+	}
+	proxy.ServeHTTP(rec, r)
+	h.meter.Record(ns(claims.GroupID), subject, lab, device, start, !rec.upstreamFailed, rec.bytes, out.n.Load())
+}
+
+func ns(groupID string) string { return laboratoryv1alpha1.LabGroupNamespace(groupID) }
+
+// countingWriter records how many body bytes went to the client and whether
+// the proxy itself failed to reach the lab. Upgraded (WebSocket) connections
+// are hijacked, so their frames are not counted; the request still is.
+type countingWriter struct {
+	http.ResponseWriter
+	bytes          int64
+	upstreamFailed bool
+}
+
+func (w *countingWriter) Write(b []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(b)
+	w.bytes += int64(n)
+	return n, err
+}
+
+// Unwrap lets http.ResponseController reach Flush and Hijack.
+func (w *countingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// countingBody counts request body bytes read by the upstream transport.
+type countingBody struct {
+	io.ReadCloser
+	n atomic.Int64
+}
+
+func (b *countingBody) Read(p []byte) (int, error) {
+	if b.ReadCloser == nil {
+		return 0, io.EOF
+	}
+	n, err := b.ReadCloser.Read(p)
+	b.n.Add(int64(n))
+	return n, err
+}
+
+func (b *countingBody) Close() error {
+	if b.ReadCloser == nil {
+		return nil
+	}
+	return b.ReadCloser.Close()
 }
 
 // ServiceResolver builds a BackendResolver that determines backend URL from Service named port.

@@ -105,6 +105,12 @@ proxy:
     enabled: true
     listen: ":8443"
     cookieName: "challenge"
+    # legacy: one token per group, nothing counted per user (the old behaviour).
+    # mixed: per-user tokens are counted and obey explicit deny rules; old tokens
+    #   still work but are not counted. Start here.
+    # per-user: every token must name a user and the group access policy (the one
+    #   the VPN uses) must allow that participant the lab. Switch after one event.
+    tokenMode: "mixed"
     resources:
       limits:
         cpu: 500m

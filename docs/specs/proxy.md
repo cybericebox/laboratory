@@ -1,6 +1,6 @@
 # Proxy — спецификация требований (L7 + Demux)
 
-> Источник: `cybericebox-spec-v1.md` §3 (challenge-токен Ed25519), §4 (VPN-демукс: mac1, conntrack, XDP), §5 (L7
+> Источник: `cybericebox-spec-v1.md` §3 (challenge-токен; в коде RS256, не Ed25519), §4 (VPN-демукс: mac1, conntrack, XDP), §5 (L7
 > challenge-прокси), §6 (TLS / wildcard DNS-01), §13 (изоляция).
 
 ## Назначение
@@ -8,7 +8,7 @@
 Cluster-singleton-pod, который держит **два независимых L4/L7-демультиплексора на одном публичном IP**:
 
 - **L7-прокси** (TCP/443) — HTTPS-фронт для web-заданий. Терминирует внешний TLS под wildcard-сертом
-  `*.challenges.<domain>`, верифицирует challenge-cookie Ed25519, маршрутизирует в
+  `*.challenges.<domain>`, верифицирует challenge-cookie (RS256 JWT), маршрутизирует в
   `<task>.labgroup-<groupID>.svc.cluster.local`, вырезает challenge-cookie перед форвардом.
 - **WireGuard-демукс** (UDP/51820) — распределяет входящие WG-пакеты на VPN-сервер нужной группы. Handshake init (type
   1) через mac1 brute-force в userspace; transport data (type 4) через XDP-fast-path с conntrack-таблицей.
@@ -21,9 +21,9 @@ demux — `LabGroup.Status.VPN.PublicKey`.
 | Файл                                 | Роль                                                                                            |
 |--------------------------------------|-------------------------------------------------------------------------------------------------|
 | `cmd/proxy/main.go`                  | Bootstrap: cluster-singleton manager, watcher LabGroup, HTTPS-сервер + UDP-демукс + TTL-cleanup |
-| `cmd/proxy/config.go`                | env-config: TLS_CERT/KEY paths, ED25519_PUBLIC_KEY, BASE_DOMAIN, LISTEN_HTTPS, UDP_LISTEN_ADDR  |
+| `internal/proxy/config.go`           | env-config: TLS_CERT/KEY paths, JWT_PUBLIC_KEY_PATH, BASE_DOMAIN, LISTEN_HTTPS, TOKEN_MODE, UDP_LISTEN_ADDR |
 | `cmd/proxy/l7/handler.go`            | ServeHTTP: parse host → validate cookie → resolve backend → strip cookie → reverse proxy        |
-| `cmd/proxy/l7/auth.go`               | validateCookie: parse `base64(json).base64(sig)`, Ed25519.Verify, exp check                     |
+| `cmd/proxy/l7/auth.go`               | validateCookie: RS256 JWT (`jwt.ParseWithClaims`), exp/nbf, group_id, sub                       |
 | `cmd/proxy/demux/demux.go`           | UDP-loop: dispatch type 1 (mac1), type 2 (learn), type 4 (userspace fallback)                   |
 | `cmd/proxy/demux/table.go`           | in-memory pubkey→UID; mac1_key через BLAKE2s; LabGroupWatcher reconciler                        |
 | `cmd/proxy/demux/conntrack.go`       | receiver_index → Socket; AddPartial/Complete/Lookup/UpdateRoaming; TTL-eviction                 |
@@ -112,24 +112,44 @@ demux — `LabGroup.Status.VPN.PublicKey`.
   `fmt.Sprintf("%s://%s.%s.svc...", proto, task, ns, port)` — task попадает только в hostname-сегмент.
 - **Что считать выполненным:** `task=`foo/../bar`` → 400 до обращения к resolver.
 
-#### REQ-PX-014: Cookie Ed25519 stateless verification
+#### REQ-PX-014: Cookie RS256 JWT, stateless verification
 
-- **Источник:** §3 «Stateless, асимметричная подпись (Ed25519) — прокси держит только публичный ключ».
+- **Источник:** §3 «Stateless, асимметричная подпись — прокси держит только публичный ключ» (алгоритм в коде RS256,
+  а не Ed25519 как в исходной спецификации).
 - **Статус:** ✅ Implemented
-- **Реализация:** `l7/auth.go:validateCookie` — split `.`, base64-decode payload+sig,
-  `ed25519.Verify(pubKey, rawJSON, sig)`, unmarshal claims, check `Exp` vs `Now().Unix()`. На любую ошибку —
-  `Unauthorized`.
+- **Реализация:** `internal/proxy/l7/auth.go:validateCookie` — `jwt.ParseWithClaims`, допускается только
+  `*jwt.SigningMethodRSA`, публичный ключ берётся из `keywatcher.go` (PEM из Secret, hot-reload через fsnotify),
+  `exp`/`nbf` проверяет библиотека. На любую ошибку — `401`.
 - **Что считать выполненным:** подделанные/истёкшие cookies отбрасываются; без cookie — 401; proxy не подписывает
-  токены (приватник вне кластера).
+  токены (приватный ключ хранит только платформа).
 
-#### REQ-PX-015: Cookie claims `{group_id, exp}`
+#### REQ-PX-015: Cookie claims
 
-- **Источник:** §3 «Claims: { user_id, group_id, exp }».
-- **Статус:** ⚠️ Partial
-- **Реализация:** `l7/auth.go:challengeClaims` имеет только `GroupID` и `Exp`. `UserID` отсутствует.
-- **Что считать выполненным:** claims содержат user_id (для аудита/rate-limit), group_id (для маршрутизации), exp.
-- **Заметки/gap:** §3 явно перечисляет `user_id` в claims. Сейчас proxy его не извлекает (но и не использует — для
-  маршрутизации достаточно group_id). Для аудита нужен.
+- **Источник:** §3 «Claims: { user_id, group_id, exp }» + решение владельца 2026-09-30 (учёт обращений по пользователям).
+- **Статус:** ✅ Implemented
+- **Реализация:** claims: `sub` (id пользователя, alias `user_id`), `group_id` (маршрутизация, единственный claim для
+  авторизации), `evt`, `team` (только для отчётов), `jti`, `iat`, `exp` (60 минут; платформа обновляет токен, пока
+  открыта страница задания), `nbf`, `ver` (2 = токен пользователя). Выдаёт токены backend платформы.
+- **Режимы `TOKEN_MODE`:** `legacy` — как раньше, ничего не считается; `mixed` (старт) — токены с `sub` считаются и
+  проверяются на явный `deny` в `LabGroupAccessPolicy`, токены без `sub` работают, но не считаются; `per-user` — `sub`
+  обязателен, и лаборатория доступна, только если политика группы разрешает её этому участнику (та же политика, что для
+  VPN): исключённый из команды или заблокированный участник теряет web сразу после синхронизации политики.
+- **Что считать выполненным:** `handler_test.go` (режимы, авторизация), `policy_test.go`.
+
+#### REQ-PX-019A: Учёт запросов по пользователям и лабораториям
+
+- **Источник:** `docs/LAB-TRAFFIC-ACCOUNTING.md` §3 (в корне репозитория CyberICEBox), решение владельца 2026-09-30.
+- **Статус:** ✅ Implemented (нужна проверка на живом кластере).
+- **Реализация:** `l7/meter.go` считает запросы токенов с `sub` на пару (пользователь, лаборатория, устройство):
+  `attempts` (запросы), `firstSeen`, `lastSeen`, `firstResponded` (лаборатория сама ответила; 502 от прокси не считается),
+  байты. Лаборатория и устройство берутся из лейблов Service (`laboratory.cybericebox.com/lab`, `/device`), которые ставит
+  оператор. Хост веб-устройства теперь `<device>-<labShortID>.<BASE_DOMAIN>` (`names.WebHostLabel`), Service называется
+  так же; коллизия одноимённых устройств разных лаб устранена. Каждая реплика раз в минуту пишет
+  `LabTrafficReport/proxy-<pod>` в каждый namespace группы (`l7/reporter.go`): кумулятивный ledger и покрытие
+  `coveredFrom..coveredTo` (heartbeat и для группы без запросов). Не записываются: путь, query, заголовки, тела, адрес
+  клиента, User-Agent.
+- **Ограничения:** WebSocket/Upgrade считается как запрос, байты по hijacked-соединению не считаются; счётчик относится к
+  токену участника, а не к человеку; токены без `sub` не считаются (только внутренний счётчик `Meter.Legacy`).
 
 #### REQ-PX-016: Cookie-вырезание перед форвардом
 
@@ -147,7 +167,7 @@ demux — `LabGroup.Status.VPN.PublicKey`.
 - **Реализация:** `l7/handler.go:ServiceResolver` —
   `fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d", proto, task, "labgroup-"+groupID, port)`.
 - **Что считать выполненным:** все запросы группы X идут только в её namespace `labgroup-X`; токен с подменённым
-  `groupID` отвергается на стадии Ed25519-проверки.
+  `groupID` отвергается на стадии проверки подписи.
 
 #### REQ-PX-018: Service existence as access gate
 
@@ -368,7 +388,7 @@ demux — `LabGroup.Status.VPN.PublicKey`.
 
 - **Источник:** §3 «прокси держит только публичный ключ: проверять может, ковать — нет».
 - **Статус:** ✅ Implemented
-- **Реализация:** `config.go` — `ED25519_PUBLIC_KEY` env-var, 32-byte; нет private-key в env / Secret / mount.
+- **Реализация:** `config.go` — `JWT_PUBLIC_KEY_PATH` (PEM RSA public key, монтируется из Secret); private-key нет в env / Secret / mount.
 - **Что считать выполненным:** компрометация proxy не даёт ковать challenge-токены.
 
 #### REQ-PX-062: Cookie scope `Domain=challenges.<домен>`
@@ -436,7 +456,6 @@ demux — `LabGroup.Status.VPN.PublicKey`.
 
 ### Важно
 
-- ⚠️ **REQ-PX-015** — claims содержит только `group_id`+`exp`, не `user_id` (для аудита).
 - 🔍 **REQ-PX-054** — XDP роуминг (через peer_index) не поддерживается в BPF map (нет поля `peer_index`).
 - ⚠️ **REQ-PX-041** — last_seen в XDP не обновляется → активные XDP-сессии могут быть evicted TTL-cleanup-ом.
 - 🔍 **REQ-PX-004** — RBAC ClusterRole / ServiceAccount для proxy не виден в репо.

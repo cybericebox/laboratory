@@ -66,23 +66,27 @@ func (r *Reporter) Run(ctx context.Context, pollEvery, reportEvery time.Duration
 // Publish writes the current state; CoveredTo advances even when nothing
 // happened, which is what proves an idle team was being watched.
 func (r *Reporter) Publish(ctx context.Context, now time.Time) error {
-	key := types.NamespacedName{Namespace: r.Namespace, Name: ReportName}
+	return PublishReport(ctx, r.Reader, r.Writer, types.NamespacedName{Namespace: r.Namespace, Name: ReportName},
+		laboratoryv1alpha1.LabTrafficReportSpec{Kind: laboratoryv1alpha1.LabTrafficSurfaceVPN, Instance: r.Instance},
+		ToStatus(r.Collector.Snapshot(now)))
+}
+
+// PublishReport creates the LabTrafficReport when missing and replaces its
+// spec instance and status. It is shared by the VPN pod and the proxy.
+func PublishReport(ctx context.Context, reader client.Reader, writer client.Client, key types.NamespacedName, spec laboratoryv1alpha1.LabTrafficReportSpec, status laboratoryv1alpha1.LabTrafficReportStatus) error {
 	obj := &laboratoryv1alpha1.LabTrafficReport{}
-	err := r.Reader.Get(ctx, key, obj)
+	err := reader.Get(ctx, key, obj)
 	switch {
 	case apierrors.IsNotFound(err):
-		obj = &laboratoryv1alpha1.LabTrafficReport{
-			ObjectMeta: metav1.ObjectMeta{Namespace: r.Namespace, Name: ReportName},
-			Spec:       laboratoryv1alpha1.LabTrafficReportSpec{Kind: laboratoryv1alpha1.LabTrafficSurfaceVPN, Instance: r.Instance},
-		}
-		if err := r.Writer.Create(ctx, obj); err != nil {
+		obj = &laboratoryv1alpha1.LabTrafficReport{ObjectMeta: metav1.ObjectMeta{Namespace: key.Namespace, Name: key.Name}, Spec: spec}
+		if err := writer.Create(ctx, obj); err != nil {
 			return fmt.Errorf("create traffic report: %w", err)
 		}
 	case err != nil:
 		return fmt.Errorf("get traffic report: %w", err)
 	}
-	obj.Status = ToStatus(r.Collector.Snapshot(now))
-	if err := r.Writer.Status().Update(ctx, obj); err != nil {
+	obj.Status = status
+	if err := writer.Status().Update(ctx, obj); err != nil {
 		return fmt.Errorf("update traffic report status: %w", err)
 	}
 	return nil
