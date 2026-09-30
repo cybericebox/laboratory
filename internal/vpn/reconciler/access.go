@@ -172,6 +172,9 @@ func (r *AccessReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: object.GetNamespace(), Name: "access-policy"}}}
 	})
 	return ctrl.NewControllerManagedBy(mgr).
+		// The peer reconciler also watches LabGroupClient; without its own name
+		// both derive "labgroupclient" and the manager refuses the second one.
+		Named("vpn-access").
 		For(&laboratoryv1alpha1.LabGroupClient{}).
 		Watches(&laboratoryv1alpha1.Lab{}, allInNamespace).
 		// Counter refreshes patch only status. Do not turn those patches into
