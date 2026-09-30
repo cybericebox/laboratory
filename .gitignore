@@ -49,3 +49,5 @@ laboratory-node-agent-*.log
 # helm dependency lock/vendor
 charts/laboratory/Chart.lock
 charts/laboratory/charts/
+
+.DS_Store
