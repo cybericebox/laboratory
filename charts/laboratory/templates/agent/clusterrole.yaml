@@ -39,7 +39,7 @@ rules:
     resources: [ "labs", "labs/status", "labgroupclients", "labgroupclients/status", "labgroupaccesspolicies" ]
     verbs: [ "get", "list", "watch", "create", "update", "patch", "delete" ]
   - apiGroups: [ "laboratory.cybericebox.com" ]
-    resources: [ "devices", "devices/status", "connections", "connections/status", "labvpns", "labvpns/status", "labgateways", "labgateways/status" ]
+    resources: [ "labtrafficreports", "devices", "devices/status", "connections", "connections/status", "labvpns", "labvpns/status", "labgateways", "labgateways/status" ]
     verbs: [ "get", "list", "watch" ]
   # Env secrets are WRITE-ONLY for the agent: it CREATEs/DELETEs per-device env
   # Secrets (overwrite is delete+create) and never reads them — so a device's

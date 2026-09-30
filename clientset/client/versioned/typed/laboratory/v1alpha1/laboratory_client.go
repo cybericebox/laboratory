@@ -33,6 +33,7 @@ type LaboratoryV1alpha1Interface interface {
 	LabGatewaysGetter
 	LabGroupsGetter
 	LabGroupAccessPoliciesGetter
+	LabTrafficReportsGetter
 	LabGroupClientsGetter
 	LabVPNsGetter
 }
@@ -64,6 +65,10 @@ func (c *LaboratoryV1alpha1Client) LabGroups() LabGroupInterface {
 
 func (c *LaboratoryV1alpha1Client) LabGroupAccessPolicies(namespace string) LabGroupAccessPolicyInterface {
 	return newLabGroupAccessPolicies(c, namespace)
+}
+
+func (c *LaboratoryV1alpha1Client) LabTrafficReports(namespace string) LabTrafficReportInterface {
+	return newLabTrafficReports(c, namespace)
 }
 
 func (c *LaboratoryV1alpha1Client) LabGroupClients(namespace string) LabGroupClientInterface {

@@ -95,6 +95,14 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupAccessPolicySpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupAccessPolicyStatus"):
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupAccessPolicyStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabTrafficReport"):
+		return &applyconfigurationlaboratoryv1alpha1.LabTrafficReportApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabTrafficReportSpec"):
+		return &applyconfigurationlaboratoryv1alpha1.LabTrafficReportSpecApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabTrafficReportStatus"):
+		return &applyconfigurationlaboratoryv1alpha1.LabTrafficReportStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabTrafficTouch"):
+		return &applyconfigurationlaboratoryv1alpha1.LabTrafficTouchApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupAccessRule"):
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupAccessRuleApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupClient"):

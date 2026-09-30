@@ -205,6 +205,48 @@ message MonitoringUpdate {
   // Cluster-wide capacity is not tied to any LabGroup. It lets the platform
   // administrator see actual headroom even when no event is currently active.
   CapacityResponse capacity = 15;
+  // Lab traffic accounting: cumulative aggregates relayed from LabTrafficReport
+  // resources. State records like clients and policies, so a fresh snapshot
+  // after a reconnect re-sends them; consumers apply them as cumulative values.
+  repeated TrafficReport traffic = 16;
+}
+
+// TrafficReport is the state of one collector (the VPN pod of a group, or one
+// proxy replica). It carries counters and times only: never a user address,
+// path, header or payload.
+message TrafficReport {
+  string lab_group_name = 1;
+  string namespace = 2;
+  string source = 3;   // name of the LabTrafficReport object
+  string kind = 4;     // "vpn" | "proxy"
+  string instance = 5; // writing pod
+  // Changes on every collector restart; the ledger is cumulative within one boot.
+  string boot_id = 6;
+  // The span the collector actually observed. Absence of a touch proves
+  // nothing outside this span.
+  int64 covered_from_unix_ms = 7;
+  int64 covered_to_unix_ms = 8;
+  bool partial = 9;
+  bool truncated = 10;
+  repeated TrafficTouch ledger = 11;
+}
+
+// TrafficTouch is one cumulative aggregate of a subject against a lab target.
+message TrafficTouch {
+  string subject = 1;  // LabGroupClient name (p-<user uuid>) for vpn, user id for proxy
+  string lab_name = 2;
+  string device = 3;
+  string dst_ip = 4;   // lab-internal address only
+  string proto = 5;
+  uint32 dst_port = 6;
+  int64 attempts = 7;  // new connections (vpn) or requests (proxy)
+  int64 packets_out = 8;
+  int64 packets_in = 9;
+  int64 bytes_out = 10;
+  int64 bytes_in = 11;
+  int64 first_seen_unix_ms = 12;
+  int64 last_seen_unix_ms = 13;
+  int64 first_responded_unix_ms = 14; // 0 = the lab never answered
 }
 
 // NodeCapacity reports a node's allocatable resources and how much is already

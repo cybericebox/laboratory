@@ -188,3 +188,30 @@ func accessPolicyToProto(policy *laboratoryv1alpha1.LabGroupAccessPolicy, labGro
 	}
 	return p
 }
+
+// trafficReportToProto relays a collector's report. The namespace decides the
+// group; nothing inside the report is trusted to name one.
+func trafficReportToProto(report *laboratoryv1alpha1.LabTrafficReport, labGroupName string) *protobuf.TrafficReport {
+	p := &protobuf.TrafficReport{
+		LabGroupName:      labGroupName,
+		Namespace:         report.Namespace,
+		Source:            report.Name,
+		Kind:              string(report.Spec.Kind),
+		Instance:          report.Spec.Instance,
+		BootId:            report.Status.BootID,
+		CoveredFromUnixMs: report.Status.CoveredFromMs,
+		CoveredToUnixMs:   report.Status.CoveredToMs,
+		Partial:           report.Status.Partial,
+		Truncated:         report.Status.Truncated,
+		Ledger:            make([]*protobuf.TrafficTouch, 0, len(report.Status.Ledger)),
+	}
+	for _, t := range report.Status.Ledger {
+		p.Ledger = append(p.Ledger, &protobuf.TrafficTouch{
+			Subject: t.Subject, LabName: t.LabName, Device: t.Device, DstIp: t.DstIP, Proto: t.Proto,
+			DstPort: uint32(t.DstPort), Attempts: t.Attempts,
+			PacketsOut: t.PacketsOut, PacketsIn: t.PacketsIn, BytesOut: t.BytesOut, BytesIn: t.BytesIn,
+			FirstSeenUnixMs: t.FirstSeenMs, LastSeenUnixMs: t.LastSeenMs, FirstRespondedUnixMs: t.FirstRespondedMs,
+		})
+	}
+	return p
+}

@@ -14,6 +14,13 @@ rules:
   - apiGroups: [ laboratory.cybericebox.com ]
     resources: [ labgroupaccesspolicies/status ]
     verbs: [ get, patch, update ]
+  # The VPN pod publishes its flow accounting as its own LabTrafficReport.
+  - apiGroups: [ laboratory.cybericebox.com ]
+    resources: [ labtrafficreports ]
+    verbs: [ get, create, update ]
+  - apiGroups: [ laboratory.cybericebox.com ]
+    resources: [ labtrafficreports/status ]
+    verbs: [ get, patch, update ]
   - apiGroups: [ laboratory.cybericebox.com ]
     resources: [ labgroupclients/status ]
     verbs: [ get, patch, update ]

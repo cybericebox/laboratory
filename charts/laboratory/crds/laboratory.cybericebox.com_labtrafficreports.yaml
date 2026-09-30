@@ -1,0 +1,155 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: labtrafficreports.laboratory.cybericebox.com
+spec:
+  group: laboratory.cybericebox.com
+  names:
+    kind: LabTrafficReport
+    listKind: LabTrafficReportList
+    plural: labtrafficreports
+    shortNames:
+    - ltr
+    singular: labtrafficreport
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          LabTrafficReport is the namespaced hand-off between a traffic collector (the
+          VPN pod, a proxy replica) and the agent, which relays it to the platform.
+          The custom resource is the buffer: the agent keeps no traffic state.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              LabTrafficReportSpec identifies the writer of a report. The report carries
+              facts only; nothing here configures behaviour.
+            properties:
+              instance:
+                description: Instance is the writing pod (the VPN pod, or one proxy
+                  replica).
+                type: string
+              kind:
+                description: LabTrafficSurface names the collector that produced a
+                  report.
+                enum:
+                - vpn
+                - proxy
+                type: string
+            required:
+            - kind
+            type: object
+          status:
+            description: LabTrafficReportStatus is written only by the collector.
+            properties:
+              bootID:
+                description: |-
+                  BootID changes whenever the collector restarts; the ledger is cumulative
+                  within one boot.
+                type: string
+              coveredFromMs:
+                description: |-
+                  CoveredFromMs..CoveredToMs is the span the collector actually observed.
+                  CoveredToMs advances as a heartbeat even when nothing happened.
+                format: int64
+                type: integer
+              coveredToMs:
+                format: int64
+                type: integer
+              ledger:
+                items:
+                  description: |-
+                    LabTrafficTouch is one cumulative aggregate row: what one VPN config (or one
+                    proxy token) did against one lab target since the collector booted. There is
+                    no time series. Times are Unix milliseconds. Only lab-internal addresses are
+                    ever recorded, never the address of a user.
+                  properties:
+                    attempts:
+                      description: Attempts counts new connections (VPN) or requests
+                        (proxy).
+                      format: int64
+                      type: integer
+                    bytesIn:
+                      format: int64
+                      type: integer
+                    bytesOut:
+                      format: int64
+                      type: integer
+                    device:
+                      description: Device is the device or route inside the lab, when
+                        known.
+                      type: string
+                    dstIP:
+                      type: string
+                    dstPort:
+                      format: int32
+                      type: integer
+                    firstRespondedMs:
+                      description: FirstRespondedMs is when the lab first answered;
+                        zero means it never did.
+                      format: int64
+                      type: integer
+                    firstSeenMs:
+                      description: FirstSeenMs is the first attempt, LastSeenMs the
+                        last one.
+                      format: int64
+                      type: integer
+                    labName:
+                      type: string
+                    lastSeenMs:
+                      format: int64
+                      type: integer
+                    packetsIn:
+                      format: int64
+                      type: integer
+                    packetsOut:
+                      format: int64
+                      type: integer
+                    proto:
+                      type: string
+                    subject:
+                      description: |-
+                        Subject is the LabGroupClient name (VPN) or the token subject, a user id
+                        (proxy). An empty subject is a legacy token.
+                      type: string
+                  required:
+                  - attempts
+                  - firstSeenMs
+                  - labName
+                  - lastSeenMs
+                  type: object
+                type: array
+              partial:
+                description: Partial is set when part of the span could not be read.
+                type: boolean
+              truncated:
+                description: Truncated is set when the ledger hit its size cap and
+                  rows were dropped.
+                type: boolean
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

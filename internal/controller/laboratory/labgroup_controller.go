@@ -440,6 +440,10 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 	if err := r.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: ns}, &existing); err == nil {
 		changed := existing.Spec.Replicas == nil || *existing.Spec.Replicas != replicas
 		existing.Spec.Replicas = ptrInt32(replicas)
+		if len(existing.Spec.Template.Spec.InitContainers) == 0 {
+			existing.Spec.Template.Spec.InitContainers = []corev1.Container{r.vpnAccountingInitContainer()}
+			changed = true
+		}
 		if len(existing.Spec.Template.Spec.Containers) > 0 {
 			container := &existing.Spec.Template.Spec.Containers[0]
 			found := false
@@ -483,6 +487,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 					ServiceAccountName: "vpn",
 					NodeSelector:       r.LabNodeSelector,
 					Tolerations:        r.LabTolerations,
+					InitContainers:     []corev1.Container{r.vpnAccountingInitContainer()},
 					Containers: []corev1.Container{{
 						Name:            "vpn",
 						Image:           r.VPNImage,
@@ -515,6 +520,31 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 		},
 	}
 	return r.Create(ctx, d)
+}
+
+// vpnAccountingScript turns on conntrack byte accounting and flow timestamps in
+// the pod network namespace. Both are off by default and /proc/sys is read-only
+// for the unprivileged VPN container, so a short privileged init container does
+// it once. The script never fails the pod: without the switches the flow
+// collector still counts attempts and replies, only bytes stay zero.
+const vpnAccountingScript = `for i in 1 2 3 4 5; do
+  [ -w /proc/sys/net/netfilter/nf_conntrack_acct ] && break
+  iptables -C FORWARD -m conntrack --ctstate ESTABLISHED -j ACCEPT >/dev/null 2>&1
+  sleep 1
+done
+echo 1 > /proc/sys/net/netfilter/nf_conntrack_acct || echo "conntrack acct unavailable"
+echo 1 > /proc/sys/net/netfilter/nf_conntrack_timestamp || echo "conntrack timestamp unavailable"
+exit 0`
+
+func (r *LabGroupReconciler) vpnAccountingInitContainer() corev1.Container {
+	privileged := true
+	return corev1.Container{
+		Name:            "conntrack-accounting",
+		Image:           r.VPNImage,
+		Command:         []string{"/bin/sh", "-c", vpnAccountingScript},
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		SecurityContext: &corev1.SecurityContext{Privileged: &privileged},
+	}
 }
 
 // ensureGatewayDeployment creates the per-LabGroup internet-gateway pod.

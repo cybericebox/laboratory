@@ -7,6 +7,7 @@ resources:
   - bases/laboratory.cybericebox.com_labgroups.yaml
   - bases/laboratory.cybericebox.com_labgroupclients.yaml
   - bases/laboratory.cybericebox.com_labgroupaccesspolicies.yaml
+  - bases/laboratory.cybericebox.com_labtrafficreports.yaml
   - bases/laboratory.cybericebox.com_connections.yaml
   - bases/laboratory.cybericebox.com_devices.yaml
 # +kubebuilder:scaffold:crdkustomizeresource

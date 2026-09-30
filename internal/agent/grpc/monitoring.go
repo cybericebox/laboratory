@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	monitoringSchemaVersion   = 1
+	monitoringSchemaVersion   = 2
 	minimumMonitoringPeriod   = 10 * time.Millisecond
 	defaultMonitoringPeriod   = 5 * time.Second
 	monitoringHeartbeatPeriod = 30 * time.Second
@@ -56,6 +56,12 @@ func (h *Handler) snapshot(ctx context.Context) (*protobuf.MonitoringUpdate, err
 		if err == nil {
 			upd.Policies = append(upd.Policies, accessPolicyToProto(policy, g.Name))
 		}
+		reports, err := h.cs.LaboratoryV1alpha1().LabTrafficReports(ns).List(ctx, metav1.ListOptions{})
+		if err == nil {
+			for j := range reports.Items {
+				upd.Traffic = append(upd.Traffic, trafficReportToProto(&reports.Items[j], g.Name))
+			}
+		}
 	}
 	capacity, err := h.GetCapacity(ctx, &protobuf.Empty{})
 	if err != nil {
@@ -63,6 +69,7 @@ func (h *Handler) snapshot(ctx context.Context) (*protobuf.MonitoringUpdate, err
 	}
 	upd.Capacity = capacity
 	sortMonitoringRecords(upd)
+	sortTraffic(upd)
 	return upd, nil
 }
 
@@ -174,7 +181,7 @@ func monitoringDelta(previous, next *protobuf.MonitoringUpdate) (*protobuf.Monit
 	sort.Slice(delta.DeletedKeys, func(i, j int) bool {
 		return monitoringDeletedKeyString(delta.DeletedKeys[i]) < monitoringDeletedKeyString(delta.DeletedKeys[j])
 	})
-	return delta, len(delta.Groups) > 0 || len(delta.Labs) > 0 || len(delta.Clients) > 0 || len(delta.Policies) > 0 || len(delta.DeletedKeys) > 0 || delta.Capacity != nil
+	return delta, len(delta.Groups) > 0 || len(delta.Labs) > 0 || len(delta.Clients) > 0 || len(delta.Policies) > 0 || len(delta.Traffic) > 0 || len(delta.DeletedKeys) > 0 || delta.Capacity != nil
 }
 
 type monitoringRecord struct {
@@ -211,6 +218,10 @@ func monitoringRecordIndex(update *protobuf.MonitoringUpdate) map[string]monitor
 		record := monitoringRecord{kind: "access_policy", groupName: policy.GetLabGroupName(), namespace: policy.GetNamespace(), name: "access-policy", value: policy}
 		records[record.key()] = record
 	}
+	for _, report := range update.Traffic {
+		record := monitoringRecord{kind: "traffic_report", groupName: report.GetLabGroupName(), namespace: report.GetNamespace(), name: report.GetSource(), value: report}
+		records[record.key()] = record
+	}
 	return records
 }
 
@@ -224,6 +235,8 @@ func appendMonitoringRecord(update *protobuf.MonitoringUpdate, record monitoring
 		update.Clients = append(update.Clients, value)
 	case *protobuf.LabGroupAccessPolicy:
 		update.Policies = append(update.Policies, value)
+	case *protobuf.TrafficReport:
+		update.Traffic = append(update.Traffic, value)
 	}
 }
 
@@ -237,6 +250,12 @@ func sortMonitoringRecords(update *protobuf.MonitoringUpdate) {
 	})
 	sort.Slice(update.Policies, func(i, j int) bool {
 		return update.Policies[i].GetLabGroupName()+"\x00"+update.Policies[i].GetNamespace() < update.Policies[j].GetLabGroupName()+"\x00"+update.Policies[j].GetNamespace()
+	})
+}
+
+func sortTraffic(update *protobuf.MonitoringUpdate) {
+	sort.Slice(update.Traffic, func(i, j int) bool {
+		return update.Traffic[i].GetLabGroupName()+"\x00"+update.Traffic[i].GetSource() < update.Traffic[j].GetLabGroupName()+"\x00"+update.Traffic[j].GetSource()
 	})
 }
 

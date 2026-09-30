@@ -27,6 +27,11 @@ var _ = Describe("LabGroup suspension", func() {
 		var dep appsv1.Deployment
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: namespace}, &dep)).To(Succeed())
 		Expect(dep.Spec.Template.Spec.Containers[0].Env).To(ContainElement(corev1.EnvVar{Name: "SUPPORT_EMAIL", Value: "help@example.org"}))
+		// Conntrack byte accounting is switched on by a privileged init container;
+		// the long-running VPN container itself stays unprivileged.
+		Expect(dep.Spec.Template.Spec.InitContainers).To(HaveLen(1))
+		Expect(*dep.Spec.Template.Spec.InitContainers[0].SecurityContext.Privileged).To(BeTrue())
+		Expect(dep.Spec.Template.Spec.Containers[0].SecurityContext.Privileged).To(BeNil())
 		r.SupportEmail = "new-help@example.org"
 		Expect(r.ensureVPNDeployment(ctx, namespace, false)).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: namespace}, &dep)).To(Succeed())
@@ -117,7 +122,7 @@ var _ = Describe("LabGroup suspension", func() {
 			DeferCleanup(func() { _ = k8sClient.Delete(ctx, dep) })
 		}
 
-		r := &LabGroupReconciler{Client: k8sClient, VPNBaseNetwork: "10.8.0.0/10"}
+		r := &LabGroupReconciler{Client: k8sClient, VPNBaseNetwork: "10.8.0.0/10", VPNImage: "test"}
 		Expect(r.ensureVPNDeployment(ctx, namespace, true)).To(Succeed())
 		Expect(r.ensureGatewayDeployment(ctx, namespace, true)).To(Succeed())
 
@@ -126,6 +131,12 @@ var _ = Describe("LabGroup suspension", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, &dep)).To(Succeed())
 			Expect(*dep.Spec.Replicas).To(Equal(int32(0)))
 		}
+
+		// A VPN deployment created before flow accounting gets the init container.
+		var vpn appsv1.Deployment
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: namespace}, &vpn)).To(Succeed())
+		Expect(vpn.Spec.Template.Spec.InitContainers).To(HaveLen(1))
+		Expect(vpn.Spec.Template.Spec.InitContainers[0].Name).To(Equal("conntrack-accounting"))
 	})
 
 	It("reports suspended while keeping group services running", func() {
