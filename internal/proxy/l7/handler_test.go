@@ -193,3 +193,35 @@ func TestHandler_TokenModesAndAuthorizer(t *testing.T) {
 		t.Fatalf("allowed participant: %d", code)
 	}
 }
+
+// A valid, unexpired token of a member who is no longer in the group policy is
+// refused in per-user mode: revocation is done by the policy, not by the token.
+func TestHandler_PerUserRefusesAValidTokenOfARemovedMember(t *testing.T) {
+	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
+	defer backend.Close()
+	rules := []laboratoryv1alpha1.LabGroupAccessRule{{
+		Action: laboratoryv1alpha1.LabGroupAccessAllow, ClientNames: []string{ClientName("member")}, LabNames: []string{"c-1"},
+	}}
+	authorize := func(group, subject, lab string) bool { return PolicyAllows(rules, ClientName(subject), lab, true) }
+	h := NewHandler(func() *rsa.PublicKey { return &priv.PublicKey }, "challenges.example.com", "challenge",
+		func(task, groupID string) (string, error) { return backend.URL, nil }).
+		WithTokenMode(ModePerUser).
+		WithAccounting(NewMeter("b", time.Now()), func(task, groupID string) (string, bool) { return "c-1", true }).
+		WithAuthorizer(authorize)
+	call := func(sub string) int {
+		tok := signToken(t, priv, jwtClaims{GroupID: "g1", RegisteredClaims: jwt.RegisteredClaims{Subject: sub, ExpiresAt: jwt.NewNumericDate(time.Now().Add(72 * time.Hour))}})
+		req := httptest.NewRequest("GET", "http://web-abc123.challenges.example.com/", nil)
+		req.Host = "web-abc123.challenges.example.com"
+		req.AddCookie(&http.Cookie{Name: "challenge", Value: tok})
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := call("member"); code != 200 {
+		t.Fatalf("member in the policy: %d", code)
+	}
+	if code := call("removed"); code != http.StatusForbidden {
+		t.Fatalf("removed member with a valid token must be refused: %d", code)
+	}
+}
