@@ -39,8 +39,8 @@ type LabReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 	// BaseDomain is the public DNS suffix under which task URLs are advertised,
-	// e.g. "challenges.cybericebox.com". An exposed device named "ssh" inside
-	// any lab is reachable as https://ssh.<BaseDomain>. Written to
+	// e.g. "challenges.cybericebox.com". An exposed device named "web" inside a
+	// lab is reachable as https://web-<labShortID>.<BaseDomain> (names.WebHostLabel). Written to
 	// Lab.Status.Access on Ready.
 	BaseDomain string
 	// ProxySourceCIDRs is an optional list of CIDRs added as ipBlock peers in the
@@ -754,7 +754,7 @@ func (r *LabReconciler) buildAccessEntries(lab *laboratoryv1alpha1.Lab) []labora
 				Device:   d.Name,
 				Port:     d.Exposure.Web.Port,
 				Protocol: proto,
-				URL:      fmt.Sprintf("https://%s.%s", d.Name, r.BaseDomain),
+				URL:      fmt.Sprintf("https://%s.%s", names.WebHostLabel(lab.Name, d.Name), r.BaseDomain),
 			},
 		)
 	}
@@ -1110,13 +1110,20 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 			continue
 		}
 		web := d.Exposure.Web
-		svcName := d.Name
+		// Unique per lab: two labs of one group may both expose a device "web".
+		// The labels let the proxy attribute a request to the lab and the device.
+		svcName := names.WebHostLabel(lab.Name, d.Name)
 
 		svc := &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{Name: svcName, Namespace: lab.Namespace},
 		}
 		_, err := controllerutil.CreateOrUpdate(
 			ctx, r.Client, svc, func() error {
+				if svc.Labels == nil {
+					svc.Labels = map[string]string{}
+				}
+				svc.Labels[names.LabelLab] = lab.Name
+				svc.Labels[names.LabelDevice] = d.Name
 				svc.Spec.Selector = map[string]string{
 					names.LabelLab: lab.Name,
 					"app":          d.Name,

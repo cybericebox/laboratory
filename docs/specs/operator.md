@@ -244,6 +244,10 @@ Namespace, Deployment, Service, NetworkPolicy, Secret). Не программи�
 - **Статус:** ✅ Implemented
 - **Реализация:** `lab_controller.go:ensureWebServices` (ClusterIP Service на `app=<device>`, NetworkPolicy с
   `ingress.from.namespaceSelector=proxy-system && podSelector=app:proxy`, `egress: []`).
+- **Имя Service и хост:** `<device>-<labShortID>` (`names.WebHostLabel`, `labShortID` = первые 6 hex sha256 от имени
+  Lab). Это же первый лейбл публичного хоста `https://<device>-<labShortID>.<BASE_DOMAIN>`. Два Lab одной группы с
+  устройством `web` больше не делят Service и хост. У Service есть лейблы `laboratory.cybericebox.com/lab` и
+  `.../device`, по ним прокси относит запрос к лаборатории (см. proxy.md, учёт обращений).
 - **Что считать выполненным:** для каждого Device с `exposure.web != nil` существует Service и NetworkPolicy; пакеты не
   от prox-pod-а отбрасываются; egress полностью запрещён.
 - **Заметки/gap:** spec §5 говорит о «второй ноге» (отдельный интерфейс) на под — здесь web-нога совпадает с дефолтным
