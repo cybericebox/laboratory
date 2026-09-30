@@ -8,6 +8,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -15,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -119,6 +121,11 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	if err := r.ensureDefaultDeny(ctx, ns); err != nil {
 		logger.Error(err, "ensure default-deny network policy")
+		return ctrl.Result{}, err
+	}
+
+	if err := r.ensureGroupDisruptionBudget(ctx, ns); err != nil {
+		logger.Error(err, "ensure pod disruption budget")
 		return ctrl.Result{}, err
 	}
 
@@ -696,6 +703,27 @@ func (r *LabGroupReconciler) ensureDefaultDeny(ctx context.Context, ns string) e
 			return nil
 		},
 	)
+	return err
+}
+
+// groupDisruptionBudgetName is the PodDisruptionBudget of a lab group namespace.
+const groupDisruptionBudgetName = "lab-group"
+
+// ensureGroupDisruptionBudget blocks voluntary evictions (node drains, the
+// autoscaler) of every pod in the group namespace: the VPN, the gateway and the
+// single-replica device pods all belong to running labs, so a drain must be an
+// explicit, force-deleting decision. One budget covers the whole namespace; a
+// pod under two budgets cannot be evicted at all, so nothing else may select
+// these pods.
+func (r *LabGroupReconciler) ensureGroupDisruptionBudget(ctx context.Context, ns string) error {
+	pdb := &policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Name: groupDisruptionBudgetName, Namespace: ns}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, pdb, func() error {
+		maxUnavailable := intstr.FromInt32(0)
+		pdb.Spec.Selector = &metav1.LabelSelector{}
+		pdb.Spec.MaxUnavailable = &maxUnavailable
+		pdb.Spec.MinAvailable = nil
+		return nil
+	})
 	return err
 }
 

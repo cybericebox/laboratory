@@ -272,6 +272,7 @@ func main() {
 		LabTolerations:   labTolerations,
 		NetConfigImage:   cfg.NetConfigImage,
 		ImagePullSecrets: cfg.ImagePullSecrets,
+		Defaults:         laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Device")
 		os.Exit(1)

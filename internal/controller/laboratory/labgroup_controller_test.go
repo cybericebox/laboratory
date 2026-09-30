@@ -7,6 +7,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -219,6 +220,26 @@ var _ = Describe(
 				// The namespace must exist in the cluster.
 				var ns corev1.Namespace
 				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: updated.Status.Namespace}, &ns)).To(Succeed())
+			},
+		)
+
+		It(
+			"guards every pod of the group with one PodDisruptionBudget", func() {
+				lg := &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: "pdb-labgroup"}}
+				Expect(k8sClient.Create(ctx, lg)).To(Succeed())
+				DeferCleanup(func() { _ = k8sClient.Delete(ctx, lg) })
+
+				Eventually(
+					func(g Gomega) {
+						var pdb policyv1.PodDisruptionBudget
+						g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: groupDisruptionBudgetName, Namespace: "pdb-labgroup"}, &pdb)).To(Succeed())
+						g.Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
+						g.Expect(pdb.Spec.MaxUnavailable.IntValue()).To(Equal(0))
+						g.Expect(pdb.Spec.Selector).NotTo(BeNil())
+						g.Expect(pdb.Spec.Selector.MatchLabels).To(BeEmpty())
+						g.Expect(pdb.Spec.Selector.MatchExpressions).To(BeEmpty())
+					}, timeout, interval,
+				).Should(Succeed())
 			},
 		)
 	},

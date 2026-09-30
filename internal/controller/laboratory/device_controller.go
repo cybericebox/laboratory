@@ -14,11 +14,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -44,6 +42,8 @@ type DeviceReconciler struct {
 	// ImagePullSecrets names registry Secrets that the LabGroup controller copied
 	// into the group namespace; device pods reference them.
 	ImagePullSecrets []string
+	// Defaults are the CPU and memory of a device container that declares none.
+	Defaults DeviceDefaults
 }
 
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices,verbs=get;list;watch;create;update;patch;delete
@@ -162,10 +162,10 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 		return ctrl.Result{}, err
 	}
 
-	// A device is a single-replica workload: protect it from voluntary disruption
-	// (node drains, autoscaler) so a running lab is not silently torn down — a
-	// drain must be an explicit, force-deleting decision.
-	if err := r.ensurePodDisruptionBudget(ctx, device); err != nil {
+	// Voluntary disruption is blocked by the lab group's PodDisruptionBudget; the
+	// per-device budget of older versions would overlap it (an eviction fails for
+	// a pod under two budgets), so it is removed.
+	if err := r.deleteLegacyPodDisruptionBudget(ctx, device); err != nil {
 		return ctrl.Result{}, err
 	}
 	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != replicas {
@@ -307,7 +307,7 @@ func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laborat
 				// has a DHCP interface). Isolation is enforced host-side by OVS
 				// flows, so these caps cannot break a pod out of its VNI.
 				SecurityContext: deviceSecurityContext(device),
-				Resources:       deviceResources(device),
+				Resources:       deviceResources(device, r.Defaults),
 				// Env vars come from a per-device Secret (<device>-env) the agent
 				// wrote write-only — referenced here, never read by the controller
 				// (the kubelet resolves envFrom at pod start). optional=true so a
@@ -362,70 +362,21 @@ func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laborat
 func ptrBool(b bool) *bool    { return &b }
 func ptrInt32(i int32) *int32 { return &i }
 
-// ensurePodDisruptionBudget creates a minAvailable=1 PDB guarding the device's
-// (single-replica) pod, so voluntary evictions cannot take the device down. It
-// is created once and owned by the Device; the selector matches the Deployment's
-// pods. Idempotent: a NotFound triggers a create, an existing PDB is left as-is.
-func (r *DeviceReconciler) ensurePodDisruptionBudget(ctx context.Context, device *laboratoryv1alpha1.Device) error {
-	var existing policyv1.PodDisruptionBudget
-	err := r.Get(ctx, types.NamespacedName{Name: device.Name, Namespace: device.Namespace}, &existing)
-	if err == nil {
+// deleteLegacyPodDisruptionBudget removes the per-device PodDisruptionBudget that
+// older versions created (same name as the device, owned by it). Idempotent.
+func (r *DeviceReconciler) deleteLegacyPodDisruptionBudget(ctx context.Context, device *laboratoryv1alpha1.Device) error {
+	var pdb policyv1.PodDisruptionBudget
+	err := r.Get(ctx, types.NamespacedName{Name: device.Name, Namespace: device.Namespace}, &pdb)
+	if errors.IsNotFound(err) {
 		return nil
 	}
-	if !errors.IsNotFound(err) {
+	if err != nil {
 		return err
 	}
-	minAvailable := intstr.FromInt32(1)
-	pdb := &policyv1.PodDisruptionBudget{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      device.Name,
-			Namespace: device.Namespace,
-			Labels: map[string]string{
-				names.LabelLab:    device.Spec.LabRef,
-				names.LabelDevice: device.Spec.Name,
-			},
-		},
-		Spec: policyv1.PodDisruptionBudgetSpec{
-			MinAvailable: &minAvailable,
-			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{
-				names.LabelLab:    device.Spec.LabRef,
-				names.LabelDevice: device.Spec.Name,
-			}},
-		},
+	if !metav1.IsControlledBy(&pdb, device) {
+		return nil
 	}
-	if err := controllerutil.SetControllerReference(device, pdb, r.Scheme); err != nil {
-		return err
-	}
-	return r.Create(ctx, pdb)
-}
-
-// deviceResources builds container resource requirements from the device's
-// optional Resources spec. Empty or unparseable quantity strings are skipped,
-// so a device with no (or partial) resources set is best-effort scheduled.
-func deviceResources(device *laboratoryv1alpha1.Device) corev1.ResourceRequirements {
-	var rr corev1.ResourceRequirements
-	r := device.Spec.Resources
-	if r == nil {
-		return rr
-	}
-	set := func(list *corev1.ResourceList, name corev1.ResourceName, val string) {
-		if val == "" {
-			return
-		}
-		q, err := resource.ParseQuantity(val)
-		if err != nil {
-			return
-		}
-		if *list == nil {
-			*list = corev1.ResourceList{}
-		}
-		(*list)[name] = q
-	}
-	set(&rr.Requests, corev1.ResourceCPU, r.CPURequest)
-	set(&rr.Requests, corev1.ResourceMemory, r.MemoryRequest)
-	set(&rr.Limits, corev1.ResourceCPU, r.CPULimit)
-	set(&rr.Limits, corev1.ResourceMemory, r.MemoryLimit)
-	return rr
+	return client.IgnoreNotFound(r.Delete(ctx, &pdb))
 }
 
 // ifaceNameRE matches a valid Linux interface name (IFNAMSIZ-bounded, no shell

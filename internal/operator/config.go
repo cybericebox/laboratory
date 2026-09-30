@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/mail"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/cybericebox/laboratory/pkg/config"
 )
@@ -61,6 +63,31 @@ type Config struct {
 	// SupportEmail is the contact address shown to participants on the VPN
 	// probe page. Passed to every per-LabGroup VPN pod as SUPPORT_EMAIL.
 	SupportEmail string `env:"SUPPORT_EMAIL,required"`
+
+	// Launch pacing: a new Lab is admitted from a queue so that a burst of labs
+	// does not overload the cluster.
+
+	// LaunchMaxInFlight is the largest number of labs provisioning at once. A lab
+	// counts from admission until it is Ready or LaunchWaveTimeout expires.
+	// 0 disables pacing: every lab is provisioned at once.
+	LaunchMaxInFlight int `env:"LAUNCH_MAX_IN_FLIGHT" envDefault:"20"`
+	// LaunchWaveTimeout is how long an admitted lab holds its slot if it is not Ready.
+	LaunchWaveTimeout time.Duration `env:"LAUNCH_WAVE_TIMEOUT" envDefault:"3m"`
+	// LaunchHeadroomPercent is the share of the schedulable CPU and memory that
+	// must stay free after a lab is admitted.
+	LaunchHeadroomPercent int `env:"LAUNCH_HEADROOM_PERCENT" envDefault:"10"`
+	// LaunchResourceCheck gates admission on free cluster CPU and memory.
+	LaunchResourceCheck bool `env:"LAUNCH_RESOURCE_CHECK" envDefault:"true"`
+	// LaunchPrepull pulls the images of a lab class onto the nodes before its first wave.
+	LaunchPrepull bool `env:"LAUNCH_PREPULL" envDefault:"true"`
+	// LaunchPrepullTimeout bounds the wait for the image prepull; admission goes on after it.
+	LaunchPrepullTimeout time.Duration `env:"LAUNCH_PREPULL_TIMEOUT" envDefault:"5m"`
+
+	// DeviceDefaultCPU and DeviceDefaultMemory are the requests and limits of a
+	// device container that declares neither (requests always equal limits, so
+	// the pod is Guaranteed). Empty leaves such a device without resources.
+	DeviceDefaultCPU    string `env:"DEVICE_DEFAULT_CPU" envDefault:"250m"`
+	DeviceDefaultMemory string `env:"DEVICE_DEFAULT_MEMORY" envDefault:"256Mi"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -70,6 +97,20 @@ func LoadConfig() (*Config, error) {
 	}
 	if address, err := mail.ParseAddress(cfg.SupportEmail); err != nil || address.Address != cfg.SupportEmail {
 		return nil, fmt.Errorf("SUPPORT_EMAIL %q is not a plain email address", cfg.SupportEmail)
+	}
+	if cfg.LaunchMaxInFlight < 0 {
+		return nil, fmt.Errorf("LAUNCH_MAX_IN_FLIGHT must not be negative")
+	}
+	if cfg.LaunchHeadroomPercent < 0 || cfg.LaunchHeadroomPercent >= 100 {
+		return nil, fmt.Errorf("LAUNCH_HEADROOM_PERCENT must be in [0,100)")
+	}
+	for name, v := range map[string]string{"DEVICE_DEFAULT_CPU": cfg.DeviceDefaultCPU, "DEVICE_DEFAULT_MEMORY": cfg.DeviceDefaultMemory} {
+		if v == "" {
+			continue
+		}
+		if _, err := resource.ParseQuantity(v); err != nil {
+			return nil, fmt.Errorf("%s %q: %w", name, v, err)
+		}
 	}
 	return cfg, nil
 }

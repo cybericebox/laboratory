@@ -29,6 +29,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -79,7 +81,7 @@ var _ = Describe(
 		})
 
 		It(
-			"creates a Deployment with lab co-location affinity and a PDB", func() {
+			"creates a Guaranteed Deployment with lab co-location affinity and drops the legacy PDB", func() {
 				dev := &laboratoryv1alpha1.Device{
 					ObjectMeta: metav1.ObjectMeta{Name: "lab1-web", Namespace: "default"},
 					Spec: laboratoryv1alpha1.DeviceSpec{
@@ -92,7 +94,7 @@ var _ = Describe(
 				Expect(k8sClient.Create(ctx, dev)).To(Succeed())
 				DeferCleanup(func() { _ = k8sClient.Delete(ctx, dev) })
 
-				r := &DeviceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+				r := &DeviceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Defaults: DeviceDefaults{CPU: "250m", Memory: "256Mi"}}
 				_, err := r.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{Name: "lab1-web", Namespace: "default"},
 				})
@@ -109,16 +111,31 @@ var _ = Describe(
 				Expect(terms[0].PodAffinityTerm.TopologyKey).To(Equal(names.TopologyKeyHostname))
 				Expect(terms[0].PodAffinityTerm.LabelSelector.MatchLabels).To(HaveKeyWithValue(names.LabelLab, "lab1"))
 
-				// Reconcile again so the PDB is ensured (the deployment now exists).
+				// The container is Guaranteed: requests equal limits, defaults applied.
+				res := dep.Spec.Template.Spec.Containers[0].Resources
+				Expect(res.Requests).To(Equal(res.Limits))
+				Expect(res.Requests.Cpu().String()).To(Equal("250m"))
+				Expect(res.Requests.Memory().String()).To(Equal("256Mi"))
+
+				// A per-device budget of an older version is removed: the group budget
+				// covers the pod, and a pod under two budgets cannot be evicted.
+				var current laboratoryv1alpha1.Device
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "lab1-web", Namespace: "default"}, &current)).To(Succeed())
+				legacy := &policyv1.PodDisruptionBudget{
+					ObjectMeta: metav1.ObjectMeta{Name: "lab1-web", Namespace: "default"},
+					Spec: policyv1.PodDisruptionBudgetSpec{
+						MinAvailable: ptrIntstr(1),
+						Selector:     &metav1.LabelSelector{MatchLabels: map[string]string{names.LabelDevice: "web"}},
+					},
+				}
+				Expect(controllerutil.SetControllerReference(&current, legacy, k8sClient.Scheme())).To(Succeed())
+				Expect(k8sClient.Create(ctx, legacy)).To(Succeed())
 				_, err = r.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{Name: "lab1-web", Namespace: "default"},
 				})
 				Expect(err).NotTo(HaveOccurred())
-				var pdb policyv1.PodDisruptionBudget
-				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "lab1-web", Namespace: "default"}, &pdb)).To(Succeed())
-				DeferCleanup(func() { _ = k8sClient.Delete(ctx, &pdb) })
-				Expect(pdb.Spec.MinAvailable.IntValue()).To(Equal(1))
-				Expect(pdb.Spec.Selector.MatchLabels).To(HaveKeyWithValue(names.LabelDevice, "web"))
+				err = k8sClient.Get(ctx, types.NamespacedName{Name: "lab1-web", Namespace: "default"}, &policyv1.PodDisruptionBudget{})
+				Expect(errors.IsNotFound(err)).To(BeTrue(), "legacy per-device PDB must be deleted, got %v", err)
 			},
 		)
 	},
@@ -261,3 +278,8 @@ var _ = Describe(
 		)
 	},
 )
+
+func ptrIntstr(i int32) *intstr.IntOrString {
+	v := intstr.FromInt32(i)
+	return &v
+}

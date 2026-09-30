@@ -37,3 +37,32 @@ func TestLoadConfigImagePullSecrets(t *testing.T) {
 		t.Fatalf("parsed: %v %v", cfg, err)
 	}
 }
+
+func TestLoadConfigLaunchDefaultsAndValidation(t *testing.T) {
+	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
+	t.Setenv("BASE_DOMAIN", "labs.example.com")
+	t.Setenv("SUPPORT_EMAIL", "support@example.com")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LaunchMaxInFlight != 20 || cfg.LaunchWaveTimeout.String() != "3m0s" || cfg.LaunchHeadroomPercent != 10 ||
+		!cfg.LaunchResourceCheck || !cfg.LaunchPrepull || cfg.LaunchPrepullTimeout.String() != "5m0s" ||
+		cfg.DeviceDefaultCPU != "250m" || cfg.DeviceDefaultMemory != "256Mi" {
+		t.Fatalf("defaults: %+v", cfg)
+	}
+
+	for name, kv := range map[string][2]string{
+		"negative in flight": {"LAUNCH_MAX_IN_FLIGHT", "-1"},
+		"headroom 100":       {"LAUNCH_HEADROOM_PERCENT", "100"},
+		"bad cpu default":    {"DEVICE_DEFAULT_CPU", "lots"},
+		"bad wave timeout":   {"LAUNCH_WAVE_TIMEOUT", "soon"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(kv[0], kv[1])
+			if _, err := LoadConfig(); err == nil {
+				t.Fatalf("%s=%s must be refused", kv[0], kv[1])
+			}
+		})
+	}
+}
