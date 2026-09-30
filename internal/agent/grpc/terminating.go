@@ -80,8 +80,7 @@ func apiErrorToStatus(err error) error {
 	if _, ok := status.FromError(err); ok {
 		return err
 	}
-	var apiErr apierrors.APIStatus
-	if !errors.As(err, &apiErr) {
+	if _, ok := errors.AsType[*apierrors.StatusError](err); !ok {
 		return err
 	}
 	code := codes.Unknown
