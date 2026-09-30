@@ -1,6 +1,8 @@
 package grpc
 
 import (
+	"context"
+
 	versioned "github.com/cybericebox/laboratory/clientset/client/versioned"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 	"k8s.io/client-go/kubernetes"
@@ -30,4 +32,10 @@ func NewHandler(cs versioned.Interface, k8s kubernetes.Interface, metrics metric
 		id = agentID[0]
 	}
 	return &Handler{cs: cs, k8s: k8s, metrics: metrics, agentID: id}
+}
+
+// Ping answers the backend's connection health probe (mTLS and CN allowlist
+// have already been checked by the server interceptors).
+func (h *Handler) Ping(context.Context, *protobuf.Empty) (*protobuf.Empty, error) {
+	return &protobuf.Empty{}, nil
 }
