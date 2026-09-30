@@ -308,8 +308,16 @@ registry:
   # images and references to registries not listed below are pulled directly.
   cache:
     enabled: false
-    # Cached content not pulled for this long is deleted (zot retention, then GC).
-    maxAge: 720h
+    # A cached image nobody pulled for this long is deleted (zot retention, then GC); an
+    # image in use is never deleted. It is simply fetched again on the next pull.
+    unusedTTL: 48h
+    # Image tags are pinned to digests when a lab is created with the cache on: the
+    # operator asks the upstream registry (with the pull secrets, not through the cache)
+    # for each tag once and the lab's pods pull REG/repo@sha256:..., so a lab, and the
+    # labs created in the same wave, run one image even if an upstream tag moves. A
+    # resolved digest is remembered for pinTTL; an image that cannot be resolved is
+    # pulled by its tag and named in Lab.status.imageWarning.
+    pinTTL: 30m
     # Upstream registries to cache. docker.io, ghcr.io, quay.io and registry.k8s.io are
     # built in; others go into extraRegistries.
     registries:

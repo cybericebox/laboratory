@@ -66,3 +66,20 @@ func TestRepoOf(t *testing.T) {
 		}
 	}
 }
+
+func TestRewritePinned(t *testing.T) {
+	r := Rewriter{Prefix: "localhost:5035", Registries: DefaultRegistries}
+	dg := "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	if got := r.RewritePinned("nginx:1.25", dg); got != "localhost:5035/docker.io/library/nginx@"+dg {
+		t.Fatal(got)
+	}
+	if got := r.RewritePinned("ghcr.io/o/app:v1", dg); got != "localhost:5035/ghcr.io/o/app@"+dg {
+		t.Fatal(got)
+	}
+	if got := r.RewritePinned("registry.example.com/app:v1", dg); got != "registry.example.com/app:v1" {
+		t.Fatalf("a registry the cache does not serve is never pinned or rewritten: %s", got)
+	}
+	if got := r.RewritePinned("nginx:1.25", ""); got != "localhost:5035/docker.io/library/nginx:1.25" {
+		t.Fatalf("no digest, plain rewrite: %s", got)
+	}
+}

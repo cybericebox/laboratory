@@ -65,6 +65,12 @@ type LabReconciler struct {
 	// Mirror rewrites image references for the image cache; the zero value
 	// (cache off) rewrites nothing. The Lab records the decision once.
 	Mirror imagecache.Rewriter
+	// Resolver pins image tags to digests for a lab created with the image
+	// cache on; nil pins nothing.
+	Resolver imagecache.Resolver
+	// NetConfigImage is the image of the device netconfig init-container, pinned
+	// together with the device images.
+	NetConfigImage string
 }
 
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
@@ -454,6 +460,7 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 				Resources:      tmpl.Resources,
 				State:          r.deviceStateSpec(lab, tmpl.Type),
 				ImageMirror:    r.deviceMirror(lab, tmpl.Type),
+				ImageDigests:   r.deviceDigests(lab, tmpl),
 			},
 		}
 		if err := controllerutil.SetOwnerReference(lab, d, r.Scheme); err != nil {

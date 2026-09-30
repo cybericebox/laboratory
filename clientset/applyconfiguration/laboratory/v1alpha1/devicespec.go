@@ -48,6 +48,13 @@ type DeviceSpecApplyConfiguration struct {
 	// <prefix>/REG/repo:tag. Set once when the Device is materialised, only for
 	// labs created while the image cache is on; empty pulls Image directly.
 	ImageMirror *string `json:"imageMirror,omitempty"`
+	// ImageDigests pins the images of the device (its image and the netconfig
+	// init-container image) to the digests their tags had when the lab was
+	// created, keyed by the image as written. A cached pull uses the digest, so
+	// every device of the lab, and of the labs created in the same wave, runs the
+	// same image even if an upstream tag moves. An image that could not be
+	// resolved is absent and pulled by its tag.
+	ImageDigests map[string]string `json:"imageDigests,omitempty"`
 }
 
 // DeviceSpecApplyConfiguration constructs a declarative configuration of the DeviceSpec type for use with
@@ -138,5 +145,19 @@ func (b *DeviceSpecApplyConfiguration) WithState(value *DeviceStateSpecApplyConf
 // If called multiple times, the ImageMirror field is set to the value of the last call.
 func (b *DeviceSpecApplyConfiguration) WithImageMirror(value string) *DeviceSpecApplyConfiguration {
 	b.ImageMirror = &value
+	return b
+}
+
+// WithImageDigests puts the entries into the ImageDigests field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, the entries provided by each call will be put on the ImageDigests field,
+// overwriting an existing map entries in ImageDigests field with the same key.
+func (b *DeviceSpecApplyConfiguration) WithImageDigests(entries map[string]string) *DeviceSpecApplyConfiguration {
+	if b.ImageDigests == nil && len(entries) > 0 {
+		b.ImageDigests = make(map[string]string, len(entries))
+	}
+	for k, v := range entries {
+		b.ImageDigests[k] = v
+	}
 	return b
 }

@@ -2,8 +2,11 @@ package laboratory
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -47,6 +50,9 @@ func (r *LabReconciler) ensureModes(ctx context.Context, lab *laboratoryv1alpha1
 	}
 	if lab.Status.ImageCache == nil {
 		lab.Status.ImageCache = &cache
+		if cache {
+			r.pinImages(ctx, lab)
+		}
 	}
 	if err := r.Status().Update(ctx, lab); err != nil {
 		return false, err
@@ -118,4 +124,67 @@ func throttleStateInfo(old, cur []laboratoryv1alpha1.DeviceRef) (throttled bool)
 		}
 	}
 	return throttled
+}
+
+// pinImages resolves the image tags of the lab's container devices, and the
+// netconfig image, to digests once, at creation, and records them in the Lab
+// status: the whole lab pulls exactly that content. An image that cannot be
+// resolved is left to its tag and named in Status.ImageWarning.
+func (r *LabReconciler) pinImages(ctx context.Context, lab *laboratoryv1alpha1.Lab) {
+	if r.Resolver == nil {
+		return
+	}
+	var refs []string
+	seen := map[string]bool{}
+	add := func(ref string) {
+		if ref != "" && !seen[ref] && r.Mirror.Rewrite(ref) != ref {
+			seen[ref] = true
+			refs = append(refs, ref)
+		}
+	}
+	for _, d := range lab.Spec.Devices {
+		if d.Type == laboratoryv1alpha1.DeviceTypeContainer {
+			add(d.Image)
+		}
+	}
+	if len(refs) > 0 {
+		add(r.NetConfigImage)
+	}
+	digests := map[string]string{}
+	var failed []string
+	for _, ref := range refs {
+		d, err := r.Resolver.Resolve(ctx, ref)
+		if err != nil {
+			failed = append(failed, fmt.Sprintf("%s (%v)", ref, err))
+			continue
+		}
+		digests[ref] = d
+	}
+	if len(digests) > 0 {
+		lab.Status.ImageDigests = digests
+	}
+	if len(failed) > 0 {
+		lab.Status.ImageWarning = "image tags not pinned to a digest, pulled by tag: " + strings.Join(failed, "; ")
+		if r.Recorder != nil {
+			r.Recorder.Event(lab, corev1.EventTypeWarning, "ImageNotPinned", lab.Status.ImageWarning)
+		}
+	}
+}
+
+// deviceDigests is the pinned digests of a new Device's images: its own image
+// and the netconfig image.
+func (r *LabReconciler) deviceDigests(lab *laboratoryv1alpha1.Lab, tmpl laboratoryv1alpha1.DeviceTemplate) map[string]string {
+	if r.deviceMirror(lab, tmpl.Type) == "" {
+		return nil
+	}
+	out := map[string]string{}
+	for _, ref := range []string{tmpl.Image, r.NetConfigImage} {
+		if d, ok := lab.Status.ImageDigests[ref]; ok {
+			out[ref] = d
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

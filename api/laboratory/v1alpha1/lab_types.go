@@ -94,6 +94,15 @@ type LabStatus struct {
 	// image cache, decided once on the first reconcile like StatePersistence.
 	// +optional
 	ImageCache *bool `json:"imageCache,omitempty"`
+	// ImageDigests are the digests the image tags of the lab's container devices
+	// (and the netconfig image) were pinned to when the lab was created with the
+	// image cache on, keyed by the image as written in the spec.
+	// +optional
+	ImageDigests map[string]string `json:"imageDigests,omitempty"`
+	// ImageWarning lists the images that could not be pinned and are pulled by
+	// their tag; empty when all were.
+	// +optional
+	ImageWarning string `json:"imageWarning,omitempty"`
 	// Conditions surfaces reconciler progress/blocking reasons
 	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
 	// +optional

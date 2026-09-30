@@ -20,8 +20,8 @@ prefix off and fetches <repo> from the registry's URL on the first pull.
 {{- $globs = append $globs (printf "%s/**" $u.name) }}
 {{- end }}
 {{- $_ := set $cfg "extensions" (dict "sync" (dict "enable" true "credentialsFile" "/etc/zot-sync/credentials.json" "registries" $entries)) }}
-{{- /* Cached content not pulled for maxAge is deleted; snapshot repositories (lab/**) match no policy and are kept. */}}
-{{- $_ := set $storage "retention" (dict "dryRun" false "delay" "24h" "policies" (list (dict "repositories" $globs "deleteReferrers" false "deleteUntagged" true "keepTags" (list (dict "patterns" (list ".*") "pulledWithin" $cache.maxAge))))) }}
+{{- /* A cached image not pulled for unusedTTL is deleted (one in use is pulled, so kept); snapshot repositories (lab/**) match no policy and are kept. */}}
+{{- $_ := set $storage "retention" (dict "dryRun" false "delay" "24h" "policies" (list (dict "repositories" $globs "deleteReferrers" false "deleteUntagged" true "keepTags" (list (dict "patterns" (list ".*") "pulledWithin" $cache.unusedTTL))))) }}
 {{- end }}
 apiVersion: v1
 kind: ConfigMap

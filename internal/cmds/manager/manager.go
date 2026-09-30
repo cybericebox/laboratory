@@ -43,6 +43,7 @@ import (
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	laboratorycontroller "github.com/cybericebox/laboratory/internal/controller/laboratory"
+	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/operator"
 	// +kubebuilder:scaffold:imports
@@ -229,6 +230,16 @@ func Run() {
 
 	// Image cache: lab images of labs created while it is on are pulled through it.
 	mirror := cfg.Cache.Rewriter()
+	var resolver imagecache.Resolver
+
+	if cfg.Cache.Enabled {
+		// Tags are pinned to digests asked of the upstream registries directly, with
+		// the operator's pull secrets.
+		resolver = &imagecache.RegistryResolver{
+			Keychain: &laboratorycontroller.PullKeychain{Reader: mgr.GetAPIReader(), Namespace: names.SystemNamespace, Names: cfg.ImagePullSecrets},
+			TTL:      cfg.Cache.PinTTL,
+		}
+	}
 
 	statePolicy, stateRegistry, err := laboratorycontroller.SetupState(cfg.State)
 	if err != nil {
@@ -244,8 +255,10 @@ func Run() {
 		VPNServicePort:    cfg.VPNServicePort,
 		VPNBaseNetwork:    cfg.VPNBaseNetwork,
 		InetBaseNetwork:   cfg.InetBaseNetwork,
-		VPNImage:          mirror.Rewrite(cfg.VPNImage),
-		GatewayImage:      mirror.Rewrite(cfg.GatewayImage),
+		VPNImage:          cfg.VPNImage,
+		Mirror:            mirror,
+		Resolver:          resolver,
+		GatewayImage:      cfg.GatewayImage,
 		SupportEmail:      cfg.SupportEmail,
 		LabNodeSelector:   labNodeSelector,
 		LabTolerations:    labTolerations,
@@ -280,6 +293,8 @@ func Run() {
 		LaunchGate:       cfg.LaunchEnabled,
 		State:            statePolicy,
 		Mirror:           mirror,
+		Resolver:         resolver,
+		NetConfigImage:   cfg.NetConfigImage,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Lab")
 		os.Exit(1)

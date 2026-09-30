@@ -34,6 +34,14 @@ type DeviceSpec struct {
 	// labs created while the image cache is on; empty pulls Image directly.
 	// +optional
 	ImageMirror string `json:"imageMirror,omitempty"`
+	// ImageDigests pins the images of the device (its image and the netconfig
+	// init-container image) to the digests their tags had when the lab was
+	// created, keyed by the image as written. A cached pull uses the digest, so
+	// every device of the lab, and of the labs created in the same wave, runs the
+	// same image even if an upstream tag moves. An image that could not be
+	// resolved is absent and pulled by its tag.
+	// +optional
+	ImageDigests map[string]string `json:"imageDigests,omitempty"`
 	// Env values are NOT carried on the CR — they live only in a per-device
 	// Secret (<device>-env) the agent writes, referenced by the pod via envFrom.
 }

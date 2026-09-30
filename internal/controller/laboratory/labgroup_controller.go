@@ -27,6 +27,7 @@ import (
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
@@ -55,6 +56,11 @@ type LabGroupReconciler struct {
 	VPNImage string
 	// GatewayImage is the container image for gateway pods.
 	GatewayImage string
+	// Mirror rewrites the VPN and gateway images for the image cache when their
+	// pods are created; the zero value (cache off) rewrites nothing.
+	Mirror imagecache.Rewriter
+	// Resolver pins those images to a digest, once, at creation; nil pins nothing.
+	Resolver imagecache.Resolver
 	// SupportEmail is the contact address shown on the VPN probe page.
 	SupportEmail string
 	// LabNodeSelector is applied to VPN and gateway pod specs.
@@ -456,7 +462,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 		changed := existing.Spec.Replicas == nil || *existing.Spec.Replicas != replicas
 		existing.Spec.Replicas = ptrInt32(replicas)
 		if len(existing.Spec.Template.Spec.InitContainers) == 0 {
-			existing.Spec.Template.Spec.InitContainers = []corev1.Container{r.vpnAccountingInitContainer()}
+			existing.Spec.Template.Spec.InitContainers = []corev1.Container{r.vpnAccountingInitContainer(r.VPNImage)}
 			changed = true
 		}
 		if len(existing.Spec.Template.Spec.Containers) > 0 {
@@ -484,6 +490,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 	} else if !errors.IsNotFound(err) {
 		return err
 	}
+	vpnImage := r.cachedImage(ctx, r.VPNImage)
 	clientSubnet, err := netutil.SubnetForIndex(r.VPNBaseNetwork, labSubnetPrefixLen, 0)
 	if err != nil {
 		return fmt.Errorf("derive VPN client subnet: %w", err)
@@ -503,10 +510,10 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 					ImagePullSecrets:   pullSecretRefs(r.ImagePullSecrets),
 					NodeSelector:       r.LabNodeSelector,
 					Tolerations:        r.LabTolerations,
-					InitContainers:     []corev1.Container{r.vpnAccountingInitContainer()},
+					InitContainers:     []corev1.Container{r.vpnAccountingInitContainer(vpnImage)},
 					Containers: []corev1.Container{{
 						Name:            "vpn",
-						Image:           r.VPNImage,
+						Image:           vpnImage,
 						Command:         []string{"/lab", "vpn"},
 						ImagePullPolicy: corev1.PullIfNotPresent,
 						SecurityContext: &corev1.SecurityContext{
@@ -552,11 +559,11 @@ echo 1 > /proc/sys/net/netfilter/nf_conntrack_acct || echo "conntrack acct unava
 echo 1 > /proc/sys/net/netfilter/nf_conntrack_timestamp || echo "conntrack timestamp unavailable"
 exit 0`
 
-func (r *LabGroupReconciler) vpnAccountingInitContainer() corev1.Container {
+func (r *LabGroupReconciler) vpnAccountingInitContainer(image string) corev1.Container {
 	privileged := true
 	return corev1.Container{
 		Name:            "conntrack-accounting",
-		Image:           r.VPNImage,
+		Image:           image,
 		Command:         []string{"/bin/sh", "-c", vpnAccountingScript},
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		SecurityContext: &corev1.SecurityContext{Privileged: &privileged},
@@ -582,6 +589,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 	} else if !errors.IsNotFound(err) {
 		return err
 	}
+	gatewayImage := r.cachedImage(ctx, r.GatewayImage)
 	d := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: ns},
 		Spec: appsv1.DeploymentSpec{
@@ -599,7 +607,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 					Tolerations:        r.LabTolerations,
 					Containers: []corev1.Container{{
 						Name:            "gateway",
-						Image:           r.GatewayImage,
+						Image:           gatewayImage,
 						Command:         []string{"/lab", "gateway"},
 						ImagePullPolicy: corev1.PullIfNotPresent,
 						SecurityContext: &corev1.SecurityContext{
@@ -910,4 +918,23 @@ func (r *LabGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&laboratoryv1alpha1.LabGroup{}).
 		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(vpnPodMap)).
 		Complete(r)
+}
+
+// cachedImage is the reference a new VPN or gateway pod of the group pulls:
+// through the image cache, pinned to the digest of the tag at this moment. When
+// the digest cannot be resolved the tag is used and the failure is logged.
+func (r *LabGroupReconciler) cachedImage(ctx context.Context, image string) string {
+	if r.Mirror.Prefix == "" || r.Mirror.Rewrite(image) == image {
+		return image
+	}
+	digest := ""
+	if r.Resolver != nil {
+		d, err := r.Resolver.Resolve(ctx, image)
+		if err != nil {
+			log.FromContext(ctx).Info("image not pinned to a digest, pulled by tag", "image", image, "err", err.Error())
+		} else {
+			digest = d
+		}
+	}
+	return r.Mirror.RewritePinned(image, digest)
 }

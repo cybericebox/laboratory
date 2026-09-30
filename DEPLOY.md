@@ -436,7 +436,7 @@ sync), and every other node pulls it from zot, inside the cluster. It saves upst
 registry:
   cache:
     enabled: true
-    maxAge: 720h            # cached content not pulled for this long is deleted
+    unusedTTL: 48h          # a cached image nobody pulled for this long is deleted
     registries: [docker.io, ghcr.io, quay.io, registry.k8s.io]   # built in
     extraRegistries: []     # - name: registry.example.com
                             #   url: https://registry.example.com
@@ -465,8 +465,19 @@ compressed on amd64 and arm64; the cache needs its sync extension), both can be 
   `helm template` or GitOps renderers; there, create your own Secret with the key `credentials.json`
   (`{"ghcr.io": {"username": "...", "password": "..."}}`; Docker Hub is `registry-1.docker.io`) and set
   `registry.cache.credentialsSecret`. Restart the registry pod after the credentials change.
-- **Retention.** zot's retention policy deletes cached tags not pulled for `registry.cache.maxAge` (default 30 days),
-  and its garbage collection frees the blobs. Snapshot repositories (`lab/...`) are never touched by it.
+- **Digest pinning.** A tag can move upstream during an event. When a lab is created with the cache on, the operator
+  asks the upstream registry (directly, with the pull secrets; not through zot, which would answer from its store)
+  for the digest of each device image and of the netconfig image, once, and the lab's pods pull
+  `localhost:<port>/REG/repo@sha256:...`. The digests are recorded in `Lab.status.imageDigests` and copied to
+  `Device.spec.imageDigests`; the prepull uses them. A resolved digest is remembered for `registry.cache.pinTTL`
+  (default 30m), so labs created in the same wave get the same image. The VPN and gateway images of a group are
+  pinned the same way when the group's pods are created. An image whose digest cannot be resolved is pulled by its
+  tag and named in `Lab.status.imageWarning` (and a Warning event on the Lab). The operator needs HTTPS egress to the
+  upstream registries for this (the chart's operator network policy allows it when the cache is on).
+- **Retention.** The cache is not an archive. zot's retention policy deletes a cached image that nobody pulled for
+  `registry.cache.unusedTTL` (default 48h, counted from the last pull, so an image in use is never deleted), and its
+  garbage collection frees the blobs; the image is simply fetched again on the next pull. Snapshot repositories
+  (`lab/...`) are never touched by it.
 - **Size.** The registry volume (`registry.size`) holds the cached images as well: plan for the images of the labs you
   run, next to the snapshots.
 

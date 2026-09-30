@@ -367,7 +367,8 @@ func (r *DeviceReconciler) deviceImage(device *laboratoryv1alpha1.Device, image 
 	if device.Spec.ImageMirror == "" {
 		return image
 	}
-	return imagecache.Rewriter{Prefix: device.Spec.ImageMirror, Registries: r.MirrorRegistries}.Rewrite(image)
+	rw := imagecache.Rewriter{Prefix: device.Spec.ImageMirror, Registries: r.MirrorRegistries}
+	return rw.RewritePinned(image, device.Spec.ImageDigests[image])
 }
 
 func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laboratoryv1alpha1.Device, replicas int32) error {

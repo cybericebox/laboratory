@@ -480,6 +480,19 @@ spec:
                   ImageCache records whether this lab pulls its images through the platform
                   image cache, decided once on the first reconcile like StatePersistence.
                 type: boolean
+              imageDigests:
+                additionalProperties:
+                  type: string
+                description: |-
+                  ImageDigests are the digests the image tags of the lab's container devices
+                  (and the netconfig image) were pinned to when the lab was created with the
+                  image cache on, keyed by the image as written in the spec.
+                type: object
+              imageWarning:
+                description: |-
+                  ImageWarning lists the images that could not be pinned and are pulled by
+                  their tag; empty when all were.
+                type: string
               internet:
                 description: LabNetworkStatus reports the allocated CIDR for a network
                   segment.

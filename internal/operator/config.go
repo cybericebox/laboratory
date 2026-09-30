@@ -112,7 +112,10 @@ type CacheConfig struct {
 	Prefix string `env:"IMAGE_CACHE_PREFIX" envDefault:"localhost:5035"`
 	// Registries are the upstream registries the cache serves; references to any
 	// other registry are pulled directly.
-	Registries []string `env:"IMAGE_CACHE_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
+	// PinTTL is how long a resolved image digest is remembered, so labs created in
+	// the same wave run the same image even when the upstream tag moves.
+	PinTTL     time.Duration `env:"IMAGE_CACHE_PIN_TTL" envDefault:"30m"`
+	Registries []string      `env:"IMAGE_CACHE_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
 }
 
 // Rewriter returns the image reference rewriter; the zero one (no rewrite)

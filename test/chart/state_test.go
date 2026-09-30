@@ -283,7 +283,7 @@ func TestImageCacheAloneDeploysRegistryWithoutStatePersistence(t *testing.T) {
 		t.Errorf("missing upstreams %v", want)
 	}
 	pol := zc.Storage.Retention.Policies[0]
-	if pol.KeepTags[0].PulledWithin != "720h" || len(pol.Repositories) != 4 || pol.Repositories[0] != "docker.io/**" {
+	if pol.KeepTags[0].PulledWithin != "48h" || len(pol.Repositories) != 4 || pol.Repositories[0] != "docker.io/**" {
 		t.Errorf("retention %+v", pol)
 	}
 
@@ -301,7 +301,7 @@ func TestImageCacheAloneDeploysRegistryWithoutStatePersistence(t *testing.T) {
 
 	var opCfg corev1.ConfigMap
 	render(t, "templates/operator/configmap.yaml", &opCfg, cache...)
-	if opCfg.Data["IMAGE_CACHE_ENABLED"] != "true" || opCfg.Data["IMAGE_CACHE_PREFIX"] != "localhost:5035" ||
+	if opCfg.Data["IMAGE_CACHE_PIN_TTL"] != "30m" || opCfg.Data["IMAGE_CACHE_ENABLED"] != "true" || opCfg.Data["IMAGE_CACHE_PREFIX"] != "localhost:5035" ||
 		opCfg.Data["IMAGE_CACHE_REGISTRIES"] != "docker.io,ghcr.io,quay.io,registry.k8s.io" {
 		t.Errorf("operator config %v", opCfg.Data)
 	}
@@ -331,12 +331,18 @@ func TestImageCacheCustomRegistriesAndCredentialsSecret(t *testing.T) {
 		"--set", "registry.cache.extraRegistries[0].name=registry.example.com",
 		"--set", "registry.cache.extraRegistries[0].url=https://registry.example.com",
 		"--set", "registry.cache.credentialsSecret=my-sync-creds",
-		"--set", "registry.cache.maxAge=240h",
+		"--set", "registry.cache.unusedTTL=12h",
+		"--set", "registry.cache.pinTTL=5m",
 	}
 	var opCfg corev1.ConfigMap
 	render(t, "templates/operator/configmap.yaml", &opCfg, extra...)
-	if opCfg.Data["IMAGE_CACHE_REGISTRIES"] != "docker.io,registry.example.com" {
-		t.Errorf("registries %q", opCfg.Data["IMAGE_CACHE_REGISTRIES"])
+	if opCfg.Data["IMAGE_CACHE_REGISTRIES"] != "docker.io,registry.example.com" || opCfg.Data["IMAGE_CACHE_PIN_TTL"] != "5m" {
+		t.Errorf("registries %q pin ttl %q", opCfg.Data["IMAGE_CACHE_REGISTRIES"], opCfg.Data["IMAGE_CACHE_PIN_TTL"])
+	}
+	var zotCfg corev1.ConfigMap
+	render(t, "templates/registry/configmap.yaml", &zotCfg, extra...)
+	if !strings.Contains(zotCfg.Data["config.json"], `"pulledWithin": "12h"`) || strings.Contains(zotCfg.Data["config.json"], "maxAge") {
+		t.Errorf("unusedTTL must drive the retention, with no hard age cap:\n%s", zotCfg.Data["config.json"])
 	}
 	var dep appsv1.Deployment
 	render(t, "templates/registry/deployment.yaml", &dep, extra...)
