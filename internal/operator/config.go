@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/mail"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/cybericebox/laboratory/pkg/config"
 )
@@ -61,6 +63,44 @@ type Config struct {
 	// SupportEmail is the contact address shown to participants on the VPN
 	// probe page. Passed to every per-LabGroup VPN pod as SUPPORT_EMAIL.
 	SupportEmail string `env:"SUPPORT_EMAIL,required"`
+
+	// State is the device state persistence configuration (snapshot registry
+	// and snapshot policy). Every field is optional; Enabled=false is today's
+	// behaviour.
+	State StateConfig
+}
+
+// StateConfig configures device state persistence: devices of new labs run as
+// bare Pods whose writable layer the node-agent snapshots into the platform
+// snapshot registry.
+type StateConfig struct {
+	Enabled bool `env:"STATE_PERSISTENCE_ENABLED" envDefault:"false"`
+	// RegistryAddr is host:port of the snapshot registry Service, used by the
+	// operator to drop snapshots (device reset, retention).
+	RegistryAddr     string `env:"STATE_REGISTRY_ADDR"`
+	RegistryUser     string `env:"STATE_REGISTRY_USER"`
+	RegistryPassword string `env:"STATE_REGISTRY_PASSWORD"`
+	// Debounce is how long a device's writable layer must stay quiet before a snapshot.
+	Debounce time.Duration `env:"STATE_DEBOUNCE" envDefault:"5s"`
+	// ExcludePaths are never snapshotted (comma-separated absolute paths).
+	ExcludePaths []string `env:"STATE_EXCLUDE_PATHS" envSeparator:"," envDefault:"/tmp,/var/tmp,/run"`
+	// MaxSnapshotSize is the quota per device, a Kubernetes quantity ("512Mi").
+	MaxSnapshotSize string `env:"STATE_MAX_SNAPSHOT_SIZE" envDefault:"512Mi"`
+	// MaxLayers is the snapshot layer count after which the chain is squashed.
+	MaxLayers int32 `env:"STATE_MAX_LAYERS" envDefault:"10"`
+	// Retention is how long the snapshots of a deleted lab are kept.
+	Retention time.Duration `env:"STATE_RETENTION" envDefault:"168h"`
+	// RetentionInterval is how often the retention sweep runs.
+	RetentionInterval time.Duration `env:"STATE_RETENTION_INTERVAL" envDefault:"10m"`
+}
+
+// MaxSnapshotBytes parses MaxSnapshotSize.
+func (c StateConfig) MaxSnapshotBytes() (int64, error) {
+	q, err := resource.ParseQuantity(c.MaxSnapshotSize)
+	if err != nil {
+		return 0, fmt.Errorf("STATE_MAX_SNAPSHOT_SIZE %q: %w", c.MaxSnapshotSize, err)
+	}
+	return q.Value(), nil
 }
 
 func LoadConfig() (*Config, error) {
@@ -70,6 +110,9 @@ func LoadConfig() (*Config, error) {
 	}
 	if address, err := mail.ParseAddress(cfg.SupportEmail); err != nil || address.Address != cfg.SupportEmail {
 		return nil, fmt.Errorf("SUPPORT_EMAIL %q is not a plain email address", cfg.SupportEmail)
+	}
+	if _, err := cfg.State.MaxSnapshotBytes(); err != nil {
+		return nil, err
 	}
 	return cfg, nil
 }

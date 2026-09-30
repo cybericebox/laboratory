@@ -44,6 +44,14 @@ type DeviceReconciler struct {
 	// ImagePullSecrets names registry Secrets that the LabGroup controller copied
 	// into the group namespace; device pods reference them.
 	ImagePullSecrets []string
+	// Registry is the snapshot registry, nil when state persistence is off; it
+	// is used to drop a device's snapshots on reset.
+	Registry SnapshotRegistry
+	// ExitSnapshotTimeout is how long a finished pod waits for the node-agent's
+	// exit snapshot; zero means 30s.
+	ExitSnapshotTimeout time.Duration
+	// Now is the clock; nil means time.Now. A field so tests can move time.
+	Now func() time.Time
 }
 
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices,verbs=get;list;watch;create;update;patch;delete
@@ -51,7 +59,7 @@ type DeviceReconciler struct {
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=connections,verbs=get;list;watch
 
 func (r *DeviceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -73,6 +81,9 @@ func (r *DeviceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return r.reconcileSwitch(ctx, &device)
 	}
 
+	if deviceStateEnabled(&device) {
+		return r.reconcilePod(ctx, &device)
+	}
 	return r.reconcileWorkload(ctx, &device)
 }
 
@@ -241,21 +252,35 @@ func (r *DeviceReconciler) devicePodPlacement(ctx context.Context, device *labor
 // Format per entry: "iface@[connection][|MAC]"
 // At pod creation time we don't know the Connection name yet, so entries are "iface@" or "iface@|MAC".
 func deviceNetworkAnnotation(device *laboratoryv1alpha1.Device) string {
+	return networkAnnotation(device, false)
+}
+
+// networkAnnotation is deviceNetworkAnnotation; with stableMAC every interface
+// without an explicit MAC gets one derived from the device identity, so a
+// recreated pod gets the same hardware address and therefore the same DHCP lease.
+func networkAnnotation(device *laboratoryv1alpha1.Device, stableMAC bool) string {
 	var entries []string
 	for _, iface := range device.Spec.Interfaces {
 		entry := iface.Name + "@"
-		if iface.MAC != "" {
-			entry += "|" + iface.MAC
+		mac := iface.MAC
+		if stableMAC && (mac == "" || mac == "random") {
+			mac = stableDeviceMAC(device.Namespace, device.Name, iface.Name)
+		}
+		if mac != "" {
+			entry += "|" + mac
 		}
 		entries = append(entries, entry)
 	}
 	return strings.Join(entries, ",")
 }
 
-func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laboratoryv1alpha1.Device, replicas int32) error {
-	annotations := map[string]string{
+// workloadTemplate is the pod of a device, shared by the Deployment and the
+// bare-Pod (state persistence) modes: the labels, selector labels, pod
+// annotations and the pod spec running the device image.
+func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, stableMAC bool) (labels, selectorLabels, annotations map[string]string, podSpec corev1.PodSpec) {
+	annotations = map[string]string{
 		names.AnnotationDevice:   device.Spec.Name,
-		names.AnnotationNetworks: deviceNetworkAnnotation(device),
+		names.AnnotationNetworks: networkAnnotation(device, stableMAC),
 	}
 	if device.Spec.Exposure != nil {
 		annotations[names.AnnotationDefaultNetwork] = names.AccessPortIface
@@ -263,19 +288,19 @@ func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laborat
 		annotations[names.AnnotationDefaultNetwork] = ""
 	}
 
-	labels := map[string]string{
+	labels = map[string]string{
 		names.LabelLab:    device.Spec.LabRef,
 		"app":             device.Spec.Name,
 		names.LabelDevice: device.Spec.Name,
 	}
 	// The selector must be immutable and uniquely identify this device's pod:
 	// (lab, device-name) is unique within the namespace.
-	selectorLabels := map[string]string{
+	selectorLabels = map[string]string{
 		names.LabelLab:    device.Spec.LabRef,
 		names.LabelDevice: device.Spec.Name,
 	}
 
-	podSpec := corev1.PodSpec{
+	podSpec = corev1.PodSpec{
 		ImagePullSecrets: pullSecretRefs(r.ImagePullSecrets),
 		NodeSelector:     r.LabNodeSelector,
 		Tolerations:      r.LabTolerations,
@@ -328,6 +353,11 @@ func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laborat
 	if ic := r.netConfigInitContainer(device); ic != nil {
 		podSpec.InitContainers = append(podSpec.InitContainers, *ic)
 	}
+	return labels, selectorLabels, annotations, podSpec
+}
+
+func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laboratoryv1alpha1.Device, replicas int32) error {
+	labels, selectorLabels, annotations, podSpec := r.workloadTemplate(device, false)
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -574,6 +604,8 @@ func (r *DeviceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.Device{}).
 		Owns(&appsv1.Deployment{}).
+		// Devices with state persistence run as bare Pods owned by the Device.
+		Owns(&corev1.Pod{}).
 		Watches(&laboratoryv1alpha1.LabGroup{}, handler.EnqueueRequestsFromMapFunc(r.devicesForLabGroup), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		// A switch/hub's readiness depends on its Connections — re-reconcile the
 		// referenced devices whenever a Connection changes.

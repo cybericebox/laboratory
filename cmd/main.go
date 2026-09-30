@@ -43,6 +43,7 @@ import (
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	laboratorycontroller "github.com/cybericebox/laboratory/internal/controller/laboratory"
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/operator"
 	// +kubebuilder:scaffold:imports
 )
@@ -220,6 +221,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	statePolicy, stateRegistry, err := laboratorycontroller.SetupState(cfg.State)
+	if err != nil {
+		setupLog.Error(err, "state persistence config")
+		os.Exit(1)
+	}
+
 	if err = (&laboratorycontroller.LabGroupReconciler{
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
@@ -261,18 +268,23 @@ func main() {
 		ProxySourceCIDRs: cfg.ProxySourceCIDRs,
 		VPNBaseNetwork:   cfg.VPNBaseNetwork,
 		InetBaseNetwork:  cfg.InetBaseNetwork,
+		State:            statePolicy,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Lab")
 		os.Exit(1)
 	}
-	if err = (&laboratorycontroller.DeviceReconciler{
+	deviceReconciler := &laboratorycontroller.DeviceReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
 		LabNodeSelector:  labNodeSelector,
 		LabTolerations:   labTolerations,
 		NetConfigImage:   cfg.NetConfigImage,
 		ImagePullSecrets: cfg.ImagePullSecrets,
-	}).SetupWithManager(mgr); err != nil {
+	}
+	if stateRegistry != nil {
+		deviceReconciler.Registry = stateRegistry
+	}
+	if err = deviceReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Device")
 		os.Exit(1)
 	}
@@ -290,6 +302,19 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Platform")
 		os.Exit(1)
+	}
+	if stateRegistry != nil {
+		if err = mgr.Add(&laboratorycontroller.RetentionSweeper{
+			Client:    mgr.GetClient(),
+			Reader:    mgr.GetAPIReader(),
+			Registry:  stateRegistry,
+			Retention: cfg.State.Retention,
+			Interval:  cfg.State.RetentionInterval,
+			Namespace: names.SystemNamespace,
+		}); err != nil {
+			setupLog.Error(err, "unable to add snapshot retention sweep")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 
