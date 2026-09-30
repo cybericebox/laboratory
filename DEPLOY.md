@@ -58,17 +58,31 @@ operator:
 EOF
 ```
 
+The chart never receives secret values: create these Secrets before installing.
+
 The proxy verifies the platform's lab access tokens (Ed25519) with a public key. Generate the pair once,
-give the private key to the backend (`LAB_ACCESS_PRIVATE_KEY`) and pass the public one to the chart:
+give the private key to the backend (`LAB_ACCESS_PRIVATE_KEY`) and put the public one in a Secret:
 
 ```bash
 make lab-access-keys   # /tmp/lab-access-private.pem and /tmp/lab-access-public.pem
-# install with: --set-file platform.labAccessPublicKey=/tmp/lab-access-public.pem
+kubectl create namespace laboratory-system
+kubectl -n laboratory-system create secret generic lab-access-public-key \
+  --from-file=public.pem=/tmp/lab-access-public.pem
 ```
 
-The proxy's own session-cookie key (`SESSION_SECRET`) is generated once and kept across upgrades; to supply it
-yourself set `proxy.l7.sessionSecret.existingSecret` (a Secret with key `sessionSecret`, 32+ bytes; after changing its content run `kubectl -n laboratory-proxy rollout restart deploy/laboratory-proxy`, the chart cannot see it) or
-`proxy.l7.sessionSecret.value`.
+The proxy's own session-cookie key (`SESSION_SECRET`, 32+ bytes, not the access key):
+
+```bash
+kubectl create namespace laboratory-proxy
+kubectl -n laboratory-proxy create secret generic proxy-session \
+  --from-literal=sessionSecret="$(openssl rand -base64 48)"
+```
+
+After rotating it run `kubectl -n laboratory-proxy rollout restart deploy/laboratory-proxy`.
+
+With an ACME issuer (`certManager.selfSigned: false`) the wildcard proxy certificate needs DNS-01: create a
+Cloudflare API token (Zone:Zone:Read + Zone:DNS:Edit on the zone) Secret in the cert-manager namespace and
+name it in `certManager.dns01.cloudflare.apiTokenSecretRef`.
 
 Full list of available values: see `charts/laboratory/values.yaml`.
 
@@ -80,8 +94,7 @@ Full list of available values: see `charts/laboratory/values.yaml`.
 helm install laboratory ./charts/laboratory \
   --namespace laboratory-system \
   --create-namespace \
-  -f my-values.yaml \
-  --set-file platform.labAccessPublicKey=/tmp/lab-access-public.pem
+  -f my-values.yaml
 ```
 
 What gets installed:

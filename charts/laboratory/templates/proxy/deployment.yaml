@@ -16,12 +16,6 @@ spec:
       labels:
         app: laboratory-proxy-l7
         {{- include "laboratory.selectorLabels" . | nindent 8 }}
-      {{- if not .Values.proxy.l7.sessionSecret.existingSecret }}
-      {{- /* SESSION_SECRET is an env var: a changed key must roll the pods. */}}
-      {{- $existing := lookup "v1" "Secret" .Values.proxy.namespace "proxy-session" }}
-      annotations:
-        checksum/session-secret: {{ default (dig "data" "sessionSecret" "" (default dict $existing)) (.Values.proxy.l7.sessionSecret.value | b64enc) | sha256sum }}
-      {{- end }}
     spec:
       serviceAccountName: laboratory-proxy
       affinity:
@@ -53,8 +47,8 @@ spec:
         - name: SESSION_SECRET
           valueFrom:
             secretKeyRef:
-              name: {{ default "proxy-session" .Values.proxy.l7.sessionSecret.existingSecret }}
-              key: sessionSecret
+              name: {{ .Values.proxy.l7.sessionSecret.name | quote }}
+              key: {{ .Values.proxy.l7.sessionSecret.key | quote }}
         - name: REPORT_INTERVAL
           value: {{ .Values.proxy.l7.reportInterval | quote }}
         - name: POD_NAME

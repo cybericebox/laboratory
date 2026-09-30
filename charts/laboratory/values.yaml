@@ -106,13 +106,14 @@ proxy:
     # Name of the proxy's own session cookie (SESSION_COOKIE_NAME).
     sessionCookieName: "challenge"
     # HMAC-SHA256 key (32+ bytes) of the proxy's own session cookie, set on /_auth
-    # from the platform's lab access link. Never the lab access key. Shared by all
-    # replicas. existingSecret names a Secret with key `sessionSecret`; otherwise
-    # `value` is used, and when that is empty a key is generated once and kept
-    # across upgrades (lookup).
+    # from the platform's lab access link. Never the lab access key. The chart
+    # never holds its value: create the Secret beforehand in proxy.namespace,
+    #   kubectl -n laboratory-proxy create secret generic proxy-session \
+    #     --from-literal=sessionSecret="$(openssl rand -base64 48)"
+    # and restart the proxy after rotating it (it is read as an env var).
     sessionSecret:
-      existingSecret: ""
-      value: ""
+      name: proxy-session
+      key: sessionSecret
     # How often each replica publishes its request counters (REPORT_INTERVAL).
     reportInterval: "1m"
     resources:
@@ -292,13 +293,14 @@ agent:
 # Platform credentials
 # ============================================================
 platform:
-  # Ed25519 public key (PKIX PEM) that proxy-l7 uses to verify the lab access
-  # tokens (handoff links) signed by the daemon (LAB_ACCESS_PRIVATE_KEY).
-  # The operator's PlatformReconciler syncs this into the lab-access-public-key Secret in
-  # the proxy namespace. REQUIRED while the proxy is enabled.
-  # Pass via: --set-file platform.labAccessPublicKey=/path/to/lab-access-public.pem
-  # (make lab-access-keys generates the pair).
-  labAccessPublicKey: ""
+  # The Ed25519 public key (PKIX PEM) that proxy-l7 uses to verify the lab
+  # access tokens signed by the daemon (LAB_ACCESS_PRIVATE_KEY) is NOT a chart
+  # value: create the Secret `lab-access-public-key` (key public.pem) in the
+  # release namespace beforehand,
+  #   kubectl -n laboratory-system create secret generic lab-access-public-key \
+  #     --from-file=public.pem=lab-access-public.pem
+  # The operator's PlatformReconciler validates it and syncs it into the proxy
+  # namespace; the proxy reloads it on change. `make lab-access-keys` makes the pair.
 
 # ============================================================
 # Common

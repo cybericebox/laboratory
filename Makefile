@@ -167,7 +167,6 @@ k0s-deploy: docker-build-all ## Build ALL images, import into Lima, full helm in
 		--set inetGateway.image.tag=$(BUILD_TAG) \
 		--set proxy.l7.image.tag=$(BUILD_TAG) \
 		--set proxy.wg.image.tag=$(BUILD_TAG) \
-		--set-file platform.labAccessPublicKey=$(LAB_ACCESS_PUBLIC_KEY) \
 		--wait --timeout=5m
 	@echo ""
 	@echo "✓ deployed all: $(BUILD_TAG)"
@@ -227,11 +226,10 @@ k0s-upgrade-chart: ## Apply values.yaml changes to existing cluster (preserves c
 		--namespace $(HELM_NS) \
 		--reuse-values \
 		--values $(CHART_PATH)/values.yaml \
-		--set-file platform.labAccessPublicKey=$(LAB_ACCESS_PUBLIC_KEY) \
 		--wait --timeout=2m
 
 .PHONY: lab-access-keys
-lab-access-keys: ## Generate the Ed25519 lab access key pair (private: backend LAB_ACCESS_PRIVATE_KEY, public: platform.labAccessPublicKey)
+lab-access-keys: ## Generate the Ed25519 lab access key pair (private: backend LAB_ACCESS_PRIVATE_KEY, public: Secret lab-access-public-key)
 	@test ! -e $(LAB_ACCESS_PRIVATE_KEY) || { echo "$(LAB_ACCESS_PRIVATE_KEY) exists, remove it to rotate"; exit 1; }
 	openssl genpkey -algorithm ed25519 -out $(LAB_ACCESS_PRIVATE_KEY)
 	openssl pkey -in $(LAB_ACCESS_PRIVATE_KEY) -pubout -out $(LAB_ACCESS_PUBLIC_KEY)

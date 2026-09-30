@@ -19,14 +19,6 @@ at install time instead of shipping a broken deployment.
 {{- if ne .Values.proxy.namespace "laboratory-proxy" }}
 {{- fail (printf "proxy.namespace must be 'laboratory-proxy' (got %q): the operator uses that name as a compile-time constant." .Values.proxy.namespace) }}
 {{- end }}
-{{- if and .Values.proxy.enabled .Values.proxy.l7.enabled }}
-{{- if not (contains "BEGIN PUBLIC KEY" (default "" .Values.platform.labAccessPublicKey)) }}
-{{- fail "platform.labAccessPublicKey is required while the proxy is enabled: the Ed25519 public key (PKIX PEM) that verifies lab access tokens. Generate the pair with 'make lab-access-keys', pass the public one with --set-file platform.labAccessPublicKey=<file> and give the private one to the backend as LAB_ACCESS_PRIVATE_KEY." }}
-{{- end }}
-{{- if and .Values.proxy.l7.sessionSecret.value (lt (len .Values.proxy.l7.sessionSecret.value) 32) }}
-{{- fail "proxy.l7.sessionSecret.value must be at least 32 bytes (or leave it empty to generate one)" }}
-{{- end }}
-{{- end }}
 {{- if and .Values.certManager.enabled .Values.proxy.enabled .Values.proxy.l7.enabled (not .Values.certManager.selfSigned) }}
 {{- if not .Values.certManager.dns01.cloudflare.apiTokenSecretRef.name }}
 {{- fail "certManager.dns01.cloudflare.apiTokenSecretRef.name is required with an ACME issuer: the proxy certificate is a wildcard (*.baseDomain) and Let's Encrypt issues wildcards only via DNS-01" }}

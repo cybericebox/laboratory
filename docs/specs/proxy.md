@@ -123,8 +123,8 @@ demux — `LabGroup.Status.VPN.PublicKey`.
   на backend, не более 5). Токен без состояния: ни `jti`, ни привязки к браузеру, прокси ничего не запоминает. Прокси на
   `/_auth` (`session.go:handoff`) офлайн проверяет подпись, срок, что `host` совпадает с хостом запроса, и что сессия не
   закончилась. Затем ставит СВОЮ cookie (`Domain=<base>`, `HttpOnly`, `Secure`,
-  `SameSite=Lax`, срок = `sess`), подписанную HMAC-SHA256 секретом прокси (`SESSION_SECRET`, не короче 32 байт, Secret `proxy-session`
-  или `proxy.l7.sessionSecret.existingSecret`, общий для реплик, платформе неизвестен, это не ключ доступа; имя cookie
+  `SameSite=Lax`, срок = `sess`), подписанную HMAC-SHA256 секретом прокси (`SESSION_SECRET`, не короче 32 байт, из Secret
+  `proxy.l7.sessionSecret.name`, по умолчанию `proxy-session`; создаётся отдельно, не чартом), общий для реплик, платформе неизвестен, это не ключ доступа; имя cookie
   `SESSION_COOKIE_NAME`) и отвечает `303 /` с `Referrer-Policy: no-referrer`. `/_auth` в лабораторию не
   проксируется.
 - **Обычные запросы:** `validateCookie` проверяет только HS256 cookie (токен доступа как cookie не принимается) и далее
