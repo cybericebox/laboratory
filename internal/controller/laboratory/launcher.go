@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 )
@@ -74,6 +75,9 @@ type Launcher struct {
 	ImagePullSecrets []string
 	LabNodeSelector  map[string]string
 	LabTolerations   []corev1.Toleration
+	// Mirror rewrites image references of labs that use the image cache, so the
+	// prepull warms the cache through the path the lab pods will use.
+	Mirror imagecache.Rewriter
 	// Namespace holds the prepull DaemonSets (and the pull secrets); the operator's.
 	Namespace string
 	// Now is the clock; nil means time.Now.
@@ -392,7 +396,7 @@ func (l *Launcher) ensureClassPrepared(ctx context.Context, class string, labs [
 	if _, ok := l.prepared[class]; ok {
 		return true, nil
 	}
-	images := classImages(labs)
+	images := classImages(labs, l.Mirror)
 	if !l.Config.Prepull || len(images) == 0 {
 		l.prepared[class] = struct{}{}
 		return true, nil

@@ -8,6 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/imagecache"
 )
 
 var testEpoch = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
@@ -186,7 +187,7 @@ func TestClassImages(t *testing.T) {
 		laboratoryv1alpha1.DeviceTemplate{Name: "noimg", Type: laboratoryv1alpha1.DeviceTypeContainer},
 	)
 	b := queuedLab("b", "A", "img-b", 0)
-	got := classImages([]*laboratoryv1alpha1.Lab{a, b})
+	got := classImages([]*laboratoryv1alpha1.Lab{a, b}, imagecache.Rewriter{})
 	if !equalStrings(got, []string{"img-a", "img-b"}) {
 		t.Fatalf("images = %v", got)
 	}

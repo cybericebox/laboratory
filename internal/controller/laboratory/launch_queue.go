@@ -11,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/imagecache"
 )
 
 // This file holds the pure rules of launch pacing: which labs are queued, in
@@ -109,17 +110,24 @@ func orderQueue(labs []*laboratoryv1alpha1.Lab) []*laboratoryv1alpha1.Lab {
 	return out
 }
 
-// classImages returns the sorted unique images of the container devices of labs.
-func classImages(labs []*laboratoryv1alpha1.Lab) []string {
+// classImages returns the sorted unique images of the container devices of
+// labs, as the nodes will pull them: through the image cache for a lab that
+// uses it.
+func classImages(labs []*laboratoryv1alpha1.Lab, mirror imagecache.Rewriter) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, l := range labs {
+		cached := l.Status.ImageCache != nil && *l.Status.ImageCache
 		for _, d := range l.Spec.Devices {
-			if d.Type != laboratoryv1alpha1.DeviceTypeContainer || d.Image == "" || seen[d.Image] {
+			img := d.Image
+			if cached {
+				img = mirror.Rewrite(img)
+			}
+			if d.Type != laboratoryv1alpha1.DeviceTypeContainer || img == "" || seen[img] {
 				continue
 			}
-			seen[d.Image] = true
-			out = append(out, d.Image)
+			seen[img] = true
+			out = append(out, img)
 		}
 	}
 	sort.Strings(out)

@@ -53,8 +53,10 @@ func (r *Registry) Ref(repo string, digest v1.Hash) string {
 // Push makes img available as repo:latest. The base layers of img (the first
 // baseLayers) are placed in the shared base repository once and mounted into
 // repo, so a device's first snapshot does not upload the whole base image.
-// It returns the pullable reference by digest.
-func (r *Registry) Push(ctx context.Context, repo string, img v1.Image, baseLayers int) (string, v1.Hash, error) {
+// sourceRepo, when set, is a repository that already holds the base layers (the
+// image cache's repository of the base image): they are mounted from it, so
+// nothing is uploaded at all. It returns the pullable reference by digest.
+func (r *Registry) Push(ctx context.Context, repo string, img v1.Image, baseLayers int, sourceRepo string) (string, v1.Hash, error) {
 	target, err := r.repo(repo)
 	if err != nil {
 		return "", v1.Hash{}, err
@@ -67,7 +69,7 @@ func (r *Registry) Push(ctx context.Context, repo string, img v1.Image, baseLaye
 		baseLayers = len(layers)
 	}
 	for _, l := range layers[:baseLayers] {
-		if err := r.ensureBaseLayer(ctx, target, l); err != nil {
+		if err := r.ensureBaseLayer(ctx, target, l, sourceRepo); err != nil {
 			return "", v1.Hash{}, err
 		}
 	}
@@ -85,13 +87,20 @@ func (r *Registry) Push(ctx context.Context, repo string, img v1.Image, baseLaye
 // ensureBaseLayer guarantees that target holds layer l: already there, mounted
 // from the shared base repository, or (registries without mount support)
 // uploaded.
-func (r *Registry) ensureBaseLayer(ctx context.Context, target name.Repository, l v1.Layer) error {
+func (r *Registry) ensureBaseLayer(ctx context.Context, target name.Repository, l v1.Layer, sourceRepo string) error {
 	d, err := l.Digest()
 	if err != nil {
 		return err
 	}
 	if r.hasBlob(ctx, target, d) {
 		return nil
+	}
+	if sourceRepo != "" {
+		if src, err := r.repo(sourceRepo); err == nil && r.hasBlob(ctx, src, d) {
+			if ok, err := r.mountBlob(ctx, target, src, d); err == nil && ok {
+				return nil
+			}
+		}
 	}
 	baseRepo, err := r.repo(BaseRepo)
 	if err != nil {

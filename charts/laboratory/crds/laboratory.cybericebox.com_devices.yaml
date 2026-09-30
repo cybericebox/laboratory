@@ -58,6 +58,13 @@ spec:
                 type: object
               image:
                 type: string
+              imageMirror:
+                description: |-
+                  ImageMirror is the cache prefix (host:port, e.g. "localhost:5035") through
+                  which the node pulls the device image: the operator pulls REG/repo:tag as
+                  <prefix>/REG/repo:tag. Set once when the Device is materialised, only for
+                  labs created while the image cache is on; empty pulls Image directly.
+                type: string
               interfaces:
                 items:
                   description: InterfaceSpec defines a network interface on a device.

@@ -90,7 +90,7 @@ func TestStateModeIsFixedAtCreation(t *testing.T) {
 	if err := r.Get(ctx, client.ObjectKeyFromObject(lab), lab); err != nil {
 		t.Fatal(err)
 	}
-	if updated, err := r.ensureStateMode(ctx, lab); err != nil || !updated {
+	if updated, err := r.ensureModes(ctx, lab); err != nil || !updated {
 		t.Fatalf("first reconcile must stamp the lab: updated=%v err=%v", updated, err)
 	}
 	if lab.Status.StatePersistence == nil || !*lab.Status.StatePersistence {
@@ -105,7 +105,7 @@ func TestStateModeIsFixedAtCreation(t *testing.T) {
 
 	// Flipping the switch off never changes the stamped lab.
 	r.State.Enabled = false
-	if updated, err := r.ensureStateMode(ctx, lab); err != nil || updated {
+	if updated, err := r.ensureModes(ctx, lab); err != nil || updated {
 		t.Fatalf("a stamped lab is left alone: updated=%v err=%v", updated, err)
 	}
 	if !*lab.Status.StatePersistence {
@@ -116,11 +116,11 @@ func TestStateModeIsFixedAtCreation(t *testing.T) {
 	off := newLab("off")
 	r2 := stateTestLab(t, off)
 	r2.State.Enabled = false
-	if _, err := r2.ensureStateMode(ctx, off); err != nil {
+	if _, err := r2.ensureModes(ctx, off); err != nil {
 		t.Fatal(err)
 	}
 	r2.State.Enabled = true
-	if _, err := r2.ensureStateMode(ctx, off); err != nil {
+	if _, err := r2.ensureModes(ctx, off); err != nil {
 		t.Fatal(err)
 	}
 	if *off.Status.StatePersistence || r2.deviceStateSpec(off, laboratoryv1alpha1.DeviceTypeContainer) != nil {
@@ -135,7 +135,7 @@ func TestLabThatAlreadyHasDevicesIsNotSwitched(t *testing.T) {
 		Name: "legacy-web", Namespace: "ns", Labels: map[string]string{names.LabelLab: "legacy"},
 	}}
 	r := stateTestLab(t, legacy, dev)
-	if _, err := r.ensureStateMode(ctx, legacy); err != nil {
+	if _, err := r.ensureModes(ctx, legacy); err != nil {
 		t.Fatal(err)
 	}
 	if legacy.Status.StatePersistence == nil || *legacy.Status.StatePersistence {

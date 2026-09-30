@@ -22,30 +22,45 @@ type StatePolicy struct {
 	MaxLayers        int32
 }
 
-// ensureStateMode decides, once, whether the lab runs its devices as
-// snapshot-backed Pods, and records it in Status.StatePersistence. A lab that
-// already has Devices was created before the decision existed (or while the
-// switch was off) and keeps running them as Deployments, so flipping the
-// platform switch never changes a live lab. It reports whether it wrote the status.
-func (r *LabReconciler) ensureStateMode(ctx context.Context, lab *laboratoryv1alpha1.Lab) (bool, error) {
-	if lab.Status.StatePersistence != nil {
+// ensureModes decides, once, how the lab runs: whether its devices are
+// snapshot-backed Pods (Status.StatePersistence) and whether its images are
+// pulled through the image cache (Status.ImageCache). A lab that already has
+// Devices was created before the decision existed (or while the switch was off)
+// and keeps its mode, so flipping a platform switch never changes a live lab.
+// It reports whether it wrote the status.
+func (r *LabReconciler) ensureModes(ctx context.Context, lab *laboratoryv1alpha1.Lab) (bool, error) {
+	if lab.Status.StatePersistence != nil && lab.Status.ImageCache != nil {
 		return false, nil
 	}
-	enabled := r.State.Enabled
-	if enabled {
+	persist, cache := r.State.Enabled, r.Mirror.Prefix != ""
+	if persist || cache {
 		var devices laboratoryv1alpha1.DeviceList
 		if err := r.List(ctx, &devices, client.InNamespace(lab.Namespace), client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
 			return false, err
 		}
 		if len(devices.Items) > 0 {
-			enabled = false
+			persist, cache = false, false
 		}
 	}
-	lab.Status.StatePersistence = &enabled
+	if lab.Status.StatePersistence == nil {
+		lab.Status.StatePersistence = &persist
+	}
+	if lab.Status.ImageCache == nil {
+		lab.Status.ImageCache = &cache
+	}
 	if err := r.Status().Update(ctx, lab); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// deviceMirror is the image cache prefix of a new Device of the lab; empty when
+// the lab does not use the cache or the device runs no container.
+func (r *LabReconciler) deviceMirror(lab *laboratoryv1alpha1.Lab, t laboratoryv1alpha1.DeviceType) string {
+	if lab.Status.ImageCache == nil || !*lab.Status.ImageCache || t != laboratoryv1alpha1.DeviceTypeContainer {
+		return ""
+	}
+	return r.Mirror.Prefix
 }
 
 // deviceStateSpec is the state policy of a new Device of the lab; nil when the

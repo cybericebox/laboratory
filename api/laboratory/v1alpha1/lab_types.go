@@ -90,6 +90,10 @@ type LabStatus struct {
 	// Deployments. It never changes afterwards, whatever the platform switch says.
 	// +optional
 	StatePersistence *bool `json:"statePersistence,omitempty"`
+	// ImageCache records whether this lab pulls its images through the platform
+	// image cache, decided once on the first reconcile like StatePersistence.
+	// +optional
+	ImageCache *bool `json:"imageCache,omitempty"`
 	// Conditions surfaces reconciler progress/blocking reasons
 	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
 	// +optional

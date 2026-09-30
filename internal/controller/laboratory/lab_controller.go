@@ -27,6 +27,7 @@ import (
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
@@ -61,6 +62,9 @@ type LabReconciler struct {
 	// State is the device state persistence policy applied to labs created
 	// while the platform switch is on.
 	State StatePolicy
+	// Mirror rewrites image references for the image cache; the zero value
+	// (cache off) rewrites nothing. The Lab records the decision once.
+	Mirror imagecache.Rewriter
 }
 
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
@@ -95,6 +99,16 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 	}
 
+	// The modes are fixed before anything is created, and before the queue, so
+	// the launcher knows which image references the lab will pull.
+	if updated, err := r.ensureModes(ctx, &lab); err != nil {
+		return ctrl.Result{}, err
+	} else if updated {
+		if err := r.Get(ctx, req.NamespacedName, &lab); err != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
+	}
+
 	// A queued lab creates nothing yet: the launcher admits it (status patch),
 	// which triggers the next reconcile.
 	if r.LaunchGate && !labAdmitted(&lab) {
@@ -105,14 +119,6 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, err
 	} else if updated {
 		// Re-fetch after status update so we have the latest resourceVersion.
-		if err := r.Get(ctx, req.NamespacedName, &lab); err != nil {
-			return ctrl.Result{}, client.IgnoreNotFound(err)
-		}
-	}
-
-	if updated, err := r.ensureStateMode(ctx, &lab); err != nil {
-		return ctrl.Result{}, err
-	} else if updated {
 		if err := r.Get(ctx, req.NamespacedName, &lab); err != nil {
 			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
@@ -447,6 +453,7 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 				Exposure:       tmpl.Exposure,
 				Resources:      tmpl.Resources,
 				State:          r.deviceStateSpec(lab, tmpl.Type),
+				ImageMirror:    r.deviceMirror(lab, tmpl.Type),
 			},
 		}
 		if err := controllerutil.SetOwnerReference(lab, d, r.Scheme); err != nil {

@@ -1232,6 +1232,11 @@ func (in *LabStatus) DeepCopyInto(out *LabStatus) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.ImageCache != nil {
+		in, out := &in.ImageCache, &out.ImageCache
+		*out = new(bool)
+		**out = **in
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

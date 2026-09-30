@@ -99,5 +99,5 @@ type Cluster interface {
 
 // Pusher publishes snapshot images; *snapshot.Registry implements it.
 type Pusher interface {
-	Push(ctx context.Context, repo string, img v1.Image, baseLayers int) (ref string, digest v1.Hash, err error)
+	Push(ctx context.Context, repo string, img v1.Image, baseLayers int, sourceRepo string) (ref string, digest v1.Hash, err error)
 }

@@ -9,6 +9,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/pkg/config"
 )
 
@@ -96,6 +97,31 @@ type Config struct {
 	// and snapshot policy). Every field is optional; Enabled=false is today's
 	// behaviour.
 	State StateConfig
+
+	// Cache is the image cache: lab images are pulled through the platform's
+	// pull-through cache (zot with on-demand sync) instead of straight from the
+	// upstream registries. Independent of State.
+	Cache CacheConfig
+}
+
+// CacheConfig configures the image cache rewrite of lab image references.
+type CacheConfig struct {
+	Enabled bool `env:"IMAGE_CACHE_ENABLED" envDefault:"false"`
+	// Prefix is host:port of the cache as the nodes see it (the node-agent's
+	// localhost forwarder).
+	Prefix string `env:"IMAGE_CACHE_PREFIX" envDefault:"localhost:5035"`
+	// Registries are the upstream registries the cache serves; references to any
+	// other registry are pulled directly.
+	Registries []string `env:"IMAGE_CACHE_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
+}
+
+// Rewriter returns the image reference rewriter; the zero one (no rewrite)
+// when the cache is off.
+func (c CacheConfig) Rewriter() imagecache.Rewriter {
+	if !c.Enabled {
+		return imagecache.Rewriter{}
+	}
+	return imagecache.Rewriter{Prefix: c.Prefix, Registries: c.Registries}
 }
 
 // StateConfig configures device state persistence: devices of new labs run as

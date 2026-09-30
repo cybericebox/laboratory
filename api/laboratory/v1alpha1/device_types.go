@@ -28,6 +28,12 @@ type DeviceSpec struct {
 	// the platform has device state persistence off never carries it.
 	// +optional
 	State *DeviceStateSpec `json:"state,omitempty"`
+	// ImageMirror is the cache prefix (host:port, e.g. "localhost:5035") through
+	// which the node pulls the device image: the operator pulls REG/repo:tag as
+	// <prefix>/REG/repo:tag. Set once when the Device is materialised, only for
+	// labs created while the image cache is on; empty pulls Image directly.
+	// +optional
+	ImageMirror string `json:"imageMirror,omitempty"`
 	// Env values are NOT carried on the CR — they live only in a per-device
 	// Secret (<device>-env) the agent writes, referenced by the pod via envFrom.
 }

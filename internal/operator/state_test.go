@@ -58,3 +58,29 @@ func TestStateConfigRejectsBadQuota(t *testing.T) {
 		t.Fatal("an unparseable quota must fail at startup")
 	}
 }
+
+func TestCacheConfig(t *testing.T) {
+	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
+	t.Setenv("BASE_DOMAIN", "lab.example.com")
+	t.Setenv("SUPPORT_EMAIL", "support@example.com")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Cache.Enabled || cfg.Cache.Rewriter().Prefix != "" {
+		t.Fatal("the image cache is off by default and rewrites nothing")
+	}
+	t.Setenv("IMAGE_CACHE_ENABLED", "true")
+	t.Setenv("IMAGE_CACHE_REGISTRIES", "docker.io,registry.example.com")
+	cfg, err = LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rw := cfg.Cache.Rewriter()
+	if rw.Prefix != "localhost:5035" || len(rw.Registries) != 2 {
+		t.Fatalf("%+v", rw)
+	}
+	if got := rw.Rewrite("nginx"); got != "localhost:5035/docker.io/library/nginx:latest" {
+		t.Fatal(got)
+	}
+}

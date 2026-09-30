@@ -386,8 +386,7 @@ func (r *DeviceReconciler) createDevicePod(ctx context.Context, device *laborato
 	st := device.Status.State
 	spec := device.Spec.State
 	next := st.Incarnation + 1
-	image := device.Spec.Image
-	restored := false
+	image, restored := "", false
 	if st.Image != "" {
 		image, restored = st.Image, true
 	}
@@ -410,7 +409,9 @@ func (r *DeviceReconciler) createDevicePod(ctx context.Context, device *laborato
 	}
 	podSpec.RestartPolicy = corev1.RestartPolicyNever
 	c := &podSpec.Containers[0]
-	c.Image = image
+	if restored {
+		c.Image = image // a snapshot image is already local; the template holds the base image
+	}
 	if spec.Rescue {
 		// Start the snapshot with a shell instead of the entrypoint, so a
 		// configuration that makes the service crash can be repaired in place.

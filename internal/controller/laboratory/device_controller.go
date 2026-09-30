@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
 )
 
@@ -47,6 +48,10 @@ type DeviceReconciler struct {
 	// Registry is the snapshot registry, nil when state persistence is off; it
 	// is used to drop a device's snapshots on reset.
 	Registry SnapshotRegistry
+	// MirrorRegistries are the upstream registries the image cache serves; a
+	// device whose spec names a cache prefix (Spec.ImageMirror) pulls its images
+	// through it.
+	MirrorRegistries []string
 	// ExitSnapshotTimeout is how long a finished pod waits for the node-agent's
 	// exit snapshot; zero means 30s.
 	ExitSnapshotTimeout time.Duration
@@ -324,7 +329,7 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 		Containers: []corev1.Container{
 			{
 				Name:  device.Spec.Name,
-				Image: device.Spec.Image,
+				Image: r.deviceImage(device, device.Spec.Image),
 				// Run the image as-is (no entrypoint override). Capabilities are
 				// opt-in: an image that only serves a port gets none; one that
 				// runs networking/testing tools or an in-image DHCP client gets
@@ -354,6 +359,15 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 		podSpec.InitContainers = append(podSpec.InitContainers, *ic)
 	}
 	return labels, selectorLabels, annotations, podSpec
+}
+
+// deviceImage is the reference the node pulls for an image of the device:
+// through the image cache when the device was created for it, else as is.
+func (r *DeviceReconciler) deviceImage(device *laboratoryv1alpha1.Device, image string) string {
+	if device.Spec.ImageMirror == "" {
+		return image
+	}
+	return imagecache.Rewriter{Prefix: device.Spec.ImageMirror, Registries: r.MirrorRegistries}.Rewrite(image)
 }
 
 func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laboratoryv1alpha1.Device, replicas int32) error {
@@ -501,7 +515,7 @@ func (r *DeviceReconciler) netConfigInitContainer(device *laboratoryv1alpha1.Dev
 	}
 	return &corev1.Container{
 		Name:            "netconfig",
-		Image:           r.NetConfigImage,
+		Image:           r.deviceImage(device, r.NetConfigImage),
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Command:         []string{"/laboratory", "netconfig"},
 		Env:             []corev1.EnvVar{{Name: "NETCONFIG", Value: string(cfg)}},

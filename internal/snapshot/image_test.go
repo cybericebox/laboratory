@@ -101,7 +101,7 @@ func snapshotOnce(t *testing.T, reg *Registry, repo string, run v1.Image, pol Po
 	if err != nil {
 		return nil, err
 	}
-	_, _, err = reg.Push(context.Background(), repo, next, chain.Base)
+	_, _, err = reg.Push(context.Background(), repo, next, chain.Base, "")
 	if err != nil {
 		t.Fatal(err)
 	}

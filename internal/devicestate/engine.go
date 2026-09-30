@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-logr/logr"
 
+	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/snapshot"
 )
 
@@ -380,7 +381,7 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 	if err != nil {
 		return err
 	}
-	ref, _, err := e.Pusher.Push(ctx, t.pod.Repo, img, chain.Base)
+	ref, _, err := e.Pusher.Push(ctx, t.pod.Repo, img, chain.Base, imagecache.Rewriter{Prefix: e.RegistryHost}.RepoOf(t.c.ImageRef))
 	if err != nil {
 		return fmt.Errorf("push snapshot: %w", err)
 	}

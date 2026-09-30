@@ -15,9 +15,10 @@ import (
 	"github.com/cybericebox/laboratory/internal/snapshot"
 )
 
-// SetupDeviceState adds device state persistence to the manager: the
-// localhost registry forwarder and the snapshot engine that follows the
-// snapshot-backed device containers of this node. It does nothing when no
+// SetupDeviceState adds the platform registry's node side to the manager: the
+// localhost registry forwarder (snapshots and the image cache are both pulled
+// through it) and, with state persistence on, the snapshot engine that follows
+// the snapshot-backed device containers of this node. It does nothing when no
 // registry is configured.
 func SetupDeviceState(mgr ctrl.Manager, cfg *Config) error {
 	if cfg.StateRegistryAddr == "" {
@@ -36,6 +37,9 @@ func SetupDeviceState(mgr ctrl.Manager, cfg *Config) error {
 		return err
 	}
 
+	if !cfg.StatePersistence {
+		return nil // the forwarder alone: the registry serves the image cache
+	}
 	rt, err := devicestate.NewContainerdRuntime(cfg.CRISock, cfg.ContainerdNamespace, cfg.CgroupRoot, log)
 	if err != nil {
 		return err

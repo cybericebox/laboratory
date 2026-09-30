@@ -227,6 +227,9 @@ func Run() {
 		os.Exit(1)
 	}
 
+	// Image cache: lab images of labs created while it is on are pulled through it.
+	mirror := cfg.Cache.Rewriter()
+
 	statePolicy, stateRegistry, err := laboratorycontroller.SetupState(cfg.State)
 	if err != nil {
 		setupLog.Error(err, "state persistence config")
@@ -241,8 +244,8 @@ func Run() {
 		VPNServicePort:    cfg.VPNServicePort,
 		VPNBaseNetwork:    cfg.VPNBaseNetwork,
 		InetBaseNetwork:   cfg.InetBaseNetwork,
-		VPNImage:          cfg.VPNImage,
-		GatewayImage:      cfg.GatewayImage,
+		VPNImage:          mirror.Rewrite(cfg.VPNImage),
+		GatewayImage:      mirror.Rewrite(cfg.GatewayImage),
 		SupportEmail:      cfg.SupportEmail,
 		LabNodeSelector:   labNodeSelector,
 		LabTolerations:    labTolerations,
@@ -276,12 +279,14 @@ func Run() {
 		InetBaseNetwork:  cfg.InetBaseNetwork,
 		LaunchGate:       cfg.LaunchEnabled,
 		State:            statePolicy,
+		Mirror:           mirror,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Lab")
 		os.Exit(1)
 	}
 	if cfg.LaunchEnabled {
 		if err = mgr.Add(&laboratorycontroller.Launcher{
+			Mirror:   mirror,
 			Client:   mgr.GetClient(),
 			Recorder: mgr.GetEventRecorderFor("launcher"),
 			Config: laboratorycontroller.LaunchConfig{
@@ -302,6 +307,7 @@ func Run() {
 		}
 	}
 	deviceReconciler := &laboratorycontroller.DeviceReconciler{
+		MirrorRegistries: mirror.Registries,
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
 		LabNodeSelector:  labNodeSelector,

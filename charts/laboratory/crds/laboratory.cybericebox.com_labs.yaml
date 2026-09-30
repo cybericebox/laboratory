@@ -475,6 +475,11 @@ spec:
                   - name
                   type: object
                 type: array
+              imageCache:
+                description: |-
+                  ImageCache records whether this lab pulls its images through the platform
+                  image cache, decided once on the first reconcile like StatePersistence.
+                type: boolean
               internet:
                 description: LabNetworkStatus reports the allocated CIDR for a network
                   segment.
