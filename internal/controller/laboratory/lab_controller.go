@@ -871,15 +871,14 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 	// Remove annotation entries so node-agent stops maintaining the veths.
 	if lab.Status.VPN.CIDR != "" {
 		if n, ok := indexFromCIDR(lab.Status.VPN.CIDR); ok {
-			iface := names.LabIfaceNameByIndex(n)
-			_ = r.patchDeploymentNetworks(ctx, lab.Namespace, "vpn", iface, iface, false)
+			_ = r.patchDeploymentNetworks(ctx, lab.Namespace, "vpn", names.LabIfaceNameByIndex(n), names.VPNHostPortKey(lab.Namespace, n), false)
 		}
 	}
 	if lab.Status.Internet.CIDR != "" {
 		if n, ok := indexFromCIDR(lab.Status.Internet.CIDR); ok {
 			_ = r.patchDeploymentNetworks(
 				ctx, lab.Namespace, "gateway",
-				names.LabIfaceNameByIndex(n), names.GWIfaceNameByIndex(n), false,
+				names.LabIfaceNameByIndex(n), names.GWHostPortKey(lab.Namespace, n), false,
 			)
 		}
 	}
@@ -1250,13 +1249,13 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 // ensureDeploymentAnnotations adds the lab's OVS interface entries to the VPN and/or
 // gateway Deployment pod-template annotation so node-agent attaches them.
 // The annotation entry format is "lab{N}@{ovsPortName}" so node-agent creates a
-// veth with ovsPortName as the OVS port and renames the pod-side to lab{N}.
+// veth with ovsPortName (VPNHostPortKey / GWHostPortKey) as the OVS port and
+// renames the pod-side to lab{N}.
 func (r *LabReconciler) ensureDeploymentAnnotations(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
 	if lab.Spec.VPN.Enabled && lab.Status.VPN.CIDR != "" {
 		n, ok := indexFromCIDR(lab.Status.VPN.CIDR)
 		if ok {
-			iface := names.LabIfaceNameByIndex(n)
-			if err := r.patchDeploymentNetworks(ctx, lab.Namespace, "vpn", iface, iface, true); err != nil {
+			if err := r.patchDeploymentNetworks(ctx, lab.Namespace, "vpn", names.LabIfaceNameByIndex(n), names.VPNHostPortKey(lab.Namespace, n), true); err != nil {
 				return err
 			}
 		}
@@ -1264,11 +1263,11 @@ func (r *LabReconciler) ensureDeploymentAnnotations(ctx context.Context, lab *la
 	if lab.Spec.Internet.Enabled && lab.Status.Internet.CIDR != "" {
 		n, ok := indexFromCIDR(lab.Status.Internet.CIDR)
 		if ok {
-			// Pod-side iface is lab{N}; host-side OVS port must be gw{N} so it
-			// does not collide with the VPN leg's lab{N} port in root netns.
+			// Pod-side iface is lab{N}; the host-side OVS port is per group and
+			// per leg, so it collides neither with the VPN leg nor with other groups.
 			if err := r.patchDeploymentNetworks(
 				ctx, lab.Namespace, "gateway",
-				names.LabIfaceNameByIndex(n), names.GWIfaceNameByIndex(n), true,
+				names.LabIfaceNameByIndex(n), names.GWHostPortKey(lab.Namespace, n), true,
 			); err != nil {
 				return err
 			}

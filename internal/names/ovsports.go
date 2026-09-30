@@ -7,19 +7,26 @@ import (
 
 // LabIfaceNameByIndex returns the in-netns interface name for lab N inside VPN
 // and Gateway pods (e.g. lab1 … lab254). Safe to share between the two pod
-// types because each pod has its own network namespace.
-// It is also the host-side OVS port name for the VPN leg only — the gateway
-// leg uses GWIfaceNameByIndex, since both host-side ports live in the root
-// netns and would otherwise collide when a lab has VPN and internet enabled.
+// types because each pod has its own network namespace. It is never a
+// host-side name: see VPNHostPortKey / GWHostPortKey.
 func LabIfaceNameByIndex(n uint) string {
 	return fmt.Sprintf("lab%d", n)
 }
 
-// GWIfaceNameByIndex returns the host-side OVS port name for lab N's internet
-// (gateway) leg (e.g. gw1 … gw254). The pod-side interface inside the gateway
-// pod is still named LabIfaceNameByIndex(n).
-func GWIfaceNameByIndex(n uint) string {
-	return fmt.Sprintf("gw%d", n)
+// VPNHostPortKey returns the host-side OVS port name of lab N's VPN leg in a
+// group namespace. Lab indexes are allocated per group, so every group has a
+// lab 1: the name must include the namespace or two groups' VPN pods on one
+// node would fight over the same port. ≤15 chars like DevicePortKey.
+func VPNHostPortKey(namespace string, n uint) string {
+	h := sha256.Sum256([]byte(fmt.Sprintf("%s/vpn/%d", namespace, n)))
+	return fmt.Sprintf("n%x", h[:6])
+}
+
+// GWHostPortKey returns the host-side OVS port name of lab N's internet
+// (gateway) leg in a group namespace; distinct from the VPN leg of the same lab.
+func GWHostPortKey(namespace string, n uint) string {
+	h := sha256.Sum256([]byte(fmt.Sprintf("%s/gw/%d", namespace, n)))
+	return fmt.Sprintf("g%x", h[:6])
 }
 
 // LabVPNObjectName returns the Kubernetes object name for the LabVPN belonging to lab.

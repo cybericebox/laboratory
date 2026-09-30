@@ -40,18 +40,32 @@ func TestDevicePortKeyUniqueAcrossInputs(t *testing.T) {
 	}
 }
 
-func TestLabAndGWIfaceNamesDistinct(t *testing.T) {
-	// VPN and gateway legs of the same lab share NetworkIndex N; their host-side
-	// OVS port names must never collide in the root netns.
-	for n := uint(1); n <= 254; n++ {
-		if LabIfaceNameByIndex(n) == GWIfaceNameByIndex(n) {
-			t.Fatalf("lab and gw host-side names collide for index %d", n)
+func TestHostPortKeysAreUniquePerGroupAndLeg(t *testing.T) {
+	// Lab indexes are allocated per group, so every group has a lab 1. Host-side
+	// OVS ports live in one root netns per node: VPN and gateway legs, and the
+	// same leg of different groups, must never share a name.
+	seen := map[string]string{}
+	for _, ns := range []string{"e-aaa-t-bbb", "e-aaa-t-ccc"} {
+		for n := uint(1); n <= 254; n++ {
+			for leg, key := range map[string]string{"vpn": VPNHostPortKey(ns, n), "gw": GWHostPortKey(ns, n)} {
+				if len(key) > 15 || len(VethPeerNameForTest(key)) > 15 {
+					t.Fatalf("%s key %q too long for IFNAMSIZ", leg, key)
+				}
+				id := fmt.Sprintf("%s/%s/%d", ns, leg, n)
+				if prev, dup := seen[key]; dup {
+					t.Fatalf("host port %q shared by %s and %s", key, prev, id)
+				}
+				seen[key] = id
+			}
 		}
+	}
+	if VPNHostPortKey("x", 1) != VPNHostPortKey("x", 1) {
+		t.Fatal("VPNHostPortKey is not stable")
 	}
 	if got := LabIfaceNameByIndex(7); got != "lab7" {
 		t.Fatalf("LabIfaceNameByIndex(7) = %q", got)
 	}
-	if got := GWIfaceNameByIndex(7); got != "gw7" {
-		t.Fatalf("GWIfaceNameByIndex(7) = %q", got)
-	}
 }
+
+// VethPeerNameForTest mirrors nodeagent.VethPeerName ("v" + key).
+func VethPeerNameForTest(key string) string { return "v" + key }

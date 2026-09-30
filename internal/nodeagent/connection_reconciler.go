@@ -617,7 +617,7 @@ func (r *ConnectionReconciler) resolveLocalPortKey(
 			}
 			return "", true, nil
 		}
-		return names.LabIfaceNameByIndex(labvpn.Spec.NetworkIndex), false, nil
+		return names.VPNHostPortKey(conn.Namespace, labvpn.Spec.NetworkIndex), false, nil
 	case "internet":
 		var labgw laboratoryv1alpha1.LabGateway
 		if err := r.Get(
@@ -631,7 +631,7 @@ func (r *ConnectionReconciler) resolveLocalPortKey(
 			}
 			return "", true, nil
 		}
-		return names.GWIfaceNameByIndex(labgw.Spec.NetworkIndex), false, nil
+		return names.GWHostPortKey(conn.Namespace, labgw.Spec.NetworkIndex), false, nil
 	default:
 		// The device's pod must exist before its port can be wired; requeue until
 		// the operator publishes the current pod name.
