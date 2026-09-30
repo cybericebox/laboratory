@@ -19,6 +19,16 @@ spec:
     privateKeySecretRef:
       name: {{ .Values.certManager.issuerName }}-account-key
     solvers:
+      {{- with .Values.certManager.dns01.cloudflare.apiTokenSecretRef }}
+      {{- if .name }}
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: {{ .name | quote }}
+              key: {{ .key | quote }}
+      {{- end }}
+      {{- end }}
+      {{- if not .Values.certManager.dns01.cloudflare.apiTokenSecretRef.name }}
       - http01:
           ingress:
             class: ""
@@ -34,5 +44,6 @@ spec:
                 {{- toYaml . | nindent 16 }}
               {{- end }}
           {{- end }}
+      {{- end }}
   {{- end }}
 {{- end }}

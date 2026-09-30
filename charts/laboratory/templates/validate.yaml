@@ -27,3 +27,11 @@ at install time instead of shipping a broken deployment.
 {{- fail "proxy.l7.sessionSecret.value must be at least 32 bytes (or leave it empty to generate one)" }}
 {{- end }}
 {{- end }}
+{{- if and .Values.certManager.enabled .Values.proxy.enabled .Values.proxy.l7.enabled (not .Values.certManager.selfSigned) }}
+{{- if not .Values.certManager.dns01.cloudflare.apiTokenSecretRef.name }}
+{{- fail "certManager.dns01.cloudflare.apiTokenSecretRef.name is required with an ACME issuer: the proxy certificate is a wildcard (*.baseDomain) and Let's Encrypt issues wildcards only via DNS-01" }}
+{{- end }}
+{{- if not .Values.certManager.email }}
+{{- fail "certManager.email is required with an ACME issuer (Let's Encrypt account)" }}
+{{- end }}
+{{- end }}

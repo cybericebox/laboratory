@@ -202,6 +202,17 @@ certManager:
   # Name of the ClusterIssuer to create.
   issuerName: "letsencrypt"
 
+  # ACME DNS-01 through Cloudflare. The proxy certificate is a wildcard
+  # (*.baseDomain), and Let's Encrypt issues wildcards only via DNS-01, so a
+  # non-selfSigned issuer needs this. The Secret lives in cert-manager's cluster
+  # resource namespace (usually cert-manager) and holds an API token with
+  # Zone:DNS:Edit on the zone of baseDomain.
+  dns01:
+    cloudflare:
+      apiTokenSecretRef:
+        name: ""
+        key: api-token
+
 # ============================================================
 # Node-agent DaemonSet configuration
 # ============================================================
