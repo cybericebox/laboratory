@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 	
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -133,8 +134,24 @@ var _ = BeforeSuite(
 			Recorder:        mgr.GetEventRecorderFor("lab"),
 			VPNBaseNetwork:  "10.8.0.0/10",
 			InetBaseNetwork: "10.9.0.0/10",
+			LaunchGate:      true,
 		}).SetupWithManager(mgr)
 		Expect(err).NotTo(HaveOccurred())
+		
+		// Launch pacing runs with short intervals so the specs stay fast: three labs
+		// provisioning at once, a slot held for at most four seconds.
+		Expect(createLaunchNode(ctx, k8sClient, "300")).To(Succeed())
+		Expect(mgr.Add(&Launcher{
+			Client: mgr.GetClient(),
+			Config: LaunchConfig{
+				MaxInFlight:    testMaxInFlight,
+				WaveTimeout:    testWaveTimeout,
+				ResourceCheck:  true,
+				Tick:           100 * time.Millisecond,
+				StatusInterval: 100 * time.Millisecond,
+			},
+			Defaults: DeviceDefaults{CPU: "250m", Memory: "256Mi"},
+		})).To(Succeed())
 		
 		go func() {
 			defer GinkgoRecover()
