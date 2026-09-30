@@ -2,12 +2,18 @@
 BUILD_TAG    := $(shell date +%Y%m%d-%H%M%S)
 
 # Image URL to use all building/pushing image targets
-# One image per component domain. AGENT_IMG is the per-node image (node-agent + OVS); GRPC_IMG is the agent API service.
-IMG          ?= cybericebox/laboratory-controller:$(BUILD_TAG)
-AGENT_IMG    ?= cybericebox/laboratory-node:$(BUILD_TAG)
-GRPC_IMG     ?= cybericebox/laboratory-agent:$(BUILD_TAG)
-LAB_IMG      ?= cybericebox/laboratory-lab:$(BUILD_TAG)
-PROXY_IMG    ?= cybericebox/laboratory-proxy:$(BUILD_TAG)
+# One image per component domain; the variable, the Dockerfile target and the docker-build-<name> target share the name.
+CONTROLLER_IMG ?= cybericebox/laboratory-controller:$(BUILD_TAG)
+AGENT_IMG      ?= cybericebox/laboratory-agent:$(BUILD_TAG)
+PROXY_IMG      ?= cybericebox/laboratory-proxy:$(BUILD_TAG)
+NODE_IMG       ?= cybericebox/laboratory-node:$(BUILD_TAG)
+LAB_IMG        ?= cybericebox/laboratory-lab:$(BUILD_TAG)
+IMAGES         := controller agent proxy node lab
+IMG_controller  = $(CONTROLLER_IMG)
+IMG_agent       = $(AGENT_IMG)
+IMG_proxy       = $(PROXY_IMG)
+IMG_node        = $(NODE_IMG)
+IMG_lab         = $(LAB_IMG)
 
 KIND_CLUSTER_NAME ?= icebox
 
@@ -85,55 +91,66 @@ cluster-up: ## Create 3-node Kind cluster (1 control-plane + 2 workers)
 cluster-down: ## Delete Kind cluster
 	$(KIND) delete cluster --name $(KIND_CLUSTER_NAME)
 
-.PHONY: docker-build-agent
-docker-build-agent: ## Build node-agent Docker image
-	$(CONTAINER_TOOL) build -t $(AGENT_IMG) --target node .
-
-.PHONY: docker-build-lab
-docker-build-lab: ## Build lab (vpn + gateway) Docker image
+.PHONY: docker-build-controller docker-build-agent docker-build-proxy docker-build-node docker-build-lab
+docker-build-controller: ## Build the controller (operator) image
+	$(CONTAINER_TOOL) build -t $(CONTROLLER_IMG) --target controller .
+docker-build-agent: ## Build the agent (gRPC API) image
+	$(CONTAINER_TOOL) build -t $(AGENT_IMG) --target agent .
+docker-build-proxy: ## Build the proxy (proxy-l7 + proxy-wg) image
+	$(CONTAINER_TOOL) build -t $(PROXY_IMG) --target proxy .
+docker-build-node: ## Build the node (node-agent + OVS) image
+	$(CONTAINER_TOOL) build -t $(NODE_IMG) --target node .
+docker-build-lab: ## Build the lab (vpn + gateway) image
 	$(CONTAINER_TOOL) build -t $(LAB_IMG) --target lab .
 
-.PHONY: docker-build-proxy
-docker-build-proxy: ## Build proxy (proxy-l7 + proxy-wg) Docker image
-	$(CONTAINER_TOOL) build -t $(PROXY_IMG) --target proxy .
+.PHONY: docker-build
+docker-build: docker-build-controller docker-build-agent docker-build-proxy docker-build-node docker-build-lab ## Build all 5 images
 
-.PHONY: docker-build-grpc
-docker-build-grpc: ## Build agent (gRPC API) Docker image
-	$(CONTAINER_TOOL) build -t $(GRPC_IMG) --target agent .
+.PHONY: docker-push-controller docker-push-agent docker-push-proxy docker-push-node docker-push-lab
+docker-push-controller: ## Push the controller image
+	$(CONTAINER_TOOL) push $(CONTROLLER_IMG)
+docker-push-agent: ## Push the agent image
+	$(CONTAINER_TOOL) push $(AGENT_IMG)
+docker-push-proxy: ## Push the proxy image
+	$(CONTAINER_TOOL) push $(PROXY_IMG)
+docker-push-node: ## Push the node image
+	$(CONTAINER_TOOL) push $(NODE_IMG)
+docker-push-lab: ## Push the lab image
+	$(CONTAINER_TOOL) push $(LAB_IMG)
+
+.PHONY: docker-push
+docker-push: docker-push-controller docker-push-agent docker-push-proxy docker-push-node docker-push-lab ## Push all 5 images
 
 .PHONY: kind-load-proxy
 kind-load-proxy: docker-build-proxy ## Build and load proxy image into Kind cluster
 	$(KIND) load docker-image $(PROXY_IMG) --name $(KIND_CLUSTER_NAME)
 
-.PHONY: docker-build-all
-docker-build-all: docker-build docker-build-agent docker-build-lab docker-build-proxy docker-build-grpc ## Build all service images
-
 .PHONY: kind-load
-kind-load: docker-build-all ## Build and load all images into Kind cluster
-	$(KIND) load docker-image $(IMG)       --name $(KIND_CLUSTER_NAME)
-	$(KIND) load docker-image $(AGENT_IMG) --name $(KIND_CLUSTER_NAME)
+kind-load: docker-build ## Build and load all images into Kind cluster
+	$(KIND) load docker-image $(CONTROLLER_IMG) --name $(KIND_CLUSTER_NAME)
+	$(KIND) load docker-image $(NODE_IMG)  --name $(KIND_CLUSTER_NAME)
 	$(KIND) load docker-image $(LAB_IMG)   --name $(KIND_CLUSTER_NAME)
 	$(KIND) load docker-image $(PROXY_IMG) --name $(KIND_CLUSTER_NAME)
-	$(KIND) load docker-image $(GRPC_IMG)  --name $(KIND_CLUSTER_NAME)
+	$(KIND) load docker-image $(AGENT_IMG) --name $(KIND_CLUSTER_NAME)
 
-.PHONY: kind-patch-agent
-kind-patch-agent: ## Patch node-agent DaemonSet to use local image
+.PHONY: kind-patch-node
+kind-patch-node: ## Patch node-agent DaemonSet to use local image
 	$(KUBECTL) set image daemonset/laboratory-node-agent \
-		node-agent=$(AGENT_IMG) ovs=$(AGENT_IMG) host-prep=$(AGENT_IMG) install-cni-bins=$(AGENT_IMG) install-cni-conf=$(AGENT_IMG) \
+		node-agent=$(NODE_IMG) ovs=$(NODE_IMG) host-prep=$(NODE_IMG) install-cni-bins=$(NODE_IMG) install-cni-conf=$(NODE_IMG) \
 		-n laboratory-system
 	$(KUBECTL) patch daemonset laboratory-node-agent -n laboratory-system \
 		--type=json -p='[{"op":"replace","path":"/spec/template/spec/initContainers/0/imagePullPolicy","value":"Never"},{"op":"replace","path":"/spec/template/spec/initContainers/1/imagePullPolicy","value":"Never"},{"op":"replace","path":"/spec/template/spec/initContainers/2/imagePullPolicy","value":"Never"},{"op":"replace","path":"/spec/template/spec/initContainers/3/imagePullPolicy","value":"Never"},{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"Never"}]'
 
-.PHONY: kind-reload-agent
-kind-reload-agent: docker-build-agent ## Rebuild node-agent image, reload into Kind, restart DaemonSet
-	$(KIND) load docker-image $(AGENT_IMG) --name $(KIND_CLUSTER_NAME)
-	$(MAKE) kind-patch-agent
+.PHONY: kind-reload-node
+kind-reload-node: docker-build-node ## Rebuild node-agent image, reload into Kind, restart DaemonSet
+	$(KIND) load docker-image $(NODE_IMG) --name $(KIND_CLUSTER_NAME)
+	$(MAKE) kind-patch-node
 	$(KUBECTL) rollout restart daemonset/laboratory-node-agent -n laboratory-system
 	$(KUBECTL) rollout status  daemonset/laboratory-node-agent -n laboratory-system
 
 .PHONY: kind-reload-operator
-kind-reload-operator: docker-build ## Rebuild operator image, reload into Kind, restart controller
-	$(KIND) load docker-image $(IMG) --name $(KIND_CLUSTER_NAME)
+kind-reload-operator: docker-build-controller ## Rebuild operator image, reload into Kind, restart controller
+	$(KIND) load docker-image $(CONTROLLER_IMG) --name $(KIND_CLUSTER_NAME)
 	$(KUBECTL) patch deployment laboratory-controller-manager -n laboratory-system \
 		--type=json -p='[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"Never"}]'
 	$(KUBECTL) rollout restart deployment/laboratory-controller-manager -n laboratory-system
@@ -147,11 +164,11 @@ kind-reload-lab: docker-build-lab ## Rebuild lab (vpn+gateway) image, reload int
 	@echo "  kubectl delete pods -n <namespace> -l app=gateway"
 
 .PHONY: kind-reload
-kind-reload: kind-reload-operator kind-reload-agent kind-reload-lab ## Rebuild and reload all components
+kind-reload: kind-reload-operator kind-reload-node kind-reload-lab ## Rebuild and reload all components
 
 # ── Lima / k0s helpers ────────────────────────────────────────────────────────
 # Import a single image into both Lima VMs (ctrl + worker).
-# Usage: $(call k0s-import,$(AGENT_IMG))
+# Usage: $(call k0s-import,$(NODE_IMG))
 define k0s-import
 	docker save $(1) | limactl shell $(LIMA_CTRL)   -- sudo k0s ctr --namespace k8s.io images import -
 	docker save $(1) | limactl shell $(LIMA_WORKER) -- sudo k0s ctr --namespace k8s.io images import -
@@ -160,12 +177,12 @@ endef
 ##@ Lima / k0s (dev cluster)
 
 .PHONY: k0s-deploy
-k0s-deploy: docker-build-all ## Build ALL images, import into Lima, full helm install (use on fresh cluster)
-	$(call k0s-import,$(IMG))
-	$(call k0s-import,$(AGENT_IMG))
+k0s-deploy: docker-build ## Build ALL images, import into Lima, full helm install (use on fresh cluster)
+	$(call k0s-import,$(CONTROLLER_IMG))
+	$(call k0s-import,$(NODE_IMG))
 	$(call k0s-import,$(LAB_IMG))
 	$(call k0s-import,$(PROXY_IMG))
-	$(call k0s-import,$(GRPC_IMG))
+	$(call k0s-import,$(AGENT_IMG))
 	helm upgrade --install laboratory $(CHART_PATH) \
 		--namespace $(HELM_NS) --create-namespace \
 		--values $(CHART_PATH)/values.yaml \
@@ -181,26 +198,26 @@ k0s-deploy: docker-build-all ## Build ALL images, import into Lima, full helm in
 	@echo "✓ deployed all: $(BUILD_TAG)"
 
 .PHONY: k0s-reload-operator
-k0s-reload-operator: docker-build ## Rebuild operator, import into Lima, update image tag
-	$(call k0s-import,$(IMG))
+k0s-reload-operator: docker-build-controller ## Rebuild operator, import into Lima, update image tag
+	$(call k0s-import,$(CONTROLLER_IMG))
 	helm upgrade laboratory $(CHART_PATH) \
 		--namespace $(HELM_NS) \
 		--reuse-values \
 		--set operator.image.tag=$(BUILD_TAG) \
 		--wait --timeout=3m
 	@echo ""
-	@echo "✓ operator deployed: $(IMG)"
+	@echo "✓ operator deployed: $(CONTROLLER_IMG)"
 
-.PHONY: k0s-reload-agent
-k0s-reload-agent: docker-build-agent ## Rebuild node-agent, import into Lima, update image tag
-	$(call k0s-import,$(AGENT_IMG))
+.PHONY: k0s-reload-node
+k0s-reload-node: docker-build-node ## Rebuild node-agent, import into Lima, update image tag
+	$(call k0s-import,$(NODE_IMG))
 	helm upgrade laboratory $(CHART_PATH) \
 		--namespace $(HELM_NS) \
 		--reuse-values \
 		--set nodeAgent.image.tag=$(BUILD_TAG) \
 		--wait --timeout=3m
 	@echo ""
-	@echo "✓ node-agent deployed: $(AGENT_IMG)"
+	@echo "✓ node-agent deployed: $(NODE_IMG)"
 
 .PHONY: k0s-reload-lab
 k0s-reload-lab: docker-build-lab ## Rebuild lab (vpn+gateway) image, import into Lima, update image tag
@@ -227,7 +244,7 @@ k0s-reload-proxy: docker-build-proxy ## Rebuild proxy image, import into Lima, u
 	@echo "✓ proxy deployed: $(PROXY_IMG)"
 
 .PHONY: k0s-reload
-k0s-reload: k0s-reload-operator k0s-reload-agent k0s-reload-lab k0s-reload-proxy ## Rebuild and reload all components
+k0s-reload: k0s-reload-operator k0s-reload-node k0s-reload-lab k0s-reload-proxy ## Rebuild and reload all components
 
 .PHONY: k0s-upgrade-chart
 k0s-upgrade-chart: ## Apply values.yaml changes to existing cluster (preserves current image tags)
@@ -248,7 +265,7 @@ lab-access-keys: ## Generate the Ed25519 lab access key pair (private: backend L
 kind-deploy: kind-load install deploy ## Full local deploy: build all + load + CRDs + controller + node-agent
 	$(KUBECTL) create namespace lab-system --dry-run=client -o yaml | $(KUBECTL) apply -f -
 	$(KUSTOMIZE) build config/node-agent | $(KUBECTL) apply -f -
-	$(MAKE) kind-patch-agent
+	$(MAKE) kind-patch-node
 	@echo ""
 	@echo "Cluster ready. Run tests:"
 	@echo "  $(LOCAL_K0S)/scenarios/run.sh single-node"
@@ -305,38 +322,21 @@ build: manifests generate fmt vet ## Build manager binary.
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/manager
 
-# If you wish to build the manager image targeting other platforms you can use the --platform flag.
-# (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
-# More info: https://docs.docker.com/develop/develop-images/build_enhancements/
-.PHONY: docker-build
-docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} --target controller .
-
-.PHONY: docker-push
-docker-push: ## Push docker image with the manager.
-	$(CONTAINER_TOOL) push ${IMG}
-
-# PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
-# architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
-# - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/
-# - have enabled BuildKit. More info: https://docs.docker.com/develop/develop-images/build_enhancements/
-# - be able to push the image to your registry (i.e. if you do not set a valid value via IMG=<myregistry/image:<tag>> then the export will fail)
-# To adequately provide solutions that are compatible with multiple platforms, you should consider using this option.
-PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
+# Multi-platform build and push of one image: make docker-buildx IMAGE=proxy PLATFORMS=linux/arm64,linux/amd64
+# (IMAGE is one of controller agent proxy node lab). Needs docker buildx and a registry you can push to.
+PLATFORMS ?= linux/arm64,linux/amd64
+IMAGE ?= controller
 .PHONY: docker-buildx
-docker-buildx: ## Build and push docker image for the manager for cross-platform support
-	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
-	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
+docker-buildx: ## Build and push one image (IMAGE=...) for several platforms
 	- $(CONTAINER_TOOL) buildx create --name laboratory-builder
 	$(CONTAINER_TOOL) buildx use laboratory-builder
-	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
+	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --target $(IMAGE) --tag $(IMG_$(IMAGE)) .
 	- $(CONTAINER_TOOL) buildx rm laboratory-builder
-	rm Dockerfile.cross
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
 	mkdir -p dist
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	cd config/manager && $(KUSTOMIZE) edit set image controller=${CONTROLLER_IMG}
 	$(KUSTOMIZE) build config/default > dist/install.yaml
 
 ##@ Deployment
@@ -355,7 +355,7 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	cd config/manager && $(KUSTOMIZE) edit set image controller=${CONTROLLER_IMG}
 	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
