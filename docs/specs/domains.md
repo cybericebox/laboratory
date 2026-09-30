@@ -2,11 +2,13 @@
 
 ## Сейчас: один кластер
 
+Все три имени задаются только конфигурацией (env, values чарта). В коде нет ни значений по умолчанию, ни склейки из зоны: без них сервисы не стартуют. Ниже — значения локального стенда.
+
 | Имя | Куда | Что |
 |---|---|---|
 | `*.labs.<zone>` | L7-прокси | веб-доступ к устройствам лабораторий |
 | `vpn.<zone>` | WireGuard-демультиплексор | VPN участников и авторов |
-| `agent.<zone>` | агент laboratory (gRPC, mTLS) | внутреннее имя для бэкенда платформы |
+| `ctl.<zone>` | агент laboratory (gRPC, mTLS) | служебное имя для бэкенда платформы |
 
 Хост веб-устройства: `<device>-<code>.labs.<zone>`, например `web-only-x7q.labs.cybericebox-dev.pp.ua`.
 
@@ -22,7 +24,7 @@
 ```
 <device>-<code>.labs.<region>.<zone>
 vpn.<region>.<zone>
-agent.<region>.<zone>
+ctl.<region>.<zone>
 ```
 
 Пример: `web-only-x7q.labs.k1.cybericebox-dev.pp.ua`.
