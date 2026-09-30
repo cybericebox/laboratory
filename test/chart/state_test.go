@@ -55,7 +55,7 @@ func TestStatePersistenceRendersRegistryAndWiring(t *testing.T) {
 	var dep appsv1.Deployment
 	render(t, "templates/snapshots/deployment.yaml", &dep, on...)
 	zot := dep.Spec.Template.Spec.Containers[0]
-	if zot.Image != "ghcr.io/project-zot/zot-linux-amd64:v2.1.21" {
+	if zot.Image != "ghcr.io/project-zot/zot:v2.1.21" {
 		t.Errorf("registry image %q", zot.Image)
 	}
 	if dep.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {

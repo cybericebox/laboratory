@@ -287,7 +287,8 @@ devices:
     # The snapshot registry (zot) in the release namespace.
     registry:
       image:
-        repository: ghcr.io/project-zot/zot-linux-amd64
+        # Multi-arch (linux/amd64 and linux/arm64) image.
+        repository: ghcr.io/project-zot/zot
         tag: "v2.1.21"
         pullPolicy: IfNotPresent
       # StorageClass of the registry volume; empty = the cluster default.

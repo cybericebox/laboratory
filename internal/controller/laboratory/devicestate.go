@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -263,10 +264,38 @@ func (r *DeviceReconciler) reconcileCurrentPod(ctx context.Context, device *labo
 	if err := r.publishPlacement(ctx, device, cur); err != nil {
 		return ctrl.Result{}, err
 	}
+	if err := r.reportSnapshotPull(ctx, device, cur); err != nil {
+		return ctrl.Result{}, err
+	}
 	if !podReady(cur) || cur.Status.PodIP == "" {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+// pullWarning prefixes the warning the controller sets when a snapshot image cannot be pulled.
+const pullWarning = "snapshot image unavailable"
+
+// reportSnapshotPull surfaces a pod stuck pulling its snapshot image as a device
+// warning (there is no silent fallback to the base image, which would lose the
+// state), and clears the warning once the pod runs.
+func (r *DeviceReconciler) reportSnapshotPull(ctx context.Context, device *laboratoryv1alpha1.Device, pod *corev1.Pod) error {
+	st := device.Status.State
+	failing := ""
+	if st.Image != "" && len(pod.Spec.Containers) > 0 && pod.Spec.Containers[0].Image == st.Image {
+		for _, cs := range pod.Status.ContainerStatuses {
+			if w := cs.State.Waiting; w != nil && (w.Reason == "ErrImagePull" || w.Reason == "ImagePullBackOff") {
+				failing = w.Reason
+			}
+		}
+	}
+	switch {
+	case failing != "" && !strings.HasPrefix(st.Warning, pullWarning):
+		return r.patchState(ctx, device, statePatch{"warning": pullWarning + " (" + failing + "): the registry cannot be reached; reset the device to start from the base image"})
+	case failing == "" && strings.HasPrefix(st.Warning, pullWarning) && pod.Status.Phase == corev1.PodRunning:
+		return r.patchState(ctx, device, statePatch{"warning": nil})
+	}
+	return nil
 }
 
 // reconcileEndedPod handles a pod whose container finished: wait for the exit

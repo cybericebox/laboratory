@@ -336,8 +336,9 @@ kubectl -n laboratory-system logs -l app=node-agent -c node-agent | grep device-
 
 Size the volume for the base images plus (devices x `maxSnapshotSize`) in the worst case. If a device's warning says
 `state persistence unavailable`, the node's containerd does not use the overlayfs snapshotter or the paths above are
-not mounted. A device whose snapshot image cannot be pulled stays in `ImagePullBackOff`; use `ResetDevice` to start it
-from the base image.
+not mounted. A device whose snapshot image cannot be pulled stays in `ImagePullBackOff` and its status warning says
+`snapshot image unavailable`; the operator never falls back to the base image on its own (that would lose state
+silently). Fix the registry, or use `ResetDevice` to start it from the base image.
 
 ---
 

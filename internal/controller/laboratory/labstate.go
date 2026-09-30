@@ -77,3 +77,30 @@ func deviceStateInfo(d *laboratoryv1alpha1.Device) *laboratoryv1alpha1.DeviceSta
 		Rescue:         st.Rescue,
 	}
 }
+
+// snapshotInfoInterval is the least time between two writes of a device's
+// snapshot time into the Lab status: snapshots can come every few seconds and
+// every Lab status write reaches the monitoring stream.
+const snapshotInfoInterval = 10 * time.Second
+
+// throttleStateInfo keeps the previously published snapshot time while the new
+// one is less than snapshotInfoInterval later and nothing else changed.
+func throttleStateInfo(old, cur []laboratoryv1alpha1.DeviceRef) (throttled bool) {
+	prev := map[string]*laboratoryv1alpha1.DeviceStateInfo{}
+	for i := range old {
+		prev[old[i].Name] = old[i].State
+	}
+	for i := range cur {
+		p, n := prev[cur[i].Name], cur[i].State
+		if p == nil || n == nil || p.LastSnapshotAt == nil || n.LastSnapshotAt == nil {
+			continue
+		}
+		if d := n.LastSnapshotAt.Sub(p.LastSnapshotAt.Time); d > 0 && d < snapshotInfoInterval {
+			c := *n
+			c.LastSnapshotAt = p.LastSnapshotAt
+			cur[i].State = &c
+			throttled = true
+		}
+	}
+	return throttled
+}

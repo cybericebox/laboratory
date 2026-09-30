@@ -455,6 +455,33 @@ var _ = Describe("Device state persistence: bare Pod lifecycle", func() {
 		Expect(mustPod(2).Spec.Containers[0].Image).To(Equal(snap))
 	})
 
+	It("warns, without falling back to the base image, when the snapshot image cannot be pulled", func() {
+		p1 := startDevice()
+		setRunning(p1)
+		reconcileOnce()
+		patchDeviceState(func(s *laboratoryv1alpha1.DeviceStateStatus) { s.Image = snap })
+		setEnded(mustPod(1), time.Hour)
+		exitSnapshotDone(mustPod(1), "")
+		reconcileOnce()
+		reconcileOnce()
+		p2 := mustPod(2)
+		p2.Status.Phase = corev1.PodPending
+		p2.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "web", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ImagePullBackOff"}}}}
+		Expect(k8sClient.Status().Update(ctx, p2)).To(Succeed())
+		reconcileOnce()
+		st := getDevice().Status.State
+		Expect(st.Warning).To(ContainSubstring("snapshot image unavailable"))
+		Expect(mustPod(2).Spec.Containers[0].Image).To(Equal(snap))
+		_, err := getPod(3)
+		Expect(errors.IsNotFound(err)).To(BeTrue())
+
+		p2 = mustPod(2)
+		p2.Status.ContainerStatuses = nil
+		setRunning(p2)
+		reconcileOnce()
+		Expect(getDevice().Status.State.Warning).To(BeEmpty())
+	})
+
 	It("leaves a device without state persistence on its Deployment", func() {
 		plain := &laboratoryv1alpha1.Device{
 			ObjectMeta: metav1.ObjectMeta{Name: "lab-db", Namespace: ns},
@@ -469,3 +496,19 @@ var _ = Describe("Device state persistence: bare Pod lifecycle", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: plain.Name, Namespace: ns}, &dep)).To(Succeed())
 	})
 })
+
+func TestThrottleStateInfo(t *testing.T) {
+	t0 := metav1.NewTime(time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC))
+	t5 := metav1.NewTime(t0.Add(5 * time.Second))
+	t20 := metav1.NewTime(t0.Add(20 * time.Second))
+	old := []laboratoryv1alpha1.DeviceRef{{Name: "web", State: &laboratoryv1alpha1.DeviceStateInfo{LastSnapshotAt: &t0, SizeBytes: 1}}}
+
+	cur := []laboratoryv1alpha1.DeviceRef{{Name: "web", State: &laboratoryv1alpha1.DeviceStateInfo{LastSnapshotAt: &t5, SizeBytes: 1}}}
+	if !throttleStateInfo(old, cur) || !cur[0].State.LastSnapshotAt.Equal(&t0) {
+		t.Fatal("a snapshot time less than 10s newer must not be republished")
+	}
+	cur = []laboratoryv1alpha1.DeviceRef{{Name: "web", State: &laboratoryv1alpha1.DeviceStateInfo{LastSnapshotAt: &t20, SizeBytes: 1}}}
+	if throttleStateInfo(old, cur) || !cur[0].State.LastSnapshotAt.Equal(&t20) {
+		t.Fatal("a snapshot time 10s or more newer is published")
+	}
+}

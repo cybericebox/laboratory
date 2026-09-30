@@ -685,6 +685,8 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		}
 	}
 
+	throttled := throttleStateInfo(lab.Status.Devices, refs)
+
 	var connList laboratoryv1alpha1.ConnectionList
 	if err := r.List(
 		ctx, &connList, client.InNamespace(lab.Namespace),
@@ -755,6 +757,9 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		wasReady == allReady {
 		if newPhase != laboratoryv1alpha1.PhaseReady {
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
+		if throttled {
+			return ctrl.Result{RequeueAfter: snapshotInfoInterval}, nil
 		}
 		return ctrl.Result{}, nil
 	}
