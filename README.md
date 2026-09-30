@@ -204,7 +204,7 @@ make test-e2e        # e2e tests against a kind cluster (see test/e2e)
 - **Tests.** `make test` downloads the `kube-apiserver` and `etcd` binaries with `setup-envtest` into `./bin` and runs
   every package except the e2e suite, so controller tests run against a real API server without a cluster. Chart
   rendering tests live in [`test/chart`](test/chart).
-- **Images.** `make docker-build-all` builds the operator, node-agent, lab and proxy images; `make kind-deploy`
+- **Images.** `make docker-build` builds all five images (`make docker-build-controller|agent|proxy|node|lab` one of them); `make kind-deploy`
   builds them, loads them into a kind cluster and installs everything.
 - **Clients.** Typed clientset and apply configurations are generated with `hack/update-codegen.sh`.
 - **Local cluster.** The Makefile expects the local k0s/Lima cluster kit (VMs, Cilium Gateway, test scenarios) in a
