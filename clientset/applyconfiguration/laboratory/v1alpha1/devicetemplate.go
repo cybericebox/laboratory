@@ -26,6 +26,8 @@ import (
 //
 // DeviceTemplate is an inline device declaration inside Lab.spec.devices[].
 type DeviceTemplateApplyConfiguration struct {
+	// Name becomes part of the lab's web address (<name>-<code>.<domain>), so
+	// it is a DNS label of at most 35 characters (names.MaxDeviceNameLen).
 	Name  *string                        `json:"name,omitempty"`
 	Type  *laboratoryv1alpha1.DeviceType `json:"type,omitempty"`
 	Image *string                        `json:"image,omitempty"`

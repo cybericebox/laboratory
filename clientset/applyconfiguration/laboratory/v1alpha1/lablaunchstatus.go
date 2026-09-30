@@ -33,6 +33,7 @@ type LabLaunchStatusApplyConfiguration struct {
 	// AdmittedAt is when the launcher admitted the lab for provisioning.
 	AdmittedAt *v1.Time `json:"admittedAt,omitempty"`
 	// Position is the 1-based place in the queue; 0 when the lab is not queued.
+	// It is refreshed at a limited rate, so it can lag behind by a few seconds.
 	Position *int32 `json:"position,omitempty"`
 	// Length is the number of queued labs when Position was written.
 	Length *int32 `json:"length,omitempty"`

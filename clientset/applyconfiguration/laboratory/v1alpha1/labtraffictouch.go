@@ -19,21 +19,32 @@ package v1alpha1
 
 // LabTrafficTouchApplyConfiguration represents a declarative configuration of the LabTrafficTouch type for use
 // with apply.
+//
+// LabTrafficTouch is one cumulative aggregate row: what one VPN config (or one
+// proxy token) did against one lab target since the collector booted. There is
+// no time series. Times are Unix milliseconds. Only lab-internal addresses are
+// ever recorded, never the address of a user.
 type LabTrafficTouchApplyConfiguration struct {
-	Subject          *string `json:"subject,omitempty"`
-	LabName          *string `json:"labName,omitempty"`
-	Device           *string `json:"device,omitempty"`
-	DstIP            *string `json:"dstIP,omitempty"`
-	Proto            *string `json:"proto,omitempty"`
-	DstPort          *int32  `json:"dstPort,omitempty"`
-	Attempts         *int64  `json:"attempts,omitempty"`
-	PacketsOut       *int64  `json:"packetsOut,omitempty"`
-	PacketsIn        *int64  `json:"packetsIn,omitempty"`
-	BytesOut         *int64  `json:"bytesOut,omitempty"`
-	BytesIn          *int64  `json:"bytesIn,omitempty"`
-	FirstSeenMs      *int64  `json:"firstSeenMs,omitempty"`
-	LastSeenMs       *int64  `json:"lastSeenMs,omitempty"`
-	FirstRespondedMs *int64  `json:"firstRespondedMs,omitempty"`
+	// Subject is the LabGroupClient name, for the VPN and for the proxy (the client
+	// of the lab access token).
+	Subject *string `json:"subject,omitempty"`
+	LabName *string `json:"labName,omitempty"`
+	// Device is the device or route inside the lab, when known.
+	Device  *string `json:"device,omitempty"`
+	DstIP   *string `json:"dstIP,omitempty"`
+	Proto   *string `json:"proto,omitempty"`
+	DstPort *int32  `json:"dstPort,omitempty"`
+	// Attempts counts new connections (VPN) or requests (proxy).
+	Attempts   *int64 `json:"attempts,omitempty"`
+	PacketsOut *int64 `json:"packetsOut,omitempty"`
+	PacketsIn  *int64 `json:"packetsIn,omitempty"`
+	BytesOut   *int64 `json:"bytesOut,omitempty"`
+	BytesIn    *int64 `json:"bytesIn,omitempty"`
+	// FirstSeenMs is the first attempt, LastSeenMs the last one.
+	FirstSeenMs *int64 `json:"firstSeenMs,omitempty"`
+	LastSeenMs  *int64 `json:"lastSeenMs,omitempty"`
+	// FirstRespondedMs is when the lab first answered; zero means it never did.
+	FirstRespondedMs *int64 `json:"firstRespondedMs,omitempty"`
 }
 
 // LabTrafficTouchApplyConfiguration constructs a declarative configuration of the LabTrafficTouch type for use with

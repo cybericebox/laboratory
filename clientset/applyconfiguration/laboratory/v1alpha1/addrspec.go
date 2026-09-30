@@ -56,6 +56,9 @@ func (b *AddrSpecApplyConfiguration) WithIP(value string) *AddrSpecApplyConfigur
 	return b
 }
 
+// WithAddressRef sets the AddressRef field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the AddressRef field is set to the value of the last call.
 func (b *AddrSpecApplyConfiguration) WithAddressRef(value *NetworkIPRefApplyConfiguration) *AddrSpecApplyConfiguration {
 	b.AddressRef = value
 	return b
@@ -69,6 +72,9 @@ func (b *AddrSpecApplyConfiguration) WithGateway(value string) *AddrSpecApplyCon
 	return b
 }
 
+// WithGatewayRef sets the GatewayRef field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the GatewayRef field is set to the value of the last call.
 func (b *AddrSpecApplyConfiguration) WithGatewayRef(value *NetworkIPRefApplyConfiguration) *AddrSpecApplyConfiguration {
 	b.GatewayRef = value
 	return b

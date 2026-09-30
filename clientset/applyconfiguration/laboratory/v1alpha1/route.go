@@ -42,6 +42,9 @@ func (b *RouteApplyConfiguration) WithDst(value string) *RouteApplyConfiguration
 	return b
 }
 
+// WithDstRef sets the DstRef field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the DstRef field is set to the value of the last call.
 func (b *RouteApplyConfiguration) WithDstRef(value *NetworkSubnetRefApplyConfiguration) *RouteApplyConfiguration {
 	b.DstRef = value
 	return b
@@ -55,6 +58,9 @@ func (b *RouteApplyConfiguration) WithVia(value string) *RouteApplyConfiguration
 	return b
 }
 
+// WithViaRef sets the ViaRef field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ViaRef field is set to the value of the last call.
 func (b *RouteApplyConfiguration) WithViaRef(value *NetworkIPRefApplyConfiguration) *RouteApplyConfiguration {
 	b.ViaRef = value
 	return b

@@ -35,10 +35,10 @@ type Interface interface {
 	LabGroups() TypedLabGroupInformer
 	// LabGroupAccessPolicies returns a LabGroupAccessPolicyInformer.
 	LabGroupAccessPolicies() TypedLabGroupAccessPolicyInformer
-	// LabTrafficReports returns a LabTrafficReportInformer.
-	LabTrafficReports() TypedLabTrafficReportInformer
 	// LabGroupClients returns a LabGroupClientInformer.
 	LabGroupClients() TypedLabGroupClientInformer
+	// LabTrafficReports returns a LabTrafficReportInformer.
+	LabTrafficReports() TypedLabTrafficReportInformer
 	// LabVPNs returns a LabVPNInformer.
 	LabVPNs() TypedLabVPNInformer
 }
@@ -84,14 +84,14 @@ func (v *version) LabGroupAccessPolicies() TypedLabGroupAccessPolicyInformer {
 	return &labGroupAccessPolicyInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
-// LabTrafficReports returns a TypedLabTrafficReportInformer.
-func (v *version) LabTrafficReports() TypedLabTrafficReportInformer {
-	return &labTrafficReportInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
-}
-
 // LabGroupClients returns a TypedLabGroupClientInformer.
 func (v *version) LabGroupClients() TypedLabGroupClientInformer {
 	return &labGroupClientInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// LabTrafficReports returns a TypedLabTrafficReportInformer.
+func (v *version) LabTrafficReports() TypedLabTrafficReportInformer {
+	return &labTrafficReportInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
 // LabVPNs returns a TypedLabVPNInformer.

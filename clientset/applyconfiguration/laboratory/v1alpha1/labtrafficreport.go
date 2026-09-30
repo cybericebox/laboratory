@@ -26,9 +26,9 @@ import (
 // LabTrafficReportApplyConfiguration represents a declarative configuration of the LabTrafficReport type for use
 // with apply.
 //
-// LabTrafficReport is the namespaced firewall policy of one LabGroup. The
-// agent owns a fixed object in the LabGroup namespace and replaces its Spec in
-// one Kubernetes update, while the VPN process watches this resource.
+// LabTrafficReport is the namespaced hand-off between a traffic collector (the
+// VPN pod, a proxy replica) and the agent, which relays it to the platform.
+// The custom resource is the buffer: the agent keeps no traffic state.
 type LabTrafficReportApplyConfiguration struct {
 	v1.TypeMetaApplyConfiguration    `json:""`
 	*v1.ObjectMetaApplyConfiguration `json:"metadata,omitempty"`

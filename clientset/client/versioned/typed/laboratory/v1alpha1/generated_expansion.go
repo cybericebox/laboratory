@@ -29,8 +29,8 @@ type LabGroupExpansion interface{}
 
 type LabGroupAccessPolicyExpansion interface{}
 
-type LabTrafficReportExpansion interface{}
-
 type LabGroupClientExpansion interface{}
+
+type LabTrafficReportExpansion interface{}
 
 type LabVPNExpansion interface{}
