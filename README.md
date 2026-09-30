@@ -60,14 +60,14 @@ It consists of:
 
 | Binary (`cmd/`) | Image | Role |
 |---|---|---|
-| `main.go` (operator) | `laboratory-controller` | controller-runtime manager with all reconcilers |
-| `agent` | `laboratory-agent` | gRPC management API (`LabManager`) in front of the CRDs |
-| `node-agent` | `laboratory-node-agent` | per-node OVS programming, device port reconciliation, gRPC socket for the CNI gate |
-| `install-cni`, `cni-gate` | `laboratory-node-agent` | installs and runs the meta-CNI that keeps the cluster CNI in charge of `eth0` |
-| `netconfig` | `laboratory-node-agent` | init container that configures lab interfaces inside a device pod |
+| `main.go` (operator) | `laboratory` | controller-runtime manager with all reconcilers |
+| `agent` | `laboratory` | gRPC management API (`LabManager`) in front of the CRDs |
+| `node-agent` | `laboratory-node` | per-node OVS programming, device port reconciliation, gRPC socket for the CNI gate |
+| `install-cni`, `cni-gate` | `laboratory-node` | installs and runs the meta-CNI that keeps the cluster CNI in charge of `eth0` |
+| `netconfig` | `laboratory-node` | init container that configures lab interfaces inside a device pod |
 | `vpn` | `laboratory-lab` | per-group WireGuard server, peer management, access policy, flow accounting |
 | `gateway` | `laboratory-lab` | per-group internet egress NAT and optional DHCP for lab segments |
-| `proxy-l7`, `proxy-wg` | `laboratory-proxy` | shared HTTPS front and WireGuard demultiplexer |
+| `proxy-l7`, `proxy-wg` | `laboratory` | shared HTTPS front and WireGuard demultiplexer |
 | `ovs-diag` | - | diagnostic tool for moving OVS ports into pod network namespaces |
 
 The Dockerfiles are in the repository root (`Dockerfile*`), one per published image. Component specifications (in Russian) are in
@@ -77,13 +77,11 @@ The Dockerfiles are in the repository root (`Dockerfile*`), one per published im
 
 Images are published to Docker Hub for `linux/amd64` and `linux/arm64`:
 
-| Image | Dockerfile |
-|---|---|
-| `cybericebox/laboratory-controller` | `Dockerfile` |
-| `cybericebox/laboratory-lab` (vpn and gateway) | `Dockerfile.lab` |
-| `cybericebox/laboratory-proxy` (proxy-l7 and proxy-wg) | `Dockerfile.proxy` |
-| `cybericebox/laboratory-node-agent` | `Dockerfile.node-agent` |
-| `cybericebox/laboratory-agent` | `Dockerfile.agent` |
+| Image | Contents | Dockerfile |
+|---|---|---|
+| `cybericebox/laboratory` | operator (`/manager`), agent (`/agent`), proxy (`/proxy-l7`, `/proxy-wg`); each Deployment picks its binary through `command` | `Dockerfile` |
+| `cybericebox/laboratory-node` | node-agent, CNI gate, netconfig and Open vSwitch (one pod per node) | `Dockerfile.node` |
+| `cybericebox/laboratory-lab` | per-group VPN and gateway runtime (`/vpn`, `/gateway`, iptables, iproute2) | `Dockerfile.lab` |
 
 - Every push to `develop` builds all images and tags them `develop` and `sha-<short commit>` (workflow `develop-images.yml`).
 - Publishing a GitHub release `vX.Y.Z` builds them with the tags `X.Y.Z` and `latest`, packages the Helm chart with

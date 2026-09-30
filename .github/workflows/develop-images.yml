@@ -13,16 +13,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: controller
+          - name: laboratory
             file: Dockerfile
+            image: cybericebox/laboratory
+          - name: node
+            file: Dockerfile.node
+            image: cybericebox/laboratory-node
           - name: lab
             file: Dockerfile.lab
-          - name: proxy
-            file: Dockerfile.proxy
-          - name: node-agent
-            file: Dockerfile.node-agent
-          - name: agent
-            file: Dockerfile.agent
+            image: cybericebox/laboratory-lab
     steps:
       - name: Check repository
         uses: actions/checkout@v4
@@ -49,5 +48,5 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,scope=${{ matrix.name }},mode=max
           tags: |
-            cybericebox/laboratory-${{ matrix.name }}:develop
-            cybericebox/laboratory-${{ matrix.name }}:${{ steps.meta.outputs.sha }}
+            ${{ matrix.image }}:develop
+            ${{ matrix.image }}:${{ steps.meta.outputs.sha }}
