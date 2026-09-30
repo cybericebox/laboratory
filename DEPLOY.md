@@ -62,7 +62,7 @@ make lab-access-keys   # /tmp/lab-access-private.pem and /tmp/lab-access-public.
 ```
 
 The proxy's own session-cookie key (`SESSION_SECRET`) is generated once and kept across upgrades; to supply it
-yourself set `proxy.l7.sessionSecret.existingSecret` (a Secret with key `sessionSecret`, 32+ bytes) or
+yourself set `proxy.l7.sessionSecret.existingSecret` (a Secret with key `sessionSecret`, 32+ bytes; after changing its content run `kubectl -n laboratory-proxy rollout restart deploy/laboratory-proxy`, the chart cannot see it) or
 `proxy.l7.sessionSecret.value`.
 
 Full list of available values: see `charts/laboratory/values.yaml`.
