@@ -70,8 +70,34 @@ It consists of:
 | `proxy-l7`, `proxy-wg` | `laboratory-proxy` | shared HTTPS front and WireGuard demultiplexer |
 | `ovs-diag` | - | diagnostic tool for moving OVS ports into pod network namespaces |
 
-The Dockerfiles are in the repository root (`Dockerfile*`). Component specifications (in Russian) are in
+The Dockerfiles are in the repository root (`Dockerfile*`), one per published image. Component specifications (in Russian) are in
 [`docs/specs/`](docs/specs/).
+
+## Releases & images
+
+Images are published to Docker Hub for `linux/amd64` and `linux/arm64`:
+
+| Image | Dockerfile |
+|---|---|
+| `cybericebox/laboratory-controller` | `Dockerfile` |
+| `cybericebox/laboratory-lab` (vpn and gateway) | `Dockerfile.lab` |
+| `cybericebox/laboratory-proxy` (proxy-l7 and proxy-wg) | `Dockerfile.proxy` |
+| `cybericebox/laboratory-node-agent` | `Dockerfile.node-agent` |
+| `cybericebox/laboratory-agent` | `Dockerfile.agent` |
+
+- Every push to `develop` builds all images and tags them `develop` and `sha-<short commit>` (workflow `develop-images.yml`).
+- Publishing a GitHub release `vX.Y.Z` builds them with the tags `X.Y.Z` and `latest`, packages the Helm chart with
+  `version` and `appVersion` set to `X.Y.Z`, pushes it to `oci://registry-1.docker.io/cybericebox/laboratory` and
+  attaches the `.tgz` to the release (workflow `release.yml`).
+- Chart image tags default to the chart `appVersion`; set `*.image.tag` in values to pin another tag (for example `develop`).
+
+```bash
+helm install laboratory oci://registry-1.docker.io/cybericebox/laboratory --version X.Y.Z \
+  --namespace laboratory-system --create-namespace -f my-values.yaml
+```
+
+The workflows need two repository secrets (Settings, Secrets and variables, Actions): `DOCKERHUB_USERNAME` and
+`DOCKERHUB_TOKEN` (a Docker Hub access token with write access to the `cybericebox` organisation).
 
 ## Requirements
 
