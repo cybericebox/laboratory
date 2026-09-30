@@ -149,13 +149,21 @@ namespace; `templates/validate.yaml` rejects anything else and fails early when 
 6. Create a lab group and a lab. [`DEPLOY.md`](DEPLOY.md) walks through `LabGroup`, `LabGroupClient` and `Lab`
    examples, upgrades and uninstalling (CRDs are not removed by `helm uninstall`).
 
+## Launch pacing
+
+A burst of new Labs does not start all at once. Each Lab is created in phase `Queued` and the operator admits it in
+launch class order (the lab type, then creation time) while fewer than `launch.maxInFlight` labs are provisioning, the
+images of its class are pulled onto the nodes, and the nodes have free CPU and memory for it. Device pods are
+Guaranteed (requests equal limits) and each lab group has a PodDisruptionBudget. The queue position, length and reason
+are in `Lab.status.launch` and in the agent's `LabStatus.queue`. See "Launch pacing" in [`DEPLOY.md`](DEPLOY.md).
+
 ## Management agent API
 
 With `agent.enabled`, the chart deploys a gRPC server (default port 5454, TLS with mutual authentication; client
 certificates are issued by the chart for the CNs listed in `agent.clients`). The service is `LabManager`, defined in
 [`pkg/agent/protobuf/agent.proto`](pkg/agent/protobuf/agent.proto). It covers `Ping`, CRUD for `LabGroup`, `Lab` and
 `LabGroupClient`, suspend and VPN-disable switches for a group, access-policy reconciliation, a `Monitoring` stream
-and `GetCapacity`. Go bindings are generated next to the proto file; a Go client is in [`pkg/agent/client`](pkg/agent/client).
+and `GetCapacity`. `LabStatus.queue` carries the launch queue state. Go bindings are generated next to the proto file; a Go client is in [`pkg/agent/client`](pkg/agent/client).
 
 ## Development
 
