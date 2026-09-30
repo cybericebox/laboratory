@@ -79,6 +79,7 @@ spec:
                 description: Phase is the lifecycle phase of a resource.
                 enum:
                 - Pending
+                - Queued
                 - Provisioning
                 - Ready
                 - Suspended

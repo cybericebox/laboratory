@@ -10,6 +10,11 @@ type LabSpec struct {
 	Internet    LabNetworkSpec       `json:"internet,omitempty"`
 	Devices     []DeviceTemplate     `json:"devices,omitempty"`
 	Connections []ConnectionTemplate `json:"connections,omitempty"`
+	// LaunchClass groups labs of one type (for example an exercise version or
+	// variant id) for launch pacing: labs of one class are admitted together.
+	// Empty means the operator derives the class from the lab topology and images.
+	// +optional
+	LaunchClass string `json:"launchClass,omitempty"`
 }
 
 // LabNetworkSpec configures a network segment (VPN or internet) attached to the lab.
@@ -76,6 +81,10 @@ type LabStatus struct {
 	Devices     []DeviceRef      `json:"devices,omitempty"`
 	Connections []ConnectionRef  `json:"connections,omitempty"`
 	Access      []AccessEntry    `json:"access,omitempty"`
+	// Launch reports the launch pacing state: the resolved class, the admission
+	// time and, while the lab is Queued, its place in the queue.
+	// +optional
+	Launch *LabLaunchStatus `json:"launch,omitempty"`
 	// Conditions surfaces reconciler progress/blocking reasons
 	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
 	// +optional

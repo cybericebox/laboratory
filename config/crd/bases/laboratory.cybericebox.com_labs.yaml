@@ -295,6 +295,12 @@ spec:
                   enabled:
                     type: boolean
                 type: object
+              launchClass:
+                description: |-
+                  LaunchClass groups labs of one type (for example an exercise version or
+                  variant id) for launch pacing: labs of one class are admitted together.
+                  Empty means the operator derives the class from the lab topology and images.
+                type: string
               vpn:
                 description: LabNetworkSpec configures a network segment (VPN or internet)
                   attached to the lab.
@@ -456,10 +462,42 @@ spec:
                   ready:
                     type: boolean
                 type: object
+              launch:
+                description: |-
+                  Launch reports the launch pacing state: the resolved class, the admission
+                  time and, while the lab is Queued, its place in the queue.
+                properties:
+                  admittedAt:
+                    description: AdmittedAt is when the launcher admitted the lab
+                      for provisioning.
+                    format: date-time
+                    type: string
+                  class:
+                    description: |-
+                      Class is the resolved launch class: Spec.LaunchClass, or a hash of the lab
+                      topology and images when that is empty.
+                    type: string
+                  length:
+                    description: Length is the number of queued labs when Position
+                      was written.
+                    format: int32
+                    type: integer
+                  position:
+                    description: |-
+                      Position is the 1-based place in the queue; 0 when the lab is not queued.
+                      It is refreshed at a limited rate, so it can lag behind by a few seconds.
+                    format: int32
+                    type: integer
+                  reason:
+                    description: Reason is why the queue is not admitting this lab
+                      right now (LaunchReason*).
+                    type: string
+                type: object
               phase:
                 description: Phase is the lifecycle phase of a resource.
                 enum:
                 - Pending
+                - Queued
                 - Provisioning
                 - Ready
                 - Suspended

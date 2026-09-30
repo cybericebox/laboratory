@@ -125,6 +125,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.LabNetworkSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabNetworkStatus"):
 		return &applyconfigurationlaboratoryv1alpha1.LabNetworkStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabLaunchStatus"):
+		return &applyconfigurationlaboratoryv1alpha1.LabLaunchStatusApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabSpec"):
 		return &applyconfigurationlaboratoryv1alpha1.LabSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabStatus"):

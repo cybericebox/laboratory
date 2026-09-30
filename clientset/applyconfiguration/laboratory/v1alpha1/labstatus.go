@@ -33,6 +33,9 @@ type LabStatusApplyConfiguration struct {
 	Devices     []DeviceRefApplyConfiguration       `json:"devices,omitempty"`
 	Connections []ConnectionRefApplyConfiguration   `json:"connections,omitempty"`
 	Access      []AccessEntryApplyConfiguration     `json:"access,omitempty"`
+	// Launch reports the launch pacing state: the resolved class, the admission
+	// time and, while the lab is Queued, its place in the queue.
+	Launch *LabLaunchStatusApplyConfiguration `json:"launch,omitempty"`
 	// Conditions surfaces reconciler progress/blocking reasons
 	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
 	Conditions []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
@@ -104,6 +107,14 @@ func (b *LabStatusApplyConfiguration) WithAccess(values ...*AccessEntryApplyConf
 		}
 		b.Access = append(b.Access, *values[i])
 	}
+	return b
+}
+
+// WithLaunch sets the Launch field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Launch field is set to the value of the last call.
+func (b *LabStatusApplyConfiguration) WithLaunch(value *LabLaunchStatusApplyConfiguration) *LabStatusApplyConfiguration {
+	b.Launch = value
 	return b
 }
 
