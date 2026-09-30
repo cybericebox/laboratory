@@ -17,6 +17,7 @@ const ConditionReady = "Ready"
 const (
 	ReasonReady                = "Ready"
 	ReasonProvisioning         = "Provisioning"
+	ReasonQueued               = "Queued"
 	ReasonValidationFailed     = "ValidationFailed"
 	ReasonWaitingForInterface  = "WaitingForInterface"
 	ReasonWaitingForVNI        = "WaitingForVNI"

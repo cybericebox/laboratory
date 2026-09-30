@@ -55,6 +55,9 @@ type LabReconciler struct {
 	VPNBaseNetwork string
 	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets (e.g. "10.9.0.0/16").
 	InetBaseNetwork string
+	// LaunchGate holds a new Lab back until the Launcher admits it (launch pacing).
+	// Off: the lab is provisioned as soon as it is created.
+	LaunchGate bool
 }
 
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
@@ -87,6 +90,12 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		if err := r.Update(ctx, &lab); err != nil {
 			return ctrl.Result{}, err
 		}
+	}
+
+	// A queued lab creates nothing yet: the launcher admits it (status patch),
+	// which triggers the next reconcile.
+	if r.LaunchGate && !labAdmitted(&lab) {
+		return ctrl.Result{}, nil
 	}
 
 	if updated, err := r.ensureSubnetAllocation(ctx, &lab); err != nil {

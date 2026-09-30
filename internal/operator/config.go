@@ -67,9 +67,12 @@ type Config struct {
 	// Launch pacing: a new Lab is admitted from a queue so that a burst of labs
 	// does not overload the cluster.
 
+	// LaunchEnabled turns the queue on. Off: every lab is provisioned at once,
+	// as before launch pacing existed.
+	LaunchEnabled bool `env:"LAUNCH_ENABLED" envDefault:"true"`
 	// LaunchMaxInFlight is the largest number of labs provisioning at once. A lab
 	// counts from admission until it is Ready or LaunchWaveTimeout expires.
-	// 0 disables pacing: every lab is provisioned at once.
+	// 0 sets no limit (prepull and the resource check still apply).
 	LaunchMaxInFlight int `env:"LAUNCH_MAX_IN_FLIGHT" envDefault:"20"`
 	// LaunchWaveTimeout is how long an admitted lab holds its slot if it is not Ready.
 	LaunchWaveTimeout time.Duration `env:"LAUNCH_WAVE_TIMEOUT" envDefault:"3m"`
