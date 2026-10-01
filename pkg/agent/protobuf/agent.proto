@@ -56,6 +56,10 @@ message NamespacedIDRequest {string namespace = 1; string name = 2;}
 message LabGroup {
   string name = 1;
   LabGroupStatus status = 2;
+  // Kubernetes labels of the LabGroup. Create/Update merge the given labels into
+  // the object's (a label is never removed this way). The Monitoring selector
+  // matches against them.
+  map<string, string> labels = 10;
 }
 message LabGroupStatus {
   string phase = 1;
@@ -84,6 +88,8 @@ message Lab {
   // Populated only by monitoring so the backend can associate a namespaced
   // Lab record with its LabGroup without inferring it from a namespace.
   string lab_group_name = 6;
+  // Kubernetes labels of the Lab; set and merged like LabGroup.labels.
+  map<string, string> labels = 10;
 }
 // DeviceEnv carries the env vars for one device (e.g. a task flag, a license).
 message DeviceEnv {
@@ -163,6 +169,8 @@ message LabGroupClient {
   LabGroupClientStatus status = 4;
   // Populated only by monitoring; CRUD callers resolve group scope themselves.
   string lab_group_name = 5;
+  // Kubernetes labels of the client; set and merged like LabGroup.labels.
+  map<string, string> labels = 10;
 }
 message LabGroupClientStatus {
   reserved 2;   // was secret_ref (client Secret removed)
@@ -191,6 +199,9 @@ message LabGroupAccessPolicy {
 	LabGroupAccessPolicyStatus status = 3;
 	// Populated only by monitoring; mutations resolve scope from LabGroup name.
 	string namespace = 4;
+  // Labels of the policy object. ReconcileLabGroupAccess gives it the labels of its
+  // LabGroup plus these, so a selector that matches a group matches its policy.
+  map<string, string> labels = 10;
 }
 enum LabGroupAccessAction {
   LAB_GROUP_ACCESS_ACTION_UNSPECIFIED = 0;
@@ -222,11 +233,20 @@ message LabGroupAccessRuleStatistics {
 }
 
 message MonitoringRequest {
-  // The agent bounds this to protect the Kubernetes API from a too-fast caller.
+  // The agent bounds this to protect the Kubernetes API from a too-fast caller. It is
+  // the least time between two messages of this stream: changes in between are merged.
   int64 min_interval_ms = 1;
-  // Reserved for a future resumable agent journal. Current agents always send
-  // a new snapshot on connection/reconnection.
+  // Resume: the last sequence the subscriber processed from the agent instance named in
+  // agent_epoch. If that instance still holds the missed updates in its journal, they are
+  // replayed (snapshot=false); otherwise a full snapshot (snapshot=true) is sent. 0 = no resume.
   int64 resume_after_sequence = 2;
+  // Kubernetes label selector ("a=b,c in (d,e),!f"). Only objects of the kinds LabGroup, Lab,
+  // LabGroupClient and access policy whose labels match are sent, in the snapshot and in the
+  // updates, deletions included. A traffic report is cut down to the touches of matching labs.
+  // Capacity is always sent. Empty = everything. An invalid selector fails the call.
+  string selector = 3;
+  // The agent_epoch of the updates resume_after_sequence belongs to.
+  string agent_epoch = 4;
 }
 
 message MonitoringDeletedKey {
@@ -254,6 +274,9 @@ message MonitoringUpdate {
   // resources. State records like clients and policies, so a fresh snapshot
   // after a reconnect re-sends them; consumers apply them as cumulative values.
   repeated TrafficReport traffic = 16;
+  // Identifies this agent PROCESS. Sequences are monotonic within one epoch only; a changed
+  // epoch means the agent restarted and a resume is impossible (a snapshot follows).
+  string agent_epoch = 20;
 }
 
 // TrafficReport is the state of one collector (the VPN pod of a group, or one

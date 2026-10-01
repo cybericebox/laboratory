@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"sync"
 
 	versioned "github.com/cybericebox/laboratory/clientset/client/versioned"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
@@ -21,6 +22,10 @@ type Handler struct {
 	// resource-usage reporting then degrades to zero rather than failing.
 	metrics metricsclient.Interface
 	agentID string
+
+	// monitor is the shared poller and journal behind every Monitoring stream.
+	monOnce sync.Once
+	mon     *monitor
 }
 
 // NewHandler builds a Handler backed by the given typed clientset, plain

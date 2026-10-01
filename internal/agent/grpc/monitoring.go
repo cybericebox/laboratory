@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -13,24 +15,54 @@ import (
 )
 
 const (
-	monitoringSchemaVersion   = 2
+	monitoringSchemaVersion   = 3
 	minimumMonitoringPeriod   = 10 * time.Millisecond
 	defaultMonitoringPeriod   = 5 * time.Second
 	monitoringHeartbeatPeriod = 30 * time.Second
 )
 
-// snapshot builds a secret-free MonitoringUpdate covering all LabGroups
+// monState is one complete observation of the platform: the secret-free
+// MonitoringUpdate and, kept beside it, the Kubernetes labels of every record,
+// which the selector of a subscriber is matched against.
+type monState struct {
+	update *protobuf.MonitoringUpdate
+	// labels is keyed like monitoringRecord.key().
+	labels map[string]map[string]string
+	// labLabels is keyed "<group>\x00<lab>": the labels of a Lab, which decide
+	// whether the touches of a traffic report are visible to a subscriber.
+	labLabels map[string]map[string]string
+}
+
+func recordKey(kind, group, namespace, name string) string {
+	return strings.Join([]string{kind, group, namespace, name}, "\x00")
+}
+
+func labLabelKey(group, lab string) string { return group + "\x00" + lab }
+
+// snapshot returns the current MonitoringUpdate (see collect).
+func (h *Handler) snapshot(ctx context.Context) (*protobuf.MonitoringUpdate, error) {
+	st, err := h.collect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return st.update, nil
+}
+
+// collect builds a secret-free observation covering all LabGroups
 // (cluster-scoped) and, for each group with a provisioned namespace, its Labs
 // and LabGroupClients (namespace-scoped).
-func (h *Handler) snapshot(ctx context.Context) (*protobuf.MonitoringUpdate, error) {
+func (h *Handler) collect(ctx context.Context) (*monState, error) {
 	groups, err := h.cs.LaboratoryV1alpha1().LabGroups().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
+	st := &monState{labels: map[string]map[string]string{}, labLabels: map[string]map[string]string{}}
 	upd := &protobuf.MonitoringUpdate{}
+	st.update = upd
 	for i := range groups.Items {
 		g := &groups.Items[i]
 		upd.Groups = append(upd.Groups, labGroupToProto(g))
+		st.labels[recordKey("lab_group", g.Name, "", g.Name)] = g.Labels
 		ns := g.Status.Namespace
 		if ns == "" {
 			continue
@@ -44,17 +76,21 @@ func (h *Handler) snapshot(ctx context.Context) (*protobuf.MonitoringUpdate, err
 				fillLabUsage(p, usage)
 				fillLabPodStatus(p, pods)
 				upd.Labs = append(upd.Labs, p)
+				st.labels[recordKey("lab", g.Name, ns, labs.Items[j].Name)] = labs.Items[j].Labels
+				st.labLabels[labLabelKey(g.Name, labs.Items[j].Name)] = labs.Items[j].Labels
 			}
 		}
 		clients, err := h.cs.LaboratoryV1alpha1().LabGroupClients(ns).List(ctx, metav1.ListOptions{})
 		if err == nil {
 			for j := range clients.Items {
 				upd.Clients = append(upd.Clients, clientMonitoringToProto(&clients.Items[j], g.Name))
+				st.labels[recordKey("client", g.Name, ns, clients.Items[j].Name)] = clients.Items[j].Labels
 			}
 		}
 		policy, err := h.cs.LaboratoryV1alpha1().LabGroupAccessPolicies(ns).Get(ctx, "access-policy", metav1.GetOptions{})
 		if err == nil {
 			upd.Policies = append(upd.Policies, accessPolicyToProto(policy, g.Name))
+			st.labels[recordKey("access_policy", g.Name, ns, "access-policy")] = policy.Labels
 		}
 		reports, err := h.cs.LaboratoryV1alpha1().LabTrafficReports(ns).List(ctx, metav1.ListOptions{})
 		if err == nil {
@@ -79,51 +115,122 @@ func (h *Handler) snapshot(ctx context.Context) (*protobuf.MonitoringUpdate, err
 	upd.Capacity = capacity
 	sortMonitoringRecords(upd)
 	sortTraffic(upd)
-	return upd, nil
+	return st, nil
 }
 
-// Monitoring starts with a complete snapshot and then sends only changed
-// records. It intentionally does not resume an old sequence: a reconnection
-// receives a new snapshot so consumers can safely discard a partial delta set.
+// Monitoring streams the platform state to one subscriber. It starts with a full
+// snapshot, or, when the subscriber names an agent epoch and sequence the journal
+// still covers, with the updates it missed; then it sends only changes. All
+// subscribers share one poller and one journal (see monitor), each gets its own
+// selector, minimum interval and position.
 func (h *Handler) Monitoring(request *protobuf.MonitoringRequest, stream protobuf.LabManager_MonitoringServer) error {
+	filter, err := newSelectorFilter(request.GetSelector())
+	if err != nil {
+		return status.Errorf(codes.InvalidArgument, "selector: %v", err)
+	}
 	period := monitoringPeriod(request.GetMinIntervalMs())
-	current, err := h.snapshot(stream.Context())
+	sub, start, err := h.monitor().subscribe(stream.Context(), request)
 	if err != nil {
 		return err
 	}
+	defer h.monitor().unsubscribe(sub)
 
-	sequence := int64(1)
-	if err := stream.Send(h.monitoringUpdate(current, sequence, true)); err != nil {
-		return err
+	// The loop below never blocks on the network: a goroutine does the sends, so a
+	// subscriber stuck in Send fills its journal buffer, is dropped by the monitor, and
+	// the loop (watching sub.dropped) ends the call, which unblocks the sender.
+	out := make(chan *protobuf.MonitoringUpdate, 1)
+	sendErr := make(chan error, 1)
+	go func() {
+		for u := range out {
+			if err := stream.Send(u); err != nil {
+				sendErr <- err
+				return
+			}
+		}
+		sendErr <- nil
+	}()
+	defer func() {
+		close(out)
+	}()
+	emit := func(u *protobuf.MonitoringUpdate) error {
+		select {
+		case out <- u:
+			return nil
+		case err := <-sendErr:
+			if err == nil {
+				err = context.Canceled
+			}
+			return err
+		case <-sub.dropped:
+			return sub.dropErr()
+		case <-stream.Context().Done():
+			return nil
+		}
 	}
 
-	ticker := time.NewTicker(period)
-	defer ticker.Stop()
+	processed := start.sequence
+	if start.snapshot != nil {
+		if err := emit(h.monitoringUpdateAt(filter.snapshot(start.snapshot), processed, true)); err != nil {
+			return err
+		}
+	}
+	acc := newAccumulator()
+	for _, e := range start.replay {
+		acc.add(filter.entry(e))
+		processed = e.seq
+	}
+	last := time.Now()
+	if !acc.empty() {
+		if err := emit(h.monitoringUpdateAt(acc.take(), processed, false)); err != nil {
+			return err
+		}
+	}
+
 	heartbeat := time.NewTimer(monitoringHeartbeatPeriod)
 	defer heartbeat.Stop()
+	flush := time.NewTimer(time.Hour)
+	if !flush.Stop() {
+		<-flush.C
+	}
+	defer flush.Stop()
+	flushArmed := false
+	arm := func() {
+		wait := period - time.Since(last)
+		if wait < 0 {
+			wait = 0
+		}
+		resetMonitoringTimer(flush, wait)
+		flushArmed = true
+	}
 
 	for {
 		select {
 		case <-stream.Context().Done():
 			return nil
-		case <-ticker.C:
-			next, err := h.snapshot(stream.Context())
-			if err != nil {
-				return err
+		case err := <-sendErr:
+			return err
+		case <-sub.dropped:
+			return sub.dropErr()
+		case e := <-sub.ch:
+			processed = e.seq
+			acc.add(filter.entry(e))
+			if !acc.empty() && !flushArmed {
+				arm()
 			}
-			delta, changed := monitoringDelta(current, next)
-			if !changed {
+		case <-flush.C:
+			flushArmed = false
+			if acc.empty() {
 				continue
 			}
-			sequence++
-			if err := stream.Send(h.monitoringUpdate(delta, sequence, false)); err != nil {
+			if err := emit(h.monitoringUpdateAt(acc.take(), processed, false)); err != nil {
 				return err
 			}
-			current = next
+			last = time.Now()
 			resetMonitoringTimer(heartbeat, monitoringHeartbeatPeriod)
 		case <-heartbeat.C:
-			sequence++
-			if err := stream.Send(h.monitoringUpdate(&protobuf.MonitoringUpdate{}, sequence, false)); err != nil {
+			// A quiet stream still reports how far it has processed, so the
+			// subscriber's resume position stays inside the journal window.
+			if err := emit(h.monitoringUpdateAt(&protobuf.MonitoringUpdate{}, processed, false)); err != nil {
 				return err
 			}
 			resetMonitoringTimer(heartbeat, monitoringHeartbeatPeriod)
@@ -131,8 +238,10 @@ func (h *Handler) Monitoring(request *protobuf.MonitoringRequest, stream protobu
 	}
 }
 
-func (h *Handler) monitoringUpdate(update *protobuf.MonitoringUpdate, sequence int64, snapshot bool) *protobuf.MonitoringUpdate {
+// monitoringUpdateAt stamps an update with the agent identity and the position it covers.
+func (h *Handler) monitoringUpdateAt(update *protobuf.MonitoringUpdate, sequence int64, snapshot bool) *protobuf.MonitoringUpdate {
 	update.AgentId = h.agentID
+	update.AgentEpoch = h.monitor().epoch
 	update.Sequence = sequence
 	update.ObservedAtUnixMs = time.Now().UnixMilli()
 	update.SchemaVersion = monitoringSchemaVersion

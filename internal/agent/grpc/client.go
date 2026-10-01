@@ -38,7 +38,7 @@ func (h *Handler) CreateLabGroupClient(ctx context.Context, in *protobuf.LabGrou
 	}
 
 	lgc := &laboratoryv1alpha1.LabGroupClient{
-		ObjectMeta: metav1.ObjectMeta{Name: in.Name, Namespace: in.Namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: in.Name, Namespace: in.Namespace, Labels: copyLabels(in.Labels)},
 	}
 	lgc.Spec.PublicKey = priv.PublicKey().String()
 	_, err = h.cs.LaboratoryV1alpha1().LabGroupClients(in.Namespace).Create(ctx, lgc, metav1.CreateOptions{})
@@ -172,11 +172,14 @@ func (h *Handler) ReconcileLabGroupAccess(ctx context.Context, in *protobuf.LabG
 			LabNames:    labNames,
 		})
 	}
+	// The policy carries the labels of its group (plus any given), so a selector that
+	// matches the group matches its policy too.
+	policyLabels, _ := mergeLabels(copyLabels(group.Labels), in.Labels)
 	policies := h.cs.LaboratoryV1alpha1().LabGroupAccessPolicies(namespace)
 	stored, err := policies.Get(ctx, names.LabGroupAccessPolicyName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		_, err = policies.Create(ctx, &laboratoryv1alpha1.LabGroupAccessPolicy{
-			ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: namespace},
+			ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: namespace, Labels: policyLabels},
 			Spec:       laboratoryv1alpha1.LabGroupAccessPolicySpec{Rules: rules},
 		}, metav1.CreateOptions{})
 	} else if err == nil {
@@ -184,6 +187,7 @@ func (h *Handler) ReconcileLabGroupAccess(ctx context.Context, in *protobuf.LabG
 			return nil, err
 		}
 		stored.Spec.Rules = rules
+		stored.Labels, _ = mergeLabels(stored.Labels, policyLabels)
 		_, err = policies.Update(ctx, stored, metav1.UpdateOptions{})
 	}
 	if err = createErr(err, kindLabGroupAccessPolicy, names.LabGroupAccessPolicyName, func() (metav1.Object, error) {

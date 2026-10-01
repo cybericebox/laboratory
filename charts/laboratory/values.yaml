@@ -453,6 +453,18 @@ agent:
   clients:
     - platform
 
+  # The Monitoring stream: one poller and one in-memory journal serve every platform
+  # backend that subscribes. See DEPLOY.md, "Monitoring stream".
+  monitoring:
+    # Updates the journal keeps for resuming subscribers.
+    journalSize: 10000
+    # How long an update stays in the journal.
+    journalAge: 15m
+    # How often the platform is observed while anybody is subscribed.
+    pollInterval: 1s
+    # Updates a subscriber may lag behind before its stream is dropped.
+    subscriberBuffer: 256
+
   # Container resource requests/limits.
   resources:
     limits:

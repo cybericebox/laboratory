@@ -193,7 +193,7 @@ are in `Lab.status.launch` and in the agent's `LabStatus.queue`. See "Launch pac
 With `agent.enabled`, the chart deploys a gRPC server (default port 5454, TLS with mutual authentication; client
 certificates are issued by the chart for the CNs listed in `agent.clients`). The service is `LabManager`, defined in
 [`pkg/agent/protobuf/agent.proto`](pkg/agent/protobuf/agent.proto). It covers `Ping`, CRUD for `LabGroup`, `Lab` and
-`LabGroupClient`, suspend and VPN-disable switches for a group, access-policy reconciliation, a `Monitoring` stream
+`LabGroupClient`, suspend and VPN-disable switches for a group, access-policy reconciliation, a resumable, label-selectable `Monitoring` stream (see [Monitoring stream](DEPLOY.md#monitoring-stream))
 `GetCapacity`, and `ResetDevice` / `RescueDevice` for devices with state persistence (see
 [Device state persistence](DEPLOY.md#device-state-persistence-optional)). `LabStatus.queue` carries the launch queue state. Go bindings are generated next to the proto file; a Go client is in [`pkg/agent/client`](pkg/agent/client).
 

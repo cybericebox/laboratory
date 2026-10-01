@@ -21,6 +21,7 @@ func labGroupToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.LabGroup {
 			VpnClientSubnet: g.Status.VPN.ClientSubnet,
 			ImageWarning:    g.Status.ImageWarning,
 		},
+		Labels: copyLabels(g.Labels),
 	}
 }
 
@@ -72,6 +73,7 @@ func labToProto(l *laboratoryv1alpha1.Lab) *protobuf.Lab {
 		Name:      l.Name,
 		SpecJson:  specJSON,
 		Status:    status,
+		Labels:    copyLabels(l.Labels),
 	}
 }
 
@@ -130,6 +132,7 @@ func protoToLab(p *protobuf.Lab) (*laboratoryv1alpha1.Lab, error) {
 	l := &laboratoryv1alpha1.Lab{}
 	l.Name = p.Name
 	l.Namespace = p.Namespace
+	l.Labels = copyLabels(p.Labels)
 	if len(p.SpecJson) > 0 {
 		if err := json.Unmarshal(p.SpecJson, &l.Spec); err != nil {
 			return nil, err
@@ -162,6 +165,7 @@ func clientToProto(c *laboratoryv1alpha1.LabGroupClient) *protobuf.LabGroupClien
 			Config:     c.Status.Config,
 			Statistics: stats,
 		},
+		Labels: copyLabels(c.Labels),
 	}
 }
 
@@ -179,6 +183,7 @@ func accessPolicyToProto(policy *laboratoryv1alpha1.LabGroupAccessPolicy, labGro
 	p := &protobuf.LabGroupAccessPolicy{
 		LabGroupName: labGroupName,
 		Namespace:    policy.Namespace,
+		Labels:       copyLabels(policy.Labels),
 		Status: &protobuf.LabGroupAccessPolicyStatus{
 			ObservedGeneration: policy.Status.ObservedGeneration,
 			State:              policy.Status.State,

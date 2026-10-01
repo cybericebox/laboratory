@@ -39,6 +39,12 @@ func Run() {
 		metrics = nil
 	}
 	h := grpcserver.NewHandler(cs, k8s, metrics, cfg.AgentID)
+	h.SetMonitoringConfig(grpcserver.MonitoringConfig{
+		JournalSize:      cfg.Monitoring.JournalSize,
+		JournalAge:       cfg.Monitoring.JournalAge,
+		PollInterval:     cfg.Monitoring.PollInterval,
+		SubscriberBuffer: cfg.Monitoring.SubscriberBuffer,
+	})
 	srv, err := grpcserver.New(cfg, h)
 	if err != nil {
 		log.Fatalf("build server: %v", err)

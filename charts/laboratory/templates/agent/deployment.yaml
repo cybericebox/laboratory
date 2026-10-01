@@ -41,6 +41,14 @@ spec:
               value: /tls/tls.crt
             - name: AGENT_TLS_KEY
               value: /tls/tls.key
+            - name: AGENT_MONITORING_JOURNAL_SIZE
+              value: {{ .Values.agent.monitoring.journalSize | quote }}
+            - name: AGENT_MONITORING_JOURNAL_AGE
+              value: {{ .Values.agent.monitoring.journalAge | quote }}
+            - name: AGENT_MONITORING_POLL_INTERVAL
+              value: {{ .Values.agent.monitoring.pollInterval | quote }}
+            - name: AGENT_MONITORING_SUBSCRIBER_BUFFER
+              value: {{ .Values.agent.monitoring.subscriberBuffer | quote }}
             - name: AGENT_MTLS_ENABLED
               value: {{ .Values.agent.mtls.enabled | quote }}
           {{- if .Values.agent.mtls.enabled }}

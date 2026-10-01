@@ -70,6 +70,7 @@ func (h *Handler) UpdateLab(ctx context.Context, in *protobuf.Lab) (*protobuf.La
 		return nil, err
 	}
 	cur.Spec = desired.Spec
+	cur.Labels, _ = mergeLabels(cur.Labels, in.Labels)
 	out, err := h.cs.LaboratoryV1alpha1().Labs(in.Namespace).Update(ctx, cur, metav1.UpdateOptions{})
 	if err != nil {
 		return nil, err

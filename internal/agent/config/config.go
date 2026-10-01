@@ -1,6 +1,10 @@
 package config
 
-import "github.com/caarlos0/env/v11"
+import (
+	"time"
+
+	"github.com/caarlos0/env/v11"
+)
 
 // ServerTLSConfig is the agent's own TLS identity — a key pair only, no CA.
 type ServerTLSConfig struct {
@@ -23,6 +27,18 @@ type Config struct {
 	AgentID   string `env:"AGENT_ID" envDefault:"laboratory-agent"`
 	ServerTLS ServerTLSConfig
 	MTLS      MTLSConfig
+	// Monitoring bounds the shared journal behind the Monitoring stream.
+	Monitoring MonitoringConfig
+}
+
+// MonitoringConfig sizes the Monitoring stream's shared poller and journal. A
+// subscriber that lags more than SubscriberBuffer updates is dropped (it reconnects
+// and resumes); a resume older than JournalSize updates or JournalAge gets a snapshot.
+type MonitoringConfig struct {
+	JournalSize      int           `env:"AGENT_MONITORING_JOURNAL_SIZE" envDefault:"10000"`
+	JournalAge       time.Duration `env:"AGENT_MONITORING_JOURNAL_AGE" envDefault:"15m"`
+	PollInterval     time.Duration `env:"AGENT_MONITORING_POLL_INTERVAL" envDefault:"1s"`
+	SubscriberBuffer int           `env:"AGENT_MONITORING_SUBSCRIBER_BUFFER" envDefault:"256"`
 }
 
 func Load() (*Config, error) {

@@ -498,6 +498,65 @@ compressed on amd64 and arm64; the cache needs its sync extension), both can be 
 
 ---
 
+## Monitoring stream
+
+`LabManager.Monitoring` (agent.proto) is the server-push stream the platform backend follows. One agent can serve
+several backends at once (for example two platform instances against one cluster): each opens its own stream with its
+own selector, minimum interval and position, and all of them are fed by **one** poller and **one** in-memory journal.
+
+### Request
+
+| Field | Meaning |
+|---|---|
+| `selector` | Kubernetes label selector (`instance=a`, `tier in (gold,silver),!legacy`). Empty = everything. Invalid: `InvalidArgument`. |
+| `min_interval_ms` | Least time between two messages of this stream; changes in between are merged into one message. Bounded below by 10 ms; the agent observes the platform every `agent.monitoring.pollInterval` (1s), so that is the real resolution. Default 5 s when unset. |
+| `resume_after_sequence`, `agent_epoch` | Where to resume (below). 0 / empty = no resume. |
+
+### What is sent
+
+- The **first message** is either a full **snapshot** (`snapshot = true`: replace everything you hold) or, on a successful
+  resume, the merged updates you missed (`snapshot = false`). Then deltas follow. A delta holds the changed or new
+  records (`groups`, `labs`, `clients`, `policies`, `traffic`), `deleted_keys`, and `capacity` when it changed.
+- Every message carries `agent_epoch` and `sequence`, the position of the stream up to which everything has been sent
+  (or filtered out as not matching). A quiet stream sends an empty heartbeat every 30 s with the position, so that the
+  stored position stays inside the journal window.
+- **Selector.** It is matched against the Kubernetes labels of the object itself: LabGroup, Lab, LabGroupClient and the
+  access policy. A deletion is delivered iff the deleted object matched (the journal keeps the labels of deleted objects).
+  A traffic report is cut down to the touches of labs that match, and dropped when none do (it follows the labels of
+  its lab). **Capacity always goes to everyone.** A change of labels that moves an object out of the selector is not
+  sent as a deletion: use labels that do not change (an instance or tenant id).
+- **Labels** are set through the same API: `labels` on `LabGroup`, `Lab`, `LabGroupClient` (create and update) and on
+  `LabGroupAccessPolicy`. Updates merge labels in; a label is never removed this way. The access policy takes the labels of
+  its LabGroup plus its own, so a selector that matches a group also matches its policy. The labels are part of the
+  messages (`labels`, field 10).
+
+### Resume contract for the backend
+
+1. Keep, per stream, the last `sequence` and `agent_epoch` of the last message you **processed**.
+2. On every (re)connect send them as `resume_after_sequence` and `agent_epoch`.
+3. Look at the first message: `snapshot = true` means replace your state with it (the agent restarted, the epoch changed,
+   or the journal no longer reaches back to your position); `snapshot = false` means apply it on top of what you hold.
+4. Sequences grow within an epoch and may skip numbers (updates that did not match your selector). Never assume
+   `sequence + 1`. A new `agent_epoch` always starts a new snapshot.
+5. If the stream ends with `ResourceExhausted`, your consumer was too slow: its buffer of `subscriberBuffer` updates
+   overflowed and the agent dropped it so that the others are not held back. Reconnect with your last position (a
+   snapshot follows if the journal lost it). Any other error: reconnect the same way.
+
+The journal lives in the agent's memory: an agent restart gives a new epoch (a snapshot), and a position older than
+`journalSize` updates or `journalAge` is answered with a snapshot too. Sizing: an update is a few KiB at most; the default
+10000 updates fit the agent's default memory limit, raise `journalSize` together with `agent.resources` if you raise it.
+
+```yaml
+agent:
+  monitoring:
+    journalSize: 10000      # updates kept for resuming subscribers
+    journalAge: 15m         # how long an update stays
+    pollInterval: 1s        # observation period while anybody is subscribed
+    subscriberBuffer: 256   # updates a subscriber may lag before it is dropped
+```
+
+---
+
 ## Network Layout
 
 | Network             | Default       | Usage                                                              |
