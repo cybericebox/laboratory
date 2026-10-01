@@ -7,7 +7,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 )
 
@@ -19,7 +18,7 @@ import (
 func ServiceAttribution(reader client.Reader) Attribution {
 	return func(task, groupID string) (string, bool) {
 		var svc corev1.Service
-		key := types.NamespacedName{Name: task, Namespace: laboratoryv1alpha1.LabGroupNamespace(groupID)}
+		key := types.NamespacedName{Name: task, Namespace: GroupNamespace(groupID)}
 		if err := reader.Get(context.Background(), key, &svc); err != nil {
 			return "", false
 		}

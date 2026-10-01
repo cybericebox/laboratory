@@ -20,7 +20,9 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -52,6 +54,10 @@ func Run() {
 		ctrl.GetConfigOrDie(), ctrl.Options{
 			Scheme:  scheme,
 			Metrics: metricsserver.Options{BindAddress: "0"},
+			// Secrets are read for the tenants' access keys only: watch that namespace, nothing else.
+			Cache: cache.Options{ByObject: map[client.Object]cache.ByObject{
+				&corev1.Secret{}: {Namespaces: map[string]cache.Config{names.TenantsNamespace: {}}},
+			}},
 		},
 	)
 	if err != nil {
@@ -77,12 +83,6 @@ func Run() {
 		return proto, nil
 	}
 
-	keyWatcher, err := proxy.NewKeyWatcher(cfg.LabAccessPublicKeyPath)
-	if err != nil {
-		log.Error(err, "init lab access key watcher")
-		os.Exit(1)
-	}
-
 	instance := cfg.Instance
 	if instance == "" {
 		instance, _ = os.Hostname()
@@ -99,7 +99,7 @@ func Run() {
 	// policy must allow it the lab, so blocking a client blocks the VPN and the
 	// web together.
 	authorize := func(groupID, clientName, lab string) bool {
-		ns := laboratoryv1alpha1.LabGroupNamespace(groupID)
+		ns := l7.GroupNamespace(groupID)
 		var lgc laboratoryv1alpha1.LabGroupClient
 		if err := mgr.GetClient().Get(context.Background(), types.NamespacedName{Name: clientName, Namespace: ns}, &lgc); err != nil {
 			return false
@@ -111,10 +111,12 @@ func Run() {
 		}
 		return l7.PolicyAllows(policy.Spec.Rules, clientName, lab)
 	}
+	// The handoff links are verified with the access keys of the tenant that issued them, and the
+	// group of a link must belong to that tenant.
 	handler := l7.NewHandler(
-		keyWatcher.Key, []byte(cfg.SessionSecret), cfg.BaseDomain, cfg.CookieName,
+		l7.SecretKeys(mgr.GetClient()), []byte(cfg.SessionSecret), cfg.BaseDomain, cfg.CookieName,
 		l7.ServiceResolver(svcResolver),
-	).WithAccounting(meter, attribute).WithAuthorizer(authorize)
+	).WithAccounting(meter, attribute).WithAuthorizer(authorize).WithGroupTenant(l7.LabGroupTenant(mgr.GetClient()))
 
 	reports := &l7.ReportWriter{
 		Reader: mgr.GetAPIReader(), Writer: mgr.GetClient(), Meter: meter, Instance: instance,
@@ -159,7 +161,6 @@ func Run() {
 			}), "traffic-reports",
 		},
 		{certWatcher, "cert-watcher"},
-		{keyWatcher, "key-watcher"},
 		{
 			manager.RunnableFunc(
 				func(ctx context.Context) error {

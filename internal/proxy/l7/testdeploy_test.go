@@ -25,7 +25,7 @@ func TestHandler_TestDeployTokenIsAuthorizedByPolicyAndReportedByClient(t *testi
 		Action: laboratoryv1alpha1.LabGroupAccessAllow, ClientNames: []string{"p-author"}, LabNames: []string{"lab"},
 	}}
 	meter := NewMeter("boot", time.Now())
-	h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge",
+	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return backend.URL, nil }).
 		WithAccounting(meter, func(task, groupID string) (string, bool) { return "lab", true }).
 		WithAuthorizer(func(group, client, lab string) bool { return PolicyAllows(rules, client, lab) })

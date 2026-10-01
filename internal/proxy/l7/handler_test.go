@@ -33,7 +33,7 @@ func TestHandler_StripsCookie(t *testing.T) {
 		return backend.URL, nil
 	}
 
-	h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge", resolver)
+	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge", resolver)
 
 	req := httptest.NewRequest("GET", "http://mytask.challenges.example.com/path", nil)
 	req.Host = "mytask.challenges.example.com"
@@ -56,7 +56,7 @@ func TestHandler_StripsCookie(t *testing.T) {
 
 func TestHandler_InvalidHost(t *testing.T) {
 	pub, _, _ := ed25519.GenerateKey(rand.Reader)
-	h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge", nil)
+	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge", nil)
 
 	req := httptest.NewRequest("GET", "http://evil.com/", nil)
 	req.Host = "evil.com"
@@ -77,7 +77,7 @@ func TestHandler_CountsPerUserRequestsAndBytes(t *testing.T) {
 	defer backend.Close()
 
 	meter := NewMeter("boot-1", time.Now())
-	h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge",
+	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return backend.URL, nil }).
 		WithAccounting(meter, func(task, groupID string) (string, bool) { return "c-1", true })
 
@@ -118,7 +118,7 @@ func TestHandler_UpstreamFailureIsNotAResponse(t *testing.T) {
 	dead.Close()
 
 	meter := NewMeter("boot-1", time.Now())
-	h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge",
+	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return url, nil }).
 		WithAccounting(meter, func(task, groupID string) (string, bool) { return "c-1", true })
 	req := httptest.NewRequest("GET", "http://web-abc123.challenges.example.com/", nil)
@@ -151,7 +151,7 @@ func TestHandler_ClientAndAuthorizer(t *testing.T) {
 		return rec.Code
 	}
 	build := func(authorize Authorizer) *Handler {
-		h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge",
+		h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge",
 			func(task, groupID string) (string, error) { return backend.URL, nil })
 		if authorize != nil {
 			h.WithAuthorizer(authorize).WithAccounting(NewMeter("b", time.Now()), func(task, groupID string) (string, bool) { return "c-1", true })
@@ -180,7 +180,7 @@ func TestHandler_PerUserRefusesAValidTokenOfARemovedMember(t *testing.T) {
 		Action: laboratoryv1alpha1.LabGroupAccessAllow, ClientNames: []string{"c-member"}, LabNames: []string{"c-1"},
 	}}
 	authorize := func(group, client, lab string) bool { return PolicyAllows(rules, client, lab) }
-	h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge",
+	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return backend.URL, nil }).
 		WithAccounting(NewMeter("b", time.Now()), func(task, groupID string) (string, bool) { return "c-1", true }).
 		WithAuthorizer(authorize)

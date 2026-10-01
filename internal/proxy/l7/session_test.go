@@ -16,8 +16,43 @@ import (
 
 const labHost = "web-abc123.challenges.example.com"
 
+// staticKeys is a KeyLookup with one key.
+func staticKeys(tenant, kid string, pub ed25519.PublicKey) KeyLookup {
+	return func(t, k string) (ed25519.PublicKey, bool) {
+		if t == tenant && k == kid {
+			return pub, true
+		}
+		return nil, false
+	}
+}
+
+// baseHandoff is a valid handoff of tenant acme for group g1.
+func baseHandoff(now time.Time) handoffClaims {
+	return handoffClaims{
+		GroupID: "g1", Host: "web-abc123", Session: now.Add(24 * time.Hour).Unix(),
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer: "acme", Subject: "p-u1", Audience: jwt.ClaimStrings{HandoffAudience},
+			IssuedAt: jwt.NewNumericDate(now), NotBefore: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute)),
+		},
+	}
+}
+
+func signHandoff(t *testing.T, priv ed25519.PrivateKey, kid string, claims handoffClaims) string {
+	t.Helper()
+	tok := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
+	tok.Header["kid"] = kid
+	signed, err := tok.SignedString(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signed
+}
+
 type handoffFixture struct {
 	priv    ed25519.PrivateKey
+	pub     ed25519.PublicKey
+	groups  map[string]string // group id -> owning tenant
+	owner   func(string) (string, bool)
 	handler *Handler
 	backend *httptest.Server
 	now     time.Time
@@ -28,29 +63,23 @@ func newHandoffFixture(t *testing.T) *handoffFixture {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("lab")) }))
 	t.Cleanup(backend.Close)
-	f := &handoffFixture{priv: priv, backend: backend, now: time.Now()}
-	f.handler = NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge",
-		func(task, groupID string) (string, error) { return backend.URL, nil })
+	f := &handoffFixture{priv: priv, backend: backend, now: time.Now(), groups: map[string]string{"g1": "acme"}}
+	f.owner = func(g string) (string, bool) { t, ok := f.groups[g]; return t, ok }
+	f.pub = pub
+	f.handler = NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge",
+		func(task, groupID string) (string, error) { return backend.URL, nil }).
+		WithGroupTenant(func(groupID string) (string, bool) { return f.owner(groupID) })
 	f.handler.now = func() time.Time { return f.now }
 	return f
 }
 
 func (f *handoffFixture) link(t *testing.T, mutate func(*handoffClaims)) string {
 	t.Helper()
-	claims := handoffClaims{
-		GroupID: "g1", Client: "p-u1", Host: "web-abc123", Session: f.now.Add(24 * time.Hour).Unix(),
-		RegisteredClaims: jwt.RegisteredClaims{
-			IssuedAt: jwt.NewNumericDate(f.now), ExpiresAt: jwt.NewNumericDate(f.now.Add(time.Minute)),
-		},
-	}
+	claims := baseHandoff(f.now)
 	if mutate != nil {
 		mutate(&claims)
 	}
-	signed, err := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims).SignedString(f.priv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return signed
+	return signHandoff(t, f.priv, "k1", claims)
 }
 
 func (f *handoffFixture) open(token string) *httptest.ResponseRecorder {
@@ -108,7 +137,15 @@ func TestHandoff_Refusals(t *testing.T) {
 		}},
 		{"another device host", func(c *handoffClaims) { c.Host = "db-abc123" }},
 		{"session already over", func(c *handoffClaims) { c.Session = time.Now().Add(-time.Hour).Unix() }},
-		{"no client", func(c *handoffClaims) { c.Client = "" }},
+		{"no client", func(c *handoffClaims) { c.Subject = "" }},
+		{"another audience", func(c *handoffClaims) { c.Audience = jwt.ClaimStrings{"somewhere-else"} }},
+		{"no audience", func(c *handoffClaims) { c.Audience = nil }},
+		{"no not-before", func(c *handoffClaims) { c.NotBefore = nil }},
+		{"not valid yet", func(c *handoffClaims) { c.NotBefore = jwt.NewNumericDate(time.Now().Add(10 * time.Minute)) }},
+		{"no issuer", func(c *handoffClaims) { c.Issuer = "" }},
+		{"an unknown tenant", func(c *handoffClaims) { c.Issuer = "mallory" }},
+		{"an issuer that is no name", func(c *handoffClaims) { c.Issuer = "../acme" }},
+		{"a group that does not exist", func(c *handoffClaims) { c.GroupID = "nope" }},
 		{"link over the five minute cap", func(c *handoffClaims) { c.ExpiresAt = jwt.NewNumericDate(time.Now().Add(6 * time.Minute)) }},
 	}
 	for _, c := range cases {
@@ -131,10 +168,7 @@ func TestHandoff_TamperedSignature(t *testing.T) {
 		t.Fatalf("tampered payload: %d", rec.Code)
 	}
 	_, other, _ := ed25519.GenerateKey(rand.Reader)
-	signed, _ := jwt.NewWithClaims(jwt.SigningMethodEdDSA, handoffClaims{
-		GroupID: "g1", Client: "p-u1", Host: "web-abc123", Session: f.now.Add(time.Hour).Unix(),
-		RegisteredClaims: jwt.RegisteredClaims{IssuedAt: jwt.NewNumericDate(f.now), ExpiresAt: jwt.NewNumericDate(f.now.Add(time.Minute))},
-	}).SignedString(other)
+	signed := signHandoff(t, other, "k1", baseHandoff(f.now))
 	if rec := f.open(signed); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("foreign key: %d", rec.Code)
 	}
@@ -158,10 +192,7 @@ func TestHandoff_IsStatelessAndOpensAgainUntilExp(t *testing.T) {
 // Only EdDSA counts: a token signed with RSA, HMAC (any secret) or "none" is refused.
 func TestHandoff_RefusesOtherAlgorithms(t *testing.T) {
 	f := newHandoffFixture(t)
-	claims := handoffClaims{
-		GroupID: "g1", Client: "p-u1", Host: "web-abc123", Session: f.now.Add(time.Hour).Unix(),
-		RegisteredClaims: jwt.RegisteredClaims{IssuedAt: jwt.NewNumericDate(f.now), ExpiresAt: jwt.NewNumericDate(f.now.Add(time.Minute))},
-	}
+	claims := baseHandoff(f.now)
 	rsaKey, _ := rsa.GenerateKey(rand.Reader, 2048)
 	rs, _ := jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(rsaKey)
 	hs, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(testSecret)
@@ -209,5 +240,91 @@ func TestExpiredCard_ExpiredCookie(t *testing.T) {
 	f.handler.ServeHTTP(out, req)
 	if out.Code != http.StatusUnauthorized || !strings.Contains(out.Body.String(), "Сесія завершилася.") {
 		t.Fatalf("expired cookie: %d %s", out.Code, out.Body.String())
+	}
+}
+
+// The keys of the issuing tenant, by key id: a rotation overlaps (both keys work), a removed key stops,
+// an unknown kid is refused.
+func TestHandoff_KeysByTenantAndKeyID(t *testing.T) {
+	f := newHandoffFixture(t)
+	pub2, priv2, _ := ed25519.GenerateKey(rand.Reader)
+	keys := map[string]ed25519.PublicKey{"acme/k1": f.pub, "acme/k2": pub2}
+	f.handler.keys = func(tenant, kid string) (ed25519.PublicKey, bool) { k, ok := keys[tenant+"/"+kid]; return k, ok }
+	open := func(priv ed25519.PrivateKey, kid string) int {
+		return f.open(signHandoff(t, priv, kid, baseHandoff(f.now))).Code
+	}
+	if open(f.priv, "k1") != http.StatusSeeOther || open(priv2, "k2") != http.StatusSeeOther {
+		t.Fatal("during a rotation both keys work")
+	}
+	if open(f.priv, "k2") != http.StatusUnauthorized {
+		t.Fatal("a key under another id's name is refused")
+	}
+	if open(f.priv, "ghost") != http.StatusUnauthorized {
+		t.Fatal("an unknown kid is refused")
+	}
+	// A token with no kid at all.
+	tok := jwt.NewWithClaims(jwt.SigningMethodEdDSA, baseHandoff(f.now))
+	noKid, _ := tok.SignedString(f.priv)
+	if rec := f.open(noKid); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no kid: %d", rec.Code)
+	}
+	delete(keys, "acme/k1") // the old key is removed
+	if open(f.priv, "k1") != http.StatusUnauthorized || open(priv2, "k2") != http.StatusSeeOther {
+		t.Fatal("after the removal only the new key works")
+	}
+}
+
+// CRUCIAL: a tenant cannot open a group of another tenant, with a perfectly valid signature of its own.
+func TestHandoff_RefusesAGroupOfAnotherTenant(t *testing.T) {
+	f := newHandoffFixture(t)
+	f.groups["theirs"] = "mallory"
+	rec := f.open(f.link(t, func(c *handoffClaims) { c.GroupID = "theirs" }))
+	if rec.Code != http.StatusUnauthorized || len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("cross-tenant handoff: %d", rec.Code)
+	}
+	// The other tenant's own key does not help either: it is not issuer acme's key.
+	pubM, privM, _ := ed25519.GenerateKey(rand.Reader)
+	f.handler.keys = func(tenant, kid string) (ed25519.PublicKey, bool) {
+		switch tenant + "/" + kid {
+		case "acme/k1":
+			return f.pub, true
+		case "mallory/k1":
+			return pubM, true
+		}
+		return nil, false
+	}
+	claims := baseHandoff(f.now)
+	claims.Issuer, claims.GroupID = "mallory", "g1" // g1 is acme's
+	if rec := f.open(signHandoff(t, privM, "k1", claims)); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("mallory signing for acme's group: %d", rec.Code)
+	}
+	claims.GroupID = "theirs"
+	if rec := f.open(signHandoff(t, privM, "k1", claims)); rec.Code != http.StatusSeeOther {
+		t.Fatalf("mallory for its own group: %d", rec.Code)
+	}
+}
+
+// A session cookie dies with the group's ownership: the group now belongs to someone else.
+func TestSession_StopsWhenTheGroupChangesOwner(t *testing.T) {
+	f := newHandoffFixture(t)
+	c := f.open(f.link(t, nil)).Result().Cookies()[0]
+	get := func() int {
+		req := httptest.NewRequest("GET", "https://"+labHost+"/", nil)
+		req.Host = labHost
+		req.AddCookie(c)
+		rec := httptest.NewRecorder()
+		f.handler.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if get() != 200 {
+		t.Fatal("the session opens the lab")
+	}
+	f.groups["g1"] = "mallory"
+	if get() != http.StatusForbidden {
+		t.Fatal("a session of a group that changed owner must stop")
+	}
+	delete(f.groups, "g1")
+	if get() != http.StatusForbidden {
+		t.Fatal("and so must a session of a group that is gone")
 	}
 }

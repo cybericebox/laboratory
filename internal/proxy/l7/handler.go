@@ -1,7 +1,6 @@
 package l7
 
 import (
-	"crypto/ed25519"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
 )
 
 // BackendResolver maps (task, groupID) to a backend URL string.
@@ -26,14 +26,15 @@ type Attribution func(task, groupID string) (lab string, ok bool)
 type Authorizer func(groupID, client, lab string) bool
 
 type Handler struct {
-	// key verifies the platform's handoff tokens; secret signs and verifies the
+	// keys verifies the tenants' handoff tokens; secret signs and verifies the
 	// proxy's own session cookie.
-	key        func() ed25519.PublicKey
-	secret     []byte
-	baseDomain string
-	cookieName string
-	resolver   BackendResolver
-	transport  http.RoundTripper
+	keys        KeyLookup
+	groupTenant GroupTenant
+	secret      []byte
+	baseDomain  string
+	cookieName  string
+	resolver    BackendResolver
+	transport   http.RoundTripper
 
 	meter     *Meter
 	attribute Attribution
@@ -53,9 +54,9 @@ var upstreamTransport = &http.Transport{
 	IdleConnTimeout: 90 * time.Second,
 }
 
-func NewHandler(key func() ed25519.PublicKey, secret []byte, baseDomain, cookieName string, resolver BackendResolver) *Handler {
+func NewHandler(keys KeyLookup, secret []byte, baseDomain, cookieName string, resolver BackendResolver) *Handler {
 	return &Handler{
-		key:        key,
+		keys:       keys,
 		secret:     secret,
 		baseDomain: baseDomain,
 		cookieName: cookieName,
@@ -69,6 +70,14 @@ func NewHandler(key func() ed25519.PublicKey, secret []byte, baseDomain, cookieN
 // maps the task host to the lab and device; without it nothing is counted.
 func (h *Handler) WithAccounting(meter *Meter, attribute Attribution) *Handler {
 	h.meter, h.attribute = meter, attribute
+	return h
+}
+
+// WithGroupTenant tells the owner of a group. A handoff whose issuer is not the tenant of its group
+// is refused, and so is a session cookie whose tenant no longer owns the group. Without it no
+// handoff is accepted.
+func (h *Handler) WithGroupTenant(g GroupTenant) *Handler {
+	h.groupTenant = g
 	return h
 }
 
@@ -98,6 +107,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if client == "" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
+	}
+	if h.groupTenant != nil {
+		if owner, ok := h.groupTenant(claims.GroupID); !ok || owner != claims.Tenant {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 	}
 
 	backendURL, err := h.resolver(task, claims.GroupID)
@@ -158,7 +173,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.meter.Record(ns(claims.GroupID), client, lab, start, !rec.upstreamFailed, rec.bytes, out.n.Load())
 }
 
-func ns(groupID string) string { return laboratoryv1alpha1.LabGroupNamespace(groupID) }
+func ns(groupID string) string { return GroupNamespace(groupID) }
+
+// GroupNamespace is the namespace of a LabGroup the platform calls groupID: the group's custom
+// resource is named after the id (encoded when the id is not a valid name), and the namespace is its name.
+func GroupNamespace(groupID string) string {
+	return laboratoryv1alpha1.LabGroupNamespace(names.EncodeName(groupID))
+}
 
 // countingWriter records how many body bytes went to the client and whether
 // the proxy itself failed to reach the lab. Upgraded (WebSocket) connections
@@ -204,7 +225,7 @@ func (b *countingBody) Close() error {
 // getServiceProtocol(task, namespace) returns the Service's first port name ("http" or "https").
 func ServiceResolver(getServiceProtocol func(task, namespace string) (string, error)) BackendResolver {
 	return func(task, groupID string) (string, error) {
-		ns := laboratoryv1alpha1.LabGroupNamespace(groupID)
+		ns := GroupNamespace(groupID)
 		proto, err := getServiceProtocol(task, ns)
 		if err != nil {
 			return "", err
