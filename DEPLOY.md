@@ -496,6 +496,37 @@ compressed on amd64 and arm64; the cache needs its sync extension), both can be 
 - **Size.** The registry volume (`registry.size`) holds the cached images as well: plan for the images of the labs you
   run, next to the snapshots.
 
+
+### Cache prewarm
+
+An event starts many labs at once. The first pull of an image through the cache makes zot fetch it from the upstream
+registry, which is slow for the first lab. **Prewarm** fills the cache before the event. It is done by the
+management agent only (the operator and the launch queue take no part), through one RPC:
+
+`PrewarmImages(PrewarmImagesRequest{images}) returns (PrewarmImagesResult{images[]})`, each element
+`{image, state, error, digest, updated_unix_ms}` with `state` one of `QUEUED`, `WARMING`, `DONE`, `FAILED`, `SKIPPED`.
+
+- **Asynchronous and idempotent.** The call returns at once with the current state of every requested image; repeat it
+  to poll. A new image starts; a `QUEUED` or `WARMING` one is only reported; a `FAILED` one is tried again once
+  30 seconds have passed since it failed (so a poller sees the failure); a `DONE` one older than 30 minutes is checked
+  again. An empty list reports every image the agent knows. The status is kept in the agent's memory: after an agent
+  restart, ask again (the images are checked in seconds).
+- **What it does.** For each image the agent resolves the tag to the digest the operator will pin labs to (the manifest of the
+  node platform when every lab node has one architecture, the index otherwise), asks zot for that manifest, and zot
+  fetches the image from upstream before it answers. zot stores the blobs while it serves that manifest request (checked
+  on the stand: the layers are on the volume although nobody pulled a blob); the agent then checks that the config and
+  **every layer blob** are stored (an index: every platform manifest too), and only then reports `DONE` with the digest.
+  A lab created later pins the same digest and its nodes pull from zot with no upstream traffic.
+- **Concurrency and time.** `registry.cache.prewarm.concurrency` images at once (4), at most `registry.cache.prewarm.timeout`
+  (10m) for one; every image has its own error.
+- **`SKIPPED`:** the image's registry is not in the cache list (`registry.cache.registries`, `extraRegistries`): nodes pull it
+  directly. **`FAILED` with FailedPrecondition** for the whole call: the cache is not enabled.
+- **Retention.** The manifest request counts as a pull for the cache's `unusedTTL` (48h), as does every later check.
+  Prewarm within 48 hours before the event, or repeat the call: an image nobody pulled for 48 hours is deleted.
+- **Requirements.** `agent.enabled` and `registry.cache.enabled`. The chart gives the agent the cache address, the
+  registry list, and read access to exactly the `imagePullSecrets` Secrets of the release namespace (used to ask
+  upstream registries for digests), and opens the network policies between the agent, zot and the upstream registries.
+
 ---
 
 ## Monitoring stream
