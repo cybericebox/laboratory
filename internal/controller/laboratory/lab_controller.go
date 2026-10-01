@@ -105,23 +105,18 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 	}
 
-	// The modes are fixed before anything is created, and before anything is created,
-	// so the scheduler knows which image references the lab will pull.
-	if updated, err := r.ensureModes(ctx, &lab); err != nil {
+	// The modes are fixed before anything is created, so the scheduler knows which image
+	// references the lab will pull. The status write leaves the answer of the API server in lab; it is not read again,
+	// because the cache may still hold the object without the modes, and the devices
+	// created below would run in the wrong mode.
+	if _, err := r.ensureModes(ctx, &lab); err != nil {
 		return ctrl.Result{}, err
-	} else if updated {
-		if err := r.Get(ctx, req.NamespacedName, &lab); err != nil {
-			return ctrl.Result{}, client.IgnoreNotFound(err)
-		}
 	}
 
-	if updated, err := r.ensureSubnetAllocation(ctx, &lab); err != nil {
+	// Like the modes, the subnets stay in lab as the status write answered them (a read
+	// from the cache could return the object without them).
+	if _, err := r.ensureSubnetAllocation(ctx, &lab); err != nil {
 		return ctrl.Result{}, err
-	} else if updated {
-		// Re-fetch after status update so we have the latest resourceVersion.
-		if err := r.Get(ctx, req.NamespacedName, &lab); err != nil {
-			return ctrl.Result{}, client.IgnoreNotFound(err)
-		}
 	}
 
 	if err := r.ensureLabNetworkObjects(ctx, &lab); err != nil {
