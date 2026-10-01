@@ -30,7 +30,7 @@ For a real cluster, skip this step and point `KUBECONFIG` at the existing config
 ---
 
 > A complete local k0s cluster (Lima VMs, Cilium Gateway, this chart, test lab and checklist) is in
-> `$(LOCAL_K0S)/README.md` in the infrastructure repo (default `../infra/local/cluster`); `make cluster-up` uses the Kind config from `$(LOCAL_K0S)/kind/`.
+> `$(LOCAL_K0S)/README.md` in the infrastructure repo (default `../infrastructure/local/cluster`); `make cluster-up` uses the Kind config from `$(LOCAL_K0S)/kind/`.
 
 ---
 

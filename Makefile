@@ -19,7 +19,7 @@ KIND_CLUSTER_NAME ?= icebox
 
 # Lima/k0s dev cluster
 # Local cluster kit (Lima VMs, k0s, Kind config, lab scenarios) lives in the infrastructure repo (override LOCAL_K0S to point elsewhere).
-LOCAL_K0S      ?= ../infra/local/cluster
+LOCAL_K0S      ?= ../infrastructure/local/cluster
 LIMA_CTRL      ?= lab-ctrl
 LIMA_WORKER    ?= lab-worker
 CHART_PATH     ?= charts/laboratory
