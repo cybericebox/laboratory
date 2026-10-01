@@ -55,7 +55,7 @@ func (h *Handler) CreateLabGroupClients(ctx context.Context, in *protobuf.Create
 	if err := dupRefs(refs); err != nil {
 		return nil, err
 	}
-	resolver := h.newResolver()
+	resolver := h.newResolver(ctx)
 	clients := make([]*protobuf.LabGroupClient, len(items))
 	results := forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
 		res, c := h.createLabGroupClient(ctx, resolver, items[i], in.GetLabels())
@@ -83,7 +83,7 @@ func (h *Handler) createLabGroupClient(ctx context.Context, resolver *groupResol
 	want := mergeItemLabels(common, it.GetLabels())
 	clients := h.cs.LaboratoryV1alpha1().LabGroupClients(ns)
 	lgc := &laboratoryv1alpha1.LabGroupClient{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: copyLabels(want), Annotations: stampID(nil, it.GetName())},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: stampTenant(copyLabels(want), tenantOf(ctx)), Annotations: stampID(nil, it.GetName())},
 	}
 	lgc.Spec.PublicKey = priv.PublicKey().String()
 	_, err = clients.Create(ctx, lgc, metav1.CreateOptions{})
@@ -180,7 +180,7 @@ func (h *Handler) ListLabGroupClients(ctx context.Context, in *protobuf.ListRequ
 	}
 	out := &protobuf.LabGroupClientList{}
 	if len(in.GetItems()) > 0 {
-		resolver := h.newResolver()
+		resolver := h.newResolver(ctx)
 		for _, ref := range in.GetItems() {
 			g, err := resolver.get(ctx, ref.GetLabGroup())
 			if apierrors.IsNotFound(err) || (err == nil && g.Status.Namespace == "") {
@@ -253,7 +253,7 @@ func (h *Handler) UpdateLabGroupClients(ctx context.Context, in *protobuf.Update
 			return nil, err
 		}
 	}
-	resolver := h.newResolver()
+	resolver := h.newResolver(ctx)
 	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
 		ns, err := resolver.namespace(ctx, refs[i].GetLabGroup())
 		if err != nil {
@@ -320,7 +320,7 @@ func (h *Handler) deleteNamespaced(ctx context.Context, in *protobuf.DeleteReque
 	} else if err := dupRefs(refs); err != nil {
 		return nil, err
 	}
-	resolver := h.newResolver()
+	resolver := h.newResolver(ctx)
 	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
 		g, err := resolver.get(ctx, refs[i].GetLabGroup())
 		if err != nil {

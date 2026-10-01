@@ -60,14 +60,20 @@ func (h *Handler) createLabGroup(ctx context.Context, it *protobuf.LabGroupItem,
 	lg.Spec.Suspended = it.GetSuspended()
 	lg.Spec.VPN.Disabled = it.GetVpnDisabled()
 	lg.Spec.VPN.ProbeWhileSuspended = it.GetProbeWhileSuspended()
-	lg.Labels, lg.Annotations = dep.stamp(copyLabels(want), stampID(nil, it.GetName()))
+	tenant := tenantOf(ctx)
+	lg.Labels, lg.Annotations = dep.stamp(stampTenant(copyLabels(want), tenant), stampID(nil, it.GetName()))
 
 	_, err := groups.Create(ctx, lg, metav1.CreateOptions{})
 	if err == nil {
 		return result(ref, protobuf.ItemState_ITEM_STATE_CREATED)
 	}
 	if err = createErr(err, kindLabGroup, it.GetName(), func() (metav1.Object, error) {
-		return groups.Get(ctx, name, metav1.GetOptions{})
+		cur, err := groups.Get(ctx, name, metav1.GetOptions{})
+		if err == nil && !ownedBy(tenant, cur) {
+			// Another tenant's object: no terminating hint, the retry loop below answers.
+			return nil, errTaken{kindLabGroup, it.GetName()}
+		}
+		return cur, err
 	}); !apierrors.IsAlreadyExists(err) {
 		return failedResult(ref, err)
 	}
@@ -78,6 +84,9 @@ func (h *Handler) createLabGroup(ctx context.Context, it *protobuf.LabGroupItem,
 		cur, err := groups.Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return err
+		}
+		if !ownedBy(tenant, cur) {
+			return errTaken{kindLabGroup, it.GetName()}
 		}
 		if err := rejectTerminating(kindLabGroup, cur); err != nil {
 			return err
@@ -117,10 +126,9 @@ func (h *Handler) ListLabGroups(ctx context.Context, in *protobuf.ListRequest) (
 		return nil, err
 	}
 	out := &protobuf.LabGroupList{}
-	groups := h.cs.LaboratoryV1alpha1().LabGroups()
 	if len(in.GetItems()) > 0 {
 		for _, ref := range in.GetItems() {
-			g, err := groups.Get(ctx, crName(ref.GetName()), metav1.GetOptions{})
+			g, err := h.getGroup(ctx, ref.GetName())
 			if apierrors.IsNotFound(err) {
 				continue
 			}
@@ -131,12 +139,12 @@ func (h *Handler) ListLabGroups(ctx context.Context, in *protobuf.ListRequest) (
 		}
 		return out, nil
 	}
-	list, err := groups.List(ctx, metav1.ListOptions{LabelSelector: in.GetSelector()})
+	items, err := h.listGroups(ctx, in.GetSelector())
 	if err != nil {
 		return nil, err
 	}
-	for i := range list.Items {
-		out.Items = append(out.Items, labGroupToProto(&list.Items[i]))
+	for i := range items {
+		out.Items = append(out.Items, labGroupToProto(&items[i]))
 	}
 	return out, nil
 }
@@ -164,15 +172,15 @@ func (h *Handler) UpdateLabGroups(ctx context.Context, in *protobuf.UpdateLabGro
 	}
 	var targets []groupTarget
 	if in.GetBySelector() != nil {
-		list, err := h.cs.LaboratoryV1alpha1().LabGroups().List(ctx, metav1.ListOptions{LabelSelector: in.GetBySelector().GetSelector()})
+		items, err := h.listGroups(ctx, in.GetBySelector().GetSelector())
 		if err != nil {
 			return nil, err
 		}
-		if err := checkMatched(len(list.Items), in.GetBySelector().ExpectedCount); err != nil {
+		if err := checkMatched(len(items), in.GetBySelector().ExpectedCount); err != nil {
 			return nil, err
 		}
-		for i := range list.Items {
-			targets = append(targets, groupTarget{ref: groupRef(names.IDOf(&list.Items[i]))})
+		for i := range items {
+			targets = append(targets, groupTarget{ref: groupRef(names.IDOf(&items[i]))})
 		}
 		sort.Slice(targets, func(i, j int) bool { return refKey(targets[i].ref) < refKey(targets[j].ref) })
 	} else {
@@ -237,6 +245,9 @@ func (h *Handler) updateLabGroup(ctx context.Context, ref *protobuf.ItemRef, p g
 		if err != nil {
 			return err
 		}
+		if !ownedBy(tenantOf(ctx), cur) {
+			return notFoundForeign(kindLabGroup, ref.GetName())
+		}
 		if err := rejectTerminating(kindLabGroup, cur); err != nil {
 			return err
 		}
@@ -275,15 +286,15 @@ func (h *Handler) DeleteLabGroups(ctx context.Context, in *protobuf.DeleteReques
 	}
 	var refs []*protobuf.ItemRef
 	if in.GetBySelector() != nil {
-		list, err := h.cs.LaboratoryV1alpha1().LabGroups().List(ctx, metav1.ListOptions{LabelSelector: in.GetBySelector().GetSelector()})
+		items, err := h.listGroups(ctx, in.GetBySelector().GetSelector())
 		if err != nil {
 			return nil, err
 		}
-		if err := checkMatched(len(list.Items), in.GetBySelector().ExpectedCount); err != nil {
+		if err := checkMatched(len(items), in.GetBySelector().ExpectedCount); err != nil {
 			return nil, err
 		}
-		for i := range list.Items {
-			refs = append(refs, groupRef(names.IDOf(&list.Items[i])))
+		for i := range items {
+			refs = append(refs, groupRef(names.IDOf(&items[i])))
 		}
 		sortRefs(refs)
 	} else {
@@ -295,6 +306,9 @@ func (h *Handler) DeleteLabGroups(ctx context.Context, in *protobuf.DeleteReques
 		}
 	}
 	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
+		if _, err := h.getGroup(ctx, refs[i].GetName()); err != nil {
+			return failedResult(refs[i], err)
+		}
 		return deleteResult(refs[i], h.cs.LaboratoryV1alpha1().LabGroups().Delete(ctx, crName(refs[i].GetName()), metav1.DeleteOptions{}))
 	})}, nil
 }

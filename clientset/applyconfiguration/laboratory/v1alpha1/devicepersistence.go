@@ -28,12 +28,9 @@ import (
 type DevicePersistenceApplyConfiguration struct {
 	// Enabled turns snapshot-backed state on for the device.
 	Enabled *bool `json:"enabled,omitempty"`
-	// Debounce is how long the writable layer must stay quiet before a snapshot.
+	// Debounce is how long the writable layer must stay quiet before a snapshot
+	// (default: the platform setting).
 	Debounce *v1.Duration `json:"debounce,omitempty"`
-	// ExcludePaths are absolute container paths that are never snapshotted.
-	ExcludePaths []string `json:"excludePaths,omitempty"`
-	// MaxSnapshotSize is the quota of the kept state (a Kubernetes quantity, e.g. "512Mi").
-	MaxSnapshotSize *string `json:"maxSnapshotSize,omitempty"`
 }
 
 // DevicePersistenceApplyConfiguration constructs a declarative configuration of the DevicePersistence type for use with
@@ -55,23 +52,5 @@ func (b *DevicePersistenceApplyConfiguration) WithEnabled(value bool) *DevicePer
 // If called multiple times, the Debounce field is set to the value of the last call.
 func (b *DevicePersistenceApplyConfiguration) WithDebounce(value v1.Duration) *DevicePersistenceApplyConfiguration {
 	b.Debounce = &value
-	return b
-}
-
-// WithExcludePaths adds the given value to the ExcludePaths field in the declarative configuration
-// and returns the receiver, so that objects can be build by chaining "With" function invocations.
-// If called multiple times, values provided by each call will be appended to the ExcludePaths field.
-func (b *DevicePersistenceApplyConfiguration) WithExcludePaths(values ...string) *DevicePersistenceApplyConfiguration {
-	for i := range values {
-		b.ExcludePaths = append(b.ExcludePaths, values[i])
-	}
-	return b
-}
-
-// WithMaxSnapshotSize sets the MaxSnapshotSize field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the MaxSnapshotSize field is set to the value of the last call.
-func (b *DevicePersistenceApplyConfiguration) WithMaxSnapshotSize(value string) *DevicePersistenceApplyConfiguration {
-	b.MaxSnapshotSize = &value
 	return b
 }

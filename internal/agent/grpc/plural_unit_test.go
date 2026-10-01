@@ -341,15 +341,15 @@ func TestPersistenceInTheSpec(t *testing.T) {
 	if _, err := parseLabSpec(spec(`{"enabled":true}`), false); err == nil || !strings.Contains(err.Error(), "does not allow") {
 		t.Fatalf("persistence off in the cluster: %v", err)
 	}
-	got, err := parseLabSpec(spec(`{"enabled":true,"debounce":"5s","excludePaths":["/tmp"],"maxSnapshotSize":"512Mi"}`), true)
-	if err != nil || !got.Devices[0].Persistence.Enabled || got.Devices[0].Persistence.MaxSnapshotSize != "512Mi" {
+	got, err := parseLabSpec(spec(`{"enabled":true,"debounce":"5s"}`), true)
+	if err != nil || !got.Devices[0].Persistence.Enabled || got.Devices[0].Persistence.Debounce == nil {
 		t.Fatalf("%+v %v", got, err)
 	}
 	// Disabled persistence is fine anywhere.
 	if _, err := parseLabSpec(spec(`{"enabled":false}`), false); err != nil {
 		t.Fatal(err)
 	}
-	for _, bad := range []string{`{"enabled":true,"debounce":"0s"}`, `{"enabled":true,"excludePaths":["tmp"]}`, `{"enabled":true,"maxSnapshotSize":"lots"}`, `{"enabled":true,"nope":1}`} {
+	for _, bad := range []string{`{"enabled":true,"debounce":"0s"}`, `{"enabled":true,"excludePaths":["/tmp"]}`, `{"enabled":true,"maxSnapshotSize":"1Gi"}`} {
 		if _, err := parseLabSpec(spec(bad), true); err == nil {
 			t.Errorf("%s must be rejected", bad)
 		}

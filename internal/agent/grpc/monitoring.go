@@ -63,8 +63,20 @@ func (h *Handler) collect(ctx context.Context) (*monState, error) {
 	for i := range groups.Items {
 		g := &groups.Items[i]
 		gid := names.IDOf(g)
+		// The tenant of a group is the tenant of everything in it. It is added to the labels
+		// kept for the selector filter (never to what is sent), so the filter's tenant test
+		// holds for every record.
+		gt := names.TenantOf(g.Labels)
+		tl := func(l map[string]string) map[string]string {
+			out := make(map[string]string, len(l)+1)
+			for k, v := range l {
+				out[k] = v
+			}
+			out[names.LabelTenant] = gt
+			return out
+		}
 		upd.Groups = append(upd.Groups, labGroupToProto(g))
-		st.labels[recordKey("lab_group", gid, "", gid)] = g.Labels
+		st.labels[recordKey("lab_group", gid, "", gid)] = tl(g.Labels)
 		ns := g.Status.Namespace
 		if ns == "" {
 			continue
@@ -84,8 +96,8 @@ func (h *Handler) collect(ctx context.Context) (*monState, error) {
 				fillDeviceScheduling(p, sched, lab.Name)
 				upd.Labs = append(upd.Labs, p)
 				labIDs[lab.Name] = p.Name
-				st.labels[recordKey("lab", gid, ns, p.Name)] = lab.Labels
-				st.labLabels[labLabelKey(gid, p.Name)] = lab.Labels
+				st.labels[recordKey("lab", gid, ns, p.Name)] = tl(lab.Labels)
+				st.labLabels[labLabelKey(gid, p.Name)] = tl(lab.Labels)
 			}
 		}
 		clients, err := h.cs.LaboratoryV1alpha1().LabGroupClients(ns).List(ctx, metav1.ListOptions{})
@@ -94,13 +106,13 @@ func (h *Handler) collect(ctx context.Context) (*monState, error) {
 				p := clientMonitoringToProto(&clients.Items[j], gid)
 				upd.Clients = append(upd.Clients, p)
 				clientIDs[clients.Items[j].Name] = p.Name
-				st.labels[recordKey("client", gid, ns, p.Name)] = clients.Items[j].Labels
+				st.labels[recordKey("client", gid, ns, p.Name)] = tl(clients.Items[j].Labels)
 			}
 		}
 		policy, err := h.cs.LaboratoryV1alpha1().LabGroupAccessPolicies(ns).Get(ctx, "access-policy", metav1.GetOptions{})
 		if err == nil {
 			upd.Policies = append(upd.Policies, accessPolicyToProto(policy, gid))
-			st.labels[recordKey("access_policy", gid, ns, "access-policy")] = policy.Labels
+			st.labels[recordKey("access_policy", gid, ns, "access-policy")] = tl(policy.Labels)
 		}
 		reports, err := h.cs.LaboratoryV1alpha1().LabTrafficReports(ns).List(ctx, metav1.ListOptions{})
 		if err == nil {
@@ -135,7 +147,7 @@ func (h *Handler) collect(ctx context.Context) (*monState, error) {
 // subscribers share one poller and one journal (see monitor), each gets its own
 // selector, minimum interval and position.
 func (h *Handler) Monitoring(request *protobuf.MonitoringRequest, stream protobuf.LabManager_MonitoringServer) error {
-	filter, err := newSelectorFilter(request.GetSelector())
+	filter, err := newSelectorFilter(request.GetSelector(), tenantOf(stream.Context()))
 	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "selector: %v", err)
 	}

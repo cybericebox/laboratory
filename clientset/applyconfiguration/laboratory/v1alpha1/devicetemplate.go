@@ -40,7 +40,7 @@ type DeviceTemplateApplyConfiguration struct {
 	// Resources sets the container resource requests/limits for this device.
 	Resources *DeviceResourcesApplyConfiguration `json:"resources,omitempty"`
 	// Persistence is the optional state-persistence policy of this device, set at
-	// creation and immutable. Unset fields take the platform defaults.
+	// creation and immutable. The excluded paths and the quota are platform settings.
 	Persistence *DevicePersistenceApplyConfiguration `json:"persistence,omitempty"`
 }
 

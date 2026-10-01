@@ -428,10 +428,28 @@ There is no "flag" concept in the agent.
 the variant's variables are merged with the lab's own (the lab wins per device and variable name) into the Secrets.
 
 **State persistence** is a property of a device in the topology, set at creation and immutable (a lab's spec is never
-updated): `devices[].persistence {enabled, debounce, excludePaths, maxSnapshotSize}` in `spec_json`, all optional, with the
+updated): `devices[].persistence {enabled, debounce}` in `spec_json`, both optional, with the
 platform defaults from the chart. `enabled: true` is refused when `devices.statePersistence.enabled` is off in the
-chart (the agent reads it as `AGENT_STATE_PERSISTENCE_ENABLED`); `debounce` must be positive, `excludePaths` absolute,
-`maxSnapshotSize` a positive Kubernetes quantity.
+chart (the agent reads it as `AGENT_STATE_PERSISTENCE_ENABLED`); `debounce` must be positive. The excluded paths and the
+quota are cluster settings of the chart (`devices.statePersistence.excludePaths`, `maxSnapshotSize`) and cannot be requested per device.
+
+**Tenancy.**
+
+The agent serves several clients (tenants) from one cluster and keeps them apart.
+
+- **Identity.** The tenant of a call is the CN of the verified client certificate (mTLS). A CN that is a valid label
+  value of at most 63 characters is the tenant key as is, any other CN becomes `h` + base36(SHA-256). A call without a client
+  certificate (TLS or mTLS off, local development) is the tenant `default`, and so is a client whose CN is `default`.
+- **Stamp.** Every object the agent creates (LabGroups, Labs, VPN clients, access policies) gets the reserved label
+  `laboratory.cybericebox.com/tenant`. The operator copies it to the Devices and pods of a Lab and the pods of a
+  LabGroup. Like every reserved label it is hidden: never in answers, never accepted from a client, never allowed in a selector.
+  Objects without the label (created before tenancy) belong to the `default` tenant.
+- **Scope.** Every RPC is implicitly scoped to the caller's tenant: `List*`, `Update*`, `Delete*`, the device calls and `Monitoring`
+  see only its objects, combined with the caller's own selector (which can narrow the scope but never widen it). Objects inside a
+  LabGroup belong to the tenant of the group. Another tenant's object is `NOT_FOUND` for every operation, as if it did not exist.
+- **Names.** LabGroup ids are global. Creating an id that belongs to another tenant fails for that item with "the id is not
+  available", with no hint that it exists or is being deleted.
+- **Monitoring** is cut to the tenant before the user selector. `GetCapacity` is cluster-wide for now.
 
 **Limits.** Ids and deploy keys at most 64 characters, `deploy_after` at most 32 keys, at most 5000 items per call, message size 64 MiB (`MaxRecvMsgSize`/`MaxSendMsgSize`; the Go client sets the
 same call options), bounded internal concurrency (16 calls to the Kubernetes API per request).

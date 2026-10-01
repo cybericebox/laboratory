@@ -97,10 +97,16 @@ func TestStateModeIsFixedAtCreation(t *testing.T) {
 	if lab.Status.StatePersistence == nil || !*lab.Status.StatePersistence {
 		t.Fatal("lab created with the switch on must be persistent")
 	}
-	if spec := r.deviceStateSpec(lab, laboratoryv1alpha1.DeviceTypeContainer); spec == nil || !spec.Enabled || spec.MaxLayers != 10 {
+	if spec := r.deviceStateSpec(lab, laboratoryv1alpha1.DeviceTemplate{Type: laboratoryv1alpha1.DeviceTypeContainer}); spec == nil || !spec.Enabled || spec.MaxLayers != 10 {
 		t.Fatalf("container device must carry the policy, got %+v", spec)
 	}
-	if r.deviceStateSpec(lab, laboratoryv1alpha1.DeviceTypeHub) != nil {
+	// The topology may set the debounce of a device; the rest of the policy stays the platform's.
+	d := metav1.Duration{Duration: 42 * time.Second}
+	custom := r.deviceStateSpec(lab, laboratoryv1alpha1.DeviceTemplate{Type: laboratoryv1alpha1.DeviceTypeContainer, Persistence: &laboratoryv1alpha1.DevicePersistence{Enabled: true, Debounce: &d}})
+	if custom.Debounce.Duration != 42*time.Second || custom.MaxLayers != 10 || custom.MaxSnapshotBytes != r.State.MaxSnapshotBytes {
+		t.Fatalf("custom debounce: %+v", custom)
+	}
+	if r.deviceStateSpec(lab, laboratoryv1alpha1.DeviceTemplate{Type: laboratoryv1alpha1.DeviceTypeHub}) != nil {
 		t.Fatal("a switch runs no container and needs no state")
 	}
 
@@ -124,7 +130,7 @@ func TestStateModeIsFixedAtCreation(t *testing.T) {
 	if _, err := r2.ensureModes(ctx, off); err != nil {
 		t.Fatal(err)
 	}
-	if *off.Status.StatePersistence || r2.deviceStateSpec(off, laboratoryv1alpha1.DeviceTypeContainer) != nil {
+	if *off.Status.StatePersistence || r2.deviceStateSpec(off, laboratoryv1alpha1.DeviceTemplate{Type: laboratoryv1alpha1.DeviceTypeContainer}) != nil {
 		t.Fatal("lab created with the switch off must stay on Deployments")
 	}
 }

@@ -71,13 +71,18 @@ func (r *LabReconciler) deviceMirror(lab *laboratoryv1alpha1.Lab, t laboratoryv1
 
 // deviceStateSpec is the state policy of a new Device of the lab; nil when the
 // lab does not use persistence or the device runs no container.
-func (r *LabReconciler) deviceStateSpec(lab *laboratoryv1alpha1.Lab, t laboratoryv1alpha1.DeviceType) *laboratoryv1alpha1.DeviceStateSpec {
-	if lab.Status.StatePersistence == nil || !*lab.Status.StatePersistence || t != laboratoryv1alpha1.DeviceTypeContainer {
+func (r *LabReconciler) deviceStateSpec(lab *laboratoryv1alpha1.Lab, tmpl laboratoryv1alpha1.DeviceTemplate) *laboratoryv1alpha1.DeviceStateSpec {
+	if lab.Status.StatePersistence == nil || !*lab.Status.StatePersistence || tmpl.Type != laboratoryv1alpha1.DeviceTypeContainer {
 		return nil
+	}
+	// The topology may set the debounce of a device; the excluded paths and the quota are the platform's.
+	debounce := metav1.Duration{Duration: r.State.Debounce}
+	if p := tmpl.Persistence; p != nil && p.Debounce != nil {
+		debounce = *p.Debounce
 	}
 	return &laboratoryv1alpha1.DeviceStateSpec{
 		Enabled:          true,
-		Debounce:         metav1.Duration{Duration: r.State.Debounce},
+		Debounce:         debounce,
 		ExcludePaths:     append([]string(nil), r.State.ExcludePaths...),
 		MaxSnapshotBytes: r.State.MaxSnapshotBytes,
 		MaxLayers:        r.State.MaxLayers,

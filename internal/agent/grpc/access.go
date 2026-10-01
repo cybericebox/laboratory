@@ -40,7 +40,7 @@ func (h *Handler) SetLabGroupAccess(ctx context.Context, in *protobuf.SetLabGrou
 	if err := dupRefs(refs); err != nil {
 		return nil, err
 	}
-	resolver := h.newResolver()
+	resolver := h.newResolver(ctx)
 	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
 		state, err := h.setLabGroupAccess(ctx, resolver, policies[i], in.GetLabels())
 		if err != nil {
@@ -98,6 +98,7 @@ func (h *Handler) setLabGroupAccess(ctx context.Context, resolver *groupResolver
 	// the group's own.
 	policyLabels := copyLabels(group.Labels)
 	delete(policyLabels, names.LabelDeployGroup)
+	policyLabels = stampTenant(policyLabels, tenantOf(ctx))
 	policyLabels, _ = mergeLabels(policyLabels, mergeItemLabels(common, in.Labels))
 
 	rawMap, _ := json.Marshal(idMap)

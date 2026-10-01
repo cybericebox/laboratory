@@ -314,7 +314,7 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 
 	// The labels the caller put on the lab (see deviceLabels) reach the pod, the
 	// platform's own keys below always win.
-	labels = names.UserLabels(device.Labels)
+	labels = names.PropagatedLabels(device.Labels)
 	labels[names.LabelLab] = device.Spec.LabRef
 	labels["app"] = device.Spec.Name
 	labels[names.LabelDevice] = device.Spec.Name

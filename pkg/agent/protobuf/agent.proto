@@ -232,7 +232,7 @@ message SetLabGroupAccessRequest {
 // LabVariant is sent once per request however many labs use it; it is not stored, the
 // spec is copied into every Lab. Device variables are secrets only: spec_json must not
 // carry env or flags on devices (rejected). A device's state persistence is part of the
-// spec (devices[].persistence {enabled, debounce, excludePaths, maxSnapshotSize}), set at
+// spec (devices[].persistence {enabled, debounce}), set at
 // creation and immutable; enabled=true is refused when the cluster does not allow persistence.
 message LabVariant {
   string variant_id = 1;

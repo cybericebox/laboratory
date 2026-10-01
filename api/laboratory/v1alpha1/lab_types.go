@@ -60,7 +60,7 @@ type DeviceTemplate struct {
 	// +optional
 	Resources *DeviceResources `json:"resources,omitempty"`
 	// Persistence is the optional state-persistence policy of this device, set at
-	// creation and immutable. Unset fields take the platform defaults.
+	// creation and immutable. The excluded paths and the quota are platform settings.
 	// +optional
 	Persistence *DevicePersistence `json:"persistence,omitempty"`
 }
@@ -69,15 +69,10 @@ type DeviceTemplate struct {
 type DevicePersistence struct {
 	// Enabled turns snapshot-backed state on for the device.
 	Enabled bool `json:"enabled,omitempty"`
-	// Debounce is how long the writable layer must stay quiet before a snapshot.
+	// Debounce is how long the writable layer must stay quiet before a snapshot
+	// (default: the platform setting).
 	// +optional
 	Debounce *metav1.Duration `json:"debounce,omitempty"`
-	// ExcludePaths are absolute container paths that are never snapshotted.
-	// +optional
-	ExcludePaths []string `json:"excludePaths,omitempty"`
-	// MaxSnapshotSize is the quota of the kept state (a Kubernetes quantity, e.g. "512Mi").
-	// +optional
-	MaxSnapshotSize string `json:"maxSnapshotSize,omitempty"`
 }
 
 // ConnectionTemplate is an inline connection declaration inside Lab.spec.connections[].

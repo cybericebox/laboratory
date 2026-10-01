@@ -469,7 +469,7 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 				Interfaces:     resolvedInterfaces[tmpl.Name],
 				Exposure:       tmpl.Exposure,
 				Resources:      tmpl.Resources,
-				State:          r.deviceStateSpec(lab, tmpl.Type),
+				State:          r.deviceStateSpec(lab, tmpl),
 				ImageMirror:    r.deviceMirror(lab, tmpl.Type),
 				ImageDigests:   r.deviceDigests(lab, tmpl),
 			},
@@ -499,7 +499,7 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 // deviceLabels are the labels of a Device: the labels the caller put on its Lab (they
 // reach the pod from here) and the lab's own key.
 func deviceLabels(lab *laboratoryv1alpha1.Lab) map[string]string {
-	labels := names.UserLabels(lab.Labels)
+	labels := names.PropagatedLabels(lab.Labels)
 	labels[names.LabelLab] = lab.Name
 	return labels
 }
