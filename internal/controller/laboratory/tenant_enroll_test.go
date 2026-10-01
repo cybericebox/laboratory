@@ -146,3 +146,31 @@ func TestExpiredTokenGoesAwayUntilRegenerated(t *testing.T) {
 		t.Fatalf("the configured lifetime applies: %v", got)
 	}
 }
+
+// A deleted tenant takes its Secrets with it: the access keys of a gone tenant must not be
+// inherited by a tenant created later under the same name.
+func TestDeletedTenantLeavesNoSecretsBehind(t *testing.T) {
+	r, c, _ := tenantEnrollRig(t)
+	reconcileTenant(t, r)
+	keys := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: names.AccessKeysSecret("acme"), Namespace: names.TenantsNamespace}, Data: map[string][]byte{"k1": []byte("pem")}}
+	other := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: names.AccessKeysSecret("other"), Namespace: names.TenantsNamespace}, Data: map[string][]byte{"k1": []byte("pem")}}
+	for _, s := range []*corev1.Secret{keys, other} {
+		if err := c.Create(context.Background(), s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := c.Delete(context.Background(), getTenant(t, c)); err != nil {
+		t.Fatal(err)
+	}
+	reconcileTenant(t, r)
+	for _, name := range []string{names.AccessKeysSecret("acme"), names.EnrollmentSecret("acme")} {
+		var s corev1.Secret
+		if err := c.Get(context.Background(), types.NamespacedName{Namespace: names.TenantsNamespace, Name: name}, &s); !apierrors.IsNotFound(err) {
+			t.Fatalf("secret %s survives the tenant: %v", name, err)
+		}
+	}
+	var s corev1.Secret
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: names.TenantsNamespace, Name: names.AccessKeysSecret("other")}, &s); err != nil {
+		t.Fatalf("another tenant's keys must stay: %v", err)
+	}
+}

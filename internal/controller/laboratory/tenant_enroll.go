@@ -66,7 +66,12 @@ func HashEnrollmentToken(token string) string {
 func (r *TenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var t laboratoryv1alpha1.Tenant
 	if err := r.Get(ctx, req.NamespacedName, &t); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		if apierrors.IsNotFound(err) {
+			// A deleted tenant leaves nothing behind: a tenant created later under the same
+			// name must not inherit its access keys (they would verify its signatures) or token.
+			return ctrl.Result{}, r.deleteTenantSecrets(ctx, req.Name)
+		}
+		return ctrl.Result{}, err
 	}
 	if t.DeletionTimestamp != nil {
 		return ctrl.Result{}, r.deleteTokenSecret(ctx, t.Name)
@@ -130,6 +135,15 @@ func (r *TenantReconciler) issue(ctx context.Context, t *laboratoryv1alpha1.Tena
 		return r.Patch(ctx, t, client.MergeFrom(orig))
 	}
 	return nil
+}
+
+// deleteTenantSecrets removes the enrollment Secret and the access-keys Secret of a tenant that is gone.
+func (r *TenantReconciler) deleteTenantSecrets(ctx context.Context, tenant string) error {
+	if err := r.deleteTokenSecret(ctx, tenant); err != nil {
+		return err
+	}
+	err := r.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: names.AccessKeysSecret(tenant), Namespace: names.TenantsNamespace}})
+	return client.IgnoreNotFound(err)
 }
 
 func (r *TenantReconciler) deleteTokenSecret(ctx context.Context, tenant string) error {
