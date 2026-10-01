@@ -39,6 +39,13 @@ spec:
           spec:
             description: DeviceSpec defines the desired state of Device.
             properties:
+              code:
+                description: |-
+                  Code is the short random code that makes the workload name <name>-<code>
+                  unique in the group namespace; the web Service of the device carries the same
+                  one. It is drawn when the Device is created and never changes. Empty on a
+                  Device that predates codes: its workload keeps the name of the Device.
+                type: string
               exposure:
                 description: ExposureSpec declares how a device is externally reachable.
                 properties:
@@ -303,6 +310,51 @@ spec:
                 type: boolean
               reason:
                 type: string
+              scheduling:
+                description: Scheduling is the pod's place on its way from the scheduler
+                  queue to Ready.
+                properties:
+                  dispatchedAt:
+                    description: DispatchedAt is when the scheduler let the pod start;
+                      the startup timeout counts from it.
+                    format: date-time
+                    type: string
+                  failure:
+                    description: Failure explains a Failed pod; the warning clears
+                      when the pod becomes Ready.
+                    properties:
+                      at:
+                        format: date-time
+                        type: string
+                      message:
+                        description: Message is the last error the node reported (for
+                          example the image pull error).
+                        type: string
+                      reason:
+                        description: Reason is one of the Failure* constants.
+                        type: string
+                      restartCount:
+                        format: int32
+                        type: integer
+                    type: object
+                  queuedAt:
+                    description: QueuedAt is when the pod entered the queue.
+                    format: date-time
+                    type: string
+                  startedAt:
+                    description: StartedAt is when the pod was first seen Ready.
+                    format: date-time
+                    type: string
+                  state:
+                    description: PodScheduleState is where a pod is on its way from
+                      the queue to Ready.
+                    enum:
+                    - Queued
+                    - Starting
+                    - Started
+                    - Failed
+                    type: string
+                type: object
               state:
                 description: State is the snapshot state of a device with spec.state.enabled.
                 properties:

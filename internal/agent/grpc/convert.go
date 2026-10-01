@@ -3,6 +3,7 @@ package grpc
 import (
 	"encoding/json"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
@@ -24,6 +25,8 @@ func labGroupToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.LabGroup {
 			Suspended:       g.Status.Suspended,
 			VpnClientSubnet: g.Status.VPN.ClientSubnet,
 			ImageWarning:    g.Status.ImageWarning,
+			Scheduling:      schedulingToProto(g.Status.Scheduling, g.Annotations),
+			Pods:            groupPodsToProto(g.Status.Pods),
 		},
 		Labels: userLabels(g.Labels),
 	}
@@ -43,7 +46,7 @@ func labToProto(l *laboratoryv1alpha1.Lab) *protobuf.Lab {
 		InternetReady: st.Internet.Ready,
 		ImageWarning:  st.ImageWarning,
 	}
-	status.Queue = labQueueToProto(st.Launch)
+	status.Scheduling = schedulingToProto(st.Scheduling, l.Annotations)
 	for i := range st.Devices {
 		status.Devices = append(status.Devices, &protobuf.LabDeviceStatus{
 			Name: st.Devices[i].Name, Ready: st.Devices[i].Ready,
@@ -84,21 +87,67 @@ func labToProto(l *laboratoryv1alpha1.Lab) *protobuf.Lab {
 	}
 }
 
-// labQueueToProto maps the launch pacing state; nil for a lab that never had it.
-func labQueueToProto(l *laboratoryv1alpha1.LabLaunchStatus) *protobuf.LabQueueStatus {
-	if l == nil {
+// schedulingToProto maps the scheduler queue place of a Lab or LabGroup; nil when it has
+// none. The group is the original deploy key from the object's annotation (the status
+// holds the encoded label value).
+func schedulingToProto(s *laboratoryv1alpha1.SchedulingStatus, annotations map[string]string) *protobuf.Scheduling {
+	if s == nil {
 		return nil
 	}
-	q := &protobuf.LabQueueStatus{
-		Position:    l.Position,
-		Length:      l.Length,
-		Reason:      l.Reason,
-		LaunchClass: l.Class,
+	group, _ := deployOf(annotations)
+	if group == "" {
+		group = s.Group
 	}
-	if l.AdmittedAt != nil {
-		q.AdmittedAtUnixMs = l.AdmittedAt.UnixMilli()
+	return &protobuf.Scheduling{Group: group, Position: s.Position, Length: s.Length, Reason: s.Reason, Message: s.Message, Pods: s.Pods, Pending: s.Pending}
+}
+
+func ms(t *metav1.Time) int64 {
+	if t == nil || t.IsZero() {
+		return 0
 	}
-	return q
+	return t.UnixMilli()
+}
+
+// podScheduleToProto maps the scheduler state of one pod; nil when untracked.
+func podScheduleToProto(p *laboratoryv1alpha1.PodSchedule) *protobuf.PodScheduling {
+	if p == nil || p.State == "" {
+		return nil
+	}
+	out := &protobuf.PodScheduling{QueuedUnixMs: ms(p.QueuedAt), DispatchedUnixMs: ms(p.DispatchedAt), StartedUnixMs: ms(p.StartedAt)}
+	switch p.State {
+	case laboratoryv1alpha1.PodQueued:
+		out.State = protobuf.PodState_POD_STATE_QUEUED
+	case laboratoryv1alpha1.PodStarting:
+		out.State = protobuf.PodState_POD_STATE_STARTING
+	case laboratoryv1alpha1.PodStarted:
+		out.State = protobuf.PodState_POD_STATE_STARTED
+	case laboratoryv1alpha1.PodFailed:
+		out.State = protobuf.PodState_POD_STATE_FAILED
+	}
+	if f := p.Failure; f != nil {
+		out.Failure = &protobuf.PodFailure{Reason: f.Reason, Message: f.Message, RestartCount: f.RestartCount, AtUnixMs: ms(f.At)}
+	}
+	return out
+}
+
+// fillDeviceScheduling sets the scheduler state of each device of a proto Lab from the
+// Device objects of its namespace, keyed by device name (the lab's CR name is lab.crName).
+func fillDeviceScheduling(lab *protobuf.Lab, devices map[usageKey]*laboratoryv1alpha1.PodSchedule, crName string) {
+	if lab.GetStatus() == nil || devices == nil {
+		return
+	}
+	for _, d := range lab.Status.Devices {
+		d.Scheduling = podScheduleToProto(devices[usageKey{lab: crName, device: d.Name}])
+	}
+}
+
+// groupPodsToProto maps the scheduler state of the pods a LabGroup runs itself.
+func groupPodsToProto(pods []laboratoryv1alpha1.NamedPodSchedule) []*protobuf.LabGroupPod {
+	var out []*protobuf.LabGroupPod
+	for i := range pods {
+		out = append(out, &protobuf.LabGroupPod{Name: pods[i].Name, Scheduling: podScheduleToProto(&pods[i].PodSchedule)})
+	}
+	return out
 }
 
 func quantityMilliValue(value string) int64 {

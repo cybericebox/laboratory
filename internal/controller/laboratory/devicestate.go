@@ -57,8 +57,13 @@ func podIncarnation(p *corev1.Pod) int32 {
 	return int32(n)
 }
 
+// workloadName is the name of the device's Deployment, and the prefix of its pods.
+func workloadName(device *laboratoryv1alpha1.Device) string {
+	return names.WorkloadName(device.Spec.Name, device.Spec.Code, device.Name)
+}
+
 func podName(device *laboratoryv1alpha1.Device, incarnation int32) string {
-	return fmt.Sprintf("%s-%d", device.Name, incarnation)
+	return fmt.Sprintf("%s-%d", workloadName(device), incarnation)
 }
 
 // reader reads straight from the API server when one is configured.
@@ -178,6 +183,19 @@ func (r *DeviceReconciler) reconcilePod(ctx context.Context, device *laboratoryv
 
 	if spec.ResetToken != st.ResetToken {
 		return r.resetDevice(ctx, device, pods)
+	}
+
+	// A device that was never dispatched has no pod and waits for the scheduler. A
+	// pod that ran once and ended is a recovery: it is recreated at once, with no
+	// slot, as before. A device with no record is recorded as running if it ever had a pod.
+	if err := r.initScheduling(ctx, device, len(pods) > 0 || st.Incarnation > 0); err != nil {
+		return ctrl.Result{}, err
+	}
+	if r.queuedByScheduler(device) {
+		if err := r.publishPlacement(ctx, device, nil); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
 	}
 
 	name := podName(device, st.Incarnation)

@@ -7,6 +7,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
 func TestLabToProtoIncludesConfiguredResourceBounds(t *testing.T) {
@@ -154,24 +156,51 @@ func TestClientToProtoZeroHandshake(t *testing.T) {
 	}
 }
 
-func TestLabToProtoQueue(t *testing.T) {
+func TestSchedulingToProto(t *testing.T) {
 	lab := &laboratoryv1alpha1.Lab{}
-	if labToProto(lab).GetStatus().GetQueue() != nil {
-		t.Fatal("a lab without launch status must have no queue message")
+	if labToProto(lab).GetStatus().GetScheduling() != nil {
+		t.Fatal("a lab without scheduling status has no scheduling message")
 	}
+	lab.Annotations = map[string]string{names.AnnotationDeployGroup: "Intro Group"}
+	lab.Status.Scheduling = &laboratoryv1alpha1.SchedulingStatus{
+		Group: "hencoded", Position: 7, Length: 42, Reason: laboratoryv1alpha1.WaitInFlightLimit, Message: "m", Pods: 3, Pending: 2,
+	}
+	q := labToProto(lab).GetStatus().GetScheduling()
+	if q.GetPosition() != 7 || q.GetLength() != 42 || q.GetReason() != "InFlightLimit" || q.GetGroup() != "Intro Group" || q.GetPods() != 3 || q.GetPending() != 2 || q.GetMessage() != "m" {
+		t.Fatalf("scheduling = %+v", q)
+	}
+	if got := labMonitoringToProto(lab, "g").GetStatus().GetScheduling(); got.GetPosition() != 7 {
+		t.Fatalf("monitoring must carry the scheduling, got %+v", got)
+	}
+	// Without an annotation the status group is returned.
+	lab.Annotations = nil
+	if g := labToProto(lab).GetStatus().GetScheduling().GetGroup(); g != "hencoded" {
+		t.Fatal(g)
+	}
+}
 
-	admitted := metav1.NewTime(time.UnixMilli(1_700_000_000_123))
-	lab.Status.Phase = laboratoryv1alpha1.PhaseQueued
-	lab.Status.Launch = &laboratoryv1alpha1.LabLaunchStatus{
-		Class: "web-v2", Position: 7, Length: 42,
-		Reason: laboratoryv1alpha1.LaunchReasonInFlightLimit, AdmittedAt: &admitted,
+func TestPodSchedulingToProto(t *testing.T) {
+	at := metav1.NewTime(time.UnixMilli(1_700_000_000_000))
+	p := podScheduleToProto(&laboratoryv1alpha1.PodSchedule{
+		State: laboratoryv1alpha1.PodFailed, QueuedAt: &at, Failure: &laboratoryv1alpha1.PodFailure{Reason: laboratoryv1alpha1.FailureImagePull, Message: "denied", RestartCount: 2, At: &at},
+	})
+	if p.State != protobuf.PodState_POD_STATE_FAILED || p.QueuedUnixMs != 1_700_000_000_000 || p.DispatchedUnixMs != 0 ||
+		p.Failure.Reason != "ImagePull" || p.Failure.Message != "denied" || p.Failure.RestartCount != 2 || p.Failure.AtUnixMs != 1_700_000_000_000 {
+		t.Fatalf("%+v", p)
 	}
-	q := labToProto(lab).GetStatus().GetQueue()
-	if q.GetPosition() != 7 || q.GetLength() != 42 || q.GetReason() != "InFlightLimit" ||
-		q.GetLaunchClass() != "web-v2" || q.GetAdmittedAtUnixMs() != 1_700_000_000_123 {
-		t.Fatalf("queue = %+v", q)
+	if podScheduleToProto(nil) != nil || podScheduleToProto(&laboratoryv1alpha1.PodSchedule{}) != nil {
+		t.Fatal("untracked pods have no message")
 	}
-	if got := labMonitoringToProto(lab, "g").GetStatus().GetQueue(); got.GetPosition() != 7 {
-		t.Fatalf("monitoring must carry the queue, got %+v", got)
+	g := labGroupToProto(&laboratoryv1alpha1.LabGroup{Status: laboratoryv1alpha1.LabGroupStatus{
+		Pods: []laboratoryv1alpha1.NamedPodSchedule{{Name: "vpn", PodSchedule: laboratoryv1alpha1.PodSchedule{State: laboratoryv1alpha1.PodStarting}}},
+	}})
+	if len(g.Status.Pods) != 1 || g.Status.Pods[0].Name != "vpn" || g.Status.Pods[0].Scheduling.State != protobuf.PodState_POD_STATE_STARTING {
+		t.Fatalf("%+v", g.Status.Pods)
+	}
+	// Devices: from the Device objects.
+	lab := &protobuf.Lab{Status: &protobuf.LabStatus{Devices: []*protobuf.LabDeviceStatus{{Name: "web"}, {Name: "db"}}}}
+	fillDeviceScheduling(lab, map[usageKey]*laboratoryv1alpha1.PodSchedule{{lab: "cr", device: "web"}: {State: laboratoryv1alpha1.PodQueued}}, "cr")
+	if lab.Status.Devices[0].Scheduling.State != protobuf.PodState_POD_STATE_QUEUED || lab.Status.Devices[1].Scheduling != nil {
+		t.Fatalf("%+v", lab.Status.Devices)
 	}
 }

@@ -26,10 +26,6 @@ type LabSpecApplyConfiguration struct {
 	Internet    *LabNetworkSpecApplyConfiguration      `json:"internet,omitempty"`
 	Devices     []DeviceTemplateApplyConfiguration     `json:"devices,omitempty"`
 	Connections []ConnectionTemplateApplyConfiguration `json:"connections,omitempty"`
-	// LaunchClass groups labs of one type (for example an exercise version or
-	// variant id) for launch pacing: labs of one class are admitted together.
-	// Empty means the operator derives the class from the lab topology and images.
-	LaunchClass *string `json:"launchClass,omitempty"`
 }
 
 // LabSpecApplyConfiguration constructs a declarative configuration of the LabSpec type for use with
@@ -77,13 +73,5 @@ func (b *LabSpecApplyConfiguration) WithConnections(values ...*ConnectionTemplat
 		}
 		b.Connections = append(b.Connections, *values[i])
 	}
-	return b
-}
-
-// WithLaunchClass sets the LaunchClass field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the LaunchClass field is set to the value of the last call.
-func (b *LabSpecApplyConfiguration) WithLaunchClass(value string) *LabSpecApplyConfiguration {
-	b.LaunchClass = &value
 	return b
 }

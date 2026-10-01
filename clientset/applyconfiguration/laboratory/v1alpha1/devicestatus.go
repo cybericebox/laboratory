@@ -37,6 +37,8 @@ type DeviceStatusApplyConfiguration struct {
 	Reason *string `json:"reason,omitempty"`
 	// State is the snapshot state of a device with spec.state.enabled.
 	State *DeviceStateStatusApplyConfiguration `json:"state,omitempty"`
+	// Scheduling is the pod's place on its way from the scheduler queue to Ready.
+	Scheduling *PodScheduleApplyConfiguration `json:"scheduling,omitempty"`
 }
 
 // DeviceStatusApplyConfiguration constructs a declarative configuration of the DeviceStatus type for use with
@@ -106,5 +108,13 @@ func (b *DeviceStatusApplyConfiguration) WithReason(value string) *DeviceStatusA
 // If called multiple times, the State field is set to the value of the last call.
 func (b *DeviceStatusApplyConfiguration) WithState(value *DeviceStateStatusApplyConfiguration) *DeviceStatusApplyConfiguration {
 	b.State = value
+	return b
+}
+
+// WithScheduling sets the Scheduling field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Scheduling field is set to the value of the last call.
+func (b *DeviceStatusApplyConfiguration) WithScheduling(value *PodScheduleApplyConfiguration) *DeviceStatusApplyConfiguration {
+	b.Scheduling = value
 	return b
 }

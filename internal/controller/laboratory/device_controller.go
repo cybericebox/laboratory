@@ -60,6 +60,9 @@ type DeviceReconciler struct {
 	ExitSnapshotTimeout time.Duration
 	// Now is the clock; nil means time.Now. A field so tests can move time.
 	Now func() time.Time
+	// Scheduled makes the device wait for the scheduler to dispatch its pod
+	// (see device_sched.go). Off: the pod is created as soon as the device is.
+	Scheduled bool
 }
 
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices,verbs=get;list;watch;create;update;patch;delete
@@ -87,6 +90,10 @@ func (r *DeviceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	switch device.Spec.Type {
 	case laboratoryv1alpha1.DeviceTypeUnmanagedSwitch, laboratoryv1alpha1.DeviceTypeHub:
 		return r.reconcileSwitch(ctx, &device)
+	}
+
+	if err := r.syncPodLabels(ctx, &device); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	if deviceStateEnabled(&device) {
@@ -172,12 +179,21 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 	}
 
 	var dep appsv1.Deployment
-	err = r.Get(ctx, types.NamespacedName{Name: device.Name, Namespace: device.Namespace}, &dep)
+	err = r.Get(ctx, types.NamespacedName{Name: workloadName(device), Namespace: device.Namespace}, &dep)
 
 	if errors.IsNotFound(err) {
+		if !suspended {
+			if ok, gateErr := r.mayCreateWorkload(ctx, device); gateErr != nil || !ok {
+				return ctrl.Result{}, gateErr // the scheduler's dispatch triggers the next reconcile
+			}
+		}
 		return ctrl.Result{}, r.createDeployment(ctx, device, replicas)
 	}
 	if err != nil {
+		return ctrl.Result{}, err
+	}
+	// A workload that already runs needs no dispatch.
+	if err := r.initScheduling(ctx, device, true); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -308,6 +324,14 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 		names.LabelLab:    device.Spec.LabRef,
 		names.LabelDevice: device.Spec.Name,
 	}
+	// The user labels of the lab, copied onto the device, go onto its pods too.
+	wanted := userLabels(device.Labels)
+	for k, v := range wanted {
+		labels[k] = v
+	}
+	if len(wanted) > 0 {
+		annotations[names.AnnotationUserLabels] = joinKeys(wanted)
+	}
 
 	podSpec = corev1.PodSpec{
 		ImagePullSecrets: pullSecretRefs(r.ImagePullSecrets),
@@ -380,7 +404,7 @@ func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laborat
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      device.Name,
+			Name:      workloadName(device),
 			Namespace: device.Namespace,
 			Labels:    labels,
 		},

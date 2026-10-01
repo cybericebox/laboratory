@@ -22,17 +22,18 @@ func operatorConfig(t *testing.T, extra ...string) map[string]string {
 	return cm.Data
 }
 
-func TestLaunchPacingDefaultsReachTheOperator(t *testing.T) {
+func TestSchedulerDefaultsReachTheOperator(t *testing.T) {
 	want := map[string]string{
-		"LAUNCH_ENABLED":          "true",
-		"LAUNCH_MAX_IN_FLIGHT":    "20",
-		"LAUNCH_WAVE_TIMEOUT":     "3m",
-		"LAUNCH_HEADROOM_PERCENT": "10",
-		"LAUNCH_RESOURCE_CHECK":   "true",
-		"LAUNCH_PREPULL":          "true",
-		"LAUNCH_PREPULL_TIMEOUT":  "5m",
-		"DEVICE_DEFAULT_CPU":      "250m",
-		"DEVICE_DEFAULT_MEMORY":   "256Mi",
+		"SCHEDULER_ENABLED":           "true",
+		"SCHEDULER_MAX_PODS":          "20",
+		"SCHEDULER_STARTUP_TIMEOUT":   "5m",
+		"SCHEDULER_RESTART_THRESHOLD": "5",
+		"SCHEDULER_HEADROOM_PERCENT":  "10",
+		"SCHEDULER_RESOURCE_CHECK":    "true",
+		"SCHEDULER_PREPULL":           "true",
+		"SCHEDULER_PREPULL_TIMEOUT":   "5m",
+		"DEVICE_DEFAULT_CPU":          "250m",
+		"DEVICE_DEFAULT_MEMORY":       "256Mi",
 	}
 	got := operatorConfig(t)
 	for k, v := range want {
@@ -40,24 +41,31 @@ func TestLaunchPacingDefaultsReachTheOperator(t *testing.T) {
 			t.Errorf("%s = %q, want %q", k, got[k], v)
 		}
 	}
+	for k := range got {
+		if strings.HasPrefix(k, "LAUNCH_") {
+			t.Errorf("old launch setting %s is still rendered", k)
+		}
+	}
 }
 
-func TestLaunchPacingValuesOverride(t *testing.T) {
+func TestSchedulerValuesOverride(t *testing.T) {
 	got := operatorConfig(t,
-		"--set", "launch.enabled=false",
-		"--set", "launch.maxInFlight=50",
-		"--set", "launch.waveTimeout=90s",
-		"--set", "launch.headroomPercent=25",
-		"--set", "launch.resourceCheck=false",
-		"--set", "launch.prepull.enabled=false",
-		"--set", "launch.prepull.timeout=10m",
-		"--set", "launch.deviceDefaults.cpu=500m",
-		"--set", "launch.deviceDefaults.memory=1Gi",
+		"--set", "scheduler.enabled=false",
+		"--set", "scheduler.maxPods=50",
+		"--set", "scheduler.startupTimeout=90s",
+		"--set", "scheduler.restartThreshold=3",
+		"--set", "scheduler.headroomPercent=25",
+		"--set", "scheduler.resourceCheck=false",
+		"--set", "scheduler.prepull.enabled=false",
+		"--set", "scheduler.prepull.timeout=10m",
+		"--set", "scheduler.deviceDefaults.cpu=500m",
+		"--set", "scheduler.deviceDefaults.memory=1Gi",
 	)
 	want := map[string]string{
-		"LAUNCH_ENABLED": "false", "LAUNCH_MAX_IN_FLIGHT": "50", "LAUNCH_WAVE_TIMEOUT": "90s",
-		"LAUNCH_HEADROOM_PERCENT": "25", "LAUNCH_RESOURCE_CHECK": "false", "LAUNCH_PREPULL": "false",
-		"LAUNCH_PREPULL_TIMEOUT": "10m", "DEVICE_DEFAULT_CPU": "500m", "DEVICE_DEFAULT_MEMORY": "1Gi",
+		"SCHEDULER_ENABLED": "false", "SCHEDULER_MAX_PODS": "50", "SCHEDULER_STARTUP_TIMEOUT": "90s",
+		"SCHEDULER_RESTART_THRESHOLD": "3", "SCHEDULER_HEADROOM_PERCENT": "25", "SCHEDULER_RESOURCE_CHECK": "false",
+		"SCHEDULER_PREPULL": "false", "SCHEDULER_PREPULL_TIMEOUT": "10m",
+		"DEVICE_DEFAULT_CPU": "500m", "DEVICE_DEFAULT_MEMORY": "1Gi",
 	}
 	for k, v := range want {
 		if got[k] != v {
@@ -66,12 +74,12 @@ func TestLaunchPacingValuesOverride(t *testing.T) {
 	}
 }
 
-func TestLaunchPacingRejectsBadValues(t *testing.T) {
-	for _, set := range []string{"launch.maxInFlight=-1", "launch.headroomPercent=100", "launch.headroomPercent=-5"} {
+func TestSchedulerRejectsBadValues(t *testing.T) {
+	for _, set := range []string{"scheduler.maxPods=-1", "scheduler.headroomPercent=100", "scheduler.headroomPercent=-5", "scheduler.restartThreshold=0"} {
 		out, err := helmTemplate(t, "--set", set)
 		if err == nil {
 			t.Errorf("%s must be refused", set)
-		} else if !strings.Contains(out, "launch.") {
+		} else if !strings.Contains(out, "scheduler.") {
 			t.Errorf("%s: error does not name the value: %s", set, out)
 		}
 	}

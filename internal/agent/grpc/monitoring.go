@@ -75,11 +75,13 @@ func (h *Handler) collect(ctx context.Context) (*monState, error) {
 		if err == nil {
 			usage := h.namespaceUsage(ctx, ns)
 			pods := h.namespacePodStatus(ctx, ns)
+			sched := h.namespaceDeviceScheduling(ctx, ns)
 			for j := range labs.Items {
 				lab := &labs.Items[j]
 				p := labMonitoringToProto(lab, gid)
 				fillLabUsage(p, usage, lab.Name)
 				fillLabPodStatus(p, pods, lab.Name)
+				fillDeviceScheduling(p, sched, lab.Name)
 				upd.Labs = append(upd.Labs, p)
 				labIDs[lab.Name] = p.Name
 				st.labels[recordKey("lab", gid, ns, p.Name)] = lab.Labels

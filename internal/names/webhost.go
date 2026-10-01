@@ -72,3 +72,14 @@ func ValidateDeviceName(name string) error {
 func WebHostLabel(device, code string) string {
 	return device + "-" + code
 }
+
+// WorkloadName is the name of the Deployment of a device, and the prefix of its
+// bare pods: <device>-<code>, the same label the web Service has. The lab is
+// never part of it; the relation goes through owner references and labels. A
+// device without a code (created before codes existed) keeps its legacy name.
+func WorkloadName(device, code, legacy string) string {
+	if code == "" {
+		return legacy
+	}
+	return WebHostLabel(device, code)
+}

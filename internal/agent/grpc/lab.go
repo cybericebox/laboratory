@@ -231,6 +231,7 @@ func (h *Handler) ListLabs(ctx context.Context, in *protobuf.ListRequest) (*prot
 		}
 	}
 	usage := map[string]map[usageKey]deviceUsage{}
+	sched := map[string]map[usageKey]*laboratoryv1alpha1.PodSchedule{}
 	out := &protobuf.LabList{}
 	for _, m := range matches {
 		u, ok := usage[m.lab.Namespace]
@@ -241,6 +242,12 @@ func (h *Handler) ListLabs(ctx context.Context, in *protobuf.ListRequest) (*prot
 		p := labToProto(m.lab)
 		p.LabGroupName = m.group
 		fillLabUsage(p, u, m.lab.Name)
+		s, ok := sched[m.lab.Namespace]
+		if !ok {
+			s = h.namespaceDeviceScheduling(ctx, m.lab.Namespace)
+			sched[m.lab.Namespace] = s
+		}
+		fillDeviceScheduling(p, s, m.lab.Name)
 		out.Items = append(out.Items, p)
 	}
 	return out, nil

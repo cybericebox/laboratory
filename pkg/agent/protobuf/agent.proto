@@ -308,6 +308,8 @@ message LabGroupStatus {
   string vpn_client_subnet = 5;
   // VPN or gateway image that could not be pinned to a digest (pulled by tag); empty when fine.
   string image_warning = 6;
+  Scheduling scheduling = 7;
+  repeated LabGroupPod pods = 8;   // absent for a group that predates the scheduler
 }
 message LabGroupList {repeated LabGroup items = 1;}
 
@@ -343,24 +345,58 @@ message LabStatus {
   repeated LabDeviceStatus devices = 8;      // per-device readiness
   repeated LabConnectionStatus connections = 9;  // per-connection readiness
   repeated LabAccessEntry access = 10;       // structured web-exposure entries
-  // Launch queue state. Set by the operator's launch pacing; absent (nil)
-  // for labs that were never queued. Numbers 20+ are reserved for launch pacing.
-  LabQueueStatus queue = 20;
+  reserved 20;   // was queue (the launch queue)
+  // Place of the lab in the scheduler queue; absent for a lab the scheduler does not track.
+  Scheduling scheduling = 21;
   // Image cache: the images of the lab that could not be pinned to a digest and
   // are pulled by tag; empty when all were pinned or the lab does not use the cache.
   string image_warning = 40;
 }
-// LabQueueStatus is the place of a Lab in the operator's launch queue. A lab is
-// queued while LabStatus.phase is "Queued"; once admitted, position and length
-// are 0 and reason is empty. The platform can show "in queue: position of length".
-message LabQueueStatus {
-  int32 position = 1;       // 1-based place in the queue, 0 = not queued
-  int32 length = 2;         // queued labs at the time position was written
-  // Why the queue does not admit the lab now: InFlightLimit | PreparingImages |
-  // InsufficientResources | NoSchedulableNodes. Empty when not queued.
-  string reason = 3;
-  string launch_class = 4;  // resolved launch class (spec launchClass or topology hash)
-  int64 admitted_at_unix_ms = 5;  // 0 = not admitted yet
+// Scheduling is the place of a Lab or LabGroup in the scheduler queue. The scheduler
+// refreshes it at a limited rate, so position can lag by seconds.
+message Scheduling {
+  // The ORIGINAL deploy key of the object (as given in deploy_group); empty for an independent one.
+  string group = 1;
+  int32 position = 2;   // 1-based place among the objects that still have pods to dispatch; 0 = all dispatched
+  int32 length = 3;     // such objects when position was written
+  // Why the next pod is not dispatched: InFlightLimit | WaitingForGroup | WaitingForTurn |
+  // PreparingImages | InsufficientResources | NoSchedulableNodes. Empty when nothing waits.
+  string reason = 4;
+  string message = 5;   // detail, for example "waiting for group intro"
+  int32 pods = 6;       // pods of the object
+  int32 pending = 7;    // of them not dispatched yet
+}
+
+enum PodState {
+  POD_STATE_UNSPECIFIED = 0;
+  POD_STATE_QUEUED = 1;     // waits for the scheduler; no workload yet
+  POD_STATE_STARTING = 2;   // dispatched, not Ready yet
+  POD_STATE_STARTED = 3;    // was Ready once
+  POD_STATE_FAILED = 4;     // did not start in time (see failure); it may still become Ready
+}
+
+// PodScheduling is where one pod is on its way from the queue to Ready.
+message PodScheduling {
+  PodState state = 1;
+  int64 queued_unix_ms = 2;
+  int64 dispatched_unix_ms = 3;
+  int64 started_unix_ms = 4;
+  PodFailure failure = 5;   // set for a failed pod, cleared when it becomes Ready
+}
+
+// PodFailure explains a pod that did not start: ImagePull | CrashLoop | Unschedulable |
+// StartupTimeout | DoesNotFit.
+message PodFailure {
+  string reason = 1;
+  string message = 2;       // the last error the node reported
+  int32 restart_count = 3;
+  int64 at_unix_ms = 4;
+}
+
+// LabGroupPod is the scheduling state of a pod the LabGroup runs itself ("vpn", "gateway").
+message LabGroupPod {
+  string name = 1;
+  PodScheduling scheduling = 2;
 }
 message LabDeviceStatus {
 	string name = 1;
@@ -377,6 +413,8 @@ message LabDeviceStatus {
 	int32 restart_count = 12;
 	// Set only for a device with state persistence.
 	DeviceSnapshotStatus snapshot = 30;
+	// Scheduler state of the device pod; absent when the scheduler does not track it.
+	PodScheduling scheduling = 31;
 }
 // DeviceSnapshotStatus is the state of a device's writable-layer snapshots.
 message DeviceSnapshotStatus {

@@ -393,34 +393,40 @@ labWorkloads:
   tolerations: []
 
 # ============================================================
-# Launch pacing: how the operator brings up a burst of labs
+# Scheduler: how pods start when many labs arrive at once
 # ============================================================
-# A new Lab is created at once but stays Queued. The operator admits labs in launch
-# class order (then creation time), so the same lab type comes up for all teams at
-# about the same time, and only while
-#   - fewer than maxInFlight labs are provisioning (a lab holds its slot until it is
-#     Ready or waveTimeout passes),
-#   - the images of the lab's class are on the nodes (prepull), and
-#   - the schedulable nodes have free CPU and memory for the lab's requests, with
-#     headroomPercent of their allocatable resources still free afterwards.
-# The queue position, length and reason are in Lab.status.launch and the agent's LabStatus.
-launch:
-  # false: every lab is provisioned as soon as it is created.
+# The units are the top-level objects, LabGroup (its VPN and gateway pods) and Lab
+# (one pod per container device); the slots are pods. At most maxPods pods are
+# starting at once; a pod holds its slot from dispatch until it is Ready or declared
+# failed. The pods of an object are dispatched one object after another (an object
+# may start with fewer slots than pods), and objects with the same deploy group
+# (label laboratory.cybericebox.com/deploy-group) form a group: the group being
+# dispatched gets the slots first, the next group starts as soon as the current one
+# has nothing left to dispatch (it does not wait for readiness), and a group whose
+# annotation laboratory.cybericebox.com/deploy-after lists other groups starts only
+# when all of them are complete (every pod Ready or failed). Objects without a deploy
+# group are independent and go after all grouped work. The queue place and the
+# reason are in status.scheduling of the Lab and LabGroup and in the agent's LabStatus.
+scheduler:
+  # false: every pod starts as soon as its object is created.
   enabled: true
-  # Largest number of labs provisioning at once; 0 sets no limit.
-  maxInFlight: 20
-  # How long an admitted lab holds its slot when it is not Ready (Go duration).
-  waveTimeout: 3m
-  # Share of the schedulable CPU and memory (0-99) kept free after an admission.
+  # Largest number of pods starting at once; 0 sets no limit.
+  maxPods: 20
+  # A dispatched pod that is not Ready after this long (Go duration) is declared
+  # failed: its slot is freed and the device status gets a warning.
+  startupTimeout: 5m
+  # ... or after this many restarts, whichever comes first.
+  restartThreshold: 5
+  # Share of the schedulable CPU and memory (0-99) kept free after a dispatch.
   headroomPercent: 10
-  # false: admission does not look at the free CPU and memory of the nodes.
+  # false: dispatch does not look at the free CPU and memory of the nodes.
   resourceCheck: true
-  # Pull the images of a class onto the eligible nodes before its first lab starts.
+  # Pull the images of a group onto the eligible nodes before its first pod starts.
   # A short-lived DaemonSet in laboratory-system runs the images with the command
   # replaced by a sleep (no lab service starts) and uses imagePullSecrets below.
   prepull:
     enabled: true
-    # Admission goes on after this long even if some image is still not pulled.
+    # Dispatch goes on after this long even if some image is still not pulled.
     timeout: 5m
   # CPU and memory of a device container that declares none. Requests always equal
   # limits (Guaranteed pods); a declared request and limit collapse to the limit.

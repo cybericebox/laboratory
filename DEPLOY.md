@@ -199,85 +199,143 @@ kubectl -n team-alpha-ns get lab,devices,connections
 
 ---
 
-## Launch pacing
+## Scheduler
 
-When an event starts, the platform may create hundreds of Labs at once. A new Lab is
-created at once but stays in phase `Queued`; the operator admits labs so the cluster is
-brought up smoothly instead of all at the same moment.
+When an event starts, the platform creates many Labs and LabGroups at once. The scheduler in the
+operator starts their pods through a conveyor, so the cluster is brought up smoothly instead of
+all at the same moment.
 
-**Order.** Labs are admitted by *launch class* first, then by creation time. The class is
-the lab type: `spec.launchClass` (for example an exercise version or variant id, set by
-the platform through the agent's `spec_json`). If it is empty the operator derives it from
-a hash of the lab topology and images (`auto-<hash>`), so labs built from one template
-share a class. A class is admitted completely before the next one starts, and the class
-with the oldest queued lab goes first, so one lab type appears for all teams at about the
-same time.
+**Units and slots.** A unit is a top-level object: a *LabGroup* (its VPN and gateway pods) or a *Lab*
+(one pod per container device; switches and hubs have no pod). A slot is a **pod**: an object needs as
+many slots as it has pods. `scheduler.maxPods` pods (default 20) may be starting at once. A pod holds
+its slot from the moment it is dispatched until it is Ready or declared failed.
 
-**Admission.** The head of the queue is admitted only when all of these hold; otherwise
-it waits (it never fails) and the queue reports why:
+**Conveyor.** The pods of an object are dispatched one object after another, and no other object's
+pods are interleaved once an object has started. An object may start partially: with 3 free slots and
+5 pods, 3 start now and 2 as slots free up.
 
-| Condition | Reason while waiting |
+**Groups.** Objects with the same *deploy group* form a group (mixed kinds, one object or many). The
+agent writes two operator-internal markers on LabGroups and Labs; the operator reads only these, never
+user labels (and they work when someone applies the CRs directly):
+
+| Marker | Meaning |
 |---|---|
-| fewer than `launch.maxInFlight` labs are provisioning (a lab holds its slot from admission until it is Ready or `launch.waveTimeout` passes) | `InFlightLimit` |
-| the images of its class are on the nodes | `PreparingImages` |
-| the schedulable nodes have free CPU and memory for the lab's requests, and `launch.headroomPercent` of their allocatable CPU and memory stays free | `InsufficientResources` |
-| there is at least one schedulable node | `NoSchedulableNodes` |
+| label `laboratory.cybericebox.com/deploy-group=<key>` | the group of the object; key of at most 63 characters (base36) |
+| annotation `laboratory.cybericebox.com/deploy-after=<key1>,<key2>` | the groups that must be **complete** (every pod Ready or failed) before this group starts |
 
-A lab larger than the whole cluster (minus headroom) cannot ever fit; it steps aside and
-does not block the labs behind it, but it stays `Queued` with `InsufficientResources`.
+The rules:
 
-**Image prepull.** Before the first lab of a class is admitted the operator creates a
-short-lived DaemonSet `prepull-<hash>` in `laboratory-system`: one container per image of
-the class, with the command replaced by a sleep (the lab service never starts), on the
-nodes matching `labWorkloads.nodeSelector` / `tolerations`, using `imagePullSecrets`. It
-waits until every pod holds all images, or `launch.prepull.timeout`, then deletes the
-DaemonSet (a missing image must not stop the queue). Images that run as a shell-less
-container still count as pulled: the kubelet reports the image ID either way.
+1. The group being dispatched (some pod out, some still pending) gets the slots first.
+2. When it has **no undispatched pod left**, the next group starts on the next free slot; it does not wait
+   for readiness.
+3. The order of groups is arrival order (the creation time of their first object), except that a group
+   with `deploy-after` starts only when all listed groups are complete. A group that waits for another
+   does not hold up the groups after it. An unknown key waits too, and the status says so
+   (`waiting for group X (not known yet)`); a cycle starts nothing.
+4. Objects **without** a deploy group are independent: they go one object at a time, in creation order,
+   after all grouped work that can start.
+5. A late object (a team that registered late) joins its group: if the group is still being dispatched it
+   goes with it, and a group that already finished is dispatched again first, ahead of the groups that
+   have not started. Pods that already run are never affected.
 
-**Free resources** are the allocatable CPU and memory of the schedulable nodes (Ready,
-not cordoned, matching the lab node selector, taints tolerated) minus the requests of all
-pods scheduled there. The requests of labs that were just admitted, whose pods are not
-scheduled yet, are held back.
+**Before the first pod of a group** its images (those of all its Labs) are pulled onto the eligible nodes by
+a short-lived DaemonSet `prepull-<hash>` in `laboratory-system`, one container per image with the command
+replaced by a sleep (the lab service never starts), on the nodes of `labWorkloads.nodeSelector`/`tolerations`,
+with `imagePullSecrets`. Dispatch waits until every pod holds all images or `scheduler.prepull.timeout`, then
+the DaemonSet is deleted (a missing image must not stop the queue). Filling the registry cache beforehand is
+the agent's job (`PrewarmImages`), not the scheduler's.
 
-**Guaranteed resources.** Every device container gets requests equal to limits, so its pod
-is Guaranteed and the scheduler sees its real load. Per resource the limit wins, then the
-request, then `launch.deviceDefaults` (250m CPU and 256Mi memory). A declared request and
-limit that differ collapse to the limit. Set a default to `""` to leave a device without
-that resource (best effort, the behavior before launch pacing). The resources are applied
-when a device is created; running devices are not changed. Each lab group namespace has
-one PodDisruptionBudget `lab-group` (`maxUnavailable: 0`, all pods of the namespace), so
-node drains and the autoscaler do not evict running labs; the per-device budgets of older
-versions are removed because a pod under two budgets cannot be evicted.
+**Resource check.** A pod is dispatched only when the schedulable nodes (Ready, not cordoned, matching the
+lab node selector, taints tolerated) have free CPU and memory for its requests: allocatable minus the
+requests of all scheduled pods, minus what already dispatched pods will still request, and with
+`scheduler.headroomPercent` of the allocatable resources kept free. Otherwise the queue waits (it does not
+fail) and the reason is in the status. A pod that requests more than the whole schedulable capacity can never
+fit: it is declared failed (`DoesNotFit`) and the queue goes on.
 
-**Status.** `kubectl get lab` shows the phase; `status.launch` has the class,
-`admittedAt`, and, while `Queued`, the place in the queue:
+**Failed pods.** A dispatched pod that is not Ready after `scheduler.startupTimeout` (5m), or that restarted
+`scheduler.restartThreshold` times (5), is declared failed: its slot is freed, the group still completes,
+nothing else is rolled back, and the device gets a warning: `Device.status.scheduling.failure` and, on the
+Lab, `status.devices[].failure`, with the reason (`ImagePull`, `CrashLoop`, `Unschedulable`,
+`StartupTimeout`, `DoesNotFit`), the last error the node reported and the restart count. If the pod becomes
+Ready later it is Started and the warning clears. A snapshot-backed device whose pod ended after it had started
+is recreated at once, with no slot, as without the scheduler.
+
+**Guaranteed resources.** Every device container gets requests equal to limits, so its pod is Guaranteed.
+Per resource the limit wins, then the request, then `scheduler.deviceDefaults` (250m CPU and 256Mi memory);
+a declared request and limit that differ collapse to the limit. Set a default to `""` to leave a device without
+that resource (best effort). The resources are applied when a device is created; running devices are not
+changed. Each lab group namespace has one PodDisruptionBudget `lab-group` (`maxUnavailable: 0`, all pods of
+the namespace), so node drains and the autoscaler do not evict running labs.
+
+**Status.** `Lab.status.scheduling` and `LabGroup.status.scheduling` show the place in the queue:
 
 ```bash
-kubectl get labs -A -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,PHASE:.status.phase,POS:.status.launch.position,OF:.status.launch.length,WHY:.status.launch.reason
+kubectl get labs -A -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,PHASE:.status.phase,GROUP:.status.scheduling.group,POS:.status.scheduling.position,OF:.status.scheduling.length,WHY:.status.scheduling.reason,PENDING:.status.scheduling.pending
 ```
 
-The position is refreshed at a limited rate (at most 50 writes per 2 s tick, one per lab
-per 10 s), so in a long queue it can lag by a few seconds. The agent's gRPC `LabStatus`
-carries the same in `queue` (`position`, `length`, `reason`, `launch_class`,
-`admitted_at_unix_ms`), also on the `Monitoring` stream, so a UI can show
-"in queue: position of length".
+`group` is the deploy group, `position` the place among the objects that still have pods to dispatch
+(0 when all are dispatched), `length` their number, `reason` why the next pod waits (`InFlightLimit`,
+`WaitingForGroup` with `message` "waiting for group X", `WaitingForTurn`, `PreparingImages`,
+`InsufficientResources`, `NoSchedulableNodes`), `pods`/`pending` the pod counts. A Lab is in phase `Queued`
+while none of its pods has been dispatched. The position is refreshed at a limited rate (at most 50 writes per
+2 s tick, one per object per 10 s), so in a long queue it lags by a few seconds. Each pod's own state is
+`Device.status.scheduling` (`Queued`, `Starting`, `Started`, `Failed`) and, for a group, `LabGroup.status.pods`.
 
-**Values** (chart `launch.*`):
+**A worked example.** Window `maxPods: 2`. Three groups and an independent lab: lab `a` (group `g1`, devices
+`web`, `db`), lab `b` (group `g2`, `deploy-after: g1`, device `web`), lab `c` (group `g3`, device `web`), lab
+`i` (no group, device `web`).
+
+1. All four labs and five devices are created and queued (`Queued`). Group `g1` is first: `a-web` and `a-db`
+   take the two slots. `b`, `c`, `i` wait; `b` says `waiting for group g1`.
+2. `a-db` is Ready (`Started`): a slot is free. `g1` has no pod left to dispatch, but `g2` waits for `g1`, so
+   the next group, `g3`, starts: `c-web` is dispatched. `i` still waits: independent labs go after all grouped
+   work that can start.
+3. `a-web` and `c-web` are Ready: `g1` is complete, so `b-web` (`g2`) is dispatched, then `i-web`.
+4. `b-web` never gets Ready: after 5 minutes it is declared `Failed` (reason `StartupTimeout`, or `ImagePull`
+   with the pull error). Its slot is free, `g2` is complete, and the lab shows the warning in
+   `status.devices[].failure`.
+5. If `b-web` becomes Ready later after all, it is `Started` and the warning clears; nothing else changes.
+
+**Values** (chart `scheduler.*`):
 
 | Value | Default | Meaning |
 |---|---|---|
-| `enabled` | `true` | `false` provisions every lab as soon as it is created |
-| `maxInFlight` | `20` | labs provisioning at once; `0` = no limit |
-| `waveTimeout` | `3m` | how long an admitted lab holds its slot if not Ready |
+| `enabled` | `true` | `false` starts every pod as soon as its object is created |
+| `maxPods` | `20` | pods starting at once; `0` = no limit |
+| `startupTimeout` | `5m` | a pod not Ready after this is declared failed |
+| `restartThreshold` | `5` | restarts after which a pod that is not Ready is declared failed |
 | `headroomPercent` | `10` | share of schedulable CPU and memory kept free (0-99) |
 | `resourceCheck` | `true` | `false` skips the free-resource check |
-| `prepull.enabled` | `true` | prepull images per class |
-| `prepull.timeout` | `5m` | admission goes on after this long |
+| `prepull.enabled` | `true` | prepull the images of a group |
+| `prepull.timeout` | `5m` | dispatch goes on after this long |
 | `deviceDefaults.cpu` / `.memory` | `250m` / `256Mi` | resources of a device that declares none |
 
-Labs that existed before the upgrade are never queued: a Lab with any phase other than
-empty or `Queued` counts as admitted. The operator needs `get/list/watch` on nodes and
-`create/delete/get/list/watch` on DaemonSets; the chart's ClusterRole has them.
+Objects that existed before the upgrade are never queued: the Device and LabGroup reconcilers record a pod
+that already runs as `Started` and leave its workload alone. The operator needs `get/list/watch` on nodes and
+`create/delete/get/list/watch` on DaemonSets; the chart's ClusterRole has them. The old `launch.*` values are
+gone (no fallback): the launch class, `Lab.spec.launchClass` and `Lab.status.launch` no longer exist.
+
+---
+
+## Workload names and user labels
+
+**Names.** The name of a device's workload never contains the lab. Every container device gets a short
+random code (3 characters, 4 after repeated collisions) when it is created, kept in `Device.spec.code`; the
+Deployment is named `<device>-<code>` (a pod of it adds the ReplicaSet hash and 5 characters, at most 63 with a
+device name of at most 35 characters), a snapshot-backed device's bare pod `<device>-<code>-<incarnation>`, and its
+web Service, which is also its host label, `<device>-<code>`. The code is unique in the group namespace (checked
+against the other devices' codes and the Services), so two labs may have a device of the same name in one
+namespace. The relation between a pod, its device and its lab goes through owner references and the labels
+`laboratory.cybericebox.com/lab` and `/device`, never through the name. Devices created before codes existed
+keep their names (no migration). The Device resource itself is still named `<lab>-<device>`, as the per-device
+env Secret `<lab>-<device>-env`.
+
+**User labels.** The labels of a Lab (and of a LabGroup) are copied onto its Devices and onto the pods of
+those Devices (the VPN and gateway pods for a LabGroup), except the operator's own: every label with the prefix
+`laboratory.cybericebox.com/` (`deploy-group` among them) and the keys `app`, `pod-template-hash` and
+`controller-revision-hash`. They are kept in sync: a changed or removed label follows on the Devices and on live
+pods, which are patched in place (metadata only, so nothing restarts); the copied keys are listed in the
+annotation `laboratory.cybericebox.com/user-labels` so only they are removed.
 
 ---
 
@@ -601,7 +659,7 @@ compressed on amd64 and arm64; the cache needs its sync extension), both can be 
 - **Fixed per lab.** The mode is recorded in `Lab.status.imageCache` when the lab is first reconciled, and the
   device image is written to `Device.spec.imageMirror`; switching the cache on or off never changes existing labs.
   The VPN and gateway images of a lab group are rewritten when the group's pods are created.
-- **Launch pacing.** With the cache on, the prepull DaemonSet pulls the rewritten images, so the first node warms
+- **Scheduler.** With the cache on, the prepull DaemonSet pulls the rewritten images, so the first node warms
   zot and the others pull from it.
 - **Snapshots.** The base layers of a device snapshot are mounted from the cached repository of the base image
   instead of being uploaded.
@@ -638,7 +696,7 @@ compressed on amd64 and arm64; the cache needs its sync extension), both can be 
 
 An event starts many labs at once. The first pull of an image through the cache makes zot fetch it from the upstream
 registry, which is slow for the first lab. **Prewarm** fills the cache before the event. It is done by the
-management agent only (the operator and the launch queue take no part), through one RPC:
+management agent only (the operator and the scheduler take no part), through one RPC:
 
 `PrewarmImages(PrewarmImagesRequest{images}) returns (PrewarmImagesResult{images[]})`, each element
 `{image, state, error, digest, updated_unix_ms}` with `state` one of `QUEUED`, `WARMING`, `DONE`, `FAILED`, `SKIPPED`.

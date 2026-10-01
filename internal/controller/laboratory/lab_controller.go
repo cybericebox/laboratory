@@ -56,9 +56,9 @@ type LabReconciler struct {
 	VPNBaseNetwork string
 	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets (e.g. "10.9.0.0/16").
 	InetBaseNetwork string
-	// LaunchGate holds a new Lab back until the Launcher admits it (launch pacing).
-	// Off: the lab is provisioned as soon as it is created.
-	LaunchGate bool
+	// Reader reads from the API server without the cache; nil means Client. Used
+	// where a stale cache would hand out a device code twice.
+	Reader client.Reader
 	// State is the device state persistence policy applied to labs created
 	// while the platform switch is on.
 	State StatePolicy
@@ -105,20 +105,14 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 	}
 
-	// The modes are fixed before anything is created, and before the queue, so
-	// the launcher knows which image references the lab will pull.
+	// The modes are fixed before anything is created, and before anything is created,
+	// so the scheduler knows which image references the lab will pull.
 	if updated, err := r.ensureModes(ctx, &lab); err != nil {
 		return ctrl.Result{}, err
 	} else if updated {
 		if err := r.Get(ctx, req.NamespacedName, &lab); err != nil {
 			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
-	}
-
-	// A queued lab creates nothing yet: the launcher admits it (status patch),
-	// which triggers the next reconcile.
-	if r.LaunchGate && !labAdmitted(&lab) {
-		return ctrl.Result{}, nil
 	}
 
 	if updated, err := r.ensureSubnetAllocation(ctx, &lab); err != nil {
@@ -417,11 +411,20 @@ func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, sw
 
 func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv1alpha1.Lab, resolvedInterfaces map[string][]laboratoryv1alpha1.InterfaceSpec) error {
 	vniAllocator := poolpkg.NewAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
+	codes := r.newCodeAllocator(lab)
+	wantLabels := userLabels(lab.Labels)
 
 	for _, tmpl := range lab.Spec.Devices {
 		deviceName := fmt.Sprintf("%s-%s", lab.Name, tmpl.Name)
 		var existing laboratoryv1alpha1.Device
 		if err := r.Get(ctx, types.NamespacedName{Name: deviceName, Namespace: lab.Namespace}, &existing); err == nil {
+			// The user labels of the lab follow it onto its devices.
+			orig := existing.DeepCopy()
+			if applyUserLabels(&existing, wantLabels) {
+				if err := r.Patch(ctx, &existing, client.MergeFrom(orig)); err != nil {
+					return err
+				}
+			}
 			// For switch/hub devices, ensure VNI is written even if the status update failed on a previous reconcile.
 			isSwitch := existing.Spec.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch ||
 				existing.Spec.Type == laboratoryv1alpha1.DeviceTypeHub
@@ -442,6 +445,13 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 			return err
 		}
 
+		var code string
+		if tmpl.Type == laboratoryv1alpha1.DeviceTypeContainer {
+			var err error
+			if code, err = codes.codeFor(ctx, tmpl.Name); err != nil {
+				return fmt.Errorf("device code of %s: %w", tmpl.Name, err)
+			}
+		}
 		d := &laboratoryv1alpha1.Device{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:       deviceName,
@@ -452,6 +462,7 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 			Spec: laboratoryv1alpha1.DeviceSpec{
 				LabRef:         lab.Name,
 				Name:           tmpl.Name,
+				Code:           code,
 				Type:           tmpl.Type,
 				Image:          tmpl.Image,
 				SecurityPreset: tmpl.SecurityPreset,
@@ -463,6 +474,7 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 				ImageDigests:   r.deviceDigests(lab, tmpl),
 			},
 		}
+		applyUserLabels(d, wantLabels)
 		if err := controllerutil.SetOwnerReference(lab, d, r.Scheme); err != nil {
 			return err
 		}
@@ -709,12 +721,25 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 
 	var refs []laboratoryv1alpha1.DeviceRef
 	allReady := len(deviceList.Items) > 0
+	pods, queuedPods := 0, 0
 	for _, d := range deviceList.Items {
-		refs = append(refs, laboratoryv1alpha1.DeviceRef{Name: d.Spec.Name, Ready: d.Status.Ready, State: deviceStateInfo(&d)})
+		var failure *laboratoryv1alpha1.PodFailure
+		if sc := d.Status.Scheduling; sc != nil && sc.State == laboratoryv1alpha1.PodFailed {
+			failure = sc.Failure
+		}
+		refs = append(refs, laboratoryv1alpha1.DeviceRef{Name: d.Spec.Name, Ready: d.Status.Ready, State: deviceStateInfo(&d), Failure: failure})
 		if !d.Status.Ready {
 			allReady = false
 		}
+		if d.Spec.Type == laboratoryv1alpha1.DeviceTypeContainer {
+			pods++
+			if sc := d.Status.Scheduling; sc != nil && sc.State == laboratoryv1alpha1.PodQueued {
+				queuedPods++
+			}
+		}
 	}
+	// Every pod still waits in the scheduler queue: nothing has started.
+	allQueued := pods > 0 && queuedPods == pods
 
 	throttled := throttleStateInfo(lab.Status.Devices, refs)
 
@@ -750,8 +775,11 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 	}
 
 	newPhase := laboratoryv1alpha1.PhaseProvisioning
-	if allReady {
+	switch {
+	case allReady:
 		newPhase = laboratoryv1alpha1.PhaseReady
+	case allQueued:
+		newPhase = laboratoryv1alpha1.PhaseQueued
 	}
 
 	access := r.buildAccessEntries(ctx, lab)
@@ -770,13 +798,11 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 			r.Recorder.Event(lab, corev1.EventTypeNormal, labstatus.ReasonReady, "lab is ready")
 		}
 	} else {
-		labstatus.SetReady(
-			&lab.Status.Conditions,
-			lab.Generation,
-			false,
-			labstatus.ReasonProvisioning,
-			"waiting for devices and connections to become ready",
-		)
+		reason, message := labstatus.ReasonProvisioning, "waiting for devices and connections to become ready"
+		if allQueued {
+			reason, message = labstatus.ReasonQueued, "waiting in the scheduler queue"
+		}
+		labstatus.SetReady(&lab.Status.Conditions, lab.Generation, false, reason, message)
 	}
 
 	if newPhase == lab.Status.Phase &&
@@ -1212,7 +1238,7 @@ func (r *LabReconciler) ensureLabGatewayDeleted(ctx context.Context, lab *labora
 // this is how later reconciles keep the host label stable. nil if none exists.
 func (r *LabReconciler) findWebService(ctx context.Context, lab *laboratoryv1alpha1.Lab, device string) (*corev1.Service, error) {
 	var list corev1.ServiceList
-	if err := r.List(
+	if err := r.reader().List(
 		ctx, &list, client.InNamespace(lab.Namespace),
 		client.MatchingLabels{names.LabelLab: lab.Name, names.LabelDevice: device},
 	); err != nil {
@@ -1278,6 +1304,7 @@ func (r *LabReconciler) createWebService(ctx context.Context, lab *laboratoryv1a
 }
 
 func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
+	codes := r.newCodeAllocator(lab)
 	for _, d := range lab.Spec.Devices {
 		if d.Exposure == nil || d.Exposure.Web == nil {
 			continue
@@ -1318,7 +1345,22 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 		}
 		var svc *corev1.Service
 		if existing == nil {
-			svc, err = r.createWebService(ctx, lab, d.Name, fill)
+			var code string
+			if d.Type == laboratoryv1alpha1.DeviceTypeContainer {
+				code, err = codes.codeFor(ctx, d.Name)
+			}
+			if err != nil {
+				return fmt.Errorf("device code of %s: %w", d.Name, err)
+			}
+			if code != "" {
+				// The host label is the device's workload label: <device>-<code>.
+				svc = &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: names.WebHostLabel(d.Name, code), Namespace: lab.Namespace}}
+				if err = fill(svc); err == nil {
+					err = r.Create(ctx, svc)
+				}
+			} else {
+				svc, err = r.createWebService(ctx, lab, d.Name, fill)
+			}
 		} else {
 			svc = existing
 			_, err = controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error { return fill(svc) })

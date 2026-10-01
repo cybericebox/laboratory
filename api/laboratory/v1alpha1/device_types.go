@@ -42,6 +42,12 @@ type DeviceSpec struct {
 	// resolved is absent and pulled by its tag.
 	// +optional
 	ImageDigests map[string]string `json:"imageDigests,omitempty"`
+	// Code is the short random code that makes the workload name <name>-<code>
+	// unique in the group namespace; the web Service of the device carries the same
+	// one. It is drawn when the Device is created and never changes. Empty on a
+	// Device that predates codes: its workload keeps the name of the Device.
+	// +optional
+	Code string `json:"code,omitempty"`
 	// Env values are NOT carried on the CR — they live only in a per-device
 	// Secret (<device>-env) the agent writes, referenced by the pod via envFrom.
 }
@@ -154,6 +160,9 @@ type DeviceStatus struct {
 	// State is the snapshot state of a device with spec.state.enabled.
 	// +optional
 	State *DeviceStateStatus `json:"state,omitempty"`
+	// Scheduling is the pod's place on its way from the scheduler queue to Ready.
+	// +optional
+	Scheduling *PodSchedule `json:"scheduling,omitempty"`
 }
 
 // +genclient
