@@ -166,6 +166,16 @@ func (f *fakeRegistry) DeleteRepo(_ context.Context, repo string) error {
 	return nil
 }
 
+// podBlindClient lists no pods: a cache that has not yet seen the pod just created.
+type podBlindClient struct{ client.Client }
+
+func (c podBlindClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if _, ok := list.(*corev1.PodList); ok {
+		return nil
+	}
+	return c.Client.List(ctx, list, opts...)
+}
+
 var _ = Describe("Device state persistence: bare Pod lifecycle", func() {
 	ctx := context.Background()
 
@@ -290,6 +300,18 @@ var _ = Describe("Device state persistence: bare Pod lifecycle", func() {
 		Expect(d.Status.Ready).To(BeTrue())
 		Expect(d.Status.PodName).To(Equal(p.Name))
 		Expect(d.Status.PodIP).To(Equal("10.1.2.3"))
+	})
+
+	It("does not start the device twice when the cache has not seen the pod it just created", func() {
+		p1 := startDevice()
+		Expect(p1.Name).To(Equal(dev.Name + "-1"))
+		r.Client = podBlindClient{k8sClient}
+		r.Reader = k8sClient
+		res := reconcileOnce()
+		Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+		_, err := getPod(2)
+		Expect(errors.IsNotFound(err)).To(BeTrue(), "the existing pod of the current incarnation must stop a second creation")
+		Expect(getDevice().Status.State.Incarnation).To(Equal(int32(1)))
 	})
 
 	It("does not drop a newer pod when its cached status is behind", func() {

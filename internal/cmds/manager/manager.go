@@ -326,6 +326,7 @@ func Run() {
 	}
 	deviceReconciler := &laboratorycontroller.DeviceReconciler{
 		MirrorRegistries: mirror.Registries,
+		Reader:           mgr.GetAPIReader(),
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
 		LabNodeSelector:  labNodeSelector,

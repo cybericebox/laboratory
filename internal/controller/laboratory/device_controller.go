@@ -48,6 +48,9 @@ type DeviceReconciler struct {
 	// Registry is the snapshot registry, nil when state persistence is off; it
 	// is used to drop a device's snapshots on reset.
 	Registry SnapshotRegistry
+	// Reader reads from the API server without the cache; nil means Client. Used
+	// where a stale cache would start a device twice.
+	Reader client.Reader
 	// MirrorRegistries are the upstream registries the image cache serves; a
 	// device whose spec names a cache prefix (Spec.ImageMirror) pulls its images
 	// through it.

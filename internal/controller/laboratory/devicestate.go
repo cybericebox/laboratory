@@ -61,6 +61,14 @@ func podName(device *laboratoryv1alpha1.Device, incarnation int32) string {
 	return fmt.Sprintf("%s-%d", device.Name, incarnation)
 }
 
+// reader reads straight from the API server when one is configured.
+func (r *DeviceReconciler) reader() client.Reader {
+	if r.Reader != nil {
+		return r.Reader
+	}
+	return r.Client
+}
+
 func (r *DeviceReconciler) now() time.Time {
 	if r.Now != nil {
 		return r.Now()
@@ -206,6 +214,19 @@ func (r *DeviceReconciler) reconcilePod(ctx context.Context, device *laboratoryv
 	}
 	if wait := r.recreateWait(device); wait > 0 {
 		return ctrl.Result{RequeueAfter: wait}, nil
+	}
+	// The pod of the current incarnation may exist although the cache does not show
+	// it yet (it was created by the previous reconcile): creating the next one
+	// then would start the device twice. Ask the API server.
+	if st.Incarnation > 0 {
+		var existing corev1.Pod
+		err := r.reader().Get(ctx, types.NamespacedName{Namespace: device.Namespace, Name: name}, &existing)
+		if err == nil {
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		}
+		if !errors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
 	}
 	if err := r.createDevicePod(ctx, device); err != nil {
 		return ctrl.Result{}, err
