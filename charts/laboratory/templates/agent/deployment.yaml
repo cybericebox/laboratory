@@ -41,6 +41,11 @@ spec:
               value: /tls/tls.crt
             - name: AGENT_TLS_KEY
               value: /tls/tls.key
+          {{- if include "laboratory.registryEnabled" . }}
+            # ExportDeviceSnapshot reads the snapshots from the platform registry.
+            - name: AGENT_REGISTRY_ADDR
+              value: {{ include "laboratory.registryAddr" . | quote }}
+          {{- end }}
           {{- if .Values.registry.cache.enabled }}
             # PrewarmImages: the agent makes the image cache fetch images ahead of time.
             - name: AGENT_CACHE_ENABLED

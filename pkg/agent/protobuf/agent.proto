@@ -76,6 +76,15 @@ service LabManager {
   // the image entrypoint (enable=true), or back to normal (enable=false), to repair a
   // configuration that makes the service crash.
   rpc RescueDevices(RescueDevicesRequest) returns (BatchResult) {}
+
+  // ExportDeviceSnapshot streams the LATEST state of a device with snapshot-backed state as one
+  // archive: the files that differ from the device's base image (the layers of the snapshot
+  // chain squashed into one, deletions kept as OCI whiteouts), as an uncompressed-tar stream
+  // compressed with gzip and cut into chunks. The first message is the metadata, then data
+  // chunks, then the trailer with the length and sha256 of the gzip stream. There is no layer history.
+  // FailedPrecondition: the device has no state persistence, or it has no snapshot yet, or the
+  // snapshot registry is not configured. NotFound: no such device.
+  rpc ExportDeviceSnapshot(DeviceSnapshotRequest) returns (stream SnapshotChunk) {}
 }
 
 message Empty {}
@@ -637,4 +646,47 @@ message PrewarmImageStatus {
 
 message PrewarmImagesResult {
   repeated PrewarmImageStatus images = 1;
+}
+
+message DeviceSnapshotRequest {
+  // The device: lab_group, lab and name (the device name).
+  ItemRef ref = 1;
+}
+
+// SnapshotChunk is one message of the ExportDeviceSnapshot stream: first meta, then data
+// (in order), then trailer. Concatenating the data of all chunks gives a gzip stream of one tar
+// archive (see SnapshotMeta.format).
+message SnapshotChunk {
+  oneof content {
+    SnapshotMeta meta = 1;
+    bytes data = 2;
+    SnapshotTrailer trailer = 3;
+  }
+}
+
+message SnapshotMeta {
+  ItemRef ref = 1;
+  // The base image of the device as written in its spec, and, when the lab pinned it, its digest.
+  string base_image = 2;
+  string base_image_digest = 3;
+  // The compressed digests of the layers of the base image, in order, as the snapshot image holds them.
+  repeated string base_layer_digests = 4;
+  // The manifest digest of the snapshot in the registry, and when it was taken.
+  string snapshot_digest = 5;
+  int64 snapshot_unix_ms = 6;
+  // Snapshot layers squashed into this archive, and the sum of their uncompressed sizes
+  // (an upper bound of the archive's content: a file rewritten in several runs counts once in the archive).
+  int32 squashed_layers = 7;
+  int64 layers_size_bytes = 8;
+  // "tar+gzip; OCI layer: whiteouts as .wh.<name>, opaque directories as .wh..wh..opq". The
+  // archive applies on top of the base image like an image layer.
+  string format = 9;
+  // The size of every data chunk except the last (bytes).
+  int32 chunk_size = 10;
+}
+
+message SnapshotTrailer {
+  // The total length and the sha256 (hex) of the gzip stream, for the receiver to verify.
+  int64 compressed_bytes = 1;
+  string sha256 = 2;
 }

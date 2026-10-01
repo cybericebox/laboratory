@@ -65,8 +65,8 @@ spec:
   egress:
     - toEntities:
         - kube-apiserver
-{{- if .Values.registry.cache.enabled }}
-    # PrewarmImages: the image cache (zot), the upstream registries (digest of a tag) and DNS.
+{{- if include "laboratory.registryEnabled" . }}
+    # The platform registry (zot): snapshot export, and PrewarmImages with the cache.
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace }}
@@ -74,12 +74,6 @@ spec:
       toPorts:
         - ports:
             - port: "5000"
-              protocol: TCP
-    - toEntities:
-        - world
-      toPorts:
-        - ports:
-            - port: "443"
               protocol: TCP
     - toEndpoints:
         - matchLabels:
@@ -90,6 +84,15 @@ spec:
             - port: "53"
               protocol: UDP
             - port: "53"
+              protocol: TCP
+{{- end }}
+{{- if .Values.registry.cache.enabled }}
+    # PrewarmImages: the upstream registries (digest of a tag).
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
               protocol: TCP
 {{- end }}
 {{- end }}

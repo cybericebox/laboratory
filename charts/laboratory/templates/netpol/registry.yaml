@@ -30,8 +30,8 @@ spec:
         - ports:
             - port: "5000"
               protocol: TCP
-{{- if and .Values.registry.cache.enabled .Values.agent.enabled }}
-    # PrewarmImages: the management agent asks the cache to fetch images ahead of time.
+{{- if .Values.agent.enabled }}
+    # The management agent: snapshot export, and PrewarmImages with the cache.
     - fromEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ .Values.agent.namespace }}

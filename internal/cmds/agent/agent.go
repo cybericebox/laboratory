@@ -44,6 +44,7 @@ func Run() {
 	}
 	h := grpcserver.NewHandler(cs, k8s, metrics, cfg.AgentID)
 	h.SetStatePersistence(cfg.StatePersistence)
+	h.SetRegistryAddr(cfg.RegistryAddr)
 	if cfg.Cache.Enabled {
 		pw, err := prewarmConfig(cfg, k8s)
 		if err != nil {

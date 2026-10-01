@@ -4672,6 +4672,329 @@ func (x *PrewarmImagesResult) GetImages() []*PrewarmImageStatus {
 	return nil
 }
 
+type DeviceSnapshotRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The device: lab_group, lab and name (the device name).
+	Ref           *ItemRef `protobuf:"bytes,1,opt,name=ref,proto3" json:"ref,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeviceSnapshotRequest) Reset() {
+	*x = DeviceSnapshotRequest{}
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[63]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeviceSnapshotRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeviceSnapshotRequest) ProtoMessage() {}
+
+func (x *DeviceSnapshotRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[63]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeviceSnapshotRequest.ProtoReflect.Descriptor instead.
+func (*DeviceSnapshotRequest) Descriptor() ([]byte, []int) {
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{63}
+}
+
+func (x *DeviceSnapshotRequest) GetRef() *ItemRef {
+	if x != nil {
+		return x.Ref
+	}
+	return nil
+}
+
+// SnapshotChunk is one message of the ExportDeviceSnapshot stream: first meta, then data
+// (in order), then trailer. Concatenating the data of all chunks gives a gzip stream of one tar
+// archive (see SnapshotMeta.format).
+type SnapshotChunk struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Content:
+	//
+	//	*SnapshotChunk_Meta
+	//	*SnapshotChunk_Data
+	//	*SnapshotChunk_Trailer
+	Content       isSnapshotChunk_Content `protobuf_oneof:"content"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SnapshotChunk) Reset() {
+	*x = SnapshotChunk{}
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[64]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnapshotChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnapshotChunk) ProtoMessage() {}
+
+func (x *SnapshotChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[64]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnapshotChunk.ProtoReflect.Descriptor instead.
+func (*SnapshotChunk) Descriptor() ([]byte, []int) {
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{64}
+}
+
+func (x *SnapshotChunk) GetContent() isSnapshotChunk_Content {
+	if x != nil {
+		return x.Content
+	}
+	return nil
+}
+
+func (x *SnapshotChunk) GetMeta() *SnapshotMeta {
+	if x != nil {
+		if x, ok := x.Content.(*SnapshotChunk_Meta); ok {
+			return x.Meta
+		}
+	}
+	return nil
+}
+
+func (x *SnapshotChunk) GetData() []byte {
+	if x != nil {
+		if x, ok := x.Content.(*SnapshotChunk_Data); ok {
+			return x.Data
+		}
+	}
+	return nil
+}
+
+func (x *SnapshotChunk) GetTrailer() *SnapshotTrailer {
+	if x != nil {
+		if x, ok := x.Content.(*SnapshotChunk_Trailer); ok {
+			return x.Trailer
+		}
+	}
+	return nil
+}
+
+type isSnapshotChunk_Content interface {
+	isSnapshotChunk_Content()
+}
+
+type SnapshotChunk_Meta struct {
+	Meta *SnapshotMeta `protobuf:"bytes,1,opt,name=meta,proto3,oneof"`
+}
+
+type SnapshotChunk_Data struct {
+	Data []byte `protobuf:"bytes,2,opt,name=data,proto3,oneof"`
+}
+
+type SnapshotChunk_Trailer struct {
+	Trailer *SnapshotTrailer `protobuf:"bytes,3,opt,name=trailer,proto3,oneof"`
+}
+
+func (*SnapshotChunk_Meta) isSnapshotChunk_Content() {}
+
+func (*SnapshotChunk_Data) isSnapshotChunk_Content() {}
+
+func (*SnapshotChunk_Trailer) isSnapshotChunk_Content() {}
+
+type SnapshotMeta struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Ref   *ItemRef               `protobuf:"bytes,1,opt,name=ref,proto3" json:"ref,omitempty"`
+	// The base image of the device as written in its spec, and, when the lab pinned it, its digest.
+	BaseImage       string `protobuf:"bytes,2,opt,name=base_image,json=baseImage,proto3" json:"base_image,omitempty"`
+	BaseImageDigest string `protobuf:"bytes,3,opt,name=base_image_digest,json=baseImageDigest,proto3" json:"base_image_digest,omitempty"`
+	// The compressed digests of the layers of the base image, in order, as the snapshot image holds them.
+	BaseLayerDigests []string `protobuf:"bytes,4,rep,name=base_layer_digests,json=baseLayerDigests,proto3" json:"base_layer_digests,omitempty"`
+	// The manifest digest of the snapshot in the registry, and when it was taken.
+	SnapshotDigest string `protobuf:"bytes,5,opt,name=snapshot_digest,json=snapshotDigest,proto3" json:"snapshot_digest,omitempty"`
+	SnapshotUnixMs int64  `protobuf:"varint,6,opt,name=snapshot_unix_ms,json=snapshotUnixMs,proto3" json:"snapshot_unix_ms,omitempty"`
+	// Snapshot layers squashed into this archive, and the sum of their uncompressed sizes
+	// (an upper bound of the archive's content: a file rewritten in several runs counts once in the archive).
+	SquashedLayers  int32 `protobuf:"varint,7,opt,name=squashed_layers,json=squashedLayers,proto3" json:"squashed_layers,omitempty"`
+	LayersSizeBytes int64 `protobuf:"varint,8,opt,name=layers_size_bytes,json=layersSizeBytes,proto3" json:"layers_size_bytes,omitempty"`
+	// "tar+gzip; OCI layer: whiteouts as .wh.<name>, opaque directories as .wh..wh..opq". The
+	// archive applies on top of the base image like an image layer.
+	Format string `protobuf:"bytes,9,opt,name=format,proto3" json:"format,omitempty"`
+	// The size of every data chunk except the last (bytes).
+	ChunkSize     int32 `protobuf:"varint,10,opt,name=chunk_size,json=chunkSize,proto3" json:"chunk_size,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SnapshotMeta) Reset() {
+	*x = SnapshotMeta{}
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[65]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnapshotMeta) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnapshotMeta) ProtoMessage() {}
+
+func (x *SnapshotMeta) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[65]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnapshotMeta.ProtoReflect.Descriptor instead.
+func (*SnapshotMeta) Descriptor() ([]byte, []int) {
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{65}
+}
+
+func (x *SnapshotMeta) GetRef() *ItemRef {
+	if x != nil {
+		return x.Ref
+	}
+	return nil
+}
+
+func (x *SnapshotMeta) GetBaseImage() string {
+	if x != nil {
+		return x.BaseImage
+	}
+	return ""
+}
+
+func (x *SnapshotMeta) GetBaseImageDigest() string {
+	if x != nil {
+		return x.BaseImageDigest
+	}
+	return ""
+}
+
+func (x *SnapshotMeta) GetBaseLayerDigests() []string {
+	if x != nil {
+		return x.BaseLayerDigests
+	}
+	return nil
+}
+
+func (x *SnapshotMeta) GetSnapshotDigest() string {
+	if x != nil {
+		return x.SnapshotDigest
+	}
+	return ""
+}
+
+func (x *SnapshotMeta) GetSnapshotUnixMs() int64 {
+	if x != nil {
+		return x.SnapshotUnixMs
+	}
+	return 0
+}
+
+func (x *SnapshotMeta) GetSquashedLayers() int32 {
+	if x != nil {
+		return x.SquashedLayers
+	}
+	return 0
+}
+
+func (x *SnapshotMeta) GetLayersSizeBytes() int64 {
+	if x != nil {
+		return x.LayersSizeBytes
+	}
+	return 0
+}
+
+func (x *SnapshotMeta) GetFormat() string {
+	if x != nil {
+		return x.Format
+	}
+	return ""
+}
+
+func (x *SnapshotMeta) GetChunkSize() int32 {
+	if x != nil {
+		return x.ChunkSize
+	}
+	return 0
+}
+
+type SnapshotTrailer struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The total length and the sha256 (hex) of the gzip stream, for the receiver to verify.
+	CompressedBytes int64  `protobuf:"varint,1,opt,name=compressed_bytes,json=compressedBytes,proto3" json:"compressed_bytes,omitempty"`
+	Sha256          string `protobuf:"bytes,2,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *SnapshotTrailer) Reset() {
+	*x = SnapshotTrailer{}
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[66]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnapshotTrailer) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnapshotTrailer) ProtoMessage() {}
+
+func (x *SnapshotTrailer) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[66]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnapshotTrailer.ProtoReflect.Descriptor instead.
+func (*SnapshotTrailer) Descriptor() ([]byte, []int) {
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{66}
+}
+
+func (x *SnapshotTrailer) GetCompressedBytes() int64 {
+	if x != nil {
+		return x.CompressedBytes
+	}
+	return 0
+}
+
+func (x *SnapshotTrailer) GetSha256() string {
+	if x != nil {
+		return x.Sha256
+	}
+	return ""
+}
+
 var File_pkg_agent_protobuf_agent_proto protoreflect.FileDescriptor
 
 const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
@@ -5087,7 +5410,31 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x06digest\x18\x04 \x01(\tR\x06digest\x12&\n" +
 	"\x0fupdated_unix_ms\x18\x05 \x01(\x03R\rupdatedUnixMs\"M\n" +
 	"\x13PrewarmImagesResult\x126\n" +
-	"\x06images\x18\x01 \x03(\v2\x1e.labmanager.PrewarmImageStatusR\x06images*\xb7\x01\n" +
+	"\x06images\x18\x01 \x03(\v2\x1e.labmanager.PrewarmImageStatusR\x06images\">\n" +
+	"\x15DeviceSnapshotRequest\x12%\n" +
+	"\x03ref\x18\x01 \x01(\v2\x13.labmanager.ItemRefR\x03ref\"\x99\x01\n" +
+	"\rSnapshotChunk\x12.\n" +
+	"\x04meta\x18\x01 \x01(\v2\x18.labmanager.SnapshotMetaH\x00R\x04meta\x12\x14\n" +
+	"\x04data\x18\x02 \x01(\fH\x00R\x04data\x127\n" +
+	"\atrailer\x18\x03 \x01(\v2\x1b.labmanager.SnapshotTrailerH\x00R\atrailerB\t\n" +
+	"\acontent\"\x8d\x03\n" +
+	"\fSnapshotMeta\x12%\n" +
+	"\x03ref\x18\x01 \x01(\v2\x13.labmanager.ItemRefR\x03ref\x12\x1d\n" +
+	"\n" +
+	"base_image\x18\x02 \x01(\tR\tbaseImage\x12*\n" +
+	"\x11base_image_digest\x18\x03 \x01(\tR\x0fbaseImageDigest\x12,\n" +
+	"\x12base_layer_digests\x18\x04 \x03(\tR\x10baseLayerDigests\x12'\n" +
+	"\x0fsnapshot_digest\x18\x05 \x01(\tR\x0esnapshotDigest\x12(\n" +
+	"\x10snapshot_unix_ms\x18\x06 \x01(\x03R\x0esnapshotUnixMs\x12'\n" +
+	"\x0fsquashed_layers\x18\a \x01(\x05R\x0esquashedLayers\x12*\n" +
+	"\x11layers_size_bytes\x18\b \x01(\x03R\x0flayersSizeBytes\x12\x16\n" +
+	"\x06format\x18\t \x01(\tR\x06format\x12\x1d\n" +
+	"\n" +
+	"chunk_size\x18\n" +
+	" \x01(\x05R\tchunkSize\"T\n" +
+	"\x0fSnapshotTrailer\x12)\n" +
+	"\x10compressed_bytes\x18\x01 \x01(\x03R\x0fcompressedBytes\x12\x16\n" +
+	"\x06sha256\x18\x02 \x01(\tR\x06sha256*\xb7\x01\n" +
 	"\tItemState\x12\x1a\n" +
 	"\x16ITEM_STATE_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12ITEM_STATE_CREATED\x10\x01\x12\x15\n" +
@@ -5112,7 +5459,7 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x15PREWARM_STATE_WARMING\x10\x02\x12\x16\n" +
 	"\x12PREWARM_STATE_DONE\x10\x03\x12\x18\n" +
 	"\x14PREWARM_STATE_FAILED\x10\x04\x12\x19\n" +
-	"\x15PREWARM_STATE_SKIPPED\x10\x052\xc0\v\n" +
+	"\x15PREWARM_STATE_SKIPPED\x10\x052\x9a\f\n" +
 	"\n" +
 	"LabManager\x12.\n" +
 	"\x04Ping\x12\x11.labmanager.Empty\x1a\x11.labmanager.Empty\"\x00\x12P\n" +
@@ -5137,7 +5484,8 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\vGetCapacity\x12\x11.labmanager.Empty\x1a\x1c.labmanager.CapacityResponse\"\x00\x12T\n" +
 	"\rPrewarmImages\x12 .labmanager.PrewarmImagesRequest\x1a\x1f.labmanager.PrewarmImagesResult\"\x00\x12E\n" +
 	"\fResetDevices\x12\x1a.labmanager.DevicesRequest\x1a\x17.labmanager.BatchResult\"\x00\x12L\n" +
-	"\rRescueDevices\x12 .labmanager.RescueDevicesRequest\x1a\x17.labmanager.BatchResult\"\x00B6Z4github.com/cybericebox/laboratory/pkg/agent/protobufb\x06proto3"
+	"\rRescueDevices\x12 .labmanager.RescueDevicesRequest\x1a\x17.labmanager.BatchResult\"\x00\x12X\n" +
+	"\x14ExportDeviceSnapshot\x12!.labmanager.DeviceSnapshotRequest\x1a\x19.labmanager.SnapshotChunk\"\x000\x01B6Z4github.com/cybericebox/laboratory/pkg/agent/protobufb\x06proto3"
 
 var (
 	file_pkg_agent_protobuf_agent_proto_rawDescOnce sync.Once
@@ -5152,7 +5500,7 @@ func file_pkg_agent_protobuf_agent_proto_rawDescGZIP() []byte {
 }
 
 var file_pkg_agent_protobuf_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_pkg_agent_protobuf_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 76)
+var file_pkg_agent_protobuf_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 80)
 var file_pkg_agent_protobuf_agent_proto_goTypes = []any{
 	(ItemState)(0),                        // 0: labmanager.ItemState
 	(PodState)(0),                         // 1: labmanager.PodState
@@ -5221,19 +5569,23 @@ var file_pkg_agent_protobuf_agent_proto_goTypes = []any{
 	(*PrewarmImagesRequest)(nil),          // 64: labmanager.PrewarmImagesRequest
 	(*PrewarmImageStatus)(nil),            // 65: labmanager.PrewarmImageStatus
 	(*PrewarmImagesResult)(nil),           // 66: labmanager.PrewarmImagesResult
-	nil,                                   // 67: labmanager.LabelChanges.SetEntry
-	nil,                                   // 68: labmanager.LabGroupItem.LabelsEntry
-	nil,                                   // 69: labmanager.CreateLabGroupsRequest.LabelsEntry
-	nil,                                   // 70: labmanager.LabGroupClientItem.LabelsEntry
-	nil,                                   // 71: labmanager.CreateLabGroupClientsRequest.LabelsEntry
-	nil,                                   // 72: labmanager.SetLabGroupAccessRequest.LabelsEntry
-	nil,                                   // 73: labmanager.LabItem.LabelsEntry
-	nil,                                   // 74: labmanager.CreateLabsRequest.LabelsEntry
-	nil,                                   // 75: labmanager.LabGroup.LabelsEntry
-	nil,                                   // 76: labmanager.Lab.LabelsEntry
-	nil,                                   // 77: labmanager.DeviceEnv.VarsEntry
-	nil,                                   // 78: labmanager.LabGroupClient.LabelsEntry
-	nil,                                   // 79: labmanager.LabGroupAccessPolicy.LabelsEntry
+	(*DeviceSnapshotRequest)(nil),         // 67: labmanager.DeviceSnapshotRequest
+	(*SnapshotChunk)(nil),                 // 68: labmanager.SnapshotChunk
+	(*SnapshotMeta)(nil),                  // 69: labmanager.SnapshotMeta
+	(*SnapshotTrailer)(nil),               // 70: labmanager.SnapshotTrailer
+	nil,                                   // 71: labmanager.LabelChanges.SetEntry
+	nil,                                   // 72: labmanager.LabGroupItem.LabelsEntry
+	nil,                                   // 73: labmanager.CreateLabGroupsRequest.LabelsEntry
+	nil,                                   // 74: labmanager.LabGroupClientItem.LabelsEntry
+	nil,                                   // 75: labmanager.CreateLabGroupClientsRequest.LabelsEntry
+	nil,                                   // 76: labmanager.SetLabGroupAccessRequest.LabelsEntry
+	nil,                                   // 77: labmanager.LabItem.LabelsEntry
+	nil,                                   // 78: labmanager.CreateLabsRequest.LabelsEntry
+	nil,                                   // 79: labmanager.LabGroup.LabelsEntry
+	nil,                                   // 80: labmanager.Lab.LabelsEntry
+	nil,                                   // 81: labmanager.DeviceEnv.VarsEntry
+	nil,                                   // 82: labmanager.LabGroupClient.LabelsEntry
+	nil,                                   // 83: labmanager.LabGroupAccessPolicy.LabelsEntry
 }
 var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
 	5,   // 0: labmanager.ItemResult.ref:type_name -> labmanager.ItemRef
@@ -5242,17 +5594,17 @@ var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
 	5,   // 3: labmanager.ListRequest.items:type_name -> labmanager.ItemRef
 	9,   // 4: labmanager.DeleteRequest.by_selector:type_name -> labmanager.Selector
 	5,   // 5: labmanager.DeleteRequest.items:type_name -> labmanager.ItemRef
-	67,  // 6: labmanager.LabelChanges.set:type_name -> labmanager.LabelChanges.SetEntry
-	68,  // 7: labmanager.LabGroupItem.labels:type_name -> labmanager.LabGroupItem.LabelsEntry
-	69,  // 8: labmanager.CreateLabGroupsRequest.labels:type_name -> labmanager.CreateLabGroupsRequest.LabelsEntry
+	71,  // 6: labmanager.LabelChanges.set:type_name -> labmanager.LabelChanges.SetEntry
+	72,  // 7: labmanager.LabGroupItem.labels:type_name -> labmanager.LabGroupItem.LabelsEntry
+	73,  // 8: labmanager.CreateLabGroupsRequest.labels:type_name -> labmanager.CreateLabGroupsRequest.LabelsEntry
 	13,  // 9: labmanager.CreateLabGroupsRequest.items:type_name -> labmanager.LabGroupItem
 	11,  // 10: labmanager.LabGroupChanges.labels:type_name -> labmanager.LabelChanges
 	15,  // 11: labmanager.UpdateLabGroupItem.changes:type_name -> labmanager.LabGroupChanges
 	9,   // 12: labmanager.UpdateLabGroupsRequest.by_selector:type_name -> labmanager.Selector
 	15,  // 13: labmanager.UpdateLabGroupsRequest.changes:type_name -> labmanager.LabGroupChanges
 	16,  // 14: labmanager.UpdateLabGroupsRequest.items:type_name -> labmanager.UpdateLabGroupItem
-	70,  // 15: labmanager.LabGroupClientItem.labels:type_name -> labmanager.LabGroupClientItem.LabelsEntry
-	71,  // 16: labmanager.CreateLabGroupClientsRequest.labels:type_name -> labmanager.CreateLabGroupClientsRequest.LabelsEntry
+	74,  // 15: labmanager.LabGroupClientItem.labels:type_name -> labmanager.LabGroupClientItem.LabelsEntry
+	75,  // 16: labmanager.CreateLabGroupClientsRequest.labels:type_name -> labmanager.CreateLabGroupClientsRequest.LabelsEntry
 	18,  // 17: labmanager.CreateLabGroupClientsRequest.items:type_name -> labmanager.LabGroupClientItem
 	6,   // 18: labmanager.LabGroupClientResult.result:type_name -> labmanager.ItemResult
 	49,  // 19: labmanager.LabGroupClientResult.client:type_name -> labmanager.LabGroupClient
@@ -5261,12 +5613,12 @@ var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
 	9,   // 22: labmanager.UpdateLabGroupClientsRequest.by_selector:type_name -> labmanager.Selector
 	11,  // 23: labmanager.UpdateLabGroupClientsRequest.labels:type_name -> labmanager.LabelChanges
 	22,  // 24: labmanager.UpdateLabGroupClientsRequest.items:type_name -> labmanager.UpdateLabGroupClientItem
-	72,  // 25: labmanager.SetLabGroupAccessRequest.labels:type_name -> labmanager.SetLabGroupAccessRequest.LabelsEntry
+	76,  // 25: labmanager.SetLabGroupAccessRequest.labels:type_name -> labmanager.SetLabGroupAccessRequest.LabelsEntry
 	53,  // 26: labmanager.SetLabGroupAccessRequest.policies:type_name -> labmanager.LabGroupAccessPolicy
 	38,  // 27: labmanager.LabVariant.env:type_name -> labmanager.DeviceEnv
 	38,  // 28: labmanager.LabItem.env:type_name -> labmanager.DeviceEnv
-	73,  // 29: labmanager.LabItem.labels:type_name -> labmanager.LabItem.LabelsEntry
-	74,  // 30: labmanager.CreateLabsRequest.labels:type_name -> labmanager.CreateLabsRequest.LabelsEntry
+	77,  // 29: labmanager.LabItem.labels:type_name -> labmanager.LabItem.LabelsEntry
+	78,  // 30: labmanager.CreateLabsRequest.labels:type_name -> labmanager.CreateLabsRequest.LabelsEntry
 	25,  // 31: labmanager.CreateLabsRequest.variants:type_name -> labmanager.LabVariant
 	26,  // 32: labmanager.CreateLabsRequest.items:type_name -> labmanager.LabItem
 	11,  // 33: labmanager.LabChanges.labels:type_name -> labmanager.LabelChanges
@@ -5279,13 +5631,13 @@ var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
 	31,  // 40: labmanager.DevicesRequest.by_selector:type_name -> labmanager.DeviceSelector
 	32,  // 41: labmanager.RescueDevicesRequest.devices:type_name -> labmanager.DevicesRequest
 	35,  // 42: labmanager.LabGroup.status:type_name -> labmanager.LabGroupStatus
-	75,  // 43: labmanager.LabGroup.labels:type_name -> labmanager.LabGroup.LabelsEntry
+	79,  // 43: labmanager.LabGroup.labels:type_name -> labmanager.LabGroup.LabelsEntry
 	40,  // 44: labmanager.LabGroupStatus.scheduling:type_name -> labmanager.Scheduling
 	43,  // 45: labmanager.LabGroupStatus.pods:type_name -> labmanager.LabGroupPod
 	34,  // 46: labmanager.LabGroupList.items:type_name -> labmanager.LabGroup
 	39,  // 47: labmanager.Lab.status:type_name -> labmanager.LabStatus
-	76,  // 48: labmanager.Lab.labels:type_name -> labmanager.Lab.LabelsEntry
-	77,  // 49: labmanager.DeviceEnv.vars:type_name -> labmanager.DeviceEnv.VarsEntry
+	80,  // 48: labmanager.Lab.labels:type_name -> labmanager.Lab.LabelsEntry
+	81,  // 49: labmanager.DeviceEnv.vars:type_name -> labmanager.DeviceEnv.VarsEntry
 	44,  // 50: labmanager.LabStatus.devices:type_name -> labmanager.LabDeviceStatus
 	46,  // 51: labmanager.LabStatus.connections:type_name -> labmanager.LabConnectionStatus
 	47,  // 52: labmanager.LabStatus.access:type_name -> labmanager.LabAccessEntry
@@ -5297,12 +5649,12 @@ var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
 	41,  // 58: labmanager.LabDeviceStatus.scheduling:type_name -> labmanager.PodScheduling
 	37,  // 59: labmanager.LabList.items:type_name -> labmanager.Lab
 	50,  // 60: labmanager.LabGroupClient.status:type_name -> labmanager.LabGroupClientStatus
-	78,  // 61: labmanager.LabGroupClient.labels:type_name -> labmanager.LabGroupClient.LabelsEntry
+	82,  // 61: labmanager.LabGroupClient.labels:type_name -> labmanager.LabGroupClient.LabelsEntry
 	51,  // 62: labmanager.LabGroupClientStatus.statistics:type_name -> labmanager.LabGroupClientStatistics
 	49,  // 63: labmanager.LabGroupClientList.items:type_name -> labmanager.LabGroupClient
 	54,  // 64: labmanager.LabGroupAccessPolicy.rules:type_name -> labmanager.LabGroupAccessRule
 	55,  // 65: labmanager.LabGroupAccessPolicy.status:type_name -> labmanager.LabGroupAccessPolicyStatus
-	79,  // 66: labmanager.LabGroupAccessPolicy.labels:type_name -> labmanager.LabGroupAccessPolicy.LabelsEntry
+	83,  // 66: labmanager.LabGroupAccessPolicy.labels:type_name -> labmanager.LabGroupAccessPolicy.LabelsEntry
 	2,   // 67: labmanager.LabGroupAccessRule.action:type_name -> labmanager.LabGroupAccessAction
 	56,  // 68: labmanager.LabGroupAccessPolicyStatus.rules:type_name -> labmanager.LabGroupAccessRuleStatistics
 	2,   // 69: labmanager.LabGroupAccessRuleStatistics.action:type_name -> labmanager.LabGroupAccessAction
@@ -5317,49 +5669,55 @@ var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
 	62,  // 78: labmanager.CapacityResponse.nodes:type_name -> labmanager.NodeCapacity
 	3,   // 79: labmanager.PrewarmImageStatus.state:type_name -> labmanager.PrewarmState
 	65,  // 80: labmanager.PrewarmImagesResult.images:type_name -> labmanager.PrewarmImageStatus
-	4,   // 81: labmanager.LabManager.Ping:input_type -> labmanager.Empty
-	14,  // 82: labmanager.LabManager.CreateLabGroups:input_type -> labmanager.CreateLabGroupsRequest
-	8,   // 83: labmanager.LabManager.ListLabGroups:input_type -> labmanager.ListRequest
-	17,  // 84: labmanager.LabManager.UpdateLabGroups:input_type -> labmanager.UpdateLabGroupsRequest
-	10,  // 85: labmanager.LabManager.DeleteLabGroups:input_type -> labmanager.DeleteRequest
-	19,  // 86: labmanager.LabManager.CreateLabGroupClients:input_type -> labmanager.CreateLabGroupClientsRequest
-	8,   // 87: labmanager.LabManager.ListLabGroupClients:input_type -> labmanager.ListRequest
-	23,  // 88: labmanager.LabManager.UpdateLabGroupClients:input_type -> labmanager.UpdateLabGroupClientsRequest
-	10,  // 89: labmanager.LabManager.DeleteLabGroupClients:input_type -> labmanager.DeleteRequest
-	24,  // 90: labmanager.LabManager.SetLabGroupAccess:input_type -> labmanager.SetLabGroupAccessRequest
-	27,  // 91: labmanager.LabManager.CreateLabs:input_type -> labmanager.CreateLabsRequest
-	8,   // 92: labmanager.LabManager.ListLabs:input_type -> labmanager.ListRequest
-	30,  // 93: labmanager.LabManager.UpdateLabs:input_type -> labmanager.UpdateLabsRequest
-	10,  // 94: labmanager.LabManager.DeleteLabs:input_type -> labmanager.DeleteRequest
-	57,  // 95: labmanager.LabManager.Monitoring:input_type -> labmanager.MonitoringRequest
-	4,   // 96: labmanager.LabManager.GetCapacity:input_type -> labmanager.Empty
-	64,  // 97: labmanager.LabManager.PrewarmImages:input_type -> labmanager.PrewarmImagesRequest
-	32,  // 98: labmanager.LabManager.ResetDevices:input_type -> labmanager.DevicesRequest
-	33,  // 99: labmanager.LabManager.RescueDevices:input_type -> labmanager.RescueDevicesRequest
-	4,   // 100: labmanager.LabManager.Ping:output_type -> labmanager.Empty
-	7,   // 101: labmanager.LabManager.CreateLabGroups:output_type -> labmanager.BatchResult
-	36,  // 102: labmanager.LabManager.ListLabGroups:output_type -> labmanager.LabGroupList
-	7,   // 103: labmanager.LabManager.UpdateLabGroups:output_type -> labmanager.BatchResult
-	7,   // 104: labmanager.LabManager.DeleteLabGroups:output_type -> labmanager.BatchResult
-	21,  // 105: labmanager.LabManager.CreateLabGroupClients:output_type -> labmanager.CreateLabGroupClientsResponse
-	52,  // 106: labmanager.LabManager.ListLabGroupClients:output_type -> labmanager.LabGroupClientList
-	7,   // 107: labmanager.LabManager.UpdateLabGroupClients:output_type -> labmanager.BatchResult
-	7,   // 108: labmanager.LabManager.DeleteLabGroupClients:output_type -> labmanager.BatchResult
-	7,   // 109: labmanager.LabManager.SetLabGroupAccess:output_type -> labmanager.BatchResult
-	7,   // 110: labmanager.LabManager.CreateLabs:output_type -> labmanager.BatchResult
-	48,  // 111: labmanager.LabManager.ListLabs:output_type -> labmanager.LabList
-	7,   // 112: labmanager.LabManager.UpdateLabs:output_type -> labmanager.BatchResult
-	7,   // 113: labmanager.LabManager.DeleteLabs:output_type -> labmanager.BatchResult
-	59,  // 114: labmanager.LabManager.Monitoring:output_type -> labmanager.MonitoringUpdate
-	63,  // 115: labmanager.LabManager.GetCapacity:output_type -> labmanager.CapacityResponse
-	66,  // 116: labmanager.LabManager.PrewarmImages:output_type -> labmanager.PrewarmImagesResult
-	7,   // 117: labmanager.LabManager.ResetDevices:output_type -> labmanager.BatchResult
-	7,   // 118: labmanager.LabManager.RescueDevices:output_type -> labmanager.BatchResult
-	100, // [100:119] is the sub-list for method output_type
-	81,  // [81:100] is the sub-list for method input_type
-	81,  // [81:81] is the sub-list for extension type_name
-	81,  // [81:81] is the sub-list for extension extendee
-	0,   // [0:81] is the sub-list for field type_name
+	5,   // 81: labmanager.DeviceSnapshotRequest.ref:type_name -> labmanager.ItemRef
+	69,  // 82: labmanager.SnapshotChunk.meta:type_name -> labmanager.SnapshotMeta
+	70,  // 83: labmanager.SnapshotChunk.trailer:type_name -> labmanager.SnapshotTrailer
+	5,   // 84: labmanager.SnapshotMeta.ref:type_name -> labmanager.ItemRef
+	4,   // 85: labmanager.LabManager.Ping:input_type -> labmanager.Empty
+	14,  // 86: labmanager.LabManager.CreateLabGroups:input_type -> labmanager.CreateLabGroupsRequest
+	8,   // 87: labmanager.LabManager.ListLabGroups:input_type -> labmanager.ListRequest
+	17,  // 88: labmanager.LabManager.UpdateLabGroups:input_type -> labmanager.UpdateLabGroupsRequest
+	10,  // 89: labmanager.LabManager.DeleteLabGroups:input_type -> labmanager.DeleteRequest
+	19,  // 90: labmanager.LabManager.CreateLabGroupClients:input_type -> labmanager.CreateLabGroupClientsRequest
+	8,   // 91: labmanager.LabManager.ListLabGroupClients:input_type -> labmanager.ListRequest
+	23,  // 92: labmanager.LabManager.UpdateLabGroupClients:input_type -> labmanager.UpdateLabGroupClientsRequest
+	10,  // 93: labmanager.LabManager.DeleteLabGroupClients:input_type -> labmanager.DeleteRequest
+	24,  // 94: labmanager.LabManager.SetLabGroupAccess:input_type -> labmanager.SetLabGroupAccessRequest
+	27,  // 95: labmanager.LabManager.CreateLabs:input_type -> labmanager.CreateLabsRequest
+	8,   // 96: labmanager.LabManager.ListLabs:input_type -> labmanager.ListRequest
+	30,  // 97: labmanager.LabManager.UpdateLabs:input_type -> labmanager.UpdateLabsRequest
+	10,  // 98: labmanager.LabManager.DeleteLabs:input_type -> labmanager.DeleteRequest
+	57,  // 99: labmanager.LabManager.Monitoring:input_type -> labmanager.MonitoringRequest
+	4,   // 100: labmanager.LabManager.GetCapacity:input_type -> labmanager.Empty
+	64,  // 101: labmanager.LabManager.PrewarmImages:input_type -> labmanager.PrewarmImagesRequest
+	32,  // 102: labmanager.LabManager.ResetDevices:input_type -> labmanager.DevicesRequest
+	33,  // 103: labmanager.LabManager.RescueDevices:input_type -> labmanager.RescueDevicesRequest
+	67,  // 104: labmanager.LabManager.ExportDeviceSnapshot:input_type -> labmanager.DeviceSnapshotRequest
+	4,   // 105: labmanager.LabManager.Ping:output_type -> labmanager.Empty
+	7,   // 106: labmanager.LabManager.CreateLabGroups:output_type -> labmanager.BatchResult
+	36,  // 107: labmanager.LabManager.ListLabGroups:output_type -> labmanager.LabGroupList
+	7,   // 108: labmanager.LabManager.UpdateLabGroups:output_type -> labmanager.BatchResult
+	7,   // 109: labmanager.LabManager.DeleteLabGroups:output_type -> labmanager.BatchResult
+	21,  // 110: labmanager.LabManager.CreateLabGroupClients:output_type -> labmanager.CreateLabGroupClientsResponse
+	52,  // 111: labmanager.LabManager.ListLabGroupClients:output_type -> labmanager.LabGroupClientList
+	7,   // 112: labmanager.LabManager.UpdateLabGroupClients:output_type -> labmanager.BatchResult
+	7,   // 113: labmanager.LabManager.DeleteLabGroupClients:output_type -> labmanager.BatchResult
+	7,   // 114: labmanager.LabManager.SetLabGroupAccess:output_type -> labmanager.BatchResult
+	7,   // 115: labmanager.LabManager.CreateLabs:output_type -> labmanager.BatchResult
+	48,  // 116: labmanager.LabManager.ListLabs:output_type -> labmanager.LabList
+	7,   // 117: labmanager.LabManager.UpdateLabs:output_type -> labmanager.BatchResult
+	7,   // 118: labmanager.LabManager.DeleteLabs:output_type -> labmanager.BatchResult
+	59,  // 119: labmanager.LabManager.Monitoring:output_type -> labmanager.MonitoringUpdate
+	63,  // 120: labmanager.LabManager.GetCapacity:output_type -> labmanager.CapacityResponse
+	66,  // 121: labmanager.LabManager.PrewarmImages:output_type -> labmanager.PrewarmImagesResult
+	7,   // 122: labmanager.LabManager.ResetDevices:output_type -> labmanager.BatchResult
+	7,   // 123: labmanager.LabManager.RescueDevices:output_type -> labmanager.BatchResult
+	68,  // 124: labmanager.LabManager.ExportDeviceSnapshot:output_type -> labmanager.SnapshotChunk
+	105, // [105:125] is the sub-list for method output_type
+	85,  // [85:105] is the sub-list for method input_type
+	85,  // [85:85] is the sub-list for extension type_name
+	85,  // [85:85] is the sub-list for extension extendee
+	0,   // [0:85] is the sub-list for field type_name
 }
 
 func init() { file_pkg_agent_protobuf_agent_proto_init() }
@@ -5370,13 +5728,18 @@ func file_pkg_agent_protobuf_agent_proto_init() {
 	file_pkg_agent_protobuf_agent_proto_msgTypes[5].OneofWrappers = []any{}
 	file_pkg_agent_protobuf_agent_proto_msgTypes[11].OneofWrappers = []any{}
 	file_pkg_agent_protobuf_agent_proto_msgTypes[27].OneofWrappers = []any{}
+	file_pkg_agent_protobuf_agent_proto_msgTypes[64].OneofWrappers = []any{
+		(*SnapshotChunk_Meta)(nil),
+		(*SnapshotChunk_Data)(nil),
+		(*SnapshotChunk_Trailer)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_agent_protobuf_agent_proto_rawDesc), len(file_pkg_agent_protobuf_agent_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   76,
+			NumMessages:   80,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

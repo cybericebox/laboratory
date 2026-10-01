@@ -32,6 +32,9 @@ type Handler struct {
 
 	// prewarm fills the image cache ahead of time; nil until SetPrewarm.
 	prewarm *prewarmer
+
+	// registryAddr is the platform registry (host:port) snapshot export reads from.
+	registryAddr string
 }
 
 // NewHandler builds a Handler backed by the given typed clientset, plain
