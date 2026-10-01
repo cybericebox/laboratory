@@ -109,24 +109,6 @@ var _ = Describe("Scheduler", func() {
 			Expect(*dep.Spec.Replicas).To(Equal(int32(1)))
 		})
 
-		It("stops the workload of a device sent back to the queue and starts it again when dispatched", func() {
-			newDevice("lab-web", nil)
-			reconcileDevice("lab-web")
-			setScheduling("lab-web", laboratoryv1alpha1.PodStarting)
-			reconcileDevice("lab-web")
-
-			setScheduling("lab-web", laboratoryv1alpha1.PodQueued) // a retry
-			reconcileDevice("lab-web")
-			dep, err := deployment("lab-web")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(*dep.Spec.Replicas).To(Equal(int32(0)))
-
-			setScheduling("lab-web", laboratoryv1alpha1.PodStarting)
-			reconcileDevice("lab-web")
-			dep, _ = deployment("lab-web")
-			Expect(*dep.Spec.Replicas).To(Equal(int32(1)))
-		})
-
 		It("does the same for a snapshot-backed device that runs as a bare Pod", func() {
 			newDevice("lab-web", &laboratoryv1alpha1.DeviceStateSpec{Enabled: true, MaxLayers: 10})
 			podOf := func() (*corev1.Pod, error) {
@@ -144,14 +126,13 @@ var _ = Describe("Scheduler", func() {
 			_, err = podOf()
 			Expect(err).NotTo(HaveOccurred())
 
-			setScheduling("lab-web", laboratoryv1alpha1.PodQueued) // a retry deletes the pod
-			reconcileDevice("lab-web")
-			Eventually(func() bool { _, err := podOf(); return errors.IsNotFound(err) }, timeout, interval).Should(BeTrue())
+			// A pod that ran once and ended is a recovery: it is recreated with no slot.
+			Expect(k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "lab-web-1", Namespace: ns}})).To(Succeed())
 		})
 	})
 
 	Describe("the flow", func() {
-		It("brings up three groups with a dependency, a failed pod and a retry", func() {
+		It("brings up three groups with a dependency, and a failed pod", func() {
 			newLab := func(name, group string, after string, devices ...string) {
 				lab := &laboratoryv1alpha1.Lab{
 					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: map[string]string{}, Annotations: map[string]string{}},
@@ -282,20 +263,6 @@ var _ = Describe("Scheduler", func() {
 				}
 				return nil
 			}, timeout, interval).Should(And(Not(BeNil()), HaveField("Reason", laboratoryv1alpha1.FailureStartupTimeout)))
-
-			// The retry token starts the device again at the head of the queue.
-			dev := getDevice("b-web")
-			dev.Spec.RetryToken = "retry-1"
-			Expect(k8sClient.Update(ctx, dev)).To(Succeed())
-			tick()
-			Expect(state("b-web")).To(Equal(st))
-			got := getDevice("b-web").Status.Scheduling
-			Expect(got.RetryToken).To(Equal("retry-1"))
-			Expect(got.Failure).To(BeNil())
-			reconcileDevice("b-web")
-			dep, err := deployment(workloadName(getDevice("b-web")))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(*dep.Spec.Replicas).To(Equal(int32(1)))
 		})
 	})
 })

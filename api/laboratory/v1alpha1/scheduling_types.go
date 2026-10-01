@@ -23,7 +23,7 @@ const (
 	// PodStarted: was Ready once. It holds no slot any more.
 	PodStarted PodScheduleState = "Started"
 	// PodFailed: did not start in time (see Failure). It holds no slot; the
-	// workload is left to retry on its own, and a retry token starts it afresh.
+	// workload is left to retry on its own and may still become Ready.
 	PodFailed PodScheduleState = "Failed"
 )
 
@@ -52,11 +52,6 @@ type PodSchedule struct {
 	DispatchedAt *metav1.Time `json:"dispatchedAt,omitempty"`
 	// StartedAt is when the pod was first seen Ready.
 	StartedAt *metav1.Time `json:"startedAt,omitempty"`
-	// RetryToken is the last spec.retryToken acted on.
-	RetryToken string `json:"retryToken,omitempty"`
-	// RetryAt is when a retry was requested; a queued pod with it goes ahead of
-	// everything else. Cleared on dispatch.
-	RetryAt *metav1.Time `json:"retryAt,omitempty"`
 	// Failure explains a Failed pod; the warning clears when the pod becomes Ready.
 	Failure *PodFailure `json:"failure,omitempty"`
 }

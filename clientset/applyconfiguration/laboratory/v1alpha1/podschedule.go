@@ -35,11 +35,6 @@ type PodScheduleApplyConfiguration struct {
 	DispatchedAt *v1.Time `json:"dispatchedAt,omitempty"`
 	// StartedAt is when the pod was first seen Ready.
 	StartedAt *v1.Time `json:"startedAt,omitempty"`
-	// RetryToken is the last spec.retryToken acted on.
-	RetryToken *string `json:"retryToken,omitempty"`
-	// RetryAt is when a retry was requested; a queued pod with it goes ahead of
-	// everything else. Cleared on dispatch.
-	RetryAt *v1.Time `json:"retryAt,omitempty"`
 	// Failure explains a Failed pod; the warning clears when the pod becomes Ready.
 	Failure *PodFailureApplyConfiguration `json:"failure,omitempty"`
 }
@@ -79,22 +74,6 @@ func (b *PodScheduleApplyConfiguration) WithDispatchedAt(value v1.Time) *PodSche
 // If called multiple times, the StartedAt field is set to the value of the last call.
 func (b *PodScheduleApplyConfiguration) WithStartedAt(value v1.Time) *PodScheduleApplyConfiguration {
 	b.StartedAt = &value
-	return b
-}
-
-// WithRetryToken sets the RetryToken field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the RetryToken field is set to the value of the last call.
-func (b *PodScheduleApplyConfiguration) WithRetryToken(value string) *PodScheduleApplyConfiguration {
-	b.RetryToken = &value
-	return b
-}
-
-// WithRetryAt sets the RetryAt field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the RetryAt field is set to the value of the last call.
-func (b *PodScheduleApplyConfiguration) WithRetryAt(value v1.Time) *PodScheduleApplyConfiguration {
-	b.RetryAt = &value
 	return b
 }
 

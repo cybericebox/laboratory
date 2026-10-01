@@ -257,11 +257,8 @@ fit: it is declared failed (`DoesNotFit`) and the queue goes on.
 nothing else is rolled back, and the device gets a warning: `Device.status.scheduling.failure` and, on the
 Lab, `status.devices[].failure`, with the reason (`ImagePull`, `CrashLoop`, `Unschedulable`,
 `StartupTimeout`, `DoesNotFit`), the last error the node reported and the restart count. If the pod becomes
-Ready later it is Started and the warning clears.
-
-**Retry.** A new `Device.spec.retryToken` (set by the management agent) puts that device's pod back in the
-queue at the **head**: it takes the first free slot, ahead of everything. The operator stops the current
-workload and starts it again when dispatched. Several retries go head first, oldest request first.
+Ready later it is Started and the warning clears. A snapshot-backed device whose pod ended after it had started
+is recreated at once, with no slot, as without the scheduler.
 
 **Guaranteed resources.** Every device container gets requests equal to limits, so its pod is Guaranteed.
 Per resource the limit wins, then the request, then `scheduler.deviceDefaults` (250m CPU and 256Mi memory);
@@ -297,8 +294,7 @@ while none of its pods has been dispatched. The position is refreshed at a limit
 4. `b-web` never gets Ready: after 5 minutes it is declared `Failed` (reason `StartupTimeout`, or `ImagePull`
    with the pull error). Its slot is free, `g2` is complete, and the lab shows the warning in
    `status.devices[].failure`.
-5. The platform sets `spec.retryToken` on `b-web`: the device is queued at the head, takes the first free slot
-   and its pod starts again.
+5. If `b-web` becomes Ready later after all, it is `Started` and the warning clears; nothing else changes.
 
 **Values** (chart `scheduler.*`):
 

@@ -275,8 +275,7 @@ func (s *Scheduler) setGroupPod(ctx context.Context, lg *laboratoryv1alpha1.LabG
 }
 
 // observe records what became of the pods already dispatched: Ready ones are
-// Started, ones that took too long or crash too often are Failed, and a retry
-// requested on a Device puts it back in the queue ahead of everything. It
+// Started, ones that took too long or crash too often are Failed. It
 // changes the cached objects in place, so the plan sees the new states.
 func (s *Scheduler) observe(ctx context.Context, snap *clusterView, now time.Time) {
 	logger := log.FromContext(ctx).WithName("scheduler")
@@ -294,12 +293,6 @@ func (s *Scheduler) observe(ctx context.Context, snap *clusterView, now time.Tim
 		key := devicePodKey(d.Namespace, d.Spec.LabRef, d.Spec.Name)
 		stamp := metav1.NewTime(now)
 		switch {
-		case d.Spec.RetryToken != "" && d.Spec.RetryToken != cur.RetryToken:
-			*ps = laboratoryv1alpha1.PodSchedule{
-				State: laboratoryv1alpha1.PodQueued, QueuedAt: &stamp, RetryAt: &stamp, RetryToken: d.Spec.RetryToken,
-			}
-			changed = true
-			delete(s.recent, key)
 		case (cur.State == laboratoryv1alpha1.PodStarting || cur.State == laboratoryv1alpha1.PodFailed) && d.Status.Ready:
 			ps.State, ps.Failure, ps.StartedAt = laboratoryv1alpha1.PodStarted, nil, &stamp
 			changed = true
@@ -470,13 +463,8 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 				p.ref = d
 				if sc := d.Status.Scheduling; sc != nil {
 					p.state = sc.State
-					if sc.RetryAt != nil {
-						p.retryAt = sc.RetryAt.Time
-					}
-					if at, ok := s.recent[key]; ok && p.state == laboratoryv1alpha1.PodQueued && now.Sub(at) < recentDispatchTTL &&
-						(sc.RetryAt == nil || !sc.RetryAt.Time.After(at)) {
+					if at, ok := s.recent[key]; ok && p.state == laboratoryv1alpha1.PodQueued && now.Sub(at) < recentDispatchTTL {
 						p.state = laboratoryv1alpha1.PodStarting
-						p.retryAt = time.Time{}
 					}
 				}
 			}
@@ -562,7 +550,7 @@ func (s *Scheduler) tick(ctx context.Context) error {
 		case kindDevicePod:
 			d := p.ref.(*laboratoryv1alpha1.Device)
 			q := d.Status.Scheduling.DeepCopy()
-			q.State, q.DispatchedAt, q.RetryAt, q.Failure = laboratoryv1alpha1.PodStarting, &stamp, nil, nil
+			q.State, q.DispatchedAt, q.Failure = laboratoryv1alpha1.PodStarting, &stamp, nil
 			err = s.setDevice(ctx, d, q)
 		case kindGroupPod:
 			err = s.dispatchGroupPod(ctx, snap, p, stamp)
@@ -601,7 +589,7 @@ func (s *Scheduler) dispatchGroupPod(ctx context.Context, snap *clusterView, p *
 				ps = e.PodSchedule
 			}
 		}
-		ps.State, ps.DispatchedAt, ps.RetryAt, ps.Failure = laboratoryv1alpha1.PodStarting, &stamp, nil, nil
+		ps.State, ps.DispatchedAt, ps.Failure = laboratoryv1alpha1.PodStarting, &stamp, nil
 		return s.setGroupPod(ctx, g, name, ps)
 	}
 	return errors.NewNotFound(schema.GroupResource{Group: laboratoryv1alpha1.SchemeGroupVersion.Group, Resource: "labgroups"}, p.key)

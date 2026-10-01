@@ -192,14 +192,9 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	// A workload that already runs needs no dispatch; one sent back to the queue
-	// (a retry) is stopped until the scheduler dispatches it again.
+	// A workload that already runs needs no dispatch.
 	if err := r.initScheduling(ctx, device, true); err != nil {
 		return ctrl.Result{}, err
-	}
-	queued := r.queuedByScheduler(device)
-	if queued {
-		replicas = 0
 	}
 
 	// Voluntary disruption is blocked by the lab group's PodDisruptionBudget; the
@@ -243,7 +238,7 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 	// Deployment changes trigger reconcile, but a pod getting its IP does not
 	// (the pod is owned by the ReplicaSet, not the Device) — requeue until the
 	// placement is fully observed.
-	if !suspended && !queued && (!ready || podIP == "" || podName == "") {
+	if !suspended && (!ready || podIP == "" || podName == "") {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil

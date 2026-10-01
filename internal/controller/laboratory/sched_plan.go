@@ -27,8 +27,6 @@ type schedPod struct {
 	// state is the recorded scheduling state; empty until the owning reconciler
 	// has initialised it (the pod is then counted but cannot be dispatched).
 	state laboratoryv1alpha1.PodScheduleState
-	// retryAt is set on a queued pod whose retry was requested: it goes first.
-	retryAt time.Time
 	// need is what the pod will request from a node.
 	need amount
 	// ref is the scheduler's handle on the underlying object (opaque to the plan).
@@ -129,7 +127,7 @@ type schedGroup struct {
 
 // planSchedule decides which pods start now.
 //
-// Retried pods go first, whatever else is queued. Then the conveyor: groups that
+// The conveyor: groups that
 // are being dispatched (some pod out, some pending) keep the slots, then groups
 // that have not started, in arrival order, each only once every group it lists in
 // deploy-after is complete; objects without a group go last. Inside a group an
@@ -236,24 +234,8 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	plan := schedPlan{status: map[string]objectStatus{}}
 	gone := map[*schedPod]bool{} // dispatched or failed in this pass
 
-	// Retried pods first, oldest request first.
-	var heads []*schedPod
-	for _, o := range objs {
-		for _, p := range o.pods {
-			if p.queued() && !p.retryAt.IsZero() {
-				heads = append(heads, p)
-			}
-		}
-	}
-	sort.SliceStable(heads, func(i, j int) bool {
-		if !heads[i].retryAt.Equal(heads[j].retryAt) {
-			return heads[i].retryAt.Before(heads[j].retryAt)
-		}
-		return heads[i].key < heads[j].key
-	})
-
 	blocker := ""
-	try := func(p *schedPod, o *schedObject, withImages bool) (stop bool) {
+	try := func(p *schedPod, o *schedObject) (stop bool) {
 		if !p.queued() || gone[p] {
 			return false
 		}
@@ -261,7 +243,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			blocker = laboratoryv1alpha1.WaitInFlightLimit
 			return true
 		}
-		if withImages && !env.prepared(o) {
+		if !env.prepared(o) {
 			blocker = laboratoryv1alpha1.WaitPreparingImages
 			return true
 		}
@@ -284,28 +266,13 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		return false
 	}
 
-	owner := map[*schedPod]*schedObject{}
-	for _, o := range objs {
-		for _, p := range o.pods {
-			owner[p] = o
-		}
-	}
-	stopped := false
-	for _, p := range heads {
-		if try(p, owner[p], false) {
-			stopped = true
-			break
-		}
-	}
-	if !stopped {
-	conveyor:
-		for _, o := range sequence {
-			pods := append([]*schedPod(nil), o.pods...)
-			sort.SliceStable(pods, func(i, j int) bool { return pods[i].name < pods[j].name })
-			for _, p := range pods {
-				if try(p, o, true) {
-					break conveyor
-				}
+conveyor:
+	for _, o := range sequence {
+		pods := append([]*schedPod(nil), o.pods...)
+		sort.SliceStable(pods, func(i, j int) bool { return pods[i].name < pods[j].name })
+		for _, p := range pods {
+			if try(p, o) {
+				break conveyor
 			}
 		}
 	}

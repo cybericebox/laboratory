@@ -77,22 +77,6 @@ func (b *NamedPodScheduleApplyConfiguration) WithStartedAt(value v1.Time) *Named
 	return b
 }
 
-// WithRetryToken sets the RetryToken field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the RetryToken field is set to the value of the last call.
-func (b *NamedPodScheduleApplyConfiguration) WithRetryToken(value string) *NamedPodScheduleApplyConfiguration {
-	b.PodScheduleApplyConfiguration.RetryToken = &value
-	return b
-}
-
-// WithRetryAt sets the RetryAt field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the RetryAt field is set to the value of the last call.
-func (b *NamedPodScheduleApplyConfiguration) WithRetryAt(value v1.Time) *NamedPodScheduleApplyConfiguration {
-	b.PodScheduleApplyConfiguration.RetryAt = &value
-	return b
-}
-
 // WithFailure sets the Failure field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Failure field is set to the value of the last call.

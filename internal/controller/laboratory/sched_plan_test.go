@@ -245,22 +245,6 @@ func TestPlanSlotsAndUnlimited(t *testing.T) {
 	wantDispatch(t, plan, "a/p1", "a/p2")
 }
 
-// A retried pod goes first, ahead of every group, the oldest request first.
-func TestPlanRetryGoesToTheHead(t *testing.T) {
-	g1 := obj("lab/a", "g1", 1, nil, pods("a", "p1")...)
-	late := obj("lab/z", "g9", 99, nil, pods("z", "r1", "r2")...)
-	late.pods[0].retryAt = planEpoch.Add(20 * time.Second)
-	late.pods[1].retryAt = planEpoch.Add(10 * time.Second)
-	plan := planSchedule([]*schedObject{g1, late}, 2, false, &fakeEnv{})
-	wantDispatch(t, plan, "z/r2", "z/r1")
-	// With one slot only the oldest retry goes, and nothing else.
-	plan = planSchedule([]*schedObject{g1, late}, 1, false, &fakeEnv{})
-	wantDispatch(t, plan, "z/r2")
-	// A retried pod is dispatched once, not again in the conveyor.
-	plan = planSchedule([]*schedObject{g1, late}, 10, false, &fakeEnv{})
-	wantDispatch(t, plan, "z/r2", "z/r1", "a/p1")
-}
-
 func TestPlanResourceCheck(t *testing.T) {
 	a := obj("lab/a", "g1", 1, nil, pods("a", "p1", "p2")...)
 	b := obj("lab/b", "g1", 2, nil, pods("b", "p1")...)
@@ -301,9 +285,6 @@ func TestPlanImagesMustBeOnTheNodes(t *testing.T) {
 	if r := plan.status["lab/a"].Reason; r != laboratoryv1alpha1.WaitPreparingImages {
 		t.Fatalf("reason = %q", r)
 	}
-	// A retried pod needs no prepull: its image is on its node already.
-	a.pods[0].retryAt = planEpoch
-	wantDispatch(t, planSchedule([]*schedObject{a, b}, 10, false, env), "a/p1", "b/p1")
 }
 
 // Queue places count the objects that still have pods to dispatch, the

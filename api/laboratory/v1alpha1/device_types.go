@@ -48,10 +48,6 @@ type DeviceSpec struct {
 	// Device that predates codes: its workload keeps the name of the Device.
 	// +optional
 	Code string `json:"code,omitempty"`
-	// RetryToken: a new value starts the device's pod again, at the head of the
-	// scheduler queue. Set by the management agent.
-	// +optional
-	RetryToken string `json:"retryToken,omitempty"`
 	// Env values are NOT carried on the CR — they live only in a per-device
 	// Secret (<device>-env) the agent writes, referenced by the pod via envFrom.
 }

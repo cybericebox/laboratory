@@ -129,15 +129,6 @@ spec:
                       description: QueuedAt is when the pod entered the queue.
                       format: date-time
                       type: string
-                    retryAt:
-                      description: |-
-                        RetryAt is when a retry was requested; a queued pod with it goes ahead of
-                        everything else. Cleared on dispatch.
-                      format: date-time
-                      type: string
-                    retryToken:
-                      description: RetryToken is the last spec.retryToken acted on.
-                      type: string
                     startedAt:
                       description: StartedAt is when the pod was first seen Ready.
                       format: date-time

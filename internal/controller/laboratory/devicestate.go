@@ -185,26 +185,15 @@ func (r *DeviceReconciler) reconcilePod(ctx context.Context, device *laboratoryv
 		return r.resetDevice(ctx, device, pods)
 	}
 
-	// A device sent back to the queue (a retry) loses its pod and waits for the
-	// scheduler; one with no record yet is recorded as running if it ever had a pod.
+	// A device that was never dispatched has no pod and waits for the scheduler. A
+	// pod that ran once and ended is a recovery: it is recreated at once, with no
+	// slot, as before. A device with no record is recorded as running if it ever had a pod.
 	if err := r.initScheduling(ctx, device, len(pods) > 0 || st.Incarnation > 0); err != nil {
 		return ctrl.Result{}, err
 	}
 	if r.queuedByScheduler(device) {
-		stopping := false
-		for i := range pods {
-			if pods[i].DeletionTimestamp == nil {
-				if err := r.Delete(ctx, &pods[i]); client.IgnoreNotFound(err) != nil {
-					return ctrl.Result{}, err
-				}
-			}
-			stopping = true
-		}
 		if err := r.publishPlacement(ctx, device, nil); err != nil {
 			return ctrl.Result{}, err
-		}
-		if stopping {
-			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 		}
 		return ctrl.Result{}, nil
 	}

@@ -413,62 +413,6 @@ func TestSchedulerFailedPodThatBecomesReady(t *testing.T) {
 	f.wantStates("a/p1=D b/p1=S b/p2=S b/p3=S b/p4=Q")
 }
 
-// A retry token puts the pod back in the queue at the head, whatever else waits.
-func TestSchedulerRetryGoesToTheHeadOfTheQueue(t *testing.T) {
-	cfg := schedCfg()
-	cfg.MaxPods = 1
-	f := newSchedFixture(t, cfg)
-	f.addLab("a", "g1", nil, "p1")
-	f.addLab("b", "g2", nil, "p1")
-	f.tick()
-	f.now = f.now.Add(6 * time.Minute)
-	f.tick() // a/p1 failed, b/p1 dispatched
-	f.wantStates("a/p1=F b/p1=S")
-
-	d := f.device("a", "p1")
-	d.Spec.RetryToken = "try-1"
-	if err := f.c.Update(context.Background(), d); err != nil {
-		t.Fatal(err)
-	}
-	f.ready("b", "p1")
-	f.addLab("c", "g3", nil, "p1")
-	f.tick()
-	// The retried pod takes the free slot ahead of group g3, and its warning is gone.
-	f.wantStates("a/p1=S b/p1=D c/p1=Q")
-	got := f.device("a", "p1").Status.Scheduling
-	if got.Failure != nil || got.RetryToken != "try-1" || got.RetryAt != nil || got.DispatchedAt == nil {
-		t.Fatalf("scheduling = %+v", got)
-	}
-	// The same token again does nothing.
-	f.now = f.now.Add(time.Minute)
-	f.tick()
-	f.wantStates("a/p1=S b/p1=D c/p1=Q")
-	if f.device("a", "p1").Status.Scheduling.RetryToken != "try-1" {
-		t.Fatal("token forgotten")
-	}
-}
-
-func TestSchedulerRetryOfAHealthyPod(t *testing.T) {
-	f := newSchedFixture(t, schedCfg())
-	f.addLab("a", "g", nil, "p1")
-	f.tick()
-	f.ready("a", "p1")
-	f.tick()
-	f.wantStates("a/p1=D")
-	d := f.device("a", "p1")
-	d.Spec.RetryToken = "again"
-	if err := f.c.Update(context.Background(), d); err != nil {
-		t.Fatal(err)
-	}
-	f.s.recent = map[string]time.Time{}
-	f.tick()
-	// Requeued by the observation, dispatched again in the same pass (head of the queue).
-	got := f.device("a", "p1").Status.Scheduling
-	if got.State != laboratoryv1alpha1.PodStarting || got.RetryToken != "again" || got.StartedAt != nil {
-		t.Fatalf("scheduling = %+v", got)
-	}
-}
-
 func TestSchedulerPodsOfALabGroup(t *testing.T) {
 	f := newSchedFixture(t, schedCfg())
 	now := metav1.NewTime(f.now)

@@ -1558,10 +1558,6 @@ func (in *PodSchedule) DeepCopyInto(out *PodSchedule) {
 		in, out := &in.StartedAt, &out.StartedAt
 		*out = (*in).DeepCopy()
 	}
-	if in.RetryAt != nil {
-		in, out := &in.RetryAt, &out.RetryAt
-		*out = (*in).DeepCopy()
-	}
 	if in.Failure != nil {
 		in, out := &in.Failure, &out.Failure
 		*out = new(PodFailure)

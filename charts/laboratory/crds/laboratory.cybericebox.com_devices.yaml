@@ -219,11 +219,6 @@ spec:
                   memoryRequest:
                     type: string
                 type: object
-              retryToken:
-                description: |-
-                  RetryToken: a new value starts the device's pod again, at the head of the
-                  scheduler queue. Set by the management agent.
-                type: string
               securityPreset:
                 description: |-
                   SecurityPreset names a capability profile (basic/service/net/debug); the
@@ -345,15 +340,6 @@ spec:
                   queuedAt:
                     description: QueuedAt is when the pod entered the queue.
                     format: date-time
-                    type: string
-                  retryAt:
-                    description: |-
-                      RetryAt is when a retry was requested; a queued pod with it goes ahead of
-                      everything else. Cleared on dispatch.
-                    format: date-time
-                    type: string
-                  retryToken:
-                    description: RetryToken is the last spec.retryToken acted on.
                     type: string
                   startedAt:
                     description: StartedAt is when the pod was first seen Ready.
