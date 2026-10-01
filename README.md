@@ -180,13 +180,15 @@ namespace; `templates/validate.yaml` rejects anything else and fails early when 
 6. Create a lab group and a lab. [`DEPLOY.md`](DEPLOY.md) walks through `LabGroup`, `LabGroupClient` and `Lab`
    examples, upgrades and uninstalling (CRDs are not removed by `helm uninstall`).
 
-## Launch pacing
+## Scheduler
 
-A burst of new Labs does not start all at once. Each Lab is created in phase `Queued` and the operator admits it in
-launch class order (the lab type, then creation time) while fewer than `launch.maxInFlight` labs are provisioning, the
-images of its class are pulled onto the nodes, and the nodes have free CPU and memory for it. Device pods are
-Guaranteed (requests equal limits) and each lab group has a PodDisruptionBudget. The queue position, length and reason
-are in `Lab.status.launch` and in the agent's `LabStatus.queue`. See "Launch pacing" in [`DEPLOY.md`](DEPLOY.md).
+A burst of new Labs and LabGroups does not start all at once. The scheduler starts their pods through a window
+(`scheduler.maxPods`, 20 by default), one object after another; objects with the same deploy group are started
+together, a group can wait for other groups to complete, and a pod that does not start in time is declared failed
+with a warning and frees its slot. Images are pulled onto the nodes before a group starts, and a pod is held back
+while no node has room for it. Device pods are Guaranteed (requests equal limits) and each lab group has a
+PodDisruptionBudget. The queue place and reason are in `status.scheduling` and in the agent's `LabStatus.queue`.
+See "Scheduler" in [`DEPLOY.md`](DEPLOY.md).
 
 ## Management agent API
 
@@ -195,7 +197,7 @@ certificates are issued by the chart for the CNs listed in `agent.clients`). The
 [`pkg/agent/protobuf/agent.proto`](pkg/agent/protobuf/agent.proto). It covers `Ping`, CRUD for `LabGroup`, `Lab` and
 `LabGroupClient`, suspend and VPN-disable switches for a group, access-policy reconciliation, a resumable, label-selectable `Monitoring` stream (see [Monitoring stream](DEPLOY.md#monitoring-stream))
 `GetCapacity`, and `ResetDevice` / `RescueDevice` for devices with state persistence (see
-[Device state persistence](DEPLOY.md#device-state-persistence-optional)). `LabStatus.queue` carries the launch queue state. Go bindings are generated next to the proto file; a Go client is in [`pkg/agent/client`](pkg/agent/client).
+[Device state persistence](DEPLOY.md#device-state-persistence-optional)). `LabStatus.queue` carries the scheduler queue state. Go bindings are generated next to the proto file; a Go client is in [`pkg/agent/client`](pkg/agent/client).
 
 ## Development
 
