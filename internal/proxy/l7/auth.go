@@ -21,7 +21,7 @@ type jwtClaims struct {
 	GroupID string `json:"group_id"`
 	// Client is the LabGroupClient of the group the session acts as: the same
 	// object that is the participant's VPN peer.
-	Client  string `json:"client,omitempty"`
+	Client string `json:"client,omitempty"`
 	jwt.RegisteredClaims
 }
 

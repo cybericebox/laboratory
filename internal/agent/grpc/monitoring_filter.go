@@ -6,7 +6,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
 
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -16,18 +18,24 @@ type selectorFilter struct {
 	sel labels.Selector // nil: everything
 }
 
-func newSelectorFilter(expr string) (*selectorFilter, error) {
-	if strings.TrimSpace(expr) == "" {
-		return &selectorFilter{}, nil
+// newSelectorFilter keeps what is of the tenant AND matches the user's selector. The tenant
+// test comes first and cannot be escaped by the selector (which may not name reserved keys).
+func newSelectorFilter(expr, tenant string) (*selectorFilter, error) {
+	sel := labels.Everything()
+	if strings.TrimSpace(expr) != "" {
+		var err error
+		if sel, err = labels.Parse(expr); err != nil {
+			return nil, err
+		}
+		if err := checkSelectorKeys(expr); err != nil {
+			return nil, err
+		}
 	}
-	sel, err := labels.Parse(expr)
+	req, err := labels.NewRequirement(names.LabelTenant, selection.Equals, []string{tenant})
 	if err != nil {
 		return nil, err
 	}
-	if err := checkSelectorKeys(expr); err != nil {
-		return nil, err
-	}
-	return &selectorFilter{sel: sel}, nil
+	return &selectorFilter{sel: sel.Add(*req)}, nil
 }
 
 func (f *selectorFilter) matches(l map[string]string) bool {

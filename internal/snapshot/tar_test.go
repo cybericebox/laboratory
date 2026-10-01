@@ -66,7 +66,7 @@ func opener(b []byte) Opener {
 
 func TestPolicyDefaultsAndExclusion(t *testing.T) {
 	p := NewPolicy(0, nil, 0, 0)
-	if p.Debounce != DefaultDebounce || p.MaxBytes != DefaultMaxSnapshotSize || p.MaxLayers != DefaultMaxLayers {
+	if p.Debounce != DefaultDebounce || p.WriteQuota != DefaultWriteQuota || p.MaxLayers != DefaultMaxLayers {
 		t.Fatalf("defaults not applied: %+v", p)
 	}
 	for _, path := range []string{"/tmp", "/tmp/x/y", "tmp/a", "/var/tmp/f", "/run/lock", "/proc/1", "/etc/hosts", "/var/run/secrets/kubernetes.io/serviceaccount/token"} {
@@ -276,5 +276,54 @@ func TestMergeLayersDropsDanglingHardlink(t *testing.T) {
 	files, _, _ := mergedView(t, out.Bytes())
 	if _, ok := files["link"]; ok {
 		t.Fatalf("link to a deleted target must be dropped: %v", files)
+	}
+}
+
+func TestFilterLayerSkipsFilesOverTheSizeLimit(t *testing.T) {
+	in := mkTar(t,
+		ent{name: "data/", dir: true},
+		ent{name: "data/big.bin", body: strings.Repeat("x", 100)},
+		ent{name: "data/small.txt", body: "ok"},
+		ent{name: "data/link.bin", link: "data/big.bin"},
+		ent{name: "data/.wh.deleted"},
+		ent{name: "data/exact", body: strings.Repeat("y", 50)},
+	)
+	pol := NewPolicy(0, nil, 0, 0).WithMaxFileSize(50)
+	var out bytes.Buffer
+	st, err := FilterLayer(bytes.NewReader(in), &out, pol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := names(t, out.Bytes())
+	want := []string{"data/", "data/small.txt", "data/.wh.deleted", "data/exact"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("kept %v, want %v (the big file and the hard link to it are skipped; whiteouts and a file at the limit stay)", got, want)
+	}
+	if st.SkippedTotal != 1 || len(st.Skipped) != 1 || st.Skipped[0] != (SkippedFile{Path: "/data/big.bin", Size: 100}) {
+		t.Fatalf("skipped %+v", st)
+	}
+	if st.Bytes != 52 {
+		t.Fatalf("only the kept files count: %d", st.Bytes)
+	}
+}
+
+func TestSkippedWarningNamesAtMostTenFiles(t *testing.T) {
+	var st Stats
+	if st.SkippedWarning(10) != "" {
+		t.Fatal("nothing skipped, no warning")
+	}
+	for i := 0; i < 13; i++ {
+		st.skip("/f"+string(rune('a'+i)), int64(100+i))
+	}
+	w := st.SkippedWarning(64)
+	if len(st.Skipped) != MaxSkippedListed || st.SkippedTotal != 13 ||
+		!strings.Contains(w, "files over 64 bytes") || !strings.Contains(w, "/fa (100 bytes)") || strings.Contains(w, "/fk") || !strings.HasSuffix(w, "and 3 more") {
+		t.Fatalf("warning %q", w)
+	}
+}
+
+func TestPolicyMaxFileSizeDefault(t *testing.T) {
+	if p := NewPolicy(0, nil, 0, 0); p.MaxFileSize != DefaultMaxFileSize || p.WithMaxFileSize(0).MaxFileSize != DefaultMaxFileSize || p.WithMaxFileSize(7).MaxFileSize != 7 {
+		t.Fatalf("%+v", p)
 	}
 }

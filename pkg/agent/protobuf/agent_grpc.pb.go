@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v7.35.0
-// source: pkg/agent/protobuf/agent.proto
+// source: agent.proto
 
 package protobuf
 
@@ -69,6 +69,7 @@ type LabManagerClient interface {
 	// Monitoring is a server-push stream. Every subscription starts with a
 	// complete snapshot; subsequent messages are sequenced deltas or heartbeats.
 	Monitoring(ctx context.Context, in *MonitoringRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[MonitoringUpdate], error)
+	// GetCapacity is the caller's tenant view: its quota, reserved, used and free resources.
 	GetCapacity(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*CapacityResponse, error)
 	// PrewarmImages makes the platform image cache (zot) fetch images from their upstream
 	// registries BEFORE labs need them, so a burst of labs pulls only from the cache. It is
@@ -94,7 +95,7 @@ type LabManagerClient interface {
 	// compressed with gzip and cut into chunks. The first message is the metadata, then data
 	// chunks, then the trailer with the length and sha256 of the gzip stream. There is no layer history.
 	// FailedPrecondition: the device has no state persistence, or it has no snapshot yet, or the
-	// snapshot registry is not configured. NotFound: no such device.
+	// snapshot registry is not configured. NotFound: no such device, or it belongs to another tenant.
 	ExportDeviceSnapshot(ctx context.Context, in *DeviceSnapshotRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SnapshotChunk], error)
 }
 
@@ -352,6 +353,7 @@ type LabManagerServer interface {
 	// Monitoring is a server-push stream. Every subscription starts with a
 	// complete snapshot; subsequent messages are sequenced deltas or heartbeats.
 	Monitoring(*MonitoringRequest, grpc.ServerStreamingServer[MonitoringUpdate]) error
+	// GetCapacity is the caller's tenant view: its quota, reserved, used and free resources.
 	GetCapacity(context.Context, *Empty) (*CapacityResponse, error)
 	// PrewarmImages makes the platform image cache (zot) fetch images from their upstream
 	// registries BEFORE labs need them, so a burst of labs pulls only from the cache. It is
@@ -377,7 +379,7 @@ type LabManagerServer interface {
 	// compressed with gzip and cut into chunks. The first message is the metadata, then data
 	// chunks, then the trailer with the length and sha256 of the gzip stream. There is no layer history.
 	// FailedPrecondition: the device has no state persistence, or it has no snapshot yet, or the
-	// snapshot registry is not configured. NotFound: no such device.
+	// snapshot registry is not configured. NotFound: no such device, or it belongs to another tenant.
 	ExportDeviceSnapshot(*DeviceSnapshotRequest, grpc.ServerStreamingServer[SnapshotChunk]) error
 	mustEmbedUnimplementedLabManagerServer()
 }
@@ -908,5 +910,5 @@ var LabManager_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 	},
-	Metadata: "pkg/agent/protobuf/agent.proto",
+	Metadata: "agent.proto",
 }

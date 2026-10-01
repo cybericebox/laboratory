@@ -1,0 +1,119 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: tenants.laboratory.cybericebox.com
+spec:
+  group: laboratory.cybericebox.com
+  names:
+    kind: Tenant
+    listKind: TenantList
+    plural: tenants
+    singular: tenant
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.persistence.allowed
+      name: Persistence
+      type: boolean
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Tenant is the Schema for the tenants API: a client of the management agent with
+          its own objects, persistence policy and resource quota. The chart always creates
+          the tenant "default" and the tenants listed in its values.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              TenantSpec is the policy of one tenant of the management agent. The tenant is
+              identified by the Tenant's name: the client certificate issued for it carries
+              CN = name, and the agent resolves the caller's tenant by that CN.
+            properties:
+              persistence:
+                description: Persistence is what the tenant may do with device state
+                  persistence.
+                properties:
+                  allowed:
+                    description: |-
+                      Allowed lets the tenant's topologies ask for persistence (devices[].persistence.enabled).
+                      It has no effect while the platform does not allow persistence.
+                    type: boolean
+                  maxFileSize:
+                    description: |-
+                      MaxFileSize: a file larger than this is not snapshotted (a Kubernetes quantity);
+                      capped by the platform's value, which is also the default.
+                    type: string
+                  writeQuota:
+                    description: |-
+                      WriteQuota is the most of a participant's writes kept per device (a Kubernetes
+                      quantity); capped by the platform's value, which is also the default.
+                    type: string
+                type: object
+              quota:
+                description: |-
+                  Quota caps the CPU and memory requests of the tenant's running pods.
+                  Absent: no limit.
+                properties:
+                  cpu:
+                    type: string
+                  memory:
+                    type: string
+                type: object
+            type: object
+          status:
+            description: TenantStatus is the observed load of the tenant, refreshed
+              by the management agent.
+            properties:
+              observedAt:
+                description: ObservedAt is when Reserved and Used were taken.
+                format: date-time
+                type: string
+              reserved:
+                description: Reserved is the sum of the requests of the tenant's pods.
+                properties:
+                  cpu:
+                    type: string
+                  memory:
+                    type: string
+                type: object
+              used:
+                description: |-
+                  Used is the live consumption of the tenant's pods (metrics-server); empty
+                  while metrics are not available.
+                properties:
+                  cpu:
+                    type: string
+                  memory:
+                    type: string
+                type: object
+            type: object
+        type: object
+        x-kubernetes-validations:
+        - message: 'Tenant name is the client certificate CN: a DNS-1123 label of
+            at most 63 characters'
+          rule: self.metadata.name.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$') && self.metadata.name.size()
+            <= 63
+    served: true
+    storage: true
+    subresources:
+      status: {}

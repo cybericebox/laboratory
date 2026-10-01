@@ -68,7 +68,7 @@ func podInfo(p *corev1.Pod, dev *laboratoryv1alpha1.Device) PodInfo {
 		ExitDone:    st.ExitSnapshotPod == p.Name,
 		Running:     p.Status.Phase == corev1.PodRunning,
 		Ended:       p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed,
-		Policy:      snapshot.NewPolicy(spec.Debounce.Duration, spec.ExcludePaths, spec.MaxSnapshotBytes, int(spec.MaxLayers)),
+		Policy:      snapshot.NewPolicy(spec.Debounce.Duration, spec.ExcludePaths, spec.WriteQuotaBytes, int(spec.MaxLayers)).WithMaxFileSize(spec.MaxFileBytes),
 		Repo:        snapshot.Repo(dev.Namespace, dev.Spec.LabRef, dev.Spec.Name),
 	}
 	for _, cs := range p.Status.ContainerStatuses {

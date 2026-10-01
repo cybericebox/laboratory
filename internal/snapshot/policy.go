@@ -16,9 +16,11 @@ import (
 // Defaults of the policy; the chart values and the operator configuration use
 // the same numbers.
 const (
-	DefaultDebounce        = 5 * time.Second
-	DefaultMaxSnapshotSize = int64(512 << 20)
-	DefaultMaxLayers       = 10
+	DefaultDebounce   = 5 * time.Second
+	DefaultWriteQuota = int64(512 << 20)
+	DefaultMaxLayers  = 10
+	// DefaultMaxFileSize: a regular file larger than this is left out of a snapshot.
+	DefaultMaxFileSize = int64(256 << 20)
 )
 
 // DefaultExcludePaths are never snapshotted unless the operator overrides the list.
@@ -41,20 +43,23 @@ var SystemExcludePaths = []string{
 type Policy struct {
 	Debounce     time.Duration
 	ExcludePaths []string
-	MaxBytes     int64
-	MaxLayers    int
+	WriteQuota   int64
+	// MaxFileSize: a regular file over it is skipped (like an excluded path, for that file only).
+	MaxFileSize int64
+	MaxLayers   int
 }
 
 // NewPolicy fills unset fields with the defaults and normalises the exclude
 // list (absolute, cleaned, no duplicates), adding the system paths.
 func NewPolicy(debounce time.Duration, exclude []string, maxBytes int64, maxLayers int) Policy {
-	p := Policy{Debounce: debounce, MaxBytes: maxBytes, MaxLayers: maxLayers}
+	p := Policy{Debounce: debounce, WriteQuota: maxBytes, MaxLayers: maxLayers}
 	if p.Debounce <= 0 {
 		p.Debounce = DefaultDebounce
 	}
-	if p.MaxBytes <= 0 {
-		p.MaxBytes = DefaultMaxSnapshotSize
+	if p.WriteQuota <= 0 {
+		p.WriteQuota = DefaultWriteQuota
 	}
+	p.MaxFileSize = DefaultMaxFileSize
 	if p.MaxLayers <= 0 {
 		p.MaxLayers = DefaultMaxLayers
 	}
@@ -69,6 +74,14 @@ func NewPolicy(debounce time.Duration, exclude []string, maxBytes int64, maxLaye
 		}
 		seen[e] = true
 		p.ExcludePaths = append(p.ExcludePaths, e)
+	}
+	return p
+}
+
+// WithMaxFileSize sets the per-file size limit (n <= 0 keeps the default).
+func (p Policy) WithMaxFileSize(n int64) Policy {
+	if n > 0 {
+		p.MaxFileSize = n
 	}
 	return p
 }
@@ -90,7 +103,7 @@ func (p Policy) Excluded(name string) bool {
 }
 
 // ErrQuota is returned when a snapshot would exceed the device's size quota.
-var ErrQuota = errors.New("snapshot quota exceeded")
+var ErrQuota = errors.New("write quota exceeded")
 
 // CheckQuota reports ErrQuota (wrapped with the numbers) when the state already
 // kept plus the new layer exceeds max. A zero max means no limit.

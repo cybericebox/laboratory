@@ -62,7 +62,11 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 	if err := validateLabels(in.GetLabels()); err != nil {
 		return nil, invalid("%v", err)
 	}
-	variants, err := parseVariants(in.GetVariants(), h.statePersistence)
+	persistence, err := h.persistenceAllowed(ctx)
+	if err != nil {
+		return nil, err
+	}
+	variants, err := parseVariants(in.GetVariants(), persistence)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +98,7 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 	if err := dupRefs(refs); err != nil {
 		return nil, err
 	}
-	resolver := h.newResolver()
+	resolver := h.newResolver(ctx)
 	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
 		state, err := h.createLab(ctx, resolver, items[i], variants[items[i].GetVariantId()], envs[i], in.GetLabels())
 		if err != nil {
@@ -134,7 +138,7 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 	dep, _ := newDeploySpec(it.GetDeployGroup(), it.GetDeployAfter())
 	lab := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
 	v.spec.DeepCopyInto(&lab.Spec)
-	lab.Labels, lab.Annotations = dep.stamp(copyLabels(want), stampID(nil, it.GetName()))
+	lab.Labels, lab.Annotations = dep.stamp(stampTenant(copyLabels(want), tenantOf(ctx)), stampID(nil, it.GetName()))
 	hash := specHash(&lab.Spec, dep)
 	lab.Annotations[names.AnnotationSpecHash] = hash
 
@@ -206,7 +210,7 @@ func (h *Handler) ListLabs(ctx context.Context, in *protobuf.ListRequest) (*prot
 	}
 	var matches []labMatch
 	if len(in.GetItems()) > 0 {
-		resolver := h.newResolver()
+		resolver := h.newResolver(ctx)
 		for _, ref := range in.GetItems() {
 			g, err := resolver.get(ctx, ref.GetLabGroup())
 			if apierrors.IsNotFound(err) || (err == nil && g.Status.Namespace == "") {
@@ -309,7 +313,7 @@ func (h *Handler) UpdateLabs(ctx context.Context, in *protobuf.UpdateLabsRequest
 			return nil, err
 		}
 	}
-	resolver := h.newResolver()
+	resolver := h.newResolver(ctx)
 	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
 		if err := h.updateLab(ctx, resolver, refs[i], plans[i]); err != nil {
 			return failedResult(refs[i], err)

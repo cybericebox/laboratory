@@ -18,15 +18,15 @@ package laboratory
 
 import (
 	"context"
-	
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	
+
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
@@ -35,15 +35,15 @@ var _ = Describe(
 		Context(
 			"When reconciling a resource", func() {
 				const resourceName = "test-resource"
-				
+
 				ctx := context.Background()
-				
+
 				typeNamespacedName := types.NamespacedName{
 					Name:      resourceName,
 					Namespace: "default", // TODO(user):Modify as needed
 				}
 				connection := &laboratoryv1alpha1.Connection{}
-				
+
 				BeforeEach(
 					func() {
 						By("creating the custom resource for the Kind Connection")
@@ -65,14 +65,14 @@ var _ = Describe(
 						}
 					},
 				)
-				
+
 				AfterEach(
 					func() {
 						// TODO(user): Cleanup logic after each test, like removing the resource instance.
 						resource := &laboratoryv1alpha1.Connection{}
 						err := k8sClient.Get(ctx, typeNamespacedName, resource)
 						Expect(err).NotTo(HaveOccurred())
-						
+
 						By("Cleanup the specific resource instance Connection")
 						Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 					},
@@ -84,7 +84,7 @@ var _ = Describe(
 							Client: k8sClient,
 							Scheme: k8sClient.Scheme(),
 						}
-						
+
 						_, err := controllerReconciler.Reconcile(
 							ctx, reconcile.Request{
 								NamespacedName: typeNamespacedName,

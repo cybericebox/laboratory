@@ -55,6 +55,7 @@ service LabManager {
   // complete snapshot; subsequent messages are sequenced deltas or heartbeats.
   rpc Monitoring(MonitoringRequest) returns (stream MonitoringUpdate) {}
 
+  // GetCapacity is the caller's tenant view: its quota, reserved, used and free resources.
   rpc GetCapacity(Empty) returns (CapacityResponse) {}
 
   // PrewarmImages makes the platform image cache (zot) fetch images from their upstream
@@ -83,7 +84,7 @@ service LabManager {
   // compressed with gzip and cut into chunks. The first message is the metadata, then data
   // chunks, then the trailer with the length and sha256 of the gzip stream. There is no layer history.
   // FailedPrecondition: the device has no state persistence, or it has no snapshot yet, or the
-  // snapshot registry is not configured. NotFound: no such device.
+  // snapshot registry is not configured. NotFound: no such device, or it belongs to another tenant.
   rpc ExportDeviceSnapshot(DeviceSnapshotRequest) returns (stream SnapshotChunk) {}
 }
 
@@ -241,7 +242,7 @@ message SetLabGroupAccessRequest {
 // LabVariant is sent once per request however many labs use it; it is not stored, the
 // spec is copied into every Lab. Device variables are secrets only: spec_json must not
 // carry env or flags on devices (rejected). A device's state persistence is part of the
-// spec (devices[].persistence {enabled, debounce, excludePaths, maxSnapshotSize}), set at
+// spec (devices[].persistence {enabled, debounce}), set at
 // creation and immutable; enabled=true is refused when the cluster does not allow persistence.
 message LabVariant {
   string variant_id = 1;
@@ -550,8 +551,8 @@ message MonitoringUpdate {
   repeated LabGroupClient clients = 12;
 	repeated MonitoringDeletedKey deleted_keys = 13;
 	repeated LabGroupAccessPolicy policies = 14;
-  // Cluster-wide capacity is not tied to any LabGroup. It lets the platform
-  // administrator see actual headroom even when no event is currently active.
+  // The subscriber's tenant capacity (quota, reserved, used, free). It is sent with the first
+  // message and again when it changed; never cluster-wide numbers.
   CapacityResponse capacity = 15;
   // Lab traffic accounting: cumulative aggregates relayed from LabTrafficReport
   // resources. State records like clients and policies, so a fresh snapshot
@@ -600,24 +601,23 @@ message TrafficTouch {
   int64 first_responded_unix_ms = 14; // 0 = the lab never answered
 }
 
-// NodeCapacity reports a node's allocatable resources and how much is already
-// requested by scheduled pods, so a caller can compute remaining headroom.
-message NodeCapacity {
-  string name = 1;
-  int64 allocatable_cpu_millicores = 2;
-  int64 allocatable_memory_bytes = 3;
-  int64 requested_cpu_millicores = 4;   // sum of scheduled pod container requests
-  int64 requested_memory_bytes = 5;
-}
-// CapacityResponse aggregates per-node capacity plus cluster totals. Remaining
-// headroom = allocatable - requested; divide by a lab's summed device requests
-// to estimate how many more labs fit.
+// CapacityResponse is the CALLER's view of its tenant's resources; no cluster-wide numbers
+// are exposed. Reserved is the sum of the requests of the tenant's pods, used the live
+// consumption (metrics). When the tenant has a quota, free = quota - reserved (never negative);
+// without one there is no limit and the free fields are 0.
 message CapacityResponse {
-  repeated NodeCapacity nodes = 1;
-  int64 allocatable_cpu_millicores = 2;
-  int64 allocatable_memory_bytes = 3;
-  int64 requested_cpu_millicores = 4;
-  int64 requested_memory_bytes = 5;
+  string tenant = 1;
+  bool has_cpu_quota = 2;
+  int64 cpu_quota_millicores = 3;
+  bool has_memory_quota = 4;
+  int64 memory_quota_bytes = 5;
+  int64 cpu_reserved_millicores = 6;
+  int64 memory_reserved_bytes = 7;
+  bool usage_available = 8;   // false when metrics-server is not installed: used is then 0
+  int64 cpu_used_millicores = 9;
+  int64 memory_used_bytes = 10;
+  int64 cpu_free_millicores = 11;
+  int64 memory_free_bytes = 12;
 }
 
 message PrewarmImagesRequest {

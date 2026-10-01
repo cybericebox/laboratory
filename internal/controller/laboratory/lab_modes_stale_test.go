@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/imagecache"
 )
 
 // staleLabs makes Get of a Lab answer from a copy taken when the object was first read, as
@@ -38,7 +39,7 @@ func (s *staleLabs) Get(ctx context.Context, key client.ObjectKey, obj client.Ob
 }
 
 // A stale cache after the status write of the modes must not decide the mode of the devices:
-// every device of a lab created with the switch on is snapshot-backed.
+// every device of a lab created with the image cache on pulls through it.
 func TestDevicesKeepTheModeOfTheLabWhenTheCacheIsStale(t *testing.T) {
 	s := pruneScheme(t)
 	_ = corev1.AddToScheme(s)
@@ -49,7 +50,7 @@ func TestDevicesKeepTheModeOfTheLabWhenTheCacheIsStale(t *testing.T) {
 	r := &LabReconciler{
 		Client: &staleLabs{Client: c, first: map[client.ObjectKey]*laboratoryv1alpha1.Lab{}},
 		Scheme: s, BaseDomain: "labs.example.com",
-		State: StatePolicy{Enabled: true, MaxLayers: 10, MaxSnapshotBytes: 1 << 29},
+		Mirror: imagecache.Rewriter{Prefix: "localhost:5035", Registries: imagecache.DefaultRegistries},
 	}
 	// The first pass adds the finalizer; later passes reach the devices.
 	for i := 0; i < 3; i++ {
@@ -61,8 +62,8 @@ func TestDevicesKeepTheModeOfTheLabWhenTheCacheIsStale(t *testing.T) {
 		t.Fatalf("want 2 devices, got %d", len(devs))
 	}
 	for name, d := range devs {
-		if !d.Spec.StateEnabled() {
-			t.Errorf("device %s was created without state persistence", name)
+		if d.Spec.ImageMirror == "" {
+			t.Errorf("device %s was created without the image cache", name)
 		}
 	}
 }

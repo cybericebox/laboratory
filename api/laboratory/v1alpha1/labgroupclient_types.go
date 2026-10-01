@@ -46,7 +46,7 @@ type LabGroupClientStatistics struct {
 type LabGroupClient struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	
+
 	Spec   LabGroupClientSpec   `json:"spec,omitempty"`
 	Status LabGroupClientStatus `json:"status,omitempty"`
 }

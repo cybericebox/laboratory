@@ -34,3 +34,5 @@ type LabGroupClientExpansion interface{}
 type LabTrafficReportExpansion interface{}
 
 type LabVPNExpansion interface{}
+
+type TenantExpansion interface{}

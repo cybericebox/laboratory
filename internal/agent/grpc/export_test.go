@@ -28,6 +28,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/clientset/client/versioned/fake"
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/snapshot"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
@@ -287,8 +288,12 @@ func newExportRig(t *testing.T, persistence bool, snapshotImage v1.Image) *expor
 }
 
 func (r *exportRig) export(ref *protobuf.ItemRef) (*exported, error) {
+	return r.exportAs(context.Background(), ref)
+}
+
+func (r *exportRig) exportAs(ctx context.Context, ref *protobuf.ItemRef) (*exported, error) {
 	e := &exported{}
-	err := r.h.ExportDeviceSnapshot(&protobuf.DeviceSnapshotRequest{Ref: ref}, &exportStream{ctx: context.Background(), e: e})
+	err := r.h.ExportDeviceSnapshot(&protobuf.DeviceSnapshotRequest{Ref: ref}, &exportStream{ctx: ctx, e: e})
 	return e, err
 }
 
@@ -359,5 +364,30 @@ func TestSplitSnapshotRef(t *testing.T) {
 	}
 	if _, _, err := splitSnapshotRef("localhost:5035/lab/x:tag"); err == nil {
 		t.Fatal("a tag reference is not a snapshot reference")
+	}
+}
+
+// A tenant exports only its own devices: the group of another tenant does not exist for it.
+func TestExportDeviceSnapshotIsScopedToTheTenant(t *testing.T) {
+	img := snapshotChain(t, []tent{{name: "home/notes.txt", body: "x"}})
+	rig := newExportRig(t, true, img)
+	ref := &protobuf.ItemRef{LabGroup: "grp", Lab: "lab1", Name: "web"}
+	if _, err := rig.exportAs(asClient("other"), ref); status.Code(err) != codes.NotFound {
+		t.Fatalf("another tenant's device: %v", err)
+	}
+	// The group belongs to the tenant "owner": it exports, the default tenant does not.
+	g, err := rig.h.cs.LaboratoryV1alpha1().LabGroups().Get(context.Background(), crName("grp"), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.Labels = map[string]string{names.LabelTenant: "owner"}
+	if _, err := rig.h.cs.LaboratoryV1alpha1().LabGroups().Update(context.Background(), g, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rig.exportAs(asClient("owner"), ref); err != nil {
+		t.Fatalf("the owner: %v", err)
+	}
+	if _, err := rig.export(ref); status.Code(err) != codes.NotFound {
+		t.Fatalf("the default tenant must not see it: %v", err)
 	}
 }

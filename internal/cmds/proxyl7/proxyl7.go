@@ -10,9 +10,9 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
-	
+
 	_ "github.com/cybericebox/laboratory/pkg/runtime"
-	
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -24,7 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	
+
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/proxy"
@@ -41,13 +41,13 @@ func init() {
 func Run() {
 	ctrl.SetLogger(zap.New())
 	log := ctrl.Log.WithName("proxy-l7")
-	
+
 	cfg, err := proxy.LoadL7Config()
 	if err != nil {
 		log.Error(err, "load config")
 		os.Exit(1)
 	}
-	
+
 	mgr, err := ctrl.NewManager(
 		ctrl.GetConfigOrDie(), ctrl.Options{
 			Scheme:  scheme,
@@ -58,7 +58,7 @@ func Run() {
 		log.Error(err, "create manager")
 		os.Exit(1)
 	}
-	
+
 	svcResolver := func(task, namespace string) (string, error) {
 		var svc corev1.Service
 		if err := mgr.GetClient().Get(
@@ -76,13 +76,13 @@ func Run() {
 		}
 		return proto, nil
 	}
-	
+
 	keyWatcher, err := proxy.NewKeyWatcher(cfg.LabAccessPublicKeyPath)
 	if err != nil {
 		log.Error(err, "init lab access key watcher")
 		os.Exit(1)
 	}
-	
+
 	instance := cfg.Instance
 	if instance == "" {
 		instance, _ = os.Hostname()
@@ -132,13 +132,13 @@ func Run() {
 			return out
 		},
 	}
-	
+
 	certWatcher, err := certwatcher.New(cfg.TLSCertPath, cfg.TLSKeyPath)
 	if err != nil {
 		log.Error(err, "init TLS cert watcher")
 		os.Exit(1)
 	}
-	
+
 	httpsSrv := &http.Server{
 		Addr:    cfg.Listen,
 		Handler: handler,
@@ -147,7 +147,7 @@ func Run() {
 			MinVersion:     tls.VersionTLS12,
 		},
 	}
-	
+
 	for _, r := range []struct {
 		runnable manager.Runnable
 		name     string
@@ -180,10 +180,10 @@ func Run() {
 			os.Exit(1)
 		}
 	}
-	
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
-	
+
 	log.Info("starting l7 proxy", "listen", cfg.Listen)
 	if err := mgr.Start(ctx); err != nil {
 		log.Error(err, "manager error")

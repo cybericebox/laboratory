@@ -37,7 +37,7 @@ func (h *Handler) ExportDeviceSnapshot(in *protobuf.DeviceSnapshotRequest, strea
 	if ref.GetLabGroup() == "" || ref.GetLab() == "" || ref.GetName() == "" {
 		return invalid("ref: lab_group, lab and name (the device) are required")
 	}
-	ns, err := h.newResolver().namespace(ctx, ref.GetLabGroup())
+	ns, err := h.newResolver(ctx).namespace(ctx, ref.GetLabGroup())
 	if err != nil {
 		return apiErrorToStatus(err)
 	}

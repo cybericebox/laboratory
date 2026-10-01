@@ -11,16 +11,21 @@ import (
 // policy the Lab controller copies onto new devices and the snapshot registry
 // client (nil when persistence is off or no registry is configured).
 func SetupState(c operator.StateConfig) (StatePolicy, *snapshot.Registry, error) {
-	maxBytes, err := c.MaxSnapshotBytes()
+	maxBytes, err := c.WriteQuotaBytes()
+	if err != nil {
+		return StatePolicy{}, nil, err
+	}
+	maxFile, err := c.MaxFileBytes()
 	if err != nil {
 		return StatePolicy{}, nil, err
 	}
 	pol := StatePolicy{
-		Enabled:          c.Enabled,
-		Debounce:         c.Debounce,
-		ExcludePaths:     c.ExcludePaths,
-		MaxSnapshotBytes: maxBytes,
-		MaxLayers:        c.MaxLayers,
+		MaxFileBytes:    maxFile,
+		Enabled:         c.Enabled,
+		Debounce:        c.Debounce,
+		ExcludePaths:    c.ExcludePaths,
+		WriteQuotaBytes: maxBytes,
+		MaxLayers:       c.MaxLayers,
 	}
 	if !c.Enabled || c.RegistryAddr == "" {
 		return pol, nil, nil

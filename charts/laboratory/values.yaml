@@ -285,7 +285,7 @@ registry:
   storageClass: ""
   # Size of the registry volume. It holds the cached images, the base image layers once
   # and every device's snapshot layers: plan for the images of the labs plus
-  # (devices x maxSnapshotSize) at worst. The volume is kept on uninstall.
+  # (devices x writeQuota) at worst. The volume is kept on uninstall.
   size: 20Gi
   # Garbage collection of blobs no manifest references any more.
   gc:
@@ -353,23 +353,30 @@ devices:
   # netfilter/route state are lost, as in a VM reboot; seconds of work are lost when
   # a node dies. See DEPLOY.md, "Device state persistence".
   #
-  # false: devices run as Deployments, exactly as without the feature.
-  # true: the labs CREATED from now on run their devices as bare Pods managed by the
-  # operator. The mode is fixed on each Lab when it is created; flipping this switch
-  # never changes existing labs.
+  # This switch only ALLOWS persistence. Each device chooses with persistence.enabled
+  # in its topology: such a device runs as a bare Pod managed by the operator, every
+  # other device as a Deployment (one lab may mix both). The choice is made when the
+  # Device is created and never changes, whatever this switch does later.
+  # false: no device can ask for persistence.
   statePersistence:
     enabled: false
 
     # How long a device's writable layer must stay quiet before a snapshot is taken.
     debounce: 5s
-    # Paths inside the container that are never snapshotted.
+    # Paths inside the container that are never snapshotted. Configurable only here, in
+    # the chart: a topology cannot ask for its own.
     excludePaths:
       - /tmp
       - /var/tmp
       - /run
-    # Quota per device (uncompressed size of all its snapshot layers). Over quota the
-    # last good snapshot is kept and a warning shows in the lab status.
-    maxSnapshotSize: 512Mi
+    # Write quota per device: the most of a participant's writes we keep (the uncompressed
+    # size of all its snapshot layers). Over the quota the last good snapshot is kept
+    # and a warning shows in the lab status.
+    writeQuota: 512Mi
+    # A regular file larger than this is never snapshotted (only that file is skipped;
+    # the lab status warning names it). The write quota above is the total backstop,
+    # applied after skipping.
+    maxFileSize: 256Mi
     # Snapshot layers kept on top of the base image before they are squashed into one.
     maxLayers: 10
     # How long the snapshots of a deleted lab are kept before the repository is deleted
@@ -457,15 +464,6 @@ agent:
   mtls:
     enabled: true
 
-  # CNs of client certs allowed to call the agent (sent as AGENT_ALLOWED_CLIENT_CNS).
-  allowedClientCNs:
-    - platform
-
-  # Each entry becomes a cert-manager Certificate → Secret laboratory-agent-client-<name>-tls,
-  # issued by the private laboratory-agent-ca Issuer.
-  clients:
-    - platform
-
   # The Monitoring stream: one poller and one in-memory journal serve every platform
   # backend that subscribes. See DEPLOY.md, "Monitoring stream".
   monitoring:
@@ -524,3 +522,26 @@ fullnameOverride: ""
 cert-manager:
   crds:
     enabled: true
+
+# ============================================================
+# Tenants of the management agent
+# ============================================================
+# A tenant is a client of the agent with its own objects, device persistence policy and
+# resource quota. The chart always creates the tenant "default" (the caller without a client
+# certificate, local development) and one Tenant per key below. With agent.mtls.enabled it also
+# issues a client certificate per tenant, CN = the tenant name, from the agent's client CA into the
+# Secret laboratory-agent-client-<name>-tls of the agent namespace; hand that Secret to the client.
+# The agent refuses a certificate whose CN is not a tenant. A name is a DNS-1123 label.
+#
+#   tenants:
+#     platform:
+#       persistence:
+#         allowed: true         # may ask for device persistence (needs devices.statePersistence.enabled)
+#         writeQuota: 256Mi     # optional; capped by devices.statePersistence.writeQuota
+#         maxFileSize: 128Mi    # optional; capped by devices.statePersistence.maxFileSize
+#       quota:                  # optional; absent = no limit
+#         cpu: "50%"            # sum of the CPU requests of its pods: "32", "500m" or a percentage
+#         memory: "40%"         #   of what the lab nodes allocate
+#
+# "default" may be listed to change its policy; unless it is, it may use persistence and has no quota.
+tenants: {}

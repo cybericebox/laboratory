@@ -77,6 +77,7 @@ type LabReconciler struct {
 
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=tenants,verbs=get;list;watch
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs/finalizers,verbs=update
@@ -410,6 +411,10 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 	vniAllocator := poolpkg.NewAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
 	codes := r.newCodeAllocator(lab)
 	wantLabels := userLabels(lab.Labels)
+	ten, err := r.tenantOf(ctx, lab)
+	if err != nil {
+		return err
+	}
 
 	for _, tmpl := range lab.Spec.Devices {
 		deviceName := fmt.Sprintf("%s-%s", lab.Name, tmpl.Name)
@@ -466,7 +471,7 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 				Interfaces:     resolvedInterfaces[tmpl.Name],
 				Exposure:       tmpl.Exposure,
 				Resources:      tmpl.Resources,
-				State:          r.deviceStateSpec(lab, tmpl.Type),
+				State:          r.deviceStateSpec(ten, tmpl),
 				ImageMirror:    r.deviceMirror(lab, tmpl.Type),
 				ImageDigests:   r.deviceDigests(lab, tmpl),
 			},
@@ -496,7 +501,7 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 // deviceLabels are the labels of a Device: the labels the caller put on its Lab (they
 // reach the pod from here) and the lab's own key.
 func deviceLabels(lab *laboratoryv1alpha1.Lab) map[string]string {
-	labels := names.UserLabels(lab.Labels)
+	labels := names.PropagatedLabels(lab.Labels)
 	labels[names.LabelLab] = lab.Name
 	return labels
 }

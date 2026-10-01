@@ -77,3 +77,29 @@ func IDOf(obj interface{ GetName() string }) string {
 	}
 	return obj.GetName()
 }
+
+// DefaultTenant is the tenant of a caller without a client certificate (TLS or mTLS off) and
+// of objects that carry no tenant label.
+const DefaultTenant = "default"
+
+// LabelTenant is the reserved label that stamps every object the management agent creates
+// with the tenant of its caller (the client certificate CN). It is hidden from the API.
+const LabelTenant = LabelPrefix + "tenant"
+
+// TenantKey is the label value of a tenant: the certificate CN when it is a valid label value
+// of at most 63 characters, otherwise "h" + base36(sha256). An empty CN is the default tenant.
+func TenantKey(cn string) string {
+	if cn == "" {
+		return DefaultTenant
+	}
+	return DeployKey(cn)
+}
+
+// TenantOf is the tenant of an object: its tenant label, or the default tenant for an object
+// created before tenancy.
+func TenantOf(labels map[string]string) string {
+	if t := labels[LabelTenant]; t != "" {
+		return t
+	}
+	return DefaultTenant
+}

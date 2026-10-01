@@ -115,7 +115,8 @@ func TestStatePersistenceRendersRegistryAndWiring(t *testing.T) {
 		"STATE_REGISTRY_ADDR":       "laboratory-registry.laboratory-system.svc:5000",
 		"STATE_DEBOUNCE":            "5s",
 		"STATE_EXCLUDE_PATHS":       "/tmp,/var/tmp,/run",
-		"STATE_MAX_SNAPSHOT_SIZE":   "512Mi",
+		"STATE_WRITE_QUOTA":         "512Mi",
+		"STATE_MAX_FILE_SIZE":       "256Mi",
 		"STATE_MAX_LAYERS":          "10",
 		"STATE_RETENTION":           "168h",
 	}
@@ -174,7 +175,8 @@ func TestStatePersistenceValuesAreConfigurable(t *testing.T) {
 		"--set", regPath + "image.tag=v9.9.9",
 		"--set", statePath + "debounce=12s",
 		"--set", statePath + "excludePaths={/cache,/var/log}",
-		"--set", statePath + "maxSnapshotSize=1Gi",
+		"--set", statePath + "writeQuota=1Gi",
+		"--set", statePath + "maxFileSize=64Mi",
 		"--set", statePath + "maxLayers=4",
 		"--set", statePath + "retention=24h",
 		"--set", regPath + "forwardPort=5099",
@@ -193,7 +195,7 @@ func TestStatePersistenceValuesAreConfigurable(t *testing.T) {
 	var cm corev1.ConfigMap
 	render(t, "templates/operator/configmap.yaml", &cm, extra...)
 	want := map[string]string{
-		"STATE_DEBOUNCE": "12s", "STATE_EXCLUDE_PATHS": "/cache,/var/log", "STATE_MAX_SNAPSHOT_SIZE": "1Gi",
+		"STATE_DEBOUNCE": "12s", "STATE_EXCLUDE_PATHS": "/cache,/var/log", "STATE_WRITE_QUOTA": "1Gi", "STATE_MAX_FILE_SIZE": "64Mi",
 		"STATE_MAX_LAYERS": "4", "STATE_RETENTION": "24h",
 	}
 	for k, v := range want {

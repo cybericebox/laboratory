@@ -4,6 +4,9 @@ import (
 	"context"
 	"sync"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+
 	versioned "github.com/cybericebox/laboratory/clientset/client/versioned"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 	"k8s.io/client-go/kubernetes"
@@ -29,6 +32,12 @@ type Handler struct {
 
 	// statePersistence: the cluster allows devices with persistence (the chart switch).
 	statePersistence bool
+
+	// labSelector and labTolerations describe the nodes lab pods run on (percentage quotas).
+	labSelector    map[string]string
+	labTolerations []corev1.Toleration
+	// capCache keeps each tenant's capacity for a few seconds.
+	capCache capacityCache
 
 	// prewarm fills the image cache ahead of time; nil until SetPrewarm.
 	prewarm *prewarmer
@@ -57,3 +66,5 @@ func (h *Handler) Ping(context.Context, *protobuf.Empty) (*protobuf.Empty, error
 // SetStatePersistence tells the agent whether the cluster allows device state
 // persistence; a topology that asks for it otherwise is refused.
 func (h *Handler) SetStatePersistence(enabled bool) { h.statePersistence = enabled }
+
+func isNotFound(err error) bool { return apierrors.IsNotFound(err) }

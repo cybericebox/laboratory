@@ -193,7 +193,7 @@ See "Scheduler" in [`DEPLOY.md`](DEPLOY.md).
 ## Management agent API
 
 With `agent.enabled`, the chart deploys a gRPC server (default port 5454, TLS with mutual authentication; client
-certificates are issued by the chart for the CNs listed in `agent.clients`). The service is `LabManager`, defined in
+a client certificate is issued by the chart for every tenant, CN = the tenant name, see [Tenancy](DEPLOY.md#management-agent-api)). The service is `LabManager`, defined in
 [`pkg/agent/protobuf/agent.proto`](pkg/agent/protobuf/agent.proto). The CRUD API is plural-only (every call takes a list; one
 object is a list of one): `CreateLabGroups` / `ListLabGroups` / `UpdateLabGroups` / `DeleteLabGroups`, the same four for
 `LabGroupClients` and `Labs`, `SetLabGroupAccess` (access policies of many groups), `ResetDevices` / `RescueDevices`, plus `Ping`, `GetCapacity`, `PrewarmImages` and a resumable, label-selectable `Monitoring` stream (see

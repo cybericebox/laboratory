@@ -7,52 +7,50 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/tenant"
 )
 
 // StatePolicy is the device state persistence configuration of the operator.
 // It is copied onto the Devices of a Lab when they are created and never
 // re-applied, so changing it affects only labs created afterwards.
 type StatePolicy struct {
-	Enabled          bool
-	Debounce         time.Duration
-	ExcludePaths     []string
-	MaxSnapshotBytes int64
-	MaxLayers        int32
+	Enabled         bool
+	Debounce        time.Duration
+	ExcludePaths    []string
+	WriteQuotaBytes int64
+	MaxFileBytes    int64
+	MaxLayers       int32
 }
 
-// ensureModes decides, once, how the lab runs: whether its devices are
-// snapshot-backed Pods (Status.StatePersistence) and whether its images are
-// pulled through the image cache (Status.ImageCache). A lab that already has
-// Devices was created before the decision existed (or while the switch was off)
-// and keeps its mode, so flipping a platform switch never changes a live lab.
-// It reports whether it wrote the status.
+// ensureModes decides, once, whether the lab's images are pulled through the image
+// cache (Status.ImageCache). A lab that already has Devices was created before the
+// decision existed (or while the switch was off) and keeps its mode, so flipping a
+// platform switch never changes a live lab. State persistence is not a lab mode: each
+// device decides at its creation (deviceStateSpec). It reports whether it wrote the status.
 func (r *LabReconciler) ensureModes(ctx context.Context, lab *laboratoryv1alpha1.Lab) (bool, error) {
-	if lab.Status.StatePersistence != nil && lab.Status.ImageCache != nil {
+	if lab.Status.ImageCache != nil {
 		return false, nil
 	}
-	persist, cache := r.State.Enabled, r.Mirror.Prefix != ""
-	if persist || cache {
+	cache := r.Mirror.Prefix != ""
+	if cache {
 		var devices laboratoryv1alpha1.DeviceList
 		if err := r.List(ctx, &devices, client.InNamespace(lab.Namespace), client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
 			return false, err
 		}
 		if len(devices.Items) > 0 {
-			persist, cache = false, false
+			cache = false
 		}
 	}
-	if lab.Status.StatePersistence == nil {
-		lab.Status.StatePersistence = &persist
-	}
-	if lab.Status.ImageCache == nil {
-		lab.Status.ImageCache = &cache
-		if cache {
-			r.pinImages(ctx, lab)
-		}
+	lab.Status.ImageCache = &cache
+	if cache {
+		r.pinImages(ctx, lab)
 	}
 	if err := r.Status().Update(ctx, lab); err != nil {
 		return false, err
@@ -69,18 +67,41 @@ func (r *LabReconciler) deviceMirror(lab *laboratoryv1alpha1.Lab, t laboratoryv1
 	return r.Mirror.Prefix
 }
 
-// deviceStateSpec is the state policy of a new Device of the lab; nil when the
-// lab does not use persistence or the device runs no container.
-func (r *LabReconciler) deviceStateSpec(lab *laboratoryv1alpha1.Lab, t laboratoryv1alpha1.DeviceType) *laboratoryv1alpha1.DeviceStateSpec {
-	if lab.Status.StatePersistence == nil || !*lab.Status.StatePersistence || t != laboratoryv1alpha1.DeviceTypeContainer {
+// tenantOf is the Tenant a Lab belongs to (by its tenant label; the default tenant without
+// one); nil when there is no such Tenant object, which then gets the platform's policy.
+func (r *LabReconciler) tenantOf(ctx context.Context, lab *laboratoryv1alpha1.Lab) (*laboratoryv1alpha1.Tenant, error) {
+	var t laboratoryv1alpha1.Tenant
+	if err := r.Get(ctx, types.NamespacedName{Name: names.TenantOf(lab.Labels)}, &t); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &t, nil
+}
+
+// deviceStateSpec is the state policy of a new Device, decided once at its creation: the
+// topology asked for persistence (devices[].persistence.enabled), the platform and the tenant allow it
+// (its write quota and file size limit are the tenant's, capped by the platform's) and the device runs a container. Otherwise nil: a Deployment. The Device keeps what was
+// stamped, so later changes of the platform switch never change an existing device. One lab
+// may mix both kinds.
+func (r *LabReconciler) deviceStateSpec(ten *laboratoryv1alpha1.Tenant, tmpl laboratoryv1alpha1.DeviceTemplate) *laboratoryv1alpha1.DeviceStateSpec {
+	pers := tenant.EffectivePersistence(ten, r.State.Enabled, r.State.WriteQuotaBytes, r.State.MaxFileBytes)
+	if !pers.Allowed || tmpl.Persistence == nil || !tmpl.Persistence.Enabled || tmpl.Type != laboratoryv1alpha1.DeviceTypeContainer {
 		return nil
 	}
+	// The topology may set the debounce of a device; the excluded paths and the quota are the platform's.
+	debounce := metav1.Duration{Duration: r.State.Debounce}
+	if p := tmpl.Persistence; p.Debounce != nil {
+		debounce = *p.Debounce
+	}
 	return &laboratoryv1alpha1.DeviceStateSpec{
-		Enabled:          true,
-		Debounce:         metav1.Duration{Duration: r.State.Debounce},
-		ExcludePaths:     append([]string(nil), r.State.ExcludePaths...),
-		MaxSnapshotBytes: r.State.MaxSnapshotBytes,
-		MaxLayers:        r.State.MaxLayers,
+		Enabled:         true,
+		Debounce:        debounce,
+		ExcludePaths:    append([]string(nil), r.State.ExcludePaths...),
+		WriteQuotaBytes: pers.WriteQuota,
+		MaxFileBytes:    pers.MaxFileSize,
+		MaxLayers:       r.State.MaxLayers,
 	}
 }
 

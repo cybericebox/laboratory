@@ -222,26 +222,17 @@ spec:
                     persistence:
                       description: |-
                         Persistence is the optional state-persistence policy of this device, set at
-                        creation and immutable. Unset fields take the platform defaults.
+                        creation and immutable. The excluded paths and the quota are platform settings.
                       properties:
                         debounce:
-                          description: Debounce is how long the writable layer must
-                            stay quiet before a snapshot.
+                          description: |-
+                            Debounce is how long the writable layer must stay quiet before a snapshot
+                            (default: the platform setting).
                           type: string
                         enabled:
                           description: Enabled turns snapshot-backed state on for
                             the device.
                           type: boolean
-                        excludePaths:
-                          description: ExcludePaths are absolute container paths that
-                            are never snapshotted.
-                          items:
-                            type: string
-                          type: array
-                        maxSnapshotSize:
-                          description: MaxSnapshotSize is the quota of the kept state
-                            (a Kubernetes quantity, e.g. "512Mi").
-                          type: string
                       type: object
                     resources:
                       description: Resources sets the container resource requests/limits
@@ -514,7 +505,7 @@ spec:
               imageCache:
                 description: |-
                   ImageCache records whether this lab pulls its images through the platform
-                  image cache, decided once on the first reconcile like StatePersistence.
+                  image cache, decided once on the first reconcile.
                 type: boolean
               imageDigests:
                 additionalProperties:
@@ -585,12 +576,6 @@ spec:
                       (Wait* constants).
                     type: string
                 type: object
-              statePersistence:
-                description: |-
-                  StatePersistence records how this lab runs its devices, decided once on the
-                  first reconcile: true = bare Pods with snapshot-backed state, false =
-                  Deployments. It never changes afterwards, whatever the platform switch says.
-                type: boolean
               vpn:
                 description: LabNetworkStatus reports the allocated CIDR for a network
                   segment.

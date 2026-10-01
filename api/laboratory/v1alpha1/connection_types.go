@@ -50,7 +50,7 @@ type ConnectionPortStatus struct {
 type Connection struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	
+
 	Spec   ConnectionSpec   `json:"spec,omitempty"`
 	Status ConnectionStatus `json:"status,omitempty"`
 }

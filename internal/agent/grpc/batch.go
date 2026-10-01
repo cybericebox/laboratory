@@ -11,7 +11,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/pkg/agent/client"
@@ -108,7 +107,7 @@ type groupEntry struct {
 	err   error
 }
 
-func (h *Handler) newResolver() *groupResolver {
+func (h *Handler) newResolver(_ context.Context) *groupResolver {
 	return &groupResolver{h: h, entries: map[string]*groupEntry{}}
 }
 
@@ -121,7 +120,7 @@ func (r *groupResolver) get(ctx context.Context, name string) (*laboratoryv1alph
 	}
 	r.mu.Unlock()
 	e.once.Do(func() {
-		e.group, e.err = r.h.cs.LaboratoryV1alpha1().LabGroups().Get(ctx, crName(name), metav1.GetOptions{})
+		e.group, e.err = r.h.getGroup(ctx, name)
 	})
 	return e.group, e.err
 }
@@ -144,11 +143,11 @@ func (r *groupResolver) namespace(ctx context.Context, name string) (string, err
 	return g.Status.Namespace, nil
 }
 
-// scopedGroups lists the groups a selector call looks at: the named one, or every
-// group that has a namespace.
+// scopedGroups lists the groups of the caller's tenant a selector call looks at: the named
+// one, or every one.
 func (h *Handler) scopedGroups(ctx context.Context, labGroup string) ([]laboratoryv1alpha1.LabGroup, error) {
 	if labGroup != "" {
-		g, err := h.cs.LaboratoryV1alpha1().LabGroups().Get(ctx, crName(labGroup), metav1.GetOptions{})
+		g, err := h.getGroup(ctx, labGroup)
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}
@@ -157,11 +156,7 @@ func (h *Handler) scopedGroups(ctx context.Context, labGroup string) ([]laborato
 		}
 		return []laboratoryv1alpha1.LabGroup{*g}, nil
 	}
-	list, err := h.cs.LaboratoryV1alpha1().LabGroups().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	return list.Items, nil
+	return h.listGroups(ctx, "")
 }
 
 // parseSelector validates a label selector; empty is allowed only when allowEmpty.

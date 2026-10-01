@@ -130,6 +130,16 @@ func IsReservedLabel(key string) bool {
 	return false
 }
 
+// PropagatedLabels are the labels a Lab or LabGroup passes on to its Devices and pods: the
+// caller's own labels and the tenant stamp.
+func PropagatedLabels(in map[string]string) map[string]string {
+	out := UserLabels(in)
+	if t := in[LabelTenant]; t != "" {
+		out[LabelTenant] = t
+	}
+	return out
+}
+
 // UserLabels returns the labels of an object that the management agent set on behalf of a
 // caller: everything except the reserved keys (IsReservedLabel). Lab labels go to
 // its Devices and from there to their pods.

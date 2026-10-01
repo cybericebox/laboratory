@@ -9,7 +9,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 
@@ -116,7 +115,8 @@ func parseLabSpec(raw []byte, persistence bool) (laboratoryv1alpha1.LabSpec, err
 }
 
 // validatePersistence checks a device's persistence request: enabled only when the
-// cluster allows persistence, a positive debounce, absolute exclude paths, a valid size.
+// cluster allows persistence, a positive debounce. The excluded paths and the quota are
+// platform settings, not part of the request.
 func validatePersistence(d *laboratoryv1alpha1.DeviceTemplate, allowed bool) error {
 	p := d.Persistence
 	if p == nil {
@@ -127,17 +127,6 @@ func validatePersistence(d *laboratoryv1alpha1.DeviceTemplate, allowed bool) err
 	}
 	if p.Debounce != nil && p.Debounce.Duration <= 0 {
 		return fmt.Errorf("persistence.debounce must be positive")
-	}
-	for _, path := range p.ExcludePaths {
-		if !strings.HasPrefix(path, "/") {
-			return fmt.Errorf("persistence.excludePaths: %q is not absolute", path)
-		}
-	}
-	if p.MaxSnapshotSize != "" {
-		q, err := resource.ParseQuantity(p.MaxSnapshotSize)
-		if err != nil || q.Sign() <= 0 {
-			return fmt.Errorf("persistence.maxSnapshotSize %q is not a positive quantity", p.MaxSnapshotSize)
-		}
 	}
 	return nil
 }

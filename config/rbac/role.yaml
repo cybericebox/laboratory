@@ -137,6 +137,14 @@ rules:
   - patch
   - update
 - apiGroups:
+  - laboratory.cybericebox.com
+  resources:
+  - tenants
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - networking.k8s.io
   resources:
   - networkpolicies

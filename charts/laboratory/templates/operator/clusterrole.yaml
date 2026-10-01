@@ -36,6 +36,10 @@ rules:
 - apiGroups: [laboratory.cybericebox.com]
   resources: [connections/status, devices/status, labgateways/status, labgroupclients/status, labgroups/status, labs/status, labvpns/status]
   verbs: [get, patch, update]
+# Tenants: the persistence policy of a lab's tenant, and the quotas the scheduler enforces.
+- apiGroups: [laboratory.cybericebox.com]
+  resources: [tenants]
+  verbs: [get, list, watch]
 - apiGroups: [networking.k8s.io]
   resources: [networkpolicies]
   verbs: [create, delete, get, list, patch, update, watch]

@@ -14,7 +14,7 @@ import (
 // prewarmConfig builds the cache prewarm setup of the agent from its configuration.
 func prewarmConfig(cfg *config.Config, k8s kubernetes.Interface) (grpcserver.PrewarmConfig, error) {
 	var selector map[string]string
-	if err := json.Unmarshal([]byte(cfg.Cache.LabNodeSelector), &selector); err != nil {
+	if err := json.Unmarshal([]byte(cfg.LabNodeSelector), &selector); err != nil {
 		return grpcserver.PrewarmConfig{}, fmt.Errorf("AGENT_LAB_NODE_SELECTOR: %w", err)
 	}
 	if cfg.Cache.RegistryAddr == "" {

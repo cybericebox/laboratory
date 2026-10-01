@@ -6,14 +6,14 @@ import (
 	"context"
 	"fmt"
 	"time"
-	
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	
+
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
@@ -33,7 +33,7 @@ func (r *LabGroupClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err := r.Get(ctx, req.NamespacedName, &lgc); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	
+
 	// Deletion path — run before the finalizer add so cleanup happens even
 	// while the operator's own finalizer is still present.
 	if !lgc.DeletionTimestamp.IsZero() {
@@ -46,7 +46,7 @@ func (r *LabGroupClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 		return ctrl.Result{}, nil
 	}
-	
+
 	// The operator allocates the IP and generates/persists the public key. Wait
 	// for both before adding the peer — do NOT gate on the operator's finalizer,
 	// which is a different finalizer than this reconciler's readiness signal.
@@ -55,10 +55,10 @@ func (r *LabGroupClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if pubKey == "" || assignedIP == "" {
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
-	
+
 	// First registration = finalizer not yet present. Capture before adding it.
 	newPeer := !controllerutil.ContainsFinalizer(&lgc, names.FinalizerVPN)
-	
+
 	// Add own finalizer once the peer is about to be programmed, so teardown
 	// removes the peer before the object is garbage-collected.
 	if newPeer {
@@ -70,7 +70,7 @@ func (r *LabGroupClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
 	}
-	
+
 	if err := r.WG.AddPeer(pubKey, assignedIP); err != nil {
 		r.Recorder.Eventf(
 			&lgc, corev1.EventTypeWarning, labstatus.ReasonProgrammingFailed,

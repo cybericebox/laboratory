@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v7.35.0
-// source: pkg/agent/protobuf/agent.proto
+// source: agent.proto
 
 package protobuf
 
@@ -66,11 +66,11 @@ func (x ItemState) String() string {
 }
 
 func (ItemState) Descriptor() protoreflect.EnumDescriptor {
-	return file_pkg_agent_protobuf_agent_proto_enumTypes[0].Descriptor()
+	return file_agent_proto_enumTypes[0].Descriptor()
 }
 
 func (ItemState) Type() protoreflect.EnumType {
-	return &file_pkg_agent_protobuf_agent_proto_enumTypes[0]
+	return &file_agent_proto_enumTypes[0]
 }
 
 func (x ItemState) Number() protoreflect.EnumNumber {
@@ -79,7 +79,7 @@ func (x ItemState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ItemState.Descriptor instead.
 func (ItemState) EnumDescriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{0}
+	return file_agent_proto_rawDescGZIP(), []int{0}
 }
 
 type PodState int32
@@ -121,11 +121,11 @@ func (x PodState) String() string {
 }
 
 func (PodState) Descriptor() protoreflect.EnumDescriptor {
-	return file_pkg_agent_protobuf_agent_proto_enumTypes[1].Descriptor()
+	return file_agent_proto_enumTypes[1].Descriptor()
 }
 
 func (PodState) Type() protoreflect.EnumType {
-	return &file_pkg_agent_protobuf_agent_proto_enumTypes[1]
+	return &file_agent_proto_enumTypes[1]
 }
 
 func (x PodState) Number() protoreflect.EnumNumber {
@@ -134,7 +134,7 @@ func (x PodState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use PodState.Descriptor instead.
 func (PodState) EnumDescriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{1}
+	return file_agent_proto_rawDescGZIP(), []int{1}
 }
 
 type LabGroupAccessAction int32
@@ -170,11 +170,11 @@ func (x LabGroupAccessAction) String() string {
 }
 
 func (LabGroupAccessAction) Descriptor() protoreflect.EnumDescriptor {
-	return file_pkg_agent_protobuf_agent_proto_enumTypes[2].Descriptor()
+	return file_agent_proto_enumTypes[2].Descriptor()
 }
 
 func (LabGroupAccessAction) Type() protoreflect.EnumType {
-	return &file_pkg_agent_protobuf_agent_proto_enumTypes[2]
+	return &file_agent_proto_enumTypes[2]
 }
 
 func (x LabGroupAccessAction) Number() protoreflect.EnumNumber {
@@ -183,7 +183,7 @@ func (x LabGroupAccessAction) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use LabGroupAccessAction.Descriptor instead.
 func (LabGroupAccessAction) EnumDescriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{2}
+	return file_agent_proto_rawDescGZIP(), []int{2}
 }
 
 type PrewarmState int32
@@ -228,11 +228,11 @@ func (x PrewarmState) String() string {
 }
 
 func (PrewarmState) Descriptor() protoreflect.EnumDescriptor {
-	return file_pkg_agent_protobuf_agent_proto_enumTypes[3].Descriptor()
+	return file_agent_proto_enumTypes[3].Descriptor()
 }
 
 func (PrewarmState) Type() protoreflect.EnumType {
-	return &file_pkg_agent_protobuf_agent_proto_enumTypes[3]
+	return &file_agent_proto_enumTypes[3]
 }
 
 func (x PrewarmState) Number() protoreflect.EnumNumber {
@@ -241,7 +241,7 @@ func (x PrewarmState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use PrewarmState.Descriptor instead.
 func (PrewarmState) EnumDescriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{3}
+	return file_agent_proto_rawDescGZIP(), []int{3}
 }
 
 type Empty struct {
@@ -252,7 +252,7 @@ type Empty struct {
 
 func (x *Empty) Reset() {
 	*x = Empty{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[0]
+	mi := &file_agent_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -264,7 +264,7 @@ func (x *Empty) String() string {
 func (*Empty) ProtoMessage() {}
 
 func (x *Empty) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[0]
+	mi := &file_agent_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -277,7 +277,7 @@ func (x *Empty) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Empty.ProtoReflect.Descriptor instead.
 func (*Empty) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{0}
+	return file_agent_proto_rawDescGZIP(), []int{0}
 }
 
 // ItemRef names one object by its ids. A LabGroup (and the access policy of one) is identified by
@@ -294,7 +294,7 @@ type ItemRef struct {
 
 func (x *ItemRef) Reset() {
 	*x = ItemRef{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[1]
+	mi := &file_agent_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -306,7 +306,7 @@ func (x *ItemRef) String() string {
 func (*ItemRef) ProtoMessage() {}
 
 func (x *ItemRef) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[1]
+	mi := &file_agent_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -319,7 +319,7 @@ func (x *ItemRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ItemRef.ProtoReflect.Descriptor instead.
 func (*ItemRef) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{1}
+	return file_agent_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *ItemRef) GetLabGroup() string {
@@ -357,7 +357,7 @@ type ItemResult struct {
 
 func (x *ItemResult) Reset() {
 	*x = ItemResult{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[2]
+	mi := &file_agent_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -369,7 +369,7 @@ func (x *ItemResult) String() string {
 func (*ItemResult) ProtoMessage() {}
 
 func (x *ItemResult) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[2]
+	mi := &file_agent_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -382,7 +382,7 @@ func (x *ItemResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ItemResult.ProtoReflect.Descriptor instead.
 func (*ItemResult) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{2}
+	return file_agent_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *ItemResult) GetRef() *ItemRef {
@@ -422,7 +422,7 @@ type BatchResult struct {
 
 func (x *BatchResult) Reset() {
 	*x = BatchResult{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[3]
+	mi := &file_agent_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -434,7 +434,7 @@ func (x *BatchResult) String() string {
 func (*BatchResult) ProtoMessage() {}
 
 func (x *BatchResult) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[3]
+	mi := &file_agent_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -447,7 +447,7 @@ func (x *BatchResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchResult.ProtoReflect.Descriptor instead.
 func (*BatchResult) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{3}
+	return file_agent_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *BatchResult) GetResults() []*ItemResult {
@@ -470,7 +470,7 @@ type ListRequest struct {
 
 func (x *ListRequest) Reset() {
 	*x = ListRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[4]
+	mi := &file_agent_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -482,7 +482,7 @@ func (x *ListRequest) String() string {
 func (*ListRequest) ProtoMessage() {}
 
 func (x *ListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[4]
+	mi := &file_agent_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -495,7 +495,7 @@ func (x *ListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRequest.ProtoReflect.Descriptor instead.
 func (*ListRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{4}
+	return file_agent_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ListRequest) GetSelector() string {
@@ -533,7 +533,7 @@ type Selector struct {
 
 func (x *Selector) Reset() {
 	*x = Selector{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[5]
+	mi := &file_agent_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -545,7 +545,7 @@ func (x *Selector) String() string {
 func (*Selector) ProtoMessage() {}
 
 func (x *Selector) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[5]
+	mi := &file_agent_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -558,7 +558,7 @@ func (x *Selector) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Selector.ProtoReflect.Descriptor instead.
 func (*Selector) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{5}
+	return file_agent_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *Selector) GetSelector() string {
@@ -592,7 +592,7 @@ type DeleteRequest struct {
 
 func (x *DeleteRequest) Reset() {
 	*x = DeleteRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[6]
+	mi := &file_agent_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -604,7 +604,7 @@ func (x *DeleteRequest) String() string {
 func (*DeleteRequest) ProtoMessage() {}
 
 func (x *DeleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[6]
+	mi := &file_agent_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -617,7 +617,7 @@ func (x *DeleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteRequest.ProtoReflect.Descriptor instead.
 func (*DeleteRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{6}
+	return file_agent_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *DeleteRequest) GetBySelector() *Selector {
@@ -646,7 +646,7 @@ type LabelChanges struct {
 
 func (x *LabelChanges) Reset() {
 	*x = LabelChanges{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[7]
+	mi := &file_agent_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -658,7 +658,7 @@ func (x *LabelChanges) String() string {
 func (*LabelChanges) ProtoMessage() {}
 
 func (x *LabelChanges) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[7]
+	mi := &file_agent_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -671,7 +671,7 @@ func (x *LabelChanges) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabelChanges.ProtoReflect.Descriptor instead.
 func (*LabelChanges) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{7}
+	return file_agent_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *LabelChanges) GetSet() map[string]string {
@@ -697,7 +697,7 @@ type StringList struct {
 
 func (x *StringList) Reset() {
 	*x = StringList{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[8]
+	mi := &file_agent_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -709,7 +709,7 @@ func (x *StringList) String() string {
 func (*StringList) ProtoMessage() {}
 
 func (x *StringList) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[8]
+	mi := &file_agent_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -722,7 +722,7 @@ func (x *StringList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StringList.ProtoReflect.Descriptor instead.
 func (*StringList) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{8}
+	return file_agent_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *StringList) GetValues() []string {
@@ -747,7 +747,7 @@ type LabGroupItem struct {
 
 func (x *LabGroupItem) Reset() {
 	*x = LabGroupItem{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[9]
+	mi := &file_agent_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -759,7 +759,7 @@ func (x *LabGroupItem) String() string {
 func (*LabGroupItem) ProtoMessage() {}
 
 func (x *LabGroupItem) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[9]
+	mi := &file_agent_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -772,7 +772,7 @@ func (x *LabGroupItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabGroupItem.ProtoReflect.Descriptor instead.
 func (*LabGroupItem) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{9}
+	return file_agent_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *LabGroupItem) GetName() string {
@@ -834,7 +834,7 @@ type CreateLabGroupsRequest struct {
 
 func (x *CreateLabGroupsRequest) Reset() {
 	*x = CreateLabGroupsRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[10]
+	mi := &file_agent_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -846,7 +846,7 @@ func (x *CreateLabGroupsRequest) String() string {
 func (*CreateLabGroupsRequest) ProtoMessage() {}
 
 func (x *CreateLabGroupsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[10]
+	mi := &file_agent_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -859,7 +859,7 @@ func (x *CreateLabGroupsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateLabGroupsRequest.ProtoReflect.Descriptor instead.
 func (*CreateLabGroupsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{10}
+	return file_agent_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *CreateLabGroupsRequest) GetLabels() map[string]string {
@@ -888,7 +888,7 @@ type LabGroupChanges struct {
 
 func (x *LabGroupChanges) Reset() {
 	*x = LabGroupChanges{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[11]
+	mi := &file_agent_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -900,7 +900,7 @@ func (x *LabGroupChanges) String() string {
 func (*LabGroupChanges) ProtoMessage() {}
 
 func (x *LabGroupChanges) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[11]
+	mi := &file_agent_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -913,7 +913,7 @@ func (x *LabGroupChanges) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabGroupChanges.ProtoReflect.Descriptor instead.
 func (*LabGroupChanges) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{11}
+	return file_agent_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *LabGroupChanges) GetLabels() *LabelChanges {
@@ -954,7 +954,7 @@ type UpdateLabGroupItem struct {
 
 func (x *UpdateLabGroupItem) Reset() {
 	*x = UpdateLabGroupItem{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[12]
+	mi := &file_agent_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -966,7 +966,7 @@ func (x *UpdateLabGroupItem) String() string {
 func (*UpdateLabGroupItem) ProtoMessage() {}
 
 func (x *UpdateLabGroupItem) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[12]
+	mi := &file_agent_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -979,7 +979,7 @@ func (x *UpdateLabGroupItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateLabGroupItem.ProtoReflect.Descriptor instead.
 func (*UpdateLabGroupItem) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{12}
+	return file_agent_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *UpdateLabGroupItem) GetName() string {
@@ -1008,7 +1008,7 @@ type UpdateLabGroupsRequest struct {
 
 func (x *UpdateLabGroupsRequest) Reset() {
 	*x = UpdateLabGroupsRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[13]
+	mi := &file_agent_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1020,7 +1020,7 @@ func (x *UpdateLabGroupsRequest) String() string {
 func (*UpdateLabGroupsRequest) ProtoMessage() {}
 
 func (x *UpdateLabGroupsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[13]
+	mi := &file_agent_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1033,7 +1033,7 @@ func (x *UpdateLabGroupsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateLabGroupsRequest.ProtoReflect.Descriptor instead.
 func (*UpdateLabGroupsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{13}
+	return file_agent_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *UpdateLabGroupsRequest) GetBySelector() *Selector {
@@ -1068,7 +1068,7 @@ type LabGroupClientItem struct {
 
 func (x *LabGroupClientItem) Reset() {
 	*x = LabGroupClientItem{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[14]
+	mi := &file_agent_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1080,7 +1080,7 @@ func (x *LabGroupClientItem) String() string {
 func (*LabGroupClientItem) ProtoMessage() {}
 
 func (x *LabGroupClientItem) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[14]
+	mi := &file_agent_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1093,7 +1093,7 @@ func (x *LabGroupClientItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabGroupClientItem.ProtoReflect.Descriptor instead.
 func (*LabGroupClientItem) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{14}
+	return file_agent_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *LabGroupClientItem) GetLabGroup() string {
@@ -1127,7 +1127,7 @@ type CreateLabGroupClientsRequest struct {
 
 func (x *CreateLabGroupClientsRequest) Reset() {
 	*x = CreateLabGroupClientsRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[15]
+	mi := &file_agent_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1139,7 +1139,7 @@ func (x *CreateLabGroupClientsRequest) String() string {
 func (*CreateLabGroupClientsRequest) ProtoMessage() {}
 
 func (x *CreateLabGroupClientsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[15]
+	mi := &file_agent_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1152,7 +1152,7 @@ func (x *CreateLabGroupClientsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateLabGroupClientsRequest.ProtoReflect.Descriptor instead.
 func (*CreateLabGroupClientsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{15}
+	return file_agent_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *CreateLabGroupClientsRequest) GetLabels() map[string]string {
@@ -1181,7 +1181,7 @@ type LabGroupClientResult struct {
 
 func (x *LabGroupClientResult) Reset() {
 	*x = LabGroupClientResult{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[16]
+	mi := &file_agent_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1193,7 +1193,7 @@ func (x *LabGroupClientResult) String() string {
 func (*LabGroupClientResult) ProtoMessage() {}
 
 func (x *LabGroupClientResult) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[16]
+	mi := &file_agent_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1206,7 +1206,7 @@ func (x *LabGroupClientResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabGroupClientResult.ProtoReflect.Descriptor instead.
 func (*LabGroupClientResult) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{16}
+	return file_agent_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *LabGroupClientResult) GetResult() *ItemResult {
@@ -1232,7 +1232,7 @@ type CreateLabGroupClientsResponse struct {
 
 func (x *CreateLabGroupClientsResponse) Reset() {
 	*x = CreateLabGroupClientsResponse{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[17]
+	mi := &file_agent_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1244,7 +1244,7 @@ func (x *CreateLabGroupClientsResponse) String() string {
 func (*CreateLabGroupClientsResponse) ProtoMessage() {}
 
 func (x *CreateLabGroupClientsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[17]
+	mi := &file_agent_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1257,7 +1257,7 @@ func (x *CreateLabGroupClientsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateLabGroupClientsResponse.ProtoReflect.Descriptor instead.
 func (*CreateLabGroupClientsResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{17}
+	return file_agent_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *CreateLabGroupClientsResponse) GetResults() []*LabGroupClientResult {
@@ -1278,7 +1278,7 @@ type UpdateLabGroupClientItem struct {
 
 func (x *UpdateLabGroupClientItem) Reset() {
 	*x = UpdateLabGroupClientItem{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[18]
+	mi := &file_agent_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1290,7 +1290,7 @@ func (x *UpdateLabGroupClientItem) String() string {
 func (*UpdateLabGroupClientItem) ProtoMessage() {}
 
 func (x *UpdateLabGroupClientItem) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[18]
+	mi := &file_agent_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1303,7 +1303,7 @@ func (x *UpdateLabGroupClientItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateLabGroupClientItem.ProtoReflect.Descriptor instead.
 func (*UpdateLabGroupClientItem) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{18}
+	return file_agent_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *UpdateLabGroupClientItem) GetLabGroup() string {
@@ -1338,7 +1338,7 @@ type UpdateLabGroupClientsRequest struct {
 
 func (x *UpdateLabGroupClientsRequest) Reset() {
 	*x = UpdateLabGroupClientsRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[19]
+	mi := &file_agent_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1350,7 +1350,7 @@ func (x *UpdateLabGroupClientsRequest) String() string {
 func (*UpdateLabGroupClientsRequest) ProtoMessage() {}
 
 func (x *UpdateLabGroupClientsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[19]
+	mi := &file_agent_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1363,7 +1363,7 @@ func (x *UpdateLabGroupClientsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateLabGroupClientsRequest.ProtoReflect.Descriptor instead.
 func (*UpdateLabGroupClientsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{19}
+	return file_agent_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *UpdateLabGroupClientsRequest) GetBySelector() *Selector {
@@ -1398,7 +1398,7 @@ type SetLabGroupAccessRequest struct {
 
 func (x *SetLabGroupAccessRequest) Reset() {
 	*x = SetLabGroupAccessRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[20]
+	mi := &file_agent_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1410,7 +1410,7 @@ func (x *SetLabGroupAccessRequest) String() string {
 func (*SetLabGroupAccessRequest) ProtoMessage() {}
 
 func (x *SetLabGroupAccessRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[20]
+	mi := &file_agent_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1423,7 +1423,7 @@ func (x *SetLabGroupAccessRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetLabGroupAccessRequest.ProtoReflect.Descriptor instead.
 func (*SetLabGroupAccessRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{20}
+	return file_agent_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *SetLabGroupAccessRequest) GetLabels() map[string]string {
@@ -1443,7 +1443,7 @@ func (x *SetLabGroupAccessRequest) GetPolicies() []*LabGroupAccessPolicy {
 // LabVariant is sent once per request however many labs use it; it is not stored, the
 // spec is copied into every Lab. Device variables are secrets only: spec_json must not
 // carry env or flags on devices (rejected). A device's state persistence is part of the
-// spec (devices[].persistence {enabled, debounce, excludePaths, maxSnapshotSize}), set at
+// spec (devices[].persistence {enabled, debounce}), set at
 // creation and immutable; enabled=true is refused when the cluster does not allow persistence.
 type LabVariant struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1456,7 +1456,7 @@ type LabVariant struct {
 
 func (x *LabVariant) Reset() {
 	*x = LabVariant{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[21]
+	mi := &file_agent_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1468,7 +1468,7 @@ func (x *LabVariant) String() string {
 func (*LabVariant) ProtoMessage() {}
 
 func (x *LabVariant) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[21]
+	mi := &file_agent_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1481,7 +1481,7 @@ func (x *LabVariant) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabVariant.ProtoReflect.Descriptor instead.
 func (*LabVariant) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{21}
+	return file_agent_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *LabVariant) GetVariantId() string {
@@ -1521,7 +1521,7 @@ type LabItem struct {
 
 func (x *LabItem) Reset() {
 	*x = LabItem{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[22]
+	mi := &file_agent_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1533,7 +1533,7 @@ func (x *LabItem) String() string {
 func (*LabItem) ProtoMessage() {}
 
 func (x *LabItem) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[22]
+	mi := &file_agent_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1546,7 +1546,7 @@ func (x *LabItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabItem.ProtoReflect.Descriptor instead.
 func (*LabItem) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{22}
+	return file_agent_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *LabItem) GetLabGroup() string {
@@ -1609,7 +1609,7 @@ type CreateLabsRequest struct {
 
 func (x *CreateLabsRequest) Reset() {
 	*x = CreateLabsRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[23]
+	mi := &file_agent_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1621,7 +1621,7 @@ func (x *CreateLabsRequest) String() string {
 func (*CreateLabsRequest) ProtoMessage() {}
 
 func (x *CreateLabsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[23]
+	mi := &file_agent_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1634,7 +1634,7 @@ func (x *CreateLabsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateLabsRequest.ProtoReflect.Descriptor instead.
 func (*CreateLabsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{23}
+	return file_agent_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *CreateLabsRequest) GetLabels() map[string]string {
@@ -1671,7 +1671,7 @@ type LabChanges struct {
 
 func (x *LabChanges) Reset() {
 	*x = LabChanges{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[24]
+	mi := &file_agent_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1683,7 +1683,7 @@ func (x *LabChanges) String() string {
 func (*LabChanges) ProtoMessage() {}
 
 func (x *LabChanges) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[24]
+	mi := &file_agent_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1696,7 +1696,7 @@ func (x *LabChanges) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabChanges.ProtoReflect.Descriptor instead.
 func (*LabChanges) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{24}
+	return file_agent_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *LabChanges) GetLabels() *LabelChanges {
@@ -1724,7 +1724,7 @@ type UpdateLabItem struct {
 
 func (x *UpdateLabItem) Reset() {
 	*x = UpdateLabItem{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[25]
+	mi := &file_agent_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1736,7 +1736,7 @@ func (x *UpdateLabItem) String() string {
 func (*UpdateLabItem) ProtoMessage() {}
 
 func (x *UpdateLabItem) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[25]
+	mi := &file_agent_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1749,7 +1749,7 @@ func (x *UpdateLabItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateLabItem.ProtoReflect.Descriptor instead.
 func (*UpdateLabItem) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{25}
+	return file_agent_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *UpdateLabItem) GetLabGroup() string {
@@ -1784,7 +1784,7 @@ type UpdateLabsRequest struct {
 
 func (x *UpdateLabsRequest) Reset() {
 	*x = UpdateLabsRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[26]
+	mi := &file_agent_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1796,7 +1796,7 @@ func (x *UpdateLabsRequest) String() string {
 func (*UpdateLabsRequest) ProtoMessage() {}
 
 func (x *UpdateLabsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[26]
+	mi := &file_agent_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1809,7 +1809,7 @@ func (x *UpdateLabsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateLabsRequest.ProtoReflect.Descriptor instead.
 func (*UpdateLabsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{26}
+	return file_agent_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *UpdateLabsRequest) GetBySelector() *Selector {
@@ -1846,7 +1846,7 @@ type DeviceSelector struct {
 
 func (x *DeviceSelector) Reset() {
 	*x = DeviceSelector{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[27]
+	mi := &file_agent_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1858,7 +1858,7 @@ func (x *DeviceSelector) String() string {
 func (*DeviceSelector) ProtoMessage() {}
 
 func (x *DeviceSelector) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[27]
+	mi := &file_agent_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1871,7 +1871,7 @@ func (x *DeviceSelector) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeviceSelector.ProtoReflect.Descriptor instead.
 func (*DeviceSelector) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{27}
+	return file_agent_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *DeviceSelector) GetSelector() string {
@@ -1913,7 +1913,7 @@ type DevicesRequest struct {
 
 func (x *DevicesRequest) Reset() {
 	*x = DevicesRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[28]
+	mi := &file_agent_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1925,7 +1925,7 @@ func (x *DevicesRequest) String() string {
 func (*DevicesRequest) ProtoMessage() {}
 
 func (x *DevicesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[28]
+	mi := &file_agent_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1938,7 +1938,7 @@ func (x *DevicesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DevicesRequest.ProtoReflect.Descriptor instead.
 func (*DevicesRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{28}
+	return file_agent_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *DevicesRequest) GetItems() []*ItemRef {
@@ -1965,7 +1965,7 @@ type RescueDevicesRequest struct {
 
 func (x *RescueDevicesRequest) Reset() {
 	*x = RescueDevicesRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[29]
+	mi := &file_agent_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1977,7 +1977,7 @@ func (x *RescueDevicesRequest) String() string {
 func (*RescueDevicesRequest) ProtoMessage() {}
 
 func (x *RescueDevicesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[29]
+	mi := &file_agent_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1990,7 +1990,7 @@ func (x *RescueDevicesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RescueDevicesRequest.ProtoReflect.Descriptor instead.
 func (*RescueDevicesRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{29}
+	return file_agent_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *RescueDevicesRequest) GetDevices() *DevicesRequest {
@@ -2021,7 +2021,7 @@ type LabGroup struct {
 
 func (x *LabGroup) Reset() {
 	*x = LabGroup{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[30]
+	mi := &file_agent_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2033,7 +2033,7 @@ func (x *LabGroup) String() string {
 func (*LabGroup) ProtoMessage() {}
 
 func (x *LabGroup) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[30]
+	mi := &file_agent_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2046,7 +2046,7 @@ func (x *LabGroup) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabGroup.ProtoReflect.Descriptor instead.
 func (*LabGroup) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{30}
+	return file_agent_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *LabGroup) GetName() string {
@@ -2101,7 +2101,7 @@ type LabGroupStatus struct {
 
 func (x *LabGroupStatus) Reset() {
 	*x = LabGroupStatus{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[31]
+	mi := &file_agent_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2113,7 +2113,7 @@ func (x *LabGroupStatus) String() string {
 func (*LabGroupStatus) ProtoMessage() {}
 
 func (x *LabGroupStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[31]
+	mi := &file_agent_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2126,7 +2126,7 @@ func (x *LabGroupStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabGroupStatus.ProtoReflect.Descriptor instead.
 func (*LabGroupStatus) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{31}
+	return file_agent_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *LabGroupStatus) GetPhase() string {
@@ -2194,7 +2194,7 @@ type LabGroupList struct {
 
 func (x *LabGroupList) Reset() {
 	*x = LabGroupList{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[32]
+	mi := &file_agent_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2206,7 +2206,7 @@ func (x *LabGroupList) String() string {
 func (*LabGroupList) ProtoMessage() {}
 
 func (x *LabGroupList) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[32]
+	mi := &file_agent_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2219,7 +2219,7 @@ func (x *LabGroupList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabGroupList.ProtoReflect.Descriptor instead.
 func (*LabGroupList) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{32}
+	return file_agent_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *LabGroupList) GetItems() []*LabGroup {
@@ -2248,7 +2248,7 @@ type Lab struct {
 
 func (x *Lab) Reset() {
 	*x = Lab{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[33]
+	mi := &file_agent_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2260,7 +2260,7 @@ func (x *Lab) String() string {
 func (*Lab) ProtoMessage() {}
 
 func (x *Lab) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[33]
+	mi := &file_agent_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2273,7 +2273,7 @@ func (x *Lab) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Lab.ProtoReflect.Descriptor instead.
 func (*Lab) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{33}
+	return file_agent_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *Lab) GetNamespace() string {
@@ -2345,7 +2345,7 @@ type DeviceEnv struct {
 
 func (x *DeviceEnv) Reset() {
 	*x = DeviceEnv{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[34]
+	mi := &file_agent_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2357,7 +2357,7 @@ func (x *DeviceEnv) String() string {
 func (*DeviceEnv) ProtoMessage() {}
 
 func (x *DeviceEnv) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[34]
+	mi := &file_agent_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2370,7 +2370,7 @@ func (x *DeviceEnv) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeviceEnv.ProtoReflect.Descriptor instead.
 func (*DeviceEnv) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{34}
+	return file_agent_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *DeviceEnv) GetDevice() string {
@@ -2410,7 +2410,7 @@ type LabStatus struct {
 
 func (x *LabStatus) Reset() {
 	*x = LabStatus{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[35]
+	mi := &file_agent_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2422,7 +2422,7 @@ func (x *LabStatus) String() string {
 func (*LabStatus) ProtoMessage() {}
 
 func (x *LabStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[35]
+	mi := &file_agent_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2435,7 +2435,7 @@ func (x *LabStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabStatus.ProtoReflect.Descriptor instead.
 func (*LabStatus) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{35}
+	return file_agent_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *LabStatus) GetPhase() string {
@@ -2542,7 +2542,7 @@ type Scheduling struct {
 
 func (x *Scheduling) Reset() {
 	*x = Scheduling{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[36]
+	mi := &file_agent_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2554,7 +2554,7 @@ func (x *Scheduling) String() string {
 func (*Scheduling) ProtoMessage() {}
 
 func (x *Scheduling) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[36]
+	mi := &file_agent_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2567,7 +2567,7 @@ func (x *Scheduling) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Scheduling.ProtoReflect.Descriptor instead.
 func (*Scheduling) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{36}
+	return file_agent_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *Scheduling) GetGroup() string {
@@ -2633,7 +2633,7 @@ type PodScheduling struct {
 
 func (x *PodScheduling) Reset() {
 	*x = PodScheduling{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[37]
+	mi := &file_agent_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2645,7 +2645,7 @@ func (x *PodScheduling) String() string {
 func (*PodScheduling) ProtoMessage() {}
 
 func (x *PodScheduling) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[37]
+	mi := &file_agent_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2658,7 +2658,7 @@ func (x *PodScheduling) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PodScheduling.ProtoReflect.Descriptor instead.
 func (*PodScheduling) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{37}
+	return file_agent_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *PodScheduling) GetState() PodState {
@@ -2710,7 +2710,7 @@ type PodFailure struct {
 
 func (x *PodFailure) Reset() {
 	*x = PodFailure{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[38]
+	mi := &file_agent_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2722,7 +2722,7 @@ func (x *PodFailure) String() string {
 func (*PodFailure) ProtoMessage() {}
 
 func (x *PodFailure) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[38]
+	mi := &file_agent_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2735,7 +2735,7 @@ func (x *PodFailure) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PodFailure.ProtoReflect.Descriptor instead.
 func (*PodFailure) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{38}
+	return file_agent_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *PodFailure) GetReason() string {
@@ -2777,7 +2777,7 @@ type LabGroupPod struct {
 
 func (x *LabGroupPod) Reset() {
 	*x = LabGroupPod{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[39]
+	mi := &file_agent_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2789,7 +2789,7 @@ func (x *LabGroupPod) String() string {
 func (*LabGroupPod) ProtoMessage() {}
 
 func (x *LabGroupPod) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[39]
+	mi := &file_agent_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2802,7 +2802,7 @@ func (x *LabGroupPod) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabGroupPod.ProtoReflect.Descriptor instead.
 func (*LabGroupPod) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{39}
+	return file_agent_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *LabGroupPod) GetName() string {
@@ -2843,7 +2843,7 @@ type LabDeviceStatus struct {
 
 func (x *LabDeviceStatus) Reset() {
 	*x = LabDeviceStatus{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[40]
+	mi := &file_agent_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2855,7 +2855,7 @@ func (x *LabDeviceStatus) String() string {
 func (*LabDeviceStatus) ProtoMessage() {}
 
 func (x *LabDeviceStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[40]
+	mi := &file_agent_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2868,7 +2868,7 @@ func (x *LabDeviceStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabDeviceStatus.ProtoReflect.Descriptor instead.
 func (*LabDeviceStatus) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{40}
+	return file_agent_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *LabDeviceStatus) GetName() string {
@@ -2983,7 +2983,7 @@ type DeviceSnapshotStatus struct {
 
 func (x *DeviceSnapshotStatus) Reset() {
 	*x = DeviceSnapshotStatus{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[41]
+	mi := &file_agent_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2995,7 +2995,7 @@ func (x *DeviceSnapshotStatus) String() string {
 func (*DeviceSnapshotStatus) ProtoMessage() {}
 
 func (x *DeviceSnapshotStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[41]
+	mi := &file_agent_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3008,7 +3008,7 @@ func (x *DeviceSnapshotStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeviceSnapshotStatus.ProtoReflect.Descriptor instead.
 func (*DeviceSnapshotStatus) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{41}
+	return file_agent_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *DeviceSnapshotStatus) GetLastSnapshotUnixMs() int64 {
@@ -3056,7 +3056,7 @@ type LabConnectionStatus struct {
 
 func (x *LabConnectionStatus) Reset() {
 	*x = LabConnectionStatus{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[42]
+	mi := &file_agent_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3068,7 +3068,7 @@ func (x *LabConnectionStatus) String() string {
 func (*LabConnectionStatus) ProtoMessage() {}
 
 func (x *LabConnectionStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[42]
+	mi := &file_agent_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3081,7 +3081,7 @@ func (x *LabConnectionStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabConnectionStatus.ProtoReflect.Descriptor instead.
 func (*LabConnectionStatus) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{42}
+	return file_agent_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *LabConnectionStatus) GetName() string {
@@ -3110,7 +3110,7 @@ type LabAccessEntry struct {
 
 func (x *LabAccessEntry) Reset() {
 	*x = LabAccessEntry{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[43]
+	mi := &file_agent_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3122,7 +3122,7 @@ func (x *LabAccessEntry) String() string {
 func (*LabAccessEntry) ProtoMessage() {}
 
 func (x *LabAccessEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[43]
+	mi := &file_agent_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3135,7 +3135,7 @@ func (x *LabAccessEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabAccessEntry.ProtoReflect.Descriptor instead.
 func (*LabAccessEntry) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{43}
+	return file_agent_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *LabAccessEntry) GetDevice() string {
@@ -3175,7 +3175,7 @@ type LabList struct {
 
 func (x *LabList) Reset() {
 	*x = LabList{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[44]
+	mi := &file_agent_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3187,7 +3187,7 @@ func (x *LabList) String() string {
 func (*LabList) ProtoMessage() {}
 
 func (x *LabList) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[44]
+	mi := &file_agent_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3200,7 +3200,7 @@ func (x *LabList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabList.ProtoReflect.Descriptor instead.
 func (*LabList) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{44}
+	return file_agent_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *LabList) GetItems() []*Lab {
@@ -3226,7 +3226,7 @@ type LabGroupClient struct {
 
 func (x *LabGroupClient) Reset() {
 	*x = LabGroupClient{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[45]
+	mi := &file_agent_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3238,7 +3238,7 @@ func (x *LabGroupClient) String() string {
 func (*LabGroupClient) ProtoMessage() {}
 
 func (x *LabGroupClient) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[45]
+	mi := &file_agent_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3251,7 +3251,7 @@ func (x *LabGroupClient) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabGroupClient.ProtoReflect.Descriptor instead.
 func (*LabGroupClient) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{45}
+	return file_agent_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *LabGroupClient) GetNamespace() string {
@@ -3311,7 +3311,7 @@ type LabGroupClientStatus struct {
 
 func (x *LabGroupClientStatus) Reset() {
 	*x = LabGroupClientStatus{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[46]
+	mi := &file_agent_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3323,7 +3323,7 @@ func (x *LabGroupClientStatus) String() string {
 func (*LabGroupClientStatus) ProtoMessage() {}
 
 func (x *LabGroupClientStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[46]
+	mi := &file_agent_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3336,7 +3336,7 @@ func (x *LabGroupClientStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabGroupClientStatus.ProtoReflect.Descriptor instead.
 func (*LabGroupClientStatus) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{46}
+	return file_agent_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *LabGroupClientStatus) GetAssignedIp() string {
@@ -3380,7 +3380,7 @@ type LabGroupClientStatistics struct {
 
 func (x *LabGroupClientStatistics) Reset() {
 	*x = LabGroupClientStatistics{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[47]
+	mi := &file_agent_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3392,7 +3392,7 @@ func (x *LabGroupClientStatistics) String() string {
 func (*LabGroupClientStatistics) ProtoMessage() {}
 
 func (x *LabGroupClientStatistics) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[47]
+	mi := &file_agent_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3405,7 +3405,7 @@ func (x *LabGroupClientStatistics) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabGroupClientStatistics.ProtoReflect.Descriptor instead.
 func (*LabGroupClientStatistics) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{47}
+	return file_agent_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *LabGroupClientStatistics) GetLastHandshakeUnix() int64 {
@@ -3438,7 +3438,7 @@ type LabGroupClientList struct {
 
 func (x *LabGroupClientList) Reset() {
 	*x = LabGroupClientList{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[48]
+	mi := &file_agent_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3450,7 +3450,7 @@ func (x *LabGroupClientList) String() string {
 func (*LabGroupClientList) ProtoMessage() {}
 
 func (x *LabGroupClientList) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[48]
+	mi := &file_agent_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3463,7 +3463,7 @@ func (x *LabGroupClientList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabGroupClientList.ProtoReflect.Descriptor instead.
 func (*LabGroupClientList) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{48}
+	return file_agent_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *LabGroupClientList) GetItems() []*LabGroupClient {
@@ -3491,7 +3491,7 @@ type LabGroupAccessPolicy struct {
 
 func (x *LabGroupAccessPolicy) Reset() {
 	*x = LabGroupAccessPolicy{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[49]
+	mi := &file_agent_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3503,7 +3503,7 @@ func (x *LabGroupAccessPolicy) String() string {
 func (*LabGroupAccessPolicy) ProtoMessage() {}
 
 func (x *LabGroupAccessPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[49]
+	mi := &file_agent_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3516,7 +3516,7 @@ func (x *LabGroupAccessPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabGroupAccessPolicy.ProtoReflect.Descriptor instead.
 func (*LabGroupAccessPolicy) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{49}
+	return file_agent_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *LabGroupAccessPolicy) GetLabGroupName() string {
@@ -3567,7 +3567,7 @@ type LabGroupAccessRule struct {
 
 func (x *LabGroupAccessRule) Reset() {
 	*x = LabGroupAccessRule{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[50]
+	mi := &file_agent_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3579,7 +3579,7 @@ func (x *LabGroupAccessRule) String() string {
 func (*LabGroupAccessRule) ProtoMessage() {}
 
 func (x *LabGroupAccessRule) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[50]
+	mi := &file_agent_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3592,7 +3592,7 @@ func (x *LabGroupAccessRule) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabGroupAccessRule.ProtoReflect.Descriptor instead.
 func (*LabGroupAccessRule) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{50}
+	return file_agent_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *LabGroupAccessRule) GetAction() LabGroupAccessAction {
@@ -3629,7 +3629,7 @@ type LabGroupAccessPolicyStatus struct {
 
 func (x *LabGroupAccessPolicyStatus) Reset() {
 	*x = LabGroupAccessPolicyStatus{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[51]
+	mi := &file_agent_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3641,7 +3641,7 @@ func (x *LabGroupAccessPolicyStatus) String() string {
 func (*LabGroupAccessPolicyStatus) ProtoMessage() {}
 
 func (x *LabGroupAccessPolicyStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[51]
+	mi := &file_agent_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3654,7 +3654,7 @@ func (x *LabGroupAccessPolicyStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabGroupAccessPolicyStatus.ProtoReflect.Descriptor instead.
 func (*LabGroupAccessPolicyStatus) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{51}
+	return file_agent_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *LabGroupAccessPolicyStatus) GetObservedGeneration() int64 {
@@ -3706,7 +3706,7 @@ type LabGroupAccessRuleStatistics struct {
 
 func (x *LabGroupAccessRuleStatistics) Reset() {
 	*x = LabGroupAccessRuleStatistics{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[52]
+	mi := &file_agent_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3718,7 +3718,7 @@ func (x *LabGroupAccessRuleStatistics) String() string {
 func (*LabGroupAccessRuleStatistics) ProtoMessage() {}
 
 func (x *LabGroupAccessRuleStatistics) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[52]
+	mi := &file_agent_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3731,7 +3731,7 @@ func (x *LabGroupAccessRuleStatistics) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LabGroupAccessRuleStatistics.ProtoReflect.Descriptor instead.
 func (*LabGroupAccessRuleStatistics) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{52}
+	return file_agent_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *LabGroupAccessRuleStatistics) GetClientName() string {
@@ -3798,7 +3798,7 @@ type MonitoringRequest struct {
 
 func (x *MonitoringRequest) Reset() {
 	*x = MonitoringRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[53]
+	mi := &file_agent_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3810,7 +3810,7 @@ func (x *MonitoringRequest) String() string {
 func (*MonitoringRequest) ProtoMessage() {}
 
 func (x *MonitoringRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[53]
+	mi := &file_agent_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3823,7 +3823,7 @@ func (x *MonitoringRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitoringRequest.ProtoReflect.Descriptor instead.
 func (*MonitoringRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{53}
+	return file_agent_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *MonitoringRequest) GetMinIntervalMs() int64 {
@@ -3866,7 +3866,7 @@ type MonitoringDeletedKey struct {
 
 func (x *MonitoringDeletedKey) Reset() {
 	*x = MonitoringDeletedKey{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[54]
+	mi := &file_agent_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3878,7 +3878,7 @@ func (x *MonitoringDeletedKey) String() string {
 func (*MonitoringDeletedKey) ProtoMessage() {}
 
 func (x *MonitoringDeletedKey) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[54]
+	mi := &file_agent_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3891,7 +3891,7 @@ func (x *MonitoringDeletedKey) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitoringDeletedKey.ProtoReflect.Descriptor instead.
 func (*MonitoringDeletedKey) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{54}
+	return file_agent_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *MonitoringDeletedKey) GetKind() string {
@@ -3934,8 +3934,8 @@ type MonitoringUpdate struct {
 	Clients          []*LabGroupClient       `protobuf:"bytes,12,rep,name=clients,proto3" json:"clients,omitempty"`
 	DeletedKeys      []*MonitoringDeletedKey `protobuf:"bytes,13,rep,name=deleted_keys,json=deletedKeys,proto3" json:"deleted_keys,omitempty"`
 	Policies         []*LabGroupAccessPolicy `protobuf:"bytes,14,rep,name=policies,proto3" json:"policies,omitempty"`
-	// Cluster-wide capacity is not tied to any LabGroup. It lets the platform
-	// administrator see actual headroom even when no event is currently active.
+	// The subscriber's tenant capacity (quota, reserved, used, free). It is sent with the first
+	// message and again when it changed; never cluster-wide numbers.
 	Capacity *CapacityResponse `protobuf:"bytes,15,opt,name=capacity,proto3" json:"capacity,omitempty"`
 	// Lab traffic accounting: cumulative aggregates relayed from LabTrafficReport
 	// resources. State records like clients and policies, so a fresh snapshot
@@ -3950,7 +3950,7 @@ type MonitoringUpdate struct {
 
 func (x *MonitoringUpdate) Reset() {
 	*x = MonitoringUpdate{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[55]
+	mi := &file_agent_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3962,7 +3962,7 @@ func (x *MonitoringUpdate) String() string {
 func (*MonitoringUpdate) ProtoMessage() {}
 
 func (x *MonitoringUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[55]
+	mi := &file_agent_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3975,7 +3975,7 @@ func (x *MonitoringUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitoringUpdate.ProtoReflect.Descriptor instead.
 func (*MonitoringUpdate) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{55}
+	return file_agent_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *MonitoringUpdate) GetAgentId() string {
@@ -4094,7 +4094,7 @@ type TrafficReport struct {
 
 func (x *TrafficReport) Reset() {
 	*x = TrafficReport{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[56]
+	mi := &file_agent_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4106,7 +4106,7 @@ func (x *TrafficReport) String() string {
 func (*TrafficReport) ProtoMessage() {}
 
 func (x *TrafficReport) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[56]
+	mi := &file_agent_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4119,7 +4119,7 @@ func (x *TrafficReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TrafficReport.ProtoReflect.Descriptor instead.
 func (*TrafficReport) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{56}
+	return file_agent_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *TrafficReport) GetLabGroupName() string {
@@ -4222,7 +4222,7 @@ type TrafficTouch struct {
 
 func (x *TrafficTouch) Reset() {
 	*x = TrafficTouch{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[57]
+	mi := &file_agent_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4234,7 +4234,7 @@ func (x *TrafficTouch) String() string {
 func (*TrafficTouch) ProtoMessage() {}
 
 func (x *TrafficTouch) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[57]
+	mi := &file_agent_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4247,7 +4247,7 @@ func (x *TrafficTouch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TrafficTouch.ProtoReflect.Descriptor instead.
 func (*TrafficTouch) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{57}
+	return file_agent_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *TrafficTouch) GetSubject() string {
@@ -4348,101 +4348,31 @@ func (x *TrafficTouch) GetFirstRespondedUnixMs() int64 {
 	return 0
 }
 
-// NodeCapacity reports a node's allocatable resources and how much is already
-// requested by scheduled pods, so a caller can compute remaining headroom.
-type NodeCapacity struct {
-	state                    protoimpl.MessageState `protogen:"open.v1"`
-	Name                     string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	AllocatableCpuMillicores int64                  `protobuf:"varint,2,opt,name=allocatable_cpu_millicores,json=allocatableCpuMillicores,proto3" json:"allocatable_cpu_millicores,omitempty"`
-	AllocatableMemoryBytes   int64                  `protobuf:"varint,3,opt,name=allocatable_memory_bytes,json=allocatableMemoryBytes,proto3" json:"allocatable_memory_bytes,omitempty"`
-	RequestedCpuMillicores   int64                  `protobuf:"varint,4,opt,name=requested_cpu_millicores,json=requestedCpuMillicores,proto3" json:"requested_cpu_millicores,omitempty"` // sum of scheduled pod container requests
-	RequestedMemoryBytes     int64                  `protobuf:"varint,5,opt,name=requested_memory_bytes,json=requestedMemoryBytes,proto3" json:"requested_memory_bytes,omitempty"`
-	unknownFields            protoimpl.UnknownFields
-	sizeCache                protoimpl.SizeCache
-}
-
-func (x *NodeCapacity) Reset() {
-	*x = NodeCapacity{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[58]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *NodeCapacity) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*NodeCapacity) ProtoMessage() {}
-
-func (x *NodeCapacity) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[58]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use NodeCapacity.ProtoReflect.Descriptor instead.
-func (*NodeCapacity) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{58}
-}
-
-func (x *NodeCapacity) GetName() string {
-	if x != nil {
-		return x.Name
-	}
-	return ""
-}
-
-func (x *NodeCapacity) GetAllocatableCpuMillicores() int64 {
-	if x != nil {
-		return x.AllocatableCpuMillicores
-	}
-	return 0
-}
-
-func (x *NodeCapacity) GetAllocatableMemoryBytes() int64 {
-	if x != nil {
-		return x.AllocatableMemoryBytes
-	}
-	return 0
-}
-
-func (x *NodeCapacity) GetRequestedCpuMillicores() int64 {
-	if x != nil {
-		return x.RequestedCpuMillicores
-	}
-	return 0
-}
-
-func (x *NodeCapacity) GetRequestedMemoryBytes() int64 {
-	if x != nil {
-		return x.RequestedMemoryBytes
-	}
-	return 0
-}
-
-// CapacityResponse aggregates per-node capacity plus cluster totals. Remaining
-// headroom = allocatable - requested; divide by a lab's summed device requests
-// to estimate how many more labs fit.
+// CapacityResponse is the CALLER's view of its tenant's resources; no cluster-wide numbers
+// are exposed. Reserved is the sum of the requests of the tenant's pods, used the live
+// consumption (metrics). When the tenant has a quota, free = quota - reserved (never negative);
+// without one there is no limit and the free fields are 0.
 type CapacityResponse struct {
-	state                    protoimpl.MessageState `protogen:"open.v1"`
-	Nodes                    []*NodeCapacity        `protobuf:"bytes,1,rep,name=nodes,proto3" json:"nodes,omitempty"`
-	AllocatableCpuMillicores int64                  `protobuf:"varint,2,opt,name=allocatable_cpu_millicores,json=allocatableCpuMillicores,proto3" json:"allocatable_cpu_millicores,omitempty"`
-	AllocatableMemoryBytes   int64                  `protobuf:"varint,3,opt,name=allocatable_memory_bytes,json=allocatableMemoryBytes,proto3" json:"allocatable_memory_bytes,omitempty"`
-	RequestedCpuMillicores   int64                  `protobuf:"varint,4,opt,name=requested_cpu_millicores,json=requestedCpuMillicores,proto3" json:"requested_cpu_millicores,omitempty"`
-	RequestedMemoryBytes     int64                  `protobuf:"varint,5,opt,name=requested_memory_bytes,json=requestedMemoryBytes,proto3" json:"requested_memory_bytes,omitempty"`
-	unknownFields            protoimpl.UnknownFields
-	sizeCache                protoimpl.SizeCache
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	Tenant                string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	HasCpuQuota           bool                   `protobuf:"varint,2,opt,name=has_cpu_quota,json=hasCpuQuota,proto3" json:"has_cpu_quota,omitempty"`
+	CpuQuotaMillicores    int64                  `protobuf:"varint,3,opt,name=cpu_quota_millicores,json=cpuQuotaMillicores,proto3" json:"cpu_quota_millicores,omitempty"`
+	HasMemoryQuota        bool                   `protobuf:"varint,4,opt,name=has_memory_quota,json=hasMemoryQuota,proto3" json:"has_memory_quota,omitempty"`
+	MemoryQuotaBytes      int64                  `protobuf:"varint,5,opt,name=memory_quota_bytes,json=memoryQuotaBytes,proto3" json:"memory_quota_bytes,omitempty"`
+	CpuReservedMillicores int64                  `protobuf:"varint,6,opt,name=cpu_reserved_millicores,json=cpuReservedMillicores,proto3" json:"cpu_reserved_millicores,omitempty"`
+	MemoryReservedBytes   int64                  `protobuf:"varint,7,opt,name=memory_reserved_bytes,json=memoryReservedBytes,proto3" json:"memory_reserved_bytes,omitempty"`
+	UsageAvailable        bool                   `protobuf:"varint,8,opt,name=usage_available,json=usageAvailable,proto3" json:"usage_available,omitempty"` // false when metrics-server is not installed: used is then 0
+	CpuUsedMillicores     int64                  `protobuf:"varint,9,opt,name=cpu_used_millicores,json=cpuUsedMillicores,proto3" json:"cpu_used_millicores,omitempty"`
+	MemoryUsedBytes       int64                  `protobuf:"varint,10,opt,name=memory_used_bytes,json=memoryUsedBytes,proto3" json:"memory_used_bytes,omitempty"`
+	CpuFreeMillicores     int64                  `protobuf:"varint,11,opt,name=cpu_free_millicores,json=cpuFreeMillicores,proto3" json:"cpu_free_millicores,omitempty"`
+	MemoryFreeBytes       int64                  `protobuf:"varint,12,opt,name=memory_free_bytes,json=memoryFreeBytes,proto3" json:"memory_free_bytes,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *CapacityResponse) Reset() {
 	*x = CapacityResponse{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[59]
+	mi := &file_agent_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4454,7 +4384,7 @@ func (x *CapacityResponse) String() string {
 func (*CapacityResponse) ProtoMessage() {}
 
 func (x *CapacityResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[59]
+	mi := &file_agent_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4467,40 +4397,89 @@ func (x *CapacityResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CapacityResponse.ProtoReflect.Descriptor instead.
 func (*CapacityResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{59}
+	return file_agent_proto_rawDescGZIP(), []int{58}
 }
 
-func (x *CapacityResponse) GetNodes() []*NodeCapacity {
+func (x *CapacityResponse) GetTenant() string {
 	if x != nil {
-		return x.Nodes
+		return x.Tenant
 	}
-	return nil
+	return ""
 }
 
-func (x *CapacityResponse) GetAllocatableCpuMillicores() int64 {
+func (x *CapacityResponse) GetHasCpuQuota() bool {
 	if x != nil {
-		return x.AllocatableCpuMillicores
+		return x.HasCpuQuota
 	}
-	return 0
+	return false
 }
 
-func (x *CapacityResponse) GetAllocatableMemoryBytes() int64 {
+func (x *CapacityResponse) GetCpuQuotaMillicores() int64 {
 	if x != nil {
-		return x.AllocatableMemoryBytes
-	}
-	return 0
-}
-
-func (x *CapacityResponse) GetRequestedCpuMillicores() int64 {
-	if x != nil {
-		return x.RequestedCpuMillicores
+		return x.CpuQuotaMillicores
 	}
 	return 0
 }
 
-func (x *CapacityResponse) GetRequestedMemoryBytes() int64 {
+func (x *CapacityResponse) GetHasMemoryQuota() bool {
 	if x != nil {
-		return x.RequestedMemoryBytes
+		return x.HasMemoryQuota
+	}
+	return false
+}
+
+func (x *CapacityResponse) GetMemoryQuotaBytes() int64 {
+	if x != nil {
+		return x.MemoryQuotaBytes
+	}
+	return 0
+}
+
+func (x *CapacityResponse) GetCpuReservedMillicores() int64 {
+	if x != nil {
+		return x.CpuReservedMillicores
+	}
+	return 0
+}
+
+func (x *CapacityResponse) GetMemoryReservedBytes() int64 {
+	if x != nil {
+		return x.MemoryReservedBytes
+	}
+	return 0
+}
+
+func (x *CapacityResponse) GetUsageAvailable() bool {
+	if x != nil {
+		return x.UsageAvailable
+	}
+	return false
+}
+
+func (x *CapacityResponse) GetCpuUsedMillicores() int64 {
+	if x != nil {
+		return x.CpuUsedMillicores
+	}
+	return 0
+}
+
+func (x *CapacityResponse) GetMemoryUsedBytes() int64 {
+	if x != nil {
+		return x.MemoryUsedBytes
+	}
+	return 0
+}
+
+func (x *CapacityResponse) GetCpuFreeMillicores() int64 {
+	if x != nil {
+		return x.CpuFreeMillicores
+	}
+	return 0
+}
+
+func (x *CapacityResponse) GetMemoryFreeBytes() int64 {
+	if x != nil {
+		return x.MemoryFreeBytes
 	}
 	return 0
 }
@@ -4515,7 +4494,7 @@ type PrewarmImagesRequest struct {
 
 func (x *PrewarmImagesRequest) Reset() {
 	*x = PrewarmImagesRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[60]
+	mi := &file_agent_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4527,7 +4506,7 @@ func (x *PrewarmImagesRequest) String() string {
 func (*PrewarmImagesRequest) ProtoMessage() {}
 
 func (x *PrewarmImagesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[60]
+	mi := &file_agent_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4540,7 +4519,7 @@ func (x *PrewarmImagesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrewarmImagesRequest.ProtoReflect.Descriptor instead.
 func (*PrewarmImagesRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{60}
+	return file_agent_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *PrewarmImagesRequest) GetImages() []string {
@@ -4565,7 +4544,7 @@ type PrewarmImageStatus struct {
 
 func (x *PrewarmImageStatus) Reset() {
 	*x = PrewarmImageStatus{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[61]
+	mi := &file_agent_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4577,7 +4556,7 @@ func (x *PrewarmImageStatus) String() string {
 func (*PrewarmImageStatus) ProtoMessage() {}
 
 func (x *PrewarmImageStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[61]
+	mi := &file_agent_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4590,7 +4569,7 @@ func (x *PrewarmImageStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrewarmImageStatus.ProtoReflect.Descriptor instead.
 func (*PrewarmImageStatus) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{61}
+	return file_agent_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *PrewarmImageStatus) GetImage() string {
@@ -4637,7 +4616,7 @@ type PrewarmImagesResult struct {
 
 func (x *PrewarmImagesResult) Reset() {
 	*x = PrewarmImagesResult{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[62]
+	mi := &file_agent_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4649,7 +4628,7 @@ func (x *PrewarmImagesResult) String() string {
 func (*PrewarmImagesResult) ProtoMessage() {}
 
 func (x *PrewarmImagesResult) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[62]
+	mi := &file_agent_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4662,7 +4641,7 @@ func (x *PrewarmImagesResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrewarmImagesResult.ProtoReflect.Descriptor instead.
 func (*PrewarmImagesResult) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{62}
+	return file_agent_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *PrewarmImagesResult) GetImages() []*PrewarmImageStatus {
@@ -4682,7 +4661,7 @@ type DeviceSnapshotRequest struct {
 
 func (x *DeviceSnapshotRequest) Reset() {
 	*x = DeviceSnapshotRequest{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[63]
+	mi := &file_agent_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4694,7 +4673,7 @@ func (x *DeviceSnapshotRequest) String() string {
 func (*DeviceSnapshotRequest) ProtoMessage() {}
 
 func (x *DeviceSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[63]
+	mi := &file_agent_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4707,7 +4686,7 @@ func (x *DeviceSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeviceSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*DeviceSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{63}
+	return file_agent_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *DeviceSnapshotRequest) GetRef() *ItemRef {
@@ -4734,7 +4713,7 @@ type SnapshotChunk struct {
 
 func (x *SnapshotChunk) Reset() {
 	*x = SnapshotChunk{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[64]
+	mi := &file_agent_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4746,7 +4725,7 @@ func (x *SnapshotChunk) String() string {
 func (*SnapshotChunk) ProtoMessage() {}
 
 func (x *SnapshotChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[64]
+	mi := &file_agent_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4759,7 +4738,7 @@ func (x *SnapshotChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotChunk.ProtoReflect.Descriptor instead.
 func (*SnapshotChunk) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{64}
+	return file_agent_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *SnapshotChunk) GetContent() isSnapshotChunk_Content {
@@ -4844,7 +4823,7 @@ type SnapshotMeta struct {
 
 func (x *SnapshotMeta) Reset() {
 	*x = SnapshotMeta{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[65]
+	mi := &file_agent_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4856,7 +4835,7 @@ func (x *SnapshotMeta) String() string {
 func (*SnapshotMeta) ProtoMessage() {}
 
 func (x *SnapshotMeta) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[65]
+	mi := &file_agent_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4869,7 +4848,7 @@ func (x *SnapshotMeta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotMeta.ProtoReflect.Descriptor instead.
 func (*SnapshotMeta) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{65}
+	return file_agent_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *SnapshotMeta) GetRef() *ItemRef {
@@ -4953,7 +4932,7 @@ type SnapshotTrailer struct {
 
 func (x *SnapshotTrailer) Reset() {
 	*x = SnapshotTrailer{}
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[66]
+	mi := &file_agent_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4965,7 +4944,7 @@ func (x *SnapshotTrailer) String() string {
 func (*SnapshotTrailer) ProtoMessage() {}
 
 func (x *SnapshotTrailer) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[66]
+	mi := &file_agent_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4978,7 +4957,7 @@ func (x *SnapshotTrailer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotTrailer.ProtoReflect.Descriptor instead.
 func (*SnapshotTrailer) Descriptor() ([]byte, []int) {
-	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{66}
+	return file_agent_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *SnapshotTrailer) GetCompressedBytes() int64 {
@@ -4995,11 +4974,11 @@ func (x *SnapshotTrailer) GetSha256() string {
 	return ""
 }
 
-var File_pkg_agent_protobuf_agent_proto protoreflect.FileDescriptor
+var File_agent_proto protoreflect.FileDescriptor
 
-const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
+const file_agent_proto_rawDesc = "" +
 	"\n" +
-	"\x1epkg/agent/protobuf/agent.proto\x12\n" +
+	"\vagent.proto\x12\n" +
 	"labmanager\"\a\n" +
 	"\x05Empty\"L\n" +
 	"\aItemRef\x12\x1b\n" +
@@ -5388,19 +5367,21 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\bbytes_in\x18\v \x01(\x03R\abytesIn\x12+\n" +
 	"\x12first_seen_unix_ms\x18\f \x01(\x03R\x0ffirstSeenUnixMs\x12)\n" +
 	"\x11last_seen_unix_ms\x18\r \x01(\x03R\x0elastSeenUnixMs\x125\n" +
-	"\x17first_responded_unix_ms\x18\x0e \x01(\x03R\x14firstRespondedUnixMs\"\x8a\x02\n" +
-	"\fNodeCapacity\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x12<\n" +
-	"\x1aallocatable_cpu_millicores\x18\x02 \x01(\x03R\x18allocatableCpuMillicores\x128\n" +
-	"\x18allocatable_memory_bytes\x18\x03 \x01(\x03R\x16allocatableMemoryBytes\x128\n" +
-	"\x18requested_cpu_millicores\x18\x04 \x01(\x03R\x16requestedCpuMillicores\x124\n" +
-	"\x16requested_memory_bytes\x18\x05 \x01(\x03R\x14requestedMemoryBytes\"\xaa\x02\n" +
-	"\x10CapacityResponse\x12.\n" +
-	"\x05nodes\x18\x01 \x03(\v2\x18.labmanager.NodeCapacityR\x05nodes\x12<\n" +
-	"\x1aallocatable_cpu_millicores\x18\x02 \x01(\x03R\x18allocatableCpuMillicores\x128\n" +
-	"\x18allocatable_memory_bytes\x18\x03 \x01(\x03R\x16allocatableMemoryBytes\x128\n" +
-	"\x18requested_cpu_millicores\x18\x04 \x01(\x03R\x16requestedCpuMillicores\x124\n" +
-	"\x16requested_memory_bytes\x18\x05 \x01(\x03R\x14requestedMemoryBytes\".\n" +
+	"\x17first_responded_unix_ms\x18\x0e \x01(\x03R\x14firstRespondedUnixMs\"\xa5\x04\n" +
+	"\x10CapacityResponse\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\"\n" +
+	"\rhas_cpu_quota\x18\x02 \x01(\bR\vhasCpuQuota\x120\n" +
+	"\x14cpu_quota_millicores\x18\x03 \x01(\x03R\x12cpuQuotaMillicores\x12(\n" +
+	"\x10has_memory_quota\x18\x04 \x01(\bR\x0ehasMemoryQuota\x12,\n" +
+	"\x12memory_quota_bytes\x18\x05 \x01(\x03R\x10memoryQuotaBytes\x126\n" +
+	"\x17cpu_reserved_millicores\x18\x06 \x01(\x03R\x15cpuReservedMillicores\x122\n" +
+	"\x15memory_reserved_bytes\x18\a \x01(\x03R\x13memoryReservedBytes\x12'\n" +
+	"\x0fusage_available\x18\b \x01(\bR\x0eusageAvailable\x12.\n" +
+	"\x13cpu_used_millicores\x18\t \x01(\x03R\x11cpuUsedMillicores\x12*\n" +
+	"\x11memory_used_bytes\x18\n" +
+	" \x01(\x03R\x0fmemoryUsedBytes\x12.\n" +
+	"\x13cpu_free_millicores\x18\v \x01(\x03R\x11cpuFreeMillicores\x12*\n" +
+	"\x11memory_free_bytes\x18\f \x01(\x03R\x0fmemoryFreeBytes\".\n" +
 	"\x14PrewarmImagesRequest\x12\x16\n" +
 	"\x06images\x18\x01 \x03(\tR\x06images\"\xb0\x01\n" +
 	"\x12PrewarmImageStatus\x12\x14\n" +
@@ -5488,20 +5469,20 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x14ExportDeviceSnapshot\x12!.labmanager.DeviceSnapshotRequest\x1a\x19.labmanager.SnapshotChunk\"\x000\x01B6Z4github.com/cybericebox/laboratory/pkg/agent/protobufb\x06proto3"
 
 var (
-	file_pkg_agent_protobuf_agent_proto_rawDescOnce sync.Once
-	file_pkg_agent_protobuf_agent_proto_rawDescData []byte
+	file_agent_proto_rawDescOnce sync.Once
+	file_agent_proto_rawDescData []byte
 )
 
-func file_pkg_agent_protobuf_agent_proto_rawDescGZIP() []byte {
-	file_pkg_agent_protobuf_agent_proto_rawDescOnce.Do(func() {
-		file_pkg_agent_protobuf_agent_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_pkg_agent_protobuf_agent_proto_rawDesc), len(file_pkg_agent_protobuf_agent_proto_rawDesc)))
+func file_agent_proto_rawDescGZIP() []byte {
+	file_agent_proto_rawDescOnce.Do(func() {
+		file_agent_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_agent_proto_rawDesc), len(file_agent_proto_rawDesc)))
 	})
-	return file_pkg_agent_protobuf_agent_proto_rawDescData
+	return file_agent_proto_rawDescData
 }
 
-var file_pkg_agent_protobuf_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_pkg_agent_protobuf_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 80)
-var file_pkg_agent_protobuf_agent_proto_goTypes = []any{
+var file_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 79)
+var file_agent_proto_goTypes = []any{
 	(ItemState)(0),                        // 0: labmanager.ItemState
 	(PodState)(0),                         // 1: labmanager.PodState
 	(LabGroupAccessAction)(0),             // 2: labmanager.LabGroupAccessAction
@@ -5564,47 +5545,46 @@ var file_pkg_agent_protobuf_agent_proto_goTypes = []any{
 	(*MonitoringUpdate)(nil),              // 59: labmanager.MonitoringUpdate
 	(*TrafficReport)(nil),                 // 60: labmanager.TrafficReport
 	(*TrafficTouch)(nil),                  // 61: labmanager.TrafficTouch
-	(*NodeCapacity)(nil),                  // 62: labmanager.NodeCapacity
-	(*CapacityResponse)(nil),              // 63: labmanager.CapacityResponse
-	(*PrewarmImagesRequest)(nil),          // 64: labmanager.PrewarmImagesRequest
-	(*PrewarmImageStatus)(nil),            // 65: labmanager.PrewarmImageStatus
-	(*PrewarmImagesResult)(nil),           // 66: labmanager.PrewarmImagesResult
-	(*DeviceSnapshotRequest)(nil),         // 67: labmanager.DeviceSnapshotRequest
-	(*SnapshotChunk)(nil),                 // 68: labmanager.SnapshotChunk
-	(*SnapshotMeta)(nil),                  // 69: labmanager.SnapshotMeta
-	(*SnapshotTrailer)(nil),               // 70: labmanager.SnapshotTrailer
-	nil,                                   // 71: labmanager.LabelChanges.SetEntry
-	nil,                                   // 72: labmanager.LabGroupItem.LabelsEntry
-	nil,                                   // 73: labmanager.CreateLabGroupsRequest.LabelsEntry
-	nil,                                   // 74: labmanager.LabGroupClientItem.LabelsEntry
-	nil,                                   // 75: labmanager.CreateLabGroupClientsRequest.LabelsEntry
-	nil,                                   // 76: labmanager.SetLabGroupAccessRequest.LabelsEntry
-	nil,                                   // 77: labmanager.LabItem.LabelsEntry
-	nil,                                   // 78: labmanager.CreateLabsRequest.LabelsEntry
-	nil,                                   // 79: labmanager.LabGroup.LabelsEntry
-	nil,                                   // 80: labmanager.Lab.LabelsEntry
-	nil,                                   // 81: labmanager.DeviceEnv.VarsEntry
-	nil,                                   // 82: labmanager.LabGroupClient.LabelsEntry
-	nil,                                   // 83: labmanager.LabGroupAccessPolicy.LabelsEntry
+	(*CapacityResponse)(nil),              // 62: labmanager.CapacityResponse
+	(*PrewarmImagesRequest)(nil),          // 63: labmanager.PrewarmImagesRequest
+	(*PrewarmImageStatus)(nil),            // 64: labmanager.PrewarmImageStatus
+	(*PrewarmImagesResult)(nil),           // 65: labmanager.PrewarmImagesResult
+	(*DeviceSnapshotRequest)(nil),         // 66: labmanager.DeviceSnapshotRequest
+	(*SnapshotChunk)(nil),                 // 67: labmanager.SnapshotChunk
+	(*SnapshotMeta)(nil),                  // 68: labmanager.SnapshotMeta
+	(*SnapshotTrailer)(nil),               // 69: labmanager.SnapshotTrailer
+	nil,                                   // 70: labmanager.LabelChanges.SetEntry
+	nil,                                   // 71: labmanager.LabGroupItem.LabelsEntry
+	nil,                                   // 72: labmanager.CreateLabGroupsRequest.LabelsEntry
+	nil,                                   // 73: labmanager.LabGroupClientItem.LabelsEntry
+	nil,                                   // 74: labmanager.CreateLabGroupClientsRequest.LabelsEntry
+	nil,                                   // 75: labmanager.SetLabGroupAccessRequest.LabelsEntry
+	nil,                                   // 76: labmanager.LabItem.LabelsEntry
+	nil,                                   // 77: labmanager.CreateLabsRequest.LabelsEntry
+	nil,                                   // 78: labmanager.LabGroup.LabelsEntry
+	nil,                                   // 79: labmanager.Lab.LabelsEntry
+	nil,                                   // 80: labmanager.DeviceEnv.VarsEntry
+	nil,                                   // 81: labmanager.LabGroupClient.LabelsEntry
+	nil,                                   // 82: labmanager.LabGroupAccessPolicy.LabelsEntry
 }
-var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
+var file_agent_proto_depIdxs = []int32{
 	5,   // 0: labmanager.ItemResult.ref:type_name -> labmanager.ItemRef
 	0,   // 1: labmanager.ItemResult.state:type_name -> labmanager.ItemState
 	6,   // 2: labmanager.BatchResult.results:type_name -> labmanager.ItemResult
 	5,   // 3: labmanager.ListRequest.items:type_name -> labmanager.ItemRef
 	9,   // 4: labmanager.DeleteRequest.by_selector:type_name -> labmanager.Selector
 	5,   // 5: labmanager.DeleteRequest.items:type_name -> labmanager.ItemRef
-	71,  // 6: labmanager.LabelChanges.set:type_name -> labmanager.LabelChanges.SetEntry
-	72,  // 7: labmanager.LabGroupItem.labels:type_name -> labmanager.LabGroupItem.LabelsEntry
-	73,  // 8: labmanager.CreateLabGroupsRequest.labels:type_name -> labmanager.CreateLabGroupsRequest.LabelsEntry
+	70,  // 6: labmanager.LabelChanges.set:type_name -> labmanager.LabelChanges.SetEntry
+	71,  // 7: labmanager.LabGroupItem.labels:type_name -> labmanager.LabGroupItem.LabelsEntry
+	72,  // 8: labmanager.CreateLabGroupsRequest.labels:type_name -> labmanager.CreateLabGroupsRequest.LabelsEntry
 	13,  // 9: labmanager.CreateLabGroupsRequest.items:type_name -> labmanager.LabGroupItem
 	11,  // 10: labmanager.LabGroupChanges.labels:type_name -> labmanager.LabelChanges
 	15,  // 11: labmanager.UpdateLabGroupItem.changes:type_name -> labmanager.LabGroupChanges
 	9,   // 12: labmanager.UpdateLabGroupsRequest.by_selector:type_name -> labmanager.Selector
 	15,  // 13: labmanager.UpdateLabGroupsRequest.changes:type_name -> labmanager.LabGroupChanges
 	16,  // 14: labmanager.UpdateLabGroupsRequest.items:type_name -> labmanager.UpdateLabGroupItem
-	74,  // 15: labmanager.LabGroupClientItem.labels:type_name -> labmanager.LabGroupClientItem.LabelsEntry
-	75,  // 16: labmanager.CreateLabGroupClientsRequest.labels:type_name -> labmanager.CreateLabGroupClientsRequest.LabelsEntry
+	73,  // 15: labmanager.LabGroupClientItem.labels:type_name -> labmanager.LabGroupClientItem.LabelsEntry
+	74,  // 16: labmanager.CreateLabGroupClientsRequest.labels:type_name -> labmanager.CreateLabGroupClientsRequest.LabelsEntry
 	18,  // 17: labmanager.CreateLabGroupClientsRequest.items:type_name -> labmanager.LabGroupClientItem
 	6,   // 18: labmanager.LabGroupClientResult.result:type_name -> labmanager.ItemResult
 	49,  // 19: labmanager.LabGroupClientResult.client:type_name -> labmanager.LabGroupClient
@@ -5613,12 +5593,12 @@ var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
 	9,   // 22: labmanager.UpdateLabGroupClientsRequest.by_selector:type_name -> labmanager.Selector
 	11,  // 23: labmanager.UpdateLabGroupClientsRequest.labels:type_name -> labmanager.LabelChanges
 	22,  // 24: labmanager.UpdateLabGroupClientsRequest.items:type_name -> labmanager.UpdateLabGroupClientItem
-	76,  // 25: labmanager.SetLabGroupAccessRequest.labels:type_name -> labmanager.SetLabGroupAccessRequest.LabelsEntry
+	75,  // 25: labmanager.SetLabGroupAccessRequest.labels:type_name -> labmanager.SetLabGroupAccessRequest.LabelsEntry
 	53,  // 26: labmanager.SetLabGroupAccessRequest.policies:type_name -> labmanager.LabGroupAccessPolicy
 	38,  // 27: labmanager.LabVariant.env:type_name -> labmanager.DeviceEnv
 	38,  // 28: labmanager.LabItem.env:type_name -> labmanager.DeviceEnv
-	77,  // 29: labmanager.LabItem.labels:type_name -> labmanager.LabItem.LabelsEntry
-	78,  // 30: labmanager.CreateLabsRequest.labels:type_name -> labmanager.CreateLabsRequest.LabelsEntry
+	76,  // 29: labmanager.LabItem.labels:type_name -> labmanager.LabItem.LabelsEntry
+	77,  // 30: labmanager.CreateLabsRequest.labels:type_name -> labmanager.CreateLabsRequest.LabelsEntry
 	25,  // 31: labmanager.CreateLabsRequest.variants:type_name -> labmanager.LabVariant
 	26,  // 32: labmanager.CreateLabsRequest.items:type_name -> labmanager.LabItem
 	11,  // 33: labmanager.LabChanges.labels:type_name -> labmanager.LabelChanges
@@ -5631,13 +5611,13 @@ var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
 	31,  // 40: labmanager.DevicesRequest.by_selector:type_name -> labmanager.DeviceSelector
 	32,  // 41: labmanager.RescueDevicesRequest.devices:type_name -> labmanager.DevicesRequest
 	35,  // 42: labmanager.LabGroup.status:type_name -> labmanager.LabGroupStatus
-	79,  // 43: labmanager.LabGroup.labels:type_name -> labmanager.LabGroup.LabelsEntry
+	78,  // 43: labmanager.LabGroup.labels:type_name -> labmanager.LabGroup.LabelsEntry
 	40,  // 44: labmanager.LabGroupStatus.scheduling:type_name -> labmanager.Scheduling
 	43,  // 45: labmanager.LabGroupStatus.pods:type_name -> labmanager.LabGroupPod
 	34,  // 46: labmanager.LabGroupList.items:type_name -> labmanager.LabGroup
 	39,  // 47: labmanager.Lab.status:type_name -> labmanager.LabStatus
-	80,  // 48: labmanager.Lab.labels:type_name -> labmanager.Lab.LabelsEntry
-	81,  // 49: labmanager.DeviceEnv.vars:type_name -> labmanager.DeviceEnv.VarsEntry
+	79,  // 48: labmanager.Lab.labels:type_name -> labmanager.Lab.LabelsEntry
+	80,  // 49: labmanager.DeviceEnv.vars:type_name -> labmanager.DeviceEnv.VarsEntry
 	44,  // 50: labmanager.LabStatus.devices:type_name -> labmanager.LabDeviceStatus
 	46,  // 51: labmanager.LabStatus.connections:type_name -> labmanager.LabConnectionStatus
 	47,  // 52: labmanager.LabStatus.access:type_name -> labmanager.LabAccessEntry
@@ -5649,12 +5629,12 @@ var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
 	41,  // 58: labmanager.LabDeviceStatus.scheduling:type_name -> labmanager.PodScheduling
 	37,  // 59: labmanager.LabList.items:type_name -> labmanager.Lab
 	50,  // 60: labmanager.LabGroupClient.status:type_name -> labmanager.LabGroupClientStatus
-	82,  // 61: labmanager.LabGroupClient.labels:type_name -> labmanager.LabGroupClient.LabelsEntry
+	81,  // 61: labmanager.LabGroupClient.labels:type_name -> labmanager.LabGroupClient.LabelsEntry
 	51,  // 62: labmanager.LabGroupClientStatus.statistics:type_name -> labmanager.LabGroupClientStatistics
 	49,  // 63: labmanager.LabGroupClientList.items:type_name -> labmanager.LabGroupClient
 	54,  // 64: labmanager.LabGroupAccessPolicy.rules:type_name -> labmanager.LabGroupAccessRule
 	55,  // 65: labmanager.LabGroupAccessPolicy.status:type_name -> labmanager.LabGroupAccessPolicyStatus
-	83,  // 66: labmanager.LabGroupAccessPolicy.labels:type_name -> labmanager.LabGroupAccessPolicy.LabelsEntry
+	82,  // 66: labmanager.LabGroupAccessPolicy.labels:type_name -> labmanager.LabGroupAccessPolicy.LabelsEntry
 	2,   // 67: labmanager.LabGroupAccessRule.action:type_name -> labmanager.LabGroupAccessAction
 	56,  // 68: labmanager.LabGroupAccessPolicyStatus.rules:type_name -> labmanager.LabGroupAccessRuleStatistics
 	2,   // 69: labmanager.LabGroupAccessRuleStatistics.action:type_name -> labmanager.LabGroupAccessAction
@@ -5663,72 +5643,71 @@ var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
 	49,  // 72: labmanager.MonitoringUpdate.clients:type_name -> labmanager.LabGroupClient
 	58,  // 73: labmanager.MonitoringUpdate.deleted_keys:type_name -> labmanager.MonitoringDeletedKey
 	53,  // 74: labmanager.MonitoringUpdate.policies:type_name -> labmanager.LabGroupAccessPolicy
-	63,  // 75: labmanager.MonitoringUpdate.capacity:type_name -> labmanager.CapacityResponse
+	62,  // 75: labmanager.MonitoringUpdate.capacity:type_name -> labmanager.CapacityResponse
 	60,  // 76: labmanager.MonitoringUpdate.traffic:type_name -> labmanager.TrafficReport
 	61,  // 77: labmanager.TrafficReport.ledger:type_name -> labmanager.TrafficTouch
-	62,  // 78: labmanager.CapacityResponse.nodes:type_name -> labmanager.NodeCapacity
-	3,   // 79: labmanager.PrewarmImageStatus.state:type_name -> labmanager.PrewarmState
-	65,  // 80: labmanager.PrewarmImagesResult.images:type_name -> labmanager.PrewarmImageStatus
-	5,   // 81: labmanager.DeviceSnapshotRequest.ref:type_name -> labmanager.ItemRef
-	69,  // 82: labmanager.SnapshotChunk.meta:type_name -> labmanager.SnapshotMeta
-	70,  // 83: labmanager.SnapshotChunk.trailer:type_name -> labmanager.SnapshotTrailer
-	5,   // 84: labmanager.SnapshotMeta.ref:type_name -> labmanager.ItemRef
-	4,   // 85: labmanager.LabManager.Ping:input_type -> labmanager.Empty
-	14,  // 86: labmanager.LabManager.CreateLabGroups:input_type -> labmanager.CreateLabGroupsRequest
-	8,   // 87: labmanager.LabManager.ListLabGroups:input_type -> labmanager.ListRequest
-	17,  // 88: labmanager.LabManager.UpdateLabGroups:input_type -> labmanager.UpdateLabGroupsRequest
-	10,  // 89: labmanager.LabManager.DeleteLabGroups:input_type -> labmanager.DeleteRequest
-	19,  // 90: labmanager.LabManager.CreateLabGroupClients:input_type -> labmanager.CreateLabGroupClientsRequest
-	8,   // 91: labmanager.LabManager.ListLabGroupClients:input_type -> labmanager.ListRequest
-	23,  // 92: labmanager.LabManager.UpdateLabGroupClients:input_type -> labmanager.UpdateLabGroupClientsRequest
-	10,  // 93: labmanager.LabManager.DeleteLabGroupClients:input_type -> labmanager.DeleteRequest
-	24,  // 94: labmanager.LabManager.SetLabGroupAccess:input_type -> labmanager.SetLabGroupAccessRequest
-	27,  // 95: labmanager.LabManager.CreateLabs:input_type -> labmanager.CreateLabsRequest
-	8,   // 96: labmanager.LabManager.ListLabs:input_type -> labmanager.ListRequest
-	30,  // 97: labmanager.LabManager.UpdateLabs:input_type -> labmanager.UpdateLabsRequest
-	10,  // 98: labmanager.LabManager.DeleteLabs:input_type -> labmanager.DeleteRequest
-	57,  // 99: labmanager.LabManager.Monitoring:input_type -> labmanager.MonitoringRequest
-	4,   // 100: labmanager.LabManager.GetCapacity:input_type -> labmanager.Empty
-	64,  // 101: labmanager.LabManager.PrewarmImages:input_type -> labmanager.PrewarmImagesRequest
-	32,  // 102: labmanager.LabManager.ResetDevices:input_type -> labmanager.DevicesRequest
-	33,  // 103: labmanager.LabManager.RescueDevices:input_type -> labmanager.RescueDevicesRequest
-	67,  // 104: labmanager.LabManager.ExportDeviceSnapshot:input_type -> labmanager.DeviceSnapshotRequest
-	4,   // 105: labmanager.LabManager.Ping:output_type -> labmanager.Empty
-	7,   // 106: labmanager.LabManager.CreateLabGroups:output_type -> labmanager.BatchResult
-	36,  // 107: labmanager.LabManager.ListLabGroups:output_type -> labmanager.LabGroupList
-	7,   // 108: labmanager.LabManager.UpdateLabGroups:output_type -> labmanager.BatchResult
-	7,   // 109: labmanager.LabManager.DeleteLabGroups:output_type -> labmanager.BatchResult
-	21,  // 110: labmanager.LabManager.CreateLabGroupClients:output_type -> labmanager.CreateLabGroupClientsResponse
-	52,  // 111: labmanager.LabManager.ListLabGroupClients:output_type -> labmanager.LabGroupClientList
-	7,   // 112: labmanager.LabManager.UpdateLabGroupClients:output_type -> labmanager.BatchResult
-	7,   // 113: labmanager.LabManager.DeleteLabGroupClients:output_type -> labmanager.BatchResult
-	7,   // 114: labmanager.LabManager.SetLabGroupAccess:output_type -> labmanager.BatchResult
-	7,   // 115: labmanager.LabManager.CreateLabs:output_type -> labmanager.BatchResult
-	48,  // 116: labmanager.LabManager.ListLabs:output_type -> labmanager.LabList
-	7,   // 117: labmanager.LabManager.UpdateLabs:output_type -> labmanager.BatchResult
-	7,   // 118: labmanager.LabManager.DeleteLabs:output_type -> labmanager.BatchResult
-	59,  // 119: labmanager.LabManager.Monitoring:output_type -> labmanager.MonitoringUpdate
-	63,  // 120: labmanager.LabManager.GetCapacity:output_type -> labmanager.CapacityResponse
-	66,  // 121: labmanager.LabManager.PrewarmImages:output_type -> labmanager.PrewarmImagesResult
-	7,   // 122: labmanager.LabManager.ResetDevices:output_type -> labmanager.BatchResult
-	7,   // 123: labmanager.LabManager.RescueDevices:output_type -> labmanager.BatchResult
-	68,  // 124: labmanager.LabManager.ExportDeviceSnapshot:output_type -> labmanager.SnapshotChunk
-	105, // [105:125] is the sub-list for method output_type
-	85,  // [85:105] is the sub-list for method input_type
-	85,  // [85:85] is the sub-list for extension type_name
-	85,  // [85:85] is the sub-list for extension extendee
-	0,   // [0:85] is the sub-list for field type_name
+	3,   // 78: labmanager.PrewarmImageStatus.state:type_name -> labmanager.PrewarmState
+	64,  // 79: labmanager.PrewarmImagesResult.images:type_name -> labmanager.PrewarmImageStatus
+	5,   // 80: labmanager.DeviceSnapshotRequest.ref:type_name -> labmanager.ItemRef
+	68,  // 81: labmanager.SnapshotChunk.meta:type_name -> labmanager.SnapshotMeta
+	69,  // 82: labmanager.SnapshotChunk.trailer:type_name -> labmanager.SnapshotTrailer
+	5,   // 83: labmanager.SnapshotMeta.ref:type_name -> labmanager.ItemRef
+	4,   // 84: labmanager.LabManager.Ping:input_type -> labmanager.Empty
+	14,  // 85: labmanager.LabManager.CreateLabGroups:input_type -> labmanager.CreateLabGroupsRequest
+	8,   // 86: labmanager.LabManager.ListLabGroups:input_type -> labmanager.ListRequest
+	17,  // 87: labmanager.LabManager.UpdateLabGroups:input_type -> labmanager.UpdateLabGroupsRequest
+	10,  // 88: labmanager.LabManager.DeleteLabGroups:input_type -> labmanager.DeleteRequest
+	19,  // 89: labmanager.LabManager.CreateLabGroupClients:input_type -> labmanager.CreateLabGroupClientsRequest
+	8,   // 90: labmanager.LabManager.ListLabGroupClients:input_type -> labmanager.ListRequest
+	23,  // 91: labmanager.LabManager.UpdateLabGroupClients:input_type -> labmanager.UpdateLabGroupClientsRequest
+	10,  // 92: labmanager.LabManager.DeleteLabGroupClients:input_type -> labmanager.DeleteRequest
+	24,  // 93: labmanager.LabManager.SetLabGroupAccess:input_type -> labmanager.SetLabGroupAccessRequest
+	27,  // 94: labmanager.LabManager.CreateLabs:input_type -> labmanager.CreateLabsRequest
+	8,   // 95: labmanager.LabManager.ListLabs:input_type -> labmanager.ListRequest
+	30,  // 96: labmanager.LabManager.UpdateLabs:input_type -> labmanager.UpdateLabsRequest
+	10,  // 97: labmanager.LabManager.DeleteLabs:input_type -> labmanager.DeleteRequest
+	57,  // 98: labmanager.LabManager.Monitoring:input_type -> labmanager.MonitoringRequest
+	4,   // 99: labmanager.LabManager.GetCapacity:input_type -> labmanager.Empty
+	63,  // 100: labmanager.LabManager.PrewarmImages:input_type -> labmanager.PrewarmImagesRequest
+	32,  // 101: labmanager.LabManager.ResetDevices:input_type -> labmanager.DevicesRequest
+	33,  // 102: labmanager.LabManager.RescueDevices:input_type -> labmanager.RescueDevicesRequest
+	66,  // 103: labmanager.LabManager.ExportDeviceSnapshot:input_type -> labmanager.DeviceSnapshotRequest
+	4,   // 104: labmanager.LabManager.Ping:output_type -> labmanager.Empty
+	7,   // 105: labmanager.LabManager.CreateLabGroups:output_type -> labmanager.BatchResult
+	36,  // 106: labmanager.LabManager.ListLabGroups:output_type -> labmanager.LabGroupList
+	7,   // 107: labmanager.LabManager.UpdateLabGroups:output_type -> labmanager.BatchResult
+	7,   // 108: labmanager.LabManager.DeleteLabGroups:output_type -> labmanager.BatchResult
+	21,  // 109: labmanager.LabManager.CreateLabGroupClients:output_type -> labmanager.CreateLabGroupClientsResponse
+	52,  // 110: labmanager.LabManager.ListLabGroupClients:output_type -> labmanager.LabGroupClientList
+	7,   // 111: labmanager.LabManager.UpdateLabGroupClients:output_type -> labmanager.BatchResult
+	7,   // 112: labmanager.LabManager.DeleteLabGroupClients:output_type -> labmanager.BatchResult
+	7,   // 113: labmanager.LabManager.SetLabGroupAccess:output_type -> labmanager.BatchResult
+	7,   // 114: labmanager.LabManager.CreateLabs:output_type -> labmanager.BatchResult
+	48,  // 115: labmanager.LabManager.ListLabs:output_type -> labmanager.LabList
+	7,   // 116: labmanager.LabManager.UpdateLabs:output_type -> labmanager.BatchResult
+	7,   // 117: labmanager.LabManager.DeleteLabs:output_type -> labmanager.BatchResult
+	59,  // 118: labmanager.LabManager.Monitoring:output_type -> labmanager.MonitoringUpdate
+	62,  // 119: labmanager.LabManager.GetCapacity:output_type -> labmanager.CapacityResponse
+	65,  // 120: labmanager.LabManager.PrewarmImages:output_type -> labmanager.PrewarmImagesResult
+	7,   // 121: labmanager.LabManager.ResetDevices:output_type -> labmanager.BatchResult
+	7,   // 122: labmanager.LabManager.RescueDevices:output_type -> labmanager.BatchResult
+	67,  // 123: labmanager.LabManager.ExportDeviceSnapshot:output_type -> labmanager.SnapshotChunk
+	104, // [104:124] is the sub-list for method output_type
+	84,  // [84:104] is the sub-list for method input_type
+	84,  // [84:84] is the sub-list for extension type_name
+	84,  // [84:84] is the sub-list for extension extendee
+	0,   // [0:84] is the sub-list for field type_name
 }
 
-func init() { file_pkg_agent_protobuf_agent_proto_init() }
-func file_pkg_agent_protobuf_agent_proto_init() {
-	if File_pkg_agent_protobuf_agent_proto != nil {
+func init() { file_agent_proto_init() }
+func file_agent_proto_init() {
+	if File_agent_proto != nil {
 		return
 	}
-	file_pkg_agent_protobuf_agent_proto_msgTypes[5].OneofWrappers = []any{}
-	file_pkg_agent_protobuf_agent_proto_msgTypes[11].OneofWrappers = []any{}
-	file_pkg_agent_protobuf_agent_proto_msgTypes[27].OneofWrappers = []any{}
-	file_pkg_agent_protobuf_agent_proto_msgTypes[64].OneofWrappers = []any{
+	file_agent_proto_msgTypes[5].OneofWrappers = []any{}
+	file_agent_proto_msgTypes[11].OneofWrappers = []any{}
+	file_agent_proto_msgTypes[27].OneofWrappers = []any{}
+	file_agent_proto_msgTypes[63].OneofWrappers = []any{
 		(*SnapshotChunk_Meta)(nil),
 		(*SnapshotChunk_Data)(nil),
 		(*SnapshotChunk_Trailer)(nil),
@@ -5737,18 +5716,18 @@ func file_pkg_agent_protobuf_agent_proto_init() {
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_agent_protobuf_agent_proto_rawDesc), len(file_pkg_agent_protobuf_agent_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_agent_proto_rawDesc), len(file_agent_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   80,
+			NumMessages:   79,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_pkg_agent_protobuf_agent_proto_goTypes,
-		DependencyIndexes: file_pkg_agent_protobuf_agent_proto_depIdxs,
-		EnumInfos:         file_pkg_agent_protobuf_agent_proto_enumTypes,
-		MessageInfos:      file_pkg_agent_protobuf_agent_proto_msgTypes,
+		GoTypes:           file_agent_proto_goTypes,
+		DependencyIndexes: file_agent_proto_depIdxs,
+		EnumInfos:         file_agent_proto_enumTypes,
+		MessageInfos:      file_agent_proto_msgTypes,
 	}.Build()
-	File_pkg_agent_protobuf_agent_proto = out.File
-	file_pkg_agent_protobuf_agent_proto_goTypes = nil
-	file_pkg_agent_protobuf_agent_proto_depIdxs = nil
+	File_agent_proto = out.File
+	file_agent_proto_goTypes = nil
+	file_agent_proto_depIdxs = nil
 }

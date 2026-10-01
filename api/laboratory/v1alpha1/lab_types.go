@@ -60,7 +60,7 @@ type DeviceTemplate struct {
 	// +optional
 	Resources *DeviceResources `json:"resources,omitempty"`
 	// Persistence is the optional state-persistence policy of this device, set at
-	// creation and immutable. Unset fields take the platform defaults.
+	// creation and immutable. The excluded paths and the quota are platform settings.
 	// +optional
 	Persistence *DevicePersistence `json:"persistence,omitempty"`
 }
@@ -69,15 +69,10 @@ type DeviceTemplate struct {
 type DevicePersistence struct {
 	// Enabled turns snapshot-backed state on for the device.
 	Enabled bool `json:"enabled,omitempty"`
-	// Debounce is how long the writable layer must stay quiet before a snapshot.
+	// Debounce is how long the writable layer must stay quiet before a snapshot
+	// (default: the platform setting).
 	// +optional
 	Debounce *metav1.Duration `json:"debounce,omitempty"`
-	// ExcludePaths are absolute container paths that are never snapshotted.
-	// +optional
-	ExcludePaths []string `json:"excludePaths,omitempty"`
-	// MaxSnapshotSize is the quota of the kept state (a Kubernetes quantity, e.g. "512Mi").
-	// +optional
-	MaxSnapshotSize string `json:"maxSnapshotSize,omitempty"`
 }
 
 // ConnectionTemplate is an inline connection declaration inside Lab.spec.connections[].
@@ -98,13 +93,8 @@ type LabStatus struct {
 	// Scheduling is the place of the lab in the scheduler queue.
 	// +optional
 	Scheduling *SchedulingStatus `json:"scheduling,omitempty"`
-	// StatePersistence records how this lab runs its devices, decided once on the
-	// first reconcile: true = bare Pods with snapshot-backed state, false =
-	// Deployments. It never changes afterwards, whatever the platform switch says.
-	// +optional
-	StatePersistence *bool `json:"statePersistence,omitempty"`
 	// ImageCache records whether this lab pulls its images through the platform
-	// image cache, decided once on the first reconcile like StatePersistence.
+	// image cache, decided once on the first reconcile.
 	// +optional
 	ImageCache *bool `json:"imageCache,omitempty"`
 	// ImageDigests are the digests the image tags of the lab's container devices

@@ -62,7 +62,7 @@ func (h *Handler) patchDevices(ctx context.Context, in *protobuf.DevicesRequest,
 	if err != nil {
 		return nil, err
 	}
-	resolver := h.newResolver()
+	resolver := h.newResolver(ctx)
 	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
 		spec, err := patch()
 		if err != nil {

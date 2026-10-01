@@ -3,7 +3,7 @@ package cnigate
 import (
 	"net"
 	"testing"
-	
+
 	cniv1 "github.com/containernetworking/cni/pkg/types/100"
 )
 

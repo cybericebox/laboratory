@@ -5,7 +5,9 @@ import (
 	"fmt"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/status"
 
 	"github.com/cybericebox/laboratory/internal/agent/config"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
@@ -46,15 +48,25 @@ func New(cfg *config.Config, impl protobuf.LabManagerServer) (*grpc.Server, erro
 		opts = append(opts, grpc.Creds(creds))
 	}
 	if cfg.MTLS.Enabled {
+		// Every call must carry a client certificate, and its CN must be a tenant.
+		admit := func(ctx context.Context) error {
+			if _, err := clientCN(ctx); err != nil {
+				return status.Error(codes.Unauthenticated, err.Error())
+			}
+			if a, ok := impl.(interface{ Authorize(context.Context) error }); ok {
+				return a.Authorize(ctx)
+			}
+			return nil
+		}
 		opts = append(opts,
 			grpc.ChainUnaryInterceptor(func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
-				if err := authorizeCN(ctx, cfg.MTLS.AllowedClientCNs); err != nil {
+				if err := admit(ctx); err != nil {
 					return nil, err
 				}
 				return h(ctx, req)
 			}),
 			grpc.StreamInterceptor(func(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, h grpc.StreamHandler) error {
-				if err := authorizeCN(ss.Context(), cfg.MTLS.AllowedClientCNs); err != nil {
+				if err := admit(ss.Context()); err != nil {
 					return err
 				}
 				return h(srv, ss)

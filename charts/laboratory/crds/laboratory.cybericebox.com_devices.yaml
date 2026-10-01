@@ -252,18 +252,17 @@ spec:
                     items:
                       type: string
                     type: array
+                  maxFileBytes:
+                    description: |-
+                      MaxFileBytes: a regular file larger than this is left out of the snapshots
+                      (the status warning names it). Zero is the platform default.
+                    format: int64
+                    type: integer
                   maxLayers:
                     description: |-
                       MaxLayers is the number of snapshot layers after which the chain is
                       squashed into one.
                     format: int32
-                    type: integer
-                  maxSnapshotBytes:
-                    description: |-
-                      MaxSnapshotBytes is the quota of the state kept for this device (the
-                      uncompressed size of all snapshot layers). Over quota the last good
-                      snapshot is kept and a warning is reported.
-                    format: int64
                     type: integer
                   rescue:
                     description: |-
@@ -276,6 +275,13 @@ spec:
                       ResetToken: a new value discards the snapshots and starts the device from
                       its base image again. Set by the management agent (ResetDevice).
                     type: string
+                  writeQuotaBytes:
+                    description: |-
+                      WriteQuotaBytes is the write quota of this device: the most of the user's
+                      writes kept (the uncompressed size of all snapshot layers). Over the quota
+                      the last good snapshot is kept and a warning is reported.
+                    format: int64
+                    type: integer
                 type: object
               type:
                 description: DeviceType distinguishes network device kinds.

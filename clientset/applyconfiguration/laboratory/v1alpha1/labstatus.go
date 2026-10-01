@@ -35,12 +35,8 @@ type LabStatusApplyConfiguration struct {
 	Access      []AccessEntryApplyConfiguration     `json:"access,omitempty"`
 	// Scheduling is the place of the lab in the scheduler queue.
 	Scheduling *SchedulingStatusApplyConfiguration `json:"scheduling,omitempty"`
-	// StatePersistence records how this lab runs its devices, decided once on the
-	// first reconcile: true = bare Pods with snapshot-backed state, false =
-	// Deployments. It never changes afterwards, whatever the platform switch says.
-	StatePersistence *bool `json:"statePersistence,omitempty"`
 	// ImageCache records whether this lab pulls its images through the platform
-	// image cache, decided once on the first reconcile like StatePersistence.
+	// image cache, decided once on the first reconcile.
 	ImageCache *bool `json:"imageCache,omitempty"`
 	// ImageDigests are the digests the image tags of the lab's container devices
 	// (and the netconfig image) were pinned to when the lab was created with the
@@ -128,14 +124,6 @@ func (b *LabStatusApplyConfiguration) WithAccess(values ...*AccessEntryApplyConf
 // If called multiple times, the Scheduling field is set to the value of the last call.
 func (b *LabStatusApplyConfiguration) WithScheduling(value *SchedulingStatusApplyConfiguration) *LabStatusApplyConfiguration {
 	b.Scheduling = value
-	return b
-}
-
-// WithStatePersistence sets the StatePersistence field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the StatePersistence field is set to the value of the last call.
-func (b *LabStatusApplyConfiguration) WithStatePersistence(value bool) *LabStatusApplyConfiguration {
-	b.StatePersistence = &value
 	return b
 }
 

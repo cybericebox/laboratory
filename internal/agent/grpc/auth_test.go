@@ -21,16 +21,11 @@ func ctxWithCN(cn string) context.Context {
 	return peer.NewContext(context.Background(), &peer.Peer{AuthInfo: ti})
 }
 
-func TestAuthorizeCN(t *testing.T) {
-	allowed := []string{"platform", "daemon"}
-
-	if err := authorizeCN(ctxWithCN("platform"), allowed); err != nil {
-		t.Errorf("platform should pass: %v", err)
+func TestClientCN(t *testing.T) {
+	if cn, err := clientCN(ctxWithCN("platform")); err != nil || cn != "platform" {
+		t.Errorf("cn %q %v", cn, err)
 	}
-	if err := authorizeCN(ctxWithCN("intruder"), allowed); err == nil {
-		t.Error("intruder must be rejected")
-	}
-	if err := authorizeCN(context.Background(), allowed); err == nil {
+	if _, err := clientCN(context.Background()); err == nil {
 		t.Error("missing peer cert must be rejected")
 	}
 }

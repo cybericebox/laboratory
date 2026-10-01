@@ -2,7 +2,7 @@ package cnigate
 
 import (
 	_ "github.com/cybericebox/laboratory/pkg/runtime"
-	
+
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,7 +10,7 @@ import (
 	"os"
 	"strings"
 	"time"
-	
+
 	"github.com/containernetworking/cni/pkg/invoke"
 	"github.com/containernetworking/cni/pkg/skel"
 	cnitypes "github.com/containernetworking/cni/pkg/types"
@@ -18,7 +18,7 @@ import (
 	"github.com/containernetworking/cni/pkg/version"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	
+
 	"github.com/cybericebox/laboratory/internal/names"
 	nodev1 "github.com/cybericebox/laboratory/pkg/rpc/node/v1"
 )
@@ -71,14 +71,14 @@ func cmdADD(args *skel.CmdArgs) error {
 		logf("ADD loadConf error: %v", err)
 		return err
 	}
-	
+
 	ns, name, uid := parsePodArgs(args.Args)
 	logf("ADD pod=%s/%s uid=%s netns=%s ifname=%s", ns, name, uid, args.Netns, args.IfName)
 	if ns == "" || name == "" {
 		logf("ADD no pod args → delegateReal")
 		return delegateReal(conf)
 	}
-	
+
 	conn, client, err := dialAgent(conf)
 	if err != nil {
 		logf("ADD dialAgent error: %v", err)
@@ -89,10 +89,10 @@ func cmdADD(args *skel.CmdArgs) error {
 			logf("ADD conn.Close error: %v", err)
 		}
 	}()
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	
+
 	resp, err := client.SetupNetworks(
 		ctx, &nodev1.SetupNetworksRequest{
 			Namespace: ns,
@@ -106,9 +106,9 @@ func cmdADD(args *skel.CmdArgs) error {
 		return fmt.Errorf("SetupNetworks: %w", err)
 	}
 	logf("ADD SetupNetworks resp pod=%s/%s defaultNetwork=%q", ns, name, resp.DefaultNetwork)
-	
+
 	var result *cniv1.Result
-	
+
 	switch resp.DefaultNetwork {
 	case "real", names.DefaultEth0:
 		// Regular pod or explicit eth0: delegate to k8s CNI normally.
@@ -126,12 +126,12 @@ func cmdADD(args *skel.CmdArgs) error {
 		if err != nil {
 			return fmt.Errorf("convert result: %w", err)
 		}
-	
+
 	case "stub":
 		// Device pod: OVS interfaces already wired by node-agent; no default network.
 		logf("ADD pod=%s/%s branch=STUB no default network, stub eth0 only", ns, name)
 		result = &cniv1.Result{CNIVersion: conf.CNIVersion}
-	
+
 	default:
 		// Access-port pod: delegate k8s CNI to the named iface.
 		accessIface := resp.DefaultNetwork
@@ -153,12 +153,12 @@ func cmdADD(args *skel.CmdArgs) error {
 			return fmt.Errorf("convert result: %w", err)
 		}
 	}
-	
+
 	// Kubernetes requires eth0 with an IP. Add a stub eth0 if the delegated
 	// result has none (device/access pods), or attach an IP to a bare eth0.
 	result = ensureEth0(result, args.Netns)
 	logf("ADD pod=%s/%s done interfaces=%d ips=%d", ns, name, len(result.Interfaces), len(result.IPs))
-	
+
 	return cnitypes.PrintResult(result, conf.CNIVersion)
 }
 
@@ -172,11 +172,11 @@ func cmdDEL(args *skel.CmdArgs) error {
 	if len(conf.Delegate) == 0 {
 		return nil
 	}
-	
+
 	// Best-effort annotation check to decide whether DelegateDel is needed.
 	// Errors are ignored: DEL must not fail the pod teardown.
 	defaultIface, hasAnnotation, _ := getPodAnnotation(conf, args.Args, names.AnnotationDefaultNetwork)
-	
+
 	switch {
 	case !hasAnnotation || defaultIface == names.DefaultEth0:
 		return invoke.DelegateDel(context.Background(), delegateType(conf), marshalDelegate(conf), nil)
@@ -254,12 +254,12 @@ func getPodAnnotation(conf *NetConf, cniArgs, key string) (value string, found b
 		return "", false, err
 	}
 	defer conn.Close()
-	
+
 	ns, name, _ := parsePodArgs(cniArgs)
 	if ns == "" || name == "" {
 		return "", false, nil
 	}
-	
+
 	resp, err := client.GetPodAnnotation(
 		context.Background(),
 		&nodev1.GetPodAnnotationRequest{Namespace: ns, Name: name, Key: key},
@@ -302,7 +302,7 @@ func parsePodArgs(cniArgs string) (namespace, name, uid string) {
 //   - eth0 absent, no IPs (device pod) → prepend a stub eth0 + 127.0.0.1/32.
 func ensureEth0(base *cniv1.Result, netns string) *cniv1.Result {
 	_, stub, _ := net.ParseCIDR("127.0.0.1/32")
-	
+
 	eth0Idx := -1
 	for i, iface := range base.Interfaces {
 		if iface.Name == names.DefaultEth0 {
@@ -310,7 +310,7 @@ func ensureEth0(base *cniv1.Result, netns string) *cniv1.Result {
 			break
 		}
 	}
-	
+
 	if eth0Idx >= 0 {
 		for _, ip := range base.IPs {
 			if ip.Interface != nil && *ip.Interface == eth0Idx {
@@ -320,7 +320,7 @@ func ensureEth0(base *cniv1.Result, netns string) *cniv1.Result {
 		base.IPs = append(base.IPs, &cniv1.IPConfig{Interface: cniv1.Int(eth0Idx), Address: *stub})
 		return base
 	}
-	
+
 	base.Interfaces = append([]*cniv1.Interface{{Name: names.DefaultEth0, Sandbox: netns}}, base.Interfaces...)
 	if len(base.IPs) > 0 {
 		// Redirect the delegate's primary IP to eth0 (index 0); shift the rest.

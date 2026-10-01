@@ -20,8 +20,8 @@ import (
 // never copied: the reserved prefix, and the keys the workloads select on.
 
 // userLabels returns the labels of an object that may be copied to its workloads: not the
-// reserved keys (names.IsReservedLabel).
-func userLabels(in map[string]string) map[string]string { return names.UserLabels(in) }
+// reserved keys (names.IsReservedLabel), plus the tenant stamp.
+func userLabels(in map[string]string) map[string]string { return names.PropagatedLabels(in) }
 
 // applyUserLabels makes the user labels of obj equal to desired and reports
 // whether obj changed. The keys it copied are recorded in an annotation, so a

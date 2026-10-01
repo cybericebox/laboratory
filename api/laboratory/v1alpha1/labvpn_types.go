@@ -46,7 +46,7 @@ type LabVPNStatus struct {
 type LabVPN struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	
+
 	Spec   LabVPNSpec   `json:"spec,omitempty"`
 	Status LabVPNStatus `json:"status,omitempty"`
 }

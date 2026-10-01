@@ -5,11 +5,11 @@ import (
 	"encoding/base64"
 	"fmt"
 	"sync"
-	
+
 	"golang.org/x/crypto/blake2s"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	
+
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
@@ -92,12 +92,12 @@ func (t *Table) FindByMac1(packet []byte) (uid, backend string, found bool) {
 	}
 	msgBody := packet[:len(packet)-32]
 	mac1InPkt := packet[len(packet)-32 : len(packet)-16]
-	
+
 	t.mu.RLock()
 	entries := make([]TableEntry, len(t.entries))
 	copy(entries, t.entries)
 	t.mu.RUnlock()
-	
+
 	for _, e := range entries {
 		mac := computeMAC(e.Mac1Key[:], msgBody)
 		if bytesEqual(mac[:], mac1InPkt) {
@@ -138,7 +138,7 @@ type LabGroupWatcher struct {
 
 func (w *LabGroupWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
-	
+
 	var lg laboratoryv1alpha1.LabGroup
 	if err := w.Get(ctx, req.NamespacedName, &lg); err != nil {
 		if client.IgnoreNotFound(err) == nil {
@@ -150,14 +150,14 @@ func (w *LabGroupWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		w.Table.Delete(string(lg.UID))
 		return ctrl.Result{}, nil
 	}
-	
+
 	pubKey := lg.Status.VPN.PublicKey
 	if pubKey == "" || !lg.Status.VPN.Registered {
 		// VPN not yet ready — remove stale entry if present.
 		w.Table.Delete(string(lg.UID))
 		return ctrl.Result{}, nil
 	}
-	
+
 	ns := laboratoryv1alpha1.LabGroupNamespace(lg.Name)
 	backend := fmt.Sprintf("vpn.%s.svc.cluster.local:%d", ns, w.VPNServicePort)
 	log.Info("updating demux table", "group", lg.Name, "backend", backend)

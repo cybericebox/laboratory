@@ -428,10 +428,63 @@ There is no "flag" concept in the agent.
 the variant's variables are merged with the lab's own (the lab wins per device and variable name) into the Secrets.
 
 **State persistence** is a property of a device in the topology, set at creation and immutable (a lab's spec is never
-updated): `devices[].persistence {enabled, debounce, excludePaths, maxSnapshotSize}` in `spec_json`, all optional, with the
+updated): `devices[].persistence {enabled, debounce}` in `spec_json`, both optional, with the
 platform defaults from the chart. `enabled: true` is refused when `devices.statePersistence.enabled` is off in the
-chart (the agent reads it as `AGENT_STATE_PERSISTENCE_ENABLED`); `debounce` must be positive, `excludePaths` absolute,
-`maxSnapshotSize` a positive Kubernetes quantity.
+chart (the agent reads it as `AGENT_STATE_PERSISTENCE_ENABLED`); `debounce` must be positive. The excluded paths and the
+quota are cluster settings of the chart (`devices.statePersistence.maxFileSize`, default `256Mi`: bigger files are skipped; `devices.statePersistence.excludePaths`, default `/tmp`, `/var/tmp`, `/run`; and `writeQuota`, default `512Mi`: the most of a
+participant's writes kept per device). They are configurable only in the chart and cannot be requested per device.
+
+**Tenancy.** The agent serves several clients (tenants) from one cluster and keeps them apart. A tenant is a cluster-scoped
+`Tenant` resource; the chart always creates `default` and the tenants listed in its `tenants:` values.
+
+```yaml
+tenants:
+  platform:                  # the Tenant name = the client certificate CN (a DNS-1123 label)
+    persistence:
+      allowed: true          # may ask for device persistence (needs devices.statePersistence.enabled)
+      writeQuota: 256Mi      # optional, capped by devices.statePersistence.writeQuota (the default)
+      maxFileSize: 128Mi     # optional, capped by devices.statePersistence.maxFileSize (the default)
+    quota:                   # optional; absent = no limit
+      cpu: "50%"             # the sum of the CPU requests of the tenant's pods: "32", "500m" or a percentage
+      memory: "40Gi"         #   of what the lab nodes (labWorkloads selector and tolerations) allocate
+```
+
+Quote a quota value ("32", "50%"): it is a string. `default` may be listed to change its policy; unless it is, it may use
+persistence and has no quota.
+
+- **Identity and certificate.** The tenant of a call is the CN of the verified client certificate, and the CN is the Tenant's name.
+  With `agent.mtls.enabled` the chart issues the certificate for every tenant (cert-manager, from the agent's private client CA,
+  `laboratory-agent-ca`) into the Secret `laboratory-agent-client-<name>-tls` of the agent namespace. Hand that Secret to the client:
+
+  ```bash
+  kubectl -n laboratory-agent get secret laboratory-agent-client-platform-tls -o jsonpath='{.data.tls\.crt}' | base64 -d > client.crt
+  kubectl -n laboratory-agent get secret laboratory-agent-client-platform-tls -o jsonpath='{.data.tls\.key}' | base64 -d > client.key
+  kubectl -n laboratory-agent get secret laboratory-agent-client-platform-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > ca.crt
+  ```
+
+  A certificate whose CN is not a Tenant is `PERMISSION_DENIED` on every call (the Tenant resources are the only allowlist). A call
+  without a client certificate (TLS or mTLS off, local development) is the tenant `default`.
+- **Stamp.** Every object the agent creates (LabGroups, Labs, VPN clients, access policies) gets the reserved label
+  `laboratory.cybericebox.com/tenant`. The operator copies it to the Devices and pods of a Lab and the pods of a
+  LabGroup. Like every reserved label it is hidden: never in answers, never accepted from a client, never allowed in a selector.
+  Objects without the label (created before tenancy) belong to the `default` tenant.
+- **Scope.** Every RPC is implicitly scoped to the caller's tenant: `List*`, `Update*`, `Delete*`, the device calls and `Monitoring`
+  see only its objects, combined with the caller's own selector (which can narrow the scope but never widen it). Objects inside a
+  LabGroup belong to the tenant of the group. Another tenant's object is `NOT_FOUND` for every operation, as if it did not exist.
+  LabGroup ids are global: creating an id that belongs to another tenant fails for that item with "the id is not available", with
+  no hint that it exists or is being deleted.
+- **Persistence policy.** A topology may ask for `devices[].persistence.enabled` only if the platform allows persistence and
+  the tenant's `persistence.allowed` is true; otherwise the agent refuses it (`INVALID_ARGUMENT`). The write quota and the
+  maximum file size of a device are the tenant's, capped by the chart values (a tenant without its own gets the chart's), and are
+  stamped on the Device when it is created, like the persistence choice itself: changing a Tenant later affects new devices only.
+- **Resource quota.** The scheduler caps the sum of the CPU and memory requests of the tenant's dispatched pods (started, starting
+  or failed). A pod that would pass the cap waits, the lab's `scheduling.reason` is `TenantQuota`, and other tenants' pods go on.
+  A percentage is a percentage of the CPU and memory the lab nodes allocate.
+- **Capacity.** `GetCapacity` and the `capacity` of the `Monitoring` stream are the caller's view only: its quota (if any), what its
+  pods reserve (the sum of their requests) and use (metrics-server, when installed), and what is free (quota minus reserved). No
+  cluster-wide numbers are exposed. The same reserved and used totals are in `Tenant.status` (refreshed by the agent):
+  `kubectl get tenant platform -o yaml`.
+- **Monitoring** is cut to the tenant before the user selector.
 
 **Limits.** Ids and deploy keys at most 64 characters, `deploy_after` at most 32 keys, at most 5000 items per call, message size 64 MiB (`MaxRecvMsgSize`/`MaxSendMsgSize`; the Go client sets the
 same call options), bounded internal concurrency (16 calls to the Kubernetes API per request).
@@ -520,7 +573,8 @@ devices:
     enabled: true
     debounce: 5s              # quiet time of the writable layer before a snapshot
     excludePaths: [/tmp, /var/tmp, /run]
-    maxSnapshotSize: 512Mi    # quota per device
+    writeQuota: 512Mi         # write quota per device (the most of a participant's writes we keep)
+    maxFileSize: 256Mi        # a file larger than this is never snapshotted
     maxLayers: 10             # snapshot layers before they are squashed into one
     retention: 168h           # how long a deleted lab's snapshots are kept
     containerdRoot: /var/lib/k0s/containerd   # host path of the containerd root
@@ -531,10 +585,12 @@ devices:
 - the chart deploys the platform registry ([zot](https://zotregistry.dev)) in `laboratory-system`: a
   PersistentVolumeClaim (`registry.storageClass`, `registry.size`; it is kept on `helm uninstall`), a Service, and a
   Secret with generated `htpasswd` credentials for the single writer;
-- the operator runs the devices of **new** labs as bare Pods (`restartPolicy: Never`) that it owns and recreates. The
-  mode is fixed on each Lab when it is first reconciled (`Lab.status.statePersistence`); flipping the switch never
-  changes an existing lab, in either direction;
-- the node-agent watches the devices of its node and snapshots them.
+- the switch only **allows** persistence. Each device decides for itself with `persistence.enabled` in its topology
+  (see "State persistence" in the agent API): such a device runs as a bare Pod (`restartPolicy: Never`) that the operator owns
+  and recreates, every other device as a Deployment, and one lab may mix both. The choice is stamped on the Device
+  (`spec.state`) when it is created and is immutable, so flipping the switch later never changes an existing device;
+- the node-agent runs the snapshot engine whenever persistence is allowed, and snapshots only the devices that run as
+  snapshot-backed Pods.
 
 Requirements on the nodes (nothing has to be installed or configured on the host):
 
@@ -565,9 +621,13 @@ Requirements on the nodes (nothing has to be installed or configured on the host
    own mount points (`/dev`, `/proc`, `/sys`, `/etc/hosts`, `/etc/hostname`, `/etc/resolv.conf`, the service account
    directory) are left out of every layer. When the chain exceeds `maxLayers` the snapshot layers are squashed into
    one (whiteouts are preserved, so deletions of files of the base image stay deleted).
-4. **Quota.** If a snapshot would make the kept layers larger than `maxSnapshotSize` (uncompressed), the last good
-   snapshot is kept and `status.state.warning` of the Device is set; the warning clears with the next good snapshot.
-5. **Recreate.** When the pod ends, the operator waits until the node-agent marks the exit snapshot done
+4. **Large files.** A regular file larger than `maxFileSize` (default `256Mi`) is left out of the layer, like an excluded path
+   but for that file only; everything else is snapshotted normally. `status.state.warning` of the Device names the skipped
+   files with their sizes (the first 10 and a count of the rest) and stays while the files are there. Whiteouts are not affected.
+5. **Write quota.** If a snapshot would make the kept layers larger than `writeQuota` (uncompressed), the last good
+   snapshot is kept and `status.state.warning` of the Device is set; the warning clears with the next good snapshot. The quota is the
+   total backstop and applies after the large files were skipped.
+6. **Recreate.** When the pod ends, the operator waits until the node-agent marks the exit snapshot done
    (`status.state.exitSnapshotPod`) or 30 seconds have passed, deletes the pod and creates the next one from the latest
    snapshot (`status.state.image`). Pods are named `<device>-<incarnation>`. A device that keeps ending within 30
    seconds of its start is recreated with a growing back-off (2s, 4s, ... up to 2 minutes).
@@ -601,9 +661,10 @@ name before the deadline cancels the deletion.
 
 ### Turning it off
 
-`devices.statePersistence.enabled: false` only stops new labs from using persistence. Labs that already run with it
-keep depending on the registry and on the node-agent's snapshot engine, which the switch also removes from the
-node-agent. Leave the switch on until the last such lab is deleted (or accept that they stop being snapshotted).
+`devices.statePersistence.enabled: false` only stops new devices from using persistence (the agent refuses a topology that asks
+for it). Devices that already run as snapshot-backed Pods keep that mode, but they depend on the registry and on the
+node-agent's snapshot engine, which the switch also removes from the node-agent. Leave the switch on until the last such device is
+deleted (or accept that they stop being snapshotted).
 
 ### Operating it
 
@@ -619,7 +680,7 @@ kubectl -n laboratory-system get pvc laboratory-registry
 kubectl -n laboratory-system logs -l app=node-agent -c node-agent | grep device-state
 ```
 
-Size the volume for the base images plus (devices x `maxSnapshotSize`) in the worst case. If a device's warning says
+Size the volume for the base images plus (devices x `writeQuota`) in the worst case. If a device's warning says
 `state persistence unavailable`, the node's containerd does not use the overlayfs snapshotter or the paths above are
 not mounted. A device whose snapshot image cannot be pulled stays in `ImagePullBackOff` and its status warning says
 `snapshot image unavailable`; the operator never falls back to the base image on its own (that would lose state
