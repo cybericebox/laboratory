@@ -70,83 +70,117 @@ func TestNetworkAnnotationStableMAC(t *testing.T) {
 
 func stateTestLab(t *testing.T, objs ...client.Object) *LabReconciler {
 	t.Helper()
+	scheme := pruneScheme(t)
+	_ = corev1.AddToScheme(scheme) // the device code allocator lists Services
 	c := fake.NewClientBuilder().
-		WithScheme(pruneScheme(t)).
+		WithScheme(scheme).
 		WithObjects(objs...).
 		WithStatusSubresource(&laboratoryv1alpha1.Lab{}, &laboratoryv1alpha1.Device{}).
 		Build()
-	return &LabReconciler{Client: c, State: StatePolicy{Enabled: true, MaxLayers: 10, MaxSnapshotBytes: 1 << 29}}
+	return &LabReconciler{Client: c, Scheme: scheme, State: StatePolicy{Enabled: true, MaxLayers: 10, MaxSnapshotBytes: 1 << 29}}
 }
 
 func newLab(name string) *laboratoryv1alpha1.Lab {
 	return &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns"}}
 }
 
-func TestStateModeIsFixedAtCreation(t *testing.T) {
-	ctx := context.Background()
+func persistent(debounce *metav1.Duration) laboratoryv1alpha1.DeviceTemplate {
+	return laboratoryv1alpha1.DeviceTemplate{Type: laboratoryv1alpha1.DeviceTypeContainer, Persistence: &laboratoryv1alpha1.DevicePersistence{Enabled: true, Debounce: debounce}}
+}
 
-	// A lab created with the switch on is stamped persistent and its devices carry the policy.
+// Persistence is a per-device decision made at the Device's creation: one lab may mix a
+// snapshot-backed device and a normal one.
+func TestPersistenceIsPerDevice(t *testing.T) {
 	r := stateTestLab(t, newLab("new"))
 	lab := newLab("new")
-	if err := r.Get(ctx, client.ObjectKeyFromObject(lab), lab); err != nil {
-		t.Fatal(err)
+	plain := laboratoryv1alpha1.DeviceTemplate{Type: laboratoryv1alpha1.DeviceTypeContainer}
+	off := laboratoryv1alpha1.DeviceTemplate{Type: laboratoryv1alpha1.DeviceTypeContainer, Persistence: &laboratoryv1alpha1.DevicePersistence{}}
+
+	if spec := r.deviceStateSpec(lab, persistent(nil)); spec == nil || !spec.Enabled || spec.MaxLayers != 10 {
+		t.Fatalf("a persistent device carries the policy: %+v", spec)
 	}
-	if updated, err := r.ensureModes(ctx, lab); err != nil || !updated {
-		t.Fatalf("first reconcile must stamp the lab: updated=%v err=%v", updated, err)
+	if r.deviceStateSpec(lab, plain) != nil || r.deviceStateSpec(lab, off) != nil {
+		t.Fatal("a device that did not ask for persistence is a Deployment")
 	}
-	if lab.Status.StatePersistence == nil || !*lab.Status.StatePersistence {
-		t.Fatal("lab created with the switch on must be persistent")
-	}
-	if spec := r.deviceStateSpec(lab, laboratoryv1alpha1.DeviceTemplate{Type: laboratoryv1alpha1.DeviceTypeContainer}); spec == nil || !spec.Enabled || spec.MaxLayers != 10 {
-		t.Fatalf("container device must carry the policy, got %+v", spec)
-	}
-	// The topology may set the debounce of a device; the rest of the policy stays the platform's.
+	// The topology may set the debounce; the rest of the policy stays the platform's.
 	d := metav1.Duration{Duration: 42 * time.Second}
-	custom := r.deviceStateSpec(lab, laboratoryv1alpha1.DeviceTemplate{Type: laboratoryv1alpha1.DeviceTypeContainer, Persistence: &laboratoryv1alpha1.DevicePersistence{Enabled: true, Debounce: &d}})
-	if custom.Debounce.Duration != 42*time.Second || custom.MaxLayers != 10 || custom.MaxSnapshotBytes != r.State.MaxSnapshotBytes {
+	if custom := r.deviceStateSpec(lab, persistent(&d)); custom.Debounce.Duration != 42*time.Second || custom.MaxLayers != 10 || custom.MaxSnapshotBytes != r.State.MaxSnapshotBytes {
 		t.Fatalf("custom debounce: %+v", custom)
 	}
-	if r.deviceStateSpec(lab, laboratoryv1alpha1.DeviceTemplate{Type: laboratoryv1alpha1.DeviceTypeHub}) != nil {
+	hub := persistent(nil)
+	hub.Type = laboratoryv1alpha1.DeviceTypeHub
+	if r.deviceStateSpec(lab, hub) != nil {
 		t.Fatal("a switch runs no container and needs no state")
 	}
-
-	// Flipping the switch off never changes the stamped lab.
+	// The platform not allowing persistence: nothing is snapshot-backed.
 	r.State.Enabled = false
-	if updated, err := r.ensureModes(ctx, lab); err != nil || updated {
-		t.Fatalf("a stamped lab is left alone: updated=%v err=%v", updated, err)
-	}
-	if !*lab.Status.StatePersistence {
-		t.Fatal("mode changed after creation")
-	}
-
-	// A lab created with the switch off stays on Deployments after it is flipped on.
-	off := newLab("off")
-	r2 := stateTestLab(t, off)
-	r2.State.Enabled = false
-	if _, err := r2.ensureModes(ctx, off); err != nil {
-		t.Fatal(err)
-	}
-	r2.State.Enabled = true
-	if _, err := r2.ensureModes(ctx, off); err != nil {
-		t.Fatal(err)
-	}
-	if *off.Status.StatePersistence || r2.deviceStateSpec(off, laboratoryv1alpha1.DeviceTemplate{Type: laboratoryv1alpha1.DeviceTypeContainer}) != nil {
-		t.Fatal("lab created with the switch off must stay on Deployments")
+	if r.deviceStateSpec(lab, persistent(nil)) != nil {
+		t.Fatal("persistence is allowed by the platform switch only")
 	}
 }
 
-func TestLabThatAlreadyHasDevicesIsNotSwitched(t *testing.T) {
+// A device keeps what was stamped at its creation, whatever the platform switch does later.
+func TestExistingDevicesKeepTheirMode(t *testing.T) {
+	r := stateTestLab(t, newLab("mix"))
+	lab := newLab("mix")
+	spec := r.deviceStateSpec(lab, persistent(nil))
+	dev := &laboratoryv1alpha1.Device{Spec: laboratoryv1alpha1.DeviceSpec{State: spec}}
+	plainDev := &laboratoryv1alpha1.Device{}
+	r.State.Enabled = false
+	if !deviceStateEnabled(dev) || deviceStateEnabled(plainDev) {
+		t.Fatal("the stamped devices must not change when the switch is flipped off")
+	}
+	r.State.Enabled = true
+	if !deviceStateEnabled(dev) || deviceStateEnabled(plainDev) {
+		t.Fatal("nor when it is flipped on")
+	}
+}
+
+// A mixed lab: the persistent device gets the snapshot policy at creation, the normal one does
+// not, and flipping the platform switch later changes neither.
+func TestMixedLabAndSwitchFlip(t *testing.T) {
 	ctx := context.Background()
-	legacy := newLab("legacy")
-	dev := &laboratoryv1alpha1.Device{ObjectMeta: metav1.ObjectMeta{
-		Name: "legacy-web", Namespace: "ns", Labels: map[string]string{names.LabelLab: "legacy"},
-	}}
-	r := stateTestLab(t, legacy, dev)
-	if _, err := r.ensureModes(ctx, legacy); err != nil {
+	lab := newLab("mix")
+	lab.Spec.Devices = []laboratoryv1alpha1.DeviceTemplate{
+		{Name: "web", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx", Persistence: &laboratoryv1alpha1.DevicePersistence{Enabled: true}},
+		{Name: "db", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "pg"},
+	}
+	r := stateTestLab(t, lab)
+	get := func(name string) *laboratoryv1alpha1.Device {
+		t.Helper()
+		var d laboratoryv1alpha1.Device
+		if err := r.Get(ctx, client.ObjectKey{Namespace: "ns", Name: name}, &d); err != nil {
+			t.Fatal(err)
+		}
+		return &d
+	}
+	if err := r.materializeDevices(ctx, lab, nil); err != nil {
 		t.Fatal(err)
 	}
-	if legacy.Status.StatePersistence == nil || *legacy.Status.StatePersistence {
-		t.Fatal("a lab that predates the feature keeps its Deployments even when the switch is on")
+	if !deviceStateEnabled(get("mix-web")) || deviceStateEnabled(get("mix-db")) {
+		t.Fatalf("mixed modes: web=%+v db=%+v", get("mix-web").Spec.State, get("mix-db").Spec.State)
+	}
+	// The switch goes off, then on again: existing devices are untouched.
+	for _, allowed := range []bool{false, true} {
+		r.State.Enabled = allowed
+		if err := r.materializeDevices(ctx, lab, nil); err != nil {
+			t.Fatal(err)
+		}
+		if !deviceStateEnabled(get("mix-web")) || deviceStateEnabled(get("mix-db")) {
+			t.Fatalf("the platform switch (%v) changed an existing device", allowed)
+		}
+	}
+	// A device created while the switch is off is a Deployment even if it asks for persistence.
+	lab2 := newLab("late")
+	lab2.Spec.Devices = lab.Spec.Devices[:1]
+	r2 := stateTestLab(t, lab2)
+	r2.State.Enabled = false
+	if err := r2.materializeDevices(ctx, lab2, nil); err != nil {
+		t.Fatal(err)
+	}
+	var d laboratoryv1alpha1.Device
+	if err := r2.Get(ctx, client.ObjectKey{Namespace: "ns", Name: "late-web"}, &d); err != nil || deviceStateEnabled(&d) {
+		t.Fatalf("persistence is allowed by the platform switch only: %v %+v", err, d.Spec.State)
 	}
 }
 

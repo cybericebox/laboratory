@@ -25,34 +25,28 @@ type StatePolicy struct {
 	MaxLayers        int32
 }
 
-// ensureModes decides, once, how the lab runs: whether its devices are
-// snapshot-backed Pods (Status.StatePersistence) and whether its images are
-// pulled through the image cache (Status.ImageCache). A lab that already has
-// Devices was created before the decision existed (or while the switch was off)
-// and keeps its mode, so flipping a platform switch never changes a live lab.
-// It reports whether it wrote the status.
+// ensureModes decides, once, whether the lab's images are pulled through the image
+// cache (Status.ImageCache). A lab that already has Devices was created before the
+// decision existed (or while the switch was off) and keeps its mode, so flipping a
+// platform switch never changes a live lab. State persistence is not a lab mode: each
+// device decides at its creation (deviceStateSpec). It reports whether it wrote the status.
 func (r *LabReconciler) ensureModes(ctx context.Context, lab *laboratoryv1alpha1.Lab) (bool, error) {
-	if lab.Status.StatePersistence != nil && lab.Status.ImageCache != nil {
+	if lab.Status.ImageCache != nil {
 		return false, nil
 	}
-	persist, cache := r.State.Enabled, r.Mirror.Prefix != ""
-	if persist || cache {
+	cache := r.Mirror.Prefix != ""
+	if cache {
 		var devices laboratoryv1alpha1.DeviceList
 		if err := r.List(ctx, &devices, client.InNamespace(lab.Namespace), client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
 			return false, err
 		}
 		if len(devices.Items) > 0 {
-			persist, cache = false, false
+			cache = false
 		}
 	}
-	if lab.Status.StatePersistence == nil {
-		lab.Status.StatePersistence = &persist
-	}
-	if lab.Status.ImageCache == nil {
-		lab.Status.ImageCache = &cache
-		if cache {
-			r.pinImages(ctx, lab)
-		}
+	lab.Status.ImageCache = &cache
+	if cache {
+		r.pinImages(ctx, lab)
 	}
 	if err := r.Status().Update(ctx, lab); err != nil {
 		return false, err
@@ -69,15 +63,18 @@ func (r *LabReconciler) deviceMirror(lab *laboratoryv1alpha1.Lab, t laboratoryv1
 	return r.Mirror.Prefix
 }
 
-// deviceStateSpec is the state policy of a new Device of the lab; nil when the
-// lab does not use persistence or the device runs no container.
+// deviceStateSpec is the state policy of a new Device, decided once at its creation: the
+// topology asked for persistence (devices[].persistence.enabled), the platform allows it
+// and the device runs a container. Otherwise nil: a Deployment. The Device keeps what was
+// stamped, so later changes of the platform switch never change an existing device. One lab
+// may mix both kinds.
 func (r *LabReconciler) deviceStateSpec(lab *laboratoryv1alpha1.Lab, tmpl laboratoryv1alpha1.DeviceTemplate) *laboratoryv1alpha1.DeviceStateSpec {
-	if lab.Status.StatePersistence == nil || !*lab.Status.StatePersistence || tmpl.Type != laboratoryv1alpha1.DeviceTypeContainer {
+	if !r.State.Enabled || tmpl.Persistence == nil || !tmpl.Persistence.Enabled || tmpl.Type != laboratoryv1alpha1.DeviceTypeContainer {
 		return nil
 	}
 	// The topology may set the debounce of a device; the excluded paths and the quota are the platform's.
 	debounce := metav1.Duration{Duration: r.State.Debounce}
-	if p := tmpl.Persistence; p != nil && p.Debounce != nil {
+	if p := tmpl.Persistence; p.Debounce != nil {
 		debounce = *p.Debounce
 	}
 	return &laboratoryv1alpha1.DeviceStateSpec{

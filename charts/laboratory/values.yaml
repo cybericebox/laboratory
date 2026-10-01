@@ -353,10 +353,11 @@ devices:
   # netfilter/route state are lost, as in a VM reboot; seconds of work are lost when
   # a node dies. See DEPLOY.md, "Device state persistence".
   #
-  # false: devices run as Deployments, exactly as without the feature.
-  # true: the labs CREATED from now on run their devices as bare Pods managed by the
-  # operator. The mode is fixed on each Lab when it is created; flipping this switch
-  # never changes existing labs.
+  # This switch only ALLOWS persistence. Each device chooses with persistence.enabled
+  # in its topology: such a device runs as a bare Pod managed by the operator, every
+  # other device as a Deployment (one lab may mix both). The choice is made when the
+  # Device is created and never changes, whatever this switch does later.
+  # false: no device can ask for persistence.
   statePersistence:
     enabled: false
 

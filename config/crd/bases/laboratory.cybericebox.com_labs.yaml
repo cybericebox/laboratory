@@ -505,7 +505,7 @@ spec:
               imageCache:
                 description: |-
                   ImageCache records whether this lab pulls its images through the platform
-                  image cache, decided once on the first reconcile like StatePersistence.
+                  image cache, decided once on the first reconcile.
                 type: boolean
               imageDigests:
                 additionalProperties:
@@ -576,12 +576,6 @@ spec:
                       (Wait* constants).
                     type: string
                 type: object
-              statePersistence:
-                description: |-
-                  StatePersistence records how this lab runs its devices, decided once on the
-                  first reconcile: true = bare Pods with snapshot-backed state, false =
-                  Deployments. It never changes afterwards, whatever the platform switch says.
-                type: boolean
               vpn:
                 description: LabNetworkStatus reports the allocated CIDR for a network
                   segment.

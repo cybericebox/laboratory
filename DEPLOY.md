@@ -549,10 +549,12 @@ devices:
 - the chart deploys the platform registry ([zot](https://zotregistry.dev)) in `laboratory-system`: a
   PersistentVolumeClaim (`registry.storageClass`, `registry.size`; it is kept on `helm uninstall`), a Service, and a
   Secret with generated `htpasswd` credentials for the single writer;
-- the operator runs the devices of **new** labs as bare Pods (`restartPolicy: Never`) that it owns and recreates. The
-  mode is fixed on each Lab when it is first reconciled (`Lab.status.statePersistence`); flipping the switch never
-  changes an existing lab, in either direction;
-- the node-agent watches the devices of its node and snapshots them.
+- the switch only **allows** persistence. Each device decides for itself with `persistence.enabled` in its topology
+  (see "State persistence" in the agent API): such a device runs as a bare Pod (`restartPolicy: Never`) that the operator owns
+  and recreates, every other device as a Deployment, and one lab may mix both. The choice is stamped on the Device
+  (`spec.state`) when it is created and is immutable, so flipping the switch later never changes an existing device;
+- the node-agent runs the snapshot engine whenever persistence is allowed, and snapshots only the devices that run as
+  snapshot-backed Pods.
 
 Requirements on the nodes (nothing has to be installed or configured on the host):
 
@@ -619,9 +621,10 @@ name before the deadline cancels the deletion.
 
 ### Turning it off
 
-`devices.statePersistence.enabled: false` only stops new labs from using persistence. Labs that already run with it
-keep depending on the registry and on the node-agent's snapshot engine, which the switch also removes from the
-node-agent. Leave the switch on until the last such lab is deleted (or accept that they stop being snapshotted).
+`devices.statePersistence.enabled: false` only stops new devices from using persistence (the agent refuses a topology that asks
+for it). Devices that already run as snapshot-backed Pods keep that mode, but they depend on the registry and on the
+node-agent's snapshot engine, which the switch also removes from the node-agent. Leave the switch on until the last such device is
+deleted (or accept that they stop being snapshotted).
 
 ### Operating it
 

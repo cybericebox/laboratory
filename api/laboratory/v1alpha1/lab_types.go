@@ -93,13 +93,8 @@ type LabStatus struct {
 	// Scheduling is the place of the lab in the scheduler queue.
 	// +optional
 	Scheduling *SchedulingStatus `json:"scheduling,omitempty"`
-	// StatePersistence records how this lab runs its devices, decided once on the
-	// first reconcile: true = bare Pods with snapshot-backed state, false =
-	// Deployments. It never changes afterwards, whatever the platform switch says.
-	// +optional
-	StatePersistence *bool `json:"statePersistence,omitempty"`
 	// ImageCache records whether this lab pulls its images through the platform
-	// image cache, decided once on the first reconcile like StatePersistence.
+	// image cache, decided once on the first reconcile.
 	// +optional
 	ImageCache *bool `json:"imageCache,omitempty"`
 	// ImageDigests are the digests the image tags of the lab's container devices

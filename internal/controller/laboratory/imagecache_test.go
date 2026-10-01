@@ -74,7 +74,7 @@ func TestImageCacheLabWithDevicesIsNotSwitched(t *testing.T) {
 	if _, err := r.ensureModes(context.Background(), legacy); err != nil {
 		t.Fatal(err)
 	}
-	if *legacy.Status.ImageCache || *legacy.Status.StatePersistence {
+	if *legacy.Status.ImageCache {
 		t.Fatal("a lab that predates the switches keeps pulling directly")
 	}
 }

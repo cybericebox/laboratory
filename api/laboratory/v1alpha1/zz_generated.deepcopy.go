@@ -1262,11 +1262,6 @@ func (in *LabStatus) DeepCopyInto(out *LabStatus) {
 		*out = new(SchedulingStatus)
 		**out = **in
 	}
-	if in.StatePersistence != nil {
-		in, out := &in.StatePersistence, &out.StatePersistence
-		*out = new(bool)
-		**out = **in
-	}
 	if in.ImageCache != nil {
 		in, out := &in.ImageCache, &out.ImageCache
 		*out = new(bool)
