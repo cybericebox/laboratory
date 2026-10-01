@@ -373,6 +373,10 @@ devices:
     # size of all its snapshot layers). Over the quota the last good snapshot is kept
     # and a warning shows in the lab status.
     writeQuota: 512Mi
+    # A regular file larger than this is never snapshotted (only that file is skipped;
+    # the lab status warning names it). The write quota above is the total backstop,
+    # applied after skipping.
+    maxFileSize: 256Mi
     # Snapshot layers kept on top of the base image before they are squashed into one.
     maxLayers: 10
     # How long the snapshots of a deleted lab are kept before the repository is deleted

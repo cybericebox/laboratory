@@ -16,9 +16,11 @@ import (
 // Defaults of the policy; the chart values and the operator configuration use
 // the same numbers.
 const (
-	DefaultDebounce        = 5 * time.Second
+	DefaultDebounce   = 5 * time.Second
 	DefaultWriteQuota = int64(512 << 20)
-	DefaultMaxLayers       = 10
+	DefaultMaxLayers  = 10
+	// DefaultMaxFileSize: a regular file larger than this is left out of a snapshot.
+	DefaultMaxFileSize = int64(256 << 20)
 )
 
 // DefaultExcludePaths are never snapshotted unless the operator overrides the list.
@@ -41,8 +43,10 @@ var SystemExcludePaths = []string{
 type Policy struct {
 	Debounce     time.Duration
 	ExcludePaths []string
-	WriteQuota     int64
-	MaxLayers    int
+	WriteQuota   int64
+	// MaxFileSize: a regular file over it is skipped (like an excluded path, for that file only).
+	MaxFileSize int64
+	MaxLayers   int
 }
 
 // NewPolicy fills unset fields with the defaults and normalises the exclude
@@ -55,6 +59,7 @@ func NewPolicy(debounce time.Duration, exclude []string, maxBytes int64, maxLaye
 	if p.WriteQuota <= 0 {
 		p.WriteQuota = DefaultWriteQuota
 	}
+	p.MaxFileSize = DefaultMaxFileSize
 	if p.MaxLayers <= 0 {
 		p.MaxLayers = DefaultMaxLayers
 	}
@@ -69,6 +74,14 @@ func NewPolicy(debounce time.Duration, exclude []string, maxBytes int64, maxLaye
 		}
 		seen[e] = true
 		p.ExcludePaths = append(p.ExcludePaths, e)
+	}
+	return p
+}
+
+// WithMaxFileSize sets the per-file size limit (n <= 0 keeps the default).
+func (p Policy) WithMaxFileSize(n int64) Policy {
+	if n > 0 {
+		p.MaxFileSize = n
 	}
 	return p
 }

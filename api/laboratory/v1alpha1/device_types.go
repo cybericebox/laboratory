@@ -88,6 +88,10 @@ type DeviceStateSpec struct {
 	// the last good snapshot is kept and a warning is reported.
 	// +optional
 	WriteQuotaBytes int64 `json:"writeQuotaBytes,omitempty"`
+	// MaxFileBytes: a regular file larger than this is left out of the snapshots
+	// (the status warning names it). Zero is the platform default.
+	// +optional
+	MaxFileBytes int64 `json:"maxFileBytes,omitempty"`
 	// MaxLayers is the number of snapshot layers after which the chain is
 	// squashed into one.
 	// +optional

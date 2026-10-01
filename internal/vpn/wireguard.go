@@ -8,7 +8,7 @@ import (
 	"net"
 	"syscall"
 	"time"
-	
+
 	"github.com/vishvananda/netlink"
 	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
@@ -47,7 +47,7 @@ func (m *WGManager) Init(privKeyBase64 string, listenPort int) error {
 	if err := netlink.LinkSetUp(link); err != nil {
 		return fmt.Errorf("set wg interface up: %w", err)
 	}
-	
+
 	key, err := wgtypes.ParseKey(privKeyBase64)
 	if err != nil {
 		return fmt.Errorf("parse private key: %w", err)

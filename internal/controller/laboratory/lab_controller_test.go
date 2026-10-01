@@ -3,13 +3,13 @@ package laboratory
 import (
 	"fmt"
 	"time"
-	
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	
+
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 )
@@ -21,7 +21,7 @@ var _ = Describe(
 			timeout  = 15 * time.Second
 			interval = 250 * time.Millisecond
 		)
-		
+
 		It(
 			"materializes Device and Connection CRDs and allocates VNI on CREATE", func() {
 				lab := &laboratoryv1alpha1.Lab{
@@ -86,7 +86,7 @@ var _ = Describe(
 						_ = k8sClient.Delete(ctx, &l)
 					},
 				)
-				
+
 				// Two Device CRDs must be created.
 				Eventually(
 					func() int {
@@ -98,7 +98,7 @@ var _ = Describe(
 						return len(list.Items)
 					}, timeout, interval,
 				).Should(Equal(2))
-				
+
 				// One Connection CRD must be created.
 				Eventually(
 					func() int {
@@ -110,7 +110,7 @@ var _ = Describe(
 						return len(list.Items)
 					}, timeout, interval,
 				).Should(Equal(1))
-				
+
 				// The Connection must have a VNI allocated in its status.
 				Eventually(
 					func() bool {
@@ -127,7 +127,7 @@ var _ = Describe(
 				).Should(BeTrue())
 			},
 		)
-		
+
 		It(
 			"allocates VNI for UnmanagedSwitch device", func() {
 				lab := &laboratoryv1alpha1.Lab{
@@ -157,7 +157,7 @@ var _ = Describe(
 						_ = k8sClient.Delete(ctx, &l)
 					},
 				)
-				
+
 				deviceName := fmt.Sprintf("%s-%s", "vni-test", "sw1")
 				Eventually(
 					func() *uint {
@@ -168,7 +168,7 @@ var _ = Describe(
 				).ShouldNot(BeNil())
 			},
 		)
-		
+
 		It(
 			"sets status=Failed when the switch topology contains a cycle", func() {
 				lab := &laboratoryv1alpha1.Lab{
@@ -196,7 +196,7 @@ var _ = Describe(
 						_ = k8sClient.Delete(ctx, &l)
 					},
 				)
-				
+
 				Eventually(
 					func() laboratoryv1alpha1.Phase {
 						var updated laboratoryv1alpha1.Lab
@@ -204,7 +204,7 @@ var _ = Describe(
 						return updated.Status.Phase
 					}, timeout, interval,
 				).Should(Equal(laboratoryv1alpha1.PhaseFailed))
-				
+
 				// No Device or Connection CRDs must be created for a cyclic topology.
 				var devList laboratoryv1alpha1.DeviceList
 				Expect(

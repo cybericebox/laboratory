@@ -3,7 +3,7 @@ package laboratory
 import (
 	"context"
 	"fmt"
-	
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	
+
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/proxy"
 )
@@ -25,11 +25,11 @@ const (
 	// PlatformSecretName is the admin-managed Secret in laboratory-system that
 	// holds the platform's lab access public key (Ed25519).
 	PlatformSecretName = "lab-access-public-key"
-	
+
 	// ProxyCredentialsName is the Secret in laboratory-proxy that the
 	// proxy pod mounts. Created and kept in sync by PlatformReconciler.
 	ProxyCredentialsName = "lab-access-public-key"
-	
+
 	// LabAccessPublicKeyField is the key within both Secrets that holds the
 	// Ed25519 public key PEM (a file named public.pem once mounted).
 	LabAccessPublicKeyField = "public.pem"
@@ -47,7 +47,7 @@ type PlatformReconciler struct {
 
 func (r *PlatformReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.Log.WithName("platform")
-	
+
 	var src corev1.Secret
 	if err := r.Get(
 		ctx, types.NamespacedName{
@@ -61,12 +61,12 @@ func (r *PlatformReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 		return ctrl.Result{}, err
 	}
-	
+
 	accessKey, ok := src.Data[LabAccessPublicKeyField]
 	if !ok {
 		return ctrl.Result{}, fmt.Errorf("platform secret missing key %q", LabAccessPublicKeyField)
 	}
-	
+
 	// Never hand the proxy a key it cannot load (it would keep the old one and
 	// log an error, or fail to start).
 	if _, err := proxy.ParseLabAccessPublicKey(accessKey); err != nil {
@@ -92,7 +92,7 @@ func (r *PlatformReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	
+
 	patch := client.MergeFrom(existing.DeepCopy())
 	if existing.Data == nil {
 		existing.Data = make(map[string][]byte)
@@ -119,7 +119,7 @@ func (r *PlatformReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		DeleteFunc:  func(event.DeleteEvent) bool { return false },
 		GenericFunc: func(event.GenericEvent) bool { return false },
 	}
-	
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Secret{}, builder.WithPredicates(isPlatformSecret)).
 		// Also reconcile when the proxy copy is deleted externally.

@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"sync/atomic"
 	"time"
-	
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	
+
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
@@ -24,16 +24,16 @@ var lgcCounter atomic.Int64
 var _ = Describe(
 	"LabGroupClient controller", func() {
 		const (
-			timeout = 15 * time.Second
+			timeout  = 15 * time.Second
 			interval = 250 * time.Millisecond
 		)
-		
+
 		// Each test gets its own LabGroup (and thus namespace) to avoid pool state leakage.
 		var (
 			lgName string
 			lgNS   string
 		)
-		
+
 		BeforeEach(
 			func() {
 				lg := &laboratoryv1alpha1.LabGroup{
@@ -46,7 +46,7 @@ var _ = Describe(
 						_ = k8sClient.Delete(ctx, lg)
 					},
 				)
-				
+
 				// Wait until LabGroup reconciler populates Status.Namespace (and creates the vpn-clients-0 pool).
 				Eventually(
 					func() string {
@@ -55,13 +55,13 @@ var _ = Describe(
 						return updated.Status.Namespace
 					}, timeout, interval,
 				).ShouldNot(BeEmpty())
-				
+
 				var updated laboratoryv1alpha1.LabGroup
 				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: lgName}, &updated)).To(Succeed())
 				lgNS = updated.Status.Namespace
 			},
 		)
-		
+
 		It(
 			"assigns a unique non-zero IP on CREATE", func() {
 				lgc := &laboratoryv1alpha1.LabGroupClient{
@@ -74,7 +74,7 @@ var _ = Describe(
 						_ = k8sClient.Delete(ctx, lgc)
 					},
 				)
-				
+
 				// Wait for AssignedIP to be set.
 				Eventually(
 					func() string {
@@ -83,7 +83,7 @@ var _ = Describe(
 						return updated.Status.AssignedIP
 					}, timeout, interval,
 				).ShouldNot(BeEmpty())
-				
+
 				var updated laboratoryv1alpha1.LabGroupClient
 				Expect(
 					k8sClient.Get(
@@ -92,12 +92,12 @@ var _ = Describe(
 						&updated,
 					),
 				).To(Succeed())
-				
+
 				// IP must be a valid 10.8.0.X/32 and X must not be 0 (reserved).
 				Expect(updated.Status.AssignedIP).To(MatchRegexp(`^10\.8\.0\.[1-9][0-9]*/32$`))
 			},
 		)
-		
+
 		It(
 			"assigns distinct IPs to two concurrent clients", func() {
 				lgcA := &laboratoryv1alpha1.LabGroupClient{
@@ -116,23 +116,23 @@ var _ = Describe(
 						_ = k8sClient.Delete(ctx, lgcB)
 					},
 				)
-				
+
 				ipOf := func(name string) string {
 					var lgc laboratoryv1alpha1.LabGroupClient
 					_ = k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: lgNS}, &lgc)
 					return lgc.Status.AssignedIP
 				}
-				
+
 				Eventually(
 					func() bool {
 						return ipOf("client-b") != "" && ipOf("client-c") != ""
 					}, timeout, interval,
 				).Should(BeTrue())
-				
+
 				Expect(ipOf("client-b")).NotTo(Equal(ipOf("client-c")))
 			},
 		)
-		
+
 		It(
 			"releases the IP back to the pool on DELETE", func() {
 				lgc := &laboratoryv1alpha1.LabGroupClient{
@@ -140,7 +140,7 @@ var _ = Describe(
 					Spec:       laboratoryv1alpha1.LabGroupClientSpec{PublicKey: "pk-d"},
 				}
 				Expect(k8sClient.Create(ctx, lgc)).To(Succeed())
-				
+
 				// Wait for IP assignment.
 				Eventually(
 					func() string {
@@ -149,7 +149,7 @@ var _ = Describe(
 						return updated.Status.AssignedIP
 					}, timeout, interval,
 				).ShouldNot(BeEmpty())
-				
+
 				var updated laboratoryv1alpha1.LabGroupClient
 				Expect(
 					k8sClient.Get(
@@ -159,10 +159,10 @@ var _ = Describe(
 					),
 				).To(Succeed())
 				assignedIP := updated.Status.AssignedIP
-				
+
 				// Record free count before delete.
 				freeBefore := poolFreeCount(lgNS)
-				
+
 				// Delete the client and wait for it to be gone.
 				Expect(k8sClient.Delete(ctx, &updated)).To(Succeed())
 				Eventually(
@@ -175,10 +175,10 @@ var _ = Describe(
 						) != nil
 					}, timeout, interval,
 				).Should(BeTrue())
-				
+
 				// Free count must increase by 1 (the released slot).
 				Expect(poolFreeCount(lgNS)).To(Equal(freeBefore + 1))
-				
+
 				// The same IP must be reallocatable.
 				lgc2 := &laboratoryv1alpha1.LabGroupClient{
 					ObjectMeta: metav1.ObjectMeta{Name: "client-d2", Namespace: lgNS},
@@ -190,7 +190,7 @@ var _ = Describe(
 						_ = k8sClient.Delete(ctx, lgc2)
 					},
 				)
-				
+
 				Eventually(
 					func() string {
 						var updated2 laboratoryv1alpha1.LabGroupClient

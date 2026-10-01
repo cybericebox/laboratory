@@ -39,6 +39,7 @@ data:
   STATE_DEBOUNCE: {{ .debounce | quote }}
   STATE_EXCLUDE_PATHS: {{ join "," .excludePaths | quote }}
   STATE_WRITE_QUOTA: {{ .writeQuota | quote }}
+  STATE_MAX_FILE_SIZE: {{ .maxFileSize | quote }}
   STATE_MAX_LAYERS: {{ .maxLayers | quote }}
   STATE_RETENTION: {{ .retention | quote }}
   {{- end }}

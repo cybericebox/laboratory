@@ -361,11 +361,16 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 	}
 	digest := hex.EncodeToString(sum.Sum(nil))
 
+	// Files over the size limit are left out of the layer; the status names them.
+	skipMsg := stats.SkippedWarning(pol.MaxFileSize)
 	if stats.Entries == 0 {
-		if !t.pushed {
-			return nil // nothing changed since the device started
+		if t.pushed {
+			if err := t.publishStart(ctx); err != nil {
+				return err
+			}
 		}
-		return t.publishStart(ctx)
+		t.warnSkipped(ctx, skipMsg)
+		return nil // nothing (else) changed since the device started
 	}
 	if digest == t.lastDiff {
 		return nil
@@ -394,6 +399,7 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 		return err
 	}
 	t.lastDiff, t.pushed, t.lastWarn = digest, true, ""
+	t.warnSkipped(ctx, skipMsg)
 	e.Log.Info("snapshot taken", "device", t.pod.Device, "pod", t.pod.Pod, "frozen", freeze,
 		"diff", diffTook.String(), "push", pushTook.String(), "total", e.now().Sub(started).String(),
 		"layers", chain.Layers(), "bytes", chain.Bytes(), "image", ref)
@@ -420,6 +426,13 @@ func (t *tracked) publishStart(ctx context.Context) error {
 	}
 	t.lastDiff, t.pushed, t.lastWarn = "", false, ""
 	return nil
+}
+
+// warnSkipped reports the files skipped for size, if any.
+func (t *tracked) warnSkipped(ctx context.Context, msg string) {
+	if msg != "" {
+		t.warn(ctx, msg)
+	}
 }
 
 // warn reports a warning once per distinct message.

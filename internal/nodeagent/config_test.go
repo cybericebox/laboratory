@@ -18,7 +18,7 @@ func TestLoadConfig_RequiresNodeName(t *testing.T) {
 func TestLoadConfig_Defaults(t *testing.T) {
 	os.Setenv("NODE_NAME", "worker-1")
 	defer os.Unsetenv("NODE_NAME")
-	
+
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

@@ -2,9 +2,9 @@ package laboratory
 
 import (
 	"testing"
-	
+
 	corev1 "k8s.io/api/core/v1"
-	
+
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
@@ -109,7 +109,7 @@ func TestDeviceSecurityContext(t *testing.T) {
 			Name: "eth1",
 			Addr: laboratoryv1alpha1.AddrSpec{
 				Type: laboratoryv1alpha1.AddrTypeStatic,
-				IP: "10.0.0.1/24",
+				IP:   "10.0.0.1/24",
 			},
 		},
 	}

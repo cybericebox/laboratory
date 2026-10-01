@@ -18,11 +18,12 @@ import (
 // It is copied onto the Devices of a Lab when they are created and never
 // re-applied, so changing it affects only labs created afterwards.
 type StatePolicy struct {
-	Enabled          bool
-	Debounce         time.Duration
-	ExcludePaths     []string
+	Enabled         bool
+	Debounce        time.Duration
+	ExcludePaths    []string
 	WriteQuotaBytes int64
-	MaxLayers        int32
+	MaxFileBytes    int64
+	MaxLayers       int32
 }
 
 // ensureModes decides, once, whether the lab's images are pulled through the image
@@ -78,11 +79,12 @@ func (r *LabReconciler) deviceStateSpec(lab *laboratoryv1alpha1.Lab, tmpl labora
 		debounce = *p.Debounce
 	}
 	return &laboratoryv1alpha1.DeviceStateSpec{
-		Enabled:          true,
-		Debounce:         debounce,
-		ExcludePaths:     append([]string(nil), r.State.ExcludePaths...),
+		Enabled:         true,
+		Debounce:        debounce,
+		ExcludePaths:    append([]string(nil), r.State.ExcludePaths...),
 		WriteQuotaBytes: r.State.WriteQuotaBytes,
-		MaxLayers:        r.State.MaxLayers,
+		MaxFileBytes:    r.State.MaxFileBytes,
+		MaxLayers:       r.State.MaxLayers,
 	}
 }
 

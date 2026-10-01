@@ -6,7 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	criapi "k8s.io/cri-api/pkg/apis/runtime/v1"
@@ -34,9 +34,9 @@ func PodNetNSFromCRI(ctx context.Context, criSock, podUID string) (string, error
 		return "", fmt.Errorf("dial CRI %s: %w", criSock, err)
 	}
 	defer conn.Close()
-	
+
 	rt := criapi.NewRuntimeServiceClient(conn)
-	
+
 	// Filter on READY: a restarted pod can still have its previous NOTREADY
 	// sandbox listed, and picking that one would return a dead netns path.
 	list, err := rt.ListPodSandbox(
@@ -53,7 +53,7 @@ func PodNetNSFromCRI(ctx context.Context, criSock, podUID string) (string, error
 	if len(list.Items) == 0 {
 		return "", fmt.Errorf("ready sandbox not found for pod UID %s", podUID)
 	}
-	
+
 	status, err := rt.PodSandboxStatus(
 		ctx, &criapi.PodSandboxStatusRequest{
 			PodSandboxId: list.Items[0].Id,
@@ -63,17 +63,17 @@ func PodNetNSFromCRI(ctx context.Context, criSock, podUID string) (string, error
 	if err != nil {
 		return "", fmt.Errorf("sandbox status for pod %s: %w", podUID, err)
 	}
-	
+
 	info, ok := status.Info["info"]
 	if !ok {
 		return "", fmt.Errorf("no 'info' key in sandbox verbose status for pod %s", podUID)
 	}
-	
+
 	var si criSandboxInfo
 	if err := json.Unmarshal([]byte(info), &si); err != nil {
 		return "", fmt.Errorf("parse sandbox info for pod %s: %w", podUID, err)
 	}
-	
+
 	for _, ns := range si.RuntimeSpec.Linux.Namespaces {
 		if ns.Type == "network" && ns.Path != "" {
 			return ns.Path, nil

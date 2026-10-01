@@ -15,12 +15,17 @@ func SetupState(c operator.StateConfig) (StatePolicy, *snapshot.Registry, error)
 	if err != nil {
 		return StatePolicy{}, nil, err
 	}
+	maxFile, err := c.MaxFileBytes()
+	if err != nil {
+		return StatePolicy{}, nil, err
+	}
 	pol := StatePolicy{
-		Enabled:          c.Enabled,
-		Debounce:         c.Debounce,
-		ExcludePaths:     c.ExcludePaths,
+		MaxFileBytes:    maxFile,
+		Enabled:         c.Enabled,
+		Debounce:        c.Debounce,
+		ExcludePaths:    c.ExcludePaths,
 		WriteQuotaBytes: maxBytes,
-		MaxLayers:        c.MaxLayers,
+		MaxLayers:       c.MaxLayers,
 	}
 	if !c.Enabled || c.RegistryAddr == "" {
 		return pol, nil, nil

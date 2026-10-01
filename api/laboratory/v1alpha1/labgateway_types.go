@@ -47,7 +47,7 @@ type LabGatewayStatus struct {
 type LabGateway struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	
+
 	Spec   LabGatewaySpec   `json:"spec,omitempty"`
 	Status LabGatewayStatus `json:"status,omitempty"`
 }

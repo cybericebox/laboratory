@@ -147,6 +147,8 @@ type StateConfig struct {
 	ExcludePaths []string `env:"STATE_EXCLUDE_PATHS" envSeparator:"," envDefault:"/tmp,/var/tmp,/run"`
 	// WriteQuota is the quota per device, a Kubernetes quantity ("512Mi").
 	WriteQuota string `env:"STATE_WRITE_QUOTA" envDefault:"512Mi"`
+	// MaxFileSize: a regular file larger than this is left out of a snapshot (a Kubernetes quantity).
+	MaxFileSize string `env:"STATE_MAX_FILE_SIZE" envDefault:"256Mi"`
 	// MaxLayers is the snapshot layer count after which the chain is squashed.
 	MaxLayers int32 `env:"STATE_MAX_LAYERS" envDefault:"10"`
 	// Retention is how long the snapshots of a deleted lab are kept.
@@ -160,6 +162,15 @@ func (c StateConfig) WriteQuotaBytes() (int64, error) {
 	q, err := resource.ParseQuantity(c.WriteQuota)
 	if err != nil {
 		return 0, fmt.Errorf("STATE_WRITE_QUOTA %q: %w", c.WriteQuota, err)
+	}
+	return q.Value(), nil
+}
+
+// MaxFileBytes parses MaxFileSize.
+func (c StateConfig) MaxFileBytes() (int64, error) {
+	q, err := resource.ParseQuantity(c.MaxFileSize)
+	if err != nil {
+		return 0, fmt.Errorf("STATE_MAX_FILE_SIZE %q: %w", c.MaxFileSize, err)
 	}
 	return q.Value(), nil
 }
@@ -193,6 +204,9 @@ func LoadConfig() (*Config, error) {
 		}
 	}
 	if _, err := cfg.State.WriteQuotaBytes(); err != nil {
+		return nil, err
+	}
+	if _, err := cfg.State.MaxFileBytes(); err != nil {
 		return nil, err
 	}
 	return cfg, nil
