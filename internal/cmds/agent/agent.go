@@ -22,6 +22,10 @@ func Run() {
 	if err != nil {
 		log.Fatalf("in-cluster config: %v", err)
 	}
+	// Batch calls write thousands of objects; the default client-side rate limit
+	// (5 QPS, burst 10) would make them crawl.
+	restCfg.QPS = 100
+	restCfg.Burst = 200
 	cs, err := grpcserver.NewVersionedClientset(restCfg)
 	if err != nil {
 		log.Fatalf("versioned client: %v", err)

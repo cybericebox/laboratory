@@ -2,35 +2,124 @@ package grpc
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
-// reconcileEnvSecrets materializes per-device environment variables into
-// write-only Secrets named "<lab>-<device>-env", owner-referenced by the Lab so
-// they are garbage-collected with it. The device pod loads them via envFrom.
-//
-// The agent only ever CREATEs/DELETEs these Secrets — never reads them — so a
-// device's env values (e.g. a task flag or a license) live solely in the
-// Secret, never in the Lab/Device CR and never back through the agent.
-// "Overwrite" is therefore delete-then-create, which needs no read.
-//
-// For every device in the lab spec: write its Secret when env is provided,
-// otherwise ensure no Secret exists (a device that dropped its env).
-func (h *Handler) reconcileEnvSecrets(ctx context.Context, lab *laboratoryv1alpha1.Lab, env []*protobuf.DeviceEnv) error {
-	byDevice := make(map[string]map[string]string, len(env))
-	for _, de := range env {
-		if de != nil {
-			byDevice[de.Device] = de.Vars
+// deviceVars is device name -> variable name -> value.
+type deviceVars map[string]map[string]string
+
+// mergeEnvLists folds DeviceEnv lists into one deviceVars; later lists override earlier
+// ones variable by variable. A listed device stays in the result even without variables
+// (the Update call reads that as "remove the Secret").
+func mergeEnvLists(lists ...[]*protobuf.DeviceEnv) deviceVars {
+	out := deviceVars{}
+	for _, list := range lists {
+		for _, de := range list {
+			if de == nil {
+				continue
+			}
+			vars := out[de.Device]
+			if vars == nil {
+				vars = map[string]string{}
+				out[de.Device] = vars
+			}
+			for k, v := range de.Vars {
+				vars[k] = v
+			}
 		}
 	}
+	return out
+}
 
+// validateEnv checks variable names and, when devices is given, that every device exists.
+func validateEnv(env deviceVars, devices map[string]bool) error {
+	for _, dev := range sortedKeys(env) {
+		if devices != nil && !devices[dev] {
+			return fmt.Errorf("env for unknown device %q", dev)
+		}
+		for k := range env[dev] {
+			if errs := validation.IsEnvVarName(k); len(errs) > 0 {
+				return fmt.Errorf("device %q: invalid variable name %q: %s", dev, k, strings.Join(errs, "; "))
+			}
+		}
+	}
+	return nil
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func specDevices(spec *laboratoryv1alpha1.LabSpec) map[string]bool {
+	out := make(map[string]bool, len(spec.Devices))
+	for i := range spec.Devices {
+		out[spec.Devices[i].Name] = true
+	}
+	return out
+}
+
+// forbiddenDeviceKeys are device fields that would carry variables (or flags) in the CR.
+// Device variables are secrets only; they travel in env, never in spec_json.
+var forbiddenDeviceKeys = []string{"env", "envs", "environment", "envfrom", "flag", "flags"}
+
+// parseLabSpec reads spec_json into a LabSpec. It rejects unknown fields and, with a
+// clear message, any env/flags field on devices.
+func parseLabSpec(raw []byte) (laboratoryv1alpha1.LabSpec, error) {
+	var spec laboratoryv1alpha1.LabSpec
+	if len(raw) == 0 {
+		return spec, fmt.Errorf("spec_json is empty")
+	}
+	var generic struct {
+		Devices []map[string]json.RawMessage `json:"devices"`
+	}
+	if err := json.Unmarshal(raw, &generic); err != nil {
+		return spec, fmt.Errorf("spec_json: %w", err)
+	}
+	for i, dev := range generic.Devices {
+		for key := range dev {
+			for _, bad := range forbiddenDeviceKeys {
+				if strings.EqualFold(key, bad) {
+					return spec, fmt.Errorf("spec_json: device %d carries %q: device variables are secrets, send them as env", i, key)
+				}
+			}
+		}
+	}
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&spec); err != nil {
+		return spec, fmt.Errorf("spec_json: %w", err)
+	}
+	return spec, nil
+}
+
+// writeDeviceSecrets materializes per-device variables into write-only Secrets named
+// "<lab>-<device>-env", owner-referenced by the Lab so they are garbage-collected with it.
+// The device pod loads them via envFrom.
+//
+// The agent only ever CREATEs/DELETEs these Secrets, never reads them, so a device's
+// variables (a task flag, a license) live solely in the Secret: never in the Lab/Device
+// CR and never back through the agent. "Overwrite" is therefore delete-then-create.
+//
+// For each device in devices: the Secret is written when it has variables, otherwise
+// removed. Writing the same values again is safe.
+func (h *Handler) writeDeviceSecrets(ctx context.Context, lab *laboratoryv1alpha1.Lab, devices []string, env deviceVars) error {
 	controller := true
 	owner := metav1.OwnerReference{
 		APIVersion:         laboratoryv1alpha1.SchemeGroupVersion.String(),
@@ -40,17 +129,13 @@ func (h *Handler) reconcileEnvSecrets(ctx context.Context, lab *laboratoryv1alph
 		Controller:         &controller,
 		BlockOwnerDeletion: &controller,
 	}
-
 	secrets := h.k8s.CoreV1().Secrets(lab.Namespace)
-	for i := range lab.Spec.Devices {
-		dev := lab.Spec.Devices[i].Name
+	for _, dev := range devices {
 		name := lab.Name + "-" + dev + "-env"
-
-		// Delete first so overwrite never requires reading the Secret.
 		if err := secrets.Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
-		vars := byDevice[dev]
+		vars := env[dev]
 		if len(vars) == 0 {
 			continue
 		}

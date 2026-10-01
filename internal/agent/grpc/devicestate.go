@@ -18,36 +18,105 @@ import (
 
 const kindDevice = "Device"
 
-// ResetDevice discards the snapshots of a device and restarts it from its base
-// image. The operator does the work: a new reset token on the Device is what it
-// acts on, so repeating the call resets again.
-func (h *Handler) ResetDevice(ctx context.Context, in *protobuf.DeviceRequest) (*protobuf.Empty, error) {
+// deviceTargets resolves the targets of a device call: explicit (lab_group, lab, device)
+// items, or a selector over labs plus a device name.
+func (h *Handler) deviceTargets(ctx context.Context, in *protobuf.DevicesRequest) ([]*protobuf.ItemRef, error) {
+	sel := in.GetBySelector()
+	if err := checkSelection(sel.GetSelector(), len(in.GetItems()), sel != nil); err != nil {
+		return nil, err
+	}
+	if sel == nil {
+		for i, r := range in.GetItems() {
+			if r.GetLabGroup() == "" || r.GetLab() == "" || r.GetName() == "" {
+				return nil, invalid("item %d: lab_group, lab and name (the device) are required", i)
+			}
+		}
+		if err := dupRefs(in.GetItems()); err != nil {
+			return nil, err
+		}
+		return in.GetItems(), nil
+	}
+	if sel.GetDevice() == "" {
+		return nil, invalid("by_selector.device is required")
+	}
+	matches, err := h.listLabs(ctx, sel.GetSelector(), sel.GetLabGroup())
+	if err != nil {
+		return nil, err
+	}
+	if err := checkMatched(len(matches), sel.ExpectedCount); err != nil {
+		return nil, err
+	}
+	refs := make([]*protobuf.ItemRef, 0, len(matches))
+	for _, m := range matches {
+		refs = append(refs, &protobuf.ItemRef{LabGroup: m.group, Lab: m.lab.Name, Name: sel.GetDevice()})
+	}
+	sortRefs(refs)
+	return refs, nil
+}
+
+// patchDevices applies a Device spec patch to every target. needState: the device must
+// have state persistence.
+func (h *Handler) patchDevices(ctx context.Context, in *protobuf.DevicesRequest, needState bool, patch func() (map[string]any, error)) (*protobuf.BatchResult, error) {
+	refs, err := h.deviceTargets(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	resolver := h.newResolver()
+	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
+		spec, err := patch()
+		if err != nil {
+			return failedResult(refs[i], err)
+		}
+		if err := h.patchDevice(ctx, resolver, refs[i], needState, spec); err != nil {
+			return failedResult(refs[i], err)
+		}
+		return result(refs[i], protobuf.ItemState_ITEM_STATE_UPDATED)
+	})}, nil
+}
+
+func newToken() (string, error) {
 	token := make([]byte, 8)
 	if _, err := rand.Read(token); err != nil {
-		return nil, err
+		return "", err
 	}
-	if err := h.patchDeviceState(ctx, in.Namespace, in.Lab, in.Device, map[string]any{"resetToken": hex.EncodeToString(token)}); err != nil {
-		return nil, err
-	}
-	return &protobuf.Empty{}, nil
+	return hex.EncodeToString(token), nil
 }
 
-// RescueDevice switches a device between its normal start and rescue mode: the
-// latest snapshot started with a shell instead of the image entrypoint.
-func (h *Handler) RescueDevice(ctx context.Context, in *protobuf.RescueDeviceRequest) (*protobuf.Empty, error) {
-	if err := h.patchDeviceState(ctx, in.Namespace, in.Lab, in.Device, map[string]any{"rescue": in.Enable}); err != nil {
-		return nil, err
-	}
-	return &protobuf.Empty{}, nil
+// ResetDevices discards the snapshots of the devices and restarts them from their base
+// image. The operator does the work: a new reset token on the Device is what it acts
+// on, so repeating the call resets again.
+func (h *Handler) ResetDevices(ctx context.Context, in *protobuf.DevicesRequest) (*protobuf.BatchResult, error) {
+	return h.patchDevices(ctx, in, true, func() (map[string]any, error) {
+		token, err := newToken()
+		return map[string]any{"state": map[string]any{"resetToken": token}}, err
+	})
 }
 
-// patchDeviceState merges fields into spec.state of a device that has state persistence.
-func (h *Handler) patchDeviceState(ctx context.Context, namespace, lab, device string, fields map[string]any) error {
-	if namespace == "" || lab == "" || device == "" {
-		return status.Error(codes.InvalidArgument, "namespace, lab and device are required")
+// RescueDevices switches devices between their normal start and rescue mode: the latest
+// snapshot started with a shell instead of the image entrypoint.
+func (h *Handler) RescueDevices(ctx context.Context, in *protobuf.RescueDevicesRequest) (*protobuf.BatchResult, error) {
+	return h.patchDevices(ctx, in.GetDevices(), true, func() (map[string]any, error) {
+		return map[string]any{"state": map[string]any{"rescue": in.GetEnable()}}, nil
+	})
+}
+
+// RetryDevices asks the operator to retry the pod of devices whose start failed: a new
+// retry token on the Device is what the operator acts on, so every call is a new retry.
+func (h *Handler) RetryDevices(ctx context.Context, in *protobuf.DevicesRequest) (*protobuf.BatchResult, error) {
+	return h.patchDevices(ctx, in, false, func() (map[string]any, error) {
+		token, err := newToken()
+		return map[string]any{"retryToken": token}, err
+	})
+}
+
+// patchDevice merge-patches the spec of the Device "<lab>-<device>".
+func (h *Handler) patchDevice(ctx context.Context, resolver *groupResolver, ref *protobuf.ItemRef, needState bool, spec map[string]any) error {
+	ns, err := resolver.namespace(ctx, ref.GetLabGroup())
+	if err != nil {
+		return err
 	}
-	name := fmt.Sprintf("%s-%s", lab, device)
-	devices := h.cs.LaboratoryV1alpha1().Devices(namespace)
+	name := fmt.Sprintf("%s-%s", ref.GetLab(), ref.GetName())
+	devices := h.cs.LaboratoryV1alpha1().Devices(ns)
 	cur, err := devices.Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return err
@@ -55,10 +124,10 @@ func (h *Handler) patchDeviceState(ctx context.Context, namespace, lab, device s
 	if err := rejectTerminating(kindDevice, cur); err != nil {
 		return err
 	}
-	if !cur.Spec.StateEnabled() {
-		return status.Errorf(codes.FailedPrecondition, "device %s of lab %s has no state persistence", device, lab)
+	if needState && !cur.Spec.StateEnabled() {
+		return status.Errorf(codes.FailedPrecondition, "device %s of lab %s has no state persistence", ref.GetName(), ref.GetLab())
 	}
-	patch, err := json.Marshal(map[string]any{"spec": map[string]any{"state": fields}})
+	patch, err := json.Marshal(map[string]any{"spec": spec})
 	if err != nil {
 		return err
 	}

@@ -121,24 +121,8 @@ func quantityValue(value string) int64 {
 func labMonitoringToProto(l *laboratoryv1alpha1.Lab, labGroupName string) *protobuf.Lab {
 	p := labToProto(l)
 	p.SpecJson = nil
-	p.Env = nil
 	p.LabGroupName = labGroupName
 	return p
-}
-
-// protoToLab maps a gRPC Lab message back to a Lab custom resource,
-// unmarshalling spec_json into the typed Spec field.
-func protoToLab(p *protobuf.Lab) (*laboratoryv1alpha1.Lab, error) {
-	l := &laboratoryv1alpha1.Lab{}
-	l.Name = p.Name
-	l.Namespace = p.Namespace
-	l.Labels = copyLabels(p.Labels)
-	if len(p.SpecJson) > 0 {
-		if err := json.Unmarshal(p.SpecJson, &l.Spec); err != nil {
-			return nil, err
-		}
-	}
-	return l, nil
 }
 
 // clientToProto maps a LabGroupClient custom resource to its gRPC wire

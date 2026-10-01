@@ -55,6 +55,10 @@ type DeviceSpecApplyConfiguration struct {
 	// same image even if an upstream tag moves. An image that could not be
 	// resolved is absent and pulled by its tag.
 	ImageDigests map[string]string `json:"imageDigests,omitempty"`
+	// RetryToken: a new value asks the operator to retry a device whose pod start
+	// failed and was given up. Set by the management agent (RetryDevices); the
+	// operator acts once per distinct value.
+	RetryToken *string `json:"retryToken,omitempty"`
 }
 
 // DeviceSpecApplyConfiguration constructs a declarative configuration of the DeviceSpec type for use with
@@ -159,5 +163,13 @@ func (b *DeviceSpecApplyConfiguration) WithImageDigests(entries map[string]strin
 	for k, v := range entries {
 		b.ImageDigests[k] = v
 	}
+	return b
+}
+
+// WithRetryToken sets the RetryToken field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the RetryToken field is set to the value of the last call.
+func (b *DeviceSpecApplyConfiguration) WithRetryToken(value string) *DeviceSpecApplyConfiguration {
+	b.RetryToken = &value
 	return b
 }

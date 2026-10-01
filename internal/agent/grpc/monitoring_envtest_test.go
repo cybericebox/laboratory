@@ -21,9 +21,8 @@ func TestMonitoringTwoBackendsOnARealAPIServer(t *testing.T) {
 	ctx := context.Background()
 	mk := func(name, inst string) {
 		t.Helper()
-		if _, err := h.CreateLabGroup(ctx, &protobuf.LabGroup{Name: name, Labels: map[string]string{"instance": inst}}); err != nil {
-			t.Fatal(err)
-		}
+		res, err := h.CreateLabGroups(ctx, &protobuf.CreateLabGroupsRequest{Items: []*protobuf.LabGroupItem{{Name: name, Labels: map[string]string{"instance": inst}}}})
+		wantStates(t, res, err, stCreated)
 	}
 	mk("g-a1", "a")
 	mk("g-b1", "b")
@@ -79,10 +78,12 @@ func TestMonitoringTwoBackendsOnARealAPIServer(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 	}
 
-	// Labels merge through UpdateLabGroup and show in the stream.
-	if _, err := h.UpdateLabGroup(ctx, &protobuf.LabGroup{Name: "g-a1", Labels: map[string]string{"tier": "gold"}}); err != nil {
-		t.Fatal(err)
-	}
+	// Labels set through UpdateLabGroups show in the stream.
+	res, err := h.UpdateLabGroups(ctx, &protobuf.UpdateLabGroupsRequest{
+		Changes: &protobuf.LabGroupChanges{Labels: &protobuf.LabelChanges{Set: map[string]string{"tier": "gold"}}},
+		Items:   []*protobuf.UpdateLabGroupItem{{Name: "g-a1"}},
+	})
+	wantStates(t, res, err, stUpdated)
 	_, upd := collect(aUp, 1)
 	if upd.Groups[0].Labels["tier"] != "gold" || upd.Groups[0].Labels["instance"] != "a" {
 		t.Fatalf("merged labels: %v", upd.Groups[0].Labels)

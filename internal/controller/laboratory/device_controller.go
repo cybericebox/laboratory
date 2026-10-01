@@ -296,11 +296,12 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 		annotations[names.AnnotationDefaultNetwork] = ""
 	}
 
-	labels = map[string]string{
-		names.LabelLab:    device.Spec.LabRef,
-		"app":             device.Spec.Name,
-		names.LabelDevice: device.Spec.Name,
-	}
+	// The labels the caller put on the lab (see deviceLabels) reach the pod, the
+	// platform's own keys below always win.
+	labels = names.UserLabels(device.Labels)
+	labels[names.LabelLab] = device.Spec.LabRef
+	labels["app"] = device.Spec.Name
+	labels[names.LabelDevice] = device.Spec.Name
 	// The selector must be immutable and uniquely identify this device's pod:
 	// (lab, device-name) is unique within the namespace.
 	selectorLabels = map[string]string{

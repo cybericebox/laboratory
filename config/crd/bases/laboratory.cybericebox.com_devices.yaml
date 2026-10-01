@@ -212,6 +212,12 @@ spec:
                   memoryRequest:
                     type: string
                 type: object
+              retryToken:
+                description: |-
+                  RetryToken: a new value asks the operator to retry a device whose pod start
+                  failed and was given up. Set by the management agent (RetryDevices); the
+                  operator acts once per distinct value.
+                type: string
               securityPreset:
                 description: |-
                   SecurityPreset names a capability profile (basic/service/net/debug); the

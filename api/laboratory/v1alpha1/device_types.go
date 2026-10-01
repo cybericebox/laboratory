@@ -42,6 +42,11 @@ type DeviceSpec struct {
 	// resolved is absent and pulled by its tag.
 	// +optional
 	ImageDigests map[string]string `json:"imageDigests,omitempty"`
+	// RetryToken: a new value asks the operator to retry a device whose pod start
+	// failed and was given up. Set by the management agent (RetryDevices); the
+	// operator acts once per distinct value.
+	// +optional
+	RetryToken string `json:"retryToken,omitempty"`
 	// Env values are NOT carried on the CR — they live only in a per-device
 	// Secret (<device>-env) the agent writes, referenced by the pod via envFrom.
 }

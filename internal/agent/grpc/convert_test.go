@@ -67,19 +67,18 @@ func TestLabToProtoStatus(t *testing.T) {
 	}
 }
 
-func TestProtoToLabRoundtrip(t *testing.T) {
+func TestLabToProtoCarriesSpecJSON(t *testing.T) {
 	in := &laboratoryv1alpha1.Lab{}
 	in.Name = "ctf1"
 	in.Namespace = "team-alpha"
 	in.Spec.VPN.Enabled = true
 
-	pb := labToProto(in)
-	out, err := protoToLab(pb)
+	out, err := parseLabSpec(labToProto(in).SpecJson)
 	if err != nil {
-		t.Fatalf("protoToLab: %v", err)
+		t.Fatalf("parseLabSpec: %v", err)
 	}
-	if out.Name != "ctf1" || !out.Spec.VPN.Enabled {
-		t.Errorf("roundtrip lost data: %+v", out.Spec)
+	if !out.VPN.Enabled {
+		t.Errorf("lost data: %+v", out)
 	}
 }
 

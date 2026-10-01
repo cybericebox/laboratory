@@ -12,6 +12,9 @@ import (
 	"github.com/cybericebox/laboratory/pkg/tlsreload"
 )
 
+// MaxMessageSize is the largest gRPC message the agent accepts and sends.
+const MaxMessageSize = 64 << 20
+
 // serverCredentials serves the cert-manager certificate from the mounted files
 // and re-reads it (and the client CA) when they change, so a renewal needs no
 // restart.
@@ -29,7 +32,12 @@ func serverCredentials(cfg *config.Config) (credentials.TransportCredentials, er
 
 // New builds the gRPC server with mTLS creds and CN-allowlist interceptors.
 func New(cfg *config.Config, impl protobuf.LabManagerServer) (*grpc.Server, error) {
-	opts := []grpc.ServerOption{grpc.ChainUnaryInterceptor(apiErrorInterceptor)}
+	opts := []grpc.ServerOption{
+		grpc.ChainUnaryInterceptor(apiErrorInterceptor),
+		// Batch calls carry up to MaxItems lab specs and answer with as many objects.
+		grpc.MaxRecvMsgSize(MaxMessageSize),
+		grpc.MaxSendMsgSize(MaxMessageSize),
+	}
 	if cfg.ServerTLS.Enabled {
 		creds, err := serverCredentials(cfg)
 		if err != nil {

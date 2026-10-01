@@ -3,10 +3,12 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -62,16 +64,39 @@ func requireTerminating(t *testing.T, err error) {
 	}
 }
 
+// onlyResult unwraps the answer to a one-item call.
+func onlyResult(t *testing.T, res *protobuf.BatchResult, err error) *protobuf.ItemResult {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if len(res.GetResults()) != 1 {
+		t.Fatalf("want one result, got %v", res.GetResults())
+	}
+	return res.GetResults()[0]
+}
+
+func requireItemTerminating(t *testing.T, r *protobuf.ItemResult) {
+	t.Helper()
+	if r.State != protobuf.ItemState_ITEM_STATE_FAILED || !r.Retryable || !strings.Contains(r.Error, "still being deleted") {
+		t.Fatalf("expected a retryable terminating failure, got %v", r)
+	}
+}
+
 func TestLabGroupRecreateWhileTerminating(t *testing.T) {
 	h, release := newFinalizerHandler(t)
 	ctx := context.Background()
-
-	if _, err := h.CreateLabGroup(ctx, &protobuf.LabGroup{Name: "e-1-t-1"}); err != nil {
-		t.Fatal(err)
+	create := func() *protobuf.ItemResult {
+		res, err := h.CreateLabGroups(ctx, &protobuf.CreateLabGroupsRequest{Items: []*protobuf.LabGroupItem{{Name: "e-1-t-1"}}})
+		return onlyResult(t, res, err)
 	}
-	// A live object: create stays the ordinary AlreadyExists (idempotent for callers).
-	if _, err := h.CreateLabGroup(ctx, &protobuf.LabGroup{Name: "e-1-t-1"}); !apierrors.IsAlreadyExists(err) {
-		t.Fatalf("live duplicate create: %v", err)
+
+	if r := create(); r.State != protobuf.ItemState_ITEM_STATE_CREATED {
+		t.Fatal(r)
+	}
+	// A live object: the same create is EXISTS (idempotent for callers).
+	if r := create(); r.State != protobuf.ItemState_ITEM_STATE_EXISTS {
+		t.Fatalf("live duplicate create: %v", r)
 	}
 
 	// The operator's finalizer keeps the group after Delete.
@@ -80,70 +105,81 @@ func TestLabGroupRecreateWhileTerminating(t *testing.T) {
 	if _, err := h.cs.LaboratoryV1alpha1().LabGroups().Update(ctx, lg, metav1.UpdateOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.DeleteLabGroup(ctx, &protobuf.IDRequest{Name: "e-1-t-1"}); err != nil {
-		t.Fatal(err)
+	del, err := h.DeleteLabGroups(ctx, &protobuf.DeleteRequest{Items: []*protobuf.ItemRef{{Name: "e-1-t-1"}}})
+	if r := onlyResult(t, del, err); r.State != protobuf.ItemState_ITEM_STATE_DELETED {
+		t.Fatal(r)
 	}
 
-	_, err := h.CreateLabGroup(ctx, &protobuf.LabGroup{Name: "e-1-t-1"})
-	requireTerminating(t, err)
-	if got := status.Convert(err).Message(); got != "LabGroup e-1-t-1 is still being deleted, retry later" {
-		t.Errorf("message: %q", got)
+	r := create()
+	requireItemTerminating(t, r)
+	if r.Error != "LabGroup e-1-t-1 is still being deleted, retry later" {
+		t.Errorf("message: %q", r.Error)
 	}
-	// Other writes are refused too, and Get still shows the dying object.
-	_, err = h.SetLabGroupSuspended(ctx, &protobuf.LabGroupSuspendRequest{Name: "e-1-t-1", Suspended: true})
-	requireTerminating(t, err)
-	_, err = h.SetLabGroupVPNDisabled(ctx, &protobuf.LabGroupVPNDisabledRequest{Name: "e-1-t-1", Disabled: true})
-	requireTerminating(t, err)
-	_, err = h.UpdateLabGroup(ctx, &protobuf.LabGroup{Name: "e-1-t-1"})
-	requireTerminating(t, err)
-	_, err = h.ReconcileLabGroupAccess(ctx, &protobuf.LabGroupAccessPolicy{LabGroupName: "e-1-t-1"})
-	requireTerminating(t, err)
-	if _, err := h.GetLabGroup(ctx, &protobuf.IDRequest{Name: "e-1-t-1"}); err != nil {
-		t.Fatalf("get while terminating: %v", err)
+	// Other writes are refused too, and the list still shows the dying object.
+	upd, err := h.UpdateLabGroups(ctx, &protobuf.UpdateLabGroupsRequest{
+		Changes: &protobuf.LabGroupChanges{Suspended: proto.Bool(true)},
+		Items:   []*protobuf.UpdateLabGroupItem{{Name: "e-1-t-1"}},
+	})
+	requireItemTerminating(t, onlyResult(t, upd, err))
+	acc, err := h.SetLabGroupAccess(ctx, &protobuf.SetLabGroupAccessRequest{Policies: []*protobuf.LabGroupAccessPolicy{{LabGroupName: "e-1-t-1"}}})
+	requireItemTerminating(t, onlyResult(t, acc, err))
+	list, err := h.ListLabGroups(ctx, &protobuf.ListRequest{})
+	if err != nil || len(list.Items) != 1 {
+		t.Fatalf("list while terminating: %v %v", list, err)
 	}
 
 	// Finalizer removed: the object is gone and create succeeds with a fresh one.
 	release("labgroups", "", "e-1-t-1")
-	if _, err := h.GetLabGroup(ctx, &protobuf.IDRequest{Name: "e-1-t-1"}); !apierrors.IsNotFound(err) {
-		t.Fatalf("get after release: %v", err)
+	if list, _ := h.ListLabGroups(ctx, &protobuf.ListRequest{}); len(list.Items) != 0 {
+		t.Fatalf("list after release: %v", list)
 	}
-	if _, err := h.CreateLabGroup(ctx, &protobuf.LabGroup{Name: "e-1-t-1"}); err != nil {
-		t.Fatalf("create after release: %v", err)
+	if r := create(); r.State != protobuf.ItemState_ITEM_STATE_CREATED {
+		t.Fatalf("create after release: %v", r)
 	}
 }
 
 func TestLabRecreateWhileTerminating(t *testing.T) {
-	h, release := newFinalizerHandler(t)
+	h, release := newFinalizerHandler(t,
+		&laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: "g1"}, Status: laboratoryv1alpha1.LabGroupStatus{Namespace: "ns1"}})
 	ctx := context.Background()
 	specJSON, _ := json.Marshal(laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{
 		{Name: "web", Type: laboratoryv1alpha1.DeviceTypeContainer},
 	}})
-	in := &protobuf.Lab{Namespace: "ns1", Name: "ch1", SpecJson: specJSON}
+	create := func() *protobuf.ItemResult {
+		res, err := h.CreateLabs(ctx, &protobuf.CreateLabsRequest{
+			Variants: []*protobuf.LabVariant{{VariantId: "v", SpecJson: specJSON}},
+			Items:    []*protobuf.LabItem{{LabGroup: "g1", Name: "ch1", VariantId: "v"}},
+		})
+		return onlyResult(t, res, err)
+	}
 
-	if _, err := h.CreateLab(ctx, in); err != nil {
-		t.Fatal(err)
+	if r := create(); r.State != protobuf.ItemState_ITEM_STATE_CREATED {
+		t.Fatal(r)
 	}
 	lab, _ := h.cs.LaboratoryV1alpha1().Labs("ns1").Get(ctx, "ch1", metav1.GetOptions{})
 	lab.Finalizers = []string{"laboratory/cleanup"}
 	if _, err := h.cs.LaboratoryV1alpha1().Labs("ns1").Update(ctx, lab, metav1.UpdateOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	// Live update stays an update.
-	if _, err := h.UpdateLab(ctx, in); err != nil {
-		t.Fatalf("live update: %v", err)
+	// A live resend stays EXISTS.
+	if r := create(); r.State != protobuf.ItemState_ITEM_STATE_EXISTS {
+		t.Fatalf("live resend: %v", r)
 	}
-	if _, err := h.DeleteLab(ctx, &protobuf.NamespacedIDRequest{Namespace: "ns1", Name: "ch1"}); err != nil {
-		t.Fatal(err)
+	del, err := h.DeleteLabs(ctx, &protobuf.DeleteRequest{Items: []*protobuf.ItemRef{{LabGroup: "g1", Name: "ch1"}}})
+	if r := onlyResult(t, del, err); r.State != protobuf.ItemState_ITEM_STATE_DELETED {
+		t.Fatal(r)
 	}
 
-	_, err := h.CreateLab(ctx, in)
-	requireTerminating(t, err)
-	_, err = h.UpdateLab(ctx, in)
-	requireTerminating(t, err)
+	requireItemTerminating(t, create())
+	upd, err := h.UpdateLabs(ctx, &protobuf.UpdateLabsRequest{
+		Changes: &protobuf.LabChanges{Labels: &protobuf.LabelChanges{Set: map[string]string{"a": "b"}}},
+		Items:   []*protobuf.UpdateLabItem{{LabGroup: "g1", Name: "ch1"}},
+	})
+	requireItemTerminating(t, onlyResult(t, upd, err))
 
 	release("labs", "ns1", "ch1")
-	if _, err := h.CreateLab(ctx, in); err != nil {
-		t.Fatalf("create after release: %v", err)
+	if r := create(); r.State != protobuf.ItemState_ITEM_STATE_CREATED {
+		t.Fatalf("create after release: %v", r)
 	}
 }
 
@@ -157,10 +193,13 @@ func TestLabGroupClientAndPolicyWhileTerminating(t *testing.T) {
 	)
 	ctx := context.Background()
 
-	_, err := h.CreateLabGroupClient(ctx, &protobuf.LabGroupClient{Namespace: "ns1", Name: "p-1"})
-	requireTerminating(t, err)
-	_, err = h.ReconcileLabGroupAccess(ctx, &protobuf.LabGroupAccessPolicy{LabGroupName: "g1"})
-	requireTerminating(t, err)
+	res, err := h.CreateLabGroupClients(ctx, &protobuf.CreateLabGroupClientsRequest{Items: []*protobuf.LabGroupClientItem{{LabGroup: "g1", Name: "p-1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireItemTerminating(t, res.Results[0].Result)
+	acc, err := h.SetLabGroupAccess(ctx, &protobuf.SetLabGroupAccessRequest{Policies: []*protobuf.LabGroupAccessPolicy{{LabGroupName: "g1"}}})
+	requireItemTerminating(t, onlyResult(t, acc, err))
 }
 
 func TestAPIErrorToStatus(t *testing.T) {

@@ -1,10 +1,20 @@
 package names
 
+import "strings"
+
 // Kubernetes label keys.
 const (
 	LabelLab    = "laboratory.cybericebox.com/lab"
 	LabelDevice = "laboratory.cybericebox.com/device"
 	LabelGroup  = "laboratory.cybericebox.com/group"
+
+	// LabelPrefix is reserved for the platform: the management agent rejects user
+	// labels that carry it.
+	LabelPrefix = "laboratory.cybericebox.com/"
+	// LabelDeployGroup is the deploy group of a LabGroup or Lab: a label-safe key
+	// (base36 of a UUID, or a hash). Written by the management agent from the
+	// deploy_group field; read by the operator's scheduler.
+	LabelDeployGroup = LabelPrefix + "deploy-group"
 
 	// TopologyKeyHostname is the well-known node label used as the topology key
 	// for per-node scheduling constraints (device co-location).
@@ -13,6 +23,15 @@ const (
 
 // Kubernetes annotation keys.
 const (
+	// AnnotationDeployAfter lists, comma-separated, the deploy-group keys this
+	// object waits for (see LabelDeployGroup).
+	AnnotationDeployAfter = LabelPrefix + "deploy-after"
+
+	// AnnotationSpecHash is the hash of the desired Lab spec as the management
+	// agent received it; an idempotent create compares it, so API-server
+	// defaulting of the stored spec does not look like a different spec.
+	AnnotationSpecHash = LabelPrefix + "spec-hash"
+
 	// AnnotationNetworks is the pod annotation listing OVS network attachments.
 	// Format: comma-separated "iface@name[|MAC]" entries.
 	AnnotationNetworks = "network.cybericebox.com/networks"
@@ -86,3 +105,16 @@ const (
 	SecretVPNKeypair   = "vpn-server-keypair"
 	SecretClientPrefix = "client-"
 )
+
+// UserLabels returns the labels of an object that the management agent set on behalf of a
+// caller: everything except the platform's own keys (LabelPrefix). Lab labels go to
+// its Devices and from there to their pods.
+func UserLabels(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		if !strings.HasPrefix(k, LabelPrefix) {
+			out[k] = v
+		}
+	}
+	return out
+}

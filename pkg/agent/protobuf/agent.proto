@@ -5,28 +5,46 @@ option go_package = "github.com/cybericebox/laboratory/pkg/agent/protobuf";
 service LabManager {
   rpc Ping(Empty) returns (Empty) {}
 
-  rpc CreateLabGroup(LabGroup) returns (LabGroup) {}
-  rpc GetLabGroup(IDRequest) returns (LabGroup) {}
-  rpc ListLabGroups(Empty) returns (LabGroupList) {}
-  rpc UpdateLabGroup(LabGroup) returns (LabGroup) {}
-  rpc SetLabGroupSuspended(LabGroupSuspendRequest) returns (LabGroup) {}
-  rpc SetLabGroupVPNDisabled(LabGroupVPNDisabledRequest) returns (LabGroup) {}
-  rpc DeleteLabGroup(IDRequest) returns (Empty) {}
+  // The CRUD API is plural-only: every call works on a list, one object is a list of one.
+  // The agent is a thin layer: it writes custom resources (and the write-only per-device
+  // Secrets); scheduling and the work itself are the operator's job.
+  //
+  // Mutating calls (Create*, Update*, Delete*, SetLabGroupAccess, the device calls) answer
+  // with one ItemResult per item, in the order of the request (selector calls: sorted by
+  // reference); one failing item never fails the call. A call fails as a whole (INVALID_ARGUMENT)
+  // only for a malformed request: more than 5000 items, a reserved or invalid label, an
+  // invalid selector, a duplicate variant id. Objects are referenced by LabGroup name
+  // and object name, never by namespace; the agent resolves the namespace.
+  //
+  // Selector calls (List, Update, Delete, device calls): a Kubernetes label selector or explicit
+  // items, never both. Update, Delete and the device calls with a selector REQUIRE a
+  // non-empty selector and take an optional expected_count: when MORE objects match, nothing
+  // is done and the call fails with FAILED_PRECONDITION (reason COUNT_MISMATCH, the actual
+  // count in the error metadata "actual"). A selector may match at most 5000 objects.
 
-  rpc CreateLab(Lab) returns (Lab) {}
-  rpc GetLab(NamespacedIDRequest) returns (Lab) {}
-  rpc ListLabs(NamespaceRequest) returns (LabList) {}
-  rpc UpdateLab(Lab) returns (Lab) {}
-  rpc DeleteLab(NamespacedIDRequest) returns (Empty) {}
+  // LabGroups.
+  rpc CreateLabGroups(CreateLabGroupsRequest) returns (BatchResult) {}
+  rpc ListLabGroups(ListRequest) returns (LabGroupList) {}
+  rpc UpdateLabGroups(UpdateLabGroupsRequest) returns (BatchResult) {}
+  rpc DeleteLabGroups(DeleteRequest) returns (BatchResult) {}
 
-  rpc CreateLabGroupClient(LabGroupClient) returns (LabGroupClient) {}
-  rpc GetLabGroupClient(NamespacedIDRequest) returns (LabGroupClient) {}
-  rpc ListLabGroupClients(NamespaceRequest) returns (LabGroupClientList) {}
-  rpc DeleteLabGroupClient(NamespacedIDRequest) returns (Empty) {}
+  // LabGroupClients (VPN clients). The CreateLabGroupClients result carries the finished
+  // WireGuard config with the private key the agent generated; it is never available again.
+  rpc CreateLabGroupClients(CreateLabGroupClientsRequest) returns (CreateLabGroupClientsResponse) {}
+  rpc ListLabGroupClients(ListRequest) returns (LabGroupClientList) {}
+  rpc UpdateLabGroupClients(UpdateLabGroupClientsRequest) returns (BatchResult) {}
+  rpc DeleteLabGroupClients(DeleteRequest) returns (BatchResult) {}
 
-  // ReconcileLabGroupAccess atomically replaces the complete client-to-lab
-  // access policy of one LabGroup. Unlisted existing clients receive no labs.
-  rpc ReconcileLabGroupAccess(LabGroupAccessPolicy) returns (Empty) {}
+  // SetLabGroupAccess atomically replaces the complete client-to-lab access policy of
+  // every listed LabGroup. Unlisted existing clients receive no labs.
+  rpc SetLabGroupAccess(SetLabGroupAccessRequest) returns (BatchResult) {}
+
+  // Labs. A variant (the lab spec and its common variables) is sent once, the items
+  // refer to it by id.
+  rpc CreateLabs(CreateLabsRequest) returns (BatchResult) {}
+  rpc ListLabs(ListRequest) returns (LabList) {}
+  rpc UpdateLabs(UpdateLabsRequest) returns (BatchResult) {}
+  rpc DeleteLabs(DeleteRequest) returns (BatchResult) {}
 
   // Monitoring is a server-push stream. Every subscription starts with a
   // complete snapshot; subsequent messages are sequenced deltas or heartbeats.
@@ -42,31 +60,234 @@ service LabManager {
   // knows. Poll by repeating the call. Fails with FailedPrecondition when the cache is off.
   rpc PrewarmImages(PrewarmImagesRequest) returns (PrewarmImagesResult) {}
 
-  // Device state persistence. Both calls act on one device of a lab and only
-  // make sense for labs that run with snapshot-backed state (LabDeviceStatus.snapshot
-  // is set). The backend restricts them to organizers and admins.
+  // Device calls. Targets are explicit (lab_group, lab, device) items or a selector over
+  // LABS plus a device name. The state calls (reset, rescue) only make sense for devices
+  // with snapshot-backed state (LabDeviceStatus.snapshot is set); the backend restricts
+  // them to organizers and admins.
   //
-  // ResetDevice discards the device's snapshots and restarts it from its base image.
-  rpc ResetDevice(DeviceRequest) returns (Empty) {}
-  // RescueDevice starts the device from its latest snapshot with a shell instead
-  // of the image entrypoint (enable=true), or back to normal (enable=false), to
-  // repair a configuration that makes the service crash.
-  rpc RescueDevice(RescueDeviceRequest) returns (Empty) {}
+  // ResetDevices discards the devices' snapshots and restarts them from their base image.
+  rpc ResetDevices(DevicesRequest) returns (BatchResult) {}
+  // RescueDevices starts the devices from their latest snapshot with a shell instead of
+  // the image entrypoint (enable=true), or back to normal (enable=false), to repair a
+  // configuration that makes the service crash.
+  rpc RescueDevices(RescueDevicesRequest) returns (BatchResult) {}
+  // RetryDevices asks the operator to retry the pod of a device whose start failed (the
+  // operator gave up after its retries); every call is a new retry.
+  rpc RetryDevices(DevicesRequest) returns (BatchResult) {}
 }
 
 message Empty {}
-message IDRequest {string name = 1;}
-message LabGroupSuspendRequest {string name = 1; bool suspended = 2;}
-message LabGroupVPNDisabledRequest {string name = 1; bool disabled = 2; bool probe_while_suspended = 3;}
-message NamespaceRequest {string namespace = 1;}
-message NamespacedIDRequest {string namespace = 1; string name = 2;}
+
+// ---- common shapes -------------------------------------------------------------------
+
+// ItemRef names one object. A LabGroup (and the access policy of one) is identified by
+// name alone; a LabGroupClient or Lab by lab_group + name; a Device by lab_group + lab +
+// name (the device name).
+message ItemRef {
+  string lab_group = 1;
+  string lab = 2;
+  string name = 3;
+}
+
+enum ItemState {
+  ITEM_STATE_UNSPECIFIED = 0;
+  ITEM_STATE_CREATED = 1;
+  ITEM_STATE_EXISTS = 2;     // already there with the same spec and labels
+  ITEM_STATE_UPDATED = 3;    // changed (an existing object that got the labels it lacked), or the request was handed to the operator (device calls)
+  ITEM_STATE_DELETED = 4;    // deletion started (it finishes asynchronously, finalizers)
+  ITEM_STATE_NOT_FOUND = 5;
+  ITEM_STATE_FAILED = 6;     // see error; for an existing name with a different spec as well
+}
+
+message ItemResult {
+  ItemRef ref = 1;
+  ItemState state = 2;
+  string error = 3;
+  // True when the failure is worth repeating (the object is still being deleted, the
+  // LabGroup namespace is not ready yet).
+  bool retryable = 4;
+}
+
+message BatchResult {repeated ItemResult results = 1;}
+
+// ListRequest: names (items) or a selector, never both; none = everything. lab_group
+// narrows a listing of namespaced kinds to one LabGroup.
+message ListRequest {
+  string selector = 1;
+  repeated ItemRef items = 2;
+  string lab_group = 3;
+}
+
+// Selector picks objects by Kubernetes label selector ("a=b,c in (d,e),!f"). It must be
+// non-empty. lab_group narrows namespaced kinds to one LabGroup.
+message Selector {
+  string selector = 1;
+  string lab_group = 2;
+  // The upper bound of matching objects; more matches fail the call (see the service notes).
+  optional int64 expected_count = 3;
+}
+
+message DeleteRequest {
+  Selector by_selector = 1;
+  repeated ItemRef items = 2;
+}
+
+// LabelChanges: set labels (a set label overrides an existing one) and remove labels.
+// A key in both is invalid.
+message LabelChanges {
+  map<string, string> set = 1;
+  repeated string remove = 2;
+}
+
+message StringList {repeated string values = 1;}
+
+// Labels of every mutating call: request-level labels apply to every item, the item's
+// own labels win on a conflict. Keys and values must be valid Kubernetes labels; the
+// prefix laboratory.cybericebox.com/ is reserved for the platform and rejected. Labels
+// go onto the custom resource; a Lab's labels are copied to its Devices and pods when those
+// are created.
+//
+// Scheduling parameters are NOT labels but fields: deploy_group (any string, e.g. a UUID)
+// and deploy_after (deploy groups this one waits for). The agent converts them to
+// label-safe keys (base36 of a UUID, a hash of anything else) and writes the operator-internal
+// label laboratory.cybericebox.com/deploy-group and the annotation
+// laboratory.cybericebox.com/deploy-after (comma-separated keys).
+
+// ---- LabGroups ----------------------------------------------------------------------
+
+message LabGroupItem {
+  string name = 1;
+  map<string, string> labels = 2;
+  string deploy_group = 3;
+  repeated string deploy_after = 4;
+  bool suspended = 5;
+  bool vpn_disabled = 6;
+  bool probe_while_suspended = 7;
+}
+message CreateLabGroupsRequest {
+  map<string, string> labels = 1;
+  repeated LabGroupItem items = 2;
+}
+
+message LabGroupChanges {
+  LabelChanges labels = 1;
+  optional bool suspended = 2;
+  optional bool vpn_disabled = 3;
+  optional bool probe_while_suspended = 4;
+}
+message UpdateLabGroupItem {
+  string name = 1;
+  LabGroupChanges changes = 2;
+}
+// Selector or items. changes apply to every target; an item's own changes win.
+message UpdateLabGroupsRequest {
+  Selector by_selector = 1;
+  LabGroupChanges changes = 2;
+  repeated UpdateLabGroupItem items = 3;
+}
+
+// ---- LabGroupClients ----------------------------------------------------------------
+
+message LabGroupClientItem {
+  string lab_group = 1;
+  string name = 2;
+  map<string, string> labels = 3;
+}
+message CreateLabGroupClientsRequest {
+  map<string, string> labels = 1;
+  repeated LabGroupClientItem items = 2;
+}
+// client is set for CREATED (with the finished WireGuard config) and EXISTS (the
+// placeholder config: the private key exists only in the answer of the create call).
+message LabGroupClientResult {
+  ItemResult result = 1;
+  LabGroupClient client = 2;
+}
+message CreateLabGroupClientsResponse {repeated LabGroupClientResult results = 1;}
+
+message UpdateLabGroupClientItem {
+  string lab_group = 1;
+  string name = 2;
+  LabelChanges labels = 3;
+}
+message UpdateLabGroupClientsRequest {
+  Selector by_selector = 1;
+  LabelChanges labels = 2;
+  repeated UpdateLabGroupClientItem items = 3;
+}
+
+message SetLabGroupAccessRequest {
+  // Added to the labels of every policy (a policy also gets the labels of its LabGroup).
+  map<string, string> labels = 1;
+  repeated LabGroupAccessPolicy policies = 2;
+}
+
+// ---- Labs ---------------------------------------------------------------------------
+
+// LabVariant is sent once per request however many labs use it. Device variables are
+// secrets only: spec_json must not carry env or flags on devices (rejected).
+message LabVariant {
+  string variant_id = 1;
+  bytes spec_json = 2;            // Lab.spec serialized; the agent passes it through
+  repeated DeviceEnv env = 3;     // variables common to every lab of the variant
+}
+message LabItem {
+  string lab_group = 1;
+  string name = 2;
+  string variant_id = 3;
+  // This lab's own variables; they override the variant's by device and variable name.
+  repeated DeviceEnv env = 4;
+  map<string, string> labels = 5;
+  string deploy_group = 6;
+  repeated string deploy_after = 7;
+}
+message CreateLabsRequest {
+  map<string, string> labels = 1;
+  repeated LabVariant variants = 2;
+  repeated LabItem items = 3;
+}
+
+// LabChanges: labels, and env = rewrite the write-only Secret of every listed device
+// with exactly these variables (no variables = remove the Secret); unlisted devices are
+// untouched.
+message LabChanges {
+  LabelChanges labels = 1;
+  repeated DeviceEnv env = 2;
+}
+message UpdateLabItem {
+  string lab_group = 1;
+  string name = 2;
+  LabChanges changes = 3;
+}
+message UpdateLabsRequest {
+  Selector by_selector = 1;
+  LabChanges changes = 2;
+  repeated UpdateLabItem items = 3;
+}
+
+// ---- Devices ------------------------------------------------------------------------
+
+// DeviceSelector selects LABS by label and names the device inside each of them.
+message DeviceSelector {
+  string selector = 1;
+  string lab_group = 2;
+  string device = 3;
+  optional int64 expected_count = 4;   // of labs
+}
+// items (lab_group, lab, name = device) or by_selector, never both.
+message DevicesRequest {
+  repeated ItemRef items = 1;
+  DeviceSelector by_selector = 2;
+}
+message RescueDevicesRequest {
+  DevicesRequest devices = 1;
+  bool enable = 2;
+}
 
 message LabGroup {
   string name = 1;
   LabGroupStatus status = 2;
-  // Kubernetes labels of the LabGroup. Create/Update merge the given labels into
-  // the object's (a label is never removed this way). The Monitoring selector
-  // matches against them.
+  // Kubernetes labels of the LabGroup (the Monitoring selector matches against them).
   map<string, string> labels = 10;
 }
 message LabGroupStatus {
@@ -80,26 +301,21 @@ message LabGroupStatus {
 }
 message LabGroupList {repeated LabGroup items = 1;}
 
-// DeviceRequest names one device of a lab.
-message DeviceRequest {string namespace = 1; string lab = 2; string device = 3;}
-message RescueDeviceRequest {string namespace = 1; string lab = 2; string device = 3; bool enable = 4;}
-
 message Lab {
   string namespace = 1;
   string name = 2;
   bytes spec_json = 3;   // Lab.spec serialized; agent is a thin wrapper, spec passes through
   LabStatus status = 4;
-  // Per-device environment variables. The agent materializes these into a
-  // write-only per-device Secret (referenced by the pod via envFrom) — the
-  // values never travel in spec_json and never land in the Lab/Device CR.
-  repeated DeviceEnv env = 5;
+  reserved 5;   // was env: device variables are write-only and never read back
   // Populated only by monitoring so the backend can associate a namespaced
   // Lab record with its LabGroup without inferring it from a namespace.
   string lab_group_name = 6;
-  // Kubernetes labels of the Lab; set and merged like LabGroup.labels.
+  // Kubernetes labels of the Lab.
   map<string, string> labels = 10;
 }
-// DeviceEnv carries the env vars for one device (e.g. a task flag, a license).
+// DeviceEnv carries the variables of one device. The agent materializes them into a
+// write-only per-device Secret (the pod loads it via envFrom): they never land in the
+// Lab/Device CR and are never read back.
 message DeviceEnv {
   string device = 1;
   map<string, string> vars = 2;
@@ -177,16 +393,16 @@ message LabGroupClient {
   LabGroupClientStatus status = 4;
   // Populated only by monitoring; CRUD callers resolve group scope themselves.
   string lab_group_name = 5;
-  // Kubernetes labels of the client; set and merged like LabGroup.labels.
+  // Kubernetes labels of the client.
   map<string, string> labels = 10;
 }
 message LabGroupClientStatus {
   reserved 2;   // was secret_ref (client Secret removed)
   string assigned_ip = 1;
   bool ready = 3;
-  // Assembled WireGuard client config. On CreateLabGroupClient the agent fills
-  // in the real private key it generated; on Get it carries the placeholder
-  // (the cluster never holds the private key).
+  // Assembled WireGuard client config. In the CreateLabGroupClients answer the agent
+  // fills in the real private key it generated; everywhere else it carries the
+  // placeholder (the cluster never holds the private key).
   string config = 4;
   LabGroupClientStatistics statistics = 5;   // live WireGuard peer stats (bytes + handshake)
 }
@@ -207,7 +423,7 @@ message LabGroupAccessPolicy {
 	LabGroupAccessPolicyStatus status = 3;
 	// Populated only by monitoring; mutations resolve scope from LabGroup name.
 	string namespace = 4;
-  // Labels of the policy object. ReconcileLabGroupAccess gives it the labels of its
+  // Labels of the policy object. SetLabGroupAccess gives it the labels of its
   // LabGroup plus these, so a selector that matches a group matches its policy.
   map<string, string> labels = 10;
 }

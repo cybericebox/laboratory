@@ -2,37 +2,46 @@ package grpc
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
-func TestResetAndRescueDevice(t *testing.T) {
+func TestDeviceCallsEndToEnd(t *testing.T) {
 	h, k8s := newTestHandler(t)
 	ctx := context.Background()
-	mustNamespace(t, k8s, "team-state")
+	readyGroup(t, h, k8s, "team-state", "team-state", nil)
 	devices := h.cs.LaboratoryV1alpha1().Devices("team-state")
 
-	create := func(name, dev string, state *laboratoryv1alpha1.DeviceStateSpec) {
+	create := func(lab, dev string, state *laboratoryv1alpha1.DeviceStateSpec) {
 		t.Helper()
 		_, err := devices.Create(ctx, &laboratoryv1alpha1.Device{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-state"},
+			ObjectMeta: metav1.ObjectMeta{Name: lab + "-" + dev, Namespace: "team-state"},
 			Spec: laboratoryv1alpha1.DeviceSpec{
-				LabRef: "ctf", Name: dev, Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx", State: state,
+				LabRef: lab, Name: dev, Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx", State: state,
 			},
 		}, metav1.CreateOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
+		if _, err := h.cs.LaboratoryV1alpha1().Labs("team-state").Create(ctx, &laboratoryv1alpha1.Lab{
+			ObjectMeta: metav1.ObjectMeta{Name: lab, Namespace: "team-state", Labels: map[string]string{"round": "1"}},
+		}, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+			t.Fatal(err)
+		}
 	}
-	create("ctf-web", "web", &laboratoryv1alpha1.DeviceStateSpec{Enabled: true})
-	create("ctf-plain", "plain", nil)
+	create("ctf", "web", &laboratoryv1alpha1.DeviceStateSpec{Enabled: true})
+	create("ctf", "plain", nil)
+	create("ctf2", "web", &laboratoryv1alpha1.DeviceStateSpec{Enabled: true})
 
 	get := func(name string) *laboratoryv1alpha1.Device {
 		t.Helper()
@@ -42,18 +51,18 @@ func TestResetAndRescueDevice(t *testing.T) {
 		}
 		return d
 	}
-
-	req := &protobuf.DeviceRequest{Namespace: "team-state", Lab: "ctf", Device: "web"}
-	if _, err := h.ResetDevice(ctx, req); err != nil {
-		t.Fatalf("ResetDevice: %v", err)
+	web := func(lab string) *protobuf.DevicesRequest {
+		return &protobuf.DevicesRequest{Items: []*protobuf.ItemRef{{LabGroup: "team-state", Lab: lab, Name: "web"}}}
 	}
+
+	res, err := h.ResetDevices(ctx, web("ctf"))
+	wantStates(t, res, err, stUpdated)
 	first := get("ctf-web").Spec.State.ResetToken
 	if first == "" {
 		t.Fatal("reset must set a token for the operator to act on")
 	}
-	if _, err := h.ResetDevice(ctx, req); err != nil {
-		t.Fatal(err)
-	}
+	res, err = h.ResetDevices(ctx, web("ctf"))
+	wantStates(t, res, err, stUpdated)
 	if second := get("ctf-web").Spec.State.ResetToken; second == "" || second == first {
 		t.Fatalf("every reset needs a new token, got %q then %q", first, second)
 	}
@@ -61,32 +70,61 @@ func TestResetAndRescueDevice(t *testing.T) {
 		t.Fatal("reset must keep the policy")
 	}
 
-	rescue := &protobuf.RescueDeviceRequest{Namespace: "team-state", Lab: "ctf", Device: "web", Enable: true}
-	if _, err := h.RescueDevice(ctx, rescue); err != nil {
-		t.Fatalf("RescueDevice: %v", err)
-	}
+	res, err = h.RescueDevices(ctx, &protobuf.RescueDevicesRequest{Devices: web("ctf"), Enable: true})
+	wantStates(t, res, err, stUpdated)
 	if !get("ctf-web").Spec.State.Rescue {
 		t.Fatal("rescue not enabled")
 	}
-	rescue.Enable = false
-	if _, err := h.RescueDevice(ctx, rescue); err != nil {
-		t.Fatal(err)
-	}
+	res, err = h.RescueDevices(ctx, &protobuf.RescueDevicesRequest{Devices: web("ctf")})
+	wantStates(t, res, err, stUpdated)
 	if get("ctf-web").Spec.State.Rescue {
 		t.Fatal("rescue not disabled")
 	}
 
-	_, err := h.ResetDevice(ctx, &protobuf.DeviceRequest{Namespace: "team-state", Lab: "ctf", Device: "plain"})
-	if status.Code(apiErrorToStatus(err)) != codes.FailedPrecondition {
-		t.Fatalf("a device without state persistence cannot be reset, got %v", err)
+	// Retry works on any device (no state needed) and needs a new token every time.
+	plain := &protobuf.DevicesRequest{Items: []*protobuf.ItemRef{{LabGroup: "team-state", Lab: "ctf", Name: "plain"}}}
+	res, err = h.RetryDevices(ctx, plain)
+	wantStates(t, res, err, stUpdated)
+	r1 := get("ctf-plain").Spec.RetryToken
+	if _, err = h.RetryDevices(ctx, plain); err != nil {
+		t.Fatal(err)
 	}
-	_, err = h.RescueDevice(ctx, &protobuf.RescueDeviceRequest{Namespace: "team-state", Lab: "ctf", Device: "nope", Enable: true})
-	if status.Code(apiErrorToStatus(err)) != codes.NotFound {
+	if r2 := get("ctf-plain").Spec.RetryToken; r1 == "" || r2 == "" || r1 == r2 {
+		t.Fatalf("retry tokens: %q %q", r1, r2)
+	}
+
+	// Per-item failures do not fail the call.
+	res, err = h.ResetDevices(ctx, &protobuf.DevicesRequest{Items: []*protobuf.ItemRef{
+		{LabGroup: "team-state", Lab: "ctf", Name: "plain"},
+		{LabGroup: "team-state", Lab: "ctf", Name: "nope"},
+		{LabGroup: "no-group", Lab: "ctf", Name: "web"},
+	}})
+	wantStates(t, res, err, stFailed, stNotFound, stNotFound)
+	if !strings.Contains(res.Results[0].Error, "no state persistence") {
+		t.Fatalf("got %v", res.Results[0])
+	}
+	// A malformed item fails the whole call.
+	if _, err = h.ResetDevices(ctx, &protobuf.DevicesRequest{Items: []*protobuf.ItemRef{{LabGroup: "team-state", Lab: "ctf"}}}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("got %v", err)
 	}
-	_, err = h.ResetDevice(ctx, &protobuf.DeviceRequest{Namespace: "team-state", Lab: "ctf"})
-	if status.Code(apiErrorToStatus(err)) != codes.InvalidArgument {
-		t.Fatalf("got %v", err)
+
+	// Selector over labs plus a device name, with the guard.
+	sel := func(expected int64) *protobuf.DevicesRequest {
+		return &protobuf.DevicesRequest{BySelector: &protobuf.DeviceSelector{Selector: "round=1", Device: "web", ExpectedCount: proto.Int64(expected)}}
+	}
+	if _, err = h.RetryDevices(ctx, sel(1)); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("guard: %v", err)
+	}
+	res, err = h.RetryDevices(ctx, sel(2))
+	wantStates(t, res, err, stUpdated, stUpdated)
+	if res.Results[0].Ref.Lab != "ctf" || res.Results[1].Ref.Lab != "ctf2" || get("ctf2-web").Spec.RetryToken == "" {
+		t.Fatalf("selector results: %v", res.Results)
+	}
+	if _, err = h.RetryDevices(ctx, &protobuf.DevicesRequest{BySelector: &protobuf.DeviceSelector{Selector: "round=1"}}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("a selector needs a device: %v", err)
+	}
+	if _, err = h.RetryDevices(ctx, &protobuf.DevicesRequest{}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("no target: %v", err)
 	}
 }
 

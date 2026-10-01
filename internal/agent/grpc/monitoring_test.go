@@ -47,9 +47,8 @@ func TestMonitoringSendsSnapshotThenOnlyChangedRecords(t *testing.T) {
 		t.Fatal("snapshot must include cluster capacity for platform monitoring")
 	}
 
-	if _, err := h.CreateLabGroup(ctx, &protobuf.LabGroup{Name: "team-mon"}); err != nil {
-		t.Fatal(err)
-	}
+	res, err := h.CreateLabGroups(ctx, &protobuf.CreateLabGroupsRequest{Items: groupItems("team-mon")})
+	wantStates(t, res, err, stCreated)
 
 	delta := receiveMonitoringUpdate(t, s.sent)
 	if delta.GetSnapshot() {

@@ -298,6 +298,122 @@ kubectl delete crd \
 
 ---
 
+## Management agent API
+
+The agent (`LabManager`, [`pkg/agent/protobuf/agent.proto`](pkg/agent/protobuf/agent.proto)) is a thin layer: it
+writes custom resources and the per-device Secrets, and scheduling is the operator's job. The CRUD API is **plural
+only**: every call takes a list, one object is a list of one. There are no singular calls.
+
+| Family | Calls |
+| --- | --- |
+| LabGroups | `CreateLabGroups`, `ListLabGroups`, `UpdateLabGroups`, `DeleteLabGroups` |
+| VPN clients | `CreateLabGroupClients`, `ListLabGroupClients`, `UpdateLabGroupClients`, `DeleteLabGroupClients` |
+| Access | `SetLabGroupAccess` (the policies of many groups, full replacement) |
+| Labs | `CreateLabs`, `ListLabs`, `UpdateLabs`, `DeleteLabs` |
+| Devices | `ResetDevices`, `RescueDevices`, `RetryDevices` |
+| Other | `Ping`, `Monitoring` (stream), `GetCapacity`, `PrewarmImages` |
+
+**References.** Objects are named by LabGroup name and object name (`ItemRef{lab_group, lab, name}`), never by
+namespace; the agent resolves the namespace from the group (`status.namespace`). A LabGroup, and the policy of one, is
+identified by `name` alone; a client or lab by `lab_group` + `name`; a device by `lab_group` + `lab` + `name`.
+
+**Answers.** A mutating call returns one `ItemResult{ref, state, error, retryable}` per item, in request order (selector
+calls: sorted by reference). `state` is `CREATED`, `EXISTS`, `UPDATED`, `DELETED`, `NOT_FOUND` or `FAILED`. A failing item
+never fails the call; `retryable` marks failures a repetition cures (the object is still being deleted, the group
+namespace is not ready yet). The call itself fails with `INVALID_ARGUMENT` only for a malformed request: more than 5000
+items, a reserved or invalid label, an invalid selector, a duplicate item or variant id, an unknown variant, device
+variables for a device the spec does not have.
+
+**Idempotency.** Re-sending an item whose object exists with the same spec is `EXISTS` (device Secrets are rewritten
+with the same values; labels the object lacks are added and reported as `UPDATED`). A different spec for an existing
+name is `FAILED` for that item. A lab's spec is compared by a hash the agent stores in an annotation. A write onto an
+object that is still being deleted fails with `retryable` (`TERMINATING`); repeat until the object is gone.
+
+**Labels.** Every mutating call has request-level `labels` applied to every item, and per-item `labels` (the item wins on
+a conflict). Keys and values must be valid Kubernetes labels; the prefix `laboratory.cybericebox.com/` is reserved and
+rejected. Labels go onto the custom resource. The labels of a Lab are copied to its Devices and their pods when those are
+created (a later `UpdateLabs` changes the Lab's labels only). Update calls take `LabelChanges{set, remove}`.
+
+**Scheduling parameters** are dedicated fields, not labels: `deploy_group` (any string, for example a UUID) and
+`deploy_after` (deploy groups this one waits for) on LabGroup and Lab items. The agent converts them to label-safe keys
+(base36 of the UUID, or `h` + base36 of a SHA-256 for any other string; at most 63 characters) and writes the
+operator-internal label `laboratory.cybericebox.com/deploy-group` and the annotation
+`laboratory.cybericebox.com/deploy-after` (comma-separated keys). The operator's scheduler reads them.
+
+**Selectors.** `ListLabGroups`, `ListLabGroupClients` and `ListLabs` take names (`items`) or a Kubernetes label selector
+(`a=b,c in (d,e),!f`), never both; nothing means everything; `lab_group` narrows a listing of namespaced kinds to one
+group. `Update*`, `Delete*` and the device calls take explicit items or `by_selector`. A selector must be non-empty and
+may carry `expected_count`: when MORE objects match, nothing is done and the call fails with `FAILED_PRECONDITION`
+(reason `COUNT_MISMATCH`, `client.CountMismatch(err)` returns the actual count). A selector matches at most 5000 objects.
+For device calls the selector selects labs, and `device` names the device in each.
+
+**Device variables are secrets only.** `DeviceEnv{device, vars}` becomes the write-only Secret `<lab>-<device>-env`
+(loaded through `envFrom`, owned by the Lab). The agent never reads it back, and no variable ever lands in the Lab or
+Device spec. A `spec_json` that carries `env`, `flags` or similar fields on a device is rejected, as is any unknown field.
+There is no "flag" concept in the agent.
+
+**Limits.** At most 5000 items per call, message size 64 MiB (`MaxRecvMsgSize`/`MaxSendMsgSize`; the Go client sets the
+same call options), bounded internal concurrency (16 calls to the Kubernetes API per request).
+
+### Examples (Go, `pkg/agent/client`)
+
+```go
+conn, _ := client.NewConnection(client.Config{Endpoint: "agent.example.com:443", TLS: client.TLS{Enabled: true, /* ... */}})
+defer conn.Close()
+
+// LabGroups: request labels for all, item labels per group, scheduling fields.
+res, _ := conn.CreateLabGroups(ctx, &pb.CreateLabGroupsRequest{
+    Labels: map[string]string{"event": "e1"},
+    Items: []*pb.LabGroupItem{
+        {Name: "e-1-t-1", Labels: map[string]string{"team": "alpha"}, DeployGroup: "0198c0a4-7a41-7000-8000-000000000001"},
+        {Name: "e-1-t-2", DeployAfter: []string{"0198c0a4-7a41-7000-8000-000000000001"}},
+    },
+})
+for _, r := range res.Results { fmt.Println(r.Ref.Name, r.State, r.Error) }
+
+// Suspend every group of the event, but only if exactly the 2 expected ones match.
+conn.UpdateLabGroups(ctx, &pb.UpdateLabGroupsRequest{
+    BySelector: &pb.Selector{Selector: "event=e1", ExpectedCount: proto.Int64(2)},
+    Changes:    &pb.LabGroupChanges{Suspended: proto.Bool(true)},
+})
+
+// VPN clients: the config with the private key is in the CREATED result, once.
+cl, _ := conn.CreateLabGroupClients(ctx, &pb.CreateLabGroupClientsRequest{
+    Items: []*pb.LabGroupClientItem{{LabGroup: "e-1-t-1", Name: "p-alice"}, {LabGroup: "e-1-t-1", Name: "p-bob"}},
+})
+fmt.Println(cl.Results[0].Client.Status.Config)
+
+// Access for many groups at once.
+conn.SetLabGroupAccess(ctx, &pb.SetLabGroupAccessRequest{Policies: []*pb.LabGroupAccessPolicy{{
+    LabGroupName: "e-1-t-1",
+    Rules: []*pb.LabGroupAccessRule{{Action: pb.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_ALLOW, ClientNames: []string{"p-alice"}, LabNames: []string{"web"}}},
+}}})
+
+// Labs: each variant (spec + common variables) is sent once, items refer to it.
+conn.CreateLabs(ctx, &pb.CreateLabsRequest{
+    Labels: map[string]string{"event": "e1"},
+    Variants: []*pb.LabVariant{{
+        VariantId: "web-v3", SpecJson: specJSON,
+        Env: []*pb.DeviceEnv{{Device: "web", Vars: map[string]string{"MODE": "ctf"}}},
+    }},
+    Items: []*pb.LabItem{
+        {LabGroup: "e-1-t-1", Name: "c-1", VariantId: "web-v3", Env: []*pb.DeviceEnv{{Device: "web", Vars: map[string]string{"FLAG": "..."}}}},
+        {LabGroup: "e-1-t-2", Name: "c-1", VariantId: "web-v3", Env: []*pb.DeviceEnv{{Device: "web", Vars: map[string]string{"FLAG": "..."}}}},
+    },
+})
+
+// Rewrite one device's Secret, delete all labs of a group's round, retry a failed device.
+conn.UpdateLabs(ctx, &pb.UpdateLabsRequest{Items: []*pb.UpdateLabItem{{LabGroup: "e-1-t-1", Name: "c-1",
+    Changes: &pb.LabChanges{Env: []*pb.DeviceEnv{{Device: "web", Vars: map[string]string{"FLAG": "new"}}}}}}})
+conn.DeleteLabs(ctx, &pb.DeleteRequest{BySelector: &pb.Selector{Selector: "round=1", LabGroup: "e-1-t-1"}})
+conn.RetryDevices(ctx, &pb.DevicesRequest{Items: []*pb.ItemRef{{LabGroup: "e-1-t-1", Lab: "c-1", Name: "web"}}})
+```
+
+`RetryDevices` sets a new random `Device.spec.retryToken`; the operator retries the failed device pod once per distinct
+value. The same token mechanism drives `ResetDevices` (`spec.state.resetToken`).
+
+---
+
 ## Device state persistence (optional)
 
 By default a device is a container in a Deployment: when it restarts, it starts again from its image and the work
@@ -383,10 +499,11 @@ Requirements on the nodes (nothing has to be installed or configured on the host
 `Lab.status.devices[].state` and the agent's `LabDeviceStatus.snapshot` report, per device: the time of the last
 snapshot, the time it was last restored from a snapshot, its size in bytes, a quota or failure warning, and whether
 rescue mode is on. The management agent has two calls, meant for organizers and admins only (the platform backend
-enforces who may call them):
+enforces who may call them); both take explicit `(lab_group, lab, device)` items or a selector plus a device name
+(see [Management agent API](#management-agent-api)):
 
-- `ResetDevice(namespace, lab, device)` deletes the device's snapshots and starts it from the base image again;
-- `RescueDevice(namespace, lab, device, enable)` starts the device from its latest snapshot with a shell
+- `ResetDevices` deletes the devices' snapshots and starts them from the base image again;
+- `RescueDevices` (`enable`) starts the devices from their latest snapshot with a shell
   (`/bin/sh`, kept alive with `sleep`) instead of the image entrypoint, to repair a configuration that makes the
   service crash. It needs a shell in the image. `enable=false` returns to the normal start. Snapshots keep being taken
   while the device is in rescue mode.
@@ -428,7 +545,7 @@ Size the volume for the base images plus (devices x `maxSnapshotSize`) in the wo
 `state persistence unavailable`, the node's containerd does not use the overlayfs snapshotter or the paths above are
 not mounted. A device whose snapshot image cannot be pulled stays in `ImagePullBackOff` and its status warning says
 `snapshot image unavailable`; the operator never falls back to the base image on its own (that would lose state
-silently). Fix the registry, or use `ResetDevice` to start it from the base image.
+silently). Fix the registry, or use `ResetDevices` to start it from the base image.
 
 ---
 

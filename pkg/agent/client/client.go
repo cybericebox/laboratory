@@ -21,6 +21,13 @@ import (
 	"github.com/cybericebox/laboratory/pkg/tlsreload"
 )
 
+// MaxMessageSize is the largest gRPC message the client sends or accepts, equal to the
+// agent's limit; MaxItems is the most items one call may carry.
+const (
+	MaxMessageSize = 64 << 20
+	MaxItems       = 5000
+)
+
 type (
 	// Config describes how to reach a LabManager agent.
 	Config struct {
@@ -110,7 +117,11 @@ func NewConnection(config Config) (Client, error) {
 		return nil, fmt.Errorf("build transport credentials: %w", err)
 	}
 
-	conn, err := grpc.NewClient(config.Endpoint, grpc.WithTransportCredentials(creds))
+	conn, err := grpc.NewClient(config.Endpoint,
+		grpc.WithTransportCredentials(creds),
+		// Batch calls carry thousands of items; the 4 MiB default would refuse them.
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(MaxMessageSize), grpc.MaxCallSendMsgSize(MaxMessageSize)),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("dial agent %q: %w", config.Endpoint, err)
 	}

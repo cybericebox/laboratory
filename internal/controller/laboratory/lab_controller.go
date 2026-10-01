@@ -446,7 +446,7 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 			ObjectMeta: metav1.ObjectMeta{
 				Name:       deviceName,
 				Namespace:  lab.Namespace,
-				Labels:     map[string]string{names.LabelLab: lab.Name},
+				Labels:     deviceLabels(lab),
 				Finalizers: []string{names.FinalizerOVSCleanup},
 			},
 			Spec: laboratoryv1alpha1.DeviceSpec{
@@ -482,6 +482,14 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 		}
 	}
 	return nil
+}
+
+// deviceLabels are the labels of a Device: the labels the caller put on its Lab (they
+// reach the pod from here) and the lab's own key.
+func deviceLabels(lab *laboratoryv1alpha1.Lab) map[string]string {
+	labels := names.UserLabels(lab.Labels)
+	labels[names.LabelLab] = lab.Name
+	return labels
 }
 
 func isSwitchDevice(name string, lab *laboratoryv1alpha1.Lab) bool {
@@ -532,7 +540,7 @@ func (r *LabReconciler) materializeConnections(ctx context.Context, lab *laborat
 			ObjectMeta: metav1.ObjectMeta{
 				Name:       connName,
 				Namespace:  lab.Namespace,
-				Labels:     map[string]string{names.LabelLab: lab.Name},
+				Labels:     deviceLabels(lab),
 				Finalizers: []string{names.FinalizerOVSCleanup},
 			},
 			Spec: laboratoryv1alpha1.ConnectionSpec{
