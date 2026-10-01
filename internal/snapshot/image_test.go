@@ -237,7 +237,7 @@ func TestBaseLayersSharedAcrossDeviceRepos(t *testing.T) {
 	layers, _ := base.Layers()
 	d, _ := layers[0].Digest()
 	baseRepo, _ := reg.repo(BaseRepo)
-	if !reg.hasBlob(context.Background(), baseRepo, d) {
+	if !reg.HasBlob(context.Background(), baseRepo, d) {
 		t.Fatal("base layer missing from the shared base repository")
 	}
 }

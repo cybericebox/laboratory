@@ -29,6 +29,28 @@ type Config struct {
 	MTLS      MTLSConfig
 	// Monitoring bounds the shared journal behind the Monitoring stream.
 	Monitoring MonitoringConfig
+	// Cache lets the agent prewarm the platform image cache.
+	Cache CacheConfig
+}
+
+// CacheConfig configures PrewarmImages. Without Enabled the RPC fails with FailedPrecondition.
+type CacheConfig struct {
+	Enabled bool `env:"AGENT_CACHE_ENABLED" envDefault:"false"`
+	// RegistryAddr is host:port of the cache (the registry Service) as the agent reaches it.
+	RegistryAddr string `env:"AGENT_CACHE_REGISTRY_ADDR"`
+	// Registries are the upstream registries the cache serves.
+	Registries []string `env:"AGENT_CACHE_REGISTRIES" envSeparator:","`
+	// PullSecrets are dockerconfigjson Secrets of PullSecretNamespace used to ask the
+	// upstream registries for digests.
+	PullSecrets         []string `env:"AGENT_PULL_SECRETS" envSeparator:","`
+	PullSecretNamespace string   `env:"AGENT_PULL_SECRET_NAMESPACE" envDefault:"laboratory-system"`
+	// LabNodeSelector is the JSON nodeSelector of lab pods: the nodes whose
+	// architectures decide which platform of an image is warmed.
+	LabNodeSelector string `env:"AGENT_LAB_NODE_SELECTOR" envDefault:"{}"`
+	// PinTTL is how long a resolved digest is remembered (the tag is looked up again after it).
+	PinTTL      time.Duration `env:"AGENT_CACHE_PIN_TTL" envDefault:"5m"`
+	Concurrency int           `env:"AGENT_PREWARM_CONCURRENCY" envDefault:"4"`
+	Timeout     time.Duration `env:"AGENT_PREWARM_TIMEOUT" envDefault:"10m"`
 }
 
 // MonitoringConfig sizes the Monitoring stream's shared poller and journal. A

@@ -370,3 +370,38 @@ func TestImageCacheCustomRegistriesAndCredentialsSecret(t *testing.T) {
 		t.Errorf("an unknown built-in registry must be refused:\n%s", out)
 	}
 }
+
+func TestAgentPrewarmWiring(t *testing.T) {
+	on := []string{"--set", "registry.cache.enabled=true", "--set", "agent.enabled=true", "--set", "agent.domain=a.example.com",
+		"--set", "imagePullSecrets[0].name=pull-one", "--set", "registry.cache.prewarm.concurrency=7"}
+	var dep appsv1.Deployment
+	render(t, "templates/agent/deployment.yaml", &dep, on...)
+	env := envOf(dep.Spec.Template.Spec.Containers[0])
+	want := map[string]string{
+		"AGENT_CACHE_ENABLED":         "true",
+		"AGENT_CACHE_REGISTRY_ADDR":   "laboratory-registry.laboratory-system.svc:5000",
+		"AGENT_CACHE_REGISTRIES":      "docker.io,ghcr.io,quay.io,registry.k8s.io",
+		"AGENT_PULL_SECRETS":          "pull-one",
+		"AGENT_PULL_SECRET_NAMESPACE": "laboratory-system",
+		"AGENT_PREWARM_CONCURRENCY":   "7",
+		"AGENT_PREWARM_TIMEOUT":       "10m",
+	}
+	for k, v := range want {
+		if env[k].Value != v {
+			t.Errorf("%s = %q, want %q", k, env[k].Value, v)
+		}
+	}
+	out, err := helmTemplate(t, append(on, "-s", "templates/agent/role-pullsecrets.yaml")...)
+	if err != nil || !strings.Contains(out, "pull-one") || !strings.Contains(out, "verbs: [ get ]") && !strings.Contains(out, "- get") {
+		t.Errorf("the agent must be allowed to read exactly the pull secrets:\n%s %v", out, err)
+	}
+
+	// Cache off: the agent knows nothing of it and has no extra role.
+	var off appsv1.Deployment
+	render(t, "templates/agent/deployment.yaml", &off, "--set", "agent.enabled=true", "--set", "agent.domain=a.example.com")
+	for k := range envOf(off.Spec.Template.Spec.Containers[0]) {
+		if strings.HasPrefix(k, "AGENT_CACHE") || strings.HasPrefix(k, "AGENT_PREWARM") {
+			t.Errorf("%s present with the cache off", k)
+		}
+	}
+}

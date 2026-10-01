@@ -30,4 +30,15 @@ spec:
         - ports:
             - port: "5000"
               protocol: TCP
+{{- if and .Values.registry.cache.enabled .Values.agent.enabled }}
+    # PrewarmImages: the management agent asks the cache to fetch images ahead of time.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.agent.namespace }}
+            app: laboratory-agent
+      toPorts:
+        - ports:
+            - port: "5000"
+              protocol: TCP
+{{- end }}
 {{- end }}

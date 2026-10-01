@@ -39,6 +39,7 @@ const (
 	LabManager_ReconcileLabGroupAccess_FullMethodName = "/labmanager.LabManager/ReconcileLabGroupAccess"
 	LabManager_Monitoring_FullMethodName              = "/labmanager.LabManager/Monitoring"
 	LabManager_GetCapacity_FullMethodName             = "/labmanager.LabManager/GetCapacity"
+	LabManager_PrewarmImages_FullMethodName           = "/labmanager.LabManager/PrewarmImages"
 	LabManager_ResetDevice_FullMethodName             = "/labmanager.LabManager/ResetDevice"
 	LabManager_RescueDevice_FullMethodName            = "/labmanager.LabManager/RescueDevice"
 )
@@ -71,6 +72,13 @@ type LabManagerClient interface {
 	// complete snapshot; subsequent messages are sequenced deltas or heartbeats.
 	Monitoring(ctx context.Context, in *MonitoringRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[MonitoringUpdate], error)
 	GetCapacity(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*CapacityResponse, error)
+	// PrewarmImages makes the platform image cache (zot) fetch images from their upstream
+	// registries BEFORE labs need them, so a burst of labs pulls only from the cache. It is
+	// asynchronous and idempotent: each call returns the current state of the requested images
+	// (starting the work for new ones, retrying FAILED ones, refreshing DONE ones that are
+	// older than the agent's staleness bound); an empty list returns every image the agent
+	// knows. Poll by repeating the call. Fails with FailedPrecondition when the cache is off.
+	PrewarmImages(ctx context.Context, in *PrewarmImagesRequest, opts ...grpc.CallOption) (*PrewarmImagesResult, error)
 	// Device state persistence. Both calls act on one device of a lab and only
 	// make sense for labs that run with snapshot-backed state (LabDeviceStatus.snapshot
 	// is set). The backend restricts them to organizers and admins.
@@ -300,6 +308,16 @@ func (c *labManagerClient) GetCapacity(ctx context.Context, in *Empty, opts ...g
 	return out, nil
 }
 
+func (c *labManagerClient) PrewarmImages(ctx context.Context, in *PrewarmImagesRequest, opts ...grpc.CallOption) (*PrewarmImagesResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PrewarmImagesResult)
+	err := c.cc.Invoke(ctx, LabManager_PrewarmImages_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *labManagerClient) ResetDevice(ctx context.Context, in *DeviceRequest, opts ...grpc.CallOption) (*Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Empty)
@@ -348,6 +366,13 @@ type LabManagerServer interface {
 	// complete snapshot; subsequent messages are sequenced deltas or heartbeats.
 	Monitoring(*MonitoringRequest, grpc.ServerStreamingServer[MonitoringUpdate]) error
 	GetCapacity(context.Context, *Empty) (*CapacityResponse, error)
+	// PrewarmImages makes the platform image cache (zot) fetch images from their upstream
+	// registries BEFORE labs need them, so a burst of labs pulls only from the cache. It is
+	// asynchronous and idempotent: each call returns the current state of the requested images
+	// (starting the work for new ones, retrying FAILED ones, refreshing DONE ones that are
+	// older than the agent's staleness bound); an empty list returns every image the agent
+	// knows. Poll by repeating the call. Fails with FailedPrecondition when the cache is off.
+	PrewarmImages(context.Context, *PrewarmImagesRequest) (*PrewarmImagesResult, error)
 	// Device state persistence. Both calls act on one device of a lab and only
 	// make sense for labs that run with snapshot-backed state (LabDeviceStatus.snapshot
 	// is set). The backend restricts them to organizers and admins.
@@ -427,6 +452,9 @@ func (UnimplementedLabManagerServer) Monitoring(*MonitoringRequest, grpc.ServerS
 }
 func (UnimplementedLabManagerServer) GetCapacity(context.Context, *Empty) (*CapacityResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetCapacity not implemented")
+}
+func (UnimplementedLabManagerServer) PrewarmImages(context.Context, *PrewarmImagesRequest) (*PrewarmImagesResult, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PrewarmImages not implemented")
 }
 func (UnimplementedLabManagerServer) ResetDevice(context.Context, *DeviceRequest) (*Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ResetDevice not implemented")
@@ -808,6 +836,24 @@ func _LabManager_GetCapacity_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LabManager_PrewarmImages_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PrewarmImagesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabManagerServer).PrewarmImages(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LabManager_PrewarmImages_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabManagerServer).PrewarmImages(ctx, req.(*PrewarmImagesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _LabManager_ResetDevice_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(DeviceRequest)
 	if err := dec(in); err != nil {
@@ -926,6 +972,10 @@ var LabManager_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetCapacity",
 			Handler:    _LabManager_GetCapacity_Handler,
+		},
+		{
+			MethodName: "PrewarmImages",
+			Handler:    _LabManager_PrewarmImages_Handler,
 		},
 		{
 			MethodName: "ResetDevice",

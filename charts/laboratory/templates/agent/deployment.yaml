@@ -41,6 +41,25 @@ spec:
               value: /tls/tls.crt
             - name: AGENT_TLS_KEY
               value: /tls/tls.key
+          {{- if .Values.registry.cache.enabled }}
+            # PrewarmImages: the agent makes the image cache fetch images ahead of time.
+            - name: AGENT_CACHE_ENABLED
+              value: "true"
+            - name: AGENT_CACHE_REGISTRY_ADDR
+              value: {{ include "laboratory.registryAddr" . | quote }}
+            - name: AGENT_CACHE_REGISTRIES
+              value: {{ include "laboratory.cacheRegistryNames" . | quote }}
+            - name: AGENT_PULL_SECRETS
+              value: {{ include "laboratory.pullSecretNames" . | quote }}
+            - name: AGENT_PULL_SECRET_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: AGENT_LAB_NODE_SELECTOR
+              value: {{ .Values.labWorkloads.nodeSelector | toJson | quote }}
+            - name: AGENT_PREWARM_CONCURRENCY
+              value: {{ .Values.registry.cache.prewarm.concurrency | quote }}
+            - name: AGENT_PREWARM_TIMEOUT
+              value: {{ .Values.registry.cache.prewarm.timeout | quote }}
+          {{- end }}
             - name: AGENT_MONITORING_JOURNAL_SIZE
               value: {{ .Values.agent.monitoring.journalSize | quote }}
             - name: AGENT_MONITORING_JOURNAL_AGE

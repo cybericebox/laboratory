@@ -39,6 +39,13 @@ func Run() {
 		metrics = nil
 	}
 	h := grpcserver.NewHandler(cs, k8s, metrics, cfg.AgentID)
+	if cfg.Cache.Enabled {
+		pw, err := prewarmConfig(cfg, k8s)
+		if err != nil {
+			log.Fatalf("cache prewarm: %v", err)
+		}
+		h.SetPrewarm(pw)
+	}
 	h.SetMonitoringConfig(grpcserver.MonitoringConfig{
 		JournalSize:      cfg.Monitoring.JournalSize,
 		JournalAge:       cfg.Monitoring.JournalAge,

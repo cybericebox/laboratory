@@ -43,10 +43,8 @@ data:
   {{- end }}
   {{- end }}
   {{- if .Values.registry.cache.enabled }}
-  {{- $names := list }}
-  {{- range (include "laboratory.cacheUpstreams" . | fromJsonArray) }}{{ $names = append $names .name }}{{ end }}
   IMAGE_CACHE_ENABLED: "true"
   IMAGE_CACHE_PIN_TTL: {{ .Values.registry.cache.pinTTL | quote }}
   IMAGE_CACHE_PREFIX: {{ printf "localhost:%v" .Values.registry.forwardPort | quote }}
-  IMAGE_CACHE_REGISTRIES: {{ join "," $names | quote }}
+  IMAGE_CACHE_REGISTRIES: {{ include "laboratory.cacheRegistryNames" . | quote }}
   {{- end }}

@@ -75,6 +75,15 @@ app: laboratory-registry
 {{- end }}
 
 {{/*
+Comma-separated names of the registries the image cache serves.
+*/}}
+{{- define "laboratory.cacheRegistryNames" -}}
+{{- $names := list -}}
+{{- range (include "laboratory.cacheUpstreams" . | fromJsonArray) }}{{ $names = append $names .name }}{{ end -}}
+{{- join "," $names -}}
+{{- end }}
+
+{{/*
 Non-empty when the platform registry (zot) is deployed: device state persistence
 or the image cache is on.
 */}}

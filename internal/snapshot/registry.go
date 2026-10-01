@@ -92,11 +92,11 @@ func (r *Registry) ensureBaseLayer(ctx context.Context, target name.Repository, 
 	if err != nil {
 		return err
 	}
-	if r.hasBlob(ctx, target, d) {
+	if r.HasBlob(ctx, target, d) {
 		return nil
 	}
 	if sourceRepo != "" {
-		if src, err := r.repo(sourceRepo); err == nil && r.hasBlob(ctx, src, d) {
+		if src, err := r.repo(sourceRepo); err == nil && r.HasBlob(ctx, src, d) {
 			if ok, err := r.mountBlob(ctx, target, src, d); err == nil && ok {
 				return nil
 			}
@@ -106,7 +106,7 @@ func (r *Registry) ensureBaseLayer(ctx context.Context, target name.Repository, 
 	if err != nil {
 		return err
 	}
-	if !r.hasBlob(ctx, baseRepo, d) {
+	if !r.HasBlob(ctx, baseRepo, d) {
 		if err := remote.WriteLayer(baseRepo, l, r.opts(ctx)...); err != nil {
 			return fmt.Errorf("upload base layer %s: %w", d, err)
 		}
@@ -120,7 +120,7 @@ func (r *Registry) ensureBaseLayer(ctx context.Context, target name.Repository, 
 	return nil
 }
 
-func (r *Registry) hasBlob(ctx context.Context, repo name.Repository, d v1.Hash) bool {
+func (r *Registry) HasBlob(ctx context.Context, repo name.Repository, d v1.Hash) bool {
 	resp, err := r.blobRequest(ctx, http.MethodHead, repo, nil, fmt.Sprintf("blobs/%s", d), nil)
 	if err != nil {
 		return false
@@ -235,4 +235,13 @@ func (r *Registry) Image(ctx context.Context, repo string) (v1.Image, error) {
 		return nil, err
 	}
 	return remote.Image(target.Tag(Latest), r.opts(ctx)...)
+}
+
+// HasBlobIn reports whether the blob is stored in the repository named by its path.
+func (r *Registry) HasBlobIn(ctx context.Context, repo string, d v1.Hash) bool {
+	target, err := r.repo(repo)
+	if err != nil {
+		return false
+	}
+	return r.HasBlob(ctx, target, d)
 }

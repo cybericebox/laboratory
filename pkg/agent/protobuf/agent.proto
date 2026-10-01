@@ -34,6 +34,14 @@ service LabManager {
 
   rpc GetCapacity(Empty) returns (CapacityResponse) {}
 
+  // PrewarmImages makes the platform image cache (zot) fetch images from their upstream
+  // registries BEFORE labs need them, so a burst of labs pulls only from the cache. It is
+  // asynchronous and idempotent: each call returns the current state of the requested images
+  // (starting the work for new ones, retrying FAILED ones, refreshing DONE ones that are
+  // older than the agent's staleness bound); an empty list returns every image the agent
+  // knows. Poll by repeating the call. Fails with FailedPrecondition when the cache is off.
+  rpc PrewarmImages(PrewarmImagesRequest) returns (PrewarmImagesResult) {}
+
   // Device state persistence. Both calls act on one device of a lab and only
   // make sense for labs that run with snapshot-backed state (LabDeviceStatus.snapshot
   // is set). The backend restricts them to organizers and admins.
@@ -335,4 +343,32 @@ message CapacityResponse {
   int64 allocatable_memory_bytes = 3;
   int64 requested_cpu_millicores = 4;
   int64 requested_memory_bytes = 5;
+}
+
+message PrewarmImagesRequest {
+  // Image references as written in a lab spec ("nginx:1.25", "ghcr.io/o/app@sha256:...").
+  repeated string images = 1;
+}
+
+enum PrewarmState {
+  PREWARM_STATE_UNSPECIFIED = 0;
+  PREWARM_STATE_QUEUED = 1;   // waiting for a free slot (the agent bounds the concurrency)
+  PREWARM_STATE_WARMING = 2;  // the cache is fetching it
+  PREWARM_STATE_DONE = 3;     // the manifest and every blob are stored in the cache
+  PREWARM_STATE_FAILED = 4;   // see error; a repeated call retries
+  PREWARM_STATE_SKIPPED = 5;  // the image's registry is not served by the cache: nodes pull it directly
+}
+
+message PrewarmImageStatus {
+  string image = 1;
+  PrewarmState state = 2;
+  string error = 3;
+  // The digest the cache holds: the manifest of the cluster's node platform for a
+  // single-architecture cluster, the index otherwise (what the operator pins labs to).
+  string digest = 4;
+  int64 updated_unix_ms = 5;
+}
+
+message PrewarmImagesResult {
+  repeated PrewarmImageStatus images = 1;
 }

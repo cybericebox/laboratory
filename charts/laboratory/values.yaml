@@ -334,6 +334,13 @@ registry:
     # namespace with the key credentials.json in zot's sync credentials format
     # ({"host": {"username": "...", "password": "..."}}); imagePullSecrets is then ignored.
     credentialsSecret: ""
+    # Cache prewarm: the management agent's PrewarmImages RPC makes the cache fetch images
+    # ahead of an event. Needs agent.enabled. See DEPLOY.md, "Cache prewarm".
+    prewarm:
+      # Images fetched at once.
+      concurrency: 4
+      # Longest time for one image.
+      timeout: 10m
 
 # ============================================================
 # Devices: optional state persistence

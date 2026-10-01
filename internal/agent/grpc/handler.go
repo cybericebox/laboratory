@@ -26,6 +26,9 @@ type Handler struct {
 	// monitor is the shared poller and journal behind every Monitoring stream.
 	monOnce sync.Once
 	mon     *monitor
+
+	// prewarm fills the image cache ahead of time; nil until SetPrewarm.
+	prewarm *prewarmer
 }
 
 // NewHandler builds a Handler backed by the given typed clientset, plain
