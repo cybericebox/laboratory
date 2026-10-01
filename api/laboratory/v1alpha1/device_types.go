@@ -42,6 +42,12 @@ type DeviceSpec struct {
 	// resolved is absent and pulled by its tag.
 	// +optional
 	ImageDigests map[string]string `json:"imageDigests,omitempty"`
+	// Code is the short random code that makes the workload name <name>-<code>
+	// unique in the group namespace; the web Service of the device carries the same
+	// one. It is drawn when the Device is created and never changes. Empty on a
+	// Device that predates codes: its workload keeps the name of the Device.
+	// +optional
+	Code string `json:"code,omitempty"`
 	// RetryToken: a new value starts the device's pod again, at the head of the
 	// scheduler queue. Set by the management agent.
 	// +optional

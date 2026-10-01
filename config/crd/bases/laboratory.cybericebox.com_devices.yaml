@@ -39,6 +39,13 @@ spec:
           spec:
             description: DeviceSpec defines the desired state of Device.
             properties:
+              code:
+                description: |-
+                  Code is the short random code that makes the workload name <name>-<code>
+                  unique in the group namespace; the web Service of the device carries the same
+                  one. It is drawn when the Device is created and never changes. Empty on a
+                  Device that predates codes: its workload keeps the name of the Device.
+                type: string
               exposure:
                 description: ExposureSpec declares how a device is externally reachable.
                 properties:

@@ -321,6 +321,28 @@ gone (no fallback): the launch class, `Lab.spec.launchClass` and `Lab.status.lau
 
 ---
 
+## Workload names and user labels
+
+**Names.** The name of a device's workload never contains the lab. Every container device gets a short
+random code (3 characters, 4 after repeated collisions) when it is created, kept in `Device.spec.code`; the
+Deployment is named `<device>-<code>` (a pod of it adds the ReplicaSet hash and 5 characters, at most 63 with a
+device name of at most 35 characters), a snapshot-backed device's bare pod `<device>-<code>-<incarnation>`, and its
+web Service, which is also its host label, `<device>-<code>`. The code is unique in the group namespace (checked
+against the other devices' codes and the Services), so two labs may have a device of the same name in one
+namespace. The relation between a pod, its device and its lab goes through owner references and the labels
+`laboratory.cybericebox.com/lab` and `/device`, never through the name. Devices created before codes existed
+keep their names (no migration). The Device resource itself is still named `<lab>-<device>`, as the per-device
+env Secret `<lab>-<device>-env`.
+
+**User labels.** The labels of a Lab (and of a LabGroup) are copied onto its Devices and onto the pods of
+those Devices (the VPN and gateway pods for a LabGroup), except the operator's own: every label with the prefix
+`laboratory.cybericebox.com/` (`deploy-group` among them) and the keys `app`, `pod-template-hash` and
+`controller-revision-hash`. They are kept in sync: a changed or removed label follows on the Devices and on live
+pods, which are patched in place (metadata only, so nothing restarts); the copied keys are listed in the
+annotation `laboratory.cybericebox.com/user-labels` so only they are removed.
+
+---
+
 ## 6. Uninstall
 
 ```bash

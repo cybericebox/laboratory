@@ -55,6 +55,11 @@ type DeviceSpecApplyConfiguration struct {
 	// same image even if an upstream tag moves. An image that could not be
 	// resolved is absent and pulled by its tag.
 	ImageDigests map[string]string `json:"imageDigests,omitempty"`
+	// Code is the short random code that makes the workload name <name>-<code>
+	// unique in the group namespace; the web Service of the device carries the same
+	// one. It is drawn when the Device is created and never changes. Empty on a
+	// Device that predates codes: its workload keeps the name of the Device.
+	Code *string `json:"code,omitempty"`
 	// RetryToken: a new value starts the device's pod again, at the head of the
 	// scheduler queue. Set by the management agent.
 	RetryToken *string `json:"retryToken,omitempty"`
@@ -162,6 +167,14 @@ func (b *DeviceSpecApplyConfiguration) WithImageDigests(entries map[string]strin
 	for k, v := range entries {
 		b.ImageDigests[k] = v
 	}
+	return b
+}
+
+// WithCode sets the Code field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Code field is set to the value of the last call.
+func (b *DeviceSpecApplyConfiguration) WithCode(value string) *DeviceSpecApplyConfiguration {
+	b.Code = &value
 	return b
 }
 

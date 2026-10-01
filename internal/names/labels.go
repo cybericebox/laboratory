@@ -1,5 +1,10 @@
 package names
 
+// LabelPrefix is the prefix of every operator-internal label and annotation of
+// this platform. Labels with it are never copied from a Lab or LabGroup onto its
+// devices and pods: they are not user labels.
+const LabelPrefix = "laboratory.cybericebox.com/"
+
 // Kubernetes label keys.
 const (
 	LabelLab    = "laboratory.cybericebox.com/lab"
@@ -8,7 +13,7 @@ const (
 	// LabelDeployGroup is the scheduler group of a Lab or LabGroup (a key of at
 	// most 63 characters). Objects with the same key are dispatched together.
 	// Operator-internal: the scheduler reads it and no user label.
-	LabelDeployGroup = "laboratory.cybericebox.com/deploy-group"
+	LabelDeployGroup = LabelPrefix + "deploy-group"
 
 	// TopologyKeyHostname is the well-known node label used as the topology key
 	// for per-node scheduling constraints (device co-location).
@@ -19,7 +24,15 @@ const (
 const (
 	// AnnotationDeployAfter lists, comma separated, the deploy groups that must be
 	// complete (every pod Ready or failed) before the group of this object starts.
-	AnnotationDeployAfter = "laboratory.cybericebox.com/deploy-after"
+	AnnotationDeployAfter = LabelPrefix + "deploy-after"
+
+	// AnnotationSpecHash is written by the management agent on the objects it
+	// creates; the operator ignores it.
+	AnnotationSpecHash = LabelPrefix + "spec-hash"
+
+	// AnnotationUserLabels lists the user labels copied onto an object from its
+	// Lab or LabGroup, so a label removed there is removed here too.
+	AnnotationUserLabels = LabelPrefix + "user-labels"
 
 	// AnnotationNetworks is the pod annotation listing OVS network attachments.
 	// Format: comma-separated "iface@name[|MAC]" entries.

@@ -234,12 +234,12 @@ var _ = Describe("Scheduler", func() {
 				reconcileDevice(d)
 			}
 			for _, d := range []string{"a-web", "a-db"} {
-				dep, err := deployment(d)
+				dep, err := deployment(workloadName(getDevice(d)))
 				Expect(err).NotTo(HaveOccurred(), d)
 				Expect(*dep.Spec.Replicas).To(Equal(int32(1)))
 			}
 			for _, d := range []string{"b-web", "c-web", "i-web"} {
-				_, err := deployment(d)
+				_, err := deployment(workloadName(getDevice(d)))
 				Expect(errors.IsNotFound(err)).To(BeTrue(), d+" must wait")
 			}
 
@@ -293,7 +293,7 @@ var _ = Describe("Scheduler", func() {
 			Expect(got.RetryToken).To(Equal("retry-1"))
 			Expect(got.Failure).To(BeNil())
 			reconcileDevice("b-web")
-			dep, err := deployment("b-web")
+			dep, err := deployment(workloadName(getDevice("b-web")))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(*dep.Spec.Replicas).To(Equal(int32(1)))
 		})

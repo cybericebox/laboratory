@@ -4,9 +4,11 @@ import (
 	"context"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
@@ -63,4 +65,31 @@ func (r *LabGroupReconciler) ensureGroupScheduling(ctx context.Context, lg *labo
 		return nil
 	}
 	return r.Status().Update(ctx, lg)
+}
+
+// syncPodLabels keeps the user labels of the group's VPN and gateway pods equal
+// to those of the LabGroup. Only pod metadata changes, never the template, so a
+// label change restarts nothing; a pod created later is brought up to date on the
+// next reconcile.
+func (r *LabGroupReconciler) syncPodLabels(ctx context.Context, lg *laboratoryv1alpha1.LabGroup) error {
+	desired := userLabels(lg.Labels)
+	for _, app := range []string{"vpn", "gateway"} {
+		var pods corev1.PodList
+		if err := r.List(ctx, &pods, client.InNamespace(laboratoryv1alpha1.LabGroupNamespace(lg.Name)), client.MatchingLabels{"app": app}); err != nil {
+			return err
+		}
+		for i := range pods.Items {
+			p := &pods.Items[i]
+			if p.DeletionTimestamp != nil {
+				continue
+			}
+			orig := p.DeepCopy()
+			if applyUserLabels(p, desired) {
+				if err := r.Patch(ctx, p, client.MergeFrom(orig)); client.IgnoreNotFound(err) != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }

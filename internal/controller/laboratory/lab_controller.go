@@ -56,6 +56,9 @@ type LabReconciler struct {
 	VPNBaseNetwork string
 	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets (e.g. "10.9.0.0/16").
 	InetBaseNetwork string
+	// Reader reads from the API server without the cache; nil means Client. Used
+	// where a stale cache would hand out a device code twice.
+	Reader client.Reader
 	// State is the device state persistence policy applied to labs created
 	// while the platform switch is on.
 	State StatePolicy
@@ -408,11 +411,20 @@ func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, sw
 
 func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv1alpha1.Lab, resolvedInterfaces map[string][]laboratoryv1alpha1.InterfaceSpec) error {
 	vniAllocator := poolpkg.NewAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
+	codes := r.newCodeAllocator(lab)
+	wantLabels := userLabels(lab.Labels)
 
 	for _, tmpl := range lab.Spec.Devices {
 		deviceName := fmt.Sprintf("%s-%s", lab.Name, tmpl.Name)
 		var existing laboratoryv1alpha1.Device
 		if err := r.Get(ctx, types.NamespacedName{Name: deviceName, Namespace: lab.Namespace}, &existing); err == nil {
+			// The user labels of the lab follow it onto its devices.
+			orig := existing.DeepCopy()
+			if applyUserLabels(&existing, wantLabels) {
+				if err := r.Patch(ctx, &existing, client.MergeFrom(orig)); err != nil {
+					return err
+				}
+			}
 			// For switch/hub devices, ensure VNI is written even if the status update failed on a previous reconcile.
 			isSwitch := existing.Spec.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch ||
 				existing.Spec.Type == laboratoryv1alpha1.DeviceTypeHub
@@ -433,6 +445,13 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 			return err
 		}
 
+		var code string
+		if tmpl.Type == laboratoryv1alpha1.DeviceTypeContainer {
+			var err error
+			if code, err = codes.codeFor(ctx, tmpl.Name); err != nil {
+				return fmt.Errorf("device code of %s: %w", tmpl.Name, err)
+			}
+		}
 		d := &laboratoryv1alpha1.Device{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:       deviceName,
@@ -443,6 +462,7 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 			Spec: laboratoryv1alpha1.DeviceSpec{
 				LabRef:         lab.Name,
 				Name:           tmpl.Name,
+				Code:           code,
 				Type:           tmpl.Type,
 				Image:          tmpl.Image,
 				SecurityPreset: tmpl.SecurityPreset,
@@ -454,6 +474,7 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 				ImageDigests:   r.deviceDigests(lab, tmpl),
 			},
 		}
+		applyUserLabels(d, wantLabels)
 		if err := controllerutil.SetOwnerReference(lab, d, r.Scheme); err != nil {
 			return err
 		}
@@ -1209,7 +1230,7 @@ func (r *LabReconciler) ensureLabGatewayDeleted(ctx context.Context, lab *labora
 // this is how later reconciles keep the host label stable. nil if none exists.
 func (r *LabReconciler) findWebService(ctx context.Context, lab *laboratoryv1alpha1.Lab, device string) (*corev1.Service, error) {
 	var list corev1.ServiceList
-	if err := r.List(
+	if err := r.reader().List(
 		ctx, &list, client.InNamespace(lab.Namespace),
 		client.MatchingLabels{names.LabelLab: lab.Name, names.LabelDevice: device},
 	); err != nil {
@@ -1275,6 +1296,7 @@ func (r *LabReconciler) createWebService(ctx context.Context, lab *laboratoryv1a
 }
 
 func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
+	codes := r.newCodeAllocator(lab)
 	for _, d := range lab.Spec.Devices {
 		if d.Exposure == nil || d.Exposure.Web == nil {
 			continue
@@ -1315,7 +1337,22 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 		}
 		var svc *corev1.Service
 		if existing == nil {
-			svc, err = r.createWebService(ctx, lab, d.Name, fill)
+			var code string
+			if d.Type == laboratoryv1alpha1.DeviceTypeContainer {
+				code, err = codes.codeFor(ctx, d.Name)
+			}
+			if err != nil {
+				return fmt.Errorf("device code of %s: %w", d.Name, err)
+			}
+			if code != "" {
+				// The host label is the device's workload label: <device>-<code>.
+				svc = &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: names.WebHostLabel(d.Name, code), Namespace: lab.Namespace}}
+				if err = fill(svc); err == nil {
+					err = r.Create(ctx, svc)
+				}
+			} else {
+				svc, err = r.createWebService(ctx, lab, d.Name, fill)
+			}
 		} else {
 			svc = existing
 			_, err = controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error { return fill(svc) })

@@ -57,8 +57,13 @@ func podIncarnation(p *corev1.Pod) int32 {
 	return int32(n)
 }
 
+// workloadName is the name of the device's Deployment, and the prefix of its pods.
+func workloadName(device *laboratoryv1alpha1.Device) string {
+	return names.WorkloadName(device.Spec.Name, device.Spec.Code, device.Name)
+}
+
 func podName(device *laboratoryv1alpha1.Device, incarnation int32) string {
-	return fmt.Sprintf("%s-%d", device.Name, incarnation)
+	return fmt.Sprintf("%s-%d", workloadName(device), incarnation)
 }
 
 // reader reads straight from the API server when one is configured.

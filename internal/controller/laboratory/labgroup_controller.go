@@ -203,6 +203,11 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 
+	if err = r.syncPodLabels(ctx, &lg); err != nil {
+		logger.Error(err, "sync pod labels")
+		return ctrl.Result{}, err
+	}
+
 	if err = r.ensureVPNGatewayPolicies(ctx, ns); err != nil {
 		logger.Error(err, "ensure vpn/gateway CiliumNetworkPolicies")
 		return ctrl.Result{}, err
