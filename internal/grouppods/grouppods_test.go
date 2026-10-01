@@ -1,6 +1,10 @@
 package grouppods
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/caarlos0/env/v11"
+)
 
 func TestDefaultsAreGuaranteedAndSummed(t *testing.T) {
 	c := Config{VPNCPU: "100m", VPNMemory: "64Mi", GatewayCPU: "50m", GatewayMemory: "32Mi"}
@@ -35,5 +39,15 @@ func TestValidateRefusesBadValues(t *testing.T) {
 func TestEmptyConfigFallsBackToTheDefaults(t *testing.T) {
 	if o := (Config{}).Overhead(); o.CPU != 150 || o.Memory != 96<<20 {
 		t.Fatalf("%+v", o)
+	}
+}
+
+func TestDefaultsAreTheMeasuredOnes(t *testing.T) {
+	var c Config
+	if err := env.Parse(&c); err != nil {
+		t.Fatal(err)
+	}
+	if c.VPNCPU != "100m" || c.VPNMemory != "256Mi" || c.GatewayCPU != "10m" || c.GatewayMemory != "32Mi" {
+		t.Fatalf("defaults %+v", c)
 	}
 }

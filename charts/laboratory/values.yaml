@@ -53,13 +53,14 @@ operator:
 # VPN pod image (created at runtime by operator per LabGroup)
 # ============================================================
 vpn:
-  # Resources of the VPN pod of a NEW LabGroup (requests = limits: a Guaranteed pod). Measured idle: about 1m CPU and
-  # 16Mi; the margin covers about five active peers (the data path is the kernel's WireGuard, the pod only manages peers
-  # and firewall rules). The management agent reports vpn + gateway as the service overhead of a group
-  # (GetCapacity). Existing groups keep what they were created with.
+  # Resources of the VPN pod of a NEW LabGroup (requests = limits: a Guaranteed pod). Measured on the local stand:
+  # idle 1m CPU / 16Mi; with 5 active peers pulling pages in a loop up to 48m CPU and 155Mi (the memory grows with the
+  # peers and their traffic, so it is the limit that matters: 256Mi leaves room for a team of 10). The data path is the
+  # kernel's WireGuard, the pod manages peers and firewall rules. The management agent reports vpn + gateway as the
+  # service overhead of a group (GetCapacity). Existing groups keep what they were created with.
   resources:
     cpu: 100m
-    memory: 64Mi
+    memory: 256Mi
   image:
     repository: cybericebox/laboratory-lab
     tag: ""
@@ -72,9 +73,10 @@ vpn:
 # Gateway pod image (created at runtime by operator per LabGroup)
 # ============================================================
 inetGateway:
-  # Resources of the internet gateway pod of a NEW LabGroup (requests = limits). Measured idle: about 1m CPU and 8Mi.
+  # Resources of the internet gateway pod of a NEW LabGroup (requests = limits). Measured idle: about 1m CPU and 8Mi
+  # (traffic of labs through it is not measured yet).
   resources:
-    cpu: 50m
+    cpu: 10m
     memory: 32Mi
   image:
     repository: cybericebox/laboratory-lab

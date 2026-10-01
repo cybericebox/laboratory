@@ -183,3 +183,17 @@ func TestGroupPodResourcesReachOperatorAndAgent(t *testing.T) {
 		}
 	}
 }
+
+// The defaults are the measured ones: a VPN pod of a team of ten needs memory headroom (155Mi was seen with five
+// active peers), a gateway is tiny. Requests equal limits (Guaranteed pods).
+func TestGroupPodDefaultsAreTheMeasuredOnes(t *testing.T) {
+	out, err := helmTemplate(t, append(agentSet, "-s", "templates/operator/configmap.yaml")...)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, want := range []string{`VPN_CPU: "100m"`, `VPN_MEMORY: "256Mi"`, `GATEWAY_CPU: "10m"`, `GATEWAY_MEMORY: "32Mi"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+}
