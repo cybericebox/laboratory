@@ -30,6 +30,10 @@ type LabGroupStatusApplyConfiguration struct {
 	Namespace *string                              `json:"namespace,omitempty"`
 	Suspended *bool                                `json:"suspended,omitempty"`
 	VPN       *LabGroupVPNStatusApplyConfiguration `json:"vpn,omitempty"`
+	// ImageWarning names the VPN or gateway image that could not be pinned to a
+	// digest when the group's pods were created with the image cache on; the pod
+	// pulls it by tag. Empty when all were pinned (or the cache was off).
+	ImageWarning *string `json:"imageWarning,omitempty"`
 }
 
 // LabGroupStatusApplyConfiguration constructs a declarative configuration of the LabGroupStatus type for use with
@@ -67,5 +71,13 @@ func (b *LabGroupStatusApplyConfiguration) WithSuspended(value bool) *LabGroupSt
 // If called multiple times, the VPN field is set to the value of the last call.
 func (b *LabGroupStatusApplyConfiguration) WithVPN(value *LabGroupVPNStatusApplyConfiguration) *LabGroupStatusApplyConfiguration {
 	b.VPN = value
+	return b
+}
+
+// WithImageWarning sets the ImageWarning field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ImageWarning field is set to the value of the last call.
+func (b *LabGroupStatusApplyConfiguration) WithImageWarning(value string) *LabGroupStatusApplyConfiguration {
+	b.ImageWarning = &value
 	return b
 }

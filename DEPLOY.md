@@ -479,7 +479,8 @@ compressed on amd64 and arm64; the cache needs its sync extension), both can be 
   `localhost:<port>/REG/repo@sha256:...`. The digests are recorded in `Lab.status.imageDigests` and copied to
   `Device.spec.imageDigests`; the prepull uses them. A resolved digest is remembered for `registry.cache.pinTTL`
   (default 30m), so labs created in the same wave get the same image. The VPN and gateway images of a group are
-  pinned the same way when the group's pods are created. An image whose digest cannot be resolved is pulled by its
+  pinned the same way when the group's pods are created; a failure there is recorded in `LabGroup.status.imageWarning`.
+  Both warnings reach the management agent (`LabStatus.image_warning`, `LabGroupStatus.image_warning`). An image whose digest cannot be resolved is pulled by its
   tag and named in `Lab.status.imageWarning` (and a Warning event on the Lab). The operator needs HTTPS egress to the
   upstream registries for this (the chart's operator network policy allows it when the cache is on).
 - **Platforms.** zot syncs a whole multi-platform image index, Windows variants included (the `pause` image alone is

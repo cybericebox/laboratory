@@ -109,3 +109,20 @@ func TestLabStatusCarriesSnapshotInfo(t *testing.T) {
 		t.Fatal("a device without persistence reports no snapshot block")
 	}
 }
+
+func TestImageWarningsReachTheAgentStatus(t *testing.T) {
+	lab := &laboratoryv1alpha1.Lab{
+		ObjectMeta: metav1.ObjectMeta{Name: "ctf", Namespace: "ns"},
+		Status:     laboratoryv1alpha1.LabStatus{ImageWarning: "image tags not pinned to a digest, pulled by tag: nginx:1"},
+	}
+	if got := labToProto(lab).Status.ImageWarning; got != lab.Status.ImageWarning {
+		t.Fatalf("lab warning %q", got)
+	}
+	g := &laboratoryv1alpha1.LabGroup{Status: laboratoryv1alpha1.LabGroupStatus{ImageWarning: "images not pinned to a digest, pulled by tag: lab:v1"}}
+	if got := labGroupToProto(g).Status.ImageWarning; got != g.Status.ImageWarning {
+		t.Fatalf("group warning %q", got)
+	}
+	if labToProto(&laboratoryv1alpha1.Lab{}).Status.ImageWarning != "" {
+		t.Fatal("no warning unless there is one")
+	}
+}

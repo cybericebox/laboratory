@@ -19,6 +19,7 @@ func labGroupToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.LabGroup {
 			VpnRegistered:   g.Status.VPN.Registered,
 			Suspended:       g.Status.Suspended,
 			VpnClientSubnet: g.Status.VPN.ClientSubnet,
+			ImageWarning:    g.Status.ImageWarning,
 		},
 	}
 }
@@ -35,6 +36,7 @@ func labToProto(l *laboratoryv1alpha1.Lab) *protobuf.Lab {
 		Ready:         st.Phase == laboratoryv1alpha1.PhaseReady,
 		VpnReady:      st.VPN.Ready,
 		InternetReady: st.Internet.Ready,
+		ImageWarning:  st.ImageWarning,
 	}
 	status.Queue = labQueueToProto(st.Launch)
 	for i := range st.Devices {

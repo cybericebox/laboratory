@@ -63,6 +63,8 @@ message LabGroupStatus {
   bool vpn_registered = 3;
   bool suspended = 4;
   string vpn_client_subnet = 5;
+  // VPN or gateway image that could not be pinned to a digest (pulled by tag); empty when fine.
+  string image_warning = 6;
 }
 message LabGroupList {repeated LabGroup items = 1;}
 
@@ -102,6 +104,9 @@ message LabStatus {
   // Launch queue state. Set by the operator's launch pacing; absent (nil)
   // for labs that were never queued. Numbers 20+ are reserved for launch pacing.
   LabQueueStatus queue = 20;
+  // Image cache: the images of the lab that could not be pinned to a digest and
+  // are pulled by tag; empty when all were pinned or the lab does not use the cache.
+  string image_warning = 40;
 }
 // LabQueueStatus is the place of a Lab in the operator's launch queue. A lab is
 // queued while LabStatus.phase is "Queued"; once admitted, position and length

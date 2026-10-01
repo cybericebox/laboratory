@@ -3,6 +3,8 @@ package laboratory
 import (
 	"context"
 	"fmt"
+	"strings"
+	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -61,6 +63,9 @@ type LabGroupReconciler struct {
 	Mirror imagecache.Rewriter
 	// Resolver pins those images to a digest, once, at creation; nil pins nothing.
 	Resolver imagecache.Resolver
+
+	pinMu       sync.Mutex
+	pinFailures map[string][]string
 	// SupportEmail is the contact address shown on the VPN probe page.
 	SupportEmail string
 	// LabNodeSelector is applied to VPN and gateway pod specs.
@@ -215,6 +220,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				return ctrl.Result{}, err
 			}
 		}
+		r.reportPinWarning(&lg, ns)
 		lg.Status.Phase = laboratoryv1alpha1.PhaseSuspended
 		lg.Status.Namespace = ns
 		lg.Status.Suspended = true
@@ -241,6 +247,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 
+	r.reportPinWarning(&lg, ns)
 	lg.Status.Phase = laboratoryv1alpha1.PhaseReady
 	lg.Status.Namespace = ns
 	lg.Status.Suspended = false
@@ -490,7 +497,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 	} else if !errors.IsNotFound(err) {
 		return err
 	}
-	vpnImage := r.cachedImage(ctx, r.VPNImage)
+	vpnImage := r.cachedImage(ctx, ns, r.VPNImage)
 	clientSubnet, err := netutil.SubnetForIndex(r.VPNBaseNetwork, labSubnetPrefixLen, 0)
 	if err != nil {
 		return fmt.Errorf("derive VPN client subnet: %w", err)
@@ -589,7 +596,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 	} else if !errors.IsNotFound(err) {
 		return err
 	}
-	gatewayImage := r.cachedImage(ctx, r.GatewayImage)
+	gatewayImage := r.cachedImage(ctx, ns, r.GatewayImage)
 	d := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: ns},
 		Spec: appsv1.DeploymentSpec{
@@ -922,8 +929,9 @@ func (r *LabGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // cachedImage is the reference a new VPN or gateway pod of the group pulls:
 // through the image cache, pinned to the digest of the tag at this moment. When
-// the digest cannot be resolved the tag is used and the failure is logged.
-func (r *LabGroupReconciler) cachedImage(ctx context.Context, image string) string {
+// the digest cannot be resolved the tag is used, and the failure is kept for the
+// group status (and the log).
+func (r *LabGroupReconciler) cachedImage(ctx context.Context, ns, image string) string {
 	if r.Mirror.Prefix == "" || r.Mirror.Rewrite(image) == image {
 		return image
 	}
@@ -932,9 +940,41 @@ func (r *LabGroupReconciler) cachedImage(ctx context.Context, image string) stri
 		d, err := r.Resolver.Resolve(ctx, image)
 		if err != nil {
 			log.FromContext(ctx).Info("image not pinned to a digest, pulled by tag", "image", image, "err", err.Error())
+			r.notePinFailure(ns, fmt.Sprintf("%s (%v)", image, err))
 		} else {
 			digest = d
 		}
 	}
 	return r.Mirror.RewritePinned(image, digest)
+}
+
+func (r *LabGroupReconciler) notePinFailure(ns, what string) {
+	r.pinMu.Lock()
+	defer r.pinMu.Unlock()
+	if r.pinFailures == nil {
+		r.pinFailures = map[string][]string{}
+	}
+	r.pinFailures[ns] = append(r.pinFailures[ns], what)
+}
+
+// takePinWarning returns, and forgets, the pin failures noted for a group namespace.
+func (r *LabGroupReconciler) takePinWarning(ns string) string {
+	r.pinMu.Lock()
+	defer r.pinMu.Unlock()
+	f := r.pinFailures[ns]
+	delete(r.pinFailures, ns)
+	if len(f) == 0 {
+		return ""
+	}
+	return "images not pinned to a digest, pulled by tag: " + strings.Join(f, "; ")
+}
+
+// reportPinWarning copies a fresh pin failure into the group status and raises an event.
+func (r *LabGroupReconciler) reportPinWarning(lg *laboratoryv1alpha1.LabGroup, ns string) {
+	if w := r.takePinWarning(ns); w != "" {
+		lg.Status.ImageWarning = w
+		if r.Recorder != nil {
+			r.Recorder.Event(lg, corev1.EventTypeWarning, "ImageNotPinned", w)
+		}
+	}
 }

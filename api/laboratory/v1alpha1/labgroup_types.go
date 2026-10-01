@@ -29,6 +29,11 @@ type LabGroupStatus struct {
 	Namespace string            `json:"namespace,omitempty"`
 	Suspended bool              `json:"suspended,omitempty"`
 	VPN       LabGroupVPNStatus `json:"vpn,omitempty"`
+	// ImageWarning names the VPN or gateway image that could not be pinned to a
+	// digest when the group's pods were created with the image cache on; the pod
+	// pulls it by tag. Empty when all were pinned (or the cache was off).
+	// +optional
+	ImageWarning string `json:"imageWarning,omitempty"`
 }
 
 // LabGroupVPNStatus exposes VPN server connection details.

@@ -73,6 +73,12 @@ spec:
           status:
             description: LabGroupStatus defines the observed state of LabGroup.
             properties:
+              imageWarning:
+                description: |-
+                  ImageWarning names the VPN or gateway image that could not be pinned to a
+                  digest when the group's pods were created with the image cache on; the pod
+                  pulls it by tag. Empty when all were pinned (or the cache was off).
+                type: string
               namespace:
                 type: string
               phase:

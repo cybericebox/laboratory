@@ -417,8 +417,10 @@ type LabGroupStatus struct {
 	VpnRegistered   bool                   `protobuf:"varint,3,opt,name=vpn_registered,json=vpnRegistered,proto3" json:"vpn_registered,omitempty"`
 	Suspended       bool                   `protobuf:"varint,4,opt,name=suspended,proto3" json:"suspended,omitempty"`
 	VpnClientSubnet string                 `protobuf:"bytes,5,opt,name=vpn_client_subnet,json=vpnClientSubnet,proto3" json:"vpn_client_subnet,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// VPN or gateway image that could not be pinned to a digest (pulled by tag); empty when fine.
+	ImageWarning  string `protobuf:"bytes,6,opt,name=image_warning,json=imageWarning,proto3" json:"image_warning,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *LabGroupStatus) Reset() {
@@ -482,6 +484,13 @@ func (x *LabGroupStatus) GetSuspended() bool {
 func (x *LabGroupStatus) GetVpnClientSubnet() string {
 	if x != nil {
 		return x.VpnClientSubnet
+	}
+	return ""
+}
+
+func (x *LabGroupStatus) GetImageWarning() string {
+	if x != nil {
+		return x.ImageWarning
 	}
 	return ""
 }
@@ -815,7 +824,10 @@ type LabStatus struct {
 	Access        []*LabAccessEntry      `protobuf:"bytes,10,rep,name=access,proto3" json:"access,omitempty"`          // structured web-exposure entries
 	// Launch queue state. Set by the operator's launch pacing; absent (nil)
 	// for labs that were never queued. Numbers 20+ are reserved for launch pacing.
-	Queue         *LabQueueStatus `protobuf:"bytes,20,opt,name=queue,proto3" json:"queue,omitempty"`
+	Queue *LabQueueStatus `protobuf:"bytes,20,opt,name=queue,proto3" json:"queue,omitempty"`
+	// Image cache: the images of the lab that could not be pinned to a digest and
+	// are pulled by tag; empty when all were pinned or the lab does not use the cache.
+	ImageWarning  string `protobuf:"bytes,40,opt,name=image_warning,json=imageWarning,proto3" json:"image_warning,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -925,6 +937,13 @@ func (x *LabStatus) GetQueue() *LabQueueStatus {
 		return x.Queue
 	}
 	return nil
+}
+
+func (x *LabStatus) GetImageWarning() string {
+	if x != nil {
+		return x.ImageWarning
+	}
+	return ""
 }
 
 // LabQueueStatus is the place of a Lab in the operator's launch queue. A lab is
@@ -2656,13 +2675,14 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x04name\x18\x02 \x01(\tR\x04name\"R\n" +
 	"\bLabGroup\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x122\n" +
-	"\x06status\x18\x02 \x01(\v2\x1a.labmanager.LabGroupStatusR\x06status\"\xb5\x01\n" +
+	"\x06status\x18\x02 \x01(\v2\x1a.labmanager.LabGroupStatusR\x06status\"\xda\x01\n" +
 	"\x0eLabGroupStatus\x12\x14\n" +
 	"\x05phase\x18\x01 \x01(\tR\x05phase\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12%\n" +
 	"\x0evpn_registered\x18\x03 \x01(\bR\rvpnRegistered\x12\x1c\n" +
 	"\tsuspended\x18\x04 \x01(\bR\tsuspended\x12*\n" +
-	"\x11vpn_client_subnet\x18\x05 \x01(\tR\x0fvpnClientSubnet\":\n" +
+	"\x11vpn_client_subnet\x18\x05 \x01(\tR\x0fvpnClientSubnet\x12#\n" +
+	"\rimage_warning\x18\x06 \x01(\tR\fimageWarning\":\n" +
 	"\fLabGroupList\x12*\n" +
 	"\x05items\x18\x01 \x03(\v2\x14.labmanager.LabGroupR\x05items\"W\n" +
 	"\rDeviceRequest\x12\x1c\n" +
@@ -2686,7 +2706,7 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x04vars\x18\x02 \x03(\v2\x1f.labmanager.DeviceEnv.VarsEntryR\x04vars\x1a7\n" +
 	"\tVarsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbc\x03\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xe1\x03\n" +
 	"\tLabStatus\x12\x14\n" +
 	"\x05phase\x18\x01 \x01(\tR\x05phase\x12\x19\n" +
 	"\bvpn_cidr\x18\x02 \x01(\tR\avpnCidr\x12#\n" +
@@ -2700,7 +2720,8 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\vconnections\x18\t \x03(\v2\x1f.labmanager.LabConnectionStatusR\vconnections\x122\n" +
 	"\x06access\x18\n" +
 	" \x03(\v2\x1a.labmanager.LabAccessEntryR\x06access\x120\n" +
-	"\x05queue\x18\x14 \x01(\v2\x1a.labmanager.LabQueueStatusR\x05queue\"\xae\x01\n" +
+	"\x05queue\x18\x14 \x01(\v2\x1a.labmanager.LabQueueStatusR\x05queue\x12#\n" +
+	"\rimage_warning\x18( \x01(\tR\fimageWarning\"\xae\x01\n" +
 	"\x0eLabQueueStatus\x12\x1a\n" +
 	"\bposition\x18\x01 \x01(\x05R\bposition\x12\x16\n" +
 	"\x06length\x18\x02 \x01(\x05R\x06length\x12\x16\n" +

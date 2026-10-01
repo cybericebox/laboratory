@@ -286,15 +286,33 @@ func TestGroupImagePinning(t *testing.T) {
 	rw := imagecache.Rewriter{Prefix: "localhost:5035", Registries: imagecache.DefaultRegistries}
 	g := &LabGroupReconciler{Mirror: rw, Resolver: &fakeResolver{digests: map[string]string{"ghcr.io/cybericebox/laboratory-lab:v1": digA}}}
 	ctx := context.Background()
-	if got := g.cachedImage(ctx, "ghcr.io/cybericebox/laboratory-lab:v1"); got != "localhost:5035/ghcr.io/cybericebox/laboratory-lab@"+digA {
+	if got := g.cachedImage(ctx, "ns", "ghcr.io/cybericebox/laboratory-lab:v1"); got != "localhost:5035/ghcr.io/cybericebox/laboratory-lab@"+digA {
 		t.Fatal(got)
 	}
 	g.Resolver = &fakeResolver{fail: map[string]bool{"ghcr.io/cybericebox/laboratory-lab:v1": true}}
-	if got := g.cachedImage(ctx, "ghcr.io/cybericebox/laboratory-lab:v1"); got != "localhost:5035/ghcr.io/cybericebox/laboratory-lab:v1" {
+	if got := g.cachedImage(ctx, "ns", "ghcr.io/cybericebox/laboratory-lab:v1"); got != "localhost:5035/ghcr.io/cybericebox/laboratory-lab:v1" {
 		t.Fatalf("a failed resolution falls back to the tag, got %s", got)
 	}
-	if got := (&LabGroupReconciler{}).cachedImage(ctx, "ghcr.io/x/y:1"); got != "ghcr.io/x/y:1" {
+	if got := (&LabGroupReconciler{}).cachedImage(ctx, "ns", "ghcr.io/x/y:1"); got != "ghcr.io/x/y:1" {
 		t.Fatalf("cache off: %s", got)
+	}
+	// The failure is kept for the group status once, with the image named.
+	w := g.takePinWarning("ns")
+	if !strings.Contains(w, "ghcr.io/cybericebox/laboratory-lab:v1") || !strings.Contains(w, "pulled by tag") {
+		t.Fatalf("warning %q", w)
+	}
+	if g.takePinWarning("ns") != "" || g.takePinWarning("other") != "" {
+		t.Fatal("a warning is taken once and belongs to its group")
+	}
+	lg := &laboratoryv1alpha1.LabGroup{}
+	g.notePinFailure("ns", "x:1 (down)")
+	g.reportPinWarning(lg, "ns")
+	if !strings.Contains(lg.Status.ImageWarning, "x:1") {
+		t.Fatalf("status %q", lg.Status.ImageWarning)
+	}
+	g.reportPinWarning(lg, "ns")
+	if lg.Status.ImageWarning == "" {
+		t.Fatal("a later reconcile without new failures keeps the recorded warning")
 	}
 }
 
