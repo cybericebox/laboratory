@@ -50,8 +50,11 @@ var upstreamTransport = &http.Transport{
 		InsecureSkipVerify: true,
 		MinVersion:         tls.VersionTLS12,
 	}, // #nosec G402 — see comment above
-	MaxIdleConns:    100,
-	IdleConnTimeout: 90 * time.Second,
+	MaxIdleConns: 100,
+	// Every task of a team is one upstream host: without this the default of 2 idle connections per host
+	// makes every request beyond the second concurrent one open (and close) its own TCP connection.
+	MaxIdleConnsPerHost: 100,
+	IdleConnTimeout:     90 * time.Second,
 }
 
 func NewHandler(keys KeyLookup, secret []byte, baseDomain, cookieName string, resolver BackendResolver) *Handler {

@@ -200,3 +200,11 @@ func TestHandler_PerUserRefusesAValidTokenOfARemovedMember(t *testing.T) {
 		t.Fatalf("removed member with a valid token must be refused: %d", code)
 	}
 }
+
+// Many participants hit one task device at once: the idle pool per upstream host must be as large as the
+// pool itself, or every request beyond the default 2 idle connections opens a new TCP connection.
+func TestUpstreamTransportKeepsIdleConnectionsPerHost(t *testing.T) {
+	if upstreamTransport.MaxIdleConnsPerHost < upstreamTransport.MaxIdleConns {
+		t.Fatalf("MaxIdleConnsPerHost = %d, want at least MaxIdleConns = %d", upstreamTransport.MaxIdleConnsPerHost, upstreamTransport.MaxIdleConns)
+	}
+}
