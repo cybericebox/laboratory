@@ -159,7 +159,10 @@ func (r *ContainerdRuntime) Diff(ctx context.Context, c Container, freeze bool) 
 	}
 	return &diffReader{Reader: content.NewReader(ra), close: func() {
 		_ = ra.Close()
-		_ = cs.Delete(context.WithoutCancel(ctx), desc.Digest)
+		// The blob is not deleted here: identical diffs of different devices have the same
+		// digest, and deleting it pulled it from under a reader that was still using it
+		// ("content digest not found"). It belongs to the lease, and containerd collects
+		// it when the last lease that holds it is gone.
 		release()
 	}}, nil
 }

@@ -42,6 +42,7 @@ const (
 	LabManager_PrewarmImages_FullMethodName         = "/labmanager.LabManager/PrewarmImages"
 	LabManager_ResetDevices_FullMethodName          = "/labmanager.LabManager/ResetDevices"
 	LabManager_RescueDevices_FullMethodName         = "/labmanager.LabManager/RescueDevices"
+	LabManager_ExportDeviceSnapshot_FullMethodName  = "/labmanager.LabManager/ExportDeviceSnapshot"
 )
 
 // LabManagerClient is the client API for LabManager service.
@@ -111,6 +112,14 @@ type LabManagerClient interface {
 	// the image entrypoint (enable=true), or back to normal (enable=false), to repair a
 	// configuration that makes the service crash.
 	RescueDevices(ctx context.Context, in *RescueDevicesRequest, opts ...grpc.CallOption) (*BatchResult, error)
+	// ExportDeviceSnapshot streams the LATEST state of a device with snapshot-backed state as one
+	// archive: the files that differ from the device's base image (the layers of the snapshot
+	// chain squashed into one, deletions kept as OCI whiteouts), as an uncompressed-tar stream
+	// compressed with gzip and cut into chunks. The first message is the metadata, then data
+	// chunks, then the trailer with the length and sha256 of the gzip stream. There is no layer history.
+	// FailedPrecondition: the device has no state persistence, or it has no snapshot yet, or the
+	// snapshot registry is not configured. NotFound: no such device, or it belongs to another tenant.
+	ExportDeviceSnapshot(ctx context.Context, in *DeviceSnapshotRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SnapshotChunk], error)
 }
 
 type labManagerClient struct {
@@ -360,6 +369,25 @@ func (c *labManagerClient) RescueDevices(ctx context.Context, in *RescueDevicesR
 	return out, nil
 }
 
+func (c *labManagerClient) ExportDeviceSnapshot(ctx context.Context, in *DeviceSnapshotRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SnapshotChunk], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &LabManager_ServiceDesc.Streams[1], LabManager_ExportDeviceSnapshot_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[DeviceSnapshotRequest, SnapshotChunk]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type LabManager_ExportDeviceSnapshotClient = grpc.ServerStreamingClient[SnapshotChunk]
+
 // LabManagerServer is the server API for LabManager service.
 // All implementations must embed UnimplementedLabManagerServer
 // for forward compatibility.
@@ -427,6 +455,14 @@ type LabManagerServer interface {
 	// the image entrypoint (enable=true), or back to normal (enable=false), to repair a
 	// configuration that makes the service crash.
 	RescueDevices(context.Context, *RescueDevicesRequest) (*BatchResult, error)
+	// ExportDeviceSnapshot streams the LATEST state of a device with snapshot-backed state as one
+	// archive: the files that differ from the device's base image (the layers of the snapshot
+	// chain squashed into one, deletions kept as OCI whiteouts), as an uncompressed-tar stream
+	// compressed with gzip and cut into chunks. The first message is the metadata, then data
+	// chunks, then the trailer with the length and sha256 of the gzip stream. There is no layer history.
+	// FailedPrecondition: the device has no state persistence, or it has no snapshot yet, or the
+	// snapshot registry is not configured. NotFound: no such device, or it belongs to another tenant.
+	ExportDeviceSnapshot(*DeviceSnapshotRequest, grpc.ServerStreamingServer[SnapshotChunk]) error
 	mustEmbedUnimplementedLabManagerServer()
 }
 
@@ -505,6 +541,9 @@ func (UnimplementedLabManagerServer) ResetDevices(context.Context, *DevicesReque
 }
 func (UnimplementedLabManagerServer) RescueDevices(context.Context, *RescueDevicesRequest) (*BatchResult, error) {
 	return nil, status.Error(codes.Unimplemented, "method RescueDevices not implemented")
+}
+func (UnimplementedLabManagerServer) ExportDeviceSnapshot(*DeviceSnapshotRequest, grpc.ServerStreamingServer[SnapshotChunk]) error {
+	return status.Error(codes.Unimplemented, "method ExportDeviceSnapshot not implemented")
 }
 func (UnimplementedLabManagerServer) mustEmbedUnimplementedLabManagerServer() {}
 func (UnimplementedLabManagerServer) testEmbeddedByValue()                    {}
@@ -934,6 +973,17 @@ func _LabManager_RescueDevices_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LabManager_ExportDeviceSnapshot_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(DeviceSnapshotRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(LabManagerServer).ExportDeviceSnapshot(m, &grpc.GenericServerStream[DeviceSnapshotRequest, SnapshotChunk]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type LabManager_ExportDeviceSnapshotServer = grpc.ServerStreamingServer[SnapshotChunk]
+
 // LabManager_ServiceDesc is the grpc.ServiceDesc for LabManager service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1034,6 +1084,11 @@ var LabManager_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "Monitoring",
 			Handler:       _LabManager_Monitoring_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "ExportDeviceSnapshot",
+			Handler:       _LabManager_ExportDeviceSnapshot_Handler,
 			ServerStreams: true,
 		},
 	},

@@ -874,6 +874,45 @@ agent:
 
 ---
 
+## Snapshot export
+
+`ExportDeviceSnapshot(DeviceSnapshotRequest{ref}) returns (stream SnapshotChunk)` hands the platform the **latest state** of a
+device with state persistence as one file, for archiving or analysis (for example after an exercise). `ref` is the
+device: `lab_group`, `lab`, `name` (the device name). There is no layer history: the snapshot layers of the device's
+chain are squashed into one.
+
+**Stream.** The first message is `meta`, then `data` chunks, then `trailer`:
+
+- `meta`: the device ref; `base_image` (as in the device spec) and `base_image_digest` (when the lab pinned it);
+  `base_layer_digests` (compressed digests of the base image layers in the snapshot image, in order);
+  `snapshot_digest` (manifest digest in the registry) and `snapshot_unix_ms`; `squashed_layers` and `layers_size_bytes`
+  (the sum of the uncompressed sizes of the squashed layers, an upper bound of the content); `format`; `chunk_size`.
+- `data`: the bytes of the archive, in order; every chunk is `chunk_size` (1 MiB) long except the last.
+- `trailer`: `compressed_bytes` and `sha256` (hex) of the whole data stream, for the receiver to verify.
+
+**Archive format.** The concatenated data is a **gzip** stream of one **tar** archive, laid out as an OCI image
+layer: it holds the files that differ from the base image and applies on top of it. A file deleted since the device
+started is a **whiteout** entry `<dir>/.wh.<name>` (it also hides the file of the base image), a directory emptied and
+refilled is marked by `<dir>/.wh..wh..opq`. Whiteouts come first in the archive. Ownership, modes, symlinks and
+extended attributes are those of the snapshot. Paths excluded from snapshots (`/tmp`, `/var/tmp`, `/run`, the runtime's
+mount points) are not in it. To look at the files: `tar xzf archive.tgz` (the `.wh.` entries show as regular empty
+files); to apply it to a base image rootfs, use any OCI layer applier.
+
+**How.** The agent reads the snapshot image from the platform registry (the chart passes its address as
+`AGENT_REGISTRY_ADDR` whenever persistence or the cache is on), squashes the layers while it streams (they are read
+twice from the registry; nothing is stored on the agent) and compresses with gzip. A caller that goes away stops the
+export.
+
+**Errors.** `FailedPrecondition`: the device has no state persistence; it has no snapshot yet (nothing differs from the
+base image, or the first snapshot is not taken); the agent has no registry address. `NotFound`: no such device or
+group. `Unavailable` with a message: the registry could not be read.
+
+The export is of the snapshot the registry holds at that moment; changes the node-agent has not snapshotted yet (the
+last debounce period) are not in it. For a device that must be exported with everything, stop it first: its exit
+snapshot is taken at once.
+
+---
+
 ## Network Layout
 
 | Network             | Default       | Usage                                                              |

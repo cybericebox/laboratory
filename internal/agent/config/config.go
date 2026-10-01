@@ -42,6 +42,9 @@ type Config struct {
 	// StatePersistence is the platform switch for device state persistence: a topology
 	// with devices[].persistence.enabled is refused when it is off.
 	StatePersistence bool `env:"AGENT_STATE_PERSISTENCE_ENABLED" envDefault:"false"`
+	// RegistryAddr is host:port of the platform registry (zot) as the agent reaches it:
+	// snapshot export reads the device snapshots from it. Empty: the export fails with FailedPrecondition.
+	RegistryAddr string `env:"AGENT_REGISTRY_ADDR"`
 	// Cache lets the agent prewarm the platform image cache.
 	Cache CacheConfig
 }

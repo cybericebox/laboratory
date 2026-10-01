@@ -407,3 +407,22 @@ func TestAgentPrewarmWiring(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentGetsTheRegistryAddressForSnapshotExport(t *testing.T) {
+	agent := []string{"--set", "agent.enabled=true", "--set", "agent.domain=a.example.com"}
+	for name, extra := range map[string][]string{
+		"persistence": {"--set", statePath + "enabled=true"},
+		"cache":       {"--set", "registry.cache.enabled=true"},
+	} {
+		var dep appsv1.Deployment
+		render(t, "templates/agent/deployment.yaml", &dep, append(agent, extra...)...)
+		if got := envOf(dep.Spec.Template.Spec.Containers[0])["AGENT_REGISTRY_ADDR"].Value; got != "laboratory-registry.laboratory-system.svc:5000" {
+			t.Errorf("%s: AGENT_REGISTRY_ADDR = %q", name, got)
+		}
+	}
+	var off appsv1.Deployment
+	render(t, "templates/agent/deployment.yaml", &off, agent...)
+	if _, set := envOf(off.Spec.Template.Spec.Containers[0])["AGENT_REGISTRY_ADDR"]; set {
+		t.Error("no registry, no address")
+	}
+}
