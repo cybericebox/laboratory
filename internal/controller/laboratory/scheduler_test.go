@@ -569,11 +569,12 @@ func TestSchedulerPrepullsGroupImagesBeforeItsFirstPod(t *testing.T) {
 	if sp := ds.Spec.Template.Spec; len(sp.ImagePullSecrets) != 1 || sp.ImagePullSecrets[0].Name != "regcred" || sp.NodeSelector["pool"] != "labs" {
 		t.Fatalf("pull secrets / selector not honoured: %+v", sp)
 	}
-	if f.prepullDS("g/g2") != nil {
-		t.Fatal("g2 waits for its turn")
+	// The images of g2 are pulled meanwhile: a group's prepull gates its own pods only.
+	if f.prepullDS("g/g2") == nil {
+		t.Fatal("g2 prepull expected")
 	}
 
-	// No eligible node: done at once. Group g1 goes; g2 starts its prepull.
+	// No eligible node: done at once. Group g1 goes.
 	f.stampDS(ds)
 	ds.Status.ObservedGeneration = ds.Generation
 	if err := f.c.Status().Update(context.Background(), ds); err != nil {
@@ -581,10 +582,7 @@ func TestSchedulerPrepullsGroupImagesBeforeItsFirstPod(t *testing.T) {
 	}
 	f.tick()
 	f.wantStates("a/web=S b/web=S c/web=Q")
-	if f.prepullDS("g/g2") == nil {
-		t.Fatal("g2 prepull expected")
-	}
-	// Its timeout passes: dispatch goes on, the daemonset is removed.
+	// The prepull of g2 is still going on; its timeout passes: dispatch goes on, the daemonset is removed.
 	f.ready("a", "web")
 	f.ready("b", "web")
 	f.stampDS(f.prepullDS("g/g2"))
@@ -784,4 +782,97 @@ func TestSchedulerEnforcesTenantQuota(t *testing.T) {
 	f.ready("a", "cache")
 	f.tick()
 	f.wantStates("a/cache=D a/db=S a/web=Q b/web=S")
+}
+
+// brokenPod is a prepull pod of the DaemonSet whose only image cannot be pulled.
+func (f *schedFixture) prepullPod(ds *appsv1.DaemonSet, image string, st corev1.ContainerStatus) {
+	f.t.Helper()
+	st.Name, st.Image = "i0", image
+	pod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "prepull-" + ds.Name, Namespace: ds.Namespace, Labels: ds.Spec.Template.Labels},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "i0", Image: image}}},
+	}
+	if err := f.c.Create(context.Background(), &pod); err != nil {
+		f.t.Fatal(err)
+	}
+	pod.Status = corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{st}}
+	if err := f.c.Status().Update(context.Background(), &pod); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func prepullSchedCfg() SchedulerConfig {
+	cfg := schedCfg()
+	cfg.MaxPods = 10
+	cfg.Prepull = true
+	cfg.PrepullTimeout = 5 * time.Minute
+	return cfg
+}
+
+// One broken image does not hold its group for the prepull timeout: the pull error is seen
+// within seconds, the group goes on, and its pods fail through the normal image pull path.
+func TestSchedulerPrepullDoesNotWaitForABrokenImage(t *testing.T) {
+	f := newSchedFixture(t, prepullSchedCfg())
+	f.addLab("a", "g1", nil, "web")
+	f.tick()
+	f.wantStates("a/web=Q")
+	if s := f.labStatus("a"); s.Reason != laboratoryv1alpha1.WaitPreparingImages {
+		t.Fatalf("status = %+v", s)
+	}
+	ds := f.prepullDS("g/g1")
+	f.stampDS(ds)
+	ds.Status.ObservedGeneration, ds.Status.DesiredNumberScheduled = ds.Generation, 1
+	if err := f.c.Status().Update(context.Background(), ds); err != nil {
+		t.Fatal(err)
+	}
+	// The kubelet reports the pull error a few seconds in: far from the 5 minute timeout.
+	f.prepullPod(ds, "reg/a-web", corev1.ContainerStatus{State: corev1.ContainerState{
+		Waiting: &corev1.ContainerStateWaiting{Reason: "ErrImagePull", Message: "manifest unknown"}}})
+	f.now = f.now.Add(5 * time.Second)
+	f.tick()
+	f.wantStates("a/web=S")
+	f.tick()
+	if f.prepullDS("g/g1") != nil {
+		t.Fatal("the prepull daemonset must be removed")
+	}
+}
+
+// A slow pull holds only its own group: an independent group (here without images to pull)
+// goes on at once, and so does a group whose images are already pulled.
+func TestSchedulerSlowPrepullDoesNotBlockOtherGroups(t *testing.T) {
+	f := newSchedFixture(t, prepullSchedCfg())
+	f.addLab("slow", "g1", nil, "web")
+	f.addLab("other", "g2", nil, "web")
+	f.addLab("free", "", nil, "web")
+	for _, name := range []string{"other", "free"} {
+		var l laboratoryv1alpha1.Lab
+		if err := f.c.Get(context.Background(), types.NamespacedName{Namespace: "ns-" + name, Name: name}, &l); err != nil {
+			t.Fatal(err)
+		}
+		l.Spec.Devices[0].Image = "" // nothing to pull
+		if err := f.c.Update(context.Background(), &l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.tick()
+	// g1 is still pulling; g2 and the independent lab are not held by it.
+	f.wantStates("free/web=S other/web=S slow/web=Q")
+	if s := f.labStatus("slow"); s.Reason != laboratoryv1alpha1.WaitPreparingImages {
+		t.Fatalf("slow = %+v", s)
+	}
+	// A slow image (still being created) is waited for, up to the timeout.
+	ds := f.prepullDS("g/g1")
+	f.stampDS(ds)
+	ds.Status.ObservedGeneration, ds.Status.DesiredNumberScheduled = ds.Generation, 1
+	if err := f.c.Status().Update(context.Background(), ds); err != nil {
+		t.Fatal(err)
+	}
+	f.prepullPod(ds, "reg/slow-web", corev1.ContainerStatus{State: corev1.ContainerState{
+		Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"}}})
+	f.now = f.now.Add(time.Minute)
+	f.tick()
+	f.wantStates("free/web=S other/web=S slow/web=Q")
+	if f.prepullDS("g/g1") == nil {
+		t.Fatal("the slow prepull keeps its daemonset")
+	}
 }

@@ -241,6 +241,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 
 	blocker := ""
 	tenantHeld := map[string]bool{} // objects held back by their tenant's quota
+	prepHeld := map[string]bool{}   // objects whose group's images are still being pulled
 	try := func(p *schedPod, o *schedObject) (stop bool) {
 		if !p.queued() || gone[p] {
 			return false
@@ -254,9 +255,11 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			tenantHeld[o.id] = true
 			return false
 		}
+		// The images of a group are pulled before its first pod starts, but that gates only its
+		// own objects: the others go on, and only the order and dependency rules hold them.
 		if !env.prepared(o) {
-			blocker = laboratoryv1alpha1.WaitPreparingImages
-			return true
+			prepHeld[o.id] = true
+			return false
 		}
 		switch env.check(p) {
 		case fitWait:
@@ -285,7 +288,7 @@ conveyor:
 			if try(p, o) {
 				break conveyor
 			}
-			if tenantHeld[o.id] {
+			if tenantHeld[o.id] || prepHeld[o.id] {
 				break // the order inside an object is kept: nothing behind a held pod goes
 			}
 		}
@@ -326,6 +329,11 @@ conveyor:
 		}
 		if tenantHeld[o.id] {
 			st.Reason, st.Message = laboratoryv1alpha1.WaitTenantQuota, "the tenant has reached its quota"
+			plan.status[o.id] = st
+			continue
+		}
+		if prepHeld[o.id] {
+			st.Reason, st.Message = laboratoryv1alpha1.WaitPreparingImages, "pulling the images of the group onto the nodes"
 			plan.status[o.id] = st
 			continue
 		}

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -86,30 +87,80 @@ func containerPulled(st *corev1.ContainerStatus) bool {
 	return st.ImageID != "" || st.State.Running != nil || st.State.Terminated != nil
 }
 
-// prepullProgress counts how many pods hold all their images and how many pods
-// the DaemonSet wants. done is true once every scheduled pod has all images; a
-// DaemonSet whose status the controller has not reported yet is never done, and
-// one with no eligible node (desired 0) is done at once.
-func prepullProgress(ds *appsv1.DaemonSet, pods []corev1.Pod) (pulled, desired int, done bool) {
-	if ds.Status.ObservedGeneration < ds.Generation || ds.Status.ObservedGeneration == 0 {
-		return 0, 0, false
+// containerPullFailed reports whether the kubelet gave up on the container's image for
+// now: it cannot be pulled (a wrong name or tag, no access) and nothing more will happen
+// until it retries with back-off. Waiting for such an image would stall its group for
+// nothing: the pods that use it fail through the normal image pull path.
+func containerPullFailed(st *corev1.ContainerStatus) bool {
+	if containerPulled(st) {
+		return false
 	}
-	desired = int(ds.Status.DesiredNumberScheduled)
+	w := st.State.Waiting
+	if w == nil {
+		return false
+	}
+	switch w.Reason {
+	case "ErrImagePull", "ImagePullBackOff", "InvalidImageName", "ErrImageNeverPull":
+		return true
+	}
+	return false
+}
+
+// prepullState is how far a prepull DaemonSet is.
+type prepullState struct {
+	// pulled counts the pods that hold all their images, resolved the pods that hold or
+	// gave up on each of them, and desired the pods the DaemonSet wants.
+	pulled, resolved, desired int
+	// failed lists the images that could not be pulled, once each.
+	failed []string
+	// done is true once every scheduled pod has resolved all its images; a DaemonSet whose
+	// status the controller has not reported yet is never done, and one with no eligible
+	// node (desired 0) is done at once.
+	done bool
+}
+
+// prepullProgress reads the progress of a prepull from its pods. An image that fails to
+// pull counts as resolved at once (a pull error is reported within seconds), so one
+// broken image does not hold the group until the timeout.
+func prepullProgress(ds *appsv1.DaemonSet, pods []corev1.Pod) prepullState {
+	var st prepullState
+	if ds.Status.ObservedGeneration < ds.Generation || ds.Status.ObservedGeneration == 0 {
+		return st
+	}
+	st.desired = int(ds.Status.DesiredNumberScheduled)
+	seen := map[string]bool{}
 	for i := range pods {
 		p := &pods[i]
 		if p.DeletionTimestamp != nil || len(p.Status.ContainerStatuses) < len(p.Spec.Containers) {
 			continue
 		}
-		all := true
+		pulledAll, resolvedAll := true, true
 		for j := range p.Status.ContainerStatuses {
-			if !containerPulled(&p.Status.ContainerStatuses[j]) {
-				all = false
-				break
+			cs := &p.Status.ContainerStatuses[j]
+			switch {
+			case containerPulled(cs):
+			case containerPullFailed(cs):
+				pulledAll = false
+				image := cs.Image
+				if image == "" && j < len(p.Spec.Containers) {
+					image = p.Spec.Containers[j].Image
+				}
+				if !seen[image] {
+					seen[image] = true
+					st.failed = append(st.failed, image)
+				}
+			default:
+				pulledAll, resolvedAll = false, false
 			}
 		}
-		if all {
-			pulled++
+		if pulledAll {
+			st.pulled++
+		}
+		if resolvedAll {
+			st.resolved++
 		}
 	}
-	return pulled, desired, pulled >= desired
+	sort.Strings(st.failed)
+	st.done = st.resolved >= st.desired
+	return st
 }

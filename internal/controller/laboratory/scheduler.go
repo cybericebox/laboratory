@@ -84,8 +84,9 @@ type Scheduler struct {
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 
-	prepared  map[string]struct{}
-	preparing string
+	prepared map[string]struct{}
+	// preparing holds the keys of the prepull DaemonSets in progress in this pass.
+	preparing map[string]bool
 	recent    map[string]time.Time
 	lastWrite map[types.UID]time.Time
 }
@@ -539,7 +540,7 @@ func (s *Scheduler) tick(ctx context.Context) error {
 		}
 	}
 
-	s.preparing = ""
+	s.preparing = map[string]bool{}
 	defer func() {
 		if err := s.gcPrepull(ctx, s.preparing); err != nil {
 			logger.Error(err, "clean up prepull daemonsets")
@@ -824,7 +825,7 @@ func (s *Scheduler) ensurePrepared(ctx context.Context, key string, images []str
 		if err := s.Create(ctx, want); err != nil && !errors.IsAlreadyExists(err) {
 			return false, err
 		}
-		s.preparing = prepullKey(key)
+		s.preparing[prepullKey(key)] = true
 		logger.Info("prepulling images", "key", key, "images", len(images))
 		return false, nil
 	}
@@ -832,33 +833,41 @@ func (s *Scheduler) ensurePrepared(ctx context.Context, key string, images []str
 	if err := s.List(ctx, &pods, client.InNamespace(dsKey.Namespace), client.MatchingLabels{prepullLabel: prepullKey(key)}); err != nil {
 		return false, err
 	}
-	pulled, desired, done := prepullProgress(&ds, pods.Items)
+	prog := prepullProgress(&ds, pods.Items)
 	timeout := s.Config.PrepullTimeout
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
 	}
-	if !done && now.Sub(ds.CreationTimestamp.Time) < timeout {
-		s.preparing = prepullKey(key)
+	created := ds.CreationTimestamp.Time
+	if created.IsZero() {
+		created = now // not stamped yet: it has just been created
+	}
+	if !prog.done && now.Sub(created) < timeout {
+		s.preparing[prepullKey(key)] = true
 		return false, nil
 	}
-	if done {
-		logger.Info("images are on the nodes", "key", key, "nodes", desired)
-	} else {
-		logger.Info("image prepull timed out, dispatching anyway", "key", key, "pulled", pulled, "nodes", desired)
+	switch {
+	case prog.done && len(prog.failed) > 0:
+		logger.Info("some images could not be pulled; dispatching anyway, their pods fail on their own",
+			"key", key, "failed", prog.failed, "nodes", prog.desired)
+	case prog.done:
+		logger.Info("images are on the nodes", "key", key, "nodes", prog.desired)
+	default:
+		logger.Info("image prepull timed out, dispatching anyway", "key", key, "pulled", prog.pulled, "nodes", prog.desired)
 	}
 	s.prepared[key] = struct{}{}
 	return true, nil
 }
 
-// gcPrepull deletes every prepull DaemonSet except the one of keepKey.
-func (s *Scheduler) gcPrepull(ctx context.Context, keepKey string) error {
+// gcPrepull deletes every prepull DaemonSet except the ones still in progress.
+func (s *Scheduler) gcPrepull(ctx context.Context, keep map[string]bool) error {
 	var list appsv1.DaemonSetList
 	if err := s.List(ctx, &list, client.InNamespace(s.namespace()), client.HasLabels{prepullLabel}); err != nil {
 		return err
 	}
 	for i := range list.Items {
 		ds := &list.Items[i]
-		if ds.Labels[prepullLabel] == keepKey || !ds.DeletionTimestamp.IsZero() {
+		if keep[ds.Labels[prepullLabel]] || !ds.DeletionTimestamp.IsZero() {
 			continue
 		}
 		if err := s.Delete(ctx, ds, client.PropagationPolicy(metav1.DeletePropagationBackground)); client.IgnoreNotFound(err) != nil {
