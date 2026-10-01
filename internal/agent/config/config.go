@@ -15,9 +15,8 @@ type ServerTLSConfig struct {
 
 // MTLSConfig verifies CLIENT certificates against a separate client CA.
 type MTLSConfig struct {
-	Enabled          bool     `env:"AGENT_MTLS_ENABLED" envDefault:"true"`
-	ClientCAFile     string   `env:"AGENT_MTLS_CLIENT_CA"`
-	AllowedClientCNs []string `env:"AGENT_ALLOWED_CLIENT_CNS" envSeparator:","`
+	Enabled      bool   `env:"AGENT_MTLS_ENABLED" envDefault:"true"`
+	ClientCAFile string `env:"AGENT_MTLS_CLIENT_CA"`
 }
 
 type Config struct {
@@ -29,6 +28,12 @@ type Config struct {
 	MTLS      MTLSConfig
 	// Monitoring bounds the shared journal behind the Monitoring stream.
 	Monitoring MonitoringConfig
+	// LabNodeSelector and LabTolerations (JSON) describe the nodes lab pods run on: they decide
+	// which platform of an image is warmed and what a percentage tenant quota is a percentage of.
+	LabNodeSelector string `env:"AGENT_LAB_NODE_SELECTOR" envDefault:"{}"`
+	LabTolerations  string `env:"AGENT_LAB_TOLERATIONS" envDefault:"[]"`
+	// TenantStatusInterval is how often the status (reserved, used) of every Tenant is refreshed.
+	TenantStatusInterval time.Duration `env:"AGENT_TENANT_STATUS_INTERVAL" envDefault:"30s"`
 	// StatePersistence is the platform switch for device state persistence: a topology
 	// with devices[].persistence.enabled is refused when it is off.
 	StatePersistence bool `env:"AGENT_STATE_PERSISTENCE_ENABLED" envDefault:"false"`
@@ -47,9 +52,6 @@ type CacheConfig struct {
 	// upstream registries for digests.
 	PullSecrets         []string `env:"AGENT_PULL_SECRETS" envSeparator:","`
 	PullSecretNamespace string   `env:"AGENT_PULL_SECRET_NAMESPACE" envDefault:"laboratory-system"`
-	// LabNodeSelector is the JSON nodeSelector of lab pods: the nodes whose
-	// architectures decide which platform of an image is warmed.
-	LabNodeSelector string `env:"AGENT_LAB_NODE_SELECTOR" envDefault:"{}"`
 	// PinTTL is how long a resolved digest is remembered (the tag is looked up again after it).
 	PinTTL      time.Duration `env:"AGENT_CACHE_PIN_TTL" envDefault:"5m"`
 	Concurrency int           `env:"AGENT_PREWARM_CONCURRENCY" envDefault:"4"`

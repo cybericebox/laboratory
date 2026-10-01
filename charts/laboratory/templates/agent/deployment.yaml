@@ -53,13 +53,16 @@ spec:
               value: {{ include "laboratory.pullSecretNames" . | quote }}
             - name: AGENT_PULL_SECRET_NAMESPACE
               value: {{ .Release.Namespace | quote }}
-            - name: AGENT_LAB_NODE_SELECTOR
-              value: {{ .Values.labWorkloads.nodeSelector | toJson | quote }}
             - name: AGENT_PREWARM_CONCURRENCY
               value: {{ .Values.registry.cache.prewarm.concurrency | quote }}
             - name: AGENT_PREWARM_TIMEOUT
               value: {{ .Values.registry.cache.prewarm.timeout | quote }}
           {{- end }}
+            # The nodes lab pods run on: a percentage tenant quota is a percentage of their allocatable.
+            - name: AGENT_LAB_NODE_SELECTOR
+              value: {{ .Values.labWorkloads.nodeSelector | toJson | quote }}
+            - name: AGENT_LAB_TOLERATIONS
+              value: {{ .Values.labWorkloads.tolerations | toJson | quote }}
             # A topology that asks for device state persistence is refused unless the platform allows it.
             - name: AGENT_STATE_PERSISTENCE_ENABLED
               value: {{ .Values.devices.statePersistence.enabled | quote }}
@@ -76,8 +79,6 @@ spec:
           {{- if .Values.agent.mtls.enabled }}
             - name: AGENT_MTLS_CLIENT_CA
               value: /ca/tls.crt
-            - name: AGENT_ALLOWED_CLIENT_CNS
-              value: {{ join "," .Values.agent.allowedClientCNs | quote }}
           {{- end }}
           volumeMounts:
             - name: server-tls

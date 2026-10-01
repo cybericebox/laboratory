@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"context"
+	"encoding/json"
 	"log"
 	"net"
 	"os"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	metricsclient "k8s.io/metrics/pkg/client/clientset/versioned"
@@ -44,6 +47,16 @@ func Run() {
 	}
 	h := grpcserver.NewHandler(cs, k8s, metrics, cfg.AgentID)
 	h.SetStatePersistence(cfg.StatePersistence)
+	var labSelector map[string]string
+	var labTolerations []corev1.Toleration
+	if err := json.Unmarshal([]byte(cfg.LabNodeSelector), &labSelector); err != nil {
+		log.Fatalf("AGENT_LAB_NODE_SELECTOR: %v", err)
+	}
+	if err := json.Unmarshal([]byte(cfg.LabTolerations), &labTolerations); err != nil {
+		log.Fatalf("AGENT_LAB_TOLERATIONS: %v", err)
+	}
+	h.SetLabScheduling(labSelector, labTolerations)
+	go h.RunTenantStatus(context.Background(), cfg.TenantStatusInterval)
 	if cfg.Cache.Enabled {
 		pw, err := prewarmConfig(cfg, k8s)
 		if err != nil {

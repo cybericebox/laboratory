@@ -131,11 +131,6 @@ func (h *Handler) collect(ctx context.Context) (*monState, error) {
 			}
 		}
 	}
-	capacity, err := h.GetCapacity(ctx, &protobuf.Empty{})
-	if err != nil {
-		return nil, err
-	}
-	upd.Capacity = capacity
 	sortMonitoringRecords(upd)
 	sortTraffic(upd)
 	return st, nil
@@ -175,7 +170,12 @@ func (h *Handler) Monitoring(request *protobuf.MonitoringRequest, stream protobu
 	defer func() {
 		close(out)
 	}()
+	// The tenant's capacity goes out with the first message and again whenever it changed.
+	var lastCapacity *protobuf.CapacityResponse
 	emit := func(u *protobuf.MonitoringUpdate) error {
+		if c, err := h.tenantCapacity(stream.Context()); err == nil && !proto.Equal(c, lastCapacity) {
+			u.Capacity, lastCapacity = c, c
+		}
 		select {
 		case out <- u:
 			return nil
@@ -316,13 +316,10 @@ func monitoringDelta(previous, next *protobuf.MonitoringUpdate) (*protobuf.Monit
 		}
 		delta.DeletedKeys = append(delta.DeletedKeys, record.deletedKey())
 	}
-	if !proto.Equal(previous.GetCapacity(), next.GetCapacity()) {
-		delta.Capacity = next.GetCapacity()
-	}
 	sort.Slice(delta.DeletedKeys, func(i, j int) bool {
 		return monitoringDeletedKeyString(delta.DeletedKeys[i]) < monitoringDeletedKeyString(delta.DeletedKeys[j])
 	})
-	return delta, len(delta.Groups) > 0 || len(delta.Labs) > 0 || len(delta.Clients) > 0 || len(delta.Policies) > 0 || len(delta.Traffic) > 0 || len(delta.DeletedKeys) > 0 || delta.Capacity != nil
+	return delta, len(delta.Groups) > 0 || len(delta.Labs) > 0 || len(delta.Clients) > 0 || len(delta.Policies) > 0 || len(delta.Traffic) > 0 || len(delta.DeletedKeys) > 0
 }
 
 type monitoringRecord struct {

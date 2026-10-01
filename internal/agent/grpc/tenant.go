@@ -3,13 +3,16 @@ package grpc
 import (
 	"context"
 
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/tenant"
 )
 
 // tenantOf derives the tenant of a call from the verified client certificate CN. A call
@@ -83,3 +86,29 @@ func (h *Handler) getGroup(ctx context.Context, id string) (*laboratoryv1alpha1.
 type errTaken struct{ kind, id string }
 
 func (e errTaken) Error() string { return e.kind + " " + e.id + ": the id is not available" }
+
+// persistenceAllowed: the platform allows persistence and the caller's tenant is permitted it.
+func (h *Handler) persistenceAllowed(ctx context.Context) (bool, error) {
+	ten, err := h.tenantObject(ctx, tenantOf(ctx))
+	if err != nil {
+		return false, err
+	}
+	return tenant.EffectivePersistence(ten, h.statePersistence, 0, 0).Allowed, nil
+}
+
+// Authorize admits a call: the default tenant always; any other tenant only when its
+// Tenant object exists (an unknown certificate CN is PermissionDenied).
+func (h *Handler) Authorize(ctx context.Context) error {
+	name := tenantOf(ctx)
+	if name == names.DefaultTenant {
+		return nil
+	}
+	ten, err := h.tenantObject(ctx, name)
+	if err != nil {
+		return err
+	}
+	if ten == nil {
+		return status.Errorf(codes.PermissionDenied, "client %q is not a tenant", name)
+	}
+	return nil
+}

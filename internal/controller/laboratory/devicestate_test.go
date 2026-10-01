@@ -659,6 +659,17 @@ var _ = Describe("Device state persistence: per-device mode", func() {
 		settle()
 		expectMixed()
 
+		// A tenant that does not allow persistence gets a Deployment for the same topology.
+		Expect(k8sClient.Create(ctx, &laboratoryv1alpha1.Tenant{ObjectMeta: metav1.ObjectMeta{Name: "locked"}})).To(Succeed())
+		lockedLab := lab.DeepCopy()
+		lockedLab.Name, lockedLab.UID = "locked", "99999999-2222-3333-4444-555555555555"
+		lockedLab.Labels = map[string]string{names.LabelTenant: "locked"}
+		Expect(lr.materializeDevices(ctx, lockedLab, nil)).To(Succeed())
+		var lockedWeb laboratoryv1alpha1.Device
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "locked-web", Namespace: ns}, &lockedWeb)).To(Succeed())
+		Expect(deviceStateEnabled(&lockedWeb)).To(BeFalse(), "the tenant does not allow persistence")
+		Expect(lockedWeb.Labels).To(HaveKeyWithValue(names.LabelTenant, "locked"))
+
 		// The platform stops allowing persistence, then allows it again: nothing changes.
 		for _, allowed := range []bool{false, true} {
 			lr.State.Enabled = allowed

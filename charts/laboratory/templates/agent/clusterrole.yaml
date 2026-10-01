@@ -13,6 +13,13 @@ rules:
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "labgroups", "labgroups/status" ]
     verbs: [ "get", "list", "watch", "create", "update", "patch", "delete" ]
+  # Tenants: the caller's tenant by certificate CN, and the status the agent keeps fresh.
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "tenants" ]
+    verbs: [ "get", "list", "watch" ]
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "tenants/status" ]
+    verbs: [ "get", "update", "patch" ]
   - apiGroups: [ "" ]
     resources: [ "namespaces" ]
     verbs: [ "get", "list", "watch" ]

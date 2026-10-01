@@ -464,15 +464,6 @@ agent:
   mtls:
     enabled: true
 
-  # CNs of client certs allowed to call the agent (sent as AGENT_ALLOWED_CLIENT_CNS).
-  allowedClientCNs:
-    - platform
-
-  # Each entry becomes a cert-manager Certificate → Secret laboratory-agent-client-<name>-tls,
-  # issued by the private laboratory-agent-ca Issuer.
-  clients:
-    - platform
-
   # The Monitoring stream: one poller and one in-memory journal serve every platform
   # backend that subscribes. See DEPLOY.md, "Monitoring stream".
   monitoring:
@@ -531,3 +522,26 @@ fullnameOverride: ""
 cert-manager:
   crds:
     enabled: true
+
+# ============================================================
+# Tenants of the management agent
+# ============================================================
+# A tenant is a client of the agent with its own objects, device persistence policy and
+# resource quota. The chart always creates the tenant "default" (the caller without a client
+# certificate, local development) and one Tenant per key below. With agent.mtls.enabled it also
+# issues a client certificate per tenant, CN = the tenant name, from the agent's client CA into the
+# Secret laboratory-agent-client-<name>-tls of the agent namespace; hand that Secret to the client.
+# The agent refuses a certificate whose CN is not a tenant. A name is a DNS-1123 label.
+#
+#   tenants:
+#     platform:
+#       persistence:
+#         allowed: true         # may ask for device persistence (needs devices.statePersistence.enabled)
+#         writeQuota: 256Mi     # optional; capped by devices.statePersistence.writeQuota
+#         maxFileSize: 128Mi    # optional; capped by devices.statePersistence.maxFileSize
+#       quota:                  # optional; absent = no limit
+#         cpu: "50%"            # sum of the CPU requests of its pods: "32", "500m" or a percentage
+#         memory: "40%"         #   of what the lab nodes allocate
+#
+# "default" may be listed to change its policy; unless it is, it may use persistence and has no quota.
+tenants: {}

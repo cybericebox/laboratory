@@ -62,7 +62,11 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 	if err := validateLabels(in.GetLabels()); err != nil {
 		return nil, invalid("%v", err)
 	}
-	variants, err := parseVariants(in.GetVariants(), h.statePersistence)
+	persistence, err := h.persistenceAllowed(ctx)
+	if err != nil {
+		return nil, err
+	}
+	variants, err := parseVariants(in.GetVariants(), persistence)
 	if err != nil {
 		return nil, err
 	}

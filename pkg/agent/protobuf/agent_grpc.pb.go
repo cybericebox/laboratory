@@ -68,6 +68,7 @@ type LabManagerClient interface {
 	// Monitoring is a server-push stream. Every subscription starts with a
 	// complete snapshot; subsequent messages are sequenced deltas or heartbeats.
 	Monitoring(ctx context.Context, in *MonitoringRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[MonitoringUpdate], error)
+	// GetCapacity is the caller's tenant view: its quota, reserved, used and free resources.
 	GetCapacity(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*CapacityResponse, error)
 	// PrewarmImages makes the platform image cache (zot) fetch images from their upstream
 	// registries BEFORE labs need them, so a burst of labs pulls only from the cache. It is
@@ -324,6 +325,7 @@ type LabManagerServer interface {
 	// Monitoring is a server-push stream. Every subscription starts with a
 	// complete snapshot; subsequent messages are sequenced deltas or heartbeats.
 	Monitoring(*MonitoringRequest, grpc.ServerStreamingServer[MonitoringUpdate]) error
+	// GetCapacity is the caller's tenant view: its quota, reserved, used and free resources.
 	GetCapacity(context.Context, *Empty) (*CapacityResponse, error)
 	// PrewarmImages makes the platform image cache (zot) fetch images from their upstream
 	// registries BEFORE labs need them, so a burst of labs pulls only from the cache. It is

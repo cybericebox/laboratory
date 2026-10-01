@@ -434,13 +434,36 @@ chart (the agent reads it as `AGENT_STATE_PERSISTENCE_ENABLED`); `debounce` must
 quota are cluster settings of the chart (`devices.statePersistence.maxFileSize`, default `256Mi`: bigger files are skipped; `devices.statePersistence.excludePaths`, default `/tmp`, `/var/tmp`, `/run`; and `writeQuota`, default `512Mi`: the most of a
 participant's writes kept per device). They are configurable only in the chart and cannot be requested per device.
 
-**Tenancy.**
+**Tenancy.** The agent serves several clients (tenants) from one cluster and keeps them apart. A tenant is a cluster-scoped
+`Tenant` resource; the chart always creates `default` and the tenants listed in its `tenants:` values.
 
-The agent serves several clients (tenants) from one cluster and keeps them apart.
+```yaml
+tenants:
+  platform:                  # the Tenant name = the client certificate CN (a DNS-1123 label)
+    persistence:
+      allowed: true          # may ask for device persistence (needs devices.statePersistence.enabled)
+      writeQuota: 256Mi      # optional, capped by devices.statePersistence.writeQuota (the default)
+      maxFileSize: 128Mi     # optional, capped by devices.statePersistence.maxFileSize (the default)
+    quota:                   # optional; absent = no limit
+      cpu: "50%"             # the sum of the CPU requests of the tenant's pods: "32", "500m" or a percentage
+      memory: "40Gi"         #   of what the lab nodes (labWorkloads selector and tolerations) allocate
+```
 
-- **Identity.** The tenant of a call is the CN of the verified client certificate (mTLS). A CN that is a valid label
-  value of at most 63 characters is the tenant key as is, any other CN becomes `h` + base36(SHA-256). A call without a client
-  certificate (TLS or mTLS off, local development) is the tenant `default`, and so is a client whose CN is `default`.
+Quote a quota value ("32", "50%"): it is a string. `default` may be listed to change its policy; unless it is, it may use
+persistence and has no quota.
+
+- **Identity and certificate.** The tenant of a call is the CN of the verified client certificate, and the CN is the Tenant's name.
+  With `agent.mtls.enabled` the chart issues the certificate for every tenant (cert-manager, from the agent's private client CA,
+  `laboratory-agent-ca`) into the Secret `laboratory-agent-client-<name>-tls` of the agent namespace. Hand that Secret to the client:
+
+  ```bash
+  kubectl -n laboratory-agent get secret laboratory-agent-client-platform-tls -o jsonpath='{.data.tls\.crt}' | base64 -d > client.crt
+  kubectl -n laboratory-agent get secret laboratory-agent-client-platform-tls -o jsonpath='{.data.tls\.key}' | base64 -d > client.key
+  kubectl -n laboratory-agent get secret laboratory-agent-client-platform-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > ca.crt
+  ```
+
+  A certificate whose CN is not a Tenant is `PERMISSION_DENIED` on every call (the Tenant resources are the only allowlist). A call
+  without a client certificate (TLS or mTLS off, local development) is the tenant `default`.
 - **Stamp.** Every object the agent creates (LabGroups, Labs, VPN clients, access policies) gets the reserved label
   `laboratory.cybericebox.com/tenant`. The operator copies it to the Devices and pods of a Lab and the pods of a
   LabGroup. Like every reserved label it is hidden: never in answers, never accepted from a client, never allowed in a selector.
@@ -448,9 +471,20 @@ The agent serves several clients (tenants) from one cluster and keeps them apart
 - **Scope.** Every RPC is implicitly scoped to the caller's tenant: `List*`, `Update*`, `Delete*`, the device calls and `Monitoring`
   see only its objects, combined with the caller's own selector (which can narrow the scope but never widen it). Objects inside a
   LabGroup belong to the tenant of the group. Another tenant's object is `NOT_FOUND` for every operation, as if it did not exist.
-- **Names.** LabGroup ids are global. Creating an id that belongs to another tenant fails for that item with "the id is not
-  available", with no hint that it exists or is being deleted.
-- **Monitoring** is cut to the tenant before the user selector. `GetCapacity` is cluster-wide for now.
+  LabGroup ids are global: creating an id that belongs to another tenant fails for that item with "the id is not available", with
+  no hint that it exists or is being deleted.
+- **Persistence policy.** A topology may ask for `devices[].persistence.enabled` only if the platform allows persistence and
+  the tenant's `persistence.allowed` is true; otherwise the agent refuses it (`INVALID_ARGUMENT`). The write quota and the
+  maximum file size of a device are the tenant's, capped by the chart values (a tenant without its own gets the chart's), and are
+  stamped on the Device when it is created, like the persistence choice itself: changing a Tenant later affects new devices only.
+- **Resource quota.** The scheduler caps the sum of the CPU and memory requests of the tenant's dispatched pods (started, starting
+  or failed). A pod that would pass the cap waits, the lab's `scheduling.reason` is `TenantQuota`, and other tenants' pods go on.
+  A percentage is a percentage of the CPU and memory the lab nodes allocate.
+- **Capacity.** `GetCapacity` and the `capacity` of the `Monitoring` stream are the caller's view only: its quota (if any), what its
+  pods reserve (the sum of their requests) and use (metrics-server, when installed), and what is free (quota minus reserved). No
+  cluster-wide numbers are exposed. The same reserved and used totals are in `Tenant.status` (refreshed by the agent):
+  `kubectl get tenant platform -o yaml`.
+- **Monitoring** is cut to the tenant before the user selector.
 
 **Limits.** Ids and deploy keys at most 64 characters, `deploy_after` at most 32 keys, at most 5000 items per call, message size 64 MiB (`MaxRecvMsgSize`/`MaxSendMsgSize`; the Go client sets the
 same call options), bounded internal concurrency (16 calls to the Kubernetes API per request).

@@ -198,7 +198,7 @@ func TestMonitoringIsFilteredByTenant(t *testing.T) {
 	if g, l := groups(names.DefaultTenant, ""); len(g) != 1 || g[0] != "gl" || l != 0 {
 		t.Fatalf("default tenant: %v %d", g, l)
 	}
-	if st.update.Capacity == nil {
-		t.Fatal("capacity stays")
+	if st.update.Capacity != nil {
+		t.Fatal("no cluster capacity in the shared observation: every subscriber gets its tenant's")
 	}
 }
