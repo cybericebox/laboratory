@@ -543,8 +543,8 @@ own selector, minimum interval and position, and all of them are fed by **one** 
    snapshot follows if the journal lost it). Any other error: reconnect the same way.
 
 The journal lives in the agent's memory: an agent restart gives a new epoch (a snapshot), and a position older than
-`journalSize` updates or `journalAge` is answered with a snapshot too. Sizing: an update is a few KiB at most; the default
-10000 updates fit the agent's default memory limit, raise `journalSize` together with `agent.resources` if you raise it.
+`journalSize` updates or `journalAge` is answered with a snapshot too. Sizing: an update is a few KiB, so the default 10000 updates are tens of MiB at
+most; raise `agent.resources` together with `journalSize`.
 
 ```yaml
 agent:
