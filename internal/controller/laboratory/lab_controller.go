@@ -15,6 +15,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -23,6 +24,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
@@ -1502,14 +1504,21 @@ func (r *LabReconciler) patchDeploymentNetworks(
 	return r.Patch(ctx, &dep, client.MergeFrom(original))
 }
 
+// labOwnerHandler queues the Lab that owns an object. The Lab is an owner, not the
+// controller, of what it creates (SetOwnerReference), and Owns() follows controller
+// references only, so a change of a Device, Connection or Service would never reach the Lab.
+func labOwnerHandler(scheme *runtime.Scheme, mapper meta.RESTMapper) handler.EventHandler {
+	return handler.EnqueueRequestForOwner(scheme, mapper, &laboratoryv1alpha1.Lab{})
+}
+
 func (r *LabReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.Lab{}).
-		Owns(&laboratoryv1alpha1.Device{}).
-		Owns(&laboratoryv1alpha1.Connection{}).
-		Owns(&laboratoryv1alpha1.LabVPN{}).
-		Owns(&laboratoryv1alpha1.LabGateway{}).
-		Owns(&corev1.Service{}).
-		Owns(&networkingv1.NetworkPolicy{}).
+		Watches(&laboratoryv1alpha1.Device{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
+		Watches(&laboratoryv1alpha1.Connection{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
+		Watches(&laboratoryv1alpha1.LabVPN{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
+		Watches(&laboratoryv1alpha1.LabGateway{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
+		Watches(&corev1.Service{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
+		Watches(&networkingv1.NetworkPolicy{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Complete(r)
 }
