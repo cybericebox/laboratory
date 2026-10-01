@@ -761,3 +761,44 @@ func TestTopologyClassIgnoresNames(t *testing.T) {
 }
 
 var _ = resource.MustParse
+
+// The group reconciler records its pods: Queued when the Deployment is missing,
+// Started when it exists (a group that predates the scheduler), and holds back
+// only the queued ones.
+func TestEnsureGroupScheduling(t *testing.T) {
+	f := newSchedFixture(t, schedCfg())
+	lg := &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: "team", UID: "uid-team"}}
+	f.create(lg)
+	f.create(&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: "team"}})
+	r := &LabGroupReconciler{Client: f.c, Scheme: f.c.Scheme(), Scheduled: true}
+	if err := r.ensureGroupScheduling(context.Background(), lg); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]laboratoryv1alpha1.PodScheduleState{}
+	for _, p := range lg.Status.Pods {
+		got[p.Name] = p.State
+	}
+	if len(got) != 2 || got["vpn"] != laboratoryv1alpha1.PodQueued || got["gateway"] != laboratoryv1alpha1.PodStarted {
+		t.Fatalf("pods = %v", got)
+	}
+	if !r.groupPodQueued(lg, "vpn") || r.groupPodQueued(lg, "gateway") || r.groupPodQueued(lg, "other") {
+		t.Fatal("only the queued pod is held back")
+	}
+	// Saved, and not rewritten the second time.
+	var stored laboratoryv1alpha1.LabGroup
+	if err := f.c.Get(context.Background(), types.NamespacedName{Name: "team"}, &stored); err != nil || len(stored.Status.Pods) != 2 {
+		t.Fatalf("stored: %v %+v", err, stored.Status.Pods)
+	}
+	r.Scheduled = false
+	if r.groupPodQueued(lg, "vpn") {
+		t.Fatal("a scheduler that is off holds nothing back")
+	}
+	r.Scheduled = true
+	// A group with VPN disabled has the gateway only.
+	lg2 := &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: "novpn", UID: "uid-novpn"},
+		Spec: laboratoryv1alpha1.LabGroupSpec{VPN: laboratoryv1alpha1.LabGroupVPNSpec{Disabled: true}}}
+	f.create(lg2)
+	if err := r.ensureGroupScheduling(context.Background(), lg2); err != nil || len(lg2.Status.Pods) != 1 || lg2.Status.Pods[0].Name != "gateway" {
+		t.Fatalf("no-VPN group: %v %+v", err, lg2.Status.Pods)
+	}
+}

@@ -22,15 +22,16 @@ data:
   AGENT_SERVICE_NAMESPACE: {{ .Values.agent.namespace | quote }}
   SUPPORT_EMAIL: {{ required "operator.supportEmail is required" .Values.operator.supportEmail | quote }}
   IMAGE_PULL_SECRETS: {{ include "laboratory.pullSecretNames" . | quote }}
-  LAUNCH_ENABLED: {{ .Values.launch.enabled | quote }}
-  LAUNCH_MAX_IN_FLIGHT: {{ .Values.launch.maxInFlight | quote }}
-  LAUNCH_WAVE_TIMEOUT: {{ .Values.launch.waveTimeout | quote }}
-  LAUNCH_HEADROOM_PERCENT: {{ .Values.launch.headroomPercent | quote }}
-  LAUNCH_RESOURCE_CHECK: {{ .Values.launch.resourceCheck | quote }}
-  LAUNCH_PREPULL: {{ .Values.launch.prepull.enabled | quote }}
-  LAUNCH_PREPULL_TIMEOUT: {{ .Values.launch.prepull.timeout | quote }}
-  DEVICE_DEFAULT_CPU: {{ .Values.launch.deviceDefaults.cpu | quote }}
-  DEVICE_DEFAULT_MEMORY: {{ .Values.launch.deviceDefaults.memory | quote }}
+  SCHEDULER_ENABLED: {{ .Values.scheduler.enabled | quote }}
+  SCHEDULER_MAX_PODS: {{ .Values.scheduler.maxPods | quote }}
+  SCHEDULER_STARTUP_TIMEOUT: {{ .Values.scheduler.startupTimeout | quote }}
+  SCHEDULER_RESTART_THRESHOLD: {{ .Values.scheduler.restartThreshold | quote }}
+  SCHEDULER_HEADROOM_PERCENT: {{ .Values.scheduler.headroomPercent | quote }}
+  SCHEDULER_RESOURCE_CHECK: {{ .Values.scheduler.resourceCheck | quote }}
+  SCHEDULER_PREPULL: {{ .Values.scheduler.prepull.enabled | quote }}
+  SCHEDULER_PREPULL_TIMEOUT: {{ .Values.scheduler.prepull.timeout | quote }}
+  DEVICE_DEFAULT_CPU: {{ .Values.scheduler.deviceDefaults.cpu | quote }}
+  DEVICE_DEFAULT_MEMORY: {{ .Values.scheduler.deviceDefaults.memory | quote }}
   {{- with .Values.devices.statePersistence }}
   {{- if .enabled }}
   STATE_PERSISTENCE_ENABLED: "true"
