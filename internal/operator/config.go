@@ -65,6 +65,9 @@ type Config struct {
 	// probe page. Passed to every per-LabGroup VPN pod as SUPPORT_EMAIL.
 	SupportEmail string `env:"SUPPORT_EMAIL,required"`
 
+	// TenantEnrollmentTTL is how long an unused tenant enrollment token works.
+	TenantEnrollmentTTL time.Duration `env:"TENANT_ENROLLMENT_TTL" envDefault:"24h"`
+
 	// Scheduler: pods start through a conveyor so that a burst of labs does not
 	// overload the cluster. See DEPLOY.md, "Scheduler".
 

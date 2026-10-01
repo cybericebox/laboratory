@@ -352,11 +352,12 @@ func Run() {
 		setupLog.Error(err, "unable to create controller", "controller", "Connection")
 		os.Exit(1)
 	}
-	if err = (&laboratorycontroller.PlatformReconciler{
+	if err = (&laboratorycontroller.TenantReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		TTL:    cfg.TenantEnrollmentTTL,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Platform")
+		setupLog.Error(err, "unable to create controller", "controller", "Tenant")
 		os.Exit(1)
 	}
 	if stateRegistry != nil {

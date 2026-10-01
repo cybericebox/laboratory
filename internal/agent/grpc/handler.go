@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"sync"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -32,6 +33,11 @@ type Handler struct {
 
 	// statePersistence: the cluster allows devices with persistence (the chart switch).
 	statePersistence bool
+
+	// caCertFile/caKeyFile sign client certificates (Enroll, RenewCertificate).
+	caCertFile, caKeyFile string
+	certTTL               time.Duration
+	clock                 func() time.Time
 
 	// labSelector and labTolerations describe the nodes lab pods run on (percentage quotas).
 	labSelector    map[string]string

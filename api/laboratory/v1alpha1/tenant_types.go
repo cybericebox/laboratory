@@ -63,6 +63,23 @@ type TenantStatus struct {
 	// ObservedAt is when Reserved and Used were taken.
 	// +optional
 	ObservedAt *metav1.Time `json:"observedAt,omitempty"`
+	// Enrollment is the one-time token a client enrolls with (see the agent's Enroll).
+	// +optional
+	Enrollment *TenantEnrollment `json:"enrollment,omitempty"`
+}
+
+// TenantEnrollment holds the state of the tenant's enrollment token. Only its hash is
+// stored; the token itself is in the Secret tenant-<name>-enrollment of the tenants namespace
+// until it is used or replaced.
+type TenantEnrollment struct {
+	// TokenHash is the hex SHA-256 of the token.
+	TokenHash string `json:"tokenHash,omitempty"`
+	// IssuedAt is when the token was generated.
+	IssuedAt *metav1.Time `json:"issuedAt,omitempty"`
+	// ExpiresAt is when an unused token stops working.
+	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
+	// UsedAt is when the token was used to enroll; a used token never works again.
+	UsedAt *metav1.Time `json:"usedAt,omitempty"`
 }
 
 // +genclient

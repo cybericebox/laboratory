@@ -103,3 +103,21 @@ func TenantOf(labels map[string]string) string {
 	}
 	return DefaultTenant
 }
+
+// TenantsNamespace holds the per-tenant Secrets: the enrollment token and the access public keys.
+const TenantsNamespace = "laboratory-tenants"
+
+// AnnotationRegenerateEnrollment on a Tenant asks the operator for a new enrollment token; the
+// operator removes it once done.
+const AnnotationRegenerateEnrollment = LabelPrefix + "regenerate-enrollment-token"
+
+// AccessKeysSecret is the Secret (in TenantsNamespace) that holds the access public keys of a
+// tenant, one entry per key id with the PEM public key. The proxy looks keys up by this name.
+func AccessKeysSecret(tenant string) string { return "tenant-" + tenant + "-access-keys" }
+
+// EnrollmentSecret is the Secret (in TenantsNamespace) that shows the tenant's enrollment
+// token (key "token") to the admin until it is used.
+func EnrollmentSecret(tenant string) string { return "tenant-" + tenant + "-enrollment" }
+
+// EnrollmentTokenKey is the data key of the token in the enrollment Secret.
+const EnrollmentTokenKey = "token"

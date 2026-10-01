@@ -17,6 +17,11 @@ type ServerTLSConfig struct {
 type MTLSConfig struct {
 	Enabled      bool   `env:"AGENT_MTLS_ENABLED" envDefault:"true"`
 	ClientCAFile string `env:"AGENT_MTLS_CLIENT_CA"`
+	// ClientCAKeyFile is the private key of that CA: the agent signs the client certificates of
+	// enrolled tenants with it (Enroll, RenewCertificate).
+	ClientCAKeyFile string `env:"AGENT_MTLS_CLIENT_CA_KEY"`
+	// ClientCertTTL is how long an issued client certificate is valid.
+	ClientCertTTL time.Duration `env:"AGENT_CLIENT_CERT_TTL" envDefault:"720h"`
 }
 
 type Config struct {

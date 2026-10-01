@@ -34,6 +34,10 @@ const (
 	LabManager_UpdateLabs_FullMethodName            = "/labmanager.LabManager/UpdateLabs"
 	LabManager_DeleteLabs_FullMethodName            = "/labmanager.LabManager/DeleteLabs"
 	LabManager_Monitoring_FullMethodName            = "/labmanager.LabManager/Monitoring"
+	LabManager_Enroll_FullMethodName                = "/labmanager.LabManager/Enroll"
+	LabManager_RenewCertificate_FullMethodName      = "/labmanager.LabManager/RenewCertificate"
+	LabManager_RotateAccessKey_FullMethodName       = "/labmanager.LabManager/RotateAccessKey"
+	LabManager_RemoveAccessKey_FullMethodName       = "/labmanager.LabManager/RemoveAccessKey"
 	LabManager_GetCapacity_FullMethodName           = "/labmanager.LabManager/GetCapacity"
 	LabManager_PrewarmImages_FullMethodName         = "/labmanager.LabManager/PrewarmImages"
 	LabManager_ResetDevices_FullMethodName          = "/labmanager.LabManager/ResetDevices"
@@ -68,6 +72,24 @@ type LabManagerClient interface {
 	// Monitoring is a server-push stream. Every subscription starts with a
 	// complete snapshot; subsequent messages are sequenced deltas or heartbeats.
 	Monitoring(ctx context.Context, in *MonitoringRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[MonitoringUpdate], error)
+	// Enrollment. The platform's private keys never leave it: it generates a client key and an
+	// access key pair itself and sends only the certificate request and the public access key.
+	//
+	// Enroll works over plain TLS (server authentication only: the client has no certificate yet). The
+	// token is the one-time enrollment token of a Tenant (shown to the admin once, valid 24 hours by
+	// default). The agent verifies the token (hash, expiry, not used) and the request (EC P-256 or
+	// stronger, or RSA 2048 or more; the requested subject is ignored), signs a client certificate with
+	// CN = the tenant name, stores the access public key and burns the token. A used, expired or unknown
+	// token is PERMISSION_DENIED.
+	Enroll(ctx context.Context, in *EnrollRequest, opts ...grpc.CallOption) (*CertificateResponse, error)
+	// RenewCertificate (mTLS) issues a new client certificate with the same CN for a new key.
+	RenewCertificate(ctx context.Context, in *RenewCertificateRequest, opts ...grpc.CallOption) (*CertificateResponse, error)
+	// RotateAccessKey (mTLS) adds an access public key to the tenant (a rotation overlaps: both keys
+	// work until the old one is removed). The same id with the same key is accepted again.
+	RotateAccessKey(ctx context.Context, in *RotateAccessKeyRequest, opts ...grpc.CallOption) (*Empty, error)
+	// RemoveAccessKey (mTLS) removes a key. The last key of a tenant cannot be removed
+	// (FAILED_PRECONDITION).
+	RemoveAccessKey(ctx context.Context, in *RemoveAccessKeyRequest, opts ...grpc.CallOption) (*Empty, error)
 	// GetCapacity is the caller's tenant view: its quota, reserved, used and free resources.
 	GetCapacity(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*CapacityResponse, error)
 	// PrewarmImages makes the platform image cache (zot) fetch images from their upstream
@@ -257,6 +279,46 @@ func (c *labManagerClient) Monitoring(ctx context.Context, in *MonitoringRequest
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type LabManager_MonitoringClient = grpc.ServerStreamingClient[MonitoringUpdate]
 
+func (c *labManagerClient) Enroll(ctx context.Context, in *EnrollRequest, opts ...grpc.CallOption) (*CertificateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CertificateResponse)
+	err := c.cc.Invoke(ctx, LabManager_Enroll_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *labManagerClient) RenewCertificate(ctx context.Context, in *RenewCertificateRequest, opts ...grpc.CallOption) (*CertificateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CertificateResponse)
+	err := c.cc.Invoke(ctx, LabManager_RenewCertificate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *labManagerClient) RotateAccessKey(ctx context.Context, in *RotateAccessKeyRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, LabManager_RotateAccessKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *labManagerClient) RemoveAccessKey(ctx context.Context, in *RemoveAccessKeyRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, LabManager_RemoveAccessKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *labManagerClient) GetCapacity(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*CapacityResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CapacityResponse)
@@ -325,6 +387,24 @@ type LabManagerServer interface {
 	// Monitoring is a server-push stream. Every subscription starts with a
 	// complete snapshot; subsequent messages are sequenced deltas or heartbeats.
 	Monitoring(*MonitoringRequest, grpc.ServerStreamingServer[MonitoringUpdate]) error
+	// Enrollment. The platform's private keys never leave it: it generates a client key and an
+	// access key pair itself and sends only the certificate request and the public access key.
+	//
+	// Enroll works over plain TLS (server authentication only: the client has no certificate yet). The
+	// token is the one-time enrollment token of a Tenant (shown to the admin once, valid 24 hours by
+	// default). The agent verifies the token (hash, expiry, not used) and the request (EC P-256 or
+	// stronger, or RSA 2048 or more; the requested subject is ignored), signs a client certificate with
+	// CN = the tenant name, stores the access public key and burns the token. A used, expired or unknown
+	// token is PERMISSION_DENIED.
+	Enroll(context.Context, *EnrollRequest) (*CertificateResponse, error)
+	// RenewCertificate (mTLS) issues a new client certificate with the same CN for a new key.
+	RenewCertificate(context.Context, *RenewCertificateRequest) (*CertificateResponse, error)
+	// RotateAccessKey (mTLS) adds an access public key to the tenant (a rotation overlaps: both keys
+	// work until the old one is removed). The same id with the same key is accepted again.
+	RotateAccessKey(context.Context, *RotateAccessKeyRequest) (*Empty, error)
+	// RemoveAccessKey (mTLS) removes a key. The last key of a tenant cannot be removed
+	// (FAILED_PRECONDITION).
+	RemoveAccessKey(context.Context, *RemoveAccessKeyRequest) (*Empty, error)
 	// GetCapacity is the caller's tenant view: its quota, reserved, used and free resources.
 	GetCapacity(context.Context, *Empty) (*CapacityResponse, error)
 	// PrewarmImages makes the platform image cache (zot) fetch images from their upstream
@@ -399,6 +479,18 @@ func (UnimplementedLabManagerServer) DeleteLabs(context.Context, *DeleteRequest)
 }
 func (UnimplementedLabManagerServer) Monitoring(*MonitoringRequest, grpc.ServerStreamingServer[MonitoringUpdate]) error {
 	return status.Error(codes.Unimplemented, "method Monitoring not implemented")
+}
+func (UnimplementedLabManagerServer) Enroll(context.Context, *EnrollRequest) (*CertificateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Enroll not implemented")
+}
+func (UnimplementedLabManagerServer) RenewCertificate(context.Context, *RenewCertificateRequest) (*CertificateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RenewCertificate not implemented")
+}
+func (UnimplementedLabManagerServer) RotateAccessKey(context.Context, *RotateAccessKeyRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method RotateAccessKey not implemented")
+}
+func (UnimplementedLabManagerServer) RemoveAccessKey(context.Context, *RemoveAccessKeyRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveAccessKey not implemented")
 }
 func (UnimplementedLabManagerServer) GetCapacity(context.Context, *Empty) (*CapacityResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetCapacity not implemented")
@@ -696,6 +788,78 @@ func _LabManager_Monitoring_Handler(srv interface{}, stream grpc.ServerStream) e
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type LabManager_MonitoringServer = grpc.ServerStreamingServer[MonitoringUpdate]
 
+func _LabManager_Enroll_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EnrollRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabManagerServer).Enroll(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LabManager_Enroll_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabManagerServer).Enroll(ctx, req.(*EnrollRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LabManager_RenewCertificate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RenewCertificateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabManagerServer).RenewCertificate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LabManager_RenewCertificate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabManagerServer).RenewCertificate(ctx, req.(*RenewCertificateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LabManager_RotateAccessKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RotateAccessKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabManagerServer).RotateAccessKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LabManager_RotateAccessKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabManagerServer).RotateAccessKey(ctx, req.(*RotateAccessKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LabManager_RemoveAccessKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveAccessKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabManagerServer).RemoveAccessKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LabManager_RemoveAccessKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabManagerServer).RemoveAccessKey(ctx, req.(*RemoveAccessKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _LabManager_GetCapacity_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(Empty)
 	if err := dec(in); err != nil {
@@ -830,6 +994,22 @@ var LabManager_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteLabs",
 			Handler:    _LabManager_DeleteLabs_Handler,
+		},
+		{
+			MethodName: "Enroll",
+			Handler:    _LabManager_Enroll_Handler,
+		},
+		{
+			MethodName: "RenewCertificate",
+			Handler:    _LabManager_RenewCertificate_Handler,
+		},
+		{
+			MethodName: "RotateAccessKey",
+			Handler:    _LabManager_RotateAccessKey_Handler,
+		},
+		{
+			MethodName: "RemoveAccessKey",
+			Handler:    _LabManager_RemoveAccessKey_Handler,
 		},
 		{
 			MethodName: "GetCapacity",

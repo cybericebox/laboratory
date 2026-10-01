@@ -23,6 +23,10 @@ type Files struct {
 	CAFile string
 	// MinInterval limits how often the files are stat'ed. Zero checks every time.
 	MinInterval time.Duration
+	// OptionalClientAuth makes a client certificate optional on the server side: when one is
+	// presented it must still verify against the CA. The caller then decides, per call, whether
+	// a certificate is required (the agent's Enroll has none yet).
+	OptionalClientAuth bool
 
 	mu        sync.Mutex
 	cert      *tls.Certificate
@@ -122,6 +126,9 @@ func (f *Files) ServerConfig(nextProtos ...string) *tls.Config {
 		}
 		if pool != nil {
 			c.ClientAuth = tls.RequireAndVerifyClientCert
+			if f.OptionalClientAuth {
+				c.ClientAuth = tls.VerifyClientCertIfGiven
+			}
 			c.ClientCAs = pool
 		}
 		return c

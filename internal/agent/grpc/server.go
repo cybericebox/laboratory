@@ -29,6 +29,9 @@ func serverCredentials(cfg *config.Config) (credentials.TransportCredentials, er
 	if err != nil {
 		return nil, fmt.Errorf("load server TLS: %w", err)
 	}
+	// A client certificate is optional at the handshake: Enroll is called before the client has one.
+	// Every other call requires it (see New).
+	files.OptionalClientAuth = true
 	return credentials.NewTLS(files.ServerConfig("h2")), nil
 }
 
@@ -59,9 +62,12 @@ func New(cfg *config.Config, impl protobuf.LabManagerServer) (*grpc.Server, erro
 			return nil
 		}
 		opts = append(opts,
-			grpc.ChainUnaryInterceptor(func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
-				if err := admit(ctx); err != nil {
-					return nil, err
+			grpc.ChainUnaryInterceptor(func(ctx context.Context, req any, info *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
+				// Enroll is the one call without a client certificate: the one-time token authenticates it.
+				if info.FullMethod != protobuf.LabManager_Enroll_FullMethodName {
+					if err := admit(ctx); err != nil {
+						return nil, err
+					}
 				}
 				return h(ctx, req)
 			}),

@@ -55,6 +55,25 @@ service LabManager {
   // complete snapshot; subsequent messages are sequenced deltas or heartbeats.
   rpc Monitoring(MonitoringRequest) returns (stream MonitoringUpdate) {}
 
+  // Enrollment. The platform's private keys never leave it: it generates a client key and an
+  // access key pair itself and sends only the certificate request and the public access key.
+  //
+  // Enroll works over plain TLS (server authentication only: the client has no certificate yet). The
+  // token is the one-time enrollment token of a Tenant (shown to the admin once, valid 24 hours by
+  // default). The agent verifies the token (hash, expiry, not used) and the request (EC P-256 or
+  // stronger, or RSA 2048 or more; the requested subject is ignored), signs a client certificate with
+  // CN = the tenant name, stores the access public key and burns the token. A used, expired or unknown
+  // token is PERMISSION_DENIED.
+  rpc Enroll(EnrollRequest) returns (CertificateResponse) {}
+  // RenewCertificate (mTLS) issues a new client certificate with the same CN for a new key.
+  rpc RenewCertificate(RenewCertificateRequest) returns (CertificateResponse) {}
+  // RotateAccessKey (mTLS) adds an access public key to the tenant (a rotation overlaps: both keys
+  // work until the old one is removed). The same id with the same key is accepted again.
+  rpc RotateAccessKey(RotateAccessKeyRequest) returns (Empty) {}
+  // RemoveAccessKey (mTLS) removes a key. The last key of a tenant cannot be removed
+  // (FAILED_PRECONDITION).
+  rpc RemoveAccessKey(RemoveAccessKeyRequest) returns (Empty) {}
+
   // GetCapacity is the caller's tenant view: its quota, reserved, used and free resources.
   rpc GetCapacity(Empty) returns (CapacityResponse) {}
 
@@ -638,3 +657,22 @@ message PrewarmImageStatus {
 message PrewarmImagesResult {
   repeated PrewarmImageStatus images = 1;
 }
+
+message EnrollRequest {
+  string token = 1;
+  string csr_pem = 2;               // PKCS#10 certificate request; only its public key is used
+  string access_public_key_pem = 3; // PKIX Ed25519 public key that verifies the tenant's tokens
+  string access_key_id = 4;         // 1 to 64 characters of A-Z a-z 0-9 . _ -
+}
+message RenewCertificateRequest {string csr_pem = 1;}
+message CertificateResponse {
+  string certificate_pem = 1;
+  string chain_pem = 2;             // the CA certificate that signed it
+  string tenant = 3;                // the tenant name = the certificate CN
+  int64 not_after_unix = 4;
+}
+message RotateAccessKeyRequest {
+  string public_key_pem = 1;        // PKIX Ed25519
+  string key_id = 2;
+}
+message RemoveAccessKeyRequest {string key_id = 1;}
