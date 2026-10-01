@@ -73,13 +73,14 @@ func (s *RetentionSweeper) Start(ctx context.Context) error {
 	}
 }
 
-// labKey is "<namespace>/<lab>".
+// labKeyOf is the ConfigMap key of the lab a repository belongs to:
+// "<namespace>_<lab>" (a ConfigMap key cannot hold a slash; Kubernetes names have no underscore).
 func labKeyOf(repo string) (key string, ok bool) {
 	parts := strings.Split(repo, "/")
 	if len(parts) != 4 || parts[0] != snapshot.RepoPrefix {
 		return "", false
 	}
-	return parts[1] + "/" + parts[2], true
+	return parts[1] + "_" + parts[2], true
 }
 
 // Sweep runs one retention pass.
@@ -125,7 +126,7 @@ func (s *RetentionSweeper) Sweep(ctx context.Context) error {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		ns, lab, _ := strings.Cut(k, "/")
+		ns, lab, _ := strings.Cut(k, "_")
 		var l laboratoryv1alpha1.Lab
 		err := reader.Get(ctx, types.NamespacedName{Namespace: ns, Name: lab}, &l)
 		if err == nil {

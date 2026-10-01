@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -57,6 +58,15 @@ func TestRetentionSweep(t *testing.T) {
 		return cm.Data
 	}
 
+	// The API server refuses ConfigMap keys with a slash: the keys must be valid ones.
+	if err := sw.Sweep(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for k := range tombstones() {
+		if errs := validation.IsConfigMapKey(k); len(errs) != 0 {
+			t.Fatalf("tombstone key %q is not a valid ConfigMap key: %v", k, errs)
+		}
+	}
 	// First pass: the missing lab is only noted; a live lab is never touched.
 	if err := sw.Sweep(ctx); err != nil {
 		t.Fatal(err)
@@ -64,7 +74,7 @@ func TestRetentionSweep(t *testing.T) {
 	if len(cat.deleted) != 0 {
 		t.Fatalf("nothing is deleted before the retention has passed: %v", cat.deleted)
 	}
-	if got := tombstones(); got["ns/gone"] != clock.Format(time.RFC3339) || len(got) != 1 {
+	if got := tombstones(); got["ns_gone"] != clock.Format(time.RFC3339) || len(got) != 1 {
 		t.Fatalf("tombstones %v", got)
 	}
 
