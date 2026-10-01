@@ -12,7 +12,6 @@ import (
 	"google.golang.org/grpc/status"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	k8slabels "k8s.io/apimachinery/pkg/labels"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/pkg/agent/client"
@@ -173,7 +172,7 @@ func parseSelector(sel string, allowEmpty bool) error {
 		}
 		return invalid("selector must not be empty")
 	}
-	if _, err := k8slabels.Parse(sel); err != nil {
+	if err := checkSelectorKeys(sel); err != nil {
 		return invalid("invalid selector: %v", err)
 	}
 	return nil

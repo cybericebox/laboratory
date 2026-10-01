@@ -24,6 +24,9 @@ func newSelectorFilter(expr string) (*selectorFilter, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := checkSelectorKeys(expr); err != nil {
+		return nil, err
+	}
 	return &selectorFilter{sel: sel}, nil
 }
 

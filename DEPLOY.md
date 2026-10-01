@@ -340,7 +340,10 @@ object that is still being deleted fails with `retryable` (`TERMINATING`); repea
 **Labels.** Every mutating call has request-level `labels` applied to every item, and per-item `labels` (the item wins on
 a conflict). Labels pass through as given, with no re-encoding: keys and values must be valid Kubernetes labels (key
 prefix and name, value at most 63 characters, allowed characters only), otherwise the call fails with `INVALID_ARGUMENT`
-naming the item. The prefix `laboratory.cybericebox.com/` is reserved and rejected. Labels go onto the custom resource. The labels of a Lab are copied to its Devices and their pods when those are
+naming the item. Internal keys are never exposed: the prefix `laboratory.cybericebox.com/`, Kubernetes system keys (`kubernetes.io`, `k8s.io`
+domains), `app` and `pod-template-hash` are rejected when set, stripped from every object in `List*` and in `Monitoring`
+(the `labels` maps hold only the caller's labels), and a selector that names one (in `List*`, `Update*`, `Delete*`, the
+device calls and `Monitoring`) fails with `INVALID_ARGUMENT`. Labels go onto the custom resource. The labels of a Lab are copied to its Devices and their pods when those are
 created (a later `UpdateLabs` changes the Lab's labels only). Update calls take `LabelChanges{set, remove}`.
 
 **Scheduling parameters** are dedicated fields, not labels: `deploy_group` (at most 64 characters) and `deploy_after`

@@ -25,7 +25,7 @@ func labGroupToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.LabGroup {
 			VpnClientSubnet: g.Status.VPN.ClientSubnet,
 			ImageWarning:    g.Status.ImageWarning,
 		},
-		Labels: copyLabels(g.Labels),
+		Labels: userLabels(g.Labels),
 	}
 }
 
@@ -78,7 +78,7 @@ func labToProto(l *laboratoryv1alpha1.Lab) *protobuf.Lab {
 		Name:        names.IDOf(l),
 		SpecJson:    specJSON,
 		Status:      status,
-		Labels:      copyLabels(l.Labels),
+		Labels:      userLabels(l.Labels),
 		DeployGroup: dg,
 		DeployAfter: da,
 	}
@@ -156,7 +156,7 @@ func clientToProto(c *laboratoryv1alpha1.LabGroupClient) *protobuf.LabGroupClien
 			Config:     c.Status.Config,
 			Statistics: stats,
 		},
-		Labels: copyLabels(c.Labels),
+		Labels: userLabels(c.Labels),
 	}
 }
 
@@ -200,7 +200,7 @@ func accessPolicyToProto(policy *laboratoryv1alpha1.LabGroupAccessPolicy, labGro
 	p := &protobuf.LabGroupAccessPolicy{
 		LabGroupName: labGroupName,
 		Namespace:    policy.Namespace,
-		Labels:       copyLabels(policy.Labels),
+		Labels:       userLabels(policy.Labels),
 		Status: &protobuf.LabGroupAccessPolicyStatus{
 			ObservedGeneration: policy.Status.ObservedGeneration,
 			State:              policy.Status.State,

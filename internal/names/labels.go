@@ -106,13 +106,33 @@ const (
 	SecretClientPrefix = "client-"
 )
 
+// IsReservedLabel reports whether a label key belongs to the platform or the system: the
+// platform prefix, Kubernetes' own domains (kubernetes.io, k8s.io and their subdomains), and
+// the keys the operator sets on workloads (app, pod-template-hash). Such keys are never
+// exposed, searched or set through the management agent.
+func IsReservedLabel(key string) bool {
+	if strings.HasPrefix(key, LabelPrefix) || key == "app" || key == "pod-template-hash" {
+		return true
+	}
+	domain, _, ok := strings.Cut(key, "/")
+	if !ok {
+		return false
+	}
+	for _, d := range []string{"kubernetes.io", "k8s.io"} {
+		if domain == d || strings.HasSuffix(domain, "."+d) {
+			return true
+		}
+	}
+	return false
+}
+
 // UserLabels returns the labels of an object that the management agent set on behalf of a
-// caller: everything except the platform's own keys (LabelPrefix). Lab labels go to
+// caller: everything except the reserved keys (IsReservedLabel). Lab labels go to
 // its Devices and from there to their pods.
 func UserLabels(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
 	for k, v := range in {
-		if !strings.HasPrefix(k, LabelPrefix) {
+		if !IsReservedLabel(k) {
 			out[k] = v
 		}
 	}

@@ -442,3 +442,90 @@ func TestEncodedIDsInMonitoring(t *testing.T) {
 	del, err := h.DeleteLabs(ctx, &protobuf.DeleteRequest{Items: []*protobuf.ItemRef{{LabGroup: "Team X", Name: "Lab One"}}})
 	wantStates(t, del, err, stDeleted)
 }
+
+func TestReservedLabelKeys(t *testing.T) {
+	for _, k := range []string{names.LabelLab, names.LabelDeployGroup, "app", "pod-template-hash", "kubernetes.io/hostname", "node.kubernetes.io/x", "k8s.io/a", "foo.k8s.io/b"} {
+		if !names.IsReservedLabel(k) {
+			t.Errorf("%q must be reserved", k)
+		}
+		if validateLabels(map[string]string{k: "v"}) == nil {
+			t.Errorf("setting %q must be refused", k)
+		}
+	}
+	for _, k := range []string{"event", "example.com/app", "notkubernetes.io/x", "team"} {
+		if names.IsReservedLabel(k) {
+			t.Errorf("%q is a user label", k)
+		}
+	}
+}
+
+// Internal labels never leave the agent: not in answers, not searchable.
+func TestInternalLabelsAreHidden(t *testing.T) {
+	grp := &laboratoryv1alpha1.LabGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "g1", Labels: map[string]string{"team": "a", names.LabelDeployGroup: "x", "app": "y"}},
+		Status:     laboratoryv1alpha1.LabGroupStatus{Namespace: "ns1"},
+	}
+	h, _ := newFinalizerHandler(t, grp)
+	ctx := context.Background()
+
+	list, err := h.ListLabGroups(ctx, &protobuf.ListRequest{})
+	if err != nil || len(list.Items) != 1 || len(list.Items[0].Labels) != 1 || list.Items[0].Labels["team"] != "a" {
+		t.Fatalf("list labels: %v %v", list, err)
+	}
+	res, err := h.CreateLabs(ctx, &protobuf.CreateLabsRequest{
+		Variants: []*protobuf.LabVariant{{VariantId: "v", SpecJson: specJSON("web")}},
+		Items:    []*protobuf.LabItem{{LabGroup: "g1", Name: "c1", VariantId: "v", DeployGroup: "dg", Labels: map[string]string{"round": "1"}}},
+	})
+	wantStates(t, res, err, stCreated)
+	labs, _ := h.ListLabs(ctx, &protobuf.ListRequest{})
+	if len(labs.Items[0].Labels) != 1 || labs.Items[0].Labels["round"] != "1" || labs.Items[0].DeployGroup != "dg" {
+		t.Fatalf("lab labels: %v", labs.Items[0])
+	}
+	st, err := h.collect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range st.update.Groups {
+		if len(g.Labels) != 1 {
+			t.Fatalf("monitoring group labels: %v", g.Labels)
+		}
+	}
+	for _, l := range st.update.Labs {
+		if len(l.Labels) != 1 {
+			t.Fatalf("monitoring lab labels: %v", l.Labels)
+		}
+	}
+
+	sel := names.LabelDeployGroup + "=x"
+	for name, call := range map[string]func() error{
+		"list groups": func() error { _, err := h.ListLabGroups(ctx, &protobuf.ListRequest{Selector: sel}); return err },
+		"list labs":   func() error { _, err := h.ListLabs(ctx, &protobuf.ListRequest{Selector: "app=y"}); return err },
+		"list clients": func() error {
+			_, err := h.ListLabGroupClients(ctx, &protobuf.ListRequest{Selector: "!kubernetes.io/hostname"})
+			return err
+		},
+		"update": func() error {
+			_, err := h.UpdateLabGroups(ctx, &protobuf.UpdateLabGroupsRequest{BySelector: &protobuf.Selector{Selector: "team=a," + sel}})
+			return err
+		},
+		"delete": func() error {
+			_, err := h.DeleteLabs(ctx, &protobuf.DeleteRequest{BySelector: &protobuf.Selector{Selector: "pod-template-hash in (a)"}})
+			return err
+		},
+		"devices": func() error {
+			_, err := h.ResetDevices(ctx, &protobuf.DevicesRequest{BySelector: &protobuf.DeviceSelector{Selector: sel, Device: "web"}})
+			return err
+		},
+		"monitoring": func() error {
+			return h.Monitoring(&protobuf.MonitoringRequest{Selector: sel}, &fakeMonStream{ctx: ctx, sent: make(chan *protobuf.MonitoringUpdate, 1)})
+		},
+	} {
+		if err := call(); status.Code(err) != codes.InvalidArgument {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// A user selector still works.
+	if list, err := h.ListLabGroups(ctx, &protobuf.ListRequest{Selector: "team=a"}); err != nil || len(list.Items) != 1 {
+		t.Fatalf("user selector: %v %v", list, err)
+	}
+}

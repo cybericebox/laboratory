@@ -7,6 +7,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	k8slabels "k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/cybericebox/laboratory/internal/names"
@@ -23,6 +24,31 @@ func copyLabels(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+// userLabels is what an answer shows of an object's labels: the caller's own, never the
+// reserved keys (nil for none).
+func userLabels(in map[string]string) map[string]string {
+	out := names.UserLabels(in)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// checkSelectorKeys rejects a selector that names a reserved label key.
+func checkSelectorKeys(expr string) error {
+	sel, err := k8slabels.Parse(expr)
+	if err != nil {
+		return err
+	}
+	reqs, _ := sel.Requirements()
+	for _, r := range reqs {
+		if names.IsReservedLabel(r.Key()) {
+			return fmt.Errorf("the selector names the reserved label %q", r.Key())
+		}
+	}
+	return nil
 }
 
 // mergeLabels adds the given labels to dst (allocating it when needed) and
@@ -57,8 +83,8 @@ func validateLabels(in map[string]string) error {
 }
 
 func validateLabelKey(k string) error {
-	if strings.HasPrefix(k, names.LabelPrefix) {
-		return fmt.Errorf("label %q: the prefix %s is reserved", k, names.LabelPrefix)
+	if names.IsReservedLabel(k) {
+		return fmt.Errorf("label %q is reserved (the %s prefix, Kubernetes system keys, app, pod-template-hash)", k, names.LabelPrefix)
 	}
 	if errs := validation.IsQualifiedName(k); len(errs) > 0 {
 		return fmt.Errorf("label key %q: %s", k, strings.Join(errs, "; "))
