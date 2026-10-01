@@ -283,7 +283,8 @@ func TestPlanImagesMustBeOnTheNodes(t *testing.T) {
 	b := obj("lab/b", "g2", 2, nil, pods("b", "p1")...)
 	env := &fakeEnv{notPrepared: map[string]bool{"g/g1": true}}
 	plan := planSchedule([]*schedObject{a, b}, 10, false, env)
-	wantDispatch(t, plan)
+	// The images gate their own group only: the next group goes on.
+	wantDispatch(t, plan, "b/p1")
 	if r := plan.status["lab/a"].Reason; r != laboratoryv1alpha1.WaitPreparingImages {
 		t.Fatalf("reason = %q", r)
 	}

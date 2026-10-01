@@ -241,9 +241,15 @@ The rules:
 **Before the first pod of a group** its images (those of all its Labs) are pulled onto the eligible nodes by
 a short-lived DaemonSet `prepull-<hash>` in `laboratory-system`, one container per image with the command
 replaced by a sleep (the lab service never starts), on the nodes of `labWorkloads.nodeSelector`/`tolerations`,
-with `imagePullSecrets`. Dispatch waits until every pod holds all images or `scheduler.prepull.timeout`, then
-the DaemonSet is deleted (a missing image must not stop the queue). Filling the registry cache beforehand is
-the agent's job (`PrewarmImages`), not the scheduler's.
+with `imagePullSecrets`. The group's pods wait until every prepull pod holds all images, then the DaemonSet
+is deleted. An image that **cannot be pulled** (the kubelet reports `ErrImagePull`, `ImagePullBackOff`,
+`InvalidImageName` or `ErrImageNeverPull`) is given up on at once, within seconds: the group goes on without it
+and its pods that use that image fail through the normal per-pod `ImagePull` path (reason and error in
+`Device.status.scheduling.failure`). `scheduler.prepull.timeout` is only a safety net for a pull that is slow
+but not failing. A prepull gates **only its own group**: while a group's images are still being pulled
+(reason `PreparingImages`), the pods of other groups and of independent objects are dispatched as the order and
+dependency rules allow, and their own prepulls run meanwhile. Filling the registry cache beforehand is the
+agent's job (`PrewarmImages`), not the scheduler's.
 
 **Resource check.** A pod is dispatched only when the schedulable nodes (Ready, not cordoned, matching the
 lab node selector, taints tolerated) have free CPU and memory for its requests: allocatable minus the
