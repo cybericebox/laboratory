@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/grouppods"
 )
 
 var _ = Describe("LabGroup suspension", func() {
@@ -37,6 +38,39 @@ var _ = Describe("LabGroup suspension", func() {
 		Expect(r.ensureVPNDeployment(ctx, namespace, false)).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: namespace}, &dep)).To(Succeed())
 		Expect(dep.Spec.Template.Spec.Containers[0].Env).To(ContainElement(corev1.EnvVar{Name: "SUPPORT_EMAIL", Value: "new-help@example.org"}))
+	})
+
+	It("gives the VPN and gateway pods of a NEW group Guaranteed resources and leaves an existing group's alone", func() {
+		const namespace = "default"
+		r := &LabGroupReconciler{Client: k8sClient, VPNBaseNetwork: "10.8.0.0/10", InetBaseNetwork: "10.9.0.0/10", VPNImage: "test", GatewayImage: "test",
+			GroupPods: grouppods.Config{VPNCPU: "120m", VPNMemory: "80Mi", GatewayCPU: "60m", GatewayMemory: "40Mi"}}
+		Expect(r.ensureVPNDeployment(ctx, namespace, false)).To(Succeed())
+		Expect(r.ensureGatewayDeployment(ctx, namespace, false)).To(Succeed())
+		DeferCleanup(func() {
+			for _, n := range []string{"vpn", "gateway"} {
+				var dep appsv1.Deployment
+				if k8sClient.Get(ctx, types.NamespacedName{Name: n, Namespace: namespace}, &dep) == nil {
+					_ = k8sClient.Delete(ctx, &dep)
+				}
+			}
+		})
+		resOf := func(name string) corev1.ResourceRequirements {
+			var dep appsv1.Deployment
+			ExpectWithOffset(1, k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, &dep)).To(Succeed())
+			return dep.Spec.Template.Spec.Containers[0].Resources
+		}
+		vpn, gw := resOf("vpn"), resOf("gateway")
+		Expect(quantity(vpn.Requests, corev1.ResourceCPU)).To(Equal("120m"))
+		Expect(quantity(vpn.Limits, corev1.ResourceMemory)).To(Equal("80Mi"))
+		Expect(vpn.Requests).To(Equal(vpn.Limits))
+		Expect(quantity(gw.Requests, corev1.ResourceCPU)).To(Equal("60m"))
+		Expect(gw.Requests).To(Equal(gw.Limits))
+		// A later change of the chart value does not touch a group that exists (its VPN keeps running).
+		r.GroupPods = grouppods.Config{VPNCPU: "500m", VPNMemory: "512Mi", GatewayCPU: "500m", GatewayMemory: "512Mi"}
+		Expect(r.ensureVPNDeployment(ctx, namespace, false)).To(Succeed())
+		Expect(r.ensureGatewayDeployment(ctx, namespace, false)).To(Succeed())
+		Expect(quantity(resOf("vpn").Requests, corev1.ResourceCPU)).To(Equal("120m"))
+		Expect(quantity(resOf("gateway").Requests, corev1.ResourceMemory)).To(Equal("40Mi"))
 	})
 
 	It("keeps the tunnel and internet gateway available while Lab devices are suspended", func() {
@@ -244,3 +278,9 @@ var _ = Describe(
 		)
 	},
 )
+
+// quantity renders one resource of a list.
+func quantity(l corev1.ResourceList, name corev1.ResourceName) string {
+	q := l[name]
+	return q.String()
+}

@@ -638,6 +638,10 @@ message CapacityResponse {
   int64 memory_used_bytes = 10;
   int64 cpu_free_millicores = 11;
   int64 memory_free_bytes = 12;
+  // What the VPN and gateway pods of ONE LabGroup request together (requests = limits, from the chart): the
+  // service overhead every group adds to its labs. Sizing a reservation takes it per group.
+  int64 group_overhead_cpu_millicores = 13;
+  int64 group_overhead_memory_bytes = 14;
 }
 
 message PrewarmImagesRequest {

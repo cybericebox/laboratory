@@ -9,6 +9,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	versioned "github.com/cybericebox/laboratory/clientset/client/versioned"
+	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 	"k8s.io/client-go/kubernetes"
 	metricsclient "k8s.io/metrics/pkg/client/clientset/versioned"
@@ -38,6 +39,9 @@ type Handler struct {
 	caCertFile, caKeyFile string
 	certTTL               time.Duration
 	clock                 func() time.Time
+
+	// groupOverhead is what a LabGroup's own pods (VPN, gateway) request together.
+	groupOverhead grouppods.Overhead
 
 	// labSelector and labTolerations describe the nodes lab pods run on (percentage quotas).
 	labSelector    map[string]string

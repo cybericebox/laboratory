@@ -4366,8 +4366,12 @@ type CapacityResponse struct {
 	MemoryUsedBytes       int64                  `protobuf:"varint,10,opt,name=memory_used_bytes,json=memoryUsedBytes,proto3" json:"memory_used_bytes,omitempty"`
 	CpuFreeMillicores     int64                  `protobuf:"varint,11,opt,name=cpu_free_millicores,json=cpuFreeMillicores,proto3" json:"cpu_free_millicores,omitempty"`
 	MemoryFreeBytes       int64                  `protobuf:"varint,12,opt,name=memory_free_bytes,json=memoryFreeBytes,proto3" json:"memory_free_bytes,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// What the VPN and gateway pods of ONE LabGroup request together (requests = limits, from the chart): the
+	// service overhead every group adds to its labs. Sizing a reservation takes it per group.
+	GroupOverheadCpuMillicores int64 `protobuf:"varint,13,opt,name=group_overhead_cpu_millicores,json=groupOverheadCpuMillicores,proto3" json:"group_overhead_cpu_millicores,omitempty"`
+	GroupOverheadMemoryBytes   int64 `protobuf:"varint,14,opt,name=group_overhead_memory_bytes,json=groupOverheadMemoryBytes,proto3" json:"group_overhead_memory_bytes,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
 }
 
 func (x *CapacityResponse) Reset() {
@@ -4480,6 +4484,20 @@ func (x *CapacityResponse) GetCpuFreeMillicores() int64 {
 func (x *CapacityResponse) GetMemoryFreeBytes() int64 {
 	if x != nil {
 		return x.MemoryFreeBytes
+	}
+	return 0
+}
+
+func (x *CapacityResponse) GetGroupOverheadCpuMillicores() int64 {
+	if x != nil {
+		return x.GroupOverheadCpuMillicores
+	}
+	return 0
+}
+
+func (x *CapacityResponse) GetGroupOverheadMemoryBytes() int64 {
+	if x != nil {
+		return x.GroupOverheadMemoryBytes
 	}
 	return 0
 }
@@ -5635,7 +5653,7 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\bbytes_in\x18\v \x01(\x03R\abytesIn\x12+\n" +
 	"\x12first_seen_unix_ms\x18\f \x01(\x03R\x0ffirstSeenUnixMs\x12)\n" +
 	"\x11last_seen_unix_ms\x18\r \x01(\x03R\x0elastSeenUnixMs\x125\n" +
-	"\x17first_responded_unix_ms\x18\x0e \x01(\x03R\x14firstRespondedUnixMs\"\xa5\x04\n" +
+	"\x17first_responded_unix_ms\x18\x0e \x01(\x03R\x14firstRespondedUnixMs\"\xa7\x05\n" +
 	"\x10CapacityResponse\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\"\n" +
 	"\rhas_cpu_quota\x18\x02 \x01(\bR\vhasCpuQuota\x120\n" +
@@ -5649,7 +5667,9 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x11memory_used_bytes\x18\n" +
 	" \x01(\x03R\x0fmemoryUsedBytes\x12.\n" +
 	"\x13cpu_free_millicores\x18\v \x01(\x03R\x11cpuFreeMillicores\x12*\n" +
-	"\x11memory_free_bytes\x18\f \x01(\x03R\x0fmemoryFreeBytes\".\n" +
+	"\x11memory_free_bytes\x18\f \x01(\x03R\x0fmemoryFreeBytes\x12A\n" +
+	"\x1dgroup_overhead_cpu_millicores\x18\r \x01(\x03R\x1agroupOverheadCpuMillicores\x12=\n" +
+	"\x1bgroup_overhead_memory_bytes\x18\x0e \x01(\x03R\x18groupOverheadMemoryBytes\".\n" +
 	"\x14PrewarmImagesRequest\x12\x16\n" +
 	"\x06images\x18\x01 \x03(\tR\x06images\"\xb0\x01\n" +
 	"\x12PrewarmImageStatus\x12\x14\n" +

@@ -168,3 +168,18 @@ func TestProxyHasNoSharedLabAccessKey(t *testing.T) {
 		}
 	}
 }
+
+// The group pods' resources reach the operator and the agent from one chart value.
+func TestGroupPodResourcesReachOperatorAndAgent(t *testing.T) {
+	out, err := helmTemplate(t, append(agentSet, "-s", "templates/operator/configmap.yaml", "-s", "templates/agent/deployment.yaml",
+		"--set", "vpn.resources.cpu=200m", "--set", "vpn.resources.memory=128Mi",
+		"--set", "inetGateway.resources.cpu=75m", "--set", "inetGateway.resources.memory=48Mi")...)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, want := range []string{`VPN_CPU: "200m"`, `VPN_MEMORY: "128Mi"`, `GATEWAY_CPU: "75m"`, `GATEWAY_MEMORY: "48Mi"`, `value: "200m"`, `value: "128Mi"`, `value: "75m"`, `value: "48Mi"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+}

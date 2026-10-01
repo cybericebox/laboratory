@@ -9,6 +9,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/pkg/config"
 )
@@ -37,6 +38,8 @@ type Config struct {
 	VPNImage string `env:"VPN_IMAGE" envDefault:"cybericebox/laboratory-lab:latest"`
 	// GatewayImage is the container image for per-LabGroup gateway pods.
 	GatewayImage string `env:"GATEWAY_IMAGE" envDefault:"cybericebox/laboratory-lab:latest"`
+	// GroupPods are the resources of the VPN and gateway pods of a new LabGroup (requests = limits).
+	GroupPods grouppods.Config
 	// NetConfigImage is the image for the optional device init-container that
 	// assigns static IP/routes. Needs iproute2 + sh; node-agent image has both.
 	NetConfigImage string `env:"NETCONFIG_IMAGE" envDefault:"cybericebox/laboratory-node-agent:latest"`
@@ -205,6 +208,9 @@ func LoadConfig() (*Config, error) {
 		if _, err := resource.ParseQuantity(v); err != nil {
 			return nil, fmt.Errorf("%s %q: %w", name, v, err)
 		}
+	}
+	if err := cfg.GroupPods.Validate(); err != nil {
+		return nil, err
 	}
 	if _, err := cfg.State.WriteQuotaBytes(); err != nil {
 		return nil, err

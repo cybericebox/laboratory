@@ -13,6 +13,10 @@ data:
   INET_BASE_NETWORK: {{ .Values.operator.inetBaseNetwork | quote }}
   PROXY_SOURCE_CIDRS: {{ .Values.operator.proxySourceCIDRs | quote }}
   VPN_IMAGE: "{{ .Values.vpn.image.repository }}:{{ .Values.vpn.image.tag | default .Chart.AppVersion }}"
+  VPN_CPU: {{ .Values.vpn.resources.cpu | quote }}
+  VPN_MEMORY: {{ .Values.vpn.resources.memory | quote }}
+  GATEWAY_CPU: {{ .Values.inetGateway.resources.cpu | quote }}
+  GATEWAY_MEMORY: {{ .Values.inetGateway.resources.memory | quote }}
   GATEWAY_IMAGE: "{{ .Values.inetGateway.image.repository }}:{{ .Values.inetGateway.image.tag | default .Chart.AppVersion }}"
   NETCONFIG_IMAGE: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag | default .Chart.AppVersion }}"
   LAB_NODE_SELECTOR: {{ .Values.labWorkloads.nodeSelector | toJson | quote }}

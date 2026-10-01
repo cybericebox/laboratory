@@ -16,6 +16,7 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/clientset/client/versioned/fake"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -209,5 +210,14 @@ func TestTenantResourceOnARealAPIServer(t *testing.T) {
 	got, err := tenants.Get(ctx, "platform", metav1.GetOptions{})
 	if err != nil || got.Status.Reserved.CPU != "750m" || got.Status.ObservedAt == nil {
 		t.Fatalf("status through the status subresource: %+v %v", got.Status, err)
+	}
+}
+
+func TestCapacityReportsTheGroupOverhead(t *testing.T) {
+	h := tenantHandler(t, []*laboratoryv1alpha1.Tenant{newTenantTenant("a", true, nil)})
+	h.SetGroupOverhead(grouppods.Config{VPNCPU: "100m", VPNMemory: "64Mi", GatewayCPU: "50m", GatewayMemory: "32Mi"}.Overhead())
+	got, err := h.GetCapacity(asClient("a"), &protobuf.Empty{})
+	if err != nil || got.GroupOverheadCpuMillicores != 150 || got.GroupOverheadMemoryBytes != 96<<20 {
+		t.Fatalf("%+v %v", got, err)
 	}
 }

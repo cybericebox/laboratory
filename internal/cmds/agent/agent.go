@@ -47,6 +47,10 @@ func Run() {
 	}
 	h := grpcserver.NewHandler(cs, k8s, metrics, cfg.AgentID)
 	h.SetStatePersistence(cfg.StatePersistence)
+	if err := cfg.GroupPods.Validate(); err != nil {
+		log.Fatalf("%v", err)
+	}
+	h.SetGroupOverhead(cfg.GroupPods.Overhead())
 	h.SetClientCA(cfg.MTLS.ClientCAFile, cfg.MTLS.ClientCAKeyFile, cfg.MTLS.ClientCertTTL)
 	h.SetRegistryAddr(cfg.RegistryAddr)
 	var labSelector map[string]string

@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/internal/tenant"
@@ -28,6 +29,10 @@ type capacityCache struct {
 	mu sync.Mutex
 	m  map[string]capacityEntry
 }
+
+// SetGroupOverhead sets what the VPN and gateway pods of one LabGroup request together: the
+// service overhead of every group, which a reservation must add to its labs.
+func (h *Handler) SetGroupOverhead(o grouppods.Overhead) { h.groupOverhead = o }
 
 // SetLabScheduling tells the agent which nodes lab pods run on, so a percentage quota
 // resolves against the same allocatable as the operator's scheduler sees.
@@ -67,7 +72,7 @@ func (h *Handler) tenantCapacity(ctx context.Context) (*protobuf.CapacityRespons
 	if ten != nil {
 		quota = ten.Spec.Quota
 	}
-	resp := capacityOf(name, tenant.ResolveQuota(quota, alloc), load)
+	resp := capacityOf(name, tenant.ResolveQuota(quota, alloc), load, h.groupOverhead)
 	h.capCache.mu.Lock()
 	if h.capCache.m == nil {
 		h.capCache.m = map[string]capacityEntry{}
@@ -85,11 +90,12 @@ type load struct {
 }
 
 // capacityOf assembles the answer; free is quota - reserved, never negative.
-func capacityOf(name string, l tenant.Limits, ld load) *protobuf.CapacityResponse {
+func capacityOf(name string, l tenant.Limits, ld load, overhead grouppods.Overhead) *protobuf.CapacityResponse {
 	r := &protobuf.CapacityResponse{
 		Tenant:                name,
 		CpuReservedMillicores: ld.reserved.CPU, MemoryReservedBytes: ld.reserved.Memory,
 		UsageAvailable: ld.usageAvailable, CpuUsedMillicores: ld.used.CPU, MemoryUsedBytes: ld.used.Memory,
+		GroupOverheadCpuMillicores: overhead.CPU, GroupOverheadMemoryBytes: overhead.Memory,
 	}
 	if l.HasCPU {
 		r.HasCpuQuota, r.CpuQuotaMillicores = true, l.CPU

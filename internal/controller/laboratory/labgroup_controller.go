@@ -29,6 +29,7 @@ import (
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
@@ -58,6 +59,9 @@ type LabGroupReconciler struct {
 	VPNImage string
 	// GatewayImage is the container image for gateway pods.
 	GatewayImage string
+	// GroupPods are the resources of the VPN and gateway pods of a NEW group (requests = limits);
+	// the Deployments of existing groups are left as they are, so a live event keeps its VPN.
+	GroupPods grouppods.Config
 	// Mirror rewrites the VPN and gateway images for the image cache when their
 	// pods are created; the zero value (cache off) rewrites nothing.
 	Mirror imagecache.Rewriter
@@ -539,6 +543,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 					InitContainers:     []corev1.Container{r.vpnAccountingInitContainer(vpnImage)},
 					Containers: []corev1.Container{{
 						Name:            "vpn",
+						Resources:       r.GroupPods.VPN(),
 						Image:           vpnImage,
 						Command:         []string{"/lab", "vpn"},
 						ImagePullPolicy: corev1.PullIfNotPresent,
@@ -633,6 +638,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 					Tolerations:        r.LabTolerations,
 					Containers: []corev1.Container{{
 						Name:            "gateway",
+						Resources:       r.GroupPods.Gateway(),
 						Image:           gatewayImage,
 						Command:         []string{"/lab", "gateway"},
 						ImagePullPolicy: corev1.PullIfNotPresent,

@@ -4,6 +4,8 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
+
+	"github.com/cybericebox/laboratory/internal/grouppods"
 )
 
 // ServerTLSConfig is the agent's own TLS identity — a key pair only, no CA.
@@ -39,6 +41,9 @@ type Config struct {
 	LabTolerations  string `env:"AGENT_LAB_TOLERATIONS" envDefault:"[]"`
 	// TenantStatusInterval is how often the status (reserved, used) of every Tenant is refreshed.
 	TenantStatusInterval time.Duration `env:"AGENT_TENANT_STATUS_INTERVAL" envDefault:"30s"`
+	// GroupPods are the resources of the VPN and gateway pods of a group (the same values as the operator's):
+	// their sum is the service overhead GetCapacity reports.
+	GroupPods grouppods.Config
 	// StatePersistence is the platform switch for device state persistence: a topology
 	// with devices[].persistence.enabled is refused when it is off.
 	StatePersistence bool `env:"AGENT_STATE_PERSISTENCE_ENABLED" envDefault:"false"`

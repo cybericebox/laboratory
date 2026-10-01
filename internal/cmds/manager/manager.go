@@ -263,6 +263,7 @@ func Run() {
 		Mirror:            mirror,
 		Resolver:          resolver,
 		GatewayImage:      cfg.GatewayImage,
+		GroupPods:         cfg.GroupPods,
 		SupportEmail:      cfg.SupportEmail,
 		LabNodeSelector:   labNodeSelector,
 		LabTolerations:    labTolerations,
