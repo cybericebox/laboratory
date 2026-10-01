@@ -520,7 +520,7 @@ management agent only (the operator and the launch queue take no part), through 
 - **Concurrency and time.** `registry.cache.prewarm.concurrency` images at once (4), at most `registry.cache.prewarm.timeout`
   (10m) for one; every image has its own error.
 - **`SKIPPED`:** the image's registry is not in the cache list (`registry.cache.registries`, `extraRegistries`): nodes pull it
-  directly. **`FAILED` with FailedPrecondition** for the whole call: the cache is not enabled.
+  directly. The whole call fails with `FailedPrecondition` when the cache is not enabled.
 - **Retention.** The manifest request counts as a pull for the cache's `unusedTTL` (48h), as does every later check.
   Prewarm within 48 hours before the event, or repeat the call: an image nobody pulled for 48 hours is deleted.
 - **Requirements.** `agent.enabled` and `registry.cache.enabled`. The chart gives the agent the cache address, the
