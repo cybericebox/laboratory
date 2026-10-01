@@ -105,7 +105,7 @@ func TestEnrollIssuesACertificateAndStoresTheAccessKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Tenant != "acme" || resp.NotAfterUnix != r.now.Add(DefaultClientCertTTL).Unix() {
+	if resp.NotAfterUnix != r.now.Add(DefaultClientCertTTL).Unix() {
 		t.Fatalf("%+v", resp)
 	}
 	block, _ := pem.Decode([]byte(resp.CertificatePem))
@@ -210,7 +210,7 @@ func TestRenewKeepsTheCN(t *testing.T) {
 	}
 	block, _ := pem.Decode([]byte(resp.CertificatePem))
 	cert, _ := x509.ParseCertificate(block.Bytes)
-	if cert.Subject.CommonName != "acme" || resp.Tenant != "acme" {
+	if cert.Subject.CommonName != "acme" {
 		t.Fatalf("the renewed certificate is for the caller's tenant: %v", cert.Subject)
 	}
 	if _, err := r.h.RenewCertificate(context.Background(), &protobuf.RenewCertificateRequest{CsrPem: csrPEM(t, newECKey(t), "x")}); status.Code(err) != codes.Unauthenticated {

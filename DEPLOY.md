@@ -495,7 +495,7 @@ pair, and sends the cluster only public material: a certificate request and the 
    `{token, csr_pem, access_public_key_pem, access_key_id}`. The agent verifies the token (hash, expiry, unused) and the request
    (a valid signature; EC P-256 or stronger, or RSA 2048 or more; the requested subject is ignored), signs a client
    certificate with CN = the tenant name from the client CA (`agent.enrollment.certificateTTL`, 30 days, never past the CA), stores the
-   access public key and burns the token. The answer is `{certificate_pem, chain_pem, tenant, not_after_unix}`. A used, expired
+   access public key and burns the token. The answer is `{certificate_pem, chain_pem, not_after_unix}`: **tenant identity = the client certificate CN** (the tenant name, no prefix, a DNS label); there is no separate tenant field, a client reads the CN from the certificate. A used, expired
    or unknown token is `PERMISSION_DENIED` with one and the same message. Access keys are Ed25519 (PKIX PEM); an id is 1 to 64 characters
    of `A-Z a-z 0-9 . _ -`.
 3. **Renewal and rotation** (mTLS, as the tenant). `RenewCertificate{csr_pem}` issues a new certificate with the same CN for a

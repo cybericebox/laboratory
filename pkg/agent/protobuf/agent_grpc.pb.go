@@ -80,7 +80,8 @@ type LabManagerClient interface {
 	// default). The agent verifies the token (hash, expiry, not used) and the request (EC P-256 or
 	// stronger, or RSA 2048 or more; the requested subject is ignored), signs a client certificate with
 	// CN = the tenant name, stores the access public key and burns the token. A used, expired or unknown
-	// token is PERMISSION_DENIED.
+	// token is PERMISSION_DENIED. The tenant identity is the subject CN of the returned certificate (the tenant
+	// name, no prefix; a DNS label): the response has no separate tenant field.
 	Enroll(ctx context.Context, in *EnrollRequest, opts ...grpc.CallOption) (*CertificateResponse, error)
 	// RenewCertificate (mTLS) issues a new client certificate with the same CN for a new key.
 	RenewCertificate(ctx context.Context, in *RenewCertificateRequest, opts ...grpc.CallOption) (*CertificateResponse, error)
@@ -395,7 +396,8 @@ type LabManagerServer interface {
 	// default). The agent verifies the token (hash, expiry, not used) and the request (EC P-256 or
 	// stronger, or RSA 2048 or more; the requested subject is ignored), signs a client certificate with
 	// CN = the tenant name, stores the access public key and burns the token. A used, expired or unknown
-	// token is PERMISSION_DENIED.
+	// token is PERMISSION_DENIED. The tenant identity is the subject CN of the returned certificate (the tenant
+	// name, no prefix; a DNS label): the response has no separate tenant field.
 	Enroll(context.Context, *EnrollRequest) (*CertificateResponse, error)
 	// RenewCertificate (mTLS) issues a new client certificate with the same CN for a new key.
 	RenewCertificate(context.Context, *RenewCertificateRequest) (*CertificateResponse, error)

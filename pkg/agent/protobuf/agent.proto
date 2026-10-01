@@ -63,7 +63,8 @@ service LabManager {
   // default). The agent verifies the token (hash, expiry, not used) and the request (EC P-256 or
   // stronger, or RSA 2048 or more; the requested subject is ignored), signs a client certificate with
   // CN = the tenant name, stores the access public key and burns the token. A used, expired or unknown
-  // token is PERMISSION_DENIED.
+  // token is PERMISSION_DENIED. The tenant identity is the subject CN of the returned certificate (the tenant
+  // name, no prefix; a DNS label): the response has no separate tenant field.
   rpc Enroll(EnrollRequest) returns (CertificateResponse) {}
   // RenewCertificate (mTLS) issues a new client certificate with the same CN for a new key.
   rpc RenewCertificate(RenewCertificateRequest) returns (CertificateResponse) {}
@@ -668,7 +669,7 @@ message RenewCertificateRequest {string csr_pem = 1;}
 message CertificateResponse {
   string certificate_pem = 1;
   string chain_pem = 2;             // the CA certificate that signed it
-  string tenant = 3;                // the tenant name = the certificate CN
+  reserved 3;                       // was tenant: the identity is the certificate's subject CN, nothing else
   int64 not_after_unix = 4;
 }
 message RotateAccessKeyRequest {

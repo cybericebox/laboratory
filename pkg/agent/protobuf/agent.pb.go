@@ -4767,7 +4767,6 @@ type CertificateResponse struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	CertificatePem string                 `protobuf:"bytes,1,opt,name=certificate_pem,json=certificatePem,proto3" json:"certificate_pem,omitempty"`
 	ChainPem       string                 `protobuf:"bytes,2,opt,name=chain_pem,json=chainPem,proto3" json:"chain_pem,omitempty"` // the CA certificate that signed it
-	Tenant         string                 `protobuf:"bytes,3,opt,name=tenant,proto3" json:"tenant,omitempty"`                     // the tenant name = the certificate CN
 	NotAfterUnix   int64                  `protobuf:"varint,4,opt,name=not_after_unix,json=notAfterUnix,proto3" json:"not_after_unix,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -4813,13 +4812,6 @@ func (x *CertificateResponse) GetCertificatePem() string {
 func (x *CertificateResponse) GetChainPem() string {
 	if x != nil {
 		return x.ChainPem
-	}
-	return ""
-}
-
-func (x *CertificateResponse) GetTenant() string {
-	if x != nil {
-		return x.Tenant
 	}
 	return ""
 }
@@ -5351,12 +5343,11 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x15access_public_key_pem\x18\x03 \x01(\tR\x12accessPublicKeyPem\x12\"\n" +
 	"\raccess_key_id\x18\x04 \x01(\tR\vaccessKeyId\"2\n" +
 	"\x17RenewCertificateRequest\x12\x17\n" +
-	"\acsr_pem\x18\x01 \x01(\tR\x06csrPem\"\x99\x01\n" +
+	"\acsr_pem\x18\x01 \x01(\tR\x06csrPem\"\x87\x01\n" +
 	"\x13CertificateResponse\x12'\n" +
 	"\x0fcertificate_pem\x18\x01 \x01(\tR\x0ecertificatePem\x12\x1b\n" +
-	"\tchain_pem\x18\x02 \x01(\tR\bchainPem\x12\x16\n" +
-	"\x06tenant\x18\x03 \x01(\tR\x06tenant\x12$\n" +
-	"\x0enot_after_unix\x18\x04 \x01(\x03R\fnotAfterUnix\"U\n" +
+	"\tchain_pem\x18\x02 \x01(\tR\bchainPem\x12$\n" +
+	"\x0enot_after_unix\x18\x04 \x01(\x03R\fnotAfterUnixJ\x04\b\x03\x10\x04\"U\n" +
 	"\x16RotateAccessKeyRequest\x12$\n" +
 	"\x0epublic_key_pem\x18\x01 \x01(\tR\fpublicKeyPem\x12\x15\n" +
 	"\x06key_id\x18\x02 \x01(\tR\x05keyId\"/\n" +

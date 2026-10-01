@@ -277,7 +277,6 @@ func (h *Handler) issueCertificate(tenant string, pub any) (*protobuf.Certificat
 	return &protobuf.CertificateResponse{
 		CertificatePem: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
 		ChainPem:       string(caPEM),
-		Tenant:         tenant,
 		NotAfterUnix:   notAfter.Unix(),
 	}, nil
 }
