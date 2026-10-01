@@ -77,7 +77,7 @@ func stateTestLab(t *testing.T, objs ...client.Object) *LabReconciler {
 		WithObjects(objs...).
 		WithStatusSubresource(&laboratoryv1alpha1.Lab{}, &laboratoryv1alpha1.Device{}).
 		Build()
-	return &LabReconciler{Client: c, Scheme: scheme, State: StatePolicy{Enabled: true, MaxLayers: 10, MaxSnapshotBytes: 1 << 29}}
+	return &LabReconciler{Client: c, Scheme: scheme, State: StatePolicy{Enabled: true, MaxLayers: 10, WriteQuotaBytes: 1 << 29}}
 }
 
 func newLab(name string) *laboratoryv1alpha1.Lab {
@@ -104,7 +104,7 @@ func TestPersistenceIsPerDevice(t *testing.T) {
 	}
 	// The topology may set the debounce; the rest of the policy stays the platform's.
 	d := metav1.Duration{Duration: 42 * time.Second}
-	if custom := r.deviceStateSpec(lab, persistent(&d)); custom.Debounce.Duration != 42*time.Second || custom.MaxLayers != 10 || custom.MaxSnapshotBytes != r.State.MaxSnapshotBytes {
+	if custom := r.deviceStateSpec(lab, persistent(&d)); custom.Debounce.Duration != 42*time.Second || custom.MaxLayers != 10 || custom.WriteQuotaBytes != r.State.WriteQuotaBytes {
 		t.Fatalf("custom debounce: %+v", custom)
 	}
 	hub := persistent(nil)
@@ -598,3 +598,61 @@ func TestThrottleStateInfo(t *testing.T) {
 		t.Fatal("a snapshot time 10s or more newer is published")
 	}
 }
+
+// A mixed lab on a real API server: the persistent device becomes a bare Pod, the normal one a
+// Deployment, and flipping the platform switch changes neither.
+var _ = Describe("Device state persistence: per-device mode", func() {
+	ctx := context.Background()
+
+	It("runs a persistent device as a bare Pod and a normal one as a Deployment, and keeps both when the switch flips", func() {
+		ns := "mixed-mode"
+		Expect(k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})).To(Succeed())
+		// The Lab object stays out of the API server: the suite's manager would reconcile it
+		// with a platform that does not allow persistence.
+		lab := &laboratoryv1alpha1.Lab{
+			ObjectMeta: metav1.ObjectMeta{Name: "mix", Namespace: ns, UID: "11111111-2222-3333-4444-555555555555"},
+			Spec: laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{
+				{Name: "web", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx", Persistence: &laboratoryv1alpha1.DevicePersistence{Enabled: true}},
+				{Name: "db", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "postgres"},
+			}},
+		}
+		lr := &LabReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), State: StatePolicy{Enabled: true, MaxLayers: 10, WriteQuotaBytes: 1 << 29}}
+		dr := &DeviceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Registry: &fakeRegistry{}, Now: time.Now, ExitSnapshotTimeout: 30 * time.Second}
+
+		settle := func() {
+			Expect(lr.materializeDevices(ctx, lab, nil)).To(Succeed())
+			for _, n := range []string{"mix-web", "mix-db"} {
+				for i := 0; i < 2; i++ {
+					_, err := dr.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: n, Namespace: ns}})
+					Expect(err).NotTo(HaveOccurred())
+				}
+			}
+		}
+		expectMixed := func() {
+			var web, db laboratoryv1alpha1.Device
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "mix-web", Namespace: ns}, &web)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "mix-db", Namespace: ns}, &db)).To(Succeed())
+			Expect(deviceStateEnabled(&web)).To(BeTrue())
+			Expect(deviceStateEnabled(&db)).To(BeFalse())
+
+			var pods corev1.PodList
+			Expect(k8sClient.List(ctx, &pods, client.InNamespace(ns))).To(Succeed())
+			Expect(pods.Items).To(HaveLen(1), "only the persistent device is a bare Pod")
+			Expect(pods.Items[0].Labels).To(HaveKeyWithValue(names.LabelDevice, "web"))
+			var deps appsv1.DeploymentList
+			Expect(k8sClient.List(ctx, &deps, client.InNamespace(ns))).To(Succeed())
+			Expect(deps.Items).To(HaveLen(1), "only the normal device is a Deployment")
+			Expect(deps.Items[0].Labels).To(HaveKeyWithValue(names.LabelDevice, "db"))
+		}
+
+		settle()
+		expectMixed()
+
+		// The platform stops allowing persistence, then allows it again: nothing changes.
+		for _, allowed := range []bool{false, true} {
+			lr.State.Enabled = allowed
+			settle()
+			expectMixed()
+		}
+	})
+})

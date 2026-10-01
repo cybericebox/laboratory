@@ -20,7 +20,7 @@ func TestStateConfigDefaults(t *testing.T) {
 	if got := len(st.ExcludePaths); got != 3 || st.ExcludePaths[0] != "/tmp" {
 		t.Fatalf("exclude paths: %v", st.ExcludePaths)
 	}
-	if n, err := st.MaxSnapshotBytes(); err != nil || n != 512<<20 {
+	if n, err := st.WriteQuotaBytes(); err != nil || n != 512<<20 {
 		t.Fatalf("max snapshot size: %d %v", n, err)
 	}
 }
@@ -32,7 +32,7 @@ func TestStateConfigFromEnv(t *testing.T) {
 	t.Setenv("STATE_PERSISTENCE_ENABLED", "true")
 	t.Setenv("STATE_DEBOUNCE", "12s")
 	t.Setenv("STATE_EXCLUDE_PATHS", "/cache,/var/log")
-	t.Setenv("STATE_MAX_SNAPSHOT_SIZE", "1Gi")
+	t.Setenv("STATE_WRITE_QUOTA", "1Gi")
 	t.Setenv("STATE_MAX_LAYERS", "4")
 	t.Setenv("STATE_RETENTION", "24h")
 	cfg, err := LoadConfig()
@@ -44,7 +44,7 @@ func TestStateConfigFromEnv(t *testing.T) {
 		len(st.ExcludePaths) != 2 || st.ExcludePaths[1] != "/var/log" {
 		t.Fatalf("%+v", st)
 	}
-	if n, _ := st.MaxSnapshotBytes(); n != 1<<30 {
+	if n, _ := st.WriteQuotaBytes(); n != 1<<30 {
 		t.Fatalf("max snapshot size %d", n)
 	}
 }
@@ -53,7 +53,7 @@ func TestStateConfigRejectsBadQuota(t *testing.T) {
 	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
 	t.Setenv("BASE_DOMAIN", "lab.example.com")
 	t.Setenv("SUPPORT_EMAIL", "support@example.com")
-	t.Setenv("STATE_MAX_SNAPSHOT_SIZE", "lots")
+	t.Setenv("STATE_WRITE_QUOTA", "lots")
 	if _, err := LoadConfig(); err == nil {
 		t.Fatal("an unparseable quota must fail at startup")
 	}

@@ -431,7 +431,8 @@ the variant's variables are merged with the lab's own (the lab wins per device a
 updated): `devices[].persistence {enabled, debounce}` in `spec_json`, both optional, with the
 platform defaults from the chart. `enabled: true` is refused when `devices.statePersistence.enabled` is off in the
 chart (the agent reads it as `AGENT_STATE_PERSISTENCE_ENABLED`); `debounce` must be positive. The excluded paths and the
-quota are cluster settings of the chart (`devices.statePersistence.excludePaths`, `maxSnapshotSize`) and cannot be requested per device.
+quota are cluster settings of the chart (`devices.statePersistence.excludePaths`, default `/tmp`, `/var/tmp`, `/run`; and `writeQuota`, default `512Mi`: the most of a
+participant's writes kept per device). They are configurable only in the chart and cannot be requested per device.
 
 **Tenancy.**
 
@@ -538,7 +539,7 @@ devices:
     enabled: true
     debounce: 5s              # quiet time of the writable layer before a snapshot
     excludePaths: [/tmp, /var/tmp, /run]
-    maxSnapshotSize: 512Mi    # quota per device
+    writeQuota: 512Mi         # write quota per device (the most of a participant's writes we keep)
     maxLayers: 10             # snapshot layers before they are squashed into one
     retention: 168h           # how long a deleted lab's snapshots are kept
     containerdRoot: /var/lib/k0s/containerd   # host path of the containerd root
@@ -585,7 +586,7 @@ Requirements on the nodes (nothing has to be installed or configured on the host
    own mount points (`/dev`, `/proc`, `/sys`, `/etc/hosts`, `/etc/hostname`, `/etc/resolv.conf`, the service account
    directory) are left out of every layer. When the chain exceeds `maxLayers` the snapshot layers are squashed into
    one (whiteouts are preserved, so deletions of files of the base image stay deleted).
-4. **Quota.** If a snapshot would make the kept layers larger than `maxSnapshotSize` (uncompressed), the last good
+4. **Write quota.** If a snapshot would make the kept layers larger than `writeQuota` (uncompressed), the last good
    snapshot is kept and `status.state.warning` of the Device is set; the warning clears with the next good snapshot.
 5. **Recreate.** When the pod ends, the operator waits until the node-agent marks the exit snapshot done
    (`status.state.exitSnapshotPod`) or 30 seconds have passed, deletes the pod and creates the next one from the latest
@@ -640,7 +641,7 @@ kubectl -n laboratory-system get pvc laboratory-registry
 kubectl -n laboratory-system logs -l app=node-agent -c node-agent | grep device-state
 ```
 
-Size the volume for the base images plus (devices x `maxSnapshotSize`) in the worst case. If a device's warning says
+Size the volume for the base images plus (devices x `writeQuota`) in the worst case. If a device's warning says
 `state persistence unavailable`, the node's containerd does not use the overlayfs snapshotter or the paths above are
 not mounted. A device whose snapshot image cannot be pulled stays in `ImagePullBackOff` and its status warning says
 `snapshot image unavailable`; the operator never falls back to the base image on its own (that would lose state

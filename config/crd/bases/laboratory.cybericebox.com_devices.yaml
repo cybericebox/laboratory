@@ -258,13 +258,6 @@ spec:
                       squashed into one.
                     format: int32
                     type: integer
-                  maxSnapshotBytes:
-                    description: |-
-                      MaxSnapshotBytes is the quota of the state kept for this device (the
-                      uncompressed size of all snapshot layers). Over quota the last good
-                      snapshot is kept and a warning is reported.
-                    format: int64
-                    type: integer
                   rescue:
                     description: |-
                       Rescue starts the device from its snapshot with a shell instead of the
@@ -276,6 +269,13 @@ spec:
                       ResetToken: a new value discards the snapshots and starts the device from
                       its base image again. Set by the management agent (ResetDevice).
                     type: string
+                  writeQuotaBytes:
+                    description: |-
+                      WriteQuotaBytes is the quota of the state kept for this device (the
+                      uncompressed size of all snapshot layers). Over quota the last good
+                      snapshot is kept and a warning is reported.
+                    format: int64
+                    type: integer
                 type: object
               type:
                 description: DeviceType distinguishes network device kinds.

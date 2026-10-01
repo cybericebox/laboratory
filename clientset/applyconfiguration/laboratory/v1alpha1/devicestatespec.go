@@ -39,10 +39,10 @@ type DeviceStateSpecApplyConfiguration struct {
 	// ExcludePaths are absolute paths inside the container that are never
 	// snapshotted (temporary and runtime directories).
 	ExcludePaths []string `json:"excludePaths,omitempty"`
-	// MaxSnapshotBytes is the quota of the state kept for this device (the
+	// WriteQuotaBytes is the quota of the state kept for this device (the
 	// uncompressed size of all snapshot layers). Over quota the last good
 	// snapshot is kept and a warning is reported.
-	MaxSnapshotBytes *int64 `json:"maxSnapshotBytes,omitempty"`
+	WriteQuotaBytes *int64 `json:"writeQuotaBytes,omitempty"`
 	// MaxLayers is the number of snapshot layers after which the chain is
 	// squashed into one.
 	MaxLayers *int32 `json:"maxLayers,omitempty"`
@@ -87,11 +87,11 @@ func (b *DeviceStateSpecApplyConfiguration) WithExcludePaths(values ...string) *
 	return b
 }
 
-// WithMaxSnapshotBytes sets the MaxSnapshotBytes field in the declarative configuration to the given value
+// WithWriteQuotaBytes sets the WriteQuotaBytes field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the MaxSnapshotBytes field is set to the value of the last call.
-func (b *DeviceStateSpecApplyConfiguration) WithMaxSnapshotBytes(value int64) *DeviceStateSpecApplyConfiguration {
-	b.MaxSnapshotBytes = &value
+// If called multiple times, the WriteQuotaBytes field is set to the value of the last call.
+func (b *DeviceStateSpecApplyConfiguration) WithWriteQuotaBytes(value int64) *DeviceStateSpecApplyConfiguration {
+	b.WriteQuotaBytes = &value
 	return b
 }
 

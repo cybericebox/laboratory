@@ -42,7 +42,7 @@ func stateDevice() *laboratoryv1alpha1.Device {
 			Name: "web", LabRef: "lab",
 			State: &laboratoryv1alpha1.DeviceStateSpec{
 				Enabled: true, Debounce: metav1.Duration{Duration: 7 * time.Second},
-				ExcludePaths: []string{"/cache"}, MaxSnapshotBytes: 1000, MaxLayers: 4,
+				ExcludePaths: []string{"/cache"}, WriteQuotaBytes: 1000, MaxLayers: 4,
 			},
 		},
 		Status: laboratoryv1alpha1.DeviceStatus{State: &laboratoryv1alpha1.DeviceStateStatus{Epoch: 2, Incarnation: 3}},
@@ -76,7 +76,7 @@ func TestKubeClusterListsOnlyLocalStatePods(t *testing.T) {
 	if p.Pod != "lab-web-3" || p.ContainerID != "abc123" || !p.Running || p.Ended || p.Epoch != 2 || p.DeviceEpoch != 2 || p.Incarnation != 3 {
 		t.Fatalf("unexpected %+v", p)
 	}
-	if p.Repo != "lab/ns/lab/web" || p.Policy.Debounce != 7*time.Second || p.Policy.MaxBytes != 1000 || p.Policy.MaxLayers != 4 || !p.Policy.Excluded("/cache/x") {
+	if p.Repo != "lab/ns/lab/web" || p.Policy.Debounce != 7*time.Second || p.Policy.WriteQuota != 1000 || p.Policy.MaxLayers != 4 || !p.Policy.Excluded("/cache/x") {
 		t.Fatalf("policy not taken from the device: %+v", p)
 	}
 }

@@ -156,7 +156,7 @@ func Build(run v1.Image, newTar string, newBytes int64, pol Policy, workDir stri
 	if err != nil {
 		return nil, Chain{}, err
 	}
-	if err := CheckQuota(chain.Bytes(), newBytes, pol.MaxBytes); err != nil {
+	if err := CheckQuota(chain.Bytes(), newBytes, pol.WriteQuota); err != nil {
 		return nil, chain, err
 	}
 	layerType, err := snapshotLayerType(run)

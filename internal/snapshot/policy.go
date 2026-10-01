@@ -17,7 +17,7 @@ import (
 // the same numbers.
 const (
 	DefaultDebounce        = 5 * time.Second
-	DefaultMaxSnapshotSize = int64(512 << 20)
+	DefaultWriteQuota = int64(512 << 20)
 	DefaultMaxLayers       = 10
 )
 
@@ -41,19 +41,19 @@ var SystemExcludePaths = []string{
 type Policy struct {
 	Debounce     time.Duration
 	ExcludePaths []string
-	MaxBytes     int64
+	WriteQuota     int64
 	MaxLayers    int
 }
 
 // NewPolicy fills unset fields with the defaults and normalises the exclude
 // list (absolute, cleaned, no duplicates), adding the system paths.
 func NewPolicy(debounce time.Duration, exclude []string, maxBytes int64, maxLayers int) Policy {
-	p := Policy{Debounce: debounce, MaxBytes: maxBytes, MaxLayers: maxLayers}
+	p := Policy{Debounce: debounce, WriteQuota: maxBytes, MaxLayers: maxLayers}
 	if p.Debounce <= 0 {
 		p.Debounce = DefaultDebounce
 	}
-	if p.MaxBytes <= 0 {
-		p.MaxBytes = DefaultMaxSnapshotSize
+	if p.WriteQuota <= 0 {
+		p.WriteQuota = DefaultWriteQuota
 	}
 	if p.MaxLayers <= 0 {
 		p.MaxLayers = DefaultMaxLayers
@@ -90,7 +90,7 @@ func (p Policy) Excluded(name string) bool {
 }
 
 // ErrQuota is returned when a snapshot would exceed the device's size quota.
-var ErrQuota = errors.New("snapshot quota exceeded")
+var ErrQuota = errors.New("write quota exceeded")
 
 // CheckQuota reports ErrQuota (wrapped with the numbers) when the state already
 // kept plus the new layer exceeds max. A zero max means no limit.

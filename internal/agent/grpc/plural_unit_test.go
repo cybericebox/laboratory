@@ -349,7 +349,7 @@ func TestPersistenceInTheSpec(t *testing.T) {
 	if _, err := parseLabSpec(spec(`{"enabled":false}`), false); err != nil {
 		t.Fatal(err)
 	}
-	for _, bad := range []string{`{"enabled":true,"debounce":"0s"}`, `{"enabled":true,"excludePaths":["/tmp"]}`, `{"enabled":true,"maxSnapshotSize":"1Gi"}`} {
+	for _, bad := range []string{`{"enabled":true,"debounce":"0s"}`, `{"enabled":true,"excludePaths":["/tmp"]}`, `{"enabled":true,"writeQuota":"1Gi"}`} {
 		if _, err := parseLabSpec(spec(bad), true); err == nil {
 			t.Errorf("%s must be rejected", bad)
 		}

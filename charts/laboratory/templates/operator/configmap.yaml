@@ -38,7 +38,7 @@ data:
   STATE_REGISTRY_ADDR: {{ include "laboratory.registryAddr" $ | quote }}
   STATE_DEBOUNCE: {{ .debounce | quote }}
   STATE_EXCLUDE_PATHS: {{ join "," .excludePaths | quote }}
-  STATE_MAX_SNAPSHOT_SIZE: {{ .maxSnapshotSize | quote }}
+  STATE_WRITE_QUOTA: {{ .writeQuota | quote }}
   STATE_MAX_LAYERS: {{ .maxLayers | quote }}
   STATE_RETENTION: {{ .retention | quote }}
   {{- end }}

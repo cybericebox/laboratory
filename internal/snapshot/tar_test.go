@@ -66,7 +66,7 @@ func opener(b []byte) Opener {
 
 func TestPolicyDefaultsAndExclusion(t *testing.T) {
 	p := NewPolicy(0, nil, 0, 0)
-	if p.Debounce != DefaultDebounce || p.MaxBytes != DefaultMaxSnapshotSize || p.MaxLayers != DefaultMaxLayers {
+	if p.Debounce != DefaultDebounce || p.WriteQuota != DefaultWriteQuota || p.MaxLayers != DefaultMaxLayers {
 		t.Fatalf("defaults not applied: %+v", p)
 	}
 	for _, path := range []string{"/tmp", "/tmp/x/y", "tmp/a", "/var/tmp/f", "/run/lock", "/proc/1", "/etc/hosts", "/var/run/secrets/kubernetes.io/serviceaccount/token"} {

@@ -83,11 +83,11 @@ type DeviceStateSpec struct {
 	// snapshotted (temporary and runtime directories).
 	// +optional
 	ExcludePaths []string `json:"excludePaths,omitempty"`
-	// MaxSnapshotBytes is the quota of the state kept for this device (the
-	// uncompressed size of all snapshot layers). Over quota the last good
-	// snapshot is kept and a warning is reported.
+	// WriteQuotaBytes is the write quota of this device: the most of the user's
+	// writes kept (the uncompressed size of all snapshot layers). Over the quota
+	// the last good snapshot is kept and a warning is reported.
 	// +optional
-	MaxSnapshotBytes int64 `json:"maxSnapshotBytes,omitempty"`
+	WriteQuotaBytes int64 `json:"writeQuotaBytes,omitempty"`
 	// MaxLayers is the number of snapshot layers after which the chain is
 	// squashed into one.
 	// +optional

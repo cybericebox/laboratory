@@ -21,7 +21,7 @@ type StatePolicy struct {
 	Enabled          bool
 	Debounce         time.Duration
 	ExcludePaths     []string
-	MaxSnapshotBytes int64
+	WriteQuotaBytes int64
 	MaxLayers        int32
 }
 
@@ -81,7 +81,7 @@ func (r *LabReconciler) deviceStateSpec(lab *laboratoryv1alpha1.Lab, tmpl labora
 		Enabled:          true,
 		Debounce:         debounce,
 		ExcludePaths:     append([]string(nil), r.State.ExcludePaths...),
-		MaxSnapshotBytes: r.State.MaxSnapshotBytes,
+		WriteQuotaBytes: r.State.WriteQuotaBytes,
 		MaxLayers:        r.State.MaxLayers,
 	}
 }

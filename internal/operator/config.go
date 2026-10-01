@@ -145,8 +145,8 @@ type StateConfig struct {
 	Debounce time.Duration `env:"STATE_DEBOUNCE" envDefault:"5s"`
 	// ExcludePaths are never snapshotted (comma-separated absolute paths).
 	ExcludePaths []string `env:"STATE_EXCLUDE_PATHS" envSeparator:"," envDefault:"/tmp,/var/tmp,/run"`
-	// MaxSnapshotSize is the quota per device, a Kubernetes quantity ("512Mi").
-	MaxSnapshotSize string `env:"STATE_MAX_SNAPSHOT_SIZE" envDefault:"512Mi"`
+	// WriteQuota is the quota per device, a Kubernetes quantity ("512Mi").
+	WriteQuota string `env:"STATE_WRITE_QUOTA" envDefault:"512Mi"`
 	// MaxLayers is the snapshot layer count after which the chain is squashed.
 	MaxLayers int32 `env:"STATE_MAX_LAYERS" envDefault:"10"`
 	// Retention is how long the snapshots of a deleted lab are kept.
@@ -155,11 +155,11 @@ type StateConfig struct {
 	RetentionInterval time.Duration `env:"STATE_RETENTION_INTERVAL" envDefault:"10m"`
 }
 
-// MaxSnapshotBytes parses MaxSnapshotSize.
-func (c StateConfig) MaxSnapshotBytes() (int64, error) {
-	q, err := resource.ParseQuantity(c.MaxSnapshotSize)
+// WriteQuotaBytes parses WriteQuota.
+func (c StateConfig) WriteQuotaBytes() (int64, error) {
+	q, err := resource.ParseQuantity(c.WriteQuota)
 	if err != nil {
-		return 0, fmt.Errorf("STATE_MAX_SNAPSHOT_SIZE %q: %w", c.MaxSnapshotSize, err)
+		return 0, fmt.Errorf("STATE_WRITE_QUOTA %q: %w", c.WriteQuota, err)
 	}
 	return q.Value(), nil
 }
@@ -192,7 +192,7 @@ func LoadConfig() (*Config, error) {
 			return nil, fmt.Errorf("%s %q: %w", name, v, err)
 		}
 	}
-	if _, err := cfg.State.MaxSnapshotBytes(); err != nil {
+	if _, err := cfg.State.WriteQuotaBytes(); err != nil {
 		return nil, err
 	}
 	return cfg, nil
