@@ -243,9 +243,10 @@ func TestImageCacheAloneDeploysRegistryWithoutStatePersistence(t *testing.T) {
 				Enable          bool   `json:"enable"`
 				CredentialsFile string `json:"credentialsFile"`
 				Registries      []struct {
-					URLs     []string `json:"urls"`
-					OnDemand bool     `json:"onDemand"`
-					Content  []struct {
+					URLs           []string `json:"urls"`
+					OnDemand       bool     `json:"onDemand"`
+					PreserveDigest bool     `json:"preserveDigest"`
+					Content        []struct {
 						Prefix      string `json:"prefix"`
 						Destination string `json:"destination"`
 						StripPrefix bool   `json:"stripPrefix"`
@@ -253,6 +254,9 @@ func TestImageCacheAloneDeploysRegistryWithoutStatePersistence(t *testing.T) {
 				} `json:"registries"`
 			} `json:"sync"`
 		} `json:"extensions"`
+		HTTP struct {
+			Compat []string `json:"compat"`
+		} `json:"http"`
 		Storage struct {
 			Retention struct {
 				Policies []struct {
@@ -274,13 +278,17 @@ func TestImageCacheAloneDeploysRegistryWithoutStatePersistence(t *testing.T) {
 	want := map[string]string{"/docker.io": "https://registry-1.docker.io", "/ghcr.io": "https://ghcr.io", "/quay.io": "https://quay.io", "/registry.k8s.io": "https://registry.k8s.io"}
 	for _, r := range sync.Registries {
 		c := r.Content[0]
-		if !r.OnDemand || c.Prefix != "**" || c.StripPrefix || want[c.Destination] != r.URLs[0] {
+		if !r.PreserveDigest || !r.OnDemand || c.Prefix != "**" || c.StripPrefix || want[c.Destination] != r.URLs[0] {
 			t.Errorf("registry entry %+v", r)
 		}
 		delete(want, c.Destination)
 	}
 	if len(want) != 0 {
 		t.Errorf("missing upstreams %v", want)
+	}
+	// Digest-pinned pulls of Docker-format images need the digests kept as they are upstream.
+	if len(zc.HTTP.Compat) != 1 || zc.HTTP.Compat[0] != "docker2s2" {
+		t.Errorf("http.compat must allow docker2s2 manifests: %v", zc.HTTP.Compat)
 	}
 	pol := zc.Storage.Retention.Policies[0]
 	if pol.KeepTags[0].PulledWithin != "48h" || len(pol.Repositories) != 4 || pol.Repositories[0] != "docker.io/**" {

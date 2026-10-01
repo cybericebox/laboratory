@@ -4,7 +4,7 @@
 {{- $all := list "read" "create" "update" "delete" }}
 {{- $storage := dict "rootDirectory" "/var/lib/registry" "dedupe" true "gc" true "gcDelay" $r.gc.delay "gcInterval" $r.gc.interval }}
 {{- $access := dict "repositories" (dict "**" (dict "anonymousPolicy" (list "read") "policies" (list (dict "users" (list "writer") "actions" $all)))) "adminPolicy" (dict "users" (list "writer") "actions" $all) }}
-{{- $http := dict "address" "0.0.0.0" "port" "5000" "auth" (dict "htpasswd" (dict "path" "/etc/zot-auth/htpasswd")) "accessControl" $access }}
+{{- $http := dict "address" "0.0.0.0" "compat" (list "docker2s2") "port" "5000" "auth" (dict "htpasswd" (dict "path" "/etc/zot-auth/htpasswd")) "accessControl" $access }}
 {{- $cfg := dict "distSpecVersion" "1.1.0" "storage" $storage "http" $http "log" (dict "level" "info") }}
 {{- if $cache.enabled }}
 {{- /*
@@ -16,7 +16,7 @@ prefix off and fetches <repo> from the registry's URL on the first pull.
 {{- $entries := list }}
 {{- $globs := list }}
 {{- range $u := $upstreams }}
-{{- $entries = append $entries (dict "urls" (list $u.url) "onDemand" true "tlsVerify" true "maxRetries" 3 "retryDelay" "1m" "content" (list (dict "prefix" "**" "destination" (printf "/%s" $u.name) "stripPrefix" false))) }}
+{{- $entries = append $entries (dict "urls" (list $u.url) "onDemand" true "preserveDigest" true "tlsVerify" true "maxRetries" 3 "retryDelay" "1m" "content" (list (dict "prefix" "**" "destination" (printf "/%s" $u.name) "stripPrefix" false))) }}
 {{- $globs = append $globs (printf "%s/**" $u.name) }}
 {{- end }}
 {{- $_ := set $cfg "extensions" (dict "sync" (dict "enable" true "credentialsFile" "/etc/zot-sync/credentials.json" "registries" $entries)) }}

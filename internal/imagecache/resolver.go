@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 )
 
@@ -60,8 +61,14 @@ type RegistryResolver struct {
 	Timeout time.Duration
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
-	// head is the registry call; nil means the real one. A field so tests need no registry.
-	head func(ctx context.Context, ref name.Reference, kc authn.Keychain) (string, error)
+	// Platforms lists the platforms of the nodes the images run on. With exactly
+	// one, a multi-platform image is pinned to the manifest of that platform, so the
+	// cache fetches that one image and not every architecture of the index. With
+	// several (or none known) the index digest is pinned.
+	Platforms func(ctx context.Context) []v1.Platform
+	// get resolves a reference to a digest for a platform (nil: any); nil means the
+	// real registry call. A field so tests need no registry.
+	get func(ctx context.Context, ref name.Reference, kc authn.Keychain, platform *v1.Platform) (string, error)
 
 	mu    sync.Mutex
 	known map[string]pinned
@@ -88,7 +95,16 @@ func (r *RegistryResolver) Resolve(ctx context.Context, ref string) (string, err
 	if err != nil {
 		return "", err
 	}
+	var platform *v1.Platform
+	if r.Platforms != nil {
+		if ps := r.Platforms(ctx); len(ps) == 1 {
+			platform = &ps[0]
+		}
+	}
 	key := parsed.Name()
+	if platform != nil {
+		key += "|" + platform.OS + "/" + platform.Architecture
+	}
 	r.mu.Lock()
 	if p, ok := r.known[key]; ok && r.now().Sub(p.at) < r.TTL {
 		r.mu.Unlock()
@@ -102,21 +118,11 @@ func (r *RegistryResolver) Resolve(ctx context.Context, ref string) (string, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	head := r.head
-	if head == nil {
-		head = func(ctx context.Context, ref name.Reference, kc authn.Keychain) (string, error) {
-			opts := []remote.Option{remote.WithContext(ctx)}
-			if kc != nil {
-				opts = append(opts, remote.WithAuthFromKeychain(kc))
-			}
-			desc, err := remote.Head(ref, opts...)
-			if err != nil {
-				return "", err
-			}
-			return desc.Digest.String(), nil
-		}
+	get := r.get
+	if get == nil {
+		get = registryDigest
 	}
-	digest, err := head(ctx, parsed, r.Keychain)
+	digest, err := get(ctx, parsed, r.Keychain, platform)
 	if err != nil {
 		return "", err
 	}
@@ -185,4 +191,42 @@ func (k *DockerConfigKeychain) Resolve(res authn.Resource) (authn.Authenticator,
 		}
 	}
 	return authn.Anonymous, nil
+}
+
+// registryDigest asks the registry for the digest of a reference. For an image
+// index and a platform it is the digest of that platform's manifest; otherwise
+// the digest of the reference itself.
+func registryDigest(ctx context.Context, ref name.Reference, kc authn.Keychain, platform *v1.Platform) (string, error) {
+	opts := []remote.Option{remote.WithContext(ctx)}
+	if kc != nil {
+		opts = append(opts, remote.WithAuthFromKeychain(kc))
+	}
+	if platform == nil {
+		desc, err := remote.Head(ref, opts...)
+		if err != nil {
+			return "", err
+		}
+		return desc.Digest.String(), nil
+	}
+	desc, err := remote.Get(ref, opts...)
+	if err != nil {
+		return "", err
+	}
+	if !desc.MediaType.IsIndex() {
+		return desc.Digest.String(), nil
+	}
+	idx, err := desc.ImageIndex()
+	if err != nil {
+		return "", err
+	}
+	m, err := idx.IndexManifest()
+	if err != nil {
+		return "", err
+	}
+	for _, d := range m.Manifests {
+		if d.Platform != nil && d.Platform.OS == platform.OS && d.Platform.Architecture == platform.Architecture && d.MediaType.IsImage() {
+			return d.Digest.String(), nil
+		}
+	}
+	return desc.Digest.String(), nil // no manifest for the platform: the index
 }

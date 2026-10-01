@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
 
 const dg1 = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -17,7 +18,7 @@ func TestResolverPinsForTTLThenFollowsTheTag(t *testing.T) {
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	answer, calls := dg1, 0
 	r := &RegistryResolver{TTL: 10 * time.Minute, Now: func() time.Time { return now },
-		head: func(_ context.Context, ref name.Reference, _ authn.Keychain) (string, error) {
+		get: func(_ context.Context, ref name.Reference, _ authn.Keychain, _ *v1.Platform) (string, error) {
 			calls++
 			if ref.Name() != "index.docker.io/library/nginx:1.25" {
 				t.Errorf("resolved %s", ref.Name())
@@ -42,7 +43,7 @@ func TestResolverPinsForTTLThenFollowsTheTag(t *testing.T) {
 func TestResolverDigestRefsNeedNoRequestAndErrorsAreNotCached(t *testing.T) {
 	fail := true
 	calls := 0
-	r := &RegistryResolver{TTL: time.Hour, head: func(context.Context, name.Reference, authn.Keychain) (string, error) {
+	r := &RegistryResolver{TTL: time.Hour, get: func(context.Context, name.Reference, authn.Keychain, *v1.Platform) (string, error) {
 		calls++
 		if fail {
 			return "", errors.New("upstream down")
@@ -84,5 +85,32 @@ func TestDockerConfigKeychain(t *testing.T) {
 	}
 	if _, err := NewDockerConfigKeychain([]byte("{")); err == nil {
 		t.Fatal("malformed config must fail")
+	}
+}
+
+func TestResolverPinsToThePlatformOfASingleNodeArchitecture(t *testing.T) {
+	var asked []*v1.Platform
+	var platforms []v1.Platform
+	r := &RegistryResolver{TTL: time.Hour,
+		Platforms: func(context.Context) []v1.Platform { return platforms },
+		get: func(_ context.Context, _ name.Reference, _ authn.Keychain, p *v1.Platform) (string, error) {
+			asked = append(asked, p)
+			if p != nil {
+				return dg2, nil // the platform manifest
+			}
+			return dg1, nil // the index
+		}}
+	ctx := context.Background()
+	platforms = []v1.Platform{{OS: "linux", Architecture: "arm64"}}
+	if d, _ := r.Resolve(ctx, "quay.io/a/b:1"); d != dg2 || asked[0] == nil || asked[0].Architecture != "arm64" {
+		t.Fatalf("one architecture: the platform manifest, got %s %v", d, asked)
+	}
+	platforms = []v1.Platform{{OS: "linux", Architecture: "arm64"}, {OS: "linux", Architecture: "amd64"}}
+	if d, _ := r.Resolve(ctx, "quay.io/a/b:1"); d != dg1 || asked[len(asked)-1] != nil {
+		t.Fatalf("a mixed cluster pins the index, got %s", d)
+	}
+	platforms = nil
+	if d, _ := r.Resolve(ctx, "quay.io/a/c:1"); d != dg1 {
+		t.Fatalf("unknown platforms pin the index, got %s", d)
 	}
 }

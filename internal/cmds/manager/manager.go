@@ -238,6 +238,9 @@ func Run() {
 		resolver = &imagecache.RegistryResolver{
 			Keychain: &laboratorycontroller.PullKeychain{Reader: mgr.GetAPIReader(), Namespace: names.SystemNamespace, Names: cfg.ImagePullSecrets},
 			TTL:      cfg.Cache.PinTTL,
+			// One node architecture: pin the platform manifest, so the cache fetches
+			// that image and not every architecture of an index.
+			Platforms: laboratorycontroller.NodePlatforms(mgr.GetAPIReader(), labNodeSelector),
 		}
 	}
 
