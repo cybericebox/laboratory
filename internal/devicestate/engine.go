@@ -323,6 +323,8 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 		return nil
 	}
 	e, pol := t.e, t.pod.Policy
+	started := e.now()
+	var diffTook, pushTook time.Duration
 
 	defer func() {
 		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, ErrStale) {
@@ -331,6 +333,7 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 	}()
 
 	rc, err := e.Runtime.Diff(ctx, t.c, freeze)
+	diffTook = e.now().Sub(started)
 	if err != nil {
 		return fmt.Errorf("diff writable layer: %w", err)
 	}
@@ -381,14 +384,19 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 	if err != nil {
 		return err
 	}
+	pushStart := e.now()
 	ref, _, err := e.Pusher.Push(ctx, t.pod.Repo, img, chain.Base, imagecache.Rewriter{Prefix: e.RegistryHost}.RepoOf(t.c.ImageRef))
 	if err != nil {
 		return fmt.Errorf("push snapshot: %w", err)
 	}
+	pushTook = e.now().Sub(pushStart)
 	if err := e.Cluster.Record(ctx, t.pod, Snapshot{Image: ref, At: e.now(), SizeBytes: chain.Bytes(), Layers: int32(chain.Layers())}); err != nil {
 		return err
 	}
 	t.lastDiff, t.pushed, t.lastWarn = digest, true, ""
+	e.Log.Info("snapshot taken", "device", t.pod.Device, "pod", t.pod.Pod, "frozen", freeze,
+		"diff", diffTook.String(), "push", pushTook.String(), "total", e.now().Sub(started).String(),
+		"layers", chain.Layers(), "bytes", chain.Bytes(), "image", ref)
 	return nil
 }
 

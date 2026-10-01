@@ -135,9 +135,13 @@ func (r *ContainerdRuntime) Diff(ctx context.Context, c Container, freeze bool) 
 		var cancel context.CancelFunc
 		cctx, cancel = context.WithTimeout(ctx, freezeLimit)
 		defer cancel()
+		frozenAt := time.Now()
 		thaw, ferr := r.freeze(cctx, c)
 		if ferr == nil {
-			defer thaw()
+			defer func() {
+				thaw()
+				r.log.Info("container frozen for the snapshot", "container", c.ID, "frozen", time.Since(frozenAt).String())
+			}()
 		}
 	}
 	desc, err := r.client.DiffService().Compare(cctx, lower, upper, diff.WithMediaType(ocispec.MediaTypeImageLayer))
