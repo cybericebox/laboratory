@@ -26,3 +26,12 @@ func TestRootCAsKeepsPrivatePoolForAFile(t *testing.T) {
 		t.Fatal("a CA file without certificates must be an error")
 	}
 }
+
+func TestTransportWithoutAKeypairIsServerOnlyTLS(t *testing.T) {
+	if _, err := transportCredentials(TLS{Enabled: true}); err != nil {
+		t.Fatalf("server-authenticated TLS needs no keypair (Enroll): %v", err)
+	}
+	if _, err := transportCredentials(TLS{Enabled: true, CertFile: "/missing.crt", KeyFile: "/missing.key"}); err == nil {
+		t.Fatal("a named keypair that cannot be read is an error")
+	}
+}

@@ -40,9 +40,9 @@ type (
 	}
 
 	// TLS configures the transport. When Enabled, the connection is mutual
-	// TLS: the client presents CertFile/KeyFile (whose CN must be in the
-	// agent's allowlist) and verifies the server against CAFile, or against the
-	// system roots when CAFile is empty (a publicly trusted certificate).
+	// TLS: the client presents CertFile/KeyFile (whose CN must be a Tenant) and verifies the
+	// server against CAFile, or against the system roots when CAFile is empty (a publicly trusted
+	// certificate). With no CertFile and KeyFile it is server-authenticated TLS only, for Enroll.
 	TLS struct {
 		Enabled  bool
 		CertFile string // client certificate (PEM) presented for mTLS
@@ -70,23 +70,24 @@ func transportCredentials(conf TLS) (credentials.TransportCredentials, error) {
 		return insecure.NewCredentials(), nil
 	}
 
-	// The client certificate is renewed in place by cert-manager: re-read it
+	pool, err := rootCAs(conf.CAFile)
+	if err != nil {
+		return nil, err
+	}
+	tc := &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+
+	// Without a keypair the connection authenticates the server only: that is what Enroll needs
+	// (the client has no certificate yet).
+	if conf.CertFile == "" && conf.KeyFile == "" {
+		return credentials.NewTLS(tc), nil
+	}
+	// The client certificate is renewed in place (RenewCertificate, cert-manager): re-read it
 	// from the files when they change instead of pinning the first one.
 	files, err := tlsreload.New(conf.CertFile, conf.KeyFile, "")
 	if err != nil {
 		return nil, fmt.Errorf("load client keypair: %w", err)
 	}
-
-	pool, err := rootCAs(conf.CAFile)
-	if err != nil {
-		return nil, err
-	}
-
-	tc := &tls.Config{
-		GetClientCertificate: files.GetClientCertificate,
-		RootCAs:              pool,
-		MinVersion:           tls.VersionTLS12,
-	}
+	tc.GetClientCertificate = files.GetClientCertificate
 	return credentials.NewTLS(tc), nil
 }
 
