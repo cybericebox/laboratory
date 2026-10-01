@@ -446,7 +446,10 @@ func (r *DeviceReconciler) createDevicePod(ctx context.Context, device *laborato
 	if spec.Rescue {
 		// Start the snapshot with a shell instead of the entrypoint, so a
 		// configuration that makes the service crash can be repaired in place.
-		c.Command = []string{"/bin/sh", "-c", "trap 'exit 0' TERM INT; while :; do sleep 1; done"}
+		// The shell leaves on every signal an image may name as its stop signal
+		// (nginx stops on QUIT, not TERM) and polls with short sleeps: the busybox
+		// shell runs a trap only between commands.
+		c.Command = []string{"/bin/sh", "-c", "trap 'exit 0' TERM INT QUIT HUP USR1 USR2; while :; do sleep 1; done"}
 		c.Args = nil
 	}
 	pod := &corev1.Pod{

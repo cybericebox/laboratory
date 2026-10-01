@@ -424,7 +424,7 @@ var _ = Describe("Device state persistence: bare Pod lifecycle", func() {
 
 		p2 := mustPod(2)
 		Expect(p2.Spec.Containers[0].Image).To(Equal(snap))
-		Expect(p2.Spec.Containers[0].Command).To(Equal([]string{"/bin/sh", "-c", "trap 'exit 0' TERM INT; while :; do sleep 1; done"}))
+		Expect(p2.Spec.Containers[0].Command).To(Equal([]string{"/bin/sh", "-c", "trap 'exit 0' TERM INT QUIT HUP USR1 USR2; while :; do sleep 1; done"}))
 		Expect(p2.Annotations[names.AnnotationStateRescue]).To(Equal("true"))
 		setRunning(p2)
 		reconcileOnce()
