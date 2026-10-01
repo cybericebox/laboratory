@@ -391,6 +391,8 @@ enforces who may call them):
   service crash. It needs a shell in the image. `enable=false` returns to the normal start. Snapshots keep being taken
   while the device is in rescue mode.
 
+Rescue mode runs `/bin/sh` in a loop that leaves on any stop signal (an image may name its own, nginx uses `SIGQUIT`).
+
 Both set fields on `Device.spec.state` (`resetToken`, `rescue`) that the operator acts on.
 
 ### Retention of deleted labs
@@ -401,6 +403,12 @@ repository whose Lab no longer exists it records the time it first noticed this 
 the lab's repositories. zot's garbage collection (`registry.gc.interval` and `registry.gc.delay`, both 1h by default)
 then frees the blobs, so the space comes back within about `retention` plus two hours. A lab recreated under the same
 name before the deadline cancels the deletion.
+
+### Turning it off
+
+`devices.statePersistence.enabled: false` only stops new labs from using persistence. Labs that already run with it
+keep depending on the registry and on the node-agent's snapshot engine, which the switch also removes from the
+node-agent. Leave the switch on until the last such lab is deleted (or accept that they stop being snapshotted).
 
 ### Operating it
 
@@ -474,6 +482,12 @@ compressed on amd64 and arm64; the cache needs its sync extension), both can be 
   pinned the same way when the group's pods are created. An image whose digest cannot be resolved is pulled by its
   tag and named in `Lab.status.imageWarning` (and a Warning event on the Lab). The operator needs HTTPS egress to the
   upstream registries for this (the chart's operator network policy allows it when the cache is on).
+- **Platforms.** zot syncs a whole multi-platform image index, Windows variants included (the `pause` image alone is
+  about 550 MB across all platforms). So when every lab node has one architecture the operator pins the digest of that
+  platform's manifest instead of the index, and the cache fetches that one image. With several architectures it pins
+  the index. An image pulled by tag (unpinned fallback) always fetches the whole index. zot runs with
+  `http.compat: [docker2s2]` and `preserveDigest` so that the digests of Docker-format images stay what the upstream
+  registry says; without them a pull by digest of such an image fails.
 - **Retention.** The cache is not an archive. zot's retention policy deletes a cached image that nobody pulled for
   `registry.cache.unusedTTL` (default 48h, counted from the last pull, so an image in use is never deleted), and its
   garbage collection frees the blobs; the image is simply fetched again on the next pull. Snapshot repositories
