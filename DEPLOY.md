@@ -36,7 +36,7 @@ For a real cluster, skip this step and point `KUBECONFIG` at the existing config
 
 ## 2. Configure
 
-Create your `values.yaml` override file. Required: `operator.publicVPNEndpoint`, `operator.baseDomain`, and the lab access public key (below):
+Create your `values.yaml` override file. Required: `operator.publicVPNEndpoint`, `operator.baseDomain` and, with the agent, `agent.domain`. Tenants (the platform backends that use the agent) are declared under `tenants:` (see [Tenancy](#tenancy)):
 
 ```yaml
 # my-values.yaml
@@ -44,7 +44,16 @@ operator:
   publicVPNEndpoint: "vpn.example.com:51820"   # REQUIRED
   baseDomain: "lab.example.com"                 # REQUIRED
   supportEmail: "support@example.com"           # shown on the VPN probe page; defaults to support@cybericebox.com
+agent:
+  enabled: true
+  domain: "ctl.example.com"                     # REQUIRED with the agent
+tenants:
+  platform: { }                                 # one Tenant per backend; the name is its client certificate CN
 ```
+
+Domains are configuration only, with no defaults in code: `operator.baseDomain` (web devices are
+`<device>-<code>.<baseDomain>`, the proxy serves `*.<baseDomain>`), `operator.publicVPNEndpoint` (the WireGuard
+demultiplexer) and `agent.domain` (the management agent). See `docs/specs/domains.md`.
 
 For Kind, use the node IP:
 
@@ -92,10 +101,13 @@ helm install laboratory ./charts/laboratory \
 
 What gets installed:
 
-- CRDs (Pools, LabGroups, LabGroupClients, Labs, Devices, Connections)
-- `laboratory-system` namespace
+- CRDs (Pools, Tenants, LabGroups, LabGroupClients, LabGroupAccessPolicies, Labs, Devices, Connections, and the internal
+  LabVPNs, LabGateways, LabTrafficReports)
+- `laboratory-system` namespace and the `laboratory-tenants` namespace (enrollment tokens and access keys of tenants)
+- One `Tenant` per entry of `tenants:`, and `default`
 - Operator (Deployment + RBAC)
 - Node-agent (DaemonSet + RBAC) on every node
+- Management agent (`agent.enabled`), the L7 proxy and WireGuard demultiplexer, and, when enabled, the platform registry
 - `laboratory-config` ConfigMap with your settings
 
 Verify:
@@ -346,11 +358,17 @@ kubectl delete namespace laboratory-system
 # CRDs are NOT removed by helm uninstall — remove manually if needed:
 kubectl delete crd \
   pools.allocation.cybericebox.com \
+  tenants.laboratory.cybericebox.com \
   labgroups.laboratory.cybericebox.com \
   labgroupclients.laboratory.cybericebox.com \
+  labgroupaccesspolicies.laboratory.cybericebox.com \
   labs.laboratory.cybericebox.com \
   devices.laboratory.cybericebox.com \
-  connections.laboratory.cybericebox.com
+  connections.laboratory.cybericebox.com \
+  labvpns.laboratory.cybericebox.com \
+  labgateways.laboratory.cybericebox.com \
+  labtrafficreports.laboratory.cybericebox.com
+kubectl delete namespace laboratory-tenants
 ```
 
 ---
@@ -433,7 +451,9 @@ chart (the agent reads it as `AGENT_STATE_PERSISTENCE_ENABLED`); `debounce` must
 quota are cluster settings of the chart (`devices.statePersistence.maxFileSize`, default `256Mi`: bigger files are skipped; `devices.statePersistence.excludePaths`, default `/tmp`, `/var/tmp`, `/run`; and `writeQuota`, default `512Mi`: the most of a
 participant's writes kept per device). They are configurable only in the chart and cannot be requested per device.
 
-**Tenancy.** The agent serves several clients (tenants) from one cluster and keeps them apart. A tenant is a cluster-scoped
+### Tenancy
+
+The agent serves several clients (tenants) from one cluster and keeps them apart. A tenant is a cluster-scoped
 `Tenant` resource; the chart always creates `default` and the tenants listed in its `tenants:` values.
 
 ```yaml
