@@ -529,9 +529,9 @@ cert-manager:
 # ============================================================
 # A tenant is a client of the agent with its own objects, device persistence policy and
 # resource quota. The chart always creates the tenant "default" (the caller without a client
-# certificate, local development) and one Tenant per key below. With agent.mtls.enabled it also
-# issues a client certificate per tenant, CN = the tenant name, from the agent's client CA into the
-# Secret laboratory-agent-client-<name>-tls of the agent namespace; hand that Secret to the client.
+# certificate, local development) and one Tenant per key below. The operator gives every tenant a
+# one-time enrollment token (Secret tenant-<name>-enrollment in laboratory-tenants); the tenant enrolls
+# with it and gets a client certificate with CN = the tenant name (see DEPLOY.md, "Enrollment & access keys").
 # The agent refuses a certificate whose CN is not a tenant. A name is a DNS-1123 label.
 #
 #   tenants:

@@ -126,14 +126,11 @@ Laboratory targets bare Linux VMs running Kubernetes (developed against [k0s](ht
 The chart is in [`charts/laboratory`](charts/laboratory). It must be installed into the `laboratory-system`
 namespace; `templates/validate.yaml` rejects anything else and fails early when a required value is missing.
 
-1. Generate the lab access key pair. The backend signs lab access links with the private key; the proxy verifies them
-   with the public key.
+1. Create the namespace. Lab access links are signed by the tenant's own access key, registered by enrolling
+   ([Enrollment & access keys](DEPLOY.md#enrollment--access-keys)); there is no shared key to create.
 
    ```bash
-   make lab-access-keys   # /tmp/lab-access-private.pem, /tmp/lab-access-public.pem
    kubectl create namespace laboratory-system
-   kubectl -n laboratory-system create secret generic lab-access-public-key \
-     --from-file=public.pem=/tmp/lab-access-public.pem
    ```
 
 2. Create the proxy session secret (32+ bytes) in the proxy namespace:

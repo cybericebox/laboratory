@@ -60,15 +60,8 @@ EOF
 
 The chart never receives secret values: create these Secrets before installing.
 
-The proxy verifies the platform's lab access tokens (Ed25519) with a public key. Generate the pair once,
-give the private key to the backend (`LAB_ACCESS_PRIVATE_KEY`) and put the public one in a Secret:
-
-```bash
-make lab-access-keys   # /tmp/lab-access-private.pem and /tmp/lab-access-public.pem
-kubectl create namespace laboratory-system
-kubectl -n laboratory-system create secret generic lab-access-public-key \
-  --from-file=public.pem=/tmp/lab-access-public.pem
-```
+The proxy verifies lab access links with the public access keys of the tenants, which a tenant registers by
+enrolling (see [Enrollment & access keys](#enrollment--access-keys)); there is no key to create here.
 
 The proxy's own session-cookie key (`SESSION_SECRET`, 32+ bytes, not the access key):
 
@@ -453,17 +446,9 @@ Quote a quota value ("32", "50%"): it is a string. `default` may be listed to ch
 persistence and has no quota.
 
 - **Identity and certificate.** The tenant of a call is the CN of the verified client certificate, and the CN is the Tenant's name.
-  With `agent.mtls.enabled` the chart issues the certificate for every tenant (cert-manager, from the agent's private client CA,
-  `laboratory-agent-ca`) into the Secret `laboratory-agent-client-<name>-tls` of the agent namespace. Hand that Secret to the client:
-
-  ```bash
-  kubectl -n laboratory-agent get secret laboratory-agent-client-platform-tls -o jsonpath='{.data.tls\.crt}' | base64 -d > client.crt
-  kubectl -n laboratory-agent get secret laboratory-agent-client-platform-tls -o jsonpath='{.data.tls\.key}' | base64 -d > client.key
-  kubectl -n laboratory-agent get secret laboratory-agent-client-platform-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > ca.crt
-  ```
-
-  A certificate whose CN is not a Tenant is `PERMISSION_DENIED` on every call (the Tenant resources are the only allowlist). A call
-  without a client certificate (TLS or mTLS off, local development) is the tenant `default`.
+  The tenant obtains its certificate by enrolling with a one-time token (see [Enrollment & access keys](#enrollment--access-keys)): its
+  private key stays with it. A certificate whose CN is not a Tenant is `PERMISSION_DENIED` on every call (the Tenant resources are the
+  only allowlist). A call without a client certificate (TLS or mTLS off, local development) is the tenant `default`.
 - **Stamp.** Every object the agent creates (LabGroups, Labs, VPN clients, access policies) gets the reserved label
   `laboratory.cybericebox.com/tenant`. The operator copies it to the Devices and pods of a Lab and the pods of a
   LabGroup. Like every reserved label it is hidden: never in answers, never accepted from a client, never allowed in a selector.
@@ -485,6 +470,51 @@ persistence and has no quota.
   cluster-wide numbers are exposed. The same reserved and used totals are in `Tenant.status` (refreshed by the agent):
   `kubectl get tenant platform -o yaml`.
 - **Monitoring** is cut to the tenant before the user selector.
+
+### Enrollment & access keys
+
+A tenant's private keys never leave it. The platform (the tenant's backend) generates its own client key and access key
+pair, and sends the cluster only public material: a certificate request and the access public key.
+
+1. **The token.** When a `Tenant` exists, the operator generates a random one-time enrollment token. Only its SHA-256 and
+   expiry (`agent.enrollment.tokenTTL`, 24h) go to `Tenant.status.enrollment`; the token itself is shown once, in the Secret
+   `tenant-<name>-enrollment` of the namespace `laboratory-tenants`. The admin reads it and hands it to the tenant:
+
+   ```bash
+   kubectl -n laboratory-tenants get secret tenant-platform-enrollment -o jsonpath='{.data.token}' | base64 -d
+   ```
+
+   When the token is used, the Secret is removed. An expired token disappears the same way. For a new token annotate the Tenant
+   (the operator makes it, replaces the Secret and removes the annotation):
+
+   ```bash
+   kubectl annotate tenant platform laboratory.cybericebox.com/regenerate-enrollment-token=true
+   ```
+
+2. **Enroll** (agent RPC over plain TLS, server authentication only: the client has no certificate yet). The request is
+   `{token, csr_pem, access_public_key_pem, access_key_id}`. The agent verifies the token (hash, expiry, unused) and the request
+   (a valid signature; EC P-256 or stronger, or RSA 2048 or more; the requested subject is ignored), signs a client
+   certificate with CN = the tenant name from the client CA (`agent.enrollment.certificateTTL`, 30 days, never past the CA), stores the
+   access public key and burns the token. The answer is `{certificate_pem, chain_pem, tenant, not_after_unix}`. A used, expired
+   or unknown token is `PERMISSION_DENIED` with one and the same message. Access keys are Ed25519 (PKIX PEM); an id is 1 to 64 characters
+   of `A-Z a-z 0-9 . _ -`.
+3. **Renewal and rotation** (mTLS, as the tenant). `RenewCertificate{csr_pem}` issues a new certificate with the same CN for a
+   new key. `RotateAccessKey{public_key_pem, key_id}` adds a key (a tenant keeps at most 10); `RemoveAccessKey{key_id}` removes one,
+   never the last. A rotation overlaps: add the new key, switch the backend to it, remove the old one.
+4. **Where the keys are.** The agent keeps them in the Secret `tenant-<name>-access-keys` of `laboratory-tenants` (one entry per key id,
+   the PEM public key); the proxy reads them from there (it watches that namespace and nothing else).
+5. **Handoff links.** The proxy accepts a lab access link only if it is a JWT signed with EdDSA by an access key of the tenant it
+   names: `iss` = the tenant, the header `kid` = the key id, `aud` = `laboratory-proxy`, `sub` = the LabGroupClient, `iat`, `nbf` and `exp`
+   (at most 5 minutes apart), plus `group_id`, `host` (the `<device>-<code>` label) and `sess` (the end of the session, unix time). An unknown
+   issuer or key id, another audience, an expired or not yet valid link is refused. The group must belong to the issuer (the tenant
+   label of the LabGroup): a tenant cannot open another's labs, even with a perfect signature, and a session stops when its group
+   changes owner. There is no shared lab access key any more.
+6. **Without enrollment.** Setting `agent.tenantCertificates.enabled` makes cert-manager issue a client certificate (and key) per tenant into
+   the Secret `laboratory-agent-client-<name>-tls`. This is a manual fallback, off by default; the access key must then be
+   registered some other way (the agent only writes it through `Enroll` and `RotateAccessKey`).
+
+The agent accepts a connection without a client certificate and requires one for every call except `Enroll`. The CA key
+(`laboratory-agent-ca`) is mounted into the agent for signing.
 
 **Limits.** Ids and deploy keys at most 64 characters, `deploy_after` at most 32 keys, at most 5000 items per call, message size 64 MiB (`MaxRecvMsgSize`/`MaxSendMsgSize`; the Go client sets the
 same call options), bounded internal concurrency (16 calls to the Kubernetes API per request).
