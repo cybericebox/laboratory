@@ -84,6 +84,27 @@ spec:
             description: TenantStatus is the observed load of the tenant, refreshed
               by the management agent.
             properties:
+              enrollment:
+                description: Enrollment is the one-time token a client enrolls with
+                  (see the agent's Enroll).
+                properties:
+                  expiresAt:
+                    description: ExpiresAt is when an unused token stops working.
+                    format: date-time
+                    type: string
+                  issuedAt:
+                    description: IssuedAt is when the token was generated.
+                    format: date-time
+                    type: string
+                  tokenHash:
+                    description: TokenHash is the hex SHA-256 of the token.
+                    type: string
+                  usedAt:
+                    description: UsedAt is when the token was used to enroll; a used
+                      token never works again.
+                    format: date-time
+                    type: string
+                type: object
               observedAt:
                 description: ObservedAt is when Reserved and Used were taken.
                 format: date-time

@@ -33,6 +33,8 @@ type TenantStatusApplyConfiguration struct {
 	Used *TenantUsageApplyConfiguration `json:"used,omitempty"`
 	// ObservedAt is when Reserved and Used were taken.
 	ObservedAt *v1.Time `json:"observedAt,omitempty"`
+	// Enrollment is the one-time token a client enrolls with (see the agent's Enroll).
+	Enrollment *TenantEnrollmentApplyConfiguration `json:"enrollment,omitempty"`
 }
 
 // TenantStatusApplyConfiguration constructs a declarative configuration of the TenantStatus type for use with
@@ -62,5 +64,13 @@ func (b *TenantStatusApplyConfiguration) WithUsed(value *TenantUsageApplyConfigu
 // If called multiple times, the ObservedAt field is set to the value of the last call.
 func (b *TenantStatusApplyConfiguration) WithObservedAt(value v1.Time) *TenantStatusApplyConfiguration {
 	b.ObservedAt = &value
+	return b
+}
+
+// WithEnrollment sets the Enrollment field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Enrollment field is set to the value of the last call.
+func (b *TenantStatusApplyConfiguration) WithEnrollment(value *TenantEnrollmentApplyConfiguration) *TenantStatusApplyConfiguration {
+	b.Enrollment = value
 	return b
 }

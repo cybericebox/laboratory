@@ -1,0 +1,73 @@
+{{- /*
+The tenants namespace: per-tenant Secrets. tenant-<name>-enrollment shows the admin the one-time
+enrollment token (made by the operator); tenant-<name>-access-keys holds the access public keys of the
+tenant (written by the agent, read by the proxy to verify handoff links).
+*/ -}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: laboratory-tenants
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+{{- if .Values.agent.enabled }}
+---
+# The agent stores the access keys here and nowhere else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: laboratory-agent-tenants
+  namespace: laboratory-tenants
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [ "" ]
+    resources: [ "secrets" ]
+    verbs: [ "get", "list", "create", "update", "patch" ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: laboratory-agent-tenants
+  namespace: laboratory-tenants
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: laboratory-agent-tenants
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-agent
+    namespace: {{ .Values.agent.namespace }}
+{{- end }}
+{{- if .Values.proxy.enabled }}
+---
+# The proxy reads the keys of this namespace only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: laboratory-proxy-tenants
+  namespace: laboratory-tenants
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [ "" ]
+    resources: [ "secrets" ]
+    verbs: [ "get", "list", "watch" ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: laboratory-proxy-tenants
+  namespace: laboratory-tenants
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: laboratory-proxy-tenants
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-proxy
+    namespace: laboratory-proxy
+{{- end }}

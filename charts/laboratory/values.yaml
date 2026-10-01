@@ -464,6 +464,20 @@ agent:
   mtls:
     enabled: true
 
+  # Enrollment: a tenant gets its client certificate and registers its access key with a one-time
+  # token (see DEPLOY.md, "Enrollment & access keys"); no private key ever leaves the tenant.
+  enrollment:
+    # How long an unused enrollment token works.
+    tokenTTL: 24h
+    # How long a client certificate issued by Enroll / RenewCertificate is valid (at most the CA's).
+    certificateTTL: 720h
+
+  # Manual fallback, off by default: cert-manager issues a client certificate (and its private key,
+  # into a Secret of the cluster) for every tenant: Secret laboratory-agent-client-<name>-tls. Use
+  # enrollment instead whenever the tenant can reach the agent.
+  tenantCertificates:
+    enabled: false
+
   # The Monitoring stream: one poller and one in-memory journal serve every platform
   # backend that subscribes. See DEPLOY.md, "Monitoring stream".
   monitoring:
@@ -487,19 +501,6 @@ agent:
 
   networkPolicy:
     enabled: true
-
-# ============================================================
-# Platform credentials
-# ============================================================
-platform:
-  # The Ed25519 public key (PKIX PEM) that proxy-l7 uses to verify the lab
-  # access tokens signed by the daemon (LAB_ACCESS_PRIVATE_KEY) is NOT a chart
-  # value: create the Secret `lab-access-public-key` (key public.pem) in the
-  # release namespace beforehand,
-  #   kubectl -n laboratory-system create secret generic lab-access-public-key \
-  #     --from-file=public.pem=lab-access-public.pem
-  # The operator's PlatformReconciler validates it and syncs it into the proxy
-  # namespace; the proxy reloads it on change. `make lab-access-keys` makes the pair.
 
 # ============================================================
 # Common

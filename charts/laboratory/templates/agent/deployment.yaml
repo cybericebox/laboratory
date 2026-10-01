@@ -79,6 +79,11 @@ spec:
           {{- if .Values.agent.mtls.enabled }}
             - name: AGENT_MTLS_CLIENT_CA
               value: /ca/tls.crt
+            # The agent signs the client certificates of enrolled tenants with this CA (Enroll, RenewCertificate).
+            - name: AGENT_MTLS_CLIENT_CA_KEY
+              value: /ca/tls.key
+            - name: AGENT_CLIENT_CERT_TTL
+              value: {{ .Values.agent.enrollment.certificateTTL | quote }}
           {{- end }}
           volumeMounts:
             - name: server-tls

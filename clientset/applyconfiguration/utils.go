@@ -161,6 +161,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.SchedulingStatusApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("Tenant"):
 		return &applyconfigurationlaboratoryv1alpha1.TenantApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("TenantEnrollment"):
+		return &applyconfigurationlaboratoryv1alpha1.TenantEnrollmentApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("TenantPersistence"):
 		return &applyconfigurationlaboratoryv1alpha1.TenantPersistenceApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("TenantQuota"):

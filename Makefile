@@ -24,8 +24,6 @@ LIMA_CTRL      ?= lab-ctrl
 LIMA_WORKER    ?= lab-worker
 CHART_PATH     ?= charts/laboratory
 HELM_NS        ?= laboratory-system
-LAB_ACCESS_PUBLIC_KEY  ?= /tmp/lab-access-public.pem
-LAB_ACCESS_PRIVATE_KEY ?= /tmp/lab-access-private.pem
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -253,13 +251,6 @@ k0s-upgrade-chart: ## Apply values.yaml changes to existing cluster (preserves c
 		--reuse-values \
 		--values $(CHART_PATH)/values.yaml \
 		--wait --timeout=2m
-
-.PHONY: lab-access-keys
-lab-access-keys: ## Generate the Ed25519 lab access key pair (private: backend LAB_ACCESS_PRIVATE_KEY, public: Secret lab-access-public-key)
-	@test ! -e $(LAB_ACCESS_PRIVATE_KEY) || { echo "$(LAB_ACCESS_PRIVATE_KEY) exists, remove it to rotate"; exit 1; }
-	openssl genpkey -algorithm ed25519 -out $(LAB_ACCESS_PRIVATE_KEY)
-	openssl pkey -in $(LAB_ACCESS_PRIVATE_KEY) -pubout -out $(LAB_ACCESS_PUBLIC_KEY)
-	@echo "private: $(LAB_ACCESS_PRIVATE_KEY)  public: $(LAB_ACCESS_PUBLIC_KEY)"
 
 .PHONY: kind-deploy
 kind-deploy: kind-load install deploy ## Full local deploy: build all + load + CRDs + controller + node-agent

@@ -36,10 +36,14 @@ rules:
 - apiGroups: [laboratory.cybericebox.com]
   resources: [connections/status, devices/status, labgateways/status, labgroupclients/status, labgroups/status, labs/status, labvpns/status]
   verbs: [get, patch, update]
-# Tenants: the persistence policy of a lab's tenant, and the quotas the scheduler enforces.
+# Tenants: the persistence policy of a lab's tenant, the quotas the scheduler enforces, and the
+# enrollment token (its hash goes to the status; the annotation asking for a new one is removed).
 - apiGroups: [laboratory.cybericebox.com]
   resources: [tenants]
-  verbs: [get, list, watch]
+  verbs: [get, list, watch, update, patch]
+- apiGroups: [laboratory.cybericebox.com]
+  resources: [tenants/status]
+  verbs: [get, update, patch]
 - apiGroups: [networking.k8s.io]
   resources: [networkpolicies]
   verbs: [create, delete, get, list, patch, update, watch]

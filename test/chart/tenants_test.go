@@ -39,6 +39,7 @@ func ofKind(all []map[string]any, kind string) map[string]map[string]any {
 func TestTenantsAreCreatedWithTheirCertificates(t *testing.T) {
 	out, err := helmTemplate(t, append(agentSet,
 		"-s", "templates/tenants.yaml", "-s", "templates/agent/certificate-clients.yaml",
+		"--set", "agent.tenantCertificates.enabled=true",
 		"--set", "tenants.platform.persistence.allowed=true",
 		"--set", "tenants.platform.persistence.writeQuota=256Mi",
 		"--set-string", "tenants.platform.quota.cpu=50%",
@@ -106,5 +107,64 @@ func TestAgentHasNoCNAllowlistAnymore(t *testing.T) {
 	}
 	if !strings.Contains(out, "AGENT_LAB_TOLERATIONS") || !strings.Contains(out, "AGENT_LAB_NODE_SELECTOR") {
 		t.Fatal("the agent needs the lab nodes to resolve percentage quotas")
+	}
+}
+
+// The cert-manager certificate per tenant is a manual fallback, off by default.
+func TestTenantCertificatesAreOffByDefault(t *testing.T) {
+	out, err := helmTemplate(t, append(agentSet, "-s", "templates/agent/certificate-clients.yaml")...)
+	if err == nil && strings.Contains(out, "kind: Certificate") {
+		t.Fatalf("a certificate was rendered by default:\n%s", out)
+	}
+}
+
+func TestEnrollmentWiring(t *testing.T) {
+	out, err := helmTemplate(t, append(agentSet, "-s", "templates/agent/deployment.yaml", "-s", "templates/operator/configmap.yaml",
+		"--set", "agent.enrollment.tokenTTL=2h", "--set", "agent.enrollment.certificateTTL=48h")...)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, want := range []string{"AGENT_MTLS_CLIENT_CA_KEY", "/ca/tls.key", `value: "48h"`, `TENANT_ENROLLMENT_TTL: "2h"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+}
+
+func TestTenantsNamespaceAndAccess(t *testing.T) {
+	out, err := helmTemplate(t, append(agentSet, "-s", "templates/tenants-namespace.yaml")...)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	all := docs(t, out)
+	if ofKind(all, "Namespace")["laboratory-tenants"] == nil {
+		t.Fatal("the tenants namespace")
+	}
+	roles := ofKind(all, "Role")
+	agent, proxy := roles["laboratory-agent-tenants"], roles["laboratory-proxy-tenants"]
+	if agent == nil || proxy == nil {
+		t.Fatalf("roles: %v", roles)
+	}
+	verbs := func(r map[string]any) string {
+		v, _ := yaml.Marshal(r["rules"])
+		return string(v)
+	}
+	if strings.Contains(verbs(proxy), "create") || strings.Contains(verbs(proxy), "update") || !strings.Contains(verbs(proxy), "watch") {
+		t.Errorf("the proxy only reads: %s", verbs(proxy))
+	}
+	if !strings.Contains(verbs(agent), "create") || strings.Contains(verbs(agent), "delete") {
+		t.Errorf("the agent writes keys, never deletes the Secret: %s", verbs(agent))
+	}
+}
+
+func TestProxyHasNoSharedLabAccessKey(t *testing.T) {
+	out, err := helmTemplate(t, "-s", "templates/proxy/deployment.yaml")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, gone := range []string{"LAB_ACCESS_PUBLIC_KEY_PATH", "lab-access-public-key", "/etc/proxy/lab-access"} {
+		if strings.Contains(out, gone) {
+			t.Errorf("the shared key path is gone, found %q", gone)
+		}
 	}
 }

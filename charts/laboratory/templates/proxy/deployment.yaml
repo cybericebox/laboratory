@@ -59,8 +59,6 @@ spec:
           value: /etc/proxy/tls/tls.crt
         - name: TLS_KEY_PATH
           value: /etc/proxy/tls/tls.key
-        - name: LAB_ACCESS_PUBLIC_KEY_PATH
-          value: /etc/proxy/lab-access/public.pem
         {{- if .Values.proxy.kindMode }}
         - name: KUBERNETES_SERVICE_HOST
           value: "127.0.0.1"
@@ -73,9 +71,6 @@ spec:
         volumeMounts:
         - name: tls
           mountPath: /etc/proxy/tls
-          readOnly: true
-        - name: lab-access
-          mountPath: /etc/proxy/lab-access
           readOnly: true
         resources:
           {{- toYaml .Values.proxy.l7.resources | nindent 10 }}
@@ -108,8 +103,5 @@ spec:
       - name: tls
         secret:
           secretName: proxy-tls
-      - name: lab-access
-        secret:
-          secretName: lab-access-public-key
       {{- end }}
 {{- end }}

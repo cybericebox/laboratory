@@ -30,6 +30,7 @@ data:
   SCHEDULER_RESOURCE_CHECK: {{ .Values.scheduler.resourceCheck | quote }}
   SCHEDULER_PREPULL: {{ .Values.scheduler.prepull.enabled | quote }}
   SCHEDULER_PREPULL_TIMEOUT: {{ .Values.scheduler.prepull.timeout | quote }}
+  TENANT_ENROLLMENT_TTL: {{ .Values.agent.enrollment.tokenTTL | quote }}
   DEVICE_DEFAULT_CPU: {{ .Values.scheduler.deviceDefaults.cpu | quote }}
   DEVICE_DEFAULT_MEMORY: {{ .Values.scheduler.deviceDefaults.memory | quote }}
   {{- with .Values.devices.statePersistence }}
