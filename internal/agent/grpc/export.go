@@ -39,11 +39,11 @@ func (h *Handler) ExportDeviceSnapshot(in *protobuf.DeviceSnapshotRequest, strea
 	}
 	ns, err := h.newResolver().namespace(ctx, ref.GetLabGroup())
 	if err != nil {
-		return err
+		return apiErrorToStatus(err)
 	}
 	dev, err := h.cs.LaboratoryV1alpha1().Devices(ns).Get(ctx, fmt.Sprintf("%s-%s", crName(ref.GetLab()), ref.GetName()), metav1.GetOptions{})
 	if err != nil {
-		return err
+		return apiErrorToStatus(err)
 	}
 	if err := rejectTerminating(kindDevice, dev); err != nil {
 		return err

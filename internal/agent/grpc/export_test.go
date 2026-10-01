@@ -335,8 +335,11 @@ func TestExportDeviceSnapshotRefusals(t *testing.T) {
 		t.Fatalf("no registry: %v", err)
 	}
 	ok := newExportRig(t, true, img)
-	if _, err := ok.export(&protobuf.ItemRef{LabGroup: "grp", Lab: "lab1", Name: "nope"}); status.Code(err) != codes.NotFound && !strings.Contains(err.Error(), "not found") {
+	if _, err := ok.export(&protobuf.ItemRef{LabGroup: "grp", Lab: "lab1", Name: "nope"}); status.Code(err) != codes.NotFound {
 		t.Fatalf("unknown device: %v", err)
+	}
+	if _, err := ok.export(&protobuf.ItemRef{LabGroup: "nogroup", Lab: "lab1", Name: "web"}); status.Code(err) != codes.NotFound {
+		t.Fatalf("unknown lab group: %v", err)
 	}
 	if _, err := ok.export(&protobuf.ItemRef{LabGroup: "grp", Lab: "lab1"}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("incomplete ref: %v", err)
