@@ -40,6 +40,9 @@ type fakeRuntime struct {
 	images map[string]v1.Image
 	freeze []bool
 	gone   bool
+	// failDiff is the number of Diff calls that fail before one succeeds.
+	failDiff int
+	diffs    int
 }
 
 func (f *fakeRuntime) Inspect(_ context.Context, id string) (Container, error) {
@@ -53,6 +56,11 @@ func (f *fakeRuntime) Diff(_ context.Context, _ Container, freeze bool) (io.Read
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.freeze = append(f.freeze, freeze)
+	f.diffs++
+	if f.failDiff > 0 {
+		f.failDiff--
+		return nil, fmt.Errorf("content digest sha256:x: not found")
+	}
 	return io.NopCloser(bytes.NewReader(f.diff)), nil
 }
 
@@ -350,5 +358,43 @@ func TestEngineWarnsAboutFilesSkippedForSize(t *testing.T) {
 	}
 	if got := warns[len(warns)-1]; !strings.Contains(got, "/data/big (200 bytes)") {
 		t.Fatalf("the new size is reported: %v", warns)
+	}
+}
+
+func TestRetryDelayDoublesAndCaps(t *testing.T) {
+	want := []time.Duration{10 * time.Second, 20 * time.Second, 40 * time.Second, 80 * time.Second, 160 * time.Second, 5 * time.Minute, 5 * time.Minute}
+	for i, w := range want {
+		if got := retryDelay(10*time.Second, 5*time.Minute, i+1); got != w {
+			t.Errorf("retry %d: got %v want %v", i+1, got, w)
+		}
+	}
+}
+
+// A snapshot that failed is taken again by itself, without a change of the layer.
+func TestEngineRetriesAFailedSnapshotByItself(t *testing.T) {
+	r := newRig(t, 20*time.Millisecond, 1<<20)
+	r.e.RetryBase, r.e.RetryMax = 30*time.Millisecond, 100*time.Millisecond
+	r.rt.failDiff = 3
+	r.rt.setDiff(tarOf(map[string]string{"data/db": "rows"}))
+	r.e.Sync(context.Background())
+	defer r.e.stopAll()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		recs, _, _ := r.cl.snapshot()
+		if len(recs) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			r.rt.mu.Lock()
+			defer r.rt.mu.Unlock()
+			t.Fatalf("no snapshot after %d attempts", r.rt.diffs)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	r.rt.mu.Lock()
+	defer r.rt.mu.Unlock()
+	if r.rt.diffs != 4 {
+		t.Fatalf("want 3 failures then 1 success, got %d attempts", r.rt.diffs)
 	}
 }

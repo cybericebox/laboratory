@@ -31,7 +31,23 @@ const (
 	// after this many debounce periods.
 	maxWaitFactor = 6
 	minMaxWait    = 30 * time.Second
+	// A failed snapshot is retried by itself: after defaultRetryBase, then twice as late
+	// each time, at most defaultRetryMax apart.
+	defaultRetryBase = 10 * time.Second
+	defaultRetryMax  = 5 * time.Minute
 )
+
+// retryDelay is the wait before retry number n (1-based) of a failed snapshot.
+func retryDelay(base, max time.Duration, n int) time.Duration {
+	d := base
+	for i := 1; i < n && d < max; i++ {
+		d *= 2
+	}
+	if d > max {
+		d = max
+	}
+	return d
+}
 
 // Engine follows the snapshot-backed device containers of one node.
 type Engine struct {
@@ -50,7 +66,9 @@ type Engine struct {
 	// ExitTimeout bounds the exit snapshot so it ends before the controller
 	// stops waiting for it (25s when zero).
 	ExitTimeout time.Duration
-	Log         logr.Logger
+	// RetryBase and RetryMax bound the retry of a failed snapshot (10s doubling to 5m when zero).
+	RetryBase, RetryMax time.Duration
+	Log                 logr.Logger
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 
@@ -72,6 +90,21 @@ type tracked struct {
 	pushed   bool       // a snapshot of this run was published
 	lastWarn string
 	exited   bool
+	failures int // consecutive failed live snapshots (touched by the live loop only)
+}
+
+func (e *Engine) retryBase() time.Duration {
+	if e.RetryBase > 0 {
+		return e.RetryBase
+	}
+	return defaultRetryBase
+}
+
+func (e *Engine) retryMax() time.Duration {
+	if e.RetryMax > 0 {
+		return e.RetryMax
+	}
+	return defaultRetryMax
 }
 
 func (e *Engine) now() time.Time {
@@ -220,12 +253,18 @@ func (e *Engine) track(ctx context.Context, p PodInfo, c Container) *tracked {
 	// node-agent restarted) must not wait for the next change.
 	in := make(chan struct{}, 1)
 	in <- struct{}{}
+	retry := make(chan struct{}, 1)
 	go func() {
 		defer close(in)
 		for {
 			select {
 			case <-wctx.Done():
 				return
+			case <-retry:
+				select {
+				case in <- struct{}{}:
+				default:
+				}
 			case _, ok := <-changes:
 				if !ok {
 					return
@@ -244,8 +283,25 @@ func (e *Engine) track(ctx context.Context, p PodInfo, c Container) *tracked {
 	go Debounce(wctx, in, p.Policy.Debounce, maxWait, func() {
 		lctx, lcancel := context.WithTimeout(wctx, defaultLiveTimeout)
 		defer lcancel()
-		if err := t.snapshot(lctx, true); err != nil && !errors.Is(err, context.Canceled) {
+		err := t.snapshot(lctx, true)
+		switch {
+		case err == nil:
+			t.failures = 0
+		case errors.Is(err, context.Canceled) || errors.Is(err, ErrStale):
+		default:
 			e.Log.Error(err, "snapshot", "device", p.Device, "pod", p.Pod)
+			t.failures++
+			d := retryDelay(e.retryBase(), e.retryMax(), t.failures)
+			go func() {
+				select {
+				case <-time.After(d):
+					select {
+					case retry <- struct{}{}:
+					default:
+					}
+				case <-wctx.Done():
+				}
+			}()
 		}
 	})
 	return t
