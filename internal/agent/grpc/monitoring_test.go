@@ -29,6 +29,8 @@ func (f *fakeMonStream) Send(u *protobuf.MonitoringUpdate) error {
 
 func TestMonitoringSendsSnapshotThenOnlyChangedRecords(t *testing.T) {
 	h, _ := newTestHandler(t)
+	// The shared poller observes the platform once per interval; a short one keeps the test fast and not racing its timeout.
+	h.SetMonitoringConfig(MonitoringConfig{PollInterval: 50 * time.Millisecond})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s := &fakeMonStream{ctx: ctx, sent: make(chan *protobuf.MonitoringUpdate, 4)}
@@ -65,7 +67,7 @@ func receiveMonitoringUpdate(t *testing.T, updates <-chan *protobuf.MonitoringUp
 	select {
 	case update := <-updates:
 		return update
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for monitoring update")
 		return nil
 	}
