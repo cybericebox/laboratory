@@ -219,6 +219,11 @@ its slot from the moment it is dispatched until it is Ready or declared failed.
 pods are interleaved once an object has started. An object may start partially: with 3 free slots and
 5 pods, 3 start now and 2 as slots free up.
 
+**Service pods go first.** The VPN and gateway pods of a LabGroup have a lane of their own: they are
+dispatched ahead of every queued Lab, so a new team is not held up by a burst of labs that wait for room
+(`InsufficientResources`). They still need a slot and room, and they obey `deploy-after`. Labs keep
+strict order among themselves (no backfill: a lab that does not fit holds back the labs behind it).
+
 **Groups.** Objects with the same *deploy group* form a group (mixed kinds, one object or many). The
 agent writes two operator-internal markers on LabGroups and Labs; the operator reads only these, never
 user labels (and they work when someone applies the CRs directly):

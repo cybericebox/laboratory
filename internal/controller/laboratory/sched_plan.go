@@ -2,6 +2,7 @@ package laboratory
 
 import (
 	"sort"
+	"strings"
 	"time"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
@@ -64,6 +65,9 @@ type schedObject struct {
 	// ref is the scheduler's handle on the Lab or LabGroup (opaque to the plan).
 	ref any
 }
+
+// isGroup says the object is a LabGroup: its pods are the VPN and gateway of a team, not lab pods.
+func (o *schedObject) isGroup() bool { return strings.HasPrefix(o.id, "group/") }
 
 func (o *schedObject) pending() int {
 	n := 0
@@ -140,7 +144,8 @@ type schedGroup struct {
 // start with fewer slots than pods. Dispatch stops at the first pod that cannot go
 // (no slot, images not ready, no room), so the order is never skipped; a pod that
 // fits no node at all is failed instead, and a group that is not eligible is
-// skipped without stopping the others.
+// skipped without stopping the others. The pods of LabGroups (the team's VPN and
+// gateway) go ahead of all labs.
 func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) schedPlan {
 	groups := map[string]*schedGroup{}
 	var independents []*schedObject
@@ -231,6 +236,18 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		sequence = append(sequence, orderObjs(g.objs)...)
 	}
 	sequence = append(sequence, orderObjs(independents)...)
+	// The service pods of a LabGroup (VPN, gateway) have a lane of their own: they dispatch
+	// ahead of every queued lab, so a new team is not held up by a burst of labs that wait
+	// for room. They still need a slot and room like any pod; labs keep their strict order.
+	var lane, rest []*schedObject
+	for _, o := range sequence {
+		if o.isGroup() {
+			lane = append(lane, o)
+		} else {
+			rest = append(rest, o)
+		}
+	}
+	sequence = append(lane, rest...)
 	var blockedObjs []*schedObject
 	for _, g := range blocked {
 		blockedObjs = append(blockedObjs, orderObjs(g.objs)...)

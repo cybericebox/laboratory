@@ -369,3 +369,40 @@ func TestClusterEnvEnforcesTenantQuota(t *testing.T) {
 		t.Fatal("memory over the quota")
 	}
 }
+
+// The service pods of a new team go ahead of labs that wait for room: a burst of labs that does
+// not fit must not keep a new LabGroup from starting, and the labs stay in their own order.
+func TestPlanGroupPodsGoAheadOfQueuedLabs(t *testing.T) {
+	old := obj("lab/old/l1", "", 1, nil, pods("l1", "web")...)
+	old2 := obj("lab/old/l2", "", 2, nil, pods("l2", "web")...)
+	grp := obj("group/new", "", 3, nil, &schedPod{key: "group/new/vpn", name: "vpn", kind: kindGroupPod, state: qd},
+		&schedPod{key: "group/new/gateway", name: "gateway", kind: kindGroupPod, state: qd})
+	// the labs do not fit; the group pods do
+	env := &fakeEnv{fits: map[string]fit{"l1/web": fitWait, "l2/web": fitWait}}
+	plan := planSchedule([]*schedObject{old, old2, grp}, 10, false, env)
+	wantDispatch(t, plan, "group/new/gateway", "group/new/vpn")
+	if r := plan.status["lab/old/l1"].Reason; r != laboratoryv1alpha1.WaitInsufficient {
+		t.Fatalf("the lab at the head waits for room, reason = %q", r)
+	}
+	if _, waiting := plan.status["group/new"]; waiting {
+		t.Fatal("the group has nothing left to wait for")
+	}
+	// the group pods are still checked: no room for them, nothing goes
+	env = &fakeEnv{fits: map[string]fit{"group/new/gateway": fitWait}}
+	plan = planSchedule([]*schedObject{old, grp}, 10, false, env)
+	wantDispatch(t, plan)
+	if r := plan.status["group/new"].Reason; r != laboratoryv1alpha1.WaitInsufficient {
+		t.Fatalf("reason = %q", r)
+	}
+	// labs keep strict order: no backfill of the second lab past the first
+	env = &fakeEnv{fits: map[string]fit{"l1/web": fitWait}}
+	plan = planSchedule([]*schedObject{old, old2}, 10, false, env)
+	wantDispatch(t, plan)
+	// a group that depends on another group still waits for it
+	dep := obj("group/dep", "d", 4, []string{"other"}, &schedPod{key: "group/dep/vpn", name: "vpn", kind: kindGroupPod, state: qd})
+	plan = planSchedule([]*schedObject{dep}, 10, false, &fakeEnv{})
+	wantDispatch(t, plan)
+	if plan.status["group/dep"].Reason != laboratoryv1alpha1.WaitForGroup {
+		t.Fatalf("reason = %q", plan.status["group/dep"].Reason)
+	}
+}
