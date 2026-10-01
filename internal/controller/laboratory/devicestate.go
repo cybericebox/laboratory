@@ -446,7 +446,7 @@ func (r *DeviceReconciler) createDevicePod(ctx context.Context, device *laborato
 	if spec.Rescue {
 		// Start the snapshot with a shell instead of the entrypoint, so a
 		// configuration that makes the service crash can be repaired in place.
-		c.Command = []string{"/bin/sh", "-c", "trap : TERM INT; while :; do sleep 3600 & wait $!; done"}
+		c.Command = []string{"/bin/sh", "-c", "trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $!; done"}
 		c.Args = nil
 	}
 	pod := &corev1.Pod{
