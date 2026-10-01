@@ -43,7 +43,7 @@ func newSchedFixture(t *testing.T, cfg SchedulerConfig) *schedFixture {
 		t.Fatal(err)
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).
-		WithStatusSubresource(&laboratoryv1alpha1.Lab{}, &laboratoryv1alpha1.LabGroup{}, &laboratoryv1alpha1.Device{}, &corev1.Pod{}, &appsv1.DaemonSet{}, &corev1.Node{}).
+		WithStatusSubresource(&laboratoryv1alpha1.Lab{}, &laboratoryv1alpha1.LabGroup{}, &laboratoryv1alpha1.Device{}, &laboratoryv1alpha1.Tenant{}, &corev1.Pod{}, &appsv1.DaemonSet{}, &corev1.Node{}).
 		Build()
 	f := &schedFixture{t: t, c: c, now: planEpoch.Add(time.Hour)}
 	f.s = &Scheduler{
@@ -69,6 +69,8 @@ func (f *schedFixture) create(o client.Object) {
 		o.(*laboratoryv1alpha1.LabGroup).Status = s.Status
 	case *laboratoryv1alpha1.Lab:
 		o.(*laboratoryv1alpha1.Lab).Status = s.Status
+	case *laboratoryv1alpha1.Tenant:
+		o.(*laboratoryv1alpha1.Tenant).Status = s.Status
 	}
 	if err := f.c.Status().Update(context.Background(), o); err != nil {
 		f.t.Fatal(err)
@@ -745,4 +747,41 @@ func TestEnsureGroupScheduling(t *testing.T) {
 	if err := r.ensureGroupScheduling(context.Background(), lg2); err != nil || len(lg2.Status.Pods) != 1 || lg2.Status.Pods[0].Name != "gateway" {
 		t.Fatalf("no-VPN group: %v %+v", err, lg2.Status.Pods)
 	}
+}
+
+// A tenant's quota caps the requests of its dispatched pods; its next pod waits with the
+// reason TenantQuota while another tenant's labs go on.
+func TestSchedulerEnforcesTenantQuota(t *testing.T) {
+	cfg := schedCfg()
+	cfg.MaxPods = 0 // no in-flight limit: only the quota holds pods back
+	f := newSchedFixture(t, cfg)
+	f.create(&laboratoryv1alpha1.Tenant{ObjectMeta: metav1.ObjectMeta{Name: "capped"},
+		Spec: laboratoryv1alpha1.TenantSpec{Quota: &laboratoryv1alpha1.TenantQuota{CPU: "250m"}}}) // two pods of 100m
+	label := func(lab, tenant string) {
+		var l laboratoryv1alpha1.Lab
+		if err := f.c.Get(context.Background(), types.NamespacedName{Namespace: "ns-" + lab, Name: lab}, &l); err != nil {
+			t.Fatal(err)
+		}
+		if l.Labels == nil {
+			l.Labels = map[string]string{}
+		}
+		l.Labels[names.LabelTenant] = tenant
+		if err := f.c.Update(context.Background(), &l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.addLab("a", "", nil, "web", "db", "cache")
+	label("a", "capped")
+	f.addLab("b", "", nil, "web")
+	label("b", "other")
+
+	f.tick()
+	f.wantStates("a/cache=S a/db=S a/web=Q b/web=S")
+	if st := f.labStatus("a"); st == nil || st.Reason != laboratoryv1alpha1.WaitTenantQuota || st.Pending != 1 {
+		t.Fatalf("status of the held lab: %+v", st)
+	}
+	// Pods that started (or failed) still count against the quota.
+	f.ready("a", "cache")
+	f.tick()
+	f.wantStates("a/cache=D a/db=S a/web=Q b/web=S")
 }

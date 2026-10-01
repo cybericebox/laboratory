@@ -49,8 +49,10 @@ type fakeEnv struct {
 	notPrepared map[string]bool // by prepKey
 	fits        map[string]fit  // by pod key
 	taken       int
+	tenantFull  map[string]bool // by tenant
 }
 
+func (f *fakeEnv) tenantFits(p *schedPod) bool  { return !f.tenantFull[p.tenant] }
 func (f *fakeEnv) prepared(o *schedObject) bool { return !f.notPrepared[o.prepKey] }
 func (f *fakeEnv) check(p *schedPod) fit {
 	if v, ok := f.fits[p.key]; ok {
@@ -315,4 +317,54 @@ func TestPlanMixedKindsInOneGroup(t *testing.T) {
 	lab := obj("lab/team/l1", "g", 2, nil, pods("l1", "web")...)
 	plan := planSchedule([]*schedObject{lab, grp}, 3, false, &fakeEnv{})
 	wantDispatch(t, plan, "group/team/gateway", "group/team/vpn", "l1/web")
+}
+
+// A tenant at its quota waits with the reason TenantQuota and does not hold up the others.
+func TestTenantAtQuotaWaitsWithoutBlockingOthers(t *testing.T) {
+	a := obj("lab/ns/a", "", 0, nil, pods("lab/ns/a", "web", "db")...)
+	b := obj("lab/ns/b", "", 1, nil, pods("lab/ns/b", "web")...)
+	for _, p := range a.pods {
+		p.tenant = "full"
+	}
+	for _, p := range b.pods {
+		p.tenant = "free"
+	}
+	plan := planSchedule([]*schedObject{a, b}, 10, false, &fakeEnv{tenantFull: map[string]bool{"full": true}})
+	if len(plan.dispatch) != 1 || plan.dispatch[0].key != "lab/ns/b/web" {
+		t.Fatalf("only the other tenant's pod starts: %+v", plan.dispatch)
+	}
+	st := plan.status["lab/ns/a"]
+	if st.Reason != laboratoryv1alpha1.WaitTenantQuota || st.Pending != 2 {
+		t.Fatalf("status of the held object: %+v", st)
+	}
+	if _, waiting := plan.status["lab/ns/b"]; waiting {
+		t.Fatal("the free tenant's object has nothing left to wait for")
+	}
+}
+
+// The quota counts the requests of the dispatched pods of the tenant, and each new
+// dispatch in the same pass.
+func TestClusterEnvEnforcesTenantQuota(t *testing.T) {
+	ten := &laboratoryv1alpha1.Tenant{Spec: laboratoryv1alpha1.TenantSpec{Quota: &laboratoryv1alpha1.TenantQuota{CPU: "1", Memory: "1Gi"}}}
+	run := &schedPod{key: "ns/l/run", kind: kindDevicePod, state: sd, tenant: "t", need: amount{cpu: 400, mem: 100 << 20}}
+	q1 := &schedPod{key: "ns/l/q1", kind: kindDevicePod, state: qd, tenant: "t", need: amount{cpu: 500, mem: 100 << 20}}
+	q2 := &schedPod{key: "ns/l/q2", kind: kindDevicePod, state: qd, tenant: "t", need: amount{cpu: 500, mem: 100 << 20}}
+	other := &schedPod{key: "ns/o/x", kind: kindDevicePod, state: qd, tenant: "nobody", need: amount{cpu: 99000, mem: 1 << 40}}
+	env := &clusterEnv{s: &Scheduler{}, snap: &clusterView{tenants: map[string]*laboratoryv1alpha1.Tenant{"t": ten}},
+		objs: []*schedObject{{pods: []*schedPod{run, q1, q2, other}}}}
+	if !env.tenantFits(q1) {
+		t.Fatal("400m running + 500m fits 1 CPU")
+	}
+	env.take(q1)
+	if env.tenantFits(q2) {
+		t.Fatal("900m reserved + 500m is over 1 CPU")
+	}
+	if !env.tenantFits(other) {
+		t.Fatal("a tenant without a Tenant object or quota has no limit")
+	}
+	// Memory limit too.
+	big := &schedPod{key: "ns/l/big", kind: kindDevicePod, state: qd, tenant: "t", need: amount{cpu: 1, mem: 2 << 30}}
+	if env.tenantFits(big) {
+		t.Fatal("memory over the quota")
+	}
 }

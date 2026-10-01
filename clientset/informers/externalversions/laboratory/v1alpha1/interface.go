@@ -41,6 +41,8 @@ type Interface interface {
 	LabTrafficReports() TypedLabTrafficReportInformer
 	// LabVPNs returns a LabVPNInformer.
 	LabVPNs() TypedLabVPNInformer
+	// Tenants returns a TenantInformer.
+	Tenants() TypedTenantInformer
 }
 
 type version struct {
@@ -97,4 +99,9 @@ func (v *version) LabTrafficReports() TypedLabTrafficReportInformer {
 // LabVPNs returns a TypedLabVPNInformer.
 func (v *version) LabVPNs() TypedLabVPNInformer {
 	return &labVPNInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// Tenants returns a TypedTenantInformer.
+func (v *version) Tenants() TypedTenantInformer {
+	return &tenantInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }

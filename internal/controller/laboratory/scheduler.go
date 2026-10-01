@@ -22,6 +22,7 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/tenant"
 )
 
 // SchedulerConfig is the scheduler policy.
@@ -91,7 +92,7 @@ type Scheduler struct {
 
 // +kubebuilder:rbac:groups="",resources=nodes;pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;create;delete
-// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs;labgroups;devices,verbs=get;list;watch
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs;labgroups;devices;tenants,verbs=get;list;watch
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs/status;labgroups/status;devices/status,verbs=get;update;patch
 
 // NeedLeaderElection makes the manager run the scheduler on the leader only.
@@ -200,10 +201,11 @@ type clusterView struct {
 	// podsOf maps a device key, and "ns/app" for a group pod, to its pods.
 	podsOf    map[string][]*corev1.Pod
 	suspended map[string]bool // namespace of a suspended group
+	tenants   map[string]*laboratoryv1alpha1.Tenant
 }
 
 func (s *Scheduler) load(ctx context.Context) (*clusterView, error) {
-	snap := &clusterView{devices: map[string]*laboratoryv1alpha1.Device{}, podsOf: map[string][]*corev1.Pod{}, suspended: map[string]bool{}}
+	snap := &clusterView{devices: map[string]*laboratoryv1alpha1.Device{}, podsOf: map[string][]*corev1.Pod{}, suspended: map[string]bool{}, tenants: map[string]*laboratoryv1alpha1.Tenant{}}
 	var labs laboratoryv1alpha1.LabList
 	if err := s.List(ctx, &labs); err != nil {
 		return nil, fmt.Errorf("list labs: %w", err)
@@ -221,6 +223,13 @@ func (s *Scheduler) load(ctx context.Context) (*clusterView, error) {
 		if g.Spec.Suspended {
 			snap.suspended[laboratoryv1alpha1.LabGroupNamespace(g.Name)] = true
 		}
+	}
+	var tenants laboratoryv1alpha1.TenantList
+	if err := s.List(ctx, &tenants); err != nil {
+		return nil, fmt.Errorf("list tenants: %w", err)
+	}
+	for i := range tenants.Items {
+		snap.tenants[tenants.Items[i].Name] = &tenants.Items[i]
 	}
 	var devices laboratoryv1alpha1.DeviceList
 	if err := s.List(ctx, &devices); err != nil {
@@ -456,7 +465,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 				continue
 			}
 			key := devicePodKey(lab.Namespace, lab.Name, t.Name)
-			p := &schedPod{key: key, name: t.Name, kind: kindDevicePod}
+			p := &schedPod{key: key, name: t.Name, kind: kindDevicePod, tenant: names.TenantOf(lab.Labels)}
 			if need := guaranteedResources(t.Resources, s.Defaults); need != nil {
 				p.need = amount{cpu: need.Cpu().MilliValue(), mem: need.Memory().Value()}
 			}
@@ -486,7 +495,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 		}
 		for _, name := range groupPodNames(g) {
 			key := "group/" + g.Name + "/" + name
-			p := &schedPod{key: key, name: name, kind: kindGroupPod, ref: name}
+			p := &schedPod{key: key, name: name, kind: kindGroupPod, ref: name, tenant: names.TenantOf(g.Labels)}
 			for _, e := range g.Status.Pods {
 				if e.Name != name {
 					continue
@@ -605,6 +614,8 @@ type clusterEnv struct {
 	objs []*schedObject
 	free *capacity
 	err  error
+	// tenantUsed is what each tenant's dispatched pods request, built on first use.
+	tenantUsed map[string]tenant.Totals
 }
 
 func (e *clusterEnv) prepared(o *schedObject) bool {
@@ -668,6 +679,38 @@ func (e *clusterEnv) take(p *schedPod) {
 	if e.free != nil {
 		e.free.take(p.need)
 	}
+	if e.tenantUsed != nil {
+		e.tenantUsed[p.tenant] = e.tenantUsed[p.tenant].Add(tenant.Totals{CPU: p.need.cpu, Memory: p.need.mem})
+	}
+}
+
+// tenantFits applies the tenant's CPU and memory quota to the sum of the requests of its
+// dispatched device pods (started, starting or failed: a failed pod's workload still runs).
+func (e *clusterEnv) tenantFits(p *schedPod) bool {
+	ten := e.snap.tenants[p.tenant]
+	if ten == nil || ten.Spec.Quota == nil || p.kind != kindDevicePod {
+		return true
+	}
+	if e.tenantUsed == nil {
+		e.tenantUsed = map[string]tenant.Totals{}
+		for _, o := range e.objs {
+			for _, q := range o.pods {
+				if q.kind == kindDevicePod && q.dispatched() {
+					e.tenantUsed[q.tenant] = e.tenantUsed[q.tenant].Add(tenant.Totals{CPU: q.need.cpu, Memory: q.need.mem})
+				}
+			}
+		}
+	}
+	var alloc tenant.Totals
+	if tenant.NeedsAllocatable(ten.Spec.Quota) {
+		c := e.capacity()
+		if c == nil {
+			return false
+		}
+		alloc = tenant.Totals{CPU: c.allocatable.cpu, Memory: c.allocatable.mem}
+	}
+	limits := tenant.ResolveQuota(ten.Spec.Quota, alloc)
+	return limits.Fits(e.tenantUsed[p.tenant], tenant.Totals{CPU: p.need.cpu, Memory: p.need.mem})
 }
 
 // writeStatuses publishes the queue place of each object. An object whose

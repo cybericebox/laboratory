@@ -63,6 +63,10 @@ func (c *FakeLaboratoryV1alpha1) LabVPNs(namespace string) v1alpha1.LabVPNInterf
 	return newFakeLabVPNs(c, namespace)
 }
 
+func (c *FakeLaboratoryV1alpha1) Tenants() v1alpha1.TenantInterface {
+	return newFakeTenants(c)
+}
+
 // RESTClient returns a RESTClient that is used to communicate
 // with API server by this client implementation.
 func (c *FakeLaboratoryV1alpha1) RESTClient() rest.Interface {

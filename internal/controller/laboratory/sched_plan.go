@@ -29,6 +29,8 @@ type schedPod struct {
 	state laboratoryv1alpha1.PodScheduleState
 	// need is what the pod will request from a node.
 	need amount
+	// tenant owns the pod (its object's tenant label).
+	tenant string
 	// ref is the scheduler's handle on the underlying object (opaque to the plan).
 	ref any
 }
@@ -91,6 +93,9 @@ type schedEnv interface {
 	// check says whether the pod fits now, and take reserves its requests.
 	check(p *schedPod) fit
 	take(p *schedPod)
+	// tenantFits says whether the pod's tenant stays within its CPU and memory quota
+	// with the pod added to what its dispatched pods already request.
+	tenantFits(p *schedPod) bool
 }
 
 // objectStatus is what the plan reports for an object that still has pods to dispatch.
@@ -235,6 +240,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	gone := map[*schedPod]bool{} // dispatched or failed in this pass
 
 	blocker := ""
+	tenantHeld := map[string]bool{} // objects held back by their tenant's quota
 	try := func(p *schedPod, o *schedObject) (stop bool) {
 		if !p.queued() || gone[p] {
 			return false
@@ -242,6 +248,11 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		if !unlimited && slots <= 0 {
 			blocker = laboratoryv1alpha1.WaitInFlightLimit
 			return true
+		}
+		// A tenant at its quota waits without holding up the others: the object is skipped.
+		if !env.tenantFits(p) {
+			tenantHeld[o.id] = true
+			return false
 		}
 		if !env.prepared(o) {
 			blocker = laboratoryv1alpha1.WaitPreparingImages
@@ -273,6 +284,9 @@ conveyor:
 		for _, p := range pods {
 			if try(p, o) {
 				break conveyor
+			}
+			if tenantHeld[o.id] {
+				break // the order inside an object is kept: nothing behind a held pod goes
 			}
 		}
 	}
@@ -309,6 +323,11 @@ conveyor:
 				plan.status[o.id] = st
 				continue
 			}
+		}
+		if tenantHeld[o.id] {
+			st.Reason, st.Message = laboratoryv1alpha1.WaitTenantQuota, "the tenant has reached its quota"
+			plan.status[o.id] = st
+			continue
 		}
 		st.Reason = blocker
 		if st.Reason == "" {

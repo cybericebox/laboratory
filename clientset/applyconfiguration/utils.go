@@ -159,6 +159,18 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.RouteApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("SchedulingStatus"):
 		return &applyconfigurationlaboratoryv1alpha1.SchedulingStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("Tenant"):
+		return &applyconfigurationlaboratoryv1alpha1.TenantApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("TenantPersistence"):
+		return &applyconfigurationlaboratoryv1alpha1.TenantPersistenceApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("TenantQuota"):
+		return &applyconfigurationlaboratoryv1alpha1.TenantQuotaApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("TenantSpec"):
+		return &applyconfigurationlaboratoryv1alpha1.TenantSpecApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("TenantStatus"):
+		return &applyconfigurationlaboratoryv1alpha1.TenantStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("TenantUsage"):
+		return &applyconfigurationlaboratoryv1alpha1.TenantUsageApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("WebExposure"):
 		return &applyconfigurationlaboratoryv1alpha1.WebExposureApplyConfiguration{}
 

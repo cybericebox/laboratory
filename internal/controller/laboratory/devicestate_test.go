@@ -92,29 +92,41 @@ func persistent(debounce *metav1.Duration) laboratoryv1alpha1.DeviceTemplate {
 // snapshot-backed device and a normal one.
 func TestPersistenceIsPerDevice(t *testing.T) {
 	r := stateTestLab(t, newLab("new"))
-	lab := newLab("new")
 	plain := laboratoryv1alpha1.DeviceTemplate{Type: laboratoryv1alpha1.DeviceTypeContainer}
 	off := laboratoryv1alpha1.DeviceTemplate{Type: laboratoryv1alpha1.DeviceTypeContainer, Persistence: &laboratoryv1alpha1.DevicePersistence{}}
 
-	if spec := r.deviceStateSpec(lab, persistent(nil)); spec == nil || !spec.Enabled || spec.MaxLayers != 10 {
+	if spec := r.deviceStateSpec(nil, persistent(nil)); spec == nil || !spec.Enabled || spec.MaxLayers != 10 {
 		t.Fatalf("a persistent device carries the policy: %+v", spec)
 	}
-	if r.deviceStateSpec(lab, plain) != nil || r.deviceStateSpec(lab, off) != nil {
+	if r.deviceStateSpec(nil, plain) != nil || r.deviceStateSpec(nil, off) != nil {
 		t.Fatal("a device that did not ask for persistence is a Deployment")
 	}
 	// The topology may set the debounce; the rest of the policy stays the platform's.
 	d := metav1.Duration{Duration: 42 * time.Second}
-	if custom := r.deviceStateSpec(lab, persistent(&d)); custom.Debounce.Duration != 42*time.Second || custom.MaxLayers != 10 || custom.WriteQuotaBytes != r.State.WriteQuotaBytes {
+	if custom := r.deviceStateSpec(nil, persistent(&d)); custom.Debounce.Duration != 42*time.Second || custom.MaxLayers != 10 || custom.WriteQuotaBytes != r.State.WriteQuotaBytes {
 		t.Fatalf("custom debounce: %+v", custom)
 	}
 	hub := persistent(nil)
 	hub.Type = laboratoryv1alpha1.DeviceTypeHub
-	if r.deviceStateSpec(lab, hub) != nil {
+	if r.deviceStateSpec(nil, hub) != nil {
 		t.Fatal("a switch runs no container and needs no state")
+	}
+	// The tenant's policy: it must allow persistence, and its limits are capped by the platform's.
+	tenantOf := func(allowed bool, wq string) *laboratoryv1alpha1.Tenant {
+		return &laboratoryv1alpha1.Tenant{Spec: laboratoryv1alpha1.TenantSpec{Persistence: laboratoryv1alpha1.TenantPersistence{Allowed: allowed, WriteQuota: wq}}}
+	}
+	if r.deviceStateSpec(tenantOf(false, ""), persistent(nil)) != nil {
+		t.Fatal("a tenant that does not allow persistence gets Deployments")
+	}
+	if spec := r.deviceStateSpec(tenantOf(true, "64Mi"), persistent(nil)); spec == nil || spec.WriteQuotaBytes != 64<<20 {
+		t.Fatalf("the tenant's lower write quota applies: %+v", spec)
+	}
+	if spec := r.deviceStateSpec(tenantOf(true, "10Gi"), persistent(nil)); spec == nil || spec.WriteQuotaBytes != r.State.WriteQuotaBytes {
+		t.Fatalf("the platform ceiling caps the tenant: %+v", spec)
 	}
 	// The platform not allowing persistence: nothing is snapshot-backed.
 	r.State.Enabled = false
-	if r.deviceStateSpec(lab, persistent(nil)) != nil {
+	if r.deviceStateSpec(nil, persistent(nil)) != nil || r.deviceStateSpec(tenantOf(true, ""), persistent(nil)) != nil {
 		t.Fatal("persistence is allowed by the platform switch only")
 	}
 }
@@ -122,8 +134,7 @@ func TestPersistenceIsPerDevice(t *testing.T) {
 // A device keeps what was stamped at its creation, whatever the platform switch does later.
 func TestExistingDevicesKeepTheirMode(t *testing.T) {
 	r := stateTestLab(t, newLab("mix"))
-	lab := newLab("mix")
-	spec := r.deviceStateSpec(lab, persistent(nil))
+	spec := r.deviceStateSpec(nil, persistent(nil))
 	dev := &laboratoryv1alpha1.Device{Spec: laboratoryv1alpha1.DeviceSpec{State: spec}}
 	plainDev := &laboratoryv1alpha1.Device{}
 	r.State.Enabled = false

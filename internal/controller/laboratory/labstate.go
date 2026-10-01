@@ -7,11 +7,14 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/tenant"
 )
 
 // StatePolicy is the device state persistence configuration of the operator.
@@ -64,13 +67,27 @@ func (r *LabReconciler) deviceMirror(lab *laboratoryv1alpha1.Lab, t laboratoryv1
 	return r.Mirror.Prefix
 }
 
+// tenantOf is the Tenant a Lab belongs to (by its tenant label; the default tenant without
+// one); nil when there is no such Tenant object, which then gets the platform's policy.
+func (r *LabReconciler) tenantOf(ctx context.Context, lab *laboratoryv1alpha1.Lab) (*laboratoryv1alpha1.Tenant, error) {
+	var t laboratoryv1alpha1.Tenant
+	if err := r.Get(ctx, types.NamespacedName{Name: names.TenantOf(lab.Labels)}, &t); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &t, nil
+}
+
 // deviceStateSpec is the state policy of a new Device, decided once at its creation: the
-// topology asked for persistence (devices[].persistence.enabled), the platform allows it
-// and the device runs a container. Otherwise nil: a Deployment. The Device keeps what was
+// topology asked for persistence (devices[].persistence.enabled), the platform and the tenant allow it
+// (its write quota and file size limit are the tenant's, capped by the platform's) and the device runs a container. Otherwise nil: a Deployment. The Device keeps what was
 // stamped, so later changes of the platform switch never change an existing device. One lab
 // may mix both kinds.
-func (r *LabReconciler) deviceStateSpec(lab *laboratoryv1alpha1.Lab, tmpl laboratoryv1alpha1.DeviceTemplate) *laboratoryv1alpha1.DeviceStateSpec {
-	if !r.State.Enabled || tmpl.Persistence == nil || !tmpl.Persistence.Enabled || tmpl.Type != laboratoryv1alpha1.DeviceTypeContainer {
+func (r *LabReconciler) deviceStateSpec(ten *laboratoryv1alpha1.Tenant, tmpl laboratoryv1alpha1.DeviceTemplate) *laboratoryv1alpha1.DeviceStateSpec {
+	pers := tenant.EffectivePersistence(ten, r.State.Enabled, r.State.WriteQuotaBytes, r.State.MaxFileBytes)
+	if !pers.Allowed || tmpl.Persistence == nil || !tmpl.Persistence.Enabled || tmpl.Type != laboratoryv1alpha1.DeviceTypeContainer {
 		return nil
 	}
 	// The topology may set the debounce of a device; the excluded paths and the quota are the platform's.
@@ -82,8 +99,8 @@ func (r *LabReconciler) deviceStateSpec(lab *laboratoryv1alpha1.Lab, tmpl labora
 		Enabled:         true,
 		Debounce:        debounce,
 		ExcludePaths:    append([]string(nil), r.State.ExcludePaths...),
-		WriteQuotaBytes: r.State.WriteQuotaBytes,
-		MaxFileBytes:    r.State.MaxFileBytes,
+		WriteQuotaBytes: pers.WriteQuota,
+		MaxFileBytes:    pers.MaxFileSize,
 		MaxLayers:       r.State.MaxLayers,
 	}
 }

@@ -40,6 +40,8 @@ const (
 	WaitPreparingImages    = "PreparingImages"
 	WaitInsufficient       = "InsufficientResources"
 	WaitNoSchedulableNodes = "NoSchedulableNodes"
+	// WaitTenantQuota: the tenant of the object has reached its CPU or memory quota.
+	WaitTenantQuota = "TenantQuota"
 )
 
 // PodSchedule is the scheduling state of one pod: a Device, or the VPN or
