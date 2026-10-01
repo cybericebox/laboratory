@@ -39,6 +39,9 @@ type DeviceTemplateApplyConfiguration struct {
 	Exposure       *ExposureSpecApplyConfiguration    `json:"exposure,omitempty"`
 	// Resources sets the container resource requests/limits for this device.
 	Resources *DeviceResourcesApplyConfiguration `json:"resources,omitempty"`
+	// Persistence is the optional state-persistence policy of this device, set at
+	// creation and immutable. Unset fields take the platform defaults.
+	Persistence *DevicePersistenceApplyConfiguration `json:"persistence,omitempty"`
 }
 
 // DeviceTemplateApplyConfiguration constructs a declarative configuration of the DeviceTemplate type for use with
@@ -105,5 +108,13 @@ func (b *DeviceTemplateApplyConfiguration) WithExposure(value *ExposureSpecApply
 // If called multiple times, the Resources field is set to the value of the last call.
 func (b *DeviceTemplateApplyConfiguration) WithResources(value *DeviceResourcesApplyConfiguration) *DeviceTemplateApplyConfiguration {
 	b.Resources = value
+	return b
+}
+
+// WithPersistence sets the Persistence field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Persistence field is set to the value of the last call.
+func (b *DeviceTemplateApplyConfiguration) WithPersistence(value *DevicePersistenceApplyConfiguration) *DeviceTemplateApplyConfiguration {
+	b.Persistence = value
 	return b
 }

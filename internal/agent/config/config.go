@@ -29,6 +29,9 @@ type Config struct {
 	MTLS      MTLSConfig
 	// Monitoring bounds the shared journal behind the Monitoring stream.
 	Monitoring MonitoringConfig
+	// StatePersistence is the platform switch for device state persistence: a topology
+	// with devices[].persistence.enabled is refused when it is off.
+	StatePersistence bool `env:"AGENT_STATE_PERSISTENCE_ENABLED" envDefault:"false"`
 	// Cache lets the agent prewarm the platform image cache.
 	Cache CacheConfig
 }

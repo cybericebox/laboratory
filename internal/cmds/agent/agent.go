@@ -43,6 +43,7 @@ func Run() {
 		metrics = nil
 	}
 	h := grpcserver.NewHandler(cs, k8s, metrics, cfg.AgentID)
+	h.SetStatePersistence(cfg.StatePersistence)
 	if cfg.Cache.Enabled {
 		pw, err := prewarmConfig(cfg, k8s)
 		if err != nil {

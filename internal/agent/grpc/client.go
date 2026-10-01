@@ -9,7 +9,6 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/util/retry"
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
@@ -46,6 +45,9 @@ func (h *Handler) CreateLabGroupClients(ctx context.Context, in *protobuf.Create
 	refs := make([]*protobuf.ItemRef, len(items))
 	for i, it := range items {
 		refs[i] = nsRef(it.GetLabGroup(), it.GetName())
+		if err := names.ValidateID(it.GetName()); err != nil {
+			return nil, invalid("item %d: %v", i, err)
+		}
 		if err := validateLabels(it.GetLabels()); err != nil {
 			return nil, invalid("item %d (%s): %v", i, describeRef(refs[i]), err)
 		}
@@ -73,9 +75,7 @@ func (h *Handler) createLabGroupClient(ctx context.Context, resolver *groupResol
 	if err != nil {
 		return failedResult(ref, err), nil
 	}
-	if errs := validation.IsDNS1123Label(it.GetName()); len(errs) > 0 {
-		return failedResult(ref, fmt.Errorf("invalid name %q: %v", it.GetName(), errs)), nil
-	}
+	name := crName(it.GetName())
 	priv, err := wgtypes.GeneratePrivateKey()
 	if err != nil {
 		return failedResult(ref, fmt.Errorf("generate wireguard key: %w", err)), nil
@@ -83,23 +83,23 @@ func (h *Handler) createLabGroupClient(ctx context.Context, resolver *groupResol
 	want := mergeItemLabels(common, it.GetLabels())
 	clients := h.cs.LaboratoryV1alpha1().LabGroupClients(ns)
 	lgc := &laboratoryv1alpha1.LabGroupClient{
-		ObjectMeta: metav1.ObjectMeta{Name: it.GetName(), Namespace: ns, Labels: copyLabels(want)},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: copyLabels(want), Annotations: stampID(nil, it.GetName())},
 	}
 	lgc.Spec.PublicKey = priv.PublicKey().String()
 	_, err = clients.Create(ctx, lgc, metav1.CreateOptions{})
 	if err = createErr(err, kindLabGroupClient, it.GetName(), func() (metav1.Object, error) {
-		return clients.Get(ctx, it.GetName(), metav1.GetOptions{})
+		return clients.Get(ctx, name, metav1.GetOptions{})
 	}); apierrors.IsAlreadyExists(err) {
-		return h.existingLabGroupClient(ctx, ref, ns, it.GetName(), want)
+		return h.existingLabGroupClient(ctx, ref, ns, want)
 	} else if err != nil {
 		return failedResult(ref, err), nil
 	}
 
-	out, err := h.awaitClientConfig(ctx, ns, it.GetName())
+	out, err := h.awaitClientConfig(ctx, ns, name)
 	if err != nil {
 		// The private key would be lost with this call, so the half-made client is
 		// removed: the repetition (retryable, TERMINATING until it is gone) makes a new one.
-		_ = clients.Delete(context.WithoutCancel(ctx), it.GetName(), metav1.DeleteOptions{})
+		_ = clients.Delete(context.WithoutCancel(ctx), name, metav1.DeleteOptions{})
 		res := failedResult(ref, err)
 		res.Retryable = true
 		return res, nil
@@ -113,8 +113,9 @@ func (h *Handler) createLabGroupClient(ctx context.Context, resolver *groupResol
 }
 
 // existingLabGroupClient answers a create of a name that exists: adds missing labels.
-func (h *Handler) existingLabGroupClient(ctx context.Context, ref *protobuf.ItemRef, ns, name string, want map[string]string) (*protobuf.ItemResult, *protobuf.LabGroupClient) {
+func (h *Handler) existingLabGroupClient(ctx context.Context, ref *protobuf.ItemRef, ns string, want map[string]string) (*protobuf.ItemResult, *protobuf.LabGroupClient) {
 	clients := h.cs.LaboratoryV1alpha1().LabGroupClients(ns)
+	name := crName(ref.GetName())
 	state := protobuf.ItemState_ITEM_STATE_EXISTS
 	var cur *laboratoryv1alpha1.LabGroupClient
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -125,6 +126,9 @@ func (h *Handler) existingLabGroupClient(ctx context.Context, ref *protobuf.Item
 		}
 		if err := rejectTerminating(kindLabGroupClient, cur); err != nil {
 			return err
+		}
+		if names.IDOf(cur) != ref.GetName() {
+			return fmt.Errorf("%s %s: the name is taken by another id %q", kindLabGroupClient, ref.GetName(), names.IDOf(cur))
 		}
 		labels, changed := mergeLabels(cur.Labels, want)
 		if !changed {
@@ -185,7 +189,7 @@ func (h *Handler) ListLabGroupClients(ctx context.Context, in *protobuf.ListRequ
 			if err != nil {
 				return nil, err
 			}
-			c, err := h.cs.LaboratoryV1alpha1().LabGroupClients(g.Status.Namespace).Get(ctx, ref.GetName(), metav1.GetOptions{})
+			c, err := h.cs.LaboratoryV1alpha1().LabGroupClients(g.Status.Namespace).Get(ctx, crName(ref.GetName()), metav1.GetOptions{})
 			if apierrors.IsNotFound(err) {
 				continue
 			}
@@ -193,7 +197,7 @@ func (h *Handler) ListLabGroupClients(ctx context.Context, in *protobuf.ListRequ
 				return nil, err
 			}
 			p := clientToProto(c)
-			p.LabGroupName = g.Name
+			p.LabGroupName = names.IDOf(g)
 			out.Items = append(out.Items, p)
 		}
 		return out, nil
@@ -226,7 +230,7 @@ func (h *Handler) UpdateLabGroupClients(ctx context.Context, in *protobuf.Update
 			return nil, err
 		}
 		for _, m := range matches {
-			refs = append(refs, nsRef(m.group, m.client.Name))
+			refs = append(refs, nsRef(m.group, names.IDOf(m.client)))
 		}
 		sortRefs(refs)
 		plan, err := mergeLabelChanges(in.GetLabels(), nil)
@@ -257,7 +261,7 @@ func (h *Handler) UpdateLabGroupClients(ctx context.Context, in *protobuf.Update
 		}
 		clients := h.cs.LaboratoryV1alpha1().LabGroupClients(ns)
 		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			cur, err := clients.Get(ctx, refs[i].GetName(), metav1.GetOptions{})
+			cur, err := clients.Get(ctx, crName(refs[i].GetName()), metav1.GetOptions{})
 			if err != nil {
 				return err
 			}
@@ -288,7 +292,7 @@ func (h *Handler) DeleteLabGroupClients(ctx context.Context, in *protobuf.Delete
 		matches, err := h.listClients(ctx, selector, labGroup)
 		refs := make([]*protobuf.ItemRef, 0, len(matches))
 		for _, m := range matches {
-			refs = append(refs, nsRef(m.group, m.client.Name))
+			refs = append(refs, nsRef(m.group, names.IDOf(m.client)))
 		}
 		return refs, err
 	})
@@ -325,7 +329,7 @@ func (h *Handler) deleteNamespaced(ctx context.Context, in *protobuf.DeleteReque
 		if g.Status.Namespace == "" {
 			return result(refs[i], protobuf.ItemState_ITEM_STATE_NOT_FOUND)
 		}
-		return deleteResult(refs[i], del(ctx, g.Status.Namespace, refs[i].GetName()))
+		return deleteResult(refs[i], del(ctx, g.Status.Namespace, crName(refs[i].GetName())))
 	})}, nil
 }
 

@@ -9,7 +9,6 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/util/retry"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
@@ -29,7 +28,7 @@ type labVariant struct {
 
 // parseVariants parses and validates the variants of a CreateLabs request. A variant id
 // must be unique; a spec must be valid JSON of a Lab spec without device variables.
-func parseVariants(in []*protobuf.LabVariant) (map[string]*labVariant, error) {
+func parseVariants(in []*protobuf.LabVariant, persistence bool) (map[string]*labVariant, error) {
 	out := make(map[string]*labVariant, len(in))
 	for i, v := range in {
 		if v.GetVariantId() == "" {
@@ -38,12 +37,9 @@ func parseVariants(in []*protobuf.LabVariant) (map[string]*labVariant, error) {
 		if _, dup := out[v.GetVariantId()]; dup {
 			return nil, invalid("variant %q is sent twice", v.GetVariantId())
 		}
-		spec, err := parseLabSpec(v.GetSpecJson())
+		spec, err := parseLabSpec(v.GetSpecJson(), persistence)
 		if err != nil {
 			return nil, invalid("variant %q: %v", v.GetVariantId(), err)
-		}
-		if spec.LaunchClass == "" {
-			spec.LaunchClass = v.GetVariantId()
 		}
 		env := mergeEnvLists(v.GetEnv())
 		if err := validateEnv(env, specDevices(&spec)); err != nil {
@@ -66,7 +62,7 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 	if err := validateLabels(in.GetLabels()); err != nil {
 		return nil, invalid("%v", err)
 	}
-	variants, err := parseVariants(in.GetVariants())
+	variants, err := parseVariants(in.GetVariants(), h.statePersistence)
 	if err != nil {
 		return nil, err
 	}
@@ -74,6 +70,15 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 	envs := make([]deviceVars, len(items))
 	for i, it := range items {
 		refs[i] = nsRef(it.GetLabGroup(), it.GetName())
+		if err := names.ValidateID(it.GetName()); err != nil {
+			return nil, invalid("item %d: %v", i, err)
+		}
+		if err := names.ValidateID(it.GetLabGroup()); err != nil {
+			return nil, invalid("item %d: lab_group: %v", i, err)
+		}
+		if _, err := newDeploySpec(it.GetDeployGroup(), it.GetDeployAfter()); err != nil {
+			return nil, invalid("item %d (%s): %v", i, describeRef(refs[i]), err)
+		}
 		v, ok := variants[it.GetVariantId()]
 		if !ok {
 			return nil, invalid("item %d (%s): unknown variant_id %q", i, describeRef(refs[i]), it.GetVariantId())
@@ -113,25 +118,23 @@ func specHash(spec *laboratoryv1alpha1.LabSpec, dep deploySpec) string {
 	raw, _ := json.Marshal(struct {
 		Spec  *laboratoryv1alpha1.LabSpec
 		Group string
-		After string
+		After []string
 	}{spec, dep.group, dep.after})
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }
 
 func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *protobuf.LabItem, v *labVariant, env deviceVars, common map[string]string) (protobuf.ItemState, error) {
-	if errs := validation.IsDNS1123Label(it.GetName()); len(errs) > 0 {
-		return 0, fmt.Errorf("invalid name %q: %v", it.GetName(), errs)
-	}
+	name := crName(it.GetName())
 	ns, err := resolver.namespace(ctx, it.GetLabGroup())
 	if err != nil {
 		return 0, err
 	}
 	want := mergeItemLabels(common, it.GetLabels())
-	dep := newDeploySpec(it.GetDeployGroup(), it.GetDeployAfter())
-	lab := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: it.GetName(), Namespace: ns}}
+	dep, _ := newDeploySpec(it.GetDeployGroup(), it.GetDeployAfter())
+	lab := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
 	v.spec.DeepCopyInto(&lab.Spec)
-	lab.Labels, lab.Annotations = dep.stamp(copyLabels(want), map[string]string{})
+	lab.Labels, lab.Annotations = dep.stamp(copyLabels(want), stampID(nil, it.GetName()))
 	hash := specHash(&lab.Spec, dep)
 	lab.Annotations[names.AnnotationSpecHash] = hash
 
@@ -139,7 +142,7 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 	state := protobuf.ItemState_ITEM_STATE_CREATED
 	out, err := labs.Create(ctx, lab, metav1.CreateOptions{})
 	if err = createErr(err, kindLab, it.GetName(), func() (metav1.Object, error) {
-		return labs.Get(ctx, it.GetName(), metav1.GetOptions{})
+		return labs.Get(ctx, name, metav1.GetOptions{})
 	}); apierrors.IsAlreadyExists(err) {
 		out, state, err = h.existingLab(ctx, ns, it.GetName(), hash, want)
 	}
@@ -163,7 +166,8 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 
 // existingLab answers a create of a name that exists: the same spec (by hash) is fine,
 // a different one is an error. Labels it lacks are added.
-func (h *Handler) existingLab(ctx context.Context, ns, name, hash string, want map[string]string) (*laboratoryv1alpha1.Lab, protobuf.ItemState, error) {
+func (h *Handler) existingLab(ctx context.Context, ns, id, hash string, want map[string]string) (*laboratoryv1alpha1.Lab, protobuf.ItemState, error) {
+	name := crName(id)
 	labs := h.cs.LaboratoryV1alpha1().Labs(ns)
 	state := protobuf.ItemState_ITEM_STATE_EXISTS
 	var cur *laboratoryv1alpha1.Lab
@@ -176,8 +180,11 @@ func (h *Handler) existingLab(ctx context.Context, ns, name, hash string, want m
 		if err := rejectTerminating(kindLab, cur); err != nil {
 			return err
 		}
+		if names.IDOf(cur) != id {
+			return fmt.Errorf("%s %s: the name is taken by another id %q", kindLab, id, names.IDOf(cur))
+		}
 		if cur.Annotations[names.AnnotationSpecHash] != hash {
-			return errDifferentSpec{kindLab, name}
+			return errDifferentSpec{kindLab, id}
 		}
 		labels, changed := mergeLabels(cur.Labels, want)
 		if !changed {
@@ -208,14 +215,14 @@ func (h *Handler) ListLabs(ctx context.Context, in *protobuf.ListRequest) (*prot
 			if err != nil {
 				return nil, err
 			}
-			lab, err := h.cs.LaboratoryV1alpha1().Labs(g.Status.Namespace).Get(ctx, ref.GetName(), metav1.GetOptions{})
+			lab, err := h.cs.LaboratoryV1alpha1().Labs(g.Status.Namespace).Get(ctx, crName(ref.GetName()), metav1.GetOptions{})
 			if apierrors.IsNotFound(err) {
 				continue
 			}
 			if err != nil {
 				return nil, err
 			}
-			matches = append(matches, labMatch{group: g.Name, lab: lab})
+			matches = append(matches, labMatch{group: names.IDOf(g), lab: lab})
 		}
 	} else {
 		var err error
@@ -233,7 +240,7 @@ func (h *Handler) ListLabs(ctx context.Context, in *protobuf.ListRequest) (*prot
 		}
 		p := labToProto(m.lab)
 		p.LabGroupName = m.group
-		fillLabUsage(p, u)
+		fillLabUsage(p, u, m.lab.Name)
 		out.Items = append(out.Items, p)
 	}
 	return out, nil
@@ -272,7 +279,7 @@ func (h *Handler) UpdateLabs(ctx context.Context, in *protobuf.UpdateLabsRequest
 			return nil, err
 		}
 		for _, m := range matches {
-			refs = append(refs, nsRef(m.group, m.lab.Name))
+			refs = append(refs, nsRef(m.group, names.IDOf(m.lab)))
 		}
 		sortRefs(refs)
 		plan, err := planLabChanges(in.GetChanges(), nil)
@@ -313,7 +320,7 @@ func (h *Handler) updateLab(ctx context.Context, resolver *groupResolver, ref *p
 	var cur *laboratoryv1alpha1.Lab
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var err error
-		if cur, err = labs.Get(ctx, ref.GetName(), metav1.GetOptions{}); err != nil {
+		if cur, err = labs.Get(ctx, crName(ref.GetName()), metav1.GetOptions{}); err != nil {
 			return err
 		}
 		if err := rejectTerminating(kindLab, cur); err != nil {
@@ -350,7 +357,7 @@ func (h *Handler) DeleteLabs(ctx context.Context, in *protobuf.DeleteRequest) (*
 		matches, err := h.listLabs(ctx, selector, labGroup)
 		refs := make([]*protobuf.ItemRef, 0, len(matches))
 		for _, m := range matches {
-			refs = append(refs, nsRef(m.group, m.lab.Name))
+			refs = append(refs, nsRef(m.group, names.IDOf(m.lab)))
 		}
 		return refs, err
 	})

@@ -13,8 +13,13 @@ service LabManager {
   // with one ItemResult per item, in the order of the request (selector calls: sorted by
   // reference); one failing item never fails the call. A call fails as a whole (INVALID_ARGUMENT)
   // only for a malformed request: more than 5000 items, a reserved or invalid label, an
-  // invalid selector, a duplicate variant id. Objects are referenced by LabGroup name
-  // and object name, never by namespace; the agent resolves the namespace.
+  // invalid selector, a duplicate variant id. Objects are referenced by their ids
+  // (LabGroup id, object id), never by namespace; the agent resolves the namespace.
+  //
+  // Ids of LabGroups, Labs and LabGroupClients are arbitrary strings of 1 to 64 characters. The
+  // custom resource is named after the id when that is a valid DNS-1123 label (every UUID is),
+  // otherwise "h" + base36(sha256(id)); the original id is kept in an annotation and every
+  // answer (calls, Monitoring) returns the original.
   //
   // Selector calls (List, Update, Delete, device calls): a Kubernetes label selector or explicit
   // items, never both. Update, Delete and the device calls with a selector REQUIRE a
@@ -71,16 +76,13 @@ service LabManager {
   // the image entrypoint (enable=true), or back to normal (enable=false), to repair a
   // configuration that makes the service crash.
   rpc RescueDevices(RescueDevicesRequest) returns (BatchResult) {}
-  // RetryDevices asks the operator to retry the pod of a device whose start failed (the
-  // operator gave up after its retries); every call is a new retry.
-  rpc RetryDevices(DevicesRequest) returns (BatchResult) {}
 }
 
 message Empty {}
 
 // ---- common shapes -------------------------------------------------------------------
 
-// ItemRef names one object. A LabGroup (and the access policy of one) is identified by
+// ItemRef names one object by its ids. A LabGroup (and the access policy of one) is identified by
 // name alone; a LabGroupClient or Lab by lab_group + name; a Device by lab_group + lab +
 // name (the device name).
 message ItemRef {
@@ -142,16 +144,19 @@ message LabelChanges {
 message StringList {repeated string values = 1;}
 
 // Labels of every mutating call: request-level labels apply to every item, the item's
-// own labels win on a conflict. Keys and values must be valid Kubernetes labels; the
+// own labels win on a conflict. They pass through as given and must be valid Kubernetes
+// labels (an invalid one is INVALID_ARGUMENT, naming the item); the
 // prefix laboratory.cybericebox.com/ is reserved for the platform and rejected. Labels
 // go onto the custom resource; a Lab's labels are copied to its Devices and pods when those
 // are created.
 //
-// Scheduling parameters are NOT labels but fields: deploy_group (any string, e.g. a UUID)
-// and deploy_after (deploy groups this one waits for). The agent converts them to
-// label-safe keys (base36 of a UUID, a hash of anything else) and writes the operator-internal
-// label laboratory.cybericebox.com/deploy-group and the annotation
-// laboratory.cybericebox.com/deploy-after (comma-separated keys).
+// Scheduling parameters are NOT labels but fields: deploy_group (at most 64 characters, no
+// comma) and deploy_after (at most 32 deploy groups this one waits for, each at most 64
+// characters, no comma). The agent writes the reserved label laboratory.cybericebox.com/deploy-group
+// (the group itself when it is a valid label value of up to 63 characters, otherwise "h" +
+// base36(sha256)) and the annotations laboratory.cybericebox.com/deploy-group (the original)
+// and laboratory.cybericebox.com/deploy-after (the original keys, comma-separated). Both come
+// back as given in LabGroup and Lab.
 
 // ---- LabGroups ----------------------------------------------------------------------
 
@@ -224,8 +229,11 @@ message SetLabGroupAccessRequest {
 
 // ---- Labs ---------------------------------------------------------------------------
 
-// LabVariant is sent once per request however many labs use it. Device variables are
-// secrets only: spec_json must not carry env or flags on devices (rejected).
+// LabVariant is sent once per request however many labs use it; it is not stored, the
+// spec is copied into every Lab. Device variables are secrets only: spec_json must not
+// carry env or flags on devices (rejected). A device's state persistence is part of the
+// spec (devices[].persistence {enabled, debounce, excludePaths, maxSnapshotSize}), set at
+// creation and immutable; enabled=true is refused when the cluster does not allow persistence.
 message LabVariant {
   string variant_id = 1;
   bytes spec_json = 2;            // Lab.spec serialized; the agent passes it through
@@ -289,6 +297,8 @@ message LabGroup {
   LabGroupStatus status = 2;
   // Kubernetes labels of the LabGroup (the Monitoring selector matches against them).
   map<string, string> labels = 10;
+  string deploy_group = 11;
+  repeated string deploy_after = 12;
 }
 message LabGroupStatus {
   string phase = 1;
@@ -312,6 +322,8 @@ message Lab {
   string lab_group_name = 6;
   // Kubernetes labels of the Lab.
   map<string, string> labels = 10;
+  string deploy_group = 11;
+  repeated string deploy_after = 12;
 }
 // DeviceEnv carries the variables of one device. The agent materializes them into a
 // write-only per-device Secret (the pod loads it via envFrom): they never land in the

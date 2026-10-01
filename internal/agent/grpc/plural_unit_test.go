@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -78,56 +77,67 @@ func TestMergeLabelChanges(t *testing.T) {
 	}
 }
 
-func TestDeployKey(t *testing.T) {
-	id := uuid.New().String()
-	k := deployKey(id)
-	if k == "" || len(k) > 25 || strings.ToLower(k) != k || k != deployKey(strings.ToUpper(id)) {
-		t.Fatalf("uuid key %q", k)
-	}
-	h := deployKey("just some text")
-	if len(h) > 63 || h[0] != 'h' || h != deployKey("just some text") || h == deployKey("other text") {
-		t.Fatalf("hash key %q", h)
-	}
-	if deployKey("") != "" {
-		t.Fatal("empty stays empty")
-	}
-	for _, key := range []string{k, h} {
-		if err := validateLabels(map[string]string{"k": key}); err != nil {
-			t.Fatalf("%q is not label safe: %v", key, err)
-		}
-	}
-	d := newDeploySpec("g", []string{id, "g", id, ""})
-	if d.group != deployKey("g") || d.after != deployKey(id)+","+deployKey("g") {
-		t.Fatalf("deploy spec %+v", d)
+func TestDeploySpec(t *testing.T) {
+	id := "0198c0a4-7a41-7000-8000-000000000001"
+	d, err := newDeploySpec(id, []string{"first", id, "first", ""})
+	if err != nil || d.group != id || len(d.after) != 2 {
+		t.Fatalf("deploy spec %+v %v", d, err)
 	}
 	labels, ann := d.stamp(nil, nil)
-	if labels[names.LabelDeployGroup] != d.group || ann[names.AnnotationDeployAfter] != d.after || !d.matches(labels, ann) {
+	if labels[names.LabelDeployGroup] != id || ann[names.AnnotationDeployGroup] != id || ann[names.AnnotationDeployAfter] != "first,"+id || !d.matches(labels, ann) {
 		t.Fatalf("stamp %v %v", labels, ann)
+	}
+	if g, a := deployOf(ann); g != id || len(a) != 2 || a[0] != "first" {
+		t.Fatalf("read back %q %v", g, a)
+	}
+	// An invalid label value is hashed in the label, the original is kept.
+	d, _ = newDeploySpec("has space", nil)
+	labels, ann = d.stamp(nil, nil)
+	if labels[names.LabelDeployGroup] == "has space" || ann[names.AnnotationDeployGroup] != "has space" {
+		t.Fatalf("hashed %v %v", labels, ann)
+	}
+	for _, bad := range []func() error{
+		func() error { _, err := newDeploySpec(strings.Repeat("x", 65), nil); return err },
+		func() error { _, err := newDeploySpec("a,b", nil); return err },
+		func() error { _, err := newDeploySpec("", []string{"a,b"}); return err },
+		func() error { _, err := newDeploySpec("", []string{strings.Repeat("x", 65)}); return err },
+		func() error {
+			more := make([]string, names.MaxDeployAfter+1)
+			for i := range more {
+				more[i] = string(rune('a' + i))
+			}
+			_, err := newDeploySpec("", more)
+			return err
+		},
+	} {
+		if bad() == nil {
+			t.Error("must be rejected")
+		}
 	}
 }
 
 func TestParseLabSpecRejectsDeviceVariables(t *testing.T) {
 	for _, key := range []string{"env", "flags", "Flag", "envFrom", "environment"} {
 		raw := `{"devices":[{"name":"web","type":"container","` + key + `":[{"name":"X","value":"1"}]}]}`
-		_, err := parseLabSpec([]byte(raw))
+		_, err := parseLabSpec([]byte(raw), false)
 		if err == nil || !strings.Contains(err.Error(), "secrets") {
 			t.Errorf("%s: %v", key, err)
 		}
 	}
-	if _, err := parseLabSpec([]byte(`{"devices":[{"name":"web","type":"container","bogus":1}]}`)); err == nil {
+	if _, err := parseLabSpec([]byte(`{"devices":[{"name":"web","type":"container","bogus":1}]}`), false); err == nil {
 		t.Error("unknown fields are refused")
 	}
-	if _, err := parseLabSpec(nil); err == nil {
+	if _, err := parseLabSpec(nil, false); err == nil {
 		t.Error("an empty spec is refused")
 	}
-	if _, err := parseLabSpec(specJSON("web")); err != nil {
+	if _, err := parseLabSpec(specJSON("web"), false); err != nil {
 		t.Errorf("a plain spec: %v", err)
 	}
 }
 
 func TestParseVariants(t *testing.T) {
-	v, err := parseVariants([]*protobuf.LabVariant{{VariantId: "a", SpecJson: specJSON("web"), Env: []*protobuf.DeviceEnv{envOf("web", "K", "v")}}})
-	if err != nil || v["a"].spec.LaunchClass != "a" || v["a"].env["web"]["K"] != "v" {
+	v, err := parseVariants([]*protobuf.LabVariant{{VariantId: "a", SpecJson: specJSON("web"), Env: []*protobuf.DeviceEnv{envOf("web", "K", "v")}}}, false)
+	if err != nil || v["a"].env["web"]["K"] != "v" {
 		t.Fatalf("%+v %v", v, err)
 	}
 	bad := [][]*protobuf.LabVariant{
@@ -138,7 +148,7 @@ func TestParseVariants(t *testing.T) {
 		{{VariantId: "a", SpecJson: []byte(`{"devices":[{"name":"web","type":"container","env":[]}]}`)}},
 	}
 	for i, b := range bad {
-		if _, err := parseVariants(b); status.Code(err) != codes.InvalidArgument {
+		if _, err := parseVariants(b, false); status.Code(err) != codes.InvalidArgument {
 			t.Errorf("case %d: %v", i, err)
 		}
 	}
@@ -322,4 +332,113 @@ func TestBatchKeepsRequestOrder(t *testing.T) {
 	if len(list.Items) != len(names) {
 		t.Fatalf("listed %d", len(list.Items))
 	}
+}
+
+func TestPersistenceInTheSpec(t *testing.T) {
+	spec := func(p string) []byte {
+		return []byte(`{"devices":[{"name":"web","type":"container","image":"x","persistence":` + p + `}]}`)
+	}
+	if _, err := parseLabSpec(spec(`{"enabled":true}`), false); err == nil || !strings.Contains(err.Error(), "does not allow") {
+		t.Fatalf("persistence off in the cluster: %v", err)
+	}
+	got, err := parseLabSpec(spec(`{"enabled":true,"debounce":"5s","excludePaths":["/tmp"],"maxSnapshotSize":"512Mi"}`), true)
+	if err != nil || !got.Devices[0].Persistence.Enabled || got.Devices[0].Persistence.MaxSnapshotSize != "512Mi" {
+		t.Fatalf("%+v %v", got, err)
+	}
+	// Disabled persistence is fine anywhere.
+	if _, err := parseLabSpec(spec(`{"enabled":false}`), false); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{`{"enabled":true,"debounce":"0s"}`, `{"enabled":true,"excludePaths":["tmp"]}`, `{"enabled":true,"maxSnapshotSize":"lots"}`, `{"enabled":true,"nope":1}`} {
+		if _, err := parseLabSpec(spec(bad), true); err == nil {
+			t.Errorf("%s must be rejected", bad)
+		}
+	}
+}
+
+func TestIDsAreEncodedAndReturned(t *testing.T) {
+	h, _ := newFinalizerHandler(t)
+	ctx := context.Background()
+	uuid := "0198c0a4-7a41-7000-8000-000000000001"
+	res, err := h.CreateLabGroups(ctx, &protobuf.CreateLabGroupsRequest{Items: groupItems(uuid, "Team Alpha!", strings.Repeat("Z", 64))})
+	wantStates(t, res, err, stCreated, stCreated, stCreated)
+	if _, err := h.cs.LaboratoryV1alpha1().LabGroups().Get(ctx, uuid, metav1.GetOptions{}); err != nil {
+		t.Fatalf("a valid id is the CR name: %v", err)
+	}
+	enc := names.EncodeName("Team Alpha!")
+	g, err := h.cs.LaboratoryV1alpha1().LabGroups().Get(ctx, enc, metav1.GetOptions{})
+	if err != nil || g.Annotations[names.AnnotationID] != "Team Alpha!" {
+		t.Fatalf("encoded group: %v %v", g, err)
+	}
+	// Lookups go through the encoding; answers carry the original id.
+	list, err := h.ListLabGroups(ctx, &protobuf.ListRequest{Items: []*protobuf.ItemRef{{Name: "Team Alpha!"}}})
+	if err != nil || len(list.Items) != 1 || list.Items[0].Name != "Team Alpha!" {
+		t.Fatalf("list by id: %v %v", list, err)
+	}
+	if res, err = h.CreateLabGroups(ctx, &protobuf.CreateLabGroupsRequest{Items: groupItems("Team Alpha!")}); err != nil || res.Results[0].State != stExists || res.Results[0].Ref.Name != "Team Alpha!" {
+		t.Fatalf("resend: %v %v", res, err)
+	}
+	del, err := h.DeleteLabGroups(ctx, &protobuf.DeleteRequest{Items: []*protobuf.ItemRef{{Name: "Team Alpha!"}}})
+	wantStates(t, del, err, stDeleted)
+
+	for _, bad := range []string{"", strings.Repeat("a", 65)} {
+		if _, err := h.CreateLabGroups(ctx, &protobuf.CreateLabGroupsRequest{Items: groupItems(bad)}); status.Code(err) != codes.InvalidArgument {
+			t.Errorf("id %q: %v", bad, err)
+		}
+	}
+}
+
+// Labs, clients and policies with encoded ids: the monitoring feed and the lists show the originals.
+func TestEncodedIDsInMonitoring(t *testing.T) {
+	grp := &laboratoryv1alpha1.LabGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: names.EncodeName("Team X"), Annotations: map[string]string{names.AnnotationID: "Team X"}},
+		Status:     laboratoryv1alpha1.LabGroupStatus{Namespace: "ns-x"},
+	}
+	h, _ := newFinalizerHandler(t, grp)
+	ctx := context.Background()
+	res, err := h.CreateLabs(ctx, &protobuf.CreateLabsRequest{
+		Variants: []*protobuf.LabVariant{{VariantId: "v", SpecJson: specJSON("web")}},
+		Items:    []*protobuf.LabItem{{LabGroup: "Team X", Name: "Lab One", VariantId: "v"}},
+	})
+	wantStates(t, res, err, stCreated)
+	h.cs.LaboratoryV1alpha1().LabGroupClients("ns-x").Create(ctx, &laboratoryv1alpha1.LabGroupClient{ObjectMeta: metav1.ObjectMeta{
+		Name: names.EncodeName("Alice A"), Namespace: "ns-x", Annotations: map[string]string{names.AnnotationID: "Alice A"}}}, metav1.CreateOptions{})
+	acc, err := h.SetLabGroupAccess(ctx, &protobuf.SetLabGroupAccessRequest{Policies: []*protobuf.LabGroupAccessPolicy{{
+		LabGroupName: "Team X",
+		Rules:        []*protobuf.LabGroupAccessRule{{Action: protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_ALLOW, ClientNames: []string{"Alice A", "bob"}, LabNames: []string{"Lab One"}}},
+	}}})
+	wantStates(t, acc, err, stCreated)
+	stored, _ := h.cs.LaboratoryV1alpha1().LabGroupAccessPolicies("ns-x").Get(ctx, names.LabGroupAccessPolicyName, metav1.GetOptions{})
+	if stored.Spec.Rules[0].LabNames[0] != names.EncodeName("Lab One") {
+		t.Fatalf("the reconciler matches CR names: %v", stored.Spec.Rules)
+	}
+	if acc, err = h.SetLabGroupAccess(ctx, &protobuf.SetLabGroupAccessRequest{Policies: []*protobuf.LabGroupAccessPolicy{{
+		LabGroupName: "Team X",
+		Rules:        []*protobuf.LabGroupAccessRule{{Action: protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_ALLOW, ClientNames: []string{"Alice A", "bob"}, LabNames: []string{"Lab One"}}},
+	}}}); err != nil || acc.Results[0].State != stExists {
+		t.Fatalf("resend: %v %v", acc, err)
+	}
+
+	st, err := h.collect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := st.update
+	if u.Groups[0].Name != "Team X" || u.Labs[0].Name != "Lab One" || u.Labs[0].LabGroupName != "Team X" || u.Clients[0].Name != "Alice A" || u.Clients[0].LabGroupName != "Team X" {
+		t.Fatalf("ids in monitoring: %v %v %v", u.Groups, u.Labs, u.Clients)
+	}
+	rule := u.Policies[0].Rules[0]
+	if rule.LabNames[0] != "Lab One" || rule.ClientNames[0] != "Alice A" || rule.ClientNames[1] != "bob" {
+		t.Fatalf("policy ids: %v", rule)
+	}
+	// The filter keys use ids too.
+	if _, ok := st.labels[recordKey("lab", "Team X", "ns-x", "Lab One")]; !ok {
+		t.Fatal("record key with the id")
+	}
+	list, err := h.ListLabs(ctx, &protobuf.ListRequest{LabGroup: "Team X"})
+	if err != nil || len(list.Items) != 1 || list.Items[0].Name != "Lab One" {
+		t.Fatalf("list: %v %v", list, err)
+	}
+	del, err := h.DeleteLabs(ctx, &protobuf.DeleteRequest{Items: []*protobuf.ItemRef{{LabGroup: "Team X", Name: "Lab One"}}})
+	wantStates(t, del, err, stDeleted)
 }

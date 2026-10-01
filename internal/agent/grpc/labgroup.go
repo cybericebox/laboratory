@@ -7,10 +7,10 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/util/retry"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -32,7 +32,13 @@ func (h *Handler) CreateLabGroups(ctx context.Context, in *protobuf.CreateLabGro
 	refs := make([]*protobuf.ItemRef, len(items))
 	for i, it := range items {
 		refs[i] = groupRef(it.GetName())
+		if err := names.ValidateID(it.GetName()); err != nil {
+			return nil, invalid("item %d: %v", i, err)
+		}
 		if err := validateLabels(it.GetLabels()); err != nil {
+			return nil, invalid("item %d (%s): %v", i, it.GetName(), err)
+		}
+		if _, err := newDeploySpec(it.GetDeployGroup(), it.GetDeployAfter()); err != nil {
 			return nil, invalid("item %d (%s): %v", i, it.GetName(), err)
 		}
 	}
@@ -46,24 +52,22 @@ func (h *Handler) CreateLabGroups(ctx context.Context, in *protobuf.CreateLabGro
 
 func (h *Handler) createLabGroup(ctx context.Context, it *protobuf.LabGroupItem, common map[string]string) *protobuf.ItemResult {
 	ref := groupRef(it.GetName())
-	if errs := validation.IsDNS1123Label(it.GetName()); len(errs) > 0 {
-		return failedResult(ref, fmt.Errorf("invalid name %q: %v", it.GetName(), errs))
-	}
+	name := crName(it.GetName())
 	groups := h.cs.LaboratoryV1alpha1().LabGroups()
 	want := mergeItemLabels(common, it.GetLabels())
-	dep := newDeploySpec(it.GetDeployGroup(), it.GetDeployAfter())
-	lg := &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: it.GetName()}}
+	dep, _ := newDeploySpec(it.GetDeployGroup(), it.GetDeployAfter())
+	lg := &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: name}}
 	lg.Spec.Suspended = it.GetSuspended()
 	lg.Spec.VPN.Disabled = it.GetVpnDisabled()
 	lg.Spec.VPN.ProbeWhileSuspended = it.GetProbeWhileSuspended()
-	lg.Labels, lg.Annotations = dep.stamp(copyLabels(want), nil)
+	lg.Labels, lg.Annotations = dep.stamp(copyLabels(want), stampID(nil, it.GetName()))
 
 	_, err := groups.Create(ctx, lg, metav1.CreateOptions{})
 	if err == nil {
 		return result(ref, protobuf.ItemState_ITEM_STATE_CREATED)
 	}
 	if err = createErr(err, kindLabGroup, it.GetName(), func() (metav1.Object, error) {
-		return groups.Get(ctx, it.GetName(), metav1.GetOptions{})
+		return groups.Get(ctx, name, metav1.GetOptions{})
 	}); !apierrors.IsAlreadyExists(err) {
 		return failedResult(ref, err)
 	}
@@ -71,12 +75,15 @@ func (h *Handler) createLabGroup(ctx context.Context, it *protobuf.LabGroupItem,
 	state := protobuf.ItemState_ITEM_STATE_EXISTS
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		state = protobuf.ItemState_ITEM_STATE_EXISTS
-		cur, err := groups.Get(ctx, it.GetName(), metav1.GetOptions{})
+		cur, err := groups.Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return err
 		}
 		if err := rejectTerminating(kindLabGroup, cur); err != nil {
 			return err
+		}
+		if names.IDOf(cur) != it.GetName() {
+			return fmt.Errorf("%s %s: the name is taken by another id %q", kindLabGroup, it.GetName(), names.IDOf(cur))
 		}
 		if cur.Spec.Suspended != lg.Spec.Suspended || cur.Spec.VPN.Disabled != lg.Spec.VPN.Disabled ||
 			cur.Spec.VPN.ProbeWhileSuspended != lg.Spec.VPN.ProbeWhileSuspended || !dep.matches(cur.Labels, cur.Annotations) {
@@ -113,7 +120,7 @@ func (h *Handler) ListLabGroups(ctx context.Context, in *protobuf.ListRequest) (
 	groups := h.cs.LaboratoryV1alpha1().LabGroups()
 	if len(in.GetItems()) > 0 {
 		for _, ref := range in.GetItems() {
-			g, err := groups.Get(ctx, ref.GetName(), metav1.GetOptions{})
+			g, err := groups.Get(ctx, crName(ref.GetName()), metav1.GetOptions{})
 			if apierrors.IsNotFound(err) {
 				continue
 			}
@@ -165,7 +172,7 @@ func (h *Handler) UpdateLabGroups(ctx context.Context, in *protobuf.UpdateLabGro
 			return nil, err
 		}
 		for i := range list.Items {
-			targets = append(targets, groupTarget{ref: groupRef(list.Items[i].Name)})
+			targets = append(targets, groupTarget{ref: groupRef(names.IDOf(&list.Items[i]))})
 		}
 		sort.Slice(targets, func(i, j int) bool { return refKey(targets[i].ref) < refKey(targets[j].ref) })
 	} else {
@@ -226,7 +233,7 @@ func planGroupChanges(common, item *protobuf.LabGroupChanges) (groupPlan, error)
 func (h *Handler) updateLabGroup(ctx context.Context, ref *protobuf.ItemRef, p groupPlan) *protobuf.ItemResult {
 	groups := h.cs.LaboratoryV1alpha1().LabGroups()
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		cur, err := groups.Get(ctx, ref.GetName(), metav1.GetOptions{})
+		cur, err := groups.Get(ctx, crName(ref.GetName()), metav1.GetOptions{})
 		if err != nil {
 			return err
 		}
@@ -276,7 +283,7 @@ func (h *Handler) DeleteLabGroups(ctx context.Context, in *protobuf.DeleteReques
 			return nil, err
 		}
 		for i := range list.Items {
-			refs = append(refs, groupRef(list.Items[i].Name))
+			refs = append(refs, groupRef(names.IDOf(&list.Items[i])))
 		}
 		sortRefs(refs)
 	} else {
@@ -288,7 +295,7 @@ func (h *Handler) DeleteLabGroups(ctx context.Context, in *protobuf.DeleteReques
 		}
 	}
 	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
-		return deleteResult(refs[i], h.cs.LaboratoryV1alpha1().LabGroups().Delete(ctx, refs[i].GetName(), metav1.DeleteOptions{}))
+		return deleteResult(refs[i], h.cs.LaboratoryV1alpha1().LabGroups().Delete(ctx, crName(refs[i].GetName()), metav1.DeleteOptions{}))
 	})}, nil
 }
 

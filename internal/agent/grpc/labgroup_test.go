@@ -37,7 +37,7 @@ func TestLabGroupsEndToEnd(t *testing.T) {
 	if a.Labels["tier"] != "own" || a.Labels["event"] != "e1" || b.Labels["tier"] != "common" {
 		t.Fatalf("labels: %v %v", a.Labels, b.Labels)
 	}
-	if a.Labels[names.LabelDeployGroup] != deployKey(deployGroup) || a.Annotations[names.AnnotationDeployAfter] != deployKey("first")+","+deployKey(deployGroup) {
+	if a.Labels[names.LabelDeployGroup] != deployGroup || a.Annotations[names.AnnotationDeployGroup] != deployGroup || a.Annotations[names.AnnotationDeployAfter] != "first,"+deployGroup {
 		t.Fatalf("scheduling metadata: %v %v", a.Labels, a.Annotations)
 	}
 	if _, ok := b.Labels[names.LabelDeployGroup]; ok {

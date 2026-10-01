@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -48,7 +49,7 @@ func (h *Handler) deviceTargets(ctx context.Context, in *protobuf.DevicesRequest
 	}
 	refs := make([]*protobuf.ItemRef, 0, len(matches))
 	for _, m := range matches {
-		refs = append(refs, &protobuf.ItemRef{LabGroup: m.group, Lab: m.lab.Name, Name: sel.GetDevice()})
+		refs = append(refs, &protobuf.ItemRef{LabGroup: m.group, Lab: names.IDOf(m.lab), Name: sel.GetDevice()})
 	}
 	sortRefs(refs)
 	return refs, nil
@@ -100,22 +101,13 @@ func (h *Handler) RescueDevices(ctx context.Context, in *protobuf.RescueDevicesR
 	})
 }
 
-// RetryDevices asks the operator to retry the pod of devices whose start failed: a new
-// retry token on the Device is what the operator acts on, so every call is a new retry.
-func (h *Handler) RetryDevices(ctx context.Context, in *protobuf.DevicesRequest) (*protobuf.BatchResult, error) {
-	return h.patchDevices(ctx, in, false, func() (map[string]any, error) {
-		token, err := newToken()
-		return map[string]any{"retryToken": token}, err
-	})
-}
-
 // patchDevice merge-patches the spec of the Device "<lab>-<device>".
 func (h *Handler) patchDevice(ctx context.Context, resolver *groupResolver, ref *protobuf.ItemRef, needState bool, spec map[string]any) error {
 	ns, err := resolver.namespace(ctx, ref.GetLabGroup())
 	if err != nil {
 		return err
 	}
-	name := fmt.Sprintf("%s-%s", ref.GetLab(), ref.GetName())
+	name := fmt.Sprintf("%s-%s", crName(ref.GetLab()), ref.GetName())
 	devices := h.cs.LaboratoryV1alpha1().Devices(ns)
 	cur, err := devices.Get(ctx, name, metav1.GetOptions{})
 	if err != nil {

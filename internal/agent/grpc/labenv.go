@@ -9,6 +9,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 
@@ -81,7 +82,7 @@ var forbiddenDeviceKeys = []string{"env", "envs", "environment", "envfrom", "fla
 
 // parseLabSpec reads spec_json into a LabSpec. It rejects unknown fields and, with a
 // clear message, any env/flags field on devices.
-func parseLabSpec(raw []byte) (laboratoryv1alpha1.LabSpec, error) {
+func parseLabSpec(raw []byte, persistence bool) (laboratoryv1alpha1.LabSpec, error) {
 	var spec laboratoryv1alpha1.LabSpec
 	if len(raw) == 0 {
 		return spec, fmt.Errorf("spec_json is empty")
@@ -106,7 +107,39 @@ func parseLabSpec(raw []byte) (laboratoryv1alpha1.LabSpec, error) {
 	if err := dec.Decode(&spec); err != nil {
 		return spec, fmt.Errorf("spec_json: %w", err)
 	}
+	for i := range spec.Devices {
+		if err := validatePersistence(&spec.Devices[i], persistence); err != nil {
+			return spec, fmt.Errorf("spec_json: device %q: %w", spec.Devices[i].Name, err)
+		}
+	}
 	return spec, nil
+}
+
+// validatePersistence checks a device's persistence request: enabled only when the
+// cluster allows persistence, a positive debounce, absolute exclude paths, a valid size.
+func validatePersistence(d *laboratoryv1alpha1.DeviceTemplate, allowed bool) error {
+	p := d.Persistence
+	if p == nil {
+		return nil
+	}
+	if p.Enabled && !allowed {
+		return fmt.Errorf("persistence.enabled: the cluster does not allow state persistence")
+	}
+	if p.Debounce != nil && p.Debounce.Duration <= 0 {
+		return fmt.Errorf("persistence.debounce must be positive")
+	}
+	for _, path := range p.ExcludePaths {
+		if !strings.HasPrefix(path, "/") {
+			return fmt.Errorf("persistence.excludePaths: %q is not absolute", path)
+		}
+	}
+	if p.MaxSnapshotSize != "" {
+		q, err := resource.ParseQuantity(p.MaxSnapshotSize)
+		if err != nil || q.Sign() <= 0 {
+			return fmt.Errorf("persistence.maxSnapshotSize %q is not a positive quantity", p.MaxSnapshotSize)
+		}
+	}
+	return nil
 }
 
 // writeDeviceSecrets materializes per-device variables into write-only Secrets named

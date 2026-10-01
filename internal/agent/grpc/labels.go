@@ -1,13 +1,10 @@
 package grpc
 
 import (
-	"crypto/sha256"
 	"fmt"
-	"math/big"
 	"sort"
 	"strings"
 
-	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -136,38 +133,46 @@ func (p labelPlan) apply(cur map[string]string) (map[string]string, bool) {
 	return out, changed || c
 }
 
-// deployKey converts a deploy group (or a deploy_after entry) to a label-safe key
-// of at most 63 characters: base36 of the UUID when it is one, otherwise "h" and
-// the base36 of the SHA-256. Empty stays empty.
-func deployKey(s string) string {
-	if s == "" {
-		return ""
-	}
-	if id, err := uuid.Parse(s); err == nil {
-		return new(big.Int).SetBytes(id[:]).Text(36)
-	}
-	sum := sha256.Sum256([]byte(s))
-	return "h" + new(big.Int).SetBytes(sum[:]).Text(36)
-}
-
-// deploySpec is the scheduling metadata of an object as the operator reads it:
-// the deploy-group label value and the deploy-after annotation value.
+// deploySpec is the scheduling metadata of an object: the original deploy group and
+// deploy_after keys. On the object the group is the reserved label (names.DeployKey of
+// it) and the annotations hold the originals.
 type deploySpec struct {
 	group string
-	after string
+	after []string
 }
 
-func newDeploySpec(group string, after []string) deploySpec {
-	var keys []string
+// newDeploySpec validates the scheduling fields: a group of at most 64 characters, at
+// most 32 deploy_after keys of at most 64 characters each, none with a comma (the
+// annotation is comma-separated). Duplicates and empty keys are dropped.
+func newDeploySpec(group string, after []string) (deploySpec, error) {
+	d := deploySpec{group: group}
+	if err := checkDeployKey(group); err != nil {
+		return d, fmt.Errorf("deploy_group: %w", err)
+	}
+	if len(after) > names.MaxDeployAfter {
+		return d, fmt.Errorf("deploy_after has %d keys, at most %d", len(after), names.MaxDeployAfter)
+	}
 	seen := map[string]bool{}
 	for _, a := range after {
-		k := deployKey(a)
-		if k != "" && !seen[k] {
-			seen[k] = true
-			keys = append(keys, k)
+		if err := checkDeployKey(a); err != nil {
+			return d, fmt.Errorf("deploy_after: %w", err)
+		}
+		if a != "" && !seen[a] {
+			seen[a] = true
+			d.after = append(d.after, a)
 		}
 	}
-	return deploySpec{group: deployKey(group), after: strings.Join(keys, ",")}
+	return d, nil
+}
+
+func checkDeployKey(k string) error {
+	if len(k) > names.MaxIDLen {
+		return fmt.Errorf("%q is longer than %d characters", k, names.MaxIDLen)
+	}
+	if strings.Contains(k, ",") {
+		return fmt.Errorf("%q has a comma", k)
+	}
+	return nil
 }
 
 // stamp writes the scheduling metadata into labels and annotations (allocating them).
@@ -176,20 +181,47 @@ func (d deploySpec) stamp(labels, annotations map[string]string) (map[string]str
 		if labels == nil {
 			labels = map[string]string{}
 		}
-		labels[names.LabelDeployGroup] = d.group
-	}
-	if d.after != "" {
 		if annotations == nil {
 			annotations = map[string]string{}
 		}
-		annotations[names.AnnotationDeployAfter] = d.after
+		labels[names.LabelDeployGroup] = names.DeployKey(d.group)
+		annotations[names.AnnotationDeployGroup] = d.group
+	}
+	if len(d.after) > 0 {
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations[names.AnnotationDeployAfter] = strings.Join(d.after, ",")
 	}
 	return labels, annotations
 }
 
 // matches reports whether an object already carries exactly this metadata.
 func (d deploySpec) matches(labels, annotations map[string]string) bool {
-	return labels[names.LabelDeployGroup] == d.group && annotations[names.AnnotationDeployAfter] == d.after
+	return labels[names.LabelDeployGroup] == names.DeployKey(d.group) &&
+		annotations[names.AnnotationDeployGroup] == d.group &&
+		annotations[names.AnnotationDeployAfter] == strings.Join(d.after, ",")
+}
+
+// deployOf reads the original scheduling fields of an object back.
+func deployOf(annotations map[string]string) (string, []string) {
+	var after []string
+	if v := annotations[names.AnnotationDeployAfter]; v != "" {
+		after = strings.Split(v, ",")
+	}
+	return annotations[names.AnnotationDeployGroup], after
+}
+
+// crName is the CR name of a client-supplied id.
+func crName(id string) string { return names.EncodeName(id) }
+
+// stampID records the original id on an object.
+func stampID(annotations map[string]string, id string) map[string]string {
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	annotations[names.AnnotationID] = id
+	return annotations
 }
 
 func invalid(format string, a ...any) error {

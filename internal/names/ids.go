@@ -1,0 +1,79 @@
+package names
+
+import (
+	"crypto/sha256"
+	"fmt"
+	"math/big"
+	"strings"
+
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/util/validation"
+)
+
+const (
+	// MaxIDLen is the longest client-supplied object id (LabGroup, Lab, LabGroupClient,
+	// deploy group).
+	MaxIDLen = 64
+	// MaxDeployAfter is the most deploy_after keys of one object.
+	MaxDeployAfter = 32
+
+	// AnnotationID holds the id a client gave an object: the CR name is derived from
+	// it (EncodeName) and every answer returns the original.
+	AnnotationID = LabelPrefix + "id"
+	// AnnotationDeployGroup holds the original deploy group (the label holds DeployKey of it).
+	AnnotationDeployGroup = LabelPrefix + "deploy-group"
+	// AnnotationIDMap is JSON {encoded: original} of the object names a policy refers to
+	// whose CR name differs from the id.
+	AnnotationIDMap = LabelPrefix + "id-map"
+)
+
+// ValidateID checks a client-supplied id: not empty, at most MaxIDLen bytes, no control
+// characters.
+func ValidateID(id string) error {
+	if id == "" {
+		return fmt.Errorf("id is empty")
+	}
+	if len(id) > MaxIDLen {
+		return fmt.Errorf("id %q is longer than %d characters", id, MaxIDLen)
+	}
+	if strings.ContainsFunc(id, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return fmt.Errorf("id %q has control characters", id)
+	}
+	return nil
+}
+
+func hashKey(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	return "h" + new(big.Int).SetBytes(sum[:]).Text(36)
+}
+
+// EncodeName is the CR name of an object id: the id itself when it already is a valid
+// DNS-1123 label (lowercase, at most 63 characters; every UUID is), otherwise "h" and the
+// base36 of its SHA-256 (51 characters).
+func EncodeName(id string) string {
+	if len(id) <= 63 && len(validation.IsDNS1123Label(id)) == 0 {
+		return id
+	}
+	return hashKey(id)
+}
+
+// DeployKey is the label value of a deploy group (or a deploy_after entry): the key itself
+// when it is a valid label value of at most 63 characters, otherwise "h" and the base36 of
+// its SHA-256. Empty stays empty. The operator maps deploy-after annotations with it too.
+func DeployKey(key string) string {
+	if key == "" || (len(key) <= 63 && len(validation.IsValidLabelValue(key)) == 0) {
+		return key
+	}
+	return hashKey(key)
+}
+
+// IDOf is the id of an object: the original from the annotation, or the CR name of an
+// object that was not made by the agent.
+func IDOf(obj interface{ GetName() string }) string {
+	if a, err := meta.Accessor(obj); err == nil {
+		if id := a.GetAnnotations()[AnnotationID]; id != "" {
+			return id
+		}
+	}
+	return obj.GetName()
+}

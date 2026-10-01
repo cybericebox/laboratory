@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -61,42 +62,50 @@ func (h *Handler) collect(ctx context.Context) (*monState, error) {
 	st.update = upd
 	for i := range groups.Items {
 		g := &groups.Items[i]
+		gid := names.IDOf(g)
 		upd.Groups = append(upd.Groups, labGroupToProto(g))
-		st.labels[recordKey("lab_group", g.Name, "", g.Name)] = g.Labels
+		st.labels[recordKey("lab_group", gid, "", gid)] = g.Labels
 		ns := g.Status.Namespace
 		if ns == "" {
 			continue
 		}
+		// CR name -> id, to give the ids back in what the collectors report by CR name.
+		labIDs, clientIDs := map[string]string{}, map[string]string{}
 		labs, err := h.cs.LaboratoryV1alpha1().Labs(ns).List(ctx, metav1.ListOptions{})
 		if err == nil {
 			usage := h.namespaceUsage(ctx, ns)
 			pods := h.namespacePodStatus(ctx, ns)
 			for j := range labs.Items {
-				p := labMonitoringToProto(&labs.Items[j], g.Name)
-				fillLabUsage(p, usage)
-				fillLabPodStatus(p, pods)
+				lab := &labs.Items[j]
+				p := labMonitoringToProto(lab, gid)
+				fillLabUsage(p, usage, lab.Name)
+				fillLabPodStatus(p, pods, lab.Name)
 				upd.Labs = append(upd.Labs, p)
-				st.labels[recordKey("lab", g.Name, ns, labs.Items[j].Name)] = labs.Items[j].Labels
-				st.labLabels[labLabelKey(g.Name, labs.Items[j].Name)] = labs.Items[j].Labels
+				labIDs[lab.Name] = p.Name
+				st.labels[recordKey("lab", gid, ns, p.Name)] = lab.Labels
+				st.labLabels[labLabelKey(gid, p.Name)] = lab.Labels
 			}
 		}
 		clients, err := h.cs.LaboratoryV1alpha1().LabGroupClients(ns).List(ctx, metav1.ListOptions{})
 		if err == nil {
 			for j := range clients.Items {
-				upd.Clients = append(upd.Clients, clientMonitoringToProto(&clients.Items[j], g.Name))
-				st.labels[recordKey("client", g.Name, ns, clients.Items[j].Name)] = clients.Items[j].Labels
+				p := clientMonitoringToProto(&clients.Items[j], gid)
+				upd.Clients = append(upd.Clients, p)
+				clientIDs[clients.Items[j].Name] = p.Name
+				st.labels[recordKey("client", gid, ns, p.Name)] = clients.Items[j].Labels
 			}
 		}
 		policy, err := h.cs.LaboratoryV1alpha1().LabGroupAccessPolicies(ns).Get(ctx, "access-policy", metav1.GetOptions{})
 		if err == nil {
-			upd.Policies = append(upd.Policies, accessPolicyToProto(policy, g.Name))
-			st.labels[recordKey("access_policy", g.Name, ns, "access-policy")] = policy.Labels
+			upd.Policies = append(upd.Policies, accessPolicyToProto(policy, gid))
+			st.labels[recordKey("access_policy", gid, ns, "access-policy")] = policy.Labels
 		}
 		reports, err := h.cs.LaboratoryV1alpha1().LabTrafficReports(ns).List(ctx, metav1.ListOptions{})
 		if err == nil {
 			var proxies []*protobuf.TrafficReport
 			for j := range reports.Items {
-				report := trafficReportToProto(&reports.Items[j], g.Name)
+				report := trafficReportToProto(&reports.Items[j], gid)
+				restoreTrafficIDs(report, labIDs, clientIDs)
 				if report.GetKind() == "proxy" {
 					proxies = append(proxies, report)
 					continue
@@ -379,4 +388,19 @@ func sortTraffic(update *protobuf.MonitoringUpdate) {
 
 func monitoringDeletedKeyString(key *protobuf.MonitoringDeletedKey) string {
 	return strings.Join([]string{key.GetKind(), key.GetLabGroupName(), key.GetNamespace(), key.GetName()}, "\x00")
+}
+
+// restoreTrafficIDs replaces the CR names a collector reports (labs, and VPN clients as
+// subjects) by their ids.
+func restoreTrafficIDs(r *protobuf.TrafficReport, labIDs, clientIDs map[string]string) {
+	for _, t := range r.GetLedger() {
+		if id, ok := labIDs[t.LabName]; ok {
+			t.LabName = id
+		}
+		if r.GetKind() == "vpn" {
+			if id, ok := clientIDs[t.Subject]; ok {
+				t.Subject = id
+			}
+		}
+	}
 }

@@ -66,17 +66,23 @@ func (h *Handler) namespaceUsage(ctx context.Context, ns string) map[usageKey]de
 }
 
 // fillLabUsage sets live per-device usage on a proto Lab from a namespace usage
-// map. A nil map (metrics unavailable) leaves usage at zero.
-func fillLabUsage(lab *protobuf.Lab, usage map[usageKey]deviceUsage) {
+// map. A nil map (metrics unavailable) leaves usage at zero. Pods are keyed by the
+// CR name of the lab, which differs from lab.Name (the id) for an id that had to be encoded:
+// pass it as crName.
+func fillLabUsage(lab *protobuf.Lab, usage map[usageKey]deviceUsage, crName ...string) {
 	if lab.GetStatus() == nil {
 		return
+	}
+	key := lab.Name
+	if len(crName) > 0 {
+		key = crName[0]
 	}
 	for _, d := range lab.Status.Devices {
 		d.UsageAvailable = usage != nil
 		if usage == nil {
 			continue
 		}
-		if u, ok := usage[usageKey{lab: lab.Name, device: d.Name}]; ok {
+		if u, ok := usage[usageKey{lab: key, device: d.Name}]; ok {
 			d.CpuMillicores = u.cpuMillicores
 			d.MemoryBytes = u.memoryBytes
 		}
@@ -103,12 +109,16 @@ func (h *Handler) namespacePodStatus(ctx context.Context, ns string) map[usageKe
 	return statuses
 }
 
-func fillLabPodStatus(lab *protobuf.Lab, pods map[usageKey]devicePodStatus) {
+func fillLabPodStatus(lab *protobuf.Lab, pods map[usageKey]devicePodStatus, crName ...string) {
 	if pods == nil || lab.GetStatus() == nil {
 		return
 	}
+	key := lab.Name
+	if len(crName) > 0 {
+		key = crName[0]
+	}
 	for _, device := range lab.Status.Devices {
-		status, found := pods[usageKey{lab: lab.Name, device: device.Name}]
+		status, found := pods[usageKey{lab: key, device: device.Name}]
 		if !found {
 			continue
 		}

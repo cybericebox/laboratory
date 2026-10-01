@@ -38,7 +38,6 @@ const (
 	LabManager_PrewarmImages_FullMethodName         = "/labmanager.LabManager/PrewarmImages"
 	LabManager_ResetDevices_FullMethodName          = "/labmanager.LabManager/ResetDevices"
 	LabManager_RescueDevices_FullMethodName         = "/labmanager.LabManager/RescueDevices"
-	LabManager_RetryDevices_FullMethodName          = "/labmanager.LabManager/RetryDevices"
 )
 
 // LabManagerClient is the client API for LabManager service.
@@ -88,9 +87,6 @@ type LabManagerClient interface {
 	// the image entrypoint (enable=true), or back to normal (enable=false), to repair a
 	// configuration that makes the service crash.
 	RescueDevices(ctx context.Context, in *RescueDevicesRequest, opts ...grpc.CallOption) (*BatchResult, error)
-	// RetryDevices asks the operator to retry the pod of a device whose start failed (the
-	// operator gave up after its retries); every call is a new retry.
-	RetryDevices(ctx context.Context, in *DevicesRequest, opts ...grpc.CallOption) (*BatchResult, error)
 }
 
 type labManagerClient struct {
@@ -300,16 +296,6 @@ func (c *labManagerClient) RescueDevices(ctx context.Context, in *RescueDevicesR
 	return out, nil
 }
 
-func (c *labManagerClient) RetryDevices(ctx context.Context, in *DevicesRequest, opts ...grpc.CallOption) (*BatchResult, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(BatchResult)
-	err := c.cc.Invoke(ctx, LabManager_RetryDevices_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // LabManagerServer is the server API for LabManager service.
 // All implementations must embed UnimplementedLabManagerServer
 // for forward compatibility.
@@ -357,9 +343,6 @@ type LabManagerServer interface {
 	// the image entrypoint (enable=true), or back to normal (enable=false), to repair a
 	// configuration that makes the service crash.
 	RescueDevices(context.Context, *RescueDevicesRequest) (*BatchResult, error)
-	// RetryDevices asks the operator to retry the pod of a device whose start failed (the
-	// operator gave up after its retries); every call is a new retry.
-	RetryDevices(context.Context, *DevicesRequest) (*BatchResult, error)
 	mustEmbedUnimplementedLabManagerServer()
 }
 
@@ -426,9 +409,6 @@ func (UnimplementedLabManagerServer) ResetDevices(context.Context, *DevicesReque
 }
 func (UnimplementedLabManagerServer) RescueDevices(context.Context, *RescueDevicesRequest) (*BatchResult, error) {
 	return nil, status.Error(codes.Unimplemented, "method RescueDevices not implemented")
-}
-func (UnimplementedLabManagerServer) RetryDevices(context.Context, *DevicesRequest) (*BatchResult, error) {
-	return nil, status.Error(codes.Unimplemented, "method RetryDevices not implemented")
 }
 func (UnimplementedLabManagerServer) mustEmbedUnimplementedLabManagerServer() {}
 func (UnimplementedLabManagerServer) testEmbeddedByValue()                    {}
@@ -786,24 +766,6 @@ func _LabManager_RescueDevices_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
-func _LabManager_RetryDevices_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(DevicesRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(LabManagerServer).RetryDevices(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: LabManager_RetryDevices_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(LabManagerServer).RetryDevices(ctx, req.(*DevicesRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 // LabManager_ServiceDesc is the grpc.ServiceDesc for LabManager service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -882,10 +844,6 @@ var LabManager_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RescueDevices",
 			Handler:    _LabManager_RescueDevices_Handler,
-		},
-		{
-			MethodName: "RetryDevices",
-			Handler:    _LabManager_RetryDevices_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

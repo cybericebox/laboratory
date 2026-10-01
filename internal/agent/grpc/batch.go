@@ -122,7 +122,7 @@ func (r *groupResolver) get(ctx context.Context, name string) (*laboratoryv1alph
 	}
 	r.mu.Unlock()
 	e.once.Do(func() {
-		e.group, e.err = r.h.cs.LaboratoryV1alpha1().LabGroups().Get(ctx, name, metav1.GetOptions{})
+		e.group, e.err = r.h.cs.LaboratoryV1alpha1().LabGroups().Get(ctx, crName(name), metav1.GetOptions{})
 	})
 	return e.group, e.err
 }
@@ -149,7 +149,7 @@ func (r *groupResolver) namespace(ctx context.Context, name string) (string, err
 // group that has a namespace.
 func (h *Handler) scopedGroups(ctx context.Context, labGroup string) ([]laboratoryv1alpha1.LabGroup, error) {
 	if labGroup != "" {
-		g, err := h.cs.LaboratoryV1alpha1().LabGroups().Get(ctx, labGroup, metav1.GetOptions{})
+		g, err := h.cs.LaboratoryV1alpha1().LabGroups().Get(ctx, crName(labGroup), metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}

@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"encoding/json"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -29,8 +30,8 @@ func (h *Handler) SetLabGroupAccess(ctx context.Context, in *protobuf.SetLabGrou
 	refs := make([]*protobuf.ItemRef, len(policies))
 	for i, p := range policies {
 		refs[i] = groupRef(p.GetLabGroupName())
-		if p.GetLabGroupName() == "" {
-			return nil, invalid("policy %d: lab_group_name is required", i)
+		if err := names.ValidateID(p.GetLabGroupName()); err != nil {
+			return nil, invalid("policy %d: lab_group_name: %v", i, err)
 		}
 		if err := validateLabels(p.GetLabels()); err != nil {
 			return nil, invalid("policy %d (%s): %v", i, p.GetLabGroupName(), err)
@@ -64,6 +65,7 @@ func (h *Handler) setLabGroupAccess(ctx context.Context, resolver *groupResolver
 	for i := range labs.Items {
 		knownLabs[labs.Items[i].Name] = struct{}{}
 	}
+	idMap := map[string]string{}
 	rules := make([]laboratoryv1alpha1.LabGroupAccessRule, 0, len(in.Rules))
 	for _, rule := range in.Rules {
 		if rule == nil {
@@ -79,15 +81,16 @@ func (h *Handler) setLabGroupAccess(ctx context.Context, resolver *groupResolver
 			return 0, invalid("every access rule requires allow or deny action")
 		}
 		labNames := uniqueSorted(rule.LabNames)
-		for _, name := range labNames {
-			if _, ok := knownLabs[name]; !ok {
-				return 0, invalid("lab %q does not belong to group %q", name, in.LabGroupName)
+		for _, id := range labNames {
+			if _, ok := knownLabs[crName(id)]; !ok {
+				return 0, invalid("lab %q does not belong to group %q", id, in.LabGroupName)
 			}
 		}
+		// The VPN reconciler matches CR names; the originals go to the id map.
 		rules = append(rules, laboratoryv1alpha1.LabGroupAccessRule{
 			Action:      action,
-			ClientNames: uniqueSorted(rule.ClientNames),
-			LabNames:    labNames,
+			ClientNames: encodeNames(uniqueSorted(rule.ClientNames), idMap),
+			LabNames:    encodeNames(labNames, idMap),
 		})
 	}
 	// The policy carries the labels of its group (plus the given ones), so a selector
@@ -97,6 +100,11 @@ func (h *Handler) setLabGroupAccess(ctx context.Context, resolver *groupResolver
 	delete(policyLabels, names.LabelDeployGroup)
 	policyLabels, _ = mergeLabels(policyLabels, mergeItemLabels(common, in.Labels))
 
+	rawMap, _ := json.Marshal(idMap)
+	var annotations map[string]string
+	if len(idMap) > 0 {
+		annotations = map[string]string{names.AnnotationIDMap: string(rawMap)}
+	}
 	state := protobuf.ItemState_ITEM_STATE_EXISTS
 	policiesAPI := h.cs.LaboratoryV1alpha1().LabGroupAccessPolicies(namespace)
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -105,7 +113,7 @@ func (h *Handler) setLabGroupAccess(ctx context.Context, resolver *groupResolver
 		if apierrors.IsNotFound(err) {
 			state = protobuf.ItemState_ITEM_STATE_CREATED
 			_, err = policiesAPI.Create(ctx, &laboratoryv1alpha1.LabGroupAccessPolicy{
-				ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: namespace, Labels: policyLabels},
+				ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: namespace, Labels: policyLabels, Annotations: copyLabels(annotations)},
 				Spec:       laboratoryv1alpha1.LabGroupAccessPolicySpec{Rules: rules},
 			}, metav1.CreateOptions{})
 			return createErr(err, kindLabGroupAccessPolicy, names.LabGroupAccessPolicyName, func() (metav1.Object, error) {
@@ -119,12 +127,18 @@ func (h *Handler) setLabGroupAccess(ctx context.Context, resolver *groupResolver
 			return err
 		}
 		labels, labelsChanged := mergeLabels(stored.Labels, policyLabels)
-		if !labelsChanged && rulesEqual(stored.Spec.Rules, rules) {
+		if !labelsChanged && rulesEqual(stored.Spec.Rules, rules) && stored.Annotations[names.AnnotationIDMap] == annotations[names.AnnotationIDMap] {
 			return nil
 		}
 		state = protobuf.ItemState_ITEM_STATE_UPDATED
 		stored.Spec.Rules = rules
 		stored.Labels = labels
+		stored.Annotations = copyLabels(stored.Annotations)
+		if len(idMap) > 0 {
+			stored.Annotations = stampAnn(stored.Annotations, names.AnnotationIDMap, string(rawMap))
+		} else {
+			delete(stored.Annotations, names.AnnotationIDMap)
+		}
 		_, err = policiesAPI.Update(ctx, stored, metav1.UpdateOptions{})
 		return err
 	})
@@ -133,4 +147,27 @@ func (h *Handler) setLabGroupAccess(ctx context.Context, resolver *groupResolver
 
 func rulesEqual(a, b []laboratoryv1alpha1.LabGroupAccessRule) bool {
 	return len(a) == len(b) && (len(a) == 0 || apiequality.Semantic.DeepEqual(a, b))
+}
+
+func stampAnn(m map[string]string, k, v string) map[string]string {
+	if m == nil {
+		m = map[string]string{}
+	}
+	m[k] = v
+	return m
+}
+
+// encodeNames maps ids to CR names, recording the ids whose name differs.
+func encodeNames(ids []string, idMap map[string]string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = crName(id)
+		if out[i] != id {
+			idMap[out[i]] = id
+		}
+	}
+	return out
 }

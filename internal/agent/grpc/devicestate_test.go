@@ -81,18 +81,6 @@ func TestDeviceCallsEndToEnd(t *testing.T) {
 		t.Fatal("rescue not disabled")
 	}
 
-	// Retry works on any device (no state needed) and needs a new token every time.
-	plain := &protobuf.DevicesRequest{Items: []*protobuf.ItemRef{{LabGroup: "team-state", Lab: "ctf", Name: "plain"}}}
-	res, err = h.RetryDevices(ctx, plain)
-	wantStates(t, res, err, stUpdated)
-	r1 := get("ctf-plain").Spec.RetryToken
-	if _, err = h.RetryDevices(ctx, plain); err != nil {
-		t.Fatal(err)
-	}
-	if r2 := get("ctf-plain").Spec.RetryToken; r1 == "" || r2 == "" || r1 == r2 {
-		t.Fatalf("retry tokens: %q %q", r1, r2)
-	}
-
 	// Per-item failures do not fail the call.
 	res, err = h.ResetDevices(ctx, &protobuf.DevicesRequest{Items: []*protobuf.ItemRef{
 		{LabGroup: "team-state", Lab: "ctf", Name: "plain"},
@@ -112,18 +100,18 @@ func TestDeviceCallsEndToEnd(t *testing.T) {
 	sel := func(expected int64) *protobuf.DevicesRequest {
 		return &protobuf.DevicesRequest{BySelector: &protobuf.DeviceSelector{Selector: "round=1", Device: "web", ExpectedCount: proto.Int64(expected)}}
 	}
-	if _, err = h.RetryDevices(ctx, sel(1)); status.Code(err) != codes.FailedPrecondition {
+	if _, err = h.ResetDevices(ctx, sel(1)); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("guard: %v", err)
 	}
-	res, err = h.RetryDevices(ctx, sel(2))
+	res, err = h.ResetDevices(ctx, sel(2))
 	wantStates(t, res, err, stUpdated, stUpdated)
-	if res.Results[0].Ref.Lab != "ctf" || res.Results[1].Ref.Lab != "ctf2" || get("ctf2-web").Spec.RetryToken == "" {
+	if res.Results[0].Ref.Lab != "ctf" || res.Results[1].Ref.Lab != "ctf2" || get("ctf2-web").Spec.State.ResetToken == "" {
 		t.Fatalf("selector results: %v", res.Results)
 	}
-	if _, err = h.RetryDevices(ctx, &protobuf.DevicesRequest{BySelector: &protobuf.DeviceSelector{Selector: "round=1"}}); status.Code(err) != codes.InvalidArgument {
+	if _, err = h.ResetDevices(ctx, &protobuf.DevicesRequest{BySelector: &protobuf.DeviceSelector{Selector: "round=1"}}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("a selector needs a device: %v", err)
 	}
-	if _, err = h.RetryDevices(ctx, &protobuf.DevicesRequest{}); status.Code(err) != codes.InvalidArgument {
+	if _, err = h.ResetDevices(ctx, &protobuf.DevicesRequest{}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("no target: %v", err)
 	}
 }

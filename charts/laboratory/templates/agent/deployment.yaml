@@ -60,6 +60,9 @@ spec:
             - name: AGENT_PREWARM_TIMEOUT
               value: {{ .Values.registry.cache.prewarm.timeout | quote }}
           {{- end }}
+            # A topology that asks for device state persistence is refused unless the platform allows it.
+            - name: AGENT_STATE_PERSISTENCE_ENABLED
+              value: {{ .Values.devices.statePersistence.enabled | quote }}
             - name: AGENT_MONITORING_JOURNAL_SIZE
               value: {{ .Values.agent.monitoring.journalSize | quote }}
             - name: AGENT_MONITORING_JOURNAL_AGE

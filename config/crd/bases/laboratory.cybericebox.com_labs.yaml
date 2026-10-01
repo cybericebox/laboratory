@@ -219,6 +219,30 @@ spec:
                       minLength: 1
                       pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                       type: string
+                    persistence:
+                      description: |-
+                        Persistence is the optional state-persistence policy of this device, set at
+                        creation and immutable. Unset fields take the platform defaults.
+                      properties:
+                        debounce:
+                          description: Debounce is how long the writable layer must
+                            stay quiet before a snapshot.
+                          type: string
+                        enabled:
+                          description: Enabled turns snapshot-backed state on for
+                            the device.
+                          type: boolean
+                        excludePaths:
+                          description: ExcludePaths are absolute container paths that
+                            are never snapshotted.
+                          items:
+                            type: string
+                          type: array
+                        maxSnapshotSize:
+                          description: MaxSnapshotSize is the quota of the kept state
+                            (a Kubernetes quantity, e.g. "512Mi").
+                          type: string
+                      type: object
                     resources:
                       description: Resources sets the container resource requests/limits
                         for this device.

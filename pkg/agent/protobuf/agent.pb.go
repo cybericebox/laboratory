@@ -225,7 +225,7 @@ func (*Empty) Descriptor() ([]byte, []int) {
 	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{0}
 }
 
-// ItemRef names one object. A LabGroup (and the access policy of one) is identified by
+// ItemRef names one object by its ids. A LabGroup (and the access policy of one) is identified by
 // name alone; a LabGroupClient or Lab by lab_group + name; a Device by lab_group + lab +
 // name (the device name).
 type ItemRef struct {
@@ -1385,8 +1385,11 @@ func (x *SetLabGroupAccessRequest) GetPolicies() []*LabGroupAccessPolicy {
 	return nil
 }
 
-// LabVariant is sent once per request however many labs use it. Device variables are
-// secrets only: spec_json must not carry env or flags on devices (rejected).
+// LabVariant is sent once per request however many labs use it; it is not stored, the
+// spec is copied into every Lab. Device variables are secrets only: spec_json must not
+// carry env or flags on devices (rejected). A device's state persistence is part of the
+// spec (devices[].persistence {enabled, debounce, excludePaths, maxSnapshotSize}), set at
+// creation and immutable; enabled=true is refused when the cluster does not allow persistence.
 type LabVariant struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	VariantId     string                 `protobuf:"bytes,1,opt,name=variant_id,json=variantId,proto3" json:"variant_id,omitempty"`
@@ -1955,6 +1958,8 @@ type LabGroup struct {
 	Status *LabGroupStatus        `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
 	// Kubernetes labels of the LabGroup (the Monitoring selector matches against them).
 	Labels        map[string]string `protobuf:"bytes,10,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	DeployGroup   string            `protobuf:"bytes,11,opt,name=deploy_group,json=deployGroup,proto3" json:"deploy_group,omitempty"`
+	DeployAfter   []string          `protobuf:"bytes,12,rep,name=deploy_after,json=deployAfter,proto3" json:"deploy_after,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2006,6 +2011,20 @@ func (x *LabGroup) GetStatus() *LabGroupStatus {
 func (x *LabGroup) GetLabels() map[string]string {
 	if x != nil {
 		return x.Labels
+	}
+	return nil
+}
+
+func (x *LabGroup) GetDeployGroup() string {
+	if x != nil {
+		return x.DeployGroup
+	}
+	return ""
+}
+
+func (x *LabGroup) GetDeployAfter() []string {
+	if x != nil {
+		return x.DeployAfter
 	}
 	return nil
 }
@@ -2150,6 +2169,8 @@ type Lab struct {
 	LabGroupName string `protobuf:"bytes,6,opt,name=lab_group_name,json=labGroupName,proto3" json:"lab_group_name,omitempty"`
 	// Kubernetes labels of the Lab.
 	Labels        map[string]string `protobuf:"bytes,10,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	DeployGroup   string            `protobuf:"bytes,11,opt,name=deploy_group,json=deployGroup,proto3" json:"deploy_group,omitempty"`
+	DeployAfter   []string          `protobuf:"bytes,12,rep,name=deploy_after,json=deployAfter,proto3" json:"deploy_after,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2222,6 +2243,20 @@ func (x *Lab) GetLabGroupName() string {
 func (x *Lab) GetLabels() map[string]string {
 	if x != nil {
 		return x.Labels
+	}
+	return nil
+}
+
+func (x *Lab) GetDeployGroup() string {
+	if x != nil {
+		return x.DeployGroup
+	}
+	return ""
+}
+
+func (x *Lab) GetDeployAfter() []string {
+	if x != nil {
+		return x.DeployAfter
 	}
 	return nil
 }
@@ -4500,12 +4535,14 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"bySelector\"d\n" +
 	"\x14RescueDevicesRequest\x124\n" +
 	"\adevices\x18\x01 \x01(\v2\x1a.labmanager.DevicesRequestR\adevices\x12\x16\n" +
-	"\x06enable\x18\x02 \x01(\bR\x06enable\"\xc7\x01\n" +
+	"\x06enable\x18\x02 \x01(\bR\x06enable\"\x8d\x02\n" +
 	"\bLabGroup\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x122\n" +
 	"\x06status\x18\x02 \x01(\v2\x1a.labmanager.LabGroupStatusR\x06status\x128\n" +
 	"\x06labels\x18\n" +
-	" \x03(\v2 .labmanager.LabGroup.LabelsEntryR\x06labels\x1a9\n" +
+	" \x03(\v2 .labmanager.LabGroup.LabelsEntryR\x06labels\x12!\n" +
+	"\fdeploy_group\x18\v \x01(\tR\vdeployGroup\x12!\n" +
+	"\fdeploy_after\x18\f \x03(\tR\vdeployAfter\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xda\x01\n" +
@@ -4517,7 +4554,7 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x11vpn_client_subnet\x18\x05 \x01(\tR\x0fvpnClientSubnet\x12#\n" +
 	"\rimage_warning\x18\x06 \x01(\tR\fimageWarning\":\n" +
 	"\fLabGroupList\x12*\n" +
-	"\x05items\x18\x01 \x03(\v2\x14.labmanager.LabGroupR\x05items\"\x9f\x02\n" +
+	"\x05items\x18\x01 \x03(\v2\x14.labmanager.LabGroupR\x05items\"\xe5\x02\n" +
 	"\x03Lab\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1b\n" +
@@ -4525,7 +4562,9 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x06status\x18\x04 \x01(\v2\x15.labmanager.LabStatusR\x06status\x12$\n" +
 	"\x0elab_group_name\x18\x06 \x01(\tR\flabGroupName\x123\n" +
 	"\x06labels\x18\n" +
-	" \x03(\v2\x1b.labmanager.Lab.LabelsEntryR\x06labels\x1a9\n" +
+	" \x03(\v2\x1b.labmanager.Lab.LabelsEntryR\x06labels\x12!\n" +
+	"\fdeploy_group\x18\v \x01(\tR\vdeployGroup\x12!\n" +
+	"\fdeploy_after\x18\f \x03(\tR\vdeployAfter\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x05\x10\x06\"\x91\x01\n" +
@@ -4742,7 +4781,7 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x15PREWARM_STATE_WARMING\x10\x02\x12\x16\n" +
 	"\x12PREWARM_STATE_DONE\x10\x03\x12\x18\n" +
 	"\x14PREWARM_STATE_FAILED\x10\x04\x12\x19\n" +
-	"\x15PREWARM_STATE_SKIPPED\x10\x052\x87\f\n" +
+	"\x15PREWARM_STATE_SKIPPED\x10\x052\xc0\v\n" +
 	"\n" +
 	"LabManager\x12.\n" +
 	"\x04Ping\x12\x11.labmanager.Empty\x1a\x11.labmanager.Empty\"\x00\x12P\n" +
@@ -4767,8 +4806,7 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\vGetCapacity\x12\x11.labmanager.Empty\x1a\x1c.labmanager.CapacityResponse\"\x00\x12T\n" +
 	"\rPrewarmImages\x12 .labmanager.PrewarmImagesRequest\x1a\x1f.labmanager.PrewarmImagesResult\"\x00\x12E\n" +
 	"\fResetDevices\x12\x1a.labmanager.DevicesRequest\x1a\x17.labmanager.BatchResult\"\x00\x12L\n" +
-	"\rRescueDevices\x12 .labmanager.RescueDevicesRequest\x1a\x17.labmanager.BatchResult\"\x00\x12E\n" +
-	"\fRetryDevices\x12\x1a.labmanager.DevicesRequest\x1a\x17.labmanager.BatchResult\"\x00B6Z4github.com/cybericebox/laboratory/pkg/agent/protobufb\x06proto3"
+	"\rRescueDevices\x12 .labmanager.RescueDevicesRequest\x1a\x17.labmanager.BatchResult\"\x00B6Z4github.com/cybericebox/laboratory/pkg/agent/protobufb\x06proto3"
 
 var (
 	file_pkg_agent_protobuf_agent_proto_rawDescOnce sync.Once
@@ -4957,29 +4995,27 @@ var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
 	60, // 91: labmanager.LabManager.PrewarmImages:input_type -> labmanager.PrewarmImagesRequest
 	31, // 92: labmanager.LabManager.ResetDevices:input_type -> labmanager.DevicesRequest
 	32, // 93: labmanager.LabManager.RescueDevices:input_type -> labmanager.RescueDevicesRequest
-	31, // 94: labmanager.LabManager.RetryDevices:input_type -> labmanager.DevicesRequest
-	3,  // 95: labmanager.LabManager.Ping:output_type -> labmanager.Empty
-	6,  // 96: labmanager.LabManager.CreateLabGroups:output_type -> labmanager.BatchResult
-	35, // 97: labmanager.LabManager.ListLabGroups:output_type -> labmanager.LabGroupList
-	6,  // 98: labmanager.LabManager.UpdateLabGroups:output_type -> labmanager.BatchResult
-	6,  // 99: labmanager.LabManager.DeleteLabGroups:output_type -> labmanager.BatchResult
-	20, // 100: labmanager.LabManager.CreateLabGroupClients:output_type -> labmanager.CreateLabGroupClientsResponse
-	48, // 101: labmanager.LabManager.ListLabGroupClients:output_type -> labmanager.LabGroupClientList
-	6,  // 102: labmanager.LabManager.UpdateLabGroupClients:output_type -> labmanager.BatchResult
-	6,  // 103: labmanager.LabManager.DeleteLabGroupClients:output_type -> labmanager.BatchResult
-	6,  // 104: labmanager.LabManager.SetLabGroupAccess:output_type -> labmanager.BatchResult
-	6,  // 105: labmanager.LabManager.CreateLabs:output_type -> labmanager.BatchResult
-	44, // 106: labmanager.LabManager.ListLabs:output_type -> labmanager.LabList
-	6,  // 107: labmanager.LabManager.UpdateLabs:output_type -> labmanager.BatchResult
-	6,  // 108: labmanager.LabManager.DeleteLabs:output_type -> labmanager.BatchResult
-	55, // 109: labmanager.LabManager.Monitoring:output_type -> labmanager.MonitoringUpdate
-	59, // 110: labmanager.LabManager.GetCapacity:output_type -> labmanager.CapacityResponse
-	62, // 111: labmanager.LabManager.PrewarmImages:output_type -> labmanager.PrewarmImagesResult
-	6,  // 112: labmanager.LabManager.ResetDevices:output_type -> labmanager.BatchResult
-	6,  // 113: labmanager.LabManager.RescueDevices:output_type -> labmanager.BatchResult
-	6,  // 114: labmanager.LabManager.RetryDevices:output_type -> labmanager.BatchResult
-	95, // [95:115] is the sub-list for method output_type
-	75, // [75:95] is the sub-list for method input_type
+	3,  // 94: labmanager.LabManager.Ping:output_type -> labmanager.Empty
+	6,  // 95: labmanager.LabManager.CreateLabGroups:output_type -> labmanager.BatchResult
+	35, // 96: labmanager.LabManager.ListLabGroups:output_type -> labmanager.LabGroupList
+	6,  // 97: labmanager.LabManager.UpdateLabGroups:output_type -> labmanager.BatchResult
+	6,  // 98: labmanager.LabManager.DeleteLabGroups:output_type -> labmanager.BatchResult
+	20, // 99: labmanager.LabManager.CreateLabGroupClients:output_type -> labmanager.CreateLabGroupClientsResponse
+	48, // 100: labmanager.LabManager.ListLabGroupClients:output_type -> labmanager.LabGroupClientList
+	6,  // 101: labmanager.LabManager.UpdateLabGroupClients:output_type -> labmanager.BatchResult
+	6,  // 102: labmanager.LabManager.DeleteLabGroupClients:output_type -> labmanager.BatchResult
+	6,  // 103: labmanager.LabManager.SetLabGroupAccess:output_type -> labmanager.BatchResult
+	6,  // 104: labmanager.LabManager.CreateLabs:output_type -> labmanager.BatchResult
+	44, // 105: labmanager.LabManager.ListLabs:output_type -> labmanager.LabList
+	6,  // 106: labmanager.LabManager.UpdateLabs:output_type -> labmanager.BatchResult
+	6,  // 107: labmanager.LabManager.DeleteLabs:output_type -> labmanager.BatchResult
+	55, // 108: labmanager.LabManager.Monitoring:output_type -> labmanager.MonitoringUpdate
+	59, // 109: labmanager.LabManager.GetCapacity:output_type -> labmanager.CapacityResponse
+	62, // 110: labmanager.LabManager.PrewarmImages:output_type -> labmanager.PrewarmImagesResult
+	6,  // 111: labmanager.LabManager.ResetDevices:output_type -> labmanager.BatchResult
+	6,  // 112: labmanager.LabManager.RescueDevices:output_type -> labmanager.BatchResult
+	94, // [94:113] is the sub-list for method output_type
+	75, // [75:94] is the sub-list for method input_type
 	75, // [75:75] is the sub-list for extension type_name
 	75, // [75:75] is the sub-list for extension extendee
 	0,  // [0:75] is the sub-list for field type_name

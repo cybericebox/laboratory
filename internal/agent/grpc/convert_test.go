@@ -73,7 +73,7 @@ func TestLabToProtoCarriesSpecJSON(t *testing.T) {
 	in.Namespace = "team-alpha"
 	in.Spec.VPN.Enabled = true
 
-	out, err := parseLabSpec(labToProto(in).SpecJson)
+	out, err := parseLabSpec(labToProto(in).SpecJson, false)
 	if err != nil {
 		t.Fatalf("parseLabSpec: %v", err)
 	}

@@ -68,12 +68,9 @@ func TestLabsEndToEnd(t *testing.T) {
 		t.Fatal("no variables, no Secret")
 	}
 	c1, _ := labs.Get(ctx, "c1", metav1.GetOptions{})
-	if c1.Labels["event"] != "e1" || c1.Labels["tier"] != "gold" || c1.Labels[names.LabelDeployGroup] != deployKey(deployGroup) ||
-		c1.Annotations[names.AnnotationDeployAfter] != deployKey("x") {
+	if c1.Labels["event"] != "e1" || c1.Labels["tier"] != "gold" || c1.Labels[names.LabelDeployGroup] != deployGroup ||
+		c1.Annotations[names.AnnotationDeployAfter] != "x" {
 		t.Fatalf("c1 metadata: %v %v", c1.Labels, c1.Annotations)
-	}
-	if c1.Spec.LaunchClass != "web" {
-		t.Fatalf("the variant id is the launch class by default: %q", c1.Spec.LaunchClass)
 	}
 	if string(c1.Spec.Devices[0].Name) == "" || len(c1.Spec.Devices) != 2 {
 		t.Fatalf("spec: %+v", c1.Spec)

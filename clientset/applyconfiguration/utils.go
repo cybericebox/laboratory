@@ -59,6 +59,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.ConnectionTemplateApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("Device"):
 		return &applyconfigurationlaboratoryv1alpha1.DeviceApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DevicePersistence"):
+		return &applyconfigurationlaboratoryv1alpha1.DevicePersistenceApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceRef"):
 		return &applyconfigurationlaboratoryv1alpha1.DeviceRefApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceResources"):

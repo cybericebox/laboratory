@@ -8,6 +8,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
 )
 
 type labMatch struct {
@@ -40,7 +41,7 @@ func perGroup[T any](ctx context.Context, groups []laboratoryv1alpha1.LabGroup, 
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			parts[i], errs[i] = list(groups[i].Name, groups[i].Status.Namespace)
+			parts[i], errs[i] = list(names.IDOf(&groups[i]), groups[i].Status.Namespace)
 		}()
 	}
 	wg.Wait()

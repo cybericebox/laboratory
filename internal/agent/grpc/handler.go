@@ -27,6 +27,9 @@ type Handler struct {
 	monOnce sync.Once
 	mon     *monitor
 
+	// statePersistence: the cluster allows devices with persistence (the chart switch).
+	statePersistence bool
+
 	// prewarm fills the image cache ahead of time; nil until SetPrewarm.
 	prewarm *prewarmer
 }
@@ -47,3 +50,7 @@ func NewHandler(cs versioned.Interface, k8s kubernetes.Interface, metrics metric
 func (h *Handler) Ping(context.Context, *protobuf.Empty) (*protobuf.Empty, error) {
 	return &protobuf.Empty{}, nil
 }
+
+// SetStatePersistence tells the agent whether the cluster allows device state
+// persistence; a topology that asks for it otherwise is refused.
+func (h *Handler) SetStatePersistence(enabled bool) { h.statePersistence = enabled }

@@ -310,12 +310,20 @@ only**: every call takes a list, one object is a list of one. There are no singu
 | VPN clients | `CreateLabGroupClients`, `ListLabGroupClients`, `UpdateLabGroupClients`, `DeleteLabGroupClients` |
 | Access | `SetLabGroupAccess` (the policies of many groups, full replacement) |
 | Labs | `CreateLabs`, `ListLabs`, `UpdateLabs`, `DeleteLabs` |
-| Devices | `ResetDevices`, `RescueDevices`, `RetryDevices` |
+| Devices | `ResetDevices`, `RescueDevices` |
 | Other | `Ping`, `Monitoring` (stream), `GetCapacity`, `PrewarmImages` |
 
-**References.** Objects are named by LabGroup name and object name (`ItemRef{lab_group, lab, name}`), never by
-namespace; the agent resolves the namespace from the group (`status.namespace`). A LabGroup, and the policy of one, is
-identified by `name` alone; a client or lab by `lab_group` + `name`; a device by `lab_group` + `lab` + `name`.
+**References and ids.** Objects are named by id (`ItemRef{lab_group, lab, name}`), never by namespace; the agent
+resolves the namespace from the group (`status.namespace`). A LabGroup, and the policy of one, is identified by `name`
+alone; a client or lab by `lab_group` + `name`; a device by `lab_group` + `lab` + `name` (the device name).
+
+Ids of LabGroups, Labs and LabGroupClients are **arbitrary strings of 1 to 64 characters** (no control characters), so
+any client can use the API. The custom resource is named after the id when that already is a valid DNS-1123 label
+(lowercase, at most 63 characters; every UUID is), so `kubectl` shows the real ids. Any other id gets the name `h` +
+base36(SHA-256 of the id) (51 characters). The original id is kept in the annotation `laboratory.cybericebox.com/id`;
+every answer (results, lists, `Monitoring`, access-policy rules) returns the original, and every lookup by id goes
+through the same encoding (`names.EncodeName`). Two ids that would get one name (practically impossible) fail for that item.
+Namespaces keep their composed names; device and pod names follow from the CR names.
 
 **Answers.** A mutating call returns one `ItemResult{ref, state, error, retryable}` per item, in request order (selector
 calls: sorted by reference). `state` is `CREATED`, `EXISTS`, `UPDATED`, `DELETED`, `NOT_FOUND` or `FAILED`. A failing item
@@ -330,15 +338,18 @@ name is `FAILED` for that item. A lab's spec is compared by a hash the agent sto
 object that is still being deleted fails with `retryable` (`TERMINATING`); repeat until the object is gone.
 
 **Labels.** Every mutating call has request-level `labels` applied to every item, and per-item `labels` (the item wins on
-a conflict). Keys and values must be valid Kubernetes labels; the prefix `laboratory.cybericebox.com/` is reserved and
-rejected. Labels go onto the custom resource. The labels of a Lab are copied to its Devices and their pods when those are
+a conflict). Labels pass through as given, with no re-encoding: keys and values must be valid Kubernetes labels (key
+prefix and name, value at most 63 characters, allowed characters only), otherwise the call fails with `INVALID_ARGUMENT`
+naming the item. The prefix `laboratory.cybericebox.com/` is reserved and rejected. Labels go onto the custom resource. The labels of a Lab are copied to its Devices and their pods when those are
 created (a later `UpdateLabs` changes the Lab's labels only). Update calls take `LabelChanges{set, remove}`.
 
-**Scheduling parameters** are dedicated fields, not labels: `deploy_group` (any string, for example a UUID) and
-`deploy_after` (deploy groups this one waits for) on LabGroup and Lab items. The agent converts them to label-safe keys
-(base36 of the UUID, or `h` + base36 of a SHA-256 for any other string; at most 63 characters) and writes the
-operator-internal label `laboratory.cybericebox.com/deploy-group` and the annotation
-`laboratory.cybericebox.com/deploy-after` (comma-separated keys). The operator's scheduler reads them.
+**Scheduling parameters** are dedicated fields, not labels: `deploy_group` (at most 64 characters) and `deploy_after`
+(at most 32 deploy groups this one waits for, each at most 64 characters) on LabGroup and Lab items; no commas. The
+agent writes the reserved label `laboratory.cybericebox.com/deploy-group` (the group itself when it is a valid label
+value of at most 63 characters, otherwise `h` + base36(SHA-256), `names.DeployKey`) and two annotations that keep the
+originals: `laboratory.cybericebox.com/deploy-group` and `laboratory.cybericebox.com/deploy-after` (the original keys,
+comma-separated). The operator maps the `deploy-after` keys to group labels with `names.DeployKey`. `LabGroup` and `Lab`
+return both fields as given.
 
 **Selectors.** `ListLabGroups`, `ListLabGroupClients` and `ListLabs` take names (`items`) or a Kubernetes label selector
 (`a=b,c in (d,e),!f`), never both; nothing means everything; `lab_group` narrows a listing of namespaced kinds to one
@@ -352,7 +363,16 @@ For device calls the selector selects labs, and `device` names the device in eac
 Device spec. A `spec_json` that carries `env`, `flags` or similar fields on a device is rejected, as is any unknown field.
 There is no "flag" concept in the agent.
 
-**Limits.** At most 5000 items per call, message size 64 MiB (`MaxRecvMsgSize`/`MaxSendMsgSize`; the Go client sets the
+**Variants are not stored.** `CreateLabs` expands every variant into each Lab: the spec is copied into the Lab CR and
+the variant's variables are merged with the lab's own (the lab wins per device and variable name) into the Secrets.
+
+**State persistence** is a property of a device in the topology, set at creation and immutable (a lab's spec is never
+updated): `devices[].persistence {enabled, debounce, excludePaths, maxSnapshotSize}` in `spec_json`, all optional, with the
+platform defaults from the chart. `enabled: true` is refused when `devices.statePersistence.enabled` is off in the
+chart (the agent reads it as `AGENT_STATE_PERSISTENCE_ENABLED`); `debounce` must be positive, `excludePaths` absolute,
+`maxSnapshotSize` a positive Kubernetes quantity.
+
+**Limits.** Ids and deploy keys at most 64 characters, `deploy_after` at most 32 keys, at most 5000 items per call, message size 64 MiB (`MaxRecvMsgSize`/`MaxSendMsgSize`; the Go client sets the
 same call options), bounded internal concurrency (16 calls to the Kubernetes API per request).
 
 ### Examples (Go, `pkg/agent/client`)
@@ -402,15 +422,12 @@ conn.CreateLabs(ctx, &pb.CreateLabsRequest{
     },
 })
 
-// Rewrite one device's Secret, delete all labs of a group's round, retry a failed device.
+// Rewrite one device's Secret, delete all labs of a group's round, reset a device.
 conn.UpdateLabs(ctx, &pb.UpdateLabsRequest{Items: []*pb.UpdateLabItem{{LabGroup: "e-1-t-1", Name: "c-1",
     Changes: &pb.LabChanges{Env: []*pb.DeviceEnv{{Device: "web", Vars: map[string]string{"FLAG": "new"}}}}}}})
 conn.DeleteLabs(ctx, &pb.DeleteRequest{BySelector: &pb.Selector{Selector: "round=1", LabGroup: "e-1-t-1"}})
-conn.RetryDevices(ctx, &pb.DevicesRequest{Items: []*pb.ItemRef{{LabGroup: "e-1-t-1", Lab: "c-1", Name: "web"}}})
+conn.ResetDevices(ctx, &pb.DevicesRequest{Items: []*pb.ItemRef{{LabGroup: "e-1-t-1", Lab: "c-1", Name: "web"}}})
 ```
-
-`RetryDevices` sets a new random `Device.spec.retryToken`; the operator retries the failed device pod once per distinct
-value. The same token mechanism drives `ResetDevices` (`spec.state.resetToken`).
 
 ---
 

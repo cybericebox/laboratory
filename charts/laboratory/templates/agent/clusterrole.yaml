@@ -41,7 +41,7 @@ rules:
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "labtrafficreports", "devices", "devices/status", "connections", "connections/status", "labvpns", "labvpns/status", "labgateways", "labgateways/status" ]
     verbs: [ "get", "list", "watch" ]
-  # ResetDevices, RescueDevices and RetryDevices set the state and retry controls in a device's spec.
+  # ResetDevices and RescueDevices set the state controls in a device's spec.
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "devices" ]
     verbs: [ "patch" ]

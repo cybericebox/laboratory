@@ -6,13 +6,17 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
 // labGroupToProto maps a LabGroup custom resource to its gRPC wire representation.
 func labGroupToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.LabGroup {
+	dg, da := deployOf(g.Annotations)
 	return &protobuf.LabGroup{
-		Name: g.Name,
+		Name:        names.IDOf(g),
+		DeployGroup: dg,
+		DeployAfter: da,
 		Status: &protobuf.LabGroupStatus{
 			Phase:           string(g.Status.Phase),
 			Namespace:       g.Status.Namespace,
@@ -68,12 +72,15 @@ func labToProto(l *laboratoryv1alpha1.Lab) *protobuf.Lab {
 		status.Access = append(status.Access, &protobuf.LabAccessEntry{Device: a.Device, Port: a.Port, Protocol: a.Protocol, Url: a.URL})
 		status.AccessUrls = append(status.AccessUrls, a.URL)
 	}
+	dg, da := deployOf(l.Annotations)
 	return &protobuf.Lab{
-		Namespace: l.Namespace,
-		Name:      l.Name,
-		SpecJson:  specJSON,
-		Status:    status,
-		Labels:    copyLabels(l.Labels),
+		Namespace:   l.Namespace,
+		Name:        names.IDOf(l),
+		SpecJson:    specJSON,
+		Status:      status,
+		Labels:      copyLabels(l.Labels),
+		DeployGroup: dg,
+		DeployAfter: da,
 	}
 }
 
@@ -141,7 +148,7 @@ func clientToProto(c *laboratoryv1alpha1.LabGroupClient) *protobuf.LabGroupClien
 	}
 	return &protobuf.LabGroupClient{
 		Namespace: c.Namespace,
-		Name:      c.Name,
+		Name:      names.IDOf(c),
 		PublicKey: c.Spec.PublicKey,
 		Status: &protobuf.LabGroupClientStatus{
 			AssignedIp: c.Status.AssignedIP,
@@ -163,7 +170,33 @@ func clientMonitoringToProto(c *laboratoryv1alpha1.LabGroupClient, labGroupName 
 	return p
 }
 
+// policyIDMap reads the {encoded name: original id} map of an access policy.
+func policyIDMap(policy *laboratoryv1alpha1.LabGroupAccessPolicy) map[string]string {
+	var m map[string]string
+	if raw := policy.Annotations[names.AnnotationIDMap]; raw != "" {
+		_ = json.Unmarshal([]byte(raw), &m)
+	}
+	return m
+}
+
 func accessPolicyToProto(policy *laboratoryv1alpha1.LabGroupAccessPolicy, labGroupName string) *protobuf.LabGroupAccessPolicy {
+	idMap := policyIDMap(policy)
+	orig := func(ns []string) []string {
+		out := make([]string, len(ns))
+		for i, n := range ns {
+			out[i] = n
+			if o, ok := idMap[n]; ok {
+				out[i] = o
+			}
+		}
+		return out
+	}
+	origOne := func(n string) string {
+		if o, ok := idMap[n]; ok {
+			return o
+		}
+		return n
+	}
 	p := &protobuf.LabGroupAccessPolicy{
 		LabGroupName: labGroupName,
 		Namespace:    policy.Namespace,
@@ -184,7 +217,7 @@ func accessPolicyToProto(policy *laboratoryv1alpha1.LabGroupAccessPolicy, labGro
 		} else if rule.Action == laboratoryv1alpha1.LabGroupAccessDeny {
 			action = protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_DENY
 		}
-		p.Rules = append(p.Rules, &protobuf.LabGroupAccessRule{Action: action, ClientNames: rule.ClientNames, LabNames: rule.LabNames})
+		p.Rules = append(p.Rules, &protobuf.LabGroupAccessRule{Action: action, ClientNames: orig(rule.ClientNames), LabNames: orig(rule.LabNames)})
 	}
 	for _, rule := range policy.Status.Rules {
 		action := protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_UNSPECIFIED
@@ -194,7 +227,7 @@ func accessPolicyToProto(policy *laboratoryv1alpha1.LabGroupAccessPolicy, labGro
 			action = protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_DENY
 		}
 		p.Status.Rules = append(p.Status.Rules, &protobuf.LabGroupAccessRuleStatistics{
-			ClientName: rule.ClientName, LabName: rule.LabName, Action: action,
+			ClientName: origOne(rule.ClientName), LabName: origOne(rule.LabName), Action: action,
 			Packets: rule.Packets, Bytes: rule.Bytes, CounterReset: rule.CounterReset,
 		})
 	}
