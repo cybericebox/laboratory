@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -289,6 +290,29 @@ var _ = Describe("Device state persistence: bare Pod lifecycle", func() {
 		Expect(d.Status.Ready).To(BeTrue())
 		Expect(d.Status.PodName).To(Equal(p.Name))
 		Expect(d.Status.PodIP).To(Equal("10.1.2.3"))
+	})
+
+	It("does not drop a newer pod when its cached status is behind", func() {
+		p1 := startDevice()
+		setRunning(p1)
+		reconcileOnce()
+		// The pod of incarnation 2 exists, but the status the reconcile reads still says 1.
+		newer := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: dev.Name + "-2", Namespace: ns,
+				Labels:      map[string]string{names.LabelLab: "lab", names.LabelDevice: "web"},
+				Annotations: map[string]string{names.AnnotationStateIncarnation: "2"},
+			},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "web", Image: base}}},
+		}
+		Expect(controllerutil.SetControllerReference(getDevice(), newer, k8sClient.Scheme())).To(Succeed())
+		Expect(k8sClient.Create(ctx, newer)).To(Succeed())
+		res := reconcileOnce()
+		Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+		_, err := getPod(2)
+		Expect(err).NotTo(HaveOccurred(), "a pod newer than the status must be left alone")
+		_, err = getPod(1)
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	It("waits for the exit snapshot, then recreates the pod from the latest snapshot", func() {

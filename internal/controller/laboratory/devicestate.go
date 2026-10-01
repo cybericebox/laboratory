@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,6 +49,12 @@ func deviceStateEnabled(d *laboratoryv1alpha1.Device) bool {
 func stableDeviceMAC(namespace, device, iface string) string {
 	sum := sha256.Sum256([]byte(namespace + "/" + device + "/" + iface))
 	return fmt.Sprintf("02:%02x:%02x:%02x:%02x:%02x", sum[0], sum[1], sum[2], sum[3], sum[4])
+}
+
+// podIncarnation is the incarnation number a pod was created for; 0 if unknown.
+func podIncarnation(p *corev1.Pod) int32 {
+	n, _ := strconv.ParseInt(p.Annotations[names.AnnotationStateIncarnation], 10, 32)
+	return int32(n)
 }
 
 func podName(device *laboratoryv1alpha1.Device, incarnation int32) string {
@@ -168,12 +175,15 @@ func (r *DeviceReconciler) reconcilePod(ctx context.Context, device *laboratoryv
 	name := podName(device, st.Incarnation)
 	var cur *corev1.Pod
 	for i := range pods {
-		if pods[i].Name == name {
+		switch inc := podIncarnation(&pods[i]); {
+		case pods[i].Name == name:
 			cur = &pods[i]
-			continue
-		}
-		// A pod of an older incarnation that is still around: drop it.
-		if pods[i].DeletionTimestamp == nil {
+		case inc > st.Incarnation:
+			// The pod is newer than this status: the cached Device is behind the
+			// patch that created the pod. Wait for the cache, never act on it.
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		case pods[i].DeletionTimestamp == nil:
+			// A pod of an older incarnation that is still around: drop it.
 			if err := r.Delete(ctx, &pods[i]); client.IgnoreNotFound(err) != nil {
 				return ctrl.Result{}, err
 			}
