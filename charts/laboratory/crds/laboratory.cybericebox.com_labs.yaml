@@ -295,12 +295,6 @@ spec:
                   enabled:
                     type: boolean
                 type: object
-              launchClass:
-                description: |-
-                  LaunchClass groups labs of one type (for example an exercise version or
-                  variant id) for launch pacing: labs of one class are admitted together.
-                  Empty means the operator derives the class from the lab topology and images.
-                type: string
               vpn:
                 description: LabNetworkSpec configures a network segment (VPN or internet)
                   attached to the lab.
@@ -445,6 +439,24 @@ spec:
                 items:
                   description: DeviceRef summarises a materialised Device's readiness.
                   properties:
+                    failure:
+                      description: Failure is the warning of a device pod that did
+                        not start in time.
+                      properties:
+                        at:
+                          format: date-time
+                          type: string
+                        message:
+                          description: Message is the last error the node reported
+                            (for example the image pull error).
+                          type: string
+                        reason:
+                          description: Reason is one of the Failure* constants.
+                          type: string
+                        restartCount:
+                          format: int32
+                          type: integer
+                      type: object
                     name:
                       type: string
                     ready:
@@ -502,37 +514,6 @@ spec:
                   ready:
                     type: boolean
                 type: object
-              launch:
-                description: |-
-                  Launch reports the launch pacing state: the resolved class, the admission
-                  time and, while the lab is Queued, its place in the queue.
-                properties:
-                  admittedAt:
-                    description: AdmittedAt is when the launcher admitted the lab
-                      for provisioning.
-                    format: date-time
-                    type: string
-                  class:
-                    description: |-
-                      Class is the resolved launch class: Spec.LaunchClass, or a hash of the lab
-                      topology and images when that is empty.
-                    type: string
-                  length:
-                    description: Length is the number of queued labs when Position
-                      was written.
-                    format: int32
-                    type: integer
-                  position:
-                    description: |-
-                      Position is the 1-based place in the queue; 0 when the lab is not queued.
-                      It is refreshed at a limited rate, so it can lag behind by a few seconds.
-                    format: int32
-                    type: integer
-                  reason:
-                    description: Reason is why the queue is not admitting this lab
-                      right now (LaunchReason*).
-                    type: string
-                type: object
               phase:
                 description: Phase is the lifecycle phase of a resource.
                 enum:
@@ -544,6 +525,42 @@ spec:
                 - Failed
                 - Error
                 type: string
+              scheduling:
+                description: Scheduling is the place of the lab in the scheduler queue.
+                properties:
+                  group:
+                    description: Group is the deploy group of the object; empty for
+                      an independent one.
+                    type: string
+                  length:
+                    description: Length is the number of such objects when Position
+                      was written.
+                    format: int32
+                    type: integer
+                  message:
+                    description: Message adds detail, for example "waiting for group
+                      intro".
+                    type: string
+                  pending:
+                    format: int32
+                    type: integer
+                  pods:
+                    description: |-
+                      Pods is the number of pods of the object and Pending how many of them are
+                      not dispatched yet.
+                    format: int32
+                    type: integer
+                  position:
+                    description: |-
+                      Position is the 1-based place among the objects that still have pods to
+                      dispatch; 0 when all pods are dispatched.
+                    format: int32
+                    type: integer
+                  reason:
+                    description: Reason is why the next pod of the object is not dispatched
+                      (Wait* constants).
+                    type: string
+                type: object
               statePersistence:
                 description: |-
                   StatePersistence records how this lab runs its devices, decided once on the

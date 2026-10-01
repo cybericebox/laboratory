@@ -34,6 +34,15 @@ type LabGroupStatus struct {
 	// pulls it by tag. Empty when all were pinned (or the cache was off).
 	// +optional
 	ImageWarning string `json:"imageWarning,omitempty"`
+	// Scheduling is the place of the group in the scheduler queue.
+	// +optional
+	Scheduling *SchedulingStatus `json:"scheduling,omitempty"`
+	// Pods is the scheduling state of the group's own pods ("vpn", "gateway").
+	// Absent for a group that predates the scheduler: its pods are not queued.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Pods []NamedPodSchedule `json:"pods,omitempty"`
 }
 
 // LabGroupVPNStatus exposes VPN server connection details.

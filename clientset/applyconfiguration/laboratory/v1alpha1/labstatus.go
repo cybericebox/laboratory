@@ -33,9 +33,8 @@ type LabStatusApplyConfiguration struct {
 	Devices     []DeviceRefApplyConfiguration       `json:"devices,omitempty"`
 	Connections []ConnectionRefApplyConfiguration   `json:"connections,omitempty"`
 	Access      []AccessEntryApplyConfiguration     `json:"access,omitempty"`
-	// Launch reports the launch pacing state: the resolved class, the admission
-	// time and, while the lab is Queued, its place in the queue.
-	Launch *LabLaunchStatusApplyConfiguration `json:"launch,omitempty"`
+	// Scheduling is the place of the lab in the scheduler queue.
+	Scheduling *SchedulingStatusApplyConfiguration `json:"scheduling,omitempty"`
 	// StatePersistence records how this lab runs its devices, decided once on the
 	// first reconcile: true = bare Pods with snapshot-backed state, false =
 	// Deployments. It never changes afterwards, whatever the platform switch says.
@@ -124,11 +123,11 @@ func (b *LabStatusApplyConfiguration) WithAccess(values ...*AccessEntryApplyConf
 	return b
 }
 
-// WithLaunch sets the Launch field in the declarative configuration to the given value
+// WithScheduling sets the Scheduling field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Launch field is set to the value of the last call.
-func (b *LabStatusApplyConfiguration) WithLaunch(value *LabLaunchStatusApplyConfiguration) *LabStatusApplyConfiguration {
-	b.Launch = value
+// If called multiple times, the Scheduling field is set to the value of the last call.
+func (b *LabStatusApplyConfiguration) WithScheduling(value *SchedulingStatusApplyConfiguration) *LabStatusApplyConfiguration {
+	b.Scheduling = value
 	return b
 }
 

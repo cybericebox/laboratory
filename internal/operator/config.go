@@ -65,27 +65,31 @@ type Config struct {
 	// probe page. Passed to every per-LabGroup VPN pod as SUPPORT_EMAIL.
 	SupportEmail string `env:"SUPPORT_EMAIL,required"`
 
-	// Launch pacing: a new Lab is admitted from a queue so that a burst of labs
-	// does not overload the cluster.
+	// Scheduler: pods start through a conveyor so that a burst of labs does not
+	// overload the cluster. See DEPLOY.md, "Scheduler".
 
-	// LaunchEnabled turns the queue on. Off: every lab is provisioned at once,
-	// as before launch pacing existed.
-	LaunchEnabled bool `env:"LAUNCH_ENABLED" envDefault:"true"`
-	// LaunchMaxInFlight is the largest number of labs provisioning at once. A lab
-	// counts from admission until it is Ready or LaunchWaveTimeout expires.
-	// 0 sets no limit (prepull and the resource check still apply).
-	LaunchMaxInFlight int `env:"LAUNCH_MAX_IN_FLIGHT" envDefault:"20"`
-	// LaunchWaveTimeout is how long an admitted lab holds its slot if it is not Ready.
-	LaunchWaveTimeout time.Duration `env:"LAUNCH_WAVE_TIMEOUT" envDefault:"3m"`
-	// LaunchHeadroomPercent is the share of the schedulable CPU and memory that
-	// must stay free after a lab is admitted.
-	LaunchHeadroomPercent int `env:"LAUNCH_HEADROOM_PERCENT" envDefault:"10"`
-	// LaunchResourceCheck gates admission on free cluster CPU and memory.
-	LaunchResourceCheck bool `env:"LAUNCH_RESOURCE_CHECK" envDefault:"true"`
-	// LaunchPrepull pulls the images of a lab class onto the nodes before its first wave.
-	LaunchPrepull bool `env:"LAUNCH_PREPULL" envDefault:"true"`
-	// LaunchPrepullTimeout bounds the wait for the image prepull; admission goes on after it.
-	LaunchPrepullTimeout time.Duration `env:"LAUNCH_PREPULL_TIMEOUT" envDefault:"5m"`
+	// SchedulerEnabled turns the queue on. Off: every pod starts as soon as its
+	// object is created.
+	SchedulerEnabled bool `env:"SCHEDULER_ENABLED" envDefault:"true"`
+	// SchedulerMaxPods is the largest number of pods starting at once. A pod holds
+	// its slot from dispatch until it is Ready or declared failed. 0 sets no limit
+	// (prepull and the resource check still apply).
+	SchedulerMaxPods int `env:"SCHEDULER_MAX_PODS" envDefault:"20"`
+	// SchedulerStartupTimeout is how long a dispatched pod may take to become Ready
+	// before it is declared failed and its slot is freed.
+	SchedulerStartupTimeout time.Duration `env:"SCHEDULER_STARTUP_TIMEOUT" envDefault:"5m"`
+	// SchedulerRestartThreshold is the number of restarts after which a pod that is
+	// not Ready is declared failed before the timeout.
+	SchedulerRestartThreshold int `env:"SCHEDULER_RESTART_THRESHOLD" envDefault:"5"`
+	// SchedulerHeadroomPercent is the share of the schedulable CPU and memory that
+	// must stay free after a pod is dispatched.
+	SchedulerHeadroomPercent int `env:"SCHEDULER_HEADROOM_PERCENT" envDefault:"10"`
+	// SchedulerResourceCheck holds a pod back while no node has room for its requests.
+	SchedulerResourceCheck bool `env:"SCHEDULER_RESOURCE_CHECK" envDefault:"true"`
+	// SchedulerPrepull pulls the images of a group onto the nodes before its first pod starts.
+	SchedulerPrepull bool `env:"SCHEDULER_PREPULL" envDefault:"true"`
+	// SchedulerPrepullTimeout bounds the wait for the image prepull; dispatch goes on after it.
+	SchedulerPrepullTimeout time.Duration `env:"SCHEDULER_PREPULL_TIMEOUT" envDefault:"5m"`
 
 	// DeviceDefaultCPU and DeviceDefaultMemory are the requests and limits of a
 	// device container that declares neither (requests always equal limits, so
@@ -168,11 +172,17 @@ func LoadConfig() (*Config, error) {
 	if address, err := mail.ParseAddress(cfg.SupportEmail); err != nil || address.Address != cfg.SupportEmail {
 		return nil, fmt.Errorf("SUPPORT_EMAIL %q is not a plain email address", cfg.SupportEmail)
 	}
-	if cfg.LaunchMaxInFlight < 0 {
-		return nil, fmt.Errorf("LAUNCH_MAX_IN_FLIGHT must not be negative")
+	if cfg.SchedulerMaxPods < 0 {
+		return nil, fmt.Errorf("SCHEDULER_MAX_PODS must not be negative")
 	}
-	if cfg.LaunchHeadroomPercent < 0 || cfg.LaunchHeadroomPercent >= 100 {
-		return nil, fmt.Errorf("LAUNCH_HEADROOM_PERCENT must be in [0,100)")
+	if cfg.SchedulerHeadroomPercent < 0 || cfg.SchedulerHeadroomPercent >= 100 {
+		return nil, fmt.Errorf("SCHEDULER_HEADROOM_PERCENT must be in [0,100)")
+	}
+	if cfg.SchedulerStartupTimeout <= 0 {
+		return nil, fmt.Errorf("SCHEDULER_STARTUP_TIMEOUT must be positive")
+	}
+	if cfg.SchedulerRestartThreshold < 1 {
+		return nil, fmt.Errorf("SCHEDULER_RESTART_THRESHOLD must be at least 1")
 	}
 	for name, v := range map[string]string{"DEVICE_DEFAULT_CPU": cfg.DeviceDefaultCPU, "DEVICE_DEFAULT_MEMORY": cfg.DeviceDefaultMemory} {
 		if v == "" {

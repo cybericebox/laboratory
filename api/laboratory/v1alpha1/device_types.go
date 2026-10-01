@@ -42,6 +42,10 @@ type DeviceSpec struct {
 	// resolved is absent and pulled by its tag.
 	// +optional
 	ImageDigests map[string]string `json:"imageDigests,omitempty"`
+	// RetryToken: a new value starts the device's pod again, at the head of the
+	// scheduler queue. Set by the management agent.
+	// +optional
+	RetryToken string `json:"retryToken,omitempty"`
 	// Env values are NOT carried on the CR — they live only in a per-device
 	// Secret (<device>-env) the agent writes, referenced by the pod via envFrom.
 }
@@ -154,6 +158,9 @@ type DeviceStatus struct {
 	// State is the snapshot state of a device with spec.state.enabled.
 	// +optional
 	State *DeviceStateStatus `json:"state,omitempty"`
+	// Scheduling is the pod's place on its way from the scheduler queue to Ready.
+	// +optional
+	Scheduling *PodSchedule `json:"scheduling,omitempty"`
 }
 
 // +genclient

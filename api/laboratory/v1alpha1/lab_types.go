@@ -10,11 +10,6 @@ type LabSpec struct {
 	Internet    LabNetworkSpec       `json:"internet,omitempty"`
 	Devices     []DeviceTemplate     `json:"devices,omitempty"`
 	Connections []ConnectionTemplate `json:"connections,omitempty"`
-	// LaunchClass groups labs of one type (for example an exercise version or
-	// variant id) for launch pacing: labs of one class are admitted together.
-	// Empty means the operator derives the class from the lab topology and images.
-	// +optional
-	LaunchClass string `json:"launchClass,omitempty"`
 }
 
 // LabNetworkSpec configures a network segment (VPN or internet) attached to the lab.
@@ -81,10 +76,9 @@ type LabStatus struct {
 	Devices     []DeviceRef      `json:"devices,omitempty"`
 	Connections []ConnectionRef  `json:"connections,omitempty"`
 	Access      []AccessEntry    `json:"access,omitempty"`
-	// Launch reports the launch pacing state: the resolved class, the admission
-	// time and, while the lab is Queued, its place in the queue.
+	// Scheduling is the place of the lab in the scheduler queue.
 	// +optional
-	Launch *LabLaunchStatus `json:"launch,omitempty"`
+	Scheduling *SchedulingStatus `json:"scheduling,omitempty"`
 	// StatePersistence records how this lab runs its devices, decided once on the
 	// first reconcile: true = bare Pods with snapshot-backed state, false =
 	// Deployments. It never changes afterwards, whatever the platform switch says.
@@ -126,6 +120,9 @@ type DeviceRef struct {
 	// State summarises the snapshots of a device with state persistence.
 	// +optional
 	State *DeviceStateInfo `json:"state,omitempty"`
+	// Failure is the warning of a device pod that did not start in time.
+	// +optional
+	Failure *PodFailure `json:"failure,omitempty"`
 }
 
 // DeviceStateInfo is the organizer-facing view of a device's snapshots.

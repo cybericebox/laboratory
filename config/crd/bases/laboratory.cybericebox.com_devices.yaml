@@ -212,6 +212,11 @@ spec:
                   memoryRequest:
                     type: string
                 type: object
+              retryToken:
+                description: |-
+                  RetryToken: a new value starts the device's pod again, at the head of the
+                  scheduler queue. Set by the management agent.
+                type: string
               securityPreset:
                 description: |-
                   SecurityPreset names a capability profile (basic/service/net/debug); the
@@ -303,6 +308,60 @@ spec:
                 type: boolean
               reason:
                 type: string
+              scheduling:
+                description: Scheduling is the pod's place on its way from the scheduler
+                  queue to Ready.
+                properties:
+                  dispatchedAt:
+                    description: DispatchedAt is when the scheduler let the pod start;
+                      the startup timeout counts from it.
+                    format: date-time
+                    type: string
+                  failure:
+                    description: Failure explains a Failed pod; the warning clears
+                      when the pod becomes Ready.
+                    properties:
+                      at:
+                        format: date-time
+                        type: string
+                      message:
+                        description: Message is the last error the node reported (for
+                          example the image pull error).
+                        type: string
+                      reason:
+                        description: Reason is one of the Failure* constants.
+                        type: string
+                      restartCount:
+                        format: int32
+                        type: integer
+                    type: object
+                  queuedAt:
+                    description: QueuedAt is when the pod entered the queue.
+                    format: date-time
+                    type: string
+                  retryAt:
+                    description: |-
+                      RetryAt is when a retry was requested; a queued pod with it goes ahead of
+                      everything else. Cleared on dispatch.
+                    format: date-time
+                    type: string
+                  retryToken:
+                    description: RetryToken is the last spec.retryToken acted on.
+                    type: string
+                  startedAt:
+                    description: StartedAt is when the pod was first seen Ready.
+                    format: date-time
+                    type: string
+                  state:
+                    description: PodScheduleState is where a pod is on its way from
+                      the queue to Ready.
+                    enum:
+                    - Queued
+                    - Starting
+                    - Started
+                    - Failed
+                    type: string
+                type: object
               state:
                 description: State is the snapshot state of a device with spec.state.enabled.
                 properties:

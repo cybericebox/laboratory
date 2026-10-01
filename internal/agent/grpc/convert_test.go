@@ -2,7 +2,6 @@ package grpc
 
 import (
 	"testing"
-	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -158,18 +157,14 @@ func TestClientToProtoZeroHandshake(t *testing.T) {
 func TestLabToProtoQueue(t *testing.T) {
 	lab := &laboratoryv1alpha1.Lab{}
 	if labToProto(lab).GetStatus().GetQueue() != nil {
-		t.Fatal("a lab without launch status must have no queue message")
+		t.Fatal("a lab without scheduling status must have no queue message")
 	}
-
-	admitted := metav1.NewTime(time.UnixMilli(1_700_000_000_123))
 	lab.Status.Phase = laboratoryv1alpha1.PhaseQueued
-	lab.Status.Launch = &laboratoryv1alpha1.LabLaunchStatus{
-		Class: "web-v2", Position: 7, Length: 42,
-		Reason: laboratoryv1alpha1.LaunchReasonInFlightLimit, AdmittedAt: &admitted,
+	lab.Status.Scheduling = &laboratoryv1alpha1.SchedulingStatus{
+		Group: "intro", Position: 7, Length: 42, Reason: laboratoryv1alpha1.WaitInFlightLimit,
 	}
 	q := labToProto(lab).GetStatus().GetQueue()
-	if q.GetPosition() != 7 || q.GetLength() != 42 || q.GetReason() != "InFlightLimit" ||
-		q.GetLaunchClass() != "web-v2" || q.GetAdmittedAtUnixMs() != 1_700_000_000_123 {
+	if q.GetPosition() != 7 || q.GetLength() != 42 || q.GetReason() != "InFlightLimit" || q.GetLaunchClass() != "intro" {
 		t.Fatalf("queue = %+v", q)
 	}
 	if got := labMonitoringToProto(lab, "g").GetStatus().GetQueue(); got.GetPosition() != 7 {

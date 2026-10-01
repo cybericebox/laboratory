@@ -82,6 +82,9 @@ type LabGroupReconciler struct {
 	// ImagePullSecrets names registry Secrets of the operator namespace. They are
 	// copied into every group namespace and referenced by the VPN and gateway pods.
 	ImagePullSecrets []string
+	// Scheduled makes the group's VPN and gateway pods wait for the scheduler to
+	// dispatch them (see labgroup_sched.go). Off: they start as soon as the group is created.
+	Scheduled bool
 }
 
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labgroups,verbs=get;list;watch;create;update;patch;delete
@@ -172,11 +175,17 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Error(err, "ensure VPN role binding")
 		return ctrl.Result{}, err
 	}
+	if err = r.ensureGroupScheduling(ctx, &lg); err != nil {
+		logger.Error(err, "ensure scheduling state")
+		return ctrl.Result{}, err
+	}
 	// Suspension stops task devices only. Keep the team's tunnel and internet
 	// gateway running so participants can test their connection during a pause.
-	if err = r.ensureVPNDeployment(ctx, ns, lg.Spec.VPN.Disabled); err != nil {
-		logger.Error(err, "ensure VPN deployment")
-		return ctrl.Result{}, err
+	if !r.groupPodQueued(&lg, "vpn") {
+		if err = r.ensureVPNDeployment(ctx, ns, lg.Spec.VPN.Disabled); err != nil {
+			logger.Error(err, "ensure VPN deployment")
+			return ctrl.Result{}, err
+		}
 	}
 
 	if err = r.ensureServiceAccount(ctx, ns, "gateway"); err != nil {
@@ -187,9 +196,11 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Error(err, "ensure gateway role binding")
 		return ctrl.Result{}, err
 	}
-	if err = r.ensureGatewayDeployment(ctx, ns, false); err != nil {
-		logger.Error(err, "ensure gateway deployment")
-		return ctrl.Result{}, err
+	if !r.groupPodQueued(&lg, "gateway") {
+		if err = r.ensureGatewayDeployment(ctx, ns, false); err != nil {
+			logger.Error(err, "ensure gateway deployment")
+			return ctrl.Result{}, err
+		}
 	}
 
 	if err = r.ensureVPNGatewayPolicies(ctx, ns); err != nil {
@@ -249,6 +260,9 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	r.reportPinWarning(&lg, ns)
 	lg.Status.Phase = laboratoryv1alpha1.PhaseReady
+	if r.groupPodQueued(&lg, "vpn") || r.groupPodQueued(&lg, "gateway") {
+		lg.Status.Phase = laboratoryv1alpha1.PhaseQueued
+	}
 	lg.Status.Namespace = ns
 	lg.Status.Suspended = false
 	lg.Status.VPN.PublicKey = pubKey

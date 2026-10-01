@@ -121,8 +121,6 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupVPNSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupVPNStatus"):
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupVPNStatusApplyConfiguration{}
-	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabLaunchStatus"):
-		return &applyconfigurationlaboratoryv1alpha1.LabLaunchStatusApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabNetworkSpec"):
 		return &applyconfigurationlaboratoryv1alpha1.LabNetworkSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabNetworkStatus"):
@@ -145,12 +143,20 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.LabVPNSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabVPNStatus"):
 		return &applyconfigurationlaboratoryv1alpha1.LabVPNStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("NamedPodSchedule"):
+		return &applyconfigurationlaboratoryv1alpha1.NamedPodScheduleApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("NetworkIPRef"):
 		return &applyconfigurationlaboratoryv1alpha1.NetworkIPRefApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("NetworkSubnetRef"):
 		return &applyconfigurationlaboratoryv1alpha1.NetworkSubnetRefApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("PodFailure"):
+		return &applyconfigurationlaboratoryv1alpha1.PodFailureApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("PodSchedule"):
+		return &applyconfigurationlaboratoryv1alpha1.PodScheduleApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("Route"):
 		return &applyconfigurationlaboratoryv1alpha1.RouteApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("SchedulingStatus"):
+		return &applyconfigurationlaboratoryv1alpha1.SchedulingStatusApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("WebExposure"):
 		return &applyconfigurationlaboratoryv1alpha1.WebExposureApplyConfiguration{}
 

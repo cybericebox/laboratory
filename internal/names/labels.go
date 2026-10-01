@@ -5,6 +5,10 @@ const (
 	LabelLab    = "laboratory.cybericebox.com/lab"
 	LabelDevice = "laboratory.cybericebox.com/device"
 	LabelGroup  = "laboratory.cybericebox.com/group"
+	// LabelDeployGroup is the scheduler group of a Lab or LabGroup (a key of at
+	// most 63 characters). Objects with the same key are dispatched together.
+	// Operator-internal: the scheduler reads it and no user label.
+	LabelDeployGroup = "laboratory.cybericebox.com/deploy-group"
 
 	// TopologyKeyHostname is the well-known node label used as the topology key
 	// for per-node scheduling constraints (device co-location).
@@ -13,6 +17,10 @@ const (
 
 // Kubernetes annotation keys.
 const (
+	// AnnotationDeployAfter lists, comma separated, the deploy groups that must be
+	// complete (every pod Ready or failed) before the group of this object starts.
+	AnnotationDeployAfter = "laboratory.cybericebox.com/deploy-after"
+
 	// AnnotationNetworks is the pod annotation listing OVS network attachments.
 	// Format: comma-separated "iface@name[|MAC]" entries.
 	AnnotationNetworks = "network.cybericebox.com/networks"

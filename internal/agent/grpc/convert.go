@@ -39,7 +39,7 @@ func labToProto(l *laboratoryv1alpha1.Lab) *protobuf.Lab {
 		InternetReady: st.Internet.Ready,
 		ImageWarning:  st.ImageWarning,
 	}
-	status.Queue = labQueueToProto(st.Launch)
+	status.Queue = labQueueToProto(st.Scheduling)
 	for i := range st.Devices {
 		status.Devices = append(status.Devices, &protobuf.LabDeviceStatus{
 			Name: st.Devices[i].Name, Ready: st.Devices[i].Ready,
@@ -77,21 +77,14 @@ func labToProto(l *laboratoryv1alpha1.Lab) *protobuf.Lab {
 	}
 }
 
-// labQueueToProto maps the launch pacing state; nil for a lab that never had it.
-func labQueueToProto(l *laboratoryv1alpha1.LabLaunchStatus) *protobuf.LabQueueStatus {
+// labQueueToProto maps the scheduler queue place; nil for a lab that has none.
+// The proto still has the shape of the old launch queue: launch_class carries the
+// deploy group, and admitted_at is not reported.
+func labQueueToProto(l *laboratoryv1alpha1.SchedulingStatus) *protobuf.LabQueueStatus {
 	if l == nil {
 		return nil
 	}
-	q := &protobuf.LabQueueStatus{
-		Position:    l.Position,
-		Length:      l.Length,
-		Reason:      l.Reason,
-		LaunchClass: l.Class,
-	}
-	if l.AdmittedAt != nil {
-		q.AdmittedAtUnixMs = l.AdmittedAt.UnixMilli()
-	}
-	return q
+	return &protobuf.LabQueueStatus{Position: l.Position, Length: l.Length, Reason: l.Reason, LaunchClass: l.Group}
 }
 
 func quantityMilliValue(value string) int64 {

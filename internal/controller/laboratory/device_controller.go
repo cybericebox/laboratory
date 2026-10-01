@@ -60,6 +60,9 @@ type DeviceReconciler struct {
 	ExitSnapshotTimeout time.Duration
 	// Now is the clock; nil means time.Now. A field so tests can move time.
 	Now func() time.Time
+	// Scheduled makes the device wait for the scheduler to dispatch its pod
+	// (see device_sched.go). Off: the pod is created as soon as the device is.
+	Scheduled bool
 }
 
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices,verbs=get;list;watch;create;update;patch;delete
@@ -175,10 +178,24 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 	err = r.Get(ctx, types.NamespacedName{Name: device.Name, Namespace: device.Namespace}, &dep)
 
 	if errors.IsNotFound(err) {
+		if !suspended {
+			if ok, gateErr := r.mayCreateWorkload(ctx, device); gateErr != nil || !ok {
+				return ctrl.Result{}, gateErr // the scheduler's dispatch triggers the next reconcile
+			}
+		}
 		return ctrl.Result{}, r.createDeployment(ctx, device, replicas)
 	}
 	if err != nil {
 		return ctrl.Result{}, err
+	}
+	// A workload that already runs needs no dispatch; one sent back to the queue
+	// (a retry) is stopped until the scheduler dispatches it again.
+	if err := r.initScheduling(ctx, device, true); err != nil {
+		return ctrl.Result{}, err
+	}
+	queued := r.queuedByScheduler(device)
+	if queued {
+		replicas = 0
 	}
 
 	// Voluntary disruption is blocked by the lab group's PodDisruptionBudget; the
@@ -222,7 +239,7 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 	// Deployment changes trigger reconcile, but a pod getting its IP does not
 	// (the pod is owned by the ReplicaSet, not the Device) — requeue until the
 	// placement is fully observed.
-	if !suspended && (!ready || podIP == "" || podName == "") {
+	if !suspended && !queued && (!ready || podIP == "" || podName == "") {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil

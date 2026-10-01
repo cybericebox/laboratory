@@ -56,9 +56,6 @@ type LabReconciler struct {
 	VPNBaseNetwork string
 	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets (e.g. "10.9.0.0/16").
 	InetBaseNetwork string
-	// LaunchGate holds a new Lab back until the Launcher admits it (launch pacing).
-	// Off: the lab is provisioned as soon as it is created.
-	LaunchGate bool
 	// State is the device state persistence policy applied to labs created
 	// while the platform switch is on.
 	State StatePolicy
@@ -105,20 +102,14 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 	}
 
-	// The modes are fixed before anything is created, and before the queue, so
-	// the launcher knows which image references the lab will pull.
+	// The modes are fixed before anything is created, and before anything is created,
+	// so the scheduler knows which image references the lab will pull.
 	if updated, err := r.ensureModes(ctx, &lab); err != nil {
 		return ctrl.Result{}, err
 	} else if updated {
 		if err := r.Get(ctx, req.NamespacedName, &lab); err != nil {
 			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
-	}
-
-	// A queued lab creates nothing yet: the launcher admits it (status patch),
-	// which triggers the next reconcile.
-	if r.LaunchGate && !labAdmitted(&lab) {
-		return ctrl.Result{}, nil
 	}
 
 	if updated, err := r.ensureSubnetAllocation(ctx, &lab); err != nil {
@@ -701,12 +692,25 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 
 	var refs []laboratoryv1alpha1.DeviceRef
 	allReady := len(deviceList.Items) > 0
+	pods, queuedPods := 0, 0
 	for _, d := range deviceList.Items {
-		refs = append(refs, laboratoryv1alpha1.DeviceRef{Name: d.Spec.Name, Ready: d.Status.Ready, State: deviceStateInfo(&d)})
+		var failure *laboratoryv1alpha1.PodFailure
+		if sc := d.Status.Scheduling; sc != nil && sc.State == laboratoryv1alpha1.PodFailed {
+			failure = sc.Failure
+		}
+		refs = append(refs, laboratoryv1alpha1.DeviceRef{Name: d.Spec.Name, Ready: d.Status.Ready, State: deviceStateInfo(&d), Failure: failure})
 		if !d.Status.Ready {
 			allReady = false
 		}
+		if d.Spec.Type == laboratoryv1alpha1.DeviceTypeContainer {
+			pods++
+			if sc := d.Status.Scheduling; sc != nil && sc.State == laboratoryv1alpha1.PodQueued {
+				queuedPods++
+			}
+		}
 	}
+	// Every pod still waits in the scheduler queue: nothing has started.
+	allQueued := pods > 0 && queuedPods == pods
 
 	throttled := throttleStateInfo(lab.Status.Devices, refs)
 
@@ -742,8 +746,11 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 	}
 
 	newPhase := laboratoryv1alpha1.PhaseProvisioning
-	if allReady {
+	switch {
+	case allReady:
 		newPhase = laboratoryv1alpha1.PhaseReady
+	case allQueued:
+		newPhase = laboratoryv1alpha1.PhaseQueued
 	}
 
 	access := r.buildAccessEntries(ctx, lab)
@@ -762,13 +769,11 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 			r.Recorder.Event(lab, corev1.EventTypeNormal, labstatus.ReasonReady, "lab is ready")
 		}
 	} else {
-		labstatus.SetReady(
-			&lab.Status.Conditions,
-			lab.Generation,
-			false,
-			labstatus.ReasonProvisioning,
-			"waiting for devices and connections to become ready",
-		)
+		reason, message := labstatus.ReasonProvisioning, "waiting for devices and connections to become ready"
+		if allQueued {
+			reason, message = labstatus.ReasonQueued, "waiting in the scheduler queue"
+		}
+		labstatus.SetReady(&lab.Status.Conditions, lab.Generation, false, reason, message)
 	}
 
 	if newPhase == lab.Status.Phase &&

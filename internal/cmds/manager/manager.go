@@ -198,7 +198,7 @@ func Run() {
 		})
 	}
 
-	// The launcher writes the queue status of many labs; the default client-side
+	// The scheduler writes the queue status of many objects; the default client-side
 	// rate limit (20 QPS, burst 30) would also slow every reconciler.
 	restCfg := ctrl.GetConfigOrDie()
 	restCfg.QPS = 60
@@ -251,6 +251,7 @@ func Run() {
 	}
 
 	if err = (&laboratorycontroller.LabGroupReconciler{
+		Scheduled:         cfg.SchedulerEnabled,
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
 		Recorder:          mgr.GetEventRecorderFor("labgroup"),
@@ -293,7 +294,6 @@ func Run() {
 		ProxySourceCIDRs: cfg.ProxySourceCIDRs,
 		VPNBaseNetwork:   cfg.VPNBaseNetwork,
 		InetBaseNetwork:  cfg.InetBaseNetwork,
-		LaunchGate:       cfg.LaunchEnabled,
 		State:            statePolicy,
 		Mirror:           mirror,
 		Resolver:         resolver,
@@ -302,29 +302,31 @@ func Run() {
 		setupLog.Error(err, "unable to create controller", "controller", "Lab")
 		os.Exit(1)
 	}
-	if cfg.LaunchEnabled {
-		if err = mgr.Add(&laboratorycontroller.Launcher{
+	if cfg.SchedulerEnabled {
+		if err = mgr.Add(&laboratorycontroller.Scheduler{
 			Mirror:   mirror,
 			Client:   mgr.GetClient(),
-			Recorder: mgr.GetEventRecorderFor("launcher"),
-			Config: laboratorycontroller.LaunchConfig{
-				MaxInFlight:     cfg.LaunchMaxInFlight,
-				WaveTimeout:     cfg.LaunchWaveTimeout,
-				HeadroomPercent: cfg.LaunchHeadroomPercent,
-				ResourceCheck:   cfg.LaunchResourceCheck,
-				Prepull:         cfg.LaunchPrepull,
-				PrepullTimeout:  cfg.LaunchPrepullTimeout,
+			Recorder: mgr.GetEventRecorderFor("scheduler"),
+			Config: laboratorycontroller.SchedulerConfig{
+				MaxPods:          cfg.SchedulerMaxPods,
+				StartupTimeout:   cfg.SchedulerStartupTimeout,
+				RestartThreshold: cfg.SchedulerRestartThreshold,
+				HeadroomPercent:  cfg.SchedulerHeadroomPercent,
+				ResourceCheck:    cfg.SchedulerResourceCheck,
+				Prepull:          cfg.SchedulerPrepull,
+				PrepullTimeout:   cfg.SchedulerPrepullTimeout,
 			},
 			Defaults:         laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory},
 			ImagePullSecrets: cfg.ImagePullSecrets,
 			LabNodeSelector:  labNodeSelector,
 			LabTolerations:   labTolerations,
 		}); err != nil {
-			setupLog.Error(err, "unable to add the launcher")
+			setupLog.Error(err, "unable to add the scheduler")
 			os.Exit(1)
 		}
 	}
 	deviceReconciler := &laboratorycontroller.DeviceReconciler{
+		Scheduled:        cfg.SchedulerEnabled,
 		MirrorRegistries: mirror.Registries,
 		Reader:           mgr.GetAPIReader(),
 		Client:           mgr.GetClient(),
