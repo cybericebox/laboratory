@@ -75,3 +75,23 @@ func TestDeviceResourcesMapsAreIndependent(t *testing.T) {
 		t.Error("requests share storage with limits")
 	}
 }
+
+// A zero, negative or overflowing value of an object that predates the validation never reaches the pod as "no limit":
+// it is skipped (the next candidate or the default applies) and a value over the chart maximum is clamped.
+func TestDeviceResourcesRefuseZeroAndClamp(t *testing.T) {
+	d := &laboratoryv1alpha1.Device{}
+	d.Spec.Resources = &laboratoryv1alpha1.DeviceResources{CPULimit: "0", CPURequest: "-5", MemoryLimit: "1e30", MemoryRequest: "512Mi"}
+	rr := deviceResources(d, testDefaults)
+	for _, list := range []corev1.ResourceList{rr.Requests, rr.Limits} {
+		wantQty(t, list, corev1.ResourceCPU, "250m")
+		wantQty(t, list, corev1.ResourceMemory, "512Mi")
+	}
+
+	big := &laboratoryv1alpha1.Device{}
+	big.Spec.Resources = &laboratoryv1alpha1.DeviceResources{CPULimit: "64", MemoryLimit: "100Gi"}
+	capped := DeviceDefaults{CPU: "250m", Memory: "256Mi", MaxCPU: "2000m", MaxMemory: "4Gi"}
+	rr = deviceResources(big, capped)
+	wantQty(t, rr.Limits, corev1.ResourceCPU, "2")
+	wantQty(t, rr.Limits, corev1.ResourceMemory, "4Gi")
+	wantQty(t, rr.Requests, corev1.ResourceMemory, "4Gi")
+}

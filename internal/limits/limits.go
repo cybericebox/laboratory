@@ -5,6 +5,7 @@ package limits
 
 import (
 	"fmt"
+	"math"
 
 	"k8s.io/apimachinery/pkg/api/resource"
 
@@ -84,6 +85,45 @@ func quantity(s string, cpu bool) (int64, error) {
 	return q.Value(), nil
 }
 
+// The absolute bounds of one device quantity, whatever the chart maxima say: a value above them is a mistake or an
+// attempt to overflow the sums (1024 cores, 1 TiB).
+var (
+	absoluteCPU    = resource.MustParse("1024")
+	absoluteMemory = resource.MustParse("1Ti")
+)
+
+// DeviceQuantity parses a device cpu (millicores) or memory (bytes) value the way a tenant may write it: it must be
+// positive and within the absolute bound. A zero value would remove the pod limit, a negative or an overflowing one
+// would skew the sums. Quantities are compared as quantities, so an exponent that overflows int64 is refused, not wrapped.
+func DeviceQuantity(s string, cpu bool) (int64, error) {
+	q, err := resource.ParseQuantity(s)
+	if err != nil {
+		return 0, err
+	}
+	if q.Sign() <= 0 {
+		return 0, fmt.Errorf("must be greater than zero")
+	}
+	bound := absoluteMemory
+	if cpu {
+		bound = absoluteCPU
+	}
+	if q.Cmp(bound) > 0 {
+		return 0, fmt.Errorf("must not exceed %s", bound.String())
+	}
+	if cpu {
+		return q.MilliValue(), nil
+	}
+	return q.Value(), nil
+}
+
+// addSat adds without wrapping around.
+func addSat(a, b int64) int64 {
+	if a > 0 && b > math.MaxInt64-a {
+		return math.MaxInt64
+	}
+	return a + b
+}
+
 // DeviceResources is what a device is planned with: its limit, else its request, else the default. A quantity
 // that does not parse is an error.
 func (l Limits) DeviceResources(r *laboratoryv1alpha1.DeviceResources) (cpu, mem int64, err error) {
@@ -96,7 +136,7 @@ func (l Limits) DeviceResources(r *laboratoryv1alpha1.DeviceResources) (cpu, mem
 			if c == "" {
 				continue
 			}
-			v, err := quantity(c, cpuRes)
+			v, err := DeviceQuantity(c, cpuRes)
 			if err != nil {
 				return 0, false, fmt.Errorf("%s %q: %w", name, c, err)
 			}
@@ -129,7 +169,7 @@ func (l Limits) SpecTotals(spec *laboratoryv1alpha1.LabSpec) (cpu, mem int64, co
 		if err != nil {
 			return 0, 0, 0, fmt.Errorf("device %q: %w", d.Name, err)
 		}
-		cpu, mem, containers = cpu+c, mem+m, containers+1
+		cpu, mem, containers = addSat(cpu, c), addSat(mem, m), containers+1
 	}
 	return cpu, mem, containers, nil
 }
@@ -164,9 +204,9 @@ func (l Limits) GroupFits(labs int, cpu, mem, addCPU, addMem int64) error {
 	switch {
 	case l.GroupMaxLabs > 0 && labs+1 > l.GroupMaxLabs:
 		return fmt.Errorf("the lab group is at its limit of %d labs", l.GroupMaxLabs)
-	case l.GroupMaxCPU > 0 && cpu+addCPU > l.GroupMaxCPU:
+	case l.GroupMaxCPU > 0 && addSat(cpu, addCPU) > l.GroupMaxCPU:
 		return fmt.Errorf("the lab needs %dm of cpu and the lab group already plans %dm, the limit per group is %dm", addCPU, cpu, l.GroupMaxCPU)
-	case l.GroupMaxMemory > 0 && mem+addMem > l.GroupMaxMemory:
+	case l.GroupMaxMemory > 0 && addSat(mem, addMem) > l.GroupMaxMemory:
 		return fmt.Errorf("the lab needs %d bytes of memory and the lab group already plans %d, the limit per group is %d bytes", addMem, mem, l.GroupMaxMemory)
 	}
 	return nil

@@ -56,11 +56,21 @@ type DeviceSpec struct {
 // Values are Kubernetes quantity strings (e.g. "250m", "256Mi"); empty fields
 // are omitted so the scheduler treats them as best-effort. Requests are what
 // capacity planning sums against node allocatable.
+//
+// Every value must be a positive quantity without an exponent: zero would remove the pod limit.
 type DeviceResources struct {
-	CPURequest    string `json:"cpuRequest,omitempty"`
+	// +kubebuilder:validation:MaxLength=24
+	// +kubebuilder:validation:Pattern=`^([1-9][0-9]*(\.[0-9]+)?|0?\.[0-9]*[1-9][0-9]*)(m|k|[KMGTPE]i?)?$`
+	CPURequest string `json:"cpuRequest,omitempty"`
+	// +kubebuilder:validation:MaxLength=24
+	// +kubebuilder:validation:Pattern=`^([1-9][0-9]*(\.[0-9]+)?|0?\.[0-9]*[1-9][0-9]*)(m|k|[KMGTPE]i?)?$`
 	MemoryRequest string `json:"memoryRequest,omitempty"`
-	CPULimit      string `json:"cpuLimit,omitempty"`
-	MemoryLimit   string `json:"memoryLimit,omitempty"`
+	// +kubebuilder:validation:MaxLength=24
+	// +kubebuilder:validation:Pattern=`^([1-9][0-9]*(\.[0-9]+)?|0?\.[0-9]*[1-9][0-9]*)(m|k|[KMGTPE]i?)?$`
+	CPULimit string `json:"cpuLimit,omitempty"`
+	// +kubebuilder:validation:MaxLength=24
+	// +kubebuilder:validation:Pattern=`^([1-9][0-9]*(\.[0-9]+)?|0?\.[0-9]*[1-9][0-9]*)(m|k|[KMGTPE]i?)?$`
+	MemoryLimit string `json:"memoryLimit,omitempty"`
 }
 
 // StateEnabled reports whether the device is snapshot-backed.

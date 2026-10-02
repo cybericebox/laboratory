@@ -1,6 +1,7 @@
 package limits
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -117,5 +118,38 @@ func TestSpecTotalsCountContainersAtTheProfile(t *testing.T) {
 	cpu, mem, n, err := l.SpecTotals(spec)
 	if err != nil || n != 2 || cpu != 500 || mem != (256+64)<<20 {
 		t.Fatalf("cpu %d mem %d n %d err %v", cpu, mem, n, err)
+	}
+}
+
+func TestDeviceQuantityRefusesZeroNegativeAndOverflow(t *testing.T) {
+	for _, c := range []struct {
+		in  string
+		cpu bool
+		ok  bool
+	}{
+		{"0", true, false}, {"0", false, false}, {"0m", true, false}, {"-1", true, false}, {"-1Gi", false, false},
+		{"18446744073709551", true, false}, {"1e30", true, false}, {"1e30", false, false}, {"9223372036854775807", false, false},
+		{"2Ti", false, false}, {"2000", true, false},
+		{"100m", true, true}, {"2", true, true}, {"256Mi", false, true}, {"1Ti", false, true}, {"1024", true, true},
+	} {
+		_, err := DeviceQuantity(c.in, c.cpu)
+		if (err == nil) != c.ok {
+			t.Errorf("DeviceQuantity(%q, cpu=%v) = %v, want ok=%v", c.in, c.cpu, err, c.ok)
+		}
+	}
+}
+
+func TestCheckSpecRefusesZeroLimit(t *testing.T) {
+	l := chartDefaults(t)
+	spec := &laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{
+		dev("a", &laboratoryv1alpha1.DeviceResources{MemoryLimit: "0", CPULimit: "0"})}}
+	if err := l.CheckSpec(spec); err == nil {
+		t.Fatal("a zero limit must be refused")
+	}
+}
+
+func TestAddSatDoesNotWrap(t *testing.T) {
+	if got := addSat(math.MaxInt64-1, 10); got != math.MaxInt64 {
+		t.Errorf("addSat = %d", got)
 	}
 }

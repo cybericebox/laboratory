@@ -1378,3 +1378,27 @@ kubectl -n laboratory-system get configmap laboratory-config -o yaml
 # Render chart without installing (dry-run)
 helm template laboratory ./charts/laboratory -f my-values.yaml | less
 ```
+
+## Re-audit fixes and upgrade order
+
+The fixes after the second audit (docs/security/2026-10-02-laboratory-reaudit.md). The rule for all of them: objects that already
+exist keep working after the upgrade; a stricter check applies to new input, and where an old object could slip under it the
+component that runs it clamps or ignores the bad value instead of failing.
+
+**Upgrade order.**
+
+1. Apply the CRDs first: `kubectl apply --server-side -f charts/laboratory/crds/`. `helm upgrade` does not update the `crds/`
+   directory, so without this step the new validation patterns below are missing on an upgraded cluster (the code does not rely on
+   them, they are the second line).
+2. `helm upgrade` (the operator, agent, node-agent and proxy roll out together; the operator and the agent can run in either order).
+3. The notes of each item below say what, if anything, must happen in a different order.
+
+### Device resources (R-2)
+
+- A device resource value must be a positive quantity (no exponent, at most 24 characters) and at most 1024 cores or 1 TiB. The agent
+  refuses `"0"`, negative, overflowing and out-of-bound values on CreateLabs with an error that names the device; the CRD has the same
+  pattern. The sums use saturating arithmetic.
+- The operator ignores such a value on an object that predates the check (the next candidate or the default is used) and clamps
+  anything above the chart maximum to it (`limits.device.maxCpu` / `maxMemory`, passed to the operator as `DEVICE_MAX_CPU` /
+  `DEVICE_MAX_MEMORY`), so a pod never runs without limits. No existing lab is deleted or restarted by this; a pod that was created
+  without a limit gets its limit when its Device is next rebuilt.

@@ -116,6 +116,10 @@ type Config struct {
 	// the pod is Guaranteed). Empty leaves such a device without resources.
 	DeviceDefaultCPU    string `env:"DEVICE_DEFAULT_CPU" envDefault:"100m"`
 	DeviceDefaultMemory string `env:"DEVICE_DEFAULT_MEMORY" envDefault:"256Mi"`
+	// DeviceMaxCPU and DeviceMaxMemory are the chart maxima of one device (limits.device.maxCpu / maxMemory): a
+	// device object that asks for more (it predates the agent's check, or was made by hand) is clamped to them.
+	DeviceMaxCPU    string `env:"DEVICE_MAX_CPU" envDefault:"2000m"`
+	DeviceMaxMemory string `env:"DEVICE_MAX_MEMORY" envDefault:"4Gi"`
 
 	// DeviceUserNamespaces runs device pods with hostUsers: false (default on; a hidden setting, not shown in any UI).
 	// DeviceEphemeralStorage limits the writable layer, logs and emptyDirs of a device ("" or "0" = no limit).
