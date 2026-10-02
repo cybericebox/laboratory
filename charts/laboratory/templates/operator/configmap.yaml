@@ -17,6 +17,9 @@ data:
   VPN_MEMORY: {{ .Values.vpn.resources.memory | quote }}
   PRIORITY_CLASS_GROUP: {{ .Values.priorityClasses.group.name | quote }}
   PRIORITY_CLASS_DEVICE: {{ .Values.priorityClasses.device.name | quote }}
+{{- if .Values.labScheduler.enabled }}
+  LAB_SCHEDULER_NAME: {{ .Values.labScheduler.schedulerName | quote }}
+{{- end }}
   VPN_STATS_INTERVAL: {{ .Values.vpn.statsInterval | quote }}
   NETWORK_POLICY_ENABLED: {{ .Values.operator.groupNetworkPolicy.enabled | quote }}
   GATEWAY_CPU: {{ .Values.inetGateway.resources.cpu | quote }}

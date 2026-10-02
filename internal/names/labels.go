@@ -33,6 +33,11 @@ const (
 	// complete (every pod Ready or failed) before the group of this object starts.
 	AnnotationDeployAfter = LabelPrefix + "deploy-after"
 
+	// AnnotationDeployPriority is an explicit dispatch priority of a Lab or LabGroup (an integer, 0 when absent or not a
+	// number): within the same deploy group (or among independent objects) a higher one is dispatched first, whatever the
+	// size; at equal priority the larger lab goes first.
+	AnnotationDeployPriority = LabelPrefix + "deploy-priority"
+
 	// AnnotationSpecHash is written by the management agent on the objects it
 	// creates; the operator ignores it.
 	AnnotationSpecHash = LabelPrefix + "spec-hash"

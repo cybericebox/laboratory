@@ -115,7 +115,7 @@ func TestCapacityIsTheCallersTenantView(t *testing.T) {
 		labPod("ns3", "legacy", "", "100m", "10Mi", corev1.PodRunning), // before tenancy: default tenant
 		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "system", Namespace: "kube-system"}, Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c",
 			Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("8")}}}}}},
-		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n1"}, Status: corev1.NodeStatus{Allocatable: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("64")}}},
+		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n1"}, Status: corev1.NodeStatus{Allocatable: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("64"), corev1.ResourceMemory: resource.MustParse("128Gi")}}},
 	)
 	got, err := h.GetCapacity(asClient("a"), &protobuf.Empty{})
 	if err != nil {
@@ -125,9 +125,9 @@ func TestCapacityIsTheCallersTenantView(t *testing.T) {
 		got.CpuReservedMillicores != 750 || got.MemoryReservedBytes != 150<<20 || got.CpuFreeMillicores != 1250 || got.MemoryFreeBytes != (1<<30)-(150<<20) || got.UsageAvailable {
 		t.Fatalf("tenant a: %+v", got)
 	}
-	// Tenant b has no quota: no limit and no free numbers, and none of a's pods or the cluster's.
+	// Tenant b has no quota: it is told the real room of the lab nodes (64 CPU), and none of a's pods or the cluster's.
 	b, _ := h.GetCapacity(asClient("b"), &protobuf.Empty{})
-	if b.Tenant != "b" || b.HasCpuQuota || b.CpuReservedMillicores != 3000 || b.CpuFreeMillicores != 0 {
+	if b.Tenant != "b" || !b.HasCpuQuota || b.CpuQuotaMillicores != 64000 || b.CpuReservedMillicores != 3000 || b.CpuFreeMillicores != 61000 {
 		t.Fatalf("tenant b: %+v", b)
 	}
 	// The default tenant owns the pod that predates tenancy, not the system pod.
@@ -267,5 +267,36 @@ func TestCapacityReportsTheLargestPlaceableDeviceOnly(t *testing.T) {
 	empty := tenantHandler(t, []*laboratoryv1alpha1.Tenant{newTenantTenant("a", true, nil)})
 	if got, _ = empty.GetCapacity(asClient("a"), &protobuf.Empty{}); got.HasMaxDevice {
 		t.Errorf("no node, no largest device: %+v", got)
+	}
+}
+
+// The capacity a tenant is told is net of the hidden packing reserve: its quota (or, with none, the real room of the lab nodes,
+// whichever is smaller) less the percentage. The reserve itself is never in the message.
+func TestCapacityIsNetOfThePackingReserve(t *testing.T) {
+	node := func(name string) *corev1.Node {
+		return &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name}, Status: corev1.NodeStatus{
+			Allocatable: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("10"), corev1.ResourceMemory: resource.MustParse("20Gi")},
+			Conditions:  []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}},
+		}}
+	}
+	h := tenantHandler(t, []*laboratoryv1alpha1.Tenant{
+		newTenantTenant("small", true, &laboratoryv1alpha1.TenantQuota{CPU: "4", Memory: "8Gi"}),
+		newTenantTenant("huge", true, &laboratoryv1alpha1.TenantQuota{CPU: "100", Memory: "100Gi"}),
+		newTenantTenant("open", true, nil)}, node("n1"), node("n2"))
+	h.SetPackingReserve(15)
+	cases := map[string][2]int64{
+		"small": {3400, 8 << 30 * 85 / 100},   // the quota is below the room: 85% of it
+		"huge":  {17000, 40 << 30 * 85 / 100}, // the quota is above the room (20 CPU, 40Gi): 85% of the room
+		"open":  {17000, 40 << 30 * 85 / 100}, // no quota: the room
+	}
+	for name, want := range cases {
+		got, err := h.GetCapacity(asClient(name), &protobuf.Empty{})
+		if err != nil || !got.HasCpuQuota || got.CpuQuotaMillicores != want[0] || got.MemoryQuotaBytes != want[1] {
+			t.Errorf("%s: %+v %v, want %d / %d", name, got, err, want[0], want[1])
+		}
+	}
+	f, err := h.GetFeatures(asClient("small"), &protobuf.Empty{})
+	if err != nil || f.TenantQuota.CpuQuotaMillicores != 3400 {
+		t.Errorf("the features quota is net of it as well: %+v %v", f.GetTenantQuota(), err)
 	}
 }

@@ -1,0 +1,37 @@
+{{- if .Values.labScheduler.enabled }}
+{{- $name := .Values.labScheduler.schedulerName }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: laboratory-scheduler
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+data:
+  scheduler-config.yaml: |
+    apiVersion: kubescheduler.config.k8s.io/v1
+    kind: KubeSchedulerConfiguration
+    leaderElection:
+      leaderElect: true
+      resourceNamespace: {{ .Release.Namespace }}
+      resourceName: laboratory-scheduler
+    profiles:
+      - schedulerName: {{ $name }}
+        plugins:
+          score:
+            disabled:
+              - name: NodeResourcesBalancedAllocation
+            enabled:
+              - name: NodeResourcesFit
+                weight: {{ .Values.labScheduler.fitWeight }}
+        pluginConfig:
+          - name: NodeResourcesFit
+            args:
+              scoringStrategy:
+                type: MostAllocated
+                resources:
+                  - name: cpu
+                    weight: 1
+                  - name: memory
+                    weight: 1
+{{- end }}

@@ -81,6 +81,34 @@ priorityClasses:
     value: 100
 
 # ============================================================
+# Lab scheduler: a second kube-scheduler with a bin-packing profile for the pods of labs
+# ============================================================
+# The pods of labs (devices, VPN, gateway) are placed by a kube-scheduler profile that fills one node after another
+# (NodeResourcesFit, scoringStrategy MostAllocated) instead of spreading, so no hole is left on every node that a big device
+# cannot use. Nothing is repacked during a running event, so placement must avoid holes from the start. System pods keep the
+# cluster's own scheduler. false: lab pods use the cluster's default scheduler.
+labScheduler:
+  enabled: true
+  # The profile name the operator puts into the pods of labs (schedulerName).
+  schedulerName: laboratory-binpack
+  replicas: 2
+  # Weight of the bin-packing score against the soft co-location preferences of device pods (the same lab, the same group).
+  fitWeight: 3
+  image:
+    repository: registry.k8s.io/kube-scheduler
+    # Empty = the cluster's own version (a scheduler must not be newer than the API server).
+    tag: ""
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  nodeSelector: {}
+  tolerations: []
+
+# ============================================================
 # VPN pod image (created at runtime by operator per LabGroup)
 # ============================================================
 vpn:
@@ -731,6 +759,11 @@ scheduler:
   platformReservePercent: 10
   platformReserveCpu: "0"
   platformReserveMemory: "0"
+  # Packing reserve (hidden): the share of the capacity reported to the platform (the tenant quota, or the real room of the lab
+  # nodes when it has none, whichever is smaller) that is kept unused, because nodes do not share memory and devices leave gaps
+  # between them, so the last part of a cluster can never be packed full. The agent reports its capacity net of it (0-49);
+  # tenants never see the reserve or the nodes. The quota the operator enforces is not changed.
+  packingReservePercent: 15
   # false: dispatch does not look at the free CPU and memory of the nodes.
   resourceCheck: true
   # Pull the images of a group onto the eligible nodes before its first pod starts.

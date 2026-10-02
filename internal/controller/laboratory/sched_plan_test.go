@@ -250,15 +250,15 @@ func TestPlanSlotsAndUnlimited(t *testing.T) {
 func TestPlanResourceCheck(t *testing.T) {
 	a := obj("lab/a", "g1", 1, nil, pods("a", "p1", "p2")...)
 	b := obj("lab/b", "g1", 2, nil, pods("b", "p1")...)
-	// No room now: the queue waits at that pod and nothing behind it goes.
+	// No room now for the next pod of a: it stays queued (InsufficientResources) and b, behind it, goes past (backfill).
 	env := &fakeEnv{fits: map[string]fit{"a/p2": fitWait}}
 	plan := planSchedule([]*schedObject{a, b}, 10, false, env)
-	wantDispatch(t, plan, "a/p1")
+	wantDispatch(t, plan, "a/p1", "b/p1")
 	if r := plan.status["lab/a"].Reason; r != laboratoryv1alpha1.WaitInsufficient {
 		t.Fatalf("reason = %q", r)
 	}
-	if r := plan.status["lab/b"].Reason; r != laboratoryv1alpha1.WaitInsufficient {
-		t.Fatalf("reason of the object behind = %q", r)
+	if _, waiting := plan.status["lab/b"]; waiting {
+		t.Fatalf("b went past a: %+v", plan.status["lab/b"])
 	}
 	// No node at all.
 	plan = planSchedule([]*schedObject{a}, 10, false, &fakeEnv{fits: map[string]fit{"a/p1": fitNoNodes}})
@@ -387,17 +387,17 @@ func TestPlanGroupPodsGoAheadOfQueuedLabs(t *testing.T) {
 	if _, waiting := plan.status["group/new"]; waiting {
 		t.Fatal("the group has nothing left to wait for")
 	}
-	// the group pods are still checked: no room for them, nothing goes
+	// the group pods are still checked: no room for them, they stay queued and the lab goes past them
 	env = &fakeEnv{fits: map[string]fit{"group/new/gateway": fitWait}}
 	plan = planSchedule([]*schedObject{old, grp}, 10, false, env)
-	wantDispatch(t, plan)
+	wantDispatch(t, plan, "l1/web")
 	if r := plan.status["group/new"].Reason; r != laboratoryv1alpha1.WaitInsufficient {
 		t.Fatalf("reason = %q", r)
 	}
-	// labs keep strict order: no backfill of the second lab past the first
+	// a lab that does not fit stays queued and the next lab goes past it (backfill)
 	env = &fakeEnv{fits: map[string]fit{"l1/web": fitWait}}
 	plan = planSchedule([]*schedObject{old, old2}, 10, false, env)
-	wantDispatch(t, plan)
+	wantDispatch(t, plan, "l2/web")
 	// a group that depends on another group still waits for it
 	dep := obj("group/dep", "d", 4, []string{"other"}, &schedPod{key: "group/dep/vpn", name: "vpn", kind: kindGroupPod, state: qd})
 	plan = planSchedule([]*schedObject{dep}, 10, false, &fakeEnv{})
@@ -443,4 +443,59 @@ func TestGroupPodNeedFollowsTheChart(t *testing.T) {
 	if s.groupPodNeed("other", &laboratoryv1alpha1.LabGroup{}) != nil {
 		t.Fatal("an unknown pod has no need")
 	}
+}
+
+func sized(o *schedObject, cpu, mem int64) *schedObject {
+	for _, p := range o.pods {
+		p.need = amount{cpu: cpu, mem: mem}
+	}
+	return o
+}
+
+// Inside a group the larger lab goes first (so the big ones are placed while the nodes are empty); an explicit priority
+// wins over size; objects of different groups keep the group order whatever their size.
+func TestPlanLargerLabsFirstWithinTheSamePriority(t *testing.T) {
+	small := sized(obj("lab/s", "g", 1, nil, pods("s", "web")...), 100, 64<<20)
+	big := sized(obj("lab/b", "g", 2, nil, pods("b", "web")...), 1000, 1<<30)
+	mid := sized(obj("lab/m", "g", 3, nil, pods("m", "web")...), 500, 1<<30)
+	plan := planSchedule([]*schedObject{small, big, mid}, 10, false, &fakeEnv{})
+	wantDispatch(t, plan, "b/web", "m/web", "s/web")
+
+	// an explicit priority wins over size
+	small.priority = 5
+	plan = planSchedule([]*schedObject{small, big, mid}, 10, false, &fakeEnv{})
+	wantDispatch(t, plan, "s/web", "b/web", "m/web")
+
+	// groups keep their order and dependencies: a later group's big lab never goes before an earlier group's small one
+	g1 := sized(obj("lab/g1", "g1", 1, nil, pods("g1", "web")...), 100, 64<<20)
+	g2 := sized(obj("lab/g2", "g2", 2, nil, pods("g2", "web")...), 4000, 8<<30)
+	plan = planSchedule([]*schedObject{g2, g1}, 10, false, &fakeEnv{})
+	wantDispatch(t, plan, "g1/web", "g2/web")
+	g2.after = []string{"g1"}
+	plan = planSchedule([]*schedObject{g2, g1}, 10, false, &fakeEnv{})
+	wantDispatch(t, plan, "g1/web")
+
+	// independent labs are ordered the same way
+	i1 := sized(obj("lab/i1", "", 1, nil, pods("i1", "web")...), 100, 64<<20)
+	i2 := sized(obj("lab/i2", "", 2, nil, pods("i2", "web")...), 900, 64<<20)
+	plan = planSchedule([]*schedObject{i1, i2}, 10, false, &fakeEnv{})
+	wantDispatch(t, plan, "i2/web", "i1/web")
+}
+
+// An object that is being dispatched keeps going before a larger one starts, and a big lab that does not fit lets the
+// small ones fill the gaps without losing its place for the next pass.
+func TestPlanBackfillKeepsTheBigLabFirst(t *testing.T) {
+	big := sized(obj("lab/b", "g", 1, nil, pods("b", "web")...), 4000, 8<<30)
+	small := sized(obj("lab/s", "g", 2, nil, pods("s", "web")...), 100, 64<<20)
+	plan := planSchedule([]*schedObject{small, big}, 10, false, &fakeEnv{fits: map[string]fit{"b/web": fitWait}})
+	wantDispatch(t, plan, "s/web")
+	if plan.status["lab/b"].Reason != laboratoryv1alpha1.WaitInsufficient || plan.status["lab/b"].Position != 1 {
+		t.Fatalf("the big lab stays at the head: %+v", plan.status["lab/b"])
+	}
+	// room appears: the big lab goes first again
+	plan = planSchedule([]*schedObject{small, big}, 10, false, &fakeEnv{})
+	wantDispatch(t, plan, "b/web", "s/web")
+	started := sized(obj("lab/st", "g", 3, nil, pods("st", "p1:D", "p2")...), 10, 1<<20)
+	plan = planSchedule([]*schedObject{big, started}, 10, false, &fakeEnv{})
+	wantDispatch(t, plan, "st/p2", "b/web")
 }

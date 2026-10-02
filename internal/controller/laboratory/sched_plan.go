@@ -59,7 +59,9 @@ type schedObject struct {
 	group   string // deploy group key; empty: independent
 	after   []string
 	arrival time.Time
-	pods    []*schedPod
+	// priority is the explicit dispatch priority (higher first); it wins over size.
+	priority int
+	pods     []*schedPod
 	// prepKey and images say what the nodes must have before the object's first pod
 	// starts: the images of the whole deploy group (or of the independent lab).
 	prepKey string
@@ -72,6 +74,16 @@ type schedObject struct {
 
 // isGroup says the object is a LabGroup: its pods are the VPN and gateway of a team, not lab pods.
 func (o *schedObject) isGroup() bool { return strings.HasPrefix(o.id, "group/") }
+
+// size is what the object's pods request together: larger labs are dispatched first, so the big ones are placed while the
+// nodes are still empty and the small ones fill the gaps.
+func (o *schedObject) size() amount {
+	var sum amount
+	for _, p := range o.pods {
+		sum = sum.add(p.need)
+	}
+	return sum
+}
 
 func (o *schedObject) pending() int {
 	n := 0
@@ -150,6 +162,10 @@ type schedGroup struct {
 // fits no node at all is failed instead, and a group that is not eligible is
 // skipped without stopping the others. The pods of LabGroups (the team's VPN and
 // gateway) go ahead of all labs.
+//
+// Inside a group (and among the independent objects) the order is: an object already being dispatched first, then the
+// explicit priority (higher first), then the larger object (CPU, then memory), then arrival. A lab that does not fit now
+// (InsufficientResources) stays queued and the objects behind it go past it (backfill); the order inside an object is kept.
 func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) schedPlan {
 	groups := map[string]*schedGroup{}
 	var independents []*schedObject
@@ -228,6 +244,15 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			if pi != pj {
 				return pi
 			}
+			if out[i].priority != out[j].priority {
+				return out[i].priority > out[j].priority
+			}
+			if si, sj := out[i].size(), out[j].size(); si != sj {
+				if si.cpu != sj.cpu {
+					return si.cpu > sj.cpu
+				}
+				return si.mem > sj.mem
+			}
 			if !out[i].arrival.Equal(out[j].arrival) {
 				return out[i].arrival.Before(out[j].arrival)
 			}
@@ -263,6 +288,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	blocker := ""
 	tenantHeld := map[string]bool{} // objects held back by their tenant's quota
 	prepHeld := map[string]bool{}   // objects whose group's images are still being pulled
+	roomHeld := map[string]bool{}   // objects whose next pod does not fit now: the others go past them (backfill)
 	try := func(p *schedPod, o *schedObject) (stop bool) {
 		if !p.queued() || gone[p] {
 			return false
@@ -284,8 +310,8 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		}
 		switch env.check(p) {
 		case fitWait:
-			blocker = laboratoryv1alpha1.WaitInsufficient
-			return true
+			roomHeld[o.id] = true
+			return false
 		case fitNoNodes:
 			blocker = laboratoryv1alpha1.WaitNoSchedulableNodes
 			return true
@@ -309,7 +335,7 @@ conveyor:
 			if try(p, o) {
 				break conveyor
 			}
-			if tenantHeld[o.id] || prepHeld[o.id] {
+			if tenantHeld[o.id] || prepHeld[o.id] || roomHeld[o.id] {
 				break // the order inside an object is kept: nothing behind a held pod goes
 			}
 		}
@@ -355,6 +381,11 @@ conveyor:
 		}
 		if prepHeld[o.id] {
 			st.Reason, st.Message = laboratoryv1alpha1.WaitPreparingImages, "pulling the images of the group onto the nodes"
+			plan.status[o.id] = st
+			continue
+		}
+		if roomHeld[o.id] {
+			st.Reason, st.Message = laboratoryv1alpha1.WaitInsufficient, "not enough free resources for the next pod now"
 			plan.status[o.id] = st
 			continue
 		}

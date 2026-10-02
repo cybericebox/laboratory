@@ -45,6 +45,10 @@ type Config struct {
 	// (the chart creates them, values priorityClasses). Empty = no class (tests, a development stand).
 	GroupPriorityClass  string `env:"PRIORITY_CLASS_GROUP"`
 	DevicePriorityClass string `env:"PRIORITY_CLASS_DEVICE"`
+	// LabSchedulerName is the kube-scheduler profile that places the pods of labs (devices, VPN, gateway): a bin-packing one, so
+	// the nodes fill up one after another and no hole is left that a big device cannot use. Empty = the default scheduler (the
+	// chart sets it when labScheduler.enabled). System pods never use it.
+	LabSchedulerName string `env:"LAB_SCHEDULER_NAME"`
 	// NetConfigImage is the image for the optional device init-container that
 	// assigns static IP/routes. Needs iproute2 + sh; node-agent image has both.
 	// Required, no default.

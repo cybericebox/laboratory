@@ -255,8 +255,17 @@ pods are interleaved once an object has started. An object may start partially: 
 
 **Service pods go first.** The VPN and gateway pods of a LabGroup have a lane of their own: they are
 dispatched ahead of every queued Lab, so a new team is not held up by a burst of labs that wait for room
-(`InsufficientResources`). They still need a slot and room, and they obey `deploy-after`. Labs keep
-strict order among themselves (no backfill: a lab that does not fit holds back the labs behind it).
+(`InsufficientResources`). They still need a slot and room, and they obey `deploy-after`.
+
+**Larger labs first, with backfill.** Nothing is repacked during a running event, so the labs are placed to leave
+no holes: inside a deploy group (and among the objects without one) the order is an object that is already being
+dispatched, then the **explicit priority** (annotation `laboratory.cybericebox.com/deploy-priority`, an integer,
+`0` when absent; higher goes first and wins over size), then the **larger lab** (the sum of its pods' CPU, then
+memory), then arrival. The deploy groups themselves, their `deploy-after` dependencies and the group order
+(arrival, i.e. the category order the platform creates them in) are unchanged: size orders objects only inside a group. A
+lab whose next pod does not fit now stays queued (`InsufficientResources`) and the labs behind it go past it
+(**backfill**), so small labs fill the gaps while the big one waits; on the next pass the big one is first again. The order of the pods
+inside one object is kept.
 
 **Groups.** Objects with the same *deploy group* form a group (mixed kinds, one object or many). The
 agent writes two operator-internal markers on LabGroups and Labs; the operator reads only these, never
@@ -332,7 +341,24 @@ a declared request and limit that differ collapse to the limit. The resources ar
 changed. Each lab group namespace has one PodDisruptionBudget `lab-group` (`maxUnavailable: 0`, all pods of
 the namespace), so node drains and the autoscaler do not evict running labs (see "Maintenance of a node" below).
 
-**Placement of a group.** Pod placement is the Kubernetes scheduler's, with two soft preferences on device pods (never required, so a full
+**Packing reserve (hidden).** `scheduler.packingReservePercent` (15, 0-49) is the share of the capacity the agent reports to
+the platform that is kept unused, because nodes do not share memory and devices leave gaps between them, so the last part of a
+cluster can never be packed full. The agent reports `GetCapacity` and the features' tenant quota **net of it**: the smaller of
+the tenant's quota and the real room of the lab nodes (a tenant without a quota is told the real room), less the percentage. A
+tenant never sees the reserve or the nodes; the quota the operator enforces is unchanged. The platform adds no buffer of its own.
+
+**Bin-packing scheduler.** Lab pods (devices, VPN, gateway) are placed by a **second kube-scheduler** with one profile,
+`laboratory-binpack` (chart `labScheduler.*`): `NodeResourcesFit` with `scoringStrategy: MostAllocated` (weight
+`labScheduler.fitWeight`, 3) and the spreading `NodeResourcesBalancedAllocation` score off, so pods fill one node after
+another instead of spreading and no hole is left everywhere. The operator puts `schedulerName` into the pods it creates
+(`LAB_SCHEDULER_NAME`; the VPN and gateway Deployments of groups that already exist keep what they have). System pods keep the
+cluster's scheduler. A second instance is the portable way (the control plane's own scheduler configuration, k0s included, is
+not reachable from a chart); it runs in the release namespace with a lease of its own, the cluster's `system:kube-scheduler` and
+`system:volume-scheduler` roles, and the image `registry.k8s.io/kube-scheduler` at the cluster's own version (override
+`labScheduler.image` for an air-gapped registry). `labScheduler.enabled: false` leaves lab pods to the default scheduler. If the
+lab scheduler is down, new lab pods stay Pending until it is back (running labs are not affected).
+
+**Placement of a group.** Pod placement is the lab scheduler's (or the default one's), with two soft preferences on device pods (never required, so a full
 node never blocks a lab): the node of another device of the same lab (weight 100: a lab's traffic stays node-local), then a node that already
 runs any pod of the same group, i.e. its VPN, gateway and other labs (weight 50). A group's labs therefore end up together on as few nodes as
 capacity allows, which makes a node empty sooner when you take it out for maintenance. Nothing guarantees one node per group.
@@ -389,6 +415,8 @@ while none of its pods has been dispatched. The position is refreshed at a limit
 | `restartThreshold` | `5` | restarts after which a pod that is not Ready is declared failed |
 | `platformReservePercent` | `10` | platform reserve: share of the schedulable CPU and memory (0-99) user labs never consume |
 | `platformReserveCpu` / `platformReserveMemory` | `"0"` / `"0"` | absolute platform reserve of every schedulable node (quantities) |
+| `packingReservePercent` | `15` | hidden packing reserve: the agent reports its capacity net of this share (0-49) |
+| `labScheduler.enabled` | `true` | a second kube-scheduler with the bin-packing profile for lab pods (see "Bin-packing scheduler") |
 | `resourceCheck` | `true` | `false` skips the free-resource check |
 | `prepull.enabled` | `true` | prepull the images of a group |
 | `prepull.timeout` | `5m` | dispatch goes on after this long |
@@ -656,7 +684,8 @@ images:
   or failed). A pod that would pass the cap waits, the lab's `scheduling.reason` is `TenantQuota`, and other tenants' pods go on.
   A percentage is a percentage of the CPU and memory the lab nodes allocate.
 - **Capacity.** `GetCapacity` and the `capacity` of the `Monitoring` stream are the caller's view only: its quota (if any), what its
-  pods reserve (the sum of their requests) and use (metrics-server, when installed), and what is free (quota minus reserved). No
+  pods reserve (the sum of their requests) and use (metrics-server, when installed), and what is free (quota minus reserved). The quota
+  shown is net of the hidden packing reserve (see "Packing reserve"). No
   cluster totals are exposed. The same reserved and used totals are in `Tenant.status` (refreshed by the agent):
   `kubectl get tenant platform -o yaml`.
   The one number about the cluster layout is the **largest device the agent can place** (`has_max_device`, `max_device_cpu_millicores`,

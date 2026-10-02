@@ -71,8 +71,8 @@ func (h *Handler) tenantCapacity(ctx context.Context) (*protobuf.CapacityRespons
 		return nil, err
 	}
 	resp := capacityOf(name, limits, load, h.groupOverhead)
-	if d, ok := h.largestDevice(ctx); ok {
-		resp.HasMaxDevice, resp.MaxDeviceCpuMillicores, resp.MaxDeviceMemoryBytes = true, d.CPU, d.Memory
+	if v := h.room(ctx); v.ok {
+		resp.HasMaxDevice, resp.MaxDeviceCpuMillicores, resp.MaxDeviceMemoryBytes = true, v.largest.CPU, v.largest.Memory
 	}
 	h.capCache.mu.Lock()
 	if h.capCache.m == nil {
@@ -83,8 +83,9 @@ func (h *Handler) tenantCapacity(ctx context.Context) (*protobuf.CapacityRespons
 	return resp, nil
 }
 
-// tenantQuota resolves the quota of the tenant (nil = the tenant has no object: the platform's policy, no limit) against the
-// allocatable of the nodes lab pods run on.
+// tenantQuota is the capacity the tenant is told about: its quota (nil = the tenant has no object: the platform's policy,
+// no limit) resolved against the allocatable of the nodes lab pods run on, limited by the real room and net of the hidden
+// packing reserve (see reported).
 func (h *Handler) tenantQuota(ctx context.Context, ten *laboratoryv1alpha1.Tenant) (tenant.Limits, error) {
 	var alloc tenant.Totals
 	var quota *laboratoryv1alpha1.TenantQuota
@@ -97,7 +98,7 @@ func (h *Handler) tenantQuota(ctx context.Context, ten *laboratoryv1alpha1.Tenan
 			return tenant.Limits{}, err
 		}
 	}
-	return tenant.ResolveQuota(quota, alloc), nil
+	return h.reported(ctx, tenant.ResolveQuota(quota, alloc)), nil
 }
 
 // load is what a tenant's pods reserve and use.

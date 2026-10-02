@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -174,6 +175,15 @@ func deployAfter(obj metav1.Object) []string {
 		}
 	}
 	return out
+}
+
+// deployPriority reads the explicit dispatch priority of an object: an integer annotation, 0 when absent or not a number.
+func deployPriority(obj metav1.Object) int {
+	n, err := strconv.Atoi(strings.TrimSpace(obj.GetAnnotations()[names.AnnotationDeployPriority]))
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // topologyClass is a hash of the topology and images of a lab: independent labs
@@ -473,7 +483,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 		}
 		o := &schedObject{
 			id: "lab/" + lab.Namespace + "/" + lab.Name, group: lab.Labels[names.LabelDeployGroup],
-			after: deployAfter(lab), arrival: lab.CreationTimestamp.Time, ref: lab,
+			after: deployAfter(lab), arrival: lab.CreationTimestamp.Time, priority: deployPriority(lab), ref: lab,
 		}
 		o.prepTenant = names.TenantOf(lab.Labels)
 		if o.group != "" {
@@ -509,7 +519,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 		}
 		o := &schedObject{
 			id: "group/" + g.Name, group: g.Labels[names.LabelDeployGroup],
-			after: deployAfter(g), arrival: g.CreationTimestamp.Time, ref: g,
+			after: deployAfter(g), arrival: g.CreationTimestamp.Time, priority: deployPriority(g), ref: g,
 		}
 		if o.group != "" {
 			o.prepTenant = names.TenantOf(g.Labels)

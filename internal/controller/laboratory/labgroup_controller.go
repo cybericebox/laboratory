@@ -68,6 +68,8 @@ type LabGroupReconciler struct {
 	GroupPods grouppods.Config
 	// PriorityClass is the class of the VPN and gateway pods (above the devices). Empty = none.
 	PriorityClass string
+	// SchedulerName is the kube-scheduler profile of the VPN and gateway pods (bin-packing); empty = the default scheduler.
+	SchedulerName string
 	// Mirror rewrites the VPN and gateway images for the image cache when their
 	// pods are created; the zero value (cache off) rewrites nothing.
 	Mirror imagecache.Rewriter
@@ -682,6 +684,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 				Spec: corev1.PodSpec{
 					ServiceAccountName: "vpn",
 					PriorityClassName:  r.PriorityClass,
+					SchedulerName:      r.SchedulerName,
 					ImagePullSecrets:   pullSecretRefs(r.ImagePullSecrets),
 					NodeSelector:       r.LabNodeSelector,
 					Tolerations:        r.LabTolerations,
@@ -764,6 +767,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 				Spec: corev1.PodSpec{
 					ServiceAccountName: "gateway",
 					PriorityClassName:  r.PriorityClass,
+					SchedulerName:      r.SchedulerName,
 					ImagePullSecrets:   pullSecretRefs(r.ImagePullSecrets),
 					NodeSelector:       r.LabNodeSelector,
 					Tolerations:        r.LabTolerations,

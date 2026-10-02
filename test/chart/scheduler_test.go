@@ -163,3 +163,48 @@ func TestAgentMayReadMaintenanceWindows(t *testing.T) {
 		t.Errorf("the CRD is not in the chart: %v", err)
 	}
 }
+
+// The agent reports its capacity net of the hidden packing reserve: it gets the chart value.
+func TestAgentGetsThePackingReserve(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "agent.enabled=true", "--set", "agent.domain=agent.example.com",
+		"--set", "scheduler.packingReservePercent=20", "-s", "templates/agent/deployment.yaml")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	if want := "name: SCHEDULER_PACKING_RESERVE_PERCENT\n              value: \"20\""; !strings.Contains(out, want) {
+		t.Errorf("the agent deployment lacks %q:\n%s", want, out)
+	}
+	if out, _ = helmTemplate(t, "--set", "agent.enabled=true", "--set", "agent.domain=agent.example.com", "-s", "templates/agent/deployment.yaml"); !strings.Contains(out, "value: \"15\"") {
+		t.Errorf("the default packing reserve is 15%%:\n%s", out)
+	}
+}
+
+// Lab pods use a bin-packing scheduler profile: a second kube-scheduler whose profile scores NodeResourcesFit MostAllocated and
+// leaves out the spreading score, and the operator puts its name into the pods of labs. Off: the default scheduler, no extra
+// scheduler.
+func TestLabSchedulerIsABinPackingProfile(t *testing.T) {
+	out, err := helmTemplate(t, "-s", "templates/lab-scheduler/scheduler.yaml", "-s", "templates/lab-scheduler/configmap.yaml")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"schedulerName: laboratory-binpack", "type: MostAllocated", "name: NodeResourcesBalancedAllocation", "kind: Deployment",
+		"resourceName: laboratory-scheduler", "name: system:kube-scheduler",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the lab scheduler lacks %q", want)
+		}
+	}
+	cfg := operatorConfig(t)
+	if cfg["LAB_SCHEDULER_NAME"] != "laboratory-binpack" {
+		t.Errorf("the operator does not name the profile: %q", cfg["LAB_SCHEDULER_NAME"])
+	}
+	// off: nothing is rendered and the operator keeps the default scheduler
+	off := operatorConfig(t, "--set", "labScheduler.enabled=false")
+	if _, set := off["LAB_SCHEDULER_NAME"]; set {
+		t.Errorf("a disabled lab scheduler must not be named: %q", off["LAB_SCHEDULER_NAME"])
+	}
+	if out, err = helmTemplate(t, "--set", "labScheduler.enabled=false", "-s", "templates/lab-scheduler/scheduler.yaml"); err == nil && strings.Contains(out, "kind: Deployment") {
+		t.Errorf("a disabled lab scheduler renders a Deployment:\n%s", out)
+	}
+}

@@ -93,6 +93,10 @@ func Run() {
 		log.Fatalf("%v", err)
 	}
 	h.SetNodeReserve(reserve)
+	if cfg.PackingReservePercent < 0 || cfg.PackingReservePercent >= 50 {
+		log.Fatalf("SCHEDULER_PACKING_RESERVE_PERCENT must be in [0,50)")
+	}
+	h.SetPackingReserve(cfg.PackingReservePercent)
 	go h.RunTenantStatus(context.Background(), cfg.TenantStatusInterval)
 	if cfg.Cache.Enabled {
 		pw, err := prewarmConfig(cfg, k8s)

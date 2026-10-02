@@ -40,6 +40,8 @@ type DeviceReconciler struct {
 	LabTolerations  []corev1.Toleration
 	// PriorityClass is the class of the device pods (the lowest; it never preempts). Empty = none.
 	PriorityClass string
+	// SchedulerName is the kube-scheduler profile of the device pods (bin-packing); empty = the default scheduler.
+	SchedulerName string
 	// NetConfigImage is the image used for the optional init-container that
 	// assigns static IP/routes inside a device pod. Must contain `ip` (iproute2)
 	// and `sh`. Empty disables static addressing via init-container.
@@ -344,6 +346,7 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 		NodeSelector:      r.LabNodeSelector,
 		Tolerations:       r.LabTolerations,
 		PriorityClassName: r.PriorityClass,
+		SchedulerName:     r.SchedulerName,
 		// Best-effort co-location, soft (preferred) so a full node never blocks a lab from being placed:
 		// 1. prefer a node that already runs another device of the same lab, so a lab's intra-fabric
 		//    traffic stays node-local (no Geneve hop) whenever capacity allows;

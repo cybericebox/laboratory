@@ -41,3 +41,48 @@ func TestPodsCarryTheirPriorityClass(t *testing.T) {
 		t.Errorf("device: class %q, want laboratory-device", spec.PriorityClassName)
 	}
 }
+
+// The pods of labs use the bin-packing scheduler profile when one is configured; with none they keep the default scheduler.
+func TestPodsCarryTheLabSchedulerName(t *testing.T) {
+	ctx := context.Background()
+	for _, name := range []string{"laboratory-binpack", ""} {
+		c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()
+		r := &LabGroupReconciler{Client: c, VPNBaseNetwork: "10.8.0.0/10", VPNImage: "lab:v1", GatewayImage: "lab:v1", SchedulerName: name}
+		if err := r.ensureVPNDeployment(ctx, "ns", false, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.ensureGatewayDeployment(ctx, "ns", false, nil); err != nil {
+			t.Fatal(err)
+		}
+		for _, n := range []string{"vpn", "gateway"} {
+			var d appsv1.Deployment
+			if err := c.Get(ctx, types.NamespacedName{Name: n, Namespace: "ns"}, &d); err != nil {
+				t.Fatal(err)
+			}
+			if got := d.Spec.Template.Spec.SchedulerName; got != name {
+				t.Errorf("%s: scheduler %q, want %q", n, got, name)
+			}
+		}
+		device := &laboratoryv1alpha1.Device{}
+		device.Spec.Name, device.Spec.LabRef = "web", "lab"
+		_, _, _, spec := (&DeviceReconciler{SchedulerName: name}).workloadTemplate(device, false)
+		if spec.SchedulerName != name {
+			t.Errorf("device: scheduler %q, want %q", spec.SchedulerName, name)
+		}
+	}
+}
+
+func TestDeployPriorityIsAnIntegerAnnotation(t *testing.T) {
+	obj := func(v string) *laboratoryv1alpha1.Lab {
+		l := &laboratoryv1alpha1.Lab{}
+		if v != "" {
+			l.Annotations = map[string]string{"laboratory.cybericebox.com/deploy-priority": v}
+		}
+		return l
+	}
+	for in, want := range map[string]int{"": 0, "5": 5, " -2 ": -2, "high": 0} {
+		if got := deployPriority(obj(in)); got != want {
+			t.Errorf("%q = %d, want %d", in, got, want)
+		}
+	}
+}

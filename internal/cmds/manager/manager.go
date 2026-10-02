@@ -305,6 +305,7 @@ func Run() {
 		GatewayImage:      cfg.GatewayImage,
 		GroupPods:         cfg.GroupPods,
 		PriorityClass:     cfg.GroupPriorityClass,
+		SchedulerName:     cfg.LabSchedulerName,
 		SupportEmail:      cfg.SupportEmail,
 		LabNodeSelector:   labNodeSelector,
 		LabTolerations:    labTolerations,
@@ -383,6 +384,7 @@ func Run() {
 		LabNodeSelector:  labNodeSelector,
 		LabTolerations:   labTolerations,
 		PriorityClass:    cfg.DevicePriorityClass,
+		SchedulerName:    cfg.LabSchedulerName,
 		NetConfigImage:   cfg.NetConfigImage,
 		Defaults:         laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory},
 		Security: laboratorycontroller.PodSecurity{
