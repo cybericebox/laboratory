@@ -356,6 +356,23 @@ func (m *OVSManager) findPortByKey(stableKey string) (*OVSPort, error) {
 	return nil, nil
 }
 
+// PortKeys returns the stable keys of the OVS ports the platform made (external_ids["port-key"]), as a set.
+func (m *OVSManager) PortKeys() (map[string]bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ports := []OVSPort{}
+	if err := m.client.List(m.ctx, &ports); err != nil {
+		return nil, fmt.Errorf("list ports: %w", err)
+	}
+	keys := map[string]bool{}
+	for i := range ports {
+		if k := ports[i].ExternalIDs[portKeyExternalID]; k != "" {
+			keys[k] = true
+		}
+	}
+	return keys, nil
+}
+
 // DelPortByKey removes the OVS port whose external_ids["port-key"] matches stableKey.
 // Idempotent: no-op if not found.
 func (m *OVSManager) DelPortByKey(stableKey string) error {

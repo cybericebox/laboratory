@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -32,7 +31,6 @@ import (
 	"github.com/cybericebox/laboratory/internal/devices"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
-	"github.com/cybericebox/laboratory/internal/netattach"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	"github.com/cybericebox/laboratory/pkg/netutil"
@@ -173,11 +171,6 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 	if err := r.pruneDevices(ctx, &lab); err != nil {
 		logger.Error(err, "prune devices")
-		return ctrl.Result{}, err
-	}
-
-	if err := r.ensureDeploymentAnnotations(ctx, &lab); err != nil {
-		logger.Error(err, "ensure deployment annotations")
 		return ctrl.Result{}, err
 	}
 
@@ -964,21 +957,6 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	// Remove annotation entries so node-agent stops maintaining the veths.
-	if lab.Status.VPN.CIDR != "" {
-		if n, ok := indexFromCIDR(lab.Status.VPN.CIDR); ok {
-			_ = r.patchDeploymentNetworks(ctx, lab.Namespace, "vpn", names.LabIfaceNameByIndex(n), names.VPNHostPortKey(lab.Namespace, n), false)
-		}
-	}
-	if lab.Status.Internet.CIDR != "" {
-		if n, ok := indexFromCIDR(lab.Status.Internet.CIDR); ok {
-			_ = r.patchDeploymentNetworks(
-				ctx, lab.Namespace, "gateway",
-				names.LabIfaceNameByIndex(n), names.GWHostPortKey(lab.Namespace, n), false,
-			)
-		}
-	}
-
 	// Delete LabVPN and wait for VPN binary to complete cleanup.
 	if done, err := r.ensureLabVPNDeleted(ctx, lab); err != nil {
 		return ctrl.Result{}, err
@@ -1431,70 +1409,9 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 	return nil
 }
 
-// ensureDeploymentAnnotations adds the lab's OVS interface entries to the VPN and/or
-// gateway Deployment pod-template annotation so node-agent attaches them.
-// The annotation entry format is "lab{N}@{ovsPortName}" so node-agent creates a
-// veth with ovsPortName (VPNHostPortKey / GWHostPortKey) as the OVS port and
-// renames the pod-side to lab{N}.
-func (r *LabReconciler) ensureDeploymentAnnotations(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
-	if lab.Spec.VPN.Enabled && lab.Status.VPN.CIDR != "" {
-		n, ok := indexFromCIDR(lab.Status.VPN.CIDR)
-		if ok {
-			if err := r.patchDeploymentNetworks(ctx, lab.Namespace, "vpn", names.LabIfaceNameByIndex(n), names.VPNHostPortKey(lab.Namespace, n), true); err != nil {
-				return err
-			}
-		}
-	}
-	if lab.Spec.Internet.Enabled && lab.Status.Internet.CIDR != "" {
-		n, ok := indexFromCIDR(lab.Status.Internet.CIDR)
-		if ok {
-			// Pod-side iface is lab{N}; the host-side OVS port is per group and
-			// per leg, so it collides neither with the VPN leg nor with other groups.
-			if err := r.patchDeploymentNetworks(
-				ctx, lab.Namespace, "gateway",
-				names.LabIfaceNameByIndex(n), names.GWHostPortKey(lab.Namespace, n), true,
-			); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// patchDeploymentNetworks adds or removes a "{podIfaceName}@{ovsPortName}" entry from
-// the network.cybericebox.com/networks annotation on a Deployment pod template.
-// node-agent creates a veth whose host side is registered in OVS as ovsPortName and
-// whose pod side is moved into the pod netns and renamed to podIfaceName.
-func (r *LabReconciler) patchDeploymentNetworks(
-	ctx context.Context,
-	ns, deployName, podIfaceName, ovsPortName string,
-	add bool,
-) error {
-	var dep appsv1.Deployment
-	if err := r.Get(ctx, types.NamespacedName{Name: deployName, Namespace: ns}, &dep); err != nil {
-		return client.IgnoreNotFound(err)
-	}
-
-	entry := netattach.Attachment{Iface: podIfaceName, Name: ovsPortName}
-	original := dep.DeepCopy()
-
-	list := netattach.Parse(dep.Spec.Template.Annotations[names.AnnotationNetworks])
-	var entries []netattach.Attachment
-	if add {
-		entries = netattach.With(list, entry)
-	} else {
-		entries = netattach.Without(list, entry)
-	}
-	if len(entries) == len(list) {
-		return nil // already present, or not present: nothing to do
-	}
-
-	if dep.Spec.Template.Annotations == nil {
-		dep.Spec.Template.Annotations = map[string]string{}
-	}
-	dep.Spec.Template.Annotations[names.AnnotationNetworks] = netattach.Encode(entries)
-	return r.Patch(ctx, &dep, client.MergeFrom(original))
-}
+// The VPN and gateway pods carry no list of the labs' interfaces: the node-agent derives them from the group's LabVPN and LabGateway objects
+// and attaches and detaches them in the running pod (see nodeagent.GroupPodAttachments), so adding or removing a lab never changes the
+// Deployment and never restarts the pod.
 
 // labOwnerHandler queues the Lab that owns an object. The Lab is an owner, not the
 // controller, of what it creates (SetOwnerReference), and Owns() follows controller

@@ -767,6 +767,30 @@ long time, look at the CNI agent on that node (`kubectl -n kube-system get pods 
 `nodeAgent.cniFallbackTimeout` (default empty) is the explicit opt-in for a cluster that has no other CNI: with a Go duration such as `10m`, a built-in `ptp` + `host-local`
 config (10.244.0.0/16) is written after that long without a base config. Leave it empty on any cluster with Cilium.
 
+### The lab interfaces of the VPN and gateway pods
+
+A team's VPN pod and gateway pod have one interface per lab (`lab<N>`, the lab's network index). The Deployment's pod template carries **no list** of them: the node-agent
+derives the list from the group's `LabVPN` and `LabGateway` objects (the operator makes one per lab with a VPN or an internet leg; it lives until the VPN or gateway
+process has cleaned up after the lab). It attaches a lab's interface to the **running** pod's network namespace when the object appears and takes it out
+(OVS port and veth) when the object is gone. Adding or removing a lab therefore never changes the Deployment and never restarts the team's VPN or gateway pod: the tunnel and
+the sessions stay. The VPN and gateway processes already wait for `lab<N>` to appear and react to their `LabVPN` / `LabGateway` objects (addresses, routes, allowed IPs,
+NAT and egress rules), so nothing else is needed. A pod that is (re)created gets all the interfaces its group's objects list. Only the node-agent of the pod's node acts, and
+only on its own node: after a pod moves to another node, its legs are made there.
+
+Test plan on the stand (a group with VPN and internet on two labs):
+
+1. `kubectl -n <group-ns> get pods -l laboratory.cybericebox.com/component=vpn -o wide`; note the pod name and IP, and the `RESTARTS`/`AGE` of the `vpn` and `gateway` pods.
+2. Connect a participant with the client's WireGuard config and keep a continuous `ping` of a device of lab 1 running.
+3. Create lab 2 (VPN on) in the same group. Expect: the `vpn` pod name, IP and AGE do not change; `kubectl -n <group-ns> exec deploy/vpn -- ip -br link` shows `lab2` next to `lab1`;
+   `LabVPN labvpn-<lab2>` reaches `Ready`; the ping does not drop, and a device of lab 2 is reachable over the same tunnel.
+4. Repeat with a lab that has the internet leg: the `gateway` pod does not restart; `ip -br link` in it shows the new `lab<N>`; the lab's devices reach the internet.
+5. Delete lab 2. Expect: `lab2` disappears from `ip -br link` of the `vpn` (and `gateway`) pod, the OVS port is gone on the node
+   (`kubectl -n laboratory-system exec ds/laboratory-node-agent -c ovs -- ovs-vsctl list-ports br-ovs` has no port named like the lab's leg), the pod name, IP and AGE are unchanged, the ping of
+   lab 1 never dropped.
+6. Create and delete five labs in a row: the pods do not restart at all. Check `kubectl -n <group-ns> get deploy vpn gateway -o jsonpath='{.items[*].metadata.generation}'` is the same before and after.
+7. Delete the `vpn` pod by hand: the new pod gets `lab1` and any other lab's interface from the objects (a few seconds after it is Running), and `LabVPN` returns to `Ready`.
+8. Restart the node-agent pod of the node (`kubectl -n laboratory-system delete pod <node-agent-pod>`): the pods and their interfaces stay; no leg is removed for a lab that still exists.
+
 ### Which nodes run labs
 
 A lab pod (device, VPN, gateway) needs the node-agent of its node: the node-agent wires the device's network into Open vSwitch and its `cni-gate` plugin is

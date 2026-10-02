@@ -12,6 +12,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -114,11 +116,31 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
-	annotation := pod.Annotations[AnnotationNetworks]
-	attachments := ParseNetworkAnnotation(annotation)
-	log.Info("NetAttach parsed", "annotation", annotation, "attachments", len(attachments), "phase", pod.Status.Phase)
+	// The VPN and gateway pod of a group: the lab interfaces come from the group's LabVPN and LabGateway objects (see GroupPodAttachments),
+	// not from the pod's annotation, so a lab added or removed never changes the Deployment. A device pod lists its interfaces in the
+	// annotation.
+	component := GroupComponent(&pod)
+	var attachments []NetAttachment
+	if component != "" {
+		var err error
+		if attachments, err = GroupPodAttachments(ctx, r.Client, pod.Namespace, component); err != nil {
+			return ctrl.Result{}, err
+		}
+	} else {
+		attachments = ParseNetworkAnnotation(pod.Annotations[AnnotationNetworks])
+	}
+	log.Info("NetAttach attachments", "component", component, "attachments", len(attachments), "phase", pod.Status.Phase)
 
 	if pod.DeletionTimestamp != nil {
+		if component != "" {
+			// The pod goes: so do all the legs it had on this node.
+			if present, err := r.OVS.PortKeys(); err == nil {
+				for _, key := range GroupPortsPresent(pod.Namespace, component, present) {
+					r.delVethWithFlows(key)
+				}
+			}
+			return ctrl.Result{}, nil
+		}
 		for _, att := range attachments {
 			stableKey := r.resolveOVSPort(ctx, pod.Namespace, pod.Name, att)
 			if !ValidPortKey(stableKey) {
@@ -130,7 +152,22 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
+	// A lab that is gone: its leg is taken out of the running pod (the pod keeps running).
+	if component != "" && pod.Status.Phase == corev1.PodRunning {
+		present, err := r.OVS.PortKeys()
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("list ports: %w", err)
+		}
+		for _, key := range StaleGroupPorts(pod.Namespace, component, attachments, present) {
+			log.Info("NetAttach: detaching the leg of a lab that is gone", "key", key)
+			r.delVethWithFlows(key)
+		}
+	}
+
 	if len(attachments) == 0 {
+		if component != "" {
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -153,7 +190,10 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	log.Info("NetAttach: got netnsPath", "netnsPath", netnsPath)
 
 	for _, att := range attachments {
-		stableKey := r.resolveOVSPort(ctx, pod.Namespace, pod.Name, att)
+		stableKey := att.Name // a leg of a lab: its port is named by the lab's index
+		if component == "" {
+			stableKey = r.resolveOVSPort(ctx, pod.Namespace, pod.Name, att)
+		}
 		if !ValidPortKey(stableKey) {
 			// "eth0" or any other name an annotation could carry: never a veth of ours.
 			log.Info("NetAttach: not a port key of the platform, ignored", "name", stableKey)
@@ -317,8 +357,28 @@ func (r *NetworkAttachReconciler) resolveOVSPort(
 	return names.DevicePortKey(namespace, podName, att.Iface)
 }
 
+// groupPodsOf enqueues the VPN or gateway pod of the group (on this node) when one of its lab network objects changes.
+func (r *NetworkAttachReconciler) groupPodsOf(component string) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		var pods corev1.PodList
+		if err := r.List(ctx, &pods, client.InNamespace(obj.GetNamespace())); err != nil {
+			return nil
+		}
+		var out []reconcile.Request
+		for i := range pods.Items {
+			p := &pods.Items[i]
+			if p.Spec.NodeName == r.NodeName && GroupComponent(p) == component {
+				out = append(out, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: p.Namespace, Name: p.Name}})
+			}
+		}
+		return out
+	}
+}
+
 func (r *NetworkAttachReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Pod{}).
+		Watches(&laboratoryv1alpha1.LabVPN{}, handler.EnqueueRequestsFromMapFunc(r.groupPodsOf(names.ComponentVPN))).
+		Watches(&laboratoryv1alpha1.LabGateway{}, handler.EnqueueRequestsFromMapFunc(r.groupPodsOf(names.ComponentGateway))).
 		Complete(r)
 }

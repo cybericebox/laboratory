@@ -41,7 +41,8 @@ const (
 	// Lab or LabGroup, so a label removed there is removed here too.
 	AnnotationUserLabels = LabelPrefix + "user-labels"
 
-	// AnnotationNetworks is the pod annotation listing OVS network attachments.
+	// AnnotationNetworks is the pod annotation listing the OVS network attachments of a DEVICE pod. The VPN and gateway pods of a group have none:
+	// the node-agent derives their lab interfaces from the group's LabVPN and LabGateway objects.
 	// Format: comma-separated "iface@name[|MAC]" entries.
 	AnnotationNetworks = "network.cybericebox.com/networks"
 
