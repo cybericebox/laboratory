@@ -87,16 +87,25 @@ func relay(ctx context.Context, client net.Conn, target string, log logr.Logger)
 // ForwardOption configures Forward.
 type ForwardOption func(*forwardOptions)
 
-type forwardOptions struct{ readerUser, readerPassword string }
+type forwardOptions struct{ readerUser, readerPassword, host string }
 
 // WithReader makes the forwarder add the reader account to the reads of the snapshot repositories.
 func WithReader(user, password string) ForwardOption {
 	return func(o *forwardOptions) { o.readerUser, o.readerPassword = user, password }
 }
 
+// WithHost sets the exact Host header a request must carry to be given the reader account: the address the node's
+// runtime pulls the snapshots from (localhost:<port>). A request that arrives under any other Host is relayed without it.
+func WithHost(host string) ForwardOption {
+	return func(o *forwardOptions) { o.host = host }
+}
+
 // needsReader says whether a registry request reads a repository only the platform may read.
 func needsReader(method, path string) bool {
 	if method != http.MethodGet && method != http.MethodHead {
+		return false
+	}
+	if strings.Contains(path, "..") || strings.Contains(path, "//") {
 		return false
 	}
 	return strings.HasPrefix(path, "/v2/lab/") || strings.HasPrefix(path, "/v2/base/")
@@ -106,8 +115,9 @@ func needsReader(method, path string) bool {
 func readerHandler(target string, o forwardOptions) http.Handler {
 	proxy := &httputil.ReverseProxy{
 		Director: func(r *http.Request) {
+			hostOK := o.host == "" || strings.EqualFold(r.Host, o.host)
 			r.URL.Scheme, r.URL.Host, r.Host = "http", target, target
-			if r.Header.Get("Authorization") == "" && needsReader(r.Method, r.URL.Path) {
+			if hostOK && r.Header.Get("Authorization") == "" && needsReader(r.Method, r.URL.Path) {
 				r.SetBasicAuth(o.readerUser, o.readerPassword)
 			}
 		},

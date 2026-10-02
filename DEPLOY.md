@@ -1402,3 +1402,19 @@ component that runs it clamps or ignores the bad value instead of failing.
   anything above the chart maximum to it (`limits.device.maxCpu` / `maxMemory`, passed to the operator as `DEVICE_MAX_CPU` /
   `DEVICE_MAX_MEMORY`), so a pod never runs without limits. No existing lab is deleted or restarted by this; a pod that was created
   without a limit gets its limit when its Device is next rebuilt.
+
+### Image policy and the registry forwarder (R-3)
+
+- The agent refuses an image reference that names an IP address in any spelling (`127.0.0.1`, `127.1`, `0x7f.1`, `[::1]`), `localhost`
+  (and `*.localhost`), or a host without a dot, and one with empty, `.` or `..` path components or characters outside printable ASCII.
+  A tenant names the original image on a public registry; the operator routes it through the cache.
+- Registry hosts are compared canonically: lowercase, no trailing dot, default ports `:443` / `:80` dropped, and `index.docker.io`,
+  `registry-1.docker.io`, `registry.hub.docker.com` and `docker.io` are one registry. The deny list (`images.tenantDeny`) matches the host
+  whatever the port, so `ghcr.io:8443/platform/x` is denied with `ghcr.io/platform`. The platform registry and cache hosts are refused by
+  host, not by prefix. Allow-list entries are canonicalised the same way.
+- The node-agent's forwarder adds the zot reader account only to a request whose `Host` is exactly `localhost:<state forward port>` (the
+  address the node's runtime pulls from), and not to a path with `..` or `//`.
+- Upgrade: no order constraint. Labs that exist keep their pods; only a new or changed spec is checked again. A lab whose stored spec
+  names a refused spelling is not touched until its devices are recreated.
+- `images.tenantDeny` still defaults to empty: the chart cannot know which repositories of an installation are private. Set it to the
+  platform's private organizations.

@@ -34,7 +34,8 @@ func SetupDeviceState(mgr ctrl.Manager, cfg *Config) error {
 		log.Info("registry forwarder", "listen", "127.0.0.1", "port", cfg.StateForwardPort, "target", cfg.StateRegistryAddr)
 		var opts []devicestate.ForwardOption
 		if cfg.StateRegistryReaderUser != "" {
-			opts = append(opts, devicestate.WithReader(cfg.StateRegistryReaderUser, cfg.StateRegistryReaderPassword))
+			opts = append(opts, devicestate.WithReader(cfg.StateRegistryReaderUser, cfg.StateRegistryReaderPassword),
+				devicestate.WithHost(fmt.Sprintf("localhost:%d", cfg.StateForwardPort)))
 		}
 		return devicestate.Forward(ctx, fmt.Sprintf("127.0.0.1:%d", cfg.StateForwardPort), cfg.StateRegistryAddr, log, opts...)
 	})); err != nil {

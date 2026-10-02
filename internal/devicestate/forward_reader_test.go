@@ -57,3 +57,29 @@ func TestReaderHandlerAddsTheReaderOnlyWhereItBelongs(t *testing.T) {
 		t.Errorf("labx is not lab: %q", got)
 	}
 }
+
+// The reader goes only to requests that carry the exact Host the runtime pulls from, and never to paths that climb.
+func TestReaderHandlerNeedsTheExactHost(t *testing.T) {
+	var gotAuth string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { gotAuth = r.Header.Get("Authorization") }))
+	defer up.Close()
+	h := readerHandler(strings.TrimPrefix(up.URL, "http://"), forwardOptions{readerUser: "reader", readerPassword: "pw", host: "localhost:5035"})
+	for host, want := range map[string]bool{"localhost:5035": true, "LOCALHOST:5035": true, "127.0.0.1:5035": false, "localhost:5036": false, "evil.example": false, "localhost": false} {
+		gotAuth = ""
+		req := httptest.NewRequest("GET", "/v2/lab/ns/lab/dev/manifests/x", nil)
+		req.Host = host
+		h.ServeHTTP(httptest.NewRecorder(), req)
+		if (gotAuth != "") != want {
+			t.Errorf("Host %q: reader added = %v, want %v", host, gotAuth != "", want)
+		}
+	}
+	for _, p := range []string{"/v2/lab/../docker.io/x/manifests/1", "/v2/lab//x"} {
+		gotAuth = ""
+		req := httptest.NewRequest("GET", p, nil)
+		req.Host = "localhost:5035"
+		h.ServeHTTP(httptest.NewRecorder(), req)
+		if gotAuth != "" {
+			t.Errorf("%s must not get the reader", p)
+		}
+	}
+}
