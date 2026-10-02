@@ -664,6 +664,22 @@ message CapacityResponse {
   // service overhead every group adds to its labs. Sizing a reservation takes it per group.
   int64 group_overhead_cpu_millicores = 13;
   int64 group_overhead_memory_bytes = 14;
+  // The room of every node lab pods can run on (the nodes with the node-agent-ready label that are schedulable), so the
+  // backend can pack devices: a device must fit one node. Not limited by the tenant quota. False before an agent
+  // reports it (an older agent): the whole cluster is then treated as one node.
+  bool nodes_reported = 15;
+  repeated NodeRoom nodes = 16;
+}
+
+// The room of one lab node. Allocatable is what labs can ever use on it (the node's allocatable less the platform
+// reserve the scheduler keeps free: scheduler.platformReserveCpu/Memory off the node first, then platformReservePercent of
+// the rest); free is allocatable less the requests of every unfinished pod on the node, never negative.
+message NodeRoom {
+  string name = 1;
+  int64 allocatable_cpu_millicores = 2;
+  int64 allocatable_memory_bytes = 3;
+  int64 free_cpu_millicores = 4;
+  int64 free_memory_bytes = 5;
 }
 
 message FeaturesResponse {

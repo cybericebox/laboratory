@@ -125,3 +125,22 @@ func contains(list []string, s string) bool {
 	}
 	return false
 }
+
+// The agent applies the operator's platform reserve to the per-node room it reports, so it gets the same values.
+func TestAgentGetsThePlatformReserve(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "agent.enabled=true", "--set", "agent.domain=agent.example.com",
+		"--set", "scheduler.platformReservePercent=15", "--set", "scheduler.platformReserveCpu=250m", "--set", "scheduler.platformReserveMemory=512Mi",
+		"-s", "templates/agent/deployment.yaml")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"name: SCHEDULER_PLATFORM_RESERVE_PERCENT\n              value: \"15\"",
+		"name: SCHEDULER_PLATFORM_RESERVE_CPU\n              value: \"250m\"",
+		"name: SCHEDULER_PLATFORM_RESERVE_MEMORY\n              value: \"512Mi\"",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the agent deployment lacks %q:\n%s", want, out)
+		}
+	}
+}

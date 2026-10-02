@@ -21,6 +21,7 @@ import (
 	grpcserver "github.com/cybericebox/laboratory/internal/agent/grpc"
 	"github.com/cybericebox/laboratory/internal/crdcheck"
 	"github.com/cybericebox/laboratory/internal/errorlog"
+	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/internal/profiles"
 )
 
@@ -87,6 +88,11 @@ func Run() {
 		log.Fatalf("AGENT_LAB_TOLERATIONS: %v", err)
 	}
 	h.SetLabScheduling(labSelector, labTolerations)
+	reserve, err := nodeReserve(cfg)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	h.SetNodeReserve(reserve)
 	go h.RunTenantStatus(context.Background(), cfg.TenantStatusInterval)
 	if cfg.Cache.Enabled {
 		pw, err := prewarmConfig(cfg, k8s)
@@ -177,4 +183,27 @@ func features(cfg *config.Config) (f grpcserver.Features, err error) {
 		*c.dst = q.Value()
 	}
 	return f, nil
+}
+
+// nodeReserve is the scheduler's platform reserve as the operator reads it.
+func nodeReserve(cfg *config.Config) (nodecap.Reserve, error) {
+	if cfg.PlatformReservePercent < 0 || cfg.PlatformReservePercent >= 100 {
+		return nodecap.Reserve{}, fmt.Errorf("SCHEDULER_PLATFORM_RESERVE_PERCENT must be in [0,100)")
+	}
+	r := nodecap.Reserve{Percent: cfg.PlatformReservePercent}
+	for _, c := range []struct {
+		env, val string
+		cpu      bool
+	}{{"SCHEDULER_PLATFORM_RESERVE_CPU", cfg.PlatformReserveCPU, true}, {"SCHEDULER_PLATFORM_RESERVE_MEMORY", cfg.PlatformReserveMemory, false}} {
+		q, err := resource.ParseQuantity(c.val)
+		if err != nil || q.Sign() < 0 {
+			return r, fmt.Errorf("%s: %q is not a non-negative quantity", c.env, c.val)
+		}
+		if c.cpu {
+			r.Node.CPU = q.MilliValue()
+		} else {
+			r.Node.Memory = q.Value()
+		}
+	}
+	return r, nil
 }

@@ -71,6 +71,11 @@ type Config struct {
 	// which platform of an image is warmed and what a percentage tenant quota is a percentage of.
 	LabNodeSelector string `env:"AGENT_LAB_NODE_SELECTOR" envDefault:"{}"`
 	LabTolerations  string `env:"AGENT_LAB_TOLERATIONS" envDefault:"[]"`
+	// PlatformReservePercent, PlatformReserveCPU and PlatformReserveMemory are the operator's scheduler reserve (the same chart
+	// values, scheduler.platformReserve*): the agent applies them to the per-node room it reports.
+	PlatformReservePercent int    `env:"SCHEDULER_PLATFORM_RESERVE_PERCENT" envDefault:"10"`
+	PlatformReserveCPU     string `env:"SCHEDULER_PLATFORM_RESERVE_CPU" envDefault:"0"`
+	PlatformReserveMemory  string `env:"SCHEDULER_PLATFORM_RESERVE_MEMORY" envDefault:"0"`
 	// TenantStatusInterval is how often the status (reserved, used) of every Tenant is refreshed.
 	TenantStatusInterval time.Duration `env:"AGENT_TENANT_STATUS_INTERVAL" envDefault:"30s"`
 	// GroupPods are the resources of the VPN and gateway pods of a group (the same values as the operator's):

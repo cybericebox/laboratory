@@ -11,6 +11,7 @@ import (
 
 	versioned "github.com/cybericebox/laboratory/clientset/client/versioned"
 	"github.com/cybericebox/laboratory/internal/grouppods"
+	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 	"k8s.io/client-go/kubernetes"
 	metricsclient "k8s.io/metrics/pkg/client/clientset/versioned"
@@ -56,6 +57,10 @@ type Handler struct {
 	// labSelector and labTolerations describe the nodes lab pods run on (percentage quotas).
 	labSelector    map[string]string
 	labTolerations []corev1.Toleration
+	// nodeReserve is what the platform keeps free on the lab nodes (the scheduler's reserve), applied to the per-node room.
+	nodeReserve nodecap.Reserve
+	// roomCache keeps the per-node room for a few seconds: it is the same for every tenant.
+	roomCache nodeRoomCache
 	// errors is the laboratory's own error journal (see errorjournal.go); errJournal says where its events are.
 	errors     *errorCollector
 	errJournal ErrorJournalConfig

@@ -151,6 +151,13 @@ spec:
               value: {{ include "laboratory.labNodeSelector" . | quote }}
             - name: AGENT_LAB_TOLERATIONS
               value: {{ .Values.labWorkloads.tolerations | toJson | quote }}
+            # The scheduler's platform reserve (the operator's values): the per-node room the agent reports is net of it.
+            - name: SCHEDULER_PLATFORM_RESERVE_PERCENT
+              value: {{ .Values.scheduler.platformReservePercent | quote }}
+            - name: SCHEDULER_PLATFORM_RESERVE_CPU
+              value: {{ .Values.scheduler.platformReserveCpu | quote }}
+            - name: SCHEDULER_PLATFORM_RESERVE_MEMORY
+              value: {{ .Values.scheduler.platformReserveMemory | quote }}
             # What a group's VPN and gateway pods request (the operator's values): their sum is the service overhead in GetCapacity.
             - name: VPN_CPU
               value: {{ .Values.vpn.resources.cpu | quote }}

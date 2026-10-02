@@ -27,30 +27,8 @@ func (a amount) floorZero() amount {
 // podRequests is the amount the scheduler reserves for a pod: the larger of the
 // sum of its containers and its biggest init container, plus the pod overhead.
 func podRequests(pod *corev1.Pod) amount {
-	var sum, initMax amount
-	for i := range pod.Spec.Containers {
-		r := pod.Spec.Containers[i].Resources.Requests
-		sum.cpu += r.Cpu().MilliValue()
-		sum.mem += r.Memory().Value()
-	}
-	for i := range pod.Spec.InitContainers {
-		r := pod.Spec.InitContainers[i].Resources.Requests
-		if v := r.Cpu().MilliValue(); v > initMax.cpu {
-			initMax.cpu = v
-		}
-		if v := r.Memory().Value(); v > initMax.mem {
-			initMax.mem = v
-		}
-	}
-	if initMax.cpu > sum.cpu {
-		sum.cpu = initMax.cpu
-	}
-	if initMax.mem > sum.mem {
-		sum.mem = initMax.mem
-	}
-	sum.cpu += pod.Spec.Overhead.Cpu().MilliValue()
-	sum.mem += pod.Spec.Overhead.Memory().Value()
-	return sum
+	r := nodecap.PodRequests(pod)
+	return amount{cpu: r.CPU, mem: r.Memory}
 }
 
 // capacity is the CPU and memory of the nodes lab pods can run on.

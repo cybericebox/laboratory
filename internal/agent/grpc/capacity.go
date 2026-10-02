@@ -40,6 +40,10 @@ func (h *Handler) SetLabScheduling(selector map[string]string, tolerations []cor
 	h.labSelector, h.labTolerations = selector, tolerations
 }
 
+// SetNodeReserve sets the platform reserve the scheduler keeps free on the lab nodes, so the per-node room the agent
+// reports is the room the scheduler would give a lab.
+func (h *Handler) SetNodeReserve(r nodecap.Reserve) { h.nodeReserve = r }
+
 // GetCapacity is the caller's tenant view: its quota, what its pods reserve and use, what is
 // free. It never reveals cluster-wide numbers.
 func (h *Handler) GetCapacity(ctx context.Context, _ *protobuf.Empty) (*protobuf.CapacityResponse, error) {
@@ -67,6 +71,9 @@ func (h *Handler) tenantCapacity(ctx context.Context) (*protobuf.CapacityRespons
 		return nil, err
 	}
 	resp := capacityOf(name, limits, load, h.groupOverhead)
+	if rooms, err := h.nodeRooms(ctx); err == nil {
+		resp.NodesReported, resp.Nodes = true, rooms
+	}
 	h.capCache.mu.Lock()
 	if h.capCache.m == nil {
 		h.capCache.m = map[string]capacityEntry{}
