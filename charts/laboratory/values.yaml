@@ -212,6 +212,22 @@ proxy:
     # e.g. behind a cloud NLB that targets a known node port. Unset: Kubernetes
     # assigns one.
     nodePort: null
+    # The demux reads a public UDP port shared by every team and holds a table of sessions, so what a stranger can make it
+    # hold or spend is capped. maxEntries is the conntrack entries in total (two per session) and maxEntriesPerSource what one
+    # client address may own (a team behind one NAT needs two per VPN client); a handshake that would pass either is dropped
+    # and the client retries. handshakeRate and handshakeBurst limit handshake initiations per source address (each costs a
+    # scan of the groups' keys); missRate and missBurst limit, per source address, packets that match no session or come from
+    # an unexpected address, so guessing the 32-bit session index is rate-limited. roamInterval is the least time between two
+    # address changes of one session (roaming itself works as before). maxSources bounds the memory of these limiters.
+    limits:
+      maxEntries: 100000
+      maxEntriesPerSource: 64
+      handshakeRate: 20
+      handshakeBurst: 50
+      missRate: 50
+      missBurst: 100
+      roamInterval: 5s
+      maxSources: 100000
     # Requests = limits. Measured: 12Mi, 1m idle and up to 111m at ten active peers (the packets are
     # relayed in userspace, so the CPU follows the VPN traffic).
     resources:

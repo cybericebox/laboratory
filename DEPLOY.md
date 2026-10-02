@@ -852,6 +852,24 @@ Nothing is renamed. Scripts that derive the namespace from the group name must r
 - **The session cookie belongs to the proxy.** Any `Set-Cookie` of the session cookie's name in a device's response is removed, so a device cannot set,
   replace or clear it; the device's own cookies pass.
 
+### The WireGuard demux under hostile senders
+
+The demux (`wg-demux`) reads one public UDP port for every team. It holds no keys (the VPN pods do; WireGuard's own handshake is the security boundary), so
+everything a stranger can make it hold or spend is capped (`proxy.wg.limits`):
+
+- **No per-packet logs.** Nothing is logged for an incoming datagram (a flood could otherwise fill the log pipeline).
+- **Table caps:** `maxEntries` conntrack entries in all (two per session), `maxEntriesPerSource` for one client address (a team behind one NAT needs two per VPN
+  client). A handshake that would pass either is dropped and the client retries.
+- **Rates, per source address:** `handshakeRate`/`handshakeBurst` for handshake initiations (each costs a scan of the groups' mac1 keys), and
+  `missRate`/`missBurst` for packets that match no session or come from an address the session does not expect, so guessing the 32-bit session index is
+  rate-limited. `maxSources` bounds the memory of these limiters.
+- **Roaming works as before**, but one session changes address at most once per `roamInterval`; a packet from a third address inside the interval is dropped and
+  moves nothing. An index a live session owns is never taken by another handshake (the handshake is dropped).
+- **Type 2** (the server's answer) is accepted only from the VPN pod the init was forwarded to; **type 3** (cookie reply, the peer's own load protection) is
+  forwarded, only from the exact address the session expects, and never moves the session.
+
+One overloaded VPN pod only hurts its own team: the demux caps are shared, the pods are not.
+
 ### Service pods and images
 
 The service pods of the laboratory are hardened without a setting:

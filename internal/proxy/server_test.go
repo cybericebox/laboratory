@@ -119,3 +119,18 @@ func TestServerLimitsComeFromTheConfig(t *testing.T) {
 		t.Fatal("a zero timeout must be refused")
 	}
 }
+
+func TestWGLimitsDefaults(t *testing.T) {
+	cfg, err := LoadWGConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxEntries != 100000 || cfg.MaxEntriesPerSource != 64 || cfg.HandshakeRate != 20 || cfg.HandshakeBurst != 50 || cfg.MissRate != 50 || cfg.MissBurst != 100 ||
+		cfg.RoamInterval != 5*time.Second || cfg.MaxSources != 100000 {
+		t.Fatalf("%+v", cfg)
+	}
+	t.Setenv("DEMUX_MAX_ENTRIES", "0")
+	if _, err := LoadWGConfig(); err == nil {
+		t.Fatal("a zero cap must be refused")
+	}
+}

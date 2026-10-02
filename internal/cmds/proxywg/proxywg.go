@@ -50,7 +50,12 @@ func Run() {
 	}
 
 	table := demux.NewTable()
-	ct := demux.NewConnTrack()
+	limits := demux.Limits{
+		MaxEntries: cfg.MaxEntries, MaxEntriesPerSource: cfg.MaxEntriesPerSource,
+		HandshakeRate: cfg.HandshakeRate, HandshakeBurst: cfg.HandshakeBurst, MissRate: cfg.MissRate, MissBurst: cfg.MissBurst,
+		RoamInterval: cfg.RoamInterval, MaxSources: cfg.MaxSources,
+	}
+	ct := demux.NewConnTrackWithLimits(limits)
 
 	if err := (&demux.LabGroupWatcher{
 		Client:         mgr.GetClient(),
@@ -65,7 +70,7 @@ func Run() {
 	defer cancel()
 	stop := make(chan struct{})
 
-	dmx, err := demux.New(cfg.ListenAddr, table, ct)
+	dmx, err := demux.NewWithLimits(cfg.ListenAddr, table, ct, limits)
 	if err != nil {
 		log.Error(err, "create demux")
 		os.Exit(1)

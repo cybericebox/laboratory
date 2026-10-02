@@ -116,6 +116,22 @@ spec:
       value: {{ printf ":%d" (.Values.proxy.wg.listenPort | int) | quote }}
     - name: VPN_SERVICE_PORT
       value: {{ .Values.operator.vpnServicePort | quote }}
+    - name: DEMUX_MAX_ENTRIES
+      value: {{ .Values.proxy.wg.limits.maxEntries | quote }}
+    - name: DEMUX_MAX_ENTRIES_PER_SOURCE
+      value: {{ .Values.proxy.wg.limits.maxEntriesPerSource | quote }}
+    - name: DEMUX_HANDSHAKE_RATE
+      value: {{ .Values.proxy.wg.limits.handshakeRate | quote }}
+    - name: DEMUX_HANDSHAKE_BURST
+      value: {{ .Values.proxy.wg.limits.handshakeBurst | quote }}
+    - name: DEMUX_MISS_RATE
+      value: {{ .Values.proxy.wg.limits.missRate | quote }}
+    - name: DEMUX_MISS_BURST
+      value: {{ .Values.proxy.wg.limits.missBurst | quote }}
+    - name: DEMUX_ROAM_INTERVAL
+      value: {{ .Values.proxy.wg.limits.roamInterval | quote }}
+    - name: DEMUX_MAX_SOURCES
+      value: {{ .Values.proxy.wg.limits.maxSources | quote }}
     {{- if .Values.proxy.kindMode }}
     - name: KUBERNETES_SERVICE_HOST
       value: "127.0.0.1"

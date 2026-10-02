@@ -48,6 +48,17 @@ type L7Config struct {
 type WGConfig struct {
 	ListenAddr     string `env:"UDP_LISTEN_ADDR"  envDefault:":51820"`
 	VPNServicePort int    `env:"VPN_SERVICE_PORT" envDefault:"51820"`
+	// The demux reads a public UDP port shared by every team, so what a stranger can make it hold or spend is capped
+	// (see demux.Limits): the conntrack entries in total and per client address, handshake initiations and
+	// unmatched packets per second per source address, and how often one session may change address.
+	MaxEntries          int           `env:"DEMUX_MAX_ENTRIES" envDefault:"100000"`
+	MaxEntriesPerSource int           `env:"DEMUX_MAX_ENTRIES_PER_SOURCE" envDefault:"64"`
+	HandshakeRate       float64       `env:"DEMUX_HANDSHAKE_RATE" envDefault:"20"`
+	HandshakeBurst      int           `env:"DEMUX_HANDSHAKE_BURST" envDefault:"50"`
+	MissRate            float64       `env:"DEMUX_MISS_RATE" envDefault:"50"`
+	MissBurst           int           `env:"DEMUX_MISS_BURST" envDefault:"100"`
+	RoamInterval        time.Duration `env:"DEMUX_ROAM_INTERVAL" envDefault:"5s"`
+	MaxSources          int           `env:"DEMUX_MAX_SOURCES" envDefault:"100000"`
 }
 
 // MinSessionSecretLen is the shortest accepted SESSION_SECRET.
@@ -72,5 +83,12 @@ func LoadL7Config() (*L7Config, error) {
 
 func LoadWGConfig() (*WGConfig, error) {
 	cfg := &WGConfig{}
-	return cfg, config.Load(cfg)
+	if err := config.Load(cfg); err != nil {
+		return cfg, err
+	}
+	if cfg.MaxEntries <= 0 || cfg.MaxEntriesPerSource <= 0 || cfg.HandshakeRate <= 0 || cfg.HandshakeBurst <= 0 || cfg.MissRate <= 0 || cfg.MissBurst <= 0 ||
+		cfg.RoamInterval <= 0 || cfg.MaxSources <= 0 {
+		return cfg, fmt.Errorf("the DEMUX_* limits must be positive")
+	}
+	return cfg, nil
 }
