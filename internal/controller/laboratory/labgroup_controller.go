@@ -74,6 +74,9 @@ type LabGroupReconciler struct {
 
 	pinMu       sync.Mutex
 	pinFailures map[string][]string
+	// rollout lets one group at a time have its VPN and gateway pods replaced because their image, command or resources
+	// differ from the configured ones (see rollout.go).
+	rollout rolloutGuard
 	// SupportEmail is the contact address shown on the VPN probe page.
 	SupportEmail string
 	// LabNodeSelector is applied to VPN and gateway pod specs.
@@ -133,6 +136,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	ns := laboratoryv1alpha1.LabGroupNamespaceOf(&lg)
+	r.rollout.begin(ns)
 	clientSubnet, err := netutil.SubnetForIndex(r.VPNBaseNetwork, labSubnetPrefixLen, 0)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("derive VPN client subnet: %w", err)
@@ -227,6 +231,19 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 
+	// An image update waits its turn (one group at a time) and the next group starts when this one's pods are rolled out.
+	rolloutRequeue, err := r.settleRollout(ctx, ns)
+	if err != nil {
+		logger.Error(err, "check the rollout of the VPN and gateway pods")
+		return ctrl.Result{}, err
+	}
+	later := func(res ctrl.Result) ctrl.Result {
+		if rolloutRequeue && (res.RequeueAfter == 0 || res.RequeueAfter > rolloutPoll) {
+			res.RequeueAfter = rolloutPoll
+		}
+		return res
+	}
+
 	if err = r.syncPodLabels(ctx, &lg); err != nil {
 		logger.Error(err, "sync pod labels")
 		return ctrl.Result{}, err
@@ -277,9 +294,9 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return ctrl.Result{}, err
 		}
 		if !lg.Spec.VPN.Disabled && !vpnReady {
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			return later(ctrl.Result{RequeueAfter: 5 * time.Second}), nil
 		}
-		return ctrl.Result{}, nil
+		return later(ctrl.Result{}), nil
 	}
 
 	vpnReady := false
@@ -313,12 +330,12 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			r.Recorder.Event(&lg, corev1.EventTypeWarning, labstatus.ReasonWaitingForVPNServer,
 				"VPN server has no ready replicas; group not registered in demux")
 		}
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		return later(ctrl.Result{RequeueAfter: 5 * time.Second}), nil
 	}
 	if !wasRegistered {
 		r.Recorder.Event(&lg, corev1.EventTypeNormal, labstatus.ReasonReady, "VPN server registered in demux")
 	}
-	return ctrl.Result{}, nil
+	return later(ctrl.Result{}), nil
 }
 
 // findDuplicatePubKey returns the name of another LabGroup that already
@@ -600,6 +617,10 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 	if err := r.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: ns}, &existing); err == nil {
 		changed := existing.Spec.Replicas == nil || *existing.Spec.Replicas != replicas
 		existing.Spec.Replicas = ptrInt32(replicas)
+		// The configured image, command and resources reach the VPN pods that already run, one group at a time (a rolling update).
+		if r.convergeGroupPod(ctx, ns, &existing, "vpn", r.VPNImage, []string{"/lab", "vpn"}, r.GroupPods.VPN()) {
+			changed = true
+		}
 		// The hardened shape reaches the VPN pods that already run too (a rolling restart of the pod).
 		if hardenGroupPod(&existing.Spec.Template.Spec, "vpn", vpnCaps) {
 			changed = true
@@ -664,7 +685,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 						Resources:       r.GroupPods.VPN(),
 						Image:           vpnImage,
 						Command:         []string{"/lab", "vpn"},
-						ImagePullPolicy: corev1.PullIfNotPresent,
+						ImagePullPolicy: pullPolicyFor(vpnImage),
 						Env: append([]corev1.EnvVar{
 							{
 								Name: "PRIVATE_KEY",
@@ -703,6 +724,10 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 	if err := r.Get(ctx, types.NamespacedName{Name: "gateway", Namespace: ns}, &existing); err == nil {
 		changed := existing.Spec.Replicas == nil || *existing.Spec.Replicas != replicas
 		existing.Spec.Replicas = ptrInt32(replicas)
+		// The configured image, command and resources reach the gateways that already run, one group at a time (a rolling update).
+		if r.convergeGroupPod(ctx, ns, &existing, "gateway", r.GatewayImage, []string{"/lab", "gateway"}, r.GroupPods.Gateway()) {
+			changed = true
+		}
 		// A security setting reaches the gateways that already run too (a restart of the pod).
 		if r.convergeGateway(&existing) {
 			changed = true
@@ -741,7 +766,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 						Resources:       r.GroupPods.Gateway(),
 						Image:           gatewayImage,
 						Command:         []string{"/lab", "gateway"},
-						ImagePullPolicy: corev1.PullIfNotPresent,
+						ImagePullPolicy: pullPolicyFor(gatewayImage),
 						Env:             r.gatewayEnv(ns),
 					}},
 				},

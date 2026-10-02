@@ -42,7 +42,7 @@ spec:
       containers:
         - name: agent
           image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.agent.image.pullPolicy "tag" (.Values.agent.image.tag | default .Chart.AppVersion)) }}
           command: ["/agent"]
           securityContext:
             allowPrivilegeEscalation: false

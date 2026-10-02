@@ -34,7 +34,7 @@ spec:
       containers:
         - name: manager
           image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
+          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.operator.image.pullPolicy "tag" (.Values.operator.image.tag | default .Chart.AppVersion)) }}
           command:
             - /manager
           args:

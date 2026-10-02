@@ -44,7 +44,7 @@ spec:
         # and does nothing else: it is the one root container of the pod, with only the capabilities chown needs.
         - name: own-data
           image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
+          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (.Values.nodeAgent.image.tag | default .Chart.AppVersion)) }}
           command: [ "/bin/sh", "-c", "chown -R 65532:65532 /var/lib/registry" ]
           securityContext:
             runAsNonRoot: false
@@ -62,7 +62,7 @@ spec:
       containers:
         - name: zot
           image: "{{ $r.image.repository }}:{{ $r.image.tag }}"
-          imagePullPolicy: {{ $r.image.pullPolicy }}
+          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" $r.image.pullPolicy "tag" $r.image.tag) }}
           args: [ "serve", "/etc/zot/config.json" ]
           ports:
             - name: registry

@@ -7,7 +7,7 @@ operator:
   image:
     repository: cybericebox/laboratory-controller
     tag: ""
-    pullPolicy: IfNotPresent
+    pullPolicy: ""   # empty = follows the tag: Always for latest, IfNotPresent for an exact version tag
 
   # REQUIRED (no default): host:port advertised to WireGuard clients (demux public address).
   # Example: "vpn.example.com:51820"
@@ -77,10 +77,9 @@ vpn:
   image:
     repository: cybericebox/laboratory-lab
     tag: ""
-    # No pullPolicy key here (unlike operator/proxy/nodeAgent/agent): this image is
-    # only ever used to build a Pod spec directly in Go
-    # (internal/controller/laboratory/labgroup_controller.go), which hardcodes
-    # ImagePullPolicy: IfNotPresent. There is no chart-level knob to plumb it through.
+    # No pullPolicy key here (unlike operator/proxy/nodeAgent/agent): the operator builds this Pod spec itself
+    # and the pull policy follows the tag: Always for latest, IfNotPresent for an exact version tag.
+    # The operator also brings the pods of existing groups to this image, one group at a time (see DEPLOY.md, "Upgrade").
 
 # ============================================================
 # Gateway pod image (created at runtime by operator per LabGroup)
@@ -98,10 +97,9 @@ inetGateway:
   image:
     repository: cybericebox/laboratory-lab
     tag: ""
-    # No pullPolicy key here (unlike operator/proxy/nodeAgent/agent): this image is
-    # only ever used to build a Pod spec directly in Go
-    # (internal/controller/laboratory/labgroup_controller.go), which hardcodes
-    # ImagePullPolicy: IfNotPresent. There is no chart-level knob to plumb it through.
+    # No pullPolicy key here (unlike operator/proxy/nodeAgent/agent): the operator builds this Pod spec itself
+    # and the pull policy follows the tag: Always for latest, IfNotPresent for an exact version tag.
+    # The operator also brings the pods of existing groups to this image, one group at a time (see DEPLOY.md, "Upgrade").
 
 # ============================================================
 # Proxy: l7 + wg-demux containers in one unprivileged Deployment
@@ -128,7 +126,7 @@ proxy:
   image:
     repository: cybericebox/laboratory-proxy
     tag: ""
-    pullPolicy: IfNotPresent
+    pullPolicy: ""   # empty = follows the tag: Always for latest, IfNotPresent for an exact version tag
   # How the proxy runs.
   #   replicas (default): a Deployment of `replicas` pods, NEVER two on one node (required anti-affinity by
   #     hostname). With more replicas than schedulable nodes the extra pods stay Pending, so on a one-node
@@ -363,7 +361,7 @@ nodeAgent:
   image:
     repository: cybericebox/laboratory-node
     tag: ""
-    pullPolicy: IfNotPresent
+    pullPolicy: ""   # empty = follows the tag: Always for latest, IfNotPresent for an exact version tag
 
   # The node is bare: Open vSwitch runs inside this DaemonSet (the "ovs" sidecar),
   # and the host-prep init container loads the kernel modules and sets the sysctls
@@ -443,7 +441,7 @@ registry:
     # (linux/amd64 and linux/arm64); about 70 MB compressed.
     repository: ghcr.io/project-zot/zot
     tag: "v2.1.21"
-    pullPolicy: IfNotPresent
+    pullPolicy: ""   # empty = follows the tag: Always for latest, IfNotPresent for an exact version tag
   # StorageClass of the registry volume; empty = the cluster default. The volume holds every device snapshot, so its
   # PersistentVolume must survive the claim: use a class with reclaimPolicy Retain (retainClass below creates one).
   # With a class whose reclaimPolicy is Delete, a deleted claim or namespace deletes all snapshots.
@@ -719,7 +717,7 @@ agent:
   image:
     repository: cybericebox/laboratory-agent
     tag: ""
-    pullPolicy: IfNotPresent
+    pullPolicy: ""   # empty = follows the tag: Always for latest, IfNotPresent for an exact version tag
 
   # gRPC port the agent listens on (TLS).
   grpcPort: 5454
@@ -834,6 +832,14 @@ imagePullSecrets: []
 
 nameOverride: ""
 fullnameOverride: ""
+
+# ============================================================
+# Development switches (never on a production install)
+# ============================================================
+development:
+  # The chart refuses the image tag `latest` (a tag that moves: a node may run an old image while another runs a new one, and a
+  # rollout cannot tell the versions apart). Production uses exact version tags. true: allow `latest`, for a local stand.
+  allowLatestTags: false
 
 # ============================================================
 # cert-manager subchart values (used when certManager.install=true)

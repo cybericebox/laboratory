@@ -153,6 +153,18 @@ helm upgrade laboratory ./charts/laboratory \
 
 The ConfigMap is re-rendered from values. Operator pod restarts automatically (Deployment update triggers rollout).
 
+**Image tags.** Production uses exact version tags (`operator.image.tag`, `vpn.image.tag`, `inetGateway.image.tag`, `proxy.image.tag`, `nodeAgent.image.tag`,
+`agent.image.tag`; an empty tag is the chart's `appVersion`). The chart refuses `latest` unless `development.allowLatestTags: true` (a local stand): a moving tag leaves
+nodes on different images and a rollout cannot tell the versions apart. The image pull policy follows the tag when `pullPolicy` is empty: `IfNotPresent` for an exact
+tag, `Always` for `latest`.
+
+**The VPN and gateway pods of existing groups.** They run `vpn.image` and `inetGateway.image` (the binary with the gateway egress filter, the anti-spoof check and the
+WireGuard handling), so after a chart upgrade the operator brings every existing group's VPN and gateway Deployment to the configured image, command, pull policy and
+resources (`vpn.resources`, `inetGateway.resources`). It does that **one group at a time**: a group's two pods restart together (its tunnels drop and the clients
+re-handshake), and the next group starts when the previous one's pods are rolled out and available, or after 10 minutes if they never become so (a bad image does not
+hold up the cluster, but it does reach the next group). Watch it with `kubectl get deploy -A -l app -o wide` (the `vpn` and `gateway` Deployments) and the operator log.
+With the image cache on, the image is the pinned reference the operator resolves (`registry.cache.pinTTL`).
+
 ---
 
 ## 5. Use

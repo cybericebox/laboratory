@@ -151,3 +151,11 @@ node-agent sets on its node. Lab pods run only where a ready node-agent serves t
 {{- define "laboratory.labNodeSelector" -}}
 {{- merge (dict "laboratory.cybericebox.com/node-agent-ready" "true") (deepCopy .Values.labWorkloads.nodeSelector) | toJson -}}
 {{- end }}
+
+{{/*
+The image pull policy of a container: the explicit one when set, else it follows the tag. A tag that moves (latest, or none) is pulled every
+time; an exact version tag only when the node does not have it. Arguments: dict "policy" <values pullPolicy> "tag" <effective tag>.
+*/}}
+{{- define "laboratory.pullPolicy" -}}
+{{- if .policy -}}{{ .policy }}{{- else if or (eq (toString .tag) "") (eq (toString .tag) "latest") -}}Always{{- else -}}IfNotPresent{{- end -}}
+{{- end }}

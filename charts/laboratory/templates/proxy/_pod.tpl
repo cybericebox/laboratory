@@ -36,7 +36,7 @@ spec:
   {{- if .Values.proxy.l7.enabled }}
   - name: l7
     image: "{{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag | default .Chart.AppVersion }}"
-    imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
+    imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.proxy.image.pullPolicy "tag" (.Values.proxy.image.tag | default .Chart.AppVersion)) }}
     command: ["/proxy", "proxy-l7"]
     securityContext:
       allowPrivilegeEscalation: false
@@ -118,7 +118,7 @@ spec:
   {{- if .Values.proxy.wg.enabled }}
   - name: wg-demux
     image: "{{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag | default .Chart.AppVersion }}"
-    imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
+    imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.proxy.image.pullPolicy "tag" (.Values.proxy.image.tag | default .Chart.AppVersion)) }}
     command: ["/proxy", "proxy-wg"]
     securityContext:
       allowPrivilegeEscalation: false
