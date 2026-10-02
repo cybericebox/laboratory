@@ -170,7 +170,6 @@ func (r *ConnectionReconciler) reconcileDeviceDevice(
 				return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
 			}
 
-			_ = r.Flows.DelT0Port(pKey)
 			if err := r.Flows.AddT0Port(pKey, vni); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -267,7 +266,6 @@ func (r *ConnectionReconciler) reconcileDeviceSwitch(
 			return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
 		}
 
-		_ = r.Flows.DelT0Port(pKey)
 		if err := r.Flows.AddT0Port(pKey, vni); err != nil {
 			return ctrl.Result{}, err
 		}
