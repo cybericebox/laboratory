@@ -18,8 +18,8 @@ type ConnEntry struct {
 	SenderSocket   Socket
 	ReceiverSocket Socket
 	LastSeen       time.Time
-	// owner is the client address the session was opened from: the entry counts against its cap, whatever roaming does.
-	owner string
+	// partial is a handshake in progress: the init was forwarded and no answer has completed it (Limits.PartialTTL).
+	partial bool
 	// lastRoam is when the session last changed address.
 	lastRoam time.Time
 	// pkts is the token bucket of the packets this session may send per second (Limits.SessionRate).
@@ -29,11 +29,8 @@ type ConnEntry struct {
 type ConnTrack struct {
 	mu      sync.RWMutex
 	entries map[uint32]*ConnEntry
-	perSrc  map[string]int
 	limits  Limits
 	now     func() time.Time
-	// owners are the packet buckets of the client addresses (Limits.OwnerRate): all the sessions of one address share one.
-	owners map[string]*bucket
 }
 
 // take refills a bucket and takes one token from it; false when it is empty. rate 0 = unlimited.
@@ -59,7 +56,7 @@ func (b *bucket) take(now time.Time, rate float64, burst int) bool {
 func NewConnTrack() *ConnTrack { return NewConnTrackWithLimits(DefaultLimits()) }
 
 func NewConnTrackWithLimits(l Limits) *ConnTrack {
-	return &ConnTrack{entries: make(map[uint32]*ConnEntry), perSrc: map[string]int{}, owners: map[string]*bucket{}, limits: l, now: time.Now}
+	return &ConnTrack{entries: make(map[uint32]*ConnEntry), limits: l, now: time.Now}
 }
 
 // Len is the number of entries.
@@ -69,40 +66,18 @@ func (c *ConnTrack) Len() int {
 	return len(c.entries)
 }
 
-// room says whether two more entries (a session) fit under the global cap and the owner's. Must be called with c.mu held.
-func (c *ConnTrack) roomLocked(owner string) bool {
-	if c.limits.MaxEntries > 0 && len(c.entries)+2 > c.limits.MaxEntries {
-		return false
-	}
-	if c.limits.MaxEntriesPerSource > 0 && c.perSrc[owner]+2 > c.limits.MaxEntriesPerSource {
-		return false
-	}
-	return true
+// roomLocked says whether two more entries (a session) fit under the global cap. Must be called with c.mu held.
+func (c *ConnTrack) roomLocked() bool {
+	return c.limits.MaxEntries <= 0 || len(c.entries)+2 <= c.limits.MaxEntries
 }
 
-// put stores an entry and counts it against its owner. Must be called with c.mu held.
-func (c *ConnTrack) putLocked(idx uint32, e *ConnEntry) {
-	if old, ok := c.entries[idx]; ok {
-		c.perSrc[old.owner]--
-	}
-	c.entries[idx] = e
-	c.perSrc[e.owner]++
-}
-
-// removeLocked deletes an entry and its count. Must be called with c.mu held.
-func (c *ConnTrack) removeLocked(idx uint32) {
-	if e, ok := c.entries[idx]; ok {
-		if c.perSrc[e.owner]--; c.perSrc[e.owner] <= 0 {
-			delete(c.perSrc, e.owner)
-		}
-		delete(c.entries, idx)
-	}
-}
+// removeLocked deletes an entry. Must be called with c.mu held.
+func (c *ConnTrack) removeLocked(idx uint32) { delete(c.entries, idx) }
 
 // AddPartial creates the Ci entry after type 1 forward (Si unknown yet).
 // Returns false (and changes nothing) when the index is already taken by a different live session (spec §4: the
 // handshake is dropped so upstream WireGuard retries with a new index, instead of overwriting a peer), or when the
-// table, or the client's share of it, is full.
+// table is full.
 func (c *ConnTrack) AddPartial(ci uint32, clientSocket, serverSocket Socket) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -117,11 +92,10 @@ func (c *ConnTrack) AddPartial(ci uint32, clientSocket, serverSocket Socket) boo
 		existing.LastSeen = now
 		return true
 	}
-	owner := clientSocket.IP.String()
-	if !c.roomLocked(owner) {
+	if !c.roomLocked() {
 		return false
 	}
-	c.putLocked(ci, &ConnEntry{SenderSocket: clientSocket, ReceiverSocket: serverSocket, LastSeen: now, owner: owner, lastRoam: now})
+	c.entries[ci] = &ConnEntry{SenderSocket: clientSocket, ReceiverSocket: serverSocket, LastSeen: now, lastRoam: now, partial: true}
 	return true
 }
 
@@ -139,20 +113,33 @@ func (c *ConnTrack) Complete(si, ci uint32, clientSocket, serverSocket Socket) b
 			return false
 		}
 	}
-	owner := clientSocket.IP.String()
 	if _, replacing := c.entries[si]; !replacing && c.limits.MaxEntries > 0 && len(c.entries)+1 > c.limits.MaxEntries {
 		return false
 	}
-	c.putLocked(si, &ConnEntry{PeerIndex: ci, SenderSocket: serverSocket, ReceiverSocket: clientSocket, LastSeen: now, owner: owner, lastRoam: now})
+	c.entries[si] = &ConnEntry{PeerIndex: ci, SenderSocket: serverSocket, ReceiverSocket: clientSocket, LastSeen: now, lastRoam: now}
 	if e, ok := c.entries[ci]; ok {
 		e.PeerIndex = si
+		e.partial = false
+		e.LastSeen = now
 	}
 	return true
 }
 
-// staleLocked reports whether an entry is past TTL. Must be called with c.mu held.
+// staleLocked reports whether an entry is past its TTL: PartialTTL for a handshake in progress, conntrackTTL for a session.
+// Must be called with c.mu held.
 func (c *ConnTrack) staleLocked(e *ConnEntry) bool {
-	return c.now().Sub(e.LastSeen) > conntrackTTL
+	ttl := conntrackTTL
+	if e.partial {
+		ttl = c.partialTTL()
+	}
+	return c.now().Sub(e.LastSeen) > ttl
+}
+
+func (c *ConnTrack) partialTTL() time.Duration {
+	if c.limits.PartialTTL > 0 {
+		return c.limits.PartialTTL
+	}
+	return DefaultLimits().PartialTTL
 }
 
 // sameClient reports whether the given socket matches the entry's recorded sender.
@@ -225,19 +212,9 @@ func (c *ConnTrack) LookupForward(receiverIndex uint32, src Socket) (dst Socket,
 			peer.SenderSocket = src
 		}
 	}
-	// The demux is shared by everyone: a session, and all the sessions of one address, have a packet rate of their own.
+	// The demux is shared by everyone: a session has a packet rate of its own.
 	if !e.pkts.take(now, c.limits.SessionRate, c.limits.SessionBurst) {
 		return Socket{}, false
-	}
-	if c.limits.OwnerRate > 0 {
-		ob := c.owners[e.owner]
-		if ob == nil {
-			ob = &bucket{}
-			c.owners[e.owner] = ob
-		}
-		if !ob.take(now, c.limits.OwnerRate, c.limits.OwnerBurst) {
-			return Socket{}, false
-		}
 	}
 	e.LastSeen = now
 	return e.SenderSocket, true
@@ -305,17 +282,14 @@ func (c *ConnTrack) Cleanup() int {
 	for _, idx := range expired {
 		c.evictLocked(idx)
 	}
-	for o := range c.owners {
-		if c.perSrc[o] == 0 {
-			delete(c.owners, o)
-		}
-	}
 	return len(expired)
 }
 
 // RunTTLCleanup removes stale entries in a background goroutine.
 func (c *ConnTrack) RunTTLCleanup(stop <-chan struct{}) {
-	ticker := time.NewTicker(conntrackTTL / 3)
+	// Often enough for the short life of a handshake in progress too (it must not outlive PartialTTL by minutes).
+	interval := min(conntrackTTL/3, c.partialTTL()/2)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {

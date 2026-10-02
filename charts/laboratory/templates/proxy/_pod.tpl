@@ -134,20 +134,14 @@ spec:
       value: {{ .Release.Namespace | quote }}
     - name: DEMUX_MAX_ENTRIES
       value: {{ .Values.proxy.wg.limits.maxEntries | quote }}
-    - name: DEMUX_MAX_ENTRIES_PER_SOURCE
-      value: {{ .Values.proxy.wg.limits.maxEntriesPerSource | quote }}
-    - name: DEMUX_HANDSHAKE_RATE
-      value: {{ .Values.proxy.wg.limits.handshakeRate | quote }}
-    - name: DEMUX_HANDSHAKE_BURST
-      value: {{ .Values.proxy.wg.limits.handshakeBurst | quote }}
+    - name: DEMUX_PARTIAL_TTL
+      value: {{ .Values.proxy.wg.limits.partialTTL | quote }}
     - name: DEMUX_MISS_RATE
       value: {{ .Values.proxy.wg.limits.missRate | quote }}
     - name: DEMUX_MISS_BURST
       value: {{ .Values.proxy.wg.limits.missBurst | quote }}
     - name: DEMUX_ROAM_INTERVAL
       value: {{ .Values.proxy.wg.limits.roamInterval | quote }}
-    - name: DEMUX_MAX_SOURCES
-      value: {{ .Values.proxy.wg.limits.maxSources | quote }}
     - name: DEMUX_GLOBAL_HANDSHAKE_RATE
       value: {{ .Values.proxy.wg.limits.globalHandshakeRate | quote }}
     - name: DEMUX_GLOBAL_HANDSHAKE_BURST
@@ -156,10 +150,6 @@ spec:
       value: {{ .Values.proxy.wg.limits.sessionRate | quote }}
     - name: DEMUX_SESSION_BURST
       value: {{ .Values.proxy.wg.limits.sessionBurst | quote }}
-    - name: DEMUX_OWNER_RATE
-      value: {{ .Values.proxy.wg.limits.ownerRate | quote }}
-    - name: DEMUX_OWNER_BURST
-      value: {{ .Values.proxy.wg.limits.ownerBurst | quote }}
     - name: DEMUX_READERS
       value: {{ .Values.proxy.wg.limits.readers | quote }}
     {{- if .Values.proxy.kindMode }}

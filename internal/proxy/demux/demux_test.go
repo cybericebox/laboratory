@@ -150,28 +150,7 @@ func TestType3IsForwardedFromTheExpectedSourceOnly(t *testing.T) {
 	}
 }
 
-// A source that hammers handshake inits runs out of its budget; another source is not affected.
-func TestHandshakeRateLimitPerSource(t *testing.T) {
-	l := DefaultLimits()
-	l.HandshakeBurst, l.HandshakeRate = 3, 0.5
-	r := newRig(t, l)
-	for i := uint32(0); i < 10; i++ {
-		r.toDemux(r.client, initPacket(r.key, 100+i))
-	}
-	got := 0
-	for recv(r.backend, 400*time.Millisecond) != nil {
-		got++
-	}
-	if got != 3 {
-		t.Fatalf("the backend saw %d inits, want the burst of 3", got)
-	}
-	// another source address has its own budget (127.0.0.2 on linux only: use the limiter directly)
-	if !r.demux.handshakes.allow("203.0.113.9") {
-		t.Fatal("another source has its own budget")
-	}
-}
-
-// Guessing session indexes from one source is rate-limited: past the budget even a correct guess is not forwarded.
+// Guessing session indexes is rate-limited (all sources together): past the budget even a correct guess is not forwarded.
 func TestGuessingIndexesIsRateLimited(t *testing.T) {
 	l := DefaultLimits()
 	l.MissBurst, l.MissRate = 5, 0.1
@@ -231,14 +210,14 @@ func TestWrongSizedPacketsAreDropped(t *testing.T) {
 	}
 }
 
-// All sources together may start only so many handshakes: spoofed sources each have a budget of their own.
+// All sources together may start only so many handshakes (there is no per-source budget).
 func TestGlobalHandshakeBudget(t *testing.T) {
 	l := DefaultLimits()
 	l.GlobalHandshakeRate, l.GlobalHandshakeBurst = 0.001, 2
 	r := newRig(t, l)
 	got := 0
 	for i := 0; i < 6; i++ {
-		c := udp(t) // each from its own source port; the per-source budget is not what stops them
+		c := udp(t) // each from its own source port
 		r.toDemux(c, initPacket(r.key, uint32(100+i)))
 		if recv(r.backend, 300*time.Millisecond) != nil {
 			got++

@@ -224,31 +224,26 @@ proxy:
     # assigns one.
     nodePort: null
     # The demux reads a public UDP port shared by every team and holds a table of sessions, so what a stranger can make it
-    # hold or spend is capped. maxEntries is the conntrack entries in total (two per session) and maxEntriesPerSource what one
-    # client address may own (a team behind one NAT needs two per VPN client); a handshake that would pass either is dropped
-    # and the client retries. handshakeRate and handshakeBurst limit handshake initiations per source address (each costs a
-    # scan of the groups' keys); missRate and missBurst limit, per source address, packets that match no session or come from
-    # an unexpected address, so guessing the 32-bit session index is rate-limited. roamInterval is the least time between two
-    # address changes of one session (roaming itself works as before). maxSources bounds the memory of these limiters.
+    # hold or spend is capped. There is NO limit per source address: one NAT (a venue, a campus) hides a whole event behind one
+    # address, and behind a load balancer in SNAT mode every client has a node's address. maxEntries is the conntrack entries in
+    # total (two per session); a handshake that would pass it is dropped and the client retries. partialTTL is how long a
+    # handshake in progress (init forwarded, no answer yet) keeps its entry: it is made before anything is authenticated, so it
+    # is short (a completed session keeps its entry for 3 minutes after its last packet). All sources together may start
+    # globalHandshakeRate handshakes per second (burst globalHandshakeBurst; each scans every group's key) and send missRate
+    # (missBurst) packets per second that match no session or come from an unexpected address, so guessing the 32-bit session
+    # index is rate-limited. roamInterval is the least time between two address changes of one session (roaming itself works as
+    # before). One session may send sessionRate packets per second (burst sessionBurst): the demux is shared by every tenant and
+    # one participant with a valid session must not be able to use its CPU up. readers goroutines read the socket.
     limits:
       maxEntries: 100000
-      maxEntriesPerSource: 128
-      handshakeRate: 20
-      handshakeBurst: 50
-      missRate: 50
-      missBurst: 100
-      roamInterval: 5s
-      maxSources: 100000
-      # All sources together may start globalHandshakeRate handshakes per second (each scans every group's key; spoofed sources each
-      # have a budget of their own, so the total needs one). One session may send sessionRate packets per second (burst
-      # sessionBurst) and all the sessions of one client address ownerRate (ownerBurst): the demux is shared by every tenant and one
-      # participant with a valid session must not be able to use its CPU up. readers goroutines read the socket.
+      partialTTL: 15s
       globalHandshakeRate: 2000
       globalHandshakeBurst: 4000
+      missRate: 2000
+      missBurst: 4000
+      roamInterval: 5s
       sessionRate: 15000
       sessionBurst: 30000
-      ownerRate: 40000
-      ownerBurst: 80000
       readers: 4
     # Requests = limits. Measured: 12Mi, 1m idle and up to 111m at ten active peers (the packets are
     # relayed in userspace, so the CPU follows the VPN traffic).

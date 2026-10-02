@@ -919,11 +919,16 @@ The demux (`wg-demux`) reads one public UDP port for every team. It holds no key
 everything a stranger can make it hold or spend is capped (`proxy.wg.limits`):
 
 - **No per-packet logs.** Nothing is logged for an incoming datagram (a flood could otherwise fill the log pipeline).
-- **Table caps:** `maxEntries` conntrack entries in all (two per session), `maxEntriesPerSource` for one client address (a team behind one NAT needs two per VPN
-  client). A handshake that would pass either is dropped and the client retries.
-- **Rates, per source address:** `handshakeRate`/`handshakeBurst` for handshake initiations (each costs a scan of the groups' mac1 keys), and
-  `missRate`/`missBurst` for packets that match no session or come from an address the session does not expect, so guessing the 32-bit session index is
-  rate-limited. `maxSources` bounds the memory of these limiters.
+- **No limit per source address.** One NAT (a venue, a campus) hides a whole event behind one address, and behind a load balancer in SNAT mode the clients of a node
+  share its address: any per-address cap would cut off a whole event. What is capped is shared by everyone:
+- **Table cap:** `maxEntries` conntrack entries in all (two per session). A handshake that would pass it is dropped and the client retries.
+- **Handshakes in progress are short-lived:** the entry of an init is made before anything is authenticated (the mac1 key derives from the group's public key, which
+  every participant has), so it lives only `partialTTL` (15 s) unless the VPN pod answers; a completed session keeps its entry for 3 minutes after its last packet.
+  Spoofed inits therefore cannot hold the table for minutes. They can still use up the global handshake budget (below): that needs a rate limit by source,
+  which cannot be told apart from a venue, so watch the proxy's logs and the Cilium flow logs for such a flood instead.
+- **Global rates:** `globalHandshakeRate`/`globalHandshakeBurst` for handshake initiations of all sources together (each costs a scan of the groups' mac1 keys), and
+  `missRate`/`missBurst` for packets, all sources together, that match no session or come from an address the session does not expect, so guessing the 32-bit
+  session index is rate-limited. Per session: `sessionRate`/`sessionBurst` packets per second, so one participant cannot use the demux's CPU up.
 - **Roaming works as before**, but one session changes address at most once per `roamInterval`; a packet from a third address inside the interval is dropped and
   moves nothing. An index a live session owns is never taken by another handshake (the handshake is dropped).
 - **Type 2** (the server's answer) is accepted only from the VPN pod the init was forwarded to; **type 3** (cookie reply, the peer's own load protection) is

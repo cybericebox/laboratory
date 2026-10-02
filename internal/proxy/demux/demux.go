@@ -5,14 +5,13 @@ import (
 	"fmt"
 	"net"
 	"sync"
-	"time"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 // Demux handles incoming WireGuard UDP packets on the one public port every team shares.
 //
-//	type 1 (handshake init)   forwarded to the group's VPN pod found by mac1; rate-limited per source
+//	type 1 (handshake init)   forwarded to the group's VPN pod found by mac1; rate-limited (all sources together)
 //	type 2 (handshake answer) accepted only from the backend the init was forwarded to
 //	type 3 (cookie reply)     forwarded like a transport packet, but only from the exact expected source
 //	type 4 (transport data)   forwarded by receiver index; roaming allowed at most once per interval
@@ -21,13 +20,13 @@ import (
 // the boundary), so everything a stranger can make it hold or spend is capped (see Limits) and nothing is logged per
 // packet.
 type Demux struct {
-	table      *Table
-	conntrack  *ConnTrack
-	conn       *net.UDPConn
-	handshakes *limiter // type 1, per source address
-	strangers  *limiter // packets that match no session or come from an unexpected source, per source address
-	global     *limiter // type 1, all sources together
-	readers    int
+	table     *Table
+	conntrack *ConnTrack
+	conn      *net.UDPConn
+	// There is no limit per source address: one NAT hides a whole event, and behind a load balancer every client may share an address.
+	global    *limiter // type 1, all sources together
+	strangers *limiter // packets that match no session or come from an unexpected source, all sources together
+	readers   int
 }
 
 func New(listenAddr string, table *Table, ct *ConnTrack) (*Demux, error) {
@@ -45,10 +44,9 @@ func NewWithLimits(listenAddr string, table *Table, ct *ConnTrack, l Limits) (*D
 	}
 	return &Demux{
 		table: table, conntrack: ct, conn: conn,
-		handshakes: newLimiter(l.HandshakeRate, l.HandshakeBurst, l.MaxSources),
-		strangers:  newLimiter(l.MissRate, l.MissBurst, l.MaxSources),
-		global:     newLimiter(l.GlobalHandshakeRate, l.GlobalHandshakeBurst, 1),
-		readers:    max(l.Readers, 1),
+		global:    newLimiter(l.GlobalHandshakeRate, l.GlobalHandshakeBurst),
+		strangers: newLimiter(l.MissRate, l.MissBurst),
+		readers:   max(l.Readers, 1),
 	}, nil
 }
 
@@ -58,7 +56,6 @@ func (d *Demux) LocalAddr() net.Addr { return d.conn.LocalAddr() }
 // Run processes incoming WireGuard packets until stop is closed. Several goroutines read the socket (a UDP socket is safe to read
 // from many), so the cost of one packet does not hold the others up.
 func (d *Demux) Run(stop <-chan struct{}) {
-	go d.sweepLimiters(stop)
 	var wg sync.WaitGroup
 	for i := 0; i < d.readers; i++ {
 		wg.Add(1)
@@ -134,20 +131,6 @@ func (d *Demux) handle(pkt []byte, src *net.UDPAddr) {
 	}
 }
 
-func (d *Demux) sweepLimiters(stop <-chan struct{}) {
-	t := time.NewTicker(time.Minute)
-	defer t.Stop()
-	for {
-		select {
-		case <-stop:
-			return
-		case <-t.C:
-			d.handshakes.sweep()
-			d.strangers.sweep()
-		}
-	}
-}
-
 func socketOf(a *net.UDPAddr) Socket { return Socket{IP: a.IP, Port: uint16(a.Port)} }
 
 func (d *Demux) handleType1(pkt []byte, src *net.UDPAddr) {
@@ -155,9 +138,8 @@ func (d *Demux) handleType1(pkt []byte, src *net.UDPAddr) {
 	if len(pkt) < 8 {
 		return
 	}
-	// A handshake init costs a scan of every group's mac1 key: the source pays for it from its own budget, and all sources together
-	// from a global one (spoofed sources each have a budget of their own).
-	if !d.handshakes.allow(src.IP.String()) || !d.global.allow("all") {
+	// A handshake init costs a scan of every group's mac1 key: all sources together pay for it from one budget.
+	if !d.global.allow() {
 		return
 	}
 	_, backend, found := d.table.FindByMac1(pkt)
@@ -235,9 +217,9 @@ func (d *Demux) handleType4Userspace(pkt []byte, src *net.UDPAddr) {
 	receiverIndex := binary.LittleEndian.Uint32(pkt[4:8])
 	from := socketOf(src)
 	// A packet that matches no session, or comes from other than the session's address (a guess, a spoof, or a roam),
-	// is paid for from the source's budget: guessing the 32-bit index is rate-limited, per source.
+	// is paid for from one budget for all sources: guessing the 32-bit index is rate-limited.
 	if expected, ok := d.conntrack.Expected(receiverIndex); !ok || !sameSocket(expected, from) {
-		if !d.strangers.allow(src.IP.String()) {
+		if !d.strangers.allow() {
 			return
 		}
 	}

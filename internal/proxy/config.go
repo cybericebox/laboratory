@@ -58,26 +58,22 @@ type WGConfig struct {
 	ListenAddr     string `env:"UDP_LISTEN_ADDR"  envDefault:":51820"`
 	VPNServicePort int    `env:"VPN_SERVICE_PORT" envDefault:"51820"`
 	// The demux reads a public UDP port shared by every team, so what a stranger can make it hold or spend is capped
-	// (see demux.Limits): the conntrack entries in total and per client address, handshake initiations and
-	// unmatched packets per second per source address, and how often one session may change address.
-	MaxEntries          int           `env:"DEMUX_MAX_ENTRIES" envDefault:"100000"`
-	MaxEntriesPerSource int           `env:"DEMUX_MAX_ENTRIES_PER_SOURCE" envDefault:"128"`
-	HandshakeRate       float64       `env:"DEMUX_HANDSHAKE_RATE" envDefault:"20"`
-	HandshakeBurst      int           `env:"DEMUX_HANDSHAKE_BURST" envDefault:"50"`
-	MissRate            float64       `env:"DEMUX_MISS_RATE" envDefault:"50"`
-	MissBurst           int           `env:"DEMUX_MISS_BURST" envDefault:"100"`
-	RoamInterval        time.Duration `env:"DEMUX_ROAM_INTERVAL" envDefault:"5s"`
-	MaxSources          int           `env:"DEMUX_MAX_SOURCES" envDefault:"100000"`
-	// All sources together may start this many handshakes per second (each costs a scan of the groups' keys, whoever pays for
-	// it), one session may send SessionRate packets per second and one client address OwnerRate in all its sessions, so that one
-	// participant cannot use up the shared demux. Readers is how many goroutines read the socket.
-	GlobalHandshakeRate  float64 `env:"DEMUX_GLOBAL_HANDSHAKE_RATE" envDefault:"2000"`
-	GlobalHandshakeBurst int     `env:"DEMUX_GLOBAL_HANDSHAKE_BURST" envDefault:"4000"`
-	SessionRate          float64 `env:"DEMUX_SESSION_RATE" envDefault:"15000"`
-	SessionBurst         int     `env:"DEMUX_SESSION_BURST" envDefault:"30000"`
-	OwnerRate            float64 `env:"DEMUX_OWNER_RATE" envDefault:"40000"`
-	OwnerBurst           int     `env:"DEMUX_OWNER_BURST" envDefault:"80000"`
-	Readers              int     `env:"DEMUX_READERS" envDefault:"4"`
+	// (see demux.Limits). There is no limit per source address: one NAT hides a whole event behind one address.
+	// MaxEntries: conntrack entries in total (two per session). PartialTTL: how long a handshake in progress keeps its entry.
+	MaxEntries int           `env:"DEMUX_MAX_ENTRIES" envDefault:"100000"`
+	PartialTTL time.Duration `env:"DEMUX_PARTIAL_TTL" envDefault:"15s"`
+	// All sources together may start this many handshakes per second (each costs a scan of the groups' keys) and send this many
+	// packets per second that match no session or come from an unexpected address (index guessing, spoofing, roaming).
+	GlobalHandshakeRate  float64       `env:"DEMUX_GLOBAL_HANDSHAKE_RATE" envDefault:"2000"`
+	GlobalHandshakeBurst int           `env:"DEMUX_GLOBAL_HANDSHAKE_BURST" envDefault:"4000"`
+	MissRate             float64       `env:"DEMUX_MISS_RATE" envDefault:"2000"`
+	MissBurst            int           `env:"DEMUX_MISS_BURST" envDefault:"4000"`
+	RoamInterval         time.Duration `env:"DEMUX_ROAM_INTERVAL" envDefault:"5s"`
+	// One session may send SessionRate packets per second, so that one participant cannot use up the shared demux.
+	// Readers is how many goroutines read the socket.
+	SessionRate  float64 `env:"DEMUX_SESSION_RATE" envDefault:"15000"`
+	SessionBurst int     `env:"DEMUX_SESSION_BURST" envDefault:"30000"`
+	Readers      int     `env:"DEMUX_READERS" envDefault:"4"`
 }
 
 // MinSessionSecretLen is the shortest accepted SESSION_SECRET.
@@ -108,9 +104,8 @@ func LoadWGConfig() (*WGConfig, error) {
 	if err := config.Load(cfg); err != nil {
 		return cfg, err
 	}
-	if cfg.MaxEntries <= 0 || cfg.MaxEntriesPerSource <= 0 || cfg.HandshakeRate <= 0 || cfg.HandshakeBurst <= 0 || cfg.MissRate <= 0 || cfg.MissBurst <= 0 ||
-		cfg.RoamInterval <= 0 || cfg.MaxSources <= 0 || cfg.GlobalHandshakeRate <= 0 || cfg.GlobalHandshakeBurst <= 0 ||
-		cfg.SessionRate <= 0 || cfg.SessionBurst <= 0 || cfg.OwnerRate <= 0 || cfg.OwnerBurst <= 0 || cfg.Readers <= 0 {
+	if cfg.MaxEntries <= 0 || cfg.PartialTTL <= 0 || cfg.MissRate <= 0 || cfg.MissBurst <= 0 || cfg.RoamInterval <= 0 ||
+		cfg.GlobalHandshakeRate <= 0 || cfg.GlobalHandshakeBurst <= 0 || cfg.SessionRate <= 0 || cfg.SessionBurst <= 0 || cfg.Readers <= 0 {
 		return cfg, fmt.Errorf("the DEMUX_* limits must be positive")
 	}
 	return cfg, nil

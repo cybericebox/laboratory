@@ -54,11 +54,10 @@ func Run() {
 
 	table := demux.NewTable()
 	limits := demux.Limits{
-		MaxEntries: cfg.MaxEntries, MaxEntriesPerSource: cfg.MaxEntriesPerSource,
-		HandshakeRate: cfg.HandshakeRate, HandshakeBurst: cfg.HandshakeBurst, MissRate: cfg.MissRate, MissBurst: cfg.MissBurst,
-		RoamInterval: cfg.RoamInterval, MaxSources: cfg.MaxSources,
+		MaxEntries: cfg.MaxEntries, PartialTTL: cfg.PartialTTL,
 		GlobalHandshakeRate: cfg.GlobalHandshakeRate, GlobalHandshakeBurst: cfg.GlobalHandshakeBurst,
-		SessionRate: cfg.SessionRate, SessionBurst: cfg.SessionBurst, OwnerRate: cfg.OwnerRate, OwnerBurst: cfg.OwnerBurst,
+		MissRate: cfg.MissRate, MissBurst: cfg.MissBurst, RoamInterval: cfg.RoamInterval,
+		SessionRate: cfg.SessionRate, SessionBurst: cfg.SessionBurst,
 		Readers: cfg.Readers,
 	}
 	ct := demux.NewConnTrackWithLimits(limits)

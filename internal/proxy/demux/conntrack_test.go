@@ -104,21 +104,15 @@ func TestStrictLookupForCookieReplies(t *testing.T) {
 	}
 }
 
-// The table is capped as a whole and per client address; room returns when entries expire.
+// The table is capped as a whole, and there is no cap per client address (one NAT hides a whole event); room returns when entries expire.
 func TestEntryCaps(t *testing.T) {
 	l := DefaultLimits()
-	l.MaxEntries, l.MaxEntriesPerSource = 8, 4
+	l.MaxEntries = 8
 	c, now := clockTrack(l)
 	backend := sock("10.0.0.1", 51820)
-	for i := uint32(0); i < 2; i++ { // two sessions = 4 entries for one address
+	for i := uint32(0); i < 4; i++ { // four sessions = 8 entries, all of one address: nothing stops a venue behind one NAT
 		session(t, c, 100+i, 200+i, sock("1.1.1.1", 1000+uint16(i)), backend)
 	}
-	if c.AddPartial(300, sock("1.1.1.1", 1999), backend) {
-		t.Fatal("a third session of one address passes the per-source cap")
-	}
-	// other addresses still fit, up to the global cap
-	session(t, c, 400, 500, sock("2.2.2.2", 1), backend)
-	session(t, c, 401, 501, sock("3.3.3.3", 1), backend)
 	if c.Len() != 8 {
 		t.Fatalf("entries = %d", c.Len())
 	}
@@ -129,52 +123,112 @@ func TestEntryCaps(t *testing.T) {
 	if n := c.Cleanup(); n != 8 {
 		t.Fatalf("cleanup removed %d", n)
 	}
-	if c.Len() != 0 || len(c.perSrc) != 0 {
-		t.Fatalf("everything is gone: %d entries, %v", c.Len(), c.perSrc)
+	if c.Len() != 0 {
+		t.Fatalf("everything is gone: %d entries", c.Len())
 	}
 	if !c.AddPartial(402, sock("4.4.4.4", 1), backend) {
 		t.Fatal("room returns after expiry")
 	}
 }
 
-func TestLimiterRefillsAndForgetsIdleSources(t *testing.T) {
-	now := time.Unix(0, 0)
-	l := newLimiter(2, 3, 2)
-	l.now = func() time.Time { return now }
-	for i := 0; i < 3; i++ {
-		if !l.allow("a") {
-			t.Fatalf("burst %d", i)
-		}
+// D-1: 300 clients behind one address (a venue's NAT) all get their sessions.
+func TestManyClientsBehindOneAddress(t *testing.T) {
+	c, _ := clockTrack(DefaultLimits())
+	backend := sock("10.0.0.1", 51820)
+	for i := uint32(0); i < 300; i++ {
+		session(t, c, 1000+i, 5000+i, sock("203.0.113.7", 2000+uint16(i)), backend)
 	}
-	if l.allow("a") {
-		t.Fatal("the burst is spent")
-	}
-	now = now.Add(time.Second) // two tokens come back
-	if !l.allow("a") || !l.allow("a") || l.allow("a") {
-		t.Fatal("refill at the rate")
-	}
-	// the table of sources is bounded, and a new source is never refused for that: the one quiet longest is forgotten
-	l.allow("b")
-	now = now.Add(time.Second)
-	if !l.allow("c") {
-		t.Fatal("a new source must be admitted when the table is full")
-	}
-	if len(l.buckets) != 2 {
-		t.Fatalf("the table stays bounded: %d", len(l.buckets))
-	}
-	now = now.Add(time.Hour)
-	l.sweep()
-	if len(l.buckets) != 0 || !l.allow("c") {
-		t.Fatal("idle sources are forgotten")
+	if c.Len() != 600 {
+		t.Fatalf("entries = %d, want 600", c.Len())
 	}
 }
 
-// R-16: a session, and all the sessions of one client address, have a packet rate of their own.
-func TestSessionAndOwnerPacketRates(t *testing.T) {
+// D-2: a handshake in progress (init forwarded, never answered) expires within PartialTTL, a completed session keeps its entry for conntrackTTL.
+func TestPartialEntriesExpireWithinSeconds(t *testing.T) {
+	l := DefaultLimits()
+	l.PartialTTL = 15 * time.Second
+	c, now := clockTrack(l)
+	backend := sock("10.0.0.1", 51820)
+	session(t, c, 10, 20, sock("1.1.1.1", 1000), backend)
+	for i := uint32(0); i < 50; i++ { // spoofed inits that are never answered
+		if !c.AddPartial(100+i, sock("9.9.9.9", 1000+uint16(i)), backend) {
+			t.Fatalf("AddPartial %d", i)
+		}
+	}
+	if c.Len() != 52 {
+		t.Fatalf("entries = %d", c.Len())
+	}
+	*now = now.Add(14 * time.Second)
+	if n := c.Cleanup(); n != 0 {
+		t.Fatalf("nothing is stale after 14s, %d removed", n)
+	}
+	*now = now.Add(2 * time.Second)
+	if n := c.Cleanup(); n != 50 {
+		t.Fatalf("the 50 unanswered inits must go after PartialTTL, %d removed", n)
+	}
+	if c.Len() != 2 {
+		t.Fatalf("the completed session stays: %d entries", c.Len())
+	}
+	if _, ok := c.LookupSender(10); !ok {
+		t.Fatal("the completed session is still there")
+	}
+	*now = now.Add(conntrackTTL)
+	if c.Cleanup(); c.Len() != 0 {
+		t.Fatalf("the idle session goes after conntrackTTL: %d entries", c.Len())
+	}
+}
+
+// D-2: an expired partial entry no longer blocks its index, and answering a fresh one completes it into a session with the long TTL.
+func TestPartialIndexIsFreeAfterTTLAndCompletionTurnsItIntoASession(t *testing.T) {
+	l := DefaultLimits()
+	l.PartialTTL = 10 * time.Second
+	c, now := clockTrack(l)
+	backend := sock("10.0.0.1", 51820)
+	if !c.AddPartial(7, sock("1.1.1.1", 1), backend) {
+		t.Fatal("first init")
+	}
+	if c.AddPartial(7, sock("2.2.2.2", 2), backend) {
+		t.Fatal("a live partial entry owns its index")
+	}
+	*now = now.Add(11 * time.Second)
+	if !c.AddPartial(7, sock("2.2.2.2", 2), backend) {
+		t.Fatal("the stale partial entry must not block its index")
+	}
+	if !c.Complete(8, 7, sock("2.2.2.2", 2), backend) {
+		t.Fatal("complete")
+	}
+	*now = now.Add(2 * time.Minute) // far past PartialTTL, inside conntrackTTL
+	if n := c.Cleanup(); n != 0 {
+		t.Fatalf("a completed session is not partial any more: %d removed", n)
+	}
+}
+
+func TestLimiterRefills(t *testing.T) {
+	now := time.Unix(0, 0)
+	l := newLimiter(2, 3)
+	l.now = func() time.Time { return now }
+	for i := 0; i < 3; i++ {
+		if !l.allow() {
+			t.Fatalf("burst %d", i)
+		}
+	}
+	if l.allow() {
+		t.Fatal("the burst is spent")
+	}
+	now = now.Add(time.Second) // two tokens come back
+	if !l.allow() || !l.allow() || l.allow() {
+		t.Fatal("refill at the rate")
+	}
+	if !newLimiter(0, 0).allow() {
+		t.Fatal("rate 0 is unlimited")
+	}
+}
+
+// R-16: a session has a packet rate of its own.
+func TestSessionPacketRate(t *testing.T) {
 	now := time.Unix(1000, 0)
 	l := DefaultLimits()
 	l.SessionRate, l.SessionBurst = 10, 3
-	l.OwnerRate, l.OwnerBurst = 100, 100
 	c := NewConnTrackWithLimits(l)
 	c.now = func() time.Time { return now }
 	client := Socket{IP: net.ParseIP("203.0.113.5"), Port: 4000}
@@ -201,26 +255,17 @@ func TestSessionAndOwnerPacketRates(t *testing.T) {
 	if ok != 3 {
 		t.Fatalf("after a second %d packets passed", ok)
 	}
-	// the owner's bucket is shared by its sessions: a second session of the same address passes only what is left of it
-	l2 := DefaultLimits()
-	l2.SessionRate, l2.SessionBurst = 0, 0
-	l2.OwnerRate, l2.OwnerBurst = 10, 4
-	c2 := NewConnTrackWithLimits(l2)
-	c2.now = func() time.Time { return now }
-	for _, ci := range []uint32{10, 20} {
-		if !c2.AddPartial(ci, client, backend) || !c2.Complete(ci+1, ci, client, backend) {
-			t.Fatal("setup 2")
+	// a second session of the same address has its own bucket: nothing is shared per address
+	if !c.AddPartial(10, client, backend) || !c.Complete(11, 10, client, backend) {
+		t.Fatal("setup 2")
+	}
+	ok = 0
+	for i := 0; i < 10; i++ {
+		if _, found := c.LookupForward(11, client); found {
+			ok++
 		}
 	}
-	passed := 0
-	for i := 0; i < 5; i++ {
-		for _, si := range []uint32{11, 21} {
-			if _, found := c2.LookupForward(si, client); found {
-				passed++
-			}
-		}
-	}
-	if passed != 4 {
-		t.Fatalf("the owner's burst is 4 across both sessions, %d passed", passed)
+	if ok != 3 {
+		t.Fatalf("the second session has its own burst of 3, %d passed", ok)
 	}
 }

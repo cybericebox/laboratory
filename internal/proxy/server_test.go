@@ -125,8 +125,8 @@ func TestWGLimitsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.MaxEntries != 100000 || cfg.MaxEntriesPerSource != 128 || cfg.HandshakeRate != 20 || cfg.HandshakeBurst != 50 || cfg.MissRate != 50 || cfg.MissBurst != 100 ||
-		cfg.RoamInterval != 5*time.Second || cfg.MaxSources != 100000 || cfg.GlobalHandshakeRate != 2000 || cfg.SessionRate != 15000 || cfg.OwnerRate != 40000 || cfg.Readers != 4 {
+	if cfg.MaxEntries != 100000 || cfg.PartialTTL != 15*time.Second || cfg.MissRate != 2000 || cfg.MissBurst != 4000 ||
+		cfg.RoamInterval != 5*time.Second || cfg.GlobalHandshakeRate != 2000 || cfg.SessionRate != 15000 || cfg.Readers != 4 {
 		t.Fatalf("%+v", cfg)
 	}
 	t.Setenv("DEMUX_MAX_ENTRIES", "0")

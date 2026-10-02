@@ -120,14 +120,20 @@ func TestProxyServerLimitsAreValues(t *testing.T) {
 }
 
 func TestDemuxLimitsAreValues(t *testing.T) {
-	out, err := helmTemplate(t, "-s", "templates/proxy/deployment.yaml", "--set", "proxy.wg.limits.maxEntriesPerSource=10", "--set", "proxy.wg.limits.roamInterval=9s")
+	out, err := helmTemplate(t, "-s", "templates/proxy/deployment.yaml", "--set", "proxy.wg.limits.partialTTL=7s", "--set", "proxy.wg.limits.roamInterval=9s")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for name, val := range map[string]string{"DEMUX_MAX_ENTRIES": "100000", "DEMUX_MAX_ENTRIES_PER_SOURCE": "10", "DEMUX_HANDSHAKE_RATE": "20", "DEMUX_HANDSHAKE_BURST": "50",
-		"DEMUX_MISS_RATE": "50", "DEMUX_MISS_BURST": "100", "DEMUX_ROAM_INTERVAL": "9s", "DEMUX_MAX_SOURCES": "100000"} {
+	for name, val := range map[string]string{"DEMUX_MAX_ENTRIES": "100000", "DEMUX_PARTIAL_TTL": "7s",
+		"DEMUX_MISS_RATE": "2000", "DEMUX_MISS_BURST": "4000", "DEMUX_ROAM_INTERVAL": "9s", "DEMUX_GLOBAL_HANDSHAKE_RATE": "2000"} {
 		if !regexp.MustCompile(`name: ` + name + `\s+value: "` + val + `"`).MatchString(out) {
 			t.Errorf("%s = %s missing", name, val)
+		}
+	}
+	// D-1: no limit per source address is configurable any more.
+	for _, gone := range []string{"DEMUX_MAX_ENTRIES_PER_SOURCE", "DEMUX_HANDSHAKE_RATE", "DEMUX_HANDSHAKE_BURST", "DEMUX_MAX_SOURCES", "DEMUX_OWNER_RATE", "DEMUX_OWNER_BURST"} {
+		if strings.Contains(out, gone+"\n") || strings.Contains(out, "name: "+gone) {
+			t.Errorf("%s must be gone: the source address is shared (NAT)", gone)
 		}
 	}
 }
