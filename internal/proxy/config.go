@@ -31,6 +31,10 @@ type L7Config struct {
 	SessionIdleTTL     time.Duration `env:"SESSION_IDLE_TTL" envDefault:"24h"`
 	SessionRenewBefore time.Duration `env:"SESSION_RENEW_BEFORE" envDefault:"1h"`
 	SessionMaxTTL      time.Duration `env:"SESSION_MAX_TTL" envDefault:"168h"`
+	// LiveMaxLifetime caps one request or upgraded (WebSocket) connection; LiveCheckInterval is how often the
+	// open ones are checked against the access policy again, so a lock cuts them within about that time.
+	LiveMaxLifetime   time.Duration `env:"LIVE_MAX_LIFETIME" envDefault:"12h"`
+	LiveCheckInterval time.Duration `env:"LIVE_CHECK_INTERVAL" envDefault:"10s"`
 }
 
 type WGConfig struct {

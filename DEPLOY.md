@@ -746,6 +746,12 @@ therefore deletes, through ctnetlink, every tracked connection that a client ope
 The next packet of such a session is a new connection, which the chain refuses; an open SSH session, reverse shell or download ends within
 the reconcile (a second or two). A lab that stops being ready also loses its open sessions. A failed delete is retried by the next reconcile.
 
+The L7 proxy checks access once per request, so a WebSocket (a web terminal) or a long download would also outlive a lock. The proxy
+therefore keeps every request in flight and, every `proxy.l7.liveCheckInterval` (10s), runs the same checks again (the group still belongs
+to the tenant that issued the session; the client still exists and the group policy allows it the lab) and closes the ones that fail: a plain
+request is cancelled, an upgraded connection is closed. A lock takes effect within about the check interval plus the proxy's cache lag.
+No connection lives past the session's absolute end or `proxy.l7.liveMaxLifetime` (12h).
+
 ### Device interface names and MACs
 
 A device's `interfaces[].name` is a lowercase word of at most 15 characters (`^[a-z][a-z0-9-]{0,14}$`; `lo` and `accessport`

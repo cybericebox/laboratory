@@ -116,7 +116,7 @@ func Run() {
 	handler := l7.NewHandler(
 		l7.SecretKeys(mgr.GetClient()), []byte(cfg.SessionSecret), cfg.BaseDomain, cfg.CookieName,
 		l7.ServiceResolver(svcResolver),
-	).WithLimits(cfg.AccessTokenMaxTTL, cfg.SessionIdleTTL, cfg.SessionRenewBefore, cfg.SessionMaxTTL).WithAccounting(meter, attribute).WithAuthorizer(authorize).WithGroupTenant(l7.LabGroupTenant(mgr.GetClient()))
+	).WithLimits(cfg.AccessTokenMaxTTL, cfg.SessionIdleTTL, cfg.SessionRenewBefore, cfg.SessionMaxTTL).WithAccounting(meter, attribute).WithAuthorizer(authorize).WithGroupTenant(l7.LabGroupTenant(mgr.GetClient())).WithLiveMaxLifetime(cfg.LiveMaxLifetime)
 
 	reports := &l7.ReportWriter{
 		Reader: mgr.GetAPIReader(), Writer: mgr.GetClient(), Meter: meter, Instance: instance,
@@ -159,6 +159,12 @@ func Run() {
 				reports.Run(ctx, cfg.ReportInterval, func(err error) { log.Error(err, "publish traffic report") })
 				return nil
 			}), "traffic-reports",
+		},
+		{
+			manager.RunnableFunc(func(ctx context.Context) error {
+				handler.RunLiveCheck(ctx, cfg.LiveCheckInterval)
+				return nil
+			}), "live-check",
 		},
 		{certWatcher, "cert-watcher"},
 		{

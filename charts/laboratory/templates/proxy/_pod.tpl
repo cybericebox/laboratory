@@ -52,6 +52,10 @@ spec:
       value: {{ .Values.proxy.l7.sessionRenewBefore | quote }}
     - name: SESSION_MAX_TTL
       value: {{ .Values.proxy.l7.sessionMaxTTL | quote }}
+    - name: LIVE_MAX_LIFETIME
+      value: {{ .Values.proxy.l7.liveMaxLifetime | quote }}
+    - name: LIVE_CHECK_INTERVAL
+      value: {{ .Values.proxy.l7.liveCheckInterval | quote }}
     - name: REPORT_INTERVAL
       value: {{ .Values.proxy.l7.reportInterval | quote }}
     - name: POD_NAME

@@ -191,6 +191,11 @@ proxy:
     sessionIdleTTL: 24h
     sessionRenewBefore: 1h
     sessionMaxTTL: 168h
+    # An open request or WebSocket is checked against the group access policy every liveCheckInterval and
+    # closed once the client may no longer reach the lab (a lock, a removed client); no connection lives longer than
+    # liveMaxLifetime or past the session's absolute end (LIVE_CHECK_INTERVAL, LIVE_MAX_LIFETIME).
+    liveCheckInterval: 10s
+    liveMaxLifetime: 12h
     # How often each replica publishes its request counters (REPORT_INTERVAL).
     reportInterval: "1m"
     # Requests = limits (Guaranteed). Measured: 36Mi at 200 concurrent clients; CPU is the limit that

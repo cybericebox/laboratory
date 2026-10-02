@@ -1,6 +1,7 @@
 package l7
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -43,6 +44,9 @@ type Handler struct {
 	// handoffMax bounds exp - iat of a handoff token. The session is sliding: it expires sessionIdle after the last
 	// request, is renewed when less than sessionRenew of it remains, and ends at sessionMax at the latest.
 	handoffMax, sessionIdle, sessionRenew, sessionMax time.Duration
+	// live holds the requests in flight so a lost access can cut them (see live.go); liveMax caps their lifetime.
+	live    *liveSet
+	liveMax time.Duration
 }
 
 // upstreamTransport skips certificate verification for in-cluster backends
@@ -69,6 +73,7 @@ func NewHandler(keys KeyLookup, secret []byte, baseDomain, cookieName string, re
 		resolver:   resolver,
 		transport:  upstreamTransport,
 		now:        time.Now,
+		live:       newLiveSet(),
 		handoffMax: DefaultHandoffLifetime, sessionIdle: DefaultSessionIdleTTL, sessionRenew: DefaultSessionRenewBefore, sessionMax: DefaultSessionMaxTTL,
 	}
 }
@@ -164,6 +169,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Header.Set("Cookie", strings.Join(kept, "; "))
 	r.Header.Set("X-Forwarded-Proto", "https")
+
+	// Track the request: when the client loses access, CheckLive cancels it or closes its upgraded connection.
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	r = r.WithContext(ctx)
+	entry := &liveEntry{group: claims.GroupID, client: client, lab: lab, tenant: claims.Tenant, deadline: h.liveDeadline(claims.Abs), cancel: cancel}
+	h.live.add(entry)
+	defer h.live.remove(entry)
+	w = &hijackRecorder{ResponseWriter: w, entry: entry}
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Transport = h.transport
