@@ -131,7 +131,7 @@ func TestEnrollIssuesACertificateAndStoresTheAccessKey(t *testing.T) {
 		t.Fatal("chain")
 	}
 	// The access key is stored under the fixed name.
-	s, err := r.h.k8s.CoreV1().Secrets(names.TenantsNamespace).Get(context.Background(), "tenant-acme-access-keys", metav1.GetOptions{})
+	s, err := r.h.k8s.CoreV1().Secrets(names.AccessKeysNamespace).Get(context.Background(), "tenant-acme-access-keys", metav1.GetOptions{})
 	if err != nil || len(s.Data["k1"]) == 0 {
 		t.Fatalf("access keys secret: %v %v", s, err)
 	}
@@ -165,7 +165,7 @@ func TestEnrollRefusesBadTokens(t *testing.T) {
 	if e1.Error() != e2.Error() {
 		t.Fatalf("the answers differ: %v / %v", e1, e2)
 	}
-	if _, err := r.h.k8s.CoreV1().Secrets(names.TenantsNamespace).Get(context.Background(), "tenant-acme-access-keys", metav1.GetOptions{}); err == nil {
+	if _, err := r.h.k8s.CoreV1().Secrets(names.AccessKeysNamespace).Get(context.Background(), "tenant-acme-access-keys", metav1.GetOptions{}); err == nil {
 		t.Fatal("a refused enrollment stores nothing")
 	}
 }
@@ -242,7 +242,7 @@ func TestRotateAndRemoveAccessKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	ids := func() []string {
-		s, _ := r.h.k8s.CoreV1().Secrets(names.TenantsNamespace).Get(context.Background(), "tenant-acme-access-keys", metav1.GetOptions{})
+		s, _ := r.h.k8s.CoreV1().Secrets(names.AccessKeysNamespace).Get(context.Background(), "tenant-acme-access-keys", metav1.GetOptions{})
 		return sortedKeyIDs(s.Data)
 	}
 	rot := func(key, id string) error {
