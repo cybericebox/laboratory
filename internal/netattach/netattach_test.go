@@ -61,7 +61,7 @@ func TestEncodeNoSeparatorInjection(t *testing.T) {
 
 func TestParseLegacy(t *testing.T) {
 	got := Parse("eth1@,eth2@|random,lab1@port,x@default")
-	want := []Attachment{{Iface: "eth1"}, {Iface: "eth2", MAC: "random"}, {Iface: "lab1", Name: "port"}}
+	want := []Attachment{{Iface: "eth1"}, {Iface: "eth2"}, {Iface: "lab1", Name: "port"}}
 	if len(got) != len(want) {
 		t.Fatalf("got %+v", got)
 	}

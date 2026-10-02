@@ -1427,7 +1427,13 @@ component that runs it clamps or ignores the bad value instead of failing.
    directory, so without this step the new validation patterns below are missing on an upgraded cluster (the code does not rely on
    them, they are the second line).
 2. `helm upgrade` (the operator, agent, node-agent and proxy roll out together; the operator and the agent can run in either order).
-3. The notes of each item below say what, if anything, must happen in a different order.
+3. The notes of each item below say what, if anything, must happen in a different order. In short, before `helm upgrade`:
+   - the cluster is Kubernetes 1.30 or newer, or `operator.admissionPolicy.enabled=false` is set on purpose (the chart refuses to skip the policies silently, and the operator exits at start when they are not enforced);
+   - the tenant `default` exists (the chart creates it): with mTLS on, every certificate, the default tenant's included, needs its Tenant object;
+   - nothing else has to be done by hand: the VPN and gateway pods are rolled once (component label), the agent runs two replicas and moves the access keys at start, the operator labels the unused enrollment tokens,
+     the node-agents roll one node at a time, and objects that exist keep their names, namespaces, snapshots and certificates.
+   After it, the first enrollment of a tenant moves its epoch and revokes the certificates issued before the upgrade; renew or enroll them when that is wanted. The values added by this release are
+   under `agent.replicas`, `agent.server`, `agent.mtls.caDuration`, `limits.device`, `devices.statePersistence` (push limits), `nodeAgent` (policing, watchdog), `proxy.wg.limits` and `proxy.l7`.
 
 ### Device resources (R-2)
 
