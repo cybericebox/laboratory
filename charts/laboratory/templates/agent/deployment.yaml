@@ -86,6 +86,23 @@ spec:
             # A topology that asks for device state persistence is refused unless the platform allows it.
             - name: AGENT_STATE_PERSISTENCE_ENABLED
               value: {{ .Values.devices.statePersistence.enabled | quote }}
+            # GetFeatures and Monitoring report these to the backend (the same values the operator gets).
+            - name: AGENT_STATE_DEBOUNCE
+              value: {{ .Values.devices.statePersistence.debounce | quote }}
+            - name: AGENT_STATE_EXCLUDE_PATHS
+              value: {{ join "," .Values.devices.statePersistence.excludePaths | quote }}
+            - name: AGENT_STATE_WRITE_QUOTA
+              value: {{ .Values.devices.statePersistence.writeQuota | quote }}
+            - name: AGENT_STATE_MAX_FILE_SIZE
+              value: {{ .Values.devices.statePersistence.maxFileSize | quote }}
+            - name: AGENT_SCHEDULER_ENABLED
+              value: {{ .Values.scheduler.enabled | quote }}
+            - name: AGENT_SCHEDULER_MAX_PODS
+              value: {{ .Values.scheduler.maxPods | quote }}
+            - name: AGENT_BASE_DOMAIN
+              value: {{ required "operator.baseDomain is required" .Values.operator.baseDomain | quote }}
+            - name: AGENT_PUBLIC_VPN_ENDPOINT
+              value: {{ required "operator.publicVPNEndpoint is required" .Values.operator.publicVPNEndpoint | quote }}
             - name: AGENT_MONITORING_JOURNAL_SIZE
               value: {{ .Values.agent.monitoring.journalSize | quote }}
             - name: AGENT_MONITORING_JOURNAL_AGE

@@ -58,7 +58,7 @@ func (f *selectorFilter) entry(e *journalEntry) *protobuf.MonitoringUpdate {
 // Capacity is always kept. Records and reports are shared with the original,
 // never modified.
 func (f *selectorFilter) apply(u *protobuf.MonitoringUpdate, labelsOf func(key string) map[string]string, labOf func(group, lab string) map[string]string) *protobuf.MonitoringUpdate {
-	out := &protobuf.MonitoringUpdate{Capacity: u.GetCapacity()}
+	out := &protobuf.MonitoringUpdate{Capacity: u.GetCapacity(), Features: u.GetFeatures()}
 	if f.sel == nil {
 		out.Groups, out.Labs, out.Clients, out.Policies = u.Groups, u.Labs, u.Clients, u.Policies
 		out.Traffic, out.DeletedKeys = u.Traffic, u.DeletedKeys
@@ -127,6 +127,7 @@ type accumulator struct {
 	records  map[string]monitoringRecord
 	deleted  map[string]*protobuf.MonitoringDeletedKey
 	capacity *protobuf.CapacityResponse
+	features *protobuf.FeaturesResponse
 }
 
 func newAccumulator() *accumulator {
@@ -134,7 +135,7 @@ func newAccumulator() *accumulator {
 }
 
 func (a *accumulator) empty() bool {
-	return len(a.records) == 0 && len(a.deleted) == 0 && a.capacity == nil
+	return len(a.records) == 0 && len(a.deleted) == 0 && a.capacity == nil && a.features == nil
 }
 
 func (a *accumulator) add(u *protobuf.MonitoringUpdate) {
@@ -153,11 +154,14 @@ func (a *accumulator) add(u *protobuf.MonitoringUpdate) {
 	if u.Capacity != nil {
 		a.capacity = u.Capacity
 	}
+	if u.Features != nil {
+		a.features = u.Features
+	}
 }
 
 // take returns the merged update and empties the accumulator.
 func (a *accumulator) take() *protobuf.MonitoringUpdate {
-	out := &protobuf.MonitoringUpdate{Capacity: a.capacity}
+	out := &protobuf.MonitoringUpdate{Capacity: a.capacity, Features: a.features}
 	keys := make([]string, 0, len(a.records))
 	for k := range a.records {
 		keys = append(keys, k)
@@ -176,6 +180,6 @@ func (a *accumulator) take() *protobuf.MonitoringUpdate {
 	}
 	a.records = map[string]monitoringRecord{}
 	a.deleted = map[string]*protobuf.MonitoringDeletedKey{}
-	a.capacity = nil
+	a.capacity, a.features = nil, nil
 	return out
 }

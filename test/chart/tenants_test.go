@@ -269,3 +269,20 @@ func TestRemainingTunablesFollowValues(t *testing.T) {
 		}
 	}
 }
+
+// GetFeatures reports the cluster values the operator uses: the agent gets the same ones from the same keys.
+func TestAgentGetsTheFeatureValues(t *testing.T) {
+	out, err := helmTemplate(t, append(agentSet, "--set", "devices.statePersistence.debounce=9s", "--set", "devices.statePersistence.writeQuota=1Gi",
+		"--set", "scheduler.maxPods=7", "-s", "templates/agent/deployment.yaml")...)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, want := range []string{"name: AGENT_STATE_DEBOUNCE\n              value: \"9s\"", "name: AGENT_STATE_WRITE_QUOTA\n              value: \"1Gi\"",
+		"name: AGENT_STATE_MAX_FILE_SIZE\n              value: \"256Mi\"", "name: AGENT_STATE_EXCLUDE_PATHS\n              value: \"/tmp,/var/tmp,/run\"",
+		"name: AGENT_SCHEDULER_MAX_PODS\n              value: \"7\"", "name: AGENT_SCHEDULER_ENABLED\n              value: \"true\"",
+		"name: AGENT_BASE_DOMAIN", "name: AGENT_PUBLIC_VPN_ENDPOINT"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+}

@@ -47,12 +47,19 @@ func TestMonitoringSendsSnapshotThenOnlyChangedRecords(t *testing.T) {
 		t.Fatalf("the snapshot carries the subscriber's tenant capacity: %+v", first.GetCapacity())
 	}
 
+	if first.GetFeatures().GetTenant() != "default" || first.GetFeatures().GetScheduler() == nil {
+		t.Fatalf("the snapshot carries the subscriber's features: %+v", first.GetFeatures())
+	}
+
 	res, err := h.CreateLabGroups(ctx, &protobuf.CreateLabGroupsRequest{Items: groupItems("team-mon")})
 	wantStates(t, res, err, stCreated)
 
 	delta := receiveMonitoringUpdate(t, s.sent)
 	if delta.GetSnapshot() {
 		t.Fatalf("changed state must be sent as a delta: %+v", delta)
+	}
+	if delta.GetFeatures() != nil {
+		t.Fatalf("unchanged features are not repeated: %+v", delta.GetFeatures())
 	}
 	if len(delta.GetGroups()) != 1 || delta.GetGroups()[0].GetName() != "team-mon" {
 		t.Fatalf("expected only changed group, got %+v", delta.GetGroups())

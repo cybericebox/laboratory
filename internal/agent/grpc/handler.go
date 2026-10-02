@@ -46,6 +46,9 @@ type Handler struct {
 	// labSelector and labTolerations describe the nodes lab pods run on (percentage quotas).
 	labSelector    map[string]string
 	labTolerations []corev1.Toleration
+	// features are the platform's choices GetFeatures reports; featCache keeps each tenant's answer for a few seconds.
+	features  Features
+	featCache featuresCache
 	// capCache keeps each tenant's capacity for a few seconds.
 	capCache capacityCache
 

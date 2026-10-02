@@ -78,6 +78,12 @@ service LabManager {
   // GetCapacity is the caller's tenant view: its quota, reserved, used and free resources.
   rpc GetCapacity(Empty) returns (CapacityResponse) {}
 
+  // GetFeatures is what the caller's tenant can use on this laboratory: state persistence, the image cache,
+  // the scheduler limits, the public hosts and the caller's client certificate lifetime. The backend takes
+  // all of it from here and keeps no copy in its own configuration. Monitoring carries the same message in
+  // MonitoringUpdate.features (first message, then whenever it changed).
+  rpc GetFeatures(Empty) returns (FeaturesResponse) {}
+
   // PrewarmImages makes the platform image cache (zot) fetch images from their upstream
   // registries BEFORE labs need them, so a burst of labs pulls only from the cache. It is
   // asynchronous and idempotent: each call returns the current state of the requested images
@@ -574,6 +580,8 @@ message MonitoringUpdate {
   // The subscriber's tenant capacity (quota, reserved, used, free). It is sent with the first
   // message and again when it changed; never cluster-wide numbers.
   CapacityResponse capacity = 15;
+  // What the subscriber's tenant can use (see GetFeatures). Sent with the first message and again when it changed.
+  FeaturesResponse features = 17;
   // Lab traffic accounting: cumulative aggregates relayed from LabTrafficReport
   // resources. State records like clients and policies, so a fresh snapshot
   // after a reconnect re-sends them; consumers apply them as cumulative values.
@@ -642,6 +650,60 @@ message CapacityResponse {
   // service overhead every group adds to its labs. Sizing a reservation takes it per group.
   int64 group_overhead_cpu_millicores = 13;
   int64 group_overhead_memory_bytes = 14;
+}
+
+message FeaturesResponse {
+  string tenant = 1;
+  StatePersistenceFeature state_persistence = 2;
+  ImageCacheFeature image_cache = 3;
+  SchedulerFeature scheduler = 4;
+  EndpointsFeature endpoints = 5;
+  CertificateFeature certificate = 6;
+}
+
+// Device state persistence for this tenant.
+message StatePersistenceFeature {
+  // The cluster enables persistence AND the tenant is allowed (Tenant.spec.persistence.allowed). Only then a
+  // topology may set devices[].persistence.enabled.
+  bool available = 1;
+  // Debounce used when a device does not set one (the cluster value).
+  int64 default_debounce_ms = 2;
+  // The most of a participant's writes kept per device, and the largest file snapshotted: the tenant's
+  // limit capped by the cluster's, or the cluster's when the tenant sets none.
+  int64 write_quota_bytes = 3;
+  int64 max_file_size_bytes = 4;
+  // Paths never snapshotted (cluster-wide, a topology cannot change them).
+  repeated string excluded_paths = 5;
+}
+
+// The platform image cache (PrewarmImages works only when it is enabled).
+message ImageCacheFeature {
+  bool enabled = 1;
+  // Upstream registries the cache serves; images of other registries are pulled directly.
+  repeated string registries = 2;
+}
+
+// Scheduler: pods of labs start through a queue of this width.
+message SchedulerFeature {
+  bool enabled = 1;
+  // The most pods starting at once (0 = no limit).
+  int32 max_pods = 2;
+}
+
+// Hosts the backend shows or hands out.
+message EndpointsFeature {
+  // Base domain of the lab web endpoints (device URLs are <host>.<labs_domain>).
+  string labs_domain = 1;
+  // host:port WireGuard clients connect to.
+  string vpn_endpoint = 2;
+}
+
+// The client certificate of the connection the call came on. The backend schedules RenewCertificate from
+// not_after_unix, not from its own configuration. Reflects the certificate used to connect: after a renewal it
+// changes when the connection is made again.
+message CertificateFeature {
+  int64 not_after_unix = 1;       // 0 without a client certificate (mTLS off)
+  int64 issued_ttl_seconds = 2;   // the lifetime of certificates Enroll / RenewCertificate issue now
 }
 
 message PrewarmImagesRequest {

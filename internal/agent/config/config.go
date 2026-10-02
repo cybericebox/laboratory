@@ -47,11 +47,34 @@ type Config struct {
 	// StatePersistence is the platform switch for device state persistence: a topology
 	// with devices[].persistence.enabled is refused when it is off.
 	StatePersistence bool `env:"AGENT_STATE_PERSISTENCE_ENABLED" envDefault:"false"`
+	// State are the cluster values of state persistence (the chart's devices.statePersistence, the same as the
+	// operator's): GetFeatures reports them, a tenant's own limits are capped by them.
+	State StateConfig
+	// Scheduler and Endpoints are reported by GetFeatures (the same chart values as the operator's).
+	Scheduler SchedulerConfig
+	// BaseDomain is the domain of the lab web endpoints; PublicVPNEndpoint is host:port of WireGuard.
+	BaseDomain        string `env:"AGENT_BASE_DOMAIN"`
+	PublicVPNEndpoint string `env:"AGENT_PUBLIC_VPN_ENDPOINT"`
 	// RegistryAddr is host:port of the platform registry (zot) as the agent reaches it:
 	// snapshot export reads the device snapshots from it. Empty: the export fails with FailedPrecondition.
 	RegistryAddr string `env:"AGENT_REGISTRY_ADDR"`
 	// Cache lets the agent prewarm the platform image cache.
 	Cache CacheConfig
+}
+
+// StateConfig mirrors the state persistence values of the operator.
+type StateConfig struct {
+	Debounce     time.Duration `env:"AGENT_STATE_DEBOUNCE" envDefault:"5s"`
+	ExcludePaths []string      `env:"AGENT_STATE_EXCLUDE_PATHS" envSeparator:"," envDefault:"/tmp,/var/tmp,/run"`
+	// WriteQuota and MaxFileSize are Kubernetes quantities.
+	WriteQuota  string `env:"AGENT_STATE_WRITE_QUOTA" envDefault:"512Mi"`
+	MaxFileSize string `env:"AGENT_STATE_MAX_FILE_SIZE" envDefault:"256Mi"`
+}
+
+// SchedulerConfig mirrors the operator's scheduler switch and width.
+type SchedulerConfig struct {
+	Enabled bool `env:"AGENT_SCHEDULER_ENABLED" envDefault:"true"`
+	MaxPods int  `env:"AGENT_SCHEDULER_MAX_PODS" envDefault:"20"`
 }
 
 // CacheConfig configures PrewarmImages. Without Enabled the RPC fails with FailedPrecondition.

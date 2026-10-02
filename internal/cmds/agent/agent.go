@@ -3,11 +3,13 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
 	"os"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	metricsclient "k8s.io/metrics/pkg/client/clientset/versioned"
@@ -47,6 +49,11 @@ func Run() {
 	}
 	h := grpcserver.NewHandler(cs, k8s, metrics, cfg.AgentID)
 	h.SetStatePersistence(cfg.StatePersistence)
+	feat, err := features(cfg)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	h.SetFeatures(feat)
 	if err := cfg.GroupPods.Validate(); err != nil {
 		log.Fatalf("%v", err)
 	}
@@ -89,4 +96,25 @@ func Run() {
 		log.Printf("serve: %v", err)
 		os.Exit(1)
 	}
+}
+
+// features is what GetFeatures reports from the agent's own configuration.
+func features(cfg *config.Config) (grpcserver.Features, error) {
+	f := grpcserver.Features{
+		StatePersistence: cfg.StatePersistence, Debounce: cfg.State.Debounce, ExcludePaths: cfg.State.ExcludePaths,
+		CacheEnabled: cfg.Cache.Enabled, CacheRegistries: cfg.Cache.Registries,
+		SchedulerEnabled: cfg.Scheduler.Enabled, SchedulerMaxPods: int32(cfg.Scheduler.MaxPods),
+		LabsDomain: cfg.BaseDomain, VPNEndpoint: cfg.PublicVPNEndpoint,
+	}
+	for _, c := range []struct {
+		env, val string
+		dst      *int64
+	}{{"AGENT_STATE_WRITE_QUOTA", cfg.State.WriteQuota, &f.WriteQuota}, {"AGENT_STATE_MAX_FILE_SIZE", cfg.State.MaxFileSize, &f.MaxFileSize}} {
+		q, err := resource.ParseQuantity(c.val)
+		if err != nil || q.Sign() <= 0 {
+			return f, fmt.Errorf("%s %q is not a positive quantity", c.env, c.val)
+		}
+		*c.dst = q.Value()
+	}
+	return f, nil
 }

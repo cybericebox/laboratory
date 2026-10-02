@@ -27,3 +27,14 @@ func TestLoadDefaultsAndTenantSettings(t *testing.T) {
 		t.Errorf("%+v", c)
 	}
 }
+
+func TestFeatureDefaultsMirrorTheChart(t *testing.T) {
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.State.Debounce != 5*time.Second || c.State.WriteQuota != "512Mi" || c.State.MaxFileSize != "256Mi" ||
+		len(c.State.ExcludePaths) != 3 || !c.Scheduler.Enabled || c.Scheduler.MaxPods != 20 {
+		t.Fatalf("%+v %+v", c.State, c.Scheduler)
+	}
+}

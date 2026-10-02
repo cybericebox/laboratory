@@ -400,7 +400,7 @@ only**: every call takes a list, one object is a list of one. There are no singu
 | Access | `SetLabGroupAccess` (the policies of many groups, full replacement) |
 | Labs | `CreateLabs`, `ListLabs`, `UpdateLabs`, `DeleteLabs` |
 | Devices | `ResetDevices`, `RescueDevices` |
-| Other | `Ping`, `Monitoring` (stream), `GetCapacity`, `PrewarmImages` |
+| Other | `Ping`, `Monitoring` (stream), `GetCapacity`, `GetFeatures`, `PrewarmImages` |
 
 **References and ids.** Objects are named by id (`ItemRef{lab_group, lab, name}`), never by namespace; the agent
 resolves the namespace from the group (`status.namespace`). A LabGroup, and the policy of one, is identified by `name`
@@ -515,6 +515,16 @@ persistence and has no quota.
   pods reserve (the sum of their requests) and use (metrics-server, when installed), and what is free (quota minus reserved). No
   cluster-wide numbers are exposed. The same reserved and used totals are in `Tenant.status` (refreshed by the agent):
   `kubectl get tenant platform -o yaml`.
+- **Features.** Everything the laboratory owns that the backend needs reaches it only through the agent: `GetFeatures` and the
+  `features` of the `Monitoring` stream (sent with the first message and again when they change; a change shows at the next
+  heartbeat at the latest, so the backend needs no polling). The answer is the caller's tenant view:
+  `state_persistence` (`available` = the cluster enables it AND the Tenant is allowed; the default debounce; the write quota and
+  maximum file size, the tenant's limit capped by the cluster's; the excluded paths), `image_cache` (enabled, registries),
+  `scheduler` (enabled, `max_pods`), `endpoints` (the labs domain, the VPN endpoint) and `certificate` (`not_after_unix` of the client
+  certificate the call came with, `issued_ttl_seconds` of new ones: the backend schedules `RenewCertificate` from the expiry, and the
+  expiry changes only when it reconnects with the renewed certificate). Quotas and the group overhead stay in `GetCapacity`. The agent
+  gets the cluster values from the same chart keys as the operator (`devices.statePersistence.*`, `scheduler.enabled/maxPods`,
+  `registry.cache`, `operator.baseDomain`, `operator.publicVPNEndpoint`, `agent.enrollment.certificateTTL`).
 - **Monitoring** is cut to the tenant before the user selector.
 
 ### Required values and defaults

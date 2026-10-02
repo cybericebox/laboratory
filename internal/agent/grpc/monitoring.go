@@ -172,7 +172,11 @@ func (h *Handler) Monitoring(request *protobuf.MonitoringRequest, stream protobu
 	}()
 	// The tenant's capacity goes out with the first message and again whenever it changed.
 	var lastCapacity *protobuf.CapacityResponse
+	var lastFeatures *protobuf.FeaturesResponse
 	emit := func(u *protobuf.MonitoringUpdate) error {
+		if f, err := h.tenantFeatures(stream.Context()); err == nil && !proto.Equal(f, lastFeatures) {
+			u.Features, lastFeatures = f, f
+		}
 		if c, err := h.tenantCapacity(stream.Context()); err == nil && !proto.Equal(c, lastCapacity) {
 			u.Capacity, lastCapacity = c, c
 		}

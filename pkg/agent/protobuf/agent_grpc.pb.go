@@ -39,6 +39,7 @@ const (
 	LabManager_RotateAccessKey_FullMethodName       = "/labmanager.LabManager/RotateAccessKey"
 	LabManager_RemoveAccessKey_FullMethodName       = "/labmanager.LabManager/RemoveAccessKey"
 	LabManager_GetCapacity_FullMethodName           = "/labmanager.LabManager/GetCapacity"
+	LabManager_GetFeatures_FullMethodName           = "/labmanager.LabManager/GetFeatures"
 	LabManager_PrewarmImages_FullMethodName         = "/labmanager.LabManager/PrewarmImages"
 	LabManager_ResetDevices_FullMethodName          = "/labmanager.LabManager/ResetDevices"
 	LabManager_RescueDevices_FullMethodName         = "/labmanager.LabManager/RescueDevices"
@@ -94,6 +95,11 @@ type LabManagerClient interface {
 	RemoveAccessKey(ctx context.Context, in *RemoveAccessKeyRequest, opts ...grpc.CallOption) (*Empty, error)
 	// GetCapacity is the caller's tenant view: its quota, reserved, used and free resources.
 	GetCapacity(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*CapacityResponse, error)
+	// GetFeatures is what the caller's tenant can use on this laboratory: state persistence, the image cache,
+	// the scheduler limits, the public hosts and the caller's client certificate lifetime. The backend takes
+	// all of it from here and keeps no copy in its own configuration. Monitoring carries the same message in
+	// MonitoringUpdate.features (first message, then whenever it changed).
+	GetFeatures(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*FeaturesResponse, error)
 	// PrewarmImages makes the platform image cache (zot) fetch images from their upstream
 	// registries BEFORE labs need them, so a burst of labs pulls only from the cache. It is
 	// asynchronous and idempotent: each call returns the current state of the requested images
@@ -339,6 +345,16 @@ func (c *labManagerClient) GetCapacity(ctx context.Context, in *Empty, opts ...g
 	return out, nil
 }
 
+func (c *labManagerClient) GetFeatures(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*FeaturesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FeaturesResponse)
+	err := c.cc.Invoke(ctx, LabManager_GetFeatures_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *labManagerClient) PrewarmImages(ctx context.Context, in *PrewarmImagesRequest, opts ...grpc.CallOption) (*PrewarmImagesResult, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PrewarmImagesResult)
@@ -437,6 +453,11 @@ type LabManagerServer interface {
 	RemoveAccessKey(context.Context, *RemoveAccessKeyRequest) (*Empty, error)
 	// GetCapacity is the caller's tenant view: its quota, reserved, used and free resources.
 	GetCapacity(context.Context, *Empty) (*CapacityResponse, error)
+	// GetFeatures is what the caller's tenant can use on this laboratory: state persistence, the image cache,
+	// the scheduler limits, the public hosts and the caller's client certificate lifetime. The backend takes
+	// all of it from here and keeps no copy in its own configuration. Monitoring carries the same message in
+	// MonitoringUpdate.features (first message, then whenever it changed).
+	GetFeatures(context.Context, *Empty) (*FeaturesResponse, error)
 	// PrewarmImages makes the platform image cache (zot) fetch images from their upstream
 	// registries BEFORE labs need them, so a burst of labs pulls only from the cache. It is
 	// asynchronous and idempotent: each call returns the current state of the requested images
@@ -532,6 +553,9 @@ func (UnimplementedLabManagerServer) RemoveAccessKey(context.Context, *RemoveAcc
 }
 func (UnimplementedLabManagerServer) GetCapacity(context.Context, *Empty) (*CapacityResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetCapacity not implemented")
+}
+func (UnimplementedLabManagerServer) GetFeatures(context.Context, *Empty) (*FeaturesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetFeatures not implemented")
 }
 func (UnimplementedLabManagerServer) PrewarmImages(context.Context, *PrewarmImagesRequest) (*PrewarmImagesResult, error) {
 	return nil, status.Error(codes.Unimplemented, "method PrewarmImages not implemented")
@@ -919,6 +943,24 @@ func _LabManager_GetCapacity_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LabManager_GetFeatures_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabManagerServer).GetFeatures(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LabManager_GetFeatures_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabManagerServer).GetFeatures(ctx, req.(*Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _LabManager_PrewarmImages_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(PrewarmImagesRequest)
 	if err := dec(in); err != nil {
@@ -1066,6 +1108,10 @@ var LabManager_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetCapacity",
 			Handler:    _LabManager_GetCapacity_Handler,
+		},
+		{
+			MethodName: "GetFeatures",
+			Handler:    _LabManager_GetFeatures_Handler,
 		},
 		{
 			MethodName: "PrewarmImages",
