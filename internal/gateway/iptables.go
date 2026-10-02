@@ -145,6 +145,19 @@ func (m *IPTablesManager) setupForwardRules() error {
 // filled while the old one still runs, the jump is switched, and the old one is emptied after: there is no moment without a
 // filter. The gateway's own traffic (its API client) is OUTPUT, not FORWARD, and is not touched.
 func setupEgressChain(ipt netfilter, extIface string, deny []string) error {
+	// Both chains must exist before the jump checks: iptables-nft fails a rule check that names a missing chain (exit 2)
+	// instead of answering "no". A missing chain is created empty, which is safe while nothing jumps to it.
+	for _, c := range egressChains {
+		ok, err := ipt.ChainExists("filter", c)
+		if err != nil {
+			return fmt.Errorf("check chain %s: %w", c, err)
+		}
+		if !ok {
+			if err := ipt.ClearChain("filter", c); err != nil { // creates a missing chain
+				return fmt.Errorf("create chain %s: %w", c, err)
+			}
+		}
+	}
 	active := ""
 	for _, c := range egressChains {
 		if ok, err := ipt.Exists("filter", "FORWARD", "-o", extIface, "-j", c); err != nil {

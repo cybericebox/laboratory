@@ -38,6 +38,14 @@ func (f *fakeNetfilter) ClearChain(_, chain string) error {
 	return nil
 }
 func (f *fakeNetfilter) Exists(_, chain string, rule ...string) (bool, error) {
+	// Like iptables-nft: checking a rule whose -j target is a chain that does not exist fails (exit 2), it is not "false".
+	for i := 0; i+1 < len(rule); i++ {
+		if rule[i] == "-j" && rule[i+1] != "ACCEPT" && rule[i+1] != "DROP" && rule[i+1] != "RETURN" {
+			if _, ok := f.chains[rule[i+1]]; !ok {
+				return false, fmt.Errorf("exit status 2: Chain '%s' does not exist", rule[i+1])
+			}
+		}
+	}
 	for _, r := range f.chains[chain] {
 		if r == f.key(rule) {
 			return true, nil
