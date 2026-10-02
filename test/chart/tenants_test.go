@@ -191,7 +191,7 @@ func TestGroupPodDefaultsAreTheMeasuredOnes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for _, want := range []string{`VPN_CPU: "100m"`, `VPN_MEMORY: "256Mi"`, `GATEWAY_CPU: "10m"`, `GATEWAY_MEMORY: "32Mi"`} {
+	for _, want := range []string{`VPN_CPU: "100m"`, `VPN_MEMORY: "320Mi"`, `GATEWAY_CPU: "10m"`, `GATEWAY_MEMORY: "32Mi"`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %s", want)
 		}

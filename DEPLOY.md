@@ -110,6 +110,15 @@ What gets installed:
 - Management agent (`agent.enabled`), the L7 proxy and WireGuard demultiplexer, and, when enabled, the platform registry
 - `laboratory-config` ConfigMap with your settings
 
+**The proxy** (`proxy.*`) is one Deployment with two containers, the L7 HTTPS proxy and the WireGuard demux, **two replicas by default**
+(`proxy.replicas`), a PodDisruptionBudget with `minAvailable: 1` (`proxy.podDisruptionBudget`, rendered only with more than one replica) and a
+preferred pod anti-affinity by hostname. The L7 proxy is stateless (its session cookie is signed with the shared `proxy-session` secret), so a request
+may land on any replica. The demux keeps no state a restart would lose: a WireGuard client that lands on the other replica (after a reconnect, or when
+the replica it used is gone) re-handshakes within its persistent keepalive, about 15 s. Both containers are Guaranteed (requests = limits): L7 `1000m`/`64Mi`,
+demux `250m`/`64Mi`. Measured on the local stand (kubectl top, one replica): L7 serves about 5000 requests per second for 500m of CPU (0.1 ms per request;
+p95 63 ms at 100 concurrent clients, 36Mi at 200), the demux is 1m idle and about 110m at ten active VPN peers (it relays the packets in userspace),
+and L7 load does not slow the tunnels (VPN latency p95 3-4 ms with 100 L7 clients).
+
 Verify:
 
 ```bash
@@ -495,9 +504,8 @@ persistence and has no quota.
   stamped on the Device when it is created, like the persistence choice itself: changing a Tenant later affects new devices only.
 - **Group overhead.** Every LabGroup runs a VPN pod and an internet gateway pod of its own. Their resources are chart values
   (`vpn.resources`, `inetGateway.resources`: `cpu` and `memory`, requests = limits, so the pods are Guaranteed). The defaults are
-  `100m`/`256Mi` for the VPN and `10m`/`32Mi` for the gateway. Measured on the local stand (kubectl top every 10 s): an idle VPN pod uses
-  1m CPU (p95 4m) and 16Mi; with five active peers pulling pages in a loop it peaks at 48m CPU and 155Mi, so the memory limit has room for a
-  team of ten; an idle gateway uses 1m and 8Mi. The data path is the kernel's WireGuard and the pod only manages peers and firewall rules. The operator
+  `100m`/`320Mi` for the VPN and `10m`/`32Mi` for the gateway. Measured on the local stand (kubectl top every 10 s): an idle VPN pod uses
+  1m CPU (p95 4m) and 16Mi; with ten active peers pulling pages in a loop it peaks at 55m CPU and 195Mi, so 320Mi leaves about half as headroom; an idle gateway uses 1m and 8Mi. The data path is the kernel's WireGuard and the pod only manages peers and firewall rules. The operator
   applies them when it CREATES a group; existing groups keep what they have (changing a value never restarts a live VPN). `GetCapacity`
   reports their sum as `group_overhead_cpu_millicores` and `group_overhead_memory_bytes`: what one group adds to its labs, for sizing a reservation.
 - **Resource quota.** The scheduler caps the sum of the CPU and memory requests of the tenant's dispatched pods (started, starting

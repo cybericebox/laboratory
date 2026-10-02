@@ -55,12 +55,12 @@ operator:
 vpn:
   # Resources of the VPN pod of a NEW LabGroup (requests = limits: a Guaranteed pod). Measured on the local stand:
   # idle 1m CPU / 16Mi; with 5 active peers pulling pages in a loop up to 48m CPU and 155Mi (the memory grows with the
-  # peers and their traffic, so it is the limit that matters: 256Mi leaves room for a team of 10). The data path is the
+  # peers and their traffic, so it is the limit that matters; 195Mi was seen with 10 peers: 320Mi leaves about 50% room). The data path is the
   # kernel's WireGuard, the pod manages peers and firewall rules. The management agent reports vpn + gateway as the
   # service overhead of a group (GetCapacity). Existing groups keep what they were created with.
   resources:
     cpu: 100m
-    memory: 256Mi
+    memory: 320Mi
   image:
     repository: cybericebox/laboratory-lab
     tag: ""
@@ -112,7 +112,16 @@ proxy:
     repository: cybericebox/laboratory-proxy
     tag: ""
     pullPolicy: IfNotPresent
-  replicas: 1
+  # Two replicas by default: the L7 proxy is stateless (its session cookie is signed with the shared
+  # secret), and a WireGuard client that lands on the other replica after a restart re-handshakes within
+  # its persistent keepalive (about 15 s). Anti-affinity (preferred, by hostname) spreads them over nodes
+  # when there are several; the PodDisruptionBudget keeps one up during a drain. Measured on the local
+  # stand with 1 replica: L7 about 5000 rps for 500m of CPU (0.1 ms per request), wg-demux 1m idle and about
+  # 110m at ten active peers.
+  replicas: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
 
   # L7 HTTPS proxy container — receives TLS passthrough from Cilium Gateway.
   l7:
@@ -131,12 +140,14 @@ proxy:
       key: sessionSecret
     # How often each replica publishes its request counters (REPORT_INTERVAL).
     reportInterval: "1m"
+    # Requests = limits (Guaranteed). Measured: 36Mi at 200 concurrent clients, CPU is the limit that
+    # matters (about 5000 requests per second per core).
     resources:
       limits:
-        cpu: 500m
-        memory: 256Mi
+        cpu: 1000m
+        memory: 64Mi
       requests:
-        cpu: 50m
+        cpu: 1000m
         memory: 64Mi
 
   # WireGuard demux container — plain userspace UDP, no hostNetwork/capabilities.
@@ -149,12 +160,14 @@ proxy:
     # e.g. behind a cloud NLB that targets a known node port. Unset: Kubernetes
     # assigns one.
     nodePort: null
+    # Requests = limits. Measured: 12Mi, 1m idle and up to 111m at ten active peers (the packets are
+    # relayed in userspace, so the CPU follows the VPN traffic).
     resources:
       limits:
-        cpu: 500m
-        memory: 256Mi
+        cpu: 250m
+        memory: 64Mi
       requests:
-        cpu: 50m
+        cpu: 250m
         memory: 64Mi
 
   # LoadBalancer Service annotations (e.g. cloud-specific LB config).

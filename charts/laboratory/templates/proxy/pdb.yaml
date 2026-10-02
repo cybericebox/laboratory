@@ -1,0 +1,16 @@
+{{- if and .Values.proxy.enabled .Values.proxy.podDisruptionBudget.enabled (gt (int .Values.proxy.replicas) 1) }}
+# One proxy replica stays up during a node drain (only with more than one replica: a budget on a single
+# replica would block every drain).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: laboratory-proxy
+  namespace: {{ .Values.proxy.namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.proxy.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app: laboratory-proxy-l7
+{{- end }}

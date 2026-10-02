@@ -12,11 +12,11 @@ import (
 )
 
 // Config is the chart's choice (env VPN_CPU, VPN_MEMORY, GATEWAY_CPU, GATEWAY_MEMORY, shared by the operator and
-// the agent). The defaults come from measuring: an idle VPN pod about 1m and 16Mi, up to 48m and 155Mi with five active
-// peers (so 256Mi for a team of ten), a gateway about 1m and 8Mi: the data path is the kernel's WireGuard, the pod only manages peers and rules.
+// the agent). The defaults come from measuring: an idle VPN pod about 1m and 16Mi, up to 55m and 195Mi with ten active
+// peers (so 320Mi), a gateway about 1m and 8Mi: the data path is the kernel's WireGuard, the pod only manages peers and rules.
 type Config struct {
 	VPNCPU        string `env:"VPN_CPU" envDefault:"100m"`
-	VPNMemory     string `env:"VPN_MEMORY" envDefault:"256Mi"`
+	VPNMemory     string `env:"VPN_MEMORY" envDefault:"320Mi"`
 	GatewayCPU    string `env:"GATEWAY_CPU" envDefault:"10m"`
 	GatewayMemory string `env:"GATEWAY_MEMORY" envDefault:"32Mi"`
 }
@@ -40,7 +40,7 @@ func (c Config) Validate() error {
 // Defaults of the chart, used for a value left empty (a reconciler built without a config).
 const (
 	DefaultVPNCPU        = "100m"
-	DefaultVPNMemory     = "256Mi"
+	DefaultVPNMemory     = "320Mi"
 	DefaultGatewayCPU    = "10m"
 	DefaultGatewayMemory = "32Mi"
 )

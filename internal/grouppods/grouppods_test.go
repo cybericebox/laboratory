@@ -37,7 +37,7 @@ func TestValidateRefusesBadValues(t *testing.T) {
 }
 
 func TestEmptyConfigFallsBackToTheDefaults(t *testing.T) {
-	if o := (Config{}).Overhead(); o.CPU != 110 || o.Memory != 288<<20 {
+	if o := (Config{}).Overhead(); o.CPU != 110 || o.Memory != 352<<20 {
 		t.Fatalf("%+v", o)
 	}
 }
@@ -47,7 +47,7 @@ func TestDefaultsAreTheMeasuredOnes(t *testing.T) {
 	if err := env.Parse(&c); err != nil {
 		t.Fatal(err)
 	}
-	if c.VPNCPU != "100m" || c.VPNMemory != "256Mi" || c.GatewayCPU != "10m" || c.GatewayMemory != "32Mi" {
+	if c.VPNCPU != "100m" || c.VPNMemory != "320Mi" || c.GatewayCPU != "10m" || c.GatewayMemory != "32Mi" {
 		t.Fatalf("defaults %+v", c)
 	}
 }
