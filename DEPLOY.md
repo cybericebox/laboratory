@@ -299,8 +299,7 @@ is recreated at once, with no slot, as without the scheduler.
 
 **Guaranteed resources.** Every device container gets requests equal to limits, so its pod is Guaranteed.
 Per resource the limit wins, then the request, then `limits.device.defaultCpu` / `defaultMemory` (100m CPU and 256Mi memory);
-a declared request and limit that differ collapse to the limit. Set a default to `""` to leave a device without
-that resource (best effort). The resources are applied when a device is created; running devices are not
+a declared request and limit that differ collapse to the limit. The resources are applied when a device is created; running devices are not
 changed. Each lab group namespace has one PodDisruptionBudget `lab-group` (`maxUnavailable: 0`, all pods of
 the namespace), so node drains and the autoscaler do not evict running labs.
 
