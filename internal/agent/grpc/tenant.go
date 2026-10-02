@@ -2,6 +2,8 @@ package grpc
 
 import (
 	"context"
+	"crypto/x509"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -109,6 +111,35 @@ func (h *Handler) Authorize(ctx context.Context) error {
 	}
 	if ten == nil {
 		return status.Errorf(codes.PermissionDenied, "client %q is not a tenant", name)
+	}
+	return checkEpoch(ctx, ten)
+}
+
+// checkEpoch refuses a client certificate that was issued before the tenant's enrollment epoch: before the Tenant object
+// was created (an old certificate of a tenant that was deleted and created again under the same name), or before the last
+// enrollment (enrolling again revokes the earlier certificates, a leaked one included). Seconds are the resolution of both
+// sides, so the comparison is on whole seconds.
+func checkEpoch(ctx context.Context, ten *laboratoryv1alpha1.Tenant) error {
+	cert := callerCert(ctx)
+	if cert == nil {
+		return nil // no client certificate in this context: the default tenant, or mTLS off
+	}
+	floor := ten.CreationTimestamp.Time
+	if nb := ten.Status.CertificatesNotBefore; nb != nil && nb.Time.After(floor) {
+		floor = nb.Time
+	}
+	if certIssuedAt(cert).Truncate(time.Second).Before(floor.Truncate(time.Second)) {
+		return status.Errorf(codes.PermissionDenied, "the client certificate of %q was issued before the tenant's current enrollment: enroll again", ten.Name)
+	}
+	return nil
+}
+
+// callerCert is the verified client certificate of the call, nil without one.
+func callerCert(ctx context.Context) *x509.Certificate {
+	if p, ok := peer.FromContext(ctx); ok {
+		if info, ok := p.AuthInfo.(credentials.TLSInfo); ok && len(info.State.PeerCertificates) > 0 {
+			return info.State.PeerCertificates[0]
+		}
 	}
 	return nil
 }

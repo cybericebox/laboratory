@@ -32,8 +32,8 @@ type DeviceSpecApplyConfiguration struct {
 	Name  *string                        `json:"name,omitempty"`
 	Type  *laboratoryv1alpha1.DeviceType `json:"type,omitempty"`
 	Image *string                        `json:"image,omitempty"`
-	// SecurityPreset names a capability profile (basic/service/net/debug); the
-	// concrete capabilities are resolved internally by the operator.
+	// SecurityPreset names a device security profile (standard/extended, or the old aliases
+	// basic/service/net/debug); the concrete capabilities are resolved internally by the operator.
 	SecurityPreset *laboratoryv1alpha1.SecurityPreset `json:"securityPreset,omitempty"`
 	Interfaces     []InterfaceSpecApplyConfiguration  `json:"interfaces,omitempty"`
 	Exposure       *ExposureSpecApplyConfiguration    `json:"exposure,omitempty"`

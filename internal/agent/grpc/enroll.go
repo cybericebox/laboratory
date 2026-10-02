@@ -74,13 +74,15 @@ func (h *Handler) Enroll(ctx context.Context, in *protobuf.EnrollRequest) (*prot
 	if err != nil {
 		return nil, err
 	}
-	// Sign before burning: a signing failure then costs nothing.
-	resp, err := h.issueCertificate(tenant.Name, csr.PublicKey)
-	if err != nil {
-		return nil, err
-	}
+	// Burn first, then sign: of any number of requests that carry the same token, exactly one wins the conditional
+	// write and gets a certificate. The burn also moves the enrollment epoch, which revokes every certificate issued
+	// before it. A failure after the burn costs the token: the admin issues a new one.
 	if err := h.burnToken(ctx, tenant.Name, in.GetToken()); err != nil {
 		return nil, err
+	}
+	resp, err := h.issueCertificate(tenant.Name, csr.PublicKey)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "the token is used but the certificate was not issued (%v): ask the admin for a new token", err)
 	}
 	if err := h.putAccessKey(ctx, tenant.Name, in.GetAccessKeyId(), keyPEM); err != nil {
 		return nil, status.Errorf(codes.Internal, "the token is used but the access key was not stored (%v): ask the admin for a new token", err)
@@ -187,6 +189,7 @@ func (h *Handler) burnToken(ctx context.Context, tenant, token string) error {
 		}
 		now := metav1.NewTime(h.now())
 		en.UsedAt = &now
+		t.Status.CertificatesNotBefore = &now
 		if _, err = tenants.UpdateStatus(ctx, t, metav1.UpdateOptions{}); err == nil {
 			return nil
 		}
@@ -239,6 +242,13 @@ func (h *Handler) putAccessKey(ctx context.Context, tenant, id string, keyPEM []
 	})
 }
 
+// certBackdate is how far a client certificate's NotBefore is set before the moment it was issued, for clock skew between
+// agent replicas. The moment of issue is NotBefore plus this (see certIssuedAt).
+const certBackdate = time.Minute
+
+// certIssuedAt is when a client certificate was issued, as the enrollment epoch sees it.
+func certIssuedAt(c *x509.Certificate) time.Time { return c.NotBefore.Add(certBackdate) }
+
 // issueCertificate signs a client certificate for the tenant with the agent's client CA.
 func (h *Handler) issueCertificate(tenant string, pub any) (*protobuf.CertificateResponse, error) {
 	if h.caCertFile == "" || h.caKeyFile == "" {
@@ -265,7 +275,7 @@ func (h *Handler) issueCertificate(tenant string, pub any) (*protobuf.Certificat
 		SerialNumber: serial,
 		// Whatever subject the request asked for is ignored: the CN is the tenant.
 		Subject:     pkix.Name{CommonName: tenant},
-		NotBefore:   now.Add(-time.Minute),
+		NotBefore:   now.Add(-certBackdate),
 		NotAfter:    notAfter,
 		KeyUsage:    x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},

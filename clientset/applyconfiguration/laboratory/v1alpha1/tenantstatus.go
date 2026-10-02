@@ -35,6 +35,10 @@ type TenantStatusApplyConfiguration struct {
 	ObservedAt *v1.Time `json:"observedAt,omitempty"`
 	// Enrollment is the one-time token a client enrolls with (see the agent's Enroll).
 	Enrollment *TenantEnrollmentApplyConfiguration `json:"enrollment,omitempty"`
+	// CertificatesNotBefore is the enrollment epoch: a client certificate issued before it (and before the Tenant
+	// was created) is refused. It moves to the moment of every enrollment, so enrolling again revokes every
+	// certificate issued earlier; a Tenant created again under the same name starts a new epoch by its creation time.
+	CertificatesNotBefore *v1.Time `json:"certificatesNotBefore,omitempty"`
 }
 
 // TenantStatusApplyConfiguration constructs a declarative configuration of the TenantStatus type for use with
@@ -72,5 +76,13 @@ func (b *TenantStatusApplyConfiguration) WithObservedAt(value v1.Time) *TenantSt
 // If called multiple times, the Enrollment field is set to the value of the last call.
 func (b *TenantStatusApplyConfiguration) WithEnrollment(value *TenantEnrollmentApplyConfiguration) *TenantStatusApplyConfiguration {
 	b.Enrollment = value
+	return b
+}
+
+// WithCertificatesNotBefore sets the CertificatesNotBefore field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the CertificatesNotBefore field is set to the value of the last call.
+func (b *TenantStatusApplyConfiguration) WithCertificatesNotBefore(value v1.Time) *TenantStatusApplyConfiguration {
+	b.CertificatesNotBefore = &value
 	return b
 }

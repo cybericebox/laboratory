@@ -29,6 +29,8 @@ type TenantSpecApplyConfiguration struct {
 	// Quota caps the CPU and memory requests of the tenant's running pods.
 	// Absent: no limit.
 	Quota *TenantQuotaApplyConfiguration `json:"quota,omitempty"`
+	// Images is the tenant's image policy and registry credentials.
+	Images *TenantImagesApplyConfiguration `json:"images,omitempty"`
 }
 
 // TenantSpecApplyConfiguration constructs a declarative configuration of the TenantSpec type for use with
@@ -50,5 +52,13 @@ func (b *TenantSpecApplyConfiguration) WithPersistence(value *TenantPersistenceA
 // If called multiple times, the Quota field is set to the value of the last call.
 func (b *TenantSpecApplyConfiguration) WithQuota(value *TenantQuotaApplyConfiguration) *TenantSpecApplyConfiguration {
 	b.Quota = value
+	return b
+}
+
+// WithImages sets the Images field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Images field is set to the value of the last call.
+func (b *TenantSpecApplyConfiguration) WithImages(value *TenantImagesApplyConfiguration) *TenantSpecApplyConfiguration {
+	b.Images = value
 	return b
 }

@@ -31,9 +31,9 @@ type DeviceTemplateApplyConfiguration struct {
 	Name  *string                        `json:"name,omitempty"`
 	Type  *laboratoryv1alpha1.DeviceType `json:"type,omitempty"`
 	Image *string                        `json:"image,omitempty"`
-	// SecurityPreset names a capability profile for the device container. Only
-	// the preset name is exposed here; the concrete Linux capabilities behind it
-	// are an internal platform decision. Empty means "basic" (no extra caps).
+	// SecurityPreset names a device security profile (standard or extended; the old names basic, service,
+	// net and debug are aliases). Only the name is exposed here; the concrete Linux capabilities behind it
+	// are an internal platform decision. Empty means standard.
 	SecurityPreset *laboratoryv1alpha1.SecurityPreset `json:"securityPreset,omitempty"`
 	Interfaces     []InterfaceSpecApplyConfiguration  `json:"interfaces,omitempty"`
 	Exposure       *ExposureSpecApplyConfiguration    `json:"exposure,omitempty"`

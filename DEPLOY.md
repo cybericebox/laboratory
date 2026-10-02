@@ -870,6 +870,20 @@ everything a stranger can make it hold or spend is capped (`proxy.wg.limits`):
 
 One overloaded VPN pod only hurts its own team: the demux caps are shared, the pods are not.
 
+### Revoking client certificates: the enrollment epoch
+
+A client certificate cannot be revoked one by one, so the agent keeps an **enrollment epoch** per tenant and refuses a certificate issued before it.
+The epoch is the later of the moment the Tenant object was created and `Tenant.status.certificatesNotBefore`, which `Enroll` sets to the moment it consumes a
+token. Consequences:
+
+- **Enrolling again revokes every certificate issued before** (a leaked one included): give the tenant a new token (see "Enrollment & access keys") and
+  enroll. A revoked certificate also cannot be used to renew itself.
+- **A tenant deleted and created again under the same name** starts a new epoch at its creation: the certificates of the old tenant stop working.
+- **Certificates issued before this check existed** keep working for the tenants that already exist, until they are renewed or expire (an old certificate
+  is accepted when it was issued after the Tenant was created); nothing has to be re-enrolled on upgrade.
+- **The token is burnt before the certificate is signed** (a conditional write: of any number of requests with the same unused token exactly one wins). If signing
+  then fails, the token is spent and the admin issues a new one.
+
 ### Service pods and images
 
 The service pods of the laboratory are hardened without a setting:

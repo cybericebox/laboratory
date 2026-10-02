@@ -7,6 +7,7 @@ import (
 	"crypto/x509/pkix"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -21,7 +22,8 @@ import (
 
 // asClient is a call context carrying a verified client certificate with the given CN.
 func asClient(cn string) context.Context {
-	cert := &x509.Certificate{Subject: pkix.Name{CommonName: cn}}
+	// issued now (the enrollment epoch refuses a certificate older than its tenant)
+	cert := &x509.Certificate{Subject: pkix.Name{CommonName: cn}, NotBefore: time.Now().Add(-certBackdate)}
 	return peer.NewContext(context.Background(), &peer.Peer{
 		AuthInfo: credentials.TLSInfo{State: tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}},
 	})

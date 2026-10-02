@@ -90,6 +90,11 @@ type TenantStatus struct {
 	// Enrollment is the one-time token a client enrolls with (see the agent's Enroll).
 	// +optional
 	Enrollment *TenantEnrollment `json:"enrollment,omitempty"`
+	// CertificatesNotBefore is the enrollment epoch: a client certificate issued before it (and before the Tenant
+	// was created) is refused. It moves to the moment of every enrollment, so enrolling again revokes every
+	// certificate issued earlier; a Tenant created again under the same name starts a new epoch by its creation time.
+	// +optional
+	CertificatesNotBefore *metav1.Time `json:"certificatesNotBefore,omitempty"`
 }
 
 // TenantEnrollment holds the state of the tenant's enrollment token. Only its hash is
