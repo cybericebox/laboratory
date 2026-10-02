@@ -25,7 +25,7 @@ func Setup(ctx context.Context, mgr ctrl.Manager, wg *vpn.WGManager, ipt *vpn.IP
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setup LabGroupClientReconciler: %w", err)
 	}
-	if err := (&AccessReconciler{Client: mgr.GetClient(), IPT: ipt}).SetupWithManager(mgr); err != nil {
+	if err := (&AccessReconciler{Client: mgr.GetClient(), IPT: ipt, Conntrack: vpn.NewConntrackRevoker()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setup LabGroup access reconciler: %w", err)
 	}
 

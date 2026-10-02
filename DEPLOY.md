@@ -738,6 +738,14 @@ table-0 flow (`in_port` to the VNI) is installed, so a port that has no flow, fo
 Check on a node: `ovs-vsctl get bridge br-ovs fail_mode` is `secure`, and `ovs-ofctl -O OpenFlow13 dump-flows br-ovs table=0` has no
 `NORMAL` action and ends with `priority=0 actions=drop`.
 
+### Revoking access cuts live sessions
+
+FORWARD in the VPN pod accepts established connections before the access chain, so replacing the chain stops only new connections.
+After every rewrite of the chain (a policy change, a client added, removed or given a new address, a lab becoming ready or not) the VPN pod
+therefore deletes, through ctnetlink, every tracked connection that a client opened to a lab network and that no allow rule covers.
+The next packet of such a session is a new connection, which the chain refuses; an open SSH session, reverse shell or download ends within
+the reconcile (a second or two). A lab that stops being ready also loses its open sessions. A failed delete is retried by the next reconcile.
+
 ### Device interface names and MACs
 
 A device's `interfaces[].name` is a lowercase word of at most 15 characters (`^[a-z][a-z0-9-]{0,14}$`; `lo` and `accessport`
