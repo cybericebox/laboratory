@@ -829,6 +829,31 @@ The gateway forwards to the **public internet only**:
 - Not done here: a sandbox RuntimeClass (gVisor, Kata) for hostile images, and Pod Security Admission on the group namespaces (the lab pods need NET_ADMIN,
   which `baseline` allows, but the `net` preset adds more; the admission policy below is the guard that matters for the operator).
 
+### Service pods and images
+
+The service pods of the laboratory are hardened without a setting:
+
+| Pod | User | Root file system | Capabilities | Seccomp |
+|---|---|---|---|---|
+| operator | non-root | | all dropped, no privilege escalation | RuntimeDefault |
+| agent | non-root (65532) | read-only (`/tmp` is an emptyDir) | all dropped, no privilege escalation | RuntimeDefault |
+| L7 proxy and wg-demux | non-root (65532) | read-only | all dropped, no privilege escalation | RuntimeDefault |
+| zot (registry) | non-root (65532, `fsGroup` for the volume) | writable | all dropped, no privilege escalation | RuntimeDefault |
+| node-agent and OVS | root, **privileged** (it drives OVS and pod networking on the host) | | | |
+
+Every service pod, the node-agent included (the node-agent container, the OVS sidecar and the init containers each have their own `nodeAgent.resources`,
+`ovsResources`, `initResources`), and zot (`registry.resources`) has requests and limits, so one runaway process cannot starve a node. The values are starting
+points: measure on your nodes. The kubelet's `podPidsLimit` is a node setting (infrastructure). The directory of the node-agent's socket
+(`/run/cybericebox`) is `0700`: only root can reach the socket that drives pod networking.
+
+Images (one `Dockerfile`, five targets), all bases pinned by digest:
+
+- controller, agent and proxy: `gcr.io/distroless/static:nonroot`, user 65532, no shell, no package manager; the final stage holds only the binary.
+- lab (the VPN and gateway pods): built **from scratch** with only the alpine `iptables` and `ip6tables` and their libraries and the `/lab` binary: no shell, no
+  busybox, no package manager. It stays root: Kubernetes gives capabilities (NET_ADMIN) only to root.
+- node: alpine with Open vSwitch, iproute2 and a shell, as root: the OVS start script and the host-prep and CNI-install init containers are shell, and the
+  node-agent drives the host. It is the one image that keeps a shell, because the role needs it.
+
 ### Operator permissions
 
 The operator is not a cluster-admin in disguise. Its ClusterRole (`laboratory-manager-role`) holds:

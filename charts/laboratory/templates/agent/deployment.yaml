@@ -19,6 +19,12 @@ spec:
         {{- include "laboratory.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: laboratory-agent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -28,6 +34,11 @@ spec:
           image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
           command: ["/agent"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ ALL ]
           ports:
             - name: grpc
               containerPort: {{ .Values.agent.grpcPort }}
@@ -156,6 +167,8 @@ spec:
               value: {{ .Values.agent.enrollment.certificateTTL | quote }}
           {{- end }}
           volumeMounts:
+            - name: tmp
+              mountPath: /tmp
             - name: server-tls
               mountPath: /tls
               readOnly: true
@@ -167,6 +180,8 @@ spec:
           resources:
             {{- toYaml .Values.agent.resources | nindent 12 }}
       volumes:
+        - name: tmp
+          emptyDir: {}
         - name: server-tls
           secret:
             secretName: laboratory-agent-server-tls

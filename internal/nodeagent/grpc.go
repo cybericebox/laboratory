@@ -265,8 +265,8 @@ func (s *NodeAgentServer) GetPodAnnotation(
 
 // StartGRPCServer starts the NodeAgent gRPC server on a Unix socket.
 func StartGRPCServer(sockPath string, srv *NodeAgentServer) (*grpc.Server, error) {
-	if err := os.MkdirAll(filepath.Dir(sockPath), 0755); err != nil {
-		return nil, fmt.Errorf("mkdir %s: %w", filepath.Dir(sockPath), err)
+	if err := secureSocketDir(filepath.Dir(sockPath)); err != nil {
+		return nil, err
 	}
 	_ = os.Remove(sockPath)
 
@@ -282,4 +282,16 @@ func StartGRPCServer(sockPath string, srv *NodeAgentServer) (*grpc.Server, error
 		_ = s.Serve(lis)
 	}()
 	return s, nil
+}
+
+// secureSocketDir makes the directory of the node-agent socket private to root (0700), also when it already exists
+// with looser permissions (a hostPath directory is created 0755): the socket drives pod networking on the node.
+func secureSocketDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("chmod %s: %w", dir, err)
+	}
+	return nil
 }

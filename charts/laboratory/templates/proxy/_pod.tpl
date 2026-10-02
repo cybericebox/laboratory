@@ -5,6 +5,12 @@ metadata:
     {{- include "laboratory.selectorLabels" . | nindent 4 }}
 spec:
   serviceAccountName: laboratory-proxy
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
   {{- if eq .Values.proxy.mode "replicas" }}
   affinity:
     podAntiAffinity:
@@ -32,6 +38,11 @@ spec:
     image: "{{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag | default .Chart.AppVersion }}"
     imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
     command: ["/proxy", "proxy-l7"]
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop: [ ALL ]
     env:
     - name: BASE_DOMAIN
       value: {{ required "operator.baseDomain is required" .Values.operator.baseDomain | quote }}
@@ -87,6 +98,11 @@ spec:
     image: "{{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag | default .Chart.AppVersion }}"
     imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
     command: ["/proxy", "proxy-wg"]
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop: [ ALL ]
     env:
     - name: UDP_LISTEN_ADDR
       value: {{ printf ":%d" (.Values.proxy.wg.listenPort | int) | quote }}

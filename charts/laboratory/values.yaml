@@ -350,10 +350,31 @@ nodeAgent:
   # Name of the OVS bridge the node-agent programs.
   ovsBridge: br-ovs
 
-  # Container resource requests/limits for all init/main containers (host-prep,
-  # ovs, node-agent, cni installers). Empty by default: these are host-privileged
-  # system processes intentionally left unconstrained unless overridden.
-  resources: {}
+  # Requests and limits of the node-agent pod, so that one runaway process cannot starve the node (the pod is privileged
+  # and the cluster's other pods share the node). Three groups: the node-agent container (its snapshot engine keeps the path
+  # map of a layer merge in memory), the OVS sidecar, and the short init containers (host-prep and the CNI installers).
+  # These are starting values: measure on your nodes and adjust.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  ovsResources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  initResources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 200m
+      memory: 64Mi
 
 # ============================================================
 # Platform registry (zot): device snapshots and the image cache
@@ -378,7 +399,14 @@ registry:
   gc:
     interval: 1h
     delay: 1h
-  resources: {}
+  # zot: a starting value, measure under load (garbage collection and the image sync use memory).
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
   networkPolicy:
     enabled: true
   # Node-side access: the node-agent relays 127.0.0.1:<forwardPort> on each node to the
