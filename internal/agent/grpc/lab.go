@@ -80,6 +80,9 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 		if err := h.features.Limits.CheckSpec(&v.spec); err != nil {
 			return nil, invalid("variant %q: %v", v.id, err)
 		}
+		if err := h.checkProfiles(&v.spec); err != nil {
+			return nil, invalid("variant %q: %v", v.id, err)
+		}
 		if err := checkSpecImages(policy, &v.spec); err != nil {
 			return nil, status.Errorf(codes.PermissionDenied, "variant %q: %v", v.id, err)
 		}

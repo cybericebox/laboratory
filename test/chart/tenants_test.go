@@ -326,23 +326,25 @@ func TestGatewayEgressIsNotASetting(t *testing.T) {
 	}
 }
 
-func TestDeviceSecurityValuesReachTheOperator(t *testing.T) {
-	out, err := helmTemplate(t, "-s", "templates/operator/configmap.yaml")
+func TestDeviceSecurityValuesReachTheOperatorAndTheAgent(t *testing.T) {
+	out, err := helmTemplate(t, append(agentSet, "-s", "templates/operator/configmap.yaml", "-s", "templates/agent/deployment.yaml")...)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for _, want := range []string{`DEVICE_BASE_CAPABILITIES: "AUDIT_WRITE,CHOWN,DAC_OVERRIDE,FOWNER,FSETID,KILL,NET_BIND_SERVICE,SETGID,SETPCAP,SETUID,SYS_CHROOT"`,
-		`DEVICE_USER_NAMESPACES: "false"`, `DEVICE_EPHEMERAL_STORAGE: "2Gi"`} {
+	for _, want := range []string{`DEVICE_USER_NAMESPACES: "true"`, `DEVICE_EPHEMERAL_STORAGE: "2Gi"`, "name: AGENT_DEVICE_PROFILES\n              value: \"standard,extended\""} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q", want)
 		}
 	}
-	out, err = helmTemplate(t, "-s", "templates/operator/configmap.yaml", "--set", "devices.security.userNamespaces=true", "--set", "devices.security.ephemeralStorage=5Gi",
-		"--set", "devices.security.baseCapabilities={CHOWN,NET_RAW}")
+	if strings.Contains(out, "DEVICE_BASE_CAPABILITIES") {
+		t.Error("the base capabilities are a constant of the code, not a setting")
+	}
+	out, err = helmTemplate(t, append(agentSet, "-s", "templates/operator/configmap.yaml", "-s", "templates/agent/deployment.yaml", "--set", "devices.security.userNamespaces=false",
+		"--set", "devices.security.ephemeralStorage=5Gi", "--set", "devices.security.profiles={standard}")...)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for _, want := range []string{`DEVICE_BASE_CAPABILITIES: "CHOWN,NET_RAW"`, `DEVICE_USER_NAMESPACES: "true"`, `DEVICE_EPHEMERAL_STORAGE: "5Gi"`} {
+	for _, want := range []string{`DEVICE_USER_NAMESPACES: "false"`, `DEVICE_EPHEMERAL_STORAGE: "5Gi"`, "name: AGENT_DEVICE_PROFILES\n              value: \"standard\""} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q", want)
 		}

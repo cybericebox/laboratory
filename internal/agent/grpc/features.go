@@ -2,6 +2,8 @@ package grpc
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -9,7 +11,9 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/protobuf/proto"
 
+	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/limits"
+	"github.com/cybericebox/laboratory/internal/profiles"
 	"github.com/cybericebox/laboratory/internal/tenant"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
@@ -36,6 +40,8 @@ type Features struct {
 	ProxyAccessTokenMaxTTL time.Duration
 	ProxySessionIdleTTL    time.Duration
 	ProxySessionMaxTTL     time.Duration
+	// DeviceProfiles are the enabled catalog profile IDs (internal/profiles).
+	DeviceProfiles []string
 	// Limits are the caps CreateLabs enforces.
 	Limits limits.Limits
 }
@@ -85,9 +91,10 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 				MaxFileSizeBytes:  p.MaxFileSize,
 				ExcludedPaths:     append([]string(nil), f.ExcludePaths...),
 			},
-			ImageCache: &protobuf.ImageCacheFeature{Enabled: f.CacheEnabled, Registries: append([]string(nil), f.CacheRegistries...)},
-			Scheduler:  &protobuf.SchedulerFeature{Enabled: f.SchedulerEnabled, MaxPods: f.SchedulerMaxPods},
-			Endpoints:  &protobuf.EndpointsFeature{LabsDomain: f.LabsDomain, VpnEndpoint: f.VPNEndpoint},
+			ImageCache:     &protobuf.ImageCacheFeature{Enabled: f.CacheEnabled, Registries: append([]string(nil), f.CacheRegistries...)},
+			Scheduler:      &protobuf.SchedulerFeature{Enabled: f.SchedulerEnabled, MaxPods: f.SchedulerMaxPods},
+			Endpoints:      &protobuf.EndpointsFeature{LabsDomain: f.LabsDomain, VpnEndpoint: f.VPNEndpoint},
+			DeviceProfiles: append([]string(nil), f.DeviceProfiles...),
 			Limits: &protobuf.LimitsFeature{
 				Device: &protobuf.DeviceLimits{
 					MaxCpuMillicores: f.Limits.DeviceMaxCPU, MaxMemoryBytes: f.Limits.DeviceMaxMemory,
@@ -126,4 +133,26 @@ func callerCertNotAfter(ctx context.Context) int64 {
 		}
 	}
 	return 0
+}
+
+// checkProfiles refuses a device whose security profile is not in the catalog or not enabled on this cluster. The
+// old names (basic, service, net, debug) are aliases of the catalog IDs. Without a configured list nothing is checked.
+func (h *Handler) checkProfiles(spec *laboratoryv1alpha1.LabSpec) error {
+	enabled := h.features.DeviceProfiles
+	if len(enabled) == 0 {
+		return nil
+	}
+	for i := range spec.Devices {
+		d := &spec.Devices[i]
+		if d.Type != laboratoryv1alpha1.DeviceTypeContainer {
+			continue
+		}
+		name := string(d.SecurityPreset)
+		if id, ok := profiles.Resolve(name); !ok {
+			return fmt.Errorf("device %q: unknown security profile %q", d.Name, name)
+		} else if !profiles.IsEnabled(name, enabled) {
+			return fmt.Errorf("device %q: the security profile %q is not enabled on this cluster (enabled: %s)", d.Name, id, strings.Join(enabled, ", "))
+		}
+	}
+	return nil
 }

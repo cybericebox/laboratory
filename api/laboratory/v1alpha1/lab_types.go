@@ -50,9 +50,9 @@ type DeviceTemplate struct {
 	// +kubebuilder:validation:Required
 	Type  DeviceType `json:"type"`
 	Image string     `json:"image,omitempty"`
-	// SecurityPreset names a capability profile for the device container. Only
-	// the preset name is exposed here; the concrete Linux capabilities behind it
-	// are an internal platform decision. Empty means "basic" (no extra caps).
+	// SecurityPreset names a device security profile (standard or extended; the old names basic, service,
+	// net and debug are aliases). Only the name is exposed here; the concrete Linux capabilities behind it
+	// are an internal platform decision. Empty means standard.
 	SecurityPreset SecurityPreset  `json:"securityPreset,omitempty"`
 	Interfaces     []InterfaceSpec `json:"interfaces,omitempty"`
 	Exposure       *ExposureSpec   `json:"exposure,omitempty"`

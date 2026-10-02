@@ -340,6 +340,13 @@ nodeAgent:
       net.bridge.bridge-nf-call-iptables: "1"
   grpcSocket: "/run/cybericebox/node-agent.sock"
   criSocket: "/run/k0s/containerd.sock"
+  # The node-agent is the kubelet device plugin of the extended resource cybericebox.com/tun: a device pod with the
+  # `extended` profile requests it and the kubelet passes /dev/net/tun (the host needs the tun module). dir is the
+  # kubelet's device-plugins directory (k0s: /var/lib/k0s/kubelet/device-plugins); tunSlots is how many such devices
+  # a node advertises, which bounds the extended devices per node.
+  devicePlugin:
+    dir: /var/lib/k0s/kubelet/device-plugins
+    tunSlots: 1000
   # Name of the OVS bridge the node-agent programs.
   ovsBridge: br-ovs
 
@@ -426,27 +433,20 @@ registry:
 # Devices: optional state persistence
 # ============================================================
 devices:
-  # Hardening of the device pods (the participant is root inside). Every capability is dropped, then baseCapabilities
-  # and those of the device's SecurityPreset (service, net, debug) are added back. The default is the Docker default
-  # set without MKNOD (device nodes), NET_RAW (raw sockets: ARP/ICMP spoofing, ping) and SETFCAP; an image that needs
-  # ping or raw sockets uses the net or debug preset, or add NET_RAW here for every device. Device pods never get the
-  # service account token and run with the runtime's default seccomp profile.
+  # Hardening of the device pods (the participant is root inside). Device security profiles are a fixed catalog in the
+  # code (internal/profiles): `standard` (the default; web, API, databases, SSH, privilege escalation, cracking,
+  # forensics, gdb, strace, ping) and `extended` (standard plus NET_RAW, NET_ADMIN and /dev/net/tun: raw scans,
+  # sniffing, spoofing, routers, VPNs). The capability sets are not a setting. Here you only say which catalog profiles
+  # this cluster offers: the agent reports them to the backend and refuses a lab that asks for another. The old names
+  # (basic, service, net, debug) are accepted as aliases. Every capability is dropped, then the base set and the profile's
+  # are added back; device pods never get the service account token and run with the runtime's default seccomp profile.
   security:
-    baseCapabilities:
-      - AUDIT_WRITE
-      - CHOWN
-      - DAC_OVERRIDE
-      - FOWNER
-      - FSETID
-      - KILL
-      - NET_BIND_SERVICE
-      - SETGID
-      - SETPCAP
-      - SETUID
-      - SYS_CHROOT
+    profiles:
+      - standard
+      - extended
     # Run device pods in a user namespace (hostUsers: false): root in a device is not root on the node. Needs Kubernetes
-    # 1.33+, a runtime with support (containerd 2.x) and kernel 6.3+. Off until verified on the cluster.
-    userNamespaces: false
+    # 1.33+, a runtime with support (containerd 2.x) and kernel 6.3+. A hidden setting, not shown in any UI.
+    userNamespaces: true
     # Limit of the writable layer, logs and emptyDirs of a device, so one device cannot fill the node's disk
     # (DiskPressure evicts other pods). "0" = no limit.
     ephemeralStorage: 2Gi

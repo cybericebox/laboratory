@@ -106,13 +106,8 @@ func TestDeviceSecurityDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.DeviceBaseCapabilities) != 11 || cfg.DeviceUserNamespaces || cfg.DeviceEphemeralStorage != "2Gi" {
-		t.Fatalf("%v %v %q", cfg.DeviceBaseCapabilities, cfg.DeviceUserNamespaces, cfg.DeviceEphemeralStorage)
-	}
-	for _, c := range cfg.DeviceBaseCapabilities {
-		if c == "NET_RAW" || c == "MKNOD" || c == "SYS_ADMIN" {
-			t.Errorf("%s must not be in the default base set", c)
-		}
+	if !cfg.DeviceUserNamespaces || cfg.DeviceEphemeralStorage != "2Gi" {
+		t.Fatalf("%v %q", cfg.DeviceUserNamespaces, cfg.DeviceEphemeralStorage)
 	}
 	t.Setenv("DEVICE_EPHEMERAL_STORAGE", "0")
 	if cfg, err = LoadConfig(); err != nil || cfg.DeviceEphemeralStorage != "" {

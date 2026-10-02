@@ -661,6 +661,9 @@ message FeaturesResponse {
   CertificateFeature certificate = 6;
   ProxyFeature proxy = 7;
   LimitsFeature limits = 8;
+  // The device security profiles this cluster offers (catalog IDs: "standard", "extended"). A lab whose device asks
+  // for another is refused (InvalidArgument); the old names basic and service mean standard, net and debug mean extended.
+  repeated string device_profiles = 9;
 }
 
 // Caps the cluster owns. CreateLabs refuses a lab over them (InvalidArgument with the reason; a tenant over

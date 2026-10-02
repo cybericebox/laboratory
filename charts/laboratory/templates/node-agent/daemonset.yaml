@@ -159,6 +159,10 @@ spec:
               value: {{ .Values.nodeAgent.ovsBridge | quote }}
             - name: CRI_SOCK
               value: {{ .Values.nodeAgent.criSocket | quote }}
+            - name: DEVICE_PLUGIN_DIR
+              value: {{ .Values.nodeAgent.devicePlugin.dir | quote }}
+            - name: TUN_SLOTS
+              value: {{ .Values.nodeAgent.devicePlugin.tunSlots | quote }}
           {{- if include "laboratory.registryEnabled" . }}
             # The platform registry (snapshots, image cache): its Service is relayed to
             # 127.0.0.1:STATE_FORWARD_PORT, where containerd reads it as a plain-HTTP
@@ -200,6 +204,9 @@ spec:
               mountPath: /run/cybericebox
             - name: cri-sock
               mountPath: {{ .Values.nodeAgent.criSocket | quote }}
+            # The kubelet's device-plugin directory: the node-agent registers cybericebox.com/tun here.
+            - name: device-plugins
+              mountPath: {{ .Values.nodeAgent.devicePlugin.dir | quote }}
             - name: host-netns
               mountPath: /run/netns
               # HostToContainer: propagate netns bind-mounts (cni-XXX) created on the
@@ -252,6 +259,10 @@ spec:
           hostPath:
             path: {{ .Values.nodeAgent.criSocket }}
             type: Socket
+        - name: device-plugins
+          hostPath:
+            path: {{ .Values.nodeAgent.devicePlugin.dir | quote }}
+            type: Directory
         - name: host-netns
           hostPath:
             path: /run/netns

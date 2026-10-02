@@ -263,10 +263,12 @@ spec:
                       type: object
                     securityPreset:
                       description: |-
-                        SecurityPreset names a capability profile for the device container. Only
-                        the preset name is exposed here; the concrete Linux capabilities behind it
-                        are an internal platform decision. Empty means "basic" (no extra caps).
+                        SecurityPreset names a device security profile (standard or extended; the old names basic, service,
+                        net and debug are aliases). Only the name is exposed here; the concrete Linux capabilities behind it
+                        are an internal platform decision. Empty means standard.
                       enum:
+                      - standard
+                      - extended
                       - basic
                       - service
                       - net

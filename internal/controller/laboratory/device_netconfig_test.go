@@ -6,6 +6,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/profiles"
 )
 
 func TestValidIfaceName(t *testing.T) {
@@ -64,45 +65,55 @@ func capSet(sc *corev1.SecurityContext) map[corev1.Capability]bool {
 	return got
 }
 
-// Every capability is dropped; the base set, the preset's and the DHCP ones come back, and nothing else.
+// Every capability is dropped; the base set, the profile's and the DHCP ones come back, and nothing else.
 func TestDeviceSecurityContext(t *testing.T) {
-	base := DefaultDeviceBaseCaps
-	basic := deviceSecurityContext(devWith("", nil), base)
-	if len(basic.Capabilities.Drop) != 1 || basic.Capabilities.Drop[0] != "ALL" {
-		t.Fatalf("drop = %v, want [ALL]", basic.Capabilities.Drop)
+	base := profiles.Base
+	std := deviceSecurityContext(devWith("", nil))
+	if len(std.Capabilities.Drop) != 1 || std.Capabilities.Drop[0] != "ALL" {
+		t.Fatalf("drop = %v, want [ALL]", std.Capabilities.Drop)
 	}
-	got := capSet(basic)
-	if len(got) != len(base) {
-		t.Errorf("basic device keeps %v, want exactly the base set %v", got, base)
+	got := capSet(std)
+	// the standard profile: the base set plus SYS_PTRACE, IPC_LOCK, LINUX_IMMUTABLE
+	if len(got) != len(base)+3 || !got["SYS_PTRACE"] || !got["IPC_LOCK"] || !got["LINUX_IMMUTABLE"] {
+		t.Errorf("standard device keeps %v", got)
 	}
-	for _, denied := range []corev1.Capability{"NET_RAW", "MKNOD", "SETFCAP", "NET_ADMIN", "SYS_ADMIN", "SYS_PTRACE"} {
-		if got[denied] {
-			t.Errorf("basic device must not keep %s", denied)
+	for _, denied := range append([]string{"NET_RAW", "NET_ADMIN"}, profiles.Never...) {
+		if got[corev1.Capability(denied)] {
+			t.Errorf("a standard device must not keep %s", denied)
 		}
 	}
 	// A device may escalate (sudo, setuid binaries): no_new_privs is not set.
-	if basic.AllowPrivilegeEscalation != nil || basic.Privileged != nil {
-		t.Errorf("unexpected escalation settings: %+v", basic)
+	if std.AllowPrivilegeEscalation != nil || std.Privileged != nil {
+		t.Errorf("unexpected escalation settings: %+v", std)
 	}
-	// service preset adds nothing new (NET_BIND_SERVICE is in the base); the base is configurable.
-	if got := capSet(deviceSecurityContext(devWith(laboratoryv1alpha1.SecurityPresetService, nil), []string{"CHOWN"})); len(got) != 2 || !got["CHOWN"] || !got["NET_BIND_SERVICE"] {
-		t.Errorf("service preset over a one-capability base = %v", got)
+	// The old names are aliases: basic and service are standard, net and debug are extended.
+	for _, old := range []laboratoryv1alpha1.SecurityPreset{laboratoryv1alpha1.SecurityPresetBasic, laboratoryv1alpha1.SecurityPresetService, laboratoryv1alpha1.SecurityPresetStandard} {
+		if g := capSet(deviceSecurityContext(devWith(old, nil))); len(g) != len(got) || g["NET_RAW"] {
+			t.Errorf("%s must mean standard: %v", old, g)
+		}
 	}
-	// net preset adds NET_ADMIN + NET_RAW.
-	if got := capSet(deviceSecurityContext(devWith(laboratoryv1alpha1.SecurityPresetNet, nil), base)); !got["NET_ADMIN"] || !got["NET_RAW"] || !got["CHOWN"] {
-		t.Errorf("net preset = %v", got)
+	for _, ext := range []laboratoryv1alpha1.SecurityPreset{laboratoryv1alpha1.SecurityPresetNet, laboratoryv1alpha1.SecurityPresetDebug, laboratoryv1alpha1.SecurityPresetExtended} {
+		g := capSet(deviceSecurityContext(devWith(ext, nil)))
+		if !g["NET_ADMIN"] || !g["NET_RAW"] || !g["SYS_PTRACE"] || !g["CHOWN"] || len(g) != len(base)+5 {
+			t.Errorf("%s must mean extended: %v", ext, g)
+		}
+		for _, denied := range profiles.Never {
+			if g[corev1.Capability(denied)] {
+				t.Errorf("extended must not keep %s", denied)
+			}
+		}
 	}
-	// In-image dhcp interface implies NET_ADMIN+NET_RAW even on the basic preset.
+	// In-image dhcp interface implies NET_ADMIN+NET_RAW even on the standard profile.
 	dhcp := []laboratoryv1alpha1.InterfaceSpec{{Name: "eth1", Addr: laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeDHCP}}}
-	if got := capSet(deviceSecurityContext(devWith("", dhcp), base)); !got["NET_ADMIN"] || !got["NET_RAW"] {
-		t.Errorf("in-image dhcp caps = %v, want NET_ADMIN+NET_RAW", got)
+	if g := capSet(deviceSecurityContext(devWith("", dhcp))); !g["NET_ADMIN"] || !g["NET_RAW"] {
+		t.Errorf("in-image dhcp caps = %v, want NET_ADMIN+NET_RAW", g)
 	}
 	// dhcp-preset (platform-managed) and static interfaces add no device caps (the init container does it).
 	preset := []laboratoryv1alpha1.InterfaceSpec{{Name: "eth1", Addr: laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeDHCPPreset}}}
 	static := []laboratoryv1alpha1.InterfaceSpec{{Name: "eth1", Addr: laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeStatic, IP: "10.0.0.1/24"}}}
 	for name, ifaces := range map[string][]laboratoryv1alpha1.InterfaceSpec{"dhcp-preset": preset, "static": static} {
-		if got := capSet(deviceSecurityContext(devWith("", ifaces), base)); got["NET_ADMIN"] || got["NET_RAW"] || len(got) != len(base) {
-			t.Errorf("%s device keeps %v", name, got)
+		if g := capSet(deviceSecurityContext(devWith("", ifaces))); g["NET_ADMIN"] || g["NET_RAW"] {
+			t.Errorf("%s device keeps %v", name, g)
 		}
 	}
 }

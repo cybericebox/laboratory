@@ -6,33 +6,18 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
-)
 
-// DefaultDeviceBaseCaps is the capability set a device container keeps after "drop ALL": the Docker default set
-// without MKNOD (device nodes), NET_RAW (raw sockets: ARP and ICMP spoofing, ping) and SETFCAP. It is enough for the
-// usual service images (they chown, setuid, bind low ports, chroot, run sudo and su). An image that needs more asks
-// for a SecurityPreset (net, debug: NET_RAW, NET_ADMIN, ...). Mirrors the chart (devices.security.baseCapabilities).
-var DefaultDeviceBaseCaps = []string{
-	"AUDIT_WRITE", "CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "NET_BIND_SERVICE", "SETGID", "SETPCAP", "SETUID", "SYS_CHROOT",
-}
+	"github.com/cybericebox/laboratory/internal/profiles"
+)
 
 // PodSecurity is the hardening of the device pods the operator creates (the VPN and gateway pods have a fixed,
 // minimal set, see hardenGroupPod).
 type PodSecurity struct {
-	// BaseCapabilities are added to every device container after dropping ALL (nil: DefaultDeviceBaseCaps).
-	BaseCapabilities []string
 	// UserNamespaces runs device pods in their own user namespace (hostUsers: false), so root in a device is not
 	// root on the node. Needs Kubernetes 1.33+ and a runtime that supports it (containerd 2.x, kernel 6.3+).
 	UserNamespaces bool
 	// EphemeralStorage is the limit (and request) of a device's writable layer, logs and emptyDirs; empty: none.
 	EphemeralStorage string
-}
-
-func (s PodSecurity) baseCaps() []string {
-	if s.BaseCapabilities == nil {
-		return DefaultDeviceBaseCaps
-	}
-	return s.BaseCapabilities
 }
 
 // capsOf is a drop-ALL capability set with exactly these capabilities added, sorted and without duplicates.
@@ -118,4 +103,22 @@ func hardenGroupPod(spec *corev1.PodSpec, container string, caps []string) bool 
 		}
 	}
 	return !equality.Semantic.DeepEqual(before, spec)
+}
+
+// withTUN adds the extended resource that makes the kubelet pass /dev/net/tun (and only that) to the container: the
+// node-agent is its device plugin. A pod that requests it can only run on a node that advertises it.
+func withTUN(res corev1.ResourceRequirements, tun bool) corev1.ResourceRequirements {
+	if !tun {
+		return res
+	}
+	one := resource.MustParse("1")
+	if res.Limits == nil {
+		res.Limits = corev1.ResourceList{}
+	}
+	if res.Requests == nil {
+		res.Requests = corev1.ResourceList{}
+	}
+	res.Limits[corev1.ResourceName(profiles.TUNResource)] = one
+	res.Requests[corev1.ResourceName(profiles.TUNResource)] = one.DeepCopy()
+	return res
 }

@@ -48,19 +48,22 @@ const (
 	AddrTypeDHCPPreset AddrType = "dhcp-preset"
 )
 
-// SecurityPreset selects a named capability profile for a device container.
-// The concrete Linux capabilities behind each preset are resolved internally by
-// the operator and are intentionally NOT part of the public spec, so the
-// requirement surface stays hidden and can move behind a custom agent later.
-//   - basic:   no extra capabilities (a plain service).
-//   - service: bind privileged ports.
-//   - net:     networking/testing tools (ping, tcpdump, ip, iptables, DHCP).
-//   - debug:   net plus process debugging (gdb/strace).
+// SecurityPreset selects a device security profile from the fixed catalog of the laboratory (internal/profiles). The
+// concrete Linux capabilities behind a profile are resolved by the operator and are intentionally NOT part of the
+// public spec. Empty means standard.
+//   - standard: the base set plus SYS_PTRACE, IPC_LOCK, LINUX_IMMUTABLE; ping through ping_group_range. Web, API, databases,
+//     SSH, privilege escalation, cracking, forensics, gdb and strace.
+//   - extended: standard plus NET_RAW, NET_ADMIN and /dev/net/tun. Raw scans, sniffing, spoofing, routers, VPNs, tunnels.
 //
-// +kubebuilder:validation:Enum=basic;service;net;debug
+// The old names stay accepted as aliases: basic and service mean standard, net and debug mean extended.
+//
+// +kubebuilder:validation:Enum=standard;extended;basic;service;net;debug
 type SecurityPreset string
 
 const (
+	SecurityPresetStandard SecurityPreset = "standard"
+	SecurityPresetExtended SecurityPreset = "extended"
+	// Deprecated aliases.
 	SecurityPresetBasic   SecurityPreset = "basic"
 	SecurityPresetService SecurityPreset = "service"
 	SecurityPresetNet     SecurityPreset = "net"

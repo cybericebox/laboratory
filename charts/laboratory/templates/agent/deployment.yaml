@@ -106,6 +106,8 @@ spec:
               value: {{ .Values.scheduler.enabled | quote }}
             - name: AGENT_SCHEDULER_MAX_PODS
               value: {{ .Values.scheduler.maxPods | quote }}
+            - name: AGENT_DEVICE_PROFILES
+              value: {{ join "," .Values.devices.security.profiles | quote }}
             - name: AGENT_LIMIT_DEVICE_MAX_CPU
               value: {{ .Values.limits.device.maxCpu | quote }}
             - name: AGENT_LIMIT_DEVICE_MAX_MEMORY

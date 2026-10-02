@@ -793,21 +793,36 @@ The gateway forwards to the **public internet only**:
 
 | Pod | Token | Seccomp | Capabilities (everything else dropped) | Other |
 |---|---|---|---|---|
-| Device | never | RuntimeDefault | `devices.security.baseCapabilities` plus the SecurityPreset's (`service`, `net`, `debug`) and, for an in-image DHCP client, NET_ADMIN and NET_RAW | no service links; `ephemeralStorage` limit; optional `hostUsers: false` |
+| Device | never | RuntimeDefault | the base set plus the profile's (see below) and, for an in-image DHCP client, NET_ADMIN and NET_RAW | no service links; `ping_group_range` sysctl; `ephemeralStorage` limit; `hostUsers: false` by default |
 | Device `netconfig` init | never | RuntimeDefault | NET_ADMIN, NET_RAW | no privilege escalation |
 | VPN | kept (talks to the API) | RuntimeDefault | NET_ADMIN, NET_RAW | no privilege escalation, **no privileged init container** |
 | Gateway | kept | RuntimeDefault | NET_ADMIN, NET_RAW, NET_BIND_SERVICE (its DHCP server binds port 67) | no privilege escalation |
 
-- **Device capabilities.** All are dropped first. The default base set is the Docker default without MKNOD (device nodes), NET_RAW (raw sockets,
-  so no ARP or ICMP spoofing, and no `ping` unless the preset or the base set gives it) and SETFCAP. Privilege escalation stays allowed in a
-  device on purpose: lab images run `sudo` and setuid binaries. An image that needs raw sockets uses the `net` or `debug` preset.
+- **Device security profiles** are a fixed catalog in the code (`internal/profiles`), each with a stable ID. The settings only say which catalog profiles
+  are enabled (`devices.security.profiles`, default both); the agent reports the enabled IDs (`device_profiles` in the features) and refuses a lab whose
+  device asks for another one (`InvalidArgument`, naming the device). The spec field is still `securityPreset`; an empty value is `standard`, and the old names
+  are aliases: `basic` and `service` mean `standard`, `net` and `debug` mean `extended`. Never in any profile: SYS_ADMIN, SYS_MODULE, SYS_RAWIO,
+  SYS_TIME, SYS_BOOT, DAC_READ_SEARCH, BPF, PERFMON, SYSLOG, AUDIT_CONTROL, MAC_ADMIN, MAC_OVERRIDE, MKNOD, privileged, host network, PID and IPC, hostPath.
+
+  | ID | Adds to the base set | Covers |
+  |---|---|---|
+  | `standard` (default) | SYS_PTRACE, IPC_LOCK, LINUX_IMMUTABLE; ping through `net.ipv4.ping_group_range` | web, API, databases, mail, DNS, LDAP, SSH, FTP, Samba, privilege escalation (sudo, SUID, cron, capabilities), cracking, crypto, forensics, gdb and strace, `chattr`, mlock, ping, nmap connect scan, noVNC desktop |
+  | `extended` | standard plus NET_RAW, NET_ADMIN and `/dev/net/tun` | nmap SYN and OS scan, tcpdump, scapy, ARP spoofing, MITM, Responder, routers and firewalls, DHCP server, WireGuard, OpenVPN, tun pivoting, VLAN, GRE, VXLAN, IPsec, Linux bridge, FRR |
+
+  The base set of every device is AUDIT_WRITE, CHOWN, DAC_OVERRIDE, FOWNER, FSETID, KILL, NET_BIND_SERVICE, SETGID, SETPCAP, SETUID, SYS_CHROOT; all other
+  capabilities are dropped. Privilege escalation stays allowed in a device on purpose: lab images run `sudo` and setuid binaries.
+- **`/dev/net/tun`.** The node-agent is a kubelet device plugin and advertises the extended resource `cybericebox.com/tun` (`nodeAgent.devicePlugin`: the
+  kubelet's device-plugins directory, k0s `/var/lib/k0s/kubelet/device-plugins`, and `tunSlots`, 1000 per node). A device pod with the `extended` profile
+  requests one (request = limit) and the kubelet passes `/dev/net/tun` and nothing else from the host; no extra daemon, no hostPath. The host needs the `tun`
+  module loaded at boot (infrastructure); without the device the slots are advertised unhealthy and such pods stay Pending.
 - **VPN conntrack accounting.** The switches `nf_conntrack_acct` and `nf_conntrack_timestamp` need a writable `/proc/sys`, which an unprivileged
   container does not have. The VPN pod carries the annotation `network.cybericebox.com/conntrack-accounting: "true"` and the node-agent sets them in the
   pod's network namespace when it wires the pod (CNI ADD). If that fails the flow collector still counts attempts and replies, only bytes stay zero.
 - **Existing groups.** The operator brings the VPN and gateway Deployments that already run to this shape (their pods restart once, WireGuard clients
   reconnect within the keepalive). Device pods of labs that already run keep what they were created with; new labs get the hardening.
-- **User namespaces** (`devices.security.userNamespaces`, default `false`): root in a device is not root on the node. Needs Kubernetes 1.33+,
-  containerd 2.x and kernel 6.3+. Verify device networking (the veth is moved into the pod namespace by the node-agent) on your cluster before turning it on.
+- **User namespaces** (`devices.security.userNamespaces`, a hidden setting, default `true`): device pods run with `hostUsers: false`, so root in a device is
+  not root on the node. Needs Kubernetes 1.33+, containerd 2 and kernel 6.3+. Check on the cluster that device networking (the veth is moved into the
+  pod namespace by the node-agent), state snapshots, `sudo` and setuid binaries, and images with UIDs above 65535 still work.
 - **Ephemeral storage** (`devices.security.ephemeralStorage`, 2Gi): the writable layer, logs and emptyDirs of one device. Without a limit a device can fill
   the node's disk and DiskPressure evicts other pods. The PID limit is a node setting: set the kubelet's `podPidsLimit` (`--pod-max-pids`) in the
   cluster configuration (not a pod field).

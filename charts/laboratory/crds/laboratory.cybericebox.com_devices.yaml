@@ -234,9 +234,11 @@ spec:
                 type: object
               securityPreset:
                 description: |-
-                  SecurityPreset names a capability profile (basic/service/net/debug); the
-                  concrete capabilities are resolved internally by the operator.
+                  SecurityPreset names a device security profile (standard/extended, or the old aliases
+                  basic/service/net/debug); the concrete capabilities are resolved internally by the operator.
                 enum:
+                - standard
+                - extended
                 - basic
                 - service
                 - net

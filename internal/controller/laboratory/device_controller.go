@@ -27,6 +27,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/netattach"
+	"github.com/cybericebox/laboratory/internal/profiles"
 )
 
 // DeviceReconciler reconciles a Device object.
@@ -362,8 +363,8 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 				// the curated set it requested (plus NET_ADMIN+NET_RAW when it
 				// has a DHCP interface). Isolation is enforced host-side by OVS
 				// flows, so these caps cannot break a pod out of its VNI.
-				SecurityContext: deviceSecurityContext(device, r.Security.baseCaps()),
-				Resources:       withEphemeralStorage(deviceResources(device, r.Defaults), r.Security.EphemeralStorage),
+				SecurityContext: deviceSecurityContext(device),
+				Resources:       withTUN(withEphemeralStorage(deviceResources(device, r.Defaults), r.Security.EphemeralStorage), profiles.Get(string(device.Spec.SecurityPreset)).TUN),
 				// Env vars come from a per-device Secret (<device>-env) the agent
 				// wrote write-only — referenced here, never read by the controller
 				// (the kubelet resolves envFrom at pod start). optional=true so a
@@ -387,6 +388,8 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 	// The participant is root in the device: it gets no service account token, the runtime's seccomp profile, and
 	// optionally its own user namespace.
 	hardenPod(&podSpec, false)
+	// Every device may ping: unprivileged ICMP echo sockets (a safe sysctl), so ping needs no NET_RAW.
+	podSpec.SecurityContext.Sysctls = []corev1.Sysctl{{Name: "net.ipv4.ping_group_range", Value: profiles.PingGroupRange}}
 	if r.Security.UserNamespaces {
 		hostUsers := false
 		podSpec.HostUsers = &hostUsers
@@ -562,13 +565,14 @@ func (r *DeviceReconciler) netConfigInitContainer(device *laboratoryv1alpha1.Dev
 	}
 }
 
-// deviceSecurityContext resolves the device's SecurityPreset to concrete capabilities and adds the DHCP-implied
-// caps when the image runs its own DHCP client (addr.type=dhcp). Every capability is dropped first and only the base
-// set (baseCaps, see DefaultDeviceBaseCaps), the preset's and the DHCP ones are added back. Privilege escalation stays
-// allowed on purpose: lab images run sudo and setuid binaries.
-func deviceSecurityContext(device *laboratoryv1alpha1.Device, baseCaps []string) *corev1.SecurityContext {
-	want := append([]string(nil), baseCaps...)
-	want = append(want, names.CapabilitiesForPreset(string(device.Spec.SecurityPreset))...)
+// deviceSecurityContext resolves the device's profile (profiles.Standard or Extended, or an old alias) to concrete
+// capabilities and adds the DHCP-implied caps when the image runs its own DHCP client (addr.type=dhcp), whatever the
+// profile. Every capability is dropped first; only the base set, the profile's and the DHCP ones are added back.
+// Privilege escalation stays allowed on purpose: lab images run sudo and setuid binaries.
+func deviceSecurityContext(device *laboratoryv1alpha1.Device) *corev1.SecurityContext {
+	p := profiles.Get(string(device.Spec.SecurityPreset))
+	want := append([]string(nil), profiles.Base...)
+	want = append(want, p.Caps...)
 	if deviceHasInImageDHCP(device) {
 		want = append(want, names.DHCPImpliedCapabilities...)
 	}

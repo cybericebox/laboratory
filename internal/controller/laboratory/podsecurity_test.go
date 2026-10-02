@@ -30,7 +30,13 @@ func TestDevicePodIsHardened(t *testing.T) {
 		t.Errorf("seccomp = %+v", spec.SecurityContext)
 	}
 	if spec.HostUsers != nil {
-		t.Error("user namespaces are off unless asked for")
+		t.Error("user namespaces are off in this reconciler unless asked for")
+	}
+	if len(spec.SecurityContext.Sysctls) != 1 || spec.SecurityContext.Sysctls[0].Name != "net.ipv4.ping_group_range" || spec.SecurityContext.Sysctls[0].Value != "0 2147483647" {
+		t.Errorf("every device pings through ping_group_range: %+v", spec.SecurityContext.Sysctls)
+	}
+	if _, ok := spec.Containers[0].Resources.Limits["cybericebox.com/tun"]; ok {
+		t.Error("a standard device gets no tun")
 	}
 	c := spec.Containers[0]
 	if c.SecurityContext.Capabilities.Drop[0] != "ALL" {
@@ -112,5 +118,23 @@ func TestGatewayKeepsTheCapabilitiesItNeeds(t *testing.T) {
 	}
 	if len(got) != 3 || !got["NET_ADMIN"] || !got["NET_RAW"] || !got["NET_BIND_SERVICE"] {
 		t.Errorf("gateway caps = %v", got)
+	}
+}
+
+// The extended profile requests the tun device from the node-agent's device plugin, request and limit.
+func TestExtendedDeviceRequestsTun(t *testing.T) {
+	for _, preset := range []laboratoryv1alpha1.SecurityPreset{laboratoryv1alpha1.SecurityPresetExtended, laboratoryv1alpha1.SecurityPresetNet, laboratoryv1alpha1.SecurityPresetDebug} {
+		d := newDeviceForPod()
+		d.Spec.SecurityPreset = preset
+		r := &DeviceReconciler{}
+		_, _, _, spec := r.workloadTemplate(d, false)
+		res := spec.Containers[0].Resources
+		one := resource.MustParse("1")
+		if got := res.Limits["cybericebox.com/tun"]; got.Cmp(one) != 0 {
+			t.Errorf("%s: tun limit = %v", preset, got.String())
+		}
+		if got := res.Requests["cybericebox.com/tun"]; got.Cmp(one) != 0 {
+			t.Errorf("%s: tun request = %v", preset, got.String())
+		}
 	}
 }

@@ -117,12 +117,10 @@ type Config struct {
 	DeviceDefaultCPU    string `env:"DEVICE_DEFAULT_CPU" envDefault:"100m"`
 	DeviceDefaultMemory string `env:"DEVICE_DEFAULT_MEMORY" envDefault:"256Mi"`
 
-	// DeviceBaseCapabilities are the capabilities a device container keeps after all are dropped (on top of its
-	// SecurityPreset's). DeviceUserNamespaces runs device pods with hostUsers: false. DeviceEphemeralStorage limits
-	// the writable layer, logs and emptyDirs of a device ("" or "0" = no limit).
-	DeviceBaseCapabilities []string `env:"DEVICE_BASE_CAPABILITIES" envSeparator:"," envDefault:"AUDIT_WRITE,CHOWN,DAC_OVERRIDE,FOWNER,FSETID,KILL,NET_BIND_SERVICE,SETGID,SETPCAP,SETUID,SYS_CHROOT"`
-	DeviceUserNamespaces   bool     `env:"DEVICE_USER_NAMESPACES" envDefault:"false"`
-	DeviceEphemeralStorage string   `env:"DEVICE_EPHEMERAL_STORAGE" envDefault:"2Gi"`
+	// DeviceUserNamespaces runs device pods with hostUsers: false (default on; a hidden setting, not shown in any UI).
+	// DeviceEphemeralStorage limits the writable layer, logs and emptyDirs of a device ("" or "0" = no limit).
+	DeviceUserNamespaces   bool   `env:"DEVICE_USER_NAMESPACES" envDefault:"true"`
+	DeviceEphemeralStorage string `env:"DEVICE_EPHEMERAL_STORAGE" envDefault:"2Gi"`
 
 	// State is the device state persistence configuration (snapshot registry
 	// and snapshot policy). Every field is optional; Enabled=false is today's

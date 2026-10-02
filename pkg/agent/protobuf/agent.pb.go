@@ -4521,8 +4521,11 @@ type FeaturesResponse struct {
 	Certificate      *CertificateFeature      `protobuf:"bytes,6,opt,name=certificate,proto3" json:"certificate,omitempty"`
 	Proxy            *ProxyFeature            `protobuf:"bytes,7,opt,name=proxy,proto3" json:"proxy,omitempty"`
 	Limits           *LimitsFeature           `protobuf:"bytes,8,opt,name=limits,proto3" json:"limits,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// The device security profiles this cluster offers (catalog IDs: "standard", "extended"). A lab whose device asks
+	// for another is refused (InvalidArgument); the old names basic and service mean standard, net and debug mean extended.
+	DeviceProfiles []string `protobuf:"bytes,9,rep,name=device_profiles,json=deviceProfiles,proto3" json:"device_profiles,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *FeaturesResponse) Reset() {
@@ -4607,6 +4610,13 @@ func (x *FeaturesResponse) GetProxy() *ProxyFeature {
 func (x *FeaturesResponse) GetLimits() *LimitsFeature {
 	if x != nil {
 		return x.Limits
+	}
+	return nil
+}
+
+func (x *FeaturesResponse) GetDeviceProfiles() []string {
+	if x != nil {
+		return x.DeviceProfiles
 	}
 	return nil
 }
@@ -6436,7 +6446,7 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x13cpu_free_millicores\x18\v \x01(\x03R\x11cpuFreeMillicores\x12*\n" +
 	"\x11memory_free_bytes\x18\f \x01(\x03R\x0fmemoryFreeBytes\x12A\n" +
 	"\x1dgroup_overhead_cpu_millicores\x18\r \x01(\x03R\x1agroupOverheadCpuMillicores\x12=\n" +
-	"\x1bgroup_overhead_memory_bytes\x18\x0e \x01(\x03R\x18groupOverheadMemoryBytes\"\xd9\x03\n" +
+	"\x1bgroup_overhead_memory_bytes\x18\x0e \x01(\x03R\x18groupOverheadMemoryBytes\"\x82\x04\n" +
 	"\x10FeaturesResponse\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12P\n" +
 	"\x11state_persistence\x18\x02 \x01(\v2#.labmanager.StatePersistenceFeatureR\x10statePersistence\x12>\n" +
@@ -6446,7 +6456,8 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\tendpoints\x18\x05 \x01(\v2\x1c.labmanager.EndpointsFeatureR\tendpoints\x12@\n" +
 	"\vcertificate\x18\x06 \x01(\v2\x1e.labmanager.CertificateFeatureR\vcertificate\x12.\n" +
 	"\x05proxy\x18\a \x01(\v2\x18.labmanager.ProxyFeatureR\x05proxy\x121\n" +
-	"\x06limits\x18\b \x01(\v2\x19.labmanager.LimitsFeatureR\x06limits\"\xcb\x01\n" +
+	"\x06limits\x18\b \x01(\v2\x19.labmanager.LimitsFeatureR\x06limits\x12'\n" +
+	"\x0fdevice_profiles\x18\t \x03(\tR\x0edeviceProfiles\"\xcb\x01\n" +
 	"\rLimitsFeature\x120\n" +
 	"\x06device\x18\x01 \x01(\v2\x18.labmanager.DeviceLimitsR\x06device\x12'\n" +
 	"\x03lab\x18\x02 \x01(\v2\x15.labmanager.LabLimitsR\x03lab\x120\n" +

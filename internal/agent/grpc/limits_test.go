@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -138,5 +139,56 @@ func TestCreateLabsHonoursTheGroupLimits(t *testing.T) {
 	wantStates(t, res, nil, stCreated, stFailed)
 	if !strings.Contains(res.Results[1].Error, "limit of 2 labs") {
 		t.Fatalf("labs cap: %+v", res.Results[1])
+	}
+}
+
+func specWithProfile(preset string) []byte {
+	spec := laboratoryv1alpha1.LabSpec{}
+	spec.Devices = []laboratoryv1alpha1.DeviceTemplate{{Name: "box", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx", SecurityPreset: laboratoryv1alpha1.SecurityPreset(preset)}}
+	raw, _ := json.Marshal(spec)
+	return raw
+}
+
+// The agent reports the enabled profiles and refuses a device that asks for one that is not enabled; the old names
+// are aliases (basic and service mean standard, net and debug mean extended).
+func TestProfilesAreReportedAndEnforced(t *testing.T) {
+	h, k8s := newTestHandler(t)
+	f := testFeatures
+	f.DeviceProfiles = []string{"standard"}
+	h.SetFeatures(f)
+	readyGroup(t, h, k8s, "g", "g", nil)
+	got, err := h.GetFeatures(asClient("default"), &protobuf.Empty{})
+	if err != nil || len(got.GetDeviceProfiles()) != 1 || got.GetDeviceProfiles()[0] != "standard" {
+		t.Fatalf("features: %+v %v", got.GetDeviceProfiles(), err)
+	}
+	n := 0
+	create := func(spec []byte) error {
+		n++
+		res, err := h.CreateLabs(context.Background(), &protobuf.CreateLabsRequest{
+			Variants: []*protobuf.LabVariant{{VariantId: "v", SpecJson: spec}},
+			Items:    []*protobuf.LabItem{{LabGroup: "g", Name: fmt.Sprintf("x%d", n), VariantId: "v"}},
+		})
+		if err == nil && res.Results[0].State != protobuf.ItemState_ITEM_STATE_CREATED {
+			return fmt.Errorf("not created: %v", res.Results[0])
+		}
+		return err
+	}
+	for _, ok := range []string{"", "standard", "basic", "service"} {
+		if err := create(specWithProfile(ok)); err != nil {
+			t.Errorf("%q must be accepted: %v", ok, err)
+		}
+	}
+	for _, refused := range []string{"extended", "net", "debug"} {
+		err := create(specWithProfile(refused))
+		if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "is not enabled on this cluster") || !strings.Contains(err.Error(), `device "box"`) {
+			t.Errorf("%q must be refused with the reason: %v", refused, err)
+		}
+	}
+	f.DeviceProfiles = []string{"standard", "extended"}
+	h.SetFeatures(f)
+	for _, ok := range []string{"extended", "net", "debug"} {
+		if err := create(specWithProfile(ok)); err != nil {
+			t.Errorf("%q must be accepted when extended is enabled: %v", ok, err)
+		}
 	}
 }

@@ -16,6 +16,7 @@ import (
 
 	"github.com/cybericebox/laboratory/internal/agent/config"
 	grpcserver "github.com/cybericebox/laboratory/internal/agent/grpc"
+	"github.com/cybericebox/laboratory/internal/profiles"
 )
 
 func Run() {
@@ -107,6 +108,12 @@ func features(cfg *config.Config) (f grpcserver.Features, err error) {
 		SchedulerEnabled: cfg.Scheduler.Enabled, SchedulerMaxPods: int32(cfg.Scheduler.MaxPods),
 		LabsDomain: cfg.BaseDomain, VPNEndpoint: cfg.PublicVPNEndpoint,
 		ProxyAccessTokenMaxTTL: cfg.ProxyAccessTokenMaxTTL, ProxySessionIdleTTL: cfg.ProxySessionIdleTTL, ProxySessionMaxTTL: cfg.ProxySessionMaxTTL,
+	}
+	if f.DeviceProfiles, err = profiles.Enabled(cfg.DeviceProfiles); err != nil {
+		return f, fmt.Errorf("AGENT_DEVICE_PROFILES: %w", err)
+	}
+	if len(f.DeviceProfiles) == 0 {
+		return f, fmt.Errorf("AGENT_DEVICE_PROFILES must list at least one profile")
 	}
 	if f.Limits, err = cfg.Limits.Parse(); err != nil {
 		return f, err

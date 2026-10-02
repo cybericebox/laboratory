@@ -21,9 +21,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/deviceplugin"
 	"github.com/cybericebox/laboratory/internal/imagepull"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/nodeagent"
+	"github.com/cybericebox/laboratory/internal/profiles"
 )
 
 var scheme = runtime.NewScheme()
@@ -141,6 +143,14 @@ func Run() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
+
+	// The device plugin that lets `extended` device pods have /dev/net/tun (resource cybericebox.com/tun).
+	tun := &deviceplugin.Plugin{Resource: profiles.TUNResource, Dir: cfg.DevicePluginDir, Slots: cfg.TunSlots}
+	go func() {
+		if err := tun.Serve(ctx); err != nil {
+			log.Error(err, "tun device plugin")
+		}
+	}()
 
 	log.Info("starting node-agent", "node", cfg.NodeName, "bridge", cfg.Bridge)
 	if err := mgr.Start(ctx); err != nil {

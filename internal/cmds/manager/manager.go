@@ -349,7 +349,7 @@ func Run() {
 		NetConfigImage:   cfg.NetConfigImage,
 		Defaults:         laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory},
 		Security: laboratorycontroller.PodSecurity{
-			BaseCapabilities: cfg.DeviceBaseCapabilities, UserNamespaces: cfg.DeviceUserNamespaces, EphemeralStorage: cfg.DeviceEphemeralStorage,
+			UserNamespaces: cfg.DeviceUserNamespaces, EphemeralStorage: cfg.DeviceEphemeralStorage,
 		},
 	}
 	if stateRegistry != nil {
