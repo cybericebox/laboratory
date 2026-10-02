@@ -92,3 +92,17 @@ func TestProxySessionValuesReachTheProxy(t *testing.T) {
 		}
 	}
 }
+
+// With required anti-affinity a surge pod cannot be scheduled next to the old one, so the Deployment replaces
+// pods one at a time (found when a one-node stand hung in the upgrade).
+func TestProxyUpdateDoesNotSurge(t *testing.T) {
+	out, err := helmTemplate(t, "-s", "templates/proxy/deployment.yaml")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, want := range []string{"maxSurge: 0", "maxUnavailable: 1", "requiredDuringSchedulingIgnoredDuringExecution"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+}

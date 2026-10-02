@@ -8,6 +8,14 @@ metadata:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.proxy.replicas }}
+  # The pod anti-affinity is required (one replica per node): a surge pod could never be scheduled next
+  # to the old one (always, with one replica; with as many replicas as nodes), so the update would hang
+  # forever. Replace the pods one at a time instead; the PodDisruptionBudget keeps one up with two or more.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: laboratory-proxy-l7
