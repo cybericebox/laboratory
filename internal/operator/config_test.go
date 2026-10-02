@@ -49,7 +49,7 @@ func TestLoadConfigSchedulerDefaultsAndValidation(t *testing.T) {
 	if !cfg.SchedulerEnabled || cfg.SchedulerMaxPods != 20 || cfg.SchedulerStartupTimeout.String() != "5m0s" ||
 		cfg.SchedulerRestartThreshold != 5 || cfg.SchedulerPlatformReservePercent != 10 || cfg.SchedulerPlatformReserveCPU != "0" || cfg.SchedulerPlatformReserveMemory != "0" ||
 		!cfg.SchedulerResourceCheck || !cfg.SchedulerPrepull || cfg.SchedulerPrepullTimeout.String() != "5m0s" ||
-		cfg.DeviceDefaultCPU != "250m" || cfg.DeviceDefaultMemory != "256Mi" {
+		cfg.DeviceDefaultCPU != "100m" || cfg.DeviceDefaultMemory != "256Mi" {
 		t.Fatalf("defaults: %+v", cfg)
 	}
 

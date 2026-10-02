@@ -99,13 +99,16 @@ func Run() {
 }
 
 // features is what GetFeatures reports from the agent's own configuration.
-func features(cfg *config.Config) (grpcserver.Features, error) {
-	f := grpcserver.Features{
+func features(cfg *config.Config) (f grpcserver.Features, err error) {
+	f = grpcserver.Features{
 		StatePersistence: cfg.StatePersistence, Debounce: cfg.State.Debounce, ExcludePaths: cfg.State.ExcludePaths,
 		CacheEnabled: cfg.Cache.Enabled, CacheRegistries: cfg.Cache.Registries,
 		SchedulerEnabled: cfg.Scheduler.Enabled, SchedulerMaxPods: int32(cfg.Scheduler.MaxPods),
 		LabsDomain: cfg.BaseDomain, VPNEndpoint: cfg.PublicVPNEndpoint,
 		ProxyAccessTokenMaxTTL: cfg.ProxyAccessTokenMaxTTL, ProxySessionMaxTTL: cfg.ProxySessionMaxTTL,
+	}
+	if f.Limits, err = cfg.Limits.Parse(); err != nil {
+		return f, err
 	}
 	for _, c := range []struct {
 		env, val string

@@ -298,7 +298,7 @@ Ready later it is Started and the warning clears. A snapshot-backed device whose
 is recreated at once, with no slot, as without the scheduler.
 
 **Guaranteed resources.** Every device container gets requests equal to limits, so its pod is Guaranteed.
-Per resource the limit wins, then the request, then `scheduler.deviceDefaults` (250m CPU and 256Mi memory);
+Per resource the limit wins, then the request, then `limits.device.defaultCpu` / `defaultMemory` (100m CPU and 256Mi memory);
 a declared request and limit that differ collapse to the limit. Set a default to `""` to leave a device without
 that resource (best effort). The resources are applied when a device is created; running devices are not
 changed. Each lab group namespace has one PodDisruptionBudget `lab-group` (`maxUnavailable: 0`, all pods of
@@ -346,7 +346,7 @@ while none of its pods has been dispatched. The position is refreshed at a limit
 | `resourceCheck` | `true` | `false` skips the free-resource check |
 | `prepull.enabled` | `true` | prepull the images of a group |
 | `prepull.timeout` | `5m` | dispatch goes on after this long |
-| `deviceDefaults.cpu` / `.memory` | `250m` / `256Mi` | resources of a device that declares none |
+| (moved) | | the planning profile of a device that declares none is `limits.device.defaultCpu` / `defaultMemory` (`100m` / `256Mi`), see "Limits" |
 
 Objects that existed before the upgrade are never queued: the Device and LabGroup reconcilers record a pod
 that already runs as `Started` and leave its workload alone. The operator needs `get/list/watch` on nodes and
@@ -540,6 +540,14 @@ persistence and has no quota.
   expiry changes only when it reconnects with the renewed certificate). Quotas and the group overhead stay in `GetCapacity`. The agent
   gets the cluster values from the same chart keys as the operator (`devices.statePersistence.*`, `scheduler.enabled/maxPods`,
   `registry.cache`, `operator.baseDomain`, `operator.publicVPNEndpoint`, `agent.enrollment.certificateTTL`).
+- **Limits.** `limits` in the features is what the cluster allows, and `CreateLabs` enforces it: `limits.device.maxCpu` (500m) and
+  `maxMemory` (512Mi) per device, `limits.lab.maxDevices` (10 container devices; switches and hubs do not count), `limits.lab.maxCpu` (2) and
+  `maxMemory` (2Gi) as the sum over the devices of a lab, `limits.tenant.maxLabs` (0 = unlimited; the tenant's resource quota still applies).
+  A device's resources are its limit, else its request, else the planning profile `limits.device.defaultCpu` (100m) / `defaultMemory`
+  (256Mi), which is also what the scheduler gives a device without resources (requests = limits). A variant over a cap is
+  `InvalidArgument` naming the variant, the device and both numbers. Over `maxLabs` the new items are `FAILED` (`ResourceExhausted`
+  reason, not retryable); an item whose lab exists is not new. The count is checked when the call arrives. Labs created directly
+  with kubectl are not checked.
 - **Monitoring** is cut to the tenant before the user selector.
 
 ### Required values and defaults

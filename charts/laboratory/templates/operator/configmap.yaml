@@ -39,8 +39,8 @@ data:
   SCHEDULER_PREPULL: {{ .Values.scheduler.prepull.enabled | quote }}
   SCHEDULER_PREPULL_TIMEOUT: {{ .Values.scheduler.prepull.timeout | quote }}
   TENANT_ENROLLMENT_TTL: {{ .Values.agent.enrollment.tokenTTL | quote }}
-  DEVICE_DEFAULT_CPU: {{ .Values.scheduler.deviceDefaults.cpu | quote }}
-  DEVICE_DEFAULT_MEMORY: {{ .Values.scheduler.deviceDefaults.memory | quote }}
+  DEVICE_DEFAULT_CPU: {{ .Values.limits.device.defaultCpu | quote }}
+  DEVICE_DEFAULT_MEMORY: {{ .Values.limits.device.defaultMemory | quote }}
   {{- with .Values.devices.statePersistence }}
   {{- if .enabled }}
   STATE_PERSISTENCE_ENABLED: "true"

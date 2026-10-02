@@ -99,6 +99,22 @@ spec:
               value: {{ .Values.scheduler.enabled | quote }}
             - name: AGENT_SCHEDULER_MAX_PODS
               value: {{ .Values.scheduler.maxPods | quote }}
+            - name: AGENT_LIMIT_DEVICE_MAX_CPU
+              value: {{ .Values.limits.device.maxCpu | quote }}
+            - name: AGENT_LIMIT_DEVICE_MAX_MEMORY
+              value: {{ .Values.limits.device.maxMemory | quote }}
+            - name: AGENT_LIMIT_DEVICE_DEFAULT_CPU
+              value: {{ .Values.limits.device.defaultCpu | quote }}
+            - name: AGENT_LIMIT_DEVICE_DEFAULT_MEMORY
+              value: {{ .Values.limits.device.defaultMemory | quote }}
+            - name: AGENT_LIMIT_LAB_MAX_DEVICES
+              value: {{ .Values.limits.lab.maxDevices | quote }}
+            - name: AGENT_LIMIT_LAB_MAX_CPU
+              value: {{ .Values.limits.lab.maxCpu | quote }}
+            - name: AGENT_LIMIT_LAB_MAX_MEMORY
+              value: {{ .Values.limits.lab.maxMemory | quote }}
+            - name: AGENT_LIMIT_TENANT_MAX_LABS
+              value: {{ .Values.limits.tenant.maxLabs | quote }}
             - name: AGENT_PROXY_ACCESS_TOKEN_MAX_TTL
               value: {{ .Values.proxy.l7.accessTokenMaxTTL | quote }}
             - name: AGENT_PROXY_SESSION_MAX_TTL

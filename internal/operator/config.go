@@ -110,7 +110,7 @@ type Config struct {
 	// DeviceDefaultCPU and DeviceDefaultMemory are the requests and limits of a
 	// device container that declares neither (requests always equal limits, so
 	// the pod is Guaranteed). Empty leaves such a device without resources.
-	DeviceDefaultCPU    string `env:"DEVICE_DEFAULT_CPU" envDefault:"250m"`
+	DeviceDefaultCPU    string `env:"DEVICE_DEFAULT_CPU" envDefault:"100m"`
 	DeviceDefaultMemory string `env:"DEVICE_DEFAULT_MEMORY" envDefault:"256Mi"`
 
 	// State is the device state persistence configuration (snapshot registry

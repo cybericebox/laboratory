@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
@@ -70,6 +72,11 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 	if err != nil {
 		return nil, err
 	}
+	for _, v := range variants {
+		if err := h.features.Limits.CheckSpec(&v.spec); err != nil {
+			return nil, invalid("variant %q: %v", v.id, err)
+		}
+	}
 	refs := make([]*protobuf.ItemRef, len(items))
 	envs := make([]deviceVars, len(items))
 	for i, it := range items {
@@ -98,8 +105,16 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 	if err := dupRefs(refs); err != nil {
 		return nil, err
 	}
+	over, err := h.overTenantLabLimit(ctx, refs)
+	if err != nil {
+		return nil, err
+	}
 	resolver := h.newResolver(ctx)
 	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
+		if over[i] {
+			return failedResult(refs[i], status.Errorf(codes.ResourceExhausted, "the tenant is at its limit of %d labs",
+				h.features.Limits.TenantMaxLabs))
+		}
 		state, err := h.createLab(ctx, resolver, items[i], variants[items[i].GetVariantId()], envs[i], in.GetLabels())
 		if err != nil {
 			return failedResult(refs[i], err)
@@ -372,4 +387,36 @@ func (h *Handler) DeleteLabs(ctx context.Context, in *protobuf.DeleteRequest) (*
 		}
 		return refs, err
 	})
+}
+
+// overTenantLabLimit says which of the items to create would pass the tenant's lab cap. The labs the tenant has
+// are counted first; an item whose lab exists is not new (the create is idempotent), and of the new ones the first
+// that fit the room are admitted, in request order. The check is made when the call arrives: calls that run at the
+// same time may pass it together.
+func (h *Handler) overTenantLabLimit(ctx context.Context, refs []*protobuf.ItemRef) ([]bool, error) {
+	over := make([]bool, len(refs))
+	max := h.features.Limits.TenantMaxLabs
+	if max <= 0 {
+		return over, nil
+	}
+	have, err := h.listLabs(ctx, "", "")
+	if err != nil {
+		return nil, err
+	}
+	exists := make(map[string]bool, len(have))
+	for _, m := range have {
+		exists[m.group+"/"+names.IDOf(m.lab)] = true
+	}
+	room := max - len(have)
+	for i, r := range refs {
+		if exists[r.GetLabGroup()+"/"+r.GetName()] {
+			continue
+		}
+		if room <= 0 {
+			over[i] = true
+			continue
+		}
+		room--
+	}
+	return over, nil
 }

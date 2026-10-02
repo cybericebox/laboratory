@@ -499,12 +499,31 @@ scheduler:
     enabled: true
     # Dispatch goes on after this long even if some image is still not pulled.
     timeout: 5m
-  # CPU and memory of a device container that declares none. Requests always equal
-  # limits (Guaranteed pods); a declared request and limit collapse to the limit.
-  # Empty string: a device without resources gets none (best effort).
-  deviceDefaults:
-    cpu: 250m
-    memory: 256Mi
+
+# ============================================================
+# Limits the cluster owns on devices, labs and tenants
+# ============================================================
+# The management agent enforces them on CreateLabs (a lab over them is refused with the reason) and reports them
+# in GetFeatures and the Monitoring stream; the backend keeps no copy. CPU and memory are Kubernetes quantities.
+# A device's resources are its limit, else its request, else the default; requests always equal limits (Guaranteed
+# pods), so the scheduler and the quotas count the real load. 0 / "0" = no limit.
+limits:
+  device:
+    # The most one device may take.
+    maxCpu: 500m
+    maxMemory: 512Mi
+    # The planning profile: what a device that declares no resources gets (and counts as).
+    defaultCpu: 100m
+    defaultMemory: 256Mi
+  lab:
+    # Container devices of one lab (switches and hubs run no pod and do not count).
+    maxDevices: 10
+    # The sum over the devices of one lab.
+    maxCpu: "2"
+    maxMemory: 2Gi
+  tenant:
+    # Labs of one tenant; 0 = unlimited (the tenant's resource quota still applies).
+    maxLabs: 0
 
 # ============================================================
 # Management agent: optional per-cluster gRPC agent for platform ops

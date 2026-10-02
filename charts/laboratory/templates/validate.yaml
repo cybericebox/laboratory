@@ -41,6 +41,9 @@ at install time instead of shipping a broken deployment.
 {{- if lt (int .Values.scheduler.maxPods) 0 }}
 {{- fail "scheduler.maxPods must not be negative (0 sets no limit)" }}
 {{- end }}
+{{- if hasKey .Values.scheduler "deviceDefaults" }}
+{{- fail "scheduler.deviceDefaults moved to limits.device.defaultCpu / defaultMemory" }}
+{{- end }}
 {{- if hasKey .Values.scheduler "headroomPercent" }}
 {{- fail "scheduler.headroomPercent was renamed to scheduler.platformReservePercent (and scheduler.platformReserveCpu/Memory were added)" }}
 {{- end }}

@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/tenant"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
@@ -34,6 +35,8 @@ type Features struct {
 	// ProxyAccessTokenMaxTTL and ProxySessionMaxTTL are the L7 proxy's limits.
 	ProxyAccessTokenMaxTTL time.Duration
 	ProxySessionMaxTTL     time.Duration
+	// Limits are the caps CreateLabs enforces.
+	Limits limits.Limits
 }
 
 type featuresCache struct {
@@ -84,6 +87,12 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 			ImageCache: &protobuf.ImageCacheFeature{Enabled: f.CacheEnabled, Registries: append([]string(nil), f.CacheRegistries...)},
 			Scheduler:  &protobuf.SchedulerFeature{Enabled: f.SchedulerEnabled, MaxPods: f.SchedulerMaxPods},
 			Endpoints:  &protobuf.EndpointsFeature{LabsDomain: f.LabsDomain, VpnEndpoint: f.VPNEndpoint},
+			Limits: &protobuf.LimitsFeature{
+				DeviceMaxCpuMillicores: f.Limits.DeviceMaxCPU, DeviceMaxMemoryBytes: f.Limits.DeviceMaxMemory,
+				DeviceDefaultCpuMillicores: f.Limits.DeviceDefaultCPU, DeviceDefaultMemoryBytes: f.Limits.DeviceDefaultMemory,
+				LabMaxDevices: int32(f.Limits.LabMaxDevices), LabMaxCpuMillicores: f.Limits.LabMaxCPU, LabMaxMemoryBytes: f.Limits.LabMaxMemory,
+				TenantMaxLabs: int32(f.Limits.TenantMaxLabs),
+			},
 			Proxy: &protobuf.ProxyFeature{
 				AccessTokenMaxTtlSeconds: int64(f.ProxyAccessTokenMaxTTL.Seconds()), SessionMaxTtlSeconds: int64(f.ProxySessionMaxTTL.Seconds()),
 			},

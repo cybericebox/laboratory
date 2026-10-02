@@ -287,3 +287,27 @@ func TestAgentGetsTheFeatureValues(t *testing.T) {
 		}
 	}
 }
+
+func TestLimitsReachTheAgentAndTheOperator(t *testing.T) {
+	out, err := helmTemplate(t, append(agentSet, "-s", "templates/agent/deployment.yaml", "-s", "templates/operator/configmap.yaml",
+		"--set", "limits.tenant.maxLabs=5", "--set", "limits.lab.maxDevices=4")...)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, want := range []string{"name: AGENT_LIMIT_DEVICE_MAX_CPU\n              value: \"500m\"", "name: AGENT_LIMIT_DEVICE_MAX_MEMORY\n              value: \"512Mi\"",
+		"name: AGENT_LIMIT_DEVICE_DEFAULT_CPU\n              value: \"100m\"", "name: AGENT_LIMIT_DEVICE_DEFAULT_MEMORY\n              value: \"256Mi\"",
+		"name: AGENT_LIMIT_LAB_MAX_DEVICES\n              value: \"4\"", "name: AGENT_LIMIT_LAB_MAX_CPU\n              value: \"2\"",
+		"name: AGENT_LIMIT_LAB_MAX_MEMORY\n              value: \"2Gi\"", "name: AGENT_LIMIT_TENANT_MAX_LABS\n              value: \"5\"",
+		`DEVICE_DEFAULT_CPU: "100m"`, `DEVICE_DEFAULT_MEMORY: "256Mi"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+}
+
+func TestOldDeviceDefaultsKeyIsRefused(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "scheduler.deviceDefaults.cpu=1")
+	if err == nil || !strings.Contains(out, "limits.device") {
+		t.Fatalf("scheduler.deviceDefaults must be refused: %v\n%s", err, out)
+	}
+}

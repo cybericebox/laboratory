@@ -32,7 +32,7 @@ func TestSchedulerDefaultsReachTheOperator(t *testing.T) {
 		"SCHEDULER_RESOURCE_CHECK":    "true",
 		"SCHEDULER_PREPULL":           "true",
 		"SCHEDULER_PREPULL_TIMEOUT":   "5m",
-		"DEVICE_DEFAULT_CPU":          "250m",
+		"DEVICE_DEFAULT_CPU":          "100m",
 		"DEVICE_DEFAULT_MEMORY":       "256Mi",
 	}
 	got := operatorConfig(t)
@@ -58,14 +58,14 @@ func TestSchedulerValuesOverride(t *testing.T) {
 		"--set", "scheduler.resourceCheck=false",
 		"--set", "scheduler.prepull.enabled=false",
 		"--set", "scheduler.prepull.timeout=10m",
-		"--set", "scheduler.deviceDefaults.cpu=500m",
-		"--set", "scheduler.deviceDefaults.memory=1Gi",
+		"--set", "limits.device.defaultCpu=400m",
+		"--set", "limits.device.defaultMemory=1Gi",
 	)
 	want := map[string]string{
 		"SCHEDULER_ENABLED": "false", "SCHEDULER_MAX_PODS": "50", "SCHEDULER_STARTUP_TIMEOUT": "90s",
 		"SCHEDULER_RESTART_THRESHOLD": "3", "SCHEDULER_PLATFORM_RESERVE_PERCENT": "25", "SCHEDULER_PLATFORM_RESERVE_CPU": "300m", "SCHEDULER_PLATFORM_RESERVE_MEMORY": "1Gi", "SCHEDULER_RESOURCE_CHECK": "false",
 		"SCHEDULER_PREPULL": "false", "SCHEDULER_PREPULL_TIMEOUT": "10m",
-		"DEVICE_DEFAULT_CPU": "500m", "DEVICE_DEFAULT_MEMORY": "1Gi",
+		"DEVICE_DEFAULT_CPU": "400m", "DEVICE_DEFAULT_MEMORY": "1Gi",
 	}
 	for k, v := range want {
 		if got[k] != v {

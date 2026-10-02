@@ -6,6 +6,7 @@ import (
 	"github.com/caarlos0/env/v11"
 
 	"github.com/cybericebox/laboratory/internal/grouppods"
+	"github.com/cybericebox/laboratory/internal/limits"
 )
 
 // ServerTLSConfig is the agent's own TLS identity — a key pair only, no CA.
@@ -55,6 +56,8 @@ type Config struct {
 	// ProxyAccessTokenMaxTTL and ProxySessionMaxTTL are the L7 proxy's limits (chart proxy.l7.*), reported by GetFeatures.
 	ProxyAccessTokenMaxTTL time.Duration `env:"AGENT_PROXY_ACCESS_TOKEN_MAX_TTL" envDefault:"5m"`
 	ProxySessionMaxTTL     time.Duration `env:"AGENT_PROXY_SESSION_MAX_TTL" envDefault:"24h"`
+	// Limits are the caps on devices, labs and tenants the agent enforces on CreateLabs and reports.
+	Limits limits.Config
 	// BaseDomain is the domain of the lab web endpoints; PublicVPNEndpoint is host:port of WireGuard.
 	BaseDomain        string `env:"AGENT_BASE_DOMAIN"`
 	PublicVPNEndpoint string `env:"AGENT_PUBLIC_VPN_ENDPOINT"`
