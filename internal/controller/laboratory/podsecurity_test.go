@@ -32,7 +32,7 @@ func TestDevicePodIsHardened(t *testing.T) {
 	if spec.HostUsers != nil {
 		t.Error("user namespaces are off in this reconciler unless asked for")
 	}
-	if len(spec.SecurityContext.Sysctls) != 1 || spec.SecurityContext.Sysctls[0].Name != "net.ipv4.ping_group_range" || spec.SecurityContext.Sysctls[0].Value != "0 2147483647" {
+	if len(spec.SecurityContext.Sysctls) != 1 || spec.SecurityContext.Sysctls[0].Name != "net.ipv4.ping_group_range" || spec.SecurityContext.Sysctls[0].Value != "0 65535" {
 		t.Errorf("every device pings through ping_group_range: %+v", spec.SecurityContext.Sysctls)
 	}
 	if _, ok := spec.Containers[0].Resources.Limits["cybericebox.com/tun"]; ok {
@@ -135,6 +135,21 @@ func TestExtendedDeviceRequestsTun(t *testing.T) {
 		}
 		if got := res.Requests["cybericebox.com/tun"]; got.Cmp(one) != 0 {
 			t.Errorf("%s: tun request = %v", preset, got.String())
+		}
+	}
+}
+
+// With and without a user namespace the device pod carries the same ping range, and it fits the namespace's mapping.
+func TestPingSysctlIsTheSameWithAndWithoutUserNamespaces(t *testing.T) {
+	for _, userns := range []bool{false, true} {
+		r := &DeviceReconciler{Security: PodSecurity{UserNamespaces: userns}}
+		_, _, _, spec := r.workloadTemplate(newDeviceForPod(), false)
+		sc := spec.SecurityContext.Sysctls
+		if len(sc) != 1 || sc[0].Name != "net.ipv4.ping_group_range" || sc[0].Value != "0 65535" {
+			t.Errorf("userns=%v: sysctls %+v", userns, sc)
+		}
+		if userns != (spec.HostUsers != nil && !*spec.HostUsers) {
+			t.Errorf("userns=%v: hostUsers %v", userns, spec.HostUsers)
 		}
 	}
 }

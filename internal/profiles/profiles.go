@@ -15,9 +15,11 @@ const (
 // /dev/net/tun and nothing else from the host.
 const TUNResource = "cybericebox.com/tun"
 
-// PingGroupRange is the value of net.ipv4.ping_group_range of every device: unprivileged ICMP echo sockets for every
-// group, so `ping` works without NET_RAW.
-const PingGroupRange = "0 2147483647"
+// PingGroupRange is the value of net.ipv4.ping_group_range of every device: unprivileged ICMP echo sockets for the groups 0 to 65535, so
+// `ping` works without NET_RAW. The upper bound must lie inside the group mapping of the pod: with hostUsers: false (a user namespace
+// of 65536 ids) a larger bound makes runc fail the sysctl write ("invalid argument") and the pod never starts. It is the same range
+// with and without a user namespace.
+const PingGroupRange = "0 65535"
 
 // Base is the capability set of every device after "drop ALL". Privilege escalation stays allowed (sudo, setuid).
 var Base = []string{
