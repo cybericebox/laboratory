@@ -113,8 +113,8 @@ What gets installed:
 **The proxy** (`proxy.*`) is one Deployment with two containers, the L7 HTTPS proxy and the WireGuard demux, **two replicas by default**
 (`proxy.replicas`), a PodDisruptionBudget with `minAvailable: 1` (`proxy.podDisruptionBudget`, rendered only with more than one replica) and a
 a **required** pod anti-affinity by hostname: never two replicas on one node (with more replicas than nodes the extra ones stay Pending). For larger clusters
-set `proxy.mode: daemonset`: one proxy pod on every node (`proxy.nodeSelector` narrows the set; `replicas` and the budget do not apply; the default is
-`deployment`). In both modes the proxy requests are pods like any other, so the scheduler's room for lab pods on each node is what is left after them
+set `proxy.mode: daemonset`: one proxy pod on every node (`proxy.nodeSelector` and `proxy.tolerations` narrow the set; `replicas` and the budget do not apply; the default is
+`replicas`, a fixed count: on a one-node cluster set `proxy.replicas: 1`, and a live install refuses more replicas than nodes). In both modes the proxy requests are pods like any other, so the scheduler's room for lab pods on each node is what is left after them
 (see "Platform reserve"). The L7 proxy is stateless (its session cookie is signed with the shared `proxy-session` secret), so a request
 may land on any replica. The demux keeps no state a restart would lose: a WireGuard client that lands on the other replica (after a reconnect, or when
 the replica it used is gone) re-handshakes within its persistent keepalive, about 15 s. Both containers are Guaranteed (requests = limits): L7 `500m`/`64Mi`,
@@ -539,9 +539,9 @@ persistence and has no quota.
   expiry changes only when it reconnects with the renewed certificate). Quotas and the group overhead stay in `GetCapacity`. The agent
   gets the cluster values from the same chart keys as the operator (`devices.statePersistence.*`, `scheduler.enabled/maxPods`,
   `registry.cache`, `operator.baseDomain`, `operator.publicVPNEndpoint`, `agent.enrollment.certificateTTL`).
-- **Limits.** `limits` in the features is what the cluster allows, and `CreateLabs` enforces it: `limits.device.maxCpu` (500m) and
-  `maxMemory` (512Mi) per device, `limits.lab.maxDevices` (10 container devices; switches and hubs do not count), `limits.lab.maxCpu` (2) and
-  `maxMemory` (2Gi) as the sum over the devices of a lab, `limits.tenant.maxLabs` (0 = unlimited; the tenant's resource quota still applies).
+- **Limits.** `limits` in the features (`device`, `lab`, `tenant`; 0 = no limit) is a sanity ceiling, not a sizing profile, and is what the cluster allows, and `CreateLabs` enforces it: `limits.device.maxCpu` (2000m) and
+  `maxMemory` (4Gi) per device, `limits.lab.maxDevices` (20 container devices; switches and hubs do not count), `limits.lab.maxCpu` (4000m) and
+  `maxMemory` (8Gi) as the sum over the devices of a lab, `limits.tenant.maxLabs` (0 = unlimited; the tenant's resource quota still applies).
   A device's resources are its limit, else its request, else the planning profile `limits.device.defaultCpu` (100m) / `defaultMemory`
   (256Mi), which is also what the scheduler gives a device without resources (requests = limits). A variant over a cap is
   `InvalidArgument` naming the variant, the device and both numbers. Over `maxLabs` the new items are `FAILED` (`ResourceExhausted`

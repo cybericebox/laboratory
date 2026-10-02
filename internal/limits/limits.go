@@ -14,15 +14,15 @@ import (
 // Config is read by the agent from the environment the chart gives it. CPU is a Kubernetes quantity ("500m", "2"),
 // memory too ("512Mi"). The defaults mirror values.yaml.
 type Config struct {
-	DeviceMaxCPU        string `env:"AGENT_LIMIT_DEVICE_MAX_CPU" envDefault:"500m"`
-	DeviceMaxMemory     string `env:"AGENT_LIMIT_DEVICE_MAX_MEMORY" envDefault:"512Mi"`
+	DeviceMaxCPU        string `env:"AGENT_LIMIT_DEVICE_MAX_CPU" envDefault:"2000m"`
+	DeviceMaxMemory     string `env:"AGENT_LIMIT_DEVICE_MAX_MEMORY" envDefault:"4Gi"`
 	DeviceDefaultCPU    string `env:"AGENT_LIMIT_DEVICE_DEFAULT_CPU" envDefault:"100m"`
 	DeviceDefaultMemory string `env:"AGENT_LIMIT_DEVICE_DEFAULT_MEMORY" envDefault:"256Mi"`
 	// LabMaxDevices caps the devices of one lab (0 = no limit); LabMaxCPU and LabMaxMemory cap the sum of the
 	// resources of its devices (the planning profile counts for a device without resources).
-	LabMaxDevices int    `env:"AGENT_LIMIT_LAB_MAX_DEVICES" envDefault:"10"`
-	LabMaxCPU     string `env:"AGENT_LIMIT_LAB_MAX_CPU" envDefault:"2"`
-	LabMaxMemory  string `env:"AGENT_LIMIT_LAB_MAX_MEMORY" envDefault:"2Gi"`
+	LabMaxDevices int    `env:"AGENT_LIMIT_LAB_MAX_DEVICES" envDefault:"20"`
+	LabMaxCPU     string `env:"AGENT_LIMIT_LAB_MAX_CPU" envDefault:"4000m"`
+	LabMaxMemory  string `env:"AGENT_LIMIT_LAB_MAX_MEMORY" envDefault:"8Gi"`
 	// TenantMaxLabs caps the labs of one tenant (0 = no limit; the tenant's resource quota still applies).
 	TenantMaxLabs int `env:"AGENT_LIMIT_TENANT_MAX_LABS" envDefault:"0"`
 }

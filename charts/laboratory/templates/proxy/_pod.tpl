@@ -5,7 +5,7 @@ metadata:
     {{- include "laboratory.selectorLabels" . | nindent 4 }}
 spec:
   serviceAccountName: laboratory-proxy
-  {{- if eq .Values.proxy.mode "deployment" }}
+  {{- if eq .Values.proxy.mode "replicas" }}
   affinity:
     podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
@@ -16,6 +16,10 @@ spec:
   {{- end }}
   {{- with .Values.proxy.nodeSelector }}
   nodeSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.proxy.tolerations }}
+  tolerations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
   {{- with .Values.imagePullSecrets }}

@@ -664,20 +664,33 @@ message FeaturesResponse {
 }
 
 // Caps the cluster owns. CreateLabs refuses a lab over them (InvalidArgument with the reason; a tenant over
-// tenant_max_labs gets FAILED items with the reason). 0 = no limit, except the default_* values, which are
-// the planning profile of a device that declares no resources (the scheduler counts with it too).
+// tenant.max_labs gets FAILED items with the reason). 0 = no limit, except the default_* values, which are the
+// planning profile of a device that declares no resources (the scheduler counts with it too). Devices run
+// Guaranteed (request = limit); a topology value counts as its limit, else its request, else the default.
 message LimitsFeature {
-  int64 device_max_cpu_millicores = 1;
-  int64 device_max_memory_bytes = 2;
-  int64 device_default_cpu_millicores = 3;
-  int64 device_default_memory_bytes = 4;
+  DeviceLimits device = 1;
+  LabLimits lab = 2;
+  TenantLimits tenant = 3;
+}
+
+message DeviceLimits {
+  int64 max_cpu_millicores = 1;
+  int64 max_memory_bytes = 2;
+  int64 default_cpu_millicores = 3;
+  int64 default_memory_bytes = 4;
+}
+
+message LabLimits {
   // Container devices per lab (switches and hubs run no pod and do not count).
-  int32 lab_max_devices = 5;
+  int32 max_devices = 1;
   // The sum over the devices of a lab, the planning profile counted for a device without resources.
-  int64 lab_max_cpu_millicores = 6;
-  int64 lab_max_memory_bytes = 7;
+  int64 max_cpu_millicores = 2;
+  int64 max_memory_bytes = 3;
+}
+
+message TenantLimits {
   // Labs of one tenant; the tenant's resource quota still applies.
-  int32 tenant_max_labs = 8;
+  int32 max_labs = 1;
 }
 
 // Limits the L7 proxy enforces on lab access.

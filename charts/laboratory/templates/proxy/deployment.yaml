@@ -1,4 +1,4 @@
-{{- if and .Values.proxy.enabled (eq .Values.proxy.mode "deployment") }}
+{{- if and .Values.proxy.enabled (eq .Values.proxy.mode "replicas") }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

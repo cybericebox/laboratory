@@ -45,12 +45,12 @@ func TestProxyBudgetNeedsMoreThanOneReplica(t *testing.T) {
 
 // daemonset mode: one pod per node (narrowed by nodeSelector), same pod as the Deployment's, no replicas, no budget.
 func TestProxyDaemonSetMode(t *testing.T) {
-	out, err := helmTemplate(t, "--set", "proxy.mode=daemonset", "--set-string", "proxy.nodeSelector.lab=true",
+	out, err := helmTemplate(t, "--set", "proxy.mode=daemonset", "--set-string", "proxy.nodeSelector.lab=true", "--set", "proxy.tolerations[0].operator=Exists",
 		"-s", "templates/proxy/daemonset.yaml")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for _, want := range []string{"kind: DaemonSet", "name: laboratory-proxy", "app: laboratory-proxy-l7", "nodeSelector:", "lab: \"true\"", "name: l7", "name: wg-demux"} {
+	for _, want := range []string{"kind: DaemonSet", "name: laboratory-proxy", "app: laboratory-proxy-l7", "nodeSelector:", "tolerations:", "operator: Exists", "lab: \"true\"", "name: l7", "name: wg-demux"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q\n%s", want, out)
 		}
@@ -68,5 +68,12 @@ func TestProxyDaemonSetMode(t *testing.T) {
 func TestProxyDeploymentModeHasNoDaemonSet(t *testing.T) {
 	if o, err := helmTemplate(t, "-s", "templates/proxy/daemonset.yaml"); err == nil && strings.Contains(o, "kind:") {
 		t.Fatalf("deployment mode renders no DaemonSet:\n%s", o)
+	}
+}
+
+func TestProxyModeIsValidated(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "proxy.mode=deployment", "-s", "templates/proxy/deployment.yaml")
+	if err == nil || !strings.Contains(out, "proxy.mode") {
+		t.Fatalf("an unknown mode must be refused: %v\n%s", err, out)
 	}
 }

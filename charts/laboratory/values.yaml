@@ -118,14 +118,18 @@ proxy:
     repository: cybericebox/laboratory-proxy
     tag: ""
     pullPolicy: IfNotPresent
-  # How the proxy runs. "deployment" (default): `replicas` pods, never two on one node (required anti-affinity
-  # by hostname; with more replicas than nodes the extra pods stay Pending). "daemonset": one pod on every node
-  # (nodeSelector below narrows the set) for larger clusters; `replicas` and the PodDisruptionBudget do not
-  # apply. In both modes the proxy requests count against its node like any pod, so the scheduler's room
-  # for lab pods is what is left.
-  mode: deployment
-  # Nodes the proxy may run on (both modes). Empty: any.
+  # How the proxy runs.
+  #   replicas (default): a Deployment of `replicas` pods, NEVER two on one node (required anti-affinity by
+  #     hostname). With more replicas than schedulable nodes the extra pods stay Pending, so on a one-node
+  #     cluster set replicas: 1 (the install refuses replicas > nodes when it can count them).
+  #   daemonset: one pod on every node (nodeSelector / tolerations narrow the set), for larger clusters;
+  #     `replicas` and the PodDisruptionBudget do not apply.
+  # In both modes the proxy requests count against its node like any pod, so the scheduler's room for lab
+  # pods is what is left.
+  mode: replicas
+  # Nodes the proxy may run on and the taints it tolerates (both modes). Empty: any node.
   nodeSelector: {}
+  tolerations: []
   # Two replicas by default: the L7 proxy is stateless (its session cookie is signed with the shared
   # secret), and a WireGuard client that lands on the other replica after a restart re-handshakes within
   # its persistent keepalive (about 15 s). Anti-affinity (preferred, by hostname) spreads them over nodes
@@ -506,21 +510,22 @@ scheduler:
 # The management agent enforces them on CreateLabs (a lab over them is refused with the reason) and reports them
 # in GetFeatures and the Monitoring stream; the backend keeps no copy. CPU and memory are Kubernetes quantities.
 # A device's resources are its limit, else its request, else the default; requests always equal limits (Guaranteed
-# pods), so the scheduler and the quotas count the real load. 0 / "0" = no limit.
+# pods), so the scheduler and the quotas count the real load. The maxima are a sanity ceiling, not a sizing
+# profile. 0 / "0" = no limit.
 limits:
   device:
     # The most one device may take.
-    maxCpu: 500m
-    maxMemory: 512Mi
+    maxCpu: 2000m
+    maxMemory: 4Gi
     # The planning profile: what a device that declares no resources gets (and counts as).
     defaultCpu: 100m
     defaultMemory: 256Mi
   lab:
     # Container devices of one lab (switches and hubs run no pod and do not count).
-    maxDevices: 10
+    maxDevices: 20
     # The sum over the devices of one lab.
-    maxCpu: "2"
-    maxMemory: 2Gi
+    maxCpu: 4000m
+    maxMemory: 8Gi
   tenant:
     # Labs of one tenant; 0 = unlimited (the tenant's resource quota still applies).
     maxLabs: 0

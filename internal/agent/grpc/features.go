@@ -88,10 +88,12 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 			Scheduler:  &protobuf.SchedulerFeature{Enabled: f.SchedulerEnabled, MaxPods: f.SchedulerMaxPods},
 			Endpoints:  &protobuf.EndpointsFeature{LabsDomain: f.LabsDomain, VpnEndpoint: f.VPNEndpoint},
 			Limits: &protobuf.LimitsFeature{
-				DeviceMaxCpuMillicores: f.Limits.DeviceMaxCPU, DeviceMaxMemoryBytes: f.Limits.DeviceMaxMemory,
-				DeviceDefaultCpuMillicores: f.Limits.DeviceDefaultCPU, DeviceDefaultMemoryBytes: f.Limits.DeviceDefaultMemory,
-				LabMaxDevices: int32(f.Limits.LabMaxDevices), LabMaxCpuMillicores: f.Limits.LabMaxCPU, LabMaxMemoryBytes: f.Limits.LabMaxMemory,
-				TenantMaxLabs: int32(f.Limits.TenantMaxLabs),
+				Device: &protobuf.DeviceLimits{
+					MaxCpuMillicores: f.Limits.DeviceMaxCPU, MaxMemoryBytes: f.Limits.DeviceMaxMemory,
+					DefaultCpuMillicores: f.Limits.DeviceDefaultCPU, DefaultMemoryBytes: f.Limits.DeviceDefaultMemory,
+				},
+				Lab:    &protobuf.LabLimits{MaxDevices: int32(f.Limits.LabMaxDevices), MaxCpuMillicores: f.Limits.LabMaxCPU, MaxMemoryBytes: f.Limits.LabMaxMemory},
+				Tenant: &protobuf.TenantLimits{MaxLabs: int32(f.Limits.TenantMaxLabs)},
 			},
 			Proxy: &protobuf.ProxyFeature{
 				AccessTokenMaxTtlSeconds: int64(f.ProxyAccessTokenMaxTTL.Seconds()), SessionMaxTtlSeconds: int64(f.ProxySessionMaxTTL.Seconds()),

@@ -1,4 +1,4 @@
-{{- if and .Values.proxy.enabled (eq .Values.proxy.mode "deployment") .Values.proxy.podDisruptionBudget.enabled (gt (int .Values.proxy.replicas) 1) }}
+{{- if and .Values.proxy.enabled (eq .Values.proxy.mode "replicas") .Values.proxy.podDisruptionBudget.enabled (gt (int .Values.proxy.replicas) 1) }}
 # One proxy replica stays up during a node drain (only with more than one replica: a budget on a single
 # replica would block every drain).
 apiVersion: policy/v1

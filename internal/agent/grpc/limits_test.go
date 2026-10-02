@@ -92,9 +92,10 @@ func TestFeaturesReportTheLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 	l := got.GetLimits()
-	if l.GetDeviceMaxCpuMillicores() != 500 || l.GetDeviceMaxMemoryBytes() != 512<<20 || l.GetDeviceDefaultCpuMillicores() != 100 ||
-		l.GetDeviceDefaultMemoryBytes() != 256<<20 || l.GetLabMaxDevices() != 3 || l.GetLabMaxCpuMillicores() != 1000 ||
-		l.GetLabMaxMemoryBytes() != 1<<30 || l.GetTenantMaxLabs() != 2 {
+	d, lab := l.GetDevice(), l.GetLab()
+	if d.GetMaxCpuMillicores() != 500 || d.GetMaxMemoryBytes() != 512<<20 || d.GetDefaultCpuMillicores() != 100 ||
+		d.GetDefaultMemoryBytes() != 256<<20 || lab.GetMaxDevices() != 3 || lab.GetMaxCpuMillicores() != 1000 ||
+		lab.GetMaxMemoryBytes() != 1<<30 || l.GetTenant().GetMaxLabs() != 2 {
 		t.Fatalf("limits: %+v", l)
 	}
 }

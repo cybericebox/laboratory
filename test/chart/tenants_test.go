@@ -294,10 +294,10 @@ func TestLimitsReachTheAgentAndTheOperator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for _, want := range []string{"name: AGENT_LIMIT_DEVICE_MAX_CPU\n              value: \"500m\"", "name: AGENT_LIMIT_DEVICE_MAX_MEMORY\n              value: \"512Mi\"",
+	for _, want := range []string{"name: AGENT_LIMIT_DEVICE_MAX_CPU\n              value: \"2000m\"", "name: AGENT_LIMIT_DEVICE_MAX_MEMORY\n              value: \"4Gi\"",
 		"name: AGENT_LIMIT_DEVICE_DEFAULT_CPU\n              value: \"100m\"", "name: AGENT_LIMIT_DEVICE_DEFAULT_MEMORY\n              value: \"256Mi\"",
-		"name: AGENT_LIMIT_LAB_MAX_DEVICES\n              value: \"4\"", "name: AGENT_LIMIT_LAB_MAX_CPU\n              value: \"2\"",
-		"name: AGENT_LIMIT_LAB_MAX_MEMORY\n              value: \"2Gi\"", "name: AGENT_LIMIT_TENANT_MAX_LABS\n              value: \"5\"",
+		"name: AGENT_LIMIT_LAB_MAX_DEVICES\n              value: \"4\"", "name: AGENT_LIMIT_LAB_MAX_CPU\n              value: \"4000m\"",
+		"name: AGENT_LIMIT_LAB_MAX_MEMORY\n              value: \"8Gi\"", "name: AGENT_LIMIT_TENANT_MAX_LABS\n              value: \"5\"",
 		`DEVICE_DEFAULT_CPU: "100m"`, `DEVICE_DEFAULT_MEMORY: "256Mi"`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q", want)
