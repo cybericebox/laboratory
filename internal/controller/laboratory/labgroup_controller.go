@@ -83,6 +83,8 @@ type LabGroupReconciler struct {
 	// NetworkPolicyEnabled gates creation of the default-deny NetworkPolicy
 	// baseline in each group namespace.
 	NetworkPolicyEnabled bool
+	// VPNStatsInterval is STATS_INTERVAL of the VPN pod of a new group; zero leaves the pod's own default.
+	VPNStatsInterval time.Duration
 	// ImagePullSecrets names registry Secrets of the operator namespace. They are
 	// copied into every group namespace and referenced by the VPN and gateway pods.
 	ImagePullSecrets []string
@@ -552,7 +554,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 								Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
 							},
 						},
-						Env: []corev1.EnvVar{
+						Env: append([]corev1.EnvVar{
 							{
 								Name: "PRIVATE_KEY",
 								ValueFrom: &corev1.EnvVarSource{
@@ -567,7 +569,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 							{Name: "VPN_BASE_NETWORK", Value: r.VPNBaseNetwork},
 							{Name: "LISTEN_PORT", Value: fmt.Sprint(r.vpnPort())},
 							{Name: "SUPPORT_EMAIL", Value: r.SupportEmail},
-						},
+						}, r.vpnStatsEnv()...),
 					}},
 				},
 			},
@@ -1002,4 +1004,12 @@ func (r *LabGroupReconciler) reportPinWarning(lg *laboratoryv1alpha1.LabGroup, n
 			r.Recorder.Event(lg, corev1.EventTypeWarning, "ImageNotPinned", w)
 		}
 	}
+}
+
+// vpnStatsEnv is STATS_INTERVAL of the VPN pod, when the chart sets one.
+func (r *LabGroupReconciler) vpnStatsEnv() []corev1.EnvVar {
+	if r.VPNStatsInterval <= 0 {
+		return nil
+	}
+	return []corev1.EnvVar{{Name: "STATS_INTERVAL", Value: r.VPNStatsInterval.String()}}
 }

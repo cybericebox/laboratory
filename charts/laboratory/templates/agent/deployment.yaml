@@ -41,6 +41,10 @@ spec:
               value: /tls/tls.crt
             - name: AGENT_TLS_KEY
               value: /tls/tls.key
+            - name: AGENT_ID
+              value: {{ .Values.agent.id | quote }}
+            - name: AGENT_TENANT_STATUS_INTERVAL
+              value: {{ .Values.agent.tenantStatusInterval | quote }}
           {{- if include "laboratory.registryEnabled" . }}
             # ExportDeviceSnapshot reads the snapshots from the platform registry.
             - name: AGENT_REGISTRY_ADDR

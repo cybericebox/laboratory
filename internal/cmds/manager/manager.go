@@ -273,6 +273,7 @@ func Run() {
 			Name:      cfg.AgentServiceAccount,
 		},
 		NetworkPolicyEnabled: cfg.NetworkPolicyEnabled,
+		VPNStatsInterval:     cfg.VPNStatsInterval,
 		ImagePullSecrets:     cfg.ImagePullSecrets,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LabGroup")

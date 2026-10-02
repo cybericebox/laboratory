@@ -48,11 +48,17 @@ operator:
 
   networkPolicy:
     enabled: true
+  # Default-deny NetworkPolicy baseline in the namespace of every LabGroup (the chart's own policy of
+  # the operator pod is networkPolicy.enabled above).
+  groupNetworkPolicy:
+    enabled: true
 
 # ============================================================
 # VPN pod image (created at runtime by operator per LabGroup)
 # ============================================================
 vpn:
+  # How often the VPN pod of a NEW group samples traffic statistics (Go duration).
+  statsInterval: 30s
   # Resources of the VPN pod of a NEW LabGroup (requests = limits: a Guaranteed pod). Measured on the local stand:
   # idle 1m CPU / 16Mi; with 5 active peers pulling pages in a loop up to 48m CPU and 155Mi (the memory grows with the
   # peers and their traffic, so it is the limit that matters; 195Mi was seen with 10 peers: 320Mi leaves about 50% room). The data path is the
@@ -296,6 +302,8 @@ nodeAgent:
       net.bridge.bridge-nf-call-iptables: "1"
   grpcSocket: "/run/cybericebox/node-agent.sock"
   criSocket: "/run/k0s/containerd.sock"
+  # Name of the OVS bridge the node-agent programs.
+  ovsBridge: br-ovs
 
   # Container resource requests/limits for all init/main containers (host-prep,
   # ovs, node-agent, cni installers). Empty by default: these are host-privileged
@@ -411,6 +419,8 @@ devices:
     # the lab status warning names it). The write quota above is the total backstop,
     # applied after skipping.
     maxFileSize: 256Mi
+    # How often the retention sweep of old snapshots runs (Go duration).
+    retentionInterval: 10m
     # Snapshot layers kept on top of the base image before they are squashed into one.
     maxLayers: 10
     # How long the snapshots of a deleted lab are kept before the repository is deleted
@@ -482,6 +492,10 @@ scheduler:
 agent:
   enabled: false
   namespace: laboratory-agent
+  # Stable identity of this agent: makes the monitoring observations idempotent at the platform boundary.
+  id: laboratory-agent
+  # How often the agent refreshes the status of the Tenant objects (Go duration).
+  tenantStatusInterval: 30s
 
   image:
     repository: cybericebox/laboratory-agent

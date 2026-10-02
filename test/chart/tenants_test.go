@@ -236,3 +236,36 @@ func TestAgentGetsTheCachePinTTLFromValues(t *testing.T) {
 		t.Errorf("pin ttl:\n%s", out)
 	}
 }
+
+// Every tunable is passed explicitly, with the value that the code default mirrors.
+func TestRemainingTunablesArePassedWithTheirDefaults(t *testing.T) {
+	out, err := helmTemplate(t, append(agentSet, "--set", "devices.statePersistence.enabled=true",
+		"-s", "templates/operator/configmap.yaml", "-s", "templates/agent/deployment.yaml", "-s", "templates/node-agent/daemonset.yaml")...)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, want := range []string{`NETWORK_POLICY_ENABLED: "true"`, `VPN_STATS_INTERVAL: "30s"`, `STATE_RETENTION_INTERVAL: "10m"`,
+		"name: AGENT_ID\n              value: \"laboratory-agent\"", "name: AGENT_TENANT_STATUS_INTERVAL\n              value: \"30s\"",
+		"name: OVS_BRIDGE\n              value: \"br-ovs\""} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q\n%s", want, out)
+		}
+	}
+}
+
+func TestRemainingTunablesFollowValues(t *testing.T) {
+	out, err := helmTemplate(t, append(agentSet, "--set", "devices.statePersistence.enabled=true",
+		"--set", "operator.groupNetworkPolicy.enabled=false", "--set", "vpn.statsInterval=1m", "--set", "devices.statePersistence.retentionInterval=1h",
+		"--set", "agent.id=ctl-1", "--set", "agent.tenantStatusInterval=5s", "--set", "nodeAgent.ovsBridge=br-x",
+		"-s", "templates/operator/configmap.yaml", "-s", "templates/agent/deployment.yaml", "-s", "templates/node-agent/daemonset.yaml")...)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, want := range []string{`NETWORK_POLICY_ENABLED: "false"`, `VPN_STATS_INTERVAL: "1m"`, `STATE_RETENTION_INTERVAL: "1h"`,
+		"name: AGENT_ID\n              value: \"ctl-1\"", "name: AGENT_TENANT_STATUS_INTERVAL\n              value: \"5s\"",
+		"name: OVS_BRIDGE\n              value: \"br-x\""} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+}

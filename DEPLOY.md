@@ -527,6 +527,11 @@ and `SUPPORT_EMAIL`. Where a code default remains it mirrors the value in `value
 `proxy.l7.listen` `:8443`, `nodeAgent.criSocket` `/run/k0s/containerd.sock`). The ACME directory of the issuer is `certManager.acme.server`
 (empty: the Let's Encrypt preset of `certManager.acme.presets` chosen by `certManager.staging`).
 
+Also explicit values (each default mirrors the code default): `operator.groupNetworkPolicy.enabled` (true, the default-deny baseline of every
+group namespace; `operator.networkPolicy.enabled` is the policy of the operator pod itself), `vpn.statsInterval` (30s, `STATS_INTERVAL` of the
+VPN pod of a new group), `devices.statePersistence.retentionInterval` (10m), `agent.id` (`laboratory-agent`),
+`agent.tenantStatusInterval` (30s) and `nodeAgent.ovsBridge` (`br-ovs`).
+
 ### Enrollment & access keys
 
 A tenant's private keys never leave it. The platform (the tenant's backend) generates its own client key and access key

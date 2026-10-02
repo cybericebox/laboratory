@@ -15,6 +15,8 @@ data:
   VPN_IMAGE: "{{ .Values.vpn.image.repository }}:{{ .Values.vpn.image.tag | default .Chart.AppVersion }}"
   VPN_CPU: {{ .Values.vpn.resources.cpu | quote }}
   VPN_MEMORY: {{ .Values.vpn.resources.memory | quote }}
+  VPN_STATS_INTERVAL: {{ .Values.vpn.statsInterval | quote }}
+  NETWORK_POLICY_ENABLED: {{ .Values.operator.groupNetworkPolicy.enabled | quote }}
   GATEWAY_CPU: {{ .Values.inetGateway.resources.cpu | quote }}
   GATEWAY_MEMORY: {{ .Values.inetGateway.resources.memory | quote }}
   GATEWAY_IMAGE: "{{ .Values.inetGateway.image.repository }}:{{ .Values.inetGateway.image.tag | default .Chart.AppVersion }}"
@@ -47,6 +49,7 @@ data:
   STATE_MAX_FILE_SIZE: {{ .maxFileSize | quote }}
   STATE_MAX_LAYERS: {{ .maxLayers | quote }}
   STATE_RETENTION: {{ .retention | quote }}
+  STATE_RETENTION_INTERVAL: {{ .retentionInterval | quote }}
   {{- end }}
   {{- end }}
   {{- if .Values.registry.cache.enabled }}

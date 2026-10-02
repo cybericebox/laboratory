@@ -61,6 +61,9 @@ type Config struct {
 	// NetworkPolicyEnabled gates creation of the default-deny NetworkPolicy
 	// baseline in each LabGroup namespace.
 	NetworkPolicyEnabled bool `env:"NETWORK_POLICY_ENABLED" envDefault:"true"`
+	// VPNStatsInterval is how often the VPN pod of a NEW group samples traffic statistics
+	// (env STATS_INTERVAL of the pod).
+	VPNStatsInterval time.Duration `env:"VPN_STATS_INTERVAL" envDefault:"30s"`
 	// ImagePullSecrets lists registry Secrets (kubernetes.io/dockerconfigjson) in the
 	// operator namespace, created outside the chart. The operator copies them into
 	// every group namespace and sets them on the VPN, gateway and device pods, so a
