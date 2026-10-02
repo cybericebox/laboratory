@@ -84,12 +84,11 @@ Comma-separated names of the registries the image cache serves.
 {{- end }}
 
 {{/*
-Non-empty when the platform registry (zot) is deployed: device state persistence
-or the image cache is on.
+Non-empty when the platform registry (zot) is deployed. It always is: neither
+devices.statePersistence nor registry.cache decides it, so flipping one of them never
+removes the registry (and the snapshots in it).
 */}}
-{{- define "laboratory.registryEnabled" -}}
-{{- if or .Values.devices.statePersistence.enabled .Values.registry.cache.enabled -}}true{{- end -}}
-{{- end }}
+{{- define "laboratory.registryEnabled" -}}true{{- end }}
 
 {{/*
 Upstream registries of the image cache as a JSON list of {name, url}: the built-in

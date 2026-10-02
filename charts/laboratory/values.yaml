@@ -437,7 +437,8 @@ nodeAgent:
 # ============================================================
 # One zot in the release namespace serves two optional features, each with its own
 # switch: devices.statePersistence (snapshots of device state) and registry.cache
-# (a pull-through cache of the lab images). It is deployed when either is on.
+# (a pull-through cache of the lab images). zot itself is ALWAYS installed (it needs nodeAgent.enabled):
+# neither switch decides it, so turning one off never removes the registry or the snapshots in it.
 registry:
   image:
     # The full image: the image cache needs its sync extension. Multi-arch

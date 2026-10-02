@@ -39,7 +39,7 @@ func TestStatePersistenceOffByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	for _, unwanted := range []string{"laboratory-registry", "STATE_REGISTRY", "STATE_PERSISTENCE", "containerd-root", "DAC_READ_SEARCH"} {
+	for _, unwanted := range []string{"STATE_REGISTRY_CAPACITY", "STATE_PERSISTENCE", "containerd-root", "DAC_READ_SEARCH"} {
 		if strings.Contains(out, unwanted) {
 			t.Errorf("with state persistence off the chart must render nothing about it, found %q", unwanted)
 		}
@@ -216,10 +216,10 @@ func TestStatePersistenceValuesAreConfigurable(t *testing.T) {
 	}
 }
 
-func TestStatePersistenceNeedsNodeAgent(t *testing.T) {
-	out, err := helmTemplate(t, "--set", statePath+"enabled=true", "--set", "nodeAgent.enabled=false")
+func TestRegistryNeedsNodeAgent(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "nodeAgent.enabled=false")
 	if err == nil {
-		t.Fatalf("the chart must refuse state persistence without the node-agent")
+		t.Fatalf("the chart must refuse a registry without the node-agent")
 	}
 	if !strings.Contains(out, "nodeAgent.enabled") {
 		t.Errorf("unexpected error: %s", out)
@@ -424,7 +424,25 @@ func TestAgentGetsTheRegistryAddressForSnapshotExport(t *testing.T) {
 	}
 	var off appsv1.Deployment
 	render(t, "templates/agent/deployment.yaml", &off, agent...)
-	if _, set := envOf(off.Spec.Template.Spec.Containers[0])["AGENT_REGISTRY_ADDR"]; set {
-		t.Error("no registry, no address")
+	if _, set := envOf(off.Spec.Template.Spec.Containers[0])["AGENT_REGISTRY_ADDR"]; !set {
+		t.Error("the registry is always installed, so the agent always gets its address")
+	}
+}
+
+// C-1: the registry does not depend on either switch: flipping statePersistence or the cache off never removes zot.
+func TestRegistryIsAlwaysInstalled(t *testing.T) {
+	out, err := helmTemplate(t, "-s", "templates/registry/deployment.yaml", "-s", "templates/registry/service.yaml", "-s", "templates/registry/pvc.yaml", "-s", "templates/registry/secret.yaml")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	for _, want := range []string{"kind: Deployment", "kind: Service", "kind: PersistentVolumeClaim", "kind: Secret"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("with both switches off the chart must still render %q", want)
+		}
+	}
+	var na appsv1.DaemonSet
+	render(t, "templates/node-agent/daemonset.yaml", &na)
+	if envOf(na.Spec.Template.Spec.Containers[0])["STATE_FORWARD_PORT"].Value != "5035" {
+		t.Error("the node-agent relays the registry even with state persistence off")
 	}
 }

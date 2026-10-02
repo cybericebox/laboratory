@@ -71,7 +71,7 @@ at install time instead of shipping a broken deployment.
 {{- end }}
 {{- if include "laboratory.registryEnabled" . }}
 {{- if not .Values.nodeAgent.enabled }}
-{{- fail "devices.statePersistence.enabled and registry.cache.enabled need nodeAgent.enabled: the node-agent serves the registry to the nodes as localhost" }}
+{{- fail "the platform registry is always installed and needs nodeAgent.enabled: the node-agent serves the registry to the nodes as localhost" }}
 {{- end }}
 {{- if not .Values.registry.size }}
 {{- fail "registry.size is required (volume size of the platform registry)" }}

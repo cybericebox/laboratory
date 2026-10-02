@@ -1215,7 +1215,7 @@ registry:
                             #   url: https://registry.example.com
 ```
 
-It is independent of state persistence: either switch deploys the registry (the full zot image, about 70 MB
+The registry is always installed; neither `devices.statePersistence.enabled` nor `registry.cache.enabled` decides it, so switching one off never removes zot or the snapshots in it. `statePersistence.enabled` only turns the device snapshots on, `cache.enabled` only the image cache (the full zot image, about 70 MB
 compressed on amd64 and arm64; the cache needs its sync extension), both can be on. Needs `nodeAgent.enabled`.
 
 - **How the nodes reach it.** As for snapshots: the node-agent relays `127.0.0.1:<registry.forwardPort>` on every node
