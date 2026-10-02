@@ -1,3 +1,15 @@
+{{- /*
+Least privilege for the operator. Cluster-wide it can only:
+  - manage its own custom resources (laboratory.* and allocation.*) and Namespaces (a compromised operator that deletes
+    namespaces is bad, but it does not read anything: see the admission policy that limits it to group namespaces);
+  - READ pods, nodes, services, serviceaccounts, endpoints, deployments, daemonsets, networkpolicies, poddisruptionbudgets and
+    rolebindings (the informers of its controllers and the scheduler's view of the nodes). It reads NO Secret cluster-wide;
+  - create the RoleBinding that gives it its working permissions in a namespace of a LabGroup it manages (see below).
+Everything it WRITES in a namespace (Secrets, Deployments, Services, NetworkPolicies, pods...) it can only do where a RoleBinding to
+laboratory-operator-namespaced exists: in each LabGroup namespace (made by the operator itself), in the release namespace and in
+the tenants namespace (made by this chart, with narrower roles). `bind` on the named ClusterRoles lets it create those RoleBindings
+without holding their permissions cluster-wide.
+*/ -}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -5,28 +17,30 @@ metadata:
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 rules:
+# Namespaces of the LabGroups.
 - apiGroups: [""]
-  resources: [endpoints, namespaces, pods, secrets, serviceaccounts, services]
+  resources: [namespaces]
   verbs: [create, delete, get, list, patch, update, watch]
+# Read-only views (informers, the scheduler's view of the cluster).
+- apiGroups: [""]
+  resources: [endpoints, nodes, pods, serviceaccounts, services]
+  verbs: [get, list, watch]
+- apiGroups: [apps]
+  resources: [daemonsets, deployments]
+  verbs: [get, list, watch]
+- apiGroups: [networking.k8s.io]
+  resources: [networkpolicies]
+  verbs: [get, list, watch]
+- apiGroups: [policy]
+  resources: [poddisruptionbudgets]
+  verbs: [get, list, watch]
+# The platform's own resources.
 - apiGroups: [allocation.cybericebox.com]
   resources: [pools]
   verbs: [create, delete, get, list, patch, update, watch]
 - apiGroups: [allocation.cybericebox.com]
   resources: [pools/status]
   verbs: [get, patch, update]
-- apiGroups: [apps]
-  resources: [deployments]
-  verbs: [create, delete, get, list, patch, update, watch]
-# Scheduler: short-lived image prepull DaemonSets, and the free capacity of the nodes.
-- apiGroups: [apps]
-  resources: [daemonsets]
-  verbs: [create, delete, get, list, watch]
-- apiGroups: [""]
-  resources: [nodes]
-  verbs: [get, list, watch]
-- apiGroups: [cilium.io]
-  resources: [ciliumnetworkpolicies]
-  verbs: [create, delete, get, list, patch, update, watch]
 - apiGroups: [laboratory.cybericebox.com]
   resources: [connections, devices, labgateways, labgroupclients, labgroups, labs, labvpns]
   verbs: [create, delete, get, list, patch, update, watch]
@@ -44,27 +58,17 @@ rules:
 - apiGroups: [laboratory.cybericebox.com]
   resources: [tenants/status]
   verbs: [get, update, patch]
-- apiGroups: [networking.k8s.io]
-  resources: [networkpolicies]
-  verbs: [create, delete, get, list, patch, update, watch]
-- apiGroups: [policy]
-  resources: [poddisruptionbudgets]
-  verbs: [create, delete, get, list, patch, update, watch]
+# RoleBindings of the group namespaces (its own, the VPN's, the gateway's, the agent's).
 - apiGroups: [rbac.authorization.k8s.io]
   resources: [rolebindings]
   verbs: [create, delete, get, list, patch, update, watch]
-
 # Events for reconciler diagnostics (kubectl describe / get events).
 - apiGroups: [""]
   resources: [events]
   verbs: [create, patch]
-
-# The LabGroup reconciler binds the agent ServiceAccount to laboratory-agent-role
-# and the group's VPN ServiceAccount to laboratory-vpn-role in each group namespace. The `bind` verb authorizes creating RoleBindings that
-# reference this ClusterRole without the operator itself holding every permission
-# the role grants — otherwise RBAC escalation-prevention rejects the binding and
-# LabGroup provisioning fails whenever agent.enabled=true.
+# The `bind` verb authorizes creating RoleBindings that reference these ClusterRoles without the operator holding every
+# permission they grant: the agent and the VPN pod roles, and its own working role in a namespace.
 - apiGroups: [rbac.authorization.k8s.io]
   resources: [clusterroles]
-  resourceNames: [laboratory-agent-role, laboratory-vpn-role]
+  resourceNames: [laboratory-agent-role, laboratory-vpn-role, laboratory-operator-namespaced]
   verbs: [bind]

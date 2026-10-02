@@ -97,6 +97,10 @@ const (
 	RoleVPNName     = "laboratory-vpn-role"
 	RoleGatewayName = "laboratory-gateway-role"
 	RoleAgentName   = "laboratory-agent-role"
+	// RoleOperatorNamespacedName is the ClusterRole with the operator's working permissions INSIDE a namespace;
+	// OperatorRoleBindingName is the RoleBinding that grants it in each LabGroup namespace.
+	RoleOperatorNamespacedName = "laboratory-operator-namespaced"
+	OperatorRoleBindingName    = "laboratory-operator-binding"
 
 	// AgentRoleBindingName is the RoleBinding created in each LabGroup namespace
 	// that grants the management-agent ServiceAccount access via RoleAgentName,

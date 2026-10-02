@@ -59,6 +59,10 @@ type Config struct {
 	AgentServiceAccount string `env:"AGENT_SERVICE_ACCOUNT" envDefault:"laboratory-agent"`
 	// AgentServiceNamespace is the namespace of the management-agent ServiceAccount.
 	AgentServiceNamespace string `env:"AGENT_SERVICE_NAMESPACE" envDefault:"laboratory-agent"`
+	// OperatorServiceAccount and OperatorNamespace are the operator's own identity: in every LabGroup namespace it
+	// binds that ServiceAccount to the ClusterRole of its working permissions (it has no cluster-wide write access).
+	OperatorServiceAccount string `env:"OPERATOR_SERVICE_ACCOUNT" envDefault:"laboratory-controller-manager"`
+	OperatorNamespace      string `env:"OPERATOR_NAMESPACE" envDefault:"laboratory-system"`
 	// NetworkPolicyEnabled gates creation of the default-deny NetworkPolicy
 	// baseline in each LabGroup namespace.
 	NetworkPolicyEnabled bool `env:"NETWORK_POLICY_ENABLED" envDefault:"true"`

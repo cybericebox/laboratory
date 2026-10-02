@@ -85,7 +85,7 @@ func TestSchedulerRejectsBadValues(t *testing.T) {
 	}
 }
 
-// The operator reads nodes and runs the prepull DaemonSets, so its ClusterRole needs both.
+// The operator reads nodes cluster-wide and runs the prepull DaemonSets in the release namespace (its namespaced role).
 func TestOperatorMayReadNodesAndManagePrepullDaemonSets(t *testing.T) {
 	out, err := helmTemplate(t, "-s", "templates/operator/clusterrole.yaml")
 	if err != nil {
@@ -108,7 +108,7 @@ func TestOperatorMayReadNodesAndManagePrepullDaemonSets(t *testing.T) {
 	}
 	for _, c := range [][3]string{
 		{"", "nodes", "list"}, {"", "nodes", "watch"},
-		{"apps", "daemonsets", "create"}, {"apps", "daemonsets", "delete"}, {"apps", "daemonsets", "list"}, {"apps", "daemonsets", "watch"},
+		{"apps", "daemonsets", "list"}, {"apps", "daemonsets", "watch"},
 		{"", "pods", "list"},
 	} {
 		if !can(c[0], c[1], c[2]) {

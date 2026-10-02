@@ -9,6 +9,35 @@ metadata:
   name: laboratory-tenants
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
+---
+# The operator makes the enrollment tokens and removes a tenant's Secrets here, and nowhere else outside the namespaces of its groups.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: laboratory-operator-tenants
+  namespace: laboratory-tenants
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [ "" ]
+    resources: [ "secrets" ]
+    verbs: [ "create", "delete", "get", "list", "patch", "update", "watch" ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: laboratory-operator-tenants
+  namespace: laboratory-tenants
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: laboratory-operator-tenants
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-controller-manager
+    namespace: {{ .Release.Namespace }}
 {{- if .Values.agent.enabled }}
 ---
 # The agent stores the access keys here and nowhere else.

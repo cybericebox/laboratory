@@ -1,0 +1,16 @@
+# The operator's working permissions in the release namespace (the pull secrets it copies, the prepull DaemonSets, the snapshot registry credentials).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: laboratory-operator-namespaced
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: laboratory-operator-namespaced
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-controller-manager
+    namespace: {{ .Release.Namespace }}

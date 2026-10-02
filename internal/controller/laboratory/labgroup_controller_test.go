@@ -8,11 +8,13 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/grouppods"
+	"github.com/cybericebox/laboratory/internal/names"
 )
 
 var _ = Describe("LabGroup suspension", func() {
@@ -101,6 +103,31 @@ var _ = Describe("LabGroup suspension", func() {
 		Expect(r.ensureGatewayDeployment(ctx, namespace, false)).To(Succeed())
 		Expect(envOf()).To(HaveKeyWithValue("GATEWAY_EGRESS_DENY_CIDRS", "169.254.0.0/16,10.0.0.0/8,203.0.113.0/24"))
 		Expect(envOf()).To(HaveKeyWithValue("GATEWAY_EGRESS_ALLOW_CIDRS", "10.7.7.7/32"))
+	})
+
+	It("binds the operator to its working role in a namespace, and repairs the binding", func() {
+		const namespace = "default"
+		r := &LabGroupReconciler{Client: k8sClient, OperatorSA: types.NamespacedName{Namespace: "laboratory-system", Name: "laboratory-controller-manager"}}
+		Expect(r.ensureOperatorBinding(ctx, namespace)).To(Succeed())
+		DeferCleanup(func() {
+			var rb rbacv1.RoleBinding
+			if k8sClient.Get(ctx, types.NamespacedName{Name: names.OperatorRoleBindingName, Namespace: namespace}, &rb) == nil {
+				_ = k8sClient.Delete(ctx, &rb)
+			}
+		})
+		var rb rbacv1.RoleBinding
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: names.OperatorRoleBindingName, Namespace: namespace}, &rb)).To(Succeed())
+		Expect(rb.RoleRef.Kind).To(Equal("ClusterRole"))
+		Expect(rb.RoleRef.Name).To(Equal("laboratory-operator-namespaced"))
+		Expect(rb.Subjects).To(ConsistOf(rbacv1.Subject{Kind: "ServiceAccount", Name: "laboratory-controller-manager", Namespace: "laboratory-system"}))
+		// A binding someone changed is put back; without an operator identity nothing is made.
+		rb.Subjects = []rbacv1.Subject{{Kind: "ServiceAccount", Name: "intruder", Namespace: "x"}}
+		Expect(k8sClient.Update(ctx, &rb)).To(Succeed())
+		Expect(r.ensureOperatorBinding(ctx, namespace)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: names.OperatorRoleBindingName, Namespace: namespace}, &rb)).To(Succeed())
+		Expect(rb.Subjects[0].Name).To(Equal("laboratory-controller-manager"))
+		Expect((&LabGroupReconciler{Client: k8sClient}).ensureOperatorBinding(ctx, "kube-system")).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: names.OperatorRoleBindingName, Namespace: "kube-system"}, &rb)).NotTo(Succeed())
 	})
 
 	It("keeps the tunnel and internet gateway available while Lab devices are suspended", func() {

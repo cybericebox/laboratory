@@ -36,6 +36,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -213,6 +214,9 @@ func Run() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "2b172d9d.cybericebox.com",
+		// Secrets are read straight from the API server, not through an informer: an informer would need list and
+		// watch on every Secret of the cluster, and the operator has no such permission (only in its own namespaces).
+		Client: client.Options{Cache: &client.CacheOptions{DisableFor: []client.Object{&corev1.Secret{}}}},
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -276,6 +280,7 @@ func Run() {
 		},
 		NetworkPolicyEnabled:   cfg.NetworkPolicyEnabled,
 		VPNStatsInterval:       cfg.VPNStatsInterval,
+		OperatorSA:             types.NamespacedName{Namespace: cfg.OperatorNamespace, Name: cfg.OperatorServiceAccount},
 		GatewayEgressDenyCIDRs: cfg.GatewayEgressDenyCIDRs, GatewayEgressAllowCIDRs: cfg.GatewayEgressAllowCIDRs,
 		ImagePullSecrets: cfg.ImagePullSecrets,
 	}).SetupWithManager(mgr); err != nil {

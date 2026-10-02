@@ -83,6 +83,9 @@ type LabGroupReconciler struct {
 	// NetworkPolicyEnabled gates creation of the default-deny NetworkPolicy
 	// baseline in each group namespace.
 	NetworkPolicyEnabled bool
+	// OperatorSA is the operator's own ServiceAccount: it is bound to the working role in each group namespace
+	// (empty: no binding, for tests).
+	OperatorSA types.NamespacedName
 	// GatewayEgressDenyCIDRs and GatewayEgressAllowCIDRs: what the labs of a group may not (and, inside that, may)
 	// reach through the internet gateway. They go into the gateway's environment and its CiliumNetworkPolicy.
 	GatewayEgressDenyCIDRs, GatewayEgressAllowCIDRs []string
@@ -134,6 +137,11 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	if err := r.ensureNamespace(ctx, ns, &lg); err != nil {
 		logger.Error(err, "ensure namespace")
+		return ctrl.Result{}, err
+	}
+
+	if err := r.ensureOperatorBinding(ctx, ns); err != nil {
+		logger.Error(err, "ensure the operator's role binding")
 		return ctrl.Result{}, err
 	}
 
@@ -1077,4 +1085,32 @@ func upsertEnv(c *corev1.Container, want corev1.EnvVar) bool {
 	}
 	c.Env = append(c.Env, want)
 	return true
+}
+
+// ensureOperatorBinding gives the operator its working permissions in a group namespace: a RoleBinding of its own
+// ServiceAccount to the namespaced ClusterRole. The operator has no cluster-wide write access (see the chart's
+// clusterrole.yaml); this binding, created with its right to create RoleBindings and to `bind` that role, is how
+// it acts in the namespaces of its groups and nowhere else.
+func (r *LabGroupReconciler) ensureOperatorBinding(ctx context.Context, ns string) error {
+	if r.OperatorSA.Name == "" {
+		return nil
+	}
+	want := rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: names.RoleOperatorNamespacedName}
+	subject := rbacv1.Subject{Kind: "ServiceAccount", Name: r.OperatorSA.Name, Namespace: r.OperatorSA.Namespace}
+	var existing rbacv1.RoleBinding
+	err := r.Get(ctx, types.NamespacedName{Name: names.OperatorRoleBindingName, Namespace: ns}, &existing)
+	if err == nil {
+		if len(existing.Subjects) == 1 && existing.Subjects[0] == subject {
+			return nil
+		}
+		existing.Subjects = []rbacv1.Subject{subject}
+		return r.Update(ctx, &existing)
+	} else if !errors.IsNotFound(err) {
+		return err
+	}
+	return r.Create(ctx, &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: names.OperatorRoleBindingName, Namespace: ns},
+		RoleRef:    want,
+		Subjects:   []rbacv1.Subject{subject},
+	})
 }

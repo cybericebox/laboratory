@@ -710,6 +710,30 @@ The gateway forwards to the **public internet only**:
   policy. A change reaches the gateways that already run (their pods restart). Verify from a lab device with `internet.enabled`: the
   metadata address, a node address and the API server are unreachable, a public address is reachable.
 
+### Operator permissions
+
+The operator is not a cluster-admin in disguise. Its ClusterRole (`laboratory-manager-role`) holds:
+
+- full access to the platform's own resources (`laboratory.cybericebox.com`, `allocation.cybericebox.com`) and to Namespaces (the namespace of
+  every LabGroup is made and removed by it);
+- **read-only** access (get, list, watch) to nodes, pods, services, serviceaccounts, endpoints, deployments, daemonsets, networkpolicies,
+  poddisruptionbudgets and rolebindings: the informers of its controllers and the scheduler's view of node capacity;
+- create/update/delete of RoleBindings, and `bind` on exactly three ClusterRoles (`laboratory-operator-namespaced`, `laboratory-vpn-role`,
+  `laboratory-agent-role`).
+
+It has **no cluster-wide access to Secrets**, and no cluster-wide write access to anything that lives in a namespace. What it writes inside
+a namespace (Secrets, Services, ServiceAccounts, Deployments, bare pods, NetworkPolicies, CiliumNetworkPolicies, PodDisruptionBudgets) comes
+from RoleBindings to the ClusterRole `laboratory-operator-namespaced`, which exist only in: each LabGroup namespace (the operator creates
+the binding itself right after the namespace, with the RoleBinding rights and the `bind` verb above), the release namespace (made by this
+chart: pull secrets it copies, the prepull DaemonSets) and, as a narrower Role, `laboratory-tenants` (Secrets only). The manager reads Secrets
+straight from the API server instead of caching them, because an informer would need cluster-wide list and watch.
+
+What remains, and why: the operator can still create a RoleBinding in any namespace to the three roles it may bind, so on its own RBAC cannot
+stop a compromised operator from giving itself its working role in, say, `kube-system`. That is the job of the admission policy (see below).
+The platform's own resources and Namespaces are cluster-wide because LabGroups, Labs and the VNI pool are cluster-scoped or cross-namespace.
+The `config/rbac` kustomize role generated from the kubebuilder markers is for the development install only; the chart's roles are the
+deployed ones.
+
 ## Device state persistence (optional)
 
 By default a device is a container in a Deployment: when it restarts, it starts again from its image and the work
