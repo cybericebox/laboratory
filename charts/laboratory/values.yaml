@@ -481,8 +481,15 @@ scheduler:
   startupTimeout: 5m
   # ... or after this many restarts, whichever comes first.
   restartThreshold: 5
-  # Share of the schedulable CPU and memory (0-99) kept free after a dispatch.
-  headroomPercent: 10
+  # Platform reserve: CPU and memory that user labs can never consume, so the platform itself (operator, proxy,
+  # registry, node-agent, monitoring, the VPN and gateway pods' bursts) always has room. It is applied AFTER the
+  # kubelet's own reserve (the allocatable of a node is already net of kube-reserved, system-reserved and
+  # eviction) and AFTER the requests of every pod scheduled on the node (DaemonSets and the proxy included, in
+  # both proxy modes). First platformReserveCpu / platformReserveMemory come off EVERY schedulable node (absolute
+  # quantities, "0" = none), then platformReservePercent (0-99) of what is left of the sum over the nodes is kept free.
+  platformReservePercent: 10
+  platformReserveCpu: "0"
+  platformReserveMemory: "0"
   # false: dispatch does not look at the free CPU and memory of the nodes.
   resourceCheck: true
   # Pull the images of a group onto the eligible nodes before its first pod starts.

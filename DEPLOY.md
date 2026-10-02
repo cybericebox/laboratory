@@ -275,10 +275,19 @@ agent's job (`PrewarmImages`), not the scheduler's.
 
 **Resource check.** A pod is dispatched only when the schedulable nodes (Ready, not cordoned, matching the
 lab node selector, taints tolerated) have free CPU and memory for its requests: allocatable minus the
-requests of all scheduled pods, minus what already dispatched pods will still request, and with
-`scheduler.headroomPercent` of the allocatable resources kept free. Otherwise the queue waits (it does not
+requests of all scheduled pods, minus what already dispatched pods will still request, and with the platform
+reserve kept free (see "Platform reserve" below). Otherwise the queue waits (it does not
 fail) and the reason is in the status. A pod that requests more than the whole schedulable capacity can never
 fit: it is declared failed (`DoesNotFit`) and the queue goes on.
+
+**Platform reserve.** CPU and memory that user labs can never consume, so the platform itself always has room.
+It is `scheduler.platformReservePercent` (10) of the schedulable CPU and memory, plus an optional absolute reserve on
+every schedulable node (`scheduler.platformReserveCpu`, `scheduler.platformReserveMemory`, `"0"` = none) that comes off the
+node first. It is applied after the kubelet's own reserve (a node's allocatable is already net of kube-reserved,
+system-reserved and eviction thresholds) and after the requests of every pod scheduled on the node: DaemonSets, the
+proxy (Deployment or DaemonSet mode alike) and system pods are counted because the check subtracts the requests of all
+scheduled pods, not only lab pods. The value `scheduler.headroomPercent` of earlier versions was renamed, and the chart
+refuses it.
 
 **Failed pods.** A dispatched pod that is not Ready after `scheduler.startupTimeout` (5m), or that restarted
 `scheduler.restartThreshold` times (5), is declared failed: its slot is freed, the group still completes,
@@ -332,7 +341,8 @@ while none of its pods has been dispatched. The position is refreshed at a limit
 | `maxPods` | `20` | pods starting at once; `0` = no limit |
 | `startupTimeout` | `5m` | a pod not Ready after this is declared failed |
 | `restartThreshold` | `5` | restarts after which a pod that is not Ready is declared failed |
-| `headroomPercent` | `10` | share of schedulable CPU and memory kept free (0-99) |
+| `platformReservePercent` | `10` | platform reserve: share of the schedulable CPU and memory (0-99) user labs never consume |
+| `platformReserveCpu` / `platformReserveMemory` | `"0"` / `"0"` | absolute platform reserve of every schedulable node (quantities) |
 | `resourceCheck` | `true` | `false` skips the free-resource check |
 | `prepull.enabled` | `true` | prepull the images of a group |
 | `prepull.timeout` | `5m` | dispatch goes on after this long |

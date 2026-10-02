@@ -65,11 +65,12 @@ func schedulableNode(node *corev1.Node, selector map[string]string, tolerations 
 	return nodecap.Schedulable(node, selector, tolerations)
 }
 
-// snapshotCapacity sums the allocatable resources of the schedulable nodes and
-// subtracts the requests of the pods scheduled on them. Free is summed per node
+// snapshotCapacity sums the allocatable resources of the schedulable nodes (less the absolute platform reserve
+// of each) and subtracts the requests of ALL pods scheduled on them (DaemonSets, the proxy and system pods
+// included, not only lab pods). Free is summed per node
 // and never negative on a node, so an overcommitted node does not hide room
 // elsewhere. Finished pods hold no resources.
-func snapshotCapacity(nodes []corev1.Node, pods []corev1.Pod, selector map[string]string, tolerations []corev1.Toleration) capacity {
+func snapshotCapacity(nodes []corev1.Node, pods []corev1.Pod, selector map[string]string, tolerations []corev1.Toleration, nodeReserve amount) capacity {
 	requested := map[string]amount{}
 	for i := range pods {
 		p := &pods[i]
@@ -84,7 +85,8 @@ func snapshotCapacity(nodes []corev1.Node, pods []corev1.Pod, selector map[strin
 		if !schedulableNode(n, selector, tolerations) {
 			continue
 		}
-		alloc := amount{cpu: n.Status.Allocatable.Cpu().MilliValue(), mem: n.Status.Allocatable.Memory().Value()}
+		// What the platform keeps on every node comes off first; the percentage reserve is taken from the rest.
+		alloc := amount{cpu: n.Status.Allocatable.Cpu().MilliValue(), mem: n.Status.Allocatable.Memory().Value()}.sub(nodeReserve).floorZero()
 		c.nodes++
 		c.allocatable = c.allocatable.add(alloc)
 		c.free = c.free.add(alloc.sub(requested[n.Name]).floorZero())
@@ -107,7 +109,7 @@ const (
 )
 
 // check decides whether a lab needing need can be admitted while headroomPercent
-// of the allocatable CPU and memory stays free. A lab that requests nothing
+// of the schedulable CPU and memory (the platform reserve) stays free. A lab that requests nothing
 // always fits.
 func (c capacity) check(need amount, headroomPercent int) fit {
 	if need == (amount{}) {

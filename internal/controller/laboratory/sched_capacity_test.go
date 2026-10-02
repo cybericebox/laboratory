@@ -35,7 +35,7 @@ func TestSnapshotCapacityFreeIsAllocatableMinusRequests(t *testing.T) {
 	pending := testPod("", "3", "3Gi")
 	pods = append(pods, done, pending)
 
-	c := snapshotCapacity(nodes, pods, nil, nil)
+	c := snapshotCapacity(nodes, pods, nil, nil, amount{})
 	if c.nodes != 2 || c.allocatable != (amount{8000, 16 << 30}) {
 		t.Fatalf("capacity = %+v", c)
 	}
@@ -48,7 +48,7 @@ func TestSnapshotCapacityFreeIsAllocatableMinusRequests(t *testing.T) {
 func TestSnapshotCapacityClampsPerNode(t *testing.T) {
 	nodes := []corev1.Node{testNode("n1", "1", "1Gi"), testNode("n2", "4", "4Gi")}
 	pods := []corev1.Pod{testPod("n1", "3", "3Gi")}
-	c := snapshotCapacity(nodes, pods, nil, nil)
+	c := snapshotCapacity(nodes, pods, nil, nil, amount{})
 	if c.free != (amount{4000, 4 << 30}) {
 		t.Fatalf("free = %+v", c.free)
 	}
@@ -69,12 +69,12 @@ func TestSnapshotCapacityNodeEligibility(t *testing.T) {
 	nodes := []corev1.Node{ready, cordoned, notReady, other, tainted, soft}
 	sel := map[string]string{"lab": "yes"}
 
-	c := snapshotCapacity(nodes, nil, sel, nil)
+	c := snapshotCapacity(nodes, nil, sel, nil, amount{})
 	if c.nodes != 2 { // ready + soft (PreferNoSchedule does not exclude)
 		t.Fatalf("eligible nodes = %d, want 2", c.nodes)
 	}
 	tol := []corev1.Toleration{{Key: "dedicated", Operator: corev1.TolerationOpEqual, Value: "lab", Effect: corev1.TaintEffectNoSchedule}}
-	if c := snapshotCapacity(nodes, nil, sel, tol); c.nodes != 3 {
+	if c := snapshotCapacity(nodes, nil, sel, tol, amount{}); c.nodes != 3 {
 		t.Fatalf("with the toleration nodes = %d, want 3", c.nodes)
 	}
 }
@@ -123,5 +123,30 @@ func TestCapacityCheck(t *testing.T) {
 	c.take(amount{5000, 5 << 30})
 	if c.free != (amount{}) {
 		t.Errorf("free must not go negative: %+v", c.free)
+	}
+}
+
+// The platform reserve is taken after the kubelet's (allocatable is already net of it) and after every pod
+// scheduled on the node, the proxy and DaemonSet pods included, in both proxy modes; the absolute per-node
+// reserve comes off each node before the percentage is applied.
+func TestPlatformReserveCountsProxyAndNodeReserve(t *testing.T) {
+	nodes := []corev1.Node{testNode("n1", "4", "8Gi"), testNode("n2", "4", "8Gi")}
+	// deployment mode: a proxy pod on each of two nodes; daemonset mode would be the same on every node.
+	proxy := []corev1.Pod{testPod("n1", "750m", "128Mi"), testPod("n2", "750m", "128Mi")}
+	c := snapshotCapacity(nodes, proxy, nil, nil, amount{cpu: 500, mem: 1 << 30})
+	if c.allocatable != (amount{cpu: 7000, mem: 14 << 30}) || c.free != (amount{cpu: 5500, mem: 14<<30 - 256<<20}) {
+		t.Fatalf("capacity = %+v", c)
+	}
+	// 10% of the schedulable 7 CPU stays out of reach on top: 5500-700 = 4800 may be taken.
+	if got := c.check(amount{cpu: 4800}, 10); got != fitOK {
+		t.Errorf("4800m: %d", got)
+	}
+	if got := c.check(amount{cpu: 4801}, 10); got != fitWait {
+		t.Errorf("4801m: %d", got)
+	}
+	// a node smaller than the reserve gives nothing, never a negative amount
+	small := snapshotCapacity([]corev1.Node{testNode("n1", "100m", "1Gi")}, nil, nil, nil, amount{cpu: 500, mem: 2 << 30})
+	if small.allocatable != (amount{}) || small.free != (amount{}) {
+		t.Fatalf("small = %+v", small)
 	}
 }

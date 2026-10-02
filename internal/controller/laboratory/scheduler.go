@@ -34,8 +34,11 @@ type SchedulerConfig struct {
 	StartupTimeout time.Duration
 	// RestartThreshold is the restart count that fails a pod that is not Ready.
 	RestartThreshold int
-	// HeadroomPercent of the schedulable CPU and memory must stay free after a dispatch.
-	HeadroomPercent int
+	// PlatformReservePercent of the schedulable CPU and memory (allocatable, so after the kubelet's reserve,
+	// and after the requests of DaemonSets and the proxy) is never given to user labs.
+	PlatformReservePercent int
+	// PlatformReserveNode is an extra absolute reserve on every schedulable node.
+	PlatformReserveNode corev1.ResourceList
 	// ResourceCheck holds a pod back while no node has room for it.
 	ResourceCheck bool
 	// Prepull pulls the images of a group onto the nodes before its first pod starts.
@@ -662,7 +665,7 @@ func (e *clusterEnv) capacity() *capacity {
 	for _, p := range e.snap.pods {
 		pods = append(pods, *p)
 	}
-	c := snapshotCapacity(nodes.Items, pods, e.s.LabNodeSelector, e.s.LabTolerations)
+	c := snapshotCapacity(nodes.Items, pods, e.s.LabNodeSelector, e.s.LabTolerations, e.s.nodeReserve())
 	// A dispatched pod that is not on a node yet will still request its resources.
 	var reserved amount
 	for _, o := range e.objs {
@@ -692,7 +695,7 @@ func (e *clusterEnv) check(p *schedPod) fit {
 	if c == nil {
 		return fitWait
 	}
-	return c.check(p.need, e.s.Config.HeadroomPercent)
+	return c.check(p.need, e.s.Config.PlatformReservePercent)
 }
 
 func (e *clusterEnv) take(p *schedPod) {
@@ -895,4 +898,9 @@ func (s *Scheduler) gcPrepull(ctx context.Context, keep map[string]bool) error {
 		}
 	}
 	return nil
+}
+
+// nodeReserve is the absolute platform reserve of every node.
+func (s *Scheduler) nodeReserve() amount {
+	return amount{cpu: s.Config.PlatformReserveNode.Cpu().MilliValue(), mem: s.Config.PlatformReserveNode.Memory().Value()}
 }

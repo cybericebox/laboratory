@@ -47,19 +47,20 @@ func TestLoadConfigSchedulerDefaultsAndValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !cfg.SchedulerEnabled || cfg.SchedulerMaxPods != 20 || cfg.SchedulerStartupTimeout.String() != "5m0s" ||
-		cfg.SchedulerRestartThreshold != 5 || cfg.SchedulerHeadroomPercent != 10 ||
+		cfg.SchedulerRestartThreshold != 5 || cfg.SchedulerPlatformReservePercent != 10 || cfg.SchedulerPlatformReserveCPU != "0" || cfg.SchedulerPlatformReserveMemory != "0" ||
 		!cfg.SchedulerResourceCheck || !cfg.SchedulerPrepull || cfg.SchedulerPrepullTimeout.String() != "5m0s" ||
 		cfg.DeviceDefaultCPU != "250m" || cfg.DeviceDefaultMemory != "256Mi" {
 		t.Fatalf("defaults: %+v", cfg)
 	}
 
 	for name, kv := range map[string][2]string{
-		"negative max pods":   {"SCHEDULER_MAX_PODS", "-1"},
-		"headroom 100":        {"SCHEDULER_HEADROOM_PERCENT", "100"},
-		"bad cpu default":     {"DEVICE_DEFAULT_CPU", "lots"},
-		"bad startup timeout": {"SCHEDULER_STARTUP_TIMEOUT", "soon"},
-		"zero timeout":        {"SCHEDULER_STARTUP_TIMEOUT", "0s"},
-		"zero threshold":      {"SCHEDULER_RESTART_THRESHOLD", "0"},
+		"negative max pods":    {"SCHEDULER_MAX_PODS", "-1"},
+		"platform reserve 100": {"SCHEDULER_PLATFORM_RESERVE_PERCENT", "100"},
+		"reserve cpu -1":       {"SCHEDULER_PLATFORM_RESERVE_CPU", "-1"},
+		"bad cpu default":      {"DEVICE_DEFAULT_CPU", "lots"},
+		"bad startup timeout":  {"SCHEDULER_STARTUP_TIMEOUT", "soon"},
+		"zero timeout":         {"SCHEDULER_STARTUP_TIMEOUT", "0s"},
+		"zero threshold":       {"SCHEDULER_RESTART_THRESHOLD", "0"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(kv[0], kv[1])

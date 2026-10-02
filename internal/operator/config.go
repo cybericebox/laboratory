@@ -93,9 +93,13 @@ type Config struct {
 	// SchedulerRestartThreshold is the number of restarts after which a pod that is
 	// not Ready is declared failed before the timeout.
 	SchedulerRestartThreshold int `env:"SCHEDULER_RESTART_THRESHOLD" envDefault:"5"`
-	// SchedulerHeadroomPercent is the share of the schedulable CPU and memory that
-	// must stay free after a pod is dispatched.
-	SchedulerHeadroomPercent int `env:"SCHEDULER_HEADROOM_PERCENT" envDefault:"10"`
+	// SchedulerPlatformReservePercent is the platform reserve: the share of the schedulable CPU and memory
+	// (allocatable, so after the kubelet's own reserve, and counted after DaemonSet and proxy requests) that user
+	// labs can never consume. SchedulerPlatformReserveCPU and SchedulerPlatformReserveMemory are an extra
+	// absolute reserve on EVERY schedulable node (quantities, "0" = none).
+	SchedulerPlatformReservePercent int    `env:"SCHEDULER_PLATFORM_RESERVE_PERCENT" envDefault:"10"`
+	SchedulerPlatformReserveCPU     string `env:"SCHEDULER_PLATFORM_RESERVE_CPU" envDefault:"0"`
+	SchedulerPlatformReserveMemory  string `env:"SCHEDULER_PLATFORM_RESERVE_MEMORY" envDefault:"0"`
 	// SchedulerResourceCheck holds a pod back while no node has room for its requests.
 	SchedulerResourceCheck bool `env:"SCHEDULER_RESOURCE_CHECK" envDefault:"true"`
 	// SchedulerPrepull pulls the images of a group onto the nodes before its first pod starts.
@@ -198,8 +202,13 @@ func LoadConfig() (*Config, error) {
 	if cfg.SchedulerMaxPods < 0 {
 		return nil, fmt.Errorf("SCHEDULER_MAX_PODS must not be negative")
 	}
-	if cfg.SchedulerHeadroomPercent < 0 || cfg.SchedulerHeadroomPercent >= 100 {
-		return nil, fmt.Errorf("SCHEDULER_HEADROOM_PERCENT must be in [0,100)")
+	if cfg.SchedulerPlatformReservePercent < 0 || cfg.SchedulerPlatformReservePercent >= 100 {
+		return nil, fmt.Errorf("SCHEDULER_PLATFORM_RESERVE_PERCENT must be in [0,100)")
+	}
+	for name, v := range map[string]string{"SCHEDULER_PLATFORM_RESERVE_CPU": cfg.SchedulerPlatformReserveCPU, "SCHEDULER_PLATFORM_RESERVE_MEMORY": cfg.SchedulerPlatformReserveMemory} {
+		if q, err := resource.ParseQuantity(v); err != nil || q.Sign() < 0 {
+			return nil, fmt.Errorf("%s %q is not a non-negative quantity", name, v)
+		}
 	}
 	if cfg.SchedulerStartupTimeout <= 0 {
 		return nil, fmt.Errorf("SCHEDULER_STARTUP_TIMEOUT must be positive")

@@ -28,7 +28,7 @@ func TestSchedulerDefaultsReachTheOperator(t *testing.T) {
 		"SCHEDULER_MAX_PODS":          "20",
 		"SCHEDULER_STARTUP_TIMEOUT":   "5m",
 		"SCHEDULER_RESTART_THRESHOLD": "5",
-		"SCHEDULER_HEADROOM_PERCENT":  "10",
+		"SCHEDULER_PLATFORM_RESERVE_PERCENT": "10", "SCHEDULER_PLATFORM_RESERVE_CPU": "0", "SCHEDULER_PLATFORM_RESERVE_MEMORY": "0",
 		"SCHEDULER_RESOURCE_CHECK":    "true",
 		"SCHEDULER_PREPULL":           "true",
 		"SCHEDULER_PREPULL_TIMEOUT":   "5m",
@@ -54,7 +54,7 @@ func TestSchedulerValuesOverride(t *testing.T) {
 		"--set", "scheduler.maxPods=50",
 		"--set", "scheduler.startupTimeout=90s",
 		"--set", "scheduler.restartThreshold=3",
-		"--set", "scheduler.headroomPercent=25",
+		"--set", "scheduler.platformReservePercent=25", "--set", "scheduler.platformReserveCpu=300m", "--set", "scheduler.platformReserveMemory=1Gi",
 		"--set", "scheduler.resourceCheck=false",
 		"--set", "scheduler.prepull.enabled=false",
 		"--set", "scheduler.prepull.timeout=10m",
@@ -63,7 +63,7 @@ func TestSchedulerValuesOverride(t *testing.T) {
 	)
 	want := map[string]string{
 		"SCHEDULER_ENABLED": "false", "SCHEDULER_MAX_PODS": "50", "SCHEDULER_STARTUP_TIMEOUT": "90s",
-		"SCHEDULER_RESTART_THRESHOLD": "3", "SCHEDULER_HEADROOM_PERCENT": "25", "SCHEDULER_RESOURCE_CHECK": "false",
+		"SCHEDULER_RESTART_THRESHOLD": "3", "SCHEDULER_PLATFORM_RESERVE_PERCENT": "25", "SCHEDULER_PLATFORM_RESERVE_CPU": "300m", "SCHEDULER_PLATFORM_RESERVE_MEMORY": "1Gi", "SCHEDULER_RESOURCE_CHECK": "false",
 		"SCHEDULER_PREPULL": "false", "SCHEDULER_PREPULL_TIMEOUT": "10m",
 		"DEVICE_DEFAULT_CPU": "500m", "DEVICE_DEFAULT_MEMORY": "1Gi",
 	}
@@ -75,7 +75,7 @@ func TestSchedulerValuesOverride(t *testing.T) {
 }
 
 func TestSchedulerRejectsBadValues(t *testing.T) {
-	for _, set := range []string{"scheduler.maxPods=-1", "scheduler.headroomPercent=100", "scheduler.headroomPercent=-5", "scheduler.restartThreshold=0"} {
+	for _, set := range []string{"scheduler.maxPods=-1", "scheduler.platformReservePercent=100", "scheduler.platformReservePercent=-5", "scheduler.headroomPercent=10", "scheduler.restartThreshold=0"} {
 		out, err := helmTemplate(t, "--set", set)
 		if err == nil {
 			t.Errorf("%s must be refused", set)

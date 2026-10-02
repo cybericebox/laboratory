@@ -41,8 +41,11 @@ at install time instead of shipping a broken deployment.
 {{- if lt (int .Values.scheduler.maxPods) 0 }}
 {{- fail "scheduler.maxPods must not be negative (0 sets no limit)" }}
 {{- end }}
-{{- if or (lt (int .Values.scheduler.headroomPercent) 0) (ge (int .Values.scheduler.headroomPercent) 100) }}
-{{- fail "scheduler.headroomPercent must be between 0 and 99" }}
+{{- if hasKey .Values.scheduler "headroomPercent" }}
+{{- fail "scheduler.headroomPercent was renamed to scheduler.platformReservePercent (and scheduler.platformReserveCpu/Memory were added)" }}
+{{- end }}
+{{- if or (lt (int .Values.scheduler.platformReservePercent) 0) (ge (int .Values.scheduler.platformReservePercent) 100) }}
+{{- fail "scheduler.platformReservePercent must be between 0 and 99" }}
 {{- end }}
 {{- if lt (int .Values.scheduler.restartThreshold) 1 }}
 {{- fail "scheduler.restartThreshold must be at least 1" }}

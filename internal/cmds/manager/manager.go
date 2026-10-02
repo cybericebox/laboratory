@@ -28,6 +28,8 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -310,13 +312,17 @@ func Run() {
 			Client:   mgr.GetClient(),
 			Recorder: mgr.GetEventRecorderFor("scheduler"),
 			Config: laboratorycontroller.SchedulerConfig{
-				MaxPods:          cfg.SchedulerMaxPods,
-				StartupTimeout:   cfg.SchedulerStartupTimeout,
-				RestartThreshold: cfg.SchedulerRestartThreshold,
-				HeadroomPercent:  cfg.SchedulerHeadroomPercent,
-				ResourceCheck:    cfg.SchedulerResourceCheck,
-				Prepull:          cfg.SchedulerPrepull,
-				PrepullTimeout:   cfg.SchedulerPrepullTimeout,
+				MaxPods:                cfg.SchedulerMaxPods,
+				StartupTimeout:         cfg.SchedulerStartupTimeout,
+				RestartThreshold:       cfg.SchedulerRestartThreshold,
+				PlatformReservePercent: cfg.SchedulerPlatformReservePercent,
+				PlatformReserveNode: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse(cfg.SchedulerPlatformReserveCPU),
+					corev1.ResourceMemory: resource.MustParse(cfg.SchedulerPlatformReserveMemory),
+				},
+				ResourceCheck:  cfg.SchedulerResourceCheck,
+				Prepull:        cfg.SchedulerPrepull,
+				PrepullTimeout: cfg.SchedulerPrepullTimeout,
 			},
 			Defaults:         laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory},
 			GroupPods:        cfg.GroupPods,
