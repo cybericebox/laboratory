@@ -12,10 +12,11 @@ rules:
 - apiGroups: [""]
   resources: [endpoints, secrets, serviceaccounts, services]
   verbs: [create, delete, get, list, patch, update, watch]
-# Bare device pods (state persistence) and the pod of a suspended or removed device.
+# Bare device pods (state persistence) and the pod of a suspended or removed device; patch: the user labels of the group's
+# own pods (VPN, gateway) and of the device pods are kept in step with the group's and the lab's.
 - apiGroups: [""]
   resources: [pods]
-  verbs: [create, delete, get, list, watch]
+  verbs: [create, delete, get, list, patch, watch]
 - apiGroups: [apps]
   resources: [deployments]
   verbs: [create, delete, get, list, patch, update, watch]
