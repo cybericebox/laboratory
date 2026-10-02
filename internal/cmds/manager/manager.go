@@ -36,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
@@ -50,6 +51,7 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/admissioncheck"
 	laboratorycontroller "github.com/cybericebox/laboratory/internal/controller/laboratory"
+	"github.com/cybericebox/laboratory/internal/crdcheck"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/operator"
@@ -211,6 +213,15 @@ func Run() {
 	restCfg := ctrl.GetConfigOrDie()
 	restCfg.QPS = 60
 	restCfg.Burst = 120
+
+	// The operator and the agent need the CRDs of this release (the enrollment epoch among them): refuse to run on older ones.
+	if dc, err := discovery.NewDiscoveryClientForConfig(restCfg); err != nil {
+		setupLog.Error(err, "unable to build the discovery client")
+		os.Exit(1)
+	} else if err := crdcheck.Wait(context.Background(), crdcheck.FromDiscovery(dc), 60*time.Second, func(err error) { setupLog.Info("waiting for the CRDs", "reason", err.Error()) }); err != nil {
+		setupLog.Error(err, "the CRDs are older than this release")
+		os.Exit(1)
+	}
 
 	if cfg.RequireAdmissionPolicy {
 		// The operator is confined by admission policies the chart installs; refuse to run when they are not enforced.

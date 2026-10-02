@@ -1505,121 +1505,17 @@ component that runs it clamps or ignores the bad value instead of failing.
 
 ### Lab ceilings (R-7)
 
-A lab takes a VNI from the shared pool (65000, all tenants) for every switch, hub and direct connection, and ports and flows on the nodes with them, so
-what one lab can ask for is bounded by constants of the platform, not by a setting an author or a values file could raise:
+- **Devices of a lab, every type counted** (container, switch, hub): at most `limits.lab.maxDevices` (default 32), which can only lower the ceiling of 64 (`names.MaxLabDevices`, also the
+  Lab CRD's `maxItems`); the chart refuses a larger value, and the agent clamps one that gets through, so the agent's clean error binds before the CRD's.
+- **Interfaces of a device**: 16 on a container device, 48 on a switch or hub, in the agent and as a CEL rule and `maxItems` in the CRD. There are no other caps (connections, VNIs, DHCP ranges).
+- `CreateLabs` refuses a spec over them with the numbers. Existing labs are not touched. GetFeatures reports the effective device limit.
+- **Upgrade**: apply the CRDs first. The default went from 20 (containers only) to 32 (all devices).
 
-- **Devices of a lab, switches and hubs included**: at most `limits.lab.maxDevices` (default 20), which can only lower the ceiling of 64 (`names.MaxLabDevices`;
-  0 = the ceiling). A lab that used to be 18 containers and 5 switches is 23 devices now: raise the value if your exercises need it (up to 64).
-- **Interfaces of a device**: 8. **Connections of a lab**: 256. **DHCP ranges** of one server: 16. So a lab holds at most 64 + 256 VNIs.
-- `CreateLabs` refuses a spec over them with the numbers; the Lab and Device CRDs carry the same `maxItems`, so a spec made by hand is refused too.
-  Existing labs are not touched (the CRD checks only what is written). GetFeatures reports the effective device limit.
-- **Upgrade**: apply the CRDs first (the `maxItems`); nothing else to do. A chart value above 64 is clamped to 64, not refused.
-- Not done: a per-tenant VNI quota and a cap of groups per tenant (the owner decided per-lab caps only).
+### Labs on the platform's domain (R-18, option B) and the CRD check
 
-### The shared registry under a churning device (R-5)
-
-Every snapshot pushes the whole state of a device as a new blob, and the registry volume (`registry.size`) is shared by every tenant and the image cache, so
-one device writing, idling and writing again could fill it. What bounds it now (all in `devices.statePersistence`):
-
-- **A device keeps only its current state.** After a snapshot is recorded, the manifest it replaced and the blobs only that one used are deleted from the
-  registry `supersededGrace` (2m) later, not after the garbage collection's hours. The grace lets a pod that was created from the old snapshot a moment ago still pull
-  it. A registry that refuses to delete blobs is fine: its garbage collection does it then (`registry.gc`).
-- **A rate per device.** At least `minPushInterval` (60s) between two pushes of one device and at most `pushBudget` (2Gi) of state per `pushBudgetWindow` (1h); a
-  change that comes sooner waits and the next snapshot has it. This is not a failure and not a warning. The exit snapshot of a device is never held back.
-- **No push into a nearly full registry.** The node-agent measures what the registry stores (every blob once, over every tag of every repository, the snapshots, the
-  shared base and the image cache; at most once a minute) and refuses a push that would leave less than `registryReserve` (10%) of `registry.size` free. A live snapshot
-  waits five minutes and tries again; the exit snapshot is given up (the last good one stays); the lab status says why.
-- **Retained repositories count for the tenant.** A snapshot manifest carries the tenant and the state size as annotations (`cybericebox.com/tenant`,
-  `cybericebox.com/state-bytes`); the repositories of labs that are gone and wait out `retention` (168h) are counted into the tenant's quota (`tenantQuota`), so deleting
-  and re-creating labs no longer hides what the registry still holds. A repository pushed before the annotations existed counts for nothing there (it counts in the
-  registry's own measurement above).
-- **Upgrade.** Nothing to do by hand: the node-agent rolls and the new bounds apply to the next snapshot. Manifests of earlier versions have no annotations and are
-  superseded like the others by the first new snapshot of their device. The registry's writer account can delete (it already could).
-- Not done: pushing deltas instead of the cumulative layer, and a shorter GC delay for untagged blobs (the active deletion above replaces both for the normal case).
-
-### What the proxy can read and write (R-10)
-
-- **The access keys have their own namespace**, `laboratory-access-keys` (the Secrets `tenant-<name>-access-keys`). The L7 proxy can read that namespace and
-  nothing in `laboratory-tenants`, which holds the enrollment tokens and the tenants' registry credentials: an internet-facing component that is compromised no
-  longer gets a tenant's client certificate or credentials. The agent writes the keys there (and only reads the tenants namespace now), the operator removes a tenant's,
-  and the admission policy lists the namespace among the platform ones. (A namespace of its own and not the proxy's: the agent and the operator would otherwise
-  need rights over the proxy's TLS key and session secret.)
-- **The proxy writes its traffic reports only in the group namespaces**, through a RoleBinding the operator makes in each (`laboratory-proxy-reports-binding`, role
-  `laboratory-proxy-reports`, which the operator may `bind`); the proxy has no such right cluster-wide any more. `PROXY_ENABLED` (from `proxy.enabled`) turns the
-  binding on for the operator.
-- **Upgrade (existing keys keep working).** At start every agent replica copies the access keys of earlier versions from the tenants namespace to the new one (merging, nothing
-  deleted), before it serves any call. Roll the agent first if you can: a proxy that rolls before an agent has done that finds no key for a moment and answers 401 to a handoff
-  link (the participant opens a new one); the keys are only public keys and the old Secrets stay until their tenant is deleted. The proxy's reports fail for the few seconds until the
-  operator has bound its role in each group (a best-effort statistic).
-- **The wg-demux container keeps the pod's ServiceAccount token**: it needs the API to watch the LabGroups for the groups' keys, and its token can no longer read any Secret.
-- Not done: restricting what the components watch to namespaces that carry the platform's label. controller-runtime and RBAC cannot select namespaces by label; the node-agent's
-  pod reconciler now ignores every pod that is not the platform's (device, VPN or gateway), and the informers still list cluster-wide read-only.
-
-### The node-agent and the shared switch (R-11, R-12, R-13, R-14)
-
-- **Only its own interfaces (R-11).** A veth the node-agent creates or deletes must be named like the platform names them (a letter and 12 hex digits); an annotation that names
-  `eth0` or any other host interface is ignored, an existing link is touched only if it is a veth, and only the platform's own pods (device, VPN, gateway) are wired. The
-  `AddPort` and `DeletePort` RPCs, unused and unauthenticated, are removed from the node-agent's API.
-- **Geneve only from the nodes (R-12).** The Geneve ingress flow is installed per node address (`tun_src`), refreshed every 15 s from the cluster's nodes' internal addresses; Geneve
-  from any other source matches no flow and is dropped by the table-0 default. Until the first refresh nothing is accepted from remote nodes (fail closed, a few seconds after the
-  node-agent starts). Still close UDP 6081 between nodes only in the cloud firewall or host firewall (infrastructure): a source address can be forged inside the node network.
-- **Patch ports and VNI reuse (R-13).** The names of the patch ports of a switch-to-switch link include the namespace, so two groups with a connection of the same name no longer share
-  ports; a pair under the old names is replaced when its connection is reconciled (the link flaps once). The VNIs of lab networks are handed out in turn, not lowest-free first
-  (`allocation.cybericebox.com/cursor` on the pool), so a released VNI is not given to another lab until the pool has been walked and no stale flow of the old one can meet it.
-  Not done: a desired-versus-actual flow collection with a generation cookie, and a finalizer per node (the cleanup of a connection still runs on the node that removes the shared finalizer first;
-  the stale-port purge and the VNI rotation cover what the report found plausible).
-- **Storm control and recovery (R-14).** `nodeAgent.portPolicingKbps` (500000) polices every device veth with OVS `ingress_policing_rate` (applied to running ones at the next resync); the
-  node-agent exits to be restarted when OVS (the database or OpenFlow channel) has not answered `ovsWatchFailures` (3) checks `ovsWatchInterval` (15 s) apart, since the channels do not reconnect;
-  a pod whose veth was recreated five times in ten minutes is left alone for a while (it can delete its own interface with NET_ADMIN and send the node-agent round in circles). A snapshot of
-  a running container that cannot be frozen is not taken (a diff of a running layer can race its writes), a layer is refused at the write quota by the apparent size in its headers before its
-  zeros are read (a sparse file), and the same layer is not diffed again for five minutes. Not done: a `sizeLimit` on the snapshot work directory (an emptyDir over its limit evicts the whole
-  node-agent), and shaping Geneve egress.
-- **Upgrade.** Nothing by hand; the node-agents roll one node at a time and each programs its bridge from scratch (fail-secure) as before.
-
-### The L7 proxy and the WireGuard demux (R-16, R-17)
-
-- **Demux (R-16).** Only the exact sizes of the fixed WireGuard messages are looked at (initiation 148, response 92, cookie reply 64, transport at least 32); all sources together
-  may start `globalHandshakeRate` (2000) handshakes per second, one session may send `sessionRate` (15000) packets per second and all the sessions of one address `ownerRate` (40000), so one
-  participant with a valid session cannot use up the shared demux; `readers` (4) goroutines read the socket; the backend's address is resolved when the group is learnt and refreshed in the
-  background, not looked up on the read loop; a source that finds the table of sources full evicts the one quiet longest instead of being refused (a venue behind one NAT no longer locks
-  out its neighbours), and `maxEntriesPerSource` is 128; the table entry of a deleted group is removed (it leaked, keyed by name against UID). A packet that panics the handler loses only
-  itself. Verify on the stand that the demux sees the real source address: `service-wg-lb` has `externalTrafficPolicy: Cluster`, which may SNAT, in which case all clients behind a node share
-  one source bucket.
-- **L7 proxy (R-17).** `maxConnections` (4000) connections at once, `livePerClient` (200), `livePerGroup` (1000) and `liveTotal` (8000) requests in flight (WebSockets included; over them a request
-  gets 429), the handoff path `/_auth` limited per peer address and in all, and the Go runtime keeps under 80% of the container memory limit (all binaries; `GOMEMLIMIT` set by hand wins).
-  A device cannot set the session cookie in a 1xx response either (L-5).
-- `:8080` metrics are off in the gateway pod (a lab could read them and learn the API server's address) and in the node-agent (host network); the operator no longer logs in development mode.
-- **Upgrade.** Nothing by hand. The values are under `proxy.wg.limits`, `proxy.l7` and `nodeAgent`.
-
-### Smaller findings of the re-audit (R-20)
-
-Done:
-
-- **Namespace hash (L-1)**: a new group's namespace is `lg-<name up to 40>-<12 hex>` (56 characters at most). Groups made before keep the namespace in their status. The stale
-  CEL rules on the LabGroup name (it is no longer the namespace) are gone, a name longer than 63 is still refused.
-- **Enroll (L-2)**: what can be known to fail does not burn the token (see "Revoking client certificates").
-- **Prewarm and Monitoring (L-3)**: one PrewarmImages call names at most 200 images and the agent tracks at most 5000 (the oldest finished one is forgotten); a tenant holds at most
-  `agent.monitoring.maxStreamsPerTenant` (8) Monitoring streams.
-- **Error text (L-4)**: the Kubernetes API server's text no longer reaches a tenant. A caller gets the object that is not there, the field of its own spec that is invalid, or a plain sentence
-  ("the cluster refused the request"); the full error goes to the agent's log. The blast radius of the agent's CA key and of its reads in the tenants namespace is unchanged (the key is what signs
-  the client certificates).
-- **1xx Set-Cookie (L-5)**, **gateway filter restart window (L-6)**, **metrics on :8080 (L-7)**, **the tun device check (L-11)**: see the sections above.
-- **Resources (L-8)**: `nodeAgent.ovsResources` and `initResources` are used (the OVS sidecar and the init containers); the netconfig init container of a device has requests equal to limits.
-- **Pull policy (L-9)**: a device pod of a tenant that has its own registry credentials pulls with `Always`, so another tenant cannot run what those credentials pulled onto the node.
-  (The registry allow-list and size cap of ImagePull, and the prepull key width, are not done.)
-- **Registry (L-10)**: the writer account cannot write or delete in the public cache (zot's own sync fills it; the writer may read it to measure the volume), no account has rights over every
-  repository, and zot has no ServiceAccount token. Verify on the stand that the retention sweep and the node-agents' catalog read still work with the narrower policy.
-- **MAC "random" (L-12)**: read as no MAC (the CNI cannot set a hardware address called "random"); a pod's annotation is not rewritten, so nothing restarts.
-- **Chart (L-14)**: the agent CA has a `duration` (5 years, renewed a year before its end with the same key); the agent and proxy namespaces enforce the restricted Pod Security level; the CRD
-  step is in the upgrade order at the top of this section.
-- **CI (L-15)**: `permissions: contents: read` on every workflow (the chart job asks for write itself), actions pinned by commit, the Docker Hub token passed through the environment, `:latest`
-  only for a published release and the tag checked to be `vX.Y.Z`, kind pinned with a checksum kept in the workflow, CNI plugins updated (v1.9.1) with checksums kept in the Dockerfile.
-- **Azure WireServer (L-16)**: `168.63.129.16` is in the egress deny list.
-- **Dependencies (R-15)**: every direct Go module is at its latest version (controller-runtime 0.25.2, k8s 0.37.1, containerd 2.4.1, OpenTelemetry 1.47 ...); grpc stays at 1.84.0 until 1.85 is
-  released (govulncheck reports GO-2026-6443, a panic on a missing `:authority`, reachable on the agent's port: the one open advisory). The base images (alpine 3.24.2, Go 1.27.1, distroless
-  static, zot v2.1.21) were already the latest on 2026-10-02. libovsdb's two pinned transitive modules (`cenkalti/hub`, `cenkalti/rpc2`) have newer tags that their parent does not accept.
-
-Not done, for the record: L-13 (a node-wide inotify budget, the 60 s re-add of the t6 flood flows, dangling hardlinks of `FilterLayer`, the work directory after a crash, the socket parent
-directory check, writable `host-netns` and `host-cgroup`), L-14 default-deny policies in the system namespaces, a PriorityClass, `certManager.selfSigned`/`staging` defaults and the API server egress
-port limits, L-16 (the namespace of `keypairSecretRef`, a finalizer timeout, the traffic-stats patches of the VPN, the VPN probe server timeouts, the kustomize proxy manifest), and
-the stray files in the repository root (untracked and ignored).
+- **The L7 proxy filters what a device's response does to the site.** A cookie that is host-only, or whose `Domain` is exactly the device's own host, passes unchanged; a cookie whose `Domain` is the labs
+  base domain or any parent of it is removed; a cookie named like the proxy's session cookie is removed whatever its domain (also in 1xx responses); `Clear-Site-Data`, `Strict-Transport-Security` and
+  `Content-Security-Policy` are removed. Requests to a device never carry the session cookie. Not done: binding the `/_auth` handoff to the browser (a login-CSRF defence) needs a nonce the backend sets
+  before it redirects, so it is a backend change, not a proxy one.
+- **The agent and the operator refuse to start on CRDs older than the release** (they read the published OpenAPI schema and look for `Tenant.status.certificateEpoch`), retrying for a minute, then exit
+  with `kubectl apply --server-side -f charts/laboratory/crds/` in the message. So Enroll can never burn a token against an old CRD. No extra permission is needed (discovery).

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/cybericebox/laboratory/internal/agent/config"
 	grpcserver "github.com/cybericebox/laboratory/internal/agent/grpc"
+	"github.com/cybericebox/laboratory/internal/crdcheck"
 	"github.com/cybericebox/laboratory/internal/errorlog"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/profiles"
@@ -53,6 +55,10 @@ func Run() {
 	if err != nil {
 		log.Printf("metrics client unavailable, live usage disabled: %v", err)
 		metrics = nil
+	}
+	// Enroll must never run against a CRD that would drop the enrollment epoch: refuse to start instead.
+	if err := crdcheck.Wait(context.Background(), crdcheck.FromDiscovery(k8s.Discovery()), 60*time.Second, func(err error) { log.Printf("%v", err) }); err != nil {
+		log.Fatalf("%v", err)
 	}
 	h := grpcserver.NewHandler(cs, k8s, metrics, cfg.AgentID)
 	h.SetStatePersistence(cfg.StatePersistence)

@@ -11,8 +11,6 @@ type LabSpec struct {
 	// Devices of the lab, switches and hubs included. The ceiling is fixed in code (names.MaxLabDevices).
 	// +kubebuilder:validation:MaxItems=64
 	Devices []DeviceTemplate `json:"devices,omitempty"`
-	// Connections of the lab (names.MaxLabConnections).
-	// +kubebuilder:validation:MaxItems=256
 	Connections []ConnectionTemplate `json:"connections,omitempty"`
 }
 
@@ -26,7 +24,6 @@ type LabNetworkSpec struct {
 // Subnet and gateway are derived from the lab's allocated CIDR (Status.*.CIDR).
 type DHCPServer struct {
 	Enabled bool `json:"enabled,omitempty"`
-	// +kubebuilder:validation:MaxItems=16
 	Ranges []DHCPRange `json:"ranges,omitempty"`
 	// DNS is advertised only by the internet gateway's DHCP server.
 	DNS string `json:"dns,omitempty"`
@@ -44,6 +41,7 @@ type DHCPRange struct {
 }
 
 // DeviceTemplate is an inline device declaration inside Lab.spec.devices[].
+// +kubebuilder:validation:XValidation:rule="self.type != 'container' || !has(self.interfaces) || size(self.interfaces) <= 16",message="a container device has at most 16 interfaces"
 type DeviceTemplate struct {
 	// Name becomes part of the lab's web address (<name>-<code>.<domain>), so
 	// it is a DNS label of at most 35 characters (names.MaxDeviceNameLen).
@@ -60,8 +58,8 @@ type DeviceTemplate struct {
 	// net and debug are aliases). Only the name is exposed here; the concrete Linux capabilities behind it
 	// are an internal platform decision. Empty means standard.
 	SecurityPreset SecurityPreset `json:"securityPreset,omitempty"`
-	// Interfaces of the device (names.MaxDeviceInterfaces).
-	// +kubebuilder:validation:MaxItems=8
+	// Interfaces of the device: at most 16 on a container (names.MaxContainerInterfaces), 48 on a switch or hub.
+	// +kubebuilder:validation:MaxItems=48
 	Interfaces []InterfaceSpec `json:"interfaces,omitempty"`
 	Exposure   *ExposureSpec   `json:"exposure,omitempty"`
 	// Resources sets the container resource requests/limits for this device.

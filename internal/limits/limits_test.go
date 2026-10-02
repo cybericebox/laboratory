@@ -80,22 +80,28 @@ func TestCheckSpec(t *testing.T) {
 	}
 }
 
-// The ceilings of interfaces and connections are fixed, and the chart can only lower the one of devices.
+// 16 interfaces on a container device, 48 on a switch or hub; the chart can only lower the device ceiling.
 func TestHardcodedLabCeilings(t *testing.T) {
 	l := chartDefaults(t)
-	tooManyIfaces := &laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{dev("a", nil)}}
-	for i := 0; i <= names.MaxDeviceInterfaces; i++ {
-		tooManyIfaces.Devices[0].Interfaces = append(tooManyIfaces.Devices[0].Interfaces, laboratoryv1alpha1.InterfaceSpec{Name: "eth1"})
+	mk := func(typ laboratoryv1alpha1.DeviceType, n int) *laboratoryv1alpha1.LabSpec {
+		d := dev("a", nil)
+		d.Type = typ
+		for i := 0; i < n; i++ {
+			d.Interfaces = append(d.Interfaces, laboratoryv1alpha1.InterfaceSpec{Name: "eth1"})
+		}
+		return &laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{d}}
 	}
-	if err := l.CheckSpec(tooManyIfaces); err == nil || !strings.Contains(err.Error(), "interfaces") {
-		t.Errorf("interfaces: %v", err)
+	if err := l.CheckSpec(mk(laboratoryv1alpha1.DeviceTypeContainer, names.MaxContainerInterfaces)); err != nil {
+		t.Errorf("16 on a container: %v", err)
 	}
-	conns := &laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{dev("a", nil)}}
-	for i := 0; i <= names.MaxLabConnections; i++ {
-		conns.Connections = append(conns.Connections, laboratoryv1alpha1.ConnectionTemplate{})
+	if err := l.CheckSpec(mk(laboratoryv1alpha1.DeviceTypeContainer, names.MaxContainerInterfaces+1)); err == nil || !strings.Contains(err.Error(), "interfaces") {
+		t.Errorf("17 on a container: %v", err)
 	}
-	if err := l.CheckSpec(conns); err == nil || !strings.Contains(err.Error(), "connections") {
-		t.Errorf("connections: %v", err)
+	if err := l.CheckSpec(mk(laboratoryv1alpha1.DeviceTypeUnmanagedSwitch, names.MaxSwitchPorts)); err != nil {
+		t.Errorf("48 on a switch: %v", err)
+	}
+	if err := l.CheckSpec(mk(laboratoryv1alpha1.DeviceTypeUnmanagedSwitch, names.MaxSwitchPorts+1)); err == nil {
+		t.Error("49 on a switch")
 	}
 	c, err := Config{DeviceMaxCPU: "1", DeviceMaxMemory: "1Gi", DeviceDefaultCPU: "100m", DeviceDefaultMemory: "1Mi", LabMaxDevices: 1000, GroupMaxCPU: "0", GroupMaxMemory: "0"}.Parse()
 	if err != nil || c.LabMaxDevices != names.MaxLabDevices {

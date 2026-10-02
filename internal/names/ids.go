@@ -14,15 +14,13 @@ const (
 	// MaxIDLen is the longest client-supplied object id (LabGroup, Lab, LabGroupClient,
 	// deploy group).
 	MaxIDLen = 64
-	// MaxLabDevices is the hard ceiling of the devices of one lab (switches and hubs included); the CRD carries the same
-	// number. The chart's limits.lab.maxDevices can only lower it. MaxDeviceInterfaces and MaxLabConnections are fixed in
-	// the same way, so what one lab can take from the shared pools (a VNI for every switch, hub and direct connection) is
-	// bounded by constants: at most MaxLabDevices + MaxLabConnections VNIs, whoever the author is.
-	MaxLabDevices       = 64
-	MaxDeviceInterfaces = 8
-	MaxLabConnections   = 256
-	// MaxDHCPRanges is the most ranges of one embedded DHCP server.
-	MaxDHCPRanges = 16
+	// MaxLabDevices is the hard ceiling of the devices of one lab, every type counted (container, switch, hub); the CRD carries the same
+	// number. The chart's limits.lab.maxDevices (default 32) can only lower it, and the chart refuses a larger value.
+	MaxLabDevices = 64
+	// MaxContainerInterfaces is the most interfaces of a container device (a switch or hub has its fixed 48 ports): one device cannot open
+	// thousands of direct connections.
+	MaxContainerInterfaces = 16
+	MaxSwitchPorts         = 48
 	// MaxDeployAfter is the most deploy_after keys of one object.
 	MaxDeployAfter = 32
 

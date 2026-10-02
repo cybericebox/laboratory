@@ -222,3 +222,68 @@ func TestStripSessionCookie(t *testing.T) {
 	}
 	stripSessionCookie(http.Header{}, "challenge") // nothing to strip is fine
 }
+
+// R-18: what a device's response may do to the site around it.
+func TestDeviceResponseFilter(t *testing.T) {
+	const base = "labs.example.com"
+	const host = "web-abc.labs.example.com"
+	h := http.Header{}
+	for _, c := range []string{
+		"a=1", // host-only: stays
+		"b=1; Path=/; Domain=web-abc.labs.example.com", // exactly its own host: stays
+		"c=1; Domain=.web-abc.labs.example.com",        // the same with a leading dot: stays
+		"d=1; Domain=labs.example.com",                 // the base domain: removed
+		"e=1; domain=.Labs.Example.com",                // any spelling of it: removed
+		"f=1; Domain=example.com",                      // a parent: removed
+		"g=1; Domain=com",                              // a parent: removed
+		"challenge=x",                                  // our session cookie, host-only: removed
+		"challenge=x; Domain=web-abc.labs.example.com", // and with its own domain: removed
+		"challengex=1",                                 // only the exact name
+	} {
+		h.Add("Set-Cookie", c)
+	}
+	h.Set("Clear-Site-Data", `"cookies"`)
+	h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
+	h.Set("Content-Security-Policy", "default-src 'none'")
+	h.Set("Content-Type", "text/html")
+	deviceResponseFilter(h, "challenge", host+":443", base)
+	got := strings.Join(h.Values("Set-Cookie"), "|")
+	want := "a=1|b=1; Path=/; Domain=web-abc.labs.example.com|c=1; Domain=.web-abc.labs.example.com|challengex=1"
+	if got != want {
+		t.Fatalf("cookies:\n got %q\nwant %q", got, want)
+	}
+	for _, name := range []string{"Clear-Site-Data", "Strict-Transport-Security", "Content-Security-Policy"} {
+		if h.Get(name) != "" {
+			t.Errorf("%s must be removed", name)
+		}
+	}
+	if h.Get("Content-Type") != "text/html" {
+		t.Error("other headers stay")
+	}
+}
+
+// Requests to the device never carry the proxy's session cookie; the device's own cookies do reach it.
+func TestSessionCookieIsNeverForwardedUpstream(t *testing.T) {
+	var got string
+	h, srv, _, cookie := liveFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Cookie")
+		w.Header().Add("Set-Cookie", "x=1; Domain=challenges.example.com")
+		w.Header().Set("Strict-Transport-Security", "max-age=1")
+	}))
+	_ = h
+	req, _ := http.NewRequest("GET", srv.URL+"/", nil)
+	req.Host = "web-abc123.challenges.example.com"
+	req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
+	req.AddCookie(&http.Cookie{Name: "app", Value: "1"})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if strings.Contains(got, "challenge") || !strings.Contains(got, "app=1") {
+		t.Fatalf("the upstream saw %q", got)
+	}
+	if len(resp.Header.Values("Set-Cookie")) != 0 || resp.Header.Get("Strict-Transport-Security") != "" {
+		t.Fatalf("response headers: %v", resp.Header)
+	}
+}

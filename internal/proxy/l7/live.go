@@ -141,13 +141,14 @@ type hijackRecorder struct {
 	entry *liveEntry
 	// cookieName is the proxy's session cookie: a device may not set it, not even in an informational (1xx) response, which the
 	// reverse proxy relays before the final one and ModifyResponse never sees.
-	cookieName string
+	cookieName       string
+	host, baseDomain string
 }
 
 // WriteHeader strips the session cookie from the headers of an informational response before they go out.
 func (w *hijackRecorder) WriteHeader(code int) {
 	if code >= 100 && code < 200 && w.cookieName != "" {
-		stripSessionCookie(w.Header(), w.cookieName)
+		deviceResponseFilter(w.Header(), w.cookieName, w.host, w.baseDomain)
 	}
 	w.ResponseWriter.WriteHeader(code)
 }

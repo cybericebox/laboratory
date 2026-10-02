@@ -193,13 +193,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer h.live.remove(entry)
-	w = &hijackRecorder{ResponseWriter: w, entry: entry, cookieName: h.cookieName}
+	w = &hijackRecorder{ResponseWriter: w, entry: entry, cookieName: h.cookieName, host: r.Host, baseDomain: h.baseDomain}
 
+	deviceHost := r.Host
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Transport = h.transport
 	// A device must not set (or reset) the proxy's own session cookie: drop any Set-Cookie of that name from its responses.
 	proxy.ModifyResponse = func(resp *http.Response) error {
-		stripSessionCookie(resp.Header, h.cookieName)
+		deviceResponseFilter(resp.Header, h.cookieName, deviceHost, h.baseDomain)
 		return nil
 	}
 
@@ -317,20 +318,59 @@ func ServiceResolver(getServiceProtocol func(task, namespace string) (string, er
 // stripSessionCookie removes the Set-Cookie headers that name the proxy's session cookie, whatever their attributes
 // (domain, path, expiry): the cookie is the proxy's, never the device's to set, replace or clear.
 func stripSessionCookie(hdr http.Header, name string) {
+	filterSetCookies(hdr, func(cookieName, _ string) bool { return cookieName != name })
+}
+
+// filterSetCookies keeps the Set-Cookie headers for which keep(name, domain) is true.
+func filterSetCookies(hdr http.Header, keep func(name, domain string) bool) {
 	values := hdr.Values("Set-Cookie")
 	if len(values) == 0 {
 		return
 	}
 	kept := make([]string, 0, len(values))
 	for _, v := range values {
-		cookieName, _, _ := strings.Cut(v, "=")
-		if strings.TrimSpace(cookieName) == name {
-			continue
+		parts := strings.Split(v, ";")
+		cookieName, _, _ := strings.Cut(parts[0], "=")
+		domain := ""
+		for _, attr := range parts[1:] {
+			k, val, _ := strings.Cut(strings.TrimSpace(attr), "=")
+			if strings.EqualFold(k, "domain") {
+				domain = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(val), "."))
+			}
 		}
-		kept = append(kept, v)
+		if keep(strings.TrimSpace(cookieName), domain) {
+			kept = append(kept, v)
+		}
 	}
 	hdr.Del("Set-Cookie")
 	for _, v := range kept {
 		hdr.Add("Set-Cookie", v)
 	}
+}
+
+// deviceResponseFilter is what a device's response may not do to the site around it. The labs are served on subdomains of one base domain
+// that may itself sit under the platform's, so a device (its author is a participant) must not be able to:
+//   - set a cookie for the whole base domain or any parent of it (a cookie that is host-only, or whose Domain is exactly the device's own
+//     host, is left as it is);
+//   - set a cookie named like the proxy's session cookie, whatever its domain;
+//   - clear the site's data (Clear-Site-Data), pin it to HTTPS for good (Strict-Transport-Security) or set its Content-Security-Policy.
+func deviceResponseFilter(hdr http.Header, sessionCookie, deviceHost, baseDomain string) {
+	deviceHost = strings.ToLower(deviceHost)
+	if h, _, ok := strings.Cut(deviceHost, ":"); ok {
+		deviceHost = h
+	}
+	baseDomain = strings.ToLower(baseDomain)
+	for _, name := range []string{"Clear-Site-Data", "Strict-Transport-Security", "Content-Security-Policy", "Content-Security-Policy-Report-Only"} {
+		hdr.Del(name)
+	}
+	filterSetCookies(hdr, func(name, domain string) bool {
+		if name == sessionCookie {
+			return false
+		}
+		if domain == "" || domain == deviceHost {
+			return true
+		}
+		// the base domain or a parent of it
+		return !(domain == baseDomain || strings.HasSuffix(baseDomain, "."+domain))
+	})
 }

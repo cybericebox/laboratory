@@ -21,7 +21,7 @@ type Config struct {
 	DeviceDefaultCPU    string `env:"AGENT_LIMIT_DEVICE_DEFAULT_CPU" envDefault:"100m"`
 	DeviceDefaultMemory string `env:"AGENT_LIMIT_DEVICE_DEFAULT_MEMORY" envDefault:"256Mi"`
 	// LabMaxDevices caps the devices of one lab, switches and hubs included (0 = the platform ceiling, names.MaxLabDevices).
-	LabMaxDevices int `env:"AGENT_LIMIT_LAB_MAX_DEVICES" envDefault:"20"`
+	LabMaxDevices int `env:"AGENT_LIMIT_LAB_MAX_DEVICES" envDefault:"32"`
 	// GroupMaxLabs caps the labs of one LabGroup (0 = no limit); GroupMaxCPU and GroupMaxMemory cap the sum of
 	// the resources of the devices of all its labs (the planning profile counts for a device without resources;
 	// "0" = no limit).
@@ -179,10 +179,8 @@ func (l Limits) SpecTotals(spec *laboratoryv1alpha1.LabSpec) (cpu, mem int64, co
 	return cpu, mem, containers, nil
 }
 
-// CheckSpec refuses a lab spec that passes a cap: too many devices (every kind counts: a switch or a hub takes a VNI from the shared
-// pool, so it is no cheaper than a container), too many interfaces on a device, too many connections, or a device over the device
-// maximum. The device, interface and connection ceilings are constants of the platform (names.MaxLabDevices and friends) that the
-// chart can only lower; the message names the numbers.
+// CheckSpec refuses a lab spec that passes a cap: too many devices (every type counts), too many interfaces on a device (16 on a container,
+// 48 on a switch or hub), or a device over the device maximum. The message names the numbers.
 func (l Limits) CheckSpec(spec *laboratoryv1alpha1.LabSpec) error {
 	if _, _, _, err := l.SpecTotals(spec); err != nil {
 		return err
@@ -194,12 +192,14 @@ func (l Limits) CheckSpec(spec *laboratoryv1alpha1.LabSpec) error {
 	if n := len(spec.Devices); n > maxDevices {
 		return fmt.Errorf("the lab has %d devices (switches and hubs included), the limit is %d", n, maxDevices)
 	}
-	if n := len(spec.Connections); n > names.MaxLabConnections {
-		return fmt.Errorf("the lab has %d connections, the limit is %d", n, names.MaxLabConnections)
-	}
 	for i := range spec.Devices {
-		if n := len(spec.Devices[i].Interfaces); n > names.MaxDeviceInterfaces {
-			return fmt.Errorf("device %q has %d interfaces, the limit is %d", spec.Devices[i].Name, n, names.MaxDeviceInterfaces)
+		d := &spec.Devices[i]
+		max := names.MaxSwitchPorts
+		if d.Type == laboratoryv1alpha1.DeviceTypeContainer {
+			max = names.MaxContainerInterfaces
+		}
+		if n := len(d.Interfaces); n > max {
+			return fmt.Errorf("device %q has %d interfaces, the limit is %d", d.Name, n, max)
 		}
 	}
 	for i := range spec.Devices {
