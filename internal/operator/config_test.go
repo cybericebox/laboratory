@@ -1,6 +1,11 @@
 package operator
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+
+	"github.com/cybericebox/laboratory/internal/egress"
+)
 
 func TestLoadConfigRequiresLabDomains(t *testing.T) {
 	set := func(vpn, base string) {
@@ -93,5 +98,13 @@ func TestLoadConfigRefusesEmptyImagesAndSupportEmail(t *testing.T) {
 		if _, err := LoadConfig(); err == nil {
 			t.Errorf("an empty %s must be refused", key)
 		}
+	}
+}
+
+// The code default mirrors the shared list (and the chart).
+func TestGatewayEgressDefaultMirrorsTheSharedList(t *testing.T) {
+	f, _ := reflect.TypeOf(Config{}).FieldByName("GatewayEgressDenyCIDRs")
+	if got := f.Tag.Get("envDefault"); got != egress.DefaultDenyCIDRs {
+		t.Fatalf("envDefault %q != DefaultDenyCIDRs %q", got, egress.DefaultDenyCIDRs)
 	}
 }

@@ -73,6 +73,36 @@ var _ = Describe("LabGroup suspension", func() {
 		Expect(quantity(resOf("gateway").Requests, corev1.ResourceMemory)).To(Equal("40Mi"))
 	})
 
+	It("gives the gateway its egress lists, also on a gateway that already runs", func() {
+		const namespace = "default"
+		r := &LabGroupReconciler{Client: k8sClient, InetBaseNetwork: "10.9.0.0/10", GatewayImage: "test",
+			GatewayEgressDenyCIDRs: []string{"169.254.0.0/16", "10.0.0.0/8"}}
+		Expect(r.ensureGatewayDeployment(ctx, namespace, false)).To(Succeed())
+		DeferCleanup(func() {
+			var dep appsv1.Deployment
+			if k8sClient.Get(ctx, types.NamespacedName{Name: "gateway", Namespace: namespace}, &dep) == nil {
+				_ = k8sClient.Delete(ctx, &dep)
+			}
+		})
+		envOf := func() map[string]string {
+			var dep appsv1.Deployment
+			ExpectWithOffset(1, k8sClient.Get(ctx, types.NamespacedName{Name: "gateway", Namespace: namespace}, &dep)).To(Succeed())
+			out := map[string]string{}
+			for _, e := range dep.Spec.Template.Spec.Containers[0].Env {
+				out[e.Name] = e.Value
+			}
+			return out
+		}
+		Expect(envOf()).To(HaveKeyWithValue("GATEWAY_EGRESS_DENY_CIDRS", "169.254.0.0/16,10.0.0.0/8"))
+		Expect(envOf()).To(HaveKeyWithValue("GATEWAY_EGRESS_ALLOW_CIDRS", ""))
+		// A tightened chart value reaches the gateway that already runs.
+		r.GatewayEgressDenyCIDRs = []string{"169.254.0.0/16", "10.0.0.0/8", "203.0.113.0/24"}
+		r.GatewayEgressAllowCIDRs = []string{"10.7.7.7/32"}
+		Expect(r.ensureGatewayDeployment(ctx, namespace, false)).To(Succeed())
+		Expect(envOf()).To(HaveKeyWithValue("GATEWAY_EGRESS_DENY_CIDRS", "169.254.0.0/16,10.0.0.0/8,203.0.113.0/24"))
+		Expect(envOf()).To(HaveKeyWithValue("GATEWAY_EGRESS_ALLOW_CIDRS", "10.7.7.7/32"))
+	})
+
 	It("keeps the tunnel and internet gateway available while Lab devices are suspended", func() {
 		const name = "probe-while-suspended"
 		group := &laboratoryv1alpha1.LabGroup{

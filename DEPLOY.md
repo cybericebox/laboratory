@@ -692,6 +692,24 @@ table-0 flow (`in_port` to the VNI) is installed, so a port that has no flow, fo
 Check on a node: `ovs-vsctl get bridge br-ovs fail_mode` is `secure`, and `ovs-ofctl -O OpenFlow13 dump-flows br-ovs table=0` has no
 `NORMAL` action and ends with `priority=0 actions=drop`.
 
+### What a lab can reach through its internet gateway
+
+A lab with `internet.enabled` leaves through the gateway pod of its group, so the lab inherits whatever the gateway may reach.
+The gateway forwards to the **public internet only**:
+
+- Its iptables chain `LABEGRESS` (first in FORWARD for traffic leaving the pod) drops what a lab sends to `inetGateway.egress.denyCIDRs`
+  and accepts `inetGateway.egress.allowCIDRs` first (exceptions inside the denied ranges). The default deny list is link-local
+  `169.254.0.0/16` (the cloud metadata service), loopback, the private ranges `10/8`, `172.16/12`, `192.168/16` (so the node, VPC, pod
+  and service networks of a typical cluster, and an internal load balancer of the control plane), CGNAT `100.64/10`, and the reserved and
+  multicast ranges. If your cluster, node or API-server networks are **public** addresses, add them to `denyCIDRs`.
+- Its `CiliumNetworkPolicy` allows egress to the world **except** the same ranges (`toCIDRSet` with `except`), plus the allow list, and
+  to the API server entity on ports 6443 and 443 only (the gateway's own reconciler; the entity covers every port of a node the API server
+  runs on, so the ports are what limits it). The VPN pod's policy has the same port limit. The labs themselves can reach the API server
+  neither directly (default-deny) nor through the gateway (the filter above).
+- The lists are chart values, passed to the operator (`GATEWAY_EGRESS_*`), put into the environment of every gateway and applied to the
+  policy. A change reaches the gateways that already run (their pods restart). Verify from a lab device with `internet.enabled`: the
+  metadata address, a node address and the API server are unreachable, a public address is reachable.
+
 ## Device state persistence (optional)
 
 By default a device is a container in a Deployment: when it restarts, it starts again from its image and the work

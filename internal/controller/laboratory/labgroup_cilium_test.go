@@ -94,61 +94,64 @@ func TestVPNCiliumPolicy(t *testing.T) {
 	}
 }
 
-// TestGatewayCiliumPolicy asserts the gateway CiliumNetworkPolicy allows
-// egress to both kube-apiserver (reconciler) and world (its job), and selects
-// pods labelled app=gateway.
+// The gateway reaches the API server on its API ports only, and the world minus the deny ranges, plus the allow list.
 func TestGatewayCiliumPolicy(t *testing.T) {
-	policy := gatewayCiliumPolicy("ns1")
+	deny := []string{"169.254.0.0/16", "10.0.0.0/8"}
+	policy := gatewayCiliumPolicy("ns1", []string{"10.5.5.5/32"}, deny)
 
-	if got := policy.GetAPIVersion(); got != "cilium.io/v2" {
-		t.Fatalf("apiVersion = %q, want cilium.io/v2", got)
+	if policy.GetKind() != "CiliumNetworkPolicy" || policy.GetName() != "gateway-egress" || policy.GetNamespace() != "ns1" {
+		t.Fatalf("identity: %s %s %s", policy.GetKind(), policy.GetName(), policy.GetNamespace())
 	}
-	if got := policy.GetKind(); got != "CiliumNetworkPolicy" {
-		t.Fatalf("kind = %q, want CiliumNetworkPolicy", got)
+	if app, _, _ := unstructured.NestedString(policy.Object, "spec", "endpointSelector", "matchLabels", "app"); app != "gateway" {
+		t.Fatalf("selects app=%q, want gateway", app)
 	}
-	if got := policy.GetName(); got != "gateway-egress" {
-		t.Fatalf("name = %q, want gateway-egress", got)
-	}
-	if got := policy.GetNamespace(); got != "ns1" {
-		t.Fatalf("namespace = %q, want ns1", got)
-	}
-
-	app, found, err := unstructured.NestedString(policy.Object, "spec", "endpointSelector", "matchLabels", "app")
-	if err != nil || !found {
-		t.Fatalf("endpointSelector.matchLabels.app not found: err=%v", err)
-	}
-	if app != "gateway" {
-		t.Fatalf("endpointSelector.matchLabels.app = %q, want gateway", app)
-	}
-
 	egress, found, err := unstructured.NestedSlice(policy.Object, "spec", "egress")
-	if err != nil || !found {
-		t.Fatalf("spec.egress not found: err=%v", err)
+	if err != nil || !found || len(egress) != 3 {
+		t.Fatalf("egress = %v (found %v, err %v), want api + world-minus-denied + one allow", egress, found, err)
 	}
 
-	var toEntities []string
-	for _, r := range egress {
-		rule, ok := r.(map[string]interface{})
-		if !ok {
-			t.Fatalf("egress rule is not a map: %T", r)
-		}
-		entities, found, err := unstructured.NestedStringSlice(rule, "toEntities")
-		if err != nil || !found {
-			t.Fatalf("egress rule toEntities not found: err=%v", err)
-		}
-		toEntities = append(toEntities, entities...)
+	api := egress[0].(map[string]interface{})
+	if ents, _, _ := unstructured.NestedStringSlice(api, "toEntities"); len(ents) != 1 || ents[0] != "kube-apiserver" {
+		t.Fatalf("first rule must be the API server: %v", api)
+	}
+	ports, _, _ := unstructured.NestedSlice(api, "toPorts")
+	if len(ports) != 1 {
+		t.Fatalf("the API server entity needs ports: %v", api)
+	}
+	var got []string
+	for _, p := range ports[0].(map[string]interface{})["ports"].([]interface{}) {
+		pm := p.(map[string]interface{})
+		got = append(got, pm["port"].(string)+"/"+pm["protocol"].(string))
+	}
+	if len(got) != 2 || !contains(got, "6443/TCP") || !contains(got, "443/TCP") {
+		t.Fatalf("API ports = %v", got)
 	}
 
-	if !contains(toEntities, "kube-apiserver") {
-		t.Fatalf("egress toEntities = %v, want to contain kube-apiserver", toEntities)
+	world := egress[1].(map[string]interface{})
+	if _, ok := world["toEntities"]; ok {
+		t.Fatal("no entity world: it has no exceptions")
 	}
-	if !contains(toEntities, "world") {
-		t.Fatalf("egress toEntities = %v, want to contain world", toEntities)
+	set, _, _ := unstructured.NestedSlice(world, "toCIDRSet")
+	if len(set) != 1 || set[0].(map[string]interface{})["cidr"] != "0.0.0.0/0" {
+		t.Fatalf("world rule: %v", world)
 	}
-
-	// Gateway must not have an ingress rule at all.
+	except, _, _ := unstructured.NestedStringSlice(set[0].(map[string]interface{}), "except")
+	if len(except) != 2 || !contains(except, "169.254.0.0/16") || !contains(except, "10.0.0.0/8") {
+		t.Fatalf("except = %v", except)
+	}
+	if cidr, _, _ := unstructured.NestedStringSlice(egress[2].(map[string]interface{}), "toCIDR"); len(cidr) != 1 || cidr[0] != "10.5.5.5/32" {
+		t.Fatalf("allow rule: %v", egress[2])
+	}
 	if _, found, _ := unstructured.NestedSlice(policy.Object, "spec", "ingress"); found {
-		t.Fatalf("spec.ingress present, gateway policy must not define ingress")
+		t.Fatalf("the gateway policy must not define ingress")
+	}
+}
+
+// The VPN pod reaches the API server on its API ports only.
+func TestVPNCiliumPolicyLimitsTheAPIServerPorts(t *testing.T) {
+	egress, _, _ := unstructured.NestedSlice(vpnCiliumPolicy("ns1").Object, "spec", "egress")
+	if _, ok := egress[0].(map[string]interface{})["toPorts"]; !ok {
+		t.Fatalf("the API server entity of the VPN pod needs ports: %v", egress[0])
 	}
 }
 

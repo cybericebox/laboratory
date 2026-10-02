@@ -83,6 +83,9 @@ type LabGroupReconciler struct {
 	// NetworkPolicyEnabled gates creation of the default-deny NetworkPolicy
 	// baseline in each group namespace.
 	NetworkPolicyEnabled bool
+	// GatewayEgressDenyCIDRs and GatewayEgressAllowCIDRs: what the labs of a group may not (and, inside that, may)
+	// reach through the internet gateway. They go into the gateway's environment and its CiliumNetworkPolicy.
+	GatewayEgressDenyCIDRs, GatewayEgressAllowCIDRs []string
 	// VPNStatsInterval is STATS_INTERVAL of the VPN pod of a new group; zero leaves the pod's own default.
 	VPNStatsInterval time.Duration
 	// ImagePullSecrets names registry Secrets of the operator namespace. They are
@@ -614,10 +617,15 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 	}
 	var existing appsv1.Deployment
 	if err := r.Get(ctx, types.NamespacedName{Name: "gateway", Namespace: ns}, &existing); err == nil {
-		if existing.Spec.Replicas != nil && *existing.Spec.Replicas == replicas {
+		changed := existing.Spec.Replicas == nil || *existing.Spec.Replicas != replicas
+		existing.Spec.Replicas = ptrInt32(replicas)
+		// A security setting reaches the gateways that already run too (a restart of the pod).
+		if r.convergeGateway(&existing) {
+			changed = true
+		}
+		if !changed {
 			return nil
 		}
-		existing.Spec.Replicas = ptrInt32(replicas)
 		return r.Update(ctx, &existing)
 	} else if !errors.IsNotFound(err) {
 		return err
@@ -649,10 +657,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 								Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
 							},
 						},
-						Env: []corev1.EnvVar{
-							{Name: "NAMESPACE", Value: ns},
-							{Name: "INET_BASE_NETWORK", Value: r.InetBaseNetwork},
-						},
+						Env: r.gatewayEnv(ns),
 					}},
 				},
 			},
@@ -799,11 +804,7 @@ func vpnCiliumPolicy(ns string) *unstructured.Unstructured {
 						"app": "vpn",
 					},
 				},
-				"egress": []interface{}{
-					map[string]interface{}{
-						"toEntities": []interface{}{"kube-apiserver"},
-					},
-				},
+				"egress": []interface{}{apiServerEgress()},
 				"ingress": []interface{}{
 					map[string]interface{}{
 						"fromEndpoints": []interface{}{
@@ -831,11 +832,38 @@ func vpnCiliumPolicy(ns string) *unstructured.Unstructured {
 	}
 }
 
-// gatewayCiliumPolicy builds the CiliumNetworkPolicy for the gateway pod:
-// egress to kube-apiserver (its reconciler) and world (outside-cluster
-// internet — that's its job), but NOT to in-cluster pods. No DNS. No ingress
-// rule needed; replies flow back via conntrack.
-func gatewayCiliumPolicy(ns string) *unstructured.Unstructured {
+// apiServerEgress allows the API server entity on its API ports only (not every port of the node it may run on).
+func apiServerEgress() map[string]interface{} {
+	return map[string]interface{}{
+		"toEntities": []interface{}{"kube-apiserver"},
+		"toPorts": []interface{}{map[string]interface{}{
+			"ports": []interface{}{
+				map[string]interface{}{"port": "6443", "protocol": "TCP"},
+				map[string]interface{}{"port": "443", "protocol": "TCP"},
+			},
+		}},
+	}
+}
+
+// gatewayCiliumPolicy builds the CiliumNetworkPolicy for the gateway pod. Egress: the API server on its API ports
+// (its reconciler), and the outside world MINUS the deny ranges (the metadata service, the private ranges, CGNAT,
+// the cluster and node networks), plus the allow-list exceptions. Never in-cluster pods, no DNS. The kube-apiserver
+// entity is not a way out for the labs: they leave through this pod, and the gateway's own filter drops what they
+// send to the deny ranges. No ingress rule is needed; replies flow back via conntrack.
+func gatewayCiliumPolicy(ns string, allow, deny []string) *unstructured.Unstructured {
+	exceptions := make([]interface{}, len(deny))
+	for i, c := range deny {
+		exceptions[i] = c
+	}
+	egress := []interface{}{
+		apiServerEgress(),
+		map[string]interface{}{
+			"toCIDRSet": []interface{}{map[string]interface{}{"cidr": "0.0.0.0/0", "except": exceptions}},
+		},
+	}
+	for _, c := range allow {
+		egress = append(egress, map[string]interface{}{"toCIDR": []interface{}{c}})
+	}
 	return &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "cilium.io/v2",
@@ -850,14 +878,7 @@ func gatewayCiliumPolicy(ns string) *unstructured.Unstructured {
 						"app": "gateway",
 					},
 				},
-				"egress": []interface{}{
-					map[string]interface{}{
-						"toEntities": []interface{}{"kube-apiserver"},
-					},
-					map[string]interface{}{
-						"toEntities": []interface{}{"world"},
-					},
-				},
+				"egress": egress,
 			},
 		},
 	}
@@ -876,7 +897,7 @@ func (r *LabGroupReconciler) ensureVPNGatewayPolicies(ctx context.Context, ns st
 	if !r.NetworkPolicyEnabled {
 		return nil
 	}
-	for _, desired := range []*unstructured.Unstructured{vpnCiliumPolicy(ns), gatewayCiliumPolicy(ns)} {
+	for _, desired := range []*unstructured.Unstructured{vpnCiliumPolicy(ns), gatewayCiliumPolicy(ns, r.GatewayEgressAllowCIDRs, r.GatewayEgressDenyCIDRs)} {
 		spec, found, err := unstructured.NestedMap(desired.Object, "spec")
 		if err != nil || !found {
 			return fmt.Errorf("cilium policy %s missing spec", desired.GetName())
@@ -1012,4 +1033,48 @@ func (r *LabGroupReconciler) vpnStatsEnv() []corev1.EnvVar {
 		return nil
 	}
 	return []corev1.EnvVar{{Name: "STATS_INTERVAL", Value: r.VPNStatsInterval.String()}}
+}
+
+// gatewayEnv is the environment of the gateway container: where it lives, the lab address space, and the egress
+// lists that make it forward only to the public internet.
+func (r *LabGroupReconciler) gatewayEnv(ns string) []corev1.EnvVar {
+	return []corev1.EnvVar{
+		{Name: "NAMESPACE", Value: ns},
+		{Name: "INET_BASE_NETWORK", Value: r.InetBaseNetwork},
+		{Name: "GATEWAY_EGRESS_DENY_CIDRS", Value: strings.Join(r.GatewayEgressDenyCIDRs, ",")},
+		{Name: "GATEWAY_EGRESS_ALLOW_CIDRS", Value: strings.Join(r.GatewayEgressAllowCIDRs, ",")},
+	}
+}
+
+// convergeGateway brings the security settings of an existing gateway Deployment to the current ones and says
+// whether anything changed.
+func (r *LabGroupReconciler) convergeGateway(d *appsv1.Deployment) bool {
+	changed := false
+	for i := range d.Spec.Template.Spec.Containers {
+		c := &d.Spec.Template.Spec.Containers[i]
+		if c.Name != "gateway" {
+			continue
+		}
+		for _, want := range r.gatewayEnv(d.Namespace) {
+			if upsertEnv(c, want) {
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+// upsertEnv sets a plain env var on the container and says whether that changed it.
+func upsertEnv(c *corev1.Container, want corev1.EnvVar) bool {
+	for i := range c.Env {
+		if c.Env[i].Name == want.Name {
+			if c.Env[i].Value == want.Value && c.Env[i].ValueFrom == nil {
+				return false
+			}
+			c.Env[i] = want
+			return true
+		}
+	}
+	c.Env = append(c.Env, want)
+	return true
 }

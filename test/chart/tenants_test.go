@@ -311,3 +311,25 @@ func TestOldDeviceDefaultsKeyIsRefused(t *testing.T) {
 		t.Fatalf("scheduler.deviceDefaults must be refused: %v\n%s", err, out)
 	}
 }
+
+func TestGatewayEgressListsReachTheOperator(t *testing.T) {
+	out, err := helmTemplate(t, "-s", "templates/operator/configmap.yaml")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, want := range []string{`GATEWAY_EGRESS_DENY_CIDRS: "169.254.0.0/16,127.0.0.0/8,0.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,192.0.0.0/24,198.18.0.0/15,224.0.0.0/3"`, `GATEWAY_EGRESS_ALLOW_CIDRS: ""`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q\n%s", want, out)
+		}
+	}
+	out, err = helmTemplate(t, "-s", "templates/operator/configmap.yaml", "--set", "inetGateway.egress.denyCIDRs={169.254.0.0/16,198.51.100.0/24}",
+		"--set", "inetGateway.egress.allowCIDRs={10.1.1.1/32}")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, want := range []string{`GATEWAY_EGRESS_DENY_CIDRS: "169.254.0.0/16,198.51.100.0/24"`, `GATEWAY_EGRESS_ALLOW_CIDRS: "10.1.1.1/32"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+}

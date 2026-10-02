@@ -84,6 +84,25 @@ inetGateway:
   resources:
     cpu: 10m
     memory: 32Mi
+  # Where the labs of a group can go through its gateway: only the public internet. The gateway drops what a
+  # lab sends to denyCIDRs (iptables) and its CiliumNetworkPolicy allows the world except those ranges; the
+  # exceptions inside them are allowCIDRs. The default denies link-local (the cloud metadata service), loopback,
+  # the private ranges (the node, VPC, pod and service networks of a typical cluster) and CGNAT. Add to denyCIDRs
+  # the node, pod, service and API-server networks of your cluster when they are NOT private addresses.
+  # The kube-apiserver is not reachable by the labs: only the gateway pod itself talks to it, on 6443/443.
+  egress:
+    denyCIDRs:
+      - 169.254.0.0/16
+      - 127.0.0.0/8
+      - 0.0.0.0/8
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - 100.64.0.0/10
+      - 192.0.0.0/24
+      - 198.18.0.0/15
+      - 224.0.0.0/3
+    allowCIDRs: []
   image:
     repository: cybericebox/laboratory-lab
     tag: ""

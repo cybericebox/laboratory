@@ -46,6 +46,38 @@ func (m *IPTablesManager) SetupForwardRules() error {
 	return nil
 }
 
+// egressChain holds the destination filter of the traffic the gateway forwards to the outside.
+const egressChain = "LABEGRESS"
+
+// SetupEgressFilter makes the gateway forward lab traffic only to the public internet: in the chain LABEGRESS
+// (jumped to first from FORWARD for everything leaving through the external interface) the allow list is accepted
+// and every deny range is dropped. It is rebuilt from scratch on each start, so a changed list takes effect. The
+// gateway's own traffic (its API client) is OUTPUT, not FORWARD, and is not touched.
+func (m *IPTablesManager) SetupEgressFilter(allow, deny []string) error {
+	if err := m.ipt.ClearChain("filter", egressChain); err != nil {
+		return fmt.Errorf("prepare chain %s: %w", egressChain, err)
+	}
+	for _, c := range allow {
+		if err := m.ipt.Append("filter", egressChain, "-d", c, "-j", "ACCEPT"); err != nil {
+			return fmt.Errorf("allow %s: %w", c, err)
+		}
+	}
+	for _, c := range deny {
+		if err := m.ipt.Append("filter", egressChain, "-d", c, "-j", "DROP"); err != nil {
+			return fmt.Errorf("deny %s: %w", c, err)
+		}
+	}
+	jump := []string{"-o", m.extIface, "-j", egressChain}
+	if ok, err := m.ipt.Exists("filter", "FORWARD", jump...); err != nil {
+		return fmt.Errorf("check the %s jump: %w", egressChain, err)
+	} else if !ok {
+		if err := m.ipt.Insert("filter", "FORWARD", 1, jump...); err != nil {
+			return fmt.Errorf("jump to %s: %w", egressChain, err)
+		}
+	}
+	return nil
+}
+
 func (m *IPTablesManager) AddMasquerade(labCIDR string) error {
 	return m.ipt.AppendUnique(
 		"nat", "POSTROUTING",
