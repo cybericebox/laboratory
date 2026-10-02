@@ -4,10 +4,11 @@ package egress
 
 // DenyV4 are the IPv4 destinations a lab never reaches: the private ranges (so the node, VPC, pod and service networks
 // of a typical cluster and an internal load balancer), link-local (the cloud metadata service), loopback, CGNAT, the
-// "this network", protocol-assignment and benchmarking ranges, and multicast and reserved.
+// "this network", protocol-assignment and benchmarking ranges, and multicast and reserved. 168.63.129.16 is Azure's WireServer
+// (a public address that answers only inside Azure, with the VM's configuration and secrets), denied wherever the cluster runs.
 var DenyV4 = []string{
 	"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16", "127.0.0.0/8", "0.0.0.0/8",
-	"192.0.0.0/24", "198.18.0.0/15", "224.0.0.0/3",
+	"192.0.0.0/24", "198.18.0.0/15", "224.0.0.0/3", "168.63.129.16/32",
 }
 
 // DenyV6 are the IPv6 equivalents: unspecified and loopback, IPv4-mapped and NAT64 (which reach IPv4 destinations),

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"strings"
 
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
@@ -98,5 +100,56 @@ func apiErrorToStatus(err error) error {
 	case apierrors.IsTimeout(err), apierrors.IsServerTimeout(err), apierrors.IsTooManyRequests(err), apierrors.IsServiceUnavailable(err):
 		code = codes.Unavailable
 	}
-	return status.Error(code, err.Error())
+	return status.Error(code, tenantMessage(err, code))
+}
+
+// tenantMessage is what a caller is told of a Kubernetes API error. The API server's own text names its internals (service accounts,
+// namespaces, the verbs RBAC refused) and is not for a tenant: only what concerns the caller's own request is passed on (the object that
+// does not exist, the field of its spec that is invalid), and the rest is a plain sentence. The full error goes to the agent's log.
+func tenantMessage(err error, code codes.Code) string {
+	var se *apierrors.StatusError
+	errors.As(err, &se)
+	object := ""
+	if d := se.Status().Details; d != nil && d.Kind != "" {
+		object = d.Kind
+		if d.Name != "" {
+			object += " " + d.Name
+		}
+	}
+	switch code {
+	case codes.NotFound:
+		if object != "" {
+			return object + " not found"
+		}
+		return "not found"
+	case codes.AlreadyExists:
+		if object != "" {
+			return object + " already exists"
+		}
+		return "already exists"
+	case codes.Aborted:
+		return "the object was changed meanwhile: retry"
+	case codes.InvalidArgument:
+		// The causes are about the caller's own spec ("spec.devices[0].name: Invalid value"); they carry no cluster detail.
+		var causes []string
+		if d := se.Status().Details; d != nil {
+			for _, c := range d.Causes {
+				if c.Field != "" || c.Message != "" {
+					causes = append(causes, strings.TrimSpace(c.Field+": "+c.Message))
+				}
+			}
+		}
+		if len(causes) > 0 {
+			return "invalid " + object + ": " + strings.Join(causes, "; ")
+		}
+		return "invalid request"
+	}
+	log.Printf("kubernetes API error returned to a caller as %s: %v", code, err)
+	if code == codes.PermissionDenied {
+		return "the cluster refused the request"
+	}
+	if code == codes.Unavailable {
+		return "the cluster is busy or unavailable: retry later"
+	}
+	return "the cluster could not complete the request"
 }

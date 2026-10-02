@@ -10,6 +10,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -410,7 +411,7 @@ func (r *DeviceReconciler) deviceImage(device *laboratoryv1alpha1.Device, image 
 
 func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laboratoryv1alpha1.Device, replicas int32) error {
 	labels, selectorLabels, annotations, podSpec := r.workloadTemplate(device, false)
-	podSpec.ImagePullSecrets = r.devicePullSecrets(ctx, device)
+	r.applyPullSecrets(ctx, device, &podSpec)
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -558,6 +559,12 @@ func (r *DeviceReconciler) netConfigInitContainer(device *laboratoryv1alpha1.Dev
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Command:         []string{"/node", "netconfig"},
 		Env:             []corev1.EnvVar{{Name: "NETCONFIG", Value: string(cfg)}},
+		// Requests equal limits, like every other container of a device pod, so that the pod stays Guaranteed (an init container
+		// without them would make it Burstable).
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("20m"), corev1.ResourceMemory: resource.MustParse("32Mi")},
+			Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("20m"), corev1.ResourceMemory: resource.MustParse("32Mi")},
+		},
 		SecurityContext: &corev1.SecurityContext{
 			// NET_ADMIN to set addresses/routes; NET_RAW for the DHCP raw socket; nothing else.
 			Capabilities:             capsOf("NET_ADMIN", "NET_RAW"),

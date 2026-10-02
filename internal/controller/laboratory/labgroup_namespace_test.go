@@ -28,7 +28,7 @@ func TestGroupNamespaceNeverEqualsAGroupName(t *testing.T) {
 		if !strings.HasPrefix(ns, "lg-") || ns == name {
 			t.Errorf("%s -> %s: must carry the prefix", name, ns)
 		}
-		if len(ns) > 52 {
+		if len(ns) > 56 {
 			t.Errorf("%s -> %s: %d characters", name, ns, len(ns))
 		}
 		if strings.HasSuffix(ns, "--") || strings.Contains(ns, "--") && !strings.Contains(name, "--") {
@@ -129,3 +129,21 @@ var _ = Describe("LabGroup namespaces", func() {
 		Expect(ns.DeletionTimestamp.IsZero()).To(BeTrue(), "the foreign namespace must not be deleted")
 	})
 })
+
+// L-1: two long ids that share their first 40 characters differ in the hash (48 bits), and a namespace stays inside the 63 of a name.
+func TestGroupNamespaceHashIsTwelveDigits(t *testing.T) {
+	a := laboratoryv1alpha1.LabGroupNamespace(strings.Repeat("a", 40) + "-1")
+	b := laboratoryv1alpha1.LabGroupNamespace(strings.Repeat("a", 40) + "-2")
+	if a == b {
+		t.Fatal("long ids with a common prefix collide")
+	}
+	if len(a) != 3+40+1+12 || len(a) > 63 {
+		t.Fatalf("%s: %d characters", a, len(a))
+	}
+	// a group that exists keeps the namespace in its status, whatever its length
+	lg := &laboratoryv1alpha1.LabGroup{}
+	lg.Name, lg.Status.Namespace = "old", "lg-old-1a2b3c4d"
+	if got := laboratoryv1alpha1.LabGroupNamespaceOf(lg); got != "lg-old-1a2b3c4d" {
+		t.Fatalf("an existing namespace is kept: %s", got)
+	}
+}

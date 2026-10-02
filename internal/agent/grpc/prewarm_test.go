@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -494,5 +495,39 @@ func TestPrewarmSkipsTenantsWithTheirOwnCredentials(t *testing.T) {
 	}
 	if z.manifestFetches("ghcr.io/acme/app") != 0 {
 		t.Error("the shared cache must not fetch it")
+	}
+}
+
+// L-3: one call names a bounded number of images, and the table of images does not grow without end.
+func TestPrewarmCapsImagesPerCall(t *testing.T) {
+	z := newFakeZot(t)
+	h := prewarmHandler(t, z, &fakeResolver{}, PrewarmConfig{})
+	imgs := make([]string, MaxPrewarmImages+1)
+	for i := range imgs {
+		imgs[i] = fmt.Sprintf("registry.example.com/team/app:%d", i)
+	}
+	if _, err := h.PrewarmImages(context.Background(), &protobuf.PrewarmImagesRequest{Images: imgs}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("too many images: %v", err)
+	}
+	if _, err := h.PrewarmImages(context.Background(), &protobuf.PrewarmImagesRequest{Images: imgs[:MaxPrewarmImages]}); err != nil {
+		t.Fatalf("the cap itself is fine: %v", err)
+	}
+}
+
+func TestPrewarmEvictsOldestFinishedEntry(t *testing.T) {
+	p := &prewarmer{entries: map[string]*prewarmEntry{}}
+	add := func(img string, st protobuf.PrewarmState) {
+		p.entries[img] = &prewarmEntry{state: st}
+		p.order = append(p.order, img)
+	}
+	add("a", protobuf.PrewarmState_PREWARM_STATE_WARMING)
+	add("b", protobuf.PrewarmState_PREWARM_STATE_DONE)
+	add("c", protobuf.PrewarmState_PREWARM_STATE_FAILED)
+	if !p.evictFinishedLocked() || p.entries["b"] != nil || p.entries["a"] == nil || len(p.order) != 2 {
+		t.Fatalf("the oldest finished one goes, a running one stays: %v %v", p.entries, p.order)
+	}
+	p.entries["c"].state = protobuf.PrewarmState_PREWARM_STATE_QUEUED
+	if p.evictFinishedLocked() {
+		t.Fatal("nothing finished to forget")
 	}
 }

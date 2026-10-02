@@ -42,6 +42,10 @@ type Handler struct {
 	clock                 func() time.Time
 	// renewMinInterval is how often a tenant may renew its certificate (DefaultRenewMinInterval when zero); lastRenew
 	// remembers the last renewal of each tenant.
+	// Monitoring streams open per tenant (see MonitoringConfig.MaxStreamsPerTenant).
+	monMu            sync.Mutex
+	monStreams       map[string]int
+	monMaxStreams    int
 	renewMinInterval time.Duration
 	renewMu          sync.Mutex
 	lastRenew        map[string]time.Time

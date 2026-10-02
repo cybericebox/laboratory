@@ -140,3 +140,32 @@ func TestTenantWithOwnCredentialsBypassesTheImageCache(t *testing.T) {
 		}
 	}
 }
+
+// L-9: a pod of a tenant with its own registry credentials always asks the registry, so another tenant that names the same reference
+// cannot run the image the credentials pulled onto the node.
+func TestDevicePodWithTenantCredentialsPullsAlways(t *testing.T) {
+	ctx := context.Background()
+	c := fake.NewClientBuilder().WithScheme(secretScheme(t)).WithObjects(tenantWithPullSecret("acme", "acme-registry"), &laboratoryv1alpha1.Tenant{ObjectMeta: metav1.ObjectMeta{Name: "plain"}}).Build()
+	r := &DeviceReconciler{Client: c}
+	spec := func() *corev1.PodSpec {
+		return &corev1.PodSpec{
+			InitContainers: []corev1.Container{{Name: "i", ImagePullPolicy: corev1.PullIfNotPresent}},
+			Containers:     []corev1.Container{{Name: "c", ImagePullPolicy: corev1.PullIfNotPresent}},
+		}
+	}
+	dev := func(tenant string) *laboratoryv1alpha1.Device {
+		d := &laboratoryv1alpha1.Device{}
+		d.Labels = map[string]string{names.LabelTenant: tenant}
+		return d
+	}
+	own := spec()
+	r.applyPullSecrets(ctx, dev("acme"), own)
+	if len(own.ImagePullSecrets) != 1 || own.Containers[0].ImagePullPolicy != corev1.PullAlways || own.InitContainers[0].ImagePullPolicy != corev1.PullAlways {
+		t.Fatalf("a tenant with credentials pulls always: %+v", own)
+	}
+	plain := spec()
+	r.applyPullSecrets(ctx, dev("plain"), plain)
+	if len(plain.ImagePullSecrets) != 0 || plain.Containers[0].ImagePullPolicy != corev1.PullIfNotPresent {
+		t.Fatalf("a tenant without credentials keeps the default: %+v", plain)
+	}
+}

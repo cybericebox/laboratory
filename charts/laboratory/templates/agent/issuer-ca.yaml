@@ -19,6 +19,12 @@ metadata:
 spec:
   isCA: true
   commonName: laboratory-agent-ca
+  # The client certificates the agent signs live at most as long as this CA (agent.enrollment.certificateTTL is capped by it).
+  duration: {{ .Values.agent.mtls.caDuration | quote }}
+  renewBefore: {{ .Values.agent.mtls.caRenewBefore | quote }}
+  # The same key on renewal: certificates signed before it keep verifying against the renewed CA.
+  privateKey:
+    rotationPolicy: Never
   secretName: laboratory-agent-ca
   issuerRef:
     name: laboratory-agent-selfsign

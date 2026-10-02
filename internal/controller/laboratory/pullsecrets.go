@@ -77,6 +77,22 @@ func (r *DeviceReconciler) devicePullSecrets(ctx context.Context, device *labora
 	return pullSecretRefs([]string{names.TenantPullSecret})
 }
 
+// applyPullSecrets gives a device pod the tenant's pull secrets and, when it has any, makes every container pull with IfNotPresent turned
+// into Always: an image pulled with tenant A's credentials stays on the node, and with IfNotPresent a pod of tenant B that names the exact
+// same reference would run it without any credential. Always makes the node ask the registry, which B cannot satisfy.
+func (r *DeviceReconciler) applyPullSecrets(ctx context.Context, device *laboratoryv1alpha1.Device, spec *corev1.PodSpec) {
+	spec.ImagePullSecrets = r.devicePullSecrets(ctx, device)
+	if len(spec.ImagePullSecrets) == 0 {
+		return
+	}
+	for i := range spec.InitContainers {
+		spec.InitContainers[i].ImagePullPolicy = corev1.PullAlways
+	}
+	for i := range spec.Containers {
+		spec.Containers[i].ImagePullPolicy = corev1.PullAlways
+	}
+}
+
 // syncTenantPullSecret makes the registry credentials of the group's tenant available in the
 // group namespace as names.TenantPullSecret, and removes the copy when the tenant has none
 // (any more). The source is a Secret of the tenants namespace; a missing or non-registry

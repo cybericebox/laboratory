@@ -12,8 +12,9 @@ import (
 const LabGroupNamespacePrefix = "lg-"
 
 // LabGroupNamespace returns the namespace the operator creates for a NEW LabGroup of this name:
-// "lg-" + the name (shortened to 40 characters) + "-" + 8 hex digits of the SHA-256 of the whole name, at most 52
-// characters. Groups created before the prefix existed keep the namespace in their status (see LabGroupNamespaceOf).
+// "lg-" + the name (shortened to 40 characters) + "-" + 12 hex digits of the SHA-256 of the whole name, at most 56
+// characters: 48 bits, so two long ids that share their first 40 characters do not collide by chance (with 32 bits about one in a hundred
+// does at nine thousand groups). A group made with 8 digits keeps its namespace in its status (see LabGroupNamespaceOf).
 func LabGroupNamespace(groupName string) string {
 	sum := sha256.Sum256([]byte(groupName))
 	short := groupName
@@ -21,7 +22,7 @@ func LabGroupNamespace(groupName string) string {
 		short = short[:40]
 	}
 	short = strings.TrimRight(short, "-")
-	return LabGroupNamespacePrefix + short + "-" + hex.EncodeToString(sum[:4])
+	return LabGroupNamespacePrefix + short + "-" + hex.EncodeToString(sum[:6])
 }
 
 // LabGroupNamespaceOf is the namespace of an existing LabGroup: the one recorded in its status (so a group that

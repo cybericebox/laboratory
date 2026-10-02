@@ -182,6 +182,8 @@ spec:
               value: {{ .Values.agent.monitoring.pollInterval | quote }}
             - name: AGENT_MONITORING_SUBSCRIBER_BUFFER
               value: {{ .Values.agent.monitoring.subscriberBuffer | quote }}
+            - name: AGENT_MONITORING_MAX_STREAMS_PER_TENANT
+              value: {{ .Values.agent.monitoring.maxStreamsPerTenant | quote }}
             - name: AGENT_MTLS_ENABLED
               value: {{ .Values.agent.mtls.enabled | quote }}
             - name: AGENT_ALLOW_INSECURE

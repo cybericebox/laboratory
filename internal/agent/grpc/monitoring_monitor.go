@@ -26,6 +26,9 @@ type MonitoringConfig struct {
 	// SubscriberBuffer is how many journal updates a subscriber may lag behind
 	// before it is dropped (256).
 	SubscriberBuffer int
+	// MaxStreamsPerTenant is how many Monitoring streams one tenant may hold open at once (0 = unlimited): each subscribe runs a full
+	// collect of the cluster and keeps a buffer, so a tenant must not be able to open them without end.
+	MaxStreamsPerTenant int
 }
 
 const (
@@ -115,7 +118,30 @@ func newMonitor(h *Handler, cfg MonitoringConfig) *monitor {
 // SetMonitoringConfig sets the journal and poller bounds. Call it before the
 // first Monitoring stream; later calls are ignored.
 func (h *Handler) SetMonitoringConfig(cfg MonitoringConfig) {
+	h.monMaxStreams = cfg.MaxStreamsPerTenant
 	h.monOnce.Do(func() { h.mon = newMonitor(h, cfg) })
+}
+
+// openStream counts a Monitoring stream of the tenant; false when it holds too many already. closeStream gives the place back.
+func (h *Handler) openStream(tenant string) bool {
+	h.monMu.Lock()
+	defer h.monMu.Unlock()
+	if h.monMaxStreams > 0 && h.monStreams[tenant] >= h.monMaxStreams {
+		return false
+	}
+	if h.monStreams == nil {
+		h.monStreams = map[string]int{}
+	}
+	h.monStreams[tenant]++
+	return true
+}
+
+func (h *Handler) closeStream(tenant string) {
+	h.monMu.Lock()
+	defer h.monMu.Unlock()
+	if h.monStreams[tenant]--; h.monStreams[tenant] <= 0 {
+		delete(h.monStreams, tenant)
+	}
 }
 
 // monitor returns the handler's monitor, created with the defaults when none was configured.

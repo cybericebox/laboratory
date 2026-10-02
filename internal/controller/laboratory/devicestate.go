@@ -450,7 +450,7 @@ func (r *DeviceReconciler) createDevicePod(ctx context.Context, device *laborato
 	device.Status.State.StoppedAt = nil
 
 	labels, _, annotations, podSpec := r.workloadTemplate(device, true)
-	podSpec.ImagePullSecrets = r.devicePullSecrets(ctx, device)
+	r.applyPullSecrets(ctx, device, &podSpec)
 	annotations[names.AnnotationStateEpoch] = fmt.Sprint(st.Epoch)
 	annotations[names.AnnotationStateDevice] = device.Name
 	annotations[names.AnnotationStateIncarnation] = fmt.Sprint(next)

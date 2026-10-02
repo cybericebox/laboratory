@@ -147,6 +147,11 @@ func (h *Handler) Monitoring(request *protobuf.MonitoringRequest, stream protobu
 		return status.Errorf(codes.InvalidArgument, "selector: %v", err)
 	}
 	period := monitoringPeriod(request.GetMinIntervalMs())
+	tenant := tenantOf(stream.Context())
+	if !h.openStream(tenant) {
+		return status.Errorf(codes.ResourceExhausted, "this tenant already has %d Monitoring streams open", h.monMaxStreams)
+	}
+	defer h.closeStream(tenant)
 	sub, start, err := h.monitor().subscribe(stream.Context(), request)
 	if err != nil {
 		return err

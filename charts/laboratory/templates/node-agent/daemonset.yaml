@@ -59,7 +59,7 @@ spec:
             - name: lib-modules
               mountPath: /lib/modules
               readOnly: true
-          {{- with .Values.nodeAgent.resources }}
+          {{- with .Values.nodeAgent.initResources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
@@ -93,7 +93,7 @@ spec:
             - name: lib-modules
               mountPath: /lib/modules
               readOnly: true
-          {{- with .Values.nodeAgent.resources }}
+          {{- with .Values.nodeAgent.ovsResources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
@@ -113,7 +113,7 @@ spec:
           volumeMounts:
             - name: cni-bin
               mountPath: /opt/cni/bin
-          {{- with .Values.nodeAgent.resources }}
+          {{- with .Values.nodeAgent.initResources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
@@ -133,7 +133,7 @@ spec:
           volumeMounts:
             - name: cni-conf
               mountPath: /etc/cni/net.d
-          {{- with .Values.nodeAgent.resources }}
+          {{- with .Values.nodeAgent.initResources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}

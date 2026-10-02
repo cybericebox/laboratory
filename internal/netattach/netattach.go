@@ -92,7 +92,7 @@ func Parse(annotation string) []Attachment {
 		}
 		for _, a := range list {
 			if a.Iface != "" && a.Name != "default" {
-				out = append(out, a)
+				out = append(out, normalizeMAC(a))
 			}
 		}
 		return out
@@ -107,9 +107,18 @@ func Parse(annotation string) []Attachment {
 		if name == "default" {
 			continue
 		}
-		out = append(out, Attachment{Iface: iface, Name: name, MAC: mac})
+		out = append(out, normalizeMAC(Attachment{Iface: iface, Name: name, MAC: mac}))
 	}
 	return out
+}
+
+// normalizeMAC reads the MAC "random" as no MAC: the CNI cannot set a hardware address called "random", and the interface keeps the one it was
+// generated with (which is what "random" asked for).
+func normalizeMAC(a Attachment) Attachment {
+	if a.MAC == "random" {
+		a.MAC = ""
+	}
+	return a
 }
 
 // With returns the list with the attachment added (when absent).

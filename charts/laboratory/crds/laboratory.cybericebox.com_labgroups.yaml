@@ -216,10 +216,8 @@ spec:
             type: object
         type: object
         x-kubernetes-validations:
-        - message: LabGroup name is the namespace name and must be at most 63 characters
+        - message: LabGroup name must be at most 63 characters
           rule: self.metadata.name.size() <= 63
-        - message: LabGroup name conflicts with a reserved Kubernetes namespace
-          rule: '!(self.metadata.name in [''default'',''kube-system'',''kube-public'',''kube-node-lease'',''laboratory-system''])'
     served: true
     storage: true
     subresources:

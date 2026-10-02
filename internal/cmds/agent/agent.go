@@ -90,10 +90,11 @@ func Run() {
 		h.SetPrewarm(pw)
 	}
 	h.SetMonitoringConfig(grpcserver.MonitoringConfig{
-		JournalSize:      cfg.Monitoring.JournalSize,
-		JournalAge:       cfg.Monitoring.JournalAge,
-		PollInterval:     cfg.Monitoring.PollInterval,
-		SubscriberBuffer: cfg.Monitoring.SubscriberBuffer,
+		JournalSize:         cfg.Monitoring.JournalSize,
+		JournalAge:          cfg.Monitoring.JournalAge,
+		PollInterval:        cfg.Monitoring.PollInterval,
+		SubscriberBuffer:    cfg.Monitoring.SubscriberBuffer,
+		MaxStreamsPerTenant: cfg.Monitoring.MaxStreamsPerTenant,
 	})
 	// The access keys moved to their own namespace (the proxy reads that one only): bring the keys of earlier versions along before any call
 	// can add or remove one.

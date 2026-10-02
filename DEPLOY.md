@@ -1584,3 +1584,36 @@ one device writing, idling and writing again could fill it. What bounds it now (
   A device cannot set the session cookie in a 1xx response either (L-5).
 - `:8080` metrics are off in the gateway pod (a lab could read them and learn the API server's address) and in the node-agent (host network); the operator no longer logs in development mode.
 - **Upgrade.** Nothing by hand. The values are under `proxy.wg.limits`, `proxy.l7` and `nodeAgent`.
+
+### Smaller findings of the re-audit (R-20)
+
+Done:
+
+- **Namespace hash (L-1)**: a new group's namespace is `lg-<name up to 40>-<12 hex>` (56 characters at most). Groups made before keep the namespace in their status. The stale
+  CEL rules on the LabGroup name (it is no longer the namespace) are gone, a name longer than 63 is still refused.
+- **Enroll (L-2)**: what can be known to fail does not burn the token (see "Revoking client certificates").
+- **Prewarm and Monitoring (L-3)**: one PrewarmImages call names at most 200 images and the agent tracks at most 5000 (the oldest finished one is forgotten); a tenant holds at most
+  `agent.monitoring.maxStreamsPerTenant` (8) Monitoring streams.
+- **Error text (L-4)**: the Kubernetes API server's text no longer reaches a tenant. A caller gets the object that is not there, the field of its own spec that is invalid, or a plain sentence
+  ("the cluster refused the request"); the full error goes to the agent's log. The blast radius of the agent's CA key and of its reads in the tenants namespace is unchanged (the key is what signs
+  the client certificates).
+- **1xx Set-Cookie (L-5)**, **gateway filter restart window (L-6)**, **metrics on :8080 (L-7)**, **the tun device check (L-11)**: see the sections above.
+- **Resources (L-8)**: `nodeAgent.ovsResources` and `initResources` are used (the OVS sidecar and the init containers); the netconfig init container of a device has requests equal to limits.
+- **Pull policy (L-9)**: a device pod of a tenant that has its own registry credentials pulls with `Always`, so another tenant cannot run what those credentials pulled onto the node.
+  (The registry allow-list and size cap of ImagePull, and the prepull key width, are not done.)
+- **Registry (L-10)**: the writer account cannot write or delete in the public cache (zot's own sync fills it; the writer may read it to measure the volume), no account has rights over every
+  repository, and zot has no ServiceAccount token. Verify on the stand that the retention sweep and the node-agents' catalog read still work with the narrower policy.
+- **MAC "random" (L-12)**: read as no MAC (the CNI cannot set a hardware address called "random"); a pod's annotation is not rewritten, so nothing restarts.
+- **Chart (L-14)**: the agent CA has a `duration` (5 years, renewed a year before its end with the same key); the agent and proxy namespaces enforce the restricted Pod Security level; the CRD
+  step is in the upgrade order at the top of this section.
+- **CI (L-15)**: `permissions: contents: read` on every workflow (the chart job asks for write itself), actions pinned by commit, the Docker Hub token passed through the environment, `:latest`
+  only for a published release and the tag checked to be `vX.Y.Z`, kind pinned with a checksum kept in the workflow, CNI plugins updated (v1.9.1) with checksums kept in the Dockerfile.
+- **Azure WireServer (L-16)**: `168.63.129.16` is in the egress deny list.
+- **Dependencies (R-15)**: every direct Go module is at its latest version (controller-runtime 0.25.2, k8s 0.37.1, containerd 2.4.1, OpenTelemetry 1.47 ...); grpc stays at 1.84.0 until 1.85 is
+  released (govulncheck reports GO-2026-6443, a panic on a missing `:authority`, reachable on the agent's port: the one open advisory). The base images (alpine 3.24.2, Go 1.27.1, distroless
+  static, zot v2.1.21) were already the latest on 2026-10-02. libovsdb's two pinned transitive modules (`cenkalti/hub`, `cenkalti/rpc2`) have newer tags that their parent does not accept.
+
+Not done, for the record: L-13 (a node-wide inotify budget, the 60 s re-add of the t6 flood flows, dangling hardlinks of `FilterLayer`, the work directory after a crash, the socket parent
+directory check, writable `host-netns` and `host-cgroup`), L-14 default-deny policies in the system namespaces, a PriorityClass, `certManager.selfSigned`/`staging` defaults and the API server egress
+port limits, L-16 (the namespace of `keypairSecretRef`, a finalizer timeout, the traffic-stats patches of the VPN, the VPN probe server timeouts, the kustomize proxy manifest), and
+the stray files in the repository root (untracked and ignored).

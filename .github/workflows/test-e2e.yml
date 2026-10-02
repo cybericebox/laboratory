@@ -4,22 +4,27 @@ on:
   push:
   pull_request:
 
+# Nothing here needs more than to read the repository; a job that does asks for it itself.
+permissions:
+  contents: read
+
 jobs:
   test-e2e:
     name: Run on Ubuntu
     runs-on: ubuntu-latest
     steps:
       - name: Clone the code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
 
-      - name: Install the latest version of kind
+      - name: Install kind (a pinned version, verified against a checksum kept here)
         run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
+          curl -fsSLo ./kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
+          echo "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  kind" | sha256sum -c -
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
 

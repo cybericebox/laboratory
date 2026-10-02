@@ -81,6 +81,14 @@ type prewarmer struct {
 }
 
 // SetPrewarm configures cache prewarming; call it before serving.
+const (
+	// MaxPrewarmImages is the most images one PrewarmImages call may name, and maxPrewarmEntries the most the agent keeps track of
+	// (a goroutine starts per distinct image): past the second the oldest finished one is forgotten, and when every one is still
+	// running the new image is refused.
+	MaxPrewarmImages  = 200
+	maxPrewarmEntries = 5000
+)
+
 func (h *Handler) SetPrewarm(cfg PrewarmConfig) {
 	cfg = cfg.withDefaults()
 	h.prewarm = &prewarmer{cfg: cfg, sem: make(chan struct{}, cfg.Concurrency), entries: map[string]*prewarmEntry{}}
@@ -102,6 +110,9 @@ func (h *Handler) PrewarmImages(ctx context.Context, in *protobuf.PrewarmImagesR
 	policy, ten, err := h.imagePolicy(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if n := len(in.GetImages()); n > MaxPrewarmImages {
+		return nil, status.Errorf(codes.InvalidArgument, "at most %d images in one call, got %d", MaxPrewarmImages, n)
 	}
 	own := ten != nil && ten.Spec.Images.PullSecret != ""
 	return p.request(in.GetImages(), func(img string) (protobuf.PrewarmState, string) {
@@ -141,6 +152,11 @@ func (p *prewarmer) request(images []string, refuse func(string) (protobuf.Prewa
 			}
 		}
 		e := p.entries[img]
+		if e == nil && len(p.entries) >= maxPrewarmEntries && !p.evictFinishedLocked() {
+			out.Images = append(out.Images, &protobuf.PrewarmImageStatus{Image: img, State: protobuf.PrewarmState_PREWARM_STATE_FAILED,
+				Error: "too many images are being warmed: try again later", UpdatedUnixMs: p.cfg.Now().UnixMilli()})
+			continue
+		}
 		if e == nil {
 			e = &prewarmEntry{}
 			p.entries[img] = e
@@ -152,6 +168,20 @@ func (p *prewarmer) request(images []string, refuse func(string) (protobuf.Prewa
 		out.Images = append(out.Images, p.statusLocked(img, e))
 	}
 	return out
+}
+
+// evictFinishedLocked forgets the oldest entry that is not running (done, failed or skipped) and says whether it found one.
+func (p *prewarmer) evictFinishedLocked() bool {
+	for i, img := range p.order {
+		e := p.entries[img]
+		if e == nil || e.state == protobuf.PrewarmState_PREWARM_STATE_QUEUED || e.state == protobuf.PrewarmState_PREWARM_STATE_WARMING {
+			continue
+		}
+		delete(p.entries, img)
+		p.order = append(p.order[:i:i], p.order[i+1:]...)
+		return true
+	}
+	return false
 }
 
 // retryLocked: a failed image is tried again after RetryAfter; a done one is checked again once stale.

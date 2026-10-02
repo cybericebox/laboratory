@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -12,6 +13,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
 
@@ -216,5 +219,28 @@ func TestAPIErrorToStatus(t *testing.T) {
 	}
 	if err := terminatingError("Lab", "x"); apiErrorToStatus(err) != err {
 		t.Error("gRPC statuses must pass through")
+	}
+}
+
+// L-4: the API server's text does not reach a tenant.
+func TestKubernetesErrorTextIsNotPassedOn(t *testing.T) {
+	gr := schema.GroupResource{Group: "laboratory.cybericebox.com", Resource: "labs"}
+	forbidden := apierrors.NewForbidden(gr, "x", errors.New(`User "system:serviceaccount:laboratory-agent:laboratory-agent" cannot create resource "labs" in the namespace "lg-team-1a2b3c4d5e6f"`))
+	got := status.Convert(apiErrorToStatus(forbidden))
+	if got.Code() != codes.PermissionDenied || strings.Contains(got.Message(), "system:serviceaccount") || strings.Contains(got.Message(), "lg-team") {
+		t.Fatalf("forbidden: %v", got)
+	}
+	internal := apierrors.NewInternalError(errors.New("etcdserver: request timed out at 10.0.0.5:2379"))
+	if m := status.Convert(apiErrorToStatus(internal)).Message(); strings.Contains(m, "etcd") || strings.Contains(m, "10.0.0.5") {
+		t.Fatalf("internal: %q", m)
+	}
+	// what concerns the caller's own request stays: the object that is not there, the field of its spec that is invalid
+	if m := status.Convert(apiErrorToStatus(apierrors.NewNotFound(gr, "lab-7"))).Message(); !strings.Contains(m, "lab-7") {
+		t.Fatalf("not found: %q", m)
+	}
+	invalid := apierrors.NewInvalid(schema.GroupKind{Group: "laboratory.cybericebox.com", Kind: "Lab"}, "lab-7", field.ErrorList{field.Invalid(field.NewPath("spec", "devices").Index(0).Child("name"), "VPN", "the names vpn, gateway and internet are reserved by the platform")})
+	m := status.Convert(apiErrorToStatus(invalid)).Message()
+	if !strings.Contains(m, "spec.devices[0].name") || !strings.Contains(m, "reserved") {
+		t.Fatalf("invalid: %q", m)
 	}
 }

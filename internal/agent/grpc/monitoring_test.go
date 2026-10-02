@@ -78,3 +78,25 @@ func receiveMonitoringUpdate(t *testing.T, updates <-chan *protobuf.MonitoringUp
 		return nil
 	}
 }
+
+// L-3: a tenant holds a bounded number of Monitoring streams.
+func TestMonitoringStreamsArePerTenantCapped(t *testing.T) {
+	h := &Handler{}
+	h.monMaxStreams = 2
+	if !h.openStream("a") || !h.openStream("a") || h.openStream("a") {
+		t.Fatal("two streams of a tenant, not three")
+	}
+	if !h.openStream("b") {
+		t.Fatal("another tenant is not held back")
+	}
+	h.closeStream("a")
+	if !h.openStream("a") {
+		t.Fatal("a place is free after one closes")
+	}
+	h.monMaxStreams = 0
+	for i := 0; i < 50; i++ {
+		if !h.openStream("c") {
+			t.Fatal("0 means unlimited")
+		}
+	}
+}

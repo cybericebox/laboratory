@@ -85,3 +85,16 @@ func TestWithWithout(t *testing.T) {
 		t.Fatal("Without removes")
 	}
 }
+
+// L-12: the MAC "random" passes validation but is no hardware address: it reads as no MAC, so CNI ADD does not fail on it.
+func TestRandomMACReadsAsNoMAC(t *testing.T) {
+	for _, in := range []string{`[{"iface":"eth1","mac":"random"}]`, "eth1@|random"} {
+		got := Parse(in)
+		if len(got) != 1 || got[0].MAC != "" {
+			t.Errorf("%q: %+v", in, got)
+		}
+	}
+	if got := Parse(`[{"iface":"eth1","mac":"02:00:00:00:00:01"}]`); got[0].MAC != "02:00:00:00:00:01" {
+		t.Errorf("a real MAC stays: %+v", got)
+	}
+}

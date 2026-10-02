@@ -5,18 +5,20 @@
 {{- $storage := dict "rootDirectory" "/var/lib/registry" "dedupe" true "gc" true "gcDelay" $r.gc.delay "gcInterval" $r.gc.interval }}
 {{- /*
 Access control. The snapshots of the labs (lab/**) and the shared base repository are NOT anonymous: the reader account may read
-them, the writer everything. Everything else is the public image cache (one pattern per upstream registry), anonymous read. The
-patterns are disjoint, and there is no "**" catch-all: a repository that matches none is denied to everyone but the writer.
+them, the writer reads and writes them. Everything else is the public image cache (one pattern per upstream registry), anonymous read; the
+cache is filled by zot's own sync, so the writer account (which sits on every node) may only READ it (to measure what the volume holds), never
+write or delete there. The patterns are disjoint, there is no "**" catch-all and no admin policy: a repository that matches none is denied
+to everyone.
 */}}
 {{- $private := dict "policies" (list (dict "users" (list "reader") "actions" (list "read")) (dict "users" (list "writer") "actions" $all)) }}
 {{- $repos := dict "lab/**" $private "base" $private "base/**" $private }}
-{{- $public := dict "anonymousPolicy" (list "read") "policies" (list (dict "users" (list "writer") "actions" $all)) }}
+{{- $public := dict "anonymousPolicy" (list "read") "policies" (list (dict "users" (list "writer") "actions" (list "read"))) }}
 {{- if $cache.enabled }}
 {{- range $u := (include "laboratory.cacheUpstreams" . | fromJsonArray) }}
 {{- $_ := set $repos (printf "%s/**" $u.name) $public }}
 {{- end }}
 {{- end }}
-{{- $access := dict "repositories" $repos "adminPolicy" (dict "users" (list "writer") "actions" $all) }}
+{{- $access := dict "repositories" $repos }}
 {{- $http := dict "address" "0.0.0.0" "compat" (list "docker2s2") "port" "5000" "auth" (dict "htpasswd" (dict "path" "/etc/zot-auth/htpasswd")) "accessControl" $access }}
 {{- $cfg := dict "distSpecVersion" "1.1.0" "storage" $storage "http" $http "log" (dict "level" "info") }}
 {{- if $cache.enabled }}

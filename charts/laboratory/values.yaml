@@ -721,6 +721,10 @@ agent:
 
   mtls:
     enabled: true
+    # Lifetime of the CA that signs the client certificates (cert-manager defaults to 90 days) and how long before its end it is renewed
+    # (with the same key, so certificates already issued keep working).
+    caDuration: 43800h
+    caRenewBefore: 8760h
   # mtls.enabled=false makes every caller the default tenant. It is for local development only and the chart refuses it unless
   # this is set too.
   allowInsecure: false
@@ -770,6 +774,8 @@ agent:
     pollInterval: 1s
     # Updates a subscriber may lag behind before its stream is dropped.
     subscriberBuffer: 256
+    # Monitoring streams one tenant may hold open at once (each subscribe runs a full collect and keeps a buffer); 0 = unlimited.
+    maxStreamsPerTenant: 8
 
   # Container resource requests/limits.
   resources:

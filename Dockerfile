@@ -35,15 +35,18 @@ RUN for c in manager agent proxy node lab; do \
 # CNI plugins for the node image: only the ones the node-agent installs on the host. They run on
 # the HOST, which is glibc, so they must be static: the alpine package builds them against musl
 # (they fail there with "fork/exec ...: no such file or directory"). The upstream release is
-# static; its checksum is verified.
+# static; the tarball is verified against checksums kept HERE (not fetched from the same place as the tarball).
 FROM ${ALPINE} AS cni
 ARG TARGETARCH
-ARG CNI_PLUGINS=v1.8.0
+ARG CNI_PLUGINS=v1.9.1
+ARG CNI_SHA256_AMD64=b98f74a0f8522f0a83867178729c1aa70f2158f90c45a2ca8fa791db1c76b303
+ARG CNI_SHA256_ARM64=56171987d3947707c3563db2f4001bccaf50fd63468611b9f3cbecb1375ee7ec
 RUN set -eu; \
     base=https://github.com/containernetworking/plugins/releases/download/${CNI_PLUGINS}; \
     tgz=cni-plugins-linux-${TARGETARCH}-${CNI_PLUGINS}.tgz; \
-    wget -q -O /tmp/$tgz $base/$tgz; wget -q -O /tmp/$tgz.sha256 $base/$tgz.sha256; \
-    (cd /tmp && sha256sum -c $tgz.sha256); \
+    case "$TARGETARCH" in amd64) want=$CNI_SHA256_AMD64;; arm64) want=$CNI_SHA256_ARM64;; *) echo "no checksum for $TARGETARCH"; exit 1;; esac; \
+    wget -q -O /tmp/$tgz $base/$tgz; \
+    echo "$want  /tmp/$tgz" | sha256sum -c -; \
     mkdir -p /cni && tar -xzf /tmp/$tgz -C /cni ./bridge ./ptp ./loopback ./host-local ./portmap
 
 FROM ${DISTROLESS} AS controller

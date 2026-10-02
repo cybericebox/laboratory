@@ -156,6 +156,8 @@ type MonitoringConfig struct {
 	JournalAge       time.Duration `env:"AGENT_MONITORING_JOURNAL_AGE" envDefault:"15m"`
 	PollInterval     time.Duration `env:"AGENT_MONITORING_POLL_INTERVAL" envDefault:"1s"`
 	SubscriberBuffer int           `env:"AGENT_MONITORING_SUBSCRIBER_BUFFER" envDefault:"256"`
+	// MaxStreamsPerTenant caps the Monitoring streams one tenant may hold open (0 = unlimited).
+	MaxStreamsPerTenant int `env:"AGENT_MONITORING_MAX_STREAMS_PER_TENANT" envDefault:"8"`
 }
 
 func Load() (*Config, error) {

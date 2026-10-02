@@ -164,9 +164,20 @@ func TestRegistryKeepsSnapshotsPrivate(t *testing.T) {
 		}
 	}
 	for _, public := range []string{"docker.io/**", "ghcr.io/**", "quay.io/**", "registry.k8s.io/**"} {
-		if r, ok := repos[public]; !ok || len(r.AnonymousPolicy) != 1 || r.AnonymousPolicy[0] != "read" {
+		r, ok := repos[public]
+		if !ok || len(r.AnonymousPolicy) != 1 || r.AnonymousPolicy[0] != "read" {
 			t.Errorf("%s is the public cache: anonymous read: %+v", public, r)
+			continue
 		}
+		// the writer account is on every node: it may read the cache and never write or delete there (zot's own sync fills it)
+		for _, p := range r.Policies {
+			if strings.Join(p.Users, ",") == "writer" && strings.Join(p.Actions, ",") != "read" {
+				t.Errorf("%s: the writer must only read the cache: %v", public, p.Actions)
+			}
+		}
+	}
+	if strings.Contains(cm.Data["config.json"], "adminPolicy") {
+		t.Error("no account may have rights over every repository")
 	}
 	// both accounts exist, and the agent gets the reader in its own namespace
 	if !strings.Contains(out, "readerPassword:") || !strings.Contains(out, "reader:$2") || !strings.Contains(out, "writer:$2") {
@@ -356,5 +367,35 @@ func TestAdmissionPolicyIsNotSkippedSilently(t *testing.T) {
 	out, err = helmTemplate(t, "-s", "templates/operator/configmap.yaml")
 	if err != nil || !strings.Contains(out, `OPERATOR_REQUIRE_ADMISSION_POLICY: "true"`) {
 		t.Errorf("by default the operator checks the policies at start: %v\n%s", err, out)
+	}
+}
+
+// L-14: the namespaces of the agent and the proxy admit only restricted pods, and the pods the chart puts there are restricted ones.
+func TestAgentAndProxyNamespacesEnforcePodSecurity(t *testing.T) {
+	out, err := helmTemplate(t, append(agentSet, "-s", "templates/agent/namespace.yaml", "-s", "templates/proxy/namespace.yaml")...)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	n := 0
+	for name, ns := range ofKind(docs(t, out), "Namespace") {
+		labels, _ := ns["metadata"].(map[string]any)["labels"].(map[string]any)
+		if labels["pod-security.kubernetes.io/enforce"] != "restricted" {
+			t.Errorf("namespace %s must enforce restricted: %v", name, labels)
+		}
+		n++
+	}
+	if n != 2 {
+		t.Errorf("%d namespaces rendered", n)
+	}
+}
+
+// L-10: zot has no ServiceAccount token (it never talks to the API) and its writer account cannot touch the public cache.
+func TestRegistryPodHasNoServiceAccountToken(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "devices.statePersistence.enabled=true", "-s", "templates/registry/deployment.yaml")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if !strings.Contains(out, "automountServiceAccountToken: false") {
+		t.Errorf("zot must not mount a token:\n%s", out)
 	}
 }
