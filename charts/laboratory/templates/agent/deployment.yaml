@@ -213,12 +213,6 @@ spec:
               value: {{ .Values.agent.server.enroll.maxHandshakes | quote }}
             - name: AGENT_MAX_ANONYMOUS_CONNS
               value: {{ .Values.agent.server.enroll.maxAnonymousConns | quote }}
-            - name: AGENT_ANONYMOUS_CONNS_PER_IP
-              value: {{ .Values.agent.server.enroll.anonymousConnsPerIP | quote }}
-            - name: AGENT_NEW_CONN_RATE
-              value: {{ .Values.agent.server.enroll.newConnRate | quote }}
-            - name: AGENT_NEW_CONN_BURST
-              value: {{ .Values.agent.server.enroll.newConnBurst | quote }}
           {{- if .Values.agent.mtls.enabled }}
             - name: AGENT_MTLS_CLIENT_CA
               value: /ca/tls.crt

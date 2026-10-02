@@ -27,16 +27,14 @@ type ServerLimits struct {
 	// StreamRecheck is how often a running stream (Monitoring, snapshot export) is authorized again.
 	StreamRecheck time.Duration `env:"AGENT_STREAM_RECHECK" envDefault:"30s"`
 	// The Enroll server, open to callers without a client certificate: the largest message, calls per second (all callers
-	// together), and what one address and all addresses may hold open.
-	EnrollMaxMessage    int           `env:"AGENT_ENROLL_MAX_MESSAGE_BYTES" envDefault:"65536"`
-	EnrollRate          float64       `env:"AGENT_ENROLL_RATE" envDefault:"5"`
-	EnrollBurst         int           `env:"AGENT_ENROLL_BURST" envDefault:"10"`
-	HandshakeTimeout    time.Duration `env:"AGENT_HANDSHAKE_TIMEOUT" envDefault:"10s"`
-	MaxHandshakes       int           `env:"AGENT_MAX_HANDSHAKES" envDefault:"64"`
-	MaxAnonymousConns   int           `env:"AGENT_MAX_ANONYMOUS_CONNS" envDefault:"256"`
-	AnonymousConnsPerIP int           `env:"AGENT_ANONYMOUS_CONNS_PER_IP" envDefault:"8"`
-	NewConnRate         float64       `env:"AGENT_NEW_CONN_RATE" envDefault:"10"`
-	NewConnBurst        int           `env:"AGENT_NEW_CONN_BURST" envDefault:"30"`
+	// together), and what all of them together may hold open. There is no per-address limit: behind the gateway every caller has the
+	// same source address.
+	EnrollMaxMessage  int           `env:"AGENT_ENROLL_MAX_MESSAGE_BYTES" envDefault:"65536"`
+	EnrollRate        float64       `env:"AGENT_ENROLL_RATE" envDefault:"5"`
+	EnrollBurst       int           `env:"AGENT_ENROLL_BURST" envDefault:"10"`
+	HandshakeTimeout  time.Duration `env:"AGENT_HANDSHAKE_TIMEOUT" envDefault:"10s"`
+	MaxHandshakes     int           `env:"AGENT_MAX_HANDSHAKES" envDefault:"64"`
+	MaxAnonymousConns int           `env:"AGENT_MAX_ANONYMOUS_CONNS" envDefault:"256"`
 	// RenewMinInterval is how often one tenant may renew its client certificate.
 	RenewMinInterval time.Duration `env:"AGENT_RENEW_MIN_INTERVAL" envDefault:"10s"`
 }

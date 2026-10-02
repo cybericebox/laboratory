@@ -966,8 +966,8 @@ The agent is reachable by anyone who can reach its host, so what a caller withou
   certificate sends reaches the main server or is buffered at 64 MiB. A caller that already has a certificate enrolls through a connection without one (the
   client library's connection without a keypair).
 - **Connections**: the TLS handshake has a timeout and at most `maxHandshakes` run at once; at most `maxAnonymousConns` connections without a certificate are open
-  and `anonymousConnsPerIP` from one address; one address opens at most `newConnRate` connections per second. Behind a TLS passthrough route the address seen is
-  the gateway's, so the per-address limits then act as global ones: raise them if enrollments queue up.
+  in total. There is no per-address limit and no per-address connection rate: behind a TLS passthrough route the address seen is the gateway's, so such a limit
+  would be a global one that a single anonymous host could use up to lock out every tenant. Raise `maxAnonymousConns` and `maxHandshakes` if enrollments queue up.
 - **Streams and keepalive**: `maxConcurrentStreams` (64) per connection, a connection ends after `maxConnectionAge` with `maxConnectionAgeGrace`, and a client
   that pings more often than `keepaliveMinTime` (10 s) is disconnected.
 - **The token is found by a label.** The operator labels a Tenant with the start of its unused token's hash (`laboratory.cybericebox.com/enrollment-token`), so an

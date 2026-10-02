@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/time/rate"
 	"google.golang.org/grpc/credentials"
 )
 
@@ -19,17 +18,15 @@ type SplitLimits struct {
 	HandshakeTimeout time.Duration
 	// MaxHandshakes is how many handshakes may run at once; a connection that finds no room is closed at once.
 	MaxHandshakes int
-	// MaxAnonymous is how many connections without a client certificate may be open together, and AnonymousPerIP how many from
-	// one address (behind a proxy that hides the address the second one is the first one's twin).
-	MaxAnonymous, AnonymousPerIP int
-	// NewConnRate and NewConnBurst limit how fast one address may open connections (per second).
-	NewConnRate  float64
-	NewConnBurst int
+	// MaxAnonymous is how many connections without a client certificate may be open together. There is no per-address limit: behind the
+	// gateway's TLS passthrough every caller has the gateway's address, so one would be a global limit that an anonymous host could use
+	// to lock out every tenant.
+	MaxAnonymous int
 }
 
 // DefaultSplitLimits are what the agent runs with unless the chart says otherwise.
 func DefaultSplitLimits() SplitLimits {
-	return SplitLimits{HandshakeTimeout: 10 * time.Second, MaxHandshakes: 64, MaxAnonymous: 256, AnonymousPerIP: 8, NewConnRate: 10, NewConnBurst: 30}
+	return SplitLimits{HandshakeTimeout: 10 * time.Second, MaxHandshakes: 64, MaxAnonymous: 256}
 }
 
 // preHandshaked is the transport credentials of a server that is handed connections whose TLS handshake is already done (by
@@ -82,9 +79,6 @@ type splitListener struct {
 	hs    chan struct{} // handshake slots
 	mu    sync.Mutex
 	conns int // anonymous connections open
-	perIP map[string]int
-	rates map[string]*rate.Limiter
-	seen  map[string]time.Time
 }
 
 func newSplitListener(inner net.Listener, cfg *tls.Config, lim SplitLimits) *splitListener {
@@ -98,20 +92,10 @@ func newSplitListener(inner net.Listener, cfg *tls.Config, lim SplitLimits) *spl
 	if lim.MaxAnonymous <= 0 {
 		lim.MaxAnonymous = def.MaxAnonymous
 	}
-	if lim.AnonymousPerIP <= 0 {
-		lim.AnonymousPerIP = def.AnonymousPerIP
-	}
-	if lim.NewConnRate <= 0 {
-		lim.NewConnRate, lim.NewConnBurst = def.NewConnRate, def.NewConnBurst
-	}
-	if lim.NewConnBurst <= 0 {
-		lim.NewConnBurst = def.NewConnBurst
-	}
 	return &splitListener{
 		inner: inner, cfg: cfg, lim: lim,
 		main: newChanListener(inner.Addr()), anon: newChanListener(inner.Addr()),
-		hs:    make(chan struct{}, lim.MaxHandshakes),
-		perIP: map[string]int{}, rates: map[string]*rate.Limiter{}, seen: map[string]time.Time{},
+		hs: make(chan struct{}, lim.MaxHandshakes),
 	}
 }
 
@@ -128,50 +112,16 @@ func (s *splitListener) Run() error {
 			}
 			return err
 		}
-		ip := hostOf(c.RemoteAddr())
-		if !s.allowNew(ip) {
-			_ = c.Close()
-			continue
-		}
 		select {
 		case s.hs <- struct{}{}:
-			go s.handshake(c, ip)
+			go s.handshake(c)
 		default:
 			_ = c.Close()
 		}
 	}
 }
 
-func hostOf(a net.Addr) string {
-	if h, _, err := net.SplitHostPort(a.String()); err == nil {
-		return h
-	}
-	return a.String()
-}
-
-// allowNew is the per-address rate of new connections.
-func (s *splitListener) allowNew(ip string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now := time.Now()
-	if len(s.rates) > 4096 { // forget the quiet ones
-		for k, t := range s.seen {
-			if now.Sub(t) > time.Minute {
-				delete(s.rates, k)
-				delete(s.seen, k)
-			}
-		}
-	}
-	l, ok := s.rates[ip]
-	if !ok {
-		l = rate.NewLimiter(rate.Limit(s.lim.NewConnRate), s.lim.NewConnBurst)
-		s.rates[ip] = l
-	}
-	s.seen[ip] = now
-	return l.AllowN(now, 1)
-}
-
-func (s *splitListener) handshake(raw net.Conn, ip string) {
+func (s *splitListener) handshake(raw net.Conn) {
 	defer func() { <-s.hs }()
 	tc := tls.Server(raw, s.cfg)
 	ctx, cancel := context.WithTimeout(context.Background(), s.lim.HandshakeTimeout)
@@ -191,20 +141,16 @@ func (s *splitListener) handshake(raw net.Conn, ip string) {
 	}
 	// Without a certificate: only what the Enroll server allows, and only so many.
 	s.mu.Lock()
-	if s.conns >= s.lim.MaxAnonymous || s.perIP[ip] >= s.lim.AnonymousPerIP {
+	if s.conns >= s.lim.MaxAnonymous {
 		s.mu.Unlock()
 		_ = c.Close()
 		return
 	}
 	s.conns++
-	s.perIP[ip]++
 	s.mu.Unlock()
 	c.release = func() {
 		s.mu.Lock()
 		s.conns--
-		if s.perIP[ip]--; s.perIP[ip] <= 0 {
-			delete(s.perIP, ip)
-		}
 		s.mu.Unlock()
 	}
 	s.anon.put(c)

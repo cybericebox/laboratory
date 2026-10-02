@@ -44,7 +44,6 @@ func limitsOf(cfg *config.Config) (maxStreams uint32, age, grace time.Duration, 
 	l := cfg.Server
 	split = SplitLimits{
 		HandshakeTimeout: l.HandshakeTimeout, MaxHandshakes: l.MaxHandshakes, MaxAnonymous: l.MaxAnonymousConns,
-		AnonymousPerIP: l.AnonymousConnsPerIP, NewConnRate: l.NewConnRate, NewConnBurst: l.NewConnBurst,
 	}
 	return uint32(l.MaxConcurrentStreams), l.MaxConnectionAge, l.MaxConnectionAgeGrace, l.KeepaliveMinTime, l.EnrollMaxMessage, l.EnrollRate, l.EnrollBurst, split
 }

@@ -133,9 +133,10 @@ func TestEnrollOnTheMainServerIsRefused(t *testing.T) {
 	}
 }
 
-// Connections without a certificate are capped per address; the rest are closed at once.
-func TestAnonymousConnectionsAreCappedPerAddress(t *testing.T) {
-	s := startServer(t, func(c *config.Config) { c.Server.AnonymousConnsPerIP = 2 })
+// Connections without a certificate are capped in total (there is no per-address limit: the source address is shared behind the
+// gateway); the rest are closed at once.
+func TestAnonymousConnectionsAreCappedInTotal(t *testing.T) {
+	s := startServer(t, func(c *config.Config) { c.Server.MaxAnonymousConns = 2 })
 	var conns []*tls.Conn
 	for i := 0; i < 4; i++ {
 		c, err := tls.Dial("tcp", s.addr, s.tlsConfig())

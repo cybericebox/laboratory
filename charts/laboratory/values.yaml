@@ -768,9 +768,7 @@ agent:
       handshakeTimeout: 10s
       maxHandshakes: 64             # TLS handshakes in progress at once
       maxAnonymousConns: 256        # open connections without a client certificate, all addresses together
-      anonymousConnsPerIP: 8        # ... and from one address (behind a proxy that hides the address this is shared)
-      newConnRate: 10               # new connections per second from one address
-      newConnBurst: 30
+      # No per-address limits: behind the gateway every caller has the same source address.
 
   # Enrollment: a tenant gets its client certificate and registers its access key with a one-time
   # token (see DEPLOY.md, "Enrollment & access keys"); no private key ever leaves the tenant.
