@@ -126,3 +126,29 @@ func TestOperatorMayManagePrepullDaemonSetsThroughTheNamespacedRole(t *testing.T
 		}
 	}
 }
+
+func TestOperatorAdmissionPolicy(t *testing.T) {
+	render := func(extra ...string) (string, error) {
+		return helmTemplate(t, append([]string{"-s", "templates/operator/admission-policy.yaml"}, extra...)...)
+	}
+	out, err := render("--kube-version", "1.33.0")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, want := range []string{"name: laboratory-operator-scope", "name: laboratory-operator-namespaces", "name: laboratory-operator-pods",
+		`system:serviceaccount:laboratory-system:laboratory-controller-manager`, "validationActions: [Deny]", "laboratory.cybericebox.com/group"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	if n := strings.Count(out, "kind: ValidatingAdmissionPolicyBinding"); n != 3 {
+		t.Errorf("bindings = %d, want 3", n)
+	}
+	// off by a value, and not rendered where the API does not exist
+	if o, err := render("--kube-version", "1.33.0", "--set", "operator.admissionPolicy.enabled=false"); err == nil && strings.Contains(o, "ValidatingAdmissionPolicy") {
+		t.Errorf("a disabled policy must not render:\n%s", o)
+	}
+	if o, err := render("--kube-version", "1.29.0"); err == nil && strings.Contains(o, "ValidatingAdmissionPolicy") {
+		t.Errorf("Kubernetes 1.29 has no ValidatingAdmissionPolicy:\n%s", o)
+	}
+}

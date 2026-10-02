@@ -1,0 +1,154 @@
+{{- if and .Values.operator.admissionPolicy.enabled (semverCompare ">=1.30.0-0" .Capabilities.KubeVersion.Version) }}
+{{- /*
+RBAC cannot restrict the operator to "the namespaces of its LabGroups" (they do not exist when the chart is installed), so these
+policies do. They apply to the operator's ServiceAccount only. See DEPLOY.md, "Operator permissions".
+*/ -}}
+{{- $operator := printf "system:serviceaccount:%s:laboratory-controller-manager" .Release.Namespace }}
+{{- /* CEL does not expose ownerReferences of an object, so "a namespace of a LabGroup" is the label the operator puts on it when it creates it. */ -}}
+{{- $owned := "has(%s.metadata.labels) && 'laboratory.cybericebox.com/group' in %s.metadata.labels" }}
+---
+# Writes in a namespace: only the namespaces of LabGroups, plus the release and tenants namespaces for what the operator does there.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-operator-scope
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [secrets, serviceaccounts, services, endpoints, pods]
+      - apiGroups: [apps]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [deployments, daemonsets]
+      - apiGroups: [rbac.authorization.k8s.io]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [rolebindings]
+      - apiGroups: [networking.k8s.io]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [networkpolicies]
+      - apiGroups: [policy]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [poddisruptionbudgets]
+      - apiGroups: [cilium.io]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [ciliumnetworkpolicies]
+  matchConditions:
+    - name: from-the-operator
+      expression: request.userInfo.username == {{ $operator | quote }}
+  variables:
+    - name: groupNamespace
+      expression: {{ printf $owned "namespaceObject" "namespaceObject" | quote }}
+    - name: platformNamespace
+      expression: namespaceObject.metadata.name in [{{ .Release.Namespace | quote }}, "laboratory-tenants"]
+  validations:
+    - expression: "variables.groupNamespace || (variables.platformNamespace && request.resource.resource != 'rolebindings')"
+      message: "the operator may write here only in the namespaces of its LabGroups (RoleBindings: only there), the release namespace and the tenants namespace"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-operator-scope
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  policyName: laboratory-operator-scope
+  validationActions: [Deny]
+---
+# Namespaces: the operator creates the namespaces of its LabGroups (labelled laboratory.cybericebox.com/group) and may change or delete only those.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-operator-namespaces
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [namespaces]
+  matchConditions:
+    - name: from-the-operator
+      expression: request.userInfo.username == {{ $operator | quote }}
+  variables:
+    - name: before
+      expression: "request.operation == 'CREATE' ? object : oldObject"
+  validations:
+    - expression: {{ printf $owned "variables.before" "variables.before" | quote }}
+      message: the operator may create, change and delete only the namespaces of its LabGroups
+      reason: Forbidden
+    - expression: {{ printf "request.operation != 'UPDATE' || (%s)" (printf $owned "object" "object") | quote }}
+      message: a namespace of a LabGroup stays owned by it
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-operator-namespaces
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  policyName: laboratory-operator-namespaces
+  validationActions: [Deny]
+---
+# The pods the operator creates (directly or through a Deployment or DaemonSet): nothing that reaches into the node.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-operator-pods
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+      - apiGroups: [apps]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [deployments, daemonsets]
+  matchConditions:
+    - name: from-the-operator
+      expression: request.userInfo.username == {{ $operator | quote }}
+  variables:
+    - name: podSpec
+      expression: "request.resource.resource == 'pods' ? object.spec : object.spec.template.spec"
+    - name: containers
+      expression: "variables.podSpec.containers + (has(variables.podSpec.initContainers) ? variables.podSpec.initContainers : [])"
+  validations:
+    - expression: "!(has(variables.podSpec.hostNetwork) && variables.podSpec.hostNetwork) && !(has(variables.podSpec.hostPID) && variables.podSpec.hostPID) && !(has(variables.podSpec.hostIPC) && variables.podSpec.hostIPC)"
+      message: the operator may not create a pod that uses the host's network, PID or IPC namespace
+      reason: Forbidden
+    - expression: "!has(variables.podSpec.volumes) || !variables.podSpec.volumes.exists(v, has(v.hostPath))"
+      message: the operator may not create a pod that mounts a host path
+      reason: Forbidden
+    - expression: "variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.privileged) || !c.securityContext.privileged)"
+      message: the operator may not create a privileged container
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-operator-pods
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  policyName: laboratory-operator-pods
+  validationActions: [Deny]
+{{- end }}

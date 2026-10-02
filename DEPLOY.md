@@ -754,7 +754,22 @@ chart: pull secrets it copies, the prepull DaemonSets) and, as a narrower Role, 
 straight from the API server instead of caching them, because an informer would need cluster-wide list and watch.
 
 What remains, and why: the operator can still create a RoleBinding in any namespace to the three roles it may bind, so on its own RBAC cannot
-stop a compromised operator from giving itself its working role in, say, `kube-system`. That is the job of the admission policy (see below).
+stop a compromised operator from giving itself its working role in, say, `kube-system`. That is the job of the admission policy:
+
+**Admission policy** (`operator.admissionPolicy.enabled`, default on, Kubernetes 1.30+). Three `ValidatingAdmissionPolicy` objects, each with a
+`Deny` binding, apply to the operator's ServiceAccount only (anyone else is unaffected):
+
+- `laboratory-operator-scope`: it may create, change and delete Secrets, ServiceAccounts, Services, Endpoints, pods, Deployments, DaemonSets,
+  NetworkPolicies, CiliumNetworkPolicies, PodDisruptionBudgets and RoleBindings **only in namespaces labelled `laboratory.cybericebox.com/group`** (the
+  namespaces of its LabGroups, which it labels when it creates them) and, except RoleBindings, in the release namespace and `laboratory-tenants`.
+- `laboratory-operator-namespaces`: it may create only labelled namespaces, and change or delete only namespaces that already carry the label
+  (so it cannot label `kube-system` and take it over).
+- `laboratory-operator-pods`: a pod it creates, directly or through a Deployment or DaemonSet, may not be privileged or use the host's network, PID
+  or IPC namespace, or mount a host path.
+
+Together with the RBAC above, a compromised operator can read no Secret outside its namespaces and cannot start a pod that reaches into a node.
+(CEL does not expose `ownerReferences`, so "a namespace of a LabGroup" is the label.) Denials say which policy refused. The policies are tested on a real
+API server (`internal/controller/laboratory/admission_policy_test.go`).
 The platform's own resources and Namespaces are cluster-wide because LabGroups, Labs and the VNI pool are cluster-scoped or cross-namespace.
 The `config/rbac` kustomize role generated from the kubebuilder markers is for the development install only; the chart's roles are the
 deployed ones.

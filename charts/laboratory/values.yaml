@@ -52,6 +52,13 @@ operator:
   # the operator pod is networkPolicy.enabled above).
   groupNetworkPolicy:
     enabled: true
+  # ValidatingAdmissionPolicy (Kubernetes 1.30+) that confines the operator's ServiceAccount: it may create, change and
+  # delete RoleBindings, Secrets, Services, pods, Deployments and the like only in the namespaces of its LabGroups (a namespace
+  # it created, labelled laboratory.cybericebox.com/group) and, for what it really needs there, the release and tenants namespaces; it may change or
+  # delete only the Namespaces it created; and the pods it creates may not be privileged or use hostNetwork, hostPID, hostIPC or
+  # hostPath. RBAC alone cannot say "only these namespaces" for namespaces that do not exist yet.
+  admissionPolicy:
+    enabled: true
 
 # ============================================================
 # VPN pod image (created at runtime by operator per LabGroup)
