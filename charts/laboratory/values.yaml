@@ -791,7 +791,8 @@ agent:
     journalSize: 10000
     # How long an update stays in the journal.
     journalAge: 15m
-    # How often the platform is observed while anybody is subscribed.
+    # How often the platform is observed while anybody is subscribed. A poll reads informer caches (no API call), so 1s is cheap;
+    # the caches hold the objects of all tenants (raise agent.resources with the number of labs).
     pollInterval: 1s
     # Updates a subscriber may lag behind before its stream is dropped.
     subscriberBuffer: 256
@@ -799,10 +800,11 @@ agent:
     maxStreamsPerTenant: 8
 
   # Container resource requests/limits.
+  # 256Mi: the Monitoring caches hold the objects of all tenants (and a request is read up to 4 MiB).
   resources:
     limits:
       cpu: 250m
-      memory: 128Mi
+      memory: 256Mi
     requests:
       cpu: 10m
       memory: 64Mi

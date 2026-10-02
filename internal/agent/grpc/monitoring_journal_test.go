@@ -43,6 +43,15 @@ func newMonRig(t *testing.T, cfg MonitoringConfig) *monRig {
 		defer r.mu.Unlock()
 		return r.now
 	}
+	t.Cleanup(func() { // the informers started by the polls
+		m := h.monitor()
+		m.pollMu.Lock()
+		defer m.pollMu.Unlock()
+		if m.cache != nil {
+			m.cache.stop()
+			m.cache = nil
+		}
+	})
 	return r
 }
 
@@ -52,8 +61,22 @@ func (r *monRig) advance(d time.Duration) {
 	r.mu.Unlock()
 }
 
+// settle makes the monitor's informers show everything the fake API server holds (they are asynchronous).
+func (r *monRig) settle() {
+	r.t.Helper()
+	m := r.h.monitor()
+	m.pollMu.Lock()
+	c, err := m.ensureCache(context.Background())
+	m.pollMu.Unlock()
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	c.settle(r.t, r.cs)
+}
+
 func (r *monRig) poll() {
 	r.t.Helper()
+	r.settle()
 	if err := r.h.monitor().poll(context.Background()); err != nil {
 		r.t.Fatal(err)
 	}

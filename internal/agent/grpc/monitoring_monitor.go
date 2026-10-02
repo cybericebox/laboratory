@@ -94,6 +94,8 @@ type monitor struct {
 	epoch string
 
 	pollMu sync.Mutex // one poll at a time
+	// cache serves the polls from informers; it exists while somebody is subscribed (guarded by pollMu).
+	cache *monCache
 
 	mu    sync.Mutex
 	state *monState
@@ -167,6 +169,7 @@ func (m *monitor) subscribe(ctx context.Context, req interface {
 	GetAgentEpoch() string
 }) (*subscriber, *startPlan, error) {
 	if err := m.poll(ctx); err != nil {
+		m.stopCache() // nobody is subscribed: do not leave the informers running
 		return nil, nil, err
 	}
 	m.mu.Lock()
@@ -219,6 +222,7 @@ func (m *monitor) run() {
 		if len(m.subs) == 0 {
 			m.running = false
 			m.mu.Unlock()
+			m.stopCache()
 			return
 		}
 		m.mu.Unlock()
@@ -230,11 +234,41 @@ func (m *monitor) run() {
 	}
 }
 
-// poll observes the platform once; a change becomes a journal entry offered to every subscriber.
+// stopCache stops the informers when nobody is subscribed any more; the next subscriber starts them again.
+func (m *monitor) stopCache() {
+	m.pollMu.Lock()
+	defer m.pollMu.Unlock()
+	m.mu.Lock()
+	idle := len(m.subs) == 0
+	m.mu.Unlock()
+	if idle && m.cache != nil {
+		m.cache.stop()
+		m.cache = nil
+	}
+}
+
+// ensureCache starts the informers if they are not running (pollMu held).
+func (m *monitor) ensureCache(ctx context.Context) (*monCache, error) {
+	if m.cache == nil {
+		c, err := newMonCache(ctx, m.h)
+		if err != nil {
+			return nil, err
+		}
+		m.cache = c
+	}
+	return m.cache, nil
+}
+
+// poll observes the platform once; a change becomes a journal entry offered to every subscriber. A poll that cannot observe
+// (the caches did not sync) returns the error and changes nothing: no update, and above all no deletion, for that cycle.
 func (m *monitor) poll(ctx context.Context) error {
 	m.pollMu.Lock()
 	defer m.pollMu.Unlock()
-	next, err := m.h.collect(ctx)
+	c, err := m.ensureCache(ctx)
+	if err != nil {
+		return err
+	}
+	next, err := m.h.observe(ctx, c)
 	if err != nil {
 		return err
 	}

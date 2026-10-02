@@ -9,7 +9,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
@@ -49,19 +49,55 @@ func (h *Handler) snapshot(ctx context.Context) (*protobuf.MonitoringUpdate, err
 	return st.update, nil
 }
 
-// collect builds a secret-free observation covering all LabGroups
-// (cluster-scoped) and, for each group with a provisioned namespace, its Labs
-// and LabGroupClients (namespace-scoped).
+// collect observes the platform once with a cache of its own, which it starts and stops (tests and one-off readers). The monitor
+// keeps one cache while anybody is subscribed and calls observe on it.
 func (h *Handler) collect(ctx context.Context) (*monState, error) {
-	groups, err := h.cs.LaboratoryV1alpha1().LabGroups().List(ctx, metav1.ListOptions{})
+	c, err := newMonCache(ctx, h)
 	if err != nil {
 		return nil, err
 	}
+	defer c.stop()
+	return h.observe(ctx, c)
+}
+
+// sortedByName orders cached objects (which must be treated as read-only, so it sorts a copy of the slice).
+func sortedByName[T interface{ GetName() string }](items []T) []T {
+	out := append([]T(nil), items...)
+	sort.Slice(out, func(i, j int) bool { return out[i].GetName() < out[j].GetName() })
+	return out
+}
+
+// observe builds a secret-free observation covering all LabGroups (cluster-scoped) and, for each group with a provisioned
+// namespace, its Labs and LabGroupClients (namespace-scoped), reading only the caches: no call to the API server per group, and an
+// API error cannot make a record vanish from the observation (the caches keep the last objects they saw).
+func (h *Handler) observe(ctx context.Context, c *monCache) (*monState, error) {
+	groups, err := c.groups.List(labels.Everything())
+	if err != nil {
+		return nil, err
+	}
+	allLabs, err := c.labs.List(labels.Everything())
+	if err != nil {
+		return nil, err
+	}
+	allClients, err := c.clients.List(labels.Everything())
+	if err != nil {
+		return nil, err
+	}
+	allPolicies, err := c.policies.List(labels.Everything())
+	if err != nil {
+		return nil, err
+	}
+	allReports, err := c.reports.List(labels.Everything())
+	if err != nil {
+		return nil, err
+	}
+	labsOf, clientsOf, policiesOf, reportsOf := byNamespace(allLabs), byNamespace(allClients), byNamespace(allPolicies), byNamespace(allReports)
+	usageOf, podsOf, schedOf := c.usageByNamespace(ctx), c.podStatuses(), c.deviceSchedules()
+
 	st := &monState{labels: map[string]map[string]string{}, labLabels: map[string]map[string]string{}}
 	upd := &protobuf.MonitoringUpdate{}
 	st.update = upd
-	for i := range groups.Items {
-		g := &groups.Items[i]
+	for _, g := range sortedByName(groups) {
 		gid := names.IDOf(g)
 		// The tenant of a group is the tenant of everything in it. It is added to the labels
 		// kept for the selector filter (never to what is sent), so the filter's tenant test
@@ -83,52 +119,49 @@ func (h *Handler) collect(ctx context.Context) (*monState, error) {
 		}
 		// CR name -> id, to give the ids back in what the collectors report by CR name.
 		labIDs, clientIDs := map[string]string{}, map[string]string{}
-		labs, err := h.cs.LaboratoryV1alpha1().Labs(ns).List(ctx, metav1.ListOptions{})
-		if err == nil {
-			usage := h.namespaceUsage(ctx, ns)
-			pods := h.namespacePodStatus(ctx, ns)
-			sched := h.namespaceDeviceScheduling(ctx, ns)
-			for j := range labs.Items {
-				lab := &labs.Items[j]
-				p := labMonitoringToProto(lab, gid)
-				fillLabUsage(p, usage, lab.Name)
-				fillLabPodStatus(p, pods, lab.Name)
-				fillDeviceScheduling(p, sched, lab.Name)
-				upd.Labs = append(upd.Labs, p)
-				labIDs[lab.Name] = p.Name
-				st.labels[recordKey("lab", gid, ns, p.Name)] = tl(lab.Labels)
-				st.labLabels[labLabelKey(gid, p.Name)] = tl(lab.Labels)
+		var usage map[usageKey]deviceUsage
+		if usageOf != nil {
+			usage = usageOf[ns]
+			if usage == nil {
+				usage = map[usageKey]deviceUsage{} // metrics are available, this namespace has no device usage yet
 			}
 		}
-		clients, err := h.cs.LaboratoryV1alpha1().LabGroupClients(ns).List(ctx, metav1.ListOptions{})
-		if err == nil {
-			for j := range clients.Items {
-				p := clientMonitoringToProto(&clients.Items[j], gid)
-				upd.Clients = append(upd.Clients, p)
-				clientIDs[clients.Items[j].Name] = p.Name
-				st.labels[recordKey("client", gid, ns, p.Name)] = tl(clients.Items[j].Labels)
-			}
+		pods, sched := podsOf[ns], schedOf[ns]
+		for _, lab := range sortedByName(labsOf[ns]) {
+			p := labMonitoringToProto(lab, gid)
+			fillLabUsage(p, usage, lab.Name)
+			fillLabPodStatus(p, pods, lab.Name)
+			fillDeviceScheduling(p, sched, lab.Name)
+			upd.Labs = append(upd.Labs, p)
+			labIDs[lab.Name] = p.Name
+			st.labels[recordKey("lab", gid, ns, p.Name)] = tl(lab.Labels)
+			st.labLabels[labLabelKey(gid, p.Name)] = tl(lab.Labels)
 		}
-		policy, err := h.cs.LaboratoryV1alpha1().LabGroupAccessPolicies(ns).Get(ctx, "access-policy", metav1.GetOptions{})
-		if err == nil {
+		for _, cl := range sortedByName(clientsOf[ns]) {
+			p := clientMonitoringToProto(cl, gid)
+			upd.Clients = append(upd.Clients, p)
+			clientIDs[cl.Name] = p.Name
+			st.labels[recordKey("client", gid, ns, p.Name)] = tl(cl.Labels)
+		}
+		for _, policy := range policiesOf[ns] {
+			if policy.Name != names.LabGroupAccessPolicyName {
+				continue
+			}
 			upd.Policies = append(upd.Policies, accessPolicyToProto(policy, gid))
 			st.labels[recordKey("access_policy", gid, ns, "access-policy")] = tl(policy.Labels)
 		}
-		reports, err := h.cs.LaboratoryV1alpha1().LabTrafficReports(ns).List(ctx, metav1.ListOptions{})
-		if err == nil {
-			var proxies []*protobuf.TrafficReport
-			for j := range reports.Items {
-				report := trafficReportToProto(&reports.Items[j], gid)
-				restoreTrafficIDs(report, labIDs, clientIDs)
-				if report.GetKind() == "proxy" {
-					proxies = append(proxies, report)
-					continue
-				}
-				upd.Traffic = append(upd.Traffic, report)
+		var proxies []*protobuf.TrafficReport
+		for _, r := range sortedByName(reportsOf[ns]) {
+			report := trafficReportToProto(r, gid)
+			restoreTrafficIDs(report, labIDs, clientIDs)
+			if report.GetKind() == "proxy" {
+				proxies = append(proxies, report)
+				continue
 			}
-			if merged := mergeProxyReports(proxies); merged != nil {
-				upd.Traffic = append(upd.Traffic, merged)
-			}
+			upd.Traffic = append(upd.Traffic, report)
+		}
+		if merged := mergeProxyReports(proxies); merged != nil {
+			upd.Traffic = append(upd.Traffic, merged)
 		}
 	}
 	sortMonitoringRecords(upd)

@@ -5,6 +5,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metricsv1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -43,15 +44,23 @@ func (h *Handler) namespaceUsage(ctx context.Context, ns string) map[usageKey]de
 	if err != nil {
 		return nil
 	}
-	out := make(map[usageKey]deviceUsage)
-	for i := range list.Items {
-		pm := &list.Items[i]
+	u := foldUsage(list.Items)[ns]
+	if u == nil {
+		u = map[usageKey]deviceUsage{}
+	}
+	return u
+}
+
+// foldUsage sums the containers of each pod metric into the usage of its device, by namespace and (lab, device).
+func foldUsage(items []metricsv1beta1.PodMetrics) map[string]map[usageKey]deviceUsage {
+	out := map[string]map[usageKey]deviceUsage{}
+	for i := range items {
+		pm := &items[i]
 		lab := pm.Labels[names.LabelLab]
 		device := pm.Labels[names.LabelDevice]
 		if lab == "" || device == "" {
 			continue
 		}
-		key := usageKey{lab: lab, device: device}
 		// A device runs exactly one pod (Deployment, replicas=1). During a brief
 		// recreation overlap two PodMetrics may share the (lab, device) labels —
 		// take the last one rather than summing, so usage reflects one pod, not two.
@@ -61,7 +70,10 @@ func (h *Handler) namespaceUsage(ctx context.Context, ns string) map[usageKey]de
 			u.cpuMillicores += usage.Cpu().MilliValue()
 			u.memoryBytes += usage.Memory().Value()
 		}
-		out[key] = u
+		if out[pm.Namespace] == nil {
+			out[pm.Namespace] = map[usageKey]deviceUsage{}
+		}
+		out[pm.Namespace][usageKey{lab: lab, device: device}] = u
 	}
 	return out
 }
@@ -88,26 +100,6 @@ func fillLabUsage(lab *protobuf.Lab, usage map[usageKey]deviceUsage, crName ...s
 			d.MemoryBytes = u.memoryBytes
 		}
 	}
-}
-
-func (h *Handler) namespacePodStatus(ctx context.Context, ns string) map[usageKey]devicePodStatus {
-	if h.k8s == nil {
-		return nil
-	}
-	pods, err := h.k8s.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil
-	}
-	statuses := make(map[usageKey]devicePodStatus)
-	for i := range pods.Items {
-		pod := &pods.Items[i]
-		key := usageKey{lab: pod.Labels[names.LabelLab], device: pod.Labels[names.LabelDevice]}
-		if key.lab == "" || key.device == "" {
-			continue
-		}
-		statuses[key] = devicePodStatus{phase: string(pod.Status.Phase), reason: podReason(pod), restartCount: podRestartCount(pod)}
-	}
-	return statuses
 }
 
 func fillLabPodStatus(lab *protobuf.Lab, pods map[usageKey]devicePodStatus, crName ...string) {
