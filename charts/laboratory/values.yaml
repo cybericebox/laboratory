@@ -604,6 +604,10 @@ devices:
     maxWatchedDirs: 2000
     # How often the retention sweep of old snapshots runs (Go duration).
     retentionInterval: 10m
+    # A snapshot-backed device is a bare Pod. When its node dies (NotReady, still in the cluster, or gone) the pod stays
+    # Terminating and the device stays down. After this long Terminating on such a node the operator force-deletes the pod
+    # and recreates the device from its last snapshot ("0" = never; see DEPLOY.md, "Node loss").
+    nodeLossForceDeleteAfter: 5m
     # Snapshot layers kept on top of the base image before they are squashed into one.
     maxLayers: 10
     # How long the snapshots of a deleted lab are kept before the repository is deleted

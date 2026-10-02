@@ -63,6 +63,7 @@ data:
   STATE_MAX_LAYERS: {{ .maxLayers | quote }}
   STATE_RETENTION: {{ .retention | quote }}
   STATE_RETENTION_INTERVAL: {{ .retentionInterval | quote }}
+  STATE_NODE_LOSS_FORCE_DELETE_AFTER: {{ .nodeLossForceDeleteAfter | quote }}
   {{- end }}
   {{- end }}
   {{- if .Values.registry.cache.enabled }}

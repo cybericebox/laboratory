@@ -1187,6 +1187,26 @@ Rescue mode runs `/bin/sh` in a loop that leaves on any stop signal (an image ma
 
 Both set fields on `Device.spec.state` (`resetToken`, `rescue`) that the operator acts on.
 
+### Node loss
+
+A snapshot-backed device is a bare Pod, so a dead node does not recreate it by itself. When the node goes NotReady, the control plane's taint
+eviction sets a deletion time on the pod, but only the node's kubelet can confirm the deletion, so the pod stays `Terminating` and the device stays
+down. The operator closes this gap: a device pod that has been `Terminating` for `devices.statePersistence.nodeLossForceDeleteAfter` (default `5m`,
+`"0"` = never; env `STATE_NODE_LOSS_FORCE_DELETE_AFTER`) on a node that is NotReady (Ready `False` or `Unknown`) or no longer in the cluster is force-deleted
+(grace period 0), and the device is recreated on another node from its last snapshot (the same path as after a crash). The timer starts at the pod's deletion time,
+which is the eviction time plus the pod's grace period, so the device is down for about the taint toleration, plus the grace period, plus this timeout.
+A pod on a node that is Ready is never force-deleted, however long it takes to stop. The work since the last snapshot is lost
+(see "What is and is not kept"). Deployment-backed devices (no persistence) are replaced by their ReplicaSet and need none of this.
+
+Runbook for a lost node:
+
+1. `kubectl get nodes` shows it `NotReady`; `kubectl get pods -A -o wide --field-selector spec.nodeName=<node>` lists what was on it.
+2. Wait for the timeout above. The operator log has `force-deleted a device pod stuck terminating on a lost node`; the device's `status.state` moves to a new incarnation.
+3. To go faster, or for a pod that is not a device (VPN, gateway), delete it yourself: `kubectl -n <ns> delete pod <pod> --force --grace-period=0`.
+   Only do this for a node that is really down: the container may still run on a node that has only lost its network.
+4. If the node is dead for good: `kubectl delete node <node>`. The pods on it go at once and the devices are recreated.
+5. When the node returns, its kubelet removes the leftover containers; the node-agent rebuilds the node's switch ports from the pods that are scheduled there.
+
 ### Retention of deleted labs
 
 The snapshots of a lab are not deleted with the lab. The operator runs a sweep every 10 minutes: for each snapshot

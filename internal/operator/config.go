@@ -195,6 +195,9 @@ type StateConfig struct {
 	MaxLayers int32 `env:"STATE_MAX_LAYERS" envDefault:"10"`
 	// Retention is how long the snapshots of a deleted lab are kept.
 	Retention time.Duration `env:"STATE_RETENTION" envDefault:"168h"`
+	// NodeLossForceDeleteAfter: a snapshot-backed device pod that stays Terminating this long on a NotReady or missing node is
+	// force-deleted and the device recreated from its last snapshot ("0" = never).
+	NodeLossForceDeleteAfter time.Duration `env:"STATE_NODE_LOSS_FORCE_DELETE_AFTER" envDefault:"5m"`
 	// RetentionInterval is how often the retention sweep runs.
 	RetentionInterval time.Duration `env:"STATE_RETENTION_INTERVAL" envDefault:"10m"`
 }

@@ -29,6 +29,9 @@ const (
 	defaultExitSnapshotTimeout = 30 * time.Second
 	// quickExit: a pod that ended sooner than this after starting counts as a crash loop step.
 	quickExit = 30 * time.Second
+	// defaultNodeLossForceDelete is how long a pod may stay Terminating on a node that is NotReady or gone
+	// before it is force-deleted (STATE_NODE_LOSS_FORCE_DELETE_AFTER, chart devices.statePersistence.nodeLossForceDeleteAfter).
+	defaultNodeLossForceDelete = 5 * time.Minute
 	// maxRestartDelay caps the back-off between recreations of a crashing device.
 	maxRestartDelay = 2 * time.Minute
 )
@@ -86,6 +89,45 @@ func (r *DeviceReconciler) exitTimeout() time.Duration {
 		return r.ExitSnapshotTimeout
 	}
 	return defaultExitSnapshotTimeout
+}
+
+// nodeLossForceDelete is how long a Terminating pod waits on a lost node; negative means never.
+func (r *DeviceReconciler) nodeLossForceDelete() time.Duration {
+	if r.NodeLossForceDeleteAfter != 0 {
+		return r.NodeLossForceDeleteAfter
+	}
+	return defaultNodeLossForceDelete
+}
+
+// forceDeleteLostPod force-deletes a pod that has been Terminating for longer than the timeout on a node that is
+// NotReady or no longer in the cluster: its kubelet cannot confirm the deletion, so the pod would stay forever and the
+// device with it. The state comes from the last live snapshot. It reports whether it deleted the pod.
+func (r *DeviceReconciler) forceDeleteLostPod(ctx context.Context, pod *corev1.Pod) (bool, error) {
+	limit := r.nodeLossForceDelete()
+	if limit < 0 || pod.DeletionTimestamp == nil || pod.Spec.NodeName == "" {
+		return false, nil
+	}
+	if r.now().Sub(pod.DeletionTimestamp.Time) < limit {
+		return false, nil
+	}
+	var node corev1.Node
+	switch err := r.Get(ctx, types.NamespacedName{Name: pod.Spec.NodeName}, &node); {
+	case errors.IsNotFound(err):
+	case err != nil:
+		return false, err
+	default:
+		for _, c := range node.Status.Conditions {
+			if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
+				return false, nil // the node is alive: the pod is going away on its own, however slowly
+			}
+		}
+	}
+	zero := int64(0)
+	if err := r.Delete(ctx, pod, client.GracePeriodSeconds(zero)); client.IgnoreNotFound(err) != nil {
+		return false, err
+	}
+	ctrl.LoggerFrom(ctx).Info("force-deleted a device pod stuck terminating on a lost node", "pod", pod.Name, "node", pod.Spec.NodeName, "terminatingFor", r.now().Sub(pod.DeletionTimestamp.Time).Round(time.Second).String())
+	return true, nil
 }
 
 // restartDelay is the back-off before recreating a device whose pods keep
@@ -179,6 +221,17 @@ func (r *DeviceReconciler) reconcilePod(ctx context.Context, device *laboratoryv
 	pods, err := r.devicePods(ctx, device)
 	if err != nil {
 		return ctrl.Result{}, err
+	}
+
+	// A pod stuck Terminating on a lost node is force-deleted after a timeout; the device is then recreated from its last snapshot.
+	for i := range pods {
+		gone, err := r.forceDeleteLostPod(ctx, &pods[i])
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if gone {
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		}
 	}
 
 	if spec.ResetToken != st.ResetToken {

@@ -388,6 +388,10 @@ func Run() {
 	if stateRegistry != nil {
 		deviceReconciler.Registry = stateRegistry
 	}
+	deviceReconciler.NodeLossForceDeleteAfter = cfg.State.NodeLossForceDeleteAfter
+	if cfg.State.NodeLossForceDeleteAfter == 0 {
+		deviceReconciler.NodeLossForceDeleteAfter = -1 // "0" turns the force-delete off
+	}
 	if err = deviceReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Device")
 		os.Exit(1)

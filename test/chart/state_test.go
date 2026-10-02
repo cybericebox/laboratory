@@ -469,3 +469,18 @@ func TestRegistryRetainClass(t *testing.T) {
 		t.Errorf("by default the chart creates no StorageClass: %v %s", err, out)
 	}
 }
+
+// C-2: the force-delete timeout of a pod stuck on a lost node is a chart value that reaches the operator.
+func TestNodeLossForceDeleteAfterReachesOperator(t *testing.T) {
+	for _, tc := range []struct{ set, want string }{{"", "5m"}, {"90s", "90s"}} {
+		args := []string{"--set", statePath + "enabled=true"}
+		if tc.set != "" {
+			args = append(args, "--set", statePath+"nodeLossForceDeleteAfter="+tc.set)
+		}
+		var cm corev1.ConfigMap
+		render(t, "templates/operator/configmap.yaml", &cm, args...)
+		if got := cm.Data["STATE_NODE_LOSS_FORCE_DELETE_AFTER"]; got != tc.want {
+			t.Errorf("set %q: STATE_NODE_LOSS_FORCE_DELETE_AFTER = %q, want %q", tc.set, got, tc.want)
+		}
+	}
+}

@@ -57,6 +57,9 @@ type DeviceReconciler struct {
 	// ExitSnapshotTimeout is how long a finished pod waits for the node-agent's
 	// exit snapshot; zero means 30s.
 	ExitSnapshotTimeout time.Duration
+	// NodeLossForceDeleteAfter is how long a snapshot-backed pod may stay Terminating on a NotReady
+	// or missing node before it is force-deleted; zero means 5m, negative never.
+	NodeLossForceDeleteAfter time.Duration
 	// Now is the clock; nil means time.Now. A field so tests can move time.
 	Now func() time.Time
 	// Security is the hardening of the device pods (capabilities, user namespaces, ephemeral storage).
