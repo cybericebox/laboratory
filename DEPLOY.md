@@ -103,7 +103,7 @@ What gets installed:
 
 - CRDs (Pools, Tenants, LabGroups, LabGroupClients, LabGroupAccessPolicies, Labs, Devices, Connections, ImagePulls (prepull requests), and the internal
   LabVPNs, LabGateways, LabTrafficReports)
-- `laboratory-system` namespace, the `laboratory-tenants` namespace (enrollment tokens and access keys of tenants) and the `laboratory-images` namespace (credentials of a prepull request)
+- `laboratory-system` namespace, the `laboratory-tenants` namespace (enrollment tokens of tenants) and the `laboratory-access-keys` namespace (their access keys) and the `laboratory-images` namespace (credentials of a prepull request)
 - One `Tenant` per entry of `tenants:`, and `default`
 - Operator (Deployment + RBAC)
 - Node-agent (DaemonSet + RBAC) on every node
@@ -642,8 +642,8 @@ pair, and sends the cluster only public material: a certificate request and the 
 3. **Renewal and rotation** (mTLS, as the tenant). `RenewCertificate{csr_pem}` issues a new certificate with the same CN for a
    new key. `RotateAccessKey{public_key_pem, key_id}` adds a key (a tenant keeps at most 10); `RemoveAccessKey{key_id}` removes one,
    never the last. A rotation overlaps: add the new key, switch the backend to it, remove the old one.
-4. **Where the keys are.** The agent keeps them in the Secret `tenant-<name>-access-keys` of `laboratory-tenants` (one entry per key id,
-   the PEM public key); the proxy reads them from there (it watches that namespace and nothing else).
+4. **Where the keys are.** The agent keeps them in the Secret `tenant-<name>-access-keys` of `laboratory-access-keys` (one entry per key id,
+   the PEM public key); the proxy reads them from there (it watches that namespace and nothing else). The agent has no role in `laboratory-tenants`.
 5. **Handoff links.** The proxy accepts a lab access link only if it is a JWT signed with EdDSA by an access key of the tenant it
    names: `iss` = the tenant, the header `kid` = the key id, `aud` = `laboratory-proxy`, `sub` = the LabGroupClient, `iat`, `nbf` and `exp`
    (at most 5 minutes apart), plus `group_id`, `host` (the `<device>-<code>` label) and `sess` (the end of the session, unix time). An unknown
@@ -1435,7 +1435,7 @@ component that runs it clamps or ignores the bad value instead of failing.
 3. The notes of each item below say what, if anything, must happen in a different order. In short, before `helm upgrade`:
    - the cluster is Kubernetes 1.30 or newer, or `operator.admissionPolicy.enabled=false` is set on purpose (the chart refuses to skip the policies silently, and the operator exits at start when they are not enforced);
    - the tenant `default` exists (the chart creates it): with mTLS on, every certificate, the default tenant's included, needs its Tenant object;
-   - nothing else has to be done by hand: the VPN and gateway pods are rolled once (component label), the agent runs two replicas and moves the access keys at start, the operator labels the unused enrollment tokens,
+   - nothing else has to be done by hand: the VPN and gateway pods are rolled once (component label), the agent runs two replicas, the operator labels the unused enrollment tokens,
      the node-agents roll one node at a time, and objects that exist keep their names, namespaces, snapshots and certificates.
    After it, the first enrollment of a tenant moves its epoch and revokes the certificates issued before the upgrade; renew or enroll them when that is wanted. The values added by this release are
    under `agent.replicas`, `agent.server`, `agent.mtls.caDuration`, `limits.device`, `devices.statePersistence` (push limits), `nodeAgent` (policing, watchdog), `proxy.wg.limits` and `proxy.l7`.

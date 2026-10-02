@@ -162,8 +162,8 @@ func TestTenantsNamespaceAndAccess(t *testing.T) {
 	if !strings.Contains(verbs(agent), "create") || strings.Contains(verbs(agent), "delete") {
 		t.Errorf("the agent writes keys, never deletes the Secret: %s", verbs(agent))
 	}
-	if tenants := roles["laboratory-agent-tenants"]; tenants == nil || strings.Contains(verbs(tenants), "create") || strings.Contains(verbs(tenants), "update") {
-		t.Errorf("the agent only reads the tenants namespace: %v", tenants)
+	if roles["laboratory-agent-tenants"] != nil {
+		t.Errorf("the agent has no role in the tenants namespace: %v", roles["laboratory-agent-tenants"])
 	}
 	if op := roles["laboratory-operator-access-keys"]; op == nil || !strings.Contains(verbs(op), "delete") || strings.Contains(verbs(op), "create") {
 		t.Errorf("the operator removes a tenant's keys: %v", op)

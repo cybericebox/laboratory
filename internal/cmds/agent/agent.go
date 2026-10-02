@@ -13,14 +13,12 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/util/retry"
 	metricsclient "k8s.io/metrics/pkg/client/clientset/versioned"
 
 	"github.com/cybericebox/laboratory/internal/agent/config"
 	grpcserver "github.com/cybericebox/laboratory/internal/agent/grpc"
 	"github.com/cybericebox/laboratory/internal/crdcheck"
 	"github.com/cybericebox/laboratory/internal/errorlog"
-	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/profiles"
 )
 
@@ -102,11 +100,6 @@ func Run() {
 		SubscriberBuffer:    cfg.Monitoring.SubscriberBuffer,
 		MaxStreamsPerTenant: cfg.Monitoring.MaxStreamsPerTenant,
 	})
-	// The access keys moved to their own namespace (the proxy reads that one only): bring the keys of earlier versions along before any call
-	// can add or remove one.
-	if err := retry.OnError(retry.DefaultBackoff, func(error) bool { return true }, func() error { return h.MigrateAccessKeys(context.Background()) }); err != nil {
-		log.Fatalf("move the access keys to %s: %v", names.AccessKeysNamespace, err)
-	}
 	srv, err := grpcserver.New(cfg, h)
 	if err != nil {
 		log.Fatalf("build server: %v", err)

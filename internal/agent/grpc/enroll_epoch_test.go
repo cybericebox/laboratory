@@ -14,7 +14,6 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
@@ -331,54 +330,5 @@ func TestOneTokenGivesOneCertificateUnderConcurrency(t *testing.T) {
 	wg.Wait()
 	if won != 1 || lost != n-1 {
 		t.Fatalf("%d certificates issued for one token (and %d refused), want exactly 1", won, lost)
-	}
-}
-
-// R-10: the access keys of earlier versions (in the tenants namespace) are brought to the namespace the proxy reads, merged and
-// without deleting anything.
-func TestMigrateAccessKeysMergesIntoTheNewNamespace(t *testing.T) {
-	r := newEnrollRig(t)
-	ctx := context.Background()
-	old := r.h.k8s.CoreV1().Secrets(names.TenantsNamespace)
-	next := r.h.k8s.CoreV1().Secrets(names.AccessKeysNamespace)
-	mk := func(name string, data map[string][]byte) *corev1.Secret {
-		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name}, Data: data}
-	}
-	for _, s := range []*corev1.Secret{
-		mk("tenant-acme-access-keys", map[string][]byte{"old1": []byte("a"), "shared": []byte("old")}),
-		mk("tenant-globex-access-keys", map[string][]byte{"g1": []byte("g")}),
-		mk("tenant-acme-enrollment", map[string][]byte{"token": []byte("secret")}), // not a key Secret: never copied
-		mk("pull-credentials", map[string][]byte{".dockerconfigjson": []byte("{}")}),
-	} {
-		s.Namespace = names.TenantsNamespace
-		if _, err := old.Create(ctx, s, metav1.CreateOptions{}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// the new namespace already has acme with another key (added by this version before the migration ran): kept, and the old ones join it
-	pre := mk("tenant-acme-access-keys", map[string][]byte{"new1": []byte("n"), "shared": []byte("new")})
-	pre.Namespace = names.AccessKeysNamespace
-	if _, err := next.Create(ctx, pre, metav1.CreateOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 2; i++ { // idempotent
-		if err := r.h.MigrateAccessKeys(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
-	acme, err := next.Get(ctx, "tenant-acme-access-keys", metav1.GetOptions{})
-	if err != nil || len(acme.Data) != 3 || string(acme.Data["old1"]) != "a" || string(acme.Data["new1"]) != "n" || string(acme.Data["shared"]) != "new" {
-		t.Fatalf("acme after the migration: %v %v", acme, err)
-	}
-	if g, err := next.Get(ctx, "tenant-globex-access-keys", metav1.GetOptions{}); err != nil || string(g.Data["g1"]) != "g" {
-		t.Fatalf("globex: %v %v", g, err)
-	}
-	for _, n := range []string{"tenant-acme-enrollment", "pull-credentials"} {
-		if _, err := next.Get(ctx, n, metav1.GetOptions{}); err == nil {
-			t.Errorf("%s must not be copied", n)
-		}
-	}
-	if _, err := old.Get(ctx, "tenant-acme-access-keys", metav1.GetOptions{}); err != nil {
-		t.Error("the old Secret stays (the operator removes it with its tenant)")
 	}
 }

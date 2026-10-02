@@ -3,7 +3,7 @@
 #
 # Prerequisites in laboratory-proxy:
 #   - Secret proxy-tls (tls.crt, tls.key): the wildcard certificate of BASE_DOMAIN.
-#   - The tenants' access keys: Secrets tenant-<name>-access-keys in laboratory-tenants (written
+#   - The tenants' access keys: Secrets tenant-<name>-access-keys in laboratory-access-keys (written
 #     by the agent), readable by the proxy.
 #   - Secret proxy-session (sessionSecret): HMAC key (32+ bytes) of the proxy's own
 #     session cookie, shared by all replicas:
