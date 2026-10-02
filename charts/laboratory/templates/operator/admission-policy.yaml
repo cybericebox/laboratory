@@ -1,4 +1,7 @@
-{{- if and .Values.operator.admissionPolicy.enabled (semverCompare ">=1.30.0-0" .Capabilities.KubeVersion.Version) }}
+{{- if .Values.operator.admissionPolicy.enabled }}
+{{- if not (semverCompare ">=1.30.0-0" .Capabilities.KubeVersion.Version) }}
+{{- fail (printf "operator.admissionPolicy needs Kubernetes 1.30 or newer (ValidatingAdmissionPolicy), this cluster is %s. Without it the operator's ServiceAccount can bind its role in any namespace, so the chart will not install silently without it: upgrade the cluster, or set operator.admissionPolicy.enabled=false to accept that risk on purpose." .Capabilities.KubeVersion.Version) }}
+{{- end }}
 {{- /*
 RBAC cannot restrict the operator to "the namespaces of its LabGroups" (they do not exist when the chart is installed), so these
 policies do. They apply to the operator's ServiceAccount only. See DEPLOY.md, "Operator permissions".
@@ -131,6 +134,10 @@ spec:
       expression: "request.resource.resource == 'pods' ? object.spec : object.spec.template.spec"
     - name: containers
       expression: "variables.podSpec.containers + (has(variables.podSpec.initContainers) ? variables.podSpec.initContainers : [])"
+    # A running pod's spec cannot change (the operator patches its labels only), so the rules about what a pod is made of are
+    # judged when it is created, and on the template of a Deployment or DaemonSet whenever that changes.
+    - name: podUpdate
+      expression: "request.resource.resource == 'pods' && request.operation == 'UPDATE'"
   validations:
     - expression: "!(has(variables.podSpec.hostNetwork) && variables.podSpec.hostNetwork) && !(has(variables.podSpec.hostPID) && variables.podSpec.hostPID) && !(has(variables.podSpec.hostIPC) && variables.podSpec.hostIPC)"
       message: the operator may not create a pod that uses the host's network, PID or IPC namespace
@@ -140,6 +147,35 @@ spec:
       reason: Forbidden
     - expression: "variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.privileged) || !c.securityContext.privileged)"
       message: the operator may not create a privileged container
+      reason: Forbidden
+    # The "never in any profile" list of the device profiles, enforced by allowing only what the operator really adds: the base
+    # set, the profile additions (SYS_PTRACE, IPC_LOCK, LINUX_IMMUTABLE, NET_RAW, NET_ADMIN) and what the VPN and gateway need.
+    - expression: "variables.podUpdate || variables.containers.all(c, has(c.securityContext) && has(c.securityContext.capabilities) && has(c.securityContext.capabilities.drop) && 'ALL' in c.securityContext.capabilities.drop)"
+      message: the operator may create only containers that drop ALL capabilities
+      reason: Forbidden
+    - expression: "variables.podUpdate || variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.capabilities) || !has(c.securityContext.capabilities.add) || c.securityContext.capabilities.add.all(x, x in {{ include "laboratory.operatorCapabilities" . }}))"
+      message: the operator may add only the capabilities of the device profiles and of the VPN and gateway pods
+      reason: Forbidden
+    - expression: "variables.podUpdate || (has(variables.podSpec.securityContext) && has(variables.podSpec.securityContext.seccompProfile) && variables.podSpec.securityContext.seccompProfile.type == 'RuntimeDefault')"
+      message: the operator may create only pods with the RuntimeDefault seccomp profile
+      reason: Forbidden
+    - expression: "variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.seccompProfile) || c.securityContext.seccompProfile.type == 'RuntimeDefault')"
+      message: a container of the operator may not choose another seccomp profile
+      reason: Forbidden
+    - expression: "variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.procMount) || c.securityContext.procMount == 'Default')"
+      message: the operator may not unmask /proc
+      reason: Forbidden
+    - expression: "variables.containers.all(c, !has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0))"
+      message: the operator may not publish a container on a host port
+      reason: Forbidden
+    - expression: "variables.podUpdate || !has(variables.podSpec.nodeName) || variables.podSpec.nodeName == ''"
+      message: the operator may not place a pod on a node by name (the scheduler does)
+      reason: Forbidden
+    - expression: "!has(variables.podSpec.serviceAccountName) || variables.podSpec.serviceAccountName in ['', 'default', 'vpn', 'gateway']"
+      message: the operator's pods may run only as the default, vpn or gateway service account of their namespace
+      reason: Forbidden
+    - expression: "!has(variables.podSpec.volumes) || variables.podSpec.volumes.all(v, has(v.emptyDir) || has(v.projected) || has(v.downwardAPI) || has(v.secret) || has(v.configMap))"
+      message: the operator's pods may use only emptyDir, projected, downwardAPI, secret and configMap volumes
       reason: Forbidden
 ---
 apiVersion: admissionregistration.k8s.io/v1

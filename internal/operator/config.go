@@ -111,6 +111,12 @@ type Config struct {
 	// SchedulerPrepullTimeout bounds the wait for the image prepull; dispatch goes on after it.
 	SchedulerPrepullTimeout time.Duration `env:"SCHEDULER_PREPULL_TIMEOUT" envDefault:"5m"`
 
+	// RequireAdmissionPolicy makes the operator check at start that the chart's admission policies are enforced on it and
+	// exit if they are not (the chart sets it with operator.admissionPolicy.enabled). Off by default so that the operator can run
+	// from a developer's machine, where it is not the ServiceAccount the policies are about.
+	RequireAdmissionPolicy bool          `env:"OPERATOR_REQUIRE_ADMISSION_POLICY" envDefault:"false"`
+	AdmissionPolicyTimeout time.Duration `env:"OPERATOR_ADMISSION_POLICY_TIMEOUT" envDefault:"90s"`
+
 	// DeviceDefaultCPU and DeviceDefaultMemory are the requests and limits of a
 	// device container that declares neither (requests always equal limits, so
 	// the pod is Guaranteed). Empty leaves such a device without resources.

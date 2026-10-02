@@ -8,6 +8,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -19,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
+	"github.com/cybericebox/laboratory/internal/admissioncheck"
 	"github.com/cybericebox/laboratory/internal/names"
 )
 
@@ -73,6 +75,20 @@ var _ = Describe("operator admission policy", Ordered, func() {
 		}, 30*time.Second, 500*time.Millisecond).Should(Succeed(), "the policy must start denying")
 	})
 
+	// The shape of every pod the operator makes: drop ALL with a few additions, the runtime's seccomp profile.
+	hardenedPod := func(name, ns string) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: corev1.PodSpec{
+				SecurityContext: &corev1.PodSecurityContext{SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
+				Containers: []corev1.Container{{
+					Name: "c", Image: "x",
+					SecurityContext: &corev1.SecurityContext{Capabilities: &corev1.Capabilities{
+						Drop: []corev1.Capability{"ALL"}, Add: []corev1.Capability{"NET_ADMIN", "NET_RAW", "SYS_PTRACE", "CHOWN"}}},
+				}},
+			},
+		}
+	}
 	groupNamespace := func(name string) {
 		GinkgoHelper()
 		Expect(op.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{names.LabelGroup: name}}})).To(Succeed())
@@ -83,6 +99,14 @@ var _ = Describe("operator admission policy", Ordered, func() {
 		Expect(apierrors.IsForbidden(err)).To(BeTrue(), err.Error())
 	}
 
+	It("is verified by the operator at start: enforced for the operator, not for anyone else", func() {
+		Expect(admissioncheck.Verify(ctx, op)).To(Succeed())
+		// somebody the policies do not apply to is not confined: the check says so, which is what a cluster without them looks like
+		err := admissioncheck.Verify(ctx, k8sClient)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("not enforced"))
+	})
+
 	It("lets the operator create the namespace of a LabGroup and write in it", func() {
 		groupNamespace("adm-group")
 		Expect(op.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "adm-group"}})).To(Succeed())
@@ -91,8 +115,7 @@ var _ = Describe("operator admission policy", Ordered, func() {
 			RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "view"},
 			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "default", Namespace: "adm-group"}},
 		})).To(Succeed())
-		Expect(op.Create(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "adm-group"},
-			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "x"}}}})).To(Succeed())
+		Expect(op.Create(ctx, hardenedPod("p", "adm-group"))).To(Succeed())
 	})
 
 	It("refuses a namespace that is not a LabGroup's, and any change of one that is not the operator's", func() {
@@ -134,5 +157,93 @@ var _ = Describe("operator admission policy", Ordered, func() {
 		} {
 			denied(op.Create(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "adm-pods"}, Spec: spec}))
 		}
+	})
+
+	// The "never in any profile" list and the rest of what reaches the node, enforced on the pods the operator creates.
+	It("allows the pods the operator makes and refuses the rest", func() {
+		Expect(op.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "adm-shape", Labels: map[string]string{names.LabelGroup: "shape"}}})).To(Succeed())
+
+		good := func(name string) *corev1.Pod {
+			return &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "adm-shape"},
+				Spec: corev1.PodSpec{
+					SecurityContext: &corev1.PodSecurityContext{SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
+					Containers: []corev1.Container{{Name: "c", Image: "x", SecurityContext: &corev1.SecurityContext{
+						Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}, Add: []corev1.Capability{"NET_ADMIN", "NET_RAW", "SYS_PTRACE", "CHOWN"}}}}},
+				},
+			}
+		}
+		caps := func(p *corev1.Pod, add ...corev1.Capability) {
+			p.Spec.Containers[0].SecurityContext.Capabilities.Add = add
+		}
+		Expect(op.Create(ctx, good("fine"))).To(Succeed(), "the pods the operator really makes are allowed")
+
+		refused := map[string]func(*corev1.Pod){
+			"SYS_ADMIN":           func(p *corev1.Pod) { caps(p, "NET_ADMIN", "SYS_ADMIN") },
+			"SYS_MODULE":          func(p *corev1.Pod) { caps(p, "SYS_MODULE") },
+			"DAC_READ_SEARCH":     func(p *corev1.Pod) { caps(p, "DAC_READ_SEARCH") },
+			"no drop ALL":         func(p *corev1.Pod) { p.Spec.Containers[0].SecurityContext.Capabilities.Drop = nil },
+			"no security context": func(p *corev1.Pod) { p.Spec.Containers[0].SecurityContext = nil },
+			"init SYS_ADMIN": func(p *corev1.Pod) {
+				p.Spec.InitContainers = []corev1.Container{{Name: "i", Image: "x", SecurityContext: &corev1.SecurityContext{
+					Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}, Add: []corev1.Capability{"SYS_ADMIN"}}}}}
+			},
+			"seccomp unconfined": func(p *corev1.Pod) {
+				p.Spec.SecurityContext.SeccompProfile = &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeUnconfined}
+			},
+			"no seccomp": func(p *corev1.Pod) { p.Spec.SecurityContext = nil },
+			"container unconfined": func(p *corev1.Pod) {
+				p.Spec.Containers[0].SecurityContext.SeccompProfile = &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeUnconfined}
+			},
+			"procMount unmasked": func(p *corev1.Pod) {
+				no := false
+				p.Spec.HostUsers = &no
+				um := corev1.UnmaskedProcMount
+				p.Spec.Containers[0].SecurityContext.ProcMount = &um
+			},
+			"host port": func(p *corev1.Pod) {
+				p.Spec.Containers[0].Ports = []corev1.ContainerPort{{ContainerPort: 80, HostPort: 8080}}
+			},
+			"node name":               func(p *corev1.Pod) { p.Spec.NodeName = "some-node" },
+			"another service account": func(p *corev1.Pod) { p.Spec.ServiceAccountName = "laboratory-node-agent" },
+			"nfs volume": func(p *corev1.Pod) {
+				p.Spec.Volumes = []corev1.Volume{{Name: "n", VolumeSource: corev1.VolumeSource{NFS: &corev1.NFSVolumeSource{Server: "x", Path: "/"}}}}
+			},
+		}
+		i := 0
+		for name, mutate := range refused {
+			i++
+			p := good(fmt.Sprintf("bad-%d", i))
+			mutate(p)
+			err := op.Create(ctx, p)
+			Expect(apierrors.IsForbidden(err)).To(BeTrue(), "%s must be refused, got %v", name, err)
+		}
+		for _, sa := range []string{"vpn", "gateway", "default"} {
+			p := good("sa-" + sa)
+			p.Spec.ServiceAccountName = sa
+			p.Spec.Volumes = []corev1.Volume{{Name: "e", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
+			Expect(op.Create(ctx, p)).To(Succeed(), sa)
+		}
+
+		// A Deployment's template is judged the same way.
+		dep := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "d", Namespace: "adm-shape"},
+			Spec: appsv1.DeploymentSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"a": "b"}},
+				Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"a": "b"}}, Spec: good("x").Spec},
+			},
+		}
+		caps2 := &dep.Spec.Template.Spec.Containers[0].SecurityContext.Capabilities.Add
+		*caps2 = []corev1.Capability{"SYS_ADMIN"}
+		Expect(apierrors.IsForbidden(op.Create(ctx, dep))).To(BeTrue(), "a Deployment that adds SYS_ADMIN")
+		*caps2 = []corev1.Capability{"NET_ADMIN"}
+		Expect(op.Create(ctx, dep)).To(Succeed())
+
+		// A pod that already runs may have its labels changed whatever it was made of (pods of earlier versions).
+		old := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "old", Namespace: "adm-shape"}, Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "x"}}}}
+		Expect(k8sClient.Create(ctx, old)).To(Succeed())
+		patch := client.MergeFrom(old.DeepCopy())
+		old.Labels = map[string]string{"team": "red"}
+		Expect(op.Patch(ctx, old, patch)).To(Succeed())
 	})
 })

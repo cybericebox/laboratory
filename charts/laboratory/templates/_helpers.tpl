@@ -136,3 +136,11 @@ earlier version has no reader yet: it is added, the writer stays.
 {{- $_ := set .Values "_registryCreds" (dict "writer" $writer "reader" $reader "htpasswd" $htpasswd) -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+The capabilities the operator may add to a pod (a CEL list literal for the admission policy): the base set of every device, the
+additions of the device profiles, and what the VPN and gateway pods need. A Go test keeps this equal to what the code can add.
+*/}}
+{{- define "laboratory.operatorCapabilities" -}}
+['AUDIT_WRITE', 'CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID', 'IPC_LOCK', 'KILL', 'LINUX_IMMUTABLE', 'NET_ADMIN', 'NET_BIND_SERVICE', 'NET_RAW', 'SETGID', 'SETPCAP', 'SETUID', 'SYS_CHROOT', 'SYS_PTRACE']
+{{- end -}}

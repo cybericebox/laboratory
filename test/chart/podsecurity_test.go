@@ -338,3 +338,23 @@ func TestAgentReplicasAndInsecureFlag(t *testing.T) {
 		t.Errorf("mtls off with the flag: %v", err)
 	}
 }
+
+// R-8: without ValidatingAdmissionPolicy the chart does not install silently; the opt-out is explicit.
+func TestAdmissionPolicyIsNotSkippedSilently(t *testing.T) {
+	if out, err := helmTemplate(t, "--kube-version", "1.29.0", "-s", "templates/operator/admission-policy.yaml"); err == nil {
+		t.Fatalf("a cluster older than 1.30 must fail the render:\n%s", out)
+	} else if !strings.Contains(err.Error()+out, "admissionPolicy") {
+		t.Errorf("the failure must say what to do: %v %s", err, out)
+	}
+	out, err := helmTemplate(t, "--kube-version", "1.29.0", "--set", "operator.admissionPolicy.enabled=false", "-s", "templates/operator/configmap.yaml")
+	if err != nil {
+		t.Fatalf("the opt-out must render: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, `OPERATOR_REQUIRE_ADMISSION_POLICY: "false"`) {
+		t.Errorf("an opted-out chart must not make the operator require the policies:\n%s", out)
+	}
+	out, err = helmTemplate(t, "-s", "templates/operator/configmap.yaml")
+	if err != nil || !strings.Contains(out, `OPERATOR_REQUIRE_ADMISSION_POLICY: "true"`) {
+		t.Errorf("by default the operator checks the policies at start: %v\n%s", err, out)
+	}
+}

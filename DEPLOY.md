@@ -1476,3 +1476,23 @@ component that runs it clamps or ignores the bad value instead of failing.
   without a selector. Devices that exist under the old name keep it and keep their pods; only a pair that has no device yet gets the new
   name, and an old-named object that belongs to another pair is never adopted. Nothing has to be done by hand. Apply the CRDs first
   (see the upgrade order above) so the reserved-name rule and the device ceiling (`maxItems: 64`) are present.
+
+### The admission policies are required, and checked (R-8)
+
+- **The chart no longer skips the policies silently.** `operator.admissionPolicy.enabled` (default true) needs Kubernetes 1.30 or newer; on an older
+  cluster the render fails with a message. The opt-out is explicit: `operator.admissionPolicy.enabled=false` accepts, on purpose, that the operator's ServiceAccount
+  can bind its role in any namespace.
+- **The operator checks at start** (`OPERATOR_REQUIRE_ADMISSION_POLICY`, set by the chart from the value above) that the three policies and their bindings exist
+  and deny, and that they are enforced: it asks the API server, in dry run (nothing is written), for a RoleBinding in the namespace `default` and for a namespace
+  that is no group's, and both must be refused by the policies themselves. It retries for `OPERATOR_ADMISSION_POLICY_TIMEOUT` (90 s: the policies are applied in the
+  same release and take a moment to be compiled), then exits with the reason, so a cluster that does not enforce them shows as a crash looping operator, never as a
+  quiet one. It needs `get` on the policies and their bindings (in its ClusterRole). Run from a developer's machine the check is off (the default of the variable).
+- **The pod rules.** The pods the operator creates (and the templates of the Deployments it makes) must drop ALL capabilities and add only what the device profiles, the
+  VPN and the gateway use (`laboratory.operatorCapabilities` in the chart helpers; a Go test keeps the list equal to what the code can add, and the "never" list out of
+  it), use the RuntimeDefault seccomp profile, not unmask `/proc`, publish no host port, name no node, run only as the `default`, `vpn` or `gateway` service account,
+  and use only `emptyDir`, `projected`, `downwardAPI`, `secret` and `configMap` volumes, on top of the old rules (no host network, PID or IPC, no host path, no
+  privileged container). The rules about what a pod is made of apply when it is created and to the template of a Deployment or DaemonSet; changing the labels of a
+  running pod is judged only by the scope rules, so pods made by earlier versions keep being managed.
+- **Upgrade.** Nothing to do by hand. On a cluster older than 1.30 set `operator.admissionPolicy.enabled=false` first (or upgrade the cluster). The new rules apply to the
+  operator as soon as the chart is upgraded: the VPN and gateway Deployments it already has are hardened to the same shape (earlier version), so they pass.
+- Not done: narrowing the operator's Secret permissions in the release namespace to named Secrets (the owner's decision lists the policy check and the pod rules only).

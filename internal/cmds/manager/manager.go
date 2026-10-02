@@ -20,10 +20,12 @@ import (
 	"github.com/cybericebox/laboratory/internal/errorlog"
 	_ "github.com/cybericebox/laboratory/pkg/runtime"
 
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
 	"path/filepath"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -46,6 +48,7 @@ import (
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/admissioncheck"
 	laboratorycontroller "github.com/cybericebox/laboratory/internal/controller/laboratory"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -208,6 +211,22 @@ func Run() {
 	restCfg := ctrl.GetConfigOrDie()
 	restCfg.QPS = 60
 	restCfg.Burst = 120
+
+	if cfg.RequireAdmissionPolicy {
+		// The operator is confined by admission policies the chart installs; refuse to run when they are not enforced.
+		probe, err := client.New(restCfg, client.Options{Scheme: scheme})
+		if err != nil {
+			setupLog.Error(err, "unable to build the client that checks the admission policies")
+			os.Exit(1)
+		}
+		if err := admissioncheck.Wait(context.Background(), probe, cfg.AdmissionPolicyTimeout, 5*time.Second, func(err error) {
+			setupLog.Info("the admission policies are not (yet) enforced", "reason", err.Error())
+		}); err != nil {
+			setupLog.Error(err, "the operator's admission policies are not enforced: refusing to run (set operator.admissionPolicy.enabled=false in the chart to accept that on purpose)")
+			os.Exit(1)
+		}
+		setupLog.Info("the admission policies are enforced")
+	}
 
 	mgr, err := ctrl.NewManager(restCfg, ctrl.Options{
 		Scheme:                 scheme,

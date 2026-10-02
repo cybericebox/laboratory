@@ -45,6 +45,8 @@ data:
   TENANT_ENROLLMENT_TTL: {{ .Values.agent.enrollment.tokenTTL | quote }}
   DEVICE_DEFAULT_CPU: {{ .Values.limits.device.defaultCpu | quote }}
   DEVICE_DEFAULT_MEMORY: {{ .Values.limits.device.defaultMemory | quote }}
+  # With the admission policies on, the operator checks at start that they are enforced and exits if they are not.
+  OPERATOR_REQUIRE_ADMISSION_POLICY: {{ .Values.operator.admissionPolicy.enabled | quote }}
   DEVICE_MAX_CPU: {{ .Values.limits.device.maxCpu | quote }}
   DEVICE_MAX_MEMORY: {{ .Values.limits.device.maxMemory | quote }}
   {{- with .Values.devices.statePersistence }}

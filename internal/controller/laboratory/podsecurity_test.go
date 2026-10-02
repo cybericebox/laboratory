@@ -1,6 +1,8 @@
 package laboratory
 
 import (
+	"os"
+	"regexp"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -8,6 +10,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/profiles"
 )
 
 func newDeviceForPod() *laboratoryv1alpha1.Device {
@@ -150,6 +154,52 @@ func TestPingSysctlIsTheSameWithAndWithoutUserNamespaces(t *testing.T) {
 		}
 		if userns != (spec.HostUsers != nil && !*spec.HostUsers) {
 			t.Errorf("userns=%v: hostUsers %v", userns, spec.HostUsers)
+		}
+	}
+}
+
+// The admission policy of the chart allows exactly the capabilities the operator can add: one missing would stop pods from
+// being created, one extra would be a capability no profile may have.
+func TestAdmissionPolicyCapabilitiesAreWhatTheCodeAdds(t *testing.T) {
+	raw, err := os.ReadFile("../../../charts/laboratory/templates/_helpers.tpl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?s)laboratory\.operatorCapabilities" -\}\}\s*\[(.*?)\]`).FindSubmatch(raw)
+	if m == nil {
+		t.Fatal("the list is not in the chart helpers")
+	}
+	in := map[string]bool{}
+	for _, c := range regexp.MustCompile(`'([A-Z_]+)'`).FindAllSubmatch(m[1], -1) {
+		in[string(c[1])] = true
+	}
+	want := map[string]bool{}
+	add := func(cs ...string) {
+		for _, c := range cs {
+			want[c] = true
+		}
+	}
+	add(profiles.Base...)
+	for _, id := range profiles.IDs() {
+		add(profiles.Get(id).Caps...)
+	}
+	add(names.DHCPImpliedCapabilities...)
+	add(vpnCaps...)
+	add(gatewayCaps...)
+	add("NET_ADMIN", "NET_RAW") // the netconfig init container
+	for c := range want {
+		if !in[c] {
+			t.Errorf("the code can add %s, the policy would refuse the pod", c)
+		}
+	}
+	for c := range in {
+		if !want[c] {
+			t.Errorf("the policy allows %s, which nothing the operator makes uses", c)
+		}
+	}
+	for _, never := range profiles.Never {
+		if in[never] {
+			t.Errorf("%s is on the never list", never)
 		}
 	}
 }

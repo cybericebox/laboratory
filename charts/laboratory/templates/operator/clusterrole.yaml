@@ -34,6 +34,10 @@ rules:
 - apiGroups: [policy]
   resources: [poddisruptionbudgets]
   verbs: [get, list, watch]
+# The operator checks at start that the admission policies that confine it are enforced (and refuses to run if they are not).
+- apiGroups: [admissionregistration.k8s.io]
+  resources: [validatingadmissionpolicies, validatingadmissionpolicybindings]
+  verbs: [get]
 # The platform's own resources.
 - apiGroups: [allocation.cybericebox.com]
   resources: [pools]
