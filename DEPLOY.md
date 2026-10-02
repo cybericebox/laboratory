@@ -509,6 +509,16 @@ persistence and has no quota.
   `kubectl get tenant platform -o yaml`.
 - **Monitoring** is cut to the tenant before the user selector.
 
+### Required values and defaults
+
+The operator takes every setting from the environment the chart gives it and has no code default for what is deployment-specific:
+`operator.publicVPNEndpoint`, `operator.baseDomain` and `operator.supportEmail` are required (the render fails when one is empty); the images
+of the VPN, gateway and netconfig pods (`vpn.image`, `inetGateway.image`, `nodeAgent.image`: repository and tag, the tag is the chart
+appVersion unless set) are always passed, and the operator refuses to start without `VPN_IMAGE`, `GATEWAY_IMAGE`, `NETCONFIG_IMAGE`
+and `SUPPORT_EMAIL`. Where a code default remains it mirrors the value in `values.yaml` (for example `registry.cache.pinTTL` 30m,
+`proxy.l7.listen` `:8443`, `nodeAgent.criSocket` `/run/k0s/containerd.sock`). The ACME directory of the issuer is `certManager.acme.server`
+(empty: the Let's Encrypt preset of `certManager.acme.presets` chosen by `certManager.staging`).
+
 ### Enrollment & access keys
 
 A tenant's private keys never leave it. The platform (the tenant's backend) generates its own client key and access key

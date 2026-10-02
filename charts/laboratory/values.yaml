@@ -34,7 +34,7 @@ operator:
 
   # REQUIRED: contact address shown to participants on the VPN probe page.
   # The operator passes it to every per-LabGroup VPN pod.
-  supportEmail: "support@cybericebox.com"
+  supportEmail: ""
 
   leaderElection: true
 
@@ -218,6 +218,14 @@ certManager:
   # Use Let's Encrypt staging (recommended for testing).
   # Set false for production certificates.
   staging: true
+
+  # The ACME directory of the issuer. Empty: the preset below chosen by `staging`. Set it for another
+  # ACME CA (or a test one); the presets are Let's Encrypt.
+  acme:
+    server: ""
+    presets:
+      production: https://acme-v02.api.letsencrypt.org/directory
+      staging: https://acme-staging-v02.api.letsencrypt.org/directory
 
   # Name of the ClusterIssuer to create.
   issuerName: "letsencrypt"

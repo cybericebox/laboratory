@@ -11,7 +11,7 @@ type Config struct {
 	OVSSock  string `env:"OVS_SOCK"   envDefault:"/run/openvswitch/db.sock"`
 	GRPCSock string `env:"GRPC_SOCK"  envDefault:"/run/cybericebox/node-agent.sock"`
 	Bridge   string `env:"OVS_BRIDGE" envDefault:"br-ovs"`
-	CRISock  string `env:"CRI_SOCK"   envDefault:"/run/containerd/containerd.sock"`
+	CRISock  string `env:"CRI_SOCK"   envDefault:"/run/k0s/containerd.sock"`
 
 	// The platform registry (zot): the snapshots of device state and the image
 	// cache. Empty StateRegistryAddr switches both off.

@@ -197,3 +197,42 @@ func TestGroupPodDefaultsAreTheMeasuredOnes(t *testing.T) {
 		}
 	}
 }
+
+func TestSupportEmailIsRequired(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "operator.supportEmail=", "-s", "templates/operator/configmap.yaml")
+	if err == nil || !strings.Contains(out, "supportEmail") {
+		t.Fatalf("an empty operator.supportEmail must fail the render: %v\n%s", err, out)
+	}
+}
+
+// The ACME directory comes from values: a preset chosen by staging, or the explicit server.
+func TestACMEServerFromValues(t *testing.T) {
+	acme := func(extra ...string) string {
+		out, err := helmTemplate(t, append([]string{"-s", "templates/certmanager/clusterissuer.yaml",
+			"--set", "certManager.selfSigned=false", "--set", "certManager.email=a@example.com",
+			"--set", "certManager.dns01.cloudflare.apiTokenSecretRef.name=cf"}, extra...)...)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		return out
+	}
+	if out := acme(); !strings.Contains(out, "https://acme-staging-v02.api.letsencrypt.org/directory") {
+		t.Errorf("staging preset:\n%s", out)
+	}
+	if out := acme("--set", "certManager.staging=false"); !strings.Contains(out, "https://acme-v02.api.letsencrypt.org/directory") {
+		t.Errorf("production preset:\n%s", out)
+	}
+	if out := acme("--set", "certManager.acme.server=https://acme.example.org/dir"); !strings.Contains(out, "https://acme.example.org/dir") || strings.Contains(out, "acme-v02") || strings.Contains(out, "acme-staging") {
+		t.Errorf("explicit server:\n%s", out)
+	}
+}
+
+func TestAgentGetsTheCachePinTTLFromValues(t *testing.T) {
+	out, err := helmTemplate(t, append(agentSet, "--set", "registry.cache.enabled=true", "--set", "registry.cache.pinTTL=45m", "-s", "templates/agent/deployment.yaml")...)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if !strings.Contains(out, "AGENT_CACHE_PIN_TTL") || !strings.Contains(out, `"45m"`) {
+		t.Errorf("pin ttl:\n%s", out)
+	}
+}

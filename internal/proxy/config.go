@@ -13,7 +13,7 @@ type L7Config struct {
 	// The handoff links are verified with the access public keys of the tenants, kept in the Secrets
 	// tenant-<name>-access-keys of the tenants namespace (see l7.SecretKeys); there is no shared key.
 	BaseDomain string `env:"BASE_DOMAIN,notEmpty"`
-	Listen     string `env:"LISTEN_HTTPS"  envDefault:":443"`
+	Listen     string `env:"LISTEN_HTTPS"  envDefault:":8443"`
 	CookieName string `env:"SESSION_COOKIE_NAME" envDefault:"challenge"`
 	// SessionSecret signs the proxy's own session cookie (HMAC-SHA256, at least 32
 	// bytes). It is shared by all replicas and never leaves the cluster; the

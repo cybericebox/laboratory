@@ -28,7 +28,8 @@ data:
   PROXY_SOURCE_CIDRS: ""
 
   # REQUIRED: contact address shown to participants on the VPN probe page.
-  SUPPORT_EMAIL: "support@cybericebox.com"
+  # (no default: set it per deployment; the operator does not start with it empty)
+  SUPPORT_EMAIL: ""
 
   # DNS server advertised to WireGuard clients via DHCP option (optional).
 

@@ -29,3 +29,15 @@ func TestLoadL7Config_BaseDomainIsRequired(t *testing.T) {
 		}
 	}
 }
+
+// The code default mirrors the chart value proxy.l7.listen (an unprivileged port).
+func TestLoadL7Config_ListenDefaultMirrorsTheChart(t *testing.T) {
+	t.Setenv("TLS_CERT_PATH", "a")
+	t.Setenv("TLS_KEY_PATH", "b")
+	t.Setenv("BASE_DOMAIN", "example.com")
+	t.Setenv("SESSION_SECRET", "0123456789abcdef0123456789abcdef")
+	cfg, err := LoadL7Config()
+	if err != nil || cfg.Listen != ":8443" {
+		t.Fatalf("%+v %v", cfg, err)
+	}
+}

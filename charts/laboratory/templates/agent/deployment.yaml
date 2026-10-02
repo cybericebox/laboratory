@@ -58,6 +58,8 @@ spec:
               value: {{ include "laboratory.pullSecretNames" . | quote }}
             - name: AGENT_PULL_SECRET_NAMESPACE
               value: {{ .Release.Namespace | quote }}
+            - name: AGENT_CACHE_PIN_TTL
+              value: {{ .Values.registry.cache.pinTTL | quote }}
             - name: AGENT_PREWARM_CONCURRENCY
               value: {{ .Values.registry.cache.prewarm.concurrency | quote }}
             - name: AGENT_PREWARM_TIMEOUT

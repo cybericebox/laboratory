@@ -15,8 +15,8 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/clientset/client/versioned/fake"
-	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/grouppods"
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 

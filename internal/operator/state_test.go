@@ -5,7 +5,7 @@ import "testing"
 func TestStateConfigDefaults(t *testing.T) {
 	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
 	t.Setenv("BASE_DOMAIN", "lab.example.com")
-	t.Setenv("SUPPORT_EMAIL", "support@example.com")
+	setRequiredEnv(t)
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatal(err)
@@ -28,7 +28,7 @@ func TestStateConfigDefaults(t *testing.T) {
 func TestStateConfigFromEnv(t *testing.T) {
 	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
 	t.Setenv("BASE_DOMAIN", "lab.example.com")
-	t.Setenv("SUPPORT_EMAIL", "support@example.com")
+	setRequiredEnv(t)
 	t.Setenv("STATE_PERSISTENCE_ENABLED", "true")
 	t.Setenv("STATE_DEBOUNCE", "12s")
 	t.Setenv("STATE_EXCLUDE_PATHS", "/cache,/var/log")
@@ -52,7 +52,7 @@ func TestStateConfigFromEnv(t *testing.T) {
 func TestStateConfigRejectsBadQuota(t *testing.T) {
 	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
 	t.Setenv("BASE_DOMAIN", "lab.example.com")
-	t.Setenv("SUPPORT_EMAIL", "support@example.com")
+	setRequiredEnv(t)
 	t.Setenv("STATE_WRITE_QUOTA", "lots")
 	if _, err := LoadConfig(); err == nil {
 		t.Fatal("an unparseable quota must fail at startup")
@@ -62,7 +62,7 @@ func TestStateConfigRejectsBadQuota(t *testing.T) {
 func TestCacheConfig(t *testing.T) {
 	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
 	t.Setenv("BASE_DOMAIN", "lab.example.com")
-	t.Setenv("SUPPORT_EMAIL", "support@example.com")
+	setRequiredEnv(t)
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatal(err)

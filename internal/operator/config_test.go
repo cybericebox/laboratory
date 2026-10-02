@@ -6,7 +6,7 @@ func TestLoadConfigRequiresLabDomains(t *testing.T) {
 	set := func(vpn, base string) {
 		t.Setenv("PUBLIC_VPN_ENDPOINT", vpn)
 		t.Setenv("BASE_DOMAIN", base)
-		t.Setenv("SUPPORT_EMAIL", "support@example.com")
+		setRequiredEnv(t)
 	}
 	set("vpn.example.com:51820", "labs.example.com")
 	if _, err := LoadConfig(); err != nil {
@@ -26,7 +26,7 @@ func TestLoadConfigRequiresLabDomains(t *testing.T) {
 func TestLoadConfigImagePullSecrets(t *testing.T) {
 	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
 	t.Setenv("BASE_DOMAIN", "labs.example.com")
-	t.Setenv("SUPPORT_EMAIL", "support@example.com")
+	setRequiredEnv(t)
 	cfg, err := LoadConfig()
 	if err != nil || len(cfg.ImagePullSecrets) != 0 {
 		t.Fatalf("default: %v %v", cfg, err)
@@ -41,7 +41,7 @@ func TestLoadConfigImagePullSecrets(t *testing.T) {
 func TestLoadConfigSchedulerDefaultsAndValidation(t *testing.T) {
 	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
 	t.Setenv("BASE_DOMAIN", "labs.example.com")
-	t.Setenv("SUPPORT_EMAIL", "support@example.com")
+	setRequiredEnv(t)
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatal(err)
@@ -67,5 +67,30 @@ func TestLoadConfigSchedulerDefaultsAndValidation(t *testing.T) {
 				t.Fatalf("%s=%s must be refused", kv[0], kv[1])
 			}
 		})
+	}
+}
+
+// setRequiredEnv sets what the chart always passes and the operator refuses to start without.
+func setRequiredEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("SUPPORT_EMAIL", "support@example.com")
+	t.Setenv("VPN_IMAGE", "registry.example.com/lab:v1")
+	t.Setenv("GATEWAY_IMAGE", "registry.example.com/lab:v1")
+	t.Setenv("NETCONFIG_IMAGE", "registry.example.com/node:v1")
+}
+
+// There is no default for the images and the support address: an empty value stops the operator.
+func TestLoadConfigRefusesEmptyImagesAndSupportEmail(t *testing.T) {
+	for _, key := range []string{"VPN_IMAGE", "GATEWAY_IMAGE", "NETCONFIG_IMAGE", "SUPPORT_EMAIL"} {
+		t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
+		t.Setenv("BASE_DOMAIN", "labs.example.com")
+		setRequiredEnv(t)
+		if _, err := LoadConfig(); err != nil {
+			t.Fatalf("all set: %v", err)
+		}
+		t.Setenv(key, "")
+		if _, err := LoadConfig(); err == nil {
+			t.Errorf("an empty %s must be refused", key)
+		}
 	}
 }

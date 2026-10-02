@@ -34,15 +34,17 @@ type Config struct {
 	VPNBaseNetwork string `env:"VPN_BASE_NETWORK" envDefault:"10.128.0.0/10"`
 	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets, internet half (e.g. "10.192.0.0/10").
 	InetBaseNetwork string `env:"INET_BASE_NETWORK" envDefault:"10.192.0.0/10"`
-	// VPNImage is the container image for per-LabGroup VPN pods.
-	VPNImage string `env:"VPN_IMAGE" envDefault:"cybericebox/laboratory-lab:latest"`
-	// GatewayImage is the container image for per-LabGroup gateway pods.
-	GatewayImage string `env:"GATEWAY_IMAGE" envDefault:"cybericebox/laboratory-lab:latest"`
+	// VPNImage is the container image for per-LabGroup VPN pods. Required, no default: the chart passes
+	// repository:tag (the tag is the chart appVersion unless set).
+	VPNImage string `env:"VPN_IMAGE,notEmpty"`
+	// GatewayImage is the container image for per-LabGroup gateway pods. Required, no default.
+	GatewayImage string `env:"GATEWAY_IMAGE,notEmpty"`
 	// GroupPods are the resources of the VPN and gateway pods of a new LabGroup (requests = limits).
 	GroupPods grouppods.Config
 	// NetConfigImage is the image for the optional device init-container that
 	// assigns static IP/routes. Needs iproute2 + sh; node-agent image has both.
-	NetConfigImage string `env:"NETCONFIG_IMAGE" envDefault:"cybericebox/laboratory-node-agent:latest"`
+	// Required, no default.
+	NetConfigImage string `env:"NETCONFIG_IMAGE,notEmpty"`
 	// LabNodeSelectorJSON is a JSON-encoded map[string]string of nodeSelector labels
 	// applied to all runtime lab pods (VPN, gateway, device).
 	LabNodeSelectorJSON string `env:"LAB_NODE_SELECTOR" envDefault:"{}"`
@@ -66,7 +68,8 @@ type Config struct {
 	ImagePullSecrets []string `env:"IMAGE_PULL_SECRETS" envSeparator:","`
 	// SupportEmail is the contact address shown to participants on the VPN
 	// probe page. Passed to every per-LabGroup VPN pod as SUPPORT_EMAIL.
-	SupportEmail string `env:"SUPPORT_EMAIL,required"`
+	// Required and not empty: the deploy always passes it.
+	SupportEmail string `env:"SUPPORT_EMAIL,notEmpty"`
 
 	// TenantEnrollmentTTL is how long an unused tenant enrollment token works.
 	TenantEnrollmentTTL time.Duration `env:"TENANT_ENROLLMENT_TTL" envDefault:"24h"`

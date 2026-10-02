@@ -66,7 +66,7 @@ type CacheConfig struct {
 	PullSecrets         []string `env:"AGENT_PULL_SECRETS" envSeparator:","`
 	PullSecretNamespace string   `env:"AGENT_PULL_SECRET_NAMESPACE" envDefault:"laboratory-system"`
 	// PinTTL is how long a resolved digest is remembered (the tag is looked up again after it).
-	PinTTL      time.Duration `env:"AGENT_CACHE_PIN_TTL" envDefault:"5m"`
+	PinTTL      time.Duration `env:"AGENT_CACHE_PIN_TTL" envDefault:"30m"`
 	Concurrency int           `env:"AGENT_PREWARM_CONCURRENCY" envDefault:"4"`
 	Timeout     time.Duration `env:"AGENT_PREWARM_TIMEOUT" envDefault:"10m"`
 }

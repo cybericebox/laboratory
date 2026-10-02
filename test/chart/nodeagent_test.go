@@ -14,6 +14,7 @@ var baseSet = []string{
 	"--namespace", "laboratory-system",
 	"--set", "operator.publicVPNEndpoint=vpn.example.com:51820",
 	"--set", "operator.baseDomain=lab.example.com",
+	"--set", "operator.supportEmail=support@example.com",
 }
 
 func helmTemplate(t *testing.T, extra ...string) (string, error) {
