@@ -61,6 +61,7 @@ func Run() {
 	h.SetGroupOverhead(cfg.GroupPods.Overhead())
 	h.SetClientCA(cfg.MTLS.ClientCAFile, cfg.MTLS.ClientCAKeyFile, cfg.MTLS.ClientCertTTL)
 	h.SetRegistryAddr(cfg.RegistryAddr)
+	h.SetRegistryAuth(cfg.RegistryUser, cfg.RegistryPassword)
 	h.SetImagePolicy(cfg.ImageDeny, cfg.Cache.NodePrefix, cfg.Cache.RegistryAddr, cfg.RegistryAddr)
 	var labSelector map[string]string
 	var labTolerations []corev1.Toleration

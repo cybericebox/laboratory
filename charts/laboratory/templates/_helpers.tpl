@@ -108,3 +108,31 @@ ones named in registry.cache.registries, plus registry.cache.extraRegistries.
 {{- end -}}
 {{- toJson $out -}}
 {{- end }}
+
+{{/*
+The credentials of the platform registry (zot), made once per render and cached in .Values._registryCreds so that the
+registry Secret and the copy for the agent (another namespace) agree. Generated once and kept across upgrades (read back with
+lookup). Two accounts: writer (the operator and the node-agents write snapshots) and reader (it may read the snapshots of the
+labs and the base repository; everything else in the registry is the public image cache, anonymous read). A registry made by an
+earlier version has no reader yet: it is added, the writer stays.
+*/}}
+{{- define "laboratory.registryCreds" -}}
+{{- if not (hasKey .Values "_registryCreds") -}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace "laboratory-registry" -}}
+{{- $writer := randAlphaNum 40 -}}
+{{- $reader := randAlphaNum 40 -}}
+{{- $htpasswd := "" -}}
+{{- if and $existing $existing.data -}}
+{{- $writer = index $existing.data "password" | b64dec -}}
+{{- if hasKey $existing.data "readerPassword" -}}
+{{- $reader = index $existing.data "readerPassword" | b64dec -}}
+{{- $htpasswd = index $existing.data "htpasswd" | b64dec -}}
+{{- else -}}
+{{- $htpasswd = printf "%s\n%s" (index $existing.data "htpasswd" | b64dec | trim) (htpasswd "reader" $reader) -}}
+{{- end -}}
+{{- else -}}
+{{- $htpasswd = printf "%s\n%s" (htpasswd "writer" $writer) (htpasswd "reader" $reader) -}}
+{{- end -}}
+{{- $_ := set .Values "_registryCreds" (dict "writer" $writer "reader" $reader "htpasswd" $htpasswd) -}}
+{{- end -}}
+{{- end -}}

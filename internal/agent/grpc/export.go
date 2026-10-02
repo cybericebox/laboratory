@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
@@ -28,6 +29,24 @@ const exportFormat = "tar+gzip; OCI layer: whiteouts as .wh.<name>, opaque direc
 // SetRegistryAddr tells the agent where the platform registry (zot) is, as it reaches it
 // (host:port). Snapshot export reads the snapshots from there.
 func (h *Handler) SetRegistryAddr(addr string) { h.registryAddr = addr }
+
+// SetRegistryAuth gives the agent the reader account of the registry (empty user: anonymous).
+func (h *Handler) SetRegistryAuth(user, password string) {
+	if user == "" {
+		h.registryAuth = nil
+		return
+	}
+	h.registryAuth = &authn.Basic{Username: user, Password: password}
+}
+
+// registryOptions are the options of a registry read: the context and, when configured, the reader account.
+func (h *Handler) registryOptions(ctx context.Context) []remote.Option {
+	opts := []remote.Option{remote.WithContext(ctx)}
+	if h.registryAuth != nil {
+		opts = append(opts, remote.WithAuth(h.registryAuth))
+	}
+	return opts
+}
 
 // ExportDeviceSnapshot streams the latest state of a snapshot-backed device as one
 // archive: the squashed difference to its base image. See the proto for the format.
@@ -66,7 +85,7 @@ func (h *Handler) ExportDeviceSnapshot(in *protobuf.DeviceSnapshotRequest, strea
 	if err != nil {
 		return status.Errorf(codes.Internal, "snapshot reference: %v", err)
 	}
-	img, err := remote.Image(imgRef, remote.WithContext(ctx))
+	img, err := remote.Image(imgRef, h.registryOptions(ctx)...)
 	if err != nil {
 		return status.Errorf(codes.Unavailable, "read the snapshot %s from the registry: %v", imgRef.Name(), err)
 	}

@@ -898,6 +898,21 @@ A participant is root in the device and controls what its writable layer holds, 
   recorded in their status), so one tenant cannot fill the volume for everyone; `Tenant.spec.persistence.registryQuota` gives a tenant less. A snapshot that
   would pass it is refused like one over the write quota. The agent reports the tenant's `registry_quota_bytes` and `max_entries` in the features.
 
+### Who may read the registry
+
+zot is shared by every team and the image cache, so what it serves is split by repository (no catch-all pattern: a repository that matches none is
+denied to everyone but the writer):
+
+- **The public image cache** (`docker.io/**`, `ghcr.io/**`, `quay.io/**`, `registry.k8s.io/**`, and the extra registries you list): anonymous read.
+- **The snapshots of the labs (`lab/**`) and the shared `base` repository: not anonymous.** The `reader` account may read them, the `writer` account
+  everything. Both live in the Secret `laboratory-registry` (generated once and kept across upgrades; a registry made by an earlier version gets a reader added,
+  the writer stays). The node-agent forwarder (`127.0.0.1:<forwardPort>`) adds the reader to the node runtime's **GET and HEAD** requests of those repositories
+  that carry no credentials of their own, so pulling a snapshot needs no host configuration; writes are never given the reader. The agent exports a snapshot
+  with the reader too (the Secret `laboratory-registry-reader` in the agent namespace).
+- The network policy still lets the node-agents and the platform pods reach zot; the accounts are what keeps another team's snapshots (which can hold
+  solutions) from any other process that can reach it. A process on a node can still reach the forwarder on that node's loopback: the node-agent is the
+  trusted path.
+
 ### Service pods and images
 
 The service pods of the laboratory are hardened without a setting:

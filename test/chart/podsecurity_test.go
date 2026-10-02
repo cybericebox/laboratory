@@ -1,7 +1,11 @@
 package chart_test
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
+
+	"sigs.k8s.io/yaml"
 )
 
 // podSpecs returns the pod spec of every workload of a rendered chart, keyed by "<kind>/<name>".
@@ -103,5 +107,85 @@ func TestServicePodsAreHardened(t *testing.T) {
 	// the node-agent drives OVS and pod networking and stays privileged
 	if _, ok := specs["DaemonSet/laboratory-node-agent"]; !ok {
 		t.Fatal("no node-agent")
+	}
+}
+
+// zot: the snapshots of the labs and the base repository are not anonymous; the public image cache is.
+func TestRegistryKeepsSnapshotsPrivate(t *testing.T) {
+	out, err := helmTemplate(t, append(agentSet, "--set", "devices.statePersistence.enabled=true", "--set", "registry.cache.enabled=true",
+		"-s", "templates/registry/configmap.yaml", "-s", "templates/registry/secret.yaml")...)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	var cm struct {
+		Data map[string]string `json:"data"`
+	}
+	var cfg struct {
+		HTTP struct {
+			AccessControl struct {
+				Repositories map[string]struct {
+					AnonymousPolicy []string `json:"anonymousPolicy"`
+					Policies        []struct {
+						Users   []string `json:"users"`
+						Actions []string `json:"actions"`
+					} `json:"policies"`
+				} `json:"repositories"`
+			} `json:"accessControl"`
+		} `json:"http"`
+	}
+	for _, d := range strings.Split(out, "\n---\n") {
+		if strings.Contains(d, "kind: ConfigMap") {
+			if err := yaml.Unmarshal([]byte(d), &cm); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := json.Unmarshal([]byte(cm.Data["config.json"]), &cfg); err != nil {
+		t.Fatalf("%v\n%s", err, cm.Data["config.json"])
+	}
+	repos := cfg.HTTP.AccessControl.Repositories
+	if _, catchAll := repos["**"]; catchAll {
+		t.Error("there must be no catch-all pattern")
+	}
+	for _, private := range []string{"lab/**", "base", "base/**"} {
+		r, ok := repos[private]
+		if !ok || len(r.AnonymousPolicy) != 0 {
+			t.Errorf("%s must exist and not be anonymous: %+v", private, r)
+			continue
+		}
+		var readers, writers bool
+		for _, p := range r.Policies {
+			readers = readers || (strings.Join(p.Users, ",") == "reader" && strings.Join(p.Actions, ",") == "read")
+			writers = writers || strings.Join(p.Users, ",") == "writer"
+		}
+		if !readers || !writers {
+			t.Errorf("%s: the reader reads, the writer writes: %+v", private, r.Policies)
+		}
+	}
+	for _, public := range []string{"docker.io/**", "ghcr.io/**", "quay.io/**", "registry.k8s.io/**"} {
+		if r, ok := repos[public]; !ok || len(r.AnonymousPolicy) != 1 || r.AnonymousPolicy[0] != "read" {
+			t.Errorf("%s is the public cache: anonymous read: %+v", public, r)
+		}
+	}
+	// both accounts exist, and the agent gets the reader in its own namespace
+	if !strings.Contains(out, "readerPassword:") || !strings.Contains(out, "reader:$2") || !strings.Contains(out, "writer:$2") {
+		t.Errorf("the registry secret needs a reader and a writer account:\n%s", out)
+	}
+	agentOut, err := helmTemplate(t, append(agentSet, "--set", "devices.statePersistence.enabled=true", "-s", "templates/registry/secret.yaml", "-s", "templates/agent/deployment.yaml")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"name: laboratory-registry-reader", "namespace: laboratory-agent", "name: AGENT_REGISTRY_USER", "name: AGENT_REGISTRY_PASSWORD"} {
+		if !strings.Contains(agentOut, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	// the reader reaches the node-agent too (its forwarder adds it to the pulls of snapshots)
+	nodeOut, err := helmTemplate(t, "--set", "devices.statePersistence.enabled=true", "-s", "templates/node-agent/daemonset.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(nodeOut, "STATE_REGISTRY_READER_PASSWORD") || !strings.Contains(nodeOut, "key: readerPassword") {
+		t.Error("the node-agent needs the reader account")
 	}
 }

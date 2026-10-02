@@ -4,6 +4,9 @@ import (
 	"context"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httputil"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,10 +19,22 @@ import (
 // which treats localhost registries as plain HTTP, so no host configuration
 // (registries.yaml, hosts.toml, certificates, DNS) is needed. It returns when
 // ctx ends.
-func Forward(ctx context.Context, listen, target string, log logr.Logger) error {
+//
+// With a reader (WithReader) it is an HTTP-aware relay instead: the registry lets only the platform read the snapshots of
+// the labs (`lab/**`) and the shared `base` repository (everything else is anonymous, the public image cache), so
+// the node's runtime, which pulls a snapshot as localhost:<port>/lab/..., has the reader account added for it here, on
+// GET and HEAD requests of those repositories that carry no credentials of their own. Writes are never given the reader.
+func Forward(ctx context.Context, listen, target string, log logr.Logger, opts ...ForwardOption) error {
+	var o forwardOptions
+	for _, f := range opts {
+		f(&o)
+	}
 	ln, err := net.Listen("tcp", listen)
 	if err != nil {
 		return err
+	}
+	if o.readerUser != "" {
+		return serveReader(ctx, ln, target, o, log)
 	}
 	go func() {
 		<-ctx.Done()
@@ -67,4 +82,50 @@ func relay(ctx context.Context, client net.Conn, target string, log logr.Logger)
 		<-done
 	case <-ctx.Done():
 	}
+}
+
+// ForwardOption configures Forward.
+type ForwardOption func(*forwardOptions)
+
+type forwardOptions struct{ readerUser, readerPassword string }
+
+// WithReader makes the forwarder add the reader account to the reads of the snapshot repositories.
+func WithReader(user, password string) ForwardOption {
+	return func(o *forwardOptions) { o.readerUser, o.readerPassword = user, password }
+}
+
+// needsReader says whether a registry request reads a repository only the platform may read.
+func needsReader(method, path string) bool {
+	if method != http.MethodGet && method != http.MethodHead {
+		return false
+	}
+	return strings.HasPrefix(path, "/v2/lab/") || strings.HasPrefix(path, "/v2/base/")
+}
+
+// readerHandler relays registry requests to target, adding the reader account where needsReader says so.
+func readerHandler(target string, o forwardOptions) http.Handler {
+	proxy := &httputil.ReverseProxy{
+		Director: func(r *http.Request) {
+			r.URL.Scheme, r.URL.Host, r.Host = "http", target, target
+			if r.Header.Get("Authorization") == "" && needsReader(r.Method, r.URL.Path) {
+				r.SetBasicAuth(o.readerUser, o.readerPassword)
+			}
+		},
+		FlushInterval: -1, // blobs stream
+		ErrorHandler:  func(w http.ResponseWriter, _ *http.Request, _ error) { w.WriteHeader(http.StatusBadGateway) },
+	}
+	return proxy
+}
+
+func serveReader(ctx context.Context, ln net.Listener, target string, o forwardOptions, log logr.Logger) error {
+	srv := &http.Server{Handler: readerHandler(target, o), ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		<-ctx.Done()
+		_ = srv.Close()
+	}()
+	if err := srv.Serve(ln); err != nil && ctx.Err() == nil {
+		log.Error(err, "registry forwarder")
+		return err
+	}
+	return nil
 }

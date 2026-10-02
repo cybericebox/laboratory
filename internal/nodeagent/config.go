@@ -35,6 +35,10 @@ type Config struct {
 	StateRegistryUser     string `env:"STATE_REGISTRY_USER"`
 	StateRegistryPassword string `env:"STATE_REGISTRY_PASSWORD"`
 	StateForwardPort      int    `env:"STATE_FORWARD_PORT"    envDefault:"5035"`
+	// The reader account of the registry (it may read the snapshots and the base repository; the forwarder adds it to the
+	// node runtime's pulls of those). Empty: the forwarder is a plain relay.
+	StateRegistryReaderUser     string `env:"STATE_REGISTRY_READER_USER"`
+	StateRegistryReaderPassword string `env:"STATE_REGISTRY_READER_PASSWORD"`
 	// StatePersistence turns on the snapshot engine (the forwarder alone serves
 	// the image cache).
 	StatePersistence bool `env:"STATE_PERSISTENCE_ENABLED" envDefault:"false"`

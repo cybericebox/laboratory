@@ -68,6 +68,9 @@ type Config struct {
 	// RegistryAddr is host:port of the platform registry (zot) as the agent reaches it:
 	// snapshot export reads the device snapshots from it. Empty: the export fails with FailedPrecondition.
 	RegistryAddr string `env:"AGENT_REGISTRY_ADDR"`
+	// RegistryUser and RegistryPassword are the reader account of the registry: the snapshots are not anonymous.
+	RegistryUser     string `env:"AGENT_REGISTRY_USER"`
+	RegistryPassword string `env:"AGENT_REGISTRY_PASSWORD"`
 	// Cache lets the agent prewarm the platform image cache.
 	Cache CacheConfig
 	// ImageDeny are "registry/repository-prefix" entries no tenant may use (the platform's

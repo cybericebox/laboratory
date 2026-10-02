@@ -32,7 +32,11 @@ func SetupDeviceState(mgr ctrl.Manager, cfg *Config) error {
 
 	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		log.Info("registry forwarder", "listen", "127.0.0.1", "port", cfg.StateForwardPort, "target", cfg.StateRegistryAddr)
-		return devicestate.Forward(ctx, fmt.Sprintf("127.0.0.1:%d", cfg.StateForwardPort), cfg.StateRegistryAddr, log)
+		var opts []devicestate.ForwardOption
+		if cfg.StateRegistryReaderUser != "" {
+			opts = append(opts, devicestate.WithReader(cfg.StateRegistryReaderUser, cfg.StateRegistryReaderPassword))
+		}
+		return devicestate.Forward(ctx, fmt.Sprintf("127.0.0.1:%d", cfg.StateForwardPort), cfg.StateRegistryAddr, log, opts...)
 	})); err != nil {
 		return err
 	}

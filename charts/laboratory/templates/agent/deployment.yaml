@@ -60,6 +60,17 @@ spec:
             # ExportDeviceSnapshot reads the snapshots from the platform registry.
             - name: AGENT_REGISTRY_ADDR
               value: {{ include "laboratory.registryAddr" . | quote }}
+            # The snapshots are not anonymous: the agent reads them with the reader account.
+            - name: AGENT_REGISTRY_USER
+              valueFrom:
+                secretKeyRef:
+                  name: laboratory-registry-reader
+                  key: username
+            - name: AGENT_REGISTRY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: laboratory-registry-reader
+                  key: password
           {{- end }}
           {{- if .Values.registry.cache.enabled }}
             # PrewarmImages: the agent makes the image cache fetch images ahead of time.

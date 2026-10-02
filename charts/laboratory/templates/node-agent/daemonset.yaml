@@ -183,6 +183,17 @@ spec:
               value: {{ .Values.devices.statePersistence.maxWatchedDirs | quote }}
             - name: STATE_WORK_DIR
               value: /var/cache/cybericebox/state
+            # The reader account: the forwarder adds it to the runtime's pulls of the snapshots and the base image.
+            - name: STATE_REGISTRY_READER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: laboratory-registry
+                  key: readerUsername
+            - name: STATE_REGISTRY_READER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: laboratory-registry
+                  key: readerPassword
             - name: STATE_REGISTRY_USER
               valueFrom:
                 secretKeyRef:

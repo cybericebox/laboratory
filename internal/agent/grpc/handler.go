@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"github.com/google/go-containerregistry/pkg/authn"
 	"sync"
 	"time"
 
@@ -62,6 +63,7 @@ type Handler struct {
 
 	// registryAddr is the platform registry (host:port) snapshot export reads from.
 	registryAddr string
+	registryAuth authn.Authenticator
 }
 
 // NewHandler builds a Handler backed by the given typed clientset, plain
