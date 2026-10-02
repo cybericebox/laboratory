@@ -5,7 +5,6 @@ package nodeagent
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -15,6 +14,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/netattach"
 )
 
 const (
@@ -23,31 +23,22 @@ const (
 )
 
 // NetAttachment is one parsed entry from the networks annotation.
-type NetAttachment struct {
-	Iface string // desired name inside pod netns (e.g. "eth1")
-	Name  string // Connection CRD name or OVS port name
-	MAC   string // optional hardware address; empty = keep generated MAC
-}
+type NetAttachment = netattach.Attachment
 
-// ParseNetworkAnnotation parses the network.cybericebox.com/networks annotation.
-// Format per entry: "iface@[connection][|MAC]"
-// Entries with name=="default" are excluded (handled by the CNI plugin).
+// ParseNetworkAnnotation parses the network.cybericebox.com/networks annotation (see
+// netattach.Parse). Entries whose interface name or MAC is not valid are dropped: the
+// operator and the API validate both, and a value that got past them must not rename
+// or re-address anything in the pod netns.
 func ParseNetworkAnnotation(annotation string) []NetAttachment {
 	var result []NetAttachment
-	for _, entry := range strings.Split(annotation, ",") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
+	for _, att := range netattach.Parse(annotation) {
+		if netattach.ValidateInterfaceName(att.Iface) != nil {
 			continue
 		}
-		iface, rest, ok := strings.Cut(entry, "@")
-		if !ok || iface == "" {
+		if netattach.ValidateMAC(att.MAC) != nil {
 			continue
 		}
-		name, mac, _ := strings.Cut(rest, "|")
-		if name == "default" {
-			continue
-		}
-		result = append(result, NetAttachment{Iface: iface, Name: name, MAC: mac})
+		result = append(result, att)
 	}
 	return result
 }

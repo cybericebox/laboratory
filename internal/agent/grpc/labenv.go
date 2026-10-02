@@ -14,6 +14,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/netattach"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -110,8 +111,25 @@ func parseLabSpec(raw []byte, persistence bool) (laboratoryv1alpha1.LabSpec, err
 		if err := validatePersistence(&spec.Devices[i], persistence); err != nil {
 			return spec, fmt.Errorf("spec_json: device %q: %w", spec.Devices[i].Name, err)
 		}
+		if err := validateInterfaces(&spec.Devices[i]); err != nil {
+			return spec, fmt.Errorf("spec_json: device %q: %w", spec.Devices[i].Name, err)
+		}
 	}
 	return spec, nil
+}
+
+// validateInterfaces checks the interface names and MACs of a device: the same rules the
+// CRD enforces, reported before anything is created.
+func validateInterfaces(d *laboratoryv1alpha1.DeviceTemplate) error {
+	for _, iface := range d.Interfaces {
+		if err := netattach.ValidateInterfaceName(iface.Name); err != nil {
+			return err
+		}
+		if err := netattach.ValidateMAC(iface.MAC); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // validatePersistence checks a device's persistence request: enabled only when the

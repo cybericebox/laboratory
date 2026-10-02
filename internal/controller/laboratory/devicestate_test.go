@@ -21,6 +21,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/netattach"
 )
 
 func TestRestartDelayGrowsAndCaps(t *testing.T) {
@@ -57,14 +58,31 @@ func TestNetworkAnnotationStableMAC(t *testing.T) {
 			{Name: "eth3", MAC: "aa:bb:cc:dd:ee:ff"},
 		}},
 	}
-	if got := networkAnnotation(d, false); got != "eth1@,eth2@|random,eth3@|aa:bb:cc:dd:ee:ff" {
+	if got := networkAnnotation(d, false); got != `[{"iface":"eth1"},{"iface":"eth2","mac":"random"},{"iface":"eth3","mac":"aa:bb:cc:dd:ee:ff"}]` {
 		t.Fatalf("Deployment mode must be unchanged, got %q", got)
 	}
 	got := networkAnnotation(d, true)
-	want := fmt.Sprintf("eth1@|%s,eth2@|%s,eth3@|aa:bb:cc:dd:ee:ff",
+	want := fmt.Sprintf(`[{"iface":"eth1","mac":"%s"},{"iface":"eth2","mac":"%s"},{"iface":"eth3","mac":"aa:bb:cc:dd:ee:ff"}]`,
 		stableDeviceMAC("ns", "lab-web", "eth1"), stableDeviceMAC("ns", "lab-web", "eth2"))
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestNetworkAnnotationDropsInjectedInterfaces(t *testing.T) {
+	d := &laboratoryv1alpha1.Device{
+		ObjectMeta: metav1.ObjectMeta{Name: "lab-web", Namespace: "ns"},
+		Spec: laboratoryv1alpha1.DeviceSpec{Interfaces: []laboratoryv1alpha1.InterfaceSpec{
+			{Name: "a@x,eth0@y|ff:ff:ff:ff:ff:ff"},
+			{Name: "lo"},
+			{Name: "eth1", MAC: "ff:ff:ff:ff:ff:ff"},
+			{Name: "eth2", MAC: "01:00:5e:00:00:01"},
+			{Name: "eth3"},
+		}},
+	}
+	got := netattach.Parse(networkAnnotation(d, false))
+	if len(got) != 1 || got[0].Iface != "eth3" {
+		t.Fatalf("only the valid interface survives, got %+v", got)
 	}
 }
 
@@ -335,7 +353,7 @@ var _ = Describe("Device state persistence: bare Pod lifecycle", func() {
 		Expect(metav1.IsControlledBy(p, getDevice())).To(BeTrue())
 		Expect(p.Labels).To(HaveKeyWithValue(names.LabelLab, "lab"))
 		Expect(p.Labels).To(HaveKeyWithValue(names.LabelDevice, "web"))
-		Expect(p.Annotations[names.AnnotationNetworks]).To(Equal("eth1@|" + stableDeviceMAC(ns, dev.Name, "eth1")))
+		Expect(p.Annotations[names.AnnotationNetworks]).To(Equal(`[{"iface":"eth1","mac":"` + stableDeviceMAC(ns, dev.Name, "eth1") + `"}]`))
 		Expect(p.Annotations[names.AnnotationStateEpoch]).To(Equal("0"))
 
 		var dep appsv1.Deployment

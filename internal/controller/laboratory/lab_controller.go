@@ -31,6 +31,7 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/netattach"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	"github.com/cybericebox/laboratory/pkg/netutil"
@@ -1471,41 +1472,24 @@ func (r *LabReconciler) patchDeploymentNetworks(
 		return client.IgnoreNotFound(err)
 	}
 
-	entry := podIfaceName + "@" + ovsPortName
+	entry := netattach.Attachment{Iface: podIfaceName, Name: ovsPortName}
 	original := dep.DeepCopy()
 
-	ann := dep.Spec.Template.Annotations[names.AnnotationNetworks]
-	var entries []string
-	for _, e := range strings.Split(ann, ",") {
-		if e = strings.TrimSpace(e); e != "" {
-			entries = append(entries, e)
-		}
-	}
-
+	list := netattach.Parse(dep.Spec.Template.Annotations[names.AnnotationNetworks])
+	var entries []netattach.Attachment
 	if add {
-		for _, e := range entries {
-			if e == entry {
-				return nil // already present
-			}
-		}
-		entries = append(entries, entry)
+		entries = netattach.With(list, entry)
 	} else {
-		filtered := entries[:0]
-		for _, e := range entries {
-			if e != entry {
-				filtered = append(filtered, e)
-			}
-		}
-		if len(filtered) == len(entries) {
-			return nil // not present, nothing to do
-		}
-		entries = filtered
+		entries = netattach.Without(list, entry)
+	}
+	if len(entries) == len(list) {
+		return nil // already present, or not present: nothing to do
 	}
 
 	if dep.Spec.Template.Annotations == nil {
 		dep.Spec.Template.Annotations = map[string]string{}
 	}
-	dep.Spec.Template.Annotations[names.AnnotationNetworks] = strings.Join(entries, ",")
+	dep.Spec.Template.Annotations[names.AnnotationNetworks] = netattach.Encode(entries)
 	return r.Patch(ctx, &dep, client.MergeFrom(original))
 }
 

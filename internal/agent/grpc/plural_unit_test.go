@@ -529,3 +529,23 @@ func TestInternalLabelsAreHidden(t *testing.T) {
 		t.Fatalf("user selector: %v %v", list, err)
 	}
 }
+
+func TestParseLabSpecValidatesInterfaces(t *testing.T) {
+	spec := func(iface string) []byte {
+		return []byte(`{"devices":[{"name":"web","type":"container","interfaces":[` + iface + `]}]}`)
+	}
+	for _, bad := range []string{
+		`{"name":"a@x,eth0@y|ff:ff:ff:ff:ff:ff"}`,
+		`{"name":"lo"}`, `{"name":"accessport"}`, `{"name":"A"}`,
+		`{"name":"eth1","mac":"ff:ff:ff:ff:ff:ff"}`, `{"name":"eth1","mac":"01:00:5e:00:00:01"}`,
+	} {
+		if _, err := parseLabSpec(spec(bad), false); err == nil {
+			t.Errorf("%s must be rejected", bad)
+		}
+	}
+	for _, ok := range []string{`{"name":"eth0"}`, `{"name":"eth1"}`, `{"name":"eth1","mac":"random"}`, `{"name":"eth1","mac":"02:aa:bb:cc:dd:ee"}`} {
+		if _, err := parseLabSpec(spec(ok), false); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
+}

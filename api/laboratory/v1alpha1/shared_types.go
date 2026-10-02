@@ -79,10 +79,18 @@ type EndpointSpec struct {
 
 // InterfaceSpec defines a network interface on a device.
 type InterfaceSpec struct {
+	// Name is the interface name inside the pod: a lowercase word of at most 15
+	// characters; lo and accessport are reserved.
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=15
+	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9-]{0,14}$`
+	// +kubebuilder:validation:XValidation:rule="self != 'lo' && self != 'accessport'",message="reserved interface name"
 	Name string   `json:"name"`
 	Addr AddrSpec `json:"addr,omitempty"`
-	// MAC is "random" or an explicit MAC address.
+	// MAC is "random" or an explicit unicast MAC address.
+	// +kubebuilder:validation:MaxLength=17
+	// +kubebuilder:validation:Pattern=`^(random|[0-9a-fA-F][02468aceACE](:[0-9a-fA-F]{2}){5})$`
+	// +kubebuilder:validation:XValidation:rule="self != '00:00:00:00:00:00'",message="the zero MAC is not allowed"
 	MAC string `json:"mac,omitempty"`
 }
 

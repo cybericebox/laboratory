@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"regexp"
-	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -27,6 +26,7 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/netattach"
 )
 
 // DeviceReconciler reconciles a Device object.
@@ -274,8 +274,8 @@ func (r *DeviceReconciler) devicePodPlacement(ctx context.Context, device *labor
 
 // deviceNetworkAnnotation builds the network.cybericebox.com/networks annotation value.
 // Lists OVS attachments only; default k8s network is controlled by AnnotationDefaultNetwork.
-// Format per entry: "iface@[connection][|MAC]"
-// At pod creation time we don't know the Connection name yet, so entries are "iface@" or "iface@|MAC".
+// The value is a JSON array of netattach.Attachment. At pod creation time we don't know
+// the Connection name yet, so entries carry no name.
 func deviceNetworkAnnotation(device *laboratoryv1alpha1.Device) string {
 	return networkAnnotation(device, false)
 }
@@ -283,20 +283,21 @@ func deviceNetworkAnnotation(device *laboratoryv1alpha1.Device) string {
 // networkAnnotation is deviceNetworkAnnotation; with stableMAC every interface
 // without an explicit MAC gets one derived from the device identity, so a
 // recreated pod gets the same hardware address and therefore the same DHCP lease.
+// An interface whose name or MAC is not valid is left out: the API validates both, so
+// this only keeps a value that bypassed it from reaching the node.
 func networkAnnotation(device *laboratoryv1alpha1.Device, stableMAC bool) string {
-	var entries []string
+	var list []netattach.Attachment
 	for _, iface := range device.Spec.Interfaces {
-		entry := iface.Name + "@"
 		mac := iface.MAC
 		if stableMAC && (mac == "" || mac == "random") {
 			mac = stableDeviceMAC(device.Namespace, device.Name, iface.Name)
 		}
-		if mac != "" {
-			entry += "|" + mac
+		if netattach.ValidateInterfaceName(iface.Name) != nil || netattach.ValidateMAC(mac) != nil {
+			continue
 		}
-		entries = append(entries, entry)
+		list = append(list, netattach.Attachment{Iface: iface.Name, MAC: mac})
 	}
-	return strings.Join(entries, ",")
+	return netattach.Encode(list)
 }
 
 // workloadTemplate is the pod of a device, shared by the Deployment and the

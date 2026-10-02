@@ -203,10 +203,24 @@ spec:
                             - type
                             type: object
                           mac:
-                            description: MAC is "random" or an explicit MAC address.
+                            description: MAC is "random" or an explicit unicast MAC
+                              address.
+                            maxLength: 17
+                            pattern: ^(random|[0-9a-fA-F][02468aceACE](:[0-9a-fA-F]{2}){5})$
                             type: string
+                            x-kubernetes-validations:
+                            - message: the zero MAC is not allowed
+                              rule: self != '00:00:00:00:00:00'
                           name:
+                            description: |-
+                              Name is the interface name inside the pod: a lowercase word of at most 15
+                              characters; lo and accessport are reserved.
+                            maxLength: 15
+                            pattern: ^[a-z][a-z0-9-]{0,14}$
                             type: string
+                            x-kubernetes-validations:
+                            - message: reserved interface name
+                              rule: self != 'lo' && self != 'accessport'
                         required:
                         - name
                         type: object
