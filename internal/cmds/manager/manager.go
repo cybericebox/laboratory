@@ -304,6 +304,7 @@ func Run() {
 		Resolver:          resolver,
 		GatewayImage:      cfg.GatewayImage,
 		GroupPods:         cfg.GroupPods,
+		PriorityClass:     cfg.GroupPriorityClass,
 		SupportEmail:      cfg.SupportEmail,
 		LabNodeSelector:   labNodeSelector,
 		LabTolerations:    labTolerations,
@@ -381,6 +382,7 @@ func Run() {
 		Scheme:           mgr.GetScheme(),
 		LabNodeSelector:  labNodeSelector,
 		LabTolerations:   labTolerations,
+		PriorityClass:    cfg.DevicePriorityClass,
 		NetConfigImage:   cfg.NetConfigImage,
 		Defaults:         laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory},
 		Security: laboratorycontroller.PodSecurity{

@@ -61,6 +61,26 @@ operator:
     enabled: true
 
 # ============================================================
+# Priority classes: every pod the laboratory runs carries one, so the scheduler never evicts the system for a lab
+# ============================================================
+# node-agent: system-node-critical (built in). operator, agent, L7 proxy with the wg-demux, registry: platform. VPN and gateway
+# pods of a group: group, above the devices. Device pods: device, the lowest, with preemptionPolicy Never: a device never
+# evicts anything (a VPN or a gateway may evict a device, the system may evict both). The operator's admission policy
+# allows its pods exactly the group and device classes. Existing group pods keep what they have (no class) until recreated.
+priorityClasses:
+  # false: the classes already exist (the same names), the chart does not create them.
+  create: true
+  platform:
+    name: laboratory-platform
+    value: 1000000
+  group:
+    name: laboratory-group
+    value: 10000
+  device:
+    name: laboratory-device
+    value: 100
+
+# ============================================================
 # VPN pod image (created at runtime by operator per LabGroup)
 # ============================================================
 vpn:

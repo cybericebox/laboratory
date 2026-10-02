@@ -24,6 +24,7 @@ spec:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/registry/configmap.yaml") . | sha256sum }}
     spec:
+      priorityClassName: {{ .Values.priorityClasses.platform.name }}
       # zot never talks to the Kubernetes API: no ServiceAccount token in the pod.
       automountServiceAccountToken: false
       # zot runs as an unprivileged user; fsGroup makes the volume writable for it.

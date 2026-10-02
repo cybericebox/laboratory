@@ -41,6 +41,10 @@ type Config struct {
 	GatewayImage string `env:"GATEWAY_IMAGE,notEmpty"`
 	// GroupPods are the resources of the VPN and gateway pods of a new LabGroup (requests = limits).
 	GroupPods grouppods.Config
+	// GroupPriorityClass and DevicePriorityClass are the PriorityClasses of the VPN and gateway pods and of the device pods
+	// (the chart creates them, values priorityClasses). Empty = no class (tests, a development stand).
+	GroupPriorityClass  string `env:"PRIORITY_CLASS_GROUP"`
+	DevicePriorityClass string `env:"PRIORITY_CLASS_DEVICE"`
 	// NetConfigImage is the image for the optional device init-container that
 	// assigns static IP/routes. Needs iproute2 + sh; node-agent image has both.
 	// Required, no default.

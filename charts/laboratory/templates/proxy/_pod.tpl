@@ -5,6 +5,7 @@ metadata:
     {{- include "laboratory.selectorLabels" . | nindent 4 }}
 spec:
   serviceAccountName: laboratory-proxy
+  priorityClassName: {{ .Values.priorityClasses.platform.name }}
   # After SIGTERM the HTTP server stops taking connections and lets requests in flight finish (up to this long); the preStop sleep lets
   # the Gateway and the Service stop sending connections to the pod first.
   terminationGracePeriodSeconds: {{ .Values.proxy.terminationGracePeriodSeconds }}

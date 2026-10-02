@@ -10,9 +10,9 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -38,6 +38,8 @@ type DeviceReconciler struct {
 	Scheme          *runtime.Scheme
 	LabNodeSelector map[string]string
 	LabTolerations  []corev1.Toleration
+	// PriorityClass is the class of the device pods (the lowest; it never preempts). Empty = none.
+	PriorityClass string
 	// NetConfigImage is the image used for the optional init-container that
 	// assigns static IP/routes inside a device pod. Must contain `ip` (iproute2)
 	// and `sh`. Empty disables static addressing via init-container.
@@ -339,8 +341,9 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 	}
 
 	podSpec = corev1.PodSpec{
-		NodeSelector: r.LabNodeSelector,
-		Tolerations:  r.LabTolerations,
+		NodeSelector:      r.LabNodeSelector,
+		Tolerations:       r.LabTolerations,
+		PriorityClassName: r.PriorityClass,
 		// Best-effort co-location, soft (preferred) so a full node never blocks a lab from being placed:
 		// 1. prefer a node that already runs another device of the same lab, so a lab's intra-fabric
 		//    traffic stays node-local (no Geneve hop) whenever capacity allows;

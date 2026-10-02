@@ -173,6 +173,13 @@ spec:
       message: with devices.security.userNamespaces the operator may create a device pod only with hostUsers=false
       reason: Forbidden
 {{- end }}
+    # Every pod the operator creates carries the group or the device class (an older Deployment without one may still be updated).
+    - expression: "request.operation == 'UPDATE' || (has(variables.podSpec.priorityClassName) && variables.podSpec.priorityClassName in ['{{ .Values.priorityClasses.group.name }}', '{{ .Values.priorityClasses.device.name }}'])"
+      message: the operator may create only pods of the group or the device priority class
+      reason: Forbidden
+    - expression: "!has(variables.podSpec.priorityClassName) || variables.podSpec.priorityClassName in ['', '{{ .Values.priorityClasses.group.name }}', '{{ .Values.priorityClasses.device.name }}']"
+      message: the operator may not use another priority class than the group or the device one
+      reason: Forbidden
     - expression: "variables.podUpdate || !has(variables.podSpec.nodeName) || variables.podSpec.nodeName == ''"
       message: the operator may not place a pod on a node by name (the scheduler does)
       reason: Forbidden

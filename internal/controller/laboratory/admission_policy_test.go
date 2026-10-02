@@ -11,6 +11,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	schedulingv1 "k8s.io/api/scheduling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -50,6 +51,11 @@ var _ = Describe("operator admission policy", Ordered, func() {
 		}
 		Expect(applied).To(Equal(6), "three policies and their bindings")
 
+		// The classes the chart creates: the API server refuses a pod of a class that does not exist.
+		for _, name := range []string{"laboratory-group", "laboratory-device", "laboratory-platform"} {
+			Expect(k8sClient.Create(ctx, &schedulingv1.PriorityClass{ObjectMeta: metav1.ObjectMeta{Name: name}, Value: int32(100 + len(name))})).To(Succeed())
+		}
+
 		// Only the admission policy may stand between the operator and the cluster in this test.
 		Expect(k8sClient.Create(ctx, &rbacv1.ClusterRoleBinding{
 			ObjectMeta: metav1.ObjectMeta{Name: "adm-test-operator"},
@@ -80,7 +86,8 @@ var _ = Describe("operator admission policy", Ordered, func() {
 		return &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 			Spec: corev1.PodSpec{
-				SecurityContext: &corev1.PodSecurityContext{SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
+				PriorityClassName: "laboratory-device",
+				SecurityContext:   &corev1.PodSecurityContext{SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
 				Containers: []corev1.Container{{
 					Name: "c", Image: "x",
 					SecurityContext: &corev1.SecurityContext{Capabilities: &corev1.Capabilities{
@@ -183,7 +190,8 @@ var _ = Describe("operator admission policy", Ordered, func() {
 			return &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "adm-shape"},
 				Spec: corev1.PodSpec{
-					SecurityContext: &corev1.PodSecurityContext{SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
+					PriorityClassName: "laboratory-group",
+					SecurityContext:   &corev1.PodSecurityContext{SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
 					Containers: []corev1.Container{{Name: "c", Image: "x", SecurityContext: &corev1.SecurityContext{
 						Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}, Add: []corev1.Capability{"NET_ADMIN", "NET_RAW", "SYS_PTRACE", "CHOWN"}}}}},
 				},
@@ -220,6 +228,9 @@ var _ = Describe("operator admission policy", Ordered, func() {
 			"host port": func(p *corev1.Pod) {
 				p.Spec.Containers[0].Ports = []corev1.ContainerPort{{ContainerPort: 80, HostPort: 8080}}
 			},
+			"platform class":          func(p *corev1.Pod) { p.Spec.PriorityClassName = "laboratory-platform" },
+			"system class":            func(p *corev1.Pod) { p.Spec.PriorityClassName = "system-node-critical" },
+			"no class":                func(p *corev1.Pod) { p.Spec.PriorityClassName = "" },
 			"node name":               func(p *corev1.Pod) { p.Spec.NodeName = "some-node" },
 			"another service account": func(p *corev1.Pod) { p.Spec.ServiceAccountName = "laboratory-node-agent" },
 			"nfs volume": func(p *corev1.Pod) {

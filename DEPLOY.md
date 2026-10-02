@@ -1596,6 +1596,26 @@ snapshot is taken at once.
 
 ---
 
+## Priority and sizing of the pods
+
+### Priority classes
+
+Every pod the laboratory runs carries a PriorityClass (created by the chart, values `priorityClasses`), so the scheduler never evicts the
+system for a lab:
+
+| Pods | Class | Value |
+|---|---|---|
+| node-agent | `system-node-critical` (built in) | |
+| operator, agent, L7 proxy with the wg-demux, registry | `laboratory-platform` | 1000000 |
+| VPN and gateway of a group | `laboratory-group` | 10000 |
+| device | `laboratory-device`, `preemptionPolicy: Never` | 100 |
+
+A VPN or a gateway may evict a device, never the other way round: a device never evicts anything. The operator sets the group and device
+classes on the pods it creates (env `PRIORITY_CLASS_GROUP`, `PRIORITY_CLASS_DEVICE`, from the same values), and its admission policy lets it
+create a pod only with one of these two. The chart refuses values that do not satisfy device < group < platform. `priorityClasses.create=false`
+leaves the creation to you (the same names must exist). Group pods that were made before the classes existed keep running without one until
+they are recreated: the operator does not roll them for this.
+
 ## Network Layout
 
 | Network             | Default       | Usage                                                              |

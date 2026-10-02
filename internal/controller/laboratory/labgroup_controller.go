@@ -66,6 +66,8 @@ type LabGroupReconciler struct {
 	// GroupPods are the resources of the VPN and gateway pods of a NEW group (requests = limits);
 	// the Deployments of existing groups are left as they are, so a live event keeps its VPN.
 	GroupPods grouppods.Config
+	// PriorityClass is the class of the VPN and gateway pods (above the devices). Empty = none.
+	PriorityClass string
 	// Mirror rewrites the VPN and gateway images for the image cache when their
 	// pods are created; the zero value (cache off) rewrites nothing.
 	Mirror imagecache.Rewriter
@@ -677,6 +679,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: "vpn",
+					PriorityClassName:  r.PriorityClass,
 					ImagePullSecrets:   pullSecretRefs(r.ImagePullSecrets),
 					NodeSelector:       r.LabNodeSelector,
 					Tolerations:        r.LabTolerations,
@@ -758,6 +761,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: "gateway",
+					PriorityClassName:  r.PriorityClass,
 					ImagePullSecrets:   pullSecretRefs(r.ImagePullSecrets),
 					NodeSelector:       r.LabNodeSelector,
 					Tolerations:        r.LabTolerations,

@@ -27,6 +27,7 @@ spec:
         {{- include "laboratory.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: laboratory-agent
+      priorityClassName: {{ .Values.priorityClasses.platform.name }}
       # SIGTERM: the agent stops taking calls and finishes the running ones for up to agent.shutdownGrace (a CreateLabGroupClients that
       # has made its key must answer with it). The preStop sleep lets the Service forget the pod first.
       terminationGracePeriodSeconds: {{ .Values.agent.terminationGracePeriodSeconds }}

@@ -25,6 +25,7 @@ spec:
         {{- include "laboratory.labels" . | nindent 8 }}
     spec:
       serviceAccountName: laboratory-node-agent
+      priorityClassName: system-node-critical
       hostNetwork: true
       hostPID: false
       dnsPolicy: ClusterFirstWithHostNet

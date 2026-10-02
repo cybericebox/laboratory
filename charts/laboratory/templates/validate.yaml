@@ -23,6 +23,13 @@ at install time instead of shipping a broken deployment.
 {{- end }}
 {{- end }}
 
+{{- /* A device must stay below a group's pods, and those below the platform's. */ -}}
+{{- with .Values.priorityClasses }}
+{{- if not (and (lt (int64 .device.value) (int64 .group.value)) (lt (int64 .group.value) (int64 .platform.value))) }}
+{{- fail "priorityClasses: the values must satisfy device < group < platform" }}
+{{- end }}
+{{- end }}
+
 {{- /* Required values: fail at install time with a clear message. */ -}}
 {{- if not .Values.operator.publicVPNEndpoint }}
 {{- fail "operator.publicVPNEndpoint is required: the host:port advertised to WireGuard clients, e.g. vpn.example.com:51820" }}
