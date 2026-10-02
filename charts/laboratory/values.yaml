@@ -146,14 +146,15 @@ proxy:
       key: sessionSecret
     # How often each replica publishes its request counters (REPORT_INTERVAL).
     reportInterval: "1m"
-    # Requests = limits (Guaranteed). Measured: 36Mi at 200 concurrent clients, CPU is the limit that
-    # matters (about 5000 requests per second per core).
+    # Requests = limits (Guaranteed). Measured: 36Mi at 200 concurrent clients; CPU is the limit that
+    # matters: about 4600 requests per second at 500m (0.1 ms per request), while a real event peaks
+    # at about 1000, so 500m has roughly five times the headroom.
     resources:
       limits:
-        cpu: 1000m
+        cpu: 500m
         memory: 64Mi
       requests:
-        cpu: 1000m
+        cpu: 500m
         memory: 64Mi
 
   # WireGuard demux container — plain userspace UDP, no hostNetwork/capabilities.

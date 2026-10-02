@@ -23,8 +23,8 @@ func TestProxyRunsTwoReplicasWithABudgetAndMeasuredLimits(t *testing.T) {
 			t.Errorf("missing %q", want)
 		}
 	}
-	// requests = limits for l7 (1000m/64Mi) and wg-demux (250m/64Mi)
-	for _, want := range []string{"cpu: 1000m", "cpu: 250m", "memory: 64Mi"} {
+	// requests = limits for l7 (500m/64Mi) and wg-demux (250m/64Mi)
+	for _, want := range []string{"cpu: 500m", "cpu: 250m", "memory: 64Mi"} {
 		if strings.Count(out, want) < 2 {
 			t.Errorf("%q should appear as a request and a limit", want)
 		}
