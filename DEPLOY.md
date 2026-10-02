@@ -1125,6 +1125,11 @@ Requirements on the nodes (nothing has to be installed or configured on the host
    own mount points (`/dev`, `/proc`, `/sys`, `/etc/hosts`, `/etc/hostname`, `/etc/resolv.conf`, the service account
    directory) are left out of every layer. When the chain exceeds `maxLayers` the snapshot layers are squashed into
    one (whiteouts are preserved, so deletions of files of the base image stay deleted).
+   **Owner ids.** A device pod runs in a user namespace (`hostUsers: false`), and the diff of its writable layer holds the host ids of the
+   files. The node-agent translates every owner through the container's uid and gid maps (from its OCI spec), so a snapshot holds the ids
+   inside the container and restores under any new id range; an id outside the map is written as 0 and logged. Without a user namespace
+   nothing changes. Snapshots stored before this fix hold host ids (above 65535) and are not converted: the snapshots of the devices of
+   user-namespace pods made before the upgrade must be dropped once (reset the device or delete its repository in the registry).
 4. **Large files.** A regular file larger than `maxFileSize` (default `256Mi`) is left out of the layer, like an excluded path
    but for that file only; everything else is snapshotted normally. `status.state.warning` of the Device names the skipped
    files with their sizes (the first 10 and a count of the rest) and stays while the files are there. Whiteouts are not affected.

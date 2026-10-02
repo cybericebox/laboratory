@@ -57,6 +57,9 @@ type Container struct {
 	// runtime; they are private to the Runtime implementation.
 	Snapshotter string
 	SnapshotKey string
+	// IDs are the user and group id maps of the container's user namespace (empty without one): the diff of its writable layer
+	// holds host ids, which a snapshot must not keep.
+	IDs snapshot.IDMaps
 }
 
 // Runtime is the container runtime facade.

@@ -39,6 +39,8 @@ type Stats struct {
 	// the policy's MaxFileSize; SkippedTotal counts all of them.
 	Skipped      []SkippedFile
 	SkippedTotal int
+	// Unmapped counts the owner ids that were outside the user namespace map (written as 0).
+	Unmapped int
 }
 
 // SkippedFile is a regular file left out of a snapshot for its size.
@@ -71,6 +73,13 @@ func (s Stats) SkippedWarning(maxFileSize int64) string {
 // policy's MaxFileSize (with the hard links to them). Whiteouts are empty files and
 // never skipped for size. The result is a complete tar.
 func FilterLayer(in io.Reader, out io.Writer, pol Policy) (Stats, error) {
+	return FilterLayerMapped(in, out, pol, IDMaps{})
+}
+
+// FilterLayerMapped is FilterLayer for a container in a user namespace: the diff holds the host ids of the files (the shifted ids of that
+// pod's namespace), and the snapshot must hold the ids inside the container, so every owner is translated through ids. An id outside
+// the map is written as 0 and counted in Stats.Unmapped. Empty maps change nothing.
+func FilterLayerMapped(in io.Reader, out io.Writer, pol Policy, ids IDMaps) (Stats, error) {
 	var st Stats
 	skipped := map[string]bool{}
 	tr := tar.NewReader(in)
@@ -113,6 +122,13 @@ func FilterLayer(in io.Reader, out io.Writer, pol Policy) (Stats, error) {
 		}
 		if pol.MaxEntries > 0 && st.Entries >= pol.MaxEntries {
 			return st, fmt.Errorf("%w: more than %d entries", ErrEntries, pol.MaxEntries)
+		}
+		if len(ids.UID) > 0 || len(ids.GID) > 0 {
+			var n int
+			hdr.Uid, hdr.Gid, n = ids.translate(hdr.Uid, hdr.Gid)
+			st.Unmapped += n
+			delete(hdr.PAXRecords, "uid")
+			delete(hdr.PAXRecords, "gid")
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
 			return st, err

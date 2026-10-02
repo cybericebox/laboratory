@@ -515,7 +515,7 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 		return err
 	}
 	sum := sha256.New()
-	stats, ferr := snapshot.FilterLayer(rc, io.MultiWriter(f, sum), pol)
+	stats, ferr := snapshot.FilterLayerMapped(rc, io.MultiWriter(f, sum), pol, t.c.IDs)
 	rc.Close()
 	if cerr := f.Close(); ferr == nil {
 		ferr = cerr
@@ -535,6 +535,9 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 	}
 	if ferr != nil {
 		return fmt.Errorf("filter layer: %w", ferr)
+	}
+	if stats.Unmapped > 0 {
+		e.Log.Info("owner ids outside the user namespace map were written as 0", "device", t.pod.Device, "pod", t.pod.Pod, "ids", stats.Unmapped)
 	}
 	digest := hex.EncodeToString(sum.Sum(nil))
 

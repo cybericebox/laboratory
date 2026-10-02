@@ -23,6 +23,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 
 	"github.com/cybericebox/laboratory/internal/snapshot"
 )
@@ -80,11 +81,20 @@ func (r *ContainerdRuntime) Inspect(ctx context.Context, id string) (Container, 
 	c := Container{ID: id, ImageRef: info.Image, UpperDir: upper, Snapshotter: info.Snapshotter, SnapshotKey: info.SnapshotKey}
 	if spec, err := cont.Spec(ctx); err == nil && spec.Linux != nil {
 		c.Cgroup = CgroupDir(r.cgroupRoot, spec.Linux.CgroupsPath)
+		c.IDs = snapshot.IDMaps{UID: idMapOf(spec.Linux.UIDMappings), GID: idMapOf(spec.Linux.GIDMappings)}
 	}
 	if c.Cgroup == "" && r.cgroupRoot != "" {
 		c.Cgroup = FindCgroup(r.cgroupRoot, id)
 	}
 	return c, nil
+}
+
+func idMapOf(in []specs.LinuxIDMapping) snapshot.IDMap {
+	var m snapshot.IDMap
+	for _, l := range in {
+		m = append(m, snapshot.IDMapping{ContainerID: l.ContainerID, HostID: l.HostID, Size: l.Size})
+	}
+	return m
 }
 
 // UpperDir returns the overlay upperdir of a snapshot's mounts, "" if none.
