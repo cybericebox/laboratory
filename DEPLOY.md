@@ -101,9 +101,9 @@ helm install laboratory ./charts/laboratory \
 
 What gets installed:
 
-- CRDs (Pools, Tenants, LabGroups, LabGroupClients, LabGroupAccessPolicies, Labs, Devices, Connections, and the internal
+- CRDs (Pools, Tenants, LabGroups, LabGroupClients, LabGroupAccessPolicies, Labs, Devices, Connections, ImagePulls (prepull requests), and the internal
   LabVPNs, LabGateways, LabTrafficReports)
-- `laboratory-system` namespace and the `laboratory-tenants` namespace (enrollment tokens and access keys of tenants)
+- `laboratory-system` namespace, the `laboratory-tenants` namespace (enrollment tokens and access keys of tenants) and the `laboratory-images` namespace (credentials of a prepull request)
 - One `Tenant` per entry of `tenants:`, and `default`
 - Operator (Deployment + RBAC)
 - Node-agent (DaemonSet + RBAC) on every node
@@ -402,8 +402,9 @@ kubectl delete crd \
   connections.laboratory.cybericebox.com \
   labvpns.laboratory.cybericebox.com \
   labgateways.laboratory.cybericebox.com \
-  labtrafficreports.laboratory.cybericebox.com
-kubectl delete namespace laboratory-tenants
+  labtrafficreports.laboratory.cybericebox.com \
+  imagepulls.laboratory.cybericebox.com
+kubectl delete namespace laboratory-tenants laboratory-images
 ```
 
 ---
