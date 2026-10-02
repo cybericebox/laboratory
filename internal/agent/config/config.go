@@ -60,6 +60,8 @@ type Config struct {
 	// DeviceProfiles are the catalog profile IDs this cluster offers (internal/profiles). The agent reports them in
 	// GetFeatures and refuses a lab whose device asks for another.
 	DeviceProfiles []string `env:"AGENT_DEVICE_PROFILES" envSeparator:"," envDefault:"standard,extended"`
+	// ReleaseNamespace is where the operator, node-agents and proxy publish their error events (the chart's release namespace).
+	ReleaseNamespace string `env:"AGENT_RELEASE_NAMESPACE" envDefault:"laboratory-system"`
 	// Limits are the caps on devices, labs and tenants the agent enforces on CreateLabs and reports.
 	Limits limits.Config
 	// BaseDomain is the domain of the lab web endpoints; PublicVPNEndpoint is host:port of WireGuard.

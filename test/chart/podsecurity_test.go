@@ -252,3 +252,50 @@ func TestZotDataDirectoryIsOwnedByAnInitContainer(t *testing.T) {
 		}
 	}
 }
+
+// The error journal needs no log access: the components write Events (the proxy gets that in its ClusterRole), the agent reads those
+// of the release namespace with a read-only Role, and each component knows where to publish.
+func TestErrorJournalPermissionsAndWiring(t *testing.T) {
+	out, err := helmTemplate(t, append(agentSet, "-s", "templates/agent/role-events.yaml", "-s", "templates/proxy/clusterrole.yaml",
+		"-s", "templates/agent/deployment.yaml", "-s", "templates/proxy/deployment.yaml", "-s", "templates/node-agent/daemonset.yaml")...)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	var agentRole, proxyRole map[string]any
+	for _, d := range docs(t, out) {
+		md, _ := d["metadata"].(map[string]any)
+		switch md["name"] {
+		case "laboratory-agent-events":
+			if d["kind"] == "Role" {
+				agentRole = d
+			}
+		case "laboratory-proxy":
+			if d["kind"] == "ClusterRole" {
+				proxyRole = d
+			}
+		}
+	}
+	if agentRole == nil || proxyRole == nil {
+		t.Fatalf("roles: %v %v", agentRole != nil, proxyRole != nil)
+	}
+	for _, r := range rulesOf(t, agentRole) {
+		if !has(r.Resources, "events") || has(r.Verbs, "create") || has(r.Verbs, "update") || has(r.Verbs, "delete") || !has(r.Verbs, "list") {
+			t.Errorf("the agent only reads events: %+v", r)
+		}
+	}
+	creates := false
+	for _, r := range rulesOf(t, proxyRole) {
+		creates = creates || (has(r.Resources, "events") && has(r.Verbs, "create") && has(r.Verbs, "patch"))
+	}
+	if !creates {
+		t.Error("the proxy publishes its errors as events")
+	}
+	for _, want := range []string{"name: AGENT_RELEASE_NAMESPACE", "name: ERROR_JOURNAL_NAMESPACE"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	if n := strings.Count(out, "name: ERROR_JOURNAL_NAMESPACE"); n != 3 {
+		t.Errorf("l7, demux and the node-agent each know where to publish: %d", n)
+	}
+}

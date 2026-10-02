@@ -17,6 +17,7 @@ limitations under the License.
 package manager
 
 import (
+	"github.com/cybericebox/laboratory/internal/errorlog"
 	_ "github.com/cybericebox/laboratory/pkg/runtime"
 
 	"crypto/tls"
@@ -98,7 +99,8 @@ func Run() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	journalLog, journal := errorlog.Setup("operator", errorlog.Instance(), zap.New(zap.UseFlagOptions(&opts)))
+	ctrl.SetLogger(journalLog)
 
 	cfg, err := operator.LoadConfig()
 	if err != nil {
@@ -416,7 +418,9 @@ func Run() {
 	}
 
 	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	ctx := ctrl.SetupSignalHandler()
+	errorlog.Start(ctx, journal, restCfg, cfg.OperatorNamespace, ctrl.Log.WithName("error-journal"))
+	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}

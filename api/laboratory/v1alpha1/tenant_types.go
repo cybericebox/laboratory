@@ -11,6 +11,12 @@ type TenantSpec struct {
 	// Persistence is what the tenant may do with device state persistence.
 	// +optional
 	Persistence TenantPersistence `json:"persistence,omitempty"`
+	// ReceivesLabErrors lets the agent send this tenant the laboratory's own errors (operator, node-agent, proxy, demux, VPN and
+	// gateway pods) in MonitoringUpdate.errors. They are platform-wide and carry no tenant data, but a tenant that is only a customer
+	// of the cluster has no business with them: set it for the platform's own backend only. A tenant's failed lab deploys are always
+	// sent, whatever this says.
+	// +optional
+	ReceivesLabErrors bool `json:"receivesLabErrors,omitempty"`
 	// Quota caps the CPU and memory requests of the tenant's running pods.
 	// Absent: no limit.
 	// +optional

@@ -758,6 +758,8 @@ cert-manager:
 #         allowed: true         # may ask for device persistence (needs devices.statePersistence.enabled)
 #         writeQuota: 256Mi     # optional; capped by devices.statePersistence.writeQuota
 #         maxFileSize: 128Mi    # optional; capped by devices.statePersistence.maxFileSize
+#       receivesLabErrors: true # the platform's own backend: it gets the laboratory's own errors (operator, node-agent, proxy,
+#                               #   demux, VPN and gateway pods) in the error journal; leave it off for a customer tenant
 #       quota:                  # optional; absent = no limit
 #         cpu: "50%"            # sum of the CPU requests of its pods: "32", "500m" or a percentage
 #         memory: "40%"         #   of what the lab nodes allocate

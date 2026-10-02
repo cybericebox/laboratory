@@ -52,6 +52,8 @@ spec:
               value: /tls/tls.crt
             - name: AGENT_TLS_KEY
               value: /tls/tls.key
+            - name: AGENT_RELEASE_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
             - name: AGENT_ID
               value: {{ .Values.agent.id | quote }}
             - name: AGENT_TENANT_STATUS_INTERVAL

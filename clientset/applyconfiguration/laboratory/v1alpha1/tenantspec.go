@@ -26,6 +26,11 @@ package v1alpha1
 type TenantSpecApplyConfiguration struct {
 	// Persistence is what the tenant may do with device state persistence.
 	Persistence *TenantPersistenceApplyConfiguration `json:"persistence,omitempty"`
+	// ReceivesLabErrors lets the agent send this tenant the laboratory's own errors (operator, node-agent, proxy, demux, VPN and
+	// gateway pods) in MonitoringUpdate.errors. They are platform-wide and carry no tenant data, but a tenant that is only a customer
+	// of the cluster has no business with them: set it for the platform's own backend only. A tenant's failed lab deploys are always
+	// sent, whatever this says.
+	ReceivesLabErrors *bool `json:"receivesLabErrors,omitempty"`
 	// Quota caps the CPU and memory requests of the tenant's running pods.
 	// Absent: no limit.
 	Quota *TenantQuotaApplyConfiguration `json:"quota,omitempty"`
@@ -44,6 +49,14 @@ func TenantSpec() *TenantSpecApplyConfiguration {
 // If called multiple times, the Persistence field is set to the value of the last call.
 func (b *TenantSpecApplyConfiguration) WithPersistence(value *TenantPersistenceApplyConfiguration) *TenantSpecApplyConfiguration {
 	b.Persistence = value
+	return b
+}
+
+// WithReceivesLabErrors sets the ReceivesLabErrors field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ReceivesLabErrors field is set to the value of the last call.
+func (b *TenantSpecApplyConfiguration) WithReceivesLabErrors(value bool) *TenantSpecApplyConfiguration {
+	b.ReceivesLabErrors = &value
 	return b
 }
 

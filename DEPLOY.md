@@ -921,6 +921,33 @@ denied to everyone but the writer):
   solutions) from any other process that can reach it. A process on a node can still reach the forwarder on that node's loopback: the node-agent is the
   trusted path.
 
+### The laboratory's error journal
+
+`MonitoringUpdate.errors` (an `ErrorJournal`) carries what broke in the laboratory since the last message of the stream (the first message covers the last ten
+minutes), for the platform's error journal (see `docs/specs/error-journal.md`):
+
+- **`components`**: per component instance (`operator`, `node-agent` per node, `l7-proxy`, `wg-demux`, `vpn`, `gateway`, `agent`) the error groups since the
+  last message: a stable `fingerprint` (component, error path, normalized text), the `kind` (the first name of the logger: `reconcile`, `ovs`, `registry`, ...),
+  the `normalized` message (numbers, ids, names, hosts and addresses replaced), the `count`, first and last time, and up to three recent `samples`. Only for a
+  tenant with `Tenant.spec.receivesLabErrors` (chart `tenants.<name>.receivesLabErrors: true`: set it for the platform's own backend, not for a customer).
+- **`deploy_failures`**: the failed deploys of the **subscriber's own** labs, with a reason code (`ImagePull`, `CrashLoop`, `Unschedulable`, `StartupTimeout`,
+  `DoesNotFit` for devices and the group's VPN and gateway pods; `LabFailed` and `LabError` for a lab in that phase without a device to blame), the group and lab ids, and a
+  redacted message. Each failure is sent once, and again if its reason changes.
+- **`client_cert_not_after_unix`**: the expiry of the connection's client certificate, with the first message, when it changes and about hourly.
+
+**How it is collected, without log access.** Every component counts its error-level log lines (the agent its error lines) in memory by fingerprint and publishes the
+groups that changed, about every 30 s, as a Kubernetes Event (`reason: ErrorJournal`, label `cybericebox.com/error-journal`, one event per fingerprint, updated in place;
+the API server keeps them for an hour). The operator, the node-agents and the proxy publish into the release namespace, the VPN and gateway pods into their group
+namespace. The agent reads the release namespace (a read-only Role `laboratory-agent-events`) and every group namespace (the events permission it already has there),
+turns the cumulative totals into deltas, and keeps a bounded ring. The permissions added for this: the agent's read-only Role on events in the release namespace, and
+`events` create/patch in the proxy's ClusterRole (the operator, node-agent, VPN and gateway already could). It is best effort: a cluster that refuses the events loses the
+journal, nothing else.
+
+**What never leaves.** Every message is redacted where it is written and again where it is read: private keys, JWTs, bearer tokens, credentials in URLs, values of
+`password`/`token`/`secret`-like keys, email addresses, IPv4, IPv6 and MAC addresses, uuids, hashes, host names, object names (`namespace/name`, group namespaces), and
+any quoted string (they hold tenant and group names); a message is cut to 300 characters. The fingerprint is made from the further normalized text, so
+occurrences that differ only in numbers or names group together. Nothing names a tenant or a participant.
+
 ### Service pods and images
 
 The service pods of the laboratory are hardened without a setting:

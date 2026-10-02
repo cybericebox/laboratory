@@ -173,7 +173,9 @@ func (h *Handler) Monitoring(request *protobuf.MonitoringRequest, stream protobu
 	// The tenant's capacity goes out with the first message and again whenever it changed.
 	var lastCapacity *protobuf.CapacityResponse
 	var lastFeatures *protobuf.FeaturesResponse
+	errStream := newErrorStream()
 	emit := func(u *protobuf.MonitoringUpdate) error {
+		h.fillErrors(stream.Context(), errStream, u)
 		if f, err := h.tenantFeatures(stream.Context()); err == nil && !proto.Equal(f, lastFeatures) {
 			u.Features, lastFeatures = f, f
 		}
@@ -212,6 +214,15 @@ func (h *Handler) Monitoring(request *protobuf.MonitoringRequest, stream protobu
 			return err
 		}
 	}
+
+	// New errors of the laboratory's components do not change any record, so they get their own tick: when the journal has
+	// something this stream's tenant may see (or the certificate expiry is due again), an update goes out carrying it.
+	errEvery := period
+	if errEvery < time.Second {
+		errEvery = time.Second
+	}
+	errTick := time.NewTicker(errEvery)
+	defer errTick.Stop()
 
 	heartbeat := time.NewTimer(monitoringHeartbeatPeriod)
 	defer heartbeat.Stop()
@@ -254,6 +265,12 @@ func (h *Handler) Monitoring(request *protobuf.MonitoringRequest, stream protobu
 			}
 			last = time.Now()
 			resetMonitoringTimer(heartbeat, monitoringHeartbeatPeriod)
+		case <-errTick.C:
+			if h.errorsDue(stream.Context(), errStream) {
+				if err := emit(h.monitoringUpdateAt(&protobuf.MonitoringUpdate{}, processed, false)); err != nil {
+					return err
+				}
+			}
 		case <-heartbeat.C:
 			// A quiet stream still reports how far it has processed, so the
 			// subscriber's resume position stays inside the journal window.

@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/cybericebox/laboratory/internal/errorlog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -41,7 +42,8 @@ func init() {
 }
 
 func Run() {
-	ctrl.SetLogger(zap.New())
+	journalLog, journal := errorlog.Setup("l7-proxy", errorlog.Instance(), zap.New())
+	ctrl.SetLogger(journalLog)
 	log := ctrl.Log.WithName("proxy-l7")
 
 	cfg, err := proxy.LoadL7Config()
@@ -190,6 +192,7 @@ func Run() {
 	defer cancel()
 
 	log.Info("starting l7 proxy", "listen", cfg.Listen)
+	errorlog.Start(ctx, journal, ctrl.GetConfigOrDie(), errorlog.Namespace("laboratory-system"), ctrl.Log.WithName("error-journal"))
 	if err := mgr.Start(ctx); err != nil {
 		log.Error(err, "manager error")
 		os.Exit(1)

@@ -47,6 +47,9 @@ type Handler struct {
 	// labSelector and labTolerations describe the nodes lab pods run on (percentage quotas).
 	labSelector    map[string]string
 	labTolerations []corev1.Toleration
+	// errors is the laboratory's own error journal (see errorjournal.go); errJournal says where its events are.
+	errors     *errorCollector
+	errJournal ErrorJournalConfig
 	// features are the platform's choices GetFeatures reports; featCache keeps each tenant's answer for a few seconds.
 	features  Features
 	featCache featuresCache

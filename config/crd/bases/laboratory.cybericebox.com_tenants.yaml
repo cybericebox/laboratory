@@ -108,6 +108,13 @@ spec:
                   memory:
                     type: string
                 type: object
+              receivesLabErrors:
+                description: |-
+                  ReceivesLabErrors lets the agent send this tenant the laboratory's own errors (operator, node-agent, proxy, demux, VPN and
+                  gateway pods) in MonitoringUpdate.errors. They are platform-wide and carry no tenant data, but a tenant that is only a customer
+                  of the cluster has no business with them: set it for the platform's own backend only. A tenant's failed lab deploys are always
+                  sent, whatever this says.
+                type: boolean
             type: object
           status:
             description: TenantStatus is the observed load of the tenant, refreshed

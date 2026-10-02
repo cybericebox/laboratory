@@ -3,6 +3,7 @@
 package nodeagentd
 
 import (
+	"github.com/cybericebox/laboratory/internal/errorlog"
 	_ "github.com/cybericebox/laboratory/pkg/runtime"
 
 	"context"
@@ -37,7 +38,8 @@ func init() {
 }
 
 func Run() {
-	ctrl.SetLogger(zap.New())
+	journalLog, journal := errorlog.Setup("node-agent", errorlog.Instance(), zap.New())
+	ctrl.SetLogger(journalLog)
 	log := ctrl.Log.WithName("node-agent")
 
 	cfg, err := nodeagent.LoadConfig()
@@ -162,6 +164,7 @@ func Run() {
 	}()
 
 	log.Info("starting node-agent", "node", cfg.NodeName, "bridge", cfg.Bridge)
+	errorlog.Start(ctx, journal, ctrl.GetConfigOrDie(), errorlog.Namespace("laboratory-system"), ctrl.Log.WithName("error-journal"))
 	if err := mgr.Start(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "manager error: %v\n", err)
 		os.Exit(1)

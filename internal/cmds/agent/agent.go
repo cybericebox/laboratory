@@ -16,10 +16,14 @@ import (
 
 	"github.com/cybericebox/laboratory/internal/agent/config"
 	grpcserver "github.com/cybericebox/laboratory/internal/agent/grpc"
+	"github.com/cybericebox/laboratory/internal/errorlog"
 	"github.com/cybericebox/laboratory/internal/profiles"
 )
 
 func Run() {
+	// The agent logs with the standard logger: its error lines are counted into its own journal.
+	journal := errorlog.New("agent", errorlog.Instance())
+	log.SetOutput(errorlog.NewLineWriter(journal, os.Stderr))
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("load config: %v", err)
@@ -55,6 +59,8 @@ func Run() {
 		log.Fatalf("%v", err)
 	}
 	h.SetFeatures(feat)
+	h.SetErrorJournal(grpcserver.ErrorJournalConfig{ReleaseNamespace: cfg.ReleaseNamespace, Self: journal})
+	go h.RunErrorJournal(context.Background())
 	if err := cfg.GroupPods.Validate(); err != nil {
 		log.Fatalf("%v", err)
 	}

@@ -1,0 +1,34 @@
+{{- if .Values.agent.enabled }}
+{{- /*
+The error journal: the operator, the node-agents and the proxy publish their aggregated errors as Events in the release namespace
+(they already may create events; the proxy gets that right in its ClusterRole), and the agent reads them to put in MonitoringUpdate.errors.
+The agent reads the events of the VPN and gateway pods in the group namespaces with the role it already has there. Read only, this namespace only.
+*/ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: laboratory-agent-events
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [ "" ]
+    resources: [ events ]
+    verbs: [ get, list, watch ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: laboratory-agent-events
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: laboratory-agent-events
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-agent
+    namespace: {{ .Values.agent.namespace }}
+{{- end }}

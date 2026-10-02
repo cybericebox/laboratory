@@ -586,6 +586,9 @@ message MonitoringUpdate {
   // resources. State records like clients and policies, so a fresh snapshot
   // after a reconnect re-sends them; consumers apply them as cumulative values.
   repeated TrafficReport traffic = 16;
+  // The laboratory's own errors and the failed lab deploys of the subscriber's tenant; see ErrorJournal. Sent with the first
+  // message and then as deltas; absent when there is nothing new.
+  ErrorJournal errors = 18;
   // Identifies this agent PROCESS. Sequences are monotonic within one epoch only; a changed
   // epoch means the agent restarted and a resume is impossible (a snapshot follows).
   string agent_epoch = 20;
@@ -761,6 +764,58 @@ message EndpointsFeature {
 message CertificateFeature {
   int64 not_after_unix = 1;       // 0 without a client certificate (mTLS off)
   int64 issued_ttl_seconds = 2;   // the lifetime of certificates Enroll / RenewCertificate issue now
+}
+
+// ErrorJournal is what broke in the laboratory since the last message of this stream (the first message covers the last ten
+// minutes). The counts are deltas. Nothing here names a tenant, a participant, an address or a secret: every message is
+// redacted where it is written and again where it is read.
+message ErrorJournal {
+  int64 window_start_unix_ms = 1;
+  int64 window_end_unix_ms = 2;
+  // The laboratory's own components. Only for a tenant with Tenant.spec.receivesLabErrors (the platform's backend); empty for others.
+  repeated ComponentErrors components = 3;
+  // Lab deploys of THIS tenant that failed, with a reason code.
+  repeated DeployFailure deploy_failures = 4;
+  // not_after of the client certificate of this connection (as features.certificate.not_after_unix), so that the journal can warn
+  // before it expires. Sent with the first message, when it changes, and about hourly.
+  int64 client_cert_not_after_unix = 5;
+}
+
+// ComponentErrors are the errors of one component instance.
+message ComponentErrors {
+  // "operator" | "node-agent" | "l7-proxy" | "wg-demux" | "vpn" | "gateway" | "agent"
+  string component = 1;
+  // The node name (node-agent) or the pod name (replicas); never an address.
+  string instance = 2;
+  repeated ErrorGroup groups = 3;
+}
+
+// ErrorGroup is one distinct error: the occurrences that read the same after normalizing.
+message ErrorGroup {
+  // hex(sha256(component, kind, normalized))[:8]: stable across restarts and replicas of the same component.
+  string fingerprint = 1;
+  // The error path: reconcile, ovs, registry, cni, grpc, tls, panic, ... (the first name of the logger).
+  string kind = 2;
+  // The message with numbers, ids, names, hosts and addresses replaced (<n>, <id>, <obj>, <host>, <ip>); secrets removed.
+  string normalized = 3;
+  // Occurrences in the window.
+  int64 count = 4;
+  int64 first_unix_ms = 5;
+  int64 last_unix_ms = 6;
+  // Up to three recent messages, redacted, at most 300 characters each.
+  repeated string samples = 7;
+}
+
+// DeployFailure is a lab (or a group's VPN or gateway pod) of the tenant that did not start.
+message DeployFailure {
+  string lab_group = 1;   // the platform's ids (as in ItemRef), not names of images or people
+  string lab = 2;         // empty for a pod of the group itself
+  // A stable code: ImagePull, CrashLoop, Unschedulable, StartupTimeout, DoesNotFit (device and group pods), or LabFailed / LabError
+  // (a lab whose phase is Failed or Error without a device failure to blame).
+  string reason_code = 3;
+  string device = 4;      // the device name (the platform's, from the topology), or "vpn" / "gateway"
+  string message = 5;     // redacted, at most 300 characters
+  int64 at_unix_ms = 6;
 }
 
 message PrewarmImagesRequest {

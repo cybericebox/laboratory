@@ -67,6 +67,8 @@ spec:
       value: {{ .Values.proxy.l7.liveMaxLifetime | quote }}
     - name: LIVE_CHECK_INTERVAL
       value: {{ .Values.proxy.l7.liveCheckInterval | quote }}
+    - name: ERROR_JOURNAL_NAMESPACE
+      value: {{ .Release.Namespace | quote }}
     - name: READ_HEADER_TIMEOUT
       value: {{ .Values.proxy.l7.readHeaderTimeout | quote }}
     - name: READ_TIMEOUT
@@ -116,6 +118,8 @@ spec:
       value: {{ printf ":%d" (.Values.proxy.wg.listenPort | int) | quote }}
     - name: VPN_SERVICE_PORT
       value: {{ .Values.operator.vpnServicePort | quote }}
+    - name: ERROR_JOURNAL_NAMESPACE
+      value: {{ .Release.Namespace | quote }}
     - name: DEMUX_MAX_ENTRIES
       value: {{ .Values.proxy.wg.limits.maxEntries | quote }}
     - name: DEMUX_MAX_ENTRIES_PER_SOURCE

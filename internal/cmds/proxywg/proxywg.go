@@ -3,6 +3,7 @@
 package proxywg
 
 import (
+	"github.com/cybericebox/laboratory/internal/errorlog"
 	_ "github.com/cybericebox/laboratory/pkg/runtime"
 
 	"context"
@@ -31,7 +32,8 @@ func init() {
 }
 
 func Run() {
-	ctrl.SetLogger(zap.New())
+	journalLog, journal := errorlog.Setup("wg-demux", errorlog.Instance(), zap.New())
+	ctrl.SetLogger(journalLog)
 	log := ctrl.Log.WithName("proxy-wg")
 
 	cfg, err := proxy.LoadWGConfig()
@@ -84,6 +86,7 @@ func Run() {
 	go dmx.Run(stop)
 
 	log.Info("starting wg proxy", "udp", cfg.ListenAddr)
+	errorlog.Start(ctx, journal, ctrl.GetConfigOrDie(), errorlog.Namespace("laboratory-system"), ctrl.Log.WithName("error-journal"))
 	if err := mgr.Start(ctx); err != nil {
 		log.Error(err, "manager error")
 		os.Exit(1)

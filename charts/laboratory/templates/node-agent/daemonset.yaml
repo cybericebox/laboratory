@@ -161,6 +161,8 @@ spec:
               value: {{ .Values.nodeAgent.criSocket | quote }}
             - name: DEVICE_PLUGIN_DIR
               value: {{ .Values.nodeAgent.devicePlugin.dir | quote }}
+            - name: ERROR_JOURNAL_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
             - name: TUN_CHECK_PATH
               value: /sys/class/misc/tun/dev
             - name: TUN_SLOTS
