@@ -240,7 +240,7 @@ func (s *Scheduler) load(ctx context.Context) (*clusterView, error) {
 		g := &groups.Items[i]
 		snap.groups = append(snap.groups, g)
 		if g.Spec.Suspended {
-			snap.suspended[laboratoryv1alpha1.LabGroupNamespace(g.Name)] = true
+			snap.suspended[laboratoryv1alpha1.LabGroupNamespaceOf(g)] = true
 		}
 	}
 	var tenants laboratoryv1alpha1.TenantList
@@ -517,7 +517,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 		for _, name := range groupPodNames(g) {
 			key := "group/" + g.Name + "/" + name
 			p := &schedPod{key: key, name: name, kind: kindGroupPod, ref: name, tenant: names.TenantOf(g.Labels),
-				lookup: laboratoryv1alpha1.LabGroupNamespace(g.Name) + "/" + name}
+				lookup: laboratoryv1alpha1.LabGroupNamespaceOf(g) + "/" + name}
 			if need := s.groupPodNeed(name); need != nil {
 				p.need = amount{cpu: need.Cpu().MilliValue(), mem: need.Memory().Value()}
 			}

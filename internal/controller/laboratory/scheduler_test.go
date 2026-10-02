@@ -279,6 +279,7 @@ func TestSchedulerSuspendedGroupsAndDeletingLabsAreIgnored(t *testing.T) {
 	f.create(&laboratoryv1alpha1.LabGroup{
 		ObjectMeta: metav1.ObjectMeta{Name: "ns-a", UID: "uid-grp-a"},
 		Spec:       laboratoryv1alpha1.LabGroupSpec{Suspended: true},
+		Status:     laboratoryv1alpha1.LabGroupStatus{Namespace: "ns-a"}, // a group of the old naming: its namespace is in the status
 	})
 	f.tick()
 	f.wantStates("a/p1=Q b/p1=S")
@@ -757,7 +758,7 @@ var _ = resource.MustParse
 // only the queued ones.
 func TestEnsureGroupScheduling(t *testing.T) {
 	f := newSchedFixture(t, schedCfg())
-	lg := &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: "team", UID: "uid-team"}}
+	lg := &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: "team", UID: "uid-team"}, Status: laboratoryv1alpha1.LabGroupStatus{Namespace: "team"}}
 	f.create(lg)
 	f.create(&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: "team"}})
 	r := &LabGroupReconciler{Client: f.c, Scheme: f.c.Scheme(), Scheduled: true}

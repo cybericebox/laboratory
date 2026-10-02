@@ -9,8 +9,12 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
+
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -205,10 +209,35 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func ns(groupID string) string { return GroupNamespace(groupID) }
 
-// GroupNamespace is the namespace of a LabGroup the platform calls groupID: the group's custom
-// resource is named after the id (encoded when the id is not a valid name), and the namespace is its name.
+// GroupNamespace is the namespace of a LabGroup the platform calls groupID: the group's custom resource is named
+// after the id (encoded when the id is not a valid name). The namespace is the one in the group's status (a group
+// created before the namespace prefix keeps its old one), else the name a new group gets.
 func GroupNamespace(groupID string) string {
-	return laboratoryv1alpha1.LabGroupNamespace(names.EncodeName(groupID))
+	groupNamespaceMu.RLock()
+	r := groupReader
+	groupNamespaceMu.RUnlock()
+	name := names.EncodeName(groupID)
+	if r != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var g laboratoryv1alpha1.LabGroup
+		if err := r.Get(ctx, types.NamespacedName{Name: name}, &g); err == nil {
+			return laboratoryv1alpha1.LabGroupNamespaceOf(&g)
+		}
+	}
+	return laboratoryv1alpha1.LabGroupNamespace(name)
+}
+
+var (
+	groupNamespaceMu sync.RWMutex
+	groupReader      client.Reader
+)
+
+// UseGroupReader makes GroupNamespace read the LabGroup (from the proxy's cache) to find its namespace.
+func UseGroupReader(r client.Reader) {
+	groupNamespaceMu.Lock()
+	groupReader = r
+	groupNamespaceMu.Unlock()
 }
 
 // countingWriter records how many body bytes went to the client and whether

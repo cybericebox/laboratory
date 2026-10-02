@@ -829,6 +829,18 @@ The gateway forwards to the **public internet only**:
 - Not done here: a sandbox RuntimeClass (gVisor, Kata) for hostile images, and Pod Security Admission on the group namespaces (the lab pods need NET_ADMIN,
   which `baseline` allows, but the `net` preset adds more; the admission policy below is the guard that matters for the operator).
 
+### Namespaces of the lab groups
+
+The namespace of a **new** LabGroup is `lg-<name, at most 40 characters>-<8 hex of the SHA-256 of the whole name>` (at most 52 characters), never the bare group
+name. The group name is chosen by a tenant, so without the prefix it could equal an existing namespace; with it, it never can (the CRD also refuses the
+names of the system namespaces outright). On top of that the operator **never adopts or deletes a namespace without the group's label**
+`laboratory.cybericebox.com/group=<group>`: a namespace that exists under the name a group would get, without that label, is refused (the group stays
+unprovisioned) and, when the group is deleted, left exactly as it is. The operator puts the label on every namespace it creates.
+
+Migration: the namespace is recorded in `LabGroup.status.namespace`, and everything (the operator, the demux, the L7 proxy, the agent) uses that. A group created
+before the prefix keeps the namespace it has (its bare name, with the label the operator always set) and works as before; only new groups get the prefixed one.
+Nothing is renamed. Scripts that derive the namespace from the group name must read `status.namespace` instead.
+
 ### Service pods and images
 
 The service pods of the laboratory are hardened without a setting:

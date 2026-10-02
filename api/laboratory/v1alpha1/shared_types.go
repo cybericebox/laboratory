@@ -1,10 +1,37 @@
 package v1alpha1
 
-// LabGroupNamespace returns the Kubernetes namespace for a LabGroup.
-// The namespace is identical to the group name — no prefix — so users can
-// derive it trivially: group "team-alpha" → namespace "team-alpha".
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
+)
+
+// LabGroupNamespacePrefix starts the name of the namespace of every NEW LabGroup. A group name is chosen by a
+// tenant; with a fixed prefix it can never equal a namespace that already exists (kube-system, laboratory-system,
+// laboratory-tenants, another tenant's group...), so the operator never adopts or deletes a foreign namespace.
+const LabGroupNamespacePrefix = "lg-"
+
+// LabGroupNamespace returns the namespace the operator creates for a NEW LabGroup of this name:
+// "lg-" + the name (shortened to 40 characters) + "-" + 8 hex digits of the SHA-256 of the whole name, at most 52
+// characters. Groups created before the prefix existed keep the namespace in their status (see LabGroupNamespaceOf).
 func LabGroupNamespace(groupName string) string {
-	return groupName
+	sum := sha256.Sum256([]byte(groupName))
+	short := groupName
+	if len(short) > 40 {
+		short = short[:40]
+	}
+	short = strings.TrimRight(short, "-")
+	return LabGroupNamespacePrefix + short + "-" + hex.EncodeToString(sum[:4])
+}
+
+// LabGroupNamespaceOf is the namespace of an existing LabGroup: the one recorded in its status (so a group that
+// was created under the old naming, where the namespace was the bare group name, keeps working), else the name a
+// new group gets.
+func LabGroupNamespaceOf(lg *LabGroup) string {
+	if lg.Status.Namespace != "" {
+		return lg.Status.Namespace
+	}
+	return LabGroupNamespace(lg.Name)
 }
 
 // Phase is the lifecycle phase of a resource.

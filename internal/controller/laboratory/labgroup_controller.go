@@ -127,7 +127,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 
-	ns := laboratoryv1alpha1.LabGroupNamespace(lg.Name)
+	ns := laboratoryv1alpha1.LabGroupNamespaceOf(&lg)
 	clientSubnet, err := netutil.SubnetForIndex(r.VPNBaseNetwork, labSubnetPrefixLen, 0)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("derive VPN client subnet: %w", err)
@@ -353,7 +353,26 @@ func (r *LabGroupReconciler) vpnReadyState(ctx context.Context, ns string) (bool
 }
 
 func (r *LabGroupReconciler) reconcileDelete(ctx context.Context, lg *laboratoryv1alpha1.LabGroup) (ctrl.Result, error) {
-	ns := laboratoryv1alpha1.LabGroupNamespace(lg.Name)
+	ns := laboratoryv1alpha1.LabGroupNamespaceOf(lg)
+
+	// Never touch a namespace this group did not create: one that exists without our label (a system namespace, another
+	// group's, anything made by hand) is left exactly as it is, and the group is simply let go.
+	var existing corev1.Namespace
+	if err := r.Get(ctx, types.NamespacedName{Name: ns}, &existing); err != nil {
+		if errors.IsNotFound(err) {
+			controllerutil.RemoveFinalizer(lg, names.FinalizerLabGroup)
+			return ctrl.Result{}, r.Update(ctx, lg)
+		}
+		return ctrl.Result{}, err
+	}
+	if !ownsNamespace(&existing, lg) {
+		ctrl.LoggerFrom(ctx).Info("the namespace of the group is not the group's: leaving it alone", "namespace", ns)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(lg, corev1.EventTypeWarning, "ForeignNamespace", "namespace %s does not carry this group's label: left untouched", ns)
+		}
+		controllerutil.RemoveFinalizer(lg, names.FinalizerLabGroup)
+		return ctrl.Result{}, r.Update(ctx, lg)
+	}
 
 	// Drain Labs and LabGroupClients BEFORE deleting the namespace. Both carry
 	// finalizers cleaned up by the per-group VPN/gateway pods; deleting the
@@ -415,9 +434,24 @@ func (r *LabGroupReconciler) drainGroupWorkloads(ctx context.Context, ns string)
 	return len(labs.Items) == 0 && len(clients.Items) == 0, nil
 }
 
+// ownsNamespace says whether the namespace was made for this group: it carries the group's label. The operator puts the
+// label on every namespace it creates and works only in labelled ones (the admission policy says the same).
+func ownsNamespace(ns *corev1.Namespace, lg *laboratoryv1alpha1.LabGroup) bool {
+	return ns.Labels[names.LabelGroup] == lg.Name
+}
+
+// errForeignNamespace is a namespace that exists but is not this group's.
+var errForeignNamespace = fmt.Errorf("the namespace exists and is not this group's")
+
+// ensureNamespace creates the namespace of a group, labelled with the group. It never adopts a namespace that exists
+// without the group's label: a tenant picks the group name, and must not be able to point the operator at kube-system
+// or at another group's namespace.
 func (r *LabGroupReconciler) ensureNamespace(ctx context.Context, ns string, owner *laboratoryv1alpha1.LabGroup) error {
 	var existing corev1.Namespace
 	if err := r.Get(ctx, types.NamespacedName{Name: ns}, &existing); err == nil {
+		if !ownsNamespace(&existing, owner) {
+			return fmt.Errorf("%w: %s", errForeignNamespace, ns)
+		}
 		return nil
 	} else if !errors.IsNotFound(err) {
 		return err

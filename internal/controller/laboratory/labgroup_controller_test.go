@@ -120,19 +120,19 @@ var _ = Describe("LabGroup suspension", func() {
 			}
 			var vpn, gateway appsv1.Deployment
 			var vpnService corev1.Service
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: name}, &vpnService); err != nil || len(vpnService.Spec.Ports) != 1 || vpnService.Spec.Ports[0].Protocol != corev1.ProtocolUDP || vpnService.Spec.Ports[0].Port != 51820 {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: laboratoryv1alpha1.LabGroupNamespace(name)}, &vpnService); err != nil || len(vpnService.Spec.Ports) != 1 || vpnService.Spec.Ports[0].Protocol != corev1.ProtocolUDP || vpnService.Spec.Ports[0].Port != 51820 {
 				return false
 			}
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: name}, &vpn); err != nil {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: laboratoryv1alpha1.LabGroupNamespace(name)}, &vpn); err != nil {
 				return false
 			}
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "gateway", Namespace: name}, &gateway); err != nil {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "gateway", Namespace: laboratoryv1alpha1.LabGroupNamespace(name)}, &gateway); err != nil {
 				return false
 			}
 			return current.Status.Suspended && current.Status.VPN.ClientSubnet == "10.8.0.0/24" && vpn.Spec.Replicas != nil && *vpn.Spec.Replicas == 1 && gateway.Spec.Replicas != nil && *gateway.Spec.Replicas == 1
 		}, 15*time.Second, 250*time.Millisecond).Should(BeTrue())
 		var vpn appsv1.Deployment
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: name}, &vpn)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: laboratoryv1alpha1.LabGroupNamespace(name)}, &vpn)).To(Succeed())
 		vpn.Status.Replicas = 1
 		vpn.Status.ReadyReplicas = 1
 		Expect(k8sClient.Status().Update(ctx, &vpn)).To(Succeed())
@@ -159,10 +159,10 @@ var _ = Describe("LabGroup suspension", func() {
 				return false
 			}
 			var vpn, gateway appsv1.Deployment
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: name}, &vpn); err != nil {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: laboratoryv1alpha1.LabGroupNamespace(name)}, &vpn); err != nil {
 				return false
 			}
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "gateway", Namespace: name}, &gateway); err != nil {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "gateway", Namespace: laboratoryv1alpha1.LabGroupNamespace(name)}, &gateway); err != nil {
 				return false
 			}
 			return vpn.Spec.Replicas != nil && *vpn.Spec.Replicas == 0 && gateway.Spec.Replicas != nil && *gateway.Spec.Replicas == 1 && !current.Status.VPN.Registered && !current.Status.Suspended && current.Status.VPN.ClientSubnet == "10.8.0.0/24"
@@ -241,7 +241,7 @@ var _ = Describe("LabGroup suspension", func() {
 			}
 			for _, deploymentName := range []string{"vpn", "gateway"} {
 				var deployment appsv1.Deployment
-				if err := k8sClient.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: name}, &deployment); err != nil || deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 1 {
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: laboratoryv1alpha1.LabGroupNamespace(name)}, &deployment); err != nil || deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 1 {
 					return false
 				}
 			}
@@ -305,7 +305,7 @@ var _ = Describe(
 				Eventually(
 					func(g Gomega) {
 						var pdb policyv1.PodDisruptionBudget
-						g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: groupDisruptionBudgetName, Namespace: "pdb-labgroup"}, &pdb)).To(Succeed())
+						g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: groupDisruptionBudgetName, Namespace: laboratoryv1alpha1.LabGroupNamespace("pdb-labgroup")}, &pdb)).To(Succeed())
 						g.Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
 						g.Expect(pdb.Spec.MaxUnavailable.IntValue()).To(Equal(0))
 						g.Expect(pdb.Spec.Selector).NotTo(BeNil())

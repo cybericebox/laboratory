@@ -94,6 +94,8 @@ func Run() {
 	// the web Service of every exposed device: the host label is the Service
 	// name, looked up in the namespace of the token's own group.
 	attribute := l7.ServiceAttribution(mgr.GetClient())
+	// The namespace of a group is read from the group (its status), so groups created before the namespace prefix keep working.
+	l7.UseGroupReader(mgr.GetClient())
 	// The group access policy is the same one the VPN enforces, and the client
 	// is the same LabGroupClient: it must exist in the token's group and the
 	// policy must allow it the lab, so blocking a client blocks the VPN and the

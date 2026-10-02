@@ -36,7 +36,7 @@ func (r *LabGroupReconciler) ensureGroupScheduling(ctx context.Context, lg *labo
 	if !r.Scheduled {
 		return nil
 	}
-	ns := laboratoryv1alpha1.LabGroupNamespace(lg.Name)
+	ns := laboratoryv1alpha1.LabGroupNamespaceOf(lg)
 	now := metav1.Now()
 	added := false
 	for _, name := range groupPodNames(lg) {
@@ -75,7 +75,7 @@ func (r *LabGroupReconciler) syncPodLabels(ctx context.Context, lg *laboratoryv1
 	desired := userLabels(lg.Labels)
 	for _, app := range []string{"vpn", "gateway"} {
 		var pods corev1.PodList
-		if err := r.List(ctx, &pods, client.InNamespace(laboratoryv1alpha1.LabGroupNamespace(lg.Name)), client.MatchingLabels{"app": app}); err != nil {
+		if err := r.List(ctx, &pods, client.InNamespace(laboratoryv1alpha1.LabGroupNamespaceOf(lg)), client.MatchingLabels{"app": app}); err != nil {
 			return err
 		}
 		for i := range pods.Items {

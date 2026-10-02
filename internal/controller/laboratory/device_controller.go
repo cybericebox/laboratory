@@ -627,7 +627,7 @@ func (r *DeviceReconciler) devicesForLabGroup(ctx context.Context, obj client.Ob
 		return nil
 	}
 	var devices laboratoryv1alpha1.DeviceList
-	if err := r.List(ctx, &devices, client.InNamespace(laboratoryv1alpha1.LabGroupNamespace(group.Name))); err != nil {
+	if err := r.List(ctx, &devices, client.InNamespace(laboratoryv1alpha1.LabGroupNamespaceOf(group))); err != nil {
 		return nil
 	}
 	requests := make([]reconcile.Request, 0, len(devices.Items))

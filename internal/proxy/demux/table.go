@@ -158,7 +158,7 @@ func (w *LabGroupWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, nil
 	}
 
-	ns := laboratoryv1alpha1.LabGroupNamespace(lg.Name)
+	ns := laboratoryv1alpha1.LabGroupNamespaceOf(&lg)
 	backend := fmt.Sprintf("vpn.%s.svc.cluster.local:%d", ns, w.VPNServicePort)
 	log.Info("updating demux table", "group", lg.Name, "backend", backend)
 	if err := w.Table.Update(string(lg.UID), pubKey, backend); err != nil {
