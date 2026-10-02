@@ -208,3 +208,17 @@ func TestUpstreamTransportKeepsIdleConnectionsPerHost(t *testing.T) {
 		t.Fatalf("MaxIdleConnsPerHost = %d, want at least MaxIdleConns = %d", upstreamTransport.MaxIdleConnsPerHost, upstreamTransport.MaxIdleConns)
 	}
 }
+
+func TestStripSessionCookie(t *testing.T) {
+	h := http.Header{}
+	h.Add("Set-Cookie", "challenge=evil; Path=/; Domain=labs.example.com")
+	h.Add("Set-Cookie", "app=1; HttpOnly")
+	h.Add("Set-Cookie", "challenge=; Max-Age=0")
+	h.Add("Set-Cookie", "challenger=2")
+	stripSessionCookie(h, "challenge")
+	got := h.Values("Set-Cookie")
+	if len(got) != 2 || got[0] != "app=1; HttpOnly" || got[1] != "challenger=2" {
+		t.Fatalf("Set-Cookie = %q", got)
+	}
+	stripSessionCookie(http.Header{}, "challenge") // nothing to strip is fine
+}

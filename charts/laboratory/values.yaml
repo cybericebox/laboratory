@@ -168,7 +168,7 @@ proxy:
       name: proxy-session
       key: sessionSecret
     # The longest exp - iat of a handoff link the proxy accepts (ACCESS_TOKEN_MAX_TTL).
-    accessTokenMaxTTL: 5m
+    accessTokenMaxTTL: 60s
     # The proxy's own session is sliding. It expires sessionIdleTTL after the last request; the cookie is
     # re-issued only when less than sessionRenewBefore of it remains (at most about one renewal per
     # sessionRenewBefore per active user); sessionMaxTTL is the absolute cap from the handoff. The session also
@@ -176,6 +176,14 @@ proxy:
     sessionIdleTTL: 24h
     sessionRenewBefore: 1h
     sessionMaxTTL: 168h
+    # HTTP server limits of the L7 proxy, set before any routing or authentication so that a client that dribbles its
+    # headers or body cannot hold connections forever: the request headers, the whole request, a kept-alive connection
+    # with no request, and the size of the headers. No write timeout: responses stream, and an upgraded (WebSocket)
+    # connection lives at most liveMaxLifetime.
+    readHeaderTimeout: 10s
+    readTimeout: 5m
+    idleTimeout: 2m
+    maxHeaderBytes: 65536
     # An open request or WebSocket is checked against the group access policy every liveCheckInterval and
     # closed once the client may no longer reach the lab (a lock, a removed client); no connection lives longer than
     # liveMaxLifetime or past the session's absolute end (LIVE_CHECK_INTERVAL, LIVE_MAX_LIFETIME).

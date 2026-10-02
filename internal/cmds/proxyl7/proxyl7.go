@@ -143,14 +143,10 @@ func Run() {
 		os.Exit(1)
 	}
 
-	httpsSrv := &http.Server{
-		Addr:    cfg.Listen,
-		Handler: handler,
-		TLSConfig: &tls.Config{
-			GetCertificate: certWatcher.GetCertificate,
-			MinVersion:     tls.VersionTLS12,
-		},
-	}
+	httpsSrv := proxy.NewHTTPServer(cfg, handler, &tls.Config{
+		GetCertificate: certWatcher.GetCertificate,
+		MinVersion:     tls.VersionTLS12,
+	})
 
 	for _, r := range []struct {
 		runnable manager.Runnable

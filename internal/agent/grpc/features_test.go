@@ -22,7 +22,7 @@ var testFeatures = Features{
 	CacheEnabled: true, CacheRegistries: []string{"docker.io", "ghcr.io"},
 	SchedulerEnabled: true, SchedulerMaxPods: 20,
 	LabsDomain: "labs.example.com", VPNEndpoint: "vpn.example.com:51820",
-	ProxyAccessTokenMaxTTL: 5 * time.Minute, ProxySessionMaxTTL: 24 * time.Hour,
+	ProxyAccessTokenMaxTTL: 60 * time.Second, ProxySessionMaxTTL: 24 * time.Hour,
 }
 
 func featuresHandler(t *testing.T, f Features, tenants ...*laboratoryv1alpha1.Tenant) *Handler {
@@ -52,7 +52,7 @@ func TestFeaturesReportThePlatformChoices(t *testing.T) {
 	if e := got.GetEndpoints(); e.GetLabsDomain() != "labs.example.com" || e.GetVpnEndpoint() != "vpn.example.com:51820" {
 		t.Fatalf("endpoints: %+v", e)
 	}
-	if px := got.GetProxy(); px.GetAccessTokenMaxTtlSeconds() != 300 || px.GetSessionMaxTtlSeconds() != 86400 {
+	if px := got.GetProxy(); px.GetAccessTokenMaxTtlSeconds() != 60 || px.GetSessionMaxTtlSeconds() != 86400 {
 		t.Fatalf("proxy: %+v", px)
 	}
 	if got.GetCertificate().GetIssuedTtlSeconds() != int64(DefaultClientCertTTL.Seconds()) {

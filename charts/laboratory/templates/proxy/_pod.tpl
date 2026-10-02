@@ -67,6 +67,14 @@ spec:
       value: {{ .Values.proxy.l7.liveMaxLifetime | quote }}
     - name: LIVE_CHECK_INTERVAL
       value: {{ .Values.proxy.l7.liveCheckInterval | quote }}
+    - name: READ_HEADER_TIMEOUT
+      value: {{ .Values.proxy.l7.readHeaderTimeout | quote }}
+    - name: READ_TIMEOUT
+      value: {{ .Values.proxy.l7.readTimeout | quote }}
+    - name: IDLE_TIMEOUT
+      value: {{ .Values.proxy.l7.idleTimeout | quote }}
+    - name: MAX_HEADER_BYTES
+      value: {{ .Values.proxy.l7.maxHeaderBytes | quote }}
     - name: REPORT_INTERVAL
       value: {{ .Values.proxy.l7.reportInterval | quote }}
     - name: POD_NAME

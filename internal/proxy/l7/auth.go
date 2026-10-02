@@ -12,8 +12,8 @@ import (
 )
 
 // DefaultHandoffLifetime bounds exp - iat of a handoff token: it is a one-click
-// link, never a session. Mirrors the chart (proxy.l7.accessTokenMaxTTL).
-const DefaultHandoffLifetime = 5 * time.Minute
+// link, never a session. Mirrors the chart (proxy.l7.accessTokenMaxTTL): a link is replayable for its lifetime, so it is short.
+const DefaultHandoffLifetime = 60 * time.Second
 
 // The proxy's own session is sliding: the cookie expires DefaultSessionIdleTTL after the last request, it is
 // re-issued only when less than DefaultSessionRenewBefore of it remains (so an active user costs about one

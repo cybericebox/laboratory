@@ -61,7 +61,13 @@ type handoffFixture struct {
 func newHandoffFixture(t *testing.T) *handoffFixture {
 	t.Helper()
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("lab")) }))
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/cookies" { // a device that tries to set the proxy's session cookie, and one of its own
+			http.SetCookie(w, &http.Cookie{Name: "challenge", Value: "forged", Path: "/"})
+			http.SetCookie(w, &http.Cookie{Name: "app", Value: "1", Path: "/"})
+		}
+		_, _ = w.Write([]byte("lab"))
+	}))
 	t.Cleanup(backend.Close)
 	f := &handoffFixture{priv: priv, backend: backend, now: time.Now(), groups: map[string]string{"g1": "acme"}}
 	f.owner = func(g string) (string, bool) { t, ok := f.groups[g]; return t, ok }
@@ -146,7 +152,7 @@ func TestHandoff_Refusals(t *testing.T) {
 		{"an unknown tenant", func(c *handoffClaims) { c.Issuer = "mallory" }},
 		{"an issuer that is no name", func(c *handoffClaims) { c.Issuer = "../acme" }},
 		{"a group that does not exist", func(c *handoffClaims) { c.GroupID = "nope" }},
-		{"link over the five minute cap", func(c *handoffClaims) { c.ExpiresAt = jwt.NewNumericDate(time.Now().Add(6 * time.Minute)) }},
+		{"link over the lifetime cap", func(c *handoffClaims) { c.ExpiresAt = jwt.NewNumericDate(time.Now().Add(6 * time.Minute)) }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -418,12 +424,37 @@ func TestSession_EndsAfterTheIdleTTL(t *testing.T) {
 // The token lifetime limit is the configured one.
 func TestHandoff_TokenLifetimeLimitIsConfigured(t *testing.T) {
 	f := newHandoffFixture(t)
-	long := f.link(t, func(c *handoffClaims) { c.ExpiresAt = jwt.NewNumericDate(f.now.Add(3 * time.Minute)) })
+	long := f.link(t, func(c *handoffClaims) { c.ExpiresAt = jwt.NewNumericDate(f.now.Add(45 * time.Second)) })
 	if rec := f.open(long); rec.Code != http.StatusSeeOther {
-		t.Fatalf("3m under the default 5m: %d", rec.Code)
+		t.Fatalf("45s under the default 60s: %d", rec.Code)
 	}
-	f.handler.WithLimits(2*time.Minute, DefaultSessionIdleTTL, DefaultSessionRenewBefore, DefaultSessionMaxTTL)
+	over := f.link(t, func(c *handoffClaims) { c.ExpiresAt = jwt.NewNumericDate(f.now.Add(2 * time.Minute)) })
+	if rec := f.open(over); rec.Code == http.StatusSeeOther {
+		t.Fatal("2m is over the default 60s limit and must be refused")
+	}
+	f.handler.WithLimits(30*time.Second, DefaultSessionIdleTTL, DefaultSessionRenewBefore, DefaultSessionMaxTTL)
 	if rec := f.open(long); rec.Code == http.StatusSeeOther {
-		t.Fatal("3m over a 2m limit must be refused")
+		t.Fatal("45s over a 30s limit must be refused")
+	}
+}
+
+// A device cannot set, replace or clear the proxy's session cookie; its own cookies pass.
+func TestDeviceCannotSetTheSessionCookie(t *testing.T) {
+	f := newHandoffFixture(t)
+	c := f.open(f.link(t, nil)).Result().Cookies()[0]
+	req := httptest.NewRequest("GET", "https://"+labHost+"/cookies", nil)
+	req.Host = labHost
+	req.AddCookie(c)
+	rec := httptest.NewRecorder()
+	f.handler.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("code = %d", rec.Code)
+	}
+	var names []string
+	for _, sc := range rec.Result().Cookies() {
+		names = append(names, sc.Name+"="+sc.Value)
+	}
+	if len(names) != 1 || names[0] != "app=1" {
+		t.Fatalf("the response cookies are %v: the session cookie must be stripped, the device's own kept", names)
 	}
 }

@@ -581,7 +581,7 @@ images:
   heartbeat at the latest, so the backend needs no polling). The answer is the caller's tenant view:
   `state_persistence` (`available` = the cluster enables it AND the Tenant is allowed; the default debounce; the write quota and
   maximum file size, the tenant's limit capped by the cluster's; the excluded paths), `image_cache` (enabled, registries),
-  `scheduler` (enabled, `max_pods`), `endpoints` (the labs domain, the VPN endpoint), `proxy` (`access_token_max_ttl_seconds`: the longest exp - iat of a handoff link the proxy accepts, 5m; `session_idle_ttl_seconds`: the session expires after this much inactivity, 24h; `session_max_ttl_seconds`: the absolute cap from the handoff, 168h; chart `proxy.l7.accessTokenMaxTTL`, `sessionIdleTTL`, `sessionMaxTTL`) and `certificate` (`not_after_unix` of the client
+  `scheduler` (enabled, `max_pods`), `endpoints` (the labs domain, the VPN endpoint), `proxy` (`access_token_max_ttl_seconds`: the longest exp - iat of a handoff link the proxy accepts, 60s; `session_idle_ttl_seconds`: the session expires after this much inactivity, 24h; `session_max_ttl_seconds`: the absolute cap from the handoff, 168h; chart `proxy.l7.accessTokenMaxTTL`, `sessionIdleTTL`, `sessionMaxTTL`) and `certificate` (`not_after_unix` of the client
   certificate the call came with, `issued_ttl_seconds` of new ones: the backend schedules `RenewCertificate` from the expiry, and the
   expiry changes only when it reconnects with the renewed certificate). Quotas and the group overhead stay in `GetCapacity`. The agent
   gets the cluster values from the same chart keys as the operator (`devices.statePersistence.*`, `scheduler.enabled/maxPods`,
@@ -840,6 +840,17 @@ unprovisioned) and, when the group is deleted, left exactly as it is. The operat
 Migration: the namespace is recorded in `LabGroup.status.namespace`, and everything (the operator, the demux, the L7 proxy, the agent) uses that. A group created
 before the prefix keeps the namespace it has (its bare name, with the label the operator always set) and works as before; only new groups get the prefixed one.
 Nothing is renamed. Scripts that derive the namespace from the group name must read `status.namespace` instead.
+
+### The L7 proxy under hostile clients
+
+- **HTTP server limits** (`proxy.l7.readHeaderTimeout` 10s, `readTimeout` 5m, `idleTimeout` 2m, `maxHeaderBytes` 65536) apply before any routing or
+  authentication: a client that dribbles its headers or body, or opens connections and says nothing, is cut instead of holding a connection forever (an
+  unauthenticated slowloris could otherwise exhaust the proxy). There is no write timeout, because responses stream; an upgraded (WebSocket) connection has
+  its deadlines cleared and lives at most `LIVE_MAX_LIFETIME` (12h), with the access policy re-checked every 10 s.
+- **The handoff link** is valid for 60 s at most (`proxy.l7.accessTokenMaxTTL`; the backend's token lifetime must not be longer). It is a bearer link that the
+  proxy cannot make single-use, because its replicas share no memory; the short life is the control.
+- **The session cookie belongs to the proxy.** Any `Set-Cookie` of the session cookie's name in a device's response is removed, so a device cannot set,
+  replace or clear it; the device's own cookies pass.
 
 ### Service pods and images
 

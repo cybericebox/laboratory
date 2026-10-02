@@ -106,3 +106,15 @@ func TestProxyUpdateDoesNotSurge(t *testing.T) {
 		}
 	}
 }
+
+func TestProxyServerLimitsAreValues(t *testing.T) {
+	out, err := helmTemplate(t, "-s", "templates/proxy/deployment.yaml")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for name, val := range map[string]string{"READ_HEADER_TIMEOUT": "10s", "READ_TIMEOUT": "5m", "IDLE_TIMEOUT": "2m", "MAX_HEADER_BYTES": "65536", "ACCESS_TOKEN_MAX_TTL": "60s"} {
+		if !regexp.MustCompile(`name: ` + name + `\s+value: "` + val + `"`).MatchString(out) {
+			t.Errorf("%s = %s missing", name, val)
+		}
+	}
+}

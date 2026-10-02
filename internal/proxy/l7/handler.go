@@ -185,6 +185,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Transport = h.transport
+	// A device must not set (or reset) the proxy's own session cookie: drop any Set-Cookie of that name from its responses.
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		stripSessionCookie(resp.Header, h.cookieName)
+		return nil
+	}
 
 	// Count only what a client did to a known lab device, keyed by (group,
 	// client, lab); the platform decides which groups are event traffic.
@@ -294,5 +299,26 @@ func ServiceResolver(getServiceProtocol func(task, namespace string) (string, er
 			port = 443
 		}
 		return fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d", proto, task, ns, port), nil
+	}
+}
+
+// stripSessionCookie removes the Set-Cookie headers that name the proxy's session cookie, whatever their attributes
+// (domain, path, expiry): the cookie is the proxy's, never the device's to set, replace or clear.
+func stripSessionCookie(hdr http.Header, name string) {
+	values := hdr.Values("Set-Cookie")
+	if len(values) == 0 {
+		return
+	}
+	kept := make([]string, 0, len(values))
+	for _, v := range values {
+		cookieName, _, _ := strings.Cut(v, "=")
+		if strings.TrimSpace(cookieName) == name {
+			continue
+		}
+		kept = append(kept, v)
+	}
+	hdr.Del("Set-Cookie")
+	for _, v := range kept {
+		hdr.Add("Set-Cookie", v)
 	}
 }

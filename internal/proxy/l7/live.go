@@ -144,6 +144,9 @@ type hijackRecorder struct {
 func (w *hijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	conn, rw, err := http.NewResponseController(w.ResponseWriter).Hijack()
 	if err == nil {
+		// The server's read and write deadlines (the HTTP timeouts) were set on the connection for the request; an upgraded
+		// connection is bounded by the live-check lifetime instead.
+		_ = conn.SetDeadline(time.Time{})
 		w.entry.setConn(conn)
 	}
 	return conn, rw, err
