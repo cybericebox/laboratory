@@ -81,3 +81,13 @@ func Rooms(nodes []corev1.Node, pods []corev1.Pod, selector map[string]string, t
 	}
 	return out
 }
+
+// LargestDevice is the largest device the nodes can hold: per resource the largest Allocatable of any node (the two may
+// come from different nodes, so it can slightly overstate a device that needs both at once). Zero for no node.
+func LargestDevice(rooms []NodeRoom) Amount {
+	var out Amount
+	for _, r := range rooms {
+		out.CPU, out.Memory = max(out.CPU, r.Allocatable.CPU), max(out.Memory, r.Allocatable.Memory)
+	}
+	return out
+}

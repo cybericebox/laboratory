@@ -59,8 +59,8 @@ type Handler struct {
 	labTolerations []corev1.Toleration
 	// nodeReserve is what the platform keeps free on the lab nodes (the scheduler's reserve), applied to the per-node room.
 	nodeReserve nodecap.Reserve
-	// roomCache keeps the per-node room for a few seconds: it is the same for every tenant.
-	roomCache nodeRoomCache
+	// roomCache keeps the largest placeable device for a few seconds: it is the same for every tenant.
+	roomCache deviceRoomCache
 	// errors is the laboratory's own error journal (see errorjournal.go); errJournal says where its events are.
 	errors     *errorCollector
 	errJournal ErrorJournalConfig

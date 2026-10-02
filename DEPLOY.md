@@ -659,12 +659,14 @@ images:
   pods reserve (the sum of their requests) and use (metrics-server, when installed), and what is free (quota minus reserved). No
   cluster totals are exposed. The same reserved and used totals are in `Tenant.status` (refreshed by the agent):
   `kubectl get tenant platform -o yaml`.
-  The one exception is the **room of every lab node** (`nodes_reported`, `nodes`: name, allocatable and free CPU and memory), which the
-  backend needs to pack devices (a device must fit one node; free room of different nodes or agents is never merged). It covers the
-  schedulable nodes with the `node-agent-ready` label. Allocatable is the node's allocatable less the scheduler's platform reserve
-  (`scheduler.platformReserveCpu/Memory` off the node first, then `platformReservePercent` of the rest, per node: stricter than the
-  scheduler's reserve over the sum, because a device cannot span nodes); free is that minus the requests of every unfinished pod on the
-  node (DaemonSets, the proxy and system pods included), never negative. It is not limited by the tenant quota.
+  The one number about the cluster layout is the **largest device the agent can place** (`has_max_device`, `max_device_cpu_millicores`,
+  `max_device_memory_bytes`): per resource, the largest allocatable of a schedulable lab node (the nodes with the `node-agent-ready`
+  label) net of the scheduler's platform reserve (`scheduler.platformReserveCpu/Memory` off the node first, then
+  `platformReservePercent` of the rest, per node). It is one amount: no node list, no node names, no per-node free room reach a
+  tenant. The backend uses it to refuse planning a device that no node could hold; the per-node math stays in the agent and the
+  scheduler. The two values may come from different nodes, so it can slightly overstate a device that needs both at once; the
+  scheduler refuses what it cannot place. It is not limited by the tenant quota, and it is absent (`has_max_device` false) for an
+  agent that has no schedulable node or an older one.
 - **Features.** Everything the laboratory owns that the backend needs reaches it only through the agent: `GetFeatures` and the
   `features` of the `Monitoring` stream (sent with the first message and again when they change; a change shows at the next
   heartbeat at the latest, so the backend needs no polling). The answer is the caller's tenant view:

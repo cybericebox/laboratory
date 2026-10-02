@@ -8,42 +8,31 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/cybericebox/laboratory/internal/nodecap"
-	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
-type nodeRoomCache struct {
+type deviceRoomCache struct {
 	mu   sync.Mutex
 	at   time.Time
-	list []*protobuf.NodeRoom
+	room nodecap.Amount
+	ok   bool
 }
 
-// nodeRooms is the allocatable and free CPU and memory of every node lab pods can run on (see nodecap.Rooms). It is the
-// same for every tenant, so it is read once per capacityTTL. A failed read reports nothing (the caller leaves the
-// rooms out) and is not cached.
-func (h *Handler) nodeRooms(ctx context.Context) ([]*protobuf.NodeRoom, error) {
+// largestDevice is the largest device the agent can place: per resource the largest allocatable of a lab node net of the
+// platform reserve (nodecap.LargestDevice). The per-node numbers stay here, only this one amount leaves the agent: the
+// cluster layout is never shown to a tenant. It is the same for every tenant, so it is read once per capacityTTL; ok is
+// false when it cannot be read or no node is schedulable.
+func (h *Handler) largestDevice(ctx context.Context) (nodecap.Amount, bool) {
 	c := &h.roomCache
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.at.IsZero() && time.Since(c.at) < capacityTTL {
-		return c.list, nil
+		return c.room, c.ok
 	}
 	nodes, err := h.k8s.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return nil, err
+		return nodecap.Amount{}, false
 	}
-	pods, err := h.k8s.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	rooms := nodecap.Rooms(nodes.Items, pods.Items, h.labSelector, h.labTolerations, h.nodeReserve)
-	out := make([]*protobuf.NodeRoom, 0, len(rooms))
-	for _, r := range rooms {
-		out = append(out, &protobuf.NodeRoom{
-			Name:                     r.Name,
-			AllocatableCpuMillicores: r.Allocatable.CPU, AllocatableMemoryBytes: r.Allocatable.Memory,
-			FreeCpuMillicores: r.Free.CPU, FreeMemoryBytes: r.Free.Memory,
-		})
-	}
-	c.at, c.list = time.Now(), out
-	return out, nil
+	rooms := nodecap.Rooms(nodes.Items, nil, h.labSelector, h.labTolerations, h.nodeReserve)
+	c.at, c.room, c.ok = time.Now(), nodecap.LargestDevice(rooms), len(rooms) > 0
+	return c.room, c.ok
 }

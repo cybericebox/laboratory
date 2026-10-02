@@ -68,3 +68,16 @@ func TestPodRequestsTakesTheLargerOfInitAndContainers(t *testing.T) {
 		t.Errorf("PodRequests = %+v", got)
 	}
 }
+
+func TestLargestDeviceIsPerResourceAndEmptyForNoNode(t *testing.T) {
+	got := LargestDevice([]NodeRoom{
+		{Name: "a", Allocatable: Amount{CPU: 4000, Memory: 8 << 30}},
+		{Name: "b", Allocatable: Amount{CPU: 2000, Memory: 16 << 30}},
+	})
+	if got != (Amount{CPU: 4000, Memory: 16 << 30}) {
+		t.Errorf("LargestDevice = %+v", got)
+	}
+	if got := LargestDevice(nil); got != (Amount{}) {
+		t.Errorf("no node = %+v", got)
+	}
+}

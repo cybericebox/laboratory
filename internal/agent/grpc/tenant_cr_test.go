@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -232,9 +233,10 @@ func TestCapacityReportsTheGroupOverhead(t *testing.T) {
 	}
 }
 
-// The capacity carries the room of every schedulable lab node: the nodes with the node-agent-ready label only, free is
-// net of every pod on the node (the system's too) and of the platform reserve, and it is not limited by the tenant quota.
-func TestCapacityReportsPerNodeRoom(t *testing.T) {
+// The capacity carries one number about the cluster layout: the largest device it can place (per resource, the largest
+// allocatable of a ready lab node net of the platform reserve). No node list, no names, no per-node free room; not limited by
+// the tenant quota.
+func TestCapacityReportsTheLargestPlaceableDeviceOnly(t *testing.T) {
 	node := func(name string, ready bool, cpu, mem string) *corev1.Node {
 		labels := map[string]string{}
 		if ready {
@@ -245,25 +247,25 @@ func TestCapacityReportsPerNodeRoom(t *testing.T) {
 			Conditions:  []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}},
 		}}
 	}
-	onNode := func(p *corev1.Pod, n string) *corev1.Pod { p.Spec.NodeName = n; return p }
 	h := tenantHandler(t, []*laboratoryv1alpha1.Tenant{newTenantTenant("a", true, &laboratoryv1alpha1.TenantQuota{CPU: "1", Memory: "1Gi"})},
-		node("n1", true, "4", "8Gi"), node("n2", true, "2", "4Gi"), node("n3", false, "16", "32Gi"),
-		onNode(labPod("ns1", "a1", "a", "500m", "512Mi", corev1.PodRunning), "n1"),
-		onNode(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "system", Namespace: "kube-system"}, Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c",
-			Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")}}}}}}, "n1"),
-	)
+		node("n1", true, "4", "8Gi"), node("n2", true, "2", "16Gi"), node("n3", false, "64", "256Gi"))
 	h.SetLabScheduling(map[string]string{"laboratory.cybericebox.com/node-agent-ready": "true"}, nil)
 	h.SetNodeReserve(nodecap.Reserve{Node: nodecap.Amount{CPU: 500}, Percent: 0})
 	got, err := h.GetCapacity(asClient("a"), &protobuf.Empty{})
-	if err != nil || !got.NodesReported || len(got.Nodes) != 2 {
+	if err != nil || !got.HasMaxDevice {
 		t.Fatalf("%+v %v", got, err)
 	}
-	n1, n2 := got.Nodes[0], got.Nodes[1]
-	if n1.Name != "n1" || n1.AllocatableCpuMillicores != 3500 || n1.AllocatableMemoryBytes != 8<<30 ||
-		n1.FreeCpuMillicores != 3500-500-1000 || n1.FreeMemoryBytes != (8<<30)-(512<<20) {
-		t.Errorf("n1: %+v", n1)
+	// n3 has no ready node-agent; n1 gives the most CPU (4000-500), n2 the most memory.
+	if got.MaxDeviceCpuMillicores != 3500 || got.MaxDeviceMemoryBytes != 16<<30 {
+		t.Errorf("largest device = %dm / %d", got.MaxDeviceCpuMillicores, got.MaxDeviceMemoryBytes)
 	}
-	if n2.Name != "n2" || n2.AllocatableCpuMillicores != 1500 || n2.FreeCpuMillicores != 1500 || n2.FreeMemoryBytes != 4<<30 {
-		t.Errorf("n2 (not limited by the quota of the tenant): %+v", n2)
+	// Nothing of the layout is in the message: the generated type has no node fields at all.
+	if _, found := reflect.TypeOf(got).Elem().FieldByName("Nodes"); found {
+		t.Error("the capacity must not carry a node list")
+	}
+	// No lab node: no value, so a backend does not take it for "nothing fits".
+	empty := tenantHandler(t, []*laboratoryv1alpha1.Tenant{newTenantTenant("a", true, nil)})
+	if got, _ = empty.GetCapacity(asClient("a"), &protobuf.Empty{}); got.HasMaxDevice {
+		t.Errorf("no node, no largest device: %+v", got)
 	}
 }
