@@ -22,6 +22,10 @@ type L7Config struct {
 	// Instance names this replica in its traffic reports (the pod name).
 	Instance       string        `env:"POD_NAME"`
 	ReportInterval time.Duration `env:"REPORT_INTERVAL" envDefault:"1m"`
+	// AccessTokenMaxTTL is the longest exp - iat of a handoff link the proxy accepts; SessionMaxTTL is the
+	// longest its own session cookie lives, whatever the link asks for. The agent reports both to the backend.
+	AccessTokenMaxTTL time.Duration `env:"ACCESS_TOKEN_MAX_TTL" envDefault:"5m"`
+	SessionMaxTTL     time.Duration `env:"SESSION_MAX_TTL" envDefault:"24h"`
 }
 
 type WGConfig struct {

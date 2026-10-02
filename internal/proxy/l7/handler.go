@@ -40,6 +40,8 @@ type Handler struct {
 	attribute Attribution
 	authorize Authorizer
 	now       func() time.Time
+	// handoffMax bounds exp - iat of a handoff token, sessionMax the life of the cookie it opens.
+	handoffMax, sessionMax time.Duration
 }
 
 // upstreamTransport skips certificate verification for in-cluster backends
@@ -66,7 +68,14 @@ func NewHandler(keys KeyLookup, secret []byte, baseDomain, cookieName string, re
 		resolver:   resolver,
 		transport:  upstreamTransport,
 		now:        time.Now,
+		handoffMax: DefaultHandoffLifetime, sessionMax: DefaultSessionMaxTTL,
 	}
+}
+
+// WithLimits sets the longest accepted handoff token (exp - iat) and the longest session cookie.
+func (h *Handler) WithLimits(handoffMax, sessionMax time.Duration) *Handler {
+	h.handoffMax, h.sessionMax = handoffMax, sessionMax
+	return h
 }
 
 // WithAccounting counts requests of a client per lab device. attribute

@@ -520,7 +520,9 @@ persistence and has no quota.
   heartbeat at the latest, so the backend needs no polling). The answer is the caller's tenant view:
   `state_persistence` (`available` = the cluster enables it AND the Tenant is allowed; the default debounce; the write quota and
   maximum file size, the tenant's limit capped by the cluster's; the excluded paths), `image_cache` (enabled, registries),
-  `scheduler` (enabled, `max_pods`), `endpoints` (the labs domain, the VPN endpoint) and `certificate` (`not_after_unix` of the client
+  `scheduler` (enabled, `max_pods`), `endpoints` (the labs domain, the VPN endpoint), `proxy` (`access_token_max_ttl_seconds`: the longest exp - iat of a handoff link the proxy accepts, 5m;
+  `session_max_ttl_seconds`: the longest its session cookie lives, a longer `sess` of a link is cut to it, 24h; chart `proxy.l7.accessTokenMaxTTL` and
+  `sessionMaxTTL`) and `certificate` (`not_after_unix` of the client
   certificate the call came with, `issued_ttl_seconds` of new ones: the backend schedules `RenewCertificate` from the expiry, and the
   expiry changes only when it reconnects with the renewed certificate). Quotas and the group overhead stay in `GetCapacity`. The agent
   gets the cluster values from the same chart keys as the operator (`devices.statePersistence.*`, `scheduler.enabled/maxPods`,

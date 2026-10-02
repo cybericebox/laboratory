@@ -11,9 +11,13 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// maxHandoffLifetime bounds exp - iat of a handoff token: it is a one-click
-// link, never a session.
-const maxHandoffLifetime = 5 * time.Minute
+// DefaultHandoffLifetime bounds exp - iat of a handoff token: it is a one-click
+// link, never a session. Mirrors the chart (proxy.l7.accessTokenMaxTTL).
+const DefaultHandoffLifetime = 5 * time.Minute
+
+// DefaultSessionMaxTTL is the longest the proxy's own session cookie lives, whatever the link asks for.
+// Mirrors the chart (proxy.l7.sessionMaxTTL).
+const DefaultSessionMaxTTL = 24 * time.Hour
 
 // jwtClaims is the proxy's own session cookie (HS256). It carries only what the
 // operator knows: the LabGroup and a LabGroupClient of that group.
@@ -92,7 +96,7 @@ var tenantNameRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 // verifyHandoff checks a tenant's handoff link: the signature against the key registered for
 // (iss, kid), aud, iat/nbf/exp and the link lifetime, that it was issued for this device host, and
 // that the LabGroup belongs to the tenant that signed it (a tenant cannot reach another's labs).
-func verifyHandoff(raw string, keys KeyLookup, groupTenant GroupTenant, host string, now func() time.Time) (handoffClaims, error) {
+func verifyHandoff(raw string, keys KeyLookup, groupTenant GroupTenant, host string, now func() time.Time, maxLifetime time.Duration) (handoffClaims, error) {
 	var claims handoffClaims
 	token, err := jwt.ParseWithClaims(
 		raw, &claims, func(t *jwt.Token) (interface{}, error) {
@@ -125,7 +129,7 @@ func verifyHandoff(raw string, keys KeyLookup, groupTenant GroupTenant, host str
 	if claims.IssuedAt == nil || claims.NotBefore == nil || claims.ExpiresAt == nil {
 		return handoffClaims{}, fmt.Errorf("handoff needs iat, nbf and exp")
 	}
-	if claims.ExpiresAt.Sub(claims.IssuedAt.Time) > maxHandoffLifetime {
+	if claims.ExpiresAt.Sub(claims.IssuedAt.Time) > maxLifetime {
 		return handoffClaims{}, fmt.Errorf("handoff lives too long")
 	}
 	if claims.Host != host {

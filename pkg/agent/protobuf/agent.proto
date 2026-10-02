@@ -659,6 +659,15 @@ message FeaturesResponse {
   SchedulerFeature scheduler = 4;
   EndpointsFeature endpoints = 5;
   CertificateFeature certificate = 6;
+  ProxyFeature proxy = 7;
+}
+
+// Limits the L7 proxy enforces on lab access.
+message ProxyFeature {
+  // The longest exp - iat of an access token (handoff link) the proxy accepts; a longer one is refused.
+  int64 access_token_max_ttl_seconds = 1;
+  // The longest the proxy's own session cookie lives: a link whose session end is later is cut to this.
+  int64 session_max_ttl_seconds = 2;
 }
 
 // Device state persistence for this tenant.

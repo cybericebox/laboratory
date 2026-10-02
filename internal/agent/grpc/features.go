@@ -31,6 +31,9 @@ type Features struct {
 	// LabsDomain and VPNEndpoint are the public hosts of lab endpoints and of WireGuard.
 	LabsDomain  string
 	VPNEndpoint string
+	// ProxyAccessTokenMaxTTL and ProxySessionMaxTTL are the L7 proxy's limits.
+	ProxyAccessTokenMaxTTL time.Duration
+	ProxySessionMaxTTL     time.Duration
 }
 
 type featuresCache struct {
@@ -81,6 +84,9 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 			ImageCache: &protobuf.ImageCacheFeature{Enabled: f.CacheEnabled, Registries: append([]string(nil), f.CacheRegistries...)},
 			Scheduler:  &protobuf.SchedulerFeature{Enabled: f.SchedulerEnabled, MaxPods: f.SchedulerMaxPods},
 			Endpoints:  &protobuf.EndpointsFeature{LabsDomain: f.LabsDomain, VpnEndpoint: f.VPNEndpoint},
+			Proxy: &protobuf.ProxyFeature{
+				AccessTokenMaxTtlSeconds: int64(f.ProxyAccessTokenMaxTTL.Seconds()), SessionMaxTtlSeconds: int64(f.ProxySessionMaxTTL.Seconds()),
+			},
 		}
 		h.featCache.mu.Lock()
 		if h.featCache.m == nil {

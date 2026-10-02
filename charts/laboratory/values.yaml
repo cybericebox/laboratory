@@ -144,6 +144,10 @@ proxy:
     sessionSecret:
       name: proxy-session
       key: sessionSecret
+    # The longest exp - iat of a handoff link the proxy accepts (ACCESS_TOKEN_MAX_TTL) and the longest its own
+    # session cookie lives, whatever the link asks for (SESSION_MAX_TTL). The agent reports both to the backend.
+    accessTokenMaxTTL: 5m
+    sessionMaxTTL: 24h
     # How often each replica publishes its request counters (REPORT_INTERVAL).
     reportInterval: "1m"
     # Requests = limits (Guaranteed). Measured: 36Mi at 200 concurrent clients; CPU is the limit that

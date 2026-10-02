@@ -328,3 +328,30 @@ func TestSession_StopsWhenTheGroupChangesOwner(t *testing.T) {
 		t.Fatal("and so must a session of a group that is gone")
 	}
 }
+
+// A link asking for a longer session is cut to the proxy's own limit.
+func TestHandoff_SessionIsCutToTheLimit(t *testing.T) {
+	f := newHandoffFixture(t)
+	f.handler.WithLimits(DefaultHandoffLifetime, 2*time.Hour)
+	rec := f.open(f.link(t, nil))
+	cookies := rec.Result().Cookies()
+	if rec.Code != http.StatusSeeOther || len(cookies) != 1 {
+		t.Fatalf("code = %d cookies = %v", rec.Code, cookies)
+	}
+	if want := f.now.Add(2 * time.Hour).Unix(); cookies[0].Expires.Unix() != want {
+		t.Fatalf("expires %d, want the limit %d", cookies[0].Expires.Unix(), want)
+	}
+}
+
+// The token lifetime limit is the configured one.
+func TestHandoff_TokenLifetimeLimitIsConfigured(t *testing.T) {
+	f := newHandoffFixture(t)
+	long := f.link(t, func(c *handoffClaims) { c.ExpiresAt = jwt.NewNumericDate(f.now.Add(3 * time.Minute)) })
+	if rec := f.open(long); rec.Code != http.StatusSeeOther {
+		t.Fatalf("3m under the default 5m: %d", rec.Code)
+	}
+	f.handler.WithLimits(2*time.Minute, DefaultSessionMaxTTL)
+	if rec := f.open(long); rec.Code == http.StatusSeeOther {
+		t.Fatal("3m over a 2m limit must be refused")
+	}
+}

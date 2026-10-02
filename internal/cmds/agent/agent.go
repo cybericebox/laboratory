@@ -105,6 +105,7 @@ func features(cfg *config.Config) (grpcserver.Features, error) {
 		CacheEnabled: cfg.Cache.Enabled, CacheRegistries: cfg.Cache.Registries,
 		SchedulerEnabled: cfg.Scheduler.Enabled, SchedulerMaxPods: int32(cfg.Scheduler.MaxPods),
 		LabsDomain: cfg.BaseDomain, VPNEndpoint: cfg.PublicVPNEndpoint,
+		ProxyAccessTokenMaxTTL: cfg.ProxyAccessTokenMaxTTL, ProxySessionMaxTTL: cfg.ProxySessionMaxTTL,
 	}
 	for _, c := range []struct {
 		env, val string

@@ -23,12 +23,15 @@ func (h *Handler) handoff(w http.ResponseWriter, r *http.Request, host string) {
 		return
 	}
 	now := h.now()
-	claims, err := verifyHandoff(raw, h.keys, h.groupTenant, host, h.now)
+	claims, err := verifyHandoff(raw, h.keys, h.groupTenant, host, h.now, h.handoffMax)
 	if err != nil {
 		h.expired(w, r)
 		return
 	}
 	end := time.Unix(claims.Session, 0)
+	if limit := now.Add(h.sessionMax); h.sessionMax > 0 && end.After(limit) {
+		end = limit
+	}
 	value, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwtClaims{
 		GroupID: claims.GroupID, Client: claims.client(), Tenant: claims.Issuer,
 		RegisteredClaims: jwt.RegisteredClaims{

@@ -99,6 +99,10 @@ spec:
               value: {{ .Values.scheduler.enabled | quote }}
             - name: AGENT_SCHEDULER_MAX_PODS
               value: {{ .Values.scheduler.maxPods | quote }}
+            - name: AGENT_PROXY_ACCESS_TOKEN_MAX_TTL
+              value: {{ .Values.proxy.l7.accessTokenMaxTTL | quote }}
+            - name: AGENT_PROXY_SESSION_MAX_TTL
+              value: {{ .Values.proxy.l7.sessionMaxTTL | quote }}
             - name: AGENT_BASE_DOMAIN
               value: {{ required "operator.baseDomain is required" .Values.operator.baseDomain | quote }}
             - name: AGENT_PUBLIC_VPN_ENDPOINT

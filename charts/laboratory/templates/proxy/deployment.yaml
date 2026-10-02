@@ -49,6 +49,10 @@ spec:
             secretKeyRef:
               name: {{ .Values.proxy.l7.sessionSecret.name | quote }}
               key: {{ .Values.proxy.l7.sessionSecret.key | quote }}
+        - name: ACCESS_TOKEN_MAX_TTL
+          value: {{ .Values.proxy.l7.accessTokenMaxTTL | quote }}
+        - name: SESSION_MAX_TTL
+          value: {{ .Values.proxy.l7.sessionMaxTTL | quote }}
         - name: REPORT_INTERVAL
           value: {{ .Values.proxy.l7.reportInterval | quote }}
         - name: POD_NAME
