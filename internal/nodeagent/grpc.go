@@ -97,6 +97,13 @@ func (s *NodeAgentServer) SetupNetworks(
 		"defaultNetwork", defaultIface, "hasAnnotation", hasAnnotation,
 	)
 
+	// The VPN pod asks for conntrack byte accounting in its namespace (it cannot switch it on unprivileged).
+	if pod.Annotations[names.AnnotationConntrackAccounting] == "true" {
+		if err := EnableConntrackAccounting(req.NetnsPath); err != nil {
+			log.Error(err, "conntrack accounting unavailable: flow bytes stay zero")
+		}
+	}
+
 	// Regular pod or explicit eth0: tell cni-gate to delegate normally.
 	if !hasAnnotation || defaultIface == names.DefaultEth0 {
 		log.Info("default network: REAL eth0 (delegate to k8s CNI)")

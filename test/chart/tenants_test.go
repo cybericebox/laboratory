@@ -333,3 +333,26 @@ func TestGatewayEgressListsReachTheOperator(t *testing.T) {
 		}
 	}
 }
+
+func TestDeviceSecurityValuesReachTheOperator(t *testing.T) {
+	out, err := helmTemplate(t, "-s", "templates/operator/configmap.yaml")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, want := range []string{`DEVICE_BASE_CAPABILITIES: "AUDIT_WRITE,CHOWN,DAC_OVERRIDE,FOWNER,FSETID,KILL,NET_BIND_SERVICE,SETGID,SETPCAP,SETUID,SYS_CHROOT"`,
+		`DEVICE_USER_NAMESPACES: "false"`, `DEVICE_EPHEMERAL_STORAGE: "2Gi"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	out, err = helmTemplate(t, "-s", "templates/operator/configmap.yaml", "--set", "devices.security.userNamespaces=true", "--set", "devices.security.ephemeralStorage=5Gi",
+		"--set", "devices.security.baseCapabilities={CHOWN,NET_RAW}")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, want := range []string{`DEVICE_BASE_CAPABILITIES: "CHOWN,NET_RAW"`, `DEVICE_USER_NAMESPACES: "true"`, `DEVICE_EPHEMERAL_STORAGE: "5Gi"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+}

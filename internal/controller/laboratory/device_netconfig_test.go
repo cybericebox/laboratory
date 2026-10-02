@@ -56,64 +56,53 @@ func devWith(
 	return d
 }
 
-func TestDeviceSecurityContext(t *testing.T) {
-	// basic/empty preset, no dhcp → nil (fully unprivileged).
-	if deviceSecurityContext(devWith("", nil)) != nil {
-		t.Error("basic device must have nil SecurityContext")
-	}
-	if deviceSecurityContext(devWith(laboratoryv1alpha1.SecurityPresetBasic, nil)) != nil {
-		t.Error("explicit basic preset must have nil SecurityContext")
-	}
-	// service preset → NET_BIND_SERVICE only.
-	sc := deviceSecurityContext(devWith(laboratoryv1alpha1.SecurityPresetService, nil))
-	if sc == nil || len(sc.Capabilities.Add) != 1 || sc.Capabilities.Add[0] != "NET_BIND_SERVICE" {
-		t.Errorf("service preset = %+v, want [NET_BIND_SERVICE]", sc)
-	}
-	// net preset → includes NET_ADMIN + NET_RAW.
-	sc = deviceSecurityContext(devWith(laboratoryv1alpha1.SecurityPresetNet, nil))
+func capSet(sc *corev1.SecurityContext) map[corev1.Capability]bool {
 	got := map[corev1.Capability]bool{}
 	for _, c := range sc.Capabilities.Add {
 		got[c] = true
 	}
-	if !got["NET_ADMIN"] || !got["NET_RAW"] {
-		t.Errorf("net preset missing NET_ADMIN/NET_RAW: %+v", sc.Capabilities.Add)
+	return got
+}
+
+// Every capability is dropped; the base set, the preset's and the DHCP ones come back, and nothing else.
+func TestDeviceSecurityContext(t *testing.T) {
+	base := DefaultDeviceBaseCaps
+	basic := deviceSecurityContext(devWith("", nil), base)
+	if len(basic.Capabilities.Drop) != 1 || basic.Capabilities.Drop[0] != "ALL" {
+		t.Fatalf("drop = %v, want [ALL]", basic.Capabilities.Drop)
 	}
-	// In-image dhcp interface implies NET_ADMIN+NET_RAW even on basic preset.
-	dhcp := []laboratoryv1alpha1.InterfaceSpec{
-		{
-			Name: "eth1",
-			Addr: laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeDHCP},
-		},
+	got := capSet(basic)
+	if len(got) != len(base) {
+		t.Errorf("basic device keeps %v, want exactly the base set %v", got, base)
 	}
-	sc = deviceSecurityContext(devWith("", dhcp))
-	got = map[corev1.Capability]bool{}
-	for _, c := range sc.Capabilities.Add {
-		got[c] = true
+	for _, denied := range []corev1.Capability{"NET_RAW", "MKNOD", "SETFCAP", "NET_ADMIN", "SYS_ADMIN", "SYS_PTRACE"} {
+		if got[denied] {
+			t.Errorf("basic device must not keep %s", denied)
+		}
 	}
-	if !got["NET_ADMIN"] || !got["NET_RAW"] {
-		t.Errorf("in-image dhcp caps = %+v, want NET_ADMIN+NET_RAW", sc.Capabilities.Add)
+	// A device may escalate (sudo, setuid binaries): no_new_privs is not set.
+	if basic.AllowPrivilegeEscalation != nil || basic.Privileged != nil {
+		t.Errorf("unexpected escalation settings: %+v", basic)
 	}
-	// dhcp-preset (platform-managed) interface → NO device caps (init does it).
-	preset := []laboratoryv1alpha1.InterfaceSpec{
-		{
-			Name: "eth1",
-			Addr: laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeDHCPPreset},
-		},
+	// service preset adds nothing new (NET_BIND_SERVICE is in the base); the base is configurable.
+	if got := capSet(deviceSecurityContext(devWith(laboratoryv1alpha1.SecurityPresetService, nil), []string{"CHOWN"})); len(got) != 2 || !got["CHOWN"] || !got["NET_BIND_SERVICE"] {
+		t.Errorf("service preset over a one-capability base = %v", got)
 	}
-	if deviceSecurityContext(devWith("", preset)) != nil {
-		t.Error("dhcp-preset device must have nil SecurityContext")
+	// net preset adds NET_ADMIN + NET_RAW.
+	if got := capSet(deviceSecurityContext(devWith(laboratoryv1alpha1.SecurityPresetNet, nil), base)); !got["NET_ADMIN"] || !got["NET_RAW"] || !got["CHOWN"] {
+		t.Errorf("net preset = %v", got)
 	}
-	// static interface → no implied caps.
-	static := []laboratoryv1alpha1.InterfaceSpec{
-		{
-			Name: "eth1",
-			Addr: laboratoryv1alpha1.AddrSpec{
-				Type: laboratoryv1alpha1.AddrTypeStatic,
-				IP:   "10.0.0.1/24",
-			},
-		},
+	// In-image dhcp interface implies NET_ADMIN+NET_RAW even on the basic preset.
+	dhcp := []laboratoryv1alpha1.InterfaceSpec{{Name: "eth1", Addr: laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeDHCP}}}
+	if got := capSet(deviceSecurityContext(devWith("", dhcp), base)); !got["NET_ADMIN"] || !got["NET_RAW"] {
+		t.Errorf("in-image dhcp caps = %v, want NET_ADMIN+NET_RAW", got)
 	}
-	if deviceSecurityContext(devWith("", static)) != nil {
-		t.Error("static device must have nil SecurityContext")
+	// dhcp-preset (platform-managed) and static interfaces add no device caps (the init container does it).
+	preset := []laboratoryv1alpha1.InterfaceSpec{{Name: "eth1", Addr: laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeDHCPPreset}}}
+	static := []laboratoryv1alpha1.InterfaceSpec{{Name: "eth1", Addr: laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeStatic, IP: "10.0.0.1/24"}}}
+	for name, ifaces := range map[string][]laboratoryv1alpha1.InterfaceSpec{"dhcp-preset": preset, "static": static} {
+		if got := capSet(deviceSecurityContext(devWith("", ifaces), base)); got["NET_ADMIN"] || got["NET_RAW"] || len(got) != len(base) {
+			t.Errorf("%s device keeps %v", name, got)
+		}
 	}
 }

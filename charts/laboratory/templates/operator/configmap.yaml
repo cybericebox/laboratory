@@ -25,6 +25,9 @@ data:
   NETCONFIG_IMAGE: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag | default .Chart.AppVersion }}"
   LAB_NODE_SELECTOR: {{ .Values.labWorkloads.nodeSelector | toJson | quote }}
   LAB_TOLERATIONS: {{ .Values.labWorkloads.tolerations | toJson | quote }}
+  DEVICE_BASE_CAPABILITIES: {{ join "," .Values.devices.security.baseCapabilities | quote }}
+  DEVICE_USER_NAMESPACES: {{ .Values.devices.security.userNamespaces | quote }}
+  DEVICE_EPHEMERAL_STORAGE: {{ .Values.devices.security.ephemeralStorage | quote }}
   OPERATOR_SERVICE_ACCOUNT: "laboratory-controller-manager"
   OPERATOR_NAMESPACE: {{ .Release.Namespace | quote }}
   AGENT_ENABLED: {{ .Values.agent.enabled | quote }}

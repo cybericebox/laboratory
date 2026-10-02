@@ -31,11 +31,14 @@ var _ = Describe("LabGroup suspension", func() {
 		var dep appsv1.Deployment
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: namespace}, &dep)).To(Succeed())
 		Expect(dep.Spec.Template.Spec.Containers[0].Env).To(ContainElement(corev1.EnvVar{Name: "SUPPORT_EMAIL", Value: "help@example.org"}))
-		// Conntrack byte accounting is switched on by a privileged init container;
-		// the long-running VPN container itself stays unprivileged.
-		Expect(dep.Spec.Template.Spec.InitContainers).To(HaveLen(1))
-		Expect(*dep.Spec.Template.Spec.InitContainers[0].SecurityContext.Privileged).To(BeTrue())
-		Expect(dep.Spec.Template.Spec.Containers[0].SecurityContext.Privileged).To(BeNil())
+		// No privileged init container any more: the node-agent switches conntrack byte accounting on when it wires
+		// the pod (the annotation asks for it), and the VPN container keeps only NET_ADMIN and NET_RAW.
+		Expect(dep.Spec.Template.Spec.InitContainers).To(BeEmpty())
+		Expect(dep.Spec.Template.Annotations).To(HaveKeyWithValue("network.cybericebox.com/conntrack-accounting", "true"))
+		sc := dep.Spec.Template.Spec.Containers[0].SecurityContext
+		Expect(sc.Privileged).To(BeNil())
+		Expect(sc.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
+		Expect(sc.Capabilities.Add).To(ConsistOf(corev1.Capability("NET_ADMIN"), corev1.Capability("NET_RAW")))
 		r.SupportEmail = "new-help@example.org"
 		Expect(r.ensureVPNDeployment(ctx, namespace, false)).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: namespace}, &dep)).To(Succeed())
@@ -224,11 +227,20 @@ var _ = Describe("LabGroup suspension", func() {
 			Expect(*dep.Spec.Replicas).To(Equal(int32(0)))
 		}
 
-		// A VPN deployment created before flow accounting gets the init container.
+		// A deployment made before the hardening is brought to it: the node-agent annotation, no privileged init
+		// container, dropped capabilities, the runtime's seccomp profile.
+		for name, caps := range map[string][]corev1.Capability{"vpn": {"NET_ADMIN", "NET_RAW"}, "gateway": {"NET_ADMIN", "NET_BIND_SERVICE", "NET_RAW"}} {
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, &dep)).To(Succeed())
+			Expect(dep.Spec.Template.Spec.InitContainers).To(BeEmpty())
+			sc := dep.Spec.Template.Spec.Containers[0].SecurityContext
+			Expect(sc.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
+			Expect(sc.Capabilities.Add).To(Equal(caps))
+			Expect(dep.Spec.Template.Spec.SecurityContext.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
+		}
 		var vpn appsv1.Deployment
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: namespace}, &vpn)).To(Succeed())
-		Expect(vpn.Spec.Template.Spec.InitContainers).To(HaveLen(1))
-		Expect(vpn.Spec.Template.Spec.InitContainers[0].Name).To(Equal("conntrack-accounting"))
+		Expect(vpn.Spec.Template.Annotations).To(HaveKeyWithValue("network.cybericebox.com/conntrack-accounting", "true"))
 	})
 
 	It("reports suspended while keeping group services running", func() {

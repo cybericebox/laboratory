@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
@@ -60,6 +59,8 @@ type DeviceReconciler struct {
 	ExitSnapshotTimeout time.Duration
 	// Now is the clock; nil means time.Now. A field so tests can move time.
 	Now func() time.Time
+	// Security is the hardening of the device pods (capabilities, user namespaces, ephemeral storage).
+	Security PodSecurity
 	// Scheduled makes the device wait for the scheduler to dispatch its pod
 	// (see device_sched.go). Off: the pod is created as soon as the device is.
 	Scheduled bool
@@ -364,8 +365,8 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 				// the curated set it requested (plus NET_ADMIN+NET_RAW when it
 				// has a DHCP interface). Isolation is enforced host-side by OVS
 				// flows, so these caps cannot break a pod out of its VNI.
-				SecurityContext: deviceSecurityContext(device),
-				Resources:       deviceResources(device, r.Defaults),
+				SecurityContext: deviceSecurityContext(device, r.Security.baseCaps()),
+				Resources:       withEphemeralStorage(deviceResources(device, r.Defaults), r.Security.EphemeralStorage),
 				// Env vars come from a per-device Secret (<device>-env) the agent
 				// wrote write-only — referenced here, never read by the controller
 				// (the kubelet resolves envFrom at pod start). optional=true so a
@@ -385,6 +386,13 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 	// the image's own client instead. Skipped when neither mode is present.
 	if ic := r.netConfigInitContainer(device); ic != nil {
 		podSpec.InitContainers = append(podSpec.InitContainers, *ic)
+	}
+	// The participant is root in the device: it gets no service account token, the runtime's seccomp profile, and
+	// optionally its own user namespace.
+	hardenPod(&podSpec, false)
+	if r.Security.UserNamespaces {
+		hostUsers := false
+		podSpec.HostUsers = &hostUsers
 	}
 	return labels, selectorLabels, annotations, podSpec
 }
@@ -549,37 +557,24 @@ func (r *DeviceReconciler) netConfigInitContainer(device *laboratoryv1alpha1.Dev
 		Command:         []string{"/node", "netconfig"},
 		Env:             []corev1.EnvVar{{Name: "NETCONFIG", Value: string(cfg)}},
 		SecurityContext: &corev1.SecurityContext{
-			// NET_ADMIN to set addresses/routes; NET_RAW for the DHCP raw socket.
-			Capabilities: &corev1.Capabilities{Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"}},
+			// NET_ADMIN to set addresses/routes; NET_RAW for the DHCP raw socket; nothing else.
+			Capabilities:             capsOf("NET_ADMIN", "NET_RAW"),
+			AllowPrivilegeEscalation: ptrBool(false),
 		},
 	}
 }
 
-// deviceSecurityContext resolves the device's SecurityPreset to concrete
-// capabilities and adds the DHCP-implied caps when the image runs its own DHCP
-// client (addr.type=dhcp). Returns nil when nothing is needed, so a basic
-// service device stays fully unprivileged.
-func deviceSecurityContext(device *laboratoryv1alpha1.Device) *corev1.SecurityContext {
-	want := map[string]bool{}
-	for _, c := range names.CapabilitiesForPreset(string(device.Spec.SecurityPreset)) {
-		want[c] = true
-	}
+// deviceSecurityContext resolves the device's SecurityPreset to concrete capabilities and adds the DHCP-implied
+// caps when the image runs its own DHCP client (addr.type=dhcp). Every capability is dropped first and only the base
+// set (baseCaps, see DefaultDeviceBaseCaps), the preset's and the DHCP ones are added back. Privilege escalation stays
+// allowed on purpose: lab images run sudo and setuid binaries.
+func deviceSecurityContext(device *laboratoryv1alpha1.Device, baseCaps []string) *corev1.SecurityContext {
+	want := append([]string(nil), baseCaps...)
+	want = append(want, names.CapabilitiesForPreset(string(device.Spec.SecurityPreset))...)
 	if deviceHasInImageDHCP(device) {
-		for _, c := range names.DHCPImpliedCapabilities {
-			want[c] = true
-		}
+		want = append(want, names.DHCPImpliedCapabilities...)
 	}
-	if len(want) == 0 {
-		return nil
-	}
-	caps := make([]corev1.Capability, 0, len(want))
-	for c := range want {
-		caps = append(caps, corev1.Capability(c))
-	}
-	sort.Slice(caps, func(i, j int) bool { return caps[i] < caps[j] })
-	return &corev1.SecurityContext{
-		Capabilities: &corev1.Capabilities{Add: caps},
-	}
+	return &corev1.SecurityContext{Capabilities: capsOf(want...)}
 }
 
 // deviceHasInImageDHCP reports whether any interface expects the image's own

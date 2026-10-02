@@ -123,6 +123,13 @@ type Config struct {
 	DeviceDefaultCPU    string `env:"DEVICE_DEFAULT_CPU" envDefault:"100m"`
 	DeviceDefaultMemory string `env:"DEVICE_DEFAULT_MEMORY" envDefault:"256Mi"`
 
+	// DeviceBaseCapabilities are the capabilities a device container keeps after all are dropped (on top of its
+	// SecurityPreset's). DeviceUserNamespaces runs device pods with hostUsers: false. DeviceEphemeralStorage limits
+	// the writable layer, logs and emptyDirs of a device ("" or "0" = no limit).
+	DeviceBaseCapabilities []string `env:"DEVICE_BASE_CAPABILITIES" envSeparator:"," envDefault:"AUDIT_WRITE,CHOWN,DAC_OVERRIDE,FOWNER,FSETID,KILL,NET_BIND_SERVICE,SETGID,SETPCAP,SETUID,SYS_CHROOT"`
+	DeviceUserNamespaces   bool     `env:"DEVICE_USER_NAMESPACES" envDefault:"false"`
+	DeviceEphemeralStorage string   `env:"DEVICE_EPHEMERAL_STORAGE" envDefault:"2Gi"`
+
 	// State is the device state persistence configuration (snapshot registry
 	// and snapshot policy). Every field is optional; Enabled=false is today's
 	// behaviour.
@@ -240,6 +247,13 @@ func LoadConfig() (*Config, error) {
 		if _, err := resource.ParseQuantity(v); err != nil {
 			return nil, fmt.Errorf("%s %q: %w", name, v, err)
 		}
+	}
+	if v := cfg.DeviceEphemeralStorage; v != "" && v != "0" {
+		if q, err := resource.ParseQuantity(v); err != nil || q.Sign() < 0 {
+			return nil, fmt.Errorf("DEVICE_EPHEMERAL_STORAGE %q is not a quantity", v)
+		}
+	} else {
+		cfg.DeviceEphemeralStorage = ""
 	}
 	if err := cfg.GroupPods.Validate(); err != nil {
 		return nil, err

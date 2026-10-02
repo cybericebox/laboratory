@@ -108,3 +108,29 @@ func TestGatewayEgressDefaultMirrorsTheSharedList(t *testing.T) {
 		t.Fatalf("envDefault %q != DefaultDenyCIDRs %q", got, egress.DefaultDenyCIDRs)
 	}
 }
+
+func TestDeviceSecurityDefaults(t *testing.T) {
+	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
+	t.Setenv("BASE_DOMAIN", "labs.example.com")
+	setRequiredEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.DeviceBaseCapabilities) != 11 || cfg.DeviceUserNamespaces || cfg.DeviceEphemeralStorage != "2Gi" {
+		t.Fatalf("%v %v %q", cfg.DeviceBaseCapabilities, cfg.DeviceUserNamespaces, cfg.DeviceEphemeralStorage)
+	}
+	for _, c := range cfg.DeviceBaseCapabilities {
+		if c == "NET_RAW" || c == "MKNOD" || c == "SYS_ADMIN" {
+			t.Errorf("%s must not be in the default base set", c)
+		}
+	}
+	t.Setenv("DEVICE_EPHEMERAL_STORAGE", "0")
+	if cfg, err = LoadConfig(); err != nil || cfg.DeviceEphemeralStorage != "" {
+		t.Fatalf("0 means no limit: %q %v", cfg.DeviceEphemeralStorage, err)
+	}
+	t.Setenv("DEVICE_EPHEMERAL_STORAGE", "lots")
+	if _, err = LoadConfig(); err == nil {
+		t.Fatal("a bad quantity must be refused")
+	}
+}

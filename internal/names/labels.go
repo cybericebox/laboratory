@@ -46,6 +46,11 @@ const (
 	// Non-empty: interface name to wire via k8s CNI (e.g. "accessport").
 	AnnotationDefaultNetwork = "network.cybericebox.com/default-network"
 
+	// AnnotationConntrackAccounting on a pod asks the node-agent to switch on conntrack byte accounting and flow
+	// timestamps in the pod's network namespace when the pod is wired (CNI ADD). The pod cannot do it itself without
+	// being privileged (/proc/sys is read-only for an unprivileged container).
+	AnnotationConntrackAccounting = "network.cybericebox.com/conntrack-accounting"
+
 	// AnnotationDevice tags a pod/resource with its logical device name.
 	AnnotationDevice = "cybericebox.com/device"
 

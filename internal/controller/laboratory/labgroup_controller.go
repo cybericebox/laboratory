@@ -504,8 +504,15 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 	if err := r.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: ns}, &existing); err == nil {
 		changed := existing.Spec.Replicas == nil || *existing.Spec.Replicas != replicas
 		existing.Spec.Replicas = ptrInt32(replicas)
-		if len(existing.Spec.Template.Spec.InitContainers) == 0 {
-			existing.Spec.Template.Spec.InitContainers = []corev1.Container{r.vpnAccountingInitContainer(r.VPNImage)}
+		// The hardened shape reaches the VPN pods that already run too (a rolling restart of the pod).
+		if hardenGroupPod(&existing.Spec.Template.Spec, "vpn", vpnCaps) {
+			changed = true
+		}
+		if existing.Spec.Template.Annotations[names.AnnotationConntrackAccounting] != "true" {
+			if existing.Spec.Template.Annotations == nil {
+				existing.Spec.Template.Annotations = map[string]string{}
+			}
+			existing.Spec.Template.Annotations[names.AnnotationConntrackAccounting] = "true"
 			changed = true
 		}
 		if len(existing.Spec.Template.Spec.Containers) > 0 {
@@ -546,25 +553,19 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      map[string]string{"app": "vpn"},
-					Annotations: map[string]string{names.AnnotationDefaultNetwork: "eth0"},
+					Annotations: map[string]string{names.AnnotationDefaultNetwork: "eth0", names.AnnotationConntrackAccounting: "true"},
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: "vpn",
 					ImagePullSecrets:   pullSecretRefs(r.ImagePullSecrets),
 					NodeSelector:       r.LabNodeSelector,
 					Tolerations:        r.LabTolerations,
-					InitContainers:     []corev1.Container{r.vpnAccountingInitContainer(vpnImage)},
 					Containers: []corev1.Container{{
 						Name:            "vpn",
 						Resources:       r.GroupPods.VPN(),
 						Image:           vpnImage,
 						Command:         []string{"/lab", "vpn"},
 						ImagePullPolicy: corev1.PullIfNotPresent,
-						SecurityContext: &corev1.SecurityContext{
-							Capabilities: &corev1.Capabilities{
-								Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
-							},
-						},
 						Env: append([]corev1.EnvVar{
 							{
 								Name: "PRIVATE_KEY",
@@ -586,32 +587,8 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 			},
 		},
 	}
+	hardenGroupPod(&d.Spec.Template.Spec, "vpn", vpnCaps)
 	return r.Create(ctx, d)
-}
-
-// vpnAccountingScript turns on conntrack byte accounting and flow timestamps in
-// the pod network namespace. Both are off by default and /proc/sys is read-only
-// for the unprivileged VPN container, so a short privileged init container does
-// it once. The script never fails the pod: without the switches the flow
-// collector still counts attempts and replies, only bytes stay zero.
-const vpnAccountingScript = `for i in 1 2 3 4 5; do
-  [ -w /proc/sys/net/netfilter/nf_conntrack_acct ] && break
-  iptables -C FORWARD -m conntrack --ctstate ESTABLISHED -j ACCEPT >/dev/null 2>&1
-  sleep 1
-done
-echo 1 > /proc/sys/net/netfilter/nf_conntrack_acct || echo "conntrack acct unavailable"
-echo 1 > /proc/sys/net/netfilter/nf_conntrack_timestamp || echo "conntrack timestamp unavailable"
-exit 0`
-
-func (r *LabGroupReconciler) vpnAccountingInitContainer(image string) corev1.Container {
-	privileged := true
-	return corev1.Container{
-		Name:            "conntrack-accounting",
-		Image:           image,
-		Command:         []string{"/bin/sh", "-c", vpnAccountingScript},
-		ImagePullPolicy: corev1.PullIfNotPresent,
-		SecurityContext: &corev1.SecurityContext{Privileged: &privileged},
-	}
 }
 
 // ensureGatewayDeployment creates the per-LabGroup internet-gateway pod.
@@ -629,6 +606,9 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 		existing.Spec.Replicas = ptrInt32(replicas)
 		// A security setting reaches the gateways that already run too (a restart of the pod).
 		if r.convergeGateway(&existing) {
+			changed = true
+		}
+		if hardenGroupPod(&existing.Spec.Template.Spec, "gateway", gatewayCaps) {
 			changed = true
 		}
 		if !changed {
@@ -660,17 +640,13 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 						Image:           gatewayImage,
 						Command:         []string{"/lab", "gateway"},
 						ImagePullPolicy: corev1.PullIfNotPresent,
-						SecurityContext: &corev1.SecurityContext{
-							Capabilities: &corev1.Capabilities{
-								Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
-							},
-						},
-						Env: r.gatewayEnv(ns),
+						Env:             r.gatewayEnv(ns),
 					}},
 				},
 			},
 		},
 	}
+	hardenGroupPod(&d.Spec.Template.Spec, "gateway", gatewayCaps)
 	return r.Create(ctx, d)
 }
 

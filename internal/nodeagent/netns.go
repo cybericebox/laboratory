@@ -12,6 +12,29 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
+// EnableConntrackAccounting switches on conntrack byte accounting and flow timestamps in the target netns. They are
+// off by default and /proc/sys is read-only for an unprivileged container, so the VPN pod (which carries the
+// annotation names.AnnotationConntrackAccounting) cannot do it itself; the node-agent already works in pod
+// namespaces. Without them the flow collector still counts attempts and replies, only bytes stay zero, so a failure
+// is reported and never fails the pod.
+func EnableConntrackAccounting(netnsPath string) error {
+	var last error
+	for _, f := range []string{"nf_conntrack_acct", "nf_conntrack_timestamp"} {
+		ok := false
+		for i := 0; i < 5 && !ok; i++ {
+			if last = nsenterRun(netnsPath, "sh", "-c", "echo 1 > /proc/sys/net/netfilter/"+f); last == nil {
+				ok = true
+			} else {
+				time.Sleep(200 * time.Millisecond)
+			}
+		}
+		if !ok {
+			return fmt.Errorf("%s: %w", f, last)
+		}
+	}
+	return nil
+}
+
 // WaitForLink polls until the named link appears in the current netns or the deadline passes.
 func WaitForLink(name string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)

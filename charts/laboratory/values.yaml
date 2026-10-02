@@ -429,6 +429,30 @@ registry:
 # Devices: optional state persistence
 # ============================================================
 devices:
+  # Hardening of the device pods (the participant is root inside). Every capability is dropped, then baseCapabilities
+  # and those of the device's SecurityPreset (service, net, debug) are added back. The default is the Docker default
+  # set without MKNOD (device nodes), NET_RAW (raw sockets: ARP/ICMP spoofing, ping) and SETFCAP; an image that needs
+  # ping or raw sockets uses the net or debug preset, or add NET_RAW here for every device. Device pods never get the
+  # service account token and run with the runtime's default seccomp profile.
+  security:
+    baseCapabilities:
+      - AUDIT_WRITE
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - FSETID
+      - KILL
+      - NET_BIND_SERVICE
+      - SETGID
+      - SETPCAP
+      - SETUID
+      - SYS_CHROOT
+    # Run device pods in a user namespace (hostUsers: false): root in a device is not root on the node. Needs Kubernetes
+    # 1.33+, a runtime with support (containerd 2.x) and kernel 6.3+. Off until verified on the cluster.
+    userNamespaces: false
+    # Limit of the writable layer, logs and emptyDirs of a device, so one device cannot fill the node's disk
+    # (DiskPressure evicts other pods). "0" = no limit.
+    ephemeralStorage: 2Gi
   # Device state persistence: the writable layer of a device container survives an
   # UNPLANNED container restart (crash, OOM, reschedule). The node-agent snapshots
   # it into the platform registry above (zot); the operator recreates the device

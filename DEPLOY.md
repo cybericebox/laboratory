@@ -710,6 +710,31 @@ The gateway forwards to the **public internet only**:
   policy. A change reaches the gateways that already run (their pods restart). Verify from a lab device with `internet.enabled`: the
   metadata address, a node address and the API server are unreachable, a public address is reachable.
 
+### Hardening of the lab pods
+
+| Pod | Token | Seccomp | Capabilities (everything else dropped) | Other |
+|---|---|---|---|---|
+| Device | never | RuntimeDefault | `devices.security.baseCapabilities` plus the SecurityPreset's (`service`, `net`, `debug`) and, for an in-image DHCP client, NET_ADMIN and NET_RAW | no service links; `ephemeralStorage` limit; optional `hostUsers: false` |
+| Device `netconfig` init | never | RuntimeDefault | NET_ADMIN, NET_RAW | no privilege escalation |
+| VPN | kept (talks to the API) | RuntimeDefault | NET_ADMIN, NET_RAW | no privilege escalation, **no privileged init container** |
+| Gateway | kept | RuntimeDefault | NET_ADMIN, NET_RAW, NET_BIND_SERVICE (its DHCP server binds port 67) | no privilege escalation |
+
+- **Device capabilities.** All are dropped first. The default base set is the Docker default without MKNOD (device nodes), NET_RAW (raw sockets,
+  so no ARP or ICMP spoofing, and no `ping` unless the preset or the base set gives it) and SETFCAP. Privilege escalation stays allowed in a
+  device on purpose: lab images run `sudo` and setuid binaries. An image that needs raw sockets uses the `net` or `debug` preset.
+- **VPN conntrack accounting.** The switches `nf_conntrack_acct` and `nf_conntrack_timestamp` need a writable `/proc/sys`, which an unprivileged
+  container does not have. The VPN pod carries the annotation `network.cybericebox.com/conntrack-accounting: "true"` and the node-agent sets them in the
+  pod's network namespace when it wires the pod (CNI ADD). If that fails the flow collector still counts attempts and replies, only bytes stay zero.
+- **Existing groups.** The operator brings the VPN and gateway Deployments that already run to this shape (their pods restart once, WireGuard clients
+  reconnect within the keepalive). Device pods of labs that already run keep what they were created with; new labs get the hardening.
+- **User namespaces** (`devices.security.userNamespaces`, default `false`): root in a device is not root on the node. Needs Kubernetes 1.33+,
+  containerd 2.x and kernel 6.3+. Verify device networking (the veth is moved into the pod namespace by the node-agent) on your cluster before turning it on.
+- **Ephemeral storage** (`devices.security.ephemeralStorage`, 2Gi): the writable layer, logs and emptyDirs of one device. Without a limit a device can fill
+  the node's disk and DiskPressure evicts other pods. The PID limit is a node setting: set the kubelet's `podPidsLimit` (`--pod-max-pids`) in the
+  cluster configuration (not a pod field).
+- Not done here: a sandbox RuntimeClass (gVisor, Kata) for hostile images, and Pod Security Admission on the group namespaces (the lab pods need NET_ADMIN,
+  which `baseline` allows, but the `net` preset adds more; the admission policy below is the guard that matters for the operator).
+
 ### Operator permissions
 
 The operator is not a cluster-admin in disguise. Its ClusterRole (`laboratory-manager-role`) holds:
