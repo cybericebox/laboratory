@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/devices"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/netattach"
@@ -641,19 +642,19 @@ func (r *DeviceReconciler) devicesForLabGroup(ctx context.Context, obj client.Ob
 }
 
 // devicesForConnection maps a Connection to reconcile requests for the devices
-// at its endpoints (CR name is "<labRef>-<device>"). Enqueuing a non-switch
+// at its endpoints (CR name: devices.Name, or the old "<labRef>-<device>"). Enqueuing a non-switch
 // device is harmless — its reconcile ignores Connections.
 func (r *DeviceReconciler) devicesForConnection(_ context.Context, obj client.Object) []reconcile.Request {
 	conn, ok := obj.(*laboratoryv1alpha1.Connection)
 	if !ok {
 		return nil
 	}
-	reqs := make([]reconcile.Request, 0, len(conn.Spec.Endpoints))
+	reqs := make([]reconcile.Request, 0, 2*len(conn.Spec.Endpoints))
 	for _, e := range conn.Spec.Endpoints {
-		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
-			Name:      fmt.Sprintf("%s-%s", conn.Spec.LabRef, e.Device),
-			Namespace: conn.Namespace,
-		}})
+		// The device may carry its current name or the old one; the one that does not exist is ignored.
+		for _, n := range devices.Candidates(conn.Spec.LabRef, e.Device) {
+			reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Name: n, Namespace: conn.Namespace}})
+		}
 	}
 	return reqs
 }

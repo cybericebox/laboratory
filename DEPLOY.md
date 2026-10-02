@@ -1418,3 +1418,25 @@ component that runs it clamps or ignores the bad value instead of failing.
   names a refused spelling is not touched until its devices are recreated.
 - `images.tenantDeny` still defaults to empty: the chart cannot know which repositories of an installation are private. Set it to the
   platform's private organizations.
+
+### Names and system pods (R-19)
+
+- **System pods are selected by `laboratory.cybericebox.com/component`** (`vpn`, `gateway`), a label under the platform prefix that no
+  caller can set, never by `app`: device pods carry `app=<device name>`, so a device named `vpn` used to join the VPN Service and match
+  the network policies written for the VPN. The VPN Service, the `vpn-egress` and `gateway-egress` Cilium policies, the label sync,
+  the scheduler and the node-agent all use it. The web Service and web NetworkPolicy of a device select by the lab and device labels.
+- **Reserved device names**: `vpn`, `gateway`, `internet` are refused on CreateLabs and by the Lab CRD (a CEL rule on the device name,
+  ratcheting: a Lab that already has such a device can still be updated).
+- **Device object names** are `<lab>-<device>-<hash>` (10 hex over the pair with a separator no name contains), so two pairs never
+  share a name; the env Secret is `<device object name>-env`. The old name `<lab>-<device>` was ambiguous (lab `a-b` with device `c`, lab
+  `a` with device `b-c`).
+- **Gateway**: each lab interface of the gateway pod may send only from its own subnet (`LABSRC`), the forward rule accepts only
+  `lab+` interfaces towards the outside, and the filter is built in the order that is never open (policy DROP, then the egress and
+  source filters, then the accepting rules; the egress chain is rebuilt beside the old one and the jump switched, so a restart has no
+  gap). A pod without ip6tables logs that it forwards no IPv6.
+- **Upgrade (existing objects keep working).** The operator adds the component label to the VPN and gateway Deployment templates (the
+  selector is immutable and untouched), so each pod is replaced once, like for any hardening change. The VPN Service and the Cilium
+  policies keep the old `app` selector until every VPN or gateway pod of the group carries the new label, then switch, so there is no moment
+  without a selector. Devices that exist under the old name keep it and keep their pods; only a pair that has no device yet gets the new
+  name, and an old-named object that belongs to another pair is never adopted. Nothing has to be done by hand. Apply the CRDs first
+  (see the upgrade order above) so the reserved-name rule and the device ceiling (`maxItems: 64`) are present.

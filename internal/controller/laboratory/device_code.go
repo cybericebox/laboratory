@@ -7,10 +7,10 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/devices"
 	"github.com/cybericebox/laboratory/internal/names"
 )
 
@@ -70,8 +70,7 @@ func (a *codeAllocator) load(ctx context.Context) error {
 // created yet), a new one for a device that has none, and "" for a device that
 // exists without a code (it predates codes and keeps its names).
 func (a *codeAllocator) codeFor(ctx context.Context, device string) (string, error) {
-	var existing laboratoryv1alpha1.Device
-	err := a.r.reader().Get(ctx, types.NamespacedName{Namespace: a.lab.Namespace, Name: a.lab.Name + "-" + device}, &existing)
+	existing, err := devices.Get(ctx, a.r.reader(), a.lab.Namespace, a.lab.Name, device)
 	switch {
 	case err == nil:
 		return existing.Spec.Code, nil

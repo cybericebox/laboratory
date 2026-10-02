@@ -6,12 +6,13 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/cybericebox/laboratory/internal/egress"
+	"github.com/cybericebox/laboratory/internal/names"
 )
 
 // TestVPNCiliumPolicy asserts the vpn CiliumNetworkPolicy locks egress down to
-// kube-apiserver only (never world), and selects pods labelled app=vpn.
+// kube-apiserver only (never world), and selects the pods by the operator-only component label.
 func TestVPNCiliumPolicy(t *testing.T) {
-	policy := vpnCiliumPolicy("ns1")
+	policy := vpnCiliumPolicy("ns1", map[string]string{names.LabelComponent: "vpn"})
 
 	if got := policy.GetAPIVersion(); got != "cilium.io/v2" {
 		t.Fatalf("apiVersion = %q, want cilium.io/v2", got)
@@ -26,12 +27,15 @@ func TestVPNCiliumPolicy(t *testing.T) {
 		t.Fatalf("namespace = %q, want ns1", got)
 	}
 
-	app, found, err := unstructured.NestedString(policy.Object, "spec", "endpointSelector", "matchLabels", "app")
+	app, found, err := unstructured.NestedString(policy.Object, "spec", "endpointSelector", "matchLabels", names.LabelComponent)
 	if err != nil || !found {
-		t.Fatalf("endpointSelector.matchLabels.app not found: err=%v", err)
+		t.Fatalf("endpointSelector.matchLabels.%s not found: err=%v", names.LabelComponent, err)
 	}
 	if app != "vpn" {
-		t.Fatalf("endpointSelector.matchLabels.app = %q, want vpn", app)
+		t.Fatalf("component = %q, want vpn", app)
+	}
+	if _, has, _ := unstructured.NestedString(policy.Object, "spec", "endpointSelector", "matchLabels", "app"); has {
+		t.Fatal("the policy must not select by the app label: a device named vpn carries it")
 	}
 
 	egress, found, err := unstructured.NestedSlice(policy.Object, "spec", "egress")
@@ -98,12 +102,12 @@ func TestVPNCiliumPolicy(t *testing.T) {
 
 // The gateway reaches the API server on its API ports only, and the world minus the internal ranges (v4 and v6).
 func TestGatewayCiliumPolicy(t *testing.T) {
-	policy := gatewayCiliumPolicy("ns1")
+	policy := gatewayCiliumPolicy("ns1", map[string]string{names.LabelComponent: "gateway"})
 
 	if policy.GetKind() != "CiliumNetworkPolicy" || policy.GetName() != "gateway-egress" || policy.GetNamespace() != "ns1" {
 		t.Fatalf("identity: %s %s %s", policy.GetKind(), policy.GetName(), policy.GetNamespace())
 	}
-	if app, _, _ := unstructured.NestedString(policy.Object, "spec", "endpointSelector", "matchLabels", "app"); app != "gateway" {
+	if app, _, _ := unstructured.NestedString(policy.Object, "spec", "endpointSelector", "matchLabels", names.LabelComponent); app != "gateway" {
 		t.Fatalf("selects app=%q, want gateway", app)
 	}
 	egressRules, found, err := unstructured.NestedSlice(policy.Object, "spec", "egress")
@@ -156,7 +160,7 @@ func TestGatewayCiliumPolicy(t *testing.T) {
 
 // The VPN pod reaches the API server on its API ports only.
 func TestVPNCiliumPolicyLimitsTheAPIServerPorts(t *testing.T) {
-	egress, _, _ := unstructured.NestedSlice(vpnCiliumPolicy("ns1").Object, "spec", "egress")
+	egress, _, _ := unstructured.NestedSlice(vpnCiliumPolicy("ns1", map[string]string{names.LabelComponent: "vpn"}).Object, "spec", "egress")
 	if _, ok := egress[0].(map[string]interface{})["toPorts"]; !ok {
 		t.Fatalf("the API server entity of the VPN pod needs ports: %v", egress[0])
 	}

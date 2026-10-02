@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
 )
 
 // The scheduler decides when a group's VPN and gateway pods start. Status.Pods
@@ -73,9 +74,9 @@ func (r *LabGroupReconciler) ensureGroupScheduling(ctx context.Context, lg *labo
 // next reconcile.
 func (r *LabGroupReconciler) syncPodLabels(ctx context.Context, lg *laboratoryv1alpha1.LabGroup) error {
 	desired := userLabels(lg.Labels)
-	for _, app := range []string{"vpn", "gateway"} {
+	for _, component := range []string{names.ComponentVPN, names.ComponentGateway} {
 		var pods corev1.PodList
-		if err := r.List(ctx, &pods, client.InNamespace(laboratoryv1alpha1.LabGroupNamespaceOf(lg)), client.MatchingLabels{"app": app}); err != nil {
+		if err := r.List(ctx, &pods, client.InNamespace(laboratoryv1alpha1.LabGroupNamespaceOf(lg)), client.MatchingLabels{names.LabelComponent: component}); err != nil {
 			return err
 		}
 		for i := range pods.Items {

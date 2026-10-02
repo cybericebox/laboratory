@@ -11,6 +11,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	devnames "github.com/cybericebox/laboratory/internal/devices"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
@@ -24,7 +25,7 @@ func TestLabsEndToEnd(t *testing.T) {
 
 	secret := func(lab, dev string) map[string]string {
 		t.Helper()
-		s, err := k8s.CoreV1().Secrets("team-lab").Get(ctx, lab+"-"+dev+"-env", metav1.GetOptions{})
+		s, err := k8s.CoreV1().Secrets("team-lab").Get(ctx, devnames.Name(lab, dev)+"-env", metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
 			return nil
 		}
@@ -77,7 +78,7 @@ func TestLabsEndToEnd(t *testing.T) {
 	}
 
 	// Resend: EXISTS, Secrets rewritten; a Secret deleted behind the agent's back returns.
-	if err := k8s.CoreV1().Secrets("team-lab").Delete(ctx, "c1-web-env", metav1.DeleteOptions{}); err != nil {
+	if err := k8s.CoreV1().Secrets("team-lab").Delete(ctx, devnames.Name("c1", "web")+"-env", metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	res, err = h.CreateLabs(ctx, req)
@@ -150,4 +151,42 @@ func TestLabsEndToEnd(t *testing.T) {
 	wantStates(t, del, err, stDeleted, stDeleted, stDeleted)
 	del, err = h.DeleteLabs(ctx, &protobuf.DeleteRequest{Items: []*protobuf.ItemRef{{LabGroup: "team-lab", Name: "c1"}}})
 	wantStates(t, del, err, stNotFound)
+}
+
+// The names the platform provides in every lab cannot be taken by a device.
+func TestCreateLabsRefusesReservedDeviceNames(t *testing.T) {
+	h, k8s := newTestHandler(t)
+	readyGroup(t, h, k8s, "team-lab", "team-lab", nil)
+	for _, name := range names.ReservedDeviceNames {
+		_, err := h.CreateLabs(context.Background(), &protobuf.CreateLabsRequest{
+			Variants: []*protobuf.LabVariant{{VariantId: "v", SpecJson: specJSON(name)}},
+			Items:    []*protobuf.LabItem{{LabGroup: "team-lab", Name: "l1", VariantId: "v"}},
+		})
+		if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "reserved") {
+			t.Errorf("device %q: %v", name, err)
+		}
+	}
+}
+
+// Labs "a-b" (device "c") and "a" (device "b-c") used to spell one Secret name; each keeps its own now.
+func TestEnvSecretsOfCollidingPairsStaySeparate(t *testing.T) {
+	h, k8s := newTestHandler(t)
+	ctx := context.Background()
+	readyGroup(t, h, k8s, "team-lab", "team-lab", nil)
+	envOf := func(dev, k, v string) *protobuf.DeviceEnv {
+		return &protobuf.DeviceEnv{Device: dev, Vars: map[string]string{k: v}}
+	}
+	for _, c := range []struct{ lab, dev, flag string }{{"a-b", "c", "one"}, {"a", "b-c", "two"}} {
+		res, err := h.CreateLabs(ctx, &protobuf.CreateLabsRequest{
+			Variants: []*protobuf.LabVariant{{VariantId: "v", SpecJson: specJSON(c.dev), Env: []*protobuf.DeviceEnv{envOf(c.dev, "FLAG", c.flag)}}},
+			Items:    []*protobuf.LabItem{{LabGroup: "team-lab", Name: c.lab, VariantId: "v"}},
+		})
+		wantStates(t, res, err, stCreated)
+	}
+	for _, c := range []struct{ lab, dev, flag string }{{"a-b", "c", "one"}, {"a", "b-c", "two"}} {
+		s, err := k8s.CoreV1().Secrets("team-lab").Get(ctx, devnames.Name(c.lab, c.dev)+"-env", metav1.GetOptions{})
+		if err != nil || string(s.Data["FLAG"]) != c.flag {
+			t.Errorf("%s/%s: %v %v", c.lab, c.dev, err, s)
+		}
+	}
 }

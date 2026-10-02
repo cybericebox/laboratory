@@ -50,13 +50,12 @@ func Run() {
 		log.Error(err, "init iptables")
 		os.Exit(1)
 	}
-	if err := ipt.SetupForwardRules(); err != nil {
-		log.Error(err, "setup forward rules")
+	if err := ipt.SetupFilter(); err != nil {
+		log.Error(err, "setup the forwarding filter")
 		os.Exit(1)
 	}
-	if err := ipt.SetupEgressFilter(); err != nil {
-		log.Error(err, "setup egress filter")
-		os.Exit(1)
+	if !ipt.IPv6Filtered {
+		log.Info("no ip6tables in this pod: the gateway forwards no IPv6")
 	}
 
 	mgr, err := ctrl.NewManager(

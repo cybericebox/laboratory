@@ -271,7 +271,7 @@ func (s *Scheduler) load(ctx context.Context) (*clusterView, error) {
 		if lab, dev := p.Labels[names.LabelLab], p.Labels[names.LabelDevice]; lab != "" && dev != "" {
 			k := devicePodKey(p.Namespace, lab, dev)
 			snap.podsOf[k] = append(snap.podsOf[k], p)
-		} else if app := p.Labels["app"]; app == "vpn" || app == "gateway" {
+		} else if app := systemComponentOf(p); app != "" {
 			k := p.Namespace + "/" + app
 			snap.podsOf[k] = append(snap.podsOf[k], p)
 		}
@@ -984,4 +984,19 @@ func (s *Scheduler) gcPrepull(ctx context.Context, keep map[string]bool) error {
 // nodeReserve is the absolute platform reserve of every node.
 func (s *Scheduler) nodeReserve() amount {
 	return amount{cpu: s.Config.PlatformReserveNode.Cpu().MilliValue(), mem: s.Config.PlatformReserveNode.Memory().Value()}
+}
+
+// systemComponentOf is "vpn" or "gateway" for the group's own pods, "" for any other pod. LabelComponent decides; a pod made
+// before the label is told by `app` (device pods, which carry the lab label, are handled before this is asked).
+func systemComponentOf(p *corev1.Pod) string {
+	if c := p.Labels[names.LabelComponent]; c != "" {
+		if c == names.ComponentVPN || c == names.ComponentGateway {
+			return c
+		}
+		return ""
+	}
+	if app := p.Labels["app"]; app == names.ComponentVPN || app == names.ComponentGateway {
+		return app
+	}
+	return ""
 }

@@ -2,6 +2,7 @@ package laboratory
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -32,7 +33,7 @@ func TestPruneDevices(t *testing.T) {
 				Namespace: "team-alpha",
 				Labels:    map[string]string{names.LabelLab: "lab1"},
 			},
-			Spec: laboratoryv1alpha1.DeviceSpec{LabRef: "lab1"},
+			Spec: laboratoryv1alpha1.DeviceSpec{LabRef: "lab1", Name: strings.TrimPrefix(name, "lab1-")},
 		}
 	}
 	c := fake.NewClientBuilder().WithScheme(s).

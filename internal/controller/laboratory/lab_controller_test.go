@@ -1,7 +1,7 @@
 package laboratory
 
 import (
-	"fmt"
+	"github.com/cybericebox/laboratory/internal/devices"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -129,6 +129,22 @@ var _ = Describe(
 		)
 
 		It(
+			"refuses the device names the platform reserves", func() {
+				for _, n := range []string{"vpn", "gateway", "internet"} {
+					lab := &laboratoryv1alpha1.Lab{
+						ObjectMeta: metav1.ObjectMeta{Name: "reserved-" + n, Namespace: ns},
+						Spec: laboratoryv1alpha1.LabSpec{
+							Devices: []laboratoryv1alpha1.DeviceTemplate{{Name: n, Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx"}},
+						},
+					}
+					err := k8sClient.Create(ctx, lab)
+					Expect(err).To(HaveOccurred(), n)
+					Expect(err.Error()).To(ContainSubstring("reserved"), n)
+				}
+			},
+		)
+
+		It(
 			"allocates VNI for UnmanagedSwitch device", func() {
 				lab := &laboratoryv1alpha1.Lab{
 					ObjectMeta: metav1.ObjectMeta{Name: "vni-test", Namespace: ns},
@@ -158,7 +174,7 @@ var _ = Describe(
 					},
 				)
 
-				deviceName := fmt.Sprintf("%s-%s", "vni-test", "sw1")
+				deviceName := devices.Name("vni-test", "sw1")
 				Eventually(
 					func() *uint {
 						var d laboratoryv1alpha1.Device

@@ -29,6 +29,7 @@ import (
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/devices"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/netattach"
@@ -418,9 +419,11 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 	}
 
 	for _, tmpl := range lab.Spec.Devices {
-		deviceName := fmt.Sprintf("%s-%s", lab.Name, tmpl.Name)
+		deviceName := devices.Name(lab.Name, tmpl.Name)
 		var existing laboratoryv1alpha1.Device
-		if err := r.Get(ctx, types.NamespacedName{Name: deviceName, Namespace: lab.Namespace}, &existing); err == nil {
+		if found, err := devices.Get(ctx, r.Client, lab.Namespace, lab.Name, tmpl.Name); err == nil {
+			existing = *found
+			deviceName = existing.Name
 			// The user labels of the lab follow it onto its devices.
 			orig := existing.DeepCopy()
 			if applyUserLabels(&existing, wantLabels) {
@@ -637,7 +640,7 @@ func (r *LabReconciler) pruneConnections(ctx context.Context, lab *laboratoryv1a
 func (r *LabReconciler) pruneDevices(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
 	desired := make(map[string]bool, len(lab.Spec.Devices))
 	for i := range lab.Spec.Devices {
-		desired[fmt.Sprintf("%s-%s", lab.Name, lab.Spec.Devices[i].Name)] = true
+		desired[lab.Spec.Devices[i].Name] = true
 	}
 	var list laboratoryv1alpha1.DeviceList
 	if err := r.List(ctx, &list, client.InNamespace(lab.Namespace), client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
@@ -646,7 +649,7 @@ func (r *LabReconciler) pruneDevices(ctx context.Context, lab *laboratoryv1alpha
 	vniAllocator := poolpkg.NewAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
 	for i := range list.Items {
 		d := &list.Items[i]
-		if desired[d.Name] || !d.DeletionTimestamp.IsZero() {
+		if desired[d.Spec.Name] || !d.DeletionTimestamp.IsZero() {
 			continue
 		}
 		if d.Status.VNI != nil {
@@ -1322,8 +1325,8 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 			svc.Labels[names.LabelLab] = lab.Name
 			svc.Labels[names.LabelDevice] = d.Name
 			svc.Spec.Selector = map[string]string{
-				names.LabelLab: lab.Name,
-				"app":          d.Name,
+				names.LabelLab:    lab.Name,
+				names.LabelDevice: d.Name,
 			}
 			protocol := web.Protocol
 			if protocol == "" {
@@ -1400,7 +1403,7 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 					)
 				}
 				np.Spec = networkingv1.NetworkPolicySpec{
-					PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": d.Name}},
+					PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{names.LabelLab: lab.Name, names.LabelDevice: d.Name}},
 					PolicyTypes: []networkingv1.PolicyType{
 						networkingv1.PolicyTypeIngress,
 						networkingv1.PolicyTypeEgress,

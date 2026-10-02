@@ -3,6 +3,7 @@ package laboratory
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"time"
@@ -15,8 +16,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
@@ -509,9 +512,60 @@ func generateWireGuardKeypair() ([]byte, []byte, error) {
 	return []byte(key.String()), []byte(key.PublicKey().String()), nil
 }
 
+// systemPodsConverged says whether every pod of the group's own component (the VPN or the gateway) carries
+// LabelComponent. Pods made before the label existed do not, until the Deployment's template change has rolled them; a
+// selector that needs the label (Service, network policy) waits for that so an upgrade never leaves a gap. A device pod
+// that happens to be named like the component carries the lab label and is not counted.
+func (r *LabGroupReconciler) systemPodsConverged(ctx context.Context, ns, component string) (bool, error) {
+	noLab, err := labels.NewRequirement(names.LabelLab, selection.DoesNotExist, nil)
+	if err != nil {
+		return false, err
+	}
+	noComponent, err := labels.NewRequirement(names.LabelComponent, selection.DoesNotExist, nil)
+	if err != nil {
+		return false, err
+	}
+	sel := labels.NewSelector().Add(*noLab, *noComponent)
+	req, err := labels.NewRequirement("app", selection.Equals, []string{component})
+	if err != nil {
+		return false, err
+	}
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods, client.InNamespace(ns), client.MatchingLabelsSelector{Selector: sel.Add(*req)}); err != nil {
+		return false, err
+	}
+	for i := range pods.Items {
+		if pods.Items[i].DeletionTimestamp == nil {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// systemSelector is the label set that selects the group's VPN or gateway pods: LabelComponent once the pods carry it,
+// the old `app` label until they do.
+func (r *LabGroupReconciler) systemSelector(ctx context.Context, ns, component string) (map[string]string, error) {
+	ok, err := r.systemPodsConverged(ctx, ns, component)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		return map[string]string{names.LabelComponent: component}, nil
+	}
+	return map[string]string{"app": component}, nil
+}
+
 func (r *LabGroupReconciler) ensureVPNService(ctx context.Context, ns string) error {
+	selector, err := r.systemSelector(ctx, ns, names.ComponentVPN)
+	if err != nil {
+		return err
+	}
 	var existing corev1.Service
 	if err := r.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: ns}, &existing); err == nil {
+		if !maps.Equal(existing.Spec.Selector, selector) {
+			existing.Spec.Selector = selector
+			return r.Update(ctx, &existing)
+		}
 		return nil
 	} else if !errors.IsNotFound(err) {
 		return err
@@ -520,7 +574,7 @@ func (r *LabGroupReconciler) ensureVPNService(ctx context.Context, ns string) er
 		ObjectMeta: metav1.ObjectMeta{Name: "vpn", Namespace: ns},
 		Spec: corev1.ServiceSpec{
 			ClusterIP: "None", // headless — DNS returns pod IP directly, no ClusterIP NAT
-			Selector:  map[string]string{"app": "vpn"},
+			Selector:  selector,
 			Ports: []corev1.ServicePort{{
 				Name:     "wireguard",
 				Protocol: corev1.ProtocolUDP,
@@ -542,6 +596,9 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 		existing.Spec.Replicas = ptrInt32(replicas)
 		// The hardened shape reaches the VPN pods that already run too (a rolling restart of the pod).
 		if hardenGroupPod(&existing.Spec.Template.Spec, "vpn", vpnCaps) {
+			changed = true
+		}
+		if setComponentLabel(&existing.Spec.Template, names.ComponentVPN) {
 			changed = true
 		}
 		if existing.Spec.Template.Annotations[names.AnnotationConntrackAccounting] != "true" {
@@ -588,7 +645,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "vpn"}},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels:      map[string]string{"app": "vpn"},
+					Labels:      map[string]string{"app": "vpn", names.LabelComponent: names.ComponentVPN},
 					Annotations: map[string]string{names.AnnotationDefaultNetwork: "eth0", names.AnnotationConntrackAccounting: "true"},
 				},
 				Spec: corev1.PodSpec{
@@ -644,6 +701,9 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 		if r.convergeGateway(&existing) {
 			changed = true
 		}
+		if setComponentLabel(&existing.Spec.Template, names.ComponentGateway) {
+			changed = true
+		}
 		if hardenGroupPod(&existing.Spec.Template.Spec, "gateway", gatewayCaps) {
 			changed = true
 		}
@@ -662,7 +722,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "gateway"}},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels:      map[string]string{"app": "gateway"},
+					Labels:      map[string]string{"app": "gateway", names.LabelComponent: names.ComponentGateway},
 					Annotations: map[string]string{names.AnnotationDefaultNetwork: "eth0"},
 				},
 				Spec: corev1.PodSpec{
@@ -684,6 +744,19 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 	}
 	hardenGroupPod(&d.Spec.Template.Spec, "gateway", gatewayCaps)
 	return r.Create(ctx, d)
+}
+
+// setComponentLabel puts LabelComponent on a pod template; it reports whether it changed anything. The Deployment's
+// selector stays as it was (it is immutable), only the pods' labels grow.
+func setComponentLabel(t *corev1.PodTemplateSpec, component string) bool {
+	if t.Labels[names.LabelComponent] == component {
+		return false
+	}
+	if t.Labels == nil {
+		t.Labels = map[string]string{}
+	}
+	t.Labels[names.LabelComponent] = component
+	return true
 }
 
 func (r *LabGroupReconciler) ensureServiceAccount(ctx context.Context, ns, name string) error {
@@ -803,13 +876,22 @@ var ciliumNetworkPolicyGVK = schema.GroupVersionKind{
 	Kind:    "CiliumNetworkPolicy",
 }
 
+// matchLabelsOf is a label set as the unstructured form of a selector.
+func matchLabelsOf(in map[string]string) map[string]interface{} {
+	out := make(map[string]interface{}, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
 // vpnCiliumPolicy builds the CiliumNetworkPolicy locking down the vpn pod's
 // egress to kube-apiserver only (its reconciler needs the API; no DNS, no
 // world). Ingress allows WireGuard UDP only from the proxy pod: its wg-demux
 // container receives every client packet on the shared edge IP and forwards
 // it to the group's vpn pod, so that pod (not "world") is the source. Replies
 // go back through conntrack.
-func vpnCiliumPolicy(ns string) *unstructured.Unstructured {
+func vpnCiliumPolicy(ns string, selector map[string]string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "cilium.io/v2",
@@ -820,9 +902,7 @@ func vpnCiliumPolicy(ns string) *unstructured.Unstructured {
 			},
 			"spec": map[string]interface{}{
 				"endpointSelector": map[string]interface{}{
-					"matchLabels": map[string]interface{}{
-						"app": "vpn",
-					},
+					"matchLabels": matchLabelsOf(selector),
 				},
 				"egress": []interface{}{apiServerEgress()},
 				"ingress": []interface{}{
@@ -870,7 +950,7 @@ func apiServerEgress() map[string]interface{} {
 // the private ranges, CGNAT, the cluster and node networks). Never in-cluster pods, no DNS. The kube-apiserver entity is
 // not a way out for the labs: they leave through this pod, and the gateway's own filter drops what they send to those
 // ranges. No ingress rule is needed; replies flow back via conntrack.
-func gatewayCiliumPolicy(ns string) *unstructured.Unstructured {
+func gatewayCiliumPolicy(ns string, selector map[string]string) *unstructured.Unstructured {
 	toAny := func(list []string) []interface{} {
 		out := make([]interface{}, len(list))
 		for i, c := range list {
@@ -895,9 +975,7 @@ func gatewayCiliumPolicy(ns string) *unstructured.Unstructured {
 			},
 			"spec": map[string]interface{}{
 				"endpointSelector": map[string]interface{}{
-					"matchLabels": map[string]interface{}{
-						"app": "gateway",
-					},
+					"matchLabels": matchLabelsOf(selector),
 				},
 				"egress": egressRules,
 			},
@@ -918,7 +996,15 @@ func (r *LabGroupReconciler) ensureVPNGatewayPolicies(ctx context.Context, ns st
 	if !r.NetworkPolicyEnabled {
 		return nil
 	}
-	for _, desired := range []*unstructured.Unstructured{vpnCiliumPolicy(ns), gatewayCiliumPolicy(ns)} {
+	vpnSel, err := r.systemSelector(ctx, ns, names.ComponentVPN)
+	if err != nil {
+		return err
+	}
+	gwSel, err := r.systemSelector(ctx, ns, names.ComponentGateway)
+	if err != nil {
+		return err
+	}
+	for _, desired := range []*unstructured.Unstructured{vpnCiliumPolicy(ns, vpnSel), gatewayCiliumPolicy(ns, gwSel)} {
 		spec, found, err := unstructured.NestedMap(desired.Object, "spec")
 		if err != nil || !found {
 			return fmt.Errorf("cilium policy %s missing spec", desired.GetName())
@@ -976,7 +1062,7 @@ func (r *LabGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Re-reconcile LabGroup when its VPN Pod changes (ready, restart, new IP).
 	vpnPodMap := func(ctx context.Context, obj client.Object) []reconcile.Request {
 		pod, ok := obj.(*corev1.Pod)
-		if !ok || pod.Labels["app"] != "vpn" {
+		if !ok || !isVPNPod(pod) {
 			return nil
 		}
 		var nsObj corev1.Namespace
@@ -994,6 +1080,16 @@ func (r *LabGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&laboratoryv1alpha1.LabGroup{}).
 		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(vpnPodMap)).
 		Complete(r)
+}
+
+// isVPNPod says whether a pod is the VPN of a group: it carries LabelComponent, or (a pod made before that label) `app=vpn`
+// without the lab label of a device pod.
+func isVPNPod(pod *corev1.Pod) bool {
+	if c := pod.Labels[names.LabelComponent]; c != "" {
+		return c == names.ComponentVPN
+	}
+	_, device := pod.Labels[names.LabelLab]
+	return !device && pod.Labels["app"] == names.ComponentVPN
 }
 
 // cachedImage is the reference a new VPN or gateway pod of the group pulls:

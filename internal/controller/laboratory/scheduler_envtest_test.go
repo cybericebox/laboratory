@@ -2,6 +2,7 @@ package laboratory
 
 import (
 	"fmt"
+	"github.com/cybericebox/laboratory/internal/devices"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -178,7 +179,7 @@ var _ = Describe("Scheduler", func() {
 				_ = k8sClient.List(ctx, &devs, client.InNamespace(ns))
 				return len(devs.Items)
 			}, timeout, interval).Should(Equal(5))
-			for _, d := range []string{"a-web", "a-db", "b-web", "c-web", "i-web"} {
+			for _, d := range []string{devices.Name("a", "web"), devices.Name("a", "db"), devices.Name("b", "web"), devices.Name("c", "web"), devices.Name("i", "web")} {
 				reconcileDevice(d)
 				Expect(getDevice(d).Status.Scheduling.State).To(Equal(laboratoryv1alpha1.PodQueued), d)
 			}
@@ -209,28 +210,28 @@ var _ = Describe("Scheduler", func() {
 
 			// Window of two pods: the first group, lab a, takes both slots.
 			tick()
-			Expect([]laboratoryv1alpha1.PodScheduleState{state("a-web"), state("a-db"), state("b-web"), state("c-web"), state("i-web")}).To(Equal(
+			Expect([]laboratoryv1alpha1.PodScheduleState{state(devices.Name("a", "web")), state(devices.Name("a", "db")), state(devices.Name("b", "web")), state(devices.Name("c", "web")), state(devices.Name("i", "web"))}).To(Equal(
 				[]laboratoryv1alpha1.PodScheduleState{st, st, qd, qd, qd}))
-			for _, d := range []string{"a-web", "a-db", "b-web", "c-web", "i-web"} {
+			for _, d := range []string{devices.Name("a", "web"), devices.Name("a", "db"), devices.Name("b", "web"), devices.Name("c", "web"), devices.Name("i", "web")} {
 				reconcileDevice(d)
 			}
-			for _, d := range []string{"a-web", "a-db"} {
+			for _, d := range []string{devices.Name("a", "web"), devices.Name("a", "db")} {
 				dep, err := deployment(workloadName(getDevice(d)))
 				Expect(err).NotTo(HaveOccurred(), d)
 				Expect(*dep.Spec.Replicas).To(Equal(int32(1)))
 			}
-			for _, d := range []string{"b-web", "c-web", "i-web"} {
+			for _, d := range []string{devices.Name("b", "web"), devices.Name("c", "web"), devices.Name("i", "web")} {
 				_, err := deployment(workloadName(getDevice(d)))
 				Expect(errors.IsNotFound(err)).To(BeTrue(), d+" must wait")
 			}
 
 			// One pod is Ready: group g1 has nothing left to dispatch, g2 waits for it,
 			// so g3 takes the slot. The wait is visible on the lab.
-			ready("a-db")
+			ready(devices.Name("a", "db"))
 			tick()
-			Expect(state("a-db")).To(Equal(sd))
-			Expect(state("c-web")).To(Equal(st))
-			Expect(state("b-web")).To(Equal(qd))
+			Expect(state(devices.Name("a", "db"))).To(Equal(sd))
+			Expect(state(devices.Name("c", "web"))).To(Equal(st))
+			Expect(state(devices.Name("b", "web"))).To(Equal(qd))
 			Eventually(func() string {
 				var l laboratoryv1alpha1.Lab
 				_ = k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "b"}, &l)
@@ -241,18 +242,18 @@ var _ = Describe("Scheduler", func() {
 			}, timeout, interval).Should(Equal("WaitingForGroup|waiting for group g1"))
 
 			// g1 is complete once its last pod is Ready; then g2, and the independent lab last.
-			ready("a-web")
-			ready("c-web")
+			ready(devices.Name("a", "web"))
+			ready(devices.Name("c", "web"))
 			tick()
-			Expect(state("b-web")).To(Equal(st))
+			Expect(state(devices.Name("b", "web"))).To(Equal(st))
 			tick()
-			Expect(state("i-web")).To(Equal(st))
+			Expect(state(devices.Name("i", "web"))).To(Equal(st))
 
 			// A pod that never becomes Ready is failed after the timeout, with a warning.
 			clock = clock.Add(6 * time.Minute)
 			tick()
-			Expect(state("b-web")).To(Equal(laboratoryv1alpha1.PodFailed))
-			Expect(state("i-web")).To(Equal(laboratoryv1alpha1.PodFailed))
+			Expect(state(devices.Name("b", "web"))).To(Equal(laboratoryv1alpha1.PodFailed))
+			Expect(state(devices.Name("i", "web"))).To(Equal(laboratoryv1alpha1.PodFailed))
 			Eventually(func() *laboratoryv1alpha1.PodFailure {
 				var l laboratoryv1alpha1.Lab
 				_ = k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "b"}, &l)

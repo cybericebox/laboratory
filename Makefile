@@ -158,8 +158,8 @@ kind-reload-operator: docker-build-controller ## Rebuild operator image, reload 
 kind-reload-lab: docker-build-lab ## Rebuild lab (vpn+gateway) image, reload into Kind
 	$(KIND) load docker-image $(LAB_IMG) --name $(KIND_CLUSTER_NAME)
 	@echo "Lab image loaded. Delete VPN/gateway pods to pick up new image:"
-	@echo "  kubectl delete pods -n <namespace> -l app=vpn"
-	@echo "  kubectl delete pods -n <namespace> -l app=gateway"
+	@echo "  kubectl delete pods -n <namespace> -l laboratory.cybericebox.com/component=vpn"
+	@echo "  kubectl delete pods -n <namespace> -l laboratory.cybericebox.com/component=gateway"
 
 .PHONY: kind-reload
 kind-reload: kind-reload-operator kind-reload-node kind-reload-lab ## Rebuild and reload all components
@@ -227,7 +227,7 @@ k0s-reload-lab: docker-build-lab ## Rebuild lab (vpn+gateway) image, import into
 		--set inetGateway.image.tag=$(BUILD_TAG)
 	@echo ""
 	@echo "✓ lab image updated: $(LAB_IMG)"
-	@echo "  Restart vpn/gateway pods to apply: kubectl delete pods -n <ns> -l app=vpn,app=gateway"
+	@echo "  Restart vpn/gateway pods to apply: kubectl delete pods -n <ns> -l 'laboratory.cybericebox.com/component in (vpn,gateway)'"
 
 .PHONY: k0s-reload-proxy
 k0s-reload-proxy: docker-build-proxy ## Rebuild proxy image, import into Lima, update image tag

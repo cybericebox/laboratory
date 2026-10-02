@@ -3,6 +3,7 @@ package laboratory
 import (
 	"context"
 	"fmt"
+	"github.com/cybericebox/laboratory/internal/devices"
 	"strings"
 	"testing"
 	"time"
@@ -186,8 +187,8 @@ func TestMixedLabAndSwitchFlip(t *testing.T) {
 	if err := r.materializeDevices(ctx, lab, nil); err != nil {
 		t.Fatal(err)
 	}
-	if !deviceStateEnabled(get("mix-web")) || deviceStateEnabled(get("mix-db")) {
-		t.Fatalf("mixed modes: web=%+v db=%+v", get("mix-web").Spec.State, get("mix-db").Spec.State)
+	if !deviceStateEnabled(get(devices.Name("mix", "web"))) || deviceStateEnabled(get(devices.Name("mix", "db"))) {
+		t.Fatalf("mixed modes: web=%+v db=%+v", get(devices.Name("mix", "web")).Spec.State, get(devices.Name("mix", "db")).Spec.State)
 	}
 	// The switch goes off, then on again: existing devices are untouched.
 	for _, allowed := range []bool{false, true} {
@@ -195,7 +196,7 @@ func TestMixedLabAndSwitchFlip(t *testing.T) {
 		if err := r.materializeDevices(ctx, lab, nil); err != nil {
 			t.Fatal(err)
 		}
-		if !deviceStateEnabled(get("mix-web")) || deviceStateEnabled(get("mix-db")) {
+		if !deviceStateEnabled(get(devices.Name("mix", "web"))) || deviceStateEnabled(get(devices.Name("mix", "db"))) {
 			t.Fatalf("the platform switch (%v) changed an existing device", allowed)
 		}
 	}
@@ -208,7 +209,7 @@ func TestMixedLabAndSwitchFlip(t *testing.T) {
 		t.Fatal(err)
 	}
 	var d laboratoryv1alpha1.Device
-	if err := r2.Get(ctx, client.ObjectKey{Namespace: "ns", Name: "late-web"}, &d); err != nil || deviceStateEnabled(&d) {
+	if err := r2.Get(ctx, client.ObjectKey{Namespace: "ns", Name: devices.Name("late", "web")}, &d); err != nil || deviceStateEnabled(&d) {
 		t.Fatalf("persistence is allowed by the platform switch only: %v %+v", err, d.Spec.State)
 	}
 }
@@ -650,7 +651,7 @@ var _ = Describe("Device state persistence: per-device mode", func() {
 
 		settle := func() {
 			Expect(lr.materializeDevices(ctx, lab, nil)).To(Succeed())
-			for _, n := range []string{"mix-web", "mix-db"} {
+			for _, n := range []string{devices.Name("mix", "web"), devices.Name("mix", "db")} {
 				for i := 0; i < 2; i++ {
 					_, err := dr.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: n, Namespace: ns}})
 					Expect(err).NotTo(HaveOccurred())
@@ -659,8 +660,8 @@ var _ = Describe("Device state persistence: per-device mode", func() {
 		}
 		expectMixed := func() {
 			var web, db laboratoryv1alpha1.Device
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "mix-web", Namespace: ns}, &web)).To(Succeed())
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "mix-db", Namespace: ns}, &db)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: devices.Name("mix", "web"), Namespace: ns}, &web)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: devices.Name("mix", "db"), Namespace: ns}, &db)).To(Succeed())
 			Expect(deviceStateEnabled(&web)).To(BeTrue())
 			Expect(deviceStateEnabled(&db)).To(BeFalse())
 
@@ -684,7 +685,7 @@ var _ = Describe("Device state persistence: per-device mode", func() {
 		lockedLab.Labels = map[string]string{names.LabelTenant: "locked"}
 		Expect(lr.materializeDevices(ctx, lockedLab, nil)).To(Succeed())
 		var lockedWeb laboratoryv1alpha1.Device
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "locked-web", Namespace: ns}, &lockedWeb)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: devices.Name("locked", "web"), Namespace: ns}, &lockedWeb)).To(Succeed())
 		Expect(deviceStateEnabled(&lockedWeb)).To(BeFalse(), "the tenant does not allow persistence")
 		Expect(lockedWeb.Labels).To(HaveKeyWithValue(names.LabelTenant, "locked"))
 

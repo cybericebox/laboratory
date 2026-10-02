@@ -15,7 +15,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/cybericebox/laboratory/internal/snapshot"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
@@ -60,7 +59,7 @@ func (h *Handler) ExportDeviceSnapshot(in *protobuf.DeviceSnapshotRequest, strea
 	if err != nil {
 		return apiErrorToStatus(err)
 	}
-	dev, err := h.cs.LaboratoryV1alpha1().Devices(ns).Get(ctx, fmt.Sprintf("%s-%s", crName(ref.GetLab()), ref.GetName()), metav1.GetOptions{})
+	dev, err := h.getDevice(ctx, ns, crName(ref.GetLab()), ref.GetName())
 	if err != nil {
 		return apiErrorToStatus(err)
 	}

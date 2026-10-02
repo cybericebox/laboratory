@@ -9,6 +9,8 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -18,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/devices"
 	"github.com/cybericebox/laboratory/internal/names"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 )
@@ -433,12 +436,12 @@ func (r *ConnectionReconciler) buildSwitchVNIFlood(
 			if ep.Device == switchLogicalName {
 				continue
 			}
-			devName := fmt.Sprintf("%s-%s", labRef, ep.Device)
-			var dev laboratoryv1alpha1.Device
-			if err := r.Get(ctx, types.NamespacedName{Name: devName, Namespace: namespace}, &dev); err != nil {
+			found, err := devices.Get(ctx, r.Client, namespace, labRef, ep.Device)
+			if err != nil {
 				allOtherSwitches = false
 				break
 			}
+			dev := *found
 			if dev.Spec.Type != laboratoryv1alpha1.DeviceTypeUnmanagedSwitch &&
 				dev.Spec.Type != laboratoryv1alpha1.DeviceTypeHub {
 				allOtherSwitches = false
@@ -495,11 +498,11 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 
 	// For each switch endpoint: remove patch port + rebuild t6 from remaining connections.
 	for _, ep := range conn.Spec.Endpoints {
-		devName := fmt.Sprintf("%s-%s", conn.Spec.LabRef, ep.Device)
-		var dev laboratoryv1alpha1.Device
-		if err := r.Get(ctx, types.NamespacedName{Name: devName, Namespace: conn.Namespace}, &dev); err != nil {
+		found, err := devices.Get(ctx, r.Client, conn.Namespace, conn.Spec.LabRef, ep.Device)
+		if err != nil {
 			continue
 		}
+		dev := *found
 		isSwitch := dev.Spec.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch ||
 			dev.Spec.Type == laboratoryv1alpha1.DeviceTypeHub
 		if !isSwitch {
@@ -543,19 +546,34 @@ func (r *ConnectionReconciler) loadEndpoints(ctx context.Context, conn *laborato
 		// Virtual singletons (vpn, internet) have no Device CRD — synthesize.
 		if ep.Device == "vpn" || ep.Device == "internet" {
 			// The "internet" endpoint is served by the gateway Deployment,
-			// whose pods carry app=gateway — not app=internet.
-			appLabel := ep.Device
+			// whose pods carry the gateway component label.
+			component := ep.Device
 			if ep.Device == "internet" {
-				appLabel = names.ComponentGateway
+				component = names.ComponentGateway
 			}
 			var pods corev1.PodList
 			if err := r.List(
 				ctx, &pods,
 				client.InNamespace(conn.Namespace),
-				client.MatchingLabels{"app": appLabel},
+				client.MatchingLabels{names.LabelComponent: component},
 				client.Limit(1),
 			); err != nil {
 				return nil, false, err
+			}
+			if len(pods.Items) == 0 {
+				// A pod made before the component label: it is the one with app=<component> that is no device's.
+				req, err := labels.NewRequirement(names.LabelLab, selection.DoesNotExist, nil)
+				if err != nil {
+					return nil, false, err
+				}
+				if err := r.List(
+					ctx, &pods,
+					client.InNamespace(conn.Namespace),
+					client.MatchingLabelsSelector{Selector: labels.SelectorFromSet(labels.Set{"app": component}).Add(*req)},
+					client.Limit(1),
+				); err != nil {
+					return nil, false, err
+				}
 			}
 			if len(pods.Items) == 0 || pods.Items[0].Spec.NodeName == "" {
 				needsRequeue = true
@@ -572,11 +590,11 @@ func (r *ConnectionReconciler) loadEndpoints(ctx context.Context, conn *laborato
 			continue
 		}
 
-		deviceName := fmt.Sprintf("%s-%s", conn.Spec.LabRef, ep.Device)
-		var dev laboratoryv1alpha1.Device
-		if err := r.Get(ctx, types.NamespacedName{Name: deviceName, Namespace: conn.Namespace}, &dev); err != nil {
+		found, err := devices.Get(ctx, r.Client, conn.Namespace, conn.Spec.LabRef, ep.Device)
+		if err != nil {
 			return nil, false, client.IgnoreNotFound(err)
 		}
+		dev := *found
 		isSwitch := dev.Spec.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch ||
 			dev.Spec.Type == laboratoryv1alpha1.DeviceTypeHub
 		nodeReady := isSwitch || dev.Status.NodeName != ""

@@ -90,6 +90,11 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, fmt.Errorf("assign IP to %s: %w", ifaceName, err)
 	}
 
+	// A lab may send only from its own subnet; installed before the lab can send anything through NAT.
+	if err := r.IPT.AddAntiSpoof(ifaceName, cidr); err != nil {
+		return ctrl.Result{}, fmt.Errorf("add anti-spoof rule for %s: %w", ifaceName, err)
+	}
+
 	// NAT: POSTROUTING MASQUERADE for this lab's subnet.
 	if err := r.IPT.AddMasquerade(cidr); err != nil {
 		return ctrl.Result{}, fmt.Errorf("add masquerade %s: %w", cidr, err)
@@ -145,6 +150,7 @@ func (r *LabGatewayReconciler) reconcileDelete(ctx context.Context, gw *laborato
 	r.DHCP.Stop(gw.Spec.LabName)
 	if cidr, err := netutil.SubnetForIndex(r.Cfg.InetBaseNetwork, 24, gw.Spec.NetworkIndex); err == nil {
 		r.IPT.DelMasquerade(cidr)
+		r.IPT.DelAntiSpoof(names.LabIfaceNameByIndex(gw.Spec.NetworkIndex), cidr)
 	}
 	controllerutil.RemoveFinalizer(gw, names.FinalizerGateway)
 	return ctrl.Result{}, r.Update(ctx, gw)

@@ -69,6 +69,8 @@ spec:
                   type: object
                 type: array
               devices:
+                description: Devices of the lab, switches and hubs included. The ceiling
+                  is fixed in code (names.MaxLabDevices).
                 items:
                   description: DeviceTemplate is an inline device declaration inside
                     Lab.spec.devices[].
@@ -233,6 +235,10 @@ spec:
                       minLength: 1
                       pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                       type: string
+                      x-kubernetes-validations:
+                      - message: the names vpn, gateway and internet are reserved
+                          by the platform
+                        rule: '!(self in [''vpn'', ''gateway'', ''internet''])'
                     persistence:
                       description: |-
                         Persistence is the optional state-persistence policy of this device, set at
@@ -293,6 +299,7 @@ spec:
                   - name
                   - type
                   type: object
+                maxItems: 64
                 type: array
               internet:
                 description: LabNetworkSpec configures a network segment (VPN or internet)

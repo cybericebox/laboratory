@@ -6,8 +6,10 @@ import (
 
 // LabSpec defines the desired state of Lab.
 type LabSpec struct {
-	VPN         LabNetworkSpec       `json:"vpn,omitempty"`
-	Internet    LabNetworkSpec       `json:"internet,omitempty"`
+	VPN      LabNetworkSpec `json:"vpn,omitempty"`
+	Internet LabNetworkSpec `json:"internet,omitempty"`
+	// Devices of the lab, switches and hubs included. The ceiling is fixed in code (names.MaxLabDevices).
+	// +kubebuilder:validation:MaxItems=64
 	Devices     []DeviceTemplate     `json:"devices,omitempty"`
 	Connections []ConnectionTemplate `json:"connections,omitempty"`
 }
@@ -46,6 +48,7 @@ type DeviceTemplate struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=35
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
+	// +kubebuilder:validation:XValidation:rule="!(self in ['vpn', 'gateway', 'internet'])",message="the names vpn, gateway and internet are reserved by the platform"
 	Name string `json:"name"`
 	// +kubebuilder:validation:Required
 	Type  DeviceType `json:"type"`

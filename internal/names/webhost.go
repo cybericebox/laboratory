@@ -63,6 +63,20 @@ func ValidateDeviceName(name string) error {
 	return nil
 }
 
+// ValidateNewDeviceName is ValidateDeviceName plus the reserved names. It applies to what a caller submits; a device that
+// already exists under a reserved name keeps working because system pods are selected by LabelComponent, not by name.
+func ValidateNewDeviceName(name string) error {
+	if err := ValidateDeviceName(name); err != nil {
+		return err
+	}
+	for _, r := range ReservedDeviceNames {
+		if name == r {
+			return fmt.Errorf("device name %q is reserved by the platform", name)
+		}
+	}
+	return nil
+}
+
 // WebHostLabel is the first DNS label of a web-exposed device, both as the name
 // of its Service and as the host under the base domain: <device>-<code>. The
 // code is random and kept short; uniqueness inside the group namespace is

@@ -14,6 +14,9 @@ const (
 	// MaxIDLen is the longest client-supplied object id (LabGroup, Lab, LabGroupClient,
 	// deploy group).
 	MaxIDLen = 64
+	// MaxLabDevices is the hard ceiling of the devices of one lab (switches and hubs included); the CRD carries the same
+	// number. The chart's limits.lab.maxDevices can only lower it.
+	MaxLabDevices = 64
 	// MaxDeployAfter is the most deploy_after keys of one object.
 	MaxDeployAfter = 32
 

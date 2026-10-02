@@ -70,7 +70,19 @@ const (
 var DHCPImpliedCapabilities = []string{"NET_ADMIN", "NET_RAW"}
 
 // Component names used for Deployment names, Service names, and app label values.
-const ComponentGateway = "gateway"
+const (
+	ComponentGateway = "gateway"
+	ComponentVPN     = "vpn"
+)
+
+// LabelComponent marks the operator's own pods of a group namespace (the VPN and the gateway). Every selector of a
+// system pod (Services, network policies, label sync, scheduler, node-agent) uses it and never the `app` label: `app` is
+// also set on device pods from the device name, and the platform prefix keeps a tenant from setting this one.
+const LabelComponent = LabelPrefix + "component"
+
+// ReservedDeviceNames are the names of the endpoints the platform provides in every lab (the VPN, the internet gateway)
+// and of its pods; a device may not have them.
+var ReservedDeviceNames = []string{"vpn", "gateway", "internet"}
 
 // ProxyL7App is the `app` label value on the L7 proxy pod that terminates
 // external HTTPS and connects to exposed device Services. The web-exposure

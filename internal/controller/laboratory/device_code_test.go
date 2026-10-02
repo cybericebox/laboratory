@@ -2,6 +2,7 @@ package laboratory
 
 import (
 	"context"
+	"github.com/cybericebox/laboratory/internal/devices"
 	"regexp"
 	"strings"
 	"testing"
@@ -66,7 +67,7 @@ func TestDeviceCodesAreUniquePerNamespace(t *testing.T) {
 	devs := devicesOf(t, c)
 	for _, lab := range labs {
 		for _, dev := range []string{"web", "db"} {
-			d := devs[lab.Name+"-"+dev]
+			d := devs[devices.Name(lab.Name, dev)]
 			if !regexp.MustCompile(`^[a-z0-9]{3}$`).MatchString(d.Spec.Code) {
 				t.Fatalf("%s/%s code %q", lab.Name, dev, d.Spec.Code)
 			}
@@ -90,7 +91,7 @@ func TestDeviceCodesAreUniquePerNamespace(t *testing.T) {
 	}
 	for _, svc := range svcs.Items {
 		lab := svc.Labels[names.LabelLab]
-		d := devs[lab+"-web"]
+		d := devs[devices.Name(lab, "web")]
 		if svc.Name != workloadName(&d) {
 			t.Fatalf("service %s, web workload %s", svc.Name, workloadName(&d))
 		}

@@ -150,7 +150,7 @@ func validatePersistence(d *laboratoryv1alpha1.DeviceTemplate, allowed bool) err
 }
 
 // writeDeviceSecrets materializes per-device variables into write-only Secrets named
-// "<lab>-<device>-env", owner-referenced by the Lab so they are garbage-collected with it.
+// "<device object name>-env" (the name of the Device, which the pod's envFrom uses), owner-referenced by the Lab so they are garbage-collected with it.
 // The device pod loads them via envFrom.
 //
 // The agent only ever CREATEs/DELETEs these Secrets, never reads them, so a device's
@@ -171,7 +171,11 @@ func (h *Handler) writeDeviceSecrets(ctx context.Context, lab *laboratoryv1alpha
 	}
 	secrets := h.k8s.CoreV1().Secrets(lab.Namespace)
 	for _, dev := range devices {
-		name := lab.Name + "-" + dev + "-env"
+		objName, err := h.deviceObjectName(ctx, lab.Namespace, lab.Name, dev)
+		if err != nil {
+			return err
+		}
+		name := objName + "-env"
 		if err := secrets.Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}

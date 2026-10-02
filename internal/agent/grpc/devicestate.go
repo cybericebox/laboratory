@@ -5,14 +5,15 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	devnames "github.com/cybericebox/laboratory/internal/devices"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
@@ -101,18 +102,49 @@ func (h *Handler) RescueDevices(ctx context.Context, in *protobuf.RescueDevicesR
 	})
 }
 
+// getDevice finds the Device of a lab by the names it may have (see the devices package) and checks that it is that
+// lab's, so a device never answers for another pair that spells the same.
+func (h *Handler) getDevice(ctx context.Context, ns, lab, device string) (*laboratoryv1alpha1.Device, error) {
+	notFound := apierrors.NewNotFound(laboratoryv1alpha1.Resource("devices"), devnames.Name(lab, device))
+	for _, n := range devnames.Candidates(lab, device) {
+		d, err := h.cs.LaboratoryV1alpha1().Devices(ns).Get(ctx, n, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if devnames.Belongs(d, lab, device) {
+			return d, nil
+		}
+	}
+	return nil, notFound
+}
+
+// deviceObjectName is the name the Device of a lab has, or will have when it does not exist yet.
+func (h *Handler) deviceObjectName(ctx context.Context, ns, lab, device string) (string, error) {
+	d, err := h.getDevice(ctx, ns, lab, device)
+	switch {
+	case err == nil:
+		return d.Name, nil
+	case apierrors.IsNotFound(err):
+		return devnames.Name(lab, device), nil
+	}
+	return "", err
+}
+
 // patchDevice merge-patches the spec of the Device "<lab>-<device>".
 func (h *Handler) patchDevice(ctx context.Context, resolver *groupResolver, ref *protobuf.ItemRef, needState bool, spec map[string]any) error {
 	ns, err := resolver.namespace(ctx, ref.GetLabGroup())
 	if err != nil {
 		return err
 	}
-	name := fmt.Sprintf("%s-%s", crName(ref.GetLab()), ref.GetName())
 	devices := h.cs.LaboratoryV1alpha1().Devices(ns)
-	cur, err := devices.Get(ctx, name, metav1.GetOptions{})
+	cur, err := h.getDevice(ctx, ns, crName(ref.GetLab()), ref.GetName())
 	if err != nil {
 		return err
 	}
+	name := cur.Name
 	if err := rejectTerminating(kindDevice, cur); err != nil {
 		return err
 	}

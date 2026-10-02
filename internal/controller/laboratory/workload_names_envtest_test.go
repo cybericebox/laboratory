@@ -2,6 +2,7 @@ package laboratory
 
 import (
 	"fmt"
+	"github.com/cybericebox/laboratory/internal/devices"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -148,7 +149,7 @@ var _ = Describe("Workload names and user labels", func() {
 		})
 		device := func() laboratoryv1alpha1.Device {
 			var d laboratoryv1alpha1.Device
-			_ = k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "labeled-web"}, &d)
+			_ = k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: devices.Name("labeled", "web")}, &d)
 			return d
 		}
 		Eventually(func() map[string]string { return device().Labels }, timeout, interval).Should(And(

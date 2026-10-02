@@ -77,6 +77,11 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 		return nil, err
 	}
 	for _, v := range variants {
+		for i := range v.spec.Devices {
+			if err := names.ValidateNewDeviceName(v.spec.Devices[i].Name); err != nil {
+				return nil, invalid("variant %q: %v", v.id, err)
+			}
+		}
 		if err := h.features.Limits.CheckSpec(&v.spec); err != nil {
 			return nil, invalid("variant %q: %v", v.id, err)
 		}

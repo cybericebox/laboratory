@@ -300,8 +300,12 @@ func TestPrewarmSkipsRegistriesTheCacheDoesNotServe(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, s := range r.Images {
-		if s.State != protobuf.PrewarmState_PREWARM_STATE_SKIPPED {
-			t.Fatalf("%s: %v", s.Image, s.State)
+		want := protobuf.PrewarmState_PREWARM_STATE_SKIPPED
+		if strings.HasPrefix(s.Image, "localhost") {
+			want = protobuf.PrewarmState_PREWARM_STATE_FAILED // a loopback registry is refused by the image policy
+		}
+		if s.State != want {
+			t.Fatalf("%s: %v, want %v", s.Image, s.State, want)
 		}
 	}
 	if z.count("registry.example.com/team/app@")+len(z.manifestsCopy()) != 0 {
