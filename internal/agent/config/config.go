@@ -35,6 +35,9 @@ type ServerLimits struct {
 	HandshakeTimeout  time.Duration `env:"AGENT_HANDSHAKE_TIMEOUT" envDefault:"10s"`
 	MaxHandshakes     int           `env:"AGENT_MAX_HANDSHAKES" envDefault:"64"`
 	MaxAnonymousConns int           `env:"AGENT_MAX_ANONYMOUS_CONNS" envDefault:"256"`
+	// ShutdownGrace is how long the agent lets running calls finish after SIGTERM (a CreateLabGroupClients that has made its key must be able
+	// to answer with it) before it closes what is left, long-lived streams included. Keep terminationGracePeriodSeconds above it.
+	ShutdownGrace time.Duration `env:"AGENT_SHUTDOWN_GRACE" envDefault:"30s"`
 	// RenewMinInterval is how often one tenant may renew its client certificate.
 	RenewMinInterval time.Duration `env:"AGENT_RENEW_MIN_INTERVAL" envDefault:"10s"`
 }

@@ -17,10 +17,12 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/health"
 	proxy "github.com/cybericebox/laboratory/internal/proxy"
 	"github.com/cybericebox/laboratory/internal/proxy/demux"
 )
@@ -44,8 +46,9 @@ func Run() {
 	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:  scheme,
-		Metrics: metricsserver.Options{BindAddress: "0"},
+		Scheme:                 scheme,
+		Metrics:                metricsserver.Options{BindAddress: "0"},
+		HealthProbeBindAddress: cfg.HealthAddr,
 	})
 	if err != nil {
 		log.Error(err, "create manager")
@@ -62,11 +65,12 @@ func Run() {
 	}
 	ct := demux.NewConnTrackWithLimits(limits)
 
-	if err := (&demux.LabGroupWatcher{
+	watcher := &demux.LabGroupWatcher{
 		Client:         mgr.GetClient(),
 		Table:          table,
 		VPNServicePort: cfg.VPNServicePort,
-	}).SetupWithManager(mgr); err != nil {
+	}
+	if err := watcher.SetupWithManager(mgr); err != nil {
 		log.Error(err, "setup LabGroupWatcher")
 		os.Exit(1)
 	}
@@ -79,6 +83,22 @@ func Run() {
 	if err != nil {
 		log.Error(err, "create demux")
 		os.Exit(1)
+	}
+
+	// Ready means the demux really serves: the UDP socket is bound (above), the caches have synced, and every group has been put in the
+	// table (a handshake of a group that is not in it is dropped, and the client re-handshakes after a long wait).
+	if err := mgr.AddHealthzCheck("ping", healthz.Ping); err != nil {
+		log.Error(err, "add health check")
+		os.Exit(1)
+	}
+	for name, check := range map[string]healthz.Checker{
+		"caches": health.CacheSynced(mgr.GetCache()),
+		"table":  health.Func("the demux table is not filled from the groups yet", watcher.Synced),
+	} {
+		if err := mgr.AddReadyzCheck(name, check); err != nil {
+			log.Error(err, "add ready check")
+			os.Exit(1)
+		}
 	}
 
 	go func() {

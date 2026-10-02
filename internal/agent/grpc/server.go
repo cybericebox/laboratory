@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -42,6 +43,8 @@ type Server struct {
 
 	mu    sync.Mutex
 	split *splitListener
+	// graceful is set by GracefulStop: Serve then leaves the running calls to finish instead of closing them.
+	graceful atomic.Bool
 }
 
 // Config of the server's limits (see config.ServerLimits).
@@ -216,7 +219,9 @@ func (s *Server) Serve(lis net.Listener) error {
 	go func() { errs <- s.main.Serve(sp.main) }()
 	go func() { errs <- s.enroll.Serve(sp.anon) }()
 	err := <-errs
-	s.Stop()
+	if !s.graceful.Load() { // a deliberate GracefulStop lets the running calls finish; anything else ends them
+		s.Stop()
+	}
 	if errors.Is(err, net.ErrClosed) || errors.Is(err, grpc.ErrServerStopped) {
 		return nil
 	}
@@ -231,8 +236,15 @@ func (s *Server) Stop() {
 	}
 }
 
-// GracefulStop lets running calls finish.
+// GracefulStop stops accepting connections and lets running calls finish.
 func (s *Server) GracefulStop() {
+	s.graceful.Store(true)
+	s.mu.Lock()
+	sp := s.split
+	s.mu.Unlock()
+	if sp != nil {
+		_ = sp.inner.Close()
+	}
 	if s.enroll != nil {
 		s.enroll.GracefulStop()
 	}

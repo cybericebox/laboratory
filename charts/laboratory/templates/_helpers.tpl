@@ -159,3 +159,16 @@ time; an exact version tag only when the node does not have it. Arguments: dict 
 {{- define "laboratory.pullPolicy" -}}
 {{- if .policy -}}{{ .policy }}{{- else if or (eq (toString .tag) "") (eq (toString .tag) "latest") -}}Always{{- else -}}IfNotPresent{{- end -}}
 {{- end }}
+
+{{/*
+Non-empty when the proxy Deployment may surge a pod during a rollout: proxy.surge (true/false) when set, else when a live install can count
+the nodes and there are more of them than replicas (the pod anti-affinity is required, so a surge pod needs a node of its own).
+*/}}
+{{- define "laboratory.proxySurge" -}}
+{{- if kindIs "bool" .Values.proxy.surge -}}
+{{- if .Values.proxy.surge -}}true{{- end -}}
+{{- else -}}
+{{- $nodes := (lookup "v1" "Node" "" "").items -}}
+{{- if and $nodes (gt (len $nodes) (int .Values.proxy.replicas)) -}}true{{- end -}}
+{{- end -}}
+{{- end }}

@@ -110,3 +110,28 @@ func TestTableKeepsTheResolvedBackend(t *testing.T) {
 		t.Fatal("unresolvable")
 	}
 }
+
+// E-6: the wg-demux is ready only when every group the cache holds has been put in the table.
+func TestWatcherIsSyncedOnlyAfterEveryGroupWasReconciled(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := laboratoryv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	mk := func(name string) *laboratoryv1alpha1.LabGroup {
+		return &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(mk("a"), mk("b")).Build()
+	w := &LabGroupWatcher{Client: c, Table: NewTable(), VPNServicePort: 51820}
+	ctx := context.Background()
+	if w.Synced(ctx) {
+		t.Fatal("not synced before any group was reconciled")
+	}
+	_, _ = w.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "a"}})
+	if w.Synced(ctx) {
+		t.Fatal("not synced with one group still to do")
+	}
+	_, _ = w.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "b"}})
+	if !w.Synced(ctx) {
+		t.Fatal("synced once every group was reconciled")
+	}
+}

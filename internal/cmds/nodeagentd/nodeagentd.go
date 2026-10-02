@@ -20,11 +20,13 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/deviceplugin"
+	"github.com/cybericebox/laboratory/internal/health"
 	"github.com/cybericebox/laboratory/internal/imagepull"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/nodeagent"
@@ -65,18 +67,19 @@ func Run() {
 	}
 	defer flows.Close()
 
+	pingOVS := func(ctx context.Context) error {
+		if err := ovs.Ping(ctx); err != nil {
+			return fmt.Errorf("OVSDB: %w", err)
+		}
+		if err := flows.Ping(); err != nil {
+			return fmt.Errorf("OpenFlow: %w", err)
+		}
+		return nil
+	}
+
 	// OVS is the node's datapath: when either channel to it is lost, exit so that the kubelet restarts the node-agent and the bridge is
 	// programmed again (the channels do not reconnect).
-	go nodeagent.Watchdog(context.Background(), cfg.OVSWatchInterval, cfg.OVSWatchFailures,
-		func(ctx context.Context) error {
-			if err := ovs.Ping(ctx); err != nil {
-				return fmt.Errorf("OVSDB: %w", err)
-			}
-			if err := flows.Ping(); err != nil {
-				return fmt.Errorf("OpenFlow: %w", err)
-			}
-			return nil
-		},
+	go nodeagent.Watchdog(context.Background(), cfg.OVSWatchInterval, cfg.OVSWatchFailures, pingOVS,
 		func(err error) {
 			log.Error(err, "lost OVS: exiting to be restarted")
 			os.Exit(1)
@@ -101,6 +104,9 @@ func Run() {
 			Scheme: scheme,
 			// No metrics endpoint: the node-agent is on the host network, so it would be open on the node's address.
 			Metrics: metricsserver.Options{BindAddress: "0"},
+			// Probes: liveness is "OVS answers" (a node-agent whose channels to it hang is restarted, not left dark), readiness adds
+			// "the caches have synced" (the controllers can read what they wire).
+			HealthProbeBindAddress: cfg.HealthAddr,
 		},
 	)
 	if err != nil {
@@ -108,6 +114,21 @@ func Run() {
 		os.Exit(1)
 	}
 	grpcSrv.SetK8sClient(mgr.GetClient())
+	okOVS := health.Func("Open vSwitch does not answer", func(ctx context.Context) bool { return pingOVS(ctx) == nil })
+	for _, c := range []struct {
+		name  string
+		check healthz.Checker
+		ready bool
+	}{{"ovs", okOVS, false}, {"ovs", okOVS, true}, {"caches", health.CacheSynced(mgr.GetCache()), true}} {
+		add := mgr.AddHealthzCheck
+		if c.ready {
+			add = mgr.AddReadyzCheck
+		}
+		if err := add(c.name, c.check); err != nil {
+			log.Error(err, "add health check", "name", c.name)
+			os.Exit(1)
+		}
+	}
 
 	if err := (&nodeagent.DevicePortReconciler{
 		Client:      mgr.GetClient(),

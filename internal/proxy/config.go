@@ -19,6 +19,8 @@ type L7Config struct {
 	// bytes). It is shared by all replicas and never leaves the cluster; the
 	// platform does not know it and it is never the lab access key.
 	SessionSecret string `env:"SESSION_SECRET,required"`
+	// HealthAddr is where the readiness and liveness probes are served (the l7 container; the wg-demux container uses another port).
+	HealthAddr string `env:"HEALTH_ADDR" envDefault:":8081"`
 	// Instance names this replica in its traffic reports (the pod name).
 	Instance       string        `env:"POD_NAME"`
 	ReportInterval time.Duration `env:"REPORT_INTERVAL" envDefault:"1m"`
@@ -57,6 +59,8 @@ type L7Config struct {
 type WGConfig struct {
 	ListenAddr     string `env:"UDP_LISTEN_ADDR"  envDefault:":51820"`
 	VPNServicePort int    `env:"VPN_SERVICE_PORT" envDefault:"51820"`
+	// HealthAddr is where the readiness and liveness probes are served.
+	HealthAddr string `env:"HEALTH_ADDR" envDefault:":8082"`
 	// The demux reads a public UDP port shared by every team, so what a stranger can make it hold or spend is capped
 	// (see demux.Limits). There is no limit per source address: one NAT hides a whole event behind one address.
 	// MaxEntries: conntrack entries in total (two per session). PartialTTL: how long a handshake in progress keeps its entry.

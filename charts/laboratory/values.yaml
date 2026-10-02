@@ -146,6 +146,14 @@ proxy:
   # stand with 1 replica: L7 about 5000 rps for 500m of CPU (0.1 ms per request), wg-demux 1m idle and about
   # 110m at ten active peers.
   replicas: 2
+  # Rollout: a new pod must be Ready for minReadySeconds before the next one is replaced (both modes). surge: true lets the Deployment start
+  # a new pod before it stops an old one (maxSurge 1, maxUnavailable 0), which needs a node without a replica; empty = yes when a live install
+  # sees more nodes than replicas. A pod gets terminationGracePeriodSeconds to finish requests in flight after SIGTERM, after a preStop sleep of
+  # preStopSleepSeconds (so the Gateway and the Service stop sending it connections first).
+  minReadySeconds: 20
+  surge: null
+  terminationGracePeriodSeconds: 45
+  preStopSleepSeconds: 5
   podDisruptionBudget:
     enabled: true
     minAvailable: 1
@@ -154,6 +162,9 @@ proxy:
   l7:
     enabled: true
     listen: ":8443"
+    # Port of the readiness and liveness probes of the l7 container (/readyz: the HTTPS listener is bound and the informer caches
+    # have synced; /healthz: the process answers).
+    healthPort: 8081
     # Name of the proxy's own session cookie (SESSION_COOKIE_NAME).
     sessionCookieName: "challenge"
     # HMAC-SHA256 key (32+ bytes) of the proxy's own session cookie, set on /_auth
@@ -220,6 +231,9 @@ proxy:
   # WireGuard demux container — plain userspace UDP, no hostNetwork/capabilities.
   wg:
     enabled: true
+    # Port of the readiness and liveness probes of the wg-demux container (/readyz: the UDP socket is bound, the caches have synced and
+    # every group is in the demux table; /healthz: the process answers).
+    healthPort: 8082
     # Internal UDP port the wg-demux container binds to.
     # The LoadBalancer Service maps operator.vpnServicePort → this port.
     listenPort: 51820
@@ -350,6 +364,12 @@ certManager:
 # ============================================================
 nodeAgent:
   enabled: true
+
+  # Probes of the node-agent: /readyz (Open vSwitch answers, the caches have synced) and /healthz (Open vSwitch answers) on the loopback of the node
+  # (it is on the host network) at healthPort; a DaemonSet rollout waits minReadySeconds after a node-agent is Ready before it moves to the next
+  # node (a restart drops the node's flows until they are programmed again).
+  healthPort: 9440
+  minReadySeconds: 20
 
   # The init container wraps the node's real CNI config (Cilium) with cni-gate and waits for it as long as it takes: on a fresh
   # node the CNI can need minutes (image pull, agent start), and a pod must never get a network from anything else.
@@ -726,6 +746,14 @@ agent:
     repository: cybericebox/laboratory-agent
     tag: ""
     pullPolicy: ""   # empty = follows the tag: Always for latest, IfNotPresent for an exact version tag
+
+  # Rollout and shutdown: a new pod must be Ready (its port bound, the CRD check done) for minReadySeconds before the next one is replaced;
+  # on SIGTERM the agent finishes running calls for up to shutdownGrace, after a preStop sleep of preStopSleepSeconds (so the Service stops sending
+  # it calls first); terminationGracePeriodSeconds must be above the sum (default 5 + 30 + margin).
+  minReadySeconds: 10
+  preStopSleepSeconds: 5
+  shutdownGrace: 30s
+  terminationGracePeriodSeconds: 45
 
   # gRPC port the agent listens on (TLS).
   grpcPort: 5454

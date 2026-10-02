@@ -972,6 +972,30 @@ cost with 25% headroom) and keep `liveTotal` at or below it. A request in flight
 (each replica takes its share of the connections the Gateway sends it; never two on one node), or `proxy.mode: daemonset` for one proxy on every node (larger clusters). A WireGuard client whose
 packets land on another demux replica re-handshakes (about 25-35 s, see the proxy rollout below), so change the replica count outside an event. Capacity is `replicas` times the numbers above.
 
+### Probes and rollouts
+
+Every long-running component says when it really serves, and a rollout waits for that.
+
+| Component | Ready (readiness) means | Liveness | Rollout |
+|---|---|---|---|
+| operator | the informer caches have synced (`/readyz` on :8081) | `/healthz` | one pod, leader election |
+| agent | the mTLS port is bound: it is opened only after the CRD check and the setup (TCP probe; a startup probe waits up to 3 minutes for the CRDs) | the port answers | `maxSurge 1`, `maxUnavailable 0`, `agent.minReadySeconds` (10) |
+| L7 proxy (`l7` container) | the HTTPS listener is bound and the caches (groups, clients, policies, access keys) have synced (`/readyz` on `proxy.l7.healthPort`, 8081) | `/healthz` | see below |
+| wg-demux (`wg-demux` container) | the UDP socket is bound, the caches have synced and every LabGroup has been put in the demux table (`/readyz` on `proxy.wg.healthPort`, 8082) | `/healthz` | see below |
+| node-agent | Open vSwitch answers over both channels (database and OpenFlow) and the caches have synced (`/readyz` on `127.0.0.1:nodeAgent.healthPort`, 9440; loopback only, it is on the host network) | `/healthz`: Open vSwitch answers (a node-agent whose channels hang is restarted; the watchdog still exits when they are lost) | one node at a time (`maxUnavailable 1`), `nodeAgent.minReadySeconds` (20) |
+
+- **Proxy rollout.** A new proxy pod must stay Ready for `proxy.minReadySeconds` (20) before the next one is replaced, so the replicas never go together: the demux keeps one replica's table while the other
+  fills its own. The Deployment's pod anti-affinity is required (one replica per node), so a surge pod needs a node without a replica: when a live `helm upgrade` can count the nodes and there are more than replicas, the
+  rollout starts the new pod first (`maxSurge 1`, `maxUnavailable 0`); otherwise it replaces one pod at a time (`maxSurge 0`, `maxUnavailable 1`), held back by readiness. `proxy.surge: true|false` forces either.
+  WireGuard clients whose packets reach a new demux pod re-handshake (they keep their sessions on the other replica as long as it is up), so expect the clients of a replaced pod to reconnect within about 25-35 s
+  (their keepalive and rekey timers), and do not upgrade the proxy during an event if that matters.
+- **Shutdown.** After SIGTERM the proxy's HTTP server stops taking connections and lets requests in flight finish, up to `proxy.terminationGracePeriodSeconds` (45), after a preStop sleep of
+  `proxy.preStopSleepSeconds` (5) that lets the Gateway and the Service stop sending connections to the pod. The agent does the same with its calls: it stops taking new ones and finishes the running ones for up to
+  `agent.shutdownGrace` (30s), so a `CreateLabGroupClients` that has made a participant's WireGuard key (returned only in the answer) is not cut; what is left after the grace (long streams such as Monitoring) is
+  closed, and its client resumes. `agent.terminationGracePeriodSeconds` (45) is above the preStop sleep plus the grace.
+- A pod that is not Ready is taken out of its Service, so a node-agent or proxy that cannot serve gets no traffic; a pod that fails liveness is restarted by the kubelet.
+- If a probe fails on a cluster whose CNI blocks the node's own traffic to pods, allow the kubelet (host entity) to reach the probe ports; Cilium allows it by default.
+
 ### The WireGuard demux under hostile senders
 
 The demux (`wg-demux`) reads one public UDP port for every team. It holds no keys (the VPN pods do; WireGuard's own handshake is the security boundary), so

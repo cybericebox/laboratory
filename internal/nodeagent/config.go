@@ -13,7 +13,10 @@ type Config struct {
 	OVSSock  string `env:"OVS_SOCK"   envDefault:"/run/openvswitch/db.sock"`
 	GRPCSock string `env:"GRPC_SOCK"  envDefault:"/run/cybericebox/node-agent.sock"`
 	Bridge   string `env:"OVS_BRIDGE" envDefault:"br-ovs"`
-	CRISock  string `env:"CRI_SOCK"   envDefault:"/run/k0s/containerd.sock"`
+	// HealthAddr is where the readiness and liveness probes are served. The node-agent is on the host network, so it is the loopback
+	// only (the probes name host 127.0.0.1): the port is not open on the node's address.
+	HealthAddr string `env:"HEALTH_ADDR" envDefault:"127.0.0.1:9440"`
+	CRISock    string `env:"CRI_SOCK"   envDefault:"/run/k0s/containerd.sock"`
 	// DevicePluginDir is the kubelet's device-plugins directory (the kubelet hardcodes /var/lib/kubelet/device-plugins, also on k0s);
 	// the node-agent registers the extended resource cybericebox.com/tun there. TunSlots is how many devices of that
 	// resource a node advertises (each is the same /dev/net/tun, the count only bounds the extended devices per node).

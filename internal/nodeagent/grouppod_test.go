@@ -15,7 +15,9 @@ import (
 )
 
 func TestGroupComponent(t *testing.T) {
-	pod := func(labels map[string]string) *corev1.Pod { return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Labels: labels}} }
+	pod := func(labels map[string]string) *corev1.Pod {
+		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Labels: labels}}
+	}
 	for name, tc := range map[string]struct {
 		labels map[string]string
 		want   string

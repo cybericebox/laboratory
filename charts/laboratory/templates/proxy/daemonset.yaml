@@ -12,6 +12,8 @@ spec:
   selector:
     matchLabels:
       app: laboratory-proxy-l7
+  # The next node's pod is replaced only after this one has been Ready for minReadySeconds.
+  minReadySeconds: {{ .Values.proxy.minReadySeconds }}
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:

@@ -9,6 +9,14 @@ metadata:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.agent.replicas }}
+  # A new pod must be Ready for minReadySeconds before the next old one is replaced, and the old one is kept until then
+  # (the replicas only soft-spread over nodes, so a surge pod always fits).
+  minReadySeconds: {{ .Values.agent.minReadySeconds }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: laboratory-agent
@@ -19,6 +27,9 @@ spec:
         {{- include "laboratory.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: laboratory-agent
+      # SIGTERM: the agent stops taking calls and finishes the running ones for up to agent.shutdownGrace (a CreateLabGroupClients that
+      # has made its key must answer with it). The preStop sleep lets the Service forget the pod first.
+      terminationGracePeriodSeconds: {{ .Values.agent.terminationGracePeriodSeconds }}
       {{- if gt (int .Values.agent.replicas) 1 }}
       # Replicas go on different nodes when they can (never a reason to leave one unscheduled).
       topologySpreadConstraints:
@@ -53,9 +64,33 @@ spec:
             - name: grpc
               containerPort: {{ .Values.agent.grpcPort }}
               protocol: TCP
+          # The listener is opened only after the CRD check and the setup, so a bound port means the agent serves (a gRPC probe cannot do
+          # mTLS). The startup probe covers the CRD wait of up to a minute.
+          startupProbe:
+            tcpSocket:
+              port: grpc
+            periodSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            periodSeconds: 20
+            failureThreshold: 3
+            timeoutSeconds: 5
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ .Values.agent.preStopSleepSeconds }}
           env:
             - name: AGENT_GRPC_PORT
               value: {{ .Values.agent.grpcPort | quote }}
+            - name: AGENT_SHUTDOWN_GRACE
+              value: {{ .Values.agent.shutdownGrace | quote }}
             - name: AGENT_TLS_ENABLED
               value: "true"
             - name: AGENT_TLS_CERT

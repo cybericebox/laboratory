@@ -25,11 +25,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/health"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/proxy"
 	"github.com/cybericebox/laboratory/internal/proxy/l7"
@@ -55,8 +57,9 @@ func Run() {
 
 	mgr, err := ctrl.NewManager(
 		ctrl.GetConfigOrDie(), ctrl.Options{
-			Scheme:  scheme,
-			Metrics: metricsserver.Options{BindAddress: "0"},
+			Scheme:                 scheme,
+			Metrics:                metricsserver.Options{BindAddress: "0"},
+			HealthProbeBindAddress: cfg.HealthAddr,
 			// Secrets are read for the tenants' access keys only: watch that namespace, nothing else.
 			Cache: cache.Options{ByObject: map[client.Object]cache.ByObject{
 				&corev1.Secret{}: {Namespaces: map[string]cache.Config{names.AccessKeysNamespace: {}}},
@@ -140,6 +143,21 @@ func Run() {
 		},
 	}
 
+	// Ready means the proxy really serves: the HTTPS listener is bound and the caches (groups, clients, policies, access keys) have synced.
+	var listening health.Flag
+	if err := mgr.AddHealthzCheck("ping", healthz.Ping); err != nil {
+		log.Error(err, "add health check")
+		os.Exit(1)
+	}
+	if err := mgr.AddReadyzCheck("caches", health.CacheSynced(mgr.GetCache())); err != nil {
+		log.Error(err, "add ready check")
+		os.Exit(1)
+	}
+	if err := mgr.AddReadyzCheck("listener", listening.Check("the HTTPS listener is not bound yet")); err != nil {
+		log.Error(err, "add ready check")
+		os.Exit(1)
+	}
+
 	certWatcher, err := certwatcher.New(cfg.TLSCertPath, cfg.TLSKeyPath)
 	if err != nil {
 		log.Error(err, "init TLS cert watcher")
@@ -179,6 +197,7 @@ func Run() {
 					if err != nil {
 						return err
 					}
+					listening.Set()
 					if err := httpsSrv.ServeTLS(proxy.LimitListener(ln, cfg.MaxConnections), "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 						return err
 					}

@@ -11,8 +11,13 @@ spec:
   selector:
     matchLabels:
       app: node-agent
+  # The next node is updated only after this node's node-agent has been Ready (Open vSwitch answers, the caches have synced) for
+  # minReadySeconds: a restart drops the node's flows until they are programmed again, so no two nodes go at once.
+  minReadySeconds: {{ .Values.nodeAgent.minReadySeconds }}
   updateStrategy:
     type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
   template:
     metadata:
       labels:
@@ -149,6 +154,9 @@ spec:
           imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (.Values.nodeAgent.image.tag | default .Chart.AppVersion)) }}
           command: [ "/node", "node-agent" ]
           env:
+            # The probes' address: the loopback only (the node-agent is on the host network).
+            - name: HEALTH_ADDR
+              value: {{ printf "127.0.0.1:%d" (.Values.nodeAgent.healthPort | int) | quote }}
             # Storm control of the shared switch, and the watchdog that restarts the node-agent when OVS is lost.
             - name: PORT_POLICING_KBPS
               value: {{ .Values.nodeAgent.portPolicingKbps | quote }}
@@ -240,6 +248,31 @@ spec:
               {{- /* DAC_READ_SEARCH: the snapshot watcher reads writable layers owned by the container's own users. */}}
               add:  [ NET_ADMIN, SYS_ADMIN{{ if .Values.devices.statePersistence.enabled }}, DAC_READ_SEARCH{{ end }} ]
               drop: [ ALL ]
+          # Ready means it serves: Open vSwitch answers over both channels and the informer caches have synced. Liveness restarts a
+          # node-agent whose channels to Open vSwitch hang (the watchdog covers a lost one) or whose process does not answer.
+          startupProbe:
+            httpGet:
+              host: 127.0.0.1
+              path: /readyz
+              port: {{ .Values.nodeAgent.healthPort }}
+            periodSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              host: 127.0.0.1
+              path: /readyz
+              port: {{ .Values.nodeAgent.healthPort }}
+            periodSeconds: 10
+            failureThreshold: 2
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              host: 127.0.0.1
+              path: /healthz
+              port: {{ .Values.nodeAgent.healthPort }}
+            periodSeconds: 20
+            failureThreshold: 3
+            timeoutSeconds: 8
           volumeMounts:
             - name: ovs-run
               mountPath: /run/openvswitch

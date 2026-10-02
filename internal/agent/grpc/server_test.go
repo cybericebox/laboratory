@@ -28,11 +28,18 @@ import (
 // serverRig starts the real server (the split listener, the Enroll server and the main one) for the enrollment rig.
 type serverRig struct {
 	r    *enrollRig
+	srv  *Server
 	addr string
 	pool *x509.CertPool
 }
 
 func startServer(t *testing.T, mod func(*config.Config)) *serverRig {
+	t.Helper()
+	return startServerWith(t, mod, nil)
+}
+
+// startServerWith serves impl instead of the rig's handler (nil: the handler).
+func startServerWith(t *testing.T, mod func(*config.Config), impl protobuf.LabManagerServer) *serverRig {
 	t.Helper()
 	r := newEnrollRig(t)
 	dir := t.TempDir()
@@ -56,7 +63,10 @@ func startServer(t *testing.T, mod func(*config.Config)) *serverRig {
 	if mod != nil {
 		mod(cfg)
 	}
-	srv, err := New(cfg, r.h)
+	if impl == nil {
+		impl = r.h
+	}
+	srv, err := New(cfg, impl)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +78,7 @@ func startServer(t *testing.T, mod func(*config.Config)) *serverRig {
 	t.Cleanup(srv.Stop)
 	pool := x509.NewCertPool()
 	pool.AddCert(r.ca)
-	return &serverRig{r: r, addr: lis.Addr().String(), pool: pool}
+	return &serverRig{r: r, srv: srv, addr: lis.Addr().String(), pool: pool}
 }
 
 func (s *serverRig) tlsConfig(certs ...tls.Certificate) *tls.Config {
@@ -252,3 +262,51 @@ type fakeStream struct {
 }
 
 func (f fakeStream) Context() context.Context { return f.ctx }
+
+// slowPing answers Ping only when released.
+type slowPing struct {
+	protobuf.UnimplementedLabManagerServer
+	started chan struct{}
+	release chan struct{}
+}
+
+func (p *slowPing) Ping(context.Context, *protobuf.Empty) (*protobuf.Empty, error) {
+	close(p.started)
+	<-p.release
+	return &protobuf.Empty{}, nil
+}
+
+// E-6: on SIGTERM the agent finishes the calls that are running (a CreateLabGroupClients that has made its key must answer with it) and takes no new ones.
+func TestGracefulStopLetsARunningCallFinish(t *testing.T) {
+	impl := &slowPing{started: make(chan struct{}), release: make(chan struct{})}
+	s := startServerWith(t, nil, impl)
+	cert := issueFor(t, s.r, "acme")
+	client := s.dial(t, cert)
+	ctx, cancel := bg()
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { _, err := client.Ping(ctx, &protobuf.Empty{}); result <- err }()
+	<-impl.started
+
+	stopped := make(chan struct{})
+	go func() { s.srv.GracefulStop(); close(stopped) }()
+	select {
+	case <-stopped:
+		t.Fatal("GracefulStop returned while a call was running")
+	case <-time.After(300 * time.Millisecond):
+	}
+	// new connections are refused during the shutdown
+	if c, err := net.DialTimeout("tcp", s.addr, time.Second); err == nil {
+		_ = c.Close()
+		t.Error("a new connection was accepted during the shutdown")
+	}
+	close(impl.release)
+	if err := <-result; err != nil {
+		t.Fatalf("the running call must finish: %v", err)
+	}
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("GracefulStop did not return after the call finished")
+	}
+}

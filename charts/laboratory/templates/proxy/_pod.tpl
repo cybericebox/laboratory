@@ -5,6 +5,9 @@ metadata:
     {{- include "laboratory.selectorLabels" . | nindent 4 }}
 spec:
   serviceAccountName: laboratory-proxy
+  # After SIGTERM the HTTP server stops taking connections and lets requests in flight finish (up to this long); the preStop sleep lets
+  # the Gateway and the Service stop sending connections to the pod first.
+  terminationGracePeriodSeconds: {{ .Values.proxy.terminationGracePeriodSeconds }}
   securityContext:
     runAsNonRoot: true
     runAsUser: 65532
@@ -44,6 +47,8 @@ spec:
       capabilities:
         drop: [ ALL ]
     env:
+    - name: HEALTH_ADDR
+      value: {{ printf ":%d" (.Values.proxy.l7.healthPort | int) | quote }}
     - name: BASE_DOMAIN
       value: {{ required "operator.baseDomain is required" .Values.operator.baseDomain | quote }}
     - name: LISTEN_HTTPS
@@ -108,6 +113,33 @@ spec:
     ports:
     - name: https
       containerPort: {{ trimPrefix ":" .Values.proxy.l7.listen | int }}
+    - name: health
+      containerPort: {{ .Values.proxy.l7.healthPort }}
+    # Ready means it serves: the HTTPS listener is bound and the informer caches have synced (see DEPLOY.md, "Probes").
+    startupProbe:
+      httpGet:
+        path: /readyz
+        port: health
+      periodSeconds: 2
+      failureThreshold: 60
+    readinessProbe:
+      httpGet:
+        path: /readyz
+        port: health
+      periodSeconds: 5
+      failureThreshold: 2
+      timeoutSeconds: 3
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: health
+      periodSeconds: 20
+      failureThreshold: 3
+      timeoutSeconds: 5
+    lifecycle:
+      preStop:
+        sleep:
+          seconds: {{ .Values.proxy.preStopSleepSeconds }}
     volumeMounts:
     - name: tls
       mountPath: /etc/proxy/tls
@@ -126,6 +158,8 @@ spec:
       capabilities:
         drop: [ ALL ]
     env:
+    - name: HEALTH_ADDR
+      value: {{ printf ":%d" (.Values.proxy.wg.healthPort | int) | quote }}
     - name: UDP_LISTEN_ADDR
       value: {{ printf ":%d" (.Values.proxy.wg.listenPort | int) | quote }}
     - name: VPN_SERVICE_PORT
@@ -162,6 +196,33 @@ spec:
     - name: wg
       containerPort: {{ .Values.proxy.wg.listenPort }}
       protocol: UDP
+    - name: health
+      containerPort: {{ .Values.proxy.wg.healthPort }}
+    # Ready means it serves: the UDP socket is bound, the caches have synced and every group is in the demux table (see DEPLOY.md, "Probes").
+    startupProbe:
+      httpGet:
+        path: /readyz
+        port: health
+      periodSeconds: 2
+      failureThreshold: 60
+    readinessProbe:
+      httpGet:
+        path: /readyz
+        port: health
+      periodSeconds: 5
+      failureThreshold: 2
+      timeoutSeconds: 3
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: health
+      periodSeconds: 20
+      failureThreshold: 3
+      timeoutSeconds: 5
+    lifecycle:
+      preStop:
+        sleep:
+          seconds: {{ .Values.proxy.preStopSleepSeconds }}
     resources:
       {{- toYaml .Values.proxy.wg.resources | nindent 6 }}
   {{- end }}

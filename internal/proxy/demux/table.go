@@ -179,6 +179,33 @@ type LabGroupWatcher struct {
 
 	mu     sync.Mutex
 	uidOfs map[string]string // LabGroup name -> UID of the entry it made: the table is keyed by UID, a deletion event carries the name
+	seen   map[string]bool   // LabGroup names reconciled at least once
+}
+
+func (w *LabGroupWatcher) markSeen(name string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.seen == nil {
+		w.seen = map[string]bool{}
+	}
+	w.seen[name] = true
+}
+
+// Synced says whether every LabGroup the cache holds has been reconciled into the table at least once: only then does the demux know
+// the groups' keys, and a handshake of a group that is not in the table is dropped. It is the readiness of the wg-demux container.
+func (w *LabGroupWatcher) Synced(ctx context.Context) bool {
+	var groups laboratoryv1alpha1.LabGroupList
+	if err := w.List(ctx, &groups); err != nil {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for i := range groups.Items {
+		if !w.seen[groups.Items[i].Name] {
+			return false
+		}
+	}
+	return true
 }
 
 func (w *LabGroupWatcher) remember(name, uid string) {
@@ -203,6 +230,7 @@ func (w *LabGroupWatcher) forget(name string) {
 
 func (w *LabGroupWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
+	defer w.markSeen(req.Name)
 
 	var lg laboratoryv1alpha1.LabGroup
 	if err := w.Get(ctx, req.NamespacedName, &lg); err != nil {

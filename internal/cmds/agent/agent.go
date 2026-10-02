@@ -7,6 +7,8 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -108,10 +110,31 @@ func Run() {
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
+	// SIGTERM (a rollout, a drain): stop taking new calls and let the running ones finish, then close the rest. Without this a call that
+	// has generated a WireGuard key but not yet answered is cut and the participant is left without its configuration.
+	sig, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stopSignals()
+	finished := make(chan struct{})
+	go func() {
+		<-sig.Done()
+		defer close(finished)
+		log.Printf("shutting down: finishing running calls for up to %s", cfg.Server.ShutdownGrace)
+		done := make(chan struct{})
+		go func() { srv.GracefulStop(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(cfg.Server.ShutdownGrace):
+			log.Printf("shutdown grace over: closing the remaining calls")
+			srv.Stop()
+		}
+	}()
 	log.Printf("agent listening on port %s (mtls=%t)", cfg.GRPCPort, cfg.MTLS.Enabled)
 	if err := srv.Serve(lis); err != nil {
 		log.Printf("serve: %v", err)
 		os.Exit(1)
+	}
+	if sig.Err() != nil {
+		<-finished // Serve returns when the listener closes, the running calls are still being finished
 	}
 }
 
