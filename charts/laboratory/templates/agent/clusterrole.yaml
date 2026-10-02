@@ -25,8 +25,18 @@ rules:
     verbs: [ "get", "list", "watch" ]
   # capacity estimation: node allocatable + sum of scheduled pod requests (all namespaces).
   - apiGroups: [ "" ]
-    resources: [ "nodes", "pods" ]
+    resources: [ "nodes" ]
     verbs: [ "get", "list" ]
+  # Pods are also watched: the Monitoring stream reads the pods of devices from an informer cache.
+  - apiGroups: [ "" ]
+    resources: [ "pods" ]
+    verbs: [ "get", "list", "watch" ]
+  # READ-ONLY, cluster-wide, for the Monitoring caches (one informer per kind instead of a list per group namespace on every poll).
+  # Writes stay namespaced (laboratory-agent-role below, bound only in the group namespaces). These kinds exist only in group
+  # namespaces, where the agent could read them already.
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "labs", "labgroupclients", "labgroupaccesspolicies", "labtrafficreports", "devices" ]
+    verbs: [ "get", "list", "watch" ]
   # live resource usage (optional; requires metrics-server; all namespaces).
   - apiGroups: [ "metrics.k8s.io" ]
     resources: [ "pods" ]

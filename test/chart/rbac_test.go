@@ -193,3 +193,35 @@ func TestNodeAgentReadsOnlyTheImagesNamespaceSecrets(t *testing.T) {
 		t.Error("the images namespace and the operator's role in it")
 	}
 }
+
+// A-3: the agent's Monitoring caches need list+watch of the namespaced kinds and of pods cluster-wide; that cluster-wide reach is read-only
+// (writes stay in the group namespaces, through the role the operator binds there).
+func TestAgentMonitoringCachesAreReadOnlyClusterWide(t *testing.T) {
+	out, err := helmTemplate(t, append(agentSet, "-s", "templates/agent/clusterrole.yaml")...)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, d := range docs(t, out) {
+		if d["kind"] != "ClusterRole" || d["metadata"].(map[string]any)["name"] != "laboratory-agent-cluster" {
+			continue
+		}
+		covered := map[string]bool{}
+		for _, r := range rulesOf(t, d) {
+			for _, res := range r.Resources {
+				if has(r.APIGroups, "laboratory.cybericebox.com") && has([]string{"labs", "labgroupclients", "labgroupaccesspolicies", "labtrafficreports", "devices"}, res) {
+					covered[res] = has(r.Verbs, "list") && has(r.Verbs, "watch") && !has(r.Verbs, "create") && !has(r.Verbs, "update") && !has(r.Verbs, "patch") && !has(r.Verbs, "delete")
+				}
+				if res == "pods" && has(r.APIGroups, "") && !(has(r.Verbs, "list") && has(r.Verbs, "watch")) {
+					t.Errorf("pods need list and watch for the informer: %+v", r)
+				}
+			}
+		}
+		for _, res := range []string{"labs", "labgroupclients", "labgroupaccesspolicies", "labtrafficreports", "devices"} {
+			if !covered[res] {
+				t.Errorf("%s must be readable (list, watch) cluster-wide and nothing more: %v", res, covered)
+			}
+		}
+		return
+	}
+	t.Fatal("no laboratory-agent-cluster ClusterRole")
+}

@@ -1414,7 +1414,7 @@ not the API server: a poll costs no call to it, however many groups there are, a
 most every 15 s. The informers run only while somebody is subscribed (they start with the first stream and stop with the last), and a list or watch error of the API
 never turns into a deletion: the caches keep the last objects they saw, a poll that cannot observe is skipped (and logged), and a failing metrics API keeps
 the last usage numbers. The price is memory: the caches hold the objects of all tenants (tens of MiB at thousands of labs), so raise `agent.resources` with
-the number of labs. An object written a few milliseconds ago may appear in the next poll, not in the current one.
+the number of labs. An object written a few milliseconds ago may appear in the next poll, not in the current one. For the caches the agent's cluster role (`laboratory-agent-cluster`) has **read-only** list and watch on labs, devices, clients, access policies and traffic reports in all namespaces (and watch on pods); its writes stay inside the group namespaces, through the role the operator binds there.
 
 ### Request
 
