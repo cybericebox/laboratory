@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// The proxy runs two replicas by default, spread over nodes when there are several, with a budget that keeps
+// The proxy runs two replicas by default, never two on one node (required anti-affinity), with a budget that keeps
 // one up during a drain, and both containers are Guaranteed with the measured limits.
 func TestProxyRunsTwoReplicasWithABudgetAndMeasuredLimits(t *testing.T) {
 	out, err := helmTemplate(t, "-s", "templates/proxy/deployment.yaml", "-s", "templates/proxy/pdb.yaml")
@@ -16,7 +16,7 @@ func TestProxyRunsTwoReplicasWithABudgetAndMeasuredLimits(t *testing.T) {
 		"replicas: 2",
 		"kind: PodDisruptionBudget",
 		"minAvailable: 1",
-		"preferredDuringSchedulingIgnoredDuringExecution",
+		"requiredDuringSchedulingIgnoredDuringExecution",
 		"topologyKey: kubernetes.io/hostname",
 	} {
 		if !strings.Contains(out, want) {
@@ -40,5 +40,33 @@ func TestProxyBudgetNeedsMoreThanOneReplica(t *testing.T) {
 	out, err = helmTemplate(t, "-s", "templates/proxy/pdb.yaml", "--set", "proxy.podDisruptionBudget.enabled=false")
 	if err == nil && strings.Contains(out, "PodDisruptionBudget") {
 		t.Fatalf("a disabled budget must not render:\n%s", out)
+	}
+}
+
+// daemonset mode: one pod per node (narrowed by nodeSelector), same pod as the Deployment's, no replicas, no budget.
+func TestProxyDaemonSetMode(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "proxy.mode=daemonset", "--set-string", "proxy.nodeSelector.lab=true",
+		"-s", "templates/proxy/daemonset.yaml")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, want := range []string{"kind: DaemonSet", "name: laboratory-proxy", "app: laboratory-proxy-l7", "nodeSelector:", "lab: \"true\"", "name: l7", "name: wg-demux"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "podAntiAffinity") {
+		t.Errorf("a DaemonSet needs no anti-affinity")
+	}
+	for _, tpl := range []string{"templates/proxy/deployment.yaml", "templates/proxy/pdb.yaml"} {
+		if o, err := helmTemplate(t, "--set", "proxy.mode=daemonset", "-s", tpl); err == nil && strings.Contains(o, "kind:") {
+			t.Errorf("%s must not render in daemonset mode:\n%s", tpl, o)
+		}
+	}
+}
+
+func TestProxyDeploymentModeHasNoDaemonSet(t *testing.T) {
+	if o, err := helmTemplate(t, "-s", "templates/proxy/daemonset.yaml"); err == nil && strings.Contains(o, "kind:") {
+		t.Fatalf("deployment mode renders no DaemonSet:\n%s", o)
 	}
 }

@@ -112,7 +112,10 @@ What gets installed:
 
 **The proxy** (`proxy.*`) is one Deployment with two containers, the L7 HTTPS proxy and the WireGuard demux, **two replicas by default**
 (`proxy.replicas`), a PodDisruptionBudget with `minAvailable: 1` (`proxy.podDisruptionBudget`, rendered only with more than one replica) and a
-preferred pod anti-affinity by hostname. The L7 proxy is stateless (its session cookie is signed with the shared `proxy-session` secret), so a request
+a **required** pod anti-affinity by hostname: never two replicas on one node (with more replicas than nodes the extra ones stay Pending). For larger clusters
+set `proxy.mode: daemonset`: one proxy pod on every node (`proxy.nodeSelector` narrows the set; `replicas` and the budget do not apply; the default is
+`deployment`). In both modes the proxy requests are pods like any other, so the scheduler's room for lab pods on each node is what is left after them
+(see "Platform reserve"). The L7 proxy is stateless (its session cookie is signed with the shared `proxy-session` secret), so a request
 may land on any replica. The demux keeps no state a restart would lose: a WireGuard client that lands on the other replica (after a reconnect, or when
 the replica it used is gone) re-handshakes within its persistent keepalive, about 15 s. Both containers are Guaranteed (requests = limits): L7 `500m`/`64Mi`,
 demux `250m`/`64Mi`. Measured on the local stand (kubectl top, one replica): L7 serves about 5000 requests per second for 500m of CPU (0.1 ms per request;

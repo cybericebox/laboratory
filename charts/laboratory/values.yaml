@@ -118,6 +118,14 @@ proxy:
     repository: cybericebox/laboratory-proxy
     tag: ""
     pullPolicy: IfNotPresent
+  # How the proxy runs. "deployment" (default): `replicas` pods, never two on one node (required anti-affinity
+  # by hostname; with more replicas than nodes the extra pods stay Pending). "daemonset": one pod on every node
+  # (nodeSelector below narrows the set) for larger clusters; `replicas` and the PodDisruptionBudget do not
+  # apply. In both modes the proxy requests count against its node like any pod, so the scheduler's room
+  # for lab pods is what is left.
+  mode: deployment
+  # Nodes the proxy may run on (both modes). Empty: any.
+  nodeSelector: {}
   # Two replicas by default: the L7 proxy is stateless (its session cookie is signed with the shared
   # secret), and a WireGuard client that lands on the other replica after a restart re-handshakes within
   # its persistent keepalive (about 15 s). Anti-affinity (preferred, by hostname) spreads them over nodes
