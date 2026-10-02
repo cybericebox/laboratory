@@ -106,23 +106,28 @@ func TestOperatorNamespacedRoleAndItsBindings(t *testing.T) {
 	}
 }
 
-// The prepull DaemonSets are made in the release namespace through the namespaced role.
-func TestOperatorMayManagePrepullDaemonSetsThroughTheNamespacedRole(t *testing.T) {
-	out, err := helmTemplate(t, "-s", "templates/operator/clusterrole-namespaced.yaml")
+// The prepull is an ImagePull request: the operator creates it cluster-wide, and no DaemonSet is made any more.
+func TestOperatorMakesImagePullRequestsNotDaemonSets(t *testing.T) {
+	out, err := helmTemplate(t, "-s", "templates/operator/clusterrole.yaml", "-s", "templates/operator/clusterrole-namespaced.yaml")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	found := map[string]bool{}
-	for _, r := range rulesOf(t, docs(t, out)[0]) {
-		if has(r.Resources, "daemonsets") {
-			for _, v := range r.Verbs {
-				found[v] = true
+	for _, d := range docs(t, out) {
+		for _, r := range rulesOf(t, d) {
+			if has(r.Resources, "daemonsets") {
+				t.Errorf("the operator has no business with DaemonSets: %+v", r)
+			}
+			if has(r.Resources, "imagepulls") {
+				for _, v := range r.Verbs {
+					found[v] = true
+				}
 			}
 		}
 	}
 	for _, v := range []string{"create", "delete", "get", "list", "watch"} {
 		if !found[v] {
-			t.Errorf("daemonsets: %s missing", v)
+			t.Errorf("imagepulls: %s missing", v)
 		}
 	}
 }
@@ -150,5 +155,41 @@ func TestOperatorAdmissionPolicy(t *testing.T) {
 	}
 	if o, err := render("--kube-version", "1.29.0"); err == nil && strings.Contains(o, "ValidatingAdmissionPolicy") {
 		t.Errorf("Kubernetes 1.29 has no ValidatingAdmissionPolicy:\n%s", o)
+	}
+}
+
+// The node-agent answers the requests, and reads Secrets in the images namespace only: its role reaches no platform Secret.
+func TestNodeAgentReadsOnlyTheImagesNamespaceSecrets(t *testing.T) {
+	out, err := helmTemplate(t, "-s", "templates/node-agent/clusterrole.yaml", "-s", "templates/images-namespace.yaml")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, d := range docs(t, out) {
+		md, _ := d["metadata"].(map[string]any)
+		switch {
+		case d["kind"] == "ClusterRole":
+			var pulls, statusWrite bool
+			for _, r := range rulesOf(t, d) {
+				if has(r.Resources, "secrets") {
+					t.Errorf("the cluster-wide node-agent role must not touch Secrets: %+v", r)
+				}
+				pulls = pulls || (has(r.Resources, "imagepulls") && has(r.Verbs, "watch"))
+				statusWrite = statusWrite || (has(r.Resources, "imagepulls/status") && has(r.Verbs, "patch"))
+			}
+			if !pulls || !statusWrite {
+				t.Errorf("the node-agent must watch imagepulls and write their status: %v %v", pulls, statusWrite)
+			}
+		case d["kind"] == "Role" && md["name"] == "laboratory-node-agent-images":
+			if md["namespace"] != "laboratory-images" {
+				t.Errorf("namespace %v", md["namespace"])
+			}
+			rs := rulesOf(t, d)
+			if len(rs) != 1 || len(rs[0].Verbs) != 1 || rs[0].Verbs[0] != "get" || !has(rs[0].Resources, "secrets") {
+				t.Errorf("the node-agent may only get Secrets there: %+v", rs)
+			}
+		}
+	}
+	if !strings.Contains(out, "name: laboratory-images") || !strings.Contains(out, "name: laboratory-operator-images") {
+		t.Error("the images namespace and the operator's role in it")
 	}
 }

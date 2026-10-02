@@ -330,11 +330,10 @@ func Run() {
 				Prepull:        cfg.SchedulerPrepull,
 				PrepullTimeout: cfg.SchedulerPrepullTimeout,
 			},
-			Defaults:         laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory},
-			GroupPods:        cfg.GroupPods,
-			ImagePullSecrets: cfg.ImagePullSecrets,
-			LabNodeSelector:  labNodeSelector,
-			LabTolerations:   labTolerations,
+			Defaults:        laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory},
+			GroupPods:       cfg.GroupPods,
+			LabNodeSelector: labNodeSelector,
+			LabTolerations:  labTolerations,
 		}); err != nil {
 			setupLog.Error(err, "unable to add the scheduler")
 			os.Exit(1)

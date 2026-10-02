@@ -3,6 +3,8 @@
 package nodeagent
 
 import (
+	"time"
+
 	"github.com/cybericebox/laboratory/pkg/config"
 )
 
@@ -12,6 +14,10 @@ type Config struct {
 	GRPCSock string `env:"GRPC_SOCK"  envDefault:"/run/cybericebox/node-agent.sock"`
 	Bridge   string `env:"OVS_BRIDGE" envDefault:"br-ovs"`
 	CRISock  string `env:"CRI_SOCK"   envDefault:"/run/k0s/containerd.sock"`
+	// ImagePullConcurrency is how many images of a prepull request the node pulls at once;
+	// ImagePullTimeout bounds one image.
+	ImagePullConcurrency int           `env:"IMAGE_PULL_CONCURRENCY" envDefault:"2"`
+	ImagePullTimeout     time.Duration `env:"IMAGE_PULL_TIMEOUT"     envDefault:"5m"`
 
 	// The platform registry (zot): the snapshots of device state and the image
 	// cache. Empty StateRegistryAddr switches both off.

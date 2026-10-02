@@ -64,6 +64,8 @@ type schedObject struct {
 	// starts: the images of the whole deploy group (or of the independent lab).
 	prepKey string
 	images  []string
+	// prepTenant is the tenant whose registry credentials pull the images (none: anonymous).
+	prepTenant string
 	// ref is the scheduler's handle on the Lab or LabGroup (opaque to the plan).
 	ref any
 }

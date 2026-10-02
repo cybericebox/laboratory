@@ -19,10 +19,6 @@ rules:
 - apiGroups: [apps]
   resources: [deployments]
   verbs: [create, delete, get, list, patch, update, watch]
-# Scheduler: short-lived image prepull DaemonSets (in the release namespace).
-- apiGroups: [apps]
-  resources: [daemonsets]
-  verbs: [create, delete, get, list, watch]
 - apiGroups: [cilium.io]
   resources: [ciliumnetworkpolicies]
   verbs: [create, delete, get, list, patch, update, watch]

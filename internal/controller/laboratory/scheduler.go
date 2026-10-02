@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -78,28 +77,28 @@ type Scheduler struct {
 	// GroupPods are the resources of the VPN and gateway pods of a group; the scheduler counts them
 	// against the node room and the tenant's quota like any pod.
 	GroupPods grouppods.Config
-	// ImagePullSecrets, LabNodeSelector and LabTolerations shape the prepull pods
-	// and the node set of the resource check like they shape the lab pods.
-	ImagePullSecrets []string
-	LabNodeSelector  map[string]string
-	LabTolerations   []corev1.Toleration
+	// LabNodeSelector and LabTolerations pick the nodes the prepull asks and the node
+	// set of the resource check, like they shape the lab pods.
+	LabNodeSelector map[string]string
+	LabTolerations  []corev1.Toleration
 	// Mirror rewrites image references of labs that use the image cache, so the
 	// prepull warms the cache through the path the lab pods will use.
 	Mirror imagecache.Rewriter
-	// Namespace holds the prepull DaemonSets (and the pull secrets); the operator's.
-	Namespace string
+	// ImagesNamespace holds the credentials of a prepull request; empty means names.ImagesNamespace.
+	ImagesNamespace string
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 
 	prepared map[string]struct{}
-	// preparing holds the keys of the prepull DaemonSets in progress in this pass.
+	// preparing holds the keys of the prepull requests in progress in this pass.
 	preparing map[string]bool
 	recent    map[string]time.Time
 	lastWrite map[types.UID]time.Time
 }
 
 // +kubebuilder:rbac:groups="",resources=nodes;pods,verbs=get;list;watch
-// +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=imagepulls,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;create;update;delete
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs;labgroups;devices;tenants,verbs=get;list;watch
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs/status;labgroups/status;devices/status,verbs=get;update;patch
 
@@ -134,11 +133,12 @@ func (s *Scheduler) now() time.Time {
 	return time.Now()
 }
 
-func (s *Scheduler) namespace() string {
-	if s.Namespace != "" {
-		return s.Namespace
+// imagesNamespace holds the credentials of the ImagePull requests.
+func (s *Scheduler) imagesNamespace() string {
+	if s.ImagesNamespace != "" {
+		return s.ImagesNamespace
 	}
-	return names.SystemNamespace
+	return names.ImagesNamespace
 }
 
 func devicePodKey(ns, lab, device string) string { return ns + "/" + lab + "/" + device }
@@ -474,10 +474,11 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 			id: "lab/" + lab.Namespace + "/" + lab.Name, group: lab.Labels[names.LabelDeployGroup],
 			after: deployAfter(lab), arrival: lab.CreationTimestamp.Time, ref: lab,
 		}
+		o.prepTenant = names.TenantOf(lab.Labels)
 		if o.group != "" {
-			o.prepKey, o.images = "g/"+o.group, classImages(labsOfGroup[o.group], s.Mirror)
+			o.prepKey, o.images = prepClass(o.prepTenant, "g/"+o.group), classImages(labsOfGroup[o.group], s.Mirror)
 		} else {
-			o.prepKey, o.images = "l/"+topologyClass(lab), classImages([]*laboratoryv1alpha1.Lab{lab}, s.Mirror)
+			o.prepKey, o.images = prepClass(o.prepTenant, "l/"+topologyClass(lab)), classImages([]*laboratoryv1alpha1.Lab{lab}, s.Mirror)
 		}
 		for _, t := range lab.Spec.Devices {
 			if t.Type != laboratoryv1alpha1.DeviceTypeContainer {
@@ -510,7 +511,8 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 			after: deployAfter(g), arrival: g.CreationTimestamp.Time, ref: g,
 		}
 		if o.group != "" {
-			o.prepKey, o.images = "g/"+o.group, classImages(labsOfGroup[o.group], s.Mirror)
+			o.prepTenant = names.TenantOf(g.Labels)
+			o.prepKey, o.images = prepClass(o.prepTenant, "g/"+o.group), classImages(labsOfGroup[o.group], s.Mirror)
 		}
 		for _, name := range groupPodNames(g) {
 			key := "group/" + g.Name + "/" + name
@@ -565,7 +567,7 @@ func (s *Scheduler) tick(ctx context.Context) error {
 	s.preparing = map[string]bool{}
 	defer func() {
 		if err := s.gcPrepull(ctx, s.preparing); err != nil {
-			logger.Error(err, "clean up prepull daemonsets")
+			logger.Error(err, "clean up prepull requests")
 		}
 	}()
 
@@ -642,7 +644,7 @@ type clusterEnv struct {
 }
 
 func (e *clusterEnv) prepared(o *schedObject) bool {
-	ready, err := e.s.ensurePrepared(e.ctx, o.prepKey, o.images, e.now)
+	ready, err := e.s.ensurePrepared(e.ctx, o.prepKey, o.prepTenant, o.images, e.now)
 	if err != nil {
 		// A failed prepull only costs speed: go on without it.
 		log.FromContext(e.ctx).WithName("scheduler").Error(err, "prepull images", "key", o.prepKey)
@@ -820,13 +822,14 @@ func (s *Scheduler) writeStatuses(ctx context.Context, objs []*schedObject, plan
 	}
 }
 
-// ensurePrepared makes sure the images of a group are on the nodes and reports
-// whether its first pod may start. It creates the prepull DaemonSet and removes
-// it once every scheduled pod holds its images or the timeout passed (a missing or
-// unpullable image must not stop the queue). The DaemonSet's creation time is the
-// clock, so a restart of the operator neither loses nor extends the wait. Done
-// keys are remembered until restart.
-func (s *Scheduler) ensurePrepared(ctx context.Context, key string, images []string, now time.Time) (bool, error) {
+// ensurePrepared makes sure the images of a group are on the nodes and reports whether
+// its first pod may start. It creates an ImagePull, which the node-agents answer by pulling
+// the images through their container runtime (no tenant code runs), and removes it once
+// every listed node holds its images or has given up on them, or the timeout passed (a
+// missing or unpullable image must not stop the queue). The ImagePull's creation time is
+// the clock, so a restart of the operator neither loses nor extends the wait. Done keys are
+// remembered until restart.
+func (s *Scheduler) ensurePrepared(ctx context.Context, key, tenantName string, images []string, now time.Time) (bool, error) {
 	if key == "" {
 		return true, nil
 	}
@@ -838,30 +841,32 @@ func (s *Scheduler) ensurePrepared(ctx context.Context, key string, images []str
 		return true, nil
 	}
 	logger := log.FromContext(ctx).WithName("scheduler")
-	dsKey := types.NamespacedName{Namespace: s.namespace(), Name: prepullName(key)}
-	var ds appsv1.DaemonSet
-	if err := s.Get(ctx, dsKey, &ds); err != nil {
+	ipKey := types.NamespacedName{Name: prepullName(key)}
+	var ip laboratoryv1alpha1.ImagePull
+	if err := s.Get(ctx, ipKey, &ip); err != nil {
 		if !errors.IsNotFound(err) {
 			return false, err
 		}
-		want := buildPrepullDaemonSet(dsKey.Namespace, key, images, s.ImagePullSecrets, s.LabNodeSelector, s.LabTolerations)
+		nodes, err := s.prepullNodes(ctx)
+		if err != nil {
+			return false, err
+		}
+		want := buildImagePull(key, tenantName, images, nodes)
+		want.Spec.PullSecret = s.writePullSecret(ctx, want, tenantName)
 		if err := s.Create(ctx, want); err != nil && !errors.IsAlreadyExists(err) {
+			s.deletePullSecret(ctx, want.Spec.PullSecret)
 			return false, err
 		}
 		s.preparing[prepullKey(key)] = true
-		logger.Info("prepulling images", "key", key, "images", len(images))
+		logger.Info("prepulling images", "key", key, "images", len(images), "nodes", len(nodes))
 		return false, nil
 	}
-	var pods corev1.PodList
-	if err := s.List(ctx, &pods, client.InNamespace(dsKey.Namespace), client.MatchingLabels{prepullLabel: prepullKey(key)}); err != nil {
-		return false, err
-	}
-	prog := prepullProgress(&ds, pods.Items)
+	prog := imagePullProgress(&ip)
 	timeout := s.Config.PrepullTimeout
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
 	}
-	created := ds.CreationTimestamp.Time
+	created := ip.CreationTimestamp.Time
 	if created.IsZero() {
 		created = now // not stamped yet: it has just been created
 	}
@@ -882,18 +887,94 @@ func (s *Scheduler) ensurePrepared(ctx context.Context, key string, images []str
 	return true, nil
 }
 
-// gcPrepull deletes every prepull DaemonSet except the ones still in progress.
+// prepullNodes lists the nodes lab pods can run on, sorted by name.
+func (s *Scheduler) prepullNodes(ctx context.Context) ([]string, error) {
+	var nodes corev1.NodeList
+	if err := s.List(ctx, &nodes); err != nil {
+		return nil, fmt.Errorf("list nodes: %w", err)
+	}
+	var out []string
+	for i := range nodes.Items {
+		if schedulableNode(&nodes.Items[i], s.LabNodeSelector, s.LabTolerations) {
+			out = append(out, nodes.Items[i].Name)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// writePullSecret copies the tenant's registry credentials (the Secret its spec names, in
+// the tenants namespace) into the images namespace, where the node-agents read them, and
+// returns the copy's name; "" when the tenant has none. A tenant whose Secret cannot be read
+// is pulled for anonymously: the pods that need the credentials fail on their own.
+// The platform's own pull secrets are never used here.
+func (s *Scheduler) writePullSecret(ctx context.Context, ip *laboratoryv1alpha1.ImagePull, tenantName string) string {
+	logger := log.FromContext(ctx).WithName("scheduler")
+	secret, err := tenantPullSecret(ctx, s, tenantName)
+	if err != nil || secret == "" {
+		if err != nil {
+			logger.Error(err, "read the tenant", "tenant", tenantName)
+		}
+		return ""
+	}
+	var src corev1.Secret
+	if err := s.Get(ctx, types.NamespacedName{Namespace: names.TenantsNamespace, Name: secret}, &src); err != nil || src.Type != corev1.SecretTypeDockerConfigJson {
+		logger.Error(err, "the tenant's image pull secret is missing or not a registry secret; pulling anonymously", "tenant", tenantName, "secret", secret)
+		return ""
+	}
+	dst := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: ip.Name, Namespace: s.imagesNamespace(),
+			Labels: map[string]string{managedByLabel: managedByValue, prepullLabel: ip.Labels[prepullLabel]},
+		},
+		Type: src.Type,
+		Data: map[string][]byte{corev1.DockerConfigJsonKey: src.Data[corev1.DockerConfigJsonKey]},
+	}
+	if err := s.Create(ctx, dst); err != nil {
+		if !errors.IsAlreadyExists(err) {
+			logger.Error(err, "write the image pull credentials for the prepull", "tenant", tenantName)
+			return ""
+		}
+		if err := s.Update(ctx, dst); err != nil {
+			logger.Error(err, "refresh the image pull credentials for the prepull", "tenant", tenantName)
+			return ""
+		}
+	}
+	return dst.Name
+}
+
+func (s *Scheduler) deletePullSecret(ctx context.Context, name string) {
+	if name == "" {
+		return
+	}
+	_ = s.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.imagesNamespace()}})
+}
+
+// gcPrepull deletes every ImagePull, and its credentials, except the ones still in progress.
 func (s *Scheduler) gcPrepull(ctx context.Context, keep map[string]bool) error {
-	var list appsv1.DaemonSetList
-	if err := s.List(ctx, &list, client.InNamespace(s.namespace()), client.HasLabels{prepullLabel}); err != nil {
+	var list laboratoryv1alpha1.ImagePullList
+	if err := s.List(ctx, &list, client.HasLabels{prepullLabel}); err != nil {
 		return err
 	}
 	for i := range list.Items {
-		ds := &list.Items[i]
-		if keep[ds.Labels[prepullLabel]] || !ds.DeletionTimestamp.IsZero() {
+		ip := &list.Items[i]
+		if keep[ip.Labels[prepullLabel]] || !ip.DeletionTimestamp.IsZero() {
 			continue
 		}
-		if err := s.Delete(ctx, ds, client.PropagationPolicy(metav1.DeletePropagationBackground)); client.IgnoreNotFound(err) != nil {
+		if err := s.Delete(ctx, ip); client.IgnoreNotFound(err) != nil {
+			return err
+		}
+	}
+	var secrets corev1.SecretList
+	if err := s.List(ctx, &secrets, client.InNamespace(s.imagesNamespace()), client.HasLabels{prepullLabel}); err != nil {
+		return err
+	}
+	for i := range secrets.Items {
+		sec := &secrets.Items[i]
+		if keep[sec.Labels[prepullLabel]] || !sec.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if err := s.Delete(ctx, sec); client.IgnoreNotFound(err) != nil {
 			return err
 		}
 	}

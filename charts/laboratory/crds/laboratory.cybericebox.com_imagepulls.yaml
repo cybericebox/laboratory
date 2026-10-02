@@ -1,0 +1,122 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: imagepulls.laboratory.cybericebox.com
+spec:
+  group: laboratory.cybericebox.com
+  names:
+    kind: ImagePull
+    listKind: ImagePullList
+    plural: imagepulls
+    singular: imagepull
+  scope: Cluster
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: ImagePull is a request to pull images onto nodes, answered by
+          the node-agents.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              ImagePullSpec asks the node-agents to pull images onto their nodes through the container
+              runtime (CRI), so the images are there before the first lab pod starts. The scheduler
+              creates one per launch class and removes it when the class has been prepared. No tenant
+              code runs: only the runtime's image service is called.
+            properties:
+              images:
+                description: |-
+                  Images are the references to pull, as the nodes pull them (through the image cache
+                  when the lab uses it).
+                items:
+                  maxLength: 512
+                  type: string
+                maxItems: 64
+                type: array
+              nodes:
+                description: 'Nodes are the nodes asked to pull: the ones lab pods
+                  can run on.'
+                items:
+                  type: string
+                maxItems: 1000
+                type: array
+              pullSecret:
+                description: |-
+                  PullSecret names a kubernetes.io/dockerconfigjson Secret in the images namespace
+                  (laboratory-images) with the tenant's registry credentials, created by the operator
+                  for this ImagePull and owned by it. Absent: anonymous pulls.
+                type: string
+              tenant:
+                description: Tenant is the tenant the images belong to (informational).
+                type: string
+            required:
+            - images
+            - nodes
+            type: object
+          status:
+            description: ImagePullStatus is the progress per node, each node-agent
+              writing its own entry.
+            properties:
+              nodes:
+                additionalProperties:
+                  description: NodeImagePull is how far one node is.
+                  properties:
+                    done:
+                      description: Done is true once every image is either pulled
+                        or failed.
+                      type: boolean
+                    failed:
+                      description: Failed lists the images the node could not pull,
+                        with the runtime's message.
+                      items:
+                        description: ImagePullFailure is an image a node could not
+                          pull.
+                        properties:
+                          image:
+                            type: string
+                          message:
+                            type: string
+                        required:
+                        - image
+                        type: object
+                      type: array
+                    pulled:
+                      description: Pulled lists the images the node holds.
+                      items:
+                        type: string
+                      type: array
+                    updatedAt:
+                      description: UpdatedAt is when the node-agent last wrote this
+                        entry.
+                      format: date-time
+                      type: string
+                  required:
+                  - done
+                  type: object
+                type: object
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

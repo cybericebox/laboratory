@@ -107,6 +107,10 @@ func TenantOf(labels map[string]string) string {
 // TenantsNamespace holds the per-tenant Secrets: the enrollment token and the access public keys.
 const TenantsNamespace = "laboratory-tenants"
 
+// ImagesNamespace holds what the node-agents read to pull images for the scheduler: the
+// credentials of an ImagePull request. The node-agent's role covers this namespace only.
+const ImagesNamespace = "laboratory-images"
+
 // TenantPullSecret is the name of the Secret, in every group namespace of a tenant whose spec
 // has images.pullSecret, that holds the tenant's registry credentials (a copy of the Secret
 // of TenantsNamespace). Device pods reference it; the platform's own pull secrets are

@@ -15,6 +15,14 @@ rules:
   - apiGroups: [ laboratory.cybericebox.com ]
     resources: [ labvpns, labgateways ]
     verbs: [ get, list, watch ]
+  # Image prepull requests: it pulls the listed images through the container runtime and
+  # writes its own node's entry of the status.
+  - apiGroups: [ laboratory.cybericebox.com ]
+    resources: [ imagepulls ]
+    verbs: [ get, list, watch ]
+  - apiGroups: [ laboratory.cybericebox.com ]
+    resources: [ imagepulls/status ]
+    verbs: [ get, update, patch ]
   - apiGroups: [ laboratory.cybericebox.com ]
     resources: [ connections/status, devices/status ]
     verbs: [ get, update, patch ]

@@ -262,14 +262,21 @@ The rules:
    goes with it, and a group that already finished is dispatched again first, ahead of the groups that
    have not started. Pods that already run are never affected.
 
-**Before the first pod of a group** its images (those of all its Labs) are pulled onto the eligible nodes by
-a short-lived DaemonSet `prepull-<hash>` in `laboratory-system`, one container per image with the command
-replaced by a sleep (the lab service never starts), on the nodes of `labWorkloads.nodeSelector`/`tolerations`,
-with `imagePullSecrets`. The group's pods wait until every prepull pod holds all images, then the DaemonSet
-is deleted. An image that **cannot be pulled** (the kubelet reports `ErrImagePull`, `ImagePullBackOff`,
-`InvalidImageName` or `ErrImageNeverPull`) is given up on at once, within seconds: the group goes on without it
-and its pods that use that image fail through the normal per-pod `ImagePull` path (reason and error in
-`Device.status.scheduling.failure`). `scheduler.prepull.timeout` is only a safety net for a pull that is slow
+**Before the first pod of a group** its images (those of all its Labs) are pulled onto the eligible nodes. The
+scheduler makes a cluster-scoped `ImagePull` request `prepull-<hash>` listing the images and the nodes of
+`labWorkloads.nodeSelector`/`tolerations`; the node-agent of each listed node pulls them through the container
+runtime's image service (CRI `PullImage`) and writes its own entry in `status.nodes`. **No tenant code runs and no
+pod is made**: the runtime only fetches and unpacks the image, so a tenant image with a hostile `/bin/sh` gets
+nothing from the prepull (it used to run, as root with the platform pull secrets, in `laboratory-system`).
+Credentials are the tenant's own (see "Tenant images" below), never the platform's: the operator copies the
+tenant's registry Secret into the `laboratory-images` namespace for the life of the request, the node-agent
+(whose Role there is `get` on Secrets only) reads it, and the copy goes with the request. A request is one per
+tenant and launch class. The group's pods wait until every listed node has resolved all images, then the request
+is deleted. An image that **cannot be pulled** (a wrong name or tag, no access: the runtime refuses it) is
+given up on at once, within seconds: the group goes on without it and its pods that use that image fail
+through the normal per-pod `ImagePull` path (reason and error in `Device.status.scheduling.failure`). A node
+whose node-agent does not answer holds the group until `scheduler.prepull.timeout`. Pulls on a node run two
+at a time (`IMAGE_PULL_CONCURRENCY`, 5 minutes per image: `IMAGE_PULL_TIMEOUT`, node-agent environment). `scheduler.prepull.timeout` is only a safety net for a pull that is slow
 but not failing. A prepull gates **only its own group**: while a group's images are still being pulled
 (reason `PreparingImages`), the pods of other groups and of independent objects are dispatched as the order and
 dependency rules allow, and their own prepulls run meanwhile. Filling the registry cache beforehand is the
@@ -499,6 +506,45 @@ tenants:
 Quote a quota value ("32", "50%"): it is a string. `default` may be listed to change its policy; unless it is, it may use
 persistence and has no quota.
 
+#### Tenant images
+
+A tenant's images are pulled with the **tenant's** registry credentials, never the platform's, and the tenant can be limited to
+the registries it is meant to use:
+
+```yaml
+tenants:
+  acme:
+    images:
+      pullSecret: acme-registry   # kubernetes.io/dockerconfigjson Secret in laboratory-tenants (create it there yourself)
+      allow:                      # optional; "registry/repository-prefix", equal or below
+        - ghcr.io/acme/
+        - docker.io/library
+images:
+  tenantDeny:                     # platform-wide, every tenant: the platform's private registries and organizations
+    - ghcr.io/cybericebox-platform/
+```
+
+- **Device pods.** The platform's `imagePullSecrets` go only on the platform's own pods (operator, node-agent, agent, proxy, VPN and
+  gateway). Device pods and the prepull never get them. A tenant with `images.pullSecret` has that Secret copied by the operator
+  into each of its group namespaces as `tenant-registry` and set on its device pods; a tenant without one pulls anonymously.
+  Adding or removing the secret later changes the pod template of the tenant's devices on their next reconcile (a running device
+  is restarted by its Deployment). A missing or non-registry Secret keeps the group from reconciling, with the reason in the
+  operator log.
+- **Image cache.** zot's on-demand sync is one credential set per upstream registry (`registry.cache.credentialsSecret` or the chart's
+  `imagePullSecrets`), so it cannot be split by tenant. It is for the **platform's** images and for public images. A tenant with
+  `images.pullSecret` therefore does **not** use the shared cache: its labs are created with `Lab.status.imageCache: false`, nodes
+  pull straight from its registries with its credentials, and `PrewarmImages` answers `SKIPPED` for it. A tenant without its own
+  credentials uses the cache, and zot fetches its images from upstream with whatever credentials the platform gave zot; keep the
+  platform's private registries out of reach with `images.tenantDeny` (and the tenant's `allow`), or give zot no credentials for
+  them.
+- **Allow and deny lists.** The management agent enforces them on `CreateLabs` (`PERMISSION_DENIED`, naming the device) and
+  `PrewarmImages` (the image is `FAILED` and never fetched; the list of warmed images an empty request returns shows only what the
+  tenant may use). Entries are `registry/repository-prefix`: a reference is covered when it equals an entry or lies below it, on
+  path boundaries (`ghcr.io/acme` covers `ghcr.io/acme/web`, not `ghcr.io/acme-private/web`); a Docker Hub image is
+  `docker.io/library/nginx`. A tenant with no `allow` may use any image `tenantDeny` does not exclude. `tenantDeny` always wins.
+  A reference that names the platform's registry or image cache (`localhost:<registry.forwardPort>/...`) is refused outright: a
+  tenant names the original image and the operator routes it. Labs created directly with kubectl are not checked.
+
 - **Identity and certificate.** The tenant of a call is the CN of the verified client certificate, and the CN is the Tenant's name.
   The tenant obtains its certificate by enrolling with a one-time token (see [Enrollment & access keys](#enrollment--access-keys)): its
   private key stays with it. A certificate whose CN is not a Tenant is `PERMISSION_DENIED` on every call (the Tenant resources are the
@@ -692,6 +738,21 @@ table-0 flow (`in_port` to the VNI) is installed, so a port that has no flow, fo
 Check on a node: `ovs-vsctl get bridge br-ovs fail_mode` is `secure`, and `ovs-ofctl -O OpenFlow13 dump-flows br-ovs table=0` has no
 `NORMAL` action and ends with `priority=0 actions=drop`.
 
+### Device interface names and MACs
+
+A device's `interfaces[].name` is a lowercase word of at most 15 characters (`^[a-z][a-z0-9-]{0,14}$`; `lo` and `accessport`
+are reserved: `accessport` is the delegated Kubernetes network of a web-exposed device). `eth0` is allowed: a device with lab
+interfaces has no real `eth0`, the CNI leaves a stub the lab interface replaces. `interfaces[].mac` is `random` or a **unicast**
+hardware address (`aa:bb:cc:dd:ee:ff`; the second hex digit of the first octet is even; not all zeros). A multicast or broadcast MAC
+is refused. The same rules are in the CRDs (`Lab`, `Device`: a client that bypasses the agent is refused by the API server) and in the
+agent (`CreateLabs` answers `INVALID_ARGUMENT` before anything is created); the operator and the node-agent drop an entry that
+still gets through.
+
+The `network.cybericebox.com/networks` pod annotation that carries them to the node-agent is a JSON array
+(`[{"iface":"eth1","mac":"02:..."}]`; lab VPN and gateway ports add `"name":"<ovs port>"`), so no character of a name can start another
+entry. The node-agent still reads the old `iface@name|MAC,...` form, so pods created before an upgrade keep working. **Upgrade the
+node-agents before the operator** (the DaemonSet first): an old node-agent cannot read the JSON form.
+
 ### What a lab can reach through its internet gateway
 
 A lab with `internet.enabled` leaves through the gateway pod of its group, so the lab inherits whatever the gateway may reach.
@@ -741,7 +802,7 @@ The operator is not a cluster-admin in disguise. Its ClusterRole (`laboratory-ma
 
 - full access to the platform's own resources (`laboratory.cybericebox.com`, `allocation.cybericebox.com`) and to Namespaces (the namespace of
   every LabGroup is made and removed by it);
-- **read-only** access (get, list, watch) to nodes, pods, services, serviceaccounts, endpoints, deployments, daemonsets, networkpolicies,
+- **read-only** access (get, list, watch) to nodes, pods, services, serviceaccounts, endpoints, deployments, networkpolicies,
   poddisruptionbudgets and rolebindings: the informers of its controllers and the scheduler's view of node capacity;
 - create/update/delete of RoleBindings, and `bind` on exactly three ClusterRoles (`laboratory-operator-namespaced`, `laboratory-vpn-role`,
   `laboratory-agent-role`).
@@ -750,7 +811,8 @@ It has **no cluster-wide access to Secrets**, and no cluster-wide write access t
 a namespace (Secrets, Services, ServiceAccounts, Deployments, bare pods, NetworkPolicies, CiliumNetworkPolicies, PodDisruptionBudgets) comes
 from RoleBindings to the ClusterRole `laboratory-operator-namespaced`, which exist only in: each LabGroup namespace (the operator creates
 the binding itself right after the namespace, with the RoleBinding rights and the `bind` verb above), the release namespace (made by this
-chart: pull secrets it copies, the prepull DaemonSets) and, as a narrower Role, `laboratory-tenants` (Secrets only). The manager reads Secrets
+chart: the platform pull secrets it copies and the snapshot registry credentials) and, as narrower Roles, `laboratory-tenants` (Secrets only) and
+`laboratory-images` (Secrets only: the credentials of a prepull request). The manager reads Secrets
 straight from the API server instead of caching them, because an informer would need cluster-wide list and watch.
 
 What remains, and why: the operator can still create a RoleBinding in any namespace to the three roles it may bind, so on its own RBAC cannot
@@ -949,7 +1011,7 @@ compressed on amd64 and arm64; the cache needs its sync extension), both can be 
 - **Fixed per lab.** The mode is recorded in `Lab.status.imageCache` when the lab is first reconciled, and the
   device image is written to `Device.spec.imageMirror`; switching the cache on or off never changes existing labs.
   The VPN and gateway images of a lab group are rewritten when the group's pods are created.
-- **Scheduler.** With the cache on, the prepull DaemonSet pulls the rewritten images, so the first node warms
+- **Scheduler.** With the cache on, the prepull request lists the rewritten images, so the first node warms
   zot and the others pull from it.
 - **Snapshots.** The base layers of a device snapshot are mounted from the cached repository of the base image
   instead of being uploaded.

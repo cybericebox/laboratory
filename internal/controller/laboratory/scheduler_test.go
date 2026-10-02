@@ -43,7 +43,7 @@ func newSchedFixture(t *testing.T, cfg SchedulerConfig) *schedFixture {
 		t.Fatal(err)
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).
-		WithStatusSubresource(&laboratoryv1alpha1.Lab{}, &laboratoryv1alpha1.LabGroup{}, &laboratoryv1alpha1.Device{}, &laboratoryv1alpha1.Tenant{}, &corev1.Pod{}, &appsv1.DaemonSet{}, &corev1.Node{}).
+		WithStatusSubresource(&laboratoryv1alpha1.Lab{}, &laboratoryv1alpha1.LabGroup{}, &laboratoryv1alpha1.Device{}, &laboratoryv1alpha1.Tenant{}, &corev1.Pod{}, &appsv1.DaemonSet{}, &corev1.Node{}, &laboratoryv1alpha1.ImagePull{}).
 		Build()
 	f := &schedFixture{t: t, c: c, now: planEpoch.Add(time.Hour)}
 	f.s = &Scheduler{
@@ -110,6 +110,14 @@ func (f *schedFixture) addLab(name, group string, after []string, devices ...str
 				State: laboratoryv1alpha1.PodQueued, QueuedAt: &now,
 			}},
 		})
+	}
+}
+
+// createPlain creates an object that has no status.
+func (f *schedFixture) createPlain(o client.Object) {
+	f.t.Helper()
+	if err := f.c.Create(context.Background(), o); err != nil {
+		f.t.Fatal(err)
 	}
 }
 
@@ -547,8 +555,11 @@ func TestSchedulerPrepullsGroupImagesBeforeItsFirstPod(t *testing.T) {
 	cfg.Prepull = true
 	cfg.PrepullTimeout = 5 * time.Minute
 	f := newSchedFixture(t, cfg)
-	f.s.ImagePullSecrets = []string{"regcred"}
 	f.s.LabNodeSelector = map[string]string{"pool": "labs"}
+	f.addLabNode("n1")
+	f.addLabNode("n2")
+	other := node("elsewhere", "4", "8Gi")
+	f.create(other)
 	f.addLab("a", "g1", nil, "web")
 	f.addLab("b", "g1", nil, "web")
 	f.addLab("c", "g2", nil, "web")
@@ -558,59 +569,94 @@ func TestSchedulerPrepullsGroupImagesBeforeItsFirstPod(t *testing.T) {
 	if s := f.labStatus("a"); s.Reason != laboratoryv1alpha1.WaitPreparingImages {
 		t.Fatalf("status = %+v", s)
 	}
-	ds := f.prepullDS("g/g1")
-	if ds == nil {
-		t.Fatal("prepull daemonset for g1 not created")
+	ip := f.imagePull("g/g1")
+	if ip == nil {
+		t.Fatal("prepull request for g1 not created")
 	}
-	// One DaemonSet carries the images of every lab of the group.
-	if got := len(ds.Spec.Template.Spec.Containers); got != 2 {
-		t.Fatalf("images = %d", got)
+	// One request carries the images of every lab of the group, for the lab nodes only,
+	// and nothing in it is a pod: no tenant code runs.
+	if got := len(ip.Spec.Images); got != 2 {
+		t.Fatalf("images = %v", ip.Spec.Images)
 	}
-	if sp := ds.Spec.Template.Spec; len(sp.ImagePullSecrets) != 1 || sp.ImagePullSecrets[0].Name != "regcred" || sp.NodeSelector["pool"] != "labs" {
-		t.Fatalf("pull secrets / selector not honoured: %+v", sp)
+	if fmt.Sprint(ip.Spec.Nodes) != "[n1 n2]" {
+		t.Fatalf("only the lab nodes are asked: %v", ip.Spec.Nodes)
+	}
+	var pods corev1.PodList
+	if err := f.c.List(context.Background(), &pods); err != nil || len(pods.Items) != 0 {
+		t.Fatalf("the prepull creates no pod: %d %v", len(pods.Items), err)
+	}
+	var sets appsv1.DaemonSetList
+	if err := f.c.List(context.Background(), &sets); err != nil || len(sets.Items) != 0 {
+		t.Fatalf("the prepull creates no daemonset: %d %v", len(sets.Items), err)
 	}
 	// The images of g2 are pulled meanwhile: a group's prepull gates its own pods only.
-	if f.prepullDS("g/g2") == nil {
+	if f.imagePull("g/g2") == nil {
 		t.Fatal("g2 prepull expected")
 	}
 
-	// No eligible node: done at once. Group g1 goes.
-	f.stampDS(ds)
-	ds.Status.ObservedGeneration = ds.Generation
-	if err := f.c.Status().Update(context.Background(), ds); err != nil {
-		t.Fatal(err)
-	}
+	// Both nodes hold the images of g1: its pods go.
+	f.stampIP(ip)
+	f.report(ip, "n1", true)
+	f.report(ip, "n2", true)
 	f.tick()
 	f.wantStates("a/web=S b/web=S c/web=Q")
-	// The prepull of g2 is still going on; its timeout passes: dispatch goes on, the daemonset is removed.
+	// The prepull of g2 is still going on; its timeout passes: dispatch goes on, the request is removed.
 	f.ready("a", "web")
 	f.ready("b", "web")
-	f.stampDS(f.prepullDS("g/g2"))
+	f.stampIP(f.imagePull("g/g2"))
 	f.now = f.now.Add(6 * time.Minute)
 	f.tick()
 	f.wantStates("a/web=D b/web=D c/web=S")
 	f.tick()
-	if f.prepullDS("g/g2") != nil || f.prepullDS("g/g1") != nil {
-		t.Fatal("prepull daemonsets must be removed afterwards")
+	if f.imagePull("g/g2") != nil || f.imagePull("g/g1") != nil {
+		t.Fatal("prepull requests must be removed afterwards")
 	}
 }
 
-func (f *schedFixture) prepullDS(key string) *appsv1.DaemonSet {
+// addLabNode creates a node the lab pods can run on (it carries the selector of the fixture).
+func (f *schedFixture) addLabNode(name string) {
 	f.t.Helper()
-	var ds appsv1.DaemonSet
-	if err := f.c.Get(context.Background(), types.NamespacedName{Namespace: names.SystemNamespace, Name: prepullName(key)}, &ds); err != nil {
+	n := node(name, "4", "8Gi")
+	n.Labels = map[string]string{"pool": "labs"}
+	f.create(n)
+}
+
+// imagePull is the prepull request of a launch class of the default tenant.
+func (f *schedFixture) imagePull(key string) *laboratoryv1alpha1.ImagePull {
+	f.t.Helper()
+	var ip laboratoryv1alpha1.ImagePull
+	if err := f.c.Get(context.Background(), types.NamespacedName{Name: prepullName(prepClass(names.DefaultTenant, key))}, &ip); err != nil {
 		return nil
 	}
-	return &ds
+	return &ip
 }
 
-// stampDS gives a prepull daemonset the creation time and generation the API
-// server would set; the scheduler measures the prepull timeout from the former.
-func (f *schedFixture) stampDS(ds *appsv1.DaemonSet) {
+// stampIP gives a prepull request the creation time the API server would set; the
+// scheduler measures the prepull timeout from it.
+func (f *schedFixture) stampIP(ip *laboratoryv1alpha1.ImagePull) {
 	f.t.Helper()
-	ds.CreationTimestamp = metav1.NewTime(f.now)
-	ds.Generation = 1
-	if err := f.c.Update(context.Background(), ds); err != nil {
+	ip.CreationTimestamp = metav1.NewTime(f.now)
+	if err := f.c.Update(context.Background(), ip); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// report is a node-agent's answer: the node holds all the images, or (with failed images) gave up on them.
+func (f *schedFixture) report(ip *laboratoryv1alpha1.ImagePull, node string, done bool, failed ...string) {
+	f.t.Helper()
+	var cur laboratoryv1alpha1.ImagePull
+	if err := f.c.Get(context.Background(), types.NamespacedName{Name: ip.Name}, &cur); err != nil {
+		f.t.Fatal(err)
+	}
+	n := laboratoryv1alpha1.NodeImagePull{Done: done}
+	for _, img := range failed {
+		n.Failed = append(n.Failed, laboratoryv1alpha1.ImagePullFailure{Image: img, Message: "manifest unknown"})
+	}
+	if cur.Status.Nodes == nil {
+		cur.Status.Nodes = map[string]laboratoryv1alpha1.NodeImagePull{}
+	}
+	cur.Status.Nodes[node] = n
+	if err := f.c.Status().Update(context.Background(), &cur); err != nil {
 		f.t.Fatal(err)
 	}
 }
@@ -784,23 +830,6 @@ func TestSchedulerEnforcesTenantQuota(t *testing.T) {
 	f.wantStates("a/cache=D a/db=S a/web=Q b/web=S")
 }
 
-// brokenPod is a prepull pod of the DaemonSet whose only image cannot be pulled.
-func (f *schedFixture) prepullPod(ds *appsv1.DaemonSet, image string, st corev1.ContainerStatus) {
-	f.t.Helper()
-	st.Name, st.Image = "i0", image
-	pod := corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "prepull-" + ds.Name, Namespace: ds.Namespace, Labels: ds.Spec.Template.Labels},
-		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "i0", Image: image}}},
-	}
-	if err := f.c.Create(context.Background(), &pod); err != nil {
-		f.t.Fatal(err)
-	}
-	pod.Status = corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{st}}
-	if err := f.c.Status().Update(context.Background(), &pod); err != nil {
-		f.t.Fatal(err)
-	}
-}
-
 func prepullSchedCfg() SchedulerConfig {
 	cfg := schedCfg()
 	cfg.MaxPods = 10
@@ -813,27 +842,24 @@ func prepullSchedCfg() SchedulerConfig {
 // within seconds, the group goes on, and its pods fail through the normal image pull path.
 func TestSchedulerPrepullDoesNotWaitForABrokenImage(t *testing.T) {
 	f := newSchedFixture(t, prepullSchedCfg())
+	f.s.LabNodeSelector = map[string]string{"pool": "labs"}
+	f.addLabNode("n1")
 	f.addLab("a", "g1", nil, "web")
 	f.tick()
 	f.wantStates("a/web=Q")
 	if s := f.labStatus("a"); s.Reason != laboratoryv1alpha1.WaitPreparingImages {
 		t.Fatalf("status = %+v", s)
 	}
-	ds := f.prepullDS("g/g1")
-	f.stampDS(ds)
-	ds.Status.ObservedGeneration, ds.Status.DesiredNumberScheduled = ds.Generation, 1
-	if err := f.c.Status().Update(context.Background(), ds); err != nil {
-		t.Fatal(err)
-	}
-	// The kubelet reports the pull error a few seconds in: far from the 5 minute timeout.
-	f.prepullPod(ds, "reg/a-web", corev1.ContainerStatus{State: corev1.ContainerState{
-		Waiting: &corev1.ContainerStateWaiting{Reason: "ErrImagePull", Message: "manifest unknown"}}})
+	ip := f.imagePull("g/g1")
+	f.stampIP(ip)
+	// The node-agent reports the pull error a few seconds in: far from the 5 minute timeout.
+	f.report(ip, "n1", true, "reg/a-web")
 	f.now = f.now.Add(5 * time.Second)
 	f.tick()
 	f.wantStates("a/web=S")
 	f.tick()
-	if f.prepullDS("g/g1") != nil {
-		t.Fatal("the prepull daemonset must be removed")
+	if f.imagePull("g/g1") != nil {
+		t.Fatal("the prepull request must be removed")
 	}
 }
 
@@ -841,6 +867,8 @@ func TestSchedulerPrepullDoesNotWaitForABrokenImage(t *testing.T) {
 // goes on at once, and so does a group whose images are already pulled.
 func TestSchedulerSlowPrepullDoesNotBlockOtherGroups(t *testing.T) {
 	f := newSchedFixture(t, prepullSchedCfg())
+	f.s.LabNodeSelector = map[string]string{"pool": "labs"}
+	f.addLabNode("n1")
 	f.addLab("slow", "g1", nil, "web")
 	f.addLab("other", "g2", nil, "web")
 	f.addLab("free", "", nil, "web")
@@ -860,19 +888,75 @@ func TestSchedulerSlowPrepullDoesNotBlockOtherGroups(t *testing.T) {
 	if s := f.labStatus("slow"); s.Reason != laboratoryv1alpha1.WaitPreparingImages {
 		t.Fatalf("slow = %+v", s)
 	}
-	// A slow image (still being created) is waited for, up to the timeout.
-	ds := f.prepullDS("g/g1")
-	f.stampDS(ds)
-	ds.Status.ObservedGeneration, ds.Status.DesiredNumberScheduled = ds.Generation, 1
-	if err := f.c.Status().Update(context.Background(), ds); err != nil {
-		t.Fatal(err)
-	}
-	f.prepullPod(ds, "reg/slow-web", corev1.ContainerStatus{State: corev1.ContainerState{
-		Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"}}})
+	// A slow image (the node-agent is still pulling) is waited for, up to the timeout.
+	ip := f.imagePull("g/g1")
+	f.stampIP(ip)
+	f.report(ip, "n1", false)
 	f.now = f.now.Add(time.Minute)
 	f.tick()
 	f.wantStates("free/web=S other/web=S slow/web=Q")
-	if f.prepullDS("g/g1") == nil {
-		t.Fatal("the slow prepull keeps its daemonset")
+	if f.imagePull("g/g1") == nil {
+		t.Fatal("the slow prepull keeps its request")
+	}
+}
+
+// The prepull pulls with the tenant's own credentials, never the platform's: they are
+// copied for the node-agents into the images namespace and go with the request.
+func TestSchedulerPrepullUsesTheTenantsCredentialsOnly(t *testing.T) {
+	f := newSchedFixture(t, prepullSchedCfg())
+	f.s.LabNodeSelector = map[string]string{"pool": "labs"}
+	f.addLabNode("n1")
+	f.create(tenantWithPullSecret("acme", "acme-registry"))
+	f.createPlain(tenantRegSecret("acme-registry", corev1.SecretTypeDockerConfigJson, `{"auths":{"reg":{"auth":"dGVuYW50"}}}`))
+	f.createPlain(regSecret("platform-cred", corev1.SecretTypeDockerConfigJson, `{"auths":{"reg":{"auth":"cGxhdGZvcm0="}}}`))
+	f.addLab("a", "g1", nil, "web")
+	var lab laboratoryv1alpha1.Lab
+	if err := f.c.Get(context.Background(), types.NamespacedName{Namespace: "ns-a", Name: "a"}, &lab); err != nil {
+		t.Fatal(err)
+	}
+	lab.Labels[names.LabelTenant] = "acme"
+	if err := f.c.Update(context.Background(), &lab); err != nil {
+		t.Fatal(err)
+	}
+
+	f.tick()
+	var ip laboratoryv1alpha1.ImagePull
+	if err := f.c.Get(context.Background(), types.NamespacedName{Name: prepullName(prepClass("acme", "g/g1"))}, &ip); err != nil {
+		t.Fatal(err)
+	}
+	if ip.Spec.PullSecret == "" || ip.Spec.Tenant != "acme" {
+		t.Fatalf("spec %+v", ip.Spec)
+	}
+	var sec corev1.Secret
+	if err := f.c.Get(context.Background(), types.NamespacedName{Namespace: names.ImagesNamespace, Name: ip.Spec.PullSecret}, &sec); err != nil {
+		t.Fatal(err)
+	}
+	if string(sec.Data[corev1.DockerConfigJsonKey]) != `{"auths":{"reg":{"auth":"dGVuYW50"}}}` {
+		t.Fatalf("the tenant's credentials are copied: %s", sec.Data[corev1.DockerConfigJsonKey])
+	}
+
+	// The credentials go with the request.
+	f.stampIP(&ip)
+	f.report(&ip, "n1", true)
+	f.tick()
+	f.tick()
+	if err := f.c.Get(context.Background(), types.NamespacedName{Namespace: names.ImagesNamespace, Name: ip.Spec.PullSecret}, &sec); err == nil {
+		t.Fatal("the credentials must be removed with the request")
+	}
+
+	// A tenant without credentials: anonymous, no Secret.
+	f2 := newSchedFixture(t, prepullSchedCfg())
+	f2.s.LabNodeSelector = map[string]string{"pool": "labs"}
+	f2.addLabNode("n1")
+	f2.createPlain(regSecret("platform-cred", corev1.SecretTypeDockerConfigJson, `{"auths":{}}`))
+	f2.addLab("a", "g1", nil, "web")
+	f2.tick()
+	got := f2.imagePull("g/g1")
+	if got == nil || got.Spec.PullSecret != "" {
+		t.Fatalf("anonymous: %+v", got)
+	}
+	var secrets corev1.SecretList
+	if err := f2.c.List(context.Background(), &secrets, client.InNamespace(names.ImagesNamespace)); err != nil || len(secrets.Items) != 0 {
+		t.Fatalf("no credentials copied: %v %v", secrets.Items, err)
 	}
 }

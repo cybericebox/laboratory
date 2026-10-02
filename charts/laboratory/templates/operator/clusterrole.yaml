@@ -2,7 +2,7 @@
 Least privilege for the operator. Cluster-wide it can only:
   - manage its own custom resources (laboratory.* and allocation.*) and Namespaces (a compromised operator that deletes
     namespaces is bad, but it does not read anything: see the admission policy that limits it to group namespaces);
-  - READ pods, nodes, services, serviceaccounts, endpoints, deployments, daemonsets, networkpolicies, poddisruptionbudgets and
+  - READ pods, nodes, services, serviceaccounts, endpoints, deployments, networkpolicies, poddisruptionbudgets and
     rolebindings (the informers of its controllers and the scheduler's view of the nodes). It reads NO Secret cluster-wide;
   - create the RoleBinding that gives it its working permissions in a namespace of a LabGroup it manages (see below).
 Everything it WRITES in a namespace (Secrets, Deployments, Services, NetworkPolicies, pods...) it can only do where a RoleBinding to
@@ -26,7 +26,7 @@ rules:
   resources: [endpoints, nodes, pods, serviceaccounts, services]
   verbs: [get, list, watch]
 - apiGroups: [apps]
-  resources: [daemonsets, deployments]
+  resources: [deployments]
   verbs: [get, list, watch]
 - apiGroups: [networking.k8s.io]
   resources: [networkpolicies]
@@ -44,6 +44,10 @@ rules:
 - apiGroups: [laboratory.cybericebox.com]
   resources: [connections, devices, labgateways, labgroupclients, labgroups, labs, labvpns]
   verbs: [create, delete, get, list, patch, update, watch]
+# Image prepull requests the scheduler makes and the node-agents answer (see DEPLOY.md, "Scheduler").
+- apiGroups: [laboratory.cybericebox.com]
+  resources: [imagepulls]
+  verbs: [create, delete, get, list, watch]
 - apiGroups: [laboratory.cybericebox.com]
   resources: [connections/finalizers, devices/finalizers, labgateways/finalizers, labgroupclients/finalizers, labgroups/finalizers, labs/finalizers, labvpns/finalizers]
   verbs: [update]

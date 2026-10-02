@@ -1,4 +1,4 @@
-# The operator's working permissions in the release namespace (the pull secrets it copies, the prepull DaemonSets, the snapshot registry credentials).
+# The operator's working permissions in the release namespace (the pull secrets it copies, the snapshot registry credentials).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:

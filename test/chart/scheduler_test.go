@@ -85,8 +85,8 @@ func TestSchedulerRejectsBadValues(t *testing.T) {
 	}
 }
 
-// The operator reads nodes cluster-wide and runs the prepull DaemonSets in the release namespace (its namespaced role).
-func TestOperatorMayReadNodesAndManagePrepullDaemonSets(t *testing.T) {
+// The operator reads nodes cluster-wide and makes the prepull requests (ImagePull).
+func TestOperatorMayReadNodesAndManagePrepullRequests(t *testing.T) {
 	out, err := helmTemplate(t, "-s", "templates/operator/clusterrole.yaml")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -108,7 +108,7 @@ func TestOperatorMayReadNodesAndManagePrepullDaemonSets(t *testing.T) {
 	}
 	for _, c := range [][3]string{
 		{"", "nodes", "list"}, {"", "nodes", "watch"},
-		{"apps", "daemonsets", "list"}, {"apps", "daemonsets", "watch"},
+		{"laboratory.cybericebox.com", "imagepulls", "create"}, {"laboratory.cybericebox.com", "imagepulls", "delete"},
 		{"", "pods", "list"},
 	} {
 		if !can(c[0], c[1], c[2]) {

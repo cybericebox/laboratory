@@ -21,6 +21,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/imagepull"
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/nodeagent"
 )
 
@@ -110,6 +112,25 @@ func Run() {
 		CRISock:  cfg.CRISock,
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "setup NetworkAttachReconciler")
+		os.Exit(1)
+	}
+
+	puller, err := imagepull.NewCRIPuller(cfg.CRISock)
+	if err != nil {
+		log.Error(err, "connect to the container runtime")
+		os.Exit(1)
+	}
+	defer puller.Close()
+	if err := (&nodeagent.ImagePullReconciler{
+		Client:          mgr.GetClient(),
+		Reader:          mgr.GetAPIReader(),
+		NodeName:        cfg.NodeName,
+		ImagesNamespace: names.ImagesNamespace,
+		Puller:          puller,
+		Concurrency:     cfg.ImagePullConcurrency,
+		Timeout:         cfg.ImagePullTimeout,
+	}).SetupWithManager(mgr); err != nil {
+		log.Error(err, "setup ImagePullReconciler")
 		os.Exit(1)
 	}
 
