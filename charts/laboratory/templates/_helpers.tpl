@@ -143,3 +143,11 @@ additions of the device profiles, and what the VPN and gateway pods need. A Go t
 {{- define "laboratory.operatorCapabilities" -}}
 ['AUDIT_WRITE', 'CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID', 'IPC_LOCK', 'KILL', 'LINUX_IMMUTABLE', 'NET_ADMIN', 'NET_BIND_SERVICE', 'NET_RAW', 'SETGID', 'SETPCAP', 'SETUID', 'SYS_CHROOT', 'SYS_PTRACE']
 {{- end -}}
+
+{{/*
+The node selector of every lab pod (VPN, gateway, device): labWorkloads.nodeSelector plus the node-agent-ready label that the
+node-agent sets on its node. Lab pods run only where a ready node-agent serves them (see DEPLOY.md, "Which nodes run labs").
+*/}}
+{{- define "laboratory.labNodeSelector" -}}
+{{- merge (dict "laboratory.cybericebox.com/node-agent-ready" "true") (deepCopy .Values.labWorkloads.nodeSelector) | toJson -}}
+{{- end }}

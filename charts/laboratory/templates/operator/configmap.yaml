@@ -21,7 +21,7 @@ data:
   GATEWAY_MEMORY: {{ .Values.inetGateway.resources.memory | quote }}
   GATEWAY_IMAGE: "{{ .Values.inetGateway.image.repository }}:{{ .Values.inetGateway.image.tag | default .Chart.AppVersion }}"
   NETCONFIG_IMAGE: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag | default .Chart.AppVersion }}"
-  LAB_NODE_SELECTOR: {{ .Values.labWorkloads.nodeSelector | toJson | quote }}
+  LAB_NODE_SELECTOR: {{ include "laboratory.labNodeSelector" . | quote }}
   LAB_TOLERATIONS: {{ .Values.labWorkloads.tolerations | toJson | quote }}
   DEVICE_USER_NAMESPACES: {{ .Values.devices.security.userNamespaces | quote }}
   DEVICE_EPHEMERAL_STORAGE: {{ .Values.devices.security.ephemeralStorage | quote }}

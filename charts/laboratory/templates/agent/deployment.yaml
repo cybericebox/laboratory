@@ -112,7 +112,7 @@ spec:
           {{- end }}
             # The nodes lab pods run on: a percentage tenant quota is a percentage of their allocatable.
             - name: AGENT_LAB_NODE_SELECTOR
-              value: {{ .Values.labWorkloads.nodeSelector | toJson | quote }}
+              value: {{ include "laboratory.labNodeSelector" . | quote }}
             - name: AGENT_LAB_TOLERATIONS
               value: {{ .Values.labWorkloads.tolerations | toJson | quote }}
             # What a group's VPN and gateway pods request (the operator's values): their sum is the service overhead in GetCapacity.

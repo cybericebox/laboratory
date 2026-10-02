@@ -1,6 +1,7 @@
 package chart_test
 
 import (
+	"encoding/json"
 	"os/exec"
 	"strings"
 	"testing"
@@ -189,5 +190,58 @@ func TestCNIFallbackIsOptIn(t *testing.T) {
 	}
 	if v, ok := has(nodeAgent(t, "--set", "nodeAgent.cniFallbackTimeout=10m")); !ok || v != "10m" {
 		t.Errorf("opt-in not applied: %q %v", v, ok)
+	}
+}
+
+// C-18: the node-agent runs where lab pods can run, and lab pods run only where a ready node-agent has marked its node.
+func TestNodeAgentFollowsLabPlacementAndLabPodsNeedItsLabel(t *testing.T) {
+	const ready = "laboratory.cybericebox.com/node-agent-ready"
+	ds := nodeAgent(t)
+	if ds.Spec.Template.Spec.Affinity != nil {
+		t.Errorf("no control-plane exclusion any more: %+v", ds.Spec.Template.Spec.Affinity)
+	}
+	if len(ds.Spec.Template.Spec.NodeSelector) != 0 {
+		t.Errorf("default node selector: %v", ds.Spec.Template.Spec.NodeSelector)
+	}
+	tols := ds.Spec.Template.Spec.Tolerations
+	if len(tols) != 1 || tols[0].Key != "node.cilium.io/agent-not-ready" {
+		t.Errorf("by default only Cilium's agent-not-ready taint is tolerated: %v", tols)
+	}
+
+	set := []string{"--set", "labWorkloads.nodeSelector.pool=labs",
+		"--set", "labWorkloads.tolerations[0].key=node-role.kubernetes.io/control-plane", "--set", "labWorkloads.tolerations[0].operator=Exists", "--set", "labWorkloads.tolerations[0].effect=NoSchedule"}
+	ds = nodeAgent(t, set...)
+	if ds.Spec.Template.Spec.NodeSelector["pool"] != "labs" {
+		t.Errorf("the node-agent follows labWorkloads.nodeSelector: %v", ds.Spec.Template.Spec.NodeSelector)
+	}
+	found := false
+	for _, tol := range ds.Spec.Template.Spec.Tolerations {
+		found = found || tol.Key == "node-role.kubernetes.io/control-plane"
+	}
+	if !found {
+		t.Errorf("a control-plane node that takes labs must get a node-agent: %v", ds.Spec.Template.Spec.Tolerations)
+	}
+
+	for name, args := range map[string][]string{"default": nil, "custom": set} {
+		var cm corev1.ConfigMap
+		render(t, "templates/operator/configmap.yaml", &cm, args...)
+		var sel map[string]string
+		if err := json.Unmarshal([]byte(cm.Data["LAB_NODE_SELECTOR"]), &sel); err != nil {
+			t.Fatal(err)
+		}
+		if sel[ready] != "true" || (name == "custom" && sel["pool"] != "labs") || (name == "default" && len(sel) != 1) {
+			t.Errorf("%s: LAB_NODE_SELECTOR = %v", name, sel)
+		}
+		var dep appsv1.Deployment
+		render(t, "templates/agent/deployment.yaml", &dep, append(args, "--set", "agent.enabled=true", "--set", "agent.domain=a.example.com")...)
+		agentSel := envOf(dep.Spec.Template.Spec.Containers[0])["AGENT_LAB_NODE_SELECTOR"].Value
+		if agentSel != cm.Data["LAB_NODE_SELECTOR"] {
+			t.Errorf("%s: the agent and the operator must use the same selector: %s vs %s", name, agentSel, cm.Data["LAB_NODE_SELECTOR"])
+		}
+	}
+	// the node-agent may label its own node, nothing else of nodes
+	out, err := helmTemplate(t, "-s", "templates/node-agent/clusterrole.yaml")
+	if err != nil || !strings.Contains(out, "patch") {
+		t.Errorf("the node-agent needs to patch its node's label: %v\n%s", err, out)
 	}
 }

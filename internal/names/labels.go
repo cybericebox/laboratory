@@ -17,6 +17,11 @@ const (
 	// Operator-internal: the scheduler reads it and no user label.
 	LabelDeployGroup = LabelPrefix + "deploy-group"
 
+	// LabelNodeAgentReady is set to "true" on a node by the node-agent running there once it can serve pods, and removed when it stops.
+	// Every lab pod requires it (through the lab node selector of the chart), so no lab pod lands on a node without a working
+	// node-agent (a pod there would have no cni-gate and no OVS wiring).
+	LabelNodeAgentReady = LabelPrefix + "node-agent-ready"
+
 	// TopologyKeyHostname is the well-known node label used as the topology key
 	// for per-node scheduling constraints (device co-location).
 	TopologyKeyHostname = "kubernetes.io/hostname"

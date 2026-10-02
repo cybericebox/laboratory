@@ -171,6 +171,12 @@ func Run() {
 		os.Exit(1)
 	}
 
+	// Last: once everything above is set up, the node is marked ready for lab pods (and unmarked when this process stops).
+	if err := mgr.Add(&nodeagent.NodeLabeler{Client: mgr.GetClient(), NodeName: cfg.NodeName}); err != nil {
+		log.Error(err, "setup NodeLabeler")
+		os.Exit(1)
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 

@@ -23,17 +23,20 @@ spec:
       hostNetwork: true
       hostPID: false
       dnsPolicy: ClusterFirstWithHostNet
-      tolerations:
-        - operator: Exists
-      {{- if .Values.nodeAgent.excludeControlPlane }}
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: node-role.kubernetes.io/control-plane
-                    operator: DoesNotExist
+      # The node-agent runs on exactly the nodes that can host lab pods: the same node selector and tolerations as the lab pods
+      # (labWorkloads), so a schedulable control-plane node (controller+worker) gets one when labs tolerate its taint, and a node
+      # that labs avoid does not. It also tolerates Cilium's agent-not-ready taint, to start while the CNI comes up.
+      {{- with .Values.labWorkloads.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
       {{- end }}
+      tolerations:
+        - key: node.cilium.io/agent-not-ready
+          operator: Exists
+          effect: NoSchedule
+        {{- with .Values.labWorkloads.tolerations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

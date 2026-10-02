@@ -729,6 +729,28 @@ long time, look at the CNI agent on that node (`kubectl -n kube-system get pods 
 `nodeAgent.cniFallbackTimeout` (default empty) is the explicit opt-in for a cluster that has no other CNI: with a Go duration such as `10m`, a built-in `ptp` + `host-local`
 config (10.244.0.0/16) is written after that long without a base config. Leave it empty on any cluster with Cilium.
 
+### Which nodes run labs
+
+A lab pod (device, VPN, gateway) needs the node-agent of its node: the node-agent wires the device's network into Open vSwitch and its `cni-gate` plugin is
+what gives the pod its interfaces. A pod that lands on a node without a working node-agent gets a plain Cilium address and no OVS wiring: a lab outside the
+layer-2 isolation model. Two rules keep that from happening:
+
+1. **The node-agent runs on exactly the nodes that can host lab pods.** Its DaemonSet has the same node selector and tolerations as the lab pods
+   (`labWorkloads.nodeSelector`, `labWorkloads.tolerations`) and, in addition, tolerates Cilium's `node.cilium.io/agent-not-ready` taint so that it starts while the CNI
+   comes up. There is no `excludeControlPlane` any more. A schedulable control-plane node (a controller+worker topology) gets a node-agent and takes labs when
+   its taint is soft (`PreferNoSchedule`, as the stand and the AWS cluster role set it) or when `labWorkloads.tolerations` tolerate its taint, for example
+   `{key: node-role.kubernetes.io/control-plane, operator: Exists}`. A node that labs avoid (a hard taint they do not tolerate, or another node selector) has no node-agent.
+2. **A lab pod is placed only on a node whose node-agent is ready.** The node-agent sets the label `laboratory.cybericebox.com/node-agent-ready=true` on its own node once
+   it is up (Open vSwitch is programmed, the gRPC socket listens) and removes it when it stops. The chart adds this label to the lab node selector (`LAB_NODE_SELECTOR` of the
+   operator, `AGENT_LAB_NODE_SELECTOR` of the agent), so it is a required node selector of every VPN, gateway and device pod, and the scheduler and the capacity numbers count only
+   marked nodes. A node whose node-agent stops (rollout, crash loop, removed) takes no new lab pods; pods already there keep running. After a hard crash the label stays until the pod restarts
+   (a few seconds); a node-agent that is gone for good leaves a stale label, which you remove with `kubectl label node <node> laboratory.cybericebox.com/node-agent-ready-`.
+   The node-agent may patch only that one label of its own node: the ValidatingAdmissionPolicy `laboratory-node-agent-label` (rendered with `operator.admissionPolicy.enabled`) refuses any other
+   change and any other node, using the node name in the bound token of its pod.
+
+Check a node: `kubectl get nodes -L laboratory.cybericebox.com/node-agent-ready` and `kubectl -n laboratory-system get pods -l app=node-agent -o wide`. A new node takes labs only after its
+node-agent is `Running`.
+
 ## Security hardening
 
 Findings of the isolation audit (`docs/security/2026-10-02-laboratory-isolation.md`) and how the laboratory answers them.

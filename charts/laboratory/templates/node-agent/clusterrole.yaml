@@ -29,6 +29,11 @@ rules:
   - apiGroups: [ "" ]
     resources: [ nodes ]
     verbs: [ get, list, watch ]
+  # Marks its own node ready for lab pods (laboratory.cybericebox.com/node-agent-ready). The patch is limited to that one label of
+  # its own node by the admission policy laboratory-node-agent-label.
+  - apiGroups: [ "" ]
+    resources: [ nodes ]
+    verbs: [ patch ]
   - apiGroups: [ "" ]
     resources: [ pods ]
     verbs: [ get, list, watch ]

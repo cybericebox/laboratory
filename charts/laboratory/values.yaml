@@ -370,9 +370,6 @@ nodeAgent:
     tag: ""
     pullPolicy: IfNotPresent
 
-  # Exclude control-plane nodes from the DaemonSet (set false for single-node Kind).
-  excludeControlPlane: true
-
   # The node is bare: Open vSwitch runs inside this DaemonSet (the "ovs" sidecar),
   # and the host-prep init container loads the kernel modules and sets the sysctls
   # below. Nothing but the kernel (with these modules) and k0s is installed on the host.
@@ -630,10 +627,13 @@ devices:
 # Lab workload scheduling (VPN, gateway, device pods)
 # ============================================================
 labWorkloads:
-  # nodeSelector applied to all runtime lab pods.
+  # nodeSelector applied to all runtime lab pods, in addition to laboratory.cybericebox.com/node-agent-ready=true, which the
+  # node-agent sets on its node: a lab pod is only placed where a ready node-agent runs. The node-agent runs on EVERY node
+  # (it tolerates all taints), so which nodes take labs is decided here and by the tolerations.
   # Example: {"lab-node": "true"} — only schedule on nodes labelled lab-node=true.
   nodeSelector: {}
-  # tolerations applied to all runtime lab pods.
+  # tolerations applied to all runtime lab pods. A schedulable control-plane node (controller+worker) takes labs only when
+  # they tolerate its taint (node-role.kubernetes.io/control-plane or /master, whichever the cluster puts on it).
   tolerations: []
 
 # ============================================================
