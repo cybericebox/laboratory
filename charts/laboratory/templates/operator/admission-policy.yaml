@@ -1,7 +1,4 @@
 {{- if .Values.operator.admissionPolicy.enabled }}
-{{- if not (semverCompare ">=1.30.0-0" .Capabilities.KubeVersion.Version) }}
-{{- fail (printf "operator.admissionPolicy needs Kubernetes 1.30 or newer (ValidatingAdmissionPolicy), this cluster is %s. Without it the operator's ServiceAccount can bind its role in any namespace, so the chart will not install silently without it: upgrade the cluster, or set operator.admissionPolicy.enabled=false to accept that risk on purpose." .Capabilities.KubeVersion.Version) }}
-{{- end }}
 {{- /*
 RBAC cannot restrict the operator to "the namespaces of its LabGroups" (they do not exist when the chart is installed), so these
 policies do. They apply to the operator's ServiceAccount only. See DEPLOY.md, "Operator permissions".
@@ -132,6 +129,8 @@ spec:
   variables:
     - name: podSpec
       expression: "request.resource.resource == 'pods' ? object.spec : object.spec.template.spec"
+    - name: podLabels
+      expression: "request.resource.resource == 'pods' ? object.metadata.?labels.orValue({}) : object.spec.template.metadata.?labels.orValue({})"
     - name: containers
       expression: "variables.podSpec.containers + (has(variables.podSpec.initContainers) ? variables.podSpec.initContainers : [])"
     # A running pod's spec cannot change (the operator patches its labels only), so the rules about what a pod is made of are
@@ -168,6 +167,12 @@ spec:
     - expression: "variables.containers.all(c, !has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0))"
       message: the operator may not publish a container on a host port
       reason: Forbidden
+{{- if .Values.devices.security.userNamespaces }}
+    # devices.security.userNamespaces: a device pod (it carries the device label) runs in its own user namespace, so root in a device is not root on the node.
+    - expression: "variables.podUpdate || !('laboratory.cybericebox.com/device' in variables.podLabels) || (has(variables.podSpec.hostUsers) && variables.podSpec.hostUsers == false)"
+      message: with devices.security.userNamespaces the operator may create a device pod only with hostUsers=false
+      reason: Forbidden
+{{- end }}
     - expression: "variables.podUpdate || !has(variables.podSpec.nodeName) || variables.podSpec.nodeName == ''"
       message: the operator may not place a pod on a node by name (the scheduler does)
       reason: Forbidden

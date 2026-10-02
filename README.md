@@ -125,7 +125,7 @@ Laboratory targets bare Linux VMs running Kubernetes (developed against [k0s](ht
   client CA of the agent. Tenant client certificates are not issued by cert-manager: the agent signs them when a tenant
   enrolls (see [Tenancy](#tenancy-and-enrollment)). With an ACME issuer the wildcard certificate needs a DNS-01 solver (Cloudflare is supported by the chart); a self-signed
   issuer is available for development.
-- `kubectl` 1.28+, `helm` 3.12+.
+- Kubernetes 1.33+ (the chart refuses an older cluster: user namespaces for device pods, `spec.hostUsers`), containerd 2.x and a node kernel 6.3+ for them; `kubectl` 1.33+, `helm` 3.12+.
 - To build from source: the Go version in `go.mod`, Docker, and `make`.
 
 ## Quick start (Helm)

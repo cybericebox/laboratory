@@ -5,8 +5,16 @@ manifests.
 
 ## Prerequisites
 
-- `kubectl` ≥ 1.28
-- `helm` ≥ 3.12
+| Requirement | Version | Why |
+|---|---|---|
+| Kubernetes | **1.33 or newer** (the chart refuses an older cluster: `kubeVersion` in `Chart.yaml` and `templates/validate.yaml`) | device pods run in user namespaces (`spec.hostUsers: false`; below 1.33 the API server can drop the field silently and a device would run in the host user namespace), native sidecars, ValidatingAdmissionPolicy |
+| Container runtime | containerd 2.x | user namespaces for pods |
+| Node kernel | 6.3 or newer | idmapped mounts for user-namespace pods |
+| `kubectl` | 1.33+ | |
+| `helm` | 3.12+ | |
+
+With `devices.security.userNamespaces: true` (the default) the operator's admission policy also refuses any device pod without `hostUsers: false`, so a
+cluster that ignored the field would fail loudly instead of running devices as host root.
 - Worker nodes need only k0s and a Linux kernel with the `openvswitch`, `geneve`, `wireguard`, `br_netfilter`, `nf_conntrack` and `nf_conntrack_netlink` modules (cgroup v2). Open vSwitch runs in the node-agent DaemonSet, which also loads the modules and sets the sysctls (`nodeAgent.hostPrep`). The image ships Open vSwitch 3.7.1 (alpine 3.24); 4.0.0 comes with the next alpine stable release.
 
 ---
@@ -1094,7 +1102,7 @@ straight from the API server instead of caching them, because an informer would 
 What remains, and why: the operator can still create a RoleBinding in any namespace to the three roles it may bind, so on its own RBAC cannot
 stop a compromised operator from giving itself its working role in, say, `kube-system`. That is the job of the admission policy:
 
-**Admission policy** (`operator.admissionPolicy.enabled`, default on, Kubernetes 1.30+). Three `ValidatingAdmissionPolicy` objects, each with a
+**Admission policy** (`operator.admissionPolicy.enabled`, default on; the chart needs Kubernetes 1.33+ anyway). Three `ValidatingAdmissionPolicy` objects, each with a
 `Deny` binding, apply to the operator's ServiceAccount only (anyone else is unaffected):
 
 - `laboratory-operator-scope`: it may create, change and delete Secrets, ServiceAccounts, Services, Endpoints, pods, Deployments, DaemonSets,
@@ -1516,7 +1524,7 @@ component that runs it clamps or ignores the bad value instead of failing.
    them, they are the second line).
 2. `helm upgrade` (the operator, agent, node-agent and proxy roll out together; the operator and the agent can run in either order).
 3. The notes of each item below say what, if anything, must happen in a different order. In short, before `helm upgrade`:
-   - the cluster is Kubernetes 1.30 or newer, or `operator.admissionPolicy.enabled=false` is set on purpose (the chart refuses to skip the policies silently, and the operator exits at start when they are not enforced);
+   - the cluster is Kubernetes 1.33 or newer (the chart refuses an older one), or `operator.admissionPolicy.enabled=false` is set on purpose (the chart refuses to skip the policies silently, and the operator exits at start when they are not enforced);
    - the tenant `default` exists (the chart creates it): with mTLS on, every certificate, the default tenant's included, needs its Tenant object;
    - nothing else has to be done by hand: the VPN and gateway pods are rolled once (component label), the agent runs two replicas, the operator labels the unused enrollment tokens,
      the node-agents roll one node at a time, and objects that exist keep their names, namespaces, snapshots and certificates.
@@ -1573,8 +1581,7 @@ component that runs it clamps or ignores the bad value instead of failing.
 
 ### The admission policies are required, and checked (R-8)
 
-- **The chart no longer skips the policies silently.** `operator.admissionPolicy.enabled` (default true) needs Kubernetes 1.30 or newer; on an older
-  cluster the render fails with a message. The opt-out is explicit: `operator.admissionPolicy.enabled=false` accepts, on purpose, that the operator's ServiceAccount
+- **The chart no longer skips the policies silently.** `operator.admissionPolicy.enabled` (default true) needs a ValidatingAdmissionPolicy cluster (the chart as a whole needs Kubernetes 1.33 or newer, and refuses an older one). The opt-out is explicit: `operator.admissionPolicy.enabled=false` accepts, on purpose, that the operator's ServiceAccount
   can bind its role in any namespace.
 - **The operator checks at start** (`OPERATOR_REQUIRE_ADMISSION_POLICY`, set by the chart from the value above) that the three policies and their bindings exist
   and deny, and that they are enforced: it asks the API server, in dry run (nothing is written), for a RoleBinding in the namespace `default` and for a namespace
@@ -1587,7 +1594,7 @@ component that runs it clamps or ignores the bad value instead of failing.
   and use only `emptyDir`, `projected`, `downwardAPI`, `secret` and `configMap` volumes, on top of the old rules (no host network, PID or IPC, no host path, no
   privileged container). The rules about what a pod is made of apply when it is created and to the template of a Deployment or DaemonSet; changing the labels of a
   running pod is judged only by the scope rules, so pods made by earlier versions keep being managed.
-- **Upgrade.** Nothing to do by hand. On a cluster older than 1.30 set `operator.admissionPolicy.enabled=false` first (or upgrade the cluster). The new rules apply to the
+- **Upgrade.** Nothing to do by hand. The cluster must be 1.33 or newer. The new rules apply to the
   operator as soon as the chart is upgraded: the VPN and gateway Deployments it already has are hardened to the same shape (earlier version), so they pass.
 - Not done: narrowing the operator's Secret permissions in the release namespace to named Secrets (the owner's decision lists the policy check and the pod rules only).
 

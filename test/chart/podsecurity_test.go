@@ -2,6 +2,7 @@ package chart_test
 
 import (
 	"encoding/json"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -350,14 +351,39 @@ func TestAgentReplicasAndInsecureFlag(t *testing.T) {
 	}
 }
 
-// R-8: without ValidatingAdmissionPolicy the chart does not install silently; the opt-out is explicit.
-func TestAdmissionPolicyIsNotSkippedSilently(t *testing.T) {
-	if out, err := helmTemplate(t, "--kube-version", "1.29.0", "-s", "templates/operator/admission-policy.yaml"); err == nil {
-		t.Fatalf("a cluster older than 1.30 must fail the render:\n%s", out)
-	} else if !strings.Contains(err.Error()+out, "admissionPolicy") {
-		t.Errorf("the failure must say what to do: %v %s", err, out)
+// C-16: the chart refuses a Kubernetes older than 1.33 (user namespaces for device pods, native sidecars, admission policies).
+func TestChartRefusesKubernetesBelow133(t *testing.T) {
+	for _, v := range []string{"1.29.0", "1.30.4", "1.32.9"} {
+		out, err := helmTemplate(t, "--kube-version", v, "-s", "templates/operator/configmap.yaml")
+		if err == nil || !strings.Contains(out, "1.33") {
+			t.Errorf("%s must be refused with the required version in the message: %v\n%s", v, err, out)
+		}
 	}
-	out, err := helmTemplate(t, "--kube-version", "1.29.0", "--set", "operator.admissionPolicy.enabled=false", "-s", "templates/operator/configmap.yaml")
+	if out, err := helmTemplate(t, "--kube-version", "1.33.0", "-s", "templates/operator/configmap.yaml"); err != nil {
+		t.Errorf("1.33.0 must render: %v\n%s", err, out)
+	}
+	data, err := os.ReadFile("../../charts/laboratory/Chart.yaml")
+	if err != nil || !strings.Contains(string(data), "kubeVersion: \">=1.33.0-0\"") {
+		t.Errorf("Chart.yaml must carry kubeVersion >=1.33.0-0: %v", err)
+	}
+}
+
+// C-16: with devices.security.userNamespaces the admission policy requires hostUsers=false on device pods.
+func TestAdmissionPolicyRequiresHostUsersFalseForDevicePods(t *testing.T) {
+	const rule = "device pod only with hostUsers=false"
+	out, err := helmTemplate(t, "-s", "templates/operator/admission-policy.yaml")
+	if err != nil || !strings.Contains(out, rule) {
+		t.Errorf("userNamespaces is on by default: the policy needs the rule: %v\n%s", err, out)
+	}
+	out, err = helmTemplate(t, "--set", "devices.security.userNamespaces=false", "-s", "templates/operator/admission-policy.yaml")
+	if err != nil || strings.Contains(out, rule) {
+		t.Errorf("userNamespaces off: no rule: %v\n%s", err, out)
+	}
+}
+
+// R-8: the opt-out of the admission policies is explicit.
+func TestAdmissionPolicyOptOutIsExplicit(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "operator.admissionPolicy.enabled=false", "-s", "templates/operator/configmap.yaml")
 	if err != nil {
 		t.Fatalf("the opt-out must render: %v\n%s", err, out)
 	}

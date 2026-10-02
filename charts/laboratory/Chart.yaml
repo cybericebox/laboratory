@@ -2,6 +2,9 @@ apiVersion: v2
 name: laboratory
 description: CyberICEBox Laboratory operator — manages lab groups, VPN, OVS networking, and device lifecycle.
 type: application
+# Native sidecars and ValidatingAdmissionPolicy need 1.30, but user namespaces for device pods (spec.hostUsers, devices.security.userNamespaces)
+# need 1.33: below that the API server may drop the field silently and a device would run in the host user namespace.
+kubeVersion: ">=1.33.0-0"
 version: 0.1.0
 appVersion: "0.1.0"
 keywords:

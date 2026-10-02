@@ -9,6 +9,11 @@ at install time instead of shipping a broken deployment.
 {{- fail (printf "laboratory must be installed into the 'laboratory-system' namespace (got %q). Re-run with --namespace laboratory-system --create-namespace." .Release.Namespace) }}
 {{- end }}
 
+{{- /* Chart.yaml kubeVersion refuses an older cluster too; this says why. */ -}}
+{{- if not (semverCompare ">=1.33.0-0" .Capabilities.KubeVersion.Version) }}
+{{- fail (printf "this chart needs Kubernetes 1.33 or newer, this cluster is %s: device pods run in user namespaces (spec.hostUsers=false), and below 1.33 the API server can drop that field silently, which would run a device in the host user namespace; the chart also uses native sidecars and ValidatingAdmissionPolicy. Upgrade the cluster." .Capabilities.KubeVersion.Version) }}
+{{- end }}
+
 {{- /* Required values: fail at install time with a clear message. */ -}}
 {{- if not .Values.operator.publicVPNEndpoint }}
 {{- fail "operator.publicVPNEndpoint is required: the host:port advertised to WireGuard clients, e.g. vpn.example.com:51820" }}

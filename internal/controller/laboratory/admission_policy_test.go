@@ -107,6 +107,22 @@ var _ = Describe("operator admission policy", Ordered, func() {
 		Expect(err.Error()).To(ContainSubstring("not enforced"))
 	})
 
+	It("requires hostUsers=false on device pods when userNamespaces is on (the chart default)", func() {
+		groupNamespace("adm-users")
+		device := func(name string, hostUsers *bool) *corev1.Pod {
+			p := hardenedPod(name, "adm-users")
+			p.Labels = map[string]string{names.LabelDevice: "web"}
+			p.Spec.HostUsers = hostUsers
+			return p
+		}
+		no, yes := false, true
+		denied(op.Create(ctx, device("dev-default", nil)))
+		denied(op.Create(ctx, device("dev-host-users", &yes)))
+		Expect(op.Create(ctx, device("dev-userns", &no))).To(Succeed())
+		// the VPN and gateway pods are not devices: no user namespace needed
+		Expect(op.Create(ctx, hardenedPod("vpn-like", "adm-users"))).To(Succeed())
+	})
+
 	It("lets the operator create the namespace of a LabGroup and write in it", func() {
 		groupNamespace("adm-group")
 		Expect(op.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "adm-group"}})).To(Succeed())
