@@ -350,6 +350,12 @@ certManager:
 nodeAgent:
   enabled: true
 
+  # The init container wraps the node's real CNI config (Cilium) with cni-gate and waits for it as long as it takes: on a fresh
+  # node the CNI can need minutes (image pull, agent start), and a pod must never get a network from anything else.
+  # Explicit opt-in: a Go duration (e.g. "10m") after which, with no base config, a built-in ptp + host-local 10.244.0.0/16
+  # config is written. It is for a cluster with no other CNI; it can collide with the pod CIDR. Empty = never.
+  cniFallbackTimeout: ""
+
   # Storm control of the shared switch: the most (kbit/s) the veth port of a device may send into the bridge, so that a flood or a loop
   # inside one lab (a device with NET_ADMIN can bridge its own interfaces) is held to this rate instead of the datapath of the node.
   # 0 = off. Applied to the ports of running devices at the next resync, and to new ones when they are made.

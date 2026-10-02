@@ -1,5 +1,3 @@
-//go:build linux
-
 package nodeagent
 
 import (
@@ -24,21 +22,30 @@ const (
 	// CNIBinDir is where CNI plugin binaries are installed.
 	CNIBinDir = "/opt/cni/bin"
 
-	cniRetryInterval = 5 * time.Second
+	defaultCNIRetryInterval = 5 * time.Second
 )
+
+// cniRetryInterval is how often InstallCNIConf looks for the base config again (a variable for tests).
+var cniRetryInterval = defaultCNIRetryInterval
 
 // InstallCNIConf writes CNIConfFile into confDir by wrapping the first
 // existing CNI config it finds with cni-gate. Blocks until a base config
-// appears (retry every 5 s). Falls back to a built-in ptp delegate if no
-// base config is found within fallbackTimeout.
+// appears (retry every 5 s): the real CNI (Cilium) can take minutes on a fresh
+// node (image pull, agent start), and until it is there no pod may be given a
+// network. There is no automatic fallback: only when fallbackTimeout is
+// positive (an explicit opt-in, nodeAgent.cniFallbackTimeout) is a built-in
+// ptp delegate written after that long without a base config.
 func InstallCNIConf(confDir, agentSocket string, fallbackTimeout time.Duration) error {
-	deadline := time.Now().Add(fallbackTimeout)
+	var deadline time.Time
+	if fallbackTimeout > 0 {
+		deadline = time.Now().Add(fallbackTimeout)
+	}
 	for {
 		base, err := findBaseCNIConf(confDir)
 		if err == nil {
 			return writeCNIConf(confDir, agentSocket, base)
 		}
-		if time.Now().After(deadline) {
+		if !deadline.IsZero() && time.Now().After(deadline) {
 			return writeFallbackCNIConf(confDir, agentSocket)
 		}
 		fmt.Fprintf(os.Stderr, "install-cni: waiting for base CNI config in %s: %v\n", confDir, err)

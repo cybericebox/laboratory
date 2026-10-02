@@ -716,6 +716,19 @@ conn.ResetDevices(ctx, &pb.DevicesRequest{Items: []*pb.ItemRef{{LabGroup: "e-1-t
 
 ---
 
+## Nodes
+
+### A new node and the CNI config
+
+The node-agent's init container `install-cni-conf` wraps the node's real CNI config (Cilium's) with `cni-gate` in `00-cybericebox.conflist`. On a fresh node
+Cilium can need minutes (image pull, agent start, scale-out on a cloud), and until its config exists the init container **waits and retries every 5 s**; the node-agent
+pod stays `Init:1/2` and the log says `install-cni: waiting for base CNI config`. It never writes a substitute config on its own: a pod must not get an address from anything but
+the cluster's CNI, because a node with a different pod network for some of its pods breaks routing and can collide with the pod CIDR. If a node stays in `Init` for a
+long time, look at the CNI agent on that node (`kubectl -n kube-system get pods -o wide`), not at the node-agent.
+
+`nodeAgent.cniFallbackTimeout` (default empty) is the explicit opt-in for a cluster that has no other CNI: with a Go duration such as `10m`, a built-in `ptp` + `host-local`
+config (10.244.0.0/16) is written after that long without a base config. Leave it empty on any cluster with Cilium.
+
 ## Security hardening
 
 Findings of the isolation audit (`docs/security/2026-10-02-laboratory-isolation.md`) and how the laboratory answers them.
@@ -1205,7 +1218,7 @@ Runbook for a lost node:
 3. To go faster, or for a pod that is not a device (VPN, gateway), delete it yourself: `kubectl -n <ns> delete pod <pod> --force --grace-period=0`.
    Only do this for a node that is really down: the container may still run on a node that has only lost its network.
 4. If the node is dead for good: `kubectl delete node <node>`. The pods on it go at once and the devices are recreated.
-5. When the node returns, its kubelet removes the leftover containers; the node-agent rebuilds the node's switch ports from the pods that are scheduled there.
+5. When the node returns, its kubelet removes the leftover containers.
 
 ### Retention of deleted labs
 

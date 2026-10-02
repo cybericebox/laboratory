@@ -126,8 +126,11 @@ spec:
               value: {{ .Values.nodeAgent.grpcSocket | quote }}
             - name: CNI_CONF_DIR
               value: /etc/cni/net.d
+          {{- with .Values.nodeAgent.cniFallbackTimeout }}
+            # Explicit opt-in only: without it the init container waits for the real CNI config.
             - name: CNI_FALLBACK_TIMEOUT
-              value: "60s"
+              value: {{ . | quote }}
+          {{- end }}
           securityContext:
             runAsUser: 0
           volumeMounts:

@@ -173,3 +173,21 @@ func TestOVSSocketMustBeInsideRunDir(t *testing.T) {
 		t.Errorf("unexpected error: %s", out)
 	}
 }
+
+// C-3: no automatic fallback CNI config; it is an explicit opt-in.
+func TestCNIFallbackIsOptIn(t *testing.T) {
+	has := func(ds appsv1.DaemonSet) (string, bool) {
+		_, init := initByName(ds.Spec.Template.Spec, "install-cni-conf")
+		if init == nil {
+			t.Fatal("no install-cni-conf init container")
+		}
+		v, ok := envOf(*init)["CNI_FALLBACK_TIMEOUT"]
+		return v.Value, ok
+	}
+	if v, ok := has(nodeAgent(t)); ok {
+		t.Errorf("CNI_FALLBACK_TIMEOUT = %q by default: the init container must wait for the real CNI", v)
+	}
+	if v, ok := has(nodeAgent(t, "--set", "nodeAgent.cniFallbackTimeout=10m")); !ok || v != "10m" {
+		t.Errorf("opt-in not applied: %q %v", v, ok)
+	}
+}
