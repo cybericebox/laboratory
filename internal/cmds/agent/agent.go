@@ -65,6 +65,7 @@ func Run() {
 		log.Fatalf("%v", err)
 	}
 	h.SetGroupOverhead(cfg.GroupPods.Overhead())
+	h.SetRenewMinInterval(cfg.Server.RenewMinInterval)
 	h.SetClientCA(cfg.MTLS.ClientCAFile, cfg.MTLS.ClientCAKeyFile, cfg.MTLS.ClientCertTTL)
 	h.SetRegistryAddr(cfg.RegistryAddr)
 	h.SetRegistryAuth(cfg.RegistryUser, cfg.RegistryPassword)

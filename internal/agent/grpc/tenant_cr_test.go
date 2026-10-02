@@ -63,9 +63,18 @@ func TestAuthorizeKnowsTenantsOnly(t *testing.T) {
 	if err := h.Authorize(context.Background()); err != nil {
 		t.Fatalf("no certificate is the default tenant: %v", err)
 	}
-	// The default tenant needs no object (the chart creates it, a bare cluster has none).
+	// The default tenant is a tenant like any other: with a certificate it needs its Tenant object (the chart creates it), so a
+	// leaked certificate of it can be revoked by enrolling it again.
+	if err := h.Authorize(asClient("default")); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("default without a Tenant object: %v", err)
+	}
+	h = tenantHandler(t, []*laboratoryv1alpha1.Tenant{newTenantTenant("default", false, nil)})
 	if err := h.Authorize(asClient("default")); err != nil {
-		t.Fatalf("default: %v", err)
+		t.Fatalf("default with its object: %v", err)
+	}
+	// A certificate with no common name belongs to nobody.
+	if err := h.Authorize(asClient("")); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("empty CN: %v", err)
 	}
 }
 

@@ -60,6 +60,8 @@ func newEnrollRig(t *testing.T) *enrollRig {
 	token := "the-one-time-token"
 	exp := metav1.NewTime(now.Add(time.Hour))
 	ten := newTenantTenant("acme", false, nil)
+	ten.UID = "uid-acme"
+	ten.Labels = map[string]string{names.LabelEnrollmentToken: names.EnrollmentTokenLabel(hashToken(token))}
 	ten.Status.Enrollment = &laboratoryv1alpha1.TenantEnrollment{TokenHash: hashToken(token), ExpiresAt: &exp}
 	h := tenantHandler(t, []*laboratoryv1alpha1.Tenant{ten})
 	h.SetClientCA(certFile, keyFile, 0)
@@ -221,7 +223,11 @@ func TestRenewKeepsTheCN(t *testing.T) {
 	}
 	// The CA is the limit of a certificate's life.
 	r.h.SetClientCA(r.h.caCertFile, r.h.caKeyFile, 10*365*24*time.Hour)
-	long, _ := r.h.RenewCertificate(asClient("acme"), &protobuf.RenewCertificateRequest{CsrPem: csrPEM(t, newECKey(t), "x")})
+	r.h.clock = func() time.Time { return r.now.Add(time.Minute) } // a renewal is rate limited
+	long, err := r.h.RenewCertificate(asClient("acme"), &protobuf.RenewCertificateRequest{CsrPem: csrPEM(t, newECKey(t), "x")})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if long.NotAfterUnix != r.ca.NotAfter.Unix() {
 		t.Fatalf("a certificate outlives its CA: %d vs %d", long.NotAfterUnix, r.ca.NotAfter.Unix())
 	}
@@ -340,8 +346,8 @@ func TestServerAdmitsEnrollWithoutACertificateAndNothingElse(t *testing.T) {
 	anon := dial()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := anon.Ping(ctx, &protobuf.Empty{}); status.Code(err) != codes.Unauthenticated {
-		t.Fatalf("Ping without a certificate: %v", err)
+	if _, err := anon.Ping(ctx, &protobuf.Empty{}); status.Code(err) != codes.Unimplemented {
+		t.Fatalf("Ping without a certificate: the anonymous server knows Enroll only: %v", err)
 	}
 	if _, err := anon.Enroll(ctx, &protobuf.EnrollRequest{Token: "wrong"}); status.Code(err) == codes.Unauthenticated || status.Code(err) == codes.Unavailable {
 		t.Fatalf("Enroll without a certificate must reach the handler: %v", err)

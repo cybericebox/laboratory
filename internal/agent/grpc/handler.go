@@ -40,6 +40,11 @@ type Handler struct {
 	caCertFile, caKeyFile string
 	certTTL               time.Duration
 	clock                 func() time.Time
+	// renewMinInterval is how often a tenant may renew its certificate (DefaultRenewMinInterval when zero); lastRenew
+	// remembers the last renewal of each tenant.
+	renewMinInterval time.Duration
+	renewMu          sync.Mutex
+	lastRenew        map[string]time.Time
 
 	// groupOverhead is what a LabGroup's own pods (VPN, gateway) request together.
 	groupOverhead grouppods.Overhead

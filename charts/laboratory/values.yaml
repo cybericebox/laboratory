@@ -666,8 +666,40 @@ agent:
   # REQUIRED when agent.enabled (no default).
   domain: ""
 
+  # Replicas of the agent. Two by default: the agent is the one door every tenant uses, and one replica that is restarted (or
+  # killed by an oversized request) takes every tenant's API and monitoring down with it. Each replica serves any call; the
+  # state that lives in memory (the image-prewarm progress, the Monitoring journal) is per replica and rebuilt when a client
+  # reconnects to the other one.
+  replicas: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
   mtls:
     enabled: true
+  # mtls.enabled=false makes every caller the default tenant. It is for local development only and the chart refuses it unless
+  # this is set too.
+  allowInsecure: false
+
+  # What a caller can cost the agent. A connection without a client certificate reaches only the Enroll call, on a server that
+  # reads small messages and is rate limited; a connection with one gets the full API.
+  server:
+    maxConcurrentStreams: 64        # per connection
+    maxConnectionAge: 1h            # a connection is replaced after this (a revoked certificate is noticed at the latest then)
+    maxConnectionAgeGrace: 1m
+    keepaliveMinTime: 10s           # the most frequent client keepalive ping the server accepts
+    streamRecheck: 30s              # a running stream (Monitoring, snapshot export) is authorized again this often
+    renewMinInterval: 10s           # one tenant may renew its certificate this often
+    enroll:
+      maxMessageBytes: 65536        # the largest message of a caller without a client certificate
+      rate: 5                       # Enroll calls per second, all callers together
+      burst: 10
+      handshakeTimeout: 10s
+      maxHandshakes: 64             # TLS handshakes in progress at once
+      maxAnonymousConns: 256        # open connections without a client certificate, all addresses together
+      anonymousConnsPerIP: 8        # ... and from one address (behind a proxy that hides the address this is shared)
+      newConnRate: 10               # new connections per second from one address
+      newConnBurst: 30
 
   # Enrollment: a tenant gets its client certificate and registers its access key with a one-time
   # token (see DEPLOY.md, "Enrollment & access keys"); no private key ever leaves the tenant.

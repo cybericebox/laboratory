@@ -174,3 +174,49 @@ func TestDeletedTenantLeavesNoSecretsBehind(t *testing.T) {
 		t.Fatalf("another tenant's keys must stay: %v", err)
 	}
 }
+
+// The agent finds the Tenant of a token by a label (R-4): it is set with the hash, follows a new token, goes when the token is
+// used, and an upgrade gives a token that was issued without one its label.
+func TestTokenLabelFollowsTheToken(t *testing.T) {
+	r, c, now := tenantEnrollRig(t)
+	reconcileTenant(t, r)
+	token, _ := tokenSecret(c)
+	ten := getTenant(t, c)
+	if got := ten.Labels[names.LabelEnrollmentToken]; got != names.EnrollmentTokenLabel(HashEnrollmentToken(token)) || got == "" {
+		t.Fatalf("label %q", got)
+	}
+
+	// a token that predates the label
+	delete(ten.Labels, names.LabelEnrollmentToken)
+	if err := c.Update(context.Background(), ten); err != nil {
+		t.Fatal(err)
+	}
+	reconcileTenant(t, r)
+	if getTenant(t, c).Labels[names.LabelEnrollmentToken] == "" {
+		t.Fatal("an existing token gets its label")
+	}
+
+	// use takes the label away
+	ten = getTenant(t, c)
+	used := metav1.NewTime(*now)
+	ten.Status.Enrollment.UsedAt = &used
+	if err := c.Status().Update(context.Background(), ten); err != nil {
+		t.Fatal(err)
+	}
+	reconcileTenant(t, r)
+	if _, has := getTenant(t, c).Labels[names.LabelEnrollmentToken]; has {
+		t.Fatal("a used token is no longer findable")
+	}
+
+	// regenerating gives the label of the new token
+	ten = getTenant(t, c)
+	ten.Annotations = map[string]string{names.AnnotationRegenerateEnrollment: "true"}
+	if err := c.Update(context.Background(), ten); err != nil {
+		t.Fatal(err)
+	}
+	reconcileTenant(t, r)
+	second, _ := tokenSecret(c)
+	if getTenant(t, c).Labels[names.LabelEnrollmentToken] != names.EnrollmentTokenLabel(HashEnrollmentToken(second)) {
+		t.Fatal("the label follows the new token")
+	}
+}

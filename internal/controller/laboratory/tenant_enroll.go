@@ -82,10 +82,18 @@ func (r *TenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	case regenerate || en == nil || en.TokenHash == "":
 		return ctrl.Result{}, r.issue(ctx, &t)
 	case en.UsedAt != nil:
-		return ctrl.Result{}, r.deleteTokenSecret(ctx, t.Name) // shown once: the use burns it
+		// shown once: the use burns it, and the token is no longer findable
+		if err := r.syncTokenLabel(ctx, &t, false); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, r.deleteTokenSecret(ctx, t.Name)
 	case en.ExpiresAt != nil && !r.now().Before(en.ExpiresAt.Time):
 		return ctrl.Result{}, r.deleteTokenSecret(ctx, t.Name) // expired: the admin regenerates
 	case en.ExpiresAt != nil:
+		// A token issued before the label existed gets it now.
+		if err := r.syncTokenLabel(ctx, &t, false); err != nil {
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{RequeueAfter: en.ExpiresAt.Sub(r.now()) + time.Second}, nil
 	}
 	return ctrl.Result{}, nil
@@ -129,12 +137,39 @@ func (r *TenantReconciler) issue(ctx context.Context, t *laboratoryv1alpha1.Tena
 	if err := r.Status().Patch(ctx, t, client.MergeFrom(orig)); err != nil {
 		return err
 	}
-	if _, ok := t.Annotations[names.AnnotationRegenerateEnrollment]; ok {
-		orig := t.DeepCopy()
-		delete(t.Annotations, names.AnnotationRegenerateEnrollment)
-		return r.Patch(ctx, t, client.MergeFrom(orig))
+	// The label that lets the agent find the Tenant of a token; set after the hash is recorded, so a token is never findable
+	// before it is valid.
+	_, regenerate := t.Annotations[names.AnnotationRegenerateEnrollment]
+	return r.syncTokenLabel(ctx, t, regenerate)
+}
+
+// syncTokenLabel makes the Tenant's token label match its unused token (none: no label), and drops the regenerate request when
+// asked to.
+func (r *TenantReconciler) syncTokenLabel(ctx context.Context, t *laboratoryv1alpha1.Tenant, dropRegenerate bool) error {
+	orig := t.DeepCopy()
+	changed := false
+	want := ""
+	if en := t.Status.Enrollment; en != nil && en.TokenHash != "" && en.UsedAt == nil {
+		want = names.EnrollmentTokenLabel(en.TokenHash)
 	}
-	return nil
+	if got, has := t.Labels[names.LabelEnrollmentToken]; want == "" && has {
+		delete(t.Labels, names.LabelEnrollmentToken)
+		changed = true
+	} else if want != "" && got != want {
+		if t.Labels == nil {
+			t.Labels = map[string]string{}
+		}
+		t.Labels[names.LabelEnrollmentToken] = want
+		changed = true
+	}
+	if _, ok := t.Annotations[names.AnnotationRegenerateEnrollment]; ok && dropRegenerate {
+		delete(t.Annotations, names.AnnotationRegenerateEnrollment)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return r.Patch(ctx, t, client.MergeFrom(orig))
 }
 
 // deleteTenantSecrets removes the enrollment Secret and the access-keys Secret of a tenant that is gone.

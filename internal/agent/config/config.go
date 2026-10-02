@@ -16,6 +16,31 @@ type ServerTLSConfig struct {
 	KeyFile  string `env:"AGENT_TLS_KEY"`
 }
 
+// ServerLimits bound what a caller can cost the agent (see grpc.Server).
+type ServerLimits struct {
+	// MaxConcurrentStreams per connection, MaxConnectionAge (a connection is replaced after it, which also re-reads the client
+	// certificate), and the keepalive ping rate the server tolerates.
+	MaxConcurrentStreams  int           `env:"AGENT_MAX_CONCURRENT_STREAMS" envDefault:"64"`
+	MaxConnectionAge      time.Duration `env:"AGENT_MAX_CONNECTION_AGE" envDefault:"1h"`
+	MaxConnectionAgeGrace time.Duration `env:"AGENT_MAX_CONNECTION_AGE_GRACE" envDefault:"1m"`
+	KeepaliveMinTime      time.Duration `env:"AGENT_KEEPALIVE_MIN_TIME" envDefault:"10s"`
+	// StreamRecheck is how often a running stream (Monitoring, snapshot export) is authorized again.
+	StreamRecheck time.Duration `env:"AGENT_STREAM_RECHECK" envDefault:"30s"`
+	// The Enroll server, open to callers without a client certificate: the largest message, calls per second (all callers
+	// together), and what one address and all addresses may hold open.
+	EnrollMaxMessage    int           `env:"AGENT_ENROLL_MAX_MESSAGE_BYTES" envDefault:"65536"`
+	EnrollRate          float64       `env:"AGENT_ENROLL_RATE" envDefault:"5"`
+	EnrollBurst         int           `env:"AGENT_ENROLL_BURST" envDefault:"10"`
+	HandshakeTimeout    time.Duration `env:"AGENT_HANDSHAKE_TIMEOUT" envDefault:"10s"`
+	MaxHandshakes       int           `env:"AGENT_MAX_HANDSHAKES" envDefault:"64"`
+	MaxAnonymousConns   int           `env:"AGENT_MAX_ANONYMOUS_CONNS" envDefault:"256"`
+	AnonymousConnsPerIP int           `env:"AGENT_ANONYMOUS_CONNS_PER_IP" envDefault:"8"`
+	NewConnRate         float64       `env:"AGENT_NEW_CONN_RATE" envDefault:"10"`
+	NewConnBurst        int           `env:"AGENT_NEW_CONN_BURST" envDefault:"30"`
+	// RenewMinInterval is how often one tenant may renew its client certificate.
+	RenewMinInterval time.Duration `env:"AGENT_RENEW_MIN_INTERVAL" envDefault:"10s"`
+}
+
 // MTLSConfig verifies CLIENT certificates against a separate client CA.
 type MTLSConfig struct {
 	Enabled      bool   `env:"AGENT_MTLS_ENABLED" envDefault:"true"`
@@ -34,6 +59,11 @@ type Config struct {
 	AgentID   string `env:"AGENT_ID" envDefault:"laboratory-agent"`
 	ServerTLS ServerTLSConfig
 	MTLS      MTLSConfig
+	// AllowInsecure lets the agent run with mTLS off, where every caller is the default tenant. It is for local development
+	// only and has to be asked for by name (the chart sets it from agent.allowInsecure).
+	AllowInsecure bool `env:"AGENT_ALLOW_INSECURE" envDefault:"false"`
+	// Server holds the limits of the gRPC front.
+	Server ServerLimits
 	// Monitoring bounds the shared journal behind the Monitoring stream.
 	Monitoring MonitoringConfig
 	// LabNodeSelector and LabTolerations (JSON) describe the nodes lab pods run on: they decide

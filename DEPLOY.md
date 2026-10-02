@@ -872,17 +872,53 @@ One overloaded VPN pod only hurts its own team: the demux caps are shared, the p
 
 ### Revoking client certificates: the enrollment epoch
 
-A client certificate cannot be revoked one by one, so the agent keeps an **enrollment epoch** per tenant and refuses a certificate issued before it.
-The epoch is the later of the moment the Tenant object was created and `Tenant.status.certificatesNotBefore`, which `Enroll` sets to the moment it consumes a
-token. Consequences:
+A client certificate cannot be revoked one by one, so the agent keeps an **enrollment epoch** per tenant: `Tenant.status.certificateEpoch`, a number that
+moves by one at every enrollment. A certificate carries the epoch it was issued in and the UID of the Tenant (a private extension), and works only while both
+equal the Tenant's now: an exact comparison, no clock. Consequences:
 
-- **Enrolling again revokes every certificate issued before** (a leaked one included): give the tenant a new token (see "Enrollment & access keys") and
-  enroll. A revoked certificate also cannot be used to renew itself.
-- **A tenant deleted and created again under the same name** starts a new epoch at its creation: the certificates of the old tenant stop working.
-- **Certificates issued before this check existed** keep working for the tenants that already exist, until they are renewed or expire (an old certificate
-  is accepted when it was issued after the Tenant was created); nothing has to be re-enrolled on upgrade.
-- **The token is burnt before the certificate is signed** (a conditional write: of any number of requests with the same unused token exactly one wins). If signing
-  then fails, the token is spent and the admin issues a new one.
+- **Enrolling again revokes every certificate issued before** (a leaked one included), even one issued a millisecond earlier: give the tenant a new token (see
+  "Enrollment & access keys") and enroll. A revoked certificate also cannot be used to renew itself. Renewal is limited to once per
+  `agent.server.renewMinInterval` (10 s) per tenant, and a renewed certificate is in the epoch it was read in, so one renewed just before an enrollment dies with it.
+- **Enrolling replaces the tenant's access keys** with the one in the request, so a key that the holder of a revoked certificate added does not outlive the
+  revocation, and a tenant whose ten slots were filled can always enroll again.
+- **The default tenant is revocable like any other**: with mTLS on every certificate needs its Tenant object, `default` included (the chart creates it), and an
+  empty common name is refused.
+- **A tenant deleted and created again under the same name** has another UID: the certificates of the old tenant stop working.
+- **Certificates issued before the epoch was a number** (they carry no epoch) keep working while the tenant's epoch is 0, judged by time as before (issued after the
+  Tenant was created and after `status.certificatesNotBefore`). The first enrollment by this version moves the epoch above 0 and revokes them all; renewing gives a
+  numbered one. Nothing has to be re-enrolled on upgrade.
+- **The CRD has to be new** (`kubectl apply --server-side -f charts/laboratory/crds/`): an API server that does not know `status.certificateEpoch` drops it, and
+  `Enroll` then fails loudly (after burning the token) with a message that says so.
+- **Checked before the token is spent**: a request that is bound to fail (no CA to sign with, a key id of `.` or `..`) is refused without burning the token. The
+  token is burnt before the certificate is signed (a conditional write: of any number of requests with the same unused token exactly one wins); if signing then
+  fails, the token is spent and the admin issues a new one.
+- **Streams** (Monitoring, snapshot export) are authorized again every `agent.server.streamRecheck` (30 s): a stream whose certificate was revoked or has
+  expired is cut and the caller gets the reason. Connections are replaced after `agent.server.maxConnectionAge` (1 h).
+
+### The agent under hostile callers
+
+The agent is reachable by anyone who can reach its host, so what a caller without a certificate can cost is bounded before anything is decoded:
+
+- **Two servers behind one port.** The agent completes the TLS handshake itself and sends a connection that presented a client certificate to the main
+  server (full API, messages up to 64 MiB), and one that did not to the **Enroll server**, which knows only the Enroll call, reads messages of at most
+  `agent.server.enroll.maxMessageBytes` (64 KiB), and is rate limited (`rate` 5 per second, `burst` 10, all callers together). Nothing a caller without a
+  certificate sends reaches the main server or is buffered at 64 MiB. A caller that already has a certificate enrolls through a connection without one (the
+  client library's connection without a keypair).
+- **Connections**: the TLS handshake has a timeout and at most `maxHandshakes` run at once; at most `maxAnonymousConns` connections without a certificate are open
+  and `anonymousConnsPerIP` from one address; one address opens at most `newConnRate` connections per second. Behind a TLS passthrough route the address seen is
+  the gateway's, so the per-address limits then act as global ones: raise them if enrollments queue up.
+- **Streams and keepalive**: `maxConcurrentStreams` (64) per connection, a connection ends after `maxConnectionAge` with `maxConnectionAgeGrace`, and a client
+  that pings more often than `keepaliveMinTime` (10 s) is disconnected.
+- **The token is found by a label.** The operator labels a Tenant with the start of its unused token's hash (`laboratory.cybericebox.com/enrollment-token`), so an
+  Enroll costs one narrow, cached list instead of a read of every Tenant. A token issued before the label existed gets it when the operator next reconciles the Tenant
+  (at its start): until then that token is not found, and the admin can ask for a new one.
+- **Two replicas** (`agent.replicas`, default 2) spread over nodes with a PodDisruptionBudget (`minAvailable: 1`): an agent that is restarted does not take every
+  tenant down. The Monitoring journal and the prewarm progress are per replica.
+- **mTLS off is development only**: `agent.mtls.enabled=false` makes every caller the default tenant, and both the chart (`agent.allowInsecure=true`) and the agent
+  (`AGENT_ALLOW_INSECURE=true`) refuse it unless it is asked for by name.
+- **Upgrade order.** Apply the CRDs first. Then upgrade the chart: the operator labels the tokens and the agents roll one at a time. Clients keep their
+  certificates; a client that enrolls during the roll talks to either version, and an old agent ignores the label it does not know. If an agent rolls before the operator
+  has labelled an unused token, that token is not found until the operator has (a minute): retry.
 
 ### Device state under abuse
 

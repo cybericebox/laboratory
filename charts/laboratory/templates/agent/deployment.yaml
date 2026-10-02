@@ -8,7 +8,7 @@ metadata:
     app: laboratory-agent
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.agent.replicas }}
   selector:
     matchLabels:
       app: laboratory-agent
@@ -19,6 +19,16 @@ spec:
         {{- include "laboratory.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: laboratory-agent
+      {{- if gt (int .Values.agent.replicas) 1 }}
+      # Replicas go on different nodes when they can (never a reason to leave one unscheduled).
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: laboratory-agent
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -174,6 +184,39 @@ spec:
               value: {{ .Values.agent.monitoring.subscriberBuffer | quote }}
             - name: AGENT_MTLS_ENABLED
               value: {{ .Values.agent.mtls.enabled | quote }}
+            - name: AGENT_ALLOW_INSECURE
+              value: {{ .Values.agent.allowInsecure | quote }}
+            # What a caller can cost the agent (see DEPLOY.md, "The agent under hostile callers").
+            - name: AGENT_MAX_CONCURRENT_STREAMS
+              value: {{ .Values.agent.server.maxConcurrentStreams | quote }}
+            - name: AGENT_MAX_CONNECTION_AGE
+              value: {{ .Values.agent.server.maxConnectionAge | quote }}
+            - name: AGENT_MAX_CONNECTION_AGE_GRACE
+              value: {{ .Values.agent.server.maxConnectionAgeGrace | quote }}
+            - name: AGENT_KEEPALIVE_MIN_TIME
+              value: {{ .Values.agent.server.keepaliveMinTime | quote }}
+            - name: AGENT_STREAM_RECHECK
+              value: {{ .Values.agent.server.streamRecheck | quote }}
+            - name: AGENT_RENEW_MIN_INTERVAL
+              value: {{ .Values.agent.server.renewMinInterval | quote }}
+            - name: AGENT_ENROLL_MAX_MESSAGE_BYTES
+              value: {{ .Values.agent.server.enroll.maxMessageBytes | quote }}
+            - name: AGENT_ENROLL_RATE
+              value: {{ .Values.agent.server.enroll.rate | quote }}
+            - name: AGENT_ENROLL_BURST
+              value: {{ .Values.agent.server.enroll.burst | quote }}
+            - name: AGENT_HANDSHAKE_TIMEOUT
+              value: {{ .Values.agent.server.enroll.handshakeTimeout | quote }}
+            - name: AGENT_MAX_HANDSHAKES
+              value: {{ .Values.agent.server.enroll.maxHandshakes | quote }}
+            - name: AGENT_MAX_ANONYMOUS_CONNS
+              value: {{ .Values.agent.server.enroll.maxAnonymousConns | quote }}
+            - name: AGENT_ANONYMOUS_CONNS_PER_IP
+              value: {{ .Values.agent.server.enroll.anonymousConnsPerIP | quote }}
+            - name: AGENT_NEW_CONN_RATE
+              value: {{ .Values.agent.server.enroll.newConnRate | quote }}
+            - name: AGENT_NEW_CONN_BURST
+              value: {{ .Values.agent.server.enroll.newConnBurst | quote }}
           {{- if .Values.agent.mtls.enabled }}
             - name: AGENT_MTLS_CLIENT_CA
               value: /ca/tls.crt

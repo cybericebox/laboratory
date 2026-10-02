@@ -42,12 +42,18 @@ const (
 
 var accessKeyIDRE = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
+// validKeyID is accessKeyIDRE without "." and "..", which a Secret cannot hold as a key.
+func validKeyID(id string) bool { return accessKeyIDRE.MatchString(id) && id != "." && id != ".." }
+
 // SetClientCA gives the agent the CA that signs client certificates (the one that verifies
 // them on the server side) and the lifetime of what it signs. The files are read per
 // signature, so a rotated CA needs no restart.
 func (h *Handler) SetClientCA(certFile, keyFile string, ttl time.Duration) {
 	h.caCertFile, h.caKeyFile, h.certTTL = certFile, keyFile, ttl
 }
+
+// SetRenewMinInterval sets how often a tenant may renew its certificate (zero: DefaultRenewMinInterval).
+func (h *Handler) SetRenewMinInterval(d time.Duration) { h.renewMinInterval = d }
 
 func denied() error {
 	return status.Error(codes.PermissionDenied, "invalid, expired or already used enrollment token")
@@ -64,7 +70,7 @@ func (h *Handler) Enroll(ctx context.Context, in *protobuf.EnrollRequest) (*prot
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "access_public_key_pem: %v", err)
 	}
-	if !accessKeyIDRE.MatchString(in.GetAccessKeyId()) {
+	if !validKeyID(in.GetAccessKeyId()) {
 		return nil, status.Error(codes.InvalidArgument, "access_key_id: 1 to 64 characters of A-Z a-z 0-9 . _ -")
 	}
 	if in.GetToken() == "" {
@@ -74,32 +80,83 @@ func (h *Handler) Enroll(ctx context.Context, in *protobuf.EnrollRequest) (*prot
 	if err != nil {
 		return nil, err
 	}
+	// Everything that can be known to fail is checked before the token is spent: a request that was bound to fail must not cost
+	// the admin a token.
+	if _, err := h.signer(); err != nil {
+		return nil, err
+	}
 	// Burn first, then sign: of any number of requests that carry the same token, exactly one wins the conditional
 	// write and gets a certificate. The burn also moves the enrollment epoch, which revokes every certificate issued
 	// before it. A failure after the burn costs the token: the admin issues a new one.
-	if err := h.burnToken(ctx, tenant.Name, in.GetToken()); err != nil {
+	burnt, err := h.burnToken(ctx, tenant.Name, in.GetToken())
+	if err != nil {
 		return nil, err
 	}
-	resp, err := h.issueCertificate(tenant.Name, csr.PublicKey)
+	resp, err := h.issueCertificate(burnt.Name, csr.PublicKey, burnt.Status.CertificateEpoch, string(burnt.UID))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "the token is used but the certificate was not issued (%v): ask the admin for a new token", err)
 	}
-	if err := h.putAccessKey(ctx, tenant.Name, in.GetAccessKeyId(), keyPEM); err != nil {
+	// Enrolling replaces the tenant's access keys with this one: a key that a holder of the revoked certificate added must not
+	// outlive the revocation, and a tenant whose slots were filled can always enroll again.
+	if err := h.replaceAccessKeys(ctx, burnt.Name, in.GetAccessKeyId(), keyPEM); err != nil {
 		return nil, status.Errorf(codes.Internal, "the token is used but the access key was not stored (%v): ask the admin for a new token", err)
 	}
 	return resp, nil
 }
 
-// RenewCertificate issues a new certificate for the caller's tenant.
+// RenewCertificate issues a new certificate for the caller's tenant, in the tenant's current epoch. A tenant may renew once per
+// renewMinInterval: a renewal loop is how a revoked certificate used to outlive the revocation.
 func (h *Handler) RenewCertificate(ctx context.Context, in *protobuf.RenewCertificateRequest) (*protobuf.CertificateResponse, error) {
-	if _, err := clientCN(ctx); err != nil {
+	cn, err := clientCN(ctx)
+	if err != nil || cn == "" {
 		return nil, status.Error(codes.Unauthenticated, "a client certificate is required")
 	}
 	csr, err := parseCSR(in.GetCsrPem())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "csr_pem: %v", err)
 	}
-	return h.issueCertificate(tenantOf(ctx), csr.PublicKey)
+	name := tenantOf(ctx)
+	// Read the tenant afresh, check the epoch against it, and sign in the epoch just read: an enrollment that lands in
+	// between makes the new certificate stale at once, never valid for the next epoch.
+	ten, err := h.tenantObject(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if ten == nil {
+		return nil, status.Errorf(codes.PermissionDenied, "client %q is not a tenant", name)
+	}
+	if err := checkEpoch(ctx, ten); err != nil {
+		return nil, err
+	}
+	if !h.allowRenew(name) {
+		return nil, status.Errorf(codes.ResourceExhausted, "a certificate was issued for %q a moment ago: wait %s", name, h.renewInterval())
+	}
+	return h.issueCertificate(name, csr.PublicKey, ten.Status.CertificateEpoch, string(ten.UID))
+}
+
+// DefaultRenewMinInterval is how often one tenant may renew its certificate.
+const DefaultRenewMinInterval = 10 * time.Second
+
+func (h *Handler) renewInterval() time.Duration {
+	if h.renewMinInterval > 0 {
+		return h.renewMinInterval
+	}
+	return DefaultRenewMinInterval
+}
+
+// allowRenew records a renewal of the tenant and says whether it is not too soon after the last one.
+func (h *Handler) allowRenew(tenant string) bool {
+	h.renewMu.Lock()
+	defer h.renewMu.Unlock()
+	now := h.now()
+	if last, ok := h.lastRenew[tenant]; ok && now.Sub(last) < h.renewInterval() {
+		return false
+	}
+	if h.lastRenew == nil {
+		h.lastRenew = map[string]time.Time{}
+	}
+	h.lastRenew[tenant] = now
+	return true
 }
 
 // RotateAccessKey adds an access public key to the caller's tenant.
@@ -108,7 +165,7 @@ func (h *Handler) RotateAccessKey(ctx context.Context, in *protobuf.RotateAccess
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "public_key_pem: %v", err)
 	}
-	if !accessKeyIDRE.MatchString(in.GetKeyId()) {
+	if !validKeyID(in.GetKeyId()) {
 		return nil, status.Error(codes.InvalidArgument, "key_id: 1 to 64 characters of A-Z a-z 0-9 . _ -")
 	}
 	if err := h.putAccessKey(ctx, tenantOf(ctx), in.GetKeyId(), keyPEM); err != nil {
@@ -145,10 +202,15 @@ func (h *Handler) RemoveAccessKey(ctx context.Context, in *protobuf.RemoveAccess
 	return &protobuf.Empty{}, nil
 }
 
-// findTenantByToken returns the tenant whose unexpired, unused token this is.
+// findTenantByToken returns the tenant whose unexpired, unused token this is. The operator labels a Tenant with the start of
+// its token's hash, so one selector finds it: an unauthenticated caller costs the API server one narrow list, not a read of
+// every Tenant.
 func (h *Handler) findTenantByToken(ctx context.Context, token string) (*laboratoryv1alpha1.Tenant, error) {
 	want := hashToken(token)
-	list, err := h.cs.LaboratoryV1alpha1().Tenants().List(ctx, metav1.ListOptions{})
+	list, err := h.cs.LaboratoryV1alpha1().Tenants().List(ctx, metav1.ListOptions{
+		LabelSelector:   names.LabelEnrollmentToken + "=" + names.EnrollmentTokenLabel(want),
+		ResourceVersion: "0", // from the API server's cache
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +220,6 @@ func (h *Handler) findTenantByToken(ctx context.Context, token string) (*laborat
 		if en == nil || en.TokenHash == "" {
 			continue
 		}
-		// Compare every hash (no early exit on the first match's position).
 		if subtle.ConstantTimeCompare([]byte(en.TokenHash), []byte(want)) == 1 {
 			found = &list.Items[i]
 		}
@@ -173,31 +234,38 @@ func tokenUsable(en *laboratoryv1alpha1.TenantEnrollment, now time.Time) bool {
 	return en != nil && en.UsedAt == nil && en.ExpiresAt != nil && now.Before(en.ExpiresAt.Time)
 }
 
-// burnToken marks the token used. It is a conditional write: of two clients with the same token
-// only one succeeds.
-func (h *Handler) burnToken(ctx context.Context, tenant, token string) error {
+// burnToken marks the token used and moves the enrollment epoch by one. It is a conditional write: of two clients with the same
+// token only one succeeds. It returns the Tenant as written, whose CertificateEpoch is the epoch to issue in.
+func (h *Handler) burnToken(ctx context.Context, tenant, token string) (*laboratoryv1alpha1.Tenant, error) {
 	tenants := h.cs.LaboratoryV1alpha1().Tenants()
 	want := hashToken(token)
 	for attempt := 0; attempt < 5; attempt++ {
 		t, err := tenants.Get(ctx, tenant, metav1.GetOptions{})
 		if err != nil {
-			return denied()
+			return nil, denied()
 		}
 		en := t.Status.Enrollment
 		if !tokenUsable(en, h.now()) || subtle.ConstantTimeCompare([]byte(en.TokenHash), []byte(want)) != 1 {
-			return denied()
+			return nil, denied()
 		}
 		now := metav1.NewTime(h.now())
 		en.UsedAt = &now
 		t.Status.CertificatesNotBefore = &now
-		if _, err = tenants.UpdateStatus(ctx, t, metav1.UpdateOptions{}); err == nil {
-			return nil
+		next := t.Status.CertificateEpoch + 1
+		t.Status.CertificateEpoch = next
+		updated, err := tenants.UpdateStatus(ctx, t, metav1.UpdateOptions{})
+		if err == nil {
+			if updated.Status.CertificateEpoch != next {
+				// The API server dropped the field: its CRD is older than this agent.
+				return nil, status.Error(codes.Internal, "the Tenant CRD does not know status.certificateEpoch: apply the CRDs of the chart (kubectl apply --server-side -f charts/laboratory/crds/) and ask the admin for a new token")
+			}
+			return updated, nil
 		}
 		if !apierrors.IsConflict(err) {
-			return err
+			return nil, err
 		}
 	}
-	return denied()
+	return nil, denied()
 }
 
 func (h *Handler) now() time.Time {
@@ -242,6 +310,28 @@ func (h *Handler) putAccessKey(ctx context.Context, tenant, id string, keyPEM []
 	})
 }
 
+// replaceAccessKeys makes the tenant's access-keys Secret hold this one key and nothing else.
+func (h *Handler) replaceAccessKeys(ctx context.Context, tenant, id string, keyPEM []byte) error {
+	secrets := h.k8s.CoreV1().Secrets(names.TenantsNamespace)
+	name := names.AccessKeysSecret(tenant)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		s, err := secrets.Get(ctx, name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			_, err = secrets.Create(ctx, &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: names.TenantsNamespace, Labels: map[string]string{names.LabelPrefix + "tenant-name": tenant}},
+				Data:       map[string][]byte{id: keyPEM},
+			}, metav1.CreateOptions{})
+			return err
+		}
+		if err != nil {
+			return err
+		}
+		s.Data = map[string][]byte{id: keyPEM}
+		_, err = secrets.Update(ctx, s, metav1.UpdateOptions{})
+		return err
+	})
+}
+
 // certBackdate is how far a client certificate's NotBefore is set before the moment it was issued, for clock skew between
 // agent replicas. The moment of issue is NotBefore plus this (see certIssuedAt).
 const certBackdate = time.Minute
@@ -249,8 +339,8 @@ const certBackdate = time.Minute
 // certIssuedAt is when a client certificate was issued, as the enrollment epoch sees it.
 func certIssuedAt(c *x509.Certificate) time.Time { return c.NotBefore.Add(certBackdate) }
 
-// issueCertificate signs a client certificate for the tenant with the agent's client CA.
-func (h *Handler) issueCertificate(tenant string, pub any) (*protobuf.CertificateResponse, error) {
+// signer loads the client CA and its key, or says why the agent cannot sign.
+func (h *Handler) signer() (*caSigner, error) {
 	if h.caCertFile == "" || h.caKeyFile == "" {
 		return nil, status.Error(codes.FailedPrecondition, "the agent has no client CA to sign with")
 	}
@@ -258,6 +348,23 @@ func (h *Handler) issueCertificate(tenant string, pub any) (*protobuf.Certificat
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "client CA: %v", err)
 	}
+	return &caSigner{ca: ca, key: key, pem: caPEM}, nil
+}
+
+type caSigner struct {
+	ca  *x509.Certificate
+	key crypto.Signer
+	pem []byte
+}
+
+// issueCertificate signs a client certificate for the tenant with the agent's client CA. The certificate carries the epoch it is
+// issued in and the UID of the Tenant (see checkEpoch).
+func (h *Handler) issueCertificate(tenant string, pub any, epoch int64, tenantUID string) (*protobuf.CertificateResponse, error) {
+	sg, err := h.signer()
+	if err != nil {
+		return nil, err
+	}
+	ca, key, caPEM := sg.ca, sg.key, sg.pem
 	ttl := h.certTTL
 	if ttl <= 0 {
 		ttl = DefaultClientCertTTL
@@ -271,14 +378,19 @@ func (h *Handler) issueCertificate(tenant string, pub any) (*protobuf.Certificat
 	if err != nil {
 		return nil, err
 	}
+	ext, err := epochExtension(epoch, tenantUID)
+	if err != nil {
+		return nil, err
+	}
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		// Whatever subject the request asked for is ignored: the CN is the tenant.
-		Subject:     pkix.Name{CommonName: tenant},
-		NotBefore:   now.Add(-certBackdate),
-		NotAfter:    notAfter,
-		KeyUsage:    x509.KeyUsageDigitalSignature,
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		Subject:         pkix.Name{CommonName: tenant},
+		NotBefore:       now.Add(-certBackdate),
+		NotAfter:        notAfter,
+		KeyUsage:        x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		ExtraExtensions: []pkix.Extension{ext},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca, pub, key)
 	if err != nil {

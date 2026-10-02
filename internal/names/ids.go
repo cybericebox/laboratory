@@ -132,5 +132,18 @@ func AccessKeysSecret(tenant string) string { return "tenant-" + tenant + "-acce
 // token (key "token") to the admin until it is used.
 func EnrollmentSecret(tenant string) string { return "tenant-" + tenant + "-enrollment" }
 
+// LabelEnrollmentToken is the label the operator puts on a Tenant with the start of the hash of its unused enrollment token
+// (EnrollmentTokenLabel), so the agent finds the Tenant of a token with one selector instead of reading every Tenant.
+const LabelEnrollmentToken = LabelPrefix + "enrollment-token"
+
+// EnrollmentTokenLabel is the label value for a token hash (hex SHA-256): its first 48 characters, which is plenty to
+// narrow the list to one Tenant. The full hash is still compared.
+func EnrollmentTokenLabel(hash string) string {
+	if len(hash) > 48 {
+		return hash[:48]
+	}
+	return hash
+}
+
 // EnrollmentTokenKey is the data key of the token in the enrollment Secret.
 const EnrollmentTokenKey = "token"

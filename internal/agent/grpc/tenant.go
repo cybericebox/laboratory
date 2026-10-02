@@ -98,13 +98,24 @@ func (h *Handler) persistenceAllowed(ctx context.Context) (bool, error) {
 	return tenant.EffectivePersistence(ten, h.statePersistence, 0, 0).Allowed, nil
 }
 
-// Authorize admits a call: the default tenant always; any other tenant only when its
-// Tenant object exists (an unknown certificate CN is PermissionDenied).
+// Authorize admits a call: the caller's certificate must name a Tenant that exists (an unknown CN is PermissionDenied, the
+// default tenant included: it has a Tenant object like any other, so its certificates can be revoked too) and must belong to the
+// tenant's current enrollment epoch.
 func (h *Handler) Authorize(ctx context.Context) error {
-	name := tenantOf(ctx)
-	if name == names.DefaultTenant {
+	cert := callerCert(ctx)
+	if cert == nil {
+		// No certificate in the context: mTLS is off, which the server allows only when it was started as insecure (every
+		// caller is the default tenant). With mTLS on the server has refused such a call before it gets here.
 		return nil
 	}
+	if cert.Subject.CommonName == "" {
+		return status.Error(codes.Unauthenticated, "the client certificate has no common name")
+	}
+	// The handshake checked the validity once, when the connection opened; a long-lived stream asks again.
+	if !cert.NotAfter.IsZero() && h.now().After(cert.NotAfter) {
+		return status.Error(codes.Unauthenticated, "the client certificate has expired")
+	}
+	name := tenantOf(ctx)
 	ten, err := h.tenantObject(ctx, name)
 	if err != nil {
 		return err
@@ -115,21 +126,38 @@ func (h *Handler) Authorize(ctx context.Context) error {
 	return checkEpoch(ctx, ten)
 }
 
-// checkEpoch refuses a client certificate that was issued before the tenant's enrollment epoch: before the Tenant object
-// was created (an old certificate of a tenant that was deleted and created again under the same name), or before the last
-// enrollment (enrolling again revokes the earlier certificates, a leaked one included). Seconds are the resolution of both
-// sides, so the comparison is on whole seconds.
+// checkEpoch refuses a client certificate that does not belong to the tenant's current enrollment epoch. A certificate carries
+// the epoch number it was issued in and the UID of the Tenant; both must equal the Tenant's now, exactly. Enrolling again moves
+// the number, which revokes every earlier certificate; a Tenant created again under the same name has another UID.
+//
+// A certificate without the claim (issued before the epoch was a number) is judged by time as before (issued before the
+// Tenant's creation or before the last enrollment: refused), and refused outright once the epoch is above zero, that is after the
+// first enrollment by this version: that closes the one-second hole of the time comparison for everything that enrolls again.
 func checkEpoch(ctx context.Context, ten *laboratoryv1alpha1.Tenant) error {
 	cert := callerCert(ctx)
 	if cert == nil {
-		return nil // no client certificate in this context: the default tenant, or mTLS off
+		return nil // no client certificate in this context: mTLS off (the server refuses that unless it is told to allow it)
+	}
+	revoked := status.Errorf(codes.PermissionDenied, "the client certificate of %q was issued before the tenant's current enrollment: enroll again", ten.Name)
+	claim, has, err := certEpoch(cert)
+	if err != nil {
+		return status.Error(codes.PermissionDenied, err.Error())
+	}
+	if has {
+		if claim.Epoch != ten.Status.CertificateEpoch || claim.TenantUID != string(ten.UID) {
+			return revoked
+		}
+		return nil
+	}
+	if ten.Status.CertificateEpoch > 0 {
+		return revoked
 	}
 	floor := ten.CreationTimestamp.Time
 	if nb := ten.Status.CertificatesNotBefore; nb != nil && nb.Time.After(floor) {
 		floor = nb.Time
 	}
 	if certIssuedAt(cert).Truncate(time.Second).Before(floor.Truncate(time.Second)) {
-		return status.Errorf(codes.PermissionDenied, "the client certificate of %q was issued before the tenant's current enrollment: enroll again", ten.Name)
+		return revoked
 	}
 	return nil
 }

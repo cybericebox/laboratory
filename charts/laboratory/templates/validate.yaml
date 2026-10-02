@@ -22,6 +22,9 @@ at install time instead of shipping a broken deployment.
 {{- if and .Values.agent.enabled (not .Values.agent.domain) }}
 {{- fail "agent.domain is required when agent.enabled: the public host of the management agent (TLS certificate and TLSRoute)" }}
 {{- end }}
+{{- if and .Values.agent.enabled (not .Values.agent.mtls.enabled) (not .Values.agent.allowInsecure) }}
+{{- fail "agent.mtls.enabled=false makes every caller of the agent the default tenant. It is for local development only: set agent.allowInsecure=true as well to do it on purpose." }}
+{{- end }}
 {{- if ne .Values.proxy.namespace "laboratory-proxy" }}
 {{- fail (printf "proxy.namespace must be 'laboratory-proxy' (got %q): the operator uses that name as a compile-time constant." .Values.proxy.namespace) }}
 {{- end }}

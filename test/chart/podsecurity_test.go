@@ -310,3 +310,31 @@ func TestErrorJournalPermissionsAndWiring(t *testing.T) {
 		t.Errorf("l7, demux and the node-agent each know where to publish: %d", n)
 	}
 }
+
+// The agent runs two replicas by default, spread over nodes, with a budget; and mTLS off needs the insecure flag by name.
+func TestAgentReplicasAndInsecureFlag(t *testing.T) {
+	out, err := helmTemplate(t, append(agentSet, "-s", "templates/agent/deployment.yaml", "-s", "templates/agent/pdb.yaml")...)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if !strings.Contains(out, "replicas: 2") || !strings.Contains(out, "kind: PodDisruptionBudget") || !strings.Contains(out, "topologySpreadConstraints") {
+		t.Errorf("the agent must default to two replicas with a budget and a spread:\n%s", out)
+	}
+	for _, want := range []string{"AGENT_ENROLL_MAX_MESSAGE_BYTES", "AGENT_MAX_CONCURRENT_STREAMS", "AGENT_STREAM_RECHECK", "AGENT_ALLOW_INSECURE"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+	// one replica: no budget (it would block drains)
+	out, err = helmTemplate(t, append(agentSet, "--set", "agent.replicas=1", "-s", "templates/agent/pdb.yaml")...)
+	if err == nil && strings.Contains(out, "PodDisruptionBudget") {
+		t.Error("a budget on a single replica would block every drain")
+	}
+	// mTLS off without the flag fails the render
+	if _, err := helmTemplate(t, append(agentSet, "--set", "agent.mtls.enabled=false", "-s", "templates/agent/deployment.yaml")...); err == nil {
+		t.Error("mtls off must need agent.allowInsecure")
+	}
+	if _, err := helmTemplate(t, append(agentSet, "--set", "agent.mtls.enabled=false", "--set", "agent.allowInsecure=true", "-s", "templates/agent/deployment.yaml")...); err != nil {
+		t.Errorf("mtls off with the flag: %v", err)
+	}
+}
