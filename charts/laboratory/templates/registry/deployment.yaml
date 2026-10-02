@@ -36,6 +36,27 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      initContainers:
+        # A volume that is not made by a provisioner that honours fsGroup (hostPath, local-path, or a volume that an earlier version
+        # filled as root) keeps its owner, and zot, which is not root, could not write to it. This hands the data directory to zot's user
+        # and does nothing else: it is the one root container of the pod, with only the capabilities chown needs.
+        - name: own-data
+          image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
+          command: [ "/bin/sh", "-c", "chown -R 65532:65532 /var/lib/registry" ]
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ ALL ]
+              add: [ CHOWN, DAC_OVERRIDE, FOWNER ]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/registry
+          resources:
+            {{- toYaml .Values.nodeAgent.initResources | nindent 12 }}
       containers:
         - name: zot
           image: "{{ $r.image.repository }}:{{ $r.image.tag }}"

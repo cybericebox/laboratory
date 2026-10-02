@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -145,10 +146,18 @@ func Run() {
 	defer cancel()
 
 	// The device plugin that lets `extended` device pods have /dev/net/tun (resource cybericebox.com/tun).
-	tun := &deviceplugin.Plugin{Resource: profiles.TUNResource, Dir: cfg.DevicePluginDir, Slots: cfg.TunSlots}
+	// It is optional: this process is also the CNI, so a failure here (no kubelet directory, no socket) is only logged and retried;
+	// it never stops the node-agent. Without the plugin only the tun device of the `extended` profile is missing.
+	tun := &deviceplugin.Plugin{Resource: profiles.TUNResource, Dir: cfg.DevicePluginDir, Slots: cfg.TunSlots, CheckPath: cfg.TunCheckPath, Log: log.WithName("device-plugin")}
 	go func() {
-		if err := tun.Serve(ctx); err != nil {
-			log.Error(err, "tun device plugin")
+		for ctx.Err() == nil {
+			if err := tun.Serve(ctx); err != nil {
+				log.Error(err, "tun device plugin stopped; extended devices will not get /dev/net/tun until it runs (retry in 30s)")
+			}
+			select {
+			case <-ctx.Done():
+			case <-time.After(30 * time.Second):
+			}
 		}
 	}()
 

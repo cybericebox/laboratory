@@ -366,10 +366,11 @@ nodeAgent:
   criSocket: "/run/k0s/containerd.sock"
   # The node-agent is the kubelet device plugin of the extended resource cybericebox.com/tun: a device pod with the
   # `extended` profile requests it and the kubelet passes /dev/net/tun (the host needs the tun module). dir is the
-  # kubelet's device-plugins directory (k0s: /var/lib/k0s/kubelet/device-plugins); tunSlots is how many such devices
+  # kubelet's device-plugins directory (always /var/lib/kubelet/device-plugins: the kubelet hardcodes it, also on k0s, whatever its
+  # root-dir is); tunSlots is how many such devices
   # a node advertises, which bounds the extended devices per node.
   devicePlugin:
-    dir: /var/lib/k0s/kubelet/device-plugins
+    dir: /var/lib/kubelet/device-plugins
     tunSlots: 1000
   # Name of the OVS bridge the node-agent programs.
   ovsBridge: br-ovs

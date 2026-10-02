@@ -141,3 +141,51 @@ func TestHealthFollowsTheHostDevice(t *testing.T) {
 		t.Fatalf("after it appears the slots are healthy: %+v %v", next, err)
 	}
 }
+
+// The plugin may run in a container whose own /dev has no tun: it checks where the host's /dev/net is mounted (CheckPath),
+// while the container is still given the host's device path.
+func TestHealthLooksAtTheCheckPathNotTheContainerDev(t *testing.T) {
+	p := &Plugin{Resource: "cybericebox.com/tun", Dir: shortDir(t), Slots: 2, HostPath: "/dev/net/tun-absent-in-this-container", CheckPath: "/dev/null", Interval: 50 * time.Millisecond}
+	if !p.present() {
+		t.Fatal("the device exists on the host (the check path), whatever this container's /dev holds")
+	}
+	resp, err := p.Allocate(context.Background(), &pluginapi.AllocateRequest{ContainerRequests: []*pluginapi.ContainerAllocateRequest{{}}})
+	if err != nil || resp.ContainerResponses[0].Devices[0].HostPath != "/dev/net/tun-absent-in-this-container" {
+		t.Fatalf("the kubelet is given the host path: %+v %v", resp, err)
+	}
+	p.SetCheckPath(filepath.Join(shortDir(t), "absent"))
+	if p.present() {
+		t.Fatal("without the device at the check path the slots are unhealthy")
+	}
+}
+
+// A missing kubelet directory is an error the caller logs and retries, never a panic or a hang.
+func TestServeWithoutAKubeletDirectoryFailsQuickly(t *testing.T) {
+	p := &Plugin{Resource: "cybericebox.com/tun", Dir: filepath.Join(shortDir(t), "no", "such", "dir"), Slots: 1}
+	done := make(chan error, 1)
+	go func() { done <- p.Serve(context.Background()) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("an error is expected")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Serve must not hang without the directory")
+	}
+}
+
+// Without the kubelet socket the plugin waits and logs; it registers when the kubelet appears.
+func TestRegistersWhenTheKubeletAppearsLater(t *testing.T) {
+	dir := shortDir(t)
+	p := newPlugin(dir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = p.Serve(ctx) }()
+	time.Sleep(200 * time.Millisecond) // no kubelet yet
+	kubelet := startKubelet(t, dir)
+	select {
+	case <-kubelet.got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the plugin did not register once the kubelet appeared")
+	}
+}

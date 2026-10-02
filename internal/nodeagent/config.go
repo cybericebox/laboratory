@@ -14,11 +14,14 @@ type Config struct {
 	GRPCSock string `env:"GRPC_SOCK"  envDefault:"/run/cybericebox/node-agent.sock"`
 	Bridge   string `env:"OVS_BRIDGE" envDefault:"br-ovs"`
 	CRISock  string `env:"CRI_SOCK"   envDefault:"/run/k0s/containerd.sock"`
-	// DevicePluginDir is the kubelet's device-plugins directory (k0s keeps the kubelet root under /var/lib/k0s/kubelet);
+	// DevicePluginDir is the kubelet's device-plugins directory (the kubelet hardcodes /var/lib/kubelet/device-plugins, also on k0s);
 	// the node-agent registers the extended resource cybericebox.com/tun there. TunSlots is how many devices of that
 	// resource a node advertises (each is the same /dev/net/tun, the count only bounds the extended devices per node).
-	DevicePluginDir string `env:"DEVICE_PLUGIN_DIR" envDefault:"/var/lib/k0s/kubelet/device-plugins"`
-	TunSlots        int    `env:"TUN_SLOTS"         envDefault:"1000"`
+	DevicePluginDir string `env:"DEVICE_PLUGIN_DIR" envDefault:"/var/lib/kubelet/device-plugins"`
+	// TunCheckPath is where the node-agent container sees the host's /dev/net/tun (the chart mounts the host's /dev/net there): the
+	// container's own /dev has no tun, so the plugin must look at the host's.
+	TunCheckPath string `env:"TUN_CHECK_PATH" envDefault:"/host/dev/net/tun"`
+	TunSlots     int    `env:"TUN_SLOTS"         envDefault:"1000"`
 	// ImagePullConcurrency is how many images of a prepull request the node pulls at once;
 	// ImagePullTimeout bounds one image.
 	ImagePullConcurrency int           `env:"IMAGE_PULL_CONCURRENCY" envDefault:"2"`

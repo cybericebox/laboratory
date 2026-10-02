@@ -812,9 +812,9 @@ The gateway forwards to the **public internet only**:
   The base set of every device is AUDIT_WRITE, CHOWN, DAC_OVERRIDE, FOWNER, FSETID, KILL, NET_BIND_SERVICE, SETGID, SETPCAP, SETUID, SYS_CHROOT; all other
   capabilities are dropped. Privilege escalation stays allowed in a device on purpose: lab images run `sudo` and setuid binaries.
 - **`/dev/net/tun`.** The node-agent is a kubelet device plugin and advertises the extended resource `cybericebox.com/tun` (`nodeAgent.devicePlugin`: the
-  kubelet's device-plugins directory, k0s `/var/lib/k0s/kubelet/device-plugins`, and `tunSlots`, 1000 per node). A device pod with the `extended` profile
+  kubelet's device-plugins directory, always `/var/lib/kubelet/device-plugins` (the kubelet hardcodes it, on k0s too, whatever its root-dir is), and `tunSlots`, 1000 per node). A device pod with the `extended` profile
   requests one (request = limit) and the kubelet passes `/dev/net/tun` and nothing else from the host; no extra daemon, no hostPath. The host needs the `tun`
-  module loaded at boot (infrastructure); without the device the slots are advertised unhealthy and such pods stay Pending.
+  module loaded at boot (infrastructure); without the device the slots are advertised unhealthy and such pods stay Pending. The plugin checks that the device exists on the **host** through the host's `/dev/net` mounted read-only into the node-agent container (`TUN_CHECK_PATH`; the container's own `/dev` has no tun). The plugin is optional by construction: the node-agent is also the CNI, so both host paths are `DirectoryOrCreate` and a failure in the plugin (no directory, no kubelet socket, no registration) is only logged and retried every 30 s, never blocking the pod. Its log lines (`device plugin: ...`) say when it waits for the kubelet, registers, advertises, and when the health of the host device changes.
 - **VPN conntrack accounting.** The switches `nf_conntrack_acct` and `nf_conntrack_timestamp` need a writable `/proc/sys`, which an unprivileged
   container does not have. The VPN pod carries the annotation `network.cybericebox.com/conntrack-accounting: "true"` and the node-agent sets them in the
   pod's network namespace when it wires the pod (CNI ADD). If that fails the flow collector still counts attempts and replies, only bytes stay zero.
@@ -897,6 +897,14 @@ A participant is root in the device and controls what its writable layer holds, 
 - **The registry is shared.** `devices.statePersistence.tenantQuota` (10Gi, `"0"` = none) caps the snapshots of ALL one tenant's devices together (the sizes
   recorded in their status), so one tenant cannot fill the volume for everyone; `Tenant.spec.persistence.registryQuota` gives a tenant less. A snapshot that
   would pass it is refused like one over the write quota. The agent reports the tenant's `registry_quota_bytes` and `max_entries` in the features.
+
+### Upgrade note: zot's data directory
+
+zot runs as the unprivileged user 65532. `fsGroup` makes a volume writable for it only when the storage provisioner honours it; a hostPath or
+local-path volume, or one that an earlier version filled as root, keeps its owner and zot fails with `open /var/lib/registry/cache.db: permission denied`.
+The registry pod therefore has one init container, `own-data`, that runs `chown -R 65532:65532 /var/lib/registry` as root with only the CHOWN, DAC_OVERRIDE
+and FOWNER capabilities and a read-only root file system, and does nothing else. It runs on every start (a no-op once the volume is owned), so an upgrade needs
+no manual step; on a large volume the first start takes as long as the chown.
 
 ### Who may read the registry
 

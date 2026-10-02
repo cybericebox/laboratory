@@ -161,6 +161,8 @@ spec:
               value: {{ .Values.nodeAgent.criSocket | quote }}
             - name: DEVICE_PLUGIN_DIR
               value: {{ .Values.nodeAgent.devicePlugin.dir | quote }}
+            - name: TUN_CHECK_PATH
+              value: /host/dev/net/tun
             - name: TUN_SLOTS
               value: {{ .Values.nodeAgent.devicePlugin.tunSlots | quote }}
           {{- if include "laboratory.registryEnabled" . }}
@@ -220,6 +222,10 @@ spec:
             # The kubelet's device-plugin directory: the node-agent registers cybericebox.com/tun here.
             - name: device-plugins
               mountPath: {{ .Values.nodeAgent.devicePlugin.dir | quote }}
+            # The host's /dev/net, read-only: the plugin checks there that the tun device exists on the HOST (the container's own /dev has none).
+            - name: host-dev-net
+              mountPath: /host/dev/net
+              readOnly: true
             - name: host-netns
               mountPath: /run/netns
               # HostToContainer: propagate netns bind-mounts (cni-XXX) created on the
@@ -272,10 +278,16 @@ spec:
           hostPath:
             path: {{ .Values.nodeAgent.criSocket }}
             type: Socket
+        # DirectoryOrCreate, never Directory: the node-agent is the CNI, so a missing directory here must not keep its pod in Init
+        # (and with it every new pod of the node). The device plugin is optional; without it only the `extended` profile's tun is lost.
         - name: device-plugins
           hostPath:
             path: {{ .Values.nodeAgent.devicePlugin.dir | quote }}
-            type: Directory
+            type: DirectoryOrCreate
+        - name: host-dev-net
+          hostPath:
+            path: /dev/net
+            type: DirectoryOrCreate
         - name: host-netns
           hostPath:
             path: /run/netns

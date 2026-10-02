@@ -2,6 +2,7 @@ package chart_test
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -187,5 +188,72 @@ func TestRegistryKeepsSnapshotsPrivate(t *testing.T) {
 	}
 	if !strings.Contains(nodeOut, "STATE_REGISTRY_READER_PASSWORD") || !strings.Contains(nodeOut, "key: readerPassword") {
 		t.Error("the node-agent needs the reader account")
+	}
+}
+
+// The node-agent is the CNI: a device-plugin directory that does not exist must not keep its pod in Init (and with it every new
+// pod of the node). The directory is the kubelet's fixed one, and the plugin looks for the tun device in the host's /dev/net.
+func TestDevicePluginCannotBlockTheCNI(t *testing.T) {
+	out, err := helmTemplate(t, "-s", "templates/node-agent/daemonset.yaml")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	var found int
+	for _, d := range docs(t, out) {
+		if d["kind"] != "DaemonSet" {
+			continue
+		}
+		spec := d["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+		for _, v := range spec["volumes"].([]any) {
+			vol := v.(map[string]any)
+			hp, _ := vol["hostPath"].(map[string]any)
+			switch vol["name"] {
+			case "device-plugins":
+				found++
+				if hp["path"] != "/var/lib/kubelet/device-plugins" {
+					t.Errorf("the kubelet's device-plugins directory is fixed: %v", hp["path"])
+				}
+				if hp["type"] != "DirectoryOrCreate" {
+					t.Errorf("a missing directory must not block the pod: type %v", hp["type"])
+				}
+			case "host-dev-net":
+				found++
+				if hp["path"] != "/dev/net" || hp["type"] != "DirectoryOrCreate" {
+					t.Errorf("host /dev/net: %v", hp)
+				}
+			}
+		}
+	}
+	if found != 2 {
+		t.Fatalf("the device-plugin volumes: found %d of 2", found)
+	}
+	if !regexp.MustCompile(`TUN_CHECK_PATH\s+value: /host/dev/net/tun`).MatchString(out) {
+		t.Error("the plugin must check the host's /dev/net/tun, not the container's /dev")
+	}
+}
+
+// zot is not root: its data directory is handed to it by one root init container that does nothing else.
+func TestZotDataDirectoryIsOwnedByAnInitContainer(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "devices.statePersistence.enabled=true", "-s", "templates/registry/deployment.yaml")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	spec := podSpecs(t, out)["Deployment/laboratory-registry"]
+	inits := containersOf(spec, "initContainers")
+	if len(inits) != 1 || inits[0]["name"] != "own-data" {
+		t.Fatalf("init containers: %v", inits)
+	}
+	sc := securityOf(inits[0])
+	if sc["runAsUser"] != float64(0) || sc["allowPrivilegeEscalation"] != false || sc["readOnlyRootFilesystem"] != true || !dropsAll(sc) {
+		t.Errorf("own-data security: %v", sc)
+	}
+	cmd, _ := inits[0]["command"].([]any)
+	if len(cmd) != 3 || cmd[2] != "chown -R 65532:65532 /var/lib/registry" {
+		t.Errorf("it does one thing: %v", cmd)
+	}
+	for _, c := range containersOf(spec, "containers") {
+		if c["name"] == "zot" && securityOf(c)["runAsUser"] == float64(0) {
+			t.Error("zot itself must not run as root")
+		}
 	}
 }

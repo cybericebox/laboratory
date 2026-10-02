@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	pluginapi "k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1"
@@ -28,8 +29,12 @@ type Plugin struct {
 	Resource string // cybericebox.com/tun
 	Dir      string // the kubelet's device-plugins directory
 	Slots    int
-	HostPath string // the device on the host; default TUNDevice
-	Interval time.Duration
+	HostPath string // the device on the host as the kubelet sees it (what a container gets); default TUNDevice
+	// CheckPath is where THIS process looks to see that the device exists on the host: when the plugin runs in a container
+	// that has the host's /dev/net mounted elsewhere it is that path (the container's own /dev has no tun). Default: HostPath.
+	CheckPath string
+	Interval  time.Duration
+	Log       logr.Logger
 
 	mu      sync.Mutex
 	healthy bool
@@ -45,10 +50,17 @@ func (p *Plugin) hostPath() string {
 	return TUNDevice
 }
 
-// SetHostPath changes the device the plugin looks for (tests move it).
+// SetHostPath changes the device the plugin looks for (tests move it); the check path follows unless one was set.
 func (p *Plugin) SetHostPath(path string) {
 	p.mu.Lock()
 	p.HostPath = path
+	p.mu.Unlock()
+}
+
+// SetCheckPath changes where the plugin checks the device exists (tests move it).
+func (p *Plugin) SetCheckPath(path string) {
+	p.mu.Lock()
+	p.CheckPath = path
 	p.mu.Unlock()
 }
 
@@ -63,8 +75,26 @@ func (p *Plugin) socketName() string { return "cybericebox-tun.sock" }
 
 // present says whether the device exists on the host (the tun module is loaded).
 func (p *Plugin) present() bool {
-	st, err := os.Stat(p.hostPath())
+	path := p.hostPath()
+	p.mu.Lock()
+	if p.CheckPath != "" {
+		path = p.CheckPath
+	}
+	p.mu.Unlock()
+	st, err := os.Stat(path)
 	return err == nil && st.Mode()&os.ModeCharDevice != 0
+}
+
+func (p *Plugin) checkPath() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.CheckPath != "" {
+		return p.CheckPath
+	}
+	if p.HostPath != "" {
+		return p.HostPath
+	}
+	return TUNDevice
 }
 
 func (p *Plugin) devices(healthy bool) []*pluginapi.Device {
@@ -91,6 +121,7 @@ func (p *Plugin) ListAndWatch(_ *pluginapi.Empty, stream pluginapi.DevicePlugin_
 	}
 	p.mu.Unlock()
 	last := p.present()
+	p.Log.Info("device plugin: advertising", "resource", p.Resource, "slots", p.Slots, "deviceOnHost", last, "checkPath", p.checkPath())
 	if err := stream.Send(&pluginapi.ListAndWatchResponse{Devices: p.devices(last)}); err != nil {
 		return err
 	}
@@ -103,6 +134,7 @@ func (p *Plugin) ListAndWatch(_ *pluginapi.Empty, stream pluginapi.DevicePlugin_
 		case <-t.C:
 			if now := p.present(); now != last {
 				last = now
+				p.Log.Info("device plugin: health changed", "resource", p.Resource, "deviceOnHost", now, "checkPath", p.checkPath())
 				if err := stream.Send(&pluginapi.ListAndWatchResponse{Devices: p.devices(now)}); err != nil {
 					return err
 				}
@@ -136,6 +168,9 @@ func (p *Plugin) GetPreferredAllocation(context.Context, *pluginapi.PreferredAll
 // Serve listens on the plugin's socket in the kubelet directory and registers with the kubelet; it registers again
 // when the kubelet restarts (its socket is replaced). It returns when ctx ends.
 func (p *Plugin) Serve(ctx context.Context) error {
+	if p.Log.GetSink() == nil {
+		p.Log = logr.Discard()
+	}
 	sock := filepath.Join(p.Dir, p.socketName())
 	_ = os.Remove(sock)
 	lis, err := net.Listen("unix", sock)
@@ -152,9 +187,16 @@ func (p *Plugin) Serve(ctx context.Context) error {
 	var registeredWith os.FileInfo
 	for {
 		// The kubelet's socket is a new file after a restart: register with the new one.
-		if st, err := os.Stat(kubeletSock); err == nil && (registeredWith == nil || !os.SameFile(st, registeredWith)) {
-			if err := p.register(ctx, kubeletSock); err == nil {
+		if st, err := os.Stat(kubeletSock); err != nil {
+			if registeredWith == nil {
+				p.Log.Info("device plugin: waiting for the kubelet socket", "socket", kubeletSock)
+			}
+		} else if registeredWith == nil || !os.SameFile(st, registeredWith) {
+			if err := p.register(ctx, kubeletSock); err != nil {
+				p.Log.Error(err, "device plugin: registration with the kubelet failed (will retry)", "socket", kubeletSock)
+			} else {
 				registeredWith = st
+				p.Log.Info("device plugin: registered with the kubelet", "resource", p.Resource, "endpoint", p.socketName())
 			}
 		}
 		select {
