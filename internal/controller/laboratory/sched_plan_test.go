@@ -406,3 +406,41 @@ func TestPlanGroupPodsGoAheadOfQueuedLabs(t *testing.T) {
 		t.Fatalf("reason = %q", plan.status["group/dep"].Reason)
 	}
 }
+
+// The VPN and gateway pods of a tenant's groups request real resources: they count against the quota like
+// lab pods (what GetCapacity reports as reserved must never exceed the quota), and a new group waits for
+// room in the quota too.
+func TestTenantQuotaCountsGroupPods(t *testing.T) {
+	ten := &laboratoryv1alpha1.Tenant{Spec: laboratoryv1alpha1.TenantSpec{Quota: &laboratoryv1alpha1.TenantQuota{CPU: "700m", Memory: "4Gi"}}}
+	vpn := &schedPod{key: "group/g1/vpn", lookup: "g1/vpn", kind: kindGroupPod, state: sd, tenant: "t", need: amount{cpu: 100, mem: 256 << 20}}
+	gw := &schedPod{key: "group/g1/gateway", lookup: "g1/gateway", kind: kindGroupPod, state: sd, tenant: "t", need: amount{cpu: 10, mem: 32 << 20}}
+	lab := &schedPod{key: "ns/l/web", kind: kindDevicePod, state: qd, tenant: "t", need: amount{cpu: 600, mem: 64 << 20}}
+	newVPN := &schedPod{key: "group/g2/vpn", lookup: "g2/vpn", kind: kindGroupPod, state: qd, tenant: "t", need: amount{cpu: 100, mem: 256 << 20}}
+	env := &clusterEnv{s: &Scheduler{}, snap: &clusterView{tenants: map[string]*laboratoryv1alpha1.Tenant{"t": ten}},
+		objs: []*schedObject{{pods: []*schedPod{vpn, gw, lab, newVPN}}}}
+	if env.tenantFits(lab) {
+		t.Fatal("110m of group pods + 600m is over 700m: a lab must not slip past the group overhead")
+	}
+	lab.need.cpu = 500
+	if !env.tenantFits(lab) {
+		t.Fatal("110m + 500m fits 700m")
+	}
+	env.take(lab)
+	if env.tenantFits(newVPN) {
+		t.Fatal("a new group's VPN pod waits when the quota is used up (610m + 100m > 700m)")
+	}
+}
+
+// The scheduler sizes a group pod from the chart's group pod resources.
+func TestGroupPodNeedFollowsTheChart(t *testing.T) {
+	s := &Scheduler{}
+	if n := s.groupPodNeed("vpn"); n.Cpu().MilliValue() != 100 || n.Memory().Value() != 256<<20 {
+		t.Fatalf("vpn %v", n)
+	}
+	if n := s.groupPodNeed("gateway"); n.Cpu().MilliValue() != 10 || n.Memory().Value() != 32<<20 {
+		t.Fatalf("gateway %v", n)
+	}
+	if s.groupPodNeed("other") != nil {
+		t.Fatal("an unknown pod has no need")
+	}
+}

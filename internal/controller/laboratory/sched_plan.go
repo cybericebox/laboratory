@@ -21,6 +21,8 @@ const (
 // schedPod is one pod of an object: a container Device of a Lab, or the VPN or
 // gateway pod of a LabGroup.
 type schedPod struct {
+	// lookup is the key of the pod in the cluster view (podsOf): where the pod would be found once it exists.
+	lookup string
 	// key identifies the pod: "ns/lab/device" or "group/vpn".
 	key  string
 	name string // sort key inside the object

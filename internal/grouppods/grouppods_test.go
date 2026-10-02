@@ -37,7 +37,7 @@ func TestValidateRefusesBadValues(t *testing.T) {
 }
 
 func TestEmptyConfigFallsBackToTheDefaults(t *testing.T) {
-	if o := (Config{}).Overhead(); o.CPU != 150 || o.Memory != 96<<20 {
+	if o := (Config{}).Overhead(); o.CPU != 110 || o.Memory != 288<<20 {
 		t.Fatalf("%+v", o)
 	}
 }

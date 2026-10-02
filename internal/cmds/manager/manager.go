@@ -318,6 +318,7 @@ func Run() {
 				PrepullTimeout:   cfg.SchedulerPrepullTimeout,
 			},
 			Defaults:         laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory},
+			GroupPods:        cfg.GroupPods,
 			ImagePullSecrets: cfg.ImagePullSecrets,
 			LabNodeSelector:  labNodeSelector,
 			LabTolerations:   labTolerations,

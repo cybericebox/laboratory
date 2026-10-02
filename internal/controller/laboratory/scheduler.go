@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/tenant"
@@ -71,6 +72,9 @@ type Scheduler struct {
 	// Defaults are the device resources a device without any gets; the same the
 	// DeviceReconciler applies, so the resource check sees the real load.
 	Defaults DeviceDefaults
+	// GroupPods are the resources of the VPN and gateway pods of a group; the scheduler counts them
+	// against the node room and the tenant's quota like any pod.
+	GroupPods grouppods.Config
 	// ImagePullSecrets, LabNodeSelector and LabTolerations shape the prepull pods
 	// and the node set of the resource check like they shape the lab pods.
 	ImagePullSecrets []string
@@ -135,6 +139,17 @@ func (s *Scheduler) namespace() string {
 }
 
 func devicePodKey(ns, lab, device string) string { return ns + "/" + lab + "/" + device }
+
+// groupPodNeed is what a group pod requests (the chart's group pod resources); nil for an unknown pod.
+func (s *Scheduler) groupPodNeed(name string) corev1.ResourceList {
+	switch name {
+	case "vpn":
+		return s.GroupPods.VPN().Requests
+	case "gateway":
+		return s.GroupPods.Gateway().Requests
+	}
+	return nil
+}
 
 // groupPodNames are the pods a LabGroup runs itself.
 func groupPodNames(lg *laboratoryv1alpha1.LabGroup) []string {
@@ -466,7 +481,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 				continue
 			}
 			key := devicePodKey(lab.Namespace, lab.Name, t.Name)
-			p := &schedPod{key: key, name: t.Name, kind: kindDevicePod, tenant: names.TenantOf(lab.Labels)}
+			p := &schedPod{key: key, lookup: key, name: t.Name, kind: kindDevicePod, tenant: names.TenantOf(lab.Labels)}
 			if need := guaranteedResources(t.Resources, s.Defaults); need != nil {
 				p.need = amount{cpu: need.Cpu().MilliValue(), mem: need.Memory().Value()}
 			}
@@ -496,7 +511,11 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 		}
 		for _, name := range groupPodNames(g) {
 			key := "group/" + g.Name + "/" + name
-			p := &schedPod{key: key, name: name, kind: kindGroupPod, ref: name, tenant: names.TenantOf(g.Labels)}
+			p := &schedPod{key: key, name: name, kind: kindGroupPod, ref: name, tenant: names.TenantOf(g.Labels),
+				lookup: laboratoryv1alpha1.LabGroupNamespace(g.Name) + "/" + name}
+			if need := s.groupPodNeed(name); need != nil {
+				p.need = amount{cpu: need.Cpu().MilliValue(), mem: need.Memory().Value()}
+			}
 			for _, e := range g.Status.Pods {
 				if e.Name != name {
 					continue
@@ -648,11 +667,11 @@ func (e *clusterEnv) capacity() *capacity {
 	var reserved amount
 	for _, o := range e.objs {
 		for _, p := range o.pods {
-			if p.state != laboratoryv1alpha1.PodStarting || p.kind != kindDevicePod {
+			if p.state != laboratoryv1alpha1.PodStarting {
 				continue
 			}
 			onNode := false
-			for _, pod := range e.snap.podsOf[p.key] {
+			for _, pod := range e.snap.podsOf[p.lookup] {
 				onNode = onNode || pod.Spec.NodeName != ""
 			}
 			if !onNode {
@@ -686,17 +705,18 @@ func (e *clusterEnv) take(p *schedPod) {
 }
 
 // tenantFits applies the tenant's CPU and memory quota to the sum of the requests of its
-// dispatched device pods (started, starting or failed: a failed pod's workload still runs).
+// dispatched pods, the VPN and gateway of its groups included (started, starting or failed: a failed
+// pod's workload still runs).
 func (e *clusterEnv) tenantFits(p *schedPod) bool {
 	ten := e.snap.tenants[p.tenant]
-	if ten == nil || ten.Spec.Quota == nil || p.kind != kindDevicePod {
+	if ten == nil || ten.Spec.Quota == nil {
 		return true
 	}
 	if e.tenantUsed == nil {
 		e.tenantUsed = map[string]tenant.Totals{}
 		for _, o := range e.objs {
 			for _, q := range o.pods {
-				if q.kind == kindDevicePod && q.dispatched() {
+				if q.dispatched() {
 					e.tenantUsed[q.tenant] = e.tenantUsed[q.tenant].Add(tenant.Totals{CPU: q.need.cpu, Memory: q.need.mem})
 				}
 			}

@@ -40,8 +40,8 @@ func (c Config) Validate() error {
 // Defaults of the chart, used for a value left empty (a reconciler built without a config).
 const (
 	DefaultVPNCPU        = "100m"
-	DefaultVPNMemory     = "64Mi"
-	DefaultGatewayCPU    = "50m"
+	DefaultVPNMemory     = "256Mi"
+	DefaultGatewayCPU    = "10m"
 	DefaultGatewayMemory = "32Mi"
 )
 
