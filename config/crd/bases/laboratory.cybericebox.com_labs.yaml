@@ -40,6 +40,7 @@ spec:
             description: LabSpec defines the desired state of Lab.
             properties:
               connections:
+                description: Connections of the lab (names.MaxLabConnections).
                 items:
                   description: ConnectionTemplate is an inline connection declaration
                     inside Lab.spec.connections[].
@@ -67,6 +68,7 @@ spec:
                   required:
                   - endpoints
                   type: object
+                maxItems: 256
                 type: array
               devices:
                 description: Devices of the lab, switches and hubs included. The ceiling
@@ -97,6 +99,7 @@ spec:
                     image:
                       type: string
                     interfaces:
+                      description: Interfaces of the device (names.MaxDeviceInterfaces).
                       items:
                         description: InterfaceSpec defines a network interface on
                           a device.
@@ -226,6 +229,7 @@ spec:
                         required:
                         - name
                         type: object
+                      maxItems: 8
                       type: array
                     name:
                       description: |-
@@ -336,6 +340,7 @@ spec:
                           - end
                           - start
                           type: object
+                        maxItems: 16
                         type: array
                     type: object
                   enabled:
@@ -376,6 +381,7 @@ spec:
                           - end
                           - start
                           type: object
+                        maxItems: 16
                         type: array
                     type: object
                   enabled:

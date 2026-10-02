@@ -10,7 +10,9 @@ type LabSpec struct {
 	Internet LabNetworkSpec `json:"internet,omitempty"`
 	// Devices of the lab, switches and hubs included. The ceiling is fixed in code (names.MaxLabDevices).
 	// +kubebuilder:validation:MaxItems=64
-	Devices     []DeviceTemplate     `json:"devices,omitempty"`
+	Devices []DeviceTemplate `json:"devices,omitempty"`
+	// Connections of the lab (names.MaxLabConnections).
+	// +kubebuilder:validation:MaxItems=256
 	Connections []ConnectionTemplate `json:"connections,omitempty"`
 }
 
@@ -23,8 +25,9 @@ type LabNetworkSpec struct {
 // DHCPServer enables the embedded DHCP server for a network segment.
 // Subnet and gateway are derived from the lab's allocated CIDR (Status.*.CIDR).
 type DHCPServer struct {
-	Enabled bool        `json:"enabled,omitempty"`
-	Ranges  []DHCPRange `json:"ranges,omitempty"`
+	Enabled bool `json:"enabled,omitempty"`
+	// +kubebuilder:validation:MaxItems=16
+	Ranges []DHCPRange `json:"ranges,omitempty"`
 	// DNS is advertised only by the internet gateway's DHCP server.
 	DNS string `json:"dns,omitempty"`
 }
@@ -56,9 +59,11 @@ type DeviceTemplate struct {
 	// SecurityPreset names a device security profile (standard or extended; the old names basic, service,
 	// net and debug are aliases). Only the name is exposed here; the concrete Linux capabilities behind it
 	// are an internal platform decision. Empty means standard.
-	SecurityPreset SecurityPreset  `json:"securityPreset,omitempty"`
-	Interfaces     []InterfaceSpec `json:"interfaces,omitempty"`
-	Exposure       *ExposureSpec   `json:"exposure,omitempty"`
+	SecurityPreset SecurityPreset `json:"securityPreset,omitempty"`
+	// Interfaces of the device (names.MaxDeviceInterfaces).
+	// +kubebuilder:validation:MaxItems=8
+	Interfaces []InterfaceSpec `json:"interfaces,omitempty"`
+	Exposure   *ExposureSpec   `json:"exposure,omitempty"`
 	// Resources sets the container resource requests/limits for this device.
 	// +optional
 	Resources *DeviceResources `json:"resources,omitempty"`

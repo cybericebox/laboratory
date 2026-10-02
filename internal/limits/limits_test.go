@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
 )
 
 func dev(name string, r *laboratoryv1alpha1.DeviceResources) laboratoryv1alpha1.DeviceTemplate {
@@ -40,7 +41,7 @@ func TestCheckSpec(t *testing.T) {
 	}{
 		{"no resources: the profile counts", many(5, nil), ""},
 		{"ten devices of the profile", many(10, nil), ""},
-		{"eleven devices", many(11, nil), "11 container devices"},
+		{"eleven devices", many(11, nil), "11 devices"},
 		{"device over cpu", many(1, &laboratoryv1alpha1.DeviceResources{CPULimit: "1"}), `device "a": cpu 1000m exceeds the limit of 500m`},
 		{"device over memory", many(1, &laboratoryv1alpha1.DeviceResources{MemoryRequest: "1Gi"}), "memory"},
 		{"declared at the maximum", many(2, &laboratoryv1alpha1.DeviceResources{CPULimit: "500m", MemoryLimit: "512Mi"}), ""},
@@ -55,17 +56,54 @@ func TestCheckSpec(t *testing.T) {
 			t.Errorf("%s: err = %v, want %q", tc.name, err, tc.want)
 		}
 	}
-	// switches and hubs run no pod
+	// switches and hubs count toward the device limit: each takes a VNI from the shared pool
 	sw := &laboratoryv1alpha1.LabSpec{}
 	for i := 0; i < 20; i++ {
 		sw.Devices = append(sw.Devices, laboratoryv1alpha1.DeviceTemplate{Name: "s", Type: laboratoryv1alpha1.DeviceTypeUnmanagedSwitch})
 	}
-	if err := l.CheckSpec(sw); err != nil {
-		t.Errorf("switches do not count: %v", err)
+	if err := l.CheckSpec(sw); err == nil || !strings.Contains(err.Error(), "switches and hubs included") {
+		t.Errorf("switches count: %v", err)
 	}
-	// 0 = no limit
+	mixed := many(8, nil)
+	for i := 0; i < 3; i++ {
+		mixed.Devices = append(mixed.Devices, laboratoryv1alpha1.DeviceTemplate{Name: "s", Type: laboratoryv1alpha1.DeviceTypeHub})
+	}
+	if err := l.CheckSpec(mixed); err == nil {
+		t.Error("8 containers and 3 hubs are 11 devices")
+	}
+	// 0 = the platform ceiling, never more
 	if err := (Limits{}).CheckSpec(many(30, &laboratoryv1alpha1.DeviceResources{CPULimit: "64"})); err != nil {
-		t.Errorf("no limits: %v", err)
+		t.Errorf("no configured limit: %v", err)
+	}
+	if err := (Limits{}).CheckSpec(many(names.MaxLabDevices+1, nil)); err == nil {
+		t.Error("the ceiling is a constant of the platform")
+	}
+}
+
+// The ceilings of interfaces and connections are fixed, and the chart can only lower the one of devices.
+func TestHardcodedLabCeilings(t *testing.T) {
+	l := chartDefaults(t)
+	tooManyIfaces := &laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{dev("a", nil)}}
+	for i := 0; i <= names.MaxDeviceInterfaces; i++ {
+		tooManyIfaces.Devices[0].Interfaces = append(tooManyIfaces.Devices[0].Interfaces, laboratoryv1alpha1.InterfaceSpec{Name: "eth1"})
+	}
+	if err := l.CheckSpec(tooManyIfaces); err == nil || !strings.Contains(err.Error(), "interfaces") {
+		t.Errorf("interfaces: %v", err)
+	}
+	conns := &laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{dev("a", nil)}}
+	for i := 0; i <= names.MaxLabConnections; i++ {
+		conns.Connections = append(conns.Connections, laboratoryv1alpha1.ConnectionTemplate{})
+	}
+	if err := l.CheckSpec(conns); err == nil || !strings.Contains(err.Error(), "connections") {
+		t.Errorf("connections: %v", err)
+	}
+	c, err := Config{DeviceMaxCPU: "1", DeviceMaxMemory: "1Gi", DeviceDefaultCPU: "100m", DeviceDefaultMemory: "1Mi", LabMaxDevices: 1000, GroupMaxCPU: "0", GroupMaxMemory: "0"}.Parse()
+	if err != nil || c.LabMaxDevices != names.MaxLabDevices {
+		t.Errorf("the chart cannot lift the ceiling: %d %v", c.LabMaxDevices, err)
+	}
+	c, _ = Config{DeviceMaxCPU: "1", DeviceMaxMemory: "1Gi", DeviceDefaultCPU: "100m", DeviceDefaultMemory: "1Mi", GroupMaxCPU: "0", GroupMaxMemory: "0"}.Parse()
+	if c.LabMaxDevices != names.MaxLabDevices {
+		t.Errorf("0 means the ceiling: %d", c.LabMaxDevices)
 	}
 }
 

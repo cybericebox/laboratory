@@ -631,7 +631,9 @@ limits:
     defaultCpu: 100m
     defaultMemory: 256Mi
   lab:
-    # Container devices of one lab (switches and hubs run no pod and do not count).
+    # Devices of one lab, switches and hubs included (each takes a VNI from the shared pool). The platform has a ceiling of 64
+    # that this can only lower (0 = the ceiling). The interfaces of a device (8) and the connections of a lab (256) have fixed
+    # maxima, so what one lab can take from the shared pools follows from this number and cannot be raised by a setting.
     maxDevices: 20
   group:
     # Labs of one LabGroup, and the sum of the planned resources of the devices of all its labs

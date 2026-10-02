@@ -587,8 +587,8 @@ images:
   gets the cluster values from the same chart keys as the operator (`devices.statePersistence.*`, `scheduler.enabled/maxPods`,
   `registry.cache`, `operator.baseDomain`, `operator.publicVPNEndpoint`, `agent.enrollment.certificateTTL`).
 - **Limits.** `limits` in the features (`device`, `lab`, `group`, `tenant`; 0 = no limit) is a sanity ceiling, not a sizing profile, and `CreateLabs`
-  enforces it: `limits.device.maxCpu` (2000m) and `maxMemory` (4Gi) per device; `limits.lab.maxDevices` (20 container devices; switches and
-  hubs do not count); per LabGroup `limits.group.maxLabs` (50) and the optional sums over all its labs `limits.group.maxCpu` / `maxMemory`
+  enforces it: `limits.device.maxCpu` (2000m) and `maxMemory` (4Gi) per device; `limits.lab.maxDevices` (20 devices; switches and
+  hubs count, see "Lab ceilings" below); per LabGroup `limits.group.maxLabs` (50) and the optional sums over all its labs `limits.group.maxCpu` / `maxMemory`
   (`"0"` = unlimited); `limits.tenant.maxLabs` (0 = unlimited; the tenant's resource quota still applies). There is no per-lab resource
   cap. Devices are Guaranteed (request = limit, no CPU overcommit), so a group's sum is what it reserves. A device's resources are its
   limit, else its request, else the planning profile `limits.device.defaultCpu` (100m) / `defaultMemory` (256Mi), which is also what the
@@ -1496,3 +1496,16 @@ component that runs it clamps or ignores the bad value instead of failing.
 - **Upgrade.** Nothing to do by hand. On a cluster older than 1.30 set `operator.admissionPolicy.enabled=false` first (or upgrade the cluster). The new rules apply to the
   operator as soon as the chart is upgraded: the VPN and gateway Deployments it already has are hardened to the same shape (earlier version), so they pass.
 - Not done: narrowing the operator's Secret permissions in the release namespace to named Secrets (the owner's decision lists the policy check and the pod rules only).
+
+### Lab ceilings (R-7)
+
+A lab takes a VNI from the shared pool (65000, all tenants) for every switch, hub and direct connection, and ports and flows on the nodes with them, so
+what one lab can ask for is bounded by constants of the platform, not by a setting an author or a values file could raise:
+
+- **Devices of a lab, switches and hubs included**: at most `limits.lab.maxDevices` (default 20), which can only lower the ceiling of 64 (`names.MaxLabDevices`;
+  0 = the ceiling). A lab that used to be 18 containers and 5 switches is 23 devices now: raise the value if your exercises need it (up to 64).
+- **Interfaces of a device**: 8. **Connections of a lab**: 256. **DHCP ranges** of one server: 16. So a lab holds at most 64 + 256 VNIs.
+- `CreateLabs` refuses a spec over them with the numbers; the Lab and Device CRDs carry the same `maxItems`, so a spec made by hand is refused too.
+  Existing labs are not touched (the CRD checks only what is written). GetFeatures reports the effective device limit.
+- **Upgrade**: apply the CRDs first (the `maxItems`); nothing else to do. A chart value above 64 is clamped to 64, not refused.
+- Not done: a per-tenant VNI quota and a cap of groups per tenant (the owner decided per-lab caps only).

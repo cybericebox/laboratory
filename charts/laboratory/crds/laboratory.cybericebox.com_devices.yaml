@@ -211,6 +211,7 @@ spec:
                   required:
                   - name
                   type: object
+                maxItems: 8
                 type: array
               labRef:
                 description: LabRef is the name of the parent Lab.

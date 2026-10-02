@@ -49,7 +49,7 @@ func TestCreateLabsRefusesSpecsOverTheCaps(t *testing.T) {
 		want string
 	}{
 		"device over cpu": {specWithCPU("1"), "exceeds the limit of 500m"},
-		"too many":        {specJSON("a", "b", "c", "d"), "4 container devices, the limit is 3"},
+		"too many":        {specJSON("a", "b", "c", "d"), "4 devices (switches and hubs included), the limit is 3"},
 	} {
 		err := create(tc.spec)
 		if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), `variant "v"`) {
