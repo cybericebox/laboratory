@@ -1,9 +1,13 @@
 package chart_test
 
 import (
+	"os"
 	"regexp"
 	"strings"
 	"testing"
+
+	"k8s.io/apimachinery/pkg/api/resource"
+	"sigs.k8s.io/yaml"
 )
 
 // The proxy runs two replicas by default, never two on one node (required anti-affinity), with a budget that keeps
@@ -24,8 +28,8 @@ func TestProxyRunsTwoReplicasWithABudgetAndMeasuredLimits(t *testing.T) {
 			t.Errorf("missing %q", want)
 		}
 	}
-	// requests = limits for l7 (500m/64Mi) and wg-demux (250m/64Mi)
-	for _, want := range []string{"cpu: 500m", "cpu: 250m", "memory: 64Mi"} {
+	// requests = limits for l7 (500m/512Mi) and wg-demux (250m/128Mi)
+	for _, want := range []string{"cpu: 500m", "cpu: 250m", "memory: 512Mi", "memory: 128Mi"} {
 		if strings.Count(out, want) < 2 {
 			t.Errorf("%q should appear as a request and a limit", want)
 		}
@@ -135,5 +139,39 @@ func TestDemuxLimitsAreValues(t *testing.T) {
 		if strings.Contains(out, gone+"\n") || strings.Contains(out, "name: "+gone) {
 			t.Errorf("%s must be gone: the source address is shared (NAT)", gone)
 		}
+	}
+}
+
+// D-8: maxConnections follows the memory limit: the measured cost of a connection with a request in flight (about 105 KiB, see
+// TestL7MemoryPerConnection), with 25% headroom, plus the caches, stays under the 80% the Go runtime is allowed to use.
+func TestL7MaxConnectionsFitTheMemoryLimit(t *testing.T) {
+	data, err := os.ReadFile("../../charts/laboratory/values.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v struct {
+		Proxy struct {
+			L7 struct {
+				MaxConnections int `json:"maxConnections"`
+				LiveTotal      int `json:"liveTotal"`
+				Resources      struct {
+					Limits struct {
+						Memory string `json:"memory"`
+					} `json:"limits"`
+				} `json:"resources"`
+			} `json:"l7"`
+		} `json:"proxy"`
+	}
+	if err := yaml.Unmarshal(data, &v); err != nil {
+		t.Fatal(err)
+	}
+	limit := resource.MustParse(v.Proxy.L7.Resources.Limits.Memory)
+	const perConn, caches = 105 * 1024, 64 << 20
+	need := float64(v.Proxy.L7.MaxConnections)*perConn*1.25 + caches
+	if budget := float64(limit.Value()) * 0.8; need > budget {
+		t.Errorf("%d connections need about %.0f MiB with headroom, the runtime may use %.0f MiB of the %s limit", v.Proxy.L7.MaxConnections, need/(1<<20), budget/(1<<20), v.Proxy.L7.Resources.Limits.Memory)
+	}
+	if v.Proxy.L7.LiveTotal > v.Proxy.L7.MaxConnections {
+		t.Errorf("liveTotal %d above maxConnections %d has no effect: a request in flight holds a connection", v.Proxy.L7.LiveTotal, v.Proxy.L7.MaxConnections)
 	}
 }

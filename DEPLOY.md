@@ -949,6 +949,29 @@ Nothing is renamed. Scripts that derive the namespace from the group name must r
 - **The session cookie belongs to the proxy.** Any `Set-Cookie` of the session cookie's name in a device's response is removed, so a device cannot set,
   replace or clear it; the device's own cookies pass.
 
+### Sizing the proxy
+
+The sizes in `proxy.l7` and `proxy.wg` come from measurements, repeated by two tests (`go test ./internal/proxy/...`, not in `-short`): `TestL7MemoryPerConnection` starts the
+proxy as a separate process, holds 300, 1000 and 2000 requests in flight (each one a TLS connection, the HTTP server, the reverse proxy and an upstream connection to a
+backend that never finishes the response) and reads the process's heap and stacks after a collection; `TestConntrackMemoryAtTheCap` fills the demux's conntrack table to its cap.
+
+| | measured | chart |
+|---|---|---|
+| L7 proxy, idle | about 4 MiB | |
+| L7 proxy, per connection with a request in flight | about 105 KiB | `maxConnections: 2500` is about 260 MiB |
+| L7 proxy, informer caches (Services, LabGroups, clients, policies of all groups) | tens of MiB at several hundred groups | headroom of about 60 MiB |
+| L7 proxy memory | | `proxy.l7.resources` 512Mi (the Go runtime stays under 80% of it, 410 MiB) |
+| wg-demux, per conntrack entry | about 190 bytes | `maxEntries: 100000` is about 18 MiB, about twice that while the map grows |
+| wg-demux memory | | `proxy.wg.resources` 128Mi |
+
+`maxConnections` and the memory limit go together: past `maxConnections` a client waits in the kernel's backlog (the header timeout frees the places of silent clients), which
+is a slow answer; a pod killed for memory cuts every request in flight on it. If you raise `maxConnections`, raise the memory by about 130 KiB per connection (the measured
+cost with 25% headroom) and keep `liveTotal` at or below it. A request in flight is also a connection for the proxy, so `liveTotal` above `maxConnections` has no effect.
+
+**To serve more clients, add proxy pods, not limits.** The L7 proxy is stateless (its session cookie is signed with the shared secret) and the demux's table is per pod: `proxy.replicas`
+(each replica takes its share of the connections the Gateway sends it; never two on one node), or `proxy.mode: daemonset` for one proxy on every node (larger clusters). A WireGuard client whose
+packets land on another demux replica re-handshakes (about 25-35 s, see the proxy rollout below), so change the replica count outside an event. Capacity is `replicas` times the numbers above.
+
 ### The WireGuard demux under hostile senders
 
 The demux (`wg-demux`) reads one public UDP port for every team. It holds no keys (the VPN pods do; WireGuard's own handshake is the security boundary), so

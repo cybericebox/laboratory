@@ -187,10 +187,15 @@ proxy:
     # group (livePerClient), per group (livePerGroup) and in all (liveTotal), past which a request gets 429; and the handoff path
     # (/_auth) per peer address (authRate per second, burst authBurst; all peers together may do twenty times that). The Go runtime is
     # told to stay under 80% of the container memory limit (a soft limit), so a burst is collected before the kernel would kill the pod.
-    maxConnections: 4000
+    # maxConnections follows the memory limit: a connection with a request in flight costs about 105 KiB (measured, TestL7MemoryPerConnection:
+    # the client's TLS connection, the HTTP server, the reverse proxy and its upstream connection), so 2500 of them are about 260 MiB, and with
+    # the informer caches (about 60 MiB at several hundred groups) and 25% headroom they stay under 80% of the 512Mi limit. Past
+    # maxConnections a client waits in the kernel's backlog; to serve more clients add replicas (proxy.replicas, or proxy.mode: daemonset),
+    # do not raise the cap without the memory (DEPLOY.md, "Sizing the proxy"). liveTotal is not above it: a request in flight holds a connection.
+    maxConnections: 2500
     livePerClient: 200
     livePerGroup: 1000
-    liveTotal: 8000
+    liveTotal: 2500
     authRate: 5
     authBurst: 20
     # An open request or WebSocket is checked against the group access policy every liveCheckInterval and
@@ -200,16 +205,17 @@ proxy:
     liveMaxLifetime: 12h
     # How often each replica publishes its request counters (REPORT_INTERVAL).
     reportInterval: "1m"
-    # Requests = limits (Guaranteed). Measured: 36Mi at 200 concurrent clients; CPU is the limit that
-    # matters: about 4600 requests per second at 500m (0.1 ms per request), while a real event peaks
+    # Requests = limits (Guaranteed). Memory: about 4 MiB idle plus about 105 KiB per connection with a request in flight (measured with
+    # 300, 1000 and 2000 in flight on a real proxy process, TestL7MemoryPerConnection), so maxConnections of 2500 need about 270 MiB, plus the
+    # caches; 512Mi leaves the headroom above. CPU: about 4600 requests per second at 500m (0.1 ms per request), while a real event peaks
     # at about 1000, so 500m has roughly five times the headroom.
     resources:
       limits:
         cpu: 500m
-        memory: 64Mi
+        memory: 512Mi
       requests:
         cpu: 500m
-        memory: 64Mi
+        memory: 512Mi
 
   # WireGuard demux container — plain userspace UDP, no hostNetwork/capabilities.
   wg:
@@ -243,15 +249,17 @@ proxy:
       sessionRate: 15000
       sessionBurst: 30000
       readers: 4
-    # Requests = limits. Measured: 12Mi, 1m idle and up to 111m at ten active peers (the packets are
-    # relayed in userspace, so the CPU follows the VPN traffic).
+    # Requests = limits. Memory: the conntrack table is about 190 bytes per entry (measured, TestConntrackMemoryAtTheCap): 100000 entries,
+    # the cap, are about 18 MiB live and about twice that while the map grows, plus the Go runtime and the group table; 128Mi keeps
+    # that under the 80% soft limit with headroom. CPU: 1m idle and up to 111m at ten active peers (the packets are relayed in
+    # userspace, so the CPU follows the VPN traffic).
     resources:
       limits:
         cpu: 250m
-        memory: 64Mi
+        memory: 128Mi
       requests:
         cpu: 250m
-        memory: 64Mi
+        memory: 128Mi
 
   # LoadBalancer Service annotations (e.g. cloud-specific LB config).
   service:
