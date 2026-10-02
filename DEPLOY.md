@@ -159,8 +159,8 @@ nodes on different images and a rollout cannot tell the versions apart. The imag
 tag, `Always` for `latest`.
 
 **The VPN and gateway pods of existing groups.** They run `vpn.image` and `inetGateway.image` (the binary with the gateway egress filter, the anti-spoof check and the
-WireGuard handling), so after a chart upgrade the operator brings every existing group's VPN and gateway Deployment to the configured image, command, pull policy and
-resources (`vpn.resources`, `inetGateway.resources`). It does that **one group at a time**: a group's two pods restart together (its tunnels drop and the clients
+WireGuard handling), so after a chart upgrade the operator brings every existing group's VPN and gateway Deployment to the configured image and pull policy, and to nothing else: a group's pods keep the size (CPU and memory) and the command they were created with, a changed
+`vpn.resources` or `inetGateway.resources` reaches only new groups. It does that **one group at a time**: a group's two pods restart together (its tunnels drop and the clients
 re-handshake), and the next group starts when the previous one's pods are rolled out and available, or after 10 minutes if they never become so (a bad image does not
 hold up the cluster, but it does reach the next group). Watch it with `kubectl get deploy -A -l app -o wide` (the `vpn` and `gateway` Deployments) and the operator log.
 With the image cache on, the image is the pinned reference the operator resolves (`registry.cache.pinTTL`).

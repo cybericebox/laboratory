@@ -619,8 +619,8 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 	if err := r.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: ns}, &existing); err == nil {
 		changed := existing.Spec.Replicas == nil || *existing.Spec.Replicas != replicas
 		existing.Spec.Replicas = ptrInt32(replicas)
-		// The configured image, command and resources reach the VPN pods that already run, one group at a time (a rolling update).
-		if r.convergeGroupPod(ctx, ns, &existing, "vpn", r.VPNImage, []string{"/lab", "vpn"}, r.GroupPods.VPN()) {
+		// The configured image reaches the VPN pods that already run, one group at a time (a rolling update); their size stays.
+		if r.convergeGroupPod(ctx, ns, &existing, "vpn", r.VPNImage) {
 			changed = true
 		}
 		// The hardened shape reaches the VPN pods that already run too (a rolling restart of the pod).
@@ -727,8 +727,8 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 	if err := r.Get(ctx, types.NamespacedName{Name: "gateway", Namespace: ns}, &existing); err == nil {
 		changed := existing.Spec.Replicas == nil || *existing.Spec.Replicas != replicas
 		existing.Spec.Replicas = ptrInt32(replicas)
-		// The configured image, command and resources reach the gateways that already run, one group at a time (a rolling update).
-		if r.convergeGroupPod(ctx, ns, &existing, "gateway", r.GatewayImage, []string{"/lab", "gateway"}, r.GroupPods.Gateway()) {
+		// The configured image reaches the gateways that already run, one group at a time (a rolling update); their size stays.
+		if r.convergeGroupPod(ctx, ns, &existing, "gateway", r.GatewayImage) {
 			changed = true
 		}
 		// A security setting reaches the gateways that already run too (a restart of the pod).

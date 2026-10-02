@@ -45,7 +45,7 @@ var _ = Describe("LabGroup suspension", func() {
 		Expect(dep.Spec.Template.Spec.Containers[0].Env).To(ContainElement(corev1.EnvVar{Name: "SUPPORT_EMAIL", Value: "new-help@example.org"}))
 	})
 
-	It("gives the VPN and gateway pods Guaranteed resources, and a changed value reaches an existing group", func() {
+	It("gives the VPN and gateway pods Guaranteed resources, and a changed value never reaches an existing group", func() {
 		const namespace = "default"
 		r := &LabGroupReconciler{Client: k8sClient, VPNBaseNetwork: "10.8.0.0/10", InetBaseNetwork: "10.9.0.0/10", VPNImage: "test", GatewayImage: "test",
 			GroupPods: grouppods.Config{VPNCPU: "120m", VPNMemory: "80Mi", GatewayCPU: "60m", GatewayMemory: "40Mi"}}
@@ -70,12 +70,12 @@ var _ = Describe("LabGroup suspension", func() {
 		Expect(vpn.Requests).To(Equal(vpn.Limits))
 		Expect(quantity(gw.Requests, corev1.ResourceCPU)).To(Equal("60m"))
 		Expect(gw.Requests).To(Equal(gw.Limits))
-		// A later change of the chart value reaches the group that exists (a rolling update of its pods, see rollout.go).
+		// A later change of the chart value reaches new groups only: the pods of a group keep the size they were created with.
 		r.GroupPods = grouppods.Config{VPNCPU: "500m", VPNMemory: "512Mi", GatewayCPU: "500m", GatewayMemory: "512Mi"}
 		Expect(r.ensureVPNDeployment(ctx, namespace, false)).To(Succeed())
 		Expect(r.ensureGatewayDeployment(ctx, namespace, false)).To(Succeed())
-		Expect(quantity(resOf("vpn").Requests, corev1.ResourceCPU)).To(Equal("500m"))
-		Expect(quantity(resOf("gateway").Requests, corev1.ResourceMemory)).To(Equal("512Mi"))
+		Expect(quantity(resOf("vpn").Requests, corev1.ResourceCPU)).To(Equal("120m"))
+		Expect(quantity(resOf("gateway").Requests, corev1.ResourceMemory)).To(Equal("40Mi"))
 	})
 
 	It("binds the operator to its working role in a namespace, and repairs the binding", func() {

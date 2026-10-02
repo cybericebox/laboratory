@@ -8,7 +8,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -100,10 +99,11 @@ func pullPolicyFor(image string) corev1.PullPolicy {
 	return corev1.PullIfNotPresent
 }
 
-// convergeGroupPod brings the container of an existing VPN or gateway Deployment to the configured image, command, pull policy and
-// resources. A difference is a rolling update of the group's pod, so it is applied only when the group has the turn (see rolloutGuard);
-// otherwise it is left for a later reconcile. It reports whether it changed the Deployment.
-func (r *LabGroupReconciler) convergeGroupPod(ctx context.Context, ns string, d *appsv1.Deployment, container, image string, command []string, resources corev1.ResourceRequirements) bool {
+// convergeGroupPod brings the container of an existing VPN or gateway Deployment to the configured image and pull policy, and to nothing
+// else: the size of a group's pods is the one it was created with (the platform chose it for that group and never resizes it), and the
+// command is the one of its image's day. A difference is a rolling update of the group's pod, so it is applied only when the group has
+// the turn (see rolloutGuard); otherwise it is left for a later reconcile. It reports whether it changed the Deployment.
+func (r *LabGroupReconciler) convergeGroupPod(ctx context.Context, ns string, d *appsv1.Deployment, container, image string) bool {
 	var c *corev1.Container
 	for i := range d.Spec.Template.Spec.Containers {
 		if d.Spec.Template.Spec.Containers[i].Name == container {
@@ -118,13 +118,13 @@ func (r *LabGroupReconciler) convergeGroupPod(ctx context.Context, ns string, d 
 	}
 	want := r.cachedImage(ctx, ns, image)
 	policy := pullPolicyFor(want)
-	if c.Image == want && c.ImagePullPolicy == policy && apiequality.Semantic.DeepEqual(c.Command, command) && apiequality.Semantic.DeepEqual(c.Resources, resources) {
+	if c.Image == want && c.ImagePullPolicy == policy {
 		return false
 	}
 	if !r.rollout.try(ns) {
 		return false
 	}
-	c.Image, c.ImagePullPolicy, c.Command, c.Resources = want, policy, command, resources
+	c.Image, c.ImagePullPolicy = want, policy
 	return true
 }
 
