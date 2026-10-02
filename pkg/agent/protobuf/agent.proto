@@ -84,6 +84,13 @@ service LabManager {
   // MonitoringUpdate.features (first message, then whenever it changed).
   rpc GetFeatures(Empty) returns (FeaturesResponse) {}
 
+  // ListMaintenanceWindows returns the maintenance windows the cluster operator announced that apply to the caller's
+  // tenant (a window with no tenants applies to all), soonest first. The agent refuses and delays nothing during a
+  // window; the backend reads them to plan (its calendar shows the capacity of the agent as the window says, zero
+  // unless the window leaves some). By default windows that are over are left out. Poll it (it is not part of the
+  // Monitoring stream).
+  rpc ListMaintenanceWindows(ListMaintenanceWindowsRequest) returns (MaintenanceWindowList) {}
+
   // PrewarmImages makes the platform image cache (zot) fetch images from their upstream
   // registries BEFORE labs need them, so a burst of labs pulls only from the cache. It is
   // asynchronous and idempotent: each call returns the current state of the requested images
@@ -974,3 +981,24 @@ message SnapshotTrailer {
   int64 compressed_bytes = 1;
   string sha256 = 2;
 }
+
+message ListMaintenanceWindowsRequest {
+  bool include_past = 1;   // also the windows that are over
+}
+message MaintenanceWindow {
+  string name = 1;
+  int64 from_unix_ms = 2;
+  int64 to_unix_ms = 3;    // 0 = open-ended
+  string reason = 4;
+  // Upcoming | Active | Past, as of the call.
+  string state = 5;
+  // True when the window applies to every tenant; otherwise it names the caller's tenant
+  // (other tenants are never listed).
+  bool all_tenants = 6;
+  // What the window leaves to the tenant: when has_capacity is false nothing (zero); when true, the capacity
+  // below (a resource the window does not name is zero).
+  bool has_capacity = 7;
+  int64 capacity_cpu_millicores = 8;
+  int64 capacity_memory_bytes = 9;
+}
+message MaintenanceWindowList {repeated MaintenanceWindow items = 1;}

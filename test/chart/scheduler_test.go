@@ -1,6 +1,7 @@
 package chart_test
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -142,5 +143,23 @@ func TestAgentGetsThePlatformReserve(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("the agent deployment lacks %q:\n%s", want, out)
 		}
+	}
+}
+// Maintenance windows: the agent reads them (read only), and the CRD ships with the chart.
+func TestAgentMayReadMaintenanceWindows(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "agent.enabled=true", "--set", "agent.domain=agent.example.com", "-s", "templates/agent/clusterrole.yaml")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	i := strings.Index(out, `resources: [ "maintenancewindows" ]`)
+	if i < 0 {
+		t.Fatalf("the agent cluster role lacks maintenancewindows:\n%s", out)
+	}
+	rule := out[i : i+120]
+	if strings.Contains(rule, "create") || strings.Contains(rule, "delete") || strings.Contains(rule, "update") {
+		t.Errorf("the agent must only read maintenance windows: %s", rule)
+	}
+	if _, err := os.Stat("../../charts/laboratory/crds/laboratory.cybericebox.com_maintenancewindows.yaml"); err != nil {
+		t.Errorf("the CRD is not in the chart: %v", err)
 	}
 }

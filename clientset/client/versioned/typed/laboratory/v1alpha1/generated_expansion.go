@@ -35,4 +35,6 @@ type LabTrafficReportExpansion interface{}
 
 type LabVPNExpansion interface{}
 
+type MaintenanceWindowExpansion interface{}
+
 type TenantExpansion interface{}

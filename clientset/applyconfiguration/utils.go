@@ -149,6 +149,10 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.LabVPNSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabVPNStatus"):
 		return &applyconfigurationlaboratoryv1alpha1.LabVPNStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("MaintenanceWindow"):
+		return &applyconfigurationlaboratoryv1alpha1.MaintenanceWindowApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("MaintenanceWindowSpec"):
+		return &applyconfigurationlaboratoryv1alpha1.MaintenanceWindowSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("NamedPodSchedule"):
 		return &applyconfigurationlaboratoryv1alpha1.NamedPodScheduleApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("NetworkIPRef"):

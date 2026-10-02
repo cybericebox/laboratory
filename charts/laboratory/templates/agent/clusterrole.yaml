@@ -20,6 +20,10 @@ rules:
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "tenants/status" ]
     verbs: [ "get", "update", "patch" ]
+  # Maintenance windows the cluster operator announces: read only, shown to the tenants they apply to.
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "maintenancewindows" ]
+    verbs: [ "get", "list", "watch" ]
   - apiGroups: [ "" ]
     resources: [ "namespaces" ]
     verbs: [ "get", "list", "watch" ]

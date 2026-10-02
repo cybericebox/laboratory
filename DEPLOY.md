@@ -423,6 +423,51 @@ annotation `laboratory.cybericebox.com/user-labels` so only they are removed.
 
 ---
 
+## Maintenance windows
+
+A **MaintenanceWindow** is how the cluster operator announces that maintenance (draining nodes, upgrades, restarts) may happen, so
+the platforms that use the cluster can plan around it. The agent refuses and delays nothing during a window; the **backend** reads it
+and its calendar gives this agent no capacity inside the window (or the capacity the window leaves), and flags the reservations that
+overlap it.
+
+```yaml
+apiVersion: laboratory.cybericebox.com/v1alpha1
+kind: MaintenanceWindow
+metadata:
+  name: kernel-upgrade-2026-10
+spec:
+  from: "2026-10-12T22:00:00Z"
+  to: "2026-10-13T02:00:00Z"      # optional: empty = open-ended (until the object is deleted or edited)
+  reason: kernel upgrade of the lab nodes   # shown to tenants, at most 500 characters
+  tenants: [acme]                 # optional: Tenant names (client certificate CNs); empty = all tenants
+  capacity: { cpu: "2", memory: 4Gi }   # optional: what the window leaves to the tenants; empty = nothing (the usual case)
+```
+
+The object is cluster scoped and created with `kubectl` by the cluster operator; the schema refuses a `to` that is not after `from`
+and a `capacity` that names anything but `cpu` and `memory` (a resource it does not name is zero). `kubectl get maintenancewindows`
+shows from, to and reason. The chart installs the CRD (`helm upgrade` does not update `crds/`: apply it first, as in the upgrade
+notes) and gives the agent read-only access (`get`, `list`, `watch`); the operator does nothing with it. Without the CRD the call
+fails with `FailedPrecondition` (never an empty list).
+
+**Agent API.** `ListMaintenanceWindows(ListMaintenanceWindowsRequest{include_past}) returns (MaintenanceWindowList)`, over the same
+mTLS as the rest. It returns the windows that apply to the **caller's tenant** (a window with no `tenants` applies to everyone; a
+window that names other tenants is never listed and its tenants are never revealed), soonest `from` first, each as:
+
+| Field | Meaning |
+|---|---|
+| `name` | the object name |
+| `from_unix_ms`, `to_unix_ms` | the window; `to_unix_ms` is 0 for an open-ended window |
+| `reason` | the operator's text |
+| `state` | `Upcoming`, `Active` or `Past`, as of the call |
+| `all_tenants` | true when the window applies to every tenant |
+| `has_capacity`, `capacity_cpu_millicores`, `capacity_memory_bytes` | what the window leaves to the tenant; `has_capacity` false means nothing |
+
+Windows that are over (`Past`) are left out unless `include_past` is set. There is no change feed: poll the call (the backend does,
+every minute). The windows are **not** part of the Monitoring stream, which is a journal of per-tenant records; adding a record
+kind that is filtered by a tenant list would complicate its deltas for little gain.
+
+---
+
 ## 6. Uninstall
 
 ```bash
@@ -460,7 +505,7 @@ only**: every call takes a list, one object is a list of one. There are no singu
 | Access | `SetLabGroupAccess` (the policies of many groups, full replacement) |
 | Labs | `CreateLabs`, `ListLabs`, `UpdateLabs`, `DeleteLabs` |
 | Devices | `ResetDevices`, `RescueDevices` |
-| Other | `Ping`, `Monitoring` (stream), `GetCapacity`, `GetFeatures`, `PrewarmImages` |
+| Other | `Ping`, `Monitoring` (stream), `GetCapacity`, `GetFeatures`, `ListMaintenanceWindows`, `PrewarmImages` |
 
 **References and ids.** Objects are named by id (`ItemRef{lab_group, lab, name}`), never by namespace; the agent
 resolves the namespace from the group (`status.namespace`). A LabGroup, and the policy of one, is identified by `name`

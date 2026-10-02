@@ -36,6 +36,7 @@ type LaboratoryV1alpha1Interface interface {
 	LabGroupClientsGetter
 	LabTrafficReportsGetter
 	LabVPNsGetter
+	MaintenanceWindowsGetter
 	TenantsGetter
 }
 
@@ -78,6 +79,10 @@ func (c *LaboratoryV1alpha1Client) LabTrafficReports(namespace string) LabTraffi
 
 func (c *LaboratoryV1alpha1Client) LabVPNs(namespace string) LabVPNInterface {
 	return newLabVPNs(c, namespace)
+}
+
+func (c *LaboratoryV1alpha1Client) MaintenanceWindows() MaintenanceWindowInterface {
+	return newMaintenanceWindows(c)
 }
 
 func (c *LaboratoryV1alpha1Client) Tenants() TenantInterface {

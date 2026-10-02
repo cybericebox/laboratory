@@ -85,6 +85,10 @@ type LabVPNListerExpansion interface{}
 // LabVPNNamespaceLister.
 type LabVPNNamespaceListerExpansion interface{}
 
+// MaintenanceWindowListerExpansion allows custom methods to be added to
+// MaintenanceWindowLister.
+type MaintenanceWindowListerExpansion interface{}
+
 // TenantListerExpansion allows custom methods to be added to
 // TenantLister.
 type TenantListerExpansion interface{}

@@ -63,6 +63,10 @@ func (c *FakeLaboratoryV1alpha1) LabVPNs(namespace string) v1alpha1.LabVPNInterf
 	return newFakeLabVPNs(c, namespace)
 }
 
+func (c *FakeLaboratoryV1alpha1) MaintenanceWindows() v1alpha1.MaintenanceWindowInterface {
+	return newFakeMaintenanceWindows(c)
+}
+
 func (c *FakeLaboratoryV1alpha1) Tenants() v1alpha1.TenantInterface {
 	return newFakeTenants(c)
 }
