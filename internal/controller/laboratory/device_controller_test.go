@@ -108,9 +108,15 @@ var _ = Describe(
 				Expect(aff).NotTo(BeNil())
 				Expect(aff.PodAffinity).NotTo(BeNil())
 				terms := aff.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
-				Expect(terms).To(HaveLen(1))
+				Expect(terms).To(HaveLen(2))
 				Expect(terms[0].PodAffinityTerm.TopologyKey).To(Equal(names.TopologyKeyHostname))
 				Expect(terms[0].PodAffinityTerm.LabelSelector.MatchLabels).To(HaveKeyWithValue(names.LabelLab, "lab1"))
+				// B-11: then the group's own node (every pod of the namespace), softer than the lab's, and never required.
+				Expect(terms[1].Weight).To(BeNumerically("<", terms[0].Weight))
+				Expect(terms[1].PodAffinityTerm.TopologyKey).To(Equal(names.TopologyKeyHostname))
+				Expect(terms[1].PodAffinityTerm.LabelSelector).NotTo(BeNil())
+				Expect(terms[1].PodAffinityTerm.LabelSelector.MatchLabels).To(BeEmpty())
+				Expect(aff.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution).To(BeEmpty())
 
 				// The container is Guaranteed: requests equal limits, defaults applied.
 				res := dep.Spec.Template.Spec.Containers[0].Resources

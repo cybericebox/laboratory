@@ -318,7 +318,25 @@ is recreated at once, with no slot, as without the scheduler.
 Per resource the limit wins, then the request, then `limits.device.defaultCpu` / `defaultMemory` (100m CPU and 256Mi memory);
 a declared request and limit that differ collapse to the limit. The resources are applied when a device is created; running devices are not
 changed. Each lab group namespace has one PodDisruptionBudget `lab-group` (`maxUnavailable: 0`, all pods of
-the namespace), so node drains and the autoscaler do not evict running labs.
+the namespace), so node drains and the autoscaler do not evict running labs (see "Maintenance of a node" below).
+
+**Placement of a group.** Pod placement is the Kubernetes scheduler's, with two soft preferences on device pods (never required, so a full
+node never blocks a lab): the node of another device of the same lab (weight 100: a lab's traffic stays node-local), then a node that already
+runs any pod of the same group, i.e. its VPN, gateway and other labs (weight 50). A group's labs therefore end up together on as few nodes as
+capacity allows, which makes a node empty sooner when you take it out for maintenance. Nothing guarantees one node per group.
+
+**Maintenance of a node.** The `lab-group` budget blocks every voluntary eviction in a group namespace, the VPN and gateway pods included, so
+`kubectl drain`, an autopilot upgrade or the autoscaler's scale-down wait on a node that still has lab pods. That is intended: a running lab is
+never cut for maintenance. The flow is:
+
+1. `kubectl cordon <node>`: new lab pods go elsewhere (the operator's scheduler skips unschedulable nodes). Running labs are not touched.
+2. Wait until the labs on the node end: `kubectl get pods -A -o wide --field-selector spec.nodeName=<node>` (lab pods carry the label
+   `laboratory.cybericebox.com/lab`; a VPN or gateway pod stays as long as its group has a lab on the node, so wait for the group).
+3. `kubectl drain <node> --ignore-daemonsets --delete-emptydir-data` once only platform pods and DaemonSet pods are left; do the work; `kubectl uncordon <node>`.
+
+To empty a node before the labs end, an operator can accept the cut explicitly: suspend the group (`LabGroup.spec.suspended: true`, devices stop, snapshot-backed
+ones take an exit snapshot), or delete the pod with `kubectl delete pod`, which bypasses the budget (eviction goes through it, deletion does not). A node
+that is lost (not drained) is handled by "Node loss" in "Device state persistence".
 
 **Status.** `Lab.status.scheduling` and `LabGroup.status.scheduling` show the place in the queue:
 

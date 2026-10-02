@@ -341,21 +341,33 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 	podSpec = corev1.PodSpec{
 		NodeSelector: r.LabNodeSelector,
 		Tolerations:  r.LabTolerations,
-		// Best-effort co-location: prefer scheduling this device onto a node that
-		// already runs another device of the same lab, so a lab's intra-fabric
-		// traffic stays node-local (no Geneve hop) whenever capacity allows. Soft
-		// (preferred), so a full node never blocks a lab from being placed.
+		// Best-effort co-location, soft (preferred) so a full node never blocks a lab from being placed:
+		// 1. prefer a node that already runs another device of the same lab, so a lab's intra-fabric
+		//    traffic stays node-local (no Geneve hop) whenever capacity allows;
+		// 2. then prefer a node that runs any pod of the same group (the pods of the namespace: the
+		//    group's other labs, its VPN and gateway), so a group's labs end together on few nodes and
+		//    a node is emptied for maintenance sooner (see DEPLOY.md, "Maintenance of a node").
 		Affinity: &corev1.Affinity{
 			PodAffinity: &corev1.PodAffinity{
-				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{{
-					Weight: 100,
-					PodAffinityTerm: corev1.PodAffinityTerm{
-						LabelSelector: &metav1.LabelSelector{
-							MatchLabels: map[string]string{names.LabelLab: device.Spec.LabRef},
+				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
+					{
+						Weight: 100,
+						PodAffinityTerm: corev1.PodAffinityTerm{
+							LabelSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{names.LabelLab: device.Spec.LabRef},
+							},
+							TopologyKey: names.TopologyKeyHostname,
 						},
-						TopologyKey: names.TopologyKeyHostname,
 					},
-				}},
+					{
+						Weight: 50,
+						PodAffinityTerm: corev1.PodAffinityTerm{
+							// An empty selector matches every pod of the namespace, and the namespace is the group's.
+							LabelSelector: &metav1.LabelSelector{},
+							TopologyKey:   names.TopologyKeyHostname,
+						},
+					},
+				},
 			},
 		},
 		Containers: []corev1.Container{
