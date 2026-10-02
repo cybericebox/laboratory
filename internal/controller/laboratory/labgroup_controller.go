@@ -29,6 +29,7 @@ import (
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/egress"
 	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -86,9 +87,6 @@ type LabGroupReconciler struct {
 	// OperatorSA is the operator's own ServiceAccount: it is bound to the working role in each group namespace
 	// (empty: no binding, for tests).
 	OperatorSA types.NamespacedName
-	// GatewayEgressDenyCIDRs and GatewayEgressAllowCIDRs: what the labs of a group may not (and, inside that, may)
-	// reach through the internet gateway. They go into the gateway's environment and its CiliumNetworkPolicy.
-	GatewayEgressDenyCIDRs, GatewayEgressAllowCIDRs []string
 	// VPNStatsInterval is STATS_INTERVAL of the VPN pod of a new group; zero leaves the pod's own default.
 	VPNStatsInterval time.Duration
 	// ImagePullSecrets names registry Secrets of the operator namespace. They are
@@ -834,23 +832,24 @@ func apiServerEgress() map[string]interface{} {
 }
 
 // gatewayCiliumPolicy builds the CiliumNetworkPolicy for the gateway pod. Egress: the API server on its API ports
-// (its reconciler), and the outside world MINUS the deny ranges (the metadata service, the private ranges, CGNAT,
-// the cluster and node networks), plus the allow-list exceptions. Never in-cluster pods, no DNS. The kube-apiserver
-// entity is not a way out for the labs: they leave through this pod, and the gateway's own filter drops what they
-// send to the deny ranges. No ingress rule is needed; replies flow back via conntrack.
-func gatewayCiliumPolicy(ns string, allow, deny []string) *unstructured.Unstructured {
-	exceptions := make([]interface{}, len(deny))
-	for i, c := range deny {
-		exceptions[i] = c
+// (its reconciler), and the outside world MINUS the internal ranges (egress.DenyV4 and DenyV6: the metadata service,
+// the private ranges, CGNAT, the cluster and node networks). Never in-cluster pods, no DNS. The kube-apiserver entity is
+// not a way out for the labs: they leave through this pod, and the gateway's own filter drops what they send to those
+// ranges. No ingress rule is needed; replies flow back via conntrack.
+func gatewayCiliumPolicy(ns string) *unstructured.Unstructured {
+	toAny := func(list []string) []interface{} {
+		out := make([]interface{}, len(list))
+		for i, c := range list {
+			out[i] = c
+		}
+		return out
 	}
-	egress := []interface{}{
+	egressRules := []interface{}{
 		apiServerEgress(),
-		map[string]interface{}{
-			"toCIDRSet": []interface{}{map[string]interface{}{"cidr": "0.0.0.0/0", "except": exceptions}},
-		},
-	}
-	for _, c := range allow {
-		egress = append(egress, map[string]interface{}{"toCIDR": []interface{}{c}})
+		map[string]interface{}{"toCIDRSet": []interface{}{
+			map[string]interface{}{"cidr": "0.0.0.0/0", "except": toAny(egress.DenyV4)},
+			map[string]interface{}{"cidr": "::/0", "except": toAny(egress.DenyV6)},
+		}},
 	}
 	return &unstructured.Unstructured{
 		Object: map[string]interface{}{
@@ -866,7 +865,7 @@ func gatewayCiliumPolicy(ns string, allow, deny []string) *unstructured.Unstruct
 						"app": "gateway",
 					},
 				},
-				"egress": egress,
+				"egress": egressRules,
 			},
 		},
 	}
@@ -885,7 +884,7 @@ func (r *LabGroupReconciler) ensureVPNGatewayPolicies(ctx context.Context, ns st
 	if !r.NetworkPolicyEnabled {
 		return nil
 	}
-	for _, desired := range []*unstructured.Unstructured{vpnCiliumPolicy(ns), gatewayCiliumPolicy(ns, r.GatewayEgressAllowCIDRs, r.GatewayEgressDenyCIDRs)} {
+	for _, desired := range []*unstructured.Unstructured{vpnCiliumPolicy(ns), gatewayCiliumPolicy(ns)} {
 		spec, found, err := unstructured.NestedMap(desired.Object, "spec")
 		if err != nil || !found {
 			return fmt.Errorf("cilium policy %s missing spec", desired.GetName())
@@ -1023,14 +1022,11 @@ func (r *LabGroupReconciler) vpnStatsEnv() []corev1.EnvVar {
 	return []corev1.EnvVar{{Name: "STATS_INTERVAL", Value: r.VPNStatsInterval.String()}}
 }
 
-// gatewayEnv is the environment of the gateway container: where it lives, the lab address space, and the egress
-// lists that make it forward only to the public internet.
+// gatewayEnv is the environment of the gateway container: where it lives and the lab address space.
 func (r *LabGroupReconciler) gatewayEnv(ns string) []corev1.EnvVar {
 	return []corev1.EnvVar{
 		{Name: "NAMESPACE", Value: ns},
 		{Name: "INET_BASE_NETWORK", Value: r.InetBaseNetwork},
-		{Name: "GATEWAY_EGRESS_DENY_CIDRS", Value: strings.Join(r.GatewayEgressDenyCIDRs, ",")},
-		{Name: "GATEWAY_EGRESS_ALLOW_CIDRS", Value: strings.Join(r.GatewayEgressAllowCIDRs, ",")},
 	}
 }
 
@@ -1048,6 +1044,16 @@ func (r *LabGroupReconciler) convergeGateway(d *appsv1.Deployment) bool {
 				changed = true
 			}
 		}
+		// The egress lists were once environment variables; they are a constant of the gateway now.
+		kept := c.Env[:0]
+		for _, e := range c.Env {
+			if e.Name == "GATEWAY_EGRESS_DENY_CIDRS" || e.Name == "GATEWAY_EGRESS_ALLOW_CIDRS" {
+				changed = true
+				continue
+			}
+			kept = append(kept, e)
+		}
+		c.Env = kept
 	}
 	return changed
 }

@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/cybericebox/laboratory/internal/egress"
 )
 
 // TestVPNCiliumPolicy asserts the vpn CiliumNetworkPolicy locks egress down to
@@ -94,10 +96,9 @@ func TestVPNCiliumPolicy(t *testing.T) {
 	}
 }
 
-// The gateway reaches the API server on its API ports only, and the world minus the deny ranges, plus the allow list.
+// The gateway reaches the API server on its API ports only, and the world minus the internal ranges (v4 and v6).
 func TestGatewayCiliumPolicy(t *testing.T) {
-	deny := []string{"169.254.0.0/16", "10.0.0.0/8"}
-	policy := gatewayCiliumPolicy("ns1", []string{"10.5.5.5/32"}, deny)
+	policy := gatewayCiliumPolicy("ns1")
 
 	if policy.GetKind() != "CiliumNetworkPolicy" || policy.GetName() != "gateway-egress" || policy.GetNamespace() != "ns1" {
 		t.Fatalf("identity: %s %s %s", policy.GetKind(), policy.GetName(), policy.GetNamespace())
@@ -105,12 +106,12 @@ func TestGatewayCiliumPolicy(t *testing.T) {
 	if app, _, _ := unstructured.NestedString(policy.Object, "spec", "endpointSelector", "matchLabels", "app"); app != "gateway" {
 		t.Fatalf("selects app=%q, want gateway", app)
 	}
-	egress, found, err := unstructured.NestedSlice(policy.Object, "spec", "egress")
-	if err != nil || !found || len(egress) != 3 {
-		t.Fatalf("egress = %v (found %v, err %v), want api + world-minus-denied + one allow", egress, found, err)
+	egressRules, found, err := unstructured.NestedSlice(policy.Object, "spec", "egress")
+	if err != nil || !found || len(egressRules) != 2 {
+		t.Fatalf("egress = %v (found %v, err %v), want api + world-minus-internal", egressRules, found, err)
 	}
 
-	api := egress[0].(map[string]interface{})
+	api := egressRules[0].(map[string]interface{})
 	if ents, _, _ := unstructured.NestedStringSlice(api, "toEntities"); len(ents) != 1 || ents[0] != "kube-apiserver" {
 		t.Fatalf("first rule must be the API server: %v", api)
 	}
@@ -127,20 +128,26 @@ func TestGatewayCiliumPolicy(t *testing.T) {
 		t.Fatalf("API ports = %v", got)
 	}
 
-	world := egress[1].(map[string]interface{})
+	world := egressRules[1].(map[string]interface{})
 	if _, ok := world["toEntities"]; ok {
 		t.Fatal("no entity world: it has no exceptions")
 	}
 	set, _, _ := unstructured.NestedSlice(world, "toCIDRSet")
-	if len(set) != 1 || set[0].(map[string]interface{})["cidr"] != "0.0.0.0/0" {
+	if len(set) != 2 {
 		t.Fatalf("world rule: %v", world)
 	}
-	except, _, _ := unstructured.NestedStringSlice(set[0].(map[string]interface{}), "except")
-	if len(except) != 2 || !contains(except, "169.254.0.0/16") || !contains(except, "10.0.0.0/8") {
-		t.Fatalf("except = %v", except)
-	}
-	if cidr, _, _ := unstructured.NestedStringSlice(egress[2].(map[string]interface{}), "toCIDR"); len(cidr) != 1 || cidr[0] != "10.5.5.5/32" {
-		t.Fatalf("allow rule: %v", egress[2])
+	for i, want := range []struct {
+		cidr   string
+		except []string
+	}{{"0.0.0.0/0", egress.DenyV4}, {"::/0", egress.DenyV6}} {
+		entry := set[i].(map[string]interface{})
+		if entry["cidr"] != want.cidr {
+			t.Fatalf("cidr %v, want %s", entry["cidr"], want.cidr)
+		}
+		except, _, _ := unstructured.NestedStringSlice(entry, "except")
+		if len(except) != len(want.except) {
+			t.Fatalf("%s except = %v", want.cidr, except)
+		}
 	}
 	if _, found, _ := unstructured.NestedSlice(policy.Object, "spec", "ingress"); found {
 		t.Fatalf("the gateway policy must not define ingress")

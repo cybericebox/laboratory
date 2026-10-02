@@ -21,7 +21,6 @@ import (
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
-	"github.com/cybericebox/laboratory/internal/egress"
 	"github.com/cybericebox/laboratory/internal/gateway"
 	"github.com/cybericebox/laboratory/pkg/dhcp"
 )
@@ -53,17 +52,7 @@ func Run() {
 		log.Error(err, "setup forward rules")
 		os.Exit(1)
 	}
-	deny, err := egress.NormalizeCIDRs(cfg.EgressDenyCIDRs)
-	if err != nil {
-		log.Error(err, "GATEWAY_EGRESS_DENY_CIDRS")
-		os.Exit(1)
-	}
-	allow, err := egress.NormalizeCIDRs(cfg.EgressAllowCIDRs)
-	if err != nil {
-		log.Error(err, "GATEWAY_EGRESS_ALLOW_CIDRS")
-		os.Exit(1)
-	}
-	if err := ipt.SetupEgressFilter(allow, deny); err != nil {
+	if err := ipt.SetupEgressFilter(); err != nil {
 		log.Error(err, "setup egress filter")
 		os.Exit(1)
 	}

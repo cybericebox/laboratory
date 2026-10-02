@@ -278,11 +278,10 @@ func Run() {
 			Namespace: cfg.AgentServiceNamespace,
 			Name:      cfg.AgentServiceAccount,
 		},
-		NetworkPolicyEnabled:   cfg.NetworkPolicyEnabled,
-		VPNStatsInterval:       cfg.VPNStatsInterval,
-		OperatorSA:             types.NamespacedName{Namespace: cfg.OperatorNamespace, Name: cfg.OperatorServiceAccount},
-		GatewayEgressDenyCIDRs: cfg.GatewayEgressDenyCIDRs, GatewayEgressAllowCIDRs: cfg.GatewayEgressAllowCIDRs,
-		ImagePullSecrets: cfg.ImagePullSecrets,
+		NetworkPolicyEnabled: cfg.NetworkPolicyEnabled,
+		VPNStatsInterval:     cfg.VPNStatsInterval,
+		OperatorSA:           types.NamespacedName{Namespace: cfg.OperatorNamespace, Name: cfg.OperatorServiceAccount},
+		ImagePullSecrets:     cfg.ImagePullSecrets,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LabGroup")
 		os.Exit(1)

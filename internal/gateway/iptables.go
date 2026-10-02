@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/coreos/go-iptables/iptables"
+
+	"github.com/cybericebox/laboratory/internal/egress"
 )
 
 func splitArgs(s string) []string { return strings.Fields(s) }
@@ -49,29 +51,39 @@ func (m *IPTablesManager) SetupForwardRules() error {
 // egressChain holds the destination filter of the traffic the gateway forwards to the outside.
 const egressChain = "LABEGRESS"
 
-// SetupEgressFilter makes the gateway forward lab traffic only to the public internet: in the chain LABEGRESS
-// (jumped to first from FORWARD for everything leaving through the external interface) the allow list is accepted
-// and every deny range is dropped. It is rebuilt from scratch on each start, so a changed list takes effect. The
-// gateway's own traffic (its API client) is OUTPUT, not FORWARD, and is not touched.
-func (m *IPTablesManager) SetupEgressFilter(allow, deny []string) error {
-	if err := m.ipt.ClearChain("filter", egressChain); err != nil {
+// SetupEgressFilter makes the gateway forward lab traffic only to the public internet: in the chain LABEGRESS (jumped
+// to first from FORWARD for everything leaving through the external interface) every range of egress.DenyV4 is dropped.
+// It is rebuilt from scratch on each start. The gateway's own traffic (its API client) is OUTPUT, not FORWARD, and is not
+// touched. The IPv6 equivalents (egress.DenyV6) go the same way when the pod has ip6tables; the gateway forwards no IPv6
+// otherwise.
+func (m *IPTablesManager) SetupEgressFilter() error {
+	if err := setupEgressChain(m.ipt, m.extIface, egress.DenyV4); err != nil {
+		return err
+	}
+	ip6, err := iptables.NewWithProtocol(iptables.ProtocolIPv6)
+	if err != nil {
+		return nil // no IPv6 netfilter in this pod: nothing is forwarded over IPv6
+	}
+	if err := ip6.ChangePolicy("filter", "FORWARD", "DROP"); err != nil {
+		return nil
+	}
+	return setupEgressChain(ip6, m.extIface, egress.DenyV6)
+}
+
+func setupEgressChain(ipt *iptables.IPTables, extIface string, deny []string) error {
+	if err := ipt.ClearChain("filter", egressChain); err != nil {
 		return fmt.Errorf("prepare chain %s: %w", egressChain, err)
 	}
-	for _, c := range allow {
-		if err := m.ipt.Append("filter", egressChain, "-d", c, "-j", "ACCEPT"); err != nil {
-			return fmt.Errorf("allow %s: %w", c, err)
-		}
-	}
 	for _, c := range deny {
-		if err := m.ipt.Append("filter", egressChain, "-d", c, "-j", "DROP"); err != nil {
+		if err := ipt.Append("filter", egressChain, "-d", c, "-j", "DROP"); err != nil {
 			return fmt.Errorf("deny %s: %w", c, err)
 		}
 	}
-	jump := []string{"-o", m.extIface, "-j", egressChain}
-	if ok, err := m.ipt.Exists("filter", "FORWARD", jump...); err != nil {
+	jump := []string{"-o", extIface, "-j", egressChain}
+	if ok, err := ipt.Exists("filter", "FORWARD", jump...); err != nil {
 		return fmt.Errorf("check the %s jump: %w", egressChain, err)
 	} else if !ok {
-		if err := m.ipt.Insert("filter", "FORWARD", 1, jump...); err != nil {
+		if err := ipt.Insert("filter", "FORWARD", 1, jump...); err != nil {
 			return fmt.Errorf("jump to %s: %w", egressChain, err)
 		}
 	}

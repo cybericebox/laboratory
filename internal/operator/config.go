@@ -9,7 +9,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
-	"github.com/cybericebox/laboratory/internal/egress"
 	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/pkg/config"
@@ -69,11 +68,6 @@ type Config struct {
 	// VPNStatsInterval is how often the VPN pod of a NEW group samples traffic statistics
 	// (env STATS_INTERVAL of the pod).
 	VPNStatsInterval time.Duration `env:"VPN_STATS_INTERVAL" envDefault:"30s"`
-	// GatewayEgressDenyCIDRs are the destinations the labs of a group cannot reach through its internet gateway
-	// (the metadata service, the private ranges, CGNAT, the cluster and node networks); GatewayEgressAllowCIDRs are
-	// exceptions inside them. They shape both the gateway's own filter and its CiliumNetworkPolicy.
-	GatewayEgressDenyCIDRs  []string `env:"GATEWAY_EGRESS_DENY_CIDRS" envSeparator:"," envDefault:"169.254.0.0/16,127.0.0.0/8,0.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,192.0.0.0/24,198.18.0.0/15,224.0.0.0/3"`
-	GatewayEgressAllowCIDRs []string `env:"GATEWAY_EGRESS_ALLOW_CIDRS" envSeparator:","`
 	// ImagePullSecrets lists registry Secrets (kubernetes.io/dockerconfigjson) in the
 	// operator namespace, created outside the chart. The operator copies them into
 	// every group namespace and sets them on the VPN, gateway and device pods, so a
@@ -215,13 +209,6 @@ func LoadConfig() (*Config, error) {
 	}
 	if address, err := mail.ParseAddress(cfg.SupportEmail); err != nil || address.Address != cfg.SupportEmail {
 		return nil, fmt.Errorf("SUPPORT_EMAIL %q is not a plain email address", cfg.SupportEmail)
-	}
-	var err error
-	if cfg.GatewayEgressDenyCIDRs, err = egress.NormalizeCIDRs(cfg.GatewayEgressDenyCIDRs); err != nil {
-		return nil, fmt.Errorf("GATEWAY_EGRESS_DENY_CIDRS: %w", err)
-	}
-	if cfg.GatewayEgressAllowCIDRs, err = egress.NormalizeCIDRs(cfg.GatewayEgressAllowCIDRs); err != nil {
-		return nil, fmt.Errorf("GATEWAY_EGRESS_ALLOW_CIDRS: %w", err)
 	}
 	if cfg.SchedulerMaxPods < 0 {
 		return nil, fmt.Errorf("SCHEDULER_MAX_PODS must not be negative")

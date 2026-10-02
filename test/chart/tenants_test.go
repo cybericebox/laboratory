@@ -312,25 +312,17 @@ func TestOldDeviceDefaultsKeyIsRefused(t *testing.T) {
 	}
 }
 
-func TestGatewayEgressListsReachTheOperator(t *testing.T) {
+// The egress deny list is a constant of the code: no value, no operator setting.
+func TestGatewayEgressIsNotASetting(t *testing.T) {
 	out, err := helmTemplate(t, "-s", "templates/operator/configmap.yaml")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for _, want := range []string{`GATEWAY_EGRESS_DENY_CIDRS: "169.254.0.0/16,127.0.0.0/8,0.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,192.0.0.0/24,198.18.0.0/15,224.0.0.0/3"`, `GATEWAY_EGRESS_ALLOW_CIDRS: ""`} {
-		if !strings.Contains(out, want) {
-			t.Errorf("missing %q\n%s", want, out)
-		}
+	if strings.Contains(out, "GATEWAY_EGRESS") {
+		t.Errorf("the egress lists must not be passed:\n%s", out)
 	}
-	out, err = helmTemplate(t, "-s", "templates/operator/configmap.yaml", "--set", "inetGateway.egress.denyCIDRs={169.254.0.0/16,198.51.100.0/24}",
-		"--set", "inetGateway.egress.allowCIDRs={10.1.1.1/32}")
-	if err != nil {
-		t.Fatalf("%v\n%s", err, out)
-	}
-	for _, want := range []string{`GATEWAY_EGRESS_DENY_CIDRS: "169.254.0.0/16,198.51.100.0/24"`, `GATEWAY_EGRESS_ALLOW_CIDRS: "10.1.1.1/32"`} {
-		if !strings.Contains(out, want) {
-			t.Errorf("missing %q", want)
-		}
+	if v, err := helmTemplate(t, "--show-only", "values.yaml"); err == nil && strings.Contains(v, "denyCIDRs") {
+		t.Error("denyCIDRs must not be a chart value")
 	}
 }
 

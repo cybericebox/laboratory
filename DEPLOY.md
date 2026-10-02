@@ -773,18 +773,21 @@ node-agents before the operator** (the DaemonSet first): an old node-agent canno
 A lab with `internet.enabled` leaves through the gateway pod of its group, so the lab inherits whatever the gateway may reach.
 The gateway forwards to the **public internet only**:
 
-- Its iptables chain `LABEGRESS` (first in FORWARD for traffic leaving the pod) drops what a lab sends to `inetGateway.egress.denyCIDRs`
-  and accepts `inetGateway.egress.allowCIDRs` first (exceptions inside the denied ranges). The default deny list is link-local
-  `169.254.0.0/16` (the cloud metadata service), loopback, the private ranges `10/8`, `172.16/12`, `192.168/16` (so the node, VPC, pod
-  and service networks of a typical cluster, and an internal load balancer of the control plane), CGNAT `100.64/10`, and the reserved and
-  multicast ranges. If your cluster, node or API-server networks are **public** addresses, add them to `denyCIDRs`.
-- Its `CiliumNetworkPolicy` allows egress to the world **except** the same ranges (`toCIDRSet` with `except`), plus the allow list, and
+- The denied ranges are **a constant of the code** (`internal/egress`), not a setting, and there is no allow-list exception: a lab needs no
+  internal service and must not learn where it runs. They are: `10/8`, `172.16/12`, `192.168/16` (so the node, VPC, pod and service networks of a
+  typical cluster, and an internal load balancer of the control plane), CGNAT `100.64/10`, link-local `169.254/16` (the cloud metadata service),
+  loopback `127/8`, `0/8`, `192.0.0/24`, `198.18/15`, and multicast and reserved `224/3`; and the IPv6 equivalents (`::/128`, `::1/128`,
+  IPv4-mapped and NAT64, `fc00::/7`, `fe80::/10`, `ff00::/8`, discard and documentation). Public addresses of nodes are not listed: protect them with
+  the cloud firewall (security groups).
+- Its iptables chain `LABEGRESS` (first in FORWARD for traffic leaving the pod) drops what a lab sends to those ranges (IPv6 through ip6tables
+  where the pod has it).
+- Its `CiliumNetworkPolicy` allows egress to the world **except** the same ranges (`toCIDRSet` with `except`, for `0.0.0.0/0` and `::/0`), and
   to the API server entity on ports 6443 and 443 only (the gateway's own reconciler; the entity covers every port of a node the API server
   runs on, so the ports are what limits it). The VPN pod's policy has the same port limit. The labs themselves can reach the API server
   neither directly (default-deny) nor through the gateway (the filter above).
-- The lists are chart values, passed to the operator (`GATEWAY_EGRESS_*`), put into the environment of every gateway and applied to the
-  policy. A change reaches the gateways that already run (their pods restart). Verify from a lab device with `internet.enabled`: the
-  metadata address, a node address and the API server are unreachable, a public address is reachable.
+- A gateway that already runs is restarted by the operator with the new image; the old `GATEWAY_EGRESS_*` environment variables are removed from
+  it. Verify from a lab device with `internet.enabled`: the metadata address, a node address and the API server are unreachable, a public address is
+  reachable.
 
 ### Hardening of the lab pods
 

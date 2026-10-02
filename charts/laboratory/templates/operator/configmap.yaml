@@ -17,8 +17,6 @@ data:
   VPN_MEMORY: {{ .Values.vpn.resources.memory | quote }}
   VPN_STATS_INTERVAL: {{ .Values.vpn.statsInterval | quote }}
   NETWORK_POLICY_ENABLED: {{ .Values.operator.groupNetworkPolicy.enabled | quote }}
-  GATEWAY_EGRESS_DENY_CIDRS: {{ join "," .Values.inetGateway.egress.denyCIDRs | quote }}
-  GATEWAY_EGRESS_ALLOW_CIDRS: {{ join "," .Values.inetGateway.egress.allowCIDRs | quote }}
   GATEWAY_CPU: {{ .Values.inetGateway.resources.cpu | quote }}
   GATEWAY_MEMORY: {{ .Values.inetGateway.resources.memory | quote }}
   GATEWAY_IMAGE: "{{ .Values.inetGateway.image.repository }}:{{ .Values.inetGateway.image.tag | default .Chart.AppVersion }}"

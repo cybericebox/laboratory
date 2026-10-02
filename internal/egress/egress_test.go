@@ -1,36 +1,49 @@
 package egress
 
 import (
-	"reflect"
-	"strings"
+	"net/netip"
 	"testing"
 )
 
-func TestNormalizeCIDRs(t *testing.T) {
-	got, err := NormalizeCIDRs([]string{" 10.1.2.3/8 ", "", "203.0.113.0/24"})
-	if err != nil || !reflect.DeepEqual(got, []string{"10.0.0.0/8", "203.0.113.0/24"}) {
-		t.Fatalf("got %v err %v", got, err)
+func contains(list []string, ip string) bool {
+	a := netip.MustParseAddr(ip)
+	for _, c := range list {
+		if netip.MustParsePrefix(c).Contains(a) {
+			return true
+		}
 	}
-	for _, bad := range []string{"10.0.0.0", "nope", "fd00::/8", "10.0.0.0/33"} {
-		if _, err := NormalizeCIDRs([]string{bad}); err == nil {
-			t.Errorf("%q must be refused", bad)
+	return false
+}
+
+// The metadata service, loopback and every private range are denied; public addresses are not.
+func TestDeniedAndAllowed(t *testing.T) {
+	for _, ip := range []string{"169.254.169.254", "127.0.0.1", "10.1.2.3", "172.31.0.5", "192.168.1.1", "100.64.0.1", "0.0.0.1", "224.0.0.5", "255.255.255.255", "198.19.0.1"} {
+		if !contains(DenyV4, ip) {
+			t.Errorf("%s must be denied", ip)
+		}
+	}
+	for _, ip := range []string{"8.8.8.8", "1.1.1.1", "93.184.216.34", "172.32.0.1", "100.128.0.1", "192.0.2.1"} {
+		if contains(DenyV4, ip) {
+			t.Errorf("%s is public and must be allowed", ip)
+		}
+	}
+	for _, ip := range []string{"::1", "fe80::1", "fd00::1", "fc00::1", "ff02::1", "::ffff:10.0.0.1", "64:ff9b::a00:1"} {
+		if !contains(DenyV6, ip) {
+			t.Errorf("%s must be denied", ip)
+		}
+	}
+	for _, ip := range []string{"2606:4700:4700::1111", "2001:4860:4860::8888"} {
+		if contains(DenyV6, ip) {
+			t.Errorf("%s is public and must be allowed", ip)
 		}
 	}
 }
 
-// The default list keeps the metadata service, the private ranges and CGNAT out of reach and leaves the public internet.
-func TestDefaultDenyCIDRs(t *testing.T) {
-	list, err := NormalizeCIDRs(strings.Split(DefaultDenyCIDRs, ","))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"169.254.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "127.0.0.0/8"} {
-		found := false
-		for _, c := range list {
-			found = found || c == want
-		}
-		if !found {
-			t.Errorf("%s missing from the default deny list", want)
+func TestListsAreValidPrefixes(t *testing.T) {
+	for _, c := range append(append([]string{}, DenyV4...), DenyV6...) {
+		p, err := netip.ParsePrefix(c)
+		if err != nil || p.Masked() != p {
+			t.Errorf("%q is not a canonical prefix: %v", c, err)
 		}
 	}
 }
