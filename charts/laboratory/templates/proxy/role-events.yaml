@@ -1,0 +1,33 @@
+{{- if .Values.proxy.enabled }}
+{{- /*
+The error journal: the L7 proxy and the demux in its pod publish their aggregated errors as Events in the release namespace only,
+through a namespaced Role (not the ClusterRole above).
+*/ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: laboratory-proxy-events
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [ "" ]
+    resources: [ events ]
+    verbs: [ create, patch ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: laboratory-proxy-events
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: laboratory-proxy-events
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-proxy
+    namespace: laboratory-proxy
+{{- end }}

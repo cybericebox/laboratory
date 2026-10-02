@@ -28,8 +28,4 @@ rules:
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "labtrafficreports/status" ]
     verbs: [ "get", "patch", "update" ]
-  # The error journal: the proxy (and the demux in its pod) publish their aggregated errors as Events in the release namespace.
-  - apiGroups: [ "" ]
-    resources: [ "events" ]
-    verbs: [ "create", "patch" ]
 {{- end }}

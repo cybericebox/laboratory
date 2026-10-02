@@ -1,7 +1,7 @@
 {{- if .Values.agent.enabled }}
 {{- /*
 The error journal: the operator, the node-agents and the proxy publish their aggregated errors as Events in the release namespace
-(they already may create events; the proxy gets that right in its ClusterRole), and the agent reads them to put in MonitoringUpdate.errors.
+(they already may create events; the proxy gets that right in a Role, proxy/role-events.yaml), and the agent reads them to put in MonitoringUpdate.errors.
 The agent reads the events of the VPN and gateway pods in the group namespaces with the role it already has there. Read only, this namespace only.
 */ -}}
 apiVersion: rbac.authorization.k8s.io/v1

@@ -940,7 +940,7 @@ groups that changed, about every 30 s, as a Kubernetes Event (`reason: ErrorJour
 the API server keeps them for an hour). The operator, the node-agents and the proxy publish into the release namespace, the VPN and gateway pods into their group
 namespace. The agent reads the release namespace (a read-only Role `laboratory-agent-events`) and every group namespace (the events permission it already has there),
 turns the cumulative totals into deltas, and keeps a bounded ring. The permissions added for this: the agent's read-only Role on events in the release namespace, and
-`events` create/patch in the proxy's ClusterRole (the operator, node-agent, VPN and gateway already could). It is best effort: a cluster that refuses the events loses the
+`events` create/patch for the proxy in a namespaced Role `laboratory-proxy-events` of the release namespace, not in its ClusterRole (the operator, node-agent, VPN and gateway already could). It is best effort: a cluster that refuses the events loses the
 journal, nothing else.
 
 **What never leaves.** Every message is redacted where it is written and again where it is read: private keys, JWTs, bearer tokens, credentials in URLs, values of

@@ -253,10 +253,10 @@ func TestZotDataDirectoryIsOwnedByAnInitContainer(t *testing.T) {
 	}
 }
 
-// The error journal needs no log access: the components write Events (the proxy gets that in its ClusterRole), the agent reads those
+// The error journal needs no log access: the components write Events (the proxy gets that in a Role of the release namespace), the agent reads those
 // of the release namespace with a read-only Role, and each component knows where to publish.
 func TestErrorJournalPermissionsAndWiring(t *testing.T) {
-	out, err := helmTemplate(t, append(agentSet, "-s", "templates/agent/role-events.yaml", "-s", "templates/proxy/clusterrole.yaml",
+	out, err := helmTemplate(t, append(agentSet, "-s", "templates/agent/role-events.yaml", "-s", "templates/proxy/role-events.yaml", "-s", "templates/proxy/clusterrole.yaml",
 		"-s", "templates/agent/deployment.yaml", "-s", "templates/proxy/deployment.yaml", "-s", "templates/node-agent/daemonset.yaml")...)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
@@ -269,9 +269,20 @@ func TestErrorJournalPermissionsAndWiring(t *testing.T) {
 			if d["kind"] == "Role" {
 				agentRole = d
 			}
+		case "laboratory-proxy-events":
+			if d["kind"] == "Role" {
+				proxyRole = d
+				if md["namespace"] != "laboratory" && md["namespace"] == nil {
+					t.Error("the proxy events Role is namespaced")
+				}
+			}
 		case "laboratory-proxy":
 			if d["kind"] == "ClusterRole" {
-				proxyRole = d
+				for _, r := range rulesOf(t, d) {
+					if has(r.Resources, "events") {
+						t.Errorf("the proxy ClusterRole must not grant events: %+v", r)
+					}
+				}
 			}
 		}
 	}
