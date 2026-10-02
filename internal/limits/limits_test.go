@@ -174,6 +174,8 @@ func TestDeviceQuantityRefusesZeroNegativeAndOverflow(t *testing.T) {
 		{"0", true, false}, {"0", false, false}, {"0m", true, false}, {"-1", true, false}, {"-1Gi", false, false},
 		{"18446744073709551", true, false}, {"1e30", true, false}, {"1e30", false, false}, {"9223372036854775807", false, false},
 		{"2Ti", false, false}, {"2000", true, false},
+		{"1e3", false, false}, {"1E3", true, false}, {"1e-3", true, false}, {"+1", true, false}, {" 1", true, false},
+		{"1" + strings.Repeat("0", 24), false, false}, {"", false, false}, {"1.5.2", true, false},
 		{"100m", true, true}, {"2", true, true}, {"256Mi", false, true}, {"1Ti", false, true}, {"1024", true, true},
 	} {
 		_, err := DeviceQuantity(c.in, c.cpu)
@@ -195,5 +197,36 @@ func TestCheckSpecRefusesZeroLimit(t *testing.T) {
 func TestAddSatDoesNotWrap(t *testing.T) {
 	if got := addSat(math.MaxInt64-1, 10); got != math.MaxInt64 {
 		t.Errorf("addSat = %d", got)
+	}
+}
+
+func TestCheckSpecRefusesEveryBadValueOfEveryField(t *testing.T) {
+	l := chartDefaults(t)
+	bad := []string{"0", "0m", "-1", "1e3", "1E3", "1e30", "99999999999999999999999999"}
+	for _, field := range []string{"cpuRequest", "cpuLimit", "memoryRequest", "memoryLimit"} {
+		for _, v := range bad {
+			// the other fields are valid, and a valid limit would hide a bad request in the old agent
+			r := &laboratoryv1alpha1.DeviceResources{CPULimit: "500m", CPURequest: "100m", MemoryLimit: "256Mi", MemoryRequest: "128Mi"}
+			switch field {
+			case "cpuRequest":
+				r.CPURequest = v
+			case "cpuLimit":
+				r.CPULimit = v
+			case "memoryRequest":
+				r.MemoryRequest = v
+			case "memoryLimit":
+				r.MemoryLimit = v
+			}
+			err := l.CheckSpec(&laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{dev("web", r)}})
+			if err == nil {
+				t.Errorf("%s %q must be refused", field, v)
+			} else if !strings.Contains(err.Error(), `device "web"`) || !strings.Contains(err.Error(), field) {
+				t.Errorf("%s %q: the message %q must name the device and the field", field, v, err)
+			}
+		}
+	}
+	ok := &laboratoryv1alpha1.DeviceResources{CPULimit: "500m", CPURequest: "100m", MemoryLimit: "256Mi", MemoryRequest: "128Mi"}
+	if err := l.CheckSpec(&laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{dev("web", ok)}}); err != nil {
+		t.Fatalf("valid values refused: %v", err)
 	}
 }

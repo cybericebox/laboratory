@@ -6,6 +6,7 @@ package limits
 import (
 	"fmt"
 	"math"
+	"regexp"
 
 	"k8s.io/apimachinery/pkg/api/resource"
 
@@ -97,10 +98,21 @@ var (
 	absoluteMemory = resource.MustParse("1Ti")
 )
 
+// maxQuantityLen and quantityShape are the CRD's maxLength and pattern for a device resource value: positive, no exponent.
+const maxQuantityLen = 24
+
+var quantityShape = regexp.MustCompile(`^([1-9][0-9]*(\.[0-9]+)?|0?\.[0-9]*[1-9][0-9]*)(m|k|[KMGTPE]i?)?$`)
+
 // DeviceQuantity parses a device cpu (millicores) or memory (bytes) value the way a tenant may write it: it must be
 // positive and within the absolute bound. A zero value would remove the pod limit, a negative or an overflowing one
 // would skew the sums. Quantities are compared as quantities, so an exponent that overflows int64 is refused, not wrapped.
 func DeviceQuantity(s string, cpu bool) (int64, error) {
+	if len(s) > maxQuantityLen {
+		return 0, fmt.Errorf("must be at most %d characters", maxQuantityLen)
+	}
+	if !quantityShape.MatchString(s) {
+		return 0, fmt.Errorf("must be a positive number with an optional suffix (m, k, M, G, T, P, E, Ki, Mi, Gi, Ti, Pi, Ei), no exponent")
+	}
 	q, err := resource.ParseQuantity(s)
 	if err != nil {
 		return 0, err
@@ -136,6 +148,18 @@ func (l Limits) DeviceResources(r *laboratoryv1alpha1.DeviceResources) (cpu, mem
 	if r == nil {
 		return cpu, mem, nil
 	}
+	// Every declared field is checked, also the one a value of higher priority would hide.
+	for _, f := range []struct {
+		name, val string
+		cpu       bool
+	}{{"cpuLimit", r.CPULimit, true}, {"cpuRequest", r.CPURequest, true}, {"memoryLimit", r.MemoryLimit, false}, {"memoryRequest", r.MemoryRequest, false}} {
+		if f.val == "" {
+			continue
+		}
+		if _, err := DeviceQuantity(f.val, f.cpu); err != nil {
+			return 0, 0, fmt.Errorf("%s %q: %w", f.name, f.val, err)
+		}
+	}
 	pick := func(name string, cpuRes bool, candidates ...string) (int64, bool, error) {
 		for _, c := range candidates {
 			if c == "" {
@@ -168,7 +192,11 @@ func (l Limits) SpecTotals(spec *laboratoryv1alpha1.LabSpec) (cpu, mem int64, co
 	for i := range spec.Devices {
 		d := &spec.Devices[i]
 		if d.Type != laboratoryv1alpha1.DeviceTypeContainer {
-			continue // a switch or a hub runs no pod of its own
+			// a switch or a hub runs no pod of its own, but a resource value it carries is still refused
+			if _, _, err := l.DeviceResources(d.Resources); err != nil {
+				return 0, 0, 0, fmt.Errorf("device %q: %w", d.Name, err)
+			}
+			continue
 		}
 		c, m, err := l.DeviceResources(d.Resources)
 		if err != nil {
