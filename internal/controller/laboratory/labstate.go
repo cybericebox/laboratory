@@ -26,6 +26,8 @@ type StatePolicy struct {
 	ExcludePaths    []string
 	WriteQuotaBytes int64
 	MaxFileBytes    int64
+	MaxEntries      int32
+	TenantQuota     int64
 	MaxLayers       int32
 }
 
@@ -95,7 +97,7 @@ func (r *LabReconciler) tenantOf(ctx context.Context, lab *laboratoryv1alpha1.La
 // stamped, so later changes of the platform switch never change an existing device. One lab
 // may mix both kinds.
 func (r *LabReconciler) deviceStateSpec(ten *laboratoryv1alpha1.Tenant, tmpl laboratoryv1alpha1.DeviceTemplate) *laboratoryv1alpha1.DeviceStateSpec {
-	pers := tenant.EffectivePersistence(ten, r.State.Enabled, r.State.WriteQuotaBytes, r.State.MaxFileBytes)
+	pers := tenant.EffectivePersistence(ten, r.State.Enabled, r.State.WriteQuotaBytes, r.State.MaxFileBytes, r.State.TenantQuota)
 	if !pers.Allowed || tmpl.Persistence == nil || !tmpl.Persistence.Enabled || tmpl.Type != laboratoryv1alpha1.DeviceTypeContainer {
 		return nil
 	}
@@ -105,12 +107,14 @@ func (r *LabReconciler) deviceStateSpec(ten *laboratoryv1alpha1.Tenant, tmpl lab
 		debounce = *p.Debounce
 	}
 	return &laboratoryv1alpha1.DeviceStateSpec{
-		Enabled:         true,
-		Debounce:        debounce,
-		ExcludePaths:    append([]string(nil), r.State.ExcludePaths...),
-		WriteQuotaBytes: pers.WriteQuota,
-		MaxFileBytes:    pers.MaxFileSize,
-		MaxLayers:       r.State.MaxLayers,
+		Enabled:          true,
+		Debounce:         debounce,
+		ExcludePaths:     append([]string(nil), r.State.ExcludePaths...),
+		WriteQuotaBytes:  pers.WriteQuota,
+		MaxFileBytes:     pers.MaxFileSize,
+		MaxEntries:       r.State.MaxEntries,
+		TenantQuotaBytes: pers.RegistryQuota,
+		MaxLayers:        r.State.MaxLayers,
 	}
 }
 

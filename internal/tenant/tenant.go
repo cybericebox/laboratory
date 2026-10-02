@@ -95,13 +95,19 @@ type Persistence struct {
 	Allowed bool
 	// WriteQuota and MaxFileSize are bytes; the platform's value is the default and the ceiling.
 	WriteQuota, MaxFileSize int64
+	// RegistryQuota is what all the tenant's snapshots may take together (bytes; 0 = no limit).
+	RegistryQuota int64
 }
 
 // EffectivePersistence combines the tenant's policy with the platform's: allowed only
 // when both allow it; each limit is the tenant's value capped by the platform's, or the
 // platform's when the tenant sets none (or a malformed one). A nil tenant gets the platform's policy.
-func EffectivePersistence(t *laboratoryv1alpha1.Tenant, platformEnabled bool, platformQuota, platformMaxFile int64) Persistence {
-	p := Persistence{Allowed: platformEnabled, WriteQuota: platformQuota, MaxFileSize: platformMaxFile}
+func EffectivePersistence(t *laboratoryv1alpha1.Tenant, platformEnabled bool, platformQuota, platformMaxFile int64, platformRegistryQuota ...int64) Persistence {
+	var registry int64
+	if len(platformRegistryQuota) > 0 {
+		registry = platformRegistryQuota[0]
+	}
+	p := Persistence{Allowed: platformEnabled, WriteQuota: platformQuota, MaxFileSize: platformMaxFile, RegistryQuota: registry}
 	if t == nil {
 		return p
 	}
@@ -114,6 +120,7 @@ func EffectivePersistence(t *laboratoryv1alpha1.Tenant, platformEnabled bool, pl
 	}
 	p.WriteQuota = capped(t.Spec.Persistence.WriteQuota, platformQuota)
 	p.MaxFileSize = capped(t.Spec.Persistence.MaxFileSize, platformMaxFile)
+	p.RegistryQuota = capped(t.Spec.Persistence.RegistryQuota, registry)
 	return p
 }
 

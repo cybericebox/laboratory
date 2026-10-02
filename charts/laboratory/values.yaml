@@ -533,6 +533,18 @@ devices:
     # the lab status warning names it). The write quota above is the total backstop,
     # applied after skipping.
     maxFileSize: 256Mi
+    # The byte quotas count only the bytes of regular files, so a device that makes millions of empty files costs nothing
+    # against them but a lot of memory and time to merge and unpack. maxEntries caps the entries (files, directories, links) of
+    # one snapshot layer and of a squashed chain; over it the last good snapshot is kept and a warning shows in the lab status.
+    # Character and block devices and named pipes are never kept, and an entry whose names and attributes pass 8 KiB is left out.
+    maxEntries: 100000
+    # The most the snapshots of ALL the devices of one tenant may take in the registry together (the sizes in their status).
+    # The registry volume is shared by every tenant and the image cache, so without it one tenant can fill it. A Tenant may be
+    # given less with spec.persistence.registryQuota. "0" = no limit.
+    tenantQuota: 10Gi
+    # Directories of one device's writable layer the node-agent watches with inotify (the kernel's watch limit is shared by
+    # everything on the node). Past it the layer is only polled (about every 30 s), so a change is noticed later.
+    maxWatchedDirs: 2000
     # How often the retention sweep of old snapshots runs (Go duration).
     retentionInterval: 10m
     # Snapshot layers kept on top of the base image before they are squashed into one.

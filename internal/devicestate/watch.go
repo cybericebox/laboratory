@@ -24,9 +24,12 @@ const DefaultPollInterval = 30 * time.Second
 // the kernel's inotify watch limit, and overlayfs, which does not always raise
 // events on the upper directory for changes made through the overlay mount.
 // The returned channel is closed when ctx ends.
-func Watch(ctx context.Context, root string, pol snapshot.Policy, poll time.Duration) (<-chan struct{}, error) {
+func Watch(ctx context.Context, root string, pol snapshot.Policy, poll time.Duration, maxDirs int) (<-chan struct{}, error) {
 	if poll <= 0 {
 		poll = DefaultPollInterval
+	}
+	if maxDirs <= 0 {
+		maxDirs = DefaultMaxWatchDirs
 	}
 	out := make(chan struct{}, 1)
 	signal := func() {
@@ -39,8 +42,9 @@ func Watch(ctx context.Context, root string, pol snapshot.Policy, poll time.Dura
 	last := Fingerprint(root, pol)
 
 	w, err := fsnotify.NewWatcher()
+	budget := &watchBudget{max: maxDirs}
 	if err == nil {
-		addTree(w, root, root, pol)
+		addTree(w, root, root, pol, budget)
 	}
 
 	go func() {
@@ -69,7 +73,7 @@ func Watch(ctx context.Context, root string, pol snapshot.Policy, poll time.Dura
 				}
 				if ev.Has(fsnotify.Create) {
 					if fi, err := os.Lstat(ev.Name); err == nil && fi.IsDir() {
-						addTree(w, root, ev.Name, pol)
+						addTree(w, root, ev.Name, pol, budget)
 					}
 				}
 				signal()
@@ -100,7 +104,25 @@ func containerPath(root, p string) string {
 	return snapshot.CleanPath(filepath.ToSlash(rel))
 }
 
-func addTree(w *fsnotify.Watcher, root, dir string, pol snapshot.Policy) {
+// DefaultMaxWatchDirs is how many directories of one layer are watched with inotify. A watch costs kernel memory and the
+// limit (fs.inotify.max_user_watches) is shared by everything on the node, so a device that makes a million directories
+// must not be able to use it all: past the cap the layer is only polled.
+const DefaultMaxWatchDirs = 2000
+
+// watchBudget counts the directories watched for one layer.
+type watchBudget struct {
+	max, used int
+}
+
+func (b *watchBudget) take() bool {
+	if b.used >= b.max {
+		return false
+	}
+	b.used++
+	return true
+}
+
+func addTree(w *fsnotify.Watcher, root, dir string, pol snapshot.Policy, budget *watchBudget) {
 	if w == nil {
 		return
 	}
@@ -113,6 +135,9 @@ func addTree(w *fsnotify.Watcher, root, dir string, pol snapshot.Policy) {
 		}
 		if pol.Excluded(containerPath(root, p)) {
 			return filepath.SkipDir
+		}
+		if !budget.take() {
+			return filepath.SkipAll // over the cap: the periodic scan covers the rest
 		}
 		_ = w.Add(p) // a failure (watch limit) is covered by the periodic scan
 		return nil

@@ -194,7 +194,7 @@ func Build(run v1.Image, newTar string, newBytes int64, pol Policy, workDir stri
 	if err != nil {
 		return nil, chain, err
 	}
-	st, err := MergeLayers(openers, f)
+	st, err := MergeLayers(openers, f, pol.MaxEntries)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}

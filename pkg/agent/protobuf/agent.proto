@@ -726,6 +726,11 @@ message StatePersistenceFeature {
   int64 max_file_size_bytes = 4;
   // Paths never snapshotted (cluster-wide, a topology cannot change them).
   repeated string excluded_paths = 5;
+  // The most the snapshots of ALL the tenant's devices may take in the registry together (the tenant's own limit capped by
+  // the cluster's); 0 = no limit.
+  int64 registry_quota_bytes = 6;
+  // The most entries (files, directories, links) one snapshot layer may hold.
+  int32 max_entries = 7;
 }
 
 // The platform image cache (PrewarmImages works only when it is enabled).

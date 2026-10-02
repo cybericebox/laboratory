@@ -118,13 +118,16 @@ func features(cfg *config.Config) (f grpcserver.Features, err error) {
 	if f.Limits, err = cfg.Limits.Parse(); err != nil {
 		return f, err
 	}
+	f.MaxEntries = cfg.State.MaxEntries
 	for _, c := range []struct {
 		env, val string
 		dst      *int64
-	}{{"AGENT_STATE_WRITE_QUOTA", cfg.State.WriteQuota, &f.WriteQuota}, {"AGENT_STATE_MAX_FILE_SIZE", cfg.State.MaxFileSize, &f.MaxFileSize}} {
+	}{{"AGENT_STATE_WRITE_QUOTA", cfg.State.WriteQuota, &f.WriteQuota}, {"AGENT_STATE_MAX_FILE_SIZE", cfg.State.MaxFileSize, &f.MaxFileSize},
+		{"AGENT_STATE_TENANT_QUOTA", cfg.State.TenantQuota, &f.TenantQuota}} {
 		q, err := resource.ParseQuantity(c.val)
-		if err != nil || q.Sign() <= 0 {
-			return f, fmt.Errorf("%s %q is not a positive quantity", c.env, c.val)
+		// the tenant quota may be 0: no limit
+		if err != nil || q.Sign() < 0 || (q.Sign() == 0 && c.dst != &f.TenantQuota) {
+			return f, fmt.Errorf("%s %q is not a valid quantity", c.env, c.val)
 		}
 		*c.dst = q.Value()
 	}

@@ -174,6 +174,11 @@ type StateConfig struct {
 	WriteQuota string `env:"STATE_WRITE_QUOTA" envDefault:"512Mi"`
 	// MaxFileSize: a regular file larger than this is left out of a snapshot (a Kubernetes quantity).
 	MaxFileSize string `env:"STATE_MAX_FILE_SIZE" envDefault:"256Mi"`
+	// MaxEntries caps the entries of one snapshot layer (the byte quota does not count empty files).
+	MaxEntries int `env:"STATE_MAX_ENTRIES" envDefault:"100000"`
+	// TenantQuota is what the snapshots of all of one tenant's devices may take in the registry together (a Kubernetes
+	// quantity; "0" = no limit); a tenant may be given less (Tenant.spec.persistence.registryQuota).
+	TenantQuota string `env:"STATE_TENANT_QUOTA" envDefault:"10Gi"`
 	// MaxLayers is the snapshot layer count after which the chain is squashed.
 	MaxLayers int32 `env:"STATE_MAX_LAYERS" envDefault:"10"`
 	// Retention is how long the snapshots of a deleted lab are kept.
@@ -187,6 +192,15 @@ func (c StateConfig) WriteQuotaBytes() (int64, error) {
 	q, err := resource.ParseQuantity(c.WriteQuota)
 	if err != nil {
 		return 0, fmt.Errorf("STATE_WRITE_QUOTA %q: %w", c.WriteQuota, err)
+	}
+	return q.Value(), nil
+}
+
+// TenantQuotaBytes parses TenantQuota.
+func (c StateConfig) TenantQuotaBytes() (int64, error) {
+	q, err := resource.ParseQuantity(c.TenantQuota)
+	if err != nil || q.Sign() < 0 {
+		return 0, fmt.Errorf("STATE_TENANT_QUOTA %q is not a non-negative quantity", c.TenantQuota)
 	}
 	return q.Value(), nil
 }
@@ -239,6 +253,12 @@ func LoadConfig() (*Config, error) {
 		}
 	} else {
 		cfg.DeviceEphemeralStorage = ""
+	}
+	if cfg.State.MaxEntries <= 0 {
+		return nil, fmt.Errorf("STATE_MAX_ENTRIES must be positive")
+	}
+	if _, err := cfg.State.TenantQuotaBytes(); err != nil {
+		return nil, err
 	}
 	if err := cfg.GroupPods.Validate(); err != nil {
 		return nil, err

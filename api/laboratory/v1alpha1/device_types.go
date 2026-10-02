@@ -92,6 +92,16 @@ type DeviceStateSpec struct {
 	// (the status warning names it). Zero is the platform default.
 	// +optional
 	MaxFileBytes int64 `json:"maxFileBytes,omitempty"`
+	// MaxEntries caps the entries (files, directories, links) of one snapshot layer and of a squashed chain: the byte quota
+	// counts only the bytes of regular files, so empty files need their own cap. Over it the last good snapshot is kept and a
+	// warning is reported. Zero is the platform default.
+	// +optional
+	MaxEntries int32 `json:"maxEntries,omitempty"`
+	// TenantQuotaBytes is the most the snapshots of ALL the devices of the device's tenant may take in the registry
+	// together (the sizes recorded in their status). A snapshot that would pass it is refused like one over the write quota.
+	// Zero means no limit.
+	// +optional
+	TenantQuotaBytes int64 `json:"tenantQuotaBytes,omitempty"`
 	// MaxLayers is the number of snapshot layers after which the chain is
 	// squashed into one.
 	// +optional

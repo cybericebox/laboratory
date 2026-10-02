@@ -33,6 +33,9 @@ type TenantPersistenceApplyConfiguration struct {
 	// MaxFileSize: a file larger than this is not snapshotted (a Kubernetes quantity);
 	// capped by the platform's value, which is also the default.
 	MaxFileSize *string `json:"maxFileSize,omitempty"`
+	// RegistryQuota is the most the snapshots of all the tenant's devices may take in the registry together (a Kubernetes
+	// quantity); capped by the platform's value, which is also the default.
+	RegistryQuota *string `json:"registryQuota,omitempty"`
 }
 
 // TenantPersistenceApplyConfiguration constructs a declarative configuration of the TenantPersistence type for use with
@@ -62,5 +65,13 @@ func (b *TenantPersistenceApplyConfiguration) WithWriteQuota(value string) *Tena
 // If called multiple times, the MaxFileSize field is set to the value of the last call.
 func (b *TenantPersistenceApplyConfiguration) WithMaxFileSize(value string) *TenantPersistenceApplyConfiguration {
 	b.MaxFileSize = &value
+	return b
+}
+
+// WithRegistryQuota sets the RegistryQuota field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the RegistryQuota field is set to the value of the last call.
+func (b *TenantPersistenceApplyConfiguration) WithRegistryQuota(value string) *TenantPersistenceApplyConfiguration {
+	b.RegistryQuota = &value
 	return b
 }

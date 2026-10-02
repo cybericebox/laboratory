@@ -3,6 +3,7 @@ package snapshot
 import (
 	"archive/tar"
 	"bytes"
+	"errors"
 	"io"
 	"reflect"
 	"sort"
@@ -325,5 +326,93 @@ func TestSkippedWarningNamesAtMostTenFiles(t *testing.T) {
 func TestPolicyMaxFileSizeDefault(t *testing.T) {
 	if p := NewPolicy(0, nil, 0, 0); p.MaxFileSize != DefaultMaxFileSize || p.WithMaxFileSize(0).MaxFileSize != DefaultMaxFileSize || p.WithMaxFileSize(7).MaxFileSize != 7 {
 		t.Fatalf("%+v", p)
+	}
+}
+
+func TestFilterLayerDropsDeviceNodesAndFifos(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, h := range []*tar.Header{
+		{Name: "ok.txt", Typeflag: tar.TypeReg, Size: 2, Mode: 0o644},
+		{Name: "dev-char", Typeflag: tar.TypeChar, Devmajor: 1, Devminor: 3},
+		{Name: "dev-block", Typeflag: tar.TypeBlock, Devmajor: 8},
+		{Name: "pipe", Typeflag: tar.TypeFifo},
+		{Name: "link", Typeflag: tar.TypeSymlink, Linkname: "ok.txt"},
+	} {
+		if err := tw.WriteHeader(h); err != nil {
+			t.Fatal(err)
+		}
+		if h.Size > 0 {
+			_, _ = tw.Write([]byte("hi"))
+		}
+	}
+	_ = tw.Close()
+	var out bytes.Buffer
+	st, err := FilterLayer(&buf, &out, NewPolicy(0, nil, 0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := names(t, out.Bytes()); !reflect.DeepEqual(got, []string{"ok.txt", "link"}) || st.Dropped != 3 {
+		t.Fatalf("kept %v, dropped %d: char, block and fifo entries are never kept", got, st.Dropped)
+	}
+}
+
+// A layer with too many entries is refused: the byte quota does not count empty files.
+func TestFilterLayerRefusesTooManyEntries(t *testing.T) {
+	var ents []ent
+	for i := 0; i < 11; i++ {
+		ents = append(ents, ent{name: "f" + strings.Repeat("x", i)})
+	}
+	pol := NewPolicy(0, nil, 0, 0).WithMaxEntries(10)
+	var out bytes.Buffer
+	if _, err := FilterLayer(bytes.NewReader(mkTar(t, ents...)), &out, pol); !errors.Is(err, ErrEntries) {
+		t.Fatalf("err = %v, want ErrEntries", err)
+	}
+	if _, err := FilterLayer(bytes.NewReader(mkTar(t, ents[:10]...)), &out, pol); err != nil {
+		t.Fatalf("exactly at the cap is fine: %v", err)
+	}
+	if NewPolicy(0, nil, 0, 0).MaxEntries != DefaultMaxEntries || NewPolicy(0, nil, 0, 0).WithMaxEntries(0).MaxEntries != DefaultMaxEntries {
+		t.Fatal("the default cap")
+	}
+}
+
+// An entry whose names and attributes are huge is left out, not stored.
+func TestFilterLayerDropsEntriesWithHugeHeaders(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	_ = tw.WriteHeader(&tar.Header{Name: "small", Typeflag: tar.TypeReg, Mode: 0o644})
+	_ = tw.WriteHeader(&tar.Header{Name: "big-xattr", Typeflag: tar.TypeReg, Mode: 0o644,
+		PAXRecords: map[string]string{"SCHILY.xattr.user.x": strings.Repeat("a", MaxEntryHeaderBytes+1)}})
+	_ = tw.Close()
+	var out bytes.Buffer
+	st, err := FilterLayer(&buf, &out, NewPolicy(0, nil, 0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := names(t, out.Bytes()); !reflect.DeepEqual(got, []string{"small"}) || st.Dropped != 1 {
+		t.Fatalf("kept %v dropped %d", got, st.Dropped)
+	}
+}
+
+func TestMergeLayersStopsAtTheEntryCap(t *testing.T) {
+	var ents []ent
+	for i := 0; i < 20; i++ {
+		ents = append(ents, ent{name: "g" + strings.Repeat("y", i)})
+	}
+	open := func(b []byte) Opener {
+		return func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(b)), nil }
+	}
+	var out bytes.Buffer
+	_, err := MergeLayers([]Opener{open(mkTar(t, ents...))}, &out, 10)
+	if !errors.Is(err, ErrEntries) {
+		t.Fatalf("err = %v, want ErrEntries", err)
+	}
+	out.Reset()
+	if _, err := MergeLayers([]Opener{open(mkTar(t, ents[:10]...))}, &out, 10); err != nil {
+		t.Fatalf("at the cap: %v", err)
+	}
+	out.Reset()
+	if _, err := MergeLayers([]Opener{open(mkTar(t, ents...))}, &out); err != nil {
+		t.Fatalf("no cap given: %v", err)
 	}
 }

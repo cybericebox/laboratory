@@ -267,6 +267,13 @@ spec:
                     items:
                       type: string
                     type: array
+                  maxEntries:
+                    description: |-
+                      MaxEntries caps the entries (files, directories, links) of one snapshot layer and of a squashed chain: the byte quota
+                      counts only the bytes of regular files, so empty files need their own cap. Over it the last good snapshot is kept and a
+                      warning is reported. Zero is the platform default.
+                    format: int32
+                    type: integer
                   maxFileBytes:
                     description: |-
                       MaxFileBytes: a regular file larger than this is left out of the snapshots
@@ -290,6 +297,13 @@ spec:
                       ResetToken: a new value discards the snapshots and starts the device from
                       its base image again. Set by the management agent (ResetDevice).
                     type: string
+                  tenantQuotaBytes:
+                    description: |-
+                      TenantQuotaBytes is the most the snapshots of ALL the devices of the device's tenant may take in the registry
+                      together (the sizes recorded in their status). A snapshot that would pass it is refused like one over the write quota.
+                      Zero means no limit.
+                    format: int64
+                    type: integer
                   writeQuotaBytes:
                     description: |-
                       WriteQuotaBytes is the write quota of this device: the most of the user's

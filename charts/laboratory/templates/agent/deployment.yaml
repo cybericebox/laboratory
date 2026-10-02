@@ -113,6 +113,10 @@ spec:
               value: {{ .Values.devices.statePersistence.writeQuota | quote }}
             - name: AGENT_STATE_MAX_FILE_SIZE
               value: {{ .Values.devices.statePersistence.maxFileSize | quote }}
+            - name: AGENT_STATE_TENANT_QUOTA
+              value: {{ .Values.devices.statePersistence.tenantQuota | quote }}
+            - name: AGENT_STATE_MAX_ENTRIES
+              value: {{ .Values.devices.statePersistence.maxEntries | quote }}
             - name: AGENT_SCHEDULER_ENABLED
               value: {{ .Values.scheduler.enabled | quote }}
             - name: AGENT_SCHEDULER_MAX_PODS

@@ -42,6 +42,9 @@ type Config struct {
 	ContainerdNamespace string `env:"CONTAINERD_NAMESPACE" envDefault:"k8s.io"`
 	// CgroupRoot is where the host's cgroup v2 tree is mounted in the pod.
 	CgroupRoot string `env:"CGROUP_ROOT" envDefault:"/host/sys/fs/cgroup"`
+	// StateMaxWatchDirs is how many directories of one device's writable layer are watched with inotify; past it the layer is
+	// only polled.
+	StateMaxWatchDirs int `env:"STATE_MAX_WATCH_DIRS" envDefault:"2000"`
 	// StateWorkDir holds the temporary layer files of a snapshot.
 	StateWorkDir string `env:"STATE_WORK_DIR" envDefault:"/var/cache/cybericebox/state"`
 }

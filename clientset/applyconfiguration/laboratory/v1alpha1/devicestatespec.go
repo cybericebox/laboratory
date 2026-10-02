@@ -46,6 +46,14 @@ type DeviceStateSpecApplyConfiguration struct {
 	// MaxFileBytes: a regular file larger than this is left out of the snapshots
 	// (the status warning names it). Zero is the platform default.
 	MaxFileBytes *int64 `json:"maxFileBytes,omitempty"`
+	// MaxEntries caps the entries (files, directories, links) of one snapshot layer and of a squashed chain: the byte quota
+	// counts only the bytes of regular files, so empty files need their own cap. Over it the last good snapshot is kept and a
+	// warning is reported. Zero is the platform default.
+	MaxEntries *int32 `json:"maxEntries,omitempty"`
+	// TenantQuotaBytes is the most the snapshots of ALL the devices of the device's tenant may take in the registry
+	// together (the sizes recorded in their status). A snapshot that would pass it is refused like one over the write quota.
+	// Zero means no limit.
+	TenantQuotaBytes *int64 `json:"tenantQuotaBytes,omitempty"`
 	// MaxLayers is the number of snapshot layers after which the chain is
 	// squashed into one.
 	MaxLayers *int32 `json:"maxLayers,omitempty"`
@@ -103,6 +111,22 @@ func (b *DeviceStateSpecApplyConfiguration) WithWriteQuotaBytes(value int64) *De
 // If called multiple times, the MaxFileBytes field is set to the value of the last call.
 func (b *DeviceStateSpecApplyConfiguration) WithMaxFileBytes(value int64) *DeviceStateSpecApplyConfiguration {
 	b.MaxFileBytes = &value
+	return b
+}
+
+// WithMaxEntries sets the MaxEntries field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the MaxEntries field is set to the value of the last call.
+func (b *DeviceStateSpecApplyConfiguration) WithMaxEntries(value int32) *DeviceStateSpecApplyConfiguration {
+	b.MaxEntries = &value
+	return b
+}
+
+// WithTenantQuotaBytes sets the TenantQuotaBytes field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the TenantQuotaBytes field is set to the value of the last call.
+func (b *DeviceStateSpecApplyConfiguration) WithTenantQuotaBytes(value int64) *DeviceStateSpecApplyConfiguration {
+	b.TenantQuotaBytes = &value
 	return b
 }
 

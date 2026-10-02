@@ -53,6 +53,8 @@ data:
   STATE_EXCLUDE_PATHS: {{ join "," .excludePaths | quote }}
   STATE_WRITE_QUOTA: {{ .writeQuota | quote }}
   STATE_MAX_FILE_SIZE: {{ .maxFileSize | quote }}
+  STATE_MAX_ENTRIES: {{ .maxEntries | quote }}
+  STATE_TENANT_QUOTA: {{ .tenantQuota | quote }}
   STATE_MAX_LAYERS: {{ .maxLayers | quote }}
   STATE_RETENTION: {{ .retention | quote }}
   STATE_RETENTION_INTERVAL: {{ .retentionInterval | quote }}

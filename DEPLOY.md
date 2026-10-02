@@ -884,6 +884,20 @@ token. Consequences:
 - **The token is burnt before the certificate is signed** (a conditional write: of any number of requests with the same unused token exactly one wins). If signing
   then fails, the token is spent and the admin issues a new one.
 
+### Device state under abuse
+
+A participant is root in the device and controls what its writable layer holds, so the snapshot engine bounds what a layer can cost:
+
+- **Entries.** The byte quotas count only the bytes of regular files, so `devices.statePersistence.maxEntries` (100000) caps the entries (files,
+  directories, links) of one snapshot layer and of a squashed chain (the merge keeps a map of every path in memory and stops at the cap). Over it the last good
+  snapshot is kept and the status warns, like the byte quota. An entry whose names and attributes pass 8 KiB is left out of the snapshot.
+- **No device nodes.** Character and block devices and named pipes are never kept in a snapshot.
+- **Watching.** The node-agent watches at most `devices.statePersistence.maxWatchedDirs` (2000) directories of one layer with inotify (the kernel's watch limit
+  is shared by everything on the node); past it the layer is only polled (about every 30 s), so a change is noticed later but nothing else on the node starves.
+- **The registry is shared.** `devices.statePersistence.tenantQuota` (10Gi, `"0"` = none) caps the snapshots of ALL one tenant's devices together (the sizes
+  recorded in their status), so one tenant cannot fill the volume for everyone; `Tenant.spec.persistence.registryQuota` gives a tenant less. A snapshot that
+  would pass it is refused like one over the write quota. The agent reports the tenant's `registry_quota_bytes` and `max_entries` in the features.
+
 ### Service pods and images
 
 The service pods of the laboratory are hardened without a setting:

@@ -118,6 +118,8 @@ func TestStatePersistenceRendersRegistryAndWiring(t *testing.T) {
 		"STATE_WRITE_QUOTA":         "512Mi",
 		"STATE_MAX_FILE_SIZE":       "256Mi",
 		"STATE_MAX_LAYERS":          "10",
+		"STATE_MAX_ENTRIES":         "100000",
+		"STATE_TENANT_QUOTA":        "10Gi",
 		"STATE_RETENTION":           "168h",
 	}
 	for k, v := range wantCfg {

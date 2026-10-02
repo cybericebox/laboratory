@@ -27,6 +27,8 @@ type Features struct {
 	ExcludePaths     []string
 	WriteQuota       int64
 	MaxFileSize      int64
+	TenantQuota      int64
+	MaxEntries       int
 	// CacheEnabled and CacheRegistries describe the image cache.
 	CacheEnabled    bool
 	CacheRegistries []string
@@ -81,15 +83,17 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 			return nil, err
 		}
 		f := h.features
-		p := tenant.EffectivePersistence(ten, f.StatePersistence, f.WriteQuota, f.MaxFileSize)
+		p := tenant.EffectivePersistence(ten, f.StatePersistence, f.WriteQuota, f.MaxFileSize, f.TenantQuota)
 		base = &protobuf.FeaturesResponse{
 			Tenant: name,
 			StatePersistence: &protobuf.StatePersistenceFeature{
-				Available:         p.Allowed,
-				DefaultDebounceMs: f.Debounce.Milliseconds(),
-				WriteQuotaBytes:   p.WriteQuota,
-				MaxFileSizeBytes:  p.MaxFileSize,
-				ExcludedPaths:     append([]string(nil), f.ExcludePaths...),
+				Available:          p.Allowed,
+				DefaultDebounceMs:  f.Debounce.Milliseconds(),
+				WriteQuotaBytes:    p.WriteQuota,
+				MaxFileSizeBytes:   p.MaxFileSize,
+				RegistryQuotaBytes: p.RegistryQuota,
+				MaxEntries:         int32(f.MaxEntries),
+				ExcludedPaths:      append([]string(nil), f.ExcludePaths...),
 			},
 			ImageCache:     &protobuf.ImageCacheFeature{Enabled: f.CacheEnabled, Registries: append([]string(nil), f.CacheRegistries...)},
 			Scheduler:      &protobuf.SchedulerFeature{Enabled: f.SchedulerEnabled, MaxPods: f.SchedulerMaxPods},

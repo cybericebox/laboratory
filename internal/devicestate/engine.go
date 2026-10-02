@@ -59,6 +59,9 @@ type Engine struct {
 	RegistryHost string
 	// WorkDir holds the temporary layer files of a snapshot.
 	WorkDir string
+	// MaxWatchDirs is how many directories of one writable layer are watched with inotify (the kernel's watch limit is shared
+	// by everything on the node); past it the layer is only polled. Zero means DefaultMaxWatchDirs.
+	MaxWatchDirs int
 	// Poll is the writable-layer scan interval (DefaultPollInterval when zero).
 	Poll time.Duration
 	// Resync is how often the pods are re-listed (5s when zero).
@@ -240,7 +243,7 @@ func (e *Engine) track(ctx context.Context, p PodInfo, c Container) *tracked {
 	e.tracked[p.ContainerID] = t
 	e.mu.Unlock()
 
-	changes, err := Watch(wctx, c.UpperDir, p.Policy, e.Poll)
+	changes, err := Watch(wctx, c.UpperDir, p.Policy, e.Poll, e.MaxWatchDirs)
 	if err != nil {
 		e.Log.Error(err, "watch writable layer", "upper", c.UpperDir)
 		cancel()
@@ -412,6 +415,12 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 	if cerr := f.Close(); ferr == nil {
 		ferr = cerr
 	}
+	if errors.Is(ferr, snapshot.ErrEntries) {
+		// Too many files: the last good snapshot stays; the next change is tried again (the layer only grows, so it will
+		// most likely be refused again, but the warning is cleared by a snapshot that fits).
+		t.warn(ctx, ferr.Error())
+		return nil
+	}
 	if ferr != nil {
 		return fmt.Errorf("filter layer: %w", ferr)
 	}
@@ -437,13 +446,25 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 		return fmt.Errorf("load image %s: %w", t.c.ImageRef, err)
 	}
 	img, chain, err := snapshot.Build(run, layerPath, stats.Bytes, pol, dir)
-	if errors.Is(err, snapshot.ErrQuota) {
+	if errors.Is(err, snapshot.ErrQuota) || errors.Is(err, snapshot.ErrEntries) {
 		t.lastDiff = digest // do not retry the same layer
 		t.warn(ctx, err.Error())
 		return nil
 	}
 	if err != nil {
 		return err
+	}
+	// The registry is shared by every tenant: all the snapshots of one tenant together stay under its quota.
+	if t.pod.TenantQuota > 0 {
+		others, qerr := e.Cluster.TenantBytes(ctx, t.pod.Tenant, t.pod.Device)
+		if qerr != nil {
+			return fmt.Errorf("tenant registry usage: %w", qerr)
+		}
+		if others+chain.Bytes() > t.pod.TenantQuota {
+			t.lastDiff = digest
+			t.warn(ctx, fmt.Sprintf("%v: the snapshots of the tenant would take %d bytes of the registry, the tenant's quota is %d", snapshot.ErrQuota, others+chain.Bytes(), t.pod.TenantQuota))
+			return nil
+		}
 	}
 	pushStart := e.now()
 	ref, _, err := e.Pusher.Push(ctx, t.pod.Repo, img, chain.Base, imagecache.Rewriter{Prefix: e.RegistryHost}.RepoOf(t.c.ImageRef))

@@ -4991,6 +4991,11 @@ type StatePersistenceFeature struct {
 	MaxFileSizeBytes int64 `protobuf:"varint,4,opt,name=max_file_size_bytes,json=maxFileSizeBytes,proto3" json:"max_file_size_bytes,omitempty"`
 	// Paths never snapshotted (cluster-wide, a topology cannot change them).
 	ExcludedPaths []string `protobuf:"bytes,5,rep,name=excluded_paths,json=excludedPaths,proto3" json:"excluded_paths,omitempty"`
+	// The most the snapshots of ALL the tenant's devices may take in the registry together (the tenant's own limit capped by
+	// the cluster's); 0 = no limit.
+	RegistryQuotaBytes int64 `protobuf:"varint,6,opt,name=registry_quota_bytes,json=registryQuotaBytes,proto3" json:"registry_quota_bytes,omitempty"`
+	// The most entries (files, directories, links) one snapshot layer may hold.
+	MaxEntries    int32 `protobuf:"varint,7,opt,name=max_entries,json=maxEntries,proto3" json:"max_entries,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5058,6 +5063,20 @@ func (x *StatePersistenceFeature) GetExcludedPaths() []string {
 		return x.ExcludedPaths
 	}
 	return nil
+}
+
+func (x *StatePersistenceFeature) GetRegistryQuotaBytes() int64 {
+	if x != nil {
+		return x.RegistryQuotaBytes
+	}
+	return 0
+}
+
+func (x *StatePersistenceFeature) GetMaxEntries() int32 {
+	if x != nil {
+		return x.MaxEntries
+	}
+	return 0
 }
 
 // The platform image cache (PrewarmImages works only when it is enabled).
@@ -6480,13 +6499,16 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\fProxyFeature\x12>\n" +
 	"\x1caccess_token_max_ttl_seconds\x18\x01 \x01(\x03R\x18accessTokenMaxTtlSeconds\x127\n" +
 	"\x18session_idle_ttl_seconds\x18\x03 \x01(\x03R\x15sessionIdleTtlSeconds\x125\n" +
-	"\x17session_max_ttl_seconds\x18\x02 \x01(\x03R\x14sessionMaxTtlSeconds\"\xe9\x01\n" +
+	"\x17session_max_ttl_seconds\x18\x02 \x01(\x03R\x14sessionMaxTtlSeconds\"\xbc\x02\n" +
 	"\x17StatePersistenceFeature\x12\x1c\n" +
 	"\tavailable\x18\x01 \x01(\bR\tavailable\x12.\n" +
 	"\x13default_debounce_ms\x18\x02 \x01(\x03R\x11defaultDebounceMs\x12*\n" +
 	"\x11write_quota_bytes\x18\x03 \x01(\x03R\x0fwriteQuotaBytes\x12-\n" +
 	"\x13max_file_size_bytes\x18\x04 \x01(\x03R\x10maxFileSizeBytes\x12%\n" +
-	"\x0eexcluded_paths\x18\x05 \x03(\tR\rexcludedPaths\"M\n" +
+	"\x0eexcluded_paths\x18\x05 \x03(\tR\rexcludedPaths\x120\n" +
+	"\x14registry_quota_bytes\x18\x06 \x01(\x03R\x12registryQuotaBytes\x12\x1f\n" +
+	"\vmax_entries\x18\a \x01(\x05R\n" +
+	"maxEntries\"M\n" +
 	"\x11ImageCacheFeature\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1e\n" +
 	"\n" +

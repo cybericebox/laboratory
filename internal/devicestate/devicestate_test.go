@@ -2,6 +2,7 @@ package devicestate
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -62,6 +63,35 @@ func recv(ch <-chan struct{}, d time.Duration) bool {
 	}
 }
 
+// Past the cap on watched directories the layer is still noticed, by the periodic scan.
+func TestWatchFallsBackToPollingPastTheDirectoryCap(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 10; i++ {
+		if err := os.MkdirAll(filepath.Join(root, fmt.Sprintf("d%02d", i)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch, err := Watch(ctx, root, snapshot.NewPolicy(0, nil, 0, 0), 100*time.Millisecond, 2) // only 2 of the 10 are watched
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "d09", "late"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !recv(ch, 3*time.Second) {
+		t.Fatal("a change in an unwatched directory must be found by the periodic scan")
+	}
+}
+
+func TestWatchBudget(t *testing.T) {
+	b := &watchBudget{max: 2}
+	if !b.take() || !b.take() || b.take() {
+		t.Fatal("the budget allows exactly max watches")
+	}
+}
+
 func TestWatchSignalsChangesButNotExcludedOrExisting(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "existing"), []byte("x"), 0o600); err != nil {
@@ -73,7 +103,7 @@ func TestWatchSignalsChangesButNotExcludedOrExisting(t *testing.T) {
 	pol := snapshot.NewPolicy(0, nil, 0, 0)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ch, err := Watch(ctx, root, pol, 100*time.Millisecond)
+	ch, err := Watch(ctx, root, pol, 100*time.Millisecond, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -38,6 +38,10 @@ type PodInfo struct {
 	ExitDone bool
 	Policy   snapshot.Policy
 	Repo     string
+	// Tenant is the tenant the device belongs to (names.DefaultTenant when the device carries no tenant label);
+	// TenantQuota is the most all of that tenant's snapshots may take in the registry together (0 = no limit).
+	Tenant      string
+	TenantQuota int64
 }
 
 // Container is the runtime view of a device container.
@@ -95,6 +99,9 @@ type Cluster interface {
 	Warn(ctx context.Context, p PodInfo, msg string) error
 	// MarkExit records that the exit snapshot of the pod is finished.
 	MarkExit(ctx context.Context, p PodInfo) error
+	// TenantBytes is what the snapshots of the tenant's devices take in the registry (the sizes recorded in their status),
+	// without the device `except`.
+	TenantBytes(ctx context.Context, tenant string, except types.NamespacedName) (int64, error)
 }
 
 // Pusher publishes snapshot images; *snapshot.Registry implements it.

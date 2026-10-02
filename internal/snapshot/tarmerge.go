@@ -52,8 +52,15 @@ func parentOf(p string) string {
 // whiteout and opaque markers that still have to hide lower layers are kept.
 // Markers are written first, so an unpacker that removes on a whiteout never
 // removes a file of the same layer.
-func MergeLayers(layers []Opener, out io.Writer) (Stats, error) {
+//
+// maxEntries (optional, 0 = no limit) bounds the entries of the result: the merge keeps a map of every path in memory, so
+// it stops with ErrEntries as soon as the survivors pass the cap.
+func MergeLayers(layers []Opener, out io.Writer, maxEntries ...int) (Stats, error) {
 	var st Stats
+	limit := 0
+	if len(maxEntries) > 0 {
+		limit = maxEntries[0]
+	}
 	type keep map[int]bool
 
 	kept := make([]keep, len(layers))
@@ -104,6 +111,10 @@ func MergeLayers(layers []Opener, out io.Writer) (Stats, error) {
 					continue
 				}
 				emitted[logical] = true
+				if limit > 0 && len(emitted)+len(markers) > limit {
+					rc.Close()
+					return st, fmt.Errorf("%w: more than %d entries after squashing", ErrEntries, limit)
+				}
 				kept[i][idx] = true
 				if hdr.Typeflag != tar.TypeDir {
 					layerMarkers.replaced[logical] = true

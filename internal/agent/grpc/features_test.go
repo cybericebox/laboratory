@@ -18,7 +18,7 @@ import (
 
 var testFeatures = Features{
 	StatePersistence: true, Debounce: 5 * time.Second, ExcludePaths: []string{"/tmp", "/run"},
-	WriteQuota: 512 << 20, MaxFileSize: 256 << 20,
+	WriteQuota: 512 << 20, MaxFileSize: 256 << 20, TenantQuota: 10 << 30, MaxEntries: 100000,
 	CacheEnabled: true, CacheRegistries: []string{"docker.io", "ghcr.io"},
 	SchedulerEnabled: true, SchedulerMaxPods: 20,
 	LabsDomain: "labs.example.com", VPNEndpoint: "vpn.example.com:51820",
@@ -40,7 +40,7 @@ func TestFeaturesReportThePlatformChoices(t *testing.T) {
 	}
 	p := got.GetStatePersistence()
 	if got.GetTenant() != "a" || !p.GetAvailable() || p.GetDefaultDebounceMs() != 5000 || p.GetWriteQuotaBytes() != 512<<20 ||
-		p.GetMaxFileSizeBytes() != 256<<20 || len(p.GetExcludedPaths()) != 2 {
+		p.GetMaxFileSizeBytes() != 256<<20 || p.GetRegistryQuotaBytes() != 10<<30 || p.GetMaxEntries() != 100000 || len(p.GetExcludedPaths()) != 2 {
 		t.Fatalf("persistence: %+v", got)
 	}
 	if c := got.GetImageCache(); !c.GetEnabled() || len(c.GetRegistries()) != 2 {

@@ -58,6 +58,7 @@ func SetupDeviceState(mgr ctrl.Manager, cfg *Config) error {
 		Pusher:       reg,
 		RegistryHost: local,
 		WorkDir:      cfg.StateWorkDir,
+		MaxWatchDirs: cfg.StateMaxWatchDirs,
 		Log:          log,
 	}
 	return mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {

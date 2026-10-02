@@ -179,6 +179,8 @@ spec:
               value: {{ .Values.devices.statePersistence.containerdNamespace | quote }}
             - name: CGROUP_ROOT
               value: /host/sys/fs/cgroup
+            - name: STATE_MAX_WATCH_DIRS
+              value: {{ .Values.devices.statePersistence.maxWatchedDirs | quote }}
             - name: STATE_WORK_DIR
               value: /var/cache/cybericebox/state
             - name: STATE_REGISTRY_USER

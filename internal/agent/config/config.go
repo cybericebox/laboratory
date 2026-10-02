@@ -82,6 +82,9 @@ type StateConfig struct {
 	// WriteQuota and MaxFileSize are Kubernetes quantities.
 	WriteQuota  string `env:"AGENT_STATE_WRITE_QUOTA" envDefault:"512Mi"`
 	MaxFileSize string `env:"AGENT_STATE_MAX_FILE_SIZE" envDefault:"256Mi"`
+	// TenantQuota is what all of one tenant's snapshots may take in the registry together; MaxEntries caps one layer.
+	TenantQuota string `env:"AGENT_STATE_TENANT_QUOTA" envDefault:"10Gi"`
+	MaxEntries  int    `env:"AGENT_STATE_MAX_ENTRIES" envDefault:"100000"`
 }
 
 // SchedulerConfig mirrors the operator's scheduler switch and width.

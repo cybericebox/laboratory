@@ -88,6 +88,16 @@ func FilterLayer(in io.Reader, out io.Writer, pol Policy) (Stats, error) {
 			st.Dropped++
 			continue
 		}
+		// Device nodes and named pipes are never kept: a snapshot restored on a node must not create them (the device cgroup
+		// would stop a device node working, but nothing in a snapshot has a reason to carry one).
+		if hdr.Typeflag == tar.TypeChar || hdr.Typeflag == tar.TypeBlock || hdr.Typeflag == tar.TypeFifo {
+			st.Dropped++
+			continue
+		}
+		if headerBytes(hdr) > MaxEntryHeaderBytes {
+			st.Dropped++
+			continue
+		}
 		if pol.MaxFileSize > 0 && hdr.Typeflag == tar.TypeReg && hdr.Size > pol.MaxFileSize {
 			st.skip(logical, hdr.Size)
 			skipped[logical] = true
@@ -96,6 +106,9 @@ func FilterLayer(in io.Reader, out io.Writer, pol Policy) (Stats, error) {
 		if hdr.Typeflag == tar.TypeLink && skipped[CleanPath(hdr.Linkname)] {
 			st.Dropped++ // a hard link to a skipped file would dangle
 			continue
+		}
+		if pol.MaxEntries > 0 && st.Entries >= pol.MaxEntries {
+			return st, fmt.Errorf("%w: more than %d entries", ErrEntries, pol.MaxEntries)
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
 			return st, err
@@ -110,6 +123,18 @@ func FilterLayer(in io.Reader, out io.Writer, pol Policy) (Stats, error) {
 		st.Entries++
 	}
 	return st, tw.Close()
+}
+
+// headerBytes is what the names and extended attributes of an entry take.
+func headerBytes(h *tar.Header) int {
+	n := len(h.Name) + len(h.Linkname) + len(h.Uname) + len(h.Gname)
+	for k, v := range h.PAXRecords {
+		n += len(k) + len(v)
+	}
+	for k, v := range h.Xattrs { //nolint:staticcheck // the deprecated field still carries xattrs of older writers
+		n += len(k) + len(v)
+	}
+	return n
 }
 
 func (s *Stats) skip(path string, size int64) {

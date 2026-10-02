@@ -63,3 +63,27 @@ func TestEffectivePersistence(t *testing.T) {
 		t.Fatalf("malformed values fall back to the platform: %+v", p)
 	}
 }
+
+func TestEffectivePersistenceRegistryQuota(t *testing.T) {
+	const gi = int64(1 << 30)
+	if got := EffectivePersistence(nil, true, 1, 1, 10*gi); got.RegistryQuota != 10*gi {
+		t.Fatalf("a nil tenant gets the platform's: %d", got.RegistryQuota)
+	}
+	ten := &laboratoryv1alpha1.Tenant{}
+	ten.Spec.Persistence.Allowed = true
+	ten.Spec.Persistence.RegistryQuota = "2Gi"
+	if got := EffectivePersistence(ten, true, 1, 1, 10*gi); got.RegistryQuota != 2*gi {
+		t.Fatalf("a tenant may have less: %d", got.RegistryQuota)
+	}
+	ten.Spec.Persistence.RegistryQuota = "50Gi"
+	if got := EffectivePersistence(ten, true, 1, 1, 10*gi); got.RegistryQuota != 10*gi {
+		t.Fatalf("never more than the platform's: %d", got.RegistryQuota)
+	}
+	ten.Spec.Persistence.RegistryQuota = "junk"
+	if got := EffectivePersistence(ten, true, 1, 1, 10*gi); got.RegistryQuota != 10*gi {
+		t.Fatalf("a malformed value means the platform's: %d", got.RegistryQuota)
+	}
+	if got := EffectivePersistence(ten, true, 1, 1); got.RegistryQuota != 0 {
+		t.Fatalf("without a platform value there is no limit: %d", got.RegistryQuota)
+	}
+}

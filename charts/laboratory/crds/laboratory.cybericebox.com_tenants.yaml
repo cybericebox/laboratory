@@ -87,6 +87,11 @@ spec:
                       MaxFileSize: a file larger than this is not snapshotted (a Kubernetes quantity);
                       capped by the platform's value, which is also the default.
                     type: string
+                  registryQuota:
+                    description: |-
+                      RegistryQuota is the most the snapshots of all the tenant's devices may take in the registry together (a Kubernetes
+                      quantity); capped by the platform's value, which is also the default.
+                    type: string
                   writeQuota:
                     description: |-
                       WriteQuota is the most of a participant's writes kept per device (a Kubernetes

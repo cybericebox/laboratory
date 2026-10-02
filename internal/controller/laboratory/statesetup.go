@@ -19,8 +19,14 @@ func SetupState(c operator.StateConfig) (StatePolicy, *snapshot.Registry, error)
 	if err != nil {
 		return StatePolicy{}, nil, err
 	}
+	tenantQuota, err := c.TenantQuotaBytes()
+	if err != nil {
+		return StatePolicy{}, nil, err
+	}
 	pol := StatePolicy{
 		MaxFileBytes:    maxFile,
+		MaxEntries:      int32(c.MaxEntries),
+		TenantQuota:     tenantQuota,
 		Enabled:         c.Enabled,
 		Debounce:        c.Debounce,
 		ExcludePaths:    c.ExcludePaths,

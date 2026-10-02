@@ -21,6 +21,12 @@ const (
 	DefaultMaxLayers  = 10
 	// DefaultMaxFileSize: a regular file larger than this is left out of a snapshot.
 	DefaultMaxFileSize = int64(256 << 20)
+	// DefaultMaxEntries is the most entries (files, directories, links) one snapshot layer may hold. The byte quota counts
+	// only the bytes of regular files, so a million empty files cost nothing against it but a lot of memory and time to
+	// merge and unpack; this is the cap on them.
+	DefaultMaxEntries = 100000
+	// MaxEntryHeaderBytes is the most the names and extended attributes of one entry may take; an entry over it is left out.
+	MaxEntryHeaderBytes = 8192
 )
 
 // DefaultExcludePaths are never snapshotted unless the operator overrides the list.
@@ -47,6 +53,9 @@ type Policy struct {
 	// MaxFileSize: a regular file over it is skipped (like an excluded path, for that file only).
 	MaxFileSize int64
 	MaxLayers   int
+	// MaxEntries caps the entries of one snapshot layer (and of a squashed chain); over it the snapshot is refused (the last good
+	// one is kept and the status carries a warning), like the byte quota.
+	MaxEntries int
 }
 
 // NewPolicy fills unset fields with the defaults and normalises the exclude
@@ -60,6 +69,7 @@ func NewPolicy(debounce time.Duration, exclude []string, maxBytes int64, maxLaye
 		p.WriteQuota = DefaultWriteQuota
 	}
 	p.MaxFileSize = DefaultMaxFileSize
+	p.MaxEntries = DefaultMaxEntries
 	if p.MaxLayers <= 0 {
 		p.MaxLayers = DefaultMaxLayers
 	}
@@ -86,6 +96,14 @@ func (p Policy) WithMaxFileSize(n int64) Policy {
 	return p
 }
 
+// WithMaxEntries sets the entry cap (n <= 0 keeps the default).
+func (p Policy) WithMaxEntries(n int) Policy {
+	if n > 0 {
+		p.MaxEntries = n
+	}
+	return p
+}
+
 // CleanPath returns the absolute, cleaned form of a path inside the container.
 func CleanPath(p string) string {
 	return path.Clean("/" + p)
@@ -104,6 +122,9 @@ func (p Policy) Excluded(name string) bool {
 
 // ErrQuota is returned when a snapshot would exceed the device's size quota.
 var ErrQuota = errors.New("write quota exceeded")
+
+// ErrEntries is returned when a snapshot layer (or the squashed chain) holds more entries than the policy allows.
+var ErrEntries = errors.New("too many files in the snapshot")
 
 // CheckQuota reports ErrQuota (wrapped with the numbers) when the state already
 // kept plus the new layer exceeds max. A zero max means no limit.

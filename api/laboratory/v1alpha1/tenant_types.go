@@ -57,6 +57,10 @@ type TenantPersistence struct {
 	// capped by the platform's value, which is also the default.
 	// +optional
 	MaxFileSize string `json:"maxFileSize,omitempty"`
+	// RegistryQuota is the most the snapshots of all the tenant's devices may take in the registry together (a Kubernetes
+	// quantity); capped by the platform's value, which is also the default.
+	// +optional
+	RegistryQuota string `json:"registryQuota,omitempty"`
 }
 
 // TenantQuota caps the sum of the CPU and memory requests of the tenant's dispatched
