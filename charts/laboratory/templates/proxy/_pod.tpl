@@ -79,6 +79,18 @@ spec:
       value: {{ .Values.proxy.l7.maxHeaderBytes | quote }}
     - name: REPORT_INTERVAL
       value: {{ .Values.proxy.l7.reportInterval | quote }}
+    - name: MAX_CONNECTIONS
+      value: {{ .Values.proxy.l7.maxConnections | quote }}
+    - name: LIVE_PER_CLIENT
+      value: {{ .Values.proxy.l7.livePerClient | quote }}
+    - name: LIVE_PER_GROUP
+      value: {{ .Values.proxy.l7.livePerGroup | quote }}
+    - name: LIVE_TOTAL
+      value: {{ .Values.proxy.l7.liveTotal | quote }}
+    - name: AUTH_RATE
+      value: {{ .Values.proxy.l7.authRate | quote }}
+    - name: AUTH_BURST
+      value: {{ .Values.proxy.l7.authBurst | quote }}
     - name: POD_NAME
       valueFrom:
         fieldRef:
@@ -136,6 +148,20 @@ spec:
       value: {{ .Values.proxy.wg.limits.roamInterval | quote }}
     - name: DEMUX_MAX_SOURCES
       value: {{ .Values.proxy.wg.limits.maxSources | quote }}
+    - name: DEMUX_GLOBAL_HANDSHAKE_RATE
+      value: {{ .Values.proxy.wg.limits.globalHandshakeRate | quote }}
+    - name: DEMUX_GLOBAL_HANDSHAKE_BURST
+      value: {{ .Values.proxy.wg.limits.globalHandshakeBurst | quote }}
+    - name: DEMUX_SESSION_RATE
+      value: {{ .Values.proxy.wg.limits.sessionRate | quote }}
+    - name: DEMUX_SESSION_BURST
+      value: {{ .Values.proxy.wg.limits.sessionBurst | quote }}
+    - name: DEMUX_OWNER_RATE
+      value: {{ .Values.proxy.wg.limits.ownerRate | quote }}
+    - name: DEMUX_OWNER_BURST
+      value: {{ .Values.proxy.wg.limits.ownerBurst | quote }}
+    - name: DEMUX_READERS
+      value: {{ .Values.proxy.wg.limits.readers | quote }}
     {{- if .Values.proxy.kindMode }}
     - name: KUBERNETES_SERVICE_HOST
       value: "127.0.0.1"

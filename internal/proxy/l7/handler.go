@@ -51,6 +51,9 @@ type Handler struct {
 	// live holds the requests in flight so a lost access can cut them (see live.go); liveMax caps their lifetime.
 	live    *liveSet
 	liveMax time.Duration
+	// caps bound the requests in flight (see LiveCaps); authLimit limits the handoff path.
+	caps      LiveCaps
+	authLimit *bucketSet
 }
 
 // upstreamTransport skips certificate verification for in-cluster backends
@@ -117,6 +120,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == AuthPath {
+		if !h.authLimit.allow(peerKey(r)) {
+			w.Header().Set("Retry-After", "5")
+			http.Error(w, "too many requests", http.StatusTooManyRequests)
+			return
+		}
 		h.handoff(w, r, task)
 		return
 	}
@@ -179,9 +187,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	r = r.WithContext(ctx)
 	entry := &liveEntry{group: claims.GroupID, client: client, lab: lab, tenant: claims.Tenant, deadline: h.liveDeadline(claims.Abs), cancel: cancel}
-	h.live.add(entry)
+	if !h.live.tryAdd(entry, h.caps) {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "too many open requests", http.StatusTooManyRequests)
+		return
+	}
 	defer h.live.remove(entry)
-	w = &hijackRecorder{ResponseWriter: w, entry: entry}
+	w = &hijackRecorder{ResponseWriter: w, entry: entry, cookieName: h.cookieName}
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Transport = h.transport

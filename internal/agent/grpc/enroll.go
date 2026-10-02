@@ -18,6 +18,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -176,7 +177,7 @@ func (h *Handler) RotateAccessKey(ctx context.Context, in *protobuf.RotateAccess
 
 // RemoveAccessKey removes a key of the caller's tenant; the last one stays.
 func (h *Handler) RemoveAccessKey(ctx context.Context, in *protobuf.RemoveAccessKeyRequest) (*protobuf.Empty, error) {
-	secrets := h.k8s.CoreV1().Secrets(names.TenantsNamespace)
+	secrets := h.k8s.CoreV1().Secrets(names.AccessKeysNamespace)
 	name := names.AccessKeysSecret(tenantOf(ctx))
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		s, err := secrets.Get(ctx, name, metav1.GetOptions{})
@@ -278,13 +279,13 @@ func (h *Handler) now() time.Time {
 // putAccessKey adds a key to the tenant's access-keys Secret. The same id with the same key is
 // fine; the same id with another key is refused.
 func (h *Handler) putAccessKey(ctx context.Context, tenant, id string, keyPEM []byte) error {
-	secrets := h.k8s.CoreV1().Secrets(names.TenantsNamespace)
+	secrets := h.k8s.CoreV1().Secrets(names.AccessKeysNamespace)
 	name := names.AccessKeysSecret(tenant)
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		s, err := secrets.Get(ctx, name, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
 			_, err = secrets.Create(ctx, &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: names.TenantsNamespace, Labels: map[string]string{names.LabelPrefix + "tenant-name": tenant}},
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: names.AccessKeysNamespace, Labels: map[string]string{names.LabelPrefix + "tenant-name": tenant}},
 				Data:       map[string][]byte{id: keyPEM},
 			}, metav1.CreateOptions{})
 			return err
@@ -312,13 +313,13 @@ func (h *Handler) putAccessKey(ctx context.Context, tenant, id string, keyPEM []
 
 // replaceAccessKeys makes the tenant's access-keys Secret hold this one key and nothing else.
 func (h *Handler) replaceAccessKeys(ctx context.Context, tenant, id string, keyPEM []byte) error {
-	secrets := h.k8s.CoreV1().Secrets(names.TenantsNamespace)
+	secrets := h.k8s.CoreV1().Secrets(names.AccessKeysNamespace)
 	name := names.AccessKeysSecret(tenant)
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		s, err := secrets.Get(ctx, name, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
 			_, err = secrets.Create(ctx, &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: names.TenantsNamespace, Labels: map[string]string{names.LabelPrefix + "tenant-name": tenant}},
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: names.AccessKeysNamespace, Labels: map[string]string{names.LabelPrefix + "tenant-name": tenant}},
 				Data:       map[string][]byte{id: keyPEM},
 			}, metav1.CreateOptions{})
 			return err
@@ -501,4 +502,54 @@ func sortedKeyIDs(m map[string][]byte) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// MigrateAccessKeys copies the access keys of every tenant from the tenants namespace, where earlier versions kept them, to
+// AccessKeysNamespace, where the proxy reads them. It merges (a key already in the new Secret is kept, one only in the old is added)
+// and leaves the old Secrets alone (the operator deletes them with their tenant). Idempotent, so every replica may run it at start.
+func (h *Handler) MigrateAccessKeys(ctx context.Context) error {
+	old := h.k8s.CoreV1().Secrets(names.TenantsNamespace)
+	list, err := old.List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("list the tenants namespace: %w", err)
+	}
+	next := h.k8s.CoreV1().Secrets(names.AccessKeysNamespace)
+	for i := range list.Items {
+		src := &list.Items[i]
+		if !strings.HasPrefix(src.Name, "tenant-") || !strings.HasSuffix(src.Name, "-access-keys") {
+			continue
+		}
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			dst, err := next.Get(ctx, src.Name, metav1.GetOptions{})
+			if apierrors.IsNotFound(err) {
+				_, err = next.Create(ctx, &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{Name: src.Name, Namespace: names.AccessKeysNamespace, Labels: src.Labels},
+					Data:       src.Data,
+				}, metav1.CreateOptions{})
+				return err
+			}
+			if err != nil {
+				return err
+			}
+			changed := false
+			if dst.Data == nil {
+				dst.Data = map[string][]byte{}
+			}
+			for k, v := range src.Data {
+				if _, ok := dst.Data[k]; !ok {
+					dst.Data[k] = v
+					changed = true
+				}
+			}
+			if !changed {
+				return nil
+			}
+			_, err = next.Update(ctx, dst, metav1.UpdateOptions{})
+			return err
+		})
+		if err != nil {
+			return fmt.Errorf("move the access keys of %s: %w", src.Name, err)
+		}
+	}
+	return nil
 }

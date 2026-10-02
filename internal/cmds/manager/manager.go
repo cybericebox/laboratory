@@ -97,7 +97,7 @@ func Run() {
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	opts := zap.Options{
-		Development: true,
+		Development: false,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -295,6 +295,7 @@ func Run() {
 		LabNodeSelector:   labNodeSelector,
 		LabTolerations:    labTolerations,
 		AgentEnabled:      cfg.AgentEnabled,
+		ProxyEnabled:      cfg.ProxyEnabled,
 		AgentSA: types.NamespacedName{
 			Namespace: cfg.AgentServiceNamespace,
 			Name:      cfg.AgentServiceAccount,

@@ -19,6 +19,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
@@ -61,6 +62,8 @@ func Run() {
 	mgr, err := ctrl.NewManager(
 		ctrl.GetConfigOrDie(), ctrl.Options{
 			Scheme: scheme,
+			// No metrics endpoint: it would answer on the pod IP to the labs of the group (and name the API server).
+			Metrics: metricsserver.Options{BindAddress: "0"},
 			Cache: cache.Options{
 				DefaultNamespaces: map[string]cache.Config{cfg.Namespace: {}},
 			},

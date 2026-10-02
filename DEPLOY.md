@@ -1530,3 +1530,57 @@ one device writing, idling and writing again could fill it. What bounds it now (
 - **Upgrade.** Nothing to do by hand: the node-agent rolls and the new bounds apply to the next snapshot. Manifests of earlier versions have no annotations and are
   superseded like the others by the first new snapshot of their device. The registry's writer account can delete (it already could).
 - Not done: pushing deltas instead of the cumulative layer, and a shorter GC delay for untagged blobs (the active deletion above replaces both for the normal case).
+
+### What the proxy can read and write (R-10)
+
+- **The access keys have their own namespace**, `laboratory-access-keys` (the Secrets `tenant-<name>-access-keys`). The L7 proxy can read that namespace and
+  nothing in `laboratory-tenants`, which holds the enrollment tokens and the tenants' registry credentials: an internet-facing component that is compromised no
+  longer gets a tenant's client certificate or credentials. The agent writes the keys there (and only reads the tenants namespace now), the operator removes a tenant's,
+  and the admission policy lists the namespace among the platform ones. (A namespace of its own and not the proxy's: the agent and the operator would otherwise
+  need rights over the proxy's TLS key and session secret.)
+- **The proxy writes its traffic reports only in the group namespaces**, through a RoleBinding the operator makes in each (`laboratory-proxy-reports-binding`, role
+  `laboratory-proxy-reports`, which the operator may `bind`); the proxy has no such right cluster-wide any more. `PROXY_ENABLED` (from `proxy.enabled`) turns the
+  binding on for the operator.
+- **Upgrade (existing keys keep working).** At start every agent replica copies the access keys of earlier versions from the tenants namespace to the new one (merging, nothing
+  deleted), before it serves any call. Roll the agent first if you can: a proxy that rolls before an agent has done that finds no key for a moment and answers 401 to a handoff
+  link (the participant opens a new one); the keys are only public keys and the old Secrets stay until their tenant is deleted. The proxy's reports fail for the few seconds until the
+  operator has bound its role in each group (a best-effort statistic).
+- **The wg-demux container keeps the pod's ServiceAccount token**: it needs the API to watch the LabGroups for the groups' keys, and its token can no longer read any Secret.
+- Not done: restricting what the components watch to namespaces that carry the platform's label. controller-runtime and RBAC cannot select namespaces by label; the node-agent's
+  pod reconciler now ignores every pod that is not the platform's (device, VPN or gateway), and the informers still list cluster-wide read-only.
+
+### The node-agent and the shared switch (R-11, R-12, R-13, R-14)
+
+- **Only its own interfaces (R-11).** A veth the node-agent creates or deletes must be named like the platform names them (a letter and 12 hex digits); an annotation that names
+  `eth0` or any other host interface is ignored, an existing link is touched only if it is a veth, and only the platform's own pods (device, VPN, gateway) are wired. The
+  `AddPort` and `DeletePort` RPCs, unused and unauthenticated, are removed from the node-agent's API.
+- **Geneve only from the nodes (R-12).** The Geneve ingress flow is installed per node address (`tun_src`), refreshed every 15 s from the cluster's nodes' internal addresses; Geneve
+  from any other source matches no flow and is dropped by the table-0 default. Until the first refresh nothing is accepted from remote nodes (fail closed, a few seconds after the
+  node-agent starts). Still close UDP 6081 between nodes only in the cloud firewall or host firewall (infrastructure): a source address can be forged inside the node network.
+- **Patch ports and VNI reuse (R-13).** The names of the patch ports of a switch-to-switch link include the namespace, so two groups with a connection of the same name no longer share
+  ports; a pair under the old names is replaced when its connection is reconciled (the link flaps once). The VNIs of lab networks are handed out in turn, not lowest-free first
+  (`allocation.cybericebox.com/cursor` on the pool), so a released VNI is not given to another lab until the pool has been walked and no stale flow of the old one can meet it.
+  Not done: a desired-versus-actual flow collection with a generation cookie, and a finalizer per node (the cleanup of a connection still runs on the node that removes the shared finalizer first;
+  the stale-port purge and the VNI rotation cover what the report found plausible).
+- **Storm control and recovery (R-14).** `nodeAgent.portPolicingKbps` (500000) polices every device veth with OVS `ingress_policing_rate` (applied to running ones at the next resync); the
+  node-agent exits to be restarted when OVS (the database or OpenFlow channel) has not answered `ovsWatchFailures` (3) checks `ovsWatchInterval` (15 s) apart, since the channels do not reconnect;
+  a pod whose veth was recreated five times in ten minutes is left alone for a while (it can delete its own interface with NET_ADMIN and send the node-agent round in circles). A snapshot of
+  a running container that cannot be frozen is not taken (a diff of a running layer can race its writes), a layer is refused at the write quota by the apparent size in its headers before its
+  zeros are read (a sparse file), and the same layer is not diffed again for five minutes. Not done: a `sizeLimit` on the snapshot work directory (an emptyDir over its limit evicts the whole
+  node-agent), and shaping Geneve egress.
+- **Upgrade.** Nothing by hand; the node-agents roll one node at a time and each programs its bridge from scratch (fail-secure) as before.
+
+### The L7 proxy and the WireGuard demux (R-16, R-17)
+
+- **Demux (R-16).** Only the exact sizes of the fixed WireGuard messages are looked at (initiation 148, response 92, cookie reply 64, transport at least 32); all sources together
+  may start `globalHandshakeRate` (2000) handshakes per second, one session may send `sessionRate` (15000) packets per second and all the sessions of one address `ownerRate` (40000), so one
+  participant with a valid session cannot use up the shared demux; `readers` (4) goroutines read the socket; the backend's address is resolved when the group is learnt and refreshed in the
+  background, not looked up on the read loop; a source that finds the table of sources full evicts the one quiet longest instead of being refused (a venue behind one NAT no longer locks
+  out its neighbours), and `maxEntriesPerSource` is 128; the table entry of a deleted group is removed (it leaked, keyed by name against UID). A packet that panics the handler loses only
+  itself. Verify on the stand that the demux sees the real source address: `service-wg-lb` has `externalTrafficPolicy: Cluster`, which may SNAT, in which case all clients behind a node share
+  one source bucket.
+- **L7 proxy (R-17).** `maxConnections` (4000) connections at once, `livePerClient` (200), `livePerGroup` (1000) and `liveTotal` (8000) requests in flight (WebSockets included; over them a request
+  gets 429), the handoff path `/_auth` limited per peer address and in all, and the Go runtime keeps under 80% of the container memory limit (all binaries; `GOMEMLIMIT` set by hand wins).
+  A device cannot set the session cookie in a 1xx response either (L-5).
+- `:8080` metrics are off in the gateway pod (a lab could read them and learn the API server's address) and in the node-agent (host network); the operator no longer logs in development mode.
+- **Upgrade.** Nothing by hand. The values are under `proxy.wg.limits`, `proxy.l7` and `nodeAgent`.

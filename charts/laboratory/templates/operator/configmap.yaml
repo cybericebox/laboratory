@@ -28,6 +28,7 @@ data:
   OPERATOR_SERVICE_ACCOUNT: "laboratory-controller-manager"
   OPERATOR_NAMESPACE: {{ .Release.Namespace | quote }}
   AGENT_ENABLED: {{ .Values.agent.enabled | quote }}
+  PROXY_ENABLED: {{ .Values.proxy.enabled | quote }}
   AGENT_SERVICE_ACCOUNT: "laboratory-agent"
   AGENT_SERVICE_NAMESPACE: {{ .Values.agent.namespace | quote }}
   SUPPORT_EMAIL: {{ required "operator.supportEmail is required" .Values.operator.supportEmail | quote }}

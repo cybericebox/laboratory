@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -133,5 +134,36 @@ func TestComponentLabelIsReserved(t *testing.T) {
 	}
 	if got := names.UserLabels(map[string]string{names.LabelComponent: "vpn", "team": "a"}); len(got) != 1 {
 		t.Fatalf("user labels: %v", got)
+	}
+}
+
+// R-10: the proxy may write its traffic reports only in the group namespaces, through a RoleBinding the operator makes there.
+func TestProxyReportsBindingIsMadeInTheGroupNamespace(t *testing.T) {
+	ctx := context.Background()
+	s := systemScheme(t)
+	_ = rbacv1.AddToScheme(s)
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+	off := &LabGroupReconciler{Client: c}
+	if err := off.ensureProxyReportsBinding(ctx, "g"); err != nil {
+		t.Fatal(err)
+	}
+	var list rbacv1.RoleBindingList
+	_ = c.List(ctx, &list)
+	if len(list.Items) != 0 {
+		t.Fatal("no proxy, no binding")
+	}
+	on := &LabGroupReconciler{Client: c, ProxyEnabled: true}
+	for i := 0; i < 2; i++ { // idempotent
+		if err := on.ensureProxyReportsBinding(ctx, "g"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var rb rbacv1.RoleBinding
+	if err := c.Get(ctx, types.NamespacedName{Name: names.ProxyReportsBindingName, Namespace: "g"}, &rb); err != nil {
+		t.Fatal(err)
+	}
+	if rb.RoleRef.Name != names.RoleProxyReportsName || rb.RoleRef.Kind != "ClusterRole" ||
+		len(rb.Subjects) != 1 || rb.Subjects[0].Name != "laboratory-proxy" || rb.Subjects[0].Namespace != names.ProxyNamespace {
+		t.Fatalf("%+v", rb)
 	}
 }

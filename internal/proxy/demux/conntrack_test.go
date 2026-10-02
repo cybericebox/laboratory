@@ -153,14 +153,74 @@ func TestLimiterRefillsAndForgetsIdleSources(t *testing.T) {
 	if !l.allow("a") || !l.allow("a") || l.allow("a") {
 		t.Fatal("refill at the rate")
 	}
-	// the table of sources is bounded: a new source is limited while it is full
+	// the table of sources is bounded, and a new source is never refused for that: the one quiet longest is forgotten
 	l.allow("b")
-	if l.allow("c") {
-		t.Fatal("a third source does not fit")
+	now = now.Add(time.Second)
+	if !l.allow("c") {
+		t.Fatal("a new source must be admitted when the table is full")
+	}
+	if len(l.buckets) != 2 {
+		t.Fatalf("the table stays bounded: %d", len(l.buckets))
 	}
 	now = now.Add(time.Hour)
 	l.sweep()
 	if len(l.buckets) != 0 || !l.allow("c") {
 		t.Fatal("idle sources are forgotten")
+	}
+}
+
+// R-16: a session, and all the sessions of one client address, have a packet rate of their own.
+func TestSessionAndOwnerPacketRates(t *testing.T) {
+	now := time.Unix(1000, 0)
+	l := DefaultLimits()
+	l.SessionRate, l.SessionBurst = 10, 3
+	l.OwnerRate, l.OwnerBurst = 100, 100
+	c := NewConnTrackWithLimits(l)
+	c.now = func() time.Time { return now }
+	client := Socket{IP: net.ParseIP("203.0.113.5"), Port: 4000}
+	backend := Socket{IP: net.ParseIP("10.0.0.9"), Port: 51820}
+	if !c.AddPartial(1, client, backend) || !c.Complete(2, 1, client, backend) {
+		t.Fatal("setup")
+	}
+	ok := 0
+	for i := 0; i < 10; i++ {
+		if _, found := c.LookupForward(2, client); found {
+			ok++
+		}
+	}
+	if ok != 3 {
+		t.Fatalf("the session burst is 3, %d packets passed", ok)
+	}
+	now = now.Add(time.Second) // ten tokens come back, the bucket holds three
+	ok = 0
+	for i := 0; i < 10; i++ {
+		if _, found := c.LookupForward(2, client); found {
+			ok++
+		}
+	}
+	if ok != 3 {
+		t.Fatalf("after a second %d packets passed", ok)
+	}
+	// the owner's bucket is shared by its sessions: a second session of the same address passes only what is left of it
+	l2 := DefaultLimits()
+	l2.SessionRate, l2.SessionBurst = 0, 0
+	l2.OwnerRate, l2.OwnerBurst = 10, 4
+	c2 := NewConnTrackWithLimits(l2)
+	c2.now = func() time.Time { return now }
+	for _, ci := range []uint32{10, 20} {
+		if !c2.AddPartial(ci, client, backend) || !c2.Complete(ci+1, ci, client, backend) {
+			t.Fatal("setup 2")
+		}
+	}
+	passed := 0
+	for i := 0; i < 5; i++ {
+		for _, si := range []uint32{11, 21} {
+			if _, found := c2.LookupForward(si, client); found {
+				passed++
+			}
+		}
+	}
+	if passed != 4 {
+		t.Fatalf("the owner's burst is 4 across both sessions, %d passed", passed)
 	}
 }

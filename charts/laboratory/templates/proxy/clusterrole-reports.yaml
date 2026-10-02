@@ -1,0 +1,20 @@
+{{- if .Values.proxy.enabled }}
+{{- /*
+What the L7 proxy writes in a group namespace: its own request counters. Each replica publishes them as a LabTrafficReport of its own.
+The operator binds this role to the proxy's ServiceAccount in every LabGroup namespace (a RoleBinding there), so a proxy that is
+compromised can write reports in the groups' namespaces only, and nowhere else.
+*/ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: laboratory-proxy-reports
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "labtrafficreports" ]
+    verbs: [ "get", "create", "update" ]
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "labtrafficreports/status" ]
+    verbs: [ "get", "patch", "update" ]
+{{- end }}

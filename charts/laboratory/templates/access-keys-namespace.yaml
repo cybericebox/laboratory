@@ -1,0 +1,100 @@
+{{- /*
+The access keys namespace: the access public keys of the tenants, one Secret each (tenant-<name>-access-keys). The agent writes them, the
+proxy reads them to verify the handoff links, the operator removes a tenant's. It is a namespace of its own so that the internet-facing
+proxy can read it without being able to read the enrollment tokens and registry credentials of the tenants namespace.
+*/ -}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: laboratory-access-keys
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: laboratory-operator-access-keys
+  namespace: laboratory-access-keys
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [ "" ]
+    resources: [ "secrets" ]
+    verbs: [ "get", "delete" ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: laboratory-operator-access-keys
+  namespace: laboratory-access-keys
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: laboratory-operator-access-keys
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-controller-manager
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.agent.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: laboratory-agent-access-keys
+  namespace: laboratory-access-keys
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [ "" ]
+    resources: [ "secrets" ]
+    verbs: [ "get", "list", "create", "update", "patch" ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: laboratory-agent-access-keys
+  namespace: laboratory-access-keys
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: laboratory-agent-access-keys
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-agent
+    namespace: {{ .Values.agent.namespace }}
+{{- end }}
+{{- if .Values.proxy.enabled }}
+---
+# The proxy reads the keys of this namespace only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: laboratory-proxy-access-keys
+  namespace: laboratory-access-keys
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [ "" ]
+    resources: [ "secrets" ]
+    verbs: [ "get", "list", "watch" ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: laboratory-proxy-access-keys
+  namespace: laboratory-access-keys
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: laboratory-proxy-access-keys
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-proxy
+    namespace: laboratory-proxy
+{{- end }}

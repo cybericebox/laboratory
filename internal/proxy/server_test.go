@@ -125,12 +125,77 @@ func TestWGLimitsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.MaxEntries != 100000 || cfg.MaxEntriesPerSource != 64 || cfg.HandshakeRate != 20 || cfg.HandshakeBurst != 50 || cfg.MissRate != 50 || cfg.MissBurst != 100 ||
-		cfg.RoamInterval != 5*time.Second || cfg.MaxSources != 100000 {
+	if cfg.MaxEntries != 100000 || cfg.MaxEntriesPerSource != 128 || cfg.HandshakeRate != 20 || cfg.HandshakeBurst != 50 || cfg.MissRate != 50 || cfg.MissBurst != 100 ||
+		cfg.RoamInterval != 5*time.Second || cfg.MaxSources != 100000 || cfg.GlobalHandshakeRate != 2000 || cfg.SessionRate != 15000 || cfg.OwnerRate != 40000 || cfg.Readers != 4 {
 		t.Fatalf("%+v", cfg)
 	}
 	t.Setenv("DEMUX_MAX_ENTRIES", "0")
 	if _, err := LoadWGConfig(); err == nil {
 		t.Fatal("a zero cap must be refused")
+	}
+}
+
+// R-17: the server holds at most so many connections at once; one that closes frees its place.
+func TestLimitListenerCapsConnections(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := LimitListener(ln, 2)
+	defer l.Close()
+	accepted := make(chan net.Conn, 4)
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			accepted <- c
+		}
+	}()
+	dial := func() net.Conn {
+		c, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { c.Close() })
+		return c
+	}
+	for i := 0; i < 3; i++ {
+		dial()
+	}
+	var held []net.Conn
+	for i := 0; i < 2; i++ {
+		select {
+		case c := <-accepted:
+			held = append(held, c)
+		case <-time.After(2 * time.Second):
+			t.Fatal("two connections fit")
+		}
+	}
+	select {
+	case <-accepted:
+		t.Fatal("a third connection must wait")
+	case <-time.After(200 * time.Millisecond):
+	}
+	_ = held[0].Close() // frees a place
+	select {
+	case <-accepted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the waiting connection is accepted once one closes")
+	}
+}
+
+func TestL7LimitsDefaults(t *testing.T) {
+	t.Setenv("TLS_CERT_PATH", "/c")
+	t.Setenv("TLS_KEY_PATH", "/k")
+	t.Setenv("BASE_DOMAIN", "x.y")
+	t.Setenv("SESSION_SECRET", strings.Repeat("s", 40))
+	cfg, err := LoadL7Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxConnections != 4000 || cfg.LivePerClient != 200 || cfg.LivePerGroup != 1000 || cfg.LiveTotal != 8000 || cfg.AuthRate != 5 || cfg.AuthBurst != 20 {
+		t.Fatalf("%+v", cfg)
 	}
 }

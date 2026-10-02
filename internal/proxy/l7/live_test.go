@@ -165,3 +165,103 @@ func TestLiveDeadlineAndTenantChange(t *testing.T) {
 		t.Fatal("a finished request leaves the registry")
 	}
 }
+
+// R-17: one session cannot hold thousands of requests open: past the cap a new one is refused with 429, and a place frees when one ends.
+func TestLiveCapsRefuseRequestsPastTheCap(t *testing.T) {
+	release := make(chan struct{})
+	h, srv, _, cookie := liveFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release // a request that stays open
+		w.WriteHeader(http.StatusOK)
+	}))
+	h.WithLiveCaps(LiveCaps{PerClient: 2})
+	get := func() *http.Response {
+		req, _ := http.NewRequest("GET", srv.URL+"/slow", nil)
+		req.Host = "web-abc123.challenges.example.com"
+		req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	done := make(chan int, 4)
+	for i := 0; i < 2; i++ {
+		go func() { r := get(); r.Body.Close(); done <- r.StatusCode }()
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for len(h.live.snapshot()) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("the two requests are not in flight")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	third := get()
+	third.Body.Close()
+	if third.StatusCode != http.StatusTooManyRequests || third.Header.Get("Retry-After") == "" {
+		t.Fatalf("the third request in flight: %d", third.StatusCode)
+	}
+	close(release)
+	for i := 0; i < 2; i++ {
+		if code := <-done; code != 200 {
+			t.Fatalf("the open requests finish normally: %d", code)
+		}
+	}
+	if resp := get(); resp.StatusCode != 200 {
+		t.Fatalf("a place is free again: %d", resp.StatusCode)
+	}
+}
+
+func TestLiveCapsPerGroupAndTotal(t *testing.T) {
+	s := newLiveSet()
+	caps := LiveCaps{PerGroup: 2, Total: 3}
+	mk := func(group, client string) *liveEntry { return &liveEntry{group: group, client: client} }
+	if !s.tryAdd(mk("g1", "a"), caps) || !s.tryAdd(mk("g1", "b"), caps) {
+		t.Fatal("two in one group")
+	}
+	if s.tryAdd(mk("g1", "c"), caps) {
+		t.Fatal("the group cap")
+	}
+	if !s.tryAdd(mk("g2", "a"), caps) {
+		t.Fatal("another group is not held back by this one")
+	}
+	if s.tryAdd(mk("g3", "a"), caps) {
+		t.Fatal("the total cap")
+	}
+}
+
+// The handoff path is limited, so a flood of invalid or valid links cannot make the proxy verify signatures without end.
+func TestAuthPathIsRateLimited(t *testing.T) {
+	h, srv, _, _ := liveFixture(t, http.NotFoundHandler())
+	h.WithAuthRateLimit(1, 2) // per peer 2 in a burst; the shared bucket is 20 times that
+	hit := func() int {
+		req, _ := http.NewRequest("GET", srv.URL+AuthPath+"?token=junk", nil)
+		req.Host = "web-abc123.challenges.example.com"
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	limited := 0
+	for i := 0; i < 6; i++ {
+		if hit() == http.StatusTooManyRequests {
+			limited++
+		}
+	}
+	if limited < 3 {
+		t.Fatalf("only %d of 6 handoff attempts were limited", limited)
+	}
+}
+
+// L-5: a device cannot set the session cookie in an informational (1xx) response either.
+func TestInformationalResponseDoesNotCarryTheSessionCookie(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w := &hijackRecorder{ResponseWriter: rec, cookieName: "challenge"}
+	w.Header().Add("Set-Cookie", "challenge=evil; Domain=.example.com")
+	w.Header().Add("Set-Cookie", "theme=dark")
+	w.WriteHeader(103)
+	if got := rec.Header().Values("Set-Cookie"); len(got) != 1 || got[0] != "theme=dark" {
+		t.Fatalf("headers of the 1xx response: %v", got)
+	}
+}

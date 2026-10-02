@@ -23,7 +23,7 @@ func SecretKeys(r client.Reader) KeyLookup {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var s corev1.Secret
-		if err := r.Get(ctx, types.NamespacedName{Namespace: names.TenantsNamespace, Name: names.AccessKeysSecret(tenant)}, &s); err != nil {
+		if err := r.Get(ctx, types.NamespacedName{Namespace: names.AccessKeysNamespace, Name: names.AccessKeysSecret(tenant)}, &s); err != nil {
 			return nil, false
 		}
 		return ParseAccessKey(s.Data[keyID])

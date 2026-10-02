@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -235,9 +236,10 @@ func TestEngineQuotaKeepsLastSnapshotAndWarns(t *testing.T) {
 	if len(recs) != 0 || len(warns) != 1 || !strings.Contains(warns[0], "quota") {
 		t.Fatalf("records %v warns %v", recs, warns)
 	}
-	// The same refused layer is not retried or re-reported.
-	if err := tr.snapshot(context.Background(), true); err != nil {
-		t.Fatal(err)
+	// The same refused layer is not retried or re-reported: it is not even diffed again for a while.
+	var def *errDeferred
+	if err := tr.snapshot(context.Background(), true); !errors.As(err, &def) {
+		t.Fatalf("a layer over the quota is held back: %v", err)
 	}
 	if _, warns, _ = r.cl.snapshot(); len(warns) != 1 {
 		t.Fatalf("warning must not repeat: %v", warns)

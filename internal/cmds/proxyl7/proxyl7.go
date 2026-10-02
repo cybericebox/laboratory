@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/cybericebox/laboratory/internal/errorlog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -58,7 +59,7 @@ func Run() {
 			Metrics: metricsserver.Options{BindAddress: "0"},
 			// Secrets are read for the tenants' access keys only: watch that namespace, nothing else.
 			Cache: cache.Options{ByObject: map[client.Object]cache.ByObject{
-				&corev1.Secret{}: {Namespaces: map[string]cache.Config{names.TenantsNamespace: {}}},
+				&corev1.Secret{}: {Namespaces: map[string]cache.Config{names.AccessKeysNamespace: {}}},
 			}},
 		},
 	)
@@ -120,7 +121,7 @@ func Run() {
 	handler := l7.NewHandler(
 		l7.SecretKeys(mgr.GetClient()), []byte(cfg.SessionSecret), cfg.BaseDomain, cfg.CookieName,
 		l7.ServiceResolver(svcResolver),
-	).WithLimits(cfg.AccessTokenMaxTTL, cfg.SessionIdleTTL, cfg.SessionRenewBefore, cfg.SessionMaxTTL).WithAccounting(meter, attribute).WithAuthorizer(authorize).WithGroupTenant(l7.LabGroupTenant(mgr.GetClient())).WithLiveMaxLifetime(cfg.LiveMaxLifetime)
+	).WithLimits(cfg.AccessTokenMaxTTL, cfg.SessionIdleTTL, cfg.SessionRenewBefore, cfg.SessionMaxTTL).WithAccounting(meter, attribute).WithAuthorizer(authorize).WithGroupTenant(l7.LabGroupTenant(mgr.GetClient())).WithLiveMaxLifetime(cfg.LiveMaxLifetime).WithLiveCaps(l7.LiveCaps{PerClient: cfg.LivePerClient, PerGroup: cfg.LivePerGroup, Total: cfg.LiveTotal}).WithAuthRateLimit(cfg.AuthRate, cfg.AuthBurst)
 
 	reports := &l7.ReportWriter{
 		Reader: mgr.GetAPIReader(), Writer: mgr.GetClient(), Meter: meter, Instance: instance,
@@ -174,7 +175,11 @@ func Run() {
 						<-ctx.Done()
 						_ = httpsSrv.Shutdown(context.Background())
 					}()
-					if err := httpsSrv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					ln, err := net.Listen("tcp", httpsSrv.Addr)
+					if err != nil {
+						return err
+					}
+					if err := httpsSrv.ServeTLS(proxy.LimitListener(ln, cfg.MaxConnections), "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 						return err
 					}
 					return nil

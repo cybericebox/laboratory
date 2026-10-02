@@ -22,6 +22,8 @@ type ConnEntry struct {
 	owner string
 	// lastRoam is when the session last changed address.
 	lastRoam time.Time
+	// pkts is the token bucket of the packets this session may send per second (Limits.SessionRate).
+	pkts bucket
 }
 
 type ConnTrack struct {
@@ -30,12 +32,34 @@ type ConnTrack struct {
 	perSrc  map[string]int
 	limits  Limits
 	now     func() time.Time
+	// owners are the packet buckets of the client addresses (Limits.OwnerRate): all the sessions of one address share one.
+	owners map[string]*bucket
+}
+
+// take refills a bucket and takes one token from it; false when it is empty. rate 0 = unlimited.
+func (b *bucket) take(now time.Time, rate float64, burst int) bool {
+	if rate <= 0 {
+		return true
+	}
+	if b.at.IsZero() {
+		b.tokens, b.at = float64(burst), now
+	}
+	b.tokens += now.Sub(b.at).Seconds() * rate
+	if b.tokens > float64(burst) {
+		b.tokens = float64(burst)
+	}
+	b.at = now
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
 }
 
 func NewConnTrack() *ConnTrack { return NewConnTrackWithLimits(DefaultLimits()) }
 
 func NewConnTrackWithLimits(l Limits) *ConnTrack {
-	return &ConnTrack{entries: make(map[uint32]*ConnEntry), perSrc: map[string]int{}, limits: l, now: time.Now}
+	return &ConnTrack{entries: make(map[uint32]*ConnEntry), perSrc: map[string]int{}, owners: map[string]*bucket{}, limits: l, now: time.Now}
 }
 
 // Len is the number of entries.
@@ -201,6 +225,20 @@ func (c *ConnTrack) LookupForward(receiverIndex uint32, src Socket) (dst Socket,
 			peer.SenderSocket = src
 		}
 	}
+	// The demux is shared by everyone: a session, and all the sessions of one address, have a packet rate of their own.
+	if !e.pkts.take(now, c.limits.SessionRate, c.limits.SessionBurst) {
+		return Socket{}, false
+	}
+	if c.limits.OwnerRate > 0 {
+		ob := c.owners[e.owner]
+		if ob == nil {
+			ob = &bucket{}
+			c.owners[e.owner] = ob
+		}
+		if !ob.take(now, c.limits.OwnerRate, c.limits.OwnerBurst) {
+			return Socket{}, false
+		}
+	}
 	e.LastSeen = now
 	return e.SenderSocket, true
 }
@@ -266,6 +304,11 @@ func (c *ConnTrack) Cleanup() int {
 	}
 	for _, idx := range expired {
 		c.evictLocked(idx)
+	}
+	for o := range c.owners {
+		if c.perSrc[o] == 0 {
+			delete(c.owners, o)
+		}
 	}
 	return len(expired)
 }

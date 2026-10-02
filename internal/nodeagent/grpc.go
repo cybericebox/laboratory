@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/types/known/emptypb"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -33,15 +32,13 @@ type NodeAgentServer struct {
 	k8sMu sync.RWMutex
 	k8s   client.Client // set via SetK8sClient after manager is ready
 
-	mu       sync.RWMutex
-	podPorts map[string][]string // podUID → OVS port names
+	mu sync.RWMutex
 }
 
 func NewNodeAgentServer(ovs *OVSManager, flows *FlowManager) *NodeAgentServer {
 	return &NodeAgentServer{
-		ovs:      ovs,
-		flows:    flows,
-		podPorts: make(map[string][]string),
+		ovs:   ovs,
+		flows: flows,
 	}
 }
 
@@ -172,51 +169,6 @@ func (s *NodeAgentServer) SetupNetworks(
 	log.Info("default network: ACCESS port (delegate k8s CNI to named iface)", "iface", defaultIface)
 	// Access port: cni-gate delegates k8s CNI to this interface name + adds stub eth0.
 	return &nodev1.SetupNetworksResponse{DefaultNetwork: defaultIface}, nil
-}
-
-// AddPort creates a veth pair and moves the pod-side into the pod netns.
-// Reserved for external CNI-style callers; current lab-port wiring runs
-// inline in ConnectionReconciler.reconcileCreate.
-func (s *NodeAgentServer) AddPort(ctx context.Context, req *nodev1.AddPortRequest) (*nodev1.AddPortResponse, error) {
-	stableKey := portKey(req.Namespace, req.Connection, req.InterfaceName)
-	podSide := VethPeerName(stableKey)
-
-	if err := s.ovs.AddVethPort(stableKey); err != nil {
-		return nil, fmt.Errorf("add veth port %q: %w", stableKey, err)
-	}
-
-	if err := MoveToNetNS(podSide, req.NetnsPath); err != nil {
-		_ = s.ovs.DelVethPort(stableKey)
-		return nil, fmt.Errorf("move %q to netns: %w", podSide, err)
-	}
-
-	// Rename the pod-side inside the pod netns to the desired name.
-	if req.InterfaceName != podSide {
-		if err := RenameInNetNS(req.NetnsPath, podSide, req.InterfaceName); err != nil {
-			return nil, fmt.Errorf("rename %q → %q in netns: %w", podSide, req.InterfaceName, err)
-		}
-	}
-	if err := BringUpInNetNS(req.NetnsPath, req.InterfaceName); err != nil {
-		return nil, fmt.Errorf("bring up %q in netns: %w", req.InterfaceName, err)
-	}
-
-	s.mu.Lock()
-	s.podPorts[req.PodUid] = append(s.podPorts[req.PodUid], stableKey)
-	s.mu.Unlock()
-
-	return &nodev1.AddPortResponse{PortId: stableKey}, nil
-}
-
-// DeletePort cleans up OVS ports and cache entries.
-// Deletes all OVS ports tracked for the pod, then removes netns and port caches.
-func (s *NodeAgentServer) DeletePort(_ context.Context, req *nodev1.DeletePortRequest) (*emptypb.Empty, error) {
-	s.mu.Lock()
-	for _, p := range s.podPorts[req.PodUid] {
-		s.delVethWithFlows(p)
-	}
-	delete(s.podPorts, req.PodUid)
-	s.mu.Unlock()
-	return &emptypb.Empty{}, nil
 }
 
 // SetK8sClient provides the Kubernetes API client. Called from main after the manager is created.

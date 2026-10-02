@@ -52,10 +52,10 @@ spec:
     - name: groupNamespace
       expression: {{ printf $owned "namespaceObject" "namespaceObject" | quote }}
     - name: platformNamespace
-      expression: namespaceObject.metadata.name in [{{ .Release.Namespace | quote }}, "laboratory-tenants", "laboratory-images"]
+      expression: namespaceObject.metadata.name in [{{ .Release.Namespace | quote }}, "laboratory-tenants", "laboratory-images", "laboratory-access-keys"]
   validations:
     - expression: "variables.groupNamespace || (variables.platformNamespace && request.resource.resource != 'rolebindings')"
-      message: "the operator may write here only in the namespaces of its LabGroups (RoleBindings: only there), the release namespace, the tenants namespace and the images namespace"
+      message: "the operator may write here only in the namespaces of its LabGroups (RoleBindings: only there), the release namespace, the tenants, images and access keys namespaces"
       reason: Forbidden
 ---
 apiVersion: admissionregistration.k8s.io/v1

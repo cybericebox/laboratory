@@ -1,8 +1,11 @@
 package snapshot
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"testing"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -155,3 +158,17 @@ func mustDigest(t *testing.T, img v1.Image) v1.Hash {
 }
 
 func v1Hash(s string) (v1.Hash, error) { return v1.NewHash(s) }
+
+// A sparse file counts by its apparent size, which is in its header: the layer is refused before the zeros are read.
+func TestFilterLayerStopsAtTheQuotaByApparentSize(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	_ = tw.WriteHeader(&tar.Header{Name: "huge", Typeflag: tar.TypeReg, Size: 1 << 40, Mode: 0o644})
+	// no body follows: reading it would fail, and the filter must not try
+	pol := NewPolicy(0, nil, 1<<20, 0)
+	pol.MaxFileSize = 1 << 50
+	_, err := FilterLayer(&buf, io.Discard, pol)
+	if !errors.Is(err, ErrQuota) {
+		t.Fatalf("want ErrQuota, got %v", err)
+	}
+}

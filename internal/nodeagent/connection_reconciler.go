@@ -340,8 +340,18 @@ func (r *ConnectionReconciler) reconcileSwitchSwitch(
 	}
 
 	// Patch port names: each end lives in its switch's VNI domain.
-	patchA := patchPortName(conn.Name, ep0.endpoint.Device) // registered in vni0
-	patchB := patchPortName(conn.Name, ep1.endpoint.Device) // registered in vni1
+	patchA := patchPortName(conn.Namespace, conn.Name, ep0.endpoint.Device) // registered in vni0
+	patchB := patchPortName(conn.Namespace, conn.Name, ep1.endpoint.Device) // registered in vni1
+
+	// A pair under the names of earlier versions (no namespace in them) is replaced by this one: leaving it would flood each switch's
+	// frames through two links.
+	for _, dev := range []string{ep0.endpoint.Device, ep1.endpoint.Device} {
+		old := legacyPatchPortName(conn.Name, dev)
+		if exists, err := r.OVS.PortExists(old); err == nil && exists {
+			_ = r.Flows.DelT0Port(old)
+			_ = r.OVS.DelPort(old)
+		}
+	}
 
 	if err := r.OVS.AddPatchPair(patchA, patchB); err != nil {
 		return ctrl.Result{}, fmt.Errorf("add patch pair: %w", err)
@@ -451,7 +461,7 @@ func (r *ConnectionReconciler) buildSwitchVNIFlood(
 
 		if allOtherSwitches {
 			// Switch↔Switch: include patch port on our switch's side if it exists.
-			pName := patchPortName(c.Name, switchLogicalName)
+			pName := patchPortName(c.Namespace, c.Name, switchLogicalName)
 			if exists, err := r.OVS.PortExists(pName); err == nil && exists {
 				localPorts = append(localPorts, pName)
 			}
@@ -510,7 +520,7 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 		}
 
 		// Remove patch port for this side (switch↔switch case).
-		pName := patchPortName(conn.Name, ep.Device)
+		pName := patchPortName(conn.Namespace, conn.Name, ep.Device)
 		_ = r.Flows.DelT0Port(pName)
 		_ = r.OVS.DelPort(pName)
 

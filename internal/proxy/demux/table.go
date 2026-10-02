@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"net"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/blake2s"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -19,8 +21,10 @@ type Mac1Key [32]byte
 type TableEntry struct {
 	UID     string
 	Mac1Key Mac1Key
-	// Backend is the in-cluster Service address (host:port) for the VPN server of this group.
-	Backend string
+	// Backend is the in-cluster Service address (host:port) for the VPN server of this group; Resolved is it resolved, kept up to
+	// date by Table.RunResolver (the read loop never does a DNS lookup).
+	Backend  string
+	Resolved *net.UDPAddr
 }
 
 // Table is an in-memory mac1_key→UID/backend mapping, rebuilt from LabGroup watches.
@@ -57,16 +61,19 @@ func (t *Table) Update(uid, pubKey, backend string) error {
 	if err != nil {
 		return err
 	}
+	resolved, _ := net.ResolveUDPAddr("udp4", backend) // a failure leaves it nil: RunResolver tries again
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for i, e := range t.entries {
 		if e.UID == uid {
 			t.entries[i].Mac1Key = k
-			t.entries[i].Backend = backend
+			if t.entries[i].Backend != backend || resolved != nil {
+				t.entries[i].Backend, t.entries[i].Resolved = backend, resolved
+			}
 			return nil
 		}
 	}
-	t.entries = append(t.entries, TableEntry{UID: uid, Mac1Key: k, Backend: backend})
+	t.entries = append(t.entries, TableEntry{UID: uid, Mac1Key: k, Backend: backend, Resolved: resolved})
 	return nil
 }
 
@@ -86,25 +93,60 @@ func (t *Table) Delete(uid string) {
 // packet is the raw WireGuard type-1 packet (UDP payload).
 // mac1 occupies bytes [len-32 : len-16]; the message body for MAC is packet[:len-32].
 // Returns the matched group UID and its VPN Service backend (host:port).
-func (t *Table) FindByMac1(packet []byte) (uid, backend string, found bool) {
+func (t *Table) FindByMac1(packet []byte) (uid string, backend *net.UDPAddr, found bool) {
 	if len(packet) < 32 {
-		return "", "", false
+		return "", nil, false
 	}
 	msgBody := packet[:len(packet)-32]
 	mac1InPkt := packet[len(packet)-32 : len(packet)-16]
 
+	// The scan holds the read lock instead of copying the table: a copy per handshake is an allocation per group on the read loop.
 	t.mu.RLock()
-	entries := make([]TableEntry, len(t.entries))
-	copy(entries, t.entries)
-	t.mu.RUnlock()
-
-	for _, e := range entries {
+	defer t.mu.RUnlock()
+	for i := range t.entries {
+		e := &t.entries[i]
 		mac := computeMAC(e.Mac1Key[:], msgBody)
 		if bytesEqual(mac[:], mac1InPkt) {
-			return e.UID, e.Backend, true
+			return e.UID, e.Resolved, true
 		}
 	}
-	return "", "", false
+	return "", nil, false
+}
+
+// RunResolver keeps the resolved address of every backend fresh, off the read loop, until stop is closed. A backend that cannot be
+// resolved keeps its last good address.
+func (t *Table) RunResolver(stop <-chan struct{}, every time.Duration) {
+	if every <= 0 {
+		every = 30 * time.Second
+	}
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	for {
+		t.mu.RLock()
+		backends := make(map[string]string, len(t.entries))
+		for _, e := range t.entries {
+			backends[e.UID] = e.Backend
+		}
+		t.mu.RUnlock()
+		for uid, backend := range backends {
+			r, err := net.ResolveUDPAddr("udp4", backend)
+			if err != nil {
+				continue
+			}
+			t.mu.Lock()
+			for i := range t.entries {
+				if t.entries[i].UID == uid && t.entries[i].Backend == backend {
+					t.entries[i].Resolved = r
+				}
+			}
+			t.mu.Unlock()
+		}
+		select {
+		case <-stop:
+			return
+		case <-tick.C:
+		}
+	}
 }
 
 // computeMAC computes BLAKE2s-128 (WireGuard "MAC" function per the spec).
@@ -134,6 +176,29 @@ type LabGroupWatcher struct {
 	client.Client
 	Table          *Table
 	VPNServicePort int
+
+	mu     sync.Mutex
+	uidOfs map[string]string // LabGroup name -> UID of the entry it made: the table is keyed by UID, a deletion event carries the name
+}
+
+func (w *LabGroupWatcher) remember(name, uid string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.uidOfs == nil {
+		w.uidOfs = map[string]string{}
+	}
+	w.uidOfs[name] = uid
+}
+
+// forget removes the table entry the group made and the memory of it.
+func (w *LabGroupWatcher) forget(name string) {
+	w.mu.Lock()
+	uid := w.uidOfs[name]
+	delete(w.uidOfs, name)
+	w.mu.Unlock()
+	if uid != "" {
+		w.Table.Delete(uid)
+	}
 }
 
 func (w *LabGroupWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -142,12 +207,13 @@ func (w *LabGroupWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	var lg laboratoryv1alpha1.LabGroup
 	if err := w.Get(ctx, req.NamespacedName, &lg); err != nil {
 		if client.IgnoreNotFound(err) == nil {
-			w.Table.Delete(req.Name)
+			w.forget(req.Name)
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !lg.DeletionTimestamp.IsZero() {
 		w.Table.Delete(string(lg.UID))
+		w.forget(lg.Name)
 		return ctrl.Result{}, nil
 	}
 
@@ -155,6 +221,7 @@ func (w *LabGroupWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if pubKey == "" || !lg.Status.VPN.Registered {
 		// VPN not yet ready — remove stale entry if present.
 		w.Table.Delete(string(lg.UID))
+		w.forget(lg.Name)
 		return ctrl.Result{}, nil
 	}
 
@@ -164,6 +231,7 @@ func (w *LabGroupWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err := w.Table.Update(string(lg.UID), pubKey, backend); err != nil {
 		return ctrl.Result{}, err
 	}
+	w.remember(lg.Name, string(lg.UID))
 	return ctrl.Result{}, nil
 }
 

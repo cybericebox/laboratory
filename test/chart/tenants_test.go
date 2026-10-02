@@ -131,29 +131,42 @@ func TestEnrollmentWiring(t *testing.T) {
 	}
 }
 
+// R-10: the proxy can read the access keys and nothing of the tenants namespace (enrollment tokens, registry credentials).
 func TestTenantsNamespaceAndAccess(t *testing.T) {
-	out, err := helmTemplate(t, append(agentSet, "-s", "templates/tenants-namespace.yaml")...)
+	out, err := helmTemplate(t, append(agentSet, "-s", "templates/tenants-namespace.yaml", "-s", "templates/access-keys-namespace.yaml")...)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	all := docs(t, out)
-	if ofKind(all, "Namespace")["laboratory-tenants"] == nil {
-		t.Fatal("the tenants namespace")
+	if ofKind(all, "Namespace")["laboratory-tenants"] == nil || ofKind(all, "Namespace")["laboratory-access-keys"] == nil {
+		t.Fatal("the tenants and the access keys namespaces")
 	}
 	roles := ofKind(all, "Role")
-	agent, proxy := roles["laboratory-agent-tenants"], roles["laboratory-proxy-tenants"]
-	if agent == nil || proxy == nil {
-		t.Fatalf("roles: %v", roles)
-	}
 	verbs := func(r map[string]any) string {
 		v, _ := yaml.Marshal(r["rules"])
 		return string(v)
 	}
-	if strings.Contains(verbs(proxy), "create") || strings.Contains(verbs(proxy), "update") || !strings.Contains(verbs(proxy), "watch") {
-		t.Errorf("the proxy only reads: %s", verbs(proxy))
+	for name, r := range roles {
+		ns := r["metadata"].(map[string]any)["namespace"]
+		if ns == "laboratory-tenants" && strings.Contains(name, "proxy") {
+			t.Errorf("the proxy has a role in the tenants namespace: %s", name)
+		}
+	}
+	proxy, agent := roles["laboratory-proxy-access-keys"], roles["laboratory-agent-access-keys"]
+	if proxy == nil || agent == nil {
+		t.Fatalf("roles: %v", roles)
+	}
+	if strings.Contains(verbs(proxy), "create") || strings.Contains(verbs(proxy), "update") || strings.Contains(verbs(proxy), "delete") || !strings.Contains(verbs(proxy), "watch") {
+		t.Errorf("the proxy only reads the keys: %s", verbs(proxy))
 	}
 	if !strings.Contains(verbs(agent), "create") || strings.Contains(verbs(agent), "delete") {
 		t.Errorf("the agent writes keys, never deletes the Secret: %s", verbs(agent))
+	}
+	if tenants := roles["laboratory-agent-tenants"]; tenants == nil || strings.Contains(verbs(tenants), "create") || strings.Contains(verbs(tenants), "update") {
+		t.Errorf("the agent only reads the tenants namespace: %v", tenants)
+	}
+	if op := roles["laboratory-operator-access-keys"]; op == nil || !strings.Contains(verbs(op), "delete") || strings.Contains(verbs(op), "create") {
+		t.Errorf("the operator removes a tenant's keys: %v", op)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -25,6 +26,8 @@ type Demux struct {
 	conn       *net.UDPConn
 	handshakes *limiter // type 1, per source address
 	strangers  *limiter // packets that match no session or come from an unexpected source, per source address
+	global     *limiter // type 1, all sources together
+	readers    int
 }
 
 func New(listenAddr string, table *Table, ct *ConnTrack) (*Demux, error) {
@@ -44,16 +47,32 @@ func NewWithLimits(listenAddr string, table *Table, ct *ConnTrack, l Limits) (*D
 		table: table, conntrack: ct, conn: conn,
 		handshakes: newLimiter(l.HandshakeRate, l.HandshakeBurst, l.MaxSources),
 		strangers:  newLimiter(l.MissRate, l.MissBurst, l.MaxSources),
+		global:     newLimiter(l.GlobalHandshakeRate, l.GlobalHandshakeBurst, 1),
+		readers:    max(l.Readers, 1),
 	}, nil
 }
 
 // LocalAddr is the address the demux listens on.
 func (d *Demux) LocalAddr() net.Addr { return d.conn.LocalAddr() }
 
-// Run processes incoming WireGuard packets until stop is closed.
+// Run processes incoming WireGuard packets until stop is closed. Several goroutines read the socket (a UDP socket is safe to read
+// from many), so the cost of one packet does not hold the others up.
 func (d *Demux) Run(stop <-chan struct{}) {
 	go d.sweepLimiters(stop)
-	buf := make([]byte, 65535)
+	var wg sync.WaitGroup
+	for i := 0; i < d.readers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d.read(stop)
+		}()
+	}
+	wg.Wait()
+}
+
+func (d *Demux) read(stop <-chan struct{}) {
+	// A WireGuard datagram is at most 1500 bytes or so; anything the buffer cannot hold is not one.
+	buf := make([]byte, 2048)
 	for {
 		select {
 		case <-stop:
@@ -75,20 +94,43 @@ func (d *Demux) Run(stop <-chan struct{}) {
 	}
 }
 
+// The exact sizes of the fixed WireGuard messages: a handshake initiation is 148 bytes, a response 92, a cookie reply 64, and a
+// transport packet at least 32. Anything else is not WireGuard and is dropped before it costs anything.
+const (
+	sizeInit      = 148
+	sizeResponse  = 92
+	sizeCookie    = 64
+	sizeTransport = 32
+)
+
 // handle dispatches one datagram.
 func (d *Demux) handle(pkt []byte, src *net.UDPAddr) {
+	// Whatever a stranger sends must never stop the demux for everyone: a panic on one packet loses that packet only.
+	defer func() {
+		if r := recover(); r != nil {
+			ctrl.Log.WithName("demux").Info("dropped a packet that panicked the handler", "panic", fmt.Sprint(r))
+		}
+	}()
 	if len(pkt) < 1 {
 		return
 	}
 	switch pkt[0] {
 	case 1:
-		d.handleType1(pkt, src)
+		if len(pkt) == sizeInit {
+			d.handleType1(pkt, src)
+		}
 	case 2:
-		d.handleType2(pkt, src)
+		if len(pkt) == sizeResponse {
+			d.handleType2(pkt, src)
+		}
 	case 3:
-		d.handleType3(pkt, src)
+		if len(pkt) == sizeCookie {
+			d.handleType3(pkt, src)
+		}
 	case 4:
-		d.handleType4Userspace(pkt, src)
+		if len(pkt) >= sizeTransport {
+			d.handleType4Userspace(pkt, src)
+		}
 	}
 }
 
@@ -113,23 +155,20 @@ func (d *Demux) handleType1(pkt []byte, src *net.UDPAddr) {
 	if len(pkt) < 8 {
 		return
 	}
-	// A handshake init costs a scan of every group's mac1 key: the source pays for it from its own budget.
-	if !d.handshakes.allow(src.IP.String()) {
+	// A handshake init costs a scan of every group's mac1 key: the source pays for it from its own budget, and all sources together
+	// from a global one (spoofed sources each have a budget of their own).
+	if !d.handshakes.allow(src.IP.String()) || !d.global.allow("all") {
 		return
 	}
 	_, backend, found := d.table.FindByMac1(pkt)
 	if !found {
 		return
 	}
-	if backend == "" {
-		log.V(1).Info("backend empty, dropping handshake")
+	if backend == nil {
+		log.V(1).Info("backend not resolved yet, dropping handshake")
 		return
 	}
-	resolved, err := net.ResolveUDPAddr("udp4", backend)
-	if err != nil {
-		log.Error(err, "resolve backend failed", "backend", backend)
-		return
-	}
+	resolved := backend
 	ci := binary.LittleEndian.Uint32(pkt[4:8])
 
 	// Reserve Ci before forwarding — spec §4 says collision with another live session is fatal for this handshake;

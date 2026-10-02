@@ -86,7 +86,7 @@ func TestOperatorClusterRoleIsLeastPrivilege(t *testing.T) {
 			bound = r.ResourceNames
 		}
 	}
-	if len(bound) != 3 || !has(bound, "laboratory-operator-namespaced") || !has(bound, "laboratory-vpn-role") || !has(bound, "laboratory-agent-role") {
+	if len(bound) != 4 || !has(bound, "laboratory-proxy-reports") || !has(bound, "laboratory-operator-namespaced") || !has(bound, "laboratory-vpn-role") || !has(bound, "laboratory-agent-role") {
 		t.Errorf("bind is limited to the named roles: %v", bound)
 	}
 }

@@ -100,6 +100,11 @@ const (
 	RoleOperatorNamespacedName = "laboratory-operator-namespaced"
 	OperatorRoleBindingName    = "laboratory-operator-binding"
 
+	// RoleProxyReportsName is the ClusterRole with the one thing the L7 proxy writes in a LabGroup namespace (its LabTrafficReports);
+	// ProxyReportsBindingName is the RoleBinding that grants it there. The proxy has no such right cluster-wide.
+	RoleProxyReportsName    = "laboratory-proxy-reports"
+	ProxyReportsBindingName = "laboratory-proxy-reports-binding"
+
 	// AgentRoleBindingName is the RoleBinding created in each LabGroup namespace
 	// that grants the management-agent ServiceAccount access via RoleAgentName,
 	// gated by LabGroupReconciler.AgentEnabled.

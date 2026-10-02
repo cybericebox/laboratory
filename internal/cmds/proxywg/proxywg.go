@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -56,6 +57,9 @@ func Run() {
 		MaxEntries: cfg.MaxEntries, MaxEntriesPerSource: cfg.MaxEntriesPerSource,
 		HandshakeRate: cfg.HandshakeRate, HandshakeBurst: cfg.HandshakeBurst, MissRate: cfg.MissRate, MissBurst: cfg.MissBurst,
 		RoamInterval: cfg.RoamInterval, MaxSources: cfg.MaxSources,
+		GlobalHandshakeRate: cfg.GlobalHandshakeRate, GlobalHandshakeBurst: cfg.GlobalHandshakeBurst,
+		SessionRate: cfg.SessionRate, SessionBurst: cfg.SessionBurst, OwnerRate: cfg.OwnerRate, OwnerBurst: cfg.OwnerBurst,
+		Readers: cfg.Readers,
 	}
 	ct := demux.NewConnTrackWithLimits(limits)
 
@@ -83,6 +87,7 @@ func Run() {
 		close(stop)
 	}()
 	go ct.RunTTLCleanup(stop)
+	go table.RunResolver(stop, 30*time.Second)
 	go dmx.Run(stop)
 
 	log.Info("starting wg proxy", "udp", cfg.ListenAddr)

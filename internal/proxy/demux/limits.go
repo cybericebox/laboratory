@@ -22,8 +22,22 @@ type Limits struct {
 	MissBurst int
 	// RoamInterval is the least time between two address changes of one session.
 	RoamInterval time.Duration
-	// MaxSources bounds the memory of the per-source limiters; past it, a new source is limited until old ones expire.
+	// MaxSources bounds the memory of the per-source limiters; past it, the source that has been quiet longest is forgotten to
+	// make room (a new source is never refused for that).
 	MaxSources int
+	// GlobalHandshakeRate and GlobalHandshakeBurst limit handshake initiations of all sources together: each costs a scan of every
+	// group's key, so spoofed sources (each with a budget of its own) cannot add up to more than the demux can pay.
+	GlobalHandshakeRate  float64
+	GlobalHandshakeBurst int
+	// SessionRate and SessionBurst limit the transport packets of one session per second, and OwnerRate and OwnerBurst those of all
+	// the sessions of one client address: the demux is shared by everyone, and one participant with a valid session must not be able to
+	// use its CPU up. 0 = unlimited.
+	SessionRate  float64
+	SessionBurst int
+	OwnerRate    float64
+	OwnerBurst   int
+	// Readers is how many goroutines read the socket (1 when zero).
+	Readers int
 }
 
 // DefaultLimits mirror the chart (proxy.wg.limits).
@@ -68,7 +82,7 @@ func (l *limiter) allow(source string) bool {
 	b, ok := l.buckets[source]
 	if !ok {
 		if len(l.buckets) >= l.max {
-			return false
+			l.evictOldest()
 		}
 		b = &bucket{tokens: l.burst, at: now}
 		l.buckets[source] = b
@@ -83,6 +97,25 @@ func (l *limiter) allow(source string) bool {
 	}
 	b.tokens--
 	return true
+}
+
+// evictOldest forgets the source that has been quiet longest among a few that happen to come up first: a new source is never refused
+// because the table is full, which would let an attacker lock every new participant out by filling it. Called with l.mu held.
+func (l *limiter) evictOldest() {
+	var oldest string
+	var oldestAt time.Time
+	n := 0
+	for k, b := range l.buckets {
+		if oldest == "" || b.at.Before(oldestAt) {
+			oldest, oldestAt = k, b.at
+		}
+		if n++; n >= 16 {
+			break
+		}
+	}
+	if oldest != "" {
+		delete(l.buckets, oldest)
+	}
 }
 
 // sweep forgets the sources whose bucket is full again (idle), so the table does not grow with every address seen.

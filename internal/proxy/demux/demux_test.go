@@ -202,3 +202,49 @@ func TestOnlyNormalPacketsFlowAndTinyOnesAreIgnored(t *testing.T) {
 		t.Fatal("garbage must not be forwarded")
 	}
 }
+
+// R-16: only the exact sizes of the fixed WireGuard messages are looked at.
+func TestWrongSizedPacketsAreDropped(t *testing.T) {
+	r := newRig(t, DefaultLimits())
+	for _, size := range []int{147, 149, 200, 1400} {
+		p := initPacket(r.key, 1)
+		pkt := make([]byte, size)
+		copy(pkt, p)
+		r.toDemux(r.client, pkt)
+		if recv(r.backend, 300*time.Millisecond) != nil {
+			t.Fatalf("a %d-byte handshake init must not be forwarded", size)
+		}
+	}
+	// a correct init still is
+	r.toDemux(r.client, initPacket(r.key, 2))
+	if recv(r.backend, 2*time.Second) == nil {
+		t.Fatal("the real init must be forwarded")
+	}
+	// answers and cookie replies have fixed sizes too; a short transport packet is not one
+	r.toDemux(r.backend, typed(2, 9, 2, 91))
+	if recv(r.client, 300*time.Millisecond) != nil {
+		t.Fatal("a 91-byte answer must be dropped")
+	}
+	r.toDemux(r.client, typed(4, 9, 0, 31))
+	if recv(r.backend, 300*time.Millisecond) != nil {
+		t.Fatal("a 31-byte transport packet must be dropped")
+	}
+}
+
+// All sources together may start only so many handshakes: spoofed sources each have a budget of their own.
+func TestGlobalHandshakeBudget(t *testing.T) {
+	l := DefaultLimits()
+	l.GlobalHandshakeRate, l.GlobalHandshakeBurst = 0.001, 2
+	r := newRig(t, l)
+	got := 0
+	for i := 0; i < 6; i++ {
+		c := udp(t) // each from its own source port; the per-source budget is not what stops them
+		r.toDemux(c, initPacket(r.key, uint32(100+i)))
+		if recv(r.backend, 300*time.Millisecond) != nil {
+			got++
+		}
+	}
+	if got != 2 {
+		t.Fatalf("the global burst is 2, %d handshakes reached the backend", got)
+	}
+}

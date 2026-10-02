@@ -410,7 +410,7 @@ func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, sw
 }
 
 func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv1alpha1.Lab, resolvedInterfaces map[string][]laboratoryv1alpha1.InterfaceSpec) error {
-	vniAllocator := poolpkg.NewAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
+	vniAllocator := poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
 	codes := r.newCodeAllocator(lab)
 	wantLabels := userLabels(lab.Labels)
 	ten, err := r.tenantOf(ctx, lab)
@@ -520,7 +520,7 @@ func isSwitchDevice(name string, lab *laboratoryv1alpha1.Lab) bool {
 }
 
 func (r *LabReconciler) materializeConnections(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
-	vniAllocator := poolpkg.NewAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
+	vniAllocator := poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
 
 	for _, tmpl := range lab.Spec.Connections {
 		connName := connectionName(lab.Name, tmpl.Endpoints)
@@ -611,7 +611,7 @@ func (r *LabReconciler) pruneConnections(ctx context.Context, lab *laboratoryv1a
 	if err := r.List(ctx, &list, client.InNamespace(lab.Namespace), client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
 		return err
 	}
-	vniAllocator := poolpkg.NewAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
+	vniAllocator := poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
 	for i := range list.Items {
 		c := &list.Items[i]
 		if desired[c.Name] || !c.DeletionTimestamp.IsZero() {
@@ -646,7 +646,7 @@ func (r *LabReconciler) pruneDevices(ctx context.Context, lab *laboratoryv1alpha
 	if err := r.List(ctx, &list, client.InNamespace(lab.Namespace), client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
 		return err
 	}
-	vniAllocator := poolpkg.NewAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
+	vniAllocator := poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
 	for i := range list.Items {
 		d := &list.Items[i]
 		if desired[d.Spec.Name] || !d.DeletionTimestamp.IsZero() {
@@ -913,7 +913,7 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 	// alongside devices (not after) to avoid a deadlock: DevicePortReconciler
 	// waits for Connection OVS-cleanup finalizers before removing the Device
 	// finalizer, but connections are only deleted by this function.
-	vniAllocator := poolpkg.NewAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
+	vniAllocator := poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
 
 	var connList laboratoryv1alpha1.ConnectionList
 	if err := r.List(

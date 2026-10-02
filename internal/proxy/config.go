@@ -11,7 +11,7 @@ type L7Config struct {
 	TLSCertPath string `env:"TLS_CERT_PATH,required"`
 	TLSKeyPath  string `env:"TLS_KEY_PATH,required"`
 	// The handoff links are verified with the access public keys of the tenants, kept in the Secrets
-	// tenant-<name>-access-keys of the tenants namespace (see l7.SecretKeys); there is no shared key.
+	// tenant-<name>-access-keys of the access keys namespace (see l7.SecretKeys); there is no shared key.
 	BaseDomain string `env:"BASE_DOMAIN,notEmpty"`
 	Listen     string `env:"LISTEN_HTTPS"  envDefault:":8443"`
 	CookieName string `env:"SESSION_COOKIE_NAME" envDefault:"challenge"`
@@ -43,6 +43,15 @@ type L7Config struct {
 	ReadTimeout       time.Duration `env:"READ_TIMEOUT" envDefault:"5m"`
 	IdleTimeout       time.Duration `env:"IDLE_TIMEOUT" envDefault:"2m"`
 	MaxHeaderBytes    int           `env:"MAX_HEADER_BYTES" envDefault:"65536"`
+	// What a client can hold open (R-17): MaxConnections is the connections of the server in all; LivePerClient, LivePerGroup and
+	// LiveTotal the requests in flight (upgraded connections included) per client of a group, per group and in all; AuthRate and
+	// AuthBurst limit the handoff path per peer address (all peers together may do twenty times that). 0 = unlimited.
+	MaxConnections int     `env:"MAX_CONNECTIONS" envDefault:"4000"`
+	LivePerClient  int     `env:"LIVE_PER_CLIENT" envDefault:"200"`
+	LivePerGroup   int     `env:"LIVE_PER_GROUP" envDefault:"1000"`
+	LiveTotal      int     `env:"LIVE_TOTAL" envDefault:"8000"`
+	AuthRate       float64 `env:"AUTH_RATE" envDefault:"5"`
+	AuthBurst      int     `env:"AUTH_BURST" envDefault:"20"`
 }
 
 type WGConfig struct {
@@ -52,13 +61,23 @@ type WGConfig struct {
 	// (see demux.Limits): the conntrack entries in total and per client address, handshake initiations and
 	// unmatched packets per second per source address, and how often one session may change address.
 	MaxEntries          int           `env:"DEMUX_MAX_ENTRIES" envDefault:"100000"`
-	MaxEntriesPerSource int           `env:"DEMUX_MAX_ENTRIES_PER_SOURCE" envDefault:"64"`
+	MaxEntriesPerSource int           `env:"DEMUX_MAX_ENTRIES_PER_SOURCE" envDefault:"128"`
 	HandshakeRate       float64       `env:"DEMUX_HANDSHAKE_RATE" envDefault:"20"`
 	HandshakeBurst      int           `env:"DEMUX_HANDSHAKE_BURST" envDefault:"50"`
 	MissRate            float64       `env:"DEMUX_MISS_RATE" envDefault:"50"`
 	MissBurst           int           `env:"DEMUX_MISS_BURST" envDefault:"100"`
 	RoamInterval        time.Duration `env:"DEMUX_ROAM_INTERVAL" envDefault:"5s"`
 	MaxSources          int           `env:"DEMUX_MAX_SOURCES" envDefault:"100000"`
+	// All sources together may start this many handshakes per second (each costs a scan of the groups' keys, whoever pays for
+	// it), one session may send SessionRate packets per second and one client address OwnerRate in all its sessions, so that one
+	// participant cannot use up the shared demux. Readers is how many goroutines read the socket.
+	GlobalHandshakeRate  float64 `env:"DEMUX_GLOBAL_HANDSHAKE_RATE" envDefault:"2000"`
+	GlobalHandshakeBurst int     `env:"DEMUX_GLOBAL_HANDSHAKE_BURST" envDefault:"4000"`
+	SessionRate          float64 `env:"DEMUX_SESSION_RATE" envDefault:"15000"`
+	SessionBurst         int     `env:"DEMUX_SESSION_BURST" envDefault:"30000"`
+	OwnerRate            float64 `env:"DEMUX_OWNER_RATE" envDefault:"40000"`
+	OwnerBurst           int     `env:"DEMUX_OWNER_BURST" envDefault:"80000"`
+	Readers              int     `env:"DEMUX_READERS" envDefault:"4"`
 }
 
 // MinSessionSecretLen is the shortest accepted SESSION_SECRET.
@@ -71,6 +90,9 @@ func LoadL7Config() (*L7Config, error) {
 	}
 	if len(cfg.SessionSecret) < MinSessionSecretLen {
 		return cfg, fmt.Errorf("SESSION_SECRET must be at least %d bytes", MinSessionSecretLen)
+	}
+	if cfg.MaxConnections < 0 || cfg.LivePerClient < 0 || cfg.LivePerGroup < 0 || cfg.LiveTotal < 0 || cfg.AuthRate < 0 || cfg.AuthBurst < 0 {
+		return cfg, fmt.Errorf("MAX_CONNECTIONS, LIVE_PER_CLIENT, LIVE_PER_GROUP, LIVE_TOTAL, AUTH_RATE and AUTH_BURST must not be negative")
 	}
 	if cfg.ReadHeaderTimeout <= 0 || cfg.ReadTimeout <= 0 || cfg.IdleTimeout <= 0 || cfg.MaxHeaderBytes <= 0 {
 		return cfg, fmt.Errorf("READ_HEADER_TIMEOUT, READ_TIMEOUT, IDLE_TIMEOUT and MAX_HEADER_BYTES must be positive")
@@ -87,7 +109,8 @@ func LoadWGConfig() (*WGConfig, error) {
 		return cfg, err
 	}
 	if cfg.MaxEntries <= 0 || cfg.MaxEntriesPerSource <= 0 || cfg.HandshakeRate <= 0 || cfg.HandshakeBurst <= 0 || cfg.MissRate <= 0 || cfg.MissBurst <= 0 ||
-		cfg.RoamInterval <= 0 || cfg.MaxSources <= 0 {
+		cfg.RoamInterval <= 0 || cfg.MaxSources <= 0 || cfg.GlobalHandshakeRate <= 0 || cfg.GlobalHandshakeBurst <= 0 ||
+		cfg.SessionRate <= 0 || cfg.SessionBurst <= 0 || cfg.OwnerRate <= 0 || cfg.OwnerBurst <= 0 || cfg.Readers <= 0 {
 		return cfg, fmt.Errorf("the DEMUX_* limits must be positive")
 	}
 	return cfg, nil

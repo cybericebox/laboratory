@@ -114,7 +114,12 @@ type tracked struct {
 	// new snapshot supersedes it. pushes are the recent ones, for the rate and the budget.
 	prevRef string
 	pushes  []pushRecord
+	// holdUntil: no live snapshot before it (the layer was over the write quota, a diff that is bound to fail again).
+	holdUntil time.Time
 }
+
+// quotaHold is how long a layer over the write quota waits before the device is diffed again.
+const quotaHold = 5 * time.Minute
 
 type pushRecord struct {
 	at    time.Time
@@ -134,6 +139,9 @@ func (d *errDeferred) Error() string { return "snapshot deferred: " + d.reason }
 func (t *tracked) allow() *errDeferred {
 	e := t.e
 	now := e.now()
+	if now.Before(t.holdUntil) {
+		return &errDeferred{after: t.holdUntil.Sub(now), reason: "the layer is over the write quota"}
+	}
 	if e.MinPushInterval > 0 && len(t.pushes) > 0 {
 		last := t.pushes[len(t.pushes)-1].at
 		if wait := e.MinPushInterval - now.Sub(last); wait > 0 {
@@ -511,6 +519,13 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 	rc.Close()
 	if cerr := f.Close(); ferr == nil {
 		ferr = cerr
+	}
+	if errors.Is(ferr, snapshot.ErrQuota) {
+		// Over the write quota before the layer was even copied (a sparse file counts by its apparent size): the last good snapshot
+		// stays, and the same change is not diffed again for a while.
+		t.holdUntil = e.now().Add(quotaHold)
+		t.warn(ctx, ferr.Error())
+		return nil
 	}
 	if errors.Is(ferr, snapshot.ErrEntries) {
 		// Too many files: the last good snapshot stays; the next change is tried again (the layer only grows, so it will

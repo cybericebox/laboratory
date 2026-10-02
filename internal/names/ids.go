@@ -113,8 +113,13 @@ func TenantOf(labels map[string]string) string {
 	return DefaultTenant
 }
 
-// TenantsNamespace holds the per-tenant Secrets: the enrollment token and the access public keys.
+// TenantsNamespace holds the per-tenant Secrets: the enrollment token and the registry credentials of a tenant (images.pullSecret).
 const TenantsNamespace = "laboratory-tenants"
+
+// AccessKeysNamespace holds the access public keys of the tenants, one Secret each (AccessKeysSecret). The L7 proxy reads this namespace
+// and no other: the tenants namespace holds enrollment tokens and registry credentials, which an internet-facing component must not be
+// able to read.
+const AccessKeysNamespace = "laboratory-access-keys"
 
 // ImagesNamespace holds what the node-agents read to pull images for the scheduler: the
 // credentials of an ImagePull request. The node-agent's role covers this namespace only.
@@ -130,7 +135,7 @@ const TenantPullSecret = "tenant-registry"
 // operator removes it once done.
 const AnnotationRegenerateEnrollment = LabelPrefix + "regenerate-enrollment-token"
 
-// AccessKeysSecret is the Secret (in TenantsNamespace) that holds the access public keys of a
+// AccessKeysSecret is the Secret (in AccessKeysNamespace) that holds the access public keys of a
 // tenant, one entry per key id with the PEM public key. The proxy looks keys up by this name.
 func AccessKeysSecret(tenant string) string { return "tenant-" + tenant + "-access-keys" }
 

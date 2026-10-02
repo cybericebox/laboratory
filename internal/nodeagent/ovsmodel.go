@@ -32,4 +32,8 @@ type OVSInterface struct {
 	Type    string            `ovsdb:"type"`
 	Options map[string]string `ovsdb:"options"`
 	Ifindex *int              `ovsdb:"ifindex"`
+	// IngressPolicingRate (kbps) and IngressPolicingBurst (kb) police what a port may send into the bridge: the storm control of a
+	// shared switch. 0 = not policed.
+	IngressPolicingRate  int `ovsdb:"ingress_policing_rate"`
+	IngressPolicingBurst int `ovsdb:"ingress_policing_burst"`
 }

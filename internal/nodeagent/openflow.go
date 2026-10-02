@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"sort"
+	"sync"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 
@@ -29,6 +31,11 @@ import (
 // then re-add), so reconcileCreate can be called idempotently.
 type FlowManager struct {
 	client *ofclient.Client
+
+	// geneveSrc are the node addresses (host byte order) whose Geneve traffic is accepted: a packet that arrives on the Geneve
+	// port from any other source has no t0 flow and is dropped (R-12). Guarded by gmu.
+	gmu       sync.Mutex
+	geneveSrc map[uint32]bool
 }
 
 func NewFlowManager(ovsRunDir, bridge string) (*FlowManager, error) {
@@ -124,12 +131,14 @@ func (f *FlowManager) purgePort(no uint32) error {
 	return nil
 }
 
-// InitGeneveIngress installs the permanent t0 entry for the shared Geneve port:
+// InitGeneveIngress installs the t0 entries of the shared Geneve port, one per node the cluster has:
 //
-//	t0, priority=100, in_port=GENEVE → set reg0=1, move tun_id→metadata, resubmit(,6)
+//	t0, priority=100, in_port=GENEVE, tun_src=NODE → set reg0=1, move tun_id→metadata, resubmit(,6)
 //
-// Safe to call multiple times; OFPFC_ADD replaces the existing entry.
-// Must be called after AddGenevePort so the port is visible to OVS.
+// Geneve from any other source (UDP 6081 is open to whoever can reach the node) matches no flow and is dropped by the table-0 default,
+// so a host that is not a node cannot inject frames into a VNI. The catch-all entry of earlier versions (in_port only) is removed. Safe
+// to call multiple times; OFPFC_ADD replaces an existing entry. Must be called after AddGenevePort so the port is visible to OVS. The
+// sources are set by SetGeneveSources; until the first call nothing is accepted.
 func (f *FlowManager) InitGeneveIngress() error {
 	if err := f.refreshPorts(); err != nil {
 		return err
@@ -138,7 +147,20 @@ func (f *FlowManager) InitGeneveIngress() error {
 	if err != nil {
 		return fmt.Errorf("resolve geneve port: %w", err)
 	}
-	match := ofclient.BuildMatch(geneveNo, 0, false)
+	if err := f.client.FlowDeleteStrict(0, 100, ofclient.BuildMatch(geneveNo, 0, false)); err != nil {
+		return fmt.Errorf("remove the catch-all Geneve flow: %w", err)
+	}
+	f.gmu.Lock()
+	defer f.gmu.Unlock()
+	for ip := range f.geneveSrc {
+		if err := f.addGeneveSource(geneveNo, ip); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (f *FlowManager) addGeneveSource(geneveNo, ip uint32) error {
 	var actions []byte
 	actions = append(actions, ofclient.BuildActionsSetReg0(1)...)
 	actions = append(
@@ -148,7 +170,55 @@ func (f *FlowManager) InitGeneveIngress() error {
 		)...,
 	)
 	actions = append(actions, ofclient.BuildActionsResubmitTable(6)...)
-	return f.client.FlowAdd(0, 100, match, actions)
+	return f.client.FlowAdd(0, 100, ofclient.BuildMatchTunSrc(geneveNo, ip), actions)
+}
+
+// SetGeneveSources makes these node addresses the only ones whose Geneve traffic is accepted: a flow is added for each new address
+// and removed for each that is gone. Called with the same set it does nothing. It needs the Geneve port to exist (a call before that is
+// remembered and applied by InitGeneveIngress).
+func (f *FlowManager) SetGeneveSources(ips []net.IP) error {
+	want := map[uint32]bool{}
+	for _, ip := range ips {
+		if v4 := ip.To4(); v4 != nil {
+			want[binary.BigEndian.Uint32(v4)] = true
+		}
+	}
+	f.gmu.Lock()
+	defer f.gmu.Unlock()
+	var add, del []uint32
+	for ip := range want {
+		if !f.geneveSrc[ip] {
+			add = append(add, ip)
+		}
+	}
+	for ip := range f.geneveSrc {
+		if !want[ip] {
+			del = append(del, ip)
+		}
+	}
+	sort.Slice(add, func(i, j int) bool { return add[i] < add[j] })
+	f.geneveSrc = want
+	if len(add) == 0 && len(del) == 0 {
+		return nil
+	}
+	if err := f.refreshPorts(); err != nil {
+		return err
+	}
+	geneveNo, err := f.portNo(GenevePort)
+	if err != nil {
+		return nil // the port is not there yet: InitGeneveIngress installs the flows when it is
+	}
+	for _, ip := range add {
+		if err := f.addGeneveSource(geneveNo, ip); err != nil {
+			return err
+		}
+	}
+	for _, ip := range del {
+		if err := f.client.FlowDeleteStrict(0, 100, ofclient.BuildMatchTunSrc(geneveNo, ip)); err != nil {
+			return fmt.Errorf("remove the Geneve flow of %s: %w", net.IPv4(byte(ip>>24), byte(ip>>16), byte(ip>>8), byte(ip)), err)
+		}
+	}
+	return nil
 }
 
 // AddT0Port installs a t0 entry for a local device or patch port:

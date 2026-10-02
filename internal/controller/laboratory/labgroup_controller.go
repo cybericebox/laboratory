@@ -84,6 +84,8 @@ type LabGroupReconciler struct {
 	// group namespace. AgentSA identifies the agent ServiceAccount to bind.
 	AgentEnabled bool
 	AgentSA      types.NamespacedName
+	// ProxyEnabled gates the RoleBinding of the L7 proxy's traffic reports in each group namespace.
+	ProxyEnabled bool
 	// NetworkPolicyEnabled gates creation of the default-deny NetworkPolicy
 	// baseline in each group namespace.
 	NetworkPolicyEnabled bool
@@ -237,6 +239,10 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	if err = r.ensureAgentRoleBinding(ctx, ns); err != nil {
 		logger.Error(err, "ensure agent role binding")
+		return ctrl.Result{}, err
+	}
+	if err = r.ensureProxyReportsBinding(ctx, ns); err != nil {
+		logger.Error(err, "ensure proxy reports role binding")
 		return ctrl.Result{}, err
 	}
 
@@ -823,6 +829,25 @@ func (r *LabGroupReconciler) ensureAgentRoleBinding(ctx context.Context, ns stri
 		}},
 	}
 	return r.Create(ctx, rb)
+}
+
+// ensureProxyReportsBinding lets the L7 proxy write its LabTrafficReports in this group namespace (and in no other): the right is a
+// RoleBinding here, not a cluster-wide permission. A no-op when the proxy is off.
+func (r *LabGroupReconciler) ensureProxyReportsBinding(ctx context.Context, ns string) error {
+	if !r.ProxyEnabled {
+		return nil
+	}
+	var existing rbacv1.RoleBinding
+	if err := r.Get(ctx, types.NamespacedName{Name: names.ProxyReportsBindingName, Namespace: ns}, &existing); err == nil {
+		return nil
+	} else if !errors.IsNotFound(err) {
+		return err
+	}
+	return r.Create(ctx, &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: names.ProxyReportsBindingName, Namespace: ns},
+		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: names.RoleProxyReportsName},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "laboratory-proxy", Namespace: names.ProxyNamespace}},
+	})
 }
 
 // ensureDefaultDeny creates a default-deny NetworkPolicy in the group

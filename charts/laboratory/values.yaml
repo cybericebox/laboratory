@@ -184,6 +184,17 @@ proxy:
     readTimeout: 5m
     idleTimeout: 2m
     maxHeaderBytes: 65536
+    # What a client can hold open at the proxy (0 = unlimited): maxConnections in all (a further one waits in the kernel's backlog; the
+    # header timeout frees the places of clients that say nothing); the requests in flight, upgraded connections included, per client of a
+    # group (livePerClient), per group (livePerGroup) and in all (liveTotal), past which a request gets 429; and the handoff path
+    # (/_auth) per peer address (authRate per second, burst authBurst; all peers together may do twenty times that). The Go runtime is
+    # told to stay under 80% of the container memory limit (a soft limit), so a burst is collected before the kernel would kill the pod.
+    maxConnections: 4000
+    livePerClient: 200
+    livePerGroup: 1000
+    liveTotal: 8000
+    authRate: 5
+    authBurst: 20
     # An open request or WebSocket is checked against the group access policy every liveCheckInterval and
     # closed once the client may no longer reach the lab (a lock, a removed client); no connection lives longer than
     # liveMaxLifetime or past the session's absolute end (LIVE_CHECK_INTERVAL, LIVE_MAX_LIFETIME).
@@ -221,13 +232,24 @@ proxy:
     # address changes of one session (roaming itself works as before). maxSources bounds the memory of these limiters.
     limits:
       maxEntries: 100000
-      maxEntriesPerSource: 64
+      maxEntriesPerSource: 128
       handshakeRate: 20
       handshakeBurst: 50
       missRate: 50
       missBurst: 100
       roamInterval: 5s
       maxSources: 100000
+      # All sources together may start globalHandshakeRate handshakes per second (each scans every group's key; spoofed sources each
+      # have a budget of their own, so the total needs one). One session may send sessionRate packets per second (burst
+      # sessionBurst) and all the sessions of one client address ownerRate (ownerBurst): the demux is shared by every tenant and one
+      # participant with a valid session must not be able to use its CPU up. readers goroutines read the socket.
+      globalHandshakeRate: 2000
+      globalHandshakeBurst: 4000
+      sessionRate: 15000
+      sessionBurst: 30000
+      ownerRate: 40000
+      ownerBurst: 80000
+      readers: 4
     # Requests = limits. Measured: 12Mi, 1m idle and up to 111m at ten active peers (the packets are
     # relayed in userspace, so the CPU follows the VPN traffic).
     resources:
@@ -327,6 +349,15 @@ certManager:
 # ============================================================
 nodeAgent:
   enabled: true
+
+  # Storm control of the shared switch: the most (kbit/s) the veth port of a device may send into the bridge, so that a flood or a loop
+  # inside one lab (a device with NET_ADMIN can bridge its own interfaces) is held to this rate instead of the datapath of the node.
+  # 0 = off. Applied to the ports of running devices at the next resync, and to new ones when they are made.
+  portPolicingKbps: 500000
+  # How often the node-agent asks OVS (the database and OpenFlow channels) for a sign of life; after this many misses in a row it exits
+  # and the kubelet restarts it, which programs the bridge again (the channels do not reconnect by themselves).
+  ovsWatchInterval: 15s
+  ovsWatchFailures: 3
 
   image:
     repository: cybericebox/laboratory-node

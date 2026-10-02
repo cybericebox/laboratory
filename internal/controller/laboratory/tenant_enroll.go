@@ -177,8 +177,14 @@ func (r *TenantReconciler) deleteTenantSecrets(ctx context.Context, tenant strin
 	if err := r.deleteTokenSecret(ctx, tenant); err != nil {
 		return err
 	}
-	err := r.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: names.AccessKeysSecret(tenant), Namespace: names.TenantsNamespace}})
-	return client.IgnoreNotFound(err)
+	// Where the keys live now, and where earlier versions kept them.
+	for _, ns := range []string{names.AccessKeysNamespace, names.TenantsNamespace} {
+		err := r.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: names.AccessKeysSecret(tenant), Namespace: ns}})
+		if client.IgnoreNotFound(err) != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *TenantReconciler) deleteTokenSecret(ctx context.Context, tenant string) error {

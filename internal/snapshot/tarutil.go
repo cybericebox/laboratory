@@ -103,6 +103,10 @@ func FilterLayer(in io.Reader, out io.Writer, pol Policy) (Stats, error) {
 			skipped[logical] = true
 			continue
 		}
+		// The apparent size of a file is in its header, and a sparse file streams all its zeros: stop at the quota without reading them.
+		if pol.WriteQuota > 0 && hdr.Typeflag == tar.TypeReg && st.Bytes+hdr.Size > pol.WriteQuota {
+			return st, fmt.Errorf("%w: the layer passes the quota of %d bytes", ErrQuota, pol.WriteQuota)
+		}
 		if hdr.Typeflag == tar.TypeLink && skipped[CleanPath(hdr.Linkname)] {
 			st.Dropped++ // a hard link to a skipped file would dangle
 			continue

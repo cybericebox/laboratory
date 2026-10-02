@@ -29,7 +29,7 @@ func TestSecretKeysAndGroupTenant(t *testing.T) {
 	k1, _, _ := ed25519.GenerateKey(rand.Reader)
 	k2, _, _ := ed25519.GenerateKey(rand.Reader)
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
-		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: names.TenantsNamespace, Name: "tenant-acme-access-keys"},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: names.AccessKeysNamespace, Name: "tenant-acme-access-keys"},
 			Data: map[string][]byte{"k1": pubPEM(k1), "k2": pubPEM(k2), "junk": []byte("not a key")}},
 		// A Secret of the same name in another namespace is not a source of keys.
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "elsewhere", Name: "tenant-evil-access-keys"}, Data: map[string][]byte{"k": pubPEM(k1)}},

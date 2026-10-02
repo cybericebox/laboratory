@@ -213,3 +213,28 @@ func TestStalePortNumbers(t *testing.T) {
 		t.Fatalf("nothing changed: %v", got)
 	}
 }
+
+// R-12: the Geneve ingress flow matches the outer source address: in_port, then NXM_NX_TUN_IPV4_SRC (class 1, field 31).
+func TestBuildMatchTunSrc_Encoding(t *testing.T) {
+	ip := uint32(10)<<24 | 1<<16 | 2<<8 | 3 // 10.1.2.3
+	m := BuildMatchTunSrc(5, ip)
+	if len(m)%8 != 0 || binary.BigEndian.Uint16(m[0:2]) != 1 {
+		t.Fatalf("a malformed match: % x", m)
+	}
+	if got := binary.BigEndian.Uint16(m[2:4]); got != 4+8+8 {
+		t.Errorf("length without padding = %d, want 20", got)
+	}
+	if binary.BigEndian.Uint32(m[4:8]) != 0x80000004 || binary.BigEndian.Uint32(m[8:12]) != 5 {
+		t.Errorf("in_port field: % x", m[4:12])
+	}
+	// header: (0x0001 << 16) | (31 << 9) | 4
+	if got := binary.BigEndian.Uint32(m[12:16]); got != 0x00013e04 {
+		t.Errorf("tun_src header = 0x%08x, want 0x00013e04", got)
+	}
+	if got := binary.BigEndian.Uint32(m[16:20]); got != ip {
+		t.Errorf("tun_src value = 0x%08x, want 0x%08x", got, ip)
+	}
+	if string(BuildMatchTunSrc(5, ip)) == string(BuildMatch(5, 0, false)) {
+		t.Error("the source must make the match different from the catch-all")
+	}
+}

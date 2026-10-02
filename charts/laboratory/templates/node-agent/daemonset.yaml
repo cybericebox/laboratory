@@ -143,6 +143,13 @@ spec:
           imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
           command: [ "/node", "node-agent" ]
           env:
+            # Storm control of the shared switch, and the watchdog that restarts the node-agent when OVS is lost.
+            - name: PORT_POLICING_KBPS
+              value: {{ .Values.nodeAgent.portPolicingKbps | quote }}
+            - name: OVS_WATCH_INTERVAL
+              value: {{ .Values.nodeAgent.ovsWatchInterval | quote }}
+            - name: OVS_WATCH_FAILURES
+              value: {{ .Values.nodeAgent.ovsWatchFailures | quote }}
             - name: NODE_NAME
               valueFrom:
                 fieldRef:

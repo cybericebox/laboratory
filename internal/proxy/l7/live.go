@@ -139,6 +139,17 @@ func (h *Handler) RunLiveCheck(ctx context.Context, interval time.Duration) {
 type hijackRecorder struct {
 	http.ResponseWriter
 	entry *liveEntry
+	// cookieName is the proxy's session cookie: a device may not set it, not even in an informational (1xx) response, which the
+	// reverse proxy relays before the final one and ModifyResponse never sees.
+	cookieName string
+}
+
+// WriteHeader strips the session cookie from the headers of an informational response before they go out.
+func (w *hijackRecorder) WriteHeader(code int) {
+	if code >= 100 && code < 200 && w.cookieName != "" {
+		stripSessionCookie(w.Header(), w.cookieName)
+	}
+	w.ResponseWriter.WriteHeader(code)
 }
 
 func (w *hijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {

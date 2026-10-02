@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"sort"
+	"strconv"
 	
 	"github.com/bits-and-blooms/bitset"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -43,6 +44,10 @@ type (
 		poolSize       uint
 		namespace      string
 		labelRequests  labelRequests
+		// rotate hands out the lowest free index AFTER the one handed out last (wrapping around), not the lowest free one: a released index
+		// is not given again until the whole pool has been walked, so something that still holds its old meaning (a flow, a cache) never
+		// meets a new owner of the number at once.
+		rotate bool
 	}
 	
 	labelRequests struct {
@@ -66,6 +71,17 @@ func InitBitmap(size, offset uint) (string, uint) {
 		free--
 	}
 	return encodeBitmap(bm), free
+}
+
+// CursorAnnotation on a Pool remembers where a rotating allocator handed out last.
+const CursorAnnotation = "allocation.cybericebox.com/cursor"
+
+// NewRotatingAllocator is NewAllocator with indexes that are not reused until the pool has been walked (see allocator.rotate): the
+// VNIs of the lab networks, where the same number meeting a new lab at once could inherit stale flows on a node.
+func NewRotatingAllocator(c client.Client, poolNamePrefix, namespace string, poolSize uint) Allocator {
+	a := NewAllocator(c, poolNamePrefix, namespace, poolSize).(*allocator)
+	a.rotate = true
+	return a
 }
 
 func NewAllocator(c client.Client, poolNamePrefix, namespace string, poolSize uint) Allocator {
@@ -115,7 +131,16 @@ func (a *allocator) AllocateIndex(ctx context.Context) (uint, error) {
 		return 0, fmt.Errorf("decode bitmap for pool %s: %w", selected.Name, err)
 	}
 	
-	bit, found := bitmap.NextClear(0)
+	var start uint
+	if a.rotate {
+		if n, err := strconv.ParseUint(selected.Annotations[CursorAnnotation], 10, 32); err == nil && uint(n) < selected.Spec.Size {
+			start = uint(n)
+		}
+	}
+	bit, found := bitmap.NextClear(start)
+	if !found && start > 0 {
+		bit, found = bitmap.NextClear(0)
+	}
 	if !found {
 		return 0, fmt.Errorf("pool %s has no free slots despite state label", selected.Name)
 	}
@@ -126,6 +151,12 @@ func (a *allocator) AllocateIndex(ctx context.Context) (uint, error) {
 	if err = a.Status().Update(ctx, selected); err != nil {
 		return 0, fmt.Errorf("update pool status: %w", err)
 	}
+	if a.rotate {
+		// Best effort: a lost cursor only means the next index may be a lower one.
+		if err := a.saveCursor(ctx, selected.Name, bit+1); err != nil {
+			logf.FromContext(ctx).Error(err, "failed to save the allocation cursor", "pool", selected.Name)
+		}
+	}
 	
 	// Update state label on a fresh copy to avoid resourceVersion conflict.
 	if err = a.syncStateLabel(ctx, selected.Name, selected.Status.Free); err != nil {
@@ -134,6 +165,19 @@ func (a *allocator) AllocateIndex(ctx context.Context) (uint, error) {
 	}
 	
 	return uint(bit) + selected.Spec.Offset, nil
+}
+
+func (a *allocator) saveCursor(ctx context.Context, poolName string, cursor uint) error {
+	var pool allocationv1alpha1.Pool
+	if err := a.Get(ctx, client.ObjectKey{Name: poolName, Namespace: a.namespace}, &pool); err != nil {
+		return err
+	}
+	orig := pool.DeepCopy()
+	if pool.Annotations == nil {
+		pool.Annotations = map[string]string{}
+	}
+	pool.Annotations[CursorAnnotation] = strconv.FormatUint(uint64(cursor), 10)
+	return a.Patch(ctx, &pool, client.MergeFrom(orig))
 }
 
 func (a *allocator) ReleaseIndex(ctx context.Context, index uint) error {

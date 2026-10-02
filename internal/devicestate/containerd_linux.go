@@ -137,6 +137,13 @@ func (r *ContainerdRuntime) Diff(ctx context.Context, c Container, freeze bool) 
 		defer cancel()
 		frozenAt := time.Now()
 		thaw, ferr := r.freeze(cctx, c)
+		if ferr != nil && !errors.Is(ferr, ErrNoFreezer) {
+			// A freezer that exists but did not freeze the container in time: the diff of a running container that was not frozen can
+			// race with its writes (a file turned into a symlink under the reader), so it is not taken. The snapshot is retried.
+			removeView()
+			release()
+			return nil, fmt.Errorf("the running container could not be frozen, so it is not snapshotted: %w", ferr)
+		}
 		if ferr == nil {
 			defer func() {
 				thaw()
@@ -167,8 +174,8 @@ func (r *ContainerdRuntime) Diff(ctx context.Context, c Container, freeze bool) 
 	}}, nil
 }
 
-// freeze freezes the container and syncs its filesystem; without a usable
-// freezer the snapshot proceeds unfrozen (crash-consistent, as after a power loss).
+// freeze freezes the container and syncs its filesystem. Without a freezer at all (ErrNoFreezer: an older cgroup layout) the snapshot
+// proceeds unfrozen (crash-consistent, as after a power loss); a freezer that fails is an error the caller refuses to go on after.
 func (r *ContainerdRuntime) freeze(ctx context.Context, c Container) (func(), error) {
 	thaw, err := Freeze(ctx, c.Cgroup)
 	if err != nil {

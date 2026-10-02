@@ -205,3 +205,16 @@ func BuildMatchAdvanced(
 	copy(m[4:], fields)
 	return m
 }
+
+// BuildMatchTunSrc is BuildMatch with the tunnel source address (NXM_NX_TUN_IPV4_SRC) added: in_port plus the IPv4 source of the
+// outer header of a tunnelled packet. ip is the address in host byte order (as OxmTunIPv4Src takes it).
+func BuildMatchTunSrc(inPortNo uint32, ip uint32) []byte {
+	fields := append(OxmInPort(inPortNo), OxmTunIPv4Src(ip)...)
+	rawLen := 4 + len(fields)
+	padded := (rawLen + 7) &^ 7
+	m := make([]byte, padded)
+	binary.BigEndian.PutUint16(m[0:2], 1) // OFPMT_OXM
+	binary.BigEndian.PutUint16(m[2:4], uint16(rawLen))
+	copy(m[4:], fields)
+	return m
+}

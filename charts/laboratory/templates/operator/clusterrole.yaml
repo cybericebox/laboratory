@@ -75,8 +75,8 @@ rules:
   resources: [events]
   verbs: [create, patch]
 # The `bind` verb authorizes creating RoleBindings that reference these ClusterRoles without the operator holding every
-# permission they grant: the agent and the VPN pod roles, and its own working role in a namespace.
+# permission they grant: the agent, VPN pod and proxy report roles, and its own working role in a namespace.
 - apiGroups: [rbac.authorization.k8s.io]
   resources: [clusterroles]
-  resourceNames: [laboratory-agent-role, laboratory-vpn-role, laboratory-operator-namespaced]
+  resourceNames: [laboratory-agent-role, laboratory-vpn-role, laboratory-operator-namespaced, laboratory-proxy-reports]
   verbs: [bind]

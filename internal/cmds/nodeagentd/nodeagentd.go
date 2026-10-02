@@ -21,6 +21,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/deviceplugin"
@@ -54,6 +55,7 @@ func Run() {
 		os.Exit(1)
 	}
 	defer ovs.Close()
+	ovs.SetPolicing(cfg.PortPolicingKbps)
 
 	ovsRunDir := filepath.Dir(cfg.OVSSock)
 	flows, err := nodeagent.NewFlowManager(ovsRunDir, cfg.Bridge)
@@ -62,6 +64,23 @@ func Run() {
 		os.Exit(1)
 	}
 	defer flows.Close()
+
+	// OVS is the node's datapath: when either channel to it is lost, exit so that the kubelet restarts the node-agent and the bridge is
+	// programmed again (the channels do not reconnect).
+	go nodeagent.Watchdog(context.Background(), cfg.OVSWatchInterval, cfg.OVSWatchFailures,
+		func(ctx context.Context) error {
+			if err := ovs.Ping(ctx); err != nil {
+				return fmt.Errorf("OVSDB: %w", err)
+			}
+			if err := flows.Ping(); err != nil {
+				return fmt.Errorf("OpenFlow: %w", err)
+			}
+			return nil
+		},
+		func(err error) {
+			log.Error(err, "lost OVS: exiting to be restarted")
+			os.Exit(1)
+		})
 
 	grpcSrv := nodeagent.NewNodeAgentServer(ovs, flows)
 	gs, err := nodeagent.StartGRPCServer(cfg.GRPCSock, grpcSrv)
@@ -80,6 +99,8 @@ func Run() {
 	mgr, err := ctrl.NewManager(
 		ctrl.GetConfigOrDie(), ctrl.Options{
 			Scheme: scheme,
+			// No metrics endpoint: the node-agent is on the host network, so it would be open on the node's address.
+			Metrics: metricsserver.Options{BindAddress: "0"},
 		},
 	)
 	if err != nil {
@@ -94,6 +115,12 @@ func Run() {
 		NodeAddress: nodeAddr,
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "setup DevicePortReconciler")
+		os.Exit(1)
+	}
+
+	// Geneve (UDP 6081) is accepted only from the nodes of the cluster.
+	if err := mgr.Add(&nodeagent.GeneveSourceSync{Reader: mgr.GetAPIReader(), Flows: flows}); err != nil {
+		log.Error(err, "setup GeneveSourceSync")
 		os.Exit(1)
 	}
 

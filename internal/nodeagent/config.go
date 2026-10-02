@@ -22,6 +22,12 @@ type Config struct {
 	// (the container's own /dev has no tun even when the host does).
 	TunCheckPath string `env:"TUN_CHECK_PATH" envDefault:"/sys/class/misc/tun/dev"`
 	TunSlots     int    `env:"TUN_SLOTS"         envDefault:"1000"`
+	// PortPolicingKbps is the rate (kbit/s) a device's veth port may send into the bridge: the storm control of the shared switch
+	// (0 = off). OVSWatchInterval is how often the node-agent asks OVS (database and OpenFlow) for a sign of life; after
+	// OVSWatchFailures misses in a row it exits so that it is restarted and the bridge is programmed again.
+	PortPolicingKbps int           `env:"PORT_POLICING_KBPS" envDefault:"500000"`
+	OVSWatchInterval time.Duration `env:"OVS_WATCH_INTERVAL" envDefault:"15s"`
+	OVSWatchFailures int           `env:"OVS_WATCH_FAILURES" envDefault:"3"`
 	// ImagePullConcurrency is how many images of a prepull request the node pulls at once;
 	// ImagePullTimeout bounds one image.
 	ImagePullConcurrency int           `env:"IMAGE_PULL_CONCURRENCY" envDefault:"2"`
