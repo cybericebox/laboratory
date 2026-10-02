@@ -446,3 +446,26 @@ func TestRegistryIsAlwaysInstalled(t *testing.T) {
 		t.Error("the node-agent relays the registry even with state persistence off")
 	}
 }
+
+// C-19: the registry volume can be made on a StorageClass with reclaimPolicy Retain, which the chart creates on request.
+func TestRegistryRetainClass(t *testing.T) {
+	on := []string{"--set", "registry.retainClass.create=true", "--set", "registry.retainClass.provisioner=rancher.io/local-path", "--set", "registry.storageClass=ignored"}
+	out, err := helmTemplate(t, append(on, "-s", "templates/registry/storageclass.yaml", "-s", "templates/registry/pvc.yaml")...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	for _, want := range []string{"kind: StorageClass", "reclaimPolicy: Retain", "provisioner: \"rancher.io/local-path\"", "storageClassName: \"laboratory-registry\""} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "ignored") {
+		t.Error("registry.storageClass is not used when the chart creates the Retain class")
+	}
+	if out, err := helmTemplate(t, "--set", "registry.retainClass.create=true"); err == nil || !strings.Contains(out, "provisioner") {
+		t.Errorf("a Retain class without a provisioner must be refused: %v %s", err, out)
+	}
+	if out, err := helmTemplate(t, "-s", "templates/registry/pvc.yaml"); err != nil || strings.Contains(out, "StorageClass") {
+		t.Errorf("by default the chart creates no StorageClass: %v %s", err, out)
+	}
+}

@@ -446,8 +446,21 @@ registry:
     repository: ghcr.io/project-zot/zot
     tag: "v2.1.21"
     pullPolicy: IfNotPresent
-  # StorageClass of the registry volume; empty = the cluster default.
+  # StorageClass of the registry volume; empty = the cluster default. The volume holds every device snapshot, so its
+  # PersistentVolume must survive the claim: use a class with reclaimPolicy Retain (retainClass below creates one).
+  # With a class whose reclaimPolicy is Delete, a deleted claim or namespace deletes all snapshots.
   storageClass: ""
+  # A StorageClass with reclaimPolicy Retain made by the chart, used for the registry volume instead of storageClass.
+  # Needs the provisioner of the cluster's storage: rancher.io/local-path (k0s stand; local-path-provisioner 0.0.24+),
+  # ebs.csi.aws.com (AWS, with parameters type: gp3). A class cannot be changed in place: the name must be new, and a
+  # volume that already exists keeps the reclaim policy it was made with (see DEPLOY.md, "Registry volume").
+  retainClass:
+    create: false
+    name: laboratory-registry
+    provisioner: ""
+    parameters: {}
+    volumeBindingMode: WaitForFirstConsumer
+    allowVolumeExpansion: false
   # Size of the registry volume. It holds the cached images, the base image layers once
   # and every device's snapshot layers: plan for the images of the labs plus
   # (devices x writeQuota) at worst. The volume is kept on uninstall.

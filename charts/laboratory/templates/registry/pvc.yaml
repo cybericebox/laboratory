@@ -12,8 +12,12 @@ metadata:
     helm.sh/resource-policy: keep
 spec:
   accessModes: [ ReadWriteOnce ]
+  {{- if $r.retainClass.create }}
+  storageClassName: {{ $r.retainClass.name | quote }}
+  {{- else }}
   {{- with $r.storageClass }}
   storageClassName: {{ . | quote }}
+  {{- end }}
   {{- end }}
   resources:
     requests:

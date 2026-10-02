@@ -73,6 +73,9 @@ at install time instead of shipping a broken deployment.
 {{- if not .Values.nodeAgent.enabled }}
 {{- fail "the platform registry is always installed and needs nodeAgent.enabled: the node-agent serves the registry to the nodes as localhost" }}
 {{- end }}
+{{- if and .Values.registry.retainClass.create (not .Values.registry.retainClass.provisioner) }}
+{{- fail "registry.retainClass.provisioner is required when registry.retainClass.create is true (rancher.io/local-path, ebs.csi.aws.com, ...)" }}
+{{- end }}
 {{- if not .Values.registry.size }}
 {{- fail "registry.size is required (volume size of the platform registry)" }}
 {{- end }}

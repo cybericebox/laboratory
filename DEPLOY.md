@@ -942,6 +942,34 @@ The registry pod therefore has one init container, `own-data`, that runs `chown 
 and FOWNER capabilities and a read-only root file system, and does nothing else. It runs on every start (a no-op once the volume is owned), so an upgrade needs
 no manual step; on a large volume the first start takes as long as the chown.
 
+### Registry volume: keep the data when the claim goes
+
+The registry volume (`laboratory-registry`, `registry.size`) holds every device snapshot. `helm.sh/resource-policy: keep` protects the claim from
+`helm uninstall` only. When the claim or the namespace is deleted, the fate of the data is decided by the **reclaim policy of the PersistentVolume**, which
+it takes from its StorageClass: `Delete` (the default of local-path and of the AWS EBS class) deletes the volume and every snapshot with it. Use a class
+with `reclaimPolicy: Retain`. The chart can create it:
+
+```yaml
+registry:
+  retainClass:
+    create: true
+    provisioner: rancher.io/local-path   # k0s stand (local-path-provisioner 0.0.24 or newer, the stand has 0.0.31)
+    # AWS:  provisioner: ebs.csi.aws.com, parameters: {type: gp3, encrypted: "true"}, allowVolumeExpansion: true
+```
+
+The class is named `registry.retainClass.name` (default `laboratory-registry`), kept on uninstall, and used for the claim instead of `registry.storageClass`.
+The local stand (`infrastructure/local/cluster/laboratory/values.yaml.tmpl`) and the AWS cluster role already set it. Without it the chart works as before and
+the volume is only as durable as the class you name in `registry.storageClass`.
+
+- The reclaim policy is copied into a PersistentVolume when it is made: a volume that already exists keeps the policy it has. To protect one, run
+  `kubectl patch pv <name> -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'` (the PV is named in `kubectl -n laboratory-system get pvc laboratory-registry`).
+- Getting a retained volume back: the PV stays `Released` with a `claimRef` to the old claim. Remove it (`kubectl patch pv <name> --type json -p '[{"op":"remove","path":"/spec/claimRef"}]'`),
+  and create the claim `laboratory-registry` with `volumeName: <name>` (or install the chart again, then bind by `volumeName`). zot picks the data up as it was.
+- On local-path the PV is a directory on one node; node loss still loses it. Retain protects against a deleted claim, not against a lost disk. EBS volumes
+  survive the node but not the zone. The snapshots are the participants' work: back the volume up (EBS snapshots, or a copy of the directory).
+- Growing `registry.size` needs a class with `allowVolumeExpansion: true` (set `registry.retainClass.allowVolumeExpansion`); without it `helm upgrade` is
+  refused by the API server.
+
 ### Who may read the registry
 
 zot is shared by every team and the image cache, so what it serves is split by repository (no catch-all pattern: a repository that matches none is
