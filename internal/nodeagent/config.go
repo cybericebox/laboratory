@@ -18,9 +18,9 @@ type Config struct {
 	// the node-agent registers the extended resource cybericebox.com/tun there. TunSlots is how many devices of that
 	// resource a node advertises (each is the same /dev/net/tun, the count only bounds the extended devices per node).
 	DevicePluginDir string `env:"DEVICE_PLUGIN_DIR" envDefault:"/var/lib/kubelet/device-plugins"`
-	// TunCheckPath is where the node-agent container sees the host's /dev/net/tun (the chart mounts the host's /dev/net there): the
-	// container's own /dev has no tun, so the plugin must look at the host's.
-	TunCheckPath string `env:"TUN_CHECK_PATH" envDefault:"/host/dev/net/tun"`
+	// TunCheckPath is what the plugin looks at to see that the tun device exists on the HOST: the sysfs entry of the tun misc device
+	// (the container's own /dev has no tun even when the host does).
+	TunCheckPath string `env:"TUN_CHECK_PATH" envDefault:"/sys/class/misc/tun/dev"`
 	TunSlots     int    `env:"TUN_SLOTS"         envDefault:"1000"`
 	// ImagePullConcurrency is how many images of a prepull request the node pulls at once;
 	// ImagePullTimeout bounds one image.

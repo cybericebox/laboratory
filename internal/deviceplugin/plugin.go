@@ -30,8 +30,10 @@ type Plugin struct {
 	Dir      string // the kubelet's device-plugins directory
 	Slots    int
 	HostPath string // the device on the host as the kubelet sees it (what a container gets); default TUNDevice
-	// CheckPath is where THIS process looks to see that the device exists on the host: when the plugin runs in a container
-	// that has the host's /dev/net mounted elsewhere it is that path (the container's own /dev has no tun). Default: HostPath.
+	// CheckPath is what THIS process looks at to see that the device exists on the host. A container's /dev is minimal and has no tun
+	// even when the host does, so the node-agent checks the kernel's sysfs entry of the tun misc device, /sys/class/misc/tun/dev
+	// (present exactly when the tun module is loaded; sysfs shows the host's kernel in a container, read-only, no extra mount).
+	// Any path there only has to exist. Empty: HostPath, which must then be a character device.
 	CheckPath string
 	Interval  time.Duration
 	Log       logr.Logger
@@ -82,7 +84,13 @@ func (p *Plugin) present() bool {
 	}
 	p.mu.Unlock()
 	st, err := os.Stat(path)
-	return err == nil && st.Mode()&os.ModeCharDevice != 0
+	if err != nil {
+		return false
+	}
+	p.mu.Lock()
+	viaCheck := p.CheckPath != ""
+	p.mu.Unlock()
+	return viaCheck || st.Mode()&os.ModeCharDevice != 0
 }
 
 func (p *Plugin) checkPath() string {

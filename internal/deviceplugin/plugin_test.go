@@ -142,10 +142,10 @@ func TestHealthFollowsTheHostDevice(t *testing.T) {
 	}
 }
 
-// The plugin may run in a container whose own /dev has no tun: it checks where the host's /dev/net is mounted (CheckPath),
-// while the container is still given the host's device path.
+// The plugin runs in a container whose own /dev has no tun: it checks the host's sysfs entry of the tun device (CheckPath, a regular
+// file there), while the container is still given the host's device path.
 func TestHealthLooksAtTheCheckPathNotTheContainerDev(t *testing.T) {
-	p := &Plugin{Resource: "cybericebox.com/tun", Dir: shortDir(t), Slots: 2, HostPath: "/dev/net/tun-absent-in-this-container", CheckPath: "/dev/null", Interval: 50 * time.Millisecond}
+	p := &Plugin{Resource: "cybericebox.com/tun", Dir: shortDir(t), Slots: 2, HostPath: "/dev/net/tun-absent-in-this-container", CheckPath: sysfsEntry(t), Interval: 50 * time.Millisecond}
 	if !p.present() {
 		t.Fatal("the device exists on the host (the check path), whatever this container's /dev holds")
 	}
@@ -188,4 +188,14 @@ func TestRegistersWhenTheKubeletAppearsLater(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the plugin did not register once the kubelet appeared")
 	}
+}
+
+// sysfsEntry is a regular file standing for /sys/class/misc/tun/dev.
+func sysfsEntry(t *testing.T) string {
+	t.Helper()
+	f := filepath.Join(shortDir(t), "dev")
+	if err := os.WriteFile(f, []byte("10:200\n"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	return f
 }

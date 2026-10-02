@@ -192,7 +192,7 @@ func TestRegistryKeepsSnapshotsPrivate(t *testing.T) {
 }
 
 // The node-agent is the CNI: a device-plugin directory that does not exist must not keep its pod in Init (and with it every new
-// pod of the node). The directory is the kubelet's fixed one, and the plugin looks for the tun device in the host's /dev/net.
+// pod of the node). The directory is the kubelet's fixed one, and the plugin looks for the tun device in the host's sysfs.
 func TestDevicePluginCannotBlockTheCNI(t *testing.T) {
 	out, err := helmTemplate(t, "-s", "templates/node-agent/daemonset.yaml")
 	if err != nil {
@@ -216,19 +216,14 @@ func TestDevicePluginCannotBlockTheCNI(t *testing.T) {
 				if hp["type"] != "DirectoryOrCreate" {
 					t.Errorf("a missing directory must not block the pod: type %v", hp["type"])
 				}
-			case "host-dev-net":
-				found++
-				if hp["path"] != "/dev/net" || hp["type"] != "DirectoryOrCreate" {
-					t.Errorf("host /dev/net: %v", hp)
-				}
 			}
 		}
 	}
-	if found != 2 {
-		t.Fatalf("the device-plugin volumes: found %d of 2", found)
+	if found != 1 {
+		t.Fatalf("the device-plugin volume: found %d of 1", found)
 	}
-	if !regexp.MustCompile(`TUN_CHECK_PATH\s+value: /host/dev/net/tun`).MatchString(out) {
-		t.Error("the plugin must check the host's /dev/net/tun, not the container's /dev")
+	if !regexp.MustCompile(`TUN_CHECK_PATH\s+value: /sys/class/misc/tun/dev`).MatchString(out) {
+		t.Error("the plugin must check the host's sysfs entry of tun, not the container's /dev")
 	}
 }
 
