@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/snapshot"
@@ -71,7 +72,22 @@ type Engine struct {
 	ExitTimeout time.Duration
 	// RetryBase and RetryMax bound the retry of a failed snapshot (10s doubling to 5m when zero).
 	RetryBase, RetryMax time.Duration
-	Log                 logr.Logger
+
+	// The registry is shared by every tenant, so what a device may push is bounded (zero values switch the bound off):
+	// MinPushInterval is the least time between two pushes of one device (the exit snapshot is exempt: it must not be lost),
+	// PushBudget the most state it may push within PushBudgetWindow (an hour when zero). A change that comes sooner or over the
+	// budget waits; nothing is lost, the next snapshot has it.
+	MinPushInterval  time.Duration
+	PushBudget       int64
+	PushBudgetWindow time.Duration
+	// SupersededGrace is how long the manifest a new snapshot replaced is kept before it and its blobs are deleted from the
+	// registry (a pod being created from it a moment ago must still be able to pull it). Zero deletes at once.
+	SupersededGrace time.Duration
+	// Space refuses a push when the registry is nearly full; Retained adds the state the tenant still has in repositories of labs that
+	// are gone to the tenant's quota. Both are optional.
+	Space    SpaceGuard
+	Retained RetainedCounter
+	Log      logr.Logger
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 
@@ -94,6 +110,74 @@ type tracked struct {
 	lastWarn string
 	exited   bool
 	failures int // consecutive failed live snapshots (touched by the live loop only)
+	// prevRef is the manifest this device currently has in the registry (the one it was restored from, or its last snapshot); a
+	// new snapshot supersedes it. pushes are the recent ones, for the rate and the budget.
+	prevRef string
+	pushes  []pushRecord
+}
+
+type pushRecord struct {
+	at    time.Time
+	bytes int64
+}
+
+// errDeferred is a snapshot that was not taken now, for a reason that is not a failure: it waits for after. A deferred snapshot is
+// retried then and does not count as a failed one.
+type errDeferred struct {
+	after  time.Duration
+	reason string
+}
+
+func (d *errDeferred) Error() string { return "snapshot deferred: " + d.reason }
+
+// allow says whether the device may push now; when it may not, the time to wait. Called with t.mu held.
+func (t *tracked) allow() *errDeferred {
+	e := t.e
+	now := e.now()
+	if e.MinPushInterval > 0 && len(t.pushes) > 0 {
+		last := t.pushes[len(t.pushes)-1].at
+		if wait := e.MinPushInterval - now.Sub(last); wait > 0 {
+			return &errDeferred{after: wait, reason: "the device pushed a snapshot a moment ago"}
+		}
+	}
+	if e.PushBudget > 0 {
+		window := e.PushBudgetWindow
+		if window <= 0 {
+			window = time.Hour
+		}
+		var sum int64
+		kept := t.pushes[:0]
+		for _, p := range t.pushes {
+			if now.Sub(p.at) < window {
+				kept = append(kept, p)
+				sum += p.bytes
+			}
+		}
+		t.pushes = kept
+		if sum >= e.PushBudget && len(kept) > 0 {
+			wait := window - now.Sub(kept[0].at)
+			if wait < time.Second {
+				wait = time.Second
+			}
+			return &errDeferred{after: wait, reason: fmt.Sprintf("the device has pushed %d bytes in the last %s, its budget is %d", sum, window, e.PushBudget)}
+		}
+	}
+	return nil
+}
+
+// snapshotRef is ref when it names a snapshot of this registry (what a device restored from), "" for any other image.
+func (e *Engine) snapshotRef(ref string) string {
+	if e.RegistryHost != "" && strings.HasPrefix(ref, e.RegistryHost+"/") && strings.Contains(ref, "@") {
+		return ref
+	}
+	return ""
+}
+
+// repoOfRef is "repo" of "host/repo@digest".
+func repoOfRef(ref string) string {
+	_, rest, _ := strings.Cut(ref, "/")
+	repo, _, _ := strings.Cut(rest, "@")
+	return repo
 }
 
 func (e *Engine) retryBase() time.Duration {
@@ -233,7 +317,7 @@ func (e *Engine) warnOnce(ctx context.Context, p PodInfo, msg string) {
 // track registers the container and starts its change watcher.
 func (e *Engine) track(ctx context.Context, p PodInfo, c Container) *tracked {
 	wctx, cancel := context.WithCancel(ctx)
-	t := &tracked{e: e, pod: p, c: c, cancel: cancel}
+	t := &tracked{e: e, pod: p, c: c, cancel: cancel, prevRef: e.snapshotRef(c.ImageRef)}
 	e.mu.Lock()
 	if old, ok := e.tracked[p.ContainerID]; ok {
 		e.mu.Unlock()
@@ -287,14 +371,7 @@ func (e *Engine) track(ctx context.Context, p PodInfo, c Container) *tracked {
 		lctx, lcancel := context.WithTimeout(wctx, defaultLiveTimeout)
 		defer lcancel()
 		err := t.snapshot(lctx, true)
-		switch {
-		case err == nil:
-			t.failures = 0
-		case errors.Is(err, context.Canceled) || errors.Is(err, ErrStale):
-		default:
-			e.Log.Error(err, "snapshot", "device", p.Device, "pod", p.Pod)
-			t.failures++
-			d := retryDelay(e.retryBase(), e.retryMax(), t.failures)
+		later := func(d time.Duration) {
 			go func() {
 				select {
 				case <-time.After(d):
@@ -305,6 +382,20 @@ func (e *Engine) track(ctx context.Context, p PodInfo, c Container) *tracked {
 				case <-wctx.Done():
 				}
 			}()
+		}
+		var def *errDeferred
+		switch {
+		case err == nil:
+			t.failures = 0
+		case errors.As(err, &def):
+			// Not a failure: the registry is shared and this device has had its share for now.
+			e.Log.Info("snapshot deferred", "device", p.Device, "pod", p.Pod, "reason", def.reason, "after", def.after.String())
+			later(def.after)
+		case errors.Is(err, context.Canceled) || errors.Is(err, ErrStale):
+		default:
+			e.Log.Error(err, "snapshot", "device", p.Device, "pod", p.Pod)
+			t.failures++
+			later(retryDelay(e.retryBase(), e.retryMax(), t.failures))
 		}
 	})
 	return t
@@ -334,7 +425,7 @@ func (e *Engine) endOf(ctx context.Context, p PodInfo) {
 			e.markExit(ctx, p)
 			return
 		}
-		t = &tracked{e: e, pod: p, c: c, cancel: func() {}}
+		t = &tracked{e: e, pod: p, c: c, cancel: func() {}, prevRef: e.snapshotRef(c.ImageRef)}
 		e.mu.Lock()
 		e.tracked[p.ContainerID] = t
 		e.mu.Unlock()
@@ -384,9 +475,15 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 	e, pol := t.e, t.pod.Policy
 	started := e.now()
 	var diffTook, pushTook time.Duration
+	if freeze {
+		if d := t.allow(); d != nil {
+			return d
+		}
+	}
 
 	defer func() {
-		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, ErrStale) {
+		var def *errDeferred
+		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, ErrStale) && !errors.As(err, &def) {
 			t.warn(ctx, "snapshot failed: "+err.Error())
 		}
 	}()
@@ -460,12 +557,31 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 		if qerr != nil {
 			return fmt.Errorf("tenant registry usage: %w", qerr)
 		}
+		// What the tenant still has in the repositories of labs that are gone counts too (it takes the volume until the retention ends).
+		if e.Retained != nil {
+			if live, lerr := e.Cluster.LiveRepos(ctx); lerr == nil {
+				if ret, rerr := e.Retained.RetainedBytes(ctx, t.pod.Tenant, live); rerr == nil {
+					others += ret
+				}
+			}
+		}
 		if others+chain.Bytes() > t.pod.TenantQuota {
 			t.lastDiff = digest
 			t.warn(ctx, fmt.Sprintf("%v: the snapshots of the tenant would take %d bytes of the registry, the tenant's quota is %d", snapshot.ErrQuota, others+chain.Bytes(), t.pod.TenantQuota))
 			return nil
 		}
 	}
+	// The registry volume is shared by every tenant and the platform: no push while it is nearly full.
+	if e.Space != nil {
+		if serr := e.Space.Check(ctx, chain.Bytes()); serr != nil {
+			t.warn(ctx, serr.Error())
+			if freeze {
+				return &errDeferred{after: 5 * time.Minute, reason: serr.Error()}
+			}
+			return nil // the exit snapshot is not retried: the last good one stays
+		}
+	}
+	img = snapshot.Annotated(img, t.pod.Tenant, chain.Bytes())
 	pushStart := e.now()
 	ref, _, err := e.Pusher.Push(ctx, t.pod.Repo, img, chain.Base, imagecache.Rewriter{Prefix: e.RegistryHost}.RepoOf(t.c.ImageRef))
 	if err != nil {
@@ -476,11 +592,36 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 		return err
 	}
 	t.lastDiff, t.pushed, t.lastWarn = digest, true, ""
+	t.pushes = append(t.pushes, pushRecord{at: e.now(), bytes: chain.Bytes()})
+	t.supersede(ref, img)
 	t.warnSkipped(ctx, skipMsg)
 	e.Log.Info("snapshot taken", "device", t.pod.Device, "pod", t.pod.Pod, "frozen", freeze,
 		"diff", diffTook.String(), "push", pushTook.String(), "total", e.now().Sub(started).String(),
 		"layers", chain.Layers(), "bytes", chain.Bytes(), "image", ref)
 	return nil
+}
+
+// supersede deletes the manifest the new snapshot replaced (and the blobs only it used) from the registry, after the grace period.
+func (t *tracked) supersede(newRef string, keep v1.Image) {
+	old := t.prevRef
+	t.prevRef = newRef
+	e := t.e
+	s, ok := e.Pusher.(Superseder)
+	if !ok || old == "" || old == newRef || repoOfRef(old) != t.pod.Repo {
+		return
+	}
+	run := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if err := s.Supersede(ctx, t.pod.Repo, old, keep); err != nil {
+			e.Log.Error(err, "delete the superseded snapshot", "device", t.pod.Device, "ref", old)
+		}
+	}
+	if e.SupersededGrace <= 0 {
+		run()
+		return
+	}
+	time.AfterFunc(e.SupersededGrace, run)
 }
 
 // publishStart records that the writable layer is back to what the container

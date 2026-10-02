@@ -99,6 +99,10 @@ func (c *fakeCluster) TenantBytes(context.Context, string, types.NamespacedName)
 	return c.tenantBytes, nil
 }
 
+func (c *fakeCluster) LiveRepos(context.Context) (map[string]bool, error) {
+	return map[string]bool{snapshot.Repo("ns", "lab", "web"): true}, nil
+}
+
 func (c *fakeCluster) Pods(context.Context) ([]PodInfo, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

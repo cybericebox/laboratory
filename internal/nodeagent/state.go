@@ -6,8 +6,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
+	"k8s.io/apimachinery/pkg/api/resource"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
@@ -53,8 +55,33 @@ func SetupDeviceState(mgr ctrl.Manager, cfg *Config) error {
 	if cfg.StateRegistryUser != "" {
 		reg.Auth = &authn.Basic{Username: cfg.StateRegistryUser, Password: cfg.StateRegistryPassword}
 	}
+	capacity := &snapshot.Capacity{Registry: reg, ReserveFraction: cfg.StateRegistryReserve, TTL: time.Minute}
+	if cfg.StateRegistryCapacity != "" {
+		q, err := resource.ParseQuantity(cfg.StateRegistryCapacity)
+		if err != nil || q.Sign() < 0 {
+			return fmt.Errorf("STATE_REGISTRY_CAPACITY %q: not a quantity", cfg.StateRegistryCapacity)
+		}
+		capacity.Total = q.Value()
+	}
+	if cfg.StateRegistryReserve < 0 || cfg.StateRegistryReserve >= 1 {
+		return fmt.Errorf("STATE_REGISTRY_RESERVE %v must be at least 0 and below 1", cfg.StateRegistryReserve)
+	}
+	var budget int64
+	if cfg.StatePushBudget != "" {
+		q, err := resource.ParseQuantity(cfg.StatePushBudget)
+		if err != nil || q.Sign() < 0 {
+			return fmt.Errorf("STATE_PUSH_BUDGET %q: not a quantity", cfg.StatePushBudget)
+		}
+		budget = q.Value()
+	}
 	engine := &devicestate.Engine{
-		Runtime: rt,
+		MinPushInterval:  cfg.StateMinPushInterval,
+		PushBudget:       budget,
+		PushBudgetWindow: cfg.StatePushBudgetWindow,
+		SupersededGrace:  cfg.StateSupersededGrace,
+		Space:            capacity,
+		Retained:         reg,
+		Runtime:          rt,
 		Cluster: &devicestate.KubeCluster{
 			Client:   mgr.GetClient(),
 			Reader:   mgr.GetAPIReader(),

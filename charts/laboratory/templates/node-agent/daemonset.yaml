@@ -187,6 +187,19 @@ spec:
               value: {{ .Values.devices.statePersistence.maxWatchedDirs | quote }}
             - name: STATE_WORK_DIR
               value: /var/cache/cybericebox/state
+            # What one device may push, and when the registry is too full to take a push (see DEPLOY.md, "Device state under abuse").
+            - name: STATE_MIN_PUSH_INTERVAL
+              value: {{ .Values.devices.statePersistence.minPushInterval | quote }}
+            - name: STATE_PUSH_BUDGET
+              value: {{ .Values.devices.statePersistence.pushBudget | quote }}
+            - name: STATE_PUSH_BUDGET_WINDOW
+              value: {{ .Values.devices.statePersistence.pushBudgetWindow | quote }}
+            - name: STATE_SUPERSEDED_GRACE
+              value: {{ .Values.devices.statePersistence.supersededGrace | quote }}
+            - name: STATE_REGISTRY_CAPACITY
+              value: {{ .Values.registry.size | quote }}
+            - name: STATE_REGISTRY_RESERVE
+              value: {{ .Values.devices.statePersistence.registryReserve | quote }}
             # The reader account: the forwarder adds it to the runtime's pulls of the snapshots and the base image.
             - name: STATE_REGISTRY_READER_USER
               valueFrom:

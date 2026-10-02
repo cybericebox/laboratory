@@ -175,3 +175,17 @@ func (k *KubeCluster) TenantBytes(ctx context.Context, tenant string, except typ
 	}
 	return total, nil
 }
+
+// LiveRepos implements Cluster: the snapshot repositories of every existing device.
+func (k *KubeCluster) LiveRepos(ctx context.Context) (map[string]bool, error) {
+	var devices laboratoryv1alpha1.DeviceList
+	if err := k.Client.List(ctx, &devices); err != nil {
+		return nil, err
+	}
+	live := make(map[string]bool, len(devices.Items))
+	for i := range devices.Items {
+		d := &devices.Items[i]
+		live[snapshot.Repo(d.Namespace, d.Spec.LabRef, d.Spec.Name)] = true
+	}
+	return live, nil
+}

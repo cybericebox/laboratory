@@ -543,6 +543,17 @@ devices:
     # The registry volume is shared by every tenant and the image cache, so without it one tenant can fill it. A Tenant may be
     # given less with spec.persistence.registryQuota. "0" = no limit.
     tenantQuota: 10Gi
+    # What one device may push into the shared registry. A device keeps only its current state: the manifest (and the blobs only it
+    # used) that a new snapshot replaces is deleted supersededGrace after the push (the grace lets a pod that was just created from
+    # it still pull it). A change that comes sooner than minPushInterval after the last push, or over pushBudget of state within
+    # pushBudgetWindow, waits for the next snapshot; the exit snapshot is never held back. "0" = no budget.
+    minPushInterval: 60s
+    pushBudget: 2Gi
+    pushBudgetWindow: 1h
+    supersededGrace: 2m
+    # A push is refused while the registry (registry.size) holds more than this fraction less than its volume: everything it
+    # stores counts, each blob once, retained repositories of deleted labs included.
+    registryReserve: 0.1
     # Directories of one device's writable layer the node-agent watches with inotify (the kernel's watch limit is shared by
     # everything on the node). Past it the layer is only polled (about every 30 s), so a change is noticed later.
     maxWatchedDirs: 2000

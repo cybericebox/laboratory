@@ -1509,3 +1509,24 @@ what one lab can ask for is bounded by constants of the platform, not by a setti
   Existing labs are not touched (the CRD checks only what is written). GetFeatures reports the effective device limit.
 - **Upgrade**: apply the CRDs first (the `maxItems`); nothing else to do. A chart value above 64 is clamped to 64, not refused.
 - Not done: a per-tenant VNI quota and a cap of groups per tenant (the owner decided per-lab caps only).
+
+### The shared registry under a churning device (R-5)
+
+Every snapshot pushes the whole state of a device as a new blob, and the registry volume (`registry.size`) is shared by every tenant and the image cache, so
+one device writing, idling and writing again could fill it. What bounds it now (all in `devices.statePersistence`):
+
+- **A device keeps only its current state.** After a snapshot is recorded, the manifest it replaced and the blobs only that one used are deleted from the
+  registry `supersededGrace` (2m) later, not after the garbage collection's hours. The grace lets a pod that was created from the old snapshot a moment ago still pull
+  it. A registry that refuses to delete blobs is fine: its garbage collection does it then (`registry.gc`).
+- **A rate per device.** At least `minPushInterval` (60s) between two pushes of one device and at most `pushBudget` (2Gi) of state per `pushBudgetWindow` (1h); a
+  change that comes sooner waits and the next snapshot has it. This is not a failure and not a warning. The exit snapshot of a device is never held back.
+- **No push into a nearly full registry.** The node-agent measures what the registry stores (every blob once, over every tag of every repository, the snapshots, the
+  shared base and the image cache; at most once a minute) and refuses a push that would leave less than `registryReserve` (10%) of `registry.size` free. A live snapshot
+  waits five minutes and tries again; the exit snapshot is given up (the last good one stays); the lab status says why.
+- **Retained repositories count for the tenant.** A snapshot manifest carries the tenant and the state size as annotations (`cybericebox.com/tenant`,
+  `cybericebox.com/state-bytes`); the repositories of labs that are gone and wait out `retention` (168h) are counted into the tenant's quota (`tenantQuota`), so deleting
+  and re-creating labs no longer hides what the registry still holds. A repository pushed before the annotations existed counts for nothing there (it counts in the
+  registry's own measurement above).
+- **Upgrade.** Nothing to do by hand: the node-agent rolls and the new bounds apply to the next snapshot. Manifests of earlier versions have no annotations and are
+  superseded like the others by the first new snapshot of their device. The registry's writer account can delete (it already could).
+- Not done: pushing deltas instead of the cumulative layer, and a shorter GC delay for untagged blobs (the active deletion above replaces both for the normal case).

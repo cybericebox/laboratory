@@ -102,6 +102,24 @@ type Cluster interface {
 	// TenantBytes is what the snapshots of the tenant's devices take in the registry (the sizes recorded in their status),
 	// without the device `except`.
 	TenantBytes(ctx context.Context, tenant string, except types.NamespacedName) (int64, error)
+	// LiveRepos is the set of snapshot repositories of the devices that exist (every tenant): any other repository of the
+	// registry belongs to a lab that is gone and is only waiting out its retention.
+	LiveRepos(ctx context.Context) (map[string]bool, error)
+}
+
+// Superseder removes what a new snapshot replaced; *snapshot.Registry implements it. A Pusher that does not is never asked.
+type Superseder interface {
+	Supersede(ctx context.Context, repo, oldRef string, keep v1.Image) error
+}
+
+// SpaceGuard says whether the registry has room for a push of about this many bytes; *snapshot.Capacity implements it.
+type SpaceGuard interface {
+	Check(ctx context.Context, bytes int64) error
+}
+
+// RetainedCounter is the state a tenant keeps in the repositories of labs that are gone; *snapshot.Registry implements it.
+type RetainedCounter interface {
+	RetainedBytes(ctx context.Context, tenant string, live map[string]bool) (int64, error)
 }
 
 // Pusher publishes snapshot images; *snapshot.Registry implements it.

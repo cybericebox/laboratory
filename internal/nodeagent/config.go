@@ -52,6 +52,16 @@ type Config struct {
 	// StateMaxWatchDirs is how many directories of one device's writable layer are watched with inotify; past it the layer is
 	// only polled.
 	StateMaxWatchDirs int `env:"STATE_MAX_WATCH_DIRS" envDefault:"2000"`
+	// What one device may push (R-5): the least time between two pushes, the most state in StatePushBudgetWindow (a Kubernetes
+	// quantity; "0" = no budget), and how long the replaced manifest of a device is kept before it is deleted.
+	StateMinPushInterval  time.Duration `env:"STATE_MIN_PUSH_INTERVAL" envDefault:"60s"`
+	StatePushBudget       string        `env:"STATE_PUSH_BUDGET" envDefault:"2Gi"`
+	StatePushBudgetWindow time.Duration `env:"STATE_PUSH_BUDGET_WINDOW" envDefault:"1h"`
+	StateSupersededGrace  time.Duration `env:"STATE_SUPERSEDED_GRACE" envDefault:"2m"`
+	// StateRegistryCapacity is the size of the registry volume (a quantity; empty = unknown, no refusal) and
+	// StateRegistryReserve the fraction of it that is kept free: a push that would pass that line is refused.
+	StateRegistryCapacity string  `env:"STATE_REGISTRY_CAPACITY"`
+	StateRegistryReserve  float64 `env:"STATE_REGISTRY_RESERVE" envDefault:"0.1"`
 	// StateWorkDir holds the temporary layer files of a snapshot.
 	StateWorkDir string `env:"STATE_WORK_DIR" envDefault:"/var/cache/cybericebox/state"`
 }
