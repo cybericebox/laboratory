@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,9 +33,13 @@ const ofpmpPortDesc = 13
 
 // OFPFC flow mod commands.
 const (
-	ofpfcAdd    = 0
-	ofpfcDelete = 3
+	ofpfcAdd          = 0
+	ofpfcDelete       = 3
+	ofpfcDeleteStrict = 4
 )
+
+// ofpttAll addresses every table in a flow delete.
+const ofpttAll = 0xff
 
 // OFPIT instruction types.
 const ofpitApplyActions = 4
@@ -47,7 +52,6 @@ const (
 
 // OFPP special port numbers.
 const (
-	ofppNormal  = 0xfffffffa // submit to normal L2/L3 processing
 	ofppAny     = 0xffffffff
 	ofpNoBuffer = 0xffffffff
 )
@@ -161,6 +165,53 @@ func (c *Client) FlowDelete(tableID uint8, match []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	return c.sendFlowMod(ofpfcDelete, tableID, 0, match, nil)
+}
+
+// FlowDeleteStrict deletes the one flow with exactly this match and priority.
+func (c *Client) FlowDeleteStrict(tableID uint8, priority uint16, match []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.sendFlowMod(ofpfcDeleteStrict, tableID, priority, match, nil)
+}
+
+// FlowDeleteTable deletes every flow of a table.
+func (c *Client) FlowDeleteTable(tableID uint8) error {
+	return c.FlowDelete(tableID, BuildMatchAdvanced(0, 0, false, 0, false, 0, false, 0, false))
+}
+
+// FlowDeleteOutPort deletes the flows of every table that output to the port number.
+func (c *Client) FlowDeleteOutPort(portNo uint32) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	msg := buildFlowMod(ofpfcDelete, ofpttAll, 0, BuildMatchAdvanced(0, 0, false, 0, false, 0, false, 0, false), nil, portNo)
+	c.stamp(msg)
+	_, err := c.conn.Write(msg)
+	return err
+}
+
+// Ports returns a copy of the port map (name to number) as of the last refresh.
+func (c *Client) Ports() map[string]uint32 {
+	c.mapMu.RLock()
+	defer c.mapMu.RUnlock()
+	out := make(map[string]uint32, len(c.portMap))
+	for k, v := range c.portMap {
+		out[k] = v
+	}
+	return out
+}
+
+// StalePortNumbers lists the port numbers that were in use before a refresh and are not the same port after it:
+// the port is gone, or the number now belongs to another name. Flows that name such a number must be removed
+// before the number is used again.
+func StalePortNumbers(before, after map[string]uint32) []uint32 {
+	var stale []uint32
+	for name, no := range before {
+		if now, ok := after[name]; !ok || now != no {
+			stale = append(stale, no)
+		}
+	}
+	sort.Slice(stale, func(i, j int) bool { return stale[i] < stale[j] })
+	return stale
 }
 
 // readLoop runs as a goroutine. It reads all incoming OF messages and:
@@ -347,6 +398,19 @@ func (c *Client) queryPortDesc() error {
 }
 
 func (c *Client) sendFlowMod(cmd uint8, tableID uint8, priority uint16, match, actions []byte) error {
+	msg := buildFlowMod(cmd, tableID, priority, match, actions, ofppAny)
+	c.stamp(msg)
+	_, err := c.conn.Write(msg)
+	return err
+}
+
+// stamp gives the message a fresh xid.
+func (c *Client) stamp(msg []byte) {
+	binary.BigEndian.PutUint32(msg[4:8], c.xid.Add(1))
+}
+
+// buildFlowMod encodes an OFPT_FLOW_MOD. outPort filters deletes (ofppAny: no filter).
+func buildFlowMod(cmd uint8, tableID uint8, priority uint16, match, actions []byte, outPort uint32) []byte {
 	var instr []byte
 	if len(actions) > 0 {
 		instr = buildInstruction(ofpitApplyActions, actions)
@@ -369,7 +433,7 @@ func (c *Client) sendFlowMod(cmd uint8, tableID uint8, priority uint16, match, a
 	off += 2
 	binary.BigEndian.PutUint32(msg[off:], ofpNoBuffer) // buffer_id
 	off += 4
-	binary.BigEndian.PutUint32(msg[off:], ofppAny) // out_port
+	binary.BigEndian.PutUint32(msg[off:], outPort) // out_port
 	off += 4
 	binary.BigEndian.PutUint32(msg[off:], ofppAny) // out_group
 	off += 4
@@ -378,11 +442,7 @@ func (c *Client) sendFlowMod(cmd uint8, tableID uint8, priority uint16, match, a
 	copy(msg[off:], match)
 	off += len(match)
 	copy(msg[off:], instr)
-
-	xid := c.xid.Add(1)
-	binary.BigEndian.PutUint32(msg[4:8], xid)
-	_, err := c.conn.Write(msg)
-	return err
+	return msg
 }
 
 // rawRecv reads one complete OF message from the connection.
@@ -477,12 +537,6 @@ func BuildActionsSetFieldTunnelID(vni uint64) []byte {
 	binary.BigEndian.PutUint16(a[2:4], 16)
 	copy(a[4:], OxmTunnelID(vni))
 	return a
-}
-
-// BuildActionsGroupNormal encodes OFPAT_OUTPUT to OFPP_NORMAL (normal L2/L3 processing, 16 bytes).
-// OFPAT_GROUP with OFPG_NORMAL is not supported by OVS; OFPP_NORMAL output is the correct equivalent.
-func BuildActionsGroupNormal() []byte {
-	return BuildActionsOutput(ofppNormal)
 }
 
 // buildInstruction wraps actions in an OFPIT instruction.

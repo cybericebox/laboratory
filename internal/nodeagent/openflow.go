@@ -13,7 +13,8 @@ import (
 	"github.com/cybericebox/laboratory/internal/nodeagent/ofclient"
 )
 
-// FlowManager programs tables 0 and 6 of the OVS pipeline on br-ovs.
+// FlowManager programs tables 0 and 6 of the OVS pipeline on br-ovs. The bridge is fail-secure (see
+// OVSManager.ensureBridge): table 0 ends in a drop, so only a port with its own t0 flow forwards anything.
 //
 // v1 pipeline (MAC learning deferred to a future version):
 //
@@ -40,14 +41,41 @@ func NewFlowManager(ovsRunDir, bridge string) (*FlowManager, error) {
 	c.SetErrorHandler(
 		func(xid uint32, errType, errCode uint16) {
 			// FLOW_MOD is fire-and-forget; a rejected flow (bad OXM field, etc.)
-			// would otherwise be invisible while traffic silently falls back to NORMAL.
+			// would otherwise be invisible while the port stays unbound (its traffic is dropped).
 			log.Error(
 				fmt.Errorf("OFPT_ERROR type=%d code=%d", errType, errCode),
 				"OpenFlow request rejected by OVS", "xid", xid,
 			)
 		},
 	)
-	return &FlowManager{client: c}, nil
+	fm := &FlowManager{client: c}
+	if err := fm.resetPipeline(); err != nil {
+		c.Close()
+		return nil, err
+	}
+	return fm, nil
+}
+
+// resetPipeline makes the bridge fail-secure from the first moment: every flow of tables 0 and 6 that an earlier
+// run (or the standalone default) left behind is removed, and the table-0 default is a drop, so a port without
+// its own t0 flow reaches nobody. The flows of the live ports come back from the reconcilers within seconds; until
+// then nothing is forwarded (the price of never bridging ports of different teams).
+func (f *FlowManager) resetPipeline() error {
+	for _, table := range []uint8{0, 6} {
+		if err := f.client.FlowDeleteTable(table); err != nil {
+			return fmt.Errorf("clear table %d: %w", table, err)
+		}
+	}
+	return f.installDefaultDrop()
+}
+
+// installDefaultDrop sets table 0, priority 0, to drop. It replaces the NORMAL flow of a standalone bridge (an
+// OFPFC_ADD with the same match and priority replaces the flow).
+func (f *FlowManager) installDefaultDrop() error {
+	if err := f.client.FlowAdd(0, 0, ofclient.BuildMatchAdvanced(0, 0, false, 0, false, 0, false, 0, false), nil); err != nil {
+		return fmt.Errorf("install the default drop: %w", err)
+	}
+	return nil
 }
 
 // Close closes the underlying OpenFlow connection.
@@ -71,8 +99,27 @@ func (f *FlowManager) portNo(name string) (uint32, error) {
 // return a number that now belongs to a different interface. Every public
 // operation refreshes first to program flows against current numbers.
 func (f *FlowManager) refreshPorts() error {
+	before := f.client.Ports()
 	if err := f.client.RefreshPorts(); err != nil {
 		return fmt.Errorf("refresh port map: %w", err)
+	}
+	// A number that was a port and no longer is (or is another port now) must not keep flows: a new port that
+	// gets the number would inherit the old VNI (t0, in_port) or receive its flood (t6, output).
+	for _, no := range ofclient.StalePortNumbers(before, f.client.Ports()) {
+		if err := f.purgePort(no); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// purgePort removes every flow that matches on or outputs to the OpenFlow port number.
+func (f *FlowManager) purgePort(no uint32) error {
+	if err := f.client.FlowDeleteStrict(0, 90, ofclient.BuildMatch(no, 0, false)); err != nil {
+		return fmt.Errorf("purge t0 of port %d: %w", no, err)
+	}
+	if err := f.client.FlowDeleteOutPort(no); err != nil {
+		return fmt.Errorf("purge flows to port %d: %w", no, err)
 	}
 	return nil
 }
@@ -108,7 +155,8 @@ func (f *FlowManager) InitGeneveIngress() error {
 //
 //	t0, priority=90, in_port=PORT → set reg0=0, load VNI→metadata, resubmit(,6)
 //
-// Idempotent: deletes any existing t0 entry for this port before adding.
+// Idempotent and atomic: OFPFC_ADD with the same match and priority replaces the flow, so the port is never
+// without its t0 flow while it is rebound (a delete first would leave a gap).
 func (f *FlowManager) AddT0Port(portName string, vni uint) error {
 	if err := f.refreshPorts(); err != nil {
 		return err
@@ -118,9 +166,6 @@ func (f *FlowManager) AddT0Port(portName string, vni uint) error {
 		return fmt.Errorf("resolve port %q: %w", portName, err)
 	}
 	match := ofclient.BuildMatch(portNo, 0, false)
-	if err := f.client.FlowDelete(0, match); err != nil {
-		return fmt.Errorf("delete stale t0 for %q: %w", portName, err)
-	}
 	var actions []byte
 	actions = append(actions, ofclient.BuildActionsSetReg0(0)...)
 	actions = append(actions, ofclient.BuildActionsSetMetadata(uint64(vni))...)

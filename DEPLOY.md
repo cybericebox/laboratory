@@ -669,6 +669,29 @@ conn.ResetDevices(ctx, &pb.DevicesRequest{Items: []*pb.ItemRef{{LabGroup: "e-1-t
 
 ---
 
+## Security hardening
+
+Findings of the isolation audit (`docs/security/2026-10-02-laboratory-isolation.md`) and how the laboratory answers them.
+
+### Layer 2 between teams: fail-secure Open vSwitch
+
+The bridge `br-ovs` is `fail_mode=secure`, and table 0 ends in `priority=0 actions=drop` (the standalone default, a `NORMAL`
+learning switch over every port of the bridge, would bridge the ports of different teams). A device port forwards only after its own
+table-0 flow (`in_port` to the VNI) is installed, so a port that has no flow, for whatever reason, reaches nobody:
+
+- **CNI ADD to reconcile.** The port exists before the connection reconciler binds it; until then its frames are dropped.
+- **Node-agent restart.** At start the node-agent clears tables 0 and 6, installs the default drop, and the reconcilers bring the flows of
+  the live ports back within seconds. L2 of the lab devices on that node is interrupted for those seconds (by design: fail-secure).
+- **OVS restart.** The flows are not persistent; the bridge is secure, so nothing is forwarded until they are reinstalled.
+- **Rebinding a port.** The table-0 flow is replaced in place (an `OFPFC_ADD` with the same match and priority replaces), never deleted
+  and added again, so there is no gap.
+- **A device interface without a Connection** never gets a flow and stays isolated.
+- **Stale flows.** When a refresh of the port map shows that an OpenFlow port number is gone (or now belongs to another port), the
+  table-0 flow of that number and every flow that outputs to it (table 6 flood) are deleted before the number can be reused.
+
+Check on a node: `ovs-vsctl get bridge br-ovs fail_mode` is `secure`, and `ovs-ofctl -O OpenFlow13 dump-flows br-ovs table=0` has no
+`NORMAL` action and ends with `priority=0 actions=drop`.
+
 ## Device state persistence (optional)
 
 By default a device is a container in a Deployment: when it restarts, it starts again from its image and the work

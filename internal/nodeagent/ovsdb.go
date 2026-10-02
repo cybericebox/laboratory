@@ -98,16 +98,42 @@ func (m *OVSManager) findBridge() (*OVSBridge, error) {
 	return nil, nil
 }
 
+// FailModeSecure is the only fail mode of br-ovs: no flow, no forwarding.
+const FailModeSecure = "secure"
+
+// ensureSecure puts an existing bridge (made by an earlier version in the standalone mode) into the secure
+// fail mode.
+func (m *OVSManager) ensureSecure(br *OVSBridge) error {
+	if br.FailMode != nil && *br.FailMode == FailModeSecure {
+		return nil
+	}
+	secure := FailModeSecure
+	br.FailMode = &secure
+	ops, err := m.client.Where(br).Update(br, &br.FailMode)
+	if err != nil {
+		return fmt.Errorf("set fail_mode op: %w", err)
+	}
+	results, err := m.client.Transact(m.ctx, ops...)
+	if err != nil {
+		return fmt.Errorf("transact fail_mode: %w", err)
+	}
+	if _, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		return fmt.Errorf("fail_mode result: %w", err)
+	}
+	return nil
+}
+
 // ensureBridge is only called from NewOVSManager before the client is shared — no mutex needed.
 func (m *OVSManager) ensureBridge() error {
 	if br, err := m.findBridge(); err != nil {
 		return err
 	} else if br != nil {
-		return nil
+		return m.ensureSecure(br)
 	}
 
+	secure := FailModeSecure
 	bridgeNamedUUID := "bridge_new"
-	bridge := OVSBridge{UUID: bridgeNamedUUID, Name: m.bridge}
+	bridge := OVSBridge{UUID: bridgeNamedUUID, Name: m.bridge, FailMode: &secure}
 	bridgeOps, err := m.client.Create(&bridge)
 	if err != nil {
 		return fmt.Errorf("create bridge op: %w", err)

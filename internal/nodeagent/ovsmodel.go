@@ -14,6 +14,9 @@ type OVSBridge struct {
 	UUID  string   `ovsdb:"_uuid"`
 	Name  string   `ovsdb:"name"`
 	Ports []string `ovsdb:"ports"`
+	// FailMode is "secure" on our bridge: without a flow a frame is dropped, never switched (the standalone
+	// default installs a NORMAL flow, which would bridge the ports of different teams).
+	FailMode *string `ovsdb:"fail_mode"`
 }
 
 type OVSPort struct {
