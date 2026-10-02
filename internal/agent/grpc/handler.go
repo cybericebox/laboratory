@@ -55,6 +55,11 @@ type Handler struct {
 	// prewarm fills the image cache ahead of time; nil until SetPrewarm.
 	prewarm *prewarmer
 
+	// imageDeny are the "registry/repository-prefix" entries no tenant may use; imageCache
+	// are the addresses of the platform registry and cache (tenants may not name them).
+	imageDeny  []string
+	imageCache []string
+
 	// registryAddr is the platform registry (host:port) snapshot export reads from.
 	registryAddr string
 }
@@ -79,5 +84,13 @@ func (h *Handler) Ping(context.Context, *protobuf.Empty) (*protobuf.Empty, error
 // SetStatePersistence tells the agent whether the cluster allows device state
 // persistence; a topology that asks for it otherwise is refused.
 func (h *Handler) SetStatePersistence(enabled bool) { h.statePersistence = enabled }
+
+// SetImagePolicy sets the platform's side of the image policy: the repositories no tenant
+// may use and the addresses of the platform registry and image cache. A tenant's own allow
+// list (Tenant.spec.images.allow) narrows the rest.
+func (h *Handler) SetImagePolicy(deny []string, cacheAddrs ...string) {
+	h.imageDeny = deny
+	h.imageCache = cacheAddrs
+}
 
 func isNotFound(err error) bool { return apierrors.IsNotFound(err) }

@@ -107,6 +107,12 @@ func TenantOf(labels map[string]string) string {
 // TenantsNamespace holds the per-tenant Secrets: the enrollment token and the access public keys.
 const TenantsNamespace = "laboratory-tenants"
 
+// TenantPullSecret is the name of the Secret, in every group namespace of a tenant whose spec
+// has images.pullSecret, that holds the tenant's registry credentials (a copy of the Secret
+// of TenantsNamespace). Device pods reference it; the platform's own pull secrets are
+// never given to them.
+const TenantPullSecret = "tenant-registry"
+
 // AnnotationRegenerateEnrollment on a Tenant asks the operator for a new enrollment token; the
 // operator removes it once done.
 const AnnotationRegenerateEnrollment = LabelPrefix + "regenerate-enrollment-token"

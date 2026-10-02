@@ -149,6 +149,10 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Error(err, "copy image pull secrets")
 		return ctrl.Result{}, err
 	}
+	if err := syncTenantPullSecret(ctx, r.Client, names.TenantOf(lg.Labels), ns); err != nil {
+		logger.Error(err, "copy the tenant's image pull secret")
+		return ctrl.Result{}, err
+	}
 
 	if err := r.ensureDefaultDeny(ctx, ns); err != nil {
 		logger.Error(err, "ensure default-deny network policy")

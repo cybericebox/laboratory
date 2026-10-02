@@ -653,13 +653,26 @@ agent:
     enabled: true
 
 # ============================================================
+# Tenant images
+# ============================================================
+images:
+  # Repositories no tenant may use, "registry/repository-prefix" entries. Put here every
+  # private registry or organization the platform has credentials for (the image cache and
+  # its on-demand sync use the platform's credentials, so a tenant that names such an
+  # image would otherwise get it). Enforced by the management agent on CreateLabs and
+  # PrewarmImages. A tenant's own images.allow narrows the rest.
+  tenantDeny: []
+
+# ============================================================
 # Common
 # ============================================================
-# Registry Secrets (type kubernetes.io/dockerconfigjson) for private images, as a
-# list of `- name: <secret>`. Create them in the release namespace
+# Registry Secrets (type kubernetes.io/dockerconfigjson) for the PLATFORM's private
+# images, as a list of `- name: <secret>`. Create them in the release namespace
 # (laboratory-system) outside the chart. They are referenced by the operator,
 # proxy, node-agent and agent pods, and the operator also copies them into every
-# lab group namespace and sets them on the VPN, gateway and device pods.
+# lab group namespace and sets them on the VPN and gateway pods. Device pods and the
+# image prepull never get them: a tenant's images are pulled with the tenant's own
+# credentials (tenants.<name>.images.pullSecret), or anonymously.
 # Proxy and agent run in their own namespaces (proxy.namespace, agent.namespace):
 # create the Secrets there too.
 imagePullSecrets: []
@@ -693,6 +706,13 @@ cert-manager:
 #       quota:                  # optional; absent = no limit
 #         cpu: "50%"            # sum of the CPU requests of its pods: "32", "500m" or a percentage
 #         memory: "40%"         #   of what the lab nodes allocate
+#       images:
+#         pullSecret: acme-registry   # a dockerconfigjson Secret in laboratory-tenants: the tenant's
+#                                     #   own registry credentials for its devices and prepull. A tenant
+#                                     #   with one pulls straight from its registries (no shared cache).
+#         allow:                      # optional; absent = any image `images.tenantDeny` does not exclude
+#           - ghcr.io/acme/           # registry/repository prefixes; a reference equal to an entry
+#           - docker.io/library       #   or under it is allowed
 #
 # "default" may be listed to change its policy; unless it is, it may use persistence and has no quota.
 tenants: {}

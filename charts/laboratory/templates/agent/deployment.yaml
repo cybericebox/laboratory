@@ -56,6 +56,8 @@ spec:
               value: "true"
             - name: AGENT_CACHE_REGISTRY_ADDR
               value: {{ include "laboratory.registryAddr" . | quote }}
+            - name: AGENT_CACHE_NODE_PREFIX
+              value: {{ printf "localhost:%v" .Values.registry.forwardPort | quote }}
             - name: AGENT_CACHE_REGISTRIES
               value: {{ include "laboratory.cacheRegistryNames" . | quote }}
             - name: AGENT_PULL_SECRETS
@@ -68,6 +70,11 @@ spec:
               value: {{ .Values.registry.cache.prewarm.concurrency | quote }}
             - name: AGENT_PREWARM_TIMEOUT
               value: {{ .Values.registry.cache.prewarm.timeout | quote }}
+          {{- end }}
+          {{- with .Values.images.tenantDeny }}
+            # Repositories no tenant may use (Tenant.spec.images.allow narrows the rest).
+            - name: AGENT_IMAGE_DENY
+              value: {{ join "," . | quote }}
           {{- end }}
             # The nodes lab pods run on: a percentage tenant quota is a percentage of their allocatable.
             - name: AGENT_LAB_NODE_SELECTOR

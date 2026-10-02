@@ -39,9 +39,6 @@ type DeviceReconciler struct {
 	// assigns static IP/routes inside a device pod. Must contain `ip` (iproute2)
 	// and `sh`. Empty disables static addressing via init-container.
 	NetConfigImage string
-	// ImagePullSecrets names registry Secrets that the LabGroup controller copied
-	// into the group namespace; device pods reference them.
-	ImagePullSecrets []string
 	// Defaults are the CPU and memory of a device container that declares none.
 	Defaults DeviceDefaults
 	// Registry is the snapshot registry, nil when state persistence is off; it
@@ -336,9 +333,8 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 	}
 
 	podSpec = corev1.PodSpec{
-		ImagePullSecrets: pullSecretRefs(r.ImagePullSecrets),
-		NodeSelector:     r.LabNodeSelector,
-		Tolerations:      r.LabTolerations,
+		NodeSelector: r.LabNodeSelector,
+		Tolerations:  r.LabTolerations,
 		// Best-effort co-location: prefer scheduling this device onto a node that
 		// already runs another device of the same lab, so a lab's intra-fabric
 		// traffic stays node-local (no Geneve hop) whenever capacity allows. Soft
@@ -410,6 +406,7 @@ func (r *DeviceReconciler) deviceImage(device *laboratoryv1alpha1.Device, image 
 
 func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laboratoryv1alpha1.Device, replicas int32) error {
 	labels, selectorLabels, annotations, podSpec := r.workloadTemplate(device, false)
+	podSpec.ImagePullSecrets = r.devicePullSecrets(ctx, device)
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{

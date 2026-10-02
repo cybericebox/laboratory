@@ -49,6 +49,30 @@ spec:
               identified by the Tenant's name: the client certificate issued for it carries
               CN = name, and the agent resolves the caller's tenant by that CN.
             properties:
+              images:
+                description: Images is the tenant's image policy and registry credentials.
+                properties:
+                  allow:
+                    description: |-
+                      Allow lists the registries and repositories the tenant's devices may use, as
+                      "registry/repository-prefix" ("ghcr.io/acme/", "docker.io/library/", "quay.io"). A
+                      reference is allowed when it equals an entry or lies under it. Absent: any image that
+                      the platform deny list (agent AGENT_IMAGE_DENY) does not exclude.
+                    items:
+                      maxLength: 255
+                      type: string
+                    maxItems: 64
+                    type: array
+                  pullSecret:
+                    description: |-
+                      PullSecret names a kubernetes.io/dockerconfigjson Secret of the tenants namespace
+                      (laboratory-tenants) with the tenant's registry credentials. They are used for the
+                      tenant's devices and image prepull, and a tenant that has them pulls straight from
+                      its registries: its images do not go through the shared image cache. Absent: the
+                      tenant's images are public.
+                    maxLength: 253
+                    type: string
+                type: object
               persistence:
                 description: Persistence is what the tenant may do with device state
                   persistence.

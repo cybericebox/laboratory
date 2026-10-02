@@ -14,9 +14,25 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/random"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/clientset/client/versioned/fake"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
+
+// manifestFetches counts the manifest requests the cache saw for a repository.
+func (z *fakeZot) manifestFetches(repo string) int {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	n := 0
+	for k, c := range z.manifests {
+		if strings.HasPrefix(k, repo+"@") {
+			n += c
+		}
+	}
+	return n
+}
 
 // fakeZot imitates the image cache: a manifest request for an image it can fetch
 // "upstream" makes it store the manifest and, depending on mode, the blobs.
@@ -412,5 +428,67 @@ func TestPrewarmEmptyRequestReportsEverythingKnown(t *testing.T) {
 	r, err := h.PrewarmImages(context.Background(), &protobuf.PrewarmImagesRequest{})
 	if err != nil || len(r.Images) != 2 {
 		t.Fatalf("%v %v", r, err)
+	}
+}
+
+func tenantPolicyHandler(t *testing.T, z *fakeZot, res *fakeResolver, ten *laboratoryv1alpha1.Tenant, deny []string) *Handler {
+	t.Helper()
+	h := prewarmHandler(t, z, res, PrewarmConfig{})
+	h.cs = fake.NewSimpleClientset(ten)
+	h.SetImagePolicy(deny, "localhost:5035")
+	return h
+}
+
+func TestPrewarmAppliesTheTenantImagePolicy(t *testing.T) {
+	z := newFakeZot(t)
+	d := z.addImage(t, "ghcr.io/acme/app")
+	res := &fakeResolver{digests: map[string]string{"ghcr.io/acme/app:1": d.String()}}
+	ten := &laboratoryv1alpha1.Tenant{
+		ObjectMeta: metav1.ObjectMeta{Name: "default"},
+		Spec:       laboratoryv1alpha1.TenantSpec{Images: laboratoryv1alpha1.TenantImages{Allow: []string{"ghcr.io/acme/"}}},
+	}
+	h := tenantPolicyHandler(t, z, res, ten, []string{"ghcr.io/acme/private"})
+	ctx := context.Background()
+	r, err := h.PrewarmImages(ctx, &protobuf.PrewarmImagesRequest{Images: []string{
+		"ghcr.io/other/app:1", "ghcr.io/acme/private/x:1", "localhost:5035/ghcr.io/acme/app:1", "ghcr.io/acme/app:1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if r.Images[i].State != protobuf.PrewarmState_PREWARM_STATE_FAILED || r.Images[i].Error == "" {
+			t.Errorf("%s must be refused, got %v", r.Images[i].Image, r.Images[i].State)
+		}
+	}
+	if s := r.Images[3].State; s == protobuf.PrewarmState_PREWARM_STATE_FAILED || s == protobuf.PrewarmState_PREWARM_STATE_SKIPPED {
+		t.Errorf("the allowed image is fetched, got %v", s)
+	}
+	waitState(t, h, "ghcr.io/acme/app:1", protobuf.PrewarmState_PREWARM_STATE_DONE)
+	if z.manifestFetches("ghcr.io/other/app") != 0 {
+		t.Error("a refused image must never reach the cache")
+	}
+
+	// The listing of every warmed image shows only what this tenant may use.
+	h.cs = fake.NewSimpleClientset(&laboratoryv1alpha1.Tenant{
+		ObjectMeta: metav1.ObjectMeta{Name: "default"},
+		Spec:       laboratoryv1alpha1.TenantSpec{Images: laboratoryv1alpha1.TenantImages{Allow: []string{"quay.io/"}}},
+	})
+	all, err := h.PrewarmImages(ctx, &protobuf.PrewarmImagesRequest{})
+	if err != nil || len(all.Images) != 0 {
+		t.Fatalf("a tenant sees only its own images: %+v %v", all, err)
+	}
+}
+
+func TestPrewarmSkipsTenantsWithTheirOwnCredentials(t *testing.T) {
+	z := newFakeZot(t)
+	h := tenantPolicyHandler(t, z, &fakeResolver{}, &laboratoryv1alpha1.Tenant{
+		ObjectMeta: metav1.ObjectMeta{Name: "default"},
+		Spec:       laboratoryv1alpha1.TenantSpec{Images: laboratoryv1alpha1.TenantImages{PullSecret: "mine"}},
+	}, nil)
+	r, err := h.PrewarmImages(context.Background(), &protobuf.PrewarmImagesRequest{Images: []string{"ghcr.io/acme/app:1"}})
+	if err != nil || r.Images[0].State != protobuf.PrewarmState_PREWARM_STATE_SKIPPED {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if z.manifestFetches("ghcr.io/acme/app") != 0 {
+		t.Error("the shared cache must not fetch it")
 	}
 }

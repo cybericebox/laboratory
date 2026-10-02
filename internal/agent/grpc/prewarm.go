@@ -88,18 +88,40 @@ func (h *Handler) SetPrewarm(cfg PrewarmConfig) {
 
 // PrewarmImages starts (or reports on) the cache prewarm of images. It returns
 // at once with the current state of every requested image; repeat the call to poll.
-func (h *Handler) PrewarmImages(_ context.Context, in *protobuf.PrewarmImagesRequest) (*protobuf.PrewarmImagesResult, error) {
+//
+// The cache is shared, so the caller's tenant policy applies: an image the tenant may not
+// use is reported FAILED and never fetched, and the list of every warmed image (an empty
+// request) shows only the images the tenant may use. A tenant with registry credentials of
+// its own pulls straight from its registries, so its images are SKIPPED: the shared cache
+// would fetch them with the platform's credentials, or not at all.
+func (h *Handler) PrewarmImages(ctx context.Context, in *protobuf.PrewarmImagesRequest) (*protobuf.PrewarmImagesResult, error) {
 	p := h.prewarm
 	if p == nil || !p.cfg.Enabled {
 		return nil, status.Error(codes.FailedPrecondition, "the image cache is not enabled: there is nothing to prewarm")
 	}
-	return p.request(in.GetImages()), nil
+	policy, ten, err := h.imagePolicy(ctx)
+	if err != nil {
+		return nil, err
+	}
+	own := ten != nil && ten.Spec.Images.PullSecret != ""
+	return p.request(in.GetImages(), func(img string) (protobuf.PrewarmState, string) {
+		if err := policy.Check(img); err != nil {
+			return protobuf.PrewarmState_PREWARM_STATE_FAILED, err.Error()
+		}
+		if own {
+			return protobuf.PrewarmState_PREWARM_STATE_SKIPPED, "the tenant has its own registry credentials: nodes pull its images directly"
+		}
+		return protobuf.PrewarmState_PREWARM_STATE_UNSPECIFIED, ""
+	}), nil
 }
 
-func (p *prewarmer) request(images []string) *protobuf.PrewarmImagesResult {
+// request starts (or reports on) the fetch of images. refuse, when not nil, may answer a
+// state and a message for an image that must not be fetched for the caller.
+func (p *prewarmer) request(images []string, refuse func(string) (protobuf.PrewarmState, string)) *protobuf.PrewarmImagesResult {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if len(images) == 0 {
+	listing := len(images) == 0
+	if listing {
 		images = append([]string(nil), p.order...)
 	}
 	seen := map[string]bool{}
@@ -110,6 +132,14 @@ func (p *prewarmer) request(images []string) *protobuf.PrewarmImagesResult {
 			continue
 		}
 		seen[img] = true
+		if refuse != nil {
+			if st, msg := refuse(img); st != protobuf.PrewarmState_PREWARM_STATE_UNSPECIFIED {
+				if !listing { // asked by name: say why; a listing just leaves it out
+					out.Images = append(out.Images, &protobuf.PrewarmImageStatus{Image: img, State: st, Error: msg, UpdatedUnixMs: p.cfg.Now().UnixMilli()})
+				}
+				continue
+			}
+		}
 		e := p.entries[img]
 		if e == nil {
 			e = &prewarmEntry{}

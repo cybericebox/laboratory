@@ -60,6 +60,7 @@ func Run() {
 	h.SetGroupOverhead(cfg.GroupPods.Overhead())
 	h.SetClientCA(cfg.MTLS.ClientCAFile, cfg.MTLS.ClientCAKeyFile, cfg.MTLS.ClientCertTTL)
 	h.SetRegistryAddr(cfg.RegistryAddr)
+	h.SetImagePolicy(cfg.ImageDeny, cfg.Cache.NodePrefix, cfg.Cache.RegistryAddr, cfg.RegistryAddr)
 	var labSelector map[string]string
 	var labTolerations []corev1.Toleration
 	if err := json.Unmarshal([]byte(cfg.LabNodeSelector), &labSelector); err != nil {

@@ -15,6 +15,30 @@ type TenantSpec struct {
 	// Absent: no limit.
 	// +optional
 	Quota *TenantQuota `json:"quota,omitempty"`
+	// Images is the tenant's image policy and registry credentials.
+	// +optional
+	Images TenantImages `json:"images,omitempty"`
+}
+
+// TenantImages is what a tenant may run and how its images are pulled. The platform's own
+// registry credentials are never used for a tenant's images.
+type TenantImages struct {
+	// PullSecret names a kubernetes.io/dockerconfigjson Secret of the tenants namespace
+	// (laboratory-tenants) with the tenant's registry credentials. They are used for the
+	// tenant's devices and image prepull, and a tenant that has them pulls straight from
+	// its registries: its images do not go through the shared image cache. Absent: the
+	// tenant's images are public.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	PullSecret string `json:"pullSecret,omitempty"`
+	// Allow lists the registries and repositories the tenant's devices may use, as
+	// "registry/repository-prefix" ("ghcr.io/acme/", "docker.io/library/", "quay.io"). A
+	// reference is allowed when it equals an entry or lies under it. Absent: any image that
+	// the platform deny list (agent AGENT_IMAGE_DENY) does not exclude.
+	// +optional
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:MaxLength=255
+	Allow []string `json:"allow,omitempty"`
 }
 
 // TenantPersistence is the persistence policy of a tenant. The platform switch

@@ -40,6 +40,15 @@ func (r *LabReconciler) ensureModes(ctx context.Context, lab *laboratoryv1alpha1
 	}
 	cache := r.Mirror.Prefix != ""
 	if cache {
+		// A tenant with registry credentials of its own pulls straight from its registries:
+		// the shared cache would fetch its private images with the platform's credentials.
+		secret, err := tenantPullSecret(ctx, r, names.TenantOf(lab.Labels))
+		if err != nil {
+			return false, err
+		}
+		cache = secret == ""
+	}
+	if cache {
 		var devices laboratoryv1alpha1.DeviceList
 		if err := r.List(ctx, &devices, client.InNamespace(lab.Namespace), client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
 			return false, err

@@ -349,7 +349,6 @@ func Run() {
 		LabNodeSelector:  labNodeSelector,
 		LabTolerations:   labTolerations,
 		NetConfigImage:   cfg.NetConfigImage,
-		ImagePullSecrets: cfg.ImagePullSecrets,
 		Defaults:         laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory},
 		Security: laboratorycontroller.PodSecurity{
 			BaseCapabilities: cfg.DeviceBaseCapabilities, UserNamespaces: cfg.DeviceUserNamespaces, EphemeralStorage: cfg.DeviceEphemeralStorage,

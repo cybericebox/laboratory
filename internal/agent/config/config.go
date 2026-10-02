@@ -67,6 +67,9 @@ type Config struct {
 	RegistryAddr string `env:"AGENT_REGISTRY_ADDR"`
 	// Cache lets the agent prewarm the platform image cache.
 	Cache CacheConfig
+	// ImageDeny are "registry/repository-prefix" entries no tenant may use (the platform's
+	// private repositories); a tenant's own allow list narrows the rest.
+	ImageDeny []string `env:"AGENT_IMAGE_DENY" envSeparator:","`
 }
 
 // StateConfig mirrors the state persistence values of the operator.
@@ -89,6 +92,9 @@ type CacheConfig struct {
 	Enabled bool `env:"AGENT_CACHE_ENABLED" envDefault:"false"`
 	// RegistryAddr is host:port of the cache (the registry Service) as the agent reaches it.
 	RegistryAddr string `env:"AGENT_CACHE_REGISTRY_ADDR"`
+	// NodePrefix is host:port of the cache as the nodes see it (the node-agent's localhost
+	// forwarder); a tenant image that names it is refused.
+	NodePrefix string `env:"AGENT_CACHE_NODE_PREFIX"`
 	// Registries are the upstream registries the cache serves.
 	Registries []string `env:"AGENT_CACHE_REGISTRIES" envSeparator:","`
 	// PullSecrets are dockerconfigjson Secrets of PullSecretNamespace used to ask the

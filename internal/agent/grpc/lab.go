@@ -72,9 +72,16 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 	if err != nil {
 		return nil, err
 	}
+	policy, _, err := h.imagePolicy(ctx)
+	if err != nil {
+		return nil, err
+	}
 	for _, v := range variants {
 		if err := h.features.Limits.CheckSpec(&v.spec); err != nil {
 			return nil, invalid("variant %q: %v", v.id, err)
+		}
+		if err := checkSpecImages(policy, &v.spec); err != nil {
+			return nil, status.Errorf(codes.PermissionDenied, "variant %q: %v", v.id, err)
 		}
 	}
 	refs := make([]*protobuf.ItemRef, len(items))
