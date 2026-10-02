@@ -115,7 +115,9 @@ What gets installed:
 a **required** pod anti-affinity by hostname: never two replicas on one node (with more replicas than nodes the extra ones stay Pending). For larger clusters
 set `proxy.mode: daemonset`: one proxy pod on every node (`proxy.nodeSelector` and `proxy.tolerations` narrow the set; `replicas` and the budget do not apply; the default is
 `replicas`, a fixed count: on a one-node cluster set `proxy.replicas: 1`, and a live install refuses more replicas than nodes). In both modes the proxy requests are pods like any other, so the scheduler's room for lab pods on each node is what is left after them
-(see "Platform reserve"). The L7 proxy is stateless (its session cookie is signed with the shared `proxy-session` secret), so a request
+(see "Platform reserve"). The proxy's own session is sliding: it expires `proxy.l7.sessionIdleTTL` (24h) after the last request; the cookie is
+re-issued only when less than `proxy.l7.sessionRenewBefore` (1h) of it remains, so an active user costs about one renewal per hour; and it never
+lives past `proxy.l7.sessionMaxTTL` (168h) from the handoff or past the link's own session end. The L7 proxy is stateless (its session cookie is signed with the shared `proxy-session` secret), so a request
 may land on any replica. The demux keeps no state a restart would lose: a WireGuard client that lands on the other replica (after a reconnect, or when
 the replica it used is gone) re-handshakes within its persistent keepalive, about 15 s. Both containers are Guaranteed (requests = limits): L7 `500m`/`64Mi`,
 demux `250m`/`64Mi`. Measured on the local stand (kubectl top, one replica): L7 serves about 5000 requests per second for 500m of CPU (0.1 ms per request;
@@ -532,21 +534,20 @@ persistence and has no quota.
   heartbeat at the latest, so the backend needs no polling). The answer is the caller's tenant view:
   `state_persistence` (`available` = the cluster enables it AND the Tenant is allowed; the default debounce; the write quota and
   maximum file size, the tenant's limit capped by the cluster's; the excluded paths), `image_cache` (enabled, registries),
-  `scheduler` (enabled, `max_pods`), `endpoints` (the labs domain, the VPN endpoint), `proxy` (`access_token_max_ttl_seconds`: the longest exp - iat of a handoff link the proxy accepts, 5m;
-  `session_max_ttl_seconds`: the longest its session cookie lives, a longer `sess` of a link is cut to it, 24h; chart `proxy.l7.accessTokenMaxTTL` and
-  `sessionMaxTTL`) and `certificate` (`not_after_unix` of the client
+  `scheduler` (enabled, `max_pods`), `endpoints` (the labs domain, the VPN endpoint), `proxy` (`access_token_max_ttl_seconds`: the longest exp - iat of a handoff link the proxy accepts, 5m; `session_idle_ttl_seconds`: the session expires after this much inactivity, 24h; `session_max_ttl_seconds`: the absolute cap from the handoff, 168h; chart `proxy.l7.accessTokenMaxTTL`, `sessionIdleTTL`, `sessionMaxTTL`) and `certificate` (`not_after_unix` of the client
   certificate the call came with, `issued_ttl_seconds` of new ones: the backend schedules `RenewCertificate` from the expiry, and the
   expiry changes only when it reconnects with the renewed certificate). Quotas and the group overhead stay in `GetCapacity`. The agent
   gets the cluster values from the same chart keys as the operator (`devices.statePersistence.*`, `scheduler.enabled/maxPods`,
   `registry.cache`, `operator.baseDomain`, `operator.publicVPNEndpoint`, `agent.enrollment.certificateTTL`).
-- **Limits.** `limits` in the features (`device`, `lab`, `tenant`; 0 = no limit) is a sanity ceiling, not a sizing profile, and is what the cluster allows, and `CreateLabs` enforces it: `limits.device.maxCpu` (2000m) and
-  `maxMemory` (4Gi) per device, `limits.lab.maxDevices` (20 container devices; switches and hubs do not count), `limits.lab.maxCpu` (4000m) and
-  `maxMemory` (8Gi) as the sum over the devices of a lab, `limits.tenant.maxLabs` (0 = unlimited; the tenant's resource quota still applies).
-  A device's resources are its limit, else its request, else the planning profile `limits.device.defaultCpu` (100m) / `defaultMemory`
-  (256Mi), which is also what the scheduler gives a device without resources (requests = limits). A variant over a cap is
-  `InvalidArgument` naming the variant, the device and both numbers. Over `maxLabs` the new items are `FAILED` (`ResourceExhausted`
-  reason, not retryable); an item whose lab exists is not new. The count is checked when the call arrives. Labs created directly
-  with kubectl are not checked.
+- **Limits.** `limits` in the features (`device`, `lab`, `group`, `tenant`; 0 = no limit) is a sanity ceiling, not a sizing profile, and `CreateLabs`
+  enforces it: `limits.device.maxCpu` (2000m) and `maxMemory` (4Gi) per device; `limits.lab.maxDevices` (20 container devices; switches and
+  hubs do not count); per LabGroup `limits.group.maxLabs` (50) and the optional sums over all its labs `limits.group.maxCpu` / `maxMemory`
+  (`"0"` = unlimited); `limits.tenant.maxLabs` (0 = unlimited; the tenant's resource quota still applies). There is no per-lab resource
+  cap. Devices are Guaranteed (request = limit, no CPU overcommit), so a group's sum is what it reserves. A device's resources are its
+  limit, else its request, else the planning profile `limits.device.defaultCpu` (100m) / `defaultMemory` (256Mi), which is also what the
+  scheduler gives a device without resources. A variant over a device or lab cap is `InvalidArgument` naming the variant, the device and both
+  numbers. Over a group or tenant cap the new items are `FAILED` (`ResourceExhausted` reason, not retryable); an item whose lab exists is
+  not new. The counts are checked when the call arrives. Labs created directly with kubectl are not checked.
 - **Monitoring** is cut to the tenant before the user selector.
 
 ### Required values and defaults

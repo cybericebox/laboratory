@@ -34,6 +34,7 @@ type Features struct {
 	VPNEndpoint string
 	// ProxyAccessTokenMaxTTL and ProxySessionMaxTTL are the L7 proxy's limits.
 	ProxyAccessTokenMaxTTL time.Duration
+	ProxySessionIdleTTL    time.Duration
 	ProxySessionMaxTTL     time.Duration
 	// Limits are the caps CreateLabs enforces.
 	Limits limits.Limits
@@ -92,11 +93,12 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 					MaxCpuMillicores: f.Limits.DeviceMaxCPU, MaxMemoryBytes: f.Limits.DeviceMaxMemory,
 					DefaultCpuMillicores: f.Limits.DeviceDefaultCPU, DefaultMemoryBytes: f.Limits.DeviceDefaultMemory,
 				},
-				Lab:    &protobuf.LabLimits{MaxDevices: int32(f.Limits.LabMaxDevices), MaxCpuMillicores: f.Limits.LabMaxCPU, MaxMemoryBytes: f.Limits.LabMaxMemory},
+				Lab:    &protobuf.LabLimits{MaxDevices: int32(f.Limits.LabMaxDevices)},
+				Group:  &protobuf.GroupLimits{MaxLabs: int32(f.Limits.GroupMaxLabs), MaxCpuMillicores: f.Limits.GroupMaxCPU, MaxMemoryBytes: f.Limits.GroupMaxMemory},
 				Tenant: &protobuf.TenantLimits{MaxLabs: int32(f.Limits.TenantMaxLabs)},
 			},
 			Proxy: &protobuf.ProxyFeature{
-				AccessTokenMaxTtlSeconds: int64(f.ProxyAccessTokenMaxTTL.Seconds()), SessionMaxTtlSeconds: int64(f.ProxySessionMaxTTL.Seconds()),
+				AccessTokenMaxTtlSeconds: int64(f.ProxyAccessTokenMaxTTL.Seconds()), SessionMaxTtlSeconds: int64(f.ProxySessionMaxTTL.Seconds()), SessionIdleTtlSeconds: int64(f.ProxySessionIdleTTL.Seconds()),
 			},
 		}
 		h.featCache.mu.Lock()

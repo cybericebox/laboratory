@@ -329,17 +329,89 @@ func TestSession_StopsWhenTheGroupChangesOwner(t *testing.T) {
 	}
 }
 
-// A link asking for a longer session is cut to the proxy's own limit.
-func TestHandoff_SessionIsCutToTheLimit(t *testing.T) {
+// The idle lifetime is the cookie's: a link asking for more still gets only idle at first.
+func TestHandoff_CookieLivesTheIdleTTL(t *testing.T) {
 	f := newHandoffFixture(t)
-	f.handler.WithLimits(DefaultHandoffLifetime, 2*time.Hour)
-	rec := f.open(f.link(t, nil))
-	cookies := rec.Result().Cookies()
-	if rec.Code != http.StatusSeeOther || len(cookies) != 1 {
-		t.Fatalf("code = %d cookies = %v", rec.Code, cookies)
+	f.handler.WithLimits(DefaultHandoffLifetime, 2*time.Hour, 30*time.Minute, 168*time.Hour)
+	cookies := f.open(f.link(t, nil)).Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Expires.Unix() != f.now.Add(2*time.Hour).Unix() {
+		t.Fatalf("cookies = %v", cookies)
 	}
-	if want := f.now.Add(2 * time.Hour).Unix(); cookies[0].Expires.Unix() != want {
-		t.Fatalf("expires %d, want the limit %d", cookies[0].Expires.Unix(), want)
+}
+
+// Never beyond the link's own session end, nor the absolute maximum.
+func TestHandoff_SessionNeverPassesTheLinkOrTheMax(t *testing.T) {
+	f := newHandoffFixture(t)
+	f.handler.WithLimits(DefaultHandoffLifetime, 24*time.Hour, time.Hour, 168*time.Hour)
+	short := f.link(t, func(c *handoffClaims) { c.Session = f.now.Add(3 * time.Hour).Unix() })
+	if c := f.open(short).Result().Cookies(); len(c) != 1 || c[0].Expires.Unix() != f.now.Add(3*time.Hour).Unix() {
+		t.Fatalf("the link ends in 3h: %v", c)
+	}
+	f.handler.WithLimits(DefaultHandoffLifetime, 24*time.Hour, time.Hour, 10*time.Hour)
+	long := f.link(t, func(c *handoffClaims) { c.Session = f.now.Add(1000 * time.Hour).Unix() })
+	c := f.open(long).Result().Cookies()
+	if len(c) != 1 || c[0].Expires.Unix() != f.now.Add(10*time.Hour).Unix() {
+		t.Fatalf("the maximum is 10h: %v", c)
+	}
+}
+
+// Sliding: the cookie is renewed only when less than renewBefore remains, once per window, up to the absolute end.
+func TestSession_SlidesWithActivityAndEndsAtTheMax(t *testing.T) {
+	f := newHandoffFixture(t)
+	f.handler.WithLimits(DefaultHandoffLifetime, 10*time.Hour, 2*time.Hour, 24*time.Hour)
+	c := f.open(f.link(t, func(c *handoffClaims) { c.Session = f.now.Add(1000 * time.Hour).Unix() })).Result().Cookies()[0]
+	get := func(cookie *http.Cookie) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "https://"+labHost+"/", nil)
+		req.Host = labHost
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		f.handler.ServeHTTP(rec, req)
+		return rec
+	}
+	start := f.now
+	if rec := get(c); rec.Code != 200 || len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("9h-plus remain: no renewal, got %d %v", rec.Code, rec.Result().Cookies())
+	}
+	// 9h later 1h remains (< 2h): renewed to now+10h
+	f.now = start.Add(9 * time.Hour)
+	rec := get(c)
+	renewed := rec.Result().Cookies()
+	if rec.Code != 200 || len(renewed) != 1 || renewed[0].Expires.Unix() != f.now.Add(10*time.Hour).Unix() {
+		t.Fatalf("renewal: %d %v", rec.Code, renewed)
+	}
+	// the renewed cookie is not renewed again at once
+	if rec := get(renewed[0]); len(rec.Result().Cookies()) != 0 {
+		t.Fatal("one renewal per window")
+	}
+	// near the absolute end (24h from the start) the expiry is cut to it, and then nothing later is possible
+	f.now = start.Add(18 * time.Hour)
+	last := get(renewed[0]).Result().Cookies()
+	if len(last) != 1 || last[0].Expires.Unix() != start.Add(24*time.Hour).Unix() {
+		t.Fatalf("cut to the absolute end: %v", last)
+	}
+	f.now = start.Add(23 * time.Hour)
+	if rec := get(last[0]); rec.Code != 200 || len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("at the absolute end there is nothing to renew: %d %v", rec.Code, rec.Result().Cookies())
+	}
+	f.now = start.Add(25 * time.Hour)
+	if rec := get(last[0]); rec.Code == 200 {
+		t.Fatal("past the absolute end the session is over")
+	}
+}
+
+// Idle: no request for idle TTL ends it.
+func TestSession_EndsAfterTheIdleTTL(t *testing.T) {
+	f := newHandoffFixture(t)
+	f.handler.WithLimits(DefaultHandoffLifetime, time.Hour, 10*time.Minute, 168*time.Hour)
+	c := f.open(f.link(t, nil)).Result().Cookies()[0]
+	f.now = f.now.Add(2 * time.Hour)
+	req := httptest.NewRequest("GET", "https://"+labHost+"/", nil)
+	req.Host = labHost
+	req.AddCookie(c)
+	rec := httptest.NewRecorder()
+	f.handler.ServeHTTP(rec, req)
+	if rec.Code == 200 {
+		t.Fatal("an idle session must end")
 	}
 }
 
@@ -350,7 +422,7 @@ func TestHandoff_TokenLifetimeLimitIsConfigured(t *testing.T) {
 	if rec := f.open(long); rec.Code != http.StatusSeeOther {
 		t.Fatalf("3m under the default 5m: %d", rec.Code)
 	}
-	f.handler.WithLimits(2*time.Minute, DefaultSessionMaxTTL)
+	f.handler.WithLimits(2*time.Minute, DefaultSessionIdleTTL, DefaultSessionRenewBefore, DefaultSessionMaxTTL)
 	if rec := f.open(long); rec.Code == http.StatusSeeOther {
 		t.Fatal("3m over a 2m limit must be refused")
 	}

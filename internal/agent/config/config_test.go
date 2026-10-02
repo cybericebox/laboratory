@@ -36,7 +36,7 @@ func TestFeatureDefaultsMirrorTheChart(t *testing.T) {
 	if c.State.Debounce != 5*time.Second || c.State.WriteQuota != "512Mi" || c.State.MaxFileSize != "256Mi" ||
 		len(c.State.ExcludePaths) != 3 || !c.Scheduler.Enabled || c.Scheduler.MaxPods != 20 ||
 		c.Limits.DeviceMaxCPU != "2000m" || c.Limits.LabMaxDevices != 20 || c.Limits.TenantMaxLabs != 0 ||
-		c.ProxyAccessTokenMaxTTL != 5*time.Minute || c.ProxySessionMaxTTL != 24*time.Hour {
+		c.ProxyAccessTokenMaxTTL != 5*time.Minute || c.ProxySessionIdleTTL != 24*time.Hour || c.ProxySessionMaxTTL != 168*time.Hour || c.Limits.GroupMaxLabs != 50 {
 		t.Fatalf("%+v %+v", c.State, c.Scheduler)
 	}
 }

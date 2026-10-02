@@ -15,9 +15,15 @@ import (
 // link, never a session. Mirrors the chart (proxy.l7.accessTokenMaxTTL).
 const DefaultHandoffLifetime = 5 * time.Minute
 
-// DefaultSessionMaxTTL is the longest the proxy's own session cookie lives, whatever the link asks for.
-// Mirrors the chart (proxy.l7.sessionMaxTTL).
-const DefaultSessionMaxTTL = 24 * time.Hour
+// The proxy's own session is sliding: the cookie expires DefaultSessionIdleTTL after the last request, it is
+// re-issued only when less than DefaultSessionRenewBefore of it remains (so an active user costs about one
+// Set-Cookie per hour), and it never lives past DefaultSessionMaxTTL from the handoff or past the link's sess.
+// Mirror the chart (proxy.l7.sessionIdleTTL, sessionRenewBefore, sessionMaxTTL).
+const (
+	DefaultSessionIdleTTL     = 24 * time.Hour
+	DefaultSessionRenewBefore = time.Hour
+	DefaultSessionMaxTTL      = 168 * time.Hour
+)
 
 // jwtClaims is the proxy's own session cookie (HS256). It carries only what the
 // operator knows: the LabGroup and a LabGroupClient of that group.
@@ -28,6 +34,9 @@ type jwtClaims struct {
 	Client string `json:"client,omitempty"`
 	// Tenant is the tenant that issued the handoff; it must stay the owner of the group.
 	Tenant string `json:"tenant,omitempty"`
+	// Abs is the unix time the session ends at the latest, whatever renewals do (the handoff's start plus the
+	// session maximum, never past the link's sess). Absent in older cookies: they are not renewed.
+	Abs int64 `json:"abs,omitempty"`
 	jwt.RegisteredClaims
 }
 

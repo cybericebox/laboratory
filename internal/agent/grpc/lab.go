@@ -105,15 +105,14 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 	if err := dupRefs(refs); err != nil {
 		return nil, err
 	}
-	over, err := h.overTenantLabLimit(ctx, refs)
+	over, err := h.overLimits(ctx, items, variants)
 	if err != nil {
 		return nil, err
 	}
 	resolver := h.newResolver(ctx)
 	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
-		if over[i] {
-			return failedResult(refs[i], status.Errorf(codes.ResourceExhausted, "the tenant is at its limit of %d labs",
-				h.features.Limits.TenantMaxLabs))
+		if over[i] != nil {
+			return failedResult(refs[i], status.Error(codes.ResourceExhausted, over[i].Error()))
 		}
 		state, err := h.createLab(ctx, resolver, items[i], variants[items[i].GetVariantId()], envs[i], in.GetLabels())
 		if err != nil {
@@ -389,34 +388,57 @@ func (h *Handler) DeleteLabs(ctx context.Context, in *protobuf.DeleteRequest) (*
 	})
 }
 
-// overTenantLabLimit says which of the items to create would pass the tenant's lab cap. The labs the tenant has
-// are counted first; an item whose lab exists is not new (the create is idempotent), and of the new ones the first
-// that fit the room are admitted, in request order. The check is made when the call arrives: calls that run at the
-// same time may pass it together.
-func (h *Handler) overTenantLabLimit(ctx context.Context, refs []*protobuf.ItemRef) ([]bool, error) {
-	over := make([]bool, len(refs))
-	max := h.features.Limits.TenantMaxLabs
-	if max <= 0 {
+// overLimits says which of the items to create would pass the tenant's lab cap or its group's caps (labs, CPU,
+// memory), and why. The labs that exist are counted first; an item whose lab exists is not new (the create is
+// idempotent), and of the new ones the first that fit are admitted, in request order. The check is made when the
+// call arrives: calls that run at the same time may pass it together.
+func (h *Handler) overLimits(ctx context.Context, items []*protobuf.LabItem, variants map[string]*labVariant) ([]error, error) {
+	over := make([]error, len(items))
+	lim := h.features.Limits
+	if lim.TenantMaxLabs <= 0 && lim.GroupMaxLabs <= 0 && lim.GroupMaxCPU <= 0 && lim.GroupMaxMemory <= 0 {
 		return over, nil
 	}
 	have, err := h.listLabs(ctx, "", "")
 	if err != nil {
 		return nil, err
 	}
+	type tally struct {
+		labs     int
+		cpu, mem int64
+	}
 	exists := make(map[string]bool, len(have))
+	groups := map[string]*tally{}
 	for _, m := range have {
 		exists[m.group+"/"+names.IDOf(m.lab)] = true
+		t := groups[m.group]
+		if t == nil {
+			t = &tally{}
+			groups[m.group] = t
+		}
+		cpu, mem, _, _ := lim.SpecTotals(&m.lab.Spec)
+		t.labs, t.cpu, t.mem = t.labs+1, t.cpu+cpu, t.mem+mem
 	}
-	room := max - len(have)
-	for i, r := range refs {
-		if exists[r.GetLabGroup()+"/"+r.GetName()] {
+	room := lim.TenantMaxLabs - len(have)
+	for i, it := range items {
+		if exists[it.GetLabGroup()+"/"+it.GetName()] {
 			continue
 		}
-		if room <= 0 {
-			over[i] = true
+		if lim.TenantMaxLabs > 0 && room <= 0 {
+			over[i] = fmt.Errorf("the tenant is at its limit of %d labs", lim.TenantMaxLabs)
+			continue
+		}
+		t := groups[it.GetLabGroup()]
+		if t == nil {
+			t = &tally{}
+			groups[it.GetLabGroup()] = t
+		}
+		cpu, mem, _, _ := lim.SpecTotals(&variants[it.GetVariantId()].spec)
+		if err := lim.GroupFits(t.labs, t.cpu, t.mem, cpu, mem); err != nil {
+			over[i] = err
 			continue
 		}
 		room--
+		t.labs, t.cpu, t.mem = t.labs+1, t.cpu+cpu, t.mem+mem
 	}
 	return over, nil
 }

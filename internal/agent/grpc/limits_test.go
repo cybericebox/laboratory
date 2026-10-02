@@ -18,7 +18,7 @@ func limitedFeatures() Features {
 	f := testFeatures
 	f.Limits = limits.Limits{
 		DeviceMaxCPU: 500, DeviceMaxMemory: 512 << 20, DeviceDefaultCPU: 100, DeviceDefaultMemory: 256 << 20,
-		LabMaxDevices: 3, LabMaxCPU: 1000, LabMaxMemory: 1 << 30, TenantMaxLabs: 2,
+		LabMaxDevices: 3, GroupMaxLabs: 2, GroupMaxCPU: 250, GroupMaxMemory: 1 << 30, TenantMaxLabs: 3,
 	}
 	return f
 }
@@ -62,7 +62,9 @@ func TestCreateLabsRefusesSpecsOverTheCaps(t *testing.T) {
 
 func TestCreateLabsHonoursTheTenantLabLimit(t *testing.T) {
 	h, k8s := newTestHandler(t)
-	h.SetFeatures(limitedFeatures()) // 2 labs
+	f := limitedFeatures()
+	f.Limits.GroupMaxLabs, f.Limits.TenantMaxLabs = 0, 2
+	h.SetFeatures(f)
 	readyGroup(t, h, k8s, "g", "g", nil)
 	ctx := context.Background()
 	create := func(ids ...string) *protobuf.BatchResult {
@@ -92,10 +94,49 @@ func TestFeaturesReportTheLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 	l := got.GetLimits()
-	d, lab := l.GetDevice(), l.GetLab()
+	d, lab, g := l.GetDevice(), l.GetLab(), l.GetGroup()
 	if d.GetMaxCpuMillicores() != 500 || d.GetMaxMemoryBytes() != 512<<20 || d.GetDefaultCpuMillicores() != 100 ||
-		d.GetDefaultMemoryBytes() != 256<<20 || lab.GetMaxDevices() != 3 || lab.GetMaxCpuMillicores() != 1000 ||
-		lab.GetMaxMemoryBytes() != 1<<30 || l.GetTenant().GetMaxLabs() != 2 {
+		d.GetDefaultMemoryBytes() != 256<<20 || lab.GetMaxDevices() != 3 || g.GetMaxLabs() != 2 || g.GetMaxCpuMillicores() != 250 ||
+		g.GetMaxMemoryBytes() != 1<<30 || l.GetTenant().GetMaxLabs() != 3 {
 		t.Fatalf("limits: %+v", l)
+	}
+}
+
+// Per group: its labs, and the sum of the planned resources of all of them (the profile is 100m / 256Mi per device).
+func TestCreateLabsHonoursTheGroupLimits(t *testing.T) {
+	h, k8s := newTestHandler(t)
+	f := limitedFeatures()
+	f.Limits.TenantMaxLabs = 0
+	h.SetFeatures(f) // 2 labs, 250m, 1Gi per group
+	readyGroup(t, h, k8s, "g1", "g1", nil)
+	readyGroup(t, h, k8s, "g2", "g2", nil)
+	ctx := context.Background()
+	create := func(variant []byte, refs ...[2]string) *protobuf.BatchResult {
+		items := make([]*protobuf.LabItem, len(refs))
+		for i, r := range refs {
+			items[i] = &protobuf.LabItem{LabGroup: r[0], Name: r[1], VariantId: "v"}
+		}
+		res, err := h.CreateLabs(ctx, &protobuf.CreateLabsRequest{Variants: []*protobuf.LabVariant{{VariantId: "v", SpecJson: variant}}, Items: items})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	// two devices per lab = 200m: the second lab of g1 passes 250m, g2 is counted apart
+	res := create(specJSON("a", "b"), [2]string{"g1", "l1"}, [2]string{"g1", "l2"}, [2]string{"g2", "l3"})
+	wantStates(t, res, nil, stCreated, stFailed, stCreated)
+	if !strings.Contains(res.Results[1].Error, "limit per group is 250m") || res.Results[1].Retryable {
+		t.Fatalf("cpu cap: %+v", res.Results[1])
+	}
+	// g1 has 200m planned; a resend of l1 is not new, another 200m lab would make 400m
+	res = create(specJSON("a", "b"), [2]string{"g1", "l1"}, [2]string{"g1", "l4"})
+	wantStates(t, res, nil, stExists, stFailed)
+	// the labs cap: g2 holds one lab (200m), a second 50m-less lab fits, a third passes the cap of 2 labs
+	f.Limits.GroupMaxCPU = 0
+	h.SetFeatures(f)
+	res = create(specJSON("a"), [2]string{"g2", "l5"}, [2]string{"g2", "l6"})
+	wantStates(t, res, nil, stCreated, stFailed)
+	if !strings.Contains(res.Results[1].Error, "limit of 2 labs") {
+		t.Fatalf("labs cap: %+v", res.Results[1])
 	}
 }

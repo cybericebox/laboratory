@@ -40,8 +40,9 @@ type Handler struct {
 	attribute Attribution
 	authorize Authorizer
 	now       func() time.Time
-	// handoffMax bounds exp - iat of a handoff token, sessionMax the life of the cookie it opens.
-	handoffMax, sessionMax time.Duration
+	// handoffMax bounds exp - iat of a handoff token. The session is sliding: it expires sessionIdle after the last
+	// request, is renewed when less than sessionRenew of it remains, and ends at sessionMax at the latest.
+	handoffMax, sessionIdle, sessionRenew, sessionMax time.Duration
 }
 
 // upstreamTransport skips certificate verification for in-cluster backends
@@ -68,13 +69,14 @@ func NewHandler(keys KeyLookup, secret []byte, baseDomain, cookieName string, re
 		resolver:   resolver,
 		transport:  upstreamTransport,
 		now:        time.Now,
-		handoffMax: DefaultHandoffLifetime, sessionMax: DefaultSessionMaxTTL,
+		handoffMax: DefaultHandoffLifetime, sessionIdle: DefaultSessionIdleTTL, sessionRenew: DefaultSessionRenewBefore, sessionMax: DefaultSessionMaxTTL,
 	}
 }
 
-// WithLimits sets the longest accepted handoff token (exp - iat) and the longest session cookie.
-func (h *Handler) WithLimits(handoffMax, sessionMax time.Duration) *Handler {
-	h.handoffMax, h.sessionMax = handoffMax, sessionMax
+// WithLimits sets the longest accepted handoff token (exp - iat) and the sliding session: its idle lifetime, the
+// remaining time under which the cookie is renewed, and the absolute maximum.
+func (h *Handler) WithLimits(handoffMax, sessionIdle, sessionRenew, sessionMax time.Duration) *Handler {
+	h.handoffMax, h.sessionIdle, h.sessionRenew, h.sessionMax = handoffMax, sessionIdle, sessionRenew, sessionMax
 	return h
 }
 
@@ -126,6 +128,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	h.renewSession(w, claims)
 
 	backendURL, err := h.resolver(task, claims.GroupID)
 	if err != nil {

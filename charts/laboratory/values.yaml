@@ -156,10 +156,15 @@ proxy:
     sessionSecret:
       name: proxy-session
       key: sessionSecret
-    # The longest exp - iat of a handoff link the proxy accepts (ACCESS_TOKEN_MAX_TTL) and the longest its own
-    # session cookie lives, whatever the link asks for (SESSION_MAX_TTL). The agent reports both to the backend.
+    # The longest exp - iat of a handoff link the proxy accepts (ACCESS_TOKEN_MAX_TTL).
     accessTokenMaxTTL: 5m
-    sessionMaxTTL: 24h
+    # The proxy's own session is sliding. It expires sessionIdleTTL after the last request; the cookie is
+    # re-issued only when less than sessionRenewBefore of it remains (at most about one renewal per
+    # sessionRenewBefore per active user); sessionMaxTTL is the absolute cap from the handoff. The session also
+    # never outlives the link's own session end. The agent reports idle and max to the backend.
+    sessionIdleTTL: 24h
+    sessionRenewBefore: 1h
+    sessionMaxTTL: 168h
     # How often each replica publishes its request counters (REPORT_INTERVAL).
     reportInterval: "1m"
     # Requests = limits (Guaranteed). Measured: 36Mi at 200 concurrent clients; CPU is the limit that
@@ -523,9 +528,12 @@ limits:
   lab:
     # Container devices of one lab (switches and hubs run no pod and do not count).
     maxDevices: 20
-    # The sum over the devices of one lab.
-    maxCpu: 4000m
-    maxMemory: 8Gi
+  group:
+    # Labs of one LabGroup, and the sum of the planned resources of the devices of all its labs
+    # ("0" = no limit on the sum). Devices are Guaranteed, so a group's sum is what it reserves.
+    maxLabs: 50
+    maxCpu: "0"
+    maxMemory: "0"
   tenant:
     # Labs of one tenant; 0 = unlimited (the tenant's resource quota still applies).
     maxLabs: 0

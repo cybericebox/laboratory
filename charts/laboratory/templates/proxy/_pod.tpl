@@ -46,6 +46,10 @@ spec:
           key: {{ .Values.proxy.l7.sessionSecret.key | quote }}
     - name: ACCESS_TOKEN_MAX_TTL
       value: {{ .Values.proxy.l7.accessTokenMaxTTL | quote }}
+    - name: SESSION_IDLE_TTL
+      value: {{ .Values.proxy.l7.sessionIdleTTL | quote }}
+    - name: SESSION_RENEW_BEFORE
+      value: {{ .Values.proxy.l7.sessionRenewBefore | quote }}
     - name: SESSION_MAX_TTL
       value: {{ .Values.proxy.l7.sessionMaxTTL | quote }}
     - name: REPORT_INTERVAL

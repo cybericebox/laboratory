@@ -105,7 +105,7 @@ func features(cfg *config.Config) (f grpcserver.Features, err error) {
 		CacheEnabled: cfg.Cache.Enabled, CacheRegistries: cfg.Cache.Registries,
 		SchedulerEnabled: cfg.Scheduler.Enabled, SchedulerMaxPods: int32(cfg.Scheduler.MaxPods),
 		LabsDomain: cfg.BaseDomain, VPNEndpoint: cfg.PublicVPNEndpoint,
-		ProxyAccessTokenMaxTTL: cfg.ProxyAccessTokenMaxTTL, ProxySessionMaxTTL: cfg.ProxySessionMaxTTL,
+		ProxyAccessTokenMaxTTL: cfg.ProxyAccessTokenMaxTTL, ProxySessionIdleTTL: cfg.ProxySessionIdleTTL, ProxySessionMaxTTL: cfg.ProxySessionMaxTTL,
 	}
 	if f.Limits, err = cfg.Limits.Parse(); err != nil {
 		return f, err

@@ -55,7 +55,8 @@ type Config struct {
 	Scheduler SchedulerConfig
 	// ProxyAccessTokenMaxTTL and ProxySessionMaxTTL are the L7 proxy's limits (chart proxy.l7.*), reported by GetFeatures.
 	ProxyAccessTokenMaxTTL time.Duration `env:"AGENT_PROXY_ACCESS_TOKEN_MAX_TTL" envDefault:"5m"`
-	ProxySessionMaxTTL     time.Duration `env:"AGENT_PROXY_SESSION_MAX_TTL" envDefault:"24h"`
+	ProxySessionIdleTTL    time.Duration `env:"AGENT_PROXY_SESSION_IDLE_TTL" envDefault:"24h"`
+	ProxySessionMaxTTL     time.Duration `env:"AGENT_PROXY_SESSION_MAX_TTL" envDefault:"168h"`
 	// Limits are the caps on devices, labs and tenants the agent enforces on CreateLabs and reports.
 	Limits limits.Config
 	// BaseDomain is the domain of the lab web endpoints; PublicVPNEndpoint is host:port of WireGuard.

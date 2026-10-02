@@ -24,16 +24,16 @@ func operatorConfig(t *testing.T, extra ...string) map[string]string {
 
 func TestSchedulerDefaultsReachTheOperator(t *testing.T) {
 	want := map[string]string{
-		"SCHEDULER_ENABLED":           "true",
-		"SCHEDULER_MAX_PODS":          "20",
-		"SCHEDULER_STARTUP_TIMEOUT":   "5m",
-		"SCHEDULER_RESTART_THRESHOLD": "5",
+		"SCHEDULER_ENABLED":                  "true",
+		"SCHEDULER_MAX_PODS":                 "20",
+		"SCHEDULER_STARTUP_TIMEOUT":          "5m",
+		"SCHEDULER_RESTART_THRESHOLD":        "5",
 		"SCHEDULER_PLATFORM_RESERVE_PERCENT": "10", "SCHEDULER_PLATFORM_RESERVE_CPU": "0", "SCHEDULER_PLATFORM_RESERVE_MEMORY": "0",
-		"SCHEDULER_RESOURCE_CHECK":    "true",
-		"SCHEDULER_PREPULL":           "true",
-		"SCHEDULER_PREPULL_TIMEOUT":   "5m",
-		"DEVICE_DEFAULT_CPU":          "100m",
-		"DEVICE_DEFAULT_MEMORY":       "256Mi",
+		"SCHEDULER_RESOURCE_CHECK":  "true",
+		"SCHEDULER_PREPULL":         "true",
+		"SCHEDULER_PREPULL_TIMEOUT": "5m",
+		"DEVICE_DEFAULT_CPU":        "100m",
+		"DEVICE_DEFAULT_MEMORY":     "256Mi",
 	}
 	got := operatorConfig(t)
 	for k, v := range want {

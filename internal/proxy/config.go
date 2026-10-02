@@ -25,7 +25,12 @@ type L7Config struct {
 	// AccessTokenMaxTTL is the longest exp - iat of a handoff link the proxy accepts; SessionMaxTTL is the
 	// longest its own session cookie lives, whatever the link asks for. The agent reports both to the backend.
 	AccessTokenMaxTTL time.Duration `env:"ACCESS_TOKEN_MAX_TTL" envDefault:"5m"`
-	SessionMaxTTL     time.Duration `env:"SESSION_MAX_TTL" envDefault:"24h"`
+	// The session is sliding: it expires SessionIdleTTL after the last request, the cookie is re-issued only when
+	// less than SessionRenewBefore of it remains, and it ends SessionMaxTTL after the handoff at the latest (and
+	// never past the link's sess).
+	SessionIdleTTL     time.Duration `env:"SESSION_IDLE_TTL" envDefault:"24h"`
+	SessionRenewBefore time.Duration `env:"SESSION_RENEW_BEFORE" envDefault:"1h"`
+	SessionMaxTTL      time.Duration `env:"SESSION_MAX_TTL" envDefault:"168h"`
 }
 
 type WGConfig struct {
@@ -43,6 +48,9 @@ func LoadL7Config() (*L7Config, error) {
 	}
 	if len(cfg.SessionSecret) < MinSessionSecretLen {
 		return cfg, fmt.Errorf("SESSION_SECRET must be at least %d bytes", MinSessionSecretLen)
+	}
+	if cfg.SessionIdleTTL <= 0 || cfg.SessionMaxTTL <= 0 || cfg.SessionRenewBefore < 0 || cfg.SessionRenewBefore >= cfg.SessionIdleTTL {
+		return cfg, fmt.Errorf("SESSION_IDLE_TTL and SESSION_MAX_TTL must be positive and SESSION_RENEW_BEFORE must be shorter than SESSION_IDLE_TTL")
 	}
 	return cfg, nil
 }

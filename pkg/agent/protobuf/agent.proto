@@ -671,6 +671,7 @@ message LimitsFeature {
   DeviceLimits device = 1;
   LabLimits lab = 2;
   TenantLimits tenant = 3;
+  GroupLimits group = 4;
 }
 
 message DeviceLimits {
@@ -683,7 +684,12 @@ message DeviceLimits {
 message LabLimits {
   // Container devices per lab (switches and hubs run no pod and do not count).
   int32 max_devices = 1;
-  // The sum over the devices of a lab, the planning profile counted for a device without resources.
+  reserved 2, 3;   // were the per-lab CPU and memory sums
+}
+
+// Per LabGroup: its labs, and the sum of the planned resources of the devices of all of them.
+message GroupLimits {
+  int32 max_labs = 1;
   int64 max_cpu_millicores = 2;
   int64 max_memory_bytes = 3;
 }
@@ -697,7 +703,10 @@ message TenantLimits {
 message ProxyFeature {
   // The longest exp - iat of an access token (handoff link) the proxy accepts; a longer one is refused.
   int64 access_token_max_ttl_seconds = 1;
-  // The longest the proxy's own session cookie lives: a link whose session end is later is cut to this.
+  // The proxy's session is sliding: it expires after this much inactivity (the cookie is renewed while the
+  // user is active) ...
+  int64 session_idle_ttl_seconds = 3;
+  // ... and never lives longer than this from the handoff, nor past the link's own session end.
   int64 session_max_ttl_seconds = 2;
 }
 

@@ -280,7 +280,7 @@ func TestAgentGetsTheFeatureValues(t *testing.T) {
 	for _, want := range []string{"name: AGENT_STATE_DEBOUNCE\n              value: \"9s\"", "name: AGENT_STATE_WRITE_QUOTA\n              value: \"1Gi\"",
 		"name: AGENT_STATE_MAX_FILE_SIZE\n              value: \"256Mi\"", "name: AGENT_STATE_EXCLUDE_PATHS\n              value: \"/tmp,/var/tmp,/run\"",
 		"name: AGENT_SCHEDULER_MAX_PODS\n              value: \"7\"", "name: AGENT_SCHEDULER_ENABLED\n              value: \"true\"",
-		"name: AGENT_PROXY_ACCESS_TOKEN_MAX_TTL\n              value: \"5m\"", "name: AGENT_PROXY_SESSION_MAX_TTL\n              value: \"24h\"",
+		"name: AGENT_PROXY_ACCESS_TOKEN_MAX_TTL\n              value: \"5m\"", "name: AGENT_PROXY_SESSION_IDLE_TTL\n              value: \"24h\"", "name: AGENT_PROXY_SESSION_MAX_TTL\n              value: \"168h\"",
 		"name: AGENT_BASE_DOMAIN", "name: AGENT_PUBLIC_VPN_ENDPOINT"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q", want)
@@ -296,8 +296,8 @@ func TestLimitsReachTheAgentAndTheOperator(t *testing.T) {
 	}
 	for _, want := range []string{"name: AGENT_LIMIT_DEVICE_MAX_CPU\n              value: \"2000m\"", "name: AGENT_LIMIT_DEVICE_MAX_MEMORY\n              value: \"4Gi\"",
 		"name: AGENT_LIMIT_DEVICE_DEFAULT_CPU\n              value: \"100m\"", "name: AGENT_LIMIT_DEVICE_DEFAULT_MEMORY\n              value: \"256Mi\"",
-		"name: AGENT_LIMIT_LAB_MAX_DEVICES\n              value: \"4\"", "name: AGENT_LIMIT_LAB_MAX_CPU\n              value: \"4000m\"",
-		"name: AGENT_LIMIT_LAB_MAX_MEMORY\n              value: \"8Gi\"", "name: AGENT_LIMIT_TENANT_MAX_LABS\n              value: \"5\"",
+		"name: AGENT_LIMIT_LAB_MAX_DEVICES\n              value: \"4\"", "name: AGENT_LIMIT_GROUP_MAX_LABS\n              value: \"50\"",
+		"name: AGENT_LIMIT_GROUP_MAX_CPU\n              value: \"0\"", "name: AGENT_LIMIT_GROUP_MAX_MEMORY\n              value: \"0\"", "name: AGENT_LIMIT_TENANT_MAX_LABS\n              value: \"5\"",
 		`DEVICE_DEFAULT_CPU: "100m"`, `DEVICE_DEFAULT_MEMORY: "256Mi"`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q", want)

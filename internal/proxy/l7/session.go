@@ -28,24 +28,57 @@ func (h *Handler) handoff(w http.ResponseWriter, r *http.Request, host string) {
 		h.expired(w, r)
 		return
 	}
-	end := time.Unix(claims.Session, 0)
-	if limit := now.Add(h.sessionMax); h.sessionMax > 0 && end.After(limit) {
-		end = limit
+	// The session ends at the link's sess, but not later than sessionMax from now; it is valid for sessionIdle,
+	// and renewals (renewSession) slide that until the absolute end.
+	abs := time.Unix(claims.Session, 0)
+	if limit := now.Add(h.sessionMax); h.sessionMax > 0 && abs.After(limit) {
+		abs = limit
 	}
-	value, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwtClaims{
-		GroupID: claims.GroupID, Client: claims.client(), Tenant: claims.Issuer,
-		RegisteredClaims: jwt.RegisteredClaims{
-			IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(end),
-		},
-	}).SignedString(h.secret)
+	value, end, err := h.sessionCookie(jwtClaims{
+		GroupID: claims.GroupID, Client: claims.client(), Tenant: claims.Issuer, Abs: abs.Unix(),
+		RegisteredClaims: jwt.RegisteredClaims{IssuedAt: jwt.NewNumericDate(now)},
+	}, now)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	h.setSessionCookie(w, value, end, now)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// sessionCookie signs the cookie of c, valid for sessionIdle from now and not past c.Abs.
+func (h *Handler) sessionCookie(c jwtClaims, now time.Time) (string, time.Time, error) {
+	end := now.Add(h.sessionIdle)
+	if abs := time.Unix(c.Abs, 0); h.sessionIdle <= 0 || end.After(abs) {
+		end = abs
+	}
+	c.ExpiresAt = jwt.NewNumericDate(end)
+	value, err := jwt.NewWithClaims(jwt.SigningMethodHS256, c).SignedString(h.secret)
+	return value, end, err
+}
+
+func (h *Handler) setSessionCookie(w http.ResponseWriter, value string, end, now time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name: h.cookieName, Value: value, Domain: h.baseDomain, Path: "/",
 		Expires: end, MaxAge: int(end.Sub(now).Seconds()),
 		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 	})
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// renewSession slides the session of a valid cookie: when less than sessionRenew of it remains and the absolute end
+// allows a later expiry, a fresh cookie goes out with the response. An active user costs one renewal per
+// sessionRenew at most, and a cookie without an absolute end (older) is left alone.
+func (h *Handler) renewSession(w http.ResponseWriter, c jwtClaims) {
+	if c.Abs == 0 || c.ExpiresAt == nil || h.sessionRenew <= 0 {
+		return
+	}
+	now := h.now()
+	if c.ExpiresAt.Sub(now) >= h.sessionRenew {
+		return
+	}
+	value, end, err := h.sessionCookie(c, now)
+	if err != nil || !end.After(c.ExpiresAt.Time) {
+		return
+	}
+	h.setSessionCookie(w, value, end, now)
 }

@@ -1,6 +1,7 @@
 package chart_test
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -75,5 +76,19 @@ func TestProxyModeIsValidated(t *testing.T) {
 	out, err := helmTemplate(t, "--set", "proxy.mode=deployment", "-s", "templates/proxy/deployment.yaml")
 	if err == nil || !strings.Contains(out, "proxy.mode") {
 		t.Fatalf("an unknown mode must be refused: %v\n%s", err, out)
+	}
+}
+
+// The proxy's sliding session comes from the chart.
+func TestProxySessionValuesReachTheProxy(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "proxy.l7.sessionIdleTTL=12h", "--set", "proxy.l7.sessionRenewBefore=30m", "--set", "proxy.l7.sessionMaxTTL=48h",
+		"-s", "templates/proxy/deployment.yaml")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for name, val := range map[string]string{"SESSION_IDLE_TTL": "12h", "SESSION_RENEW_BEFORE": "30m", "SESSION_MAX_TTL": "48h"} {
+		if !regexp.MustCompile(`name: ` + name + `\s+value: "` + val + `"`).MatchString(out) {
+			t.Errorf("%s = %s missing:\n%s", name, val, out)
+		}
 	}
 }

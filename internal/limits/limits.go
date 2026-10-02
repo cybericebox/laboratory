@@ -18,13 +18,15 @@ type Config struct {
 	DeviceMaxMemory     string `env:"AGENT_LIMIT_DEVICE_MAX_MEMORY" envDefault:"4Gi"`
 	DeviceDefaultCPU    string `env:"AGENT_LIMIT_DEVICE_DEFAULT_CPU" envDefault:"100m"`
 	DeviceDefaultMemory string `env:"AGENT_LIMIT_DEVICE_DEFAULT_MEMORY" envDefault:"256Mi"`
-	// LabMaxDevices caps the devices of one lab (0 = no limit); LabMaxCPU and LabMaxMemory cap the sum of the
-	// resources of its devices (the planning profile counts for a device without resources).
-	LabMaxDevices int    `env:"AGENT_LIMIT_LAB_MAX_DEVICES" envDefault:"20"`
-	LabMaxCPU     string `env:"AGENT_LIMIT_LAB_MAX_CPU" envDefault:"4000m"`
-	LabMaxMemory  string `env:"AGENT_LIMIT_LAB_MAX_MEMORY" envDefault:"8Gi"`
-	// TenantMaxLabs caps the labs of one tenant (0 = no limit; the tenant's resource quota still applies).
-	TenantMaxLabs int `env:"AGENT_LIMIT_TENANT_MAX_LABS" envDefault:"0"`
+	// LabMaxDevices caps the container devices of one lab (0 = no limit).
+	LabMaxDevices int `env:"AGENT_LIMIT_LAB_MAX_DEVICES" envDefault:"20"`
+	// GroupMaxLabs caps the labs of one LabGroup (0 = no limit); GroupMaxCPU and GroupMaxMemory cap the sum of
+	// the resources of the devices of all its labs (the planning profile counts for a device without resources;
+	// "0" = no limit).
+	GroupMaxLabs   int    `env:"AGENT_LIMIT_GROUP_MAX_LABS" envDefault:"50"`
+	GroupMaxCPU    string `env:"AGENT_LIMIT_GROUP_MAX_CPU" envDefault:"0"`
+	GroupMaxMemory string `env:"AGENT_LIMIT_GROUP_MAX_MEMORY" envDefault:"0"`
+	TenantMaxLabs  int    `env:"AGENT_LIMIT_TENANT_MAX_LABS" envDefault:"0"`
 }
 
 // Limits is Config parsed: CPU in millicores, memory in bytes. A zero cap means no limit.
@@ -32,7 +34,8 @@ type Limits struct {
 	DeviceMaxCPU, DeviceMaxMemory         int64
 	DeviceDefaultCPU, DeviceDefaultMemory int64
 	LabMaxDevices                         int
-	LabMaxCPU, LabMaxMemory               int64
+	GroupMaxLabs                          int
+	GroupMaxCPU, GroupMaxMemory           int64
 	TenantMaxLabs                         int
 }
 
@@ -48,8 +51,8 @@ func (c Config) Parse() (Limits, error) {
 		{"AGENT_LIMIT_DEVICE_MAX_MEMORY", c.DeviceMaxMemory, false, &l.DeviceMaxMemory},
 		{"AGENT_LIMIT_DEVICE_DEFAULT_CPU", c.DeviceDefaultCPU, true, &l.DeviceDefaultCPU},
 		{"AGENT_LIMIT_DEVICE_DEFAULT_MEMORY", c.DeviceDefaultMemory, false, &l.DeviceDefaultMemory},
-		{"AGENT_LIMIT_LAB_MAX_CPU", c.LabMaxCPU, true, &l.LabMaxCPU},
-		{"AGENT_LIMIT_LAB_MAX_MEMORY", c.LabMaxMemory, false, &l.LabMaxMemory},
+		{"AGENT_LIMIT_GROUP_MAX_CPU", c.GroupMaxCPU, true, &l.GroupMaxCPU},
+		{"AGENT_LIMIT_GROUP_MAX_MEMORY", c.GroupMaxMemory, false, &l.GroupMaxMemory},
 	} {
 		v, err := quantity(q.val, q.cpu)
 		if err != nil {
@@ -57,10 +60,10 @@ func (c Config) Parse() (Limits, error) {
 		}
 		*q.dst = v
 	}
-	if c.LabMaxDevices < 0 || c.TenantMaxLabs < 0 {
-		return l, fmt.Errorf("AGENT_LIMIT_LAB_MAX_DEVICES and AGENT_LIMIT_TENANT_MAX_LABS must not be negative")
+	if c.LabMaxDevices < 0 || c.GroupMaxLabs < 0 || c.TenantMaxLabs < 0 {
+		return l, fmt.Errorf("AGENT_LIMIT_LAB_MAX_DEVICES, AGENT_LIMIT_GROUP_MAX_LABS and AGENT_LIMIT_TENANT_MAX_LABS must not be negative")
 	}
-	l.LabMaxDevices, l.TenantMaxLabs = c.LabMaxDevices, c.TenantMaxLabs
+	l.LabMaxDevices, l.GroupMaxLabs, l.TenantMaxLabs = c.LabMaxDevices, c.GroupMaxLabs, c.TenantMaxLabs
 	if l.DeviceMaxCPU > 0 && l.DeviceDefaultCPU > l.DeviceMaxCPU || l.DeviceMaxMemory > 0 && l.DeviceDefaultMemory > l.DeviceMaxMemory {
 		return l, fmt.Errorf("the default resources of a device must not exceed its maximum")
 	}
@@ -114,42 +117,57 @@ func (l Limits) DeviceResources(r *laboratoryv1alpha1.DeviceResources) (cpu, mem
 	return cpu, mem, nil
 }
 
-// CheckSpec refuses a lab spec that passes a cap: too many container devices (switches and hubs run no pod and
-// do not count), a device over the device maximum, or devices
-// that together pass the lab's CPU or memory cap. The message names the device and both numbers.
-func (l Limits) CheckSpec(spec *laboratoryv1alpha1.LabSpec) error {
-	containers := 0
-	for i := range spec.Devices {
-		if spec.Devices[i].Type == laboratoryv1alpha1.DeviceTypeContainer {
-			containers++
-		}
-	}
-	if l.LabMaxDevices > 0 && containers > l.LabMaxDevices {
-		return fmt.Errorf("the lab has %d container devices, the limit is %d", containers, l.LabMaxDevices)
-	}
-	var sumCPU, sumMem int64
+// SpecTotals is the CPU (millicores) and memory (bytes) the container devices of a spec are planned with, and
+// how many there are. A quantity that does not parse is an error naming the device.
+func (l Limits) SpecTotals(spec *laboratoryv1alpha1.LabSpec) (cpu, mem int64, containers int, err error) {
 	for i := range spec.Devices {
 		d := &spec.Devices[i]
 		if d.Type != laboratoryv1alpha1.DeviceTypeContainer {
 			continue // a switch or a hub runs no pod of its own
 		}
-		cpu, mem, err := l.DeviceResources(d.Resources)
+		c, m, err := l.DeviceResources(d.Resources)
 		if err != nil {
-			return fmt.Errorf("device %q: %w", d.Name, err)
+			return 0, 0, 0, fmt.Errorf("device %q: %w", d.Name, err)
 		}
+		cpu, mem, containers = cpu+c, mem+m, containers+1
+	}
+	return cpu, mem, containers, nil
+}
+
+// CheckSpec refuses a lab spec that passes a cap: too many container devices (switches and hubs run no pod and
+// do not count) or a device over the device maximum. The message names the device and both numbers.
+func (l Limits) CheckSpec(spec *laboratoryv1alpha1.LabSpec) error {
+	if _, _, n, err := l.SpecTotals(spec); err != nil {
+		return err
+	} else if l.LabMaxDevices > 0 && n > l.LabMaxDevices {
+		return fmt.Errorf("the lab has %d container devices, the limit is %d", n, l.LabMaxDevices)
+	}
+	for i := range spec.Devices {
+		d := &spec.Devices[i]
+		if d.Type != laboratoryv1alpha1.DeviceTypeContainer {
+			continue
+		}
+		cpu, mem, _ := l.DeviceResources(d.Resources)
 		if l.DeviceMaxCPU > 0 && cpu > l.DeviceMaxCPU {
 			return fmt.Errorf("device %q: cpu %dm exceeds the limit of %dm per device", d.Name, cpu, l.DeviceMaxCPU)
 		}
 		if l.DeviceMaxMemory > 0 && mem > l.DeviceMaxMemory {
 			return fmt.Errorf("device %q: memory %d bytes exceeds the limit of %d bytes per device", d.Name, mem, l.DeviceMaxMemory)
 		}
-		sumCPU, sumMem = sumCPU+cpu, sumMem+mem
 	}
-	if l.LabMaxCPU > 0 && sumCPU > l.LabMaxCPU {
-		return fmt.Errorf("the devices of the lab need %dm of cpu, the limit per lab is %dm", sumCPU, l.LabMaxCPU)
-	}
-	if l.LabMaxMemory > 0 && sumMem > l.LabMaxMemory {
-		return fmt.Errorf("the devices of the lab need %d bytes of memory, the limit per lab is %d bytes", sumMem, l.LabMaxMemory)
+	return nil
+}
+
+// GroupFits says whether a group that already holds labs labs planned at cpu and mem can take one more lab
+// of the given totals; the error says which cap stops it.
+func (l Limits) GroupFits(labs int, cpu, mem, addCPU, addMem int64) error {
+	switch {
+	case l.GroupMaxLabs > 0 && labs+1 > l.GroupMaxLabs:
+		return fmt.Errorf("the lab group is at its limit of %d labs", l.GroupMaxLabs)
+	case l.GroupMaxCPU > 0 && cpu+addCPU > l.GroupMaxCPU:
+		return fmt.Errorf("the lab needs %dm of cpu and the lab group already plans %dm, the limit per group is %dm", addCPU, cpu, l.GroupMaxCPU)
+	case l.GroupMaxMemory > 0 && mem+addMem > l.GroupMaxMemory:
+		return fmt.Errorf("the lab needs %d bytes of memory and the lab group already plans %d, the limit per group is %d bytes", addMem, mem, l.GroupMaxMemory)
 	}
 	return nil
 }

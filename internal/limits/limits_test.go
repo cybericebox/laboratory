@@ -15,7 +15,7 @@ func chartDefaults(t *testing.T) Limits {
 	t.Helper()
 	l, err := Config{
 		DeviceMaxCPU: "500m", DeviceMaxMemory: "512Mi", DeviceDefaultCPU: "100m", DeviceDefaultMemory: "256Mi",
-		LabMaxDevices: 10, LabMaxCPU: "2", LabMaxMemory: "2Gi",
+		LabMaxDevices: 10, GroupMaxLabs: 50, GroupMaxCPU: "0", GroupMaxMemory: "0",
 	}.Parse()
 	if err != nil {
 		t.Fatal(err)
@@ -38,12 +38,11 @@ func TestCheckSpec(t *testing.T) {
 		want string // empty: allowed
 	}{
 		{"no resources: the profile counts", many(5, nil), ""},
-		{"ten devices of the profile (1 CPU, 2.5Gi)", many(10, nil), "memory"},
+		{"ten devices of the profile", many(10, nil), ""},
 		{"eleven devices", many(11, nil), "11 container devices"},
 		{"device over cpu", many(1, &laboratoryv1alpha1.DeviceResources{CPULimit: "1"}), `device "a": cpu 1000m exceeds the limit of 500m`},
 		{"device over memory", many(1, &laboratoryv1alpha1.DeviceResources{MemoryRequest: "1Gi"}), "memory"},
 		{"declared at the maximum", many(2, &laboratoryv1alpha1.DeviceResources{CPULimit: "500m", MemoryLimit: "512Mi"}), ""},
-		{"sum over the lab cpu", many(5, &laboratoryv1alpha1.DeviceResources{CPULimit: "500m", MemoryLimit: "64Mi"}), "need 2500m of cpu"},
 		{"bad quantity", many(1, &laboratoryv1alpha1.DeviceResources{CPULimit: "lots"}), `device "a"`},
 	}
 	for _, tc := range cases {
@@ -70,7 +69,7 @@ func TestCheckSpec(t *testing.T) {
 }
 
 func TestParseRefusesBadValues(t *testing.T) {
-	ok := Config{DeviceMaxCPU: "500m", DeviceMaxMemory: "512Mi", DeviceDefaultCPU: "100m", DeviceDefaultMemory: "256Mi", LabMaxCPU: "2", LabMaxMemory: "2Gi"}
+	ok := Config{DeviceMaxCPU: "500m", DeviceMaxMemory: "512Mi", DeviceDefaultCPU: "100m", DeviceDefaultMemory: "256Mi", GroupMaxCPU: "0", GroupMaxMemory: "0"}
 	if _, err := ok.Parse(); err != nil {
 		t.Fatal(err)
 	}
@@ -78,6 +77,8 @@ func TestParseRefusesBadValues(t *testing.T) {
 		"bad cpu":          func(c *Config) { c.DeviceMaxCPU = "x" },
 		"negative devices": func(c *Config) { c.LabMaxDevices = -1 },
 		"negative labs":    func(c *Config) { c.TenantMaxLabs = -1 },
+		"negative group":   func(c *Config) { c.GroupMaxLabs = -1 },
+		"bad group cpu":    func(c *Config) { c.GroupMaxCPU = "x" },
 		"default over max": func(c *Config) { c.DeviceDefaultMemory = "1Gi" },
 	} {
 		c := ok
@@ -85,5 +86,36 @@ func TestParseRefusesBadValues(t *testing.T) {
 		if _, err := c.Parse(); err == nil {
 			t.Errorf("%s must be refused", name)
 		}
+	}
+}
+
+func TestGroupFits(t *testing.T) {
+	l := Limits{GroupMaxLabs: 3, GroupMaxCPU: 1000, GroupMaxMemory: 1 << 30}
+	if err := l.GroupFits(2, 600, 1<<29, 400, 1<<29); err != nil {
+		t.Fatalf("exactly at the caps: %v", err)
+	}
+	for name, err := range map[string]error{
+		"labs":   l.GroupFits(3, 0, 0, 1, 1),
+		"cpu":    l.GroupFits(1, 600, 0, 401, 0),
+		"memory": l.GroupFits(1, 0, 1<<29, 0, 1<<29+1),
+	} {
+		if err == nil {
+			t.Errorf("%s over the cap must be refused", name)
+		}
+	}
+	if err := (Limits{}).GroupFits(1000, 1<<40, 1<<50, 1<<40, 1<<50); err != nil {
+		t.Fatalf("0 = no limit: %v", err)
+	}
+}
+
+func TestSpecTotalsCountContainersAtTheProfile(t *testing.T) {
+	l := Limits{DeviceDefaultCPU: 100, DeviceDefaultMemory: 256 << 20}
+	spec := &laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{
+		dev("a", nil), dev("b", &laboratoryv1alpha1.DeviceResources{CPURequest: "300m", CPULimit: "400m", MemoryRequest: "64Mi"}),
+		{Name: "sw", Type: laboratoryv1alpha1.DeviceTypeUnmanagedSwitch},
+	}}
+	cpu, mem, n, err := l.SpecTotals(spec)
+	if err != nil || n != 2 || cpu != 500 || mem != (256+64)<<20 {
+		t.Fatalf("cpu %d mem %d n %d err %v", cpu, mem, n, err)
 	}
 }

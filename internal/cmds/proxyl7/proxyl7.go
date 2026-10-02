@@ -116,7 +116,7 @@ func Run() {
 	handler := l7.NewHandler(
 		l7.SecretKeys(mgr.GetClient()), []byte(cfg.SessionSecret), cfg.BaseDomain, cfg.CookieName,
 		l7.ServiceResolver(svcResolver),
-	).WithLimits(cfg.AccessTokenMaxTTL, cfg.SessionMaxTTL).WithAccounting(meter, attribute).WithAuthorizer(authorize).WithGroupTenant(l7.LabGroupTenant(mgr.GetClient()))
+	).WithLimits(cfg.AccessTokenMaxTTL, cfg.SessionIdleTTL, cfg.SessionRenewBefore, cfg.SessionMaxTTL).WithAccounting(meter, attribute).WithAuthorizer(authorize).WithGroupTenant(l7.LabGroupTenant(mgr.GetClient()))
 
 	reports := &l7.ReportWriter{
 		Reader: mgr.GetAPIReader(), Writer: mgr.GetClient(), Meter: meter, Instance: instance,
