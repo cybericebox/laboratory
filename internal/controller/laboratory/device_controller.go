@@ -612,19 +612,48 @@ func (r *DeviceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// labGroupSuspended resolves the LabGroup that owns this namespace. A namespace
-// without a LabGroup is retained for standalone controller tests and runs its
-// devices normally.
+// labGroupSuspended resolves the LabGroup that owns this namespace through the
+// namespace's group label (the namespace is lg-<name>-<hash>, not the group
+// name). A namespace without a LabGroup is retained for standalone controller
+// tests and runs its devices normally.
 func (r *DeviceReconciler) labGroupSuspended(ctx context.Context, namespace string) (bool, error) {
-	var group laboratoryv1alpha1.LabGroup
-	err := r.Get(ctx, types.NamespacedName{Name: namespace}, &group)
-	if errors.IsNotFound(err) {
-		return false, nil
-	}
-	if err != nil {
+	group, err := r.labGroupOfNamespace(ctx, namespace)
+	if err != nil || group == nil {
 		return false, err
 	}
 	return group.Spec.Suspended, nil
+}
+
+// labGroupOfNamespace returns the LabGroup named by the namespace label, or the
+// one whose status records the namespace; nil when the namespace has no group.
+func (r *DeviceReconciler) labGroupOfNamespace(ctx context.Context, namespace string) (*laboratoryv1alpha1.LabGroup, error) {
+	var ns corev1.Namespace
+	if err := r.Get(ctx, types.NamespacedName{Name: namespace}, &ns); err != nil {
+		if errors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if owner := ns.Labels[names.LabelGroup]; owner != "" {
+		var group laboratoryv1alpha1.LabGroup
+		if err := r.Get(ctx, types.NamespacedName{Name: owner}, &group); err != nil {
+			if errors.IsNotFound(err) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		return &group, nil
+	}
+	var groups laboratoryv1alpha1.LabGroupList
+	if err := r.List(ctx, &groups); err != nil {
+		return nil, err
+	}
+	for i := range groups.Items {
+		if groups.Items[i].Status.Namespace == namespace {
+			return &groups.Items[i], nil
+		}
+	}
+	return nil, nil
 }
 
 // devicesForLabGroup enqueues every Device in the group's namespace when its

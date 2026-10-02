@@ -41,12 +41,13 @@ var _ = Describe(
 		ctx := context.Background()
 
 		It("keeps a suspended LabGroup device deployment at zero replicas", func() {
-			const namespace = "suspend-devices"
-			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
+			const groupName = "suspend-devices"
+			namespace := laboratoryv1alpha1.LabGroupNamespace(groupName)
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace, Labels: map[string]string{names.LabelGroup: groupName}}}
 			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
 			DeferCleanup(func() { _ = k8sClient.Delete(ctx, ns) })
 
-			group := &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
+			group := &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: groupName}}
 			Expect(k8sClient.Create(ctx, group)).To(Succeed())
 			DeferCleanup(func() { _ = k8sClient.Delete(ctx, group) })
 
