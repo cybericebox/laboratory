@@ -152,8 +152,8 @@ func TestExpiredTokenGoesAwayUntilRegenerated(t *testing.T) {
 func TestDeletedTenantLeavesNoSecretsBehind(t *testing.T) {
 	r, c, _ := tenantEnrollRig(t)
 	reconcileTenant(t, r)
-	keys := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: names.AccessKeysSecret("acme"), Namespace: names.TenantsNamespace}, Data: map[string][]byte{"k1": []byte("pem")}}
-	other := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: names.AccessKeysSecret("other"), Namespace: names.TenantsNamespace}, Data: map[string][]byte{"k1": []byte("pem")}}
+	keys := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: names.AccessKeysSecret("acme"), Namespace: names.AccessKeysNamespace}, Data: map[string][]byte{"k1": []byte("pem")}}
+	other := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: names.AccessKeysSecret("other"), Namespace: names.AccessKeysNamespace}, Data: map[string][]byte{"k1": []byte("pem")}}
 	for _, s := range []*corev1.Secret{keys, other} {
 		if err := c.Create(context.Background(), s); err != nil {
 			t.Fatal(err)
@@ -163,14 +163,14 @@ func TestDeletedTenantLeavesNoSecretsBehind(t *testing.T) {
 		t.Fatal(err)
 	}
 	reconcileTenant(t, r)
-	for _, name := range []string{names.AccessKeysSecret("acme"), names.EnrollmentSecret("acme")} {
+	for ns, name := range map[string]string{names.AccessKeysNamespace: names.AccessKeysSecret("acme"), names.TenantsNamespace: names.EnrollmentSecret("acme")} {
 		var s corev1.Secret
-		if err := c.Get(context.Background(), types.NamespacedName{Namespace: names.TenantsNamespace, Name: name}, &s); !apierrors.IsNotFound(err) {
+		if err := c.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: name}, &s); !apierrors.IsNotFound(err) {
 			t.Fatalf("secret %s survives the tenant: %v", name, err)
 		}
 	}
 	var s corev1.Secret
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: names.TenantsNamespace, Name: names.AccessKeysSecret("other")}, &s); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: names.AccessKeysNamespace, Name: names.AccessKeysSecret("other")}, &s); err != nil {
 		t.Fatalf("another tenant's keys must stay: %v", err)
 	}
 }

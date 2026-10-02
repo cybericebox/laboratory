@@ -544,7 +544,12 @@ var _ = Describe("Device state persistence: bare Pod lifecycle", func() {
 	})
 
 	It("holds a suspended device down and brings it back from its snapshot", func() {
-		group := &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: ns}}
+		// The namespace is lg-<name>-<hash> in real life: the group is found through the namespace label.
+		var nsObj corev1.Namespace
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ns}, &nsObj)).To(Succeed())
+		nsObj.Labels = map[string]string{names.LabelGroup: "team-" + ns}
+		Expect(k8sClient.Update(ctx, &nsObj)).To(Succeed())
+		group := &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: "team-" + ns}}
 		Expect(k8sClient.Create(ctx, group)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, group) })
 
