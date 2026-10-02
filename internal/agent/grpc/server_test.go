@@ -105,6 +105,21 @@ func TestAnonymousCallersCannotSendBigMessages(t *testing.T) {
 	}
 }
 
+// A-4: the authenticated server reads at most 4 MiB per message: a certificate holder cannot make a replica buffer tens of MiB.
+func TestAuthenticatedServerReadsFourMiBAtMost(t *testing.T) {
+	s := startServer(t, nil)
+	ctx, cancel := bg()
+	defer cancel()
+	c := s.dial(t, issueFor(t, s.r, "acme"))
+	// The Enroll call is refused on the main server after decoding (FailedPrecondition), so it shows whether the message was read.
+	if _, err := c.Enroll(ctx, &protobuf.EnrollRequest{Token: strings.Repeat("x", 3<<20)}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("a 3 MiB message must be read: %v", err)
+	}
+	if _, err := c.Enroll(ctx, &protobuf.EnrollRequest{Token: strings.Repeat("x", 5<<20)}); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("a 5 MiB message must be refused before it is decoded: %v", err)
+	}
+}
+
 // The Enroll server is rate limited, all callers together.
 func TestEnrollIsRateLimited(t *testing.T) {
 	s := startServer(t, func(c *config.Config) { c.Server.EnrollRate, c.Server.EnrollBurst = 0.01, 2 })

@@ -683,8 +683,8 @@ pair, and sends the cluster only public material: a certificate request and the 
 The agent accepts a connection without a client certificate and requires one for every call except `Enroll`. The CA key
 (`laboratory-agent-ca`) is mounted into the agent for signing.
 
-**Limits.** Ids and deploy keys at most 64 characters, `deploy_after` at most 32 keys, at most 5000 items per call, message size 64 MiB (`MaxRecvMsgSize`/`MaxSendMsgSize`; the Go client sets the
-same call options), bounded internal concurrency (16 calls to the Kubernetes API per request).
+**Limits.** Ids and deploy keys at most 64 characters, `deploy_after` at most 32 keys, at most 5000 items per call, a request of at most 4 MiB (`MaxRecvMsgSize`; a bigger one is refused with `ResourceExhausted` before it is decoded, so split a very large batch into several calls) and an answer of at most 64 MiB (`MaxSendMsgSize`; the Go client sets
+the matching call options), bounded internal concurrency (16 calls to the Kubernetes API per request).
 
 ### Examples (Go, `pkg/agent/client`)
 
@@ -961,9 +961,9 @@ equal the Tenant's now: an exact comparison, no clock. Consequences:
 The agent is reachable by anyone who can reach its host, so what a caller without a certificate can cost is bounded before anything is decoded:
 
 - **Two servers behind one port.** The agent completes the TLS handshake itself and sends a connection that presented a client certificate to the main
-  server (full API, messages up to 64 MiB), and one that did not to the **Enroll server**, which knows only the Enroll call, reads messages of at most
+  server (full API, requests up to 4 MiB), and one that did not to the **Enroll server**, which knows only the Enroll call, reads messages of at most
   `agent.server.enroll.maxMessageBytes` (64 KiB), and is rate limited (`rate` 5 per second, `burst` 10, all callers together). Nothing a caller without a
-  certificate sends reaches the main server or is buffered at 64 MiB. A caller that already has a certificate enrolls through a connection without one (the
+  certificate sends reaches the main server or is buffered beyond 64 KiB. A caller that already has a certificate enrolls through a connection without one (the
   client library's connection without a keypair).
 - **Connections**: the TLS handshake has a timeout and at most `maxHandshakes` run at once; at most `maxAnonymousConns` connections without a certificate are open
   in total. There is no per-address limit and no per-address connection rate: behind a TLS passthrough route the address seen is the gateway's, so such a limit

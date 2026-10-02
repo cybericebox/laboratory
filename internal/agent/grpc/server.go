@@ -20,8 +20,13 @@ import (
 	"github.com/cybericebox/laboratory/pkg/tlsreload"
 )
 
-// MaxMessageSize is the largest gRPC message the agent accepts and sends to a caller with a client certificate.
-const MaxMessageSize = 64 << 20
+// MaxRecvMessageSize is the largest gRPC message the agent reads from a caller with a client certificate. Any certificate holder can
+// send these, a request is decoded several times, and a connection may carry many streams, so it is a few MiB, not tens (the agent has
+// 128Mi). MaxSendMessageSize is what it may answer with: a batch of up to MaxItems objects.
+const (
+	MaxRecvMessageSize = 4 << 20
+	MaxSendMessageSize = 64 << 20
+)
 
 // DefaultEnrollMaxMessage is the largest message the Enroll server (the one open to callers without a certificate) reads.
 const DefaultEnrollMaxMessage = 64 << 10
@@ -29,7 +34,7 @@ const DefaultEnrollMaxMessage = 64 << 10
 // Server is the agent's gRPC front. With mTLS on it is two servers behind one listener: the main one, for connections that
 // presented a client certificate, and the Enroll server for those that did not, which knows the Enroll call only, reads
 // messages of a few kilobytes, and is rate limited. A connection's kind is decided by the TLS handshake before anything is read
-// from it, so nothing an anonymous caller sends is decoded by the main server and no message of 64 MiB is buffered for it.
+// from it, so nothing an anonymous caller sends is decoded by the main server and no message of megabytes is buffered for it.
 type Server struct {
 	main, enroll *grpc.Server
 	tls          *tlsreload.Files
@@ -85,8 +90,8 @@ func New(cfg *config.Config, impl protobuf.LabManagerServer) (*Server, error) {
 	mainOpts := append(append([]grpc.ServerOption{}, common...),
 		grpc.ChainUnaryInterceptor(apiErrorInterceptor),
 		// Batch calls carry up to MaxItems lab specs and answer with as many objects.
-		grpc.MaxRecvMsgSize(MaxMessageSize),
-		grpc.MaxSendMsgSize(MaxMessageSize),
+		grpc.MaxRecvMsgSize(MaxRecvMessageSize),
+		grpc.MaxSendMsgSize(MaxSendMessageSize),
 	)
 	s := &Server{lim: split}
 
