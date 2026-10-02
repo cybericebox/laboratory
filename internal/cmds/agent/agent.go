@@ -156,6 +156,13 @@ func features(cfg *config.Config) (f grpcserver.Features, err error) {
 	if f.Limits, err = cfg.Limits.Parse(); err != nil {
 		return f, err
 	}
+	if f.GroupPods.Sizing, err = cfg.GroupSizing.Parse(); err != nil {
+		return f, err
+	}
+	if err = cfg.GroupPods.CheckWithin(f.GroupPods.Sizing); err != nil {
+		return f, err
+	}
+	f.GroupPods.DefaultVPN, f.GroupPods.DefaultGateway = cfg.GroupPods.VPNOverhead(), cfg.GroupPods.GatewayOverhead()
 	f.MaxEntries = cfg.State.MaxEntries
 	for _, c := range []struct {
 		env, val string

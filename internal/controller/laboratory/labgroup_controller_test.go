@@ -21,7 +21,7 @@ var _ = Describe("LabGroup suspension", func() {
 	It("passes the configured support address to the VPN server", func() {
 		const namespace = "default"
 		r := &LabGroupReconciler{Client: k8sClient, VPNBaseNetwork: "10.8.0.0/10", VPNImage: "test", SupportEmail: "help@example.org"}
-		Expect(r.ensureVPNDeployment(ctx, namespace, false)).To(Succeed())
+		Expect(r.ensureVPNDeployment(ctx, namespace, false, nil)).To(Succeed())
 		DeferCleanup(func() {
 			var dep appsv1.Deployment
 			if k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: namespace}, &dep) == nil {
@@ -40,7 +40,7 @@ var _ = Describe("LabGroup suspension", func() {
 		Expect(sc.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
 		Expect(sc.Capabilities.Add).To(ConsistOf(corev1.Capability("NET_ADMIN"), corev1.Capability("NET_RAW")))
 		r.SupportEmail = "new-help@example.org"
-		Expect(r.ensureVPNDeployment(ctx, namespace, false)).To(Succeed())
+		Expect(r.ensureVPNDeployment(ctx, namespace, false, nil)).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: namespace}, &dep)).To(Succeed())
 		Expect(dep.Spec.Template.Spec.Containers[0].Env).To(ContainElement(corev1.EnvVar{Name: "SUPPORT_EMAIL", Value: "new-help@example.org"}))
 	})
@@ -49,8 +49,8 @@ var _ = Describe("LabGroup suspension", func() {
 		const namespace = "default"
 		r := &LabGroupReconciler{Client: k8sClient, VPNBaseNetwork: "10.8.0.0/10", InetBaseNetwork: "10.9.0.0/10", VPNImage: "test", GatewayImage: "test",
 			GroupPods: grouppods.Config{VPNCPU: "120m", VPNMemory: "80Mi", GatewayCPU: "60m", GatewayMemory: "40Mi"}}
-		Expect(r.ensureVPNDeployment(ctx, namespace, false)).To(Succeed())
-		Expect(r.ensureGatewayDeployment(ctx, namespace, false)).To(Succeed())
+		Expect(r.ensureVPNDeployment(ctx, namespace, false, nil)).To(Succeed())
+		Expect(r.ensureGatewayDeployment(ctx, namespace, false, nil)).To(Succeed())
 		DeferCleanup(func() {
 			for _, n := range []string{"vpn", "gateway"} {
 				var dep appsv1.Deployment
@@ -72,8 +72,8 @@ var _ = Describe("LabGroup suspension", func() {
 		Expect(gw.Requests).To(Equal(gw.Limits))
 		// A later change of the chart value reaches new groups only: the pods of a group keep the size they were created with.
 		r.GroupPods = grouppods.Config{VPNCPU: "500m", VPNMemory: "512Mi", GatewayCPU: "500m", GatewayMemory: "512Mi"}
-		Expect(r.ensureVPNDeployment(ctx, namespace, false)).To(Succeed())
-		Expect(r.ensureGatewayDeployment(ctx, namespace, false)).To(Succeed())
+		Expect(r.ensureVPNDeployment(ctx, namespace, false, nil)).To(Succeed())
+		Expect(r.ensureGatewayDeployment(ctx, namespace, false, nil)).To(Succeed())
 		Expect(quantity(resOf("vpn").Requests, corev1.ResourceCPU)).To(Equal("120m"))
 		Expect(quantity(resOf("gateway").Requests, corev1.ResourceMemory)).To(Equal("40Mi"))
 	})
@@ -188,8 +188,8 @@ var _ = Describe("LabGroup suspension", func() {
 		}
 
 		r := &LabGroupReconciler{Client: k8sClient, VPNBaseNetwork: "10.8.0.0/10", VPNImage: "test"}
-		Expect(r.ensureVPNDeployment(ctx, namespace, true)).To(Succeed())
-		Expect(r.ensureGatewayDeployment(ctx, namespace, true)).To(Succeed())
+		Expect(r.ensureVPNDeployment(ctx, namespace, true, nil)).To(Succeed())
+		Expect(r.ensureGatewayDeployment(ctx, namespace, true, nil)).To(Succeed())
 
 		for _, name := range []string{"vpn", "gateway"} {
 			var dep appsv1.Deployment

@@ -85,6 +85,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.EndpointSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("ExposureSpec"):
 		return &applyconfigurationlaboratoryv1alpha1.ExposureSpecApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("GroupPodSize"):
+		return &applyconfigurationlaboratoryv1alpha1.GroupPodSizeApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("InterfaceSpec"):
 		return &applyconfigurationlaboratoryv1alpha1.InterfaceSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("Lab"):
@@ -115,6 +117,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupClientStatisticsApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupClientStatus"):
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupClientStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupGatewaySpec"):
+		return &applyconfigurationlaboratoryv1alpha1.LabGroupGatewaySpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupSpec"):
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupStatus"):

@@ -143,13 +143,14 @@ func (s *Scheduler) imagesNamespace() string {
 
 func devicePodKey(ns, lab, device string) string { return ns + "/" + lab + "/" + device }
 
-// groupPodNeed is what a group pod requests (the chart's group pod resources); nil for an unknown pod.
-func (s *Scheduler) groupPodNeed(name string) corev1.ResourceList {
+// groupPodNeed is what a pod of the group requests: the size its spec carries, else the chart's group pod resources; nil for an
+// unknown pod.
+func (s *Scheduler) groupPodNeed(name string, g *laboratoryv1alpha1.LabGroup) corev1.ResourceList {
 	switch name {
 	case "vpn":
-		return s.GroupPods.VPN().Requests
+		return s.GroupPods.VPNFor(g.Spec.VPN.Size).Requests
 	case "gateway":
-		return s.GroupPods.Gateway().Requests
+		return s.GroupPods.GatewayFor(g.Spec.Gateway.Size).Requests
 	}
 	return nil
 }
@@ -518,7 +519,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 			key := "group/" + g.Name + "/" + name
 			p := &schedPod{key: key, name: name, kind: kindGroupPod, ref: name, tenant: names.TenantOf(g.Labels),
 				lookup: laboratoryv1alpha1.LabGroupNamespaceOf(g) + "/" + name}
-			if need := s.groupPodNeed(name); need != nil {
+			if need := s.groupPodNeed(name, g); need != nil {
 				p.need = amount{cpu: need.Cpu().MilliValue(), mem: need.Memory().Value()}
 			}
 			for _, e := range g.Status.Pods {

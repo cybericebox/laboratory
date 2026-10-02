@@ -39,6 +39,29 @@ spec:
           spec:
             description: LabGroupSpec defines the desired state of LabGroup.
             properties:
+              gateway:
+                description: Gateway holds the internet gateway pod's settings.
+                properties:
+                  size:
+                    description: Size is the size of the gateway pod; absent = the
+                      chart's default. Fixed once set.
+                    properties:
+                      cpuMillicores:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      memoryBytes:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                    required:
+                    - cpuMillicores
+                    - memoryBytes
+                    type: object
+                    x-kubernetes-validations:
+                    - message: the size of a group's pod is fixed
+                      rule: self == oldSelf
+                type: object
               suspended:
                 type: boolean
               vpn:
@@ -68,6 +91,25 @@ spec:
                       Deprecated: suspension now always keeps WireGuard and the internet
                       gateway running while stopping only task devices.
                     type: boolean
+                  size:
+                    description: Size is the size of the VPN pod; absent = the chart's
+                      default. Fixed once set.
+                    properties:
+                      cpuMillicores:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      memoryBytes:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                    required:
+                    - cpuMillicores
+                    - memoryBytes
+                    type: object
+                    x-kubernetes-validations:
+                    - message: the size of a group's pod is fixed
+                      rule: self == oldSelf
                 type: object
             type: object
           status:

@@ -22,8 +22,10 @@ package v1alpha1
 //
 // LabGroupSpec defines the desired state of LabGroup.
 type LabGroupSpecApplyConfiguration struct {
-	VPN       *LabGroupVPNSpecApplyConfiguration `json:"vpn,omitempty"`
-	Suspended *bool                              `json:"suspended,omitempty"`
+	VPN *LabGroupVPNSpecApplyConfiguration `json:"vpn,omitempty"`
+	// Gateway holds the internet gateway pod's settings.
+	Gateway   *LabGroupGatewaySpecApplyConfiguration `json:"gateway,omitempty"`
+	Suspended *bool                                  `json:"suspended,omitempty"`
 }
 
 // LabGroupSpecApplyConfiguration constructs a declarative configuration of the LabGroupSpec type for use with
@@ -37,6 +39,14 @@ func LabGroupSpec() *LabGroupSpecApplyConfiguration {
 // If called multiple times, the VPN field is set to the value of the last call.
 func (b *LabGroupSpecApplyConfiguration) WithVPN(value *LabGroupVPNSpecApplyConfiguration) *LabGroupSpecApplyConfiguration {
 	b.VPN = value
+	return b
+}
+
+// WithGateway sets the Gateway field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Gateway field is set to the value of the last call.
+func (b *LabGroupSpecApplyConfiguration) WithGateway(value *LabGroupGatewaySpecApplyConfiguration) *LabGroupSpecApplyConfiguration {
+	b.Gateway = value
 	return b
 }
 

@@ -13,6 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -23,6 +24,13 @@ var testFeatures = Features{
 	SchedulerEnabled: true, SchedulerMaxPods: 20,
 	LabsDomain: "labs.example.com", VPNEndpoint: "vpn.example.com:51820",
 	ProxyAccessTokenMaxTTL: 60 * time.Second, ProxySessionMaxTTL: 24 * time.Hour,
+	GroupPods: GroupPodsFeature{
+		Sizing: grouppods.Sizings{
+			VPN:     grouppods.PodSizing{BaseCPU: 20, BaseMemory: 64 << 20, PerUnitCPU: 6, PerUnitMemory: 20 << 20, MaxUnits: 20},
+			Gateway: grouppods.PodSizing{BaseCPU: 5, BaseMemory: 16 << 20, PerUnitCPU: 2, PerUnitMemory: 4 << 20, MaxUnits: 50},
+		},
+		DefaultVPN: grouppods.Overhead{CPU: 100, Memory: 320 << 20}, DefaultGateway: grouppods.Overhead{CPU: 10, Memory: 32 << 20},
+	},
 }
 
 func featuresHandler(t *testing.T, f Features, tenants ...*laboratoryv1alpha1.Tenant) *Handler {
@@ -104,5 +112,41 @@ func TestFeaturesCarryTheCallersCertificateExpiry(t *testing.T) {
 	}
 	if !proto.Equal(got.GetStatePersistence(), other.GetStatePersistence()) {
 		t.Fatal("the platform part must be the same")
+	}
+}
+
+// The device model's constants, the sizing of a group's own pods and the tenant's quota are reported to the backend.
+func TestFeaturesReportTheDeviceModelAndGroupPodSizing(t *testing.T) {
+	ten := newTenantTenant("a", true, nil)
+	ten.Spec.Quota = &laboratoryv1alpha1.TenantQuota{CPU: "4", Memory: "8Gi"}
+	h := featuresHandler(t, testFeatures, ten)
+	got, err := h.GetFeatures(asClient("a"), &protobuf.Empty{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := got.GetConstants(); c.GetMaxInterfacesPerContainer() != 16 || c.GetMaxPortsPerSwitchOrHub() != 48 || c.GetHardMaxDevicesPerLab() != 64 {
+		t.Fatalf("constants: %+v", c)
+	}
+	gp := got.GetGroupPods()
+	if v := gp.GetVpn(); v.GetBaseCpuMillicores() != 20 || v.GetBaseMemoryBytes() != 64<<20 || v.GetPerUnitCpuMillicores() != 6 ||
+		v.GetPerUnitMemoryBytes() != 20<<20 || v.GetMaxUnits() != 20 {
+		t.Fatalf("vpn sizing: %+v", v)
+	}
+	if g := gp.GetGateway(); g.GetBaseCpuMillicores() != 5 || g.GetPerUnitMemoryBytes() != 4<<20 || g.GetMaxUnits() != 50 {
+		t.Fatalf("gateway sizing: %+v", g)
+	}
+	if d := gp.GetDefaultVpn(); d.GetCpuMillicores() != 100 || d.GetMemoryBytes() != 320<<20 {
+		t.Fatalf("default vpn: %+v", d)
+	}
+	if d := gp.GetDefaultGateway(); d.GetCpuMillicores() != 10 || d.GetMemoryBytes() != 32<<20 {
+		t.Fatalf("default gateway: %+v", d)
+	}
+	if q := got.GetTenantQuota(); !q.GetHasCpuQuota() || q.GetCpuQuotaMillicores() != 4000 || !q.GetHasMemoryQuota() || q.GetMemoryQuotaBytes() != 8<<30 {
+		t.Fatalf("tenant quota: %+v", q)
+	}
+	// a tenant without a quota has no limit
+	free, _ := featuresHandler(t, testFeatures, newTenantTenant("b", true, nil)).GetFeatures(asClient("b"), &protobuf.Empty{})
+	if q := free.GetTenantQuota(); q.GetHasCpuQuota() || q.GetHasMemoryQuota() {
+		t.Fatalf("tenant quota without a limit: %+v", q)
 	}
 }

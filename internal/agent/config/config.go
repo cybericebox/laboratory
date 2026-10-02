@@ -76,6 +76,9 @@ type Config struct {
 	// GroupPods are the resources of the VPN and gateway pods of a group (the same values as the operator's):
 	// their sum is the service overhead GetCapacity reports.
 	GroupPods grouppods.Config
+	// GroupSizing is how the pods of a group are sized (the chart's vpn.sizing and inetGateway.sizing): reported in GetFeatures, and the
+	// maximum of the sizes CreateLabGroups accepts.
+	GroupSizing grouppods.Sizing
 	// StatePersistence is the platform switch for device state persistence: a topology
 	// with devices[].persistence.enabled is refused when it is off.
 	StatePersistence bool `env:"AGENT_STATE_PERSISTENCE_ENABLED" envDefault:"false"`

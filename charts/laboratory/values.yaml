@@ -94,6 +94,18 @@ vpn:
   resources:
     cpu: 100m
     memory: 320Mi
+  # How the platform sizes the VPN pod of a group: base + perUser * users, at most maxUsers users (the maximum size is
+  # base + perUser * maxUsers). The agent reports it in GetFeatures; the backend computes the size of a group's VPN from the
+  # event's largest team (users = WireGuard peers) and passes it to CreateLabGroups; the agent refuses a size over the maximum,
+  # and the operator creates the pod Guaranteed at exactly that size, never resizing it. Measured: about 16Mi idle, about 55m and
+  # 195Mi with 10 active peers. `resources` above is the size of a group created without an explicit one and must not exceed the
+  # maximum (the agent refuses to start otherwise).
+  sizing:
+    baseCpu: 20m
+    baseMemory: 64Mi
+    perUserCpu: 6m
+    perUserMemory: 20Mi
+    maxUsers: 20
   image:
     repository: cybericebox/laboratory-lab
     tag: ""
@@ -110,6 +122,14 @@ inetGateway:
   resources:
     cpu: 10m
     memory: 32Mi
+  # How the platform sizes the gateway pod of a group: base + perLab * labs that use the internet, at most maxLabs labs (see vpn.sizing).
+  # Measured idle: about 1m and 8Mi.
+  sizing:
+    baseCpu: 5m
+    baseMemory: 16Mi
+    perLabCpu: 2m
+    perLabMemory: 4Mi
+    maxLabs: 50
   # The labs of a group reach only the public internet through its gateway. The denied internal ranges (the private
   # ranges, link-local and the cloud metadata service, loopback, CGNAT, multicast and reserved, and the IPv6
   # equivalents) are a constant of the code (internal/egress), not a setting: a lab needs no internal service and must

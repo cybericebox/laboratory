@@ -212,7 +212,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// Suspension stops task devices only. Keep the team's tunnel and internet
 	// gateway running so participants can test their connection during a pause.
 	if !r.groupPodQueued(&lg, "vpn") {
-		if err = r.ensureVPNDeployment(ctx, ns, lg.Spec.VPN.Disabled); err != nil {
+		if err = r.ensureVPNDeployment(ctx, ns, lg.Spec.VPN.Disabled, lg.Spec.VPN.Size); err != nil {
 			logger.Error(err, "ensure VPN deployment")
 			return ctrl.Result{}, err
 		}
@@ -227,7 +227,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 	if !r.groupPodQueued(&lg, "gateway") {
-		if err = r.ensureGatewayDeployment(ctx, ns, false); err != nil {
+		if err = r.ensureGatewayDeployment(ctx, ns, false, lg.Spec.Gateway.Size); err != nil {
 			logger.Error(err, "ensure gateway deployment")
 			return ctrl.Result{}, err
 		}
@@ -610,7 +610,9 @@ func (r *LabGroupReconciler) ensureVPNService(ctx context.Context, ns string) er
 	return r.Create(ctx, svc)
 }
 
-func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string, suspended bool) error {
+// ensureVPNDeployment creates the VPN pod at the size the group's spec says (the chart's default without one); an existing one keeps
+// the size it has: a group's pods are never resized.
+func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string, suspended bool, size *laboratoryv1alpha1.GroupPodSize) error {
 	replicas := int32(1)
 	if suspended {
 		replicas = 0
@@ -685,7 +687,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 					Tolerations:        r.LabTolerations,
 					Containers: []corev1.Container{{
 						Name:            "vpn",
-						Resources:       r.GroupPods.VPN(),
+						Resources:       r.GroupPods.VPNFor(size),
 						Image:           vpnImage,
 						Command:         []string{"/lab", "vpn"},
 						ImagePullPolicy: pullPolicyFor(vpnImage),
@@ -718,7 +720,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 // One replica per group, namespace-scoped, mirrors the VPN deployment shape so
 // node-agent's LabIfaceReconciler attaches a gw-<labname> OVS port into its
 // netns for each lab with Spec.Internet.Enabled.
-func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns string, suspended bool) error {
+func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns string, suspended bool, size *laboratoryv1alpha1.GroupPodSize) error {
 	replicas := int32(1)
 	if suspended {
 		replicas = 0
@@ -767,7 +769,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 					Tolerations:        r.LabTolerations,
 					Containers: []corev1.Container{{
 						Name:            "gateway",
-						Resources:       r.GroupPods.Gateway(),
+						Resources:       r.GroupPods.GatewayFor(size),
 						Image:           gatewayImage,
 						Command:         []string{"/lab", "gateway"},
 						ImagePullPolicy: pullPolicyFor(gatewayImage),

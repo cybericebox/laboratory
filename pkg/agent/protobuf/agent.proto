@@ -204,6 +204,17 @@ message LabGroupItem {
   bool suspended = 5;
   bool vpn_disabled = 6;
   bool probe_while_suspended = 7;
+  // The sizes of the group's own pods, computed by the backend from FeaturesResponse.group_pods (the VPN for the users the group
+  // may have, the gateway for the labs of the group that use the internet). The pods are created Guaranteed at exactly that size
+  // and never resized. Unset = the chart's default size. A set size must have both values positive and be within the maximum
+  // that group_pods reports, else the item is refused (InvalidArgument).
+  PodSize vpn_size = 8;
+  PodSize gateway_size = 9;
+}
+// The size of one pod: requests = limits.
+message PodSize {
+  int64 cpu_millicores = 1;
+  int64 memory_bytes = 2;
 }
 message CreateLabGroupsRequest {
   map<string, string> labels = 1;
@@ -667,6 +678,46 @@ message FeaturesResponse {
   // The device security profiles this cluster offers (catalog IDs: "standard", "extended"). A lab whose device asks
   // for another is refused (InvalidArgument); the old names basic and service mean standard, net and debug mean extended.
   repeated string device_profiles = 9;
+  // How the pods a group runs itself are sized, and what the chart gives them when CreateLabGroups sets no size.
+  GroupPodsFeature group_pods = 10;
+  // Fixed limits of the model (not settings).
+  DeviceConstants constants = 11;
+  // The resources the cluster gives this tenant (the same quota GetCapacity reports against).
+  TenantQuotaFeature tenant_quota = 12;
+}
+
+// The size of a pod is base + per_unit * units, units at most max_units; the maximum size is base + per_unit * max_units.
+// The VPN unit is a user (a WireGuard peer: it grows with the users of the group, not with its labs); the gateway unit is a
+// lab of the group that uses the internet.
+message PodSizing {
+  int64 base_cpu_millicores = 1;
+  int64 base_memory_bytes = 2;
+  int64 per_unit_cpu_millicores = 3;
+  int64 per_unit_memory_bytes = 4;
+  int32 max_units = 5;
+}
+message GroupPodsFeature {
+  PodSizing vpn = 1;
+  PodSizing gateway = 2;
+  // What a group's pod gets when CreateLabGroups sets no size.
+  PodSize default_vpn = 3;
+  PodSize default_gateway = 4;
+}
+
+// Constants of the device model: the platform's, not settings. The devices of a lab are capped by LimitsFeature.lab.max_devices
+// (at most hard_max_devices_per_lab, the ceiling the chart cannot lift).
+message DeviceConstants {
+  int32 max_interfaces_per_container = 1;
+  int32 max_ports_per_switch_or_hub = 2;
+  int32 hard_max_devices_per_lab = 3;
+}
+
+// The tenant's quota; has_* false = no limit on that resource.
+message TenantQuotaFeature {
+  bool has_cpu_quota = 1;
+  int64 cpu_quota_millicores = 2;
+  bool has_memory_quota = 3;
+  int64 memory_quota_bytes = 4;
 }
 
 // Caps the cluster owns. CreateLabs refuses a lab over them (InvalidArgument with the reason; a tenant over

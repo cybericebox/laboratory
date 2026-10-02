@@ -10,6 +10,7 @@ import (
 	"k8s.io/client-go/util/retry"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
@@ -41,6 +42,9 @@ func (h *Handler) CreateLabGroups(ctx context.Context, in *protobuf.CreateLabGro
 		if _, err := newDeploySpec(it.GetDeployGroup(), it.GetDeployAfter()); err != nil {
 			return nil, invalid("item %d (%s): %v", i, it.GetName(), err)
 		}
+		if err := h.checkPodSizes(it); err != nil {
+			return nil, invalid("item %d (%s): %v", i, it.GetName(), err)
+		}
 	}
 	if err := dupRefs(refs); err != nil {
 		return nil, err
@@ -60,6 +64,7 @@ func (h *Handler) createLabGroup(ctx context.Context, it *protobuf.LabGroupItem,
 	lg.Spec.Suspended = it.GetSuspended()
 	lg.Spec.VPN.Disabled = it.GetVpnDisabled()
 	lg.Spec.VPN.ProbeWhileSuspended = it.GetProbeWhileSuspended()
+	lg.Spec.VPN.Size, lg.Spec.Gateway.Size = podSize(it.GetVpnSize()), podSize(it.GetGatewaySize())
 	tenant := tenantOf(ctx)
 	lg.Labels, lg.Annotations = dep.stamp(stampTenant(copyLabels(want), tenant), stampID(nil, it.GetName()))
 
@@ -95,7 +100,8 @@ func (h *Handler) createLabGroup(ctx context.Context, it *protobuf.LabGroupItem,
 			return fmt.Errorf("%s %s: the name is taken by another id %q", kindLabGroup, it.GetName(), names.IDOf(cur))
 		}
 		if cur.Spec.Suspended != lg.Spec.Suspended || cur.Spec.VPN.Disabled != lg.Spec.VPN.Disabled ||
-			cur.Spec.VPN.ProbeWhileSuspended != lg.Spec.VPN.ProbeWhileSuspended || !dep.matches(cur.Labels, cur.Annotations) {
+			cur.Spec.VPN.ProbeWhileSuspended != lg.Spec.VPN.ProbeWhileSuspended ||
+			!samePodSize(cur.Spec.VPN.Size, lg.Spec.VPN.Size) || !samePodSize(cur.Spec.Gateway.Size, lg.Spec.Gateway.Size) || !dep.matches(cur.Labels, cur.Annotations) {
 			return errDifferentSpec{kindLabGroup, it.GetName()}
 		}
 		labels, changed := mergeLabels(cur.Labels, want)
@@ -319,4 +325,37 @@ func deleteResult(ref *protobuf.ItemRef, err error) *protobuf.ItemResult {
 		return failedResult(ref, err)
 	}
 	return result(ref, protobuf.ItemState_ITEM_STATE_DELETED)
+}
+
+// checkPodSizes refuses an explicit size of the group's VPN or gateway pod that is not positive in both values or is over the
+// maximum this cluster reports (GetFeatures, group_pods). No size is fine: the pod gets the chart's default.
+func (h *Handler) checkPodSizes(it *protobuf.LabGroupItem) error {
+	g := h.features.GroupPods.Sizing
+	for _, c := range []struct {
+		what   string
+		size   *protobuf.PodSize
+		sizing grouppods.PodSizing
+	}{{"vpn_size", it.GetVpnSize(), g.VPN}, {"gateway_size", it.GetGatewaySize(), g.Gateway}} {
+		if c.size == nil {
+			continue
+		}
+		if err := c.sizing.Check(c.size.GetCpuMillicores(), c.size.GetMemoryBytes()); err != nil {
+			return fmt.Errorf("%s: %w", c.what, err)
+		}
+	}
+	return nil
+}
+
+func podSize(s *protobuf.PodSize) *laboratoryv1alpha1.GroupPodSize {
+	if s == nil {
+		return nil
+	}
+	return &laboratoryv1alpha1.GroupPodSize{CPUMillicores: s.GetCpuMillicores(), MemoryBytes: s.GetMemoryBytes()}
+}
+
+func samePodSize(a, b *laboratoryv1alpha1.GroupPodSize) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }

@@ -434,13 +434,13 @@ func TestTenantQuotaCountsGroupPods(t *testing.T) {
 // The scheduler sizes a group pod from the chart's group pod resources.
 func TestGroupPodNeedFollowsTheChart(t *testing.T) {
 	s := &Scheduler{}
-	if n := s.groupPodNeed("vpn"); n.Cpu().MilliValue() != 100 || n.Memory().Value() != 320<<20 {
+	if n := s.groupPodNeed("vpn", &laboratoryv1alpha1.LabGroup{}); n.Cpu().MilliValue() != 100 || n.Memory().Value() != 320<<20 {
 		t.Fatalf("vpn %v", n)
 	}
-	if n := s.groupPodNeed("gateway"); n.Cpu().MilliValue() != 10 || n.Memory().Value() != 32<<20 {
+	if n := s.groupPodNeed("gateway", &laboratoryv1alpha1.LabGroup{}); n.Cpu().MilliValue() != 10 || n.Memory().Value() != 32<<20 {
 		t.Fatalf("gateway %v", n)
 	}
-	if s.groupPodNeed("other") != nil {
+	if s.groupPodNeed("other", &laboratoryv1alpha1.LabGroup{}) != nil {
 		t.Fatal("an unknown pod has no need")
 	}
 }

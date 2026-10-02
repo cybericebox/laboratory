@@ -9,6 +9,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+
+	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
 // Config is the chart's choice (env VPN_CPU, VPN_MEMORY, GATEWAY_CPU, GATEWAY_MEMORY, shared by the operator and
@@ -57,14 +59,46 @@ func guaranteed(cpu, memory string) corev1.ResourceRequirements {
 	return corev1.ResourceRequirements{Requests: l.DeepCopy(), Limits: l}
 }
 
-// VPN is the resources of a group's VPN container.
+// VPN is the resources of a group's VPN container when the platform gave no size: the chart's default.
 func (c Config) VPN() corev1.ResourceRequirements {
 	return guaranteed(orDefault(c.VPNCPU, DefaultVPNCPU), orDefault(c.VPNMemory, DefaultVPNMemory))
 }
 
-// Gateway is the resources of a group's gateway container.
+// Gateway is the resources of a group's gateway container when the platform gave no size: the chart's default.
 func (c Config) Gateway() corev1.ResourceRequirements {
 	return guaranteed(orDefault(c.GatewayCPU, DefaultGatewayCPU), orDefault(c.GatewayMemory, DefaultGatewayMemory))
+}
+
+// VPNFor is the resources of the VPN container of a group whose spec says size: exactly that, requests = limits; no size = VPN().
+func (c Config) VPNFor(size *laboratoryv1alpha1.GroupPodSize) corev1.ResourceRequirements {
+	if size == nil {
+		return c.VPN()
+	}
+	return sized(size)
+}
+
+// GatewayFor is VPNFor for the gateway container.
+func (c Config) GatewayFor(size *laboratoryv1alpha1.GroupPodSize) corev1.ResourceRequirements {
+	if size == nil {
+		return c.Gateway()
+	}
+	return sized(size)
+}
+
+func sized(size *laboratoryv1alpha1.GroupPodSize) corev1.ResourceRequirements {
+	l := corev1.ResourceList{
+		corev1.ResourceCPU:    *resource.NewMilliQuantity(size.CPUMillicores, resource.DecimalSI),
+		corev1.ResourceMemory: *resource.NewQuantity(size.MemoryBytes, resource.BinarySI),
+	}
+	return corev1.ResourceRequirements{Requests: l.DeepCopy(), Limits: l}
+}
+
+// VPNOverhead and GatewayOverhead are the default requests of the VPN and of the gateway pod.
+func (c Config) VPNOverhead() Overhead     { return overheadOf(c.VPN()) }
+func (c Config) GatewayOverhead() Overhead { return overheadOf(c.Gateway()) }
+
+func overheadOf(r corev1.ResourceRequirements) Overhead {
+	return Overhead{CPU: r.Requests.Cpu().MilliValue(), Memory: r.Requests.Memory().Value()}
 }
 
 // Overhead is the sum of the VPN and the gateway requests.

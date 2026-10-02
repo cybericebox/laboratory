@@ -17,10 +17,10 @@ func TestPodsCarryTheirPriorityClass(t *testing.T) {
 	ctx := context.Background()
 	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).Build()
 	r := &LabGroupReconciler{Client: c, VPNBaseNetwork: "10.8.0.0/10", VPNImage: "lab:v1", GatewayImage: "lab:v1", PriorityClass: "laboratory-group"}
-	if err := r.ensureVPNDeployment(ctx, "ns", false); err != nil {
+	if err := r.ensureVPNDeployment(ctx, "ns", false, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.ensureGatewayDeployment(ctx, "ns", false); err != nil {
+	if err := r.ensureGatewayDeployment(ctx, "ns", false, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, n := range []string{"vpn", "gateway"} {

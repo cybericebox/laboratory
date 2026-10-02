@@ -160,6 +160,27 @@ spec:
               value: {{ .Values.inetGateway.resources.cpu | quote }}
             - name: GATEWAY_MEMORY
               value: {{ .Values.inetGateway.resources.memory | quote }}
+            # How the pods of a group are sized: reported in GetFeatures, the maximum of the sizes CreateLabGroups accepts.
+            - name: VPN_BASE_CPU
+              value: {{ .Values.vpn.sizing.baseCpu | quote }}
+            - name: VPN_BASE_MEMORY
+              value: {{ .Values.vpn.sizing.baseMemory | quote }}
+            - name: VPN_PER_USER_CPU
+              value: {{ .Values.vpn.sizing.perUserCpu | quote }}
+            - name: VPN_PER_USER_MEMORY
+              value: {{ .Values.vpn.sizing.perUserMemory | quote }}
+            - name: VPN_MAX_USERS
+              value: {{ .Values.vpn.sizing.maxUsers | quote }}
+            - name: GATEWAY_BASE_CPU
+              value: {{ .Values.inetGateway.sizing.baseCpu | quote }}
+            - name: GATEWAY_BASE_MEMORY
+              value: {{ .Values.inetGateway.sizing.baseMemory | quote }}
+            - name: GATEWAY_PER_LAB_CPU
+              value: {{ .Values.inetGateway.sizing.perLabCpu | quote }}
+            - name: GATEWAY_PER_LAB_MEMORY
+              value: {{ .Values.inetGateway.sizing.perLabMemory | quote }}
+            - name: GATEWAY_MAX_LABS
+              value: {{ .Values.inetGateway.sizing.maxLabs | quote }}
             # A topology that asks for device state persistence is refused unless the platform allows it.
             - name: AGENT_STATE_PERSISTENCE_ENABLED
               value: {{ .Values.devices.statePersistence.enabled | quote }}

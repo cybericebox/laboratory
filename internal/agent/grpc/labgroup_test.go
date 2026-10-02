@@ -127,3 +127,54 @@ func TestLabGroupsEndToEnd(t *testing.T) {
 	res, err = h.DeleteLabGroups(ctx, &protobuf.DeleteRequest{Items: []*protobuf.ItemRef{{Name: "g-a"}}})
 	wantStates(t, res, err, stNotFound)
 }
+
+// CreateLabGroups takes explicit sizes of the group's VPN and gateway pods, checks them against the cluster's maxima and keeps them in the
+// spec; the same request again is EXISTS, another size is a different spec.
+func TestCreateLabGroupsPodSizes(t *testing.T) {
+	h, _ := newTestHandler(t)
+	h.SetFeatures(testFeatures)
+	ctx := context.Background()
+	groups := h.cs.LaboratoryV1alpha1().LabGroups()
+	size := func(cpu, mem int64) *protobuf.PodSize { return &protobuf.PodSize{CpuMillicores: cpu, MemoryBytes: mem} }
+	// the maxima: VPN 20m+6m*20 = 140m and 64Mi+20Mi*20 = 464Mi; gateway 105m and 216Mi
+	req := &protobuf.CreateLabGroupsRequest{Items: []*protobuf.LabGroupItem{
+		{Name: "sz-a", VpnSize: size(140, 464<<20), GatewaySize: size(15, 24<<20)},
+		{Name: "sz-b"},
+	}}
+	res, err := h.CreateLabGroups(ctx, req)
+	wantStates(t, res, err, stCreated, stCreated)
+	a, _ := groups.Get(ctx, "sz-a", metav1.GetOptions{})
+	b, _ := groups.Get(ctx, "sz-b", metav1.GetOptions{})
+	if v := a.Spec.VPN.Size; v == nil || v.CPUMillicores != 140 || v.MemoryBytes != 464<<20 {
+		t.Fatalf("vpn size: %+v", v)
+	}
+	if g := a.Spec.Gateway.Size; g == nil || g.CPUMillicores != 15 || g.MemoryBytes != 24<<20 {
+		t.Fatalf("gateway size: %+v", g)
+	}
+	if b.Spec.VPN.Size != nil || b.Spec.Gateway.Size != nil {
+		t.Fatal("no size asked, none stored: the operator uses the chart's default")
+	}
+	res, err = h.CreateLabGroups(ctx, req)
+	wantStates(t, res, err, stExists, stExists)
+	req.Items[0].VpnSize = size(100, 100<<20)
+	res, err = h.CreateLabGroups(ctx, req)
+	wantStates(t, res, err, stFailed, stExists)
+
+	for name, it := range map[string]*protobuf.LabGroupItem{
+		"vpn cpu over the maximum":     {Name: "x1", VpnSize: size(141, 64<<20)},
+		"vpn memory over the maximum":  {Name: "x2", VpnSize: size(20, 465<<20)},
+		"gateway cpu over the maximum": {Name: "x3", GatewaySize: size(106, 16<<20)},
+		"gateway memory over":          {Name: "x4", GatewaySize: size(5, 217<<20)},
+		"a size without memory":        {Name: "x5", VpnSize: size(20, 0)},
+		"a negative size":              {Name: "x6", GatewaySize: size(-1, 16<<20)},
+		"an empty size is not a size":  {Name: "x7", VpnSize: &protobuf.PodSize{}},
+	} {
+		_, err := h.CreateLabGroups(ctx, &protobuf.CreateLabGroupsRequest{Items: []*protobuf.LabGroupItem{it}})
+		if status.Code(err) != codes.InvalidArgument {
+			t.Errorf("%s: %v, want InvalidArgument", name, err)
+		}
+		if _, err := groups.Get(ctx, it.Name, metav1.GetOptions{}); err == nil {
+			t.Errorf("%s: the group must not be created", name)
+		}
+	}
+}

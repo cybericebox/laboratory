@@ -34,6 +34,8 @@ type LabGroupVPNSpecApplyConfiguration struct {
 	// KeypairSecretRef points to an existing WireGuard keypair Secret.
 	// If omitted, operator generates a keypair and stores it in Secret vpn-server-keypair.
 	KeypairSecretRef *v1.SecretReference `json:"keypairSecretRef,omitempty"`
+	// Size is the size of the VPN pod; absent = the chart's default. Fixed once set.
+	Size *GroupPodSizeApplyConfiguration `json:"size,omitempty"`
 }
 
 // LabGroupVPNSpecApplyConfiguration constructs a declarative configuration of the LabGroupVPNSpec type for use with
@@ -63,5 +65,13 @@ func (b *LabGroupVPNSpecApplyConfiguration) WithProbeWhileSuspended(value bool) 
 // If called multiple times, the KeypairSecretRef field is set to the value of the last call.
 func (b *LabGroupVPNSpecApplyConfiguration) WithKeypairSecretRef(value v1.SecretReference) *LabGroupVPNSpecApplyConfiguration {
 	b.KeypairSecretRef = &value
+	return b
+}
+
+// WithSize sets the Size field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Size field is set to the value of the last call.
+func (b *LabGroupVPNSpecApplyConfiguration) WithSize(value *GroupPodSizeApplyConfiguration) *LabGroupVPNSpecApplyConfiguration {
+	b.Size = value
 	return b
 }

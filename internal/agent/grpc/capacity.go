@@ -62,17 +62,11 @@ func (h *Handler) tenantCapacity(ctx context.Context) (*protobuf.CapacityRespons
 	if err != nil {
 		return nil, err
 	}
-	var alloc tenant.Totals
-	if ten != nil && tenant.NeedsAllocatable(ten.Spec.Quota) {
-		if alloc, err = h.allocatable(ctx); err != nil {
-			return nil, err
-		}
+	limits, err := h.tenantQuota(ctx, ten)
+	if err != nil {
+		return nil, err
 	}
-	var quota *laboratoryv1alpha1.TenantQuota
-	if ten != nil {
-		quota = ten.Spec.Quota
-	}
-	resp := capacityOf(name, tenant.ResolveQuota(quota, alloc), load, h.groupOverhead)
+	resp := capacityOf(name, limits, load, h.groupOverhead)
 	h.capCache.mu.Lock()
 	if h.capCache.m == nil {
 		h.capCache.m = map[string]capacityEntry{}
@@ -80,6 +74,23 @@ func (h *Handler) tenantCapacity(ctx context.Context) (*protobuf.CapacityRespons
 	h.capCache.m[name] = capacityEntry{at: time.Now(), cap: resp}
 	h.capCache.mu.Unlock()
 	return resp, nil
+}
+
+// tenantQuota resolves the quota of the tenant (nil = the tenant has no object: the platform's policy, no limit) against the
+// allocatable of the nodes lab pods run on.
+func (h *Handler) tenantQuota(ctx context.Context, ten *laboratoryv1alpha1.Tenant) (tenant.Limits, error) {
+	var alloc tenant.Totals
+	var quota *laboratoryv1alpha1.TenantQuota
+	if ten != nil {
+		quota = ten.Spec.Quota
+	}
+	if ten != nil && tenant.NeedsAllocatable(quota) {
+		var err error
+		if alloc, err = h.allocatable(ctx); err != nil {
+			return tenant.Limits{}, err
+		}
+	}
+	return tenant.ResolveQuota(quota, alloc), nil
 }
 
 // load is what a tenant's pods reserve and use.

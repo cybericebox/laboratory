@@ -12,7 +12,9 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/limits"
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/profiles"
 	"github.com/cybericebox/laboratory/internal/tenant"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
@@ -46,6 +48,14 @@ type Features struct {
 	DeviceProfiles []string
 	// Limits are the caps CreateLabs enforces.
 	Limits limits.Limits
+	// GroupPods is how a group's own pods are sized (the maximum CreateLabGroups accepts) and the default size without one.
+	GroupPods GroupPodsFeature
+}
+
+// GroupPodsFeature is grouppods.Sizings plus the chart's default sizes.
+type GroupPodsFeature struct {
+	Sizing                     grouppods.Sizings
+	DefaultVPN, DefaultGateway grouppods.Overhead
 }
 
 type featuresCache struct {
@@ -83,6 +93,10 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 			return nil, err
 		}
 		f := h.features
+		quota, err := h.tenantQuota(ctx, ten)
+		if err != nil {
+			return nil, err
+		}
 		p := tenant.EffectivePersistence(ten, f.StatePersistence, f.WriteQuota, f.MaxFileSize, f.TenantQuota)
 		base = &protobuf.FeaturesResponse{
 			Tenant: name,
@@ -107,6 +121,18 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 				Lab:    &protobuf.LabLimits{MaxDevices: int32(f.Limits.LabMaxDevices)},
 				Group:  &protobuf.GroupLimits{MaxLabs: int32(f.Limits.GroupMaxLabs), MaxCpuMillicores: f.Limits.GroupMaxCPU, MaxMemoryBytes: f.Limits.GroupMaxMemory},
 				Tenant: &protobuf.TenantLimits{MaxLabs: int32(f.Limits.TenantMaxLabs)},
+			},
+			GroupPods: &protobuf.GroupPodsFeature{
+				Vpn:            podSizingProto(f.GroupPods.Sizing.VPN),
+				Gateway:        podSizingProto(f.GroupPods.Sizing.Gateway),
+				DefaultVpn:     &protobuf.PodSize{CpuMillicores: f.GroupPods.DefaultVPN.CPU, MemoryBytes: f.GroupPods.DefaultVPN.Memory},
+				DefaultGateway: &protobuf.PodSize{CpuMillicores: f.GroupPods.DefaultGateway.CPU, MemoryBytes: f.GroupPods.DefaultGateway.Memory},
+			},
+			Constants: &protobuf.DeviceConstants{
+				MaxInterfacesPerContainer: names.MaxContainerInterfaces, MaxPortsPerSwitchOrHub: names.MaxSwitchPorts, HardMaxDevicesPerLab: names.MaxLabDevices,
+			},
+			TenantQuota: &protobuf.TenantQuotaFeature{
+				HasCpuQuota: quota.HasCPU, CpuQuotaMillicores: quota.CPU, HasMemoryQuota: quota.HasMemory, MemoryQuotaBytes: quota.Memory,
 			},
 			Proxy: &protobuf.ProxyFeature{
 				AccessTokenMaxTtlSeconds: int64(f.ProxyAccessTokenMaxTTL.Seconds()), SessionMaxTtlSeconds: int64(f.ProxySessionMaxTTL.Seconds()), SessionIdleTtlSeconds: int64(f.ProxySessionIdleTTL.Seconds()),
@@ -159,4 +185,11 @@ func (h *Handler) checkProfiles(spec *laboratoryv1alpha1.LabSpec) error {
 		}
 	}
 	return nil
+}
+
+func podSizingProto(p grouppods.PodSizing) *protobuf.PodSizing {
+	return &protobuf.PodSizing{
+		BaseCpuMillicores: p.BaseCPU, BaseMemoryBytes: p.BaseMemory,
+		PerUnitCpuMillicores: p.PerUnitCPU, PerUnitMemoryBytes: p.PerUnitMemory, MaxUnits: int32(p.MaxUnits),
+	}
 }
