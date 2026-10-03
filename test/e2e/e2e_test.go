@@ -230,14 +230,14 @@ var _ = Describe(
 						cmd = exec.Command(
 							"kubectl", "run", "curl-metrics", "--restart=Never",
 							"--namespace", namespace,
-							"--image=curlimages/curl:latest",
+							"--image=curlimages/curl:8.11.1",
 							"--overrides",
 							fmt.Sprintf(
 								`{
 					"spec": {
 						"containers": [{
 							"name": "curl",
-							"image": "curlimages/curl:latest",
+							"image": "curlimages/curl:8.11.1",
 							"command": ["/bin/sh", "-c"],
 							"args": ["curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics"],
 							"securityContext": {

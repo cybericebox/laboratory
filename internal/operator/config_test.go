@@ -73,6 +73,30 @@ func TestLoadConfigSchedulerDefaultsAndValidation(t *testing.T) {
 	}
 }
 
+// A moving image reference stops the operator: no tag, the tag latest. An exact tag and a digest start it.
+func TestLoadConfigRefusesMovingImages(t *testing.T) {
+	for image, ok := range map[string]bool{
+		"registry.example.com/lab:v1.2.3":           true,
+		"registry.example.com:5000/lab:0.1.0":       true,
+		"registry.example.com/lab@sha256:abcdef":    true,
+		"registry.example.com/lab:v1@sha256:abcdef": true,
+		"registry.example.com/lab:latest":           false,
+		"registry.example.com/lab":                  false,
+		"registry.example.com:5000/lab":             false,
+		"registry.example.com/lab:":                 false,
+	} {
+		for _, key := range []string{"VPN_IMAGE", "GATEWAY_IMAGE", "NETCONFIG_IMAGE"} {
+			t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
+			t.Setenv("BASE_DOMAIN", "labs.example.com")
+			setRequiredEnv(t)
+			t.Setenv(key, image)
+			if _, err := LoadConfig(); (err == nil) != ok {
+				t.Errorf("%s=%s: err %v, want ok=%v", key, image, err, ok)
+			}
+		}
+	}
+}
+
 // setRequiredEnv sets what the chart always passes and the operator refuses to start without.
 func setRequiredEnv(t *testing.T) {
 	t.Helper()

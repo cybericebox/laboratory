@@ -79,7 +79,7 @@ spec:
       serviceAccountName: laboratory-proxy
       containers:
         - name: l7
-          image: cybericebox/laboratory-proxy:latest
+          image: cybericebox/laboratory-proxy:0.1.0
           command: [ "/proxy", "proxy-l7" ]
           env:
             # REQUIRED, no default: the overlay must set the lab base domain.
@@ -112,7 +112,7 @@ spec:
               mountPath: /etc/proxy/tls
               readOnly: true
         - name: wg-demux
-          image: cybericebox/laboratory-proxy:latest
+          image: cybericebox/laboratory-proxy:0.1.0
           command: [ "/proxy", "proxy-wg" ]
           env:
             - name: UDP_LISTEN_ADDR

@@ -14,12 +14,11 @@ at install time instead of shipping a broken deployment.
 {{- fail (printf "this chart needs Kubernetes 1.33 or newer, this cluster is %s: device pods run in user namespaces (spec.hostUsers=false), and below 1.33 the API server can drop that field silently, which would run a device in the host user namespace; the chart also uses native sidecars and ValidatingAdmissionPolicy. Upgrade the cluster." .Capabilities.KubeVersion.Version) }}
 {{- end }}
 
-{{- /* Exact image tags: `latest` moves under a running cluster. */ -}}
-{{- if not .Values.development.allowLatestTags }}
+{{- /* Exact image tags: a moving tag (`latest`, or none) leaves nodes on different images and a rollout cannot tell them apart. */ -}}
 {{- range $name, $image := dict "operator" .Values.operator.image "vpn" .Values.vpn.image "inetGateway" .Values.inetGateway.image "proxy" .Values.proxy.image "nodeAgent" .Values.nodeAgent.image "agent" .Values.agent.image "registry" .Values.registry.image }}
-{{- if eq (toString ($image.tag | default $.Chart.AppVersion)) "latest" }}
-{{- fail (printf "%s.image.tag is \"latest\": production uses exact version tags (a moving tag leaves nodes on different images and a rollout cannot tell them apart). Set an exact tag, or development.allowLatestTags=true for a local stand." $name) }}
-{{- end }}
+{{- $tag := toString ($image.tag | default $.Chart.AppVersion) }}
+{{- if or (eq $tag "") (eq $tag "latest") }}
+{{- fail (printf "%s.image.tag is %q: images are deployed by an exact version tag (a release version or a short git sha). Set %s.image.tag." $name $tag $name) }}
 {{- end }}
 {{- end }}
 

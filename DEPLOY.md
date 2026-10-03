@@ -154,9 +154,9 @@ helm upgrade laboratory ./charts/laboratory \
 The ConfigMap is re-rendered from values. Operator pod restarts automatically (Deployment update triggers rollout).
 
 **Image tags.** Production uses exact version tags (`operator.image.tag`, `vpn.image.tag`, `inetGateway.image.tag`, `proxy.image.tag`, `nodeAgent.image.tag`,
-`agent.image.tag`; an empty tag is the chart's `appVersion`). The chart refuses `latest` unless `development.allowLatestTags: true` (a local stand): a moving tag leaves
-nodes on different images and a rollout cannot tell the versions apart. The image pull policy follows the tag when `pullPolicy` is empty: `IfNotPresent` for an exact
-tag, `Always` for `latest`.
+`agent.image.tag`; an empty tag is the chart's `appVersion`). The chart always refuses `latest` and an empty tag (there is no switch for it): a moving tag leaves
+nodes on different images and a rollout cannot tell the versions apart. A release version is the tag of a release, the short commit (`sha-<short commit>`) of a development build. The image
+pull policy is `IfNotPresent` when `pullPolicy` is empty.
 
 **The VPN and gateway pods of existing groups.** They run `vpn.image` and `inetGateway.image` (the binary with the gateway egress filter, the anti-spoof check and the
 WireGuard handling), so after a chart upgrade the operator brings every existing group's VPN and gateway Deployment to the configured image and pull policy, and to nothing else: a group's pods keep the size (CPU and memory) and the command they were created with, a changed

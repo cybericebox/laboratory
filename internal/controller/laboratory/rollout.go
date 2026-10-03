@@ -2,7 +2,6 @@ package laboratory
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"time"
 
@@ -82,20 +81,9 @@ func (g *rolloutGuard) release(ns string) {
 	}
 }
 
-// pullPolicyFor is the image pull policy that follows the tag: a tag that moves (latest, or none) is pulled every time, an exact tag or a
-// digest only when the node does not have it.
-func pullPolicyFor(image string) corev1.PullPolicy {
-	if strings.Contains(image, "@") {
-		return corev1.PullIfNotPresent
-	}
-	name := image[strings.LastIndex(image, "/")+1:]
-	tag := ""
-	if i := strings.LastIndex(name, ":"); i >= 0 {
-		tag = name[i+1:]
-	}
-	if tag == "" || tag == "latest" {
-		return corev1.PullAlways
-	}
+// pullPolicyFor is the image pull policy of the images the platform runs in a group: every one has an exact tag or a digest (the
+// operator refuses to start otherwise), so a node pulls it only when it does not have it.
+func pullPolicyFor(string) corev1.PullPolicy {
 	return corev1.PullIfNotPresent
 }
 

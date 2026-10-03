@@ -17,19 +17,15 @@ import (
 	"github.com/cybericebox/laboratory/internal/grouppods"
 )
 
-func TestPullPolicyFollowsTheTag(t *testing.T) {
-	for image, want := range map[string]corev1.PullPolicy{
-		"cybericebox/laboratory-lab:v1.2.3":        corev1.PullIfNotPresent,
-		"cybericebox/laboratory-lab:latest":        corev1.PullAlways,
-		"cybericebox/laboratory-lab":               corev1.PullAlways,
-		"localhost:5035/x/lab@sha256:abcdef":       corev1.PullIfNotPresent,
-		"registry.example.com:5000/lab:1.0":        corev1.PullIfNotPresent,
-		"registry.example.com:5000/lab":            corev1.PullAlways,
-		"localhost:5035/docker.io/x/lab:latest":    corev1.PullAlways,
-		"localhost:5035/docker.io/x/lab:v2@sha256": corev1.PullIfNotPresent,
+func TestPullPolicyIsAlwaysIfNotPresent(t *testing.T) {
+	for _, image := range []string{
+		"cybericebox/laboratory-lab:v1.2.3",
+		"localhost:5035/x/lab@sha256:abcdef",
+		"registry.example.com:5000/lab:1.0",
+		"localhost:5035/docker.io/x/lab:v2@sha256",
 	} {
-		if got := pullPolicyFor(image); got != want {
-			t.Errorf("%s: %s, want %s", image, got, want)
+		if got := pullPolicyFor(image); got != corev1.PullIfNotPresent {
+			t.Errorf("%s: %s, want %s", image, got, corev1.PullIfNotPresent)
 		}
 	}
 }

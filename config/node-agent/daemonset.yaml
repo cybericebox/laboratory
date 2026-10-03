@@ -24,7 +24,7 @@ spec:
         - operator: Exists
       initContainers:
         - name: install-cni-bins
-          image: ghcr.io/cybericebox/laboratory/node-agent:latest
+          image: ghcr.io/cybericebox/laboratory/node-agent:0.1.0
           command: [ "/bin/sh", "-c" ]
           args:
             - |
@@ -39,7 +39,7 @@ spec:
             - name: cni-bin
               mountPath: /opt/cni/bin
         - name: install-cni-conf
-          image: ghcr.io/cybericebox/laboratory/node-agent:latest
+          image: ghcr.io/cybericebox/laboratory/node-agent:0.1.0
           command: [ "/node", "install-cni" ]
           env:
             - name: GRPC_SOCK
@@ -55,7 +55,7 @@ spec:
               mountPath: /etc/cni/net.d
       containers:
         - name: ovs
-          image: ghcr.io/cybericebox/laboratory/node-agent:latest
+          image: ghcr.io/cybericebox/laboratory/node-agent:0.1.0
           command: [ "/node-agent/bin/start-ovs.sh" ]
           securityContext:
             privileged: true
@@ -63,7 +63,7 @@ spec:
             - name: ovs-run
               mountPath: /run/openvswitch
         - name: node-agent
-          image: ghcr.io/cybericebox/laboratory/node-agent:latest
+          image: ghcr.io/cybericebox/laboratory/node-agent:0.1.0
           command: [ "/node", "node-agent" ]
           env:
             - name: NODE_NAME

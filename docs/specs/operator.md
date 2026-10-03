@@ -109,7 +109,7 @@ Namespace, Deployment, Service, NetworkPolicy, Secret). Не программи�
 - **Источник:** §4 «Один на группу», §14 «VPN-сервер (ключи в Secret) + регистрация».
 - **Статус:** ✅ Implemented
 - **Реализация:** `labgroup_controller.go:ensureVPNDeployment` (Deployment `vpn` в namespace группы, replicas=1, образ
-  `cybericebox/vpn:latest`, envFrom Secret `vpn-server-keypair`).
+  `cybericebox/vpn:<exact version>`, envFrom Secret `vpn-server-keypair`).
 - **Что считать выполненным:** в `labgroup-<UID>` присутствует Deployment `vpn` с одной репликой; контейнер получает
   приватный ключ через env.
 

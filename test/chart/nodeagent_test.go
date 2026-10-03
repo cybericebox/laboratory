@@ -246,8 +246,8 @@ func TestNodeAgentFollowsLabPlacementAndLabPodsNeedItsLabel(t *testing.T) {
 	}
 }
 
-// B-3: production uses exact tags: latest is refused unless the dev flag is on, and the pull policy follows the tag.
-func TestLatestTagIsRefusedAndPullPolicyFollowsTheTag(t *testing.T) {
+// B-3: images use exact tags: latest is always refused, and the pull policy is IfNotPresent unless set.
+func TestLatestTagIsRefusedAndPullPolicyIsIfNotPresent(t *testing.T) {
 	out, err := helmTemplate(t, "--set", "operator.image.tag=latest", "-s", "templates/operator/deployment.yaml")
 	if err == nil || !strings.Contains(out, "operator.image.tag") || !strings.Contains(out, "latest") {
 		t.Errorf("latest must be refused: %v\n%s", err, out)
@@ -256,13 +256,13 @@ func TestLatestTagIsRefusedAndPullPolicyFollowsTheTag(t *testing.T) {
 	if err == nil || !strings.Contains(out, "vpn.image.tag") {
 		t.Errorf("the VPN image too: %v\n%s", err, out)
 	}
-	out, err = helmTemplate(t, "--set", "agent.image.tag=latest", "--set", "development.allowLatestTags=true", "--set", "nodeAgent.image.tag=latest", "-s", "templates/node-agent/daemonset.yaml")
-	if err != nil || !strings.Contains(out, "imagePullPolicy: Always") || strings.Contains(out, "imagePullPolicy: IfNotPresent") {
-		t.Errorf("with the dev flag latest renders and is pulled Always: %v\n%s", err, out)
+	out, err = helmTemplate(t, "--set", "agent.image.tag=latest", "-s", "templates/agent/deployment.yaml")
+	if err == nil || !strings.Contains(out, "agent.image.tag") {
+		t.Errorf("latest is refused for every image, there is no switch for it: %v\n%s", err, out)
 	}
 	out, err = helmTemplate(t, "--set", "nodeAgent.image.tag=v1.2.3", "-s", "templates/node-agent/daemonset.yaml")
 	if err != nil || !strings.Contains(out, "imagePullPolicy: IfNotPresent") || strings.Contains(out, "imagePullPolicy: Always") {
-		t.Errorf("an exact tag is pulled IfNotPresent: %v\n%s", err, out)
+		t.Errorf("an exact tag is pulled IfNotPresent, and nothing is pulled Always: %v\n%s", err, out)
 	}
 	out, err = helmTemplate(t, "--set", "nodeAgent.image.pullPolicy=Never", "-s", "templates/node-agent/daemonset.yaml")
 	if err != nil || !strings.Contains(out, "imagePullPolicy: Never") {

@@ -1,5 +1,6 @@
 # Image tags: an empty `tag` means the chart appVersion (the release version).
-# Set a tag explicitly to pin another build (e.g. `develop`).
+# Set a tag explicitly to pin another build (an exact tag: a release version or a short git sha). The chart refuses `latest` and an
+# empty tag with an empty appVersion: a moving tag leaves nodes on different images.
 # ============================================================
 # Operator configuration
 # ============================================================
@@ -7,7 +8,7 @@ operator:
   image:
     repository: cybericebox/laboratory-controller
     tag: ""
-    pullPolicy: ""   # empty = follows the tag: Always for latest, IfNotPresent for an exact version tag
+    pullPolicy: ""   # empty = IfNotPresent (the tag is always an exact version)
 
   # REQUIRED (no default): host:port advertised to WireGuard clients (demux public address).
   # Example: "vpn.example.com:51820"
@@ -138,7 +139,7 @@ vpn:
     repository: cybericebox/laboratory-lab
     tag: ""
     # No pullPolicy key here (unlike operator/proxy/nodeAgent/agent): the operator builds this Pod spec itself
-    # and the pull policy follows the tag: Always for latest, IfNotPresent for an exact version tag.
+    # and the pull policy is IfNotPresent (the tag is always an exact version).
     # The operator also brings the pods of existing groups to this image, one group at a time (see DEPLOY.md, "Upgrade").
 
 # ============================================================
@@ -166,7 +167,7 @@ inetGateway:
     repository: cybericebox/laboratory-lab
     tag: ""
     # No pullPolicy key here (unlike operator/proxy/nodeAgent/agent): the operator builds this Pod spec itself
-    # and the pull policy follows the tag: Always for latest, IfNotPresent for an exact version tag.
+    # and the pull policy is IfNotPresent (the tag is always an exact version).
     # The operator also brings the pods of existing groups to this image, one group at a time (see DEPLOY.md, "Upgrade").
 
 # ============================================================
@@ -194,7 +195,7 @@ proxy:
   image:
     repository: cybericebox/laboratory-proxy
     tag: ""
-    pullPolicy: ""   # empty = follows the tag: Always for latest, IfNotPresent for an exact version tag
+    pullPolicy: ""   # empty = IfNotPresent (the tag is always an exact version)
   # How the proxy runs.
   #   replicas (default): a Deployment of `replicas` pods, NEVER two on one node (required anti-affinity by
   #     hostname). With more replicas than schedulable nodes the extra pods stay Pending, so on a one-node
@@ -457,7 +458,7 @@ nodeAgent:
   image:
     repository: cybericebox/laboratory-node
     tag: ""
-    pullPolicy: ""   # empty = follows the tag: Always for latest, IfNotPresent for an exact version tag
+    pullPolicy: ""   # empty = IfNotPresent (the tag is always an exact version)
 
   # The node is bare: Open vSwitch runs inside this DaemonSet (the "ovs" sidecar),
   # and the host-prep init container loads the kernel modules and sets the sysctls
@@ -537,7 +538,7 @@ registry:
     # (linux/amd64 and linux/arm64); about 70 MB compressed.
     repository: ghcr.io/project-zot/zot
     tag: "v2.1.21"
-    pullPolicy: ""   # empty = follows the tag: Always for latest, IfNotPresent for an exact version tag
+    pullPolicy: ""   # empty = IfNotPresent (the tag is always an exact version)
   # StorageClass of the registry volume; empty = the cluster default. The volume holds every device snapshot, so its
   # PersistentVolume must survive the claim: use a class with reclaimPolicy Retain (retainClass below creates one).
   # With a class whose reclaimPolicy is Delete, a deleted claim or namespace deletes all snapshots.
@@ -818,7 +819,7 @@ agent:
   image:
     repository: cybericebox/laboratory-agent
     tag: ""
-    pullPolicy: ""   # empty = follows the tag: Always for latest, IfNotPresent for an exact version tag
+    pullPolicy: ""   # empty = IfNotPresent (the tag is always an exact version)
 
   # Rollout and shutdown: a new pod must be Ready (its port bound, the CRD check done) for minReadySeconds before the next one is replaced;
   # on SIGTERM the agent finishes running calls for up to shutdownGrace, after a preStop sleep of preStopSleepSeconds (so the Service stops sending
@@ -941,14 +942,6 @@ imagePullSecrets: []
 
 nameOverride: ""
 fullnameOverride: ""
-
-# ============================================================
-# Development switches (never on a production install)
-# ============================================================
-development:
-  # The chart refuses the image tag `latest` (a tag that moves: a node may run an old image while another runs a new one, and a
-  # rollout cannot tell the versions apart). Production uses exact version tags. true: allow `latest`, for a local stand.
-  allowLatestTags: false
 
 # ============================================================
 # cert-manager subchart values (used when certManager.install=true)

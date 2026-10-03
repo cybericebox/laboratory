@@ -58,6 +58,5 @@ jobs:
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,scope=${{ matrix.name }},mode=max
-          tags: |
-            ${{ matrix.image }}:develop
-            ${{ matrix.image }}:${{ steps.meta.outputs.sha }}
+          # only the commit: no moving tag
+          tags: ${{ matrix.image }}:${{ steps.meta.outputs.sha }}

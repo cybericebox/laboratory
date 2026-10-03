@@ -114,8 +114,8 @@ var _ = BeforeSuite(
 			Recorder:        mgr.GetEventRecorderFor("labgroup"),
 			VPNBaseNetwork:  "10.8.0.0/10",
 			InetBaseNetwork: "10.9.0.0/10",
-			VPNImage:        "cybericebox/laboratory-lab:latest",
-			GatewayImage:    "cybericebox/laboratory-lab:latest",
+			VPNImage:        "cybericebox/laboratory-lab:v0.0.0-test",
+			GatewayImage:    "cybericebox/laboratory-lab:v0.0.0-test",
 		}).SetupWithManager(mgr)
 		Expect(err).NotTo(HaveOccurred())
 

@@ -33,9 +33,9 @@ data:
 
   # DNS server advertised to WireGuard clients via DHCP option (optional).
 
-  # Container images for runtime-created pods (overridable per deployment).
-  VPN_IMAGE: "ghcr.io/cybericebox/laboratory/vpn:latest"
-  GATEWAY_IMAGE: "ghcr.io/cybericebox/laboratory/gateway:latest"
+  # Container images for runtime-created pods (an exact version tag: the operator refuses latest and no tag).
+  VPN_IMAGE: "ghcr.io/cybericebox/laboratory/vpn:0.1.0"
+  GATEWAY_IMAGE: "ghcr.io/cybericebox/laboratory/gateway:0.1.0"
 
   # JSON-encoded nodeSelector and tolerations for all runtime lab pods.
   LAB_NODE_SELECTOR: "{}"

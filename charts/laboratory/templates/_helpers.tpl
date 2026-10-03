@@ -153,11 +153,11 @@ node-agent sets on its node. Lab pods run only where a ready node-agent serves t
 {{- end }}
 
 {{/*
-The image pull policy of a container: the explicit one when set, else it follows the tag. A tag that moves (latest, or none) is pulled every
-time; an exact version tag only when the node does not have it. Arguments: dict "policy" <values pullPolicy> "tag" <effective tag>.
+The image pull policy of a container: the explicit one when set, else IfNotPresent (every image has an exact tag, see validate.yaml).
+Arguments: dict "policy" <values pullPolicy> "tag" <effective tag>; the tag is not used, it stays so that the callers do not change.
 */}}
 {{- define "laboratory.pullPolicy" -}}
-{{- if .policy -}}{{ .policy }}{{- else if or (eq (toString .tag) "") (eq (toString .tag) "latest") -}}Always{{- else -}}IfNotPresent{{- end -}}
+{{- if .policy -}}{{ .policy }}{{- else -}}IfNotPresent{{- end -}}
 {{- end }}
 
 {{/*

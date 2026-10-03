@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/mail"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -245,6 +246,11 @@ func LoadConfig() (*Config, error) {
 	if address, err := mail.ParseAddress(cfg.SupportEmail); err != nil || address.Address != cfg.SupportEmail {
 		return nil, fmt.Errorf("SUPPORT_EMAIL %q is not a plain email address", cfg.SupportEmail)
 	}
+	for name, image := range map[string]string{"VPN_IMAGE": cfg.VPNImage, "GATEWAY_IMAGE": cfg.GatewayImage, "NETCONFIG_IMAGE": cfg.NetConfigImage} {
+		if err := checkExactImage(image); err != nil {
+			return nil, fmt.Errorf("%s %q: %w", name, image, err)
+		}
+	}
 	if cfg.SchedulerMaxPods < 0 {
 		return nil, fmt.Errorf("SCHEDULER_MAX_PODS must not be negative")
 	}
@@ -293,6 +299,23 @@ func LoadConfig() (*Config, error) {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// checkExactImage refuses an image reference that moves: no tag (the container runtime reads that as latest) or the tag latest. A
+// digest is exact. Production runs exact versions, so a node never has an old image under the same name as a new one.
+func checkExactImage(image string) error {
+	if strings.Contains(image, "@") {
+		return nil
+	}
+	name := image[strings.LastIndex(image, "/")+1:]
+	i := strings.LastIndex(name, ":")
+	if i < 0 || name[i+1:] == "" {
+		return fmt.Errorf("has no tag: use an exact version tag")
+	}
+	if name[i+1:] == "latest" {
+		return fmt.Errorf("has the tag latest: use an exact version tag")
+	}
+	return nil
 }
 
 // ParseLabScheduling deserialises the JSON-encoded nodeSelector and tolerations

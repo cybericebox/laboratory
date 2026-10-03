@@ -96,11 +96,11 @@ their first argument (`/node node-agent`); the `cni-gate` copy the node-agent in
 started under that name. Open vSwitch is 3.7.1 from alpine 3.24; OVS 4.0.0 arrives with the next alpine stable release
 (we do not use edge).
 
-- Every push to `develop` builds all images and tags them `develop` and `sha-<short commit>` (workflow `develop-images.yml`).
-- Publishing a GitHub release `vX.Y.Z` builds them with the tags `X.Y.Z` and `latest`, packages the Helm chart with
+- Every push to `develop` builds all images and tags them `sha-<short commit>` only (workflow `develop-images.yml`).
+- Publishing a GitHub release `vX.Y.Z` builds them with the tag `X.Y.Z` only (there is no `latest`), packages the Helm chart with
   `version` and `appVersion` set to `X.Y.Z`, pushes it to `oci://registry-1.docker.io/cybericebox/laboratory` and
   attaches the `.tgz` to the release (workflow `release.yml`).
-- Chart image tags default to the chart `appVersion`; set `*.image.tag` in values to pin another tag (for example `develop`).
+- Chart image tags default to the chart `appVersion`; set `*.image.tag` in values to pin another exact tag (for example `sha-<short commit>`). The chart refuses `latest`.
 
 ```bash
 helm install laboratory oci://registry-1.docker.io/cybericebox/laboratory --version X.Y.Z \
