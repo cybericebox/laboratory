@@ -47,7 +47,10 @@ RUN set -eu; \
     case "$TARGETARCH" in amd64) want=$CNI_SHA256_AMD64;; arm64) want=$CNI_SHA256_ARM64;; *) echo "no checksum for $TARGETARCH"; exit 1;; esac; \
     wget -q -O /tmp/$tgz $base/$tgz; \
     echo "$want  /tmp/$tgz" | sha256sum -c -; \
-    mkdir -p /cni && tar -xzf /tmp/$tgz -C /cni ./bridge ./ptp ./loopback ./host-local ./portmap
+    mkdir -p /cni && tar -xzf /tmp/$tgz -C /cni ./bridge ./ptp ./loopback ./host-local ./portmap; \
+    rm -f /tmp/$tgz
+# The upstream binaries carry the symbol table and DWARF (about a third of their size); the Go runtime needs neither.
+RUN apk add --no-cache binutils && strip --strip-unneeded /cni/*
 
 FROM ${DISTROLESS} AS controller
 COPY --from=builder /out/manager /manager
