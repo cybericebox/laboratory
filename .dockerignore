@@ -6,3 +6,21 @@ bin/
 # build context. They are not inputs to any Laboratory image.
 agent/
 graphify-out/
+.git
+.github
+.worktrees
+.superpowers
+.vitest
+.claude
+.devcontainer
+.k0s
+charts/
+docs/
+e2e/
+test/
+hack/
+config/
+*.log
+*.out
+kubeconfig
+.env
