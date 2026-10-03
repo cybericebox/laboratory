@@ -296,7 +296,7 @@ scheduler makes a cluster-scoped `ImagePull` request `prepull-<hash>` listing th
 `labWorkloads.nodeSelector`/`tolerations`; the node-agent of each listed node pulls them through the container
 runtime's image service (CRI `PullImage`) and writes its own entry in `status.nodes`. **No tenant code runs and no
 pod is made**: the runtime only fetches and unpacks the image, so a tenant image with a hostile `/bin/sh` gets
-nothing from the prepull (it used to run, as root with the platform pull secrets, in `laboratory-system`).
+nothing from the prepull.
 Credentials are the tenant's own (see "Tenant images" below), never the platform's: the operator copies the
 tenant's registry Secret into the `laboratory-images` namespace for the life of the request, the node-agent
 (whose Role there is `get` on Secrets only) reads it, and the copy goes with the request. A request is one per
@@ -324,8 +324,7 @@ every schedulable node (`scheduler.platformReserveCpu`, `scheduler.platformReser
 node first. It is applied after the kubelet's own reserve (a node's allocatable is already net of kube-reserved,
 system-reserved and eviction thresholds) and after the requests of every pod scheduled on the node: DaemonSets, the
 proxy (Deployment or DaemonSet mode alike) and system pods are counted because the check subtracts the requests of all
-scheduled pods, not only lab pods. The value `scheduler.headroomPercent` of earlier versions was renamed, and the chart
-refuses it.
+scheduled pods, not only lab pods.
 
 **Failed pods.** A dispatched pod that is not Ready after `scheduler.startupTimeout` (5m), or that restarted
 `scheduler.restartThreshold` times (5), is declared failed: its slot is freed, the group still completes,
@@ -420,12 +419,9 @@ while none of its pods has been dispatched. The position is refreshed at a limit
 | `resourceCheck` | `true` | `false` skips the free-resource check |
 | `prepull.enabled` | `true` | prepull the images of a group |
 | `prepull.timeout` | `5m` | dispatch goes on after this long |
-| (moved) | | the planning profile of a device that declares none is `limits.device.defaultCpu` / `defaultMemory` (`100m` / `256Mi`), see "Limits" |
 
-Objects that existed before the upgrade are never queued: the Device and LabGroup reconcilers record a pod
-that already runs as `Started` and leave its workload alone. The operator needs `get/list/watch` on nodes and
-`create/delete/get/list/watch` on DaemonSets; the chart's ClusterRole has them. The old `launch.*` values are
-gone (no fallback): the launch class, `Lab.spec.launchClass` and `Lab.status.launch` no longer exist.
+The operator needs `get/list/watch` on nodes and
+`create/delete/get/list/watch` on DaemonSets; the chart's ClusterRole has them.
 
 ---
 
@@ -438,8 +434,7 @@ device name of at most 35 characters), a snapshot-backed device's bare pod `<dev
 web Service, which is also its host label, `<device>-<code>`. The code is unique in the group namespace (checked
 against the other devices' codes and the Services), so two labs may have a device of the same name in one
 namespace. The relation between a pod, its device and its lab goes through owner references and the labels
-`laboratory.cybericebox.com/lab` and `/device`, never through the name. Devices created before codes existed
-keep their names (no migration). The Device resource itself is still named `<lab>-<device>`, as the per-device
+`laboratory.cybericebox.com/lab` and `/device`, never through the name. The Device resource itself is still named `<lab>-<device>`, as the per-device
 env Secret `<lab>-<device>-env`.
 
 **User labels.** The labels of a Lab (and of a LabGroup) are copied onto its Devices and onto the pods of
@@ -944,8 +939,7 @@ still gets through.
 
 The `network.cybericebox.com/networks` pod annotation that carries them to the node-agent is a JSON array
 (`[{"iface":"eth1","mac":"02:..."}]`; lab VPN and gateway ports add `"name":"<ovs port>"`), so no character of a name can start another
-entry. The node-agent still reads the old `iface@name|MAC,...` form, so pods created before an upgrade keep working. **Upgrade the
-node-agents before the operator** (the DaemonSet first): an old node-agent cannot read the JSON form.
+entry.
 
 ### What a lab can reach through its internet gateway
 
@@ -997,8 +991,6 @@ The gateway forwards to the **public internet only**:
 - **VPN conntrack accounting.** The switches `nf_conntrack_acct` and `nf_conntrack_timestamp` need a writable `/proc/sys`, which an unprivileged
   container does not have. The VPN pod carries the annotation `network.cybericebox.com/conntrack-accounting: "true"` and the node-agent sets them in the
   pod's network namespace when it wires the pod (CNI ADD). If that fails the flow collector still counts attempts and replies, only bytes stay zero.
-- **Existing groups.** The operator brings the VPN and gateway Deployments that already run to this shape (their pods restart once, WireGuard clients
-  reconnect within the keepalive). Device pods of labs that already run keep what they were created with; new labs get the hardening.
 - **User namespaces** (`devices.security.userNamespaces`, a hidden setting, default `true`): device pods run with `hostUsers: false`, so root in a device is
   not root on the node. Needs Kubernetes 1.33+, containerd 2 and kernel 6.3+. Check on the cluster that device networking (the veth is moved into the
   pod namespace by the node-agent), state snapshots, `sudo` and setuid binaries, and images with UIDs above 65535 still work.
@@ -1016,9 +1008,8 @@ names of the system namespaces outright). On top of that the operator **never ad
 `laboratory.cybericebox.com/group=<group>`: a namespace that exists under the name a group would get, without that label, is refused (the group stays
 unprovisioned) and, when the group is deleted, left exactly as it is. The operator puts the label on every namespace it creates.
 
-Migration: the namespace is recorded in `LabGroup.status.namespace`, and everything (the operator, the demux, the L7 proxy, the agent) uses that. A group created
-before the prefix keeps the namespace it has (its bare name, with the label the operator always set) and works as before; only new groups get the prefixed one.
-Nothing is renamed. Scripts that derive the namespace from the group name must read `status.namespace` instead.
+The namespace is recorded in `LabGroup.status.namespace`, and everything (the operator, the demux, the L7 proxy, the agent) uses that. Scripts that derive the
+namespace from the group name must read `status.namespace` instead.
 
 ### The L7 proxy under hostile clients
 
@@ -1115,9 +1106,6 @@ equal the Tenant's now: an exact comparison, no clock. Consequences:
 - **The default tenant is revocable like any other**: with mTLS on every certificate needs its Tenant object, `default` included (the chart creates it), and an
   empty common name is refused.
 - **A tenant deleted and created again under the same name** has another UID: the certificates of the old tenant stop working.
-- **Certificates issued before the epoch was a number** (they carry no epoch) keep working while the tenant's epoch is 0, judged by time as before (issued after the
-  Tenant was created and after `status.certificatesNotBefore`). The first enrollment by this version moves the epoch above 0 and revokes them all; renewing gives a
-  numbered one. Nothing has to be re-enrolled on upgrade.
 - **The CRD has to be new** (`kubectl apply --server-side -f charts/laboratory/crds/`): an API server that does not know `status.certificateEpoch` drops it, and
   `Enroll` then fails loudly (after burning the token) with a message that says so.
 - **Checked before the token is spent**: a request that is bound to fail (no CA to sign with, a key id of `.` or `..`) is refused without burning the token. The
@@ -1147,9 +1135,6 @@ The agent is reachable by anyone who can reach its host, so what a caller withou
   tenant down. The Monitoring journal and the prewarm progress are per replica.
 - **mTLS off is development only**: `agent.mtls.enabled=false` makes every caller the default tenant, and both the chart (`agent.allowInsecure=true`) and the agent
   (`AGENT_ALLOW_INSECURE=true`) refuse it unless it is asked for by name.
-- **Upgrade order.** Apply the CRDs first. Then upgrade the chart: the operator labels the tokens and the agents roll one at a time. Clients keep their
-  certificates; a client that enrolls during the roll talks to either version, and an old agent ignores the label it does not know. If an agent rolls before the operator
-  has labelled an unused token, that token is not found until the operator has (a minute): retry.
 
 ### Device state under abuse
 
@@ -1165,13 +1150,12 @@ A participant is root in the device and controls what its writable layer holds, 
   recorded in their status), so one tenant cannot fill the volume for everyone; `Tenant.spec.persistence.registryQuota` gives a tenant less. A snapshot that
   would pass it is refused like one over the write quota. The agent reports the tenant's `registry_quota_bytes` and `max_entries` in the features.
 
-### Upgrade note: zot's data directory
+### zot's data directory
 
 zot runs as the unprivileged user 65532. `fsGroup` makes a volume writable for it only when the storage provisioner honours it; a hostPath or
-local-path volume, or one that an earlier version filled as root, keeps its owner and zot fails with `open /var/lib/registry/cache.db: permission denied`.
+local-path volume, keeps its owner and zot fails with `open /var/lib/registry/cache.db: permission denied`.
 The registry pod therefore has one init container, `own-data`, that runs `chown -R 65532:65532 /var/lib/registry` as root with only the CHOWN, DAC_OVERRIDE
-and FOWNER capabilities and a read-only root file system, and does nothing else. It runs on every start (a no-op once the volume is owned), so an upgrade needs
-no manual step; on a large volume the first start takes as long as the chown.
+and FOWNER capabilities and a read-only root file system, and does nothing else. It runs on every start (a no-op once the volume is owned), so no manual step is needed; on a large volume the first start takes as long as the chown.
 
 ### Registry volume: keep the data when the claim goes
 
@@ -1208,8 +1192,7 @@ denied to everyone but the writer):
 
 - **The public image cache** (`docker.io/**`, `ghcr.io/**`, `quay.io/**`, `registry.k8s.io/**`, and the extra registries you list): anonymous read.
 - **The snapshots of the labs (`lab/**`) and the shared `base` repository: not anonymous.** The `reader` account may read them, the `writer` account
-  everything. Both live in the Secret `laboratory-registry` (generated once and kept across upgrades; a registry made by an earlier version gets a reader added,
-  the writer stays). The node-agent forwarder (`127.0.0.1:<forwardPort>`) adds the reader to the node runtime's **GET and HEAD** requests of those repositories
+  everything. Both live in the Secret `laboratory-registry` (generated once and kept across upgrades). The node-agent forwarder (`127.0.0.1:<forwardPort>`) adds the reader to the node runtime's **GET and HEAD** requests of those repositories
   that carry no credentials of their own, so pulling a snapshot needs no host configuration; writes are never given the reader. The agent exports a snapshot
   with the reader too (the Secret `laboratory-registry-reader` in the agent namespace).
 - The network policy still lets the node-agents and the platform pods reach zot; the accounts are what keeps another team's snapshots (which can hold
@@ -1387,8 +1370,7 @@ Requirements on the nodes (nothing has to be installed or configured on the host
    **Owner ids.** A device pod runs in a user namespace (`hostUsers: false`), and the diff of its writable layer holds the host ids of the
    files. The node-agent translates every owner through the container's uid and gid maps (from its OCI spec), so a snapshot holds the ids
    inside the container and restores under any new id range; an id outside the map is written as 0 and logged. Without a user namespace
-   nothing changes. Snapshots stored before this fix hold host ids (above 65535) and are not converted: the snapshots of the devices of
-   user-namespace pods made before the upgrade must be dropped once (reset the device or delete its repository in the registry).
+   nothing changes.
 4. **Large files.** A regular file larger than `maxFileSize` (default `256Mi`) is left out of the layer, like an excluded path
    but for that file only; everything else is snapshotted normally. `status.state.warning` of the Device names the skipped
    files with their sizes (the first 10 and a count of the rest) and stays while the files are there. Whiteouts are not affected.
@@ -1747,11 +1729,10 @@ kubectl -n laboratory-system get configmap laboratory-config -o yaml
 helm template laboratory ./charts/laboratory -f my-values.yaml | less
 ```
 
-## Re-audit fixes and upgrade order
+## Upgrade order and hardening rules
 
-The fixes after the second audit (docs/security/2026-10-02-laboratory-reaudit.md). The rule for all of them: objects that already
-exist keep working after the upgrade; a stricter check applies to new input, and where an old object could slip under it the
-component that runs it clamps or ignores the bad value instead of failing.
+The rules below come from the second security audit (docs/security/2026-10-02-laboratory-reaudit.md). Where an existing object could
+slip under a stricter check, the component that runs it clamps or ignores the bad value instead of failing.
 
 **Upgrade order.**
 
@@ -1762,20 +1743,16 @@ component that runs it clamps or ignores the bad value instead of failing.
 3. The notes of each item below say what, if anything, must happen in a different order. In short, before `helm upgrade`:
    - the cluster is Kubernetes 1.33 or newer (the chart refuses an older one), or `operator.admissionPolicy.enabled=false` is set on purpose (the chart refuses to skip the policies silently, and the operator exits at start when they are not enforced);
    - the tenant `default` exists (the chart creates it): with mTLS on, every certificate, the default tenant's included, needs its Tenant object;
-   - nothing else has to be done by hand: the VPN and gateway pods are rolled once (component label), the agent runs two replicas, the operator labels the unused enrollment tokens,
-     the node-agents roll one node at a time, and objects that exist keep their names, namespaces, snapshots and certificates.
-   After it, the first enrollment of a tenant moves its epoch and revokes the certificates issued before the upgrade; renew or enroll them when that is wanted. The values added by this release are
-   under `agent.replicas`, `agent.server`, `agent.mtls.caDuration`, `limits.device`, `devices.statePersistence` (push limits), `nodeAgent` (policing, watchdog), `proxy.wg.limits` and `proxy.l7`.
+   - nothing else has to be done by hand: the operator rolls the VPN and gateway pods when their template changes, the agent runs two replicas and the node-agents roll one at a time.
 
 ### Device resources (R-2)
 
 - A device resource value must be a positive quantity (no exponent, at most 24 characters) and at most 1024 cores or 1 TiB. The agent
   refuses `"0"`, negative, overflowing and out-of-bound values on CreateLabs with an error that names the device; the CRD has the same
   pattern. The sums use saturating arithmetic.
-- The operator ignores such a value on an object that predates the check (the next candidate or the default is used) and clamps
+- The operator ignores such a value on an object that got past the check (the next candidate or the default is used) and clamps
   anything above the chart maximum to it (`limits.device.maxCpu` / `maxMemory`, passed to the operator as `DEVICE_MAX_CPU` /
-  `DEVICE_MAX_MEMORY`), so a pod never runs without limits. No existing lab is deleted or restarted by this; a pod that was created
-  without a limit gets its limit when its Device is next rebuilt.
+  `DEVICE_MAX_MEMORY`), so a pod never runs without limits.
 
 ### Image policy and the registry forwarder (R-3)
 
@@ -1788,32 +1765,25 @@ component that runs it clamps or ignores the bad value instead of failing.
   host, not by prefix. Allow-list entries are canonicalised the same way.
 - The node-agent's forwarder adds the zot reader account only to a request whose `Host` is exactly `localhost:<state forward port>` (the
   address the node's runtime pulls from), and not to a path with `..` or `//`.
-- Upgrade: no order constraint. Labs that exist keep their pods; only a new or changed spec is checked again. A lab whose stored spec
-  names a refused spelling is not touched until its devices are recreated.
 - `images.tenantDeny` still defaults to empty: the chart cannot know which repositories of an installation are private. Set it to the
   platform's private organizations.
 
 ### Names and system pods (R-19)
 
 - **System pods are selected by `laboratory.cybericebox.com/component`** (`vpn`, `gateway`), a label under the platform prefix that no
-  caller can set, never by `app`: device pods carry `app=<device name>`, so a device named `vpn` used to join the VPN Service and match
+  caller can set, never by `app`: device pods carry `app=<device name>`, so a device named `vpn` can never join the VPN Service or match
   the network policies written for the VPN. The VPN Service, the `vpn-egress` and `gateway-egress` Cilium policies, the label sync,
   the scheduler and the node-agent all use it. The web Service and web NetworkPolicy of a device select by the lab and device labels.
 - **Reserved device names**: `vpn`, `gateway`, `internet` are refused on CreateLabs and by the Lab CRD (a CEL rule on the device name,
   ratcheting: a Lab that already has such a device can still be updated).
 - **Device object names** are `<lab>-<device>-<hash>` (10 hex over the pair with a separator no name contains), so two pairs never
-  share a name; the env Secret is `<device object name>-env`. The old name `<lab>-<device>` was ambiguous (lab `a-b` with device `c`, lab
+  share a name; the env Secret is `<device object name>-env`. A bare `<lab>-<device>` would be ambiguous (lab `a-b` with device `c`, lab
   `a` with device `b-c`).
 - **Gateway**: each lab interface of the gateway pod may send only from its own subnet (`LABSRC`), the forward rule accepts only
   `lab+` interfaces towards the outside, and the filter is built in the order that is never open (policy DROP, then the egress and
   source filters, then the accepting rules; the egress chain is rebuilt beside the old one and the jump switched, so a restart has no
   gap). A pod without ip6tables logs that it forwards no IPv6.
-- **Upgrade (existing objects keep working).** The operator adds the component label to the VPN and gateway Deployment templates (the
-  selector is immutable and untouched), so each pod is replaced once, like for any hardening change. The VPN Service and the Cilium
-  policies keep the old `app` selector until every VPN or gateway pod of the group carries the new label, then switch, so there is no moment
-  without a selector. Devices that exist under the old name keep it and keep their pods; only a pair that has no device yet gets the new
-  name, and an old-named object that belongs to another pair is never adopted. Nothing has to be done by hand. Apply the CRDs first
-  (see the upgrade order above) so the reserved-name rule and the device ceiling (`maxItems: 64`) are present.
+- **CRDs.** Apply the CRDs first (see the upgrade order above) so the reserved-name rule and the device ceiling (`maxItems: 64`) are present.
 
 ### The admission policies are required, and checked (R-8)
 
@@ -1827,11 +1797,9 @@ component that runs it clamps or ignores the bad value instead of failing.
 - **The pod rules.** The pods the operator creates (and the templates of the Deployments it makes) must drop ALL capabilities and add only what the device profiles, the
   VPN and the gateway use (`laboratory.operatorCapabilities` in the chart helpers; a Go test keeps the list equal to what the code can add, and the "never" list out of
   it), use the RuntimeDefault seccomp profile, not unmask `/proc`, publish no host port, name no node, run only as the `default`, `vpn` or `gateway` service account,
-  and use only `emptyDir`, `projected`, `downwardAPI`, `secret` and `configMap` volumes, on top of the old rules (no host network, PID or IPC, no host path, no
-  privileged container). The rules about what a pod is made of apply when it is created and to the template of a Deployment or DaemonSet; changing the labels of a
-  running pod is judged only by the scope rules, so pods made by earlier versions keep being managed.
-- **Upgrade.** Nothing to do by hand. The cluster must be 1.33 or newer. The new rules apply to the
-  operator as soon as the chart is upgraded: the VPN and gateway Deployments it already has are hardened to the same shape (earlier version), so they pass.
+  and use only `emptyDir`, `projected`, `downwardAPI`, `secret` and `configMap` volumes, and no host network, PID or IPC, no host path and no
+  privileged container. The rules about what a pod is made of apply when it is created and to the template of a Deployment or DaemonSet; changing the labels of a
+  running pod is judged only by the scope rules.
 - Not done: narrowing the operator's Secret permissions in the release namespace to named Secrets (the owner's decision lists the policy check and the pod rules only).
 
 ### Lab ceilings (R-7)
@@ -1839,8 +1807,7 @@ component that runs it clamps or ignores the bad value instead of failing.
 - **Devices of a lab, every type counted** (container, switch, hub): at most `limits.lab.maxDevices` (default 32), which can only lower the ceiling of 64 (`names.MaxLabDevices`, also the
   Lab CRD's `maxItems`); the chart refuses a larger value, and the agent clamps one that gets through, so the agent's clean error binds before the CRD's.
 - **Interfaces of a device**: 16 on a container device, 48 on a switch or hub, in the agent and as a CEL rule and `maxItems` in the CRD. There are no other caps (connections, VNIs, DHCP ranges).
-- `CreateLabs` refuses a spec over them with the numbers. Existing labs are not touched. GetFeatures reports the effective device limit.
-- **Upgrade**: apply the CRDs first. The default went from 20 (containers only) to 32 (all devices).
+- `CreateLabs` refuses a spec over them with the numbers. GetFeatures reports the effective device limit.
 
 ### Labs on the platform's domain (R-18, option B) and the CRD check
 
