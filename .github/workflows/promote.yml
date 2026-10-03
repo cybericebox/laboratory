@@ -1,0 +1,140 @@
+name: Promote
+
+# Turns a pre-release (vX.Y.Z-rc.N) into the release vX.Y.Z: the same image gets the tags vX.Y.Z and latest (no rebuild),
+# the rc tags and pre-releases of that version go away, the GitHub release is created,
+# and the dev images (sha-<7>) of commits that are ancestors of the release commit are deleted.
+# dry_run changes nothing: it verifies the rc and prints what would happen, with the list of dev tags.
+on:
+  workflow_dispatch:
+    inputs:
+      rc:
+        description: Pre-release tag to promote (vX.Y.Z-rc.N)
+        required: true
+      dry_run:
+        description: Verify and print only, change nothing
+        type: boolean
+        default: false
+
+concurrency:
+  group: promote
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGES: cybericebox/laboratory-controller cybericebox/laboratory-agent cybericebox/laboratory-proxy cybericebox/laboratory-node cybericebox/laboratory-lab
+  RC: ${{ inputs.rc }}
+
+jobs:
+  verify:
+    name: Verify the pre-release
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.rc.outputs.sha }}
+      version: ${{ steps.rc.outputs.version }}
+    steps:
+      - name: Check repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Login to docker registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: The pre-release is on main and its checks passed
+        id: rc
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$RC" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]] || { echo "::error::$RC is not a pre-release tag (vX.Y.Z-rc.N)"; exit 1; }
+          sha=$(git rev-parse --verify "refs/tags/$RC^{commit}") || { echo "::error::tag $RC does not exist"; exit 1; }
+          git merge-base --is-ancestor "$sha" origin/main || { echo "::error::$RC is not on main"; exit 1; }
+          ok=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/prerelease.yml/runs?head_sha=$sha&status=success" --jq .total_count)
+          [[ "$ok" -gt 0 ]] || { echo "::error::the Pre-release workflow did not pass for $sha"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "version=${RC%-rc.*}" >> "$GITHUB_OUTPUT"
+      - name: The rc image exists
+        run: |
+          for image in $IMAGES; do
+            .github/scripts/ci.sh exists "$image" "$RC" || { echo "::error::$image:$RC does not exist"; exit 1; }
+          done
+
+  release:
+    name: Release
+    needs: [verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      SHA: ${{ needs.verify.outputs.sha }}
+      DRY_RUN: ${{ inputs.dry_run }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Login to docker registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Add vX.Y.Z and latest to the rc image (no rebuild)
+        run: |
+          for image in $IMAGES; do
+            if [[ "$DRY_RUN" == true ]]; then
+              echo "dry run: $image:$RC would get $VERSION and latest"
+            else
+              docker buildx imagetools create -t "$image:$VERSION" -t "$image:latest" "$image:$RC"
+            fi
+          done
+      - name: Create the GitHub release
+        run: |
+          if [[ "$DRY_RUN" == true ]]; then echo "dry run: release $VERSION would be created at $SHA"; exit 0; fi
+          if gh release view "$VERSION" >/dev/null 2>&1; then echo "release $VERSION exists"; else
+            gh release create "$VERSION" --target "$SHA" --title "$VERSION" --generate-notes --latest
+          fi
+      - name: Set up Helm
+        if: ${{ !inputs.dry_run }}
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+      - name: Package and push the chart
+        if: ${{ !inputs.dry_run }}
+        env:
+          VERSION_TAG: ${{ needs.verify.outputs.version }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.verify.outputs.sha }}
+        run: |
+          git checkout --detach "$SHA"
+          VERSION="${VERSION_TAG#v}"
+          helm package charts/laboratory --version "$VERSION" --app-version "$VERSION_TAG" --destination dist
+          printf '%s' "$DOCKERHUB_TOKEN" | helm registry login registry-1.docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
+          helm push dist/laboratory-*.tgz oci://registry-1.docker.io/cybericebox
+          gh release upload "$VERSION_TAG" dist/laboratory-*.tgz --clobber
+
+      - name: Delete the rc tags and pre-releases of this version
+        run: |
+          if [[ "$DRY_RUN" == true ]]; then
+            echo "dry run: would delete the Docker Hub tags $VERSION-rc.* and these pre-releases:"
+            git tag --list "$VERSION-rc.*"
+            exit 0
+          fi
+          # shellcheck disable=SC2086
+          .github/scripts/ci.sh delete-rc "$VERSION" $IMAGES
+          for tag in $(git tag --list "$VERSION-rc.*"); do
+            gh release delete "$tag" --cleanup-tag --yes || git push origin --delete "$tag" || true
+          done
+      - name: Clean up the dev images (sha-<7> of ancestors of the release commit)
+        run: |
+          # shellcheck disable=SC2086
+          .github/scripts/ci.sh cleanup "$SHA" "$DRY_RUN" $IMAGES

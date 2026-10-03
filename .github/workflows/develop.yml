@@ -1,37 +1,41 @@
-name: Develop images
+name: Publish develop
 
+# A merge into develop publishes sha-<7> only (no moving develop tag). The build reads the registry cache
+# written by the PR check. A newer merge cancels an unfinished older one; build the older commit with "Build image".
 on:
   push:
-    branches: [ "develop" ]
-  workflow_dispatch:
+    branches: [ develop ]
 
-# Nothing here needs more than to read the repository; a job that does asks for it itself.
+concurrency:
+  group: publish-develop
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
-  images:
-    name: ${{ matrix.name }}
+  image:
+    name: Image ${{ matrix.name }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: controller
-            target: controller
             image: cybericebox/laboratory-controller
+            target: controller
           - name: agent
-            target: agent
             image: cybericebox/laboratory-agent
+            target: agent
           - name: proxy
-            target: proxy
             image: cybericebox/laboratory-proxy
+            target: proxy
           - name: node
-            target: node
             image: cybericebox/laboratory-node
+            target: node
           - name: lab
-            target: lab
             image: cybericebox/laboratory-lab
+            target: lab
     steps:
       - name: Check repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -44,11 +48,10 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Image tags
+      - name: Image tag
         id: meta
-        run: |
-          echo "sha=sha-$(echo "$GITHUB_SHA" | cut -c1-7)" >> "$GITHUB_OUTPUT"
-      - name: Build and push docker image
+        run: echo "sha=$(.github/scripts/ci.sh sha-tag "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+      - name: Build and push the image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
@@ -56,8 +59,5 @@ jobs:
           target: ${{ matrix.target }}
           push: true
           platforms: linux/amd64,linux/arm64
-          cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: type=gha,scope=${{ matrix.name }},mode=max
-          tags: |
-            ${{ matrix.image }}:develop
-            ${{ matrix.image }}:${{ steps.meta.outputs.sha }}
+          cache-from: type=registry,ref=${{ matrix.image }}:buildcache
+          tags: ${{ matrix.image }}:${{ steps.meta.outputs.sha }}

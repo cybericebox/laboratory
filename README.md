@@ -96,11 +96,11 @@ their first argument (`/node node-agent`); the `cni-gate` copy the node-agent in
 started under that name. Open vSwitch is 3.7.1 from alpine 3.24; OVS 4.0.0 arrives with the next alpine stable release
 (we do not use edge).
 
-- Every push to `develop` builds all images and tags them `sha-<short commit>` only (workflow `develop-images.yml`).
-- Publishing a GitHub release `vX.Y.Z` builds them with the tag `X.Y.Z` only (there is no `latest`), packages the Helm chart with
-  `version` and `appVersion` set to `X.Y.Z`, pushes it to `oci://registry-1.docker.io/cybericebox/laboratory` and
-  attaches the `.tgz` to the release (workflow `release.yml`).
-- Chart image tags default to the chart `appVersion`; set `*.image.tag` in values to pin another exact tag (for example `sha-<short commit>`). The chart refuses `latest`.
+- The cycle (PR check, `develop`, pre-release, promote) is described in [CONTRIBUTING.md](CONTRIBUTING.md). A merge into `develop` publishes `sha-<7>` of every image
+  (`develop.yml`); a merge into `main` publishes `vX.Y.Z-rc.N` (`prerelease.yml`).
+- Promoting an rc (`promote.yml`) adds `vX.Y.Z` and `latest` to the same images without a rebuild, packages the Helm chart with `version` `X.Y.Z` and
+  `appVersion` `vX.Y.Z`, pushes it to `oci://registry-1.docker.io/cybericebox/laboratory` and attaches the `.tgz` to the GitHub release.
+- Chart image tags default to the chart `appVersion` (`vX.Y.Z`); set `*.image.tag` in values to pin another exact tag (for example `sha-<short commit>`). The chart refuses `latest`.
 
 ```bash
 helm install laboratory oci://registry-1.docker.io/cybericebox/laboratory --version X.Y.Z \
