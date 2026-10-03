@@ -2,7 +2,7 @@
 # CI helpers, the same file in every repository that publishes images. Used by the workflows in .github/workflows.
 #   ci.sh sha-tag SHA                         sha-<7 hex>
 #   ci.sh exists IMAGE TAG                    exit 0 when IMAGE:TAG exists in the registry
-#   ci.sh next-version                        BUMP=auto|major; writes skip, version, tag to GITHUB_OUTPUT
+#   ci.sh next-version                        BUMP=auto|major, VERSION=X.Y.Z (optional override, above the last release); writes skip, version, tag to GITHUB_OUTPUT
 #   ci.sh hub-tags IMAGE                      every tag of a Docker Hub repository, one per line
 #   ci.sh hub-delete IMAGE TAG                delete one tag (Docker Hub API)
 #   ci.sh delete-rc VERSION IMAGE...          delete every VERSION-rc.* tag of the images
@@ -41,10 +41,42 @@ hub_delete() {
 # true when $1 is a higher version than $2 (sort -V)
 ver_gt() { [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" == "$1" ]]; }
 
+# vX.Y or vX.Y.Z -> vX.Y.Z
+norm_ver() {
+  [[ "$1" =~ ^v[0-9]+\.[0-9]+$ ]] && echo "$1.0" || echo "$1"
+}
+
+# bump_ver vX.Y.Z major|minor|patch
+bump_ver() {
+  local x y z
+  IFS=. read -r x y z <<<"${1#v}"
+  case "$2" in
+    major) x=$((x + 1)); y=0; z=0 ;;
+    minor) y=$((y + 1)); z=0 ;;
+    *) z=$((z + 1)) ;;
+  esac
+  echo "v$x.$y.$z"
+}
+
+# "<tag> <normalised version>" of the last release (tags are vX.Y.Z or vX.Y); "none v0.0.0" when there is none
+last_release() {
+  local t best="" best_n=v0.0.0
+  while read -r t; do
+    [[ -n "$t" ]] || continue
+    local n
+    n=$(norm_ver "$t")
+    if ver_gt "$n" "$best_n"; then best=$t best_n=$n; fi
+  done < <(git tag --list 'v[0-9]*' | grep -E '^v[0-9]+\.[0-9]+(\.[0-9]+)?$' || true)
+  echo "${best:-none} $best_n"
+}
+
 next_version() {
   local last rcs latest_rc="" n bump=patch since count
-  last=$(git tag --list 'v[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)
-  last=${last:-v0.0.0}
+  local last_ref
+  last=$(last_release)
+  last_ref=${last%% *}
+  last=${last##* }
+  [[ "$last_ref" == none ]] && last_ref=""
 
   # rc tags of versions above the last release (older ones are leftovers)
   rcs=""
@@ -57,40 +89,42 @@ next_version() {
   # skip when the tree is the one of the last rc (or of the last release)
   local tree
   tree=$(git rev-parse 'HEAD^{tree}')
-  if [[ -n "$latest_rc" && "$(git rev-parse "$latest_rc^{tree}")" == "$tree" ]]; then
+  if [[ -n "$latest_rc" && "$(git rev-parse "$latest_rc^{tree}")" == "$tree" && -z "${VERSION:-}" ]]; then
     echo "the tree is unchanged since $latest_rc: no new rc"
     echo "skip=true" >>"${GITHUB_OUTPUT:-/dev/stdout}"
     return 0
   fi
-  if git rev-parse -q --verify "$last^{commit}" >/dev/null && [[ "$(git rev-parse "$last^{tree}")" == "$tree" ]]; then
+  if [[ -n "$last_ref" && "$(git rev-parse "$last_ref^{tree}")" == "$tree" && -z "${VERSION:-}" ]]; then
     echo "the tree is unchanged since the release $last: no new rc"
     echo "skip=true" >>"${GITHUB_OUTPUT:-/dev/stdout}"
     return 0
   fi
 
-  if [[ "${BUMP:-auto}" == major ]]; then
+  local version=""
+  if [[ -n "${VERSION:-}" ]]; then
+    # an explicit version (manual run): X.Y.Z, above the last release
+    [[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "version $VERSION is not X.Y.Z"
+    version="v${VERSION#v}"
+    ver_gt "$version" "$last" || die "version $version is not above the last release $last"
+    bump=explicit
+  elif [[ "${BUMP:-auto}" == major ]]; then
     bump=major
   else
     since=1970-01-01T00:00:00Z
-    if git rev-parse -q --verify "$last^{commit}" >/dev/null; then
-      since=$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ "$last^{commit}")
+    if [[ -n "$last_ref" ]]; then
+      since=$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ "$last_ref^{commit}")
     fi
     count=$(gh api -X GET search/issues -f q="repo:${GITHUB_REPOSITORY} is:pr is:merged label:minor merged:>$since" --jq .total_count)
     [[ "$count" -gt 0 ]] && bump=minor
     echo "last release $last ($since), merged PRs labelled minor since: $count"
   fi
 
-  local x y z
-  IFS=. read -r x y z <<<"${last#v}"
-  case "$bump" in
-    major) x=$((x + 1)); y=0; z=0 ;;
-    minor) y=$((y + 1)); z=0 ;;
-    *) z=$((z + 1)) ;;
-  esac
-  local version="v$x.$y.$z"
-  # an rc of a higher version (an earlier major run) keeps its version
-  if [[ -n "$latest_rc" ]] && ver_gt "${latest_rc%-rc.*}" "$version"; then
-    version=${latest_rc%-rc.*}
+  if [[ -z "$version" ]]; then
+    version=$(bump_ver "$last" "$bump")
+    # an rc of a higher version (an earlier major run) keeps its version
+    if [[ -n "$latest_rc" ]] && ver_gt "${latest_rc%-rc.*}" "$version"; then
+      version=${latest_rc%-rc.*}
+    fi
   fi
   n=0
   if [[ -n "$rcs" ]]; then
@@ -137,6 +171,7 @@ cleanup() {
   return 0
 }
 
+[[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0 2>/dev/null
 cmd=${1:-}
 shift || true
 case "$cmd" in
