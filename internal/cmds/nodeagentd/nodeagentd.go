@@ -65,7 +65,7 @@ func Run() {
 		log.Error(err, "init flow manager")
 		os.Exit(1)
 	}
-	defer flows.Close()
+	defer func() { _ = flows.Close() }()
 
 	pingOVS := func(ctx context.Context) error {
 		if err := ovs.Ping(ctx); err != nil {
@@ -173,7 +173,7 @@ func Run() {
 		log.Error(err, "connect to the container runtime")
 		os.Exit(1)
 	}
-	defer puller.Close()
+	defer func() { _ = puller.Close() }()
 	if err := (&nodeagent.ImagePullReconciler{
 		Client:          mgr.GetClient(),
 		Reader:          mgr.GetAPIReader(),

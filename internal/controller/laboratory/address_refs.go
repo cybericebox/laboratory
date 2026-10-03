@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/netip"
 
+	"github.com/cybericebox/laboratory/internal/names"
+
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
@@ -132,7 +134,7 @@ func resolveNetworkPrefix(lab *laboratoryv1alpha1.Lab, network string) (netip.Pr
 	var enabled bool
 	var cidr string
 	switch network {
-	case "vpn":
+	case names.ComponentVPN:
 		enabled, cidr = lab.Spec.VPN.Enabled, lab.Status.VPN.CIDR
 	case "internet":
 		enabled, cidr = lab.Spec.Internet.Enabled, lab.Status.Internet.CIDR

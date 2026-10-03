@@ -38,7 +38,7 @@ func Forward(ctx context.Context, listen, target string, log logr.Logger, opts .
 	}
 	go func() {
 		<-ctx.Done()
-		ln.Close()
+		_ = ln.Close()
 	}()
 	var wg sync.WaitGroup
 	defer wg.Wait()
@@ -59,14 +59,14 @@ func Forward(ctx context.Context, listen, target string, log logr.Logger, opts .
 }
 
 func relay(ctx context.Context, client net.Conn, target string, log logr.Logger) {
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	d := net.Dialer{Timeout: 5 * time.Second}
 	upstream, err := d.DialContext(ctx, "tcp", target)
 	if err != nil {
 		log.V(1).Info("registry forwarder: dial upstream", "target", target, "err", err.Error())
 		return
 	}
-	defer upstream.Close()
+	defer func() { _ = upstream.Close() }()
 	done := make(chan struct{}, 2)
 	cp := func(dst, src net.Conn) {
 		_, _ = io.Copy(dst, src)

@@ -98,7 +98,7 @@ func SetupDeviceState(mgr ctrl.Manager, cfg *Config) error {
 		for _, dir := range devicestate.ThawOrphans(cfg.CgroupRoot) {
 			log.Info("thawed a container left frozen", "cgroup", dir)
 		}
-		defer rt.Close()
+		defer func() { _ = rt.Close() }()
 		return engine.Run(ctx)
 	}))
 }

@@ -1,8 +1,9 @@
 package laboratory
 
 import (
-	"github.com/cybericebox/laboratory/internal/devices"
 	"time"
+
+	"github.com/cybericebox/laboratory/internal/devices"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"

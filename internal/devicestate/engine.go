@@ -474,6 +474,8 @@ func (e *Engine) markExit(ctx context.Context, p PodInfo) {
 // snapshot publishes the state of the writable layer. freeze is true for a
 // running container and false for one that exited. A failed or refused snapshot
 // keeps the last good one and reports a warning.
+//
+//nolint:gocyclo // one decision over many cases; splitting it would scatter the rule
 func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -503,20 +505,20 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 	}
 	dir, err := os.MkdirTemp(e.WorkDir, "snap-")
 	if err != nil {
-		rc.Close()
+		_ = rc.Close()
 		return err
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	layerPath := filepath.Join(dir, "layer.tar")
 	f, err := os.Create(layerPath)
 	if err != nil {
-		rc.Close()
+		_ = rc.Close()
 		return err
 	}
 	sum := sha256.New()
 	stats, ferr := snapshot.FilterLayerMapped(rc, io.MultiWriter(f, sum), pol, t.c.IDs)
-	rc.Close()
+	_ = rc.Close()
 	if cerr := f.Close(); ferr == nil {
 		ferr = cerr
 	}

@@ -3,10 +3,11 @@ package laboratory
 import (
 	"context"
 	"fmt"
-	"github.com/cybericebox/laboratory/internal/devices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cybericebox/laboratory/internal/devices"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"

@@ -121,6 +121,7 @@ type LabGroupReconciler struct {
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,resourceNames=laboratory-agent-role;laboratory-vpn-role;laboratory-operator-namespaced;laboratory-proxy-reports,verbs=bind
 
+//nolint:gocyclo // one decision over many cases; splitting it would scatter the rule
 func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("reconciling LabGroup", "name", req.Name)
@@ -201,11 +202,11 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	if err = r.ensureServiceAccount(ctx, ns, "vpn"); err != nil {
+	if err = r.ensureServiceAccount(ctx, ns, names.ComponentVPN); err != nil {
 		logger.Error(err, "ensure VPN service account")
 		return ctrl.Result{}, err
 	}
-	if err = r.ensureRoleBinding(ctx, ns, "vpn", names.RoleVPNName); err != nil {
+	if err = r.ensureRoleBinding(ctx, ns, names.ComponentVPN, names.RoleVPNName); err != nil {
 		logger.Error(err, "ensure VPN role binding")
 		return ctrl.Result{}, err
 	}
@@ -215,22 +216,22 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 	// Suspension stops task devices only. Keep the team's tunnel and internet
 	// gateway running so participants can test their connection during a pause.
-	if !r.groupPodQueued(&lg, "vpn") {
+	if !r.groupPodQueued(&lg, names.ComponentVPN) {
 		if err = r.ensureVPNDeployment(ctx, ns, lg.Spec.VPN.Disabled, lg.Spec.VPN.Size); err != nil {
 			logger.Error(err, "ensure VPN deployment")
 			return ctrl.Result{}, err
 		}
 	}
 
-	if err = r.ensureServiceAccount(ctx, ns, "gateway"); err != nil {
+	if err = r.ensureServiceAccount(ctx, ns, names.ComponentGateway); err != nil {
 		logger.Error(err, "ensure gateway service account")
 		return ctrl.Result{}, err
 	}
-	if err = r.ensureRoleBinding(ctx, ns, "gateway", names.RoleGatewayName); err != nil {
+	if err = r.ensureRoleBinding(ctx, ns, names.ComponentGateway, names.RoleGatewayName); err != nil {
 		logger.Error(err, "ensure gateway role binding")
 		return ctrl.Result{}, err
 	}
-	if !r.groupPodQueued(&lg, "gateway") {
+	if !r.groupPodQueued(&lg, names.ComponentGateway) {
 		if err = r.ensureGatewayDeployment(ctx, ns, false, lg.Spec.Gateway.Size); err != nil {
 			logger.Error(err, "ensure gateway deployment")
 			return ctrl.Result{}, err
@@ -316,7 +317,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	r.reportPinWarning(&lg, ns)
 	lg.Status.Phase = laboratoryv1alpha1.PhaseReady
-	if r.groupPodQueued(&lg, "vpn") || r.groupPodQueued(&lg, "gateway") {
+	if r.groupPodQueued(&lg, names.ComponentVPN) || r.groupPodQueued(&lg, names.ComponentGateway) {
 		lg.Status.Phase = laboratoryv1alpha1.PhaseQueued
 	}
 	lg.Status.Namespace = ns
@@ -378,7 +379,7 @@ func (r *LabGroupReconciler) vpnPort() int32 {
 // vpnReadyState returns true when the VPN Deployment has at least one ready replica.
 func (r *LabGroupReconciler) vpnReadyState(ctx context.Context, ns string) (bool, error) {
 	var dep appsv1.Deployment
-	if err := r.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: ns}, &dep); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Name: names.ComponentVPN, Namespace: ns}, &dep); err != nil {
 		return false, client.IgnoreNotFound(err)
 	}
 	return dep.Status.ReadyReplicas > 0, nil
@@ -555,7 +556,7 @@ func (r *LabGroupReconciler) systemPodsConverged(ctx context.Context, ns, compon
 		return false, err
 	}
 	sel := labels.NewSelector().Add(*noLab, *noComponent)
-	req, err := labels.NewRequirement("app", selection.Equals, []string{component})
+	req, err := labels.NewRequirement(labelApp, selection.Equals, []string{component})
 	if err != nil {
 		return false, err
 	}
@@ -581,7 +582,7 @@ func (r *LabGroupReconciler) systemSelector(ctx context.Context, ns, component s
 	if ok {
 		return map[string]string{names.LabelComponent: component}, nil
 	}
-	return map[string]string{"app": component}, nil
+	return map[string]string{labelApp: component}, nil
 }
 
 func (r *LabGroupReconciler) ensureVPNService(ctx context.Context, ns string) error {
@@ -590,7 +591,7 @@ func (r *LabGroupReconciler) ensureVPNService(ctx context.Context, ns string) er
 		return err
 	}
 	var existing corev1.Service
-	if err := r.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: ns}, &existing); err == nil {
+	if err := r.Get(ctx, types.NamespacedName{Name: names.ComponentVPN, Namespace: ns}, &existing); err == nil {
 		if !maps.Equal(existing.Spec.Selector, selector) {
 			existing.Spec.Selector = selector
 			return r.Update(ctx, &existing)
@@ -600,7 +601,7 @@ func (r *LabGroupReconciler) ensureVPNService(ctx context.Context, ns string) er
 		return err
 	}
 	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "vpn", Namespace: ns},
+		ObjectMeta: metav1.ObjectMeta{Name: names.ComponentVPN, Namespace: ns},
 		Spec: corev1.ServiceSpec{
 			ClusterIP: "None", // headless — DNS returns pod IP directly, no ClusterIP NAT
 			Selector:  selector,
@@ -622,25 +623,25 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 		replicas = 0
 	}
 	var existing appsv1.Deployment
-	if err := r.Get(ctx, types.NamespacedName{Name: "vpn", Namespace: ns}, &existing); err == nil {
+	if err := r.Get(ctx, types.NamespacedName{Name: names.ComponentVPN, Namespace: ns}, &existing); err == nil {
 		changed := existing.Spec.Replicas == nil || *existing.Spec.Replicas != replicas
 		existing.Spec.Replicas = ptrInt32(replicas)
 		// The configured image reaches the VPN pods that already run, one group at a time (a rolling update); their size stays.
-		if r.convergeGroupPod(ctx, ns, &existing, "vpn", r.VPNImage) {
+		if r.convergeGroupPod(ctx, ns, &existing, names.ComponentVPN, r.VPNImage) {
 			changed = true
 		}
 		// The hardened shape reaches the VPN pods that already run too (a rolling restart of the pod).
-		if hardenGroupPod(&existing.Spec.Template.Spec, "vpn", vpnCaps) {
+		if hardenGroupPod(&existing.Spec.Template.Spec, names.ComponentVPN, vpnCaps) {
 			changed = true
 		}
 		if setComponentLabel(&existing.Spec.Template, names.ComponentVPN) {
 			changed = true
 		}
-		if existing.Spec.Template.Annotations[names.AnnotationConntrackAccounting] != "true" {
+		if existing.Spec.Template.Annotations[names.AnnotationConntrackAccounting] != valueTrue {
 			if existing.Spec.Template.Annotations == nil {
 				existing.Spec.Template.Annotations = map[string]string{}
 			}
-			existing.Spec.Template.Annotations[names.AnnotationConntrackAccounting] = "true"
+			existing.Spec.Template.Annotations[names.AnnotationConntrackAccounting] = valueTrue
 			changed = true
 		}
 		if len(existing.Spec.Template.Spec.Containers) > 0 {
@@ -674,27 +675,27 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 		return fmt.Errorf("derive VPN client subnet: %w", err)
 	}
 	d := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "vpn", Namespace: ns},
+		ObjectMeta: metav1.ObjectMeta{Name: names.ComponentVPN, Namespace: ns},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "vpn"}},
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{labelApp: names.ComponentVPN}},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels:      map[string]string{"app": "vpn", names.LabelComponent: names.ComponentVPN},
-					Annotations: map[string]string{names.AnnotationDefaultNetwork: "eth0", names.AnnotationConntrackAccounting: "true"},
+					Labels:      map[string]string{labelApp: names.ComponentVPN, names.LabelComponent: names.ComponentVPN},
+					Annotations: map[string]string{names.AnnotationDefaultNetwork: "eth0", names.AnnotationConntrackAccounting: valueTrue},
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: "vpn",
+					ServiceAccountName: names.ComponentVPN,
 					PriorityClassName:  r.PriorityClass,
 					SchedulerName:      r.SchedulerName,
 					ImagePullSecrets:   pullSecretRefs(r.ImagePullSecrets),
 					NodeSelector:       r.LabNodeSelector,
 					Tolerations:        r.LabTolerations,
 					Containers: []corev1.Container{{
-						Name:            "vpn",
+						Name:            names.ComponentVPN,
 						Resources:       r.GroupPods.VPNFor(size),
 						Image:           vpnImage,
-						Command:         []string{"/lab", "vpn"},
+						Command:         []string{"/lab", names.ComponentVPN},
 						ImagePullPolicy: pullPolicyFor(vpnImage),
 						Env: append([]corev1.EnvVar{
 							{
@@ -717,7 +718,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 			},
 		},
 	}
-	hardenGroupPod(&d.Spec.Template.Spec, "vpn", vpnCaps)
+	hardenGroupPod(&d.Spec.Template.Spec, names.ComponentVPN, vpnCaps)
 	return r.Create(ctx, d)
 }
 
@@ -731,11 +732,11 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 		replicas = 0
 	}
 	var existing appsv1.Deployment
-	if err := r.Get(ctx, types.NamespacedName{Name: "gateway", Namespace: ns}, &existing); err == nil {
+	if err := r.Get(ctx, types.NamespacedName{Name: names.ComponentGateway, Namespace: ns}, &existing); err == nil {
 		changed := existing.Spec.Replicas == nil || *existing.Spec.Replicas != replicas
 		existing.Spec.Replicas = ptrInt32(replicas)
 		// The configured image reaches the gateways that already run, one group at a time (a rolling update); their size stays.
-		if r.convergeGroupPod(ctx, ns, &existing, "gateway", r.GatewayImage) {
+		if r.convergeGroupPod(ctx, ns, &existing, names.ComponentGateway, r.GatewayImage) {
 			changed = true
 		}
 		// A security setting reaches the gateways that already run too (a restart of the pod).
@@ -745,7 +746,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 		if setComponentLabel(&existing.Spec.Template, names.ComponentGateway) {
 			changed = true
 		}
-		if hardenGroupPod(&existing.Spec.Template.Spec, "gateway", gatewayCaps) {
+		if hardenGroupPod(&existing.Spec.Template.Spec, names.ComponentGateway, gatewayCaps) {
 			changed = true
 		}
 		if !changed {
@@ -757,27 +758,27 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 	}
 	gatewayImage := r.cachedImage(ctx, ns, r.GatewayImage)
 	d := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: ns},
+		ObjectMeta: metav1.ObjectMeta{Name: names.ComponentGateway, Namespace: ns},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "gateway"}},
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{labelApp: names.ComponentGateway}},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels:      map[string]string{"app": "gateway", names.LabelComponent: names.ComponentGateway},
+					Labels:      map[string]string{labelApp: names.ComponentGateway, names.LabelComponent: names.ComponentGateway},
 					Annotations: map[string]string{names.AnnotationDefaultNetwork: "eth0"},
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: "gateway",
+					ServiceAccountName: names.ComponentGateway,
 					PriorityClassName:  r.PriorityClass,
 					SchedulerName:      r.SchedulerName,
 					ImagePullSecrets:   pullSecretRefs(r.ImagePullSecrets),
 					NodeSelector:       r.LabNodeSelector,
 					Tolerations:        r.LabTolerations,
 					Containers: []corev1.Container{{
-						Name:            "gateway",
+						Name:            names.ComponentGateway,
 						Resources:       r.GroupPods.GatewayFor(size),
 						Image:           gatewayImage,
-						Command:         []string{"/lab", "gateway"},
+						Command:         []string{"/lab", names.ComponentGateway},
 						ImagePullPolicy: pullPolicyFor(gatewayImage),
 						Env:             r.gatewayEnv(ns),
 					}},
@@ -785,7 +786,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 			},
 		},
 	}
-	hardenGroupPod(&d.Spec.Template.Spec, "gateway", gatewayCaps)
+	hardenGroupPod(&d.Spec.Template.Spec, names.ComponentGateway, gatewayCaps)
 	return r.Create(ctx, d)
 }
 
@@ -973,7 +974,7 @@ func vpnCiliumPolicy(ns string, selector map[string]string) *unstructured.Unstru
 							map[string]interface{}{
 								"matchLabels": map[string]interface{}{
 									"k8s:io.kubernetes.pod.namespace": names.ProxyNamespace,
-									"app":                             "laboratory-proxy-l7",
+									labelApp:                          "laboratory-proxy-l7",
 								},
 							},
 						},
@@ -1107,7 +1108,7 @@ func (r *LabGroupReconciler) ensurePool(ctx context.Context, ns, name, poolType 
 				poolpkg.PoolTypeLabel:   poolType,
 				poolpkg.PoolStateLabel:  poolpkg.PoolStateEmpty,
 				poolpkg.PoolGroupLabel:  name,
-				poolpkg.LatestPoolLabel: "true",
+				poolpkg.LatestPoolLabel: valueTrue,
 			},
 		},
 		Spec: allocationv1alpha1.PoolSpec{Size: size, Offset: offset},
@@ -1151,7 +1152,7 @@ func isVPNPod(pod *corev1.Pod) bool {
 		return c == names.ComponentVPN
 	}
 	_, device := pod.Labels[names.LabelLab]
-	return !device && pod.Labels["app"] == names.ComponentVPN
+	return !device && pod.Labels[labelApp] == names.ComponentVPN
 }
 
 // cachedImage is the reference a new VPN or gateway pod of the group pulls:
@@ -1228,7 +1229,7 @@ func (r *LabGroupReconciler) convergeGateway(d *appsv1.Deployment) bool {
 	changed := false
 	for i := range d.Spec.Template.Spec.Containers {
 		c := &d.Spec.Template.Spec.Containers[i]
-		if c.Name != "gateway" {
+		if c.Name != names.ComponentGateway {
 			continue
 		}
 		for _, want := range r.gatewayEnv(d.Namespace) {

@@ -279,15 +279,10 @@ func (r *DeviceReconciler) devicePodPlacement(ctx context.Context, device *labor
 	return nodeName, podIP, podName
 }
 
-// deviceNetworkAnnotation builds the network.cybericebox.com/networks annotation value.
+// networkAnnotation builds the network.cybericebox.com/networks annotation value.
 // Lists OVS attachments only; default k8s network is controlled by AnnotationDefaultNetwork.
 // The value is a JSON array of netattach.Attachment. At pod creation time we don't know
-// the Connection name yet, so entries carry no name.
-func deviceNetworkAnnotation(device *laboratoryv1alpha1.Device) string {
-	return networkAnnotation(device, false)
-}
-
-// networkAnnotation is deviceNetworkAnnotation; with stableMAC every interface
+// the Connection name yet, so entries carry no name. With stableMAC every interface
 // without an explicit MAC gets one derived from the device identity, so a
 // recreated pod gets the same hardware address and therefore the same DHCP lease.
 // An interface whose name or MAC is not valid is left out: the API validates both, so
@@ -325,7 +320,7 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 	// platform's own keys below always win.
 	labels = names.PropagatedLabels(device.Labels)
 	labels[names.LabelLab] = device.Spec.LabRef
-	labels["app"] = device.Spec.Name
+	labels[labelApp] = device.Spec.Name
 	labels[names.LabelDevice] = device.Spec.Name
 	// The selector must be immutable and uniquely identify this device's pod:
 	// (lab, device-name) is unique within the namespace.

@@ -143,7 +143,10 @@ func fillDeviceScheduling(lab *protobuf.Lab, devices map[usageKey]*laboratoryv1a
 
 // groupPodsToProto maps the scheduler state of the pods a LabGroup runs itself.
 func groupPodsToProto(pods []laboratoryv1alpha1.NamedPodSchedule) []*protobuf.LabGroupPod {
-	var out []*protobuf.LabGroupPod
+	if len(pods) == 0 {
+		return nil
+	}
+	out := make([]*protobuf.LabGroupPod, 0, len(pods))
 	for i := range pods {
 		out = append(out, &protobuf.LabGroupPod{Name: pods[i].Name, Scheduling: podScheduleToProto(&pods[i].PodSchedule)})
 	}
@@ -261,18 +264,20 @@ func accessPolicyToProto(policy *laboratoryv1alpha1.LabGroupAccessPolicy, labGro
 	}
 	for _, rule := range policy.Spec.Rules {
 		action := protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_UNSPECIFIED
-		if rule.Action == laboratoryv1alpha1.LabGroupAccessAllow {
+		switch rule.Action {
+		case laboratoryv1alpha1.LabGroupAccessAllow:
 			action = protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_ALLOW
-		} else if rule.Action == laboratoryv1alpha1.LabGroupAccessDeny {
+		case laboratoryv1alpha1.LabGroupAccessDeny:
 			action = protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_DENY
 		}
 		p.Rules = append(p.Rules, &protobuf.LabGroupAccessRule{Action: action, ClientNames: orig(rule.ClientNames), LabNames: orig(rule.LabNames)})
 	}
 	for _, rule := range policy.Status.Rules {
 		action := protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_UNSPECIFIED
-		if rule.Action == laboratoryv1alpha1.LabGroupAccessAllow {
+		switch rule.Action {
+		case laboratoryv1alpha1.LabGroupAccessAllow:
 			action = protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_ALLOW
-		} else if rule.Action == laboratoryv1alpha1.LabGroupAccessDeny {
+		case laboratoryv1alpha1.LabGroupAccessDeny:
 			action = protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_DENY
 		}
 		p.Status.Rules = append(p.Status.Rules, &protobuf.LabGroupAccessRuleStatistics{

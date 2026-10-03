@@ -66,7 +66,7 @@ func MoveToNetNS(ifaceName, netnsPath string) error {
 	if err != nil {
 		return fmt.Errorf("open netns %s: %w", netnsPath, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := netlink.LinkSetNsFd(link, int(f.Fd())); err != nil {
 		return fmt.Errorf("move %s to netns %s: %w", ifaceName, netnsPath, err)
 	}

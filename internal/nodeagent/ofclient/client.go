@@ -115,7 +115,7 @@ func Connect(sockPath string) (*Client, error) {
 
 	// HELLO exchange runs synchronously before background reader starts.
 	if err := c.handshake(); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 
@@ -124,7 +124,7 @@ func Connect(sockPath string) (*Client, error) {
 
 	// Initial PORT_DESC query via channel (readLoop is now running).
 	if err := c.queryPortDesc(); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	return c, nil

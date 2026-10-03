@@ -73,7 +73,7 @@ func TestLabsEndToEnd(t *testing.T) {
 		c1.Annotations[names.AnnotationDeployAfter] != "x" {
 		t.Fatalf("c1 metadata: %v %v", c1.Labels, c1.Annotations)
 	}
-	if string(c1.Spec.Devices[0].Name) == "" || len(c1.Spec.Devices) != 2 {
+	if c1.Spec.Devices[0].Name == "" || len(c1.Spec.Devices) != 2 {
 		t.Fatalf("spec: %+v", c1.Spec)
 	}
 

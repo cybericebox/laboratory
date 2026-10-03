@@ -5,6 +5,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cybericebox/laboratory/internal/names"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -125,7 +127,7 @@ func (r *LabGroupReconciler) settleRollout(ctx context.Context, ns string) (bool
 	if !r.rollout.holds(ns) {
 		return false, nil
 	}
-	for _, name := range []string{"vpn", "gateway"} {
+	for _, name := range []string{names.ComponentVPN, names.ComponentGateway} {
 		var d appsv1.Deployment
 		if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &d); err != nil {
 			if errors.IsNotFound(err) {

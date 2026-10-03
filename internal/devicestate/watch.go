@@ -50,7 +50,7 @@ func Watch(ctx context.Context, root string, pol snapshot.Policy, poll time.Dura
 	go func() {
 		defer close(out)
 		if w != nil {
-			defer w.Close()
+			defer func() { _ = w.Close() }()
 		}
 		var events <-chan fsnotify.Event
 		var errs <-chan error

@@ -17,7 +17,10 @@ import (
 // pullSecretRefs turns the configured pull secret names into the references a
 // pod spec takes; nil when none are configured.
 func pullSecretRefs(secretNames []string) []corev1.LocalObjectReference {
-	var out []corev1.LocalObjectReference
+	if len(secretNames) == 0 {
+		return nil
+	}
+	out := make([]corev1.LocalObjectReference, 0, len(secretNames))
 	for _, n := range secretNames {
 		out = append(out, corev1.LocalObjectReference{Name: n})
 	}

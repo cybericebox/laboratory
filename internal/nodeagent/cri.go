@@ -33,7 +33,7 @@ func PodNetNSFromCRI(ctx context.Context, criSock, podUID string) (string, error
 	if err != nil {
 		return "", fmt.Errorf("dial CRI %s: %w", criSock, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	rt := criapi.NewRuntimeServiceClient(conn)
 

@@ -21,7 +21,6 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/clientset/client/versioned/fake"
 	"github.com/cybericebox/laboratory/internal/names"
-	"github.com/cybericebox/laboratory/pkg/agent/client"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -55,16 +54,6 @@ func newFinalizerHandler(t *testing.T, objs ...runtime.Object) (*Handler, func(r
 		}
 	}
 	return NewHandler(cs, k8sfake.NewSimpleClientset(), nil), release
-}
-
-func requireTerminating(t *testing.T, err error) {
-	t.Helper()
-	if err == nil {
-		t.Fatal("expected terminating error, got nil")
-	}
-	if status.Code(err) != codes.Unavailable || !client.IsTerminating(err) {
-		t.Fatalf("expected Unavailable/TERMINATING, got %v", err)
-	}
 }
 
 // onlyResult unwraps the answer to a one-item call.

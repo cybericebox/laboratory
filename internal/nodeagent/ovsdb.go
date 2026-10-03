@@ -33,8 +33,6 @@ const GenevePort = "ovsgnv0"
 
 // genevePortName is retained for transitional call sites and returns the
 // shared port name regardless of the remote address argument.
-func genevePortName(string) string { return GenevePort }
-
 // OVSManager programs the single br-ovs bridge via libovsdb (OVSDB JSON-RPC over Unix socket).
 type OVSManager struct {
 	bridge string

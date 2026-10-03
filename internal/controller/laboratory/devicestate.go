@@ -348,7 +348,7 @@ func (r *DeviceReconciler) reconcileCurrentPod(ctx context.Context, device *labo
 	// recycled: its exit snapshot is taken, then it is recreated.
 	epoch := fmt.Sprint(st.Epoch)
 	if suspended || cur.Annotations[names.AnnotationStateEpoch] != epoch ||
-		(cur.Annotations[names.AnnotationStateRescue] == "true") != spec.Rescue {
+		(cur.Annotations[names.AnnotationStateRescue] == valueTrue) != spec.Rescue {
 		if err := r.markStopped(ctx, device, now); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -470,7 +470,7 @@ func (r *DeviceReconciler) publishPlacement(ctx context.Context, device *laborat
 			ip = pod.Status.PodIP
 		}
 		ready = podReady(pod)
-		rescue = pod.Annotations[names.AnnotationStateRescue] == "true"
+		rescue = pod.Annotations[names.AnnotationStateRescue] == valueTrue
 	}
 	st := device.Status.State
 	if node == device.Status.NodeName && ip == device.Status.PodIP && name == device.Status.PodName &&
@@ -508,7 +508,7 @@ func (r *DeviceReconciler) createDevicePod(ctx context.Context, device *laborato
 	annotations[names.AnnotationStateDevice] = device.Name
 	annotations[names.AnnotationStateIncarnation] = fmt.Sprint(next)
 	if spec.Rescue {
-		annotations[names.AnnotationStateRescue] = "true"
+		annotations[names.AnnotationStateRescue] = valueTrue
 	}
 	podSpec.RestartPolicy = corev1.RestartPolicyNever
 	c := &podSpec.Containers[0]
