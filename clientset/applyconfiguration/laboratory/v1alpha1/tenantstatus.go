@@ -35,10 +35,15 @@ type TenantStatusApplyConfiguration struct {
 	ObservedAt *v1.Time `json:"observedAt,omitempty"`
 	// Enrollment is the one-time token a client enrolls with (see the agent's Enroll).
 	Enrollment *TenantEnrollmentApplyConfiguration `json:"enrollment,omitempty"`
-	// CertificatesNotBefore is the enrollment epoch: a client certificate issued before it (and before the Tenant
-	// was created) is refused. It moves to the moment of every enrollment, so enrolling again revokes every
-	// certificate issued earlier; a Tenant created again under the same name starts a new epoch by its creation time.
+	// CertificatesNotBefore is the enrollment moment, kept for client certificates that carry no epoch (issued before
+	// CertificateEpoch existed): one issued before it (and before the Tenant was created) is refused.
 	CertificatesNotBefore *v1.Time `json:"certificatesNotBefore,omitempty"`
+	// CertificateEpoch is the enrollment epoch: a counter that moves by one at every enrollment. A client certificate
+	// carries the epoch it was issued in and the UID of the Tenant, and works only while both equal these (an exact
+	// comparison, no clock), so enrolling again revokes every certificate issued earlier, and a Tenant created again
+	// under the same name (a new UID) does not accept the old Tenant's certificates. Once it is above zero a certificate
+	// without an epoch (issued before this field existed) is refused too.
+	CertificateEpoch *int64 `json:"certificateEpoch,omitempty"`
 }
 
 // TenantStatusApplyConfiguration constructs a declarative configuration of the TenantStatus type for use with
@@ -84,5 +89,13 @@ func (b *TenantStatusApplyConfiguration) WithEnrollment(value *TenantEnrollmentA
 // If called multiple times, the CertificatesNotBefore field is set to the value of the last call.
 func (b *TenantStatusApplyConfiguration) WithCertificatesNotBefore(value v1.Time) *TenantStatusApplyConfiguration {
 	b.CertificatesNotBefore = &value
+	return b
+}
+
+// WithCertificateEpoch sets the CertificateEpoch field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the CertificateEpoch field is set to the value of the last call.
+func (b *TenantStatusApplyConfiguration) WithCertificateEpoch(value int64) *TenantStatusApplyConfiguration {
+	b.CertificateEpoch = &value
 	return b
 }

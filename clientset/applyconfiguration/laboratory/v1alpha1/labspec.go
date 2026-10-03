@@ -22,8 +22,9 @@ package v1alpha1
 //
 // LabSpec defines the desired state of Lab.
 type LabSpecApplyConfiguration struct {
-	VPN         *LabNetworkSpecApplyConfiguration      `json:"vpn,omitempty"`
-	Internet    *LabNetworkSpecApplyConfiguration      `json:"internet,omitempty"`
+	VPN      *LabNetworkSpecApplyConfiguration `json:"vpn,omitempty"`
+	Internet *LabNetworkSpecApplyConfiguration `json:"internet,omitempty"`
+	// Devices of the lab, switches and hubs included. The ceiling is fixed in code (names.MaxLabDevices).
 	Devices     []DeviceTemplateApplyConfiguration     `json:"devices,omitempty"`
 	Connections []ConnectionTemplateApplyConfiguration `json:"connections,omitempty"`
 }

@@ -19,6 +19,10 @@ import (
 	"github.com/cybericebox/laboratory/internal/names"
 )
 
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=tenants,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=tenants/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
+
 // DefaultEnrollmentTTL is how long an unused enrollment token works.
 const DefaultEnrollmentTTL = 24 * time.Hour
 
@@ -27,10 +31,6 @@ const DefaultEnrollmentTTL = 24 * time.Hour
 // the Secret tenant-<name>-enrollment of the tenants namespace (the admin reads it with
 // kubectl). The agent burns the token when a client enrolls (status.enrollment.usedAt), and the
 // Secret goes away. An annotation asks for a new token.
-//
-// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=tenants,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=tenants/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 type TenantReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme

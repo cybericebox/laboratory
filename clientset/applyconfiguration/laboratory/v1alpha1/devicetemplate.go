@@ -35,8 +35,9 @@ type DeviceTemplateApplyConfiguration struct {
 	// net and debug are aliases). Only the name is exposed here; the concrete Linux capabilities behind it
 	// are an internal platform decision. Empty means standard.
 	SecurityPreset *laboratoryv1alpha1.SecurityPreset `json:"securityPreset,omitempty"`
-	Interfaces     []InterfaceSpecApplyConfiguration  `json:"interfaces,omitempty"`
-	Exposure       *ExposureSpecApplyConfiguration    `json:"exposure,omitempty"`
+	// Interfaces of the device: at most 16 on a container (names.MaxContainerInterfaces), 48 on a switch or hub.
+	Interfaces []InterfaceSpecApplyConfiguration `json:"interfaces,omitempty"`
+	Exposure   *ExposureSpecApplyConfiguration   `json:"exposure,omitempty"`
 	// Resources sets the container resource requests/limits for this device.
 	Resources *DeviceResourcesApplyConfiguration `json:"resources,omitempty"`
 	// Persistence is the optional state-persistence policy of this device, set at
