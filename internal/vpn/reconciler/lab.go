@@ -93,6 +93,11 @@ func (r *LabVPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, fmt.Errorf("assign IP to %s: %w", ifaceName, err)
 	}
 
+	// The lab may ping the pod's address on its own interface, and nothing else of the pod.
+	if err := r.IPT.AllowPing(ifaceName, firstHostIP(cidr)); err != nil {
+		return ctrl.Result{}, fmt.Errorf("allow ping of %s: %w", ifaceName, err)
+	}
+
 	// The devices of the lab may reach every participant (the pod is a transparent gateway; participants reach the lab by
 	// their access rules).
 	if err := r.IPT.AllowLabToClients(ifaceName, cidr); err != nil {
@@ -155,6 +160,7 @@ func (r *LabVPNReconciler) reconcileDelete(ctx context.Context, labvpn *laborato
 	r.IPT.DenyDHCP(ifaceName)
 	if cidr, err := netutil.SubnetForIndex(r.Cfg.VPNBaseNetwork, 24, labvpn.Spec.NetworkIndex); err == nil {
 		r.IPT.RevokeLabToClients(ifaceName, cidr)
+		r.IPT.DenyPing(ifaceName, firstHostIP(cidr))
 	}
 	controllerutil.RemoveFinalizer(labvpn, names.FinalizerVPN)
 	return ctrl.Result{}, r.Update(ctx, labvpn)

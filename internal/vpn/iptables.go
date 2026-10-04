@@ -61,18 +61,32 @@ func (m *IPTablesManager) GuardWireGuardPort(uplink string, port int) (ipv6 bool
 // the WireGuard side reaches only the status page on probeAddr:probePort, the uplink is open. It must run before any interface
 // of the pod comes up. The result says whether IPv6 was covered too (false: the pod has no ip6tables).
 func (m *IPTablesManager) ProtectInput(uplink, probeAddr string, probePort int) (ipv6 bool, err error) {
+	// Nothing is forwarded until the FORWARD rules are in place: the policy is DROP from the first moment.
+	if err := m.ipt.ChangePolicy("filter", "FORWARD", "DROP"); err != nil {
+		return false, fmt.Errorf("set FORWARD DROP: %w", err)
+	}
+	if err := podinput.NoConntrackHelpers(podinput.ConntrackHelpers); err != nil {
+		return false, err
+	}
 	p := podinput.Policy{Uplink: uplink, Probe: &podinput.Probe{Iface: m.wgIface, Addr: probeAddr, Port: probePort}}
 	if err := podinput.Install(m.ipt, p, false); err != nil {
 		return false, err
 	}
 	m.input = &p
 	if m.ipt6 != nil {
+		if err := m.ipt6.ChangePolicy("filter", "FORWARD", "DROP"); err != nil {
+			return false, fmt.Errorf("set IPv6 FORWARD DROP: %w", err)
+		}
 		if err := podinput.Install(m.ipt6, p, true); err != nil {
 			return false, err
 		}
-		ipv6 = true
+		return true, nil
 	}
-	return ipv6, nil
+	// No ip6tables: IPv6 cannot be filtered, so the pod gets none.
+	if err := podinput.DisableIPv6(); err != nil {
+		return false, fmt.Errorf("no ip6tables, and IPv6 cannot be switched off: %w", err)
+	}
+	return false, nil
 }
 
 // AllowDHCP opens DHCP on one lab interface (the pod runs a DHCP server there); DenyDHCP closes it.
@@ -84,6 +98,17 @@ func (m *IPTablesManager) AllowDHCP(iface string) error {
 }
 
 func (m *IPTablesManager) DenyDHCP(iface string) { podinput.DenyDHCP(m.ipt, iface) }
+
+// AllowPing lets the devices of a lab ping the pod's own address on that lab's interface (and no other address of the pod);
+// DenyPing takes it away with the interface.
+func (m *IPTablesManager) AllowPing(iface, addr string) error {
+	if m.input == nil {
+		return fmt.Errorf("the INPUT policy is not installed")
+	}
+	return podinput.AllowPing(m.ipt, iface, addr)
+}
+
+func (m *IPTablesManager) DenyPing(iface, addr string) { podinput.DenyPing(m.ipt, iface, addr) }
 
 // forwardRules are the base rules of FORWARD, in the order they stand. The pod is a transparent gateway between the lab and the
 // participants, with one exception: participants never reach each other through it. That drop comes first, so no conntrack state
@@ -103,12 +128,6 @@ func (m *IPTablesManager) forwardRules() [][]string {
 func (m *IPTablesManager) SetupForwardPolicy() error {
 	if err := m.ipt.ChangePolicy("filter", "FORWARD", "DROP"); err != nil {
 		return fmt.Errorf("set FORWARD DROP: %w", err)
-	}
-	if m.ipt6 != nil {
-		// The pod forwards no IPv6; the policy keeps it so.
-		if err := m.ipt6.ChangePolicy("filter", "FORWARD", "DROP"); err != nil {
-			return fmt.Errorf("set IPv6 FORWARD DROP: %w", err)
-		}
 	}
 	// The FORWARD jump below references the access chain, and iptables rejects
 	// even checking a rule whose target chain does not exist yet: create it

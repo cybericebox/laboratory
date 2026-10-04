@@ -1,6 +1,8 @@
 package podinput
 
 import (
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -69,6 +71,7 @@ type pkt struct {
 	proto string // tcp, udp, icmp, icmpv6
 	dport int
 	icmp6 string // icmpv6 type name
+	icmp4 string // icmp type name
 	state string // NEW or ESTABLISHED
 }
 
@@ -94,6 +97,9 @@ func (f *fakeFilter) matches(r []string, p pkt) (match bool, target string) {
 			i++
 		case "--dport":
 			match = match && r[i+1] == strconv.Itoa(p.dport)
+			i++
+		case "--icmp-type":
+			match = match && r[i+1] == p.icmp4
 			i++
 		case "--icmpv6-type":
 			match = match && r[i+1] == p.icmp6
@@ -350,5 +356,81 @@ func TestRulesAreTheExpectedSpecs(t *testing.T) {
 	}
 	if got, want := strings.Join(DHCPRule("lab3"), " "), "-i lab3 -p udp --dport 67 -j ACCEPT"; got != want {
 		t.Errorf("DHCP rule %q, want %q", got, want)
+	}
+}
+
+func TestPingOnlyTheOwnAddressOfTheInterface(t *testing.T) {
+	f := newFake(t)
+	if err := Install(f, vpnPolicy, false); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ { // idempotent
+		if err := AllowPing(f, "lab1", "10.8.100.1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := AllowPing(f, "lab2", "10.8.101.1"); err != nil {
+		t.Fatal(err)
+	}
+	echo := func(iface, dst string) string {
+		return f.verdict(pkt{iface: iface, dst: dst, proto: "icmp", icmp4: "echo-request"})
+	}
+	if echo("lab1", "10.8.100.1") != "ACCEPT" || echo("lab2", "10.8.101.1") != "ACCEPT" {
+		t.Errorf("a lab must be able to ping the pod's address on its own interface")
+	}
+	for _, c := range []struct{ iface, dst, why string }{
+		{"lab1", "10.8.101.1", "the address of another lab's interface"},
+		{"lab2", "10.8.100.1", "the address of another lab's interface"},
+		{"lab1", "10.8.0.1", "the tunnel address"},
+		{"lab1", "10.244.0.2", "the uplink address"},
+		{"lab1", "127.0.0.1", "the loopback"},
+		{"lab3", "10.8.100.1", "an interface that has no rule"},
+		{"wg0", "10.8.100.1", "the tunnel interface"},
+		{"wg0", "10.8.0.1", "the tunnel interface, its own address"},
+	} {
+		if v := echo(c.iface, c.dst); v != "DROP" {
+			t.Errorf("echo on %s to %s (%s): %s, want DROP", c.iface, c.dst, c.why, v)
+		}
+	}
+	for _, p := range []pkt{
+		{iface: "lab1", dst: "10.8.100.1", proto: "icmp", icmp4: "timestamp-request"},
+		{iface: "lab1", dst: "10.8.100.1", proto: "icmp", icmp4: "redirect"},
+		{iface: "lab1", dst: "10.8.100.1", proto: "tcp", dport: 22},
+		{iface: "lab1", dst: "10.8.100.1", proto: "udp", dport: 53},
+	} {
+		if v := f.verdict(p); v != "DROP" {
+			t.Errorf("%+v: %s, want DROP", p, v)
+		}
+	}
+	DenyPing(f, "lab1", "10.8.100.1")
+	if echo("lab1", "10.8.100.1") != "DROP" || echo("lab2", "10.8.101.1") != "ACCEPT" {
+		t.Errorf("DenyPing must close lab1 only")
+	}
+	// the order: the limited accept, then the drop of the rest, both in front of the ESTABLISHED accept
+	rules := f.chains[Chain]
+	if len(rules) < 3 || !strings.Contains(strings.Join(rules[0], " "), "-m limit") || strings.Join(rules[1], " ") != strings.Join(pingOverLimitRule("lab2", "10.8.101.1"), " ") {
+		t.Errorf("chain starts with %v", rules[:min(3, len(rules))])
+	}
+	got := strings.Join(PingRule("lab1", "10.8.100.1"), " ")
+	if want := "-i lab1 -d 10.8.100.1 -p icmp --icmp-type echo-request -m limit --limit 10/second --limit-burst 20 -j ACCEPT"; got != want {
+		t.Errorf("ping rule %q, want %q", got, want)
+	}
+}
+
+func TestNoConntrackHelpers(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "none")
+	if err := NoConntrackHelpers(missing); err != nil {
+		t.Errorf("a missing switch (conntrack not loaded) is not an error: %v", err)
+	}
+	on := filepath.Join(dir, "on")
+	if err := os.WriteFile(on, []byte("1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := NoConntrackHelpers(on); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(on); strings.TrimSpace(string(b)) != "0" {
+		t.Errorf("helpers left on: %q", b)
 	}
 }
