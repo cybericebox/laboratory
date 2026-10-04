@@ -59,4 +59,42 @@ out=$(delete_rc v1.2.3 img); rc=$?
 check "delete-rc status with a non-matching last tag" 0 "$rc"
 check "delete-rc deletes only the rc tags of the version" "del img v1.2.3-rc.1 del img v1.2.3-rc.2" "$(tr '\n' ' ' <<<"$out" | sed 's/ $//')"
 
+# rc_source and cleanup in a repository with a develop branch merged into main
+mkdir "$tmp/r2" && cd "$tmp/r2" || exit 1
+git init -q -b main .
+commit() { echo "$1" >"$1"; g add "$1"; g commit -qm "$1"; }
+commit m0
+g checkout -q -b develop
+commit d1
+d1=$(git rev-parse HEAD)
+g checkout -q main
+g merge -q --no-ff -m merge develop
+# shellcheck disable=SC2329
+image_exists() { [[ "$fake_exists" == yes ]]; }
+fake_exists=yes
+check "rc_source: same tree, images exist" "retag sha-${d1:0:7}" "$(rc_source img1 img2)"
+fake_exists=no
+check "rc_source: image missing" "build: img1:sha-${d1:0:7} does not exist" "$(rc_source img1)"
+fake_exists=yes
+release=$(git rev-parse HEAD)
+commit m1
+check "rc_source: not a merge commit" "build: HEAD is not a merge commit" "$(rc_source img1)"
+g checkout -q develop
+commit d2
+g checkout -q main
+commit m2
+g merge -q --no-ff -m merge2 develop
+case "$(rc_source img1)" in "build: the tree of main differs"*) check "rc_source: tree differs" ok ok ;; *) check "rc_source: tree differs" build "$(rc_source img1)" ;; esac
+
+# cleanup deletes the ancestor sha tags and the cache tags, nothing else
+newer=$(git rev-parse develop)
+# shellcheck disable=SC2329
+hub_tags() { printf '%s\n' "sha-${d1:0:7}" "sha-${newer:0:7}" sha-0000000 buildcache-develop buildcache latest v1.0.0 v1.0.0-rc.1 sha-ABCDEF0; }
+# shellcheck disable=SC2329
+hub_delete() { echo "del $2"; }
+want="del sha-${d1:0:7} del buildcache-develop del buildcache"
+check "cleanup (release before newer commits)" "$want" "$(cleanup "$release" false img | grep '^del' | tr '\n' ' ' | sed 's/ $//')"
+check "cleanup dry run deletes nothing" "" "$(cleanup "$release" true img | grep '^del')"
+check "cleanup dry run lists the cache tags" 2 "$(cleanup "$release" true img | grep -c '^  buildcache')"
+
 exit $fail

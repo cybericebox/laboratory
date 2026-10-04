@@ -1,6 +1,7 @@
 name: Pre-release
 
-# A push to main (the merge of develop) publishes vX.Y.Z-rc.N and creates the GitHub pre-release.
+# A push to main (the merge of develop) publishes vX.Y.Z-rc.N and creates the GitHub pre-release. The rc image is a retag of
+# the develop image sha-<7> (no build) when the main tree equals the tree of the develop head; otherwise it is built.
 # The version comes from the last release tag: patch by default, minor when a PR merged since the last release has the
 # "minor" label, major only through a manual run. Nothing is published when the tree is unchanged since the last rc.
 on:
@@ -51,9 +52,42 @@ jobs:
     if: needs.version.outputs.skip != 'true'
     uses: ./.github/workflows/test.yml
 
+  source:
+    name: Image source
+    needs: version
+    if: needs.version.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    env:
+      IMAGES: cybericebox/laboratory-controller cybericebox/laboratory-agent cybericebox/laboratory-proxy cybericebox/laboratory-node cybericebox/laboratory-lab
+    outputs:
+      mode: ${{ steps.s.outputs.mode }}
+      tag: ${{ steps.s.outputs.tag }}
+    steps:
+      - name: Check repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Login to docker registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Retag or build
+        id: s
+        run: |
+          # shellcheck disable=SC2086
+          out=$(.github/scripts/ci.sh rc-source $IMAGES)
+          mode=${out%% *}
+          mode=${mode%:}
+          echo "pre-release image: $out"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          if [[ "$mode" == retag ]]; then echo "tag=${out#* }" >> "$GITHUB_OUTPUT"; fi
+
   image:
     name: Image ${{ matrix.name }}
-    needs: [version, test]
+    needs: [version, test, source]
     if: needs.version.outputs.skip != 'true'
     runs-on: ubuntu-latest
     strategy:
@@ -79,6 +113,7 @@ jobs:
       - name: Check repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Set up QEMU
+        if: needs.source.outputs.mode != 'retag'
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -87,7 +122,17 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Retag the develop image (no build)
+        if: needs.source.outputs.mode == 'retag'
+        env:
+          IMAGE: ${{ matrix.image }}
+          SRC: ${{ needs.source.outputs.tag }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          echo "retag $IMAGE:$SRC -> $IMAGE:$TAG"
+          docker buildx imagetools create -t "$IMAGE:$TAG" "$IMAGE:$SRC"
       - name: Build and push the image
+        if: needs.source.outputs.mode != 'retag'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
@@ -95,7 +140,7 @@ jobs:
           target: ${{ matrix.target }}
           push: true
           platforms: linux/amd64,linux/arm64
-          cache-from: type=registry,ref=${{ matrix.image }}:buildcache
+          cache-from: type=registry,ref=${{ matrix.image }}:buildcache-develop
           tags: ${{ matrix.image }}:${{ needs.version.outputs.tag }}
 
   release:
