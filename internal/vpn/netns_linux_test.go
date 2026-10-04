@@ -58,6 +58,13 @@ func TestNetnsVPNPodIsATransparentGateway(t *testing.T) {
 	for _, k := range []string{"all", "default", "lab1", "lab2", "wg0", "eth0"} {
 		nstest.Run(t, "", "sysctl", "-w", "net.ipv4.conf."+k+".rp_filter=0")
 	}
+	for _, ns := range []string{"pa", "pb", "lab", "lab2", "up"} {
+		nstest.Run(t, ns, "sysctl", "-w", "net.ipv4.conf.all.rp_filter=0")
+		nstest.Run(t, ns, "sysctl", "-w", "net.ipv4.conf.default.rp_filter=0")
+	}
+	for _, d := range [][2]string{{"pa", "pa0"}, {"pb", "pb0"}} {
+		nstest.Run(t, d[0], "sysctl", "-w", "net.ipv4.conf."+d[1]+".rp_filter=0")
+	}
 
 	// Targets on the pod itself, on every kind of address it has.
 	tcpPod := nstest.Listen(t, "", "tcp", "0.0.0.0:7000")
