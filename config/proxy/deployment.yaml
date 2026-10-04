@@ -100,10 +100,6 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
-            - name: TLS_CERT_PATH
-              value: /etc/proxy/tls/tls.crt
-            - name: TLS_KEY_PATH
-              value: /etc/proxy/tls/tls.key
           ports:
             - name: https
               containerPort: 8443
@@ -114,11 +110,6 @@ spec:
         - name: wg-demux
           image: cybericebox/laboratory-proxy:0.1.0
           command: [ "/proxy", "proxy-wg" ]
-          env:
-            - name: UDP_LISTEN_ADDR
-              value: ":51820"
-            - name: VPN_SERVICE_PORT
-              value: "51820"
           ports:
             - name: wg
               containerPort: 51820

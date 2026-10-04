@@ -12,6 +12,7 @@ import (
 
 	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/imagecache"
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/config"
 )
 
@@ -19,8 +20,6 @@ type Config struct {
 	// PublicVPNEndpoint is the host:port advertised to WireGuard clients (demux public address).
 	// Required, no default: the domain comes only from configuration.
 	PublicVPNEndpoint string `env:"PUBLIC_VPN_ENDPOINT,notEmpty"`
-	// VPNServicePort is the UDP port the VPN server listens on. Matches VPN_SERVICE_PORT in the proxy.
-	VPNServicePort int `env:"VPN_SERVICE_PORT" envDefault:"51820"`
 	// BaseDomain is the cluster ingress base domain used for device exposure URLs.
 	// Required, no default.
 	BaseDomain string `env:"BASE_DOMAIN,notEmpty"`
@@ -36,10 +35,11 @@ type Config struct {
 	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets, internet half (e.g. "10.192.0.0/10").
 	InetBaseNetwork string `env:"INET_BASE_NETWORK" envDefault:"10.192.0.0/10"`
 	// VPNImage is the container image for per-LabGroup VPN pods. Required, no default: the chart passes
-	// repository:tag (the tag is the chart appVersion unless set).
+	// repository:tag (the tag is the release tag: image.tag, else the chart appVersion).
 	VPNImage string `env:"VPN_IMAGE,notEmpty"`
-	// GatewayImage is the container image for per-LabGroup gateway pods. Required, no default.
-	GatewayImage string `env:"GATEWAY_IMAGE,notEmpty"`
+	// GatewayImage is the container image for per-LabGroup gateway pods. The VPN and the gateway are one image (laboratory-lab, two
+	// commands): empty means VPNImage.
+	GatewayImage string `env:"GATEWAY_IMAGE"`
 	// GroupPods are the resources of the VPN and gateway pods of a new LabGroup (requests = limits).
 	GroupPods grouppods.Config
 	// GroupPriorityClass and DevicePriorityClass are the PriorityClasses of the VPN and gateway pods and of the device pods
@@ -59,26 +59,15 @@ type Config struct {
 	LabNodeSelectorJSON string `env:"LAB_NODE_SELECTOR" envDefault:"{}"`
 	// LabTolerationsJSON is a JSON-encoded []corev1.Toleration applied to all runtime lab pods.
 	LabTolerationsJSON string `env:"LAB_TOLERATIONS" envDefault:"[]"`
-	// AgentEnabled gates creation of the management-agent RoleBinding in each
-	// LabGroup namespace.
-	AgentEnabled bool `env:"AGENT_ENABLED" envDefault:"false"`
-	// ProxyEnabled gates the RoleBinding that lets the L7 proxy write its traffic reports in each group namespace.
-	ProxyEnabled bool `env:"PROXY_ENABLED" envDefault:"false"`
-	// AgentServiceAccount is the name of the management-agent ServiceAccount
-	// bound by the per-group RoleBinding.
-	AgentServiceAccount string `env:"AGENT_SERVICE_ACCOUNT" envDefault:"laboratory-agent"`
-	// AgentServiceNamespace is the namespace of the management-agent ServiceAccount.
-	AgentServiceNamespace string `env:"AGENT_SERVICE_NAMESPACE" envDefault:"laboratory-agent"`
-	// OperatorServiceAccount and OperatorNamespace are the operator's own identity: in every LabGroup namespace it
-	// binds that ServiceAccount to the ClusterRole of its working permissions (it has no cluster-wide write access).
-	OperatorServiceAccount string `env:"OPERATOR_SERVICE_ACCOUNT" envDefault:"laboratory-controller-manager"`
-	OperatorNamespace      string `env:"OPERATOR_NAMESPACE" envDefault:"laboratory-system"`
+	// AgentEnabled gates creation of the management-agent RoleBinding in each LabGroup namespace (names.AgentServiceAccount of
+	// names.AgentNamespace). On by default, as in the chart: a binding to an agent that does not run grants nothing.
+	AgentEnabled bool `env:"AGENT_ENABLED" envDefault:"true"`
+	// ProxyEnabled gates the RoleBinding that lets the L7 proxy write its traffic reports in each group namespace. On by default,
+	// as in the chart.
+	ProxyEnabled bool `env:"PROXY_ENABLED" envDefault:"true"`
 	// NetworkPolicyEnabled gates creation of the default-deny NetworkPolicy
 	// baseline in each LabGroup namespace.
 	NetworkPolicyEnabled bool `env:"NETWORK_POLICY_ENABLED" envDefault:"true"`
-	// VPNStatsInterval is how often the VPN pod of a NEW group samples traffic statistics
-	// (env STATS_INTERVAL of the pod).
-	VPNStatsInterval time.Duration `env:"VPN_STATS_INTERVAL" envDefault:"30s"`
 	// ImagePullSecrets lists registry Secrets (kubernetes.io/dockerconfigjson) in the
 	// operator namespace, created outside the chart. The operator copies them into
 	// every group namespace and sets them on the VPN, gateway and device pods, so a
@@ -123,10 +112,10 @@ type Config struct {
 	SchedulerPrepullTimeout time.Duration `env:"SCHEDULER_PREPULL_TIMEOUT" envDefault:"5m"`
 
 	// RequireAdmissionPolicy makes the operator check at start that the chart's admission policies are enforced on it and
-	// exit if they are not (the chart sets it with operator.admissionPolicy.enabled). Off by default so that the operator can run
-	// from a developer's machine, where it is not the ServiceAccount the policies are about.
-	RequireAdmissionPolicy bool          `env:"OPERATOR_REQUIRE_ADMISSION_POLICY" envDefault:"false"`
-	AdmissionPolicyTimeout time.Duration `env:"OPERATOR_ADMISSION_POLICY_TIMEOUT" envDefault:"90s"`
+	// exit if they are not (the chart sets it with operator.admissionPolicy.enabled). On by default, as in the chart: an operator that
+	// is not confined must be asked for by name (OPERATOR_REQUIRE_ADMISSION_POLICY=false: a developer's machine, where it is not the
+	// ServiceAccount the policies are about, or a deploy without the chart).
+	RequireAdmissionPolicy bool `env:"OPERATOR_REQUIRE_ADMISSION_POLICY" envDefault:"true"`
 
 	// DeviceDefaultCPU and DeviceDefaultMemory are the requests and limits of a
 	// device container that declares neither (requests always equal limits, so
@@ -157,9 +146,8 @@ type Config struct {
 // CacheConfig configures the image cache rewrite of lab image references.
 type CacheConfig struct {
 	Enabled bool `env:"IMAGE_CACHE_ENABLED" envDefault:"false"`
-	// Prefix is host:port of the cache as the nodes see it (the node-agent's
-	// localhost forwarder).
-	Prefix string `env:"IMAGE_CACHE_PREFIX" envDefault:"localhost:5035"`
+	// Prefix is host:port of the cache as the nodes see it (the node-agent's localhost forwarder); empty = names.RegistryNodePrefix.
+	Prefix string `env:"IMAGE_CACHE_PREFIX"`
 	// Registries are the upstream registries the cache serves; references to any
 	// other registry are pulled directly.
 	// PinTTL is how long a resolved image digest is remembered, so labs created in
@@ -182,8 +170,8 @@ func (c CacheConfig) Rewriter() imagecache.Rewriter {
 // snapshot registry.
 type StateConfig struct {
 	Enabled bool `env:"STATE_PERSISTENCE_ENABLED" envDefault:"false"`
-	// RegistryAddr is host:port of the snapshot registry Service, used by the
-	// operator to drop snapshots (device reset, retention).
+	// RegistryAddr is host:port of the snapshot registry Service, used by the operator to drop snapshots (device reset, retention);
+	// empty = names.RegistryServiceAddr (the chart always installs the registry there).
 	RegistryAddr     string `env:"STATE_REGISTRY_ADDR"`
 	RegistryUser     string `env:"STATE_REGISTRY_USER"`
 	RegistryPassword string `env:"STATE_REGISTRY_PASSWORD"`
@@ -245,6 +233,15 @@ func LoadConfig() (*Config, error) {
 	}
 	if address, err := mail.ParseAddress(cfg.SupportEmail); err != nil || address.Address != cfg.SupportEmail {
 		return nil, fmt.Errorf("SUPPORT_EMAIL %q is not a plain email address", cfg.SupportEmail)
+	}
+	if cfg.GatewayImage == "" {
+		cfg.GatewayImage = cfg.VPNImage
+	}
+	if cfg.Cache.Prefix == "" {
+		cfg.Cache.Prefix = names.RegistryNodePrefix
+	}
+	if cfg.State.RegistryAddr == "" {
+		cfg.State.RegistryAddr = names.RegistryServiceAddr
 	}
 	for name, image := range map[string]string{"VPN_IMAGE": cfg.VPNImage, "GATEWAY_IMAGE": cfg.GatewayImage, "NETCONFIG_IMAGE": cfg.NetConfigImage} {
 		if err := checkExactImage(image); err != nil {

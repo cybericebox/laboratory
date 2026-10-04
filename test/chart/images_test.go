@@ -42,8 +42,9 @@ func TestTenantImagePolicyReachesTheTenantAndTheAgent(t *testing.T) {
 	if env["AGENT_IMAGE_DENY"] != "ghcr.io/platform/,quay.io/platform" {
 		t.Errorf("deny list: %q", env["AGENT_IMAGE_DENY"])
 	}
-	if !strings.HasPrefix(env["AGENT_CACHE_NODE_PREFIX"], "localhost:") {
-		t.Errorf("cache node prefix: %q", env["AGENT_CACHE_NODE_PREFIX"])
+	// The node prefix of the cache (localhost:5035) is derived in the image (names.RegistryNodePrefix), not passed.
+	if _, set := env["IMAGE_CACHE_PREFIX"]; set {
+		t.Errorf("the cache node prefix is derived, not passed: %q", env["IMAGE_CACHE_PREFIX"])
 	}
 }
 

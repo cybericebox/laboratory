@@ -3,7 +3,7 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: TLSRoute
 metadata:
   name: laboratory-agent
-  namespace: {{ .Values.agent.namespace }}
+  namespace: laboratory-agent
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
@@ -11,7 +11,7 @@ spec:
     - name: laboratory-gateway
       namespace: {{ .Release.Namespace }}
   hostnames:
-    - {{ required "agent.domain is required when agent.enabled" .Values.agent.domain | quote }}
+    - {{ include "laboratory.agentDomain" . | quote }}
   rules:
     - backendRefs:
         - name: laboratory-agent

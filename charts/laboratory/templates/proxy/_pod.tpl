@@ -5,7 +5,7 @@ metadata:
     {{- include "laboratory.selectorLabels" . | nindent 4 }}
 spec:
   serviceAccountName: laboratory-proxy
-  priorityClassName: {{ .Values.priorityClasses.platform.name }}
+  priorityClassName: {{ include "laboratory.priorityClass.platform" . }}
   # After SIGTERM the HTTP server stops taking connections and lets requests in flight finish (up to this long); the preStop sleep lets
   # the Gateway and the Service stop sending connections to the pod first.
   terminationGracePeriodSeconds: {{ .Values.proxy.terminationGracePeriodSeconds }}
@@ -39,8 +39,8 @@ spec:
   containers:
   {{- if .Values.proxy.l7.enabled }}
   - name: l7
-    image: "{{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag | default .Chart.AppVersion }}"
-    imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.proxy.image.pullPolicy "tag" (.Values.proxy.image.tag | default .Chart.AppVersion)) }}
+    image: {{ include "laboratory.imageRef" (dict "image" .Values.proxy.image "root" $) | quote }}
+    imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.proxy.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.proxy.image "root" $))) }}
     command: ["/proxy", "proxy-l7"]
     securityContext:
       allowPrivilegeEscalation: false
@@ -48,12 +48,9 @@ spec:
       capabilities:
         drop: [ ALL ]
     env:
-    - name: HEALTH_ADDR
-      value: {{ printf ":%d" (.Values.proxy.l7.healthPort | int) | quote }}
+    {{- /* The listen address (:8443), the probe port (:8081) and the TLS files (/etc/proxy/tls) are baked into the image. */}}
     - name: BASE_DOMAIN
       value: {{ required "operator.baseDomain is required" .Values.operator.baseDomain | quote }}
-    - name: LISTEN_HTTPS
-      value: {{ .Values.proxy.l7.listen | quote }}
     - name: SESSION_COOKIE_NAME
       value: {{ .Values.proxy.l7.sessionCookieName | quote }}
     - name: SESSION_SECRET
@@ -101,10 +98,6 @@ spec:
       valueFrom:
         fieldRef:
           fieldPath: metadata.name
-    - name: TLS_CERT_PATH
-      value: /etc/proxy/tls/tls.crt
-    - name: TLS_KEY_PATH
-      value: /etc/proxy/tls/tls.key
     {{- if .Values.proxy.kindMode }}
     - name: KUBERNETES_SERVICE_HOST
       value: "127.0.0.1"
@@ -113,9 +106,9 @@ spec:
     {{- end }}
     ports:
     - name: https
-      containerPort: {{ trimPrefix ":" .Values.proxy.l7.listen | int }}
+      containerPort: {{ include "laboratory.l7Port" . }}
     - name: health
-      containerPort: {{ .Values.proxy.l7.healthPort }}
+      containerPort: {{ include "laboratory.l7HealthPort" . }}
     # Ready means it serves: the HTTPS listener is bound and the informer caches have synced (see DEPLOY.md, "Probes").
     startupProbe:
       httpGet:
@@ -150,8 +143,8 @@ spec:
   {{- end }}
   {{- if .Values.proxy.wg.enabled }}
   - name: wg-demux
-    image: "{{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag | default .Chart.AppVersion }}"
-    imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.proxy.image.pullPolicy "tag" (.Values.proxy.image.tag | default .Chart.AppVersion)) }}
+    image: {{ include "laboratory.imageRef" (dict "image" .Values.proxy.image "root" $) | quote }}
+    imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.proxy.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.proxy.image "root" $))) }}
     command: ["/proxy", "proxy-wg"]
     securityContext:
       allowPrivilegeEscalation: false
@@ -159,12 +152,7 @@ spec:
       capabilities:
         drop: [ ALL ]
     env:
-    - name: HEALTH_ADDR
-      value: {{ printf ":%d" (.Values.proxy.wg.healthPort | int) | quote }}
-    - name: UDP_LISTEN_ADDR
-      value: {{ printf ":%d" (.Values.proxy.wg.listenPort | int) | quote }}
-    - name: VPN_SERVICE_PORT
-      value: {{ .Values.operator.vpnServicePort | quote }}
+    {{- /* The UDP port (names.WireGuardPort), the VPN port it forwards to and the probe port (:8082) are baked into the image. */}}
     - name: ERROR_JOURNAL_NAMESPACE
       value: {{ .Release.Namespace | quote }}
     - name: DEMUX_MAX_ENTRIES
@@ -195,10 +183,10 @@ spec:
     {{- end }}
     ports:
     - name: wg
-      containerPort: {{ .Values.proxy.wg.listenPort }}
+      containerPort: {{ include "laboratory.wgPort" . }}
       protocol: UDP
     - name: health
-      containerPort: {{ .Values.proxy.wg.healthPort }}
+      containerPort: {{ include "laboratory.wgHealthPort" . }}
     # Ready means it serves: the UDP socket is bound, the caches have synced and every group is in the demux table (see DEPLOY.md, "Probes").
     startupProbe:
       httpGet:

@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/config"
 )
 
 type L7Config struct {
-	TLSCertPath string `env:"TLS_CERT_PATH,required"`
-	TLSKeyPath  string `env:"TLS_KEY_PATH,required"`
+	// The certificate and key of the wildcard Secret proxy-tls, where the chart mounts it.
+	TLSCertPath string `env:"TLS_CERT_PATH" envDefault:"/etc/proxy/tls/tls.crt"`
+	TLSKeyPath  string `env:"TLS_KEY_PATH" envDefault:"/etc/proxy/tls/tls.key"`
 	// The handoff links are verified with the access public keys of the tenants, kept in the Secrets
 	// tenant-<name>-access-keys of the access keys namespace (see l7.SecretKeys); there is no shared key.
 	BaseDomain string `env:"BASE_DOMAIN,notEmpty"`
@@ -48,17 +50,20 @@ type L7Config struct {
 	// What a client can hold open (R-17): MaxConnections is the connections of the server in all; LivePerClient, LivePerGroup and
 	// LiveTotal the requests in flight (upgraded connections included) per client of a group, per group and in all; AuthRate and
 	// AuthBurst limit the handoff path per peer address (all peers together may do twenty times that). 0 = unlimited.
-	MaxConnections int     `env:"MAX_CONNECTIONS" envDefault:"4000"`
+	// MaxConnections follows the memory limit of the chart (512Mi): a connection with a request in flight costs about 105 KiB, so
+	// 2500 are about 260 MiB, and with the informer caches and headroom they stay under the 80% soft limit. LiveTotal is not above
+	// it: a request in flight holds a connection. Above these numbers add replicas, do not raise the cap without the memory.
+	MaxConnections int     `env:"MAX_CONNECTIONS" envDefault:"2500"`
 	LivePerClient  int     `env:"LIVE_PER_CLIENT" envDefault:"200"`
 	LivePerGroup   int     `env:"LIVE_PER_GROUP" envDefault:"1000"`
-	LiveTotal      int     `env:"LIVE_TOTAL" envDefault:"8000"`
+	LiveTotal      int     `env:"LIVE_TOTAL" envDefault:"2500"`
 	AuthRate       float64 `env:"AUTH_RATE" envDefault:"5"`
 	AuthBurst      int     `env:"AUTH_BURST" envDefault:"20"`
 }
 
 type WGConfig struct {
-	ListenAddr     string `env:"UDP_LISTEN_ADDR"  envDefault:":51820"`
-	VPNServicePort int    `env:"VPN_SERVICE_PORT" envDefault:"51820"`
+	// ListenAddr is the UDP address the demux binds; empty = ":" + names.WireGuardPort. The VPN pods listen on names.WireGuardPort too.
+	ListenAddr string `env:"UDP_LISTEN_ADDR"`
 	// HealthAddr is where the readiness and liveness probes are served.
 	HealthAddr string `env:"HEALTH_ADDR" envDefault:":8082"`
 	// The demux reads a public UDP port shared by every team, so what a stranger can make it hold or spend is capped
@@ -107,6 +112,9 @@ func LoadWGConfig() (*WGConfig, error) {
 	cfg := &WGConfig{}
 	if err := config.Load(cfg); err != nil {
 		return cfg, err
+	}
+	if cfg.ListenAddr == "" {
+		cfg.ListenAddr = fmt.Sprintf(":%d", names.WireGuardPort)
 	}
 	if cfg.MaxEntries <= 0 || cfg.PartialTTL <= 0 || cfg.MissRate <= 0 || cfg.MissBurst <= 0 || cfg.RoamInterval <= 0 ||
 		cfg.GlobalHandshakeRate <= 0 || cfg.GlobalHandshakeBurst <= 0 || cfg.SessionRate <= 0 || cfg.SessionBurst <= 0 || cfg.Readers <= 0 {

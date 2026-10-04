@@ -6,12 +6,13 @@ import (
 	"net"
 	"time"
 
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/config"
 )
 
 type Config struct {
 	PrivateKey     string        `env:"PRIVATE_KEY,required"`
-	ListenPort     int           `env:"LISTEN_PORT"    envDefault:"51820"`
+	ListenPort     int           `env:"LISTEN_PORT"`
 	Namespace      string        `env:"NAMESPACE,required"`
 	ClientSubnet   *net.IPNet    `env:"CLIENT_SUBNET,required"`
 	StatsInterval  time.Duration `env:"STATS_INTERVAL" envDefault:"30s"`
@@ -21,6 +22,6 @@ type Config struct {
 }
 
 func LoadConfig() (*Config, error) {
-	cfg := &Config{}
+	cfg := &Config{ListenPort: names.WireGuardPort}
 	return cfg, config.Load(cfg)
 }

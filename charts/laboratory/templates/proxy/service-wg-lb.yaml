@@ -31,8 +31,8 @@ spec:
   ports:
     - name: wg
       protocol: UDP
-      port: {{ .Values.operator.vpnServicePort }}
-      targetPort: {{ .Values.proxy.wg.listenPort }}
+      port: {{ include "laboratory.wgPort" . }}
+      targetPort: {{ include "laboratory.wgPort" . }}
       {{- with .Values.proxy.wg.nodePort }}
       nodePort: {{ . }}
       {{- end }}

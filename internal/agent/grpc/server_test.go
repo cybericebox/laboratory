@@ -58,8 +58,8 @@ func startServerWith(t *testing.T, mod func(*config.Config), impl protobuf.LabMa
 	_ = os.WriteFile(srvKey, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: skder}), 0o600)
 
 	cfg := &config.Config{}
-	cfg.ServerTLS = config.ServerTLSConfig{Enabled: true, CertFile: srvCrt, KeyFile: srvKey}
-	cfg.MTLS = config.MTLSConfig{Enabled: true, ClientCAFile: r.h.caCertFile}
+	cfg.ServerTLS = config.ServerTLSConfig{CertFile: srvCrt, KeyFile: srvKey}
+	cfg.MTLS = config.MTLSConfig{ClientCAFile: r.h.caCertFile}
 	if mod != nil {
 		mod(cfg)
 	}
@@ -207,23 +207,20 @@ func TestNonH2ConnectionsAreDropped(t *testing.T) {
 	}
 }
 
-// mTLS off needs the insecure mode by name.
-func TestInsecureModeHasToBeAskedFor(t *testing.T) {
+// There is one switch for running without client certificates, AGENT_ALLOW_INSECURE; without it mTLS and TLS are required, and a missing
+// certificate is an error (no way to run plaintext by accident).
+func TestInsecureModeIsOneSwitchAndTLSStaysOn(t *testing.T) {
 	r := newEnrollRig(t)
 	cfg := &config.Config{}
-	cfg.ServerTLS.Enabled, cfg.MTLS.Enabled = false, false
-	if _, err := New(cfg, r.h); err == nil || !strings.Contains(err.Error(), "AGENT_ALLOW_INSECURE") {
-		t.Fatalf("mTLS off without the flag: %v", err)
+	if _, err := New(cfg, r.h); err == nil {
+		t.Fatal("no certificates and no switch: the server must not start")
 	}
 	cfg.AllowInsecure = true
-	if _, err := New(cfg, r.h); err != nil {
-		t.Fatalf("with the flag: %v", err)
-	}
-	cfg.MTLS.Enabled, cfg.AllowInsecure = true, false
-	cfg.ServerTLS.Enabled = false
 	if _, err := New(cfg, r.h); err == nil {
-		t.Fatal("client certificates need TLS")
+		t.Fatal("the switch turns the client check off, TLS needs its certificate still")
 	}
+	// With the switch and the server certificate the server starts (startServerWith fails the test otherwise).
+	startServerWith(t, func(c *config.Config) { c.AllowInsecure = true }, nil)
 }
 
 // R-6: a stream is cut when its caller's authority ends.

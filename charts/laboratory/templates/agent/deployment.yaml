@@ -3,7 +3,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: laboratory-agent
-  namespace: {{ .Values.agent.namespace }}
+  namespace: laboratory-agent
   labels:
     app: laboratory-agent
     {{- include "laboratory.labels" . | nindent 4 }}
@@ -27,7 +27,7 @@ spec:
         {{- include "laboratory.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: laboratory-agent
-      priorityClassName: {{ .Values.priorityClasses.platform.name }}
+      priorityClassName: {{ include "laboratory.priorityClass.platform" . }}
       # SIGTERM: the agent stops taking calls and finishes the running ones for up to agent.shutdownGrace (a CreateLabGroupClients that
       # has made its key must answer with it). The preStop sleep lets the Service forget the pod first.
       terminationGracePeriodSeconds: {{ .Values.agent.terminationGracePeriodSeconds }}
@@ -53,8 +53,8 @@ spec:
       {{- end }}
       containers:
         - name: agent
-          image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.agent.image.pullPolicy "tag" (.Values.agent.image.tag | default .Chart.AppVersion)) }}
+          image: {{ include "laboratory.imageRef" (dict "image" .Values.agent.image "root" $) | quote }}
+          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.agent.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.agent.image "root" $))) }}
           command: ["/agent"]
           securityContext:
             allowPrivilegeEscalation: false
@@ -92,23 +92,19 @@ spec:
               value: {{ .Values.agent.grpcPort | quote }}
             - name: AGENT_SHUTDOWN_GRACE
               value: {{ .Values.agent.shutdownGrace | quote }}
-            - name: AGENT_TLS_ENABLED
-              value: "true"
-            - name: AGENT_TLS_CERT
-              value: /tls/tls.crt
-            - name: AGENT_TLS_KEY
-              value: /tls/tls.key
-            - name: AGENT_RELEASE_NAMESPACE
-              value: {{ .Release.Namespace | quote }}
             - name: AGENT_ID
               value: {{ .Values.agent.id | quote }}
             - name: AGENT_TENANT_STATUS_INTERVAL
               value: {{ .Values.agent.tenantStatusInterval | quote }}
-          {{- if include "laboratory.registryEnabled" . }}
-            # ExportDeviceSnapshot reads the snapshots from the platform registry.
-            - name: AGENT_REGISTRY_ADDR
-              value: {{ include "laboratory.registryAddr" . | quote }}
-            # The snapshots are not anonymous: the agent reads them with the reader account.
+            {{- /* The TLS and CA files (/tls, /ca) and the release namespace are baked into the image: the chart mounts the Secrets there. */}}
+            {{- /* The settings the operator also reads: the same map under the same names (laboratory.sharedEnv). */}}
+          {{- range $name, $value := include "laboratory.sharedEnv" . | fromYaml }}
+          {{- if or (not (hasPrefix "IMAGE_CACHE_" $name)) $.Values.registry.cache.enabled }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+          {{- end }}
+          {{- end }}
+            # ExportDeviceSnapshot reads the snapshots from the platform registry with the reader account (not anonymous).
             - name: AGENT_REGISTRY_USER
               valueFrom:
                 secretKeyRef:
@@ -119,23 +115,8 @@ spec:
                 secretKeyRef:
                   name: laboratory-registry-reader
                   key: password
-          {{- end }}
           {{- if .Values.registry.cache.enabled }}
             # PrewarmImages: the agent makes the image cache fetch images ahead of time.
-            - name: AGENT_CACHE_ENABLED
-              value: "true"
-            - name: AGENT_CACHE_REGISTRY_ADDR
-              value: {{ include "laboratory.registryAddr" . | quote }}
-            - name: AGENT_CACHE_NODE_PREFIX
-              value: {{ printf "localhost:%v" .Values.registry.forwardPort | quote }}
-            - name: AGENT_CACHE_REGISTRIES
-              value: {{ include "laboratory.cacheRegistryNames" . | quote }}
-            - name: AGENT_PULL_SECRETS
-              value: {{ include "laboratory.pullSecretNames" . | quote }}
-            - name: AGENT_PULL_SECRET_NAMESPACE
-              value: {{ .Release.Namespace | quote }}
-            - name: AGENT_CACHE_PIN_TTL
-              value: {{ .Values.registry.cache.pinTTL | quote }}
             - name: AGENT_PREWARM_CONCURRENCY
               value: {{ .Values.registry.cache.prewarm.concurrency | quote }}
             - name: AGENT_PREWARM_TIMEOUT
@@ -146,81 +127,11 @@ spec:
             - name: AGENT_IMAGE_DENY
               value: {{ join "," . | quote }}
           {{- end }}
-            # The nodes lab pods run on: a percentage tenant quota is a percentage of their allocatable.
-            - name: AGENT_LAB_NODE_SELECTOR
-              value: {{ include "laboratory.labNodeSelector" . | quote }}
-            - name: AGENT_LAB_TOLERATIONS
-              value: {{ .Values.labWorkloads.tolerations | toJson | quote }}
-            # The scheduler's platform reserve (the operator's values): the largest device the agent reports is net of it.
             # The hidden packing reserve: the capacity reported to the platform is net of it.
             - name: SCHEDULER_PACKING_RESERVE_PERCENT
               value: {{ .Values.scheduler.packingReservePercent | quote }}
-            - name: SCHEDULER_PLATFORM_RESERVE_PERCENT
-              value: {{ .Values.scheduler.platformReservePercent | quote }}
-            - name: SCHEDULER_PLATFORM_RESERVE_CPU
-              value: {{ .Values.scheduler.platformReserveCpu | quote }}
-            - name: SCHEDULER_PLATFORM_RESERVE_MEMORY
-              value: {{ .Values.scheduler.platformReserveMemory | quote }}
-            # What a group's VPN and gateway pods request (the operator's values): their sum is the service overhead in GetCapacity.
-            - name: VPN_CPU
-              value: {{ .Values.vpn.resources.cpu | quote }}
-            - name: VPN_MEMORY
-              value: {{ .Values.vpn.resources.memory | quote }}
-            - name: GATEWAY_CPU
-              value: {{ .Values.inetGateway.resources.cpu | quote }}
-            - name: GATEWAY_MEMORY
-              value: {{ .Values.inetGateway.resources.memory | quote }}
-            # How the pods of a group are sized: reported in GetFeatures, the maximum of the sizes CreateLabGroups accepts.
-            - name: VPN_BASE_CPU
-              value: {{ .Values.vpn.sizing.baseCpu | quote }}
-            - name: VPN_BASE_MEMORY
-              value: {{ .Values.vpn.sizing.baseMemory | quote }}
-            - name: VPN_PER_USER_CPU
-              value: {{ .Values.vpn.sizing.perUserCpu | quote }}
-            - name: VPN_PER_USER_MEMORY
-              value: {{ .Values.vpn.sizing.perUserMemory | quote }}
-            - name: VPN_MAX_USERS
-              value: {{ .Values.vpn.sizing.maxUsers | quote }}
-            - name: GATEWAY_BASE_CPU
-              value: {{ .Values.inetGateway.sizing.baseCpu | quote }}
-            - name: GATEWAY_BASE_MEMORY
-              value: {{ .Values.inetGateway.sizing.baseMemory | quote }}
-            - name: GATEWAY_PER_LAB_CPU
-              value: {{ .Values.inetGateway.sizing.perLabCpu | quote }}
-            - name: GATEWAY_PER_LAB_MEMORY
-              value: {{ .Values.inetGateway.sizing.perLabMemory | quote }}
-            - name: GATEWAY_MAX_LABS
-              value: {{ .Values.inetGateway.sizing.maxLabs | quote }}
-            # A topology that asks for device state persistence is refused unless the platform allows it.
-            - name: AGENT_STATE_PERSISTENCE_ENABLED
-              value: {{ .Values.devices.statePersistence.enabled | quote }}
-            # GetFeatures and Monitoring report these to the backend (the same values the operator gets).
-            - name: AGENT_STATE_DEBOUNCE
-              value: {{ .Values.devices.statePersistence.debounce | quote }}
-            - name: AGENT_STATE_EXCLUDE_PATHS
-              value: {{ join "," .Values.devices.statePersistence.excludePaths | quote }}
-            - name: AGENT_STATE_WRITE_QUOTA
-              value: {{ .Values.devices.statePersistence.writeQuota | quote }}
-            - name: AGENT_STATE_MAX_FILE_SIZE
-              value: {{ .Values.devices.statePersistence.maxFileSize | quote }}
-            - name: AGENT_STATE_TENANT_QUOTA
-              value: {{ .Values.devices.statePersistence.tenantQuota | quote }}
-            - name: AGENT_STATE_MAX_ENTRIES
-              value: {{ .Values.devices.statePersistence.maxEntries | quote }}
-            - name: AGENT_SCHEDULER_ENABLED
-              value: {{ .Values.scheduler.enabled | quote }}
-            - name: AGENT_SCHEDULER_MAX_PODS
-              value: {{ .Values.scheduler.maxPods | quote }}
             - name: AGENT_DEVICE_PROFILES
               value: {{ join "," .Values.devices.security.profiles | quote }}
-            - name: AGENT_LIMIT_DEVICE_MAX_CPU
-              value: {{ .Values.limits.device.maxCpu | quote }}
-            - name: AGENT_LIMIT_DEVICE_MAX_MEMORY
-              value: {{ .Values.limits.device.maxMemory | quote }}
-            - name: AGENT_LIMIT_DEVICE_DEFAULT_CPU
-              value: {{ .Values.limits.device.defaultCpu | quote }}
-            - name: AGENT_LIMIT_DEVICE_DEFAULT_MEMORY
-              value: {{ .Values.limits.device.defaultMemory | quote }}
             - name: AGENT_LIMIT_LAB_MAX_DEVICES
               value: {{ .Values.limits.lab.maxDevices | quote }}
             - name: AGENT_LIMIT_GROUP_MAX_LABS
@@ -231,28 +142,14 @@ spec:
               value: {{ .Values.limits.group.maxMemory | quote }}
             - name: AGENT_LIMIT_TENANT_MAX_LABS
               value: {{ .Values.limits.tenant.maxLabs | quote }}
-            - name: AGENT_PROXY_ACCESS_TOKEN_MAX_TTL
+            # The L7 proxy's limits, under the proxy's own names (the same chart values): GetFeatures reports them.
+            - name: ACCESS_TOKEN_MAX_TTL
               value: {{ .Values.proxy.l7.accessTokenMaxTTL | quote }}
-            - name: AGENT_PROXY_SESSION_IDLE_TTL
+            - name: SESSION_IDLE_TTL
               value: {{ .Values.proxy.l7.sessionIdleTTL | quote }}
-            - name: AGENT_PROXY_SESSION_MAX_TTL
+            - name: SESSION_MAX_TTL
               value: {{ .Values.proxy.l7.sessionMaxTTL | quote }}
-            - name: AGENT_BASE_DOMAIN
-              value: {{ required "operator.baseDomain is required" .Values.operator.baseDomain | quote }}
-            - name: AGENT_PUBLIC_VPN_ENDPOINT
-              value: {{ required "operator.publicVPNEndpoint is required" .Values.operator.publicVPNEndpoint | quote }}
-            - name: AGENT_MONITORING_JOURNAL_SIZE
-              value: {{ .Values.agent.monitoring.journalSize | quote }}
-            - name: AGENT_MONITORING_JOURNAL_AGE
-              value: {{ .Values.agent.monitoring.journalAge | quote }}
-            - name: AGENT_MONITORING_POLL_INTERVAL
-              value: {{ .Values.agent.monitoring.pollInterval | quote }}
-            - name: AGENT_MONITORING_SUBSCRIBER_BUFFER
-              value: {{ .Values.agent.monitoring.subscriberBuffer | quote }}
-            - name: AGENT_MONITORING_MAX_STREAMS_PER_TENANT
-              value: {{ .Values.agent.monitoring.maxStreamsPerTenant | quote }}
-            - name: AGENT_MTLS_ENABLED
-              value: {{ .Values.agent.mtls.enabled | quote }}
+            # The one development switch: no client certificate is asked for, every caller is the default tenant. TLS stays on.
             - name: AGENT_ALLOW_INSECURE
               value: {{ .Values.agent.allowInsecure | quote }}
             # What a caller can cost the agent (see DEPLOY.md, "The agent under hostile callers").
@@ -280,26 +177,17 @@ spec:
               value: {{ .Values.agent.server.enroll.maxHandshakes | quote }}
             - name: AGENT_MAX_ANONYMOUS_CONNS
               value: {{ .Values.agent.server.enroll.maxAnonymousConns | quote }}
-          {{- if .Values.agent.mtls.enabled }}
-            - name: AGENT_MTLS_CLIENT_CA
-              value: /ca/tls.crt
-            # The agent signs the client certificates of enrolled tenants with this CA (Enroll, RenewCertificate).
-            - name: AGENT_MTLS_CLIENT_CA_KEY
-              value: /ca/tls.key
             - name: AGENT_CLIENT_CERT_TTL
               value: {{ .Values.agent.enrollment.certificateTTL | quote }}
-          {{- end }}
           volumeMounts:
             - name: tmp
               mountPath: /tmp
             - name: server-tls
               mountPath: /tls
               readOnly: true
-          {{- if .Values.agent.mtls.enabled }}
             - name: client-ca
               mountPath: /ca
               readOnly: true
-          {{- end }}
           resources:
             {{- toYaml .Values.agent.resources | nindent 12 }}
       volumes:
@@ -308,9 +196,7 @@ spec:
         - name: server-tls
           secret:
             secretName: laboratory-agent-server-tls
-      {{- if .Values.agent.mtls.enabled }}
         - name: client-ca
           secret:
             secretName: laboratory-agent-ca
-      {{- end }}
 {{- end }}

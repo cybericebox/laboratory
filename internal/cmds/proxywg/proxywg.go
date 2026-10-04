@@ -23,6 +23,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/health"
+	"github.com/cybericebox/laboratory/internal/names"
 	proxy "github.com/cybericebox/laboratory/internal/proxy"
 	"github.com/cybericebox/laboratory/internal/proxy/demux"
 )
@@ -68,7 +69,7 @@ func Run() {
 	watcher := &demux.LabGroupWatcher{
 		Client:         mgr.GetClient(),
 		Table:          table,
-		VPNServicePort: cfg.VPNServicePort,
+		VPNServicePort: names.WireGuardPort,
 	}
 	if err := watcher.SetupWithManager(mgr); err != nil {
 		log.Error(err, "setup LabGroupWatcher")

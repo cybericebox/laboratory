@@ -3,7 +3,7 @@
 apiVersion: scheduling.k8s.io/v1
 kind: PriorityClass
 metadata:
-  name: {{ .Values.priorityClasses.platform.name }}
+  name: {{ include "laboratory.priorityClass.platform" . }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 value: {{ .Values.priorityClasses.platform.value }}
@@ -13,7 +13,7 @@ description: "Laboratory platform pods (operator, agent, L7 proxy, wg-demux, reg
 apiVersion: scheduling.k8s.io/v1
 kind: PriorityClass
 metadata:
-  name: {{ .Values.priorityClasses.group.name }}
+  name: {{ include "laboratory.priorityClass.group" . }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 value: {{ .Values.priorityClasses.group.value }}
@@ -23,7 +23,7 @@ description: "VPN and gateway pods of a LabGroup: above the devices."
 apiVersion: scheduling.k8s.io/v1
 kind: PriorityClass
 metadata:
-  name: {{ .Values.priorityClasses.device.name }}
+  name: {{ include "laboratory.priorityClass.device" . }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 value: {{ .Values.priorityClasses.device.value }}

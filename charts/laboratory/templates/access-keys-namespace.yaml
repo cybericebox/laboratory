@@ -65,7 +65,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: laboratory-agent
-    namespace: {{ .Values.agent.namespace }}
+    namespace: laboratory-agent
 {{- end }}
 {{- if .Values.proxy.enabled }}
 ---

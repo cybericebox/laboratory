@@ -161,8 +161,7 @@ namespace; `templates/validate.yaml` rejects anything else and fails early when 
      publicVPNEndpoint: vpn.example.com:51820     # REQUIRED: host:port handed to WireGuard clients
      supportEmail: support@example.com            # shown on the VPN probe page
    agent:
-     enabled: true
-     domain: agent.example.com                    # REQUIRED when the agent is enabled
+     enabled: true                                # its host is ctl.<baseDomain> unless agent.domain is set
    proxy:
      wg:
        nodePort: 31820                            # optional fixed NodePort of the WireGuard service
@@ -172,7 +171,10 @@ namespace; `templates/validate.yaml` rejects anything else and fails early when 
      - name: registry-credentials
    ```
 
-   All options are documented in [`charts/laboratory/values.yaml`](charts/laboratory/values.yaml).
+   These are the only values an installation has to give (and `certManager.email` with an ACME issuer). One release tag drives every image
+   (`image.tag`, empty = the chart `appVersion`); everything else has a default that suits any installation and stays overridable. All options
+   are documented in [`charts/laboratory/values.yaml`](charts/laboratory/values.yaml); the settings that became constants of the images (ports,
+   paths, names) are listed in [`DEPLOY.md`](DEPLOY.md) ("The inputs").
 
 5. Install:
 
@@ -243,13 +245,13 @@ Details, limits and the manual fallback are in [DEPLOY.md](DEPLOY.md#tenancy).
 
 ## Domains
 
-Three names are set by configuration only (chart values), with no defaults in code:
+Three names are set by configuration (chart values); the agent's has a derived default:
 
 | Name | Value | Points to |
 |---|---|---|
 | `*.<operator.baseDomain>` | for example `*.labs.<zone>` | the L7 proxy; web devices are `<device>-<code>.<baseDomain>` |
 | `operator.publicVPNEndpoint` | for example `vpn.<zone>:51820` | the WireGuard demultiplexer |
-| `agent.domain` | for example `ctl.<zone>` | the management agent (gRPC, TLS) |
+| `agent.domain` | default `ctl.<operator.baseDomain>` | the management agent (gRPC, TLS) |
 
 See [`docs/specs/domains.md`](docs/specs/domains.md) (Russian) for the naming rules and the planned region sub-domains.
 

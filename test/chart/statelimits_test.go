@@ -12,7 +12,7 @@ func TestStateAbuseLimitsAreValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for name, val := range map[string]string{"STATE_MAX_WATCH_DIRS": "500", "AGENT_STATE_TENANT_QUOTA": "3Gi", "AGENT_STATE_MAX_ENTRIES": "100000"} {
+	for name, val := range map[string]string{"STATE_MAX_WATCH_DIRS": "500", "STATE_TENANT_QUOTA": "3Gi", "STATE_MAX_ENTRIES": "100000"} {
 		if !regexp.MustCompile(`name: ` + name + `\s+value: "` + val + `"`).MatchString(out) {
 			t.Errorf("%s = %s missing", name, val)
 		}
