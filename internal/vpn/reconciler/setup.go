@@ -33,6 +33,7 @@ func Setup(ctx context.Context, mgr ctrl.Manager, wg *vpn.WGManager, ipt *vpn.IP
 		Client:   mgr.GetClient(),
 		WG:       wg,
 		DHCP:     dhcpMgr,
+		IPT:      ipt,
 		Cfg:      cfg,
 		Recorder: mgr.GetEventRecorderFor("labvpn"),
 	}).SetupWithManager(mgr); err != nil {
