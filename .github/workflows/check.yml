@@ -1,7 +1,7 @@
 name: Check
 
 # A PR into develop or main: tests plus the image build. The layers go to the registry cache
-# (<image>:buildcache); nothing is published. A PR from a fork gets no secrets, so it builds without the cache.
+# (<image>:buildcache-develop); nothing is published. A PR from a fork gets no secrets, so it builds without the cache.
 on:
   pull_request:
     branches: [ develop, main ]
@@ -61,8 +61,8 @@ jobs:
           target: ${{ matrix.target }}
           push: false
           platforms: linux/amd64,linux/arm64
-          cache-from: type=registry,ref=${{ matrix.image }}:buildcache
-          cache-to: ${{ github.event.pull_request.head.repo.full_name == github.repository && format('type=registry,ref={0}:buildcache,mode=max', matrix.image) || '' }}
+          cache-from: type=registry,ref=${{ matrix.image }}:buildcache-develop
+          cache-to: ${{ github.event.pull_request.head.repo.full_name == github.repository && format('type=registry,ref={0}:buildcache-develop,mode=max', matrix.image) || '' }}
 
   passed:
     name: Check passed

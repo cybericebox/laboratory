@@ -1,0 +1,55 @@
+name: Cleanup
+
+# The dev-image cleanup of a release on its own (it runs inside Promote too): deletes the sha-<7> tags of commits that are
+# ancestors of the release commit, and the buildcache-develop / buildcache cache tags. Never vX.Y.Z, latest, other tags,
+# or a sha-<7> whose commit is unknown here or not an ancestor. The list is printed first; dry_run deletes nothing.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing release (vX.Y.Z)
+        required: true
+      dry_run:
+        description: Print the list only, delete nothing
+        type: boolean
+        default: true
+
+concurrency:
+  group: cleanup
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGES: cybericebox/laboratory-controller cybericebox/laboratory-agent cybericebox/laboratory-proxy cybericebox/laboratory-node cybericebox/laboratory-lab
+  VERSION: ${{ inputs.version }}
+  DRY_RUN: ${{ inputs.dry_run }}
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+  DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  cleanup:
+    name: Clean up the dev images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: The release exists and is on main
+        id: release
+        run: |
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$VERSION is not a release (vX.Y.Z)"; exit 1; }
+          sha=$(git rev-parse --verify "refs/tags/$VERSION^{commit}") || { echo "::error::tag $VERSION does not exist"; exit 1; }
+          pre=$(gh release view "$VERSION" --json isPrerelease,isDraft --jq '.isPrerelease or .isDraft') || { echo "::error::release $VERSION does not exist"; exit 1; }
+          [[ "$pre" == false ]] || { echo "::error::$VERSION is a pre-release or a draft"; exit 1; }
+          git merge-base --is-ancestor "$sha" origin/main || { echo "::error::$VERSION is not on main"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Clean up the dev images (sha-<7> of ancestors of the release commit) and the registry cache
+        env:
+          SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          # shellcheck disable=SC2086
+          .github/scripts/ci.sh cleanup "$SHA" "$DRY_RUN" $IMAGES

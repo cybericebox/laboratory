@@ -6,7 +6,9 @@
 #   ci.sh hub-tags IMAGE                      every tag of a Docker Hub repository, one per line
 #   ci.sh hub-delete IMAGE TAG                delete one tag (Docker Hub API)
 #   ci.sh delete-rc VERSION IMAGE...          delete every VERSION-rc.* tag of the images
-#   ci.sh cleanup RELEASE_SHA DRY_RUN IMAGE...  delete sha-<7> dev tags whose commit is an ancestor of RELEASE_SHA
+#   ci.sh rc-source IMAGE...                  "retag sha-<7>" or "build <reason>": how the rc image of HEAD (a main merge) is made
+#   ci.sh cleanup RELEASE_SHA DRY_RUN IMAGE...  delete sha-<7> dev tags whose commit is an ancestor of RELEASE_SHA,
+#                                             plus the buildcache-develop and buildcache cache tags
 # Docker Hub calls use DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (org secrets, Read/Write/Delete); GitHub calls use GH_TOKEN.
 set -euo pipefail
 
@@ -37,6 +39,9 @@ hub_delete() {
   curl -fsS -o /dev/null -X DELETE -H "Authorization: JWT $hub_jwt" "https://hub.docker.com/v2/repositories/$1/tags/$2/"
   echo "deleted $1:$2"
 }
+
+# true when the image $1:$2 exists on Docker Hub
+image_exists() { docker buildx imagetools inspect "$1:$2" >/dev/null 2>&1; }
 
 # true when $1 is a higher version than $2 (sort -V)
 ver_gt() { [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" == "$1" ]]; }
@@ -148,6 +153,11 @@ cleanup() {
     echo "== $image"
     local doomed=()
     while read -r tag; do
+      # the registry layer caches (rebuilt cold by the next PR); the old name "buildcache" goes too
+      if [[ "$tag" == buildcache-develop || "$tag" == buildcache ]]; then
+        doomed+=("$tag")
+        continue
+      fi
       [[ "$tag" =~ ^sha-[0-9a-f]{7}$ ]] || continue
       full=$(git rev-parse -q --verify "${tag#sha-}^{commit}" 2>/dev/null || true)
       if [[ -z "$full" ]]; then
@@ -171,6 +181,32 @@ cleanup() {
   return 0
 }
 
+# rc_source image... : how the pre-release image of HEAD (the merge of develop into main) is made. Prints one line:
+#   retag sha-<7>   the main tree equals the tree of the develop head (the second parent), and that head has an image
+#                   sha-<7> for every image: the rc is a retag of it, no build
+#   build <reason>  anything else: a real build
+rc_source() {
+  local head parent tag image
+  head=$(git rev-parse HEAD)
+  parent=$(git rev-parse -q --verify "$head^2" 2>/dev/null || true)
+  if [[ -z "$parent" ]]; then
+    echo "build: HEAD is not a merge commit"
+    return 0
+  fi
+  if [[ "$(git rev-parse "$head^{tree}")" != "$(git rev-parse "$parent^{tree}")" ]]; then
+    echo "build: the tree of main differs from the develop head ${parent:0:7}"
+    return 0
+  fi
+  tag="sha-${parent:0:7}"
+  for image in "$@"; do
+    if ! image_exists "$image" "$tag"; then
+      echo "build: $image:$tag does not exist"
+      return 0
+    fi
+  done
+  echo "retag $tag"
+}
+
 # delete_rc vX.Y.Z image... : delete the rc tags of that version
 delete_rc() {
   local version=$1 image tag
@@ -187,11 +223,12 @@ cmd=${1:-}
 shift || true
 case "$cmd" in
   sha-tag) echo "sha-$(printf '%s' "$1" | cut -c1-7)" ;;
-  exists) docker buildx imagetools inspect "$1:$2" >/dev/null 2>&1 ;;
+  exists) image_exists "$1" "$2" ;;
+  rc-source) rc_source "$@" ;;
   next-version) next_version ;;
   hub-tags) hub_tags "$1" ;;
   hub-delete) hub_delete "$1" "$2" ;;
   delete-rc) delete_rc "$@" ;;
   cleanup) cleanup "$@" ;;
-  *) die "usage: ci.sh sha-tag|exists|next-version|hub-tags|hub-delete|delete-rc|cleanup" ;;
+  *) die "usage: ci.sh sha-tag|exists|next-version|hub-tags|hub-delete|delete-rc|rc-source|cleanup" ;;
 esac
