@@ -12,6 +12,9 @@
 //     which wgguard.go narrows further);
 //   - the VPN status page, from the WireGuard interface and to the tunnel address only;
 //   - DHCP, on the lab interfaces where the pod runs a DHCP server (AllowDHCP);
+//   - ping of the pod's own address on a lab interface, rate-limited, and only on the interface that owns the address (AllowPing):
+//     Linux answers for every local address on every interface, so without the -d match a device could ping the pod's address
+//     of another lab, its uplink or its tunnel address;
 //   - IPv6 neighbour discovery on the lab interfaces (ARP of IPv4 is not netfilter's).
 //
 // The rules live in a chain of their own, jumped to from the top of INPUT. The chain gets its last rule (the drop) first and the
@@ -20,7 +23,9 @@ package podinput
 
 import (
 	"fmt"
+	"os"
 	"strconv"
+	"strings"
 )
 
 // Filter is the part of go-iptables the policy uses (a fake stands in for it in the tests).
@@ -142,16 +147,88 @@ func AllowDHCP(ipt Filter, iface string) error {
 	return ensure(ipt, Chain, DHCPRule(iface), true)
 }
 
-func DenyDHCP(ipt Filter, iface string) {
+func DenyDHCP(ipt Filter, iface string) { deleteAll(ipt, DHCPRule(iface)) }
+
+// pingRate is the rate limit of echo requests per lab interface: a ping to the gateway works, a flood does not.
+const (
+	pingRate  = "10/second"
+	pingBurst = "20"
+)
+
+// PingRule accepts echo requests that arrive on one lab interface and are addressed to that interface's own address.
+func PingRule(iface, addr string) []string {
+	return []string{"-i", iface, "-d", addr, "-p", "icmp", "--icmp-type", "echo-request",
+		"-m", "limit", "--limit", pingRate, "--limit-burst", pingBurst, "-j", accept}
+}
+
+// pingOverLimitRule drops the echo requests over the limit. It must be there: conntrack keeps an echo "connection" by id, so after
+// the first answer every further request of the same ping is ESTABLISHED, and without this rule the ESTABLISHED accept would let
+// the over-limit ones through.
+func pingOverLimitRule(iface, addr string) []string {
+	return []string{"-i", iface, "-d", addr, "-p", "icmp", "--icmp-type", "echo-request", "-j", drop}
+}
+
+// AllowPing lets a lab ping the pod's address on its own interface (the answer is the pod's own output, which is not filtered);
+// DenyPing takes it away with the interface. Both are idempotent. The policy must be installed. The two rules stand before the
+// ESTABLISHED accept (they go to the top of the chain), the drop of the over-limit requests first so the accept is never alone.
+func AllowPing(ipt Filter, iface, addr string) error {
+	if err := ensure(ipt, Chain, pingOverLimitRule(iface, addr), true); err != nil {
+		return err
+	}
+	return ensure(ipt, Chain, PingRule(iface, addr), true)
+}
+
+func DenyPing(ipt Filter, iface, addr string) {
+	deleteAll(ipt, PingRule(iface, addr))
+	deleteAll(ipt, pingOverLimitRule(iface, addr))
+}
+
+func deleteAll(ipt Filter, rule []string) {
 	for {
-		ok, err := ipt.Exists("filter", Chain, DHCPRule(iface)...)
+		ok, err := ipt.Exists("filter", Chain, rule...)
 		if err != nil || !ok {
 			return
 		}
-		if ipt.Delete("filter", Chain, DHCPRule(iface)...) != nil {
+		if ipt.Delete("filter", Chain, rule...) != nil {
 			return
 		}
 	}
+}
+
+// ipv6Sysctls are the switches that turn the IPv6 stack of the pod's network namespace off.
+var ipv6Sysctls = []string{"/proc/sys/net/ipv6/conf/all/disable_ipv6", "/proc/sys/net/ipv6/conf/default/disable_ipv6"}
+
+// DisableIPv6 turns IPv6 off in the pod's network namespace. A pod without a working ip6tables cannot filter IPv6, so it must not
+// have any: otherwise the lab side would reach it over IPv6 with no INPUT policy at all.
+func DisableIPv6() error { return writeSysctls(ipv6Sysctls, "1") }
+
+// ConntrackHelpers is the switch of automatic conntrack helpers (FTP, SIP, ...): a helper makes a RELATED connection out of a
+// payload, which the ESTABLISHED,RELATED accept of the FORWARD chain would let through.
+const ConntrackHelpers = "/proc/sys/net/netfilter/nf_conntrack_helper"
+
+// NoConntrackHelpers makes sure no conntrack helper is assigned automatically (the default of kernels since 4.7; the file is
+// absent when conntrack is not loaded yet, which is fine). It tries to switch the helpers off when they are on.
+func NoConntrackHelpers(path string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	if strings.TrimSpace(string(b)) == "0" {
+		return nil
+	}
+	if err := writeSysctls([]string{path}, "0"); err != nil {
+		return fmt.Errorf("conntrack helpers are on and cannot be switched off: %w", err)
+	}
+	return nil
+}
+
+func writeSysctls(paths []string, v string) error {
+	for _, p := range paths {
+		if err := os.WriteFile(p, []byte(v), 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", p, err)
+		}
+	}
+	return nil
 }
 
 // Remove takes the policy off: the jump first, then the chain.

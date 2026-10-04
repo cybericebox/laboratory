@@ -4,10 +4,14 @@ package vpn
 
 import (
 	"net"
+	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/cybericebox/laboratory/internal/nstest"
+	"github.com/cybericebox/laboratory/internal/podinput"
 )
 
 func TestNetnsHelperProcess(*testing.T) { nstest.HelperProcess() }
@@ -22,11 +26,12 @@ func TestNetnsHelperProcess(*testing.T) { nstest.HelperProcess() }
 // be dropped), not switched.
 func TestNetnsVPNPodIsATransparentGateway(t *testing.T) {
 	nstest.Require(t)
-	for _, ns := range []string{"up", "lab", "wgsw", "pa", "pb"} {
+	for _, ns := range []string{"up", "lab", "lab2", "wgsw", "pa", "pb"} {
 		nstest.NS(t, ns)
 	}
 	nstest.Veth(t, "", "eth0", "10.244.0.2/24", "up", "u0", "10.244.0.1/24")
 	nstest.Veth(t, "", "lab1", "10.8.100.1/24", "lab", "l0", "10.8.100.2/24")
+	nstest.Veth(t, "", "lab2", "10.8.101.1/24", "lab2", "m0", "10.8.101.2/24")
 	nstest.Veth(t, "", "wg0", "10.8.0.1/24", "wgsw", "vw", "")
 	nstest.Veth(t, "wgsw", "va", "", "pa", "pa0", "")
 	nstest.Veth(t, "wgsw", "vb", "", "pb", "pb0", "")
@@ -44,6 +49,9 @@ func TestNetnsVPNPodIsATransparentGateway(t *testing.T) {
 	}
 	nstest.Run(t, "lab", "ip", "route", "add", "10.8.0.0/24", "via", "10.8.100.1")
 	nstest.Run(t, "lab", "ip", "route", "add", "10.244.0.0/24", "via", "10.8.100.1")
+	nstest.Run(t, "lab", "ip", "route", "add", "10.8.101.0/24", "via", "10.8.100.1")
+	nstest.Run(t, "lab2", "ip", "route", "add", "10.8.100.0/24", "via", "10.8.101.1")
+	nstest.Run(t, "lab2", "ip", "route", "add", "10.8.0.0/24", "via", "10.8.101.1")
 	nstest.Run(t, "", "sysctl", "-w", "net.ipv4.ip_forward=1")
 
 	// Targets on the pod itself, on every kind of address it has.
@@ -69,6 +77,13 @@ func TestNetnsVPNPodIsATransparentGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Nothing is forwarded from the first moment: the policy is DROP before any FORWARD rule exists.
+	if out := nstest.Run(t, "", "iptables", "-S", "FORWARD"); !strings.Contains(out, "-P FORWARD DROP") {
+		t.Fatalf("FORWARD policy is not DROP right after ProtectInput:\n%s", out)
+	}
+	if b, err := os.ReadFile(podinput.ConntrackHelpers); err == nil && strings.TrimSpace(string(b)) != "0" {
+		t.Fatalf("conntrack helpers are on (%q): a RELATED connection could be opened by a payload", b)
+	}
 	if _, err := m.GuardWireGuardPort("eth0", 51820); err != nil {
 		t.Fatal(err)
 	}
@@ -77,6 +92,11 @@ func TestNetnsVPNPodIsATransparentGateway(t *testing.T) {
 	}
 	if err := m.AllowLabToClients("lab1", "10.8.100.0/24"); err != nil {
 		t.Fatal(err)
+	}
+	for _, l := range [][2]string{{"lab1", "10.8.100.1"}, {"lab2", "10.8.101.1"}} {
+		if err := m.AllowPing(l[0], l[1]); err != nil {
+			t.Fatal(err)
+		}
 	}
 	_, wgNet, _ := net.ParseCIDR("10.8.0.0/24")
 	probe, err := startProbe(wgNet, ProbePort, "help@example.org", "wg0")
@@ -93,11 +113,21 @@ func TestNetnsVPNPodIsATransparentGateway(t *testing.T) {
 		}
 	}
 
-	t.Run("lab to the pod itself is blocked", func(t *testing.T) {
-		for _, dst := range []string{"10.8.100.1", "10.8.0.1", "10.244.0.2"} {
-			if nstest.Ping(t, "lab", dst) {
-				t.Errorf("ping %s from the lab is answered", dst)
+	t.Run("lab to the pod itself is blocked, except the ping of its own interface address", func(t *testing.T) {
+		if !nstest.Ping(t, "lab", "10.8.100.1") || !nstest.Ping(t, "lab2", "10.8.101.1") {
+			t.Errorf("a lab cannot ping the pod's address on its own interface")
+		}
+		for _, c := range []struct{ ns, dst, why string }{
+			{"lab", "10.8.101.1", "the address of another lab's interface"},
+			{"lab2", "10.8.100.1", "the address of another lab's interface"},
+			{"lab", "10.8.0.1", "the tunnel address"},
+			{"lab", "10.244.0.2", "the uplink address"},
+		} {
+			if nstest.Ping(t, c.ns, c.dst) {
+				t.Errorf("ping %s from %s (%s) is answered", c.dst, c.ns, c.why)
 			}
+		}
+		for _, dst := range []string{"10.8.100.1", "10.8.0.1", "10.244.0.2"} {
 			if nstest.Reach(t, "lab", "tcp", dst+":7000", tcpPod) {
 				t.Errorf("tcp %s:7000 from the lab is open", dst)
 			}
@@ -107,6 +137,17 @@ func TestNetnsVPNPodIsATransparentGateway(t *testing.T) {
 			if nstest.Dial(t, "lab", "tcp", dst+":8088") {
 				t.Errorf("the status page at %s:8088 answers the lab", dst)
 			}
+		}
+	})
+
+	t.Run("the ping of the gateway is rate-limited", func(t *testing.T) {
+		out, _ := nstest.Try("lab", "ping", "-c", "100", "-i", "0.01", "-W", "1", "10.8.100.1")
+		sum := regexp.MustCompile(`(\d+) received`).FindStringSubmatch(out)
+		if sum == nil {
+			t.Fatalf("no ping summary:\n%s", out)
+		}
+		if n, _ := strconv.Atoi(sum[1]); n < 10 || n > 60 {
+			t.Errorf("%d of 100 fast echo requests answered, want a few (burst 20 plus 10 per second)", n)
 		}
 	})
 

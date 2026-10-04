@@ -108,7 +108,7 @@ func (f *fakeNetfilter) check() {
 }
 
 func manager(f *fakeNetfilter) *IPTablesManager {
-	return &IPTablesManager{ipt: f, extIface: "eth0"}
+	return &IPTablesManager{ipt: f, extIface: "eth0", disableIPv6: func() error { return nil }}
 }
 
 func TestSetupFilterOrderAndContent(t *testing.T) {

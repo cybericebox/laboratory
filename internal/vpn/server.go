@@ -36,7 +36,7 @@ func InitServer(cfg *Config) (*Server, error) {
 		return nil, fmt.Errorf("install the INPUT policy: %w", err)
 	}
 	if !ipv6Covered {
-		log.Printf("no ip6tables in this pod: the INPUT policy covers IPv4 only")
+		log.Printf("no ip6tables in this pod: IPv6 is switched off in it")
 	}
 	ipv6Guarded, err := ipt.GuardWireGuardPort(cfg.ExternalInterface, cfg.ListenPort)
 	if err != nil {

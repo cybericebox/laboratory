@@ -28,7 +28,11 @@ type IPTablesManager struct {
 	// IPv6Filtered is true when the egress filter was installed for IPv6 as well; false means the pod has no ip6tables
 	// and forwards no IPv6 (the caller logs it).
 	IPv6Filtered bool
-	newIPv6      func() (netfilter, error)
+	// IPv6Error is set when the pod has no ip6tables and IPv6 could not be switched off either (the caller logs it).
+	IPv6Error error
+	newIPv6   func() (netfilter, error)
+	// disableIPv6 switches the IPv6 stack of the pod off (a stand-in in the tests, which must not touch the host).
+	disableIPv6 func() error
 	// ip6 is the IPv6 table of the pod once SetupFilter found one.
 	ip6 netfilter
 	// inputInstalled is true once the INPUT policy stands.
@@ -40,7 +44,7 @@ func NewIPTablesManager(extIface string) (*IPTablesManager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("iptables.New: %w", err)
 	}
-	return &IPTablesManager{ipt: ipt, extIface: extIface, newIPv6: func() (netfilter, error) {
+	return &IPTablesManager{ipt: ipt, extIface: extIface, disableIPv6: podinput.DisableIPv6, newIPv6: func() (netfilter, error) {
 		return iptables.NewWithProtocol(iptables.ProtocolIPv6)
 	}}, nil
 }
@@ -103,6 +107,12 @@ func (m *IPTablesManager) protectInput() error {
 			m.ip6 = nil
 		}
 	}
+	if m.ip6 == nil {
+		// IPv6 cannot be filtered, so the pod gets none.
+		if err := m.disableIPv6(); err != nil {
+			m.IPv6Error = err
+		}
+	}
 	return nil
 }
 
@@ -110,6 +120,14 @@ func (m *IPTablesManager) protectInput() error {
 func (m *IPTablesManager) AllowDHCP(iface string) error { return podinput.AllowDHCP(m.ipt, iface) }
 
 func (m *IPTablesManager) DenyDHCP(iface string) { podinput.DenyDHCP(m.ipt, iface) }
+
+// AllowPing lets the devices of a lab ping the pod's own address on that lab's interface (and no other address of the pod);
+// DenyPing takes it away with the interface.
+func (m *IPTablesManager) AllowPing(iface, addr string) error {
+	return podinput.AllowPing(m.ipt, iface, addr)
+}
+
+func (m *IPTablesManager) DenyPing(iface, addr string) { podinput.DenyPing(m.ipt, iface, addr) }
 
 // RemoveInput takes the INPUT policy off (the pod is stopping).
 func (m *IPTablesManager) RemoveInput() {
