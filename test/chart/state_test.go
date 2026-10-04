@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cybericebox/laboratory/internal/names"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
@@ -112,7 +113,6 @@ func TestStatePersistenceRendersRegistryAndWiring(t *testing.T) {
 	render(t, "templates/operator/configmap.yaml", &opCfg, on...)
 	wantCfg := map[string]string{
 		"STATE_PERSISTENCE_ENABLED": "true",
-		"STATE_REGISTRY_ADDR":       "laboratory-registry.laboratory-system.svc:5000",
 		"STATE_DEBOUNCE":            "5s",
 		"STATE_EXCLUDE_PATHS":       "/tmp,/var/tmp,/run",
 		"STATE_WRITE_QUOTA":         "512Mi",
@@ -137,12 +137,20 @@ func TestStatePersistenceRendersRegistryAndWiring(t *testing.T) {
 		}
 	}
 
+	// The registry address and its relay port, the cgroup root and the work directory are constants of the images, not passed.
+	if _, set := opCfg.Data["STATE_REGISTRY_ADDR"]; set {
+		t.Errorf("the registry address is derived (names.RegistryServiceAddr), not passed")
+	}
+	if names.RegistryServiceAddr != "laboratory-registry.laboratory-system.svc:5000" || names.RegistryForwardPort != 5035 {
+		t.Errorf("the registry Service is laboratory-registry in laboratory-system on port 5000, relayed on 5035: %s %d", names.RegistryServiceAddr, names.RegistryForwardPort)
+	}
 	ds := nodeAgent(t, on...)
 	agent := ds.Spec.Template.Spec.Containers[0]
 	env := envOf(agent)
-	if env["STATE_REGISTRY_ADDR"].Value != "laboratory-registry.laboratory-system.svc:5000" || env["STATE_FORWARD_PORT"].Value != "5035" ||
-		env["CGROUP_ROOT"].Value != "/host/sys/fs/cgroup" {
-		t.Errorf("node-agent env %+v", env)
+	for _, baked := range []string{"STATE_REGISTRY_ADDR", "STATE_FORWARD_PORT", "CGROUP_ROOT", "STATE_WORK_DIR"} {
+		if _, set := env[baked]; set {
+			t.Errorf("%s is a constant of the node-agent image, not an input", baked)
+		}
 	}
 	mounts := map[string]corev1.VolumeMount{}
 	for _, m := range agent.VolumeMounts {
@@ -181,7 +189,6 @@ func TestStatePersistenceValuesAreConfigurable(t *testing.T) {
 		"--set", statePath + "maxFileSize=64Mi",
 		"--set", statePath + "maxLayers=4",
 		"--set", statePath + "retention=24h",
-		"--set", regPath + "forwardPort=5099",
 		"--set", statePath + "containerdRoot=/var/lib/containerd",
 	}
 	var pvc corev1.PersistentVolumeClaim
@@ -206,9 +213,6 @@ func TestStatePersistenceValuesAreConfigurable(t *testing.T) {
 		}
 	}
 	agent := nodeAgent(t, extra...).Spec.Template.Spec.Containers[0]
-	if envOf(agent)["STATE_FORWARD_PORT"].Value != "5099" {
-		t.Errorf("forward port not applied")
-	}
 	for _, m := range agent.VolumeMounts {
 		if m.Name == "containerd-root" && m.MountPath != "/var/lib/containerd" {
 			t.Errorf("containerd root mount %s", m.MountPath)
@@ -313,7 +317,7 @@ func TestImageCacheAloneDeploysRegistryWithoutStatePersistence(t *testing.T) {
 
 	var opCfg corev1.ConfigMap
 	render(t, "templates/operator/configmap.yaml", &opCfg, cache...)
-	if opCfg.Data["IMAGE_CACHE_PIN_TTL"] != "30m" || opCfg.Data["IMAGE_CACHE_ENABLED"] != "true" || opCfg.Data["IMAGE_CACHE_PREFIX"] != "localhost:5035" ||
+	if opCfg.Data["IMAGE_CACHE_PIN_TTL"] != "30m" || opCfg.Data["IMAGE_CACHE_ENABLED"] != "true" || opCfg.Data["IMAGE_CACHE_PREFIX"] != "" ||
 		opCfg.Data["IMAGE_CACHE_REGISTRIES"] != "docker.io,ghcr.io,quay.io,registry.k8s.io" {
 		t.Errorf("operator config %v", opCfg.Data)
 	}
@@ -323,8 +327,8 @@ func TestImageCacheAloneDeploysRegistryWithoutStatePersistence(t *testing.T) {
 
 	agent := nodeAgent(t, cache...).Spec.Template.Spec.Containers[0]
 	env := envOf(agent)
-	if env["STATE_REGISTRY_ADDR"].Value == "" || env["STATE_FORWARD_PORT"].Value != "5035" {
-		t.Errorf("the node-agent must forward the registry: %v", env)
+	if names.RegistryNodePrefix != "localhost:5035" {
+		t.Errorf("the node-agent relays the registry on localhost:5035: %s", names.RegistryNodePrefix)
 	}
 	if _, on := env["STATE_PERSISTENCE_ENABLED"]; on || hasCap(agent.SecurityContext.Capabilities.Add, "DAC_READ_SEARCH") {
 		t.Errorf("the snapshot engine's wiring must stay off")
@@ -381,14 +385,14 @@ func TestAgentPrewarmWiring(t *testing.T) {
 	var dep appsv1.Deployment
 	render(t, "templates/agent/deployment.yaml", &dep, on...)
 	env := envOf(dep.Spec.Template.Spec.Containers[0])
+	// The agent reads the cache settings under the operator's names (IMAGE_CACHE_*, IMAGE_PULL_SECRETS); the registry address, the node prefix
+	// and the secret namespace are constants of the image.
 	want := map[string]string{
-		"AGENT_CACHE_ENABLED":         "true",
-		"AGENT_CACHE_REGISTRY_ADDR":   "laboratory-registry.laboratory-system.svc:5000",
-		"AGENT_CACHE_REGISTRIES":      "docker.io,ghcr.io,quay.io,registry.k8s.io",
-		"AGENT_PULL_SECRETS":          "pull-one",
-		"AGENT_PULL_SECRET_NAMESPACE": "laboratory-system",
-		"AGENT_PREWARM_CONCURRENCY":   "7",
-		"AGENT_PREWARM_TIMEOUT":       "10m",
+		"IMAGE_CACHE_ENABLED":       "true",
+		"IMAGE_CACHE_REGISTRIES":    "docker.io,ghcr.io,quay.io,registry.k8s.io",
+		"IMAGE_PULL_SECRETS":        "pull-one",
+		"AGENT_PREWARM_CONCURRENCY": "7",
+		"AGENT_PREWARM_TIMEOUT":     "10m",
 	}
 	for k, v := range want {
 		if env[k].Value != v {
@@ -404,28 +408,31 @@ func TestAgentPrewarmWiring(t *testing.T) {
 	var off appsv1.Deployment
 	render(t, "templates/agent/deployment.yaml", &off, "--set", "agent.enabled=true", "--set", "agent.domain=a.example.com")
 	for k := range envOf(off.Spec.Template.Spec.Containers[0]) {
-		if strings.HasPrefix(k, "AGENT_CACHE") || strings.HasPrefix(k, "AGENT_PREWARM") {
+		if strings.HasPrefix(k, "IMAGE_CACHE") || strings.HasPrefix(k, "AGENT_PREWARM") {
 			t.Errorf("%s present with the cache off", k)
 		}
 	}
 }
 
-func TestAgentGetsTheRegistryAddressForSnapshotExport(t *testing.T) {
+// The registry is always installed at a fixed address, so the agent derives it (names.RegistryServiceAddr) and is passed only the reader account.
+func TestAgentGetsTheRegistryReaderAccountForSnapshotExport(t *testing.T) {
 	agent := []string{"--set", "agent.enabled=true", "--set", "agent.domain=a.example.com"}
 	for name, extra := range map[string][]string{
 		"persistence": {"--set", statePath + "enabled=true"},
 		"cache":       {"--set", "registry.cache.enabled=true"},
+		"neither":     nil,
 	} {
 		var dep appsv1.Deployment
 		render(t, "templates/agent/deployment.yaml", &dep, append(agent, extra...)...)
-		if got := envOf(dep.Spec.Template.Spec.Containers[0])["AGENT_REGISTRY_ADDR"].Value; got != "laboratory-registry.laboratory-system.svc:5000" {
-			t.Errorf("%s: AGENT_REGISTRY_ADDR = %q", name, got)
+		env := envOf(dep.Spec.Template.Spec.Containers[0])
+		if _, set := env["AGENT_REGISTRY_ADDR"]; set {
+			t.Errorf("%s: the registry address is derived, not passed", name)
 		}
-	}
-	var off appsv1.Deployment
-	render(t, "templates/agent/deployment.yaml", &off, agent...)
-	if _, set := envOf(off.Spec.Template.Spec.Containers[0])["AGENT_REGISTRY_ADDR"]; !set {
-		t.Error("the registry is always installed, so the agent always gets its address")
+		for _, k := range []string{"AGENT_REGISTRY_USER", "AGENT_REGISTRY_PASSWORD"} {
+			if env[k].ValueFrom == nil || env[k].ValueFrom.SecretKeyRef.Name != "laboratory-registry-reader" {
+				t.Errorf("%s: %s must come from the reader Secret", name, k)
+			}
+		}
 	}
 }
 
@@ -442,8 +449,9 @@ func TestRegistryIsAlwaysInstalled(t *testing.T) {
 	}
 	var na appsv1.DaemonSet
 	render(t, "templates/node-agent/daemonset.yaml", &na)
-	if envOf(na.Spec.Template.Spec.Containers[0])["STATE_FORWARD_PORT"].Value != "5035" {
-		t.Error("the node-agent relays the registry even with state persistence off")
+	// The relay is on in the node-agent image whatever the switches are: nothing is passed for it (names.RegistryServiceAddr, RegistryForwardPort).
+	if _, set := envOf(na.Spec.Template.Spec.Containers[0])["STATE_PERSISTENCE_ENABLED"]; set {
+		t.Error("the snapshot engine stays off with state persistence off")
 	}
 }
 

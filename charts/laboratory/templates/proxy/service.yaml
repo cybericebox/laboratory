@@ -15,6 +15,6 @@ spec:
   ports:
     - name: https
       port: 443
-      targetPort: {{ trimPrefix ":" .Values.proxy.l7.listen | int }}
+      targetPort: {{ include "laboratory.l7Port" . }}
       protocol: TCP
 {{- end }}

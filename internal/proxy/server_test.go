@@ -195,7 +195,7 @@ func TestL7LimitsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.MaxConnections != 4000 || cfg.LivePerClient != 200 || cfg.LivePerGroup != 1000 || cfg.LiveTotal != 8000 || cfg.AuthRate != 5 || cfg.AuthBurst != 20 {
+	if cfg.MaxConnections != 2500 || cfg.LivePerClient != 200 || cfg.LivePerGroup != 1000 || cfg.LiveTotal != 2500 || cfg.AuthRate != 5 || cfg.AuthBurst != 20 {
 		t.Fatalf("%+v", cfg)
 	}
 }

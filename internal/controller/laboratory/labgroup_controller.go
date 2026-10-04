@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -53,8 +54,6 @@ type LabGroupReconciler struct {
 	// PublicVPNEndpoint is the publicly reachable host:port that clients dial
 	// (host of the WireGuard demux). Written verbatim to LabGroup.Status.VPN.Endpoint.
 	PublicVPNEndpoint string
-	// VPNServicePort is the UDP port the VPN server listens on. Defaults to 51820.
-	VPNServicePort int
 	// VPNBaseNetwork is the base address space for all VPN subnets (e.g. "10.8.0.0/10").
 	VPNBaseNetwork string
 	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets (e.g. "10.9.0.0/10").
@@ -99,8 +98,6 @@ type LabGroupReconciler struct {
 	// OperatorSA is the operator's own ServiceAccount: it is bound to the working role in each group namespace
 	// (empty: no binding, for tests).
 	OperatorSA types.NamespacedName
-	// VPNStatsInterval is STATS_INTERVAL of the VPN pod of a new group; zero leaves the pod's own default.
-	VPNStatsInterval time.Duration
 	// ImagePullSecrets names registry Secrets of the operator namespace. They are
 	// copied into every group namespace and referenced by the VPN and gateway pods.
 	ImagePullSecrets []string
@@ -370,10 +367,7 @@ func (r *LabGroupReconciler) findDuplicatePubKey(ctx context.Context, pubKey, se
 }
 
 func (r *LabGroupReconciler) vpnPort() int32 {
-	if r.VPNServicePort > 0 {
-		return int32(r.VPNServicePort)
-	}
-	return 51820
+	return names.WireGuardPort
 }
 
 // vpnReadyState returns true when the VPN Deployment has at least one ready replica.
@@ -982,7 +976,7 @@ func vpnCiliumPolicy(ns string, selector map[string]string) *unstructured.Unstru
 							map[string]interface{}{
 								"ports": []interface{}{
 									map[string]interface{}{
-										"port":     "51820",
+										"port":     strconv.Itoa(names.WireGuardPort),
 										"protocol": "UDP",
 									},
 								},
@@ -1207,12 +1201,12 @@ func (r *LabGroupReconciler) reportPinWarning(lg *laboratoryv1alpha1.LabGroup, n
 	}
 }
 
-// vpnStatsEnv is STATS_INTERVAL of the VPN pod, when the chart sets one.
+// vpnStatsInterval is how often the VPN pod of a group samples traffic statistics (STATS_INTERVAL of the pod).
+const vpnStatsInterval = 30 * time.Second
+
+// vpnStatsEnv is STATS_INTERVAL of the VPN pod.
 func (r *LabGroupReconciler) vpnStatsEnv() []corev1.EnvVar {
-	if r.VPNStatsInterval <= 0 {
-		return nil
-	}
-	return []corev1.EnvVar{{Name: "STATS_INTERVAL", Value: r.VPNStatsInterval.String()}}
+	return []corev1.EnvVar{{Name: "STATS_INTERVAL", Value: vpnStatsInterval.String()}}
 }
 
 // gatewayEnv is the environment of the gateway container: where it lives and the lab address space.

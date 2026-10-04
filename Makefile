@@ -311,8 +311,8 @@ build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager ./cmd/manager
 
 .PHONY: run
-run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/manager
+run: manifests generate fmt vet ## Run a controller from your host (one manager, no admission policies of the chart to require).
+	OPERATOR_REQUIRE_ADMISSION_POLICY=false go run ./cmd/manager --leader-elect=false
 
 # Multi-platform build and push of one image: make docker-buildx IMAGE=proxy PLATFORMS=linux/arm64,linux/amd64
 # (IMAGE is one of controller agent proxy node lab). Needs docker buildx and a registry you can push to.

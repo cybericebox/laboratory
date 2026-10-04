@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cybericebox/laboratory/internal/proxy"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -67,8 +69,12 @@ func TestEveryServiceHasProbesAndRollsOutOnReadiness(t *testing.T) {
 				declared = p.ContainerPort
 			}
 		}
-		if declared != port || envOf(c)["HEALTH_ADDR"].Value != fmt.Sprintf(":%d", port) {
-			t.Errorf("%s: the health port %d and HEALTH_ADDR must agree: %d %q", name, port, declared, envOf(c)["HEALTH_ADDR"].Value)
+		// The listen address is the image's default (proxy.LoadL7Config / LoadWGConfig), so the chart passes none and must name that port.
+		if _, set := envOf(c)["HEALTH_ADDR"]; set || declared != port || c.ReadinessProbe.HTTPGet.Port.String() != "health" {
+			t.Errorf("%s: the health port %d must be the image default (no HEALTH_ADDR passed): %d %v", name, port, declared, envOf(c)["HEALTH_ADDR"])
+		}
+		if got := imageHealthAddr(t, name); got != fmt.Sprintf(":%d", port) {
+			t.Errorf("%s: the image listens for probes on %q, the chart probes %d", name, got, port)
 		}
 	}
 	if proxy.Spec.MinReadySeconds == 0 {
@@ -93,9 +99,9 @@ func TestEveryServiceHasProbesAndRollsOutOnReadiness(t *testing.T) {
 		}
 	}
 	needProbes(t, "node-agent", main)
-	if main.LivenessProbe.HTTPGet == nil || main.LivenessProbe.HTTPGet.Host != "127.0.0.1" || main.LivenessProbe.HTTPGet.Port.IntValue() != 9440 ||
-		envOf(main)["HEALTH_ADDR"].Value != "127.0.0.1:9440" {
-		t.Errorf("the node-agent's probes are on the loopback of the node, where it listens: %+v %q", main.LivenessProbe.HTTPGet, envOf(main)["HEALTH_ADDR"].Value)
+	// The node-agent listens on 127.0.0.1:9440 by default (internal/nodeagent/config.go; its own test pins it): no HEALTH_ADDR is passed.
+	if _, set := envOf(main)["HEALTH_ADDR"]; set || main.LivenessProbe.HTTPGet == nil || main.LivenessProbe.HTTPGet.Host != "127.0.0.1" || main.LivenessProbe.HTTPGet.Port.IntValue() != 9440 {
+		t.Errorf("the node-agent's probes are on the loopback of the node, at the image's default port: %+v %v", main.LivenessProbe.HTTPGet, envOf(main)["HEALTH_ADDR"])
 	}
 	if ds.Spec.MinReadySeconds == 0 || ds.Spec.UpdateStrategy.RollingUpdate == nil || ds.Spec.UpdateStrategy.RollingUpdate.MaxUnavailable.IntValue() != 1 {
 		t.Errorf("a node-agent rollout moves one node at a time and waits for Ready: %+v", ds.Spec.UpdateStrategy)
@@ -105,4 +111,23 @@ func TestEveryServiceHasProbesAndRollsOutOnReadiness(t *testing.T) {
 	if err != nil || !strings.Contains(out, "readinessProbe") || !strings.Contains(out, "livenessProbe") {
 		t.Errorf("the operator has probes: %v", err)
 	}
+}
+
+// imageHealthAddr is where a proxy container of the image listens for its probes when nothing is passed: the l7 or the wg-demux default.
+func imageHealthAddr(t *testing.T, container string) string {
+	t.Helper()
+	if container == "l7" {
+		t.Setenv("BASE_DOMAIN", "example.com")
+		t.Setenv("SESSION_SECRET", "0123456789abcdef0123456789abcdef")
+		cfg, err := proxy.LoadL7Config()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg.HealthAddr
+	}
+	cfg, err := proxy.LoadWGConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg.HealthAddr
 }

@@ -7,13 +7,14 @@ import (
 
 	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/limits"
+	"github.com/cybericebox/laboratory/internal/names"
 )
 
-// ServerTLSConfig is the agent's own TLS identity — a key pair only, no CA.
+// ServerTLSConfig is the agent's own TLS identity — a key pair only, no CA. TLS is always on; the files are where the chart mounts the
+// certificate of the agent (cert-manager Secret laboratory-agent-server-tls).
 type ServerTLSConfig struct {
-	Enabled  bool   `env:"AGENT_TLS_ENABLED" envDefault:"true"`
-	CertFile string `env:"AGENT_TLS_CERT"`
-	KeyFile  string `env:"AGENT_TLS_KEY"`
+	CertFile string `env:"AGENT_TLS_CERT" envDefault:"/tls/tls.crt"`
+	KeyFile  string `env:"AGENT_TLS_KEY" envDefault:"/tls/tls.key"`
 }
 
 // ServerLimits bound what a caller can cost the agent (see grpc.Server).
@@ -42,13 +43,13 @@ type ServerLimits struct {
 	RenewMinInterval time.Duration `env:"AGENT_RENEW_MIN_INTERVAL" envDefault:"10s"`
 }
 
-// MTLSConfig verifies CLIENT certificates against a separate client CA.
+// MTLSConfig verifies CLIENT certificates against a separate client CA (mTLS is on unless Config.AllowInsecure). The files are where the
+// chart mounts the client CA (cert-manager Secret laboratory-agent-ca).
 type MTLSConfig struct {
-	Enabled      bool   `env:"AGENT_MTLS_ENABLED" envDefault:"true"`
-	ClientCAFile string `env:"AGENT_MTLS_CLIENT_CA"`
+	ClientCAFile string `env:"AGENT_MTLS_CLIENT_CA" envDefault:"/ca/tls.crt"`
 	// ClientCAKeyFile is the private key of that CA: the agent signs the client certificates of
 	// enrolled tenants with it (Enroll, RenewCertificate).
-	ClientCAKeyFile string `env:"AGENT_MTLS_CLIENT_CA_KEY"`
+	ClientCAKeyFile string `env:"AGENT_MTLS_CLIENT_CA_KEY" envDefault:"/ca/tls.key"`
 	// ClientCertTTL is how long an issued client certificate is valid.
 	ClientCertTTL time.Duration `env:"AGENT_CLIENT_CERT_TTL" envDefault:"720h"`
 }
@@ -60,17 +61,16 @@ type Config struct {
 	AgentID   string `env:"AGENT_ID" envDefault:"laboratory-agent"`
 	ServerTLS ServerTLSConfig
 	MTLS      MTLSConfig
-	// AllowInsecure lets the agent run with mTLS off, where every caller is the default tenant. It is for local development
-	// only and has to be asked for by name (the chart sets it from agent.allowInsecure).
+	// AllowInsecure is the one switch that turns the client-certificate check off: every caller is then the default tenant. It is for
+	// local development only and has to be asked for by name (the chart sets it from agent.allowInsecure). TLS itself stays on.
 	AllowInsecure bool `env:"AGENT_ALLOW_INSECURE" envDefault:"false"`
 	// Server holds the limits of the gRPC front.
 	Server ServerLimits
-	// Monitoring bounds the shared journal behind the Monitoring stream.
-	Monitoring MonitoringConfig
 	// LabNodeSelector and LabTolerations (JSON) describe the nodes lab pods run on: they decide
 	// which platform of an image is warmed and what a percentage tenant quota is a percentage of.
-	LabNodeSelector string `env:"AGENT_LAB_NODE_SELECTOR" envDefault:"{}"`
-	LabTolerations  string `env:"AGENT_LAB_TOLERATIONS" envDefault:"[]"`
+	// The names are the operator's (LAB_NODE_SELECTOR, LAB_TOLERATIONS): one chart value, one name.
+	LabNodeSelector string `env:"LAB_NODE_SELECTOR" envDefault:"{}"`
+	LabTolerations  string `env:"LAB_TOLERATIONS" envDefault:"[]"`
 	// PlatformReservePercent, PlatformReserveCPU and PlatformReserveMemory are the operator's scheduler reserve (the same chart
 	// values, scheduler.platformReserve*): the agent applies them to the per-node room it reports.
 	PlatformReservePercent int    `env:"SCHEDULER_PLATFORM_RESERVE_PERCENT" envDefault:"10"`
@@ -89,28 +89,28 @@ type Config struct {
 	GroupSizing grouppods.Sizing
 	// StatePersistence is the platform switch for device state persistence: a topology
 	// with devices[].persistence.enabled is refused when it is off.
-	StatePersistence bool `env:"AGENT_STATE_PERSISTENCE_ENABLED" envDefault:"false"`
+	StatePersistence bool `env:"STATE_PERSISTENCE_ENABLED" envDefault:"false"`
 	// State are the cluster values of state persistence (the chart's devices.statePersistence, the same as the
 	// operator's): GetFeatures reports them, a tenant's own limits are capped by them.
 	State StateConfig
 	// Scheduler and Endpoints are reported by GetFeatures (the same chart values as the operator's).
 	Scheduler SchedulerConfig
-	// ProxyAccessTokenMaxTTL and ProxySessionMaxTTL are the L7 proxy's limits (chart proxy.l7.*), reported by GetFeatures.
-	ProxyAccessTokenMaxTTL time.Duration `env:"AGENT_PROXY_ACCESS_TOKEN_MAX_TTL" envDefault:"60s"`
-	ProxySessionIdleTTL    time.Duration `env:"AGENT_PROXY_SESSION_IDLE_TTL" envDefault:"24h"`
-	ProxySessionMaxTTL     time.Duration `env:"AGENT_PROXY_SESSION_MAX_TTL" envDefault:"168h"`
+	// ProxyAccessTokenMaxTTL and ProxySessionMaxTTL are the L7 proxy's limits (chart proxy.l7.*), reported by GetFeatures. They are
+	// read under the proxy's own names (the same variables of the same chart values), not as a second copy.
+	ProxyAccessTokenMaxTTL time.Duration `env:"ACCESS_TOKEN_MAX_TTL" envDefault:"60s"`
+	ProxySessionIdleTTL    time.Duration `env:"SESSION_IDLE_TTL" envDefault:"24h"`
+	ProxySessionMaxTTL     time.Duration `env:"SESSION_MAX_TTL" envDefault:"168h"`
 	// DeviceProfiles are the catalog profile IDs this cluster offers (internal/profiles). The agent reports them in
 	// GetFeatures and refuses a lab whose device asks for another.
 	DeviceProfiles []string `env:"AGENT_DEVICE_PROFILES" envSeparator:"," envDefault:"standard,extended"`
-	// ReleaseNamespace is where the operator, node-agents and proxy publish their error events (the chart's release namespace).
-	ReleaseNamespace string `env:"AGENT_RELEASE_NAMESPACE" envDefault:"laboratory-system"`
 	// Limits are the caps on devices, labs and tenants the agent enforces on CreateLabs and reports.
 	Limits limits.Config
-	// BaseDomain is the domain of the lab web endpoints; PublicVPNEndpoint is host:port of WireGuard.
-	BaseDomain        string `env:"AGENT_BASE_DOMAIN"`
-	PublicVPNEndpoint string `env:"AGENT_PUBLIC_VPN_ENDPOINT"`
-	// RegistryAddr is host:port of the platform registry (zot) as the agent reaches it:
-	// snapshot export reads the device snapshots from it. Empty: the export fails with FailedPrecondition.
+	// BaseDomain is the domain of the lab web endpoints; PublicVPNEndpoint is host:port of WireGuard. The operator's names and the
+	// operator's values (operator.baseDomain, operator.publicVPNEndpoint): the chart passes one value to both.
+	BaseDomain        string `env:"BASE_DOMAIN"`
+	PublicVPNEndpoint string `env:"PUBLIC_VPN_ENDPOINT"`
+	// RegistryAddr is host:port of the platform registry (zot) as the agent reaches it: snapshot export reads the device snapshots from
+	// it, and PrewarmImages makes the cache fetch through it. Empty = names.RegistryServiceAddr (the chart always installs it there).
 	RegistryAddr string `env:"AGENT_REGISTRY_ADDR"`
 	// RegistryUser and RegistryPassword are the reader account of the registry: the snapshots are not anonymous.
 	RegistryUser     string `env:"AGENT_REGISTRY_USER"`
@@ -122,40 +122,37 @@ type Config struct {
 	ImageDeny []string `env:"AGENT_IMAGE_DENY" envSeparator:","`
 }
 
-// StateConfig mirrors the state persistence values of the operator.
+// StateConfig is the state persistence values of the operator, under the operator's names (STATE_*): one chart value, one name.
 type StateConfig struct {
-	Debounce     time.Duration `env:"AGENT_STATE_DEBOUNCE" envDefault:"5s"`
-	ExcludePaths []string      `env:"AGENT_STATE_EXCLUDE_PATHS" envSeparator:"," envDefault:"/tmp,/var/tmp,/run"`
+	Debounce     time.Duration `env:"STATE_DEBOUNCE" envDefault:"5s"`
+	ExcludePaths []string      `env:"STATE_EXCLUDE_PATHS" envSeparator:"," envDefault:"/tmp,/var/tmp,/run"`
 	// WriteQuota and MaxFileSize are Kubernetes quantities.
-	WriteQuota  string `env:"AGENT_STATE_WRITE_QUOTA" envDefault:"512Mi"`
-	MaxFileSize string `env:"AGENT_STATE_MAX_FILE_SIZE" envDefault:"256Mi"`
+	WriteQuota  string `env:"STATE_WRITE_QUOTA" envDefault:"512Mi"`
+	MaxFileSize string `env:"STATE_MAX_FILE_SIZE" envDefault:"256Mi"`
 	// TenantQuota is what all of one tenant's snapshots may take in the registry together; MaxEntries caps one layer.
-	TenantQuota string `env:"AGENT_STATE_TENANT_QUOTA" envDefault:"10Gi"`
-	MaxEntries  int    `env:"AGENT_STATE_MAX_ENTRIES" envDefault:"100000"`
+	TenantQuota string `env:"STATE_TENANT_QUOTA" envDefault:"10Gi"`
+	MaxEntries  int    `env:"STATE_MAX_ENTRIES" envDefault:"100000"`
 }
 
-// SchedulerConfig mirrors the operator's scheduler switch and width.
+// SchedulerConfig is the operator's scheduler switch and width, under the operator's names (SCHEDULER_*).
 type SchedulerConfig struct {
-	Enabled bool `env:"AGENT_SCHEDULER_ENABLED" envDefault:"true"`
-	MaxPods int  `env:"AGENT_SCHEDULER_MAX_PODS" envDefault:"20"`
+	Enabled bool `env:"SCHEDULER_ENABLED" envDefault:"true"`
+	MaxPods int  `env:"SCHEDULER_MAX_PODS" envDefault:"20"`
 }
 
-// CacheConfig configures PrewarmImages. Without Enabled the RPC fails with FailedPrecondition.
+// CacheConfig configures PrewarmImages. Without Enabled the RPC fails with FailedPrecondition. The names are the operator's
+// (IMAGE_CACHE_*, IMAGE_PULL_SECRETS): one chart value, one name.
 type CacheConfig struct {
-	Enabled bool `env:"AGENT_CACHE_ENABLED" envDefault:"false"`
-	// RegistryAddr is host:port of the cache (the registry Service) as the agent reaches it.
-	RegistryAddr string `env:"AGENT_CACHE_REGISTRY_ADDR"`
-	// NodePrefix is host:port of the cache as the nodes see it (the node-agent's localhost
-	// forwarder); a tenant image that names it is refused.
-	NodePrefix string `env:"AGENT_CACHE_NODE_PREFIX"`
+	Enabled bool `env:"IMAGE_CACHE_ENABLED" envDefault:"false"`
+	// NodePrefix is host:port of the cache as the nodes see it (the node-agent's localhost forwarder); a tenant image that names it
+	// is refused. Empty = names.RegistryNodePrefix.
+	NodePrefix string `env:"IMAGE_CACHE_PREFIX"`
 	// Registries are the upstream registries the cache serves.
-	Registries []string `env:"AGENT_CACHE_REGISTRIES" envSeparator:","`
-	// PullSecrets are dockerconfigjson Secrets of PullSecretNamespace used to ask the
-	// upstream registries for digests.
-	PullSecrets         []string `env:"AGENT_PULL_SECRETS" envSeparator:","`
-	PullSecretNamespace string   `env:"AGENT_PULL_SECRET_NAMESPACE" envDefault:"laboratory-system"`
+	Registries []string `env:"IMAGE_CACHE_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
+	// PullSecrets are dockerconfigjson Secrets of the release namespace used to ask the upstream registries for digests.
+	PullSecrets []string `env:"IMAGE_PULL_SECRETS" envSeparator:","`
 	// PinTTL is how long a resolved digest is remembered (the tag is looked up again after it).
-	PinTTL      time.Duration `env:"AGENT_CACHE_PIN_TTL" envDefault:"30m"`
+	PinTTL      time.Duration `env:"IMAGE_CACHE_PIN_TTL" envDefault:"30m"`
 	Concurrency int           `env:"AGENT_PREWARM_CONCURRENCY" envDefault:"4"`
 	Timeout     time.Duration `env:"AGENT_PREWARM_TIMEOUT" envDefault:"10m"`
 }
@@ -164,18 +161,37 @@ type CacheConfig struct {
 // subscriber that lags more than SubscriberBuffer updates is dropped (it reconnects
 // and resumes); a resume older than JournalSize updates or JournalAge gets a snapshot.
 type MonitoringConfig struct {
-	JournalSize      int           `env:"AGENT_MONITORING_JOURNAL_SIZE" envDefault:"10000"`
-	JournalAge       time.Duration `env:"AGENT_MONITORING_JOURNAL_AGE" envDefault:"15m"`
-	PollInterval     time.Duration `env:"AGENT_MONITORING_POLL_INTERVAL" envDefault:"1s"`
-	SubscriberBuffer int           `env:"AGENT_MONITORING_SUBSCRIBER_BUFFER" envDefault:"256"`
+	JournalSize      int
+	JournalAge       time.Duration
+	PollInterval     time.Duration
+	SubscriberBuffer int
 	// MaxStreamsPerTenant caps the Monitoring streams one tenant may hold open (0 = unlimited).
-	MaxStreamsPerTenant int `env:"AGENT_MONITORING_MAX_STREAMS_PER_TENANT" envDefault:"8"`
+	MaxStreamsPerTenant int
 }
+
+// DefaultMonitoring is the sizing of the Monitoring stream: internal mechanics, not a setting. A poll reads informer caches (no API call),
+// so one second is cheap; the caches hold the objects of all tenants (raise the agent resources with the number of labs).
+var DefaultMonitoring = MonitoringConfig{
+	JournalSize:         10000,
+	JournalAge:          15 * time.Minute,
+	PollInterval:        time.Second,
+	SubscriberBuffer:    256,
+	MaxStreamsPerTenant: 8,
+}
+
+// MTLSEnabled is whether callers must present a client certificate: always, but for the development switch AllowInsecure.
+func (c *Config) MTLSEnabled() bool { return !c.AllowInsecure }
 
 func Load() (*Config, error) {
 	c := &Config{}
 	if err := env.Parse(c); err != nil {
 		return nil, err
+	}
+	if c.RegistryAddr == "" {
+		c.RegistryAddr = names.RegistryServiceAddr
+	}
+	if c.Cache.NodePrefix == "" {
+		c.Cache.NodePrefix = names.RegistryNodePrefix
 	}
 	return c, nil
 }

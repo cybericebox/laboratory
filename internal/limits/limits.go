@@ -15,12 +15,12 @@ import (
 )
 
 // Config is read by the agent from the environment the chart gives it. CPU is a Kubernetes quantity ("500m", "2"),
-// memory too ("512Mi"). The defaults mirror values.yaml.
+// memory too ("512Mi"). The defaults mirror values.yaml. The DEVICE_* names are the operator's (the same chart values limits.device.*).
 type Config struct {
-	DeviceMaxCPU        string `env:"AGENT_LIMIT_DEVICE_MAX_CPU" envDefault:"2000m"`
-	DeviceMaxMemory     string `env:"AGENT_LIMIT_DEVICE_MAX_MEMORY" envDefault:"4Gi"`
-	DeviceDefaultCPU    string `env:"AGENT_LIMIT_DEVICE_DEFAULT_CPU" envDefault:"100m"`
-	DeviceDefaultMemory string `env:"AGENT_LIMIT_DEVICE_DEFAULT_MEMORY" envDefault:"256Mi"`
+	DeviceMaxCPU        string `env:"DEVICE_MAX_CPU" envDefault:"2000m"`
+	DeviceMaxMemory     string `env:"DEVICE_MAX_MEMORY" envDefault:"4Gi"`
+	DeviceDefaultCPU    string `env:"DEVICE_DEFAULT_CPU" envDefault:"100m"`
+	DeviceDefaultMemory string `env:"DEVICE_DEFAULT_MEMORY" envDefault:"256Mi"`
 	// LabMaxDevices caps the devices of one lab, switches and hubs included (0 = the platform ceiling, names.MaxLabDevices).
 	LabMaxDevices int `env:"AGENT_LIMIT_LAB_MAX_DEVICES" envDefault:"32"`
 	// GroupMaxLabs caps the labs of one LabGroup (0 = no limit); GroupMaxCPU and GroupMaxMemory cap the sum of
@@ -50,10 +50,10 @@ func (c Config) Parse() (Limits, error) {
 		cpu      bool
 		dst      *int64
 	}{
-		{"AGENT_LIMIT_DEVICE_MAX_CPU", c.DeviceMaxCPU, true, &l.DeviceMaxCPU},
-		{"AGENT_LIMIT_DEVICE_MAX_MEMORY", c.DeviceMaxMemory, false, &l.DeviceMaxMemory},
-		{"AGENT_LIMIT_DEVICE_DEFAULT_CPU", c.DeviceDefaultCPU, true, &l.DeviceDefaultCPU},
-		{"AGENT_LIMIT_DEVICE_DEFAULT_MEMORY", c.DeviceDefaultMemory, false, &l.DeviceDefaultMemory},
+		{"DEVICE_MAX_CPU", c.DeviceMaxCPU, true, &l.DeviceMaxCPU},
+		{"DEVICE_MAX_MEMORY", c.DeviceMaxMemory, false, &l.DeviceMaxMemory},
+		{"DEVICE_DEFAULT_CPU", c.DeviceDefaultCPU, true, &l.DeviceDefaultCPU},
+		{"DEVICE_DEFAULT_MEMORY", c.DeviceDefaultMemory, false, &l.DeviceDefaultMemory},
 		{"AGENT_LIMIT_GROUP_MAX_CPU", c.GroupMaxCPU, true, &l.GroupMaxCPU},
 		{"AGENT_LIMIT_GROUP_MAX_MEMORY", c.GroupMaxMemory, false, &l.GroupMaxMemory},
 	} {

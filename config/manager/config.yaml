@@ -12,8 +12,8 @@ data:
   # Example: "lab.example.com"
   BASE_DOMAIN: ""
 
-  # UDP port the VPN server listens on.
-  VPN_SERVICE_PORT: "51820"
+  # This kustomize deploy applies no admission policies (the Helm chart does), so the operator is told not to require them.
+  OPERATOR_REQUIRE_ADMISSION_POLICY: "false"
 
   # Base address space for VPN subnets.
   # Client subnet = first /24 (e.g. 10.8.0.0/24).

@@ -22,7 +22,7 @@ spec:
         {{- include "laboratory.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: laboratory-controller-manager
-      priorityClassName: {{ .Values.priorityClasses.platform.name }}
+      priorityClassName: {{ include "laboratory.priorityClass.platform" . }}
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -34,14 +34,14 @@ spec:
       {{- end }}
       containers:
         - name: manager
-          image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.operator.image.pullPolicy "tag" (.Values.operator.image.tag | default .Chart.AppVersion)) }}
+          image: {{ include "laboratory.imageRef" (dict "image" .Values.operator.image "root" $) | quote }}
+          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.operator.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.operator.image "root" $))) }}
           command:
             - /manager
+        {{- /* Leader election and the probe port :8081 are the manager's defaults. */}}
+        {{- if not .Values.operator.leaderElection }}
           args:
-            - --health-probe-bind-address=:8081
-        {{- if .Values.operator.leaderElection }}
-            - --leader-elect
+            - --leader-elect=false
         {{- end }}
           envFrom:
             - configMapRef:

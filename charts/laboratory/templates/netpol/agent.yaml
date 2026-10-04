@@ -1,6 +1,6 @@
 {{/*
 NetworkPolicy + CiliumNetworkPolicy for the laboratory-agent Deployment
-(singleton, namespace .Values.agent.namespace, pod label
+(singleton, namespace laboratory-agent, pod label
 app: laboratory-agent — see charts/laboratory/templates/agent/deployment.yaml).
 
 Ingress (TCP .Values.agent.grpcPort): admitted from Cilium's own Envoy proxy
@@ -23,7 +23,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: laboratory-agent
-  namespace: {{ .Values.agent.namespace }}
+  namespace: laboratory-agent
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
@@ -48,7 +48,7 @@ apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
   name: laboratory-agent
-  namespace: {{ .Values.agent.namespace }}
+  namespace: laboratory-agent
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
