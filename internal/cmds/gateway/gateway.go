@@ -56,9 +56,6 @@ func Run() {
 		log.Error(err, "setup the forwarding filter")
 		os.Exit(1)
 	}
-	if ipt.IPv6Error != nil {
-		log.Error(ipt.IPv6Error, "no ip6tables in this pod and IPv6 could not be switched off")
-	}
 	if !ipt.IPv6Filtered {
 		log.Info("no ip6tables in this pod: the gateway forwards no IPv6")
 	}
