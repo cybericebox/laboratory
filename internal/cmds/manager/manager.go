@@ -57,9 +57,6 @@ import (
 	// +kubebuilder:scaffold:imports
 )
 
-// admissionPolicyTimeout is how long the operator waits at start for its admission policies to be enforced.
-const admissionPolicyTimeout = 90 * time.Second
-
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
@@ -158,7 +155,7 @@ func Run() {
 			setupLog.Error(err, "unable to build the client that checks the admission policies")
 			os.Exit(1)
 		}
-		if err := admissioncheck.Wait(context.Background(), probe, admissionPolicyTimeout, 5*time.Second, func(err error) {
+		if err := admissioncheck.Wait(context.Background(), probe, cfg.AdmissionPolicyTimeout, 5*time.Second, func(err error) {
 			setupLog.Info("the admission policies are not (yet) enforced", "reason", err.Error())
 		}); err != nil {
 			setupLog.Error(err, "the operator's admission policies are not enforced: refusing to run (set operator.admissionPolicy.enabled=false in the chart to accept that on purpose)")
@@ -236,11 +233,12 @@ func Run() {
 		AgentEnabled:      cfg.AgentEnabled,
 		ProxyEnabled:      cfg.ProxyEnabled,
 		AgentSA: types.NamespacedName{
-			Namespace: names.AgentNamespace,
-			Name:      names.AgentServiceAccount,
+			Namespace: cfg.AgentServiceNamespace,
+			Name:      cfg.AgentServiceAccount,
 		},
 		NetworkPolicyEnabled: cfg.NetworkPolicyEnabled,
-		OperatorSA:           types.NamespacedName{Namespace: names.SystemNamespace, Name: names.OperatorServiceAccount},
+		OperatorSA:           types.NamespacedName{Namespace: cfg.OperatorNamespace, Name: cfg.OperatorServiceAccount},
+		VPNStatsInterval:     cfg.VPNStatsInterval,
 		ImagePullSecrets:     cfg.ImagePullSecrets,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LabGroup")
@@ -372,7 +370,7 @@ func Run() {
 
 	setupLog.Info("starting manager")
 	ctx := ctrl.SetupSignalHandler()
-	errorlog.Start(ctx, journal, restCfg, names.SystemNamespace, ctrl.Log.WithName("error-journal"))
+	errorlog.Start(ctx, journal, restCfg, cfg.OperatorNamespace, ctrl.Log.WithName("error-journal"))
 	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)

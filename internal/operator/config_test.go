@@ -2,6 +2,7 @@ package operator
 
 import (
 	"testing"
+	"time"
 )
 
 func TestLoadConfigRequiresLabDomains(t *testing.T) {
@@ -172,5 +173,45 @@ func TestLoadConfigSafeDefaults(t *testing.T) {
 	}
 	if cfg.State.RegistryAddr != "laboratory-registry.laboratory-system.svc:5000" || cfg.Cache.Prefix != "localhost:5035" {
 		t.Errorf("registry addresses: %q %q", cfg.State.RegistryAddr, cfg.Cache.Prefix)
+	}
+}
+
+// The tuning knobs are optional environment variables with fixed defaults: nothing is required, any can be overridden without a rebuild.
+func TestLoadConfigTuningKnobs(t *testing.T) {
+	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com")
+	t.Setenv("BASE_DOMAIN", "labs.example.com")
+	setRequiredEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.VPNStatsInterval != 30*time.Second || cfg.AdmissionPolicyTimeout != 90*time.Second {
+		t.Errorf("VPN_STATS_INTERVAL %v, OPERATOR_ADMISSION_POLICY_TIMEOUT %v", cfg.VPNStatsInterval, cfg.AdmissionPolicyTimeout)
+	}
+	if cfg.AgentServiceAccount != "laboratory-agent" || cfg.AgentServiceNamespace != "laboratory-agent" ||
+		cfg.OperatorServiceAccount != "laboratory-controller-manager" || cfg.OperatorNamespace != "laboratory-system" {
+		t.Errorf("identities: %+v", cfg)
+	}
+	if cfg.PublicVPNEndpoint != "vpn.example.com:51820" {
+		t.Errorf("a host without a port is advertised with the default port: %q", cfg.PublicVPNEndpoint)
+	}
+
+	t.Setenv("VPN_STATS_INTERVAL", "7s")
+	t.Setenv("OPERATOR_ADMISSION_POLICY_TIMEOUT", "5s")
+	t.Setenv("AGENT_SERVICE_ACCOUNT", "agent-sa")
+	t.Setenv("AGENT_SERVICE_NAMESPACE", "agent-ns")
+	t.Setenv("OPERATOR_SERVICE_ACCOUNT", "op-sa")
+	t.Setenv("OPERATOR_NAMESPACE", "op-ns")
+	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:443")
+	cfg, err = LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.VPNStatsInterval != 7*time.Second || cfg.AdmissionPolicyTimeout != 5*time.Second || cfg.AgentServiceAccount != "agent-sa" ||
+		cfg.AgentServiceNamespace != "agent-ns" || cfg.OperatorServiceAccount != "op-sa" || cfg.OperatorNamespace != "op-ns" {
+		t.Errorf("overrides are not read: %+v", cfg)
+	}
+	if cfg.PublicVPNEndpoint != "vpn.example.com:443" {
+		t.Errorf("an endpoint with a port is advertised as it is: %q", cfg.PublicVPNEndpoint)
 	}
 }

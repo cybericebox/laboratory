@@ -264,11 +264,15 @@ func TestRemainingTunablesArePassedWithTheirDefaults(t *testing.T) {
 			t.Errorf("missing %q\n%s", want, out)
 		}
 	}
-	// Constants of the images: nothing passes them.
-	for _, gone := range []string{"VPN_STATS_INTERVAL", "OVS_BRIDGE", "VPN_SERVICE_PORT", "OPERATOR_SERVICE_ACCOUNT", "OPERATOR_NAMESPACE", "AGENT_SERVICE_ACCOUNT", "AGENT_SERVICE_NAMESPACE"} {
-		if strings.Contains(out, gone) {
-			t.Errorf("%s is a constant of the images, not an input", gone)
+	for _, want := range []string{`VPN_STATS_INTERVAL: "30s"`, `name: OVS_BRIDGE`, `OPERATOR_SERVICE_ACCOUNT: "laboratory-controller-manager"`,
+		`OPERATOR_NAMESPACE: "laboratory-system"`, `AGENT_SERVICE_ACCOUNT: "laboratory-agent"`, `AGENT_SERVICE_NAMESPACE: "laboratory-agent"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
 		}
+	}
+	// The port inside the VPN pods is a constant of the images: nothing passes it.
+	if strings.Contains(out, "VPN_SERVICE_PORT") {
+		t.Errorf("VPN_SERVICE_PORT is a constant of the images, not an input")
 	}
 }
 

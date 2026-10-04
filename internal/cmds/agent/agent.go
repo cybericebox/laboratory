@@ -21,7 +21,6 @@ import (
 	grpcserver "github.com/cybericebox/laboratory/internal/agent/grpc"
 	"github.com/cybericebox/laboratory/internal/crdcheck"
 	"github.com/cybericebox/laboratory/internal/errorlog"
-	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/internal/profiles"
 )
@@ -69,7 +68,7 @@ func Run() {
 		log.Fatalf("%v", err)
 	}
 	h.SetFeatures(feat)
-	h.SetErrorJournal(grpcserver.ErrorJournalConfig{ReleaseNamespace: names.SystemNamespace, Self: journal})
+	h.SetErrorJournal(grpcserver.ErrorJournalConfig{ReleaseNamespace: cfg.ReleaseNamespace, Self: journal})
 	go h.RunErrorJournal(context.Background())
 	if err := cfg.GroupPods.Validate(); err != nil {
 		log.Fatalf("%v", err)
@@ -107,11 +106,11 @@ func Run() {
 		h.SetPrewarm(pw)
 	}
 	h.SetMonitoringConfig(grpcserver.MonitoringConfig{
-		JournalSize:         config.DefaultMonitoring.JournalSize,
-		JournalAge:          config.DefaultMonitoring.JournalAge,
-		PollInterval:        config.DefaultMonitoring.PollInterval,
-		SubscriberBuffer:    config.DefaultMonitoring.SubscriberBuffer,
-		MaxStreamsPerTenant: config.DefaultMonitoring.MaxStreamsPerTenant,
+		JournalSize:         cfg.Monitoring.JournalSize,
+		JournalAge:          cfg.Monitoring.JournalAge,
+		PollInterval:        cfg.Monitoring.PollInterval,
+		SubscriberBuffer:    cfg.Monitoring.SubscriberBuffer,
+		MaxStreamsPerTenant: cfg.Monitoring.MaxStreamsPerTenant,
 	})
 	srv, err := grpcserver.New(cfg, h)
 	if err != nil {

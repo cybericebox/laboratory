@@ -9,7 +9,6 @@ import (
 	"github.com/cybericebox/laboratory/internal/agent/config"
 	grpcserver "github.com/cybericebox/laboratory/internal/agent/grpc"
 	"github.com/cybericebox/laboratory/internal/imagecache"
-	"github.com/cybericebox/laboratory/internal/names"
 )
 
 // prewarmConfig builds the cache prewarm setup of the agent from its configuration.
@@ -23,7 +22,7 @@ func prewarmConfig(cfg *config.Config, k8s kubernetes.Interface) (grpcserver.Pre
 		RegistryAddr: cfg.RegistryAddr,
 		Registries:   cfg.Cache.Registries,
 		Resolver: &imagecache.RegistryResolver{
-			Keychain:  &grpcserver.SecretKeychain{K8s: k8s, Namespace: names.SystemNamespace, Names: cfg.Cache.PullSecrets},
+			Keychain:  &grpcserver.SecretKeychain{K8s: k8s, Namespace: cfg.Cache.PullSecretNamespace, Names: cfg.Cache.PullSecrets},
 			TTL:       cfg.Cache.PinTTL,
 			Platforms: grpcserver.NodePlatforms(k8s, selector),
 		},

@@ -98,6 +98,8 @@ type LabGroupReconciler struct {
 	// OperatorSA is the operator's own ServiceAccount: it is bound to the working role in each group namespace
 	// (empty: no binding, for tests).
 	OperatorSA types.NamespacedName
+	// VPNStatsInterval is STATS_INTERVAL of the VPN pod of a new group; zero leaves the pod's own default.
+	VPNStatsInterval time.Duration
 	// ImagePullSecrets names registry Secrets of the operator namespace. They are
 	// copied into every group namespace and referenced by the VPN and gateway pods.
 	ImagePullSecrets []string
@@ -1201,12 +1203,12 @@ func (r *LabGroupReconciler) reportPinWarning(lg *laboratoryv1alpha1.LabGroup, n
 	}
 }
 
-// vpnStatsInterval is how often the VPN pod of a group samples traffic statistics (STATS_INTERVAL of the pod).
-const vpnStatsInterval = 30 * time.Second
-
-// vpnStatsEnv is STATS_INTERVAL of the VPN pod.
+// vpnStatsEnv is STATS_INTERVAL of the VPN pod, when the operator is told one.
 func (r *LabGroupReconciler) vpnStatsEnv() []corev1.EnvVar {
-	return []corev1.EnvVar{{Name: "STATS_INTERVAL", Value: vpnStatsInterval.String()}}
+	if r.VPNStatsInterval <= 0 {
+		return nil
+	}
+	return []corev1.EnvVar{{Name: "STATS_INTERVAL", Value: r.VPNStatsInterval.String()}}
 }
 
 // gatewayEnv is the environment of the gateway container: where it lives and the lab address space.

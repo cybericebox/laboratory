@@ -61,6 +61,13 @@ operator copies into every lab group namespace and sets on lab pods.
 {{- end -}}
 
 {{/*
+host:port of the platform registry Service inside the cluster (the release namespace).
+*/}}
+{{- define "laboratory.registryAddr" -}}
+{{- printf "laboratory-registry.%s.svc:5000" .Release.Namespace -}}
+{{- end }}
+
+{{/*
 The release tag of an image: the image's own tag when set, else the global image.tag, else the chart appVersion. One release tag
 drives every image; the per-image tag stays for pinning another build. Arguments: dict "image" <values .image> "root" $.
 */}}
@@ -76,18 +83,30 @@ repository:tag of an image. Arguments: dict "image" <values .image> "root" $.
 {{- end }}
 
 {{/*
-Constants of the platform that the images share (internal/names): the WireGuard port, the ports of the proxy containers and of the
-node-agent probes, the names of the priority classes. Not values:
-they are baked into the images, so nothing has to pass them.
+Constants of the platform that the images share (internal/names): the WireGuard port inside the VPN pods, the ports of the proxy
+containers. Not values: they are baked into the images, so nothing has to pass them.
 */}}
 {{- define "laboratory.wgPort" -}}51820{{- end }}
+
+{{/*
+The UDP port clients connect to, outside the cluster (the port of the LoadBalancer Service): proxy.wg.publicPort.
+*/}}
+{{- define "laboratory.wgPublicPort" -}}{{ .Values.proxy.wg.publicPort | int }}{{- end }}
+
+{{/*
+The WireGuard address advertised to clients (PUBLIC_VPN_ENDPOINT): operator.publicVPNEndpoint, with proxy.wg.publicPort appended when it
+names no port.
+*/}}
+{{- define "laboratory.publicVPNEndpoint" -}}
+{{- $endpoint := required "operator.publicVPNEndpoint is required" .Values.operator.publicVPNEndpoint -}}
+{{- if regexMatch ":[0-9]+$" $endpoint -}}{{ $endpoint }}{{- else -}}{{ printf "%s:%s" $endpoint (include "laboratory.wgPublicPort" .) }}{{- end -}}
+{{- end }}
 {{- define "laboratory.l7Port" -}}8443{{- end }}
 {{- define "laboratory.l7HealthPort" -}}8081{{- end }}
 {{- define "laboratory.wgHealthPort" -}}8082{{- end }}
-{{- define "laboratory.nodeHealthPort" -}}9440{{- end }}
-{{- define "laboratory.priorityClass.platform" -}}laboratory-platform{{- end }}
-{{- define "laboratory.priorityClass.group" -}}laboratory-group{{- end }}
-{{- define "laboratory.priorityClass.device" -}}laboratory-device{{- end }}
+{{- define "laboratory.priorityClass.platform" -}}{{ .Values.priorityClasses.platform.name }}{{- end }}
+{{- define "laboratory.priorityClass.group" -}}{{ .Values.priorityClasses.group.name }}{{- end }}
+{{- define "laboratory.priorityClass.device" -}}{{ .Values.priorityClasses.device.name }}{{- end }}
 
 {{/*
 The public host of the management agent: agent.domain, else ctl.<operator.baseDomain>.
@@ -103,7 +122,7 @@ names it knows. The map is YAML: consumers use `include ... | fromYaml`.
 */}}
 {{- define "laboratory.sharedEnv" -}}
 BASE_DOMAIN: {{ required "operator.baseDomain is required" .Values.operator.baseDomain | quote }}
-PUBLIC_VPN_ENDPOINT: {{ required "operator.publicVPNEndpoint is required" .Values.operator.publicVPNEndpoint | quote }}
+PUBLIC_VPN_ENDPOINT: {{ include "laboratory.publicVPNEndpoint" . | quote }}
 IMAGE_PULL_SECRETS: {{ include "laboratory.pullSecretNames" . | quote }}
 LAB_NODE_SELECTOR: {{ include "laboratory.labNodeSelector" . | quote }}
 LAB_TOLERATIONS: {{ .Values.labWorkloads.tolerations | toJson | quote }}

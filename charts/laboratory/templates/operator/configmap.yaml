@@ -29,11 +29,17 @@ data:
 {{- if .Values.labScheduler.enabled }}
   LAB_SCHEDULER_NAME: {{ .Values.labScheduler.schedulerName | quote }}
 {{- end }}
+  VPN_STATS_INTERVAL: {{ .Values.vpn.statsInterval | quote }}
   NETWORK_POLICY_ENABLED: {{ .Values.operator.groupNetworkPolicy.enabled | quote }}
   DEVICE_USER_NAMESPACES: {{ .Values.devices.security.userNamespaces | quote }}
   DEVICE_EPHEMERAL_STORAGE: {{ .Values.devices.security.ephemeralStorage | quote }}
+  # The operator's own identity and the agent's: in every LabGroup namespace the operator binds them to their Roles.
+  OPERATOR_SERVICE_ACCOUNT: "laboratory-controller-manager"
+  OPERATOR_NAMESPACE: {{ .Release.Namespace | quote }}
   AGENT_ENABLED: {{ .Values.agent.enabled | quote }}
   PROXY_ENABLED: {{ .Values.proxy.enabled | quote }}
+  AGENT_SERVICE_ACCOUNT: "laboratory-agent"
+  AGENT_SERVICE_NAMESPACE: {{ .Values.agent.namespace | quote }}
   SUPPORT_EMAIL: {{ required "operator.supportEmail is required" .Values.operator.supportEmail | quote }}
   SCHEDULER_STARTUP_TIMEOUT: {{ .Values.scheduler.startupTimeout | quote }}
   SCHEDULER_RESTART_THRESHOLD: {{ .Values.scheduler.restartThreshold | quote }}
@@ -43,9 +49,10 @@ data:
   TENANT_ENROLLMENT_TTL: {{ .Values.agent.enrollment.tokenTTL | quote }}
   # The operator checks at start that the admission policies are enforced on it and exits if they are not (with them off it is told so).
   OPERATOR_REQUIRE_ADMISSION_POLICY: {{ .Values.operator.admissionPolicy.enabled | quote }}
-  # State persistence: the registry address is derived (names.RegistryServiceAddr); the credentials come from the registry Secret.
+  # State persistence: the credentials come from the registry Secret.
   {{- with .Values.devices.statePersistence }}
   {{- if .enabled }}
+  STATE_REGISTRY_ADDR: {{ include "laboratory.registryAddr" $ | quote }}
   STATE_MAX_LAYERS: {{ .maxLayers | quote }}
   STATE_RETENTION: {{ .retention | quote }}
   STATE_RETENTION_INTERVAL: {{ .retentionInterval | quote }}

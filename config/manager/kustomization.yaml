@@ -1,9 +1,9 @@
 resources:
-  - config.yaml
-  - manager.yaml
+- config.yaml
+- manager.yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 images:
-  - name: controller
-    newName: controller
-    newTag: 0.1.0
+- name: controller
+  newName: example.com/laboratory
+  newTag: v0.0.1

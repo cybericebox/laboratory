@@ -158,7 +158,7 @@ namespace; `templates/validate.yaml` rejects anything else and fails early when 
    # my-values.yaml
    operator:
      baseDomain: lab.example.com                  # REQUIRED: base domain of lab web hosts
-     publicVPNEndpoint: vpn.example.com:51820     # REQUIRED: host:port handed to WireGuard clients
+     publicVPNEndpoint: vpn.example.com            # REQUIRED: host (or host:port) handed to WireGuard clients; the port is proxy.wg.publicPort, 51820 by default
      supportEmail: support@example.com            # shown on the VPN probe page
    agent:
      enabled: true                                # its host is ctl.<baseDomain> unless agent.domain is set
@@ -173,8 +173,9 @@ namespace; `templates/validate.yaml` rejects anything else and fails early when 
 
    These are the only values an installation has to give (and `certManager.email` with an ACME issuer). One release tag drives every image
    (`image.tag`, empty = the chart `appVersion`); everything else has a default that suits any installation and stays overridable. All options
-   are documented in [`charts/laboratory/values.yaml`](charts/laboratory/values.yaml); the settings that became constants of the images (ports,
-   paths, names) are listed in [`DEPLOY.md`](DEPLOY.md) ("The inputs").
+   are documented in [`charts/laboratory/values.yaml`](charts/laboratory/values.yaml); only the ports inside the cluster network are constants
+   of the images, they are listed in [`DEPLOY.md`](DEPLOY.md) ("The inputs"). The port clients connect to outside the cluster is
+   `proxy.wg.publicPort` (51820 by default).
 
 5. Install:
 

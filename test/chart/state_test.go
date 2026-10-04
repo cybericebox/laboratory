@@ -137,9 +137,10 @@ func TestStatePersistenceRendersRegistryAndWiring(t *testing.T) {
 		}
 	}
 
-	// The registry address and its relay port, the cgroup root and the work directory are constants of the images, not passed.
-	if _, set := opCfg.Data["STATE_REGISTRY_ADDR"]; set {
-		t.Errorf("the registry address is derived (names.RegistryServiceAddr), not passed")
+	// The registry address follows the release namespace and is passed; its relay port 5035, the cgroup root and the work directory are
+	// the images' own (optional environment variables with those defaults, not passed by the chart).
+	if opCfg.Data["STATE_REGISTRY_ADDR"] != "laboratory-registry.laboratory-system.svc:5000" {
+		t.Errorf("the operator is passed the registry address: %q", opCfg.Data["STATE_REGISTRY_ADDR"])
 	}
 	if names.RegistryServiceAddr != "laboratory-registry.laboratory-system.svc:5000" || names.RegistryForwardPort != 5035 {
 		t.Errorf("the registry Service is laboratory-registry in laboratory-system on port 5000, relayed on 5035: %s %d", names.RegistryServiceAddr, names.RegistryForwardPort)
@@ -147,9 +148,12 @@ func TestStatePersistenceRendersRegistryAndWiring(t *testing.T) {
 	ds := nodeAgent(t, on...)
 	agent := ds.Spec.Template.Spec.Containers[0]
 	env := envOf(agent)
-	for _, baked := range []string{"STATE_REGISTRY_ADDR", "STATE_FORWARD_PORT", "CGROUP_ROOT", "STATE_WORK_DIR"} {
+	if env["STATE_REGISTRY_ADDR"].Value != "laboratory-registry.laboratory-system.svc:5000" {
+		t.Errorf("the node-agent is passed the registry address: %q", env["STATE_REGISTRY_ADDR"].Value)
+	}
+	for _, baked := range []string{"STATE_FORWARD_PORT", "CGROUP_ROOT", "STATE_WORK_DIR"} {
 		if _, set := env[baked]; set {
-			t.Errorf("%s is a constant of the node-agent image, not an input", baked)
+			t.Errorf("%s is not passed by the chart (the relay port is a constant, the others default in the image)", baked)
 		}
 	}
 	mounts := map[string]corev1.VolumeMount{}
@@ -414,7 +418,7 @@ func TestAgentPrewarmWiring(t *testing.T) {
 	}
 }
 
-// The registry is always installed at a fixed address, so the agent derives it (names.RegistryServiceAddr) and is passed only the reader account.
+// The registry address follows the release namespace and is passed to the agent, together with the reader account.
 func TestAgentGetsTheRegistryReaderAccountForSnapshotExport(t *testing.T) {
 	agent := []string{"--set", "agent.enabled=true", "--set", "agent.domain=a.example.com"}
 	for name, extra := range map[string][]string{
@@ -425,8 +429,8 @@ func TestAgentGetsTheRegistryReaderAccountForSnapshotExport(t *testing.T) {
 		var dep appsv1.Deployment
 		render(t, "templates/agent/deployment.yaml", &dep, append(agent, extra...)...)
 		env := envOf(dep.Spec.Template.Spec.Containers[0])
-		if _, set := env["AGENT_REGISTRY_ADDR"]; set {
-			t.Errorf("%s: the registry address is derived, not passed", name)
+		if env["AGENT_REGISTRY_ADDR"].Value != "laboratory-registry.laboratory-system.svc:5000" {
+			t.Errorf("%s: the registry address is passed: %q", name, env["AGENT_REGISTRY_ADDR"].Value)
 		}
 		for _, k := range []string{"AGENT_REGISTRY_USER", "AGENT_REGISTRY_PASSWORD"} {
 			if env[k].ValueFrom == nil || env[k].ValueFrom.SecretKeyRef.Name != "laboratory-registry-reader" {

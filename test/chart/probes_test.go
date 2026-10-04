@@ -99,9 +99,9 @@ func TestEveryServiceHasProbesAndRollsOutOnReadiness(t *testing.T) {
 		}
 	}
 	needProbes(t, "node-agent", main)
-	// The node-agent listens on 127.0.0.1:9440 by default (internal/nodeagent/config.go; its own test pins it): no HEALTH_ADDR is passed.
-	if _, set := envOf(main)["HEALTH_ADDR"]; set || main.LivenessProbe.HTTPGet == nil || main.LivenessProbe.HTTPGet.Host != "127.0.0.1" || main.LivenessProbe.HTTPGet.Port.IntValue() != 9440 {
-		t.Errorf("the node-agent's probes are on the loopback of the node, at the image's default port: %+v %v", main.LivenessProbe.HTTPGet, envOf(main)["HEALTH_ADDR"])
+	// The node-agent listens on the loopback of the node at nodeAgent.healthPort (9440): HEALTH_ADDR and the probes agree.
+	if envOf(main)["HEALTH_ADDR"].Value != "127.0.0.1:9440" || main.LivenessProbe.HTTPGet == nil || main.LivenessProbe.HTTPGet.Host != "127.0.0.1" || main.LivenessProbe.HTTPGet.Port.IntValue() != 9440 {
+		t.Errorf("the node-agent's probes are on the loopback of the node, at its health port: %+v %v", main.LivenessProbe.HTTPGet, envOf(main)["HEALTH_ADDR"])
 	}
 	if ds.Spec.MinReadySeconds == 0 || ds.Spec.UpdateStrategy.RollingUpdate == nil || ds.Spec.UpdateStrategy.RollingUpdate.MaxUnavailable.IntValue() != 1 {
 		t.Errorf("a node-agent rollout moves one node at a time and waits for Ready: %+v", ds.Spec.UpdateStrategy)

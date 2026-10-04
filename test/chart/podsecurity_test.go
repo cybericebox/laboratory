@@ -314,9 +314,9 @@ func TestErrorJournalPermissionsAndWiring(t *testing.T) {
 	if !creates {
 		t.Error("the proxy publishes its errors as events")
 	}
-	// The agent reads the release namespace from the image (names.SystemNamespace): only the proxy and the node-agent are told.
-	if !strings.Contains(out, "name: ERROR_JOURNAL_NAMESPACE") || strings.Contains(out, "AGENT_RELEASE_NAMESPACE") {
-		t.Errorf("ERROR_JOURNAL_NAMESPACE must be passed and AGENT_RELEASE_NAMESPACE must not exist")
+	// The proxy and the node-agent are told the release namespace as ERROR_JOURNAL_NAMESPACE, the agent as AGENT_RELEASE_NAMESPACE.
+	if !strings.Contains(out, "name: ERROR_JOURNAL_NAMESPACE") || !strings.Contains(out, "name: AGENT_RELEASE_NAMESPACE") {
+		t.Errorf("ERROR_JOURNAL_NAMESPACE and AGENT_RELEASE_NAMESPACE must be passed")
 	}
 	if n := strings.Count(out, "name: ERROR_JOURNAL_NAMESPACE"); n != 3 {
 		t.Errorf("l7, demux and the node-agent each know where to publish: %d", n)

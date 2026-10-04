@@ -17,7 +17,7 @@ import (
 )
 
 type Config struct {
-	// PublicVPNEndpoint is the host:port advertised to WireGuard clients (demux public address).
+	// PublicVPNEndpoint is the host:port advertised to WireGuard clients (demux public address); a host alone gets the default port.
 	// Required, no default: the domain comes only from configuration.
 	PublicVPNEndpoint string `env:"PUBLIC_VPN_ENDPOINT,notEmpty"`
 	// BaseDomain is the cluster ingress base domain used for device exposure URLs.
@@ -59,15 +59,26 @@ type Config struct {
 	LabNodeSelectorJSON string `env:"LAB_NODE_SELECTOR" envDefault:"{}"`
 	// LabTolerationsJSON is a JSON-encoded []corev1.Toleration applied to all runtime lab pods.
 	LabTolerationsJSON string `env:"LAB_TOLERATIONS" envDefault:"[]"`
-	// AgentEnabled gates creation of the management-agent RoleBinding in each LabGroup namespace (names.AgentServiceAccount of
-	// names.AgentNamespace). On by default, as in the chart: a binding to an agent that does not run grants nothing.
+	// AgentEnabled gates creation of the management-agent RoleBinding in each LabGroup namespace. On by default, as in the chart: a
+	// binding to an agent that does not run grants nothing.
 	AgentEnabled bool `env:"AGENT_ENABLED" envDefault:"true"`
+	// AgentServiceAccount and AgentServiceNamespace are the management agent's identity bound by that RoleBinding (empty =
+	// names.AgentServiceAccount in names.AgentNamespace, the chart's defaults).
+	AgentServiceAccount   string `env:"AGENT_SERVICE_ACCOUNT"`
+	AgentServiceNamespace string `env:"AGENT_SERVICE_NAMESPACE"`
+	// OperatorServiceAccount and OperatorNamespace are the operator's own identity: in every LabGroup namespace it binds that
+	// ServiceAccount to the ClusterRole of its working permissions (it has no cluster-wide write access). Empty =
+	// names.OperatorServiceAccount in names.SystemNamespace.
+	OperatorServiceAccount string `env:"OPERATOR_SERVICE_ACCOUNT"`
+	OperatorNamespace      string `env:"OPERATOR_NAMESPACE"`
 	// ProxyEnabled gates the RoleBinding that lets the L7 proxy write its traffic reports in each group namespace. On by default,
 	// as in the chart.
 	ProxyEnabled bool `env:"PROXY_ENABLED" envDefault:"true"`
 	// NetworkPolicyEnabled gates creation of the default-deny NetworkPolicy
 	// baseline in each LabGroup namespace.
 	NetworkPolicyEnabled bool `env:"NETWORK_POLICY_ENABLED" envDefault:"true"`
+	// VPNStatsInterval is how often the VPN pod of a NEW group samples traffic statistics (env STATS_INTERVAL of the pod).
+	VPNStatsInterval time.Duration `env:"VPN_STATS_INTERVAL" envDefault:"30s"`
 	// ImagePullSecrets lists registry Secrets (kubernetes.io/dockerconfigjson) in the
 	// operator namespace, created outside the chart. The operator copies them into
 	// every group namespace and sets them on the VPN, gateway and device pods, so a
@@ -116,6 +127,8 @@ type Config struct {
 	// is not confined must be asked for by name (OPERATOR_REQUIRE_ADMISSION_POLICY=false: a developer's machine, where it is not the
 	// ServiceAccount the policies are about, or a deploy without the chart).
 	RequireAdmissionPolicy bool `env:"OPERATOR_REQUIRE_ADMISSION_POLICY" envDefault:"true"`
+	// AdmissionPolicyTimeout is how long the operator waits at start for the policies to be enforced.
+	AdmissionPolicyTimeout time.Duration `env:"OPERATOR_ADMISSION_POLICY_TIMEOUT" envDefault:"90s"`
 
 	// DeviceDefaultCPU and DeviceDefaultMemory are the requests and limits of a
 	// device container that declares neither (requests always equal limits, so
@@ -226,6 +239,27 @@ func (c StateConfig) MaxFileBytes() (int64, error) {
 	return q.Value(), nil
 }
 
+// applyDefaults fills what is left empty with the platform's own values: the chart's identities, the registry addresses, the
+// default WireGuard port, the gateway image (one image with the VPN, two commands).
+func (cfg *Config) applyDefaults() {
+	cfg.PublicVPNEndpoint = names.WithPublicVPNPort(cfg.PublicVPNEndpoint)
+	if cfg.GatewayImage == "" {
+		cfg.GatewayImage = cfg.VPNImage
+	}
+	for dst, def := range map[*string]string{
+		&cfg.AgentServiceAccount:    names.AgentServiceAccount,
+		&cfg.AgentServiceNamespace:  names.AgentNamespace,
+		&cfg.OperatorServiceAccount: names.OperatorServiceAccount,
+		&cfg.OperatorNamespace:      names.SystemNamespace,
+		&cfg.Cache.Prefix:           names.RegistryNodePrefix,
+		&cfg.State.RegistryAddr:     names.RegistryServiceAddr,
+	} {
+		if *dst == "" {
+			*dst = def
+		}
+	}
+}
+
 func LoadConfig() (*Config, error) {
 	cfg := &Config{}
 	if err := config.Load(cfg); err != nil {
@@ -234,15 +268,7 @@ func LoadConfig() (*Config, error) {
 	if address, err := mail.ParseAddress(cfg.SupportEmail); err != nil || address.Address != cfg.SupportEmail {
 		return nil, fmt.Errorf("SUPPORT_EMAIL %q is not a plain email address", cfg.SupportEmail)
 	}
-	if cfg.GatewayImage == "" {
-		cfg.GatewayImage = cfg.VPNImage
-	}
-	if cfg.Cache.Prefix == "" {
-		cfg.Cache.Prefix = names.RegistryNodePrefix
-	}
-	if cfg.State.RegistryAddr == "" {
-		cfg.State.RegistryAddr = names.RegistryServiceAddr
-	}
+	cfg.applyDefaults()
 	for name, image := range map[string]string{"VPN_IMAGE": cfg.VPNImage, "GATEWAY_IMAGE": cfg.GatewayImage, "NETCONFIG_IMAGE": cfg.NetConfigImage} {
 		if err := checkExactImage(image); err != nil {
 			return nil, fmt.Errorf("%s %q: %w", name, image, err)

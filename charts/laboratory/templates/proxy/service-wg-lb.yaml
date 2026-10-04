@@ -31,7 +31,7 @@ spec:
   ports:
     - name: wg
       protocol: UDP
-      port: {{ include "laboratory.wgPort" . }}
+      port: {{ include "laboratory.wgPublicPort" . }}
       targetPort: {{ include "laboratory.wgPort" . }}
       {{- with .Values.proxy.wg.nodePort }}
       nodePort: {{ . }}

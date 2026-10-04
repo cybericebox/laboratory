@@ -44,3 +44,42 @@ func TestFeatureDefaultsMirrorTheChart(t *testing.T) {
 		t.Fatalf("%+v %+v", c.State, c.Scheduler)
 	}
 }
+
+// The monitoring sizes and the namespaces are optional environment variables with fixed defaults.
+func TestLoadTuningKnobs(t *testing.T) {
+	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := c.Monitoring
+	if m.JournalSize != 10000 || m.JournalAge != 15*time.Minute || m.PollInterval != time.Second || m.SubscriberBuffer != 256 || m.MaxStreamsPerTenant != 8 {
+		t.Errorf("monitoring defaults: %+v", m)
+	}
+	if c.ReleaseNamespace != "laboratory-system" || c.Cache.PullSecretNamespace != "laboratory-system" {
+		t.Errorf("namespaces: %q %q", c.ReleaseNamespace, c.Cache.PullSecretNamespace)
+	}
+	if c.PublicVPNEndpoint != "vpn.example.com:51820" {
+		t.Errorf("a host without a port gets the default port: %q", c.PublicVPNEndpoint)
+	}
+	t.Setenv("AGENT_MONITORING_JOURNAL_SIZE", "5")
+	t.Setenv("AGENT_MONITORING_JOURNAL_AGE", "1m")
+	t.Setenv("AGENT_MONITORING_POLL_INTERVAL", "3s")
+	t.Setenv("AGENT_MONITORING_SUBSCRIBER_BUFFER", "7")
+	t.Setenv("AGENT_MONITORING_MAX_STREAMS_PER_TENANT", "2")
+	t.Setenv("AGENT_RELEASE_NAMESPACE", "rel")
+	t.Setenv("AGENT_PULL_SECRET_NAMESPACE", "pull")
+	t.Setenv("AGENT_REGISTRY_ADDR", "reg.example:5000")
+	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:443")
+	c, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = c.Monitoring
+	if m.JournalSize != 5 || m.JournalAge != time.Minute || m.PollInterval != 3*time.Second || m.SubscriberBuffer != 7 || m.MaxStreamsPerTenant != 2 {
+		t.Errorf("monitoring overrides: %+v", m)
+	}
+	if c.ReleaseNamespace != "rel" || c.Cache.PullSecretNamespace != "pull" || c.RegistryAddr != "reg.example:5000" || c.PublicVPNEndpoint != "vpn.example.com:443" {
+		t.Errorf("overrides: %q %q %q %q", c.ReleaseNamespace, c.Cache.PullSecretNamespace, c.RegistryAddr, c.PublicVPNEndpoint)
+	}
+}

@@ -66,6 +66,11 @@ type Config struct {
 	AllowInsecure bool `env:"AGENT_ALLOW_INSECURE" envDefault:"false"`
 	// Server holds the limits of the gRPC front.
 	Server ServerLimits
+	// Monitoring bounds the shared journal behind the Monitoring stream.
+	Monitoring MonitoringConfig
+	// ReleaseNamespace is where the operator, node-agents and proxy publish their error events (the chart's release namespace);
+	// empty = names.SystemNamespace.
+	ReleaseNamespace string `env:"AGENT_RELEASE_NAMESPACE"`
 	// LabNodeSelector and LabTolerations (JSON) describe the nodes lab pods run on: they decide
 	// which platform of an image is warmed and what a percentage tenant quota is a percentage of.
 	// The names are the operator's (LAB_NODE_SELECTOR, LAB_TOLERATIONS): one chart value, one name.
@@ -151,6 +156,8 @@ type CacheConfig struct {
 	Registries []string `env:"IMAGE_CACHE_REGISTRIES" envSeparator:"," envDefault:"docker.io,ghcr.io,quay.io,registry.k8s.io"`
 	// PullSecrets are dockerconfigjson Secrets of the release namespace used to ask the upstream registries for digests.
 	PullSecrets []string `env:"IMAGE_PULL_SECRETS" envSeparator:","`
+	// PullSecretNamespace is the namespace of those Secrets; empty = names.SystemNamespace.
+	PullSecretNamespace string `env:"AGENT_PULL_SECRET_NAMESPACE"`
 	// PinTTL is how long a resolved digest is remembered (the tag is looked up again after it).
 	PinTTL      time.Duration `env:"IMAGE_CACHE_PIN_TTL" envDefault:"30m"`
 	Concurrency int           `env:"AGENT_PREWARM_CONCURRENCY" envDefault:"4"`
@@ -161,22 +168,14 @@ type CacheConfig struct {
 // subscriber that lags more than SubscriberBuffer updates is dropped (it reconnects
 // and resumes); a resume older than JournalSize updates or JournalAge gets a snapshot.
 type MonitoringConfig struct {
-	JournalSize      int
-	JournalAge       time.Duration
-	PollInterval     time.Duration
-	SubscriberBuffer int
+	JournalSize int           `env:"AGENT_MONITORING_JOURNAL_SIZE" envDefault:"10000"`
+	JournalAge  time.Duration `env:"AGENT_MONITORING_JOURNAL_AGE" envDefault:"15m"`
+	// PollInterval: a poll reads informer caches (no API call), so one second is cheap; the caches hold the objects of all
+	// tenants (raise the agent resources with the number of labs).
+	PollInterval     time.Duration `env:"AGENT_MONITORING_POLL_INTERVAL" envDefault:"1s"`
+	SubscriberBuffer int           `env:"AGENT_MONITORING_SUBSCRIBER_BUFFER" envDefault:"256"`
 	// MaxStreamsPerTenant caps the Monitoring streams one tenant may hold open (0 = unlimited).
-	MaxStreamsPerTenant int
-}
-
-// DefaultMonitoring is the sizing of the Monitoring stream: internal mechanics, not a setting. A poll reads informer caches (no API call),
-// so one second is cheap; the caches hold the objects of all tenants (raise the agent resources with the number of labs).
-var DefaultMonitoring = MonitoringConfig{
-	JournalSize:         10000,
-	JournalAge:          15 * time.Minute,
-	PollInterval:        time.Second,
-	SubscriberBuffer:    256,
-	MaxStreamsPerTenant: 8,
+	MaxStreamsPerTenant int `env:"AGENT_MONITORING_MAX_STREAMS_PER_TENANT" envDefault:"8"`
 }
 
 // MTLSEnabled is whether callers must present a client certificate: always, but for the development switch AllowInsecure.
@@ -189,6 +188,13 @@ func Load() (*Config, error) {
 	}
 	if c.RegistryAddr == "" {
 		c.RegistryAddr = names.RegistryServiceAddr
+	}
+	c.PublicVPNEndpoint = names.WithPublicVPNPort(c.PublicVPNEndpoint)
+	if c.ReleaseNamespace == "" {
+		c.ReleaseNamespace = names.SystemNamespace
+	}
+	if c.Cache.PullSecretNamespace == "" {
+		c.Cache.PullSecretNamespace = names.SystemNamespace
 	}
 	if c.Cache.NodePrefix == "" {
 		c.Cache.NodePrefix = names.RegistryNodePrefix
