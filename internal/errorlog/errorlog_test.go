@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-logr/logr"
 	"github.com/go-logr/logr/funcr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
@@ -86,7 +85,7 @@ func TestLogSinkCountsErrorsOnlyAndPassesEverythingOn(t *testing.T) {
 			t.Fatalf("address in %q", g.Normalized)
 		}
 	}
-	var _ logr.Logger = log
+	var _ = log
 }
 
 func TestPublisherWritesAndUpdatesEventsAndTheyParseBack(t *testing.T) {

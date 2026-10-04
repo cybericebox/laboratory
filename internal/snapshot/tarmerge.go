@@ -55,6 +55,8 @@ func parentOf(p string) string {
 //
 // maxEntries (optional, 0 = no limit) bounds the entries of the result: the merge keeps a map of every path in memory, so
 // it stops with ErrEntries as soon as the survivors pass the cap.
+//
+//nolint:gocyclo // one decision over many cases; splitting it would scatter the rule
 func MergeLayers(layers []Opener, out io.Writer, maxEntries ...int) (Stats, error) {
 	var st Stats
 	limit := 0
@@ -84,7 +86,7 @@ func MergeLayers(layers []Opener, out io.Writer, maxEntries ...int) (Stats, erro
 				break
 			}
 			if err != nil {
-				rc.Close()
+				_ = rc.Close()
 				return st, fmt.Errorf("layer %d: %w", i, err)
 			}
 			logical, whiteout, opaque := entryPath(hdr.Name)
@@ -112,7 +114,7 @@ func MergeLayers(layers []Opener, out io.Writer, maxEntries ...int) (Stats, erro
 				}
 				emitted[logical] = true
 				if limit > 0 && len(emitted)+len(markers) > limit {
-					rc.Close()
+					_ = rc.Close()
 					return st, fmt.Errorf("%w: more than %d entries after squashing", ErrEntries, limit)
 				}
 				kept[i][idx] = true
@@ -121,7 +123,7 @@ func MergeLayers(layers []Opener, out io.Writer, maxEntries ...int) (Stats, erro
 				}
 			}
 		}
-		rc.Close()
+		_ = rc.Close()
 		for k := range layerMarkers.whiteouts {
 			hidden.whiteouts[k] = true
 		}
@@ -153,7 +155,7 @@ func MergeLayers(layers []Opener, out io.Writer, maxEntries ...int) (Stats, erro
 				break
 			}
 			if err != nil {
-				rc.Close()
+				_ = rc.Close()
 				return st, fmt.Errorf("layer %d: %w", i, err)
 			}
 			if !kept[i][idx] {
@@ -164,20 +166,20 @@ func MergeLayers(layers []Opener, out io.Writer, maxEntries ...int) (Stats, erro
 				continue
 			}
 			if err := tw.WriteHeader(hdr); err != nil {
-				rc.Close()
+				_ = rc.Close()
 				return st, err
 			}
 			if hdr.Typeflag == tar.TypeReg {
 				n, err := io.Copy(tw, tr)
 				if err != nil {
-					rc.Close()
+					_ = rc.Close()
 					return st, err
 				}
 				st.Bytes += n
 			}
 			st.Entries++
 		}
-		rc.Close()
+		_ = rc.Close()
 	}
 	return st, tw.Close()
 }

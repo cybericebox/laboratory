@@ -5,13 +5,14 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"github.com/cybericebox/laboratory/internal/errorlog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/cybericebox/laboratory/internal/errorlog"
 
 	_ "github.com/cybericebox/laboratory/pkg/runtime"
 

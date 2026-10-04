@@ -5,6 +5,7 @@ package nodeagent
 import (
 	"time"
 
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/config"
 )
 
@@ -23,7 +24,7 @@ type Config struct {
 	DevicePluginDir string `env:"DEVICE_PLUGIN_DIR" envDefault:"/var/lib/kubelet/device-plugins"`
 	// TunCheckPath is what the plugin looks at to see that the tun device exists on the HOST: the sysfs entry of the tun misc device
 	// (the container's own /dev has no tun even when the host does).
-	TunCheckPath string `env:"TUN_CHECK_PATH" envDefault:"/sys/class/misc/tun/dev"`
+	TunCheckPath string `env:"TUN_CHECK_PATH"   envDefault:"/sys/class/misc/tun/dev"`
 	TunSlots     int    `env:"TUN_SLOTS"         envDefault:"1000"`
 	// PortPolicingKbps is the rate (kbit/s) a device's veth port may send into the bridge: the storm control of the shared switch
 	// (0 = off). OVSWatchInterval is how often the node-agent asks OVS (database and OpenFlow) for a sign of life; after
@@ -36,17 +37,15 @@ type Config struct {
 	ImagePullConcurrency int           `env:"IMAGE_PULL_CONCURRENCY" envDefault:"2"`
 	ImagePullTimeout     time.Duration `env:"IMAGE_PULL_TIMEOUT"     envDefault:"5m"`
 
-	// The platform registry (zot): the snapshots of device state and the image
-	// cache. Empty StateRegistryAddr switches both off.
+	// The platform registry (zot): the snapshots of device state and the image cache.
 	//
-	// StateRegistryAddr is host:port of the registry Service. The node-agent
-	// relays it to 127.0.0.1:StateForwardPort, so snapshot and cached images are
-	// referenced as localhost:<port>/... and pulled by the node's containerd
-	// over plain HTTP without any host configuration.
+	// StateRegistryAddr is host:port of the registry Service (empty = names.RegistryServiceAddr: the chart always installs it there).
+	// The node-agent relays it to 127.0.0.1:StateForwardPort (names.RegistryForwardPort, a constant), so snapshot and cached images are
+	// referenced as localhost:<port>/... and pulled by the node's containerd over plain HTTP without any host configuration.
 	StateRegistryAddr     string `env:"STATE_REGISTRY_ADDR"`
 	StateRegistryUser     string `env:"STATE_REGISTRY_USER"`
 	StateRegistryPassword string `env:"STATE_REGISTRY_PASSWORD"`
-	StateForwardPort      int    `env:"STATE_FORWARD_PORT"    envDefault:"5035"`
+	StateForwardPort      int
 	// The reader account of the registry (it may read the snapshots and the base repository; the forwarder adds it to the
 	// node runtime's pulls of those). Empty: the forwarder is a plain relay.
 	StateRegistryReaderUser     string `env:"STATE_REGISTRY_READER_USER"`
@@ -76,6 +75,12 @@ type Config struct {
 }
 
 func LoadConfig() (*Config, error) {
-	cfg := &Config{}
-	return cfg, config.Load(cfg)
+	cfg := &Config{StateForwardPort: names.RegistryForwardPort}
+	if err := config.Load(cfg); err != nil {
+		return cfg, err
+	}
+	if cfg.StateRegistryAddr == "" {
+		cfg.StateRegistryAddr = names.RegistryServiceAddr
+	}
+	return cfg, nil
 }

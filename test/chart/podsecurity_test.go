@@ -234,8 +234,9 @@ func TestDevicePluginCannotBlockTheCNI(t *testing.T) {
 	if found != 1 {
 		t.Fatalf("the device-plugin volume: found %d of 1", found)
 	}
-	if !regexp.MustCompile(`TUN_CHECK_PATH\s+value: /sys/class/misc/tun/dev`).MatchString(out) {
-		t.Error("the plugin must check the host's sysfs entry of tun, not the container's /dev")
+	// The check path (the host's sysfs entry of tun, not the container's /dev) is baked into the node-agent, so the chart passes none.
+	if strings.Contains(out, "TUN_CHECK_PATH") {
+		t.Error("TUN_CHECK_PATH is a constant of the image, not an input")
 	}
 }
 
@@ -313,10 +314,9 @@ func TestErrorJournalPermissionsAndWiring(t *testing.T) {
 	if !creates {
 		t.Error("the proxy publishes its errors as events")
 	}
-	for _, want := range []string{"name: AGENT_RELEASE_NAMESPACE", "name: ERROR_JOURNAL_NAMESPACE"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("missing %q", want)
-		}
+	// The proxy and the node-agent are told the release namespace as ERROR_JOURNAL_NAMESPACE, the agent as AGENT_RELEASE_NAMESPACE.
+	if !strings.Contains(out, "name: ERROR_JOURNAL_NAMESPACE") || !strings.Contains(out, "name: AGENT_RELEASE_NAMESPACE") {
+		t.Errorf("ERROR_JOURNAL_NAMESPACE and AGENT_RELEASE_NAMESPACE must be passed")
 	}
 	if n := strings.Count(out, "name: ERROR_JOURNAL_NAMESPACE"); n != 3 {
 		t.Errorf("l7, demux and the node-agent each know where to publish: %d", n)
@@ -342,12 +342,19 @@ func TestAgentReplicasAndInsecureFlag(t *testing.T) {
 	if err == nil && strings.Contains(out, "PodDisruptionBudget") {
 		t.Error("a budget on a single replica would block every drain")
 	}
-	// mTLS off without the flag fails the render
+	// There is one switch: agent.mtls.enabled is gone (a stale values file fails), agent.allowInsecure turns the client check off.
 	if _, err := helmTemplate(t, append(agentSet, "--set", "agent.mtls.enabled=false", "-s", "templates/agent/deployment.yaml")...); err == nil {
-		t.Error("mtls off must need agent.allowInsecure")
+		t.Error("agent.mtls.enabled was removed and must be refused")
 	}
-	if _, err := helmTemplate(t, append(agentSet, "--set", "agent.mtls.enabled=false", "--set", "agent.allowInsecure=true", "-s", "templates/agent/deployment.yaml")...); err != nil {
-		t.Errorf("mtls off with the flag: %v", err)
+	out, err = helmTemplate(t, append(agentSet, "--set", "agent.allowInsecure=true", "-s", "templates/agent/deployment.yaml")...)
+	if err != nil || !regexp.MustCompile(`name: AGENT_ALLOW_INSECURE\s+value: "true"`).MatchString(out) {
+		t.Errorf("allowInsecure: %v\n%s", err, out)
+	}
+	out, _ = helmTemplate(t, append(agentSet, "-s", "templates/agent/deployment.yaml")...)
+	for _, gone := range []string{"AGENT_TLS_ENABLED", "AGENT_MTLS_ENABLED", "AGENT_TLS_CERT", "AGENT_MTLS_CLIENT_CA"} {
+		if strings.Contains(out, gone) {
+			t.Errorf("%s is a constant of the image (TLS is always on, the files are where the chart mounts them)", gone)
+		}
 	}
 }
 

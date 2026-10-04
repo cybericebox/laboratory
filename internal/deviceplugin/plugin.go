@@ -39,7 +39,6 @@ type Plugin struct {
 	Log       logr.Logger
 
 	mu      sync.Mutex
-	healthy bool
 	changed chan struct{}
 }
 
@@ -189,7 +188,7 @@ func (p *Plugin) Serve(ctx context.Context) error {
 	pluginapi.RegisterDevicePluginServer(srv, p)
 	go func() { _ = srv.Serve(lis) }()
 	defer srv.Stop()
-	defer os.Remove(sock)
+	defer func() { _ = os.Remove(sock) }()
 
 	kubeletSock := filepath.Join(p.Dir, "kubelet.sock")
 	var registeredWith os.FileInfo
@@ -222,7 +221,7 @@ func (p *Plugin) register(ctx context.Context, kubeletSock string) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_, err = pluginapi.NewRegistrationClient(conn).Register(ctx, &pluginapi.RegisterRequest{
 		Version: pluginapi.Version, Endpoint: p.socketName(), ResourceName: p.Resource,
 	})

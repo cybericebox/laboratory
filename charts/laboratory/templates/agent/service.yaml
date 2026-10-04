@@ -3,7 +3,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: laboratory-agent
-  namespace: {{ .Values.agent.namespace }}
+  namespace: {{ $.Values.agent.namespace }}
   labels:
     app: laboratory-agent
     {{- include "laboratory.labels" . | nindent 4 }}

@@ -56,7 +56,7 @@ func ValidateDeviceName(name string) error {
 		return fmt.Errorf("device name %q must not start or end with '-'", name)
 	}
 	for _, c := range name {
-		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
 			return fmt.Errorf("device name %q may contain only lowercase a-z, 0-9 and '-'", name)
 		}
 	}

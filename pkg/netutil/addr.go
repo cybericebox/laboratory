@@ -5,7 +5,7 @@ package netutil
 import (
 	"fmt"
 	"net"
-	
+
 	"github.com/vishvananda/netlink"
 )
 

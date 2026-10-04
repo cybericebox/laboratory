@@ -98,23 +98,17 @@ func New(cfg *config.Config, impl protobuf.LabManagerServer) (*Server, error) {
 	)
 	s := &Server{lim: split}
 
-	if !cfg.MTLS.Enabled {
-		if !cfg.AllowInsecure {
-			return nil, fmt.Errorf("AGENT_MTLS_ENABLED is false: every caller would be the default tenant. Set AGENT_ALLOW_INSECURE=true to run like that on purpose (local development only)")
+	// The one development switch: AGENT_ALLOW_INSECURE turns the client-certificate check off, and every caller is the default tenant.
+	// TLS stays on.
+	if cfg.AllowInsecure {
+		creds, err := plainTLS(cfg)
+		if err != nil {
+			return nil, err
 		}
-		if cfg.ServerTLS.Enabled {
-			creds, err := plainTLS(cfg)
-			if err != nil {
-				return nil, err
-			}
-			mainOpts = append(mainOpts, grpc.Creds(creds))
-		}
+		mainOpts = append(mainOpts, grpc.Creds(creds))
 		s.main = grpc.NewServer(mainOpts...)
 		protobuf.RegisterLabManagerServer(s.main, impl)
 		return s, nil
-	}
-	if !cfg.ServerTLS.Enabled {
-		return nil, fmt.Errorf("AGENT_MTLS_ENABLED needs AGENT_TLS_ENABLED: client certificates ride on TLS")
 	}
 	files, err := tlsreload.New(cfg.ServerTLS.CertFile, cfg.ServerTLS.KeyFile, cfg.MTLS.ClientCAFile)
 	if err != nil {

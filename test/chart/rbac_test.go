@@ -211,7 +211,7 @@ func TestAgentMonitoringCachesAreReadOnlyClusterWide(t *testing.T) {
 				if has(r.APIGroups, "laboratory.cybericebox.com") && has([]string{"labs", "labgroupclients", "labgroupaccesspolicies", "labtrafficreports", "devices"}, res) {
 					covered[res] = has(r.Verbs, "list") && has(r.Verbs, "watch") && !has(r.Verbs, "create") && !has(r.Verbs, "update") && !has(r.Verbs, "patch") && !has(r.Verbs, "delete")
 				}
-				if res == "pods" && has(r.APIGroups, "") && !(has(r.Verbs, "list") && has(r.Verbs, "watch")) {
+				if res == "pods" && has(r.APIGroups, "") && (!has(r.Verbs, "list") || !has(r.Verbs, "watch")) {
 					t.Errorf("pods need list and watch for the informer: %+v", r)
 				}
 			}

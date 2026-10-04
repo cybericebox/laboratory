@@ -24,7 +24,7 @@ spec:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/registry/configmap.yaml") . | sha256sum }}
     spec:
-      priorityClassName: {{ .Values.priorityClasses.platform.name }}
+      priorityClassName: {{ include "laboratory.priorityClass.platform" . }}
       # zot never talks to the Kubernetes API: no ServiceAccount token in the pod.
       automountServiceAccountToken: false
       # zot runs as an unprivileged user; fsGroup makes the volume writable for it.
@@ -44,8 +44,8 @@ spec:
         # filled as root) keeps its owner, and zot, which is not root, could not write to it. This hands the data directory to zot's user
         # and does nothing else: it is the one root container of the pod, with only the capabilities chown needs.
         - name: own-data
-          image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (.Values.nodeAgent.image.tag | default .Chart.AppVersion)) }}
+          image: {{ include "laboratory.imageRef" (dict "image" .Values.nodeAgent.image "root" $) | quote }}
+          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.nodeAgent.image "root" $))) }}
           command: [ "/bin/sh", "-c", "chown -R 65532:65532 /var/lib/registry" ]
           securityContext:
             runAsNonRoot: false

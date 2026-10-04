@@ -1,9 +1,9 @@
-{{- if and .Values.agent.enabled .Values.agent.mtls.enabled }}
+{{- if .Values.agent.enabled }}
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
   name: laboratory-agent-selfsign
-  namespace: {{ .Values.agent.namespace }}
+  namespace: {{ $.Values.agent.namespace }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
@@ -13,7 +13,7 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: laboratory-agent-ca
-  namespace: {{ .Values.agent.namespace }}
+  namespace: {{ $.Values.agent.namespace }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
@@ -34,7 +34,7 @@ apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
   name: laboratory-agent-ca
-  namespace: {{ .Values.agent.namespace }}
+  namespace: {{ $.Values.agent.namespace }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:

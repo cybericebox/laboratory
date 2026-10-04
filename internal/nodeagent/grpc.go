@@ -32,7 +32,6 @@ type NodeAgentServer struct {
 	k8sMu sync.RWMutex
 	k8s   client.Client // set via SetK8sClient after manager is ready
 
-	mu sync.RWMutex
 }
 
 func NewNodeAgentServer(ovs *OVSManager, flows *FlowManager) *NodeAgentServer {

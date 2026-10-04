@@ -178,6 +178,8 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 }
 
 // validateGraph checks device names, endpoint ports, occupancy and switch/hub cycles.
+//
+//nolint:gocyclo // one decision over many cases; splitting it would scatter the rule
 func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
 	for _, d := range lab.Spec.Devices {
 		if err := names.ValidateDeviceName(d.Name); err != nil {
@@ -222,7 +224,7 @@ func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
 	usedGateways := map[string]bool{}
 	for _, conn := range lab.Spec.Connections {
 		for _, ep := range conn.Endpoints {
-			if ep.Device == "vpn" || ep.Device == "internet" {
+			if ep.Device == names.ComponentVPN || ep.Device == "internet" {
 				// Each singleton exposes exactly one logical port: eth0.
 				if ep.Interface != "eth0" {
 					return fmt.Errorf("InvalidGatewayPort: %s has no port %q", ep.Device, ep.Interface)
@@ -374,7 +376,7 @@ func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, sw
 		}
 		for _, ep := range conn.Endpoints {
 			switch ep.Device {
-			case "vpn":
+			case names.ComponentVPN:
 				d.hasVPN = true
 				if lab.Spec.VPN.DHCPServer != nil && lab.Spec.VPN.DHCPServer.Enabled {
 					d.dhcpSources++
@@ -709,6 +711,7 @@ func dnsSafeNamePart(value string) bool {
 	return true
 }
 
+//nolint:gocyclo // one decision over many cases; splitting it would scatter the rule
 func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha1.Lab) (ctrl.Result, error) {
 	var deviceList laboratoryv1alpha1.DeviceList
 	if err := r.List(
@@ -1102,7 +1105,7 @@ func (r *LabReconciler) ensureDHCPPool(ctx context.Context, lab *laboratoryv1alp
 				poolpkg.PoolTypeLabel:   prefix,
 				poolpkg.PoolStateLabel:  poolpkg.PoolStateEmpty,
 				poolpkg.PoolGroupLabel:  fmt.Sprintf("%s-%s", prefix, lab.Name),
-				poolpkg.LatestPoolLabel: "true",
+				poolpkg.LatestPoolLabel: valueTrue,
 			},
 		},
 		Spec: allocationv1alpha1.PoolSpec{Size: dhcpPoolSize, Offset: dhcpPoolOffset},
@@ -1366,7 +1369,7 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 							MatchLabels: map[string]string{"kubernetes.io/metadata.name": names.ProxyNamespace},
 						},
 						PodSelector: &metav1.LabelSelector{
-							MatchLabels: map[string]string{"app": names.ProxyL7App},
+							MatchLabels: map[string]string{labelApp: names.ProxyL7App},
 						},
 					},
 				}

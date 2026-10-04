@@ -16,6 +16,11 @@ func splitArgs(s string) []string { return strings.Fields(s) }
 type IPTablesManager struct {
 	ipt     *iptables.IPTables
 	wgIface string
+	// ipt6 is the IPv6 table of the pod, nil when the pod has no ip6tables.
+	ipt6 *iptables.IPTables
+	// uplink and wgPort are what the guard of the WireGuard port was installed for ("" = not installed).
+	uplink string
+	wgPort int
 }
 
 const accessChain = "CYBERICEBOX_VPN_ACCESS"
@@ -25,7 +30,29 @@ func NewIPTablesManager(wgIface string) (*IPTablesManager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("iptables.New: %w", err)
 	}
-	return &IPTablesManager{ipt: ipt, wgIface: wgIface}, nil
+	m := &IPTablesManager{ipt: ipt, wgIface: wgIface}
+	if ipt6, err := iptables.NewWithProtocol(iptables.ProtocolIPv6); err == nil {
+		m.ipt6 = ipt6
+	}
+	return m, nil
+}
+
+// GuardWireGuardPort makes the WireGuard port of the pod reachable only through the uplink interface, where the wg-demux of the
+// proxy delivers the clients' packets: a packet to that port from any other interface, the lab interfaces among them, is dropped
+// (see wgguard.go). It must run before the WireGuard interface is created, so that the port is never open to the lab side. The
+// result says whether IPv6 was guarded too (false: the pod has no ip6tables; the guard is then IPv4 only and the caller logs it).
+func (m *IPTablesManager) GuardWireGuardPort(uplink string, port int) (ipv6 bool, err error) {
+	if err := installWGGuard(m.ipt, uplink, port); err != nil {
+		return false, err
+	}
+	m.uplink, m.wgPort = uplink, port
+	if m.ipt6 != nil {
+		if err := installWGGuard(m.ipt6, uplink, port); err != nil {
+			return false, err
+		}
+		ipv6 = true
+	}
+	return ipv6, nil
 }
 
 // SetupForwardPolicy sets FORWARD policy to DROP and installs a default-deny
@@ -128,4 +155,10 @@ func (m *IPTablesManager) Cleanup() {
 		_ = m.ipt.Delete("filter", "FORWARD", splitArgs(r)...)
 	}
 	_ = m.ipt.ClearAndDeleteChain("filter", accessChain)
+	if m.uplink != "" {
+		removeWGGuard(m.ipt, m.uplink, m.wgPort)
+		if m.ipt6 != nil {
+			removeWGGuard(m.ipt6, m.uplink, m.wgPort)
+		}
+	}
 }

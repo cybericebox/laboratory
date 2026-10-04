@@ -1,5 +1,5 @@
 {{- /* Manual fallback only: the normal way is enrollment (see DEPLOY.md). */ -}}
-{{- if and .Values.agent.enabled .Values.agent.mtls.enabled .Values.agent.tenantCertificates.enabled }}
+{{- if and .Values.agent.enabled .Values.agent.tenantCertificates.enabled }}
 {{- /* One client certificate per tenant, CN = the tenant name. */ -}}
 {{- range $name, $_ := (include "laboratory.tenants" . | fromYaml) }}
 ---

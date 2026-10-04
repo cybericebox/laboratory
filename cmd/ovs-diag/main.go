@@ -19,7 +19,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
-	
+
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 )
@@ -34,13 +34,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, "ERROR: --netns is required")
 		os.Exit(1)
 	}
-	
+
 	fmt.Printf("=== ovs-diag ===\nnetns: %s\nbridge: %s\nsock: %s\n\n", *netnsPath, *bridge, *sock)
-	
+
 	const portName = "icediag000001"
-	
+
 	// Remove any leftover port from a previous run.
-	runOVSCtl(*sock, "del-port", *bridge, portName)
+	_ = runOVSCtl(*sock, "del-port", *bridge, portName)
 
 	step("1. ovs-vsctl add-port (create internal port)")
 	if err := runOVSCtl(
@@ -49,14 +49,14 @@ func main() {
 	); err != nil {
 		fatal("ovs-vsctl add-port: %v", err)
 	}
-	
+
 	// Wait for the kernel interface to appear in root netns.
 	step("1b. WaitForLink in root netns")
 	if err := waitForLink(portName, 5*time.Second); err != nil {
 		fatal("WaitForLink: %v", err)
 	}
 	printLink("root netns", portName)
-	
+
 	// Wait for a stable ifindex (vswitchd dpif_port_add).
 	step("1c. waiting for a stable ifindex (300ms)")
 	if err := waitStableIfindex(portName, 5*time.Second); err != nil {
@@ -67,7 +67,7 @@ func main() {
 	if err := libMoveToNetNS(portName, *netnsPath); err != nil {
 		fmt.Printf("  FAIL: %v\n", err)
 		fmt.Println("  → falling back to CLI")
-		
+
 		step("2b. [CLI] MoveToNetNS: ip link set netns")
 		if err2 := cliMoveToNetNS(portName, *netnsPath); err2 != nil {
 			fatal("CLI MoveToNetNS: %v", err2)
@@ -76,7 +76,7 @@ func main() {
 	} else {
 		fmt.Println("  LIB OK")
 	}
-	
+
 	// Check that the interface disappeared from root netns and appeared in pod netns.
 	if _, e := netlink.LinkByName(portName); e == nil {
 		fmt.Printf("  WARNING: %s still in root netns!\n", portName)
@@ -89,14 +89,14 @@ func main() {
 	} else {
 		fmt.Println("PRESENT")
 	}
-	
+
 	const targetName = "diageth1"
 	step(fmt.Sprintf("3a. [LIB] RenameInNetNS: %s → %s", portName, targetName))
 	if err := libRenameInNetNS(*netnsPath, portName, targetName); err != nil {
 		fmt.Printf("  FAIL: %v\n", err)
 		fmt.Println("  → trying CLI")
-		
-		step(fmt.Sprintf("3b. [CLI] RenameInNetNS: nsenter ip link set name"))
+
+		step("3b. [CLI] RenameInNetNS: nsenter ip link set name")
 		if err2 := cliRenameInNetNS(*netnsPath, portName, targetName); err2 != nil {
 			fatal("CLI RenameInNetNS: %v", err2)
 		}
@@ -104,14 +104,14 @@ func main() {
 	} else {
 		fmt.Println("  LIB OK")
 	}
-	
+
 	fmt.Printf("  pod netns %s: ", targetName)
 	if err := checkInNetNS(*netnsPath, targetName); err != nil {
 		fmt.Printf("FAIL (%v)\n", err)
 	} else {
 		fmt.Println("PRESENT")
 	}
-	
+
 	step("4. Timing: how fast does vswitchd remove the interface after move?")
 	t0 := time.Now()
 	for i := 0; i < 20; i++ {
@@ -124,8 +124,8 @@ func main() {
 		}
 		fmt.Printf("  [%3dms] %s: present\n", elapsed.Milliseconds(), targetName)
 	}
-	
-	runOVSCtl(*sock, "del-port", *bridge, portName)
+
+	_ = runOVSCtl(*sock, "del-port", *bridge, portName)
 	time.Sleep(500 * time.Millisecond)
 
 	step("5. TEST: move+rename WITHOUT LinkSetUp — how long does it survive?")
@@ -163,7 +163,7 @@ func main() {
 	fmt.Println("\n=== RESULT ===")
 	fmt.Printf("See output above: when does vswitchd remove it, and does LinkSetUp trigger immediate removal\n")
 
-	runOVSCtl(*sock, "del-port", *bridge, portName)
+	_ = runOVSCtl(*sock, "del-port", *bridge, portName)
 	cliRunInNetNS(*netnsPath, "ip", "link", "del", targetName)
 }
 
@@ -241,7 +241,7 @@ func libMoveToNetNS(ifaceName, netnsPath string) error {
 	if err != nil {
 		return fmt.Errorf("GetFromPath: %w", err)
 	}
-	defer ns.Close()
+	defer func() { _ = ns.Close() }()
 	link, err := netlink.LinkByName(ifaceName)
 	if err != nil {
 		return fmt.Errorf("LinkByName: %w", err)
@@ -261,41 +261,29 @@ func libRenameInNetNS(netnsPath, oldName, newName string) error {
 	)
 }
 
-func libConfigureInNetNS(netnsPath, ifaceName string) error {
-	return inNetNS(
-		netnsPath, func() error {
-			link, err := netlink.LinkByName(ifaceName)
-			if err != nil {
-				return fmt.Errorf("LinkByName %q: %w", ifaceName, err)
-			}
-			return netlink.LinkSetUp(link)
-		},
-	)
-}
-
 func inNetNS(netnsPath string, fn func() error) error {
 	runtime.LockOSThread()
 	origNS, err := netns.Get()
 	if err != nil {
 		runtime.UnlockOSThread()
-		return fmt.Errorf("Get origNS: %w", err)
+		return fmt.Errorf("get origNS: %w", err)
 	}
-	defer origNS.Close()
-	
+	defer func() { _ = origNS.Close() }()
+
 	targetNS, err := netns.GetFromPath(netnsPath)
 	if err != nil {
 		runtime.UnlockOSThread()
 		return fmt.Errorf("GetFromPath %q: %w", netnsPath, err)
 	}
-	defer targetNS.Close()
-	
+	defer func() { _ = targetNS.Close() }()
+
 	if err := netns.Set(targetNS); err != nil {
 		runtime.UnlockOSThread()
-		return fmt.Errorf("Set targetNS: %w", err)
+		return fmt.Errorf("set targetNS: %w", err)
 	}
-	
+
 	fnErr := fn()
-	
+
 	if err := netns.Set(origNS); err != nil {
 		panic(fmt.Sprintf("inNetNS: failed to restore origNS: %v", err))
 	}
@@ -320,17 +308,6 @@ func cliRenameInNetNS(netnsPath, oldName, newName string) error {
 	).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("nsenter rename: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-func cliConfigureInNetNS(netnsPath, ifaceName string) error {
-	out, err := exec.Command(
-		"nsenter", "--net="+netnsPath, "--",
-		"ip", "link", "set", ifaceName, "up",
-	).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("nsenter set up: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

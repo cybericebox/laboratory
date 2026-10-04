@@ -50,12 +50,6 @@ type liveSet struct {
 
 func newLiveSet() *liveSet { return &liveSet{entries: map[*liveEntry]struct{}{}} }
 
-func (s *liveSet) add(e *liveEntry) {
-	s.mu.Lock()
-	s.entries[e] = struct{}{}
-	s.mu.Unlock()
-}
-
 func (s *liveSet) remove(e *liveEntry) {
 	s.mu.Lock()
 	delete(s.entries, e)

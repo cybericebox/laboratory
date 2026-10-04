@@ -318,8 +318,8 @@ func TestServerAdmitsEnrollWithoutACertificateAndNothingElse(t *testing.T) {
 	_ = os.WriteFile(srvKey, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: skder}), 0o600)
 
 	cfg := &config.Config{}
-	cfg.ServerTLS = config.ServerTLSConfig{Enabled: true, CertFile: srvCrt, KeyFile: srvKey}
-	cfg.MTLS = config.MTLSConfig{Enabled: true, ClientCAFile: r.h.caCertFile}
+	cfg.ServerTLS = config.ServerTLSConfig{CertFile: srvCrt, KeyFile: srvKey}
+	cfg.MTLS = config.MTLSConfig{ClientCAFile: r.h.caCertFile}
 	// Real time is needed for the handshake: the certificates were made around a fixed date.
 	r.h.clock = nil
 	srv, err := New(cfg, r.h)

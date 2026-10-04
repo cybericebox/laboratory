@@ -4,7 +4,7 @@ namespace .Values.proxy.namespace (default "laboratory-proxy"), pod label app: l
 see charts/laboratory/templates/proxy/deployment.yaml and
 internal/names/labels.go:ProxyL7App). The Deployment's two containers — l7
 (:8443/TCP, terminates TLS + access-gated device proxying) and wg-demux
-(:{{ .Values.proxy.wg.listenPort }}/UDP, WireGuard endpoint) — share one
+(:51820/UDP, WireGuard endpoint) — share one
 pod/label, so this single policy pair governs both.
 
 Ingress:
@@ -50,8 +50,8 @@ both the UDP demux forward and the l7 dial. Everything else — including
 other in-cluster namespaces — is denied.
 */}}
 {{- if and .Values.proxy.enabled .Values.proxy.l7.enabled .Values.proxy.networkPolicy.enabled }}
-{{- $l7Port := trimPrefix ":" .Values.proxy.l7.listen | int }}
-{{- $wgPort := .Values.proxy.wg.listenPort | int }}
+{{- $l7Port := include "laboratory.l7Port" . | int }}
+{{- $wgPort := include "laboratory.wgPort" . | int }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

@@ -97,6 +97,7 @@ func isPlatformPod(pod *corev1.Pod) bool {
 	return app == names.ComponentVPN || app == names.ComponentGateway
 }
 
+//nolint:gocyclo // one decision over many cases; splitting it would scatter the rule
 func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 	log.Info("NetAttach reconcile start", "pod", req.NamespacedName)

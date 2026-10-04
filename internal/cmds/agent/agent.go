@@ -78,14 +78,14 @@ func Run() {
 	h.SetClientCA(cfg.MTLS.ClientCAFile, cfg.MTLS.ClientCAKeyFile, cfg.MTLS.ClientCertTTL)
 	h.SetRegistryAddr(cfg.RegistryAddr)
 	h.SetRegistryAuth(cfg.RegistryUser, cfg.RegistryPassword)
-	h.SetImagePolicy(cfg.ImageDeny, cfg.Cache.NodePrefix, cfg.Cache.RegistryAddr, cfg.RegistryAddr)
+	h.SetImagePolicy(cfg.ImageDeny, cfg.Cache.NodePrefix, cfg.RegistryAddr, cfg.RegistryAddr)
 	var labSelector map[string]string
 	var labTolerations []corev1.Toleration
 	if err := json.Unmarshal([]byte(cfg.LabNodeSelector), &labSelector); err != nil {
-		log.Fatalf("AGENT_LAB_NODE_SELECTOR: %v", err)
+		log.Fatalf("LAB_NODE_SELECTOR: %v", err)
 	}
 	if err := json.Unmarshal([]byte(cfg.LabTolerations), &labTolerations); err != nil {
-		log.Fatalf("AGENT_LAB_TOLERATIONS: %v", err)
+		log.Fatalf("LAB_TOLERATIONS: %v", err)
 	}
 	h.SetLabScheduling(labSelector, labTolerations)
 	reserve, err := nodeReserve(cfg)
@@ -138,7 +138,7 @@ func Run() {
 			srv.Stop()
 		}
 	}()
-	log.Printf("agent listening on port %s (mtls=%t)", cfg.GRPCPort, cfg.MTLS.Enabled)
+	log.Printf("agent listening on port %s (mtls=%t)", cfg.GRPCPort, cfg.MTLSEnabled())
 	if err := srv.Serve(lis); err != nil {
 		log.Printf("serve: %v", err)
 		os.Exit(1)
@@ -177,8 +177,8 @@ func features(cfg *config.Config) (f grpcserver.Features, err error) {
 	for _, c := range []struct {
 		env, val string
 		dst      *int64
-	}{{"AGENT_STATE_WRITE_QUOTA", cfg.State.WriteQuota, &f.WriteQuota}, {"AGENT_STATE_MAX_FILE_SIZE", cfg.State.MaxFileSize, &f.MaxFileSize},
-		{"AGENT_STATE_TENANT_QUOTA", cfg.State.TenantQuota, &f.TenantQuota}} {
+	}{{"STATE_WRITE_QUOTA", cfg.State.WriteQuota, &f.WriteQuota}, {"STATE_MAX_FILE_SIZE", cfg.State.MaxFileSize, &f.MaxFileSize},
+		{"STATE_TENANT_QUOTA", cfg.State.TenantQuota, &f.TenantQuota}} {
 		q, err := resource.ParseQuantity(c.val)
 		// the tenant quota may be 0: no limit
 		if err != nil || q.Sign() < 0 || (q.Sign() == 0 && c.dst != &f.TenantQuota) {

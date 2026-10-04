@@ -153,7 +153,7 @@ func checkEpoch(ctx context.Context, ten *laboratoryv1alpha1.Tenant) error {
 		return revoked
 	}
 	floor := ten.CreationTimestamp.Time
-	if nb := ten.Status.CertificatesNotBefore; nb != nil && nb.Time.After(floor) {
+	if nb := ten.Status.CertificatesNotBefore; nb != nil && nb.After(floor) {
 		floor = nb.Time
 	}
 	if certIssuedAt(cert).Truncate(time.Second).Before(floor.Truncate(time.Second)) {

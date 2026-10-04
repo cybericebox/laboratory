@@ -5,7 +5,7 @@ apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: laboratory-agent
-  namespace: {{ .Values.agent.namespace }}
+  namespace: {{ $.Values.agent.namespace }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:

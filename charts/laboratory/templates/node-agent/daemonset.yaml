@@ -50,8 +50,8 @@ spec:
       initContainers:
         # Host prep: kernel modules and sysctls. Nothing is installed on the node.
         - name: host-prep
-          image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (.Values.nodeAgent.image.tag | default .Chart.AppVersion)) }}
+          image: {{ include "laboratory.imageRef" (dict "image" .Values.nodeAgent.image "root" $) | quote }}
+          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.nodeAgent.image "root" $))) }}
           command: [ "/bin/sh", "-c" ]
           args:
             - |
@@ -75,8 +75,8 @@ spec:
         # Open vSwitch as a native sidecar (restartPolicy: Always): it starts before the
         # next init containers and the node-agent, which wait for its startupProbe.
         - name: ovs
-          image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (.Values.nodeAgent.image.tag | default .Chart.AppVersion)) }}
+          image: {{ include "laboratory.imageRef" (dict "image" .Values.nodeAgent.image "root" $) | quote }}
+          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.nodeAgent.image "root" $))) }}
           restartPolicy: Always
           command: [ "/node-agent/bin/start-ovs.sh" ]
           env:
@@ -107,8 +107,8 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
         - name: install-cni-bins
-          image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (.Values.nodeAgent.image.tag | default .Chart.AppVersion)) }}
+          image: {{ include "laboratory.imageRef" (dict "image" .Values.nodeAgent.image "root" $) | quote }}
+          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.nodeAgent.image "root" $))) }}
           command: [ "/bin/sh", "-c" ]
           args:
             - |
@@ -127,8 +127,8 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
         - name: install-cni-conf
-          image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (.Values.nodeAgent.image.tag | default .Chart.AppVersion)) }}
+          image: {{ include "laboratory.imageRef" (dict "image" .Values.nodeAgent.image "root" $) | quote }}
+          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.nodeAgent.image "root" $))) }}
           command: [ "/node", "install-cni" ]
           env:
             - name: GRPC_SOCK
@@ -151,8 +151,8 @@ spec:
           {{- end }}
       containers:
         - name: node-agent
-          image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (.Values.nodeAgent.image.tag | default .Chart.AppVersion)) }}
+          image: {{ include "laboratory.imageRef" (dict "image" .Values.nodeAgent.image "root" $) | quote }}
+          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.nodeAgent.image "root" $))) }}
           command: [ "/node", "node-agent" ]
           env:
             # The probes' address: the loopback only (the node-agent is on the host network).
@@ -185,30 +185,19 @@ spec:
               value: {{ .Values.nodeAgent.devicePlugin.dir | quote }}
             - name: ERROR_JOURNAL_NAMESPACE
               value: {{ .Release.Namespace | quote }}
-            - name: TUN_CHECK_PATH
-              value: /sys/class/misc/tun/dev
             - name: TUN_SLOTS
               value: {{ .Values.nodeAgent.devicePlugin.tunSlots | quote }}
-          {{- if include "laboratory.registryEnabled" . }}
-            # The platform registry (snapshots, image cache): its Service is relayed to
-            # 127.0.0.1:STATE_FORWARD_PORT, where containerd reads it as a plain-HTTP
-            # localhost registry.
+            # The platform registry (snapshots, image cache): its Service is relayed to 127.0.0.1:5035 (a constant of the image), where
+            # containerd reads it as a plain-HTTP localhost registry.
             - name: STATE_REGISTRY_ADDR
               value: {{ include "laboratory.registryAddr" . | quote }}
-            - name: STATE_FORWARD_PORT
-              value: {{ .Values.registry.forwardPort | quote }}
-          {{- end }}
           {{- if .Values.devices.statePersistence.enabled }}
             - name: STATE_PERSISTENCE_ENABLED
               value: "true"
             - name: CONTAINERD_NAMESPACE
               value: {{ .Values.devices.statePersistence.containerdNamespace | quote }}
-            - name: CGROUP_ROOT
-              value: /host/sys/fs/cgroup
             - name: STATE_MAX_WATCH_DIRS
               value: {{ .Values.devices.statePersistence.maxWatchedDirs | quote }}
-            - name: STATE_WORK_DIR
-              value: /var/cache/cybericebox/state
             # What one device may push, and when the registry is too full to take a push (see DEPLOY.md, "Device state under abuse").
             - name: STATE_MIN_PUSH_INTERVAL
               value: {{ .Values.devices.statePersistence.minPushInterval | quote }}

@@ -165,10 +165,11 @@ func TestNoHostOVSMode(t *testing.T) {
 	}
 }
 
-func TestOVSSocketMustBeInsideRunDir(t *testing.T) {
+// The OVS socket path is a constant of the images, not a value: a stale values file that sets it fails loudly instead of being ignored.
+func TestOVSSocketIsNotAValueAnyMore(t *testing.T) {
 	out, err := helmTemplate(t, "--set", "nodeAgent.ovsSocket=/tmp/db.sock")
 	if err == nil {
-		t.Fatalf("expected the chart to refuse a socket outside the run dir")
+		t.Fatalf("expected the chart to refuse the removed value")
 	}
 	if !strings.Contains(out, "nodeAgent.ovsSocket") {
 		t.Errorf("unexpected error: %s", out)
@@ -234,7 +235,7 @@ func TestNodeAgentFollowsLabPlacementAndLabPodsNeedItsLabel(t *testing.T) {
 		}
 		var dep appsv1.Deployment
 		render(t, "templates/agent/deployment.yaml", &dep, append(args, "--set", "agent.enabled=true", "--set", "agent.domain=a.example.com")...)
-		agentSel := envOf(dep.Spec.Template.Spec.Containers[0])["AGENT_LAB_NODE_SELECTOR"].Value
+		agentSel := envOf(dep.Spec.Template.Spec.Containers[0])["LAB_NODE_SELECTOR"].Value
 		if agentSel != cm.Data["LAB_NODE_SELECTOR"] {
 			t.Errorf("%s: the agent and the operator must use the same selector: %s vs %s", name, agentSel, cm.Data["LAB_NODE_SELECTOR"])
 		}

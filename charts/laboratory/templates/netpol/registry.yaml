@@ -34,7 +34,7 @@ spec:
     # The management agent: snapshot export, and PrewarmImages with the cache.
     - fromEndpoints:
         - matchLabels:
-            k8s:io.kubernetes.pod.namespace: {{ .Values.agent.namespace }}
+            k8s:io.kubernetes.pod.namespace: {{ $.Values.agent.namespace }}
             app: laboratory-agent
       toPorts:
         - ports:

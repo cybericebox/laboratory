@@ -174,6 +174,8 @@ func (h *Handler) observe(ctx context.Context, c *monCache) (*monState, error) {
 // still covers, with the updates it missed; then it sends only changes. All
 // subscribers share one poller and one journal (see monitor), each gets its own
 // selector, minimum interval and position.
+//
+//nolint:gocyclo // one decision over many cases; splitting it would scatter the rule
 func (h *Handler) Monitoring(request *protobuf.MonitoringRequest, stream protobuf.LabManager_MonitoringServer) error {
 	filter, err := newSelectorFilter(request.GetSelector(), tenantOf(stream.Context()))
 	if err != nil {

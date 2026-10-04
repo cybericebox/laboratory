@@ -90,7 +90,7 @@ func (r *ContainerdRuntime) Inspect(ctx context.Context, id string) (Container, 
 }
 
 func idMapOf(in []specs.LinuxIDMapping) snapshot.IDMap {
-	var m snapshot.IDMap
+	m := make(snapshot.IDMap, 0, len(in))
 	for _, l := range in {
 		m = append(m, snapshot.IDMapping{ContainerID: l.ContainerID, HostID: l.HostID, Size: l.Size})
 	}
@@ -245,7 +245,7 @@ func resolveManifest(ctx context.Context, cs content.Provider, desc ocispec.Desc
 		if err != nil {
 			return "", err
 		}
-		defer ra.Close()
+		defer func() { _ = ra.Close() }()
 		var idx ocispec.Index
 		if err := json.NewDecoder(content.NewReader(ra)).Decode(&idx); err != nil {
 			return "", fmt.Errorf("parse index %s: %w", desc.Digest, err)

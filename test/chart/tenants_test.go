@@ -105,7 +105,7 @@ func TestAgentHasNoCNAllowlistAnymore(t *testing.T) {
 	if strings.Contains(out, "AGENT_ALLOWED_CLIENT_CNS") {
 		t.Fatal("the tenants are the allowlist")
 	}
-	if !strings.Contains(out, "AGENT_LAB_TOLERATIONS") || !strings.Contains(out, "AGENT_LAB_NODE_SELECTOR") {
+	if !strings.Contains(out, "LAB_TOLERATIONS") || !strings.Contains(out, "LAB_NODE_SELECTOR") {
 		t.Fatal("the agent needs the lab nodes to resolve percentage quotas")
 	}
 }
@@ -124,7 +124,8 @@ func TestEnrollmentWiring(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for _, want := range []string{"AGENT_MTLS_CLIENT_CA_KEY", "/ca/tls.key", `value: "48h"`, `TENANT_ENROLLMENT_TTL: "2h"`} {
+	// The CA files are where the chart mounts them (baked into the image); the TTLs are values.
+	for _, want := range []string{"AGENT_CLIENT_CERT_TTL", "mountPath: /ca", `value: "48h"`, `TENANT_ENROLLMENT_TTL: "2h"`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q", want)
 		}
@@ -245,7 +246,7 @@ func TestAgentGetsTheCachePinTTLFromValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if !strings.Contains(out, "AGENT_CACHE_PIN_TTL") || !strings.Contains(out, `"45m"`) {
+	if !strings.Contains(out, "IMAGE_CACHE_PIN_TTL") || !strings.Contains(out, `"45m"`) {
 		t.Errorf("pin ttl:\n%s", out)
 	}
 }
@@ -257,26 +258,34 @@ func TestRemainingTunablesArePassedWithTheirDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for _, want := range []string{`NETWORK_POLICY_ENABLED: "true"`, `VPN_STATS_INTERVAL: "30s"`, `STATE_RETENTION_INTERVAL: "10m"`,
-		"name: AGENT_ID\n              value: \"laboratory-agent\"", "name: AGENT_TENANT_STATUS_INTERVAL\n              value: \"30s\"",
-		"name: OVS_BRIDGE\n              value: \"br-ovs\""} {
+	for _, want := range []string{`NETWORK_POLICY_ENABLED: "true"`, `STATE_RETENTION_INTERVAL: "10m"`,
+		"name: AGENT_ID\n              value: \"laboratory-agent\"", "name: AGENT_TENANT_STATUS_INTERVAL\n              value: \"30s\""} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q\n%s", want, out)
 		}
+	}
+	for _, want := range []string{`VPN_STATS_INTERVAL: "30s"`, `name: OVS_BRIDGE`, `OPERATOR_SERVICE_ACCOUNT: "laboratory-controller-manager"`,
+		`OPERATOR_NAMESPACE: "laboratory-system"`, `AGENT_SERVICE_ACCOUNT: "laboratory-agent"`, `AGENT_SERVICE_NAMESPACE: "laboratory-agent"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	// The port inside the VPN pods is a constant of the images: nothing passes it.
+	if strings.Contains(out, "VPN_SERVICE_PORT") {
+		t.Errorf("VPN_SERVICE_PORT is a constant of the images, not an input")
 	}
 }
 
 func TestRemainingTunablesFollowValues(t *testing.T) {
 	out, err := helmTemplate(t, append(agentSet, "--set", "devices.statePersistence.enabled=true",
-		"--set", "operator.groupNetworkPolicy.enabled=false", "--set", "vpn.statsInterval=1m", "--set", "devices.statePersistence.retentionInterval=1h",
-		"--set", "agent.id=ctl-1", "--set", "agent.tenantStatusInterval=5s", "--set", "nodeAgent.ovsBridge=br-x",
+		"--set", "operator.groupNetworkPolicy.enabled=false", "--set", "devices.statePersistence.retentionInterval=1h",
+		"--set", "agent.id=ctl-1", "--set", "agent.tenantStatusInterval=5s",
 		"-s", "templates/operator/configmap.yaml", "-s", "templates/agent/deployment.yaml", "-s", "templates/node-agent/daemonset.yaml")...)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for _, want := range []string{`NETWORK_POLICY_ENABLED: "false"`, `VPN_STATS_INTERVAL: "1m"`, `STATE_RETENTION_INTERVAL: "1h"`,
-		"name: AGENT_ID\n              value: \"ctl-1\"", "name: AGENT_TENANT_STATUS_INTERVAL\n              value: \"5s\"",
-		"name: OVS_BRIDGE\n              value: \"br-x\""} {
+	for _, want := range []string{`NETWORK_POLICY_ENABLED: "false"`, `STATE_RETENTION_INTERVAL: "1h"`,
+		"name: AGENT_ID\n              value: \"ctl-1\"", "name: AGENT_TENANT_STATUS_INTERVAL\n              value: \"5s\""} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q", want)
 		}
@@ -290,11 +299,11 @@ func TestAgentGetsTheFeatureValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for _, want := range []string{"name: AGENT_STATE_DEBOUNCE\n              value: \"9s\"", "name: AGENT_STATE_WRITE_QUOTA\n              value: \"1Gi\"",
-		"name: AGENT_STATE_MAX_FILE_SIZE\n              value: \"256Mi\"", "name: AGENT_STATE_EXCLUDE_PATHS\n              value: \"/tmp,/var/tmp,/run\"",
-		"name: AGENT_SCHEDULER_MAX_PODS\n              value: \"7\"", "name: AGENT_SCHEDULER_ENABLED\n              value: \"true\"",
-		"name: AGENT_PROXY_ACCESS_TOKEN_MAX_TTL\n              value: \"60s\"", "name: AGENT_PROXY_SESSION_IDLE_TTL\n              value: \"24h\"", "name: AGENT_PROXY_SESSION_MAX_TTL\n              value: \"168h\"",
-		"name: AGENT_BASE_DOMAIN", "name: AGENT_PUBLIC_VPN_ENDPOINT"} {
+	for _, want := range []string{"name: STATE_DEBOUNCE\n              value: \"9s\"", "name: STATE_WRITE_QUOTA\n              value: \"1Gi\"",
+		"name: STATE_MAX_FILE_SIZE\n              value: \"256Mi\"", "name: STATE_EXCLUDE_PATHS\n              value: \"/tmp,/var/tmp,/run\"",
+		"name: SCHEDULER_MAX_PODS\n              value: \"7\"", "name: SCHEDULER_ENABLED\n              value: \"true\"",
+		"name: ACCESS_TOKEN_MAX_TTL\n              value: \"60s\"", "name: SESSION_IDLE_TTL\n              value: \"24h\"", "name: SESSION_MAX_TTL\n              value: \"168h\"",
+		"name: BASE_DOMAIN", "name: PUBLIC_VPN_ENDPOINT"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q", want)
 		}
@@ -307,8 +316,8 @@ func TestLimitsReachTheAgentAndTheOperator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for _, want := range []string{"name: AGENT_LIMIT_DEVICE_MAX_CPU\n              value: \"2000m\"", "name: AGENT_LIMIT_DEVICE_MAX_MEMORY\n              value: \"4Gi\"",
-		"name: AGENT_LIMIT_DEVICE_DEFAULT_CPU\n              value: \"100m\"", "name: AGENT_LIMIT_DEVICE_DEFAULT_MEMORY\n              value: \"256Mi\"",
+	for _, want := range []string{"name: DEVICE_MAX_CPU\n              value: \"2000m\"", "name: DEVICE_MAX_MEMORY\n              value: \"4Gi\"",
+		"name: DEVICE_DEFAULT_CPU\n              value: \"100m\"", "name: DEVICE_DEFAULT_MEMORY\n              value: \"256Mi\"",
 		"name: AGENT_LIMIT_LAB_MAX_DEVICES\n              value: \"4\"", "name: AGENT_LIMIT_GROUP_MAX_LABS\n              value: \"50\"",
 		"name: AGENT_LIMIT_GROUP_MAX_CPU\n              value: \"0\"", "name: AGENT_LIMIT_GROUP_MAX_MEMORY\n              value: \"0\"", "name: AGENT_LIMIT_TENANT_MAX_LABS\n              value: \"5\"",
 		`DEVICE_DEFAULT_CPU: "100m"`, `DEVICE_DEFAULT_MEMORY: "256Mi"`} {

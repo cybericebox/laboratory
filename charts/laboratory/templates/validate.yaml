@@ -14,11 +14,24 @@ at install time instead of shipping a broken deployment.
 {{- fail (printf "this chart needs Kubernetes 1.33 or newer, this cluster is %s: device pods run in user namespaces (spec.hostUsers=false), and below 1.33 the API server can drop that field silently, which would run a device in the host user namespace; the chart also uses native sidecars and ValidatingAdmissionPolicy. Upgrade the cluster." .Capabilities.KubeVersion.Version) }}
 {{- end }}
 
-{{- /* Exact image tags: a moving tag (`latest`, or none) leaves nodes on different images and a rollout cannot tell them apart. */ -}}
+{{- /* Exact image tags: a moving tag (`latest`, or none) leaves nodes on different images and a rollout cannot tell them apart. The release tag
+       (image.tag, else the chart appVersion) drives every image; <name>.image.tag pins one of them to another build. */ -}}
 {{- range $name, $image := dict "operator" .Values.operator.image "vpn" .Values.vpn.image "inetGateway" .Values.inetGateway.image "proxy" .Values.proxy.image "nodeAgent" .Values.nodeAgent.image "agent" .Values.agent.image "registry" .Values.registry.image }}
-{{- $tag := toString ($image.tag | default $.Chart.AppVersion) }}
+{{- $tag := include "laboratory.tag" (dict "image" $image "root" $) }}
 {{- if or (eq $tag "") (eq $tag "latest") }}
-{{- fail (printf "%s.image.tag is %q: images are deployed by an exact version tag (a release version or a short git sha). Set %s.image.tag." $name $tag $name) }}
+{{- fail (printf "the tag of the %s image is %q: images are deployed by an exact version tag (a release version or a short git sha). Set image.tag (all images) or %s.image.tag (this one)." $name $tag $name) }}
+{{- end }}
+{{- end }}
+
+{{- /* Values that no longer exist (the setting became a constant of an in-network port of the images, or moved): fail loudly instead of ignoring them silently. */ -}}
+{{- range $path := list "operator.vpnServicePort" "registry.forwardPort" "agent.mtls.enabled" "proxy.l7.listen" "proxy.l7.healthPort" "proxy.wg.healthPort" "proxy.wg.listenPort" }}
+{{- $node := $.Values }}
+{{- $found := true }}
+{{- range $key := splitList "." $path }}
+{{- if and $found (kindIs "map" $node) (hasKey $node $key) }}{{- $node = index $node $key }}{{- else }}{{- $found = false }}{{- end }}
+{{- end }}
+{{- if $found }}
+{{- fail (printf "%s was removed: it is a constant of the images now (an in-network port, see values.yaml and DEPLOY.md). Agent without client certificates: agent.allowInsecure=true (development only)." $path) }}
 {{- end }}
 {{- end }}
 
@@ -31,19 +44,16 @@ at install time instead of shipping a broken deployment.
 
 {{- /* Required values: fail at install time with a clear message. */ -}}
 {{- if not .Values.operator.publicVPNEndpoint }}
-{{- fail "operator.publicVPNEndpoint is required: the host:port advertised to WireGuard clients, e.g. vpn.example.com:51820" }}
+{{- fail "operator.publicVPNEndpoint is required: the host (or host:port) advertised to WireGuard clients, e.g. vpn.example.com" }}
+{{- end }}
+{{- if or (lt (int .Values.proxy.wg.publicPort) 1) (gt (int .Values.proxy.wg.publicPort) 65535) }}
+{{- fail (printf "proxy.wg.publicPort %v is not a port (1-65535): the UDP port WireGuard clients connect to, outside the cluster" .Values.proxy.wg.publicPort) }}
 {{- end }}
 {{- if not .Values.operator.baseDomain }}
 {{- fail "operator.baseDomain is required: the base domain of lab web hosts, e.g. lab.example.com" }}
 {{- end }}
 {{- if not .Values.operator.supportEmail }}
 {{- fail "operator.supportEmail is required: the contact address shown to participants on the VPN probe page" }}
-{{- end }}
-{{- if and .Values.agent.enabled (not .Values.agent.domain) }}
-{{- fail "agent.domain is required when agent.enabled: the public host of the management agent (TLS certificate and TLSRoute)" }}
-{{- end }}
-{{- if and .Values.agent.enabled (not .Values.agent.mtls.enabled) (not .Values.agent.allowInsecure) }}
-{{- fail "agent.mtls.enabled=false makes every caller of the agent the default tenant. It is for local development only: set agent.allowInsecure=true as well to do it on purpose." }}
 {{- end }}
 {{- if gt (int .Values.limits.lab.maxDevices) 64 }}
 {{- fail "limits.lab.maxDevices must not exceed 64: the Lab CRD and the agent have that ceiling" }}
@@ -59,6 +69,7 @@ at install time instead of shipping a broken deployment.
 {{- fail "certManager.email is required with an ACME issuer (Let's Encrypt account)" }}
 {{- end }}
 {{- end }}
+
 {{- if not (hasPrefix (printf "%s/" (trimSuffix "/" .Values.nodeAgent.ovsRunHostPath)) .Values.nodeAgent.ovsSocket) }}
 {{- fail (printf "nodeAgent.ovsSocket (%s) must be inside nodeAgent.ovsRunHostPath (%s): the ovs sidecar and the node-agent share that directory" .Values.nodeAgent.ovsSocket .Values.nodeAgent.ovsRunHostPath) }}
 {{- end }}

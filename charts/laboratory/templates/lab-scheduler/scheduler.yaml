@@ -102,7 +102,7 @@ spec:
         {{- include "laboratory.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: laboratory-scheduler
-      priorityClassName: {{ .Values.priorityClasses.platform.name }}
+      priorityClassName: {{ include "laboratory.priorityClass.platform" . }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65534
