@@ -73,6 +73,19 @@ var _ = Describe(
 				cmd = exec.Command("make", "deploy", fmt.Sprintf("CONTROLLER_IMG=%s", projectImage))
 				_, err = utils.Run(cmd)
 				Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+				// The operator refuses to start without these (the manifest ConfigMap keeps them empty on purpose:
+				// they are per deployment). A container env wins over the ConfigMap envFrom.
+				By("configuring the required operator settings")
+				cmd = exec.Command(
+					"kubectl", "set", "env", "deployment/laboratory-controller-manager", "-n", namespace,
+					"PUBLIC_VPN_ENDPOINT=vpn.e2e.example.com:51820",
+					"BASE_DOMAIN=e2e.example.com",
+					"SUPPORT_EMAIL=support@e2e.example.com",
+					"NETCONFIG_IMAGE=example.com/laboratory-node:0.0.1",
+				)
+				_, err = utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred(), "Failed to configure the controller-manager")
 			},
 		)
 
