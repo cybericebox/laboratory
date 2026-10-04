@@ -149,7 +149,7 @@ func exportImage(ctx context.Context, img v1.Image, meta *protobuf.SnapshotMeta,
 
 	var openers []snapshot.Opener
 	for _, l := range layers[chain.Base:] {
-		l := l
+
 		openers = append(openers, func() (io.ReadCloser, error) { return l.Uncompressed() })
 	}
 	out := &chunkWriter{ctx: ctx, size: chunkSize, send: send, sum: sha256.New()}

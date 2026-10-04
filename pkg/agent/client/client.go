@@ -21,8 +21,9 @@ import (
 	"github.com/cybericebox/laboratory/pkg/tlsreload"
 )
 
-// MaxMessageSize is the largest answer the client accepts, equal to the agent's send limit; MaxRequestSize is the largest request
-// it sends, equal to what the agent reads (a bigger one is refused locally); MaxItems is the most items one call may carry.
+// MaxMessageSize is the largest answer the client accepts, equal to the agent's send limit; MaxRequestSize is the
+// largest request it sends, equal to what the agent reads (a bigger one is refused locally); MaxItems is the most
+// items one call may carry.
 const (
 	MaxMessageSize = 64 << 20
 	MaxRequestSize = 4 << 20

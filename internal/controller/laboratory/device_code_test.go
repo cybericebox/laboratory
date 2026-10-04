@@ -2,10 +2,11 @@ package laboratory
 
 import (
 	"context"
-	"github.com/cybericebox/laboratory/internal/devices"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/cybericebox/laboratory/internal/devices"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"

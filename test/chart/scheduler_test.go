@@ -145,6 +145,7 @@ func TestAgentGetsThePlatformReserve(t *testing.T) {
 		}
 	}
 }
+
 // Maintenance windows: the agent reads them (read only), and the CRD ships with the chart.
 func TestAgentMayReadMaintenanceWindows(t *testing.T) {
 	out, err := helmTemplate(t, "--set", "agent.enabled=true", "--set", "agent.domain=agent.example.com", "-s", "templates/agent/clusterrole.yaml")

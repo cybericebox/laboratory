@@ -92,7 +92,7 @@ func readAll(ctx context.Context, src BlobSource, h v1.Hash) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	return io.ReadAll(rc)
 }
 
@@ -184,7 +184,7 @@ func Build(run v1.Image, newTar string, newBytes int64, pol Policy, workDir stri
 	}
 	var openers []Opener
 	for _, l := range layers[chain.Base:] {
-		l := l
+
 		openers = append(openers, func() (io.ReadCloser, error) { return l.Uncompressed() })
 	}
 	openers = append(openers, func() (io.ReadCloser, error) { return os.Open(newTar) })

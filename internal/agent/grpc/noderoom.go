@@ -68,7 +68,7 @@ func (h *Handler) reported(ctx context.Context, l tenant.Limits) tenant.Limits {
 		case has && v.ok:
 			limit = min(limit, real)
 		case !has && v.ok:
-			has, limit = true, real
+			limit = real
 		case !has:
 			return false, 0
 		}

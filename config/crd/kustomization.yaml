@@ -10,6 +10,11 @@ resources:
   - bases/laboratory.cybericebox.com_labtrafficreports.yaml
   - bases/laboratory.cybericebox.com_connections.yaml
   - bases/laboratory.cybericebox.com_devices.yaml
+  - bases/laboratory.cybericebox.com_imagepulls.yaml
+  - bases/laboratory.cybericebox.com_labgateways.yaml
+  - bases/laboratory.cybericebox.com_labvpns.yaml
+  - bases/laboratory.cybericebox.com_maintenancewindows.yaml
+  - bases/laboratory.cybericebox.com_tenants.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

@@ -101,8 +101,8 @@ func newSplitListener(inner net.Listener, cfg *tls.Config, lim SplitLimits) *spl
 
 // Run accepts until the inner listener closes.
 func (s *splitListener) Run() error {
-	defer s.main.Close()
-	defer s.anon.Close()
+	defer func() { _ = s.main.Close() }()
+	defer func() { _ = s.anon.Close() }()
 	for {
 		c, err := s.inner.Accept()
 		if err != nil {

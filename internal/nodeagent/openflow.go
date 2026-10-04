@@ -57,7 +57,7 @@ func NewFlowManager(ovsRunDir, bridge string) (*FlowManager, error) {
 	)
 	fm := &FlowManager{client: c}
 	if err := fm.resetPipeline(); err != nil {
-		c.Close()
+		_ = c.Close()
 		return nil, err
 	}
 	return fm, nil
@@ -161,7 +161,7 @@ func (f *FlowManager) InitGeneveIngress() error {
 }
 
 func (f *FlowManager) addGeneveSource(geneveNo, ip uint32) error {
-	var actions []byte
+	actions := make([]byte, 0, 128)
 	actions = append(actions, ofclient.BuildActionsSetReg0(1)...)
 	actions = append(
 		actions, ofclient.BuildActionsRegMove(
@@ -236,7 +236,7 @@ func (f *FlowManager) AddT0Port(portName string, vni uint) error {
 		return fmt.Errorf("resolve port %q: %w", portName, err)
 	}
 	match := ofclient.BuildMatch(portNo, 0, false)
-	var actions []byte
+	actions := make([]byte, 0, 128)
 	actions = append(actions, ofclient.BuildActionsSetReg0(0)...)
 	actions = append(actions, ofclient.BuildActionsSetMetadata(uint64(vni))...)
 	actions = append(actions, ofclient.BuildActionsResubmitTable(6)...)

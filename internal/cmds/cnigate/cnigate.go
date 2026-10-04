@@ -141,9 +141,9 @@ func cmdADD(args *skel.CmdArgs) error {
 			return fmt.Errorf("cni-gate: delegate.type required for access port")
 		}
 		orig := os.Getenv("CNI_IFNAME")
-		os.Setenv("CNI_IFNAME", accessIface)
+		_ = os.Setenv("CNI_IFNAME", accessIface)
 		delegateResult, delegateErr := invoke.DelegateAdd(context.Background(), dt, marshalDelegate(conf), nil)
-		os.Setenv("CNI_IFNAME", orig)
+		_ = os.Setenv("CNI_IFNAME", orig)
 		if delegateErr != nil {
 			logf("ADD pod=%s/%s delegate ADD for %s error: %v", ns, name, accessIface, delegateErr)
 			return fmt.Errorf("delegate ADD for %s: %w", accessIface, delegateErr)
@@ -182,9 +182,9 @@ func cmdDEL(args *skel.CmdArgs) error {
 		return invoke.DelegateDel(context.Background(), delegateType(conf), marshalDelegate(conf), nil)
 	case defaultIface != "":
 		orig := os.Getenv("CNI_IFNAME")
-		os.Setenv("CNI_IFNAME", defaultIface)
+		_ = os.Setenv("CNI_IFNAME", defaultIface)
 		err := invoke.DelegateDel(context.Background(), delegateType(conf), marshalDelegate(conf), nil)
-		os.Setenv("CNI_IFNAME", orig)
+		_ = os.Setenv("CNI_IFNAME", orig)
 		return err
 	}
 	return nil
@@ -253,7 +253,7 @@ func getPodAnnotation(conf *NetConf, cniArgs, key string) (value string, found b
 	if err != nil {
 		return "", false, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	ns, name, _ := parsePodArgs(cniArgs)
 	if ns == "" || name == "" {

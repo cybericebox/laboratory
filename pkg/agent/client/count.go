@@ -21,7 +21,8 @@ func CountMismatch(err error) (actual int, ok bool) {
 		return 0, false
 	}
 	for _, d := range st.Details() {
-		if info, isInfo := d.(*errdetails.ErrorInfo); isInfo && info.Domain == ErrorDomain && info.Reason == ReasonCountMismatch {
+		info, isInfo := d.(*errdetails.ErrorInfo)
+		if isInfo && info.Domain == ErrorDomain && info.Reason == ReasonCountMismatch {
 			n, convErr := strconv.Atoi(info.Metadata["actual"])
 			return n, convErr == nil
 		}

@@ -185,7 +185,7 @@ func TestServerConfigHandshakeAcrossRenewal(t *testing.T) {
 		defer conn.Close()
 		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 		if _, err := conn.Read(make([]byte, 1)); err != nil {
-			if ne, ok := err.(net.Error); !(ok && ne.Timeout()) && err.Error() != "EOF" {
+			if ne, ok := err.(net.Error); (!ok || !ne.Timeout()) && err.Error() != "EOF" {
 				return "", err
 			}
 		}

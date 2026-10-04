@@ -100,4 +100,4 @@ func (m *WGManager) Device() (*wgtypes.Device, error) {
 	return m.client.Device(m.iface)
 }
 
-func (m *WGManager) Close() { m.client.Close() }
+func (m *WGManager) Close() { _ = m.client.Close() }

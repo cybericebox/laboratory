@@ -10,7 +10,7 @@ type LabSpec struct {
 	Internet LabNetworkSpec `json:"internet,omitempty"`
 	// Devices of the lab, switches and hubs included. The ceiling is fixed in code (names.MaxLabDevices).
 	// +kubebuilder:validation:MaxItems=64
-	Devices []DeviceTemplate `json:"devices,omitempty"`
+	Devices     []DeviceTemplate     `json:"devices,omitempty"`
 	Connections []ConnectionTemplate `json:"connections,omitempty"`
 }
 
@@ -23,8 +23,8 @@ type LabNetworkSpec struct {
 // DHCPServer enables the embedded DHCP server for a network segment.
 // Subnet and gateway are derived from the lab's allocated CIDR (Status.*.CIDR).
 type DHCPServer struct {
-	Enabled bool `json:"enabled,omitempty"`
-	Ranges []DHCPRange `json:"ranges,omitempty"`
+	Enabled bool        `json:"enabled,omitempty"`
+	Ranges  []DHCPRange `json:"ranges,omitempty"`
 	// DNS is advertised only by the internet gateway's DHCP server.
 	DNS string `json:"dns,omitempty"`
 }

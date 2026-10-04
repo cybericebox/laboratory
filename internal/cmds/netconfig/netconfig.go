@@ -95,7 +95,7 @@ func applyDHCPPreset(link netlink.Link, c ifaceConfig) error {
 	if err != nil {
 		return fmt.Errorf("dhcp client: %w", err)
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -112,11 +112,11 @@ func applyDHCPPreset(link netlink.Link, c ifaceConfig) error {
 	if err := addAddr(link, fmt.Sprintf("%s/%d", ack.YourIPAddr.String(), ones)); err != nil {
 		return err
 	}
-	for _, gw := range ack.Router() {
-		if err := addDefaultRoute(link, gw.String()); err != nil {
+	// only the first router is used
+	if routers := ack.Router(); len(routers) > 0 {
+		if err := addDefaultRoute(link, routers[0].String()); err != nil {
 			return err
 		}
-		break
 	}
 	return nil
 }

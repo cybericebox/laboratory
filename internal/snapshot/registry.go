@@ -131,7 +131,7 @@ func (r *Registry) HasBlob(ctx context.Context, repo name.Repository, d v1.Hash)
 	if err != nil {
 		return false
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
 }
 
@@ -144,7 +144,7 @@ func (r *Registry) mountBlob(ctx context.Context, target, from name.Repository, 
 	if err != nil {
 		return false, err
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return resp.StatusCode == http.StatusCreated, nil
 }
 
@@ -172,8 +172,8 @@ func (r *Registry) blobRequest(ctx context.Context, method string, repo name.Rep
 		return nil, err
 	}
 	u := url.URL{
-		Scheme:   repo.Registry.Scheme(),
-		Host:     repo.Registry.RegistryStr(),
+		Scheme:   repo.Scheme(),
+		Host:     repo.RegistryStr(),
 		Path:     fmt.Sprintf("/v2/%s/%s", repo.RepositoryStr(), path),
 		RawQuery: q.Encode(),
 	}
@@ -321,7 +321,7 @@ func (r *Registry) Supersede(ctx context.Context, repo, oldRef string, keep v1.I
 		if err != nil {
 			return fmt.Errorf("delete superseded blob %s: %w", d, err)
 		}
-		resp.Body.Close() // 202 deleted; 404 gone; 405 the registry does not delete blobs: its garbage collection will
+		_ = resp.Body.Close() // 202 deleted; 404 gone; 405 the registry does not delete blobs: its garbage collection will
 	}
 	return nil
 }

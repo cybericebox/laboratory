@@ -73,7 +73,7 @@ func (d *Demux) read(stop <-chan struct{}) {
 	for {
 		select {
 		case <-stop:
-			d.conn.Close()
+			_ = d.conn.Close()
 			return
 		default:
 		}
@@ -231,5 +231,5 @@ func (d *Demux) handleType4Userspace(pkt []byte, src *net.UDPAddr) {
 }
 
 func (d *Demux) Close() {
-	d.conn.Close()
+	_ = d.conn.Close()
 }

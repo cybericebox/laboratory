@@ -148,9 +148,9 @@ func devicePodKey(ns, lab, device string) string { return ns + "/" + lab + "/" +
 // unknown pod.
 func (s *Scheduler) groupPodNeed(name string, g *laboratoryv1alpha1.LabGroup) corev1.ResourceList {
 	switch name {
-	case "vpn":
+	case names.ComponentVPN:
 		return s.GroupPods.VPNFor(g.Spec.VPN.Size).Requests
-	case "gateway":
+	case names.ComponentGateway:
 		return s.GroupPods.GatewayFor(g.Spec.Gateway.Size).Requests
 	}
 	return nil
@@ -160,9 +160,9 @@ func (s *Scheduler) groupPodNeed(name string, g *laboratoryv1alpha1.LabGroup) co
 func groupPodNames(lg *laboratoryv1alpha1.LabGroup) []string {
 	var out []string
 	if !lg.Spec.VPN.Disabled {
-		out = append(out, "vpn")
+		out = append(out, names.ComponentVPN)
 	}
-	return append(out, "gateway")
+	return append(out, names.ComponentGateway)
 }
 
 // deployAfter parses the deploy-after annotation.
@@ -317,6 +317,8 @@ func (s *Scheduler) setGroupPod(ctx context.Context, lg *laboratoryv1alpha1.LabG
 // observe records what became of the pods already dispatched: Ready ones are
 // Started, ones that took too long or crash too often are Failed. It
 // changes the cached objects in place, so the plan sees the new states.
+//
+//nolint:gocyclo // one decision over many cases; splitting it would scatter the rule
 func (s *Scheduler) observe(ctx context.Context, snap *clusterView, now time.Time) {
 	logger := log.FromContext(ctx).WithName("scheduler")
 	cfg := s.Config
@@ -1006,7 +1008,7 @@ func systemComponentOf(p *corev1.Pod) string {
 		}
 		return ""
 	}
-	if app := p.Labels["app"]; app == names.ComponentVPN || app == names.ComponentGateway {
+	if app := p.Labels[labelApp]; app == names.ComponentVPN || app == names.ComponentGateway {
 		return app
 	}
 	return ""

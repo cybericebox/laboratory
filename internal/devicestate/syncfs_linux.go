@@ -8,6 +8,6 @@ func syncFilesystem(dir string) error {
 	if err != nil {
 		return err
 	}
-	defer unix.Close(fd)
+	defer func() { _ = unix.Close(fd) }()
 	return unix.Syncfs(fd)
 }

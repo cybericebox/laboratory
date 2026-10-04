@@ -166,6 +166,8 @@ type schedGroup struct {
 // Inside a group (and among the independent objects) the order is: an object already being dispatched first, then the
 // explicit priority (higher first), then the larger object (CPU, then memory), then arrival. A lab that does not fit now
 // (InsufficientResources) stays queued and the objects behind it go past it (backfill); the order inside an object is kept.
+//
+//nolint:gocyclo // one decision over many cases; splitting it would scatter the rule
 func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) schedPlan {
 	groups := map[string]*schedGroup{}
 	var independents []*schedObject

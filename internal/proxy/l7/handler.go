@@ -371,6 +371,6 @@ func deviceResponseFilter(hdr http.Header, sessionCookie, deviceHost, baseDomain
 			return true
 		}
 		// the base domain or a parent of it
-		return !(domain == baseDomain || strings.HasSuffix(baseDomain, "."+domain))
+		return domain != baseDomain && !strings.HasSuffix(baseDomain, "."+domain)
 	})
 }
