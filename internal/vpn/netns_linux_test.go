@@ -53,6 +53,11 @@ func TestNetnsVPNPodIsATransparentGateway(t *testing.T) {
 	nstest.Run(t, "lab2", "ip", "route", "add", "10.8.100.0/24", "via", "10.8.101.1")
 	nstest.Run(t, "lab2", "ip", "route", "add", "10.8.0.0/24", "via", "10.8.101.1")
 	nstest.Run(t, "", "sysctl", "-w", "net.ipv4.ip_forward=1")
+	// The test does not measure the reverse-path filter of the host kernel (a runner may have it strict, which drops a lab's other
+	// subnets); the pod's own firewall is what is under test.
+	for _, k := range []string{"all", "default", "lab1", "lab2", "wg0", "eth0"} {
+		nstest.Run(t, "", "sysctl", "-w", "net.ipv4.conf."+k+".rp_filter=0")
+	}
 
 	// Targets on the pod itself, on every kind of address it has.
 	tcpPod := nstest.Listen(t, "", "tcp", "0.0.0.0:7000")
