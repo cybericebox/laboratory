@@ -50,4 +50,13 @@ g tag v1.1.0
 commit d
 check "vX.Y.Z after vX.Y" "skip=false version=v1.1.1 tag=v1.1.1-rc.1 " "$(run)"
 
+# delete_rc exits 0 when the last tag does not match, and deletes only the rc tags of the version
+# shellcheck disable=SC2329
+hub_tags() { printf '%s\n' v1.2.3-rc.1 v1.2.3-rc.2 v1.2.30-rc.1 sha-abcdef0 latest; }
+# shellcheck disable=SC2329
+hub_delete() { echo "del $1 $2"; }
+out=$(delete_rc v1.2.3 img); rc=$?
+check "delete-rc status with a non-matching last tag" 0 "$rc"
+check "delete-rc deletes only the rc tags of the version" "del img v1.2.3-rc.1 del img v1.2.3-rc.2" "$(tr '\n' ' ' <<<"$out" | sed 's/ $//')"
+
 exit $fail

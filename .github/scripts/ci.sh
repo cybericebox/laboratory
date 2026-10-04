@@ -82,7 +82,7 @@ next_version() {
   rcs=""
   while read -r t; do
     [[ -n "$t" ]] || continue
-    ver_gt "${t%-rc.*}" "$last" && rcs+="$t"$'\n'
+    if ver_gt "${t%-rc.*}" "$last"; then rcs+="$t"$'\n'; fi
   done < <(git tag --list 'v*-rc.*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$' || true)
   [[ -n "$rcs" ]] && latest_rc=$(printf '%s' "$rcs" | sort -V | tail -n 1)
 
@@ -129,7 +129,7 @@ next_version() {
   n=0
   if [[ -n "$rcs" ]]; then
     while read -r t; do
-      [[ "${t%-rc.*}" == "$version" ]] && n=$((${t##*-rc.} > n ? ${t##*-rc.} : n))
+      if [[ "${t%-rc.*}" == "$version" ]]; then n=$((${t##*-rc.} > n ? ${t##*-rc.} : n)); fi
     done <<<"$rcs"
   fi
   {
@@ -171,6 +171,17 @@ cleanup() {
   return 0
 }
 
+# delete_rc vX.Y.Z image... : delete the rc tags of that version
+delete_rc() {
+  local version=$1 image tag
+  shift
+  for image in "$@"; do
+    while read -r tag; do
+      if [[ "$tag" =~ ^${version//./\\.}-rc\.[0-9]+$ ]]; then hub_delete "$image" "$tag"; fi
+    done < <(hub_tags "$image")
+  done
+}
+
 [[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0 2>/dev/null
 cmd=${1:-}
 shift || true
@@ -180,15 +191,7 @@ case "$cmd" in
   next-version) next_version ;;
   hub-tags) hub_tags "$1" ;;
   hub-delete) hub_delete "$1" "$2" ;;
-  delete-rc)
-    version=$1
-    shift
-    for image in "$@"; do
-      while read -r tag; do
-        [[ "$tag" =~ ^${version//./\\.}-rc\.[0-9]+$ ]] && hub_delete "$image" "$tag"
-      done < <(hub_tags "$image")
-    done
-    ;;
+  delete-rc) delete_rc "$@" ;;
   cleanup) cleanup "$@" ;;
   *) die "usage: ci.sh sha-tag|exists|next-version|hub-tags|hub-delete|delete-rc|cleanup" ;;
 esac
