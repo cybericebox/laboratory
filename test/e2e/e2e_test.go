@@ -232,8 +232,9 @@ var _ = Describe(
 							cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
 							output, err := utils.Run(cmd)
 							g.Expect(err).NotTo(HaveOccurred())
+							// The operator logs JSON (not the console format of the scaffold), so the logger and the message are fields.
 							g.Expect(output).To(
-								ContainSubstring("controller-runtime.metrics\tServing metrics server"),
+								ContainSubstring(`"logger":"controller-runtime.metrics","msg":"Serving metrics server"`),
 								"Metrics server not yet started",
 							)
 						}
