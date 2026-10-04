@@ -119,7 +119,14 @@ next_version() {
     if [[ -n "$last_ref" ]]; then
       since=$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ "$last_ref^{commit}")
     fi
-    count=$(gh api -X GET search/issues -f q="repo:${GITHUB_REPOSITORY} is:pr is:merged label:minor merged:>$since" --jq .total_count)
+    # The date only narrows the search: a PR merged in the same second as the release commit is
+    # already in it, so a PR counts only when its merge commit is not in the last release.
+    count=0
+    while read -r sha; do
+      [[ -n "$sha" ]] || continue
+      if [[ -n "$last_ref" ]] && git merge-base --is-ancestor "$sha" "$last_ref" 2>/dev/null; then continue; fi
+      count=$((count + 1))
+    done < <(gh pr list -R "$GITHUB_REPOSITORY" --state merged --label minor --search "merged:>=$since" -L 200 --json mergeCommit --jq '.[].mergeCommit.oid')
     [[ "$count" -gt 0 ]] && bump=minor
     echo "last release $last ($since), merged PRs labelled minor since: $count"
   fi
