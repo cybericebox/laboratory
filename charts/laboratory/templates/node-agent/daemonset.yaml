@@ -79,6 +79,9 @@ spec:
           imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.nodeAgent.image "root" $))) }}
           restartPolicy: Always
           command: [ "/node-agent/bin/start-ovs.sh" ]
+          env:
+            - name: OVS_SOCK
+              value: {{ .Values.nodeAgent.ovsSocket | quote }}
           securityContext:
             privileged: true
           startupProbe:
@@ -128,6 +131,8 @@ spec:
           imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.nodeAgent.image "root" $))) }}
           command: [ "/node", "install-cni" ]
           env:
+            - name: GRPC_SOCK
+              value: {{ .Values.nodeAgent.grpcSocket | quote }}
             - name: CNI_CONF_DIR
               value: /etc/cni/net.d
           {{- with .Values.nodeAgent.cniFallbackTimeout }}
@@ -150,8 +155,9 @@ spec:
           imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.nodeAgent.image "root" $))) }}
           command: [ "/node", "node-agent" ]
           env:
-            # The socket paths, the bridge name (br-ovs), the probes' address (the loopback :9440: the node-agent is on the host network),
-            # the tun check path, the registry address and its relay port (5035) are baked into the image.
+            # The probes' address: the loopback only (the node-agent is on the host network).
+            - name: HEALTH_ADDR
+              value: {{ printf "127.0.0.1:%d" (.Values.nodeAgent.healthPort | int) | quote }}
             # Storm control of the shared switch, and the watchdog that restarts the node-agent when OVS is lost.
             - name: PORT_POLICING_KBPS
               value: {{ .Values.nodeAgent.portPolicingKbps | quote }}
@@ -163,16 +169,28 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            - name: OVS_SOCK
+              value: {{ .Values.nodeAgent.ovsSocket | quote }}
+            - name: GRPC_SOCK
+              value: {{ .Values.nodeAgent.grpcSocket | quote }}
             - name: NODE_ADDRESS
               valueFrom:
                 fieldRef:
                   fieldPath: status.hostIP
+            - name: OVS_BRIDGE
+              value: {{ .Values.nodeAgent.ovsBridge | quote }}
             - name: CRI_SOCK
               value: {{ .Values.nodeAgent.criSocket | quote }}
+            - name: DEVICE_PLUGIN_DIR
+              value: {{ .Values.nodeAgent.devicePlugin.dir | quote }}
             - name: ERROR_JOURNAL_NAMESPACE
               value: {{ .Release.Namespace | quote }}
             - name: TUN_SLOTS
               value: {{ .Values.nodeAgent.devicePlugin.tunSlots | quote }}
+            # The platform registry (snapshots, image cache): its Service is relayed to 127.0.0.1:5035 (a constant of the image), where
+            # containerd reads it as a plain-HTTP localhost registry.
+            - name: STATE_REGISTRY_ADDR
+              value: {{ include "laboratory.registryAddr" . | quote }}
           {{- if .Values.devices.statePersistence.enabled }}
             - name: STATE_PERSISTENCE_ENABLED
               value: "true"
@@ -226,14 +244,14 @@ spec:
             httpGet:
               host: 127.0.0.1
               path: /readyz
-              port: {{ include "laboratory.nodeHealthPort" . }}
+              port: {{ .Values.nodeAgent.healthPort }}
             periodSeconds: 3
             failureThreshold: 60
           readinessProbe:
             httpGet:
               host: 127.0.0.1
               path: /readyz
-              port: {{ include "laboratory.nodeHealthPort" . }}
+              port: {{ .Values.nodeAgent.healthPort }}
             periodSeconds: 10
             failureThreshold: 2
             timeoutSeconds: 5
@@ -241,7 +259,7 @@ spec:
             httpGet:
               host: 127.0.0.1
               path: /healthz
-              port: {{ include "laboratory.nodeHealthPort" . }}
+              port: {{ .Values.nodeAgent.healthPort }}
             periodSeconds: 20
             failureThreshold: 3
             timeoutSeconds: 8
@@ -254,7 +272,7 @@ spec:
               mountPath: {{ .Values.nodeAgent.criSocket | quote }}
             # The kubelet's device-plugin directory: the node-agent registers cybericebox.com/tun here.
             - name: device-plugins
-              mountPath: "/var/lib/kubelet/device-plugins"
+              mountPath: {{ .Values.nodeAgent.devicePlugin.dir | quote }}
             - name: host-netns
               mountPath: /run/netns
               # HostToContainer: propagate netns bind-mounts (cni-XXX) created on the
@@ -289,11 +307,11 @@ spec:
             type: DirectoryOrCreate
         - name: ovs-run
           hostPath:
-            path: /run/openvswitch
+            path: {{ .Values.nodeAgent.ovsRunHostPath }}
             type: DirectoryOrCreate
         - name: ovs-db
           hostPath:
-            path: /var/lib/cybericebox/openvswitch
+            path: {{ .Values.nodeAgent.ovsDBHostPath }}
             type: DirectoryOrCreate
         - name: lib-modules
           hostPath:
@@ -311,7 +329,7 @@ spec:
         # (and with it every new pod of the node). The device plugin is optional; without it only the `extended` profile's tun is lost.
         - name: device-plugins
           hostPath:
-            path: "/var/lib/kubelet/device-plugins"
+            path: {{ .Values.nodeAgent.devicePlugin.dir | quote }}
             type: DirectoryOrCreate
         - name: host-netns
           hostPath:

@@ -7,8 +7,9 @@ image:
 
 # Everything below has a default that suits any installation; the only values a chart user has to give are operator.baseDomain,
 # operator.publicVPNEndpoint, operator.supportEmail and, with an ACME issuer, certManager.email. Constants of the platform (the WireGuard
-# port 51820, the ports of the proxy containers, the node-agent socket and host paths, the registry address and its relay port 5035,
-# the priority class names, the namespaces laboratory-system, laboratory-proxy and laboratory-agent) are baked into the images and are not values.
+# port 51820 inside the VPN pods, the ports of the proxy containers, the node-agent probe port, the registry relay port 5035) are baked into the
+# images and are not values. Tuning knobs (paths, names, namespaces, intervals, sizes) stay optional values with these defaults; the images
+# also read them as optional environment variables, so any of them can be overridden without a rebuild.
 # ============================================================
 # Operator configuration
 # ============================================================
@@ -18,9 +19,10 @@ operator:
     tag: ""
     pullPolicy: ""   # empty = IfNotPresent (the tag is always an exact version)
 
-  # REQUIRED (no default): host:port advertised to WireGuard clients (demux public address), also reported by the agent.
-  # The platform listens on UDP 51820 everywhere inside; the public port here may differ when a load balancer maps it.
-  # Example: "vpn.example.com:51820"
+  # REQUIRED (no default): the address advertised to WireGuard clients (demux public address), also reported by the agent: a host, or
+  # host:port. Without a port, proxy.wg.publicPort is used (51820 by default). With one, it is advertised as it is: that is for a
+  # front (a cloud load balancer, a firewall) that maps the public port to proxy.wg.publicPort.
+  # Examples: "vpn.example.com" or "vpn.example.com:443"
   publicVPNEndpoint: ""
 
   # REQUIRED: cluster ingress base domain for device exposure URLs (also the proxy's and the agent's
@@ -74,15 +76,17 @@ operator:
 # pods of a group: group, above the devices. Device pods: device, the lowest, with preemptionPolicy Never: a device never
 # evicts anything (a VPN or a gateway may evict a device, the system may evict both). The operator's admission policy
 # allows its pods exactly the group and device classes. Existing group pods keep what they have (no class) until recreated.
-# The names are constants (laboratory-platform, laboratory-group, laboratory-device); only the values are settings.
 priorityClasses:
   # false: the classes already exist (the same names), the chart does not create them.
   create: true
   platform:
+    name: laboratory-platform
     value: 1000000
   group:
+    name: laboratory-group
     value: 10000
   device:
+    name: laboratory-device
     value: 100
 
 # ============================================================
@@ -137,7 +141,8 @@ vpn:
     perUserCpu: 6m
     perUserMemory: 20Mi
     maxUsers: 20
-  # The VPN pod samples traffic statistics every 30 s (a constant of the image).
+  # How often the VPN pod of a NEW group samples traffic statistics (Go duration).
+  statsInterval: 30s
   image:
     repository: cybericebox/laboratory-lab
     tag: ""   # empty = the release tag (image.tag)
@@ -302,8 +307,11 @@ proxy:
   # WireGuard demux container — plain userspace UDP, no hostNetwork/capabilities.
   wg:
     enabled: true
-    # The wg-demux binds UDP 51820 (the LoadBalancer Service publishes the same port) and its probes (/readyz: the UDP socket is bound, the
+    # The wg-demux binds UDP 51820 inside the pod (the VPN pods listen on 51820 too) and its probes (/readyz: the UDP socket is bound, the
     # caches have synced and every group is in the demux table; /healthz: the process answers) are on :8082. Constants of the image.
+    # publicPort is the port OUTSIDE the cluster: the UDP port the LoadBalancer Service listens on, where the clients connect (the Service
+    # forwards it to 51820). It is also the port of operator.publicVPNEndpoint when that has none.
+    publicPort: 51820
     # Optional fixed nodePort of the laboratory-proxy-wg Service (30000-32767),
     # e.g. behind a cloud NLB that targets a known node port. Unset: Kubernetes
     # assigns one.
@@ -433,8 +441,9 @@ nodeAgent:
   enabled: true
 
   # Probes of the node-agent: /readyz (Open vSwitch answers, the caches have synced) and /healthz (Open vSwitch answers) on the loopback of the node
-  # (it is on the host network) at :9440; a DaemonSet rollout waits minReadySeconds after a node-agent is Ready before it moves to the next
+  # (it is on the host network) at healthPort; a DaemonSet rollout waits minReadySeconds after a node-agent is Ready before it moves to the next
   # node (a restart drops the node's flows until they are programmed again).
+  healthPort: 9440
   minReadySeconds: 20
 
   # The init container wraps the node's real CNI config (Cilium) with cni-gate and waits for it as long as it takes: on a fresh
@@ -479,13 +488,24 @@ nodeAgent:
       net.ipv4.conf.all.rp_filter: "0"
       net.ipv4.conf.default.rp_filter: "0"
       net.bridge.bridge-nf-call-iptables: "1"
+  # Where the node-agent keeps its sockets and Open vSwitch state on the host, and the bridge it programs.
+  # ovsSocket must stay inside ovsRunHostPath: templates/validate.yaml refuses anything else.
+  ovsSocket: "/run/openvswitch/db.sock"
+  # hostPath of the OVS runtime dir (db socket, pid and control files).
+  ovsRunHostPath: "/run/openvswitch"
+  # hostPath of /etc/openvswitch: conf.db (bridges, ports) survives pod restarts.
+  ovsDBHostPath: "/var/lib/cybericebox/openvswitch"
+  grpcSocket: "/run/cybericebox/node-agent.sock"
+  # Name of the OVS bridge the node-agent programs.
+  ovsBridge: br-ovs
   # The container runtime's socket on the host: the one path that depends on the Kubernetes distribution (k0s here).
   criSocket: "/run/k0s/containerd.sock"
   # The node-agent is the kubelet device plugin of the extended resource cybericebox.com/tun: a device pod with the
-  # `extended` profile requests it and the kubelet passes /dev/net/tun (the host needs the tun module). The kubelet's device-plugins
-  # directory is always /var/lib/kubelet/device-plugins (the kubelet hardcodes it, also on k0s, whatever its root-dir is); tunSlots is how
-  # many such devices a node advertises, which bounds the extended devices per node.
+  # `extended` profile requests it and the kubelet passes /dev/net/tun (the host needs the tun module). dir is the kubelet's
+  # device-plugins directory (/var/lib/kubelet/device-plugins: the kubelet hardcodes it, also on k0s, whatever its root-dir is); tunSlots is
+  # how many such devices a node advertises, which bounds the extended devices per node.
   devicePlugin:
+    dir: /var/lib/kubelet/device-plugins
     tunSlots: 1000
 
   # Requests and limits of the node-agent pod, so that one runaway process cannot starve the node (the pod is privileged
@@ -562,9 +582,9 @@ registry:
   networkPolicy:
     enabled: true
   # Node-side access: the node-agent relays 127.0.0.1:5035 on each node to the registry Service
-  # (laboratory-registry.laboratory-system.svc:5000), and images are referenced as localhost:5035/...
+  # (laboratory-registry.<release namespace>.svc:5000, passed to every component), and images are referenced as localhost:5035/...
   # containerd treats localhost registries as plain HTTP, so the nodes need no
-  # configuration. The port must be free on the node. Both are constants of the images.
+  # configuration. The port 5035 must be free on the node; it is a constant of the images.
 
   # Pull-through cache of the lab images. The operator rewrites REG/repo:tag of the
   # devices, VPN and gateway pods of labs created while the cache is on into
@@ -798,7 +818,8 @@ limits:
 # ============================================================
 agent:
   enabled: false
-  # The agent runs in the namespace laboratory-agent (a constant).
+  # Namespace of the management agent (the operator binds its ServiceAccount in every LabGroup namespace).
+  namespace: laboratory-agent
   # Stable identity of this agent: makes the monitoring observations idempotent at the platform boundary.
   id: laboratory-agent
   # How often the agent refreshes the status of the Tenant objects (Go duration).
@@ -874,9 +895,20 @@ agent:
   tenantCertificates:
     enabled: false
 
-  # The Monitoring stream (see DEPLOY.md, "Monitoring stream"): one poller and one in-memory journal serve every platform backend that
-  # subscribes; their sizes are internal and fixed. A poll reads informer caches (no API call); the caches hold the objects of all tenants
-  # (raise agent.resources with the number of labs).
+  # The Monitoring stream: one poller and one in-memory journal serve every platform
+  # backend that subscribes. See DEPLOY.md, "Monitoring stream".
+  monitoring:
+    # Updates the journal keeps for resuming subscribers.
+    journalSize: 10000
+    # How long an update stays in the journal.
+    journalAge: 15m
+    # How often the platform is observed while anybody is subscribed. A poll reads informer caches (no API call), so 1s is cheap;
+    # the caches hold the objects of all tenants (raise agent.resources with the number of labs).
+    pollInterval: 1s
+    # Updates a subscriber may lag behind before its stream is dropped.
+    subscriberBuffer: 256
+    # Monitoring streams one tenant may hold open at once (each subscribe runs a full collect and keeps a buffer); 0 = unlimited.
+    maxStreamsPerTenant: 8
 
   # Container resource requests/limits.
   # 256Mi: the Monitoring caches hold the objects of all tenants (and a request is read up to 4 MiB).

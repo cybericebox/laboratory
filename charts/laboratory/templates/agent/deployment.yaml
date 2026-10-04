@@ -3,7 +3,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: laboratory-agent
-  namespace: laboratory-agent
+  namespace: {{ $.Values.agent.namespace }}
   labels:
     app: laboratory-agent
     {{- include "laboratory.labels" . | nindent 4 }}
@@ -96,7 +96,25 @@ spec:
               value: {{ .Values.agent.id | quote }}
             - name: AGENT_TENANT_STATUS_INTERVAL
               value: {{ .Values.agent.tenantStatusInterval | quote }}
-            {{- /* The TLS and CA files (/tls, /ca) and the release namespace are baked into the image: the chart mounts the Secrets there. */}}
+            {{- /* The TLS and CA files (/tls, /ca) are the image's defaults: the chart mounts the Secrets there. */}}
+            - name: AGENT_RELEASE_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: AGENT_PULL_SECRET_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            # ExportDeviceSnapshot reads the snapshots from the platform registry, PrewarmImages makes the cache fetch through it.
+            - name: AGENT_REGISTRY_ADDR
+              value: {{ include "laboratory.registryAddr" . | quote }}
+            # The Monitoring stream (see DEPLOY.md, "Monitoring stream").
+            - name: AGENT_MONITORING_JOURNAL_SIZE
+              value: {{ .Values.agent.monitoring.journalSize | quote }}
+            - name: AGENT_MONITORING_JOURNAL_AGE
+              value: {{ .Values.agent.monitoring.journalAge | quote }}
+            - name: AGENT_MONITORING_POLL_INTERVAL
+              value: {{ .Values.agent.monitoring.pollInterval | quote }}
+            - name: AGENT_MONITORING_SUBSCRIBER_BUFFER
+              value: {{ .Values.agent.monitoring.subscriberBuffer | quote }}
+            - name: AGENT_MONITORING_MAX_STREAMS_PER_TENANT
+              value: {{ .Values.agent.monitoring.maxStreamsPerTenant | quote }}
             {{- /* The settings the operator also reads: the same map under the same names (laboratory.sharedEnv). */}}
           {{- range $name, $value := include "laboratory.sharedEnv" . | fromYaml }}
           {{- if or (not (hasPrefix "IMAGE_CACHE_" $name)) $.Values.registry.cache.enabled }}
@@ -104,7 +122,7 @@ spec:
               value: {{ $value | quote }}
           {{- end }}
           {{- end }}
-            # ExportDeviceSnapshot reads the snapshots from the platform registry with the reader account (not anonymous).
+            # The snapshots are not anonymous: the agent reads them with the reader account.
             - name: AGENT_REGISTRY_USER
               valueFrom:
                 secretKeyRef:

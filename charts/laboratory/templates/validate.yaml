@@ -23,19 +23,16 @@ at install time instead of shipping a broken deployment.
 {{- end }}
 {{- end }}
 
-{{- /* Values that no longer exist (the setting became a constant of the images, or moved): fail loudly instead of ignoring them silently. */ -}}
-{{- range $path := list "operator.vpnServicePort" "vpn.statsInterval" "registry.forwardPort" "agent.namespace" "agent.monitoring" "agent.mtls.enabled" "proxy.l7.listen" "proxy.l7.healthPort" "proxy.wg.healthPort" "proxy.wg.listenPort" "nodeAgent.ovsSocket" "nodeAgent.ovsRunHostPath" "nodeAgent.ovsDBHostPath" "nodeAgent.grpcSocket" "nodeAgent.ovsBridge" "nodeAgent.healthPort" "nodeAgent.devicePlugin.dir" }}
+{{- /* Values that no longer exist (the setting became a constant of an in-network port of the images, or moved): fail loudly instead of ignoring them silently. */ -}}
+{{- range $path := list "operator.vpnServicePort" "registry.forwardPort" "agent.mtls.enabled" "proxy.l7.listen" "proxy.l7.healthPort" "proxy.wg.healthPort" "proxy.wg.listenPort" }}
 {{- $node := $.Values }}
 {{- $found := true }}
 {{- range $key := splitList "." $path }}
 {{- if and $found (kindIs "map" $node) (hasKey $node $key) }}{{- $node = index $node $key }}{{- else }}{{- $found = false }}{{- end }}
 {{- end }}
 {{- if $found }}
-{{- fail (printf "%s was removed: it is a constant of the images now (see values.yaml and DEPLOY.md). Agent without client certificates: agent.allowInsecure=true (development only)." $path) }}
+{{- fail (printf "%s was removed: it is a constant of the images now (an in-network port, see values.yaml and DEPLOY.md). Agent without client certificates: agent.allowInsecure=true (development only)." $path) }}
 {{- end }}
-{{- end }}
-{{- if or .Values.priorityClasses.platform.name .Values.priorityClasses.group.name .Values.priorityClasses.device.name }}
-{{- fail "priorityClasses.<class>.name was removed: the names are laboratory-platform, laboratory-group and laboratory-device" }}
 {{- end }}
 
 {{- /* A device must stay below a group's pods, and those below the platform's. */ -}}
@@ -47,7 +44,10 @@ at install time instead of shipping a broken deployment.
 
 {{- /* Required values: fail at install time with a clear message. */ -}}
 {{- if not .Values.operator.publicVPNEndpoint }}
-{{- fail "operator.publicVPNEndpoint is required: the host:port advertised to WireGuard clients, e.g. vpn.example.com:51820" }}
+{{- fail "operator.publicVPNEndpoint is required: the host (or host:port) advertised to WireGuard clients, e.g. vpn.example.com" }}
+{{- end }}
+{{- if or (lt (int .Values.proxy.wg.publicPort) 1) (gt (int .Values.proxy.wg.publicPort) 65535) }}
+{{- fail (printf "proxy.wg.publicPort %v is not a port (1-65535): the UDP port WireGuard clients connect to, outside the cluster" .Values.proxy.wg.publicPort) }}
 {{- end }}
 {{- if not .Values.operator.baseDomain }}
 {{- fail "operator.baseDomain is required: the base domain of lab web hosts, e.g. lab.example.com" }}
@@ -68,6 +68,10 @@ at install time instead of shipping a broken deployment.
 {{- if not .Values.certManager.email }}
 {{- fail "certManager.email is required with an ACME issuer (Let's Encrypt account)" }}
 {{- end }}
+{{- end }}
+
+{{- if not (hasPrefix (printf "%s/" (trimSuffix "/" .Values.nodeAgent.ovsRunHostPath)) .Values.nodeAgent.ovsSocket) }}
+{{- fail (printf "nodeAgent.ovsSocket (%s) must be inside nodeAgent.ovsRunHostPath (%s): the ovs sidecar and the node-agent share that directory" .Values.nodeAgent.ovsSocket .Values.nodeAgent.ovsRunHostPath) }}
 {{- end }}
 
 {{- /* Scheduler values: the operator refuses to start on bad ones, so fail at install time. */ -}}

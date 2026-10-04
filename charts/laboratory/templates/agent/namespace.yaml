@@ -2,7 +2,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: laboratory-agent
+  name: {{ $.Values.agent.namespace }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
     # The pods here are non-root, drop every capability, use the runtime's seccomp profile and a read-only root filesystem: the

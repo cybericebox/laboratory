@@ -12,5 +12,5 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: laboratory-agent
-    namespace: laboratory-agent
+    namespace: {{ $.Values.agent.namespace }}
 {{- end }}

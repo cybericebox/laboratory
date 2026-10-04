@@ -95,7 +95,7 @@ func TestOperatorAndAgentShareTheirSettings(t *testing.T) {
 	}
 	// and the agent has none of the second names it used to read
 	for name := range envOf(dep.Spec.Template.Spec.Containers[0]) {
-		for _, old := range []string{"AGENT_LIMIT_DEVICE_", "AGENT_STATE_", "AGENT_SCHEDULER_", "AGENT_CACHE_", "AGENT_BASE_DOMAIN", "AGENT_PUBLIC_VPN_ENDPOINT", "AGENT_LAB_", "AGENT_PROXY_", "AGENT_MONITORING_", "AGENT_PULL_SECRET"} {
+		for _, old := range []string{"AGENT_LIMIT_DEVICE_", "AGENT_STATE_", "AGENT_SCHEDULER_", "AGENT_CACHE_", "AGENT_BASE_DOMAIN", "AGENT_PUBLIC_VPN_ENDPOINT", "AGENT_LAB_", "AGENT_PROXY_"} {
 			if strings.HasPrefix(name, old) {
 				t.Errorf("%s: the agent reads the operator's name for it", name)
 			}
@@ -103,11 +103,11 @@ func TestOperatorAndAgentShareTheirSettings(t *testing.T) {
 	}
 }
 
-// Values that became constants of the images are refused when a stale values file still sets them.
+// Values that became constants of the images are refused when a stale values file still sets them: only ports inside the cluster
+// network (the WireGuard port of the VPN pods, the ports of the proxy containers, the registry relay port).
 func TestRemovedValuesAreRefused(t *testing.T) {
-	for _, set := range []string{"operator.vpnServicePort=51821", "vpn.statsInterval=1m", "registry.forwardPort=5099", "agent.namespace=other", "agent.monitoring.journalSize=1",
-		"proxy.l7.listen=:9443", "proxy.l7.healthPort=1", "proxy.wg.listenPort=1", "proxy.wg.healthPort=1", "nodeAgent.ovsBridge=x", "nodeAgent.grpcSocket=/x",
-		"nodeAgent.healthPort=1", "nodeAgent.ovsRunHostPath=/x", "nodeAgent.ovsDBHostPath=/x", "priorityClasses.group.name=x"} {
+	for _, set := range []string{"operator.vpnServicePort=51821", "registry.forwardPort=5099",
+		"proxy.l7.listen=:9443", "proxy.l7.healthPort=1", "proxy.wg.listenPort=1", "proxy.wg.healthPort=1"} {
 		if out, err := helmTemplate(t, "--set", set); err == nil {
 			t.Errorf("%s must be refused:\n%s", set, out)
 		} else if !strings.Contains(out, "removed") {
@@ -124,5 +124,132 @@ func TestPlatformConstantsInTheChart(t *testing.T) {
 	}
 	if !regexp.MustCompile(`port: 51820\s+targetPort: 51820`).MatchString(out) || !strings.Contains(out, "targetPort: 8443") {
 		t.Errorf("the WireGuard port 51820 and the HTTPS port 8443:\n%s", out)
+	}
+}
+
+// The tuning knobs stay values (and optional environment variables of the images): paths, names, namespaces, intervals, sizes.
+func TestTuningKnobsStayValues(t *testing.T) {
+	set := append(append([]string{}, agentSet...), "--set", "vpn.statsInterval=45s", "--set", "agent.namespace=lab-agent-x",
+		"--set", "agent.monitoring.journalSize=77", "--set", "agent.monitoring.journalAge=3m", "--set", "agent.monitoring.pollInterval=2s",
+		"--set", "agent.monitoring.subscriberBuffer=9", "--set", "agent.monitoring.maxStreamsPerTenant=3",
+		"--set", "nodeAgent.ovsRunHostPath=/run/ovs-x", "--set", "nodeAgent.ovsSocket=/run/ovs-x/db.sock", "--set", "nodeAgent.ovsDBHostPath=/var/lib/ovs-x",
+		"--set", "nodeAgent.grpcSocket=/run/cice/na.sock", "--set", "nodeAgent.ovsBridge=br-x", "--set", "nodeAgent.healthPort=9555",
+		"--set", "nodeAgent.devicePlugin.dir=/var/lib/kubelet/dp-x", "--set", "priorityClasses.group.name=grp-x")
+	var cm corev1.ConfigMap
+	render(t, "templates/operator/configmap.yaml", &cm, set...)
+	for k, want := range map[string]string{"VPN_STATS_INTERVAL": "45s", "AGENT_SERVICE_NAMESPACE": "lab-agent-x", "AGENT_SERVICE_ACCOUNT": "laboratory-agent",
+		"OPERATOR_SERVICE_ACCOUNT": "laboratory-controller-manager", "OPERATOR_NAMESPACE": "laboratory-system", "PRIORITY_CLASS_GROUP": "grp-x"} {
+		if cm.Data[k] != want {
+			t.Errorf("operator %s = %q, want %q", k, cm.Data[k], want)
+		}
+	}
+	var dep appsv1.Deployment
+	render(t, "templates/agent/deployment.yaml", &dep, set...)
+	if dep.Namespace != "lab-agent-x" {
+		t.Errorf("agent namespace %q, want lab-agent-x", dep.Namespace)
+	}
+	agentEnv := envOf(dep.Spec.Template.Spec.Containers[0])
+	for k, want := range map[string]string{"AGENT_MONITORING_JOURNAL_SIZE": "77", "AGENT_MONITORING_JOURNAL_AGE": "3m", "AGENT_MONITORING_POLL_INTERVAL": "2s",
+		"AGENT_MONITORING_SUBSCRIBER_BUFFER": "9", "AGENT_MONITORING_MAX_STREAMS_PER_TENANT": "3", "AGENT_RELEASE_NAMESPACE": "laboratory-system",
+		"AGENT_PULL_SECRET_NAMESPACE": "laboratory-system", "AGENT_REGISTRY_ADDR": "laboratory-registry.laboratory-system.svc:5000"} {
+		if agentEnv[k].Value != want {
+			t.Errorf("agent %s = %q, want %q", k, agentEnv[k].Value, want)
+		}
+	}
+	var ds appsv1.DaemonSet
+	render(t, "templates/node-agent/daemonset.yaml", &ds, set...)
+	var main corev1.Container
+	for _, c := range ds.Spec.Template.Spec.Containers {
+		if c.Name == "node-agent" {
+			main = c
+		}
+	}
+	naEnv := envOf(main)
+	for k, want := range map[string]string{"OVS_SOCK": "/run/ovs-x/db.sock", "GRPC_SOCK": "/run/cice/na.sock", "OVS_BRIDGE": "br-x",
+		"HEALTH_ADDR": "127.0.0.1:9555", "DEVICE_PLUGIN_DIR": "/var/lib/kubelet/dp-x", "STATE_REGISTRY_ADDR": "laboratory-registry.laboratory-system.svc:5000"} {
+		if naEnv[k].Value != want {
+			t.Errorf("node-agent %s = %q, want %q", k, naEnv[k].Value, want)
+		}
+	}
+	if main.StartupProbe == nil || main.StartupProbe.HTTPGet == nil || main.StartupProbe.HTTPGet.Port.IntValue() != 9555 {
+		t.Errorf("the probes follow nodeAgent.healthPort: %+v", main.StartupProbe)
+	}
+	hostPaths := map[string]string{}
+	for _, v := range ds.Spec.Template.Spec.Volumes {
+		if v.HostPath != nil {
+			hostPaths[v.Name] = v.HostPath.Path
+		}
+	}
+	for _, p := range []string{"/run/ovs-x", "/var/lib/ovs-x", "/var/lib/kubelet/dp-x"} {
+		found := false
+		for _, got := range hostPaths {
+			found = found || got == p
+		}
+		if !found {
+			t.Errorf("no hostPath %s in %v", p, hostPaths)
+		}
+	}
+	// the socket must stay inside the OVS run directory
+	if out, err := helmTemplate(t, "--set", "nodeAgent.ovsSocket=/elsewhere/db.sock"); err == nil || !strings.Contains(out, "must be inside nodeAgent.ovsRunHostPath") {
+		t.Errorf("an OVS socket outside its run directory must be refused: %v\n%s", err, out)
+	}
+}
+
+// The defaults of all of them are unchanged by the knobs coming back.
+func TestTuningKnobDefaults(t *testing.T) {
+	var cm corev1.ConfigMap
+	render(t, "templates/operator/configmap.yaml", &cm, agentSet...)
+	if cm.Data["VPN_STATS_INTERVAL"] != "30s" || cm.Data["AGENT_SERVICE_NAMESPACE"] != "laboratory-agent" || cm.Data["PRIORITY_CLASS_DEVICE"] != "laboratory-device" {
+		t.Errorf("operator defaults: %v", cm.Data)
+	}
+	var ds appsv1.DaemonSet
+	render(t, "templates/node-agent/daemonset.yaml", &ds, agentSet...)
+	for _, c := range ds.Spec.Template.Spec.Containers {
+		if c.Name != "node-agent" {
+			continue
+		}
+		env := envOf(c)
+		if env["OVS_SOCK"].Value != "/run/openvswitch/db.sock" || env["OVS_BRIDGE"].Value != "br-ovs" || env["HEALTH_ADDR"].Value != "127.0.0.1:9440" ||
+			env["GRPC_SOCK"].Value != "/run/cybericebox/node-agent.sock" || env["DEVICE_PLUGIN_DIR"].Value != "/var/lib/kubelet/device-plugins" {
+			t.Errorf("node-agent defaults: %v", env)
+		}
+	}
+}
+
+// The port clients connect to OUTSIDE the cluster is configurable end to end: proxy.wg.publicPort is the port of the LoadBalancer
+// Service and of the advertised address (PUBLIC_VPN_ENDPOINT, in the operator's and the agent's settings), and defaults to 51820.
+// The port inside (the VPN pods, the demux, the Service's targetPort) is a constant.
+func TestExternalWireGuardPort(t *testing.T) {
+	endpointOf := func(t *testing.T, endpoint string, extra ...string) (string, int32, int32) {
+		t.Helper()
+		set := append([]string{"--set", "operator.publicVPNEndpoint=" + endpoint}, extra...)
+		var cm corev1.ConfigMap
+		render(t, "templates/operator/configmap.yaml", &cm, append(append([]string{}, agentSet...), set...)...)
+		var svc corev1.Service
+		render(t, "templates/proxy/service-wg-lb.yaml", &svc, append(append([]string{}, agentSet...), set...)...)
+		var dep appsv1.Deployment
+		render(t, "templates/agent/deployment.yaml", &dep, append(append([]string{}, agentSet...), set...)...)
+		if got := envOf(dep.Spec.Template.Spec.Containers[0])["PUBLIC_VPN_ENDPOINT"].Value; got != cm.Data["PUBLIC_VPN_ENDPOINT"] {
+			t.Errorf("the agent advertises %q, the operator %q", got, cm.Data["PUBLIC_VPN_ENDPOINT"])
+		}
+		if svc.Spec.Ports[0].TargetPort.IntValue() != 51820 {
+			t.Errorf("the Service always forwards to the constant inner port 51820: %v", svc.Spec.Ports[0].TargetPort)
+		}
+		return cm.Data["PUBLIC_VPN_ENDPOINT"], svc.Spec.Ports[0].Port, int32(svc.Spec.Ports[0].TargetPort.IntValue())
+	}
+	// default: 51820, the port is appended to a bare host
+	if ep, port, _ := endpointOf(t, "vpn.example.com"); ep != "vpn.example.com:51820" || port != 51820 {
+		t.Errorf("default: endpoint %q, Service port %d", ep, port)
+	}
+	// the public port is a value
+	if ep, port, _ := endpointOf(t, "vpn.example.com", "--set", "proxy.wg.publicPort=443"); ep != "vpn.example.com:443" || port != 443 {
+		t.Errorf("publicPort=443: endpoint %q, Service port %d", ep, port)
+	}
+	// an endpoint that names its own port is advertised as it is (a front that maps the port); the Service port is still publicPort
+	if ep, port, _ := endpointOf(t, "vpn.example.com:4000", "--set", "proxy.wg.publicPort=5000"); ep != "vpn.example.com:4000" || port != 5000 {
+		t.Errorf("explicit endpoint port: endpoint %q, Service port %d", ep, port)
+	}
+	if out, err := helmTemplate(t, "--set", "proxy.wg.publicPort=70000"); err == nil || !strings.Contains(out, "proxy.wg.publicPort") {
+		t.Errorf("a port above 65535 must be refused: %v\n%s", err, out)
 	}
 }
