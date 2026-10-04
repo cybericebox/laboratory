@@ -28,9 +28,7 @@ type IPTablesManager struct {
 	// IPv6Filtered is true when the egress filter was installed for IPv6 as well; false means the pod has no ip6tables
 	// and forwards no IPv6 (the caller logs it).
 	IPv6Filtered bool
-	// IPv6Error is set when the pod has no ip6tables and IPv6 could not be switched off either (the caller logs it).
-	IPv6Error error
-	newIPv6   func() (netfilter, error)
+	newIPv6      func() (netfilter, error)
 	// disableIPv6 switches the IPv6 stack of the pod off (a stand-in in the tests, which must not touch the host).
 	disableIPv6 func() error
 	// ip6 is the IPv6 table of the pod once SetupFilter found one.
@@ -44,7 +42,7 @@ func NewIPTablesManager(extIface string) (*IPTablesManager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("iptables.New: %w", err)
 	}
-	return &IPTablesManager{ipt: ipt, extIface: extIface, disableIPv6: podinput.DisableIPv6, newIPv6: func() (netfilter, error) {
+	return &IPTablesManager{ipt: ipt, extIface: extIface, disableIPv6: podinput.IPv6Off, newIPv6: func() (netfilter, error) {
 		return iptables.NewWithProtocol(iptables.ProtocolIPv6)
 	}}, nil
 }
@@ -77,19 +75,18 @@ func (m *IPTablesManager) SetupFilter() error {
 	if err := m.setupSourceChain(); err != nil {
 		return err
 	}
-	if m.ip6 != nil {
-		if err := m.ip6.ChangePolicy("filter", "FORWARD", "DROP"); err == nil {
-			if err := setupEgressChain(m.ip6, m.extIface, egress.DenyV6); err != nil {
-				return err
-			}
-			m.IPv6Filtered = true
+	if m.ip6 != nil { // the FORWARD policy of IPv6 is DROP since protectInput
+		if err := setupEgressChain(m.ip6, m.extIface, egress.DenyV6); err != nil {
+			return err
 		}
+		m.IPv6Filtered = true
 	}
 	return m.setupForwardRules()
 }
 
-// protectInput installs the INPUT policy (see internal/podinput) for IPv4 and, when the pod has ip6tables, IPv6. The gateway
-// has no listener of its own; its DHCP servers are opened per lab interface (AllowDHCP).
+// protectInput installs the INPUT policy (see internal/podinput) for IPv4 and for IPv6 (filtered when the pod has a working
+// ip6tables, switched off otherwise). The gateway has no listener of its own; its DHCP servers are opened per lab interface
+// (AllowDHCP). Any failing step is an error and the pod must not start.
 func (m *IPTablesManager) protectInput() error {
 	p := podinput.Policy{Uplink: m.extIface}
 	if err := podinput.Install(m.ipt, p, false); err != nil {
@@ -101,17 +98,16 @@ func (m *IPTablesManager) protectInput() error {
 			m.ip6 = ip6
 		}
 	}
+	var t6 podinput.Table
 	if m.ip6 != nil {
-		// ip6tables without a working IPv6 table (no kernel support) is a pod with no IPv6: treated as having no ip6tables.
-		if err := podinput.Install(m.ip6, p, true); err != nil {
-			m.ip6 = nil
-		}
+		t6 = m.ip6
 	}
-	if m.ip6 == nil {
-		// IPv6 cannot be filtered, so the pod gets none.
-		if err := m.disableIPv6(); err != nil {
-			m.IPv6Error = err
-		}
+	filtered, err := podinput.ProtectIPv6(t6, p, m.disableIPv6)
+	if err != nil {
+		return err
+	}
+	if !filtered {
+		m.ip6 = nil
 	}
 	return nil
 }

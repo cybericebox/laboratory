@@ -90,9 +90,6 @@ func TestNetnsVPNPodIsATransparentGateway(t *testing.T) {
 	if err := m.SetupForwardPolicy(); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.AllowLabToClients("lab1", "10.8.100.0/24"); err != nil {
-		t.Fatal(err)
-	}
 	for _, l := range [][2]string{{"lab1", "10.8.100.1"}, {"lab2", "10.8.101.1"}} {
 		if err := m.AllowPing(l[0], l[1]); err != nil {
 			t.Fatal(err)
@@ -221,16 +218,20 @@ func TestNetnsVPNPodIsATransparentGateway(t *testing.T) {
 		}
 	})
 
-	t.Run("a lab never sends as another lab", func(t *testing.T) {
+	t.Run("a lab reaches the participants from any source address", func(t *testing.T) {
+		// A lab may route its own subnets, so no source check: the boundary is the pod (one per group).
 		udpA := nstest.Listen(t, "pa", "udp", "0.0.0.0:7201")
 		nstest.Run(t, "lab", "ip", "addr", "add", "10.8.99.5/24", "dev", "l0")
-		nstest.Run(t, "lab", "ip", "route", "replace", "10.8.0.2/32", "via", "10.8.100.1", "src", "10.8.100.2")
-		if !nstest.Reach(t, "lab", "udp", "10.8.0.2:7201", udpA) {
-			t.Fatalf("control: a datagram from the lab's own address does not arrive")
-		}
 		nstest.Run(t, "lab", "ip", "route", "replace", "10.8.0.2/32", "via", "10.8.100.1", "src", "10.8.99.5")
-		if nstest.Reach(t, "lab", "udp", "10.8.0.2:7201", udpA) {
-			t.Errorf("a datagram with a source outside the lab's subnet went through")
+		if !nstest.Reach(t, "lab", "udp", "10.8.0.2:7201", udpA) {
+			t.Errorf("a datagram from another subnet of the lab does not reach the participant")
+		}
+	})
+
+	t.Run("a lab never reaches another lab through the pod", func(t *testing.T) {
+		tcp2 := nstest.Listen(t, "lab2", "tcp", "0.0.0.0:7500")
+		if nstest.Reach(t, "lab", "tcp", "10.8.101.2:7500", tcp2) {
+			t.Errorf("lab to lab went through the pod")
 		}
 	})
 
@@ -266,9 +267,6 @@ func TestNetnsVPNPodIsATransparentGateway(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := m.SetupForwardPolicy(); err != nil {
-			t.Fatal(err)
-		}
-		if err := m.AllowLabToClients("lab1", "10.8.100.0/24"); err != nil {
 			t.Fatal(err)
 		}
 		after := nstest.Run(t, "", "iptables", "-S")

@@ -36,15 +36,12 @@ func InitServer(cfg *Config) (*Server, error) {
 		return nil, fmt.Errorf("install the INPUT policy: %w", err)
 	}
 	if !ipv6Covered {
-		log.Printf("no ip6tables in this pod: IPv6 is switched off in it")
+		log.Printf("IPv6 is switched off in this pod (no usable ip6tables)")
 	}
-	ipv6Guarded, err := ipt.GuardWireGuardPort(cfg.ExternalInterface, cfg.ListenPort)
+	_, err = ipt.GuardWireGuardPort(cfg.ExternalInterface, cfg.ListenPort)
 	if err != nil {
 		ipt.Cleanup()
 		return nil, fmt.Errorf("guard the WireGuard port %d: %w", cfg.ListenPort, err)
-	}
-	if !ipv6Guarded {
-		log.Printf("no ip6tables in this pod: the WireGuard port is guarded for IPv4 only")
 	}
 
 	wg, err := NewWGManager(cfg.WGInterface)

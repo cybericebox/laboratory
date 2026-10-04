@@ -23,6 +23,15 @@ jobs:
           go mod tidy
           make test
 
+  netns:
+    name: Real-iptables tests (network namespaces)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: VPN and gateway pod firewalls in network namespaces (privileged docker, make test-netns)
+        run: make test-netns
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

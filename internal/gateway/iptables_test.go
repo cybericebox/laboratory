@@ -200,3 +200,27 @@ func TestIPv6FilterReported(t *testing.T) {
 		t.Errorf("err=%v filtered=%v", err, m2.IPv6Filtered)
 	}
 }
+
+// A security setup step that fails stops the start: SetupFilter returns the error and the binary exits non-zero.
+func TestSetupFilterFailsClosed(t *testing.T) {
+	m := manager(newFake(t))
+	m.disableIPv6 = func() error { return fmt.Errorf("IPv6 is on") }
+	if err := m.SetupFilter(); err == nil {
+		t.Errorf("no ip6tables and IPv6 on: SetupFilter went on")
+	}
+	m = manager(newFake(t))
+	m.newIPv6 = func() (netfilter, error) { return &failPolicy{newFake(t)}, nil }
+	m.disableIPv6 = func() error { return fmt.Errorf("IPv6 is on") }
+	if err := m.SetupFilter(); err == nil {
+		t.Errorf("a broken ip6tables and IPv6 on: SetupFilter went on")
+	}
+	m = manager(newFake(t))
+	m.newIPv6 = func() (netfilter, error) { return &failPolicy{newFake(t)}, nil }
+	if err := m.SetupFilter(); err != nil || m.IPv6Filtered {
+		t.Errorf("a broken ip6tables with IPv6 off must start without IPv6: err=%v filtered=%v", err, m.IPv6Filtered)
+	}
+}
+
+type failPolicy struct{ *fakeNetfilter }
+
+func (f *failPolicy) ChangePolicy(_, _, _ string) error { return fmt.Errorf("no ip6tables table") }

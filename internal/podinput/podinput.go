@@ -198,9 +198,53 @@ func deleteAll(ipt Filter, rule []string) {
 // ipv6Sysctls are the switches that turn the IPv6 stack of the pod's network namespace off.
 var ipv6Sysctls = []string{"/proc/sys/net/ipv6/conf/all/disable_ipv6", "/proc/sys/net/ipv6/conf/default/disable_ipv6"}
 
-// DisableIPv6 turns IPv6 off in the pod's network namespace. A pod without a working ip6tables cannot filter IPv6, so it must not
-// have any: otherwise the lab side would reach it over IPv6 with no INPUT policy at all.
-func DisableIPv6() error { return writeSysctls(ipv6Sysctls, "1") }
+// IPv6Off makes sure the pod's network namespace has no IPv6 (the pod's own interfaces carry none, so nothing reaches the pod over
+// IPv6). A namespace without an IPv6 stack (the switch is absent) counts as off. The write is tried first (a privileged or
+// pod-spec-configured namespace allows it); a container's /proc/sys is normally read-only, so what counts is the value read back:
+// anything but "1" is an error, and the caller must not start.
+func IPv6Off() error { return EnsureOff(ipv6Sysctls) }
+
+// EnsureOff is IPv6Off for the given switches.
+func EnsureOff(paths []string) error {
+	for _, p := range paths {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue // no IPv6 stack
+		}
+		if strings.TrimSpace(string(b)) == "1" {
+			continue
+		}
+		_ = os.WriteFile(p, []byte("1"), 0o644)
+		if b, err := os.ReadFile(p); err != nil || strings.TrimSpace(string(b)) != "1" {
+			return fmt.Errorf("IPv6 is on in the pod (%s) and cannot be switched off", p)
+		}
+	}
+	return nil
+}
+
+// Table is Filter with the policy switch of a built-in chain.
+type Table interface {
+	Filter
+	ChangePolicy(table, chain, target string) error
+}
+
+// ProtectIPv6 closes the pod to IPv6: when the pod has a working ip6tables the INPUT policy and the FORWARD DROP policy are
+// installed for IPv6 and the result is true; otherwise IPv6 must be off (ensureOff), and the result is false. Any step that fails
+// is an error: a pod that can neither filter nor switch off IPv6 must not start. v6 is nil when the pod has no ip6tables.
+func ProtectIPv6(v6 Table, p Policy, ensureOff func() error) (filtered bool, err error) {
+	if v6 != nil {
+		if err := v6.ChangePolicy("filter", "FORWARD", "DROP"); err == nil {
+			if err := Install(v6, p, true); err == nil {
+				return true, nil
+			}
+		}
+		// ip6tables is there but its IPv6 table is not usable (no kernel support): only an IPv6-less namespace is safe.
+	}
+	if err := ensureOff(); err != nil {
+		return false, err
+	}
+	return false, nil
+}
 
 // ConntrackHelpers is the switch of automatic conntrack helpers (FTP, SIP, ...): a helper makes a RELATED connection out of a
 // payload, which the ESTABLISHED,RELATED accept of the FORWARD chain would let through.

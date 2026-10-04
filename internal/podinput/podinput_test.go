@@ -434,3 +434,57 @@ func TestNoConntrackHelpers(t *testing.T) {
 		t.Errorf("helpers left on: %q", b)
 	}
 }
+
+// failTable is a Table whose chosen step fails; it records nothing else.
+type failTable struct {
+	*fakeFilter
+	failPolicy bool
+}
+
+func (f failTable) ChangePolicy(_, _, _ string) error {
+	if f.failPolicy {
+		return os.ErrPermission
+	}
+	return nil
+}
+
+func TestEnsureOff(t *testing.T) {
+	dir := t.TempDir()
+	on := filepath.Join(dir, "on")
+	off := filepath.Join(dir, "off")
+	_ = os.WriteFile(on, []byte("0\n"), 0o644)
+	_ = os.WriteFile(off, []byte("1\n"), 0o644)
+	if err := EnsureOff([]string{filepath.Join(dir, "absent")}); err != nil {
+		t.Errorf("no IPv6 stack is off: %v", err)
+	}
+	if err := EnsureOff([]string{off, on}); err != nil {
+		t.Errorf("a switch that can be turned: %v", err)
+	}
+	if b, _ := os.ReadFile(on); strings.TrimSpace(string(b)) != "1" {
+		t.Errorf("not switched: %q", b)
+	}
+	// /dev/null accepts the write and reads back empty: a switch that cannot be turned (a read-only /proc/sys).
+	if err := EnsureOff([]string{"/dev/null"}); err == nil {
+		t.Errorf("IPv6 that cannot be switched off must be an error")
+	}
+}
+
+func TestProtectIPv6FailsClosed(t *testing.T) {
+	off := func(err error) func() error { return func() error { return err } }
+	ok, bad := off(nil), off(os.ErrPermission)
+	if f, err := ProtectIPv6(nil, vpnPolicy, ok); err != nil || f {
+		t.Errorf("no ip6tables, IPv6 off: filtered=%v err=%v, want false, nil", f, err)
+	}
+	if _, err := ProtectIPv6(nil, vpnPolicy, bad); err == nil {
+		t.Errorf("no ip6tables and IPv6 cannot be switched off must be an error")
+	}
+	if f, err := ProtectIPv6(failTable{fakeFilter: newFake(t)}, vpnPolicy, bad); err != nil || !f {
+		t.Errorf("a working ip6tables needs no switch: filtered=%v err=%v", f, err)
+	}
+	if _, err := ProtectIPv6(failTable{fakeFilter: newFake(t), failPolicy: true}, vpnPolicy, bad); err == nil {
+		t.Errorf("an unusable ip6tables and IPv6 on must be an error")
+	}
+	if f, err := ProtectIPv6(failTable{fakeFilter: newFake(t), failPolicy: true}, vpnPolicy, ok); err != nil || f {
+		t.Errorf("an unusable ip6tables with IPv6 off is fine: filtered=%v err=%v", f, err)
+	}
+}
