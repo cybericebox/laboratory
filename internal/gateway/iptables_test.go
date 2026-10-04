@@ -37,6 +37,10 @@ func (f *fakeNetfilter) ClearChain(_, chain string) error {
 	f.check()
 	return nil
 }
+func (f *fakeNetfilter) ClearAndDeleteChain(_, chain string) error {
+	delete(f.chains, chain)
+	return nil
+}
 func (f *fakeNetfilter) Exists(_, chain string, rule ...string) (bool, error) {
 	// Like iptables-nft: checking a rule whose -j target is a chain that does not exist fails (exit 2), it is not "false".
 	for i := 0; i+1 < len(rule); i++ {

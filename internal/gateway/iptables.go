@@ -6,6 +6,7 @@ import (
 	"github.com/coreos/go-iptables/iptables"
 
 	"github.com/cybericebox/laboratory/internal/egress"
+	"github.com/cybericebox/laboratory/internal/podinput"
 )
 
 // netfilter is the part of go-iptables the gateway uses (a fake stands in for it in the tests).
@@ -17,6 +18,7 @@ type netfilter interface {
 	Delete(table, chain string, rulespec ...string) error
 	Exists(table, chain string, rulespec ...string) (bool, error)
 	ClearChain(table, chain string) error
+	ClearAndDeleteChain(table, chain string) error
 	ChainExists(table, chain string) (bool, error)
 }
 
@@ -27,6 +29,10 @@ type IPTablesManager struct {
 	// and forwards no IPv6 (the caller logs it).
 	IPv6Filtered bool
 	newIPv6      func() (netfilter, error)
+	// ip6 is the IPv6 table of the pod once SetupFilter found one.
+	ip6 netfilter
+	// inputInstalled is true once the INPUT policy stands.
+	inputInstalled bool
 }
 
 func NewIPTablesManager(extIface string) (*IPTablesManager, error) {
@@ -54,6 +60,10 @@ var egressChains = [2]string{"LABEGRESS", "LABEGRESS2"}
 // is safe to run again in a pod whose network namespace outlives the process (a container restart): the old filter keeps
 // working until the new one is in place, and the rule of earlier versions that accepted everything leaving is removed.
 func (m *IPTablesManager) SetupFilter() error {
+	// The pod answers nothing on the lab side: the INPUT policy is first, before any lab interface is configured.
+	if err := m.protectInput(); err != nil {
+		return err
+	}
 	if err := m.ipt.ChangePolicy("filter", "FORWARD", "DROP"); err != nil {
 		return fmt.Errorf("set FORWARD DROP: %w", err)
 	}
@@ -63,17 +73,53 @@ func (m *IPTablesManager) SetupFilter() error {
 	if err := m.setupSourceChain(); err != nil {
 		return err
 	}
-	if m.newIPv6 != nil {
-		if ip6, err := m.newIPv6(); err == nil {
-			if err := ip6.ChangePolicy("filter", "FORWARD", "DROP"); err == nil {
-				if err := setupEgressChain(ip6, m.extIface, egress.DenyV6); err != nil {
-					return err
-				}
-				m.IPv6Filtered = true
+	if m.ip6 != nil {
+		if err := m.ip6.ChangePolicy("filter", "FORWARD", "DROP"); err == nil {
+			if err := setupEgressChain(m.ip6, m.extIface, egress.DenyV6); err != nil {
+				return err
 			}
+			m.IPv6Filtered = true
 		}
 	}
 	return m.setupForwardRules()
+}
+
+// protectInput installs the INPUT policy (see internal/podinput) for IPv4 and, when the pod has ip6tables, IPv6. The gateway
+// has no listener of its own; its DHCP servers are opened per lab interface (AllowDHCP).
+func (m *IPTablesManager) protectInput() error {
+	p := podinput.Policy{Uplink: m.extIface}
+	if err := podinput.Install(m.ipt, p, false); err != nil {
+		return err
+	}
+	m.inputInstalled = true
+	if m.newIPv6 != nil && m.ip6 == nil {
+		if ip6, err := m.newIPv6(); err == nil {
+			m.ip6 = ip6
+		}
+	}
+	if m.ip6 != nil {
+		// ip6tables without a working IPv6 table (no kernel support) is a pod with no IPv6: treated as having no ip6tables.
+		if err := podinput.Install(m.ip6, p, true); err != nil {
+			m.ip6 = nil
+		}
+	}
+	return nil
+}
+
+// AllowDHCP opens DHCP on one lab interface (the pod runs a DHCP server there); DenyDHCP closes it.
+func (m *IPTablesManager) AllowDHCP(iface string) error { return podinput.AllowDHCP(m.ipt, iface) }
+
+func (m *IPTablesManager) DenyDHCP(iface string) { podinput.DenyDHCP(m.ipt, iface) }
+
+// RemoveInput takes the INPUT policy off (the pod is stopping).
+func (m *IPTablesManager) RemoveInput() {
+	if !m.inputInstalled {
+		return
+	}
+	podinput.Remove(m.ipt)
+	if m.ip6 != nil {
+		podinput.Remove(m.ip6)
+	}
 }
 
 // setupSourceChain makes FORWARD send every lab interface through LABSRC first.

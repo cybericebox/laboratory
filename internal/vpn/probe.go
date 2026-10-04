@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/cybericebox/laboratory/pkg/vpnprobe"
@@ -55,7 +56,9 @@ func probeHandler(supportEmail string) http.Handler {
 	})
 }
 
-func startProbe(subnet *net.IPNet, port int, supportEmail string) (*probeServer, error) {
+// startProbe serves the page on the first address of the client subnet. A non-empty iface (the tunnel interface) also binds the
+// socket to that interface, so the page is reachable from the tunnel only, on top of the INPUT rule that says the same.
+func startProbe(subnet *net.IPNet, port int, supportEmail, iface string) (*probeServer, error) {
 	if subnet == nil {
 		return nil, fmt.Errorf("VPN probe requires an IPv4 client subnet")
 	}
@@ -64,7 +67,8 @@ func startProbe(subnet *net.IPNet, port int, supportEmail string) (*probeServer,
 		return nil, err
 	}
 	gwIP := net.ParseIP(address)
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: gwIP, Port: port})
+	lc := net.ListenConfig{Control: bindToDevice(iface)}
+	listener, err := lc.Listen(context.Background(), "tcp4", net.JoinHostPort(gwIP.String(), strconv.Itoa(port)))
 	if err != nil {
 		return nil, fmt.Errorf("listen on VPN gateway %s: %w", gwIP, err)
 	}

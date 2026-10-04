@@ -7,6 +7,7 @@ import (
 	"log"
 
 	"github.com/cybericebox/laboratory/pkg/netutil"
+	"github.com/cybericebox/laboratory/pkg/vpnprobe"
 )
 
 // Server holds the running VPN server components.
@@ -19,10 +20,23 @@ type Server struct {
 // InitServer configures the WireGuard interface and iptables for the VPN server.
 // Call Cleanup when done (deferred in main).
 func InitServer(cfg *Config) (*Server, error) {
-	// The guard of the WireGuard port comes first: the port must not be open to the lab side even for a moment.
+	// The INPUT rules come first: nothing on the lab side may talk to the pod, and the WireGuard port must not be open to it even
+	// for a moment. The status page address is known from the client subnet before the interface exists.
+	probeAddr, err := vpnprobe.GatewayIP(cfg.ClientSubnet.String())
+	if err != nil {
+		return nil, fmt.Errorf("VPN gateway address: %w", err)
+	}
 	ipt, err := NewIPTablesManager(cfg.WGInterface)
 	if err != nil {
 		return nil, fmt.Errorf("init iptables: %w", err)
+	}
+	ipv6Covered, err := ipt.ProtectInput(cfg.ExternalInterface, probeAddr, ProbePort)
+	if err != nil {
+		ipt.Cleanup()
+		return nil, fmt.Errorf("install the INPUT policy: %w", err)
+	}
+	if !ipv6Covered {
+		log.Printf("no ip6tables in this pod: the INPUT policy covers IPv4 only")
 	}
 	ipv6Guarded, err := ipt.GuardWireGuardPort(cfg.ExternalInterface, cfg.ListenPort)
 	if err != nil {
@@ -59,7 +73,7 @@ func InitServer(cfg *Config) (*Server, error) {
 		ipt.Cleanup()
 		return nil, fmt.Errorf("setup FORWARD policy: %w", err)
 	}
-	probe, err := startProbe(cfg.ClientSubnet, ProbePort, cfg.SupportEmail)
+	probe, err := startProbe(cfg.ClientSubnet, ProbePort, cfg.SupportEmail, cfg.WGInterface)
 	if err != nil {
 		ipt.Cleanup()
 		wg.Close()

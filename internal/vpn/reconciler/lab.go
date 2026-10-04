@@ -31,6 +31,7 @@ type LabVPNReconciler struct {
 	client.Client
 	WG       *vpn.WGManager
 	DHCP     *dhcp.Manager
+	IPT      *vpn.IPTablesManager
 	Cfg      *vpn.Config
 	Recorder record.EventRecorder
 }
@@ -92,6 +93,12 @@ func (r *LabVPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, fmt.Errorf("assign IP to %s: %w", ifaceName, err)
 	}
 
+	// The devices of the lab may reach every participant (the pod is a transparent gateway; participants reach the lab by
+	// their access rules).
+	if err := r.IPT.AllowLabToClients(ifaceName, cidr); err != nil {
+		return ctrl.Result{}, fmt.Errorf("allow %s to the participants: %w", ifaceName, err)
+	}
+
 	// DHCP: optional, only if pool exists.
 	dhcpEnabled := r.dhcpPoolExists(ctx, labvpn.Spec.LabName, labvpn.Namespace)
 	if dhcpEnabled {
@@ -104,6 +111,10 @@ func (r *LabVPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			return ctrl.Result{}, fmt.Errorf("VPN DHCP settings: %w", err)
 		}
 		gwIP := firstHostIP(cidr)
+		// The pod drops everything addressed to itself from the lab side, DHCP on this interface excepted.
+		if err := r.IPT.AllowDHCP(ifaceName); err != nil {
+			return ctrl.Result{}, fmt.Errorf("open DHCP on %s: %w", ifaceName, err)
+		}
 		if err := r.DHCP.Start(
 			labvpn.Spec.LabName, dhcp.Config{
 				Iface:   ifaceName,
@@ -115,6 +126,8 @@ func (r *LabVPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		); err != nil {
 			return ctrl.Result{}, fmt.Errorf("start VPN DHCP for lab %s: %w", labvpn.Spec.LabName, err)
 		}
+	} else {
+		r.IPT.DenyDHCP(ifaceName)
 	}
 
 	if labvpn.Status.Phase != laboratoryv1alpha1.LabVPNPhaseReady {
@@ -138,6 +151,11 @@ func (r *LabVPNReconciler) reconcileDelete(ctx context.Context, labvpn *laborato
 	error,
 ) {
 	r.DHCP.Stop(labvpn.Spec.LabName)
+	ifaceName := names.LabIfaceNameByIndex(labvpn.Spec.NetworkIndex)
+	r.IPT.DenyDHCP(ifaceName)
+	if cidr, err := netutil.SubnetForIndex(r.Cfg.VPNBaseNetwork, 24, labvpn.Spec.NetworkIndex); err == nil {
+		r.IPT.RevokeLabToClients(ifaceName, cidr)
+	}
 	controllerutil.RemoveFinalizer(labvpn, names.FinalizerVPN)
 	return ctrl.Result{}, r.Update(ctx, labvpn)
 }

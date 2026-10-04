@@ -55,7 +55,7 @@ func TestProbeBindsOnlyWireGuardGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	probe, err := startProbe(subnet, 0, "help@example.org")
+	probe, err := startProbe(subnet, 0, "help@example.org", "")
 	if err != nil {
 		t.Fatal(err)
 	}

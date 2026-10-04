@@ -112,6 +112,10 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return ctrl.Result{}, fmt.Errorf("internet DHCP settings: %w", err)
 		}
 		gwIP := firstHostIP(cidr)
+		// The pod drops everything addressed to itself from the lab side, DHCP on this interface excepted.
+		if err := r.IPT.AllowDHCP(ifaceName); err != nil {
+			return ctrl.Result{}, fmt.Errorf("open DHCP on %s: %w", ifaceName, err)
+		}
 		if err := r.DHCP.Start(
 			gw.Spec.LabName, dhcp.Config{
 				Iface:   ifaceName,
@@ -124,6 +128,8 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		); err != nil {
 			return ctrl.Result{}, fmt.Errorf("start internet DHCP for lab %s: %w", gw.Spec.LabName, err)
 		}
+	} else {
+		r.IPT.DenyDHCP(ifaceName)
 	}
 
 	if gw.Status.Phase != laboratoryv1alpha1.LabGatewayPhaseReady {
@@ -148,6 +154,7 @@ func (r *LabGatewayReconciler) reconcileDelete(ctx context.Context, gw *laborato
 	error,
 ) {
 	r.DHCP.Stop(gw.Spec.LabName)
+	r.IPT.DenyDHCP(names.LabIfaceNameByIndex(gw.Spec.NetworkIndex))
 	if cidr, err := netutil.SubnetForIndex(r.Cfg.InetBaseNetwork, 24, gw.Spec.NetworkIndex); err == nil {
 		r.IPT.DelMasquerade(cidr)
 		r.IPT.DelAntiSpoof(names.LabIfaceNameByIndex(gw.Spec.NetworkIndex), cidr)
