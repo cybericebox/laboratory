@@ -22,7 +22,7 @@ cd "$tmp" || exit 1
 git init -q .
 mkdir bin
 # shellcheck disable=SC2016
-printf '#!/bin/sh\necho "${FAKE_COUNT:-0}"\n' >bin/gh
+printf '#!/bin/sh\n[ -n "${FAKE_SHAS:-}" ] && printf "%%s\\n" $FAKE_SHAS\nexit 0\n' >bin/gh
 chmod +x bin/gh
 export PATH=$tmp/bin:$PATH GITHUB_REPOSITORY=x/y GITHUB_OUTPUT=$tmp/out
 g() { git -c user.email=a@b -c user.name=n -c tag.gpgsign=false -c commit.gpgsign=false "$@"; }
@@ -39,7 +39,8 @@ check "vX.Y tags: last is 1.0.0" "skip=false version=v1.0.1 tag=v1.0.1-rc.1 " "$
 check "explicit 2.0.0" "skip=false version=v2.0.0 tag=v2.0.0-rc.1 " "$(VERSION=2.0.0 run)"
 check "explicit not above the last release" "" "$(VERSION=1.0.0 run)"
 check "explicit not X.Y.Z" "" "$(VERSION=2.0 run)"
-check "minor label" "skip=false version=v1.1.0 tag=v1.1.0-rc.1 " "$(FAKE_COUNT=1 run)"
+check "minor label" "skip=false version=v1.1.0 tag=v1.1.0-rc.1 " "$(FAKE_SHAS=0123456789abcdef0123456789abcdef01234567 run)"
+check "minor PR already in the last release" "skip=false version=v1.0.1 tag=v1.0.1-rc.1 " "$(FAKE_SHAS=$(git rev-parse v1.0) run)"
 check "major" "skip=false version=v2.0.0 tag=v2.0.0-rc.1 " "$(BUMP=major run)"
 g tag v1.0.1-rc.1
 check "same tree as the last rc" "skip=true " "$(run)"
