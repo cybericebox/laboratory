@@ -2085,9 +2085,12 @@ type LabGroup struct {
 	Name   string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Status *LabGroupStatus        `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
 	// Kubernetes labels of the LabGroup (the Monitoring selector matches against them).
-	Labels        map[string]string `protobuf:"bytes,10,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	DeployGroup   string            `protobuf:"bytes,11,opt,name=deploy_group,json=deployGroup,proto3" json:"deploy_group,omitempty"`
-	DeployAfter   []string          `protobuf:"bytes,12,rep,name=deploy_after,json=deployAfter,proto3" json:"deploy_after,omitempty"`
+	Labels      map[string]string `protobuf:"bytes,10,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	DeployGroup string            `protobuf:"bytes,11,opt,name=deploy_group,json=deployGroup,proto3" json:"deploy_group,omitempty"`
+	DeployAfter []string          `protobuf:"bytes,12,rep,name=deploy_after,json=deployAfter,proto3" json:"deploy_after,omitempty"`
+	// Creation time of the LabGroup object, unix milliseconds (0 when unknown). A cleanup
+	// sweep uses it to skip groups that are still being deployed.
+	CreatedUnixMs int64 `protobuf:"varint,13,opt,name=created_unix_ms,json=createdUnixMs,proto3" json:"created_unix_ms,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2155,6 +2158,13 @@ func (x *LabGroup) GetDeployAfter() []string {
 		return x.DeployAfter
 	}
 	return nil
+}
+
+func (x *LabGroup) GetCreatedUnixMs() int64 {
+	if x != nil {
+		return x.CreatedUnixMs
+	}
+	return 0
 }
 
 type LabGroupStatus struct {
@@ -7166,14 +7176,15 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"bySelector\"d\n" +
 	"\x14RescueDevicesRequest\x124\n" +
 	"\adevices\x18\x01 \x01(\v2\x1a.labmanager.DevicesRequestR\adevices\x12\x16\n" +
-	"\x06enable\x18\x02 \x01(\bR\x06enable\"\x8d\x02\n" +
+	"\x06enable\x18\x02 \x01(\bR\x06enable\"\xb5\x02\n" +
 	"\bLabGroup\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x122\n" +
 	"\x06status\x18\x02 \x01(\v2\x1a.labmanager.LabGroupStatusR\x06status\x128\n" +
 	"\x06labels\x18\n" +
 	" \x03(\v2 .labmanager.LabGroup.LabelsEntryR\x06labels\x12!\n" +
 	"\fdeploy_group\x18\v \x01(\tR\vdeployGroup\x12!\n" +
-	"\fdeploy_after\x18\f \x03(\tR\vdeployAfter\x1a9\n" +
+	"\fdeploy_after\x18\f \x03(\tR\vdeployAfter\x12&\n" +
+	"\x0fcreated_unix_ms\x18\r \x01(\x03R\rcreatedUnixMs\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbf\x02\n" +

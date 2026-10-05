@@ -14,6 +14,10 @@ import (
 // labGroupToProto maps a LabGroup custom resource to its gRPC wire representation.
 func labGroupToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.LabGroup {
 	dg, da := deployOf(g.Annotations)
+	var created int64
+	if !g.CreationTimestamp.IsZero() {
+		created = g.CreationTimestamp.UnixMilli()
+	}
 	return &protobuf.LabGroup{
 		Name:        names.IDOf(g),
 		DeployGroup: dg,
@@ -28,7 +32,8 @@ func labGroupToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.LabGroup {
 			Scheduling:      schedulingToProto(g.Status.Scheduling, g.Annotations),
 			Pods:            groupPodsToProto(g.Status.Pods),
 		},
-		Labels: userLabels(g.Labels),
+		Labels:        userLabels(g.Labels),
+		CreatedUnixMs: created,
 	}
 }
 

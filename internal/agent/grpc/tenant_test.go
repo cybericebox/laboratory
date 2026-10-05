@@ -204,3 +204,28 @@ func TestMonitoringIsFilteredByTenant(t *testing.T) {
 		t.Fatal("no cluster capacity in the shared observation: every subscriber gets its tenant's")
 	}
 }
+
+// A sweep lists its own groups by label with their creation time, and never sees another tenant's.
+func TestListLabGroupsBySelectorShowsCreationTimeOnlyOfOwnTenant(t *testing.T) {
+	h, _ := newFinalizerHandler(t)
+	a, b := asClient("tenant-a"), asClient("tenant-b")
+	for _, c := range []struct {
+		ctx  context.Context
+		name string
+	}{{a, "g-a"}, {b, "g-b"}} {
+		res, err := h.CreateLabGroups(c.ctx, &protobuf.CreateLabGroupsRequest{Items: []*protobuf.LabGroupItem{{Name: c.name, Labels: map[string]string{"kind": "stand"}}}})
+		wantStates(t, res, err, stCreated)
+	}
+	g, _ := h.cs.LaboratoryV1alpha1().LabGroups().Get(a, "g-a", metav1.GetOptions{})
+	g.CreationTimestamp = metav1.NewTime(time.UnixMilli(1700000000123))
+	if _, err := h.cs.LaboratoryV1alpha1().LabGroups().Update(a, g, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := h.ListLabGroups(a, &protobuf.ListRequest{Selector: "kind=stand"})
+	if err != nil || len(list.Items) != 1 || list.Items[0].Name != "g-a" || list.Items[0].CreatedUnixMs != 1700000000123 {
+		t.Fatalf("tenant a: %v %v", list, err)
+	}
+	if list, err = h.ListLabGroups(b, &protobuf.ListRequest{Selector: "kind=stand"}); err != nil || len(list.Items) != 1 || list.Items[0].Name != "g-b" {
+		t.Fatalf("tenant b sees only its own group: %v %v", list, err)
+	}
+}
