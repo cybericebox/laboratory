@@ -124,3 +124,20 @@ func TestErrorPages_InvalidHostAndExpired(t *testing.T) {
 		t.Fatalf("expired, non-HTML: %d %q", out.Code, out.Body.String())
 	}
 }
+
+func TestErrorPages_HaveInlineFavicon(t *testing.T) {
+	h := errHandler(t, func(string, string) (string, error) { return "", http.ErrMissingFile })
+	if b := errCall(t, h, errHost, "text/html", "").Body.String(); !strings.Contains(b, `<link rel="icon" type="image/png" href="data:image/png;base64,`) {
+		t.Fatal(b)
+	}
+}
+
+func TestErrorPages_CleanCopy(t *testing.T) {
+	for _, p := range []page{pageExpired, pageGone, pageUpstream, pageBusy, pageFailed} {
+		for _, c := range []cardText{p.uk, p.en} {
+			if strings.HasSuffix(c.title, ".") || strings.Contains(c.title+c.hint, "..") || !strings.HasSuffix(c.hint, ".") || strings.Count(c.hint, ". ") > 1 {
+				t.Fatalf("copy: %+v", c)
+			}
+		}
+	}
+}

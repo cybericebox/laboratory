@@ -39,10 +39,11 @@ func probeHandler(supportEmail string) http.Handler {
 	if err == nil {
 		err = pageTemplate.Execute(&page, struct {
 			SupportEmail string
+			Favicon      template.URL
 			Style        template.CSS
 			Script       template.JS
 			Theme        template.HTML
-		}{supportEmail, statuspage.Style(), statuspage.Script(), statuspage.Theme("uk")})
+		}{supportEmail, statuspage.Favicon(), statuspage.Style(), statuspage.Script(), statuspage.Theme("uk")})
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
@@ -53,7 +54,7 @@ func probeHandler(supportEmail string) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'")
 		if r.Method != http.MethodGet || r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
