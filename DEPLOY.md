@@ -15,7 +15,7 @@ manifests.
 
 With `devices.security.userNamespaces: true` (the default) the operator's admission policy also refuses any device pod without `hostUsers: false`, so a
 cluster that ignored the field would fail loudly instead of running devices as host root.
-- Worker nodes need only k0s and a Linux kernel with the `openvswitch`, `geneve`, `wireguard`, `br_netfilter`, `nf_conntrack` and `nf_conntrack_netlink` modules (cgroup v2). Open vSwitch runs in the node-agent DaemonSet, which also loads the modules and sets the sysctls (`nodeAgent.hostPrep`). The image ships Open vSwitch 3.7.1 (alpine 3.24); 4.0.0 comes with the next alpine stable release.
+- Worker nodes need only k0s and a Linux kernel with the `openvswitch`, `geneve`, `wireguard`, `br_netfilter`, `nf_conntrack` and `nf_conntrack_netlink` modules (cgroup v2). Open vSwitch runs in the node-agent DaemonSet, which also loads the modules and sets the sysctls (`nodeAgent.hostPrep`; `net.core.fb_tunnels_only_for_init_net=2` keeps the kernel fallback tunnel devices gre0, gretap0, erspan0 out of every pod). The image ships Open vSwitch 3.7.1 (alpine 3.24); 4.0.0 comes with the next alpine stable release.
 
 ---
 
