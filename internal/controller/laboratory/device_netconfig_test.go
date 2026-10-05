@@ -104,13 +104,13 @@ func TestDeviceSecurityContext(t *testing.T) {
 		}
 	}
 	// In-image dhcp interface implies NET_ADMIN+NET_RAW even on the standard profile.
-	dhcp := []laboratoryv1alpha1.InterfaceSpec{{Name: "eth1", Addr: laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeDHCP}}}
+	dhcp := []laboratoryv1alpha1.InterfaceSpec{{Name: "eth1", Addr: &laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeDHCP}}}
 	if g := capSet(deviceSecurityContext(devWith("", dhcp))); !g["NET_ADMIN"] || !g["NET_RAW"] {
 		t.Errorf("in-image dhcp caps = %v, want NET_ADMIN+NET_RAW", g)
 	}
 	// dhcp-preset (platform-managed) and static interfaces add no device caps (the init container does it).
-	preset := []laboratoryv1alpha1.InterfaceSpec{{Name: "eth1", Addr: laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeDHCPPreset}}}
-	static := []laboratoryv1alpha1.InterfaceSpec{{Name: "eth1", Addr: laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeStatic, IP: "10.0.0.1/24"}}}
+	preset := []laboratoryv1alpha1.InterfaceSpec{{Name: "eth1", Addr: &laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeDHCPPreset}}}
+	static := []laboratoryv1alpha1.InterfaceSpec{{Name: "eth1", Addr: &laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeStatic, IP: "10.0.0.1/24"}}}
 	for name, ifaces := range map[string][]laboratoryv1alpha1.InterfaceSpec{"dhcp-preset": preset, "static": static} {
 		if g := capSet(deviceSecurityContext(devWith("", ifaces))); g["NET_ADMIN"] || g["NET_RAW"] {
 			t.Errorf("%s device keeps %v", name, g)

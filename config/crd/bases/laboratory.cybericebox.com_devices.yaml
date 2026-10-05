@@ -88,7 +88,8 @@ spec:
                   description: InterfaceSpec defines a network interface on a device.
                   properties:
                     addr:
-                      description: AddrSpec defines static or DHCP address configuration.
+                      description: 'Addr is optional: nil means the interface is created
+                        without an IP.'
                       properties:
                         addressRef:
                           description: |-

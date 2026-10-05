@@ -340,7 +340,7 @@ var _ = Describe("Device state persistence: bare Pod lifecycle", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: "lab-web", Namespace: ns},
 			Spec: laboratoryv1alpha1.DeviceSpec{
 				Type: laboratoryv1alpha1.DeviceTypeContainer, Name: "web", LabRef: "lab", Image: base,
-				Interfaces: []laboratoryv1alpha1.InterfaceSpec{{Name: "eth1", Addr: laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeDHCP}}},
+				Interfaces: []laboratoryv1alpha1.InterfaceSpec{{Name: "eth1", Addr: &laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeDHCP}}},
 				State:      &laboratoryv1alpha1.DeviceStateSpec{Enabled: true, MaxLayers: 10},
 			},
 		}

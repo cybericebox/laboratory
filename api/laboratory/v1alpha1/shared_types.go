@@ -116,8 +116,10 @@ type InterfaceSpec struct {
 	// +kubebuilder:validation:MaxLength=15
 	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9-]{0,14}$`
 	// +kubebuilder:validation:XValidation:rule="self != 'lo' && self != 'accessport'",message="reserved interface name"
-	Name string   `json:"name"`
-	Addr AddrSpec `json:"addr,omitempty"`
+	Name string `json:"name"`
+	// Addr is optional: nil means the interface is created without an IP.
+	// +optional
+	Addr *AddrSpec `json:"addr,omitempty"`
 	// MAC is "random" or an explicit unicast MAC address.
 	// +kubebuilder:validation:MaxLength=17
 	// +kubebuilder:validation:Pattern=`^(random|[0-9a-fA-F][02468aceACE](:[0-9a-fA-F]{2}){5})$`

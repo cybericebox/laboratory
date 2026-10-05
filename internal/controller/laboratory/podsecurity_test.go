@@ -68,7 +68,7 @@ func TestDevicePodUserNamespacesWhenAsked(t *testing.T) {
 
 func TestNetconfigInitContainerKeepsOnlyItsCapabilities(t *testing.T) {
 	d := newDeviceForPod()
-	d.Spec.Interfaces = []laboratoryv1alpha1.InterfaceSpec{{Name: "eth1", Addr: laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeStatic, IP: "10.0.0.2/24"}}}
+	d.Spec.Interfaces = []laboratoryv1alpha1.InterfaceSpec{{Name: "eth1", Addr: &laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeStatic, IP: "10.0.0.2/24"}}}
 	r := &DeviceReconciler{NetConfigImage: "node"}
 	_, _, _, spec := r.workloadTemplate(d, false)
 	if len(spec.InitContainers) != 1 {

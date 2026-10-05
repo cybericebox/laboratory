@@ -34,7 +34,7 @@ var _ = Describe(
 								Interfaces: []laboratoryv1alpha1.InterfaceSpec{
 									{
 										Name: "eth0",
-										Addr: laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeDHCP},
+										Addr: &laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeDHCP},
 									},
 								},
 							},
@@ -43,7 +43,7 @@ var _ = Describe(
 								Interfaces: []laboratoryv1alpha1.InterfaceSpec{
 									{
 										Name: "eth0",
-										Addr: laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeDHCP},
+										Addr: &laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeDHCP},
 									},
 								},
 							},

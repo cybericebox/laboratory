@@ -15,7 +15,9 @@ func TestLabCRDValidatesInterfaces(t *testing.T) {
 	readyGroup(t, h, k8s, "team-iface", "team-iface", nil)
 	labs := h.cs.LaboratoryV1alpha1().Labs("team-iface")
 	try := func(name string, iface laboratoryv1alpha1.InterfaceSpec) error {
-		iface.Addr.Type = laboratoryv1alpha1.AddrType("dhcp")
+		if iface.Addr == nil {
+			iface.Addr = &laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrType("dhcp")}
+		}
 		lab := &laboratoryv1alpha1.Lab{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-iface"},
 			Spec: laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{{
@@ -25,6 +27,24 @@ func TestLabCRDValidatesInterfaces(t *testing.T) {
 		}
 		_, err := labs.Create(context.Background(), lab, metav1.CreateOptions{})
 		return err
+	}
+	// No address (IP type "none"): the CRD accepts a missing addr but not an empty addr.type.
+	noAddr := func(name string, addr *laboratoryv1alpha1.AddrSpec) error {
+		lab := &laboratoryv1alpha1.Lab{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-iface"},
+			Spec: laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{{
+				Name: "web", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx",
+				Interfaces: []laboratoryv1alpha1.InterfaceSpec{{Name: "eth0", Addr: addr}},
+			}}},
+		}
+		_, err := labs.Create(context.Background(), lab, metav1.CreateOptions{})
+		return err
+	}
+	if err := noAddr("noaddr", nil); err != nil {
+		t.Errorf("interface without addr must be accepted: %v", err)
+	}
+	if err := noAddr("emptytype", &laboratoryv1alpha1.AddrSpec{}); err == nil {
+		t.Error("addr with an empty type must be rejected")
 	}
 	for i, bad := range []laboratoryv1alpha1.InterfaceSpec{
 		{Name: "a@x,eth0@y|ff:ff:ff:ff:ff:ff"}, {Name: "lo"}, {Name: "accessport"},

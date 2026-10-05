@@ -540,6 +540,9 @@ func (r *DeviceReconciler) netConfigInitContainer(device *laboratoryv1alpha1.Dev
 		if !ok {
 			continue
 		}
+		if iface.Addr == nil {
+			continue
+		}
 		switch iface.Addr.Type {
 		case laboratoryv1alpha1.AddrTypeStatic:
 			ipCIDR, ok := canonicalCIDR(iface.Addr.IP)
@@ -608,7 +611,7 @@ func deviceSecurityContext(device *laboratoryv1alpha1.Device) *corev1.SecurityCo
 // handled by the netconfig init-container and needs no device-container caps.
 func deviceHasInImageDHCP(device *laboratoryv1alpha1.Device) bool {
 	for _, iface := range device.Spec.Interfaces {
-		if iface.Addr.Type == laboratoryv1alpha1.AddrTypeDHCP {
+		if iface.Addr != nil && iface.Addr.Type == laboratoryv1alpha1.AddrTypeDHCP {
 			return true
 		}
 	}
