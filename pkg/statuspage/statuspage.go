@@ -40,3 +40,36 @@ func Theme(lang string) template.HTML {
 func Favicon() template.URL {
 	return template.URL("data:image/png;base64," + base64.StdEncoding.EncodeToString(faviconPNG))
 }
+
+// State is the kind of a card: it picks the icon colour and glyph.
+type State string
+
+const (
+	// StateOK is a success (VPN connected): green check.
+	StateOK State = "ok"
+	// StateWait is a card that asks the visitor to act or wait (session ended, too many requests,
+	// the task not ready): amber clock.
+	StateWait State = "warn"
+	// StateUnavailable is a card for something that is not there or broke (task not available, bad host,
+	// internal error): red slashed circle.
+	StateUnavailable State = "danger"
+)
+
+var glyphs = map[State]string{
+	StateOK:          `<path d="M5 12.5l4.2 4.2L19 7"/>`,
+	StateWait:        `<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>`,
+	StateUnavailable: `<circle cx="12" cy="12" r="8.5"/><path d="M6 18L18 6"/>`,
+}
+
+// Icon is the state icon (56px circle, 28px glyph); the title is the caller's and the brand Rule goes under it.
+func Icon(s State) template.HTML {
+	g, ok := glyphs[s]
+	if !ok {
+		s, g = StateUnavailable, glyphs[StateUnavailable]
+	}
+	return template.HTML(`<span class="ic ic-` + string(s) + `">` +
+		`<svg viewBox="0 0 24 24" aria-hidden="true">` + g + `</svg></span>`)
+}
+
+// Rule is the short brand-colour line under the title.
+const Rule template.HTML = `<span class="rule" aria-hidden="true"></span>`

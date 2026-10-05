@@ -10,10 +10,11 @@
   </style>
 </head>
 <body>
-  <div class="top" aria-hidden="true"></div>
   <div class="frame">
-    <main>
-      <h1><span class="mark" aria-hidden="true">✓</span>Вітаємо!</h1>
+    <main class="state-ok">
+      {{.Icon}}
+      <h1>Вітаємо!</h1>
+      {{.Rule}}
       <p class="intro">Ви успішно підключилися до групи лабораторій.</p>
       <p class="note">Доступ до окремих лабораторій (завдань) відкривається окремо.</p>
     </main>

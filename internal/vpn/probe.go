@@ -43,7 +43,9 @@ func probeHandler(supportEmail string) http.Handler {
 			Style        template.CSS
 			Script       template.JS
 			Theme        template.HTML
-		}{supportEmail, statuspage.Favicon(), statuspage.Style(), statuspage.Script(), statuspage.Theme("uk")})
+			Icon, Rule   template.HTML
+		}{supportEmail, statuspage.Favicon(), statuspage.Style(), statuspage.Script(), statuspage.Theme("uk"),
+			statuspage.Icon(statuspage.StateOK), statuspage.Rule})
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err != nil {

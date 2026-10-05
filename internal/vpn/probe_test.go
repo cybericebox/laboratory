@@ -37,6 +37,10 @@ func TestProbeHandlerShowsOnlyConnectionResult(t *testing.T) {
 		!strings.Contains(r.Body.String(), "Темна") {
 		t.Fatalf("fixed platform palette or theme switcher missing")
 	}
+	if !strings.Contains(r.Body.String(), `class="ic ic-ok"`) || !strings.Contains(r.Body.String(), `class="rule"`) ||
+		strings.Contains(r.Body.String(), `class="top"`) {
+		t.Fatalf("state icon, brand rule or top bar: %s", r.Body.String())
+	}
 	if strings.Contains(r.Body.String(), "event") || strings.Contains(r.Body.String(), "team") {
 		t.Fatalf("probe leaks event data: %q", r.Body.String())
 	}
