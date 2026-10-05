@@ -2,6 +2,7 @@ package laboratory
 
 import (
 	"context"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -73,5 +74,5 @@ func (r *ConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 func (r *ConnectionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.Connection{}).
-		Complete(r)
+		Complete(reconcileutil.Quiet(r))
 }

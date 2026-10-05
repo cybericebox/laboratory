@@ -5,6 +5,7 @@ package nodeagent
 import (
 	"context"
 	"fmt"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"reflect"
 	"time"
 
@@ -704,7 +705,7 @@ func (r *ConnectionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&laboratoryv1alpha1.Device{},
 			handler.EnqueueRequestsFromMapFunc(r.connectionsForDevice),
 		).
-		Complete(r)
+		Complete(reconcileutil.QuietIgnoreNotFound(r))
 }
 
 func (r *ConnectionReconciler) connectionsForDevice(ctx context.Context, obj client.Object) []reconcile.Request {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"net"
 	"sync"
 	"time"
@@ -266,5 +267,5 @@ func (w *LabGroupWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 func (w *LabGroupWatcher) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.LabGroup{}).
-		Complete(w)
+		Complete(reconcileutil.Quiet(w))
 }

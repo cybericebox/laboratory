@@ -62,6 +62,16 @@ spec:
               {{- range $key, $val := .Values.nodeAgent.hostPrep.sysctls }}
               echo {{ $val | quote }} > /proc/sys/{{ $key | replace "." "/" }}
               {{- end }}
+              {{- if .Values.nodeAgent.hostPrep.conntrackAccounting }}
+              # Byte accounting and start times of conntrack flows (the VPN pod's flow report). The sysctls are per network
+              # namespace and a new namespace (every pod) starts from the module parameters, so the parameters are set too: this
+              # is the one place with a writable /proc/sys and /sys (the node-agent container itself has them read-only).
+              echo 1 > /proc/sys/net/netfilter/nf_conntrack_acct
+              echo 1 > /proc/sys/net/netfilter/nf_conntrack_timestamp
+              for p in acct tstamp; do
+                if [ -e /sys/module/nf_conntrack/parameters/$p ]; then echo 1 > /sys/module/nf_conntrack/parameters/$p; fi
+              done
+              {{- end }}
           securityContext:
             privileged: true
           volumeMounts:

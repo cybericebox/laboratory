@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"net"
 	"text/template"
 	"time"
@@ -341,5 +342,5 @@ func (r *LabGroupClientReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.LabGroupClient{}).
 		Watches(&laboratoryv1alpha1.LabGroup{}, handler.EnqueueRequestsFromMapFunc(groupMap)).
-		Complete(r)
+		Complete(reconcileutil.Quiet(r))
 }

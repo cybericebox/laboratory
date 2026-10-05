@@ -5,6 +5,7 @@ package reconciler
 import (
 	"context"
 	"fmt"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -200,5 +201,5 @@ func (r *AccessReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// Counter refreshes patch only status. Do not turn those patches into
 		// another policy reconcile; specification changes still enqueue one.
 		Watches(&laboratoryv1alpha1.LabGroupAccessPolicy{}, allInNamespace, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Complete(r)
+		Complete(reconcileutil.Quiet(r))
 }

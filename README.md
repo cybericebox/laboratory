@@ -202,7 +202,7 @@ A burst of new Labs and LabGroups does not start all at once. The scheduler star
 (`scheduler.maxPods`, 20 by default), one object after another (the pod-slot conveyor). Objects with the same deploy
 group are started together, and a group can declare other groups that must complete first (`deploy-after`). A pod that
 is not Ready within `scheduler.startupTimeout` (5 minutes) is declared failed with a warning and a reason
-(`ImagePull`, `CrashLoop`, `Unschedulable`, `StartupTimeout`, `DoesNotFit`) and frees its slot. Before a group starts,
+(`ImagePull`, `CrashLoop`, `Unschedulable`, `StartupTimeout`, `PodNotCreated`, `DoesNotFit`) and frees its slot. Before a group starts,
 its images are pulled onto the nodes by the node-agents through the container runtime (an `ImagePull` request; no
 tenant code runs); a prepull gates only its own group and gives up at once on an image that cannot be pulled. A pod is held back while no node has room for it, and while its tenant is at
 its resource quota. Device pods are Guaranteed (requests equal limits) and each lab group has a PodDisruptionBudget.

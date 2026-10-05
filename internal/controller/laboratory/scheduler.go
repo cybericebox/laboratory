@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -228,6 +229,8 @@ type clusterView struct {
 	groups  []*laboratoryv1alpha1.LabGroup
 	devices map[string]*laboratoryv1alpha1.Device // by devicePodKey
 	pods    []*corev1.Pod
+	// workloads are the Deployments of devices and group pods, by "namespace/name": what says why a pod was never created.
+	workloads map[string]*appsv1.Deployment
 	// podsOf maps a device key, and "ns/app" for a group pod, to its pods.
 	podsOf    map[string][]*corev1.Pod
 	suspended map[string]bool // namespace of a suspended group
@@ -268,6 +271,14 @@ func (s *Scheduler) load(ctx context.Context) (*clusterView, error) {
 	for i := range devices.Items {
 		d := &devices.Items[i]
 		snap.devices[devicePodKey(d.Namespace, d.Spec.LabRef, d.Spec.Name)] = d
+	}
+	snap.workloads = map[string]*appsv1.Deployment{}
+	var deps appsv1.DeploymentList
+	if err := s.List(ctx, &deps); err != nil {
+		return nil, fmt.Errorf("list deployments: %w", err)
+	}
+	for i := range deps.Items {
+		snap.workloads[deps.Items[i].Namespace+"/"+deps.Items[i].Name] = &deps.Items[i]
 	}
 	var pods corev1.PodList
 	if err := s.List(ctx, &pods); err != nil {
@@ -347,7 +358,7 @@ func (s *Scheduler) observe(ctx context.Context, snap *clusterView, now time.Tim
 			if cur.DispatchedAt != nil {
 				dispatched = cur.DispatchedAt.Time
 			}
-			if failed, f := startupVerdict(now, dispatched, snap.podsOf[key], extra, cfg.StartupTimeout, cfg.RestartThreshold); failed {
+			if failed, f := startupVerdict(now, dispatched, snap.podsOf[key], snap.workloads[d.Namespace+"/"+workloadName(d)], extra, cfg.StartupTimeout, cfg.RestartThreshold); failed {
 				ps.State = laboratoryv1alpha1.PodFailed
 				ps.Failure = &f
 				changed = true
@@ -387,7 +398,7 @@ func (s *Scheduler) observe(ctx context.Context, snap *clusterView, now time.Tim
 				if ps.DispatchedAt != nil {
 					dispatched = ps.DispatchedAt.Time
 				}
-				failed, f := startupVerdict(now, dispatched, pods, 0, cfg.StartupTimeout, cfg.RestartThreshold)
+				failed, f := startupVerdict(now, dispatched, pods, snap.workloads[laboratoryv1alpha1.LabGroupNamespaceOf(g)+"/"+entry.Name], 0, cfg.StartupTimeout, cfg.RestartThreshold)
 				if !failed {
 					continue
 				}
@@ -406,10 +417,29 @@ func (s *Scheduler) observe(ctx context.Context, snap *clusterView, now time.Tim
 	}
 }
 
+// noPodReason says why a dispatched workload has no pod. The Deployment carries the answer: its ReplicaFailure condition holds
+// what the API server told its ReplicaSet (a quota, a Pod Security refusal, an admission webhook, a missing ServiceAccount).
+func noPodReason(workload *appsv1.Deployment) (reason, message string) {
+	switch {
+	case workload == nil:
+		return laboratoryv1alpha1.FailurePodNotCreated, "the workload was not created (its Deployment does not exist)"
+	case workload.DeletionTimestamp != nil:
+		return laboratoryv1alpha1.FailurePodNotCreated, "the workload is being deleted"
+	case workload.Spec.Replicas != nil && *workload.Spec.Replicas == 0:
+		return laboratoryv1alpha1.FailurePodNotCreated, "the workload is scaled to zero"
+	}
+	for _, c := range workload.Status.Conditions {
+		if c.Type == appsv1.DeploymentReplicaFailure && c.Status == corev1.ConditionTrue {
+			return laboratoryv1alpha1.FailurePodNotCreated, strings.TrimSpace("the pod could not be created: " + c.Reason + ": " + c.Message)
+		}
+	}
+	return laboratoryv1alpha1.FailureStartupTimeout, "no pod was created"
+}
+
 // startupVerdict decides whether a dispatched pod that is not Ready is failed:
 // it restarted too often, or it has taken longer than the timeout. The reason
 // comes from what the node reports about the newest pod.
-func startupVerdict(now, dispatched time.Time, pods []*corev1.Pod, extraRestarts int32, timeout time.Duration, threshold int) (bool, laboratoryv1alpha1.PodFailure) {
+func startupVerdict(now, dispatched time.Time, pods []*corev1.Pod, workload *appsv1.Deployment, extraRestarts int32, timeout time.Duration, threshold int) (bool, laboratoryv1alpha1.PodFailure) {
 	f := laboratoryv1alpha1.PodFailure{Reason: laboratoryv1alpha1.FailureStartupTimeout, Message: "the pod did not become Ready in time", RestartCount: extraRestarts}
 	var newest *corev1.Pod
 	for _, p := range pods {
@@ -418,7 +448,7 @@ func startupVerdict(now, dispatched time.Time, pods []*corev1.Pod, extraRestarts
 		}
 	}
 	if newest == nil {
-		f.Message = "no pod was created"
+		f.Reason, f.Message = noPodReason(workload)
 	} else {
 		for _, cs := range append(append([]corev1.ContainerStatus(nil), newest.Status.InitContainerStatuses...), newest.Status.ContainerStatuses...) {
 			if cs.RestartCount > f.RestartCount {

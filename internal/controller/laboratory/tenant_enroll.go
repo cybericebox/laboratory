@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -193,5 +194,5 @@ func (r *TenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.Tenant{}).
 		Named("tenant-enrollment").
-		Complete(r)
+		Complete(reconcileutil.Quiet(r))
 }

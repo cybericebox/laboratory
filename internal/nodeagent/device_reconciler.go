@@ -4,6 +4,7 @@ package nodeagent
 
 import (
 	"context"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"time"
 
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -74,5 +75,5 @@ func (r *DevicePortReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 func (r *DevicePortReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.Device{}).
-		Complete(r)
+		Complete(reconcileutil.QuietIgnoreNotFound(r))
 }

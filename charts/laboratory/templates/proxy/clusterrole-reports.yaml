@@ -13,8 +13,9 @@ metadata:
 rules:
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "labtrafficreports" ]
-    verbs: [ "get", "create", "update" ]
+    verbs: [ "get", "create" ]
+  # The writer reads the report (get), creates it when missing (create) and replaces its status (status update): nothing else.
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "labtrafficreports/status" ]
-    verbs: [ "get", "patch", "update" ]
+    verbs: [ "update" ]
 {{- end }}

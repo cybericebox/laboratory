@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/go-logr/logr/funcr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 )
 
@@ -167,5 +169,20 @@ func TestLineWriterCountsErrorLinesAndPassesAll(t *testing.T) {
 	snap := a.Snapshot()
 	if len(snap) != 1 || snap[0].Total != 1 || strings.Contains(snap[0].Samples[0], "10.1.2.3") {
 		t.Fatalf("%+v", snap)
+	}
+}
+
+func TestLogSinkKeepsConflictsOutOfTheJournal(t *testing.T) {
+	var lines []string
+	base := funcr.New(func(prefix, args string) { lines = append(lines, prefix+args) }, funcr.Options{})
+	a := New("operator", "p")
+	log := WrapLogger(base, a).WithName("labgroup")
+	conflict := apierrors.NewConflict(schema.GroupResource{Resource: "pools"}, "p", errors.New("the object has been modified; please apply your changes to the latest version"))
+	log.Error(fmt.Errorf("wrapped: %w", conflict), "failed to sync pool state label")
+	if len(a.Snapshot()) != 0 {
+		t.Fatalf("a conflict must not reach the journal: %+v", a.Snapshot())
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], "will retry") {
+		t.Fatalf("a conflict is still logged for the trace: %v", lines)
 	}
 }

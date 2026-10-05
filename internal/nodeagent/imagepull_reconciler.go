@@ -2,6 +2,7 @@ package nodeagent
 
 import (
 	"context"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"slices"
 	"time"
 
@@ -102,5 +103,5 @@ func (r *ImagePullReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.ImagePull{}).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 4}).
-		Complete(r)
+		Complete(reconcileutil.QuietIgnoreNotFound(r))
 }

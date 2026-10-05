@@ -5,6 +5,7 @@ package nodeagent
 import (
 	"context"
 	"fmt"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"sync"
 	"time"
 
@@ -381,5 +382,5 @@ func (r *NetworkAttachReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&corev1.Pod{}).
 		Watches(&laboratoryv1alpha1.LabVPN{}, handler.EnqueueRequestsFromMapFunc(r.groupPodsOf(names.ComponentVPN))).
 		Watches(&laboratoryv1alpha1.LabGateway{}, handler.EnqueueRequestsFromMapFunc(r.groupPodsOf(names.ComponentGateway))).
-		Complete(r)
+		Complete(reconcileutil.QuietIgnoreNotFound(r))
 }

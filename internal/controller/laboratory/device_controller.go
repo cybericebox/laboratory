@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"net"
 	"regexp"
 	"time"
@@ -628,7 +629,7 @@ func (r *DeviceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// A switch/hub's readiness depends on its Connections — re-reconcile the
 		// referenced devices whenever a Connection changes.
 		Watches(&laboratoryv1alpha1.Connection{}, handler.EnqueueRequestsFromMapFunc(r.devicesForConnection)).
-		Complete(r)
+		Complete(reconcileutil.Quiet(r))
 }
 
 // labGroupSuspended resolves the LabGroup that owns this namespace through the

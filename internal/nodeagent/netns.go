@@ -12,24 +12,32 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-// EnableConntrackAccounting switches on conntrack byte accounting and flow timestamps in the target netns. They are
-// off by default and /proc/sys is read-only for an unprivileged container, so the VPN pod (which carries the
-// annotation names.AnnotationConntrackAccounting) cannot do it itself; the node-agent already works in pod
-// namespaces. Without them the flow collector still counts attempts and replies, only bytes stay zero, so a failure
-// is reported and never fails the pod.
-func EnableConntrackAccounting(netnsPath string) error {
-	var last error
-	for _, f := range []string{"nf_conntrack_acct", "nf_conntrack_timestamp"} {
-		ok := false
-		for i := 0; i < 5 && !ok; i++ {
-			if last = nsenterRun(netnsPath, "sh", "-c", "echo 1 > /proc/sys/net/netfilter/"+f); last == nil {
-				ok = true
-			} else {
-				time.Sleep(200 * time.Millisecond)
-			}
+// conntrackSysctls are the per-netns switches of conntrack byte accounting and flow start times.
+var conntrackSysctls = []string{"nf_conntrack_acct", "nf_conntrack_timestamp"}
+
+// ConntrackAccountingOn reports whether both switches are already on in the target netns. Reading works with the read-only
+// /proc/sys of the node-agent container; the node prep (the chart's host-prep init container, or the node image) sets them
+// on the host and through the nf_conntrack module parameters, so a new pod namespace normally starts with them on.
+func ConntrackAccountingOn(netnsPath string) bool {
+	for _, f := range conntrackSysctls {
+		out, err := nsenterOutput(netnsPath, "cat", "/proc/sys/net/netfilter/"+f)
+		if err != nil || strings.TrimSpace(out) != "1" {
+			return false
 		}
-		if !ok {
-			return fmt.Errorf("%s: %w", f, last)
+	}
+	return true
+}
+
+// EnableConntrackAccounting makes sure conntrack byte accounting and flow timestamps are on in the target netns: nothing to
+// do when they already are, otherwise it tries to write them. The write only works when /proc/sys is writable; in the
+// unprivileged node-agent container it is not, and then the error says so (the node prep is the place to set them).
+func EnableConntrackAccounting(netnsPath string) error {
+	if ConntrackAccountingOn(netnsPath) {
+		return nil
+	}
+	for _, f := range conntrackSysctls {
+		if err := nsenterRun(netnsPath, "sh", "-c", "echo 1 > /proc/sys/net/netfilter/"+f); err != nil {
+			return fmt.Errorf("%s: %w", f, err)
 		}
 	}
 	return nil
@@ -92,6 +100,15 @@ func DeleteInNetNS(netnsPath, ifaceName string) error {
 // BringUpInNetNS brings an interface UP inside the target netns.
 func BringUpInNetNS(netnsPath, ifaceName string) error {
 	return nsenterRun(netnsPath, "ip", "link", "set", ifaceName, "up")
+}
+
+func nsenterOutput(netnsPath string, args ...string) (string, error) {
+	full := append([]string{"--net=" + netnsPath, "--"}, args...)
+	out, err := exec.Command("nsenter", full...).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
 }
 
 func nsenterRun(netnsPath string, args ...string) error {

@@ -5,6 +5,7 @@ package reconciler
 import (
 	"context"
 	"fmt"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"net"
 	"time"
 
@@ -193,7 +194,7 @@ func (r *LabVPNReconciler) patchStatus(
 func (r *LabVPNReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.LabVPN{}).
-		Complete(r)
+		Complete(reconcileutil.Quiet(r))
 }
 
 func firstHostIP(cidr string) string {

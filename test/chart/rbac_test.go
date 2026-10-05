@@ -225,3 +225,26 @@ func TestAgentMonitoringCachesAreReadOnlyClusterWide(t *testing.T) {
 	}
 	t.Fatal("no laboratory-agent-cluster ClusterRole")
 }
+
+// The proxy writes only its own LabTrafficReports, and only what the writer does: get, create, and a status update. The role is bound
+// per group namespace by the operator, never cluster-wide.
+func TestProxyReportsRoleIsLeastPrivilege(t *testing.T) {
+	out, err := helmTemplate(t, "-s", "templates/proxy/clusterrole-reports.yaml")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	got := map[string][]string{}
+	for _, d := range docs(t, out) {
+		if d["kind"] != "ClusterRole" || d["metadata"].(map[string]any)["name"] != "laboratory-proxy-reports" {
+			continue
+		}
+		for _, r := range rulesOf(t, d) {
+			for _, res := range r.Resources {
+				got[res] = append(got[res], r.Verbs...)
+			}
+		}
+	}
+	if len(got) != 2 || strings.Join(got["labtrafficreports"], ",") != "get,create" || strings.Join(got["labtrafficreports/status"], ",") != "update" {
+		t.Fatalf("proxy reports role = %v", got)
+	}
+}

@@ -5,6 +5,7 @@ package reconciler
 import (
 	"context"
 	"fmt"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -90,7 +91,7 @@ func (r *LabGroupClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 func (r *LabGroupClientReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.LabGroupClient{}).
-		Complete(r)
+		Complete(reconcileutil.Quiet(r))
 }
 
 // RunStats periodically reads WireGuard peer stats and writes them to LabGroupClient status.
