@@ -15,7 +15,7 @@ manifests.
 
 With `devices.security.userNamespaces: true` (the default) the operator's admission policy also refuses any device pod without `hostUsers: false`, so a
 cluster that ignored the field would fail loudly instead of running devices as host root.
-- Worker nodes need only k0s and a Linux kernel with the `openvswitch`, `geneve`, `wireguard`, `br_netfilter`, `nf_conntrack` and `nf_conntrack_netlink` modules (cgroup v2). Open vSwitch runs in the node-agent DaemonSet, which also loads the modules and sets the sysctls (`nodeAgent.hostPrep`). The image ships Open vSwitch 3.7.1 (alpine 3.24); 4.0.0 comes with the next alpine stable release.
+- Worker nodes need only k0s and a Linux kernel with the `openvswitch`, `geneve`, `wireguard`, `br_netfilter`, `nf_conntrack` and `nf_conntrack_netlink` modules (cgroup v2). Open vSwitch runs in the node-agent DaemonSet, which also loads the modules and sets the sysctls (`nodeAgent.hostPrep`; `net.core.fb_tunnels_only_for_init_net=2` keeps the kernel fallback tunnel devices gre0, gretap0, erspan0 out of every pod). The image ships Open vSwitch 3.7.1 (alpine 3.24); 4.0.0 comes with the next alpine stable release.
 
 ---
 
@@ -973,6 +973,8 @@ hardware address (`aa:bb:cc:dd:ee:ff`; the second hex digit of the first octet i
 is refused. The same rules are in the CRDs (`Lab`, `Device`: a client that bypasses the agent is refused by the API server) and in the
 agent (`CreateLabs` answers `INVALID_ARGUMENT` before anything is created); the operator and the node-agent drop an entry that
 still gets through.
+
+The routes of `accessport` do not stay in the pod's main table: cni-gate moves them, in the same CNI ADD, into table 100 and adds `ip rule from <accessport address> lookup 100` (priority 1000), so a default gateway of a lab interface never takes the replies to the L7 proxy. A device with `NET_ADMIN` (the `extended` profile) may flush the table or delete the rule: the node-agent checks every 10 seconds and puts them back; a deleted `accessport` is reported once as a `Warning` event `AccessPortLost` on the pod (reset the device). The NetworkPolicy of a published device admits only the proxy on the published port and no egress.
 
 The `network.cybericebox.com/networks` pod annotation that carries them to the node-agent is a JSON array
 (`[{"iface":"eth1","mac":"02:..."}]`; lab VPN and gateway ports add `"name":"<ovs port>"`), so no character of a name can start another

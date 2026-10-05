@@ -168,6 +168,16 @@ func Run() {
 		os.Exit(1)
 	}
 
+	if err := mgr.Add(&nodeagent.AccessPortChecker{
+		Client:   mgr.GetClient(),
+		NodeName: cfg.NodeName,
+		CRISock:  cfg.CRISock,
+		Recorder: mgr.GetEventRecorderFor("node-agent-access-port"),
+	}); err != nil {
+		log.Error(err, "setup AccessPortChecker")
+		os.Exit(1)
+	}
+
 	puller, err := imagepull.NewCRIPuller(cfg.CRISock)
 	if err != nil {
 		log.Error(err, "connect to the container runtime")

@@ -161,3 +161,34 @@ func TestEnsureWebServicesGivesUpAfterAllAttempts(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 }
+
+// The policy of a web-exposed device pod (the one Cilium enforces on the access port): in only from the L7 proxy on the published
+// port, out nothing (the replies of the allowed connections pass by conntrack), so a connection the pod starts is denied.
+func TestWebNetworkPolicyAdmitsOnlyTheProxyAndNoEgress(t *testing.T) {
+	s := pruneScheme(t)
+	_ = corev1.AddToScheme(s)
+	_ = networkingv1.AddToScheme(s)
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+	r := &LabReconciler{Client: c, Scheme: s, BaseDomain: "labs.example.com"}
+	if err := r.ensureWebServices(context.Background(), webLab("lab1", "uid-1")); err != nil {
+		t.Fatal(err)
+	}
+	var list networkingv1.NetworkPolicyList
+	if err := c.List(context.Background(), &list, client.InNamespace("team-alpha")); err != nil || len(list.Items) != 1 {
+		t.Fatalf("policies: %v %+v", err, list.Items)
+	}
+	spec := list.Items[0].Spec
+	if len(spec.PolicyTypes) != 2 || len(spec.Egress) != 0 {
+		t.Errorf("egress must be selected and empty (deny all), got types %v egress %v", spec.PolicyTypes, spec.Egress)
+	}
+	if len(spec.Ingress) != 1 || len(spec.Ingress[0].Ports) != 1 || spec.Ingress[0].Ports[0].Port.IntVal != 80 {
+		t.Fatalf("ingress must be one rule on the published port: %+v", spec.Ingress)
+	}
+	for _, peer := range spec.Ingress[0].From {
+		if peer.PodSelector == nil || peer.PodSelector.MatchLabels["app"] != names.ProxyL7App {
+			if peer.IPBlock == nil {
+				t.Errorf("a peer that is not the proxy: %+v", peer)
+			}
+		}
+	}
+}

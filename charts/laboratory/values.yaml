@@ -488,6 +488,8 @@ nodeAgent:
       net.ipv4.conf.all.rp_filter: "0"
       net.ipv4.conf.default.rp_filter: "0"
       net.bridge.bridge-nf-call-iptables: "1"
+      # No gre0/gretap0/erspan0 fallback tunnel devices in any netns (pods would show them when ip_gre is loaded on the node).
+      net.core.fb_tunnels_only_for_init_net: "2"
     # Switch on conntrack byte accounting and flow timestamps (net.netfilter.nf_conntrack_acct / _timestamp and the nf_conntrack
     # module parameters acct / tstamp that every new pod namespace inherits). Without them the VPN flow report counts attempts and
     # replies but its bytes stay zero. Only this privileged init container can write them: the node-agent container has a

@@ -165,6 +165,16 @@ func TestHostPrepSwitchesConntrackAccountingOn(t *testing.T) {
 	}
 }
 
+// The kernel's fallback tunnel devices (gre0, gretap0, erspan0, ...) are created in every new netns while ip_gre and friends are
+// loaded; the sysctl at 2 stops it, in the init namespace too. (A kind node shares the CI runner's kernel, which may not have
+// the modules, so the effect itself is not asserted in a pod there; the chart must write the value.)
+func TestHostPrepDisablesFallbackTunnelDevices(t *testing.T) {
+	_, prep := initByName(nodeAgent(t).Spec.Template.Spec, "host-prep")
+	if want := `echo "2" > /proc/sys/net/core/fb_tunnels_only_for_init_net`; !strings.Contains(strings.Join(prep.Args, "\n"), want) {
+		t.Errorf("host-prep script lacks %q", want)
+	}
+}
+
 func TestHostPrepValuesAreConfigurable(t *testing.T) {
 	spec := nodeAgent(t,
 		"--set", "nodeAgent.hostPrep.modules={openvswitch,vxlan}",
