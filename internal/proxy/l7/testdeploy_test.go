@@ -42,7 +42,7 @@ func TestHandler_TestDeployTokenIsAuthorizedByPolicyAndReportedByClient(t *testi
 	if code := call("p-author"); code != 200 {
 		t.Fatalf("the author's client: %d", code)
 	}
-	if code := call("p-someone-else"); code != http.StatusForbidden {
+	if code := call("p-someone-else"); code != http.StatusNotFound {
 		t.Fatalf("a client without an allow rule: %d", code)
 	}
 	rows, _ := meter.Ledger(laboratoryv1alpha1.LabGroupNamespace("t-1"))

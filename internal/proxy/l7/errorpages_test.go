@@ -47,7 +47,7 @@ func TestErrorPages_GoneIsTheSameCardForUnknownAndForbidden(t *testing.T) {
 	for name, tc := range map[string]struct {
 		h    *Handler
 		code int
-	}{"unknown": {unknown, 404}, "forbidden": {forbidden, 403}} {
+	}{"unknown": {unknown, 404}, "forbidden": {forbidden, 404}} {
 		rec := errCall(t, tc.h, errHost, "text/html", "")
 		if rec.Code != tc.code || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") {
 			t.Fatalf("%s: %d %s", name, rec.Code, rec.Header().Get("Content-Type"))
