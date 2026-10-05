@@ -219,6 +219,7 @@ func TestExpiredCard_NoCookieShowsTheCardWithoutRedirect(t *testing.T) {
 	} {
 		req := httptest.NewRequest("GET", "https://"+labHost+"/", nil)
 		req.Host = labHost
+		req.Header.Set("Accept", "text/html,application/xhtml+xml")
 		if tc.lang != "" {
 			req.Header.Set("Accept-Language", tc.lang)
 		}
@@ -228,7 +229,7 @@ func TestExpiredCard_NoCookieShowsTheCardWithoutRedirect(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized || rec.Header().Get("Location") != "" {
 			t.Fatalf("%q: code = %d location = %q", tc.lang, rec.Code, rec.Header().Get("Location"))
 		}
-		if !strings.Contains(body, tc.first) || !strings.Contains(body, "Відкрийте лабораторію ще раз за посиланням із завдання.") || !strings.Contains(body, "Open the lab again") || !strings.Contains(body, "data:image/webp;base64,") {
+		if !strings.Contains(body, tc.first) || !strings.Contains(body, "Відкрийте лабораторію ще раз за посиланням із завдання.") || !strings.Contains(body, "Open the lab again") {
 			t.Fatalf("%q: card = %s", tc.lang, body)
 		}
 	}
@@ -242,6 +243,7 @@ func TestExpiredCard_ExpiredCookie(t *testing.T) {
 	req := httptest.NewRequest("GET", "https://"+labHost+"/", nil)
 	req.Host = labHost
 	req.AddCookie(c)
+	req.Header.Set("Accept", "text/html")
 	out := httptest.NewRecorder()
 	f.handler.ServeHTTP(out, req)
 	if out.Code != http.StatusUnauthorized || !strings.Contains(out.Body.String(), "Сесія завершилася.") {

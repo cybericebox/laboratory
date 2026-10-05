@@ -39,7 +39,7 @@ func (h *Handler) handoff(w http.ResponseWriter, r *http.Request, host string) {
 		RegisteredClaims: jwt.RegisteredClaims{IssuedAt: jwt.NewNumericDate(now)},
 	}, now)
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		fail(w, r, http.StatusInternalServerError, pageFailed, "internal error")
 		return
 	}
 	h.setSessionCookie(w, value, end, now)

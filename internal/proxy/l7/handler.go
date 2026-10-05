@@ -116,13 +116,13 @@ func (h *Handler) WithAuthorizer(authorize Authorizer) *Handler {
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	task, err := getTaskName(r, h.baseDomain)
 	if err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		fail(w, r, http.StatusBadRequest, pageGone, "bad request")
 		return
 	}
 	if r.URL.Path == AuthPath {
 		if !h.authLimit.allow(peerKey(r)) {
 			w.Header().Set("Retry-After", "5")
-			http.Error(w, "too many requests", http.StatusTooManyRequests)
+			fail(w, r, http.StatusTooManyRequests, pageBusy, "too many requests")
 			return
 		}
 		h.handoff(w, r, task)
@@ -136,12 +136,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	client := claims.client()
 	if client == "" {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		h.expired(w, r)
 		return
 	}
 	if h.groupTenant != nil {
 		if owner, ok := h.groupTenant(claims.GroupID); !ok || owner != claims.Tenant {
-			http.Error(w, "forbidden", http.StatusForbidden)
+			fail(w, r, http.StatusForbidden, pageGone, "forbidden")
 			return
 		}
 	}
@@ -150,24 +150,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	backendURL, err := h.resolver(task, claims.GroupID)
 	if err != nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		fail(w, r, http.StatusNotFound, pageGone, "not found")
 		return
 	}
 	target, err := url.Parse(backendURL)
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		fail(w, r, http.StatusInternalServerError, pageFailed, "internal error")
 		return
 	}
 	var lab string
 	if h.attribute != nil {
 		lab, _ = h.attribute(task, claims.GroupID)
 		if lab == "" {
-			http.Error(w, "not found", http.StatusNotFound)
+			fail(w, r, http.StatusNotFound, pageGone, "not found")
 			return
 		}
 	}
 	if h.authorize != nil && !h.authorize(claims.GroupID, client, lab) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		fail(w, r, http.StatusForbidden, pageGone, "forbidden")
 		return
 	}
 
@@ -189,7 +189,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	entry := &liveEntry{group: claims.GroupID, client: client, lab: lab, tenant: claims.Tenant, deadline: h.liveDeadline(claims.Abs), cancel: cancel}
 	if !h.live.tryAdd(entry, h.caps) {
 		w.Header().Set("Retry-After", "5")
-		http.Error(w, "too many open requests", http.StatusTooManyRequests)
+		fail(w, r, http.StatusTooManyRequests, pageBusy, "too many requests")
 		return
 	}
 	defer h.live.remove(entry)
@@ -207,6 +207,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Count only what a client did to a known lab device, keyed by (group,
 	// client, lab); the platform decides which groups are event traffic.
 	if h.meter == nil || lab == "" {
+		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, _ error) {
+			fail(w, r, http.StatusBadGateway, pageUpstream, "bad gateway")
+		}
 		proxy.ServeHTTP(w, r)
 		return
 	}
@@ -217,9 +220,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Body = out
 	}
 	rec := &countingWriter{ResponseWriter: w}
-	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, _ error) {
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, _ error) {
 		rec.upstreamFailed = true
-		w.WriteHeader(http.StatusBadGateway)
+		fail(w, r, http.StatusBadGateway, pageUpstream, "bad gateway")
 	}
 	proxy.ServeHTTP(rec, r)
 	h.meter.Record(ns(claims.GroupID), client, lab, start, !rec.upstreamFailed, rec.bytes, out.n.Load())

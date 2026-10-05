@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/cybericebox/laboratory/pkg/statuspage"
 	"github.com/cybericebox/laboratory/pkg/vpnprobe"
 )
 
@@ -36,7 +37,12 @@ func probeHandler(supportEmail string) http.Handler {
 	pageTemplate, err := template.New("probe").Parse(probePageHTML)
 	var page bytes.Buffer
 	if err == nil {
-		err = pageTemplate.Execute(&page, struct{ SupportEmail string }{SupportEmail: supportEmail})
+		err = pageTemplate.Execute(&page, struct {
+			SupportEmail string
+			Style        template.CSS
+			Script       template.JS
+			Theme        template.HTML
+		}{supportEmail, statuspage.Style(), statuspage.Script(), statuspage.Theme("uk")})
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
