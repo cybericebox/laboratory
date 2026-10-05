@@ -141,3 +141,28 @@ func TestErrorPages_CleanCopy(t *testing.T) {
 		}
 	}
 }
+
+func TestErrorPages_StateClassPerCard(t *testing.T) {
+	for name, tc := range map[string]struct {
+		p     page
+		class string
+	}{
+		"expired":  {pageExpired, "ic-warn"},
+		"busy":     {pageBusy, "ic-warn"},
+		"upstream": {pageUpstream, "ic-warn"},
+		"gone":     {pageGone, "ic-danger"},
+		"failed":   {pageFailed, "ic-danger"},
+	} {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("Accept", "text/html")
+		rec := httptest.NewRecorder()
+		fail(rec, req, 500, tc.p, "x")
+		b := rec.Body.String()
+		if !strings.Contains(b, `class="ic `+tc.class+`"`) || !strings.Contains(b, `class="rule"`) {
+			t.Fatalf("%s: no %s or rule: %s", name, tc.class, b)
+		}
+		if strings.Contains(b, `class="top"`) || strings.Contains(b, `class="mark"`) {
+			t.Fatalf("%s: old top bar or mark is back", name)
+		}
+	}
+}

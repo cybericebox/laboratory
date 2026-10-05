@@ -11,29 +11,37 @@ import (
 type cardText struct{ lang, title, hint string }
 
 // page is one error card: its text in both languages (a visitor sees one). The status code is the caller's.
-type page struct{ uk, en cardText }
+type page struct {
+	uk, en cardText
+	state  statuspage.State
+}
 
 var (
 	pageExpired = page{
 		cardText{"uk", "Сесію завершено", "Щоб продовжити, відкрийте лабораторію за посиланням у завданні."},
 		cardText{"en", "Session ended", "To continue, open the lab from the link in the task."},
+		statuspage.StateWait,
 	}
 	// pageGone is the same for an unknown host, a removed lab and a refused client, so the text does not tell which.
 	pageGone = page{
 		cardText{"uk", "Такого завдання зараз немає", "Можливо, лабораторію вже вимкнено або посилання застаріло."},
 		cardText{"en", "This task is not available right now", "The lab may have been turned off or the link is out of date."},
+		statuspage.StateUnavailable,
 	}
 	pageUpstream = page{
 		cardText{"uk", "Завдання поки недоступне", "Сервіс завдання ще запускається або недоступний. Спробуйте за хвилину."},
 		cardText{"en", "The task is not available yet", "The task service is still starting or unavailable. Try again in a minute."},
+		statuspage.StateWait,
 	}
 	pageBusy = page{
 		cardText{"uk", "Забагато запитів", "Спробуйте ще раз за кілька секунд."},
 		cardText{"en", "Too many requests", "Try again in a few seconds."},
+		statuspage.StateWait,
 	}
 	pageFailed = page{
 		cardText{"uk", "Щось пішло не так", "Спробуйте ще раз за хвилину."},
 		cardText{"en", "Something went wrong", "Try again in a minute."},
+		statuspage.StateUnavailable,
 	}
 )
 
@@ -85,10 +93,11 @@ func fail(w http.ResponseWriter, r *http.Request, status int, p page, plain stri
   </style>
 </head>
 <body>
-  <div class="top" aria-hidden="true"></div>
   <div class="frame">
-    <main>
+    <main class="state-%s">
+      %s
       <h1>%s</h1>
+      %s
       <p class="intro">%s</p>
     </main>
     <footer>
@@ -100,7 +109,7 @@ func fail(w http.ResponseWriter, r *http.Request, status int, p page, plain stri
   </script>
 </body>
 </html>`,
-		card.lang, statuspage.Favicon(), card.title, statuspage.Style(), card.title, card.hint,
+		card.lang, statuspage.Favicon(), card.title, statuspage.Style(), p.state, statuspage.Icon(p.state), card.title, statuspage.Rule, card.hint,
 		statuspage.Theme(card.lang), statuspage.Script())
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
