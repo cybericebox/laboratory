@@ -103,7 +103,7 @@ var _ = Describe("Image cache: device image rewrite", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 			Spec: laboratoryv1alpha1.DeviceSpec{
 				Type: laboratoryv1alpha1.DeviceTypeContainer, Name: "web", LabRef: "lab", Image: "nginx:1.25", ImageMirror: mirror,
-				Interfaces: []laboratoryv1alpha1.InterfaceSpec{{Name: "eth1", Addr: laboratoryv1alpha1.AddrSpec{
+				Interfaces: []laboratoryv1alpha1.InterfaceSpec{{Name: "eth1", Addr: &laboratoryv1alpha1.AddrSpec{
 					Type: laboratoryv1alpha1.AddrTypeStatic, IP: "10.0.0.5/24"}}},
 			},
 		}

@@ -16,6 +16,9 @@ func resolveLabDeviceInterfaces(lab *laboratoryv1alpha1.Lab) (map[string][]labor
 	usedAddresses := make(map[laboratoryv1alpha1.NetworkIPRef]string)
 	for _, tmpl := range lab.Spec.Devices {
 		for _, iface := range tmpl.Interfaces {
+			if iface.Addr == nil {
+				continue
+			}
 			if ref := iface.Addr.AddressRef; ref != nil {
 				if previous, exists := usedAddresses[*ref]; exists {
 					return nil, fmt.Errorf("duplicate static address %s host %d on %s and %s.%s", ref.Network, ref.Host, previous, tmpl.Name, iface.Name)
@@ -38,7 +41,12 @@ func resolveDeviceInterfaces(tmpl laboratoryv1alpha1.DeviceTemplate, lab *labora
 	resolved := make([]laboratoryv1alpha1.InterfaceSpec, len(tmpl.Interfaces))
 	for index, iface := range tmpl.Interfaces {
 		out := iface
-		addr := iface.Addr
+		if iface.Addr == nil {
+			// No address: the interface is created without an IP.
+			resolved[index] = out
+			continue
+		}
+		addr := *iface.Addr
 		if addr.Type != laboratoryv1alpha1.AddrTypeStatic {
 			if addr.IP != "" || addr.AddressRef != nil || addr.Gateway != "" || addr.GatewayRef != nil || len(addr.Routes) != 0 {
 				return nil, fmt.Errorf("interface %q: non-static mode contains static address values", iface.Name)
@@ -107,7 +115,7 @@ func resolveDeviceInterfaces(tmpl laboratoryv1alpha1.DeviceTemplate, lab *labora
 			}
 			addr.Routes[routeIndex] = route
 		}
-		out.Addr = addr
+		out.Addr = &addr
 		resolved[index] = out
 	}
 	return resolved, nil

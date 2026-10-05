@@ -13,7 +13,7 @@ func TestNetConfigStaticRoute(t *testing.T) {
 	device := &laboratoryv1alpha1.Device{}
 	device.Spec.Interfaces = []laboratoryv1alpha1.InterfaceSpec{{
 		Name: "eth0",
-		Addr: laboratoryv1alpha1.AddrSpec{
+		Addr: &laboratoryv1alpha1.AddrSpec{
 			Type: laboratoryv1alpha1.AddrTypeStatic,
 			IP:   "10.0.0.2/24",
 			Routes: []laboratoryv1alpha1.Route{{
@@ -38,7 +38,7 @@ func TestNetConfigStaticRoute(t *testing.T) {
 // L-8: the init container has requests equal to limits, so a device pod stays Guaranteed.
 func TestNetConfigInitContainerHasGuaranteedResources(t *testing.T) {
 	device := &laboratoryv1alpha1.Device{}
-	device.Spec.Interfaces = []laboratoryv1alpha1.InterfaceSpec{{Name: "eth1", Addr: laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeStatic, IP: "10.0.0.2/24"}}}
+	device.Spec.Interfaces = []laboratoryv1alpha1.InterfaceSpec{{Name: "eth1", Addr: &laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeStatic, IP: "10.0.0.2/24"}}}
 	c := (&DeviceReconciler{NetConfigImage: "netconfig"}).netConfigInitContainer(device)
 	if c == nil {
 		t.Fatal("missing netconfig container")
