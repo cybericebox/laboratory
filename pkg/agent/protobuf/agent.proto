@@ -353,6 +353,9 @@ message LabGroup {
   map<string, string> labels = 10;
   string deploy_group = 11;
   repeated string deploy_after = 12;
+  // Creation time of the LabGroup object, unix milliseconds (0 when unknown). A cleanup
+  // sweep uses it to skip groups that are still being deployed.
+  int64 created_unix_ms = 13;
 }
 message LabGroupStatus {
   string phase = 1;
