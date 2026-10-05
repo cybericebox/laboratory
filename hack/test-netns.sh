@@ -18,10 +18,10 @@ if ! command -v iptables >/dev/null || ! command -v ip >/dev/null || ! command -
   apt-get update -qq && apt-get install -y -qq iptables iproute2 iputils-ping >/dev/null
 fi
 out=$(mktemp -d)
-for pkg in vpn gateway; do
+for pkg in vpn gateway accessroute; do
   go test -c -o "$out/$pkg.test" "./internal/$pkg"
 done
-for pkg in vpn gateway; do
+for pkg in vpn gateway accessroute; do
   # The test binary is the pod: its own network namespace, so the host's rules are never touched.
   (cd "internal/$pkg" && unshare -n "$out/$pkg.test" -test.run 'TestNetns' -test.v -test.timeout 120s)
 done

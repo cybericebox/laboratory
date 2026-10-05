@@ -974,6 +974,8 @@ is refused. The same rules are in the CRDs (`Lab`, `Device`: a client that bypas
 agent (`CreateLabs` answers `INVALID_ARGUMENT` before anything is created); the operator and the node-agent drop an entry that
 still gets through.
 
+The routes of `accessport` do not stay in the pod's main table: cni-gate moves them, in the same CNI ADD, into table 100 and adds `ip rule from <accessport address> lookup 100` (priority 1000), so a default gateway of a lab interface never takes the replies to the L7 proxy. A device with `NET_ADMIN` (the `extended` profile) may flush the table or delete the rule: the node-agent checks every 10 seconds and puts them back; a deleted `accessport` is reported once as a `Warning` event `AccessPortLost` on the pod (reset the device). The NetworkPolicy of a published device admits only the proxy on the published port and no egress.
+
 The `network.cybericebox.com/networks` pod annotation that carries them to the node-agent is a JSON array
 (`[{"iface":"eth1","mac":"02:..."}]`; lab VPN and gateway ports add `"name":"<ovs port>"`), so no character of a name can start another
 entry.

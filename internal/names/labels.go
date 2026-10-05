@@ -73,6 +73,14 @@ const (
 	// names must not collide with it: SetupNetworks would delete/replace the
 	// delegated interface on a kubelet CNI retry.
 	AccessPortIface = "accessport"
+
+	// AccessPortRouteTable is the routing table that holds every route of the access port inside the pod. The rule
+	// "from <access port address> lookup <table>" sends the replies back out of the port; the main table, where the lab
+	// interfaces and their default gateway live, never holds a route through it (see package accessroute).
+	AccessPortRouteTable = 100
+	// AccessPortRulePriority is the priority of that rule: above the main table (32766), so the replies never reach
+	// the lab's default route.
+	AccessPortRulePriority = 1000
 )
 
 // DHCPImpliedCapabilities are added to any device with an in-image DHCP

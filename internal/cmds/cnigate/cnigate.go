@@ -152,6 +152,12 @@ func cmdADD(args *skel.CmdArgs) error {
 		if err != nil {
 			return fmt.Errorf("convert result: %w", err)
 		}
+		// Source routing, before the container starts: the routes of the port leave the main table, so that a default
+		// gateway of a lab interface never takes the replies to the proxy. An error fails the ADD, the kubelet retries it.
+		if err := routeAccessPort(args.Netns, accessIface); err != nil {
+			logf("ADD pod=%s/%s source routing of %s error: %v", ns, name, accessIface, err)
+			return fmt.Errorf("source routing of %s: %w", accessIface, err)
+		}
 	}
 
 	// Kubernetes requires eth0 with an IP. Add a stub eth0 if the delegated
