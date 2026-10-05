@@ -4,7 +4,6 @@ package nodeagent
 
 import (
 	"context"
-	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"time"
 
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -13,6 +12,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 )
 
 // DevicePortReconciler manages the ovs-cleanup finalizer on Device CRDs and

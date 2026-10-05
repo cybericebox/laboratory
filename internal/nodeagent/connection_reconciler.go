@@ -5,7 +5,6 @@ package nodeagent
 import (
 	"context"
 	"fmt"
-	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"reflect"
 	"time"
 
@@ -23,6 +22,7 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/devices"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 )
 

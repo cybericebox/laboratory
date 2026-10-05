@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"net"
 	"text/template"
 	"time"
@@ -21,6 +20,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	"github.com/cybericebox/laboratory/pkg/netutil"

@@ -5,7 +5,6 @@ package nodeagent
 import (
 	"context"
 	"fmt"
-	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"sync"
 	"time"
 
@@ -19,6 +18,7 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/netattach"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 )
 
 const (

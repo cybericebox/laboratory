@@ -2,7 +2,6 @@ package nodeagent
 
 import (
 	"context"
-	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"slices"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/imagepull"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 )
 
 // ImagePullReconciler answers the scheduler's image prepull requests (ImagePull) by pulling

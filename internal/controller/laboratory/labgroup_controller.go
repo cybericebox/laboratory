@@ -3,13 +3,13 @@ package laboratory
 import (
 	"context"
 	"fmt"
-	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"maps"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -38,10 +38,10 @@ import (
 	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	"github.com/cybericebox/laboratory/pkg/netutil"
-	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 // labSubnetPrefixLen is the prefix length of per-lab and per-client subnets within VPNBaseNetwork.

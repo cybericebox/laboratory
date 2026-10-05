@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"net"
 	"regexp"
 	"time"
@@ -31,6 +30,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/netattach"
 	"github.com/cybericebox/laboratory/internal/profiles"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 )
 
 // DeviceReconciler reconciles a Device object.

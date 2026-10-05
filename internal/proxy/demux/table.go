@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"net"
 	"sync"
 	"time"
@@ -14,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 )
 
 // Mac1Key is the 32-byte key used to compute and verify mac1 in WireGuard handshake init.

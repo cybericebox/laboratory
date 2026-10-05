@@ -5,7 +5,6 @@ package gateway
 import (
 	"context"
 	"fmt"
-	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"net"
 	"time"
 
@@ -21,6 +20,7 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/labdhcp"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 	"github.com/cybericebox/laboratory/pkg/dhcp"
 	"github.com/cybericebox/laboratory/pkg/netutil"
