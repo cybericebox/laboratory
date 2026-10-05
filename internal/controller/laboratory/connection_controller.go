@@ -13,6 +13,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 )
 
@@ -73,5 +74,5 @@ func (r *ConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 func (r *ConnectionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.Connection{}).
-		Complete(r)
+		Complete(reconcileutil.Quiet(r))
 }

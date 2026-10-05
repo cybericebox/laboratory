@@ -14,6 +14,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/imagepull"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 )
 
 // ImagePullReconciler answers the scheduler's image prepull requests (ImagePull) by pulling
@@ -102,5 +103,5 @@ func (r *ImagePullReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.ImagePull{}).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 4}).
-		Complete(r)
+		Complete(reconcileutil.QuietIgnoreNotFound(r))
 }

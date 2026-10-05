@@ -22,6 +22,7 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/devices"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 )
 
@@ -704,7 +705,7 @@ func (r *ConnectionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&laboratoryv1alpha1.Device{},
 			handler.EnqueueRequestsFromMapFunc(r.connectionsForDevice),
 		).
-		Complete(r)
+		Complete(reconcileutil.QuietIgnoreNotFound(r))
 }
 
 func (r *ConnectionReconciler) connectionsForDevice(ctx context.Context, obj client.Object) []reconcile.Request {

@@ -269,7 +269,7 @@ func (a *allocator) collectRedundantEmptyPools(ctx context.Context) error {
 func (a *allocator) syncStateLabel(ctx context.Context, poolName string, free uint) error {
 	var pool allocationv1alpha1.Pool
 	if err := a.Get(ctx, client.ObjectKey{Name: poolName, Namespace: a.namespace}, &pool); err != nil {
-		return err
+		return client.IgnoreNotFound(err)
 	}
 	// Capacity accounts for the reserved bit-0 in the first pool (offset == 0).
 	capacity := pool.Spec.Size
@@ -283,14 +283,17 @@ func (a *allocator) syncStateLabel(ctx context.Context, poolName string, free ui
 	case capacity:
 		state = PoolStateEmpty
 	}
-	if pool.Labels == nil {
-		pool.Labels = map[string]string{}
-	}
 	if pool.Labels[PoolStateLabel] == state {
 		return nil
 	}
+	// A merge patch of the one label (no resourceVersion precondition): the pool's status is written by the same
+	// callers at the same time, and a full Update here lost that race with a conflict.
+	orig := pool.DeepCopy()
+	if pool.Labels == nil {
+		pool.Labels = map[string]string{}
+	}
 	pool.Labels[PoolStateLabel] = state
-	return a.Update(ctx, &pool)
+	return client.IgnoreNotFound(a.Patch(ctx, &pool, client.MergeFrom(orig)))
 }
 
 func (a *allocator) createPool(ctx context.Context) (*allocationv1alpha1.Pool, error) {

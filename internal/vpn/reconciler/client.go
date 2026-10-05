@@ -16,6 +16,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 	"github.com/cybericebox/laboratory/internal/vpn"
 )
@@ -90,7 +91,7 @@ func (r *LabGroupClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 func (r *LabGroupClientReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.LabGroupClient{}).
-		Complete(r)
+		Complete(reconcileutil.Quiet(r))
 }
 
 // RunStats periodically reads WireGuard peer stats and writes them to LabGroupClient status.

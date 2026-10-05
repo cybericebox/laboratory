@@ -12,6 +12,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 )
 
 // DevicePortReconciler manages the ovs-cleanup finalizer on Device CRDs and
@@ -74,5 +75,5 @@ func (r *DevicePortReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 func (r *DevicePortReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.Device{}).
-		Complete(r)
+		Complete(reconcileutil.QuietIgnoreNotFound(r))
 }

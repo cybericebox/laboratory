@@ -20,6 +20,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	"github.com/cybericebox/laboratory/pkg/netutil"
@@ -341,5 +342,5 @@ func (r *LabGroupClientReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.LabGroupClient{}).
 		Watches(&laboratoryv1alpha1.LabGroup{}, handler.EnqueueRequestsFromMapFunc(groupMap)).
-		Complete(r)
+		Complete(reconcileutil.Quiet(r))
 }

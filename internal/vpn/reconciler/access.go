@@ -19,6 +19,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"github.com/cybericebox/laboratory/internal/vpn"
 )
 
@@ -200,5 +201,5 @@ func (r *AccessReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// Counter refreshes patch only status. Do not turn those patches into
 		// another policy reconcile; specification changes still enqueue one.
 		Watches(&laboratoryv1alpha1.LabGroupAccessPolicy{}, allInNamespace, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Complete(r)
+		Complete(reconcileutil.Quiet(r))
 }

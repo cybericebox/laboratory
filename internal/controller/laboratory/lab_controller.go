@@ -31,6 +31,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/devices"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	"github.com/cybericebox/laboratory/pkg/netutil"
@@ -1432,5 +1433,5 @@ func (r *LabReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&laboratoryv1alpha1.LabGateway{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Watches(&corev1.Service{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Watches(&networkingv1.NetworkPolicy{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
-		Complete(r)
+		Complete(reconcileutil.Quiet(r))
 }

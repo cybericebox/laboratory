@@ -20,6 +20,7 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/labdhcp"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 	"github.com/cybericebox/laboratory/internal/vpn"
 	"github.com/cybericebox/laboratory/pkg/dhcp"
@@ -193,7 +194,7 @@ func (r *LabVPNReconciler) patchStatus(
 func (r *LabVPNReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.LabVPN{}).
-		Complete(r)
+		Complete(reconcileutil.Quiet(r))
 }
 
 func firstHostIP(cidr string) string {

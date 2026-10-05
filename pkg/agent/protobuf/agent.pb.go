@@ -2780,7 +2780,7 @@ func (x *PodScheduling) GetFailure() *PodFailure {
 }
 
 // PodFailure explains a pod that did not start: ImagePull | CrashLoop | Unschedulable |
-// StartupTimeout | DoesNotFit.
+// StartupTimeout | PodNotCreated | DoesNotFit.
 type PodFailure struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Reason        string                 `protobuf:"bytes,1,opt,name=reason,proto3" json:"reason,omitempty"`
@@ -5972,7 +5972,7 @@ type DeployFailure struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	LabGroup string                 `protobuf:"bytes,1,opt,name=lab_group,json=labGroup,proto3" json:"lab_group,omitempty"` // the platform's ids (as in ItemRef), not names of images or people
 	Lab      string                 `protobuf:"bytes,2,opt,name=lab,proto3" json:"lab,omitempty"`                           // empty for a pod of the group itself
-	// A stable code: ImagePull, CrashLoop, Unschedulable, StartupTimeout, DoesNotFit (device and group pods), or LabFailed / LabError
+	// A stable code: ImagePull, CrashLoop, Unschedulable, StartupTimeout, PodNotCreated, DoesNotFit (device and group pods), or LabFailed / LabError
 	// (a lab whose phase is Failed or Error without a device failure to blame).
 	ReasonCode    string `protobuf:"bytes,3,opt,name=reason_code,json=reasonCode,proto3" json:"reason_code,omitempty"`
 	Device        string `protobuf:"bytes,4,opt,name=device,proto3" json:"device,omitempty"`   // the device name (the platform's, from the topology), or "vpn" / "gateway"

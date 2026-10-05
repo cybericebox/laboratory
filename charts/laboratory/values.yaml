@@ -488,6 +488,11 @@ nodeAgent:
       net.ipv4.conf.all.rp_filter: "0"
       net.ipv4.conf.default.rp_filter: "0"
       net.bridge.bridge-nf-call-iptables: "1"
+    # Switch on conntrack byte accounting and flow timestamps (net.netfilter.nf_conntrack_acct / _timestamp and the nf_conntrack
+    # module parameters acct / tstamp that every new pod namespace inherits). Without them the VPN flow report counts attempts and
+    # replies but its bytes stay zero. Only this privileged init container can write them: the node-agent container has a
+    # read-only /proc/sys, and no pod sysctl is used. A node image that already sets them (node_prep) makes this a no-op.
+    conntrackAccounting: true
   # Where the node-agent keeps its sockets and Open vSwitch state on the host, and the bridge it programs.
   # ovsSocket must stay inside ovsRunHostPath: templates/validate.yaml refuses anything else.
   ovsSocket: "/run/openvswitch/db.sock"

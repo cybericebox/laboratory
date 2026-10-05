@@ -299,8 +299,47 @@ func TestSchedulerFailsAPodThatTookTooLong(t *testing.T) {
 	f.tick()
 	f.wantStates("a/p1=F b/p1=S")
 	fail := f.device("a", "p1").Status.Scheduling.Failure
-	if fail == nil || fail.Reason != laboratoryv1alpha1.FailureStartupTimeout || fail.Message != "no pod was created" {
+	if fail == nil || fail.Reason != laboratoryv1alpha1.FailurePodNotCreated || !strings.Contains(fail.Message, "Deployment does not exist") {
 		t.Fatalf("failure = %+v", fail)
+	}
+}
+
+// A workload that never produced a pod says why: the ReplicaFailure the API server reported to its ReplicaSet.
+func TestSchedulerNamesWhyNoPodWasCreated(t *testing.T) {
+	f := newSchedFixture(t, schedCfg())
+	f.addLab("a", "g1", nil, "p1")
+	f.tick()
+	d := f.device("a", "p1")
+	f.create(&appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: workloadName(d), Namespace: d.Namespace},
+		Status: appsv1.DeploymentStatus{Conditions: []appsv1.DeploymentCondition{{
+			Type: appsv1.DeploymentReplicaFailure, Status: corev1.ConditionTrue, Reason: "FailedCreate",
+			Message: `pods "x" is forbidden: exceeded quota: lab-quota`,
+		}}},
+	})
+	f.now = f.now.Add(6 * time.Minute)
+	f.tick()
+	fail := f.device("a", "p1").Status.Scheduling.Failure
+	if fail == nil || fail.Reason != laboratoryv1alpha1.FailurePodNotCreated || !strings.Contains(fail.Message, "exceeded quota") {
+		t.Fatalf("failure = %+v", fail)
+	}
+}
+
+func TestNoPodReason(t *testing.T) {
+	zero := int32(0)
+	cases := []struct {
+		name, reason, want string
+		dep                *appsv1.Deployment
+	}{
+		{"missing", laboratoryv1alpha1.FailurePodNotCreated, "does not exist", nil},
+		{"scaled to zero", laboratoryv1alpha1.FailurePodNotCreated, "scaled to zero", &appsv1.Deployment{Spec: appsv1.DeploymentSpec{Replicas: &zero}}},
+		{"no information", laboratoryv1alpha1.FailureStartupTimeout, "no pod was created", &appsv1.Deployment{}},
+	}
+	for _, c := range cases {
+		reason, msg := noPodReason(c.dep)
+		if reason != c.reason || !strings.Contains(msg, c.want) {
+			t.Errorf("%s: %s %q", c.name, reason, msg)
+		}
 	}
 }
 
@@ -707,25 +746,25 @@ func TestSchedulerKeepsRunningWorkloadsOfOldGroupsUntouched(t *testing.T) {
 
 func TestStartupVerdict(t *testing.T) {
 	now := planEpoch
-	if failed, _ := startupVerdict(now, now.Add(-time.Minute), nil, 0, 5*time.Minute, 5); failed {
+	if failed, _ := startupVerdict(now, now.Add(-time.Minute), nil, nil, 0, 5*time.Minute, 5); failed {
 		t.Fatal("not yet")
 	}
-	if failed, f := startupVerdict(now, now.Add(-time.Hour), nil, 0, 5*time.Minute, 5); !failed || f.Reason != laboratoryv1alpha1.FailureStartupTimeout {
+	if failed, f := startupVerdict(now, now.Add(-time.Hour), nil, &appsv1.Deployment{}, 0, 5*time.Minute, 5); !failed || f.Reason != laboratoryv1alpha1.FailureStartupTimeout {
 		t.Fatalf("timeout: %v %+v", failed, f)
 	}
-	if failed, f := startupVerdict(now, now, nil, 5, 5*time.Minute, 5); !failed || f.Reason != laboratoryv1alpha1.FailureCrashLoop {
+	if failed, f := startupVerdict(now, now, nil, &appsv1.Deployment{}, 5, 5*time.Minute, 5); !failed || f.Reason != laboratoryv1alpha1.FailureCrashLoop {
 		t.Fatalf("restarts: %v %+v", failed, f)
 	}
 	// The newest pod decides.
 	old := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(now.Add(-time.Hour))},
 		Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ErrImagePull"}}}}}}
 	newer := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(now)}, Status: corev1.PodStatus{Phase: corev1.PodRunning}}
-	if _, f := startupVerdict(now, now.Add(-time.Hour), []*corev1.Pod{old, newer}, 0, time.Minute, 5); f.Reason != laboratoryv1alpha1.FailureStartupTimeout {
+	if _, f := startupVerdict(now, now.Add(-time.Hour), []*corev1.Pod{old, newer}, nil, 0, time.Minute, 5); f.Reason != laboratoryv1alpha1.FailureStartupTimeout {
 		t.Fatalf("reason = %s", f.Reason)
 	}
 	long := &corev1.Pod{Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
 		Reason: "ErrImagePull", Message: strings.Repeat("x", 2000)}}}}}}
-	if _, f := startupVerdict(now, now.Add(-time.Hour), []*corev1.Pod{long}, 0, time.Minute, 5); len(f.Message) > 500 {
+	if _, f := startupVerdict(now, now.Add(-time.Hour), []*corev1.Pod{long}, nil, 0, time.Minute, 5); len(f.Message) > 500 {
 		t.Fatalf("message length %d", len(f.Message))
 	}
 }

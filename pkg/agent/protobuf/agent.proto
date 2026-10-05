@@ -442,7 +442,7 @@ message PodScheduling {
 }
 
 // PodFailure explains a pod that did not start: ImagePull | CrashLoop | Unschedulable |
-// StartupTimeout | DoesNotFit.
+// StartupTimeout | PodNotCreated | DoesNotFit.
 message PodFailure {
   string reason = 1;
   string message = 2;       // the last error the node reported
@@ -879,7 +879,7 @@ message ErrorGroup {
 message DeployFailure {
   string lab_group = 1;   // the platform's ids (as in ItemRef), not names of images or people
   string lab = 2;         // empty for a pod of the group itself
-  // A stable code: ImagePull, CrashLoop, Unschedulable, StartupTimeout, DoesNotFit (device and group pods), or LabFailed / LabError
+  // A stable code: ImagePull, CrashLoop, Unschedulable, StartupTimeout, PodNotCreated, DoesNotFit (device and group pods), or LabFailed / LabError
   // (a lab whose phase is Failed or Error without a device failure to blame).
   string reason_code = 3;
   string device = 4;      // the device name (the platform's, from the topology), or "vpn" / "gateway"

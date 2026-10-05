@@ -250,7 +250,8 @@ var _ = Describe("Scheduler", func() {
 			tick()
 			Expect(state(devices.Name("i", "web"))).To(Equal(st))
 
-			// A pod that never becomes Ready is failed after the timeout, with a warning.
+			// A pod that never becomes Ready is failed after the timeout, with a warning. No pod runs here, so the reason is the timeout, or
+			// the workload not producing a pod (its replicas may not be raised yet).
 			clock = clock.Add(6 * time.Minute)
 			tick()
 			Expect(state(devices.Name("b", "web"))).To(Equal(laboratoryv1alpha1.PodFailed))
@@ -264,7 +265,7 @@ var _ = Describe("Scheduler", func() {
 					}
 				}
 				return nil
-			}, timeout, interval).Should(And(Not(BeNil()), HaveField("Reason", laboratoryv1alpha1.FailureStartupTimeout)))
+			}, timeout, interval).Should(And(Not(BeNil()), HaveField("Reason", Or(Equal(laboratoryv1alpha1.FailureStartupTimeout), Equal(laboratoryv1alpha1.FailurePodNotCreated)))))
 		})
 	})
 })

@@ -330,7 +330,7 @@ scheduled pods, not only lab pods.
 `scheduler.restartThreshold` times (5), is declared failed: its slot is freed, the group still completes,
 nothing else is rolled back, and the device gets a warning: `Device.status.scheduling.failure` and, on the
 Lab, `status.devices[].failure`, with the reason (`ImagePull`, `CrashLoop`, `Unschedulable`,
-`StartupTimeout`, `DoesNotFit`), the last error the node reported and the restart count. If the pod becomes
+`StartupTimeout`, `PodNotCreated`, `DoesNotFit`), the last error the node reported and the restart count. If the pod becomes
 Ready later it is Started and the warning clears. A snapshot-backed device whose pod ended after it had started
 is recreated at once, with no slot, as without the scheduler.
 

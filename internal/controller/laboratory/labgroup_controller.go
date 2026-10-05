@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -37,10 +38,10 @@ import (
 	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	"github.com/cybericebox/laboratory/pkg/netutil"
-	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 // labSubnetPrefixLen is the prefix length of per-lab and per-client subnets within VPNBaseNetwork.
@@ -158,6 +159,17 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
+	// The agent and the proxy get their rights in the namespace as soon as it exists, before any step that can wait or fail,
+	// so the proxy's traffic reports (it lists the group namespaces from the status) are never refused for a late binding.
+	if err := r.ensureAgentRoleBinding(ctx, ns); err != nil {
+		logger.Error(err, "ensure agent role binding")
+		return ctrl.Result{}, err
+	}
+	if err := r.ensureProxyReportsBinding(ctx, ns); err != nil {
+		logger.Error(err, "ensure proxy reports role binding")
+		return ctrl.Result{}, err
+	}
+
 	if err := copyPullSecrets(ctx, r.Client, r.ImagePullSecrets, ns); err != nil {
 		logger.Error(err, "copy image pull secrets")
 		return ctrl.Result{}, err
@@ -257,15 +269,6 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	if err = r.ensureVPNGatewayPolicies(ctx, ns); err != nil {
 		logger.Error(err, "ensure vpn/gateway CiliumNetworkPolicies")
-		return ctrl.Result{}, err
-	}
-
-	if err = r.ensureAgentRoleBinding(ctx, ns); err != nil {
-		logger.Error(err, "ensure agent role binding")
-		return ctrl.Result{}, err
-	}
-	if err = r.ensureProxyReportsBinding(ctx, ns); err != nil {
-		logger.Error(err, "ensure proxy reports role binding")
 		return ctrl.Result{}, err
 	}
 
@@ -1138,7 +1141,7 @@ func (r *LabGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.LabGroup{}).
 		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(vpnPodMap)).
-		Complete(r)
+		Complete(reconcileutil.Quiet(r))
 }
 
 // isVPNPod says whether a pod is the VPN of a group: it carries LabelComponent, or (a pod made before that label) `app=vpn`

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -83,4 +85,17 @@ func (w *ReportWriter) Publish(ctx context.Context, namespace string, now time.T
 		types.NamespacedName{Namespace: namespace, Name: ReportName(w.Instance)},
 		laboratoryv1alpha1.LabTrafficReportSpec{Kind: laboratoryv1alpha1.LabTrafficSurfaceProxy, Instance: w.Instance},
 		status)
+}
+
+// LogReportFailure is the onError of Run: a refusal (Forbidden) or NotFound is how a group namespace looks that the operator has
+// not bound the proxy's role in yet, or that is being deleted. Both pass by themselves, so they are only traced (debug), never
+// an error in the journal.
+func LogReportFailure(log logr.Logger) func(error) {
+	return func(err error) {
+		if apierrors.IsForbidden(err) || apierrors.IsNotFound(err) {
+			log.V(1).Info("traffic report skipped: the group namespace is not ready for it yet or is going away", "reason", err.Error())
+			return
+		}
+		log.Error(err, "publish traffic report")
+	}
 }

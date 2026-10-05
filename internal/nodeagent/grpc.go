@@ -34,6 +34,9 @@ type NodeAgentServer struct {
 
 }
 
+// conntrackNote makes the "accounting is off" hint appear once per node-agent process, not on every pod.
+var conntrackNote sync.Once
+
 func NewNodeAgentServer(ovs *OVSManager, flows *FlowManager) *NodeAgentServer {
 	return &NodeAgentServer{
 		ovs:   ovs,
@@ -96,7 +99,12 @@ func (s *NodeAgentServer) SetupNetworks(
 	// The VPN pod asks for conntrack byte accounting in its namespace (it cannot switch it on unprivileged).
 	if pod.Annotations[names.AnnotationConntrackAccounting] == "true" {
 		if err := EnableConntrackAccounting(req.NetnsPath); err != nil {
-			log.Error(err, "conntrack accounting unavailable: flow bytes stay zero")
+			// Not a fault of this pod: the node prep did not switch it on. Said once per process, at info level.
+			conntrackNote.Do(func() {
+				log.Info("conntrack accounting is off and this container cannot switch it on: flow bytes stay zero. "+
+					"Set net.netfilter.nf_conntrack_acct=1 and nf_conntrack_timestamp=1 on the node (chart nodeAgent.hostPrep.conntrackAccounting, "+
+					"or the node image's sysctl) and the nf_conntrack module parameters acct=1, tstamp=1", "reason", err.Error())
+			})
 		}
 	}
 

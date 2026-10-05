@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 // Sink is a logr sink that counts every error-level message into an Aggregator and passes everything on to the real sink. The
@@ -27,6 +28,12 @@ func (s *Sink) Enabled(level int) bool { return s.inner.Enabled(level) }
 func (s *Sink) Info(level int, msg string, kv ...any) { s.inner.Info(level, msg, kv...) }
 
 func (s *Sink) Error(err error, msg string, kv ...any) {
+	// An optimistic-concurrency conflict is not a fault: the caller read a stale copy and the work is retried with a fresh
+	// one. It is logged for the trace and kept out of the error journal.
+	if err != nil && apierrors.IsConflict(err) {
+		s.inner.Info(0, msg+" (conflict, will retry)", append([]any{"error", err.Error()}, kv...)...)
+		return
+	}
 	text := msg
 	if err != nil {
 		text = fmt.Sprintf("%s: %v", msg, err)

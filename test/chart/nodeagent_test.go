@@ -143,6 +143,28 @@ func TestHostPrepScript(t *testing.T) {
 	}
 }
 
+// Conntrack byte accounting is switched on by the privileged init container (the node-agent's /proc/sys is read-only), through the
+// host sysctls and the module parameters new pod namespaces inherit, and can be turned off.
+func TestHostPrepSwitchesConntrackAccountingOn(t *testing.T) {
+	spec := nodeAgent(t).Spec.Template.Spec
+	_, prep := initByName(spec, "host-prep")
+	script := strings.Join(prep.Args, "\n")
+	for _, want := range []string{
+		"echo 1 > /proc/sys/net/netfilter/nf_conntrack_acct",
+		"echo 1 > /proc/sys/net/netfilter/nf_conntrack_timestamp",
+		"/sys/module/nf_conntrack/parameters/$p",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("host-prep script lacks %q:\n%s", want, script)
+		}
+	}
+	spec = nodeAgent(t, "--set", "nodeAgent.hostPrep.conntrackAccounting=false").Spec.Template.Spec
+	_, prep = initByName(spec, "host-prep")
+	if strings.Contains(strings.Join(prep.Args, "\n"), "nf_conntrack_acct") {
+		t.Errorf("conntrackAccounting=false must leave the sysctl alone")
+	}
+}
+
 func TestHostPrepValuesAreConfigurable(t *testing.T) {
 	spec := nodeAgent(t,
 		"--set", "nodeAgent.hostPrep.modules={openvswitch,vxlan}",

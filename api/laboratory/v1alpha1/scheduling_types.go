@@ -29,10 +29,13 @@ const (
 
 // Reasons of a pod failure (PodFailure.Reason) and of a queue wait (SchedulingStatus.Reason).
 const (
-	FailureImagePull       = "ImagePull"
-	FailureCrashLoop       = "CrashLoop"
-	FailureUnschedulable   = "Unschedulable"
-	FailureStartupTimeout  = "StartupTimeout"
+	FailureImagePull      = "ImagePull"
+	FailureCrashLoop      = "CrashLoop"
+	FailureUnschedulable  = "Unschedulable"
+	FailureStartupTimeout = "StartupTimeout"
+	// FailurePodNotCreated: the workload never produced a pod (the message says why: the namespace refused it, a quota, a
+	// missing ServiceAccount or secret, an admission webhook, or the workload itself is missing or scaled to zero).
+	FailurePodNotCreated   = "PodNotCreated"
 	FailureDoesNotFit      = "DoesNotFit"
 	WaitInFlightLimit      = "InFlightLimit"
 	WaitForGroup           = "WaitingForGroup"

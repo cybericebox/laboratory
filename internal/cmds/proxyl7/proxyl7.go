@@ -176,7 +176,7 @@ func Run() {
 	}{
 		{
 			manager.RunnableFunc(func(ctx context.Context) error {
-				reports.Run(ctx, cfg.ReportInterval, func(err error) { log.Error(err, "publish traffic report") })
+				reports.Run(ctx, cfg.ReportInterval, l7.LogReportFailure(log))
 				return nil
 			}), "traffic-reports",
 		},

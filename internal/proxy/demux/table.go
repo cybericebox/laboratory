@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 )
 
 // Mac1Key is the 32-byte key used to compute and verify mac1 in WireGuard handshake init.
@@ -266,5 +267,5 @@ func (w *LabGroupWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 func (w *LabGroupWatcher) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.LabGroup{}).
-		Complete(w)
+		Complete(reconcileutil.Quiet(w))
 }
