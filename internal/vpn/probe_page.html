@@ -5,27 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Перевірка підключення</title>
   <style>
-    :root{--brand:#211A52;color-scheme:light;--paper:#F7F7F9;--surface:#FFFFFF;--line:#E4E4EC;--ink:#16152B;--body:#2C2B42;--dim:#5A5A70;--soft:#F0F0F5}
-    :root[data-theme="dark"]{color-scheme:dark;--paper:#383645;--surface:#413F4E;--line:#53515F;--ink:#EEEDF6;--body:#DAD9E5;--dim:#BBB9CB;--soft:#4A4858}
-    *{box-sizing:border-box}
-    body{margin:0;min-height:100vh;background:var(--paper);color:var(--body);font:16px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-    .top{height:8px;background:var(--brand)}
-    .frame{display:grid;grid-template-rows:1fr auto;justify-items:center;min-height:calc(100vh - 8px);padding:44px 32px 28px}
-    main{align-self:center;width:min(100%,650px);padding:67px 55px 64px;border:1px solid var(--line);border-radius:16px;background:var(--surface);text-align:center}
-    .mark{display:inline-block;margin-right:12px;color:var(--brand);font-size:.8em;font-weight:700;vertical-align:.04em}
-    h1{margin:0;color:var(--ink);font-size:clamp(32px,5vw,42px);line-height:1.15;letter-spacing:-.035em}
-    .intro{margin:22px 0 0;font-size:20px;line-height:1.4}
-    .note{max-width:440px;margin:22px auto 0;color:var(--dim);font-size:15px}
-    footer{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:20px;width:100%;color:var(--dim);font-size:14px}
-    .support{grid-column:2;margin:0;text-align:center}
-    .support a{color:var(--ink);text-decoration:underline;text-underline-offset:3px}
-    .theme{grid-column:3;justify-self:end;display:inline-flex;align-items:center;gap:2px;padding:2px;border:1px solid var(--line);border-radius:6px;background:var(--surface)}
-    .theme button{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border:0;border-radius:4px;background:transparent;color:var(--dim);cursor:pointer}
-    .theme button:hover{background:var(--soft);color:var(--ink)}
-    .theme button[aria-checked="true"]{background:var(--soft);color:var(--ink)}
-    .theme button:focus-visible{outline:3px solid var(--brand);outline-offset:3px}
-    .theme svg{width:16px;height:16px;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;fill:none}
-    @media(max-width:640px){.frame{padding:32px 16px 20px}main{padding:51px 26px}.intro{font-size:18px}.note{font-size:14px}footer{display:flex;flex-direction:column;gap:14px}}
+{{.Style}}
   </style>
 </head>
 <body>
@@ -38,30 +18,11 @@
     </main>
     <footer>
       <p class="support">Є запитання? Напишіть: <a href="mailto:{{.SupportEmail}}">{{.SupportEmail}}</a></p>
-      <div class="theme" role="radiogroup" aria-label="Тема сторінки">
-        <button type="button" role="radio" data-choice="light" aria-label="Світла" title="Світла"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg></button>
-        <button type="button" role="radio" data-choice="dark" aria-label="Темна" title="Темна"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14.1A8.5 8.5 0 0 1 9.9 3.5 8.5 8.5 0 1 0 20.5 14.1Z"/></svg></button>
-        <button type="button" role="radio" data-choice="system" aria-label="Системна" title="Системна"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg></button>
-      </div>
+{{.Theme}}
     </footer>
   </div>
   <script>
-    (function(){
-      var root=document.documentElement,buttons=document.querySelectorAll('[data-choice]');
-      var system=window.matchMedia('(prefers-color-scheme: dark)'),choice='system';
-      try{var saved=localStorage.getItem('lab-probe-theme');if(saved==='light'||saved==='dark')choice=saved}catch(_){}
-      function apply(){
-        root.dataset.theme=choice==='system'?(system.matches?'dark':'light'):choice;
-        buttons.forEach(function(button){button.setAttribute('aria-checked',String(button.dataset.choice===choice))});
-      }
-      buttons.forEach(function(button){button.addEventListener('click',function(){
-        choice=button.dataset.choice;
-        try{localStorage.setItem('lab-probe-theme',choice)}catch(_){}
-        apply();
-      })});
-      system.addEventListener('change',function(){if(choice==='system')apply()});
-      apply();
-    })();
+{{.Script}}
   </script>
 </body>
 </html>

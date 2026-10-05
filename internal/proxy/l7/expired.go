@@ -1,28 +1,51 @@
 package l7
 
 import (
-	_ "embed"
-	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/cybericebox/laboratory/pkg/statuspage"
 )
 
-//go:embed assets/crest.webp
-var crestWebP []byte
-
-var crestDataURI = "data:image/webp;base64," + base64.StdEncoding.EncodeToString(crestWebP)
-
 type cardText struct{ lang, title, hint string }
+
+// page is one error card: both languages of its text. The status code is the caller's.
+type page struct{ uk, en cardText }
 
 var (
 	cardUK = cardText{"uk", "Сесія завершилася.", "Відкрийте лабораторію ще раз за посиланням із завдання."}
 	cardEN = cardText{"en", "The session has ended.", "Open the lab again from the link in the task."}
+
+	pageExpired = page{cardUK, cardEN}
+	// pageGone is the same for an unknown host, a removed lab and a refused client, so the text does not tell which.
+	pageGone = page{
+		cardText{"uk", "Такого завдання зараз немає", "Можливо, лабораторію вже вимкнено або посилання застаріло."},
+		cardText{"en", "This task is not available right now", "The lab may have been turned off or the link is out of date."},
+	}
+	pageUpstream = page{
+		cardText{"uk", "Завдання поки недоступне", "Сервіс завдання ще запускається або недоступний. Спробуйте за хвилину."},
+		cardText{"en", "The task is not available yet", "The task service is still starting or unavailable. Try again in a minute."},
+	}
+	pageBusy = page{
+		cardText{"uk", "Забагато запитів", "Спробуйте ще раз за кілька секунд."},
+		cardText{"en", "Too many requests", "Try again in a few seconds."},
+	}
+	pageFailed = page{
+		cardText{"uk", "Щось пішло не так", "Спробуйте ще раз за хвилину."},
+		cardText{"en", "Something went wrong", "Try again in a minute."},
+	}
 )
+
+// wantsHTML tells a browser (it asks for text/html) from a script or an API client.
+func wantsHTML(r *http.Request) bool {
+	return strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/html")
+}
 
 // pickCard chooses the first language of Accept-Language: Ukrainian by default,
 // English when the browser asks for it first.
-func pickCard(acceptLanguage string) (first, second cardText) {
+func pickCard(acceptLanguage string, p page) (first, second cardText) {
+	cardUK, cardEN := p.uk, p.en
 	for _, part := range strings.Split(acceptLanguage, ",") {
 		tag := strings.ToLower(strings.TrimSpace(strings.SplitN(part, ";", 2)[0]))
 		switch {
@@ -38,28 +61,51 @@ func pickCard(acceptLanguage string) (first, second cardText) {
 // expired answers a request without a valid session with a static card: the
 // proxy does not know which platform URL to send the visitor to.
 func (h *Handler) expired(w http.ResponseWriter, r *http.Request) {
-	first, second := pickCard(r.Header.Get("Accept-Language"))
-	page := fmt.Sprintf(`<!doctype html>
-<html lang="%s"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="referrer" content="no-referrer"><meta name="robots" content="noindex">
-<title>%s</title>
-<style>
-:root{color-scheme:light dark;--bg:#f7fafc;--fg:#0b1f3a;--muted:#4a5b70;--card:#fff;--line:#d9e2ec}
-@media (prefers-color-scheme:dark){:root{--bg:#0b1220;--fg:#e8eef7;--muted:#9fb0c6;--card:#111a2b;--line:#22314a}}
-*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:16px;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-main{width:100%%;max-width:420px;text-align:center;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:32px 24px}
-img{width:64px;height:64px}h1{font-size:20px;margin:16px 0 8px}p{margin:0;color:var(--muted)}
-.alt{margin-top:20px;padding-top:16px;border-top:1px solid var(--line);font-size:14px}.alt strong{display:block;color:var(--fg);font-weight:600}
-</style></head><body><main>
-<img src="%s" alt="" width="64" height="64">
-<h1>%s</h1><p>%s</p>
-<div class="alt" lang="%s"><strong>%s</strong>%s</div>
-</main></body></html>`,
-		first.lang, first.title, crestDataURI, first.title, first.hint,
-		second.lang, second.title, second.hint)
+	fail(w, r, http.StatusUnauthorized, pageExpired, "unauthorized")
+}
+
+// fail answers a browser (Accept: text/html) with the styled card p and any other client with the short plain
+// text, both with the same status. The text never names a host, a lab, a token or an address.
+func fail(w http.ResponseWriter, r *http.Request, status int, p page, plain string) {
+	if !wantsHTML(r) {
+		http.Error(w, plain, status)
+		return
+	}
+	first, second := pickCard(r.Header.Get("Accept-Language"), p)
+	body := fmt.Sprintf(`<!doctype html>
+<html lang="%s">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer"><meta name="robots" content="noindex">
+  <title>%s</title>
+  <style>
+%s
+  </style>
+</head>
+<body>
+  <div class="top" aria-hidden="true"></div>
+  <div class="frame">
+    <main>
+      <h1>%s</h1>
+      <p class="intro">%s</p>
+      <p class="note" lang="%s">%s. %s</p>
+    </main>
+    <footer>
+%s
+    </footer>
+  </div>
+  <script>
+%s
+  </script>
+</body>
+</html>`,
+		first.lang, first.title, statuspage.Style(), first.title, first.hint,
+		second.lang, second.title, second.hint, statuspage.Theme(first.lang), statuspage.Script())
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.WriteHeader(http.StatusUnauthorized)
-	_, _ = w.Write([]byte(page))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(body))
 }
