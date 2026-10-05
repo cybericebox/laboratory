@@ -26,6 +26,10 @@ func TestProbeHandlerShowsOnlyConnectionResult(t *testing.T) {
 		!strings.Contains(r.Body.String(), "Доступ до окремих лабораторій (завдань) відкривається окремо.") {
 		t.Fatalf("unexpected body: %q", r.Body.String())
 	}
+	if !strings.Contains(r.Body.String(), `<link rel="icon" type="image/png" href="data:image/png;base64,`) ||
+		!strings.Contains(r.Header().Get("Content-Security-Policy"), "img-src data:") {
+		t.Fatalf("no inline favicon: %q", r.Body.String())
+	}
 	if strings.Count(r.Body.String(), "#211A52") != 1 ||
 		!strings.Contains(r.Body.String(), "--brand:#211A52") ||
 		!strings.Contains(r.Body.String(), "Системна") ||

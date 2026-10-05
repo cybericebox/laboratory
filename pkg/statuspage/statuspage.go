@@ -4,6 +4,7 @@ package statuspage
 
 import (
 	_ "embed"
+	"encoding/base64"
 	"fmt"
 	"html/template"
 )
@@ -13,6 +14,9 @@ var style string
 
 //go:embed theme.js
 var script string
+
+//go:embed favicon.png
+var faviconPNG []byte
 
 //go:embed theme.html
 var themeHTML string
@@ -29,4 +33,10 @@ func Theme(lang string) template.HTML {
 		return template.HTML(fmt.Sprintf(themeHTML, "Page theme", "Light", "Dark", "System"))
 	}
 	return template.HTML(fmt.Sprintf(themeHTML, "Тема сторінки", "Світла", "Темна", "Системна"))
+}
+
+// Favicon is the platform icon (32x32 PNG) as a data URI for <link rel="icon">:
+// the pages cannot load it from a platform host.
+func Favicon() template.URL {
+	return template.URL("data:image/png;base64," + base64.StdEncoding.EncodeToString(faviconPNG))
 }

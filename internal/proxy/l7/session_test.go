@@ -212,10 +212,10 @@ func TestHandoff_RefusesOtherAlgorithms(t *testing.T) {
 
 func TestExpiredCard_NoCookieShowsTheCardWithoutRedirect(t *testing.T) {
 	f := newHandoffFixture(t)
-	for _, tc := range []struct{ lang, first string }{
-		{"", "Сесія завершилася."},
-		{"uk-UA,uk;q=0.9", "Сесія завершилася."},
-		{"en-US,en;q=0.9", "The session has ended."},
+	for _, tc := range []struct{ lang, first, hint, other string }{
+		{"", "Сесію завершено", "Щоб продовжити, відкрийте лабораторію за посиланням у завданні.", "Session ended"},
+		{"uk-UA,uk;q=0.9", "Сесію завершено", "Щоб продовжити, відкрийте лабораторію за посиланням у завданні.", "Session ended"},
+		{"en-US,en;q=0.9", "Session ended", "To continue, open the lab from the link in the task.", "Сесію завершено"},
 	} {
 		req := httptest.NewRequest("GET", "https://"+labHost+"/", nil)
 		req.Host = labHost
@@ -229,7 +229,7 @@ func TestExpiredCard_NoCookieShowsTheCardWithoutRedirect(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized || rec.Header().Get("Location") != "" {
 			t.Fatalf("%q: code = %d location = %q", tc.lang, rec.Code, rec.Header().Get("Location"))
 		}
-		if !strings.Contains(body, tc.first) || !strings.Contains(body, "Відкрийте лабораторію ще раз за посиланням із завдання.") || !strings.Contains(body, "Open the lab again") {
+		if !strings.Contains(body, tc.first) || !strings.Contains(body, tc.hint) || strings.Contains(body, tc.other) {
 			t.Fatalf("%q: card = %s", tc.lang, body)
 		}
 	}
@@ -246,7 +246,7 @@ func TestExpiredCard_ExpiredCookie(t *testing.T) {
 	req.Header.Set("Accept", "text/html")
 	out := httptest.NewRecorder()
 	f.handler.ServeHTTP(out, req)
-	if out.Code != http.StatusUnauthorized || !strings.Contains(out.Body.String(), "Сесія завершилася.") {
+	if out.Code != http.StatusUnauthorized || !strings.Contains(out.Body.String(), "Сесію завершено") {
 		t.Fatalf("expired cookie: %d %s", out.Code, out.Body.String())
 	}
 }

@@ -10,14 +10,14 @@ import (
 
 type cardText struct{ lang, title, hint string }
 
-// page is one error card: both languages of its text. The status code is the caller's.
+// page is one error card: its text in both languages (a visitor sees one). The status code is the caller's.
 type page struct{ uk, en cardText }
 
 var (
-	cardUK = cardText{"uk", "Сесія завершилася.", "Відкрийте лабораторію ще раз за посиланням із завдання."}
-	cardEN = cardText{"en", "The session has ended.", "Open the lab again from the link in the task."}
-
-	pageExpired = page{cardUK, cardEN}
+	pageExpired = page{
+		cardText{"uk", "Сесію завершено", "Щоб продовжити, відкрийте лабораторію за посиланням у завданні."},
+		cardText{"en", "Session ended", "To continue, open the lab from the link in the task."},
+	}
 	// pageGone is the same for an unknown host, a removed lab and a refused client, so the text does not tell which.
 	pageGone = page{
 		cardText{"uk", "Такого завдання зараз немає", "Можливо, лабораторію вже вимкнено або посилання застаріло."},
@@ -44,18 +44,18 @@ func wantsHTML(r *http.Request) bool {
 
 // pickCard chooses the first language of Accept-Language: Ukrainian by default,
 // English when the browser asks for it first.
-func pickCard(acceptLanguage string, p page) (first, second cardText) {
+func pickCard(acceptLanguage string, p page) cardText {
 	cardUK, cardEN := p.uk, p.en
 	for _, part := range strings.Split(acceptLanguage, ",") {
 		tag := strings.ToLower(strings.TrimSpace(strings.SplitN(part, ";", 2)[0]))
 		switch {
 		case strings.HasPrefix(tag, "uk"):
-			return cardUK, cardEN
+			return cardUK
 		case strings.HasPrefix(tag, "en"):
-			return cardEN, cardUK
+			return cardEN
 		}
 	}
-	return cardUK, cardEN
+	return cardUK
 }
 
 // expired answers a request without a valid session with a static card: the
@@ -71,13 +71,14 @@ func fail(w http.ResponseWriter, r *http.Request, status int, p page, plain stri
 		http.Error(w, plain, status)
 		return
 	}
-	first, second := pickCard(r.Header.Get("Accept-Language"), p)
+	card := pickCard(r.Header.Get("Accept-Language"), p)
 	body := fmt.Sprintf(`<!doctype html>
 <html lang="%s">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="referrer" content="no-referrer"><meta name="robots" content="noindex">
+  <link rel="icon" type="image/png" href="%s">
   <title>%s</title>
   <style>
 %s
@@ -89,7 +90,6 @@ func fail(w http.ResponseWriter, r *http.Request, status int, p page, plain stri
     <main>
       <h1>%s</h1>
       <p class="intro">%s</p>
-      <p class="note" lang="%s">%s. %s</p>
     </main>
     <footer>
 %s
@@ -100,8 +100,8 @@ func fail(w http.ResponseWriter, r *http.Request, status int, p page, plain stri
   </script>
 </body>
 </html>`,
-		first.lang, first.title, statuspage.Style(), first.title, first.hint,
-		second.lang, second.title, second.hint, statuspage.Theme(first.lang), statuspage.Script())
+		card.lang, statuspage.Favicon(), card.title, statuspage.Style(), card.title, card.hint,
+		statuspage.Theme(card.lang), statuspage.Script())
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
