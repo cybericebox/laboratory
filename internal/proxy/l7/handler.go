@@ -141,7 +141,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.groupTenant != nil {
 		if owner, ok := h.groupTenant(claims.GroupID); !ok || owner != claims.Tenant {
-			fail(w, r, http.StatusForbidden, pageGone, "forbidden")
+			fail(w, r, http.StatusNotFound, pageGone, "not found")
 			return
 		}
 	}
@@ -167,7 +167,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if h.authorize != nil && !h.authorize(claims.GroupID, client, lab) {
-		fail(w, r, http.StatusForbidden, pageGone, "forbidden")
+		fail(w, r, http.StatusNotFound, pageGone, "not found")
 		return
 	}
 

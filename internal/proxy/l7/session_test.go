@@ -328,11 +328,11 @@ func TestSession_StopsWhenTheGroupChangesOwner(t *testing.T) {
 		t.Fatal("the session opens the lab")
 	}
 	f.groups["g1"] = "mallory"
-	if get() != http.StatusForbidden {
+	if get() != http.StatusNotFound {
 		t.Fatal("a session of a group that changed owner must stop")
 	}
 	delete(f.groups, "g1")
-	if get() != http.StatusForbidden {
+	if get() != http.StatusNotFound {
 		t.Fatal("and so must a session of a group that is gone")
 	}
 }

@@ -162,7 +162,7 @@ func TestHandler_ClientAndAuthorizer(t *testing.T) {
 		t.Fatalf("without a client: %d", code)
 	}
 	deny := func(group, client, lab string) bool { return client != "c-banned" }
-	if code := call(build(deny), token("c-banned")); code != http.StatusForbidden {
+	if code := call(build(deny), token("c-banned")); code != http.StatusNotFound {
 		t.Fatalf("revoked participant: %d", code)
 	}
 	if code := call(build(deny), token("c-user-1")); code != 200 {
@@ -196,7 +196,7 @@ func TestHandler_PerUserRefusesAValidTokenOfARemovedMember(t *testing.T) {
 	if code := call("c-member"); code != 200 {
 		t.Fatalf("member in the policy: %d", code)
 	}
-	if code := call("c-removed"); code != http.StatusForbidden {
+	if code := call("c-removed"); code != http.StatusNotFound {
 		t.Fatalf("removed member with a valid token must be refused: %d", code)
 	}
 }
