@@ -206,10 +206,12 @@ func (m *IPTablesManager) AccessCounters() (map[string]TrafficCounter, error) {
 			continue
 		}
 		id := line[commentIndex+len(accessRuleCommentPrefix):]
-		id = strings.Trim(id, "\" '")
 		if fieldEnd := strings.IndexAny(id, " \t"); fieldEnd >= 0 {
 			id = id[:fieldEnd]
 		}
+		// iptables -S quotes comments; trim after isolating the token so
+		// the closing quote before the next argument cannot become part of the ID.
+		id = strings.Trim(id, "\" '")
 		match := accessCounterPattern.FindStringSubmatch(line)
 		if len(match) != 3 {
 			continue

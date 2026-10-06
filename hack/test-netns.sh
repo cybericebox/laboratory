@@ -8,9 +8,23 @@ set -euo pipefail
 
 if [[ "${1:-}" != "inside" ]]; then
   image=${NETNS_TEST_IMAGE:-golang:1.27}
-  exec docker run --rm --privileged -v "$PWD":/src -w /src \
+  snapshot=$(mktemp -d)
+  container="cice-netns-tests-$$-${RANDOM}"
+  cleanup() {
+    docker rm -f "$container" >/dev/null 2>&1 || true
+    rm -rf "$snapshot"
+  }
+  trap cleanup EXIT
+  # Copy an explicit source snapshot: Docker Desktop cannot bind every external
+  # volume, and tests should never depend on host sharing configuration.
+  git ls-files --cached --others --exclude-standard -z > "$snapshot/files"
+  COPYFILE_DISABLE=1 tar --no-xattrs -cf "$snapshot/source.tar" --null -T "$snapshot/files"
+  docker create --name "$container" --privileged -w /src \
     -v cice-netns-gomod:/go/pkg/mod -v cice-netns-gocache:/root/.cache/go-build \
-    "$image" bash hack/test-netns.sh inside
+    "$image" bash hack/test-netns.sh inside >/dev/null
+  docker cp - "$container":/src < "$snapshot/source.tar"
+  docker start -a "$container"
+  exit "$(docker inspect -f '{{.State.ExitCode}}' "$container")"
 fi
 
 export GOWORK=off CICE_NETNS_TESTS=1
@@ -18,7 +32,7 @@ if ! command -v iptables >/dev/null || ! command -v ip >/dev/null || ! command -
   apt-get update -qq && apt-get install -y -qq iptables iproute2 iputils-ping >/dev/null
 fi
 out=$(mktemp -d)
-pkgs="vpn gateway accessroute cmds/cnigate"
+pkgs="vpn vpn/reconciler gateway accessroute cmds/cnigate"
 for pkg in $pkgs; do
   go test -c -o "$out/${pkg//\//_}.test" "./internal/$pkg"
 done

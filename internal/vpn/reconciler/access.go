@@ -5,6 +5,7 @@ package reconciler
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -24,16 +25,29 @@ import (
 )
 
 // AccessReconciler materializes all LabGroupClient allow-lists into the VPN
-// server's packet filter. It is intentionally a full snapshot reconcile: one
-// client update, lab readiness transition, or deletion recomputes default-deny
-// rules for the whole group namespace.
+// server's packet filter. A relevant input change recomputes the desired group
+// snapshot; the kernel is changed only when that snapshot differs.
+type accessApplier interface {
+	ReplaceAccessRules([]vpn.AccessRule) error
+	AccessCounters() (map[string]vpn.TrafficCounter, error)
+}
+
+type accessRevoker interface {
+	Revoke([]string, []vpn.AccessRule) (int, error)
+}
+
 type AccessReconciler struct {
 	client.Client
-	IPT *vpn.IPTablesManager
+	IPT accessApplier
 	// Conntrack removes the open connections a rule change revokes: FORWARD accepts
 	// established connections before the access chain, so replacing the chain alone
 	// would leave an open SSH session or download running. Nil: not removed (tests).
-	Conntrack *vpn.ConntrackRevoker
+	Conntrack accessRevoker
+	// Controller-runtime serializes Reconcile calls for this controller.
+	applied       bool
+	lastNamespace string
+	lastRules     []vpn.AccessRule
+	revokePending bool
 }
 
 func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -51,12 +65,15 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		lab := &labs.Items[i]
 		labsByName[lab.Name] = vpn.LabAccessSnapshot{
 			VPNCIDR: lab.Status.VPN.CIDR,
-			Ready:   lab.Status.Phase == laboratoryv1alpha1.PhaseReady && lab.Status.VPN.Ready,
+			Ready:   labAccessReady(lab),
 		}
 	}
 	clientSnapshots := make([]vpn.ClientAccessSnapshot, 0, len(clients.Items))
 	for i := range clients.Items {
 		client := &clients.Items[i]
+		if !client.DeletionTimestamp.IsZero() {
+			continue
+		}
 		clientSnapshots = append(clientSnapshots, vpn.ClientAccessSnapshot{
 			Name:       client.Name,
 			AssignedIP: client.Status.AssignedIP,
@@ -69,13 +86,23 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 	policyFound := err == nil
 	rules := vpn.BuildAccessRules(clientSnapshots, labsByName, policyRules(policy))
-	if err := r.IPT.ReplaceAccessRules(rules); err != nil {
-		if policyFound {
-			_ = r.writePolicyStatus(ctx, policy, rules, nil, "Failed", err.Error())
+	changed := !r.applied || r.lastNamespace != req.Namespace || !slices.Equal(r.lastRules, rules)
+	if changed {
+		// A legacy non-atomic replacement can fail after touching the chain:
+		// invalidate the old snapshot before trying, so reverting still repairs it.
+		r.applied = false
+		if err := r.IPT.ReplaceAccessRules(rules); err != nil {
+			if policyFound {
+				_ = r.writePolicyStatus(ctx, policy, rules, nil, "Failed", err.Error())
+			}
+			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, err
+		r.lastRules = slices.Clone(rules)
+		r.lastNamespace = req.Namespace
+		r.applied = true
+		r.revokePending = true
 	}
-	if r.Conntrack != nil {
+	if r.Conntrack != nil && r.revokePending {
 		labCIDRs := make([]string, 0, len(labsByName))
 		for _, l := range labsByName {
 			if l.VPNCIDR != "" {
@@ -88,9 +115,14 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 		if err != nil {
 			// The rules are in place; the open connections are not all gone. Run again.
+			if policyFound {
+				counters, _ := r.IPT.AccessCounters()
+				_ = r.writePolicyStatus(ctx, policy, rules, counters, "Failed", err.Error())
+			}
 			return ctrl.Result{}, err
 		}
 	}
+	r.revokePending = false
 	if policyFound {
 		counters, countersErr := r.IPT.AccessCounters()
 		if countersErr != nil {
@@ -196,8 +228,8 @@ func (r *AccessReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// The peer reconciler also watches LabGroupClient; without its own name
 		// both derive "labgroupclient" and the manager refuses the second one.
 		Named("vpn-access").
-		For(&laboratoryv1alpha1.LabGroupClient{}).
-		Watches(&laboratoryv1alpha1.Lab{}, allInNamespace).
+		Watches(&laboratoryv1alpha1.LabGroupClient{}, allInNamespace, builder.WithPredicates(clientAccessChanges())).
+		Watches(&laboratoryv1alpha1.Lab{}, allInNamespace, builder.WithPredicates(labAccessChanges())).
 		// Counter refreshes patch only status. Do not turn those patches into
 		// another policy reconcile; specification changes still enqueue one.
 		Watches(&laboratoryv1alpha1.LabGroupAccessPolicy{}, allInNamespace, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
