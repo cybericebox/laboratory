@@ -29,6 +29,7 @@ data:
 {{- if .Values.labScheduler.enabled }}
   LAB_SCHEDULER_NAME: {{ .Values.labScheduler.schedulerName | quote }}
 {{- end }}
+  LAB_POD_TERMINATION_GRACE_SECONDS: {{ .Values.operator.labPodTerminationGraceSeconds | quote }}
   VPN_STATS_INTERVAL: {{ .Values.vpn.statsInterval | quote }}
   NETWORK_POLICY_ENABLED: {{ .Values.operator.groupNetworkPolicy.enabled | quote }}
   DEVICE_USER_NAMESPACES: {{ .Values.devices.security.userNamespaces | quote }}

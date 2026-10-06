@@ -50,6 +50,9 @@ type Config struct {
 	// the nodes fill up one after another and no hole is left that a big device cannot use. Empty = the default scheduler (the
 	// chart sets it when labScheduler.enabled). System pods never use it.
 	LabSchedulerName string `env:"LAB_SCHEDULER_NAME"`
+	// LabPodTerminationGraceSeconds is the terminationGracePeriodSeconds of every pod of a lab (devices, VPN, gateway). They need no
+	// graceful drain, and the default 30 s makes a deleted lab's namespace live that long. 0 = the Kubernetes default.
+	LabPodTerminationGraceSeconds int64 `env:"LAB_POD_TERMINATION_GRACE_SECONDS" envDefault:"5"`
 	// NetConfigImage is the image for the optional device init-container that
 	// assigns static IP/routes. Needs iproute2 + sh; node-agent image has both.
 	// Required, no default.

@@ -5,7 +5,9 @@ import (
 
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"strings"
@@ -183,17 +185,33 @@ func cmdDEL(args *skel.CmdArgs) error {
 	// Errors are ignored: DEL must not fail the pod teardown.
 	defaultIface, hasAnnotation, _ := getPodAnnotation(conf, args.Args, names.AnnotationDefaultNetwork)
 
+	var delErr error
 	switch {
 	case !hasAnnotation || defaultIface == names.DefaultEth0:
-		return invoke.DelegateDel(context.Background(), delegateType(conf), marshalDelegate(conf), nil)
+		delErr = invoke.DelegateDel(context.Background(), delegateType(conf), marshalDelegate(conf), nil)
 	case defaultIface != "":
 		orig := os.Getenv("CNI_IFNAME")
 		_ = os.Setenv("CNI_IFNAME", defaultIface)
-		err := invoke.DelegateDel(context.Background(), delegateType(conf), marshalDelegate(conf), nil)
+		delErr = invoke.DelegateDel(context.Background(), delegateType(conf), marshalDelegate(conf), nil)
 		_ = os.Setenv("CNI_IFNAME", orig)
-		return err
 	}
-	return nil
+	// CNI spec: DEL must succeed when resources are already gone. With the pod's netns removed the delegate (Cilium) can only
+	// fail on what it cannot reach any more, and the kubelet would retry that DEL every 10 s for as long as the pod object lives
+	// (minutes, for a pod that never started). The delegate was still asked to clean what it has; its failure is only logged.
+	if delErr != nil && netnsGone(args.Netns) {
+		logf("DEL %s: netns %q is gone, ignoring delegate error: %v", args.Args, args.Netns, delErr)
+		return nil
+	}
+	return delErr
+}
+
+// netnsGone says whether the network namespace of a DEL no longer exists: the runtime passed none, or its path is missing.
+func netnsGone(netns string) bool {
+	if netns == "" {
+		return true
+	}
+	_, err := os.Stat(netns)
+	return errors.Is(err, fs.ErrNotExist)
 }
 
 func loadConf(data []byte) (*NetConf, error) {

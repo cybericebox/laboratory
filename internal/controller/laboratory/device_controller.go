@@ -43,6 +43,8 @@ type DeviceReconciler struct {
 	PriorityClass string
 	// SchedulerName is the kube-scheduler profile of the device pods (bin-packing); empty = the default scheduler.
 	SchedulerName string
+	// TerminationGraceSeconds is the terminationGracePeriodSeconds of the device pods; 0 = the Kubernetes default.
+	TerminationGraceSeconds int64
 	// NetConfigImage is the image used for the optional init-container that
 	// assigns static IP/routes inside a device pod. Must contain `ip` (iproute2)
 	// and `sh`. Empty disables static addressing via init-container.
@@ -406,7 +408,7 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 	}
 	// The participant is root in the device: it gets no service account token, the runtime's seccomp profile, and
 	// optionally its own user namespace.
-	hardenPod(&podSpec, false)
+	hardenPod(&podSpec, false, r.TerminationGraceSeconds)
 	// Every device may ping: unprivileged ICMP echo sockets (a safe sysctl), so ping needs no NET_RAW.
 	podSpec.SecurityContext.Sysctls = []corev1.Sysctl{{Name: "net.ipv4.ping_group_range", Value: profiles.PingGroupRange}}
 	if r.Security.UserNamespaces {

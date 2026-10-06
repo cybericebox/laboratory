@@ -22,8 +22,11 @@ func newDeviceForPod() *laboratoryv1alpha1.Device {
 
 // A device pod gets no token, the runtime's seccomp profile, no service links, dropped capabilities and a storage limit.
 func TestDevicePodIsHardened(t *testing.T) {
-	r := &DeviceReconciler{Security: PodSecurity{EphemeralStorage: "2Gi"}}
+	r := &DeviceReconciler{Security: PodSecurity{EphemeralStorage: "2Gi"}, TerminationGraceSeconds: 5}
 	_, _, _, spec := r.workloadTemplate(newDeviceForPod(), false)
+	if g := spec.TerminationGracePeriodSeconds; g == nil || *g != 5 {
+		t.Errorf("a device pod needs no graceful drain: terminationGracePeriodSeconds = %v", g)
+	}
 	if spec.AutomountServiceAccountToken == nil || *spec.AutomountServiceAccountToken {
 		t.Error("a device must not get the service account token")
 	}
@@ -92,7 +95,7 @@ func oldVPNSpec() corev1.PodSpec {
 // An old VPN pod is brought to the hardened shape (once), without the privileged init container.
 func TestHardenGroupPodConvergesAnOldVPNPod(t *testing.T) {
 	spec := oldVPNSpec()
-	if !hardenGroupPod(&spec, "vpn", vpnCaps) {
+	if !hardenGroupPod(&spec, "vpn", vpnCaps, 5) {
 		t.Fatal("an old pod must change")
 	}
 	if len(spec.InitContainers) != 0 {
@@ -108,14 +111,17 @@ func TestHardenGroupPodConvergesAnOldVPNPod(t *testing.T) {
 	if spec.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
 		t.Error("seccomp")
 	}
-	if hardenGroupPod(&spec, "vpn", vpnCaps) {
+	if g := spec.TerminationGracePeriodSeconds; g == nil || *g != 5 {
+		t.Errorf("terminationGracePeriodSeconds = %v", g)
+	}
+	if hardenGroupPod(&spec, "vpn", vpnCaps, 5) {
 		t.Error("a hardened pod is left alone (no restart loop)")
 	}
 }
 
 func TestGatewayKeepsTheCapabilitiesItNeeds(t *testing.T) {
 	spec := corev1.PodSpec{Containers: []corev1.Container{{Name: "gateway"}}}
-	hardenGroupPod(&spec, "gateway", gatewayCaps)
+	hardenGroupPod(&spec, "gateway", gatewayCaps, 5)
 	got := map[corev1.Capability]bool{}
 	for _, c := range spec.Containers[0].SecurityContext.Capabilities.Add {
 		got[c] = true

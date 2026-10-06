@@ -209,3 +209,14 @@ func TestLabSchedulerIsABinPackingProfile(t *testing.T) {
 		t.Errorf("a disabled lab scheduler renders a Deployment:\n%s", out)
 	}
 }
+
+// Lab pods need no graceful drain: the operator gets a short terminationGracePeriodSeconds for them, so a deleted lab does not
+// wait the 30 s default.
+func TestLabPodsGetAShortTerminationGrace(t *testing.T) {
+	if got := operatorConfig(t)["LAB_POD_TERMINATION_GRACE_SECONDS"]; got != "5" {
+		t.Errorf("LAB_POD_TERMINATION_GRACE_SECONDS = %q, want 5", got)
+	}
+	if got := operatorConfig(t, "--set", "operator.labPodTerminationGraceSeconds=2")["LAB_POD_TERMINATION_GRACE_SECONDS"]; got != "2" {
+		t.Errorf("the value must reach the operator: %q", got)
+	}
+}
