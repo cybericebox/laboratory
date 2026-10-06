@@ -44,17 +44,37 @@ func (*recordingAccessApplier) AccessCounters() (map[string]vpn.TrafficCounter, 
 }
 
 type recordingAccessRevoker struct {
-	calls    int
-	failNext bool
+	calls       int
+	failNext    bool
+	lastClients []string
 }
 
-func (r *recordingAccessRevoker) Revoke([]string, []vpn.AccessRule) (int, error) {
+func (r *recordingAccessRevoker) Revoke(_ []string, _ []vpn.AccessRule, clients ...[]string) (int, error) {
 	r.calls++
+	if len(clients) != 0 {
+		r.lastClients = slices.Clone(clients[0])
+	}
 	if r.failNext {
 		r.failNext = false
 		return 0, errors.New("conntrack unavailable")
 	}
 	return 0, nil
+}
+
+func TestAccessReconcileRevocationRetryKeepsRetiredAddress(t *testing.T) {
+	r, _, c, req := accessReconcileFixture(t)
+	revoker := &recordingAccessRevoker{}
+	r.Conntrack = revoker
+	reconcileAccess(t, r, req)
+	changePeer(t, c, func(p *lab.LabGroupClient) { p.Status.AssignedIP = "10.8.0.3/32" })
+	revoker.failNext = true
+	if _, err := r.Reconcile(context.Background(), req); err == nil {
+		t.Fatal("revocation failure was hidden")
+	}
+	reconcileAccess(t, r, req)
+	if !slices.Contains(revoker.lastClients, "10.8.0.2/32") {
+		t.Fatalf("retired address was lost on revocation retry: %v", revoker.lastClients)
+	}
 }
 
 func accessReconcileFixture(t *testing.T) (*AccessReconciler, *recordingAccessApplier, client.Client, ctrl.Request) {

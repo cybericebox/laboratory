@@ -21,10 +21,15 @@ type ConnFlow struct {
 // Connections that do not start in a client's address and go to a lab (the pod's own
 // traffic, connections between lab networks, anything the rules never covered) are left
 // alone: they were never governed by a rule.
-func RevokedFlows(flows []ConnFlow, labCIDRs []string, rules []AccessRule) []ConnFlow {
+func RevokedFlows(flows []ConnFlow, labCIDRs []string, rules []AccessRule, clientCIDRs ...[]string) []ConnFlow {
 	labs := prefixes(labCIDRs)
 	if len(labs) == 0 {
 		return nil
+	}
+	var clients []netip.Prefix
+	strictClients := len(clientCIDRs) > 0
+	if strictClients {
+		clients = prefixes(clientCIDRs[0])
 	}
 	type pair struct{ src, dst netip.Prefix }
 	var allowed []pair
@@ -40,12 +45,18 @@ func RevokedFlows(flows []ConnFlow, labCIDRs []string, rules []AccessRule) []Con
 	}
 	var out []ConnFlow
 	for _, f := range flows {
-		if !inAny(labs, f.Dst) || inAny(labs, f.Src) {
+		forward := inAny(labs, f.Dst) && !inAny(labs, f.Src) && (!strictClients || inAny(clients, f.Src))
+		reverse := strictClients && inAny(labs, f.Src) && inAny(clients, f.Dst)
+		if !forward && !reverse {
 			continue
+		}
+		src, dst := f.Src, f.Dst
+		if reverse {
+			src, dst = dst, src
 		}
 		ok := false
 		for _, a := range allowed {
-			if a.src.Contains(f.Src) && a.dst.Contains(f.Dst) {
+			if a.src.Contains(src) && a.dst.Contains(dst) {
 				ok = true
 				break
 			}

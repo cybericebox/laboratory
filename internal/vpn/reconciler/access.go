@@ -33,7 +33,7 @@ type accessApplier interface {
 }
 
 type accessRevoker interface {
-	Revoke([]string, []vpn.AccessRule) (int, error)
+	Revoke([]string, []vpn.AccessRule, ...[]string) (int, error)
 }
 
 type AccessReconciler struct {
@@ -48,6 +48,8 @@ type AccessReconciler struct {
 	lastNamespace string
 	lastRules     []vpn.AccessRule
 	revokePending bool
+	revokeLabs    []string
+	revokeClients []string
 }
 
 func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -60,13 +62,13 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, fmt.Errorf("list labs: %w", err)
 	}
 
-	labsByName := make(map[string]vpn.LabAccessSnapshot, len(labs.Items))
-	for i := range labs.Items {
-		lab := &labs.Items[i]
-		labsByName[lab.Name] = vpn.LabAccessSnapshot{
-			VPNCIDR: lab.Status.VPN.CIDR,
-			Ready:   labAccessReady(lab),
-		}
+	var legs laboratoryv1alpha1.LabVPNList
+	if err := r.List(ctx, &legs, client.InNamespace(req.Namespace)); err != nil {
+		return ctrl.Result{}, fmt.Errorf("list VPN lab legs: %w", err)
+	}
+	labsByName, bindingErr := buildLabAccessSnapshots(labs.Items, legs.Items)
+	if bindingErr != nil {
+		return ctrl.Result{}, bindingErr
 	}
 	clientSnapshots := make([]vpn.ClientAccessSnapshot, 0, len(clients.Items))
 	for i := range clients.Items {
@@ -86,8 +88,25 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 	policyFound := err == nil
 	rules := vpn.BuildAccessRules(clientSnapshots, labsByName, policyRules(policy))
+	previousRules := r.lastRules
 	changed := !r.applied || r.lastNamespace != req.Namespace || !slices.Equal(r.lastRules, rules)
 	if changed {
+		for _, old := range previousRules {
+			r.revokeLabs = append(r.revokeLabs, old.DestinationCIDR)
+			r.revokeClients = append(r.revokeClients, old.SourceCIDR)
+		}
+		for _, l := range labsByName {
+			if l.VPNCIDR != "" {
+				r.revokeLabs = append(r.revokeLabs, l.VPNCIDR)
+			}
+		}
+		for _, c := range clientSnapshots {
+			r.revokeClients = append(r.revokeClients, c.AssignedIP)
+		}
+		slices.Sort(r.revokeLabs)
+		slices.Sort(r.revokeClients)
+		r.revokeLabs = slices.Compact(r.revokeLabs)
+		r.revokeClients = slices.Compact(r.revokeClients)
 		// A legacy non-atomic replacement can fail after touching the chain:
 		// invalidate the old snapshot before trying, so reverting still repairs it.
 		r.applied = false
@@ -103,13 +122,7 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		r.revokePending = true
 	}
 	if r.Conntrack != nil && r.revokePending {
-		labCIDRs := make([]string, 0, len(labsByName))
-		for _, l := range labsByName {
-			if l.VPNCIDR != "" {
-				labCIDRs = append(labCIDRs, l.VPNCIDR)
-			}
-		}
-		n, err := r.Conntrack.Revoke(labCIDRs, rules)
+		n, err := r.Conntrack.Revoke(r.revokeLabs, rules, r.revokeClients)
 		if n > 0 {
 			ctrl.LoggerFrom(ctx).Info("closed connections the access rules no longer allow", "connections", n)
 		}
@@ -123,6 +136,8 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 	}
 	r.revokePending = false
+	r.revokeLabs = nil
+	r.revokeClients = nil
 	if policyFound {
 		counters, countersErr := r.IPT.AccessCounters()
 		if countersErr != nil {
@@ -230,6 +245,7 @@ func (r *AccessReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Named("vpn-access").
 		Watches(&laboratoryv1alpha1.LabGroupClient{}, allInNamespace, builder.WithPredicates(clientAccessChanges())).
 		Watches(&laboratoryv1alpha1.Lab{}, allInNamespace, builder.WithPredicates(labAccessChanges())).
+		Watches(&laboratoryv1alpha1.LabVPN{}, allInNamespace, builder.WithPredicates(labVPNAccessChanges())).
 		// Counter refreshes patch only status. Do not turn those patches into
 		// another policy reconcile; specification changes still enqueue one.
 		Watches(&laboratoryv1alpha1.LabGroupAccessPolicy{}, allInNamespace, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
