@@ -144,6 +144,16 @@ func (r *DeviceReconciler) switchReady(ctx context.Context, device *laboratoryv1
 	if device.Status.VNI == nil {
 		return false, nil
 	}
+	// A switch the lab does not cable to anything has no link to wait for: its VNI is
+	// the whole fabric, so a lab made only of switches can become Ready.
+	var lab laboratoryv1alpha1.Lab
+	if err := r.Get(ctx, types.NamespacedName{Namespace: device.Namespace, Name: device.Spec.LabRef}, &lab); err == nil {
+		if !labCablesDevice(&lab, device.Spec.Name) {
+			return true, nil
+		}
+	} else if !errors.IsNotFound(err) {
+		return false, err
+	}
 	var conns laboratoryv1alpha1.ConnectionList
 	if err := r.List(ctx, &conns, client.InNamespace(device.Namespace)); err != nil {
 		return false, err
@@ -160,6 +170,18 @@ func (r *DeviceReconciler) switchReady(ctx context.Context, device *laboratoryv1
 		}
 	}
 	return found, nil
+}
+
+// labCablesDevice reports whether any connection of the lab spec has the named device as an endpoint.
+func labCablesDevice(lab *laboratoryv1alpha1.Lab, deviceName string) bool {
+	for _, c := range lab.Spec.Connections {
+		for _, e := range c.Endpoints {
+			if e.Device == deviceName {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // connectionRefsDevice reports whether a Connection has the named device as one

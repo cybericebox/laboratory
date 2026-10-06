@@ -220,6 +220,53 @@ var _ = Describe(
 )
 
 var _ = Describe(
+	"Device Controller switch-only lab", func() {
+		ctx := context.Background()
+
+		It(
+			"makes a switch ready once its VNI is allocated when the lab cables nothing to it", func() {
+				lab := &laboratoryv1alpha1.Lab{
+					ObjectMeta: metav1.ObjectMeta{Name: "lab-sw-only", Namespace: "default"},
+					Spec: laboratoryv1alpha1.LabSpec{
+						Devices: []laboratoryv1alpha1.DeviceTemplate{
+							{Name: "sw", Type: laboratoryv1alpha1.DeviceTypeUnmanagedSwitch},
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, lab)).To(Succeed())
+				DeferCleanup(func() { _ = k8sClient.Delete(ctx, lab) })
+				sw := &laboratoryv1alpha1.Device{
+					ObjectMeta: metav1.ObjectMeta{Name: "sw-only", Namespace: "default"},
+					Spec: laboratoryv1alpha1.DeviceSpec{
+						Type:   laboratoryv1alpha1.DeviceTypeUnmanagedSwitch,
+						Name:   "sw",
+						LabRef: "lab-sw-only",
+					},
+				}
+				Expect(k8sClient.Create(ctx, sw)).To(Succeed())
+				DeferCleanup(func() { _ = k8sClient.Delete(ctx, sw) })
+
+				r := &DeviceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+				req := reconcile.Request{NamespacedName: types.NamespacedName{Name: "sw-only", Namespace: "default"}}
+				_, err := r.Reconcile(ctx, req)
+				Expect(err).NotTo(HaveOccurred())
+				var cur laboratoryv1alpha1.Device
+				Expect(k8sClient.Get(ctx, req.NamespacedName, &cur)).To(Succeed())
+				Expect(cur.Status.Ready).To(BeFalse(), "no VNI yet")
+
+				vni := uint(43)
+				cur.Status.VNI = &vni
+				Expect(k8sClient.Status().Update(ctx, &cur)).To(Succeed())
+				_, err = r.Reconcile(ctx, req)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(k8sClient.Get(ctx, req.NamespacedName, &cur)).To(Succeed())
+				Expect(cur.Status.Ready).To(BeTrue())
+			},
+		)
+	},
+)
+
+var _ = Describe(
 	"Device Controller", func() {
 		Context(
 			"When reconciling a resource", func() {
