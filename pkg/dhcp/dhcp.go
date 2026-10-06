@@ -122,9 +122,9 @@ func (m *Manager) Start(name string, cfg Config) error {
 	m.servers[name] = &serverEntry{cancel: cancel}
 	go func() {
 		<-ctx.Done()
-		srv.Close()
+		_ = srv.Close()
 	}()
-	go srv.Serve()
+	go func() { _ = srv.Serve() }()
 	return nil
 }
 

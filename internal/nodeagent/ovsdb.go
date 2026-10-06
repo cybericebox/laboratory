@@ -8,10 +8,11 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"regexp"
 	"sync"
 	"syscall"
 	"time"
-	
+
 	"github.com/ovn-org/libovsdb/client"
 	"github.com/ovn-org/libovsdb/model"
 	"github.com/ovn-org/libovsdb/ovsdb"
@@ -32,14 +33,60 @@ const GenevePort = "ovsgnv0"
 
 // genevePortName is retained for transitional call sites and returns the
 // shared port name regardless of the remote address argument.
-func genevePortName(string) string { return GenevePort }
-
 // OVSManager programs the single br-ovs bridge via libovsdb (OVSDB JSON-RPC over Unix socket).
 type OVSManager struct {
 	bridge string
 	client client.Client
 	ctx    context.Context
 	mu     sync.Mutex
+
+	// policingKbps is the rate a veth port of a device may send into the bridge (0 = unpoliced); set by SetPolicing.
+	policingKbps int
+}
+
+// SetPolicing sets the storm control of the veth ports: each may send at most kbps into the bridge (burst a tenth of it). A pure flood
+// or a loop through a Linux bridge inside one lab is held to that rate instead of the whole datapath of the node. 0 switches it off.
+func (m *OVSManager) SetPolicing(kbps int) {
+	m.mu.Lock()
+	m.policingKbps = kbps
+	m.mu.Unlock()
+}
+
+// Ping asks ovsdb-server for an answer: the node-agent has lost it when this fails.
+func (m *OVSManager) Ping(ctx context.Context) error { return m.client.Echo(ctx) }
+
+// EnsurePolicing applies the policing rate to an existing veth port (one made before the setting, or under another value).
+func (m *OVSManager) EnsurePolicing(portName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	kbps := m.policingKbps
+	ifaces := []OVSInterface{}
+	if err := m.client.List(m.ctx, &ifaces); err != nil {
+		return fmt.Errorf("list interfaces: %w", err)
+	}
+	for i := range ifaces {
+		if ifaces[i].Name != portName {
+			continue
+		}
+		burst := kbps / 10
+		if ifaces[i].IngressPolicingRate == kbps && ifaces[i].IngressPolicingBurst == burst {
+			return nil
+		}
+		ifaces[i].IngressPolicingRate, ifaces[i].IngressPolicingBurst = kbps, burst
+		ops, err := m.client.Where(&ifaces[i]).Update(&ifaces[i], &ifaces[i].IngressPolicingRate, &ifaces[i].IngressPolicingBurst)
+		if err != nil {
+			return fmt.Errorf("police %q: %w", portName, err)
+		}
+		results, err := m.client.Transact(m.ctx, ops...)
+		if err != nil {
+			return fmt.Errorf("transact policing of %q: %w", portName, err)
+		}
+		if _, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+			return fmt.Errorf("policing of %q result: %w", portName, err)
+		}
+		return nil
+	}
+	return nil // the port is not there (any more)
 }
 
 func NewOVSManager(bridge, sockPath string) (*OVSManager, error) {
@@ -54,7 +101,7 @@ func NewOVSManager(bridge, sockPath string) (*OVSManager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build OVSDB model: %w", err)
 	}
-	
+
 	ovs, err := client.NewOVSDBClient(
 		dbModel,
 		client.WithEndpoint("unix:"+sockPath),
@@ -63,7 +110,7 @@ func NewOVSManager(bridge, sockPath string) (*OVSManager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create OVSDB client: %w", err)
 	}
-	
+
 	ctx := context.Background()
 	// Retry connect — ovsdb-server may still be starting.
 	var connErr error
@@ -76,11 +123,11 @@ func NewOVSManager(bridge, sockPath string) (*OVSManager, error) {
 	if connErr != nil {
 		return nil, fmt.Errorf("connect to OVSDB %s: %w", sockPath, connErr)
 	}
-	
+
 	if _, err := ovs.MonitorAll(ctx); err != nil {
 		return nil, fmt.Errorf("OVSDB monitor: %w", err)
 	}
-	
+
 	m := &OVSManager{bridge: bridge, client: ovs, ctx: ctx}
 	return m, m.ensureBridge()
 }
@@ -98,21 +145,47 @@ func (m *OVSManager) findBridge() (*OVSBridge, error) {
 	return nil, nil
 }
 
+// FailModeSecure is the only fail mode of br-ovs: no flow, no forwarding.
+const FailModeSecure = "secure"
+
+// ensureSecure puts an existing bridge (made by an earlier version in the standalone mode) into the secure
+// fail mode.
+func (m *OVSManager) ensureSecure(br *OVSBridge) error {
+	if br.FailMode != nil && *br.FailMode == FailModeSecure {
+		return nil
+	}
+	secure := FailModeSecure
+	br.FailMode = &secure
+	ops, err := m.client.Where(br).Update(br, &br.FailMode)
+	if err != nil {
+		return fmt.Errorf("set fail_mode op: %w", err)
+	}
+	results, err := m.client.Transact(m.ctx, ops...)
+	if err != nil {
+		return fmt.Errorf("transact fail_mode: %w", err)
+	}
+	if _, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		return fmt.Errorf("fail_mode result: %w", err)
+	}
+	return nil
+}
+
 // ensureBridge is only called from NewOVSManager before the client is shared — no mutex needed.
 func (m *OVSManager) ensureBridge() error {
 	if br, err := m.findBridge(); err != nil {
 		return err
 	} else if br != nil {
-		return nil
+		return m.ensureSecure(br)
 	}
-	
+
+	secure := FailModeSecure
 	bridgeNamedUUID := "bridge_new"
-	bridge := OVSBridge{UUID: bridgeNamedUUID, Name: m.bridge}
+	bridge := OVSBridge{UUID: bridgeNamedUUID, Name: m.bridge, FailMode: &secure}
 	bridgeOps, err := m.client.Create(&bridge)
 	if err != nil {
 		return fmt.Errorf("create bridge op: %w", err)
 	}
-	
+
 	// Mutate Open_vSwitch root row to add bridge reference.
 	roots := []OVSOpen_vSwitch{}
 	if err := m.client.List(m.ctx, &roots); err != nil {
@@ -132,7 +205,7 @@ func (m *OVSManager) ensureBridge() error {
 	if err != nil {
 		return fmt.Errorf("mutate root bridges: %w", err)
 	}
-	
+
 	ops := append(bridgeOps, mutOps...)
 	results, err := m.client.Transact(m.ctx, ops...)
 	if err != nil {
@@ -160,6 +233,9 @@ func VethPeerName(stableKey string) string {
 // Idempotent: EEXIST on kernel side is ignored; port already in OVS is a no-op.
 // Stores stableKey in external_ids so FindPortByKey can locate it.
 func (m *OVSManager) AddVethPort(stableKey string) error {
+	if !ValidPortKey(stableKey) {
+		return fmt.Errorf("%q is not a port key of the platform: refusing to create a veth under it", stableKey)
+	}
 	podSide := VethPeerName(stableKey)
 	veth := &netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{Name: stableKey},
@@ -173,24 +249,56 @@ func (m *OVSManager) AddVethPort(stableKey string) error {
 	if err != nil {
 		return fmt.Errorf("get host-side veth %q: %w", stableKey, err)
 	}
+	if err := requireVeth(link); err != nil {
+		return err
+	}
 	if err := netlink.LinkSetUp(link); err != nil {
 		return fmt.Errorf("set up host-side veth %q: %w", stableKey, err)
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.addPort(stableKey, "system", nil, map[string]string{portKeyExternalID: stableKey})
+	err = m.addPort(stableKey, "system", nil, map[string]string{portKeyExternalID: stableKey})
+	policed := m.policingKbps > 0
+	m.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if policed {
+		return m.EnsurePolicing(stableKey)
+	}
+	return nil
+}
+
+// portKeyRE is the shape of every port key the platform makes (names.DevicePortKey, VPNHostPortKey, GWHostPortKey): a letter and 12
+// hex digits. A key of any other shape is never a veth of ours: it could be "eth0".
+var portKeyRE = regexp.MustCompile(`^[gnp][0-9a-f]{12}$`)
+
+// ValidPortKey says whether key may be used as the name of a veth the node-agent creates or deletes.
+func ValidPortKey(key string) bool { return portKeyRE.MatchString(key) }
+
+// requireVeth refuses to touch an existing link that is not a veth: a host interface that happens to carry a name.
+func requireVeth(link netlink.Link) error {
+	if link.Type() != "veth" {
+		return fmt.Errorf("%q is a %s, not a veth of the node-agent: left alone", link.Attrs().Name, link.Type())
+	}
+	return nil
 }
 
 // DelVethPort removes the OVS port and deletes the kernel veth pair for stableKey.
 // Deleting the host-side also removes the pod-side (veth pair invariant).
 // Idempotent: no-op if already gone.
 func (m *OVSManager) DelVethPort(stableKey string) error {
+	if !ValidPortKey(stableKey) {
+		return fmt.Errorf("%q is not a port key of the platform: refusing to delete a link under it", stableKey)
+	}
 	if err := m.DelPort(stableKey); err != nil {
 		return err
 	}
 	link, err := netlink.LinkByName(stableKey)
 	if err != nil {
 		return nil // already gone
+	}
+	if err := requireVeth(link); err != nil {
+		return err
 	}
 	return netlink.LinkDel(link)
 }
@@ -246,6 +354,23 @@ func (m *OVSManager) findPortByKey(stableKey string) (*OVSPort, error) {
 	return nil, nil
 }
 
+// PortKeys returns the stable keys of the OVS ports the platform made (external_ids["port-key"]), as a set.
+func (m *OVSManager) PortKeys() (map[string]bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ports := []OVSPort{}
+	if err := m.client.List(m.ctx, &ports); err != nil {
+		return nil, fmt.Errorf("list ports: %w", err)
+	}
+	keys := map[string]bool{}
+	for i := range ports {
+		if k := ports[i].ExternalIDs[portKeyExternalID]; k != "" {
+			keys[k] = true
+		}
+	}
+	return keys, nil
+}
+
 // DelPortByKey removes the OVS port whose external_ids["port-key"] matches stableKey.
 // Idempotent: no-op if not found.
 func (m *OVSManager) DelPortByKey(stableKey string) error {
@@ -291,10 +416,17 @@ func (m *OVSManager) AddPatchPair(nameA, nameB string) error {
 	return m.addPort(nameB, "patch", map[string]string{"peer": nameA}, nil)
 }
 
-// patchPortName computes a stable OVS patch-end name for one end of a
-// switch↔switch link, keyed by the connection name + switch device. Result is
-// ≤15 chars (Linux IFNAMSIZ).
-func patchPortName(connName, switchDevice string) string {
+// patchPortName computes a stable OVS patch-end name for one end of a switch↔switch link, keyed by the namespace, the connection name
+// and the switch device: two groups can have a connection of the same name (lab ids are chosen by the caller), and the name must not
+// be shared. 14 chars ("pt" and 12 hex), inside Linux IFNAMSIZ.
+func patchPortName(namespace, connName, switchDevice string) string {
+	h := sha256.Sum256([]byte(namespace + "/" + connName + "/" + switchDevice))
+	return fmt.Sprintf("pt%x", h[:6])
+}
+
+// legacyPatchPortName is the name earlier versions gave: without the namespace, so two groups could share a port and one delete the
+// other's. A port under it is removed when its connection is reconciled (see ConnectionReconciler).
+func legacyPatchPortName(connName, switchDevice string) string {
 	h := sha256.Sum256([]byte(connName + "/" + switchDevice))
 	return fmt.Sprintf("pt%x", h[:5])
 }
@@ -320,7 +452,7 @@ func (m *OVSManager) addPort(name, ifaceType string, options, externalIDs map[st
 	} else if p != nil {
 		return nil
 	}
-	
+
 	br, err := m.findBridge()
 	if err != nil {
 		return err
@@ -328,22 +460,22 @@ func (m *OVSManager) addPort(name, ifaceType string, options, externalIDs map[st
 	if br == nil {
 		return fmt.Errorf("bridge %q not found", m.bridge)
 	}
-	
+
 	ifaceNamedUUID := "iface_new"
 	portNamedUUID := "port_new"
-	
+
 	iface := OVSInterface{UUID: ifaceNamedUUID, Name: name, Type: ifaceType, Options: options}
 	ifaceOps, err := m.client.Create(&iface)
 	if err != nil {
 		return fmt.Errorf("create interface op: %w", err)
 	}
-	
+
 	port := OVSPort{UUID: portNamedUUID, Name: name, Interfaces: []string{ifaceNamedUUID}, ExternalIDs: externalIDs}
 	portOps, err := m.client.Create(&port)
 	if err != nil {
 		return fmt.Errorf("create port op: %w", err)
 	}
-	
+
 	mutOps, err := m.client.Where(br).Mutate(
 		br,
 		model.Mutation{
@@ -355,7 +487,7 @@ func (m *OVSManager) addPort(name, ifaceType string, options, externalIDs map[st
 	if err != nil {
 		return fmt.Errorf("mutate bridge ports: %w", err)
 	}
-	
+
 	ops := append(ifaceOps, append(portOps, mutOps...)...)
 	results, err := m.client.Transact(m.ctx, ops...)
 	if err != nil {
@@ -386,7 +518,7 @@ func (m *OVSManager) delPortLocked(p *OVSPort) error {
 	if err != nil {
 		return err
 	}
-	
+
 	var ops []ovsdb.Operation
 	if br != nil {
 		mutOps, err := m.client.Where(br).Mutate(
@@ -402,13 +534,13 @@ func (m *OVSManager) delPortLocked(p *OVSPort) error {
 		}
 		ops = append(ops, mutOps...)
 	}
-	
+
 	delOps, err := m.client.Where(p).Delete()
 	if err != nil {
 		return fmt.Errorf("delete port op: %w", err)
 	}
 	ops = append(ops, delOps...)
-	
+
 	results, err := m.client.Transact(m.ctx, ops...)
 	if err != nil {
 		return fmt.Errorf("transact delPort %q: %w", p.Name, err)

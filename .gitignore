@@ -51,3 +51,4 @@ charts/laboratory/Chart.lock
 charts/laboratory/charts/
 
 .DS_Store
+.worktrees/

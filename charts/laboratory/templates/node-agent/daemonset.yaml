@@ -11,8 +11,13 @@ spec:
   selector:
     matchLabels:
       app: node-agent
+  # The next node is updated only after this node's node-agent has been Ready (Open vSwitch answers, the caches have synced) for
+  # minReadySeconds: a restart drops the node's flows until they are programmed again, so no two nodes go at once.
+  minReadySeconds: {{ .Values.nodeAgent.minReadySeconds }}
   updateStrategy:
     type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
   template:
     metadata:
       labels:
@@ -20,20 +25,24 @@ spec:
         {{- include "laboratory.labels" . | nindent 8 }}
     spec:
       serviceAccountName: laboratory-node-agent
+      priorityClassName: system-node-critical
       hostNetwork: true
       hostPID: false
       dnsPolicy: ClusterFirstWithHostNet
-      tolerations:
-        - operator: Exists
-      {{- if .Values.nodeAgent.excludeControlPlane }}
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: node-role.kubernetes.io/control-plane
-                    operator: DoesNotExist
+      # The node-agent runs on exactly the nodes that can host lab pods: the same node selector and tolerations as the lab pods
+      # (labWorkloads), so a schedulable control-plane node (controller+worker) gets one when labs tolerate its taint, and a node
+      # that labs avoid does not. It also tolerates Cilium's agent-not-ready taint, to start while the CNI comes up.
+      {{- with .Values.labWorkloads.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
       {{- end }}
+      tolerations:
+        - key: node.cilium.io/agent-not-ready
+          operator: Exists
+          effect: NoSchedule
+        {{- with .Values.labWorkloads.tolerations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -41,8 +50,8 @@ spec:
       initContainers:
         # Host prep: kernel modules and sysctls. Nothing is installed on the node.
         - name: host-prep
-          image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
-          imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
+          image: {{ include "laboratory.imageRef" (dict "image" .Values.nodeAgent.image "root" $) | quote }}
+          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.nodeAgent.image "root" $))) }}
           command: [ "/bin/sh", "-c" ]
           args:
             - |
@@ -53,21 +62,31 @@ spec:
               {{- range $key, $val := .Values.nodeAgent.hostPrep.sysctls }}
               echo {{ $val | quote }} > /proc/sys/{{ $key | replace "." "/" }}
               {{- end }}
+              {{- if .Values.nodeAgent.hostPrep.conntrackAccounting }}
+              # Byte accounting and start times of conntrack flows (the VPN pod's flow report). The sysctls are per network
+              # namespace and a new namespace (every pod) starts from the module parameters, so the parameters are set too: this
+              # is the one place with a writable /proc/sys and /sys (the node-agent container itself has them read-only).
+              echo 1 > /proc/sys/net/netfilter/nf_conntrack_acct
+              echo 1 > /proc/sys/net/netfilter/nf_conntrack_timestamp
+              for p in acct tstamp; do
+                if [ -e /sys/module/nf_conntrack/parameters/$p ]; then echo 1 > /sys/module/nf_conntrack/parameters/$p; fi
+              done
+              {{- end }}
           securityContext:
             privileged: true
           volumeMounts:
             - name: lib-modules
               mountPath: /lib/modules
               readOnly: true
-          {{- with .Values.nodeAgent.resources }}
+          {{- with .Values.nodeAgent.initResources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
         # Open vSwitch as a native sidecar (restartPolicy: Always): it starts before the
         # next init containers and the node-agent, which wait for its startupProbe.
         - name: ovs
-          image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
-          imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
+          image: {{ include "laboratory.imageRef" (dict "image" .Values.nodeAgent.image "root" $) | quote }}
+          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.nodeAgent.image "root" $))) }}
           restartPolicy: Always
           command: [ "/node-agent/bin/start-ovs.sh" ]
           env:
@@ -93,56 +112,69 @@ spec:
             - name: lib-modules
               mountPath: /lib/modules
               readOnly: true
-          {{- with .Values.nodeAgent.resources }}
+          {{- with .Values.nodeAgent.ovsResources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
         - name: install-cni-bins
-          image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
-          imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
+          image: {{ include "laboratory.imageRef" (dict "image" .Values.nodeAgent.image "root" $) | quote }}
+          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.nodeAgent.image "root" $))) }}
           command: [ "/bin/sh", "-c" ]
           args:
             - |
               set -e
-              cp /node-agent/bin/cni-gate /opt/cni/bin/cni-gate
+              cp /node /opt/cni/bin/cni-gate
               for p in bridge ptp loopback host-local portmap; do
-                [ -f /usr/lib/cni/$p ] && cp /usr/lib/cni/$p /opt/cni/bin/$p
+                [ -f /usr/libexec/cni/$p ] && cp /usr/libexec/cni/$p /opt/cni/bin/$p
               done
           securityContext:
             runAsUser: 0
           volumeMounts:
             - name: cni-bin
               mountPath: /opt/cni/bin
-          {{- with .Values.nodeAgent.resources }}
+          {{- with .Values.nodeAgent.initResources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
         - name: install-cni-conf
-          image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
-          imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
-          command: [ "/node-agent/bin/install-cni" ]
+          image: {{ include "laboratory.imageRef" (dict "image" .Values.nodeAgent.image "root" $) | quote }}
+          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.nodeAgent.image "root" $))) }}
+          command: [ "/node", "install-cni" ]
           env:
             - name: GRPC_SOCK
               value: {{ .Values.nodeAgent.grpcSocket | quote }}
             - name: CNI_CONF_DIR
               value: /etc/cni/net.d
+          {{- with .Values.nodeAgent.cniFallbackTimeout }}
+            # Explicit opt-in only: without it the init container waits for the real CNI config.
             - name: CNI_FALLBACK_TIMEOUT
-              value: "60s"
+              value: {{ . | quote }}
+          {{- end }}
           securityContext:
             runAsUser: 0
           volumeMounts:
             - name: cni-conf
               mountPath: /etc/cni/net.d
-          {{- with .Values.nodeAgent.resources }}
+          {{- with .Values.nodeAgent.initResources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
       containers:
         - name: node-agent
-          image: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
-          imagePullPolicy: {{ .Values.nodeAgent.image.pullPolicy }}
-          command: [ "/node-agent/bin/node-agent" ]
+          image: {{ include "laboratory.imageRef" (dict "image" .Values.nodeAgent.image "root" $) | quote }}
+          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.nodeAgent.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.nodeAgent.image "root" $))) }}
+          command: [ "/node", "node-agent" ]
           env:
+            # The probes' address: the loopback only (the node-agent is on the host network).
+            - name: HEALTH_ADDR
+              value: {{ printf "127.0.0.1:%d" (.Values.nodeAgent.healthPort | int) | quote }}
+            # Storm control of the shared switch, and the watchdog that restarts the node-agent when OVS is lost.
+            - name: PORT_POLICING_KBPS
+              value: {{ .Values.nodeAgent.portPolicingKbps | quote }}
+            - name: OVS_WATCH_INTERVAL
+              value: {{ .Values.nodeAgent.ovsWatchInterval | quote }}
+            - name: OVS_WATCH_FAILURES
+              value: {{ .Values.nodeAgent.ovsWatchFailures | quote }}
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
@@ -155,12 +187,92 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.hostIP
+            - name: OVS_BRIDGE
+              value: {{ .Values.nodeAgent.ovsBridge | quote }}
             - name: CRI_SOCK
               value: {{ .Values.nodeAgent.criSocket | quote }}
+            - name: DEVICE_PLUGIN_DIR
+              value: {{ .Values.nodeAgent.devicePlugin.dir | quote }}
+            - name: ERROR_JOURNAL_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: TUN_SLOTS
+              value: {{ .Values.nodeAgent.devicePlugin.tunSlots | quote }}
+            # The platform registry (snapshots, image cache): its Service is relayed to 127.0.0.1:5035 (a constant of the image), where
+            # containerd reads it as a plain-HTTP localhost registry.
+            - name: STATE_REGISTRY_ADDR
+              value: {{ include "laboratory.registryAddr" . | quote }}
+          {{- if .Values.devices.statePersistence.enabled }}
+            - name: STATE_PERSISTENCE_ENABLED
+              value: "true"
+            - name: CONTAINERD_NAMESPACE
+              value: {{ .Values.devices.statePersistence.containerdNamespace | quote }}
+            - name: STATE_MAX_WATCH_DIRS
+              value: {{ .Values.devices.statePersistence.maxWatchedDirs | quote }}
+            # What one device may push, and when the registry is too full to take a push (see DEPLOY.md, "Device state under abuse").
+            - name: STATE_MIN_PUSH_INTERVAL
+              value: {{ .Values.devices.statePersistence.minPushInterval | quote }}
+            - name: STATE_PUSH_BUDGET
+              value: {{ .Values.devices.statePersistence.pushBudget | quote }}
+            - name: STATE_PUSH_BUDGET_WINDOW
+              value: {{ .Values.devices.statePersistence.pushBudgetWindow | quote }}
+            - name: STATE_SUPERSEDED_GRACE
+              value: {{ .Values.devices.statePersistence.supersededGrace | quote }}
+            - name: STATE_REGISTRY_CAPACITY
+              value: {{ .Values.registry.size | quote }}
+            - name: STATE_REGISTRY_RESERVE
+              value: {{ .Values.devices.statePersistence.registryReserve | quote }}
+            # The reader account: the forwarder adds it to the runtime's pulls of the snapshots and the base image.
+            - name: STATE_REGISTRY_READER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: laboratory-registry
+                  key: readerUsername
+            - name: STATE_REGISTRY_READER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: laboratory-registry
+                  key: readerPassword
+            - name: STATE_REGISTRY_USER
+              valueFrom:
+                secretKeyRef:
+                  name: laboratory-registry
+                  key: username
+            - name: STATE_REGISTRY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: laboratory-registry
+                  key: password
+          {{- end }}
           securityContext:
             capabilities:
-              add: [ NET_ADMIN, SYS_ADMIN ]
+              {{- /* DAC_READ_SEARCH: the snapshot watcher reads writable layers owned by the container's own users. */}}
+              add:  [ NET_ADMIN, SYS_ADMIN{{ if .Values.devices.statePersistence.enabled }}, DAC_READ_SEARCH{{ end }} ]
               drop: [ ALL ]
+          # Ready means it serves: Open vSwitch answers over both channels and the informer caches have synced. Liveness restarts a
+          # node-agent whose channels to Open vSwitch hang (the watchdog covers a lost one) or whose process does not answer.
+          startupProbe:
+            httpGet:
+              host: 127.0.0.1
+              path: /readyz
+              port: {{ .Values.nodeAgent.healthPort }}
+            periodSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              host: 127.0.0.1
+              path: /readyz
+              port: {{ .Values.nodeAgent.healthPort }}
+            periodSeconds: 10
+            failureThreshold: 2
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              host: 127.0.0.1
+              path: /healthz
+              port: {{ .Values.nodeAgent.healthPort }}
+            periodSeconds: 20
+            failureThreshold: 3
+            timeoutSeconds: 8
           volumeMounts:
             - name: ovs-run
               mountPath: /run/openvswitch
@@ -168,12 +280,28 @@ spec:
               mountPath: /run/cybericebox
             - name: cri-sock
               mountPath: {{ .Values.nodeAgent.criSocket | quote }}
+            # The kubelet's device-plugin directory: the node-agent registers cybericebox.com/tun here.
+            - name: device-plugins
+              mountPath: {{ .Values.nodeAgent.devicePlugin.dir | quote }}
             - name: host-netns
               mountPath: /run/netns
               # HostToContainer: propagate netns bind-mounts (cni-XXX) created on the
               # host after this container starts. Without it the container sees an empty
               # mountpoint instead of nsfs, and LinkSetNsFd fails with EINVAL.
               mountPropagation: HostToContainer
+          {{- if .Values.devices.statePersistence.enabled }}
+            # The overlayfs snapshotter's directories, at the same path as on the host:
+            # the writable layers that are snapshotted live below it.
+            - name: containerd-root
+              mountPath: {{ .Values.devices.statePersistence.containerdRoot | quote }}
+              readOnly: true
+            # The host's cgroup v2 tree: a container is frozen through cgroup.freeze
+            # while its layer is diffed.
+            - name: host-cgroup
+              mountPath: /host/sys/fs/cgroup
+            - name: state-work
+              mountPath: /var/cache/cybericebox/state
+          {{- end }}
           {{- with .Values.nodeAgent.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -207,8 +335,26 @@ spec:
           hostPath:
             path: {{ .Values.nodeAgent.criSocket }}
             type: Socket
+        # DirectoryOrCreate, never Directory: the node-agent is the CNI, so a missing directory here must not keep its pod in Init
+        # (and with it every new pod of the node). The device plugin is optional; without it only the `extended` profile's tun is lost.
+        - name: device-plugins
+          hostPath:
+            path: {{ .Values.nodeAgent.devicePlugin.dir | quote }}
+            type: DirectoryOrCreate
         - name: host-netns
           hostPath:
             path: /run/netns
             type: DirectoryOrCreate
+        {{- if .Values.devices.statePersistence.enabled }}
+        - name: containerd-root
+          hostPath:
+            path: {{ .Values.devices.statePersistence.containerdRoot | quote }}
+            type: Directory
+        - name: host-cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+            type: Directory
+        - name: state-work
+          emptyDir: {}
+        {{- end }}
 {{- end }}

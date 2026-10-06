@@ -3,12 +3,20 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: laboratory-agent
-  namespace: {{ .Values.agent.namespace }}
+  namespace: {{ $.Values.agent.namespace }}
   labels:
     app: laboratory-agent
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.agent.replicas }}
+  # A new pod must be Ready for minReadySeconds before the next old one is replaced, and the old one is kept until then
+  # (the replicas only soft-spread over nodes, so a surge pod always fits).
+  minReadySeconds: {{ .Values.agent.minReadySeconds }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: laboratory-agent
@@ -19,53 +27,194 @@ spec:
         {{- include "laboratory.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: laboratory-agent
+      priorityClassName: {{ include "laboratory.priorityClass.platform" . }}
+      # SIGTERM: the agent stops taking calls and finishes the running ones for up to agent.shutdownGrace (a CreateLabGroupClients that
+      # has made its key must answer with it). The preStop sleep lets the Service forget the pod first.
+      terminationGracePeriodSeconds: {{ .Values.agent.terminationGracePeriodSeconds }}
+      {{- if gt (int .Values.agent.replicas) 1 }}
+      # Replicas go on different nodes when they can (never a reason to leave one unscheduled).
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: laboratory-agent
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
         - name: agent
-          image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}"
-          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          image: {{ include "laboratory.imageRef" (dict "image" .Values.agent.image "root" $) | quote }}
+          imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.agent.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.agent.image "root" $))) }}
+          command: ["/agent"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ ALL ]
           ports:
             - name: grpc
               containerPort: {{ .Values.agent.grpcPort }}
               protocol: TCP
+          # The listener is opened only after the CRD check and the setup, so a bound port means the agent serves (a gRPC probe cannot do
+          # mTLS). The startup probe covers the CRD wait of up to a minute.
+          startupProbe:
+            tcpSocket:
+              port: grpc
+            periodSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            periodSeconds: 20
+            failureThreshold: 3
+            timeoutSeconds: 5
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ .Values.agent.preStopSleepSeconds }}
           env:
             - name: AGENT_GRPC_PORT
               value: {{ .Values.agent.grpcPort | quote }}
-            - name: AGENT_TLS_ENABLED
-              value: "true"
-            - name: AGENT_TLS_CERT
-              value: /tls/tls.crt
-            - name: AGENT_TLS_KEY
-              value: /tls/tls.key
-            - name: AGENT_MTLS_ENABLED
-              value: {{ .Values.agent.mtls.enabled | quote }}
-          {{- if .Values.agent.mtls.enabled }}
-            - name: AGENT_MTLS_CLIENT_CA
-              value: /ca/tls.crt
-            - name: AGENT_ALLOWED_CLIENT_CNS
-              value: {{ join "," .Values.agent.allowedClientCNs | quote }}
+            - name: AGENT_SHUTDOWN_GRACE
+              value: {{ .Values.agent.shutdownGrace | quote }}
+            - name: AGENT_ID
+              value: {{ .Values.agent.id | quote }}
+            - name: AGENT_TENANT_STATUS_INTERVAL
+              value: {{ .Values.agent.tenantStatusInterval | quote }}
+            {{- /* The TLS and CA files (/tls, /ca) are the image's defaults: the chart mounts the Secrets there. */}}
+            - name: AGENT_RELEASE_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: AGENT_PULL_SECRET_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            # ExportDeviceSnapshot reads the snapshots from the platform registry, PrewarmImages makes the cache fetch through it.
+            - name: AGENT_REGISTRY_ADDR
+              value: {{ include "laboratory.registryAddr" . | quote }}
+            # The Monitoring stream (see DEPLOY.md, "Monitoring stream").
+            - name: AGENT_MONITORING_JOURNAL_SIZE
+              value: {{ .Values.agent.monitoring.journalSize | quote }}
+            - name: AGENT_MONITORING_JOURNAL_AGE
+              value: {{ .Values.agent.monitoring.journalAge | quote }}
+            - name: AGENT_MONITORING_POLL_INTERVAL
+              value: {{ .Values.agent.monitoring.pollInterval | quote }}
+            - name: AGENT_MONITORING_SUBSCRIBER_BUFFER
+              value: {{ .Values.agent.monitoring.subscriberBuffer | quote }}
+            - name: AGENT_MONITORING_MAX_STREAMS_PER_TENANT
+              value: {{ .Values.agent.monitoring.maxStreamsPerTenant | quote }}
+            {{- /* The settings the operator also reads: the same map under the same names (laboratory.sharedEnv). */}}
+          {{- range $name, $value := include "laboratory.sharedEnv" . | fromYaml }}
+          {{- if or (not (hasPrefix "IMAGE_CACHE_" $name)) $.Values.registry.cache.enabled }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
           {{- end }}
+          {{- end }}
+            # The snapshots are not anonymous: the agent reads them with the reader account.
+            - name: AGENT_REGISTRY_USER
+              valueFrom:
+                secretKeyRef:
+                  name: laboratory-registry-reader
+                  key: username
+            - name: AGENT_REGISTRY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: laboratory-registry-reader
+                  key: password
+          {{- if .Values.registry.cache.enabled }}
+            # PrewarmImages: the agent makes the image cache fetch images ahead of time.
+            - name: AGENT_PREWARM_CONCURRENCY
+              value: {{ .Values.registry.cache.prewarm.concurrency | quote }}
+            - name: AGENT_PREWARM_TIMEOUT
+              value: {{ .Values.registry.cache.prewarm.timeout | quote }}
+          {{- end }}
+          {{- with .Values.images.tenantDeny }}
+            # Repositories no tenant may use (Tenant.spec.images.allow narrows the rest).
+            - name: AGENT_IMAGE_DENY
+              value: {{ join "," . | quote }}
+          {{- end }}
+            # The hidden packing reserve: the capacity reported to the platform is net of it.
+            - name: SCHEDULER_PACKING_RESERVE_PERCENT
+              value: {{ .Values.scheduler.packingReservePercent | quote }}
+            - name: AGENT_DEVICE_PROFILES
+              value: {{ join "," .Values.devices.security.profiles | quote }}
+            - name: AGENT_LIMIT_LAB_MAX_DEVICES
+              value: {{ .Values.limits.lab.maxDevices | quote }}
+            - name: AGENT_LIMIT_GROUP_MAX_LABS
+              value: {{ .Values.limits.group.maxLabs | quote }}
+            - name: AGENT_LIMIT_GROUP_MAX_CPU
+              value: {{ .Values.limits.group.maxCpu | quote }}
+            - name: AGENT_LIMIT_GROUP_MAX_MEMORY
+              value: {{ .Values.limits.group.maxMemory | quote }}
+            - name: AGENT_LIMIT_TENANT_MAX_LABS
+              value: {{ .Values.limits.tenant.maxLabs | quote }}
+            # The L7 proxy's limits, under the proxy's own names (the same chart values): GetFeatures reports them.
+            - name: ACCESS_TOKEN_MAX_TTL
+              value: {{ .Values.proxy.l7.accessTokenMaxTTL | quote }}
+            - name: SESSION_IDLE_TTL
+              value: {{ .Values.proxy.l7.sessionIdleTTL | quote }}
+            - name: SESSION_MAX_TTL
+              value: {{ .Values.proxy.l7.sessionMaxTTL | quote }}
+            # The one development switch: no client certificate is asked for, every caller is the default tenant. TLS stays on.
+            - name: AGENT_ALLOW_INSECURE
+              value: {{ .Values.agent.allowInsecure | quote }}
+            # What a caller can cost the agent (see DEPLOY.md, "The agent under hostile callers").
+            - name: AGENT_MAX_CONCURRENT_STREAMS
+              value: {{ .Values.agent.server.maxConcurrentStreams | quote }}
+            - name: AGENT_MAX_CONNECTION_AGE
+              value: {{ .Values.agent.server.maxConnectionAge | quote }}
+            - name: AGENT_MAX_CONNECTION_AGE_GRACE
+              value: {{ .Values.agent.server.maxConnectionAgeGrace | quote }}
+            - name: AGENT_KEEPALIVE_MIN_TIME
+              value: {{ .Values.agent.server.keepaliveMinTime | quote }}
+            - name: AGENT_STREAM_RECHECK
+              value: {{ .Values.agent.server.streamRecheck | quote }}
+            - name: AGENT_RENEW_MIN_INTERVAL
+              value: {{ .Values.agent.server.renewMinInterval | quote }}
+            - name: AGENT_ENROLL_MAX_MESSAGE_BYTES
+              value: {{ .Values.agent.server.enroll.maxMessageBytes | quote }}
+            - name: AGENT_ENROLL_RATE
+              value: {{ .Values.agent.server.enroll.rate | quote }}
+            - name: AGENT_ENROLL_BURST
+              value: {{ .Values.agent.server.enroll.burst | quote }}
+            - name: AGENT_HANDSHAKE_TIMEOUT
+              value: {{ .Values.agent.server.enroll.handshakeTimeout | quote }}
+            - name: AGENT_MAX_HANDSHAKES
+              value: {{ .Values.agent.server.enroll.maxHandshakes | quote }}
+            - name: AGENT_MAX_ANONYMOUS_CONNS
+              value: {{ .Values.agent.server.enroll.maxAnonymousConns | quote }}
+            - name: AGENT_CLIENT_CERT_TTL
+              value: {{ .Values.agent.enrollment.certificateTTL | quote }}
           volumeMounts:
+            - name: tmp
+              mountPath: /tmp
             - name: server-tls
               mountPath: /tls
               readOnly: true
-          {{- if .Values.agent.mtls.enabled }}
             - name: client-ca
               mountPath: /ca
               readOnly: true
-          {{- end }}
           resources:
             {{- toYaml .Values.agent.resources | nindent 12 }}
       volumes:
+        - name: tmp
+          emptyDir: {}
         - name: server-tls
           secret:
             secretName: laboratory-agent-server-tls
-      {{- if .Values.agent.mtls.enabled }}
         - name: client-ca
           secret:
             secretName: laboratory-agent-ca
-      {{- end }}
 {{- end }}

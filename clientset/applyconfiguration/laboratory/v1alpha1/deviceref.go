@@ -24,6 +24,10 @@ package v1alpha1
 type DeviceRefApplyConfiguration struct {
 	Name  *string `json:"name,omitempty"`
 	Ready *bool   `json:"ready,omitempty"`
+	// State summarises the snapshots of a device with state persistence.
+	State *DeviceStateInfoApplyConfiguration `json:"state,omitempty"`
+	// Failure is the warning of a device pod that did not start in time.
+	Failure *PodFailureApplyConfiguration `json:"failure,omitempty"`
 }
 
 // DeviceRefApplyConfiguration constructs a declarative configuration of the DeviceRef type for use with
@@ -45,5 +49,21 @@ func (b *DeviceRefApplyConfiguration) WithName(value string) *DeviceRefApplyConf
 // If called multiple times, the Ready field is set to the value of the last call.
 func (b *DeviceRefApplyConfiguration) WithReady(value bool) *DeviceRefApplyConfiguration {
 	b.Ready = &value
+	return b
+}
+
+// WithState sets the State field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the State field is set to the value of the last call.
+func (b *DeviceRefApplyConfiguration) WithState(value *DeviceStateInfoApplyConfiguration) *DeviceRefApplyConfiguration {
+	b.State = value
+	return b
+}
+
+// WithFailure sets the Failure field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Failure field is set to the value of the last call.
+func (b *DeviceRefApplyConfiguration) WithFailure(value *PodFailureApplyConfiguration) *DeviceRefApplyConfiguration {
+	b.Failure = value
 	return b
 }

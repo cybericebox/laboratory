@@ -1,0 +1,33 @@
+{{- if .Values.priorityClasses.create }}
+{{- /* See values.yaml, "Priority classes". The device class never preempts: a device must not evict anything. */ -}}
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ include "laboratory.priorityClass.platform" . }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+value: {{ .Values.priorityClasses.platform.value }}
+globalDefault: false
+description: "Laboratory platform pods (operator, agent, L7 proxy, wg-demux, registry): above every lab pod."
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ include "laboratory.priorityClass.group" . }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+value: {{ .Values.priorityClasses.group.value }}
+globalDefault: false
+description: "VPN and gateway pods of a LabGroup: above the devices."
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ include "laboratory.priorityClass.device" . }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+value: {{ .Values.priorityClasses.device.value }}
+globalDefault: false
+preemptionPolicy: Never
+description: "Device pods of a lab: the lowest, and they never evict anything."
+{{- end }}

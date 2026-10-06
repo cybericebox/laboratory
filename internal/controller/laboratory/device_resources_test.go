@@ -9,61 +9,89 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
-func TestDeviceResourcesNil(t *testing.T) {
-	rr := deviceResources(&laboratoryv1alpha1.Device{})
-	if rr.Requests != nil || rr.Limits != nil {
-		t.Errorf("expected empty requirements when Resources unset, got %+v", rr)
+var testDefaults = DeviceDefaults{CPU: "250m", Memory: "256Mi"}
+
+func wantQty(t *testing.T, list corev1.ResourceList, name corev1.ResourceName, want string) {
+	t.Helper()
+	got, ok := list[name]
+	if !ok {
+		t.Fatalf("%s not set, want %s", name, want)
+	}
+	if got.Cmp(resource.MustParse(want)) != 0 {
+		t.Errorf("%s = %s, want %s", name, got.String(), want)
 	}
 }
 
-func TestDeviceResourcesFull(t *testing.T) {
+// A device without resources gets the defaults, as requests equal to limits.
+func TestDeviceResourcesDefaults(t *testing.T) {
+	rr := deviceResources(&laboratoryv1alpha1.Device{}, testDefaults)
+	for _, list := range []corev1.ResourceList{rr.Requests, rr.Limits} {
+		wantQty(t, list, corev1.ResourceCPU, "250m")
+		wantQty(t, list, corev1.ResourceMemory, "256Mi")
+	}
+}
+
+// Empty defaults keep the old behavior for an undeclared device: nothing is set.
+func TestDeviceResourcesNoDefaults(t *testing.T) {
+	rr := deviceResources(&laboratoryv1alpha1.Device{}, DeviceDefaults{})
+	if rr.Requests != nil || rr.Limits != nil {
+		t.Errorf("expected empty requirements, got %+v", rr)
+	}
+}
+
+// Declared requests and limits collapse to the limit, so the pod is Guaranteed.
+func TestDeviceResourcesRequestsEqualLimits(t *testing.T) {
 	d := &laboratoryv1alpha1.Device{}
 	d.Spec.Resources = &laboratoryv1alpha1.DeviceResources{
-		CPURequest:    "250m",
-		MemoryRequest: "256Mi",
-		CPULimit:      "500m",
-		MemoryLimit:   "512Mi",
+		CPURequest: "250m", MemoryRequest: "256Mi", CPULimit: "500m", MemoryLimit: "512Mi",
 	}
-	rr := deviceResources(d)
-
-	want := map[corev1.ResourceName]struct {
-		list corev1.ResourceList
-		q    string
-	}{
-		corev1.ResourceCPU:    {rr.Requests, "250m"},
-		corev1.ResourceMemory: {rr.Requests, "256Mi"},
-	}
-	for name, w := range want {
-		got := w.list[name]
-		if got.Cmp(resource.MustParse(w.q)) != 0 {
-			t.Errorf("request %s = %s, want %s", name, got.String(), w.q)
-		}
-	}
-	if got := rr.Limits[corev1.ResourceCPU]; got.Cmp(resource.MustParse("500m")) != 0 {
-		t.Errorf("cpu limit = %s, want 500m", got.String())
-	}
-	if got := rr.Limits[corev1.ResourceMemory]; got.Cmp(resource.MustParse("512Mi")) != 0 {
-		t.Errorf("mem limit = %s, want 512Mi", got.String())
+	rr := deviceResources(d, testDefaults)
+	for _, list := range []corev1.ResourceList{rr.Requests, rr.Limits} {
+		wantQty(t, list, corev1.ResourceCPU, "500m")
+		wantQty(t, list, corev1.ResourceMemory, "512Mi")
 	}
 }
 
-// Empty fields are omitted; unparseable quantities are skipped rather than
-// failing the whole pod.
+// A request alone becomes the limit too; a missing resource falls back to the
+// default; an unparseable quantity is skipped rather than failing the pod.
 func TestDeviceResourcesPartialAndInvalid(t *testing.T) {
 	d := &laboratoryv1alpha1.Device{}
 	d.Spec.Resources = &laboratoryv1alpha1.DeviceResources{
-		CPURequest:    "100m",       // valid
-		MemoryRequest: "",           // omitted
-		CPULimit:      "not-a-qty",  // invalid → skipped
+		CPURequest:  "100m",
+		MemoryLimit: "not-a-qty",
 	}
-	rr := deviceResources(d)
+	rr := deviceResources(d, testDefaults)
+	for _, list := range []corev1.ResourceList{rr.Requests, rr.Limits} {
+		wantQty(t, list, corev1.ResourceCPU, "100m")
+		wantQty(t, list, corev1.ResourceMemory, "256Mi")
+	}
+}
+
+// Requests and limits must be separate maps, so a later edit of one cannot change the other.
+func TestDeviceResourcesMapsAreIndependent(t *testing.T) {
+	rr := deviceResources(&laboratoryv1alpha1.Device{}, testDefaults)
+	delete(rr.Limits, corev1.ResourceCPU)
 	if _, ok := rr.Requests[corev1.ResourceCPU]; !ok {
-		t.Errorf("expected cpu request set")
+		t.Error("requests share storage with limits")
 	}
-	if _, ok := rr.Requests[corev1.ResourceMemory]; ok {
-		t.Errorf("empty memory request must be omitted")
+}
+
+// A zero, negative or overflowing value of an object that predates the validation never reaches the pod as "no limit":
+// it is skipped (the next candidate or the default applies) and a value over the chart maximum is clamped.
+func TestDeviceResourcesRefuseZeroAndClamp(t *testing.T) {
+	d := &laboratoryv1alpha1.Device{}
+	d.Spec.Resources = &laboratoryv1alpha1.DeviceResources{CPULimit: "0", CPURequest: "-5", MemoryLimit: "1e30", MemoryRequest: "512Mi"}
+	rr := deviceResources(d, testDefaults)
+	for _, list := range []corev1.ResourceList{rr.Requests, rr.Limits} {
+		wantQty(t, list, corev1.ResourceCPU, "250m")
+		wantQty(t, list, corev1.ResourceMemory, "512Mi")
 	}
-	if _, ok := rr.Limits[corev1.ResourceCPU]; ok {
-		t.Errorf("invalid cpu limit must be skipped")
-	}
+
+	big := &laboratoryv1alpha1.Device{}
+	big.Spec.Resources = &laboratoryv1alpha1.DeviceResources{CPULimit: "64", MemoryLimit: "100Gi"}
+	capped := DeviceDefaults{CPU: "250m", Memory: "256Mi", MaxCPU: "2000m", MaxMemory: "4Gi"}
+	rr = deviceResources(big, capped)
+	wantQty(t, rr.Limits, corev1.ResourceCPU, "2")
+	wantQty(t, rr.Limits, corev1.ResourceMemory, "4Gi")
+	wantQty(t, rr.Requests, corev1.ResourceMemory, "4Gi")
 }

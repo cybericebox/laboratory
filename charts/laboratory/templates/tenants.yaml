@@ -1,0 +1,14 @@
+{{- $tenants := include "laboratory.tenants" . | fromYaml }}
+{{- range $name, $spec := $tenants }}
+---
+apiVersion: laboratory.cybericebox.com/v1alpha1
+kind: Tenant
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "laboratory.labels" $ | nindent 4 }}
+{{- with $spec }}
+spec:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end }}

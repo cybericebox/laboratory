@@ -26,12 +26,20 @@ func TestProbeHandlerShowsOnlyConnectionResult(t *testing.T) {
 		!strings.Contains(r.Body.String(), "Доступ до окремих лабораторій (завдань) відкривається окремо.") {
 		t.Fatalf("unexpected body: %q", r.Body.String())
 	}
+	if !strings.Contains(r.Body.String(), `<link rel="icon" type="image/png" href="data:image/png;base64,`) ||
+		!strings.Contains(r.Header().Get("Content-Security-Policy"), "img-src data:") {
+		t.Fatalf("no inline favicon: %q", r.Body.String())
+	}
 	if strings.Count(r.Body.String(), "#211A52") != 1 ||
 		!strings.Contains(r.Body.String(), "--brand:#211A52") ||
 		!strings.Contains(r.Body.String(), "Системна") ||
 		!strings.Contains(r.Body.String(), "Світла") ||
 		!strings.Contains(r.Body.String(), "Темна") {
 		t.Fatalf("fixed platform palette or theme switcher missing")
+	}
+	if !strings.Contains(r.Body.String(), `class="ic ic-ok"`) || !strings.Contains(r.Body.String(), `class="rule"`) ||
+		strings.Contains(r.Body.String(), `class="top"`) {
+		t.Fatalf("state icon, brand rule or top bar: %s", r.Body.String())
 	}
 	if strings.Contains(r.Body.String(), "event") || strings.Contains(r.Body.String(), "team") {
 		t.Fatalf("probe leaks event data: %q", r.Body.String())
@@ -55,7 +63,7 @@ func TestProbeBindsOnlyWireGuardGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	probe, err := startProbe(subnet, 0, "help@example.org")
+	probe, err := startProbe(subnet, 0, "help@example.org", "")
 	if err != nil {
 		t.Fatal(err)
 	}

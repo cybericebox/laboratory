@@ -22,9 +22,12 @@ package v1alpha1
 //
 // InterfaceSpec defines a network interface on a device.
 type InterfaceSpecApplyConfiguration struct {
-	Name *string                     `json:"name,omitempty"`
+	// Name is the interface name inside the pod: a lowercase word of at most 15
+	// characters; lo and accessport are reserved.
+	Name *string `json:"name,omitempty"`
+	// Addr is optional: nil means the interface is created without an IP.
 	Addr *AddrSpecApplyConfiguration `json:"addr,omitempty"`
-	// MAC is "random" or an explicit MAC address.
+	// MAC is "random" or an explicit unicast MAC address.
 	MAC *string `json:"mac,omitempty"`
 }
 

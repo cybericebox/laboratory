@@ -6,19 +6,57 @@ metadata:
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 data:
-  PUBLIC_VPN_ENDPOINT: {{ required "operator.publicVPNEndpoint is required" .Values.operator.publicVPNEndpoint | quote }}
-  BASE_DOMAIN: {{ required "operator.baseDomain is required" .Values.operator.baseDomain | quote }}
-  VPN_SERVICE_PORT: {{ .Values.operator.vpnServicePort | quote }}
+  # What the operator and the management agent both read: one map, written once (laboratory.sharedEnv).
+  # The state persistence and image cache settings are rendered only with their feature on, so that the operator gets nothing about a feature that is off.
+  {{- range $name, $value := include "laboratory.sharedEnv" . | fromYaml }}
+  {{- if and (or (not (hasPrefix "STATE_" $name)) $.Values.devices.statePersistence.enabled) (or (not (hasPrefix "IMAGE_CACHE_" $name)) $.Values.registry.cache.enabled) }}
+  {{ $name }}: {{ $value | quote }}
+  {{- end }}
+  {{- end }}
+  # Only the operator reads these.
   VPN_BASE_NETWORK: {{ .Values.operator.vpnBaseNetwork | quote }}
   INET_BASE_NETWORK: {{ .Values.operator.inetBaseNetwork | quote }}
   PROXY_SOURCE_CIDRS: {{ .Values.operator.proxySourceCIDRs | quote }}
-  VPN_IMAGE: "{{ .Values.vpn.image.repository }}:{{ .Values.vpn.image.tag }}"
-  GATEWAY_IMAGE: "{{ .Values.inetGateway.image.repository }}:{{ .Values.inetGateway.image.tag }}"
-  NETCONFIG_IMAGE: "{{ .Values.nodeAgent.image.repository }}:{{ .Values.nodeAgent.image.tag }}"
-  LAB_NODE_SELECTOR: {{ .Values.labWorkloads.nodeSelector | toJson | quote }}
-  LAB_TOLERATIONS: {{ .Values.labWorkloads.tolerations | toJson | quote }}
+  VPN_IMAGE: {{ include "laboratory.imageRef" (dict "image" .Values.vpn.image "root" $) | quote }}
+  {{- /* The gateway is the VPN image (one image, two commands): the operator takes it from VPN_IMAGE unless the chart is told another. */}}
+  {{- $gateway := include "laboratory.imageRef" (dict "image" .Values.inetGateway.image "root" $) }}
+  {{- if ne $gateway (include "laboratory.imageRef" (dict "image" .Values.vpn.image "root" $)) }}
+  GATEWAY_IMAGE: {{ $gateway | quote }}
+  {{- end }}
+  NETCONFIG_IMAGE: {{ include "laboratory.imageRef" (dict "image" .Values.nodeAgent.image "root" $) | quote }}
+  PRIORITY_CLASS_GROUP: {{ include "laboratory.priorityClass.group" . | quote }}
+  PRIORITY_CLASS_DEVICE: {{ include "laboratory.priorityClass.device" . | quote }}
+{{- if .Values.labScheduler.enabled }}
+  LAB_SCHEDULER_NAME: {{ .Values.labScheduler.schedulerName | quote }}
+{{- end }}
+  LAB_POD_TERMINATION_GRACE_SECONDS: {{ .Values.operator.labPodTerminationGraceSeconds | quote }}
+  VPN_STATS_INTERVAL: {{ .Values.vpn.statsInterval | quote }}
+  NETWORK_POLICY_ENABLED: {{ .Values.operator.groupNetworkPolicy.enabled | quote }}
+  DEVICE_USER_NAMESPACES: {{ .Values.devices.security.userNamespaces | quote }}
+  DEVICE_EPHEMERAL_STORAGE: {{ .Values.devices.security.ephemeralStorage | quote }}
+  # The operator's own identity and the agent's: in every LabGroup namespace the operator binds them to their Roles.
+  OPERATOR_SERVICE_ACCOUNT: "laboratory-controller-manager"
+  OPERATOR_NAMESPACE: {{ .Release.Namespace | quote }}
   AGENT_ENABLED: {{ .Values.agent.enabled | quote }}
+  PROXY_ENABLED: {{ .Values.proxy.enabled | quote }}
   AGENT_SERVICE_ACCOUNT: "laboratory-agent"
   AGENT_SERVICE_NAMESPACE: {{ .Values.agent.namespace | quote }}
   SUPPORT_EMAIL: {{ required "operator.supportEmail is required" .Values.operator.supportEmail | quote }}
-  IMAGE_PULL_SECRETS: {{ include "laboratory.pullSecretNames" . | quote }}
+  SCHEDULER_STARTUP_TIMEOUT: {{ .Values.scheduler.startupTimeout | quote }}
+  SCHEDULER_RESTART_THRESHOLD: {{ .Values.scheduler.restartThreshold | quote }}
+  SCHEDULER_RESOURCE_CHECK: {{ .Values.scheduler.resourceCheck | quote }}
+  SCHEDULER_PREPULL: {{ .Values.scheduler.prepull.enabled | quote }}
+  SCHEDULER_PREPULL_TIMEOUT: {{ .Values.scheduler.prepull.timeout | quote }}
+  TENANT_ENROLLMENT_TTL: {{ .Values.agent.enrollment.tokenTTL | quote }}
+  # The operator checks at start that the admission policies are enforced on it and exits if they are not (with them off it is told so).
+  OPERATOR_REQUIRE_ADMISSION_POLICY: {{ .Values.operator.admissionPolicy.enabled | quote }}
+  # State persistence: the credentials come from the registry Secret.
+  {{- with .Values.devices.statePersistence }}
+  {{- if .enabled }}
+  STATE_REGISTRY_ADDR: {{ include "laboratory.registryAddr" $ | quote }}
+  STATE_MAX_LAYERS: {{ .maxLayers | quote }}
+  STATE_RETENTION: {{ .retention | quote }}
+  STATE_RETENTION_INTERVAL: {{ .retentionInterval | quote }}
+  STATE_NODE_LOSS_FORCE_DELETE_AFTER: {{ .nodeLossForceDeleteAfter | quote }}
+  {{- end }}
+  {{- end }}

@@ -1,0 +1,25 @@
+{{- if include "laboratory.registryEnabled" . }}
+{{- $r := .Values.registry }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: laboratory-registry
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+  annotations:
+    # The snapshots are the participants' work: they outlive an uninstall of the chart.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ ReadWriteOnce ]
+  {{- if $r.retainClass.create }}
+  storageClassName: {{ $r.retainClass.name | quote }}
+  {{- else }}
+  {{- with $r.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $r.size | quote }}
+{{- end }}

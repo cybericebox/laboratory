@@ -4,37 +4,14 @@ package node.v1;
 
 option go_package = "github.com/cybericebox/laboratory/api/node/v1";
 
-import "google/protobuf/empty.proto";
-
 service NodeAgent {
   // SetupNetworks is called by cni-gate during CNI ADD.
   // It waits for pod annotations to appear in cache, creates OVS veth pairs for all
   // interfaces in the networks annotation, moves pod-side vetches into the pod netns,
   // and returns how cni-gate should handle the default k8s interface (eth0).
   rpc SetupNetworks(SetupNetworksRequest) returns (SetupNetworksResponse);
-  // AddPort creates a veth pair and moves the pod-side into the pod netns.
-  rpc AddPort(AddPortRequest) returns (AddPortResponse);
-  // DeletePort removes all OVS ports associated with a pod.
-  rpc DeletePort(DeletePortRequest) returns (google.protobuf.Empty);
   // GetPodAnnotation reads a single pod annotation; used by cni-gate during CNI DEL.
   rpc GetPodAnnotation(GetPodAnnotationRequest) returns (GetPodAnnotationResponse);
-}
-
-message AddPortRequest {
-  string pod_uid = 1;
-  string connection = 2;  // Connection CRD name
-  string interface_name = 3;  // target iface name inside pod netns (e.g. "eth0")
-  string namespace = 4;  // pod namespace
-  string netns_path = 5;  // netns path from CNI args (e.g. /var/run/netns/cni-xxx)
-}
-
-message AddPortResponse {
-  string port_id = 1;  // OVS port name (e.g. "pa1b2c3d4")
-  string mac = 2;  // assigned MAC address
-}
-
-message DeletePortRequest {
-  string pod_uid = 1;
 }
 
 message GetPodAnnotationRequest {

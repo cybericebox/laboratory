@@ -5,16 +5,20 @@ package nodeagent
 import (
 	"context"
 	"fmt"
-	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/netattach"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 )
 
 const (
@@ -23,31 +27,22 @@ const (
 )
 
 // NetAttachment is one parsed entry from the networks annotation.
-type NetAttachment struct {
-	Iface string // desired name inside pod netns (e.g. "eth1")
-	Name  string // Connection CRD name or OVS port name
-	MAC   string // optional hardware address; empty = keep generated MAC
-}
+type NetAttachment = netattach.Attachment
 
-// ParseNetworkAnnotation parses the network.cybericebox.com/networks annotation.
-// Format per entry: "iface@[connection][|MAC]"
-// Entries with name=="default" are excluded (handled by the CNI plugin).
+// ParseNetworkAnnotation parses the network.cybericebox.com/networks annotation (see
+// netattach.Parse). Entries whose interface name or MAC is not valid are dropped: the
+// operator and the API validate both, and a value that got past them must not rename
+// or re-address anything in the pod netns.
 func ParseNetworkAnnotation(annotation string) []NetAttachment {
 	var result []NetAttachment
-	for _, entry := range strings.Split(annotation, ",") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
+	for _, att := range netattach.Parse(annotation) {
+		if netattach.ValidateInterfaceName(att.Iface) != nil {
 			continue
 		}
-		iface, rest, ok := strings.Cut(entry, "@")
-		if !ok || iface == "" {
+		if netattach.ValidateMAC(att.MAC) != nil {
 			continue
 		}
-		name, mac, _ := strings.Cut(rest, "|")
-		if name == "default" {
-			continue
-		}
-		result = append(result, NetAttachment{Iface: iface, Name: name, MAC: mac})
+		result = append(result, att)
 	}
 	return result
 }
@@ -61,6 +56,19 @@ type NetworkAttachReconciler struct {
 	OVS      *OVSManager
 	Flows    *FlowManager
 	CRISock  string
+
+	guardMu sync.Mutex
+	guard   *recreationGuard
+}
+
+// mayRecreate says whether the veth of a pod may be recreated again (see recreationGuard); when not, how long to leave it be.
+func (r *NetworkAttachReconciler) mayRecreate(key string) (bool, time.Duration) {
+	r.guardMu.Lock()
+	defer r.guardMu.Unlock()
+	if r.guard == nil {
+		r.guard = newRecreationGuard(5, 10*time.Minute)
+	}
+	return r.guard.allow(key, time.Now())
 }
 
 // delVethWithFlows removes the t0 entry for a veth port BEFORE deleting the
@@ -74,6 +82,23 @@ func (r *NetworkAttachReconciler) delVethWithFlows(stableKey string) {
 	_ = r.OVS.DelVethPort(stableKey)
 }
 
+// isPlatformPod says whether a pod is one the platform made for a lab: its labels carry the lab and the device, or the component
+// (vpn, gateway) of a group. The operator sets them and no caller can.
+func isPlatformPod(pod *corev1.Pod) bool {
+	if _, ok := pod.Labels[names.LabelLab]; ok {
+		_, dev := pod.Labels[names.LabelDevice]
+		return dev
+	}
+	c := pod.Labels[names.LabelComponent]
+	if c == names.ComponentVPN || c == names.ComponentGateway {
+		return true
+	}
+	// A VPN or gateway pod made before the component label: by `app`.
+	app := pod.Labels["app"]
+	return app == names.ComponentVPN || app == names.ComponentGateway
+}
+
+//nolint:gocyclo // one decision over many cases; splitting it would scatter the rule
 func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 	log.Info("NetAttach reconcile start", "pod", req.NamespacedName)
@@ -87,20 +112,64 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		log.Info("NetAttach: skip, wrong node", "podNode", pod.Spec.NodeName, "myNode", r.NodeName)
 		return ctrl.Result{}, nil
 	}
+	// Only the platform's own pods are wired: a device pod or the VPN or gateway of a group. Any other pod on the node
+	// that carries the annotation (a workload of something else) is not ours to touch.
+	if !isPlatformPod(&pod) {
+		return ctrl.Result{}, nil
+	}
 
-	annotation := pod.Annotations[AnnotationNetworks]
-	attachments := ParseNetworkAnnotation(annotation)
-	log.Info("NetAttach parsed", "annotation", annotation, "attachments", len(attachments), "phase", pod.Status.Phase)
+	// The VPN and gateway pod of a group: the lab interfaces come from the group's LabVPN and LabGateway objects (see GroupPodAttachments),
+	// not from the pod's annotation, so a lab added or removed never changes the Deployment. A device pod lists its interfaces in the
+	// annotation.
+	component := GroupComponent(&pod)
+	var attachments []NetAttachment
+	if component != "" {
+		var err error
+		if attachments, err = GroupPodAttachments(ctx, r.Client, pod.Namespace, component); err != nil {
+			return ctrl.Result{}, err
+		}
+	} else {
+		attachments = ParseNetworkAnnotation(pod.Annotations[AnnotationNetworks])
+	}
+	log.Info("NetAttach attachments", "component", component, "attachments", len(attachments), "phase", pod.Status.Phase)
 
 	if pod.DeletionTimestamp != nil {
+		if component != "" {
+			// The pod goes: so do all the legs it had on this node.
+			if present, err := r.OVS.PortKeys(); err == nil {
+				for _, key := range GroupPortsPresent(pod.Namespace, component, present) {
+					r.delVethWithFlows(key)
+				}
+			}
+			return ctrl.Result{}, nil
+		}
 		for _, att := range attachments {
 			stableKey := r.resolveOVSPort(ctx, pod.Namespace, pod.Name, att)
+			if !ValidPortKey(stableKey) {
+				log.Info("NetAttach: not a port key of the platform, ignored", "name", stableKey)
+				continue
+			}
 			r.delVethWithFlows(stableKey)
 		}
 		return ctrl.Result{}, nil
 	}
 
+	// A lab that is gone: its leg is taken out of the running pod (the pod keeps running).
+	if component != "" && pod.Status.Phase == corev1.PodRunning {
+		present, err := r.OVS.PortKeys()
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("list ports: %w", err)
+		}
+		for _, key := range StaleGroupPorts(pod.Namespace, component, attachments, present) {
+			log.Info("NetAttach: detaching the leg of a lab that is gone", "key", key)
+			r.delVethWithFlows(key)
+		}
+	}
+
 	if len(attachments) == 0 {
+		if component != "" {
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -123,7 +192,15 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	log.Info("NetAttach: got netnsPath", "netnsPath", netnsPath)
 
 	for _, att := range attachments {
-		stableKey := r.resolveOVSPort(ctx, pod.Namespace, pod.Name, att)
+		stableKey := att.Name // a leg of a lab: its port is named by the lab's index
+		if component == "" {
+			stableKey = r.resolveOVSPort(ctx, pod.Namespace, pod.Name, att)
+		}
+		if !ValidPortKey(stableKey) {
+			// "eth0" or any other name an annotation could carry: never a veth of ours.
+			log.Info("NetAttach: not a port key of the platform, ignored", "name", stableKey)
+			continue
+		}
 		podSide := VethPeerName(stableKey)
 		targetIface := att.Iface
 		if targetIface == "" {
@@ -146,6 +223,12 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			"existsInOVS",
 			exists,
 		)
+		if exists {
+			// A port made before the policing setting (or under another value) gets it now; a no-op when it already has it.
+			if err := r.OVS.EnsurePolicing(stableKey); err != nil {
+				log.Error(err, "NetAttach: police veth port", "key", stableKey)
+			}
+		}
 		if !exists {
 			if err := r.OVS.AddVethPort(stableKey); err != nil {
 				return ctrl.Result{}, fmt.Errorf("add veth port %q: %w", stableKey, err)
@@ -228,7 +311,12 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 					return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 				}
 			} else {
-				// Not in root netns, not in pod netns — stale veth, recreate.
+				// Not in root netns, not in pod netns — stale veth, recreate. A pod that makes this happen again and again (it can delete its
+				// own interface when it has NET_ADMIN) is left alone for a while instead.
+				if ok, wait := r.mayRecreate(string(pod.UID) + "/" + stableKey); !ok {
+					log.Info("NetAttach: the veth of this pod was recreated too often, waiting", "key", stableKey, "wait", wait.String())
+					return ctrl.Result{RequeueAfter: wait}, nil
+				}
 				log.Info("NetAttach: stale veth, recreating", "key", stableKey)
 				r.delVethWithFlows(stableKey)
 				return ctrl.Result{RequeueAfter: time.Second}, nil
@@ -271,8 +359,28 @@ func (r *NetworkAttachReconciler) resolveOVSPort(
 	return names.DevicePortKey(namespace, podName, att.Iface)
 }
 
+// groupPodsOf enqueues the VPN or gateway pod of the group (on this node) when one of its lab network objects changes.
+func (r *NetworkAttachReconciler) groupPodsOf(component string) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		var pods corev1.PodList
+		if err := r.List(ctx, &pods, client.InNamespace(obj.GetNamespace())); err != nil {
+			return nil
+		}
+		var out []reconcile.Request
+		for i := range pods.Items {
+			p := &pods.Items[i]
+			if p.Spec.NodeName == r.NodeName && GroupComponent(p) == component {
+				out = append(out, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: p.Namespace, Name: p.Name}})
+			}
+		}
+		return out
+	}
+}
+
 func (r *NetworkAttachReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Pod{}).
-		Complete(r)
+		Watches(&laboratoryv1alpha1.LabVPN{}, handler.EnqueueRequestsFromMapFunc(r.groupPodsOf(names.ComponentVPN))).
+		Watches(&laboratoryv1alpha1.LabGateway{}, handler.EnqueueRequestsFromMapFunc(r.groupPodsOf(names.ComponentGateway))).
+		Complete(reconcileutil.QuietIgnoreNotFound(r))
 }

@@ -61,14 +61,6 @@ type LabGroupAccessPolicyListerExpansion interface{}
 // LabGroupAccessPolicyNamespaceLister.
 type LabGroupAccessPolicyNamespaceListerExpansion interface{}
 
-// LabTrafficReportListerExpansion allows custom methods to be added to
-// LabTrafficReportLister.
-type LabTrafficReportListerExpansion interface{}
-
-// LabTrafficReportNamespaceListerExpansion allows custom methods to be added to
-// LabTrafficReportNamespaceLister.
-type LabTrafficReportNamespaceListerExpansion interface{}
-
 // LabGroupClientListerExpansion allows custom methods to be added to
 // LabGroupClientLister.
 type LabGroupClientListerExpansion interface{}
@@ -77,6 +69,14 @@ type LabGroupClientListerExpansion interface{}
 // LabGroupClientNamespaceLister.
 type LabGroupClientNamespaceListerExpansion interface{}
 
+// LabTrafficReportListerExpansion allows custom methods to be added to
+// LabTrafficReportLister.
+type LabTrafficReportListerExpansion interface{}
+
+// LabTrafficReportNamespaceListerExpansion allows custom methods to be added to
+// LabTrafficReportNamespaceLister.
+type LabTrafficReportNamespaceListerExpansion interface{}
+
 // LabVPNListerExpansion allows custom methods to be added to
 // LabVPNLister.
 type LabVPNListerExpansion interface{}
@@ -84,3 +84,11 @@ type LabVPNListerExpansion interface{}
 // LabVPNNamespaceListerExpansion allows custom methods to be added to
 // LabVPNNamespaceLister.
 type LabVPNNamespaceListerExpansion interface{}
+
+// MaintenanceWindowListerExpansion allows custom methods to be added to
+// MaintenanceWindowLister.
+type MaintenanceWindowListerExpansion interface{}
+
+// TenantListerExpansion allows custom methods to be added to
+// TenantLister.
+type TenantListerExpansion interface{}

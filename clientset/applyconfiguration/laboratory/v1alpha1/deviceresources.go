@@ -24,6 +24,8 @@ package v1alpha1
 // Values are Kubernetes quantity strings (e.g. "250m", "256Mi"); empty fields
 // are omitted so the scheduler treats them as best-effort. Requests are what
 // capacity planning sums against node allocatable.
+//
+// Every value must be a positive quantity without an exponent: zero would remove the pod limit.
 type DeviceResourcesApplyConfiguration struct {
 	CPURequest    *string `json:"cpuRequest,omitempty"`
 	MemoryRequest *string `json:"memoryRequest,omitempty"`

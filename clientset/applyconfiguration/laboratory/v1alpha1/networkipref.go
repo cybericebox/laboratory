@@ -17,21 +17,33 @@ limitations under the License.
 
 package v1alpha1
 
-// NetworkIPRefApplyConfiguration represents a subnet-relative host reference.
+// NetworkIPRefApplyConfiguration represents a declarative configuration of the NetworkIPRef type for use
+// with apply.
+//
+// NetworkIPRef selects a host address from a lab-allocated VPN or Internet /24.
+// The lab reconciler resolves it before creating a Device.
 type NetworkIPRefApplyConfiguration struct {
 	Network *string `json:"network,omitempty"`
 	Host    *int32  `json:"host,omitempty"`
 }
 
+// NetworkIPRefApplyConfiguration constructs a declarative configuration of the NetworkIPRef type for use with
+// apply.
 func NetworkIPRef() *NetworkIPRefApplyConfiguration {
 	return &NetworkIPRefApplyConfiguration{}
 }
 
+// WithNetwork sets the Network field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Network field is set to the value of the last call.
 func (b *NetworkIPRefApplyConfiguration) WithNetwork(value string) *NetworkIPRefApplyConfiguration {
 	b.Network = &value
 	return b
 }
 
+// WithHost sets the Host field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Host field is set to the value of the last call.
 func (b *NetworkIPRefApplyConfiguration) WithHost(value int32) *NetworkIPRefApplyConfiguration {
 	b.Host = &value
 	return b

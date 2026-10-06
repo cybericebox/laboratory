@@ -1,0 +1,23 @@
+{{- if and .Values.proxy.enabled (eq .Values.proxy.mode "daemonset") }}
+# One proxy pod on every node (proxy.nodeSelector narrows it): for clusters with many nodes. The pod is the same
+# as the Deployment's; the Service and the Gateway reach it by the same labels.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: laboratory-proxy
+  namespace: {{ .Values.proxy.namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app: laboratory-proxy-l7
+  # The next node's pod is replaced only after this one has been Ready for minReadySeconds.
+  minReadySeconds: {{ .Values.proxy.minReadySeconds }}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    {{- include "laboratory.proxyPodTemplate" . | nindent 4 }}
+{{- end }}

@@ -23,7 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	
+
 	. "github.com/onsi/ginkgo/v2" //nolint:golint,revive
 )
 
@@ -31,7 +31,7 @@ const (
 	prometheusOperatorVersion = "v0.77.1"
 	prometheusOperatorURL     = "https://github.com/prometheus-operator/prometheus-operator/" +
 		"releases/download/%s/bundle.yaml"
-	
+
 	certmanagerVersion = "v1.16.3"
 	certmanagerURLTmpl = "https://github.com/cert-manager/cert-manager/releases/download/%s/cert-manager.yaml"
 )
@@ -44,11 +44,11 @@ func warnError(err error) {
 func Run(cmd *exec.Cmd) (string, error) {
 	dir, _ := GetProjectDir()
 	cmd.Dir = dir
-	
+
 	if err := os.Chdir(cmd.Dir); err != nil {
 		_, _ = fmt.Fprintf(GinkgoWriter, "chdir dir: %s\n", err)
 	}
-	
+
 	cmd.Env = append(os.Environ(), "GO111MODULE=on")
 	command := strings.Join(cmd.Args, " ")
 	_, _ = fmt.Fprintf(GinkgoWriter, "running: %s\n", command)
@@ -56,7 +56,7 @@ func Run(cmd *exec.Cmd) (string, error) {
 	if err != nil {
 		return string(output), fmt.Errorf("%s failed with error: (%v) %s", command, err, string(output))
 	}
-	
+
 	return string(output), nil
 }
 
@@ -86,7 +86,7 @@ func IsPrometheusCRDsInstalled() bool {
 		"prometheusrules.monitoring.coreos.com",
 		"prometheusagents.monitoring.coreos.com",
 	}
-	
+
 	cmd := exec.Command("kubectl", "get", "crds", "-o", "custom-columns=NAME:.metadata.name")
 	output, err := Run(cmd)
 	if err != nil {
@@ -100,7 +100,7 @@ func IsPrometheusCRDsInstalled() bool {
 			}
 		}
 	}
-	
+
 	return false
 }
 
@@ -128,7 +128,7 @@ func InstallCertManager() error {
 		"--namespace", "cert-manager",
 		"--timeout", "5m",
 	)
-	
+
 	_, err := Run(cmd)
 	return err
 }
@@ -145,14 +145,14 @@ func IsCertManagerCRDsInstalled() bool {
 		"orders.acme.cert-manager.io",
 		"challenges.acme.cert-manager.io",
 	}
-	
+
 	// Execute the kubectl command to get all CRDs
 	cmd := exec.Command("kubectl", "get", "crds")
 	output, err := Run(cmd)
 	if err != nil {
 		return false
 	}
-	
+
 	// Check if any of the Cert Manager CRDs are present
 	crdList := GetNonEmptyLines(output)
 	for _, crd := range certManagerCRDs {
@@ -162,7 +162,7 @@ func IsCertManagerCRDsInstalled() bool {
 			}
 		}
 	}
-	
+
 	return false
 }
 
@@ -188,7 +188,7 @@ func GetNonEmptyLines(output string) []string {
 			res = append(res, element)
 		}
 	}
-	
+
 	return res
 }
 
@@ -198,7 +198,7 @@ func GetProjectDir() (string, error) {
 	if err != nil {
 		return wd, err
 	}
-	wd = strings.Replace(wd, "/test/e2e", "", -1)
+	wd = strings.ReplaceAll(wd, "/test/e2e", "")
 	return wd, nil
 }
 
@@ -212,18 +212,18 @@ func UncommentCode(filename, target, prefix string) error {
 		return err
 	}
 	strContent := string(content)
-	
+
 	idx := strings.Index(strContent, target)
 	if idx < 0 {
 		return fmt.Errorf("unable to find the code %s to be uncomment", target)
 	}
-	
+
 	out := new(bytes.Buffer)
 	_, err = out.Write(content[:idx])
 	if err != nil {
 		return err
 	}
-	
+
 	scanner := bufio.NewScanner(bytes.NewBufferString(target))
 	if !scanner.Scan() {
 		return nil
@@ -241,7 +241,7 @@ func UncommentCode(filename, target, prefix string) error {
 			return err
 		}
 	}
-	
+
 	_, err = out.Write(content[idx+len(target):])
 	if err != nil {
 		return err

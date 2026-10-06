@@ -1,78 +1,92 @@
 package proxy
 
 import (
-	"crypto/ed25519"
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
-	"os"
 	"time"
 
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/config"
 )
 
 type L7Config struct {
-	TLSCertPath string `env:"TLS_CERT_PATH,required"`
-	TLSKeyPath  string `env:"TLS_KEY_PATH,required"`
-	// LabAccessPublicKeyPath is the Ed25519 public key (PKIX PEM) that verifies the
-	// platform's lab access tokens (the handoff links).
-	LabAccessPublicKeyPath string `env:"LAB_ACCESS_PUBLIC_KEY_PATH,required"`
-	BaseDomain             string `env:"BASE_DOMAIN,notEmpty"`
-	Listen                 string `env:"LISTEN_HTTPS"  envDefault:":443"`
-	CookieName             string `env:"SESSION_COOKIE_NAME" envDefault:"challenge"`
+	// The certificate and key of the wildcard Secret proxy-tls, where the chart mounts it.
+	TLSCertPath string `env:"TLS_CERT_PATH" envDefault:"/etc/proxy/tls/tls.crt"`
+	TLSKeyPath  string `env:"TLS_KEY_PATH" envDefault:"/etc/proxy/tls/tls.key"`
+	// The handoff links are verified with the access public keys of the tenants, kept in the Secrets
+	// tenant-<name>-access-keys of the access keys namespace (see l7.SecretKeys); there is no shared key.
+	BaseDomain string `env:"BASE_DOMAIN,notEmpty"`
+	Listen     string `env:"LISTEN_HTTPS"  envDefault:":8443"`
+	CookieName string `env:"SESSION_COOKIE_NAME" envDefault:"challenge"`
 	// SessionSecret signs the proxy's own session cookie (HMAC-SHA256, at least 32
 	// bytes). It is shared by all replicas and never leaves the cluster; the
 	// platform does not know it and it is never the lab access key.
 	SessionSecret string `env:"SESSION_SECRET,required"`
+	// HealthAddr is where the readiness and liveness probes are served (the l7 container; the wg-demux container uses another port).
+	HealthAddr string `env:"HEALTH_ADDR" envDefault:":8081"`
 	// Instance names this replica in its traffic reports (the pod name).
 	Instance       string        `env:"POD_NAME"`
 	ReportInterval time.Duration `env:"REPORT_INTERVAL" envDefault:"1m"`
+	// AccessTokenMaxTTL is the longest exp - iat of a handoff link the proxy accepts; SessionMaxTTL is the
+	// longest its own session cookie lives, whatever the link asks for. The agent reports both to the backend.
+	AccessTokenMaxTTL time.Duration `env:"ACCESS_TOKEN_MAX_TTL" envDefault:"60s"`
+	// The session is sliding: it expires SessionIdleTTL after the last request, the cookie is re-issued only when
+	// less than SessionRenewBefore of it remains, and it ends SessionMaxTTL after the handoff at the latest (and
+	// never past the link's sess).
+	SessionIdleTTL     time.Duration `env:"SESSION_IDLE_TTL" envDefault:"24h"`
+	SessionRenewBefore time.Duration `env:"SESSION_RENEW_BEFORE" envDefault:"1h"`
+	SessionMaxTTL      time.Duration `env:"SESSION_MAX_TTL" envDefault:"168h"`
+	// LiveMaxLifetime caps one request or upgraded (WebSocket) connection; LiveCheckInterval is how often the
+	// open ones are checked against the access policy again, so a lock cuts them within about that time.
+	LiveMaxLifetime   time.Duration `env:"LIVE_MAX_LIFETIME" envDefault:"12h"`
+	LiveCheckInterval time.Duration `env:"LIVE_CHECK_INTERVAL" envDefault:"10s"`
+	// HTTP server limits (before any routing or authentication, so they stop slow-header and slow-body clients that
+	// would otherwise hold a connection and a goroutine forever): ReadHeaderTimeout bounds the request headers, ReadTimeout
+	// the whole request including the body, IdleTimeout a kept-alive connection with no request, MaxHeaderBytes the headers.
+	// There is no write timeout: responses stream, and an upgraded (WebSocket) connection lives at most LiveMaxLifetime.
+	ReadHeaderTimeout time.Duration `env:"READ_HEADER_TIMEOUT" envDefault:"10s"`
+	ReadTimeout       time.Duration `env:"READ_TIMEOUT" envDefault:"5m"`
+	IdleTimeout       time.Duration `env:"IDLE_TIMEOUT" envDefault:"2m"`
+	MaxHeaderBytes    int           `env:"MAX_HEADER_BYTES" envDefault:"65536"`
+	// What a client can hold open (R-17): MaxConnections is the connections of the server in all; LivePerClient, LivePerGroup and
+	// LiveTotal the requests in flight (upgraded connections included) per client of a group, per group and in all; AuthRate and
+	// AuthBurst limit the handoff path per peer address (all peers together may do twenty times that). 0 = unlimited.
+	// MaxConnections follows the memory limit of the chart (512Mi): a connection with a request in flight costs about 105 KiB, so
+	// 2500 are about 260 MiB, and with the informer caches and headroom they stay under the 80% soft limit. LiveTotal is not above
+	// it: a request in flight holds a connection. Above these numbers add replicas, do not raise the cap without the memory.
+	MaxConnections int     `env:"MAX_CONNECTIONS" envDefault:"2500"`
+	LivePerClient  int     `env:"LIVE_PER_CLIENT" envDefault:"200"`
+	LivePerGroup   int     `env:"LIVE_PER_GROUP" envDefault:"1000"`
+	LiveTotal      int     `env:"LIVE_TOTAL" envDefault:"2500"`
+	AuthRate       float64 `env:"AUTH_RATE" envDefault:"5"`
+	AuthBurst      int     `env:"AUTH_BURST" envDefault:"20"`
 }
 
 type WGConfig struct {
-	ListenAddr     string `env:"UDP_LISTEN_ADDR"  envDefault:":51820"`
-	VPNServicePort int    `env:"VPN_SERVICE_PORT" envDefault:"51820"`
+	// ListenAddr is the UDP address the demux binds; empty = ":" + names.WireGuardPort. The VPN pods listen on names.WireGuardPort too.
+	ListenAddr string `env:"UDP_LISTEN_ADDR"`
+	// HealthAddr is where the readiness and liveness probes are served.
+	HealthAddr string `env:"HEALTH_ADDR" envDefault:":8082"`
+	// The demux reads a public UDP port shared by every team, so what a stranger can make it hold or spend is capped
+	// (see demux.Limits). There is no limit per source address: one NAT hides a whole event behind one address.
+	// MaxEntries: conntrack entries in total (two per session). PartialTTL: how long a handshake in progress keeps its entry.
+	MaxEntries int           `env:"DEMUX_MAX_ENTRIES" envDefault:"100000"`
+	PartialTTL time.Duration `env:"DEMUX_PARTIAL_TTL" envDefault:"15s"`
+	// All sources together may start this many handshakes per second (each costs a scan of the groups' keys) and send this many
+	// packets per second that match no session or come from an unexpected address (index guessing, spoofing, roaming).
+	GlobalHandshakeRate  float64       `env:"DEMUX_GLOBAL_HANDSHAKE_RATE" envDefault:"2000"`
+	GlobalHandshakeBurst int           `env:"DEMUX_GLOBAL_HANDSHAKE_BURST" envDefault:"4000"`
+	MissRate             float64       `env:"DEMUX_MISS_RATE" envDefault:"2000"`
+	MissBurst            int           `env:"DEMUX_MISS_BURST" envDefault:"4000"`
+	RoamInterval         time.Duration `env:"DEMUX_ROAM_INTERVAL" envDefault:"5s"`
+	// One session may send SessionRate packets per second, so that one participant cannot use up the shared demux.
+	// Readers is how many goroutines read the socket.
+	SessionRate  float64 `env:"DEMUX_SESSION_RATE" envDefault:"15000"`
+	SessionBurst int     `env:"DEMUX_SESSION_BURST" envDefault:"30000"`
+	Readers      int     `env:"DEMUX_READERS" envDefault:"4"`
 }
 
 // MinSessionSecretLen is the shortest accepted SESSION_SECRET.
 const MinSessionSecretLen = 32
-
-// LoadLabAccessPublicKey reads the Ed25519 public key PEM from the configured
-// path.
-func (l *L7Config) LoadLabAccessPublicKey() (ed25519.PublicKey, error) {
-	return ReadLabAccessPublicKey(l.LabAccessPublicKeyPath)
-}
-
-// ReadLabAccessPublicKey parses a PKIX PEM Ed25519 public key file.
-func ReadLabAccessPublicKey(path string) (ed25519.PublicKey, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read lab access public key %s: %w", path, err)
-	}
-	pub, err := ParseLabAccessPublicKey(data)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	return pub, nil
-}
-
-// ParseLabAccessPublicKey parses a PKIX PEM Ed25519 public key. The operator
-// uses it to refuse a key the proxy could not load.
-func ParseLabAccessPublicKey(data []byte) (ed25519.PublicKey, error) {
-	block, _ := pem.Decode(data)
-	if block == nil {
-		return nil, fmt.Errorf("no PEM block in the lab access public key")
-	}
-	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("parse lab access public key: %w", err)
-	}
-	edPub, ok := pub.(ed25519.PublicKey)
-	if !ok {
-		return nil, fmt.Errorf("the lab access public key is not Ed25519")
-	}
-	return edPub, nil
-}
 
 func LoadL7Config() (*L7Config, error) {
 	cfg := &L7Config{}
@@ -82,10 +96,29 @@ func LoadL7Config() (*L7Config, error) {
 	if len(cfg.SessionSecret) < MinSessionSecretLen {
 		return cfg, fmt.Errorf("SESSION_SECRET must be at least %d bytes", MinSessionSecretLen)
 	}
+	if cfg.MaxConnections < 0 || cfg.LivePerClient < 0 || cfg.LivePerGroup < 0 || cfg.LiveTotal < 0 || cfg.AuthRate < 0 || cfg.AuthBurst < 0 {
+		return cfg, fmt.Errorf("MAX_CONNECTIONS, LIVE_PER_CLIENT, LIVE_PER_GROUP, LIVE_TOTAL, AUTH_RATE and AUTH_BURST must not be negative")
+	}
+	if cfg.ReadHeaderTimeout <= 0 || cfg.ReadTimeout <= 0 || cfg.IdleTimeout <= 0 || cfg.MaxHeaderBytes <= 0 {
+		return cfg, fmt.Errorf("READ_HEADER_TIMEOUT, READ_TIMEOUT, IDLE_TIMEOUT and MAX_HEADER_BYTES must be positive")
+	}
+	if cfg.SessionIdleTTL <= 0 || cfg.SessionMaxTTL <= 0 || cfg.SessionRenewBefore < 0 || cfg.SessionRenewBefore >= cfg.SessionIdleTTL {
+		return cfg, fmt.Errorf("SESSION_IDLE_TTL and SESSION_MAX_TTL must be positive and SESSION_RENEW_BEFORE must be shorter than SESSION_IDLE_TTL")
+	}
 	return cfg, nil
 }
 
 func LoadWGConfig() (*WGConfig, error) {
 	cfg := &WGConfig{}
-	return cfg, config.Load(cfg)
+	if err := config.Load(cfg); err != nil {
+		return cfg, err
+	}
+	if cfg.ListenAddr == "" {
+		cfg.ListenAddr = fmt.Sprintf(":%d", names.WireGuardPort)
+	}
+	if cfg.MaxEntries <= 0 || cfg.PartialTTL <= 0 || cfg.MissRate <= 0 || cfg.MissBurst <= 0 || cfg.RoamInterval <= 0 ||
+		cfg.GlobalHandshakeRate <= 0 || cfg.GlobalHandshakeBurst <= 0 || cfg.SessionRate <= 0 || cfg.SessionBurst <= 0 || cfg.Readers <= 0 {
+		return cfg, fmt.Errorf("the DEMUX_* limits must be positive")
+	}
+	return cfg, nil
 }

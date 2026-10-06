@@ -1,0 +1,44 @@
+{{- if and (include "laboratory.registryEnabled" .) .Values.registry.networkPolicy.enabled }}
+{{- /*
+The snapshot registry accepts connections from the node-agents (hostNetwork pods: the
+Cilium entities "host" and "remote-node", because their forwarder dials the Service from
+the node) and from the operator (device reset, retention). Its egress is open: the image cache fetches from the upstream registries.
+*/ -}}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: laboratory-registry
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "laboratory.registrySelector" . | nindent 6 }}
+  ingress:
+    - fromEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "5000"
+              protocol: TCP
+    - fromEndpoints:
+        - matchLabels:
+            control-plane: controller-manager
+      toPorts:
+        - ports:
+            - port: "5000"
+              protocol: TCP
+{{- if .Values.agent.enabled }}
+    # The management agent: snapshot export, and PrewarmImages with the cache.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $.Values.agent.namespace }}
+            app: laboratory-agent
+      toPorts:
+        - ports:
+            - port: "5000"
+              protocol: TCP
+{{- end }}
+{{- end }}

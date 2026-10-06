@@ -5,11 +5,14 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+
+	versioned "github.com/cybericebox/laboratory/clientset/client/versioned"
 )
 
 // newTestHandler bootstraps an envtest environment with the laboratory CRDs
@@ -51,6 +54,8 @@ func newTestHandler(t *testing.T) (*Handler, kubernetes.Interface) {
 		t.Fatalf("build versioned clientset: %v", err)
 	}
 
+	waitForCRDsServed(t, cs)
+
 	// Namespaces (and other core resources) are built-in API types and are
 	// served over protobuf, so the plain cfg is fine here.
 	k8s, err := kubernetes.NewForConfig(cfg)
@@ -90,4 +95,37 @@ func firstEnvTestBinaryDir() string {
 		}
 	}
 	return ""
+}
+
+// waitForCRDsServed blocks until the API server serves every CRD the agent lists.
+// envtest.Start returns once the CRDs are created, but the first request for a
+// freshly registered kind is refused with a one second Retry-After, which the
+// client obeys. Tests that time a first call against a short deadline were flaky
+// because that call paid the second; paying it here makes them deterministic.
+func waitForCRDsServed(t *testing.T, cs versioned.Interface) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	lab := cs.LaboratoryV1alpha1()
+	lists := map[string]func() error{
+		"LabGroups": func() error { _, err := lab.LabGroups().List(ctx, metav1.ListOptions{}); return err },
+		"Labs":      func() error { _, err := lab.Labs(metav1.NamespaceDefault).List(ctx, metav1.ListOptions{}); return err },
+		"LabGroupClients": func() error {
+			_, err := lab.LabGroupClients(metav1.NamespaceDefault).List(ctx, metav1.ListOptions{})
+			return err
+		},
+		"LabGroupAccessPolicies": func() error {
+			_, err := lab.LabGroupAccessPolicies(metav1.NamespaceDefault).List(ctx, metav1.ListOptions{})
+			return err
+		},
+		"LabTrafficReports": func() error {
+			_, err := lab.LabTrafficReports(metav1.NamespaceDefault).List(ctx, metav1.ListOptions{})
+			return err
+		},
+	}
+	for name, list := range lists {
+		if err := list(); err != nil {
+			t.Fatalf("wait for %s to be served: %v", name, err)
+		}
+	}
 }

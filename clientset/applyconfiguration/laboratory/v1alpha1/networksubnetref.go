@@ -17,15 +17,23 @@ limitations under the License.
 
 package v1alpha1
 
-// NetworkSubnetRefApplyConfiguration represents a full allocated subnet.
+// NetworkSubnetRefApplyConfiguration represents a declarative configuration of the NetworkSubnetRef type for use
+// with apply.
+//
+// NetworkSubnetRef selects the full lab-allocated VPN or Internet /24.
 type NetworkSubnetRefApplyConfiguration struct {
 	Network *string `json:"network,omitempty"`
 }
 
+// NetworkSubnetRefApplyConfiguration constructs a declarative configuration of the NetworkSubnetRef type for use with
+// apply.
 func NetworkSubnetRef() *NetworkSubnetRefApplyConfiguration {
 	return &NetworkSubnetRefApplyConfiguration{}
 }
 
+// WithNetwork sets the Network field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Network field is set to the value of the last call.
 func (b *NetworkSubnetRefApplyConfiguration) WithNetwork(value string) *NetworkSubnetRefApplyConfiguration {
 	b.Network = &value
 	return b

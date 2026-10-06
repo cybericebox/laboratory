@@ -51,16 +51,24 @@ func (c *FakeLaboratoryV1alpha1) LabGroupAccessPolicies(namespace string) v1alph
 	return newFakeLabGroupAccessPolicies(c, namespace)
 }
 
-func (c *FakeLaboratoryV1alpha1) LabTrafficReports(namespace string) v1alpha1.LabTrafficReportInterface {
-	return newFakeLabTrafficReports(c, namespace)
-}
-
 func (c *FakeLaboratoryV1alpha1) LabGroupClients(namespace string) v1alpha1.LabGroupClientInterface {
 	return newFakeLabGroupClients(c, namespace)
 }
 
+func (c *FakeLaboratoryV1alpha1) LabTrafficReports(namespace string) v1alpha1.LabTrafficReportInterface {
+	return newFakeLabTrafficReports(c, namespace)
+}
+
 func (c *FakeLaboratoryV1alpha1) LabVPNs(namespace string) v1alpha1.LabVPNInterface {
 	return newFakeLabVPNs(c, namespace)
+}
+
+func (c *FakeLaboratoryV1alpha1) MaintenanceWindows() v1alpha1.MaintenanceWindowInterface {
+	return newFakeMaintenanceWindows(c)
+}
+
+func (c *FakeLaboratoryV1alpha1) Tenants() v1alpha1.TenantInterface {
+	return newFakeTenants(c)
 }
 
 // RESTClient returns a RESTClient that is used to communicate

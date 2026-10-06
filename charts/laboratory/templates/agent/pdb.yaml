@@ -1,0 +1,16 @@
+{{- if and .Values.agent.enabled .Values.agent.podDisruptionBudget.enabled (gt (int .Values.agent.replicas) 1) }}
+# One agent replica stays up during a node drain (only with more than one replica: a budget on a single replica would
+# block every drain).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: laboratory-agent
+  namespace: {{ $.Values.agent.namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.agent.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app: laboratory-agent
+{{- end }}

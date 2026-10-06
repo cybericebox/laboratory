@@ -1,0 +1,41 @@
+{{- /*
+The tenants namespace: per-tenant Secrets. tenant-<name>-enrollment shows the admin the one-time
+enrollment token (made by the operator), and the registry credentials of a tenant (images.pullSecret) live here. The access
+public keys of the tenants are NOT here: the proxy reads those, and it must not be able to read tokens or credentials (see
+access-keys-namespace.yaml).
+*/ -}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: laboratory-tenants
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+---
+# The operator makes the enrollment tokens and removes a tenant's Secrets here, and nowhere else outside the namespaces of its groups.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: laboratory-operator-tenants
+  namespace: laboratory-tenants
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [ "" ]
+    resources: [ "secrets" ]
+    verbs: [ "create", "delete", "get", "list", "patch", "update", "watch" ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: laboratory-operator-tenants
+  namespace: laboratory-tenants
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: laboratory-operator-tenants
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-controller-manager
+    namespace: {{ .Release.Namespace }}

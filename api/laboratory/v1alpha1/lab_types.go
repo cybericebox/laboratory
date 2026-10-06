@@ -6,8 +6,10 @@ import (
 
 // LabSpec defines the desired state of Lab.
 type LabSpec struct {
-	VPN         LabNetworkSpec       `json:"vpn,omitempty"`
-	Internet    LabNetworkSpec       `json:"internet,omitempty"`
+	VPN      LabNetworkSpec `json:"vpn,omitempty"`
+	Internet LabNetworkSpec `json:"internet,omitempty"`
+	// Devices of the lab, switches and hubs included. The ceiling is fixed in code (names.MaxLabDevices).
+	// +kubebuilder:validation:MaxItems=64
 	Devices     []DeviceTemplate     `json:"devices,omitempty"`
 	Connections []ConnectionTemplate `json:"connections,omitempty"`
 }
@@ -39,6 +41,7 @@ type DHCPRange struct {
 }
 
 // DeviceTemplate is an inline device declaration inside Lab.spec.devices[].
+// +kubebuilder:validation:XValidation:rule="self.type != 'container' || !has(self.interfaces) || size(self.interfaces) <= 16",message="a container device has at most 16 interfaces"
 type DeviceTemplate struct {
 	// Name becomes part of the lab's web address (<name>-<code>.<domain>), so
 	// it is a DNS label of at most 35 characters (names.MaxDeviceNameLen).
@@ -46,19 +49,36 @@ type DeviceTemplate struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=35
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
+	// +kubebuilder:validation:XValidation:rule="!(self in ['vpn', 'gateway', 'internet'])",message="the names vpn, gateway and internet are reserved by the platform"
 	Name string `json:"name"`
 	// +kubebuilder:validation:Required
 	Type  DeviceType `json:"type"`
 	Image string     `json:"image,omitempty"`
-	// SecurityPreset names a capability profile for the device container. Only
-	// the preset name is exposed here; the concrete Linux capabilities behind it
-	// are an internal platform decision. Empty means "basic" (no extra caps).
-	SecurityPreset SecurityPreset  `json:"securityPreset,omitempty"`
-	Interfaces     []InterfaceSpec `json:"interfaces,omitempty"`
-	Exposure       *ExposureSpec   `json:"exposure,omitempty"`
+	// SecurityPreset names a device security profile (standard or extended; the old names basic, service,
+	// net and debug are aliases). Only the name is exposed here; the concrete Linux capabilities behind it
+	// are an internal platform decision. Empty means standard.
+	SecurityPreset SecurityPreset `json:"securityPreset,omitempty"`
+	// Interfaces of the device: at most 16 on a container (names.MaxContainerInterfaces), 48 on a switch or hub.
+	// +kubebuilder:validation:MaxItems=48
+	Interfaces []InterfaceSpec `json:"interfaces,omitempty"`
+	Exposure   *ExposureSpec   `json:"exposure,omitempty"`
 	// Resources sets the container resource requests/limits for this device.
 	// +optional
 	Resources *DeviceResources `json:"resources,omitempty"`
+	// Persistence is the optional state-persistence policy of this device, set at
+	// creation and immutable. The excluded paths and the quota are platform settings.
+	// +optional
+	Persistence *DevicePersistence `json:"persistence,omitempty"`
+}
+
+// DevicePersistence is the per-device state-persistence request of a topology.
+type DevicePersistence struct {
+	// Enabled turns snapshot-backed state on for the device.
+	Enabled bool `json:"enabled,omitempty"`
+	// Debounce is how long the writable layer must stay quiet before a snapshot
+	// (default: the platform setting).
+	// +optional
+	Debounce *metav1.Duration `json:"debounce,omitempty"`
 }
 
 // ConnectionTemplate is an inline connection declaration inside Lab.spec.connections[].
@@ -76,6 +96,22 @@ type LabStatus struct {
 	Devices     []DeviceRef      `json:"devices,omitempty"`
 	Connections []ConnectionRef  `json:"connections,omitempty"`
 	Access      []AccessEntry    `json:"access,omitempty"`
+	// Scheduling is the place of the lab in the scheduler queue.
+	// +optional
+	Scheduling *SchedulingStatus `json:"scheduling,omitempty"`
+	// ImageCache records whether this lab pulls its images through the platform
+	// image cache, decided once on the first reconcile.
+	// +optional
+	ImageCache *bool `json:"imageCache,omitempty"`
+	// ImageDigests are the digests the image tags of the lab's container devices
+	// (and the netconfig image) were pinned to when the lab was created with the
+	// image cache on, keyed by the image as written in the spec.
+	// +optional
+	ImageDigests map[string]string `json:"imageDigests,omitempty"`
+	// ImageWarning lists the images that could not be pinned and are pulled by
+	// their tag; empty when all were.
+	// +optional
+	ImageWarning string `json:"imageWarning,omitempty"`
 	// Conditions surfaces reconciler progress/blocking reasons
 	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
 	// +optional
@@ -96,6 +132,23 @@ type LabNetworkStatus struct {
 type DeviceRef struct {
 	Name  string `json:"name"`
 	Ready bool   `json:"ready,omitempty"`
+	// State summarises the snapshots of a device with state persistence.
+	// +optional
+	State *DeviceStateInfo `json:"state,omitempty"`
+	// Failure is the warning of a device pod that did not start in time.
+	// +optional
+	Failure *PodFailure `json:"failure,omitempty"`
+}
+
+// DeviceStateInfo is the organizer-facing view of a device's snapshots.
+type DeviceStateInfo struct {
+	LastSnapshotAt *metav1.Time `json:"lastSnapshotAt,omitempty"`
+	RestoredAt     *metav1.Time `json:"restoredAt,omitempty"`
+	SizeBytes      int64        `json:"sizeBytes,omitempty"`
+	// QuotaWarning is set while snapshots are refused or failing.
+	QuotaWarning string `json:"quotaWarning,omitempty"`
+	// Rescue is true while the device runs in rescue mode.
+	Rescue bool `json:"rescue,omitempty"`
 }
 
 // ConnectionRef summarises a materialised Connection's readiness.

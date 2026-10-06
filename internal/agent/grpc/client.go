@@ -7,10 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
@@ -24,40 +23,128 @@ const (
 	kindLabGroupAccessPolicy = "LabGroupAccessPolicy"
 )
 
-// CreateLabGroupClient provisions a WireGuard VPN client. The agent generates
-// the keypair — the PRIVATE key lives only in this call and never touches the
-// cluster. Only the public key is registered; the controller assigns an IP and
-// assembles the config (with a private-key placeholder) into the CR status. The
-// agent then substitutes the real private key and returns the finished config.
-// The caller (control plane) stores it; a later Get returns only the
-// placeholder config, since the private key is gone.
-func (h *Handler) CreateLabGroupClient(ctx context.Context, in *protobuf.LabGroupClient) (*protobuf.LabGroupClient, error) {
+func nsRef(group, name string) *protobuf.ItemRef {
+	return &protobuf.ItemRef{LabGroup: group, Name: name}
+}
+
+// CreateLabGroupClients provisions WireGuard VPN clients. The agent generates every
+// keypair: the PRIVATE key lives only in this call and never touches the cluster. Only
+// the public key is registered; the controller assigns an IP and assembles the config
+// (with a private-key placeholder) into the CR status. The agent then substitutes the real
+// private key and returns the finished config. The caller (control plane) stores it; no
+// later call returns it. A client that already exists is EXISTS (labels it lacks are
+// added: UPDATED) and comes back with the placeholder config.
+func (h *Handler) CreateLabGroupClients(ctx context.Context, in *protobuf.CreateLabGroupClientsRequest) (*protobuf.CreateLabGroupClientsResponse, error) {
+	items := in.GetItems()
+	if err := checkItemCount(len(items)); err != nil {
+		return nil, err
+	}
+	if err := validateLabels(in.GetLabels()); err != nil {
+		return nil, invalid("%v", err)
+	}
+	refs := make([]*protobuf.ItemRef, len(items))
+	for i, it := range items {
+		refs[i] = nsRef(it.GetLabGroup(), it.GetName())
+		if err := names.ValidateID(it.GetName()); err != nil {
+			return nil, invalid("item %d: %v", i, err)
+		}
+		if err := validateLabels(it.GetLabels()); err != nil {
+			return nil, invalid("item %d (%s): %v", i, describeRef(refs[i]), err)
+		}
+	}
+	if err := dupRefs(refs); err != nil {
+		return nil, err
+	}
+	resolver := h.newResolver(ctx)
+	clients := make([]*protobuf.LabGroupClient, len(items))
+	results := forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
+		res, c := h.createLabGroupClient(ctx, resolver, items[i], in.GetLabels())
+		clients[i] = c
+		return res
+	})
+	out := &protobuf.CreateLabGroupClientsResponse{Results: make([]*protobuf.LabGroupClientResult, len(items))}
+	for i := range items {
+		out.Results[i] = &protobuf.LabGroupClientResult{Result: results[i], Client: clients[i]}
+	}
+	return out, nil
+}
+
+func (h *Handler) createLabGroupClient(ctx context.Context, resolver *groupResolver, it *protobuf.LabGroupClientItem, common map[string]string) (*protobuf.ItemResult, *protobuf.LabGroupClient) {
+	ref := nsRef(it.GetLabGroup(), it.GetName())
+	ns, err := resolver.namespace(ctx, it.GetLabGroup())
+	if err != nil {
+		return failedResult(ref, err), nil
+	}
+	name := crName(it.GetName())
 	priv, err := wgtypes.GeneratePrivateKey()
 	if err != nil {
-		return nil, fmt.Errorf("generate wireguard key: %w", err)
+		return failedResult(ref, fmt.Errorf("generate wireguard key: %w", err)), nil
 	}
-
+	want := mergeItemLabels(common, it.GetLabels())
+	clients := h.cs.LaboratoryV1alpha1().LabGroupClients(ns)
 	lgc := &laboratoryv1alpha1.LabGroupClient{
-		ObjectMeta: metav1.ObjectMeta{Name: in.Name, Namespace: in.Namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: stampTenant(copyLabels(want), tenantOf(ctx)), Annotations: stampID(nil, it.GetName())},
 	}
 	lgc.Spec.PublicKey = priv.PublicKey().String()
-	_, err = h.cs.LaboratoryV1alpha1().LabGroupClients(in.Namespace).Create(ctx, lgc, metav1.CreateOptions{})
-	if err := createErr(err, kindLabGroupClient, in.Name, func() (metav1.Object, error) {
-		return h.cs.LaboratoryV1alpha1().LabGroupClients(in.Namespace).Get(ctx, in.Name, metav1.GetOptions{})
-	}); err != nil {
-		return nil, err
+	_, err = clients.Create(ctx, lgc, metav1.CreateOptions{})
+	if err = createErr(err, kindLabGroupClient, it.GetName(), func() (metav1.Object, error) {
+		return clients.Get(ctx, name, metav1.GetOptions{})
+	}); apierrors.IsAlreadyExists(err) {
+		return h.existingLabGroupClient(ctx, ref, ns, want)
+	} else if err != nil {
+		return failedResult(ref, err), nil
 	}
 
-	out, err := h.awaitClientConfig(ctx, in.Namespace, in.Name)
+	out, err := h.awaitClientConfig(ctx, ns, name)
 	if err != nil {
-		return nil, err
+		// The private key would be lost with this call, so the half-made client is
+		// removed: the repetition (retryable, TERMINATING until it is gone) makes a new one.
+		_ = clients.Delete(context.WithoutCancel(ctx), name, metav1.DeleteOptions{})
+		res := failedResult(ref, err)
+		res.Retryable = true
+		return res, nil
 	}
-
 	p := clientToProto(out)
+	p.LabGroupName = it.GetLabGroup()
 	if p.Status != nil && p.Status.Config != "" {
 		p.Status.Config = strings.ReplaceAll(p.Status.Config, names.WGPrivateKeyPlaceholder, priv.String())
 	}
-	return p, nil
+	return result(ref, protobuf.ItemState_ITEM_STATE_CREATED), p
+}
+
+// existingLabGroupClient answers a create of a name that exists: adds missing labels.
+func (h *Handler) existingLabGroupClient(ctx context.Context, ref *protobuf.ItemRef, ns string, want map[string]string) (*protobuf.ItemResult, *protobuf.LabGroupClient) {
+	clients := h.cs.LaboratoryV1alpha1().LabGroupClients(ns)
+	name := crName(ref.GetName())
+	state := protobuf.ItemState_ITEM_STATE_EXISTS
+	var cur *laboratoryv1alpha1.LabGroupClient
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		state = protobuf.ItemState_ITEM_STATE_EXISTS
+		var err error
+		if cur, err = clients.Get(ctx, name, metav1.GetOptions{}); err != nil {
+			return err
+		}
+		if err := rejectTerminating(kindLabGroupClient, cur); err != nil {
+			return err
+		}
+		if names.IDOf(cur) != ref.GetName() {
+			return fmt.Errorf("%s %s: the name is taken by another id %q", kindLabGroupClient, ref.GetName(), names.IDOf(cur))
+		}
+		labels, changed := mergeLabels(cur.Labels, want)
+		if !changed {
+			return nil
+		}
+		cur.Labels = labels
+		state = protobuf.ItemState_ITEM_STATE_UPDATED
+		cur, err = clients.Update(ctx, cur, metav1.UpdateOptions{})
+		return err
+	})
+	if err != nil {
+		return failedResult(ref, err), nil
+	}
+	p := clientToProto(cur)
+	p.LabGroupName = ref.GetLabGroup()
+	return result(ref, state), p
 }
 
 // awaitClientConfig polls the LabGroupClient until the reconciler has assembled
@@ -84,114 +171,166 @@ func (h *Handler) awaitClientConfig(ctx context.Context, ns, name string) (*labo
 	}
 }
 
-// GetLabGroupClient fetches a LabGroupClient. Its config carries the private-key
-// placeholder (the cluster never holds the real key) — callers rely on the
-// config returned by CreateLabGroupClient.
-func (h *Handler) GetLabGroupClient(ctx context.Context, in *protobuf.NamespacedIDRequest) (*protobuf.LabGroupClient, error) {
-	out, err := h.cs.LaboratoryV1alpha1().LabGroupClients(in.Namespace).Get(ctx, in.Name, metav1.GetOptions{})
-	if err != nil {
-		return nil, err
-	}
-	return clientToProto(out), nil
-}
-
-// ListLabGroupClients lists all LabGroupClient custom resources in the namespace.
-func (h *Handler) ListLabGroupClients(ctx context.Context, in *protobuf.NamespaceRequest) (*protobuf.LabGroupClientList, error) {
-	list, err := h.cs.LaboratoryV1alpha1().LabGroupClients(in.Namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
+// ListLabGroupClients lists LabGroupClients by names (items), by selector, or all of
+// them; lab_group narrows the listing to one group. Their config carries the private-key
+// placeholder (the cluster never holds the real key).
+func (h *Handler) ListLabGroupClients(ctx context.Context, in *protobuf.ListRequest) (*protobuf.LabGroupClientList, error) {
+	if err := checkListRequest(in); err != nil {
 		return nil, err
 	}
 	out := &protobuf.LabGroupClientList{}
-	for i := range list.Items {
-		out.Items = append(out.Items, clientToProto(&list.Items[i]))
+	if len(in.GetItems()) > 0 {
+		resolver := h.newResolver(ctx)
+		for _, ref := range in.GetItems() {
+			g, err := resolver.get(ctx, ref.GetLabGroup())
+			if apierrors.IsNotFound(err) || (err == nil && g.Status.Namespace == "") {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			c, err := h.cs.LaboratoryV1alpha1().LabGroupClients(g.Status.Namespace).Get(ctx, crName(ref.GetName()), metav1.GetOptions{})
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			p := clientToProto(c)
+			p.LabGroupName = names.IDOf(g)
+			out.Items = append(out.Items, p)
+		}
+		return out, nil
+	}
+	matches, err := h.listClients(ctx, in.GetSelector(), in.GetLabGroup())
+	if err != nil {
+		return nil, err
+	}
+	for _, m := range matches {
+		p := clientToProto(m.client)
+		p.LabGroupName = m.group
+		out.Items = append(out.Items, p)
 	}
 	return out, nil
 }
 
-// DeleteLabGroupClient deletes a LabGroupClient custom resource by namespace and
-// name. Deletion is asynchronous: it is finished once GetLabGroupClient returns
-// NotFound; until then CreateLabGroupClient fails with Unavailable / TERMINATING.
-func (h *Handler) DeleteLabGroupClient(ctx context.Context, in *protobuf.NamespacedIDRequest) (*protobuf.Empty, error) {
-	if err := h.cs.LaboratoryV1alpha1().LabGroupClients(in.Namespace).Delete(ctx, in.Name, metav1.DeleteOptions{}); err != nil {
+// UpdateLabGroupClients changes the labels of the targeted clients.
+func (h *Handler) UpdateLabGroupClients(ctx context.Context, in *protobuf.UpdateLabGroupClientsRequest) (*protobuf.BatchResult, error) {
+	if err := checkSelection(in.GetBySelector().GetSelector(), len(in.GetItems()), in.GetBySelector() != nil); err != nil {
 		return nil, err
 	}
-	return &protobuf.Empty{}, nil
-}
-
-// ReconcileLabGroupAccess replaces the one namespaced access-policy CR of a
-// LabGroup. The VPN process watches that resource and applies its full
-// default-deny rule set. Client names need not exist yet: the policy is stored
-// at group scope and automatically applies once such a VPN client is created.
-func (h *Handler) ReconcileLabGroupAccess(ctx context.Context, in *protobuf.LabGroupAccessPolicy) (*protobuf.Empty, error) {
-	if in == nil || in.LabGroupName == "" {
-		return nil, status.Error(codes.InvalidArgument, "lab_group_name is required")
-	}
-	group, err := h.cs.LaboratoryV1alpha1().LabGroups().Get(ctx, in.LabGroupName, metav1.GetOptions{})
-	if err != nil {
-		return nil, err
-	}
-	if err := rejectTerminating(kindLabGroup, group); err != nil {
-		return nil, err
-	}
-	namespace := group.Status.Namespace
-	if namespace == "" {
-		return nil, status.Errorf(codes.FailedPrecondition, "lab group %q namespace is not ready", in.LabGroupName)
-	}
-
-	labs, err := h.cs.LaboratoryV1alpha1().Labs(namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	knownLabs := make(map[string]struct{}, len(labs.Items))
-	for i := range labs.Items {
-		knownLabs[labs.Items[i].Name] = struct{}{}
-	}
-	rules := make([]laboratoryv1alpha1.LabGroupAccessRule, 0, len(in.Rules))
-	for _, rule := range in.Rules {
-		if rule == nil {
-			return nil, status.Error(codes.InvalidArgument, "access rules cannot be null")
-		}
-		var action laboratoryv1alpha1.LabGroupAccessAction
-		switch rule.Action {
-		case protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_ALLOW:
-			action = laboratoryv1alpha1.LabGroupAccessAllow
-		case protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_DENY:
-			action = laboratoryv1alpha1.LabGroupAccessDeny
-		default:
-			return nil, status.Error(codes.InvalidArgument, "every access rule requires allow or deny action")
-		}
-		labNames := uniqueSorted(rule.LabNames)
-		for _, name := range labNames {
-			if _, ok := knownLabs[name]; !ok {
-				return nil, status.Errorf(codes.InvalidArgument, "lab %q does not belong to group %q", name, in.LabGroupName)
-			}
-		}
-		rules = append(rules, laboratoryv1alpha1.LabGroupAccessRule{
-			Action:      action,
-			ClientNames: uniqueSorted(rule.ClientNames),
-			LabNames:    labNames,
-		})
-	}
-	policies := h.cs.LaboratoryV1alpha1().LabGroupAccessPolicies(namespace)
-	stored, err := policies.Get(ctx, names.LabGroupAccessPolicyName, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		_, err = policies.Create(ctx, &laboratoryv1alpha1.LabGroupAccessPolicy{
-			ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: namespace},
-			Spec:       laboratoryv1alpha1.LabGroupAccessPolicySpec{Rules: rules},
-		}, metav1.CreateOptions{})
-	} else if err == nil {
-		if err = rejectTerminating(kindLabGroupAccessPolicy, stored); err != nil {
+	var refs []*protobuf.ItemRef
+	var plans []labelPlan
+	if in.GetBySelector() != nil {
+		matches, err := h.listClients(ctx, in.GetBySelector().GetSelector(), in.GetBySelector().GetLabGroup())
+		if err != nil {
 			return nil, err
 		}
-		stored.Spec.Rules = rules
-		_, err = policies.Update(ctx, stored, metav1.UpdateOptions{})
+		if err := checkMatched(len(matches), in.GetBySelector().ExpectedCount); err != nil {
+			return nil, err
+		}
+		for _, m := range matches {
+			refs = append(refs, nsRef(m.group, names.IDOf(m.client)))
+		}
+		sortRefs(refs)
+		plan, err := mergeLabelChanges(in.GetLabels(), nil)
+		if err != nil {
+			return nil, invalid("%v", err)
+		}
+		for range refs {
+			plans = append(plans, plan)
+		}
+	} else {
+		for _, it := range in.GetItems() {
+			ref := nsRef(it.GetLabGroup(), it.GetName())
+			plan, err := mergeLabelChanges(in.GetLabels(), it.GetLabels())
+			if err != nil {
+				return nil, invalid("%s: %v", describeRef(ref), err)
+			}
+			refs, plans = append(refs, ref), append(plans, plan)
+		}
+		if err := dupRefs(refs); err != nil {
+			return nil, err
+		}
 	}
-	if err = createErr(err, kindLabGroupAccessPolicy, names.LabGroupAccessPolicyName, func() (metav1.Object, error) {
-		return policies.Get(ctx, names.LabGroupAccessPolicyName, metav1.GetOptions{})
-	}); err != nil {
+	resolver := h.newResolver(ctx)
+	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
+		ns, err := resolver.namespace(ctx, refs[i].GetLabGroup())
+		if err != nil {
+			return failedResult(refs[i], err)
+		}
+		clients := h.cs.LaboratoryV1alpha1().LabGroupClients(ns)
+		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			cur, err := clients.Get(ctx, crName(refs[i].GetName()), metav1.GetOptions{})
+			if err != nil {
+				return err
+			}
+			if err := rejectTerminating(kindLabGroupClient, cur); err != nil {
+				return err
+			}
+			labels, changed := plans[i].apply(cur.Labels)
+			if !changed {
+				return nil
+			}
+			cur.Labels = labels
+			_, err = clients.Update(ctx, cur, metav1.UpdateOptions{})
+			return err
+		})
+		if err != nil {
+			return failedResult(refs[i], err)
+		}
+		return result(refs[i], protobuf.ItemState_ITEM_STATE_UPDATED)
+	})}, nil
+}
+
+// DeleteLabGroupClients deletes LabGroupClients. Deletion is asynchronous: until it is
+// finished, creating the same name fails with a retryable TERMINATING error.
+func (h *Handler) DeleteLabGroupClients(ctx context.Context, in *protobuf.DeleteRequest) (*protobuf.BatchResult, error) {
+	return h.deleteNamespaced(ctx, in, func(ctx context.Context, ns, name string) error {
+		return h.cs.LaboratoryV1alpha1().LabGroupClients(ns).Delete(ctx, name, metav1.DeleteOptions{})
+	}, func(ctx context.Context, selector, labGroup string) ([]*protobuf.ItemRef, error) {
+		matches, err := h.listClients(ctx, selector, labGroup)
+		refs := make([]*protobuf.ItemRef, 0, len(matches))
+		for _, m := range matches {
+			refs = append(refs, nsRef(m.group, names.IDOf(m.client)))
+		}
+		return refs, err
+	})
+}
+
+// deleteNamespaced is the Delete of a namespaced kind: refs by items or by selector,
+// then one Delete call per ref in the namespace of its LabGroup.
+func (h *Handler) deleteNamespaced(ctx context.Context, in *protobuf.DeleteRequest,
+	del func(ctx context.Context, ns, name string) error,
+	match func(ctx context.Context, selector, labGroup string) ([]*protobuf.ItemRef, error),
+) (*protobuf.BatchResult, error) {
+	if err := checkSelection(in.GetBySelector().GetSelector(), len(in.GetItems()), in.GetBySelector() != nil); err != nil {
 		return nil, err
 	}
-	return &protobuf.Empty{}, nil
+	refs := in.GetItems()
+	if in.GetBySelector() != nil {
+		var err error
+		if refs, err = match(ctx, in.GetBySelector().GetSelector(), in.GetBySelector().GetLabGroup()); err != nil {
+			return nil, err
+		}
+		if err := checkMatched(len(refs), in.GetBySelector().ExpectedCount); err != nil {
+			return nil, err
+		}
+		sortRefs(refs)
+	} else if err := dupRefs(refs); err != nil {
+		return nil, err
+	}
+	resolver := h.newResolver(ctx)
+	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
+		g, err := resolver.get(ctx, refs[i].GetLabGroup())
+		if err != nil {
+			return failedResult(refs[i], err)
+		}
+		if g.Status.Namespace == "" {
+			return result(refs[i], protobuf.ItemState_ITEM_STATE_NOT_FOUND)
+		}
+		return deleteResult(refs[i], del(ctx, g.Status.Namespace, crName(refs[i].GetName())))
+	})}, nil
 }
 
 func uniqueSorted(values []string) []string {

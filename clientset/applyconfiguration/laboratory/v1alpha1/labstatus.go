@@ -33,6 +33,18 @@ type LabStatusApplyConfiguration struct {
 	Devices     []DeviceRefApplyConfiguration       `json:"devices,omitempty"`
 	Connections []ConnectionRefApplyConfiguration   `json:"connections,omitempty"`
 	Access      []AccessEntryApplyConfiguration     `json:"access,omitempty"`
+	// Scheduling is the place of the lab in the scheduler queue.
+	Scheduling *SchedulingStatusApplyConfiguration `json:"scheduling,omitempty"`
+	// ImageCache records whether this lab pulls its images through the platform
+	// image cache, decided once on the first reconcile.
+	ImageCache *bool `json:"imageCache,omitempty"`
+	// ImageDigests are the digests the image tags of the lab's container devices
+	// (and the netconfig image) were pinned to when the lab was created with the
+	// image cache on, keyed by the image as written in the spec.
+	ImageDigests map[string]string `json:"imageDigests,omitempty"`
+	// ImageWarning lists the images that could not be pinned and are pulled by
+	// their tag; empty when all were.
+	ImageWarning *string `json:"imageWarning,omitempty"`
 	// Conditions surfaces reconciler progress/blocking reasons
 	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
 	Conditions []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
@@ -104,6 +116,44 @@ func (b *LabStatusApplyConfiguration) WithAccess(values ...*AccessEntryApplyConf
 		}
 		b.Access = append(b.Access, *values[i])
 	}
+	return b
+}
+
+// WithScheduling sets the Scheduling field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Scheduling field is set to the value of the last call.
+func (b *LabStatusApplyConfiguration) WithScheduling(value *SchedulingStatusApplyConfiguration) *LabStatusApplyConfiguration {
+	b.Scheduling = value
+	return b
+}
+
+// WithImageCache sets the ImageCache field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ImageCache field is set to the value of the last call.
+func (b *LabStatusApplyConfiguration) WithImageCache(value bool) *LabStatusApplyConfiguration {
+	b.ImageCache = &value
+	return b
+}
+
+// WithImageDigests puts the entries into the ImageDigests field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, the entries provided by each call will be put on the ImageDigests field,
+// overwriting an existing map entries in ImageDigests field with the same key.
+func (b *LabStatusApplyConfiguration) WithImageDigests(entries map[string]string) *LabStatusApplyConfiguration {
+	if b.ImageDigests == nil && len(entries) > 0 {
+		b.ImageDigests = make(map[string]string, len(entries))
+	}
+	for k, v := range entries {
+		b.ImageDigests[k] = v
+	}
+	return b
+}
+
+// WithImageWarning sets the ImageWarning field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ImageWarning field is set to the value of the last call.
+func (b *LabStatusApplyConfiguration) WithImageWarning(value string) *LabStatusApplyConfiguration {
+	b.ImageWarning = &value
 	return b
 }
 

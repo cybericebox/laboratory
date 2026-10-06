@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.17.2
+    controller-gen.kubebuilder.io/version: v0.22.0
   name: labgroups.laboratory.cybericebox.com
 spec:
   group: laboratory.cybericebox.com
@@ -39,6 +39,29 @@ spec:
           spec:
             description: LabGroupSpec defines the desired state of LabGroup.
             properties:
+              gateway:
+                description: Gateway holds the internet gateway pod's settings.
+                properties:
+                  size:
+                    description: Size is the size of the gateway pod; absent = the
+                      chart's default. Fixed once set.
+                    properties:
+                      cpuMillicores:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      memoryBytes:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                    required:
+                    - cpuMillicores
+                    - memoryBytes
+                    type: object
+                    x-kubernetes-validations:
+                    - message: the size of a group's pod is fixed
+                      rule: self == oldSelf
+                type: object
               suspended:
                 type: boolean
               vpn:
@@ -68,23 +91,143 @@ spec:
                       Deprecated: suspension now always keeps WireGuard and the internet
                       gateway running while stopping only task devices.
                     type: boolean
+                  size:
+                    description: Size is the size of the VPN pod; absent = the chart's
+                      default. Fixed once set.
+                    properties:
+                      cpuMillicores:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      memoryBytes:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                    required:
+                    - cpuMillicores
+                    - memoryBytes
+                    type: object
+                    x-kubernetes-validations:
+                    - message: the size of a group's pod is fixed
+                      rule: self == oldSelf
                 type: object
             type: object
           status:
             description: LabGroupStatus defines the observed state of LabGroup.
             properties:
+              imageWarning:
+                description: |-
+                  ImageWarning names the VPN or gateway image that could not be pinned to a
+                  digest when the group's pods were created with the image cache on; the pod
+                  pulls it by tag. Empty when all were pinned (or the cache was off).
+                type: string
               namespace:
                 type: string
               phase:
                 description: Phase is the lifecycle phase of a resource.
                 enum:
                 - Pending
+                - Queued
                 - Provisioning
                 - Ready
                 - Suspended
                 - Failed
                 - Error
                 type: string
+              pods:
+                description: |-
+                  Pods is the scheduling state of the group's own pods ("vpn", "gateway").
+                  Absent for a group that predates the scheduler: its pods are not queued.
+                items:
+                  description: NamedPodSchedule is the PodSchedule of a LabGroup pod
+                    ("vpn" or "gateway").
+                  properties:
+                    dispatchedAt:
+                      description: DispatchedAt is when the scheduler let the pod
+                        start; the startup timeout counts from it.
+                      format: date-time
+                      type: string
+                    failure:
+                      description: Failure explains a Failed pod; the warning clears
+                        when the pod becomes Ready.
+                      properties:
+                        at:
+                          format: date-time
+                          type: string
+                        message:
+                          description: Message is the last error the node reported
+                            (for example the image pull error).
+                          type: string
+                        reason:
+                          description: Reason is one of the Failure* constants.
+                          type: string
+                        restartCount:
+                          format: int32
+                          type: integer
+                      type: object
+                    name:
+                      type: string
+                    queuedAt:
+                      description: QueuedAt is when the pod entered the queue.
+                      format: date-time
+                      type: string
+                    startedAt:
+                      description: StartedAt is when the pod was first seen Ready.
+                      format: date-time
+                      type: string
+                    state:
+                      description: PodScheduleState is where a pod is on its way from
+                        the queue to Ready.
+                      enum:
+                      - Queued
+                      - Starting
+                      - Started
+                      - Failed
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              scheduling:
+                description: Scheduling is the place of the group in the scheduler
+                  queue.
+                properties:
+                  group:
+                    description: Group is the deploy group of the object; empty for
+                      an independent one.
+                    type: string
+                  length:
+                    description: Length is the number of such objects when Position
+                      was written.
+                    format: int32
+                    type: integer
+                  message:
+                    description: Message adds detail, for example "waiting for group
+                      intro".
+                    type: string
+                  pending:
+                    format: int32
+                    type: integer
+                  pods:
+                    description: |-
+                      Pods is the number of pods of the object and Pending how many of them are
+                      not dispatched yet.
+                    format: int32
+                    type: integer
+                  position:
+                    description: |-
+                      Position is the 1-based place among the objects that still have pods to
+                      dispatch; 0 when all pods are dispatched.
+                    format: int32
+                    type: integer
+                  reason:
+                    description: Reason is why the next pod of the object is not dispatched
+                      (Wait* constants).
+                    type: string
+                type: object
               suspended:
                 type: boolean
               vpn:
@@ -115,10 +258,8 @@ spec:
             type: object
         type: object
         x-kubernetes-validations:
-        - message: LabGroup name is the namespace name and must be at most 63 characters
+        - message: LabGroup name must be at most 63 characters
           rule: self.metadata.name.size() <= 63
-        - message: LabGroup name conflicts with a reserved Kubernetes namespace
-          rule: '!(self.metadata.name in [''default'',''kube-system'',''kube-public'',''kube-node-lease'',''laboratory-system''])'
     served: true
     storage: true
     subresources:

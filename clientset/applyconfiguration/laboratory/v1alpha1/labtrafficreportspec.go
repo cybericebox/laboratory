@@ -23,9 +23,13 @@ import (
 
 // LabTrafficReportSpecApplyConfiguration represents a declarative configuration of the LabTrafficReportSpec type for use
 // with apply.
+//
+// LabTrafficReportSpec identifies the writer of a report. The report carries
+// facts only; nothing here configures behaviour.
 type LabTrafficReportSpecApplyConfiguration struct {
-	Kind     *laboratoryv1alpha1.LabTrafficSurface `json:"kind,omitempty"`
-	Instance *string                               `json:"instance,omitempty"`
+	Kind *laboratoryv1alpha1.LabTrafficSurface `json:"kind,omitempty"`
+	// Instance is the writing pod (the VPN pod, or one proxy replica).
+	Instance *string `json:"instance,omitempty"`
 }
 
 // LabTrafficReportSpecApplyConfiguration constructs a declarative configuration of the LabTrafficReportSpec type for use with

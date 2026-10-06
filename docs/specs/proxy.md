@@ -21,7 +21,7 @@ demux — `LabGroup.Status.VPN.PublicKey`.
 | Файл                                 | Роль                                                                                            |
 |--------------------------------------|-------------------------------------------------------------------------------------------------|
 | `cmd/proxy/main.go`                  | Bootstrap: cluster-singleton manager, watcher LabGroup, HTTPS-сервер + UDP-демукс + TTL-cleanup |
-| `internal/proxy/config.go`           | env-config: TLS_CERT/KEY paths, LAB_ACCESS_PUBLIC_KEY_PATH, BASE_DOMAIN, LISTEN_HTTPS, SESSION_SECRET, SESSION_COOKIE_NAME, REPORT_INTERVAL, UDP_LISTEN_ADDR |
+| `internal/proxy/config.go`           | env-config: TLS_CERT/KEY paths, BASE_DOMAIN, LISTEN_HTTPS, SESSION_SECRET, SESSION_COOKIE_NAME, REPORT_INTERVAL, UDP_LISTEN_ADDR |
 | `cmd/proxy/l7/handler.go`            | ServeHTTP: parse host → validate cookie → resolve backend → strip cookie → reverse proxy        |
 | `cmd/proxy/l7/auth.go`               | validateCookie: HS256 cookie прокси; verifyHandoff: EdDSA токен доступа, exp, host                       |
 | `cmd/proxy/demux/demux.go`           | UDP-loop: dispatch type 1 (mac1), type 2 (learn), type 4 (userspace fallback)                   |
@@ -118,8 +118,8 @@ demux — `LabGroup.Status.VPN.PublicKey`.
   домен разные, поэтому платформа cookie не ставит.
 - **Статус:** ✅ Implemented (нужна проверка на живом кластере)
 - **Реализация:** платформа по клику отдаёт ссылку `https://<device>-<code>.<base>/_auth?t=<jwt>`. JWT (токен доступа к лаборатории)
-  подписан Ed25519 (alg `EdDSA`; RS256, HS256 и `none` отклоняются) ключом платформы (`auth.go:verifyHandoff`), несёт
-  `group_id`, `client`, `host` (метка `<device>-<code>`), `sess` (конец сессии), `iat`, `exp` (~1 минута, `LAB_ACCESS_TOKEN_TTL`
+  подписан Ed25519 (alg `EdDSA`; RS256, HS256 и `none` отклоняются) ключом тенанта (`auth.go:verifyHandoff`: `iss` = тенант, `kid` = id ключа, `aud` = `laboratory-proxy`, `sub` = клиент, `nbf`; группа должна принадлежать `iss`), несёт
+  `group_id`, `host` (метка `<device>-<code>`), `sess` (конец сессии), `iat`, `exp` (~1 минута, `LAB_ACCESS_TOKEN_TTL`
   на backend, не более 5). Токен без состояния: ни `jti`, ни привязки к браузеру, прокси ничего не запоминает. Прокси на
   `/_auth` (`session.go:handoff`) офлайн проверяет подпись, срок, что `host` совпадает с хостом запроса, и что сессия не
   закончилась. Затем ставит СВОЮ cookie (`Domain=<base>`, `HttpOnly`, `Secure`,
@@ -410,8 +410,8 @@ demux — `LabGroup.Status.VPN.PublicKey`.
 
 - **Источник:** §3 «прокси держит только публичный ключ: проверять может, ковать — нет».
 - **Статус:** ✅ Implemented
-- **Реализация:** `config.go` — `LAB_ACCESS_PUBLIC_KEY_PATH` (PKIX PEM Ed25519 public key, Secret `lab-access-public-key`, файл
-  `/etc/proxy/lab-access/public.pem`; `LoadLabAccessPublicKey` отвергает не Ed25519); private-key нет в env / Secret / mount.
+- **Реализация:** публичные ключи доступа тенантов (PKIX PEM Ed25519) лежат в Secret `tenant-<имя>-access-keys` namespace `laboratory-tenants`
+  (по записи на id ключа; пишет агент, прокси их только читает, `l7.SecretKeys`); общего ключа нет; private-key нет в env / Secret / mount.
 - **Что считать выполненным:** компрометация proxy не даёт ковать challenge-токены.
 
 #### REQ-PX-062: Cookie scope `Domain=<base>`

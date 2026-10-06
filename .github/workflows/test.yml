@@ -1,23 +1,73 @@
-name: Tests
+name: Test
 
+# The tests of the repository: the PR check and the pre-release run them (workflow_call).
 on:
-  push:
-  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   test:
-    name: Run on Ubuntu
+    name: Unit tests
     runs-on: ubuntu-latest
     steps:
       - name: Clone the code
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-
       - name: Running Tests
         run: |
           go mod tidy
           make test
+
+  netns:
+    name: Real-iptables tests (network namespaces)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: VPN and gateway pod firewalls in network namespaces (privileged docker, make test-netns)
+        run: make test-netns
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - name: Run linter
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.14.0
+
+  e2e:
+    name: E2E tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - name: Install kind (a pinned version, verified against a checksum kept here)
+        run: |
+          curl -fsSLo ./kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
+          echo "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  kind" | sha256sum -c -
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+      - name: Verify kind installation
+        run: kind version
+      - name: Create kind cluster
+        run: kind create cluster
+      - name: Running Test e2e
+        run: |
+          go mod tidy
+          make test-e2e

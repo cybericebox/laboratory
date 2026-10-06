@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -42,14 +43,19 @@ func TestSnapshotRelaysTrafficReportsByNamespaceGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	update, err := h.snapshot(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// The snapshot reads informer caches, which a real API server serves from its watch cache: an object written a moment ago may
+	// show up a few milliseconds later.
 	var got *protobuf.TrafficReport
-	for _, traffic := range update.GetTraffic() {
-		if traffic.GetNamespace() == namespace {
-			got = traffic
+	var update *protobuf.MonitoringUpdate
+	for deadline := time.Now().Add(10 * time.Second); got == nil && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		var err error
+		if update, err = h.snapshot(ctx); err != nil {
+			t.Fatal(err)
+		}
+		for _, traffic := range update.GetTraffic() {
+			if traffic.GetNamespace() == namespace {
+				got = traffic
+			}
 		}
 	}
 	if got == nil {

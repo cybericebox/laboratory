@@ -9,15 +9,54 @@ at install time instead of shipping a broken deployment.
 {{- fail (printf "laboratory must be installed into the 'laboratory-system' namespace (got %q). Re-run with --namespace laboratory-system --create-namespace." .Release.Namespace) }}
 {{- end }}
 
+{{- /* Chart.yaml kubeVersion refuses an older cluster too; this says why. */ -}}
+{{- if not (semverCompare ">=1.33.0-0" .Capabilities.KubeVersion.Version) }}
+{{- fail (printf "this chart needs Kubernetes 1.33 or newer, this cluster is %s: device pods run in user namespaces (spec.hostUsers=false), and below 1.33 the API server can drop that field silently, which would run a device in the host user namespace; the chart also uses native sidecars and ValidatingAdmissionPolicy. Upgrade the cluster." .Capabilities.KubeVersion.Version) }}
+{{- end }}
+
+{{- /* Exact image tags: a moving tag (`latest`, or none) leaves nodes on different images and a rollout cannot tell them apart. The release tag
+       (image.tag, else the chart appVersion) drives every image; <name>.image.tag pins one of them to another build. */ -}}
+{{- range $name, $image := dict "operator" .Values.operator.image "vpn" .Values.vpn.image "inetGateway" .Values.inetGateway.image "proxy" .Values.proxy.image "nodeAgent" .Values.nodeAgent.image "agent" .Values.agent.image "registry" .Values.registry.image }}
+{{- $tag := include "laboratory.tag" (dict "image" $image "root" $) }}
+{{- if or (eq $tag "") (eq $tag "latest") }}
+{{- fail (printf "the tag of the %s image is %q: images are deployed by an exact version tag (a release version or a short git sha). Set image.tag (all images) or %s.image.tag (this one)." $name $tag $name) }}
+{{- end }}
+{{- end }}
+
+{{- /* Values that no longer exist (the setting became a constant of an in-network port of the images, or moved): fail loudly instead of ignoring them silently. */ -}}
+{{- range $path := list "operator.vpnServicePort" "registry.forwardPort" "agent.mtls.enabled" "proxy.l7.listen" "proxy.l7.healthPort" "proxy.wg.healthPort" "proxy.wg.listenPort" }}
+{{- $node := $.Values }}
+{{- $found := true }}
+{{- range $key := splitList "." $path }}
+{{- if and $found (kindIs "map" $node) (hasKey $node $key) }}{{- $node = index $node $key }}{{- else }}{{- $found = false }}{{- end }}
+{{- end }}
+{{- if $found }}
+{{- fail (printf "%s was removed: it is a constant of the images now (an in-network port, see values.yaml and DEPLOY.md). Agent without client certificates: agent.allowInsecure=true (development only)." $path) }}
+{{- end }}
+{{- end }}
+
+{{- /* A device must stay below a group's pods, and those below the platform's. */ -}}
+{{- with .Values.priorityClasses }}
+{{- if not (and (lt (int64 .device.value) (int64 .group.value)) (lt (int64 .group.value) (int64 .platform.value))) }}
+{{- fail "priorityClasses: the values must satisfy device < group < platform" }}
+{{- end }}
+{{- end }}
+
 {{- /* Required values: fail at install time with a clear message. */ -}}
 {{- if not .Values.operator.publicVPNEndpoint }}
-{{- fail "operator.publicVPNEndpoint is required: the host:port advertised to WireGuard clients, e.g. vpn.example.com:51820" }}
+{{- fail "operator.publicVPNEndpoint is required: the host (or host:port) advertised to WireGuard clients, e.g. vpn.example.com" }}
+{{- end }}
+{{- if or (lt (int .Values.proxy.wg.publicPort) 1) (gt (int .Values.proxy.wg.publicPort) 65535) }}
+{{- fail (printf "proxy.wg.publicPort %v is not a port (1-65535): the UDP port WireGuard clients connect to, outside the cluster" .Values.proxy.wg.publicPort) }}
 {{- end }}
 {{- if not .Values.operator.baseDomain }}
 {{- fail "operator.baseDomain is required: the base domain of lab web hosts, e.g. lab.example.com" }}
 {{- end }}
-{{- if and .Values.agent.enabled (not .Values.agent.domain) }}
-{{- fail "agent.domain is required when agent.enabled: the public host of the management agent (TLS certificate and TLSRoute)" }}
+{{- if not .Values.operator.supportEmail }}
+{{- fail "operator.supportEmail is required: the contact address shown to participants on the VPN probe page" }}
+{{- end }}
+{{- if gt (int .Values.limits.lab.maxDevices) 64 }}
+{{- fail "limits.lab.maxDevices must not exceed 64: the Lab CRD and the agent have that ceiling" }}
 {{- end }}
 {{- if ne .Values.proxy.namespace "laboratory-proxy" }}
 {{- fail (printf "proxy.namespace must be 'laboratory-proxy' (got %q): the operator uses that name as a compile-time constant." .Values.proxy.namespace) }}
@@ -30,6 +69,48 @@ at install time instead of shipping a broken deployment.
 {{- fail "certManager.email is required with an ACME issuer (Let's Encrypt account)" }}
 {{- end }}
 {{- end }}
+
 {{- if not (hasPrefix (printf "%s/" (trimSuffix "/" .Values.nodeAgent.ovsRunHostPath)) .Values.nodeAgent.ovsSocket) }}
 {{- fail (printf "nodeAgent.ovsSocket (%s) must be inside nodeAgent.ovsRunHostPath (%s): the ovs sidecar and the node-agent share that directory" .Values.nodeAgent.ovsSocket .Values.nodeAgent.ovsRunHostPath) }}
+{{- end }}
+
+{{- /* Scheduler values: the operator refuses to start on bad ones, so fail at install time. */ -}}
+{{- if lt (int .Values.scheduler.maxPods) 0 }}
+{{- fail "scheduler.maxPods must not be negative (0 sets no limit)" }}
+{{- end }}
+{{- if not (has .Values.proxy.mode (list "replicas" "daemonset")) }}
+{{- fail "proxy.mode must be replicas or daemonset" }}
+{{- end }}
+{{- if and .Values.proxy.enabled (eq .Values.proxy.mode "replicas") }}
+{{- /* A live install can count the nodes; helm template cannot (lookup is empty), and then nothing is checked. */ -}}
+{{- $nodes := (lookup "v1" "Node" "" "").items }}
+{{- if and $nodes (gt (int .Values.proxy.replicas) (len $nodes)) }}
+{{- fail (printf "proxy.replicas is %d but the cluster has %d node(s): at most one proxy pod runs on a node (required anti-affinity), the rest would stay Pending. Set proxy.replicas to %d or less, or proxy.mode to daemonset." (int .Values.proxy.replicas) (len $nodes) (len $nodes)) }}
+{{- end }}
+{{- end }}
+{{- if hasKey .Values.scheduler "deviceDefaults" }}
+{{- fail "scheduler.deviceDefaults moved to limits.device.defaultCpu / defaultMemory" }}
+{{- end }}
+{{- if hasKey .Values.scheduler "headroomPercent" }}
+{{- fail "scheduler.headroomPercent was renamed to scheduler.platformReservePercent (and scheduler.platformReserveCpu/Memory were added)" }}
+{{- end }}
+{{- if or (lt (int .Values.scheduler.platformReservePercent) 0) (ge (int .Values.scheduler.platformReservePercent) 100) }}
+{{- fail "scheduler.platformReservePercent must be between 0 and 99" }}
+{{- end }}
+{{- if lt (int .Values.scheduler.restartThreshold) 1 }}
+{{- fail "scheduler.restartThreshold must be at least 1" }}
+{{- end }}
+{{- if include "laboratory.registryEnabled" . }}
+{{- if not .Values.nodeAgent.enabled }}
+{{- fail "the platform registry is always installed and needs nodeAgent.enabled: the node-agent serves the registry to the nodes as localhost" }}
+{{- end }}
+{{- if and .Values.registry.retainClass.create (not .Values.registry.retainClass.provisioner) }}
+{{- fail "registry.retainClass.provisioner is required when registry.retainClass.create is true (rancher.io/local-path, ebs.csi.aws.com, ...)" }}
+{{- end }}
+{{- if not .Values.registry.size }}
+{{- fail "registry.size is required (volume size of the platform registry)" }}
+{{- end }}
+{{- end }}
+{{- if and .Values.devices.statePersistence.enabled (not (hasPrefix "/" .Values.devices.statePersistence.containerdRoot)) }}
+{{- fail "devices.statePersistence.containerdRoot must be an absolute host path (the containerd root directory)" }}
 {{- end }}

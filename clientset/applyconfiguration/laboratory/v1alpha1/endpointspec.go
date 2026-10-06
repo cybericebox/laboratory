@@ -24,7 +24,8 @@ package v1alpha1
 type EndpointSpecApplyConfiguration struct {
 	// Device is the name of the Device CRD within the same Lab.
 	Device *string `json:"device,omitempty"`
-	// Interface is the interface name on the device; omit for unmanaged-switch/hub.
+	// Interface is a declared interface on a container or a logical
+	// GigabitEthernet0/1..GigabitEthernet0/48 port on a switch/hub.
 	Interface *string `json:"interface,omitempty"`
 }
 

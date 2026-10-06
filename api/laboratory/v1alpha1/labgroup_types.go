@@ -7,8 +7,27 @@ import (
 
 // LabGroupSpec defines the desired state of LabGroup.
 type LabGroupSpec struct {
-	VPN       LabGroupVPNSpec `json:"vpn,omitempty"`
-	Suspended bool            `json:"suspended,omitempty"`
+	VPN LabGroupVPNSpec `json:"vpn,omitempty"`
+	// Gateway holds the internet gateway pod's settings.
+	Gateway   LabGroupGatewaySpec `json:"gateway,omitempty"`
+	Suspended bool                `json:"suspended,omitempty"`
+}
+
+// GroupPodSize is the size of one pod a group runs itself (the VPN or the gateway): requests = limits, so the pod is Guaranteed.
+// The platform computes it when it plans the group and the pod is created at exactly that size and never resized.
+type GroupPodSize struct {
+	// +kubebuilder:validation:Minimum=1
+	CPUMillicores int64 `json:"cpuMillicores"`
+	// +kubebuilder:validation:Minimum=1
+	MemoryBytes int64 `json:"memoryBytes"`
+}
+
+// LabGroupGatewaySpec holds the internet gateway configuration.
+type LabGroupGatewaySpec struct {
+	// Size is the size of the gateway pod; absent = the chart's default. Fixed once set.
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="the size of a group's pod is fixed"
+	// +optional
+	Size *GroupPodSize `json:"size,omitempty"`
 }
 
 // LabGroupVPNSpec holds VPN server configuration.
@@ -21,6 +40,10 @@ type LabGroupVPNSpec struct {
 	// KeypairSecretRef points to an existing WireGuard keypair Secret.
 	// If omitted, operator generates a keypair and stores it in Secret vpn-server-keypair.
 	KeypairSecretRef *corev1.SecretReference `json:"keypairSecretRef,omitempty"`
+	// Size is the size of the VPN pod; absent = the chart's default. Fixed once set.
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="the size of a group's pod is fixed"
+	// +optional
+	Size *GroupPodSize `json:"size,omitempty"`
 }
 
 // LabGroupStatus defines the observed state of LabGroup.
@@ -29,6 +52,20 @@ type LabGroupStatus struct {
 	Namespace string            `json:"namespace,omitempty"`
 	Suspended bool              `json:"suspended,omitempty"`
 	VPN       LabGroupVPNStatus `json:"vpn,omitempty"`
+	// ImageWarning names the VPN or gateway image that could not be pinned to a
+	// digest when the group's pods were created with the image cache on; the pod
+	// pulls it by tag. Empty when all were pinned (or the cache was off).
+	// +optional
+	ImageWarning string `json:"imageWarning,omitempty"`
+	// Scheduling is the place of the group in the scheduler queue.
+	// +optional
+	Scheduling *SchedulingStatus `json:"scheduling,omitempty"`
+	// Pods is the scheduling state of the group's own pods ("vpn", "gateway").
+	// Absent for a group that predates the scheduler: its pods are not queued.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Pods []NamedPodSchedule `json:"pods,omitempty"`
 }
 
 // LabGroupVPNStatus exposes VPN server connection details.
@@ -51,8 +88,7 @@ type LabGroupVPNStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
-// +kubebuilder:validation:XValidation:rule="self.metadata.name.size() <= 63",message="LabGroup name is the namespace name and must be at most 63 characters"
-// +kubebuilder:validation:XValidation:rule="!(self.metadata.name in ['default','kube-system','kube-public','kube-node-lease','laboratory-system'])",message="LabGroup name conflicts with a reserved Kubernetes namespace"
+// +kubebuilder:validation:XValidation:rule="self.metadata.name.size() <= 63",message="LabGroup name must be at most 63 characters"
 
 // LabGroup is the Schema for the labgroups API.
 type LabGroup struct {

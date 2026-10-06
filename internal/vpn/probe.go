@@ -10,8 +10,10 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
+	"github.com/cybericebox/laboratory/pkg/statuspage"
 	"github.com/cybericebox/laboratory/pkg/vpnprobe"
 )
 
@@ -35,7 +37,15 @@ func probeHandler(supportEmail string) http.Handler {
 	pageTemplate, err := template.New("probe").Parse(probePageHTML)
 	var page bytes.Buffer
 	if err == nil {
-		err = pageTemplate.Execute(&page, struct{ SupportEmail string }{SupportEmail: supportEmail})
+		err = pageTemplate.Execute(&page, struct {
+			SupportEmail string
+			Favicon      template.URL
+			Style        template.CSS
+			Script       template.JS
+			Theme        template.HTML
+			Icon, Rule   template.HTML
+		}{supportEmail, statuspage.Favicon(), statuspage.Style(), statuspage.Script(), statuspage.Theme("uk"),
+			statuspage.Icon(statuspage.StateOK), statuspage.Rule})
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
@@ -46,7 +56,7 @@ func probeHandler(supportEmail string) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'")
 		if r.Method != http.MethodGet || r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
@@ -55,7 +65,9 @@ func probeHandler(supportEmail string) http.Handler {
 	})
 }
 
-func startProbe(subnet *net.IPNet, port int, supportEmail string) (*probeServer, error) {
+// startProbe serves the page on the first address of the client subnet. A non-empty iface (the tunnel interface) also binds the
+// socket to that interface, so the page is reachable from the tunnel only, on top of the INPUT rule that says the same.
+func startProbe(subnet *net.IPNet, port int, supportEmail, iface string) (*probeServer, error) {
 	if subnet == nil {
 		return nil, fmt.Errorf("VPN probe requires an IPv4 client subnet")
 	}
@@ -64,7 +76,8 @@ func startProbe(subnet *net.IPNet, port int, supportEmail string) (*probeServer,
 		return nil, err
 	}
 	gwIP := net.ParseIP(address)
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: gwIP, Port: port})
+	lc := net.ListenConfig{Control: bindToDevice(iface)}
+	listener, err := lc.Listen(context.Background(), "tcp4", net.JoinHostPort(gwIP.String(), strconv.Itoa(port)))
 	if err != nil {
 		return nil, fmt.Errorf("listen on VPN gateway %s: %w", gwIP, err)
 	}

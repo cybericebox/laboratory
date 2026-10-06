@@ -1,6 +1,8 @@
 package laboratory
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
@@ -23,7 +25,7 @@ func TestResolveDeviceInterfaces(t *testing.T) {
 	lab := referenceLab()
 	tmpl := laboratoryv1alpha1.DeviceTemplate{Interfaces: []laboratoryv1alpha1.InterfaceSpec{{
 		Name: "eth0",
-		Addr: laboratoryv1alpha1.AddrSpec{
+		Addr: &laboratoryv1alpha1.AddrSpec{
 			Type:       laboratoryv1alpha1.AddrTypeStatic,
 			AddressRef: &laboratoryv1alpha1.NetworkIPRef{Network: "vpn", Host: 10},
 			GatewayRef: &laboratoryv1alpha1.NetworkIPRef{Network: "vpn", Host: 1},
@@ -66,7 +68,7 @@ func TestResolveDeviceInterfaces(t *testing.T) {
 func TestResolveDeviceInterfacesPreservesLiteralAddresses(t *testing.T) {
 	tmpl := laboratoryv1alpha1.DeviceTemplate{Interfaces: []laboratoryv1alpha1.InterfaceSpec{{
 		Name: "eth0",
-		Addr: laboratoryv1alpha1.AddrSpec{
+		Addr: &laboratoryv1alpha1.AddrSpec{
 			Type: laboratoryv1alpha1.AddrTypeStatic, IP: "192.0.2.10/24", Gateway: "192.0.2.1",
 			Routes: []laboratoryv1alpha1.Route{{Dst: "198.51.100.0/24", Via: "192.0.2.254"}},
 		},
@@ -100,7 +102,7 @@ func TestResolveDeviceInterfacesRejectsInvalidReferences(t *testing.T) {
 			lab := referenceLab()
 			addr := laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeStatic, AddressRef: &laboratoryv1alpha1.NetworkIPRef{Network: "vpn", Host: 10}}
 			tt.edit(lab, &addr)
-			_, err := resolveDeviceInterfaces(laboratoryv1alpha1.DeviceTemplate{Interfaces: []laboratoryv1alpha1.InterfaceSpec{{Name: "eth0", Addr: addr}}}, lab)
+			_, err := resolveDeviceInterfaces(laboratoryv1alpha1.DeviceTemplate{Interfaces: []laboratoryv1alpha1.InterfaceSpec{{Name: "eth0", Addr: &addr}}}, lab)
 			if err == nil {
 				t.Fatal("invalid reference accepted")
 			}
@@ -113,17 +115,45 @@ func TestResolveLabDeviceInterfacesRejectsDuplicateBeforeMaterialization(t *test
 	lab.Spec.Devices = []laboratoryv1alpha1.DeviceTemplate{
 		{Name: "first", Interfaces: []laboratoryv1alpha1.InterfaceSpec{{
 			Name: "eth0",
-			Addr: laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeStatic,
+			Addr: &laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeStatic,
 				AddressRef: &laboratoryv1alpha1.NetworkIPRef{Network: "vpn", Host: 10}},
 		}}},
 		{Name: "second", Interfaces: []laboratoryv1alpha1.InterfaceSpec{{
 			Name: "eth0",
-			Addr: laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeStatic,
+			Addr: &laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeStatic,
 				AddressRef: &laboratoryv1alpha1.NetworkIPRef{Network: "vpn", Host: 10}},
 		}}},
 	}
 	got, err := resolveLabDeviceInterfaces(lab)
 	if err == nil || got != nil {
 		t.Fatalf("duplicate address should prevent all Device materialization: %+v, %v", got, err)
+	}
+}
+
+// An interface without an address (platform IP type "none") has a nil Addr: it resolves untouched,
+// serializes without an "addr" key and gets no netconfig entry or DHCP capabilities.
+func TestInterfaceWithoutAddress(t *testing.T) {
+	iface := laboratoryv1alpha1.InterfaceSpec{Name: "eth0"}
+	raw, err := json.Marshal(iface)
+	if err != nil || strings.Contains(string(raw), "addr") {
+		t.Fatalf("marshal = %s, %v; want no addr key", raw, err)
+	}
+	var back laboratoryv1alpha1.InterfaceSpec
+	if err := json.Unmarshal(raw, &back); err != nil || back.Addr != nil || back.Name != "eth0" {
+		t.Fatalf("round trip = %+v, %v", back, err)
+	}
+	tmpl := laboratoryv1alpha1.DeviceTemplate{Name: "web", Interfaces: []laboratoryv1alpha1.InterfaceSpec{iface}}
+	lab := referenceLab()
+	lab.Spec.Devices = []laboratoryv1alpha1.DeviceTemplate{tmpl}
+	got, err := resolveLabDeviceInterfaces(lab)
+	if err != nil || len(got["web"]) != 1 || got["web"][0].Addr != nil {
+		t.Fatalf("resolve = %+v, %v", got, err)
+	}
+	dev := &laboratoryv1alpha1.Device{Spec: laboratoryv1alpha1.DeviceSpec{Interfaces: got["web"]}}
+	if deviceHasInImageDHCP(dev) {
+		t.Fatal("no address must not imply DHCP")
+	}
+	if c := (&DeviceReconciler{}).netConfigInitContainer(dev); c != nil {
+		t.Fatalf("no address must not need a netconfig container, got %+v", c)
 	}
 }

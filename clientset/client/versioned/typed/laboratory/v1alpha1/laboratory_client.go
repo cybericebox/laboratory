@@ -33,9 +33,11 @@ type LaboratoryV1alpha1Interface interface {
 	LabGatewaysGetter
 	LabGroupsGetter
 	LabGroupAccessPoliciesGetter
-	LabTrafficReportsGetter
 	LabGroupClientsGetter
+	LabTrafficReportsGetter
 	LabVPNsGetter
+	MaintenanceWindowsGetter
+	TenantsGetter
 }
 
 // LaboratoryV1alpha1Client is used to interact with features provided by the laboratory group.
@@ -67,16 +69,24 @@ func (c *LaboratoryV1alpha1Client) LabGroupAccessPolicies(namespace string) LabG
 	return newLabGroupAccessPolicies(c, namespace)
 }
 
-func (c *LaboratoryV1alpha1Client) LabTrafficReports(namespace string) LabTrafficReportInterface {
-	return newLabTrafficReports(c, namespace)
-}
-
 func (c *LaboratoryV1alpha1Client) LabGroupClients(namespace string) LabGroupClientInterface {
 	return newLabGroupClients(c, namespace)
 }
 
+func (c *LaboratoryV1alpha1Client) LabTrafficReports(namespace string) LabTrafficReportInterface {
+	return newLabTrafficReports(c, namespace)
+}
+
 func (c *LaboratoryV1alpha1Client) LabVPNs(namespace string) LabVPNInterface {
 	return newLabVPNs(c, namespace)
+}
+
+func (c *LaboratoryV1alpha1Client) MaintenanceWindows() MaintenanceWindowInterface {
+	return newMaintenanceWindows(c)
+}
+
+func (c *LaboratoryV1alpha1Client) Tenants() TenantInterface {
+	return newTenants(c)
 }
 
 // NewForConfig creates a new LaboratoryV1alpha1Client for the given config.

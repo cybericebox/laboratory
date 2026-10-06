@@ -30,6 +30,15 @@ type LabGroupStatusApplyConfiguration struct {
 	Namespace *string                              `json:"namespace,omitempty"`
 	Suspended *bool                                `json:"suspended,omitempty"`
 	VPN       *LabGroupVPNStatusApplyConfiguration `json:"vpn,omitempty"`
+	// ImageWarning names the VPN or gateway image that could not be pinned to a
+	// digest when the group's pods were created with the image cache on; the pod
+	// pulls it by tag. Empty when all were pinned (or the cache was off).
+	ImageWarning *string `json:"imageWarning,omitempty"`
+	// Scheduling is the place of the group in the scheduler queue.
+	Scheduling *SchedulingStatusApplyConfiguration `json:"scheduling,omitempty"`
+	// Pods is the scheduling state of the group's own pods ("vpn", "gateway").
+	// Absent for a group that predates the scheduler: its pods are not queued.
+	Pods []NamedPodScheduleApplyConfiguration `json:"pods,omitempty"`
 }
 
 // LabGroupStatusApplyConfiguration constructs a declarative configuration of the LabGroupStatus type for use with
@@ -67,5 +76,34 @@ func (b *LabGroupStatusApplyConfiguration) WithSuspended(value bool) *LabGroupSt
 // If called multiple times, the VPN field is set to the value of the last call.
 func (b *LabGroupStatusApplyConfiguration) WithVPN(value *LabGroupVPNStatusApplyConfiguration) *LabGroupStatusApplyConfiguration {
 	b.VPN = value
+	return b
+}
+
+// WithImageWarning sets the ImageWarning field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ImageWarning field is set to the value of the last call.
+func (b *LabGroupStatusApplyConfiguration) WithImageWarning(value string) *LabGroupStatusApplyConfiguration {
+	b.ImageWarning = &value
+	return b
+}
+
+// WithScheduling sets the Scheduling field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Scheduling field is set to the value of the last call.
+func (b *LabGroupStatusApplyConfiguration) WithScheduling(value *SchedulingStatusApplyConfiguration) *LabGroupStatusApplyConfiguration {
+	b.Scheduling = value
+	return b
+}
+
+// WithPods adds the given value to the Pods field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Pods field.
+func (b *LabGroupStatusApplyConfiguration) WithPods(values ...*NamedPodScheduleApplyConfiguration) *LabGroupStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithPods")
+		}
+		b.Pods = append(b.Pods, *values[i])
+	}
 	return b
 }

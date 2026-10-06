@@ -4,22 +4,36 @@ import (
 	"encoding/json"
 
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
 // labGroupToProto maps a LabGroup custom resource to its gRPC wire representation.
 func labGroupToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.LabGroup {
+	dg, da := deployOf(g.Annotations)
+	var created int64
+	if !g.CreationTimestamp.IsZero() {
+		created = g.CreationTimestamp.UnixMilli()
+	}
 	return &protobuf.LabGroup{
-		Name: g.Name,
+		Name:        names.IDOf(g),
+		DeployGroup: dg,
+		DeployAfter: da,
 		Status: &protobuf.LabGroupStatus{
 			Phase:           string(g.Status.Phase),
 			Namespace:       g.Status.Namespace,
 			VpnRegistered:   g.Status.VPN.Registered,
 			Suspended:       g.Status.Suspended,
 			VpnClientSubnet: g.Status.VPN.ClientSubnet,
+			ImageWarning:    g.Status.ImageWarning,
+			Scheduling:      schedulingToProto(g.Status.Scheduling, g.Annotations),
+			Pods:            groupPodsToProto(g.Status.Pods),
 		},
+		Labels:        userLabels(g.Labels),
+		CreatedUnixMs: created,
 	}
 }
 
@@ -35,9 +49,14 @@ func labToProto(l *laboratoryv1alpha1.Lab) *protobuf.Lab {
 		Ready:         st.Phase == laboratoryv1alpha1.PhaseReady,
 		VpnReady:      st.VPN.Ready,
 		InternetReady: st.Internet.Ready,
+		ImageWarning:  st.ImageWarning,
 	}
+	status.Scheduling = schedulingToProto(st.Scheduling, l.Annotations)
 	for i := range st.Devices {
-		status.Devices = append(status.Devices, &protobuf.LabDeviceStatus{Name: st.Devices[i].Name, Ready: st.Devices[i].Ready})
+		status.Devices = append(status.Devices, &protobuf.LabDeviceStatus{
+			Name: st.Devices[i].Name, Ready: st.Devices[i].Ready,
+			Snapshot: snapshotStatusToProto(st.Devices[i].State),
+		})
 	}
 	for _, device := range l.Spec.Devices {
 		if device.Resources == nil {
@@ -61,12 +80,82 @@ func labToProto(l *laboratoryv1alpha1.Lab) *protobuf.Lab {
 		status.Access = append(status.Access, &protobuf.LabAccessEntry{Device: a.Device, Port: a.Port, Protocol: a.Protocol, Url: a.URL})
 		status.AccessUrls = append(status.AccessUrls, a.URL)
 	}
+	dg, da := deployOf(l.Annotations)
 	return &protobuf.Lab{
-		Namespace: l.Namespace,
-		Name:      l.Name,
-		SpecJson:  specJSON,
-		Status:    status,
+		Namespace:   l.Namespace,
+		Name:        names.IDOf(l),
+		SpecJson:    specJSON,
+		Status:      status,
+		Labels:      userLabels(l.Labels),
+		DeployGroup: dg,
+		DeployAfter: da,
 	}
+}
+
+// schedulingToProto maps the scheduler queue place of a Lab or LabGroup; nil when it has
+// none. The group is the original deploy key from the object's annotation (the status
+// holds the encoded label value).
+func schedulingToProto(s *laboratoryv1alpha1.SchedulingStatus, annotations map[string]string) *protobuf.Scheduling {
+	if s == nil {
+		return nil
+	}
+	group, _ := deployOf(annotations)
+	if group == "" {
+		group = s.Group
+	}
+	return &protobuf.Scheduling{Group: group, Position: s.Position, Length: s.Length, Reason: s.Reason, Message: s.Message, Pods: s.Pods, Pending: s.Pending}
+}
+
+func ms(t *metav1.Time) int64 {
+	if t == nil || t.IsZero() {
+		return 0
+	}
+	return t.UnixMilli()
+}
+
+// podScheduleToProto maps the scheduler state of one pod; nil when untracked.
+func podScheduleToProto(p *laboratoryv1alpha1.PodSchedule) *protobuf.PodScheduling {
+	if p == nil || p.State == "" {
+		return nil
+	}
+	out := &protobuf.PodScheduling{QueuedUnixMs: ms(p.QueuedAt), DispatchedUnixMs: ms(p.DispatchedAt), StartedUnixMs: ms(p.StartedAt)}
+	switch p.State {
+	case laboratoryv1alpha1.PodQueued:
+		out.State = protobuf.PodState_POD_STATE_QUEUED
+	case laboratoryv1alpha1.PodStarting:
+		out.State = protobuf.PodState_POD_STATE_STARTING
+	case laboratoryv1alpha1.PodStarted:
+		out.State = protobuf.PodState_POD_STATE_STARTED
+	case laboratoryv1alpha1.PodFailed:
+		out.State = protobuf.PodState_POD_STATE_FAILED
+	}
+	if f := p.Failure; f != nil {
+		out.Failure = &protobuf.PodFailure{Reason: f.Reason, Message: f.Message, RestartCount: f.RestartCount, AtUnixMs: ms(f.At)}
+	}
+	return out
+}
+
+// fillDeviceScheduling sets the scheduler state of each device of a proto Lab from the
+// Device objects of its namespace, keyed by device name (the lab's CR name is lab.crName).
+func fillDeviceScheduling(lab *protobuf.Lab, devices map[usageKey]*laboratoryv1alpha1.PodSchedule, crName string) {
+	if lab.GetStatus() == nil || devices == nil {
+		return
+	}
+	for _, d := range lab.Status.Devices {
+		d.Scheduling = podScheduleToProto(devices[usageKey{lab: crName, device: d.Name}])
+	}
+}
+
+// groupPodsToProto maps the scheduler state of the pods a LabGroup runs itself.
+func groupPodsToProto(pods []laboratoryv1alpha1.NamedPodSchedule) []*protobuf.LabGroupPod {
+	if len(pods) == 0 {
+		return nil
+	}
+	out := make([]*protobuf.LabGroupPod, 0, len(pods))
+	for i := range pods {
+		out = append(out, &protobuf.LabGroupPod{Name: pods[i].Name, Scheduling: podScheduleToProto(&pods[i].PodSchedule)})
+	}
+	return out
 }
 
 func quantityMilliValue(value string) int64 {
@@ -96,23 +185,8 @@ func quantityValue(value string) int64 {
 func labMonitoringToProto(l *laboratoryv1alpha1.Lab, labGroupName string) *protobuf.Lab {
 	p := labToProto(l)
 	p.SpecJson = nil
-	p.Env = nil
 	p.LabGroupName = labGroupName
 	return p
-}
-
-// protoToLab maps a gRPC Lab message back to a Lab custom resource,
-// unmarshalling spec_json into the typed Spec field.
-func protoToLab(p *protobuf.Lab) (*laboratoryv1alpha1.Lab, error) {
-	l := &laboratoryv1alpha1.Lab{}
-	l.Name = p.Name
-	l.Namespace = p.Namespace
-	if len(p.SpecJson) > 0 {
-		if err := json.Unmarshal(p.SpecJson, &l.Spec); err != nil {
-			return nil, err
-		}
-	}
-	return l, nil
 }
 
 // clientToProto maps a LabGroupClient custom resource to its gRPC wire
@@ -131,7 +205,7 @@ func clientToProto(c *laboratoryv1alpha1.LabGroupClient) *protobuf.LabGroupClien
 	}
 	return &protobuf.LabGroupClient{
 		Namespace: c.Namespace,
-		Name:      c.Name,
+		Name:      names.IDOf(c),
 		PublicKey: c.Spec.PublicKey,
 		Status: &protobuf.LabGroupClientStatus{
 			AssignedIp: c.Status.AssignedIP,
@@ -139,6 +213,7 @@ func clientToProto(c *laboratoryv1alpha1.LabGroupClient) *protobuf.LabGroupClien
 			Config:     c.Status.Config,
 			Statistics: stats,
 		},
+		Labels: userLabels(c.Labels),
 	}
 }
 
@@ -152,10 +227,37 @@ func clientMonitoringToProto(c *laboratoryv1alpha1.LabGroupClient, labGroupName 
 	return p
 }
 
+// policyIDMap reads the {encoded name: original id} map of an access policy.
+func policyIDMap(policy *laboratoryv1alpha1.LabGroupAccessPolicy) map[string]string {
+	var m map[string]string
+	if raw := policy.Annotations[names.AnnotationIDMap]; raw != "" {
+		_ = json.Unmarshal([]byte(raw), &m)
+	}
+	return m
+}
+
 func accessPolicyToProto(policy *laboratoryv1alpha1.LabGroupAccessPolicy, labGroupName string) *protobuf.LabGroupAccessPolicy {
+	idMap := policyIDMap(policy)
+	orig := func(ns []string) []string {
+		out := make([]string, len(ns))
+		for i, n := range ns {
+			out[i] = n
+			if o, ok := idMap[n]; ok {
+				out[i] = o
+			}
+		}
+		return out
+	}
+	origOne := func(n string) string {
+		if o, ok := idMap[n]; ok {
+			return o
+		}
+		return n
+	}
 	p := &protobuf.LabGroupAccessPolicy{
 		LabGroupName: labGroupName,
 		Namespace:    policy.Namespace,
+		Labels:       userLabels(policy.Labels),
 		Status: &protobuf.LabGroupAccessPolicyStatus{
 			ObservedGeneration: policy.Status.ObservedGeneration,
 			State:              policy.Status.State,
@@ -167,22 +269,24 @@ func accessPolicyToProto(policy *laboratoryv1alpha1.LabGroupAccessPolicy, labGro
 	}
 	for _, rule := range policy.Spec.Rules {
 		action := protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_UNSPECIFIED
-		if rule.Action == laboratoryv1alpha1.LabGroupAccessAllow {
+		switch rule.Action {
+		case laboratoryv1alpha1.LabGroupAccessAllow:
 			action = protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_ALLOW
-		} else if rule.Action == laboratoryv1alpha1.LabGroupAccessDeny {
+		case laboratoryv1alpha1.LabGroupAccessDeny:
 			action = protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_DENY
 		}
-		p.Rules = append(p.Rules, &protobuf.LabGroupAccessRule{Action: action, ClientNames: rule.ClientNames, LabNames: rule.LabNames})
+		p.Rules = append(p.Rules, &protobuf.LabGroupAccessRule{Action: action, ClientNames: orig(rule.ClientNames), LabNames: orig(rule.LabNames)})
 	}
 	for _, rule := range policy.Status.Rules {
 		action := protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_UNSPECIFIED
-		if rule.Action == laboratoryv1alpha1.LabGroupAccessAllow {
+		switch rule.Action {
+		case laboratoryv1alpha1.LabGroupAccessAllow:
 			action = protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_ALLOW
-		} else if rule.Action == laboratoryv1alpha1.LabGroupAccessDeny {
+		case laboratoryv1alpha1.LabGroupAccessDeny:
 			action = protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_DENY
 		}
 		p.Status.Rules = append(p.Status.Rules, &protobuf.LabGroupAccessRuleStatistics{
-			ClientName: rule.ClientName, LabName: rule.LabName, Action: action,
+			ClientName: origOne(rule.ClientName), LabName: origOne(rule.LabName), Action: action,
 			Packets: rule.Packets, Bytes: rule.Bytes, CounterReset: rule.CounterReset,
 		})
 	}

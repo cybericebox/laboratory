@@ -1,0 +1,59 @@
+{{- if and .Values.nodeAgent.enabled .Values.operator.admissionPolicy.enabled }}
+{{- /*
+RBAC cannot limit a patch of nodes to one label of one node, so this policy does. The node-agent's ServiceAccount may patch the Node object of
+its own node (the node name is in the bound token of its pod) and change nothing but the label laboratory.cybericebox.com/node-agent-ready,
+which may only be "true". See DEPLOY.md, "Which nodes run labs".
+*/ -}}
+{{- $nodeAgent := printf "system:serviceaccount:%s:laboratory-node-agent" .Release.Namespace }}
+{{- $key := "laboratory.cybericebox.com/node-agent-ready" }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-node-agent-label
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: [UPDATE]
+        resources: [nodes]
+  matchConditions:
+    - name: from-the-node-agent
+      expression: request.userInfo.username == {{ $nodeAgent | quote }}
+  variables:
+    - name: ownNode
+      expression: "has(request.userInfo.extra) && 'authentication.kubernetes.io/node-name' in request.userInfo.extra ? request.userInfo.extra['authentication.kubernetes.io/node-name'][0] : ''"
+    - name: newLabels
+      expression: "object.metadata.?labels.orValue({})"
+    - name: oldLabels
+      expression: "oldObject.metadata.?labels.orValue({})"
+  validations:
+    - expression: "variables.ownNode != '' && variables.ownNode == object.metadata.name"
+      message: "the node-agent may change only the Node of the node it runs on"
+      reason: Forbidden
+    - expression: "object.spec == oldObject.spec"
+      message: "the node-agent may not change the spec of a node (taints, unschedulable, ...)"
+      reason: Forbidden
+    - expression: "object.metadata.?annotations.orValue({}) == oldObject.metadata.?annotations.orValue({}) && object.metadata.?finalizers.orValue([]) == oldObject.metadata.?finalizers.orValue([]) && object.metadata.?ownerReferences.orValue([]) == oldObject.metadata.?ownerReferences.orValue([])"
+      message: {{ printf "the node-agent may change only the label %s of its node" $key | quote }}
+      reason: Forbidden
+    - expression: "variables.newLabels.all(k, k == '{{ $key }}' ? variables.newLabels[k] == 'true' : (k in variables.oldLabels && variables.oldLabels[k] == variables.newLabels[k]))"
+      message: {{ printf "the node-agent may only set the label %s to true, and change no other label" $key | quote }}
+      reason: Forbidden
+    - expression: "variables.oldLabels.all(k, k == '{{ $key }}' || k in variables.newLabels)"
+      message: {{ printf "the node-agent may not remove a label other than %s" $key | quote }}
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-node-agent-label
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  policyName: laboratory-node-agent-label
+  validationActions: [Deny]
+{{- end }}

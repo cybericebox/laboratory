@@ -1,0 +1,31 @@
+{{- /*
+What the operator may do INSIDE one namespace. It is bound by a RoleBinding (never a ClusterRoleBinding): by the operator itself
+in every LabGroup namespace it creates, and by this chart in the release namespace. See clusterrole.yaml.
+*/ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: laboratory-operator-namespaced
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+- apiGroups: [""]
+  resources: [endpoints, secrets, serviceaccounts, services]
+  verbs: [create, delete, get, list, patch, update, watch]
+# Bare device pods (state persistence) and the pod of a suspended or removed device; patch: the user labels of the group's
+# own pods (VPN, gateway) and of the device pods are kept in step with the group's and the lab's.
+- apiGroups: [""]
+  resources: [pods]
+  verbs: [create, delete, get, list, patch, watch]
+- apiGroups: [apps]
+  resources: [deployments]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [cilium.io]
+  resources: [ciliumnetworkpolicies]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [networking.k8s.io]
+  resources: [networkpolicies]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [policy]
+  resources: [poddisruptionbudgets]
+  verbs: [create, delete, get, list, patch, update, watch]

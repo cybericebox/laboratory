@@ -20,6 +20,7 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/labdhcp"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 	"github.com/cybericebox/laboratory/pkg/dhcp"
 	"github.com/cybericebox/laboratory/pkg/netutil"
@@ -90,6 +91,16 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, fmt.Errorf("assign IP to %s: %w", ifaceName, err)
 	}
 
+	// The lab may ping the pod's address on its own interface, and nothing else of the pod.
+	if err := r.IPT.AllowPing(ifaceName, firstHostIP(cidr)); err != nil {
+		return ctrl.Result{}, fmt.Errorf("allow ping of %s: %w", ifaceName, err)
+	}
+
+	// A lab may send only from its own subnet; installed before the lab can send anything through NAT.
+	if err := r.IPT.AddAntiSpoof(ifaceName, cidr); err != nil {
+		return ctrl.Result{}, fmt.Errorf("add anti-spoof rule for %s: %w", ifaceName, err)
+	}
+
 	// NAT: POSTROUTING MASQUERADE for this lab's subnet.
 	if err := r.IPT.AddMasquerade(cidr); err != nil {
 		return ctrl.Result{}, fmt.Errorf("add masquerade %s: %w", cidr, err)
@@ -107,6 +118,10 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return ctrl.Result{}, fmt.Errorf("internet DHCP settings: %w", err)
 		}
 		gwIP := firstHostIP(cidr)
+		// The pod drops everything addressed to itself from the lab side, DHCP on this interface excepted.
+		if err := r.IPT.AllowDHCP(ifaceName); err != nil {
+			return ctrl.Result{}, fmt.Errorf("open DHCP on %s: %w", ifaceName, err)
+		}
 		if err := r.DHCP.Start(
 			gw.Spec.LabName, dhcp.Config{
 				Iface:   ifaceName,
@@ -119,6 +134,8 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		); err != nil {
 			return ctrl.Result{}, fmt.Errorf("start internet DHCP for lab %s: %w", gw.Spec.LabName, err)
 		}
+	} else {
+		r.IPT.DenyDHCP(ifaceName)
 	}
 
 	if gw.Status.Phase != laboratoryv1alpha1.LabGatewayPhaseReady {
@@ -143,8 +160,11 @@ func (r *LabGatewayReconciler) reconcileDelete(ctx context.Context, gw *laborato
 	error,
 ) {
 	r.DHCP.Stop(gw.Spec.LabName)
+	r.IPT.DenyDHCP(names.LabIfaceNameByIndex(gw.Spec.NetworkIndex))
 	if cidr, err := netutil.SubnetForIndex(r.Cfg.InetBaseNetwork, 24, gw.Spec.NetworkIndex); err == nil {
 		r.IPT.DelMasquerade(cidr)
+		r.IPT.DenyPing(names.LabIfaceNameByIndex(gw.Spec.NetworkIndex), firstHostIP(cidr))
+		r.IPT.DelAntiSpoof(names.LabIfaceNameByIndex(gw.Spec.NetworkIndex), cidr)
 	}
 	controllerutil.RemoveFinalizer(gw, names.FinalizerGateway)
 	return ctrl.Result{}, r.Update(ctx, gw)
@@ -184,7 +204,7 @@ func (r *LabGatewayReconciler) patchStatus(
 func (r *LabGatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.LabGateway{}).
-		Complete(r)
+		Complete(reconcileutil.Quiet(r))
 }
 
 func firstHostIP(cidr string) string {

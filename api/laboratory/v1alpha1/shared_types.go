@@ -1,18 +1,47 @@
 package v1alpha1
 
-// LabGroupNamespace returns the Kubernetes namespace for a LabGroup.
-// The namespace is identical to the group name — no prefix — so users can
-// derive it trivially: group "team-alpha" → namespace "team-alpha".
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
+)
+
+// LabGroupNamespacePrefix starts the name of the namespace of every NEW LabGroup. A group name is chosen by a
+// tenant; with a fixed prefix it can never equal a namespace that already exists (kube-system, laboratory-system,
+// laboratory-tenants, another tenant's group...), so the operator never adopts or deletes a foreign namespace.
+const LabGroupNamespacePrefix = "lg-"
+
+// LabGroupNamespace returns the namespace the operator creates for a NEW LabGroup of this name:
+// "lg-" + the name (shortened to 40 characters) + "-" + 12 hex digits of the SHA-256 of the whole name, at most 56
+// characters: 48 bits, so two long ids that share their first 40 characters do not collide by chance (with 32 bits about one in a hundred
+// does at nine thousand groups). A group made with 8 digits keeps its namespace in its status (see LabGroupNamespaceOf).
 func LabGroupNamespace(groupName string) string {
-	return groupName
+	sum := sha256.Sum256([]byte(groupName))
+	short := groupName
+	if len(short) > 40 {
+		short = short[:40]
+	}
+	short = strings.TrimRight(short, "-")
+	return LabGroupNamespacePrefix + short + "-" + hex.EncodeToString(sum[:6])
+}
+
+// LabGroupNamespaceOf is the namespace of an existing LabGroup: the one recorded in its status (so a group that
+// was created under the old naming, where the namespace was the bare group name, keeps working), else the name a
+// new group gets.
+func LabGroupNamespaceOf(lg *LabGroup) string {
+	if lg.Status.Namespace != "" {
+		return lg.Status.Namespace
+	}
+	return LabGroupNamespace(lg.Name)
 }
 
 // Phase is the lifecycle phase of a resource.
-// +kubebuilder:validation:Enum=Pending;Provisioning;Ready;Suspended;Failed;Error
+// +kubebuilder:validation:Enum=Pending;Queued;Provisioning;Ready;Suspended;Failed;Error
 type Phase string
 
 const (
 	PhasePending      Phase = "Pending"
+	PhaseQueued       Phase = "Queued"
 	PhaseProvisioning Phase = "Provisioning"
 	PhaseReady        Phase = "Ready"
 	PhaseSuspended    Phase = "Suspended"
@@ -47,19 +76,22 @@ const (
 	AddrTypeDHCPPreset AddrType = "dhcp-preset"
 )
 
-// SecurityPreset selects a named capability profile for a device container.
-// The concrete Linux capabilities behind each preset are resolved internally by
-// the operator and are intentionally NOT part of the public spec, so the
-// requirement surface stays hidden and can move behind a custom agent later.
-//   - basic:   no extra capabilities (a plain service).
-//   - service: bind privileged ports.
-//   - net:     networking/testing tools (ping, tcpdump, ip, iptables, DHCP).
-//   - debug:   net plus process debugging (gdb/strace).
+// SecurityPreset selects a device security profile from the fixed catalog of the laboratory (internal/profiles). The
+// concrete Linux capabilities behind a profile are resolved by the operator and are intentionally NOT part of the
+// public spec. Empty means standard.
+//   - standard: the base set plus SYS_PTRACE, IPC_LOCK, LINUX_IMMUTABLE; ping through ping_group_range. Web, API, databases,
+//     SSH, privilege escalation, cracking, forensics, gdb and strace.
+//   - extended: standard plus NET_RAW, NET_ADMIN and /dev/net/tun. Raw scans, sniffing, spoofing, routers, VPNs, tunnels.
 //
-// +kubebuilder:validation:Enum=basic;service;net;debug
+// The old names stay accepted as aliases: basic and service mean standard, net and debug mean extended.
+//
+// +kubebuilder:validation:Enum=standard;extended;basic;service;net;debug
 type SecurityPreset string
 
 const (
+	SecurityPresetStandard SecurityPreset = "standard"
+	SecurityPresetExtended SecurityPreset = "extended"
+	// Deprecated aliases.
 	SecurityPresetBasic   SecurityPreset = "basic"
 	SecurityPresetService SecurityPreset = "service"
 	SecurityPresetNet     SecurityPreset = "net"
@@ -78,10 +110,20 @@ type EndpointSpec struct {
 
 // InterfaceSpec defines a network interface on a device.
 type InterfaceSpec struct {
+	// Name is the interface name inside the pod: a lowercase word of at most 15
+	// characters; lo and accessport are reserved.
 	// +kubebuilder:validation:Required
-	Name string   `json:"name"`
-	Addr AddrSpec `json:"addr,omitempty"`
-	// MAC is "random" or an explicit MAC address.
+	// +kubebuilder:validation:MaxLength=15
+	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9-]{0,14}$`
+	// +kubebuilder:validation:XValidation:rule="self != 'lo' && self != 'accessport'",message="reserved interface name"
+	Name string `json:"name"`
+	// Addr is optional: nil means the interface is created without an IP.
+	// +optional
+	Addr *AddrSpec `json:"addr,omitempty"`
+	// MAC is "random" or an explicit unicast MAC address.
+	// +kubebuilder:validation:MaxLength=17
+	// +kubebuilder:validation:Pattern=`^(random|[0-9a-fA-F][02468aceACE](:[0-9a-fA-F]{2}){5})$`
+	// +kubebuilder:validation:XValidation:rule="self != '00:00:00:00:00:00'",message="the zero MAC is not allowed"
 	MAC string `json:"mac,omitempty"`
 }
 

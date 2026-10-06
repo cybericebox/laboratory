@@ -23,7 +23,10 @@ package v1alpha1
 // DHCPServer enables the embedded DHCP server for a network segment.
 // Subnet and gateway are derived from the lab's allocated CIDR (Status.*.CIDR).
 type DHCPServerApplyConfiguration struct {
-	Enabled *bool `json:"enabled,omitempty"`
+	Enabled *bool                         `json:"enabled,omitempty"`
+	Ranges  []DHCPRangeApplyConfiguration `json:"ranges,omitempty"`
+	// DNS is advertised only by the internet gateway's DHCP server.
+	DNS *string `json:"dns,omitempty"`
 }
 
 // DHCPServerApplyConfiguration constructs a declarative configuration of the DHCPServer type for use with
@@ -37,5 +40,26 @@ func DHCPServer() *DHCPServerApplyConfiguration {
 // If called multiple times, the Enabled field is set to the value of the last call.
 func (b *DHCPServerApplyConfiguration) WithEnabled(value bool) *DHCPServerApplyConfiguration {
 	b.Enabled = &value
+	return b
+}
+
+// WithRanges adds the given value to the Ranges field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Ranges field.
+func (b *DHCPServerApplyConfiguration) WithRanges(values ...*DHCPRangeApplyConfiguration) *DHCPServerApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithRanges")
+		}
+		b.Ranges = append(b.Ranges, *values[i])
+	}
+	return b
+}
+
+// WithDNS sets the DNS field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the DNS field is set to the value of the last call.
+func (b *DHCPServerApplyConfiguration) WithDNS(value string) *DHCPServerApplyConfiguration {
+	b.DNS = &value
 	return b
 }

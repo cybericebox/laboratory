@@ -11,7 +11,6 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
-	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -21,8 +20,6 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	NodeAgent_SetupNetworks_FullMethodName    = "/node.v1.NodeAgent/SetupNetworks"
-	NodeAgent_AddPort_FullMethodName          = "/node.v1.NodeAgent/AddPort"
-	NodeAgent_DeletePort_FullMethodName       = "/node.v1.NodeAgent/DeletePort"
 	NodeAgent_GetPodAnnotation_FullMethodName = "/node.v1.NodeAgent/GetPodAnnotation"
 )
 
@@ -35,10 +32,6 @@ type NodeAgentClient interface {
 	// interfaces in the networks annotation, moves pod-side vetches into the pod netns,
 	// and returns how cni-gate should handle the default k8s interface (eth0).
 	SetupNetworks(ctx context.Context, in *SetupNetworksRequest, opts ...grpc.CallOption) (*SetupNetworksResponse, error)
-	// AddPort creates a veth pair and moves the pod-side into the pod netns.
-	AddPort(ctx context.Context, in *AddPortRequest, opts ...grpc.CallOption) (*AddPortResponse, error)
-	// DeletePort removes all OVS ports associated with a pod.
-	DeletePort(ctx context.Context, in *DeletePortRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// GetPodAnnotation reads a single pod annotation; used by cni-gate during CNI DEL.
 	GetPodAnnotation(ctx context.Context, in *GetPodAnnotationRequest, opts ...grpc.CallOption) (*GetPodAnnotationResponse, error)
 }
@@ -55,26 +48,6 @@ func (c *nodeAgentClient) SetupNetworks(ctx context.Context, in *SetupNetworksRe
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SetupNetworksResponse)
 	err := c.cc.Invoke(ctx, NodeAgent_SetupNetworks_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *nodeAgentClient) AddPort(ctx context.Context, in *AddPortRequest, opts ...grpc.CallOption) (*AddPortResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(AddPortResponse)
-	err := c.cc.Invoke(ctx, NodeAgent_AddPort_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *nodeAgentClient) DeletePort(ctx context.Context, in *DeletePortRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
-	err := c.cc.Invoke(ctx, NodeAgent_DeletePort_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -100,10 +73,6 @@ type NodeAgentServer interface {
 	// interfaces in the networks annotation, moves pod-side vetches into the pod netns,
 	// and returns how cni-gate should handle the default k8s interface (eth0).
 	SetupNetworks(context.Context, *SetupNetworksRequest) (*SetupNetworksResponse, error)
-	// AddPort creates a veth pair and moves the pod-side into the pod netns.
-	AddPort(context.Context, *AddPortRequest) (*AddPortResponse, error)
-	// DeletePort removes all OVS ports associated with a pod.
-	DeletePort(context.Context, *DeletePortRequest) (*emptypb.Empty, error)
 	// GetPodAnnotation reads a single pod annotation; used by cni-gate during CNI DEL.
 	GetPodAnnotation(context.Context, *GetPodAnnotationRequest) (*GetPodAnnotationResponse, error)
 	mustEmbedUnimplementedNodeAgentServer()
@@ -118,12 +87,6 @@ type UnimplementedNodeAgentServer struct{}
 
 func (UnimplementedNodeAgentServer) SetupNetworks(context.Context, *SetupNetworksRequest) (*SetupNetworksResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetupNetworks not implemented")
-}
-func (UnimplementedNodeAgentServer) AddPort(context.Context, *AddPortRequest) (*AddPortResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method AddPort not implemented")
-}
-func (UnimplementedNodeAgentServer) DeletePort(context.Context, *DeletePortRequest) (*emptypb.Empty, error) {
-	return nil, status.Error(codes.Unimplemented, "method DeletePort not implemented")
 }
 func (UnimplementedNodeAgentServer) GetPodAnnotation(context.Context, *GetPodAnnotationRequest) (*GetPodAnnotationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetPodAnnotation not implemented")
@@ -167,42 +130,6 @@ func _NodeAgent_SetupNetworks_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
-func _NodeAgent_AddPort_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(AddPortRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NodeAgentServer).AddPort(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: NodeAgent_AddPort_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeAgentServer).AddPort(ctx, req.(*AddPortRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _NodeAgent_DeletePort_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(DeletePortRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NodeAgentServer).DeletePort(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: NodeAgent_DeletePort_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeAgentServer).DeletePort(ctx, req.(*DeletePortRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _NodeAgent_GetPodAnnotation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetPodAnnotationRequest)
 	if err := dec(in); err != nil {
@@ -231,14 +158,6 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetupNetworks",
 			Handler:    _NodeAgent_SetupNetworks_Handler,
-		},
-		{
-			MethodName: "AddPort",
-			Handler:    _NodeAgent_AddPort_Handler,
-		},
-		{
-			MethodName: "DeletePort",
-			Handler:    _NodeAgent_DeletePort_Handler,
 		},
 		{
 			MethodName: "GetPodAnnotation",

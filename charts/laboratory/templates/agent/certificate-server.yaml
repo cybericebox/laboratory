@@ -3,13 +3,13 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: laboratory-agent-server
-  namespace: {{ .Values.agent.namespace }}
+  namespace: {{ $.Values.agent.namespace }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
   secretName: laboratory-agent-server-tls
   dnsNames:
-    - {{ required "agent.domain is required when agent.enabled" .Values.agent.domain | quote }}
+    - {{ include "laboratory.agentDomain" . | quote }}
   issuerRef:
     name: {{ .Values.certManager.issuerName }}
     kind: ClusterIssuer

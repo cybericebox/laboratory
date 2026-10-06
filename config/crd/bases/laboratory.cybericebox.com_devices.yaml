@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.17.2
+    controller-gen.kubebuilder.io/version: v0.22.0
   name: devices.laboratory.cybericebox.com
 spec:
   group: laboratory.cybericebox.com
@@ -39,6 +39,13 @@ spec:
           spec:
             description: DeviceSpec defines the desired state of Device.
             properties:
+              code:
+                description: |-
+                  Code is the short random code that makes the workload name <name>-<code>
+                  unique in the group namespace; the web Service of the device carries the same
+                  one. It is drawn when the Device is created and never changes. Empty on a
+                  Device that predates codes: its workload keeps the name of the Device.
+                type: string
               exposure:
                 description: ExposureSpec declares how a device is externally reachable.
                 properties:
@@ -58,12 +65,31 @@ spec:
                 type: object
               image:
                 type: string
+              imageDigests:
+                additionalProperties:
+                  type: string
+                description: |-
+                  ImageDigests pins the images of the device (its image and the netconfig
+                  init-container image) to the digests their tags had when the lab was
+                  created, keyed by the image as written. A cached pull uses the digest, so
+                  every device of the lab, and of the labs created in the same wave, runs the
+                  same image even if an upstream tag moves. An image that could not be
+                  resolved is absent and pulled by its tag.
+                type: object
+              imageMirror:
+                description: |-
+                  ImageMirror is the cache prefix (host:port, e.g. "localhost:5035") through
+                  which the node pulls the device image: the operator pulls REG/repo:tag as
+                  <prefix>/REG/repo:tag. Set once when the Device is materialised, only for
+                  labs created while the image cache is on; empty pulls Image directly.
+                type: string
               interfaces:
                 items:
                   description: InterfaceSpec defines a network interface on a device.
                   properties:
                     addr:
-                      description: AddrSpec defines static or DHCP address configuration.
+                      description: 'Addr is optional: nil means the interface is created
+                        without an IP.'
                       properties:
                         addressRef:
                           description: |-
@@ -166,13 +192,27 @@ spec:
                       - type
                       type: object
                     mac:
-                      description: MAC is "random" or an explicit MAC address.
+                      description: MAC is "random" or an explicit unicast MAC address.
+                      maxLength: 17
+                      pattern: ^(random|[0-9a-fA-F][02468aceACE](:[0-9a-fA-F]{2}){5})$
                       type: string
+                      x-kubernetes-validations:
+                      - message: the zero MAC is not allowed
+                        rule: self != '00:00:00:00:00:00'
                     name:
+                      description: |-
+                        Name is the interface name inside the pod: a lowercase word of at most 15
+                        characters; lo and accessport are reserved.
+                      maxLength: 15
+                      pattern: ^[a-z][a-z0-9-]{0,14}$
                       type: string
+                      x-kubernetes-validations:
+                      - message: reserved interface name
+                        rule: self != 'lo' && self != 'accessport'
                   required:
                   - name
                   type: object
+                maxItems: 48
                 type: array
               labRef:
                 description: LabRef is the name of the parent Lab.
@@ -186,24 +226,102 @@ spec:
                   for this device.
                 properties:
                   cpuLimit:
+                    maxLength: 24
+                    pattern: ^([1-9][0-9]*(\.[0-9]+)?|0?\.[0-9]*[1-9][0-9]*)(m|k|[KMGTPE]i?)?$
                     type: string
                   cpuRequest:
+                    maxLength: 24
+                    pattern: ^([1-9][0-9]*(\.[0-9]+)?|0?\.[0-9]*[1-9][0-9]*)(m|k|[KMGTPE]i?)?$
                     type: string
                   memoryLimit:
+                    maxLength: 24
+                    pattern: ^([1-9][0-9]*(\.[0-9]+)?|0?\.[0-9]*[1-9][0-9]*)(m|k|[KMGTPE]i?)?$
                     type: string
                   memoryRequest:
+                    maxLength: 24
+                    pattern: ^([1-9][0-9]*(\.[0-9]+)?|0?\.[0-9]*[1-9][0-9]*)(m|k|[KMGTPE]i?)?$
                     type: string
                 type: object
               securityPreset:
                 description: |-
-                  SecurityPreset names a capability profile (basic/service/net/debug); the
-                  concrete capabilities are resolved internally by the operator.
+                  SecurityPreset names a device security profile (standard/extended, or the old aliases
+                  basic/service/net/debug); the concrete capabilities are resolved internally by the operator.
                 enum:
+                - standard
+                - extended
                 - basic
                 - service
                 - net
                 - debug
                 type: string
+              state:
+                description: |-
+                  State is the optional state-persistence policy and operator controls of
+                  this device. Set once when the Device is materialised: a Lab created while
+                  the platform has device state persistence off never carries it.
+                properties:
+                  debounce:
+                    description: |-
+                      Debounce is how long the writable layer must stay quiet after a change
+                      before the node-agent takes a snapshot.
+                    type: string
+                  enabled:
+                    description: |-
+                      Enabled marks the device as snapshot-backed. False or absent: the device
+                      runs as a Deployment exactly as without the feature.
+                    type: boolean
+                  excludePaths:
+                    description: |-
+                      ExcludePaths are absolute paths inside the container that are never
+                      snapshotted (temporary and runtime directories).
+                    items:
+                      type: string
+                    type: array
+                  maxEntries:
+                    description: |-
+                      MaxEntries caps the entries (files, directories, links) of one snapshot layer and of a squashed chain: the byte quota
+                      counts only the bytes of regular files, so empty files need their own cap. Over it the last good snapshot is kept and a
+                      warning is reported. Zero is the platform default.
+                    format: int32
+                    type: integer
+                  maxFileBytes:
+                    description: |-
+                      MaxFileBytes: a regular file larger than this is left out of the snapshots
+                      (the status warning names it). Zero is the platform default.
+                    format: int64
+                    type: integer
+                  maxLayers:
+                    description: |-
+                      MaxLayers is the number of snapshot layers after which the chain is
+                      squashed into one.
+                    format: int32
+                    type: integer
+                  rescue:
+                    description: |-
+                      Rescue starts the device from its snapshot with a shell instead of the
+                      image entrypoint, to repair a configuration that makes it crash. Set by
+                      the management agent (RescueDevice).
+                    type: boolean
+                  resetToken:
+                    description: |-
+                      ResetToken: a new value discards the snapshots and starts the device from
+                      its base image again. Set by the management agent (ResetDevice).
+                    type: string
+                  tenantQuotaBytes:
+                    description: |-
+                      TenantQuotaBytes is the most the snapshots of ALL the devices of the device's tenant may take in the registry
+                      together (the sizes recorded in their status). A snapshot that would pass it is refused like one over the write quota.
+                      Zero means no limit.
+                    format: int64
+                    type: integer
+                  writeQuotaBytes:
+                    description: |-
+                      WriteQuotaBytes is the write quota of this device: the most of the user's
+                      writes kept (the uncompressed size of all snapshot layers). Over the quota
+                      the last good snapshot is kept and a warning is reported.
+                    format: int64
+                    type: integer
+                type: object
               type:
                 description: DeviceType distinguishes network device kinds.
                 enum:
@@ -229,13 +347,128 @@ spec:
               podName:
                 description: |-
                   PodName is the current pod backing this device. A device runs one pod
-                  (Deployment, replicas=1) whose name changes on recreation, so the
+                  (Deployment, replicas=1, or a bare Pod with state persistence) whose name
+                  changes on recreation, so the
                   node-agent keys the device's per-pod OVS port on this stable pointer.
                 type: string
               ready:
                 type: boolean
               reason:
                 type: string
+              scheduling:
+                description: Scheduling is the pod's place on its way from the scheduler
+                  queue to Ready.
+                properties:
+                  dispatchedAt:
+                    description: DispatchedAt is when the scheduler let the pod start;
+                      the startup timeout counts from it.
+                    format: date-time
+                    type: string
+                  failure:
+                    description: Failure explains a Failed pod; the warning clears
+                      when the pod becomes Ready.
+                    properties:
+                      at:
+                        format: date-time
+                        type: string
+                      message:
+                        description: Message is the last error the node reported (for
+                          example the image pull error).
+                        type: string
+                      reason:
+                        description: Reason is one of the Failure* constants.
+                        type: string
+                      restartCount:
+                        format: int32
+                        type: integer
+                    type: object
+                  queuedAt:
+                    description: QueuedAt is when the pod entered the queue.
+                    format: date-time
+                    type: string
+                  startedAt:
+                    description: StartedAt is when the pod was first seen Ready.
+                    format: date-time
+                    type: string
+                  state:
+                    description: PodScheduleState is where a pod is on its way from
+                      the queue to Ready.
+                    enum:
+                    - Queued
+                    - Starting
+                    - Started
+                    - Failed
+                    type: string
+                type: object
+              state:
+                description: State is the snapshot state of a device with spec.state.enabled.
+                properties:
+                  crashStreak:
+                    description: |-
+                      CrashStreak counts consecutive pods that ended within a short time of
+                      starting; it drives the recreation back-off.
+                    format: int32
+                    type: integer
+                  epoch:
+                    description: |-
+                      Epoch counts resets. A pod carries the epoch it was created in; the
+                      node-agent ignores snapshots of pods from an older epoch.
+                    format: int32
+                    type: integer
+                  exitSnapshotPod:
+                    description: |-
+                      ExitSnapshotPod is the pod whose exit snapshot is finished (taken or
+                      given up). The controller recreates the pod only after this marker.
+                    type: string
+                  image:
+                    description: |-
+                      Image is the latest snapshot image (registry reference with digest). Empty
+                      before the first snapshot and after a reset: the pod starts from the base
+                      image.
+                    type: string
+                  incarnation:
+                    description: Incarnation numbers the pods of this device (pod
+                      name suffix).
+                    format: int32
+                    type: integer
+                  layers:
+                    description: Layers is the number of snapshot layers on top of
+                      the base image.
+                    format: int32
+                    type: integer
+                  rescue:
+                    description: Rescue reports whether the current pod runs in rescue
+                      mode.
+                    type: boolean
+                  resetToken:
+                    description: ResetToken is the last ResetToken spec value acted
+                      on.
+                    type: string
+                  restoredAt:
+                    description: RestoredAt is when a pod was last created from a
+                      snapshot.
+                    format: date-time
+                    type: string
+                  sizeBytes:
+                    description: SizeBytes is the uncompressed size of all snapshot
+                      layers of Image.
+                    format: int64
+                    type: integer
+                  snapshotAt:
+                    description: SnapshotAt is when Image was taken.
+                    format: date-time
+                    type: string
+                  stoppedAt:
+                    description: StoppedAt is when the controller saw the current
+                      pod end.
+                    format: date-time
+                    type: string
+                  warning:
+                    description: |-
+                      Warning is set while the last snapshot attempt failed or was refused
+                      (quota exceeded); the previous good snapshot stays in Image.
+                    type: string
+                type: object
               vni:
                 description: VNI is set only for unmanaged-switch and hub device types.
                 type: integer

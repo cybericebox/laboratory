@@ -20,14 +20,10 @@ const (
 	nxastRegMove       = 6
 )
 
-// OXM type encoding: (class << 16) | (field << 9) | (hasmask << 8) | length.
-// helper for readability.
-func oxmHeader(class uint16, field uint8, hasMask bool, length uint8) uint32 {
-	var hm uint32
-	if hasMask {
-		hm = 1
-	}
-	return uint32(class)<<16 | uint32(field)<<9 | hm<<8 | uint32(length)
+// OXM type encoding: (class << 16) | (field << 9) | (hasmask << 8) | length. No match here uses a mask, so the
+// hasmask bit is always 0.
+func oxmHeader(class uint16, field uint8, length uint8) uint32 {
+	return uint32(class)<<16 | uint32(field)<<9 | uint32(length)
 }
 
 // --- OXM matchers ---
@@ -37,7 +33,7 @@ func oxmHeader(class uint16, field uint8, hasMask bool, length uint8) uint32 {
 // OFPXMT_OFB_METADATA; field 4 is ETH_SRC and made OVS reject the FLOW_MOD.
 func OxmMetadata(value uint64) []byte {
 	b := make([]byte, 12)
-	binary.BigEndian.PutUint32(b[0:4], oxmHeader(0x8000, 2, false, 8))
+	binary.BigEndian.PutUint32(b[0:4], oxmHeader(0x8000, 2, 8))
 	binary.BigEndian.PutUint64(b[4:12], value)
 	return b
 }
@@ -50,7 +46,7 @@ func OxmReg1(value uint32) []byte { return oxmReg(1, value) }
 
 func oxmReg(reg uint8, value uint32) []byte {
 	b := make([]byte, 8)
-	binary.BigEndian.PutUint32(b[0:4], oxmHeader(0x0001, reg, false, 4))
+	binary.BigEndian.PutUint32(b[0:4], oxmHeader(0x0001, reg, 4))
 	binary.BigEndian.PutUint32(b[4:8], value)
 	return b
 }
@@ -58,7 +54,7 @@ func oxmReg(reg uint8, value uint32) []byte {
 // OxmTunIPv4Src encodes NXM_NX_TUN_IPV4_SRC (class=0x0001, field=31, 4 bytes).
 func OxmTunIPv4Src(ip uint32) []byte {
 	b := make([]byte, 8)
-	binary.BigEndian.PutUint32(b[0:4], oxmHeader(0x0001, 31, false, 4))
+	binary.BigEndian.PutUint32(b[0:4], oxmHeader(0x0001, 31, 4))
 	binary.BigEndian.PutUint32(b[4:8], ip)
 	return b
 }
@@ -66,7 +62,7 @@ func OxmTunIPv4Src(ip uint32) []byte {
 // OxmTunIPv4Dst encodes NXM_NX_TUN_IPV4_DST (class=0x0001, field=32, 4 bytes).
 func OxmTunIPv4Dst(ip uint32) []byte {
 	b := make([]byte, 8)
-	binary.BigEndian.PutUint32(b[0:4], oxmHeader(0x0001, 32, false, 4))
+	binary.BigEndian.PutUint32(b[0:4], oxmHeader(0x0001, 32, 4))
 	binary.BigEndian.PutUint32(b[4:8], ip)
 	return b
 }
@@ -74,25 +70,25 @@ func OxmTunIPv4Dst(ip uint32) []byte {
 // --- OXM IDs (used by NXAST_REG_MOVE source/destination identifiers) ---
 
 // OxmIDReg0 is the 4-byte header for NXM_NX_REG0 (no value).
-func OxmIDReg0() uint32 { return oxmHeader(0x0001, 0, false, 4) }
+func OxmIDReg0() uint32 { return oxmHeader(0x0001, 0, 4) }
 
 // OxmIDReg1 is the 4-byte header for NXM_NX_REG1.
-func OxmIDReg1() uint32 { return oxmHeader(0x0001, 1, false, 4) }
+func OxmIDReg1() uint32 { return oxmHeader(0x0001, 1, 4) }
 
 // OxmIDMetadata is the 4-byte header for OXM_OF_METADATA (field 2).
-func OxmIDMetadata() uint32 { return oxmHeader(0x8000, 2, false, 8) }
+func OxmIDMetadata() uint32 { return oxmHeader(0x8000, 2, 8) }
 
 // OxmIDTunnelID is the 4-byte header for OXM_OF_TUNNEL_ID.
-func OxmIDTunnelID() uint32 { return oxmHeader(0x8000, 38, false, 8) }
+func OxmIDTunnelID() uint32 { return oxmHeader(0x8000, 38, 8) }
 
 // OxmIDTunIPv4Src is the 4-byte header for NXM_NX_TUN_IPV4_SRC.
-func OxmIDTunIPv4Src() uint32 { return oxmHeader(0x0001, 31, false, 4) }
+func OxmIDTunIPv4Src() uint32 { return oxmHeader(0x0001, 31, 4) }
 
 // OxmIDTunIPv4Dst is the 4-byte header for NXM_NX_TUN_IPV4_DST.
-func OxmIDTunIPv4Dst() uint32 { return oxmHeader(0x0001, 32, false, 4) }
+func OxmIDTunIPv4Dst() uint32 { return oxmHeader(0x0001, 32, 4) }
 
 // OxmIDInPort is the 4-byte header for OXM_OF_IN_PORT.
-func OxmIDInPort() uint32 { return oxmHeader(0x8000, 0, false, 4) }
+func OxmIDInPort() uint32 { return oxmHeader(0x8000, 0, 4) }
 
 // --- Set-field convenience wrappers ---
 
@@ -197,6 +193,19 @@ func BuildMatchAdvanced(
 	if hasTunID {
 		fields = append(fields, OxmTunnelID(tunID)...)
 	}
+	rawLen := 4 + len(fields)
+	padded := (rawLen + 7) &^ 7
+	m := make([]byte, padded)
+	binary.BigEndian.PutUint16(m[0:2], 1) // OFPMT_OXM
+	binary.BigEndian.PutUint16(m[2:4], uint16(rawLen))
+	copy(m[4:], fields)
+	return m
+}
+
+// BuildMatchTunSrc is BuildMatch with the tunnel source address (NXM_NX_TUN_IPV4_SRC) added: in_port plus the IPv4 source of the
+// outer header of a tunnelled packet. ip is the address in host byte order (as OxmTunIPv4Src takes it).
+func BuildMatchTunSrc(inPortNo uint32, ip uint32) []byte {
+	fields := append(OxmInPort(inPortNo), OxmTunIPv4Src(ip)...)
 	rawLen := 4 + len(fields)
 	padded := (rawLen + 7) &^ 7
 	m := make([]byte, padded)

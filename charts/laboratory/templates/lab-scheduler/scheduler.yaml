@@ -1,0 +1,162 @@
+{{- if .Values.labScheduler.enabled }}
+{{- /*
+A second kube-scheduler with ONE profile, laboratory-binpack, for the pods of labs (devices, VPN, gateway: the operator sets
+schedulerName on them, LAB_SCHEDULER_NAME). The profile scores nodes by NodeResourcesFit MostAllocated, so pods fill one
+node after another instead of spreading, and no hole is left on every node that a big device cannot use; the spreading
+NodeResourcesBalancedAllocation score is off. The soft pod affinities the operator puts on device pods (the same lab, the
+same group) still count. System pods keep the cluster's own scheduler. A second instance is the portable way: the control
+plane's own scheduler configuration (k0s included) is not reachable from a chart.
+*/ -}}
+{{- $kube := regexFind "^v[0-9]+\\.[0-9]+\\.[0-9]+" .Capabilities.KubeVersion.Version }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: laboratory-scheduler
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+---
+# What a scheduler needs: the cluster's scheduler roles, and the lease of its own leader election in this namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: laboratory-scheduler
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:kube-scheduler
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-scheduler
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: laboratory-scheduler-volume
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:volume-scheduler
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-scheduler
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: laboratory-scheduler
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [ "coordination.k8s.io" ]
+    resources: [ "leases" ]
+    verbs: [ "create" ]
+  - apiGroups: [ "coordination.k8s.io" ]
+    resources: [ "leases" ]
+    resourceNames: [ "laboratory-scheduler" ]
+    verbs: [ "get", "update" ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: laboratory-scheduler
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: laboratory-scheduler
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-scheduler
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: laboratory-scheduler
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/component: lab-scheduler
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.labScheduler.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: lab-scheduler
+      {{- include "laboratory.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/lab-scheduler/configmap.yaml") . | sha256sum | trunc 16 }}
+      labels:
+        app.kubernetes.io/component: lab-scheduler
+        {{- include "laboratory.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: laboratory-scheduler
+      priorityClassName: {{ include "laboratory.priorityClass.platform" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.labScheduler.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.labScheduler.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: kube-scheduler
+          # The tag follows the cluster's own version (the scheduler must not be newer than the API server).
+          image: "{{ .Values.labScheduler.image.repository }}:{{ .Values.labScheduler.image.tag | default $kube }}"
+          imagePullPolicy: IfNotPresent
+          command:
+            - kube-scheduler
+            - --config=/etc/laboratory-scheduler/scheduler-config.yaml
+            - --authentication-skip-lookup=true
+            - --secure-port=10259
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 10259
+              scheme: HTTPS
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 10259
+              scheme: HTTPS
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.labScheduler.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/laboratory-scheduler
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: laboratory-scheduler
+{{- end }}

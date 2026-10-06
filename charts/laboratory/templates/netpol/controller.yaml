@@ -24,4 +24,32 @@ spec:
   egress:
     - toEntities:
         - kube-apiserver
+    # Platform registry (snapshot reset and retention sweep when state persistence is on).
+    - toEndpoints:
+        - matchLabels:
+            {{- include "laboratory.registrySelector" . | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: "5000"
+              protocol: TCP
+{{- if .Values.registry.cache.enabled }}
+    # Image cache: the operator asks the upstream registries for the digest of a tag.
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+{{- end }}
+    # DNS lookups of the registry Service and of the upstream registries.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
 {{- end }}

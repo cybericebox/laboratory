@@ -30,20 +30,23 @@ type LabGroupVPNStatusApplyConfiguration struct {
 	Endpoint *string `json:"endpoint,omitempty"`
 	// SecretRef is "<namespace>/<name>" of the vpn-server-keypair Secret.
 	SecretRef *string `json:"secretRef,omitempty"`
-	// Registered is true when the VPN deployment has at least one ready replica.
+	// Registered is true when the VPN deployment has at least one ready replica,
+	// including while Lab devices are suspended.
 	Registered *bool `json:"registered,omitempty"`
-}
-
-// WithClientSubnet sets the ClientSubnet field in the declarative configuration.
-func (b *LabGroupVPNStatusApplyConfiguration) WithClientSubnet(value string) *LabGroupVPNStatusApplyConfiguration {
-	b.ClientSubnet = &value
-	return b
 }
 
 // LabGroupVPNStatusApplyConfiguration constructs a declarative configuration of the LabGroupVPNStatus type for use with
 // apply.
 func LabGroupVPNStatus() *LabGroupVPNStatusApplyConfiguration {
 	return &LabGroupVPNStatusApplyConfiguration{}
+}
+
+// WithClientSubnet sets the ClientSubnet field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ClientSubnet field is set to the value of the last call.
+func (b *LabGroupVPNStatusApplyConfiguration) WithClientSubnet(value string) *LabGroupVPNStatusApplyConfiguration {
+	b.ClientSubnet = &value
+	return b
 }
 
 // WithPublicKey sets the PublicKey field in the declarative configuration to the given value

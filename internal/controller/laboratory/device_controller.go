@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"net"
 	"regexp"
-	"sort"
-	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -18,7 +16,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -28,7 +25,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/devices"
+	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/netattach"
+	"github.com/cybericebox/laboratory/internal/profiles"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 )
 
 // DeviceReconciler reconciles a Device object.
@@ -37,13 +39,41 @@ type DeviceReconciler struct {
 	Scheme          *runtime.Scheme
 	LabNodeSelector map[string]string
 	LabTolerations  []corev1.Toleration
+	// PriorityClass is the class of the device pods (the lowest; it never preempts). Empty = none.
+	PriorityClass string
+	// SchedulerName is the kube-scheduler profile of the device pods (bin-packing); empty = the default scheduler.
+	SchedulerName string
+	// TerminationGraceSeconds is the terminationGracePeriodSeconds of the device pods; 0 = the Kubernetes default.
+	TerminationGraceSeconds int64
 	// NetConfigImage is the image used for the optional init-container that
 	// assigns static IP/routes inside a device pod. Must contain `ip` (iproute2)
 	// and `sh`. Empty disables static addressing via init-container.
 	NetConfigImage string
-	// ImagePullSecrets names registry Secrets that the LabGroup controller copied
-	// into the group namespace; device pods reference them.
-	ImagePullSecrets []string
+	// Defaults are the CPU and memory of a device container that declares none.
+	Defaults DeviceDefaults
+	// Registry is the snapshot registry, nil when state persistence is off; it
+	// is used to drop a device's snapshots on reset.
+	Registry SnapshotRegistry
+	// Reader reads from the API server without the cache; nil means Client. Used
+	// where a stale cache would start a device twice.
+	Reader client.Reader
+	// MirrorRegistries are the upstream registries the image cache serves; a
+	// device whose spec names a cache prefix (Spec.ImageMirror) pulls its images
+	// through it.
+	MirrorRegistries []string
+	// ExitSnapshotTimeout is how long a finished pod waits for the node-agent's
+	// exit snapshot; zero means 30s.
+	ExitSnapshotTimeout time.Duration
+	// NodeLossForceDeleteAfter is how long a snapshot-backed pod may stay Terminating on a NotReady
+	// or missing node before it is force-deleted; zero means 5m, negative never.
+	NodeLossForceDeleteAfter time.Duration
+	// Now is the clock; nil means time.Now. A field so tests can move time.
+	Now func() time.Time
+	// Security is the hardening of the device pods (capabilities, user namespaces, ephemeral storage).
+	Security PodSecurity
+	// Scheduled makes the device wait for the scheduler to dispatch its pod
+	// (see device_sched.go). Off: the pod is created as soon as the device is.
+	Scheduled bool
 }
 
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices,verbs=get;list;watch;create;update;patch;delete
@@ -51,7 +81,7 @@ type DeviceReconciler struct {
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=devices/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;delete;patch
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=connections,verbs=get;list;watch
 
 func (r *DeviceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -73,6 +103,13 @@ func (r *DeviceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return r.reconcileSwitch(ctx, &device)
 	}
 
+	if err := r.syncPodLabels(ctx, &device); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if deviceStateEnabled(&device) {
+		return r.reconcilePod(ctx, &device)
+	}
 	return r.reconcileWorkload(ctx, &device)
 }
 
@@ -107,6 +144,16 @@ func (r *DeviceReconciler) switchReady(ctx context.Context, device *laboratoryv1
 	if device.Status.VNI == nil {
 		return false, nil
 	}
+	// A switch the lab does not cable to anything has no link to wait for: its VNI is
+	// the whole fabric, so a lab made only of switches can become Ready.
+	var lab laboratoryv1alpha1.Lab
+	if err := r.Get(ctx, types.NamespacedName{Namespace: device.Namespace, Name: device.Spec.LabRef}, &lab); err == nil {
+		if !labCablesDevice(&lab, device.Spec.Name) {
+			return true, nil
+		}
+	} else if !errors.IsNotFound(err) {
+		return false, err
+	}
 	var conns laboratoryv1alpha1.ConnectionList
 	if err := r.List(ctx, &conns, client.InNamespace(device.Namespace)); err != nil {
 		return false, err
@@ -123,6 +170,18 @@ func (r *DeviceReconciler) switchReady(ctx context.Context, device *laboratoryv1
 		}
 	}
 	return found, nil
+}
+
+// labCablesDevice reports whether any connection of the lab spec has the named device as an endpoint.
+func labCablesDevice(lab *laboratoryv1alpha1.Lab, deviceName string) bool {
+	for _, c := range lab.Spec.Connections {
+		for _, e := range c.Endpoints {
+			if e.Device == deviceName {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // connectionRefsDevice reports whether a Connection has the named device as one
@@ -153,19 +212,28 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 	}
 
 	var dep appsv1.Deployment
-	err = r.Get(ctx, types.NamespacedName{Name: device.Name, Namespace: device.Namespace}, &dep)
+	err = r.Get(ctx, types.NamespacedName{Name: workloadName(device), Namespace: device.Namespace}, &dep)
 
 	if errors.IsNotFound(err) {
+		if !suspended {
+			if ok, gateErr := r.mayCreateWorkload(ctx, device); gateErr != nil || !ok {
+				return ctrl.Result{}, gateErr // the scheduler's dispatch triggers the next reconcile
+			}
+		}
 		return ctrl.Result{}, r.createDeployment(ctx, device, replicas)
 	}
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	// A workload that already runs needs no dispatch.
+	if err := r.initScheduling(ctx, device, true); err != nil {
+		return ctrl.Result{}, err
+	}
 
-	// A device is a single-replica workload: protect it from voluntary disruption
-	// (node drains, autoscaler) so a running lab is not silently torn down — a
-	// drain must be an explicit, force-deleting decision.
-	if err := r.ensurePodDisruptionBudget(ctx, device); err != nil {
+	// Voluntary disruption is blocked by the lab group's PodDisruptionBudget; the
+	// per-device budget of older versions would overlap it (an eviction fails for
+	// a pod under two budgets), so it is removed.
+	if err := r.deleteLegacyPodDisruptionBudget(ctx, device); err != nil {
 		return ctrl.Result{}, err
 	}
 	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != replicas {
@@ -236,26 +304,36 @@ func (r *DeviceReconciler) devicePodPlacement(ctx context.Context, device *labor
 	return nodeName, podIP, podName
 }
 
-// deviceNetworkAnnotation builds the network.cybericebox.com/networks annotation value.
+// networkAnnotation builds the network.cybericebox.com/networks annotation value.
 // Lists OVS attachments only; default k8s network is controlled by AnnotationDefaultNetwork.
-// Format per entry: "iface@[connection][|MAC]"
-// At pod creation time we don't know the Connection name yet, so entries are "iface@" or "iface@|MAC".
-func deviceNetworkAnnotation(device *laboratoryv1alpha1.Device) string {
-	var entries []string
+// The value is a JSON array of netattach.Attachment. At pod creation time we don't know
+// the Connection name yet, so entries carry no name. With stableMAC every interface
+// without an explicit MAC gets one derived from the device identity, so a
+// recreated pod gets the same hardware address and therefore the same DHCP lease.
+// An interface whose name or MAC is not valid is left out: the API validates both, so
+// this only keeps a value that bypassed it from reaching the node.
+func networkAnnotation(device *laboratoryv1alpha1.Device, stableMAC bool) string {
+	var list []netattach.Attachment
 	for _, iface := range device.Spec.Interfaces {
-		entry := iface.Name + "@"
-		if iface.MAC != "" {
-			entry += "|" + iface.MAC
+		mac := iface.MAC
+		if stableMAC && (mac == "" || mac == "random") {
+			mac = stableDeviceMAC(device.Namespace, device.Name, iface.Name)
 		}
-		entries = append(entries, entry)
+		if netattach.ValidateInterfaceName(iface.Name) != nil || netattach.ValidateMAC(mac) != nil {
+			continue
+		}
+		list = append(list, netattach.Attachment{Iface: iface.Name, MAC: mac})
 	}
-	return strings.Join(entries, ",")
+	return netattach.Encode(list)
 }
 
-func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laboratoryv1alpha1.Device, replicas int32) error {
-	annotations := map[string]string{
+// workloadTemplate is the pod of a device, shared by the Deployment and the
+// bare-Pod (state persistence) modes: the labels, selector labels, pod
+// annotations and the pod spec running the device image.
+func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, stableMAC bool) (labels, selectorLabels, annotations map[string]string, podSpec corev1.PodSpec) {
+	annotations = map[string]string{
 		names.AnnotationDevice:   device.Spec.Name,
-		names.AnnotationNetworks: deviceNetworkAnnotation(device),
+		names.AnnotationNetworks: networkAnnotation(device, stableMAC),
 	}
 	if device.Spec.Exposure != nil {
 		annotations[names.AnnotationDefaultNetwork] = names.AccessPortIface
@@ -263,43 +341,65 @@ func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laborat
 		annotations[names.AnnotationDefaultNetwork] = ""
 	}
 
-	labels := map[string]string{
-		names.LabelLab:    device.Spec.LabRef,
-		"app":             device.Spec.Name,
-		names.LabelDevice: device.Spec.Name,
-	}
+	// The labels the caller put on the lab (see deviceLabels) reach the pod, the
+	// platform's own keys below always win.
+	labels = names.PropagatedLabels(device.Labels)
+	labels[names.LabelLab] = device.Spec.LabRef
+	labels[labelApp] = device.Spec.Name
+	labels[names.LabelDevice] = device.Spec.Name
 	// The selector must be immutable and uniquely identify this device's pod:
 	// (lab, device-name) is unique within the namespace.
-	selectorLabels := map[string]string{
+	selectorLabels = map[string]string{
 		names.LabelLab:    device.Spec.LabRef,
 		names.LabelDevice: device.Spec.Name,
 	}
+	// The user labels of the lab, copied onto the device, go onto its pods too.
+	wanted := userLabels(device.Labels)
+	for k, v := range wanted {
+		labels[k] = v
+	}
+	if len(wanted) > 0 {
+		annotations[names.AnnotationUserLabels] = joinKeys(wanted)
+	}
 
-	podSpec := corev1.PodSpec{
-		ImagePullSecrets: pullSecretRefs(r.ImagePullSecrets),
-		NodeSelector:     r.LabNodeSelector,
-		Tolerations:      r.LabTolerations,
-		// Best-effort co-location: prefer scheduling this device onto a node that
-		// already runs another device of the same lab, so a lab's intra-fabric
-		// traffic stays node-local (no Geneve hop) whenever capacity allows. Soft
-		// (preferred), so a full node never blocks a lab from being placed.
+	podSpec = corev1.PodSpec{
+		NodeSelector:      r.LabNodeSelector,
+		Tolerations:       r.LabTolerations,
+		PriorityClassName: r.PriorityClass,
+		SchedulerName:     r.SchedulerName,
+		// Best-effort co-location, soft (preferred) so a full node never blocks a lab from being placed:
+		// 1. prefer a node that already runs another device of the same lab, so a lab's intra-fabric
+		//    traffic stays node-local (no Geneve hop) whenever capacity allows;
+		// 2. then prefer a node that runs any pod of the same group (the pods of the namespace: the
+		//    group's other labs, its VPN and gateway), so a group's labs end together on few nodes and
+		//    a node is emptied for maintenance sooner (see DEPLOY.md, "Maintenance of a node").
 		Affinity: &corev1.Affinity{
 			PodAffinity: &corev1.PodAffinity{
-				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{{
-					Weight: 100,
-					PodAffinityTerm: corev1.PodAffinityTerm{
-						LabelSelector: &metav1.LabelSelector{
-							MatchLabels: map[string]string{names.LabelLab: device.Spec.LabRef},
+				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
+					{
+						Weight: 100,
+						PodAffinityTerm: corev1.PodAffinityTerm{
+							LabelSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{names.LabelLab: device.Spec.LabRef},
+							},
+							TopologyKey: names.TopologyKeyHostname,
 						},
-						TopologyKey: names.TopologyKeyHostname,
 					},
-				}},
+					{
+						Weight: 50,
+						PodAffinityTerm: corev1.PodAffinityTerm{
+							// An empty selector matches every pod of the namespace, and the namespace is the group's.
+							LabelSelector: &metav1.LabelSelector{},
+							TopologyKey:   names.TopologyKeyHostname,
+						},
+					},
+				},
 			},
 		},
 		Containers: []corev1.Container{
 			{
 				Name:  device.Spec.Name,
-				Image: device.Spec.Image,
+				Image: r.deviceImage(device, device.Spec.Image),
 				// Run the image as-is (no entrypoint override). Capabilities are
 				// opt-in: an image that only serves a port gets none; one that
 				// runs networking/testing tools or an in-image DHCP client gets
@@ -307,7 +407,7 @@ func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laborat
 				// has a DHCP interface). Isolation is enforced host-side by OVS
 				// flows, so these caps cannot break a pod out of its VNI.
 				SecurityContext: deviceSecurityContext(device),
-				Resources:       deviceResources(device),
+				Resources:       withTUN(withEphemeralStorage(deviceResources(device, r.Defaults), r.Security.EphemeralStorage), profiles.Get(string(device.Spec.SecurityPreset)).TUN),
 				// Env vars come from a per-device Secret (<device>-env) the agent
 				// wrote write-only — referenced here, never read by the controller
 				// (the kubelet resolves envFrom at pod start). optional=true so a
@@ -328,10 +428,35 @@ func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laborat
 	if ic := r.netConfigInitContainer(device); ic != nil {
 		podSpec.InitContainers = append(podSpec.InitContainers, *ic)
 	}
+	// The participant is root in the device: it gets no service account token, the runtime's seccomp profile, and
+	// optionally its own user namespace.
+	hardenPod(&podSpec, false, r.TerminationGraceSeconds)
+	// Every device may ping: unprivileged ICMP echo sockets (a safe sysctl), so ping needs no NET_RAW.
+	podSpec.SecurityContext.Sysctls = []corev1.Sysctl{{Name: "net.ipv4.ping_group_range", Value: profiles.PingGroupRange}}
+	if r.Security.UserNamespaces {
+		hostUsers := false
+		podSpec.HostUsers = &hostUsers
+	}
+	return labels, selectorLabels, annotations, podSpec
+}
+
+// deviceImage is the reference the node pulls for an image of the device:
+// through the image cache when the device was created for it, else as is.
+func (r *DeviceReconciler) deviceImage(device *laboratoryv1alpha1.Device, image string) string {
+	if device.Spec.ImageMirror == "" {
+		return image
+	}
+	rw := imagecache.Rewriter{Prefix: device.Spec.ImageMirror, Registries: r.MirrorRegistries}
+	return rw.RewritePinned(image, device.Spec.ImageDigests[image])
+}
+
+func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laboratoryv1alpha1.Device, replicas int32) error {
+	labels, selectorLabels, annotations, podSpec := r.workloadTemplate(device, false)
+	r.applyPullSecrets(ctx, device, &podSpec)
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      device.Name,
+			Name:      workloadName(device),
 			Namespace: device.Namespace,
 			Labels:    labels,
 		},
@@ -362,70 +487,21 @@ func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laborat
 func ptrBool(b bool) *bool    { return &b }
 func ptrInt32(i int32) *int32 { return &i }
 
-// ensurePodDisruptionBudget creates a minAvailable=1 PDB guarding the device's
-// (single-replica) pod, so voluntary evictions cannot take the device down. It
-// is created once and owned by the Device; the selector matches the Deployment's
-// pods. Idempotent: a NotFound triggers a create, an existing PDB is left as-is.
-func (r *DeviceReconciler) ensurePodDisruptionBudget(ctx context.Context, device *laboratoryv1alpha1.Device) error {
-	var existing policyv1.PodDisruptionBudget
-	err := r.Get(ctx, types.NamespacedName{Name: device.Name, Namespace: device.Namespace}, &existing)
-	if err == nil {
+// deleteLegacyPodDisruptionBudget removes the per-device PodDisruptionBudget that
+// older versions created (same name as the device, owned by it). Idempotent.
+func (r *DeviceReconciler) deleteLegacyPodDisruptionBudget(ctx context.Context, device *laboratoryv1alpha1.Device) error {
+	var pdb policyv1.PodDisruptionBudget
+	err := r.Get(ctx, types.NamespacedName{Name: device.Name, Namespace: device.Namespace}, &pdb)
+	if errors.IsNotFound(err) {
 		return nil
 	}
-	if !errors.IsNotFound(err) {
+	if err != nil {
 		return err
 	}
-	minAvailable := intstr.FromInt32(1)
-	pdb := &policyv1.PodDisruptionBudget{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      device.Name,
-			Namespace: device.Namespace,
-			Labels: map[string]string{
-				names.LabelLab:    device.Spec.LabRef,
-				names.LabelDevice: device.Spec.Name,
-			},
-		},
-		Spec: policyv1.PodDisruptionBudgetSpec{
-			MinAvailable: &minAvailable,
-			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{
-				names.LabelLab:    device.Spec.LabRef,
-				names.LabelDevice: device.Spec.Name,
-			}},
-		},
+	if !metav1.IsControlledBy(&pdb, device) {
+		return nil
 	}
-	if err := controllerutil.SetControllerReference(device, pdb, r.Scheme); err != nil {
-		return err
-	}
-	return r.Create(ctx, pdb)
-}
-
-// deviceResources builds container resource requirements from the device's
-// optional Resources spec. Empty or unparseable quantity strings are skipped,
-// so a device with no (or partial) resources set is best-effort scheduled.
-func deviceResources(device *laboratoryv1alpha1.Device) corev1.ResourceRequirements {
-	var rr corev1.ResourceRequirements
-	r := device.Spec.Resources
-	if r == nil {
-		return rr
-	}
-	set := func(list *corev1.ResourceList, name corev1.ResourceName, val string) {
-		if val == "" {
-			return
-		}
-		q, err := resource.ParseQuantity(val)
-		if err != nil {
-			return
-		}
-		if *list == nil {
-			*list = corev1.ResourceList{}
-		}
-		(*list)[name] = q
-	}
-	set(&rr.Requests, corev1.ResourceCPU, r.CPURequest)
-	set(&rr.Requests, corev1.ResourceMemory, r.MemoryRequest)
-	set(&rr.Limits, corev1.ResourceCPU, r.CPULimit)
-	set(&rr.Limits, corev1.ResourceMemory, r.MemoryLimit)
-	return rr
+	return client.IgnoreNotFound(r.Delete(ctx, &pdb))
 }
 
 // ifaceNameRE matches a valid Linux interface name (IFNAMSIZ-bounded, no shell
@@ -489,6 +565,9 @@ func (r *DeviceReconciler) netConfigInitContainer(device *laboratoryv1alpha1.Dev
 		if !ok {
 			continue
 		}
+		if iface.Addr == nil {
+			continue
+		}
 		switch iface.Addr.Type {
 		case laboratoryv1alpha1.AddrTypeStatic:
 			ipCIDR, ok := canonicalCIDR(iface.Addr.IP)
@@ -520,42 +599,36 @@ func (r *DeviceReconciler) netConfigInitContainer(device *laboratoryv1alpha1.Dev
 	}
 	return &corev1.Container{
 		Name:            "netconfig",
-		Image:           r.NetConfigImage,
+		Image:           r.deviceImage(device, r.NetConfigImage),
 		ImagePullPolicy: corev1.PullIfNotPresent,
-		Command:         []string{"/netconfig"},
+		Command:         []string{"/node", "netconfig"},
 		Env:             []corev1.EnvVar{{Name: "NETCONFIG", Value: string(cfg)}},
+		// Requests equal limits, like every other container of a device pod, so that the pod stays Guaranteed (an init container
+		// without them would make it Burstable).
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("20m"), corev1.ResourceMemory: resource.MustParse("32Mi")},
+			Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("20m"), corev1.ResourceMemory: resource.MustParse("32Mi")},
+		},
 		SecurityContext: &corev1.SecurityContext{
-			// NET_ADMIN to set addresses/routes; NET_RAW for the DHCP raw socket.
-			Capabilities: &corev1.Capabilities{Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"}},
+			// NET_ADMIN to set addresses/routes; NET_RAW for the DHCP raw socket; nothing else.
+			Capabilities:             capsOf("NET_ADMIN", "NET_RAW"),
+			AllowPrivilegeEscalation: ptrBool(false),
 		},
 	}
 }
 
-// deviceSecurityContext resolves the device's SecurityPreset to concrete
-// capabilities and adds the DHCP-implied caps when the image runs its own DHCP
-// client (addr.type=dhcp). Returns nil when nothing is needed, so a basic
-// service device stays fully unprivileged.
+// deviceSecurityContext resolves the device's profile (profiles.Standard or Extended, or an old alias) to concrete
+// capabilities and adds the DHCP-implied caps when the image runs its own DHCP client (addr.type=dhcp), whatever the
+// profile. Every capability is dropped first; only the base set, the profile's and the DHCP ones are added back.
+// Privilege escalation stays allowed on purpose: lab images run sudo and setuid binaries.
 func deviceSecurityContext(device *laboratoryv1alpha1.Device) *corev1.SecurityContext {
-	want := map[string]bool{}
-	for _, c := range names.CapabilitiesForPreset(string(device.Spec.SecurityPreset)) {
-		want[c] = true
-	}
+	p := profiles.Get(string(device.Spec.SecurityPreset))
+	want := append([]string(nil), profiles.Base...)
+	want = append(want, p.Caps...)
 	if deviceHasInImageDHCP(device) {
-		for _, c := range names.DHCPImpliedCapabilities {
-			want[c] = true
-		}
+		want = append(want, names.DHCPImpliedCapabilities...)
 	}
-	if len(want) == 0 {
-		return nil
-	}
-	caps := make([]corev1.Capability, 0, len(want))
-	for c := range want {
-		caps = append(caps, corev1.Capability(c))
-	}
-	sort.Slice(caps, func(i, j int) bool { return caps[i] < caps[j] })
-	return &corev1.SecurityContext{
-		Capabilities: &corev1.Capabilities{Add: caps},
-	}
+	return &corev1.SecurityContext{Capabilities: capsOf(want...)}
 }
 
 // deviceHasInImageDHCP reports whether any interface expects the image's own
@@ -563,7 +636,7 @@ func deviceSecurityContext(device *laboratoryv1alpha1.Device) *corev1.SecurityCo
 // handled by the netconfig init-container and needs no device-container caps.
 func deviceHasInImageDHCP(device *laboratoryv1alpha1.Device) bool {
 	for _, iface := range device.Spec.Interfaces {
-		if iface.Addr.Type == laboratoryv1alpha1.AddrTypeDHCP {
+		if iface.Addr != nil && iface.Addr.Type == laboratoryv1alpha1.AddrTypeDHCP {
 			return true
 		}
 	}
@@ -574,26 +647,57 @@ func (r *DeviceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.Device{}).
 		Owns(&appsv1.Deployment{}).
+		// Devices with state persistence run as bare Pods owned by the Device.
+		Owns(&corev1.Pod{}).
 		Watches(&laboratoryv1alpha1.LabGroup{}, handler.EnqueueRequestsFromMapFunc(r.devicesForLabGroup), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		// A switch/hub's readiness depends on its Connections — re-reconcile the
 		// referenced devices whenever a Connection changes.
 		Watches(&laboratoryv1alpha1.Connection{}, handler.EnqueueRequestsFromMapFunc(r.devicesForConnection)).
-		Complete(r)
+		Complete(reconcileutil.Quiet(r))
 }
 
-// labGroupSuspended resolves the LabGroup that owns this namespace. A namespace
-// without a LabGroup is retained for standalone controller tests and runs its
-// devices normally.
+// labGroupSuspended resolves the LabGroup that owns this namespace through the
+// namespace's group label (the namespace is lg-<name>-<hash>, not the group
+// name). A namespace without a LabGroup is retained for standalone controller
+// tests and runs its devices normally.
 func (r *DeviceReconciler) labGroupSuspended(ctx context.Context, namespace string) (bool, error) {
-	var group laboratoryv1alpha1.LabGroup
-	err := r.Get(ctx, types.NamespacedName{Name: namespace}, &group)
-	if errors.IsNotFound(err) {
-		return false, nil
-	}
-	if err != nil {
+	group, err := r.labGroupOfNamespace(ctx, namespace)
+	if err != nil || group == nil {
 		return false, err
 	}
 	return group.Spec.Suspended, nil
+}
+
+// labGroupOfNamespace returns the LabGroup named by the namespace label, or the
+// one whose status records the namespace; nil when the namespace has no group.
+func (r *DeviceReconciler) labGroupOfNamespace(ctx context.Context, namespace string) (*laboratoryv1alpha1.LabGroup, error) {
+	var ns corev1.Namespace
+	if err := r.Get(ctx, types.NamespacedName{Name: namespace}, &ns); err != nil {
+		if errors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if owner := ns.Labels[names.LabelGroup]; owner != "" {
+		var group laboratoryv1alpha1.LabGroup
+		if err := r.Get(ctx, types.NamespacedName{Name: owner}, &group); err != nil {
+			if errors.IsNotFound(err) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		return &group, nil
+	}
+	var groups laboratoryv1alpha1.LabGroupList
+	if err := r.List(ctx, &groups); err != nil {
+		return nil, err
+	}
+	for i := range groups.Items {
+		if groups.Items[i].Status.Namespace == namespace {
+			return &groups.Items[i], nil
+		}
+	}
+	return nil, nil
 }
 
 // devicesForLabGroup enqueues every Device in the group's namespace when its
@@ -604,7 +708,7 @@ func (r *DeviceReconciler) devicesForLabGroup(ctx context.Context, obj client.Ob
 		return nil
 	}
 	var devices laboratoryv1alpha1.DeviceList
-	if err := r.List(ctx, &devices, client.InNamespace(laboratoryv1alpha1.LabGroupNamespace(group.Name))); err != nil {
+	if err := r.List(ctx, &devices, client.InNamespace(laboratoryv1alpha1.LabGroupNamespaceOf(group))); err != nil {
 		return nil
 	}
 	requests := make([]reconcile.Request, 0, len(devices.Items))
@@ -618,19 +722,19 @@ func (r *DeviceReconciler) devicesForLabGroup(ctx context.Context, obj client.Ob
 }
 
 // devicesForConnection maps a Connection to reconcile requests for the devices
-// at its endpoints (CR name is "<labRef>-<device>"). Enqueuing a non-switch
+// at its endpoints (CR name: devices.Name, or the old "<labRef>-<device>"). Enqueuing a non-switch
 // device is harmless — its reconcile ignores Connections.
 func (r *DeviceReconciler) devicesForConnection(_ context.Context, obj client.Object) []reconcile.Request {
 	conn, ok := obj.(*laboratoryv1alpha1.Connection)
 	if !ok {
 		return nil
 	}
-	reqs := make([]reconcile.Request, 0, len(conn.Spec.Endpoints))
+	reqs := make([]reconcile.Request, 0, 2*len(conn.Spec.Endpoints))
 	for _, e := range conn.Spec.Endpoints {
-		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
-			Name:      fmt.Sprintf("%s-%s", conn.Spec.LabRef, e.Device),
-			Namespace: conn.Namespace,
-		}})
+		// The device may carry its current name or the old one; the one that does not exist is ignored.
+		for _, n := range devices.Candidates(conn.Spec.LabRef, e.Device) {
+			reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Name: n, Namespace: conn.Namespace}})
+		}
 	}
 	return reqs
 }

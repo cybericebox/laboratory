@@ -56,8 +56,22 @@ func ValidateDeviceName(name string) error {
 		return fmt.Errorf("device name %q must not start or end with '-'", name)
 	}
 	for _, c := range name {
-		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
 			return fmt.Errorf("device name %q may contain only lowercase a-z, 0-9 and '-'", name)
+		}
+	}
+	return nil
+}
+
+// ValidateNewDeviceName is ValidateDeviceName plus the reserved names. It applies to what a caller submits; a device that
+// already exists under a reserved name keeps working because system pods are selected by LabelComponent, not by name.
+func ValidateNewDeviceName(name string) error {
+	if err := ValidateDeviceName(name); err != nil {
+		return err
+	}
+	for _, r := range ReservedDeviceNames {
+		if name == r {
+			return fmt.Errorf("device name %q is reserved by the platform", name)
 		}
 	}
 	return nil
@@ -71,4 +85,15 @@ func ValidateDeviceName(name string) error {
 // already satisfy ValidateDeviceName; it is not truncated here.
 func WebHostLabel(device, code string) string {
 	return device + "-" + code
+}
+
+// WorkloadName is the name of the Deployment of a device, and the prefix of its
+// bare pods: <device>-<code>, the same label the web Service has. The lab is
+// never part of it; the relation goes through owner references and labels. A
+// device without a code (created before codes existed) keeps its legacy name.
+func WorkloadName(device, code, legacy string) string {
+	if code == "" {
+		return legacy
+	}
+	return WebHostLabel(device, code)
 }

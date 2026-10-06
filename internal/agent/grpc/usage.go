@@ -5,7 +5,9 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metricsv1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 
+	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
@@ -42,15 +44,23 @@ func (h *Handler) namespaceUsage(ctx context.Context, ns string) map[usageKey]de
 	if err != nil {
 		return nil
 	}
-	out := make(map[usageKey]deviceUsage)
-	for i := range list.Items {
-		pm := &list.Items[i]
+	u := foldUsage(list.Items)[ns]
+	if u == nil {
+		u = map[usageKey]deviceUsage{}
+	}
+	return u
+}
+
+// foldUsage sums the containers of each pod metric into the usage of its device, by namespace and (lab, device).
+func foldUsage(items []metricsv1beta1.PodMetrics) map[string]map[usageKey]deviceUsage {
+	out := map[string]map[usageKey]deviceUsage{}
+	for i := range items {
+		pm := &items[i]
 		lab := pm.Labels[names.LabelLab]
 		device := pm.Labels[names.LabelDevice]
 		if lab == "" || device == "" {
 			continue
 		}
-		key := usageKey{lab: lab, device: device}
 		// A device runs exactly one pod (Deployment, replicas=1). During a brief
 		// recreation overlap two PodMetrics may share the (lab, device) labels —
 		// take the last one rather than summing, so usage reflects one pod, not two.
@@ -60,55 +70,48 @@ func (h *Handler) namespaceUsage(ctx context.Context, ns string) map[usageKey]de
 			u.cpuMillicores += usage.Cpu().MilliValue()
 			u.memoryBytes += usage.Memory().Value()
 		}
-		out[key] = u
+		if out[pm.Namespace] == nil {
+			out[pm.Namespace] = map[usageKey]deviceUsage{}
+		}
+		out[pm.Namespace][usageKey{lab: lab, device: device}] = u
 	}
 	return out
 }
 
 // fillLabUsage sets live per-device usage on a proto Lab from a namespace usage
-// map. A nil map (metrics unavailable) leaves usage at zero.
-func fillLabUsage(lab *protobuf.Lab, usage map[usageKey]deviceUsage) {
+// map. A nil map (metrics unavailable) leaves usage at zero. Pods are keyed by the
+// CR name of the lab, which differs from lab.Name (the id) for an id that had to be encoded:
+// pass it as crName.
+func fillLabUsage(lab *protobuf.Lab, usage map[usageKey]deviceUsage, crName ...string) {
 	if lab.GetStatus() == nil {
 		return
+	}
+	key := lab.Name
+	if len(crName) > 0 {
+		key = crName[0]
 	}
 	for _, d := range lab.Status.Devices {
 		d.UsageAvailable = usage != nil
 		if usage == nil {
 			continue
 		}
-		if u, ok := usage[usageKey{lab: lab.Name, device: d.Name}]; ok {
+		if u, ok := usage[usageKey{lab: key, device: d.Name}]; ok {
 			d.CpuMillicores = u.cpuMillicores
 			d.MemoryBytes = u.memoryBytes
 		}
 	}
 }
 
-func (h *Handler) namespacePodStatus(ctx context.Context, ns string) map[usageKey]devicePodStatus {
-	if h.k8s == nil {
-		return nil
-	}
-	pods, err := h.k8s.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil
-	}
-	statuses := make(map[usageKey]devicePodStatus)
-	for i := range pods.Items {
-		pod := &pods.Items[i]
-		key := usageKey{lab: pod.Labels[names.LabelLab], device: pod.Labels[names.LabelDevice]}
-		if key.lab == "" || key.device == "" {
-			continue
-		}
-		statuses[key] = devicePodStatus{phase: string(pod.Status.Phase), reason: podReason(pod), restartCount: podRestartCount(pod)}
-	}
-	return statuses
-}
-
-func fillLabPodStatus(lab *protobuf.Lab, pods map[usageKey]devicePodStatus) {
+func fillLabPodStatus(lab *protobuf.Lab, pods map[usageKey]devicePodStatus, crName ...string) {
 	if pods == nil || lab.GetStatus() == nil {
 		return
 	}
+	key := lab.Name
+	if len(crName) > 0 {
+		key = crName[0]
+	}
 	for _, device := range lab.Status.Devices {
-		status, found := pods[usageKey{lab: lab.Name, device: device.Name}]
+		status, found := pods[usageKey{lab: key, device: device.Name}]
 		if !found {
 			continue
 		}
@@ -142,4 +145,19 @@ func podRestartCount(pod *corev1.Pod) int32 {
 		restarts += status.RestartCount
 	}
 	return restarts
+}
+
+// namespaceDeviceScheduling returns the scheduler state of the Devices of a namespace,
+// keyed by (lab CR name, device name). Best effort: nil when the list fails.
+func (h *Handler) namespaceDeviceScheduling(ctx context.Context, ns string) map[usageKey]*laboratoryv1alpha1.PodSchedule {
+	list, err := h.cs.LaboratoryV1alpha1().Devices(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil
+	}
+	out := make(map[usageKey]*laboratoryv1alpha1.PodSchedule, len(list.Items))
+	for i := range list.Items {
+		d := &list.Items[i]
+		out[usageKey{lab: d.Spec.LabRef, device: d.Spec.Name}] = d.Status.Scheduling
+	}
+	return out
 }

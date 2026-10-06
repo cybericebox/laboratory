@@ -32,13 +32,34 @@ type DeviceSpecApplyConfiguration struct {
 	Name  *string                        `json:"name,omitempty"`
 	Type  *laboratoryv1alpha1.DeviceType `json:"type,omitempty"`
 	Image *string                        `json:"image,omitempty"`
-	// SecurityPreset names a capability profile (basic/service/net/debug); the
-	// concrete capabilities are resolved internally by the operator.
+	// SecurityPreset names a device security profile (standard/extended, or the old aliases
+	// basic/service/net/debug); the concrete capabilities are resolved internally by the operator.
 	SecurityPreset *laboratoryv1alpha1.SecurityPreset `json:"securityPreset,omitempty"`
 	Interfaces     []InterfaceSpecApplyConfiguration  `json:"interfaces,omitempty"`
 	Exposure       *ExposureSpecApplyConfiguration    `json:"exposure,omitempty"`
 	// Resources sets the container resource requests/limits for this device.
 	Resources *DeviceResourcesApplyConfiguration `json:"resources,omitempty"`
+	// State is the optional state-persistence policy and operator controls of
+	// this device. Set once when the Device is materialised: a Lab created while
+	// the platform has device state persistence off never carries it.
+	State *DeviceStateSpecApplyConfiguration `json:"state,omitempty"`
+	// ImageMirror is the cache prefix (host:port, e.g. "localhost:5035") through
+	// which the node pulls the device image: the operator pulls REG/repo:tag as
+	// <prefix>/REG/repo:tag. Set once when the Device is materialised, only for
+	// labs created while the image cache is on; empty pulls Image directly.
+	ImageMirror *string `json:"imageMirror,omitempty"`
+	// ImageDigests pins the images of the device (its image and the netconfig
+	// init-container image) to the digests their tags had when the lab was
+	// created, keyed by the image as written. A cached pull uses the digest, so
+	// every device of the lab, and of the labs created in the same wave, runs the
+	// same image even if an upstream tag moves. An image that could not be
+	// resolved is absent and pulled by its tag.
+	ImageDigests map[string]string `json:"imageDigests,omitempty"`
+	// Code is the short random code that makes the workload name <name>-<code>
+	// unique in the group namespace; the web Service of the device carries the same
+	// one. It is drawn when the Device is created and never changes. Empty on a
+	// Device that predates codes: its workload keeps the name of the Device.
+	Code *string `json:"code,omitempty"`
 }
 
 // DeviceSpecApplyConfiguration constructs a declarative configuration of the DeviceSpec type for use with
@@ -113,5 +134,43 @@ func (b *DeviceSpecApplyConfiguration) WithExposure(value *ExposureSpecApplyConf
 // If called multiple times, the Resources field is set to the value of the last call.
 func (b *DeviceSpecApplyConfiguration) WithResources(value *DeviceResourcesApplyConfiguration) *DeviceSpecApplyConfiguration {
 	b.Resources = value
+	return b
+}
+
+// WithState sets the State field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the State field is set to the value of the last call.
+func (b *DeviceSpecApplyConfiguration) WithState(value *DeviceStateSpecApplyConfiguration) *DeviceSpecApplyConfiguration {
+	b.State = value
+	return b
+}
+
+// WithImageMirror sets the ImageMirror field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ImageMirror field is set to the value of the last call.
+func (b *DeviceSpecApplyConfiguration) WithImageMirror(value string) *DeviceSpecApplyConfiguration {
+	b.ImageMirror = &value
+	return b
+}
+
+// WithImageDigests puts the entries into the ImageDigests field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, the entries provided by each call will be put on the ImageDigests field,
+// overwriting an existing map entries in ImageDigests field with the same key.
+func (b *DeviceSpecApplyConfiguration) WithImageDigests(entries map[string]string) *DeviceSpecApplyConfiguration {
+	if b.ImageDigests == nil && len(entries) > 0 {
+		b.ImageDigests = make(map[string]string, len(entries))
+	}
+	for k, v := range entries {
+		b.ImageDigests[k] = v
+	}
+	return b
+}
+
+// WithCode sets the Code field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Code field is set to the value of the last call.
+func (b *DeviceSpecApplyConfiguration) WithCode(value string) *DeviceSpecApplyConfiguration {
+	b.Code = &value
 	return b
 }

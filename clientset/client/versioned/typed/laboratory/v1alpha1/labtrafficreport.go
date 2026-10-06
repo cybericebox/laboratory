@@ -67,9 +67,7 @@ func newLabTrafficReports(c *LaboratoryV1alpha1Client, namespace string) *labTra
 			scheme.ParameterCodec,
 			namespace,
 			func() *laboratoryv1alpha1.LabTrafficReport { return &laboratoryv1alpha1.LabTrafficReport{} },
-			func() *laboratoryv1alpha1.LabTrafficReportList {
-				return &laboratoryv1alpha1.LabTrafficReportList{}
-			},
+			func() *laboratoryv1alpha1.LabTrafficReportList { return &laboratoryv1alpha1.LabTrafficReportList{} },
 			gentype.PrefersProtobuf[*laboratoryv1alpha1.LabTrafficReport](),
 		),
 	}

@@ -3,8 +3,8 @@
 #
 # Prerequisites in laboratory-proxy:
 #   - Secret proxy-tls (tls.crt, tls.key): the wildcard certificate of BASE_DOMAIN.
-#   - Secret lab-access-public-key (public.pem): created by the operator from the
-#     Secret of the same name in laboratory-system (PlatformReconciler).
+#   - The tenants' access keys: Secrets tenant-<name>-access-keys in laboratory-access-keys (written
+#     by the agent), readable by the proxy.
 #   - Secret proxy-session (sessionSecret): HMAC key (32+ bytes) of the proxy's own
 #     session cookie, shared by all replicas:
 #       kubectl -n laboratory-proxy create secret generic proxy-session \
@@ -79,8 +79,8 @@ spec:
       serviceAccountName: laboratory-proxy
       containers:
         - name: l7
-          image: cybericebox/laboratory-proxy:latest
-          command: [ "/proxy-l7" ]
+          image: cybericebox/laboratory-proxy:0.1.0
+          command: [ "/proxy", "proxy-l7" ]
           env:
             # REQUIRED, no default: the overlay must set the lab base domain.
             - name: BASE_DOMAIN
@@ -100,12 +100,6 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
-            - name: TLS_CERT_PATH
-              value: /etc/proxy/tls/tls.crt
-            - name: TLS_KEY_PATH
-              value: /etc/proxy/tls/tls.key
-            - name: LAB_ACCESS_PUBLIC_KEY_PATH
-              value: /etc/proxy/lab-access/public.pem
           ports:
             - name: https
               containerPort: 8443
@@ -113,17 +107,9 @@ spec:
             - name: tls
               mountPath: /etc/proxy/tls
               readOnly: true
-            - name: lab-access
-              mountPath: /etc/proxy/lab-access
-              readOnly: true
         - name: wg-demux
-          image: cybericebox/laboratory-proxy:latest
-          command: [ "/proxy-wg" ]
-          env:
-            - name: UDP_LISTEN_ADDR
-              value: ":51820"
-            - name: VPN_SERVICE_PORT
-              value: "51820"
+          image: cybericebox/laboratory-proxy:0.1.0
+          command: [ "/proxy", "proxy-wg" ]
           ports:
             - name: wg
               containerPort: 51820
@@ -132,6 +118,3 @@ spec:
         - name: tls
           secret:
             secretName: proxy-tls
-        - name: lab-access
-          secret:
-            secretName: lab-access-public-key

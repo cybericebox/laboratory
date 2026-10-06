@@ -7,7 +7,7 @@ import (
 	"net"
 	"text/template"
 	"time"
-	
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -17,9 +17,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	
+
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	"github.com/cybericebox/laboratory/pkg/netutil"
@@ -44,11 +45,11 @@ func (r *LabGroupClientReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err := r.Get(ctx, req.NamespacedName, &lgc); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	
+
 	if !lgc.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, &lgc)
 	}
-	
+
 	return r.reconcileCreate(ctx, &lgc)
 }
 
@@ -62,7 +63,7 @@ func (r *LabGroupClientReconciler) reconcileCreate(
 			return ctrl.Result{}, err
 		}
 	}
-	
+
 	// The caller generates the WireGuard keypair and provides the public key;
 	// the cluster never generates or holds the private key.
 	pubKey := lgc.Spec.PublicKey
@@ -95,7 +96,7 @@ func (r *LabGroupClientReconciler) reconcileCreate(
 			)
 			return ctrl.Result{}, nil
 		}
-		
+
 		allocator := poolpkg.NewAllocator(r.Client, names.PoolVPNClients, lgc.Namespace, 254)
 		idx, err := allocator.AllocateIndex(ctx)
 		if err != nil {
@@ -106,7 +107,7 @@ func (r *LabGroupClientReconciler) reconcileCreate(
 			return ctrl.Result{}, fmt.Errorf("compute client IP: %w", err)
 		}
 	}
-	
+
 	// Fetch parent LabGroup so we can populate serverPublicKey + endpoint in the
 	// Secret. If the LabGroup is not yet Ready we still write what we have.
 	serverPubKey, endpoint, lgErr := r.lookupParentVPN(ctx, lgc.Namespace)
@@ -114,7 +115,7 @@ func (r *LabGroupClientReconciler) reconcileCreate(
 		// Don't fail hard — Secret is still useful with publicKey/assignedIP/privateKey.
 		ctrl.LoggerFrom(ctx).V(1).Info("parent LabGroup not yet readable", "reason", lgErr.Error())
 	}
-	
+
 	// Assemble the client config with a private-key PLACEHOLDER and store it in
 	// status — never in a Secret, so the cluster never holds the private key.
 	// Empty until the parent VPN endpoint/server key land (the requeue waits).
@@ -139,7 +140,7 @@ func (r *LabGroupClientReconciler) reconcileCreate(
 			return ctrl.Result{}, err
 		}
 	}
-	
+
 	// Requeue softly until LabGroup endpoint/server pubkey land so the wg.conf
 	// gets refreshed without depending solely on the cross-resource watch.
 	if serverPubKey == "" || endpoint == "" {
@@ -180,7 +181,7 @@ func (r *LabGroupClientReconciler) reconcileDelete(
 			return ctrl.Result{}, err
 		}
 	}
-	
+
 	// No client Secret to clean up — the config lives in status only.
 
 	// The cybericebox.com/vpn finalizer is removed by the VPN binary after it
@@ -337,9 +338,9 @@ func (r *LabGroupClientReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 		return reqs
 	}
-	
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.LabGroupClient{}).
 		Watches(&laboratoryv1alpha1.LabGroup{}, handler.EnqueueRequestsFromMapFunc(groupMap)).
-		Complete(r)
+		Complete(reconcileutil.Quiet(r))
 }

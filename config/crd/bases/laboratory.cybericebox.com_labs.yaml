@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.17.2
+    controller-gen.kubebuilder.io/version: v0.22.0
   name: labs.laboratory.cybericebox.com
 spec:
   group: laboratory.cybericebox.com
@@ -69,6 +69,8 @@ spec:
                   type: object
                 type: array
               devices:
+                description: Devices of the lab, switches and hubs included. The ceiling
+                  is fixed in code (names.MaxLabDevices).
                 items:
                   description: DeviceTemplate is an inline device declaration inside
                     Lab.spec.devices[].
@@ -95,12 +97,15 @@ spec:
                     image:
                       type: string
                     interfaces:
+                      description: 'Interfaces of the device: at most 16 on a container
+                        (names.MaxContainerInterfaces), 48 on a switch or hub.'
                       items:
                         description: InterfaceSpec defines a network interface on
                           a device.
                         properties:
                           addr:
-                            description: AddrSpec defines static or DHCP address configuration.
+                            description: 'Addr is optional: nil means the interface
+                              is created without an IP.'
                             properties:
                               addressRef:
                                 description: |-
@@ -203,13 +208,28 @@ spec:
                             - type
                             type: object
                           mac:
-                            description: MAC is "random" or an explicit MAC address.
+                            description: MAC is "random" or an explicit unicast MAC
+                              address.
+                            maxLength: 17
+                            pattern: ^(random|[0-9a-fA-F][02468aceACE](:[0-9a-fA-F]{2}){5})$
                             type: string
+                            x-kubernetes-validations:
+                            - message: the zero MAC is not allowed
+                              rule: self != '00:00:00:00:00:00'
                           name:
+                            description: |-
+                              Name is the interface name inside the pod: a lowercase word of at most 15
+                              characters; lo and accessport are reserved.
+                            maxLength: 15
+                            pattern: ^[a-z][a-z0-9-]{0,14}$
                             type: string
+                            x-kubernetes-validations:
+                            - message: reserved interface name
+                              rule: self != 'lo' && self != 'accessport'
                         required:
                         - name
                         type: object
+                      maxItems: 48
                       type: array
                     name:
                       description: |-
@@ -219,25 +239,54 @@ spec:
                       minLength: 1
                       pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                       type: string
+                      x-kubernetes-validations:
+                      - message: the names vpn, gateway and internet are reserved
+                          by the platform
+                        rule: '!(self in [''vpn'', ''gateway'', ''internet''])'
+                    persistence:
+                      description: |-
+                        Persistence is the optional state-persistence policy of this device, set at
+                        creation and immutable. The excluded paths and the quota are platform settings.
+                      properties:
+                        debounce:
+                          description: |-
+                            Debounce is how long the writable layer must stay quiet before a snapshot
+                            (default: the platform setting).
+                          type: string
+                        enabled:
+                          description: Enabled turns snapshot-backed state on for
+                            the device.
+                          type: boolean
+                      type: object
                     resources:
                       description: Resources sets the container resource requests/limits
                         for this device.
                       properties:
                         cpuLimit:
+                          maxLength: 24
+                          pattern: ^([1-9][0-9]*(\.[0-9]+)?|0?\.[0-9]*[1-9][0-9]*)(m|k|[KMGTPE]i?)?$
                           type: string
                         cpuRequest:
+                          maxLength: 24
+                          pattern: ^([1-9][0-9]*(\.[0-9]+)?|0?\.[0-9]*[1-9][0-9]*)(m|k|[KMGTPE]i?)?$
                           type: string
                         memoryLimit:
+                          maxLength: 24
+                          pattern: ^([1-9][0-9]*(\.[0-9]+)?|0?\.[0-9]*[1-9][0-9]*)(m|k|[KMGTPE]i?)?$
                           type: string
                         memoryRequest:
+                          maxLength: 24
+                          pattern: ^([1-9][0-9]*(\.[0-9]+)?|0?\.[0-9]*[1-9][0-9]*)(m|k|[KMGTPE]i?)?$
                           type: string
                       type: object
                     securityPreset:
                       description: |-
-                        SecurityPreset names a capability profile for the device container. Only
-                        the preset name is exposed here; the concrete Linux capabilities behind it
-                        are an internal platform decision. Empty means "basic" (no extra caps).
+                        SecurityPreset names a device security profile (standard or extended; the old names basic, service,
+                        net and debug are aliases). Only the name is exposed here; the concrete Linux capabilities behind it
+                        are an internal platform decision. Empty means standard.
                       enum:
+                      - standard
+                      - extended
                       - basic
                       - service
                       - net
@@ -254,6 +303,11 @@ spec:
                   - name
                   - type
                   type: object
+                  x-kubernetes-validations:
+                  - message: a container device has at most 16 interfaces
+                    rule: self.type != 'container' || !has(self.interfaces) || size(self.interfaces)
+                      <= 16
+                maxItems: 64
                 type: array
               internet:
                 description: LabNetworkSpec configures a network segment (VPN or internet)
@@ -439,14 +493,72 @@ spec:
                 items:
                   description: DeviceRef summarises a materialised Device's readiness.
                   properties:
+                    failure:
+                      description: Failure is the warning of a device pod that did
+                        not start in time.
+                      properties:
+                        at:
+                          format: date-time
+                          type: string
+                        message:
+                          description: Message is the last error the node reported
+                            (for example the image pull error).
+                          type: string
+                        reason:
+                          description: Reason is one of the Failure* constants.
+                          type: string
+                        restartCount:
+                          format: int32
+                          type: integer
+                      type: object
                     name:
                       type: string
                     ready:
                       type: boolean
+                    state:
+                      description: State summarises the snapshots of a device with
+                        state persistence.
+                      properties:
+                        lastSnapshotAt:
+                          format: date-time
+                          type: string
+                        quotaWarning:
+                          description: QuotaWarning is set while snapshots are refused
+                            or failing.
+                          type: string
+                        rescue:
+                          description: Rescue is true while the device runs in rescue
+                            mode.
+                          type: boolean
+                        restoredAt:
+                          format: date-time
+                          type: string
+                        sizeBytes:
+                          format: int64
+                          type: integer
+                      type: object
                   required:
                   - name
                   type: object
                 type: array
+              imageCache:
+                description: |-
+                  ImageCache records whether this lab pulls its images through the platform
+                  image cache, decided once on the first reconcile.
+                type: boolean
+              imageDigests:
+                additionalProperties:
+                  type: string
+                description: |-
+                  ImageDigests are the digests the image tags of the lab's container devices
+                  (and the netconfig image) were pinned to when the lab was created with the
+                  image cache on, keyed by the image as written in the spec.
+                type: object
+              imageWarning:
+                description: |-
+                  ImageWarning lists the images that could not be pinned and are pulled by
+                  their tag; empty when all were.
+                type: string
               internet:
                 description: LabNetworkStatus reports the allocated CIDR for a network
                   segment.
@@ -460,12 +572,49 @@ spec:
                 description: Phase is the lifecycle phase of a resource.
                 enum:
                 - Pending
+                - Queued
                 - Provisioning
                 - Ready
                 - Suspended
                 - Failed
                 - Error
                 type: string
+              scheduling:
+                description: Scheduling is the place of the lab in the scheduler queue.
+                properties:
+                  group:
+                    description: Group is the deploy group of the object; empty for
+                      an independent one.
+                    type: string
+                  length:
+                    description: Length is the number of such objects when Position
+                      was written.
+                    format: int32
+                    type: integer
+                  message:
+                    description: Message adds detail, for example "waiting for group
+                      intro".
+                    type: string
+                  pending:
+                    format: int32
+                    type: integer
+                  pods:
+                    description: |-
+                      Pods is the number of pods of the object and Pending how many of them are
+                      not dispatched yet.
+                    format: int32
+                    type: integer
+                  position:
+                    description: |-
+                      Position is the 1-based place among the objects that still have pods to
+                      dispatch; 0 when all pods are dispatched.
+                    format: int32
+                    type: integer
+                  reason:
+                    description: Reason is why the next pod of the object is not dispatched
+                      (Wait* constants).
+                    type: string
+                type: object
               vpn:
                 description: LabNetworkStatus reports the allocated CIDR for a network
                   segment.

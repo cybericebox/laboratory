@@ -19,6 +19,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	"github.com/cybericebox/laboratory/internal/vpn"
 )
 
@@ -29,6 +30,10 @@ import (
 type AccessReconciler struct {
 	client.Client
 	IPT *vpn.IPTablesManager
+	// Conntrack removes the open connections a rule change revokes: FORWARD accepts
+	// established connections before the access chain, so replacing the chain alone
+	// would leave an open SSH session or download running. Nil: not removed (tests).
+	Conntrack *vpn.ConntrackRevoker
 }
 
 func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -69,6 +74,22 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			_ = r.writePolicyStatus(ctx, policy, rules, nil, "Failed", err.Error())
 		}
 		return ctrl.Result{}, err
+	}
+	if r.Conntrack != nil {
+		labCIDRs := make([]string, 0, len(labsByName))
+		for _, l := range labsByName {
+			if l.VPNCIDR != "" {
+				labCIDRs = append(labCIDRs, l.VPNCIDR)
+			}
+		}
+		n, err := r.Conntrack.Revoke(labCIDRs, rules)
+		if n > 0 {
+			ctrl.LoggerFrom(ctx).Info("closed connections the access rules no longer allow", "connections", n)
+		}
+		if err != nil {
+			// The rules are in place; the open connections are not all gone. Run again.
+			return ctrl.Result{}, err
+		}
 	}
 	if policyFound {
 		counters, countersErr := r.IPT.AccessCounters()
@@ -180,5 +201,5 @@ func (r *AccessReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// Counter refreshes patch only status. Do not turn those patches into
 		// another policy reconcile; specification changes still enqueue one.
 		Watches(&laboratoryv1alpha1.LabGroupAccessPolicy{}, allInNamespace, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Complete(r)
+		Complete(reconcileutil.Quiet(r))
 }

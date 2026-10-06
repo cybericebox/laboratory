@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -23,11 +23,15 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/devices"
+	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	"github.com/cybericebox/laboratory/pkg/netutil"
@@ -55,10 +59,26 @@ type LabReconciler struct {
 	VPNBaseNetwork string
 	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets (e.g. "10.9.0.0/16").
 	InetBaseNetwork string
+	// Reader reads from the API server without the cache; nil means Client. Used
+	// where a stale cache would hand out a device code twice.
+	Reader client.Reader
+	// State is the device state persistence policy applied to labs created
+	// while the platform switch is on.
+	State StatePolicy
+	// Mirror rewrites image references for the image cache; the zero value
+	// (cache off) rewrites nothing. The Lab records the decision once.
+	Mirror imagecache.Rewriter
+	// Resolver pins image tags to digests for a lab created with the image
+	// cache on; nil pins nothing.
+	Resolver imagecache.Resolver
+	// NetConfigImage is the image of the device netconfig init-container, pinned
+	// together with the device images.
+	NetConfigImage string
 }
 
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=tenants,verbs=get;list;watch
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs/finalizers,verbs=update
@@ -89,13 +109,18 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 	}
 
-	if updated, err := r.ensureSubnetAllocation(ctx, &lab); err != nil {
+	// The modes are fixed before anything is created, so the scheduler knows which image
+	// references the lab will pull. The status write leaves the answer of the API server in lab; it is not read again,
+	// because the cache may still hold the object without the modes, and the devices
+	// created below would run in the wrong mode.
+	if _, err := r.ensureModes(ctx, &lab); err != nil {
 		return ctrl.Result{}, err
-	} else if updated {
-		// Re-fetch after status update so we have the latest resourceVersion.
-		if err := r.Get(ctx, req.NamespacedName, &lab); err != nil {
-			return ctrl.Result{}, client.IgnoreNotFound(err)
-		}
+	}
+
+	// Like the modes, the subnets stay in lab as the status write answered them (a read
+	// from the cache could return the object without them).
+	if _, err := r.ensureSubnetAllocation(ctx, &lab); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	if err := r.ensureLabNetworkObjects(ctx, &lab); err != nil {
@@ -150,15 +175,12 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, err
 	}
 
-	if err := r.ensureDeploymentAnnotations(ctx, &lab); err != nil {
-		logger.Error(err, "ensure deployment annotations")
-		return ctrl.Result{}, err
-	}
-
 	return r.updateStatus(ctx, &lab)
 }
 
 // validateGraph checks device names, endpoint ports, occupancy and switch/hub cycles.
+//
+//nolint:gocyclo // one decision over many cases; splitting it would scatter the rule
 func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
 	for _, d := range lab.Spec.Devices {
 		if err := names.ValidateDeviceName(d.Name); err != nil {
@@ -203,7 +225,7 @@ func (r *LabReconciler) validateGraph(lab *laboratoryv1alpha1.Lab) error {
 	usedGateways := map[string]bool{}
 	for _, conn := range lab.Spec.Connections {
 		for _, ep := range conn.Endpoints {
-			if ep.Device == "vpn" || ep.Device == "internet" {
+			if ep.Device == names.ComponentVPN || ep.Device == "internet" {
 				// Each singleton exposes exactly one logical port: eth0.
 				if ep.Interface != "eth0" {
 					return fmt.Errorf("InvalidGatewayPort: %s has no port %q", ep.Device, ep.Interface)
@@ -355,7 +377,7 @@ func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, sw
 		}
 		for _, ep := range conn.Endpoints {
 			switch ep.Device {
-			case "vpn":
+			case names.ComponentVPN:
 				d.hasVPN = true
 				if lab.Spec.VPN.DHCPServer != nil && lab.Spec.VPN.DHCPServer.Enabled {
 					d.dhcpSources++
@@ -384,12 +406,27 @@ func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, sw
 }
 
 func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv1alpha1.Lab, resolvedInterfaces map[string][]laboratoryv1alpha1.InterfaceSpec) error {
-	vniAllocator := poolpkg.NewAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
+	vniAllocator := poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
+	codes := r.newCodeAllocator(lab)
+	wantLabels := userLabels(lab.Labels)
+	ten, err := r.tenantOf(ctx, lab)
+	if err != nil {
+		return err
+	}
 
 	for _, tmpl := range lab.Spec.Devices {
-		deviceName := fmt.Sprintf("%s-%s", lab.Name, tmpl.Name)
+		deviceName := devices.Name(lab.Name, tmpl.Name)
 		var existing laboratoryv1alpha1.Device
-		if err := r.Get(ctx, types.NamespacedName{Name: deviceName, Namespace: lab.Namespace}, &existing); err == nil {
+		if found, err := devices.Get(ctx, r.Client, lab.Namespace, lab.Name, tmpl.Name); err == nil {
+			existing = *found
+			deviceName = existing.Name
+			// The user labels of the lab follow it onto its devices.
+			orig := existing.DeepCopy()
+			if applyUserLabels(&existing, wantLabels) {
+				if err := r.Patch(ctx, &existing, client.MergeFrom(orig)); err != nil {
+					return err
+				}
+			}
 			// For switch/hub devices, ensure VNI is written even if the status update failed on a previous reconcile.
 			isSwitch := existing.Spec.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch ||
 				existing.Spec.Type == laboratoryv1alpha1.DeviceTypeHub
@@ -410,24 +447,36 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 			return err
 		}
 
+		var code string
+		if tmpl.Type == laboratoryv1alpha1.DeviceTypeContainer {
+			var err error
+			if code, err = codes.codeFor(ctx, tmpl.Name); err != nil {
+				return fmt.Errorf("device code of %s: %w", tmpl.Name, err)
+			}
+		}
 		d := &laboratoryv1alpha1.Device{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:       deviceName,
 				Namespace:  lab.Namespace,
-				Labels:     map[string]string{names.LabelLab: lab.Name},
+				Labels:     deviceLabels(lab),
 				Finalizers: []string{names.FinalizerOVSCleanup},
 			},
 			Spec: laboratoryv1alpha1.DeviceSpec{
 				LabRef:         lab.Name,
 				Name:           tmpl.Name,
+				Code:           code,
 				Type:           tmpl.Type,
 				Image:          tmpl.Image,
 				SecurityPreset: tmpl.SecurityPreset,
 				Interfaces:     resolvedInterfaces[tmpl.Name],
 				Exposure:       tmpl.Exposure,
 				Resources:      tmpl.Resources,
+				State:          r.deviceStateSpec(ten, tmpl),
+				ImageMirror:    r.deviceMirror(lab, tmpl.Type),
+				ImageDigests:   r.deviceDigests(lab, tmpl),
 			},
 		}
+		applyUserLabels(d, wantLabels)
 		if err := controllerutil.SetOwnerReference(lab, d, r.Scheme); err != nil {
 			return err
 		}
@@ -449,6 +498,14 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 	return nil
 }
 
+// deviceLabels are the labels of a Device: the labels the caller put on its Lab (they
+// reach the pod from here) and the lab's own key.
+func deviceLabels(lab *laboratoryv1alpha1.Lab) map[string]string {
+	labels := names.PropagatedLabels(lab.Labels)
+	labels[names.LabelLab] = lab.Name
+	return labels
+}
+
 func isSwitchDevice(name string, lab *laboratoryv1alpha1.Lab) bool {
 	for _, d := range lab.Spec.Devices {
 		if d.Name == name {
@@ -459,7 +516,7 @@ func isSwitchDevice(name string, lab *laboratoryv1alpha1.Lab) bool {
 }
 
 func (r *LabReconciler) materializeConnections(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
-	vniAllocator := poolpkg.NewAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
+	vniAllocator := poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
 
 	for _, tmpl := range lab.Spec.Connections {
 		connName := connectionName(lab.Name, tmpl.Endpoints)
@@ -497,7 +554,7 @@ func (r *LabReconciler) materializeConnections(ctx context.Context, lab *laborat
 			ObjectMeta: metav1.ObjectMeta{
 				Name:       connName,
 				Namespace:  lab.Namespace,
-				Labels:     map[string]string{names.LabelLab: lab.Name},
+				Labels:     deviceLabels(lab),
 				Finalizers: []string{names.FinalizerOVSCleanup},
 			},
 			Spec: laboratoryv1alpha1.ConnectionSpec{
@@ -550,7 +607,7 @@ func (r *LabReconciler) pruneConnections(ctx context.Context, lab *laboratoryv1a
 	if err := r.List(ctx, &list, client.InNamespace(lab.Namespace), client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
 		return err
 	}
-	vniAllocator := poolpkg.NewAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
+	vniAllocator := poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
 	for i := range list.Items {
 		c := &list.Items[i]
 		if desired[c.Name] || !c.DeletionTimestamp.IsZero() {
@@ -579,16 +636,16 @@ func (r *LabReconciler) pruneConnections(ctx context.Context, lab *laboratoryv1a
 func (r *LabReconciler) pruneDevices(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
 	desired := make(map[string]bool, len(lab.Spec.Devices))
 	for i := range lab.Spec.Devices {
-		desired[fmt.Sprintf("%s-%s", lab.Name, lab.Spec.Devices[i].Name)] = true
+		desired[lab.Spec.Devices[i].Name] = true
 	}
 	var list laboratoryv1alpha1.DeviceList
 	if err := r.List(ctx, &list, client.InNamespace(lab.Namespace), client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
 		return err
 	}
-	vniAllocator := poolpkg.NewAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
+	vniAllocator := poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
 	for i := range list.Items {
 		d := &list.Items[i]
-		if desired[d.Name] || !d.DeletionTimestamp.IsZero() {
+		if desired[d.Spec.Name] || !d.DeletionTimestamp.IsZero() {
 			continue
 		}
 		if d.Status.VNI != nil {
@@ -655,6 +712,7 @@ func dnsSafeNamePart(value string) bool {
 	return true
 }
 
+//nolint:gocyclo // one decision over many cases; splitting it would scatter the rule
 func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha1.Lab) (ctrl.Result, error) {
 	var deviceList laboratoryv1alpha1.DeviceList
 	if err := r.List(
@@ -666,12 +724,27 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 
 	var refs []laboratoryv1alpha1.DeviceRef
 	allReady := len(deviceList.Items) > 0
+	pods, queuedPods := 0, 0
 	for _, d := range deviceList.Items {
-		refs = append(refs, laboratoryv1alpha1.DeviceRef{Name: d.Spec.Name, Ready: d.Status.Ready})
+		var failure *laboratoryv1alpha1.PodFailure
+		if sc := d.Status.Scheduling; sc != nil && sc.State == laboratoryv1alpha1.PodFailed {
+			failure = sc.Failure
+		}
+		refs = append(refs, laboratoryv1alpha1.DeviceRef{Name: d.Spec.Name, Ready: d.Status.Ready, State: deviceStateInfo(&d), Failure: failure})
 		if !d.Status.Ready {
 			allReady = false
 		}
+		if d.Spec.Type == laboratoryv1alpha1.DeviceTypeContainer {
+			pods++
+			if sc := d.Status.Scheduling; sc != nil && sc.State == laboratoryv1alpha1.PodQueued {
+				queuedPods++
+			}
+		}
 	}
+	// Every pod still waits in the scheduler queue: nothing has started.
+	allQueued := pods > 0 && queuedPods == pods
+
+	throttled := throttleStateInfo(lab.Status.Devices, refs)
 
 	var connList laboratoryv1alpha1.ConnectionList
 	if err := r.List(
@@ -705,8 +778,11 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 	}
 
 	newPhase := laboratoryv1alpha1.PhaseProvisioning
-	if allReady {
+	switch {
+	case allReady:
 		newPhase = laboratoryv1alpha1.PhaseReady
+	case allQueued:
+		newPhase = laboratoryv1alpha1.PhaseQueued
 	}
 
 	access := r.buildAccessEntries(ctx, lab)
@@ -725,13 +801,11 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 			r.Recorder.Event(lab, corev1.EventTypeNormal, labstatus.ReasonReady, "lab is ready")
 		}
 	} else {
-		labstatus.SetReady(
-			&lab.Status.Conditions,
-			lab.Generation,
-			false,
-			labstatus.ReasonProvisioning,
-			"waiting for devices and connections to become ready",
-		)
+		reason, message := labstatus.ReasonProvisioning, "waiting for devices and connections to become ready"
+		if allQueued {
+			reason, message = labstatus.ReasonQueued, "waiting in the scheduler queue"
+		}
+		labstatus.SetReady(&lab.Status.Conditions, lab.Generation, false, reason, message)
 	}
 
 	if newPhase == lab.Status.Phase &&
@@ -743,6 +817,9 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		wasReady == allReady {
 		if newPhase != laboratoryv1alpha1.PhaseReady {
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
+		if throttled {
+			return ctrl.Result{RequeueAfter: snapshotInfoInterval}, nil
 		}
 		return ctrl.Result{}, nil
 	}
@@ -833,7 +910,7 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 	// alongside devices (not after) to avoid a deadlock: DevicePortReconciler
 	// waits for Connection OVS-cleanup finalizers before removing the Device
 	// finalizer, but connections are only deleted by this function.
-	vniAllocator := poolpkg.NewAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
+	vniAllocator := poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
 
 	var connList laboratoryv1alpha1.ConnectionList
 	if err := r.List(
@@ -882,21 +959,6 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 
 	if len(deviceList.Items) > 0 || deletedAny || len(connList.Items) > 0 {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-	}
-
-	// Remove annotation entries so node-agent stops maintaining the veths.
-	if lab.Status.VPN.CIDR != "" {
-		if n, ok := indexFromCIDR(lab.Status.VPN.CIDR); ok {
-			_ = r.patchDeploymentNetworks(ctx, lab.Namespace, "vpn", names.LabIfaceNameByIndex(n), names.VPNHostPortKey(lab.Namespace, n), false)
-		}
-	}
-	if lab.Status.Internet.CIDR != "" {
-		if n, ok := indexFromCIDR(lab.Status.Internet.CIDR); ok {
-			_ = r.patchDeploymentNetworks(
-				ctx, lab.Namespace, "gateway",
-				names.LabIfaceNameByIndex(n), names.GWHostPortKey(lab.Namespace, n), false,
-			)
-		}
 	}
 
 	// Delete LabVPN and wait for VPN binary to complete cleanup.
@@ -1044,7 +1106,7 @@ func (r *LabReconciler) ensureDHCPPool(ctx context.Context, lab *laboratoryv1alp
 				poolpkg.PoolTypeLabel:   prefix,
 				poolpkg.PoolStateLabel:  poolpkg.PoolStateEmpty,
 				poolpkg.PoolGroupLabel:  fmt.Sprintf("%s-%s", prefix, lab.Name),
-				poolpkg.LatestPoolLabel: "true",
+				poolpkg.LatestPoolLabel: valueTrue,
 			},
 		},
 		Spec: allocationv1alpha1.PoolSpec{Size: dhcpPoolSize, Offset: dhcpPoolOffset},
@@ -1164,7 +1226,7 @@ func (r *LabReconciler) ensureLabGatewayDeleted(ctx context.Context, lab *labora
 // this is how later reconciles keep the host label stable. nil if none exists.
 func (r *LabReconciler) findWebService(ctx context.Context, lab *laboratoryv1alpha1.Lab, device string) (*corev1.Service, error) {
 	var list corev1.ServiceList
-	if err := r.List(
+	if err := r.reader().List(
 		ctx, &list, client.InNamespace(lab.Namespace),
 		client.MatchingLabels{names.LabelLab: lab.Name, names.LabelDevice: device},
 	); err != nil {
@@ -1230,6 +1292,7 @@ func (r *LabReconciler) createWebService(ctx context.Context, lab *laboratoryv1a
 }
 
 func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
+	codes := r.newCodeAllocator(lab)
 	for _, d := range lab.Spec.Devices {
 		if d.Exposure == nil || d.Exposure.Web == nil {
 			continue
@@ -1244,8 +1307,8 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 			svc.Labels[names.LabelLab] = lab.Name
 			svc.Labels[names.LabelDevice] = d.Name
 			svc.Spec.Selector = map[string]string{
-				names.LabelLab: lab.Name,
-				"app":          d.Name,
+				names.LabelLab:    lab.Name,
+				names.LabelDevice: d.Name,
 			}
 			protocol := web.Protocol
 			if protocol == "" {
@@ -1270,7 +1333,22 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 		}
 		var svc *corev1.Service
 		if existing == nil {
-			svc, err = r.createWebService(ctx, lab, d.Name, fill)
+			var code string
+			if d.Type == laboratoryv1alpha1.DeviceTypeContainer {
+				code, err = codes.codeFor(ctx, d.Name)
+			}
+			if err != nil {
+				return fmt.Errorf("device code of %s: %w", d.Name, err)
+			}
+			if code != "" {
+				// The host label is the device's workload label: <device>-<code>.
+				svc = &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: names.WebHostLabel(d.Name, code), Namespace: lab.Namespace}}
+				if err = fill(svc); err == nil {
+					err = r.Create(ctx, svc)
+				}
+			} else {
+				svc, err = r.createWebService(ctx, lab, d.Name, fill)
+			}
 		} else {
 			svc = existing
 			_, err = controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error { return fill(svc) })
@@ -1292,7 +1370,7 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 							MatchLabels: map[string]string{"kubernetes.io/metadata.name": names.ProxyNamespace},
 						},
 						PodSelector: &metav1.LabelSelector{
-							MatchLabels: map[string]string{"app": names.ProxyL7App},
+							MatchLabels: map[string]string{labelApp: names.ProxyL7App},
 						},
 					},
 				}
@@ -1307,7 +1385,7 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 					)
 				}
 				np.Spec = networkingv1.NetworkPolicySpec{
-					PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": d.Name}},
+					PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{names.LabelLab: lab.Name, names.LabelDevice: d.Name}},
 					PolicyTypes: []networkingv1.PolicyType{
 						networkingv1.PolicyTypeIngress,
 						networkingv1.PolicyTypeEgress,
@@ -1335,96 +1413,25 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 	return nil
 }
 
-// ensureDeploymentAnnotations adds the lab's OVS interface entries to the VPN and/or
-// gateway Deployment pod-template annotation so node-agent attaches them.
-// The annotation entry format is "lab{N}@{ovsPortName}" so node-agent creates a
-// veth with ovsPortName (VPNHostPortKey / GWHostPortKey) as the OVS port and
-// renames the pod-side to lab{N}.
-func (r *LabReconciler) ensureDeploymentAnnotations(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
-	if lab.Spec.VPN.Enabled && lab.Status.VPN.CIDR != "" {
-		n, ok := indexFromCIDR(lab.Status.VPN.CIDR)
-		if ok {
-			if err := r.patchDeploymentNetworks(ctx, lab.Namespace, "vpn", names.LabIfaceNameByIndex(n), names.VPNHostPortKey(lab.Namespace, n), true); err != nil {
-				return err
-			}
-		}
-	}
-	if lab.Spec.Internet.Enabled && lab.Status.Internet.CIDR != "" {
-		n, ok := indexFromCIDR(lab.Status.Internet.CIDR)
-		if ok {
-			// Pod-side iface is lab{N}; the host-side OVS port is per group and
-			// per leg, so it collides neither with the VPN leg nor with other groups.
-			if err := r.patchDeploymentNetworks(
-				ctx, lab.Namespace, "gateway",
-				names.LabIfaceNameByIndex(n), names.GWHostPortKey(lab.Namespace, n), true,
-			); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
+// The VPN and gateway pods carry no list of the labs' interfaces: the node-agent derives them from the group's LabVPN and LabGateway objects
+// and attaches and detaches them in the running pod (see nodeagent.GroupPodAttachments), so adding or removing a lab never changes the
+// Deployment and never restarts the pod.
 
-// patchDeploymentNetworks adds or removes a "{podIfaceName}@{ovsPortName}" entry from
-// the network.cybericebox.com/networks annotation on a Deployment pod template.
-// node-agent creates a veth whose host side is registered in OVS as ovsPortName and
-// whose pod side is moved into the pod netns and renamed to podIfaceName.
-func (r *LabReconciler) patchDeploymentNetworks(
-	ctx context.Context,
-	ns, deployName, podIfaceName, ovsPortName string,
-	add bool,
-) error {
-	var dep appsv1.Deployment
-	if err := r.Get(ctx, types.NamespacedName{Name: deployName, Namespace: ns}, &dep); err != nil {
-		return client.IgnoreNotFound(err)
-	}
-
-	entry := podIfaceName + "@" + ovsPortName
-	original := dep.DeepCopy()
-
-	ann := dep.Spec.Template.Annotations[names.AnnotationNetworks]
-	var entries []string
-	for _, e := range strings.Split(ann, ",") {
-		if e = strings.TrimSpace(e); e != "" {
-			entries = append(entries, e)
-		}
-	}
-
-	if add {
-		for _, e := range entries {
-			if e == entry {
-				return nil // already present
-			}
-		}
-		entries = append(entries, entry)
-	} else {
-		filtered := entries[:0]
-		for _, e := range entries {
-			if e != entry {
-				filtered = append(filtered, e)
-			}
-		}
-		if len(filtered) == len(entries) {
-			return nil // not present, nothing to do
-		}
-		entries = filtered
-	}
-
-	if dep.Spec.Template.Annotations == nil {
-		dep.Spec.Template.Annotations = map[string]string{}
-	}
-	dep.Spec.Template.Annotations[names.AnnotationNetworks] = strings.Join(entries, ",")
-	return r.Patch(ctx, &dep, client.MergeFrom(original))
+// labOwnerHandler queues the Lab that owns an object. The Lab is an owner, not the
+// controller, of what it creates (SetOwnerReference), and Owns() follows controller
+// references only, so a change of a Device, Connection or Service would never reach the Lab.
+func labOwnerHandler(scheme *runtime.Scheme, mapper meta.RESTMapper) handler.EventHandler {
+	return handler.EnqueueRequestForOwner(scheme, mapper, &laboratoryv1alpha1.Lab{})
 }
 
 func (r *LabReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.Lab{}).
-		Owns(&laboratoryv1alpha1.Device{}).
-		Owns(&laboratoryv1alpha1.Connection{}).
-		Owns(&laboratoryv1alpha1.LabVPN{}).
-		Owns(&laboratoryv1alpha1.LabGateway{}).
-		Owns(&corev1.Service{}).
-		Owns(&networkingv1.NetworkPolicy{}).
-		Complete(r)
+		Watches(&laboratoryv1alpha1.Device{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
+		Watches(&laboratoryv1alpha1.Connection{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
+		Watches(&laboratoryv1alpha1.LabVPN{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
+		Watches(&laboratoryv1alpha1.LabGateway{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
+		Watches(&corev1.Service{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
+		Watches(&networkingv1.NetworkPolicy{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
+		Complete(reconcileutil.Quiet(r))
 }

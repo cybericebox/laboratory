@@ -1,10 +1,26 @@
 package names
 
+import "strings"
+
+// LabelPrefix is the prefix of every operator-internal label and annotation of
+// this platform. Labels with it are never copied from a Lab or LabGroup onto its
+// devices and pods: they are not user labels.
+const LabelPrefix = "laboratory.cybericebox.com/"
+
 // Kubernetes label keys.
 const (
 	LabelLab    = "laboratory.cybericebox.com/lab"
 	LabelDevice = "laboratory.cybericebox.com/device"
 	LabelGroup  = "laboratory.cybericebox.com/group"
+	// LabelDeployGroup is the scheduler group of a Lab or LabGroup (a key of at
+	// most 63 characters). Objects with the same key are dispatched together.
+	// Operator-internal: the scheduler reads it and no user label.
+	LabelDeployGroup = LabelPrefix + "deploy-group"
+
+	// LabelNodeAgentReady is set to "true" on a node by the node-agent running there once it can serve pods, and removed when it stops.
+	// Every lab pod requires it (through the lab node selector of the chart), so no lab pod lands on a node without a working
+	// node-agent (a pod there would have no cni-gate and no OVS wiring).
+	LabelNodeAgentReady = LabelPrefix + "node-agent-ready"
 
 	// TopologyKeyHostname is the well-known node label used as the topology key
 	// for per-node scheduling constraints (device co-location).
@@ -13,7 +29,25 @@ const (
 
 // Kubernetes annotation keys.
 const (
-	// AnnotationNetworks is the pod annotation listing OVS network attachments.
+	// AnnotationDeployAfter lists, comma separated, the deploy groups that must be
+	// complete (every pod Ready or failed) before the group of this object starts.
+	AnnotationDeployAfter = LabelPrefix + "deploy-after"
+
+	// AnnotationDeployPriority is an explicit dispatch priority of a Lab or LabGroup (an integer, 0 when absent or not a
+	// number): within the same deploy group (or among independent objects) a higher one is dispatched first, whatever the
+	// size; at equal priority the larger lab goes first.
+	AnnotationDeployPriority = LabelPrefix + "deploy-priority"
+
+	// AnnotationSpecHash is written by the management agent on the objects it
+	// creates; the operator ignores it.
+	AnnotationSpecHash = LabelPrefix + "spec-hash"
+
+	// AnnotationUserLabels lists the user labels copied onto an object from its
+	// Lab or LabGroup, so a label removed there is removed here too.
+	AnnotationUserLabels = LabelPrefix + "user-labels"
+
+	// AnnotationNetworks is the pod annotation listing the OVS network attachments of a DEVICE pod. The VPN and gateway pods of a group have none:
+	// the node-agent derives their lab interfaces from the group's LabVPN and LabGateway objects.
 	// Format: comma-separated "iface@name[|MAC]" entries.
 	AnnotationNetworks = "network.cybericebox.com/networks"
 
@@ -22,6 +56,11 @@ const (
 	// Empty "": no default network — cni-gate returns stub eth0 only.
 	// Non-empty: interface name to wire via k8s CNI (e.g. "accessport").
 	AnnotationDefaultNetwork = "network.cybericebox.com/default-network"
+
+	// AnnotationConntrackAccounting on a pod asks the node-agent to switch on conntrack byte accounting and flow
+	// timestamps in the pod's network namespace when the pod is wired (CNI ADD). The pod cannot do it itself without
+	// being privileged (/proc/sys is read-only for an unprivileged container).
+	AnnotationConntrackAccounting = "network.cybericebox.com/conntrack-accounting"
 
 	// AnnotationDevice tags a pod/resource with its logical device name.
 	AnnotationDevice = "cybericebox.com/device"
@@ -34,26 +73,15 @@ const (
 	// names must not collide with it: SetupNetworks would delete/replace the
 	// delegated interface on a kubelet CNI retry.
 	AccessPortIface = "accessport"
+
+	// AccessPortRouteTable is the routing table that holds every route of the access port inside the pod. The rule
+	// "from <access port address> lookup <table>" sends the replies back out of the port; the main table, where the lab
+	// interfaces and their default gateway live, never holds a route through it (see package accessroute).
+	AccessPortRouteTable = 100
+	// AccessPortRulePriority is the priority of that rule: above the main table (32766), so the replies never reach
+	// the lab's default route.
+	AccessPortRulePriority = 1000
 )
-
-// securityPresetCaps maps a device SecurityPreset name to the concrete Linux
-// capabilities it grants. This mapping is internal — the public spec exposes
-// only the preset name — so the capability requirement surface stays hidden and
-// can be re-homed behind a custom agent later. Lab isolation is enforced by
-// host-side OVS flows, so NET_ADMIN inside a pod cannot break out of its VNI.
-var securityPresetCaps = map[string][]string{
-	"":        nil, // unset == basic
-	"basic":   nil,
-	"service": {"NET_BIND_SERVICE"},
-	"net":     {"NET_ADMIN", "NET_RAW", "NET_BIND_SERVICE", "NET_BROADCAST"},
-	"debug":   {"NET_ADMIN", "NET_RAW", "NET_BIND_SERVICE", "NET_BROADCAST", "SYS_PTRACE", "SYS_NICE", "IPC_LOCK"},
-}
-
-// CapabilitiesForPreset returns the capability list for a preset name (unknown
-// presets resolve to basic/none).
-func CapabilitiesForPreset(preset string) []string {
-	return securityPresetCaps[preset]
-}
 
 // DHCPImpliedCapabilities are added to any device with an in-image DHCP
 // interface (addr.type=dhcp) so its client can send raw broadcast DISCOVERs and
@@ -61,7 +89,19 @@ func CapabilitiesForPreset(preset string) []string {
 var DHCPImpliedCapabilities = []string{"NET_ADMIN", "NET_RAW"}
 
 // Component names used for Deployment names, Service names, and app label values.
-const ComponentGateway = "gateway"
+const (
+	ComponentGateway = "gateway"
+	ComponentVPN     = "vpn"
+)
+
+// LabelComponent marks the operator's own pods of a group namespace (the VPN and the gateway). Every selector of a
+// system pod (Services, network policies, label sync, scheduler, node-agent) uses it and never the `app` label: `app` is
+// also set on device pods from the device name, and the platform prefix keeps a tenant from setting this one.
+const LabelComponent = LabelPrefix + "component"
+
+// ReservedDeviceNames are the names of the endpoints the platform provides in every lab (the VPN, the internet gateway)
+// and of its pods; a device may not have them.
+var ReservedDeviceNames = []string{"vpn", "gateway", "internet"}
 
 // ProxyL7App is the `app` label value on the L7 proxy pod that terminates
 // external HTTPS and connects to exposed device Services. The web-exposure
@@ -74,6 +114,15 @@ const (
 	RoleVPNName     = "laboratory-vpn-role"
 	RoleGatewayName = "laboratory-gateway-role"
 	RoleAgentName   = "laboratory-agent-role"
+	// RoleOperatorNamespacedName is the ClusterRole with the operator's working permissions INSIDE a namespace;
+	// OperatorRoleBindingName is the RoleBinding that grants it in each LabGroup namespace.
+	RoleOperatorNamespacedName = "laboratory-operator-namespaced"
+	OperatorRoleBindingName    = "laboratory-operator-binding"
+
+	// RoleProxyReportsName is the ClusterRole with the one thing the L7 proxy writes in a LabGroup namespace (its LabTrafficReports);
+	// ProxyReportsBindingName is the RoleBinding that grants it there. The proxy has no such right cluster-wide.
+	RoleProxyReportsName    = "laboratory-proxy-reports"
+	ProxyReportsBindingName = "laboratory-proxy-reports-binding"
 
 	// AgentRoleBindingName is the RoleBinding created in each LabGroup namespace
 	// that grants the management-agent ServiceAccount access via RoleAgentName,
@@ -86,3 +135,46 @@ const (
 	SecretVPNKeypair   = "vpn-server-keypair"
 	SecretClientPrefix = "client-"
 )
+
+// IsReservedLabel reports whether a label key belongs to the platform or the system: the
+// platform prefix, Kubernetes' own domains (kubernetes.io, k8s.io and their subdomains), and
+// the keys the operator sets on workloads (app, pod-template-hash). Such keys are never
+// exposed, searched or set through the management agent.
+func IsReservedLabel(key string) bool {
+	if strings.HasPrefix(key, LabelPrefix) || key == "app" || key == "pod-template-hash" || key == "controller-revision-hash" {
+		return true
+	}
+	domain, _, ok := strings.Cut(key, "/")
+	if !ok {
+		return false
+	}
+	for _, d := range []string{"kubernetes.io", "k8s.io"} {
+		if domain == d || strings.HasSuffix(domain, "."+d) {
+			return true
+		}
+	}
+	return false
+}
+
+// PropagatedLabels are the labels a Lab or LabGroup passes on to its Devices and pods: the
+// caller's own labels and the tenant stamp.
+func PropagatedLabels(in map[string]string) map[string]string {
+	out := UserLabels(in)
+	if t := in[LabelTenant]; t != "" {
+		out[LabelTenant] = t
+	}
+	return out
+}
+
+// UserLabels returns the labels of an object that the management agent set on behalf of a
+// caller: everything except the reserved keys (IsReservedLabel). Lab labels go to
+// its Devices and from there to their pods.
+func UserLabels(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		if !IsReservedLabel(k) {
+			out[k] = v
+		}
+	}
+	return out
+}

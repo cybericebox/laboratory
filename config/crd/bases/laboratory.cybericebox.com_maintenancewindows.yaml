@@ -1,0 +1,103 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: maintenancewindows.laboratory.cybericebox.com
+spec:
+  group: laboratory.cybericebox.com
+  names:
+    kind: MaintenanceWindow
+    listKind: MaintenanceWindowList
+    plural: maintenancewindows
+    singular: maintenancewindow
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.from
+      name: From
+      type: string
+    - jsonPath: .spec.to
+      name: To
+      type: string
+    - jsonPath: .spec.reason
+      name: Reason
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          MaintenanceWindow is the Schema for the maintenancewindows API: a maintenance period
+          announced by the cluster operator.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              MaintenanceWindowSpec announces a period in which the cluster operator may do maintenance
+              (draining nodes, upgrades, restarts). Nothing in the platform refuses or delays work during a
+              window; tenants read it through the management agent and plan around it (the platform's calendar
+              gives the agent no capacity in the window, or the Capacity the window leaves).
+            properties:
+              capacity:
+                additionalProperties:
+                  anyOf:
+                  - type: integer
+                  - type: string
+                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                  x-kubernetes-int-or-string: true
+                description: |-
+                  Capacity is what the window leaves to the tenants it applies to (cpu and memory): empty means
+                  nothing, the usual case of a drain or an upgrade. A resource the window does not name is zero.
+                type: object
+                x-kubernetes-validations:
+                - message: capacity names only cpu and memory
+                  rule: self.all(k, k in ['cpu', 'memory'])
+              from:
+                description: From is when the maintenance may start.
+                format: date-time
+                type: string
+              reason:
+                description: Reason is shown to tenants, e.g. "kernel upgrade of the
+                  lab nodes".
+                maxLength: 500
+                type: string
+              tenants:
+                description: |-
+                  Tenants lists the tenants the window applies to (Tenant names, i.e. client certificate
+                  CNs); empty means all tenants.
+                items:
+                  type: string
+                maxItems: 256
+                type: array
+              to:
+                description: To is when it is over; empty means open-ended (until
+                  the object is deleted or edited).
+                format: date-time
+                type: string
+            required:
+            - from
+            type: object
+        type: object
+        x-kubernetes-validations:
+        - message: spec.to must be after spec.from
+          rule: '!has(self.spec.to) || self.spec.to > self.spec.from'
+    served: true
+    storage: true
+    subresources: {}

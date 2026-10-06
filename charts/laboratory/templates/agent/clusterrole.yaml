@@ -13,13 +13,34 @@ rules:
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "labgroups", "labgroups/status" ]
     verbs: [ "get", "list", "watch", "create", "update", "patch", "delete" ]
+  # Tenants: the caller's tenant by certificate CN, and the status the agent keeps fresh.
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "tenants" ]
+    verbs: [ "get", "list", "watch" ]
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "tenants/status" ]
+    verbs: [ "get", "update", "patch" ]
+  # Maintenance windows the cluster operator announces: read only, shown to the tenants they apply to.
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "maintenancewindows" ]
+    verbs: [ "get", "list", "watch" ]
   - apiGroups: [ "" ]
     resources: [ "namespaces" ]
     verbs: [ "get", "list", "watch" ]
   # capacity estimation: node allocatable + sum of scheduled pod requests (all namespaces).
   - apiGroups: [ "" ]
-    resources: [ "nodes", "pods" ]
+    resources: [ "nodes" ]
     verbs: [ "get", "list" ]
+  # Pods are also watched: the Monitoring stream reads the pods of devices from an informer cache.
+  - apiGroups: [ "" ]
+    resources: [ "pods" ]
+    verbs: [ "get", "list", "watch" ]
+  # READ-ONLY, cluster-wide, for the Monitoring caches (one informer per kind instead of a list per group namespace on every poll).
+  # Writes stay namespaced (laboratory-agent-role below, bound only in the group namespaces). These kinds exist only in group
+  # namespaces, where the agent could read them already.
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "labs", "labgroupclients", "labgroupaccesspolicies", "labtrafficreports", "devices" ]
+    verbs: [ "get", "list", "watch" ]
   # live resource usage (optional; requires metrics-server; all namespaces).
   - apiGroups: [ "metrics.k8s.io" ]
     resources: [ "pods" ]
@@ -41,6 +62,10 @@ rules:
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "labtrafficreports", "devices", "devices/status", "connections", "connections/status", "labvpns", "labvpns/status", "labgateways", "labgateways/status" ]
     verbs: [ "get", "list", "watch" ]
+  # ResetDevices and RescueDevices set the state controls in a device's spec.
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "devices" ]
+    verbs: [ "patch" ]
   # Env secrets are WRITE-ONLY for the agent: it CREATEs/DELETEs per-device env
   # Secrets (overwrite is delete+create) and never reads them — so a device's
   # env values (flags, licenses) are unreadable by the agent. No `get`/`list`:

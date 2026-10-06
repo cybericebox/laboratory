@@ -19,13 +19,21 @@ package v1alpha1
 
 // LabTrafficReportStatusApplyConfiguration represents a declarative configuration of the LabTrafficReportStatus type for use
 // with apply.
+//
+// LabTrafficReportStatus is written only by the collector.
 type LabTrafficReportStatusApplyConfiguration struct {
-	BootID        *string                             `json:"bootID,omitempty"`
-	CoveredFromMs *int64                              `json:"coveredFromMs,omitempty"`
-	CoveredToMs   *int64                              `json:"coveredToMs,omitempty"`
-	Partial       *bool                               `json:"partial,omitempty"`
-	Truncated     *bool                               `json:"truncated,omitempty"`
-	Ledger        []LabTrafficTouchApplyConfiguration `json:"ledger,omitempty"`
+	// BootID changes whenever the collector restarts; the ledger is cumulative
+	// within one boot.
+	BootID *string `json:"bootID,omitempty"`
+	// CoveredFromMs..CoveredToMs is the span the collector actually observed.
+	// CoveredToMs advances as a heartbeat even when nothing happened.
+	CoveredFromMs *int64 `json:"coveredFromMs,omitempty"`
+	CoveredToMs   *int64 `json:"coveredToMs,omitempty"`
+	// Partial is set when part of the span could not be read.
+	Partial *bool `json:"partial,omitempty"`
+	// Truncated is set when the ledger hit its size cap and rows were dropped.
+	Truncated *bool                               `json:"truncated,omitempty"`
+	Ledger    []LabTrafficTouchApplyConfiguration `json:"ledger,omitempty"`
 }
 
 // LabTrafficReportStatusApplyConfiguration constructs a declarative configuration of the LabTrafficReportStatus type for use with

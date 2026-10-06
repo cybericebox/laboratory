@@ -23,7 +23,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: laboratory-agent
-  namespace: {{ .Values.agent.namespace }}
+  namespace: {{ $.Values.agent.namespace }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
@@ -48,7 +48,7 @@ apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
   name: laboratory-agent
-  namespace: {{ .Values.agent.namespace }}
+  namespace: {{ $.Values.agent.namespace }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
@@ -65,4 +65,34 @@ spec:
   egress:
     - toEntities:
         - kube-apiserver
+{{- if include "laboratory.registryEnabled" . }}
+    # The platform registry (zot): snapshot export, and PrewarmImages with the cache.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace }}
+            {{- include "laboratory.registrySelector" . | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: "5000"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+{{- end }}
+{{- if .Values.registry.cache.enabled }}
+    # PrewarmImages: the upstream registries (digest of a tag).
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+{{- end }}
 {{- end }}

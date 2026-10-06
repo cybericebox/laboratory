@@ -9,6 +9,8 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -18,7 +20,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/devices"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 )
 
@@ -170,7 +174,6 @@ func (r *ConnectionReconciler) reconcileDeviceDevice(
 				return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
 			}
 
-			_ = r.Flows.DelT0Port(pKey)
 			if err := r.Flows.AddT0Port(pKey, vni); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -267,7 +270,6 @@ func (r *ConnectionReconciler) reconcileDeviceSwitch(
 			return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
 		}
 
-		_ = r.Flows.DelT0Port(pKey)
 		if err := r.Flows.AddT0Port(pKey, vni); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -339,8 +341,18 @@ func (r *ConnectionReconciler) reconcileSwitchSwitch(
 	}
 
 	// Patch port names: each end lives in its switch's VNI domain.
-	patchA := patchPortName(conn.Name, ep0.endpoint.Device) // registered in vni0
-	patchB := patchPortName(conn.Name, ep1.endpoint.Device) // registered in vni1
+	patchA := patchPortName(conn.Namespace, conn.Name, ep0.endpoint.Device) // registered in vni0
+	patchB := patchPortName(conn.Namespace, conn.Name, ep1.endpoint.Device) // registered in vni1
+
+	// A pair under the names of earlier versions (no namespace in them) is replaced by this one: leaving it would flood each switch's
+	// frames through two links.
+	for _, dev := range []string{ep0.endpoint.Device, ep1.endpoint.Device} {
+		old := legacyPatchPortName(conn.Name, dev)
+		if exists, err := r.OVS.PortExists(old); err == nil && exists {
+			_ = r.Flows.DelT0Port(old)
+			_ = r.OVS.DelPort(old)
+		}
+	}
 
 	if err := r.OVS.AddPatchPair(patchA, patchB); err != nil {
 		return ctrl.Result{}, fmt.Errorf("add patch pair: %w", err)
@@ -435,12 +447,12 @@ func (r *ConnectionReconciler) buildSwitchVNIFlood(
 			if ep.Device == switchLogicalName {
 				continue
 			}
-			devName := fmt.Sprintf("%s-%s", labRef, ep.Device)
-			var dev laboratoryv1alpha1.Device
-			if err := r.Get(ctx, types.NamespacedName{Name: devName, Namespace: namespace}, &dev); err != nil {
+			found, err := devices.Get(ctx, r.Client, namespace, labRef, ep.Device)
+			if err != nil {
 				allOtherSwitches = false
 				break
 			}
+			dev := *found
 			if dev.Spec.Type != laboratoryv1alpha1.DeviceTypeUnmanagedSwitch &&
 				dev.Spec.Type != laboratoryv1alpha1.DeviceTypeHub {
 				allOtherSwitches = false
@@ -450,7 +462,7 @@ func (r *ConnectionReconciler) buildSwitchVNIFlood(
 
 		if allOtherSwitches {
 			// Switch↔Switch: include patch port on our switch's side if it exists.
-			pName := patchPortName(c.Name, switchLogicalName)
+			pName := patchPortName(c.Namespace, c.Name, switchLogicalName)
 			if exists, err := r.OVS.PortExists(pName); err == nil && exists {
 				localPorts = append(localPorts, pName)
 			}
@@ -497,11 +509,11 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 
 	// For each switch endpoint: remove patch port + rebuild t6 from remaining connections.
 	for _, ep := range conn.Spec.Endpoints {
-		devName := fmt.Sprintf("%s-%s", conn.Spec.LabRef, ep.Device)
-		var dev laboratoryv1alpha1.Device
-		if err := r.Get(ctx, types.NamespacedName{Name: devName, Namespace: conn.Namespace}, &dev); err != nil {
+		found, err := devices.Get(ctx, r.Client, conn.Namespace, conn.Spec.LabRef, ep.Device)
+		if err != nil {
 			continue
 		}
+		dev := *found
 		isSwitch := dev.Spec.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch ||
 			dev.Spec.Type == laboratoryv1alpha1.DeviceTypeHub
 		if !isSwitch {
@@ -509,7 +521,7 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 		}
 
 		// Remove patch port for this side (switch↔switch case).
-		pName := patchPortName(conn.Name, ep.Device)
+		pName := patchPortName(conn.Namespace, conn.Name, ep.Device)
 		_ = r.Flows.DelT0Port(pName)
 		_ = r.OVS.DelPort(pName)
 
@@ -545,19 +557,34 @@ func (r *ConnectionReconciler) loadEndpoints(ctx context.Context, conn *laborato
 		// Virtual singletons (vpn, internet) have no Device CRD — synthesize.
 		if ep.Device == "vpn" || ep.Device == "internet" {
 			// The "internet" endpoint is served by the gateway Deployment,
-			// whose pods carry app=gateway — not app=internet.
-			appLabel := ep.Device
+			// whose pods carry the gateway component label.
+			component := ep.Device
 			if ep.Device == "internet" {
-				appLabel = names.ComponentGateway
+				component = names.ComponentGateway
 			}
 			var pods corev1.PodList
 			if err := r.List(
 				ctx, &pods,
 				client.InNamespace(conn.Namespace),
-				client.MatchingLabels{"app": appLabel},
+				client.MatchingLabels{names.LabelComponent: component},
 				client.Limit(1),
 			); err != nil {
 				return nil, false, err
+			}
+			if len(pods.Items) == 0 {
+				// A pod made before the component label: it is the one with app=<component> that is no device's.
+				req, err := labels.NewRequirement(names.LabelLab, selection.DoesNotExist, nil)
+				if err != nil {
+					return nil, false, err
+				}
+				if err := r.List(
+					ctx, &pods,
+					client.InNamespace(conn.Namespace),
+					client.MatchingLabelsSelector{Selector: labels.SelectorFromSet(labels.Set{"app": component}).Add(*req)},
+					client.Limit(1),
+				); err != nil {
+					return nil, false, err
+				}
 			}
 			if len(pods.Items) == 0 || pods.Items[0].Spec.NodeName == "" {
 				needsRequeue = true
@@ -574,11 +601,11 @@ func (r *ConnectionReconciler) loadEndpoints(ctx context.Context, conn *laborato
 			continue
 		}
 
-		deviceName := fmt.Sprintf("%s-%s", conn.Spec.LabRef, ep.Device)
-		var dev laboratoryv1alpha1.Device
-		if err := r.Get(ctx, types.NamespacedName{Name: deviceName, Namespace: conn.Namespace}, &dev); err != nil {
+		found, err := devices.Get(ctx, r.Client, conn.Namespace, conn.Spec.LabRef, ep.Device)
+		if err != nil {
 			return nil, false, client.IgnoreNotFound(err)
 		}
+		dev := *found
 		isSwitch := dev.Spec.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch ||
 			dev.Spec.Type == laboratoryv1alpha1.DeviceTypeHub
 		nodeReady := isSwitch || dev.Status.NodeName != ""
@@ -678,7 +705,7 @@ func (r *ConnectionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&laboratoryv1alpha1.Device{},
 			handler.EnqueueRequestsFromMapFunc(r.connectionsForDevice),
 		).
-		Complete(r)
+		Complete(reconcileutil.QuietIgnoreNotFound(r))
 }
 
 func (r *ConnectionReconciler) connectionsForDevice(ctx context.Context, obj client.Object) []reconcile.Request {

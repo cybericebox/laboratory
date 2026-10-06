@@ -6,7 +6,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"sort"
-	
+	"strconv"
+
 	"github.com/bits-and-blooms/bitset"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -14,7 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/selection"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	
+
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 )
 
@@ -22,14 +23,14 @@ const (
 	PoolStateLabel  = "allocation.cybericebox.com/state"
 	LatestPoolLabel = "allocation.cybericebox.com/latest"
 	PoolGroupLabel  = "allocation.cybericebox.com/group"
-	
+
 	PoolStateEmpty   = "empty"
 	PoolStatePartial = "partial"
 	PoolStateFull    = "full"
-	
+
 	// PoolTypeLabel carries semantic pool type (vni, vpn-clients, lab-subnets).
 	PoolTypeLabel = "pool.cybericebox.com/type"
-	
+
 	// Semantic pool type values.
 	PoolTypeVPNClients = "vpn-clients"
 	PoolTypeLabSubnets = "lab-subnets"
@@ -43,13 +44,17 @@ type (
 		poolSize       uint
 		namespace      string
 		labelRequests  labelRequests
+		// rotate hands out the lowest free index AFTER the one handed out last (wrapping around), not the lowest free one: a released index
+		// is not given again until the whole pool has been walked, so something that still holds its old meaning (a flow, a cache) never
+		// meets a new owner of the number at once.
+		rotate bool
 	}
-	
+
 	labelRequests struct {
 		NotFull *labels.Requirement
 		Latest  *labels.Requirement
 	}
-	
+
 	Allocator interface {
 		AllocateIndex(ctx context.Context) (uint, error)
 		ReleaseIndex(ctx context.Context, index uint) error
@@ -66,6 +71,17 @@ func InitBitmap(size, offset uint) (string, uint) {
 		free--
 	}
 	return encodeBitmap(bm), free
+}
+
+// CursorAnnotation on a Pool remembers where a rotating allocator handed out last.
+const CursorAnnotation = "allocation.cybericebox.com/cursor"
+
+// NewRotatingAllocator is NewAllocator with indexes that are not reused until the pool has been walked (see allocator.rotate): the
+// VNIs of the lab networks, where the same number meeting a new lab at once could inherit stale flows on a node.
+func NewRotatingAllocator(c client.Client, poolNamePrefix, namespace string, poolSize uint) Allocator {
+	a := NewAllocator(c, poolNamePrefix, namespace, poolSize).(*allocator)
+	a.rotate = true
+	return a
 }
 
 func NewAllocator(c client.Client, poolNamePrefix, namespace string, poolSize uint) Allocator {
@@ -93,7 +109,7 @@ func (a *allocator) AllocateIndex(ctx context.Context) (uint, error) {
 	if err != nil {
 		return 0, fmt.Errorf("list pools for allocation: %w", err)
 	}
-	
+
 	var selected *allocationv1alpha1.Pool
 	if len(pools.Items) > 0 {
 		// Fill the most-occupied pool first (least free slots).
@@ -109,36 +125,64 @@ func (a *allocator) AllocateIndex(ctx context.Context) (uint, error) {
 			return 0, fmt.Errorf("create new pool: %w", err)
 		}
 	}
-	
+
 	bitmap, err := decodeBitmap(selected.Status.BitMap, selected.Spec.Size)
 	if err != nil {
 		return 0, fmt.Errorf("decode bitmap for pool %s: %w", selected.Name, err)
 	}
-	
-	bit, found := bitmap.NextClear(0)
+
+	var start uint
+	if a.rotate {
+		if n, err := strconv.ParseUint(selected.Annotations[CursorAnnotation], 10, 32); err == nil && uint(n) < selected.Spec.Size {
+			start = uint(n)
+		}
+	}
+	bit, found := bitmap.NextClear(start)
+	if !found && start > 0 {
+		bit, found = bitmap.NextClear(0)
+	}
 	if !found {
 		return 0, fmt.Errorf("pool %s has no free slots despite state label", selected.Name)
 	}
 	bitmap.Set(bit)
 	selected.Status.Free--
 	selected.Status.BitMap = encodeBitmap(bitmap)
-	
+
 	if err = a.Status().Update(ctx, selected); err != nil {
 		return 0, fmt.Errorf("update pool status: %w", err)
 	}
-	
+	if a.rotate {
+		// Best effort: a lost cursor only means the next index may be a lower one.
+		if err := a.saveCursor(ctx, selected.Name, bit+1); err != nil {
+			logf.FromContext(ctx).Error(err, "failed to save the allocation cursor", "pool", selected.Name)
+		}
+	}
+
 	// Update state label on a fresh copy to avoid resourceVersion conflict.
 	if err = a.syncStateLabel(ctx, selected.Name, selected.Status.Free); err != nil {
 		// Label is best-effort; allocation already succeeded.
 		logf.FromContext(ctx).Error(err, "failed to sync pool state label", "pool", selected.Name)
 	}
-	
-	return uint(bit) + selected.Spec.Offset, nil
+
+	return bit + selected.Spec.Offset, nil
+}
+
+func (a *allocator) saveCursor(ctx context.Context, poolName string, cursor uint) error {
+	var pool allocationv1alpha1.Pool
+	if err := a.Get(ctx, client.ObjectKey{Name: poolName, Namespace: a.namespace}, &pool); err != nil {
+		return err
+	}
+	orig := pool.DeepCopy()
+	if pool.Annotations == nil {
+		pool.Annotations = map[string]string{}
+	}
+	pool.Annotations[CursorAnnotation] = strconv.FormatUint(uint64(cursor), 10)
+	return a.Patch(ctx, &pool, client.MergeFrom(orig))
 }
 
 func (a *allocator) ReleaseIndex(ctx context.Context, index uint) error {
 	log := logf.FromContext(ctx)
-	
+
 	poolID := index / a.poolSize
 	var pool allocationv1alpha1.Pool
 	if err := a.Get(
@@ -152,7 +196,7 @@ func (a *allocator) ReleaseIndex(ctx context.Context, index uint) error {
 		}
 		return fmt.Errorf("get pool for release index %d: %w", index, err)
 	}
-	
+
 	if index < pool.Spec.Offset {
 		return fmt.Errorf("index %d is below pool %s offset %d", index, pool.Name, pool.Spec.Offset)
 	}
@@ -160,12 +204,12 @@ func (a *allocator) ReleaseIndex(ctx context.Context, index uint) error {
 	if bit >= pool.Spec.Size {
 		return fmt.Errorf("index %d maps to bit %d outside pool %s size %d", index, bit, pool.Name, pool.Spec.Size)
 	}
-	
+
 	bitmap, err := decodeBitmap(pool.Status.BitMap, pool.Spec.Size)
 	if err != nil {
 		return fmt.Errorf("decode bitmap for pool %s: %w", pool.Name, err)
 	}
-	
+
 	if !bitmap.Test(bit) {
 		log.Info("index already free, skipping release", "index", index, "pool", pool.Name)
 		return nil
@@ -173,15 +217,15 @@ func (a *allocator) ReleaseIndex(ctx context.Context, index uint) error {
 	bitmap.Clear(bit)
 	pool.Status.Free++
 	pool.Status.BitMap = encodeBitmap(bitmap)
-	
+
 	if err = a.Status().Update(ctx, &pool); err != nil {
 		return fmt.Errorf("update pool status on release: %w", err)
 	}
-	
+
 	if err = a.syncStateLabel(ctx, pool.Name, pool.Status.Free); err != nil {
 		logf.FromContext(ctx).Error(err, "failed to sync pool state label after release", "pool", pool.Name)
 	}
-	
+
 	// Lazy GC: keep at most one empty pool per group as a buffer (spec §11 —
 	// "one empty pool as a buffer, to avoid thrashing"). The "latest" pool
 	// is preserved so newly-created allocations land contiguously; any other
@@ -189,7 +233,7 @@ func (a *allocator) ReleaseIndex(ctx context.Context, index uint) error {
 	if err = a.collectRedundantEmptyPools(ctx); err != nil {
 		logf.FromContext(ctx).Error(err, "failed to collect redundant empty pools")
 	}
-	
+
 	return nil
 }
 
@@ -225,7 +269,7 @@ func (a *allocator) collectRedundantEmptyPools(ctx context.Context) error {
 func (a *allocator) syncStateLabel(ctx context.Context, poolName string, free uint) error {
 	var pool allocationv1alpha1.Pool
 	if err := a.Get(ctx, client.ObjectKey{Name: poolName, Namespace: a.namespace}, &pool); err != nil {
-		return err
+		return client.IgnoreNotFound(err)
 	}
 	// Capacity accounts for the reserved bit-0 in the first pool (offset == 0).
 	capacity := pool.Spec.Size
@@ -233,19 +277,23 @@ func (a *allocator) syncStateLabel(ctx context.Context, poolName string, free ui
 		capacity--
 	}
 	state := PoolStatePartial
-	if free == 0 {
+	switch free {
+	case 0:
 		state = PoolStateFull
-	} else if free == capacity {
+	case capacity:
 		state = PoolStateEmpty
-	}
-	if pool.Labels == nil {
-		pool.Labels = map[string]string{}
 	}
 	if pool.Labels[PoolStateLabel] == state {
 		return nil
 	}
+	// A merge patch of the one label (no resourceVersion precondition): the pool's status is written by the same
+	// callers at the same time, and a full Update here lost that race with a conflict.
+	orig := pool.DeepCopy()
+	if pool.Labels == nil {
+		pool.Labels = map[string]string{}
+	}
 	pool.Labels[PoolStateLabel] = state
-	return a.Update(ctx, &pool)
+	return client.IgnoreNotFound(a.Patch(ctx, &pool, client.MergeFrom(orig)))
 }
 
 func (a *allocator) createPool(ctx context.Context) (*allocationv1alpha1.Pool, error) {
@@ -259,7 +307,7 @@ func (a *allocator) createPool(ctx context.Context) (*allocationv1alpha1.Pool, e
 			return nil, err
 		}
 	}
-	
+
 	var offset uint
 	if len(pools.Items) > 0 {
 		sort.Slice(
@@ -269,16 +317,16 @@ func (a *allocator) createPool(ctx context.Context) (*allocationv1alpha1.Pool, e
 		)
 		latest := pools.Items[0]
 		offset = latest.Spec.Offset + latest.Spec.Size
-		
+
 		latest.Labels[LatestPoolLabel] = "false"
 		if err = a.Update(ctx, &latest); err != nil {
 			return nil, fmt.Errorf("clear latest label from pool %s: %w", latest.Name, err)
 		}
 	}
-	
+
 	poolIndex := offset / a.poolSize
 	bitmapStr, free := InitBitmap(a.poolSize, offset)
-	
+
 	newPool := &allocationv1alpha1.Pool{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-%d", a.poolNamePrefix, poolIndex),
@@ -294,18 +342,18 @@ func (a *allocator) createPool(ctx context.Context) (*allocationv1alpha1.Pool, e
 			Offset: offset,
 		},
 	}
-	
+
 	if err = a.Create(ctx, newPool); err != nil {
 		return nil, fmt.Errorf("create pool: %w", err)
 	}
-	
+
 	// Status must be set via subresource update after the object exists.
 	newPool.Status.Free = free
 	newPool.Status.BitMap = bitmapStr
 	if err = a.Status().Update(ctx, newPool); err != nil {
 		return nil, fmt.Errorf("init pool status: %w", err)
 	}
-	
+
 	return newPool, nil
 }
 
@@ -315,7 +363,7 @@ func (a *allocator) listPools(ctx context.Context, reqs ...labels.Requirement) (
 		return nil, err
 	}
 	sel := labels.NewSelector().Add(append(reqs, *groupReq)...)
-	
+
 	var list allocationv1alpha1.PoolList
 	if err = a.List(
 		ctx, &list, &client.ListOptions{

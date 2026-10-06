@@ -8,9 +8,9 @@ access control or monitoring as missing.
 
 | Backend need | Operator and client support | Verification |
 | --- | --- | --- |
-| One resource per team challenge | `LabGroup` per team and `Lab` per challenge; create, get, update and delete RPCs | agent unit tests |
-| Participant VPN credentials | one-time `CreateLabGroupClient`; the private key is returned once and is not retained by the operator | agent client tests |
-| Default-deny access to a particular challenge Lab | full replacement `ReconcileLabGroupAccess` policy, enforced by the VPN reconciler | agent ACL tests |
+| One resource per team challenge | `LabGroup` per team and `Lab` per challenge; plural create, list, update and delete RPCs | agent unit tests |
+| Participant VPN credentials | one-time `CreateLabGroupClients`; the private key is returned once and is not retained by the operator | agent client tests |
+| Default-deny access to a particular challenge Lab | full replacement `SetLabGroupAccess` policy, enforced by the VPN reconciler | agent ACL tests |
 | Revoke access before start, after finish, or when a Lab is not ready | empty policy is default-deny; AP Backend reconciles lifecycle boundaries | backend ACL tests |
 | Retain configuration outside the event runtime | `LabGroup.spec.suspended` scales VPN, gateway and Device Deployments to zero; resume restores them without replacement resources | agent and controller tests; backend lifecycle tests |
 | Operational visibility | secret-free `Monitoring` stream with ordered snapshots/deltas and `GetCapacity` | agent monitoring tests; backend ingestion tests |

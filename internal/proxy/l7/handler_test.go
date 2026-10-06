@@ -33,7 +33,7 @@ func TestHandler_StripsCookie(t *testing.T) {
 		return backend.URL, nil
 	}
 
-	h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge", resolver)
+	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge", resolver)
 
 	req := httptest.NewRequest("GET", "http://mytask.challenges.example.com/path", nil)
 	req.Host = "mytask.challenges.example.com"
@@ -56,7 +56,7 @@ func TestHandler_StripsCookie(t *testing.T) {
 
 func TestHandler_InvalidHost(t *testing.T) {
 	pub, _, _ := ed25519.GenerateKey(rand.Reader)
-	h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge", nil)
+	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge", nil)
 
 	req := httptest.NewRequest("GET", "http://evil.com/", nil)
 	req.Host = "evil.com"
@@ -77,7 +77,7 @@ func TestHandler_CountsPerUserRequestsAndBytes(t *testing.T) {
 	defer backend.Close()
 
 	meter := NewMeter("boot-1", time.Now())
-	h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge",
+	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return backend.URL, nil }).
 		WithAccounting(meter, func(task, groupID string) (string, bool) { return "c-1", true })
 
@@ -118,7 +118,7 @@ func TestHandler_UpstreamFailureIsNotAResponse(t *testing.T) {
 	dead.Close()
 
 	meter := NewMeter("boot-1", time.Now())
-	h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge",
+	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return url, nil }).
 		WithAccounting(meter, func(task, groupID string) (string, bool) { return "c-1", true })
 	req := httptest.NewRequest("GET", "http://web-abc123.challenges.example.com/", nil)
@@ -151,7 +151,7 @@ func TestHandler_ClientAndAuthorizer(t *testing.T) {
 		return rec.Code
 	}
 	build := func(authorize Authorizer) *Handler {
-		h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge",
+		h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge",
 			func(task, groupID string) (string, error) { return backend.URL, nil })
 		if authorize != nil {
 			h.WithAuthorizer(authorize).WithAccounting(NewMeter("b", time.Now()), func(task, groupID string) (string, bool) { return "c-1", true })
@@ -162,7 +162,7 @@ func TestHandler_ClientAndAuthorizer(t *testing.T) {
 		t.Fatalf("without a client: %d", code)
 	}
 	deny := func(group, client, lab string) bool { return client != "c-banned" }
-	if code := call(build(deny), token("c-banned")); code != http.StatusForbidden {
+	if code := call(build(deny), token("c-banned")); code != http.StatusNotFound {
 		t.Fatalf("revoked participant: %d", code)
 	}
 	if code := call(build(deny), token("c-user-1")); code != 200 {
@@ -180,7 +180,7 @@ func TestHandler_PerUserRefusesAValidTokenOfARemovedMember(t *testing.T) {
 		Action: laboratoryv1alpha1.LabGroupAccessAllow, ClientNames: []string{"c-member"}, LabNames: []string{"c-1"},
 	}}
 	authorize := func(group, client, lab string) bool { return PolicyAllows(rules, client, lab) }
-	h := NewHandler(func() ed25519.PublicKey { return pub }, testSecret, "challenges.example.com", "challenge",
+	h := NewHandler(staticKeys("acme", "k1", pub), testSecret, "challenges.example.com", "challenge",
 		func(task, groupID string) (string, error) { return backend.URL, nil }).
 		WithAccounting(NewMeter("b", time.Now()), func(task, groupID string) (string, bool) { return "c-1", true }).
 		WithAuthorizer(authorize)
@@ -196,7 +196,94 @@ func TestHandler_PerUserRefusesAValidTokenOfARemovedMember(t *testing.T) {
 	if code := call("c-member"); code != 200 {
 		t.Fatalf("member in the policy: %d", code)
 	}
-	if code := call("c-removed"); code != http.StatusForbidden {
+	if code := call("c-removed"); code != http.StatusNotFound {
 		t.Fatalf("removed member with a valid token must be refused: %d", code)
+	}
+}
+
+// Many participants hit one task device at once: the idle pool per upstream host must be as large as the
+// pool itself, or every request beyond the default 2 idle connections opens a new TCP connection.
+func TestUpstreamTransportKeepsIdleConnectionsPerHost(t *testing.T) {
+	if upstreamTransport.MaxIdleConnsPerHost < upstreamTransport.MaxIdleConns {
+		t.Fatalf("MaxIdleConnsPerHost = %d, want at least MaxIdleConns = %d", upstreamTransport.MaxIdleConnsPerHost, upstreamTransport.MaxIdleConns)
+	}
+}
+
+func TestStripSessionCookie(t *testing.T) {
+	h := http.Header{}
+	h.Add("Set-Cookie", "challenge=evil; Path=/; Domain=labs.example.com")
+	h.Add("Set-Cookie", "app=1; HttpOnly")
+	h.Add("Set-Cookie", "challenge=; Max-Age=0")
+	h.Add("Set-Cookie", "challenger=2")
+	stripSessionCookie(h, "challenge")
+	got := h.Values("Set-Cookie")
+	if len(got) != 2 || got[0] != "app=1; HttpOnly" || got[1] != "challenger=2" {
+		t.Fatalf("Set-Cookie = %q", got)
+	}
+	stripSessionCookie(http.Header{}, "challenge") // nothing to strip is fine
+}
+
+// R-18: what a device's response may do to the site around it.
+func TestDeviceResponseFilter(t *testing.T) {
+	const base = "labs.example.com"
+	const host = "web-abc.labs.example.com"
+	h := http.Header{}
+	for _, c := range []string{
+		"a=1", // host-only: stays
+		"b=1; Path=/; Domain=web-abc.labs.example.com", // exactly its own host: stays
+		"c=1; Domain=.web-abc.labs.example.com",        // the same with a leading dot: stays
+		"d=1; Domain=labs.example.com",                 // the base domain: removed
+		"e=1; domain=.Labs.Example.com",                // any spelling of it: removed
+		"f=1; Domain=example.com",                      // a parent: removed
+		"g=1; Domain=com",                              // a parent: removed
+		"challenge=x",                                  // our session cookie, host-only: removed
+		"challenge=x; Domain=web-abc.labs.example.com", // and with its own domain: removed
+		"challengex=1",                                 // only the exact name
+	} {
+		h.Add("Set-Cookie", c)
+	}
+	h.Set("Clear-Site-Data", `"cookies"`)
+	h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
+	h.Set("Content-Security-Policy", "default-src 'none'")
+	h.Set("Content-Type", "text/html")
+	deviceResponseFilter(h, "challenge", host+":443", base)
+	got := strings.Join(h.Values("Set-Cookie"), "|")
+	want := "a=1|b=1; Path=/; Domain=web-abc.labs.example.com|c=1; Domain=.web-abc.labs.example.com|challengex=1"
+	if got != want {
+		t.Fatalf("cookies:\n got %q\nwant %q", got, want)
+	}
+	for _, name := range []string{"Clear-Site-Data", "Strict-Transport-Security", "Content-Security-Policy"} {
+		if h.Get(name) != "" {
+			t.Errorf("%s must be removed", name)
+		}
+	}
+	if h.Get("Content-Type") != "text/html" {
+		t.Error("other headers stay")
+	}
+}
+
+// Requests to the device never carry the proxy's session cookie; the device's own cookies do reach it.
+func TestSessionCookieIsNeverForwardedUpstream(t *testing.T) {
+	var got string
+	h, srv, _, cookie := liveFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Cookie")
+		w.Header().Add("Set-Cookie", "x=1; Domain=challenges.example.com")
+		w.Header().Set("Strict-Transport-Security", "max-age=1")
+	}))
+	_ = h
+	req, _ := http.NewRequest("GET", srv.URL+"/", nil)
+	req.Host = "web-abc123.challenges.example.com"
+	req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
+	req.AddCookie(&http.Cookie{Name: "app", Value: "1"})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if strings.Contains(got, "challenge") || !strings.Contains(got, "app=1") {
+		t.Fatalf("the upstream saw %q", got)
+	}
+	if len(resp.Header.Values("Set-Cookie")) != 0 || resp.Header.Get("Strict-Transport-Security") != "" {
+		t.Fatalf("response headers: %v", resp.Header)
 	}
 }

@@ -28,24 +28,14 @@ import (
 type LabGroupVPNSpecApplyConfiguration struct {
 	// Disabled stops only the VPN server; internet gateway and Labs remain running.
 	Disabled *bool `json:"disabled,omitempty"`
-	// ProbeWhileSuspended keeps WireGuard available for the test gateway while
-	// group suspension still stops the internet gateway and Lab devices.
+	// Deprecated: suspension now always keeps WireGuard and the internet
+	// gateway running while stopping only task devices.
 	ProbeWhileSuspended *bool `json:"probeWhileSuspended,omitempty"`
 	// KeypairSecretRef points to an existing WireGuard keypair Secret.
 	// If omitted, operator generates a keypair and stores it in Secret vpn-server-keypair.
 	KeypairSecretRef *v1.SecretReference `json:"keypairSecretRef,omitempty"`
-}
-
-// WithDisabled sets the Disabled field in the declarative configuration.
-func (b *LabGroupVPNSpecApplyConfiguration) WithDisabled(value bool) *LabGroupVPNSpecApplyConfiguration {
-	b.Disabled = &value
-	return b
-}
-
-// WithProbeWhileSuspended sets the ProbeWhileSuspended field in the declarative configuration.
-func (b *LabGroupVPNSpecApplyConfiguration) WithProbeWhileSuspended(value bool) *LabGroupVPNSpecApplyConfiguration {
-	b.ProbeWhileSuspended = &value
-	return b
+	// Size is the size of the VPN pod; absent = the chart's default. Fixed once set.
+	Size *GroupPodSizeApplyConfiguration `json:"size,omitempty"`
 }
 
 // LabGroupVPNSpecApplyConfiguration constructs a declarative configuration of the LabGroupVPNSpec type for use with
@@ -54,10 +44,34 @@ func LabGroupVPNSpec() *LabGroupVPNSpecApplyConfiguration {
 	return &LabGroupVPNSpecApplyConfiguration{}
 }
 
+// WithDisabled sets the Disabled field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Disabled field is set to the value of the last call.
+func (b *LabGroupVPNSpecApplyConfiguration) WithDisabled(value bool) *LabGroupVPNSpecApplyConfiguration {
+	b.Disabled = &value
+	return b
+}
+
+// WithProbeWhileSuspended sets the ProbeWhileSuspended field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ProbeWhileSuspended field is set to the value of the last call.
+func (b *LabGroupVPNSpecApplyConfiguration) WithProbeWhileSuspended(value bool) *LabGroupVPNSpecApplyConfiguration {
+	b.ProbeWhileSuspended = &value
+	return b
+}
+
 // WithKeypairSecretRef sets the KeypairSecretRef field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the KeypairSecretRef field is set to the value of the last call.
 func (b *LabGroupVPNSpecApplyConfiguration) WithKeypairSecretRef(value v1.SecretReference) *LabGroupVPNSpecApplyConfiguration {
 	b.KeypairSecretRef = &value
+	return b
+}
+
+// WithSize sets the Size field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Size field is set to the value of the last call.
+func (b *LabGroupVPNSpecApplyConfiguration) WithSize(value *GroupPodSizeApplyConfiguration) *LabGroupVPNSpecApplyConfiguration {
+	b.Size = value
 	return b
 }

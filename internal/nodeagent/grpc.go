@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/types/known/emptypb"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -33,15 +32,15 @@ type NodeAgentServer struct {
 	k8sMu sync.RWMutex
 	k8s   client.Client // set via SetK8sClient after manager is ready
 
-	mu       sync.RWMutex
-	podPorts map[string][]string // podUID → OVS port names
 }
+
+// conntrackNote makes the "accounting is off" hint appear once per node-agent process, not on every pod.
+var conntrackNote sync.Once
 
 func NewNodeAgentServer(ovs *OVSManager, flows *FlowManager) *NodeAgentServer {
 	return &NodeAgentServer{
-		ovs:      ovs,
-		flows:    flows,
-		podPorts: make(map[string][]string),
+		ovs:   ovs,
+		flows: flows,
 	}
 }
 
@@ -96,6 +95,18 @@ func (s *NodeAgentServer) SetupNetworks(
 		"pod", req.Namespace+"/"+req.Name,
 		"defaultNetwork", defaultIface, "hasAnnotation", hasAnnotation,
 	)
+
+	// The VPN pod asks for conntrack byte accounting in its namespace (it cannot switch it on unprivileged).
+	if pod.Annotations[names.AnnotationConntrackAccounting] == "true" {
+		if err := EnableConntrackAccounting(req.NetnsPath); err != nil {
+			// Not a fault of this pod: the node prep did not switch it on. Said once per process, at info level.
+			conntrackNote.Do(func() {
+				log.Info("conntrack accounting is off and this container cannot switch it on: flow bytes stay zero. "+
+					"Set net.netfilter.nf_conntrack_acct=1 and nf_conntrack_timestamp=1 on the node (chart nodeAgent.hostPrep.conntrackAccounting, "+
+					"or the node image's sysctl) and the nf_conntrack module parameters acct=1, tstamp=1", "reason", err.Error())
+			})
+		}
+	}
 
 	// Regular pod or explicit eth0: tell cni-gate to delegate normally.
 	if !hasAnnotation || defaultIface == names.DefaultEth0 {
@@ -167,51 +178,6 @@ func (s *NodeAgentServer) SetupNetworks(
 	return &nodev1.SetupNetworksResponse{DefaultNetwork: defaultIface}, nil
 }
 
-// AddPort creates a veth pair and moves the pod-side into the pod netns.
-// Reserved for external CNI-style callers; current lab-port wiring runs
-// inline in ConnectionReconciler.reconcileCreate.
-func (s *NodeAgentServer) AddPort(ctx context.Context, req *nodev1.AddPortRequest) (*nodev1.AddPortResponse, error) {
-	stableKey := portKey(req.Namespace, req.Connection, req.InterfaceName)
-	podSide := VethPeerName(stableKey)
-
-	if err := s.ovs.AddVethPort(stableKey); err != nil {
-		return nil, fmt.Errorf("add veth port %q: %w", stableKey, err)
-	}
-
-	if err := MoveToNetNS(podSide, req.NetnsPath); err != nil {
-		_ = s.ovs.DelVethPort(stableKey)
-		return nil, fmt.Errorf("move %q to netns: %w", podSide, err)
-	}
-
-	// Rename the pod-side inside the pod netns to the desired name.
-	if req.InterfaceName != podSide {
-		if err := RenameInNetNS(req.NetnsPath, podSide, req.InterfaceName); err != nil {
-			return nil, fmt.Errorf("rename %q → %q in netns: %w", podSide, req.InterfaceName, err)
-		}
-	}
-	if err := BringUpInNetNS(req.NetnsPath, req.InterfaceName); err != nil {
-		return nil, fmt.Errorf("bring up %q in netns: %w", req.InterfaceName, err)
-	}
-
-	s.mu.Lock()
-	s.podPorts[req.PodUid] = append(s.podPorts[req.PodUid], stableKey)
-	s.mu.Unlock()
-
-	return &nodev1.AddPortResponse{PortId: stableKey}, nil
-}
-
-// DeletePort cleans up OVS ports and cache entries.
-// Deletes all OVS ports tracked for the pod, then removes netns and port caches.
-func (s *NodeAgentServer) DeletePort(_ context.Context, req *nodev1.DeletePortRequest) (*emptypb.Empty, error) {
-	s.mu.Lock()
-	for _, p := range s.podPorts[req.PodUid] {
-		s.delVethWithFlows(p)
-	}
-	delete(s.podPorts, req.PodUid)
-	s.mu.Unlock()
-	return &emptypb.Empty{}, nil
-}
-
 // SetK8sClient provides the Kubernetes API client. Called from main after the manager is created.
 func (s *NodeAgentServer) SetK8sClient(c client.Client) {
 	s.k8sMu.Lock()
@@ -258,8 +224,8 @@ func (s *NodeAgentServer) GetPodAnnotation(
 
 // StartGRPCServer starts the NodeAgent gRPC server on a Unix socket.
 func StartGRPCServer(sockPath string, srv *NodeAgentServer) (*grpc.Server, error) {
-	if err := os.MkdirAll(filepath.Dir(sockPath), 0755); err != nil {
-		return nil, fmt.Errorf("mkdir %s: %w", filepath.Dir(sockPath), err)
+	if err := secureSocketDir(filepath.Dir(sockPath)); err != nil {
+		return nil, err
 	}
 	_ = os.Remove(sockPath)
 
@@ -275,4 +241,16 @@ func StartGRPCServer(sockPath string, srv *NodeAgentServer) (*grpc.Server, error
 		_ = s.Serve(lis)
 	}()
 	return s, nil
+}
+
+// secureSocketDir makes the directory of the node-agent socket private to root (0700), also when it already exists
+// with looser permissions (a hostPath directory is created 0755): the socket drives pod networking on the node.
+func secureSocketDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("chmod %s: %w", dir, err)
+	}
+	return nil
 }

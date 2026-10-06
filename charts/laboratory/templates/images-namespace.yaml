@@ -1,0 +1,70 @@
+{{- /*
+The images namespace: the registry credentials of an image prepull request. For a tenant that has its own pull
+secret the scheduler copies it here for the lifetime of the request (prepull-<hash>, removed with it), and the
+node-agents read it to pull with the tenant's credentials. Nothing else lives here, so the node-agent's Role
+reaches no platform Secret (the release namespace holds the CA, the platform pull secrets, the registry credentials).
+*/ -}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: laboratory-images
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: laboratory-operator-images
+  namespace: laboratory-images
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [ "" ]
+    resources: [ "secrets" ]
+    verbs: [ "create", "delete", "get", "list", "update" ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: laboratory-operator-images
+  namespace: laboratory-images
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: laboratory-operator-images
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-controller-manager
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.nodeAgent.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: laboratory-node-agent-images
+  namespace: laboratory-images
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [ "" ]
+    resources: [ "secrets" ]
+    verbs: [ "get" ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: laboratory-node-agent-images
+  namespace: laboratory-images
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: laboratory-node-agent-images
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-node-agent
+    namespace: {{ .Release.Namespace }}
+{{- end }}

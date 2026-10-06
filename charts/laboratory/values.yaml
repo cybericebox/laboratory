@@ -1,22 +1,36 @@
+# Image tags: ONE release tag drives every image of the chart (operator, agent, proxy, node-agent, VPN and gateway). It is image.tag, and
+# empty means the chart appVersion (the release version), so a normal install sets nothing. A `<component>.image.tag` set explicitly pins that
+# one image to another build (an exact tag: a release version or a short git sha). The chart refuses `latest` and an empty tag with an empty
+# appVersion: a moving tag leaves nodes on different images. The platform registry (registry.image) is a third-party image with its own tag.
+image:
+  tag: ""
+
+# Everything below has a default that suits any installation; the only values a chart user has to give are operator.baseDomain,
+# operator.publicVPNEndpoint, operator.supportEmail and, with an ACME issuer, certManager.email. Constants of the platform (the WireGuard
+# port 51820 inside the VPN pods, the ports of the proxy containers, the node-agent probe port, the registry relay port 5035) are baked into the
+# images and are not values. Tuning knobs (paths, names, namespaces, intervals, sizes) stay optional values with these defaults; the images
+# also read them as optional environment variables, so any of them can be overridden without a rebuild.
 # ============================================================
 # Operator configuration
 # ============================================================
 operator:
+  # terminationGracePeriodSeconds of every pod of a lab (devices, VPN, gateway). They keep nothing a SIGTERM would flush, so a
+  # deleted lab must not wait the Kubernetes default of 30 s. 0 = that default.
+  labPodTerminationGraceSeconds: 5
   image:
     repository: cybericebox/laboratory-controller
-    tag: "latest"
-    pullPolicy: IfNotPresent
+    tag: ""
+    pullPolicy: ""   # empty = IfNotPresent (the tag is always an exact version)
 
-  # REQUIRED (no default): host:port advertised to WireGuard clients (demux public address).
-  # Example: "vpn.example.com:51820"
+  # REQUIRED (no default): the address advertised to WireGuard clients (demux public address), also reported by the agent: a host, or
+  # host:port. Without a port, proxy.wg.publicPort is used (51820 by default). With one, it is advertised as it is: that is for a
+  # front (a cloud load balancer, a firewall) that maps the public port to proxy.wg.publicPort.
+  # Examples: "vpn.example.com" or "vpn.example.com:443"
   publicVPNEndpoint: ""
 
-  # REQUIRED: cluster ingress base domain for device exposure URLs (also the proxy's
+  # REQUIRED: cluster ingress base domain for device exposure URLs (also the proxy's and the agent's
   # BASE_DOMAIN and the session cookie domain). Example: "lab.example.com"
   baseDomain: ""
-
-  # UDP port the VPN server listens on.
-  vpnServicePort: 51820
 
   # Global lab network 10.128.0.0/9 is split into two non-overlapping /10 halves:
   # VPN = 10.128.0.0/10 (10.128.0.0-10.191.255.255), internet = 10.192.0.0/10.
@@ -32,7 +46,7 @@ operator:
 
   # REQUIRED: contact address shown to participants on the VPN probe page.
   # The operator passes it to every per-LabGroup VPN pod.
-  supportEmail: "support@cybericebox.com"
+  supportEmail: ""
 
   leaderElection: true
 
@@ -46,30 +60,127 @@ operator:
 
   networkPolicy:
     enabled: true
+  # Default-deny NetworkPolicy baseline in the namespace of every LabGroup (the chart's own policy of
+  # the operator pod is networkPolicy.enabled above).
+  groupNetworkPolicy:
+    enabled: true
+  # ValidatingAdmissionPolicy that confines the operator's ServiceAccount: it may create, change and
+  # delete RoleBindings, Secrets, Services, pods, Deployments and the like only in the namespaces of its LabGroups (a namespace
+  # it created, labelled laboratory.cybericebox.com/group) and, for what it really needs there, the release and tenants namespaces; it may change or
+  # delete only the Namespaces it created; and the pods it creates may not be privileged or use hostNetwork, hostPID, hostIPC or
+  # hostPath. RBAC alone cannot say "only these namespaces" for namespaces that do not exist yet.
+  admissionPolicy:
+    enabled: true
+
+# ============================================================
+# Priority classes: every pod the laboratory runs carries one, so the scheduler never evicts the system for a lab
+# ============================================================
+# node-agent: system-node-critical (built in). operator, agent, L7 proxy with the wg-demux, registry: platform. VPN and gateway
+# pods of a group: group, above the devices. Device pods: device, the lowest, with preemptionPolicy Never: a device never
+# evicts anything (a VPN or a gateway may evict a device, the system may evict both). The operator's admission policy
+# allows its pods exactly the group and device classes. Existing group pods keep what they have (no class) until recreated.
+priorityClasses:
+  # false: the classes already exist (the same names), the chart does not create them.
+  create: true
+  platform:
+    name: laboratory-platform
+    value: 1000000
+  group:
+    name: laboratory-group
+    value: 10000
+  device:
+    name: laboratory-device
+    value: 100
+
+# ============================================================
+# Lab scheduler: a second kube-scheduler with a bin-packing profile for the pods of labs
+# ============================================================
+# The pods of labs (devices, VPN, gateway) are placed by a kube-scheduler profile that fills one node after another
+# (NodeResourcesFit, scoringStrategy MostAllocated) instead of spreading, so no hole is left on every node that a big device
+# cannot use. Nothing is repacked during a running event, so placement must avoid holes from the start. System pods keep the
+# cluster's own scheduler. false: lab pods use the cluster's default scheduler.
+labScheduler:
+  enabled: true
+  # The profile name the operator puts into the pods of labs (schedulerName).
+  schedulerName: laboratory-binpack
+  replicas: 2
+  # Weight of the bin-packing score against the soft co-location preferences of device pods (the same lab, the same group).
+  fitWeight: 3
+  image:
+    repository: registry.k8s.io/kube-scheduler
+    # Empty = the cluster's own version (a scheduler must not be newer than the API server).
+    tag: ""
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  nodeSelector: {}
+  tolerations: []
 
 # ============================================================
 # VPN pod image (created at runtime by operator per LabGroup)
 # ============================================================
 vpn:
+  # Resources of the VPN pod of a NEW LabGroup (requests = limits: a Guaranteed pod). Measured on the local stand:
+  # idle 1m CPU / 16Mi; with 5 active peers pulling pages in a loop up to 48m CPU and 155Mi (the memory grows with the
+  # peers and their traffic, so it is the limit that matters; 195Mi was seen with 10 peers: 320Mi leaves about 50% room). The data path is the
+  # kernel's WireGuard, the pod manages peers and firewall rules. The management agent reports vpn + gateway as the
+  # service overhead of a group (GetCapacity). Existing groups keep what they were created with.
+  resources:
+    cpu: 100m
+    memory: 320Mi
+  # How the platform sizes the VPN pod of a group: base + perUser * users, at most maxUsers users (the maximum size is
+  # base + perUser * maxUsers). The agent reports it in GetFeatures; the backend computes the size of a group's VPN from the
+  # event's largest team (users = WireGuard peers) and passes it to CreateLabGroups; the agent refuses a size over the maximum,
+  # and the operator creates the pod Guaranteed at exactly that size, never resizing it. Measured: about 16Mi idle, about 55m and
+  # 195Mi with 10 active peers. `resources` above is the size of a group created without an explicit one and must not exceed the
+  # maximum (the agent refuses to start otherwise).
+  sizing:
+    baseCpu: 20m
+    baseMemory: 64Mi
+    perUserCpu: 6m
+    perUserMemory: 20Mi
+    maxUsers: 20
+  # How often the VPN pod of a NEW group samples traffic statistics (Go duration).
+  statsInterval: 30s
   image:
     repository: cybericebox/laboratory-lab
-    tag: "latest"
-    # No pullPolicy key here (unlike operator/proxy/nodeAgent/agent): this image is
-    # only ever used to build a Pod spec directly in Go
-    # (internal/controller/laboratory/labgroup_controller.go), which hardcodes
-    # ImagePullPolicy: IfNotPresent. There is no chart-level knob to plumb it through.
+    tag: ""   # empty = the release tag (image.tag)
+    # No pullPolicy key here (unlike operator/proxy/nodeAgent/agent): the operator builds this Pod spec itself
+    # and the pull policy is IfNotPresent (the tag is always an exact version).
+    # The operator also brings the pods of existing groups to this image, one group at a time (see DEPLOY.md, "Upgrade").
 
 # ============================================================
 # Gateway pod image (created at runtime by operator per LabGroup)
 # ============================================================
 inetGateway:
+  # Resources of the internet gateway pod of a NEW LabGroup (requests = limits). Measured idle: about 1m CPU and 8Mi
+  # (traffic of labs through it is not measured yet).
+  resources:
+    cpu: 10m
+    memory: 32Mi
+  # How the platform sizes the gateway pod of a group: base + perLab * labs that use the internet, at most maxLabs labs (see vpn.sizing).
+  # Measured idle: about 1m and 8Mi.
+  sizing:
+    baseCpu: 5m
+    baseMemory: 16Mi
+    perLabCpu: 2m
+    perLabMemory: 4Mi
+    maxLabs: 50
+  # The labs of a group reach only the public internet through its gateway. The denied internal ranges (the private
+  # ranges, link-local and the cloud metadata service, loopback, CGNAT, multicast and reserved, and the IPv6
+  # equivalents) are a constant of the code (internal/egress), not a setting: a lab needs no internal service and must
+  # not learn where it runs. Public addresses of nodes are protected by the cloud firewall.
+  # The gateway and the VPN are one image (two commands): the operator takes the gateway image from the VPN image unless this one differs.
   image:
     repository: cybericebox/laboratory-lab
-    tag: "latest"
-    # No pullPolicy key here (unlike operator/proxy/nodeAgent/agent): this image is
-    # only ever used to build a Pod spec directly in Go
-    # (internal/controller/laboratory/labgroup_controller.go), which hardcodes
-    # ImagePullPolicy: IfNotPresent. There is no chart-level knob to plumb it through.
+    tag: ""   # empty = the release tag (image.tag)
+    # No pullPolicy key here (unlike operator/proxy/nodeAgent/agent): the operator builds this Pod spec itself
+    # and the pull policy is IfNotPresent (the tag is always an exact version).
+    # The operator also brings the pods of existing groups to this image, one group at a time (see DEPLOY.md, "Upgrade").
 
 # ============================================================
 # Proxy: l7 + wg-demux containers in one unprivileged Deployment
@@ -95,14 +206,44 @@ proxy:
   # Shared image for both the l7 and wg-demux containers.
   image:
     repository: cybericebox/laboratory-proxy
-    tag: "latest"
-    pullPolicy: IfNotPresent
-  replicas: 1
+    tag: ""
+    pullPolicy: ""   # empty = IfNotPresent (the tag is always an exact version)
+  # How the proxy runs.
+  #   replicas (default): a Deployment of `replicas` pods, NEVER two on one node (required anti-affinity by
+  #     hostname). With more replicas than schedulable nodes the extra pods stay Pending, so on a one-node
+  #     cluster set replicas: 1 (the install refuses replicas > nodes when it can count them).
+  #   daemonset: one pod on every node (nodeSelector / tolerations narrow the set), for larger clusters;
+  #     `replicas` and the PodDisruptionBudget do not apply.
+  # In both modes the proxy requests count against its node like any pod, so the scheduler's room for lab
+  # pods is what is left.
+  mode: replicas
+  # Nodes the proxy may run on and the taints it tolerates (both modes). Empty: any node.
+  nodeSelector: {}
+  tolerations: []
+  # Two replicas by default: the L7 proxy is stateless (its session cookie is signed with the shared
+  # secret), and a WireGuard client that lands on the other replica after a restart re-handshakes within
+  # its persistent keepalive (about 15 s). Anti-affinity (preferred, by hostname) spreads them over nodes
+  # when there are several; the PodDisruptionBudget keeps one up during a drain. Measured on the local
+  # stand with 1 replica: L7 about 5000 rps for 500m of CPU (0.1 ms per request), wg-demux 1m idle and about
+  # 110m at ten active peers.
+  replicas: 2
+  # Rollout: a new pod must be Ready for minReadySeconds before the next one is replaced (both modes). surge: true lets the Deployment start
+  # a new pod before it stops an old one (maxSurge 1, maxUnavailable 0), which needs a node without a replica; empty = yes when a live install
+  # sees more nodes than replicas. A pod gets terminationGracePeriodSeconds to finish requests in flight after SIGTERM, after a preStop sleep of
+  # preStopSleepSeconds (so the Gateway and the Service stop sending it connections first).
+  minReadySeconds: 20
+  surge: null
+  terminationGracePeriodSeconds: 45
+  preStopSleepSeconds: 5
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
 
   # L7 HTTPS proxy container — receives TLS passthrough from Cilium Gateway.
   l7:
     enabled: true
-    listen: ":8443"
+    # The HTTPS listener is :8443 and the probes (/readyz: the listener is bound and the informer caches have synced; /healthz: the
+    # process answers) are on :8081; the TLS files are where proxy-tls is mounted. All constants of the image.
     # Name of the proxy's own session cookie (SESSION_COOKIE_NAME).
     sessionCookieName: "challenge"
     # HMAC-SHA256 key (32+ bytes) of the proxy's own session cookie, set on /_auth
@@ -114,33 +255,103 @@ proxy:
     sessionSecret:
       name: proxy-session
       key: sessionSecret
+    # The longest exp - iat of a handoff link the proxy accepts (ACCESS_TOKEN_MAX_TTL).
+    accessTokenMaxTTL: 60s
+    # The proxy's own session is sliding. It expires sessionIdleTTL after the last request; the cookie is
+    # re-issued only when less than sessionRenewBefore of it remains (at most about one renewal per
+    # sessionRenewBefore per active user); sessionMaxTTL is the absolute cap from the handoff. The session also
+    # never outlives the link's own session end. The agent reports idle and max to the backend.
+    sessionIdleTTL: 24h
+    sessionRenewBefore: 1h
+    sessionMaxTTL: 168h
+    # HTTP server limits of the L7 proxy, set before any routing or authentication so that a client that dribbles its
+    # headers or body cannot hold connections forever: the request headers, the whole request, a kept-alive connection
+    # with no request, and the size of the headers. No write timeout: responses stream, and an upgraded (WebSocket)
+    # connection lives at most liveMaxLifetime.
+    readHeaderTimeout: 10s
+    readTimeout: 5m
+    idleTimeout: 2m
+    maxHeaderBytes: 65536
+    # What a client can hold open at the proxy (0 = unlimited): maxConnections in all (a further one waits in the kernel's backlog; the
+    # header timeout frees the places of clients that say nothing); the requests in flight, upgraded connections included, per client of a
+    # group (livePerClient), per group (livePerGroup) and in all (liveTotal), past which a request gets 429; and the handoff path
+    # (/_auth) per peer address (authRate per second, burst authBurst; all peers together may do twenty times that). The Go runtime is
+    # told to stay under 80% of the container memory limit (a soft limit), so a burst is collected before the kernel would kill the pod.
+    # maxConnections follows the memory limit: a connection with a request in flight costs about 105 KiB (measured, TestL7MemoryPerConnection:
+    # the client's TLS connection, the HTTP server, the reverse proxy and its upstream connection), so 2500 of them are about 260 MiB, and with
+    # the informer caches (about 60 MiB at several hundred groups) and 25% headroom they stay under 80% of the 512Mi limit. Past
+    # maxConnections a client waits in the kernel's backlog; to serve more clients add replicas (proxy.replicas, or proxy.mode: daemonset),
+    # do not raise the cap without the memory (DEPLOY.md, "Sizing the proxy"). liveTotal is not above it: a request in flight holds a connection.
+    maxConnections: 2500
+    livePerClient: 200
+    livePerGroup: 1000
+    liveTotal: 2500
+    authRate: 5
+    authBurst: 20
+    # An open request or WebSocket is checked against the group access policy every liveCheckInterval and
+    # closed once the client may no longer reach the lab (a lock, a removed client); no connection lives longer than
+    # liveMaxLifetime or past the session's absolute end (LIVE_CHECK_INTERVAL, LIVE_MAX_LIFETIME).
+    liveCheckInterval: 10s
+    liveMaxLifetime: 12h
     # How often each replica publishes its request counters (REPORT_INTERVAL).
     reportInterval: "1m"
+    # Requests = limits (Guaranteed). Memory: about 4 MiB idle plus about 105 KiB per connection with a request in flight (measured with
+    # 300, 1000 and 2000 in flight on a real proxy process, TestL7MemoryPerConnection), so maxConnections of 2500 need about 270 MiB, plus the
+    # caches; 512Mi leaves the headroom above. CPU: about 4600 requests per second at 500m (0.1 ms per request), while a real event peaks
+    # at about 1000, so 500m has roughly five times the headroom.
     resources:
       limits:
         cpu: 500m
-        memory: 256Mi
+        memory: 512Mi
       requests:
-        cpu: 50m
-        memory: 64Mi
+        cpu: 500m
+        memory: 512Mi
 
   # WireGuard demux container — plain userspace UDP, no hostNetwork/capabilities.
   wg:
     enabled: true
-    # Internal UDP port the wg-demux container binds to.
-    # The LoadBalancer Service maps operator.vpnServicePort → this port.
-    listenPort: 51820
+    # The wg-demux binds UDP 51820 inside the pod (the VPN pods listen on 51820 too) and its probes (/readyz: the UDP socket is bound, the
+    # caches have synced and every group is in the demux table; /healthz: the process answers) are on :8082. Constants of the image.
+    # publicPort is the port OUTSIDE the cluster: the UDP port the LoadBalancer Service listens on, where the clients connect (the Service
+    # forwards it to 51820). It is also the port of operator.publicVPNEndpoint when that has none.
+    publicPort: 51820
     # Optional fixed nodePort of the laboratory-proxy-wg Service (30000-32767),
     # e.g. behind a cloud NLB that targets a known node port. Unset: Kubernetes
     # assigns one.
     nodePort: null
+    # The demux reads a public UDP port shared by every team and holds a table of sessions, so what a stranger can make it
+    # hold or spend is capped. There is NO limit per source address: one NAT (a venue, a campus) hides a whole event behind one
+    # address, and behind a load balancer in SNAT mode every client has a node's address. maxEntries is the conntrack entries in
+    # total (two per session); a handshake that would pass it is dropped and the client retries. partialTTL is how long a
+    # handshake in progress (init forwarded, no answer yet) keeps its entry: it is made before anything is authenticated, so it
+    # is short (a completed session keeps its entry for 3 minutes after its last packet). All sources together may start
+    # globalHandshakeRate handshakes per second (burst globalHandshakeBurst; each scans every group's key) and send missRate
+    # (missBurst) packets per second that match no session or come from an unexpected address, so guessing the 32-bit session
+    # index is rate-limited. roamInterval is the least time between two address changes of one session (roaming itself works as
+    # before). One session may send sessionRate packets per second (burst sessionBurst): the demux is shared by every tenant and
+    # one participant with a valid session must not be able to use its CPU up. readers goroutines read the socket.
+    limits:
+      maxEntries: 100000
+      partialTTL: 15s
+      globalHandshakeRate: 2000
+      globalHandshakeBurst: 4000
+      missRate: 2000
+      missBurst: 4000
+      roamInterval: 5s
+      sessionRate: 15000
+      sessionBurst: 30000
+      readers: 4
+    # Requests = limits. Memory: the conntrack table is about 190 bytes per entry (measured, TestConntrackMemoryAtTheCap): 100000 entries,
+    # the cap, are about 18 MiB live and about twice that while the map grows, plus the Go runtime and the group table; 128Mi keeps
+    # that under the 80% soft limit with headroom. CPU: 1m idle and up to 111m at ten active peers (the packets are relayed in
+    # userspace, so the CPU follows the VPN traffic).
     resources:
       limits:
-        cpu: 500m
-        memory: 256Mi
+        cpu: 250m
+        memory: 128Mi
       requests:
-        cpu: 50m
-        memory: 64Mi
+        cpu: 250m
+        memory: 128Mi
 
   # LoadBalancer Service annotations (e.g. cloud-specific LB config).
   service:
@@ -204,6 +415,14 @@ certManager:
   # Set false for production certificates.
   staging: true
 
+  # The ACME directory of the issuer. Empty: the preset below chosen by `staging`. Set it for another
+  # ACME CA (or a test one); the presets are Let's Encrypt.
+  acme:
+    server: ""
+    presets:
+      production: https://acme-v02.api.letsencrypt.org/directory
+      staging: https://acme-staging-v02.api.letsencrypt.org/directory
+
   # Name of the ClusterIssuer to create.
   issuerName: "letsencrypt"
 
@@ -224,23 +443,37 @@ certManager:
 nodeAgent:
   enabled: true
 
-  image:
-    repository: cybericebox/laboratory-node-agent
-    tag: "latest"
-    pullPolicy: IfNotPresent
+  # Probes of the node-agent: /readyz (Open vSwitch answers, the caches have synced) and /healthz (Open vSwitch answers) on the loopback of the node
+  # (it is on the host network) at healthPort; a DaemonSet rollout waits minReadySeconds after a node-agent is Ready before it moves to the next
+  # node (a restart drops the node's flows until they are programmed again).
+  healthPort: 9440
+  minReadySeconds: 20
 
-  # Exclude control-plane nodes from the DaemonSet (set false for single-node Kind).
-  excludeControlPlane: true
+  # The init container wraps the node's real CNI config (Cilium) with cni-gate and waits for it as long as it takes: on a fresh
+  # node the CNI can need minutes (image pull, agent start), and a pod must never get a network from anything else.
+  # Explicit opt-in: a Go duration (e.g. "10m") after which, with no base config, a built-in ptp + host-local 10.244.0.0/16
+  # config is written. It is for a cluster with no other CNI; it can collide with the pod CIDR. Empty = never.
+  cniFallbackTimeout: ""
+
+  # Storm control of the shared switch: the most (kbit/s) the veth port of a device may send into the bridge, so that a flood or a loop
+  # inside one lab (a device with NET_ADMIN can bridge its own interfaces) is held to this rate instead of the datapath of the node.
+  # 0 = off. Applied to the ports of running devices at the next resync, and to new ones when they are made.
+  portPolicingKbps: 500000
+  # How often the node-agent asks OVS (the database and OpenFlow channels) for a sign of life; after this many misses in a row it exits
+  # and the kubelet restarts it, which programs the bridge again (the channels do not reconnect by themselves).
+  ovsWatchInterval: 15s
+  ovsWatchFailures: 3
+
+  image:
+    repository: cybericebox/laboratory-node
+    tag: ""
+    pullPolicy: ""   # empty = IfNotPresent (the tag is always an exact version)
 
   # The node is bare: Open vSwitch runs inside this DaemonSet (the "ovs" sidecar),
   # and the host-prep init container loads the kernel modules and sets the sysctls
   # below. Nothing but the kernel (with these modules) and k0s is installed on the host.
-  # Must stay inside ovsRunHostPath: templates/validate.yaml refuses anything else.
-  ovsSocket: "/run/openvswitch/db.sock"
-  # hostPath of the OVS runtime dir (db socket, pid and control files).
-  ovsRunHostPath: "/run/openvswitch"
-  # hostPath of /etc/openvswitch: conf.db (bridges, ports) survives pod restarts.
-  ovsDBHostPath: "/var/lib/cybericebox/openvswitch"
+  # The host paths (/run/openvswitch for the OVS runtime, /var/lib/cybericebox/openvswitch for conf.db, /run/cybericebox for the
+  # node-agent socket), the bridge name br-ovs and the kubelet's device-plugins directory are constants of the image and the chart.
 
   hostPrep:
     # Loaded with modprobe from the host's /lib/modules (mounted read-only). A module
@@ -258,60 +491,441 @@ nodeAgent:
       net.ipv4.conf.all.rp_filter: "0"
       net.ipv4.conf.default.rp_filter: "0"
       net.bridge.bridge-nf-call-iptables: "1"
+      # No gre0/gretap0/erspan0 fallback tunnel devices in any netns (pods would show them when ip_gre is loaded on the node).
+      net.core.fb_tunnels_only_for_init_net: "2"
+    # Switch on conntrack byte accounting and flow timestamps (net.netfilter.nf_conntrack_acct / _timestamp and the nf_conntrack
+    # module parameters acct / tstamp that every new pod namespace inherits). Without them the VPN flow report counts attempts and
+    # replies but its bytes stay zero. Only this privileged init container can write them: the node-agent container has a
+    # read-only /proc/sys, and no pod sysctl is used. A node image that already sets them (node_prep) makes this a no-op.
+    conntrackAccounting: true
+  # Where the node-agent keeps its sockets and Open vSwitch state on the host, and the bridge it programs.
+  # ovsSocket must stay inside ovsRunHostPath: templates/validate.yaml refuses anything else.
+  ovsSocket: "/run/openvswitch/db.sock"
+  # hostPath of the OVS runtime dir (db socket, pid and control files).
+  ovsRunHostPath: "/run/openvswitch"
+  # hostPath of /etc/openvswitch: conf.db (bridges, ports) survives pod restarts.
+  ovsDBHostPath: "/var/lib/cybericebox/openvswitch"
   grpcSocket: "/run/cybericebox/node-agent.sock"
+  # Name of the OVS bridge the node-agent programs.
+  ovsBridge: br-ovs
+  # The container runtime's socket on the host: the one path that depends on the Kubernetes distribution (k0s here).
   criSocket: "/run/k0s/containerd.sock"
+  # The node-agent is the kubelet device plugin of the extended resource cybericebox.com/tun: a device pod with the
+  # `extended` profile requests it and the kubelet passes /dev/net/tun (the host needs the tun module). dir is the kubelet's
+  # device-plugins directory (/var/lib/kubelet/device-plugins: the kubelet hardcodes it, also on k0s, whatever its root-dir is); tunSlots is
+  # how many such devices a node advertises, which bounds the extended devices per node.
+  devicePlugin:
+    dir: /var/lib/kubelet/device-plugins
+    tunSlots: 1000
 
-  # Container resource requests/limits for all init/main containers (host-prep,
-  # ovs, node-agent, cni installers). Empty by default: these are host-privileged
-  # system processes intentionally left unconstrained unless overridden.
-  resources: {}
+  # Requests and limits of the node-agent pod, so that one runaway process cannot starve the node (the pod is privileged
+  # and the cluster's other pods share the node). Three groups: the node-agent container (its snapshot engine keeps the path
+  # map of a layer merge in memory), the OVS sidecar, and the short init containers (host-prep and the CNI installers).
+  # These are starting values: measure on your nodes and adjust.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  ovsResources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  initResources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 200m
+      memory: 64Mi
+
+# ============================================================
+# Platform registry (zot): device snapshots and the image cache
+# ============================================================
+# One zot in the release namespace serves two optional features, each with its own
+# switch: devices.statePersistence (snapshots of device state) and registry.cache
+# (a pull-through cache of the lab images). zot itself is ALWAYS installed (it needs nodeAgent.enabled):
+# neither switch decides it, so turning one off never removes the registry or the snapshots in it.
+registry:
+  image:
+    # The full image: the image cache needs its sync extension. Multi-arch
+    # (linux/amd64 and linux/arm64); about 70 MB compressed.
+    repository: ghcr.io/project-zot/zot
+    tag: "v2.1.21"
+    pullPolicy: ""   # empty = IfNotPresent (the tag is always an exact version)
+  # StorageClass of the registry volume; empty = the cluster default. The volume holds every device snapshot, so its
+  # PersistentVolume must survive the claim: use a class with reclaimPolicy Retain (retainClass below creates one).
+  # With a class whose reclaimPolicy is Delete, a deleted claim or namespace deletes all snapshots.
+  storageClass: ""
+  # A StorageClass with reclaimPolicy Retain made by the chart, used for the registry volume instead of storageClass.
+  # Needs the provisioner of the cluster's storage: rancher.io/local-path (k0s stand; local-path-provisioner 0.0.24+),
+  # ebs.csi.aws.com (AWS, with parameters type: gp3). A class cannot be changed in place: the name must be new, and a
+  # volume that already exists keeps the reclaim policy it was made with (see DEPLOY.md, "Registry volume").
+  retainClass:
+    create: false
+    name: laboratory-registry
+    provisioner: ""
+    parameters: {}
+    volumeBindingMode: WaitForFirstConsumer
+    allowVolumeExpansion: false
+  # Size of the registry volume. It holds the cached images, the base image layers once
+  # and every device's snapshot layers: plan for the images of the labs plus
+  # (devices x writeQuota) at worst. The volume is kept on uninstall.
+  size: 20Gi
+  # Garbage collection of blobs no manifest references any more.
+  gc:
+    interval: 1h
+    delay: 1h
+  # zot: a starting value, measure under load (garbage collection and the image sync use memory).
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  networkPolicy:
+    enabled: true
+  # Node-side access: the node-agent relays 127.0.0.1:5035 on each node to the registry Service
+  # (laboratory-registry.<release namespace>.svc:5000, passed to every component), and images are referenced as localhost:5035/...
+  # containerd treats localhost registries as plain HTTP, so the nodes need no
+  # configuration. The port 5035 must be free on the node; it is a constant of the images.
+
+  # Pull-through cache of the lab images. The operator rewrites REG/repo:tag of the
+  # devices, VPN and gateway pods of labs created while the cache is on into
+  # localhost:5035/REG/repo:tag; zot fetches each image from REG on the first
+  # pull (on-demand sync) and serves it from its volume afterwards. The mode is fixed
+  # on each lab at creation; flipping the switch never changes existing labs. Snapshot
+  # images and references to registries not listed below are pulled directly.
+  cache:
+    enabled: false
+    # A cached image nobody pulled for this long is deleted (zot retention, then GC); an
+    # image in use is never deleted. It is simply fetched again on the next pull.
+    unusedTTL: 48h
+    # Image tags are pinned to digests when a lab is created with the cache on: the
+    # operator asks the upstream registry (with the pull secrets, not through the cache)
+    # for each tag once and the lab's pods pull REG/repo@sha256:..., so a lab, and the
+    # labs created in the same wave, run one image even if an upstream tag moves. A
+    # resolved digest is remembered for pinTTL; an image that cannot be resolved is
+    # pulled by its tag and named in Lab.status.imageWarning.
+    pinTTL: 30m
+    # Upstream registries to cache. docker.io, ghcr.io, quay.io and registry.k8s.io are
+    # built in; others go into extraRegistries.
+    registries:
+      - docker.io
+      - ghcr.io
+      - quay.io
+      - registry.k8s.io
+    # Additional upstream registries: - name: registry.example.com
+    #                                   url: https://registry.example.com
+    extraRegistries: []
+    # Upstream credentials (private registries, Docker Hub rate limits) come from the
+    # chart-level imagePullSecrets (dockerconfigjson Secrets in the release namespace),
+    # read at install time. To manage them yourself, name a Secret in the release
+    # namespace with the key credentials.json in zot's sync credentials format
+    # ({"host": {"username": "...", "password": "..."}}); imagePullSecrets is then ignored.
+    credentialsSecret: ""
+    # Cache prewarm: the management agent's PrewarmImages RPC makes the cache fetch images
+    # ahead of an event. Needs agent.enabled. See DEPLOY.md, "Cache prewarm".
+    prewarm:
+      # Images fetched at once.
+      concurrency: 4
+      # Longest time for one image.
+      timeout: 10m
+
+# ============================================================
+# Devices: optional state persistence
+# ============================================================
+devices:
+  # Hardening of the device pods (the participant is root inside). Device security profiles are a fixed catalog in the
+  # code (internal/profiles): `standard` (the default; web, API, databases, SSH, privilege escalation, cracking,
+  # forensics, gdb, strace, ping) and `extended` (standard plus NET_RAW, NET_ADMIN and /dev/net/tun: raw scans,
+  # sniffing, spoofing, routers, VPNs). The capability sets are not a setting. Here you only say which catalog profiles
+  # this cluster offers: the agent reports them to the backend and refuses a lab that asks for another. The old names
+  # (basic, service, net, debug) are accepted as aliases. Every capability is dropped, then the base set and the profile's
+  # are added back; device pods never get the service account token and run with the runtime's default seccomp profile.
+  security:
+    profiles:
+      - standard
+      - extended
+    # Run device pods in a user namespace (hostUsers: false): root in a device is not root on the node. Needs Kubernetes
+    # 1.33+, a runtime with support (containerd 2.x) and kernel 6.3+. A hidden setting, not shown in any UI.
+    userNamespaces: true
+    # Limit of the writable layer, logs and emptyDirs of a device, so one device cannot fill the node's disk
+    # (DiskPressure evicts other pods). "0" = no limit.
+    ephemeralStorage: 2Gi
+  # Device state persistence: the writable layer of a device container survives an
+  # UNPLANNED container restart (crash, OOM, reschedule). The node-agent snapshots
+  # it into the platform registry above (zot); the operator recreates the device
+  # from the latest snapshot. What is kept: files only. Memory, processes and live
+  # netfilter/route state are lost, as in a VM reboot; seconds of work are lost when
+  # a node dies. See DEPLOY.md, "Device state persistence".
+  #
+  # This switch only ALLOWS persistence. Each device chooses with persistence.enabled
+  # in its topology: such a device runs as a bare Pod managed by the operator, every
+  # other device as a Deployment (one lab may mix both). The choice is made when the
+  # Device is created and never changes, whatever this switch does later.
+  # false: no device can ask for persistence.
+  statePersistence:
+    enabled: false
+
+    # How long a device's writable layer must stay quiet before a snapshot is taken.
+    debounce: 5s
+    # Paths inside the container that are never snapshotted. Configurable only here, in
+    # the chart: a topology cannot ask for its own.
+    excludePaths:
+      - /tmp
+      - /var/tmp
+      - /run
+    # Write quota per device: the most of a participant's writes we keep (the uncompressed
+    # size of all its snapshot layers). Over the quota the last good snapshot is kept
+    # and a warning shows in the lab status.
+    writeQuota: 512Mi
+    # A regular file larger than this is never snapshotted (only that file is skipped;
+    # the lab status warning names it). The write quota above is the total backstop,
+    # applied after skipping.
+    maxFileSize: 256Mi
+    # The byte quotas count only the bytes of regular files, so a device that makes millions of empty files costs nothing
+    # against them but a lot of memory and time to merge and unpack. maxEntries caps the entries (files, directories, links) of
+    # one snapshot layer and of a squashed chain; over it the last good snapshot is kept and a warning shows in the lab status.
+    # Character and block devices and named pipes are never kept, and an entry whose names and attributes pass 8 KiB is left out.
+    maxEntries: 100000
+    # The most the snapshots of ALL the devices of one tenant may take in the registry together (the sizes in their status).
+    # The registry volume is shared by every tenant and the image cache, so without it one tenant can fill it. A Tenant may be
+    # given less with spec.persistence.registryQuota. "0" = no limit.
+    tenantQuota: 10Gi
+    # What one device may push into the shared registry. A device keeps only its current state: the manifest (and the blobs only it
+    # used) that a new snapshot replaces is deleted supersededGrace after the push (the grace lets a pod that was just created from
+    # it still pull it). A change that comes sooner than minPushInterval after the last push, or over pushBudget of state within
+    # pushBudgetWindow, waits for the next snapshot; the exit snapshot is never held back. "0" = no budget.
+    minPushInterval: 60s
+    pushBudget: 2Gi
+    pushBudgetWindow: 1h
+    supersededGrace: 2m
+    # A push is refused while the registry (registry.size) holds more than this fraction less than its volume: everything it
+    # stores counts, each blob once, retained repositories of deleted labs included.
+    registryReserve: 0.1
+    # Directories of one device's writable layer the node-agent watches with inotify (the kernel's watch limit is shared by
+    # everything on the node). Past it the layer is only polled (about every 30 s), so a change is noticed later.
+    maxWatchedDirs: 2000
+    # How often the retention sweep of old snapshots runs (Go duration).
+    retentionInterval: 10m
+    # A snapshot-backed device is a bare Pod. When its node dies (NotReady, still in the cluster, or gone) the pod stays
+    # Terminating and the device stays down. After this long Terminating on such a node the operator force-deletes the pod
+    # and recreates the device from its last snapshot ("0" = never; see DEPLOY.md, "Node loss").
+    nodeLossForceDeleteAfter: 5m
+    # Snapshot layers kept on top of the base image before they are squashed into one.
+    maxLayers: 10
+    # How long the snapshots of a deleted lab are kept before the repository is deleted
+    # (and the registry's GC frees the space).
+    retention: 168h
+
+    # Host path of the containerd root (the overlayfs snapshotter keeps the writable
+    # layers below it), mounted read-only at the same path into the node-agent.
+    containerdRoot: /var/lib/k0s/containerd
+    # containerd namespace of the kubelet's CRI.
+    containerdNamespace: k8s.io
 
 # ============================================================
 # Lab workload scheduling (VPN, gateway, device pods)
 # ============================================================
 labWorkloads:
-  # nodeSelector applied to all runtime lab pods.
+  # nodeSelector applied to all runtime lab pods, in addition to laboratory.cybericebox.com/node-agent-ready=true, which the
+  # node-agent sets on its node: a lab pod is only placed where a ready node-agent runs. The node-agent runs on EVERY node
+  # (it tolerates all taints), so which nodes take labs is decided here and by the tolerations.
   # Example: {"lab-node": "true"} — only schedule on nodes labelled lab-node=true.
   nodeSelector: {}
-  # tolerations applied to all runtime lab pods.
+  # tolerations applied to all runtime lab pods. A schedulable control-plane node (controller+worker) takes labs only when
+  # they tolerate its taint (node-role.kubernetes.io/control-plane or /master, whichever the cluster puts on it).
   tolerations: []
+
+# ============================================================
+# Scheduler: how pods start when many labs arrive at once
+# ============================================================
+# The units are the top-level objects, LabGroup (its VPN and gateway pods) and Lab
+# (one pod per container device); the slots are pods. At most maxPods pods are
+# starting at once; a pod holds its slot from dispatch until it is Ready or declared
+# failed. The pods of an object are dispatched one object after another (an object
+# may start with fewer slots than pods), and objects with the same deploy group
+# (label laboratory.cybericebox.com/deploy-group) form a group: the group being
+# dispatched gets the slots first, the next group starts as soon as the current one
+# has nothing left to dispatch (it does not wait for readiness), and a group whose
+# annotation laboratory.cybericebox.com/deploy-after lists other groups starts only
+# when all of them are complete (every pod Ready or failed). Objects without a deploy
+# group are independent and go after all grouped work. The queue place and the
+# reason are in status.scheduling of the Lab and LabGroup and in the agent's LabStatus.
+scheduler:
+  # false: every pod starts as soon as its object is created.
+  enabled: true
+  # Largest number of pods starting at once; 0 sets no limit.
+  maxPods: 20
+  # A dispatched pod that is not Ready after this long (Go duration) is declared
+  # failed: its slot is freed and the device status gets a warning.
+  startupTimeout: 5m
+  # ... or after this many restarts, whichever comes first.
+  restartThreshold: 5
+  # Platform reserve: CPU and memory that user labs can never consume, so the platform itself (operator, proxy,
+  # registry, node-agent, monitoring, the VPN and gateway pods' bursts) always has room. It is applied AFTER the
+  # kubelet's own reserve (the allocatable of a node is already net of kube-reserved, system-reserved and
+  # eviction) and AFTER the requests of every pod scheduled on the node (DaemonSets and the proxy included, in
+  # both proxy modes). First platformReserveCpu / platformReserveMemory come off EVERY schedulable node (absolute
+  # quantities, "0" = none), then platformReservePercent (0-99) of what is left of the sum over the nodes is kept free.
+  platformReservePercent: 10
+  platformReserveCpu: "0"
+  platformReserveMemory: "0"
+  # Packing reserve (hidden): the share of the capacity reported to the platform (the tenant quota, or the real room of the lab
+  # nodes when it has none, whichever is smaller) that is kept unused, because nodes do not share memory and devices leave gaps
+  # between them, so the last part of a cluster can never be packed full. The agent reports its capacity net of it (0-49);
+  # tenants never see the reserve or the nodes. The quota the operator enforces is not changed.
+  packingReservePercent: 15
+  # false: dispatch does not look at the free CPU and memory of the nodes.
+  resourceCheck: true
+  # Pull the images of a group onto the eligible nodes before its first pod starts.
+  # A short-lived DaemonSet in laboratory-system runs the images with the command
+  # replaced by a sleep (no lab service starts) and uses imagePullSecrets below.
+  prepull:
+    enabled: true
+    # Dispatch goes on after this long even if some image is still not pulled.
+    timeout: 5m
+
+# ============================================================
+# Limits the cluster owns on devices, labs and tenants
+# ============================================================
+# The management agent enforces them on CreateLabs (a lab over them is refused with the reason) and reports them
+# in GetFeatures and the Monitoring stream; the backend keeps no copy. CPU and memory are Kubernetes quantities.
+# A device's resources are its limit, else its request, else the default; requests always equal limits (Guaranteed
+# pods), so the scheduler and the quotas count the real load. The maxima are a sanity ceiling, not a sizing
+# profile. 0 / "0" = no limit.
+limits:
+  device:
+    # The most one device may take.
+    maxCpu: 2000m
+    maxMemory: 4Gi
+    # The planning profile: what a device that declares no resources gets (and counts as).
+    defaultCpu: 100m
+    defaultMemory: 256Mi
+  lab:
+    # Devices of one lab, every type counted (container, switch, hub). The platform has a ceiling of 64 that this can only lower (0 = the
+    # ceiling); the chart refuses a larger value. A container device has at most 16 interfaces, a switch or hub 48 ports.
+    maxDevices: 32
+  group:
+    # Labs of one LabGroup, and the sum of the planned resources of the devices of all its labs
+    # ("0" = no limit on the sum). Devices are Guaranteed, so a group's sum is what it reserves.
+    maxLabs: 50
+    maxCpu: "0"
+    maxMemory: "0"
+  tenant:
+    # Labs of one tenant; 0 = unlimited (the tenant's resource quota still applies).
+    maxLabs: 0
 
 # ============================================================
 # Management agent: optional per-cluster gRPC agent for platform ops
 # ============================================================
 agent:
   enabled: false
+  # Namespace of the management agent (the operator binds its ServiceAccount in every LabGroup namespace).
   namespace: laboratory-agent
+  # Stable identity of this agent: makes the monitoring observations idempotent at the platform boundary.
+  id: laboratory-agent
+  # How often the agent refreshes the status of the Tenant objects (Go duration).
+  tenantStatusInterval: 30s
 
   image:
     repository: cybericebox/laboratory-agent
-    tag: "latest"
-    pullPolicy: IfNotPresent
+    tag: ""
+    pullPolicy: ""   # empty = IfNotPresent (the tag is always an exact version)
+
+  # Rollout and shutdown: a new pod must be Ready (its port bound, the CRD check done) for minReadySeconds before the next one is replaced;
+  # on SIGTERM the agent finishes running calls for up to shutdownGrace, after a preStop sleep of preStopSleepSeconds (so the Service stops sending
+  # it calls first); terminationGracePeriodSeconds must be above the sum (default 5 + 30 + margin).
+  minReadySeconds: 10
+  preStopSleepSeconds: 5
+  shutdownGrace: 30s
+  terminationGracePeriodSeconds: 45
 
   # gRPC port the agent listens on (TLS).
   grpcPort: 5454
 
-  # Public domain for the agent's TLS certificate + TLSRoute hostname.
-  # REQUIRED when agent.enabled (no default).
+  # Public domain for the agent's TLS certificate + TLSRoute hostname. Empty = ctl.<operator.baseDomain>.
   domain: ""
 
-  mtls:
+  # Replicas of the agent. Two by default: the agent is the one door every tenant uses, and one replica that is restarted (or
+  # killed by an oversized request) takes every tenant's API and monitoring down with it. Each replica serves any call; the
+  # state that lives in memory (the image-prewarm progress, the Monitoring journal) is per replica and rebuilt when a client
+  # reconnects to the other one.
+  replicas: 2
+  podDisruptionBudget:
     enabled: true
+    minAvailable: 1
 
-  # CNs of client certs allowed to call the agent (sent as AGENT_ALLOWED_CLIENT_CNS).
-  allowedClientCNs:
-    - platform
+  # Callers must present a client certificate (mTLS) and the agent always serves TLS. The CA that signs the client certificates:
+  # its lifetime (cert-manager defaults to 90 days) and how long before its end it is renewed (with the same key, so certificates
+  # already issued keep working).
+  mtls:
+    caDuration: 43800h
+    caRenewBefore: 8760h
+  # The one development switch: the agent does not ask for a client certificate and every caller is the default tenant. For local
+  # development only. TLS stays on.
+  allowInsecure: false
 
-  # Each entry becomes a cert-manager Certificate → Secret laboratory-agent-client-<name>-tls,
-  # issued by the private laboratory-agent-ca Issuer.
-  clients:
-    - platform
+  # What a caller can cost the agent. A connection without a client certificate reaches only the Enroll call, on a server that
+  # reads small messages and is rate limited; a connection with one gets the full API.
+  server:
+    maxConcurrentStreams: 64        # per connection
+    maxConnectionAge: 1h            # a connection is replaced after this (a revoked certificate is noticed at the latest then)
+    maxConnectionAgeGrace: 1m
+    keepaliveMinTime: 10s           # the most frequent client keepalive ping the server accepts
+    streamRecheck: 30s              # a running stream (Monitoring, snapshot export) is authorized again this often
+    renewMinInterval: 10s           # one tenant may renew its certificate this often
+    enroll:
+      maxMessageBytes: 65536        # the largest message of a caller without a client certificate
+      rate: 5                       # Enroll calls per second, all callers together
+      burst: 10
+      handshakeTimeout: 10s
+      maxHandshakes: 64             # TLS handshakes in progress at once
+      maxAnonymousConns: 256        # open connections without a client certificate, all addresses together
+      # No per-address limits: behind the gateway every caller has the same source address.
+
+  # Enrollment: a tenant gets its client certificate and registers its access key with a one-time
+  # token (see DEPLOY.md, "Enrollment & access keys"); no private key ever leaves the tenant.
+  enrollment:
+    # How long an unused enrollment token works.
+    tokenTTL: 24h
+    # How long a client certificate issued by Enroll / RenewCertificate is valid (at most the CA's).
+    certificateTTL: 720h
+
+  # Manual fallback, off by default: cert-manager issues a client certificate (and its private key,
+  # into a Secret of the cluster) for every tenant: Secret laboratory-agent-client-<name>-tls. Use
+  # enrollment instead whenever the tenant can reach the agent.
+  tenantCertificates:
+    enabled: false
+
+  # The Monitoring stream: one poller and one in-memory journal serve every platform
+  # backend that subscribes. See DEPLOY.md, "Monitoring stream".
+  monitoring:
+    # Updates the journal keeps for resuming subscribers.
+    journalSize: 10000
+    # How long an update stays in the journal.
+    journalAge: 15m
+    # How often the platform is observed while anybody is subscribed. A poll reads informer caches (no API call), so 1s is cheap;
+    # the caches hold the objects of all tenants (raise agent.resources with the number of labs).
+    pollInterval: 1s
+    # Updates a subscriber may lag behind before its stream is dropped.
+    subscriberBuffer: 256
+    # Monitoring streams one tenant may hold open at once (each subscribe runs a full collect and keeps a buffer); 0 = unlimited.
+    maxStreamsPerTenant: 8
 
   # Container resource requests/limits.
+  # 256Mi: the Monitoring caches hold the objects of all tenants (and a request is read up to 4 MiB).
   resources:
     limits:
       cpu: 250m
-      memory: 128Mi
+      memory: 256Mi
     requests:
       cpu: 10m
       memory: 64Mi
@@ -320,27 +934,27 @@ agent:
     enabled: true
 
 # ============================================================
-# Platform credentials
+# Tenant images
 # ============================================================
-platform:
-  # The Ed25519 public key (PKIX PEM) that proxy-l7 uses to verify the lab
-  # access tokens signed by the daemon (LAB_ACCESS_PRIVATE_KEY) is NOT a chart
-  # value: create the Secret `lab-access-public-key` (key public.pem) in the
-  # release namespace beforehand,
-  #   kubectl -n laboratory-system create secret generic lab-access-public-key \
-  #     --from-file=public.pem=lab-access-public.pem
-  # The operator's PlatformReconciler validates it and syncs it into the proxy
-  # namespace; the proxy reloads it on change. `make lab-access-keys` makes the pair.
+images:
+  # Repositories no tenant may use, "registry/repository-prefix" entries. Put here every
+  # private registry or organization the platform has credentials for (the image cache and
+  # its on-demand sync use the platform's credentials, so a tenant that names such an
+  # image would otherwise get it). Enforced by the management agent on CreateLabs and
+  # PrewarmImages. A tenant's own images.allow narrows the rest.
+  tenantDeny: []
 
 # ============================================================
 # Common
 # ============================================================
-# Registry Secrets (type kubernetes.io/dockerconfigjson) for private images, as a
-# list of `- name: <secret>`. Create them in the release namespace
+# Registry Secrets (type kubernetes.io/dockerconfigjson) for the PLATFORM's private
+# images, as a list of `- name: <secret>`. Create them in the release namespace
 # (laboratory-system) outside the chart. They are referenced by the operator,
 # proxy, node-agent and agent pods, and the operator also copies them into every
-# lab group namespace and sets them on the VPN, gateway and device pods.
-# Proxy and agent run in their own namespaces (proxy.namespace, agent.namespace):
+# lab group namespace and sets them on the VPN and gateway pods. Device pods and the
+# image prepull never get them: a tenant's images are pulled with the tenant's own
+# credentials (tenants.<name>.images.pullSecret), or anonymously.
+# Proxy and agent run in their own namespaces (laboratory-proxy, laboratory-agent):
 # create the Secrets there too.
 imagePullSecrets: []
 
@@ -353,3 +967,35 @@ fullnameOverride: ""
 cert-manager:
   crds:
     enabled: true
+
+# ============================================================
+# Tenants of the management agent
+# ============================================================
+# A tenant is a client of the agent with its own objects, device persistence policy and
+# resource quota. The chart always creates the tenant "default" (the caller without a client
+# certificate, local development) and one Tenant per key below. The operator gives every tenant a
+# one-time enrollment token (Secret tenant-<name>-enrollment in laboratory-tenants); the tenant enrolls
+# with it and gets a client certificate with CN = the tenant name (see DEPLOY.md, "Enrollment & access keys").
+# The agent refuses a certificate whose CN is not a tenant. A name is a DNS-1123 label.
+#
+#   tenants:
+#     platform:
+#       persistence:
+#         allowed: true         # may ask for device persistence (needs devices.statePersistence.enabled)
+#         writeQuota: 256Mi     # optional; capped by devices.statePersistence.writeQuota
+#         maxFileSize: 128Mi    # optional; capped by devices.statePersistence.maxFileSize
+#       receivesLabErrors: true # the platform's own backend: it gets the laboratory's own errors (operator, node-agent, proxy,
+#                               #   demux, VPN and gateway pods) in the error journal; leave it off for a customer tenant
+#       quota:                  # optional; absent = no limit
+#         cpu: "50%"            # sum of the CPU requests of its pods: "32", "500m" or a percentage
+#         memory: "40%"         #   of what the lab nodes allocate
+#       images:
+#         pullSecret: acme-registry   # a dockerconfigjson Secret in laboratory-tenants: the tenant's
+#                                     #   own registry credentials for its devices and prepull. A tenant
+#                                     #   with one pulls straight from its registries (no shared cache).
+#         allow:                      # optional; absent = any image `images.tenantDeny` does not exclude
+#           - ghcr.io/acme/           # registry/repository prefixes; a reference equal to an entry
+#           - docker.io/library       #   or under it is allowed
+#
+# "default" may be listed to change its policy; unless it is, it may use persistence and has no quota.
+tenants: {}

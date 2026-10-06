@@ -1,0 +1,21 @@
+{{- if and (include "laboratory.registryEnabled" .) .Values.registry.retainClass.create }}
+{{- $c := .Values.registry.retainClass }}
+# The registry volume holds every device snapshot (the participants' work). The reclaim policy Retain keeps the
+# PersistentVolume, and the data on it, when the claim or the namespace is deleted.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ $c.name | quote }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+provisioner: {{ $c.provisioner | quote }}
+reclaimPolicy: Retain
+volumeBindingMode: {{ $c.volumeBindingMode | quote }}
+allowVolumeExpansion: {{ $c.allowVolumeExpansion }}
+{{- with $c.parameters }}
+parameters:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end }}

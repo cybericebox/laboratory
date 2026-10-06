@@ -5,46 +5,357 @@ option go_package = "github.com/cybericebox/laboratory/pkg/agent/protobuf";
 service LabManager {
   rpc Ping(Empty) returns (Empty) {}
 
-  rpc CreateLabGroup(LabGroup) returns (LabGroup) {}
-  rpc GetLabGroup(IDRequest) returns (LabGroup) {}
-  rpc ListLabGroups(Empty) returns (LabGroupList) {}
-  rpc UpdateLabGroup(LabGroup) returns (LabGroup) {}
-  rpc SetLabGroupSuspended(LabGroupSuspendRequest) returns (LabGroup) {}
-  rpc SetLabGroupVPNDisabled(LabGroupVPNDisabledRequest) returns (LabGroup) {}
-  rpc DeleteLabGroup(IDRequest) returns (Empty) {}
+  // The CRUD API is plural-only: every call works on a list, one object is a list of one.
+  // The agent is a thin layer: it writes custom resources (and the write-only per-device
+  // Secrets); scheduling and the work itself are the operator's job.
+  //
+  // Mutating calls (Create*, Update*, Delete*, SetLabGroupAccess, the device calls) answer
+  // with one ItemResult per item, in the order of the request (selector calls: sorted by
+  // reference); one failing item never fails the call. A call fails as a whole (INVALID_ARGUMENT)
+  // only for a malformed request: more than 5000 items, a reserved or invalid label, an
+  // invalid selector, a duplicate variant id. Objects are referenced by their ids
+  // (LabGroup id, object id), never by namespace; the agent resolves the namespace.
+  //
+  // Ids of LabGroups, Labs and LabGroupClients are arbitrary strings of 1 to 64 characters. The
+  // custom resource is named after the id when that is a valid DNS-1123 label (every UUID is),
+  // otherwise "h" + base36(sha256(id)); the original id is kept in an annotation and every
+  // answer (calls, Monitoring) returns the original.
+  //
+  // Selector calls (List, Update, Delete, device calls): a Kubernetes label selector or explicit
+  // items, never both. Update, Delete and the device calls with a selector REQUIRE a
+  // non-empty selector and take an optional expected_count: when MORE objects match, nothing
+  // is done and the call fails with FAILED_PRECONDITION (reason COUNT_MISMATCH, the actual
+  // count in the error metadata "actual"). A selector may match at most 5000 objects.
 
-  rpc CreateLab(Lab) returns (Lab) {}
-  rpc GetLab(NamespacedIDRequest) returns (Lab) {}
-  rpc ListLabs(NamespaceRequest) returns (LabList) {}
-  rpc UpdateLab(Lab) returns (Lab) {}
-  rpc DeleteLab(NamespacedIDRequest) returns (Empty) {}
+  // LabGroups.
+  rpc CreateLabGroups(CreateLabGroupsRequest) returns (BatchResult) {}
+  rpc ListLabGroups(ListRequest) returns (LabGroupList) {}
+  rpc UpdateLabGroups(UpdateLabGroupsRequest) returns (BatchResult) {}
+  rpc DeleteLabGroups(DeleteRequest) returns (BatchResult) {}
 
-  rpc CreateLabGroupClient(LabGroupClient) returns (LabGroupClient) {}
-  rpc GetLabGroupClient(NamespacedIDRequest) returns (LabGroupClient) {}
-  rpc ListLabGroupClients(NamespaceRequest) returns (LabGroupClientList) {}
-  rpc DeleteLabGroupClient(NamespacedIDRequest) returns (Empty) {}
+  // LabGroupClients (VPN clients). The CreateLabGroupClients result carries the finished
+  // WireGuard config with the private key the agent generated; it is never available again.
+  rpc CreateLabGroupClients(CreateLabGroupClientsRequest) returns (CreateLabGroupClientsResponse) {}
+  rpc ListLabGroupClients(ListRequest) returns (LabGroupClientList) {}
+  rpc UpdateLabGroupClients(UpdateLabGroupClientsRequest) returns (BatchResult) {}
+  rpc DeleteLabGroupClients(DeleteRequest) returns (BatchResult) {}
 
-  // ReconcileLabGroupAccess atomically replaces the complete client-to-lab
-  // access policy of one LabGroup. Unlisted existing clients receive no labs.
-  rpc ReconcileLabGroupAccess(LabGroupAccessPolicy) returns (Empty) {}
+  // SetLabGroupAccess atomically replaces the complete client-to-lab access policy of
+  // every listed LabGroup. Unlisted existing clients receive no labs.
+  rpc SetLabGroupAccess(SetLabGroupAccessRequest) returns (BatchResult) {}
+
+  // Labs. A variant (the lab spec and its common variables) is sent once, the items
+  // refer to it by id.
+  rpc CreateLabs(CreateLabsRequest) returns (BatchResult) {}
+  rpc ListLabs(ListRequest) returns (LabList) {}
+  rpc UpdateLabs(UpdateLabsRequest) returns (BatchResult) {}
+  rpc DeleteLabs(DeleteRequest) returns (BatchResult) {}
 
   // Monitoring is a server-push stream. Every subscription starts with a
   // complete snapshot; subsequent messages are sequenced deltas or heartbeats.
   rpc Monitoring(MonitoringRequest) returns (stream MonitoringUpdate) {}
 
+  // Enrollment. The platform's private keys never leave it: it generates a client key and an
+  // access key pair itself and sends only the certificate request and the public access key.
+  //
+  // Enroll works over plain TLS (server authentication only: the client has no certificate yet). The
+  // token is the one-time enrollment token of a Tenant (shown to the admin once, valid 24 hours by
+  // default). The agent verifies the token (hash, expiry, not used) and the request (EC P-256 or
+  // stronger, or RSA 2048 or more; the requested subject is ignored), signs a client certificate with
+  // CN = the tenant name, stores the access public key and burns the token. A used, expired or unknown
+  // token is PERMISSION_DENIED. The tenant identity is the subject CN of the returned certificate (the tenant
+  // name, no prefix; a DNS label): the response has no separate tenant field.
+  rpc Enroll(EnrollRequest) returns (CertificateResponse) {}
+  // RenewCertificate (mTLS) issues a new client certificate with the same CN for a new key.
+  rpc RenewCertificate(RenewCertificateRequest) returns (CertificateResponse) {}
+  // RotateAccessKey (mTLS) adds an access public key to the tenant (a rotation overlaps: both keys
+  // work until the old one is removed). The same id with the same key is accepted again.
+  rpc RotateAccessKey(RotateAccessKeyRequest) returns (Empty) {}
+  // RemoveAccessKey (mTLS) removes a key. The last key of a tenant cannot be removed
+  // (FAILED_PRECONDITION).
+  rpc RemoveAccessKey(RemoveAccessKeyRequest) returns (Empty) {}
+
+  // GetCapacity is the caller's tenant view: its quota, reserved, used and free resources.
   rpc GetCapacity(Empty) returns (CapacityResponse) {}
+
+  // GetFeatures is what the caller's tenant can use on this laboratory: state persistence, the image cache,
+  // the scheduler limits, the public hosts and the caller's client certificate lifetime. The backend takes
+  // all of it from here and keeps no copy in its own configuration. Monitoring carries the same message in
+  // MonitoringUpdate.features (first message, then whenever it changed).
+  rpc GetFeatures(Empty) returns (FeaturesResponse) {}
+
+  // ListMaintenanceWindows returns the maintenance windows the cluster operator announced that apply to the caller's
+  // tenant (a window with no tenants applies to all), soonest first. The agent refuses and delays nothing during a
+  // window; the backend reads them to plan (its calendar shows the capacity of the agent as the window says, zero
+  // unless the window leaves some). By default windows that are over are left out. Poll it (it is not part of the
+  // Monitoring stream).
+  rpc ListMaintenanceWindows(ListMaintenanceWindowsRequest) returns (MaintenanceWindowList) {}
+
+  // PrewarmImages makes the platform image cache (zot) fetch images from their upstream
+  // registries BEFORE labs need them, so a burst of labs pulls only from the cache. It is
+  // asynchronous and idempotent: each call returns the current state of the requested images
+  // (starting the work for new ones, retrying FAILED ones, refreshing DONE ones that are
+  // older than the agent's staleness bound); an empty list returns every image the agent
+  // knows. Poll by repeating the call. Fails with FailedPrecondition when the cache is off.
+  rpc PrewarmImages(PrewarmImagesRequest) returns (PrewarmImagesResult) {}
+
+  // Device calls. Targets are explicit (lab_group, lab, device) items or a selector over
+  // LABS plus a device name. The state calls (reset, rescue) only make sense for devices
+  // with snapshot-backed state (LabDeviceStatus.snapshot is set); the backend restricts
+  // them to organizers and admins.
+  //
+  // ResetDevices discards the devices' snapshots and restarts them from their base image.
+  rpc ResetDevices(DevicesRequest) returns (BatchResult) {}
+  // RescueDevices starts the devices from their latest snapshot with a shell instead of
+  // the image entrypoint (enable=true), or back to normal (enable=false), to repair a
+  // configuration that makes the service crash.
+  rpc RescueDevices(RescueDevicesRequest) returns (BatchResult) {}
+
+  // ExportDeviceSnapshot streams the LATEST state of a device with snapshot-backed state as one
+  // archive: the files that differ from the device's base image (the layers of the snapshot
+  // chain squashed into one, deletions kept as OCI whiteouts), as an uncompressed-tar stream
+  // compressed with gzip and cut into chunks. The first message is the metadata, then data
+  // chunks, then the trailer with the length and sha256 of the gzip stream. There is no layer history.
+  // FailedPrecondition: the device has no state persistence, or it has no snapshot yet, or the
+  // snapshot registry is not configured. NotFound: no such device, or it belongs to another tenant.
+  rpc ExportDeviceSnapshot(DeviceSnapshotRequest) returns (stream SnapshotChunk) {}
 }
 
 message Empty {}
-message IDRequest {string name = 1;}
-message LabGroupSuspendRequest {string name = 1; bool suspended = 2;}
-message LabGroupVPNDisabledRequest {string name = 1; bool disabled = 2; bool probe_while_suspended = 3;}
-message NamespaceRequest {string namespace = 1;}
-message NamespacedIDRequest {string namespace = 1; string name = 2;}
+
+// ---- common shapes -------------------------------------------------------------------
+
+// ItemRef names one object by its ids. A LabGroup (and the access policy of one) is identified by
+// name alone; a LabGroupClient or Lab by lab_group + name; a Device by lab_group + lab +
+// name (the device name).
+message ItemRef {
+  string lab_group = 1;
+  string lab = 2;
+  string name = 3;
+}
+
+enum ItemState {
+  ITEM_STATE_UNSPECIFIED = 0;
+  ITEM_STATE_CREATED = 1;
+  ITEM_STATE_EXISTS = 2;     // already there with the same spec and labels
+  ITEM_STATE_UPDATED = 3;    // changed (an existing object that got the labels it lacked), or the request was handed to the operator (device calls)
+  ITEM_STATE_DELETED = 4;    // deletion started (it finishes asynchronously, finalizers)
+  ITEM_STATE_NOT_FOUND = 5;
+  ITEM_STATE_FAILED = 6;     // see error; for an existing name with a different spec as well
+}
+
+message ItemResult {
+  ItemRef ref = 1;
+  ItemState state = 2;
+  string error = 3;
+  // True when the failure is worth repeating (the object is still being deleted, the
+  // LabGroup namespace is not ready yet).
+  bool retryable = 4;
+}
+
+message BatchResult {repeated ItemResult results = 1;}
+
+// ListRequest: names (items) or a selector, never both; none = everything. lab_group
+// narrows a listing of namespaced kinds to one LabGroup.
+message ListRequest {
+  string selector = 1;
+  repeated ItemRef items = 2;
+  string lab_group = 3;
+}
+
+// Selector picks objects by Kubernetes label selector ("a=b,c in (d,e),!f"). It must be
+// non-empty. lab_group narrows namespaced kinds to one LabGroup.
+message Selector {
+  string selector = 1;
+  string lab_group = 2;
+  // The upper bound of matching objects; more matches fail the call (see the service notes).
+  optional int64 expected_count = 3;
+}
+
+message DeleteRequest {
+  Selector by_selector = 1;
+  repeated ItemRef items = 2;
+}
+
+// LabelChanges: set labels (a set label overrides an existing one) and remove labels.
+// A key in both is invalid.
+message LabelChanges {
+  map<string, string> set = 1;
+  repeated string remove = 2;
+}
+
+message StringList {repeated string values = 1;}
+
+// Labels of every mutating call: request-level labels apply to every item, the item's
+// own labels win on a conflict. They pass through as given and must be valid Kubernetes
+// labels (an invalid one is INVALID_ARGUMENT, naming the item); the
+// prefix laboratory.cybericebox.com/ is reserved for the platform and rejected. Labels
+// go onto the custom resource; a Lab's labels are copied to its Devices and pods when those
+// are created.
+//
+// Scheduling parameters are NOT labels but fields: deploy_group (at most 64 characters, no
+// comma) and deploy_after (at most 32 deploy groups this one waits for, each at most 64
+// characters, no comma). The agent writes the reserved label laboratory.cybericebox.com/deploy-group
+// (the group itself when it is a valid label value of up to 63 characters, otherwise "h" +
+// base36(sha256)) and the annotations laboratory.cybericebox.com/deploy-group (the original)
+// and laboratory.cybericebox.com/deploy-after (the original keys, comma-separated). Both come
+// back as given in LabGroup and Lab.
+
+// ---- LabGroups ----------------------------------------------------------------------
+
+message LabGroupItem {
+  string name = 1;
+  map<string, string> labels = 2;
+  string deploy_group = 3;
+  repeated string deploy_after = 4;
+  bool suspended = 5;
+  bool vpn_disabled = 6;
+  bool probe_while_suspended = 7;
+  // The sizes of the group's own pods, computed by the backend from FeaturesResponse.group_pods (the VPN for the users the group
+  // may have, the gateway for the labs of the group that use the internet). The pods are created Guaranteed at exactly that size
+  // and never resized. Unset = the chart's default size. A set size must have both values positive and be within the maximum
+  // that group_pods reports, else the item is refused (InvalidArgument).
+  PodSize vpn_size = 8;
+  PodSize gateway_size = 9;
+}
+// The size of one pod: requests = limits.
+message PodSize {
+  int64 cpu_millicores = 1;
+  int64 memory_bytes = 2;
+}
+message CreateLabGroupsRequest {
+  map<string, string> labels = 1;
+  repeated LabGroupItem items = 2;
+}
+
+message LabGroupChanges {
+  LabelChanges labels = 1;
+  optional bool suspended = 2;
+  optional bool vpn_disabled = 3;
+  optional bool probe_while_suspended = 4;
+}
+message UpdateLabGroupItem {
+  string name = 1;
+  LabGroupChanges changes = 2;
+}
+// Selector or items. changes apply to every target; an item's own changes win.
+message UpdateLabGroupsRequest {
+  Selector by_selector = 1;
+  LabGroupChanges changes = 2;
+  repeated UpdateLabGroupItem items = 3;
+}
+
+// ---- LabGroupClients ----------------------------------------------------------------
+
+message LabGroupClientItem {
+  string lab_group = 1;
+  string name = 2;
+  map<string, string> labels = 3;
+}
+message CreateLabGroupClientsRequest {
+  map<string, string> labels = 1;
+  repeated LabGroupClientItem items = 2;
+}
+// client is set for CREATED (with the finished WireGuard config) and EXISTS (the
+// placeholder config: the private key exists only in the answer of the create call).
+message LabGroupClientResult {
+  ItemResult result = 1;
+  LabGroupClient client = 2;
+}
+message CreateLabGroupClientsResponse {repeated LabGroupClientResult results = 1;}
+
+message UpdateLabGroupClientItem {
+  string lab_group = 1;
+  string name = 2;
+  LabelChanges labels = 3;
+}
+message UpdateLabGroupClientsRequest {
+  Selector by_selector = 1;
+  LabelChanges labels = 2;
+  repeated UpdateLabGroupClientItem items = 3;
+}
+
+message SetLabGroupAccessRequest {
+  // Added to the labels of every policy (a policy also gets the labels of its LabGroup).
+  map<string, string> labels = 1;
+  repeated LabGroupAccessPolicy policies = 2;
+}
+
+// ---- Labs ---------------------------------------------------------------------------
+
+// LabVariant is sent once per request however many labs use it; it is not stored, the
+// spec is copied into every Lab. Device variables are secrets only: spec_json must not
+// carry env or flags on devices (rejected). A device's state persistence is part of the
+// spec (devices[].persistence {enabled, debounce}), set at
+// creation and immutable; enabled=true is refused when the cluster does not allow persistence.
+message LabVariant {
+  string variant_id = 1;
+  bytes spec_json = 2;            // Lab.spec serialized; the agent passes it through
+  repeated DeviceEnv env = 3;     // variables common to every lab of the variant
+}
+message LabItem {
+  string lab_group = 1;
+  string name = 2;
+  string variant_id = 3;
+  // This lab's own variables; they override the variant's by device and variable name.
+  repeated DeviceEnv env = 4;
+  map<string, string> labels = 5;
+  string deploy_group = 6;
+  repeated string deploy_after = 7;
+}
+message CreateLabsRequest {
+  map<string, string> labels = 1;
+  repeated LabVariant variants = 2;
+  repeated LabItem items = 3;
+}
+
+// LabChanges: labels, and env = rewrite the write-only Secret of every listed device
+// with exactly these variables (no variables = remove the Secret); unlisted devices are
+// untouched.
+message LabChanges {
+  LabelChanges labels = 1;
+  repeated DeviceEnv env = 2;
+}
+message UpdateLabItem {
+  string lab_group = 1;
+  string name = 2;
+  LabChanges changes = 3;
+}
+message UpdateLabsRequest {
+  Selector by_selector = 1;
+  LabChanges changes = 2;
+  repeated UpdateLabItem items = 3;
+}
+
+// ---- Devices ------------------------------------------------------------------------
+
+// DeviceSelector selects LABS by label and names the device inside each of them.
+message DeviceSelector {
+  string selector = 1;
+  string lab_group = 2;
+  string device = 3;
+  optional int64 expected_count = 4;   // of labs
+}
+// items (lab_group, lab, name = device) or by_selector, never both.
+message DevicesRequest {
+  repeated ItemRef items = 1;
+  DeviceSelector by_selector = 2;
+}
+message RescueDevicesRequest {
+  DevicesRequest devices = 1;
+  bool enable = 2;
+}
 
 message LabGroup {
   string name = 1;
   LabGroupStatus status = 2;
+  // Kubernetes labels of the LabGroup (the Monitoring selector matches against them).
+  map<string, string> labels = 10;
+  string deploy_group = 11;
+  repeated string deploy_after = 12;
+  // Creation time of the LabGroup object, unix milliseconds (0 when unknown). A cleanup
+  // sweep uses it to skip groups that are still being deployed.
+  int64 created_unix_ms = 13;
 }
 message LabGroupStatus {
   string phase = 1;
@@ -52,6 +363,10 @@ message LabGroupStatus {
   bool vpn_registered = 3;
   bool suspended = 4;
   string vpn_client_subnet = 5;
+  // VPN or gateway image that could not be pinned to a digest (pulled by tag); empty when fine.
+  string image_warning = 6;
+  Scheduling scheduling = 7;
+  repeated LabGroupPod pods = 8;   // absent for a group that predates the scheduler
 }
 message LabGroupList {repeated LabGroup items = 1;}
 
@@ -60,15 +375,18 @@ message Lab {
   string name = 2;
   bytes spec_json = 3;   // Lab.spec serialized; agent is a thin wrapper, spec passes through
   LabStatus status = 4;
-  // Per-device environment variables. The agent materializes these into a
-  // write-only per-device Secret (referenced by the pod via envFrom) — the
-  // values never travel in spec_json and never land in the Lab/Device CR.
-  repeated DeviceEnv env = 5;
+  reserved 5;   // was env: device variables are write-only and never read back
   // Populated only by monitoring so the backend can associate a namespaced
   // Lab record with its LabGroup without inferring it from a namespace.
   string lab_group_name = 6;
+  // Kubernetes labels of the Lab.
+  map<string, string> labels = 10;
+  string deploy_group = 11;
+  repeated string deploy_after = 12;
 }
-// DeviceEnv carries the env vars for one device (e.g. a task flag, a license).
+// DeviceEnv carries the variables of one device. The agent materializes them into a
+// write-only per-device Secret (the pod loads it via envFrom): they never land in the
+// Lab/Device CR and are never read back.
 message DeviceEnv {
   string device = 1;
   map<string, string> vars = 2;
@@ -84,6 +402,58 @@ message LabStatus {
   repeated LabDeviceStatus devices = 8;      // per-device readiness
   repeated LabConnectionStatus connections = 9;  // per-connection readiness
   repeated LabAccessEntry access = 10;       // structured web-exposure entries
+  reserved 20;   // was queue (the launch queue)
+  // Place of the lab in the scheduler queue; absent for a lab the scheduler does not track.
+  Scheduling scheduling = 21;
+  // Image cache: the images of the lab that could not be pinned to a digest and
+  // are pulled by tag; empty when all were pinned or the lab does not use the cache.
+  string image_warning = 40;
+}
+// Scheduling is the place of a Lab or LabGroup in the scheduler queue. The scheduler
+// refreshes it at a limited rate, so position can lag by seconds.
+message Scheduling {
+  // The ORIGINAL deploy key of the object (as given in deploy_group); empty for an independent one.
+  string group = 1;
+  int32 position = 2;   // 1-based place among the objects that still have pods to dispatch; 0 = all dispatched
+  int32 length = 3;     // such objects when position was written
+  // Why the next pod is not dispatched: InFlightLimit | WaitingForGroup | WaitingForTurn |
+  // PreparingImages | InsufficientResources | NoSchedulableNodes. Empty when nothing waits.
+  string reason = 4;
+  string message = 5;   // detail, for example "waiting for group intro"
+  int32 pods = 6;       // pods of the object
+  int32 pending = 7;    // of them not dispatched yet
+}
+
+enum PodState {
+  POD_STATE_UNSPECIFIED = 0;
+  POD_STATE_QUEUED = 1;     // waits for the scheduler; no workload yet
+  POD_STATE_STARTING = 2;   // dispatched, not Ready yet
+  POD_STATE_STARTED = 3;    // was Ready once
+  POD_STATE_FAILED = 4;     // did not start in time (see failure); it may still become Ready
+}
+
+// PodScheduling is where one pod is on its way from the queue to Ready.
+message PodScheduling {
+  PodState state = 1;
+  int64 queued_unix_ms = 2;
+  int64 dispatched_unix_ms = 3;
+  int64 started_unix_ms = 4;
+  PodFailure failure = 5;   // set for a failed pod, cleared when it becomes Ready
+}
+
+// PodFailure explains a pod that did not start: ImagePull | CrashLoop | Unschedulable |
+// StartupTimeout | PodNotCreated | DoesNotFit.
+message PodFailure {
+  string reason = 1;
+  string message = 2;       // the last error the node reported
+  int32 restart_count = 3;
+  int64 at_unix_ms = 4;
+}
+
+// LabGroupPod is the scheduling state of a pod the LabGroup runs itself ("vpn", "gateway").
+message LabGroupPod {
+  string name = 1;
+  PodScheduling scheduling = 2;
 }
 message LabDeviceStatus {
 	string name = 1;
@@ -98,6 +468,18 @@ message LabDeviceStatus {
 	string pod_phase = 10;
 	string pod_reason = 11;
 	int32 restart_count = 12;
+	// Set only for a device with state persistence.
+	DeviceSnapshotStatus snapshot = 30;
+	// Scheduler state of the device pod; absent when the scheduler does not track it.
+	PodScheduling scheduling = 31;
+}
+// DeviceSnapshotStatus is the state of a device's writable-layer snapshots.
+message DeviceSnapshotStatus {
+  int64 last_snapshot_unix_ms = 1;  // 0 = no snapshot yet
+  int64 restored_unix_ms = 2;       // when the device was last started from a snapshot; 0 = never
+  int64 size_bytes = 3;             // uncompressed size of the kept snapshot layers
+  string warning = 4;               // quota exceeded or snapshot failing; the last good snapshot is kept
+  bool rescue = 5;                  // the device runs in rescue mode
 }
 message LabConnectionStatus {
   string name = 1;
@@ -118,14 +500,16 @@ message LabGroupClient {
   LabGroupClientStatus status = 4;
   // Populated only by monitoring; CRUD callers resolve group scope themselves.
   string lab_group_name = 5;
+  // Kubernetes labels of the client.
+  map<string, string> labels = 10;
 }
 message LabGroupClientStatus {
   reserved 2;   // was secret_ref (client Secret removed)
   string assigned_ip = 1;
   bool ready = 3;
-  // Assembled WireGuard client config. On CreateLabGroupClient the agent fills
-  // in the real private key it generated; on Get it carries the placeholder
-  // (the cluster never holds the private key).
+  // Assembled WireGuard client config. In the CreateLabGroupClients answer the agent
+  // fills in the real private key it generated; everywhere else it carries the
+  // placeholder (the cluster never holds the private key).
   string config = 4;
   LabGroupClientStatistics statistics = 5;   // live WireGuard peer stats (bytes + handshake)
 }
@@ -146,6 +530,9 @@ message LabGroupAccessPolicy {
 	LabGroupAccessPolicyStatus status = 3;
 	// Populated only by monitoring; mutations resolve scope from LabGroup name.
 	string namespace = 4;
+  // Labels of the policy object. SetLabGroupAccess gives it the labels of its
+  // LabGroup plus these, so a selector that matches a group matches its policy.
+  map<string, string> labels = 10;
 }
 enum LabGroupAccessAction {
   LAB_GROUP_ACCESS_ACTION_UNSPECIFIED = 0;
@@ -177,11 +564,20 @@ message LabGroupAccessRuleStatistics {
 }
 
 message MonitoringRequest {
-  // The agent bounds this to protect the Kubernetes API from a too-fast caller.
+  // The agent bounds this to protect the Kubernetes API from a too-fast caller. It is
+  // the least time between two messages of this stream: changes in between are merged.
   int64 min_interval_ms = 1;
-  // Reserved for a future resumable agent journal. Current agents always send
-  // a new snapshot on connection/reconnection.
+  // Resume: the last sequence the subscriber processed from the agent instance named in
+  // agent_epoch. If that instance still holds the missed updates in its journal, they are
+  // replayed (snapshot=false); otherwise a full snapshot (snapshot=true) is sent. 0 = no resume.
   int64 resume_after_sequence = 2;
+  // Kubernetes label selector ("a=b,c in (d,e),!f"). Only objects of the kinds LabGroup, Lab,
+  // LabGroupClient and access policy whose labels match are sent, in the snapshot and in the
+  // updates, deletions included. A traffic report is cut down to the touches of matching labs.
+  // Capacity is always sent. Empty = everything. An invalid selector fails the call.
+  string selector = 3;
+  // The agent_epoch of the updates resume_after_sequence belongs to.
+  string agent_epoch = 4;
 }
 
 message MonitoringDeletedKey {
@@ -202,13 +598,21 @@ message MonitoringUpdate {
   repeated LabGroupClient clients = 12;
 	repeated MonitoringDeletedKey deleted_keys = 13;
 	repeated LabGroupAccessPolicy policies = 14;
-  // Cluster-wide capacity is not tied to any LabGroup. It lets the platform
-  // administrator see actual headroom even when no event is currently active.
+  // The subscriber's tenant capacity (quota, reserved, used, free). It is sent with the first
+  // message and again when it changed; never cluster-wide numbers.
   CapacityResponse capacity = 15;
+  // What the subscriber's tenant can use (see GetFeatures). Sent with the first message and again when it changed.
+  FeaturesResponse features = 17;
   // Lab traffic accounting: cumulative aggregates relayed from LabTrafficReport
   // resources. State records like clients and policies, so a fresh snapshot
   // after a reconnect re-sends them; consumers apply them as cumulative values.
   repeated TrafficReport traffic = 16;
+  // The laboratory's own errors and the failed lab deploys of the subscriber's tenant; see ErrorJournal. Sent with the first
+  // message and then as deltas; absent when there is nothing new.
+  ErrorJournal errors = 18;
+  // Identifies this agent PROCESS. Sequences are monotonic within one epoch only; a changed
+  // epoch means the agent restarted and a resume is impossible (a snapshot follows).
+  string agent_epoch = 20;
 }
 
 // TrafficReport is the state of one collector (the VPN pod of a group, or one
@@ -249,22 +653,347 @@ message TrafficTouch {
   int64 first_responded_unix_ms = 14; // 0 = the lab never answered
 }
 
-// NodeCapacity reports a node's allocatable resources and how much is already
-// requested by scheduled pods, so a caller can compute remaining headroom.
-message NodeCapacity {
-  string name = 1;
-  int64 allocatable_cpu_millicores = 2;
-  int64 allocatable_memory_bytes = 3;
-  int64 requested_cpu_millicores = 4;   // sum of scheduled pod container requests
-  int64 requested_memory_bytes = 5;
-}
-// CapacityResponse aggregates per-node capacity plus cluster totals. Remaining
-// headroom = allocatable - requested; divide by a lab's summed device requests
-// to estimate how many more labs fit.
+// CapacityResponse is the CALLER's view of its tenant's resources; no cluster-wide numbers
+// are exposed. Reserved is the sum of the requests of the tenant's pods, used the live
+// consumption (metrics). When the tenant has a quota, free = quota - reserved (never negative);
+// without one there is no limit and the free fields are 0.
 message CapacityResponse {
-  repeated NodeCapacity nodes = 1;
-  int64 allocatable_cpu_millicores = 2;
-  int64 allocatable_memory_bytes = 3;
-  int64 requested_cpu_millicores = 4;
-  int64 requested_memory_bytes = 5;
+  string tenant = 1;
+  bool has_cpu_quota = 2;
+  int64 cpu_quota_millicores = 3;
+  bool has_memory_quota = 4;
+  int64 memory_quota_bytes = 5;
+  int64 cpu_reserved_millicores = 6;
+  int64 memory_reserved_bytes = 7;
+  bool usage_available = 8;   // false when metrics-server is not installed: used is then 0
+  int64 cpu_used_millicores = 9;
+  int64 memory_used_bytes = 10;
+  int64 cpu_free_millicores = 11;
+  int64 memory_free_bytes = 12;
+  // What the VPN and gateway pods of ONE LabGroup request together (requests = limits, from the chart): the
+  // service overhead every group adds to its labs. Sizing a reservation takes it per group.
+  int64 group_overhead_cpu_millicores = 13;
+  int64 group_overhead_memory_bytes = 14;
+  // Fields 15 and 16 were a per-node list that was dropped before any release: the agent never shows the cluster layout.
+  reserved 15, 16;
+  // The largest device the agent can place: per resource, the largest allocatable of a lab node net of the platform
+  // reserve the scheduler keeps free (the two values may come from different nodes). One amount, no names: the cluster
+  // layout stays private. The backend refuses to plan a device above it. has_max_device is false for an older agent.
+  bool has_max_device = 17;
+  int64 max_device_cpu_millicores = 18;
+  int64 max_device_memory_bytes = 19;
 }
+
+message FeaturesResponse {
+  string tenant = 1;
+  StatePersistenceFeature state_persistence = 2;
+  ImageCacheFeature image_cache = 3;
+  SchedulerFeature scheduler = 4;
+  EndpointsFeature endpoints = 5;
+  CertificateFeature certificate = 6;
+  ProxyFeature proxy = 7;
+  LimitsFeature limits = 8;
+  // The device security profiles this cluster offers (catalog IDs: "standard", "extended"). A lab whose device asks
+  // for another is refused (InvalidArgument); the old names basic and service mean standard, net and debug mean extended.
+  repeated string device_profiles = 9;
+  // How the pods a group runs itself are sized, and what the chart gives them when CreateLabGroups sets no size.
+  GroupPodsFeature group_pods = 10;
+  // Fixed limits of the model (not settings).
+  DeviceConstants constants = 11;
+  // The resources the cluster gives this tenant (the same quota GetCapacity reports against).
+  TenantQuotaFeature tenant_quota = 12;
+}
+
+// The size of a pod is base + per_unit * units, units at most max_units; the maximum size is base + per_unit * max_units.
+// The VPN unit is a user (a WireGuard peer: it grows with the users of the group, not with its labs); the gateway unit is a
+// lab of the group that uses the internet.
+message PodSizing {
+  int64 base_cpu_millicores = 1;
+  int64 base_memory_bytes = 2;
+  int64 per_unit_cpu_millicores = 3;
+  int64 per_unit_memory_bytes = 4;
+  int32 max_units = 5;
+}
+message GroupPodsFeature {
+  PodSizing vpn = 1;
+  PodSizing gateway = 2;
+  // What a group's pod gets when CreateLabGroups sets no size.
+  PodSize default_vpn = 3;
+  PodSize default_gateway = 4;
+}
+
+// Constants of the device model: the platform's, not settings. The devices of a lab are capped by LimitsFeature.lab.max_devices
+// (at most hard_max_devices_per_lab, the ceiling the chart cannot lift).
+message DeviceConstants {
+  int32 max_interfaces_per_container = 1;
+  int32 max_ports_per_switch_or_hub = 2;
+  int32 hard_max_devices_per_lab = 3;
+}
+
+// The tenant's quota; has_* false = no limit on that resource.
+message TenantQuotaFeature {
+  bool has_cpu_quota = 1;
+  int64 cpu_quota_millicores = 2;
+  bool has_memory_quota = 3;
+  int64 memory_quota_bytes = 4;
+}
+
+// Caps the cluster owns. CreateLabs refuses a lab over them (InvalidArgument with the reason; a tenant over
+// tenant.max_labs gets FAILED items with the reason). 0 = no limit, except the default_* values, which are the
+// planning profile of a device that declares no resources (the scheduler counts with it too). Devices run
+// Guaranteed (request = limit); a topology value counts as its limit, else its request, else the default.
+message LimitsFeature {
+  DeviceLimits device = 1;
+  LabLimits lab = 2;
+  TenantLimits tenant = 3;
+  GroupLimits group = 4;
+}
+
+message DeviceLimits {
+  int64 max_cpu_millicores = 1;
+  int64 max_memory_bytes = 2;
+  int64 default_cpu_millicores = 3;
+  int64 default_memory_bytes = 4;
+}
+
+message LabLimits {
+  // Container devices per lab (switches and hubs run no pod and do not count).
+  int32 max_devices = 1;
+  reserved 2, 3;   // were the per-lab CPU and memory sums
+}
+
+// Per LabGroup: its labs, and the sum of the planned resources of the devices of all of them.
+message GroupLimits {
+  int32 max_labs = 1;
+  int64 max_cpu_millicores = 2;
+  int64 max_memory_bytes = 3;
+}
+
+message TenantLimits {
+  // Labs of one tenant; the tenant's resource quota still applies.
+  int32 max_labs = 1;
+}
+
+// Limits the L7 proxy enforces on lab access.
+message ProxyFeature {
+  // The longest exp - iat of an access token (handoff link) the proxy accepts; a longer one is refused.
+  int64 access_token_max_ttl_seconds = 1;
+  // The proxy's session is sliding: it expires after this much inactivity (the cookie is renewed while the
+  // user is active) ...
+  int64 session_idle_ttl_seconds = 3;
+  // ... and never lives longer than this from the handoff, nor past the link's own session end.
+  int64 session_max_ttl_seconds = 2;
+}
+
+// Device state persistence for this tenant.
+message StatePersistenceFeature {
+  // The cluster enables persistence AND the tenant is allowed (Tenant.spec.persistence.allowed). Only then a
+  // topology may set devices[].persistence.enabled.
+  bool available = 1;
+  // Debounce used when a device does not set one (the cluster value).
+  int64 default_debounce_ms = 2;
+  // The most of a participant's writes kept per device, and the largest file snapshotted: the tenant's
+  // limit capped by the cluster's, or the cluster's when the tenant sets none.
+  int64 write_quota_bytes = 3;
+  int64 max_file_size_bytes = 4;
+  // Paths never snapshotted (cluster-wide, a topology cannot change them).
+  repeated string excluded_paths = 5;
+  // The most the snapshots of ALL the tenant's devices may take in the registry together (the tenant's own limit capped by
+  // the cluster's); 0 = no limit.
+  int64 registry_quota_bytes = 6;
+  // The most entries (files, directories, links) one snapshot layer may hold.
+  int32 max_entries = 7;
+}
+
+// The platform image cache (PrewarmImages works only when it is enabled).
+message ImageCacheFeature {
+  bool enabled = 1;
+  // Upstream registries the cache serves; images of other registries are pulled directly.
+  repeated string registries = 2;
+}
+
+// Scheduler: pods of labs start through a queue of this width.
+message SchedulerFeature {
+  bool enabled = 1;
+  // The most pods starting at once (0 = no limit).
+  int32 max_pods = 2;
+}
+
+// Hosts the backend shows or hands out.
+message EndpointsFeature {
+  // Base domain of the lab web endpoints (device URLs are <host>.<labs_domain>).
+  string labs_domain = 1;
+  // host:port WireGuard clients connect to.
+  string vpn_endpoint = 2;
+}
+
+// The client certificate of the connection the call came on. The backend schedules RenewCertificate from
+// not_after_unix, not from its own configuration. Reflects the certificate used to connect: after a renewal it
+// changes when the connection is made again.
+message CertificateFeature {
+  int64 not_after_unix = 1;       // 0 without a client certificate (mTLS off)
+  int64 issued_ttl_seconds = 2;   // the lifetime of certificates Enroll / RenewCertificate issue now
+}
+
+// ErrorJournal is what broke in the laboratory since the last message of this stream (the first message covers the last ten
+// minutes). The counts are deltas. Nothing here names a tenant, a participant, an address or a secret: every message is
+// redacted where it is written and again where it is read.
+message ErrorJournal {
+  int64 window_start_unix_ms = 1;
+  int64 window_end_unix_ms = 2;
+  // The laboratory's own components. Only for a tenant with Tenant.spec.receivesLabErrors (the platform's backend); empty for others.
+  repeated ComponentErrors components = 3;
+  // Lab deploys of THIS tenant that failed, with a reason code.
+  repeated DeployFailure deploy_failures = 4;
+  // not_after of the client certificate of this connection (as features.certificate.not_after_unix), so that the journal can warn
+  // before it expires. Sent with the first message, when it changes, and about hourly.
+  int64 client_cert_not_after_unix = 5;
+}
+
+// ComponentErrors are the errors of one component instance.
+message ComponentErrors {
+  // "operator" | "node-agent" | "l7-proxy" | "wg-demux" | "vpn" | "gateway" | "agent"
+  string component = 1;
+  // The node name (node-agent) or the pod name (replicas); never an address.
+  string instance = 2;
+  repeated ErrorGroup groups = 3;
+}
+
+// ErrorGroup is one distinct error: the occurrences that read the same after normalizing.
+message ErrorGroup {
+  // hex(sha256(component, kind, normalized))[:8]: stable across restarts and replicas of the same component.
+  string fingerprint = 1;
+  // The error path: reconcile, ovs, registry, cni, grpc, tls, panic, ... (the first name of the logger).
+  string kind = 2;
+  // The message with numbers, ids, names, hosts and addresses replaced (<n>, <id>, <obj>, <host>, <ip>); secrets removed.
+  string normalized = 3;
+  // Occurrences in the window.
+  int64 count = 4;
+  int64 first_unix_ms = 5;
+  int64 last_unix_ms = 6;
+  // Up to three recent messages, redacted, at most 300 characters each.
+  repeated string samples = 7;
+}
+
+// DeployFailure is a lab (or a group's VPN or gateway pod) of the tenant that did not start.
+message DeployFailure {
+  string lab_group = 1;   // the platform's ids (as in ItemRef), not names of images or people
+  string lab = 2;         // empty for a pod of the group itself
+  // A stable code: ImagePull, CrashLoop, Unschedulable, StartupTimeout, PodNotCreated, DoesNotFit (device and group pods), or LabFailed / LabError
+  // (a lab whose phase is Failed or Error without a device failure to blame).
+  string reason_code = 3;
+  string device = 4;      // the device name (the platform's, from the topology), or "vpn" / "gateway"
+  string message = 5;     // redacted, at most 300 characters
+  int64 at_unix_ms = 6;
+}
+
+message PrewarmImagesRequest {
+  // Image references as written in a lab spec ("nginx:1.25", "ghcr.io/o/app@sha256:...").
+  repeated string images = 1;
+}
+
+enum PrewarmState {
+  PREWARM_STATE_UNSPECIFIED = 0;
+  PREWARM_STATE_QUEUED = 1;   // waiting for a free slot (the agent bounds the concurrency)
+  PREWARM_STATE_WARMING = 2;  // the cache is fetching it
+  PREWARM_STATE_DONE = 3;     // the manifest and every blob are stored in the cache
+  PREWARM_STATE_FAILED = 4;   // see error; a repeated call retries
+  PREWARM_STATE_SKIPPED = 5;  // the image's registry is not served by the cache: nodes pull it directly
+}
+
+message PrewarmImageStatus {
+  string image = 1;
+  PrewarmState state = 2;
+  string error = 3;
+  // The digest the cache holds: the manifest of the cluster's node platform for a
+  // single-architecture cluster, the index otherwise (what the operator pins labs to).
+  string digest = 4;
+  int64 updated_unix_ms = 5;
+}
+
+message PrewarmImagesResult {
+  repeated PrewarmImageStatus images = 1;
+}
+
+message EnrollRequest {
+  string token = 1;
+  string csr_pem = 2;               // PKCS#10 certificate request; only its public key is used
+  string access_public_key_pem = 3; // PKIX Ed25519 public key that verifies the tenant's tokens
+  string access_key_id = 4;         // 1 to 64 characters of A-Z a-z 0-9 . _ -
+}
+message RenewCertificateRequest {string csr_pem = 1;}
+message CertificateResponse {
+  string certificate_pem = 1;
+  string chain_pem = 2;             // the CA certificate that signed it
+  reserved 3;                       // was tenant: the identity is the certificate's subject CN, nothing else
+  int64 not_after_unix = 4;
+}
+message RotateAccessKeyRequest {
+  string public_key_pem = 1;        // PKIX Ed25519
+  string key_id = 2;
+}
+message RemoveAccessKeyRequest {string key_id = 1;}
+
+message DeviceSnapshotRequest {
+  // The device: lab_group, lab and name (the device name).
+  ItemRef ref = 1;
+}
+
+// SnapshotChunk is one message of the ExportDeviceSnapshot stream: first meta, then data
+// (in order), then trailer. Concatenating the data of all chunks gives a gzip stream of one tar
+// archive (see SnapshotMeta.format).
+message SnapshotChunk {
+  oneof content {
+    SnapshotMeta meta = 1;
+    bytes data = 2;
+    SnapshotTrailer trailer = 3;
+  }
+}
+
+message SnapshotMeta {
+  ItemRef ref = 1;
+  // The base image of the device as written in its spec, and, when the lab pinned it, its digest.
+  string base_image = 2;
+  string base_image_digest = 3;
+  // The compressed digests of the layers of the base image, in order, as the snapshot image holds them.
+  repeated string base_layer_digests = 4;
+  // The manifest digest of the snapshot in the registry, and when it was taken.
+  string snapshot_digest = 5;
+  int64 snapshot_unix_ms = 6;
+  // Snapshot layers squashed into this archive, and the sum of their uncompressed sizes
+  // (an upper bound of the archive's content: a file rewritten in several runs counts once in the archive).
+  int32 squashed_layers = 7;
+  int64 layers_size_bytes = 8;
+  // "tar+gzip; OCI layer: whiteouts as .wh.<name>, opaque directories as .wh..wh..opq". The
+  // archive applies on top of the base image like an image layer.
+  string format = 9;
+  // The size of every data chunk except the last (bytes).
+  int32 chunk_size = 10;
+}
+
+message SnapshotTrailer {
+  // The total length and the sha256 (hex) of the gzip stream, for the receiver to verify.
+  int64 compressed_bytes = 1;
+  string sha256 = 2;
+}
+
+message ListMaintenanceWindowsRequest {
+  bool include_past = 1;   // also the windows that are over
+}
+message MaintenanceWindow {
+  string name = 1;
+  int64 from_unix_ms = 2;
+  int64 to_unix_ms = 3;    // 0 = open-ended
+  string reason = 4;
+  // Upcoming | Active | Past, as of the call.
+  string state = 5;
+  // True when the window applies to every tenant; otherwise it names the caller's tenant
+  // (other tenants are never listed).
+  bool all_tenants = 6;
+  // What the window leaves to the tenant: when has_capacity is false nothing (zero); when true, the capacity
+  // below (a resource the window does not name is zero).
+  bool has_capacity = 7;
+  int64 capacity_cpu_millicores = 8;
+  int64 capacity_memory_bytes = 9;
+}
+message MaintenanceWindowList {repeated MaintenanceWindow items = 1;}

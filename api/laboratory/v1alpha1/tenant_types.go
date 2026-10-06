@@ -1,0 +1,160 @@
+package v1alpha1
+
+import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// TenantSpec is the policy of one tenant of the management agent. The tenant is
+// identified by the Tenant's name: the client certificate issued for it carries
+// CN = name, and the agent resolves the caller's tenant by that CN.
+type TenantSpec struct {
+	// Persistence is what the tenant may do with device state persistence.
+	// +optional
+	Persistence TenantPersistence `json:"persistence,omitempty"`
+	// ReceivesLabErrors lets the agent send this tenant the laboratory's own errors (operator, node-agent, proxy, demux, VPN and
+	// gateway pods) in MonitoringUpdate.errors. They are platform-wide and carry no tenant data, but a tenant that is only a customer
+	// of the cluster has no business with them: set it for the platform's own backend only. A tenant's failed lab deploys are always
+	// sent, whatever this says.
+	// +optional
+	ReceivesLabErrors bool `json:"receivesLabErrors,omitempty"`
+	// Quota caps the CPU and memory requests of the tenant's running pods.
+	// Absent: no limit.
+	// +optional
+	Quota *TenantQuota `json:"quota,omitempty"`
+	// Images is the tenant's image policy and registry credentials.
+	// +optional
+	Images TenantImages `json:"images,omitempty"`
+}
+
+// TenantImages is what a tenant may run and how its images are pulled. The platform's own
+// registry credentials are never used for a tenant's images.
+type TenantImages struct {
+	// PullSecret names a kubernetes.io/dockerconfigjson Secret of the tenants namespace
+	// (laboratory-tenants) with the tenant's registry credentials. They are used for the
+	// tenant's devices and image prepull, and a tenant that has them pulls straight from
+	// its registries: its images do not go through the shared image cache. Absent: the
+	// tenant's images are public.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	PullSecret string `json:"pullSecret,omitempty"`
+	// Allow lists the registries and repositories the tenant's devices may use, as
+	// "registry/repository-prefix" ("ghcr.io/acme/", "docker.io/library/", "quay.io"). A
+	// reference is allowed when it equals an entry or lies under it. Absent: any image that
+	// the platform deny list (agent AGENT_IMAGE_DENY) does not exclude.
+	// +optional
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:MaxLength=255
+	Allow []string `json:"allow,omitempty"`
+}
+
+// TenantPersistence is the persistence policy of a tenant. The platform switch
+// (chart devices.statePersistence) allows the mechanism at all, and its values are
+// the ceilings of the limits below.
+type TenantPersistence struct {
+	// Allowed lets the tenant's topologies ask for persistence (devices[].persistence.enabled).
+	// It has no effect while the platform does not allow persistence.
+	// +optional
+	Allowed bool `json:"allowed,omitempty"`
+	// WriteQuota is the most of a participant's writes kept per device (a Kubernetes
+	// quantity); capped by the platform's value, which is also the default.
+	// +optional
+	WriteQuota string `json:"writeQuota,omitempty"`
+	// MaxFileSize: a file larger than this is not snapshotted (a Kubernetes quantity);
+	// capped by the platform's value, which is also the default.
+	// +optional
+	MaxFileSize string `json:"maxFileSize,omitempty"`
+	// RegistryQuota is the most the snapshots of all the tenant's devices may take in the registry together (a Kubernetes
+	// quantity); capped by the platform's value, which is also the default.
+	// +optional
+	RegistryQuota string `json:"registryQuota,omitempty"`
+}
+
+// TenantQuota caps the sum of the CPU and memory requests of the tenant's dispatched
+// pods. Each limit is an absolute quantity ("32", "500Gi") or a percentage of what
+// the nodes lab pods can run on allocate ("50%"). Absent: no limit.
+type TenantQuota struct {
+	// +optional
+	CPU string `json:"cpu,omitempty"`
+	// +optional
+	Memory string `json:"memory,omitempty"`
+}
+
+// TenantUsage is a CPU and memory total as Kubernetes quantities.
+type TenantUsage struct {
+	CPU    string `json:"cpu,omitempty"`
+	Memory string `json:"memory,omitempty"`
+}
+
+// TenantStatus is the observed load of the tenant, refreshed by the management agent.
+type TenantStatus struct {
+	// Reserved is the sum of the requests of the tenant's pods.
+	// +optional
+	Reserved TenantUsage `json:"reserved,omitempty"`
+	// Used is the live consumption of the tenant's pods (metrics-server); empty
+	// while metrics are not available.
+	// +optional
+	Used TenantUsage `json:"used,omitempty"`
+	// ObservedAt is when Reserved and Used were taken.
+	// +optional
+	ObservedAt *metav1.Time `json:"observedAt,omitempty"`
+	// Enrollment is the one-time token a client enrolls with (see the agent's Enroll).
+	// +optional
+	Enrollment *TenantEnrollment `json:"enrollment,omitempty"`
+	// CertificatesNotBefore is the enrollment moment, kept for client certificates that carry no epoch (issued before
+	// CertificateEpoch existed): one issued before it (and before the Tenant was created) is refused.
+	// +optional
+	CertificatesNotBefore *metav1.Time `json:"certificatesNotBefore,omitempty"`
+	// CertificateEpoch is the enrollment epoch: a counter that moves by one at every enrollment. A client certificate
+	// carries the epoch it was issued in and the UID of the Tenant, and works only while both equal these (an exact
+	// comparison, no clock), so enrolling again revokes every certificate issued earlier, and a Tenant created again
+	// under the same name (a new UID) does not accept the old Tenant's certificates. Once it is above zero a certificate
+	// without an epoch (issued before this field existed) is refused too.
+	// +optional
+	CertificateEpoch int64 `json:"certificateEpoch,omitempty"`
+}
+
+// TenantEnrollment holds the state of the tenant's enrollment token. Only its hash is
+// stored; the token itself is in the Secret tenant-<name>-enrollment of the tenants namespace
+// until it is used or replaced.
+type TenantEnrollment struct {
+	// TokenHash is the hex SHA-256 of the token.
+	TokenHash string `json:"tokenHash,omitempty"`
+	// IssuedAt is when the token was generated.
+	IssuedAt *metav1.Time `json:"issuedAt,omitempty"`
+	// ExpiresAt is when an unused token stops working.
+	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
+	// UsedAt is when the token was used to enroll; a used token never works again.
+	UsedAt *metav1.Time `json:"usedAt,omitempty"`
+}
+
+// +genclient
+// +genclient:nonNamespaced
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Cluster
+// +kubebuilder:printcolumn:name="Persistence",type=boolean,JSONPath=`.spec.persistence.allowed`
+// +kubebuilder:validation:XValidation:rule="self.metadata.name.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$') && self.metadata.name.size() <= 63",message="Tenant name is the client certificate CN: a DNS-1123 label of at most 63 characters"
+
+// Tenant is the Schema for the tenants API: a client of the management agent with
+// its own objects, persistence policy and resource quota. The chart always creates
+// the tenant "default" and the tenants listed in its values.
+type Tenant struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   TenantSpec   `json:"spec,omitempty"`
+	Status TenantStatus `json:"status,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+
+// TenantList contains a list of Tenant.
+type TenantList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []Tenant `json:"items"`
+}
+
+func init() {
+	SchemeBuilder.Register(&Tenant{}, &TenantList{})
+}

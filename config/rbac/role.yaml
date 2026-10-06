@@ -23,11 +23,36 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - pods
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - nodes
   verbs:
   - get
   - list
   - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
+  - admissionregistration.k8s.io
+  resources:
+  - validatingadmissionpolicies
+  - validatingadmissionpolicybindings
+  verbs:
+  - get
 - apiGroups:
   - allocation.cybericebox.com
   resources:
@@ -112,10 +137,31 @@ rules:
   - labgroups/status
   - labs/status
   - labvpns/status
+  - tenants/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - laboratory.cybericebox.com
+  resources:
+  - imagepulls
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - laboratory.cybericebox.com
+  resources:
+  - tenants
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - networking.k8s.io
   resources:
@@ -140,6 +186,17 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resourceNames:
+  - laboratory-agent-role
+  - laboratory-operator-namespaced
+  - laboratory-proxy-reports
+  - laboratory-vpn-role
+  resources:
+  - clusterroles
+  verbs:
+  - bind
 - apiGroups:
   - rbac.authorization.k8s.io
   resources:

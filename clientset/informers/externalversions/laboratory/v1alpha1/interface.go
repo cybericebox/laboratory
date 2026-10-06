@@ -35,12 +35,16 @@ type Interface interface {
 	LabGroups() TypedLabGroupInformer
 	// LabGroupAccessPolicies returns a LabGroupAccessPolicyInformer.
 	LabGroupAccessPolicies() TypedLabGroupAccessPolicyInformer
-	// LabTrafficReports returns a LabTrafficReportInformer.
-	LabTrafficReports() TypedLabTrafficReportInformer
 	// LabGroupClients returns a LabGroupClientInformer.
 	LabGroupClients() TypedLabGroupClientInformer
+	// LabTrafficReports returns a LabTrafficReportInformer.
+	LabTrafficReports() TypedLabTrafficReportInformer
 	// LabVPNs returns a LabVPNInformer.
 	LabVPNs() TypedLabVPNInformer
+	// MaintenanceWindows returns a MaintenanceWindowInformer.
+	MaintenanceWindows() TypedMaintenanceWindowInformer
+	// Tenants returns a TenantInformer.
+	Tenants() TypedTenantInformer
 }
 
 type version struct {
@@ -84,17 +88,27 @@ func (v *version) LabGroupAccessPolicies() TypedLabGroupAccessPolicyInformer {
 	return &labGroupAccessPolicyInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
-// LabTrafficReports returns a TypedLabTrafficReportInformer.
-func (v *version) LabTrafficReports() TypedLabTrafficReportInformer {
-	return &labTrafficReportInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
-}
-
 // LabGroupClients returns a TypedLabGroupClientInformer.
 func (v *version) LabGroupClients() TypedLabGroupClientInformer {
 	return &labGroupClientInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
+// LabTrafficReports returns a TypedLabTrafficReportInformer.
+func (v *version) LabTrafficReports() TypedLabTrafficReportInformer {
+	return &labTrafficReportInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
 // LabVPNs returns a TypedLabVPNInformer.
 func (v *version) LabVPNs() TypedLabVPNInformer {
 	return &labVPNInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// MaintenanceWindows returns a TypedMaintenanceWindowInformer.
+func (v *version) MaintenanceWindows() TypedMaintenanceWindowInformer {
+	return &maintenanceWindowInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// Tenants returns a TypedTenantInformer.
+func (v *version) Tenants() TypedTenantInformer {
+	return &tenantInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }

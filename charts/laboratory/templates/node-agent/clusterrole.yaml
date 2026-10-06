@@ -15,12 +15,25 @@ rules:
   - apiGroups: [ laboratory.cybericebox.com ]
     resources: [ labvpns, labgateways ]
     verbs: [ get, list, watch ]
+  # Image prepull requests: it pulls the listed images through the container runtime and
+  # writes its own node's entry of the status.
+  - apiGroups: [ laboratory.cybericebox.com ]
+    resources: [ imagepulls ]
+    verbs: [ get, list, watch ]
+  - apiGroups: [ laboratory.cybericebox.com ]
+    resources: [ imagepulls/status ]
+    verbs: [ get, update, patch ]
   - apiGroups: [ laboratory.cybericebox.com ]
     resources: [ connections/status, devices/status ]
     verbs: [ get, update, patch ]
   - apiGroups: [ "" ]
     resources: [ nodes ]
     verbs: [ get, list, watch ]
+  # Marks its own node ready for lab pods (laboratory.cybericebox.com/node-agent-ready). The patch is limited to that one label of
+  # its own node by the admission policy laboratory-node-agent-label.
+  - apiGroups: [ "" ]
+    resources: [ nodes ]
+    verbs: [ patch ]
   - apiGroups: [ "" ]
     resources: [ pods ]
     verbs: [ get, list, watch ]

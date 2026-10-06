@@ -12,8 +12,8 @@ data:
   # Example: "lab.example.com"
   BASE_DOMAIN: ""
 
-  # UDP port the VPN server listens on.
-  VPN_SERVICE_PORT: "51820"
+  # This kustomize deploy applies no admission policies (the Helm chart does), so the operator is told not to require them.
+  OPERATOR_REQUIRE_ADMISSION_POLICY: "false"
 
   # Base address space for VPN subnets.
   # Client subnet = first /24 (e.g. 10.8.0.0/24).
@@ -28,13 +28,14 @@ data:
   PROXY_SOURCE_CIDRS: ""
 
   # REQUIRED: contact address shown to participants on the VPN probe page.
-  SUPPORT_EMAIL: "support@cybericebox.com"
+  # (no default: set it per deployment; the operator does not start with it empty)
+  SUPPORT_EMAIL: ""
 
   # DNS server advertised to WireGuard clients via DHCP option (optional).
 
-  # Container images for runtime-created pods (overridable per deployment).
-  VPN_IMAGE: "ghcr.io/cybericebox/laboratory/vpn:latest"
-  GATEWAY_IMAGE: "ghcr.io/cybericebox/laboratory/gateway:latest"
+  # Container images for runtime-created pods (an exact version tag: the operator refuses latest and no tag).
+  VPN_IMAGE: "ghcr.io/cybericebox/laboratory/vpn:0.1.0"
+  GATEWAY_IMAGE: "ghcr.io/cybericebox/laboratory/gateway:0.1.0"
 
   # JSON-encoded nodeSelector and tolerations for all runtime lab pods.
   LAB_NODE_SELECTOR: "{}"

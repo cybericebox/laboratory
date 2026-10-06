@@ -1,9 +1,9 @@
-{{- if and .Values.agent.enabled .Values.agent.mtls.enabled }}
+{{- if .Values.agent.enabled }}
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
   name: laboratory-agent-selfsign
-  namespace: {{ .Values.agent.namespace }}
+  namespace: {{ $.Values.agent.namespace }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
@@ -13,12 +13,18 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: laboratory-agent-ca
-  namespace: {{ .Values.agent.namespace }}
+  namespace: {{ $.Values.agent.namespace }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
   isCA: true
   commonName: laboratory-agent-ca
+  # The client certificates the agent signs live at most as long as this CA (agent.enrollment.certificateTTL is capped by it).
+  duration: {{ .Values.agent.mtls.caDuration | quote }}
+  renewBefore: {{ .Values.agent.mtls.caRenewBefore | quote }}
+  # The same key on renewal: certificates signed before it keep verifying against the renewed CA.
+  privateKey:
+    rotationPolicy: Never
   secretName: laboratory-agent-ca
   issuerRef:
     name: laboratory-agent-selfsign
@@ -28,7 +34,7 @@ apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
   name: laboratory-agent-ca
-  namespace: {{ .Values.agent.namespace }}
+  namespace: {{ $.Values.agent.namespace }}
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:

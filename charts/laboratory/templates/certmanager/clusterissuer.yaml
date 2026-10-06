@@ -10,11 +10,7 @@ spec:
   selfSigned: { }
   {{- else }}
   acme:
-    {{- if .Values.certManager.staging }}
-    server: https://acme-staging-v02.api.letsencrypt.org/directory
-    {{- else }}
-    server: https://acme-v02.api.letsencrypt.org/directory
-    {{- end }}
+    server: {{ .Values.certManager.acme.server | default (ternary .Values.certManager.acme.presets.staging .Values.certManager.acme.presets.production .Values.certManager.staging) | quote }}
     email: {{ .Values.certManager.email | quote }}
     privateKeySecretRef:
       name: {{ .Values.certManager.issuerName }}-account-key

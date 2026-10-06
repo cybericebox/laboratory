@@ -59,22 +59,34 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.ConnectionTemplateApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("Device"):
 		return &applyconfigurationlaboratoryv1alpha1.DeviceApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DevicePersistence"):
+		return &applyconfigurationlaboratoryv1alpha1.DevicePersistenceApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceRef"):
 		return &applyconfigurationlaboratoryv1alpha1.DeviceRefApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceResources"):
 		return &applyconfigurationlaboratoryv1alpha1.DeviceResourcesApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceSpec"):
 		return &applyconfigurationlaboratoryv1alpha1.DeviceSpecApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceStateInfo"):
+		return &applyconfigurationlaboratoryv1alpha1.DeviceStateInfoApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceStateSpec"):
+		return &applyconfigurationlaboratoryv1alpha1.DeviceStateSpecApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceStateStatus"):
+		return &applyconfigurationlaboratoryv1alpha1.DeviceStateStatusApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceStatus"):
 		return &applyconfigurationlaboratoryv1alpha1.DeviceStatusApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceTemplate"):
 		return &applyconfigurationlaboratoryv1alpha1.DeviceTemplateApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DHCPRange"):
+		return &applyconfigurationlaboratoryv1alpha1.DHCPRangeApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DHCPServer"):
 		return &applyconfigurationlaboratoryv1alpha1.DHCPServerApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("EndpointSpec"):
 		return &applyconfigurationlaboratoryv1alpha1.EndpointSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("ExposureSpec"):
 		return &applyconfigurationlaboratoryv1alpha1.ExposureSpecApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("GroupPodSize"):
+		return &applyconfigurationlaboratoryv1alpha1.GroupPodSizeApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("InterfaceSpec"):
 		return &applyconfigurationlaboratoryv1alpha1.InterfaceSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("Lab"):
@@ -95,14 +107,6 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupAccessPolicySpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupAccessPolicyStatus"):
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupAccessPolicyStatusApplyConfiguration{}
-	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabTrafficReport"):
-		return &applyconfigurationlaboratoryv1alpha1.LabTrafficReportApplyConfiguration{}
-	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabTrafficReportSpec"):
-		return &applyconfigurationlaboratoryv1alpha1.LabTrafficReportSpecApplyConfiguration{}
-	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabTrafficReportStatus"):
-		return &applyconfigurationlaboratoryv1alpha1.LabTrafficReportStatusApplyConfiguration{}
-	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabTrafficTouch"):
-		return &applyconfigurationlaboratoryv1alpha1.LabTrafficTouchApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupAccessRule"):
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupAccessRuleApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupClient"):
@@ -113,6 +117,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupClientStatisticsApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupClientStatus"):
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupClientStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupGatewaySpec"):
+		return &applyconfigurationlaboratoryv1alpha1.LabGroupGatewaySpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupSpec"):
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupStatus"):
@@ -129,18 +135,54 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.LabSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabStatus"):
 		return &applyconfigurationlaboratoryv1alpha1.LabStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabTrafficReport"):
+		return &applyconfigurationlaboratoryv1alpha1.LabTrafficReportApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabTrafficReportSpec"):
+		return &applyconfigurationlaboratoryv1alpha1.LabTrafficReportSpecApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabTrafficReportStatus"):
+		return &applyconfigurationlaboratoryv1alpha1.LabTrafficReportStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabTrafficTouch"):
+		return &applyconfigurationlaboratoryv1alpha1.LabTrafficTouchApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabVPN"):
 		return &applyconfigurationlaboratoryv1alpha1.LabVPNApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabVPNSpec"):
 		return &applyconfigurationlaboratoryv1alpha1.LabVPNSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabVPNStatus"):
 		return &applyconfigurationlaboratoryv1alpha1.LabVPNStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("MaintenanceWindow"):
+		return &applyconfigurationlaboratoryv1alpha1.MaintenanceWindowApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("MaintenanceWindowSpec"):
+		return &applyconfigurationlaboratoryv1alpha1.MaintenanceWindowSpecApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("NamedPodSchedule"):
+		return &applyconfigurationlaboratoryv1alpha1.NamedPodScheduleApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("NetworkIPRef"):
 		return &applyconfigurationlaboratoryv1alpha1.NetworkIPRefApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("NetworkSubnetRef"):
 		return &applyconfigurationlaboratoryv1alpha1.NetworkSubnetRefApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("PodFailure"):
+		return &applyconfigurationlaboratoryv1alpha1.PodFailureApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("PodSchedule"):
+		return &applyconfigurationlaboratoryv1alpha1.PodScheduleApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("Route"):
 		return &applyconfigurationlaboratoryv1alpha1.RouteApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("SchedulingStatus"):
+		return &applyconfigurationlaboratoryv1alpha1.SchedulingStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("Tenant"):
+		return &applyconfigurationlaboratoryv1alpha1.TenantApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("TenantEnrollment"):
+		return &applyconfigurationlaboratoryv1alpha1.TenantEnrollmentApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("TenantImages"):
+		return &applyconfigurationlaboratoryv1alpha1.TenantImagesApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("TenantPersistence"):
+		return &applyconfigurationlaboratoryv1alpha1.TenantPersistenceApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("TenantQuota"):
+		return &applyconfigurationlaboratoryv1alpha1.TenantQuotaApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("TenantSpec"):
+		return &applyconfigurationlaboratoryv1alpha1.TenantSpecApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("TenantStatus"):
+		return &applyconfigurationlaboratoryv1alpha1.TenantStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("TenantUsage"):
+		return &applyconfigurationlaboratoryv1alpha1.TenantUsageApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("WebExposure"):
 		return &applyconfigurationlaboratoryv1alpha1.WebExposureApplyConfiguration{}
 

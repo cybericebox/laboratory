@@ -20,12 +20,6 @@ rules:
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "labgroupclients" ]
     verbs: [ "get", "list", "watch" ]
-  # Each replica publishes its request counters as its own report in every group
-  # namespace.
-  - apiGroups: [ "laboratory.cybericebox.com" ]
-    resources: [ "labtrafficreports" ]
-    verbs: [ "get", "create", "update" ]
-  - apiGroups: [ "laboratory.cybericebox.com" ]
-    resources: [ "labtrafficreports/status" ]
-    verbs: [ "get", "patch", "update" ]
+  # Its request counters (LabTrafficReports) are written through a RoleBinding the operator makes in each group namespace
+  # (ClusterRole laboratory-proxy-reports): the proxy has no such right cluster-wide.
 {{- end }}
