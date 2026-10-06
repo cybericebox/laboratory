@@ -77,6 +77,47 @@ spec:
               coveredToMs:
                 format: int64
                 type: integer
+              kernelCheckpoints:
+                description: KernelCheckpoints are consumed by the VPN writer, never
+                  relayed to users.
+                items:
+                  description: |-
+                    LabTrafficKernelCheckpoint stores private raw-counter checkpoints for resume.
+                    Decimal strings preserve uint64 kernel values without JSON integer loss.
+                  properties:
+                    attempts:
+                      type: string
+                    bindingID:
+                      type: string
+                    bytesIn:
+                      type: string
+                    bytesOut:
+                      type: string
+                    epoch:
+                      type: string
+                    labInitiatedAttempts:
+                      type: string
+                    labName:
+                      type: string
+                    packetsIn:
+                      type: string
+                    packetsOut:
+                      type: string
+                    subject:
+                      type: string
+                  required:
+                  - attempts
+                  - bindingID
+                  - bytesIn
+                  - bytesOut
+                  - epoch
+                  - labInitiatedAttempts
+                  - labName
+                  - packetsIn
+                  - packetsOut
+                  - subject
+                  type: object
+                type: array
               ledger:
                 items:
                   description: |-
@@ -113,6 +154,12 @@ spec:
                     firstSeenMs:
                       description: FirstSeenMs is the first attempt, LastSeenMs the
                         last one.
+                      format: int64
+                      type: integer
+                    labInitiatedAttempts:
+                      description: |-
+                        LabInitiatedAttempts counts new permitted VPN flows started by the lab.
+                        It is separate from client attempts and is not used by the proxy.
                       format: int64
                       type: integer
                     labName:

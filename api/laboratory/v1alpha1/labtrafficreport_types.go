@@ -41,6 +41,10 @@ type LabTrafficTouch struct {
 	DstPort int32 `json:"dstPort,omitempty"`
 	// Attempts counts new connections (VPN) or requests (proxy).
 	Attempts int64 `json:"attempts"`
+	// LabInitiatedAttempts counts new permitted VPN flows started by the lab.
+	// It is separate from client attempts and is not used by the proxy.
+	// +optional
+	LabInitiatedAttempts int64 `json:"labInitiatedAttempts,omitempty"`
 	// +optional
 	PacketsOut int64 `json:"packetsOut,omitempty"`
 	// +optional
@@ -57,6 +61,21 @@ type LabTrafficTouch struct {
 	FirstRespondedMs int64 `json:"firstRespondedMs,omitempty"`
 }
 
+// LabTrafficKernelCheckpoint stores private raw-counter checkpoints for resume.
+// Decimal strings preserve uint64 kernel values without JSON integer loss.
+type LabTrafficKernelCheckpoint struct {
+	Subject              string `json:"subject"`
+	LabName              string `json:"labName"`
+	BindingID            string `json:"bindingID"`
+	Epoch                string `json:"epoch"`
+	PacketsOut           string `json:"packetsOut"`
+	PacketsIn            string `json:"packetsIn"`
+	BytesOut             string `json:"bytesOut"`
+	BytesIn              string `json:"bytesIn"`
+	Attempts             string `json:"attempts"`
+	LabInitiatedAttempts string `json:"labInitiatedAttempts"`
+}
+
 // LabTrafficReportStatus is written only by the collector.
 type LabTrafficReportStatus struct {
 	// BootID changes whenever the collector restarts; the ledger is cumulative
@@ -71,6 +90,9 @@ type LabTrafficReportStatus struct {
 	// Truncated is set when the ledger hit its size cap and rows were dropped.
 	Truncated bool              `json:"truncated,omitempty"`
 	Ledger    []LabTrafficTouch `json:"ledger,omitempty"`
+	// KernelCheckpoints are consumed by the VPN writer, never relayed to users.
+	// +optional
+	KernelCheckpoints []LabTrafficKernelCheckpoint `json:"kernelCheckpoints,omitempty"`
 }
 
 // +genclient

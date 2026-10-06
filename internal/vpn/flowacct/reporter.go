@@ -3,6 +3,7 @@ package flowacct
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -80,7 +81,7 @@ func (r *Reporter) resume(ctx context.Context) error {
 	ledger := make([]Touch, 0, len(obj.Status.Ledger))
 	for _, t := range obj.Status.Ledger {
 		ledger = append(ledger, Touch{
-			Key: Key{Subject: t.Subject, Lab: t.LabName}, Attempts: t.Attempts,
+			Key: Key{Subject: t.Subject, Lab: t.LabName}, Attempts: t.Attempts, LabInitiatedAttempts: t.LabInitiatedAttempts,
 			PacketsOut: t.PacketsOut, PacketsIn: t.PacketsIn, BytesOut: t.BytesOut, BytesIn: t.BytesIn,
 			FirstSeenMs: t.FirstSeenMs, LastSeenMs: t.LastSeenMs, FirstRespondMs: t.FirstRespondedMs,
 		})
@@ -122,15 +123,23 @@ func PublishReport(ctx context.Context, reader client.Reader, writer client.Clie
 func ToStatus(report Report) laboratoryv1alpha1.LabTrafficReportStatus {
 	status := laboratoryv1alpha1.LabTrafficReportStatus{
 		BootID: report.BootID, CoveredFromMs: report.CoveredFromMs, CoveredToMs: report.CoveredToMs,
-		Truncated: report.Truncated,
-		Ledger:    make([]laboratoryv1alpha1.LabTrafficTouch, 0, len(report.Ledger)),
+		Truncated: report.Truncated, Partial: report.Partial,
+		Ledger: make([]laboratoryv1alpha1.LabTrafficTouch, 0, len(report.Ledger)),
 	}
 	for _, t := range report.Ledger {
 		status.Ledger = append(status.Ledger, laboratoryv1alpha1.LabTrafficTouch{
 			Subject: t.Subject, LabName: t.Lab,
-			Attempts: t.Attempts, PacketsOut: t.PacketsOut, PacketsIn: t.PacketsIn,
+			Attempts: t.Attempts, LabInitiatedAttempts: t.LabInitiatedAttempts, PacketsOut: t.PacketsOut, PacketsIn: t.PacketsIn,
 			BytesOut: t.BytesOut, BytesIn: t.BytesIn,
 			FirstSeenMs: t.FirstSeenMs, LastSeenMs: t.LastSeenMs, FirstRespondedMs: t.FirstRespondMs,
+		})
+	}
+	for _, c := range report.KernelCheckpoints {
+		status.KernelCheckpoints = append(status.KernelCheckpoints, laboratoryv1alpha1.LabTrafficKernelCheckpoint{
+			Subject: c.Subject, LabName: c.Lab, BindingID: c.BindingID, Epoch: c.Epoch,
+			PacketsOut: strconv.FormatUint(c.PacketsOut, 10), PacketsIn: strconv.FormatUint(c.PacketsIn, 10),
+			BytesOut: strconv.FormatUint(c.BytesOut, 10), BytesIn: strconv.FormatUint(c.BytesIn, 10),
+			Attempts: strconv.FormatUint(c.Attempts, 10), LabInitiatedAttempts: strconv.FormatUint(c.LabInitiatedAttempts, 10),
 		})
 	}
 	return status

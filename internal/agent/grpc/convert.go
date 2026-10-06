@@ -312,7 +312,7 @@ func trafficReportToProto(report *laboratoryv1alpha1.LabTrafficReport, labGroupN
 	for _, t := range report.Status.Ledger {
 		p.Ledger = append(p.Ledger, &protobuf.TrafficTouch{
 			Subject: t.Subject, LabName: t.LabName, Device: t.Device, DstIp: t.DstIP, Proto: t.Proto,
-			DstPort: uint32(t.DstPort), Attempts: t.Attempts,
+			DstPort: uint32(t.DstPort), Attempts: t.Attempts, LabInitiatedAttempts: t.LabInitiatedAttempts,
 			PacketsOut: t.PacketsOut, PacketsIn: t.PacketsIn, BytesOut: t.BytesOut, BytesIn: t.BytesIn,
 			FirstSeenUnixMs: t.FirstSeenMs, LastSeenUnixMs: t.LastSeenMs, FirstRespondedUnixMs: t.FirstRespondedMs,
 		})

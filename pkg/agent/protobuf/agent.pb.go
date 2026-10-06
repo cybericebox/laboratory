@@ -4318,6 +4318,7 @@ type TrafficTouch struct {
 	FirstSeenUnixMs      int64                  `protobuf:"varint,12,opt,name=first_seen_unix_ms,json=firstSeenUnixMs,proto3" json:"first_seen_unix_ms,omitempty"`
 	LastSeenUnixMs       int64                  `protobuf:"varint,13,opt,name=last_seen_unix_ms,json=lastSeenUnixMs,proto3" json:"last_seen_unix_ms,omitempty"`
 	FirstRespondedUnixMs int64                  `protobuf:"varint,14,opt,name=first_responded_unix_ms,json=firstRespondedUnixMs,proto3" json:"first_responded_unix_ms,omitempty"` // 0 = the lab never answered
+	LabInitiatedAttempts int64                  `protobuf:"varint,15,opt,name=lab_initiated_attempts,json=labInitiatedAttempts,proto3" json:"lab_initiated_attempts,omitempty"`   // new permitted VPN flows started by the lab
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -4446,6 +4447,13 @@ func (x *TrafficTouch) GetLastSeenUnixMs() int64 {
 func (x *TrafficTouch) GetFirstRespondedUnixMs() int64 {
 	if x != nil {
 		return x.FirstRespondedUnixMs
+	}
+	return 0
+}
+
+func (x *TrafficTouch) GetLabInitiatedAttempts() int64 {
+	if x != nil {
+		return x.LabInitiatedAttempts
 	}
 	return 0
 }
@@ -7396,7 +7404,7 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\apartial\x18\t \x01(\bR\apartial\x12\x1c\n" +
 	"\ttruncated\x18\n" +
 	" \x01(\bR\ttruncated\x120\n" +
-	"\x06ledger\x18\v \x03(\v2\x18.labmanager.TrafficTouchR\x06ledger\"\xc6\x03\n" +
+	"\x06ledger\x18\v \x03(\v2\x18.labmanager.TrafficTouchR\x06ledger\"\xfc\x03\n" +
 	"\fTrafficTouch\x12\x18\n" +
 	"\asubject\x18\x01 \x01(\tR\asubject\x12\x19\n" +
 	"\blab_name\x18\x02 \x01(\tR\alabName\x12\x16\n" +
@@ -7414,7 +7422,8 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\bbytes_in\x18\v \x01(\x03R\abytesIn\x12+\n" +
 	"\x12first_seen_unix_ms\x18\f \x01(\x03R\x0ffirstSeenUnixMs\x12)\n" +
 	"\x11last_seen_unix_ms\x18\r \x01(\x03R\x0elastSeenUnixMs\x125\n" +
-	"\x17first_responded_unix_ms\x18\x0e \x01(\x03R\x14firstRespondedUnixMs\"\xcb\x06\n" +
+	"\x17first_responded_unix_ms\x18\x0e \x01(\x03R\x14firstRespondedUnixMs\x124\n" +
+	"\x16lab_initiated_attempts\x18\x0f \x01(\x03R\x14labInitiatedAttempts\"\xcb\x06\n" +
 	"\x10CapacityResponse\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\"\n" +
 	"\rhas_cpu_quota\x18\x02 \x01(\bR\vhasCpuQuota\x120\n" +

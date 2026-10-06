@@ -651,6 +651,7 @@ message TrafficTouch {
   int64 first_seen_unix_ms = 12;
   int64 last_seen_unix_ms = 13;
   int64 first_responded_unix_ms = 14; // 0 = the lab never answered
+  int64 lab_initiated_attempts = 15; // new permitted VPN flows started by the lab
 }
 
 // CapacityResponse is the CALLER's view of its tenant's resources; no cluster-wide numbers

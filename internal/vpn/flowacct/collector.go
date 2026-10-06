@@ -71,23 +71,26 @@ type Key struct {
 // Touch is one cumulative aggregate. Times are Unix milliseconds.
 type Touch struct {
 	Key
-	Attempts       int64
-	PacketsOut     int64
-	PacketsIn      int64
-	BytesOut       int64
-	BytesIn        int64
-	FirstSeenMs    int64
-	LastSeenMs     int64
-	FirstRespondMs int64
+	Attempts             int64
+	LabInitiatedAttempts int64
+	PacketsOut           int64
+	PacketsIn            int64
+	BytesOut             int64
+	BytesIn              int64
+	FirstSeenMs          int64
+	LastSeenMs           int64
+	FirstRespondMs       int64
 }
 
 // Report is the state handed to the reporter.
 type Report struct {
-	BootID        string
-	CoveredFromMs int64
-	CoveredToMs   int64
-	Truncated     bool
-	Ledger        []Touch
+	BootID            string
+	CoveredFromMs     int64
+	CoveredToMs       int64
+	Truncated         bool
+	Partial           bool
+	KernelCheckpoints []PairCounters
+	Ledger            []Touch
 }
 
 type flowKey struct {
