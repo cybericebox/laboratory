@@ -14,6 +14,9 @@ image:
 # Operator configuration
 # ============================================================
 operator:
+  # terminationGracePeriodSeconds of every pod of a lab (devices, VPN, gateway). They keep nothing a SIGTERM would flush, so a
+  # deleted lab must not wait the Kubernetes default of 30 s. 0 = that default.
+  labPodTerminationGraceSeconds: 5
   image:
     repository: cybericebox/laboratory-controller
     tag: ""

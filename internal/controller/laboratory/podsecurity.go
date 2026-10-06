@@ -34,10 +34,20 @@ func capsOf(add ...string) *corev1.Capabilities {
 	return &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}, Add: caps}
 }
 
+// setTerminationGrace gives a lab pod a short terminationGracePeriodSeconds: none of its processes needs a graceful drain
+// (the VPN, the gateway and the devices keep nothing that SIGTERM would flush), so a teardown must not wait the 30 s default.
+// Zero or less leaves the Kubernetes default.
+func setTerminationGrace(spec *corev1.PodSpec, seconds int64) {
+	if seconds > 0 {
+		spec.TerminationGracePeriodSeconds = &seconds
+	}
+}
+
 // hardenPod applies what every lab pod gets: the runtime's default seccomp profile, no service links (the
 // environment variables that list every Service of the namespace), and the service account token only when the pod
 // talks to the API server (VPN, gateway) and never for a device, where the participant is root.
-func hardenPod(spec *corev1.PodSpec, automountToken bool) {
+func hardenPod(spec *corev1.PodSpec, automountToken bool, graceSeconds int64) {
+	setTerminationGrace(spec, graceSeconds)
 	spec.AutomountServiceAccountToken = &automountToken
 	noLinks := false
 	spec.EnableServiceLinks = &noLinks
@@ -82,11 +92,11 @@ var (
 )
 
 // hardenGroupPod brings a VPN or gateway Deployment's pod spec to the hardened shape and says whether it changed:
-// the seccomp profile, no service links, the token kept (they use the API), drop ALL with the minimal capabilities,
+// the seccomp profile, the short termination grace, no service links, the token kept (they use the API), drop ALL with the minimal capabilities,
 // and no privileged init container (the conntrack accounting switch is set by the node-agent instead).
-func hardenGroupPod(spec *corev1.PodSpec, container string, caps []string) bool {
+func hardenGroupPod(spec *corev1.PodSpec, container string, caps []string, graceSeconds int64) bool {
 	before := spec.DeepCopy()
-	hardenPod(spec, true)
+	hardenPod(spec, true, graceSeconds)
 	keep := spec.InitContainers[:0]
 	for _, c := range spec.InitContainers {
 		if c.Name != "conntrack-accounting" {

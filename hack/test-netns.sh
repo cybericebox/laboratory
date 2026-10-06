@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The real-iptables tests of the VPN and gateway pods (internal/vpn, internal/gateway: TestNetns*). They build network namespaces
+# The real-iptables tests of the VPN and gateway pods (internal/vpn, internal/gateway, internal/accessroute, internal/cmds/cnigate: TestNetns*). They build network namespaces
 # and install the pods' rules with the real iptables, so they run in a privileged Linux container, each test binary in a network
 # namespace of its own (`unshare -n`), never in the host's.
 #   hack/test-netns.sh            run them in a golang container (needs docker)
@@ -18,10 +18,11 @@ if ! command -v iptables >/dev/null || ! command -v ip >/dev/null || ! command -
   apt-get update -qq && apt-get install -y -qq iptables iproute2 iputils-ping >/dev/null
 fi
 out=$(mktemp -d)
-for pkg in vpn gateway accessroute; do
-  go test -c -o "$out/$pkg.test" "./internal/$pkg"
+pkgs="vpn gateway accessroute cmds/cnigate"
+for pkg in $pkgs; do
+  go test -c -o "$out/${pkg//\//_}.test" "./internal/$pkg"
 done
-for pkg in vpn gateway accessroute; do
+for pkg in $pkgs; do
   # The test binary is the pod: its own network namespace, so the host's rules are never touched.
-  (cd "internal/$pkg" && unshare -n "$out/$pkg.test" -test.run 'TestNetns' -test.v -test.timeout 120s)
+  (cd "internal/$pkg" && unshare -n "$out/${pkg//\//_}.test" -test.run 'TestNetns' -test.v -test.timeout 120s)
 done

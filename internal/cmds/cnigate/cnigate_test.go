@@ -2,8 +2,11 @@ package cnigate
 
 import (
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/containernetworking/cni/pkg/skel"
 	cniv1 "github.com/containernetworking/cni/pkg/types/100"
 )
 
@@ -122,5 +125,51 @@ func TestEnsureEth0_AbsentEmptyResult(t *testing.T) {
 	}
 	if len(got.IPs) != 1 || *got.IPs[0].Interface != 0 {
 		t.Fatalf("expected lone stub IP on eth0: %+v", got.IPs)
+	}
+}
+
+// fakeDelegate puts a CNI plugin named "faildel" on CNI_PATH that, like Cilium for a pod whose netns is gone, answers every
+// command with a CNI error, and leaves a marker file when it is called.
+func fakeDelegate(t *testing.T) (marker string) {
+	t.Helper()
+	dir := t.TempDir()
+	marker = filepath.Join(dir, "called")
+	script := "#!/bin/sh\ncat >/dev/null\ntouch " + marker +
+		"\necho '{\"cniVersion\":\"1.0.0\",\"code\":999,\"msg\":\"Errors encountered while deleting endpoint\"}'\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "faildel"), []byte(script), 0o755); err != nil { //nolint:gosec // an executable stub plugin
+		t.Fatal(err)
+	}
+	t.Setenv("CNI_PATH", dir)
+	return marker
+}
+
+func delArgs(netns string) *skel.CmdArgs {
+	return &skel.CmdArgs{
+		ContainerID: "c1",
+		Netns:       netns,
+		IfName:      "eth0",
+		StdinData:   []byte(`{"cniVersion":"1.0.0","name":"gate","type":"cni-gate","delegate":{"type":"faildel"}}`),
+	}
+}
+
+// DEL of a pod whose netns is gone succeeds even when the delegate fails, and the delegate is still asked to clean up.
+func TestDelSucceedsWhenNetnsIsGone(t *testing.T) {
+	marker := fakeDelegate(t)
+	for _, netns := range []string{"", filepath.Join(t.TempDir(), "removed")} {
+		_ = os.Remove(marker)
+		if err := cmdDEL(delArgs(netns)); err != nil {
+			t.Errorf("netns %q: DEL must succeed once the netns is gone: %v", netns, err)
+		}
+		if _, err := os.Stat(marker); err != nil {
+			t.Errorf("netns %q: the delegate must still be asked to clean up", netns)
+		}
+	}
+}
+
+// With the netns still there a delegate failure is a real one: the kubelet retries.
+func TestDelReportsDelegateErrorWhileNetnsExists(t *testing.T) {
+	fakeDelegate(t)
+	if err := cmdDEL(delArgs(t.TempDir())); err == nil {
+		t.Error("a delegate failure with an existing netns must reach the kubelet")
 	}
 }

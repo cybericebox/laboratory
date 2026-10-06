@@ -70,6 +70,8 @@ type LabGroupReconciler struct {
 	PriorityClass string
 	// SchedulerName is the kube-scheduler profile of the VPN and gateway pods (bin-packing); empty = the default scheduler.
 	SchedulerName string
+	// TerminationGraceSeconds is the terminationGracePeriodSeconds of the VPN and gateway pods; 0 = the Kubernetes default.
+	TerminationGraceSeconds int64
 	// Mirror rewrites the VPN and gateway images for the image cache when their
 	// pods are created; the zero value (cache off) rewrites nothing.
 	Mirror imagecache.Rewriter
@@ -630,7 +632,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 			changed = true
 		}
 		// The hardened shape reaches the VPN pods that already run too (a rolling restart of the pod).
-		if hardenGroupPod(&existing.Spec.Template.Spec, names.ComponentVPN, vpnCaps) {
+		if hardenGroupPod(&existing.Spec.Template.Spec, names.ComponentVPN, vpnCaps, r.TerminationGraceSeconds) {
 			changed = true
 		}
 		if setComponentLabel(&existing.Spec.Template, names.ComponentVPN) {
@@ -717,7 +719,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 			},
 		},
 	}
-	hardenGroupPod(&d.Spec.Template.Spec, names.ComponentVPN, vpnCaps)
+	hardenGroupPod(&d.Spec.Template.Spec, names.ComponentVPN, vpnCaps, r.TerminationGraceSeconds)
 	return r.Create(ctx, d)
 }
 
@@ -745,7 +747,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 		if setComponentLabel(&existing.Spec.Template, names.ComponentGateway) {
 			changed = true
 		}
-		if hardenGroupPod(&existing.Spec.Template.Spec, names.ComponentGateway, gatewayCaps) {
+		if hardenGroupPod(&existing.Spec.Template.Spec, names.ComponentGateway, gatewayCaps, r.TerminationGraceSeconds) {
 			changed = true
 		}
 		if !changed {
@@ -785,7 +787,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 			},
 		},
 	}
-	hardenGroupPod(&d.Spec.Template.Spec, names.ComponentGateway, gatewayCaps)
+	hardenGroupPod(&d.Spec.Template.Spec, names.ComponentGateway, gatewayCaps, r.TerminationGraceSeconds)
 	return r.Create(ctx, d)
 }
 
