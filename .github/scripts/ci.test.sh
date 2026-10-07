@@ -87,20 +87,15 @@ commit m2
 g merge -q --no-ff -m merge2 develop
 case "$(rc_source img1)" in "build: the tree of main differs"*) check "rc_source: tree differs" ok ok ;; *) check "rc_source: tree differs" build "$(rc_source img1)" ;; esac
 
-# cleanup deletes ancestor sha tags, then separately retires verified caches
+# cleanup deletes the ancestor sha tags and the cache tags, nothing else
 newer=$(git rev-parse develop)
 # shellcheck disable=SC2329
 hub_tags() { printf '%s\n' "sha-${d1:0:7}" "sha-${newer:0:7}" sha-0000000 buildcache-develop buildcache latest v1.0.0 v1.0.0-rc.1 sha-ABCDEF0; }
 # shellcheck disable=SC2329
 hub_delete() { echo "del $2"; }
-# shellcheck disable=SC2329
-cache_retire() { echo "cache retire $1 $2"; }
-want="del sha-${d1:0:7}"
+want="del sha-${d1:0:7} del buildcache-develop del buildcache"
 check "cleanup (release before newer commits)" "$want" "$(cleanup "$release" false img | grep '^del' | tr '\n' ' ' | sed 's/ $//')"
 check "cleanup dry run deletes nothing" "" "$(cleanup "$release" true img | grep '^del')"
-check "cleanup dry run does not list cache tags" 0 "$(cleanup "$release" true img | grep -c '^  buildcache')"
-
-check "cleanup retires cache separately" "cache retire img false" "$(cleanup "$release" false img | grep '^cache retire')"
-check "cache cleanup respects dry run" "cache retire img true" "$(cleanup "$release" true img | grep '^cache retire')"
+check "cleanup dry run lists the cache tags" 2 "$(cleanup "$release" true img | grep -c '^  buildcache')"
 
 exit $fail

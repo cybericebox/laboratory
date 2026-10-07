@@ -8,7 +8,7 @@
 #   ci.sh delete-rc VERSION IMAGE...          delete every VERSION-rc.* tag of the images
 #   ci.sh rc-source IMAGE...                  "retag sha-<7>" or "build <reason>": how the rc image of HEAD (a main merge) is made
 #   ci.sh cleanup RELEASE_SHA DRY_RUN IMAGE...  delete sha-<7> dev tags whose commit is an ancestor of RELEASE_SHA,
-#                                             plus verified BuildKit cache aliases after the full release (digest deletion is quarterly)
+#                                             plus the buildcache-develop and buildcache cache tags
 # Docker Hub calls use DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (org secrets, Read/Write/Delete); GitHub calls use GH_TOKEN.
 set -euo pipefail
 
@@ -160,6 +160,11 @@ cleanup() {
     echo "== $image"
     local doomed=()
     while read -r tag; do
+      # the registry layer caches (rebuilt cold by the next PR); the old name "buildcache" goes too
+      if [[ "$tag" == buildcache-develop || "$tag" == buildcache ]]; then
+        doomed+=("$tag")
+        continue
+      fi
       [[ "$tag" =~ ^sha-[0-9a-f]{7}$ ]] || continue
       full=$(git rev-parse -q --verify "${tag#sha-}^{commit}" 2>/dev/null || true)
       if [[ -z "$full" ]]; then
@@ -179,18 +184,8 @@ cleanup() {
       hub_delete "$image" "$tag"
     done
   done
-  for image in "$@"; do
-    cache_retire "$image" "$dry"
-  done
   [[ "$dry" == true ]] && echo "dry run: nothing deleted"
   return 0
-}
-
-# Only cache.py may delete cache manifests; it verifies media types and references.
-cache_retire() {
-  local args=()
-  [[ "$2" == true ]] && args+=(--dry-run)
-  python3 "$(dirname "${BASH_SOURCE[0]}")/cache.py" retire "$1" "${args[@]}"
 }
 
 # rc_source image... : how the pre-release image of HEAD (the merge of develop into main) is made. Prints one line:
