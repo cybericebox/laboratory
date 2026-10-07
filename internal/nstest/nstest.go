@@ -232,6 +232,8 @@ func HelperProcess() {
 			}
 			fmt.Println("hit")
 		}
+	case "echo tcp", "echo udp", "persist tcp", "persist udp":
+		helperPersistent(mode, proto, addr)
 	case "dial dhcp":
 		helperDHCP(addr)
 	case "dial tcp":

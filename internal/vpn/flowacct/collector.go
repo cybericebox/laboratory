@@ -248,7 +248,7 @@ func (c *Collector) ObserveCounters(snapshot CounterSnapshot) error {
 		add(&row.BytesIn, d.BytesIn)
 		add(&row.Attempts, d.Attempts)
 		add(&row.LabInitiatedAttempts, d.LabInitiatedAttempts)
-		if d.Attempts > 0 || d.PacketsOut > 0 && row.Attempts > 0 {
+		if d.Attempts > 0 {
 			if row.FirstSeenMs == 0 {
 				row.FirstSeenMs = snapshot.At.UnixMilli()
 			}
@@ -283,6 +283,18 @@ func (c *Collector) Poll(now time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	seen := map[flowKey]bool{}
+	allowedEndpoints := map[Key]map[netip.Addr]bool{}
+	for _, cp := range c.checkpoints {
+		prefix, err := netip.ParsePrefix(cp.ClientCIDR)
+		if err != nil || prefix.Bits() != 32 {
+			continue
+		}
+		if allowedEndpoints[cp.Key] == nil {
+			allowedEndpoints[cp.Key] = map[netip.Addr]bool{}
+		}
+		allowedEndpoints[cp.Key][prefix.Addr()] = true
+	}
+
 	for _, f := range flows {
 		if f.Mark&0x80000000 == 0 {
 			continue
@@ -301,6 +313,9 @@ func (c *Collector) Poll(now time.Time) error {
 			}
 		}
 		if !ok {
+			continue
+		}
+		if !allowedEndpoints[Key{subject, lab}][f.Src] {
 			continue
 		}
 		fk := flowKey{f.ID, f.Proto, f.Src, f.Dst, f.SrcPort, f.DstPort}

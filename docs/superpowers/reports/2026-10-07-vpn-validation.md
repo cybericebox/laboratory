@@ -30,10 +30,27 @@ Local compiler/fingerprint benchmarks are management-path measurements only; the
 
 | Compile permissions | Time per operation | Bytes allocated | Allocations |
 |---|---:|---:|---:|
-| 10 users / 10 labs | 49.5–50.2 µs | 46,672 | 158 |
-| 10 users / 20 labs | 96.1–96.9 µs | 91,824 | 260 |
-| 20 users / 10 labs | 104.2–104.7 µs | 96,880 | 301 |
-| 20 users / 20 labs | 200.6–203.0 µs | 186,128–186,129 | 503 |
-| Unchanged empty-plan fingerprint | 14.6–14.8 ns | 0 | 0 |
+| 10 users / 10 labs | 49.5–50.0 µs | 46,672 | 158 |
+| 10 users / 20 labs | 96.6–97.0 µs | 91,824 | 260 |
+| 20 users / 10 labs | 104.3–104.9 µs | 96,880 | 301 |
+| 20 users / 20 labs | 202.8–203.7 µs | 186,128–186,129 | 503 |
+| Unchanged empty-plan fingerprint | 20.2–20.4 ns | 0 | 0 |
 
 The unchanged fingerprint microbenchmark uses an empty plan and is not a timing estimate for a populated group. The 20×20 control test exercises the populated matrix and confirms the absence of kernel application on 100 telemetry updates.
+
+## Final review and additional regressions
+
+One fresh read-only whole-change review identified eight Important cases. All were corrected in a single fix pass with failed-then-passing regressions: serialized counter read/fold/retirement and snapshot/publication; closed reissued/cold-unknown bindings until successful conntrack retirement; DHCP migration to a valid offer while retaining the old address reservation; shutdown quiescence before final sample; stopped DHCP handler rejection/draining; client-original activity timestamps; source-leg closure during gateway replacement; and the missing kernel validation matrix.
+
+The startup access gate is also rebuilt with FORWARD in one closed atomic batch. Verified retained identities preserve permitted flows; unknown persisted identities are retired before activation. Kernel tests now continue established TCP and UDP sockets in **both original orientations**, delete real conntrack entries, send ten repeated SYNs (one initiative), remove a UDP flow before reading its retained native counters, change another allowed pair while the first remains active, preserve unrelated connmark bits, and verify shutdown cannot reopen the gate. No second review was dispatched; the fix pass is verified by regressions and full gates.
+
+## Final gate results
+
+- Default `make test`: **PASS** after the fix pass (includes native project tests, envtest, generation, formatting and vet; the Makefile deliberately separates installed-cluster e2e).
+- `make test ENVTEST_K8S_VERSION=1.33.0`: **PASS**.
+- Full `make test-netns`: **PASS**, no selected kernel tests skipped, shared VPN/gateway/DHCP/accessroute/cnigate cases included.
+- Relevant Linux package race checks and vet: **PASS**.
+- Linux command binaries: **PASS**.
+- Generated CRD/protobuf consistency and diff whitespace: **PASS**.
+
+The separate Kind e2e fixture remains unrun because no Kind cluster was supplied; no AWS/x86 capacity or NAT throughput claim is made. The initial envtest start failure and all successful reruns remain in the evidence archive. Metadata enrichment additionally checks the trusted current virtual client endpoint; this value is ephemeral and absent from public reports and private persisted checkpoints. A migrated DHCP owner can release its previous reservation, while other owners cannot.

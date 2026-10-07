@@ -52,6 +52,9 @@ func counterComment(id, epoch, direction, kind string) string {
 func (m *IPTablesManager) ApplyForwardPlan(ctx context.Context, plan ForwardPlan) (ApplyResult, error) {
 	m.forwardMu.Lock()
 	defer m.forwardMu.Unlock()
+	if m.quiesced {
+		return ApplyResult{}, fmt.Errorf("VPN forwarding is quiesced for shutdown")
+	}
 	if m.forwardReady && !m.retirePending && slices.Equal(m.forwardPlan.Allows, plan.Allows) {
 		return ApplyResult{}, nil
 	}

@@ -13,6 +13,14 @@ func nativeServer(cfg Config, handler server4.Handler) (serverRunner, error) {
 	return server4.NewServer(cfg.Iface, &net.UDPAddr{Port: 67, IP: net.IPv4zero}, handler)
 }
 func (e *serverEntry) handle(conn net.PacketConn, peer net.Addr, msg *dhcpv4.DHCPv4) {
+	e.handlerMu.Lock()
+	if e.stopped {
+		e.handlerMu.Unlock()
+		return
+	}
+	e.handlers.Add(1)
+	e.handlerMu.Unlock()
+	defer e.handlers.Done()
 	e.mu.Lock()
 	cfg := e.cfg
 	reply, err := replyForMessage(cfg, e.pool, msg)

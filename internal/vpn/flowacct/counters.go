@@ -8,6 +8,7 @@ import (
 
 type PairCounters struct {
 	Key
+	ClientCIDR                               string // ephemeral trusted endpoint; never persisted or relayed
 	BindingID, Epoch                         string
 	PacketsOut, PacketsIn, BytesOut, BytesIn uint64
 	Attempts, LabInitiatedAttempts           uint64

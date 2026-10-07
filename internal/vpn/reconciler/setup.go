@@ -32,7 +32,7 @@ func Setup(ctx context.Context, mgr ctrl.Manager, wg *vpn.WGManager, ipt *vpn.IP
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setup LabGroupClientReconciler: %w", err)
 	}
-	if err := (&AccessReconciler{Client: mgr.GetClient(), IPT: ipt, Counters: func() map[string]vpn.TrafficCounter { return accessTotals(reporter.Collector.Snapshot(time.Now())) }, Conntrack: vpn.NewConntrackRevoker()}).SetupWithManager(mgr); err != nil {
+	if err := (&AccessReconciler{Client: mgr.GetClient(), IPT: ipt, RequireInitialRetirement: true, InitialBindings: ipt.KnownBindingIDs(), Counters: func() map[string]vpn.TrafficCounter { return accessTotals(reporter.Collector.Snapshot(time.Now())) }, Conntrack: vpn.NewConntrackRevoker()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setup LabGroup access reconciler: %w", err)
 	}
 

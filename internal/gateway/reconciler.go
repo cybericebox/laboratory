@@ -76,7 +76,9 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if linkErr != nil {
 		r.DHCP.Stop(gw.Spec.LabName)
 		if old, ok := r.applied[gw.Name]; ok {
-			r.clearNetwork(old)
+			if err := r.clearNetwork(old); err != nil {
+				return r.networkFailure(ctx, &gw, err)
+			}
 			delete(r.applied, gw.Name)
 		}
 		next := gw.Status
@@ -99,9 +101,15 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	desired := appliedNetwork{Iface: ifaceName, CIDR: cidr, LinkIndex: link.Attrs().Index, Hardware: link.Attrs().HardwareAddr.String()}
 	previous, known := r.applied[gw.Name]
 	if !known || previous.Iface != desired.Iface || previous.CIDR != desired.CIDR || previous.LinkIndex != desired.LinkIndex || previous.Hardware != desired.Hardware || !networkPresent(link, cidr) {
+		if err := r.IPT.BlockLab(ifaceName); err != nil {
+			return r.networkFailure(ctx, &gw, fmt.Errorf("close lab source gate: %w", err))
+		}
+
 		if known {
 			r.DHCP.Stop(gw.Spec.LabName)
-			r.clearNetwork(previous)
+			if err := r.clearNetwork(previous); err != nil {
+				return r.networkFailure(ctx, &gw, err)
+			}
 			delete(r.applied, gw.Name)
 		}
 		// Assign first host IP of the lab's /24 to the interface (idempotent).
@@ -124,6 +132,9 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return r.networkFailure(ctx, &gw, fmt.Errorf("add masquerade %s: %w", cidr, err))
 		}
 
+		if err := r.IPT.UnblockLab(ifaceName); err != nil {
+			return r.networkFailure(ctx, &gw, fmt.Errorf("open secured lab source gate: %w", err))
+		}
 		r.applied[gw.Name] = desired
 	}
 	state := r.applied[gw.Name]
@@ -181,6 +192,9 @@ func (r *LabGatewayReconciler) reconcileDelete(ctx context.Context, gw *laborato
 	ctrl.Result,
 	error,
 ) {
+	if err := r.IPT.BlockLab(names.LabIfaceNameByIndex(gw.Spec.NetworkIndex)); err != nil {
+		return ctrl.Result{}, err
+	}
 	r.DHCP.Drop(gw.Spec.LabName)
 	r.IPT.DenyDHCP(names.LabIfaceNameByIndex(gw.Spec.NetworkIndex))
 	if cidr, err := netutil.SubnetForIndex(r.Cfg.InetBaseNetwork, 24, gw.Spec.NetworkIndex); err == nil {
@@ -189,7 +203,9 @@ func (r *LabGatewayReconciler) reconcileDelete(ctx context.Context, gw *laborato
 		r.IPT.DelAntiSpoof(names.LabIfaceNameByIndex(gw.Spec.NetworkIndex), cidr)
 	}
 	if old, ok := r.applied[gw.Name]; ok {
-		r.clearNetwork(old)
+		if err := r.clearNetwork(old); err != nil {
+			return ctrl.Result{}, err
+		}
 		delete(r.applied, gw.Name)
 	}
 	controllerutil.RemoveFinalizer(gw, names.FinalizerGateway)
@@ -226,12 +242,16 @@ func (r *LabGatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	return b.Complete(reconcileutil.Quiet(r))
 }
-func (r *LabGatewayReconciler) clearNetwork(old appliedNetwork) {
+func (r *LabGatewayReconciler) clearNetwork(old appliedNetwork) error {
+	if err := r.IPT.BlockLab(old.Iface); err != nil {
+		return err
+	}
 	r.IPT.DenyDHCP(old.Iface)
 	r.IPT.DenyPing(old.Iface, firstHostIP(old.CIDR))
 	removeNetworkAddress(old)
 	r.IPT.DelMasquerade(old.CIDR)
 	r.IPT.DelAntiSpoof(old.Iface, old.CIDR)
+	return nil
 }
 func (r *LabGatewayReconciler) dhcpFailure(ctx context.Context, gw *laboratoryv1alpha1.LabGateway, err error) (ctrl.Result, error) {
 	r.DHCP.Stop(gw.Spec.LabName)
@@ -264,6 +284,14 @@ func firstHostIP(cidr string) string {
 
 func (r *LabGatewayReconciler) networkFailure(ctx context.Context, obj *laboratoryv1alpha1.LabGateway, err error) (ctrl.Result, error) {
 	r.DHCP.Stop(obj.Spec.LabName)
+	if r.IPT != nil {
+		r.IPT.DenyDHCP(names.LabIfaceNameByIndex(obj.Spec.NetworkIndex))
+	}
+	if old, ok := r.applied[obj.Name]; ok {
+		old.DHCPKnown = false
+		r.applied[obj.Name] = old
+	}
+
 	next := obj.Status
 	next.Conditions = slices.Clone(next.Conditions)
 	next.DHCPReady = false

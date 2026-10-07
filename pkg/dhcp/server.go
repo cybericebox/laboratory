@@ -22,6 +22,9 @@ type StateChange struct {
 	Err     error
 }
 type serverEntry struct {
+	handlerMu  sync.Mutex
+	handlers   sync.WaitGroup
+	stopped    bool
 	mu         sync.Mutex
 	cfg        Config
 	pool       *ipPool
@@ -202,8 +205,12 @@ func (m *Manager) stop(name string) {
 	m.dormant[name] = e
 	m.notify(StateChange{Name: name})
 	m.mu.Unlock()
+	e.handlerMu.Lock()
+	e.stopped = true
+	e.handlerMu.Unlock()
 	_ = e.runner.Close()
 	<-e.done
+	e.handlers.Wait()
 }
 func (m *Manager) Stop(name string) { m.op.Lock(); defer m.op.Unlock(); m.stop(name) }
 func (m *Manager) Drop(name string) {

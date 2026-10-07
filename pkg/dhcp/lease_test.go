@@ -109,3 +109,45 @@ func TestConcurrentLeasesAreUnique(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestRangeShrinkOffersNewAddressAndRetainsOldReservation(t *testing.T) {
+	p := smallPool()
+	old, err := p.Allocate(macA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = p.UpdateRanges([]Range{{3, 3}})
+	offered, err := p.Offer(macA)
+	if err != nil || offered.Equal(old) {
+		t.Fatalf("out-of-range offer %v %v", offered, err)
+	}
+	if _, err := p.Commit(macA, offered); err != nil {
+		t.Fatal("migration commit", err)
+	}
+	_ = p.UpdateRanges([]Range{{2, 3}})
+	if _, err := p.Allocate(macB); err == nil {
+		t.Fatal("old live reservation recycled before expiry")
+	}
+}
+
+func TestMigratedOwnerCanReleaseOldReservation(t *testing.T) {
+	p := smallPool()
+	old, _ := p.Allocate(macA)
+	_ = p.UpdateRanges([]Range{{3, 3}})
+	offered, err := p.Offer(macA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = p.Commit(macA, offered)
+	if p.Release(macB, old) {
+		t.Fatal("foreign retired lease release")
+	}
+	if !p.Release(macA, old) {
+		t.Fatal("owner could not release old reservation")
+	}
+	_ = p.UpdateRanges([]Range{{2, 3}})
+	reused, err := p.Allocate(macB)
+	if err != nil || !reused.Equal(old) {
+		t.Fatalf("released reservation not reusable %v %v", reused, err)
+	}
+}

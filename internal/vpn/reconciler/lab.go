@@ -249,6 +249,14 @@ func firstHostIP(cidr string) string {
 
 func (r *LabVPNReconciler) networkFailure(ctx context.Context, obj *laboratoryv1alpha1.LabVPN, err error) (ctrl.Result, error) {
 	r.DHCP.Stop(obj.Spec.LabName)
+	if r.IPT != nil {
+		r.IPT.DenyDHCP(names.LabIfaceNameByIndex(obj.Spec.NetworkIndex))
+	}
+	if old, ok := r.applied[obj.Name]; ok {
+		old.DHCPKnown = false
+		r.applied[obj.Name] = old
+	}
+
 	next := obj.Status
 	next.Conditions = slices.Clone(next.Conditions)
 	next.DHCPReady = false

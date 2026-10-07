@@ -35,6 +35,7 @@ type IPTablesManager struct {
 	BeforeRetire  func(flowacct.CounterSnapshot) error
 	AfterRetire   func([]string)
 	retirePending bool
+	quiesced      bool
 }
 
 const accessChain = "CYBERICEBOX_VPN_ACCESS"
@@ -147,36 +148,30 @@ func (m *IPTablesManager) forwardRules() [][]string {
 	}
 }
 
-// SetupForwardPolicy sets the FORWARD policy to DROP, rebuilds the base rules (a restart in a surviving network namespace never
-// finds an older order of them) and installs the default-deny access chain for participant-to-lab traffic. Called once on pod
-// start before the reconcile loop begins; the lab-to-participant accepts of AllowLabToClients are added by the reconciler.
+// SetupForwardPolicy closes the access gate and rebuilds the private VPN
+// FORWARD chain in one commit. An empty access chain must never fall through
+// to established forwarding during a surviving-network-namespace restart.
 func (m *IPTablesManager) SetupForwardPolicy() error {
+	m.forwardMu.Lock()
+	defer m.forwardMu.Unlock()
 	if err := m.ipt.ChangePolicy("filter", "FORWARD", "DROP"); err != nil {
-		return fmt.Errorf("set FORWARD DROP: %w", err)
+		return err
 	}
-	// The FORWARD jump below references the access chain, and iptables rejects
-	// even checking a rule whose target chain does not exist yet: create it
-	// first (ClearChain creates it empty, i.e. deny-only).
-	if err := m.ipt.ClearChain("filter", accessChain); err != nil {
-		return fmt.Errorf("create access chain: %w", err)
+	var body strings.Builder
+	body.WriteString("*filter\n:" + accessChain + " - [0:0]\n-F " + accessChain + "\n-A " + accessChain + " -j DROP\n-F FORWARD\n")
+	for _, rule := range m.forwardRules() {
+		fmt.Fprintf(&body, "-A FORWARD %s\n", strings.Join(rule, " "))
 	}
-	// The policy is DROP, so the empty chain is closed while the rules are put back in order.
-	if err := m.ipt.ClearChain("filter", "FORWARD"); err != nil {
-		return fmt.Errorf("flush FORWARD: %w", err)
-	}
-	for _, r := range m.forwardRules() {
-		if err := m.ipt.Append("filter", "FORWARD", r...); err != nil {
-			return fmt.Errorf("iptables FORWARD %v: %w", r, err)
-		}
+	body.WriteString("COMMIT\n")
+	if err := m.commands.Restore(context.Background(), []byte(body.String())); err != nil {
+		return err
 	}
 	m.forwardReady = false
-	// Close the gate while preserving detached meter chains for restart resume.
-	return m.ipt.Append("filter", accessChain, "-j", "DROP")
+	return nil
 }
 
-// ReplaceAccessRules atomically in intent replaces all client-to-lab accepts.
-// The chain is flushed before new accepts are appended, so any transient state
-// is deny-only. The caller supplies one rule per permitted client/lab CIDR.
+// ReplaceAccessRules replaces the allowed symmetric bindings in one gate
+// commit; detached retired counters are persisted before a cleanup commit.
 func (m *IPTablesManager) ReplaceAccessRules(rules []AccessRule) error {
 	plan := ForwardPlan{Decisions: rules}
 	for _, r := range rules {

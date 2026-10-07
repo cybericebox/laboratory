@@ -29,7 +29,7 @@ func prepareFlowAccounting(ctx context.Context, mgr ctrl.Manager, cfg *vpn.Confi
 	bootID := fmt.Sprintf("%s-%d", instance, time.Now().UnixNano())
 	reader, cached := mgr.GetAPIReader(), mgr.GetClient()
 	collector := flowacct.New(source, func() flowacct.Topology { return buildTopology(ctx, cached, cfg.Namespace) }, bootID, flowacct.DefaultPollEvery)
-	reporter := &flowacct.Reporter{Reader: reader, Writer: cached, Namespace: cfg.Namespace, Instance: instance, Collector: collector, CounterReader: ipt, OnResume: ipt.RestoreCounterBindings}
+	reporter := &flowacct.Reporter{Reader: reader, Writer: cached, Namespace: cfg.Namespace, Instance: instance, Collector: collector, CounterReader: ipt, OnResume: ipt.RestoreCounterBindings, BeforeShutdown: ipt.Quiesce}
 	reporter.OnPublish = func(ctx context.Context, report flowacct.Report) error {
 		return publishAccessTotals(ctx, cached, cfg.Namespace, report)
 	}
@@ -37,13 +37,8 @@ func prepareFlowAccounting(ctx context.Context, mgr ctrl.Manager, cfg *vpn.Confi
 		source.Close()
 		return nil, nil, err
 	}
-	ipt.BeforeRetire = func(snapshot flowacct.CounterSnapshot) error {
-		if err := collector.ObserveCounters(snapshot); err != nil {
-			return err
-		}
-		return reporter.Publish(ctx, snapshot.At)
-	}
-	ipt.AfterRetire = collector.ForgetBindings
+	ipt.BeforeRetire = func(snapshot flowacct.CounterSnapshot) error { return reporter.Retire(ctx, snapshot) }
+	ipt.AfterRetire = reporter.ForgetBindings
 	return reporter, source, nil
 }
 

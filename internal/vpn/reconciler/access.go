@@ -36,6 +36,8 @@ type accessRevoker interface {
 }
 
 type AccessReconciler struct {
+	RequireInitialRetirement bool
+	InitialBindings          map[string]bool
 	client.Client
 	IPT      accessApplier
 	Counters func() map[string]vpn.TrafficCounter
@@ -43,13 +45,15 @@ type AccessReconciler struct {
 	// checks both directions before established forwarding. Nil is used in tests.
 	Conntrack accessRevoker
 	// Controller-runtime serializes Reconcile calls for this controller.
-	applied        bool
-	lastNamespace  string
-	lastRules      []vpn.AccessRule
-	revokePending  bool
-	revokeLabs     []string
-	revokeClients  []string
-	revokeReissued map[string]bool
+	applied           bool
+	lastNamespace     string
+	lastRules         []vpn.AccessRule
+	revokePending     bool
+	revokeLabs        []string
+	revokeClients     []string
+	revokeReissued    map[string]bool
+	activationPending bool
+	initialChecked    bool
 }
 
 func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -94,9 +98,22 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		if r.revokeReissued == nil {
 			r.revokeReissued = map[string]bool{}
 		}
+		if r.RequireInitialRetirement && !r.initialChecked {
+			for _, rule := range rules {
+				if rule.Action == vpn.AccessAllow && !r.InitialBindings[rule.BindingID()] {
+					r.revokeReissued[rule.Identifier()] = true
+				}
+			}
+		}
 		for _, old := range previousRules {
+			if old.Action != vpn.AccessAllow {
+				continue
+			}
 			for _, next := range rules {
-				if old.SourceCIDR == next.SourceCIDR && old.ClientName != next.ClientName || old.LabInterface == next.LabInterface && old.LabName != next.LabName {
+				if next.Action != vpn.AccessAllow {
+					continue
+				}
+				if old.SourceCIDR != "" && old.SourceCIDR == next.SourceCIDR && old.ClientName != next.ClientName || old.LabInterface != "" && old.LabInterface == next.LabInterface && old.LabName != next.LabName {
 					r.revokeReissued[next.Identifier()] = true
 				}
 			}
@@ -120,7 +137,14 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		// A legacy non-atomic replacement can fail after touching the chain:
 		// invalidate the old snapshot before trying, so reverting still repairs it.
 		r.applied = false
-		if err := r.IPT.ReplaceAccessRules(rules); err != nil {
+		safeRules := slices.Clone(rules)
+		for i := range safeRules {
+			if r.revokeReissued[safeRules[i].Identifier()] {
+				safeRules[i].Action = vpn.AccessDeny
+				r.activationPending = true
+			}
+		}
+		if err := r.IPT.ReplaceAccessRules(safeRules); err != nil {
 			if policyFound {
 				_ = r.writePolicyStatus(ctx, policy, rules, nil, "Failed", err.Error())
 			}
@@ -151,6 +175,17 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			return ctrl.Result{}, err
 		}
 	}
+	if r.activationPending {
+		if r.Conntrack == nil {
+			return ctrl.Result{}, fmt.Errorf("identity activation requires conntrack retirement")
+		}
+		if err := r.IPT.ReplaceAccessRules(rules); err != nil {
+			r.applied = false
+			return ctrl.Result{}, err
+		}
+		r.activationPending = false
+	}
+	r.initialChecked = true
 	r.revokePending = false
 	r.revokeLabs = nil
 	r.revokeClients = nil

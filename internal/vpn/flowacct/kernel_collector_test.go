@@ -7,7 +7,7 @@ import (
 )
 
 func sample(n uint64) PairCounters {
-	return PairCounters{Key: Key{"p-a", "c-1"}, BindingID: "binding", Epoch: "epoch", PacketsOut: n, BytesOut: n * 40, Attempts: 1}
+	return PairCounters{Key: Key{"p-a", "c-1"}, BindingID: "binding", ClientCIDR: "10.8.0.2/32", Epoch: "epoch", PacketsOut: n, BytesOut: n * 40, Attempts: 1}
 }
 func observe(t *testing.T, c *Collector, row PairCounters, at time.Time) {
 	t.Helper()

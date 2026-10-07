@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -27,14 +28,16 @@ const (
 // resource is the delivery buffer: it survives a pod restart and an agent or
 // platform outage, and the agent relays it without keeping any state itself.
 type Reporter struct {
-	Reader        client.Reader
-	Writer        client.Client
-	Namespace     string
-	Instance      string
-	Collector     *Collector
-	CounterReader CounterReader
-	OnResume      func([]PairCounters)
-	OnPublish     func(context.Context, Report) error
+	mu             sync.Mutex
+	Reader         client.Reader
+	Writer         client.Client
+	Namespace      string
+	Instance       string
+	Collector      *Collector
+	CounterReader  CounterReader
+	OnResume       func([]PairCounters)
+	OnPublish      func(context.Context, Report) error
+	BeforeShutdown func(context.Context) error
 }
 
 // Run polls the source and publishes on the given cadences until ctx ends.
@@ -49,15 +52,25 @@ func (r *Reporter) Run(ctx context.Context, pollEvery, reportEvery time.Duration
 			onError(err)
 		}
 	}
-	if err := r.Poll(ctx, time.Now()); err != nil && onError != nil {
-		onError(err)
+	if ctx.Err() == nil {
+		if err := r.Poll(ctx, time.Now()); err != nil && onError != nil {
+			onError(err)
+		}
+		publish()
 	}
-	publish()
 	for {
 		select {
 		case <-ctx.Done():
 			final, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
+			if r.BeforeShutdown != nil {
+				if err := r.BeforeShutdown(final); err != nil {
+					r.Collector.MarkPartial(time.Now())
+					if onError != nil {
+						onError(err)
+					}
+				}
+			}
 			if err := r.Poll(final, time.Now()); err != nil && onError != nil {
 				onError(err)
 			}
@@ -76,21 +89,44 @@ func (r *Reporter) Run(ctx context.Context, pollEvery, reportEvery time.Duration
 }
 
 // Poll reads the cumulative source once; conntrack contributes metadata only.
+type transactionalCounters interface {
+	WithPairCounters(context.Context, func(CounterSnapshot) error) error
+}
+
 func (r *Reporter) Poll(ctx context.Context, now time.Time) error {
-	if r.CounterReader == nil {
-		r.Collector.MarkPartial(now)
-		return fmt.Errorf("missing VPN counter source")
+	observe := func(snapshot CounterSnapshot) error {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if err := r.Collector.ObserveCounters(snapshot); err != nil {
+			return err
+		}
+		return r.Collector.Poll(now)
 	}
-	snapshot, err := r.CounterReader.ReadPairCounters(ctx)
+	var err error
+	if reader, ok := r.CounterReader.(transactionalCounters); ok {
+		err = reader.WithPairCounters(ctx, observe)
+	} else {
+		// Legacy/fake readers have no kernel mutation lock. Serialize their entire
+		// read/fold against report publication and retirement.
+		r.mu.Lock()
+		if r.CounterReader == nil {
+			err = fmt.Errorf("missing VPN counter source")
+		} else {
+			var snapshot CounterSnapshot
+			snapshot, err = r.CounterReader.ReadPairCounters(ctx)
+			if err == nil {
+				err = r.Collector.ObserveCounters(snapshot)
+			}
+			if err == nil {
+				err = r.Collector.Poll(now)
+			}
+		}
+		r.mu.Unlock()
+	}
 	if err != nil {
 		r.Collector.MarkPartial(now)
-		return err
 	}
-	if err := r.Collector.ObserveCounters(snapshot); err != nil {
-		r.Collector.MarkPartial(now)
-		return err
-	}
-	return r.Collector.Poll(now)
+	return err
 }
 
 // resume continues from the totals the previous run of this pod left in the
@@ -144,6 +180,11 @@ func (r *Reporter) Resume(ctx context.Context) error {
 // Publish writes the current state; CoveredTo advances even when nothing
 // happened, which is what proves an idle team was being watched.
 func (r *Reporter) Publish(ctx context.Context, now time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.publish(ctx, now)
+}
+func (r *Reporter) publish(ctx context.Context, now time.Time) error {
 	report := r.Collector.Snapshot(now)
 	if err := PublishReport(ctx, r.Reader, r.Writer, types.NamespacedName{Namespace: r.Namespace, Name: ReportName},
 		laboratoryv1alpha1.LabTrafficReportSpec{Kind: laboratoryv1alpha1.LabTrafficSurfaceVPN, Instance: r.Instance}, ToStatus(report)); err != nil {
@@ -200,4 +241,20 @@ func ToStatus(report Report) laboratoryv1alpha1.LabTrafficReportStatus {
 		})
 	}
 	return status
+}
+
+// Retire is called with the kernel mutation lock held, after the gate closed.
+// Lock order is always kernel -> reporter -> collector, never the reverse.
+func (r *Reporter) Retire(ctx context.Context, snapshot CounterSnapshot) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.Collector.ObserveCounters(snapshot); err != nil {
+		return err
+	}
+	return r.publish(ctx, snapshot.At)
+}
+func (r *Reporter) ForgetBindings(ids []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Collector.ForgetBindings(ids)
 }

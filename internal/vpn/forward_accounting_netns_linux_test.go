@@ -4,6 +4,9 @@ package vpn
 
 import (
 	"context"
+	"encoding/binary"
+	"github.com/ti-mo/conntrack"
+	"golang.org/x/sys/unix"
 	"net"
 	"os"
 	"os/exec"
@@ -108,6 +111,53 @@ func TestNetnsForwardPlanGatesBothDirectionsAndPreservesCounts(t *testing.T) {
 	}
 	m = restarted
 	t.Cleanup(m.Cleanup)
+	// Keep established sockets open across updates and revoke them in both
+	// original orientations. New dial attempts alone cannot prove this gate.
+	nstest.Echo(t, "a", "tcp", "0.0.0.0:7910")
+	nstest.Echo(t, "a", "udp", "0.0.0.0:7911")
+	nstest.Echo(t, "pa", "tcp", "0.0.0.0:7912")
+	nstest.Echo(t, "pa", "udp", "0.0.0.0:7913")
+	dialogs := []*nstest.Dialog{nstest.Persistent(t, "pa", "tcp", "10.8.1.2:7910"), nstest.Persistent(t, "pa", "udp", "10.8.1.2:7911"), nstest.Persistent(t, "a", "tcp", "10.8.0.2:7912"), nstest.Persistent(t, "a", "udp", "10.8.0.2:7913")}
+	for _, d := range dialogs {
+		if !d.Exchange(t) {
+			t.Fatal("live permitted socket failed")
+		}
+	}
+	prior, err := m.ReadPairCounters(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	additional := plan
+	additional.Allows = append(append([]ForwardRule(nil), plan.Allows...), ForwardRule{ClientName: "p1", LabName: "b", ClientCIDR: "10.8.0.2/32", LabCIDR: "10.8.2.0/24", LabInterface: "lab2"})
+	extra, err := forwardBinding(AccessRule{ClientName: "p1", LabName: "b", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.8.2.0/24", LabInterface: "lab2", Action: AccessAllow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	additional.Allows[1] = extra
+	if _, err := m.ApplyForwardPlan(context.Background(), additional); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range dialogs {
+		if !d.Exchange(t) {
+			t.Fatal("other pair update broke established traffic")
+		}
+	}
+	underTraffic, err := m.ReadPairCounters(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, row := range underTraffic.Rows {
+		if row.BindingID == prior.Rows[0].BindingID {
+			found = true
+			if row.Epoch != prior.Rows[0].Epoch || row.PacketsOut <= prior.Rows[0].PacketsOut || row.PacketsIn <= prior.Rows[0].PacketsIn {
+				t.Fatal("unchanged live pair reset")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("unchanged binding disappeared")
+	}
 	collector := flowacct.New(nil, func() flowacct.Topology { return flowacct.Topology{} }, "boot", time.Second)
 	m.BeforeRetire = collector.ObserveCounters
 	m.AfterRetire = collector.ForgetBindings
@@ -115,8 +165,19 @@ func TestNetnsForwardPlanGatesBothDirectionsAndPreservesCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	retired := collector.Snapshot(time.Now())
-	if len(retired.Ledger) != 1 || retired.Ledger[0].PacketsOut < int64(tcp.PacketsOut) || retired.Ledger[0].LabInitiatedAttempts != 1 || len(retired.KernelCheckpoints) != 0 {
+	if len(retired.Ledger) != 1 || retired.Ledger[0].PacketsOut < int64(tcp.PacketsOut) || retired.Ledger[0].LabInitiatedAttempts != 3 || len(retired.KernelCheckpoints) != 0 {
 		t.Fatalf("final retirement lost counts: %+v", retired)
+	}
+	for _, d := range dialogs {
+		if d.Exchange(t) {
+			t.Fatal("established socket bypassed revoked gate")
+		}
+	}
+	revoker := NewConntrackRevoker()
+	defer revoker.Close()
+	removed, err := revoker.Revoke([]string{"10.8.1.0/24", "10.8.2.0/24"}, nil, []string{"10.8.0.2/32"})
+	if err != nil || removed < 4 {
+		t.Fatalf("real original/reply conntrack removal %d %v", removed, err)
 	}
 	if nstest.Reach(t, "a", "udp", "10.8.0.2:7901", targetP) || nstest.Reach(t, "pa", "udp", "10.8.1.2:7900", targetA) {
 		t.Fatal("revoked pair remained open")
@@ -179,6 +240,7 @@ func TestNetnsMeterCountsEveryPacketButOneParallelUDPInitiative(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	nstest.Run(t, "", "iptables", "-t", "mangle", "-A", "PREROUTING", "-i", "wg0", "-p", "udp", "--dport", "7980", "-j", "CONNMARK", "--set-xmark", "0x42/0xff")
 	if _, err := m.ApplyForwardPlan(context.Background(), plan); err != nil {
 		t.Fatal(err)
 	}
@@ -196,4 +258,99 @@ func TestNetnsMeterCountsEveryPacketButOneParallelUDPInitiative(t *testing.T) {
 	if r.PacketsOut != 300 || r.BytesOut != 9900 || r.Attempts != 1 || r.LabInitiatedAttempts != 0 {
 		t.Fatalf("300 packets in one UDP flow: %+v", r)
 	}
+	revoker := NewConntrackRevoker()
+	defer revoker.Close()
+	ct, err := conntrack.Dial(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ct.Close()
+	raw, err := ct.Dump(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marked := false
+	for _, f := range raw {
+		if f.TupleOrig.Proto.DestinationPort == 7980 {
+			marked = true
+			if f.Mark&0xff != 0x42 {
+				t.Fatal("count mark overwrote unrelated bits")
+			}
+		}
+	}
+	if !marked {
+		t.Fatal("UDP conntrack control missing")
+	}
+	removed, err := revoker.Revoke([]string{"10.8.1.0/24"}, nil, []string{"10.8.0.2/32"})
+	if err != nil || removed < 1 {
+		t.Fatalf("ephemeral flow removal %d %v", removed, err)
+	}
+	vanished, err := m.ReadPairCounters(context.Background())
+	if err != nil || vanished.Rows[0] != r {
+		t.Fatalf("vanished flow counter lost %+v %v", vanished, err)
+	}
+	nstest.Run(t, "l", "iptables", "-A", "INPUT", "-p", "tcp", "--dport", "7981", "-j", "DROP")
+	syn := exec.Command("ip", "netns", "exec", "p", os.Args[0], "-test.run=^TestNetnsRepeatedSYNHelper$", "--", "10.8.0.2", "10.8.1.2")
+	syn.Env = append(os.Environ(), "CICE_SYN_SEND=1")
+	if out, err := syn.CombinedOutput(); err != nil {
+		t.Fatalf("SYN helper %v %s", err, out)
+	}
+	final, err := m.ReadPairCounters(context.Background())
+	if err != nil || len(final.Rows) != 1 || final.Rows[0].Attempts != 2 || final.Rows[0].PacketsOut != 310 {
+		t.Fatalf("repeated SYN counted multiple initiatives %+v %v", final, err)
+	}
+	if err := m.Quiesce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	afterClose, err := m.ReadPairCounters(context.Background())
+	if err != nil || afterClose.Rows[0] != final.Rows[0] {
+		t.Fatal("quiescence lost final counters")
+	}
+	if _, err := m.ApplyForwardPlan(context.Background(), plan); err == nil {
+		t.Fatal("reconcile reopened shutdown gate")
+	}
+
+}
+
+func TestNetnsRepeatedSYNHelper(t *testing.T) {
+	if os.Getenv("CICE_SYN_SEND") != "1" {
+		return
+	}
+	args := os.Args
+	src := net.ParseIP(args[len(args)-2]).To4()
+	dst := net.ParseIP(args[len(args)-1]).To4()
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_RAW, unix.IPPROTO_TCP)
+	if err != nil {
+		os.Exit(2)
+	}
+	defer unix.Close(fd)
+	var source, target [4]byte
+	copy(source[:], src)
+	copy(target[:], dst)
+	if err := unix.Bind(fd, &unix.SockaddrInet4{Addr: source}); err != nil {
+		os.Exit(2)
+	}
+	tcp := make([]byte, 20)
+	binary.BigEndian.PutUint16(tcp, 49000)
+	binary.BigEndian.PutUint16(tcp[2:], 7981)
+	binary.BigEndian.PutUint32(tcp[4:], 123)
+	tcp[12] = 0x50
+	tcp[13] = 2
+	binary.BigEndian.PutUint16(tcp[14:], 32768)
+	pseudo := append(append(append([]byte{}, src...), dst...), 0, 6, 0, 20)
+	pseudo = append(pseudo, tcp...)
+	sum := uint32(0)
+	for i := 0; i < len(pseudo); i += 2 {
+		sum += uint32(binary.BigEndian.Uint16(pseudo[i:]))
+	}
+	for sum>>16 != 0 {
+		sum = (sum & 0xffff) + (sum >> 16)
+	}
+	binary.BigEndian.PutUint16(tcp[16:], ^uint16(sum))
+	for i := 0; i < 10; i++ {
+		if err := unix.Sendto(fd, tcp, 0, &unix.SockaddrInet4{Addr: target}); err != nil {
+			os.Exit(3)
+		}
+	}
+	os.Exit(0)
 }

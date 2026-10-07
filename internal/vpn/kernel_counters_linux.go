@@ -64,7 +64,7 @@ func parseKernelCounters(saved []byte, bindings map[string]ForwardRule, tolerate
 		}
 		row := rows[id]
 		if row == nil {
-			row = &flowacct.PairCounters{Key: flowacct.Key{Subject: binding.ClientName, Lab: binding.LabName}, BindingID: id, Epoch: epoch}
+			row = &flowacct.PairCounters{Key: flowacct.Key{Subject: binding.ClientName, Lab: binding.LabName}, BindingID: id, Epoch: epoch, ClientCIDR: binding.ClientCIDR}
 			rows[id] = row
 		}
 		switch key {
@@ -122,4 +122,35 @@ func (m *IPTablesManager) RestoreCounterBindings(rows []flowacct.PairCounters) {
 	for _, row := range rows {
 		m.bindings[row.BindingID] = ForwardRule{ClientName: row.Subject, LabName: row.Lab, BindingID: row.BindingID}
 	}
+}
+
+// WithPairCounters holds the same lock as retirement until its snapshot has
+// been folded, so an older sample cannot arrive after a binding was forgotten.
+func (m *IPTablesManager) WithPairCounters(ctx context.Context, observe func(flowacct.CounterSnapshot) error) error {
+	m.forwardMu.Lock()
+	defer m.forwardMu.Unlock()
+	saved, err := m.commands.Save(ctx)
+	if err != nil {
+		return err
+	}
+	parsed, err := parseKernelCounters(saved, m.bindings)
+	if err != nil {
+		return err
+	}
+	return observe(parsed.snapshot)
+}
+func (m *IPTablesManager) KnownBindingIDs() map[string]bool {
+	m.forwardMu.Lock()
+	defer m.forwardMu.Unlock()
+	ids := map[string]bool{}
+	for id := range m.bindings {
+		ids[id] = true
+	}
+	return ids
+}
+func (m *IPTablesManager) Quiesce(ctx context.Context) error {
+	m.forwardMu.Lock()
+	defer m.forwardMu.Unlock()
+	m.quiesced = true
+	return m.commands.Restore(ctx, []byte("*filter\n-F "+accessChain+"\n-A "+accessChain+" -j DROP\nCOMMIT\n"))
 }

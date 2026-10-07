@@ -5,6 +5,7 @@ package vpn
 import (
 	"context"
 	"errors"
+	"github.com/cybericebox/laboratory/internal/nstest"
 	"strings"
 	"testing"
 )
@@ -68,5 +69,35 @@ func BenchmarkUnchangedForwardPlan(b *testing.B) {
 	}
 	if len(m.commands.(*recordingRuleCommand).restores) != 0 {
 		b.Fatal("unchanged plan invoked restore")
+	}
+}
+
+type recordingNativeRules struct {
+	nativeRuleCommand
+	restores [][]byte
+}
+
+func (r *recordingNativeRules) Restore(ctx context.Context, body []byte) error {
+	r.restores = append(r.restores, append([]byte(nil), body...))
+	return r.nativeRuleCommand.Restore(ctx, body)
+}
+func TestNetnsStartupGateUsesOneClosedBatch(t *testing.T) {
+	nstest.Require(t)
+	m, err := NewIPTablesManager("wg0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands := &recordingNativeRules{}
+	m.commands = commands
+	if err := m.SetupForwardPolicy(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(m.Cleanup)
+	if len(commands.restores) != 1 {
+		t.Fatalf("startup used %d closed batches, want one", len(commands.restores))
+	}
+	body := string(commands.restores[0])
+	if !strings.Contains(body, "-A "+accessChain+" -j DROP") || !strings.Contains(body, "-F FORWARD") {
+		t.Fatal("startup can expose an empty return gate")
 	}
 }

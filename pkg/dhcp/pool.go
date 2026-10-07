@@ -39,6 +39,7 @@ const (
 )
 
 type lease struct {
+	owner     string
 	ip        net.IP
 	expires   time.Time
 	committed bool
@@ -52,11 +53,12 @@ type ipPool struct {
 	ranges     []Range
 	byMAC      map[string]lease
 	quarantine map[string]time.Time
+	retired    map[string]lease
 	now        func() time.Time
 }
 
 func newIPPool(subnet *net.IPNet, gw net.IP, ranges []Range) *ipPool {
-	return &ipPool{subnet: &net.IPNet{IP: append(net.IP(nil), subnet.IP.Mask(subnet.Mask)...), Mask: append(net.IPMask(nil), subnet.Mask...)}, gw: append(net.IP(nil), gw.To4()...), ranges: append([]Range(nil), ranges...), byMAC: map[string]lease{}, quarantine: map[string]time.Time{}, now: time.Now}
+	return &ipPool{subnet: &net.IPNet{IP: append(net.IP(nil), subnet.IP.Mask(subnet.Mask)...), Mask: append(net.IPMask(nil), subnet.Mask...)}, gw: append(net.IP(nil), gw.To4()...), ranges: append([]Range(nil), ranges...), byMAC: map[string]lease{}, quarantine: map[string]time.Time{}, retired: map[string]lease{}, now: time.Now}
 }
 func validMAC(mac net.HardwareAddr) bool {
 	if len(mac) == 0 || len(mac) > 16 {
@@ -71,6 +73,11 @@ func validMAC(mac net.HardwareAddr) bool {
 }
 func (p *ipPool) purge() {
 	now := p.now()
+	for ip, r := range p.retired {
+		if !now.Before(r.expires) {
+			delete(p.retired, ip)
+		}
+	}
 	for owner, r := range p.byMAC {
 		if !now.Before(r.expires) {
 			delete(p.byMAC, owner)
@@ -96,6 +103,9 @@ func (p *ipPool) inRange(ip net.IP) bool {
 	return false
 }
 func (p *ipPool) free(ip net.IP, owner string) bool {
+	if _, ok := p.retired[ip.String()]; ok {
+		return false
+	}
 	if _, ok := p.quarantine[ip.String()]; ok {
 		return false
 	}
@@ -115,7 +125,15 @@ func (p *ipPool) Offer(mac net.HardwareAddr) (net.IP, error) {
 	p.purge()
 	key := mac.String()
 	if r, ok := p.byMAC[key]; ok {
-		return append(net.IP(nil), r.ip...), nil
+		if p.inRange(r.ip) {
+			return append(net.IP(nil), r.ip...), nil
+		}
+		// Reserve the old committed address until its original TTL while this
+		// owner obtains a new eligible offer. Never advertise an unusable lease.
+		if r.committed {
+			p.retired[r.ip.String()] = r
+		}
+		delete(p.byMAC, key)
 	}
 	for _, r := range p.ranges {
 		for host := r.Start; host <= r.End; host++ {
@@ -123,7 +141,7 @@ func (p *ipPool) Offer(mac net.HardwareAddr) (net.IP, error) {
 			if !p.inRange(ip) || !p.free(ip, key) {
 				continue
 			}
-			p.byMAC[key] = lease{ip: ip, expires: p.now().Add(offerDuration)}
+			p.byMAC[key] = lease{owner: key, ip: ip, expires: p.now().Add(offerDuration)}
 			return append(net.IP(nil), ip...), nil
 		}
 	}
@@ -144,7 +162,7 @@ func (p *ipPool) Commit(mac net.HardwareAddr, ip net.IP) (net.IP, error) {
 		return nil, fmt.Errorf("requested address differs from reservation")
 	}
 	ip = append(net.IP(nil), ip.To4()...)
-	p.byMAC[key] = lease{ip: ip, expires: p.now().Add(leaseDuration), committed: true}
+	p.byMAC[key] = lease{owner: key, ip: ip, expires: p.now().Add(leaseDuration), committed: true}
 	return append(net.IP(nil), ip...), nil
 }
 func (p *ipPool) Allocate(mac net.HardwareAddr) (net.IP, error) {
@@ -161,7 +179,12 @@ func (p *ipPool) Release(mac net.HardwareAddr, ip net.IP) bool {
 	key := mac.String()
 	r, ok := p.byMAC[key]
 	if !ok || !r.ip.Equal(ip) {
-		return false
+		retired, exists := p.retired[ip.String()]
+		if !exists || retired.owner != key {
+			return false
+		}
+		delete(p.retired, ip.String())
+		return true
 	}
 	delete(p.byMAC, key)
 	return true

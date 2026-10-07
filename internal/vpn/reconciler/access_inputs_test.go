@@ -204,3 +204,77 @@ func TestAccessReconcileReissuedAddressRevokesOldOwnerFlows(t *testing.T) {
 		}
 	}
 }
+
+func reissuePeer(t *testing.T, c client.Client) {
+	t.Helper()
+	old := &lab.LabGroupClient{}
+	_ = c.Get(context.Background(), types.NamespacedName{Namespace: "group", Name: "p1"}, old)
+	if err := c.Delete(context.Background(), old); err != nil {
+		t.Fatal(err)
+	}
+	next := old.DeepCopy()
+	next.Name = "p2"
+	next.ResourceVersion = ""
+	next.UID = ""
+	if err := c.Create(context.Background(), next); err != nil {
+		t.Fatal(err)
+	}
+}
+func TestReissuedBindingStaysClosedUntilRevocationSucceeds(t *testing.T) {
+	r, a, c, req := accessReconcileFixture(t)
+	revoker := &recordingAccessRevoker{}
+	r.Conntrack = revoker
+	reconcileAccess(t, r, req)
+	reissuePeer(t, c)
+	revoker.failNext = true
+	if _, err := r.Reconcile(context.Background(), req); err == nil {
+		t.Fatal("expected retirement failure")
+	}
+	for _, rule := range a.active {
+		if rule.ClientName == "p2" && rule.Action == vpn.AccessAllow {
+			t.Fatal("new owner opened while old flows remain")
+		}
+	}
+	reconcileAccess(t, r, req)
+	if len(a.active) != 1 || a.active[0].Action != vpn.AccessAllow {
+		t.Fatal("new owner not activated after retirement")
+	}
+}
+func TestColdStartUnknownBindingStaysClosedUntilRetirement(t *testing.T) {
+	r, a, _, req := accessReconcileFixture(t)
+	revoker := &recordingAccessRevoker{failNext: true}
+	r.Conntrack = revoker
+	r.RequireInitialRetirement = true
+	r.InitialBindings = map[string]bool{}
+	if _, err := r.Reconcile(context.Background(), req); err == nil {
+		t.Fatal("expected retirement failure")
+	}
+	for _, rule := range a.active {
+		if rule.Action == vpn.AccessAllow {
+			t.Fatal("retained old flow opened for unknown identity")
+		}
+	}
+	reconcileAccess(t, r, req)
+	if len(a.active) != 1 || a.active[0].Action != vpn.AccessAllow {
+		t.Fatal("cold binding not activated")
+	}
+}
+
+func TestColdStartVerifiedBindingPreservesItsPermittedFlows(t *testing.T) {
+	r, a, c, req := accessReconcileFixture(t)
+	leg := &lab.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: "l1-vpn", Namespace: "group"}, Spec: lab.LabVPNSpec{LabName: "l1", NetworkIndex: 1}}
+	if err := c.Create(context.Background(), leg); err != nil {
+		t.Fatal(err)
+	}
+	binding := vpn.AccessRule{ClientName: "p1", LabName: "l1", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.8.1.0/24", LabInterface: "lab1", Action: vpn.AccessAllow}.BindingID()
+	r.RequireInitialRetirement = true
+	r.InitialBindings = map[string]bool{binding: true}
+	revoker := &recordingAccessRevoker{failNext: true}
+	r.Conntrack = revoker
+	if _, err := r.Reconcile(context.Background(), req); err == nil {
+		t.Fatal("expected conntrack failure")
+	}
+	if len(a.active) != 1 || a.active[0].Action != vpn.AccessAllow || revoker.lastRules[0].Action != vpn.AccessAllow {
+		t.Fatal("verified same owner flow was unnecessarily closed")
+	}
+}

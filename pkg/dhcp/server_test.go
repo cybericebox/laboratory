@@ -4,6 +4,7 @@ package dhcp
 
 import (
 	"errors"
+	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/dhcpv4/server4"
 	"net"
 	"sync"
@@ -165,5 +166,20 @@ func TestManagerConcurrentHotUpdateAndLeaseOperations(t *testing.T) {
 	wg.Wait()
 	if len(*servers) != 1 || !m.Healthy("a") {
 		t.Fatal("hot update replaced the server")
+	}
+}
+
+func TestStoppedHandlerCannotReleaseReplacementLease(t *testing.T) {
+	m, _ := fakeManager(t)
+	cfg := handlerConfig()
+	_ = m.Start("a", cfg)
+	old := m.servers["a"]
+	ip, _ := old.pool.Allocate(macA)
+	m.Stop("a")
+	_ = m.Start("a", cfg)
+	release := message(t, dhcpv4.MessageTypeRelease, macA, dhcpv4.WithClientIP(ip), dhcpv4.WithOption(dhcpv4.OptServerIdentifier(net.ParseIP(cfg.Gateway))))
+	old.handle(nil, nil, release)
+	if _, err := m.servers["a"].pool.Allocate(macB); err == nil {
+		t.Fatal("late old RELEASE deleted renewed lease")
 	}
 }

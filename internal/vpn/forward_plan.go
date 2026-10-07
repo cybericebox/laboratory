@@ -80,3 +80,13 @@ func forwardBinding(r AccessRule) (ForwardRule, error) {
 	f.BindingID = hex.EncodeToString(sum[:8])
 	return f, nil
 }
+
+// BindingID identifies the names, endpoints and physical lab leg used by an
+// allow rule. It is also the private persisted identity proof at cold start.
+func (r AccessRule) BindingID() string {
+	binding, err := forwardBinding(r)
+	if err != nil {
+		return ""
+	}
+	return binding.BindingID
+}
