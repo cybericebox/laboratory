@@ -50,3 +50,7 @@ The first broad `go test ./...` run passed 864 tests and had two expected runtim
 - Generated CRD/protobuf consistency and diff whitespace: **PASS**.
 
 The separate Kind e2e fixture remains unrun because no Kind cluster was supplied; no AWS/x86 capacity or NAT throughput claim is made. The initial envtest start failure and all successful reruns remain in the evidence archive. Metadata enrichment additionally checks the trusted current virtual client endpoint; this value is ephemeral and absent from public reports and private persisted checkpoints. A migrated DHCP owner can release its previous reservation, while other owners cannot.
+
+Final named native-test inventory: **872 PASS / 2 expected runtime or helper SKIP / 0 FAIL** across 45 tested packages. The two skips are the CRI integration requiring an image service and the proxy memory subprocess helper; selected Linux kernel tests have no skips. Full individual results and raw logs are included in the evidence archive.
+
+Owned local test infrastructure removed and independently verified at **2026-10-07T01:26:39Z**: both named VPN/gateway containers, all disposable netns runners, and the image created by the e2e fixture. Shared tool/cache volumes were preserved. AWS resources created during implementation: **zero**.
