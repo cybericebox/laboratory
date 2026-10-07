@@ -135,6 +135,8 @@ type hijackRecorder struct {
 	entry *liveEntry
 	// cookieName is the proxy's session cookie: a device may not set it, not even in an informational (1xx) response, which the
 	// reverse proxy relays before the final one and ModifyResponse never sees.
+	meter            *RequestMeter
+	compression      bool
 	cookieName       string
 	host, baseDomain string
 }
@@ -153,6 +155,16 @@ func (w *hijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		// The server's read and write deadlines (the HTTP timeouts) were set on the connection for the request; an upgraded
 		// connection is bounded by the live-check lifetime instead.
 		_ = conn.SetDeadline(time.Time{})
+		if w.meter != nil {
+			if flushErr := rw.Writer.Flush(); flushErr != nil {
+				w.meter.Incomplete()
+				_ = conn.Close()
+				return nil, nil, flushErr
+			}
+			wrapped := &meteredUpgrade{Conn: conn, reader: rw.Reader, in: newFrameMeter(w.meter.AddIn, w.meter.Incomplete, false, w.compression), out: newFrameMeter(w.meter.AddOut, w.meter.Incomplete, true, w.compression)}
+			conn = wrapped
+			rw = bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
+		}
 		w.entry.setConn(conn)
 	}
 	return conn, rw, err

@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"k8s.io/apimachinery/pkg/types"
@@ -193,7 +192,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer h.live.remove(entry)
-	w = &hijackRecorder{ResponseWriter: w, entry: entry, cookieName: h.cookieName, host: r.Host, baseDomain: h.baseDomain}
+	upgrade := &hijackRecorder{ResponseWriter: w, entry: entry, cookieName: h.cookieName, host: r.Host, baseDomain: h.baseDomain}
+	w = upgrade
 
 	deviceHost := r.Host
 	proxy := httputil.NewSingleHostReverseProxy(target)
@@ -213,19 +213,42 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		proxy.ServeHTTP(w, r)
 		return
 	}
-	start := h.now()
-	out := &countingBody{}
+	request := h.meter.Begin(ns(claims.GroupID), client, lab, h.now())
+	defer func() {
+		if value := recover(); value != nil {
+			request.Incomplete()
+			request.End()
+			panic(value)
+		}
+		request.End()
+	}()
 	if r.Body != nil && r.Body != http.NoBody {
-		out.ReadCloser = r.Body
-		r.Body = out
+		r.Body = &countingBody{ReadCloser: r.Body, request: request}
 	}
-	rec := &countingWriter{ResponseWriter: w}
-	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, _ error) {
-		rec.upstreamFailed = true
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		deviceResponseFilter(resp.Header, h.cookieName, deviceHost, h.baseDomain)
+		request.Responded(h.now())
+		if resp.StatusCode == http.StatusSwitchingProtocols {
+			if strings.EqualFold(resp.Header.Get("Upgrade"), "websocket") {
+				compression, known := websocketCompression(resp.Header.Get("Sec-WebSocket-Extensions"))
+				if !known {
+					request.Incomplete()
+				} else {
+					upgrade.meter = request
+					upgrade.compression = compression
+				}
+			} else {
+				request.Incomplete()
+			}
+		}
+		return nil
+	}
+	rec := &countingWriter{ResponseWriter: w, request: request}
+	proxy.ErrorHandler = func(_ http.ResponseWriter, r *http.Request, _ error) {
+		// Proxy-generated error pages are not traffic from a laboratory.
 		fail(w, r, http.StatusBadGateway, pageUpstream, "bad gateway")
 	}
 	proxy.ServeHTTP(rec, r)
-	h.meter.Record(ns(claims.GroupID), client, lab, start, !rec.upstreamFailed, rec.bytes, out.n.Load())
 }
 
 func ns(groupID string) string { return GroupNamespace(groupID) }
@@ -261,44 +284,35 @@ func UseGroupReader(r client.Reader) {
 	groupNamespaceMu.Unlock()
 }
 
-// countingWriter records how many body bytes went to the client and whether
-// the proxy itself failed to reach the lab. Upgraded (WebSocket) connections
-// are hijacked, so their frames are not counted; the request still is.
+// countingWriter counts only successfully written upstream body bytes.
 type countingWriter struct {
 	http.ResponseWriter
-	bytes          int64
-	upstreamFailed bool
+	request *RequestMeter
 }
 
 func (w *countingWriter) Write(b []byte) (int, error) {
 	n, err := w.ResponseWriter.Write(b)
-	w.bytes += int64(n)
+	w.request.AddIn(int64(n))
+	if err != nil {
+		w.request.Incomplete()
+	}
 	return n, err
 }
-
-// Unwrap lets http.ResponseController reach Flush and Hijack.
 func (w *countingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// countingBody counts request body bytes read by the upstream transport.
+// countingBody observes the body consumed by the upstream transport.
 type countingBody struct {
 	io.ReadCloser
-	n atomic.Int64
+	request *RequestMeter
 }
 
 func (b *countingBody) Read(p []byte) (int, error) {
-	if b.ReadCloser == nil {
-		return 0, io.EOF
-	}
 	n, err := b.ReadCloser.Read(p)
-	b.n.Add(int64(n))
-	return n, err
-}
-
-func (b *countingBody) Close() error {
-	if b.ReadCloser == nil {
-		return nil
+	b.request.AddOut(int64(n))
+	if err != nil && err != io.EOF {
+		b.request.Incomplete()
 	}
-	return b.ReadCloser.Close()
+	return n, err
 }
 
 // ServiceResolver builds a BackendResolver that determines backend URL from Service named port.
