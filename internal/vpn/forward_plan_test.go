@@ -82,3 +82,30 @@ func TestForwardPlanRejectsUnsafeBindings(t *testing.T) {
 		t.Fatalf("not-ready lab became reachable: %+v, %v", plan, err)
 	}
 }
+
+func BenchmarkForwardPlan(b *testing.B) {
+	for _, users := range []int{10, 20} {
+		for _, labs := range []int{10, 20} {
+			b.Run(fmt.Sprintf("%dU_%dL", users, labs), func(b *testing.B) {
+				clients := []ClientAccessSnapshot{}
+				nets := map[string]LabAccessSnapshot{}
+				rules := []AccessPolicyRule{}
+				for i := 0; i < users; i++ {
+					name := fmt.Sprintf("p%d", i)
+					clients = append(clients, ClientAccessSnapshot{Name: name, AssignedIP: fmt.Sprintf("10.8.0.%d/32", i+2)})
+					rules = append(rules, AccessPolicyRule{Action: AccessAllow, ClientNames: []string{name}, LabNames: []string{fmt.Sprintf("l%d", i%labs)}})
+				}
+				for i := 0; i < labs; i++ {
+					nets[fmt.Sprintf("l%d", i)] = LabAccessSnapshot{Ready: true, VPNCIDR: fmt.Sprintf("10.8.%d.0/24", i+1), Interface: fmt.Sprintf("lab%d", i+1)}
+				}
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					if _, err := CompileForwardPlan(clients, nets, rules); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}

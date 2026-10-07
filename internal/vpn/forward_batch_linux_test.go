@@ -57,3 +57,16 @@ func TestForwardBatchFailureDoesNotSeedAppliedCache(t *testing.T) {
 		t.Fatalf("failed first application suppressed retry: %+v %v", result, err)
 	}
 }
+
+func BenchmarkUnchangedForwardPlan(b *testing.B) {
+	m := &IPTablesManager{forwardReady: true, commands: &recordingRuleCommand{}}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, err := m.ApplyForwardPlan(context.Background(), ForwardPlan{}); err != nil {
+			b.Fatal(err)
+		}
+	}
+	if len(m.commands.(*recordingRuleCommand).restores) != 0 {
+		b.Fatal("unchanged plan invoked restore")
+	}
+}
