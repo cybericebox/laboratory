@@ -1,6 +1,6 @@
 # Proxy optimization — proposed design, 2026-10-07
 
-Status: written proposal for owner review; implementation has not started. Branch: `fix/envtest-crd-warmup`, native execution continues after approval. Proxy is followed by the agent/AP Backend contract stage. "Контент" was clarified by the owner to mean the data contract.
+Status: owner approved the complete implementation on 2026-10-07 ("Да, давай все"). Branch: `fix/envtest-crd-warmup`, native execution continues after approval. Owner order: finish proxy and agent entirely in laboratory, verify/freeze its contract, then backend and finally the consuming frontend. "Контент" was clarified by the owner to mean the data contract.
 
 ## Purpose and boundary
 
@@ -79,7 +79,7 @@ Confirmed gaps to address after proxy behavior is finalized:
 - Do not add WireGuard demux UDP/ciphertext counters to the contract; HTTP/3 is a separate future feature.
 - Update the protobuf dependency, ingest/model/SQL migration/generated queries and analytics interpretation together; keep public directions/counter units/zero semantics documented and old-client compatibility explicit.
 
-Daemon is currently on `develop`, with an existing untracked AGENTS.md; no daemon files were edited. Its implementation location is selected separately before that stage.
+Daemon implementation: owner selected a new branch in the current directory; `feat/proxy-traffic-contract` starts from develop. The pre-existing untracked AGENTS.md is preserved and excluded from commits.
 
 ## Primary references
 
