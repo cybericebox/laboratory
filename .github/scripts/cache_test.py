@@ -59,6 +59,17 @@ class Safety(unittest.TestCase):
         self.registry.objects[NEW] = json.dumps(obj).encode()
         self.manager = cache.CacheManager(self.registry)
 
+    def test_no_expired_cache_does_not_fetch_live_image_manifests(self):
+        del self.registry.refs[HISTORY]
+        calls = []
+        original = self.registry.get
+        def counted_get(ref):
+            calls.append(ref)
+            return original(ref)
+        self.registry.get = counted_get
+        self.manager.prune(now=NOW)
+        self.assertEqual(calls, [])
+
     def test_current_cache_survives_even_if_history_is_old(self):
         self.registry.refs[HISTORY] = NEW
         self.manager.prune(now=NOW)

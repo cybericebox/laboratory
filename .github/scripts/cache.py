@@ -193,6 +193,9 @@ class CacheManager:
             eligible[tag] = (digest, raw)
         # Any failed read aborts before the first deletion. Include recent run
         # tags, all release/special tags, unexpected objects and their children.
+        if not eligible:
+            print("No expired verified caches: live image manifests were not requested")
+            return
         protected = self.protected(t for t in tags if t not in eligible)
         candidates = {}
         for tag, (digest, raw) in eligible.items():
