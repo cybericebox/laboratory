@@ -19,10 +19,7 @@ func TestNetnsAccessCountersRoundTripQuotedComment(t *testing.T) {
 	}
 	t.Cleanup(m.Cleanup)
 	rule := AccessRule{ClientName: "p1", LabName: "l1", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.8.1.0/24", Action: AccessAllow}
-	if err := m.ReplaceAccessRules([]AccessRule{rule}); err != nil {
-		t.Fatal(err)
-	}
-	nstest.Run(t, "", "iptables", "-t", "filter", "-R", accessChain, "1",
+	nstest.Run(t, "", "iptables", "-t", "filter", "-I", accessChain, "1",
 		"-s", rule.SourceCIDR, "-d", rule.DestinationCIDR,
 		"-m", "comment", "--comment", accessRuleComment(rule), "-j", "ACCEPT", "-c", "7", "700")
 	counters, err := m.AccessCounters()

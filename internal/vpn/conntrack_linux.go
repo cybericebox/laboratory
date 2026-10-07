@@ -46,7 +46,7 @@ func (c *ConntrackRevoker) Revoke(labCIDRs []string, rules []AccessRule, clientC
 		if !orig.IP.SourceAddress.IsValid() || !orig.IP.DestinationAddress.IsValid() {
 			continue
 		}
-		flows = append(flows, ConnFlow{ID: raw[i].ID, Key: i, Src: orig.IP.SourceAddress, Dst: orig.IP.DestinationAddress})
+		flows = append(flows, ConnFlow{ID: raw[i].ID, Mark: raw[i].Mark, Key: i, Src: orig.IP.SourceAddress, Dst: orig.IP.DestinationAddress})
 	}
 	deleted := 0
 	var firstErr error

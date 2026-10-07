@@ -35,6 +35,21 @@ func TestRevokedFlowsWithKnownClientsCoversBothDirections(t *testing.T) {
 	}
 }
 
+func TestRevokedRoutedLabFlowUsesTrustedConntrackBinding(t *testing.T) {
+	allowed := ConnFlow{ID: 1, Src: netip.MustParseAddr("10.99.0.2"), Dst: netip.MustParseAddr("10.7.0.2"), Mark: FlowCountedMark | 1<<8}
+	other := allowed
+	other.ID = 2
+	other.Mark = FlowCountedMark | 2<<8
+	rules := []AccessRule{{ClientName: "p1", LabName: "a", SourceCIDR: "10.7.0.2/32", DestinationCIDR: "10.8.1.0/24", LabInterface: "lab1", Action: AccessAllow}}
+	got := RevokedFlows([]ConnFlow{allowed, other}, []string{"10.8.1.0/24", "10.8.2.0/24"}, rules, []string{"10.7.0.2/32"})
+	if len(got) != 1 || got[0].ID != 2 {
+		t.Fatalf("routed lab binding revoked wrongly: %+v", got)
+	}
+	if got := RevokedFlows([]ConnFlow{allowed}, []string{"10.8.1.0/24"}, nil, []string{"10.7.0.2/32"}); len(got) != 1 {
+		t.Fatal("removed permission did not revoke routed lab initiative")
+	}
+}
+
 func TestRevokedFlows(t *testing.T) {
 	labs := []string{"10.8.1.0/24", "10.8.2.0/24"}
 	rules := []AccessRule{

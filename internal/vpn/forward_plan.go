@@ -21,6 +21,10 @@ type ForwardPlan struct {
 	Decisions []AccessRule
 }
 
+// Reserved only in the VPN pod's conntrack namespace. Other mark bits remain intact.
+const FlowCountedMark uint32 = 0x80000000
+const LabIdentityMask uint32 = 0x00ffff00
+
 // LabInterfaceIndex rejects wildcard/injected interface names and bounds the
 // index used for identifying the actual lab leg in the VPN namespace.
 func LabInterfaceIndex(iface string) (uint16, error) {
@@ -48,23 +52,31 @@ func CompileForwardPlan(clients []ClientAccessSnapshot, labs map[string]LabAcces
 		if r.Action != AccessAllow {
 			continue
 		}
-		src, ok := parsePrefix(r.SourceCIDR)
-		if !ok || !src.Addr().Is4() || src.Bits() != 32 {
-			return ForwardPlan{}, fmt.Errorf("client %s has invalid host address %q", r.ClientName, r.SourceCIDR)
+		f, err := forwardBinding(r)
+		if err != nil {
+			return ForwardPlan{}, err
 		}
-		dst, err := netip.ParsePrefix(r.DestinationCIDR)
-		if err != nil || !dst.Addr().Is4() {
-			return ForwardPlan{}, fmt.Errorf("lab %s has invalid subnet %q", r.LabName, r.DestinationCIDR)
-		}
-		iface := labs[r.LabName].Interface
-		if _, err := LabInterfaceIndex(iface); err != nil {
-			return ForwardPlan{}, fmt.Errorf("lab %s: %w", r.LabName, err)
-		}
-		f := ForwardRule{ClientName: r.ClientName, LabName: r.LabName,
-			ClientCIDR: src.Masked().String(), LabCIDR: dst.Masked().String(), LabInterface: iface}
-		sum := sha256.Sum256([]byte(f.ClientName + "\x00" + f.LabName + "\x00" + f.ClientCIDR + "\x00" + f.LabCIDR + "\x00" + f.LabInterface))
-		f.BindingID = hex.EncodeToString(sum[:8])
 		plan.Allows = append(plan.Allows, f)
 	}
 	return plan, nil
+}
+
+func forwardBinding(r AccessRule) (ForwardRule, error) {
+	src, ok := parsePrefix(r.SourceCIDR)
+	if !ok || !src.Addr().Is4() || src.Bits() != 32 {
+		return ForwardRule{}, fmt.Errorf("client %s has invalid host address %q", r.ClientName, r.SourceCIDR)
+	}
+	dst, err := netip.ParsePrefix(r.DestinationCIDR)
+	if err != nil || !dst.Addr().Is4() {
+		return ForwardRule{}, fmt.Errorf("lab %s has invalid subnet %q", r.LabName, r.DestinationCIDR)
+	}
+	iface := r.LabInterface
+	if _, err := LabInterfaceIndex(iface); err != nil {
+		return ForwardRule{}, fmt.Errorf("lab %s: %w", r.LabName, err)
+	}
+	f := ForwardRule{ClientName: r.ClientName, LabName: r.LabName,
+		ClientCIDR: src.Masked().String(), LabCIDR: dst.Masked().String(), LabInterface: iface}
+	sum := sha256.Sum256([]byte(f.ClientName + "\x00" + f.LabName + "\x00" + f.ClientCIDR + "\x00" + f.LabCIDR + "\x00" + f.LabInterface))
+	f.BindingID = hex.EncodeToString(sum[:8])
+	return f, nil
 }

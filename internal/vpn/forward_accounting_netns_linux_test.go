@@ -1,0 +1,172 @@
+//go:build linux
+
+package vpn
+
+import (
+	"context"
+	"net"
+	"os"
+	"os/exec"
+	"strconv"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/cybericebox/laboratory/internal/nstest"
+)
+
+func TestNetnsForwardPlanGatesBothDirectionsAndPreservesCounts(t *testing.T) {
+	nstest.Require(t)
+	for _, ns := range []string{"pa", "a", "b"} {
+		nstest.NS(t, ns)
+	}
+	nstest.Veth(t, "", "wg0", "10.8.0.1/24", "pa", "p0", "10.8.0.2/24")
+	nstest.Veth(t, "", "lab1", "10.8.1.1/24", "a", "a0", "10.8.1.2/24")
+	nstest.Veth(t, "", "lab2", "10.8.2.1/24", "b", "b0", "10.8.2.2/24")
+	t.Cleanup(func() {
+		for _, dev := range []string{"wg0", "lab1", "lab2"} {
+			_, _ = nstest.Try("", "ip", "link", "del", dev)
+		}
+	})
+	for _, e := range [][2]string{{"pa", "10.8.0.1"}, {"a", "10.8.1.1"}, {"b", "10.8.2.1"}} {
+		nstest.Run(t, e[0], "ip", "route", "add", "default", "via", e[1])
+	}
+	nstest.Run(t, "", "sysctl", "-w", "net.ipv4.ip_forward=1")
+	targetA := nstest.Listen(t, "a", "udp", "0.0.0.0:7900")
+	targetP := nstest.Listen(t, "pa", "udp", "0.0.0.0:7901")
+	m, err := NewIPTablesManager("wg0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetupForwardPolicy(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(m.Cleanup)
+	plan, err := CompileForwardPlan([]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}}, map[string]LabAccessSnapshot{"a": {VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1"}}, []AccessPolicyRule{{Action: AccessAllow}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.ApplyForwardPlan(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	if !nstest.Reach(t, "pa", "udp", "10.8.1.2:7900", targetA) || !nstest.Reach(t, "a", "udp", "10.8.0.2:7901", targetP) {
+		t.Fatal("permitted pair did not work in both directions")
+	}
+	if nstest.Reach(t, "b", "udp", "10.8.0.2:7901", targetP) {
+		t.Fatal("unassigned lab initiated traffic to the client")
+	}
+	nstest.Run(t, "b", "ip", "addr", "add", "10.8.1.99/24", "dev", "b0")
+	nstest.Run(t, "b", "ip", "route", "replace", "10.8.0.2/32", "via", "10.8.2.1", "src", "10.8.1.99")
+	if nstest.Reach(t, "b", "udp", "10.8.0.2:7901", targetP) {
+		t.Fatal("spoofed source bypassed physical lab binding")
+	}
+	counters, err := m.ReadPairCounters(context.Background())
+	if err != nil || counters.Partial || len(counters.Rows) != 1 {
+		t.Fatalf("counter snapshot: %+v %v", counters, err)
+	}
+	c := counters.Rows[0]
+	if c.PacketsOut != 1 || c.PacketsIn != 1 || c.Attempts != 1 || c.LabInitiatedAttempts != 1 {
+		t.Fatalf("wrong directional/first-flow counts: %+v", c)
+	}
+	if _, err := m.ApplyForwardPlan(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	after, err := m.ReadPairCounters(context.Background())
+	if err != nil || len(after.Rows) != 1 || after.Rows[0] != c {
+		t.Fatalf("unchanged plan lost counters: %+v %v", after, err)
+	}
+	tcpA := nstest.Listen(t, "a", "tcp", "0.0.0.0:7902")
+	if !nstest.Reach(t, "pa", "tcp", "10.8.1.2:7902", tcpA) {
+		t.Fatal("client TCP did not establish")
+	}
+	time.Sleep(100 * time.Millisecond)
+	tcpSnapshot, err := m.ReadPairCounters(context.Background())
+	if err != nil || len(tcpSnapshot.Rows) != 1 {
+		t.Fatalf("TCP counters %+v %v", tcpSnapshot, err)
+	}
+	tcp := tcpSnapshot.Rows[0]
+	if tcp.Attempts != 2 || tcp.LabInitiatedAttempts != 1 || tcp.PacketsOut <= c.PacketsOut || tcp.PacketsIn <= c.PacketsIn {
+		t.Fatalf("TCP replies counted as lab initiatives or were missed: %+v", tcp)
+	}
+	if _, err := m.ApplyForwardPlan(context.Background(), ForwardPlan{}); err != nil {
+		t.Fatal(err)
+	}
+	if nstest.Reach(t, "a", "udp", "10.8.0.2:7901", targetP) || nstest.Reach(t, "pa", "udp", "10.8.1.2:7900", targetA) {
+		t.Fatal("revoked pair remained open")
+	}
+}
+
+func TestNetnsSendUDPHelper(t *testing.T) {
+	if os.Getenv("CICE_METER_SEND") != "1" {
+		return
+	}
+	args := os.Args
+	count, err := strconv.Atoi(args[len(args)-1])
+	if err != nil {
+		os.Exit(2)
+	}
+	c, err := net.Dial("udp", args[len(args)-2])
+	if err != nil {
+		os.Exit(3)
+	}
+	defer c.Close()
+	var wg sync.WaitGroup
+	for i := 0; i < count; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := c.Write([]byte("meter")); err != nil {
+				os.Exit(4)
+			}
+		}()
+	}
+	wg.Wait()
+	os.Exit(0)
+}
+
+func TestNetnsMeterCountsEveryPacketButOneParallelUDPInitiative(t *testing.T) {
+	nstest.Require(t)
+	for _, ns := range []string{"p", "l"} {
+		nstest.NS(t, ns)
+	}
+	nstest.Veth(t, "", "wg0", "10.8.0.1/24", "p", "p0", "10.8.0.2/24")
+	nstest.Veth(t, "", "lab1", "10.8.1.1/24", "l", "l0", "10.8.1.2/24")
+	t.Cleanup(func() {
+		for _, dev := range []string{"wg0", "lab1"} {
+			_, _ = nstest.Try("", "ip", "link", "del", dev)
+		}
+	})
+	nstest.Run(t, "p", "ip", "route", "add", "default", "via", "10.8.0.1")
+	nstest.Run(t, "l", "ip", "route", "add", "default", "via", "10.8.1.1")
+	nstest.Run(t, "", "sysctl", "-w", "net.ipv4.ip_forward=1")
+	_ = nstest.Listen(t, "l", "udp", "0.0.0.0:7980")
+	m, err := NewIPTablesManager("wg0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetupForwardPolicy(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(m.Cleanup)
+	plan, err := CompileForwardPlan([]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}}, map[string]LabAccessSnapshot{"a": {VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1"}}, []AccessPolicyRule{{Action: AccessAllow}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.ApplyForwardPlan(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("ip", "netns", "exec", "p", os.Args[0], "-test.run=^TestNetnsSendUDPHelper$", "--", "10.8.1.2:7980", "300")
+	cmd.Env = append(os.Environ(), "CICE_METER_SEND=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("send: %s %v", out, err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	snapshot, err := m.ReadPairCounters(context.Background())
+	if err != nil || len(snapshot.Rows) != 1 {
+		t.Fatalf("snapshot %+v %v", snapshot, err)
+	}
+	r := snapshot.Rows[0]
+	if r.PacketsOut != 300 || r.BytesOut != 9900 || r.Attempts != 1 || r.LabInitiatedAttempts != 0 {
+		t.Fatalf("300 packets in one UDP flow: %+v", r)
+	}
+}

@@ -4,6 +4,7 @@ package reconciler
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -42,9 +43,10 @@ func TestNetnsAccessReconcilePreservesCountersForUnchangedPermissions(t *testing
 			Action: lab.LabGroupAccessAllow, ClientNames: []string{"p1"}, LabNames: []string{"l1"},
 		}}},
 	}
+	leg := &lab.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: "labvpn-l1", Namespace: ns}, Spec: lab.LabVPNSpec{LabName: "l1", NetworkIndex: 1}}
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(peer, deviceLab, policy).
-		WithObjects(peer, deviceLab, policy).Build()
+		WithObjects(peer, deviceLab, policy, leg).Build()
 	ipt, err := vpn.NewIPTablesManager("wg0")
 	if err != nil {
 		t.Fatal(err)
@@ -58,10 +60,22 @@ func TestNetnsAccessReconcilePreservesCountersForUnchangedPermissions(t *testing
 	if _, err := r.Reconcile(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
-	rule := vpn.AccessRule{ClientName: "p1", LabName: "l1", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.8.1.0/24", Action: vpn.AccessAllow}
-	nstest.Run(t, "", "iptables", "-t", "filter", "-R", "CYBERICEBOX_VPN_ACCESS", "1",
-		"-s", rule.SourceCIDR, "-d", rule.DestinationCIDR,
-		"-m", "comment", "--comment", "cice:"+rule.Identifier(), "-j", "ACCEPT", "-c", "7", "700")
+	rule := vpn.AccessRule{ClientName: "p1", LabName: "l1", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.8.1.0/24", Action: vpn.AccessAllow, LabInterface: "lab1"}
+	saved := nstest.Run(t, "", "iptables-save", "-c", "-t", "filter")
+	var meterRule string
+	for _, line := range strings.Split(saved, "\n") {
+		if strings.Contains(line, "cibacct:") && strings.Contains(line, ":F:T") {
+			meterRule = line
+			break
+		}
+	}
+	if meterRule == "" {
+		t.Fatal("missing real forward meter")
+	}
+	fields := strings.Fields(meterRule)
+	chain := fields[2]
+	comment := strings.Trim(fields[len(fields)-3], "\"")
+	nstest.Run(t, "", "iptables", "-t", "filter", "-R", chain, "2", "-m", "comment", "--comment", comment, "-j", "ACCEPT", "-c", "7", "700")
 	before, err := ipt.AccessCounters()
 	if err != nil || before[rule.Identifier()].Packets != 7 {
 		t.Fatalf("control: real counter was not seeded: %+v, %v", before, err)

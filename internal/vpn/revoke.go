@@ -7,6 +7,7 @@ type ConnFlow struct {
 	// ID is the kernel's identifier of the entry; Key is the caller's own handle
 	// (an index into the dump the flow came from).
 	ID       uint32
+	Mark     uint32
 	Key      int
 	Src, Dst netip.Addr
 }
@@ -31,7 +32,10 @@ func RevokedFlows(flows []ConnFlow, labCIDRs []string, rules []AccessRule, clien
 	if strictClients {
 		clients = prefixes(clientCIDRs[0])
 	}
-	type pair struct{ src, dst netip.Prefix }
+	type pair struct {
+		src, dst netip.Prefix
+		iface    string
+	}
 	var allowed []pair
 	for _, r := range rules {
 		if r.Action != AccessAllow {
@@ -40,13 +44,14 @@ func RevokedFlows(flows []ConnFlow, labCIDRs []string, rules []AccessRule, clien
 		s, sok := parsePrefix(r.SourceCIDR)
 		d, dok := parsePrefix(r.DestinationCIDR)
 		if sok && dok {
-			allowed = append(allowed, pair{s, d})
+			allowed = append(allowed, pair{s, d, r.LabInterface})
 		}
 	}
 	var out []ConnFlow
 	for _, f := range flows {
 		forward := inAny(labs, f.Dst) && !inAny(labs, f.Src) && (!strictClients || inAny(clients, f.Src))
-		reverse := strictClients && inAny(labs, f.Src) && inAny(clients, f.Dst)
+		marked := f.Mark&FlowCountedMark != 0
+		reverse := strictClients && (inAny(labs, f.Src) || marked) && inAny(clients, f.Dst)
 		if !forward && !reverse {
 			continue
 		}
@@ -56,7 +61,12 @@ func RevokedFlows(flows []ConnFlow, labCIDRs []string, rules []AccessRule, clien
 		}
 		ok := false
 		for _, a := range allowed {
-			if a.src.Contains(src) && a.dst.Contains(dst) {
+			labMatches := a.dst.Contains(dst)
+			if reverse && marked {
+				index, err := LabInterfaceIndex(a.iface)
+				labMatches = err == nil && uint32(index) == (f.Mark&LabIdentityMask)>>8
+			}
+			if a.src.Contains(src) && labMatches {
 				ok = true
 				break
 			}

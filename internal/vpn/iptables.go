@@ -3,14 +3,17 @@
 package vpn
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/coreos/go-iptables/iptables"
 
 	"github.com/cybericebox/laboratory/internal/podinput"
+	"github.com/cybericebox/laboratory/internal/vpn/flowacct"
 )
 
 type IPTablesManager struct {
@@ -22,7 +25,13 @@ type IPTablesManager struct {
 	uplink string
 	wgPort int
 	// input is the INPUT policy of the pod once installed (nil = not installed).
-	input *podinput.Policy
+	input        *podinput.Policy
+	commands     RuleCommand
+	forwardMu    sync.Mutex
+	forwardPlan  ForwardPlan
+	forwardReady bool
+	bindings     map[string]ForwardRule
+	BeforeRetire func(flowacct.CounterSnapshot) error
 }
 
 const accessChain = "CYBERICEBOX_VPN_ACCESS"
@@ -32,7 +41,7 @@ func NewIPTablesManager(wgIface string) (*IPTablesManager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("iptables.New: %w", err)
 	}
-	m := &IPTablesManager{ipt: ipt, wgIface: wgIface}
+	m := &IPTablesManager{ipt: ipt, wgIface: wgIface, commands: nativeRuleCommand{}}
 	if ipt6, err := iptables.NewWithProtocol(iptables.ProtocolIPv6); err == nil {
 		m.ipt6 = ipt6
 	}
@@ -127,11 +136,11 @@ func (m *IPTablesManager) forwardRules() [][]string {
 	return [][]string{
 		{"-i", m.wgIface, "-o", m.wgIface, "-j", "DROP"},
 		{"-m", "conntrack", "--ctstate", "INVALID", "-j", "DROP"},
-		{"-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"},
 		{"-i", m.wgIface, "-o", "lab+", "-j", accessChain},
-		// Every lab behind the pod may reach every participant, from any source address: the pod is one group's, the labs of other
-		// groups are not connected to it, and a lab may route its own subnets. Replies come back by conntrack.
-		{"-i", "lab+", "-o", m.wgIface, "-j", "ACCEPT"},
+		{"-i", "lab+", "-o", m.wgIface, "-j", accessChain},
+		// The access gate precedes this for every VPN/lab packet, including
+		// established replies. Unmatched access traffic is dropped by the gate.
+		{"-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"},
 	}
 }
 
@@ -157,31 +166,27 @@ func (m *IPTablesManager) SetupForwardPolicy() error {
 			return fmt.Errorf("iptables FORWARD %v: %w", r, err)
 		}
 	}
-	return m.ReplaceAccessRules(nil)
+	m.forwardReady = false
+	// Close the gate while preserving detached meter chains for restart resume.
+	return m.ipt.Append("filter", accessChain, "-j", "DROP")
 }
 
 // ReplaceAccessRules atomically in intent replaces all client-to-lab accepts.
 // The chain is flushed before new accepts are appended, so any transient state
 // is deny-only. The caller supplies one rule per permitted client/lab CIDR.
 func (m *IPTablesManager) ReplaceAccessRules(rules []AccessRule) error {
-	if err := m.ipt.ClearChain("filter", accessChain); err != nil {
-		return fmt.Errorf("clear access chain: %w", err)
-	}
-	for _, rule := range rules {
-		target := "DROP"
-		if rule.Action == AccessAllow {
-			target = "ACCEPT"
-		}
-		if err := m.ipt.AppendUnique("filter", accessChain,
-			"-s", rule.SourceCIDR,
-			"-d", rule.DestinationCIDR,
-			"-m", "comment", "--comment", accessRuleComment(rule),
-			"-j", target,
-		); err != nil {
-			return fmt.Errorf("apply %s %s to %s: %w", rule.Action, rule.SourceCIDR, rule.DestinationCIDR, err)
+	plan := ForwardPlan{Decisions: rules}
+	for _, r := range rules {
+		if r.Action == AccessAllow {
+			f, err := forwardBinding(r)
+			if err != nil {
+				return err
+			}
+			plan.Allows = append(plan.Allows, f)
 		}
 	}
-	return nil
+	_, err := m.ApplyForwardPlan(context.Background(), plan)
+	return err
 }
 
 const accessRuleCommentPrefix = "cice:"
@@ -195,6 +200,21 @@ var accessCounterPattern = regexp.MustCompile(`(?:^|\s)-c\s+(\d+)\s+(\d+)(?:\s|$
 // AccessCounters reads cumulative packet/byte counters from the dedicated
 // chain and associates them with stable relation IDs.
 func (m *IPTablesManager) AccessCounters() (map[string]TrafficCounter, error) {
+	m.forwardMu.Lock()
+	ready := m.forwardReady
+	m.forwardMu.Unlock()
+	if ready {
+		snapshot, err := m.ReadPairCounters(context.Background())
+		if err != nil {
+			return nil, err
+		}
+		result := map[string]TrafficCounter{}
+		for _, row := range snapshot.Rows {
+			id := AccessRule{ClientName: row.Subject, LabName: row.Lab, Action: AccessAllow}.Identifier()
+			result[id] = TrafficCounter{Packets: int64(row.PacketsOut), Bytes: int64(row.BytesOut)}
+		}
+		return result, nil
+	}
 	lines, err := m.ipt.ListWithCounters("filter", accessChain)
 	if err != nil {
 		return nil, fmt.Errorf("list access counters: %w", err)
@@ -229,6 +249,21 @@ func (m *IPTablesManager) AccessCounters() (map[string]TrafficCounter, error) {
 func (m *IPTablesManager) Cleanup() {
 	_ = m.ipt.ClearChain("filter", "FORWARD")
 	_ = m.ipt.ClearAndDeleteChain("filter", accessChain)
+	m.forwardMu.Lock()
+	if m.commands != nil {
+		if saved, err := m.commands.Save(context.Background()); err == nil {
+			if parsed, err := parseKernelCounters(saved, m.bindings); err == nil {
+				for id := range parsed.epochs {
+					for _, d := range []string{"F", "R"} {
+						_ = m.ipt.ClearAndDeleteChain("filter", relationChain(id, d))
+					}
+				}
+			}
+		}
+	}
+	m.forwardReady = false
+	m.bindings = nil
+	m.forwardMu.Unlock()
 	if m.uplink != "" {
 		removeWGGuard(m.ipt, m.uplink, m.wgPort)
 		if m.ipt6 != nil {
