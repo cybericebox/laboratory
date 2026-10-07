@@ -86,6 +86,11 @@ jobs:
           if [[ "$mode" == retag ]]; then echo "tag=${out#* }" >> "$GITHUB_OUTPUT"; fi
 
   image:
+    # Cache imports must finish before a release retires their manifests.
+    concurrency:
+      group: docker-hub-cache-maintenance
+      cancel-in-progress: false
+      queue: max
     name: Image ${{ matrix.name }}
     needs: [version, test, source]
     if: needs.version.outputs.skip != 'true'
