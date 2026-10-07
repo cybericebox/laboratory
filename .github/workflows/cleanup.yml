@@ -1,7 +1,7 @@
 name: Cleanup
 
 # The dev-image cleanup of a release on its own (it runs inside Promote too): deletes the sha-<7> tags of commits that are
-# ancestors of the release commit, and the buildcache-develop / buildcache cache tags. Never vX.Y.Z, latest, other tags,
+# ancestors of the release commit, and verified BuildKit cache tags/manifests. Never vX.Y.Z, latest, other tags,
 # or a sha-<7> whose commit is unknown here or not an ancestor. The list is printed first; dry_run deletes nothing.
 on:
   workflow_dispatch:

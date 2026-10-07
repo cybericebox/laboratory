@@ -71,3 +71,7 @@ jobs:
         run: |
           go mod tidy
           make test-e2e
+      - name: CI release and cache safety tests
+        run: |
+          bash .github/scripts/ci.test.sh
+          python3 .github/scripts/cache_test.py

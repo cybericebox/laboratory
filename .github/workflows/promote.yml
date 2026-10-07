@@ -2,7 +2,7 @@ name: Promote
 
 # Turns a pre-release (vX.Y.Z-rc.N) into the release vX.Y.Z: the same image gets the tags vX.Y.Z and latest (no rebuild),
 # the rc tags and pre-releases of that version go away, the GitHub release is created,
-# and the dev images (sha-<7>) of commits that are ancestors of the release commit are deleted, together with the registry cache tags.
+# and the dev images (sha-<7>) of commits that are ancestors of the release commit are deleted, together with verified BuildKit cache manifests.
 # dry_run changes nothing: it verifies the rc and prints what would happen, with the list of dev tags.
 on:
   workflow_dispatch:
