@@ -159,24 +159,11 @@ func (d *Demux) handleType1(pkt []byte, src *net.UDPAddr) {
 	if !d.global.allow() {
 		return
 	}
-	group, backend, found := d.table.FindByMac1(pkt)
+	ci := binary.LittleEndian.Uint32(pkt[4:8])
+	resolved, found := d.table.reserve(pkt, ci, socketOf(src), d.conntrack)
 	if !found {
 		return
 	}
-	if backend == nil {
-		log.V(1).Info("backend not resolved yet, dropping handshake")
-		return
-	}
-	resolved := backend
-	ci := binary.LittleEndian.Uint32(pkt[4:8])
-
-	// Reserve Ci before forwarding — spec §4 says collision with another live session is fatal for this handshake;
-	// let the client retry with a new index instead of clobbering an unrelated peer. The reservation also refuses a
-	// handshake that would pass the table's caps.
-	if !d.conntrack.AddPartial(ci, socketOf(src), socketOf(resolved), group) {
-		return
-	}
-
 	// Send via main listen socket so backend's type-2 response returns to it,
 	// not to an ephemeral socket that would be closed before the reply arrives.
 	if _, err := d.conn.WriteToUDP(pkt, resolved); err != nil {

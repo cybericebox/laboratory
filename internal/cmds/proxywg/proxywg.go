@@ -9,6 +9,7 @@ import (
 	"context"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -65,6 +66,7 @@ func Run() {
 		Readers: cfg.Readers,
 	}
 	ct := demux.NewConnTrackWithLimits(limits)
+	table.OnChange = ct.RemoveGroup
 
 	watcher := &demux.LabGroupWatcher{
 		Client:         mgr.GetClient(),
@@ -106,9 +108,12 @@ func Run() {
 		<-ctx.Done()
 		close(stop)
 	}()
-	go ct.RunTTLCleanup(stop)
-	go table.RunResolver(stop, 30*time.Second)
-	go dmx.Run(stop)
+	var workers sync.WaitGroup
+	for _, run := range []func(){func() { ct.RunTTLCleanup(stop) }, func() { table.RunResolverContext(ctx, 30*time.Second) }, func() { dmx.Run(stop) }} {
+		workers.Add(1)
+		go func(run func()) { defer workers.Done(); run() }(run)
+	}
+	defer func() { cancel(); dmx.Close(); workers.Wait() }()
 
 	log.Info("starting wg proxy", "udp", cfg.ListenAddr)
 	errorlog.Start(ctx, journal, ctrl.GetConfigOrDie(), errorlog.Namespace("laboratory-system"), ctrl.Log.WithName("error-journal"))
