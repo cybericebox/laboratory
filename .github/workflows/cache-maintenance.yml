@@ -1,0 +1,45 @@
+name: Registry cache maintenance
+
+# Runs from the default branch. Repository schedules are staggered across
+# days 1-7 every three months to avoid a simultaneous Docker Hub registry read burst.
+on:
+  schedule:
+    - cron: '17 3 7 1,4,7,10 *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview expired cache deletion without changing Docker Hub
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  prune:
+    name: Prune superseded BuildKit caches
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Use the same lock as image builds and full-release cache retirement.
+    concurrency:
+      group: docker-hub-cache-maintenance
+      cancel-in-progress: false
+      queue: max
+    env:
+      IMAGES: cybericebox/laboratory-controller cybericebox/laboratory-agent cybericebox/laboratory-proxy cybericebox/laboratory-node cybericebox/laboratory-lab
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - name: Check repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Prune tracked caches; preserve current cache and runnable images
+        shell: bash
+        run: |
+          args=()
+          if [[ "$DRY_RUN" == true ]]; then
+            args+=(--dry-run)
+          fi
+          for image in $IMAGES; do
+            python3 .github/scripts/cache.py prune "$image" --keep-hours 72 "${args[@]}"
+          done

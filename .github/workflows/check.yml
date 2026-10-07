@@ -2,7 +2,7 @@ name: Check
 
 # PR builds use Docker Hub's reusable cache. Each successful same-repository
 # run exports to a unique tag before updating buildcache-develop; old caches
-# are tracked on Docker Hub and pruned after 72 hours. Forks never write caches.
+# are tracked on Docker Hub for quarterly maintenance. Forks never write caches.
 on:
   pull_request:
     branches: [ develop, main ]
@@ -82,14 +82,6 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: python3 .github/scripts/cache.py publish "$IMAGE" "$CACHE_TAG"
-      - name: Prune superseded registry caches
-        if: github.event.pull_request.head.repo.full_name == github.repository
-        continue-on-error: true
-        env:
-          IMAGE: ${{ matrix.image }}
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        run: python3 .github/scripts/cache.py prune "$IMAGE" --keep-hours 72
 
   passed:
     name: Check passed

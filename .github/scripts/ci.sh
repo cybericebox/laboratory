@@ -8,7 +8,7 @@
 #   ci.sh delete-rc VERSION IMAGE...          delete every VERSION-rc.* tag of the images
 #   ci.sh rc-source IMAGE...                  "retag sha-<7>" or "build <reason>": how the rc image of HEAD (a main merge) is made
 #   ci.sh cleanup RELEASE_SHA DRY_RUN IMAGE...  delete sha-<7> dev tags whose commit is an ancestor of RELEASE_SHA,
-#                                             plus verified BuildKit cache tags/manifests after the full release
+#                                             plus verified BuildKit cache aliases after the full release (digest deletion is quarterly)
 # Docker Hub calls use DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (org secrets, Read/Write/Delete); GitHub calls use GH_TOKEN.
 set -euo pipefail
 

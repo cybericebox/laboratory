@@ -20,7 +20,7 @@ Both targets use `scripts/dev.sh` and need the `gh` CLI, logged in.
 ## Releases
 
 - A merge of `develop` into `main` (`prerelease.yml`) publishes `vX.Y.Z-rc.N` and creates the GitHub pre-release. The version is a patch bump of the last release; it is a minor bump when any PR merged since then has the `minor` label; a major bump only through a manual run with `major`. Nothing is built when the tree is unchanged since the last rc. The rc is a retag of the develop image (no build) when the tree of `main` equals the tree of the develop head (the second parent of the merge) and that head has its `sha-<7>` image; otherwise it is built, reading the `buildcache-develop` cache.
-- `Promote` (`promote.yml`, manual, input: the rc tag) checks the rc image and its checks, adds `vX.Y.Z` and `latest` to the same image without a rebuild, creates the GitHub release, deletes the `vX.Y.Z-rc.*` tags and pre-releases, and deletes the dev images: only tags that match `^sha-[0-9a-f]{7}$` whose commit is an ancestor of the release commit, then retires verified BuildKit cache tags and manifests (the next PR starts with a cold cache). The list is printed first; the `dry_run` input changes nothing.
+- `Promote` (`promote.yml`, manual, input: the rc tag) checks the rc image and its checks, adds `vX.Y.Z` and `latest` to the same image without a rebuild, creates the GitHub release, deletes the `vX.Y.Z-rc.*` tags and pre-releases, and deletes the dev images: only tags that match `^sha-[0-9a-f]{7}$` whose commit is an ancestor of the release commit, then retires verified BuildKit cache aliases (the next PR starts with a cold cache); obsolete cache manifests are deleted by quarterly maintenance. The list is printed first; the `dry_run` input changes nothing.
 - `Cleanup` (`cleanup.yml`, manual, inputs: the release `vX.Y.Z` and `dry_run`) runs the same dev-image cleanup against an existing release commit, for example when it was skipped.
 - Clusters and the chart use exact tags only (`sha-*` or `vX.Y.Z`); `latest` is for outside users.
 
@@ -39,11 +39,15 @@ on Docker Hub, including interrupted or concurrent builds; no manual digest log
 or GitHub Actions cache storage is required. Each laboratory target uses its
 own image repository, so its cache cannot overwrite another target's cache.
 
-After successful cache publication, `cache.py prune` expires superseded tracked
-caches after 72 hours. The current cache remains available throughout the dev
+The separate `Registry cache maintenance` workflow runs every three months and expires
+superseded tracked caches that are at least 72 hours old. PR builds only publish
+and track caches; they do not scan retained images or prune caches. The current
+cache remains available throughout the dev
 and pre-release cycle, even when it is a week old. A full `Promote` or manual
-release `Cleanup` retires all verified tracked caches, including
-`buildcache-develop` and legacy `buildcache`. Dev tags are deleted only when
+release `Cleanup` removes verified `buildcache-develop`, legacy `buildcache` and
+`buildcache-run-*` aliases immediately. It keeps a `buildcache-history-*` reference
+for each cache digest; quarterly maintenance removes these references and the
+obsolete cache manifests. Retirement itself never deletes a manifest. Dev tags are deleted only when
 their commits are ancestors of the selected release; newer/unknown commits,
 release tags and special tags are preserved. Existing deployments using a
 removed dev tag must switch to the release tag before cleanup.
@@ -54,6 +58,16 @@ blobs and runnable image manifests are never deleted. If Docker Hub reports a
 remaining reference, the tracking tag is restored. A cache cleanup failure
 keeps the published cache usable and is reported by the workflow. Registry
 storage accounting and background deletion can take time to update.
+
+The quarterly schedule for this repository is day 7 at 03:17 UTC in January, April, July and October. Schedules are
+staggered across repositories, and laboratory processes its five images sequentially.
+GitHub activates scheduled workflows only after they reach the repository's default
+branch. In public repositories, GitHub may disable schedules after 60 days without
+repository activity; re-enable the workflow when needed. A manual workflow run is
+also available, with `dry_run` enabled by default. Scheduled runs apply deletion.
+Maintenance shares the image-build/release cache lock. Authentication, manifest-read
+or deletion errors fail the maintenance workflow instead of being hidden in a PR
+check. This workflow does not discover legacy untracked caches.
 
 To preview tracked old cache cleanup from this repository (requires the usual
 `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` Read/Write/Delete environment secrets):

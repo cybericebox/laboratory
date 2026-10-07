@@ -4,7 +4,8 @@
 The current buildcache-develop/buildcache tags survive between builds. Before export,
 snapshot creates a durable history tag, so interrupted jobs do not lose the
 previous digest. Prune removes history older than 72 hours after a successful
-export. Retire clears verified caches after a full release. It never deletes
+export. Retire removes reusable/run aliases after a full release, retaining history
+references for quarterly digest deletion. It never deletes
 layer blobs, runnable images or referenced manifests.
 """
 import argparse
@@ -133,6 +134,9 @@ class CacheManager:
             return
         if not is_cache(raw):
             raise ValueError("buildcache-develop is not a BuildKit cache; refusing to replace it")
+        self.track(digest, raw, now)
+
+    def track(self, digest, raw, now=None):
         for tag in self.registry.tags():
             match = HISTORY.fullmatch(tag)
             if match and match[2] == digest.removeprefix("sha256:"):
@@ -172,12 +176,10 @@ class CacheManager:
             visit(tag)
         return protected
 
-    def prune(self, keep_hours=72, dry_run=False, now=None, retire=False):
+    def prune(self, keep_hours=72, dry_run=False, now=None):
         now = time.time() if now is None else now
         tags = self.registry.tags()
         def expired(tag):
-            if retire and tag in {"buildcache-develop", "buildcache"}:
-                return True
             match = HISTORY.fullmatch(tag) or RUN.fullmatch(tag)
             return bool(match and now - int(match[1]) >= keep_hours * 3600)
 
@@ -227,6 +229,27 @@ class CacheManager:
                     self.registry.put(tag, raw)
                 raise
 
+    def retire(self, dry_run=False, now=None):
+        # Release cleanup removes reusable/run aliases immediately. Keep one
+        # history reference per verified cache until periodic digest deletion.
+        eligible = {}
+        for tag in self.registry.tags():
+            if tag not in {"buildcache-develop", "buildcache"} and not RUN.fullmatch(tag):
+                continue
+            digest, raw = self.registry.get(tag)
+            if not is_cache(raw):
+                print(f"Keep {tag}: not a verified BuildKit cache")
+                continue
+            eligible[tag] = (digest, raw)
+        for tag, (digest, raw) in eligible.items():
+            print(f"{'Would retire' if dry_run else 'Retire'} cache alias {tag}; retain {digest} for periodic cleanup")
+            if dry_run:
+                continue
+            self.track(digest, raw, now)
+            if self.registry.get(tag)[0] != digest:
+                raise ValueError("Cache alias changed; refusing retirement")
+            self.registry.delete_tag(tag)
+
     def orphans(self, digests, dry_run=False):
         protected = self.protected(self.registry.tags())
         for digest in digests:
@@ -273,7 +296,7 @@ def main():
     elif args.command == "prune":
         manager.prune(args.keep_hours, args.dry_run)
     elif args.command == "retire":
-        manager.prune(0, args.dry_run, retire=True)
+        manager.retire(args.dry_run)
     else:
         if not args.digests:
             parser.error("orphans requires explicit digests from Image Management")

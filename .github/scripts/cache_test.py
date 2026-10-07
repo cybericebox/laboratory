@@ -151,15 +151,35 @@ class Safety(unittest.TestCase):
         self.manager.prune(now=NOW)
         self.assertFalse(self.registry.deleted)
 
-    def test_full_release_retires_cache_but_preserves_images(self):
-        self.manager.prune(keep_hours=0, now=NOW, retire=True)
-        self.assertCountEqual(self.registry.deleted, [NEW, OLD])
+    def test_full_release_removes_cache_aliases_without_deleting_digests(self):
+        self.registry.refs["buildcache-run-100-123-1"] = OLD
+        self.manager.retire(now=NOW)
+        self.assertFalse(self.registry.deleted)
+        self.assertNotIn("buildcache-develop", self.registry.refs)
+        self.assertNotIn("buildcache-run-100-123-1", self.registry.refs)
+        self.assertEqual(self.registry.refs["v1.0.0"], IMAGE)
+        self.assertIn(OLD, self.registry.refs.values())
+        self.assertIn(NEW, self.registry.refs.values())
+        self.manager.prune(now=NOW + 73 * 3600)
+        self.assertCountEqual(self.registry.deleted, [OLD, NEW])
         self.assertEqual(self.registry.refs, {"v1.0.0": IMAGE})
 
     def test_retire_preserves_unreleased_dev_image(self):
         self.registry.refs["sha-1234567"] = IMAGE
-        self.manager.prune(keep_hours=0, now=NOW, retire=True)
+        self.manager.retire(now=NOW)
         self.assertEqual(self.registry.refs["sha-1234567"], IMAGE)
+
+    def test_retire_dry_run_has_no_mutations(self):
+        before = dict(self.registry.refs)
+        self.manager.retire(now=NOW, dry_run=True)
+        self.assertEqual(self.registry.refs, before)
+        self.assertFalse(self.registry.deleted)
+
+    def test_retire_preserves_regular_image_with_cache_tag(self):
+        self.registry.refs["buildcache-develop"] = IMAGE
+        self.manager.retire(now=NOW)
+        self.assertEqual(self.registry.refs["buildcache-develop"], IMAGE)
+        self.assertFalse(self.registry.deleted)
 
     def test_unknown_orphan_must_be_cache_and_unreferenced(self):
         self.manager.orphans([IMAGE, NEW, OLD], dry_run=True)
