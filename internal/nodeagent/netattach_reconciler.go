@@ -11,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -237,7 +238,7 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 
 		// Check whether pod-side veth is still in root netns.
-		podSideInRoot := WaitForLink(podSide, 200*time.Millisecond) == nil
+		podSideInRoot := peerInRoot(podSide, !exists)
 		log.Info("NetAttach: pod-side location", "podSide", podSide, "inRootNetns", podSideInRoot)
 
 		if podSideInRoot {
@@ -379,7 +380,7 @@ func (r *NetworkAttachReconciler) groupPodsOf(component string) handler.MapFunc 
 
 func (r *NetworkAttachReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&corev1.Pod{}).
+		For(&corev1.Pod{}, builder.WithPredicates(networkPodInputs(r.NodeName))).
 		Watches(&laboratoryv1alpha1.LabVPN{}, handler.EnqueueRequestsFromMapFunc(r.groupPodsOf(names.ComponentVPN))).
 		Watches(&laboratoryv1alpha1.LabGateway{}, handler.EnqueueRequestsFromMapFunc(r.groupPodsOf(names.ComponentGateway))).
 		Complete(reconcileutil.QuietIgnoreNotFound(r))

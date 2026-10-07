@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The real-iptables tests of the VPN and gateway pods (internal/vpn, internal/gateway, internal/accessroute, internal/cmds/cnigate: TestNetns*). They build network namespaces
+# The real network tests of VPN, gateway, DHCP, access routes, CNI and Node Agent (TestNetns*). They build network namespaces
 # and install the pods' rules with the real iptables, so they run in a privileged Linux container, each test binary in a network
 # namespace of its own (`unshare -n`), never in the host's.
 #   hack/test-netns.sh            run them in a golang container (needs docker)
@@ -28,17 +28,24 @@ if [[ "${1:-}" != "inside" ]]; then
 fi
 
 export GOWORK=off CICE_NETNS_TESTS=1
-if ! command -v iptables >/dev/null || ! command -v ip >/dev/null || ! command -v ping >/dev/null; then
-  apt-get update -qq && apt-get install -y -qq iptables iproute2 iputils-ping conntrack >/dev/null
+if ! command -v iptables >/dev/null || ! command -v ip >/dev/null || ! command -v ping >/dev/null || ! command -v conntrack >/dev/null || ! command -v ovsdb-server >/dev/null || ! command -v ovsdb-tool >/dev/null || ! command -v ovs-vsctl >/dev/null; then
+  apt-get update -qq && apt-get install -y -qq iptables iproute2 iputils-ping conntrack openvswitch-switch >/dev/null
 fi
 out=$(mktemp -d)
-pkgs="vpn vpn/reconciler gateway accessroute cmds/cnigate"
+pkgs="vpn vpn/reconciler gateway accessroute cmds/cnigate nodeagent"
 for pkg in $pkgs; do
   go test -c -o "$out/${pkg//\//_}.test" "./internal/$pkg"
 done
 go test -c -o "$out/dhcp.test" ./pkg/dhcp
-unshare -n "$out/dhcp.test" -test.run TestNetns -test.v -test.timeout 120s
+run_netns() {
+  unshare -n "$1" -test.run TestNetns -test.v -test.timeout 120s 2>&1 | tee "$out/last.log"
+  if grep -Eq '^[[:space:]]*--- SKIP:' "$out/last.log"; then
+    echo "Privileged network test unexpectedly skipped" >&2
+    return 1
+  fi
+}
+run_netns "$out/dhcp.test"
 for pkg in $pkgs; do
   # The test binary is the pod: its own network namespace, so the host's rules are never touched.
-  (cd "internal/$pkg" && unshare -n "$out/${pkg//\//_}.test" -test.run 'TestNetns' -test.v -test.timeout 120s)
+  (cd "internal/$pkg" && run_netns "$out/${pkg//\//_}.test")
 done

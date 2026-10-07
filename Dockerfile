@@ -81,9 +81,18 @@ ENV PATH=/usr/sbin:/usr/bin:/sbin:/bin
 COPY --from=lab-rootfs /rootfs/ /
 COPY --from=builder /out/lab /lab
 
-# Open vSwitch comes from the alpine package (kernel datapath).
+# nsenter needs only musl. Keep the other util-linux tools and their unrelated
+# storage/terminal libraries out of the runtime, while copying the same binary.
+FROM ${ALPINE} AS node-tools
+RUN apk add --no-cache util-linux-misc
+
+# Open vSwitch comes from the alpine package (kernel datapath). The node uses
+# the full ip executable; the other iproute2 commands (tc, ss, ...) are unused.
 FROM ${ALPINE} AS node
-RUN apk add --no-cache openvswitch iproute2 kmod bash util-linux-misc
+RUN apk add --no-cache openvswitch iproute2-minimal kmod bash && \
+    rm -f /usr/bin/nsenter
+# Remove Alpine's BusyBox symlink before COPY, which otherwise follows it.
+COPY --from=node-tools /usr/bin/nsenter /usr/bin/nsenter
 COPY --from=cni /cni/ /usr/libexec/cni/
 COPY --chmod=0755 scripts/start-ovs.sh /node-agent/bin/start-ovs.sh
 COPY --from=builder /out/node /node

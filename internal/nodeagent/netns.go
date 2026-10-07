@@ -57,6 +57,17 @@ func WaitForLink(name string, timeout time.Duration) error {
 	}
 }
 
+// peerInRoot waits only for a newly created peer. An existing peer normally
+// lives in the pod's namespace, so polling for it in the root namespace delays
+// every healthy attachment before its namespace recovery checks.
+func peerInRoot(name string, created bool) bool {
+	var wait time.Duration
+	if created {
+		wait = 200 * time.Millisecond
+	}
+	return WaitForLink(name, wait) == nil
+}
+
 // SetMACInNetNS sets the hardware address of an interface inside the target netns.
 func SetMACInNetNS(netnsPath, ifaceName, mac string) error {
 	return nsenterRun(netnsPath, "ip", "link", "set", ifaceName, "address", mac)
