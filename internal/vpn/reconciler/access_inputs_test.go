@@ -47,10 +47,12 @@ type recordingAccessRevoker struct {
 	calls       int
 	failNext    bool
 	lastClients []string
+	lastRules   []vpn.AccessRule
 }
 
-func (r *recordingAccessRevoker) Revoke(_ []string, _ []vpn.AccessRule, clients ...[]string) (int, error) {
+func (r *recordingAccessRevoker) Revoke(_ []string, rules []vpn.AccessRule, clients ...[]string) (int, error) {
 	r.calls++
+	r.lastRules = slices.Clone(rules)
 	if len(clients) != 0 {
 		r.lastClients = slices.Clone(clients[0])
 	}
@@ -175,5 +177,30 @@ func TestAccessReconcileColdStartAppliesEvenAfterPreviousReadyStatus(t *testing.
 	reconcileAccess(t, restarted, req)
 	if a.applications != 2 {
 		t.Fatal("new process trusted old API status without configuring the kernel")
+	}
+}
+
+func TestAccessReconcileReissuedAddressRevokesOldOwnerFlows(t *testing.T) {
+	r, _, c, req := accessReconcileFixture(t)
+	revoker := &recordingAccessRevoker{}
+	r.Conntrack = revoker
+	reconcileAccess(t, r, req)
+	old := &lab.LabGroupClient{}
+	_ = c.Get(context.Background(), types.NamespacedName{Namespace: "group", Name: "p1"}, old)
+	if err := c.Delete(context.Background(), old); err != nil {
+		t.Fatal(err)
+	}
+	next := old.DeepCopy()
+	next.Name = "p2"
+	next.ResourceVersion = ""
+	next.UID = ""
+	if err := c.Create(context.Background(), next); err != nil {
+		t.Fatal(err)
+	}
+	reconcileAccess(t, r, req)
+	for _, rule := range revoker.lastRules {
+		if rule.Action == vpn.AccessAllow && rule.SourceCIDR == "10.8.0.2/32" {
+			t.Fatal("old established flows survived address reissue")
+		}
 	}
 }

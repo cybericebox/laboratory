@@ -27,11 +27,14 @@ const (
 // resource is the delivery buffer: it survives a pod restart and an agent or
 // platform outage, and the agent relays it without keeping any state itself.
 type Reporter struct {
-	Reader    client.Reader
-	Writer    client.Client
-	Namespace string
-	Instance  string
-	Collector *Collector
+	Reader        client.Reader
+	Writer        client.Client
+	Namespace     string
+	Instance      string
+	Collector     *Collector
+	CounterReader CounterReader
+	OnResume      func([]PairCounters)
+	OnPublish     func(context.Context, Report) error
 }
 
 // Run polls the source and publishes on the given cadences until ctx ends.
@@ -46,19 +49,24 @@ func (r *Reporter) Run(ctx context.Context, pollEvery, reportEvery time.Duration
 			onError(err)
 		}
 	}
-	if err := r.resume(ctx); err != nil && onError != nil {
-		onError(err)
-	}
-	if err := r.Collector.Poll(time.Now()); err != nil && onError != nil {
+	if err := r.Poll(ctx, time.Now()); err != nil && onError != nil {
 		onError(err)
 	}
 	publish()
 	for {
 		select {
 		case <-ctx.Done():
+			final, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := r.Poll(final, time.Now()); err != nil && onError != nil {
+				onError(err)
+			}
+			if err := r.Publish(final, time.Now()); err != nil && onError != nil {
+				onError(err)
+			}
 			return
 		case <-poll.C:
-			if err := r.Collector.Poll(time.Now()); err != nil && onError != nil {
+			if err := r.Poll(ctx, time.Now()); err != nil && onError != nil {
 				onError(err)
 			}
 		case <-report.C:
@@ -67,9 +75,27 @@ func (r *Reporter) Run(ctx context.Context, pollEvery, reportEvery time.Duration
 	}
 }
 
+// Poll reads the cumulative source once; conntrack contributes metadata only.
+func (r *Reporter) Poll(ctx context.Context, now time.Time) error {
+	if r.CounterReader == nil {
+		r.Collector.MarkPartial(now)
+		return fmt.Errorf("missing VPN counter source")
+	}
+	snapshot, err := r.CounterReader.ReadPairCounters(ctx)
+	if err != nil {
+		r.Collector.MarkPartial(now)
+		return err
+	}
+	if err := r.Collector.ObserveCounters(snapshot); err != nil {
+		r.Collector.MarkPartial(now)
+		return err
+	}
+	return r.Collector.Poll(now)
+}
+
 // resume continues from the totals the previous run of this pod left in the
 // report, so a restart does not start from zero.
-func (r *Reporter) resume(ctx context.Context) error {
+func (r *Reporter) Resume(ctx context.Context) error {
 	obj := &laboratoryv1alpha1.LabTrafficReport{}
 	err := r.Reader.Get(ctx, types.NamespacedName{Namespace: r.Namespace, Name: ReportName}, obj)
 	if apierrors.IsNotFound(err) {
@@ -86,16 +112,47 @@ func (r *Reporter) resume(ctx context.Context) error {
 			FirstSeenMs: t.FirstSeenMs, LastSeenMs: t.LastSeenMs, FirstRespondMs: t.FirstRespondedMs,
 		})
 	}
-	r.Collector.Resume(ledger, time.UnixMilli(obj.Status.CoveredToMs))
+	checkpoints := make([]PairCounters, 0, len(obj.Status.KernelCheckpoints))
+	for _, raw := range obj.Status.KernelCheckpoints {
+		cp := PairCounters{Key: Key{raw.Subject, raw.LabName}, BindingID: raw.BindingID, Epoch: raw.Epoch}
+		fields := []string{raw.PacketsOut, raw.PacketsIn, raw.BytesOut, raw.BytesIn, raw.Attempts, raw.LabInitiatedAttempts}
+		dst := []*uint64{&cp.PacketsOut, &cp.PacketsIn, &cp.BytesOut, &cp.BytesIn, &cp.Attempts, &cp.LabInitiatedAttempts}
+		for i, value := range fields {
+			n, err := strconv.ParseUint(value, 10, 64)
+			if err != nil {
+				r.Collector.MarkPartial(time.Now())
+				return fmt.Errorf("invalid private counter checkpoint: %w", err)
+			}
+			*dst[i] = n
+		}
+		if _, _, err := PairCounterDelta(cp, PairCounters{}); err != nil {
+			r.Collector.MarkPartial(time.Now())
+			return err
+		}
+		checkpoints = append(checkpoints, cp)
+	}
+	r.Collector.Resume(ledger, time.UnixMilli(obj.Status.CoveredToMs), checkpoints...)
+	if obj.Status.Partial {
+		r.Collector.MarkPartial(time.Now())
+	}
+	if r.OnResume != nil {
+		r.OnResume(checkpoints)
+	}
 	return nil
 }
 
 // Publish writes the current state; CoveredTo advances even when nothing
 // happened, which is what proves an idle team was being watched.
 func (r *Reporter) Publish(ctx context.Context, now time.Time) error {
-	return PublishReport(ctx, r.Reader, r.Writer, types.NamespacedName{Namespace: r.Namespace, Name: ReportName},
-		laboratoryv1alpha1.LabTrafficReportSpec{Kind: laboratoryv1alpha1.LabTrafficSurfaceVPN, Instance: r.Instance},
-		ToStatus(r.Collector.Snapshot(now)))
+	report := r.Collector.Snapshot(now)
+	if err := PublishReport(ctx, r.Reader, r.Writer, types.NamespacedName{Namespace: r.Namespace, Name: ReportName},
+		laboratoryv1alpha1.LabTrafficReportSpec{Kind: laboratoryv1alpha1.LabTrafficSurfaceVPN, Instance: r.Instance}, ToStatus(report)); err != nil {
+		return err
+	}
+	if r.OnPublish != nil {
+		return r.OnPublish(ctx, report)
+	}
+	return nil
 }
 
 // PublishReport creates the LabTrafficReport when missing and replaces its

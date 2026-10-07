@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,18 +37,19 @@ type accessRevoker interface {
 
 type AccessReconciler struct {
 	client.Client
-	IPT accessApplier
-	// Conntrack removes the open connections a rule change revokes: FORWARD accepts
-	// established connections before the access chain, so replacing the chain alone
-	// would leave an open SSH session or download running. Nil: not removed (tests).
+	IPT      accessApplier
+	Counters func() map[string]vpn.TrafficCounter
+	// Conntrack retires flows after a permission or identity change. The gate
+	// checks both directions before established forwarding. Nil is used in tests.
 	Conntrack accessRevoker
 	// Controller-runtime serializes Reconcile calls for this controller.
-	applied       bool
-	lastNamespace string
-	lastRules     []vpn.AccessRule
-	revokePending bool
-	revokeLabs    []string
-	revokeClients []string
+	applied        bool
+	lastNamespace  string
+	lastRules      []vpn.AccessRule
+	revokePending  bool
+	revokeLabs     []string
+	revokeClients  []string
+	revokeReissued map[string]bool
 }
 
 func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -91,6 +91,16 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	previousRules := r.lastRules
 	changed := !r.applied || r.lastNamespace != req.Namespace || !slices.Equal(r.lastRules, rules)
 	if changed {
+		if r.revokeReissued == nil {
+			r.revokeReissued = map[string]bool{}
+		}
+		for _, old := range previousRules {
+			for _, next := range rules {
+				if old.SourceCIDR == next.SourceCIDR && old.ClientName != next.ClientName || old.LabInterface == next.LabInterface && old.LabName != next.LabName {
+					r.revokeReissued[next.Identifier()] = true
+				}
+			}
+		}
 		for _, old := range previousRules {
 			r.revokeLabs = append(r.revokeLabs, old.DestinationCIDR)
 			r.revokeClients = append(r.revokeClients, old.SourceCIDR)
@@ -122,14 +132,20 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		r.revokePending = true
 	}
 	if r.Conntrack != nil && r.revokePending {
-		n, err := r.Conntrack.Revoke(r.revokeLabs, rules, r.revokeClients)
+		revocationRules := slices.Clone(rules)
+		for i := range revocationRules {
+			if r.revokeReissued[revocationRules[i].Identifier()] {
+				revocationRules[i].Action = vpn.AccessDeny
+			}
+		}
+		n, err := r.Conntrack.Revoke(r.revokeLabs, revocationRules, r.revokeClients)
 		if n > 0 {
 			ctrl.LoggerFrom(ctx).Info("closed connections the access rules no longer allow", "connections", n)
 		}
 		if err != nil {
 			// The rules are in place; the open connections are not all gone. Run again.
 			if policyFound {
-				counters, _ := r.IPT.AccessCounters()
+				counters, _ := r.accessCounters()
 				_ = r.writePolicyStatus(ctx, policy, rules, counters, "Failed", err.Error())
 			}
 			return ctrl.Result{}, err
@@ -138,8 +154,9 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	r.revokePending = false
 	r.revokeLabs = nil
 	r.revokeClients = nil
+	r.revokeReissued = nil
 	if policyFound {
-		counters, countersErr := r.IPT.AccessCounters()
+		counters, countersErr := r.accessCounters()
 		if countersErr != nil {
 			return ctrl.Result{}, r.writePolicyStatus(ctx, policy, rules, nil, "Failed", countersErr.Error())
 		}
@@ -195,42 +212,11 @@ func (r *AccessReconciler) writePolicyStatus(ctx context.Context, policy *labora
 	return nil
 }
 
-// RunAccessStats refreshes firewall counters without changing the policy. The
-// history is retained on the policy CR so the agent can relay it to the
-// platform while an event is active.
-func RunAccessStats(ctx context.Context, c client.Client, ipt *vpn.IPTablesManager, cfg *vpn.Config) {
-	ticker := time.NewTicker(cfg.StatsInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			policy := &laboratoryv1alpha1.LabGroupAccessPolicy{}
-			if err := c.Get(ctx, types.NamespacedName{Namespace: cfg.Namespace, Name: names.LabGroupAccessPolicyName}, policy); err != nil {
-				continue
-			}
-			var clients laboratoryv1alpha1.LabGroupClientList
-			var labs laboratoryv1alpha1.LabList
-			if c.List(ctx, &clients, client.InNamespace(cfg.Namespace)) != nil || c.List(ctx, &labs, client.InNamespace(cfg.Namespace)) != nil {
-				continue
-			}
-			labSnapshots := make(map[string]vpn.LabAccessSnapshot, len(labs.Items))
-			for i := range labs.Items {
-				labSnapshots[labs.Items[i].Name] = vpn.LabAccessSnapshot{VPNCIDR: labs.Items[i].Status.VPN.CIDR, Ready: labs.Items[i].Status.Phase == laboratoryv1alpha1.PhaseReady && labs.Items[i].Status.VPN.Ready}
-			}
-			clientSnapshots := make([]vpn.ClientAccessSnapshot, 0, len(clients.Items))
-			for i := range clients.Items {
-				clientSnapshots = append(clientSnapshots, vpn.ClientAccessSnapshot{Name: clients.Items[i].Name, AssignedIP: clients.Items[i].Status.AssignedIP})
-			}
-			counters, err := ipt.AccessCounters()
-			if err != nil {
-				continue
-			}
-			reconciler := &AccessReconciler{Client: c, IPT: ipt}
-			_ = reconciler.writePolicyStatus(ctx, policy, vpn.BuildAccessRules(clientSnapshots, labSnapshots, policyRules(policy)), counters, "Applied", "")
-		}
+func (r *AccessReconciler) accessCounters() (map[string]vpn.TrafficCounter, error) {
+	if r.Counters != nil {
+		return r.Counters(), nil
 	}
+	return r.IPT.AccessCounters()
 }
 
 func (r *AccessReconciler) SetupWithManager(mgr ctrl.Manager) error {

@@ -9,13 +9,19 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/cybericebox/laboratory/internal/vpn"
+	"github.com/cybericebox/laboratory/internal/vpn/flowacct"
 	"github.com/cybericebox/laboratory/pkg/dhcp"
+	"time"
 )
 
 // Setup registers VPN controllers with mgr.
 // wg and cfg must already be initialised (call vpn.InitServer first).
 func Setup(ctx context.Context, mgr ctrl.Manager, wg *vpn.WGManager, ipt *vpn.IPTablesManager, cfg *vpn.Config) error {
 	dhcpMgr := dhcp.NewManager()
+	reporter, source, err := prepareFlowAccounting(ctx, mgr, cfg, ipt)
+	if err != nil {
+		return fmt.Errorf("resume VPN traffic: %w", err)
+	}
 
 	if err := (&LabGroupClientReconciler{
 		Client:   mgr.GetClient(),
@@ -25,7 +31,7 @@ func Setup(ctx context.Context, mgr ctrl.Manager, wg *vpn.WGManager, ipt *vpn.IP
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setup LabGroupClientReconciler: %w", err)
 	}
-	if err := (&AccessReconciler{Client: mgr.GetClient(), IPT: ipt, Conntrack: vpn.NewConntrackRevoker()}).SetupWithManager(mgr); err != nil {
+	if err := (&AccessReconciler{Client: mgr.GetClient(), IPT: ipt, Counters: func() map[string]vpn.TrafficCounter { return accessTotals(reporter.Collector.Snapshot(time.Now())) }, Conntrack: vpn.NewConntrackRevoker()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setup LabGroup access reconciler: %w", err)
 	}
 
@@ -41,8 +47,10 @@ func Setup(ctx context.Context, mgr ctrl.Manager, wg *vpn.WGManager, ipt *vpn.IP
 	}
 
 	go RunStats(ctx, mgr.GetClient(), wg, cfg)
-	go RunAccessStats(ctx, mgr.GetClient(), ipt, cfg)
-	go RunFlowAccounting(ctx, mgr, cfg)
+	go func() {
+		defer source.Close()
+		reporter.Run(ctx, flowacct.DefaultPollEvery, flowacct.DefaultReportEvery, func(err error) { ctrl.Log.WithName("flowacct").Error(err, "flow accounting") })
+	}()
 
 	return nil
 }

@@ -52,7 +52,7 @@ func counterComment(id, epoch, direction, kind string) string {
 func (m *IPTablesManager) ApplyForwardPlan(ctx context.Context, plan ForwardPlan) (ApplyResult, error) {
 	m.forwardMu.Lock()
 	defer m.forwardMu.Unlock()
-	if m.forwardReady && slices.Equal(m.forwardPlan.Allows, plan.Allows) {
+	if m.forwardReady && !m.retirePending && slices.Equal(m.forwardPlan.Allows, plan.Allows) {
 		return ApplyResult{}, nil
 	}
 	for _, r := range plan.Allows {
@@ -76,25 +76,13 @@ func (m *IPTablesManager) ApplyForwardPlan(ctx context.Context, plan ForwardPlan
 	if err != nil {
 		return ApplyResult{}, err
 	}
-	parsed, err := parseKernelCounters(saved, m.bindings)
+	parsed, err := parseKernelCounters(saved, m.bindings, true)
 	if err != nil {
 		return ApplyResult{}, err
 	}
 	wanted := map[string]ForwardRule{}
 	for _, r := range plan.Allows {
 		wanted[r.BindingID] = r
-	}
-	var retired flowacct.CounterSnapshot
-	retired.At = parsed.snapshot.At
-	for _, row := range parsed.snapshot.Rows {
-		if _, ok := wanted[row.BindingID]; !ok {
-			retired.Rows = append(retired.Rows, row)
-		}
-	}
-	if len(retired.Rows) > 0 && m.BeforeRetire != nil {
-		if err := m.BeforeRetire(retired); err != nil {
-			return ApplyResult{}, fmt.Errorf("capture retired traffic: %w", err)
-		}
 	}
 	var body strings.Builder
 	body.WriteString("*filter\n:" + accessChain + " - [0:0]\n-F " + accessChain + "\n")
@@ -119,21 +107,73 @@ func (m *IPTablesManager) ApplyForwardPlan(ctx context.Context, plan ForwardPlan
 		fmt.Fprintf(&body, "-A %s -i %s -o %s -d %s -j %s\n", accessChain, r.LabInterface, m.wgIface, r.ClientCIDR, relationChain(r.BindingID, "R"))
 	}
 	body.WriteString("-A " + accessChain + " -j DROP\n")
-	for id := range parsed.epochs {
-		if _, ok := wanted[id]; ok {
-			continue
-		}
-		for _, d := range []string{"F", "R"} {
-			c := relationChain(id, d)
-			fmt.Fprintf(&body, "-F %s\n-X %s\n", c, c)
-		}
-	}
 	body.WriteString("COMMIT\n")
 	if err := m.commands.Restore(ctx, []byte(body.String())); err != nil {
 		return ApplyResult{}, err
 	}
 	m.forwardPlan = ForwardPlan{Allows: slices.Clone(plan.Allows), Decisions: slices.Clone(plan.Decisions)}
 	m.forwardReady = true
+	// The gate is now closed for retired pairs. Keep their detached chains
+	// until a fresh read and the report write have succeeded; otherwise retry.
+	m.retirePending = true
+	for id, r := range wanted {
+		if m.bindings == nil {
+			m.bindings = map[string]ForwardRule{}
+		}
+		m.bindings[id] = r
+	}
+	finalSaved, err := m.commands.Save(ctx)
+	if err != nil {
+		return ApplyResult{Changed: true}, err
+	}
+	final, err := parseKernelCounters(finalSaved, m.bindings, true)
+	if err != nil {
+		return ApplyResult{Changed: true}, err
+	}
+	retired := flowacct.CounterSnapshot{At: final.snapshot.At, Partial: final.snapshot.Partial}
+	ids := []string{}
+	for id := range final.epochs {
+		if _, ok := wanted[id]; !ok {
+			ids = append(ids, id)
+		}
+	}
+	for _, row := range final.snapshot.Rows {
+		if _, ok := wanted[row.BindingID]; !ok {
+			retired.Rows = append(retired.Rows, row)
+		}
+	}
+	if (len(ids) > 0 || retired.Partial) && m.BeforeRetire != nil {
+		if err := m.BeforeRetire(retired); err != nil {
+			return ApplyResult{Changed: true}, fmt.Errorf("capture retired traffic: %w", err)
+		}
+	}
+	if len(ids) > 0 {
+		var cleanup strings.Builder
+		cleanup.WriteString("*filter\n")
+		for _, id := range ids {
+			for _, d := range []string{"F", "R"} {
+				chain := relationChain(id, d)
+				fmt.Fprintf(&cleanup, "-F %s\n-X %s\n", chain, chain)
+			}
+		}
+		cleanup.WriteString("COMMIT\n")
+		if err := m.commands.Restore(ctx, []byte(cleanup.String())); err != nil {
+			return ApplyResult{Changed: true}, err
+		}
+		if m.AfterRetire != nil {
+			m.AfterRetire(ids)
+		}
+	}
+	forgot := []string{}
+	for id := range m.bindings {
+		if _, ok := wanted[id]; !ok {
+			forgot = append(forgot, id)
+		}
+	}
+	if len(forgot) > 0 && m.AfterRetire != nil {
+		m.AfterRetire(forgot)
+	}
 	m.bindings = wanted
+	m.retirePending = false
 	return ApplyResult{Changed: true}, nil
 }

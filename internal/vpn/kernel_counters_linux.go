@@ -21,7 +21,7 @@ type parsedKernelCounters struct {
 	epochs   map[string]string
 }
 
-func parseKernelCounters(saved []byte, bindings map[string]ForwardRule) (parsedKernelCounters, error) {
+func parseKernelCounters(saved []byte, bindings map[string]ForwardRule, tolerateMissing ...bool) (parsedKernelCounters, error) {
 	result := parsedKernelCounters{snapshot: flowacct.CounterSnapshot{At: time.Now()}, epochs: map[string]string{}}
 	rows := map[string]*flowacct.PairCounters{}
 	seen := map[string]map[string]bool{}
@@ -87,6 +87,10 @@ func parseKernelCounters(saved []byte, bindings map[string]ForwardRule) (parsedK
 	}
 	for id := range bindings {
 		if len(seen[id]) != 4 {
+			if len(tolerateMissing) > 0 && tolerateMissing[0] {
+				result.snapshot.Partial = true
+				continue
+			}
 			return result, fmt.Errorf("missing VPN counter binding %s", id)
 		}
 	}
@@ -106,4 +110,16 @@ func (m *IPTablesManager) ReadPairCounters(ctx context.Context) (flowacct.Counte
 	}
 	result, err := parseKernelCounters(saved, m.bindings)
 	return result.snapshot, err
+}
+
+// RestoreCounterBindings attaches private persisted identities to surviving
+// native chains before the first policy reconcile. Endpoints are not needed
+// to read an already identified cumulative counter.
+func (m *IPTablesManager) RestoreCounterBindings(rows []flowacct.PairCounters) {
+	m.forwardMu.Lock()
+	defer m.forwardMu.Unlock()
+	m.bindings = map[string]ForwardRule{}
+	for _, row := range rows {
+		m.bindings[row.BindingID] = ForwardRule{ClientName: row.Subject, LabName: row.Lab, BindingID: row.BindingID}
+	}
 }

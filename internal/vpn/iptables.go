@@ -5,6 +5,7 @@ package vpn
 import (
 	"context"
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -25,13 +26,15 @@ type IPTablesManager struct {
 	uplink string
 	wgPort int
 	// input is the INPUT policy of the pod once installed (nil = not installed).
-	input        *podinput.Policy
-	commands     RuleCommand
-	forwardMu    sync.Mutex
-	forwardPlan  ForwardPlan
-	forwardReady bool
-	bindings     map[string]ForwardRule
-	BeforeRetire func(flowacct.CounterSnapshot) error
+	input         *podinput.Policy
+	commands      RuleCommand
+	forwardMu     sync.Mutex
+	forwardPlan   ForwardPlan
+	forwardReady  bool
+	bindings      map[string]ForwardRule
+	BeforeRetire  func(flowacct.CounterSnapshot) error
+	AfterRetire   func([]string)
+	retirePending bool
 }
 
 const accessChain = "CYBERICEBOX_VPN_ACCESS"
@@ -211,7 +214,7 @@ func (m *IPTablesManager) AccessCounters() (map[string]TrafficCounter, error) {
 		result := map[string]TrafficCounter{}
 		for _, row := range snapshot.Rows {
 			id := AccessRule{ClientName: row.Subject, LabName: row.Lab, Action: AccessAllow}.Identifier()
-			result[id] = TrafficCounter{Packets: int64(row.PacketsOut), Bytes: int64(row.BytesOut)}
+			result[id] = TrafficCounter{Packets: counterInt64(row.PacketsOut), Bytes: counterInt64(row.BytesOut)}
 		}
 		return result, nil
 	}
@@ -276,4 +279,11 @@ func (m *IPTablesManager) Cleanup() {
 			podinput.Remove(m.ipt6)
 		}
 	}
+}
+
+func counterInt64(n uint64) int64 {
+	if n > math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(n)
 }

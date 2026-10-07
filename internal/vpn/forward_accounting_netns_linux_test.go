@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cybericebox/laboratory/internal/nstest"
+	"github.com/cybericebox/laboratory/internal/vpn/flowacct"
 )
 
 func TestNetnsForwardPlanGatesBothDirectionsAndPreservesCounts(t *testing.T) {
@@ -88,8 +89,15 @@ func TestNetnsForwardPlanGatesBothDirectionsAndPreservesCounts(t *testing.T) {
 	if tcp.Attempts != 2 || tcp.LabInitiatedAttempts != 1 || tcp.PacketsOut <= c.PacketsOut || tcp.PacketsIn <= c.PacketsIn {
 		t.Fatalf("TCP replies counted as lab initiatives or were missed: %+v", tcp)
 	}
+	collector := flowacct.New(nil, func() flowacct.Topology { return flowacct.Topology{} }, "boot", time.Second)
+	m.BeforeRetire = collector.ObserveCounters
+	m.AfterRetire = collector.ForgetBindings
 	if _, err := m.ApplyForwardPlan(context.Background(), ForwardPlan{}); err != nil {
 		t.Fatal(err)
+	}
+	retired := collector.Snapshot(time.Now())
+	if len(retired.Ledger) != 1 || retired.Ledger[0].PacketsOut < int64(tcp.PacketsOut) || retired.Ledger[0].LabInitiatedAttempts != 1 || len(retired.KernelCheckpoints) != 0 {
+		t.Fatalf("final retirement lost counts: %+v", retired)
 	}
 	if nstest.Reach(t, "a", "udp", "10.8.0.2:7901", targetP) || nstest.Reach(t, "pa", "udp", "10.8.1.2:7900", targetA) {
 		t.Fatal("revoked pair remained open")
