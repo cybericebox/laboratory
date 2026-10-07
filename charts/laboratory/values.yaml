@@ -229,7 +229,7 @@ proxy:
   replicas: 2
   # Rollout: a new pod must be Ready for minReadySeconds before the next one is replaced (both modes). surge: true lets the Deployment start
   # a new pod before it stops an old one (maxSurge 1, maxUnavailable 0), which needs a node without a replica; empty = yes when a live install
-  # sees more nodes than replicas. A pod gets terminationGracePeriodSeconds to finish requests in flight after SIGTERM, after a preStop sleep of
+  # sees more nodes than replicas. A pod gets terminationGracePeriodSeconds to stop requests and publish settled counters after SIGTERM, after a preStop sleep of
   # preStopSleepSeconds (so the Gateway and the Service stop sending it connections first).
   minReadySeconds: 20
   surge: null

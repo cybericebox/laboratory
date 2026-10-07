@@ -249,3 +249,12 @@ func (m *Meter) RetireNamespaces(active map[string]bool) {
 		}
 	}
 }
+
+// MarkPartial records an interrupted observation/final drain for every known group.
+func (m *Meter) MarkPartial() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, ns := range m.namespaces {
+		ns.partial = true
+	}
+}

@@ -2,6 +2,9 @@ package l7
 
 import (
 	"context"
+	"errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"testing"
 	"time"
 
@@ -49,5 +52,63 @@ func TestReportWriterPublishesLedgerAndHeartbeatForEveryNamespace(t *testing.T) 
 	idle := get("ns-idle")
 	if len(idle.Status.Ledger) != 0 || idle.Status.CoveredToMs != 61_000 {
 		t.Fatalf("an idle group still gets its coverage heartbeat: %+v", idle.Status)
+	}
+}
+
+func TestSamePodRestartKeepsTotals(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = laboratoryv1alpha1.AddToScheme(scheme)
+	old := &laboratoryv1alpha1.LabTrafficReport{ObjectMeta: metav1.ObjectMeta{Name: ReportName("pod"), Namespace: "ns"}, Spec: laboratoryv1alpha1.LabTrafficReportSpec{Kind: laboratoryv1alpha1.LabTrafficSurfaceProxy, Instance: "pod"}, Status: laboratoryv1alpha1.LabTrafficReportStatus{BootID: "old", CoveredFromMs: 1000, CoveredToMs: 2000, Ledger: []laboratoryv1alpha1.LabTrafficTouch{{Subject: "p", LabName: "lab", Attempts: 8, BytesIn: 80, FirstSeenMs: 1000, LastSeenMs: 2000}}}}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(old).WithObjects(old).Build()
+	m := NewMeter("new", time.UnixMilli(3000))
+	m.Record("ns", "p", "lab", time.UnixMilli(3500), true, 1, 0)
+	w := &ReportWriter{Reader: c, Writer: c, Meter: m, Instance: "pod"}
+	for i := 0; i < 2; i++ {
+		if err := w.Publish(context.Background(), "ns", time.UnixMilli(4000)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got laboratoryv1alpha1.LabTrafficReport
+	_ = c.Get(context.Background(), types.NamespacedName{Namespace: "ns", Name: ReportName("pod")}, &got)
+	if got.Status.Ledger[0].Attempts != 9 || got.Status.Ledger[0].BytesIn != 81 || got.Status.CoveredFromMs != 3000 {
+		t.Fatal(got.Status)
+	}
+}
+
+type failingReportReader struct {
+	client.Reader
+	fail bool
+}
+
+func (r *failingReportReader) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if r.fail {
+		return errors.New("read unavailable")
+	}
+	return r.Reader.Get(ctx, key, obj, opts...)
+}
+func TestRestoreFailureCannotOverwriteOldTotals(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = laboratoryv1alpha1.AddToScheme(scheme)
+	old := &laboratoryv1alpha1.LabTrafficReport{ObjectMeta: metav1.ObjectMeta{Name: ReportName("pod"), Namespace: "ns"}, Spec: laboratoryv1alpha1.LabTrafficReportSpec{Kind: laboratoryv1alpha1.LabTrafficSurfaceProxy}, Status: laboratoryv1alpha1.LabTrafficReportStatus{Ledger: []laboratoryv1alpha1.LabTrafficTouch{{Subject: "p", LabName: "lab", Attempts: 8}}}}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(old).WithObjects(old).Build()
+	reader := &failingReportReader{Reader: c, fail: true}
+	m := NewMeter("new", time.Now())
+	m.Record("ns", "p", "lab", time.Now(), false, 0, 0)
+	w := &ReportWriter{Reader: reader, Writer: c, Meter: m, Instance: "pod"}
+	if err := w.Prepare(context.Background(), "ns"); err == nil {
+		t.Fatal("restore error missing")
+	}
+	var got laboratoryv1alpha1.LabTrafficReport
+	_ = c.Get(context.Background(), types.NamespacedName{Namespace: "ns", Name: ReportName("pod")}, &got)
+	if got.Status.Ledger[0].Attempts != 8 {
+		t.Fatal(got.Status)
+	}
+	reader.fail = false
+	if err := w.Publish(context.Background(), "ns", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.Get(context.Background(), types.NamespacedName{Namespace: "ns", Name: ReportName("pod")}, &got)
+	if got.Status.Ledger[0].Attempts != 9 {
+		t.Fatal(got.Status)
 	}
 }

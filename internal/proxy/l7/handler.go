@@ -40,6 +40,8 @@ type Handler struct {
 	resolver    BackendResolver
 	transport   http.RoundTripper
 
+	access    *AccessReader
+	prepare   func(context.Context, string) error
 	meter     *Meter
 	attribute Attribution
 	authorize Authorizer
@@ -113,6 +115,10 @@ func (h *Handler) WithAuthorizer(authorize Authorizer) *Handler {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.live.stopping() {
+		fail(w, r, http.StatusServiceUnavailable, pageBusy, "service unavailable")
+		return
+	}
 	task, err := getTaskName(r, h.baseDomain)
 	if err != nil {
 		fail(w, r, http.StatusBadRequest, pageGone, "bad request")
@@ -138,36 +144,68 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.expired(w, r)
 		return
 	}
-	if h.groupTenant != nil {
-		if owner, ok := h.groupTenant(claims.GroupID); !ok || owner != claims.Tenant {
+	namespace := ""
+	var group AccessGroup
+	if h.access != nil {
+		group, err = h.access.Group(r.Context(), claims.GroupID)
+		if err != nil || group.Tenant != claims.Tenant {
 			fail(w, r, http.StatusNotFound, pageGone, "not found")
 			return
 		}
+		namespace = group.Namespace
+	} else {
+		if h.groupTenant != nil {
+			if owner, ok := h.groupTenant(claims.GroupID); !ok || owner != claims.Tenant {
+				fail(w, r, http.StatusNotFound, pageGone, "not found")
+				return
+			}
+		}
+		namespace = ns(claims.GroupID)
 	}
-
 	h.renewSession(w, claims)
-
-	backendURL, err := h.resolver(task, claims.GroupID)
-	if err != nil {
-		fail(w, r, http.StatusNotFound, pageGone, "not found")
-		return
+	var backendURL, lab string
+	if h.access != nil {
+		route, routeErr := h.access.Route(r.Context(), task, namespace)
+		if routeErr != nil {
+			fail(w, r, http.StatusNotFound, pageGone, "not found")
+			return
+		}
+		backendURL, lab = route.URL, route.Lab
+		if !h.access.Allowed(r.Context(), namespace, client, lab) {
+			fail(w, r, http.StatusNotFound, pageGone, "not found")
+			return
+		}
+	} else {
+		backendURL, err = h.resolver(task, claims.GroupID)
+		if err != nil {
+			fail(w, r, http.StatusNotFound, pageGone, "not found")
+			return
+		}
+		if h.attribute != nil {
+			lab, _ = h.attribute(task, claims.GroupID)
+			if lab == "" {
+				fail(w, r, http.StatusNotFound, pageGone, "not found")
+				return
+			}
+		}
+		if h.authorize != nil && !h.authorize(claims.GroupID, client, lab) {
+			fail(w, r, http.StatusNotFound, pageGone, "not found")
+			return
+		}
 	}
 	target, err := url.Parse(backendURL)
 	if err != nil {
 		fail(w, r, http.StatusInternalServerError, pageFailed, "internal error")
 		return
 	}
-	var lab string
-	if h.attribute != nil {
-		lab, _ = h.attribute(task, claims.GroupID)
-		if lab == "" {
-			fail(w, r, http.StatusNotFound, pageGone, "not found")
+	if h.prepare != nil {
+		prepareCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		err = h.prepare(prepareCtx, namespace)
+		cancel()
+		if err != nil {
+			fail(w, r, http.StatusServiceUnavailable, pageBusy, "service unavailable")
 			return
 		}
-	}
-	if h.authorize != nil && !h.authorize(claims.GroupID, client, lab) {
-		fail(w, r, http.StatusNotFound, pageGone, "not found")
-		return
 	}
 
 	// Strip challenge cookie before forwarding.
@@ -213,7 +251,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		proxy.ServeHTTP(w, r)
 		return
 	}
-	request := h.meter.Begin(ns(claims.GroupID), client, lab, h.now())
+	request := h.meter.Begin(namespace, client, lab, h.now())
 	defer func() {
 		if value := recover(); value != nil {
 			request.Incomplete()

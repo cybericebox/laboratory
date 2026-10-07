@@ -20,12 +20,18 @@ type liveEntry struct {
 	deadline                   time.Time
 	cancel                     context.CancelFunc
 
-	mu   sync.Mutex
-	conn net.Conn
+	mu     sync.Mutex
+	conn   net.Conn
+	closed bool
 }
 
 func (e *liveEntry) setConn(c net.Conn) {
 	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		_ = c.Close()
+		return
+	}
 	e.conn = c
 	e.mu.Unlock()
 }
@@ -35,6 +41,7 @@ func (e *liveEntry) setConn(c net.Conn) {
 func (e *liveEntry) close() {
 	e.cancel()
 	e.mu.Lock()
+	e.closed = true
 	c := e.conn
 	e.mu.Unlock()
 	if c != nil {
@@ -44,15 +51,36 @@ func (e *liveEntry) close() {
 
 // liveSet is the registry of the requests in flight.
 type liveSet struct {
-	mu      sync.Mutex
-	entries map[*liveEntry]struct{}
+	mu        sync.Mutex
+	entries   map[*liveEntry]struct{}
+	perGroup  map[string]int
+	perClient map[liveClientKey]int
+	closed    bool
+	changed   chan struct{}
 }
 
-func newLiveSet() *liveSet { return &liveSet{entries: map[*liveEntry]struct{}{}} }
+type liveClientKey struct{ group, client string }
+
+func newLiveSet() *liveSet {
+	return &liveSet{entries: map[*liveEntry]struct{}{}, perGroup: map[string]int{}, perClient: map[liveClientKey]int{}, changed: make(chan struct{})}
+}
 
 func (s *liveSet) remove(e *liveEntry) {
 	s.mu.Lock()
-	delete(s.entries, e)
+	if _, ok := s.entries[e]; ok {
+		delete(s.entries, e)
+		s.perGroup[e.group]--
+		if s.perGroup[e.group] == 0 {
+			delete(s.perGroup, e.group)
+		}
+		key := liveClientKey{e.group, e.client}
+		s.perClient[key]--
+		if s.perClient[key] == 0 {
+			delete(s.perClient, key)
+		}
+		close(s.changed)
+		s.changed = make(chan struct{})
+	}
 	s.mu.Unlock()
 }
 
@@ -94,21 +122,55 @@ func (h *Handler) liveDeadline(abs int64) time.Time {
 func (h *Handler) CheckLive() int {
 	now := h.now()
 	closed := 0
+	type binding struct{ group, client, lab, tenant string }
+	permissions := map[binding]bool{}
+	owners := map[string]AccessGroup{}
+	checked := map[string]bool{}
 	for _, e := range h.live.snapshot() {
-		stop := now.After(e.deadline)
-		if !stop && h.groupTenant != nil {
-			if owner, ok := h.groupTenant(e.group); !ok || owner != e.tenant {
-				stop = true
+		stop := !now.Before(e.deadline)
+		if !stop {
+			key := binding{e.group, e.client, e.lab, e.tenant}
+			allowed, seen := permissions[key]
+			if !seen {
+				allowed = true
+				if h.access != nil {
+					group, exists := owners[e.group]
+					if !checked[e.group] {
+						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+						var err error
+						group, err = h.access.Group(ctx, e.group)
+						cancel()
+						exists = err == nil
+						checked[e.group] = true
+						if exists {
+							owners[e.group] = group
+						}
+					}
+					allowed = exists && group.Tenant == e.tenant
+					if allowed {
+						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+						allowed = h.access.Allowed(ctx, group.Namespace, e.client, e.lab)
+						cancel()
+					}
+				} else {
+					if h.groupTenant != nil {
+						owner, ok := h.groupTenant(e.group)
+						allowed = ok && owner == e.tenant
+					}
+					if allowed && h.authorize != nil {
+						allowed = h.authorize(e.group, e.client, e.lab)
+					}
+				}
+				permissions[key] = allowed
 			}
-		}
-		if !stop && h.authorize != nil && !h.authorize(e.group, e.client, e.lab) {
-			stop = true
+			stop = !allowed
 		}
 		if stop {
 			e.close()
 			closed++
 		}
 	}
+
 	return closed
 }
 
@@ -172,3 +234,29 @@ func (w *hijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 
 // Unwrap lets http.ResponseController reach Flush.
 func (w *hijackRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// Shutdown stops admissions, cancels HTTP and upgraded connections, and waits
+// for handler defers to settle their meters before the caller publishes.
+func (h *Handler) Shutdown(ctx context.Context) error {
+	h.live.mu.Lock()
+	h.live.closed = true
+	h.live.mu.Unlock()
+	for _, entry := range h.live.snapshot() {
+		entry.close()
+	}
+	for {
+		h.live.mu.Lock()
+		if len(h.live.entries) == 0 {
+			h.live.mu.Unlock()
+			return nil
+		}
+		changed := h.live.changed
+		h.live.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-changed:
+		}
+	}
+}
+func (s *liveSet) stopping() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.closed }
