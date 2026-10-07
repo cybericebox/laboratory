@@ -77,3 +77,9 @@ python3 .github/scripts/cache.py orphans cybericebox/REPOSITORY sha256:FULL_DIGE
 
 This command cannot discover unknown untagged objects itself; Docker Hub's
 standard Registry API does not expose an enumeration of all such manifests.
+
+Cache-reading/writing image builds and release/manual cache retirement share a queued
+job concurrency group (`docker-hub-cache-maintenance`, `queue: max`). They
+cannot update and delete the mutable canonical cache tag simultaneously. The
+laboratory image jobs wait in that same queue; image builds in other repositories and ordinary tests are unaffected. Manual cache commands must be run
+while these cache writers are idle.
