@@ -3,6 +3,9 @@
 > Источник: `cybericebox-spec-v1.md` §3 (challenge-токен; в коде Ed25519 / EdDSA), §4 (VPN-демукс: mac1, conntrack, XDP), §5 (L7
 > challenge-прокси), §6 (TLS / wildcard DNS-01), §13 (изоляция).
 
+
+> Актуальная реализация на 2026-10-07: Deployment с репликами либо DaemonSet в `laboratory-proxy`, UDP-forwarding целиком в Go userspace. XDP и cluster-singleton ниже — исторические требования, не текущие гарантии. Исходники находятся в `internal/proxy/{l7,demux}` и `internal/cmds/{proxyl7,proxywg}`. Актуальный контракт учёта — REQ-PX-019A; доказательства и ограничения — отчёт `2026-10-07-proxy-validation.md`.
+
 ## Назначение
 
 Cluster-singleton-pod, который держит **два независимых L4/L7-демультиплексора на одном публичном IP**:
