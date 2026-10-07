@@ -2,9 +2,11 @@ package demux
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
+	"syscall"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 )
@@ -56,6 +58,15 @@ func (d *Demux) LocalAddr() net.Addr { return d.conn.LocalAddr() }
 // Run processes incoming WireGuard packets until stop is closed. Several goroutines read the socket (a UDP socket is safe to read
 // from many), so the cost of one packet does not hold the others up.
 func (d *Demux) Run(stop <-chan struct{}) {
+	finished := make(chan struct{})
+	defer close(finished)
+	go func() {
+		select {
+		case <-stop:
+			d.Close()
+		case <-finished:
+		}
+	}()
 	var wg sync.WaitGroup
 	for i := 0; i < d.readers; i++ {
 		wg.Add(1)
@@ -69,7 +80,7 @@ func (d *Demux) Run(stop <-chan struct{}) {
 
 func (d *Demux) read(stop <-chan struct{}) {
 	// A WireGuard datagram is at most 1500 bytes or so; anything the buffer cannot hold is not one.
-	buf := make([]byte, 2048)
+	buf := make([]byte, 65535)
 	for {
 		select {
 		case <-stop:
@@ -77,15 +88,21 @@ func (d *Demux) read(stop <-chan struct{}) {
 			return
 		default:
 		}
-		n, src, err := d.conn.ReadFromUDP(buf)
+		n, _, flags, src, err := d.conn.ReadMsgUDP(buf, nil)
 		if err != nil {
-			// On stop, conn is closed and ReadFromUDP returns an error.
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			// On stop, conn is closed and ReadMsgUDP returns an error.
 			select {
 			case <-stop:
 				return
 			default:
 				continue
 			}
+		}
+		if flags&syscall.MSG_TRUNC != 0 {
+			continue
 		}
 		d.handle(buf[:n], src)
 	}
@@ -108,7 +125,7 @@ func (d *Demux) handle(pkt []byte, src *net.UDPAddr) {
 			ctrl.Log.WithName("demux").Info("dropped a packet that panicked the handler", "panic", fmt.Sprint(r))
 		}
 	}()
-	if len(pkt) < 1 {
+	if len(pkt) < 4 || pkt[1] != 0 || pkt[2] != 0 || pkt[3] != 0 {
 		return
 	}
 	switch pkt[0] {
@@ -125,7 +142,7 @@ func (d *Demux) handle(pkt []byte, src *net.UDPAddr) {
 			d.handleType3(pkt, src)
 		}
 	case 4:
-		if len(pkt) >= sizeTransport {
+		if len(pkt) >= sizeTransport && len(pkt)%16 == 0 {
 			d.handleType4Userspace(pkt, src)
 		}
 	}
@@ -142,7 +159,7 @@ func (d *Demux) handleType1(pkt []byte, src *net.UDPAddr) {
 	if !d.global.allow() {
 		return
 	}
-	_, backend, found := d.table.FindByMac1(pkt)
+	group, backend, found := d.table.FindByMac1(pkt)
 	if !found {
 		return
 	}
@@ -156,7 +173,7 @@ func (d *Demux) handleType1(pkt []byte, src *net.UDPAddr) {
 	// Reserve Ci before forwarding — spec §4 says collision with another live session is fatal for this handshake;
 	// let the client retry with a new index instead of clobbering an unrelated peer. The reservation also refuses a
 	// handshake that would pass the table's caps.
-	if !d.conntrack.AddPartial(ci, socketOf(src), socketOf(resolved)) {
+	if !d.conntrack.AddPartial(ci, socketOf(src), socketOf(resolved), group) {
 		return
 	}
 
