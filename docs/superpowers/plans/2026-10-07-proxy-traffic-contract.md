@@ -242,3 +242,17 @@ Fixture helpers in the snippets are created in the same test file using the exis
 - [ ] Step2: Update the smallest responsible API mapping and UI, preserving the current layout and shared loaders/empty/error components.
 - [ ] Step3: Run client type/build/i18n and focused rendering/contract gates; run real database backend checks and end-to-end data fixture from the frozen lab contract. Expected: new facts display correctly, old-client defaults remain safe.
 - [ ] Step4: Commit locally, record full checks/results, and preserve raw evidence plus owned-resource teardown. No push/PR/release/deployment.
+
+
+## Approved component extension before laboratory freeze (2026-10-07)
+
+The owner requested one responsible agent per self-written runtime image, covering code, Helm, OS dependencies, startup and task execution. Existing audit baselines are preserved; only affected post-change workloads and missing runtime/architecture checks are added.
+
+- Agent package approved: CRD→serialized RPC statistics/coverage/privacy, immutable ledger sharing, selector metadata copying, per-tenant refresh coalescing, omitted unused serialization and idle journal expiry. Preserve forced subscription freshness, cadence and resource defaults. Ready L7 replica coverage uses the actual fixed proxy namespace.
+- Controller package approved: per-pass image/prepull reuse, avoiding copies for settled devices, one Service snapshot per reconcile, identical status guards and semantic equality of unordered reference sets. Preserve original result order, GC cadence, prepared history, scheduling, quotas, ownership, retries and resources. Correct reproduced pre-existing allocator/empty-array blockers required by real-cache validation with narrow regressions.
+- Node package approved: immediate lookup for existing peers, local Pod index without narrowing the shared cache, conservative event predicates, minimal runtime packages with unchanged required executables, and canonical namespace/final-image tests. Preserve OVS implementation, source isolation, startup/supervision, modules, CNI, snapshots and recovery cadence.
+- Shared Docker stage split approved: each image builds only its own binary; target names, runtime paths, pinned bases and final contents remain. Verify all five targets for arm64/amd64.
+
+All implementation agents leave exact ownership lists and evidence; only root stages/commits. Native ARM64 and AMD64 Node final-image/kernel checks passed; root used a single disposable AWS instance for the missing native AMD64 proof, then independently verified deletion of all experiment resources and its temporary key. No previous capacity baseline is rerun.
+
+Task7 also includes the common image build matrix, complete branch tests/Helm/generated artifacts, one fresh independent whole-change review and a single regression-tested fix pass. Keep undeclared performance assumptions and unresolved limitations explicit. Laboratory must be locally committed and frozen before backend work; backend scope is statistics contracts only.
