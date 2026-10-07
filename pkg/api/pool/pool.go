@@ -137,9 +137,9 @@ func (a *allocator) AllocateIndex(ctx context.Context) (uint, error) {
 			start = uint(n)
 		}
 	}
-	bit, found := bitmap.NextClear(start)
+	bit, found := nextClearWithinPool(bitmap, start, selected.Spec.Size)
 	if !found && start > 0 {
-		bit, found = bitmap.NextClear(0)
+		bit, found = nextClearWithinPool(bitmap, 0, selected.Spec.Size)
 	}
 	if !found {
 		return 0, fmt.Errorf("pool %s has no free slots despite state label", selected.Name)
@@ -165,6 +165,21 @@ func (a *allocator) AllocateIndex(ctx context.Context) (uint, error) {
 	}
 
 	return bit + selected.Spec.Offset, nil
+}
+
+// Compact bitmaps omit the unused tail. Its absent bits are free, but the
+// immutable pool size still bounds the search, including older oversized data.
+func nextClearWithinPool(bitmap *bitset.BitSet, start, size uint) (uint, bool) {
+	if start >= size {
+		return 0, false
+	}
+	if bit, found := bitmap.NextClear(start); found && bit < size {
+		return bit, true
+	}
+	if tail := max(start, bitmap.Len()); tail < size {
+		return tail, true
+	}
+	return 0, false
 }
 
 func (a *allocator) saveCursor(ctx context.Context, poolName string, cursor uint) error {

@@ -31,13 +31,14 @@ func (r *LabReconciler) reader() client.Reader {
 
 // codeAllocator hands out the codes of one reconcile of a lab.
 type codeAllocator struct {
-	r    *LabReconciler
-	lab  *laboratoryv1alpha1.Lab
-	used map[string]bool // taken <device>-<code> names in the namespace
+	r        *LabReconciler
+	lab      *laboratoryv1alpha1.Lab
+	services *labServiceSnapshot
+	used     map[string]bool // taken <device>-<code> names in the namespace
 }
 
-func (r *LabReconciler) newCodeAllocator(lab *laboratoryv1alpha1.Lab) *codeAllocator {
-	return &codeAllocator{r: r, lab: lab}
+func (r *LabReconciler) newCodeAllocator(lab *laboratoryv1alpha1.Lab, snapshots ...*labServiceSnapshot) *codeAllocator {
+	return &codeAllocator{r: r, lab: lab, services: r.serviceSnapshot(lab, snapshots...)}
 }
 
 func (a *codeAllocator) load(ctx context.Context) error {
@@ -77,7 +78,7 @@ func (a *codeAllocator) codeFor(ctx context.Context, device string) (string, err
 	case !errors.IsNotFound(err):
 		return "", err
 	}
-	svc, err := a.r.findWebService(ctx, a.lab, device)
+	svc, err := a.services.find(ctx, device)
 	if err != nil {
 		return "", err
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -284,6 +285,16 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
+	// Scheduling initialization above persists its own status answer. Capture
+	// before the still-unpersisted image warning and final VPN/phase changes.
+	beforeStatus := lg.Status.DeepCopy()
+	updateStatus := func() error {
+		if reflect.DeepEqual(*beforeStatus, lg.Status) {
+			return nil
+		}
+		return r.Status().Update(ctx, &lg)
+	}
+
 	if lg.Spec.Suspended {
 		vpnReady := false
 		if !lg.Spec.VPN.Disabled {
@@ -301,7 +312,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		lg.Status.VPN.Endpoint = r.PublicVPNEndpoint
 		lg.Status.VPN.ClientSubnet = clientSubnet
 		lg.Status.VPN.Registered = vpnReady
-		if err = r.Status().Update(ctx, &lg); err != nil {
+		if err = updateStatus(); err != nil {
 			return ctrl.Result{}, err
 		}
 		if !lg.Spec.VPN.Disabled && !vpnReady {
@@ -332,7 +343,7 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	lg.Status.VPN.ClientSubnet = clientSubnet
 	wasRegistered := lg.Status.VPN.Registered
 	lg.Status.VPN.Registered = vpnReady
-	if err = r.Status().Update(ctx, &lg); err != nil {
+	if err = updateStatus(); err != nil {
 		return ctrl.Result{}, err
 	}
 
