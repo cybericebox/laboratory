@@ -73,6 +73,14 @@ func TestSamePodRestartKeepsTotals(t *testing.T) {
 	if got.Status.Ledger[0].Attempts != 9 || got.Status.Ledger[0].BytesIn != 81 || got.Status.CoveredFromMs != 3000 {
 		t.Fatal(got.Status)
 	}
+	if len(got.Status.CoverageSpans) != 2 {
+		t.Fatalf("restart history=%+v", got.Status.CoverageSpans)
+	}
+	a, b := got.Status.CoverageSpans[0], got.Status.CoverageSpans[1]
+	if a.FromMs != 1000 || a.ToMs != 2000 || a.BootID != "old" || b.FromMs != 3000 || b.ToMs != 4000 || b.BootID != "new" || a.Source != ReportName("pod") {
+		t.Fatal(got.Status.CoverageSpans)
+	}
+
 }
 
 type failingReportReader struct {
@@ -109,6 +117,25 @@ func TestRestoreFailureCannotOverwriteOldTotals(t *testing.T) {
 	}
 	_ = c.Get(context.Background(), types.NamespacedName{Namespace: "ns", Name: ReportName("pod")}, &got)
 	if got.Status.Ledger[0].Attempts != 9 {
+		t.Fatal(got.Status)
+	}
+}
+
+func TestRestartCoverageHistoryIsBoundedAndMarkedIncomplete(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = laboratoryv1alpha1.AddToScheme(scheme)
+	old := &laboratoryv1alpha1.LabTrafficReport{ObjectMeta: metav1.ObjectMeta{Name: ReportName("pod"), Namespace: "ns"}, Spec: laboratoryv1alpha1.LabTrafficReportSpec{Kind: laboratoryv1alpha1.LabTrafficSurfaceProxy}}
+	for i := 0; i < MaxReportRows; i++ {
+		old.Status.CoverageSpans = append(old.Status.CoverageSpans, laboratoryv1alpha1.LabTrafficCoverageSpan{FromMs: int64(1000 + i), ToMs: int64(2000 + i)})
+	}
+	store := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(old).WithObjects(old).Build()
+	w := &ReportWriter{Reader: store, Writer: store, Meter: NewMeter("new", time.UnixMilli(3000)), Instance: "pod"}
+	if err := w.Publish(context.Background(), "ns", time.UnixMilli(4000)); err != nil {
+		t.Fatal(err)
+	}
+	var got laboratoryv1alpha1.LabTrafficReport
+	_ = store.Get(context.Background(), types.NamespacedName{Namespace: "ns", Name: ReportName("pod")}, &got)
+	if len(got.Status.CoverageSpans) != MaxReportRows || !got.Status.Partial || got.Status.CoverageSpans[MaxReportRows-1].BootID != "new" {
 		t.Fatal(got.Status)
 	}
 }

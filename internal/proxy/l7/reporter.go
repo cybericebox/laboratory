@@ -39,6 +39,7 @@ type ReportWriter struct {
 	mu         sync.Mutex
 	readyMu    sync.RWMutex
 	prepared   map[string]bool
+	history    map[string][]laboratoryv1alpha1.LabTrafficCoverageSpan
 	Reader     client.Reader
 	Writer     client.Client
 	Meter      *Meter
@@ -81,6 +82,7 @@ func (w *ReportWriter) PublishAll(ctx context.Context, now time.Time, onError fu
 		for ns := range w.prepared {
 			if !active[ns] {
 				delete(w.prepared, ns)
+				delete(w.history, ns)
 			}
 		}
 		w.readyMu.Unlock()
@@ -123,6 +125,19 @@ func (w *ReportWriter) prepareLocked(ctx context.Context, namespace string) erro
 		rows = append(rows, Touch{Subject: t.Subject, Lab: t.LabName, Attempts: t.Attempts, BytesIn: t.BytesIn, BytesOut: t.BytesOut, FirstSeenMs: t.FirstSeenMs, LastSeenMs: t.LastSeenMs, RespondedMs: t.FirstRespondedMs})
 	}
 	w.Meter.Restore(namespace, rows, old.Status.Truncated, old.Status.Partial)
+	history := append([]laboratoryv1alpha1.LabTrafficCoverageSpan(nil), old.Status.CoverageSpans...)
+	if len(history) == 0 && old.Status.CoveredFromMs > 0 && old.Status.CoveredToMs >= old.Status.CoveredFromMs {
+		instance := old.Spec.Instance
+		if instance == "" {
+			instance = w.Instance
+		}
+		history = append(history, laboratoryv1alpha1.LabTrafficCoverageSpan{FromMs: old.Status.CoveredFromMs, ToMs: old.Status.CoveredToMs, Partial: old.Status.Partial || old.Status.Truncated, Source: ReportName(w.Instance), Instance: instance, BootID: old.Status.BootID})
+	}
+	if w.history == nil {
+		w.history = map[string][]laboratoryv1alpha1.LabTrafficCoverageSpan{}
+	}
+	w.history[namespace] = history
+
 	w.readyMu.Lock()
 	if w.prepared == nil {
 		w.prepared = map[string]bool{}
@@ -150,6 +165,13 @@ func (w *ReportWriter) Publish(ctx context.Context, namespace string, now time.T
 	status := laboratoryv1alpha1.LabTrafficReportStatus{
 		BootID: w.Meter.BootID, CoveredFromMs: w.Meter.Started.UnixMilli(), CoveredToMs: now.UnixMilli(),
 		Partial: partial, Truncated: truncated, Ledger: make([]laboratoryv1alpha1.LabTrafficTouch, 0, len(ledger)),
+	}
+
+	status.CoverageSpans = append([]laboratoryv1alpha1.LabTrafficCoverageSpan(nil), w.history[namespace]...)
+	status.CoverageSpans = append(status.CoverageSpans, laboratoryv1alpha1.LabTrafficCoverageSpan{FromMs: status.CoveredFromMs, ToMs: status.CoveredToMs, Partial: partial || truncated, Source: ReportName(w.Instance), Instance: w.Instance, BootID: w.Meter.BootID})
+	if len(status.CoverageSpans) > MaxReportRows {
+		status.CoverageSpans = status.CoverageSpans[len(status.CoverageSpans)-MaxReportRows:]
+		status.Partial = true
 	}
 	for _, t := range ledger {
 		status.Ledger = append(status.Ledger, laboratoryv1alpha1.LabTrafficTouch{

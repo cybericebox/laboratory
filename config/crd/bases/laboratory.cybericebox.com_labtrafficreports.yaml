@@ -68,6 +68,36 @@ spec:
                   BootID changes whenever the collector restarts; the ledger is cumulative
                   within one boot.
                 type: string
+              coverageSpans:
+                description: |-
+                  CoverageSpans preserves disjoint observed intervals across collector restarts.
+                  Absent for older writers: the agent derives one span from the scalar fields.
+                items:
+                  description: |-
+                    LabTrafficCoverageSpan is one actually observed collector interval. Separate
+                    spans preserve restart/replica gaps instead of treating their envelope as watched.
+                  properties:
+                    bootID:
+                      type: string
+                    fromMs:
+                      format: int64
+                      type: integer
+                    instance:
+                      type: string
+                    partial:
+                      description: Partial also covers truncation or unavailable accounting
+                        within this span.
+                      type: boolean
+                    source:
+                      type: string
+                    toMs:
+                      format: int64
+                      type: integer
+                  required:
+                  - fromMs
+                  - toMs
+                  type: object
+                type: array
               coveredFromMs:
                 description: |-
                   CoveredFromMs..CoveredToMs is the span the collector actually observed.

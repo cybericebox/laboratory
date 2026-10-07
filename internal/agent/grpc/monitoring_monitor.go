@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"strings"
 	"sync"
 	"time"
 
@@ -100,11 +101,13 @@ type monitor struct {
 	mu    sync.Mutex
 	state *monState
 	// seq is the sequence of the latest state; the first observation is sequence 1.
-	seq     int64
-	journal []*journalEntry
-	subs    map[*subscriber]struct{}
-	running bool
-	now     func() time.Time
+	seq              int64
+	journal          []*journalEntry
+	subs             map[*subscriber]struct{}
+	running          bool
+	now              func() time.Time
+	journalExpiry    *time.Timer
+	expiryGeneration uint64 // invalidates a callback already racing with Stop
 }
 
 func newEpoch() string {
@@ -188,6 +191,7 @@ func (m *monitor) subscribe(ctx context.Context, req interface {
 		plan.snapshot = m.state
 	}
 	m.subs[sub] = struct{}{}
+	m.stopJournalExpiryLocked()
 	if !m.running {
 		m.running = true
 		go m.run()
@@ -209,6 +213,9 @@ func (m *monitor) coversLocked(after int64) bool {
 func (m *monitor) unsubscribe(s *subscriber) {
 	m.mu.Lock()
 	delete(m.subs, s)
+	if len(m.subs) == 0 {
+		m.armJournalExpiryLocked()
+	}
 	m.mu.Unlock()
 }
 
@@ -240,6 +247,9 @@ func (m *monitor) stopCache() {
 	defer m.pollMu.Unlock()
 	m.mu.Lock()
 	idle := len(m.subs) == 0
+	if idle {
+		m.armJournalExpiryLocked()
+	}
 	m.mu.Unlock()
 	if idle && m.cache != nil {
 		m.cache.stop()
@@ -275,12 +285,16 @@ func (m *monitor) poll(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	prev := m.state
+	if prev != nil {
+		shareTrafficLedgers(prev.update, next.update)
+	}
 	m.state = next
 	if prev == nil {
 		return nil
 	}
 	delta, changed := monitoringDelta(prev.update, next.update)
 	if !changed {
+		m.trimLocked()
 		return nil
 	}
 	m.seq++
@@ -295,6 +309,16 @@ func (m *monitor) poll(ctx context.Context) error {
 	// The touches of a traffic report name labs: keep those labs' labels with the
 	// entry (a lab deleted since still has the labels it had).
 	for _, r := range delta.Traffic {
+		gkey := recordKey("lab_group", r.GetLabGroupName(), "", r.GetLabGroupName())
+		entry.labels[gkey] = next.labels[gkey]
+		if len(r.GetLedger()) == 0 {
+			prefix := r.GetLabGroupName() + "\x00"
+			for key, l := range next.labLabels {
+				if strings.HasPrefix(key, prefix) {
+					entry.labLabels[key] = l
+				}
+			}
+		}
 		for _, t := range r.GetLedger() {
 			key := labLabelKey(r.GetLabGroupName(), t.GetLabName())
 			if _, done := entry.labLabels[key]; done {
@@ -334,6 +358,37 @@ func (m *monitor) trimLocked() {
 	if i > 0 {
 		m.journal = append([]*journalEntry(nil), m.journal[i:]...)
 	}
+}
+
+func (m *monitor) stopJournalExpiryLocked() {
+	m.expiryGeneration++
+	if m.journalExpiry != nil {
+		m.journalExpiry.Stop()
+		m.journalExpiry = nil
+	}
+}
+
+// No Kubernetes reads or polling while idle. The one timer releases expired
+// replay versions but keeps current state and every still-valid resume entry.
+func (m *monitor) armJournalExpiryLocked() {
+	m.stopJournalExpiryLocked()
+	if len(m.journal) == 0 {
+		return
+	}
+	delay := m.journal[0].at.Add(m.cfg.JournalAge).Sub(m.now())
+	if delay <= 0 {
+		delay = time.Millisecond
+	}
+	generation := m.expiryGeneration
+	m.journalExpiry = time.AfterFunc(delay, func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if generation != m.expiryGeneration || len(m.subs) > 0 {
+			return
+		}
+		m.trimLocked()
+		m.armJournalExpiryLocked()
+	})
 }
 
 // journalLen is for tests.

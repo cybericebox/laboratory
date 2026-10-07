@@ -76,6 +76,22 @@ type LabTrafficKernelCheckpoint struct {
 	LabInitiatedAttempts string `json:"labInitiatedAttempts"`
 }
 
+// LabTrafficCoverageSpan is one actually observed collector interval. Separate
+// spans preserve restart/replica gaps instead of treating their envelope as watched.
+type LabTrafficCoverageSpan struct {
+	FromMs int64 `json:"fromMs"`
+	ToMs   int64 `json:"toMs"`
+	// Partial also covers truncation or unavailable accounting within this span.
+	// +optional
+	Partial bool `json:"partial,omitempty"`
+	// +optional
+	Source string `json:"source,omitempty"`
+	// +optional
+	Instance string `json:"instance,omitempty"`
+	// +optional
+	BootID string `json:"bootID,omitempty"`
+}
+
 // LabTrafficReportStatus is written only by the collector.
 type LabTrafficReportStatus struct {
 	// BootID changes whenever the collector restarts; the ledger is cumulative
@@ -85,6 +101,10 @@ type LabTrafficReportStatus struct {
 	// CoveredToMs advances as a heartbeat even when nothing happened.
 	CoveredFromMs int64 `json:"coveredFromMs,omitempty"`
 	CoveredToMs   int64 `json:"coveredToMs,omitempty"`
+	// CoverageSpans preserves disjoint observed intervals across collector restarts.
+	// Absent for older writers: the agent derives one span from the scalar fields.
+	// +optional
+	CoverageSpans []LabTrafficCoverageSpan `json:"coverageSpans,omitempty"`
 	// Partial is set when part of the span could not be read.
 	Partial bool `json:"partial,omitempty"`
 	// Truncated is set when the ledger hit its size cap and rows were dropped.

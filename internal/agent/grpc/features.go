@@ -59,8 +59,9 @@ type GroupPodsFeature struct {
 }
 
 type featuresCache struct {
-	mu sync.Mutex
-	m  map[string]featuresEntry
+	mu        sync.Mutex
+	m         map[string]featuresEntry
+	refreshes tenantRefreshGate
 }
 
 type featuresEntry struct {
@@ -88,62 +89,77 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 	if ok && time.Since(e.at) < capacityTTL {
 		base = e.feat
 	} else {
-		ten, err := h.tenantObject(ctx, name)
+		release, err := h.featCache.refreshes.acquire(ctx, name)
 		if err != nil {
 			return nil, err
 		}
-		f := h.features
-		quota, err := h.tenantQuota(ctx, ten)
-		if err != nil {
-			return nil, err
-		}
-		p := tenant.EffectivePersistence(ten, f.StatePersistence, f.WriteQuota, f.MaxFileSize, f.TenantQuota)
-		base = &protobuf.FeaturesResponse{
-			Tenant: name,
-			StatePersistence: &protobuf.StatePersistenceFeature{
-				Available:          p.Allowed,
-				DefaultDebounceMs:  f.Debounce.Milliseconds(),
-				WriteQuotaBytes:    p.WriteQuota,
-				MaxFileSizeBytes:   p.MaxFileSize,
-				RegistryQuotaBytes: p.RegistryQuota,
-				MaxEntries:         int32(f.MaxEntries),
-				ExcludedPaths:      append([]string(nil), f.ExcludePaths...),
-			},
-			ImageCache:     &protobuf.ImageCacheFeature{Enabled: f.CacheEnabled, Registries: append([]string(nil), f.CacheRegistries...)},
-			Scheduler:      &protobuf.SchedulerFeature{Enabled: f.SchedulerEnabled, MaxPods: f.SchedulerMaxPods},
-			Endpoints:      &protobuf.EndpointsFeature{LabsDomain: f.LabsDomain, VpnEndpoint: f.VPNEndpoint},
-			DeviceProfiles: append([]string(nil), f.DeviceProfiles...),
-			Limits: &protobuf.LimitsFeature{
-				Device: &protobuf.DeviceLimits{
-					MaxCpuMillicores: f.Limits.DeviceMaxCPU, MaxMemoryBytes: f.Limits.DeviceMaxMemory,
-					DefaultCpuMillicores: f.Limits.DeviceDefaultCPU, DefaultMemoryBytes: f.Limits.DeviceDefaultMemory,
-				},
-				Lab:    &protobuf.LabLimits{MaxDevices: int32(f.Limits.LabMaxDevices)},
-				Group:  &protobuf.GroupLimits{MaxLabs: int32(f.Limits.GroupMaxLabs), MaxCpuMillicores: f.Limits.GroupMaxCPU, MaxMemoryBytes: f.Limits.GroupMaxMemory},
-				Tenant: &protobuf.TenantLimits{MaxLabs: int32(f.Limits.TenantMaxLabs)},
-			},
-			GroupPods: &protobuf.GroupPodsFeature{
-				Vpn:            podSizingProto(f.GroupPods.Sizing.VPN),
-				Gateway:        podSizingProto(f.GroupPods.Sizing.Gateway),
-				DefaultVpn:     &protobuf.PodSize{CpuMillicores: f.GroupPods.DefaultVPN.CPU, MemoryBytes: f.GroupPods.DefaultVPN.Memory},
-				DefaultGateway: &protobuf.PodSize{CpuMillicores: f.GroupPods.DefaultGateway.CPU, MemoryBytes: f.GroupPods.DefaultGateway.Memory},
-			},
-			Constants: &protobuf.DeviceConstants{
-				MaxInterfacesPerContainer: names.MaxContainerInterfaces, MaxPortsPerSwitchOrHub: names.MaxSwitchPorts, HardMaxDevicesPerLab: names.MaxLabDevices,
-			},
-			TenantQuota: &protobuf.TenantQuotaFeature{
-				HasCpuQuota: quota.HasCPU, CpuQuotaMillicores: quota.CPU, HasMemoryQuota: quota.HasMemory, MemoryQuotaBytes: quota.Memory,
-			},
-			Proxy: &protobuf.ProxyFeature{
-				AccessTokenMaxTtlSeconds: int64(f.ProxyAccessTokenMaxTTL.Seconds()), SessionMaxTtlSeconds: int64(f.ProxySessionMaxTTL.Seconds()), SessionIdleTtlSeconds: int64(f.ProxySessionIdleTTL.Seconds()),
-			},
-		}
+		defer release()
 		h.featCache.mu.Lock()
-		if h.featCache.m == nil {
-			h.featCache.m = map[string]featuresEntry{}
-		}
-		h.featCache.m[name] = featuresEntry{at: time.Now(), feat: base}
+		e, ok = h.featCache.m[name]
 		h.featCache.mu.Unlock()
+		if ok && time.Since(e.at) < capacityTTL {
+			base = e.feat
+		} else {
+			ten, err := h.tenantObject(ctx, name)
+			if err != nil {
+				return nil, err
+			}
+			f := h.features
+			quota, err := h.tenantQuota(ctx, ten)
+			if err != nil {
+				return nil, err
+			}
+			p := tenant.EffectivePersistence(ten, f.StatePersistence, f.WriteQuota, f.MaxFileSize, f.TenantQuota)
+			base = &protobuf.FeaturesResponse{
+				Tenant: name,
+				StatePersistence: &protobuf.StatePersistenceFeature{
+					Available:          p.Allowed,
+					DefaultDebounceMs:  f.Debounce.Milliseconds(),
+					WriteQuotaBytes:    p.WriteQuota,
+					MaxFileSizeBytes:   p.MaxFileSize,
+					RegistryQuotaBytes: p.RegistryQuota,
+					MaxEntries:         int32(f.MaxEntries),
+					ExcludedPaths:      append([]string(nil), f.ExcludePaths...),
+				},
+				ImageCache:     &protobuf.ImageCacheFeature{Enabled: f.CacheEnabled, Registries: append([]string(nil), f.CacheRegistries...)},
+				Scheduler:      &protobuf.SchedulerFeature{Enabled: f.SchedulerEnabled, MaxPods: f.SchedulerMaxPods},
+				Endpoints:      &protobuf.EndpointsFeature{LabsDomain: f.LabsDomain, VpnEndpoint: f.VPNEndpoint},
+				DeviceProfiles: append([]string(nil), f.DeviceProfiles...),
+				Limits: &protobuf.LimitsFeature{
+					Device: &protobuf.DeviceLimits{
+						MaxCpuMillicores: f.Limits.DeviceMaxCPU, MaxMemoryBytes: f.Limits.DeviceMaxMemory,
+						DefaultCpuMillicores: f.Limits.DeviceDefaultCPU, DefaultMemoryBytes: f.Limits.DeviceDefaultMemory,
+					},
+					Lab:    &protobuf.LabLimits{MaxDevices: int32(f.Limits.LabMaxDevices)},
+					Group:  &protobuf.GroupLimits{MaxLabs: int32(f.Limits.GroupMaxLabs), MaxCpuMillicores: f.Limits.GroupMaxCPU, MaxMemoryBytes: f.Limits.GroupMaxMemory},
+					Tenant: &protobuf.TenantLimits{MaxLabs: int32(f.Limits.TenantMaxLabs)},
+				},
+				GroupPods: &protobuf.GroupPodsFeature{
+					Vpn:            podSizingProto(f.GroupPods.Sizing.VPN),
+					Gateway:        podSizingProto(f.GroupPods.Sizing.Gateway),
+					DefaultVpn:     &protobuf.PodSize{CpuMillicores: f.GroupPods.DefaultVPN.CPU, MemoryBytes: f.GroupPods.DefaultVPN.Memory},
+					DefaultGateway: &protobuf.PodSize{CpuMillicores: f.GroupPods.DefaultGateway.CPU, MemoryBytes: f.GroupPods.DefaultGateway.Memory},
+				},
+				Constants: &protobuf.DeviceConstants{
+					MaxInterfacesPerContainer: names.MaxContainerInterfaces, MaxPortsPerSwitchOrHub: names.MaxSwitchPorts, HardMaxDevicesPerLab: names.MaxLabDevices,
+				},
+				TenantQuota: &protobuf.TenantQuotaFeature{
+					HasCpuQuota: quota.HasCPU, CpuQuotaMillicores: quota.CPU, HasMemoryQuota: quota.HasMemory, MemoryQuotaBytes: quota.Memory,
+				},
+				Proxy: &protobuf.ProxyFeature{
+					AccessTokenMaxTtlSeconds: int64(f.ProxyAccessTokenMaxTTL.Seconds()), SessionMaxTtlSeconds: int64(f.ProxySessionMaxTTL.Seconds()), SessionIdleTtlSeconds: int64(f.ProxySessionIdleTTL.Seconds()),
+				},
+			}
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			h.featCache.mu.Lock()
+			if h.featCache.m == nil {
+				h.featCache.m = map[string]featuresEntry{}
+			}
+			h.featCache.m[name] = featuresEntry{at: time.Now(), feat: base}
+			h.featCache.mu.Unlock()
+		}
 	}
 	// The certificate belongs to the connection, so it is added to a copy.
 	out := proto.Clone(base).(*protobuf.FeaturesResponse)

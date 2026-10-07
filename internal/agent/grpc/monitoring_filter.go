@@ -4,7 +4,6 @@ import (
 	"sort"
 	"strings"
 
-	"google.golang.org/protobuf/proto"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
 
@@ -45,19 +44,47 @@ func (f *selectorFilter) matches(l map[string]string) bool {
 // snapshot filters a full state; the result is a new message the caller may stamp.
 func (f *selectorFilter) snapshot(st *monState) *protobuf.MonitoringUpdate {
 	return f.apply(st.update, func(key string) map[string]string { return st.labels[key] },
-		func(group, lab string) map[string]string { return st.labLabels[labLabelKey(group, lab)] })
+		func(group, lab string) map[string]string { return st.labLabels[labLabelKey(group, lab)] }, f.emptyTrafficGroups(st.update, st.labels, st.labLabels))
 }
 
 // entry filters one journal entry.
 func (f *selectorFilter) entry(e *journalEntry) *protobuf.MonitoringUpdate {
 	return f.apply(e.update, func(key string) map[string]string { return e.labels[key] },
-		func(group, lab string) map[string]string { return e.labLabels[labLabelKey(group, lab)] })
+		func(group, lab string) map[string]string { return e.labLabels[labLabelKey(group, lab)] }, f.emptyTrafficGroups(e.update, e.labels, e.labLabels))
+}
+
+func (f *selectorFilter) emptyTrafficGroups(u *protobuf.MonitoringUpdate, recordLabels, labLabels map[string]map[string]string) map[string]bool {
+	var visible, needsLabs map[string]bool
+	for _, r := range u.GetTraffic() {
+		if len(r.GetLedger()) != 0 {
+			continue
+		}
+		if visible == nil {
+			visible = map[string]bool{}
+			needsLabs = map[string]bool{}
+		}
+		group := r.GetLabGroupName()
+		if f.matches(recordLabels[recordKey("lab_group", group, "", group)]) {
+			visible[group] = true
+		} else {
+			needsLabs[group] = true
+		}
+	}
+	if len(needsLabs) > 0 {
+		for key, l := range labLabels {
+			group, _, _ := strings.Cut(key, "\x00")
+			if needsLabs[group] && f.matches(l) {
+				visible[group] = true
+			}
+		}
+	}
+	return visible
 }
 
 // apply keeps the records, deletions and traffic touches of matching objects.
 // Capacity is always kept. Records and reports are shared with the original,
 // never modified.
-func (f *selectorFilter) apply(u *protobuf.MonitoringUpdate, labelsOf func(key string) map[string]string, labOf func(group, lab string) map[string]string) *protobuf.MonitoringUpdate {
+func (f *selectorFilter) apply(u *protobuf.MonitoringUpdate, labelsOf func(key string) map[string]string, labOf func(group, lab string) map[string]string, emptyGroups map[string]bool) *protobuf.MonitoringUpdate {
 	out := &protobuf.MonitoringUpdate{Capacity: u.GetCapacity(), Features: u.GetFeatures()}
 	if f.sel == nil {
 		out.Groups, out.Labs, out.Clients, out.Policies = u.Groups, u.Labs, u.Clients, u.Policies
@@ -85,6 +112,12 @@ func (f *selectorFilter) apply(u *protobuf.MonitoringUpdate, labelsOf func(key s
 		}
 	}
 	for _, r := range u.Traffic {
+		if len(r.GetLedger()) == 0 {
+			if emptyGroups[r.GetLabGroupName()] {
+				out.Traffic = append(out.Traffic, r)
+			}
+			continue
+		}
 		if cut := f.cutTraffic(r, labOf); cut != nil {
 			out.Traffic = append(out.Traffic, cut)
 		}
@@ -113,11 +146,8 @@ func (f *selectorFilter) cutTraffic(r *protobuf.TrafficReport, labOf func(group,
 	if len(kept) == len(r.GetLedger()) {
 		return r
 	}
-	cut := proto.Clone(r).(*protobuf.TrafficReport)
-	cut.Ledger = nil
-	for _, t := range kept {
-		cut.Ledger = append(cut.Ledger, proto.Clone(t).(*protobuf.TrafficTouch))
-	}
+	cut := cloneTrafficMetadata(r)
+	cut.Ledger = kept
 	return cut
 }
 
