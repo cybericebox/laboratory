@@ -120,3 +120,50 @@ func TestManagerInvalidConfigDoesNotStopServingSocket(t *testing.T) {
 	}
 	_ = net.IPv4zero
 }
+
+func TestManagerConcurrentHotUpdateAndLeaseOperations(t *testing.T) {
+	m, servers := fakeManager(t)
+	cfg := handlerConfig()
+	cfg.Ranges = []Range{{2, 4}}
+	if err := m.Start("a", cfg); err != nil {
+		t.Fatal(err)
+	}
+	pool := m.servers["a"].pool
+	ip, err := pool.Allocate(macA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			next := cfg
+			next.DNS = "8.8.8.8"
+			if i%2 == 0 {
+				next.DNS = "1.1.1.1"
+			}
+			if err := m.Start("a", next); err != nil {
+				t.Error(err)
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			if _, err := pool.Commit(macA, ip); err != nil {
+				t.Error(err)
+			}
+			if !pool.Release(macA, ip) {
+				t.Error("release lost owner")
+			}
+			if _, err := pool.Commit(macA, ip); err != nil {
+				t.Error(err)
+			}
+		}
+	}()
+	wg.Wait()
+	if len(*servers) != 1 || !m.Healthy("a") {
+		t.Fatal("hot update replaced the server")
+	}
+}

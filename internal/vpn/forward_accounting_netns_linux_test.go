@@ -89,6 +89,25 @@ func TestNetnsForwardPlanGatesBothDirectionsAndPreservesCounts(t *testing.T) {
 	if tcp.Attempts != 2 || tcp.LabInitiatedAttempts != 1 || tcp.PacketsOut <= c.PacketsOut || tcp.PacketsIn <= c.PacketsIn {
 		t.Fatalf("TCP replies counted as lab initiatives or were missed: %+v", tcp)
 	}
+	// A process restart may preserve the network namespace. Bind private
+	// checkpoint identities before enabling the gate and keep its epoch/counts.
+	restarted, err := NewIPTablesManager("wg0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.SetupForwardPolicy(); err != nil {
+		t.Fatal(err)
+	}
+	restarted.RestoreCounterBindings(tcpSnapshot.Rows)
+	if _, err := restarted.ApplyForwardPlan(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := restarted.ReadPairCounters(context.Background())
+	if err != nil || len(resumed.Rows) != 1 || resumed.Rows[0] != tcp {
+		t.Fatalf("retained namespace lost native epoch: %+v %v", resumed, err)
+	}
+	m = restarted
+	t.Cleanup(m.Cleanup)
 	collector := flowacct.New(nil, func() flowacct.Topology { return flowacct.Topology{} }, "boot", time.Second)
 	m.BeforeRetire = collector.ObserveCounters
 	m.AfterRetire = collector.ForgetBindings

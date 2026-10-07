@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	"github.com/cybericebox/laboratory/internal/vpn"
 	"github.com/cybericebox/laboratory/internal/vpn/flowacct"
@@ -47,10 +48,14 @@ func Setup(ctx context.Context, mgr ctrl.Manager, wg *vpn.WGManager, ipt *vpn.IP
 	}
 
 	go RunStats(ctx, mgr.GetClient(), wg, cfg)
-	go func() {
+	if err := mgr.Add(manager.RunnableFunc(func(runCtx context.Context) error {
 		defer source.Close()
-		reporter.Run(ctx, flowacct.DefaultPollEvery, flowacct.DefaultReportEvery, func(err error) { ctrl.Log.WithName("flowacct").Error(err, "flow accounting") })
-	}()
+		reporter.Run(runCtx, flowacct.DefaultPollEvery, flowacct.DefaultReportEvery, func(err error) { ctrl.Log.WithName("flowacct").Error(err, "flow accounting") })
+		return nil
+	})); err != nil {
+		source.Close()
+		return fmt.Errorf("register VPN traffic reporter: %w", err)
+	}
 
 	return nil
 }

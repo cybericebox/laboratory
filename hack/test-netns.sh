@@ -29,13 +29,15 @@ fi
 
 export GOWORK=off CICE_NETNS_TESTS=1
 if ! command -v iptables >/dev/null || ! command -v ip >/dev/null || ! command -v ping >/dev/null; then
-  apt-get update -qq && apt-get install -y -qq iptables iproute2 iputils-ping >/dev/null
+  apt-get update -qq && apt-get install -y -qq iptables iproute2 iputils-ping conntrack >/dev/null
 fi
 out=$(mktemp -d)
 pkgs="vpn vpn/reconciler gateway accessroute cmds/cnigate"
 for pkg in $pkgs; do
   go test -c -o "$out/${pkg//\//_}.test" "./internal/$pkg"
 done
+go test -c -o "$out/dhcp.test" ./pkg/dhcp
+unshare -n "$out/dhcp.test" -test.run TestNetns -test.v -test.timeout 120s
 for pkg in $pkgs; do
   # The test binary is the pod: its own network namespace, so the host's rules are never touched.
   (cd "internal/$pkg" && unshare -n "$out/${pkg//\//_}.test" -test.run 'TestNetns' -test.v -test.timeout 120s)
