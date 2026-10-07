@@ -21,7 +21,7 @@ type LabTrafficReportSpec struct {
 }
 
 // LabTrafficTouch is one cumulative aggregate row: what one VPN config (or one
-// proxy token) did against one lab target since the collector booted. There is
+// proxy token) did against one lab target. Durable totals survive restarts. There is
 // no time series. Times are Unix milliseconds. Only lab-internal addresses are
 // ever recorded, never the address of a user.
 type LabTrafficTouch struct {
@@ -94,8 +94,8 @@ type LabTrafficCoverageSpan struct {
 
 // LabTrafficReportStatus is written only by the collector.
 type LabTrafficReportStatus struct {
-	// BootID changes whenever the collector restarts; the ledger is cumulative
-	// within one boot.
+	// BootID identifies the observation epoch. Restored cumulative ledger totals
+	// continue across boots; coverage intervals retain their own epoch identity.
 	BootID string `json:"bootID,omitempty"`
 	// CoveredFromMs..CoveredToMs is the span the collector actually observed.
 	// CoveredToMs advances as a heartbeat even when nothing happened.

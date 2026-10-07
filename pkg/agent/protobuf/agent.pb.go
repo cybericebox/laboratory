@@ -4181,7 +4181,7 @@ type TrafficReport struct {
 	Source       string                 `protobuf:"bytes,3,opt,name=source,proto3" json:"source,omitempty"`     // name of the LabTrafficReport object
 	Kind         string                 `protobuf:"bytes,4,opt,name=kind,proto3" json:"kind,omitempty"`         // "vpn" | "proxy"
 	Instance     string                 `protobuf:"bytes,5,opt,name=instance,proto3" json:"instance,omitempty"` // writing pod
-	// Changes on every collector restart; the ledger is cumulative within one boot.
+	// Identifies the observation epoch; restored cumulative totals continue across boots.
 	BootId string `protobuf:"bytes,6,opt,name=boot_id,json=bootId,proto3" json:"boot_id,omitempty"`
 	// The span the collector actually observed. Absence of a touch proves
 	// nothing outside this span.

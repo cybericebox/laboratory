@@ -624,7 +624,7 @@ message TrafficReport {
   string source = 3;   // name of the LabTrafficReport object
   string kind = 4;     // "vpn" | "proxy"
   string instance = 5; // writing pod
-  // Changes on every collector restart; the ledger is cumulative within one boot.
+  // Identifies the observation epoch; restored cumulative totals continue across boots.
   string boot_id = 6;
   // The span the collector actually observed. Absence of a touch proves
   // nothing outside this span.

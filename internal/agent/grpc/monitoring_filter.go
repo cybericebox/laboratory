@@ -56,9 +56,6 @@ func (f *selectorFilter) entry(e *journalEntry) *protobuf.MonitoringUpdate {
 func (f *selectorFilter) emptyTrafficGroups(u *protobuf.MonitoringUpdate, recordLabels, labLabels map[string]map[string]string) map[string]bool {
 	var visible, needsLabs map[string]bool
 	for _, r := range u.GetTraffic() {
-		if len(r.GetLedger()) != 0 {
-			continue
-		}
 		if visible == nil {
 			visible = map[string]bool{}
 			needsLabs = map[string]bool{}
@@ -120,6 +117,9 @@ func (f *selectorFilter) apply(u *protobuf.MonitoringUpdate, labelsOf func(key s
 		}
 		if cut := f.cutTraffic(r, labOf); cut != nil {
 			out.Traffic = append(out.Traffic, cut)
+		} else if emptyGroups[r.GetLabGroupName()] {
+			// Selected idle labs still retain their authorized observation header.
+			out.Traffic = append(out.Traffic, cloneTrafficMetadata(r))
 		}
 	}
 	for _, k := range u.DeletedKeys {

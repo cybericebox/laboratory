@@ -309,3 +309,42 @@ func TestProxyCoverageWatchUsesChartNamespace(t *testing.T) {
 		})
 	}
 }
+
+func TestSelectedIdleLabKeepsCoverageWhenOtherLabHasTraffic(t *testing.T) {
+	r := newMonRig(t, MonitoringConfig{})
+	r.group("g", "ns", map[string]string{names.LabelTenant: "owner"})
+	r.lab("ns", "idle", map[string]string{"instance": "idle", names.LabelTenant: "owner"})
+	r.lab("ns", "busy", map[string]string{"instance": "busy", names.LabelTenant: "owner"})
+	obj := &labv1.LabTrafficReport{ObjectMeta: metav1.ObjectMeta{Name: "vpn", Namespace: "ns"}, Spec: labv1.LabTrafficReportSpec{Kind: labv1.LabTrafficSurfaceVPN}, Status: labv1.LabTrafficReportStatus{BootID: "boot", CoveredFromMs: 1000, CoveredToMs: 2000, Ledger: []labv1.LabTrafficTouch{{Subject: "hidden-user", LabName: "busy", Attempts: 3}}}}
+	api := r.cs.LaboratoryV1alpha1().LabTrafficReports("ns")
+	if _, err := api.Create(context.Background(), obj, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	r.poll()
+	obj.Status.CoveredToMs = 3000
+	if _, err := api.UpdateStatus(context.Background(), obj, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	r.poll()
+	for _, tenant := range []string{"owner", "foreign"} {
+		f, err := newSelectorFilter("instance=idle", tenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for label, got := range map[string]*protobuf.MonitoringUpdate{"snapshot": f.snapshot(r.h.monitor().state), "replay": f.entry(r.h.monitor().journal[0])} {
+			if tenant == "foreign" {
+				if len(got.Traffic) != 0 {
+					t.Fatal("foreign coverage leak", label)
+				}
+				continue
+			}
+			if len(got.Traffic) != 1 || len(got.Traffic[0].Ledger) != 0 || got.Traffic[0].CoveredToUnixMs != 3000 {
+				t.Fatalf("%s idle coverage disappeared: %+v", label, got.Traffic)
+			}
+			wire, _ := proto.Marshal(got)
+			if bytes.Contains(wire, []byte("hidden-user")) {
+				t.Fatal("hidden lab row leaked", label)
+			}
+		}
+	}
+}

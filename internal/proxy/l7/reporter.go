@@ -124,7 +124,9 @@ func (w *ReportWriter) prepareLocked(ctx context.Context, namespace string) erro
 	for _, t := range old.Status.Ledger {
 		rows = append(rows, Touch{Subject: t.Subject, Lab: t.LabName, Attempts: t.Attempts, BytesIn: t.BytesIn, BytesOut: t.BytesOut, FirstSeenMs: t.FirstSeenMs, LastSeenMs: t.LastSeenMs, RespondedMs: t.FirstRespondedMs})
 	}
-	w.Meter.Restore(namespace, rows, old.Status.Truncated, old.Status.Partial)
+	if err := w.Meter.Restore(namespace, rows, old.Status.Truncated, old.Status.Partial); err != nil {
+		return err
+	}
 	history := append([]laboratoryv1alpha1.LabTrafficCoverageSpan(nil), old.Status.CoverageSpans...)
 	if len(history) == 0 && old.Status.CoveredFromMs > 0 && old.Status.CoveredToMs >= old.Status.CoveredFromMs {
 		instance := old.Spec.Instance

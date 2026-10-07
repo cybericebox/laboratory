@@ -1,6 +1,8 @@
 package demux
 
 import (
+	"bytes"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -102,9 +104,23 @@ func TestMalformedHeadersNeverUseSession(t *testing.T) {
 	if recv(r.backend, 100*time.Millisecond) != nil {
 		t.Fatal("reserved header forwarded")
 	}
-	packet = typed(4, 2, 0, 33)
+	packet = typed(4, 2, 0, 31)
 	r.toDemux(r.client, packet)
 	if recv(r.backend, 100*time.Millisecond) != nil {
 		t.Fatal("invalid transport length forwarded")
+	}
+}
+
+func TestMTUCappedPaddingTransportLengthsForward(t *testing.T) {
+	for _, size := range []int{33, 1452, 1453} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			r := newRig(t, DefaultLimits())
+			r.handshake(t, 1, 2)
+			packet := typed(4, 2, 0, size)
+			r.toDemux(r.client, packet)
+			if got := recv(r.backend, 100*time.Millisecond); !bytes.Equal(got, packet) {
+				t.Fatalf("valid MTU-capped transport %d bytes dropped", size)
+			}
+		})
 	}
 }

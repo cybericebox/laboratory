@@ -2,6 +2,7 @@ package l7
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -210,4 +211,60 @@ func TestFrameMeter64BitLengthAndUnknownExtension(t *testing.T) {
 		t.Fatal("unsupported extension accepted")
 	}
 	r.End()
+}
+
+func TestNegotiatedCompressedWebSocketPreservesFragmentedPayload(t *testing.T) {
+	// RFC7692 raw DEFLATE of "hello", sync-flush trailer omitted.
+	compressed := []byte{0xca, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00}
+	input := append([]byte{0x41, 0x83, 0, 0, 0, 0}, compressed[:3]...)
+	input = append(input, []byte{0x89, 0x81, 0, 0, 0, 0, '!'}...)
+	input = append(input, append([]byte{0x80, 0x84, 0, 0, 0, 0}, compressed[3:]...)...)
+	output := append([]byte{0xc1, 7}, compressed...)
+	output = append(output, 0x89, 1, '!')
+	received := make(chan []byte, 1)
+	h, srv, _, cookie := liveFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Sec-WebSocket-Extensions") != "permessage-deflate" {
+			return
+		}
+		c, rw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Extensions: permessage-deflate\r\n\r\n")
+		_ = rw.Flush()
+		got := make([]byte, len(input))
+		if _, err = io.ReadFull(rw, got); err != nil {
+			return
+		}
+		received <- got
+		_, _ = c.Write(output)
+		_, _ = io.Copy(io.Discard, rw)
+	}))
+	m := NewMeter("b", time.Now())
+	h.WithAccounting(m, func(string, string) (string, bool) { return "lab", true })
+	c, err := net.Dial("tcp", srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(3 * time.Second))
+	header := fmt.Sprintf("GET / HTTP/1.1\r\nHost: web-abc123.challenges.example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Extensions: permessage-deflate\r\nCookie: challenge=%s\r\n\r\n", cookie)
+	_, _ = c.Write(append([]byte(header), input...))
+	br := bufio.NewReader(c)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil || resp.StatusCode != 101 || resp.Header.Get("Sec-WebSocket-Extensions") != "permessage-deflate" {
+		t.Fatal(resp, err)
+	}
+	got := make([]byte, len(output))
+	if _, err = io.ReadFull(br, got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, output) || !bytes.Equal(<-received, input) {
+		t.Fatal("compressed forwarding changed")
+	}
+	rows, _, partial := m.Snapshot(GroupNamespace("g1"))
+	if len(rows) != 1 || rows[0].BytesIn != 7 || rows[0].BytesOut != 7 || partial {
+		t.Fatal(rows, partial)
+	}
 }

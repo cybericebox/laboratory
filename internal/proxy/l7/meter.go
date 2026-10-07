@@ -1,6 +1,7 @@
 package l7
 
 import (
+	"fmt"
 	"math"
 	"sort"
 	"sync"
@@ -204,13 +205,26 @@ func (m *Meter) Snapshot(namespace string) (rows []Touch, truncated, partial boo
 
 // Restore folds a successfully loaded durable baseline once. Traffic counted
 // before the API became available remains additive, never replaced by old rows.
-func (m *Meter) Restore(namespace string, rows []Touch, truncated, partial bool) {
+func (m *Meter) Restore(namespace string, rows []Touch, truncated, partial bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ns := m.namespaceLocked(namespace)
 	if ns.restored {
-		return
+		return nil
 	}
+	// Reserve the complete baseline before mutating any row or restored flag.
+	// A full global budget must never turn durable totals into an empty report.
+	needed := map[meterKey]struct{}{}
+	for _, touch := range rows {
+		key := meterKey{touch.Subject, touch.Lab}
+		if ns.rows[key] == nil {
+			needed[key] = struct{}{}
+		}
+	}
+	if len(needed) > MaxMeterKeys-m.keys {
+		return fmt.Errorf("traffic baseline needs %d rows with only %d meter slots available", len(needed), MaxMeterKeys-m.keys)
+	}
+
 	ns.restored = true
 	ns.truncated = ns.truncated || truncated
 	ns.partial = ns.partial || partial
@@ -228,6 +242,7 @@ func (m *Meter) Restore(namespace string, rows []Touch, truncated, partial bool)
 			row.lastMs = touch.LastSeenMs
 		}
 	}
+	return nil
 }
 func (m *Meter) removeLocked(namespace string, ns *namespaceMeter) {
 	if m.namespaces[namespace] != ns {

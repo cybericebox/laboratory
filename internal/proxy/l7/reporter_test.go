@@ -5,6 +5,7 @@ import (
 	"errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"strconv"
 	"testing"
 	"time"
 
@@ -137,5 +138,34 @@ func TestRestartCoverageHistoryIsBoundedAndMarkedIncomplete(t *testing.T) {
 	_ = store.Get(context.Background(), types.NamespacedName{Namespace: "ns", Name: ReportName("pod")}, &got)
 	if len(got.Status.CoverageSpans) != MaxReportRows || !got.Status.Partial || got.Status.CoverageSpans[MaxReportRows-1].BootID != "new" {
 		t.Fatal(got.Status)
+	}
+}
+
+func TestSaturatedRestorePreservesDurableBaselineAndRetries(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = laboratoryv1alpha1.AddToScheme(scheme)
+	old := &laboratoryv1alpha1.LabTrafficReport{ObjectMeta: metav1.ObjectMeta{Name: ReportName("pod"), Namespace: "target"}, Spec: laboratoryv1alpha1.LabTrafficReportSpec{Kind: laboratoryv1alpha1.LabTrafficSurfaceProxy}, Status: laboratoryv1alpha1.LabTrafficReportStatus{CoveredFromMs: 1000, CoveredToMs: 2000, Ledger: []laboratoryv1alpha1.LabTrafficTouch{{Subject: "p", LabName: "lab", Attempts: 8, BytesIn: 80, FirstSeenMs: 1000, LastSeenMs: 2000}}}}
+	store := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(old).WithObjects(old).Build()
+	m := NewMeter("new", time.UnixMilli(2500))
+	for i := 0; i < MaxMeterKeys; i++ {
+		m.Record("other", strconv.Itoa(i), "lab", time.UnixMilli(2000), false, 0, 0)
+	}
+	w := &ReportWriter{Reader: store, Writer: store, Meter: m, Instance: "pod"}
+	err := w.Publish(context.Background(), "target", time.UnixMilli(3000))
+	var got laboratoryv1alpha1.LabTrafficReport
+	_ = store.Get(context.Background(), types.NamespacedName{Namespace: "target", Name: ReportName("pod")}, &got)
+	if err == nil || len(got.Status.Ledger) != 1 || got.Status.Ledger[0].Attempts != 8 || got.Status.Ledger[0].BytesIn != 80 || got.Status.CoveredToMs != 2000 {
+		t.Fatal("saturated restore destroyed baseline", err, got.Status)
+	}
+	m.RetireNamespaces(map[string]bool{"target": true})
+	m.Record("target", "p", "lab", time.UnixMilli(3000), true, 1, 0)
+	for i := 0; i < 2; i++ {
+		if err := w.Publish(context.Background(), "target", time.UnixMilli(3500)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = store.Get(context.Background(), types.NamespacedName{Namespace: "target", Name: ReportName("pod")}, &got)
+	if len(got.Status.Ledger) != 1 || got.Status.Ledger[0].Attempts != 9 || got.Status.Ledger[0].BytesIn != 81 {
+		t.Fatal("retry lost or doubled progress", got.Status)
 	}
 }

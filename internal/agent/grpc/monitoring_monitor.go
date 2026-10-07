@@ -311,12 +311,11 @@ func (m *monitor) poll(ctx context.Context) error {
 	for _, r := range delta.Traffic {
 		gkey := recordKey("lab_group", r.GetLabGroupName(), "", r.GetLabGroupName())
 		entry.labels[gkey] = next.labels[gkey]
-		if len(r.GetLedger()) == 0 {
-			prefix := r.GetLabGroupName() + "\x00"
-			for key, l := range next.labLabels {
-				if strings.HasPrefix(key, prefix) {
-					entry.labLabels[key] = l
-				}
+		// Preserve labels of idle selected labs even when another lab has rows.
+		prefix := r.GetLabGroupName() + "\x00"
+		for key, l := range next.labLabels {
+			if strings.HasPrefix(key, prefix) {
+				entry.labLabels[key] = l
 			}
 		}
 		for _, t := range r.GetLedger() {

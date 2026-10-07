@@ -142,7 +142,7 @@ func (d *Demux) handle(pkt []byte, src *net.UDPAddr) {
 			d.handleType3(pkt, src)
 		}
 	case 4:
-		if len(pkt) >= sizeTransport && len(pkt)%16 == 0 {
+		if len(pkt) >= sizeTransport {
 			d.handleType4Userspace(pkt, src)
 		}
 	}
