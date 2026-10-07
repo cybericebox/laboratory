@@ -18,11 +18,6 @@ permissions:
 
 jobs:
   image:
-    # Cache imports must finish before a release retires their manifests.
-    concurrency:
-      group: docker-hub-cache-maintenance
-      cancel-in-progress: false
-      queue: max
     name: Image ${{ matrix.name }}
     runs-on: ubuntu-latest
     strategy:
