@@ -59,13 +59,7 @@ func Run() {
 			Metrics:                metricsserver.Options{BindAddress: "0"},
 			HealthProbeBindAddress: cfg.HealthAddr,
 			// Secrets are read for the tenants' access keys only: watch that namespace, nothing else.
-			Cache: cache.Options{ReaderFailOnMissingInformer: true, ByObject: map[client.Object]cache.ByObject{
-				&corev1.Secret{}:                           {Namespaces: map[string]cache.Config{names.AccessKeysNamespace: {}}, Transform: l7.CompactCacheObject},
-				&corev1.Service{}:                          {Transform: l7.CompactCacheObject},
-				&laboratoryv1alpha1.LabGroup{}:             {Transform: l7.CompactCacheObject},
-				&laboratoryv1alpha1.LabGroupClient{}:       {Transform: l7.CompactCacheObject},
-				&laboratoryv1alpha1.LabGroupAccessPolicy{}: {Transform: l7.CompactCacheObject},
-			}},
+			Cache: proxyCacheOptions(),
 		},
 	)
 	if err != nil {
@@ -87,28 +81,14 @@ func Run() {
 		WithLiveCaps(l7.LiveCaps{PerClient: cfg.LivePerClient, PerGroup: cfg.LivePerGroup, Total: cfg.LiveTotal}).WithAuthRateLimit(cfg.AuthRate, cfg.AuthBurst)
 	// Register all required informers before the manager starts: readiness must
 	// wait for each cache used by authorization, rather than an empty cache set.
-	for _, object := range []client.Object{&corev1.Secret{}, &corev1.Service{}, &laboratoryv1alpha1.LabGroup{}, &laboratoryv1alpha1.LabGroupClient{}, &laboratoryv1alpha1.LabGroupAccessPolicy{}} {
-		if _, err := mgr.GetCache().GetInformer(context.Background(), object, cache.BlockUntilSynced(false)); err != nil {
-			log.Error(err, "register proxy cache")
-			os.Exit(1)
-		}
+	if err := warmProxyCache(context.Background(), mgr.GetCache()); err != nil {
+		log.Error(err, "register proxy cache")
+		os.Exit(1)
 	}
 
 	reports := &l7.ReportWriter{
 		Reader: mgr.GetAPIReader(), Writer: mgr.GetClient(), Meter: meter, Instance: instance,
-		Namespaces: func(ctx context.Context) []string {
-			var groups laboratoryv1alpha1.LabGroupList
-			if err := mgr.GetClient().List(ctx, &groups); err != nil {
-				return nil
-			}
-			out := make([]string, 0, len(groups.Items))
-			for i := range groups.Items {
-				if ns := groups.Items[i].Status.Namespace; ns != "" {
-					out = append(out, ns)
-				}
-			}
-			return out
-		},
+		Namespaces: func(ctx context.Context) []string { return groupNamespaces(ctx, mgr.GetClient()) },
 	}
 
 	// Ready means the proxy really serves: the HTTPS listener is bound and the caches (groups, clients, policies, access keys) have synced.
@@ -172,4 +152,34 @@ func Run() {
 		log.Error(err, "manager error")
 		os.Exit(1)
 	}
+}
+
+func proxyCacheOptions() cache.Options {
+	return cache.Options{ReaderFailOnMissingInformer: true, ByObject: map[client.Object]cache.ByObject{
+		&corev1.Secret{}:                           {Namespaces: map[string]cache.Config{names.AccessKeysNamespace: {}}, Transform: l7.CompactCacheObject},
+		&corev1.Service{}:                          {Transform: l7.CompactCacheObject},
+		&laboratoryv1alpha1.LabGroup{}:             {Transform: l7.CompactCacheObject},
+		&laboratoryv1alpha1.LabGroupClient{}:       {Transform: l7.CompactCacheObject},
+		&laboratoryv1alpha1.LabGroupAccessPolicy{}: {Transform: l7.CompactCacheObject},
+	}}
+}
+func warmProxyCache(ctx context.Context, c cache.Cache) error {
+	for _, object := range []client.Object{&corev1.Secret{}, &corev1.Service{}, &laboratoryv1alpha1.LabGroup{}, &laboratoryv1alpha1.LabGroupClient{}, &laboratoryv1alpha1.LabGroupAccessPolicy{}} {
+		if _, err := c.GetInformer(ctx, object, cache.BlockUntilSynced(false)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func groupNamespaces(ctx context.Context, reader client.Reader) []string {
+	var groups laboratoryv1alpha1.LabGroupList
+	if err := reader.List(ctx, &groups); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(groups.Items))
+	for i := range groups.Items {
+		out = append(out, laboratoryv1alpha1.LabGroupNamespaceOf(&groups.Items[i]))
+	}
+	return out
 }
