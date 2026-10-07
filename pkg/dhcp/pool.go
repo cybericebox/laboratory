@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 )
 
 // Range is an inclusive host-offset interval in a lab /24.
@@ -31,56 +32,167 @@ func ValidateRanges(ranges []Range) error {
 	return nil
 }
 
-// ipPool allocates IPv4 addresses only from configured ranges. Gateway is
-// always skipped. Allocation is sticky per MAC (in-memory only).
+const (
+	leaseDuration   = 24 * time.Hour
+	offerDuration   = 30 * time.Second
+	declineDuration = 10 * time.Minute
+)
+
+type lease struct {
+	ip        net.IP
+	expires   time.Time
+	committed bool
+}
+
+// ipPool holds bounded reservations; offers and leases have different TTLs.
 type ipPool struct {
-	mu     sync.Mutex
-	subnet *net.IPNet
-	gw     net.IP
-	ranges []Range
-	byMAC  map[string]net.IP
-	used   map[string]bool
+	mu         sync.Mutex
+	subnet     *net.IPNet
+	gw         net.IP
+	ranges     []Range
+	byMAC      map[string]lease
+	quarantine map[string]time.Time
+	now        func() time.Time
 }
 
 func newIPPool(subnet *net.IPNet, gw net.IP, ranges []Range) *ipPool {
-	return &ipPool{
-		subnet: subnet,
-		gw:     gw.To4(),
-		ranges: append([]Range(nil), ranges...),
-		byMAC:  make(map[string]net.IP),
-		used:   make(map[string]bool),
+	return &ipPool{subnet: &net.IPNet{IP: append(net.IP(nil), subnet.IP.Mask(subnet.Mask)...), Mask: append(net.IPMask(nil), subnet.Mask...)}, gw: append(net.IP(nil), gw.To4()...), ranges: append([]Range(nil), ranges...), byMAC: map[string]lease{}, quarantine: map[string]time.Time{}, now: time.Now}
+}
+func validMAC(mac net.HardwareAddr) bool {
+	if len(mac) == 0 || len(mac) > 16 {
+		return false
+	}
+	for _, b := range mac {
+		if b != 0 {
+			return true
+		}
+	}
+	return false
+}
+func (p *ipPool) purge() {
+	now := p.now()
+	for owner, r := range p.byMAC {
+		if !now.Before(r.expires) {
+			delete(p.byMAC, owner)
+		}
+	}
+	for ip, until := range p.quarantine {
+		if !now.Before(until) {
+			delete(p.quarantine, ip)
+		}
 	}
 }
-
-func (p *ipPool) Allocate(mac net.HardwareAddr) (net.IP, error) {
-	if mac == nil {
-		return nil, fmt.Errorf("nil MAC")
+func (p *ipPool) inRange(ip net.IP) bool {
+	ip = ip.To4()
+	if ip == nil || !p.subnet.Contains(ip) || ip.Equal(p.gw) {
+		return false
 	}
-	key := mac.String()
-
+	host := int32(ip[3]) - int32(p.subnet.IP.To4()[3])
+	for _, r := range p.ranges {
+		if host >= r.Start && host <= r.End {
+			return true
+		}
+	}
+	return false
+}
+func (p *ipPool) free(ip net.IP, owner string) bool {
+	if _, ok := p.quarantine[ip.String()]; ok {
+		return false
+	}
+	for key, r := range p.byMAC {
+		if key != owner && r.ip.Equal(ip) {
+			return false
+		}
+	}
+	return true
+}
+func (p *ipPool) Offer(mac net.HardwareAddr) (net.IP, error) {
+	if !validMAC(mac) {
+		return nil, fmt.Errorf("invalid MAC")
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	if ip, ok := p.byMAC[key]; ok {
-		return ip, nil
-	}
-
-	base := p.subnet.IP.To4()
-	if base == nil {
-		return nil, fmt.Errorf("DHCP subnet is not IPv4: %s", p.subnet)
+	p.purge()
+	key := mac.String()
+	if r, ok := p.byMAC[key]; ok {
+		return append(net.IP(nil), r.ip...), nil
 	}
 	for _, r := range p.ranges {
 		for host := r.Start; host <= r.End; host++ {
-			cand := makeIP(base, uint32(host))
-			if cand.Equal(p.gw) || p.used[cand.String()] {
+			ip := makeIP(p.subnet.IP, uint32(host))
+			if !p.inRange(ip) || !p.free(ip, key) {
 				continue
 			}
-			p.used[cand.String()] = true
-			p.byMAC[key] = cand
-			return cand, nil
+			p.byMAC[key] = lease{ip: ip, expires: p.now().Add(offerDuration)}
+			return append(net.IP(nil), ip...), nil
 		}
 	}
 	return nil, fmt.Errorf("pool exhausted for subnet %s", p.subnet)
+}
+func (p *ipPool) Commit(mac net.HardwareAddr, ip net.IP) (net.IP, error) {
+	if !validMAC(mac) {
+		return nil, fmt.Errorf("invalid MAC")
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.purge()
+	key := mac.String()
+	if !p.inRange(ip) || !p.free(ip, key) {
+		return nil, fmt.Errorf("requested address unavailable")
+	}
+	if old, ok := p.byMAC[key]; ok && !old.ip.Equal(ip) {
+		return nil, fmt.Errorf("requested address differs from reservation")
+	}
+	ip = append(net.IP(nil), ip.To4()...)
+	p.byMAC[key] = lease{ip: ip, expires: p.now().Add(leaseDuration), committed: true}
+	return append(net.IP(nil), ip...), nil
+}
+func (p *ipPool) Allocate(mac net.HardwareAddr) (net.IP, error) {
+	ip, err := p.Offer(mac)
+	if err != nil {
+		return nil, err
+	}
+	return p.Commit(mac, ip)
+}
+func (p *ipPool) Release(mac net.HardwareAddr, ip net.IP) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.purge()
+	key := mac.String()
+	r, ok := p.byMAC[key]
+	if !ok || !r.ip.Equal(ip) {
+		return false
+	}
+	delete(p.byMAC, key)
+	return true
+}
+func (p *ipPool) Decline(mac net.HardwareAddr, ip net.IP) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.purge()
+	key := mac.String()
+	r, ok := p.byMAC[key]
+	if !ok || !r.ip.Equal(ip) {
+		return false
+	}
+	delete(p.byMAC, key)
+	p.quarantine[ip.String()] = p.now().Add(declineDuration)
+	return true
+}
+func (p *ipPool) UpdateRanges(ranges []Range) error {
+	if err := ValidateRanges(ranges); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.purge()
+	p.ranges = append([]Range(nil), ranges...)
+	for key, r := range p.byMAC {
+		if !r.committed && !p.inRange(r.ip) {
+			delete(p.byMAC, key)
+		}
+	}
+	return nil
 }
 
 func makeIP(base net.IP, offset uint32) net.IP {
