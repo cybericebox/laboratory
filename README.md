@@ -360,7 +360,9 @@ revision and accept a distinct newer retirement operation. Metadata CAS fences
 retirement without changing the original spec generation. Original native
 runtime identities are freshly observed and node reports echo the exact new
 retirement operation/revision; cross-node wall clocks cannot substitute for that
-challenge. Manifest deletion is confirmed separately from physical registry GC.
+challenge. Retirement wire request/observation timestamps are stamped and
+preserved by the operator; agent acceptance and node clocks are never ordered
+against them. Manifest deletion is confirmed separately from physical registry GC.
 Partial cleanup remains pending. Legacy name-only Delete and CR absence never
 mint this retirement certificate.
 

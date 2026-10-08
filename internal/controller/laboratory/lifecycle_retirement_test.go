@@ -40,6 +40,7 @@ func TestRetirementTombstoneRequiresExactReceipt(t *testing.T) {
 	raw, _ := json.Marshal(in)
 	l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{UID: "lab", Generation: 8, Annotations: map[string]string{names.AnnotationLifecycleRetirement: string(raw)}}}
 	status := retirementObservation(in, 8)
+	status.RequestedAt = &in.RequestedAt
 	status.ObservedAt = &metav1.Time{Time: time.Unix(101, 0)}
 	status.RuntimeAbsent = true
 	status.StorageState = "Deleted"
@@ -88,5 +89,18 @@ func TestRetirementCleanupPreservesSameNameReplacement(t *testing.T) {
 	var kept corev1.Secret
 	if err := c.Get(context.Background(), client.ObjectKeyFromObject(replacement), &kept); err != nil {
 		t.Fatal("replacement deleted", err)
+	}
+}
+
+func TestRetirementOperatorReceiptClockIndependentFromAgent(t *testing.T) {
+	future := metav1.NewTime(time.Now().Add(24 * time.Hour))
+	in := lab.LifecycleRetirementIntent{ExpectedUID: "lab", StopOperationID: "stop", StopRevision: 2, OperationID: "retire", Revision: 3, Generation: 7, RequestedAt: future}
+	first := retirementObservation(in, 7)
+	if first.RequestedAt.Equal(&future) {
+		t.Fatal("agent clock copied into operator request receipt")
+	}
+	second := retirementObservation(in, 8, first)
+	if !second.RequestedAt.Equal(first.RequestedAt) {
+		t.Fatal("operator receipt clock not durable across scrub")
 	}
 }

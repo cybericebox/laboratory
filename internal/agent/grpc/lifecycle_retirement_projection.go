@@ -12,10 +12,11 @@ func retirementToProto(object metav1.Object, status *lab.LifecycleRetirementStat
 	if !valid || in.ExpectedUID != string(object.GetUID()) {
 		return nil
 	}
-	out := &protobuf.RetirementStatus{ExpectedUid: in.ExpectedUID, StopOperationId: in.StopOperationID, StopRevision: in.StopRevision, OperationId: in.OperationID, Revision: in.Revision, State: "Unknown", StorageState: "Unknown", RequestedUnixMs: in.RequestedAt.UnixMilli()}
+	out := &protobuf.RetirementStatus{ExpectedUid: in.ExpectedUID, StopOperationId: in.StopOperationID, StopRevision: in.StopRevision, OperationId: in.OperationID, Revision: in.Revision, State: "Unknown", StorageState: "Unknown"}
 	if status == nil || status.ExpectedUID != in.ExpectedUID || status.StopOperationID != in.StopOperationID || status.StopRevision != in.StopRevision || status.OperationID != in.OperationID || status.Revision != in.Revision || status.ObservedGeneration != object.GetGeneration() {
 		return out
 	}
+	out.RequestedUnixMs = ms(status.RequestedAt)
 	out.ObservedGeneration = status.ObservedGeneration
 	out.State = status.State
 	out.ObservedUnixMs = ms(status.ObservedAt)

@@ -26,12 +26,12 @@ func GroupRetirementReady(g *lab.LabGroup) bool {
 	return i != nil && i.IsStopped() && g.Spec.Admission == nil && o != nil && a != nil && o.LabUID == string(g.UID) && o.OperationID == i.OperationID && o.Revision == i.Revision && o.ObservedGeneration == g.Generation && o.ObservedState == "Stopped" && o.Error == "" && nonzeroTime(o.StoppedAt) && a.OperationID == i.OperationID && a.Revision == i.Revision && a.RuntimeState == "Released" && nonzeroTime(a.ObservedAt) && nonzeroTime(a.ReleasedAt) && a.AllocatedRequests == (lab.ResourceAmounts{})
 }
 func retirementMatches(in lab.LifecycleRetirementIntent, status *lab.LifecycleRetirementStatus, generation int64) bool {
-	return status != nil && status.ExpectedUID == in.ExpectedUID && status.StopOperationID == in.StopOperationID && status.StopRevision == in.StopRevision && status.OperationID == in.OperationID && status.Revision == in.Revision && status.ObservedGeneration == generation && nonzeroTime(status.RequestedAt) && status.RequestedAt.Equal(&in.RequestedAt)
+	return status != nil && status.ExpectedUID == in.ExpectedUID && status.StopOperationID == in.StopOperationID && status.StopRevision == in.StopRevision && status.OperationID == in.OperationID && status.Revision == in.Revision && status.ObservedGeneration == generation && nonzeroTime(status.RequestedAt)
 }
 func LifecycleRetired(l *lab.Lab) bool {
 	in, valid := lab.ParseLifecycleRetirement(l.Annotations[names.AnnotationLifecycleRetirement])
 	o := l.Status.Retirement
-	return valid && in.ExpectedUID == string(l.UID) && retirementMatches(in, o, l.Generation) && o.State == "Deleted" && o.RuntimeAbsent && o.CleanupComplete && o.StorageState == "Deleted" && o.Error == "" && nonzeroTime(o.ObservedAt) && o.ObservedAt.After(in.RequestedAt.Time)
+	return valid && in.ExpectedUID == string(l.UID) && retirementMatches(in, o, l.Generation) && o.State == "Deleted" && o.RuntimeAbsent && o.CleanupComplete && o.StorageState == "Deleted" && o.Error == "" && nonzeroTime(o.ObservedAt) && o.ObservedAt.After(o.RequestedAt.Time)
 }
 func freshRetirementRows(rows []lab.OwnedRuntimeIdentity, reports []lab.OwnedRuntimeReport, in lab.LifecycleRetirementIntent) bool {
 	if !runtimeRowsReleased(rows, reports, in.ExpectedUID, in.StopOperationID, in.StopRevision) {
@@ -51,9 +51,15 @@ func freshRetirementRows(rows []lab.OwnedRuntimeIdentity, reports []lab.OwnedRun
 	}
 	return true
 }
-func retirementObservation(in lab.LifecycleRetirementIntent, generation int64) *lab.LifecycleRetirementStatus {
+func retirementObservation(in lab.LifecycleRetirementIntent, generation int64, previous ...*lab.LifecycleRetirementStatus) *lab.LifecycleRetirementStatus {
 	now := metav1.Now()
-	return &lab.LifecycleRetirementStatus{ExpectedUID: in.ExpectedUID, StopOperationID: in.StopOperationID, StopRevision: in.StopRevision, OperationID: in.OperationID, Revision: in.Revision, ObservedGeneration: generation, State: "CleanupPending", StorageState: "CleanupPending", RequestedAt: &in.RequestedAt, ObservedAt: &now}
+	// The agent acceptance timestamp is never ordered against the independent
+	// operator/node clocks. Persist the operator's own first receipt time.
+	requested := now.DeepCopy()
+	if len(previous) > 0 && previous[0] != nil && retirementMatches(in, previous[0], previous[0].ObservedGeneration) {
+		requested = previous[0].RequestedAt.DeepCopy()
+	}
+	return &lab.LifecycleRetirementStatus{ExpectedUID: in.ExpectedUID, StopOperationID: in.StopOperationID, StopRevision: in.StopRevision, OperationID: in.OperationID, Revision: in.Revision, ObservedGeneration: generation, State: "CleanupPending", StorageState: "CleanupPending", RequestedAt: requested, ObservedAt: &now}
 }
 func (s *RetentionSweeper) SweepLifecycleRetirements(ctx context.Context) error {
 	reader := s.Reader
@@ -98,7 +104,7 @@ func (s *RetentionSweeper) retireLifecycleLab(ctx context.Context, reader client
 	if LifecycleRetired(l) {
 		return nil
 	}
-	next := retirementObservation(in, l.Generation)
+	next := retirementObservation(in, l.Generation, l.Status.Retirement)
 	pendingCertified := l.Status.Retirement != nil && retirementMatches(in, l.Status.Retirement, l.Status.Retirement.ObservedGeneration) && l.Status.Retirement.ObservedGeneration >= in.Generation && l.Status.Retirement.ObservedGeneration <= l.Generation && l.Status.Retirement.RuntimeAbsent && l.Status.Retirement.StorageState == "Deleted" && l.Status.Retirement.Error == ""
 	var devices lab.DeviceList
 	if err := reader.List(ctx, &devices, client.InNamespace(l.Namespace)); err != nil {
@@ -193,12 +199,12 @@ func (s *RetentionSweeper) retireLifecycleLab(ctx context.Context, reader client
 	// Scrubbing a spec changes generation but cannot start runtime: stopped intent
 	// and permanent admission fence remain. Reissue stop at the scrubbed generation
 	// from the durable NEW native challenge receipt, preserving original op/rev.
-	next = retirementObservation(in, l.Generation)
+	next = retirementObservation(in, l.Generation, l.Status.Retirement)
 	next.RuntimeAbsent = true
 	next.StorageState = "Deleted"
 	next.State = "Deleted"
 	next.CleanupComplete = true
-	if !next.ObservedAt.After(in.RequestedAt.Time) {
+	if !next.ObservedAt.After(next.RequestedAt.Time) {
 		return nil
 	}
 	base := l.DeepCopy()
@@ -284,7 +290,7 @@ func (s *RetentionSweeper) retireLifecycleGroup(ctx context.Context, reader clie
 	if retirementMatches(in, g.Status.Retirement, g.Generation) && g.Status.Retirement.State == "Deleted" && g.Status.Retirement.CleanupComplete {
 		return nil
 	}
-	next := retirementObservation(in, g.Generation)
+	next := retirementObservation(in, g.Generation, g.Status.Retirement)
 	pendingCertified := g.Status.Retirement != nil && retirementMatches(in, g.Status.Retirement, g.Status.Retirement.ObservedGeneration) && g.Status.Retirement.ObservedGeneration >= in.Generation && g.Status.Retirement.ObservedGeneration <= g.Generation && g.Status.Retirement.RuntimeAbsent && g.Status.Retirement.StorageState == "Deleted" && g.Status.Retirement.Error == ""
 	var children lab.LabList
 	if err := reader.List(ctx, &children, client.InNamespace(lab.LabGroupNamespaceOf(g))); err != nil {
@@ -343,12 +349,12 @@ func (s *RetentionSweeper) retireLifecycleGroup(ctx context.Context, reader clie
 	if err := reader.Get(ctx, client.ObjectKeyFromObject(g), g); err != nil {
 		return err
 	}
-	next = retirementObservation(in, g.Generation)
+	next = retirementObservation(in, g.Generation, g.Status.Retirement)
 	next.RuntimeAbsent = true
 	next.StorageState = "Deleted"
 	next.State = "Deleted"
 	next.CleanupComplete = true
-	if !next.ObservedAt.After(in.RequestedAt.Time) {
+	if !next.ObservedAt.After(next.RequestedAt.Time) {
 		return nil
 	}
 	base := g.DeepCopy()
