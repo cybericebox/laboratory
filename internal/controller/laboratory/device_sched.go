@@ -44,8 +44,27 @@ func (r *DeviceReconciler) mayCreateWorkload(ctx context.Context, device *labora
 	if !r.Scheduled {
 		return true, nil
 	}
-	if err := r.initScheduling(ctx, device, false); err != nil {
+	// A cached Started record from before stop is not admission for this Start.
+	// Read the scheduling owner directly before resuming a retained workload.
+	var current laboratoryv1alpha1.Device
+	if err := r.reader().Get(ctx, client.ObjectKeyFromObject(device), &current); err != nil {
 		return false, err
 	}
-	return !r.queuedByScheduler(device), nil
+	if current.UID != device.UID {
+		return false, nil
+	}
+	if err := r.initScheduling(ctx, &current, false); err != nil {
+		return false, err
+	}
+	device.Status.Scheduling = current.Status.Scheduling.DeepCopy()
+	var parent laboratoryv1alpha1.Lab
+	if device.Spec.LabRef != "" {
+		if err := r.reader().Get(ctx, client.ObjectKey{Name: device.Spec.LabRef, Namespace: device.Namespace}, &parent); err != nil {
+			return false, err
+		}
+	}
+	if parent.Spec.Lifecycle != nil && parent.Spec.Lifecycle.DesiredState == "Running" {
+		return labStartPrepared(&parent) && current.Status.Scheduling.DispatchedAt != nil && !r.queuedByScheduler(&current), nil
+	}
+	return !r.queuedByScheduler(&current), nil
 }

@@ -114,7 +114,7 @@ func (r *DeviceReconciler) deviceStopped(ctx context.Context, d *lab.Device) (bo
 			return true, nil
 		}
 	}
-	return l.Spec.Lifecycle.IsStopped() || l.Spec.Lifecycle != nil && l.Spec.Lifecycle.Terminal, nil
+	return l.Spec.Lifecycle.IsStopped() || l.Spec.Lifecycle != nil && l.Spec.Lifecycle.Terminal || !labStartPrepared(&l), nil
 }
 
 // Lifecycle is checked before every ordinary materialization path. This owner
@@ -395,7 +395,7 @@ func (r *LabReconciler) patchLifecycle(ctx context.Context, l *lab.Lab, next *la
 }
 func (r *LabReconciler) reconcileLifecycleStart(ctx context.Context, l *lab.Lab) (bool, ctrl.Result, error) {
 	old := l.Status.Lifecycle
-	if old == nil || old.OperationID == l.Spec.Lifecycle.OperationID && old.Revision == l.Spec.Lifecycle.Revision {
+	if old != nil && old.OperationID == l.Spec.Lifecycle.OperationID && old.Revision == l.Spec.Lifecycle.Revision && old.LabUID == string(l.UID) {
 		return false, ctrl.Result{}, nil
 	}
 	if l.Spec.Lifecycle.Terminal {
@@ -455,4 +455,16 @@ func (r *LabReconciler) cancelLifecycleCaptures(ctx context.Context, l *lab.Lab)
 		}
 	}
 	return nil
+}
+
+// Explicit Start publishes its current operation only after every owned device
+// is queued. A Lab watch may reach Device or Scheduler before that preparation.
+// Legacy labs without lifecycle retain their original Running behavior.
+func labStartPrepared(l *lab.Lab) bool {
+	intent := l.Spec.Lifecycle
+	if intent == nil || intent.DesiredState != "Running" {
+		return true
+	}
+	observed := l.Status.Lifecycle
+	return observed != nil && observed.LabUID == string(l.UID) && observed.OperationID == intent.OperationID && observed.Revision == intent.Revision && (observed.ObservedState == "Starting" || observed.ObservedState == "Running")
 }

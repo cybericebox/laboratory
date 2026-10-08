@@ -648,7 +648,7 @@ func (s *Scheduler) tick(ctx context.Context) error {
 		case kindDevicePod:
 			d := p.ref.(*laboratoryv1alpha1.Device)
 			var currentLab laboratoryv1alpha1.Lab
-			if getErr := s.directReader().Get(ctx, client.ObjectKey{Namespace: d.Namespace, Name: d.Spec.LabRef}, &currentLab); getErr != nil || currentLab.Spec.Lifecycle.IsStopped() {
+			if getErr := s.directReader().Get(ctx, client.ObjectKey{Namespace: d.Namespace, Name: d.Spec.LabRef}, &currentLab); getErr != nil || currentLab.Spec.Lifecycle.IsStopped() || !labStartPrepared(&currentLab) {
 				continue
 			}
 			q := d.Status.Scheduling.DeepCopy()

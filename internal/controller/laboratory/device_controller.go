@@ -228,6 +228,19 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	// Stop retains a zero-replica Deployment. Its existence cannot bypass the
+	// new Start queue: only a dispatched current scheduling record may resume it.
+	if !suspended && dep.Spec.Replicas != nil && *dep.Spec.Replicas == 0 && device.Spec.LabRef != "" {
+		var parent laboratoryv1alpha1.Lab
+		if err := r.reader().Get(ctx, client.ObjectKey{Name: device.Spec.LabRef, Namespace: device.Namespace}, &parent); err != nil {
+			return ctrl.Result{}, err
+		}
+		if parent.Spec.Lifecycle != nil && parent.Spec.Lifecycle.DesiredState == "Running" {
+			if ok, gateErr := r.mayCreateWorkload(ctx, device); gateErr != nil || !ok {
+				return ctrl.Result{RequeueAfter: 2 * time.Second}, gateErr
+			}
+		}
+	}
 	// A workload that already runs needs no dispatch.
 	if err := r.initScheduling(ctx, device, true); err != nil {
 		return ctrl.Result{}, err

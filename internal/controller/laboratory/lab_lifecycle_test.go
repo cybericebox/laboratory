@@ -8,6 +8,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/names"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -646,5 +647,199 @@ func TestLifecycleConsumesOnlyExactNativeReleasedObservation(t *testing.T) {
 	}
 	if exactStoppedRelease(l) {
 		t.Fatal("old native release accepted for current stop")
+	}
+}
+
+func TestLifecycleRetainedDeploymentStartWaitsForPreparationAndDispatch(t *testing.T) {
+	for _, deviceFirst := range []bool{false, true} {
+		t.Run(map[bool]string{false: "Lab prepares queue first", true: "Device wins Lab watch"}[deviceFirst], func(t *testing.T) {
+			r, l, d, c := lifecycleFixture(t, "Skip")
+			_ = policyv1.AddToScheme(r.Scheme)
+			ctx := context.Background()
+			now := metav1.Now()
+			d.Status.Scheduling = &lab.PodSchedule{State: lab.PodStarted, StartedAt: &now, DispatchedAt: &now}
+			if err := c.Status().Update(ctx, d); err != nil {
+				t.Fatal(err)
+			}
+			dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: workloadName(d), Namespace: d.Namespace, OwnerReferences: []metav1.OwnerReference{{Kind: "Device", Name: d.Name, UID: d.UID}}}, Spec: appsv1.DeploymentSpec{Replicas: ptrInt32(1)}}
+			sibling := dep.DeepCopy()
+			sibling.Name = "sibling"
+			sibling.OwnerReferences = nil
+			for _, obj := range []client.Object{dep, sibling} {
+				if err := c.Create(ctx, obj); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, _, err := r.reconcileLifecycle(ctx, l); err != nil {
+				t.Fatal(err)
+			}
+			assertReplicas := func(obj *appsv1.Deployment, want int32) {
+				t.Helper()
+				if err := c.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
+					t.Fatal(err)
+				}
+				if obj.Spec.Replicas == nil || *obj.Spec.Replicas != want {
+					t.Fatal("replicas bypassed start admission", obj.Name, obj.Spec.Replicas, want)
+				}
+			}
+			assertReplicas(dep, 0)
+			assertReplicas(sibling, 1)
+			l.Spec.Lifecycle = &lab.LabLifecycleSpec{DesiredState: "Running", OperationID: "start", Revision: 2}
+			if err := c.Update(ctx, l); err != nil {
+				t.Fatal(err)
+			}
+			dr := &DeviceReconciler{Client: c, Reader: c, Scheme: r.Scheme, Scheduled: true}
+			deviceReconcile := func() {
+				t.Helper()
+				if _, err := dr.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(d)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if deviceFirst {
+				deviceReconcile()
+				assertReplicas(dep, 0)
+			}
+			if _, _, err := r.reconcileLifecycle(ctx, l); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Get(ctx, client.ObjectKeyFromObject(d), d); err != nil {
+				t.Fatal(err)
+			}
+			if d.Status.Scheduling.State != lab.PodQueued {
+				t.Fatal("start did not queue current device")
+			}
+			deviceReconcile()
+			assertReplicas(dep, 0)
+			assertReplicas(sibling, 1)
+			scheduler := &Scheduler{Client: c, Reader: c, Config: SchedulerConfig{MaxPods: 1}, Defaults: DeviceDefaults{CPU: "100m", Memory: "100Mi"}}
+			if err := scheduler.tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Get(ctx, client.ObjectKeyFromObject(d), d); err != nil {
+				t.Fatal(err)
+			}
+			if d.Status.Scheduling.State != lab.PodStarting || d.Status.Scheduling.DispatchedAt == nil {
+				t.Fatal("real scheduler did not dispatch the queued device", d.Status.Scheduling)
+			}
+			deviceReconcile()
+			assertReplicas(dep, 1)
+			assertReplicas(sibling, 1)
+			rv := dep.ResourceVersion
+			for i := 0; i < 3; i++ {
+				deviceReconcile()
+				if err := scheduler.tick(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			assertReplicas(dep, 1)
+			if dep.ResourceVersion != rv {
+				t.Fatal("repeat reconciliation resumed workload again")
+			}
+			var workloads appsv1.DeploymentList
+			if err := c.List(ctx, &workloads); err != nil {
+				t.Fatal(err)
+			}
+			if len(workloads.Items) != 2 {
+				t.Fatal("start created extra runtime workloads")
+			}
+		})
+	}
+}
+
+type staleStartDeviceClient struct {
+	client.Client
+	device *lab.Device
+}
+
+func (c staleStartDeviceClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if target, ok := obj.(*lab.Device); ok && key == client.ObjectKeyFromObject(c.device) {
+		*target = *c.device.DeepCopy()
+		return nil
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+func TestLifecycleStartIgnoresCachedOldStartedScheduling(t *testing.T) {
+	r, l, d, c := lifecycleFixture(t, "Skip")
+	_ = policyv1.AddToScheme(r.Scheme)
+	ctx := context.Background()
+	now := metav1.Now()
+	d.Status.Scheduling = &lab.PodSchedule{State: lab.PodStarted, DispatchedAt: &now}
+	if err := c.Status().Update(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	stale := d.DeepCopy()
+	l.Status.Lifecycle = &lab.LabLifecycleStatus{ObservedState: "Unknown", OperationID: "op", Revision: 1, LabUID: string(l.UID), ObservedGeneration: l.Generation}
+	if err := c.Status().Update(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	l.Spec.Lifecycle = &lab.LabLifecycleSpec{DesiredState: "Running", OperationID: "start", Revision: 2}
+	if err := c.Update(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: workloadName(d), Namespace: d.Namespace}, Spec: appsv1.DeploymentSpec{Replicas: ptrInt32(0)}}
+	if err := c.Create(ctx, dep); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.reconcileLifecycle(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	dr := &DeviceReconciler{Client: staleStartDeviceClient{c, stale}, Reader: c, Scheme: r.Scheme, Scheduled: true}
+	if _, err := dr.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(d)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(dep), dep); err != nil {
+		t.Fatal(err)
+	}
+	if *dep.Spec.Replicas != 0 {
+		t.Fatal("old cached Started record bypassed fresh queued record")
+	}
+}
+func TestLifecycleStartSchedulerWaitsForCurrentPreparation(t *testing.T) {
+	r, l, d, c := lifecycleFixture(t, "Skip")
+	ctx := context.Background()
+	now := metav1.Now()
+	d.Status.Scheduling = &lab.PodSchedule{State: lab.PodQueued, QueuedAt: &now}
+	if err := c.Status().Update(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.reconcileLifecycle(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	l.Spec.Lifecycle = &lab.LabLifecycleSpec{DesiredState: "Running", OperationID: "start", Revision: 2}
+	if err := c.Update(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	scheduler := &Scheduler{Client: c, Reader: c, Config: SchedulerConfig{MaxPods: 1}}
+	if err := scheduler.tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(d), d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Status.Scheduling.State != lab.PodQueued {
+		t.Fatal("scheduler dispatched while Lab Start queue was unprepared")
+	}
+}
+func TestLifecycleLegacyZeroReplicaDeploymentResumeKeepsOriginalBehavior(t *testing.T) {
+	r, l, d, c := lifecycleFixture(t, "Skip")
+	_ = policyv1.AddToScheme(r.Scheme)
+	ctx := context.Background()
+	l.Spec.Lifecycle = nil
+	if err := c.Update(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: workloadName(d), Namespace: d.Namespace}, Spec: appsv1.DeploymentSpec{Replicas: ptrInt32(0)}}
+	if err := c.Create(ctx, dep); err != nil {
+		t.Fatal(err)
+	}
+	dr := &DeviceReconciler{Client: c, Reader: c, Scheme: r.Scheme, Scheduled: true}
+	if _, err := dr.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(d)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(dep), dep); err != nil {
+		t.Fatal(err)
+	}
+	if *dep.Spec.Replicas != 1 {
+		t.Fatal("legacy no-lifecycle resume changed")
 	}
 }
