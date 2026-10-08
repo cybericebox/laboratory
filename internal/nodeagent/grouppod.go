@@ -122,6 +122,22 @@ func GroupPortsPresent(namespace, component string, present map[string]bool) []s
 	return out
 }
 
+// GroupPortsPresentOwned selects only this exact Pod incarnation's legs.
+// Empty owners are legacy/unknown and require a separate live-replacement check.
+func GroupPortsPresentOwned(namespace, component string, podUID types.UID, owners map[string]types.UID) []string {
+	if podUID == "" {
+		return nil
+	}
+	var out []string
+	for n := uint(1); n <= maxLabIndex; n++ {
+		key := groupPortKey(component, namespace, n)
+		if owners[key] == podUID {
+			out = append(out, key)
+		}
+	}
+	return out
+}
+
 // Runtime inputs are fail closed: missing parent intent cannot authorize wiring.
 func labRuntimeActive(ctx context.Context, c client.Reader, namespace, name string) (bool, error) {
 	var l laboratoryv1alpha1.Lab

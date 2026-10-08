@@ -45,16 +45,6 @@ func NewNodeAgentServer(ovs *OVSManager, flows *FlowManager) *NodeAgentServer {
 	}
 }
 
-// delVethWithFlows removes the t0 entry for a veth port before deleting the
-// port. OVS keeps flows referencing deleted ports, and the recycled ofport
-// number would make the stale flow match a different interface.
-func (s *NodeAgentServer) delVethWithFlows(stableKey string) {
-	if s.flows != nil {
-		_ = s.flows.DelT0Port(stableKey)
-	}
-	_ = s.ovs.DelVethPort(stableKey)
-}
-
 // SetupNetworks is called by cni-gate during CNI ADD. It waits for the pod to
 // appear in the controller-runtime cache, creates OVS veth pairs for all
 // interfaces listed in AnnotationNetworks, moves each pod-side veth into the
@@ -95,6 +85,13 @@ func (s *NodeAgentServer) SetupNetworks(
 		break
 	}
 
+	var current corev1.Pod
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(&pod), &current); err != nil {
+		return nil, err
+	}
+	if current.UID != pod.UID || !current.DeletionTimestamp.IsZero() {
+		return nil, ErrPortOwnerChanged
+	}
 	if req.PodUid != "" && req.PodUid != string(pod.UID) {
 		return nil, fmt.Errorf("pod UID changed during CNI setup")
 	}
@@ -131,6 +128,15 @@ func (s *NodeAgentServer) SetupNetworks(
 		return &nodev1.SetupNetworksResponse{DefaultNetwork: "real"}, nil
 	}
 
+	s.ovs.vethMu.Lock()
+	defer s.ovs.vethMu.Unlock()
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(&pod), &current); err != nil {
+		return nil, err
+	}
+	if current.UID != pod.UID || !current.DeletionTimestamp.IsZero() {
+		return nil, ErrPortOwnerChanged
+	}
+
 	// Device pod or access-port pod: wire all OVS interfaces synchronously.
 	attachments := ParseNetworkAnnotation(pod.Annotations[names.AnnotationNetworks])
 	log.Info("wiring OVS interfaces synchronously", "count", len(attachments))
@@ -139,11 +145,15 @@ func (s *NodeAgentServer) SetupNetworks(
 		podSide := VethPeerName(stableKey)
 		targetIface := att.Iface
 
+		ownerGuard := &NetworkAttachReconciler{Reader: reader, NodeName: pod.Spec.NodeName, OVS: s.ovs, Flows: s.flows}
+		if err := ownerGuard.ensurePodPortOwner(ctx, &pod, stableKey); err != nil {
+			return nil, err
+		}
 		created := false
 		if _, exists, err := s.ovs.FindPortByKey(stableKey); err != nil {
 			return nil, fmt.Errorf("find veth port %q: %w", stableKey, err)
 		} else if !exists {
-			if err := s.ovs.AddVethPort(stableKey); err != nil {
+			if err := s.ovs.AddVethPortOwned(stableKey, pod.UID); err != nil {
 				return nil, fmt.Errorf("add veth port %q: %w", stableKey, err)
 			}
 			created = true
@@ -173,7 +183,9 @@ func (s *NodeAgentServer) SetupNetworks(
 			}
 		} else {
 			// Not in root netns and not in pod netns — veth lost, recreate.
-			s.delVethWithFlows(stableKey)
+			if err := ownerGuard.delVethWithFlowsOwned(stableKey, pod.UID); err != nil {
+				return nil, err
+			}
 			return nil, fmt.Errorf("veth %q lost (not in root or pod netns); recreate triggered", stableKey)
 		}
 		if att.MAC != "" {

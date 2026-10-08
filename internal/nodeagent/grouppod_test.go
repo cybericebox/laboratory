@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
@@ -100,5 +101,23 @@ func TestStoppedLabDetachesOnlyItsGroupLegs(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Iface != "lab2" {
 		t.Fatal("stopped leg remained attached or sibling lost", got)
+	}
+}
+
+func TestTerminatingOldGroupPodKeepsReplacementPorts(t *testing.T) {
+	for _, component := range []string{names.ComponentVPN, names.ComponentGateway} {
+		key := groupPortKey(component, "g", 1)
+		owners := map[string]types.UID{key: "replacement"}
+		got := GroupPortsPresentOwned("g", component, "old", owners)
+		if len(got) != 0 {
+			t.Fatal("old pod selected replacement port", got)
+		}
+		got = GroupPortsPresentOwned("g", component, "replacement", owners)
+		if len(got) != 1 || got[0] != key {
+			t.Fatal("replacement lost its own port", got)
+		}
+		if got := GroupPortsPresentOwned("g", component, "", map[string]types.UID{key: ""}); len(got) != 0 {
+			t.Fatal("unknown owner selected", got)
+		}
 	}
 }

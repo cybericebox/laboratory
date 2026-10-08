@@ -73,15 +73,23 @@ func (r *NetworkAttachReconciler) mayRecreate(key string) (bool, time.Duration) 
 	return r.guard.allow(key, time.Now())
 }
 
-// delVethWithFlows removes the t0 entry for a veth port BEFORE deleting the
-// port itself. OVS does not remove flows referencing a deleted port, and once
-// the port is gone its name can no longer be resolved to an ofport — the stale
-// flow would then match whichever interface OVS recycles that number to.
-func (r *NetworkAttachReconciler) delVethWithFlows(stableKey string) {
-	if r.Flows != nil {
-		_ = r.Flows.DelT0Port(stableKey)
+// DelVethWithFlowsOwned returns an error rather than a cleanup ACK when the
+// stable key belongs to another incarnation or its ownership is unknown.
+func (r *NetworkAttachReconciler) DelVethWithFlowsOwned(key string, ownerUID types.UID) error {
+	if ownerUID == "" || r.Flows == nil {
+		return ErrPortOwnerUnknown
 	}
-	_ = r.OVS.DelVethPort(stableKey)
+	r.OVS.vethMu.Lock()
+	defer r.OVS.vethMu.Unlock()
+	return r.delVethWithFlowsOwned(key, ownerUID)
+}
+
+// The reconciler and CNI already hold the Pod wiring lock.
+func (r *NetworkAttachReconciler) delVethWithFlowsOwned(key string, ownerUID types.UID) error {
+	if ownerUID == "" {
+		return ErrPortOwnerUnknown
+	}
+	return r.OVS.delVethWithFlowsOwned(key, ownerUID, r.Flows)
 }
 
 // isPlatformPod says whether a pod is one the platform made for a lab: its labels carry the lab and the device, or the component
@@ -120,6 +128,11 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
+	// Different Pod names share group stable keys. Hold the node's wiring
+	// lock through direct identity checks and all netns mutations.
+	r.OVS.vethMu.Lock()
+	defer r.OVS.vethMu.Unlock()
+
 	// The VPN and gateway pod of a group: the lab interfaces come from the group's LabVPN and LabGateway objects (see GroupPodAttachments),
 	// not from the pod's annotation, so a lab added or removed never changes the Deployment. A device pod lists its interfaces in the
 	// annotation.
@@ -145,10 +158,26 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 	if pod.DeletionTimestamp != nil || stopped {
 		if component != "" {
-			// The pod goes: so do all the legs it had on this node.
-			if present, err := r.OVS.PortKeys(); err == nil {
-				for _, key := range GroupPortsPresent(pod.Namespace, component, present) {
-					r.delVethWithFlows(key)
+			owners, err := r.OVS.PortOwners()
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			for _, key := range GroupPortsPresentOwned(pod.Namespace, component, pod.UID, owners) {
+				if err := r.delVethWithFlowsOwned(key, pod.UID); err != nil {
+					return ctrl.Result{}, err
+				}
+			}
+			// Legacy rows carry no incarnation. Only a direct live replacement
+			// check can authorize retiring them; uncertainty is not an ACK.
+			legacy := map[string]bool{}
+			for key, uid := range owners {
+				if uid == "" {
+					legacy[key] = true
+				}
+			}
+			for _, key := range GroupPortsPresent(pod.Namespace, component, legacy) {
+				if err := r.cleanupPodPort(ctx, &pod, key); err != nil {
+					return ctrl.Result{}, err
 				}
 			}
 			return ctrl.Result{}, nil
@@ -159,20 +188,30 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				log.Info("NetAttach: not a port key of the platform, ignored", "name", stableKey)
 				continue
 			}
-			r.delVethWithFlows(stableKey)
+			if err := r.cleanupPodPort(ctx, &pod, stableKey); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 		return ctrl.Result{}, nil
 	}
 
 	// A lab that is gone: its leg is taken out of the running pod (the pod keeps running).
 	if component != "" && pod.Status.Phase == corev1.PodRunning {
-		present, err := r.OVS.PortKeys()
+		owners, err := r.OVS.PortOwners()
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("list ports: %w", err)
 		}
+		present := map[string]bool{}
+		for key, uid := range owners {
+			if uid == pod.UID || uid == "" {
+				present[key] = true
+			}
+		}
 		for _, key := range StaleGroupPorts(pod.Namespace, component, attachments, present) {
 			log.Info("NetAttach: detaching the leg of a lab that is gone", "key", key)
-			r.delVethWithFlows(key)
+			if err := r.cleanupPodPort(ctx, &pod, key); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 	}
 
@@ -194,6 +233,13 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
+	var current corev1.Pod
+	if err := r.directReader().Get(ctx, client.ObjectKeyFromObject(&pod), &current); err != nil {
+		return ctrl.Result{}, err
+	}
+	if current.UID != pod.UID || !current.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, ErrPortOwnerChanged
+	}
 	netnsPath, err := PodNetNSFromCRI(ctx, r.CRISock, string(pod.UID))
 	if err != nil {
 		log.Info("NetAttach: sandbox not ready, requeueing", "uid", string(pod.UID), "err", err)
@@ -218,6 +264,9 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			targetIface = stableKey
 		}
 
+		if err := r.ensurePodPortOwner(ctx, &pod, stableKey); err != nil {
+			return ctrl.Result{}, err
+		}
 		// Ensure the veth host-side is registered in OVS.
 		_, exists, err := r.OVS.FindPortByKey(stableKey)
 		if err != nil {
@@ -241,7 +290,7 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			}
 		}
 		if !exists {
-			if err := r.OVS.AddVethPort(stableKey); err != nil {
+			if err := r.OVS.AddVethPortOwned(stableKey, pod.UID); err != nil {
 				return ctrl.Result{}, fmt.Errorf("add veth port %q: %w", stableKey, err)
 			}
 			log.Info("NetAttach: created veth pair", "hostSide", stableKey, "podSide", podSide)
@@ -334,7 +383,9 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 					return ctrl.Result{RequeueAfter: wait}, nil
 				}
 				log.Info("NetAttach: stale veth, recreating", "key", stableKey)
-				r.delVethWithFlows(stableKey)
+				if err := r.cleanupPodPort(ctx, &pod, stableKey); err != nil {
+					return ctrl.Result{}, err
+				}
 				recreated = true
 			}
 		}

@@ -256,6 +256,19 @@ func (f *FlowManager) DelT0Port(portName string) error {
 	return f.client.FlowDelete(0, ofclient.BuildMatch(portNo, 0, false))
 }
 
+// retirePort confirms removal before the owning veth is deleted and its
+// ofport can be recycled. Ownership must be checked before calling this.
+func (f *FlowManager) retirePort(name string) error {
+	if err := f.refreshPorts(); err != nil {
+		return err
+	}
+	no, err := f.portNo(name)
+	if err != nil {
+		return fmt.Errorf("port retirement cannot resolve %q: %w", name, err)
+	}
+	return f.client.RetirePort(no)
+}
+
 // RebuildT6Flood atomically replaces the t6 flood entries for vni:
 //
 //	priority=110, metadata=VNI, reg0=0 → output all localPorts + Geneve to each remoteVTEP

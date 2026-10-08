@@ -265,6 +265,7 @@ func TestNetnsGroupReplacementRecovery(t *testing.T) {
 				Spec: corev1.PodSpec{NodeName: "node"}, Status: corev1.PodStatus{Phase: corev1.PodRunning}}
 			objects := []client.Object{pod}
 			for n := 1; n <= count; n++ {
+				objects = append(objects, &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("lab%d", n), Namespace: pod.Namespace}})
 				objects = append(objects, &laboratoryv1alpha1.LabVPN{
 					ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("lab%d", n), Namespace: pod.Namespace},
 					Spec:       laboratoryv1alpha1.LabVPNSpec{LabName: fmt.Sprintf("lab%d", n), NetworkIndex: uint(n)},
@@ -325,7 +326,9 @@ func TestNetnsGroupReplacementRecovery(t *testing.T) {
 				time.Sleep(res.RequeueAfter)
 			}
 			t.Logf("replacement recovery: ports=%d passes=%d scheduled_wait=%s elapsed=%s", count, passes, scheduledWait, time.Since(start))
-			if passes != 2 || scheduledWait != time.Second {
+			// Owned takeover can retire and replace the old incarnation in
+			// this pass; a delayed monitor still converges in the next pass.
+			if passes > 2 || scheduledWait > time.Second {
 				t.Fatalf("replacement peers were not recovered as one batch: passes=%d scheduled_wait=%s", passes, scheduledWait)
 			}
 		})
