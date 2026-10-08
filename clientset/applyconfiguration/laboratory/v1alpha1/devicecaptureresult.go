@@ -26,7 +26,9 @@ import (
 //
 // DeviceCaptureResult is node-agent-owned, independent of ExitSnapshotPod.
 // Succeeded includes unchanged base/latest state; a stale or invalidated held
-// guard is never sufficient to stop. NodeAgentEpoch changes on every restart.
+// guard is never sufficient to stop. NodeAgentEpoch names the capture boot; a
+// committed journal retains that identity through recovery until native death
+// or API-fenced cancellation. Uncommitted prior-boot holds are invalidated.
 type DeviceCaptureResultApplyConfiguration struct {
 	// Committed is acknowledged only after the exact hold journal is fsynced.
 	// It prevents deadline-only thaw between collective capture and deletion.

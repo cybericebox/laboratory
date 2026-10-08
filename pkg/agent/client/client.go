@@ -158,3 +158,14 @@ const (
 	StopSnapshotMode_STOP_SNAPSHOT_MODE_SKIP        = protobuf.StopSnapshotMode_STOP_SNAPSHOT_MODE_SKIP
 	StopSnapshotMode_STOP_SNAPSHOT_MODE_REQUIRED    = protobuf.StopSnapshotMode_STOP_SNAPSHOT_MODE_REQUIRED
 )
+
+// Sizing v2 aliases describe validated profiles without selecting one or changing defaults.
+type (
+	GroupPodsFeature       = protobuf.GroupPodsFeature
+	GroupPodsSizingV2      = protobuf.GroupPodsSizingV2
+	GroupPodsSizingProfile = protobuf.GroupPodsSizingProfile
+	GroupSizingInputs      = protobuf.GroupSizingInputs
+	GroupTrafficEnvelope   = protobuf.GroupTrafficEnvelope
+	GroupPodFormula        = protobuf.GroupPodFormula
+	PodSize                = protobuf.PodSize
+)

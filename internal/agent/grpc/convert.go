@@ -7,6 +7,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
@@ -42,11 +43,11 @@ func labGroupToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.LabGroup {
 
 // labToProto maps a Lab custom resource to its gRPC wire representation.
 // Spec is passed through as opaque JSON since the agent is a thin wrapper.
-func labToProto(l *laboratoryv1alpha1.Lab) *protobuf.Lab {
-	return labProjection(l, true)
+func labToProto(l *laboratoryv1alpha1.Lab, sizing ...limits.Limits) *protobuf.Lab {
+	return labProjection(l, true, sizing...)
 }
 
-func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool) *protobuf.Lab {
+func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool, sizing ...limits.Limits) *protobuf.Lab {
 	var specJSON []byte
 	if includeSpec {
 		specJSON, _ = json.Marshal(l.Spec)
@@ -62,7 +63,7 @@ func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool) *protobuf.Lab {
 		ImageWarning:  st.ImageWarning,
 	}
 	status.Lifecycle = lifecycleToProto(l)
-	status.Resources = allocationToProto(st.Resources)
+	status.Resources = labAllocationToProto(l, sizing...)
 	status.Scheduling = schedulingToProto(st.Scheduling, l.Annotations)
 	for i := range st.Devices {
 		status.Devices = append(status.Devices, &protobuf.LabDeviceStatus{
@@ -208,8 +209,8 @@ func quantityValue(value string) int64 {
 
 // labMonitoringToProto projects runtime state without exposing the Lab spec
 // or write-only device environment values through the monitoring stream.
-func labMonitoringToProto(l *laboratoryv1alpha1.Lab, labGroupName string) *protobuf.Lab {
-	p := labProjection(l, false)
+func labMonitoringToProto(l *laboratoryv1alpha1.Lab, labGroupName string, sizing ...limits.Limits) *protobuf.Lab {
+	p := labProjection(l, false, sizing...)
 	p.LabGroupName = labGroupName
 	return p
 }
@@ -406,6 +407,53 @@ func allocationToProto(a *laboratoryv1alpha1.RuntimeAllocation) *protobuf.Resour
 	}
 	if a.UsageAvailable && a.Used != nil {
 		out.Used = resourceAmountsToProto(*a.Used)
+	}
+	return out
+}
+
+// Unknown observations retain configured and previously held amounts. Only an
+// exact current Stopped observation may authorize a Released projection.
+func labAllocationToProto(l *laboratoryv1alpha1.Lab, sizing ...limits.Limits) *protobuf.ResourceAllocation {
+	a := l.Status.Resources
+	intent := l.Spec.Lifecycle
+	if intent == nil {
+		return allocationToProto(a)
+	}
+	out := allocationToProto(a)
+	if out == nil {
+		out = &protobuf.ResourceAllocation{RuntimeState: "Unknown", StorageState: "Unknown"}
+	}
+	lim := limits.Limits{}
+	if len(sizing) > 0 {
+		lim = sizing[0]
+	}
+	cpu, mem, _, _ := lim.SpecTotals(&l.Spec)
+	if out.ConfiguredRequests == nil {
+		out.ConfiguredRequests = &protobuf.ResourceAmounts{}
+	}
+	if out.ConfiguredLimits == nil {
+		out.ConfiguredLimits = &protobuf.ResourceAmounts{}
+	}
+	out.ConfiguredRequests.CpuMillicores = max(cpu, out.ConfiguredRequests.CpuMillicores)
+	out.ConfiguredRequests.MemoryBytes = max(mem, out.ConfiguredRequests.MemoryBytes)
+	out.ConfiguredLimits.CpuMillicores = max(cpu, out.ConfiguredLimits.CpuMillicores)
+	out.ConfiguredLimits.MemoryBytes = max(mem, out.ConfiguredLimits.MemoryBytes)
+	observed := l.Status.Lifecycle
+	current := a != nil && a.OperationID == intent.OperationID && a.Revision == intent.Revision && observed != nil && observed.LabUID == string(l.UID) && observed.OperationID == intent.OperationID && observed.Revision == intent.Revision && observed.ObservedGeneration == l.Generation
+	released := current && intent.IsStopped() && observed.ObservedState == "Stopped" && a.RuntimeState == "Released" && a.ObservedAt != nil && a.ReleasedAt != nil
+	if !current || out.RuntimeState == "Released" && !released {
+		out.RuntimeState = "Unknown"
+		out.ObservedUnixMs = 0
+		out.ReleasedUnixMs = 0
+		out.UsageAvailable = false
+		out.Used = nil
+	}
+	if !released {
+		if out.AllocatedRequests == nil {
+			out.AllocatedRequests = &protobuf.ResourceAmounts{}
+		}
+		out.AllocatedRequests.CpuMillicores = max(out.AllocatedRequests.CpuMillicores, out.ConfiguredRequests.CpuMillicores)
+		out.AllocatedRequests.MemoryBytes = max(out.AllocatedRequests.MemoryBytes, out.ConfiguredRequests.MemoryBytes)
 	}
 	return out
 }

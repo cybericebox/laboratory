@@ -188,12 +188,13 @@ func TestLifecycleUnsupportedUntilNativeGates(t *testing.T) {
 	if f.GetPerLabStop() || f.GetRequiredSnapshot() || f.GetConfirmedRuntime() || f.GetRetainedRestart() || f.GetFullGroupStop() {
 		t.Fatalf("unvalidated lifecycle advertised: %v", f)
 	}
-	// Generated methods stay fail-closed until the later RPC implementation task.
-	if _, err := h.StopLabs(context.Background(), &protobuf.StopLabsRequest{}); status.Code(err) != codes.Unimplemented {
-		t.Fatalf("stop prematurely implemented: %v", err)
+	// Acceptance now exists, while advertised native capabilities stay false.
+	// Empty batches still fail without mutations.
+	if _, err := h.StopLabs(context.Background(), &protobuf.StopLabsRequest{}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("empty stop accepted: %v", err)
 	}
-	if _, err := h.StartLabs(context.Background(), &protobuf.StartLabsRequest{}); status.Code(err) != codes.Unimplemented {
-		t.Fatalf("start prematurely implemented: %v", err)
+	if _, err := h.StartLabs(context.Background(), &protobuf.StartLabsRequest{}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("empty start accepted: %v", err)
 	}
 }
 

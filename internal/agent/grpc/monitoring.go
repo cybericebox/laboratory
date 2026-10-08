@@ -129,7 +129,7 @@ func (h *Handler) observe(ctx context.Context, c *monCache) (*monState, error) {
 		}
 		pods, sched := podsOf[ns], schedOf[ns]
 		for _, lab := range sortedByName(labsOf[ns]) {
-			p := labMonitoringToProto(lab, gid)
+			p := labMonitoringToProto(lab, gid, h.features.Limits)
 			fillLabUsage(p, usage, lab.Name)
 			fillLabPodStatus(p, pods, lab.Name)
 			fillDeviceScheduling(p, sched, lab.Name)

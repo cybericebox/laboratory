@@ -761,9 +761,8 @@ message GroupPodsFeature {
   // What a group's pod gets when CreateLabGroups sets no size.
   PodSize default_vpn = 3;
   PodSize default_gateway = 4;
-  // Reserved for additive sizing_v2 after its native profile gates.
-  reserved 5;
-  reserved "sizing_v2";
+  // Absent until profiles have matching validation evidence; legacy sizing remains.
+  GroupPodsSizingV2 sizing_v2 = 5;
 }
 
 // Constants of the device model: the platform's, not settings. The devices of a lab are capped by LimitsFeature.lab.max_devices
@@ -1108,4 +1107,43 @@ message LifecycleFeature {
   bool confirmed_runtime = 3;
   bool retained_restart = 4;
   bool full_group_stop = 5;
+}
+
+// Frozen additive interface; no profile is implied by the presence of these types.
+message GroupPodsSizingV2 { repeated GroupPodsSizingProfile profiles = 1; }
+message GroupPodsSizingProfile {
+  string id = 1;
+  string support_state = 2; // SUPPORTED/CANDIDATE/TESTED_POINT; unknown retains legacy sizing
+  GroupSizingInputs max_inputs = 3;
+  GroupPodFormula vpn = 4;
+  GroupPodFormula gateway = 5;
+  string validation_provenance = 6;
+  string scope = 7;
+}
+message GroupSizingInputs {
+  int64 max_users = 1;
+  int64 max_active_labs = 2;
+  int64 internet_labs = 3;
+  int64 allowed_relations = 4;
+  GroupTrafficEnvelope envelope = 5;
+}
+message GroupTrafficEnvelope {
+  int64 vpn_retained_flows = 1;
+  int64 gateway_retained_flows = 2;
+  int64 vpn_new_flows_per_second = 3;
+  int64 gateway_new_flows_per_second = 4;
+  int64 vpn_packets_per_second = 5;
+  int64 gateway_packets_per_second = 6;
+  double vpn_payload_mbps = 7;
+  double gateway_payload_mbps = 8;
+}
+message GroupPodFormula {
+  PodSize base = 1;
+  PodSize per_user = 2;
+  PodSize per_active_lab = 3;
+  PodSize per_internet_lab = 4;
+  PodSize per_allowed_relation = 5;
+  PodSize per_retained_flow = 6;
+  PodSize floor = 7;
+  PodSize round_to = 8;
 }

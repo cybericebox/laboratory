@@ -37,6 +37,8 @@ type Handler struct {
 
 	// statePersistence: the cluster allows devices with persistence (the chart switch).
 	statePersistence bool
+	// Native required-snapshot validation gate; false until configured after proof.
+	requiredSnapshotAvailable bool
 
 	// caCertFile/caKeyFile sign client certificates (Enroll, RenewCertificate).
 	caCertFile, caKeyFile string
@@ -116,3 +118,9 @@ func (h *Handler) SetImagePolicy(deny []string, cacheAddrs ...string) {
 }
 
 func isNotFound(err error) bool { return apierrors.IsNotFound(err) }
+
+// SetRequiredSnapshotAvailable wires the native producer gate after its proof.
+// This enables acceptance checks, not advertised lifecycle capabilities.
+func (h *Handler) SetRequiredSnapshotAvailable(available bool) {
+	h.requiredSnapshotAvailable = available
+}

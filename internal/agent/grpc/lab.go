@@ -54,8 +54,9 @@ func parseVariants(in []*protobuf.LabVariant, persistence bool) (map[string]*lab
 
 // CreateLabs creates Lab custom resources from variants (the spec and common variables,
 // sent once) and items. Re-sending an item whose lab exists with the same spec is
-// EXISTS (the device Secrets are rewritten with the same values, labels it lacks are
-// added: UPDATED); a lab with a different spec is FAILED for that item.
+// EXISTS (missing labels are added: UPDATED). Initial-runtime creates retain the
+// existing variable rewrite behavior; lifecycle-managed copies keep their Secrets.
+// A lab with a different immutable spec is FAILED for that item.
 func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest) (*protobuf.BatchResult, error) {
 	items := in.GetItems()
 	if err := checkItemCount(len(items)); err != nil {
@@ -148,6 +149,8 @@ func variantEnvList(v *labVariant) []*protobuf.DeviceEnv {
 // specHash fingerprints what an idempotent create compares: the spec and the scheduling
 // metadata, as sent.
 func specHash(spec *laboratoryv1alpha1.LabSpec, dep deploySpec) string {
+	spec = spec.DeepCopy()
+	spec.Lifecycle = nil
 	raw, _ := json.Marshal(struct {
 		Spec  *laboratoryv1alpha1.LabSpec
 		Group string
@@ -183,6 +186,9 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 		return 0, err
 	}
 
+	if state != protobuf.ItemState_ITEM_STATE_CREATED && out.Spec.Lifecycle != nil {
+		return state, nil
+	}
 	devices := sortedKeys(env)
 	if state != protobuf.ItemState_ITEM_STATE_CREATED {
 		// An existing lab: every device ends with the Secret of this call (or none).
@@ -272,7 +278,7 @@ func (h *Handler) ListLabs(ctx context.Context, in *protobuf.ListRequest) (*prot
 			u = h.namespaceUsage(ctx, m.lab.Namespace)
 			usage[m.lab.Namespace] = u
 		}
-		p := labToProto(m.lab)
+		p := labToProto(m.lab, h.features.Limits)
 		p.LabGroupName = m.group
 		fillLabUsage(p, u, m.lab.Name)
 		s, ok := sched[m.lab.Namespace]

@@ -107,6 +107,9 @@ func parseLabSpec(raw []byte, persistence bool) (laboratoryv1alpha1.LabSpec, err
 	if err := dec.Decode(&spec); err != nil {
 		return spec, fmt.Errorf("spec_json: %w", err)
 	}
+	if spec.Lifecycle != nil {
+		return spec, fmt.Errorf("lifecycle intent must use UID-fenced StopLabs/StartLabs")
+	}
 	for i := range spec.Devices {
 		if err := validatePersistence(&spec.Devices[i], persistence); err != nil {
 			return spec, fmt.Errorf("spec_json: device %q: %w", spec.Devices[i].Name, err)

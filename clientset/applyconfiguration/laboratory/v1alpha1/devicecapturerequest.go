@@ -21,7 +21,9 @@ package v1alpha1
 // with apply.
 //
 // DeviceCaptureRequest is an operator-owned required checkpoint request. Its
-// deadline bounds quiescence; expiry is failure, never permission to delete.
+// deadline bounds precommit capture/holds; expiry is failure, never permission
+// to delete. A durable committed hold outlives that deadline until native death
+// or the approved API-fenced cancellation of its exact operation.
 type DeviceCaptureRequestApplyConfiguration struct {
 	// CommitNodeAgentEpoch requests a durable hold for this exact capture boot.
 	CommitNodeAgentEpoch *string `json:"commitNodeAgentEpoch,omitempty"`
