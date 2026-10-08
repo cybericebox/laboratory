@@ -12,7 +12,7 @@ import (
 
 func groupStoppedChild() *lab.Lab {
 	now := metav1.Now()
-	return &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "child", Namespace: "ns", UID: "child-uid", Generation: 3}, Spec: lab.LabSpec{Lifecycle: &lab.LabLifecycleSpec{DesiredState: "Stopped", OperationID: "child-op", Revision: 2, SnapshotMode: "Skip"}}, Status: lab.LabStatus{Lifecycle: &lab.LabLifecycleStatus{LabUID: "child-uid", OperationID: "child-op", Revision: 2, ObservedGeneration: 3, ObservedState: "Stopped"}, Resources: &lab.RuntimeAllocation{OperationID: "child-op", Revision: 2, RuntimeState: "Released", ObservedAt: &now, ReleasedAt: &now}}}
+	return &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "child", Namespace: "ns", UID: "child-uid", Generation: 3}, Spec: lab.LabSpec{Lifecycle: &lab.LabLifecycleSpec{DesiredState: "Stopped", OperationID: "child-op", Revision: 2, SnapshotMode: "Skip"}}, Status: lab.LabStatus{Lifecycle: &lab.LabLifecycleStatus{LabUID: "child-uid", OperationID: "child-op", Revision: 2, ObservedGeneration: 3, ObservedState: "Stopped", StoppedAt: &now}, Resources: &lab.RuntimeAllocation{OperationID: "child-op", Revision: 2, RuntimeState: "Released", ObservedAt: &now, ReleasedAt: &now}}}
 }
 func groupStopFixture(t *testing.T, child *lab.Lab) (*LabGroupReconciler, *lab.LabGroup, client.Client) {
 	t.Helper()

@@ -407,7 +407,17 @@ func TestLifecycleRPCClientConflictTenantAndRequired(t *testing.T) {
 		got, err = rpc.StopLabs(ctx, r)
 		wantStates(t, got, err, stFailed)
 		d.Spec.State = &lab.DeviceStateSpec{Enabled: true}
-		if _, err = h.cs.LaboratoryV1alpha1().Devices(l.Namespace).Update(ctx, d, metav1.UpdateOptions{}); err != nil {
+		d, err = h.cs.LaboratoryV1alpha1().Devices(l.Namespace).Update(ctx, d, metav1.UpdateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err = rpc.StopLabs(ctx, r)
+		wantStates(t, got, err, stFailed) // persistence alone is not a native handshake
+		now := metav1.Now()
+		d.Status.NodeName = "node"
+		d.Status.State = &lab.DeviceStateStatus{Epoch: 1, Incarnation: 1}
+		d.Status.RuntimeReports = []lab.OwnedRuntimeReport{{Identity: lab.OwnedRuntimeIdentity{OwnerUID: string(l.UID), OperationID: "running", Revision: 1, PodUID: "native-pod", NodeName: "node", NodeBootID: "native-boot", ContainerIDs: []string{"native-container"}, CgroupPaths: []string{"/native-container"}, PortKeys: []string{"native-port"}, Epoch: 1, Incarnation: 1}, RuntimeState: "Present", ObservedAt: &now}}
+		if _, err = h.cs.LaboratoryV1alpha1().Devices(l.Namespace).UpdateStatus(ctx, d, metav1.UpdateOptions{}); err != nil {
 			t.Fatal(err)
 		}
 		got, err = rpc.StopLabs(ctx, r)

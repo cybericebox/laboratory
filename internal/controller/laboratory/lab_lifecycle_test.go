@@ -30,6 +30,12 @@ func lifecycleFixture(t *testing.T, mode string) (*LabReconciler, *lab.Lab, *lab
 func TestLifecycleSkipStopsOwnedRuntimeAndNeverRecreates(t *testing.T) {
 	r, l, d, c := lifecycleFixture(t, "Skip")
 	ctx := context.Background()
+	// The native identity was recorded before the API Pod disappeared. Missing
+	// Pod metadata cannot manufacture either inventory or a release certificate.
+	d.Status.RuntimeInventory = []lab.OwnedRuntimeIdentity{lifecycleNativeReport(l, d, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "pod-a"}, Spec: corev1.PodSpec{NodeName: "node"}}).Identity}
+	if err := c.Status().Update(ctx, d); err != nil {
+		t.Fatal(err)
+	}
 	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: workloadName(d), Namespace: "g", OwnerReferences: []metav1.OwnerReference{{Kind: "Device", UID: d.UID, Name: d.Name}}}, Spec: appsv1.DeploymentSpec{Replicas: ptrInt32(1)}}
 	sibling := dep.DeepCopy()
 	sibling.Name = "sibling"
@@ -169,7 +175,24 @@ func requiredReadyFixture(t *testing.T) (*LabReconciler, *lab.Lab, *lab.Device, 
 	if err := c.Create(ctx, p); err != nil {
 		t.Fatal(err)
 	}
+	d.Status.NodeName = p.Spec.NodeName
+	d.Status.RuntimeReports = []lab.OwnedRuntimeReport{lifecycleNativeReport(l, d, p)}
+	if err := c.Status().Update(ctx, d); err != nil {
+		t.Fatal(err)
+	}
 	return r, l, d, c, p
+}
+
+// Test adapters model a fresh native checkpoint handshake. It describes live
+// runtime, never a native absence ACK, so API deletion still leaves Unknown.
+func lifecycleNativeReport(l *lab.Lab, d *lab.Device, p *corev1.Pod) lab.OwnedRuntimeReport {
+	id := lab.OwnedRuntimeIdentity{OwnerUID: string(l.UID), OperationID: l.Spec.Lifecycle.OperationID, Revision: l.Spec.Lifecycle.Revision, PodUID: string(p.UID), NodeName: p.Spec.NodeName, NodeBootID: "kernel-boot", ContainerIDs: []string{"container-" + string(p.UID)}, CgroupPaths: []string{"/owned/" + string(p.UID)}, PortKeys: []string{"owned-port-" + string(p.UID)}}
+	if d.Status.State != nil {
+		id.Epoch = d.Status.State.Epoch
+		id.Incarnation = d.Status.State.Incarnation
+	}
+	now := metav1.Now()
+	return lab.OwnedRuntimeReport{Identity: id, RuntimeState: "Present", ObservedAt: &now}
 }
 func TestSnapshotBarrierCurrentGuardDeletesUsingCurrentPodRV(t *testing.T) {
 	r, l, d, c, p := requiredReadyFixture(t)
@@ -224,6 +247,10 @@ func TestSnapshotBarrierFailureDeletesNoneIncludingSuccessfulDevice(t *testing.T
 	failedPod.ResourceVersion = ""
 	failedPod.OwnerReferences = []metav1.OwnerReference{{Kind: "Device", Name: second.Name, UID: second.UID}}
 	if err := c.Create(ctx, failedPod); err != nil {
+		t.Fatal(err)
+	}
+	second.Status.RuntimeReports = []lab.OwnedRuntimeReport{lifecycleNativeReport(l, second, failedPod)}
+	if err := c.Status().Update(ctx, second); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := r.reconcileLifecycle(ctx, l); err != nil {
@@ -593,6 +620,10 @@ func TestSnapshotBarrierEveryDeviceMustACKCommittedHold(t *testing.T) {
 	if err := c.Create(ctx, secondPod); err != nil {
 		t.Fatal(err)
 	}
+	second.Status.RuntimeReports = []lab.OwnedRuntimeReport{lifecycleNativeReport(l, second, secondPod)}
+	if err := c.Status().Update(ctx, second); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, err := r.reconcileLifecycle(ctx, l); err != nil {
 		t.Fatal(err)
 	}
@@ -628,7 +659,9 @@ func TestLifecycleConsumesOnlyExactNativeReleasedObservation(t *testing.T) {
 	ctx := context.Background()
 	// Test-only producer input: Task3 itself never fabricates these observations.
 	l.Status.Lifecycle = &lab.LabLifecycleStatus{ObservedState: "Stopped", OperationID: "op", Revision: 1, LabUID: string(l.UID), ObservedGeneration: l.Generation, SnapshotComplete: true}
-	l.Status.Resources = &lab.RuntimeAllocation{RuntimeState: "Released", OperationID: "op", Revision: 1}
+	now := metav1.Now()
+	l.Status.Lifecycle.StoppedAt = &now
+	l.Status.Resources = &lab.RuntimeAllocation{RuntimeState: "Released", OperationID: "op", Revision: 1, ObservedAt: &now, ReleasedAt: &now}
 	if err := c.Status().Update(ctx, l); err != nil {
 		t.Fatal(err)
 	}
@@ -658,6 +691,7 @@ func TestLifecycleRetainedDeploymentStartWaitsForPreparationAndDispatch(t *testi
 			ctx := context.Background()
 			now := metav1.Now()
 			d.Status.Scheduling = &lab.PodSchedule{State: lab.PodStarted, StartedAt: &now, DispatchedAt: &now}
+			d.Status.RuntimeInventory = []lab.OwnedRuntimeIdentity{lifecycleNativeReport(l, d, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "pod-a"}, Spec: corev1.PodSpec{NodeName: "node"}}).Identity}
 			if err := c.Status().Update(ctx, d); err != nil {
 				t.Fatal(err)
 			}

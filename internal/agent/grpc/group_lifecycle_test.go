@@ -76,11 +76,29 @@ func TestGroupAdmissionTwoReplicasRestartBeforeAndAfterChildWrite(t *testing.T) 
 		t.Fatal("different operation cleared pending admission")
 	}
 	created := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "new", Namespace: "g", Annotations: map[string]string{names.AnnotationSpecHash: "fingerprint"}}}
-	if _, err := h.cs.LaboratoryV1alpha1().Labs("g").Create(ctx, created, metav1.CreateOptions{}); err != nil {
+	created, err = h.cs.LaboratoryV1alpha1().Labs("g").Create(ctx, created, metav1.CreateOptions{})
+	if err != nil {
 		t.Fatal(err)
 	}
 	// Simulate crash after exact childwrite and before finish: GroupStop resolves
-	// only that durable write and CASes stop on the same Group resourceVersion.
+	// only that durable write. The newly running child still prevents a group stop.
+	res, err = second.StopLabGroups(ctx, &protobuf.StopLabGroupsRequest{Items: stop.Items[:1]})
+	wantStates(t, res, err, stFailed)
+	g, _ = h.getGroup(ctx, "g")
+	if g.Spec.Admission == nil || g.Spec.Lifecycle.IsStopped() {
+		t.Fatal("rejected stop lost the durable admission or ignored the running child")
+	}
+	created.Spec.Lifecycle = &lab.LabLifecycleSpec{DesiredState: "Stopped", OperationID: "child-stop", Revision: 1, SnapshotMode: "Skip"}
+	created, err = h.cs.LaboratoryV1alpha1().Labs("g").Update(ctx, created, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := metav1.Now()
+	created.Status.Lifecycle = &lab.LabLifecycleStatus{LabUID: string(created.UID), OperationID: "child-stop", Revision: 1, ObservedGeneration: created.Generation, ObservedState: "Stopped", StoppedAt: &now}
+	created.Status.Resources = &lab.RuntimeAllocation{OperationID: "child-stop", Revision: 1, RuntimeState: "Released", StorageState: "Unknown", ObservedAt: &now, ReleasedAt: &now}
+	if _, err := h.cs.LaboratoryV1alpha1().Labs("g").UpdateStatus(ctx, created, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
 	res, err = second.StopLabGroups(ctx, &protobuf.StopLabGroupsRequest{Items: stop.Items[:1]})
 	wantStates(t, res, err, stUpdated)
 	g, _ = h.getGroup(ctx, "g")

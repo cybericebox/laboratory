@@ -83,6 +83,8 @@ func TestLifecycleRequiredGuardConflictRereadsCurrentAPIServerPod(t *testing.T) 
 		t.Fatal(err)
 	}
 	d.Status.State = &lab.DeviceStateStatus{Epoch: 1, Incarnation: 1, Capture: result}
+	d.Status.NodeName = p.Spec.NodeName
+	d.Status.RuntimeReports = []lab.OwnedRuntimeReport{lifecycleNativeReport(l, d, p)}
 	if err := c.Status().Update(ctx, d); err != nil {
 		t.Fatal(err)
 	}
