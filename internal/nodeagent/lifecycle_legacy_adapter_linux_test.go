@@ -218,7 +218,7 @@ func residualFabricFixture(t *testing.T, legacy bool) (*ConnectionReconciler, *l
 		}
 	}
 	flows := &FlowManager{client: scopeFlowAdapterWith(t, func() map[string]uint32 { return map[string]uint32{keys[0]: 7, keys[1]: 8} }, nil), nativeFlowRead: func(context.Context) ([]nativeFlow, error) {
-		return []nativeFlow{{InPort: 7, VNI: uint64(*a.Status.VNI), Raw: "actions=drop"}, {InPort: 8, VNI: uint64(*b.Status.VNI), Raw: "actions=drop"}}, nil
+		return []nativeFlow{{InPort: 7, VNI: uint64(*a.Status.VNI), HasVNI: true, Raw: "actions=drop"}, {InPort: 8, VNI: uint64(*b.Status.VNI), HasVNI: true, Raw: "actions=drop"}}, nil
 	}}
 	return &ConnectionReconciler{Client: c, Reader: c, OVS: &OVSManager{ctx: ctx, bridge: "br-ovs", client: db}, Flows: flows}, conn, a, b, db
 }
@@ -248,7 +248,9 @@ func TestResidualLegacyPatchPairRequiresExactTopologyLeasePeersAndFlowDomain(t *
 			key := legacyPatchPortName(c.Name, a.Spec.Name)
 			switch scenario {
 			case "foreign-domain":
-				r.Flows.nativeFlowRead = func(context.Context) ([]nativeFlow, error) { return []nativeFlow{{InPort: 7, VNI: 999}}, nil }
+				r.Flows.nativeFlowRead = func(context.Context) ([]nativeFlow, error) {
+					return []nativeFlow{{InPort: 7, VNI: 999, HasVNI: true}}, nil
+				}
 			case "foreign-peer":
 				options, _ := ovsdb.NewOvsMap(map[string]string{"peer": "foreign"})
 				db.interfaces[key]["options"] = options

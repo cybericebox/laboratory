@@ -71,14 +71,14 @@ func (r *ConnectionReconciler) migrateLegacySwitchPair(ctx context.Context, conn
 		matched := false
 		for _, flow := range flows {
 			if flow.InPort == no {
-				if flow.VNI != expected {
+				if !flow.HasVNI || flow.VNI != expected {
 					return fmt.Errorf("legacy ingress is in a foreign VNI domain")
 				}
 				matched = true
 			}
 			for _, out := range nativeOutput.FindAllStringSubmatch(flow.Raw, -1) {
 				number, _ := strconv.ParseUint(out[1], 10, 32)
-				if uint32(number) == no && flow.VNI != expected {
+				if uint32(number) == no && (!flow.HasVNI || flow.VNI != expected) {
 					return fmt.Errorf("legacy output belongs to a foreign VNI domain")
 				}
 			}

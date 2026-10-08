@@ -631,13 +631,21 @@ func (o *NativeRuntimeObserver) vniReleased(binding lab.OwnedVNI) bool {
 // Caller holds the common physical creation/retirement lock. Recovery consumes
 // a completed old lease receipt without deleting any later owner's numeric VNI.
 func (o *NativeRuntimeObserver) retireVNI(ctx context.Context, binding lab.OwnedVNI, flows *FlowManager) error {
+	if binding.VNI == 0 && !completeZeroVNIBinding(binding) {
+		return ErrPortOwnerUnknown
+	}
 	if o.vniReleased(binding) {
 		return nil
+	}
+	if binding.VNI == 0 {
+		if _, err := validateZeroVNIBinding(ctx, o.Reader, binding); err != nil {
+			return err
+		}
 	}
 	if err := poolpkg.ValidateLease(ctx, o.Reader, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, poolpkg.Lease{Index: binding.VNI, PoolUID: binding.PoolUID, OwnerUID: binding.UID, Generation: binding.LeaseGeneration}); err != nil {
 		return err
 	}
-	if o.Reader == nil || binding.UID == "" || binding.VNI == 0 {
+	if o.Reader == nil || binding.UID == "" {
 		return ErrPortOwnerUnknown
 	}
 	var object client.Object
@@ -716,6 +724,11 @@ func (o *NativeRuntimeObserver) retireVNI(ctx context.Context, binding lab.Owned
 	}
 	if fresh.GetUID() != object.GetUID() || fresh.GetResourceVersion() != object.GetResourceVersion() {
 		return ErrPortOwnerChanged
+	}
+	if binding.VNI == 0 {
+		if _, err := validateZeroVNIBinding(ctx, o.Reader, binding); err != nil {
+			return err
+		}
 	}
 	receipt.Complete = true
 	return o.writeRecord("vni-released", o.vniIdentity(binding), receipt)

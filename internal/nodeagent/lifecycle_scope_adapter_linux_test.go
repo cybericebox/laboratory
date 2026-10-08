@@ -254,7 +254,7 @@ func TestResidualPrephysicalDeploymentCaptureBeforeFirstCurrentReport(t *testing
 func TestResidualScopeOrphanVNIOnlyFlowCannotMintEmptyProof(t *testing.T) {
 	o, id := scopeProducerAdapter(t, nil, nil)
 	o.Network.Flows.nativeFlowRead = func(context.Context) ([]nativeFlow, error) {
-		return []nativeFlow{{VNI: 901, Raw: "table=6,metadata=0x385 actions=output:7"}}, nil
+		return []nativeFlow{{VNI: 901, HasVNI: true, Raw: "table=6,metadata=0x385 actions=output:7"}}, nil
 	}
 	report := o.ObserveScope(context.Background(), id)
 	if report.RuntimeState != "Unknown" || report.AttachmentsAbsentAt != nil {

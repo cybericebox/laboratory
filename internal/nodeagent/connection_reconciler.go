@@ -575,7 +575,7 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		if err := r.OVS.RetireVNIOwned(ctx, binding, r.Flows); err != nil {
+		if err := r.OVS.RetireVNIOwned(ctx, binding, r.Flows, r.zeroVNIRetirementAuthority()); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -628,7 +628,7 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 				if err != nil {
 					return ctrl.Result{}, err
 				}
-				if err := r.OVS.RetireVNIOwned(ctx, binding, r.Flows); err != nil {
+				if err := r.OVS.RetireVNIOwned(ctx, binding, r.Flows, r.zeroVNIRetirementAuthority()); err != nil {
 					return ctrl.Result{}, err
 				}
 			}

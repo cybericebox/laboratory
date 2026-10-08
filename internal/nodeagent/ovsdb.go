@@ -945,8 +945,11 @@ func (m *OVSManager) DelFabricPortOwned(key string, owner types.UID, flows *Flow
 
 // RetireVNIOwned serializes the immutable lease check, correlated flow barrier
 // and durable ACK with attachment creation. Numeric VNI alone is never an owner.
-func (m *OVSManager) RetireVNIOwned(ctx context.Context, binding lab.OwnedVNI, flows *FlowManager) error {
-	if binding.UID == "" || binding.VNI == 0 || flows == nil {
+func (m *OVSManager) RetireVNIOwned(ctx context.Context, binding lab.OwnedVNI, flows *FlowManager, authority ...func(context.Context, lab.OwnedVNI) error) error {
+	if binding.UID == "" || flows == nil {
+		return ErrPortOwnerUnknown
+	}
+	if binding.VNI == 0 && !completeZeroVNIBinding(binding) {
 		return ErrPortOwnerUnknown
 	}
 	m.vethMu.Lock()
@@ -954,7 +957,21 @@ func (m *OVSManager) RetireVNIOwned(ctx context.Context, binding lab.OwnedVNI, f
 	if m.VNIRetirement != nil {
 		return m.VNIRetirement(ctx, binding, flows)
 	}
-	return flows.RetireVNI(binding.VNI)
+	if binding.VNI != 0 {
+		return flows.RetireVNI(binding.VNI) // existing default-off nonzero legacy path
+	}
+	// Zero is a valid index, never missing authority. Without observation the
+	// direct caller must validate the actual Pool/object tuple under this lock.
+	if len(authority) == 0 || authority[0] == nil {
+		return ErrPortOwnerUnknown
+	}
+	if err := authority[0](ctx, binding); err != nil {
+		return err
+	}
+	if err := flows.RetireVNI(binding.VNI); err != nil {
+		return err
+	}
+	return authority[0](ctx, binding)
 }
 
 func (m *OVSManager) fabricSnapshotLocked(key string) (*OVSPort, error) {

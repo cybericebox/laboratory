@@ -24,6 +24,7 @@ import (
 type nativeFlow struct {
 	InPort uint32
 	VNI    uint64
+	HasVNI bool
 	Raw    string
 }
 
@@ -62,10 +63,11 @@ func parseNativeFlows(raw string) ([]nativeFlow, error) {
 			if err != nil {
 				return nil, err
 			}
-			if flow.VNI != 0 && flow.VNI != n {
+			if flow.HasVNI && flow.VNI != n {
 				return nil, fmt.Errorf("ambiguous native flow domain")
 			}
 			flow.VNI = n
+			flow.HasVNI = true
 		}
 		flows = append(flows, flow)
 	}
@@ -372,10 +374,10 @@ func (o *NativeRuntimeObserver) captureScopeAttachments(ctx context.Context, id 
 		if flow.InPort != 0 && !attributableFlowPort(flow.InPort, ports, rows, allFabric) && ports[GenevePort] != flow.InPort {
 			return fmt.Errorf("native ingress port has no exact owner")
 		}
-		if flow.VNI != 0 && !knownDomains[flow.VNI] {
+		if flow.HasVNI && !knownDomains[flow.VNI] {
 			return fmt.Errorf("unattributed native VNI flow without a current lease")
 		}
-		if flow.InPort == 0 && flow.VNI == 0 && !strings.HasSuffix(strings.TrimSpace(flow.Raw), "actions=drop") {
+		if flow.InPort == 0 && !flow.HasVNI && !strings.HasSuffix(strings.TrimSpace(flow.Raw), "actions=drop") {
 			return fmt.Errorf("native flow has no attributable ingress or VNI domain")
 		}
 		for _, output := range nativeOutput.FindAllStringSubmatch(flow.Raw, -1) {
@@ -386,7 +388,7 @@ func (o *NativeRuntimeObserver) captureScopeAttachments(ctx context.Context, id 
 		}
 		if final {
 			for _, binding := range id.VNIBindings {
-				if flow.VNI == uint64(binding.VNI) {
+				if flow.HasVNI && flow.VNI == uint64(binding.VNI) {
 					return fmt.Errorf("owned native VNI flow remains after retirement")
 				}
 			}
