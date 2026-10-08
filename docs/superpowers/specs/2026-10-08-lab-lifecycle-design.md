@@ -1,6 +1,6 @@
 # Lab lifecycle and one-team resource sizing
 
-Status: technical specification for owner review. The owner approved the product rules in conversation and requested parallel implementation. Product implementation starts after review of this contract and its implementation plan. No release or remote publication is part of this work.
+Status: owner approved on 2026-10-08 with the stage/group clarification incorporated below. The owner selected new branches in the current directories and parallel agents. Product implementation follows review of the implementation plan. No release or remote publication is part of this work.
 
 ## Product boundary
 
@@ -18,6 +18,8 @@ Each delivery receives its own implementation tasks and acceptance checks. The f
 ## Automatic completion invariant
 
 Stop exactly one team's shared Lab generation only when every pinned question/flag that depends on that generation is complete. Solving the first question of a multi-question laboratory must not close it. Other laboratories and other teams remain accessible. Practice completion may close its own environment without changing the existing distinction between rated and practice scores.
+
+A solved laboratory is terminal for participant runtime: nobody is expected to return to it, so a group resume, new stage or automatic deploy retry must never start it again. Progressive manual restart applies to manually stopped unresolved environments, not solved ones. Retained solved state is for inspection/history, not automatic renewed participation.
 
 Backend locks the canonical shared-laboratory aggregate before the question mutation. The answer transaction atomically records completion, logical access withdrawal, the desired lifecycle revision/operation ID and the ACL dirty revision. It performs no snapshot, agent RPC or runtime deletion synchronously. A durable record drives an idempotent background worker even if the process restarts or an immediate wake-up is lost.
 
@@ -49,7 +51,7 @@ Report configured requests/limits, actually held runtime requests, measured usag
 
 Count one allocation per shared Lab, one VPN/gateway overhead per team group, pending starts and retained storage. A stopped Lab frees device compute after acknowledgement; it does not free a fraction of a still-running group service. Reservation planning, per-node placement, measured usage and billable infrastructure remain separate.
 
-If an explicit full-group stop is later requested, require all child Labs confirmed stopped and no pending starts; stop VPN/gateway as well while retaining the group identity/configuration. Group start alone never changes child stopped intent.
+At an inter-stage pause, the system first stops the current stage's remaining unresolved laboratories with the configured snapshot policy, then requests group stop after every child is confirmed stopped and no starts are pending. Stop VPN/gateway as well while retaining the group identity/configuration. Group start alone never changes child stopped intent.
 
 ## Minimalist sizing
 
@@ -68,6 +70,8 @@ Raw extraction and Linux proof plan: `/Users/volodymyrporokhniak/.codex/outputs/
 `as_ready`: explicit participant stop does not solve a task, keeps score/progress, and can be explicitly restarted if stage access, active-lab limit, event budget and cluster placement permit it. No automatic resurrection. Do not confuse publication mode with the existing rolling-roster join policy.
 
 Stage closure withdraws runtime access; retention determines stopped preservation versus deletion. Keep event results/history independent of infrastructure deletion. Existing returnable-stage practice must not be silently removed. Moderator forced per-team stop powers remain outside this work until separately decided.
+
+Closing a stage is a stop, not immediate deletion. Definitions, snapshots and inspection records remain through the configured retention period; expiration initiates deletion with separate confirmation. If the next stage has not started, the team's group may remain stopped. Before its opening, use the existing deployment lead/preparation window to restart group services and only the unresolved laboratories explicitly needed by that next stage, restoring their retained settings. Time to prepare group services, restore snapshots and wire laboratory networks is included in readiness; task opening is never inferred from mere command acceptance or Pod Running. Already solved laboratories remain stopped through this preparation.
 
 ## Consumer ownership and compatibility
 
