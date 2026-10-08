@@ -36,13 +36,15 @@ func tarOf(files map[string]string) []byte {
 }
 
 type fakeRuntime struct {
-	mu     sync.Mutex
-	upper  string
-	diff   []byte
-	images map[string]v1.Image
-	freeze []bool
-	gone   bool
-	held   bool
+	mu           sync.Mutex
+	upper        string
+	imageRef     string
+	diff         []byte
+	images       map[string]v1.Image
+	freeze       []bool
+	gone         bool
+	held         bool
+	thawFailures int
 	// failDiff is the number of Diff calls that fail before one succeeds.
 	failDiff int
 	diffs    int
@@ -54,7 +56,11 @@ func (f *fakeRuntime) Inspect(_ context.Context, id string) (Container, error) {
 	if f.gone {
 		return Container{}, fmt.Errorf("container %s not found", id)
 	}
-	return Container{ID: id, ImageRef: "docker.io/library/app:1", UpperDir: f.upper, Cgroup: f.upper}, nil
+	ref := f.imageRef
+	if ref == "" {
+		ref = "docker.io/library/app:1"
+	}
+	return Container{ID: id, ImageRef: ref, UpperDir: f.upper, Cgroup: f.upper, OwnershipKnown: true}, nil
 }
 
 func (f *fakeRuntime) Diff(_ context.Context, _ Container, freeze bool) (io.ReadCloser, error) {
@@ -97,6 +103,8 @@ type fakeCluster struct {
 	// tenantBytes is what the other devices of the tenant take in the registry.
 	tenantBytes   int64
 	invalidateErr error
+	checkFailures int
+	onInvalidate  func()
 	deleting      bool
 	capture       api.DeviceCaptureResult
 	guard         api.DeviceCaptureResult
@@ -469,14 +477,14 @@ func TestEngineHonoursTheTenantRegistryQuota(t *testing.T) {
 	}
 }
 
-func (f *fakeRuntime) Quiesce(ctx context.Context, c Container) (func(), error) {
+func (f *fakeRuntime) Quiesce(ctx context.Context, c Container) (func() error, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	f.mu.Lock()
 	f.held = true
 	f.mu.Unlock()
-	return func() { f.mu.Lock(); f.held = false; f.mu.Unlock() }, nil
+	return func() error { return f.Thaw(context.Background(), c) }, nil
 }
 func (f *fakeRuntime) TaskAlive(context.Context, Container) (bool, error) {
 	f.mu.Lock()
@@ -498,6 +506,9 @@ func (c *fakeCluster) RecordCapture(_ context.Context, _ PodInfo, r api.DeviceCa
 func (c *fakeCluster) InvalidateCapture(_ context.Context, _ PodInfo, result api.DeviceCaptureResult) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.onInvalidate != nil {
+		c.onInvalidate()
+	}
 	if c.deleting {
 		return ErrDeleting
 	}
@@ -514,6 +525,10 @@ func (c *fakeCluster) InvalidateCapture(_ context.Context, _ PodInfo, result api
 func (c *fakeCluster) CheckCapture(_ context.Context, _ PodInfo, result api.DeviceCaptureResult) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.checkFailures > 0 {
+		c.checkFailures--
+		return false, errors.New("API unavailable")
+	}
 	if c.deleting {
 		return true, nil
 	}
@@ -521,4 +536,15 @@ func (c *fakeCluster) CheckCapture(_ context.Context, _ PodInfo, result api.Devi
 		return false, ErrStale
 	}
 	return false, nil
+}
+
+func (f *fakeRuntime) Thaw(context.Context, Container) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.thawFailures > 0 {
+		f.thawFailures--
+		return errors.New("thaw unavailable")
+	}
+	f.held = false
+	return nil
 }

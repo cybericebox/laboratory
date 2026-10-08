@@ -159,3 +159,33 @@ func isContainerID(s string) bool {
 	}
 	return true
 }
+
+// FreezeRequired retains ownership of the requested freeze even if confirmation
+// fails. Its caller must fence the API before thawing, or wait for actual death.
+// Ordinary snapshots keep using Freeze's automatic error cleanup.
+func FreezeRequired(ctx context.Context, dir string) (thaw func() error, err error) {
+	if dir == "" {
+		return nil, ErrNoFreezer
+	}
+	freeze := filepath.Join(dir, "cgroup.freeze")
+	if _, err := os.Stat(freeze); err != nil {
+		return nil, ErrNoFreezer
+	}
+	if err := os.WriteFile(freeze, []byte("1"), 0644); err != nil {
+		return nil, fmt.Errorf("freeze %s: %w", dir, err)
+	}
+	thaw = func() error { return os.WriteFile(freeze, []byte("0"), 0644) }
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := ctx.Err(); err != nil {
+			return thaw, fmt.Errorf("confirm required freeze %s: %w", dir, err)
+		}
+		if frozen(dir) {
+			return thaw, nil
+		}
+		if time.Now().After(deadline) {
+			return thaw, fmt.Errorf("confirm required freeze %s: not frozen after 5s", dir)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}

@@ -344,6 +344,7 @@ func TestRequiredCaptureDoesNotAcceptLegacyRefusedDigest(t *testing.T) {
 	}
 	saved := r.reg.Host + "/" + r.pod.Repo + "@sha256:saved"
 	r.rt.images[saved] = img
+	r.rt.imageRef = saved
 	tr.c.ImageRef = saved
 	tr.lastSnapshot = Snapshot{Image: saved, SizeBytes: 8, Layers: 1}
 	tr.pushed = true

@@ -114,6 +114,7 @@ type tracked struct {
 	lastWarn          string
 	exited            bool
 	required          *requiredHold
+	watching          bool // a normal persistence watcher exists, rather than a recovery placeholder
 	lastSnapshot      Snapshot
 	failures          int // consecutive failed live snapshots (touched by the live loop only)
 	// prevRef is the manifest this device currently has in the registry (the one it was restored from, or its last snapshot); a
@@ -349,7 +350,7 @@ func (e *Engine) warnOnce(ctx context.Context, p PodInfo, msg string) {
 // track registers the container and starts its change watcher.
 func (e *Engine) track(ctx context.Context, p PodInfo, c Container) *tracked {
 	wctx, cancel := context.WithCancel(ctx)
-	t := &tracked{e: e, pod: p, c: c, cancel: cancel, prevRef: e.snapshotRef(c.ImageRef)}
+	t := &tracked{e: e, pod: p, c: c, cancel: cancel, watching: true, prevRef: e.snapshotRef(c.ImageRef)}
 	e.mu.Lock()
 	if old, ok := e.tracked[p.ContainerID]; ok {
 		e.mu.Unlock()

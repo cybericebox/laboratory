@@ -22,7 +22,7 @@ type requiredHold struct {
 	Result    api.DeviceCaptureResult
 	Container Container
 	Pod       PodInfo
-	thaw      func()
+	thaw      func() error
 	journal   string
 }
 
@@ -66,6 +66,13 @@ func (e *Engine) CaptureRequired(ctx context.Context, p PodInfo, req api.DeviceC
 		failureCancel()
 		return result, err
 	}
+	if !c.OwnershipKnown {
+		result, _ = fail(errors.New("required capture OCI ownership mappings unavailable"))
+		failureCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = cl.RecordCapture(failureCtx, p, result)
+		return result, errors.New(result.Error)
+	}
 	e.mu.Lock()
 	if e.tracked == nil {
 		e.tracked = map[string]*tracked{}
@@ -91,6 +98,9 @@ func (e *Engine) CaptureRequired(ctx context.Context, p PodInfo, req api.DeviceC
 		}
 		return fail(errors.New("prior capture is still held"))
 	}
+	// Strict capture always uses the successfully inspected current OCI metadata.
+	t.c = c
+	t.pod = p
 	h := &requiredHold{Result: result, Container: c, Pod: p}
 	previousDiff, previousPublishedDiff, previousPushed, previousSnapshot := t.lastDiff, t.lastPublishedDiff, t.pushed, t.lastSnapshot
 	// Persist before freezing, so even a force-deleted Pod cannot erase crash recovery's hold identity.
@@ -140,7 +150,12 @@ func (e *Engine) CaptureRequired(ctx context.Context, p PodInfo, req api.DeviceC
 		invErr := cl.InvalidateCapture(cleanup, p, result)
 		if invErr == nil {
 			if h.thaw != nil {
-				h.thaw()
+				if thawErr := h.thaw(); thawErr != nil {
+					t.required = h
+					e.holdWorkers.Add(1)
+					go e.watchHold(ctx, t, h, rt, cl, time.Now())
+					return result, errors.Join(err, thawErr)
+				}
 			}
 			_ = os.Remove(h.journal)
 			return result, err
@@ -224,8 +239,12 @@ func (e *Engine) watchHold(parent context.Context, t *tracked, h *requiredHold, 
 			failed.Quiesced = false
 			failed.Error = "required capture expired or was superseded"
 			if cl.InvalidateCapture(ctx, h.Pod, failed) == nil {
+				// A nil handle means Quiesce failed before requesting a freeze.
 				if h.thaw != nil {
-					h.thaw()
+					if thawErr := h.thaw(); thawErr != nil {
+						cancel()
+						continue
+					}
 				}
 				cancel()
 				t.mu.Lock()
@@ -234,6 +253,15 @@ func (e *Engine) watchHold(parent context.Context, t *tracked, h *requiredHold, 
 				}
 				t.mu.Unlock()
 				_ = os.Remove(h.journal)
+				if !t.watching {
+					t.cancel()
+					e.mu.Lock()
+					if e.tracked[h.Container.ID] == t {
+						delete(e.tracked, h.Container.ID)
+					}
+					e.mu.Unlock()
+					// Next Engine.Sync reestablishes normal tracking from current Pod info.
+				}
 				return
 			}
 		}
@@ -324,11 +352,16 @@ func (e *Engine) RecoverCaptureHolds(ctx context.Context) (map[string]bool, erro
 			_ = os.Remove(h.journal)
 			continue
 		}
-		deleting, checkErr := cl.CheckCapture(ctx, h.Pod, h.Result)
-		if checkErr != nil && !errors.Is(checkErr, ErrStale) || deleting {
-			if h.Container.Cgroup == "" {
-				return nil, errors.New("required hold has no recoverable cgroup")
-			}
+
+		if h.Container.Cgroup == "" {
+			return nil, errors.New("required hold has no recoverable cgroup")
+		}
+		h.thaw = func() error {
+			thawCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			return rt.Thaw(thawCtx, h.Container)
+		}
+		preserve := func() {
 			protected[h.Container.Cgroup] = true
 			e.mu.Lock()
 			if e.tracked == nil {
@@ -338,7 +371,11 @@ func (e *Engine) RecoverCaptureHolds(ctx context.Context) (map[string]bool, erro
 			e.tracked[h.Container.ID] = t
 			e.mu.Unlock()
 			e.holdWorkers.Add(1)
-			go e.watchHold(context.Background(), t, h, rt, cl, time.Now())
+			go e.watchHold(ctx, t, h, rt, cl, time.Now())
+		}
+		deleting, checkErr := cl.CheckCapture(ctx, h.Pod, h.Result)
+		if checkErr != nil && !errors.Is(checkErr, ErrStale) || deleting {
+			preserve()
 			continue
 		}
 		failed := h.Result
@@ -348,12 +385,17 @@ func (e *Engine) RecoverCaptureHolds(ctx context.Context) (map[string]bool, erro
 		failed.Error = "node-agent restarted"
 		if err = cl.InvalidateCapture(ctx, h.Pod, failed); err != nil {
 			if errors.Is(err, ErrDeleting) {
-				protected[h.Container.Cgroup] = true
+				preserve()
 				continue
 			}
 			return nil, err
 		}
+		if err = h.thaw(); err != nil {
+			preserve()
+			continue
+		}
 		_ = os.Remove(h.journal)
+
 	}
 	return protected, nil
 }

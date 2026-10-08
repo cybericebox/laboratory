@@ -60,7 +60,7 @@ func TestRequiredCaptureNativeFreezer(t *testing.T) {
 	time.Sleep(80 * time.Millisecond)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	thaw, err := Freeze(ctx, dir)
+	thaw, err := FreezeRequired(ctx, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,10 +80,108 @@ func TestRequiredCaptureNativeFreezer(t *testing.T) {
 	if !frozen(dir) {
 		t.Fatal("protected required capture thawed during recovery")
 	}
-	thaw()
+	cancelled, cancelFreeze := context.WithCancel(context.Background())
+	cancelFreeze()
+	pendingThaw, freezeErr := FreezeRequired(cancelled, dir)
+	if freezeErr == nil || pendingThaw == nil || !frozen(dir) {
+		t.Fatalf("native cancelled strict freeze lost ownership: %v", freezeErr)
+	}
+	_ = thaw // same owned freeze request remains; only fenced caller releases it
+	if err := pendingThaw(); err != nil {
+		t.Fatal(err)
+	}
 	time.Sleep(80 * time.Millisecond)
 	after, _ = os.ReadFile(path)
 	if len(after) <= len(before) {
 		t.Fatal("writer did not resume after owned thaw")
 	}
+}
+
+type nativeRecoveryRuntime struct {
+	*fakeRuntime
+	dir string
+}
+
+func (r *nativeRecoveryRuntime) Inspect(ctx context.Context, id string) (Container, error) {
+	c, err := r.fakeRuntime.Inspect(ctx, id)
+	c.Cgroup = r.dir
+	return c, err
+}
+func (r *nativeRecoveryRuntime) Thaw(_ context.Context, c Container) error {
+	if c.Cgroup != r.dir {
+		return ErrStale
+	}
+	return os.WriteFile(filepath.Join(r.dir, "cgroup.freeze"), []byte("0"), 0644)
+}
+
+func TestRequiredCaptureNativeRecoveryAfterAPIOutage(t *testing.T) {
+	if os.Getenv("CICE_CAPTURE_NATIVE") != "1" {
+		t.Skip("requires owned privileged Linux container")
+	}
+	r := newRig(t, time.Hour, 1<<20)
+	req := captureRequest(r)
+	dir := filepath.Join("/sys/fs/cgroup", "cri-containerd-cice-recovery-"+strconv.Itoa(os.Getpid()))
+	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(dir)
+	path := filepath.Join(t.TempDir(), "ticks")
+	child := exec.Command("sh", "-c", "while :; do echo x >> \"$1\"; sleep 0.01; done", "writer", path)
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.WriteFile(filepath.Join(dir, "cgroup.freeze"), []byte("0"), 0644)
+		_ = child.Process.Kill()
+		_ = child.Wait()
+	}()
+	if err := os.WriteFile(filepath.Join(dir, "cgroup.procs"), []byte(strconv.Itoa(child.Process.Pid)), 0644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(80 * time.Millisecond)
+	_, err := FreezeRequired(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &nativeRecoveryRuntime{fakeRuntime: r.rt, dir: dir}
+	r.e.Runtime = runtime
+	r.e.NodeAgentEpoch = "boot-b"
+	c, err := runtime.Inspect(context.Background(), r.pod.ContainerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &requiredHold{Container: c, Pod: r.pod, Result: captureResult(r.pod, req, "boot-a")}
+	if err := r.e.writeHold(h); err != nil {
+		t.Fatal(err)
+	}
+	r.cl.guard = h.Result
+	r.cl.checkFailures = 1
+	protected, err := r.e.RecoverCaptureHolds(context.Background())
+	if err != nil || !protected[dir] {
+		t.Fatalf("native recovery: %v %v", protected, err)
+	}
+	ThawOrphansExcept("/sys/fs/cgroup", protected)
+	if !frozen(dir) {
+		t.Fatal("API-outage recovery thawed before invalidation")
+	}
+	before, _ := os.ReadFile(path)
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		after, _ := os.ReadFile(path)
+		if len(after) > len(before) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("API recovery never resumed the real frozen writer")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	r.cl.mu.Lock()
+	result := r.cl.capture
+	r.cl.mu.Unlock()
+	if result.GuardState != "Invalidated" || result.Result != "Failed" {
+		t.Fatalf("native writer resumed without failed API fence: %+v", result)
+	}
+	r.e.holdWorkers.Wait()
+	r.e.stopAll()
 }

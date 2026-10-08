@@ -68,6 +68,8 @@ type Container struct {
 	// IDs are the user and group id maps of the container's user namespace (empty without one): the diff of its writable layer
 	// holds host ids, which a snapshot must not keep.
 	IDs snapshot.IDMaps
+	// OwnershipKnown distinguishes a read OCI no-userns map from missing metadata.
+	OwnershipKnown bool
 }
 
 // Runtime is the container runtime facade.
@@ -140,7 +142,10 @@ type Pusher interface {
 
 // RequiredRuntime must fail when strict quiescence or task liveness cannot be established.
 type RequiredRuntime interface {
-	Quiesce(context.Context, Container) (func(), error)
+	// Quiesce returns an owned thaw handle whenever freeze was requested, even on error.
+	Quiesce(context.Context, Container) (func() error, error)
+	// Thaw releases a known current container hold only after caller API invalidation.
+	Thaw(context.Context, Container) error
 	TaskAlive(context.Context, Container) (bool, error)
 }
 

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -80,10 +82,7 @@ func (r *ContainerdRuntime) Inspect(ctx context.Context, id string) (Container, 
 		return Container{}, fmt.Errorf("snapshotter %q has no overlay upper directory (state persistence needs the overlayfs snapshotter)", info.Snapshotter)
 	}
 	c := Container{ID: id, ImageRef: info.Image, UpperDir: upper, Snapshotter: info.Snapshotter, SnapshotKey: info.SnapshotKey}
-	if spec, err := cont.Spec(ctx); err == nil && spec.Linux != nil {
-		c.Cgroup = CgroupDir(r.cgroupRoot, spec.Linux.CgroupsPath)
-		c.IDs = snapshot.IDMaps{UID: idMapOf(spec.Linux.UIDMappings), GID: idMapOf(spec.Linux.GIDMappings)}
-	}
+	inspectContainerSpec(ctx, &c, cont.Spec, r.cgroupRoot)
 	if c.Cgroup == "" && r.cgroupRoot != "" {
 		c.Cgroup = FindCgroup(r.cgroupRoot, id)
 	}
@@ -324,7 +323,7 @@ func (r *ContainerdRuntime) Exits(ctx context.Context) (<-chan string, error) {
 
 // Quiesce uses the native freezer and treats sync failures as required-capture failures.
 // On sync failure the caller still owns the thaw function and must invalidate first.
-func (r *ContainerdRuntime) Quiesce(ctx context.Context, c Container) (func(), error) {
+func (r *ContainerdRuntime) Quiesce(ctx context.Context, c Container) (func() error, error) {
 	cont, err := r.client.LoadContainer(r.ctx(ctx), c.ID)
 	if err != nil {
 		return nil, err
@@ -332,9 +331,9 @@ func (r *ContainerdRuntime) Quiesce(ctx context.Context, c Container) (func(), e
 	if _, err = cont.Task(r.ctx(ctx), nil); err != nil {
 		return nil, err
 	}
-	thaw, err := Freeze(ctx, c.Cgroup)
+	thaw, err := FreezeRequired(ctx, c.Cgroup)
 	if err != nil {
-		return nil, err
+		return thaw, err
 	}
 	return thaw, syncFilesystem(c.UpperDir)
 }
@@ -358,4 +357,56 @@ func (r *ContainerdRuntime) TaskAlive(ctx context.Context, c Container) (bool, e
 		return false, err
 	}
 	return status.Status != containerd.Stopped, nil
+}
+
+// Thaw verifies the task's current cgroup identity; callers own API fencing.
+func (r *ContainerdRuntime) Thaw(ctx context.Context, c Container) error {
+	current, err := r.Inspect(ctx, c.ID)
+	if err != nil {
+		return err
+	}
+	if current.Cgroup == "" || current.Cgroup != c.Cgroup {
+		return ErrStale
+	}
+	return os.WriteFile(filepath.Join(current.Cgroup, "cgroup.freeze"), []byte("0"), 0644)
+}
+
+// inspectContainerSpec keeps legacy best-effort inspection but explicitly marks
+// unknown ownership metadata, so required capture cannot treat it as identity.
+func inspectContainerSpec(ctx context.Context, c *Container, read func(context.Context) (*specs.Spec, error), root string) {
+	c.OwnershipKnown = false
+	c.IDs = snapshot.IDMaps{}
+	spec, err := read(ctx)
+	if err != nil || spec == nil || spec.Linux == nil {
+		return
+	}
+	c.Cgroup = CgroupDir(root, spec.Linux.CgroupsPath)
+	userns := false
+	for _, ns := range spec.Linux.Namespaces {
+		if ns.Type == specs.UserNamespace {
+			userns = true
+		}
+	}
+	uid, gid := spec.Linux.UIDMappings, spec.Linux.GIDMappings
+	if userns && (len(uid) == 0 || len(gid) == 0) || ((len(uid) > 0) != (len(gid) > 0)) {
+		return
+	}
+	if !validIDMappings(uid) || !validIDMappings(gid) {
+		return
+	}
+	c.IDs = snapshot.IDMaps{UID: idMapOf(uid), GID: idMapOf(gid)}
+	c.OwnershipKnown = true
+}
+func validIDMappings(m []specs.LinuxIDMapping) bool {
+	for i, a := range m {
+		if a.Size == 0 || uint64(a.ContainerID)+uint64(a.Size) > 1<<32 || uint64(a.HostID)+uint64(a.Size) > 1<<32 {
+			return false
+		}
+		for _, b := range m[:i] {
+			if uint64(a.ContainerID) < uint64(b.ContainerID)+uint64(b.Size) && uint64(b.ContainerID) < uint64(a.ContainerID)+uint64(a.Size) || uint64(a.HostID) < uint64(b.HostID)+uint64(b.Size) && uint64(b.HostID) < uint64(a.HostID)+uint64(a.Size) {
+				return false
+			}
+		}
+	}
+	return true
 }
