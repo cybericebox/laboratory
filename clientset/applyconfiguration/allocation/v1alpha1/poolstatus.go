@@ -22,6 +22,9 @@ package v1alpha1
 //
 // PoolStatus holds the mutable allocation state.
 type PoolStatusApplyConfiguration struct {
+	// Lease owners and bitmap change in the same resourceVersion CAS.
+	Leases              map[string]PoolLeaseApplyConfiguration `json:"leases,omitempty"`
+	NextLeaseGeneration *int64                                 `json:"nextLeaseGeneration,omitempty"`
 	// Free is the count of unallocated slots; mirrored to label pool.cybericebox.com/free.
 	Free *uint `json:"free,omitempty"`
 	// BitMap is a base64-encoded bitset (one bit per slot, 1 = allocated).
@@ -32,6 +35,28 @@ type PoolStatusApplyConfiguration struct {
 // apply.
 func PoolStatus() *PoolStatusApplyConfiguration {
 	return &PoolStatusApplyConfiguration{}
+}
+
+// WithLeases puts the entries into the Leases field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, the entries provided by each call will be put on the Leases field,
+// overwriting an existing map entries in Leases field with the same key.
+func (b *PoolStatusApplyConfiguration) WithLeases(entries map[string]PoolLeaseApplyConfiguration) *PoolStatusApplyConfiguration {
+	if b.Leases == nil && len(entries) > 0 {
+		b.Leases = make(map[string]PoolLeaseApplyConfiguration, len(entries))
+	}
+	for k, v := range entries {
+		b.Leases[k] = v
+	}
+	return b
+}
+
+// WithNextLeaseGeneration sets the NextLeaseGeneration field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the NextLeaseGeneration field is set to the value of the last call.
+func (b *PoolStatusApplyConfiguration) WithNextLeaseGeneration(value int64) *PoolStatusApplyConfiguration {
+	b.NextLeaseGeneration = &value
+	return b
 }
 
 // WithFree sets the Free field in the declarative configuration to the given value

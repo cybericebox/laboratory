@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
@@ -192,11 +193,20 @@ func (r *ConnectionReconciler) reconcileDeviceDevice(
 				return ctrl.Result{}, err
 			}
 			portStatus.PodUID = string(owner)
+			r.OVS.mu.Lock()
+			row, err := r.OVS.portSnapshotLocked(pKey)
+			r.OVS.mu.Unlock()
+			if err != nil || row == nil || row.ExternalIDs[portOwnerExternalID] != string(owner) {
+				return ctrl.Result{}, ErrPortOwnerChanged
+			}
+			portStatus.RowUUID = row.UUID
 			portStatus.PortID = pKey
 			portStatus.Connected = true
 		} else {
 			for _, existing := range conn.Status.Ports {
 				if existing.Device == ep.endpoint.Device && existing.Interface == ep.endpoint.Interface {
+					portStatus.PodUID = existing.PodUID
+					portStatus.RowUUID = existing.RowUUID
 					portStatus.PortID = existing.PortID
 					portStatus.Connected = existing.Connected
 					break
@@ -293,11 +303,20 @@ func (r *ConnectionReconciler) reconcileDeviceSwitch(
 			return ctrl.Result{}, err
 		}
 		portStatus.PodUID = string(owner)
+		r.OVS.mu.Lock()
+		row, err := r.OVS.portSnapshotLocked(pKey)
+		r.OVS.mu.Unlock()
+		if err != nil || row == nil || row.ExternalIDs[portOwnerExternalID] != string(owner) {
+			return ctrl.Result{}, ErrPortOwnerChanged
+		}
+		portStatus.RowUUID = row.UUID
 		portStatus.PortID = pKey
 		portStatus.Connected = true
 	} else {
 		for _, existing := range conn.Status.Ports {
 			if existing.Device == devEp.endpoint.Device && existing.Interface == devEp.endpoint.Interface {
+				portStatus.PodUID = existing.PodUID
+				portStatus.RowUUID = existing.RowUUID
 				portStatus.PortID = existing.PortID
 				portStatus.Connected = existing.Connected
 				break
@@ -368,8 +387,9 @@ func (r *ConnectionReconciler) reconcileSwitchSwitch(
 	for _, dev := range []string{ep0.endpoint.Device, ep1.endpoint.Device} {
 		old := legacyPatchPortName(conn.Name, dev)
 		if exists, err := r.OVS.PortExists(old); err == nil && exists {
-			_ = r.Flows.DelT0Port(old)
-			_ = r.OVS.DelPort(old)
+			if err := r.OVS.DelFabricPortOwned(old, conn.UID, r.Flows); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 	}
 
@@ -519,6 +539,29 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 	ctrl.Result,
 	error,
 ) {
+	// A cached stop/delete may not authorize work against a replacement or a
+	// newer Running intent. Exact current reads precede each owned primitive.
+	var current laboratoryv1alpha1.Connection
+	if err := r.directReader().Get(ctx, client.ObjectKeyFromObject(conn), &current); err != nil {
+		return ctrl.Result{}, err
+	}
+	if current.UID != conn.UID || current.ResourceVersion != conn.ResourceVersion {
+		return ctrl.Result{}, ErrPortOwnerChanged
+	}
+	active, err := labRuntimeActive(ctx, r.directReader(), conn.Namespace, conn.Spec.LabRef)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	var parent laboratoryv1alpha1.Lab
+	if err := r.directReader().Get(ctx, client.ObjectKey{Namespace: conn.Namespace, Name: conn.Spec.LabRef}, &parent); err != nil {
+		return ctrl.Result{}, err
+	}
+	if current.DeletionTimestamp.IsZero() && parent.DeletionTimestamp.IsZero() && !parent.Spec.Lifecycle.IsStopped() {
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
+	if active && current.DeletionTimestamp.IsZero() {
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
 	// Remove local device ports from OVS and their t0 entries.
 	for _, port := range conn.Status.Ports {
 		if port.NodeName != r.NodeName || port.PortID == "" {
@@ -528,20 +571,27 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 			return ctrl.Result{}, ErrPortOwnerUnknown
 		}
 		network := &NetworkAttachReconciler{OVS: r.OVS, Flows: r.Flows}
-		if err := network.DelVethWithFlowsOwned(port.PortID, types.UID(port.PodUID)); err != nil {
+		if err := network.DelVethWithFlowsExpected(port.PortID, types.UID(port.PodUID), port.RowUUID); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 
 	// Remove t6 flood for the connection's own VNI (device↔device case).
 	if conn.Status.VNI != nil {
-		if err := r.Flows.RetireVNI(*conn.Status.VNI); err != nil {
+		binding, err := r.connectionVNIBinding(ctx, conn, "Connection", conn.Name, string(conn.UID), *conn.Status.VNI)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.OVS.RetireVNIOwned(ctx, binding, r.Flows); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 
 	// For each switch endpoint: remove patch port + rebuild t6 from remaining connections.
 	for _, ep := range conn.Spec.Endpoints {
+		if ep.Device == "vpn" || ep.Device == "internet" {
+			continue
+		}
 		found, err := devices.Get(ctx, r.Client, conn.Namespace, conn.Spec.LabRef, ep.Device)
 		if err != nil {
 			return ctrl.Result{}, err
@@ -555,8 +605,19 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 
 		// Remove patch port for this side (switch↔switch case).
 		pName := patchPortName(conn.Namespace, conn.Name, ep.Device)
-		if err := r.OVS.DelFabricPortOwned(pName, conn.UID, r.Flows); err != nil {
-			return ctrl.Result{}, err
+		if len(conn.Spec.Endpoints) == 2 {
+			peer, err := devices.Get(ctx, r.directReader(), conn.Namespace, conn.Spec.LabRef, conn.Spec.Endpoints[1].Device)
+			if conn.Spec.Endpoints[1].Device == ep.Device {
+				peer, err = devices.Get(ctx, r.directReader(), conn.Namespace, conn.Spec.LabRef, conn.Spec.Endpoints[0].Device)
+			}
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if peer.Spec.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch || peer.Spec.Type == laboratoryv1alpha1.DeviceTypeHub {
+				if err := r.OVS.DelFabricPortOwned(pName, conn.UID, r.Flows); err != nil {
+					return ctrl.Result{}, err
+				}
+			}
 		}
 
 		// Rebuild t6 for this switch's VNI from the remaining connections.
@@ -570,13 +631,30 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 					return ctrl.Result{}, err
 				}
 			} else {
-				if err := r.Flows.RetireVNI(*dev.Status.VNI); err != nil {
+				binding, err := r.connectionVNIBinding(ctx, conn, "Device", dev.Name, string(dev.UID), *dev.Status.VNI)
+				if err != nil {
+					return ctrl.Result{}, err
+				}
+				if err := r.OVS.RetireVNIOwned(ctx, binding, r.Flows); err != nil {
 					return ctrl.Result{}, err
 				}
 			}
 		}
 	}
 
+	if r.OVS.VNIRetirement != nil {
+		var parent laboratoryv1alpha1.Lab
+		if err := r.directReader().Get(ctx, client.ObjectKey{Namespace: conn.Namespace, Name: conn.Spec.LabRef}, &parent); err != nil {
+			return ctrl.Result{}, err
+		}
+		for _, scope := range parent.Status.ScopeInventory {
+			for _, binding := range scope.VNIBindings {
+				if binding.UID == string(conn.UID) && !laboratoryv1alpha1.VNILeaseReleased(&parent, binding) {
+					return ctrl.Result{RequeueAfter: time.Second}, nil
+				}
+			}
+		}
+	}
 	controllerutil.RemoveFinalizer(conn, names.FinalizerOVSCleanup)
 	return ctrl.Result{}, r.Update(ctx, conn)
 }
@@ -633,6 +711,7 @@ func (r *ConnectionReconciler) loadEndpoints(ctx context.Context, conn *laborato
 			pod := pods.Items[0]
 			synth := laboratoryv1alpha1.Device{}
 			synth.Spec.Type = laboratoryv1alpha1.DeviceTypeContainer
+			synth.Status.PodName = pod.Name
 			synth.Status.NodeName = pod.Spec.NodeName
 			synth.Status.NodeAddress = r.nodeAddressForNode(ctx, pod.Spec.NodeName)
 			synth.Name = fmt.Sprintf("%s-%s", conn.Spec.LabRef, ep.Device)
@@ -804,8 +883,43 @@ func (r *ConnectionReconciler) ownedConnectionPort(ctx context.Context, conn *la
 	if err := r.directReader().Get(ctx, client.ObjectKey{Namespace: conn.Namespace, Name: podName}, &pod); err != nil {
 		return "", err
 	}
-	if pod.Labels[names.LabelLab] != conn.Spec.LabRef || pod.UID == "" {
+	if pod.UID == "" {
 		return "", ErrPortOwnerChanged
+	}
+	if pod.Labels[names.LabelLab] != conn.Spec.LabRef {
+		var groups laboratoryv1alpha1.LabGroupList
+		if err := r.directReader().List(ctx, &groups); err != nil {
+			return "", err
+		}
+		owned := false
+		for _, group := range groups.Items {
+			if laboratoryv1alpha1.LabGroupNamespaceOf(&group) != conn.Namespace {
+				continue
+			}
+			for _, ref := range pod.OwnerReferences {
+				if ref.Kind == "ReplicaSet" {
+					var rs appsv1.ReplicaSet
+					if err := r.directReader().Get(ctx, client.ObjectKey{Namespace: conn.Namespace, Name: ref.Name}, &rs); err != nil {
+						return "", err
+					}
+					if rs.UID != ref.UID {
+						return "", ErrPortOwnerChanged
+					}
+					for _, parent := range rs.OwnerReferences {
+						if parent.Kind == "Deployment" {
+							var dep appsv1.Deployment
+							if err := r.directReader().Get(ctx, client.ObjectKey{Namespace: conn.Namespace, Name: parent.Name}, &dep); err != nil {
+								return "", err
+							}
+							owned = owned || dep.UID == parent.UID && nativeGroupDeploymentOwned(&dep, string(group.UID))
+						}
+					}
+				}
+			}
+		}
+		if !owned {
+			return "", ErrPortOwnerChanged
+		}
 	}
 	owners, err := r.OVS.PortOwners()
 	if err != nil {
@@ -815,4 +929,31 @@ func (r *ConnectionReconciler) ownedConnectionPort(ctx context.Context, conn *la
 		return "", ErrPortOwnerChanged
 	}
 	return pod.UID, nil
+}
+
+func (r *ConnectionReconciler) connectionVNIBinding(ctx context.Context, conn *laboratoryv1alpha1.Connection, kind, name, uid string, vni uint) (laboratoryv1alpha1.OwnedVNI, error) {
+	var parent laboratoryv1alpha1.Lab
+	if err := r.directReader().Get(ctx, client.ObjectKey{Namespace: conn.Namespace, Name: conn.Spec.LabRef}, &parent); err != nil {
+		return laboratoryv1alpha1.OwnedVNI{}, err
+	}
+	op, rev := nativeLabOperation(&parent)
+	var lease *laboratoryv1alpha1.VNILease
+	if kind == "Connection" {
+		lease = conn.Status.VNILease
+	} else {
+		var d laboratoryv1alpha1.Device
+		if err := r.directReader().Get(ctx, client.ObjectKey{Namespace: conn.Namespace, Name: name}, &d); err != nil {
+			return laboratoryv1alpha1.OwnedVNI{}, err
+		}
+		lease = d.Status.VNILease
+	}
+	if r.OVS.VNIRetirement != nil && lease == nil {
+		return laboratoryv1alpha1.OwnedVNI{}, ErrPortOwnerUnknown
+	}
+	binding := laboratoryv1alpha1.OwnedVNI{Kind: kind, Name: name, Namespace: conn.Namespace, UID: uid, VNI: vni, OwnerUID: string(parent.UID), OperationID: op, Revision: rev, Generation: parent.Generation}
+	if lease != nil {
+		binding.PoolUID = lease.PoolUID
+		binding.LeaseGeneration = lease.Generation
+	}
+	return binding, nil
 }

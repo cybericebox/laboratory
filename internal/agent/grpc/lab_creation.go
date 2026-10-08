@@ -137,3 +137,15 @@ func creationReceiptToProto(l *lab.Lab) *protobuf.LabCreationReceipt {
 	}
 	return &protobuf.LabCreationReceipt{GroupUid: birth.GroupUID, NamespaceUid: birth.NamespaceUID, OperationId: birth.OperationID, Revision: birth.Revision, DefinitionHash: birth.DefinitionHash, CreationId: birth.CreationID, LabUid: birth.LabUID, Committed: true}
 }
+
+func birthWriteReady(l *lab.Lab) error {
+	raw := l.Annotations[names.AnnotationLabCreation]
+	if raw == "" {
+		return nil
+	}
+	var receipt lab.LabCreationReceipt
+	if json.Unmarshal([]byte(raw), &receipt) != nil || !receipt.Committed || receipt.LabUID != string(l.UID) {
+		return fmt.Errorf("original birth admission is pending")
+	}
+	return nil
+}

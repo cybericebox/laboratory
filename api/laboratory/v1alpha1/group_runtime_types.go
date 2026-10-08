@@ -1,10 +1,14 @@
 package v1alpha1
 
-import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"reflect"
+)
 
 // OwnedRuntimeIdentity is captured before stop. An absent API Pod cannot create
 // this inventory. NodeBootID is the kernel boot, not the node-agent process.
 type OwnedRuntimeIdentity struct {
+	PortRows    []OwnedFabricPort `json:"portRows,omitempty"`
 	VNIBindings []OwnedVNI        `json:"vniBindings,omitempty"`
 	FabricPorts []OwnedFabricPort `json:"fabricPorts,omitempty"`
 	// ScopeKind is Pod, LabFabric or NeverMaterialized. Non-Pod scopes have
@@ -36,6 +40,9 @@ type OwnedRuntimeIdentity struct {
 // OwnedRuntimeReport is node-owned; identity is immutable controller inventory.
 // Independent timestamps never impose a cross-owner clock ordering.
 type OwnedRuntimeReport struct {
+	// ReleasedVNIs are exact object/node-owned correlated-barrier receipts.
+	// They retire a lease independently of live process allocation.
+	ReleasedVNIs []OwnedVNI `json:"releasedVNIs,omitempty"`
 	// Echoed only after a new native sample for this permanent retirement intent.
 	RetirementOperationID string               `json:"retirementOperationId,omitempty"`
 	RetirementRevision    int64                `json:"retirementRevision,omitempty"`
@@ -55,10 +62,50 @@ type OwnedFabricPort struct {
 }
 
 // OwnedVNI binds a numeric flow key to the actual allocation-holding object.
+type VNILease struct {
+	PoolUID    string `json:"poolUID"`
+	Generation int64  `json:"generation"`
+}
 type OwnedVNI struct {
-	Kind      string `json:"kind"`
-	Namespace string `json:"namespace"`
-	Name      string `json:"name"`
-	UID       string `json:"uid"`
-	VNI       uint   `json:"vni"`
+	PoolUID         string `json:"poolUID"`
+	LeaseGeneration int64  `json:"leaseGeneration"`
+	OwnerUID        string `json:"ownerUID"`
+	OperationID     string `json:"operationID"`
+	Revision        int64  `json:"revision"`
+	Generation      int64  `json:"generation"`
+	Kind            string `json:"kind"`
+	Namespace       string `json:"namespace"`
+	Name            string `json:"name"`
+	UID             string `json:"uid"`
+	VNI             uint   `json:"vni"`
+}
+
+// VNILeaseReleased consumes every actual placement-node obligation for one
+// exact allocation epoch. It never treats API absence as a physical ACK.
+func VNILeaseReleased(l *Lab, binding OwnedVNI) bool {
+	found := false
+	for _, scope := range l.Status.ScopeInventory {
+		member := false
+		for _, v := range scope.VNIBindings {
+			member = member || reflect.DeepEqual(v, binding)
+		}
+		if !member {
+			continue
+		}
+		found = true
+		done := false
+		for _, report := range l.Status.ScopeReports {
+			id := report.Identity
+			if id.OwnerUID != scope.OwnerUID || id.ScopeUID != scope.ScopeUID || id.NodeName != scope.NodeName || id.NodeBootID != scope.NodeBootID || id.OperationID != scope.OperationID || id.Revision != scope.Revision || id.Generation != scope.Generation || report.ObservedAt == nil || report.ObservedAt.IsZero() {
+				continue
+			}
+			for _, v := range report.ReleasedVNIs {
+				done = done || reflect.DeepEqual(v, binding)
+			}
+		}
+		if !done {
+			return false
+		}
+	}
+	return found
 }

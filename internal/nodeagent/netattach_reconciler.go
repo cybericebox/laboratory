@@ -491,3 +491,10 @@ func (r *NetworkAttachReconciler) DelVethWithFlowsOwnedJournaled(key string, uid
 	defer r.OVS.vethMu.Unlock()
 	return r.OVS.delVethWithFlowsOwnedJournaled(key, uid, r.Flows, prepared)
 }
+
+func (r *NetworkAttachReconciler) DelVethWithFlowsExpected(key string, uid types.UID, row string) error {
+	if row == "" {
+		return ErrPortOwnerUnknown
+	}
+	return r.OVS.delVethWithFlowsOwnedJournaled(key, uid, r.Flows, nil, row)
+}

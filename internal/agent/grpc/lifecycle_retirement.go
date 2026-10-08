@@ -74,6 +74,9 @@ func (h *Handler) RetireLabs(ctx context.Context, in *protobuf.RetireLabsRequest
 			if err = rejectTerminating(kindLab, cur); err != nil {
 				return err
 			}
+			if err := birthWriteReady(cur); err != nil {
+				return err
+			}
 			requested, err := retirementIntent(target.GetExpectedLabUid(), target.GetOperationId(), target.GetLifecycleRevision(), cur.Generation, item.GetRetirementOperationId(), item.GetRetirementRevision())
 			if err != nil {
 				return err

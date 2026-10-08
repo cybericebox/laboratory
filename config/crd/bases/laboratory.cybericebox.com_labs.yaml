@@ -910,6 +910,441 @@ spec:
                       (Wait* constants).
                     type: string
                 type: object
+              scopeInventory:
+                items:
+                  description: |-
+                    OwnedRuntimeIdentity is captured before stop. An absent API Pod cannot create
+                    this inventory. NodeBootID is the kernel boot, not the node-agent process.
+                  properties:
+                    attachmentsComplete:
+                      type: boolean
+                    cgroupPaths:
+                      items:
+                        type: string
+                      type: array
+                    component:
+                      type: string
+                    containerIDs:
+                      items:
+                        type: string
+                      type: array
+                    deploymentUID:
+                      type: string
+                    epoch:
+                      format: int32
+                      type: integer
+                    fabricPorts:
+                      items:
+                        properties:
+                          key:
+                            type: string
+                          ownerUID:
+                            type: string
+                          rowUUID:
+                            type: string
+                        required:
+                        - key
+                        - ownerUID
+                        - rowUUID
+                        type: object
+                      type: array
+                    generation:
+                      format: int64
+                      type: integer
+                    incarnation:
+                      format: int32
+                      type: integer
+                    labName:
+                      type: string
+                    limits:
+                      description: ResourceAmounts separates configured, held and
+                        measured compute amounts.
+                      properties:
+                        cpuMillicores:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        memoryBytes:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                      required:
+                      - cpuMillicores
+                      - memoryBytes
+                      type: object
+                    namespace:
+                      type: string
+                    nodeBootID:
+                      type: string
+                    nodeName:
+                      type: string
+                    operationId:
+                      type: string
+                    ownerUID:
+                      type: string
+                    podUID:
+                      type: string
+                    portKeys:
+                      items:
+                        type: string
+                      type: array
+                    portRows:
+                      items:
+                        properties:
+                          key:
+                            type: string
+                          ownerUID:
+                            type: string
+                          rowUUID:
+                            type: string
+                        required:
+                        - key
+                        - ownerUID
+                        - rowUUID
+                        type: object
+                      type: array
+                    requests:
+                      description: ResourceAmounts separates configured, held and
+                        measured compute amounts.
+                      properties:
+                        cpuMillicores:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        memoryBytes:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                      required:
+                      - cpuMillicores
+                      - memoryBytes
+                      type: object
+                    revision:
+                      format: int64
+                      type: integer
+                    scopeKind:
+                      description: |-
+                        ScopeKind is Pod, LabFabric or NeverMaterialized. Non-Pod scopes have
+                        actual object ScopeUID, never synthetic Pod/container/cgroup identities.
+                      type: string
+                    scopeUID:
+                      type: string
+                    vniBindings:
+                      items:
+                        properties:
+                          generation:
+                            format: int64
+                            type: integer
+                          kind:
+                            type: string
+                          leaseGeneration:
+                            format: int64
+                            type: integer
+                          name:
+                            type: string
+                          namespace:
+                            type: string
+                          operationID:
+                            type: string
+                          ownerUID:
+                            type: string
+                          poolUID:
+                            type: string
+                          revision:
+                            format: int64
+                            type: integer
+                          uid:
+                            type: string
+                          vni:
+                            type: integer
+                        required:
+                        - generation
+                        - kind
+                        - leaseGeneration
+                        - name
+                        - namespace
+                        - operationID
+                        - ownerUID
+                        - poolUID
+                        - revision
+                        - uid
+                        - vni
+                        type: object
+                      type: array
+                    vnis:
+                      items:
+                        type: integer
+                      type: array
+                  required:
+                  - cgroupPaths
+                  - containerIDs
+                  - limits
+                  - nodeBootID
+                  - nodeName
+                  - operationId
+                  - ownerUID
+                  - podUID
+                  - portKeys
+                  - requests
+                  - revision
+                  type: object
+                type: array
+              scopeReports:
+                items:
+                  description: |-
+                    OwnedRuntimeReport is node-owned; identity is immutable controller inventory.
+                    Independent timestamps never impose a cross-owner clock ordering.
+                  properties:
+                    attachmentsAbsentAt:
+                      format: date-time
+                      type: string
+                    cgroupAbsentAt:
+                      format: date-time
+                      type: string
+                    error:
+                      type: string
+                    identity:
+                      description: |-
+                        OwnedRuntimeIdentity is captured before stop. An absent API Pod cannot create
+                        this inventory. NodeBootID is the kernel boot, not the node-agent process.
+                      properties:
+                        attachmentsComplete:
+                          type: boolean
+                        cgroupPaths:
+                          items:
+                            type: string
+                          type: array
+                        component:
+                          type: string
+                        containerIDs:
+                          items:
+                            type: string
+                          type: array
+                        deploymentUID:
+                          type: string
+                        epoch:
+                          format: int32
+                          type: integer
+                        fabricPorts:
+                          items:
+                            properties:
+                              key:
+                                type: string
+                              ownerUID:
+                                type: string
+                              rowUUID:
+                                type: string
+                            required:
+                            - key
+                            - ownerUID
+                            - rowUUID
+                            type: object
+                          type: array
+                        generation:
+                          format: int64
+                          type: integer
+                        incarnation:
+                          format: int32
+                          type: integer
+                        labName:
+                          type: string
+                        limits:
+                          description: ResourceAmounts separates configured, held
+                            and measured compute amounts.
+                          properties:
+                            cpuMillicores:
+                              format: int64
+                              minimum: 0
+                              type: integer
+                            memoryBytes:
+                              format: int64
+                              minimum: 0
+                              type: integer
+                          required:
+                          - cpuMillicores
+                          - memoryBytes
+                          type: object
+                        namespace:
+                          type: string
+                        nodeBootID:
+                          type: string
+                        nodeName:
+                          type: string
+                        operationId:
+                          type: string
+                        ownerUID:
+                          type: string
+                        podUID:
+                          type: string
+                        portKeys:
+                          items:
+                            type: string
+                          type: array
+                        portRows:
+                          items:
+                            properties:
+                              key:
+                                type: string
+                              ownerUID:
+                                type: string
+                              rowUUID:
+                                type: string
+                            required:
+                            - key
+                            - ownerUID
+                            - rowUUID
+                            type: object
+                          type: array
+                        requests:
+                          description: ResourceAmounts separates configured, held
+                            and measured compute amounts.
+                          properties:
+                            cpuMillicores:
+                              format: int64
+                              minimum: 0
+                              type: integer
+                            memoryBytes:
+                              format: int64
+                              minimum: 0
+                              type: integer
+                          required:
+                          - cpuMillicores
+                          - memoryBytes
+                          type: object
+                        revision:
+                          format: int64
+                          type: integer
+                        scopeKind:
+                          description: |-
+                            ScopeKind is Pod, LabFabric or NeverMaterialized. Non-Pod scopes have
+                            actual object ScopeUID, never synthetic Pod/container/cgroup identities.
+                          type: string
+                        scopeUID:
+                          type: string
+                        vniBindings:
+                          items:
+                            properties:
+                              generation:
+                                format: int64
+                                type: integer
+                              kind:
+                                type: string
+                              leaseGeneration:
+                                format: int64
+                                type: integer
+                              name:
+                                type: string
+                              namespace:
+                                type: string
+                              operationID:
+                                type: string
+                              ownerUID:
+                                type: string
+                              poolUID:
+                                type: string
+                              revision:
+                                format: int64
+                                type: integer
+                              uid:
+                                type: string
+                              vni:
+                                type: integer
+                            required:
+                            - generation
+                            - kind
+                            - leaseGeneration
+                            - name
+                            - namespace
+                            - operationID
+                            - ownerUID
+                            - poolUID
+                            - revision
+                            - uid
+                            - vni
+                            type: object
+                          type: array
+                        vnis:
+                          items:
+                            type: integer
+                          type: array
+                      required:
+                      - cgroupPaths
+                      - containerIDs
+                      - limits
+                      - nodeBootID
+                      - nodeName
+                      - operationId
+                      - ownerUID
+                      - podUID
+                      - portKeys
+                      - requests
+                      - revision
+                      type: object
+                    observedAt:
+                      format: date-time
+                      type: string
+                    releasedVNIs:
+                      description: |-
+                        ReleasedVNIs are exact object/node-owned correlated-barrier receipts.
+                        They retire a lease independently of live process allocation.
+                      items:
+                        properties:
+                          generation:
+                            format: int64
+                            type: integer
+                          kind:
+                            type: string
+                          leaseGeneration:
+                            format: int64
+                            type: integer
+                          name:
+                            type: string
+                          namespace:
+                            type: string
+                          operationID:
+                            type: string
+                          ownerUID:
+                            type: string
+                          poolUID:
+                            type: string
+                          revision:
+                            format: int64
+                            type: integer
+                          uid:
+                            type: string
+                          vni:
+                            type: integer
+                        required:
+                        - generation
+                        - kind
+                        - leaseGeneration
+                        - name
+                        - namespace
+                        - operationID
+                        - ownerUID
+                        - poolUID
+                        - revision
+                        - uid
+                        - vni
+                        type: object
+                      type: array
+                    retirementOperationId:
+                      description: Echoed only after a new native sample for this
+                        permanent retirement intent.
+                      type: string
+                    retirementRevision:
+                      format: int64
+                      type: integer
+                    runtimeAbsentAt:
+                      format: date-time
+                      type: string
+                    runtimeState:
+                      type: string
+                  required:
+                  - identity
+                  - runtimeState
+                  type: object
+                type: array
               vpn:
                 description: LabNetworkStatus reports the allocated CIDR for a network
                   segment.

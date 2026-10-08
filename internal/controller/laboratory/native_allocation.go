@@ -32,8 +32,8 @@ func runtimeRowsReleased(rows []lab.OwnedRuntimeIdentity, reports []lab.OwnedRun
 		return false
 	}
 	for _, id := range rows {
-		scope := id.ScopeKind == "LabFabric" || id.ScopeKind == "GroupScope"
-		if id.OwnerUID != uid || id.OperationID != op || id.Revision != rev || id.NodeBootID == "" || id.NodeName == "" || scope && (id.ScopeUID != uid || id.Generation < 1 || !id.AttachmentsComplete) || !scope && (id.PodUID == "" || len(id.ContainerIDs) == 0 || len(id.CgroupPaths) == 0 || len(id.PortKeys) == 0 && !id.AttachmentsComplete) {
+		scope := id.ScopeKind == "LabFabric" || id.ScopeKind == "GroupScope" || id.ScopeKind == "NeverMaterialized"
+		if id.OwnerUID != uid || id.OperationID != op || id.Revision != rev || id.NodeBootID == "" || id.NodeName == "" || scope && (id.ScopeUID == "" || id.ScopeKind != "NeverMaterialized" && id.ScopeUID != uid || id.Generation < 1 || !id.AttachmentsComplete) || !scope && (id.PodUID == "" || len(id.ContainerIDs) == 0 || len(id.CgroupPaths) == 0 || len(id.PortKeys) == 0 && !id.AttachmentsComplete) {
 			return false
 		}
 		found := false

@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/ovn-org/libovsdb/client"
 	"github.com/ovn-org/libovsdb/model"
 	"github.com/ovn-org/libovsdb/ovsdb"
@@ -39,6 +40,7 @@ type OVSManager struct {
 	// RuntimeRetirement persists first exact physical cleanup before row loss.
 	RuntimeRetirement       func(string, types.UID, string) error
 	RuntimePrepare          func(string, types.UID, string) error
+	VNIRetirement           func(context.Context, lab.OwnedVNI, *FlowManager) error
 	FabricPrepare           func(string, types.UID, string) error
 	FabricRetirement        func(string, types.UID, string) error
 	FabricRetirementAbsent  func(string, types.UID) error
@@ -439,7 +441,7 @@ func (m *OVSManager) delVethWithFlowsOwned(key string, uid types.UID, flows *Flo
 	return m.delVethWithFlowsOwnedJournaled(key, uid, flows, nil)
 }
 
-func (m *OVSManager) delVethWithFlowsOwnedJournaled(key string, uid types.UID, flows *FlowManager, prepared func(string) error) error {
+func (m *OVSManager) delVethWithFlowsOwnedJournaled(key string, uid types.UID, flows *FlowManager, prepared func(string) error, expectedRow ...string) error {
 	if !ValidPortKey(key) {
 		return fmt.Errorf("invalid platform port key %q", key)
 	}
@@ -469,6 +471,9 @@ func (m *OVSManager) delVethWithFlowsOwnedJournaled(key string, uid types.UID, f
 			return linkErr
 		}
 		return nil
+	}
+	if len(expectedRow) > 0 && expectedRow[0] != "" && p.UUID != expectedRow[0] {
+		return ErrPortOwnerChanged
 	}
 	if types.UID(p.ExternalIDs[portOwnerExternalID]) != uid {
 		return fmt.Errorf("%w: %s", ErrPortOwnerChanged, key)
@@ -885,7 +890,7 @@ func (m *OVSManager) AddPatchPairOwned(a, b string, owner types.UID) error {
 	}
 	return nil
 }
-func (m *OVSManager) DelFabricPortOwned(key string, owner types.UID, flows *FlowManager) error {
+func (m *OVSManager) DelFabricPortOwned(key string, owner types.UID, flows *FlowManager, expectedRow ...string) error {
 	if owner == "" || flows == nil {
 		return ErrPortOwnerUnknown
 	}
@@ -893,7 +898,7 @@ func (m *OVSManager) DelFabricPortOwned(key string, owner types.UID, flows *Flow
 	defer m.vethMu.Unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	row, err := m.findPort(key)
+	row, err := m.fabricSnapshotLocked(key)
 	if err != nil {
 		return err
 	}
@@ -902,6 +907,9 @@ func (m *OVSManager) DelFabricPortOwned(key string, owner types.UID, flows *Flow
 			return m.FabricRetirementAbsent(key, owner)
 		}
 		return ErrPortOwnerUnknown
+	}
+	if len(expectedRow) > 0 && expectedRow[0] != "" && row.UUID != expectedRow[0] {
+		return ErrPortOwnerChanged
 	}
 	if row.ExternalIDs[fabricOwnerExternalID] != string(owner) {
 		return ErrPortOwnerChanged
@@ -915,7 +923,7 @@ func (m *OVSManager) DelFabricPortOwned(key string, owner types.UID, flows *Flow
 	if err := flows.retirePort(key); err != nil {
 		return err
 	}
-	current, err := m.findPort(key)
+	current, err := m.fabricSnapshotLocked(key)
 	if err != nil {
 		return err
 	}
@@ -926,4 +934,47 @@ func (m *OVSManager) DelFabricPortOwned(key string, owner types.UID, flows *Flow
 		return err
 	}
 	return m.delPortLocked(row)
+}
+
+// RetireVNIOwned serializes the immutable lease check, correlated flow barrier
+// and durable ACK with attachment creation. Numeric VNI alone is never an owner.
+func (m *OVSManager) RetireVNIOwned(ctx context.Context, binding lab.OwnedVNI, flows *FlowManager) error {
+	if binding.UID == "" || binding.VNI == 0 || flows == nil {
+		return ErrPortOwnerUnknown
+	}
+	m.vethMu.Lock()
+	defer m.vethMu.Unlock()
+	if m.VNIRetirement != nil {
+		return m.VNIRetirement(ctx, binding, flows)
+	}
+	return flows.RetireVNI(binding.VNI)
+}
+
+func (m *OVSManager) fabricSnapshotLocked(key string) (*OVSPort, error) {
+	ops := []ovsdb.Operation{{Op: ovsdb.OperationSelect, Table: "Port", Where: []ovsdb.Condition{ovsdb.NewCondition("name", ovsdb.ConditionEqual, key)}, Columns: []string{"_uuid", "name", "external_ids"}}}
+	results, err := m.client.Transact(m.ctx, ops...)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		return nil, err
+	}
+	if len(results[0].Rows) == 0 {
+		return nil, nil
+	}
+	if len(results[0].Rows) != 1 {
+		return nil, ErrPortOwnerUnknown
+	}
+	raw := results[0].Rows[0]
+	uuid, ok := raw["_uuid"].(ovsdb.UUID)
+	if !ok {
+		return nil, ErrPortOwnerUnknown
+	}
+	ids := map[string]string{}
+	if values, ok := raw["external_ids"].(ovsdb.OvsMap); ok {
+		for k, v := range values.GoMap {
+			ids[k.(string)] = v.(string)
+		}
+	}
+	return &OVSPort{UUID: uuid.GoUUID, Name: key, ExternalIDs: ids}, nil
 }

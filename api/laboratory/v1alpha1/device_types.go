@@ -190,8 +190,9 @@ type DeviceStatus struct {
 	// node-agent keys the device's per-pod OVS port on this stable pointer.
 	PodName string `json:"podName,omitempty"`
 	// VNI is set only for unmanaged-switch and hub device types.
-	VNI    *uint  `json:"vni,omitempty"`
-	Reason string `json:"reason,omitempty"`
+	VNILease *VNILease `json:"vniLease,omitempty"`
+	VNI      *uint     `json:"vni,omitempty"`
+	Reason   string    `json:"reason,omitempty"`
 	// State is the snapshot state of a device with spec.state.enabled.
 	// +optional
 	State *DeviceStateStatus `json:"state,omitempty"`

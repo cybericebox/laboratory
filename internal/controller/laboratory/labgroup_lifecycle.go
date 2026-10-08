@@ -68,6 +68,16 @@ func (r *LabGroupReconciler) reconcileGroupLifecycle(ctx context.Context, g *lab
 		if err := r.observeGroupAllocation(ctx, g); err != nil {
 			return true, ctrl.Result{}, err
 		}
+		for _, row := range g.Status.ServiceRuntime {
+			if row.OperationID != i.OperationID || row.Revision != i.Revision {
+				if !runtimeRowsReleased([]lab.OwnedRuntimeIdentity{row}, g.Status.ServiceReports, row.OwnerUID, row.OperationID, row.Revision) {
+					return true, ctrl.Result{RequeueAfter: 3 * time.Second}, r.groupLifecycleStatus(ctx, g, "Starting", "WaitingForPriorNativeObligation")
+				}
+			}
+		}
+		if err := r.observeGroupAllocation(ctx, g); err != nil {
+			return true, ctrl.Result{}, err
+		}
 		return false, ctrl.Result{}, nil
 	}
 	if !i.RequireAllLabsStopped {
@@ -424,11 +434,13 @@ func (r *LabGroupReconciler) observeGroupAllocation(ctx context.Context, g *lab.
 	}
 	current := aggregateRuntime(g.Status.ServiceRuntime, g.Status.ServiceReports, string(g.UID), i.OperationID, i.Revision)
 	configured := lab.ResourceAmounts{}
+	known := true
 	limits := lab.ResourceAmounts{}
 	for _, component := range groupPodNames(g) {
 		var deployment appsv1.Deployment
 		if err := r.groupReader().Get(ctx, client.ObjectKey{Namespace: lab.LabGroupNamespaceOf(g), Name: component}, &deployment); err != nil {
 			if apierrors.IsNotFound(err) {
+				known = false
 				continue
 			}
 			return err
@@ -448,6 +460,13 @@ func (r *LabGroupReconciler) observeGroupAllocation(ctx context.Context, g *lab.
 	current.AllocatedRequests.CPUMillicores = max(current.AllocatedRequests.CPUMillicores, configured.CPUMillicores)
 	current.AllocatedRequests.MemoryBytes = max(current.AllocatedRequests.MemoryBytes, configured.MemoryBytes)
 	current.RuntimeState = "Allocated"
+	if !known {
+		current.RuntimeState = "Unknown"
+		if g.Status.Resources != nil {
+			current.AllocatedRequests.CPUMillicores = max(current.AllocatedRequests.CPUMillicores, g.Status.Resources.AllocatedRequests.CPUMillicores)
+			current.AllocatedRequests.MemoryBytes = max(current.AllocatedRequests.MemoryBytes, g.Status.Resources.AllocatedRequests.MemoryBytes)
+		}
+	}
 	current.ReleasedAt = nil
 	if reflect.DeepEqual(current, g.Status.Resources) {
 		return nil

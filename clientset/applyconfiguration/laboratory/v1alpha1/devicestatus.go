@@ -37,8 +37,9 @@ type DeviceStatusApplyConfiguration struct {
 	// node-agent keys the device's per-pod OVS port on this stable pointer.
 	PodName *string `json:"podName,omitempty"`
 	// VNI is set only for unmanaged-switch and hub device types.
-	VNI    *uint   `json:"vni,omitempty"`
-	Reason *string `json:"reason,omitempty"`
+	VNILease *VNILeaseApplyConfiguration `json:"vniLease,omitempty"`
+	VNI      *uint                       `json:"vni,omitempty"`
+	Reason   *string                     `json:"reason,omitempty"`
 	// State is the snapshot state of a device with spec.state.enabled.
 	State *DeviceStateStatusApplyConfiguration `json:"state,omitempty"`
 	// Scheduling is the pod's place on its way from the scheduler queue to Ready.
@@ -114,6 +115,14 @@ func (b *DeviceStatusApplyConfiguration) WithPodIP(value string) *DeviceStatusAp
 // If called multiple times, the PodName field is set to the value of the last call.
 func (b *DeviceStatusApplyConfiguration) WithPodName(value string) *DeviceStatusApplyConfiguration {
 	b.PodName = &value
+	return b
+}
+
+// WithVNILease sets the VNILease field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the VNILease field is set to the value of the last call.
+func (b *DeviceStatusApplyConfiguration) WithVNILease(value *VNILeaseApplyConfiguration) *DeviceStatusApplyConfiguration {
+	b.VNILease = value
 	return b
 }
 

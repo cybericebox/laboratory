@@ -27,6 +27,9 @@ func (h *Handler) claimVariableWrite(ctx context.Context, parent *lab.Lab, token
 		if err != nil {
 			return err
 		}
+		if err := birthWriteReady(current); err != nil {
+			return err
+		}
 		if current.UID != parent.UID || !current.DeletionTimestamp.IsZero() || current.Annotations[names.AnnotationLifecycleRetirement] != "" {
 			return fmt.Errorf("Lab is retired, terminating or identity changed")
 		}

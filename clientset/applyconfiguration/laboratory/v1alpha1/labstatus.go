@@ -27,6 +27,8 @@ import (
 //
 // LabStatus defines the observed state of Lab.
 type LabStatusApplyConfiguration struct {
+	ScopeInventory []OwnedRuntimeIdentityApplyConfiguration `json:"scopeInventory,omitempty"`
+	ScopeReports   []OwnedRuntimeReportApplyConfiguration   `json:"scopeReports,omitempty"`
 	// Retirement is a fresh acknowledgement distinct from the original stop.
 	Retirement  *LifecycleRetirementStatusApplyConfiguration `json:"retirement,omitempty"`
 	Lifecycle   *LabLifecycleStatusApplyConfiguration        `json:"lifecycle,omitempty"`
@@ -58,6 +60,32 @@ type LabStatusApplyConfiguration struct {
 // apply.
 func LabStatus() *LabStatusApplyConfiguration {
 	return &LabStatusApplyConfiguration{}
+}
+
+// WithScopeInventory adds the given value to the ScopeInventory field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the ScopeInventory field.
+func (b *LabStatusApplyConfiguration) WithScopeInventory(values ...*OwnedRuntimeIdentityApplyConfiguration) *LabStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithScopeInventory")
+		}
+		b.ScopeInventory = append(b.ScopeInventory, *values[i])
+	}
+	return b
+}
+
+// WithScopeReports adds the given value to the ScopeReports field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the ScopeReports field.
+func (b *LabStatusApplyConfiguration) WithScopeReports(values ...*OwnedRuntimeReportApplyConfiguration) *LabStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithScopeReports")
+		}
+		b.ScopeReports = append(b.ScopeReports, *values[i])
+	}
+	return b
 }
 
 // WithRetirement sets the Retirement field in the declarative configuration to the given value

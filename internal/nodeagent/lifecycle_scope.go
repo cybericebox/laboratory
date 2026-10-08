@@ -9,6 +9,9 @@ import (
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/devicestate"
+	"github.com/cybericebox/laboratory/internal/names"
+	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -19,18 +22,19 @@ import (
 )
 
 func (o *NativeRuntimeObserver) scopeCurrent(ctx context.Context, id lab.OwnedRuntimeIdentity) (bool, error) {
-	if o.Reader == nil || id.NodeName != o.NodeName || id.NodeBootID != o.BootID || id.ScopeUID != id.OwnerUID || id.Generation < 1 {
+	if o.Reader == nil || id.NodeName != o.NodeName || id.NodeBootID != o.BootID || id.ScopeUID == "" || id.ScopeKind != "NeverMaterialized" && id.ScopeUID != id.OwnerUID || id.Generation < 1 {
 		return false, ErrPortOwnerUnknown
 	}
-	if id.ScopeKind == "LabFabric" {
+	if id.ScopeKind == "LabFabric" || id.ScopeKind == "NeverMaterialized" {
 		var l lab.Lab
 		if err := o.Reader.Get(ctx, client.ObjectKey{Namespace: id.Namespace, Name: id.LabName}, &l); err != nil {
 			return false, err
 		}
-		if string(l.UID) != id.OwnerUID || l.Spec.Lifecycle == nil {
+		if string(l.UID) != id.OwnerUID {
 			return false, ErrPortOwnerChanged
 		}
-		current := l.Generation == id.Generation && l.Spec.Lifecycle.OperationID == id.OperationID && l.Spec.Lifecycle.Revision == id.Revision
+		operation, revision := nativeLabOperation(&l)
+		current := l.Generation == id.Generation && operation == id.OperationID && revision == id.Revision
 		if !current {
 			retained := false
 			for _, old := range l.Status.ScopeInventory {
@@ -40,7 +44,22 @@ func (o *NativeRuntimeObserver) scopeCurrent(ctx context.Context, id lab.OwnedRu
 				return false, ErrPortOwnerChanged
 			}
 		}
-		return l.Spec.Lifecycle.IsStopped() || !current, nil
+		if id.ScopeKind == "NeverMaterialized" {
+			var devices lab.DeviceList
+			if err := o.Reader.List(ctx, &devices, client.InNamespace(id.Namespace)); err != nil {
+				return false, err
+			}
+			found := false
+			for _, d := range devices.Items {
+				if string(d.UID) == id.ScopeUID {
+					found = d.Status.PodName == "" && d.Status.NodeName == "" && (d.Status.State == nil || d.Status.State.Incarnation == 0)
+				}
+			}
+			if !found {
+				return false, ErrPortOwnerChanged
+			}
+		}
+		return !l.DeletionTimestamp.IsZero() || l.Spec.Lifecycle != nil && l.Spec.Lifecycle.IsStopped() || !current, nil
 	}
 	var groups lab.LabGroupList
 	if err := o.Reader.List(ctx, &groups); err != nil {
@@ -48,10 +67,20 @@ func (o *NativeRuntimeObserver) scopeCurrent(ctx context.Context, id lab.OwnedRu
 	}
 	for _, g := range groups.Items {
 		if string(g.UID) == id.OwnerUID {
-			if g.Generation != id.Generation || lab.LabGroupNamespaceOf(&g) != id.Namespace || g.Spec.Lifecycle == nil || g.Spec.Lifecycle.OperationID != id.OperationID || g.Spec.Lifecycle.Revision != id.Revision {
+			if lab.LabGroupNamespaceOf(&g) != id.Namespace || g.Spec.Lifecycle == nil {
 				return false, ErrPortOwnerChanged
 			}
-			return g.Spec.Lifecycle.IsStopped(), nil
+			current := g.Generation == id.Generation && g.Spec.Lifecycle.OperationID == id.OperationID && g.Spec.Lifecycle.Revision == id.Revision
+			if !current {
+				found := false
+				for _, row := range g.Status.ServiceRuntime {
+					found = found || reflect.DeepEqual(row, id)
+				}
+				if !found {
+					return false, ErrPortOwnerChanged
+				}
+			}
+			return g.Spec.Lifecycle.IsStopped() || !current, nil
 		}
 	}
 	return false, ErrPortOwnerUnknown
@@ -64,7 +93,11 @@ func envValue(env []string, key string) string {
 	}
 	return ""
 }
-func (o *NativeRuntimeObserver) ObserveScope(ctx context.Context, id lab.OwnedRuntimeIdentity) lab.OwnedRuntimeReport {
+func (o *NativeRuntimeObserver) ObserveScope(ctx context.Context, id lab.OwnedRuntimeIdentity, fresh ...bool) lab.OwnedRuntimeReport {
+	var committed lab.OwnedRuntimeReport
+	if (len(fresh) == 0 || !fresh[0]) && o.readRecord("scope-fabric-released", id, &committed) == nil && committedRuntimeReport(committed, id) {
+		return committed
+	}
 	now := metav1.Now()
 	out := lab.OwnedRuntimeReport{Identity: id, RuntimeState: "Unknown", ObservedAt: &now}
 	fail := func(err error) lab.OwnedRuntimeReport { out.Error = err.Error(); return out }
@@ -72,9 +105,7 @@ func (o *NativeRuntimeObserver) ObserveScope(ctx context.Context, id lab.OwnedRu
 	if err != nil {
 		return fail(err)
 	}
-	if !stopped {
-		return fail(fmt.Errorf("scope operation is not stopped"))
-	}
+
 	native := namespaces.WithNamespace(ctx, o.Namespace)
 	containers, err := o.Runtime.Containers(native)
 	if err != nil {
@@ -102,7 +133,11 @@ func (o *NativeRuntimeObserver) ObserveScope(ctx context.Context, id lab.OwnedRu
 			owner = envValue(spec.Process.Env, "LIFECYCLE_LAB_UID")
 			group = envValue(spec.Process.Env, "GROUP_UID")
 		}
-		match := id.ScopeKind == "LabFabric" && owner == id.OwnerUID || id.ScopeKind == "GroupScope" && group == id.OwnerUID
+		deviceOwner := ""
+		if spec.Process != nil {
+			deviceOwner = envValue(spec.Process.Env, "LIFECYCLE_DEVICE_UID")
+		}
+		match := id.ScopeKind == "LabFabric" && owner == id.OwnerUID || id.ScopeKind == "GroupScope" && group == id.OwnerUID || id.ScopeKind == "NeverMaterialized" && owner == id.OwnerUID && deviceOwner == id.ScopeUID
 		if !match && owner == "" && group == "" {
 			// A current API owner may attribute legacy runtime; absent APIs never do.
 			var pod corev1.Pod
@@ -113,6 +148,27 @@ func (o *NativeRuntimeObserver) ObserveScope(ctx context.Context, id lab.OwnedRu
 				return fail(ErrPortOwnerChanged)
 			}
 			for _, reference := range pod.OwnerReferences {
+				if id.ScopeKind == "GroupScope" && reference.Kind == "ReplicaSet" {
+					var rs appsv1.ReplicaSet
+					if err := o.Reader.Get(ctx, client.ObjectKey{Namespace: id.Namespace, Name: reference.Name}, &rs); err != nil {
+						return fail(err)
+					}
+					if rs.UID != reference.UID {
+						return fail(ErrPortOwnerChanged)
+					}
+					for _, parent := range rs.OwnerReferences {
+						if parent.Kind == "Deployment" {
+							var dep appsv1.Deployment
+							if err := o.Reader.Get(ctx, client.ObjectKey{Namespace: id.Namespace, Name: parent.Name}, &dep); err != nil {
+								return fail(err)
+							}
+							if dep.UID != parent.UID {
+								return fail(ErrPortOwnerChanged)
+							}
+							match = match || nativeGroupDeploymentOwned(&dep, id.OwnerUID)
+						}
+					}
+				}
 				if reference.Kind == "Device" {
 					var d lab.Device
 					if err := o.Reader.Get(ctx, client.ObjectKey{Namespace: id.Namespace, Name: reference.Name}, &d); err != nil {
@@ -122,7 +178,7 @@ func (o *NativeRuntimeObserver) ObserveScope(ctx context.Context, id lab.OwnedRu
 						return fail(ErrPortOwnerChanged)
 					}
 					for _, parent := range d.OwnerReferences {
-						match = match || id.ScopeKind == "LabFabric" && parent.Kind == "Lab" && string(parent.UID) == id.OwnerUID
+						match = match || (id.ScopeKind == "LabFabric" || id.ScopeKind == "NeverMaterialized" && string(d.UID) == id.ScopeUID) && parent.Kind == "Lab" && string(parent.UID) == id.OwnerUID
 					}
 				}
 			}
@@ -137,6 +193,9 @@ func (o *NativeRuntimeObserver) ObserveScope(ctx context.Context, id lab.OwnedRu
 				cgroups = append(cgroups, path)
 			}
 		}
+	}
+	if len(owned) > 0 && len(cgroups) == 0 {
+		return fail(fmt.Errorf("owned scope cgroup inventory incomplete"))
 	}
 	list, err := o.Runtime.TaskService().List(native, &tasks.ListTasksRequest{})
 	if err != nil {
@@ -164,6 +223,27 @@ func (o *NativeRuntimeObserver) ObserveScope(ctx context.Context, id lab.OwnedRu
 		return fail(err)
 	}
 	out.Identity = id
+	for _, binding := range id.VNIBindings {
+		var object client.Object
+		switch binding.Kind {
+		case "Device":
+			object = &lab.Device{}
+		case "Connection":
+			object = &lab.Connection{}
+		default:
+			return fail(ErrPortOwnerUnknown)
+		}
+		if err := o.Reader.Get(ctx, client.ObjectKey{Namespace: binding.Namespace, Name: binding.Name}, object); err == nil && string(object.GetUID()) == binding.UID && !object.GetDeletionTimestamp().IsZero() {
+			if err := o.Network.OVS.RetireVNIOwned(ctx, binding, o.Network.Flows); err != nil {
+				return fail(err)
+			}
+		}
+	}
+	for _, binding := range id.VNIBindings {
+		if o.vniReleased(binding) {
+			out.ReleasedVNIs = append(out.ReleasedVNIs, binding)
+		}
+	}
 	if err := o.writeRecord("scope", id, id); err != nil {
 		return fail(err)
 	}
@@ -194,6 +274,15 @@ func (o *NativeRuntimeObserver) ObserveScope(ctx context.Context, id lab.OwnedRu
 		return fail(err)
 	}
 	out.Identity = id
+	if !stopped {
+		if id.ScopeKind == "NeverMaterialized" {
+			out.RuntimeState = "Vacant"
+			out.AttachmentsAbsentAt = &now
+		} else {
+			out.RuntimeState = "Allocated"
+		}
+		return out
+	}
 	// Durable declaration/native actual inventory before any fabric retirement.
 	if err := o.writeRecord("scope", id, id); err != nil {
 		return fail(err)
@@ -202,7 +291,7 @@ func (o *NativeRuntimeObserver) ObserveScope(ctx context.Context, id lab.OwnedRu
 		if _, err := o.scopeCurrent(ctx, id); err != nil {
 			return fail(err)
 		}
-		if err := o.Network.OVS.DelFabricPortOwned(port.Key, types.UID(port.OwnerUID), o.Network.Flows); err != nil {
+		if err := o.Network.OVS.DelFabricPortOwned(port.Key, types.UID(port.OwnerUID), o.Network.Flows, port.RowUUID); err != nil {
 			return fail(err)
 		}
 	}
@@ -211,22 +300,23 @@ func (o *NativeRuntimeObserver) ObserveScope(ctx context.Context, id lab.OwnedRu
 	if _, err := o.scopeCurrent(ctx, id); err != nil {
 		return fail(err)
 	}
-	for _, vni := range id.VNIs {
-		if err := o.Network.Flows.RetireVNI(vni); err != nil {
+	for _, binding := range id.VNIBindings {
+		if err := o.retireVNI(ctx, binding, o.Network.Flows); err != nil {
 			return fail(err)
 		}
 	}
 	// The correlated barrier is the physical flow authority; fsync the exact
 	// object/node/operation scope before publishing its release acknowledgement.
-	if err := o.writeRecord("scope-fabric-released", id, id); err != nil {
-		return fail(err)
-	}
+	out.ReleasedVNIs = append([]lab.OwnedVNI(nil), id.VNIBindings...)
 	out.AttachmentsAbsentAt = &now
 	out.RuntimeState = "Released"
+	if err := o.writeRecord("scope-fabric-released", id, out); err != nil {
+		return fail(err)
+	}
 	return out
 }
 func (o *NativeRuntimeObserver) captureScopeFabric(ctx context.Context, id *lab.OwnedRuntimeIdentity) error {
-	if id.ScopeKind == "GroupScope" {
+	if id.ScopeKind == "GroupScope" || id.ScopeKind == "NeverMaterialized" {
 		id.AttachmentsComplete = true
 		return nil
 	}
@@ -243,6 +333,9 @@ func (o *NativeRuntimeObserver) captureScopeFabric(ctx context.Context, id *lab.
 		id.VNIs = append(id.VNIs, vni)
 	}
 	for _, binding := range id.VNIBindings {
+		if o.vniReleased(binding) {
+			continue
+		}
 		found := false
 		if binding.Kind == "Device" {
 			for _, d := range devices.Items {
@@ -261,7 +354,7 @@ func (o *NativeRuntimeObserver) captureScopeFabric(ctx context.Context, id *lab.
 		return err
 	}
 	for _, binding := range id.VNIBindings {
-		if binding.Kind == "Connection" {
+		if binding.Kind == "Connection" && !o.vniReleased(binding) {
 			found := false
 			for _, c := range connections.Items {
 				if c.Namespace == binding.Namespace && c.Name == binding.Name && string(c.UID) == binding.UID && c.Status.VNI != nil && *c.Status.VNI == binding.VNI {
@@ -274,6 +367,9 @@ func (o *NativeRuntimeObserver) captureScopeFabric(ctx context.Context, id *lab.
 		}
 	}
 	for _, connection := range connections.Items {
+		if id.AttachmentsComplete {
+			break
+		}
 		owned := false
 		for _, parent := range connection.OwnerReferences {
 			owned = owned || parent.Kind == "Lab" && string(parent.UID) == id.OwnerUID
@@ -281,16 +377,21 @@ func (o *NativeRuntimeObserver) captureScopeFabric(ctx context.Context, id *lab.
 		if !owned {
 			continue
 		}
-		if connection.Status.VNI != nil {
-			add(*connection.Status.VNI)
-		}
+
 		for _, endpoint := range connection.Spec.Endpoints {
 			key := patchPortName(connection.Namespace, connection.Name, endpoint.Device)
 			o.Network.OVS.mu.Lock()
-			row, err := o.Network.OVS.findPort(key)
+			row, err := o.Network.OVS.fabricSnapshotLocked(key)
 			o.Network.OVS.mu.Unlock()
 			if err != nil {
 				return err
+			}
+			if row == nil {
+				var receipt fabricReceipt
+				record := lab.OwnedRuntimeIdentity{ScopeUID: string(connection.UID), NodeName: o.NodeName, NodeBootID: o.BootID}
+				if o.readRecord("fabric-released-"+key, record, &receipt) == nil && receipt.ConnectionUID == string(connection.UID) && receipt.RowUUID != "" {
+					id.FabricPorts = append(id.FabricPorts, lab.OwnedFabricPort{Key: key, OwnerUID: string(connection.UID), RowUUID: receipt.RowUUID})
+				}
 			}
 			if row != nil {
 				if row.ExternalIDs[fabricOwnerExternalID] != string(connection.UID) {
@@ -308,6 +409,9 @@ func (o *NativeRuntimeObserver) captureScopeFabric(ctx context.Context, id *lab.
 		}
 	}
 	for _, binding := range id.VNIBindings {
+		if o.vniReleased(binding) {
+			continue
+		}
 		count := 0
 		for _, d := range devices.Items {
 			if d.Status.VNI != nil && *d.Status.VNI == binding.VNI {
@@ -394,4 +498,125 @@ func (o *NativeRuntimeObserver) portAbsent(key string, uid types.UID) error {
 		return ErrPortOwnerUnknown
 	}
 	return nil
+}
+
+type vniReceipt struct {
+	Binding     lab.OwnedVNI `json:"binding"`
+	LabUID      string       `json:"labUID"`
+	OperationID string       `json:"operationID"`
+	Revision    int64        `json:"revision"`
+	Generation  int64        `json:"generation"`
+	Complete    bool         `json:"complete"`
+}
+
+func (o *NativeRuntimeObserver) vniIdentity(binding lab.OwnedVNI) lab.OwnedRuntimeIdentity {
+	return lab.OwnedRuntimeIdentity{ScopeKind: "VNI", DeploymentUID: binding.PoolUID, ScopeUID: binding.UID, OwnerUID: binding.OwnerUID, OperationID: binding.OperationID, Revision: binding.Revision, Generation: binding.LeaseGeneration, NodeName: o.NodeName, NodeBootID: o.BootID}
+}
+func (o *NativeRuntimeObserver) vniReleased(binding lab.OwnedVNI) bool {
+	var receipt vniReceipt
+	return o.readRecord("vni-released", o.vniIdentity(binding), &receipt) == nil && receipt.Complete && reflect.DeepEqual(receipt.Binding, binding)
+}
+
+// Caller holds the common physical creation/retirement lock. Recovery consumes
+// a completed old lease receipt without deleting any later owner's numeric VNI.
+func (o *NativeRuntimeObserver) retireVNI(ctx context.Context, binding lab.OwnedVNI, flows *FlowManager) error {
+	if o.vniReleased(binding) {
+		return nil
+	}
+	if err := poolpkg.ValidateLease(ctx, o.Reader, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, poolpkg.Lease{Index: binding.VNI, PoolUID: binding.PoolUID, OwnerUID: binding.UID, Generation: binding.LeaseGeneration}); err != nil {
+		return err
+	}
+	if o.Reader == nil || binding.UID == "" || binding.VNI == 0 {
+		return ErrPortOwnerUnknown
+	}
+	var object client.Object
+	switch binding.Kind {
+	case "Connection":
+		object = &lab.Connection{}
+	case "Device":
+		object = &lab.Device{}
+	default:
+		return ErrPortOwnerUnknown
+	}
+	if err := o.Reader.Get(ctx, client.ObjectKey{Namespace: binding.Namespace, Name: binding.Name}, object); err != nil {
+		return err
+	}
+	if string(object.GetUID()) != binding.UID {
+		return ErrPortOwnerChanged
+	}
+	var actual *uint
+	var labName string
+	switch current := object.(type) {
+	case *lab.Connection:
+		actual = current.Status.VNI
+		labName = current.Spec.LabRef
+	case *lab.Device:
+		actual = current.Status.VNI
+		labName = current.Spec.LabRef
+	}
+	if actual == nil || *actual != binding.VNI {
+		return ErrPortOwnerChanged
+	}
+	var parent lab.Lab
+	if err := o.Reader.Get(ctx, client.ObjectKey{Namespace: binding.Namespace, Name: labName}, &parent); err != nil {
+		return err
+	}
+	owned := false
+	for _, ref := range object.GetOwnerReferences() {
+		owned = owned || ref.Kind == "Lab" && ref.UID == parent.UID
+	}
+	if !owned || binding.OwnerUID != string(parent.UID) {
+		return ErrPortOwnerChanged
+	}
+	var ds lab.DeviceList
+	var cs lab.ConnectionList
+	if err := o.Reader.List(ctx, &ds); err != nil {
+		return err
+	}
+	if err := o.Reader.List(ctx, &cs); err != nil {
+		return err
+	}
+	count := 0
+	for _, d := range ds.Items {
+		if d.Status.VNI != nil && *d.Status.VNI == binding.VNI {
+			count++
+		}
+	}
+	for _, c := range cs.Items {
+		if c.Status.VNI != nil && *c.Status.VNI == binding.VNI {
+			count++
+		}
+	}
+	if count != 1 {
+		return ErrPortOwnerChanged
+	}
+	op, rev := nativeLabOperation(&parent)
+	receipt := vniReceipt{Binding: binding, LabUID: string(parent.UID), OperationID: op, Revision: rev, Generation: parent.Generation}
+	if err := o.writeRecord("vni-inventory", o.vniIdentity(binding), receipt); err != nil {
+		return err
+	}
+	if err := flows.RetireVNI(binding.VNI); err != nil {
+		return err
+	}
+	// API object replacement during a barrier cannot authorize a completed ACK.
+	fresh := object.DeepCopyObject().(client.Object)
+	if err := o.Reader.Get(ctx, client.ObjectKeyFromObject(object), fresh); err != nil {
+		return err
+	}
+	if fresh.GetUID() != object.GetUID() || fresh.GetResourceVersion() != object.GetResourceVersion() {
+		return ErrPortOwnerChanged
+	}
+	receipt.Complete = true
+	return o.writeRecord("vni-released", o.vniIdentity(binding), receipt)
+}
+
+func nativeGroupDeploymentOwned(dep *appsv1.Deployment, uid string) bool {
+	for _, container := range dep.Spec.Template.Spec.Containers {
+		for _, env := range container.Env {
+			if env.Name == "GROUP_UID" && env.Value == uid {
+				return true
+			}
+		}
+	}
+	return false
 }

@@ -257,7 +257,9 @@ func (h *Handler) updateLabGroup(ctx context.Context, ref *protobuf.ItemRef, p g
 		if err := rejectTerminating(kindLabGroup, cur); err != nil {
 			return err
 		}
-		if cur.Annotations[names.AnnotationLifecycleRetirement] != "" { return fmt.Errorf("retired group cannot mutate configuration") }
+		if cur.Annotations[names.AnnotationLifecycleRetirement] != "" {
+			return fmt.Errorf("retired group cannot mutate configuration")
+		}
 		changed := false
 		var c bool
 		if cur.Labels, c = p.labels.apply(cur.Labels); c {
@@ -313,10 +315,17 @@ func (h *Handler) DeleteLabGroups(ctx context.Context, in *protobuf.DeleteReques
 		}
 	}
 	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
-		if _, err := h.getGroup(ctx, refs[i].GetName()); err != nil {
+		g, err := h.getGroup(ctx, refs[i].GetName())
+		if err != nil {
 			return failedResult(refs[i], err)
 		}
-		return deleteResult(refs[i], h.cs.LaboratoryV1alpha1().LabGroups().Delete(ctx, crName(refs[i].GetName()), metav1.DeleteOptions{}))
+		for _, receipt := range g.Status.Creations {
+			if !receipt.Committed {
+				return failedResult(refs[i], fmt.Errorf("original birth admission is pending"))
+			}
+		}
+		uid, rv := g.UID, g.ResourceVersion
+		return deleteResult(refs[i], h.cs.LaboratoryV1alpha1().LabGroups().Delete(ctx, crName(refs[i].GetName()), metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &rv}}))
 	})}, nil
 }
 

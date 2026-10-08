@@ -5,6 +5,7 @@ package nodeagent
 import (
 	"fmt"
 	containerd "github.com/containerd/containerd/v2/client"
+	allocationapi "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	"golang.org/x/sys/unix"
 	"os"
 	"path/filepath"
@@ -15,6 +16,9 @@ import (
 // SetupRuntimeObservation only starts an explicitly enabled native producer. It
 // never turns the advertised support flags on, and bounds each scan deadline.
 func SetupRuntimeObservation(mgr ctrl.Manager, cfg *Config, network *NetworkAttachReconciler) error {
+	if err := allocationapi.AddToScheme(mgr.GetScheme()); err != nil {
+		return err
+	}
 	if !cfg.RuntimeObservation {
 		return nil
 	}
@@ -47,6 +51,7 @@ func SetupRuntimeObservation(mgr ctrl.Manager, cfg *Config, network *NetworkAtta
 	network.OVS.RuntimePrepare = o.prepareRuntimeBeforeRetirement
 	network.OVS.RuntimeRetirement = o.preparePortRetirement
 	network.OVS.RuntimeRetirementAbsent = o.portAbsent
+	network.OVS.VNIRetirement = o.retireVNI
 	network.OVS.FabricPrepare = o.prepareFabric
 	network.OVS.FabricRetirement = o.commitFabric
 	network.OVS.FabricRetirementAbsent = o.fabricAbsent

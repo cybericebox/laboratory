@@ -23,27 +23,136 @@ package v1alpha1
 // OwnedRuntimeIdentity is captured before stop. An absent API Pod cannot create
 // this inventory. NodeBootID is the kernel boot, not the node-agent process.
 type OwnedRuntimeIdentityApplyConfiguration struct {
-	OwnerUID      *string                            `json:"ownerUID,omitempty"`
-	OperationID   *string                            `json:"operationId,omitempty"`
-	Revision      *int64                             `json:"revision,omitempty"`
-	DeploymentUID *string                            `json:"deploymentUID,omitempty"`
-	PodUID        *string                            `json:"podUID,omitempty"`
-	NodeName      *string                            `json:"nodeName,omitempty"`
-	NodeBootID    *string                            `json:"nodeBootID,omitempty"`
-	ContainerIDs  []string                           `json:"containerIDs,omitempty"`
-	CgroupPaths   []string                           `json:"cgroupPaths,omitempty"`
-	PortKeys      []string                           `json:"portKeys,omitempty"`
-	Epoch         *int32                             `json:"epoch,omitempty"`
-	Incarnation   *int32                             `json:"incarnation,omitempty"`
-	Component     *string                            `json:"component,omitempty"`
-	Requests      *ResourceAmountsApplyConfiguration `json:"requests,omitempty"`
-	Limits        *ResourceAmountsApplyConfiguration `json:"limits,omitempty"`
+	PortRows    []OwnedFabricPortApplyConfiguration `json:"portRows,omitempty"`
+	VNIBindings []OwnedVNIApplyConfiguration        `json:"vniBindings,omitempty"`
+	FabricPorts []OwnedFabricPortApplyConfiguration `json:"fabricPorts,omitempty"`
+	// ScopeKind is Pod, LabFabric or NeverMaterialized. Non-Pod scopes have
+	// actual object ScopeUID, never synthetic Pod/container/cgroup identities.
+	ScopeKind           *string                            `json:"scopeKind,omitempty"`
+	ScopeUID            *string                            `json:"scopeUID,omitempty"`
+	Namespace           *string                            `json:"namespace,omitempty"`
+	LabName             *string                            `json:"labName,omitempty"`
+	Generation          *int64                             `json:"generation,omitempty"`
+	AttachmentsComplete *bool                              `json:"attachmentsComplete,omitempty"`
+	VNIs                []uint                             `json:"vnis,omitempty"`
+	OwnerUID            *string                            `json:"ownerUID,omitempty"`
+	OperationID         *string                            `json:"operationId,omitempty"`
+	Revision            *int64                             `json:"revision,omitempty"`
+	DeploymentUID       *string                            `json:"deploymentUID,omitempty"`
+	PodUID              *string                            `json:"podUID,omitempty"`
+	NodeName            *string                            `json:"nodeName,omitempty"`
+	NodeBootID          *string                            `json:"nodeBootID,omitempty"`
+	ContainerIDs        []string                           `json:"containerIDs,omitempty"`
+	CgroupPaths         []string                           `json:"cgroupPaths,omitempty"`
+	PortKeys            []string                           `json:"portKeys,omitempty"`
+	Epoch               *int32                             `json:"epoch,omitempty"`
+	Incarnation         *int32                             `json:"incarnation,omitempty"`
+	Component           *string                            `json:"component,omitempty"`
+	Requests            *ResourceAmountsApplyConfiguration `json:"requests,omitempty"`
+	Limits              *ResourceAmountsApplyConfiguration `json:"limits,omitempty"`
 }
 
 // OwnedRuntimeIdentityApplyConfiguration constructs a declarative configuration of the OwnedRuntimeIdentity type for use with
 // apply.
 func OwnedRuntimeIdentity() *OwnedRuntimeIdentityApplyConfiguration {
 	return &OwnedRuntimeIdentityApplyConfiguration{}
+}
+
+// WithPortRows adds the given value to the PortRows field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the PortRows field.
+func (b *OwnedRuntimeIdentityApplyConfiguration) WithPortRows(values ...*OwnedFabricPortApplyConfiguration) *OwnedRuntimeIdentityApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithPortRows")
+		}
+		b.PortRows = append(b.PortRows, *values[i])
+	}
+	return b
+}
+
+// WithVNIBindings adds the given value to the VNIBindings field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the VNIBindings field.
+func (b *OwnedRuntimeIdentityApplyConfiguration) WithVNIBindings(values ...*OwnedVNIApplyConfiguration) *OwnedRuntimeIdentityApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithVNIBindings")
+		}
+		b.VNIBindings = append(b.VNIBindings, *values[i])
+	}
+	return b
+}
+
+// WithFabricPorts adds the given value to the FabricPorts field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the FabricPorts field.
+func (b *OwnedRuntimeIdentityApplyConfiguration) WithFabricPorts(values ...*OwnedFabricPortApplyConfiguration) *OwnedRuntimeIdentityApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithFabricPorts")
+		}
+		b.FabricPorts = append(b.FabricPorts, *values[i])
+	}
+	return b
+}
+
+// WithScopeKind sets the ScopeKind field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ScopeKind field is set to the value of the last call.
+func (b *OwnedRuntimeIdentityApplyConfiguration) WithScopeKind(value string) *OwnedRuntimeIdentityApplyConfiguration {
+	b.ScopeKind = &value
+	return b
+}
+
+// WithScopeUID sets the ScopeUID field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ScopeUID field is set to the value of the last call.
+func (b *OwnedRuntimeIdentityApplyConfiguration) WithScopeUID(value string) *OwnedRuntimeIdentityApplyConfiguration {
+	b.ScopeUID = &value
+	return b
+}
+
+// WithNamespace sets the Namespace field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Namespace field is set to the value of the last call.
+func (b *OwnedRuntimeIdentityApplyConfiguration) WithNamespace(value string) *OwnedRuntimeIdentityApplyConfiguration {
+	b.Namespace = &value
+	return b
+}
+
+// WithLabName sets the LabName field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the LabName field is set to the value of the last call.
+func (b *OwnedRuntimeIdentityApplyConfiguration) WithLabName(value string) *OwnedRuntimeIdentityApplyConfiguration {
+	b.LabName = &value
+	return b
+}
+
+// WithGeneration sets the Generation field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Generation field is set to the value of the last call.
+func (b *OwnedRuntimeIdentityApplyConfiguration) WithGeneration(value int64) *OwnedRuntimeIdentityApplyConfiguration {
+	b.Generation = &value
+	return b
+}
+
+// WithAttachmentsComplete sets the AttachmentsComplete field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the AttachmentsComplete field is set to the value of the last call.
+func (b *OwnedRuntimeIdentityApplyConfiguration) WithAttachmentsComplete(value bool) *OwnedRuntimeIdentityApplyConfiguration {
+	b.AttachmentsComplete = &value
+	return b
+}
+
+// WithVNIs adds the given value to the VNIs field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the VNIs field.
+func (b *OwnedRuntimeIdentityApplyConfiguration) WithVNIs(values ...uint) *OwnedRuntimeIdentityApplyConfiguration {
+	for i := range values {
+		b.VNIs = append(b.VNIs, values[i])
+	}
+	return b
 }
 
 // WithOwnerUID sets the OwnerUID field in the declarative configuration to the given value

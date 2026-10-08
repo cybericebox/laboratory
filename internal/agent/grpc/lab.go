@@ -111,6 +111,9 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 		if !ok {
 			return nil, invalid("item %d (%s): unknown variant_id %q", i, describeRef(refs[i]), it.GetVariantId())
 		}
+		if v.spec.Lifecycle != nil && it.GetExpectedGroupUid() == "" {
+			return nil, invalid("item %d (%s): initial lifecycle birth requires expected_group_uid", i, describeRef(refs[i]))
+		}
 		if err := validateLabels(it.GetLabels()); err != nil {
 			return nil, invalid("item %d (%s): %v", i, describeRef(refs[i]), err)
 		}
@@ -409,6 +412,9 @@ func (h *Handler) updateLab(ctx context.Context, resolver *groupResolver, ref *p
 		if err := rejectTerminating(kindLab, cur); err != nil {
 			return err
 		}
+		if err := birthWriteReady(cur); err != nil {
+			return err
+		}
 		if cur.Annotations[names.AnnotationLifecycleRetirement] != "" {
 			return fmt.Errorf("retired Lab cannot mutate variables or configuration")
 		}
@@ -438,7 +444,15 @@ func (h *Handler) updateLab(ctx context.Context, resolver *groupResolver, ref *p
 // same name fails with a retryable TERMINATING error.
 func (h *Handler) DeleteLabs(ctx context.Context, in *protobuf.DeleteRequest) (*protobuf.BatchResult, error) {
 	return h.deleteNamespaced(ctx, in, func(ctx context.Context, ns, name string) error {
-		return h.cs.LaboratoryV1alpha1().Labs(ns).Delete(ctx, name, metav1.DeleteOptions{})
+		cur, err := h.cs.LaboratoryV1alpha1().Labs(ns).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if err := birthWriteReady(cur); err != nil {
+			return err
+		}
+		uid, rv := cur.UID, cur.ResourceVersion
+		return h.cs.LaboratoryV1alpha1().Labs(ns).Delete(ctx, name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &rv}})
 	}, func(ctx context.Context, selector, labGroup string) ([]*protobuf.ItemRef, error) {
 		matches, err := h.listLabs(ctx, selector, labGroup)
 		refs := make([]*protobuf.ItemRef, 0, len(matches))

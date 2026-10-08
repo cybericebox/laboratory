@@ -82,6 +82,9 @@ func (h *Handler) childAdmissionWritten(ctx context.Context, g *lab.LabGroup, a 
 		return false
 	}
 	if a.SpecHash != "" {
+		if birthWriteReady(l) != nil {
+			return false
+		}
 		return l.Annotations[names.AnnotationSpecHash] == a.SpecHash
 	}
 	i := l.Spec.Lifecycle

@@ -35,6 +35,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 	// Group=allocation, Version=v1alpha1
 	case v1alpha1.SchemeGroupVersion.WithKind("Pool"):
 		return &allocationv1alpha1.PoolApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("PoolLease"):
+		return &allocationv1alpha1.PoolLeaseApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("PoolSpec"):
 		return &allocationv1alpha1.PoolSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("PoolStatus"):
@@ -101,6 +103,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.LabApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabAccessFence"):
 		return &applyconfigurationlaboratoryv1alpha1.LabAccessFenceApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabCreationReceipt"):
+		return &applyconfigurationlaboratoryv1alpha1.LabCreationReceiptApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGateway"):
 		return &applyconfigurationlaboratoryv1alpha1.LabGatewayApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGatewaySpec"):
@@ -179,10 +183,14 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.NetworkIPRefApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("NetworkSubnetRef"):
 		return &applyconfigurationlaboratoryv1alpha1.NetworkSubnetRefApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("OwnedFabricPort"):
+		return &applyconfigurationlaboratoryv1alpha1.OwnedFabricPortApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("OwnedRuntimeIdentity"):
 		return &applyconfigurationlaboratoryv1alpha1.OwnedRuntimeIdentityApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("OwnedRuntimeReport"):
 		return &applyconfigurationlaboratoryv1alpha1.OwnedRuntimeReportApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("OwnedVNI"):
+		return &applyconfigurationlaboratoryv1alpha1.OwnedVNIApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("PodFailure"):
 		return &applyconfigurationlaboratoryv1alpha1.PodFailureApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("PodSchedule"):
@@ -213,6 +221,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.TenantStatusApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("TenantUsage"):
 		return &applyconfigurationlaboratoryv1alpha1.TenantUsageApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("VNILease"):
+		return &applyconfigurationlaboratoryv1alpha1.VNILeaseApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("VPNBootRecord"):
 		return &applyconfigurationlaboratoryv1alpha1.VPNBootRecordApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("VPNRuntimeIdentity"):

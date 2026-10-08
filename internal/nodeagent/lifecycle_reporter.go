@@ -122,9 +122,9 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 			if id.NodeName == r.Observer.NodeName {
 				report := lab.OwnedRuntimeReport{}
 				if id.ScopeKind == "GroupScope" {
-					report = r.Observer.ObserveScope(ctx, id)
+					report = r.Observer.ObserveScope(ctx, id, nativeRetirementSample(g.Annotations, string(g.UID), id))
 				} else {
-					report = r.Observer.ObserveOwnedRuntime(ctx, id)
+					report = r.Observer.ObserveOwnedRuntime(ctx, id, nativeRetirementSample(g.Annotations, string(g.UID), id))
 				}
 				if intent, ok := lab.ParseLifecycleRetirement(g.Annotations[names.AnnotationLifecycleRetirement]); ok && intent.ExpectedUID == string(g.UID) && intent.StopOperationID == id.OperationID && intent.StopRevision == id.Revision {
 					report.RetirementOperationID, report.RetirementRevision = intent.OperationID, intent.Revision
@@ -149,7 +149,7 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 		reports := otherNodeReports(parent.Status.ScopeReports, r.Observer.NodeName)
 		for _, scope := range parent.Status.ScopeInventory {
 			if scope.NodeName == r.Observer.NodeName {
-				report := r.Observer.ObserveScope(ctx, scope)
+				report := r.Observer.ObserveScope(ctx, scope, nativeRetirementSample(parent.Annotations, string(parent.UID), scope))
 				if intent, ok := lab.ParseLifecycleRetirement(parent.Annotations[names.AnnotationLifecycleRetirement]); ok && intent.ExpectedUID == string(parent.UID) && intent.StopOperationID == scope.OperationID && intent.StopRevision == scope.Revision {
 					report.RetirementOperationID = intent.OperationID
 					report.RetirementRevision = intent.Revision
@@ -188,6 +188,11 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 			if p.Namespace != d.Namespace || p.Labels[names.LabelDevice] != d.Spec.Name || p.Labels[names.LabelLab] != parent.Name {
 				continue
 			}
+			if owned, err := r.nativeDevicePodOwned(ctx, d, p); err != nil {
+				return err
+			} else if !owned {
+				continue
+			}
 			id := r.podIdentity(p, string(parent.UID), operation, revision)
 			id.Namespace = parent.Namespace
 			id.LabName = parent.Name
@@ -203,7 +208,7 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 		reports := otherNodeReports(d.Status.RuntimeReports, r.Observer.NodeName)
 		for _, id := range rows {
 			if id.NodeName == r.Observer.NodeName {
-				report := r.Observer.ObserveOwnedRuntime(ctx, id)
+				report := r.Observer.ObserveOwnedRuntime(ctx, id, nativeRetirementSample(parent.Annotations, string(parent.UID), id))
 				if intent, ok := lab.ParseLifecycleRetirement(parent.Annotations[names.AnnotationLifecycleRetirement]); ok && intent.ExpectedUID == string(parent.UID) && intent.StopOperationID == id.OperationID && intent.StopRevision == id.Revision {
 					report.RetirementOperationID, report.RetirementRevision = intent.OperationID, intent.Revision
 				}
@@ -237,7 +242,7 @@ func otherNodeReports(in []lab.OwnedRuntimeReport, node string) []lab.OwnedRunti
 	return out
 }
 func (r *LifecycleReporter) podIdentity(p *corev1.Pod, owner, op string, rev int64) lab.OwnedRuntimeIdentity {
-	id := lab.OwnedRuntimeIdentity{OwnerUID: owner, OperationID: op, Revision: rev, PodUID: string(p.UID), NodeName: p.Spec.NodeName, NodeBootID: r.Observer.BootID}
+	id := lab.OwnedRuntimeIdentity{ContainerIDs: []string{}, CgroupPaths: []string{}, PortKeys: []string{}, OwnerUID: owner, OperationID: op, Revision: rev, PodUID: string(p.UID), NodeName: p.Spec.NodeName, NodeBootID: r.Observer.BootID}
 	for _, c := range append(append([]corev1.ContainerStatus(nil), p.Status.ContainerStatuses...), p.Status.InitContainerStatuses...) {
 		if c.ContainerID != "" {
 			id.ContainerIDs = append(id.ContainerIDs, strings.TrimPrefix(c.ContainerID, "containerd://"))
@@ -253,6 +258,14 @@ func (r *LifecycleReporter) podIdentity(p *corev1.Pod, owner, op string, rev int
 		for key, uid := range owners {
 			if uid == p.UID {
 				id.PortKeys = append(id.PortKeys, key)
+				r.Observer.Network.OVS.mu.Lock()
+				row, err := r.Observer.Network.OVS.portSnapshotLocked(key)
+				r.Observer.Network.OVS.mu.Unlock()
+				if err != nil || row == nil || row.ExternalIDs[portOwnerExternalID] != string(uid) {
+					id.AttachmentsComplete = false
+				} else {
+					id.PortRows = append(id.PortRows, lab.OwnedFabricPort{Key: key, OwnerUID: string(uid), RowUUID: row.UUID})
+				}
 			}
 		}
 	}
@@ -263,11 +276,17 @@ func (r *LifecycleReporter) podIdentity(p *corev1.Pod, owner, op string, rev int
 		for _, key := range prior.PortKeys {
 			if !runtimeContainsID(id.PortKeys, key) {
 				id.PortKeys = append(id.PortKeys, key)
+				for _, row := range prior.PortRows {
+					if row.Key == key {
+						id.PortRows = append(id.PortRows, row)
+					}
+				}
 			}
 		}
 	}
 	sort.Strings(id.ContainerIDs)
 	sort.Strings(id.PortKeys)
+	sort.Slice(id.PortRows, func(i, j int) bool { return id.PortRows[i].Key < id.PortRows[j].Key })
 	return id
 }
 func addQuantity(out *lab.ResourceAmounts, rl corev1.ResourceList) {
@@ -286,4 +305,44 @@ func nativeLabOperation(parent *lab.Lab) (string, int64) {
 		return parent.Spec.Lifecycle.OperationID, parent.Spec.Lifecycle.Revision
 	}
 	return "legacy-native-" + string(parent.UID) + "-" + fmt.Sprint(parent.Generation), 1
+}
+
+func (r *LifecycleReporter) nativeDevicePodOwned(ctx context.Context, d *lab.Device, p *corev1.Pod) (bool, error) {
+	for _, ref := range p.OwnerReferences {
+		if ref.Kind == "Device" && ref.UID == d.UID {
+			return true, nil
+		}
+		if ref.Kind != "ReplicaSet" {
+			continue
+		}
+		var rs appsv1.ReplicaSet
+		if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: p.Namespace, Name: ref.Name}, &rs); err != nil {
+			return false, err
+		}
+		if rs.UID != ref.UID {
+			return false, nil
+		}
+		for _, owner := range rs.OwnerReferences {
+			if owner.Kind == "Deployment" {
+				var dep appsv1.Deployment
+				if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: p.Namespace, Name: owner.Name}, &dep); err != nil {
+					return false, err
+				}
+				if dep.UID != owner.UID {
+					return false, nil
+				}
+				for _, parent := range dep.OwnerReferences {
+					if parent.Kind == "Device" && parent.UID == d.UID {
+						return true, nil
+					}
+				}
+			}
+		}
+	}
+	return false, nil
+}
+
+func nativeRetirementSample(annotations map[string]string, uid string, id lab.OwnedRuntimeIdentity) bool {
+	intent, ok := lab.ParseLifecycleRetirement(annotations[names.AnnotationLifecycleRetirement])
+	return ok && intent.ExpectedUID == uid && intent.StopOperationID == id.OperationID && intent.StopRevision == id.Revision
 }

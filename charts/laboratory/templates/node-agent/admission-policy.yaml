@@ -175,7 +175,7 @@ spec:
     - expression: "object.status.?runtimeInventory.orValue([]) == oldObject.status.?runtimeInventory.orValue([])"
       message: "the node-agent cannot mutate controller runtime inventory"
       reason: Forbidden
-    - expression: "object.status.?ready == oldObject.status.?ready && object.status.?nodeName == oldObject.status.?nodeName && object.status.?nodeAddress == oldObject.status.?nodeAddress && object.status.?podIP == oldObject.status.?podIP && object.status.?podName == oldObject.status.?podName && object.status.?vni == oldObject.status.?vni && object.status.?reason == oldObject.status.?reason && object.status.?state == oldObject.status.?state && object.status.?scheduling == oldObject.status.?scheduling"
+    - expression: "object.status.?ready == oldObject.status.?ready && object.status.?nodeName == oldObject.status.?nodeName && object.status.?nodeAddress == oldObject.status.?nodeAddress && object.status.?podIP == oldObject.status.?podIP && object.status.?podName == oldObject.status.?podName && object.status.?vniLease == oldObject.status.?vniLease && object.status.?vni == oldObject.status.?vni && object.status.?reason == oldObject.status.?reason && object.status.?state == oldObject.status.?state && object.status.?scheduling == oldObject.status.?scheduling"
       message: "native report patches cannot change controller or other status fields"
       reason: Forbidden
     - expression: "object.status.?runtimeReports.orValue([]).all(r, r.identity.nodeName == variables.ownNode || oldObject.status.?runtimeReports.orValue([]).exists(o, o == r)) && oldObject.status.?runtimeReports.orValue([]).all(o, o.identity.nodeName == variables.ownNode || object.status.?runtimeReports.orValue([]).exists(r, r == o))"
@@ -190,4 +190,38 @@ spec:
   policyName: laboratory-node-agent-device-runtime
   validationActions: [Deny]
 
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-node-agent-lab-scope
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [laboratory.cybericebox.com]
+        apiVersions: ["*"]
+        operations: [UPDATE]
+        resources: [labs/status]
+  matchConditions:
+    - name: from-the-node-agent
+      expression: request.userInfo.username == {{ $nodeAgent | quote }}
+  variables:
+    - name: ownNode
+      expression: "has(request.userInfo.extra) && 'authentication.kubernetes.io/node-name' in request.userInfo.extra && size(request.userInfo.extra['authentication.kubernetes.io/node-name']) > 0 ? request.userInfo.extra['authentication.kubernetes.io/node-name'][0] : ''"
+  validations:
+    - expression: "variables.ownNode != '' && object.spec == oldObject.spec && object.metadata.uid == oldObject.metadata.uid"
+      message: "native scope report requires exact object and bound node"
+    - expression: "object.status.?scopeInventory == oldObject.status.?scopeInventory && object.status.?retirement == oldObject.status.?retirement && object.status.?lifecycle == oldObject.status.?lifecycle && object.status.?resources == oldObject.status.?resources && object.status.?phase == oldObject.status.?phase && object.status.?vpn == oldObject.status.?vpn && object.status.?internet == oldObject.status.?internet && object.status.?devices == oldObject.status.?devices && object.status.?connections == oldObject.status.?connections && object.status.?access == oldObject.status.?access && object.status.?scheduling == oldObject.status.?scheduling && object.status.?imageCache == oldObject.status.?imageCache && object.status.?imageDigests == oldObject.status.?imageDigests && object.status.?imageWarning == oldObject.status.?imageWarning && object.status.?conditions == oldObject.status.?conditions"
+      message: "native scope reporter cannot change controller status"
+    - expression: "object.status.?scopeReports.orValue([]).all(r, r.identity.nodeName == variables.ownNode ? (r.identity.ownerUID == string(object.metadata.uid) && oldObject.status.?scopeInventory.orValue([]).exists(i, i.ownerUID == r.identity.ownerUID && i.scopeUID == r.identity.scopeUID && i.nodeName == r.identity.nodeName && i.nodeBootID == r.identity.nodeBootID && i.operationId == r.identity.operationId && i.revision == r.identity.revision && i.generation == r.identity.generation)) : oldObject.status.?scopeReports.orValue([]).exists(o, o == r)) && oldObject.status.?scopeReports.orValue([]).all(o, o.identity.nodeName == variables.ownNode || object.status.?scopeReports.orValue([]).exists(r, r == o))"
+      message: "native scope reporter may replace only its declared own-node rows"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-node-agent-lab-scope
+spec:
+  policyName: laboratory-node-agent-lab-scope
+  validationActions: [Deny]
 {{- end }}

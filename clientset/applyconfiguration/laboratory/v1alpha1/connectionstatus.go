@@ -28,9 +28,10 @@ import (
 type ConnectionStatusApplyConfiguration struct {
 	// VNI is the allocated VXLAN Network Identifier for direct (non-switch) connections.
 	// Nil for switch-to-device and switch-to-switch connections.
-	VNI   *uint                                    `json:"vni,omitempty"`
-	Ports []ConnectionPortStatusApplyConfiguration `json:"ports,omitempty"`
-	Ready *bool                                    `json:"ready,omitempty"`
+	VNILease *VNILeaseApplyConfiguration              `json:"vniLease,omitempty"`
+	VNI      *uint                                    `json:"vni,omitempty"`
+	Ports    []ConnectionPortStatusApplyConfiguration `json:"ports,omitempty"`
+	Ready    *bool                                    `json:"ready,omitempty"`
 	// Conditions surfaces reconciler progress/blocking reasons
 	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
 	Conditions []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
@@ -40,6 +41,14 @@ type ConnectionStatusApplyConfiguration struct {
 // apply.
 func ConnectionStatus() *ConnectionStatusApplyConfiguration {
 	return &ConnectionStatusApplyConfiguration{}
+}
+
+// WithVNILease sets the VNILease field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the VNILease field is set to the value of the last call.
+func (b *ConnectionStatusApplyConfiguration) WithVNILease(value *VNILeaseApplyConfiguration) *ConnectionStatusApplyConfiguration {
+	b.VNILease = value
+	return b
 }
 
 // WithVNI sets the VNI field in the declarative configuration to the given value

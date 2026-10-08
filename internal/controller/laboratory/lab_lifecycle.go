@@ -53,6 +53,26 @@ func (r *LabReconciler) ValidateRequiredSnapshot(ctx context.Context, l *lab.Lab
 			continue
 		}
 		materialized[d.Spec.Name] = true
+		never := d.Status.PodName == "" && d.Status.NodeName == "" && (d.Status.State == nil || d.Status.State.Incarnation == 0)
+		if never {
+			complete := false
+			for _, scope := range l.Status.ScopeInventory {
+				if scope.ScopeKind != "NeverMaterialized" || scope.ScopeUID != string(d.UID) || scope.Generation != l.Generation {
+					continue
+				}
+				seen := false
+				for _, report := range l.Status.ScopeReports {
+					seen = seen || sameDeclaredScope(scope, report.Identity) && report.RuntimeState == "Vacant" && report.Error == "" && nonzeroTime(report.ObservedAt) && time.Since(report.ObservedAt.Time) >= 0 && time.Since(report.ObservedAt.Time) <= 60*time.Second && nonzeroTime(report.RuntimeAbsentAt) && nonzeroTime(report.CgroupAbsentAt) && nonzeroTime(report.AttachmentsAbsentAt)
+				}
+				if !seen {
+					return fmt.Errorf("device %s native never-created scope unavailable", d.Name)
+				}
+				complete = true
+			}
+			if complete {
+				continue
+			}
+		}
 		ready := false
 		for _, report := range d.Status.RuntimeReports {
 			id := report.Identity
@@ -139,9 +159,15 @@ func (r *LabReconciler) reconcileLifecycle(ctx context.Context, l *lab.Lab) (boo
 	*l = current
 	intent := l.Spec.Lifecycle
 	if intent == nil {
+		if err := r.prepareLabScopes(ctx, l); err != nil {
+			return true, ctrl.Result{RequeueAfter: 5 * time.Second}, err
+		}
 		return false, ctrl.Result{}, nil
 	}
 	if !intent.IsStopped() {
+		if err := r.prepareLabScopes(ctx, l); err != nil {
+			return true, ctrl.Result{RequeueAfter: 5 * time.Second}, err
+		}
 		return r.reconcileLifecycleStart(ctx, l)
 	}
 	// Task5 is the only native release producer. A matching existing native
@@ -571,7 +597,7 @@ func labStartPrepared(l *lab.Lab) bool {
 		}
 	}
 	observed := l.Status.Lifecycle
-	return observed != nil && observed.LabUID == string(l.UID) && observed.OperationID == intent.OperationID && observed.Revision == intent.Revision && (observed.ObservedState == "Starting" || observed.ObservedState == "Running")
+	return observed != nil && observed.LabUID == string(l.UID) && observed.OperationID == intent.OperationID && observed.Revision == intent.Revision && observed.ObservedGeneration == l.Generation && (observed.ObservedState == "Starting" || observed.ObservedState == "Running")
 }
 
 // Deployment Pods are fenced through both immutable owner UIDs, never labels.

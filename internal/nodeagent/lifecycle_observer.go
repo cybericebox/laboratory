@@ -25,6 +25,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/devicestate"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/vishvananda/netlink"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -39,11 +40,16 @@ type NativeRuntimeObserver struct {
 	Network                                             *NetworkAttachReconciler
 	Reader                                              runtimeclient.Reader
 	mu                                                  sync.Mutex
+	journalMu                                           sync.Mutex
 }
 
-func (o *NativeRuntimeObserver) ObserveOwnedRuntime(ctx context.Context, id lab.OwnedRuntimeIdentity) lab.OwnedRuntimeReport {
+func (o *NativeRuntimeObserver) ObserveOwnedRuntime(ctx context.Context, id lab.OwnedRuntimeIdentity, fresh ...bool) lab.OwnedRuntimeReport {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	var committed lab.OwnedRuntimeReport
+	if (len(fresh) == 0 || !fresh[0]) && o.readRecord("runtime-released", id, &committed) == nil && committedRuntimeReport(committed, id) {
+		return committed
+	}
 	now := metav1.Now()
 	out := lab.OwnedRuntimeReport{Identity: id, RuntimeState: "Unknown", ObservedAt: &now}
 	fail := func(err error) lab.OwnedRuntimeReport { out.Error = err.Error(); return out }
@@ -95,10 +101,11 @@ func (o *NativeRuntimeObserver) ObserveOwnedRuntime(ctx context.Context, id lab.
 		sort.Strings(id.ContainerIDs)
 		sort.Strings(id.CgroupPaths)
 		sort.Strings(id.PortKeys)
+		sort.Slice(id.PortRows, func(i, j int) bool { return id.PortRows[i].Key < id.PortRows[j].Key })
 		if err := o.writeRecord("inventory", id, id); err != nil {
 			return fail(err)
 		}
-		if err := o.writeRecord("owner", lab.OwnedRuntimeIdentity{PodUID: id.PodUID, NodeName: id.NodeName, NodeBootID: id.NodeBootID}, id); err != nil {
+		if err := o.recordObligation(id); err != nil {
 			return fail(err)
 		}
 	} else {
@@ -169,6 +176,9 @@ func (o *NativeRuntimeObserver) ObserveOwnedRuntime(ctx context.Context, id lab.
 		return fail(fmt.Errorf("native attachment observer unavailable"))
 	}
 	for _, key := range id.PortKeys {
+		if err := o.recoverPhysicalCleanup(id, key); err != nil {
+			return fail(err)
+		}
 		var receipt cleanupReceipt
 		if e := o.readRecord("cleanup-"+key, id, &receipt); e == nil && receipt.PortUUID != "" && reflect.DeepEqual(receipt.Identity, id) {
 			// Recovery consumes only this pre-retirement owned physical proof. A new
@@ -197,7 +207,16 @@ func (o *NativeRuntimeObserver) ObserveOwnedRuntime(ctx context.Context, id lab.
 		// BEFORE deletion of the exact OVS owner row. A prepared receipt alone cannot
 		// authorize release; recovery verifies the exact guarded retirement outcome.
 		receipt = cleanupReceipt{Identity: id}
-		e := o.Network.DelVethWithFlowsOwnedJournaled(key, types.UID(id.PodUID), func(row string) error { receipt.PortUUID = row; return o.writeRecord("cleanup-"+key, id, receipt) })
+		expected := ""
+		for _, port := range id.PortRows {
+			if port.Key == key && port.OwnerUID == id.PodUID {
+				expected = port.RowUUID
+			}
+		}
+		if expected == "" {
+			return fail(ErrPortOwnerUnknown)
+		}
+		e := o.Network.OVS.delVethWithFlowsOwnedJournaled(key, types.UID(id.PodUID), o.Network.Flows, func(row string) error { receipt.PortUUID = row; return o.writeRecord("cleanup-"+key, id, receipt) }, expected)
 		if e != nil {
 			return fail(e)
 		}
@@ -210,6 +229,9 @@ func (o *NativeRuntimeObserver) ObserveOwnedRuntime(ctx context.Context, id lab.
 	at := metav1.Now()
 	out.AttachmentsAbsentAt = &at
 	out.RuntimeState = "Released"
+	if err := o.writeRecord("runtime-released", id, out); err != nil {
+		return fail(err)
+	}
 	return out
 }
 
@@ -232,7 +254,11 @@ func sameRuntimeOwner(a, b lab.OwnedRuntimeIdentity) bool {
 	return a.OwnerUID == b.OwnerUID && a.PodUID == b.PodUID && a.NodeName == b.NodeName && a.NodeBootID == b.NodeBootID && a.OperationID == b.OperationID && a.Revision == b.Revision && a.DeploymentUID == b.DeploymentUID && a.Epoch == b.Epoch && a.Incarnation == b.Incarnation
 }
 func (o *NativeRuntimeObserver) recordPath(kind string, id lab.OwnedRuntimeIdentity) string {
-	b, _ := json.Marshal([]any{kind, id.OwnerUID, id.PodUID, id.ScopeKind, id.ScopeUID, id.Generation, id.OperationID, id.Revision, id.NodeName, id.NodeBootID, id.Epoch, id.Incarnation, id.DeploymentUID})
+	parts := []any{kind, id.OwnerUID, id.PodUID, id.OperationID, id.Revision, id.NodeName, id.NodeBootID, id.Epoch, id.Incarnation, id.DeploymentUID}
+	if id.ScopeKind != "" || id.ScopeUID != "" && id.PodUID == "" {
+		parts = append(parts, id.ScopeKind, id.ScopeUID, id.Generation)
+	}
+	b, _ := json.Marshal(parts)
 	h := sha256.Sum256(b)
 	return filepath.Join(o.JournalDir, hex.EncodeToString(h[:])+".json")
 }
@@ -398,6 +424,12 @@ func (o *NativeRuntimeObserver) prepareRuntimeBeforeRetirement(key string, uid t
 		id.NodeName = o.NodeName
 		id.NodeBootID = o.BootID
 		id.Namespace = p.Namespace
+		id.Requests = lab.ResourceAmounts{}
+		id.Limits = lab.ResourceAmounts{}
+		for _, container := range p.Spec.Containers {
+			addQuantity(&id.Requests, container.Resources.Requests)
+			addQuantity(&id.Limits, container.Resources.Limits)
+		}
 		if p.Labels[names.LabelLab] != "" {
 			var device lab.Device
 			for _, owner := range p.OwnerReferences {
@@ -441,6 +473,37 @@ func (o *NativeRuntimeObserver) prepareRuntimeBeforeRetirement(key string, uid t
 			for j := range groups.Items {
 				g := &groups.Items[j]
 				if lab.LabGroupNamespaceOf(g) == p.Namespace {
+					// Actual service deployment ancestry is part of the immutable
+					// identity even when this cleanup precedes the first reporter pass.
+					deploymentUID := types.UID("")
+					for _, ref := range p.OwnerReferences {
+						if ref.Kind != "ReplicaSet" {
+							continue
+						}
+						var rs appsv1.ReplicaSet
+						if err := o.Reader.Get(ctx, runtimeclient.ObjectKey{Namespace: p.Namespace, Name: ref.Name}, &rs); err != nil {
+							return err
+						}
+						if rs.UID != ref.UID {
+							return ErrPortOwnerChanged
+						}
+						for _, parent := range rs.OwnerReferences {
+							if parent.Kind == "Deployment" {
+								var dep appsv1.Deployment
+								if err := o.Reader.Get(ctx, runtimeclient.ObjectKey{Namespace: p.Namespace, Name: parent.Name}, &dep); err != nil {
+									return err
+								}
+								if dep.UID != parent.UID || !nativeGroupDeploymentOwned(&dep, string(g.UID)) {
+									return ErrPortOwnerChanged
+								}
+								deploymentUID = dep.UID
+							}
+						}
+					}
+					if deploymentUID == "" {
+						return ErrPortOwnerUnknown
+					}
+					id.DeploymentUID = string(deploymentUID)
 					id.OwnerUID = string(g.UID)
 					id.ScopeUID = string(g.UID)
 					id.Generation = g.Generation
@@ -487,6 +550,25 @@ func (o *NativeRuntimeObserver) prepareRuntimeBeforeRetirement(key string, uid t
 		return ErrPortOwnerChanged
 	}
 	id.AttachmentsComplete = true
+	for _, port := range id.PortKeys {
+		physical, err := o.Network.OVS.portSnapshotLocked(port)
+		if err != nil {
+			return err
+		}
+		if physical != nil && physical.ExternalIDs[portOwnerExternalID] == string(uid) {
+			entry := lab.OwnedFabricPort{Key: port, OwnerUID: string(uid), RowUUID: physical.UUID}
+			found := false
+			for n, old := range id.PortRows {
+				if old.Key == port {
+					id.PortRows[n] = entry
+					found = true
+				}
+			}
+			if !found {
+				id.PortRows = append(id.PortRows, entry)
+			}
+		}
+	}
 	native := namespaces.WithNamespace(ctx, o.Namespace)
 	containers, err := o.Runtime.Containers(native)
 	if err != nil {
@@ -520,21 +602,87 @@ func (o *NativeRuntimeObserver) prepareRuntimeBeforeRetirement(key string, uid t
 	sort.Strings(id.ContainerIDs)
 	sort.Strings(id.CgroupPaths)
 	sort.Strings(id.PortKeys)
+	sort.Slice(id.PortRows, func(i, j int) bool { return id.PortRows[i].Key < id.PortRows[j].Key })
 	if err := o.writeRecord("inventory", id, id); err != nil {
 		return err
 	}
+	return o.recordObligation(id)
+}
+
+func (o *NativeRuntimeObserver) recordObligation(id lab.OwnedRuntimeIdentity) error {
+	o.journalMu.Lock()
+	defer o.journalMu.Unlock()
 	physical := lab.OwnedRuntimeIdentity{PodUID: id.PodUID, NodeName: id.NodeName, NodeBootID: id.NodeBootID}
-	var obligations []lab.OwnedRuntimeIdentity
-	_ = o.readRecord("obligations", physical, &obligations)
-	exists := false
-	for _, old := range obligations {
-		exists = exists || reflect.DeepEqual(old, id)
+	var rows []lab.OwnedRuntimeIdentity
+	err := o.readRecord("obligations", physical, &rows)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
-	if !exists {
-		obligations = append(obligations, id)
+	found := false
+	for _, row := range rows {
+		found = found || reflect.DeepEqual(row, id)
 	}
-	if err := o.writeRecord("obligations", physical, obligations); err != nil {
+	if !found {
+		rows = append(rows, id)
+	}
+	if err := o.writeRecord("obligations", physical, rows); err != nil {
 		return err
 	}
 	return o.writeRecord("owner", physical, id)
+}
+
+func (o *NativeRuntimeObserver) recoverPhysicalCleanup(id lab.OwnedRuntimeIdentity, key string) error {
+	var current cleanupReceipt
+	if o.readRecord("cleanup-"+key, id, &current) == nil {
+		return nil
+	}
+	physical := lab.OwnedRuntimeIdentity{PodUID: id.PodUID, NodeName: id.NodeName, NodeBootID: id.NodeBootID}
+	var rows []lab.OwnedRuntimeIdentity
+	if err := o.readRecord("obligations", physical, &rows); err != nil {
+		return err
+	}
+	expected := ""
+	for _, port := range id.PortRows {
+		if port.Key == key && port.OwnerUID == id.PodUID {
+			expected = port.RowUUID
+		}
+	}
+	if expected == "" {
+		return nil
+	}
+	for _, old := range rows {
+		if old.OwnerUID != id.OwnerUID || old.PodUID != id.PodUID || old.NodeBootID != id.NodeBootID {
+			continue
+		}
+		var receipt cleanupReceipt
+		if o.readRecord("cleanup-"+key, old, &receipt) != nil || receipt.PortUUID != expected {
+			continue
+		}
+		o.Network.OVS.mu.Lock()
+		row, err := o.Network.OVS.portSnapshotLocked(key)
+		o.Network.OVS.mu.Unlock()
+		if err != nil {
+			return err
+		}
+		if row != nil {
+			return nil
+		}
+		_, err = netlink.LinkByName(key)
+		var absent netlink.LinkNotFoundError
+		if !errors.As(err, &absent) {
+			if err != nil {
+				return err
+			}
+			return nil
+		}
+		receipt.Identity = id
+		receipt.Complete = true
+		receipt.At = time.Now().UTC()
+		return o.writeRecord("cleanup-"+key, id, receipt)
+	}
+	return nil
+}
+
+func committedRuntimeReport(report lab.OwnedRuntimeReport, id lab.OwnedRuntimeIdentity) bool {
+	return reflect.DeepEqual(report.Identity, id) && report.RuntimeState == "Released" && report.Error == "" && report.ObservedAt != nil && !report.ObservedAt.IsZero() && report.RuntimeAbsentAt != nil && !report.RuntimeAbsentAt.IsZero() && report.CgroupAbsentAt != nil && !report.CgroupAbsentAt.IsZero() && report.AttachmentsAbsentAt != nil && !report.AttachmentsAbsentAt.IsZero()
 }

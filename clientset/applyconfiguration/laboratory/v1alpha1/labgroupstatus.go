@@ -26,6 +26,8 @@ import (
 //
 // LabGroupStatus defines the observed state of LabGroup.
 type LabGroupStatusApplyConfiguration struct {
+	// Original birth metadata; bounded by actual group Lab capacity and never raw data.
+	Creations []LabCreationReceiptApplyConfiguration `json:"creations,omitempty"`
 	// Retirement is a fresh acknowledgement distinct from the original stop.
 	Retirement *LifecycleRetirementStatusApplyConfiguration `json:"retirement,omitempty"`
 	// ServiceRuntime is controller-owned durable pre-scale inventory.
@@ -54,6 +56,19 @@ type LabGroupStatusApplyConfiguration struct {
 // apply.
 func LabGroupStatus() *LabGroupStatusApplyConfiguration {
 	return &LabGroupStatusApplyConfiguration{}
+}
+
+// WithCreations adds the given value to the Creations field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Creations field.
+func (b *LabGroupStatusApplyConfiguration) WithCreations(values ...*LabCreationReceiptApplyConfiguration) *LabGroupStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithCreations")
+		}
+		b.Creations = append(b.Creations, *values[i])
+	}
+	return b
 }
 
 // WithRetirement sets the Retirement field in the declarative configuration to the given value
