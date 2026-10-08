@@ -36,11 +36,13 @@ const GenevePort = "ovsgnv0"
 // shared port name regardless of the remote address argument.
 // OVSManager programs the single br-ovs bridge via libovsdb (OVSDB JSON-RPC over Unix socket).
 type OVSManager struct {
-	bridge string
-	client client.Client
-	ctx    context.Context
-	mu     sync.Mutex
-	vethMu sync.Mutex // serialize Pod netns wiring against replacement cleanup
+	// RuntimeRetirement persists first exact physical cleanup before row loss.
+	RuntimeRetirement func(string, types.UID, string) error
+	bridge            string
+	client            client.Client
+	ctx               context.Context
+	mu                sync.Mutex
+	vethMu            sync.Mutex // serialize Pod netns wiring against replacement cleanup
 
 	// policingKbps is the rate a veth port of a device may send into the bridge (0 = unpoliced); set by SetPolicing.
 	policingKbps int
@@ -426,11 +428,18 @@ func (m *OVSManager) PortOwners() (map[string]types.UID, error) {
 // delVethWithFlowsOwned holds the same lock as creation for owner check, flow
 // retirement and deletion. Empty UID is allowed only by the caller's legacy fence.
 func (m *OVSManager) delVethWithFlowsOwned(key string, uid types.UID, flows *FlowManager) error {
+	return m.delVethWithFlowsOwnedJournaled(key, uid, flows, nil)
+}
+
+func (m *OVSManager) delVethWithFlowsOwnedJournaled(key string, uid types.UID, flows *FlowManager, prepared func(string) error) error {
 	if !ValidPortKey(key) {
 		return fmt.Errorf("invalid platform port key %q", key)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if prepared == nil && flows != nil && m.RuntimeRetirement != nil {
+		prepared = func(row string) error { return m.RuntimeRetirement(key, uid, row) }
+	}
 	p, err := m.portSnapshotLocked(key)
 	if err != nil {
 		return err
@@ -468,6 +477,30 @@ func (m *OVSManager) delVethWithFlowsOwned(key string, uid types.UID, flows *Flo
 	}
 	if current == nil || current.UUID != p.UUID || current.ExternalIDs[portOwnerExternalID] != p.ExternalIDs[portOwnerExternalID] {
 		return fmt.Errorf("%w: port changed during flow retirement", ErrPortOwnerChanged)
+	}
+	if prepared != nil {
+		// Keep the exact owner row until the physical flow/kernel proof is fsynced.
+		if linkErr == nil {
+			currentLink, e := netlink.LinkByName(key)
+			if e != nil {
+				return e
+			}
+			if currentLink.Attrs().Index != link.Attrs().Index {
+				return ErrPortOwnerChanged
+			}
+			if e = netlink.LinkDel(currentLink); e != nil {
+				return e
+			}
+		} else {
+			var absent netlink.LinkNotFoundError
+			if !errors.As(linkErr, &absent) {
+				return linkErr
+			}
+		}
+		if e := prepared(p.UUID); e != nil {
+			return e
+		}
+		return m.delPortLocked(p)
 	}
 	if err := m.delPortLocked(p); err != nil {
 		return err

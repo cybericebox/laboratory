@@ -168,13 +168,20 @@ func Run() {
 		os.Exit(1)
 	}
 
-	if err := (&nodeagent.NetworkAttachReconciler{
+	networkAttach := &nodeagent.NetworkAttachReconciler{
 		Client:   mgr.GetClient(),
 		NodeName: cfg.NodeName,
 		OVS:      ovs,
 		Flows:    flows,
 		CRISock:  cfg.CRISock,
-	}).SetupWithManager(mgr); err != nil {
+	}
+	if cfg.RuntimeObservation {
+		if err := nodeagent.SetupRuntimeObservation(mgr, cfg, networkAttach); err != nil {
+			log.Error(err, "setup native runtime observation")
+			os.Exit(1)
+		}
+	}
+	if err := networkAttach.SetupWithManager(mgr); err != nil {
 		log.Error(err, "setup NetworkAttachReconciler")
 		os.Exit(1)
 	}

@@ -193,6 +193,10 @@ spec:
               value: {{ .Values.nodeAgent.criSocket | quote }}
             - name: DEVICE_PLUGIN_DIR
               value: {{ .Values.nodeAgent.devicePlugin.dir | quote }}
+            - name: RUNTIME_OBSERVATION_ENABLED
+              value: {{ .Values.lifecycle.runtimeObservation.enabled | quote }}
+            - name: RUNTIME_OBSERVATION_INTERVAL
+              value: {{ .Values.lifecycle.runtimeObservation.interval | quote }}
             - name: ERROR_JOURNAL_NAMESPACE
               value: {{ .Release.Namespace | quote }}
             - name: TUN_SLOTS
@@ -201,9 +205,9 @@ spec:
             # containerd reads it as a plain-HTTP localhost registry.
             - name: STATE_REGISTRY_ADDR
               value: {{ include "laboratory.registryAddr" . | quote }}
-          {{- if .Values.devices.statePersistence.enabled }}
+          {{- if or .Values.devices.statePersistence.enabled .Values.lifecycle.runtimeObservation.enabled }}
             - name: STATE_PERSISTENCE_ENABLED
-              value: "true"
+              value: {{ .Values.devices.statePersistence.enabled | quote }}
             - name: CONTAINERD_NAMESPACE
               value: {{ .Values.devices.statePersistence.containerdNamespace | quote }}
             - name: STATE_MAX_WATCH_DIRS
@@ -289,7 +293,7 @@ spec:
               # host after this container starts. Without it the container sees an empty
               # mountpoint instead of nsfs, and LinkSetNsFd fails with EINVAL.
               mountPropagation: HostToContainer
-          {{- if .Values.devices.statePersistence.enabled }}
+          {{- if or .Values.devices.statePersistence.enabled .Values.lifecycle.runtimeObservation.enabled }}
             # The overlayfs snapshotter's directories, at the same path as on the host:
             # the writable layers that are snapshotted live below it.
             - name: containerd-root
@@ -345,7 +349,7 @@ spec:
           hostPath:
             path: /run/netns
             type: DirectoryOrCreate
-        {{- if .Values.devices.statePersistence.enabled }}
+        {{- if or .Values.devices.statePersistence.enabled .Values.lifecycle.runtimeObservation.enabled }}
         - name: containerd-root
           hostPath:
             path: {{ .Values.devices.statePersistence.containerdRoot | quote }}

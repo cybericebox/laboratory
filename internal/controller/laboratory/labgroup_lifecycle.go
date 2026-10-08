@@ -180,6 +180,23 @@ func (r *LabGroupReconciler) groupLifecycleStatus(ctx context.Context, g *lab.La
 	}
 	return r.Status().Update(ctx, live)
 }
+
+// ValidateGroupStop checks the current exact child release certificates before
+// the RPC accepts intent. Reconciliation repeats it immediately before scaling.
+func (r *LabGroupReconciler) ValidateGroupStop(ctx context.Context, g *lab.LabGroup) error {
+	if g.Spec.Admission != nil {
+		return fmt.Errorf("group has a pending child admission")
+	}
+	stopped, err := r.allGroupLabsStopped(ctx, g)
+	if err != nil {
+		return err
+	}
+	if !stopped {
+		return fmt.Errorf("all child labs must be exactly Stopped and Released with no pending admission")
+	}
+	return nil
+}
+
 func (r *LabGroupReconciler) allGroupLabsStopped(ctx context.Context, g *lab.LabGroup) (bool, error) {
 	var children lab.LabList
 	if err := r.groupReader().List(ctx, &children, client.InNamespace(lab.LabGroupNamespaceOf(g))); err != nil {

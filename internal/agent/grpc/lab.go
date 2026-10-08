@@ -456,7 +456,7 @@ func (h *Handler) overLimits(ctx context.Context, items []*protobuf.LabItem, var
 			t = &tally{}
 			groups[m.group] = t
 		}
-		cpu, mem, _, _ := lim.SpecTotals(&m.lab.Spec)
+		cpu, mem := h.activeLabCompute(m.lab)
 		t.labs, t.cpu, t.mem = t.labs+1, t.cpu+cpu, t.mem+mem
 	}
 	room := lim.TenantMaxLabs - len(have)
@@ -482,4 +482,19 @@ func (h *Handler) overLimits(ctx context.Context, items []*protobuf.LabItem, var
 		t.labs, t.cpu, t.mem = t.labs+1, t.cpu+cpu, t.mem+mem
 	}
 	return over, nil
+}
+
+// Retained definitions still count toward total Lab caps. Active and pending
+// compute is separate: only an exact completed native release is zero.
+func (h *Handler) activeLabCompute(l *laboratoryv1alpha1.Lab) (int64, int64) {
+	cpu, mem, _, _ := h.features.Limits.SpecTotals(&l.Spec)
+	a := labAllocationToProto(l, h.features.Limits)
+	if a != nil && a.RuntimeState == "Released" {
+		return 0, 0
+	}
+	if a != nil && a.AllocatedRequests != nil {
+		cpu = max(cpu, a.AllocatedRequests.CpuMillicores)
+		mem = max(mem, a.AllocatedRequests.MemoryBytes)
+	}
+	return cpu, mem
 }

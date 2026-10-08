@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	controller "github.com/cybericebox/laboratory/internal/controller/laboratory"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 	equality "k8s.io/apimachinery/pkg/api/equality"
@@ -97,6 +98,12 @@ func (h *Handler) acceptGroupLifecycle(ctx context.Context, t *protobuf.GroupTar
 				return pendingAdmissionError{group: t.GetGroup(), token: pending.Token}
 			}
 			cur.Spec.Admission = nil // exact childwrite observed; same resourceVersion CAS as stop
+		}
+		if intent.IsStopped() {
+			validator := controller.LabGroupReconciler{Reader: snapshotAcceptanceReader{h.cs}}
+			if err := validator.ValidateGroupStop(ctx, cur); err != nil {
+				return err
+			}
 		}
 		cur.Spec.Lifecycle = intent.DeepCopy()
 		_, err = h.cs.LaboratoryV1alpha1().LabGroups().Update(ctx, cur, metav1.UpdateOptions{})

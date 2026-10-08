@@ -179,6 +179,27 @@ func (h *Handler) acceptLifecycle(ctx context.Context, resolver *groupResolver, 
 				return err
 			}
 		}
+		if intent.DesiredState == "Running" {
+			all, e := labs.List(ctx, metav1.ListOptions{})
+			if e != nil {
+				return e
+			}
+			var cpu, mem int64
+			for i := range all.Items {
+				if all.Items[i].UID == cur.UID {
+					continue
+				}
+				c, m := h.activeLabCompute(&all.Items[i])
+				cpu += c
+				mem += m
+			}
+			addCPU, addMem, _, _ := h.features.Limits.SpecTotals(&cur.Spec)
+			// Starts add active/pending compute; retained count is unchanged.
+			lim := h.features.Limits
+			if lim.GroupMaxCPU > 0 && cpu+addCPU > lim.GroupMaxCPU || lim.GroupMaxMemory > 0 && mem+addMem > lim.GroupMaxMemory {
+				return fmt.Errorf("group active/pending compute limit exceeded")
+			}
+		}
 		cur.Spec.Lifecycle = intent.DeepCopy()
 		_, err = labs.Update(ctx, cur, metav1.UpdateOptions{})
 		return err
@@ -193,7 +214,7 @@ func (h *Handler) acceptLifecycle(ctx context.Context, resolver *groupResolver, 
 }
 
 // The producer's validator consumes the same live typed API reads as acceptance.
-// Only its Tenant Get and Device List dependencies are supported here.
+// Only Tenant Get and Device/Lab List dependencies are supported here.
 type snapshotAcceptanceReader struct{ cs versioned.Interface }
 
 func (r snapshotAcceptanceReader) Get(ctx context.Context, key runtimeclient.ObjectKey, obj runtimeclient.Object, _ ...runtimeclient.GetOption) error {
@@ -208,15 +229,22 @@ func (r snapshotAcceptanceReader) Get(ctx context.Context, key runtimeclient.Obj
 	return err
 }
 func (r snapshotAcceptanceReader) List(ctx context.Context, out runtimeclient.ObjectList, opts ...runtimeclient.ListOption) error {
-	devices, ok := out.(*lab.DeviceList)
-	if !ok {
-		return fmt.Errorf("unsupported snapshot acceptance list %T", out)
-	}
 	options := &runtimeclient.ListOptions{}
 	options.ApplyOptions(opts)
-	current, err := r.cs.LaboratoryV1alpha1().Devices(options.Namespace).List(ctx, metav1.ListOptions{})
-	if err == nil {
-		current.DeepCopyInto(devices)
+	switch target := out.(type) {
+	case *lab.DeviceList:
+		current, err := r.cs.LaboratoryV1alpha1().Devices(options.Namespace).List(ctx, metav1.ListOptions{})
+		if err == nil {
+			current.DeepCopyInto(target)
+		}
+		return err
+	case *lab.LabList:
+		current, err := r.cs.LaboratoryV1alpha1().Labs(options.Namespace).List(ctx, metav1.ListOptions{})
+		if err == nil {
+			current.DeepCopyInto(target)
+		}
+		return err
+	default:
+		return fmt.Errorf("unsupported lifecycle admission list %T", out)
 	}
-	return err
 }

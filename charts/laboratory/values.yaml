@@ -999,3 +999,11 @@ cert-manager:
 #
 # "default" may be listed to change its policy; unless it is, it may use persistence and has no quota.
 tenants: {}
+
+# Lifecycle acceptance stays gated until the final integrated native proof.
+# These switches do not advertise lifecycle support through GetFeatures.
+lifecycle:
+  requiredSnapshotAvailable: false
+  runtimeObservation:
+    enabled: false
+    interval: 5s

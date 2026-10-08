@@ -17,6 +17,9 @@ import (
 )
 
 type Config struct {
+	RuntimeObservation bool `env:"RUNTIME_OBSERVATION_ENABLED" envDefault:"false"`
+	// Acceptance gate stays false until final native proof; advertising remains false.
+	RequiredSnapshotAvailable bool `env:"REQUIRED_SNAPSHOT_AVAILABLE" envDefault:"false"`
 	// PublicVPNEndpoint is the host:port advertised to WireGuard clients (demux public address); a host alone gets the default port.
 	// Required, no default: the domain comes only from configuration.
 	PublicVPNEndpoint string `env:"PUBLIC_VPN_ENDPOINT,notEmpty"`

@@ -63,6 +63,7 @@ func Run() {
 	}
 	h := grpcserver.NewHandler(cs, k8s, metrics, cfg.AgentID)
 	h.SetStatePersistence(cfg.StatePersistence)
+	h.SetRequiredSnapshotAvailable(cfg.RequiredSnapshotAvailable && cfg.StatePersistence)
 	feat, err := features(cfg)
 	if err != nil {
 		log.Fatalf("%v", err)

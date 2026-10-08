@@ -401,6 +401,208 @@ spec:
                 type: boolean
               reason:
                 type: string
+              runtimeInventory:
+                description: RuntimeInventory is controller-owned and retained through
+                  API Pod deletion.
+                items:
+                  description: |-
+                    OwnedRuntimeIdentity is captured before stop. An absent API Pod cannot create
+                    this inventory. NodeBootID is the kernel boot, not the node-agent process.
+                  properties:
+                    cgroupPaths:
+                      items:
+                        type: string
+                      type: array
+                    component:
+                      type: string
+                    containerIDs:
+                      items:
+                        type: string
+                      type: array
+                    deploymentUID:
+                      type: string
+                    epoch:
+                      format: int32
+                      type: integer
+                    incarnation:
+                      format: int32
+                      type: integer
+                    limits:
+                      description: ResourceAmounts separates configured, held and
+                        measured compute amounts.
+                      properties:
+                        cpuMillicores:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        memoryBytes:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                      required:
+                      - cpuMillicores
+                      - memoryBytes
+                      type: object
+                    nodeBootID:
+                      type: string
+                    nodeName:
+                      type: string
+                    operationId:
+                      type: string
+                    ownerUID:
+                      type: string
+                    podUID:
+                      type: string
+                    portKeys:
+                      items:
+                        type: string
+                      type: array
+                    requests:
+                      description: ResourceAmounts separates configured, held and
+                        measured compute amounts.
+                      properties:
+                        cpuMillicores:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        memoryBytes:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                      required:
+                      - cpuMillicores
+                      - memoryBytes
+                      type: object
+                    revision:
+                      format: int64
+                      type: integer
+                  required:
+                  - cgroupPaths
+                  - containerIDs
+                  - limits
+                  - nodeBootID
+                  - nodeName
+                  - operationId
+                  - ownerUID
+                  - podUID
+                  - portKeys
+                  - requests
+                  - revision
+                  type: object
+                type: array
+              runtimeReports:
+                description: RuntimeReports are patched only by the bound node-agent.
+                items:
+                  description: |-
+                    OwnedRuntimeReport is node-owned; identity is immutable controller inventory.
+                    Independent timestamps never impose a cross-owner clock ordering.
+                  properties:
+                    attachmentsAbsentAt:
+                      format: date-time
+                      type: string
+                    cgroupAbsentAt:
+                      format: date-time
+                      type: string
+                    error:
+                      type: string
+                    identity:
+                      description: |-
+                        OwnedRuntimeIdentity is captured before stop. An absent API Pod cannot create
+                        this inventory. NodeBootID is the kernel boot, not the node-agent process.
+                      properties:
+                        cgroupPaths:
+                          items:
+                            type: string
+                          type: array
+                        component:
+                          type: string
+                        containerIDs:
+                          items:
+                            type: string
+                          type: array
+                        deploymentUID:
+                          type: string
+                        epoch:
+                          format: int32
+                          type: integer
+                        incarnation:
+                          format: int32
+                          type: integer
+                        limits:
+                          description: ResourceAmounts separates configured, held
+                            and measured compute amounts.
+                          properties:
+                            cpuMillicores:
+                              format: int64
+                              minimum: 0
+                              type: integer
+                            memoryBytes:
+                              format: int64
+                              minimum: 0
+                              type: integer
+                          required:
+                          - cpuMillicores
+                          - memoryBytes
+                          type: object
+                        nodeBootID:
+                          type: string
+                        nodeName:
+                          type: string
+                        operationId:
+                          type: string
+                        ownerUID:
+                          type: string
+                        podUID:
+                          type: string
+                        portKeys:
+                          items:
+                            type: string
+                          type: array
+                        requests:
+                          description: ResourceAmounts separates configured, held
+                            and measured compute amounts.
+                          properties:
+                            cpuMillicores:
+                              format: int64
+                              minimum: 0
+                              type: integer
+                            memoryBytes:
+                              format: int64
+                              minimum: 0
+                              type: integer
+                          required:
+                          - cpuMillicores
+                          - memoryBytes
+                          type: object
+                        revision:
+                          format: int64
+                          type: integer
+                      required:
+                      - cgroupPaths
+                      - containerIDs
+                      - limits
+                      - nodeBootID
+                      - nodeName
+                      - operationId
+                      - ownerUID
+                      - podUID
+                      - portKeys
+                      - requests
+                      - revision
+                      type: object
+                    observedAt:
+                      format: date-time
+                      type: string
+                    runtimeAbsentAt:
+                      format: date-time
+                      type: string
+                    runtimeState:
+                      type: string
+                  required:
+                  - identity
+                  - runtimeState
+                  type: object
+                type: array
               scheduling:
                 description: Scheduling is the pod's place on its way from the scheduler
                   queue to Ready.

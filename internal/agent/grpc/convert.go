@@ -40,6 +40,8 @@ func labGroupToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.LabGroup {
 		Uid:           string(g.UID),
 		Generation:    g.Generation,
 		Lifecycle:     groupIntentToProto(g.Spec.Lifecycle),
+		VpnSize:       immutableGroupSize(g.Spec.VPN.Size),
+		GatewaySize:   immutableGroupSize(g.Spec.Gateway.Size),
 	}
 }
 
@@ -442,10 +444,10 @@ func labAllocationToProto(l *laboratoryv1alpha1.Lab, sizing ...limits.Limits) *p
 	out.ConfiguredLimits.CpuMillicores = max(cpu, out.ConfiguredLimits.CpuMillicores)
 	out.ConfiguredLimits.MemoryBytes = max(mem, out.ConfiguredLimits.MemoryBytes)
 	observed := l.Status.Lifecycle
-	current := a != nil && a.ObservedAt != nil && a.OperationID == intent.OperationID && a.Revision == intent.Revision && observed != nil && observed.LabUID == string(l.UID) && observed.OperationID == intent.OperationID && observed.Revision == intent.Revision && observed.ObservedGeneration == l.Generation
+	current := a != nil && a.ObservedAt != nil && !a.ObservedAt.IsZero() && a.OperationID == intent.OperationID && a.Revision == intent.Revision && observed != nil && observed.LabUID == string(l.UID) && observed.OperationID == intent.OperationID && observed.Revision == intent.Revision && observed.ObservedGeneration == l.Generation
 	snapshotSucceeded := intent.SnapshotMode != "Required" || observed != nil && observed.SnapshotComplete && observed.Error == ""
-	accessFenced := !l.Spec.VPN.Enabled || observed != nil && observed.AccessFenced && observed.AccessFencedAt != nil && observed.AccessFenceVPNBootID != ""
-	released := current && intent.IsStopped() && observed.ObservedState == "Stopped" && a.RuntimeState == "Released" && a.ReleasedAt != nil && snapshotSucceeded && accessFenced
+	accessFenced := !l.Spec.VPN.Enabled || observed != nil && observed.AccessFenced && observed.AccessFencedAt != nil && !observed.AccessFencedAt.IsZero() && observed.AccessFenceVPNBootID != ""
+	released := current && intent.IsStopped() && observed.ObservedState == "Stopped" && a.RuntimeState == "Released" && a.ReleasedAt != nil && !a.ReleasedAt.IsZero() && a.AllocatedRequests == (laboratoryv1alpha1.ResourceAmounts{}) && snapshotSucceeded && accessFenced
 	if !current {
 		out.StorageState = "Unknown"
 		out.PhysicalStorageBytesAvailable = false
@@ -466,4 +468,12 @@ func labAllocationToProto(l *laboratoryv1alpha1.Lab, sizing ...limits.Limits) *p
 		out.AllocatedRequests.MemoryBytes = max(out.AllocatedRequests.MemoryBytes, out.ConfiguredRequests.MemoryBytes)
 	}
 	return out
+}
+
+// immutableGroupSize never infers a chart default or a share of aggregate resources.
+func immutableGroupSize(s *laboratoryv1alpha1.GroupPodSize) *protobuf.PodSize {
+	if s == nil || s.CPUMillicores <= 0 || s.MemoryBytes <= 0 {
+		return nil
+	}
+	return &protobuf.PodSize{CpuMillicores: s.CPUMillicores, MemoryBytes: s.MemoryBytes}
 }
