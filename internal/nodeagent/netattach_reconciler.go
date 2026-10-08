@@ -192,6 +192,7 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 	log.Info("NetAttach: got netnsPath", "netnsPath", netnsPath)
 
+	recreated := false
 	for _, att := range attachments {
 		stableKey := att.Name // a leg of a lab: its port is named by the lab's index
 		if component == "" {
@@ -316,11 +317,16 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				// own interface when it has NET_ADMIN) is left alone for a while instead.
 				if ok, wait := r.mayRecreate(string(pod.UID) + "/" + stableKey); !ok {
 					log.Info("NetAttach: the veth of this pod was recreated too often, waiting", "key", stableKey, "wait", wait.String())
+					// Restore peers already retired in this pass before entering
+					// this peer's cooldown; the capped peer remains untouched.
+					if recreated {
+						return ctrl.Result{RequeueAfter: time.Second}, nil
+					}
 					return ctrl.Result{RequeueAfter: wait}, nil
 				}
 				log.Info("NetAttach: stale veth, recreating", "key", stableKey)
 				r.delVethWithFlows(stableKey)
-				return ctrl.Result{RequeueAfter: time.Second}, nil
+				recreated = true
 			}
 		}
 	}
@@ -330,6 +336,12 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// a real eth0 for them — only the required stub eth0. Deleting eth0 here would
 	// remove that legitimate stub.
 
+	// A replacement pod loses every peer together. Retire the entire stale
+	// batch before the one recovery requeue, instead of waiting a second per
+	// interface and rescanning all already-restored interfaces on every pass.
+	if recreated {
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 

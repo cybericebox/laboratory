@@ -124,7 +124,18 @@ func NewOVSManager(bridge, sockPath string) (*OVSManager, error) {
 		return nil, fmt.Errorf("connect to OVSDB %s: %w", sockPath, connErr)
 	}
 
-	if _, err := ovs.MonitorAll(ctx); err != nil {
+	// Monitor only modeled columns. A vswitchd statistics update otherwise
+	// includes an unknown column and libovsdb drops the same update's ifindex
+	// and policing changes, leaving the node-agent's cache stale.
+	root, br, port, iface := &OVSOpen_vSwitch{}, &OVSBridge{}, &OVSPort{}, &OVSInterface{}
+	monitor := ovs.NewMonitor(
+		client.WithTable(root, &root.Bridges),
+		client.WithTable(br, &br.Name, &br.Ports, &br.FailMode),
+		client.WithTable(port, &port.Name, &port.Interfaces, &port.ExternalIDs),
+		client.WithTable(iface, &iface.Name, &iface.Type, &iface.Options, &iface.Ifindex,
+			&iface.IngressPolicingRate, &iface.IngressPolicingBurst),
+	)
+	if _, err := ovs.Monitor(ctx, monitor); err != nil {
 		return nil, fmt.Errorf("OVSDB monitor: %w", err)
 	}
 
