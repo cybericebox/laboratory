@@ -412,7 +412,8 @@ func allocationToProto(a *laboratoryv1alpha1.RuntimeAllocation) *protobuf.Resour
 }
 
 // Unknown observations retain configured and previously held amounts. Only an
-// exact current Stopped observation may authorize a Released projection.
+// exact, timestamped current observation can expose measurements. Release also
+// requires a coherent Stopped/capture certificate and the VPN fence when enabled.
 func labAllocationToProto(l *laboratoryv1alpha1.Lab, sizing ...limits.Limits) *protobuf.ResourceAllocation {
 	a := l.Status.Resources
 	intent := l.Spec.Lifecycle
@@ -439,8 +440,15 @@ func labAllocationToProto(l *laboratoryv1alpha1.Lab, sizing ...limits.Limits) *p
 	out.ConfiguredLimits.CpuMillicores = max(cpu, out.ConfiguredLimits.CpuMillicores)
 	out.ConfiguredLimits.MemoryBytes = max(mem, out.ConfiguredLimits.MemoryBytes)
 	observed := l.Status.Lifecycle
-	current := a != nil && a.OperationID == intent.OperationID && a.Revision == intent.Revision && observed != nil && observed.LabUID == string(l.UID) && observed.OperationID == intent.OperationID && observed.Revision == intent.Revision && observed.ObservedGeneration == l.Generation
-	released := current && intent.IsStopped() && observed.ObservedState == "Stopped" && a.RuntimeState == "Released" && a.ObservedAt != nil && a.ReleasedAt != nil
+	current := a != nil && a.ObservedAt != nil && a.OperationID == intent.OperationID && a.Revision == intent.Revision && observed != nil && observed.LabUID == string(l.UID) && observed.OperationID == intent.OperationID && observed.Revision == intent.Revision && observed.ObservedGeneration == l.Generation
+	snapshotSucceeded := intent.SnapshotMode != "Required" || observed != nil && observed.SnapshotComplete && observed.Error == ""
+	accessFenced := !l.Spec.VPN.Enabled || observed != nil && observed.AccessFenced && observed.AccessFencedAt != nil && observed.AccessFenceVPNBootID != ""
+	released := current && intent.IsStopped() && observed.ObservedState == "Stopped" && a.RuntimeState == "Released" && a.ReleasedAt != nil && snapshotSucceeded && accessFenced
+	if !current {
+		out.StorageState = "Unknown"
+		out.PhysicalStorageBytesAvailable = false
+		out.PhysicalStorageBytes = 0
+	}
 	if !current || out.RuntimeState == "Released" && !released {
 		out.RuntimeState = "Unknown"
 		out.ObservedUnixMs = 0
