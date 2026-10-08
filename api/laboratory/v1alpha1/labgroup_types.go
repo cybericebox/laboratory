@@ -7,7 +7,9 @@ import (
 
 // LabGroupSpec defines the desired state of LabGroup.
 type LabGroupSpec struct {
-	VPN LabGroupVPNSpec `json:"vpn,omitempty"`
+	// Shared dependency from Group7 owner, identical definition at integration.
+	Lifecycle *GroupLifecycleSpec `json:"lifecycle,omitempty"`
+	VPN       LabGroupVPNSpec     `json:"vpn,omitempty"`
 	// Gateway holds the internet gateway pod's settings.
 	Gateway   LabGroupGatewaySpec `json:"gateway,omitempty"`
 	Suspended bool                `json:"suspended,omitempty"`
@@ -48,6 +50,10 @@ type LabGroupVPNSpec struct {
 
 // LabGroupStatus defines the observed state of LabGroup.
 type LabGroupStatus struct {
+	// ServiceRuntime is controller-owned immutable stop inventory captured before scale.
+	ServiceRuntime []OwnedRuntimeIdentity `json:"serviceRuntime,omitempty"`
+	// ServiceReports are node-owned observations of that exact service inventory.
+	ServiceReports []OwnedRuntimeReport `json:"serviceReports,omitempty"`
 	// Reserved observation seam for later full group stop; suspension is unchanged.
 	// +optional
 	Lifecycle *LabLifecycleStatus `json:"lifecycle,omitempty"`

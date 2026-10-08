@@ -175,8 +175,12 @@ type DeviceStateStatus struct {
 
 // DeviceStatus defines the observed state of Device.
 type DeviceStatus struct {
-	Ready    bool   `json:"ready,omitempty"`
-	NodeName string `json:"nodeName,omitempty"`
+	// RuntimeInventory is controller-owned and retained through API Pod deletion.
+	RuntimeInventory []OwnedRuntimeIdentity `json:"runtimeInventory,omitempty"`
+	// RuntimeReports are patched only by the bound node-agent.
+	RuntimeReports []OwnedRuntimeReport `json:"runtimeReports,omitempty"`
+	Ready          bool                 `json:"ready,omitempty"`
+	NodeName       string               `json:"nodeName,omitempty"`
 	// NodeAddress is the node IP used as Geneve VTEP address.
 	NodeAddress string `json:"nodeAddress,omitempty"`
 	PodIP       string `json:"podIP,omitempty"`

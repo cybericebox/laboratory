@@ -18,6 +18,13 @@ func (r *LabReconciler) currentAccessFence(ctx context.Context, l *lab.Lab) (boo
 	if !l.Spec.VPN.Enabled {
 		return true, nil, "", nil
 	}
+	// The stop fence is an immutable certificate after native release for the
+	// same child UID/op/revision/generation. Group service pauses/restarts cannot
+	// revive that child runtime. A child Start replaces lifecycle status and thus
+	// clears this certificate before a new runtime is admitted.
+	if exactStoppedRelease(l) && l.Status.Resources.ObservedAt != nil && l.Status.Resources.ReleasedAt != nil && l.Status.Resources.AllocatedRequests == (lab.ResourceAmounts{}) && l.Status.Lifecycle.AccessFenced && l.Status.Lifecycle.AccessFencedAt != nil && l.Status.Lifecycle.AccessFenceVPNBootID != "" {
+		return true, l.Status.Lifecycle.AccessFencedAt, l.Status.Lifecycle.AccessFenceVPNBootID, nil
+	}
 	var leg lab.LabVPN
 	if err := r.lifecycleReader().Get(ctx, client.ObjectKey{Name: names.LabVPNObjectName(l.Name), Namespace: l.Namespace}, &leg); err != nil {
 		if apierrors.IsNotFound(err) {

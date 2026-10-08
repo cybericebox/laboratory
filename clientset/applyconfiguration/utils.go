@@ -89,6 +89,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.EndpointSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("ExposureSpec"):
 		return &applyconfigurationlaboratoryv1alpha1.ExposureSpecApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("GroupLifecycleSpec"):
+		return &applyconfigurationlaboratoryv1alpha1.GroupLifecycleSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("GroupPodSize"):
 		return &applyconfigurationlaboratoryv1alpha1.GroupPodSizeApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("InterfaceSpec"):
@@ -173,6 +175,10 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.NetworkIPRefApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("NetworkSubnetRef"):
 		return &applyconfigurationlaboratoryv1alpha1.NetworkSubnetRefApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("OwnedRuntimeIdentity"):
+		return &applyconfigurationlaboratoryv1alpha1.OwnedRuntimeIdentityApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("OwnedRuntimeReport"):
+		return &applyconfigurationlaboratoryv1alpha1.OwnedRuntimeReportApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("PodFailure"):
 		return &applyconfigurationlaboratoryv1alpha1.PodFailureApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("PodSchedule"):

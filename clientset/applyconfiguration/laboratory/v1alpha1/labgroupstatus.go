@@ -26,6 +26,10 @@ import (
 //
 // LabGroupStatus defines the observed state of LabGroup.
 type LabGroupStatusApplyConfiguration struct {
+	// ServiceRuntime is controller-owned immutable stop inventory captured before scale.
+	ServiceRuntime []OwnedRuntimeIdentityApplyConfiguration `json:"serviceRuntime,omitempty"`
+	// ServiceReports are node-owned observations of that exact service inventory.
+	ServiceReports []OwnedRuntimeReportApplyConfiguration `json:"serviceReports,omitempty"`
 	// Reserved observation seam for later full group stop; suspension is unchanged.
 	Lifecycle *LabLifecycleStatusApplyConfiguration `json:"lifecycle,omitempty"`
 	Resources *RuntimeAllocationApplyConfiguration  `json:"resources,omitempty"`
@@ -48,6 +52,32 @@ type LabGroupStatusApplyConfiguration struct {
 // apply.
 func LabGroupStatus() *LabGroupStatusApplyConfiguration {
 	return &LabGroupStatusApplyConfiguration{}
+}
+
+// WithServiceRuntime adds the given value to the ServiceRuntime field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the ServiceRuntime field.
+func (b *LabGroupStatusApplyConfiguration) WithServiceRuntime(values ...*OwnedRuntimeIdentityApplyConfiguration) *LabGroupStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithServiceRuntime")
+		}
+		b.ServiceRuntime = append(b.ServiceRuntime, *values[i])
+	}
+	return b
+}
+
+// WithServiceReports adds the given value to the ServiceReports field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the ServiceReports field.
+func (b *LabGroupStatusApplyConfiguration) WithServiceReports(values ...*OwnedRuntimeReportApplyConfiguration) *LabGroupStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithServiceReports")
+		}
+		b.ServiceReports = append(b.ServiceReports, *values[i])
+	}
+	return b
 }
 
 // WithLifecycle sets the Lifecycle field in the declarative configuration to the given value

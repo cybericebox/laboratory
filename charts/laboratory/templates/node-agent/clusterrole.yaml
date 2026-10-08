@@ -7,6 +7,14 @@ metadata:
     {{- include "laboratory.labels" . | nindent 4 }}
 rules:
   - apiGroups: [ laboratory.cybericebox.com ]
+    resources: [ labgroups ]
+    verbs: [ get, list, watch ]
+  {{- if .Values.operator.admissionPolicy.enabled }}
+  - apiGroups: [ laboratory.cybericebox.com ]
+    resources: [ labgroups/status ]
+    verbs: [ patch ]
+  {{- end }}
+  - apiGroups: [ laboratory.cybericebox.com ]
     resources: [ labs, devices, connections ]
     verbs: [ get, list, watch, update, patch ]
   # ConnectionReconciler resolves vpn/internet endpoints by reading the LabVPN/

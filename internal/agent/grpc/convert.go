@@ -38,6 +38,8 @@ func labGroupToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.LabGroup {
 		CreatedUnixMs: created,
 		Uid:           string(g.UID),
 		Generation:    g.Generation,
+		VpnSize:       immutableGroupSize(g.Spec.VPN.Size),
+		GatewaySize:   immutableGroupSize(g.Spec.Gateway.Size),
 	}
 }
 
@@ -464,4 +466,12 @@ func labAllocationToProto(l *laboratoryv1alpha1.Lab, sizing ...limits.Limits) *p
 		out.AllocatedRequests.MemoryBytes = max(out.AllocatedRequests.MemoryBytes, out.ConfiguredRequests.MemoryBytes)
 	}
 	return out
+}
+
+// immutableGroupSize never infers a chart default or a share of aggregate resources.
+func immutableGroupSize(s *laboratoryv1alpha1.GroupPodSize) *protobuf.PodSize {
+	if s == nil || s.CPUMillicores <= 0 || s.MemoryBytes <= 0 {
+		return nil
+	}
+	return &protobuf.PodSize{CpuMillicores: s.CPUMillicores, MemoryBytes: s.MemoryBytes}
 }

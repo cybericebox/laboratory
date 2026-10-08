@@ -364,6 +364,8 @@ message LabGroup {
   int64 created_unix_ms = 13;
   string uid = 14;
   int64 generation = 15; // live Kubernetes metadata generation, separate from observed lifecycle
+  PodSize vpn_size = 16; // explicit immutable spec only; absent means unknown legacy default
+  PodSize gateway_size = 17;
 }
 message LabGroupStatus {
   string phase = 1;

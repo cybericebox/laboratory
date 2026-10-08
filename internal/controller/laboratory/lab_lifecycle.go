@@ -53,6 +53,17 @@ func (r *LabReconciler) ValidateRequiredSnapshot(ctx context.Context, l *lab.Lab
 			continue
 		}
 		materialized[d.Spec.Name] = true
+		ready := false
+		for _, report := range d.Status.RuntimeReports {
+			id := report.Identity
+			if report.Error == "" && report.ObservedAt != nil && time.Since(report.ObservedAt.Time) >= 0 && time.Since(report.ObservedAt.Time) <= 60*time.Second && id.OwnerUID == string(l.UID) && id.NodeName == d.Status.NodeName && id.PodUID != "" && id.NodeBootID != "" && len(id.ContainerIDs) > 0 && len(id.CgroupPaths) > 0 && d.Status.State != nil && id.Epoch == d.Status.State.Epoch && id.Incarnation == d.Status.State.Incarnation {
+				ready = true
+				break
+			}
+		}
+		if !ready {
+			return fmt.Errorf("device %s has no fresh native checkpoint handshake", d.Name)
+		}
 		if d.Spec.Type != lab.DeviceTypeContainer || !deviceStateEnabled(d) {
 			return fmt.Errorf("device %s has no supported persistence", d.Name)
 		}
@@ -209,11 +220,52 @@ func (r *LabReconciler) reconcileLifecycle(ctx context.Context, l *lab.Lab) (boo
 		}
 		var pods []corev1.Pod
 		for _, p := range ps.Items {
-			if ownedDevicePod(d, &p) {
+			owned, e := r.ownedRuntimeDevicePod(ctx, d, &p)
+			if e != nil {
+				return true, ctrl.Result{}, e
+			}
+			if owned {
 				pods = append(pods, p)
 			}
 		}
 		targets = append(targets, runtime{d, pods})
+	}
+	// Capture the complete native identity in controller-owned durable inventory
+	// before any scale/delete. Unknown and force-deleted Pods keep prior holdings.
+	for _, target := range targets {
+		d := target.d
+		if d.Spec.Type != lab.DeviceTypeContainer {
+			continue
+		}
+		base := d.DeepCopy()
+		for _, p := range target.pods {
+			found := false
+			for _, report := range d.Status.RuntimeReports {
+				id := report.Identity
+				if id.OwnerUID == string(l.UID) && id.OperationID == intent.OperationID && id.Revision == intent.Revision && id.PodUID == string(p.UID) && id.NodeName == p.Spec.NodeName && id.NodeBootID != "" && len(id.ContainerIDs) > 0 && len(id.CgroupPaths) > 0 && len(id.PortKeys) > 0 {
+					exists := false
+					for _, old := range d.Status.RuntimeInventory {
+						exists = exists || reflect.DeepEqual(old, id)
+					}
+					if !exists {
+						d.Status.RuntimeInventory = append(d.Status.RuntimeInventory, id)
+					}
+					found = true
+					break
+				}
+			}
+			if !found {
+				return finish("Unknown", "WaitingForNativeInventory", nil)
+			}
+		}
+		if len(target.pods) == 0 && len(d.Status.RuntimeInventory) == 0 {
+			return finish("Unknown", "MissingNativeInventory", nil)
+		}
+		if !reflect.DeepEqual(base.Status.RuntimeInventory, d.Status.RuntimeInventory) {
+			if err := r.Status().Patch(ctx, d, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+				return true, ctrl.Result{}, err
+			}
+		}
 	}
 	// First prepare every request; then validate every guard; no deletion can occur
 	// in either pass. Capture-time RV is audit data only.
@@ -382,6 +434,30 @@ func (r *LabReconciler) reconcileLifecycle(ctx context.Context, l *lab.Lab) (boo
 	}
 	// Task5 is the native observation owner. No API-only path can fabricate its
 	// Released acknowledgement, including queued or switch-only topology.
+	var rows []lab.OwnedRuntimeIdentity
+	var reports []lab.OwnedRuntimeReport
+	var quota int64
+	for _, target := range targets {
+		rows = append(rows, target.d.Status.RuntimeInventory...)
+		reports = append(reports, target.d.Status.RuntimeReports...)
+		if target.d.Status.State != nil {
+			quota += target.d.Status.State.SizeBytes
+		}
+	}
+	allocation := aggregateRuntime(rows, reports, string(l.UID), intent.OperationID, intent.Revision)
+	allocation.SnapshotQuotaBytes = quota
+	if quota > 0 {
+		allocation.StorageState = "Retained"
+	}
+	base := l.DeepCopy()
+	l.Status.Resources = allocation
+	if err := r.Status().Patch(ctx, l, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		return true, ctrl.Result{}, err
+	}
+	if allocation.RuntimeState == "Released" {
+		next.StoppedAt = ptrTime(metav1.Now())
+		return finish("Stopped", "NativeRuntimeAndFabricReleased", nil)
+	}
 	return finish("Unknown", "WaitingForNativeRuntimeAndFabricObservation", nil)
 }
 func ptrTime(t metav1.Time) *metav1.Time { return &t }
@@ -421,6 +497,15 @@ func (r *LabReconciler) reconcileLifecycleStart(ctx context.Context, l *lab.Lab)
 		}
 		if d.Spec.Type == lab.DeviceTypeContainer {
 			orig := d.DeepCopy()
+			// Drop only independently certified retired identities. Unknown old
+			// runtime remains held across start and cannot be silently replaced.
+			var retained []lab.OwnedRuntimeIdentity
+			for _, id := range d.Status.RuntimeInventory {
+				if !runtimeRowsReleased([]lab.OwnedRuntimeIdentity{id}, d.Status.RuntimeReports, id.OwnerUID, id.OperationID, id.Revision) {
+					retained = append(retained, id)
+				}
+			}
+			d.Status.RuntimeInventory = retained
 			now := metav1.Now()
 			d.Status.Scheduling = &lab.PodSchedule{State: lab.PodQueued, QueuedAt: &now}
 			if err := r.Status().Patch(ctx, d, client.MergeFromWithOptions(orig, client.MergeFromWithOptimisticLock{})); err != nil {
@@ -467,4 +552,41 @@ func labStartPrepared(l *lab.Lab) bool {
 	}
 	observed := l.Status.Lifecycle
 	return observed != nil && observed.LabUID == string(l.UID) && observed.OperationID == intent.OperationID && observed.Revision == intent.Revision && (observed.ObservedState == "Starting" || observed.ObservedState == "Running")
+}
+
+// Deployment Pods are fenced through both immutable owner UIDs, never labels.
+func (r *LabReconciler) ownedRuntimeDevicePod(ctx context.Context, d *lab.Device, p *corev1.Pod) (bool, error) {
+	if ownedDevicePod(d, p) {
+		return true, nil
+	}
+	for _, o := range p.OwnerReferences {
+		if o.Kind != "ReplicaSet" {
+			continue
+		}
+		var rs appsv1.ReplicaSet
+		if e := r.lifecycleReader().Get(ctx, client.ObjectKey{Namespace: p.Namespace, Name: o.Name}, &rs); e != nil {
+			return false, client.IgnoreNotFound(e)
+		}
+		if rs.UID != o.UID {
+			continue
+		}
+		for _, owner := range rs.OwnerReferences {
+			if owner.Kind != "Deployment" {
+				continue
+			}
+			var dep appsv1.Deployment
+			if e := r.lifecycleReader().Get(ctx, client.ObjectKey{Namespace: p.Namespace, Name: owner.Name}, &dep); e != nil {
+				return false, client.IgnoreNotFound(e)
+			}
+			if dep.UID != owner.UID {
+				continue
+			}
+			for _, parent := range dep.OwnerReferences {
+				if parent.Kind == "Device" && parent.UID == d.UID && parent.Name == d.Name {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, nil
 }

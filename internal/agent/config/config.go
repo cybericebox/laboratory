@@ -55,7 +55,9 @@ type MTLSConfig struct {
 }
 
 type Config struct {
-	GRPCPort string `env:"AGENT_GRPC_PORT" envDefault:"5454"`
+	// Acceptance gate stays false until final native proof; advertising remains false.
+	RequiredSnapshotAvailable bool   `env:"REQUIRED_SNAPSHOT_AVAILABLE" envDefault:"false"`
+	GRPCPort                  string `env:"AGENT_GRPC_PORT" envDefault:"5454"`
 	// AgentID is a stable, deployment-scoped identity used to make monitoring
 	// observations idempotent at the platform boundary.
 	AgentID   string `env:"AGENT_ID" envDefault:"laboratory-agent"`

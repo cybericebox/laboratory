@@ -101,6 +101,15 @@ func (r *DeviceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if stopped, err := r.deviceStopped(ctx, &device); stopped || err != nil {
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, err
 	}
+	// Full group stop blocks provisioning/recreation only. Existing child runtime
+	// is stopped exclusively by the child's guarded lifecycle/capture owner.
+	group, groupErr := r.labGroupOfNamespace(ctx, device.Namespace)
+	if groupErr != nil {
+		return ctrl.Result{}, groupErr
+	}
+	if group != nil && group.Spec.Lifecycle.IsStopped() {
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	}
 	switch device.Spec.Type {
 	case laboratoryv1alpha1.DeviceTypeUnmanagedSwitch, laboratoryv1alpha1.DeviceTypeHub:
 		return r.reconcileSwitch(ctx, &device)

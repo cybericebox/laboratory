@@ -114,3 +114,10 @@ at install time instead of shipping a broken deployment.
 {{- if and .Values.devices.statePersistence.enabled (not (hasPrefix "/" .Values.devices.statePersistence.containerdRoot)) }}
 {{- fail "devices.statePersistence.containerdRoot must be an absolute host path (the containerd root directory)" }}
 {{- end }}
+
+{{- if and .Values.lifecycle.requiredSnapshotAvailable (not (and .Values.devices.statePersistence.enabled .Values.lifecycle.runtimeObservation.enabled .Values.nodeAgent.enabled .Values.operator.admissionPolicy.enabled)) }}
+{{- fail "required snapshot acceptance requires persistence, native observation, node-agent and report admission protection" }}
+{{- end }}
+{{- if and .Values.lifecycle.runtimeObservation.enabled (not .Values.operator.admissionPolicy.enabled) }}
+{{- fail "native runtime reports require admission protection" }}
+{{- end }}

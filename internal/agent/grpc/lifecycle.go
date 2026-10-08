@@ -155,6 +155,27 @@ func (h *Handler) acceptLifecycle(ctx context.Context, resolver *groupResolver, 
 				return err
 			}
 		}
+		if intent.DesiredState == "Running" {
+			all, e := labs.List(ctx, metav1.ListOptions{})
+			if e != nil {
+				return e
+			}
+			var cpu, mem int64
+			for i := range all.Items {
+				if all.Items[i].UID == cur.UID {
+					continue
+				}
+				c, m := h.activeLabCompute(&all.Items[i])
+				cpu += c
+				mem += m
+			}
+			addCPU, addMem, _, _ := h.features.Limits.SpecTotals(&cur.Spec)
+			// Starts add active/pending compute; retained count is unchanged.
+			lim := h.features.Limits
+			if lim.GroupMaxCPU > 0 && cpu+addCPU > lim.GroupMaxCPU || lim.GroupMaxMemory > 0 && mem+addMem > lim.GroupMaxMemory {
+				return fmt.Errorf("group active/pending compute limit exceeded")
+			}
+		}
 		cur.Spec.Lifecycle = intent.DeepCopy()
 		_, err = labs.Update(ctx, cur, metav1.UpdateOptions{})
 		return err

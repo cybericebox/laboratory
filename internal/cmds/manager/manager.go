@@ -255,17 +255,19 @@ func Run() {
 		os.Exit(1)
 	}
 	if err = (&laboratorycontroller.LabReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		Recorder:         mgr.GetEventRecorderFor("lab"),
-		BaseDomain:       cfg.BaseDomain,
-		ProxySourceCIDRs: cfg.ProxySourceCIDRs,
-		VPNBaseNetwork:   cfg.VPNBaseNetwork,
-		InetBaseNetwork:  cfg.InetBaseNetwork,
-		State:            statePolicy,
-		Mirror:           mirror,
-		Resolver:         resolver,
-		NetConfigImage:   cfg.NetConfigImage,
+		Reader:                    mgr.GetAPIReader(),
+		RequiredSnapshotAvailable: cfg.RequiredSnapshotAvailable && cfg.State.Enabled,
+		Client:                    mgr.GetClient(),
+		Scheme:                    mgr.GetScheme(),
+		Recorder:                  mgr.GetEventRecorderFor("lab"),
+		BaseDomain:                cfg.BaseDomain,
+		ProxySourceCIDRs:          cfg.ProxySourceCIDRs,
+		VPNBaseNetwork:            cfg.VPNBaseNetwork,
+		InetBaseNetwork:           cfg.InetBaseNetwork,
+		State:                     statePolicy,
+		Mirror:                    mirror,
+		Resolver:                  resolver,
+		NetConfigImage:            cfg.NetConfigImage,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Lab")
 		os.Exit(1)
