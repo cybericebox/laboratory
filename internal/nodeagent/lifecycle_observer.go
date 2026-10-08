@@ -18,6 +18,7 @@ import (
 	"time"
 
 	tasks "github.com/containerd/containerd/api/services/tasks/v1"
+	task "github.com/containerd/containerd/api/types/task"
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
@@ -75,12 +76,12 @@ func (o *NativeRuntimeObserver) ObserveOwnedRuntime(ctx context.Context, id lab.
 	// and init containers. It cannot create a release inventory from an empty list.
 	if len(owned) > 0 {
 		for k := range owned {
-			if !contains(id.ContainerIDs, k) {
+			if !runtimeContainsID(id.ContainerIDs, k) {
 				id.ContainerIDs = append(id.ContainerIDs, k)
 			}
 		}
 		for k := range paths {
-			if !contains(id.CgroupPaths, k) {
+			if !runtimeContainsID(id.CgroupPaths, k) {
 				id.CgroupPaths = append(id.CgroupPaths, k)
 			}
 		}
@@ -114,11 +115,23 @@ func (o *NativeRuntimeObserver) ObserveOwnedRuntime(ctx context.Context, id lab.
 	if err != nil {
 		return fail(err)
 	}
-	for _, t := range ts.Tasks {
-		if contains(id.ContainerIDs, t.ContainerID) {
-			out.RuntimeState = "Releasing"
-			return out
+	present, live, err := nativeTaskPresence(ts.Tasks, id.ContainerIDs)
+	if err != nil {
+		return fail(err)
+	}
+	if present {
+		populated, err := o.cgroupsPresent(id.CgroupPaths)
+		if err != nil {
+			return fail(err)
 		}
+		out.RuntimeState = "Releasing"
+		if live {
+			if !populated {
+				return fail(fmt.Errorf("live owned task has no populated cgroup"))
+			}
+			out.RuntimeState = "Allocated"
+		}
+		return out
 	}
 	// STOPPED metadata alone is not death: all exact native task rows must disappear.
 	out.RuntimeAbsentAt = &now
@@ -203,7 +216,7 @@ type cleanupReceipt struct {
 	At       time.Time
 }
 
-func contains(xs []string, x string) bool {
+func runtimeContainsID(xs []string, x string) bool {
 	for _, v := range xs {
 		if v == x {
 			return true
@@ -283,8 +296,65 @@ func (o *NativeRuntimeObserver) preparePortRetirement(key string, uid types.UID,
 	if e != nil {
 		return e
 	}
-	if id.PodUID != string(uid) || id.NodeBootID != o.BootID || !contains(id.PortKeys, key) {
+	if id.PodUID != string(uid) || id.NodeBootID != o.BootID || !runtimeContainsID(id.PortKeys, key) {
 		return ErrPortOwnerUnknown
 	}
 	return o.writeRecord("cleanup-"+key, id, cleanupReceipt{Identity: id, PortUUID: row})
+}
+
+// nativeTaskPresence consumes the actual Tasks.List contract. Containerd's
+// getProcessState fills Process.ID for the container's main task; ContainerID
+// is normally empty. Any exact native row retains ownership, including STOPPED.
+func nativeTaskPresence(rows []*task.Process, ids []string) (present, live bool, err error) {
+	for _, row := range rows {
+		if row == nil {
+			continue
+		}
+		id := row.ContainerID
+		if id == "" {
+			id = row.ID
+		}
+		if !runtimeContainsID(ids, id) {
+			continue
+		}
+		present = true
+		if row.Status == task.Status_UNKNOWN || row.Status == task.Status_RUNNING && row.Pid == 0 {
+			return true, false, fmt.Errorf("owned native task state incomplete")
+		}
+		if row.Status == task.Status_RUNNING && row.Pid > 0 {
+			live = true
+		}
+	}
+	return present, live, nil
+}
+
+func (o *NativeRuntimeObserver) cgroupsPresent(paths []string) (bool, error) {
+	populated := false
+	for _, path := range paths {
+		relative, err := filepath.Rel(o.CgroupRoot, path)
+		if err != nil || relative == "." || strings.HasPrefix(relative, "..") {
+			return false, fmt.Errorf("unowned cgroup path")
+		}
+		data, err := os.ReadFile(filepath.Join(path, "cgroup.events"))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		known := false
+		for _, line := range strings.Split(string(data), "\n") {
+			if line == "populated 1" {
+				known = true
+				populated = true
+			}
+			if line == "populated 0" {
+				known = true
+			}
+		}
+		if !known {
+			return false, fmt.Errorf("owned cgroup observation incomplete")
+		}
+	}
+	return populated, nil
 }

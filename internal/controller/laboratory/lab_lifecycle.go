@@ -56,7 +56,7 @@ func (r *LabReconciler) ValidateRequiredSnapshot(ctx context.Context, l *lab.Lab
 		ready := false
 		for _, report := range d.Status.RuntimeReports {
 			id := report.Identity
-			if report.Error == "" && report.ObservedAt != nil && time.Since(report.ObservedAt.Time) >= 0 && time.Since(report.ObservedAt.Time) <= 60*time.Second && id.OwnerUID == string(l.UID) && id.NodeName == d.Status.NodeName && id.PodUID != "" && id.NodeBootID != "" && len(id.ContainerIDs) > 0 && len(id.CgroupPaths) > 0 && d.Status.State != nil && id.Epoch == d.Status.State.Epoch && id.Incarnation == d.Status.State.Incarnation {
+			if report.Error == "" && (report.RuntimeState == "Allocated" || report.RuntimeState == "Present") && report.ObservedAt != nil && time.Since(report.ObservedAt.Time) >= 0 && time.Since(report.ObservedAt.Time) <= 60*time.Second && id.OwnerUID == string(l.UID) && id.NodeName == d.Status.NodeName && id.PodUID != "" && id.NodeBootID != "" && len(id.ContainerIDs) > 0 && len(id.CgroupPaths) > 0 && d.Status.State != nil && id.Epoch == d.Status.State.Epoch && id.Incarnation == d.Status.State.Incarnation {
 				ready = true
 				break
 			}
