@@ -23,6 +23,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/errorlog"
 	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/internal/profiles"
+	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
 func Run() {
@@ -68,6 +69,7 @@ func Run() {
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
+	feat.Lifecycle = &protobuf.LifecycleFeature{}
 	feat.Lifecycle.PerLabStop = cfg.PerLabStopAvailable
 	feat.Lifecycle.RequiredSnapshot = cfg.RequiredSnapshotAdvertised
 	feat.Lifecycle.ConfirmedRuntime = cfg.ConfirmedRuntimeAvailable

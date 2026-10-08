@@ -22,7 +22,7 @@ import (
 
 // Features are the platform's choices the backend needs to know, set once from the chart.
 type Features struct {
-	Lifecycle protobuf.LifecycleFeature
+	Lifecycle *protobuf.LifecycleFeature
 	// StatePersistence is the cluster switch; Debounce, ExcludePaths, WriteQuota and MaxFileSize are its cluster values
 	// (bytes), the ceilings of a tenant's own limits.
 	StatePersistence bool
@@ -113,7 +113,7 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 			p := tenant.EffectivePersistence(ten, f.StatePersistence, f.WriteQuota, f.MaxFileSize, f.TenantQuota)
 			base = &protobuf.FeaturesResponse{
 				Tenant:    name,
-				Lifecycle: proto.Clone(&f.Lifecycle).(*protobuf.LifecycleFeature),
+				Lifecycle: cloneLifecycleFeature(f.Lifecycle),
 				StatePersistence: &protobuf.StatePersistenceFeature{
 					Available:          p.Allowed,
 					DefaultDebounceMs:  f.Debounce.Milliseconds(),
@@ -211,4 +211,11 @@ func podSizingProto(p grouppods.PodSizing) *protobuf.PodSizing {
 		BaseCpuMillicores: p.BaseCPU, BaseMemoryBytes: p.BaseMemory,
 		PerUnitCpuMillicores: p.PerUnitCPU, PerUnitMemoryBytes: p.PerUnitMemory, MaxUnits: int32(p.MaxUnits),
 	}
+}
+
+func cloneLifecycleFeature(f *protobuf.LifecycleFeature) *protobuf.LifecycleFeature {
+	if f == nil {
+		return &protobuf.LifecycleFeature{}
+	}
+	return proto.Clone(f).(*protobuf.LifecycleFeature)
 }
