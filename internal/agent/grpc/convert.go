@@ -33,11 +33,13 @@ func labGroupToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.LabGroup {
 			Scheduling:      schedulingToProto(g.Status.Scheduling, g.Annotations),
 			Pods:            groupPodsToProto(g.Status.Pods),
 			Resources:       allocationToProto(g.Status.Resources),
+			Lifecycle:       groupLifecycleToProto(g),
 		},
 		Labels:        userLabels(g.Labels),
 		CreatedUnixMs: created,
 		Uid:           string(g.UID),
 		Generation:    g.Generation,
+		Lifecycle:     groupIntentToProto(g.Spec.Lifecycle),
 	}
 }
 
@@ -63,7 +65,7 @@ func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool, sizing ...limits
 		ImageWarning:  st.ImageWarning,
 	}
 	status.Lifecycle = lifecycleToProto(l)
-	status.Resources = labAllocationToProto(l, sizing...)
+	status.Resources = retiredStorageToProto(l, labAllocationToProto(l, sizing...))
 	status.Scheduling = schedulingToProto(st.Scheduling, l.Annotations)
 	for i := range st.Devices {
 		status.Devices = append(status.Devices, &protobuf.LabDeviceStatus{

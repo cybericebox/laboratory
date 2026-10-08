@@ -135,6 +135,7 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 					Tenant: &protobuf.TenantLimits{MaxLabs: int32(f.Limits.TenantMaxLabs)},
 				},
 				GroupPods: &protobuf.GroupPodsFeature{
+					SizingV2:       &protobuf.GroupPodsSizingV2{Profiles: []*protobuf.GroupPodsSizingProfile{grouppods.TestedPoint()}},
 					Vpn:            podSizingProto(f.GroupPods.Sizing.VPN),
 					Gateway:        podSizingProto(f.GroupPods.Sizing.Gateway),
 					DefaultVpn:     &protobuf.PodSize{CpuMillicores: f.GroupPods.DefaultVPN.CPU, MemoryBytes: f.GroupPods.DefaultVPN.Memory},

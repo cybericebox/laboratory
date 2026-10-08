@@ -130,7 +130,10 @@ func (s *RetentionSweeper) Sweep(ctx context.Context) error {
 		var l laboratoryv1alpha1.Lab
 		err := reader.Get(ctx, types.NamespacedName{Namespace: ns, Name: lab}, &l)
 		if err == nil {
-			delete(cm.Data, k) // the lab lives: nothing to retire
+			delete(cm.Data, k) // legacy missing-object tombstone never overrides a live identity
+			if err := s.retireRetained(ctx, reader, &l, groups[k], now); err != nil {
+				sweepErr = err
+			}
 			continue
 		}
 		if !errors.IsNotFound(err) {

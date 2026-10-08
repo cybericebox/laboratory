@@ -6,8 +6,15 @@ import (
 )
 
 // LabGroupSpec defines the desired state of LabGroup.
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.lifecycle) || has(self.lifecycle)",message="explicit group lifecycle intent cannot be removed"
 type LabGroupSpec struct {
-	VPN LabGroupVPNSpec `json:"vpn,omitempty"`
+	// Lifecycle is independent of legacy suspension; absent means Running.
+	// +optional
+	Lifecycle *GroupLifecycleSpec `json:"lifecycle,omitempty"`
+	// Admission serializes child creates/starts across agent replicas.
+	// +optional
+	Admission *GroupChildAdmission `json:"admission,omitempty"`
+	VPN       LabGroupVPNSpec      `json:"vpn,omitempty"`
 	// Gateway holds the internet gateway pod's settings.
 	Gateway   LabGroupGatewaySpec `json:"gateway,omitempty"`
 	Suspended bool                `json:"suspended,omitempty"`
@@ -48,6 +55,12 @@ type LabGroupVPNSpec struct {
 
 // LabGroupStatus defines the observed state of LabGroup.
 type LabGroupStatus struct {
+	// ServiceRuntime is controller-owned durable pre-scale inventory.
+	// +optional
+	ServiceRuntime []OwnedRuntimeIdentity `json:"serviceRuntime,omitempty"`
+	// ServiceReports is node-owned matching native observation.
+	// +optional
+	ServiceReports []OwnedRuntimeReport `json:"serviceReports,omitempty"`
 	// Reserved observation seam for later full group stop; suspension is unchanged.
 	// +optional
 	Lifecycle *LabLifecycleStatus `json:"lifecycle,omitempty"`

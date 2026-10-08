@@ -35,6 +35,8 @@ const (
 	LabManager_DeleteLabs_FullMethodName             = "/labmanager.LabManager/DeleteLabs"
 	LabManager_StopLabs_FullMethodName               = "/labmanager.LabManager/StopLabs"
 	LabManager_StartLabs_FullMethodName              = "/labmanager.LabManager/StartLabs"
+	LabManager_StopLabGroups_FullMethodName          = "/labmanager.LabManager/StopLabGroups"
+	LabManager_StartLabGroups_FullMethodName         = "/labmanager.LabManager/StartLabGroups"
 	LabManager_Monitoring_FullMethodName             = "/labmanager.LabManager/Monitoring"
 	LabManager_Enroll_FullMethodName                 = "/labmanager.LabManager/Enroll"
 	LabManager_RenewCertificate_FullMethodName       = "/labmanager.LabManager/RenewCertificate"
@@ -80,6 +82,9 @@ type LabManagerClient interface {
 	// is refused. Start never clears terminal and refuses it at every revision.
 	StopLabs(ctx context.Context, in *StopLabsRequest, opts ...grpc.CallOption) (*BatchResult, error)
 	StartLabs(ctx context.Context, in *StartLabsRequest, opts ...grpc.CallOption) (*BatchResult, error)
+	// Accepted per item only; matching lifecycle observations prove completion.
+	StopLabGroups(ctx context.Context, in *StopLabGroupsRequest, opts ...grpc.CallOption) (*BatchResult, error)
+	StartLabGroups(ctx context.Context, in *StartLabGroupsRequest, opts ...grpc.CallOption) (*BatchResult, error)
 	// Monitoring is a server-push stream. Every subscription starts with a
 	// complete snapshot; subsequent messages are sequenced deltas or heartbeats.
 	Monitoring(ctx context.Context, in *MonitoringRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[MonitoringUpdate], error)
@@ -311,6 +316,26 @@ func (c *labManagerClient) StartLabs(ctx context.Context, in *StartLabsRequest, 
 	return out, nil
 }
 
+func (c *labManagerClient) StopLabGroups(ctx context.Context, in *StopLabGroupsRequest, opts ...grpc.CallOption) (*BatchResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BatchResult)
+	err := c.cc.Invoke(ctx, LabManager_StopLabGroups_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *labManagerClient) StartLabGroups(ctx context.Context, in *StartLabGroupsRequest, opts ...grpc.CallOption) (*BatchResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BatchResult)
+	err := c.cc.Invoke(ctx, LabManager_StartLabGroups_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *labManagerClient) Monitoring(ctx context.Context, in *MonitoringRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[MonitoringUpdate], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &LabManager_ServiceDesc.Streams[0], LabManager_Monitoring_FullMethodName, cOpts...)
@@ -480,6 +505,9 @@ type LabManagerServer interface {
 	// is refused. Start never clears terminal and refuses it at every revision.
 	StopLabs(context.Context, *StopLabsRequest) (*BatchResult, error)
 	StartLabs(context.Context, *StartLabsRequest) (*BatchResult, error)
+	// Accepted per item only; matching lifecycle observations prove completion.
+	StopLabGroups(context.Context, *StopLabGroupsRequest) (*BatchResult, error)
+	StartLabGroups(context.Context, *StartLabGroupsRequest) (*BatchResult, error)
 	// Monitoring is a server-push stream. Every subscription starts with a
 	// complete snapshot; subsequent messages are sequenced deltas or heartbeats.
 	Monitoring(*MonitoringRequest, grpc.ServerStreamingServer[MonitoringUpdate]) error
@@ -598,6 +626,12 @@ func (UnimplementedLabManagerServer) StopLabs(context.Context, *StopLabsRequest)
 }
 func (UnimplementedLabManagerServer) StartLabs(context.Context, *StartLabsRequest) (*BatchResult, error) {
 	return nil, status.Error(codes.Unimplemented, "method StartLabs not implemented")
+}
+func (UnimplementedLabManagerServer) StopLabGroups(context.Context, *StopLabGroupsRequest) (*BatchResult, error) {
+	return nil, status.Error(codes.Unimplemented, "method StopLabGroups not implemented")
+}
+func (UnimplementedLabManagerServer) StartLabGroups(context.Context, *StartLabGroupsRequest) (*BatchResult, error) {
+	return nil, status.Error(codes.Unimplemented, "method StartLabGroups not implemented")
 }
 func (UnimplementedLabManagerServer) Monitoring(*MonitoringRequest, grpc.ServerStreamingServer[MonitoringUpdate]) error {
 	return status.Error(codes.Unimplemented, "method Monitoring not implemented")
@@ -944,6 +978,42 @@ func _LabManager_StartLabs_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LabManager_StopLabGroups_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StopLabGroupsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabManagerServer).StopLabGroups(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LabManager_StopLabGroups_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabManagerServer).StopLabGroups(ctx, req.(*StopLabGroupsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LabManager_StartLabGroups_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StartLabGroupsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabManagerServer).StartLabGroups(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LabManager_StartLabGroups_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabManagerServer).StartLabGroups(ctx, req.(*StartLabGroupsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _LabManager_Monitoring_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(MonitoringRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -1216,6 +1286,14 @@ var LabManager_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "StartLabs",
 			Handler:    _LabManager_StartLabs_Handler,
+		},
+		{
+			MethodName: "StopLabGroups",
+			Handler:    _LabManager_StopLabGroups_Handler,
+		},
+		{
+			MethodName: "StartLabGroups",
+			Handler:    _LabManager_StartLabGroups_Handler,
 		},
 		{
 			MethodName: "Enroll",

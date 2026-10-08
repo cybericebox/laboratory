@@ -305,3 +305,36 @@ make test-e2e        # e2e tests against a kind cluster (see test/e2e)
 ## License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
+
+### Explicit group lifecycle and retained snapshots
+
+`StopLabGroups` accepts an exact Group UID, operation ID and increasing revision.
+It requires `require_all_labs_stopped=true`; it cannot force-stop active children.
+Completion waits for every child to have matching `Stopped` and `Released`
+observations with no pending admission, then for VPN/gateway native runtime,
+cgroup and owned network attachment cleanup. API Pod absence is insufficient.
+`StartLabGroups` prepares only VPN/gateway services. Stopped and solved terminal
+children remain stopped until a permitted explicit per-Lab start; solved copies
+can never be restarted. Legacy `spec.suspended` continues to retain services.
+
+The backend owns stage sequencing, future-stage dependency protection, deployment
+lead estimates, publication modes and permissions. Before the next stage it must
+start group services, explicitly restore only required unresolved Labs, and wait
+for actual service, snapshot and network readiness before publishing tasks.
+
+A per-Lab accepted `retentionUntil` begins repository manifest retirement at expiry
+only after matching stopped/runtime-release evidence. The definition and history
+remain readable. Retirement is independent of explicit Lab deletion; the backend
+must withhold or extend the deadline for a future-stage dependency before expiry.
+A durable metadata fence prevents a newer start from racing repository deletion.
+A retired copy cannot accept new lifecycle intent. Repository deletion does not
+confirm physical blob GC: `physicalStorageBytesAvailable` remains false without
+separate verified GC evidence.
+
+Sizing v2 profiles describe users, active Labs, internet Labs, allowed relations,
+retained flows and bounded flow/packet/payload rates. Only `SUPPORTED` profiles
+with all required bounds select resources; `CANDIDATE`, `TESTED_POINT` and missing
+bounds retain legacy formulas and defaults. The five-peer 80Mi/50m VPN and
+32Mi/25m gateway point is `TESTED_POINT`. Its successful repeat and failed initial
+burst are both retained; it certifies neither general capacity nor lifecycle
+readiness. Group sizes remain immutable after creation.

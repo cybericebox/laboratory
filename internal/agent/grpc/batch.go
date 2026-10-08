@@ -83,6 +83,9 @@ func (e notReadyError) Error() string {
 
 // isRetryable tells failures a repetition can cure.
 func isRetryable(err error) bool {
+	if _, ok := err.(pendingAdmissionError); ok {
+		return true
+	}
 	if client.IsTerminating(err) {
 		return true
 	}

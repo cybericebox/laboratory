@@ -254,7 +254,7 @@ func (s *Scheduler) load(ctx context.Context) (*clusterView, error) {
 	for i := range groups.Items {
 		g := &groups.Items[i]
 		snap.groups = append(snap.groups, g)
-		if g.Spec.Suspended {
+		if g.Spec.Suspended || g.Spec.Lifecycle.IsStopped() {
 			snap.suspended[laboratoryv1alpha1.LabGroupNamespaceOf(g)] = true
 		}
 	}
@@ -559,7 +559,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 		out = append(out, o)
 	}
 	for _, g := range snap.groups {
-		if g.DeletionTimestamp != nil {
+		if g.DeletionTimestamp != nil || g.Spec.Lifecycle.IsStopped() {
 			continue
 		}
 		o := &schedObject{

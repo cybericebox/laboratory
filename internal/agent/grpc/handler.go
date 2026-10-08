@@ -30,6 +30,9 @@ type Handler struct {
 	// resource-usage reporting then degrades to zero rather than failing.
 	metrics metricsclient.Interface
 	agentID string
+	// lifecycleAdmissionMu serializes group lifecycle with child admission in this agent.
+	// Multi-agent/API admission remains a native capability gate.
+	lifecycleAdmissionMu sync.Mutex
 
 	// monitor is the shared poller and journal behind every Monitoring stream.
 	monOnce sync.Once

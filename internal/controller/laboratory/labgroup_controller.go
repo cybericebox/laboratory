@@ -51,8 +51,11 @@ const labSubnetPrefixLen = 24
 // LabGroupReconciler reconciles a LabGroup object.
 type LabGroupReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	// Reader provides direct identity reads for lifecycle side effects.
+	Reader                 client.Reader
+	ServiceReleaseObserver GroupServiceReleaseObserver
+	Scheme                 *runtime.Scheme
+	Recorder               record.EventRecorder
 	// PublicVPNEndpoint is the publicly reachable host:port that clients dial
 	// (host of the WireGuard demux). Written verbatim to LabGroup.Status.VPN.Endpoint.
 	PublicVPNEndpoint string
@@ -143,6 +146,10 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if err := r.Update(ctx, &lg); err != nil {
 			return ctrl.Result{}, err
 		}
+	}
+
+	if handled, res, err := r.reconcileGroupLifecycle(ctx, &lg); handled || err != nil {
+		return res, err
 	}
 
 	ns := laboratoryv1alpha1.LabGroupNamespaceOf(&lg)
@@ -315,6 +322,9 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if err = updateStatus(); err != nil {
 			return ctrl.Result{}, err
 		}
+		if err = r.observeGroupStart(ctx, &lg); err != nil {
+			return ctrl.Result{}, err
+		}
 		if !lg.Spec.VPN.Disabled && !vpnReady {
 			return later(ctrl.Result{RequeueAfter: 5 * time.Second}), nil
 		}
@@ -347,6 +357,9 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
+	if err = r.observeGroupStart(ctx, &lg); err != nil {
+		return ctrl.Result{}, err
+	}
 	if !vpnReady && !lg.Spec.VPN.Disabled {
 		if wasRegistered {
 			r.Recorder.Event(&lg, corev1.EventTypeWarning, labstatus.ReasonWaitingForVPNServer,
@@ -644,6 +657,9 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 	}
 	var existing appsv1.Deployment
 	if err := r.Get(ctx, types.NamespacedName{Name: names.ComponentVPN, Namespace: ns}, &existing); err == nil {
+		if err := checkServiceGroupUID(&existing, groupUID); err != nil {
+			return err
+		}
 		changed := existing.Spec.Replicas == nil || *existing.Spec.Replicas != replicas
 		existing.Spec.Replicas = ptrInt32(replicas)
 		// The configured image reaches the VPN pods that already run, one group at a time (a rolling update); their size stays.
@@ -764,13 +780,25 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 // node-agent's LabIfaceReconciler attaches a gw-<labname> OVS port into its
 // netns for each lab with Spec.Internet.Enabled.
 func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns string, suspended bool, size *laboratoryv1alpha1.GroupPodSize) error {
+	groupUID := ""
+	group, err := (&DeviceReconciler{Client: r.Client, Reader: r.Reader}).labGroupOfNamespace(ctx, ns)
+	if err != nil {
+		return err
+	}
+	if group != nil {
+		groupUID = string(group.UID)
+	}
 	replicas := int32(1)
 	if suspended {
 		replicas = 0
 	}
 	var existing appsv1.Deployment
 	if err := r.Get(ctx, types.NamespacedName{Name: names.ComponentGateway, Namespace: ns}, &existing); err == nil {
-		changed := existing.Spec.Replicas == nil || *existing.Spec.Replicas != replicas
+		if err := checkServiceGroupUID(&existing, groupUID); err != nil {
+			return err
+		}
+		changed := bindServiceGroupUID(&existing, groupUID)
+		changed = changed || existing.Spec.Replicas == nil || *existing.Spec.Replicas != replicas
 		existing.Spec.Replicas = ptrInt32(replicas)
 		// The configured image reaches the gateways that already run, one group at a time (a rolling update); their size stays.
 		if r.convergeGroupPod(ctx, ns, &existing, names.ComponentGateway, r.GatewayImage) {
@@ -817,7 +845,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 						Image:           gatewayImage,
 						Command:         []string{"/lab", names.ComponentGateway},
 						ImagePullPolicy: pullPolicyFor(gatewayImage),
-						Env:             r.gatewayEnv(ns),
+						Env:             append(r.gatewayEnv(ns), corev1.EnvVar{Name: "GROUP_UID", Value: groupUID}),
 					}},
 				},
 			},
