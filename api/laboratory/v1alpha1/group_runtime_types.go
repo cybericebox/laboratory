@@ -25,11 +25,14 @@ type OwnedRuntimeIdentity struct {
 // OwnedRuntimeReport is node-owned; identity is immutable controller inventory.
 // Independent timestamps never impose a cross-owner clock ordering.
 type OwnedRuntimeReport struct {
-	Identity            OwnedRuntimeIdentity `json:"identity"`
-	RuntimeState        string               `json:"runtimeState"`
-	RuntimeAbsentAt     *metav1.Time         `json:"runtimeAbsentAt,omitempty"`
-	CgroupAbsentAt      *metav1.Time         `json:"cgroupAbsentAt,omitempty"`
-	AttachmentsAbsentAt *metav1.Time         `json:"attachmentsAbsentAt,omitempty"`
-	ObservedAt          *metav1.Time         `json:"observedAt,omitempty"`
-	Error               string               `json:"error,omitempty"`
+	// Echoed only after a new native sample for this permanent retirement intent.
+	RetirementOperationID string               `json:"retirementOperationId,omitempty"`
+	RetirementRevision    int64                `json:"retirementRevision,omitempty"`
+	Identity              OwnedRuntimeIdentity `json:"identity"`
+	RuntimeState          string               `json:"runtimeState"`
+	RuntimeAbsentAt       *metav1.Time         `json:"runtimeAbsentAt,omitempty"`
+	CgroupAbsentAt        *metav1.Time         `json:"cgroupAbsentAt,omitempty"`
+	AttachmentsAbsentAt   *metav1.Time         `json:"attachmentsAbsentAt,omitempty"`
+	ObservedAt            *metav1.Time         `json:"observedAt,omitempty"`
+	Error                 string               `json:"error,omitempty"`
 }

@@ -121,6 +121,11 @@ ConfigMap, the management agent as its env. Each chart value is written here onc
 names it knows. The map is YAML: consumers use `include ... | fromYaml`.
 */}}
 {{- define "laboratory.sharedEnv" -}}
+LIFECYCLE_REQUIRED_SNAPSHOT_AVAILABLE: {{ .Values.lifecycle.capabilities.requiredSnapshot | quote }}
+LIFECYCLE_PER_LAB_STOP_AVAILABLE: {{ .Values.lifecycle.capabilities.perLabStop | quote }}
+LIFECYCLE_CONFIRMED_RUNTIME_AVAILABLE: {{ .Values.lifecycle.capabilities.confirmedRuntime | quote }}
+LIFECYCLE_RETAINED_RESTART_AVAILABLE: {{ .Values.lifecycle.capabilities.retainedRestart | quote }}
+LIFECYCLE_FULL_GROUP_STOP_AVAILABLE: {{ .Values.lifecycle.capabilities.fullGroupStop | quote }}
 RUNTIME_OBSERVATION_ENABLED: {{ .Values.lifecycle.runtimeObservation.enabled | quote }}
 REQUIRED_SNAPSHOT_AVAILABLE: {{ .Values.lifecycle.requiredSnapshotAvailable | quote }}
 BASE_DOMAIN: {{ required "operator.baseDomain is required" .Values.operator.baseDomain | quote }}

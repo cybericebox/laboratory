@@ -121,3 +121,21 @@ at install time instead of shipping a broken deployment.
 {{- if and .Values.lifecycle.runtimeObservation.enabled (not .Values.operator.admissionPolicy.enabled) }}
 {{- fail "native runtime reports require admission protection" }}
 {{- end }}
+
+{{- $caps := .Values.lifecycle.capabilities }}
+{{- if and (or $caps.perLabStop $caps.confirmedRuntime $caps.retainedRestart $caps.fullGroupStop $caps.requiredSnapshot) (not (and .Values.lifecycle.runtimeObservation.enabled .Values.nodeAgent.enabled .Values.operator.admissionPolicy.enabled)) }}
+{{- fail "lifecycle capabilities require native observation, node-agent and report admission protection" }}
+{{- end }}
+{{- if and (or $caps.perLabStop $caps.retainedRestart $caps.fullGroupStop $caps.requiredSnapshot) (not $caps.confirmedRuntime) }}
+{{- fail "lifecycle capabilities require confirmedRuntime" }}
+{{- end }}
+{{- if and (or $caps.fullGroupStop $caps.requiredSnapshot) (not $caps.perLabStop) }}
+{{- fail "fullGroupStop and required snapshot capabilities require perLabStop" }}
+{{- end }}
+{{- if and $caps.retainedRestart (not .Values.devices.statePersistence.enabled) }}
+{{- fail "retainedRestart requires persistence" }}
+{{- end }}
+
+{{- if and $caps.requiredSnapshot (not .Values.lifecycle.requiredSnapshotAvailable) }}
+{{- fail "requiredSnapshot advertisement requires qualified snapshot acceptance" }}
+{{- end }}

@@ -41,3 +41,41 @@ Service/EndpointSlice image. Cilium/kindnet NetworkPolicy remains excluded.
   with cleanup-extension.py then parent cleanup.py; no prune/global context edits.
 
 80m/32Mi is only a retained local point, never a general supported capacity claim.
+
+
+## Integrated source / retire / variable-write cases (UNRUN)
+
+- Build only exact final committed integration archive. Keep advertisements false
+  while bounded Required acceptance/native observation proves capture/stop/crash/
+  userns restore. Then record separate qualified perLabStop, confirmedRuntime,
+  retainedRestart, fullGroupStop, requiredSnapshot source/image/config gates.
+- RetireLabs/RetireLabGroups preserve original stop target plus distinct new
+  retirement operation/revision. Observe newly sampled native challenge echoed
+  by node report, actual task/cgroup/attachment absence, manifest Head/tag-list
+  absence; timestamps alone or accepted legacy Delete/CR absence cannot pass.
+- Crash after native+manifest intermediate receipt and during object deletion;
+  restart and prove eventual exact cleanup plus durable tombstone. Inject partial
+  registry/UID/RV/ownership errors; storage stays CleanupPending and no free credit.
+- Same-name replacement Secret/Device/Connection/service/client/policy survives
+  cleanup retry. Deleted UID inventory never authorizes a replacement. Observe
+  own namespace UID bound at group request; replacement namespace refuses cleanup.
+- Delay variable Secret write across retirement request on two actual RPC agents.
+  Lab-RV token blocks retire while writer active; identical retry resumes, another
+  write is refused, successful exact Lab-UID write clears token; accepted retire
+  permanently blocks later Secret writes. Abandoned token has no TTL cancellation.
+- Lab images/topology/network/variables and group key/client/access configuration
+  removed before Deleted receipt. Spec scrub changes live generation; original
+  stop operation/revision persists, reissued certificate derives from durable NEW
+  native challenge; no old stop status relabelled into retirement identity.
+- Full groups: all children have exact retired receipts before group retirement;
+  retained tombstones/audit namespace/RBAC metadata remain readable, private keys
+  and writable data absent; physical shared/untagged registry bytes stay unknown.
+- SDK independent module/daemon/Docker build, checked source hashes and deliberate
+  source-byte/provenance-commit tampering, matching actual GetFeatures response.
+- Real River PostgreSQL periodic delivery and process restart/lost wake using
+  tools/lifecycleworker against actual mTLS producer; final three-question solve
+  returns closed with unchanged score/history, two sets/two teams isolation,
+  access withdrawal and actual native stop before resources credit.
+- Export actual browser IDs/objective pins with tools/lifecyclefixture to private
+  outside-repo JSON. Opaque handles only; raw sessions/flags in private fixture DB
+  and mode0600 files. Native browser late-link/closed views require actual runtime.

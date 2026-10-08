@@ -75,6 +75,13 @@ func (h *Handler) createLabGroupClient(ctx context.Context, resolver *groupResol
 	if err != nil {
 		return failedResult(ref, err), nil
 	}
+	currentGroup, err := h.getGroup(ctx, it.GetLabGroup())
+	if err != nil {
+		return failedResult(ref, err), nil
+	}
+	if currentGroup.Annotations[names.AnnotationLifecycleRetirement] != "" {
+		return failedResult(ref, fmt.Errorf("retired group cannot create clients")), nil
+	}
 	name := crName(it.GetName())
 	priv, err := wgtypes.GeneratePrivateKey()
 	if err != nil {

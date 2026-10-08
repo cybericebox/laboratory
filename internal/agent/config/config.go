@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/caarlos0/env/v11"
@@ -55,9 +56,15 @@ type MTLSConfig struct {
 }
 
 type Config struct {
-	// Acceptance gate stays false until final native proof; advertising remains false.
-	RequiredSnapshotAvailable bool   `env:"REQUIRED_SNAPSHOT_AVAILABLE" envDefault:"false"`
-	GRPCPort                  string `env:"AGENT_GRPC_PORT" envDefault:"5454"`
+	// Acceptance and advertisement are explicit owner-qualified native gates.
+	RuntimeObservation         bool   `env:"RUNTIME_OBSERVATION_ENABLED" envDefault:"false"`
+	PerLabStopAvailable        bool   `env:"LIFECYCLE_PER_LAB_STOP_AVAILABLE" envDefault:"false"`
+	ConfirmedRuntimeAvailable  bool   `env:"LIFECYCLE_CONFIRMED_RUNTIME_AVAILABLE" envDefault:"false"`
+	RetainedRestartAvailable   bool   `env:"LIFECYCLE_RETAINED_RESTART_AVAILABLE" envDefault:"false"`
+	FullGroupStopAvailable     bool   `env:"LIFECYCLE_FULL_GROUP_STOP_AVAILABLE" envDefault:"false"`
+	RequiredSnapshotAdvertised bool   `env:"LIFECYCLE_REQUIRED_SNAPSHOT_AVAILABLE" envDefault:"false"`
+	RequiredSnapshotAvailable  bool   `env:"REQUIRED_SNAPSHOT_AVAILABLE" envDefault:"false"`
+	GRPCPort                   string `env:"AGENT_GRPC_PORT" envDefault:"5454"`
 	// AgentID is a stable, deployment-scoped identity used to make monitoring
 	// observations idempotent at the platform boundary.
 	AgentID   string `env:"AGENT_ID" envDefault:"laboratory-agent"`
@@ -201,5 +208,29 @@ func Load() (*Config, error) {
 	if c.Cache.NodePrefix == "" {
 		c.Cache.NodePrefix = names.RegistryNodePrefix
 	}
+	if err := c.ValidateLifecycle(); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// ValidateLifecycle refuses unsupported gate combinations; evidence remains an
+// owner qualification step, never inferred from source code or an SDK snapshot.
+func (c *Config) ValidateLifecycle() error {
+	if (c.PerLabStopAvailable || c.ConfirmedRuntimeAvailable || c.RetainedRestartAvailable || c.FullGroupStopAvailable || c.RequiredSnapshotAvailable || c.RequiredSnapshotAdvertised) && !c.RuntimeObservation {
+		return fmt.Errorf("lifecycle capabilities require native runtime observation")
+	}
+	if (c.RetainedRestartAvailable || c.RequiredSnapshotAvailable || c.RequiredSnapshotAdvertised) && !c.StatePersistence {
+		return fmt.Errorf("snapshot lifecycle capabilities require persistence")
+	}
+	if (c.PerLabStopAvailable || c.RetainedRestartAvailable || c.FullGroupStopAvailable || c.RequiredSnapshotAdvertised) && !c.ConfirmedRuntimeAvailable {
+		return fmt.Errorf("lifecycle capability requires confirmed runtime")
+	}
+	if (c.FullGroupStopAvailable || c.RequiredSnapshotAdvertised) && !c.PerLabStopAvailable {
+		return fmt.Errorf("group/snapshot lifecycle capability requires per-Lab stop")
+	}
+	if c.RequiredSnapshotAdvertised && !c.RequiredSnapshotAvailable {
+		return fmt.Errorf("required snapshot advertisement requires qualified acceptance")
+	}
+	return nil
 }

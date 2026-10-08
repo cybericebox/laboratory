@@ -37,7 +37,8 @@ type SnapshotCatalog interface {
 // statePersistence.registry.gc). A lab that reappears under the same name
 // before the deadline cancels the deletion.
 type RetentionSweeper struct {
-	Client client.Client
+	RetirementsOnly bool
+	Client          client.Client
 	// Reader reads Labs and the ConfigMap directly from the API server: the
 	// operator's cache does not watch ConfigMaps cluster-wide. Nil means Client.
 	Reader    client.Reader
@@ -85,6 +86,9 @@ func labKeyOf(repo string) (key string, ok bool) {
 
 // Sweep runs one retention pass.
 func (s *RetentionSweeper) Sweep(ctx context.Context) error {
+	if s.RetirementsOnly {
+		return s.SweepLifecycleRetirements(ctx)
+	}
 	now := time.Now()
 	if s.Now != nil {
 		now = s.Now()

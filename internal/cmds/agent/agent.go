@@ -68,6 +68,11 @@ func Run() {
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
+	feat.Lifecycle.PerLabStop = cfg.PerLabStopAvailable
+	feat.Lifecycle.RequiredSnapshot = cfg.RequiredSnapshotAdvertised
+	feat.Lifecycle.ConfirmedRuntime = cfg.ConfirmedRuntimeAvailable
+	feat.Lifecycle.RetainedRestart = cfg.RetainedRestartAvailable
+	feat.Lifecycle.FullGroupStop = cfg.FullGroupStopAvailable
 	h.SetFeatures(feat)
 	h.SetErrorJournal(grpcserver.ErrorJournalConfig{ReleaseNamespace: cfg.ReleaseNamespace, Self: journal})
 	go h.RunErrorJournal(context.Background())

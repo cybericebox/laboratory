@@ -593,6 +593,13 @@ spec:
                     observedAt:
                       format: date-time
                       type: string
+                    retirementOperationId:
+                      description: Echoed only after a new native sample for this
+                        permanent retirement intent.
+                      type: string
+                    retirementRevision:
+                      format: int64
+                      type: integer
                     runtimeAbsentAt:
                       format: date-time
                       type: string

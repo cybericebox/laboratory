@@ -34,6 +34,7 @@ func labGroupToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.LabGroup {
 			Pods:            groupPodsToProto(g.Status.Pods),
 			Resources:       allocationToProto(g.Status.Resources),
 			Lifecycle:       groupLifecycleToProto(g),
+			Retirement:      retirementToProto(g, g.Status.Retirement),
 		},
 		Labels:        userLabels(g.Labels),
 		CreatedUnixMs: created,
@@ -66,6 +67,7 @@ func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool, sizing ...limits
 		InternetReady: st.Internet.Ready,
 		ImageWarning:  st.ImageWarning,
 	}
+	status.Retirement = retirementToProto(l, l.Status.Retirement)
 	status.Lifecycle = lifecycleToProto(l)
 	status.Resources = retiredStorageToProto(l, labAllocationToProto(l, sizing...))
 	status.Scheduling = schedulingToProto(st.Scheduling, l.Annotations)

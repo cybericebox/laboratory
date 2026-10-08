@@ -81,6 +81,9 @@ func (h *Handler) acceptGroupLifecycle(ctx context.Context, t *protobuf.GroupTar
 		if string(cur.UID) != t.GetExpectedUid() {
 			return fmt.Errorf("group UID differs from expected_uid")
 		}
+		if cur.Annotations[names.AnnotationLifecycleRetirement] != "" {
+			return fmt.Errorf("retired group cannot accept another lifecycle intent")
+		}
 		if old := cur.Spec.Lifecycle; old != nil {
 			if intent.Revision < old.Revision {
 				return fmt.Errorf("group lifecycle revision is stale")

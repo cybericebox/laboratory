@@ -29,7 +29,7 @@ func (h *Handler) claimChildAdmission(ctx context.Context, group string, a *lab.
 		if err != nil {
 			return err
 		}
-		if g.UID == "" || string(g.UID) != a.GroupUID || g.Spec.Lifecycle.IsStopped() {
+		if g.UID == "" || string(g.UID) != a.GroupUID || g.Spec.Lifecycle.IsStopped() || g.Annotations[names.AnnotationLifecycleRetirement] != "" {
 			return fmt.Errorf("group is stopped or identity changed")
 		}
 		if err := rejectTerminating(kindLabGroup, g); err != nil {

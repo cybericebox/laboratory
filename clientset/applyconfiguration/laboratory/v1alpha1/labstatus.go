@@ -27,14 +27,16 @@ import (
 //
 // LabStatus defines the observed state of Lab.
 type LabStatusApplyConfiguration struct {
-	Lifecycle   *LabLifecycleStatusApplyConfiguration `json:"lifecycle,omitempty"`
-	Resources   *RuntimeAllocationApplyConfiguration  `json:"resources,omitempty"`
-	Phase       *laboratoryv1alpha1.Phase             `json:"phase,omitempty"`
-	VPN         *LabNetworkStatusApplyConfiguration   `json:"vpn,omitempty"`
-	Internet    *LabNetworkStatusApplyConfiguration   `json:"internet,omitempty"`
-	Devices     []DeviceRefApplyConfiguration         `json:"devices,omitempty"`
-	Connections []ConnectionRefApplyConfiguration     `json:"connections,omitempty"`
-	Access      []AccessEntryApplyConfiguration       `json:"access,omitempty"`
+	// Retirement is a fresh acknowledgement distinct from the original stop.
+	Retirement  *LifecycleRetirementStatusApplyConfiguration `json:"retirement,omitempty"`
+	Lifecycle   *LabLifecycleStatusApplyConfiguration        `json:"lifecycle,omitempty"`
+	Resources   *RuntimeAllocationApplyConfiguration         `json:"resources,omitempty"`
+	Phase       *laboratoryv1alpha1.Phase                    `json:"phase,omitempty"`
+	VPN         *LabNetworkStatusApplyConfiguration          `json:"vpn,omitempty"`
+	Internet    *LabNetworkStatusApplyConfiguration          `json:"internet,omitempty"`
+	Devices     []DeviceRefApplyConfiguration                `json:"devices,omitempty"`
+	Connections []ConnectionRefApplyConfiguration            `json:"connections,omitempty"`
+	Access      []AccessEntryApplyConfiguration              `json:"access,omitempty"`
 	// Scheduling is the place of the lab in the scheduler queue.
 	Scheduling *SchedulingStatusApplyConfiguration `json:"scheduling,omitempty"`
 	// ImageCache records whether this lab pulls its images through the platform
@@ -56,6 +58,14 @@ type LabStatusApplyConfiguration struct {
 // apply.
 func LabStatus() *LabStatusApplyConfiguration {
 	return &LabStatusApplyConfiguration{}
+}
+
+// WithRetirement sets the Retirement field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Retirement field is set to the value of the last call.
+func (b *LabStatusApplyConfiguration) WithRetirement(value *LifecycleRetirementStatusApplyConfiguration) *LabStatusApplyConfiguration {
+	b.Retirement = value
+	return b
 }
 
 // WithLifecycle sets the Lifecycle field in the declarative configuration to the given value

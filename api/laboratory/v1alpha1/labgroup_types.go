@@ -55,6 +55,9 @@ type LabGroupVPNSpec struct {
 
 // LabGroupStatus defines the observed state of LabGroup.
 type LabGroupStatus struct {
+	// Retirement is a fresh acknowledgement distinct from the original stop.
+	// +optional
+	Retirement *LifecycleRetirementStatus `json:"retirement,omitempty"`
 	// ServiceRuntime is controller-owned durable pre-scale inventory.
 	// +optional
 	ServiceRuntime []OwnedRuntimeIdentity `json:"serviceRuntime,omitempty"`

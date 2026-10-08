@@ -55,7 +55,13 @@ func (h *Handler) setLabGroupAccess(ctx context.Context, resolver *groupResolver
 	if err != nil {
 		return 0, err
 	}
-	group, _ := resolver.get(ctx, in.LabGroupName)
+	group, err := resolver.get(ctx, in.LabGroupName)
+	if err != nil {
+		return protobuf.ItemState_ITEM_STATE_FAILED, err
+	}
+	if group.Annotations[names.AnnotationLifecycleRetirement] != "" {
+		return protobuf.ItemState_ITEM_STATE_FAILED, fmt.Errorf("retired group cannot mutate access")
+	}
 
 	labs, err := h.cs.LaboratoryV1alpha1().Labs(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {

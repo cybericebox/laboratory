@@ -798,6 +798,82 @@ spec:
                 - runtimeState
                 - storageState
                 type: object
+              retirement:
+                description: Retirement is a fresh acknowledgement distinct from the
+                  original stop.
+                properties:
+                  cleanupComplete:
+                    type: boolean
+                  error:
+                    type: string
+                  expectedUID:
+                    type: string
+                  objects:
+                    items:
+                      description: RetirementObjectIdentity is an exact pre-cleanup
+                        object receipt, never data.
+                      properties:
+                        groupNamespaceOwned:
+                          type: boolean
+                        kind:
+                          type: string
+                        name:
+                          type: string
+                        ownerUID:
+                          type: string
+                        uid:
+                          type: string
+                      required:
+                      - kind
+                      - name
+                      - ownerUID
+                      - uid
+                      type: object
+                    type: array
+                  observedAt:
+                    format: date-time
+                    type: string
+                  observedGeneration:
+                    format: int64
+                    type: integer
+                  operationId:
+                    type: string
+                  physicalStorageBytes:
+                    format: int64
+                    type: integer
+                  physicalStorageBytesAvailable:
+                    type: boolean
+                  requestedAt:
+                    format: date-time
+                    type: string
+                  revision:
+                    format: int64
+                    type: integer
+                  runtimeAbsent:
+                    type: boolean
+                  state:
+                    type: string
+                  stopOperationId:
+                    type: string
+                  stopRevision:
+                    format: int64
+                    type: integer
+                  storageState:
+                    type: string
+                required:
+                - cleanupComplete
+                - expectedUID
+                - observedGeneration
+                - operationId
+                - physicalStorageBytes
+                - physicalStorageBytesAvailable
+                - revision
+                - runtimeAbsent
+                - state
+                - stopOperationId
+                - stopRevision
+                - storageState
+                type: object
               scheduling:
                 description: Scheduling is the place of the lab in the scheduler queue.
                 properties:

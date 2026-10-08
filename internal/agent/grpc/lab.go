@@ -392,6 +392,9 @@ func (h *Handler) updateLab(ctx context.Context, resolver *groupResolver, ref *p
 		if err := rejectTerminating(kindLab, cur); err != nil {
 			return err
 		}
+		if cur.Annotations[names.AnnotationLifecycleRetirement] != "" {
+			return fmt.Errorf("retired Lab cannot mutate variables or configuration")
+		}
 		if len(p.env) > 0 {
 			if err := validateEnv(p.env, specDevices(&cur.Spec)); err != nil {
 				return invalid("%v", err)

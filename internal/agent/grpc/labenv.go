@@ -163,6 +163,10 @@ func validatePersistence(d *laboratoryv1alpha1.DeviceTemplate, allowed bool) err
 // For each device in devices: the Secret is written when it has variables, otherwise
 // removed. Writing the same values again is safe.
 func (h *Handler) writeDeviceSecrets(ctx context.Context, lab *laboratoryv1alpha1.Lab, devices []string, env deviceVars) error {
+	token := variableWriteToken(lab, devices, env)
+	if err := h.claimVariableWrite(ctx, lab, token); err != nil {
+		return err
+	}
 	controller := true
 	owner := metav1.OwnerReference{
 		APIVersion:         laboratoryv1alpha1.SchemeGroupVersion.String(),
@@ -202,5 +206,5 @@ func (h *Handler) writeDeviceSecrets(ctx context.Context, lab *laboratoryv1alpha
 			return err
 		}
 	}
-	return nil
+	return h.finishVariableWrite(ctx, lab, token)
 }

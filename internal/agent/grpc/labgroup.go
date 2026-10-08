@@ -257,6 +257,7 @@ func (h *Handler) updateLabGroup(ctx context.Context, ref *protobuf.ItemRef, p g
 		if err := rejectTerminating(kindLabGroup, cur); err != nil {
 			return err
 		}
+		if cur.Annotations[names.AnnotationLifecycleRetirement] != "" { return fmt.Errorf("retired group cannot mutate configuration") }
 		changed := false
 		var c bool
 		if cur.Labels, c = p.labels.apply(cur.Labels); c {

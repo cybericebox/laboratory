@@ -1001,8 +1001,15 @@ cert-manager:
 tenants: {}
 
 # Lifecycle acceptance stays gated until the final integrated native proof.
-# These switches do not advertise lifecycle support through GetFeatures.
+# Advertised capabilities require owner-qualified native evidence and all
+# dependencies below. Source/SDK integration alone does not authorize enable.
 lifecycle:
+  capabilities:
+    requiredSnapshot: false
+    perLabStop: false
+    confirmedRuntime: false
+    retainedRestart: false
+    fullGroupStop: false
   requiredSnapshotAvailable: false
   runtimeObservation:
     enabled: false

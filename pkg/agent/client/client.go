@@ -142,20 +142,25 @@ func (c *labManagerClient) Close() error {
 // Lifecycle aliases expose the additive protocol through the public client.
 // Client embeds LabManagerClient, including StopLabs and StartLabs.
 type (
-	GroupTarget           = protobuf.GroupTarget
-	StopLabGroupItem      = protobuf.StopLabGroupItem
-	StopLabGroupsRequest  = protobuf.StopLabGroupsRequest
-	StartLabGroupsRequest = protobuf.StartLabGroupsRequest
-	GroupLifecycleSpec    = protobuf.GroupLifecycleSpec
-	StopSnapshotMode      = protobuf.StopSnapshotMode
-	LabLifecycleTarget    = protobuf.LabLifecycleTarget
-	StopLabItem           = protobuf.StopLabItem
-	StopLabsRequest       = protobuf.StopLabsRequest
-	StartLabsRequest      = protobuf.StartLabsRequest
-	LabLifecycleStatus    = protobuf.LabLifecycleStatus
-	ResourceAmounts       = protobuf.ResourceAmounts
-	ResourceAllocation    = protobuf.ResourceAllocation
-	LifecycleFeature      = protobuf.LifecycleFeature
+	LabRetirementTarget    = protobuf.LabRetirementTarget
+	GroupRetirementTarget  = protobuf.GroupRetirementTarget
+	RetireLabsRequest      = protobuf.RetireLabsRequest
+	RetireLabGroupsRequest = protobuf.RetireLabGroupsRequest
+	RetirementStatus       = protobuf.RetirementStatus
+	GroupTarget            = protobuf.GroupTarget
+	StopLabGroupItem       = protobuf.StopLabGroupItem
+	StopLabGroupsRequest   = protobuf.StopLabGroupsRequest
+	StartLabGroupsRequest  = protobuf.StartLabGroupsRequest
+	GroupLifecycleSpec     = protobuf.GroupLifecycleSpec
+	StopSnapshotMode       = protobuf.StopSnapshotMode
+	LabLifecycleTarget     = protobuf.LabLifecycleTarget
+	StopLabItem            = protobuf.StopLabItem
+	StopLabsRequest        = protobuf.StopLabsRequest
+	StartLabsRequest       = protobuf.StartLabsRequest
+	LabLifecycleStatus     = protobuf.LabLifecycleStatus
+	ResourceAmounts        = protobuf.ResourceAmounts
+	ResourceAllocation     = protobuf.ResourceAllocation
+	LifecycleFeature       = protobuf.LifecycleFeature
 )
 
 const (

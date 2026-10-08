@@ -117,7 +117,11 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 		reports := otherNodeReports(g.Status.ServiceReports, r.Observer.NodeName)
 		for _, id := range rows {
 			if id.NodeName == r.Observer.NodeName {
-				reports = append(reports, r.Observer.ObserveOwnedRuntime(ctx, id))
+				report := r.Observer.ObserveOwnedRuntime(ctx, id)
+				if intent, ok := lab.ParseLifecycleRetirement(g.Annotations[names.AnnotationLifecycleRetirement]); ok && intent.ExpectedUID == string(g.UID) && intent.StopOperationID == id.OperationID && intent.StopRevision == id.Revision {
+					report.RetirementOperationID, report.RetirementRevision = intent.OperationID, intent.Revision
+				}
+				reports = append(reports, report)
 			}
 		}
 		g.Status.ServiceReports = reports
@@ -164,7 +168,11 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 		reports := otherNodeReports(d.Status.RuntimeReports, r.Observer.NodeName)
 		for _, id := range rows {
 			if id.NodeName == r.Observer.NodeName {
-				reports = append(reports, r.Observer.ObserveOwnedRuntime(ctx, id))
+				report := r.Observer.ObserveOwnedRuntime(ctx, id)
+				if intent, ok := lab.ParseLifecycleRetirement(parent.Annotations[names.AnnotationLifecycleRetirement]); ok && intent.ExpectedUID == string(parent.UID) && intent.StopOperationID == id.OperationID && intent.StopRevision == id.Revision {
+					report.RetirementOperationID, report.RetirementRevision = intent.OperationID, intent.Revision
+				}
+				reports = append(reports, report)
 			}
 		}
 		d.Status.RuntimeReports = reports

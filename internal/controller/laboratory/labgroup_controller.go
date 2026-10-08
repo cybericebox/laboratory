@@ -148,6 +148,9 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 
+	if lg.Annotations[names.AnnotationLifecycleRetirement] != "" {
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
 	if handled, res, err := r.reconcileGroupLifecycle(ctx, &lg); handled || err != nil {
 		return res, err
 	}

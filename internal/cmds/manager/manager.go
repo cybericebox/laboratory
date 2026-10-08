@@ -363,6 +363,12 @@ func Run() {
 			os.Exit(1)
 		}
 	}
+	if cfg.RuntimeObservation {
+		if err = mgr.Add(&laboratorycontroller.RetentionSweeper{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Registry: stateRegistry, RetirementsOnly: true, Interval: 5 * time.Second}); err != nil {
+			setupLog.Error(err, "unable to add lifecycle retirement sweep")
+			os.Exit(1)
+		}
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

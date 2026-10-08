@@ -167,6 +167,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.LabVPNSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabVPNStatus"):
 		return &applyconfigurationlaboratoryv1alpha1.LabVPNStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LifecycleRetirementStatus"):
+		return &applyconfigurationlaboratoryv1alpha1.LifecycleRetirementStatusApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("MaintenanceWindow"):
 		return &applyconfigurationlaboratoryv1alpha1.MaintenanceWindowApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("MaintenanceWindowSpec"):
@@ -187,6 +189,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.PodScheduleApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("ResourceAmounts"):
 		return &applyconfigurationlaboratoryv1alpha1.ResourceAmountsApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("RetirementObjectIdentity"):
+		return &applyconfigurationlaboratoryv1alpha1.RetirementObjectIdentityApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("Route"):
 		return &applyconfigurationlaboratoryv1alpha1.RouteApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("RuntimeAllocation"):

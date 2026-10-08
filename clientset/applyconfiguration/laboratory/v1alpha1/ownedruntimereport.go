@@ -27,19 +27,38 @@ import (
 // OwnedRuntimeReport is node-owned; identity is immutable controller inventory.
 // Independent timestamps never impose a cross-owner clock ordering.
 type OwnedRuntimeReportApplyConfiguration struct {
-	Identity            *OwnedRuntimeIdentityApplyConfiguration `json:"identity,omitempty"`
-	RuntimeState        *string                                 `json:"runtimeState,omitempty"`
-	RuntimeAbsentAt     *v1.Time                                `json:"runtimeAbsentAt,omitempty"`
-	CgroupAbsentAt      *v1.Time                                `json:"cgroupAbsentAt,omitempty"`
-	AttachmentsAbsentAt *v1.Time                                `json:"attachmentsAbsentAt,omitempty"`
-	ObservedAt          *v1.Time                                `json:"observedAt,omitempty"`
-	Error               *string                                 `json:"error,omitempty"`
+	// Echoed only after a new native sample for this permanent retirement intent.
+	RetirementOperationID *string                                 `json:"retirementOperationId,omitempty"`
+	RetirementRevision    *int64                                  `json:"retirementRevision,omitempty"`
+	Identity              *OwnedRuntimeIdentityApplyConfiguration `json:"identity,omitempty"`
+	RuntimeState          *string                                 `json:"runtimeState,omitempty"`
+	RuntimeAbsentAt       *v1.Time                                `json:"runtimeAbsentAt,omitempty"`
+	CgroupAbsentAt        *v1.Time                                `json:"cgroupAbsentAt,omitempty"`
+	AttachmentsAbsentAt   *v1.Time                                `json:"attachmentsAbsentAt,omitempty"`
+	ObservedAt            *v1.Time                                `json:"observedAt,omitempty"`
+	Error                 *string                                 `json:"error,omitempty"`
 }
 
 // OwnedRuntimeReportApplyConfiguration constructs a declarative configuration of the OwnedRuntimeReport type for use with
 // apply.
 func OwnedRuntimeReport() *OwnedRuntimeReportApplyConfiguration {
 	return &OwnedRuntimeReportApplyConfiguration{}
+}
+
+// WithRetirementOperationID sets the RetirementOperationID field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the RetirementOperationID field is set to the value of the last call.
+func (b *OwnedRuntimeReportApplyConfiguration) WithRetirementOperationID(value string) *OwnedRuntimeReportApplyConfiguration {
+	b.RetirementOperationID = &value
+	return b
+}
+
+// WithRetirementRevision sets the RetirementRevision field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the RetirementRevision field is set to the value of the last call.
+func (b *OwnedRuntimeReportApplyConfiguration) WithRetirementRevision(value int64) *OwnedRuntimeReportApplyConfiguration {
+	b.RetirementRevision = &value
+	return b
 }
 
 // WithIdentity sets the Identity field in the declarative configuration to the given value

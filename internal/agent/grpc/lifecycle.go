@@ -119,7 +119,7 @@ func (h *Handler) acceptLifecycle(ctx context.Context, resolver *groupResolver, 
 		if err != nil {
 			return err
 		}
-		if string(before.UID) != admission.ExpectedLabUID || before.Spec.Lifecycle != nil && (before.Spec.Lifecycle.Terminal || before.Spec.Lifecycle.Revision > intent.Revision || before.Spec.Lifecycle.Revision == intent.Revision && !apiequality.Semantic.DeepEqual(before.Spec.Lifecycle, intent)) || before.Annotations[names.AnnotationSnapshotRetirement] != "" {
+		if string(before.UID) != admission.ExpectedLabUID || before.Spec.Lifecycle != nil && (before.Spec.Lifecycle.Terminal || before.Spec.Lifecycle.Revision > intent.Revision || before.Spec.Lifecycle.Revision == intent.Revision && !apiequality.Semantic.DeepEqual(before.Spec.Lifecycle, intent)) || (before.Annotations[names.AnnotationSnapshotRetirement] != "" || before.Annotations[names.AnnotationLifecycleRetirement] != "") {
 			return fmt.Errorf("invalid or retired start target")
 		}
 		if err := h.claimChildAdmission(ctx, ref.GetLabGroup(), admission); err != nil {
@@ -155,7 +155,7 @@ func (h *Handler) acceptLifecycle(ctx context.Context, resolver *groupResolver, 
 			return fmt.Errorf("lab group is stopped; explicitly start group services first")
 		}
 		old := cur.Spec.Lifecycle
-		if cur.Annotations[names.AnnotationSnapshotRetirement] != "" && !apiequality.Semantic.DeepEqual(old, intent) {
+		if (cur.Annotations[names.AnnotationSnapshotRetirement] != "" || cur.Annotations[names.AnnotationLifecycleRetirement] != "") && !apiequality.Semantic.DeepEqual(old, intent) {
 			return fmt.Errorf("snapshot retirement has begun; this copy cannot accept a new lifecycle intent")
 		}
 		if old != nil {

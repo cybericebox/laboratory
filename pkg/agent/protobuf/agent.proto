@@ -59,6 +59,10 @@ service LabManager {
   // Accepted per item only; matching lifecycle observations prove completion.
   rpc StopLabGroups(StopLabGroupsRequest) returns (BatchResult) {}
   rpc StartLabGroups(StartLabGroupsRequest) returns (BatchResult) {}
+  // Fenced terminal retirement; acceptance is distinct from fresh cleanup ACK.
+  // Definitions remain durable tombstones; legacy Delete* semantics are unchanged.
+  rpc RetireLabs(RetireLabsRequest) returns (BatchResult) {}
+  rpc RetireLabGroups(RetireLabGroupsRequest) returns (BatchResult) {}
 
   // Monitoring is a server-push stream. Every subscription starts with a
   // complete snapshot; subsequent messages are sequenced deltas or heartbeats.
@@ -387,6 +391,7 @@ message LabGroupStatus {
   string current_vpn_boot_id = 11;
   bool current_vpn_boot_available = 12;
   int64 current_vpn_boot_observed_unix_ms = 13;
+  RetirementStatus retirement = 14;
 }
 message LabGroupList {repeated LabGroup items = 1;}
 
@@ -432,6 +437,7 @@ message LabStatus {
   string image_warning = 40;
   LabLifecycleStatus lifecycle = 41;
   ResourceAllocation resources = 42;
+  RetirementStatus retirement = 43;
 }
 // Scheduling is the place of a Lab or LabGroup in the scheduler queue. The scheduler
 // refreshes it at a limited rate, so position can lag by seconds.
@@ -1172,4 +1178,35 @@ message GroupLifecycleSpec {
  string operation_id = 2;
  int64 revision = 3;
  bool require_all_labs_stopped = 4;
+}
+
+// The stop target remains immutable; retirement has a distinct new operation.
+message LabRetirementTarget {
+ LabLifecycleTarget stop_target = 1;
+ string retirement_operation_id = 2;
+ int64 retirement_revision = 3;
+}
+message GroupRetirementTarget {
+ GroupTarget stop_target = 1;
+ string retirement_operation_id = 2;
+ int64 retirement_revision = 3;
+}
+message RetireLabsRequest { repeated LabRetirementTarget items = 1; }
+message RetireLabGroupsRequest { repeated GroupRetirementTarget items = 1; }
+message RetirementStatus {
+ string expected_uid = 1;
+ string stop_operation_id = 2;
+ int64 stop_revision = 3;
+ string operation_id = 4;
+ int64 revision = 5;
+ int64 observed_generation = 6;
+ string state = 7; // Unknown/CleanupPending/Deleted
+ int64 observed_unix_ms = 8;
+ bool runtime_absent = 9;
+ string storage_state = 10;
+ bool cleanup_complete = 11;
+ bool physical_storage_bytes_available = 12;
+ int64 physical_storage_bytes = 13;
+ string error = 14;
+ int64 requested_unix_ms = 15;
 }

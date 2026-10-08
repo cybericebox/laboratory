@@ -22,7 +22,7 @@ func (r *LabReconciler) currentAccessFence(ctx context.Context, l *lab.Lab) (boo
 	// same child UID/op/revision/generation. Group service pauses/restarts cannot
 	// revive that child runtime. A child Start replaces lifecycle status and thus
 	// clears this certificate before a new runtime is admitted.
-	if exactStoppedRelease(l) && l.Status.Resources.ObservedAt != nil && l.Status.Resources.ReleasedAt != nil && l.Status.Resources.AllocatedRequests == (lab.ResourceAmounts{}) && l.Status.Lifecycle.AccessFenced && l.Status.Lifecycle.AccessFencedAt != nil && l.Status.Lifecycle.AccessFenceVPNBootID != "" {
+	if exactStoppedRelease(l) && nonzeroTime(l.Status.Resources.ObservedAt) && nonzeroTime(l.Status.Resources.ReleasedAt) && l.Status.Resources.AllocatedRequests == (lab.ResourceAmounts{}) && l.Status.Lifecycle.AccessFenced && nonzeroTime(l.Status.Lifecycle.AccessFencedAt) && l.Status.Lifecycle.AccessFenceVPNBootID != "" {
 		return true, l.Status.Lifecycle.AccessFencedAt, l.Status.Lifecycle.AccessFenceVPNBootID, nil
 	}
 	var leg lab.LabVPN

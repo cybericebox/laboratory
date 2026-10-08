@@ -26,6 +26,8 @@ import (
 //
 // LabGroupStatus defines the observed state of LabGroup.
 type LabGroupStatusApplyConfiguration struct {
+	// Retirement is a fresh acknowledgement distinct from the original stop.
+	Retirement *LifecycleRetirementStatusApplyConfiguration `json:"retirement,omitempty"`
 	// ServiceRuntime is controller-owned durable pre-scale inventory.
 	ServiceRuntime []OwnedRuntimeIdentityApplyConfiguration `json:"serviceRuntime,omitempty"`
 	// ServiceReports is node-owned matching native observation.
@@ -52,6 +54,14 @@ type LabGroupStatusApplyConfiguration struct {
 // apply.
 func LabGroupStatus() *LabGroupStatusApplyConfiguration {
 	return &LabGroupStatusApplyConfiguration{}
+}
+
+// WithRetirement sets the Retirement field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Retirement field is set to the value of the last call.
+func (b *LabGroupStatusApplyConfiguration) WithRetirement(value *LifecycleRetirementStatusApplyConfiguration) *LabGroupStatusApplyConfiguration {
+	b.Retirement = value
+	return b
 }
 
 // WithServiceRuntime adds the given value to the ServiceRuntime field in the declarative configuration
