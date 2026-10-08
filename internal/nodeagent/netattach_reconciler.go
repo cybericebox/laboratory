@@ -483,18 +483,20 @@ func (r *NetworkAttachReconciler) directReader() client.Reader {
 
 // DelVethWithFlowsOwnedJournaled fsyncs the physical cleanup witness while the
 // exact owner row still exists. Only its guarded row retirement follows it.
-func (r *NetworkAttachReconciler) DelVethWithFlowsOwnedJournaled(key string, uid types.UID, prepared func(string) error) error {
+func (r *NetworkAttachReconciler) DelVethWithFlowsOwnedJournaled(key string, uid types.UID, prepared func(string) error, expectedRow ...string) error {
 	if uid == "" || r.Flows == nil || prepared == nil {
 		return ErrPortOwnerUnknown
 	}
 	r.OVS.vethMu.Lock()
 	defer r.OVS.vethMu.Unlock()
-	return r.OVS.delVethWithFlowsOwnedJournaled(key, uid, r.Flows, prepared)
+	return r.OVS.delVethWithFlowsOwnedJournaled(key, uid, r.Flows, prepared, expectedRow...)
 }
 
 func (r *NetworkAttachReconciler) DelVethWithFlowsExpected(key string, uid types.UID, row string) error {
-	if row == "" {
+	if row == "" || uid == "" || r.OVS == nil || r.Flows == nil {
 		return ErrPortOwnerUnknown
 	}
+	r.OVS.vethMu.Lock()
+	defer r.OVS.vethMu.Unlock()
 	return r.OVS.delVethWithFlowsOwnedJournaled(key, uid, r.Flows, nil, row)
 }

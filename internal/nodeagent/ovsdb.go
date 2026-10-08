@@ -769,7 +769,7 @@ func (m *OVSManager) delPortLocked(p *OVSPort) error {
 	}
 
 	var ops []ovsdb.Operation
-	if p.ExternalIDs[portKeyExternalID] == p.Name && ValidPortKey(p.Name) {
+	if p.ExternalIDs[portKeyExternalID] == p.Name && ValidPortKey(p.Name) || p.ExternalIDs[fabricOwnerExternalID] != "" {
 		ids, _ := ovsdb.NewOvsMap(p.ExternalIDs)
 		timeout := 0
 		ops = append(ops, ovsdb.Operation{Op: ovsdb.OperationWait, Table: "Port", Where: []ovsdb.Condition{ovsdb.NewCondition("name", ovsdb.ConditionEqual, p.Name)}, Columns: []string{"_uuid", "external_ids"}, Rows: []ovsdb.Row{{"_uuid": ovsdb.UUID{GoUUID: p.UUID}, "external_ids": ids}}, Until: "==", Timeout: &timeout})
@@ -906,6 +906,9 @@ func (m *OVSManager) DelFabricPortOwned(key string, owner types.UID, flows *Flow
 		if m.FabricRetirementAbsent != nil {
 			return m.FabricRetirementAbsent(key, owner)
 		}
+		if m.FabricPrepare == nil && m.FabricRetirement == nil {
+			return nil
+		}
 		return ErrPortOwnerUnknown
 	}
 	if len(expectedRow) > 0 && expectedRow[0] != "" && row.UUID != expectedRow[0] {
@@ -914,11 +917,13 @@ func (m *OVSManager) DelFabricPortOwned(key string, owner types.UID, flows *Flow
 	if row.ExternalIDs[fabricOwnerExternalID] != string(owner) {
 		return ErrPortOwnerChanged
 	}
-	if m.FabricPrepare == nil || m.FabricRetirement == nil {
-		return ErrPortOwnerUnknown
-	}
-	if err := m.FabricPrepare(key, owner, row.UUID); err != nil {
-		return err
+	if m.FabricPrepare != nil {
+		if m.FabricRetirement == nil {
+			return ErrPortOwnerUnknown
+		}
+		if err := m.FabricPrepare(key, owner, row.UUID); err != nil {
+			return err
+		}
 	}
 	if err := flows.retirePort(key); err != nil {
 		return err
@@ -930,8 +935,10 @@ func (m *OVSManager) DelFabricPortOwned(key string, owner types.UID, flows *Flow
 	if current == nil || current.UUID != row.UUID || current.ExternalIDs[fabricOwnerExternalID] != string(owner) {
 		return ErrPortOwnerChanged
 	}
-	if err := m.FabricRetirement(key, owner, row.UUID); err != nil {
-		return err
+	if m.FabricRetirement != nil {
+		if err := m.FabricRetirement(key, owner, row.UUID); err != nil {
+			return err
+		}
 	}
 	return m.delPortLocked(row)
 }

@@ -121,7 +121,7 @@ func (r *LabReconciler) prepareLabScopes(ctx context.Context, l *lab.Lab) error 
 			declared[n].VNIs = append(declared[n].VNIs, binding.VNI)
 		}
 	}
-	rows := append([]lab.OwnedRuntimeIdentity(nil), l.Status.ScopeInventory...)
+	rows := adoptReleasedScopeHistory(l.Status.ScopeInventory, l.Status.ScopeReports)
 	for _, scope := range declared {
 		for _, prior := range rows {
 			if sameDeclaredScope(scope, prior) {
@@ -163,7 +163,15 @@ func (r *LabReconciler) prepareLabScopes(ctx context.Context, l *lab.Lab) error 
 	return r.Status().Patch(ctx, l, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 }
 func sameDeclaredScope(a, b lab.OwnedRuntimeIdentity) bool {
-	return a.ScopeKind == b.ScopeKind && a.ScopeUID == b.ScopeUID && a.OwnerUID == b.OwnerUID && a.NodeName == b.NodeName && a.NodeBootID == b.NodeBootID && a.Generation == b.Generation && a.OperationID == b.OperationID && a.Revision == b.Revision
+	a.ContainerIDs, b.ContainerIDs = nil, nil
+	a.CgroupPaths, b.CgroupPaths = nil, nil
+	a.PortKeys, b.PortKeys = nil, nil
+	a.PortRows, b.PortRows = nil, nil
+	a.FabricPorts, b.FabricPorts = nil, nil
+	a.VNIs, b.VNIs = nil, nil
+	a.VNIBindings, b.VNIBindings = nil, nil
+	a.AttachmentsComplete, b.AttachmentsComplete = false, false
+	return reflect.DeepEqual(a, b)
 }
 
 // Return pool indices only after durable per-node native barriers. Retained
@@ -234,9 +242,6 @@ func (r *LabReconciler) releaseRecordedVNIs(ctx context.Context, l *lab.Lab) err
 }
 
 func (r *LabReconciler) ensureOwnedVNI(ctx context.Context, object client.Object, allocate bool) error {
-	if !r.RuntimeObservation {
-		return nil
-	}
 	var index *uint
 	var current *lab.VNILease
 	switch o := object.(type) {
@@ -280,4 +285,66 @@ func (r *LabReconciler) ensureOwnedVNI(ctx context.Context, object client.Object
 		o.Status.VNILease = next
 	}
 	return r.Status().Update(ctx, object)
+}
+
+// Default-off compatibility keeps the legacy physical delete contract, but a
+// pinned slot still requires the exact Pool UID, owner and lease generation.
+// This does not produce any lifecycle release certificate.
+func (r *LabReconciler) releaseDefaultOffVNI(ctx context.Context, index uint, lease *lab.VNILease, uid string) error {
+	if lease != nil {
+		if uid == "" {
+			return fmt.Errorf("actual VNI owner UID missing")
+		}
+		var parents lab.LabList
+		if err := r.lifecycleReader().List(ctx, &parents); err != nil {
+			return err
+		}
+		for _, parent := range parents.Items {
+			for _, scope := range parent.Status.ScopeInventory {
+				for _, binding := range scope.VNIBindings {
+					if binding.UID == uid && !lab.VNILeaseReleased(&parent, binding) {
+						return fmt.Errorf("retained native VNI obligation is unresolved")
+					}
+				}
+			}
+		}
+		return poolpkg.ReleaseOwnedIndex(ctx, r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, poolpkg.Lease{Index: index, PoolUID: lease.PoolUID, OwnerUID: uid, Generation: lease.Generation})
+	}
+	return poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize).ReleaseIndex(ctx, index)
+}
+
+// Historical declarations may gain positive native inventory after Start was
+// accepted. Only a complete release certificate extending every prior debt is
+// adopted; consumption still uses exact full identity equality.
+func adoptReleasedScopeHistory(rows []lab.OwnedRuntimeIdentity, reports []lab.OwnedRuntimeReport) []lab.OwnedRuntimeIdentity {
+	out := append([]lab.OwnedRuntimeIdentity(nil), rows...)
+	for i, prior := range out {
+		if prior.ScopeKind != "LabFabric" && prior.ScopeKind != "GroupScope" && prior.ScopeKind != "NeverMaterialized" {
+			continue
+		}
+		for _, report := range reports {
+			next := report.Identity
+			if !sameDeclaredScope(prior, next) || !scopeHistoryContains(next.ContainerIDs, prior.ContainerIDs) || !scopeHistoryContains(next.CgroupPaths, prior.CgroupPaths) || !scopeHistoryContains(next.PortKeys, prior.PortKeys) || !scopeHistoryContains(next.PortRows, prior.PortRows) || !scopeHistoryContains(next.FabricPorts, prior.FabricPorts) || !scopeHistoryContains(next.VNIs, prior.VNIs) || !scopeHistoryContains(next.VNIBindings, prior.VNIBindings) {
+				continue
+			}
+			if !runtimeRowsReleased([]lab.OwnedRuntimeIdentity{next}, []lab.OwnedRuntimeReport{report}, next.OwnerUID, next.OperationID, next.Revision) {
+				continue
+			}
+			out[i] = *next.DeepCopy()
+			prior = out[i]
+		}
+	}
+	return out
+}
+func scopeHistoryContains[T comparable](all, prior []T) bool {
+	for _, old := range prior {
+		found := false
+		for _, item := range all {
+			found = found || item == old
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }

@@ -648,3 +648,33 @@ func (c *Client) RetireVNI(vni uint64) error {
 		return fmt.Errorf("VNI retirement barrier timed out")
 	}
 }
+
+// Barrier confirms a native enumeration boundary without deleting any scope.
+func (c *Client) Barrier() error {
+	c.retireMu.Lock()
+	defer c.retireMu.Unlock()
+	ch := make(chan error, 1)
+	c.writeMu.Lock()
+	request := buildHeader(20, 8)
+	c.stamp(request)
+	c.pdMu.Lock()
+	c.pendingRetire = ch
+	c.retireXIDs = map[uint32]bool{}
+	c.retireBarrier = binary.BigEndian.Uint32(request[4:8])
+	c.retireError = nil
+	c.pdMu.Unlock()
+	_, err := c.conn.Write(request)
+	c.writeMu.Unlock()
+	defer func() { c.pdMu.Lock(); c.pendingRetire = nil; c.retireXIDs = nil; c.pdMu.Unlock() }()
+	if err != nil {
+		return err
+	}
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-ch:
+		return err
+	case <-timer.C:
+		return fmt.Errorf("native enumeration barrier timed out")
+	}
+}

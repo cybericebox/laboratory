@@ -382,15 +382,8 @@ func (r *ConnectionReconciler) reconcileSwitchSwitch(
 	patchA := patchPortName(conn.Namespace, conn.Name, ep0.endpoint.Device) // registered in vni0
 	patchB := patchPortName(conn.Namespace, conn.Name, ep1.endpoint.Device) // registered in vni1
 
-	// A pair under the names of earlier versions (no namespace in them) is replaced by this one: leaving it would flood each switch's
-	// frames through two links.
-	for _, dev := range []string{ep0.endpoint.Device, ep1.endpoint.Device} {
-		old := legacyPatchPortName(conn.Name, dev)
-		if exists, err := r.OVS.PortExists(old); err == nil && exists {
-			if err := r.OVS.DelFabricPortOwned(old, conn.UID, r.Flows); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
+	if err := r.migrateLegacySwitchPair(ctx, conn, ep0.device, ep1.device); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	if err := r.OVS.AddPatchPairOwned(patchA, patchB, conn.UID); err != nil {

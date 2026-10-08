@@ -457,6 +457,11 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 			// For switch/hub devices, ensure VNI is written even if the status update failed on a previous reconcile.
 			isSwitch := existing.Spec.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch ||
 				existing.Spec.Type == laboratoryv1alpha1.DeviceTypeHub
+			if isSwitch && !r.RuntimeObservation && existing.Status.VNI != nil && existing.UID != "" && existing.Status.VNILease == nil {
+				if err := r.ensureOwnedVNI(ctx, &existing, false); err != nil {
+					return err
+				}
+			}
 			if isSwitch && r.RuntimeObservation {
 				if err := r.ensureOwnedVNI(ctx, &existing, true); err != nil {
 					return err
@@ -662,17 +667,17 @@ func (r *LabReconciler) pruneConnections(ctx context.Context, lab *laboratoryv1a
 	if err := r.List(ctx, &list, client.InNamespace(lab.Namespace), client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
 		return err
 	}
-	vniAllocator := poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
 	for i := range list.Items {
 		c := &list.Items[i]
 		if desired[c.Name] || !c.DeletionTimestamp.IsZero() {
 			continue
 		}
 		if !r.RuntimeObservation && c.Status.VNI != nil {
-			if err := vniAllocator.ReleaseIndex(ctx, *c.Status.VNI); err != nil {
+			if err := r.releaseDefaultOffVNI(ctx, *c.Status.VNI, c.Status.VNILease, string(c.UID)); err != nil {
 				return fmt.Errorf("release VNI %d for connection %s: %w", *c.Status.VNI, c.Name, err)
 			}
 			c.Status.VNI = nil
+			c.Status.VNILease = nil
 			if err := r.Status().Update(ctx, c); err != nil {
 				return err
 			}
@@ -697,17 +702,17 @@ func (r *LabReconciler) pruneDevices(ctx context.Context, lab *laboratoryv1alpha
 	if err := r.List(ctx, &list, client.InNamespace(lab.Namespace), client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
 		return err
 	}
-	vniAllocator := poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
 	for i := range list.Items {
 		d := &list.Items[i]
 		if desired[d.Spec.Name] || !d.DeletionTimestamp.IsZero() {
 			continue
 		}
 		if !r.RuntimeObservation && d.Status.VNI != nil {
-			if err := vniAllocator.ReleaseIndex(ctx, *d.Status.VNI); err != nil {
+			if err := r.releaseDefaultOffVNI(ctx, *d.Status.VNI, d.Status.VNILease, string(d.UID)); err != nil {
 				return fmt.Errorf("release switch VNI %d for device %s: %w", *d.Status.VNI, d.Name, err)
 			}
 			d.Status.VNI = nil
+			d.Status.VNILease = nil
 			if err := r.Status().Update(ctx, d); err != nil {
 				return err
 			}
@@ -1012,7 +1017,6 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 	// alongside devices (not after) to avoid a deadlock: DevicePortReconciler
 	// waits for Connection OVS-cleanup finalizers before removing the Device
 	// finalizer, but connections are only deleted by this function.
-	vniAllocator := poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
 
 	var connList laboratoryv1alpha1.ConnectionList
 	if err := r.List(
@@ -1024,10 +1028,11 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 	for i := range connList.Items {
 		c := &connList.Items[i]
 		if !r.RuntimeObservation && c.Status.VNI != nil {
-			if err := vniAllocator.ReleaseIndex(ctx, *c.Status.VNI); err != nil {
+			if err := r.releaseDefaultOffVNI(ctx, *c.Status.VNI, c.Status.VNILease, string(c.UID)); err != nil {
 				logger.Error(err, "release VNI", "connection", c.Name, "vni", *c.Status.VNI)
 			}
 			c.Status.VNI = nil
+			c.Status.VNILease = nil
 			if err := r.Status().Update(ctx, c); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -1043,10 +1048,11 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 	for i := range deviceList.Items {
 		d := &deviceList.Items[i]
 		if !r.RuntimeObservation && d.Status.VNI != nil {
-			if err := vniAllocator.ReleaseIndex(ctx, *d.Status.VNI); err != nil {
+			if err := r.releaseDefaultOffVNI(ctx, *d.Status.VNI, d.Status.VNILease, string(d.UID)); err != nil {
 				return ctrl.Result{}, fmt.Errorf("release switch VNI %d for device %s: %w", *d.Status.VNI, d.Name, err)
 			}
 			d.Status.VNI = nil
+			d.Status.VNILease = nil
 			if err := r.Status().Update(ctx, d); err != nil {
 				return ctrl.Result{}, err
 			}

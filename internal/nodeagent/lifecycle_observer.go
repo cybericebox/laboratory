@@ -216,7 +216,7 @@ func (o *NativeRuntimeObserver) ObserveOwnedRuntime(ctx context.Context, id lab.
 		if expected == "" {
 			return fail(ErrPortOwnerUnknown)
 		}
-		e := o.Network.OVS.delVethWithFlowsOwnedJournaled(key, types.UID(id.PodUID), o.Network.Flows, func(row string) error { receipt.PortUUID = row; return o.writeRecord("cleanup-"+key, id, receipt) }, expected)
+		e := o.Network.DelVethWithFlowsOwnedJournaled(key, types.UID(id.PodUID), func(row string) error { receipt.PortUUID = row; return o.writeRecord("cleanup-"+key, id, receipt) }, expected)
 		if e != nil {
 			return fail(e)
 		}
@@ -431,36 +431,15 @@ func (o *NativeRuntimeObserver) prepareRuntimeBeforeRetirement(key string, uid t
 			addQuantity(&id.Limits, container.Resources.Limits)
 		}
 		if p.Labels[names.LabelLab] != "" {
-			var device lab.Device
-			for _, owner := range p.OwnerReferences {
-				if owner.Kind == "Device" {
-					if err := o.Reader.Get(ctx, runtimeclient.ObjectKey{Namespace: p.Namespace, Name: owner.Name}, &device); err != nil {
-						return err
-					}
-					if device.UID != owner.UID {
-						return ErrPortOwnerChanged
-					}
-				}
-			}
-			if device.UID == "" {
-				return ErrPortOwnerUnknown
-			}
-			var parent lab.Lab
-			if err := o.Reader.Get(ctx, runtimeclient.ObjectKey{Namespace: p.Namespace, Name: device.Spec.LabRef}, &parent); err != nil {
+			device, parent, err := nativePodDeviceLab(ctx, o.Reader, p)
+			if err != nil {
 				return err
-			}
-			owned := false
-			for _, owner := range device.OwnerReferences {
-				owned = owned || owner.Kind == "Lab" && owner.UID == parent.UID
-			}
-			if !owned {
-				return ErrPortOwnerChanged
 			}
 			id.OwnerUID = string(parent.UID)
 			id.ScopeUID = string(device.UID)
 			id.LabName = parent.Name
 			id.Generation = parent.Generation
-			id.OperationID, id.Revision = nativeLabOperation(&parent)
+			id.OperationID, id.Revision = nativeLabOperation(parent)
 			if device.Status.State != nil {
 				id.Epoch = device.Status.State.Epoch
 				id.Incarnation = device.Status.State.Incarnation

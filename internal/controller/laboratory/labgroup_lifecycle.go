@@ -65,13 +65,24 @@ func (r *LabGroupReconciler) reconcileGroupLifecycle(ctx context.Context, g *lab
 		}
 	}
 	if !i.IsStopped() {
+		adopted := adoptReleasedScopeHistory(g.Status.ServiceRuntime, g.Status.ServiceReports)
+		if !reflect.DeepEqual(adopted, g.Status.ServiceRuntime) {
+			base := g.DeepCopy()
+			g.Status.ServiceRuntime = adopted
+			if err := r.Status().Patch(ctx, g, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+				return true, ctrl.Result{}, err
+			}
+		}
 		if err := r.observeGroupAllocation(ctx, g); err != nil {
 			return true, ctrl.Result{}, err
 		}
 		for _, row := range g.Status.ServiceRuntime {
 			if row.OperationID != i.OperationID || row.Revision != i.Revision {
 				if !runtimeRowsReleased([]lab.OwnedRuntimeIdentity{row}, g.Status.ServiceReports, row.OwnerUID, row.OperationID, row.Revision) {
-					return true, ctrl.Result{RequeueAfter: 3 * time.Second}, r.groupLifecycleStatus(ctx, g, "Starting", "WaitingForPriorNativeObligation")
+					if err := r.drainPriorGroupServices(ctx, g); err != nil {
+						return true, ctrl.Result{}, err
+					}
+					return true, ctrl.Result{RequeueAfter: 3 * time.Second}, r.groupLifecycleStatus(ctx, g, "Starting", "DrainingPriorNativeObligation")
 				}
 			}
 		}
@@ -474,4 +485,93 @@ func (r *LabGroupReconciler) observeGroupAllocation(ctx context.Context, g *lab.
 	base := g.DeepCopy()
 	g.Status.Resources = current
 	return r.Status().Patch(ctx, g, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+}
+
+// Logical Start may supersede stop after inventory but before scale-down. Finish
+// only those exact original service obligations; current/replacement services
+// and every child intent are outside this drain authority.
+func (r *LabGroupReconciler) drainPriorGroupServices(ctx context.Context, g *lab.LabGroup) error {
+	intent := g.Spec.Lifecycle
+	if intent == nil || intent.IsStopped() {
+		return fmt.Errorf("current group start unavailable")
+	}
+	byDeployment := map[string][]lab.OwnedRuntimeIdentity{}
+	for _, row := range g.Status.ServiceRuntime {
+		if row.OwnerUID != string(g.UID) || row.OperationID == intent.OperationID && row.Revision == intent.Revision || row.DeploymentUID == "" || row.PodUID == "" || runtimeRowsReleased([]lab.OwnedRuntimeIdentity{row}, g.Status.ServiceReports, row.OwnerUID, row.OperationID, row.Revision) {
+			continue
+		}
+		byDeployment[row.Component] = append(byDeployment[row.Component], row)
+	}
+	ns := lab.LabGroupNamespaceOf(g)
+	for component, rows := range byDeployment {
+		if component != names.ComponentVPN && component != names.ComponentGateway {
+			return fmt.Errorf("prior service component unknown")
+		}
+		if _, err := r.currentGroup(ctx, g); err != nil {
+			return err
+		}
+		var dep appsv1.Deployment
+		if err := r.groupReader().Get(ctx, client.ObjectKey{Namespace: ns, Name: component}, &dep); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return err
+		}
+		for _, row := range rows {
+			if string(dep.UID) != row.DeploymentUID {
+				return fmt.Errorf("prior service Deployment was replaced")
+			}
+		}
+		if err := checkServiceGroupUID(&dep, string(g.UID)); err != nil {
+			return err
+		}
+		var pods corev1.PodList
+		if err := r.groupReader().List(ctx, &pods, client.InNamespace(ns)); err != nil {
+			return err
+		}
+		for n := range pods.Items {
+			pod := &pods.Items[n]
+			if !r.servicePodOwned(ctx, pod, &dep) {
+				continue
+			}
+			known := false
+			for _, row := range rows {
+				known = known || string(pod.UID) == row.PodUID
+			}
+			if !known {
+				return fmt.Errorf("prior service Pod was replaced")
+			}
+		}
+		if _, err := r.currentGroup(ctx, g); err != nil {
+			return err
+		}
+		if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 0 {
+			base := dep.DeepCopy()
+			dep.Spec.Replicas = ptrInt32(0)
+			if err := r.Patch(ctx, &dep, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+				return err
+			}
+		}
+		for n := range pods.Items {
+			pod := &pods.Items[n]
+			if !r.servicePodOwned(ctx, pod, &dep) {
+				continue
+			}
+			known := false
+			for _, row := range rows {
+				known = known || string(pod.UID) == row.PodUID
+			}
+			if !known {
+				return fmt.Errorf("prior service Pod changed")
+			}
+			if _, err := r.currentGroup(ctx, g); err != nil {
+				return err
+			}
+			uid, rv := pod.UID, pod.ResourceVersion
+			if err := r.Delete(ctx, pod, &client.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &rv}}); err != nil && !apierrors.IsNotFound(err) {
+				return err
+			}
+		}
+	}
+	return nil
 }

@@ -60,9 +60,7 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 	}
 	for i := range groups.Items {
 		g := &groups.Items[i]
-		if g.Spec.Lifecycle == nil {
-			continue
-		}
+		op, rev := nativeGroupOperation(g)
 		rows := append([]lab.OwnedRuntimeIdentity(nil), g.Status.ServiceRuntime...)
 		for j := range pods.Items {
 			p := &pods.Items[j]
@@ -108,7 +106,7 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 			if !groupOwned {
 				continue
 			}
-			id := r.podIdentity(p, string(g.UID), g.Spec.Lifecycle.OperationID, g.Spec.Lifecycle.Revision)
+			id := r.podIdentity(p, string(g.UID), op, rev)
 			id.DeploymentUID = depUID
 			id.Component = component
 			id.Namespace = g.Status.Namespace
@@ -132,6 +130,9 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 				reports = append(reports, report)
 			}
 		}
+		if g.Spec.Lifecycle == nil {
+			continue
+		} // positive private ownership capture is still retained
 		g.Status.ServiceReports = reports
 		if !reflect.DeepEqual(base.Status.ServiceReports, reports) {
 			if e := r.Client.Status().Patch(ctx, g, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); e != nil {
@@ -308,41 +309,21 @@ func nativeLabOperation(parent *lab.Lab) (string, int64) {
 }
 
 func (r *LifecycleReporter) nativeDevicePodOwned(ctx context.Context, d *lab.Device, p *corev1.Pod) (bool, error) {
-	for _, ref := range p.OwnerReferences {
-		if ref.Kind == "Device" && ref.UID == d.UID {
-			return true, nil
-		}
-		if ref.Kind != "ReplicaSet" {
-			continue
-		}
-		var rs appsv1.ReplicaSet
-		if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: p.Namespace, Name: ref.Name}, &rs); err != nil {
-			return false, err
-		}
-		if rs.UID != ref.UID {
-			return false, nil
-		}
-		for _, owner := range rs.OwnerReferences {
-			if owner.Kind == "Deployment" {
-				var dep appsv1.Deployment
-				if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: p.Namespace, Name: owner.Name}, &dep); err != nil {
-					return false, err
-				}
-				if dep.UID != owner.UID {
-					return false, nil
-				}
-				for _, parent := range dep.OwnerReferences {
-					if parent.Kind == "Device" && parent.UID == d.UID {
-						return true, nil
-					}
-				}
-			}
-		}
+	actual, _, err := nativePodDeviceLab(ctx, r.Reader, p)
+	if err != nil {
+		return false, err
 	}
-	return false, nil
+	return actual.UID == d.UID, nil
 }
 
 func nativeRetirementSample(annotations map[string]string, uid string, id lab.OwnedRuntimeIdentity) bool {
 	intent, ok := lab.ParseLifecycleRetirement(annotations[names.AnnotationLifecycleRetirement])
 	return ok && intent.ExpectedUID == uid && intent.StopOperationID == id.OperationID && intent.StopRevision == id.Revision
+}
+
+func nativeGroupOperation(g *lab.LabGroup) (string, int64) {
+	if g.Spec.Lifecycle != nil {
+		return g.Spec.Lifecycle.OperationID, g.Spec.Lifecycle.Revision
+	}
+	return "legacy-group-" + string(g.UID) + "-" + fmt.Sprint(g.Generation), 1
 }

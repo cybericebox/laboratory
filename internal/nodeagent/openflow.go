@@ -3,6 +3,7 @@
 package nodeagent
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -30,7 +31,9 @@ import (
 // All t6 entries for a given VNI are rebuilt atomically (delete-all-for-VNI
 // then re-add), so reconcileCreate can be called idempotently.
 type FlowManager struct {
-	client *ofclient.Client
+	client         *ofclient.Client
+	proofSocket    string
+	nativeFlowRead func(context.Context) ([]nativeFlow, error)
 
 	// geneveSrc are the node addresses (host byte order) whose Geneve traffic is accepted: a packet that arrives on the Geneve
 	// port from any other source has no t0 flow and is dropped (R-12). Guarded by gmu.
@@ -55,7 +58,7 @@ func NewFlowManager(ovsRunDir, bridge string) (*FlowManager, error) {
 			)
 		},
 	)
-	fm := &FlowManager{client: c}
+	fm := &FlowManager{client: c, proofSocket: sockPath}
 	if err := fm.resetPipeline(); err != nil {
 		_ = c.Close()
 		return nil, err
