@@ -311,8 +311,9 @@ func (e *Engine) Sync(ctx context.Context) {
 
 func (e *Engine) ensureTracked(ctx context.Context, p PodInfo) {
 	e.mu.Lock()
-	if _, ok := e.tracked[p.ContainerID]; ok {
+	if t, ok := e.tracked[p.ContainerID]; ok {
 		e.mu.Unlock()
+		t.startWatching(ctx)
 		return
 	}
 	e.mu.Unlock()
@@ -349,26 +350,44 @@ func (e *Engine) warnOnce(ctx context.Context, p PodInfo, msg string) {
 
 // track registers the container and starts its change watcher.
 func (e *Engine) track(ctx context.Context, p PodInfo, c Container) *tracked {
-	wctx, cancel := context.WithCancel(ctx)
-	t := &tracked{e: e, pod: p, c: c, cancel: cancel, watching: true, prevRef: e.snapshotRef(c.ImageRef)}
+	t := &tracked{e: e, pod: trackingPodInfo(p), c: c, cancel: func() {}, prevRef: e.snapshotRef(c.ImageRef)}
 	e.mu.Lock()
 	if old, ok := e.tracked[p.ContainerID]; ok {
-		e.mu.Unlock()
-		cancel()
-		return old
+		t = old
+	} else {
+		e.tracked[p.ContainerID] = t
 	}
-	e.tracked[p.ContainerID] = t
 	e.mu.Unlock()
+	if !t.startWatching(ctx) {
+		return nil
+	}
+	return t
+}
 
+// startWatching attaches the existing persistence pipeline to a released capture
+// placeholder without replacing its identity. An active capture owns t.mu or
+// t.required, so a normal Sync neither waits on it nor starts a second watcher.
+func (t *tracked) startWatching(ctx context.Context) bool {
+	if !t.mu.TryLock() {
+		return true
+	}
+	defer t.mu.Unlock()
+	if t.watching || t.required != nil || t.exited {
+		return true
+	}
+	e, p, c := t.e, t.pod, t.c
+	wctx, cancel := context.WithCancel(ctx)
 	changes, err := Watch(wctx, c.UpperDir, p.Policy, e.Poll, e.MaxWatchDirs)
 	if err != nil {
 		e.Log.Error(err, "watch writable layer", "upper", c.UpperDir)
 		cancel()
-		e.mu.Lock()
-		delete(e.tracked, p.ContainerID)
-		e.mu.Unlock()
-		return nil
+		return false
 	}
+	e.mu.Lock()
+	t.cancel = cancel
+	e.mu.Unlock()
+	t.watching = true
+
 	// One snapshot right away: a layer that changed while nobody watched (the
 	// node-agent restarted) must not wait for the next change.
 	in := make(chan struct{}, 1)
@@ -431,7 +450,7 @@ func (e *Engine) track(ctx context.Context, p PodInfo, c Container) *tracked {
 			later(retryDelay(e.retryBase(), e.retryMax(), t.failures))
 		}
 	})
-	return t
+	return true
 }
 
 // onExit handles a runtime exit event.
@@ -458,7 +477,7 @@ func (e *Engine) endOf(ctx context.Context, p PodInfo) {
 			e.markExit(ctx, p)
 			return
 		}
-		t = &tracked{e: e, pod: p, c: c, cancel: func() {}, prevRef: e.snapshotRef(c.ImageRef)}
+		t = &tracked{e: e, pod: trackingPodInfo(p), c: c, cancel: func() {}, prevRef: e.snapshotRef(c.ImageRef)}
 		e.mu.Lock()
 		e.tracked[p.ContainerID] = t
 		e.mu.Unlock()
@@ -470,7 +489,9 @@ func (e *Engine) endOf(ctx context.Context, p PodInfo) {
 // nothing is frozen, and the layer on disk is final.
 func (e *Engine) finish(ctx context.Context, t *tracked) {
 	t.mu.Lock()
-	if t.exited || t.required != nil || t.pod.CaptureRequest != nil {
+	// CaptureRequired holds this same lock through capture, and t.required owns
+	// any quiescence retained afterward. A copied API request is not a live hold.
+	if t.exited || t.required != nil {
 		t.mu.Unlock()
 		return
 	}
@@ -769,4 +790,11 @@ func (t *tracked) warn(ctx context.Context, msg string) {
 	if err := t.e.Cluster.Warn(wctx, t.pod, msg); err != nil && !errors.Is(err, ErrStale) {
 		t.e.Log.Error(err, "report snapshot warning", "device", t.pod.Device)
 	}
+}
+
+// trackingPodInfo stores stable persistence metadata, not ephemeral operator
+// intent. Sync handles current requests and requiredHold owns active quiescence.
+func trackingPodInfo(p PodInfo) PodInfo {
+	p.CaptureRequest = nil
+	return p
 }

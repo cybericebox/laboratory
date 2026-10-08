@@ -79,7 +79,7 @@ func (e *Engine) CaptureRequired(ctx context.Context, p PodInfo, req api.DeviceC
 	}
 	t := e.tracked[p.ContainerID]
 	if t == nil {
-		t = &tracked{e: e, pod: p, c: c, cancel: func() {}, prevRef: e.snapshotRef(c.ImageRef)}
+		t = &tracked{e: e, pod: trackingPodInfo(p), c: c, cancel: func() {}, prevRef: e.snapshotRef(c.ImageRef)}
 		e.tracked[p.ContainerID] = t
 	}
 	e.mu.Unlock()
@@ -100,7 +100,7 @@ func (e *Engine) CaptureRequired(ctx context.Context, p PodInfo, req api.DeviceC
 	}
 	// Strict capture always uses the successfully inspected current OCI metadata.
 	t.c = c
-	t.pod = p
+	t.pod = trackingPodInfo(p)
 	h := &requiredHold{Result: result, Container: c, Pod: p}
 	previousDiff, previousPublishedDiff, previousPushed, previousSnapshot := t.lastDiff, t.lastPublishedDiff, t.pushed, t.lastSnapshot
 	// Persist before freezing, so even a force-deleted Pod cannot erase crash recovery's hold identity.
@@ -253,15 +253,8 @@ func (e *Engine) watchHold(parent context.Context, t *tracked, h *requiredHold, 
 				}
 				t.mu.Unlock()
 				_ = os.Remove(h.journal)
-				if !t.watching {
-					t.cancel()
-					e.mu.Lock()
-					if e.tracked[h.Container.ID] == t {
-						delete(e.tracked, h.Container.ID)
-					}
-					e.mu.Unlock()
-					// Next Engine.Sync reestablishes normal tracking from current Pod info.
-				}
+				// Keep the tracked identity; next Sync attaches ordinary persistence to
+				// released placeholders, while existing watchers continue unchanged.
 				return
 			}
 		}
@@ -367,7 +360,7 @@ func (e *Engine) RecoverCaptureHolds(ctx context.Context) (map[string]bool, erro
 			if e.tracked == nil {
 				e.tracked = map[string]*tracked{}
 			}
-			t := &tracked{e: e, pod: h.Pod, c: h.Container, cancel: func() {}, required: h}
+			t := &tracked{e: e, pod: trackingPodInfo(h.Pod), c: h.Container, cancel: func() {}, required: h}
 			e.tracked[h.Container.ID] = t
 			e.mu.Unlock()
 			e.holdWorkers.Add(1)
