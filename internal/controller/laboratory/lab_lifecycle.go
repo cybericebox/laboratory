@@ -125,6 +125,7 @@ func (r *DeviceReconciler) deviceStopped(ctx context.Context, d *lab.Device) (bo
 			return true, nil
 		}
 	}
+
 	return l.Spec.Lifecycle.IsStopped() || l.Spec.Lifecycle != nil && l.Spec.Lifecycle.Terminal || !labStartPrepared(&l), nil
 }
 
@@ -230,6 +231,9 @@ func (r *LabReconciler) reconcileLifecycle(ctx context.Context, l *lab.Lab) (boo
 		}
 		targets = append(targets, runtime{d, pods})
 	}
+	if err := r.prepareLabScopes(ctx, l); err != nil {
+		return finish("Unknown", "WaitingForNativeScopeInventory", err)
+	}
 	// Capture the complete native identity in controller-owned durable inventory
 	// before any scale/delete. Unknown and force-deleted Pods keep prior holdings.
 	for _, target := range targets {
@@ -242,7 +246,7 @@ func (r *LabReconciler) reconcileLifecycle(ctx context.Context, l *lab.Lab) (boo
 			found := false
 			for _, report := range d.Status.RuntimeReports {
 				id := report.Identity
-				if id.OwnerUID == string(l.UID) && id.OperationID == intent.OperationID && id.Revision == intent.Revision && id.PodUID == string(p.UID) && id.NodeName == p.Spec.NodeName && id.NodeBootID != "" && len(id.ContainerIDs) > 0 && len(id.CgroupPaths) > 0 && len(id.PortKeys) > 0 {
+				if id.OwnerUID == string(l.UID) && id.OperationID == intent.OperationID && id.Revision == intent.Revision && id.PodUID == string(p.UID) && id.NodeName == p.Spec.NodeName && id.NodeBootID != "" && len(id.ContainerIDs) > 0 && len(id.CgroupPaths) > 0 && (len(id.PortKeys) > 0 || id.AttachmentsComplete) {
 					exists := false
 					for _, old := range d.Status.RuntimeInventory {
 						exists = exists || reflect.DeepEqual(old, id)
@@ -259,7 +263,10 @@ func (r *LabReconciler) reconcileLifecycle(ctx context.Context, l *lab.Lab) (boo
 			}
 		}
 		if len(target.pods) == 0 && len(d.Status.RuntimeInventory) == 0 {
-			return finish("Unknown", "MissingNativeInventory", nil)
+			never := d.Status.PodName == "" && d.Status.NodeName == "" && (d.Status.State == nil || d.Status.State.Incarnation == 0) && d.Status.Scheduling != nil && d.Status.Scheduling.State == lab.PodQueued
+			if !r.RuntimeObservation || !never {
+				return finish("Unknown", "MissingNativeInventory", nil)
+			}
 		}
 		if !reflect.DeepEqual(base.Status.RuntimeInventory, d.Status.RuntimeInventory) {
 			if err := r.Status().Patch(ctx, d, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
@@ -434,8 +441,8 @@ func (r *LabReconciler) reconcileLifecycle(ctx context.Context, l *lab.Lab) (boo
 	}
 	// Task5 is the native observation owner. No API-only path can fabricate its
 	// Released acknowledgement, including queued or switch-only topology.
-	var rows []lab.OwnedRuntimeIdentity
-	var reports []lab.OwnedRuntimeReport
+	rows := append([]lab.OwnedRuntimeIdentity(nil), l.Status.ScopeInventory...)
+	reports := append([]lab.OwnedRuntimeReport(nil), l.Status.ScopeReports...)
 	var quota int64
 	for _, target := range targets {
 		rows = append(rows, target.d.Status.RuntimeInventory...)
@@ -471,9 +478,7 @@ func (r *LabReconciler) patchLifecycle(ctx context.Context, l *lab.Lab, next *la
 }
 func (r *LabReconciler) reconcileLifecycleStart(ctx context.Context, l *lab.Lab) (bool, ctrl.Result, error) {
 	old := l.Status.Lifecycle
-	if old != nil && old.OperationID == l.Spec.Lifecycle.OperationID && old.Revision == l.Spec.Lifecycle.Revision && old.LabUID == string(l.UID) {
-		return false, ctrl.Result{}, nil
-	}
+	current := old != nil && old.OperationID == l.Spec.Lifecycle.OperationID && old.Revision == l.Spec.Lifecycle.Revision && old.LabUID == string(l.UID) && old.ObservedGeneration == l.Generation
 	if l.Spec.Lifecycle.Terminal {
 		return true, ctrl.Result{}, fmt.Errorf("terminal laboratory cannot start")
 	}
@@ -487,7 +492,7 @@ func (r *LabReconciler) reconcileLifecycleStart(ctx context.Context, l *lab.Lab)
 			continue
 		}
 		base := d.DeepCopy()
-		if d.Spec.State != nil {
+		if !current && d.Spec.State != nil {
 			d.Spec.State.CaptureRequest = nil
 		}
 		if !reflect.DeepEqual(base.Spec, d.Spec) {
@@ -506,12 +511,20 @@ func (r *LabReconciler) reconcileLifecycleStart(ctx context.Context, l *lab.Lab)
 				}
 			}
 			d.Status.RuntimeInventory = retained
-			now := metav1.Now()
-			d.Status.Scheduling = &lab.PodSchedule{State: lab.PodQueued, QueuedAt: &now}
-			if err := r.Status().Patch(ctx, d, client.MergeFromWithOptions(orig, client.MergeFromWithOptimisticLock{})); err != nil {
-				return true, ctrl.Result{}, err
+			if !current {
+				d.Status.Ready = false
+				now := metav1.Now()
+				d.Status.Scheduling = &lab.PodSchedule{State: lab.PodQueued, QueuedAt: &now}
+			}
+			if !reflect.DeepEqual(orig.Status, d.Status) {
+				if err := r.Status().Patch(ctx, d, client.MergeFromWithOptions(orig, client.MergeFromWithOptimisticLock{})); err != nil {
+					return true, ctrl.Result{}, err
+				}
 			}
 		}
+	}
+	if current {
+		return false, ctrl.Result{}, nil
 	}
 	next := &lab.LabLifecycleStatus{ObservedState: "Starting", OperationID: l.Spec.Lifecycle.OperationID, Revision: l.Spec.Lifecycle.Revision, LabUID: string(l.UID), ObservedGeneration: l.Generation}
 	return true, ctrl.Result{RequeueAfter: time.Second}, r.patchLifecycle(ctx, l, next)
@@ -549,6 +562,13 @@ func labStartPrepared(l *lab.Lab) bool {
 	intent := l.Spec.Lifecycle
 	if intent == nil || intent.DesiredState != "Running" {
 		return true
+	}
+	for _, scope := range l.Status.ScopeInventory {
+		if scope.OperationID != intent.OperationID || scope.Revision != intent.Revision {
+			if !runtimeRowsReleased([]lab.OwnedRuntimeIdentity{scope}, l.Status.ScopeReports, scope.OwnerUID, scope.OperationID, scope.Revision) {
+				return false
+			}
+		}
 	}
 	observed := l.Status.Lifecycle
 	return observed != nil && observed.LabUID == string(l.UID) && observed.OperationID == intent.OperationID && observed.Revision == intent.Revision && (observed.ObservedState == "Starting" || observed.ObservedState == "Running")

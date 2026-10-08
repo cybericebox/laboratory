@@ -612,3 +612,39 @@ func buildInstruction(instrType uint16, actions []byte) []byte {
 	copy(instr[8:], actions)
 	return instr
 }
+
+// RetireVNI confirms exact VNI flood retirement with the same error/barrier
+// protocol and serialization as physical port retirement.
+func (c *Client) RetireVNI(vni uint64) error {
+	c.retireMu.Lock()
+	defer c.retireMu.Unlock()
+	ch := make(chan error, 1)
+	c.writeMu.Lock()
+	flow := buildFlowMod(ofpfcDelete, ofpttAll, 0, BuildMatchAdvanced(0, vni, true, 0, false, 0, false, 0, false), nil, ofppAny)
+	barrier := buildHeader(20, 8)
+	c.stamp(flow)
+	c.stamp(barrier)
+	c.pdMu.Lock()
+	c.pendingRetire = ch
+	c.retireXIDs = map[uint32]bool{binary.BigEndian.Uint32(flow[4:8]): true}
+	c.retireBarrier = binary.BigEndian.Uint32(barrier[4:8])
+	c.retireError = nil
+	c.pdMu.Unlock()
+	_, err := c.conn.Write(flow)
+	if err == nil {
+		_, err = c.conn.Write(barrier)
+	}
+	c.writeMu.Unlock()
+	defer func() { c.pdMu.Lock(); c.pendingRetire = nil; c.retireXIDs = nil; c.pdMu.Unlock() }()
+	if err != nil {
+		return err
+	}
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-ch:
+		return err
+	case <-timer.C:
+		return fmt.Errorf("VNI retirement barrier timed out")
+	}
+}

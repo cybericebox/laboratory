@@ -43,6 +43,12 @@ func SetupRuntimeObservation(mgr ctrl.Manager, cfg *Config, network *NetworkAtta
 		return e
 	}
 	o := &NativeRuntimeObserver{Runtime: rt, Namespace: cfg.ContainerdNamespace, NodeName: cfg.NodeName, BootID: strings.TrimSpace(string(boot)), CgroupRoot: cfg.CgroupRoot, JournalDir: filepath.Join(cfg.StateWorkDir, "runtime-observations"), Network: network}
+	o.Reader = mgr.GetAPIReader()
+	network.OVS.RuntimePrepare = o.prepareRuntimeBeforeRetirement
 	network.OVS.RuntimeRetirement = o.preparePortRetirement
+	network.OVS.RuntimeRetirementAbsent = o.portAbsent
+	network.OVS.FabricPrepare = o.prepareFabric
+	network.OVS.FabricRetirement = o.commitFabric
+	network.OVS.FabricRetirementAbsent = o.fabricAbsent
 	return mgr.Add(&LifecycleReporter{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Observer: o, Interval: cfg.RuntimeObservationInterval, Owner: owner})
 }

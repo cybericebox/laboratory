@@ -66,6 +66,7 @@ type LabReconciler struct {
 	// while the platform switch is on.
 	State StatePolicy
 	// Native capability is enabled only after the Task5 proof.
+	RuntimeObservation        bool
 	RequiredSnapshotAvailable bool
 	// Mirror rewrites image references for the image cache; the zero value
 	// (cache off) rewrites nothing. The Lab records the decision once.
@@ -751,7 +752,17 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 			failure = sc.Failure
 		}
 		refs = append(refs, laboratoryv1alpha1.DeviceRef{Name: d.Spec.Name, Ready: d.Status.Ready, State: deviceStateInfo(&d), Failure: failure})
-		if !d.Status.Ready {
+		ready := d.Status.Ready
+		if intent := lab.Spec.Lifecycle; intent != nil && intent.DesiredState == "Running" && d.Spec.Type == laboratoryv1alpha1.DeviceTypeContainer {
+			ready = false
+			for _, report := range d.Status.RuntimeReports {
+				if report.Identity.OwnerUID == string(lab.UID) && report.Identity.OperationID == intent.OperationID && report.Identity.Revision == intent.Revision && report.Identity.Generation == lab.Generation && report.Error == "" && report.RuntimeState == "Allocated" && d.Status.Ready {
+					ready = true
+					break
+				}
+			}
+		}
+		if !ready {
 			allReady = false
 		}
 		if d.Spec.Type == laboratoryv1alpha1.DeviceTypeContainer {
@@ -828,7 +839,21 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		labstatus.SetReady(&lab.Status.Conditions, lab.Generation, false, reason, message)
 	}
 
-	if newPhase == lab.Status.Phase &&
+	lifecycleChanged := false
+	if intent := lab.Spec.Lifecycle; intent != nil && intent.DesiredState == "Running" && labStartPrepared(lab) {
+		next := lab.Status.Lifecycle.DeepCopy()
+		if next != nil {
+			state := "Starting"
+			if allReady {
+				state = "Running"
+			}
+			lifecycleChanged = next.ObservedState != state || next.ObservedGeneration != lab.Generation
+			next.ObservedState = state
+			next.ObservedGeneration = lab.Generation
+			lab.Status.Lifecycle = next
+		}
+	}
+	if !lifecycleChanged && newPhase == lab.Status.Phase &&
 		vpnReady == lab.Status.VPN.Ready &&
 		inetReady == lab.Status.Internet.Ready &&
 		sameRefsByName(refs, lab.Status.Devices, func(ref laboratoryv1alpha1.DeviceRef) string { return ref.Name }) &&

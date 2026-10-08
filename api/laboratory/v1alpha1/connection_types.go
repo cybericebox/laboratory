@@ -33,6 +33,8 @@ type ConnectionStatus struct {
 
 // ConnectionPortStatus is written by the node-agent for each endpoint.
 type ConnectionPortStatus struct {
+	PodUID    string `json:"podUID,omitempty"`
+	RowUUID   string `json:"rowUUID,omitempty"`
 	Device    string `json:"device"`
 	Interface string `json:"interface,omitempty"`
 	// PortID is the OVS port name assigned by node-agent.

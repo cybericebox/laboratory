@@ -11,3 +11,5 @@ const AnnotationLifecycleRetirement = "laboratory.cybericebox.com/lifecycle-reti
 // AnnotationLabVariableAdmission serializes write-only Secret updates against
 // permanent retirement. It stores only a SHA256 retry token, never values.
 const AnnotationLabVariableAdmission = "laboratory.cybericebox.com/variable-admission"
+
+const AnnotationLabCreation = "laboratory.cybericebox.com/creation-receipt"

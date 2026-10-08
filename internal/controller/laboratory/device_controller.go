@@ -446,6 +446,15 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 			},
 		},
 	}
+	parentUID := ""
+	for _, owner := range device.OwnerReferences {
+		if owner.Kind == "Lab" {
+			parentUID = string(owner.UID)
+		}
+	}
+	for n := range podSpec.Containers {
+		podSpec.Containers[n].Env = append(podSpec.Containers[n].Env, corev1.EnvVar{Name: "LIFECYCLE_LAB_UID", Value: parentUID}, corev1.EnvVar{Name: "LIFECYCLE_DEVICE_UID", Value: string(device.UID)})
+	}
 	// Optional init-container: address static and dhcp-preset interfaces inside
 	// the pod netns (node-agent only wires the L2 veth), so those device pods
 	// need no capabilities of their own. addr.type=dhcp interfaces are handled by

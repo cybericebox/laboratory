@@ -382,3 +382,5 @@ func (f *FlowManager) DelFlowsByPort(portName string) error { return f.DelT0Port
 
 // DelFlowsByVNI removes all t6 flood entries for vni.
 func (f *FlowManager) DelFlowsByVNI(vni uint, _ string) error { return f.DelT6Flood(vni) }
+
+func (f *FlowManager) RetireVNI(vni uint) error { return f.client.RetireVNI(uint64(vni)) }

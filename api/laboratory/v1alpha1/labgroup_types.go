@@ -55,6 +55,9 @@ type LabGroupVPNSpec struct {
 
 // LabGroupStatus defines the observed state of LabGroup.
 type LabGroupStatus struct {
+	// Original birth metadata; bounded by actual group Lab capacity and never raw data.
+	// +kubebuilder:validation:MaxItems=5000
+	Creations []LabCreationReceipt `json:"creations,omitempty"`
 	// Retirement is a fresh acknowledgement distinct from the original stop.
 	// +optional
 	Retirement *LifecycleRetirementStatus `json:"retirement,omitempty"`

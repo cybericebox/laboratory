@@ -315,6 +315,8 @@ message LabItem {
   map<string, string> labels = 5;
   string deploy_group = 6;
   repeated string deploy_after = 7;
+  // Optional legacy; managed original birth is fenced to the observed Group UID.
+  string expected_group_uid = 8;
 }
 message CreateLabsRequest {
   map<string, string> labels = 1;
@@ -409,7 +411,8 @@ message Lab {
   string deploy_group = 11;
   repeated string deploy_after = 12;
   string uid = 13;
-  int64 generation = 14; // live Kubernetes metadata generation, separate from observed lifecycle
+  int64 generation = 14;
+  LabCreationReceipt creation_receipt = 15; // live Kubernetes metadata generation, separate from observed lifecycle
 }
 // DeviceEnv carries the variables of one device. The agent materializes them into a
 // write-only per-device Secret (the pod loads it via envFrom): they never land in the
@@ -1209,4 +1212,15 @@ message RetirementStatus {
  int64 physical_storage_bytes = 13;
  string error = 14;
  int64 requested_unix_ms = 15;
+}
+
+message LabCreationReceipt {
+ string group_uid = 1;
+ string namespace_uid = 2;
+ string operation_id = 3;
+ int64 revision = 4;
+ string definition_hash = 5;
+ string creation_id = 6;
+ string lab_uid = 7;
+ bool committed = 8;
 }

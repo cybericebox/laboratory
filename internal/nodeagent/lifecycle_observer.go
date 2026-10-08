@@ -23,9 +23,12 @@ import (
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/devicestate"
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/vishvananda/netlink"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	runtimeclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // NativeRuntimeObserver uses direct containerd task and cgroup views. API absence
@@ -34,6 +37,7 @@ type NativeRuntimeObserver struct {
 	Runtime                                             *containerd.Client
 	Namespace, NodeName, BootID, CgroupRoot, JournalDir string
 	Network                                             *NetworkAttachReconciler
+	Reader                                              runtimeclient.Reader
 	mu                                                  sync.Mutex
 }
 
@@ -108,7 +112,7 @@ func (o *NativeRuntimeObserver) ObserveOwnedRuntime(ctx context.Context, id lab.
 		id = saved
 	}
 	out.Identity = id
-	if len(id.ContainerIDs) == 0 || len(id.CgroupPaths) == 0 || len(id.PortKeys) == 0 {
+	if len(id.ContainerIDs) == 0 || len(id.CgroupPaths) == 0 || len(id.PortKeys) == 0 && !id.AttachmentsComplete {
 		return fail(fmt.Errorf("incomplete native process/attachment inventory"))
 	}
 	ts, err := o.Runtime.TaskService().List(ctx, &tasks.ListTasksRequest{})
@@ -228,7 +232,7 @@ func sameRuntimeOwner(a, b lab.OwnedRuntimeIdentity) bool {
 	return a.OwnerUID == b.OwnerUID && a.PodUID == b.PodUID && a.NodeName == b.NodeName && a.NodeBootID == b.NodeBootID && a.OperationID == b.OperationID && a.Revision == b.Revision && a.DeploymentUID == b.DeploymentUID && a.Epoch == b.Epoch && a.Incarnation == b.Incarnation
 }
 func (o *NativeRuntimeObserver) recordPath(kind string, id lab.OwnedRuntimeIdentity) string {
-	b, _ := json.Marshal([]any{kind, id.OwnerUID, id.PodUID, id.OperationID, id.Revision, id.NodeName, id.NodeBootID, id.Epoch, id.Incarnation, id.DeploymentUID})
+	b, _ := json.Marshal([]any{kind, id.OwnerUID, id.PodUID, id.ScopeKind, id.ScopeUID, id.Generation, id.OperationID, id.Revision, id.NodeName, id.NodeBootID, id.Epoch, id.Incarnation, id.DeploymentUID})
 	h := sha256.Sum256(b)
 	return filepath.Join(o.JournalDir, hex.EncodeToString(h[:])+".json")
 }
@@ -291,7 +295,7 @@ func (o *NativeRuntimeObserver) preparePortRetirement(key string, uid types.UID,
 	var id lab.OwnedRuntimeIdentity
 	e := o.readRecord("owner", lab.OwnedRuntimeIdentity{PodUID: string(uid), NodeName: o.NodeName, NodeBootID: o.BootID}, &id)
 	if errors.Is(e, os.ErrNotExist) {
-		return nil
+		return ErrPortOwnerUnknown
 	}
 	if e != nil {
 		return e
@@ -299,7 +303,18 @@ func (o *NativeRuntimeObserver) preparePortRetirement(key string, uid types.UID,
 	if id.PodUID != string(uid) || id.NodeBootID != o.BootID || !runtimeContainsID(id.PortKeys, key) {
 		return ErrPortOwnerUnknown
 	}
-	return o.writeRecord("cleanup-"+key, id, cleanupReceipt{Identity: id, PortUUID: row})
+	var obligations []lab.OwnedRuntimeIdentity
+	physical := lab.OwnedRuntimeIdentity{PodUID: id.PodUID, NodeName: id.NodeName, NodeBootID: id.NodeBootID}
+	_ = o.readRecord("obligations", physical, &obligations)
+	obligations = append(obligations, id)
+	for _, target := range obligations {
+		if target.OwnerUID == id.OwnerUID && target.PodUID == id.PodUID && target.NodeBootID == id.NodeBootID && runtimeContainsID(target.PortKeys, key) {
+			if err := o.writeRecord("cleanup-"+key, target, cleanupReceipt{Identity: target, PortUUID: row}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // nativeTaskPresence consumes the actual Tasks.List contract. Containerd's
@@ -357,4 +372,169 @@ func (o *NativeRuntimeObserver) cgroupsPresent(paths []string) (bool, error) {
 		}
 	}
 	return populated, nil
+}
+
+// prepareRuntimeBeforeRetirement runs under the common OVS owner lock BEFORE
+// deleting a flow, kernel link or row. Durable native inventory is recoverable
+// even when NetAttach wins the stop watcher race and the API Pod later vanishes.
+func (o *NativeRuntimeObserver) prepareRuntimeBeforeRetirement(key string, uid types.UID, row string) error {
+	if o.Reader == nil || uid == "" || row == "" {
+		return ErrPortOwnerUnknown
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var id lab.OwnedRuntimeIdentity
+	_ = o.readRecord("owner", lab.OwnedRuntimeIdentity{PodUID: string(uid), NodeName: o.NodeName, NodeBootID: o.BootID}, &id)
+	var pods corev1.PodList
+	if err := o.Reader.List(ctx, &pods, runtimeclient.MatchingFields{"spec.nodeName": o.NodeName}); err != nil {
+		return err
+	}
+	for i := range pods.Items {
+		p := &pods.Items[i]
+		if p.UID != uid {
+			continue
+		}
+		id.PodUID = string(uid)
+		id.NodeName = o.NodeName
+		id.NodeBootID = o.BootID
+		id.Namespace = p.Namespace
+		if p.Labels[names.LabelLab] != "" {
+			var device lab.Device
+			for _, owner := range p.OwnerReferences {
+				if owner.Kind == "Device" {
+					if err := o.Reader.Get(ctx, runtimeclient.ObjectKey{Namespace: p.Namespace, Name: owner.Name}, &device); err != nil {
+						return err
+					}
+					if device.UID != owner.UID {
+						return ErrPortOwnerChanged
+					}
+				}
+			}
+			if device.UID == "" {
+				return ErrPortOwnerUnknown
+			}
+			var parent lab.Lab
+			if err := o.Reader.Get(ctx, runtimeclient.ObjectKey{Namespace: p.Namespace, Name: device.Spec.LabRef}, &parent); err != nil {
+				return err
+			}
+			owned := false
+			for _, owner := range device.OwnerReferences {
+				owned = owned || owner.Kind == "Lab" && owner.UID == parent.UID
+			}
+			if !owned {
+				return ErrPortOwnerChanged
+			}
+			id.OwnerUID = string(parent.UID)
+			id.ScopeUID = string(device.UID)
+			id.LabName = parent.Name
+			id.Generation = parent.Generation
+			id.OperationID, id.Revision = nativeLabOperation(&parent)
+			if device.Status.State != nil {
+				id.Epoch = device.Status.State.Epoch
+				id.Incarnation = device.Status.State.Incarnation
+			}
+		} else {
+			var groups lab.LabGroupList
+			if err := o.Reader.List(ctx, &groups); err != nil {
+				return err
+			}
+			for j := range groups.Items {
+				g := &groups.Items[j]
+				if lab.LabGroupNamespaceOf(g) == p.Namespace {
+					id.OwnerUID = string(g.UID)
+					id.ScopeUID = string(g.UID)
+					id.Generation = g.Generation
+					id.Component = GroupComponent(p)
+					if g.Spec.Lifecycle == nil {
+						id.OperationID = "legacy-group-" + string(g.UID) + "-" + fmt.Sprint(g.Generation)
+						id.Revision = 1
+					} else {
+						id.OperationID = g.Spec.Lifecycle.OperationID
+						id.Revision = g.Spec.Lifecycle.Revision
+					}
+					break
+				}
+			}
+		}
+		break
+	}
+	if id.OwnerUID == "" || id.Namespace == "" || id.OperationID == "" || id.Revision < 1 || id.PodUID != string(uid) {
+		return ErrPortOwnerUnknown
+	}
+	// A saved owner remains bound to the current exact lifecycle, never an old
+	// operation merely inferred from a vanished API Pod.
+	if id.LabName != "" {
+		var parent lab.Lab
+		if err := o.Reader.Get(ctx, runtimeclient.ObjectKey{Namespace: id.Namespace, Name: id.LabName}, &parent); err != nil {
+			return err
+		}
+		if string(parent.UID) != id.OwnerUID {
+			return ErrPortOwnerChanged
+		}
+		id.OperationID, id.Revision = nativeLabOperation(&parent)
+		id.Generation = parent.Generation
+	}
+	owners, err := o.Network.OVS.portOwnersLocked()
+	if err != nil {
+		return err
+	}
+	for candidate, owner := range owners {
+		if owner == uid && !runtimeContainsID(id.PortKeys, candidate) {
+			id.PortKeys = append(id.PortKeys, candidate)
+		}
+	}
+	if !runtimeContainsID(id.PortKeys, key) {
+		return ErrPortOwnerChanged
+	}
+	id.AttachmentsComplete = true
+	native := namespaces.WithNamespace(ctx, o.Namespace)
+	containers, err := o.Runtime.Containers(native)
+	if err != nil {
+		return err
+	}
+	for _, container := range containers {
+		info, err := container.Info(native)
+		if err != nil {
+			return err
+		}
+		if info.Labels["io.kubernetes.pod.uid"] != string(uid) {
+			continue
+		}
+		if !runtimeContainsID(id.ContainerIDs, container.ID()) {
+			id.ContainerIDs = append(id.ContainerIDs, container.ID())
+		}
+		spec, err := container.Spec(native)
+		if err != nil {
+			return err
+		}
+		if spec.Linux != nil {
+			path := devicestate.CgroupDir(o.CgroupRoot, spec.Linux.CgroupsPath)
+			if path != "" && !runtimeContainsID(id.CgroupPaths, path) {
+				id.CgroupPaths = append(id.CgroupPaths, path)
+			}
+		}
+	}
+	if len(id.ContainerIDs) == 0 || len(id.CgroupPaths) == 0 {
+		return ErrPortOwnerUnknown
+	}
+	sort.Strings(id.ContainerIDs)
+	sort.Strings(id.CgroupPaths)
+	sort.Strings(id.PortKeys)
+	if err := o.writeRecord("inventory", id, id); err != nil {
+		return err
+	}
+	physical := lab.OwnedRuntimeIdentity{PodUID: id.PodUID, NodeName: id.NodeName, NodeBootID: id.NodeBootID}
+	var obligations []lab.OwnedRuntimeIdentity
+	_ = o.readRecord("obligations", physical, &obligations)
+	exists := false
+	for _, old := range obligations {
+		exists = exists || reflect.DeepEqual(old, id)
+	}
+	if !exists {
+		obligations = append(obligations, id)
+	}
+	if err := o.writeRecord("obligations", physical, obligations); err != nil {
+		return err
+	}
+	return o.writeRecord("owner", physical, id)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"reflect"
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
@@ -147,5 +148,26 @@ func labRuntimeActive(ctx context.Context, c client.Reader, namespace, name stri
 		}
 		return false, err
 	}
-	return l.DeletionTimestamp.IsZero() && !l.Spec.Lifecycle.IsStopped(), nil
+	if !l.DeletionTimestamp.IsZero() || l.Spec.Lifecycle.IsStopped() {
+		return false, nil
+	}
+	if i := l.Spec.Lifecycle; i != nil && i.DesiredState == "Running" {
+		o := l.Status.Lifecycle
+		if o == nil || o.OperationID != i.OperationID || o.Revision != i.Revision || o.LabUID != string(l.UID) || o.ObservedGeneration != l.Generation {
+			return false, nil
+		}
+		for _, scope := range l.Status.ScopeInventory {
+			if scope.OperationID == i.OperationID && scope.Revision == i.Revision {
+				continue
+			}
+			done := false
+			for _, report := range l.Status.ScopeReports {
+				done = done || reflect.DeepEqual(report.Identity, scope) && report.RuntimeState == "Released" && report.Error == "" && report.AttachmentsAbsentAt != nil
+			}
+			if !done {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
 }

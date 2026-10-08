@@ -114,8 +114,8 @@ func (s *RetentionSweeper) retireLifecycleLab(ctx context.Context, reader client
 		if l.Generation != in.Generation || !RetirementReady(l) {
 			return s.patchLabRetirement(ctx, l, next, fmt.Errorf("exact original stop certificate unavailable"))
 		}
-		var rows []lab.OwnedRuntimeIdentity
-		var reports []lab.OwnedRuntimeReport
+		rows := append([]lab.OwnedRuntimeIdentity(nil), l.Status.ScopeInventory...)
+		reports := append([]lab.OwnedRuntimeReport(nil), l.Status.ScopeReports...)
 		for i := range devices.Items {
 			if ownedLabDevice(l, &devices.Items[i]) {
 				rows = append(rows, devices.Items[i].Status.RuntimeInventory...)

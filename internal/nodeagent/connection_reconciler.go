@@ -187,6 +187,11 @@ func (r *ConnectionReconciler) reconcileDeviceDevice(
 				return ctrl.Result{}, err
 			}
 			localPorts = append(localPorts, pKey)
+			owner, err := r.ownedConnectionPort(ctx, conn, pKey, ep.device.Status.PodName)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			portStatus.PodUID = string(owner)
 			portStatus.PortID = pKey
 			portStatus.Connected = true
 		} else {
@@ -283,6 +288,11 @@ func (r *ConnectionReconciler) reconcileDeviceSwitch(
 			return ctrl.Result{}, err
 		}
 		currentLocalPort = pKey
+		owner, err := r.ownedConnectionPort(ctx, conn, pKey, devEp.device.Status.PodName)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		portStatus.PodUID = string(owner)
 		portStatus.PortID = pKey
 		portStatus.Connected = true
 	} else {
@@ -363,7 +373,7 @@ func (r *ConnectionReconciler) reconcileSwitchSwitch(
 		}
 	}
 
-	if err := r.OVS.AddPatchPair(patchA, patchB); err != nil {
+	if err := r.OVS.AddPatchPairOwned(patchA, patchB, conn.UID); err != nil {
 		return ctrl.Result{}, fmt.Errorf("add patch pair: %w", err)
 	}
 
@@ -514,20 +524,27 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 		if port.NodeName != r.NodeName || port.PortID == "" {
 			continue
 		}
-		_ = r.Flows.DelT0Port(port.PortID)
-		_ = r.OVS.DelPort(port.PortID)
+		if port.PodUID == "" {
+			return ctrl.Result{}, ErrPortOwnerUnknown
+		}
+		network := &NetworkAttachReconciler{OVS: r.OVS, Flows: r.Flows}
+		if err := network.DelVethWithFlowsOwned(port.PortID, types.UID(port.PodUID)); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Remove t6 flood for the connection's own VNI (device↔device case).
 	if conn.Status.VNI != nil {
-		_ = r.Flows.DelT6Flood(*conn.Status.VNI)
+		if err := r.Flows.RetireVNI(*conn.Status.VNI); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// For each switch endpoint: remove patch port + rebuild t6 from remaining connections.
 	for _, ep := range conn.Spec.Endpoints {
 		found, err := devices.Get(ctx, r.Client, conn.Namespace, conn.Spec.LabRef, ep.Device)
 		if err != nil {
-			continue
+			return ctrl.Result{}, err
 		}
 		dev := *found
 		isSwitch := dev.Spec.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch ||
@@ -538,17 +555,23 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 
 		// Remove patch port for this side (switch↔switch case).
 		pName := patchPortName(conn.Namespace, conn.Name, ep.Device)
-		_ = r.Flows.DelT0Port(pName)
-		_ = r.OVS.DelPort(pName)
+		if err := r.OVS.DelFabricPortOwned(pName, conn.UID, r.Flows); err != nil {
+			return ctrl.Result{}, err
+		}
 
 		// Rebuild t6 for this switch's VNI from the remaining connections.
 		if dev.Status.VNI != nil {
 			localPorts, remoteVTEPs, err := r.buildSwitchVNIFlood(ctx, conn.Namespace, conn.Spec.LabRef, ep.Device)
-			if err == nil {
-				if len(localPorts) > 0 {
-					_ = r.Flows.RebuildT6Flood(*dev.Status.VNI, localPorts, remoteVTEPs)
-				} else {
-					_ = r.Flows.DelT6Flood(*dev.Status.VNI)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if len(localPorts) > 0 {
+				if err := r.Flows.RebuildT6Flood(*dev.Status.VNI, localPorts, remoteVTEPs); err != nil {
+					return ctrl.Result{}, err
+				}
+			} else {
+				if err := r.Flows.RetireVNI(*dev.Status.VNI); err != nil {
+					return ctrl.Result{}, err
 				}
 			}
 		}
@@ -771,4 +794,25 @@ func (r *ConnectionReconciler) directReader() client.Reader {
 		return r.Reader
 	}
 	return r.Client
+}
+
+func (r *ConnectionReconciler) ownedConnectionPort(ctx context.Context, conn *laboratoryv1alpha1.Connection, key, podName string) (types.UID, error) {
+	if podName == "" {
+		return "", ErrPortOwnerUnknown
+	}
+	var pod corev1.Pod
+	if err := r.directReader().Get(ctx, client.ObjectKey{Namespace: conn.Namespace, Name: podName}, &pod); err != nil {
+		return "", err
+	}
+	if pod.Labels[names.LabelLab] != conn.Spec.LabRef || pod.UID == "" {
+		return "", ErrPortOwnerChanged
+	}
+	owners, err := r.OVS.PortOwners()
+	if err != nil {
+		return "", err
+	}
+	if owners[key] != pod.UID {
+		return "", ErrPortOwnerChanged
+	}
+	return pod.UID, nil
 }

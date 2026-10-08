@@ -23,9 +23,10 @@ const kindLab = "Lab"
 // labVariant is a parsed LabVariant: the spec and the common variables, shared by every
 // lab of the variant.
 type labVariant struct {
-	id   string
-	spec laboratoryv1alpha1.LabSpec
-	env  deviceVars
+	id            string
+	spec          laboratoryv1alpha1.LabSpec
+	rawDefinition []byte
+	env           deviceVars
 }
 
 // parseVariants parses and validates the variants of a CreateLabs request. A variant id
@@ -47,7 +48,7 @@ func parseVariants(in []*protobuf.LabVariant, persistence bool) (map[string]*lab
 		if err := validateEnv(env, specDevices(&spec)); err != nil {
 			return nil, invalid("variant %q: %v", v.GetVariantId(), err)
 		}
-		out[v.GetVariantId()] = &labVariant{id: v.GetVariantId(), spec: spec, env: env}
+		out[v.GetVariantId()] = &labVariant{id: v.GetVariantId(), spec: spec, env: env, rawDefinition: append([]byte(nil), v.GetSpecJson()...)}
 	}
 	return out, nil
 }
@@ -172,6 +173,9 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 	if err != nil {
 		return 0, err
 	}
+	if it.GetExpectedGroupUid() != "" && it.GetExpectedGroupUid() != string(liveGroup.UID) {
+		return 0, fmt.Errorf("creation group UID changed")
+	}
 	if liveGroup.Status.Namespace != ns || liveGroup.Spec.Lifecycle.IsStopped() {
 		return 0, fmt.Errorf("lab group is stopped or its namespace changed")
 	}
@@ -187,7 +191,15 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 		return 0, err
 	}
 
+	birth, err := h.prepareLabBirth(ctx, liveGroup, it, v)
+	if err != nil {
+		return 0, err
+	}
 	labs := h.cs.LaboratoryV1alpha1().Labs(ns)
+	if birth != nil {
+		raw, _ := json.Marshal(birth)
+		lab.Annotations[names.AnnotationLabCreation] = string(raw)
+	}
 	state := protobuf.ItemState_ITEM_STATE_CREATED
 	admittedGroup, err := h.getGroup(ctx, it.GetLabGroup())
 	if err != nil {
@@ -206,6 +218,11 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 		return 0, err
 	}
 
+	if birth != nil {
+		if err := h.commitLabBirth(ctx, it.GetLabGroup(), birth, out, state == protobuf.ItemState_ITEM_STATE_CREATED); err != nil {
+			return 0, err
+		}
+	}
 	if state != protobuf.ItemState_ITEM_STATE_CREATED && out.Spec.Lifecycle != nil {
 		return state, h.finishChildAdmission(ctx, it.GetLabGroup(), admission)
 	}

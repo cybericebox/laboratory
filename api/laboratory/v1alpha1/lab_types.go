@@ -94,6 +94,8 @@ type ConnectionTemplate struct {
 
 // LabStatus defines the observed state of Lab.
 type LabStatus struct {
+	ScopeInventory []OwnedRuntimeIdentity `json:"scopeInventory,omitempty"`
+	ScopeReports   []OwnedRuntimeReport   `json:"scopeReports,omitempty"`
 	// Retirement is a fresh acknowledgement distinct from the original stop.
 	// +optional
 	Retirement *LifecycleRetirementStatus `json:"retirement,omitempty"`

@@ -32,7 +32,8 @@ func runtimeRowsReleased(rows []lab.OwnedRuntimeIdentity, reports []lab.OwnedRun
 		return false
 	}
 	for _, id := range rows {
-		if id.OwnerUID != uid || id.OperationID != op || id.Revision != rev || id.NodeBootID == "" || id.PodUID == "" || id.NodeName == "" || len(id.ContainerIDs) == 0 || len(id.CgroupPaths) == 0 || len(id.PortKeys) == 0 {
+		scope := id.ScopeKind == "LabFabric" || id.ScopeKind == "GroupScope"
+		if id.OwnerUID != uid || id.OperationID != op || id.Revision != rev || id.NodeBootID == "" || id.NodeName == "" || scope && (id.ScopeUID != uid || id.Generation < 1 || !id.AttachmentsComplete) || !scope && (id.PodUID == "" || len(id.ContainerIDs) == 0 || len(id.CgroupPaths) == 0 || len(id.PortKeys) == 0 && !id.AttachmentsComplete) {
 			return false
 		}
 		found := false
@@ -53,14 +54,45 @@ func nonzeroTime(t *metav1.Time) bool { return t != nil && !t.IsZero() }
 func aggregateRuntime(rows []lab.OwnedRuntimeIdentity, reports []lab.OwnedRuntimeReport, uid, op string, rev int64) *lab.RuntimeAllocation {
 	now := metav1.Now()
 	a := &lab.RuntimeAllocation{RuntimeState: "Unknown", OperationID: op, Revision: rev, ObservedAt: &now, StorageState: "Unknown"}
+	// Exact historical ACKs retire only their own obligations, continuously.
+	// Multiple operation views of one physical incarnation reserve it once.
+	currentRows := make([]lab.OwnedRuntimeIdentity, 0, len(rows))
+	held := map[string]lab.ResourceAmounts{}
+	configured := map[string]lab.OwnedRuntimeIdentity{}
 	for _, id := range rows {
+		isCurrent := id.OwnerUID == uid && id.OperationID == op && id.Revision == rev
+		resolved := runtimeRowsReleased([]lab.OwnedRuntimeIdentity{id}, reports, id.OwnerUID, id.OperationID, id.Revision)
+		if !isCurrent && resolved {
+			continue
+		}
+		currentRows = append(currentRows, id)
+		key := id.NodeName + "/" + id.NodeBootID + "/" + id.PodUID
+		if id.PodUID == "" {
+			key += "/" + id.ScopeUID
+		}
+		if old, ok := configured[key]; !ok || isCurrent {
+			configured[key] = id
+		} else {
+			_ = old
+		}
+		if !resolved {
+			old := held[key]
+			old.CPUMillicores = max(old.CPUMillicores, id.Requests.CPUMillicores)
+			old.MemoryBytes = max(old.MemoryBytes, id.Requests.MemoryBytes)
+			held[key] = old
+		}
+	}
+	for _, id := range configured {
 		a.ConfiguredRequests.CPUMillicores += id.Requests.CPUMillicores
 		a.ConfiguredRequests.MemoryBytes += id.Requests.MemoryBytes
 		a.ConfiguredLimits.CPUMillicores += id.Limits.CPUMillicores
 		a.ConfiguredLimits.MemoryBytes += id.Limits.MemoryBytes
 	}
-	a.AllocatedRequests = a.ConfiguredRequests
-	if runtimeRowsReleased(rows, reports, uid, op, rev) {
+	for _, amount := range held {
+		a.AllocatedRequests.CPUMillicores += amount.CPUMillicores
+		a.AllocatedRequests.MemoryBytes += amount.MemoryBytes
+	}
+	if runtimeRowsReleased(currentRows, reports, uid, op, rev) {
 		a.RuntimeState = "Released"
 		a.AllocatedRequests = lab.ResourceAmounts{}
 		a.ReleasedAt = &now

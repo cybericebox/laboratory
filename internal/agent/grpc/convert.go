@@ -32,7 +32,7 @@ func labGroupToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.LabGroup {
 			ImageWarning:    g.Status.ImageWarning,
 			Scheduling:      schedulingToProto(g.Status.Scheduling, g.Annotations),
 			Pods:            groupPodsToProto(g.Status.Pods),
-			Resources:       allocationToProto(g.Status.Resources),
+			Resources:       groupAllocationToProto(g),
 			Lifecycle:       groupLifecycleToProto(g),
 			Retirement:      retirementToProto(g, g.Status.Retirement),
 		},
@@ -101,7 +101,7 @@ func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool, sizing ...limits
 	}
 	// Retained configuration or an old Ready status must never expose stopped
 	// intent as accessible runtime. Keep phases/CIDRs/snapshot history intact.
-	if l.Spec.Lifecycle.IsStopped() {
+	if l.Spec.Lifecycle != nil && !exactRunningProjection(l) {
 		status.Ready, status.VpnReady, status.InternetReady = false, false, false
 		status.Access, status.AccessUrls = nil, nil
 		for _, d := range status.Devices {
@@ -113,15 +113,16 @@ func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool, sizing ...limits
 	}
 	dg, da := deployOf(l.Annotations)
 	return &protobuf.Lab{
-		Namespace:   l.Namespace,
-		Uid:         string(l.UID),
-		Generation:  l.Generation,
-		Name:        names.IDOf(l),
-		SpecJson:    specJSON,
-		Status:      status,
-		Labels:      userLabels(l.Labels),
-		DeployGroup: dg,
-		DeployAfter: da,
+		Namespace:       l.Namespace,
+		Uid:             string(l.UID),
+		CreationReceipt: creationReceiptToProto(l),
+		Generation:      l.Generation,
+		Name:            names.IDOf(l),
+		SpecJson:        specJSON,
+		Status:          status,
+		Labels:          userLabels(l.Labels),
+		DeployGroup:     dg,
+		DeployAfter:     da,
 	}
 }
 
@@ -478,4 +479,35 @@ func immutableGroupSize(s *laboratoryv1alpha1.GroupPodSize) *protobuf.PodSize {
 		return nil
 	}
 	return &protobuf.PodSize{CpuMillicores: s.CPUMillicores, MemoryBytes: s.MemoryBytes}
+}
+
+func exactRunningProjection(l *laboratoryv1alpha1.Lab) bool {
+	i, o := l.Spec.Lifecycle, l.Status.Lifecycle
+	return i != nil && i.DesiredState == "Running" && o != nil && o.ObservedState == "Running" && o.LabUID == string(l.UID) && o.OperationID == i.OperationID && o.Revision == i.Revision && o.ObservedGeneration == l.Generation
+}
+
+func groupAllocationToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.ResourceAllocation {
+	out := allocationToProto(g.Status.Resources)
+	i := g.Spec.Lifecycle
+	if i == nil {
+		return out
+	}
+	if out == nil {
+		out = &protobuf.ResourceAllocation{RuntimeState: "Unknown", StorageState: "Unknown"}
+	}
+	if out.GetOperationId() != i.OperationID || out.GetLifecycleRevision() != i.Revision || !i.IsStopped() && out.RuntimeState == "Released" {
+		out.RuntimeState = "Unknown"
+		out.ObservedUnixMs = 0
+		out.ReleasedUnixMs = 0
+		out.OperationId = i.OperationID
+		out.LifecycleRevision = i.Revision
+		if out.AllocatedRequests == nil {
+			out.AllocatedRequests = &protobuf.ResourceAmounts{}
+		}
+		if out.ConfiguredRequests != nil {
+			out.AllocatedRequests.CpuMillicores = max(out.AllocatedRequests.CpuMillicores, out.ConfiguredRequests.CpuMillicores)
+			out.AllocatedRequests.MemoryBytes = max(out.AllocatedRequests.MemoryBytes, out.ConfiguredRequests.MemoryBytes)
+		}
+	}
+	return out
 }

@@ -262,6 +262,7 @@ func Run() {
 	}
 	if err = (&laboratorycontroller.LabReconciler{
 		Reader:                    mgr.GetAPIReader(),
+		RuntimeObservation:        cfg.RuntimeObservation,
 		RequiredSnapshotAvailable: cfg.RequiredSnapshotAvailable && cfg.State.Enabled,
 		Client:                    mgr.GetClient(),
 		Scheme:                    mgr.GetScheme(),

@@ -6,6 +6,9 @@ metadata:
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 rules:
+  - apiGroups: [ apps ]
+    resources: [ replicasets, deployments ]
+    verbs: [ get ]
   - apiGroups: [ laboratory.cybericebox.com ]
     resources: [ labgroups ]
     verbs: [ get, list, watch ]

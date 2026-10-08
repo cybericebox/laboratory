@@ -26,7 +26,7 @@ rules:
   resources: [endpoints, nodes, pods, serviceaccounts, services]
   verbs: [get, list, watch]
 - apiGroups: [apps]
-  resources: [deployments]
+  resources: [deployments, replicasets]
   verbs: [get, list, watch]
 - apiGroups: [networking.k8s.io]
   resources: [networkpolicies]
@@ -48,6 +48,9 @@ rules:
 - apiGroups: [laboratory.cybericebox.com]
   resources: [connections, devices, labgateways, labgroupclients, labgroups, labs, labvpns]
   verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [laboratory.cybericebox.com]
+  resources: [labtrafficreports]
+  verbs: [get, list, watch]
 # Image prepull requests the scheduler makes and the node-agents answer (see DEPLOY.md, "Scheduler").
 - apiGroups: [laboratory.cybericebox.com]
   resources: [imagepulls]

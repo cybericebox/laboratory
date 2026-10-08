@@ -111,13 +111,21 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 			id := r.podIdentity(p, string(g.UID), g.Spec.Lifecycle.OperationID, g.Spec.Lifecycle.Revision)
 			id.DeploymentUID = depUID
 			id.Component = component
+			id.Namespace = g.Status.Namespace
+			id.ScopeUID = string(g.UID)
+			id.Generation = g.Generation
 			rows = appendUniqueRow(rows, id)
 		}
 		base := g.DeepCopy()
 		reports := otherNodeReports(g.Status.ServiceReports, r.Observer.NodeName)
 		for _, id := range rows {
 			if id.NodeName == r.Observer.NodeName {
-				report := r.Observer.ObserveOwnedRuntime(ctx, id)
+				report := lab.OwnedRuntimeReport{}
+				if id.ScopeKind == "GroupScope" {
+					report = r.Observer.ObserveScope(ctx, id)
+				} else {
+					report = r.Observer.ObserveOwnedRuntime(ctx, id)
+				}
 				if intent, ok := lab.ParseLifecycleRetirement(g.Annotations[names.AnnotationLifecycleRetirement]); ok && intent.ExpectedUID == string(g.UID) && intent.StopOperationID == id.OperationID && intent.StopRevision == id.Revision {
 					report.RetirementOperationID, report.RetirementRevision = intent.OperationID, intent.Revision
 				}
@@ -131,6 +139,31 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 			}
 		}
 	}
+	var labs lab.LabList
+	if err := r.Reader.List(ctx, &labs); err != nil {
+		return err
+	}
+	for i := range labs.Items {
+		parent := &labs.Items[i]
+		base := parent.DeepCopy()
+		reports := otherNodeReports(parent.Status.ScopeReports, r.Observer.NodeName)
+		for _, scope := range parent.Status.ScopeInventory {
+			if scope.NodeName == r.Observer.NodeName {
+				report := r.Observer.ObserveScope(ctx, scope)
+				if intent, ok := lab.ParseLifecycleRetirement(parent.Annotations[names.AnnotationLifecycleRetirement]); ok && intent.ExpectedUID == string(parent.UID) && intent.StopOperationID == scope.OperationID && intent.StopRevision == scope.Revision {
+					report.RetirementOperationID = intent.OperationID
+					report.RetirementRevision = intent.Revision
+				}
+				reports = append(reports, report)
+			}
+		}
+		parent.Status.ScopeReports = reports
+		if !reflect.DeepEqual(base.Status.ScopeReports, reports) {
+			if err := r.Client.Status().Patch(ctx, parent, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+				return err
+			}
+		}
+	}
 	var devices lab.DeviceList
 	if e := r.Reader.List(ctx, &devices); e != nil {
 		return e
@@ -141,9 +174,7 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 		if e := r.Reader.Get(ctx, client.ObjectKey{Namespace: d.Namespace, Name: d.Spec.LabRef}, &parent); e != nil {
 			continue
 		}
-		if parent.Spec.Lifecycle == nil {
-			continue
-		}
+		operation, revision := nativeLabOperation(&parent)
 		owned := false
 		for _, o := range d.OwnerReferences {
 			owned = owned || o.Kind == "Lab" && o.UID == parent.UID
@@ -157,7 +188,11 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 			if p.Namespace != d.Namespace || p.Labels[names.LabelDevice] != d.Spec.Name || p.Labels[names.LabelLab] != parent.Name {
 				continue
 			}
-			id := r.podIdentity(p, string(parent.UID), parent.Spec.Lifecycle.OperationID, parent.Spec.Lifecycle.Revision)
+			id := r.podIdentity(p, string(parent.UID), operation, revision)
+			id.Namespace = parent.Namespace
+			id.LabName = parent.Name
+			id.ScopeUID = string(d.UID)
+			id.Generation = parent.Generation
 			if d.Status.State != nil {
 				id.Epoch = d.Status.State.Epoch
 				id.Incarnation = d.Status.State.Incarnation
@@ -213,9 +248,20 @@ func (r *LifecycleReporter) podIdentity(p *corev1.Pod, owner, op string, rev int
 		addQuantity(&id.Limits, c.Resources.Limits)
 	}
 	owners, e := r.Observer.Network.OVS.PortOwners()
+	id.AttachmentsComplete = e == nil
 	if e == nil {
 		for key, uid := range owners {
 			if uid == p.UID {
+				id.PortKeys = append(id.PortKeys, key)
+			}
+		}
+	}
+	// Durable pre-retirement inventory survives rows already removed by another
+	// watcher. Never infer a new empty scope from an absent row after cleanup.
+	var prior lab.OwnedRuntimeIdentity
+	if r.Observer.readRecord("owner", lab.OwnedRuntimeIdentity{PodUID: id.PodUID, NodeName: id.NodeName, NodeBootID: id.NodeBootID}, &prior) == nil && prior.OwnerUID == id.OwnerUID {
+		for _, key := range prior.PortKeys {
+			if !runtimeContainsID(id.PortKeys, key) {
 				id.PortKeys = append(id.PortKeys, key)
 			}
 		}
@@ -231,4 +277,13 @@ func addQuantity(out *lab.ResourceAmounts, rl corev1.ResourceList) {
 	if q, ok := rl[corev1.ResourceMemory]; ok {
 		out.MemoryBytes += q.Value()
 	}
+}
+
+// Legacy running observations are bound to the live owner UID/generation. This
+// bootstrap identity is not a lifecycle mutation and cannot certify a stop.
+func nativeLabOperation(parent *lab.Lab) (string, int64) {
+	if parent.Spec.Lifecycle != nil {
+		return parent.Spec.Lifecycle.OperationID, parent.Spec.Lifecycle.Revision
+	}
+	return "legacy-native-" + string(parent.UID) + "-" + fmt.Sprint(parent.Generation), 1
 }

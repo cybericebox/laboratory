@@ -65,6 +65,9 @@ func (r *LabGroupReconciler) reconcileGroupLifecycle(ctx context.Context, g *lab
 		}
 	}
 	if !i.IsStopped() {
+		if err := r.observeGroupAllocation(ctx, g); err != nil {
+			return true, ctrl.Result{}, err
+		}
 		return false, ctrl.Result{}, nil
 	}
 	if !i.RequireAllLabsStopped {
@@ -266,6 +269,31 @@ func (r *LabGroupReconciler) PrepareGroupRelease(ctx context.Context, g *lab.Lab
 			rows = append(rows, old)
 		}
 	}
+	if r.ServiceReleaseObserver != nil {
+		scopes, err := declaredScopes(ctx, r.groupReader(), string(live.UID), ns, "", live.Spec.Lifecycle.OperationID, live.Spec.Lifecycle.Revision, live.Generation, "GroupScope")
+		if err != nil {
+			return false, err
+		}
+		for _, scope := range scopes {
+			for _, report := range live.Status.ServiceReports {
+				if sameDeclaredScope(scope, report.Identity) && report.Identity.AttachmentsComplete {
+					scope = report.Identity
+					break
+				}
+			}
+			found := false
+			for n, old := range rows {
+				if sameDeclaredScope(scope, old) {
+					rows[n] = scope
+					found = true
+					break
+				}
+			}
+			if !found {
+				rows = append(rows, scope)
+			}
+		}
+	}
 	for _, p := range pods.Items {
 		component := serviceComponent(&p)
 		if component == "" {
@@ -298,7 +326,7 @@ func (r *LabGroupReconciler) PrepareGroupRelease(ctx context.Context, g *lab.Lab
 		for n := range live.Status.ServiceReports {
 			report := &live.Status.ServiceReports[n]
 			candidate := &report.Identity
-			if candidate.OwnerUID == string(live.UID) && candidate.OperationID == live.Spec.Lifecycle.OperationID && candidate.Revision == live.Spec.Lifecycle.Revision && candidate.DeploymentUID == string(d.UID) && candidate.PodUID == string(p.UID) && candidate.NodeName == p.Spec.NodeName && candidate.NodeBootID == node.Status.NodeInfo.BootID && candidate.Component == component && containsStrings(candidate.ContainerIDs, ids) && len(candidate.CgroupPaths) > 0 && len(candidate.PortKeys) > 0 && report.ObservedAt != nil && report.Error == "" {
+			if candidate.OwnerUID == string(live.UID) && candidate.OperationID == live.Spec.Lifecycle.OperationID && candidate.Revision == live.Spec.Lifecycle.Revision && candidate.DeploymentUID == string(d.UID) && candidate.PodUID == string(p.UID) && candidate.NodeName == p.Spec.NodeName && candidate.NodeBootID == node.Status.NodeInfo.BootID && candidate.Component == component && containsStrings(candidate.ContainerIDs, ids) && len(candidate.CgroupPaths) > 0 && (len(candidate.PortKeys) > 0 || candidate.AttachmentsComplete) && report.ObservedAt != nil && report.Error == "" {
 				identity = candidate
 				break
 			}
@@ -387,4 +415,44 @@ func (r *LabGroupReconciler) observeGroupStart(ctx context.Context, g *lab.LabGr
 		}
 	}
 	return r.groupLifecycleStatus(ctx, g, "Running", "ServicesReady")
+}
+
+func (r *LabGroupReconciler) observeGroupAllocation(ctx context.Context, g *lab.LabGroup) error {
+	i := g.Spec.Lifecycle
+	if i == nil || i.IsStopped() {
+		return nil
+	}
+	current := aggregateRuntime(g.Status.ServiceRuntime, g.Status.ServiceReports, string(g.UID), i.OperationID, i.Revision)
+	configured := lab.ResourceAmounts{}
+	limits := lab.ResourceAmounts{}
+	for _, component := range groupPodNames(g) {
+		var deployment appsv1.Deployment
+		if err := r.groupReader().Get(ctx, client.ObjectKey{Namespace: lab.LabGroupNamespaceOf(g), Name: component}, &deployment); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return err
+		}
+		if err := checkServiceGroupUID(&deployment, string(g.UID)); err != nil {
+			return err
+		}
+		for _, container := range deployment.Spec.Template.Spec.Containers {
+			configured.CPUMillicores += container.Resources.Requests.Cpu().MilliValue()
+			configured.MemoryBytes += container.Resources.Requests.Memory().Value()
+			limits.CPUMillicores += container.Resources.Limits.Cpu().MilliValue()
+			limits.MemoryBytes += container.Resources.Limits.Memory().Value()
+		}
+	}
+	current.ConfiguredRequests = configured
+	current.ConfiguredLimits = limits
+	current.AllocatedRequests.CPUMillicores = max(current.AllocatedRequests.CPUMillicores, configured.CPUMillicores)
+	current.AllocatedRequests.MemoryBytes = max(current.AllocatedRequests.MemoryBytes, configured.MemoryBytes)
+	current.RuntimeState = "Allocated"
+	current.ReleasedAt = nil
+	if reflect.DeepEqual(current, g.Status.Resources) {
+		return nil
+	}
+	base := g.DeepCopy()
+	g.Status.Resources = current
+	return r.Status().Patch(ctx, g, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 }
