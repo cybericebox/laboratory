@@ -115,6 +115,16 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return result, err
 	}
 
+	// Full group stop blocks all child provisioning. Child stopped intent is
+	// reconciled above; group start never changes it.
+	group, groupErr := (&DeviceReconciler{Client: r.Client, Reader: r.Reader}).labGroupOfNamespace(ctx, lab.Namespace)
+	if groupErr != nil {
+		return ctrl.Result{}, groupErr
+	}
+	if group != nil && group.Spec.Lifecycle.IsStopped() {
+		return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+	}
+
 	// The modes are fixed before anything is created, so the scheduler knows which image
 	// references the lab will pull. The status write leaves the answer of the API server in lab; it is not read again,
 	// because the cache may still hold the object without the modes, and the devices

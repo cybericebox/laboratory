@@ -10,6 +10,7 @@ import (
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	versioned "github.com/cybericebox/laboratory/clientset/client/versioned"
 	controller "github.com/cybericebox/laboratory/internal/controller/laboratory"
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -92,6 +93,8 @@ func checkLifecycleCount(n int) error {
 	return checkItemCount(n)
 }
 func (h *Handler) acceptLifecycle(ctx context.Context, resolver *groupResolver, target *protobuf.LabLifecycleTarget, intent *lab.LabLifecycleSpec) error {
+	h.lifecycleAdmissionMu.Lock()
+	defer h.lifecycleAdmissionMu.Unlock()
 	ref := target.GetRef()
 	if ref.GetLabGroup() == "" || ref.GetName() == "" || ref.GetLab() != "" {
 		return fmt.Errorf("target ref requires lab_group and name, with no lab")
@@ -108,7 +111,22 @@ func (h *Handler) acceptLifecycle(ctx context.Context, resolver *groupResolver, 
 		return err
 	}
 	labs := h.cs.LaboratoryV1alpha1().Labs(ns)
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	var admission *lab.GroupChildAdmission
+	if intent.DesiredState == "Running" {
+		admission = &lab.GroupChildAdmission{GroupUID: string(group.UID), LabName: crName(ref.GetName()), ExpectedLabUID: target.GetExpectedLabUid(), OperationID: intent.OperationID, Revision: intent.Revision, DesiredState: "Running"}
+		// Validate terminal/UID/revision before claiming a durable admission.
+		before, err := labs.Get(ctx, admission.LabName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if string(before.UID) != admission.ExpectedLabUID || before.Spec.Lifecycle != nil && (before.Spec.Lifecycle.Terminal || before.Spec.Lifecycle.Revision > intent.Revision || before.Spec.Lifecycle.Revision == intent.Revision && !apiequality.Semantic.DeepEqual(before.Spec.Lifecycle, intent)) || before.Annotations[names.AnnotationSnapshotRetirement] != "" {
+			return fmt.Errorf("invalid or retired start target")
+		}
+		if err := h.claimChildAdmission(ctx, ref.GetLabGroup(), admission); err != nil {
+			return err
+		}
+	}
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		// Cached resolution supplies the namespace, but each retry validates its live owner.
 		live, err := h.getGroup(ctx, ref.GetLabGroup())
 		if err != nil {
@@ -133,7 +151,13 @@ func (h *Handler) acceptLifecycle(ctx context.Context, resolver *groupResolver, 
 		if string(cur.UID) != target.GetExpectedLabUid() {
 			return fmt.Errorf("lab UID differs from expected_lab_uid")
 		}
+		if intent.DesiredState == "Running" && live.Spec.Lifecycle.IsStopped() {
+			return fmt.Errorf("lab group is stopped; explicitly start group services first")
+		}
 		old := cur.Spec.Lifecycle
+		if cur.Annotations[names.AnnotationSnapshotRetirement] != "" && !apiequality.Semantic.DeepEqual(old, intent) {
+			return fmt.Errorf("snapshot retirement has begun; this copy cannot accept a new lifecycle intent")
+		}
 		if old != nil {
 			if old.Terminal && (intent.DesiredState != "Stopped" || !intent.Terminal) {
 				return fmt.Errorf("terminal lab cannot be restarted or cleared")
@@ -159,6 +183,13 @@ func (h *Handler) acceptLifecycle(ctx context.Context, resolver *groupResolver, 
 		_, err = labs.Update(ctx, cur, metav1.UpdateOptions{})
 		return err
 	})
+	if err != nil {
+		return err
+	}
+	if admission != nil {
+		return h.finishChildAdmission(ctx, ref.GetLabGroup(), admission)
+	}
+	return nil
 }
 
 // The producer's validator consumes the same live typed API reads as acceptance.

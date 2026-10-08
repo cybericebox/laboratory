@@ -56,6 +56,9 @@ service LabManager {
   // is refused. Start never clears terminal and refuses it at every revision.
   rpc StopLabs(StopLabsRequest) returns (BatchResult) {}
   rpc StartLabs(StartLabsRequest) returns (BatchResult) {}
+  // Accepted per item only; matching lifecycle observations prove completion.
+  rpc StopLabGroups(StopLabGroupsRequest) returns (BatchResult) {}
+  rpc StartLabGroups(StartLabGroupsRequest) returns (BatchResult) {}
 
   // Monitoring is a server-push stream. Every subscription starts with a
   // complete snapshot; subsequent messages are sequenced deltas or heartbeats.
@@ -364,6 +367,7 @@ message LabGroup {
   int64 created_unix_ms = 13;
   string uid = 14;
   int64 generation = 15; // live Kubernetes metadata generation, separate from observed lifecycle
+  GroupLifecycleSpec lifecycle = 18; // 16/17 reserved for immutable VPN/gateway sizes
 }
 message LabGroupStatus {
   string phase = 1;
@@ -1146,4 +1150,24 @@ message GroupPodFormula {
   PodSize per_retained_flow = 6;
   PodSize floor = 7;
   PodSize round_to = 8;
+}
+
+// Group operations target exact identity and monotonically increasing intent.
+message GroupTarget {
+ string group = 1;
+ string expected_uid = 2;
+ string operation_id = 3;
+ int64 revision = 4;
+}
+message StopLabGroupItem {
+ GroupTarget target = 1;
+ bool require_all_labs_stopped = 2; // must be true; no forced child stop
+}
+message StopLabGroupsRequest { repeated StopLabGroupItem items = 1; }
+message StartLabGroupsRequest { repeated GroupTarget items = 1; }
+message GroupLifecycleSpec {
+ string desired_state = 1;
+ string operation_id = 2;
+ int64 revision = 3;
+ bool require_all_labs_stopped = 4;
 }

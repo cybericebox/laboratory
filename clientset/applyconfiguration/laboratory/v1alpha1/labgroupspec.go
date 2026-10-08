@@ -22,7 +22,11 @@ package v1alpha1
 //
 // LabGroupSpec defines the desired state of LabGroup.
 type LabGroupSpecApplyConfiguration struct {
-	VPN *LabGroupVPNSpecApplyConfiguration `json:"vpn,omitempty"`
+	// Lifecycle is independent of legacy suspension; absent means Running.
+	Lifecycle *GroupLifecycleSpecApplyConfiguration `json:"lifecycle,omitempty"`
+	// Admission serializes child creates/starts across agent replicas.
+	Admission *GroupChildAdmissionApplyConfiguration `json:"admission,omitempty"`
+	VPN       *LabGroupVPNSpecApplyConfiguration     `json:"vpn,omitempty"`
 	// Gateway holds the internet gateway pod's settings.
 	Gateway   *LabGroupGatewaySpecApplyConfiguration `json:"gateway,omitempty"`
 	Suspended *bool                                  `json:"suspended,omitempty"`
@@ -32,6 +36,22 @@ type LabGroupSpecApplyConfiguration struct {
 // apply.
 func LabGroupSpec() *LabGroupSpecApplyConfiguration {
 	return &LabGroupSpecApplyConfiguration{}
+}
+
+// WithLifecycle sets the Lifecycle field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Lifecycle field is set to the value of the last call.
+func (b *LabGroupSpecApplyConfiguration) WithLifecycle(value *GroupLifecycleSpecApplyConfiguration) *LabGroupSpecApplyConfiguration {
+	b.Lifecycle = value
+	return b
+}
+
+// WithAdmission sets the Admission field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Admission field is set to the value of the last call.
+func (b *LabGroupSpecApplyConfiguration) WithAdmission(value *GroupChildAdmissionApplyConfiguration) *LabGroupSpecApplyConfiguration {
+	b.Admission = value
+	return b
 }
 
 // WithVPN sets the VPN field in the declarative configuration to the given value

@@ -161,10 +161,19 @@ func specHash(spec *laboratoryv1alpha1.LabSpec, dep deploySpec) string {
 }
 
 func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *protobuf.LabItem, v *labVariant, env deviceVars, common map[string]string) (protobuf.ItemState, error) {
+	h.lifecycleAdmissionMu.Lock()
+	defer h.lifecycleAdmissionMu.Unlock()
 	name := crName(it.GetName())
 	ns, err := resolver.namespace(ctx, it.GetLabGroup())
 	if err != nil {
 		return 0, err
+	}
+	liveGroup, err := h.getGroup(ctx, it.GetLabGroup())
+	if err != nil {
+		return 0, err
+	}
+	if liveGroup.Status.Namespace != ns || liveGroup.Spec.Lifecycle.IsStopped() {
+		return 0, fmt.Errorf("lab group is stopped or its namespace changed")
 	}
 	want := mergeItemLabels(common, it.GetLabels())
 	dep, _ := newDeploySpec(it.GetDeployGroup(), it.GetDeployAfter())
@@ -173,9 +182,20 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 	lab.Labels, lab.Annotations = dep.stamp(stampTenant(copyLabels(want), tenantOf(ctx)), stampID(nil, it.GetName()))
 	hash := specHash(&lab.Spec, dep)
 	lab.Annotations[names.AnnotationSpecHash] = hash
+	admission := &laboratoryv1alpha1.GroupChildAdmission{GroupUID: string(liveGroup.UID), LabName: name, DesiredState: "Running", SpecHash: hash}
+	if err := h.claimChildAdmission(ctx, it.GetLabGroup(), admission); err != nil {
+		return 0, err
+	}
 
 	labs := h.cs.LaboratoryV1alpha1().Labs(ns)
 	state := protobuf.ItemState_ITEM_STATE_CREATED
+	admittedGroup, err := h.getGroup(ctx, it.GetLabGroup())
+	if err != nil {
+		return 0, err
+	}
+	if string(admittedGroup.UID) != admission.GroupUID || admittedGroup.Spec.Admission == nil || admittedGroup.Spec.Admission.Token != admission.Token || admittedGroup.Spec.Lifecycle.IsStopped() {
+		return 0, fmt.Errorf("child admission group identity changed")
+	}
 	out, err := labs.Create(ctx, lab, metav1.CreateOptions{})
 	if err = createErr(err, kindLab, it.GetName(), func() (metav1.Object, error) {
 		return labs.Get(ctx, name, metav1.GetOptions{})
@@ -187,7 +207,7 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 	}
 
 	if state != protobuf.ItemState_ITEM_STATE_CREATED && out.Spec.Lifecycle != nil {
-		return state, nil
+		return state, h.finishChildAdmission(ctx, it.GetLabGroup(), admission)
 	}
 	devices := sortedKeys(env)
 	if state != protobuf.ItemState_ITEM_STATE_CREATED {
@@ -200,7 +220,7 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 	if err := h.writeDeviceSecrets(ctx, out, devices, env); err != nil {
 		return 0, err
 	}
-	return state, nil
+	return state, h.finishChildAdmission(ctx, it.GetLabGroup(), admission)
 }
 
 // existingLab answers a create of a name that exists: the same spec (by hash) is fine,

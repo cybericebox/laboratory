@@ -39,6 +39,33 @@ spec:
           spec:
             description: LabGroupSpec defines the desired state of LabGroup.
             properties:
+              admission:
+                description: Admission serializes child creates/starts across agent
+                  replicas.
+                properties:
+                  desiredState:
+                    type: string
+                  expectedLabUID:
+                    type: string
+                  groupUID:
+                    type: string
+                  labName:
+                    type: string
+                  operationId:
+                    type: string
+                  revision:
+                    format: int64
+                    type: integer
+                  specHash:
+                    type: string
+                  token:
+                    type: string
+                required:
+                - desiredState
+                - groupUID
+                - labName
+                - token
+                type: object
               gateway:
                 description: Gateway holds the internet gateway pod's settings.
                 properties:
@@ -62,6 +89,36 @@ spec:
                     - message: the size of a group's pod is fixed
                       rule: self == oldSelf
                 type: object
+              lifecycle:
+                description: Lifecycle is independent of legacy suspension; absent
+                  means Running.
+                properties:
+                  desiredState:
+                    enum:
+                    - Running
+                    - Stopped
+                    type: string
+                  operationId:
+                    maxLength: 128
+                    minLength: 1
+                    type: string
+                  requireAllLabsStopped:
+                    type: boolean
+                  revision:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                required:
+                - desiredState
+                - operationId
+                - requireAllLabsStopped
+                - revision
+                type: object
+                x-kubernetes-validations:
+                - message: group stop requires all labs stopped
+                  rule: self.desiredState != 'Stopped' || self.requireAllLabsStopped
+                - message: group lifecycle revision must increase for changed intent
+                  rule: self.revision > oldSelf.revision || self == oldSelf
               suspended:
                 type: boolean
               vpn:
@@ -112,6 +169,9 @@ spec:
                       rule: self == oldSelf
                 type: object
             type: object
+            x-kubernetes-validations:
+            - message: explicit group lifecycle intent cannot be removed
+              rule: '!has(oldSelf.lifecycle) || has(self.lifecycle)'
           status:
             description: LabGroupStatus defines the observed state of LabGroup.
             properties:
@@ -399,6 +459,208 @@ spec:
                       (Wait* constants).
                     type: string
                 type: object
+              serviceReports:
+                description: ServiceReports is node-owned matching native observation.
+                items:
+                  description: |-
+                    OwnedRuntimeReport is node-owned; identity is immutable controller inventory.
+                    Independent timestamps never impose a cross-owner clock ordering.
+                  properties:
+                    attachmentsAbsentAt:
+                      format: date-time
+                      type: string
+                    cgroupAbsentAt:
+                      format: date-time
+                      type: string
+                    error:
+                      type: string
+                    identity:
+                      description: |-
+                        OwnedRuntimeIdentity is captured before stop. An absent API Pod cannot create
+                        this inventory. NodeBootID is the kernel boot, not the node-agent process.
+                      properties:
+                        cgroupPaths:
+                          items:
+                            type: string
+                          type: array
+                        component:
+                          type: string
+                        containerIDs:
+                          items:
+                            type: string
+                          type: array
+                        deploymentUID:
+                          type: string
+                        epoch:
+                          format: int32
+                          type: integer
+                        incarnation:
+                          format: int32
+                          type: integer
+                        limits:
+                          description: ResourceAmounts separates configured, held
+                            and measured compute amounts.
+                          properties:
+                            cpuMillicores:
+                              format: int64
+                              minimum: 0
+                              type: integer
+                            memoryBytes:
+                              format: int64
+                              minimum: 0
+                              type: integer
+                          required:
+                          - cpuMillicores
+                          - memoryBytes
+                          type: object
+                        nodeBootID:
+                          type: string
+                        nodeName:
+                          type: string
+                        operationId:
+                          type: string
+                        ownerUID:
+                          type: string
+                        podUID:
+                          type: string
+                        portKeys:
+                          items:
+                            type: string
+                          type: array
+                        requests:
+                          description: ResourceAmounts separates configured, held
+                            and measured compute amounts.
+                          properties:
+                            cpuMillicores:
+                              format: int64
+                              minimum: 0
+                              type: integer
+                            memoryBytes:
+                              format: int64
+                              minimum: 0
+                              type: integer
+                          required:
+                          - cpuMillicores
+                          - memoryBytes
+                          type: object
+                        revision:
+                          format: int64
+                          type: integer
+                      required:
+                      - cgroupPaths
+                      - containerIDs
+                      - limits
+                      - nodeBootID
+                      - nodeName
+                      - operationId
+                      - ownerUID
+                      - podUID
+                      - portKeys
+                      - requests
+                      - revision
+                      type: object
+                    observedAt:
+                      format: date-time
+                      type: string
+                    runtimeAbsentAt:
+                      format: date-time
+                      type: string
+                    runtimeState:
+                      type: string
+                  required:
+                  - identity
+                  - runtimeState
+                  type: object
+                type: array
+              serviceRuntime:
+                description: ServiceRuntime is controller-owned durable pre-scale
+                  inventory.
+                items:
+                  description: |-
+                    OwnedRuntimeIdentity is captured before stop. An absent API Pod cannot create
+                    this inventory. NodeBootID is the kernel boot, not the node-agent process.
+                  properties:
+                    cgroupPaths:
+                      items:
+                        type: string
+                      type: array
+                    component:
+                      type: string
+                    containerIDs:
+                      items:
+                        type: string
+                      type: array
+                    deploymentUID:
+                      type: string
+                    epoch:
+                      format: int32
+                      type: integer
+                    incarnation:
+                      format: int32
+                      type: integer
+                    limits:
+                      description: ResourceAmounts separates configured, held and
+                        measured compute amounts.
+                      properties:
+                        cpuMillicores:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        memoryBytes:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                      required:
+                      - cpuMillicores
+                      - memoryBytes
+                      type: object
+                    nodeBootID:
+                      type: string
+                    nodeName:
+                      type: string
+                    operationId:
+                      type: string
+                    ownerUID:
+                      type: string
+                    podUID:
+                      type: string
+                    portKeys:
+                      items:
+                        type: string
+                      type: array
+                    requests:
+                      description: ResourceAmounts separates configured, held and
+                        measured compute amounts.
+                      properties:
+                        cpuMillicores:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        memoryBytes:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                      required:
+                      - cpuMillicores
+                      - memoryBytes
+                      type: object
+                    revision:
+                      format: int64
+                      type: integer
+                  required:
+                  - cgroupPaths
+                  - containerIDs
+                  - limits
+                  - nodeBootID
+                  - nodeName
+                  - operationId
+                  - ownerUID
+                  - podUID
+                  - portKeys
+                  - requests
+                  - revision
+                  type: object
+                type: array
               suspended:
                 type: boolean
               vpn:
