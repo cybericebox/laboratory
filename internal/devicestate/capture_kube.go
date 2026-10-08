@@ -47,6 +47,8 @@ func (k *KubeCluster) captureCurrent(ctx context.Context, p PodInfo, req api.Dev
 	}
 	actual := *d.Spec.State.CaptureRequest
 	actual.DeadlineSeconds = req.DeadlineSeconds
+	// Commit control is additive; it does not supersede capture identity.
+	actual.CommitNodeAgentEpoch = req.CommitNodeAgentEpoch
 	if !reflect.DeepEqual(actual, req) {
 		return nil, ErrStale
 	}
@@ -196,4 +198,97 @@ func CaptureDeletePreconditions(p *corev1.Pod, req *api.DeviceCaptureRequest, re
 	}
 	uid, rv := p.UID, p.ResourceVersion
 	return &metav1.Preconditions{UID: &uid, ResourceVersion: &rv}, nil
+}
+
+func (k *KubeCluster) CaptureCommitRequested(ctx context.Context, p PodInfo, result api.DeviceCaptureResult) (bool, error) {
+	d, err := k.captureCurrent(ctx, p, requestOf(result))
+	if err != nil {
+		return false, err
+	}
+	pod, err := k.currentCapturePod(ctx, p)
+	if err != nil {
+		return false, err
+	}
+	if !CaptureGuardMatches(pod, d.Spec.State.CaptureRequest, &result) {
+		return false, ErrStale
+	}
+	return d.Spec.State.CaptureRequest.CommitNodeAgentEpoch == result.NodeAgentEpoch && result.NodeAgentEpoch != "", nil
+}
+func (k *KubeCluster) AcknowledgeCaptureCommit(ctx context.Context, p PodInfo, result api.DeviceCaptureResult) error {
+	if !result.Committed {
+		return ErrStale
+	}
+	wanted, err := k.CaptureCommitRequested(ctx, p, result)
+	if err != nil {
+		return err
+	}
+	if !wanted {
+		return ErrStale
+	}
+	d, err := k.captureCurrent(ctx, p, requestOf(result))
+	if err != nil {
+		return err
+	}
+	currentPod, err := k.currentCapturePod(ctx, p)
+	if err != nil {
+		return err
+	}
+	if d.Status.State.Capture != nil && d.Status.State.Capture.Committed && sameCapture(*d.Status.State.Capture, result) && CaptureCommittedGuardMatches(currentPod, d.Spec.State.CaptureRequest, &result) {
+		return nil
+	}
+	if err := k.patchGuard(ctx, p, func(pod *corev1.Pod) error {
+		if pod.DeletionTimestamp != nil {
+			return ErrDeleting
+		}
+		if !CaptureGuardMatches(pod, &api.DeviceCaptureRequest{OperationID: result.OperationID, LifecycleRevision: result.LifecycleRevision, PodUID: result.PodUID, Epoch: result.Epoch, Incarnation: result.Incarnation}, &result) {
+			return ErrStale
+		}
+		raw, err := json.Marshal(result)
+		if err != nil {
+			return err
+		}
+		pod.Annotations[CaptureGuardAnnotation] = string(raw)
+		return nil
+	}); err != nil {
+		return err
+	}
+	for i := 0; i < 5; i++ {
+		d, err := k.captureCurrent(ctx, p, requestOf(result))
+		if err != nil {
+			return err
+		}
+		if d.Spec.State.CaptureRequest.CommitNodeAgentEpoch != result.NodeAgentEpoch {
+			return ErrStale
+		}
+		pod, err := k.currentCapturePod(ctx, p)
+		if err != nil {
+			return err
+		}
+		if !CaptureCommittedGuardMatches(pod, d.Spec.State.CaptureRequest, &result) {
+			return ErrStale
+		}
+		before := d.DeepCopy()
+		if d.Status.State.Capture == nil || !sameCapture(*d.Status.State.Capture, result) {
+			return ErrStale
+		}
+		d.Status.State.Capture = result.DeepCopy()
+		err = k.Client.Status().Patch(ctx, d, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
+		if err == nil || !apierrors.IsConflict(err) {
+			return err
+		}
+	}
+	return ErrStale
+}
+func CaptureCommittedGuardMatches(p *corev1.Pod, req *api.DeviceCaptureRequest, result *api.DeviceCaptureResult) bool {
+	if !CaptureGuardMatches(p, req, result) || !result.Committed || req.CommitNodeAgentEpoch != result.NodeAgentEpoch {
+		return false
+	}
+	var guard api.DeviceCaptureResult
+	return json.Unmarshal([]byte(p.Annotations[CaptureGuardAnnotation]), &guard) == nil && guard.Committed
+}
+func CaptureCommittedDeletePreconditions(p *corev1.Pod, req *api.DeviceCaptureRequest, result *api.DeviceCaptureResult) (*metav1.Preconditions, error) {
+	if !CaptureCommittedGuardMatches(p, req, result) {
+		return nil, ErrStale
+	}
+	return CaptureDeletePreconditions(p, req, result)
 }

@@ -53,6 +53,50 @@ spec:
           status:
             description: LabVPNStatus defines the observed state of LabVPN.
             properties:
+              accessFence:
+                description: |-
+                  LabAccessFence is written only after both-direction rules and conntrack
+                  retirement succeed for this exact live Lab operation.
+                properties:
+                  bootId:
+                    type: string
+                  containerID:
+                    type: string
+                  fencedAt:
+                    format: date-time
+                    type: string
+                  groupUID:
+                    type: string
+                  labUID:
+                    type: string
+                  observedGeneration:
+                    format: int64
+                    type: integer
+                  operationId:
+                    type: string
+                  podName:
+                    type: string
+                  podUID:
+                    type: string
+                  restartCount:
+                    format: int32
+                    type: integer
+                  revision:
+                    format: int64
+                    type: integer
+                required:
+                - bootId
+                - containerID
+                - fencedAt
+                - groupUID
+                - labUID
+                - observedGeneration
+                - operationId
+                - podName
+                - podUID
+                - restartCount
+                - revision
+                type: object
               conditions:
                 description: |-
                   Conditions surfaces reconciler progress/blocking reasons
@@ -127,6 +171,28 @@ spec:
                 - Configuring
                 - Ready
                 type: string
+              runtime:
+                description: Runtime is published at process startup before any kernel
+                  reconciliation.
+                properties:
+                  bootId:
+                    type: string
+                  containerID:
+                    type: string
+                  podName:
+                    type: string
+                  podUID:
+                    type: string
+                  restartCount:
+                    format: int32
+                    type: integer
+                required:
+                - bootId
+                - containerID
+                - podName
+                - podUID
+                - restartCount
+                type: object
             type: object
         type: object
     served: true

@@ -630,6 +630,14 @@ func (r *LabGroupReconciler) ensureVPNService(ctx context.Context, ns string) er
 // ensureVPNDeployment creates the VPN pod at the size the group's spec says (the chart's default without one); an existing one keeps
 // the size it has: a group's pods are never resized.
 func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string, suspended bool, size *laboratoryv1alpha1.GroupPodSize) error {
+	groupUID := ""
+	group, err := (&DeviceReconciler{Client: r.Client}).labGroupOfNamespace(ctx, ns)
+	if err != nil {
+		return err
+	}
+	if group != nil {
+		groupUID = string(group.UID)
+	}
 	replicas := int32(1)
 	if suspended {
 		replicas = 0
@@ -658,6 +666,22 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 		}
 		if len(existing.Spec.Template.Spec.Containers) > 0 {
 			container := &existing.Spec.Template.Spec.Containers[0]
+			if groupUID != "" {
+				hasUID := false
+				for i := range container.Env {
+					if container.Env[i].Name == "GROUP_UID" {
+						hasUID = true
+						if container.Env[i].Value != groupUID {
+							container.Env[i].Value = groupUID
+							changed = true
+						}
+					}
+				}
+				if !hasUID {
+					container.Env = append(container.Env, corev1.EnvVar{Name: "GROUP_UID", Value: groupUID})
+					changed = true
+				}
+			}
 			found := false
 			for i := range container.Env {
 				if container.Env[i].Name == "SUPPORT_EMAIL" {
@@ -721,6 +745,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 							},
 							{Name: "NAMESPACE", Value: ns},
 							{Name: "CLIENT_SUBNET", Value: clientSubnet},
+							{Name: "GROUP_UID", Value: groupUID},
 							{Name: "VPN_BASE_NETWORK", Value: r.VPNBaseNetwork},
 							{Name: "LISTEN_PORT", Value: fmt.Sprint(r.vpnPort())},
 							{Name: "SUPPORT_EMAIL", Value: r.SupportEmail},

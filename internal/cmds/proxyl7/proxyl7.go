@@ -158,13 +158,14 @@ func proxyCacheOptions() cache.Options {
 	return cache.Options{ReaderFailOnMissingInformer: true, ByObject: map[client.Object]cache.ByObject{
 		&corev1.Secret{}:                           {Namespaces: map[string]cache.Config{names.AccessKeysNamespace: {}}, Transform: l7.CompactCacheObject},
 		&corev1.Service{}:                          {Transform: l7.CompactCacheObject},
+		&laboratoryv1alpha1.Lab{}:                  {Transform: l7.CompactCacheObject},
 		&laboratoryv1alpha1.LabGroup{}:             {Transform: l7.CompactCacheObject},
 		&laboratoryv1alpha1.LabGroupClient{}:       {Transform: l7.CompactCacheObject},
 		&laboratoryv1alpha1.LabGroupAccessPolicy{}: {Transform: l7.CompactCacheObject},
 	}}
 }
 func warmProxyCache(ctx context.Context, c cache.Cache) error {
-	for _, object := range []client.Object{&corev1.Secret{}, &corev1.Service{}, &laboratoryv1alpha1.LabGroup{}, &laboratoryv1alpha1.LabGroupClient{}, &laboratoryv1alpha1.LabGroupAccessPolicy{}} {
+	for _, object := range []client.Object{&corev1.Secret{}, &corev1.Service{}, &laboratoryv1alpha1.Lab{}, &laboratoryv1alpha1.LabGroup{}, &laboratoryv1alpha1.LabGroupClient{}, &laboratoryv1alpha1.LabGroupAccessPolicy{}} {
 		if _, err := c.GetInformer(ctx, object, cache.BlockUntilSynced(false)); err != nil {
 			return err
 		}

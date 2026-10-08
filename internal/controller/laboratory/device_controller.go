@@ -98,6 +98,9 @@ func (r *DeviceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, nil
 	}
 
+	if stopped, err := r.deviceStopped(ctx, &device); stopped || err != nil {
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, err
+	}
 	switch device.Spec.Type {
 	case laboratoryv1alpha1.DeviceTypeUnmanagedSwitch, laboratoryv1alpha1.DeviceTypeHub:
 		return r.reconcileSwitch(ctx, &device)
@@ -646,6 +649,7 @@ func deviceHasInImageDHCP(device *laboratoryv1alpha1.Device) bool {
 func (r *DeviceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.Device{}).
+		Watches(&laboratoryv1alpha1.Lab{}, handler.EnqueueRequestsFromMapFunc(r.devicesForLab)).
 		Owns(&appsv1.Deployment{}).
 		// Devices with state persistence run as bare Pods owned by the Device.
 		Owns(&corev1.Pod{}).
@@ -672,7 +676,7 @@ func (r *DeviceReconciler) labGroupSuspended(ctx context.Context, namespace stri
 // one whose status records the namespace; nil when the namespace has no group.
 func (r *DeviceReconciler) labGroupOfNamespace(ctx context.Context, namespace string) (*laboratoryv1alpha1.LabGroup, error) {
 	var ns corev1.Namespace
-	if err := r.Get(ctx, types.NamespacedName{Name: namespace}, &ns); err != nil {
+	if err := r.reader().Get(ctx, types.NamespacedName{Name: namespace}, &ns); err != nil {
 		if errors.IsNotFound(err) {
 			return nil, nil
 		}
@@ -680,7 +684,7 @@ func (r *DeviceReconciler) labGroupOfNamespace(ctx context.Context, namespace st
 	}
 	if owner := ns.Labels[names.LabelGroup]; owner != "" {
 		var group laboratoryv1alpha1.LabGroup
-		if err := r.Get(ctx, types.NamespacedName{Name: owner}, &group); err != nil {
+		if err := r.reader().Get(ctx, types.NamespacedName{Name: owner}, &group); err != nil {
 			if errors.IsNotFound(err) {
 				return nil, nil
 			}
@@ -689,7 +693,7 @@ func (r *DeviceReconciler) labGroupOfNamespace(ctx context.Context, namespace st
 		return &group, nil
 	}
 	var groups laboratoryv1alpha1.LabGroupList
-	if err := r.List(ctx, &groups); err != nil {
+	if err := r.reader().List(ctx, &groups); err != nil {
 		return nil, err
 	}
 	for i := range groups.Items {
@@ -737,4 +741,18 @@ func (r *DeviceReconciler) devicesForConnection(_ context.Context, obj client.Ob
 		}
 	}
 	return reqs
+}
+
+func (r *DeviceReconciler) devicesForLab(ctx context.Context, obj client.Object) []reconcile.Request {
+	var ds laboratoryv1alpha1.DeviceList
+	if err := r.List(ctx, &ds, client.InNamespace(obj.GetNamespace())); err != nil {
+		return nil
+	}
+	var out []reconcile.Request
+	for _, d := range ds.Items {
+		if d.Spec.LabRef == obj.GetName() {
+			out = append(out, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&d)})
+		}
+	}
+	return out
 }

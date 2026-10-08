@@ -52,3 +52,21 @@ func TestDHCPDesiredDistinguishesMissingFromReadFailure(t *testing.T) {
 		t.Fatal("API failure masked as disabled")
 	}
 }
+
+func TestStoppedIntentDisablesDHCPAndWakesBothNetworks(t *testing.T) {
+	l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g", UID: "uid"}, Spec: lab.LabSpec{VPN: lab.LabNetworkSpec{Enabled: true, DHCPServer: &lab.DHCPServer{Enabled: true, Ranges: []lab.DHCPRange{{Start: 2, End: 3}}}}}}
+	old := l.DeepCopy()
+	l.Spec.Lifecycle = &lab.LabLifecycleSpec{DesiredState: "Stopped", OperationID: "op", Revision: 1, SnapshotMode: "Skip"}
+	if !InputsChanged(old, l, "vpn") || !InputsChanged(old, l, "internet") {
+		t.Fatal("stop did not wake network owners")
+	}
+	scheme := runtime.NewScheme()
+	_ = lab.AddToScheme(scheme)
+	_ = allocation.AddToScheme(scheme)
+	pool := &allocation.Pool{ObjectMeta: metav1.ObjectMeta{Name: "dhcp-vpn-a-0", Namespace: "g", OwnerReferences: []metav1.OwnerReference{{APIVersion: lab.SchemeGroupVersion.String(), Kind: "Lab", Name: "a", UID: l.UID}}}}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(l, pool).Build()
+	enabled, _, _, err := Desired(context.Background(), c, "g", "a", "vpn")
+	if err != nil || enabled {
+		t.Fatal("stopped DHCP still enabled", err)
+	}
+}

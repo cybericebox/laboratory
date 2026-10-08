@@ -62,6 +62,33 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, r.Update(ctx, &gw)
 	}
 
+	var parent laboratoryv1alpha1.Lab
+	if err := r.Get(ctx, client.ObjectKey{Name: gw.Spec.LabName, Namespace: gw.Namespace}, &parent); err != nil {
+		return r.dhcpFailure(ctx, &gw, err)
+	}
+	if parent.Spec.Lifecycle.IsStopped() {
+		r.DHCP.Stop(gw.Spec.LabName)
+		iface := names.LabIfaceNameByIndex(gw.Spec.NetworkIndex)
+		if err := r.IPT.BlockLab(iface); err != nil {
+			return ctrl.Result{}, err
+		}
+		r.IPT.DenyDHCP(iface)
+		cidr, err := netutil.SubnetForIndex(r.Cfg.InetBaseNetwork, 24, gw.Spec.NetworkIndex)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.clearNetwork(appliedNetwork{Iface: iface, CIDR: cidr}); err != nil {
+			return ctrl.Result{}, err
+		}
+		delete(r.applied, gw.Name)
+		next := gw.Status
+		next.Conditions = slices.Clone(next.Conditions)
+		next.Phase = laboratoryv1alpha1.LabGatewayPhasePending
+		next.DHCPReady = false
+		next.NATReady = false
+		labstatus.SetReady(&next.Conditions, gw.Generation, false, "LabStopped", "lab runtime is stopped")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, r.patchStatus(ctx, &gw, next)
+	}
 	dhcpEnabled, ranges, dns, dhcpErr := labdhcp.Desired(ctx, r.Client, gw.Namespace, gw.Spec.LabName, "internet")
 	if dhcpErr != nil {
 		return r.dhcpFailure(ctx, &gw, dhcpErr)

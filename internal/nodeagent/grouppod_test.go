@@ -46,6 +46,7 @@ func TestGroupPodAttachmentsFollowTheLabObjects(t *testing.T) {
 		return &laboratoryv1alpha1.LabGateway{ObjectMeta: metav1.ObjectMeta{Name: names.LabGatewayObjectName(lab), Namespace: ns}, Spec: laboratoryv1alpha1.LabGatewaySpec{LabName: lab, NetworkIndex: n}}
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		&laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "l1", Namespace: "ns-a"}}, &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "l2", Namespace: "ns-a"}}, &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "l9", Namespace: "ns-b"}},
 		vpn("ns-a", "l1", 3), vpn("ns-a", "l2", 1), vpn("ns-b", "l9", 7), gw("ns-a", "l1", 2),
 	).Build()
 	ctx := context.Background()
@@ -84,5 +85,20 @@ func TestGroupPodAttachmentsFollowTheLabObjects(t *testing.T) {
 	}
 	if stale := StaleGroupPorts("ns-a", names.ComponentGateway, gws, present); len(stale) != 0 {
 		t.Fatalf("the gateway has no stale leg: %v", stale)
+	}
+}
+
+func TestStoppedLabDetachesOnlyItsGroupLegs(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = laboratoryv1alpha1.AddToScheme(scheme)
+	a := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g"}, Spec: laboratoryv1alpha1.LabSpec{Lifecycle: &laboratoryv1alpha1.LabLifecycleSpec{DesiredState: "Stopped", OperationID: "op", Revision: 1, SnapshotMode: "Skip"}}}
+	b := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: "g"}}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(a, b, &laboratoryv1alpha1.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g"}, Spec: laboratoryv1alpha1.LabVPNSpec{LabName: "a", NetworkIndex: 1}}, &laboratoryv1alpha1.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: "g"}, Spec: laboratoryv1alpha1.LabVPNSpec{LabName: "b", NetworkIndex: 2}}).Build()
+	got, err := GroupPodAttachments(context.Background(), c, "g", names.ComponentVPN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Iface != "lab2" {
+		t.Fatal("stopped leg remained attached or sibling lost", got)
 	}
 }

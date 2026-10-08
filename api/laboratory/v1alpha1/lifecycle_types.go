@@ -84,8 +84,13 @@ type RuntimeAllocation struct {
 }
 
 // DeviceCaptureRequest is an operator-owned required checkpoint request. Its
-// deadline bounds quiescence; expiry is failure, never permission to delete.
+// deadline bounds precommit capture/holds; expiry is failure, never permission
+// to delete. A durable committed hold outlives that deadline until native death
+// or the approved API-fenced cancellation of its exact operation.
 type DeviceCaptureRequest struct {
+	// CommitNodeAgentEpoch requests a durable hold for this exact capture boot.
+	// +optional
+	CommitNodeAgentEpoch string `json:"commitNodeAgentEpoch,omitempty"`
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=128
 	OperationID string `json:"operationId"`
@@ -107,8 +112,14 @@ type DeviceCaptureRequest struct {
 
 // DeviceCaptureResult is node-agent-owned, independent of ExitSnapshotPod.
 // Succeeded includes unchanged base/latest state; a stale or invalidated held
-// guard is never sufficient to stop. NodeAgentEpoch changes on every restart.
+// guard is never sufficient to stop. NodeAgentEpoch names the capture boot; a
+// committed journal retains that identity through recovery until native death
+// or API-fenced cancellation. Uncommitted prior-boot holds are invalidated.
 type DeviceCaptureResult struct {
+	// Committed is acknowledged only after the exact hold journal is fsynced.
+	// It prevents deadline-only thaw between collective capture and deletion.
+	// +optional
+	Committed bool `json:"committed,omitempty"`
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=128
 	OperationID string `json:"operationId"`

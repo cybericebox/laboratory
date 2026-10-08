@@ -10,6 +10,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -43,6 +45,10 @@ func (r *ConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, nil
 	}
 
+	stopped, err := (&DeviceReconciler{Client: r.Client}).deviceStopped(ctx, &laboratoryv1alpha1.Device{ObjectMeta: conn.ObjectMeta, Spec: laboratoryv1alpha1.DeviceSpec{LabRef: conn.Spec.LabRef}})
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 	allConnected := len(conn.Status.Ports) == len(conn.Spec.Endpoints)
 	for _, p := range conn.Status.Ports {
 		if !p.Connected {
@@ -51,6 +57,9 @@ func (r *ConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
+	if stopped {
+		allConnected = false
+	}
 	if conn.Status.Ready != allConnected {
 		conn.Status.Ready = allConnected
 		if allConnected {
@@ -74,5 +83,20 @@ func (r *ConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 func (r *ConnectionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.Connection{}).
+		Watches(&laboratoryv1alpha1.Lab{}, handler.EnqueueRequestsFromMapFunc(r.connectionsForLab)).
 		Complete(reconcileutil.Quiet(r))
+}
+
+func (r *ConnectionReconciler) connectionsForLab(ctx context.Context, obj client.Object) []reconcile.Request {
+	var cs laboratoryv1alpha1.ConnectionList
+	if err := r.List(ctx, &cs, client.InNamespace(obj.GetNamespace())); err != nil {
+		return nil
+	}
+	var out []reconcile.Request
+	for _, c := range cs.Items {
+		if c.Spec.LabRef == obj.GetName() {
+			out = append(out, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&c)})
+		}
+	}
+	return out
 }

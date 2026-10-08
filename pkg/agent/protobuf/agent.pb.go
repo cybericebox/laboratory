@@ -2241,13 +2241,17 @@ type LabGroupStatus struct {
 	Suspended       bool                   `protobuf:"varint,4,opt,name=suspended,proto3" json:"suspended,omitempty"`
 	VpnClientSubnet string                 `protobuf:"bytes,5,opt,name=vpn_client_subnet,json=vpnClientSubnet,proto3" json:"vpn_client_subnet,omitempty"`
 	// VPN or gateway image that could not be pinned to a digest (pulled by tag); empty when fine.
-	ImageWarning  string              `protobuf:"bytes,6,opt,name=image_warning,json=imageWarning,proto3" json:"image_warning,omitempty"`
-	Scheduling    *Scheduling         `protobuf:"bytes,7,opt,name=scheduling,proto3" json:"scheduling,omitempty"`
-	Pods          []*LabGroupPod      `protobuf:"bytes,8,rep,name=pods,proto3" json:"pods,omitempty"` // absent for a group that predates the scheduler
-	Lifecycle     *LabLifecycleStatus `protobuf:"bytes,9,opt,name=lifecycle,proto3" json:"lifecycle,omitempty"`
-	Resources     *ResourceAllocation `protobuf:"bytes,10,opt,name=resources,proto3" json:"resources,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ImageWarning string              `protobuf:"bytes,6,opt,name=image_warning,json=imageWarning,proto3" json:"image_warning,omitempty"`
+	Scheduling   *Scheduling         `protobuf:"bytes,7,opt,name=scheduling,proto3" json:"scheduling,omitempty"`
+	Pods         []*LabGroupPod      `protobuf:"bytes,8,rep,name=pods,proto3" json:"pods,omitempty"` // absent for a group that predates the scheduler
+	Lifecycle    *LabLifecycleStatus `protobuf:"bytes,9,opt,name=lifecycle,proto3" json:"lifecycle,omitempty"`
+	Resources    *ResourceAllocation `protobuf:"bytes,10,opt,name=resources,proto3" json:"resources,omitempty"`
+	// Independent direct-validated current VPN process boot; never policy/traffic fallback.
+	CurrentVpnBootId             string `protobuf:"bytes,11,opt,name=current_vpn_boot_id,json=currentVpnBootId,proto3" json:"current_vpn_boot_id,omitempty"`
+	CurrentVpnBootAvailable      bool   `protobuf:"varint,12,opt,name=current_vpn_boot_available,json=currentVpnBootAvailable,proto3" json:"current_vpn_boot_available,omitempty"`
+	CurrentVpnBootObservedUnixMs int64  `protobuf:"varint,13,opt,name=current_vpn_boot_observed_unix_ms,json=currentVpnBootObservedUnixMs,proto3" json:"current_vpn_boot_observed_unix_ms,omitempty"`
+	unknownFields                protoimpl.UnknownFields
+	sizeCache                    protoimpl.SizeCache
 }
 
 func (x *LabGroupStatus) Reset() {
@@ -2348,6 +2352,27 @@ func (x *LabGroupStatus) GetResources() *ResourceAllocation {
 		return x.Resources
 	}
 	return nil
+}
+
+func (x *LabGroupStatus) GetCurrentVpnBootId() string {
+	if x != nil {
+		return x.CurrentVpnBootId
+	}
+	return ""
+}
+
+func (x *LabGroupStatus) GetCurrentVpnBootAvailable() bool {
+	if x != nil {
+		return x.CurrentVpnBootAvailable
+	}
+	return false
+}
+
+func (x *LabGroupStatus) GetCurrentVpnBootObservedUnixMs() int64 {
+	if x != nil {
+		return x.CurrentVpnBootObservedUnixMs
+	}
+	return 0
 }
 
 type LabGroupList struct {
@@ -8146,7 +8171,7 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"generation\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbb\x03\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xf0\x04\n" +
 	"\x0eLabGroupStatus\x12\x14\n" +
 	"\x05phase\x18\x01 \x01(\tR\x05phase\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12%\n" +
@@ -8160,7 +8185,10 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x04pods\x18\b \x03(\v2\x17.labmanager.LabGroupPodR\x04pods\x12<\n" +
 	"\tlifecycle\x18\t \x01(\v2\x1e.labmanager.LabLifecycleStatusR\tlifecycle\x12<\n" +
 	"\tresources\x18\n" +
-	" \x01(\v2\x1e.labmanager.ResourceAllocationR\tresources\":\n" +
+	" \x01(\v2\x1e.labmanager.ResourceAllocationR\tresources\x12-\n" +
+	"\x13current_vpn_boot_id\x18\v \x01(\tR\x10currentVpnBootId\x12;\n" +
+	"\x1acurrent_vpn_boot_available\x18\f \x01(\bR\x17currentVpnBootAvailable\x12G\n" +
+	"!current_vpn_boot_observed_unix_ms\x18\r \x01(\x03R\x1ccurrentVpnBootObservedUnixMs\":\n" +
 	"\fLabGroupList\x12*\n" +
 	"\x05items\x18\x01 \x03(\v2\x14.labmanager.LabGroupR\x05items\"\x97\x03\n" +
 	"\x03Lab\x12\x1c\n" +

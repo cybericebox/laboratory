@@ -27,9 +27,12 @@ import (
 //
 // LabVPNStatus defines the observed state of LabVPN.
 type LabVPNStatusApplyConfiguration struct {
-	Phase       *laboratoryv1alpha1.LabVPNPhase `json:"phase,omitempty"`
-	DHCPEnabled *bool                           `json:"dhcpEnabled,omitempty"`
-	DHCPReady   *bool                           `json:"dhcpReady,omitempty"`
+	// Runtime is published at process startup before any kernel reconciliation.
+	Runtime     *VPNRuntimeIdentityApplyConfiguration `json:"runtime,omitempty"`
+	AccessFence *LabAccessFenceApplyConfiguration     `json:"accessFence,omitempty"`
+	Phase       *laboratoryv1alpha1.LabVPNPhase       `json:"phase,omitempty"`
+	DHCPEnabled *bool                                 `json:"dhcpEnabled,omitempty"`
+	DHCPReady   *bool                                 `json:"dhcpReady,omitempty"`
 	// Conditions surfaces reconciler progress/blocking reasons
 	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
 	Conditions []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
@@ -39,6 +42,22 @@ type LabVPNStatusApplyConfiguration struct {
 // apply.
 func LabVPNStatus() *LabVPNStatusApplyConfiguration {
 	return &LabVPNStatusApplyConfiguration{}
+}
+
+// WithRuntime sets the Runtime field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Runtime field is set to the value of the last call.
+func (b *LabVPNStatusApplyConfiguration) WithRuntime(value *VPNRuntimeIdentityApplyConfiguration) *LabVPNStatusApplyConfiguration {
+	b.Runtime = value
+	return b
+}
+
+// WithAccessFence sets the AccessFence field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the AccessFence field is set to the value of the last call.
+func (b *LabVPNStatusApplyConfiguration) WithAccessFence(value *LabAccessFenceApplyConfiguration) *LabVPNStatusApplyConfiguration {
+	b.AccessFence = value
+	return b
 }
 
 // WithPhase sets the Phase field in the declarative configuration to the given value

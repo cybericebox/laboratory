@@ -29,8 +29,9 @@ type NodeAgentServer struct {
 	ovs   *OVSManager
 	flows *FlowManager
 
-	k8sMu sync.RWMutex
-	k8s   client.Client // set via SetK8sClient after manager is ready
+	k8sMu  sync.RWMutex
+	reader client.Reader
+	k8s    client.Client // set via SetK8sClient after manager is ready
 
 }
 
@@ -64,6 +65,10 @@ func (s *NodeAgentServer) SetupNetworks(
 ) (*nodev1.SetupNetworksResponse, error) {
 	s.k8sMu.RLock()
 	k8s := s.k8s
+	reader := s.reader
+	if reader == nil {
+		reader = k8s
+	}
 	s.k8sMu.RUnlock()
 	if k8s == nil {
 		return nil, fmt.Errorf("node-agent: not ready")
@@ -90,6 +95,18 @@ func (s *NodeAgentServer) SetupNetworks(
 		break
 	}
 
+	if req.PodUid != "" && req.PodUid != string(pod.UID) {
+		return nil, fmt.Errorf("pod UID changed during CNI setup")
+	}
+	if isPlatformPod(&pod) && GroupComponent(&pod) == "" {
+		active, err := labRuntimeActive(ctx, reader, pod.Namespace, pod.Labels[names.LabelLab])
+		if err != nil {
+			return nil, err
+		}
+		if !active {
+			return nil, fmt.Errorf("lab runtime is stopped or unknown")
+		}
+	}
 	defaultIface, hasAnnotation := pod.Annotations[names.AnnotationDefaultNetwork]
 	log := setupLog.WithValues(
 		"pod", req.Namespace+"/"+req.Name,
@@ -255,4 +272,11 @@ func secureSocketDir(dir string) error {
 		return fmt.Errorf("chmod %s: %w", dir, err)
 	}
 	return nil
+}
+
+// SetK8sReader supplies the uncached lifecycle input for native CNI guards.
+func (s *NodeAgentServer) SetK8sReader(r client.Reader) {
+	s.k8sMu.Lock()
+	s.reader = r
+	s.k8sMu.Unlock()
 }

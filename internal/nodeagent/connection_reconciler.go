@@ -43,6 +43,7 @@ import (
 // a new value, and atomically replaces the t6 flood entry for the affected VNI.
 type ConnectionReconciler struct {
 	client.Client
+	Reader      client.Reader
 	NodeName    string
 	NodeAddress string
 	OVS         *OVSManager
@@ -72,6 +73,13 @@ func (r *ConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !conn.DeletionTimestamp.IsZero() {
+		return r.reconcileDelete(ctx, &conn)
+	}
+	active, err := labRuntimeActive(ctx, r.directReader(), conn.Namespace, conn.Spec.LabRef)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !active {
 		return r.reconcileDelete(ctx, &conn)
 	}
 	return r.reconcileCreate(ctx, &conn)
@@ -413,6 +421,13 @@ func (r *ConnectionReconciler) buildSwitchVNIFlood(
 	ctx context.Context,
 	namespace, labRef, switchLogicalName string,
 ) (localPorts, remoteVTEPs []string, _ error) {
+	active, err := labRuntimeActive(ctx, r.directReader(), namespace, labRef)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !active {
+		return nil, nil, nil
+	}
 	var connList laboratoryv1alpha1.ConnectionList
 	if err := r.List(
 		ctx, &connList,
@@ -700,8 +715,10 @@ func (r *ConnectionReconciler) nodeAddressForNode(ctx context.Context, nodeName 
 }
 
 func (r *ConnectionReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Reader = mgr.GetAPIReader()
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.Connection{}).
+		Watches(&laboratoryv1alpha1.Lab{}, handler.EnqueueRequestsFromMapFunc(r.connectionsForLab)).
 		Watches(
 			&laboratoryv1alpha1.Device{},
 			handler.EnqueueRequestsFromMapFunc(r.connectionsForDevice),
@@ -733,4 +750,25 @@ func (r *ConnectionReconciler) connectionsForDevice(ctx context.Context, obj cli
 		}
 	}
 	return reqs
+}
+
+func (r *ConnectionReconciler) connectionsForLab(ctx context.Context, obj client.Object) []reconcile.Request {
+	var cs laboratoryv1alpha1.ConnectionList
+	if err := r.List(ctx, &cs, client.InNamespace(obj.GetNamespace())); err != nil {
+		return nil
+	}
+	var out []reconcile.Request
+	for _, c := range cs.Items {
+		if c.Spec.LabRef == obj.GetName() {
+			out = append(out, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&c)})
+		}
+	}
+	return out
+}
+
+func (r *ConnectionReconciler) directReader() client.Reader {
+	if r.Reader != nil {
+		return r.Reader
+	}
+	return r.Client
 }

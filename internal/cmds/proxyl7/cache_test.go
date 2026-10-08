@@ -106,6 +106,45 @@ func TestProxyWarmCachePreservesAccessAndNamespace(t *testing.T) {
 	if err := reader.Get(ctx, types.NamespacedName{Namespace: names.AccessKeysNamespace, Name: "tenant-key"}, &key); err != nil || string(key.Data["key"]) != "public" {
 		t.Fatal(key, err)
 	}
+	// The compact informer retains desired stop and its own Lab watch observes it.
+	target := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "stop-target", Namespace: "default"}}
+	if err := writer.Create(ctx, target); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		var got lab.Lab
+		err := reader.Get(ctx, client.ObjectKeyFromObject(target), &got)
+		if err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	started := time.Now()
+	target.Spec.Lifecycle = &lab.LabLifecycleSpec{DesiredState: "Stopped", OperationID: "op", Revision: 1, SnapshotMode: "Skip"}
+	if err := writer.Update(ctx, target); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		var got lab.Lab
+		err := reader.Get(ctx, client.ObjectKeyFromObject(target), &got)
+		if err == nil && got.Spec.Lifecycle.IsStopped() {
+			if len(got.Spec.Devices) != 0 || got.Status.Phase != "" {
+				t.Fatal("compact cache retained unrelated fields")
+			}
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("Lab stop watch did not reach proxy", ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	t.Logf("API desired stop to compact proxy informer observation: %s", time.Since(started))
+
 	var missing lab.LabGroupClient
 	if err := reader.Get(ctx, types.NamespacedName{Namespace: "legacy", Name: "absent"}, &missing); !apierrors.IsNotFound(err) {
 		t.Fatalf("client informer was not ready: %v", err)

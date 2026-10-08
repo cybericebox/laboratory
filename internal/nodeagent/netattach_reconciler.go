@@ -53,6 +53,7 @@ func ParseNetworkAnnotation(annotation string) []NetAttachment {
 // the pod-side is moved into the pod netns and renamed to the desired interface name.
 type NetworkAttachReconciler struct {
 	client.Client
+	Reader   client.Reader
 	NodeName string
 	OVS      *OVSManager
 	Flows    *FlowManager
@@ -126,7 +127,7 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	var attachments []NetAttachment
 	if component != "" {
 		var err error
-		if attachments, err = GroupPodAttachments(ctx, r.Client, pod.Namespace, component); err != nil {
+		if attachments, err = GroupPodAttachments(ctx, r.directReader(), pod.Namespace, component); err != nil {
 			return ctrl.Result{}, err
 		}
 	} else {
@@ -134,7 +135,15 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 	log.Info("NetAttach attachments", "component", component, "attachments", len(attachments), "phase", pod.Status.Phase)
 
-	if pod.DeletionTimestamp != nil {
+	stopped := false
+	if component == "" {
+		active, err := labRuntimeActive(ctx, r.directReader(), pod.Namespace, pod.Labels[names.LabelLab])
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		stopped = !active
+	}
+	if pod.DeletionTimestamp != nil || stopped {
 		if component != "" {
 			// The pod goes: so do all the legs it had on this node.
 			if present, err := r.OVS.PortKeys(); err == nil {
@@ -391,9 +400,32 @@ func (r *NetworkAttachReconciler) groupPodsOf(component string) handler.MapFunc 
 }
 
 func (r *NetworkAttachReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Reader = mgr.GetAPIReader()
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Pod{}, builder.WithPredicates(networkPodInputs(r.NodeName))).
+		Watches(&laboratoryv1alpha1.Lab{}, handler.EnqueueRequestsFromMapFunc(r.podsForLab)).
 		Watches(&laboratoryv1alpha1.LabVPN{}, handler.EnqueueRequestsFromMapFunc(r.groupPodsOf(names.ComponentVPN))).
 		Watches(&laboratoryv1alpha1.LabGateway{}, handler.EnqueueRequestsFromMapFunc(r.groupPodsOf(names.ComponentGateway))).
 		Complete(reconcileutil.QuietIgnoreNotFound(r))
+}
+
+func (r *NetworkAttachReconciler) podsForLab(ctx context.Context, obj client.Object) []reconcile.Request {
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods, client.InNamespace(obj.GetNamespace())); err != nil {
+		return nil
+	}
+	var out []reconcile.Request
+	for _, p := range pods.Items {
+		if p.Spec.NodeName == r.NodeName && (GroupComponent(&p) != "" || p.Labels[names.LabelLab] == obj.GetName()) {
+			out = append(out, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&p)})
+		}
+	}
+	return out
+}
+
+func (r *NetworkAttachReconciler) directReader() client.Reader {
+	if r.Reader != nil {
+		return r.Reader
+	}
+	return r.Client
 }

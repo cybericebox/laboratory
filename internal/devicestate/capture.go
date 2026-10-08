@@ -231,9 +231,37 @@ func (e *Engine) watchHold(parent context.Context, t *tracked, h *requiredHold, 
 			_ = os.Remove(h.journal)
 			return
 		}
-		deleting, checkErr := cl.CheckCapture(ctx, h.Pod, h.Result)
-		if err == nil && (checkErr == nil || errors.Is(checkErr, ErrStale)) && !deleting && (time.Now().After(deadline) || h.Result.Result == "Failed" || parent.Err() != nil || errors.Is(checkErr, ErrStale)) {
-			failed := h.Result
+		t.mu.Lock()
+		result := h.Result
+		t.mu.Unlock()
+		deleting, checkErr := cl.CheckCapture(ctx, h.Pod, result)
+		if err == nil && checkErr == nil && !deleting && result.Result == "Succeeded" && (result.Committed || !time.Now().After(deadline)) {
+			if commits, ok := cl.(CaptureCommitCluster); ok {
+				wanted, commitErr := commits.CaptureCommitRequested(ctx, h.Pod, result)
+				if commitErr != nil {
+					checkErr = commitErr
+				} else if wanted {
+					if !result.Committed {
+						t.mu.Lock()
+						previous := h.Result
+						h.Result.Committed = true
+						if journalErr := e.writeHold(h); journalErr != nil {
+							h.Result = previous
+							checkErr = ErrStale
+						} else {
+							result = h.Result
+						}
+						t.mu.Unlock()
+					}
+					if result.Committed {
+						_ = commits.AcknowledgeCaptureCommit(ctx, h.Pod, result)
+					}
+				}
+			}
+		}
+		if err == nil && (checkErr == nil || errors.Is(checkErr, ErrStale)) && !deleting && (!result.Committed && (time.Now().After(deadline) || result.Result == "Failed" || parent.Err() != nil) || errors.Is(checkErr, ErrStale)) {
+			failed := result
+			failed.Committed = false
 			failed.Result = "Failed"
 			failed.GuardState = "Invalidated"
 			failed.Quiesced = false
@@ -332,6 +360,9 @@ func (e *Engine) RecoverCaptureHolds(ctx context.Context) (map[string]bool, erro
 		h.Container = c
 		if old := holds[c.ID]; old != nil {
 			h.journal = old.journal
+			if old.Result.Committed && sameCapture(old.Result, h.Result) {
+				h.Result = old.Result
+			}
 		}
 		holds[c.ID] = h
 	}
@@ -367,7 +398,7 @@ func (e *Engine) RecoverCaptureHolds(ctx context.Context) (map[string]bool, erro
 			go e.watchHold(ctx, t, h, rt, cl, time.Now())
 		}
 		deleting, checkErr := cl.CheckCapture(ctx, h.Pod, h.Result)
-		if checkErr != nil && !errors.Is(checkErr, ErrStale) || deleting {
+		if checkErr != nil && !errors.Is(checkErr, ErrStale) || deleting || h.Result.Committed && checkErr == nil {
 			preserve()
 			continue
 		}
@@ -375,6 +406,7 @@ func (e *Engine) RecoverCaptureHolds(ctx context.Context) (map[string]bool, erro
 		failed.Result = "Failed"
 		failed.GuardState = "Invalidated"
 		failed.Quiesced = false
+		failed.Committed = false
 		failed.Error = "node-agent restarted"
 		if err = cl.InvalidateCapture(ctx, h.Pod, failed); err != nil {
 			if errors.Is(err, ErrDeleting) {

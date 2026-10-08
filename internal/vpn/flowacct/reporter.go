@@ -210,6 +210,12 @@ func PublishReport(ctx context.Context, reader client.Reader, writer client.Clie
 	case err != nil:
 		return fmt.Errorf("get traffic report: %w", err)
 	}
+	if current := obj.Status.CurrentVPNRuntime; current != nil && spec.Kind == laboratoryv1alpha1.LabTrafficSurfaceVPN {
+		if status.BootID != current.BootID {
+			return fmt.Errorf("traffic writer boot differs from current VPN process")
+		}
+		status.CurrentVPNRuntime = current.DeepCopy()
+	}
 	obj.Status = status
 	if err := writer.Status().Update(ctx, obj); err != nil {
 		return fmt.Errorf("update traffic report status: %w", err)

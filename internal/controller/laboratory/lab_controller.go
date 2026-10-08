@@ -65,6 +65,8 @@ type LabReconciler struct {
 	// State is the device state persistence policy applied to labs created
 	// while the platform switch is on.
 	State StatePolicy
+	// Native capability is enabled only after the Task5 proof.
+	RequiredSnapshotAvailable bool
 	// Mirror rewrites image references for the image cache; the zero value
 	// (cache off) rewrites nothing. The Lab records the decision once.
 	Mirror imagecache.Rewriter
@@ -107,6 +109,10 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		if err := r.Update(ctx, &lab); err != nil {
 			return ctrl.Result{}, err
 		}
+	}
+
+	if handled, result, err := r.reconcileLifecycle(ctx, &lab); handled || err != nil {
+		return result, err
 	}
 
 	// The modes are fixed before anything is created, so the scheduler knows which image

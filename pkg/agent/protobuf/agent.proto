@@ -377,6 +377,10 @@ message LabGroupStatus {
   repeated LabGroupPod pods = 8;   // absent for a group that predates the scheduler
   LabLifecycleStatus lifecycle = 9;
   ResourceAllocation resources = 10;
+  // Independent direct-validated current VPN process boot; never policy/traffic fallback.
+  string current_vpn_boot_id = 11;
+  bool current_vpn_boot_available = 12;
+  int64 current_vpn_boot_observed_unix_ms = 13;
 }
 message LabGroupList {repeated LabGroup items = 1;}
 

@@ -33,7 +33,7 @@ var _ = Describe("Workload names and user labels", func() {
 		workloadSpecNo++
 		ns = fmt.Sprintf("wname-%d", workloadSpecNo)
 		Expect(k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})).To(Succeed())
-		dr = &DeviceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Defaults: DeviceDefaults{CPU: "100m", Memory: "100Mi"}}
+		dr = &DeviceReconciler{Client: k8sClient, Reader: standaloneRunningLabReader{k8sClient}, Scheme: k8sClient.Scheme(), Defaults: DeviceDefaults{CPU: "100m", Memory: "100Mi"}}
 	})
 	reconcileDevice := func(name string) {
 		_, err := dr.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}})

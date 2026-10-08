@@ -71,6 +71,7 @@ const (
 // of queued pods and runs on the leader.
 type Scheduler struct {
 	client.Client
+	Reader   client.Reader
 	Recorder record.EventRecorder
 	Config   SchedulerConfig
 	// Defaults are the device resources a device without any gets; the same the
@@ -240,7 +241,7 @@ type clusterView struct {
 func (s *Scheduler) load(ctx context.Context) (*clusterView, error) {
 	snap := &clusterView{devices: map[string]*laboratoryv1alpha1.Device{}, podsOf: map[string][]*corev1.Pod{}, suspended: map[string]bool{}, tenants: map[string]*laboratoryv1alpha1.Tenant{}}
 	var labs laboratoryv1alpha1.LabList
-	if err := s.List(ctx, &labs); err != nil {
+	if err := s.directReader().List(ctx, &labs); err != nil {
 		return nil, fmt.Errorf("list labs: %w", err)
 	}
 	for i := range labs.Items {
@@ -506,7 +507,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 	var out []*schedObject
 	labsOfGroup := map[string][]*laboratoryv1alpha1.Lab{}
 	for _, lab := range snap.labs {
-		if lab.DeletionTimestamp == nil && !snap.suspended[lab.Namespace] {
+		if lab.DeletionTimestamp == nil && !lab.Spec.Lifecycle.IsStopped() && !snap.suspended[lab.Namespace] {
 			if g := lab.Labels[names.LabelDeployGroup]; g != "" {
 				labsOfGroup[g] = append(labsOfGroup[g], lab)
 			}
@@ -522,7 +523,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 		return images
 	}
 	for _, lab := range snap.labs {
-		if lab.DeletionTimestamp != nil || snap.suspended[lab.Namespace] {
+		if lab.DeletionTimestamp != nil || lab.Spec.Lifecycle.IsStopped() || snap.suspended[lab.Namespace] {
 			continue
 		}
 		o := &schedObject{
@@ -646,6 +647,10 @@ func (s *Scheduler) tick(ctx context.Context) error {
 		switch p.kind {
 		case kindDevicePod:
 			d := p.ref.(*laboratoryv1alpha1.Device)
+			var currentLab laboratoryv1alpha1.Lab
+			if getErr := s.directReader().Get(ctx, client.ObjectKey{Namespace: d.Namespace, Name: d.Spec.LabRef}, &currentLab); getErr != nil || currentLab.Spec.Lifecycle.IsStopped() {
+				continue
+			}
 			q := d.Status.Scheduling.DeepCopy()
 			q.State, q.DispatchedAt, q.Failure = laboratoryv1alpha1.PodStarting, &stamp, nil
 			err = s.setDevice(ctx, d, q)
@@ -725,10 +730,15 @@ func (e *clusterEnv) capacity() *capacity {
 		e.err = fmt.Errorf("list nodes: %w", err)
 		return nil
 	}
-	pods := make([]corev1.Pod, 0, len(e.snap.pods))
+	heldPods, _, unknown := e.s.stoppedReservations(e.snap)
+	if unknown {
+		return nil
+	}
+	pods := make([]corev1.Pod, 0, len(e.snap.pods)+len(heldPods))
 	for _, p := range e.snap.pods {
 		pods = append(pods, *p)
 	}
+	pods = append(pods, heldPods...)
 	c := snapshotCapacity(nodes.Items, pods, e.s.LabNodeSelector, e.s.LabTolerations, e.s.nodeReserve())
 	// A dispatched pod that is not on a node yet will still request its resources.
 	var reserved amount
@@ -780,7 +790,11 @@ func (e *clusterEnv) tenantFits(p *schedPod) bool {
 		return true
 	}
 	if e.tenantUsed == nil {
-		e.tenantUsed = map[string]tenant.Totals{}
+		_, held, unknown := e.s.stoppedReservations(e.snap)
+		if unknown {
+			return false
+		}
+		e.tenantUsed = held
 		for _, o := range e.objs {
 			for _, q := range o.pods {
 				if q.dispatched() {
@@ -1064,4 +1078,11 @@ func systemComponentOf(p *corev1.Pod) string {
 		return app
 	}
 	return ""
+}
+
+func (s *Scheduler) directReader() client.Reader {
+	if s.Reader != nil {
+		return s.Reader
+	}
+	return s.Client
 }

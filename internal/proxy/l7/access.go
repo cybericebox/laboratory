@@ -48,6 +48,10 @@ func (a *AccessReader) Route(ctx context.Context, task, namespace string) (Acces
 	return AccessRoute{fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d", protocol, task, namespace, port), svc.Labels[names.LabelLab]}, nil
 }
 func (a *AccessReader) Allowed(ctx context.Context, namespace, member, labName string) bool {
+	var target lab.Lab
+	if err := a.Reader.Get(ctx, types.NamespacedName{Name: labName, Namespace: namespace}, &target); err != nil || !target.DeletionTimestamp.IsZero() || target.Spec.Lifecycle.IsStopped() {
+		return false
+	}
 	var c lab.LabGroupClient
 	if err := a.Reader.Get(ctx, types.NamespacedName{Name: member, Namespace: namespace}, &c); err != nil || !c.DeletionTimestamp.IsZero() {
 		return false
@@ -85,6 +89,11 @@ func CompactCacheObject(in any) (any, error) {
 		g.Spec = lab.LabGroupSpec{}
 		g.Status = lab.LabGroupStatus{Namespace: namespace}
 		out = g
+	case *lab.Lab:
+		l := x.DeepCopy()
+		l.Spec = lab.LabSpec{Lifecycle: l.Spec.Lifecycle}
+		l.Status = lab.LabStatus{}
+		out = l
 	case *lab.LabGroupClient:
 		c := x.DeepCopy()
 		c.Status = lab.LabGroupClientStatus{}

@@ -274,6 +274,7 @@ func Run() {
 		if err = mgr.Add(&laboratorycontroller.Scheduler{
 			Mirror:   mirror,
 			Client:   mgr.GetClient(),
+			Reader:   mgr.GetAPIReader(),
 			Recorder: mgr.GetEventRecorderFor("scheduler"),
 			Config: laboratorycontroller.SchedulerConfig{
 				MaxPods:                cfg.SchedulerMaxPods,

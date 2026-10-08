@@ -82,3 +82,21 @@ func TestLabAccessEventsRetainReadinessAndAllocationChanges(t *testing.T) {
 		})
 	}
 }
+
+func TestStoppedIntentClosesAccessWithoutStatusOrPolicyChange(t *testing.T) {
+	old := &lab.Lab{Status: lab.LabStatus{Phase: lab.PhaseReady, VPN: lab.LabNetworkStatus{Ready: true, CIDR: "10.8.1.0/24"}}}
+	next := old.DeepCopy()
+	next.Spec.Lifecycle = &lab.LabLifecycleSpec{DesiredState: "Stopped", OperationID: "op", Revision: 1, SnapshotMode: "Required"}
+	if labAccessReady(next) {
+		t.Fatal("stopped intent remained access ready")
+	}
+	if !labAccessInputsChanged(old, next) {
+		t.Fatal("stop did not wake physical access owner")
+	}
+	next.Spec.Lifecycle.Revision = 2
+	prior := next.DeepCopy()
+	prior.Spec.Lifecycle.Revision = 1
+	if !labAccessInputsChanged(prior, next) {
+		t.Fatal("new operation fence not refreshed")
+	}
+}

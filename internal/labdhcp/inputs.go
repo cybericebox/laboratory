@@ -16,7 +16,7 @@ func InputsChanged(old, next *lab.Lab, network string) bool {
 	if old == nil || next == nil {
 		return true
 	}
-	if !reflect.DeepEqual(old.DeletionTimestamp, next.DeletionTimestamp) {
+	if !reflect.DeepEqual(old.Spec.Lifecycle, next.Spec.Lifecycle) || !reflect.DeepEqual(old.DeletionTimestamp, next.DeletionTimestamp) {
 		return true
 	}
 	if network == "vpn" {
@@ -70,7 +70,7 @@ func Desired(ctx context.Context, c client.Reader, namespace, name, network stri
 	if network == "vpn" {
 		segment = l.Spec.VPN
 	}
-	if !pool.DeletionTimestamp.IsZero() || !l.DeletionTimestamp.IsZero() || !segment.Enabled || segment.DHCPServer == nil || !segment.DHCPServer.Enabled {
+	if !pool.DeletionTimestamp.IsZero() || !l.DeletionTimestamp.IsZero() || l.Spec.Lifecycle.IsStopped() || !segment.Enabled || segment.DHCPServer == nil || !segment.DHCPServer.Enabled {
 		return false, nil, "", nil
 	}
 	ranges, dns, err := Settings(&l, network)

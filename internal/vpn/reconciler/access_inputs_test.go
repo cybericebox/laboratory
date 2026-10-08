@@ -5,8 +5,10 @@ package reconciler
 import (
 	"context"
 	"errors"
+	corev1 "k8s.io/api/core/v1"
 	"slices"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -88,7 +90,7 @@ func accessReconcileFixture(t *testing.T) (*AccessReconciler, *recordingAccessAp
 	peer := &lab.LabGroupClient{ObjectMeta: metav1.ObjectMeta{Name: "p1", Namespace: "group"}, Status: lab.LabGroupClientStatus{AssignedIP: "10.8.0.2/32"}}
 	l := &lab.Lab{ObjectMeta: metav1.ObjectMeta{Name: "l1", Namespace: "group"}, Status: lab.LabStatus{Phase: lab.PhaseReady, VPN: lab.LabNetworkStatus{Ready: true, CIDR: "10.8.1.0/24"}}}
 	p := &lab.LabGroupAccessPolicy{ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: "group", Generation: 1}, Spec: lab.LabGroupAccessPolicySpec{Rules: []lab.LabGroupAccessRule{{Action: lab.LabGroupAccessAllow}}}}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(peer, l, p).WithObjects(peer, l, p).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(peer, l, p, &lab.LabVPN{}, &lab.LabTrafficReport{}).WithObjects(peer, l, p).Build()
 	a := &recordingAccessApplier{}
 	return &AccessReconciler{Client: c, IPT: a}, a, c, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "group", Name: names.LabGroupAccessPolicyName}}
 }
@@ -276,5 +278,226 @@ func TestColdStartVerifiedBindingPreservesItsPermittedFlows(t *testing.T) {
 	}
 	if len(a.active) != 1 || a.active[0].Action != vpn.AccessAllow || revoker.lastRules[0].Action != vpn.AccessAllow {
 		t.Fatal("verified same owner flow was unnecessarily closed")
+	}
+}
+
+func TestStoppedFenceWaitsRetirementAndExactCurrentOperation(t *testing.T) {
+	r, a, c, req := accessReconcileFixture(t)
+	ctx := context.Background()
+	_ = corev1.AddToScheme(c.Scheme())
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "vpn-pod", Namespace: "group", UID: "vpn-uid", Labels: map[string]string{names.LabelComponent: names.ComponentVPN}}, Status: corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{Name: "vpn", ContainerID: "containerd://1", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}}}}
+	if err := c.Create(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+	r.Reader = c
+	r.GroupUID = "group-uid"
+	r.Runtime = lab.VPNRuntimeIdentity{BootID: "boot1", PodName: pod.Name, PodUID: string(pod.UID), ContainerID: "containerd://1"}
+	if err := r.initializeCurrentBoot(ctx, req.Namespace); err != nil {
+		t.Fatal(err)
+	}
+	leg := &lab.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: names.LabVPNObjectName("l1"), Namespace: "group"}, Spec: lab.LabVPNSpec{LabName: "l1", NetworkIndex: 1}}
+	leg.OwnerReferences = []metav1.OwnerReference{{Kind: "Lab", UID: "lab-uid", Name: "l1"}}
+	if err := c.Create(ctx, leg); err != nil {
+		t.Fatal(err)
+	}
+	revoker := &recordingAccessRevoker{}
+	r.Conntrack = revoker
+	reconcileAccess(t, r, req)
+	var l lab.Lab
+	_ = c.Get(ctx, client.ObjectKey{Name: "l1", Namespace: "group"}, &l)
+	l.UID = "lab-uid"
+	l.Generation = 2
+	l.Spec.VPN.Enabled = true
+	l.Spec.Lifecycle = &lab.LabLifecycleSpec{DesiredState: "Stopped", OperationID: "stop", Revision: 2, SnapshotMode: "Required"}
+	if err := c.Update(ctx, &l); err != nil {
+		t.Fatal(err)
+	}
+	revoker.failNext = true
+	if _, err := r.Reconcile(ctx, req); err == nil {
+		t.Fatal("retirement failure hidden")
+	}
+	_ = c.Get(ctx, client.ObjectKeyFromObject(leg), leg)
+	if leg.Status.AccessFence != nil {
+		t.Fatal("failure certified current access fence")
+	}
+	reconcileAccess(t, r, req)
+	_ = c.Get(ctx, client.ObjectKeyFromObject(leg), leg)
+	f := leg.Status.AccessFence
+	if f == nil || f.OperationID != "stop" || f.Revision != 2 || f.LabUID != "lab-uid" || f.BootID != "boot1" || f.GroupUID != "group-uid" || f.ObservedGeneration != 2 {
+		t.Fatal("missing exact physical fence", f)
+	}
+	for _, rule := range a.active {
+		if rule.LabName == "l1" && rule.Action == vpn.AccessAllow {
+			t.Fatal("stopped traffic allowed")
+		}
+	}
+	calls := revoker.calls
+	l.Spec.Lifecycle.Revision = 3
+	l.Generation = 3
+	_ = c.Update(ctx, &l)
+	reconcileAccess(t, r, req)
+	_ = c.Get(ctx, client.ObjectKeyFromObject(leg), leg)
+	if leg.Status.AccessFence.Revision != 3 || revoker.calls <= calls {
+		t.Fatal("same denied rules credited old retirement to new operation")
+	}
+}
+
+func TestVPNBootPublicationInvalidatesOldFenceForSamePodAndReplacement(t *testing.T) {
+	r, _, c, _ := accessReconcileFixture(t)
+	ctx := context.Background()
+	_ = corev1.AddToScheme(c.Scheme())
+	r.Reader = c
+	r.GroupUID = "group-uid"
+	p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "vpn-pod", Namespace: "group", UID: "pod-1", Labels: map[string]string{names.LabelComponent: names.ComponentVPN}}, Status: corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{Name: "vpn", ContainerID: "containerd://1", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}}}}
+	if err := c.Create(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	for _, replacement := range []bool{false, true} {
+		current, err := currentVPNRuntime(ctx, c, "group", p.Name, "old-boot")
+		if err != nil {
+			t.Fatal(err)
+		}
+		leg := &lab.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: names.LabVPNObjectName("l1"), Namespace: "group"}, Spec: lab.LabVPNSpec{LabName: "l1", NetworkIndex: 1}}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(leg), leg); err != nil {
+			if err := c.Create(ctx, leg); err != nil {
+				t.Fatal(err)
+			}
+		}
+		leg.Status.Runtime = &current
+		leg.Status.AccessFence = &lab.LabAccessFence{OperationID: "op", Revision: 1, VPNRuntimeIdentity: current}
+		if err := c.Status().Update(ctx, leg); err != nil {
+			t.Fatal(err)
+		}
+		if replacement {
+			if err := c.Delete(ctx, p); err != nil {
+				t.Fatal(err)
+			}
+			p.ResourceVersion = ""
+			p.UID = "replacement"
+			if err := c.Create(ctx, p); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			p.Status.ContainerStatuses[0].ContainerID = "containerd://2"
+			p.Status.ContainerStatuses[0].RestartCount++
+			if err := c.Status().Update(ctx, p); err != nil {
+				t.Fatal(err)
+			}
+		}
+		r.Runtime = current
+		if err := r.publishBoot(ctx, "group"); err == nil {
+			t.Fatal("old process published current boot after container/Pod replacement")
+		}
+		fresh, err := currentVPNRuntime(ctx, c, "group", p.Name, "new-boot")
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Runtime = fresh
+		if err := r.initializeCurrentBoot(ctx, "group"); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.publishBoot(ctx, "group"); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(leg), leg); err != nil {
+			t.Fatal(err)
+		}
+		if leg.Status.AccessFence != nil || leg.Status.Runtime == nil || leg.Status.Runtime.BootID != "new-boot" || leg.Status.Runtime.PodUID != string(p.UID) {
+			t.Fatal("startup retained previous physical certificate", leg.Status)
+		}
+	}
+}
+func TestVPNNetworkStatusCannotOverwriteNewBootFenceFromStaleObject(t *testing.T) {
+	r, _, c, _ := accessReconcileFixture(t)
+	ctx := context.Background()
+	leg := &lab.LabVPN{ObjectMeta: metav1.ObjectMeta{Name: "leg", Namespace: "group"}, Spec: lab.LabVPNSpec{LabName: "l1", NetworkIndex: 1}}
+	if err := c.Create(ctx, leg); err != nil {
+		t.Fatal(err)
+	}
+	stale := leg.DeepCopy()
+	leg.Status.Runtime = &lab.VPNRuntimeIdentity{BootID: "new"}
+	leg.Status.AccessFence = &lab.LabAccessFence{OperationID: "op", Revision: 1, VPNRuntimeIdentity: lab.VPNRuntimeIdentity{BootID: "new"}}
+	if err := c.Status().Update(ctx, leg); err != nil {
+		t.Fatal(err)
+	}
+	network := &LabVPNReconciler{Client: r.Client}
+	if err := network.patchStatus(ctx, stale, lab.LabVPNStatus{Phase: lab.LabVPNPhaseReady, DHCPReady: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(leg), leg); err != nil {
+		t.Fatal(err)
+	}
+	if leg.Status.Runtime == nil || leg.Status.Runtime.BootID != "new" || leg.Status.AccessFence == nil || leg.Status.AccessFence.OperationID != "op" || !leg.Status.DHCPReady {
+		t.Fatal("network status replacement lost foreign fields", leg.Status)
+	}
+}
+
+func TestVPNStartupRebindsDelayedSamePodContainerStatusOnlyForCurrentProcess(t *testing.T) {
+	r, _, c, req := accessReconcileFixture(t)
+	ctx := context.Background()
+	_ = corev1.AddToScheme(c.Scheme())
+	r.Reader = c
+	r.GroupUID = "group-uid"
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "vpn-pod", Namespace: "group", UID: "same-pod", Labels: map[string]string{names.LabelComponent: names.ComponentVPN}}, Status: corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{Name: "vpn", ContainerID: "containerd://previous", RestartCount: 1, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}}}}
+	if err := c.Create(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := currentVPNRuntime(ctx, c, "group", pod.Name, "new-process")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Runtime = initial
+	if err := r.initializeCurrentBoot(ctx, req.Namespace); err != nil {
+		t.Fatal(err)
+	}
+	pod.Status.ContainerStatuses[0].ContainerID = "containerd://current"
+	pod.Status.ContainerStatuses[0].RestartCount = 2
+	if err := c.Status().Update(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.publishBoot(ctx, req.Namespace); err != nil {
+		t.Fatal("fresh process stayed permanently bound to old kubelet tuple", err)
+	}
+	if r.Runtime.ContainerID != "containerd://current" || r.Runtime.RestartCount != 2 {
+		t.Fatal("delayed status did not bind current incarnation", r.Runtime)
+	}
+	var report lab.LabTrafficReport
+	if err := c.Get(ctx, client.ObjectKey{Name: "vpn", Namespace: "group"}, &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Status.CurrentVPNRuntime == nil || report.Status.CurrentVPNRuntime.ContainerID != r.Runtime.ContainerID {
+		t.Fatal("independent witness not rebound")
+	}
+	report.Status.CurrentVPNRuntime.BootID = "newer-process"
+	if err := c.Status().Update(ctx, &report); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.publishBoot(ctx, req.Namespace); err == nil {
+		t.Fatal("superseded process restored its old boot over current startup report")
+	}
+}
+
+func TestVPNStartupWaitsForDelayedInitialContainerStatus(t *testing.T) {
+	_, _, c, _ := accessReconcileFixture(t)
+	_ = corev1.AddToScheme(c.Scheme())
+	p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "vpn-pod", Namespace: "group", UID: "pod", Labels: map[string]string{names.LabelComponent: names.ComponentVPN}}, Status: corev1.PodStatus{Phase: corev1.PodPending}}
+	if err := c.Create(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+	ready := make(chan error, 1)
+	go func() {
+		time.Sleep(60 * time.Millisecond)
+		p.Status.Phase = corev1.PodRunning
+		p.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "vpn", ContainerID: "containerd://new", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}}
+		ready <- c.Status().Update(context.Background(), p)
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	identity, err := awaitVPNRuntime(ctx, c, "group", "vpn-pod", "boot")
+	if err != nil || identity.ContainerID != "containerd://new" {
+		t.Fatal("startup exited instead of waiting for kubelet identity", identity, err)
+	}
+	if err := <-ready; err != nil {
+		t.Fatal(err)
 	}
 }

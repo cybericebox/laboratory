@@ -11,7 +11,6 @@ import (
 	"net/netip"
 	"os"
 	"strings"
-	"time"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -23,10 +22,13 @@ import (
 
 // prepareFlowAccounting resumes the single ledger before any controller can
 // replace surviving chains. Read/API failure leaves the startup gate closed.
-func prepareFlowAccounting(ctx context.Context, mgr ctrl.Manager, cfg *vpn.Config, ipt *vpn.IPTablesManager) (*flowacct.Reporter, *flowacct.Conntrack, error) {
+func prepareFlowAccounting(ctx context.Context, mgr ctrl.Manager, cfg *vpn.Config, ipt *vpn.IPTablesManager, bootID string) (*flowacct.Reporter, *flowacct.Conntrack, error) {
 	source := flowacct.NewConntrack()
 	instance, _ := os.Hostname()
-	bootID := fmt.Sprintf("%s-%d", instance, time.Now().UnixNano())
+	if bootID == "" {
+		source.Close()
+		return nil, nil, fmt.Errorf("current VPN boot is unknown")
+	}
 	reader, cached := mgr.GetAPIReader(), mgr.GetClient()
 	collector := flowacct.New(source, func() flowacct.Topology { return buildTopology(ctx, cached, cfg.Namespace) }, bootID, flowacct.DefaultPollEvery)
 	reporter := &flowacct.Reporter{Reader: reader, Writer: cached, Namespace: cfg.Namespace, Instance: instance, Collector: collector, CounterReader: ipt, OnResume: ipt.RestoreCounterBindings, BeforeShutdown: ipt.Quiesce}

@@ -22,6 +22,8 @@ package v1alpha1
 //
 // LabTrafficReportStatus is written only by the collector.
 type LabTrafficReportStatusApplyConfiguration struct {
+	// CurrentVPNRuntime is published at startup before ACL acknowledgement.
+	CurrentVPNRuntime *VPNBootRecordApplyConfiguration `json:"currentVPNRuntime,omitempty"`
 	// BootID identifies the observation epoch. Restored cumulative ledger totals
 	// continue across boots; coverage intervals retain their own epoch identity.
 	BootID *string `json:"bootID,omitempty"`
@@ -45,6 +47,14 @@ type LabTrafficReportStatusApplyConfiguration struct {
 // apply.
 func LabTrafficReportStatus() *LabTrafficReportStatusApplyConfiguration {
 	return &LabTrafficReportStatusApplyConfiguration{}
+}
+
+// WithCurrentVPNRuntime sets the CurrentVPNRuntime field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the CurrentVPNRuntime field is set to the value of the last call.
+func (b *LabTrafficReportStatusApplyConfiguration) WithCurrentVPNRuntime(value *VPNBootRecordApplyConfiguration) *LabTrafficReportStatusApplyConfiguration {
+	b.CurrentVPNRuntime = value
+	return b
 }
 
 // WithBootID sets the BootID field in the declarative configuration to the given value

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,6 +37,10 @@ type accessRevoker interface {
 }
 
 type AccessReconciler struct {
+	Reader                   client.Reader
+	Runtime                  laboratoryv1alpha1.VPNRuntimeIdentity
+	GroupUID                 string
+	lastFenceKey             string
 	RequireInitialRetirement bool
 	InitialBindings          map[string]bool
 	client.Client
@@ -58,16 +63,16 @@ type AccessReconciler struct {
 
 func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var clients laboratoryv1alpha1.LabGroupClientList
-	if err := r.List(ctx, &clients, client.InNamespace(req.Namespace)); err != nil {
+	if err := r.direct().List(ctx, &clients, client.InNamespace(req.Namespace)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("list lab group clients: %w", err)
 	}
 	var labs laboratoryv1alpha1.LabList
-	if err := r.List(ctx, &labs, client.InNamespace(req.Namespace)); err != nil {
+	if err := r.direct().List(ctx, &labs, client.InNamespace(req.Namespace)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("list labs: %w", err)
 	}
 
 	var legs laboratoryv1alpha1.LabVPNList
-	if err := r.List(ctx, &legs, client.InNamespace(req.Namespace)); err != nil {
+	if err := r.direct().List(ctx, &legs, client.InNamespace(req.Namespace)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("list VPN lab legs: %w", err)
 	}
 	labsByName, bindingErr := buildLabAccessSnapshots(labs.Items, legs.Items)
@@ -86,14 +91,26 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		})
 	}
 	policy := &laboratoryv1alpha1.LabGroupAccessPolicy{}
-	err := r.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: names.LabGroupAccessPolicyName}, policy)
+	err := r.direct().Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: names.LabGroupAccessPolicyName}, policy)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, fmt.Errorf("get group access policy: %w", err)
 	}
 	policyFound := err == nil
-	rules := vpn.BuildAccessRules(clientSnapshots, labsByName, policyRules(policy))
+	desiredPolicy := policyRules(policy)
+	policyIdentityError := ""
+	if policy.Spec.ExpectedGroupUID != "" && policy.Spec.ExpectedGroupUID != r.GroupUID {
+		desiredPolicy = nil
+		policyIdentityError = "access policy group incarnation mismatch"
+	}
+	rules := vpn.BuildAccessRules(clientSnapshots, labsByName, desiredPolicy)
+	fenceKey := stoppedFenceKey(labs.Items)
+	if r.Runtime.BootID != "" {
+		if err := r.publishBoot(ctx, req.Namespace); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	previousRules := r.lastRules
-	changed := !r.applied || r.lastNamespace != req.Namespace || !slices.Equal(r.lastRules, rules)
+	changed := !r.applied || r.lastNamespace != req.Namespace || !slices.Equal(r.lastRules, rules) || r.lastFenceKey != fenceKey
 	if changed {
 		if r.revokeReissued == nil {
 			r.revokeReissued = map[string]bool{}
@@ -151,6 +168,7 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			return ctrl.Result{}, err
 		}
 		r.lastRules = slices.Clone(rules)
+		r.lastFenceKey = fenceKey
 		r.lastNamespace = req.Namespace
 		r.applied = true
 		r.revokePending = true
@@ -190,6 +208,21 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	r.revokeLabs = nil
 	r.revokeClients = nil
 	r.revokeReissued = nil
+	if policyIdentityError != "" {
+		if policyFound {
+			_ = r.writePolicyStatus(ctx, policy, rules, nil, "Failed", policyIdentityError)
+		}
+		return ctrl.Result{}, fmt.Errorf("%s", policyIdentityError)
+	}
+	hasStopped := false
+	for _, l := range labs.Items {
+		hasStopped = hasStopped || l.Spec.VPN.Enabled && l.Spec.Lifecycle.IsStopped()
+	}
+	if hasStopped {
+		if err := r.writeStoppedFences(ctx, labs.Items); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	if policyFound {
 		counters, countersErr := r.accessCounters()
 		if countersErr != nil {
@@ -198,6 +231,9 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		if statusErr := r.writePolicyStatus(ctx, policy, rules, counters, "Applied", ""); statusErr != nil {
 			return ctrl.Result{}, statusErr
 		}
+	}
+	if r.Runtime.BootID != "" {
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
 }
@@ -227,6 +263,16 @@ func (r *AccessReconciler) writePolicyStatus(ctx context.Context, policy *labora
 	statistics := vpn.ProjectAccessStatistics(rules, counters, previous)
 	base := policy.DeepCopy()
 	policy.Status.ObservedGeneration = policy.Generation
+	policy.Status.OperationID = policy.Spec.OperationID
+	policy.Status.VPNBootID = r.Runtime.BootID
+	policy.Status.AppliedRevision = 0
+	if state == "Applied" && r.Conntrack != nil {
+		policy.Status.AppliedRevision = policy.Spec.Revision
+	}
+	if state == "Applied" && (r.Conntrack == nil || policy.Spec.OperationID != "" && r.Runtime.BootID == "") {
+		state = "Failed"
+		lastError = "physical acknowledgement requires boot and conntrack retirement"
+	}
 	policy.Status.State = state
 	policy.Status.LastError = lastError
 	policy.Status.AppliedAt = metav1.Now()

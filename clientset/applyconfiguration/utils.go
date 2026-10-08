@@ -95,6 +95,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.InterfaceSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("Lab"):
 		return &applyconfigurationlaboratoryv1alpha1.LabApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabAccessFence"):
+		return &applyconfigurationlaboratoryv1alpha1.LabAccessFenceApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGateway"):
 		return &applyconfigurationlaboratoryv1alpha1.LabGatewayApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGatewaySpec"):
@@ -199,6 +201,10 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.TenantStatusApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("TenantUsage"):
 		return &applyconfigurationlaboratoryv1alpha1.TenantUsageApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("VPNBootRecord"):
+		return &applyconfigurationlaboratoryv1alpha1.VPNBootRecordApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("VPNRuntimeIdentity"):
+		return &applyconfigurationlaboratoryv1alpha1.VPNRuntimeIdentityApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("WebExposure"):
 		return &applyconfigurationlaboratoryv1alpha1.WebExposureApplyConfiguration{}
 

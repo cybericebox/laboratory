@@ -23,9 +23,11 @@ package v1alpha1
 // DeviceCaptureRequest is an operator-owned required checkpoint request. Its
 // deadline bounds quiescence; expiry is failure, never permission to delete.
 type DeviceCaptureRequestApplyConfiguration struct {
-	OperationID       *string `json:"operationId,omitempty"`
-	LifecycleRevision *int64  `json:"lifecycleRevision,omitempty"`
-	PodUID            *string `json:"podUID,omitempty"`
+	// CommitNodeAgentEpoch requests a durable hold for this exact capture boot.
+	CommitNodeAgentEpoch *string `json:"commitNodeAgentEpoch,omitempty"`
+	OperationID          *string `json:"operationId,omitempty"`
+	LifecycleRevision    *int64  `json:"lifecycleRevision,omitempty"`
+	PodUID               *string `json:"podUID,omitempty"`
 	// PodResourceVersion is capture-time audit data; deletion reads a fresh RV.
 	PodResourceVersion *string `json:"podResourceVersion,omitempty"`
 	Epoch              *int32  `json:"epoch,omitempty"`
@@ -37,6 +39,14 @@ type DeviceCaptureRequestApplyConfiguration struct {
 // apply.
 func DeviceCaptureRequest() *DeviceCaptureRequestApplyConfiguration {
 	return &DeviceCaptureRequestApplyConfiguration{}
+}
+
+// WithCommitNodeAgentEpoch sets the CommitNodeAgentEpoch field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the CommitNodeAgentEpoch field is set to the value of the last call.
+func (b *DeviceCaptureRequestApplyConfiguration) WithCommitNodeAgentEpoch(value string) *DeviceCaptureRequestApplyConfiguration {
+	b.CommitNodeAgentEpoch = &value
+	return b
 }
 
 // WithOperationID sets the OperationID field in the declarative configuration to the given value

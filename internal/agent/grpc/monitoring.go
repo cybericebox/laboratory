@@ -68,7 +68,7 @@ func sortedByName[T interface{ GetName() string }](items []T) []T {
 }
 
 // observe builds a secret-free observation covering all LabGroups (cluster-scoped) and, for each group with a provisioned
-// namespace, its Labs and LabGroupClients (namespace-scoped), reading only the caches: no call to the API server per group, and an
+// namespace, its Labs and LabGroupClients (namespace-scoped), reading topology caches plus direct current-boot identity reads; an
 // API error cannot make a record vanish from the observation (the caches keep the last objects they saw).
 func (h *Handler) observe(ctx context.Context, c *monCache) (*monState, error) {
 	groups, err := c.groups.List(labels.Everything())
@@ -112,7 +112,7 @@ func (h *Handler) observe(ctx context.Context, c *monCache) (*monState, error) {
 			out[names.LabelTenant] = gt
 			return out
 		}
-		upd.Groups = append(upd.Groups, labGroupToProto(g))
+		upd.Groups = append(upd.Groups, h.currentLabGroupProto(ctx, g))
 		st.labels[recordKey("lab_group", gid, "", gid)] = tl(g.Labels)
 		ns := g.Status.Namespace
 		if ns == "" {

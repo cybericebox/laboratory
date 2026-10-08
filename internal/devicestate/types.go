@@ -156,3 +156,11 @@ type CaptureCluster interface {
 	InvalidateCapture(context.Context, PodInfo, api.DeviceCaptureResult) error
 	CheckCapture(context.Context, PodInfo, api.DeviceCaptureResult) (bool, error)
 }
+
+// CaptureCommitCluster is the minimal durable final-capture-to-stop seam.
+// Required capture remains compatible; an operator never deletes until this
+// exact capture's committed acknowledgement is present in status and guard.
+type CaptureCommitCluster interface {
+	CaptureCommitRequested(context.Context, PodInfo, api.DeviceCaptureResult) (bool, error)
+	AcknowledgeCaptureCommit(context.Context, PodInfo, api.DeviceCaptureResult) error
+}

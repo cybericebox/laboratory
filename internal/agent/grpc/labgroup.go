@@ -141,7 +141,7 @@ func (h *Handler) ListLabGroups(ctx context.Context, in *protobuf.ListRequest) (
 			if err != nil {
 				return nil, err
 			}
-			out.Items = append(out.Items, labGroupToProto(g))
+			out.Items = append(out.Items, h.currentLabGroupProto(ctx, g))
 		}
 		return out, nil
 	}
@@ -150,7 +150,7 @@ func (h *Handler) ListLabGroups(ctx context.Context, in *protobuf.ListRequest) (
 		return nil, err
 	}
 	for i := range items {
-		out.Items = append(out.Items, labGroupToProto(&items[i]))
+		out.Items = append(out.Items, h.currentLabGroupProto(ctx, &items[i]))
 	}
 	return out, nil
 }

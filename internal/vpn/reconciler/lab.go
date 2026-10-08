@@ -4,7 +4,9 @@ package reconciler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"k8s.io/apimachinery/pkg/types"
 	"net"
 	"reflect"
 	"slices"
@@ -65,6 +67,28 @@ func (r *LabVPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, r.Update(ctx, &labvpn)
 	}
 
+	var parent laboratoryv1alpha1.Lab
+	if err := r.Get(ctx, client.ObjectKey{Name: labvpn.Spec.LabName, Namespace: labvpn.Namespace}, &parent); err != nil {
+		return r.dhcpFailure(ctx, &labvpn, err)
+	}
+	if parent.Spec.Lifecycle.IsStopped() {
+		r.DHCP.Stop(labvpn.Spec.LabName)
+		iface := names.LabIfaceNameByIndex(labvpn.Spec.NetworkIndex)
+		r.IPT.DenyDHCP(iface)
+		if cidr, err := netutil.SubnetForIndex(r.Cfg.VPNBaseNetwork, 24, labvpn.Spec.NetworkIndex); err == nil {
+			r.IPT.DenyPing(iface, firstHostIP(cidr))
+		}
+		if old, ok := r.applied[labvpn.Name]; ok {
+			r.clearNetwork(old)
+			delete(r.applied, labvpn.Name)
+		}
+		next := labvpn.Status
+		next.Conditions = slices.Clone(next.Conditions)
+		next.Phase = laboratoryv1alpha1.LabVPNPhasePending
+		next.DHCPReady = false
+		labstatus.SetReady(&next.Conditions, labvpn.Generation, false, "LabStopped", "lab runtime is stopped")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, r.patchStatus(ctx, &labvpn, next)
+	}
 	dhcpEnabled, ranges, _, dhcpErr := labdhcp.Desired(ctx, r.Client, labvpn.Namespace, labvpn.Spec.LabName, "vpn")
 	if dhcpErr != nil {
 		return r.dhcpFailure(ctx, &labvpn, dhcpErr)
@@ -200,12 +224,18 @@ func (r *LabVPNReconciler) patchStatus(
 	labvpn *laboratoryv1alpha1.LabVPN,
 	s laboratoryv1alpha1.LabVPNStatus,
 ) error {
+	// AccessReconciler owns runtime and accessFence independently. Never include
+	// those foreign fields in a network-status replacement, even from stale cache.
+	s.Runtime = labvpn.Status.Runtime
+	s.AccessFence = labvpn.Status.AccessFence
 	if reflect.DeepEqual(labvpn.Status, s) {
 		return nil
 	}
-	patch := client.MergeFrom(labvpn.DeepCopy())
-	labvpn.Status = s
-	return r.Status().Patch(ctx, labvpn, patch)
+	raw, err := json.Marshal(map[string]any{"status": map[string]any{"phase": s.Phase, "dhcpEnabled": s.DHCPEnabled, "dhcpReady": s.DHCPReady, "conditions": s.Conditions}})
+	if err != nil {
+		return err
+	}
+	return r.Status().Patch(ctx, labvpn, client.RawPatch(types.MergePatchType, raw))
 }
 
 func (r *LabVPNReconciler) SetupWithManager(mgr ctrl.Manager) error {

@@ -264,6 +264,10 @@ spec:
                     description: CaptureRequest is mutable operator control, not immutable
                       persistence policy.
                     properties:
+                      commitNodeAgentEpoch:
+                        description: CommitNodeAgentEpoch requests a durable hold
+                          for this exact capture boot.
+                        type: string
                       deadlineSeconds:
                         format: int32
                         maximum: 3600
@@ -449,6 +453,11 @@ spec:
                     description: Capture is written only by the node-agent for explicit
                       required capture.
                     properties:
+                      committed:
+                        description: |-
+                          Committed is acknowledged only after the exact hold journal is fsynced.
+                          It prevents deadline-only thaw between collective capture and deletion.
+                        type: boolean
                       epoch:
                         format: int32
                         minimum: 0

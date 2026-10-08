@@ -107,6 +107,35 @@ spec:
               coveredToMs:
                 format: int64
                 type: integer
+              currentVPNRuntime:
+                description: CurrentVPNRuntime is published at startup before ACL
+                  acknowledgement.
+                properties:
+                  bootId:
+                    type: string
+                  containerID:
+                    type: string
+                  groupUID:
+                    type: string
+                  podName:
+                    type: string
+                  podUID:
+                    type: string
+                  publishedAt:
+                    format: date-time
+                    type: string
+                  restartCount:
+                    format: int32
+                    type: integer
+                required:
+                - bootId
+                - containerID
+                - groupUID
+                - podName
+                - podUID
+                - publishedAt
+                - restartCount
+                type: object
               kernelCheckpoints:
                 description: KernelCheckpoints are consumed by the VPN writer, never
                   relayed to users.

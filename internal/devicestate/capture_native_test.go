@@ -185,3 +185,72 @@ func TestRequiredCaptureNativeRecoveryAfterAPIOutage(t *testing.T) {
 	r.e.holdWorkers.Wait()
 	r.e.stopAll()
 }
+
+func TestRequiredCaptureNativeCommittedRecoveryKeepsRealWriterFrozen(t *testing.T) {
+	if os.Getenv("CICE_CAPTURE_NATIVE") != "1" {
+		t.Skip("requires owned privileged Linux container")
+	}
+	r := newRig(t, time.Hour, 1<<20)
+	req := captureRequest(r)
+	dir := filepath.Join("/sys/fs/cgroup", "cri-containerd-cice-commit-"+strconv.Itoa(os.Getpid()))
+	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(dir)
+	path := filepath.Join(t.TempDir(), "ticks")
+	child := exec.Command("sh", "-c", "while :; do echo x >> \"$1\"; sleep 0.01; done", "writer", path)
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.WriteFile(filepath.Join(dir, "cgroup.freeze"), []byte("0"), 0644)
+		_ = child.Process.Kill()
+		_ = child.Wait()
+	}()
+	if err := os.WriteFile(filepath.Join(dir, "cgroup.procs"), []byte(strconv.Itoa(child.Process.Pid)), 0644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(80 * time.Millisecond)
+	initial, readErr := os.ReadFile(path)
+	if readErr != nil || len(initial) == 0 {
+		t.Fatal("native writer never produced control data", readErr)
+	}
+	if _, err := FreezeRequired(context.Background(), dir); err != nil {
+		t.Fatal(err)
+	}
+	native := &nativeRecoveryRuntime{fakeRuntime: r.rt, dir: dir}
+	r.e.Runtime = native
+	r.e.NodeAgentEpoch = "new-boot"
+	cl := &committingCluster{fakeCluster: r.cl, requested: true}
+	r.e.Cluster = cl
+	c, err := native.Inspect(context.Background(), r.pod.ContainerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := captureResult(r.pod, req, "prior-boot")
+	result.Result = "Succeeded"
+	result.Quiesced = true
+	result.Committed = true
+	result.Image = c.ImageRef
+	h := &requiredHold{Container: c, Pod: r.pod, Result: result}
+	if err := r.e.writeHold(h); err != nil {
+		t.Fatal(err)
+	}
+	r.cl.guard = result
+	r.cl.checkFailures = 1
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	protected, err := r.e.RecoverCaptureHolds(runCtx)
+	if err != nil || !protected[dir] {
+		t.Fatal("committed recovery lost native ownership", protected, err)
+	}
+	ThawOrphansExcept("/sys/fs/cgroup", protected)
+	waitCommitted(t, cl)
+	cancel()
+	before, _ := os.ReadFile(path)
+	time.Sleep(1100 * time.Millisecond)
+	after, _ := os.ReadFile(path)
+	if !frozen(dir) || len(before) != len(after) {
+		t.Fatal("committed real writer thawed on restart/deadline/worker cancellation")
+	}
+}

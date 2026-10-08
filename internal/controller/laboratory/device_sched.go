@@ -38,6 +38,9 @@ func (r *DeviceReconciler) initScheduling(ctx context.Context, device *laborator
 // mayCreateWorkload reports whether the device's pod may be created now. A device
 // with no record is queued first; with a record it may go once it is not Queued.
 func (r *DeviceReconciler) mayCreateWorkload(ctx context.Context, device *laboratoryv1alpha1.Device) (bool, error) {
+	if stopped, err := r.deviceStopped(ctx, device); stopped || err != nil {
+		return false, err
+	}
 	if !r.Scheduled {
 		return true, nil
 	}

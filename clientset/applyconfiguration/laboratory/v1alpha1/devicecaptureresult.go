@@ -28,6 +28,9 @@ import (
 // Succeeded includes unchanged base/latest state; a stale or invalidated held
 // guard is never sufficient to stop. NodeAgentEpoch changes on every restart.
 type DeviceCaptureResultApplyConfiguration struct {
+	// Committed is acknowledged only after the exact hold journal is fsynced.
+	// It prevents deadline-only thaw between collective capture and deletion.
+	Committed          *bool    `json:"committed,omitempty"`
 	OperationID        *string  `json:"operationId,omitempty"`
 	LifecycleRevision  *int64   `json:"lifecycleRevision,omitempty"`
 	PodUID             *string  `json:"podUID,omitempty"`
@@ -49,6 +52,14 @@ type DeviceCaptureResultApplyConfiguration struct {
 // apply.
 func DeviceCaptureResult() *DeviceCaptureResultApplyConfiguration {
 	return &DeviceCaptureResultApplyConfiguration{}
+}
+
+// WithCommitted sets the Committed field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Committed field is set to the value of the last call.
+func (b *DeviceCaptureResultApplyConfiguration) WithCommitted(value bool) *DeviceCaptureResultApplyConfiguration {
+	b.Committed = &value
+	return b
 }
 
 // WithOperationID sets the OperationID field in the declarative configuration to the given value

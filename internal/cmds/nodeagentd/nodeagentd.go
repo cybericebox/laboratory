@@ -124,6 +124,7 @@ func Run() {
 		os.Exit(1)
 	}
 	grpcSrv.SetK8sClient(mgr.GetClient())
+	grpcSrv.SetK8sReader(mgr.GetAPIReader())
 	okOVS := health.Func("Open vSwitch does not answer", func(ctx context.Context) bool { return pingOVS(ctx) == nil })
 	for _, c := range []struct {
 		name  string

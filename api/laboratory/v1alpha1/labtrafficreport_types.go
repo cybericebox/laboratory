@@ -94,6 +94,9 @@ type LabTrafficCoverageSpan struct {
 
 // LabTrafficReportStatus is written only by the collector.
 type LabTrafficReportStatus struct {
+	// CurrentVPNRuntime is published at startup before ACL acknowledgement.
+	// +optional
+	CurrentVPNRuntime *VPNBootRecord `json:"currentVPNRuntime,omitempty"`
 	// BootID identifies the observation epoch. Restored cumulative ledger totals
 	// continue across boots; coverage intervals retain their own epoch identity.
 	BootID string `json:"bootID,omitempty"`

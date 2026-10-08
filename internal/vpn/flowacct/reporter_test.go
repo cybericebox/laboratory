@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -77,5 +78,27 @@ func TestReporterRestoresPrivateCheckpointWithoutRecount(t *testing.T) {
 	observe(t, second, sample(7), t0.Add(time.Second))
 	if len(restored) != 1 || second.Snapshot(t0).Ledger[0].PacketsOut != 7 {
 		t.Fatal("private checkpoint not resumed")
+	}
+}
+
+func TestTelemetryPreservesIndependentCurrentVPNBootAndRejectsOldWriter(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = laboratoryv1alpha1.AddToScheme(scheme)
+	current := &laboratoryv1alpha1.VPNBootRecord{VPNRuntimeIdentity: laboratoryv1alpha1.VPNRuntimeIdentity{BootID: "current", PodName: "vpn", PodUID: "uid", ContainerID: "containerd://1"}, GroupUID: "group", PublishedAt: metav1.Now()}
+	obj := &laboratoryv1alpha1.LabTrafficReport{ObjectMeta: metav1.ObjectMeta{Name: ReportName, Namespace: "ns"}, Spec: laboratoryv1alpha1.LabTrafficReportSpec{Kind: laboratoryv1alpha1.LabTrafficSurfaceVPN, Instance: "vpn"}, Status: laboratoryv1alpha1.LabTrafficReportStatus{CurrentVPNRuntime: current}}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(obj).WithObjects(obj).Build()
+	ctx := context.Background()
+	key := types.NamespacedName{Name: ReportName, Namespace: "ns"}
+	if err := PublishReport(ctx, c, c, key, obj.Spec, laboratoryv1alpha1.LabTrafficReportStatus{BootID: "current", CoveredToMs: 123}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, key, obj); err != nil {
+		t.Fatal(err)
+	}
+	if obj.Status.CurrentVPNRuntime == nil || obj.Status.CurrentVPNRuntime.BootID != "current" || obj.Status.CoveredToMs != 123 {
+		t.Fatal("telemetry replaced startup binding", obj.Status)
+	}
+	if err := PublishReport(ctx, c, c, key, obj.Spec, laboratoryv1alpha1.LabTrafficReportStatus{BootID: "superseded", CoveredToMs: 124}); err == nil {
+		t.Fatal("old process telemetry overwrote new boot witness")
 	}
 }

@@ -94,7 +94,10 @@ func TestNetnsAttachmentRecoveryAndSteadyLatency(t *testing.T) {
 		Labels:      map[string]string{names.LabelLab: "lab", names.LabelDevice: "dev"},
 		Annotations: map[string]string{names.AnnotationNetworks: netattach.Encode(attachments), names.AnnotationDefaultNetwork: ""}},
 		Spec: corev1.PodSpec{NodeName: "node"}, Status: corev1.PodStatus{Phase: corev1.PodRunning}}
-	kube := fake.NewClientBuilder().WithObjects(pod).Build()
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = laboratoryv1alpha1.AddToScheme(scheme)
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pod, &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "lab", Namespace: "ns"}}).Build()
 	s := NewNodeAgentServer(ovs, nil)
 	s.SetK8sClient(kube)
 	req := &nodev1.SetupNetworksRequest{Namespace: pod.Namespace, Name: pod.Name, PodUid: string(pod.UID), NetnsPath: path}

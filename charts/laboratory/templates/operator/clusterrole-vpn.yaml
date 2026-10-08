@@ -5,6 +5,10 @@ metadata:
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 rules:
+  # Direct current container identity is read for boot-fenced acknowledgements.
+  - apiGroups: [ "" ]
+    resources: [ pods ]
+    verbs: [ get ]
   - apiGroups: [ laboratory.cybericebox.com ]
     resources: [ labgroupclients ]
     verbs: [ get, list, watch, update ]
