@@ -269,3 +269,44 @@ func TestGatewayRoleReadsLabs(t *testing.T) {
 		t.Fatal("gateway cannot read/watch lab DHCP settings")
 	}
 }
+
+func TestNodeAgentRBACCapturePatchOnly(t *testing.T) {
+	out, err := helmTemplate(t, "-s", "templates/node-agent/clusterrole.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch := false
+	for _, d := range docs(t, out) {
+		if d["kind"] != "ClusterRole" {
+			continue
+		}
+		for _, r := range rulesOf(t, d) {
+			if has(r.Resources, "pods") && has(r.Verbs, "patch") {
+				patch = true
+				if has(r.Verbs, "update") || has(r.Verbs, "delete") || has(r.Verbs, "create") {
+					t.Fatalf("excess Pod mutation: %+v", r)
+				}
+			}
+		}
+	}
+	if !patch {
+		t.Fatal("node-agent lacks guarded Pod patch privilege")
+	}
+}
+
+func TestNodeAgentRBACNoCapturePatchWithoutAdmission(t *testing.T) {
+	out, err := helmTemplate(t, "-s", "templates/node-agent/clusterrole.yaml", "--set", "operator.admissionPolicy.enabled=false")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range docs(t, out) {
+		if d["kind"] != "ClusterRole" {
+			continue
+		}
+		for _, r := range rulesOf(t, d) {
+			if has(r.Resources, "pods") && has(r.Verbs, "patch") {
+				t.Fatal("unguarded Pod patch authority")
+			}
+		}
+	}
+}

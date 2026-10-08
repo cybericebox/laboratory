@@ -355,6 +355,9 @@ spec:
             path: /sys/fs/cgroup
             type: Directory
         - name: state-work
-          emptyDir: {}
+          # Required capture holds must survive node-agent Pod recreation.
+          hostPath:
+            path: /var/cache/cybericebox/state
+            type: DirectoryOrCreate
         {{- end }}
 {{- end }}

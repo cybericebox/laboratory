@@ -49,7 +49,7 @@ var _ = Describe("node-agent label admission policy", Ordered, func() {
 			Expect(k8sClient.Create(ctx, &obj)).To(Succeed(), doc)
 			applied++
 		}
-		Expect(applied).To(Equal(2), "the policy and its binding")
+		Expect(applied).To(Equal(4), "the Node-ready and capture policies and their bindings")
 
 		Expect(k8sClient.Create(ctx, &rbacv1.ClusterRoleBinding{
 			ObjectMeta: metav1.ObjectMeta{Name: "adm-test-node-agent"},

@@ -124,7 +124,10 @@ func frozen(dir string) bool {
 // ThawOrphans thaws container cgroups left frozen, which happens when the
 // node-agent dies in the middle of a snapshot. Nothing else freezes them.
 // It returns the directories it thawed.
-func ThawOrphans(root string) []string {
+func ThawOrphans(root string) []string { return ThawOrphansExcept(root, nil) }
+
+// ThawOrphansExcept preserves required captures that still own live tasks.
+func ThawOrphansExcept(root string, protected map[string]bool) []string {
 	var thawed []string
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -134,7 +137,7 @@ func ThawOrphans(root string) []string {
 			return nil
 		}
 		if strings.HasPrefix(d.Name(), "cri-containerd-") || isContainerID(d.Name()) {
-			if frozen(p) {
+			if !protected[p] && frozen(p) {
 				_ = os.WriteFile(filepath.Join(p, "cgroup.freeze"), []byte("0"), 0o644)
 				thawed = append(thawed, p)
 			}

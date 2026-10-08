@@ -20,6 +20,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/random"
 	"k8s.io/apimachinery/pkg/types"
 
+	api "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/snapshot"
 )
 
@@ -41,16 +42,19 @@ type fakeRuntime struct {
 	images map[string]v1.Image
 	freeze []bool
 	gone   bool
+	held   bool
 	// failDiff is the number of Diff calls that fail before one succeeds.
 	failDiff int
 	diffs    int
 }
 
 func (f *fakeRuntime) Inspect(_ context.Context, id string) (Container, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.gone {
 		return Container{}, fmt.Errorf("container %s not found", id)
 	}
-	return Container{ID: id, ImageRef: "docker.io/library/app:1", UpperDir: f.upper}, nil
+	return Container{ID: id, ImageRef: "docker.io/library/app:1", UpperDir: f.upper, Cgroup: f.upper}, nil
 }
 
 func (f *fakeRuntime) Diff(_ context.Context, _ Container, freeze bool) (io.ReadCloser, error) {
@@ -91,7 +95,11 @@ type fakeCluster struct {
 	warns   []string
 	exits   []string
 	// tenantBytes is what the other devices of the tenant take in the registry.
-	tenantBytes int64
+	tenantBytes   int64
+	invalidateErr error
+	deleting      bool
+	capture       api.DeviceCaptureResult
+	guard         api.DeviceCaptureResult
 }
 
 func (c *fakeCluster) TenantBytes(context.Context, string, types.NamespacedName) (int64, error) {
@@ -151,6 +159,7 @@ func newRig(t *testing.T, debounce time.Duration, maxBytes int64) *rig {
 		t.Fatal(err)
 	}
 	rt := &fakeRuntime{upper: t.TempDir(), images: map[string]v1.Image{"docker.io/library/app:1": base}}
+	t.Cleanup(func() { rt.mu.Lock(); rt.gone = true; rt.mu.Unlock() })
 	cl := &fakeCluster{}
 	pod := PodInfo{
 		Device: types.NamespacedName{Namespace: "ns", Name: "lab-web"}, Pod: "lab-web-1", Incarnation: 1,
@@ -458,4 +467,58 @@ func TestEngineHonoursTheTenantRegistryQuota(t *testing.T) {
 	if recs, _, _ = r.cl.snapshot(); len(recs) != 1 {
 		t.Fatalf("a snapshot that fits the tenant quota is taken: %v", recs)
 	}
+}
+
+func (f *fakeRuntime) Quiesce(ctx context.Context, c Container) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	f.held = true
+	f.mu.Unlock()
+	return func() { f.mu.Lock(); f.held = false; f.mu.Unlock() }, nil
+}
+func (f *fakeRuntime) TaskAlive(context.Context, Container) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return !f.gone, nil
+}
+func (c *fakeCluster) SetCaptureGuard(_ context.Context, p PodInfo, req api.DeviceCaptureRequest, boot string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.guard = captureResult(p, req, boot)
+	return nil
+}
+func (c *fakeCluster) RecordCapture(_ context.Context, _ PodInfo, r api.DeviceCaptureResult) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.capture = r
+	return nil
+}
+func (c *fakeCluster) InvalidateCapture(_ context.Context, _ PodInfo, result api.DeviceCaptureResult) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.deleting {
+		return ErrDeleting
+	}
+	if c.guard.NodeAgentEpoch != "" && !sameCapture(c.guard, result) {
+		return ErrStale
+	}
+	if c.invalidateErr != nil {
+		return c.invalidateErr
+	}
+	c.guard = api.DeviceCaptureResult{}
+	c.capture = result
+	return nil
+}
+func (c *fakeCluster) CheckCapture(_ context.Context, _ PodInfo, result api.DeviceCaptureResult) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.deleting {
+		return true, nil
+	}
+	if c.guard.NodeAgentEpoch != "" && !sameCapture(c.guard, result) {
+		return false, ErrStale
+	}
+	return false, nil
 }

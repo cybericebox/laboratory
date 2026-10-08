@@ -52,9 +52,10 @@ func retryDelay(base, max time.Duration, n int) time.Duration {
 
 // Engine follows the snapshot-backed device containers of one node.
 type Engine struct {
-	Runtime Runtime
-	Cluster Cluster
-	Pusher  Pusher
+	Runtime        Runtime
+	NodeAgentEpoch string
+	Cluster        Cluster
+	Pusher         Pusher
 	// RegistryHost is host:port under which this node reaches the registry; an
 	// image reference starting with it is a snapshot image.
 	RegistryHost string
@@ -91,9 +92,11 @@ type Engine struct {
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 
-	mu      sync.Mutex
-	tracked map[string]*tracked // by container id
-	warned  map[string]bool
+	captureWorkers sync.WaitGroup
+	holdWorkers    sync.WaitGroup
+	mu             sync.Mutex
+	tracked        map[string]*tracked // by container id
+	warned         map[string]bool
 }
 
 // tracked is one followed container.
@@ -104,12 +107,15 @@ type tracked struct {
 
 	cancel context.CancelFunc
 
-	mu       sync.Mutex // one snapshot at a time
-	lastDiff string     // digest of the last layer published or refused
-	pushed   bool       // a snapshot of this run was published
-	lastWarn string
-	exited   bool
-	failures int // consecutive failed live snapshots (touched by the live loop only)
+	mu                sync.Mutex // one snapshot at a time
+	lastPublishedDiff string     // only a successfully recorded digest; lastDiff also remembers legacy refusals
+	lastDiff          string     // digest of the last layer published or refused
+	pushed            bool       // a snapshot of this run was published
+	lastWarn          string
+	exited            bool
+	required          *requiredHold
+	lastSnapshot      Snapshot
+	failures          int // consecutive failed live snapshots (touched by the live loop only)
 	// prevRef is the manifest this device currently has in the registry (the one it was restored from, or its last snapshot); a
 	// new snapshot supersedes it. pushes are the recent ones, for the rate and the budget.
 	prevRef string
@@ -212,7 +218,9 @@ func (e *Engine) now() time.Time {
 // Run follows the node until ctx ends.
 func (e *Engine) Run(ctx context.Context) error {
 	e.mu.Lock()
-	e.tracked = map[string]*tracked{}
+	if e.tracked == nil {
+		e.tracked = map[string]*tracked{}
+	}
 	e.mu.Unlock()
 
 	exits, err := e.Runtime.Exits(ctx)
@@ -230,6 +238,8 @@ func (e *Engine) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			e.stopAll()
+			e.captureWorkers.Wait()
+			e.holdWorkers.Wait()
 			return nil
 		case id, ok := <-exits:
 			if !ok {
@@ -263,10 +273,24 @@ func (e *Engine) Sync(ctx context.Context) {
 	}
 	live := map[string]bool{}
 	for _, p := range pods {
-		if p.ContainerID == "" || p.Epoch != p.DeviceEpoch {
+		if p.Epoch != p.DeviceEpoch {
 			continue
 		}
 		live[p.ContainerID] = true
+		if p.CaptureRequest != nil {
+			req := *p.CaptureRequest
+			e.captureWorkers.Add(1)
+			go func() {
+				defer e.captureWorkers.Done()
+				if _, err := e.CaptureRequired(ctx, p, req); err != nil {
+					e.Log.Error(err, "required capture", "pod", p.Pod)
+				}
+			}()
+			continue
+		}
+		if p.ContainerID == "" {
+			continue
+		}
 		switch {
 		case p.Running && !p.Ended:
 			e.ensureTracked(ctx, p)
@@ -445,7 +469,7 @@ func (e *Engine) endOf(ctx context.Context, p PodInfo) {
 // nothing is frozen, and the layer on disk is final.
 func (e *Engine) finish(ctx context.Context, t *tracked) {
 	t.mu.Lock()
-	if t.exited {
+	if t.exited || t.required != nil || t.pod.CaptureRequest != nil {
 		t.mu.Unlock()
 		return
 	}
@@ -479,6 +503,13 @@ func (e *Engine) markExit(ctx context.Context, p PodInfo) {
 func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.required != nil {
+		return nil
+	}
+	return t.snapshotLocked(ctx, freeze, false)
+}
+
+func (t *tracked) snapshotLocked(ctx context.Context, freeze, required bool) (err error) {
 	if t.exited && freeze {
 		return nil
 	}
@@ -527,16 +558,25 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 		// stays, and the same change is not diffed again for a while.
 		t.holdUntil = e.now().Add(quotaHold)
 		t.warn(ctx, ferr.Error())
+		if required {
+			return ferr
+		}
 		return nil
 	}
 	if errors.Is(ferr, snapshot.ErrEntries) {
 		// Too many files: the last good snapshot stays; the next change is tried again (the layer only grows, so it will
 		// most likely be refused again, but the warning is cleared by a snapshot that fits).
 		t.warn(ctx, ferr.Error())
+		if required {
+			return ferr
+		}
 		return nil
 	}
 	if ferr != nil {
 		return fmt.Errorf("filter layer: %w", ferr)
+	}
+	if required && (stats.Unmapped > 0 || stats.SkippedTotal > 0 || stats.RefusedEntries > 0) {
+		return fmt.Errorf("required capture omits file data or ownership")
 	}
 	if stats.Unmapped > 0 {
 		e.Log.Info("owner ids outside the user namespace map were written as 0", "device", t.pod.Device, "pod", t.pod.Pod, "ids", stats.Unmapped)
@@ -546,15 +586,33 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 	// Files over the size limit are left out of the layer; the status names them.
 	skipMsg := stats.SkippedWarning(pol.MaxFileSize)
 	if stats.Entries == 0 {
-		if t.pushed {
+		if t.pushed && !required {
 			if err := t.publishStart(ctx); err != nil {
 				return err
 			}
 		}
+		t.lastSnapshot = Snapshot{Image: t.c.ImageRef, At: e.now()}
+		if required {
+			t.lastPublishedDiff = ""
+			t.lastDiff = ""
+			t.pushed = false
+		}
+		if required && e.snapshotRef(t.c.ImageRef) != "" {
+			run, err := e.Runtime.LoadImage(ctx, t.c.ImageRef)
+			if err != nil {
+				return err
+			}
+			chain, err := snapshot.ChainOf(run)
+			if err != nil {
+				return err
+			}
+			t.lastSnapshot.SizeBytes = chain.Bytes()
+			t.lastSnapshot.Layers = int32(chain.Layers())
+		}
 		t.warnSkipped(ctx, skipMsg)
 		return nil // nothing (else) changed since the device started
 	}
-	if digest == t.lastDiff {
+	if !required && digest == t.lastDiff || required && t.pushed && digest == t.lastPublishedDiff {
 		return nil
 	}
 
@@ -564,6 +622,9 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 	}
 	img, chain, err := snapshot.Build(run, layerPath, stats.Bytes, pol, dir)
 	if errors.Is(err, snapshot.ErrQuota) || errors.Is(err, snapshot.ErrEntries) {
+		if required {
+			return err
+		}
 		t.lastDiff = digest // do not retry the same layer
 		t.warn(ctx, err.Error())
 		return nil
@@ -582,18 +643,33 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 			if live, lerr := e.Cluster.LiveRepos(ctx); lerr == nil {
 				if ret, rerr := e.Retained.RetainedBytes(ctx, t.pod.Tenant, live); rerr == nil {
 					others += ret
+				} else if required {
+					return rerr
 				}
+			} else if required {
+				return lerr
 			}
 		}
 		if others+chain.Bytes() > t.pod.TenantQuota {
+			if required {
+				return fmt.Errorf("%w: tenant quota exceeded", snapshot.ErrQuota)
+			}
 			t.lastDiff = digest
 			t.warn(ctx, fmt.Sprintf("%v: the snapshots of the tenant would take %d bytes of the registry, the tenant's quota is %d", snapshot.ErrQuota, others+chain.Bytes(), t.pod.TenantQuota))
 			return nil
 		}
 	}
+	if required {
+		if d := t.allow(); d != nil {
+			return d
+		}
+	}
 	// The registry volume is shared by every tenant and the platform: no push while it is nearly full.
 	if e.Space != nil {
 		if serr := e.Space.Check(ctx, chain.Bytes()); serr != nil {
+			if required {
+				return serr
+			}
 			t.warn(ctx, serr.Error())
 			if freeze {
 				return &errDeferred{after: 5 * time.Minute, reason: serr.Error()}
@@ -608,12 +684,18 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 		return fmt.Errorf("push snapshot: %w", err)
 	}
 	pushTook = e.now().Sub(pushStart)
-	if err := e.Cluster.Record(ctx, t.pod, Snapshot{Image: ref, At: e.now(), SizeBytes: chain.Bytes(), Layers: int32(chain.Layers())}); err != nil {
-		return err
+	if !required {
+		if err := e.Cluster.Record(ctx, t.pod, Snapshot{Image: ref, At: e.now(), SizeBytes: chain.Bytes(), Layers: int32(chain.Layers())}); err != nil {
+			return err
+		}
 	}
+	t.lastSnapshot = Snapshot{Image: ref, At: e.now(), SizeBytes: chain.Bytes(), Layers: int32(chain.Layers())}
+	t.lastPublishedDiff = digest
 	t.lastDiff, t.pushed, t.lastWarn = digest, true, ""
 	t.pushes = append(t.pushes, pushRecord{at: e.now(), bytes: chain.Bytes()})
-	t.supersede(ref, img)
+	if !required {
+		t.supersede(ref, img)
+	}
 	t.warnSkipped(ctx, skipMsg)
 	e.Log.Info("snapshot taken", "device", t.pod.Device, "pod", t.pod.Pod, "frozen", freeze,
 		"diff", diffTook.String(), "push", pushTook.String(), "total", e.now().Sub(started).String(),
@@ -662,6 +744,7 @@ func (t *tracked) publishStart(ctx context.Context) error {
 	if err := t.e.Cluster.Record(ctx, t.pod, s); err != nil {
 		return err
 	}
+	t.lastPublishedDiff = ""
 	t.lastDiff, t.pushed, t.lastWarn = "", false, ""
 	return nil
 }

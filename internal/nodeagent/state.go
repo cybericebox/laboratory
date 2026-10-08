@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/uuid"
 	"k8s.io/apimachinery/pkg/api/resource"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -75,6 +76,7 @@ func SetupDeviceState(mgr ctrl.Manager, cfg *Config) error {
 		budget = q.Value()
 	}
 	engine := &devicestate.Engine{
+		NodeAgentEpoch:   uuid.NewString(),
 		MinPushInterval:  cfg.StateMinPushInterval,
 		PushBudget:       budget,
 		PushBudgetWindow: cfg.StatePushBudgetWindow,
@@ -94,8 +96,17 @@ func SetupDeviceState(mgr ctrl.Manager, cfg *Config) error {
 		Log:          log,
 	}
 	return mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
-		// A crash in the middle of a snapshot leaves the container frozen.
-		for _, dir := range devicestate.ThawOrphans(cfg.CgroupRoot) {
+		owner, err := devicestate.AcquireCaptureOwner(cfg.StateWorkDir)
+		if err != nil {
+			return err
+		}
+		defer owner.Close()
+		// Invalidate old required captures before any live task can thaw.
+		protected, err := engine.RecoverCaptureHolds(ctx)
+		if err != nil {
+			return fmt.Errorf("required capture recovery: %w", err)
+		}
+		for _, dir := range devicestate.ThawOrphansExcept(cfg.CgroupRoot, protected) {
 			log.Info("thawed a container left frozen", "cgroup", dir)
 		}
 		defer func() { _ = rt.Close() }()

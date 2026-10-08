@@ -17,6 +17,7 @@ import (
 	"github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/containerd/v2/core/mount"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
+	"github.com/containerd/errdefs"
 	"github.com/containerd/platforms"
 	"github.com/containerd/typeurl/v2"
 	"github.com/go-logr/logr"
@@ -319,4 +320,42 @@ func (r *ContainerdRuntime) Exits(ctx context.Context) (<-chan string, error) {
 		}
 	}()
 	return out, nil
+}
+
+// Quiesce uses the native freezer and treats sync failures as required-capture failures.
+// On sync failure the caller still owns the thaw function and must invalidate first.
+func (r *ContainerdRuntime) Quiesce(ctx context.Context, c Container) (func(), error) {
+	cont, err := r.client.LoadContainer(r.ctx(ctx), c.ID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = cont.Task(r.ctx(ctx), nil); err != nil {
+		return nil, err
+	}
+	thaw, err := Freeze(ctx, c.Cgroup)
+	if err != nil {
+		return nil, err
+	}
+	return thaw, syncFilesystem(c.UpperDir)
+}
+func (r *ContainerdRuntime) TaskAlive(ctx context.Context, c Container) (bool, error) {
+	cont, err := r.client.LoadContainer(r.ctx(ctx), c.ID)
+	if errdefs.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	task, err := cont.Task(r.ctx(ctx), nil)
+	if errdefs.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	status, err := task.Status(r.ctx(ctx))
+	if err != nil {
+		return false, err
+	}
+	return status.Status != containerd.Stopped, nil
 }

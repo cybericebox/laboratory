@@ -35,6 +35,8 @@ type Stats struct {
 	Bytes int64
 	// Dropped is the number of entries left out.
 	Dropped int
+	// RefusedEntries counts omitted data outside explicitly excluded paths.
+	RefusedEntries int
 	// Skipped are the first MaxSkippedListed regular files left out for being larger than
 	// the policy's MaxFileSize; SkippedTotal counts all of them.
 	Skipped      []SkippedFile
@@ -100,10 +102,12 @@ func FilterLayerMapped(in io.Reader, out io.Writer, pol Policy, ids IDMaps) (Sta
 		// Device nodes and named pipes are never kept: a snapshot restored on a node must not create them (the device cgroup
 		// would stop a device node working, but nothing in a snapshot has a reason to carry one).
 		if hdr.Typeflag == tar.TypeChar || hdr.Typeflag == tar.TypeBlock || hdr.Typeflag == tar.TypeFifo {
+			st.RefusedEntries++
 			st.Dropped++
 			continue
 		}
 		if headerBytes(hdr) > MaxEntryHeaderBytes {
+			st.RefusedEntries++
 			st.Dropped++
 			continue
 		}

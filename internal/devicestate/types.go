@@ -13,6 +13,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	api "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/snapshot"
 )
 
@@ -20,8 +21,15 @@ import (
 // pod on this node.
 type PodInfo struct {
 	// Device is the Device CR the pod belongs to.
-	Device types.NamespacedName
-	Pod    string
+	Device          types.NamespacedName
+	Pod             string
+	UID             string
+	ResourceVersion string
+	CaptureRequest  *api.DeviceCaptureRequest
+	Capture         *api.DeviceCaptureResult
+	Guard           string
+	Deleting        bool
+	capturedLayers  int32
 	// Incarnation is the pod's incarnation number; only the current incarnation
 	// of a device records snapshots.
 	Incarnation int32
@@ -128,4 +136,18 @@ type RetainedCounter interface {
 // Pusher publishes snapshot images; *snapshot.Registry implements it.
 type Pusher interface {
 	Push(ctx context.Context, repo string, img v1.Image, baseLayers int, sourceRepo string) (ref string, digest v1.Hash, err error)
+}
+
+// RequiredRuntime must fail when strict quiescence or task liveness cannot be established.
+type RequiredRuntime interface {
+	Quiesce(context.Context, Container) (func(), error)
+	TaskAlive(context.Context, Container) (bool, error)
+}
+
+// CaptureCluster uses direct reads and optimistic Pod locks, independent of legacy exit markers.
+type CaptureCluster interface {
+	SetCaptureGuard(context.Context, PodInfo, api.DeviceCaptureRequest, string) error
+	RecordCapture(context.Context, PodInfo, api.DeviceCaptureResult) error
+	InvalidateCapture(context.Context, PodInfo, api.DeviceCaptureResult) error
+	CheckCapture(context.Context, PodInfo, api.DeviceCaptureResult) (bool, error)
 }
