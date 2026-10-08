@@ -83,6 +83,9 @@ func (s DeviceSpec) StateEnabled() bool { return s.State != nil && s.State.Enabl
 // fields are copied from the operator configuration when the Device is created
 // and never change afterwards; ResetToken and Rescue are operator controls.
 type DeviceStateSpec struct {
+	// CaptureRequest is mutable operator control, not immutable persistence policy.
+	// +optional
+	CaptureRequest *DeviceCaptureRequest `json:"captureRequest,omitempty"`
 	// Enabled marks the device as snapshot-backed. False or absent: the device
 	// runs as a Deployment exactly as without the feature.
 	Enabled bool `json:"enabled,omitempty"`
@@ -133,6 +136,9 @@ type DeviceStateSpec struct {
 // ResetToken and Rescue; the node-agent owns the snapshot fields and
 // ExitSnapshotPod. Each side patches only its own fields.
 type DeviceStateStatus struct {
+	// Capture is written only by the node-agent for explicit required capture.
+	// +optional
+	Capture *DeviceCaptureResult `json:"capture,omitempty"`
 	// Epoch counts resets. A pod carries the epoch it was created in; the
 	// node-agent ignores snapshots of pods from an older epoch.
 	Epoch int32 `json:"epoch,omitempty"`

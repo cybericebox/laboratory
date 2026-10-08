@@ -59,6 +59,10 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.ConnectionTemplateApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("Device"):
 		return &applyconfigurationlaboratoryv1alpha1.DeviceApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceCaptureRequest"):
+		return &applyconfigurationlaboratoryv1alpha1.DeviceCaptureRequestApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceCaptureResult"):
+		return &applyconfigurationlaboratoryv1alpha1.DeviceCaptureResultApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DevicePersistence"):
 		return &applyconfigurationlaboratoryv1alpha1.DevicePersistenceApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("DeviceRef"):
@@ -127,6 +131,10 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupVPNSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabGroupVPNStatus"):
 		return &applyconfigurationlaboratoryv1alpha1.LabGroupVPNStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabLifecycleSpec"):
+		return &applyconfigurationlaboratoryv1alpha1.LabLifecycleSpecApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabLifecycleStatus"):
+		return &applyconfigurationlaboratoryv1alpha1.LabLifecycleStatusApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabNetworkSpec"):
 		return &applyconfigurationlaboratoryv1alpha1.LabNetworkSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabNetworkStatus"):
@@ -135,6 +143,10 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.LabSpecApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabStatus"):
 		return &applyconfigurationlaboratoryv1alpha1.LabStatusApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabTrafficCoverageSpan"):
+		return &applyconfigurationlaboratoryv1alpha1.LabTrafficCoverageSpanApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabTrafficKernelCheckpoint"):
+		return &applyconfigurationlaboratoryv1alpha1.LabTrafficKernelCheckpointApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabTrafficReport"):
 		return &applyconfigurationlaboratoryv1alpha1.LabTrafficReportApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("LabTrafficReportSpec"):
@@ -163,8 +175,12 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.PodFailureApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("PodSchedule"):
 		return &applyconfigurationlaboratoryv1alpha1.PodScheduleApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("ResourceAmounts"):
+		return &applyconfigurationlaboratoryv1alpha1.ResourceAmountsApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("Route"):
 		return &applyconfigurationlaboratoryv1alpha1.RouteApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("RuntimeAllocation"):
+		return &applyconfigurationlaboratoryv1alpha1.RuntimeAllocationApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("SchedulingStatus"):
 		return &applyconfigurationlaboratoryv1alpha1.SchedulingStatusApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("Tenant"):

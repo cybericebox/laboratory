@@ -46,6 +46,16 @@ spec:
               LabGroupAccessPolicySpec is a complete replacement desired policy. Empty is
               intentional and means no VPN client can reach a laboratory.
             properties:
+              expectedGroupUID:
+                type: string
+              operationId:
+                description: Empty identity retains the legacy policy replacement
+                  contract.
+                type: string
+              revision:
+                format: int64
+                minimum: 1
+                type: integer
               rules:
                 items:
                   description: |-
@@ -83,11 +93,17 @@ spec:
               appliedAt:
                 format: date-time
                 type: string
+              appliedRevision:
+                description: The current VPN boot acknowledges the exact policy operation/revision.
+                format: int64
+                type: integer
               lastError:
                 type: string
               observedGeneration:
                 format: int64
                 type: integer
+              operationId:
+                type: string
               rules:
                 items:
                   description: |-
@@ -123,6 +139,8 @@ spec:
                   type: object
                 type: array
               state:
+                type: string
+              vpnBootId:
                 type: string
             type: object
         type: object

@@ -260,6 +260,48 @@ spec:
                   this device. Set once when the Device is materialised: a Lab created while
                   the platform has device state persistence off never carries it.
                 properties:
+                  captureRequest:
+                    description: CaptureRequest is mutable operator control, not immutable
+                      persistence policy.
+                    properties:
+                      deadlineSeconds:
+                        format: int32
+                        maximum: 3600
+                        minimum: 1
+                        type: integer
+                      epoch:
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      incarnation:
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      lifecycleRevision:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      operationId:
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                      podResourceVersion:
+                        description: PodResourceVersion is capture-time audit data;
+                          deletion reads a fresh RV.
+                        minLength: 1
+                        type: string
+                      podUID:
+                        minLength: 1
+                        type: string
+                    required:
+                    - deadlineSeconds
+                    - epoch
+                    - incarnation
+                    - lifecycleRevision
+                    - operationId
+                    - podResourceVersion
+                    - podUID
+                    type: object
                   debounce:
                     description: |-
                       Debounce is how long the writable layer must stay quiet after a change
@@ -403,6 +445,75 @@ spec:
               state:
                 description: State is the snapshot state of a device with spec.state.enabled.
                 properties:
+                  capture:
+                    description: Capture is written only by the node-agent for explicit
+                      required capture.
+                    properties:
+                      epoch:
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      error:
+                        type: string
+                      guardState:
+                        enum:
+                        - Held
+                        - Invalidated
+                        - Released
+                        - Unknown
+                        type: string
+                      image:
+                        type: string
+                      incarnation:
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      lifecycleRevision:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      nodeAgentEpoch:
+                        minLength: 1
+                        type: string
+                      observedAt:
+                        format: date-time
+                        type: string
+                      operationId:
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                      podResourceVersion:
+                        minLength: 1
+                        type: string
+                      podUID:
+                        minLength: 1
+                        type: string
+                      quiesced:
+                        type: boolean
+                      result:
+                        enum:
+                        - Pending
+                        - Succeeded
+                        - Failed
+                        type: string
+                      sizeBytes:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      snapshotAt:
+                        format: date-time
+                        type: string
+                    required:
+                    - epoch
+                    - guardState
+                    - incarnation
+                    - lifecycleRevision
+                    - nodeAgentEpoch
+                    - operationId
+                    - podResourceVersion
+                    - podUID
+                    - result
+                    type: object
                   crashStreak:
                     description: |-
                       CrashStreak counts consecutive pods that ended within a short time of

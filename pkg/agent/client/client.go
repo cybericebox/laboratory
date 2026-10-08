@@ -138,3 +138,23 @@ func NewConnection(config Config) (Client, error) {
 func (c *labManagerClient) Close() error {
 	return c.conn.Close()
 }
+
+// Lifecycle aliases expose the additive protocol through the public client.
+// Client embeds LabManagerClient, including StopLabs and StartLabs.
+type (
+	StopSnapshotMode   = protobuf.StopSnapshotMode
+	LabLifecycleTarget = protobuf.LabLifecycleTarget
+	StopLabItem        = protobuf.StopLabItem
+	StopLabsRequest    = protobuf.StopLabsRequest
+	StartLabsRequest   = protobuf.StartLabsRequest
+	LabLifecycleStatus = protobuf.LabLifecycleStatus
+	ResourceAmounts    = protobuf.ResourceAmounts
+	ResourceAllocation = protobuf.ResourceAllocation
+	LifecycleFeature   = protobuf.LifecycleFeature
+)
+
+const (
+	StopSnapshotMode_STOP_SNAPSHOT_MODE_UNSPECIFIED = protobuf.StopSnapshotMode_STOP_SNAPSHOT_MODE_UNSPECIFIED
+	StopSnapshotMode_STOP_SNAPSHOT_MODE_SKIP        = protobuf.StopSnapshotMode_STOP_SNAPSHOT_MODE_SKIP
+	StopSnapshotMode_STOP_SNAPSHOT_MODE_REQUIRED    = protobuf.StopSnapshotMode_STOP_SNAPSHOT_MODE_REQUIRED
+)

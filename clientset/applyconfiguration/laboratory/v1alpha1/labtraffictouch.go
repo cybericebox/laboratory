@@ -21,7 +21,7 @@ package v1alpha1
 // with apply.
 //
 // LabTrafficTouch is one cumulative aggregate row: what one VPN config (or one
-// proxy token) did against one lab target since the collector booted. There is
+// proxy token) did against one lab target. Durable totals survive restarts. There is
 // no time series. Times are Unix milliseconds. Only lab-internal addresses are
 // ever recorded, never the address of a user.
 type LabTrafficTouchApplyConfiguration struct {
@@ -35,11 +35,14 @@ type LabTrafficTouchApplyConfiguration struct {
 	Proto   *string `json:"proto,omitempty"`
 	DstPort *int32  `json:"dstPort,omitempty"`
 	// Attempts counts new connections (VPN) or requests (proxy).
-	Attempts   *int64 `json:"attempts,omitempty"`
-	PacketsOut *int64 `json:"packetsOut,omitempty"`
-	PacketsIn  *int64 `json:"packetsIn,omitempty"`
-	BytesOut   *int64 `json:"bytesOut,omitempty"`
-	BytesIn    *int64 `json:"bytesIn,omitempty"`
+	Attempts *int64 `json:"attempts,omitempty"`
+	// LabInitiatedAttempts counts new permitted VPN flows started by the lab.
+	// It is separate from client attempts and is not used by the proxy.
+	LabInitiatedAttempts *int64 `json:"labInitiatedAttempts,omitempty"`
+	PacketsOut           *int64 `json:"packetsOut,omitempty"`
+	PacketsIn            *int64 `json:"packetsIn,omitempty"`
+	BytesOut             *int64 `json:"bytesOut,omitempty"`
+	BytesIn              *int64 `json:"bytesIn,omitempty"`
 	// FirstSeenMs is the first attempt, LastSeenMs the last one.
 	FirstSeenMs *int64 `json:"firstSeenMs,omitempty"`
 	LastSeenMs  *int64 `json:"lastSeenMs,omitempty"`
@@ -106,6 +109,14 @@ func (b *LabTrafficTouchApplyConfiguration) WithDstPort(value int32) *LabTraffic
 // If called multiple times, the Attempts field is set to the value of the last call.
 func (b *LabTrafficTouchApplyConfiguration) WithAttempts(value int64) *LabTrafficTouchApplyConfiguration {
 	b.Attempts = &value
+	return b
+}
+
+// WithLabInitiatedAttempts sets the LabInitiatedAttempts field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the LabInitiatedAttempts field is set to the value of the last call.
+func (b *LabTrafficTouchApplyConfiguration) WithLabInitiatedAttempts(value int64) *LabTrafficTouchApplyConfiguration {
+	b.LabInitiatedAttempts = &value
 	return b
 }
 

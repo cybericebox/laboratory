@@ -33,6 +33,8 @@ const (
 	LabManager_ListLabs_FullMethodName               = "/labmanager.LabManager/ListLabs"
 	LabManager_UpdateLabs_FullMethodName             = "/labmanager.LabManager/UpdateLabs"
 	LabManager_DeleteLabs_FullMethodName             = "/labmanager.LabManager/DeleteLabs"
+	LabManager_StopLabs_FullMethodName               = "/labmanager.LabManager/StopLabs"
+	LabManager_StartLabs_FullMethodName              = "/labmanager.LabManager/StartLabs"
 	LabManager_Monitoring_FullMethodName             = "/labmanager.LabManager/Monitoring"
 	LabManager_Enroll_FullMethodName                 = "/labmanager.LabManager/Enroll"
 	LabManager_RenewCertificate_FullMethodName       = "/labmanager.LabManager/RenewCertificate"
@@ -72,6 +74,12 @@ type LabManagerClient interface {
 	ListLabs(ctx context.Context, in *ListRequest, opts ...grpc.CallOption) (*LabList, error)
 	UpdateLabs(ctx context.Context, in *UpdateLabsRequest, opts ...grpc.CallOption) (*BatchResult, error)
 	DeleteLabs(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*BatchResult, error)
+	// Explicit UID/revision-fenced intent, at most 5000 items, no selectors.
+	// Replies acknowledge acceptance only. Unsupported servers return UNIMPLEMENTED.
+	// Identical intent is idempotent; wrong UID, lower or conflicting equal revision
+	// is refused. Start never clears terminal and refuses it at every revision.
+	StopLabs(ctx context.Context, in *StopLabsRequest, opts ...grpc.CallOption) (*BatchResult, error)
+	StartLabs(ctx context.Context, in *StartLabsRequest, opts ...grpc.CallOption) (*BatchResult, error)
 	// Monitoring is a server-push stream. Every subscription starts with a
 	// complete snapshot; subsequent messages are sequenced deltas or heartbeats.
 	Monitoring(ctx context.Context, in *MonitoringRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[MonitoringUpdate], error)
@@ -283,6 +291,26 @@ func (c *labManagerClient) DeleteLabs(ctx context.Context, in *DeleteRequest, op
 	return out, nil
 }
 
+func (c *labManagerClient) StopLabs(ctx context.Context, in *StopLabsRequest, opts ...grpc.CallOption) (*BatchResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BatchResult)
+	err := c.cc.Invoke(ctx, LabManager_StopLabs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *labManagerClient) StartLabs(ctx context.Context, in *StartLabsRequest, opts ...grpc.CallOption) (*BatchResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BatchResult)
+	err := c.cc.Invoke(ctx, LabManager_StartLabs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *labManagerClient) Monitoring(ctx context.Context, in *MonitoringRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[MonitoringUpdate], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &LabManager_ServiceDesc.Streams[0], LabManager_Monitoring_FullMethodName, cOpts...)
@@ -446,6 +474,12 @@ type LabManagerServer interface {
 	ListLabs(context.Context, *ListRequest) (*LabList, error)
 	UpdateLabs(context.Context, *UpdateLabsRequest) (*BatchResult, error)
 	DeleteLabs(context.Context, *DeleteRequest) (*BatchResult, error)
+	// Explicit UID/revision-fenced intent, at most 5000 items, no selectors.
+	// Replies acknowledge acceptance only. Unsupported servers return UNIMPLEMENTED.
+	// Identical intent is idempotent; wrong UID, lower or conflicting equal revision
+	// is refused. Start never clears terminal and refuses it at every revision.
+	StopLabs(context.Context, *StopLabsRequest) (*BatchResult, error)
+	StartLabs(context.Context, *StartLabsRequest) (*BatchResult, error)
 	// Monitoring is a server-push stream. Every subscription starts with a
 	// complete snapshot; subsequent messages are sequenced deltas or heartbeats.
 	Monitoring(*MonitoringRequest, grpc.ServerStreamingServer[MonitoringUpdate]) error
@@ -558,6 +592,12 @@ func (UnimplementedLabManagerServer) UpdateLabs(context.Context, *UpdateLabsRequ
 }
 func (UnimplementedLabManagerServer) DeleteLabs(context.Context, *DeleteRequest) (*BatchResult, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteLabs not implemented")
+}
+func (UnimplementedLabManagerServer) StopLabs(context.Context, *StopLabsRequest) (*BatchResult, error) {
+	return nil, status.Error(codes.Unimplemented, "method StopLabs not implemented")
+}
+func (UnimplementedLabManagerServer) StartLabs(context.Context, *StartLabsRequest) (*BatchResult, error) {
+	return nil, status.Error(codes.Unimplemented, "method StartLabs not implemented")
 }
 func (UnimplementedLabManagerServer) Monitoring(*MonitoringRequest, grpc.ServerStreamingServer[MonitoringUpdate]) error {
 	return status.Error(codes.Unimplemented, "method Monitoring not implemented")
@@ -868,6 +908,42 @@ func _LabManager_DeleteLabs_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LabManager_StopLabs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StopLabsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabManagerServer).StopLabs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LabManager_StopLabs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabManagerServer).StopLabs(ctx, req.(*StopLabsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LabManager_StartLabs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StartLabsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabManagerServer).StartLabs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LabManager_StartLabs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabManagerServer).StartLabs(ctx, req.(*StartLabsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _LabManager_Monitoring_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(MonitoringRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -1132,6 +1208,14 @@ var LabManager_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteLabs",
 			Handler:    _LabManager_DeleteLabs_Handler,
+		},
+		{
+			MethodName: "StopLabs",
+			Handler:    _LabManager_StopLabs_Handler,
+		},
+		{
+			MethodName: "StartLabs",
+			Handler:    _LabManager_StartLabs_Handler,
 		},
 		{
 			MethodName: "Enroll",

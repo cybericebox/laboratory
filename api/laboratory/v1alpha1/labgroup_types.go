@@ -48,10 +48,15 @@ type LabGroupVPNSpec struct {
 
 // LabGroupStatus defines the observed state of LabGroup.
 type LabGroupStatus struct {
-	Phase     Phase             `json:"phase,omitempty"`
-	Namespace string            `json:"namespace,omitempty"`
-	Suspended bool              `json:"suspended,omitempty"`
-	VPN       LabGroupVPNStatus `json:"vpn,omitempty"`
+	// Reserved observation seam for later full group stop; suspension is unchanged.
+	// +optional
+	Lifecycle *LabLifecycleStatus `json:"lifecycle,omitempty"`
+	// +optional
+	Resources *RuntimeAllocation `json:"resources,omitempty"`
+	Phase     Phase              `json:"phase,omitempty"`
+	Namespace string             `json:"namespace,omitempty"`
+	Suspended bool               `json:"suspended,omitempty"`
+	VPN       LabGroupVPNStatus  `json:"vpn,omitempty"`
 	// ImageWarning names the VPN or gateway image that could not be pinned to a
 	// digest when the group's pods were created with the image cache on; the pod
 	// pulls it by tag. Empty when all were pinned (or the cache was off).

@@ -29,6 +29,8 @@ import (
 // ResetToken and Rescue; the node-agent owns the snapshot fields and
 // ExitSnapshotPod. Each side patches only its own fields.
 type DeviceStateStatusApplyConfiguration struct {
+	// Capture is written only by the node-agent for explicit required capture.
+	Capture *DeviceCaptureResultApplyConfiguration `json:"capture,omitempty"`
 	// Epoch counts resets. A pod carries the epoch it was created in; the
 	// node-agent ignores snapshots of pods from an older epoch.
 	Epoch *int32 `json:"epoch,omitempty"`
@@ -67,6 +69,14 @@ type DeviceStateStatusApplyConfiguration struct {
 // apply.
 func DeviceStateStatus() *DeviceStateStatusApplyConfiguration {
 	return &DeviceStateStatusApplyConfiguration{}
+}
+
+// WithCapture sets the Capture field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Capture field is set to the value of the last call.
+func (b *DeviceStateStatusApplyConfiguration) WithCapture(value *DeviceCaptureResultApplyConfiguration) *DeviceStateStatusApplyConfiguration {
+	b.Capture = value
+	return b
 }
 
 // WithEpoch sets the Epoch field in the declarative configuration to the given value

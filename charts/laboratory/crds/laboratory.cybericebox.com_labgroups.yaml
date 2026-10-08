@@ -121,6 +121,61 @@ spec:
                   digest when the group's pods were created with the image cache on; the pod
                   pulls it by tag. Empty when all were pinned (or the cache was off).
                 type: string
+              lifecycle:
+                description: Reserved observation seam for later full group stop;
+                  suspension is unchanged.
+                properties:
+                  accessFenceVPNBootId:
+                    type: string
+                  accessFenced:
+                    description: AccessFenced is current-operation confirmation, never
+                      RPC acceptance.
+                    type: boolean
+                  accessFencedAt:
+                    format: date-time
+                    type: string
+                  error:
+                    type: string
+                  labUID:
+                    type: string
+                  observedGeneration:
+                    format: int64
+                    type: integer
+                  observedState:
+                    enum:
+                    - Running
+                    - Snapshotting
+                    - Stopping
+                    - Stopped
+                    - StopFailed
+                    - Starting
+                    - Unknown
+                    type: string
+                  operationId:
+                    maxLength: 128
+                    minLength: 1
+                    type: string
+                  reason:
+                    type: string
+                  requestedAt:
+                    format: date-time
+                    type: string
+                  revision:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  snapshotComplete:
+                    type: boolean
+                  stoppedAt:
+                    format: date-time
+                    type: string
+                required:
+                - labUID
+                - observedGeneration
+                - observedState
+                - operationId
+                - revision
+                type: object
               namespace:
                 type: string
               phase:
@@ -191,6 +246,122 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              resources:
+                description: |-
+                  RuntimeAllocation keeps held requests until identity-matching native absence
+                  and attachment cleanup are confirmed. Missing observations mean Unknown.
+                  Quota bytes are uncompressed accounting, not physically reclaimed storage.
+                properties:
+                  allocatedRequests:
+                    description: ResourceAmounts separates configured, held and measured
+                      compute amounts.
+                    properties:
+                      cpuMillicores:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      memoryBytes:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                    required:
+                    - cpuMillicores
+                    - memoryBytes
+                    type: object
+                  configuredLimits:
+                    description: ResourceAmounts separates configured, held and measured
+                      compute amounts.
+                    properties:
+                      cpuMillicores:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      memoryBytes:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                    required:
+                    - cpuMillicores
+                    - memoryBytes
+                    type: object
+                  configuredRequests:
+                    description: ResourceAmounts separates configured, held and measured
+                      compute amounts.
+                    properties:
+                      cpuMillicores:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      memoryBytes:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                    required:
+                    - cpuMillicores
+                    - memoryBytes
+                    type: object
+                  observedAt:
+                    format: date-time
+                    type: string
+                  operationId:
+                    type: string
+                  physicalStorageBytes:
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  physicalStorageBytesAvailable:
+                    type: boolean
+                  releasedAt:
+                    format: date-time
+                    type: string
+                  revision:
+                    format: int64
+                    type: integer
+                  runtimeState:
+                    enum:
+                    - Allocated
+                    - Releasing
+                    - Released
+                    - Unknown
+                    type: string
+                  snapshotQuotaBytes:
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  storageState:
+                    enum:
+                    - None
+                    - Retained
+                    - DeleteRequested
+                    - CleanupPending
+                    - Deleted
+                    - Unknown
+                    type: string
+                  usageAvailable:
+                    type: boolean
+                  used:
+                    description: ResourceAmounts separates configured, held and measured
+                      compute amounts.
+                    properties:
+                      cpuMillicores:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      memoryBytes:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                    required:
+                    - cpuMillicores
+                    - memoryBytes
+                    type: object
+                required:
+                - allocatedRequests
+                - configuredLimits
+                - configuredRequests
+                - runtimeState
+                - storageState
+                type: object
               scheduling:
                 description: Scheduling is the place of the group in the scheduler
                   queue.
