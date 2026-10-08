@@ -122,15 +122,17 @@ func (s *NodeAgentServer) SetupNetworks(
 		podSide := VethPeerName(stableKey)
 		targetIface := att.Iface
 
+		created := false
 		if _, exists, err := s.ovs.FindPortByKey(stableKey); err != nil {
 			return nil, fmt.Errorf("find veth port %q: %w", stableKey, err)
 		} else if !exists {
 			if err := s.ovs.AddVethPort(stableKey); err != nil {
 				return nil, fmt.Errorf("add veth port %q: %w", stableKey, err)
 			}
+			created = true
 		}
 
-		podSideInRoot := WaitForLink(podSide, 200*time.Millisecond) == nil
+		podSideInRoot := peerInRoot(podSide, created)
 		if podSideInRoot {
 			if CheckInNetNS(req.NetnsPath, targetIface) == nil {
 				_ = DeleteInNetNS(req.NetnsPath, targetIface)

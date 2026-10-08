@@ -624,7 +624,7 @@ message TrafficReport {
   string source = 3;   // name of the LabTrafficReport object
   string kind = 4;     // "vpn" | "proxy"
   string instance = 5; // writing pod
-  // Changes on every collector restart; the ledger is cumulative within one boot.
+  // Identifies the observation epoch; restored cumulative totals continue across boots.
   string boot_id = 6;
   // The span the collector actually observed. Absence of a touch proves
   // nothing outside this span.
@@ -633,6 +633,18 @@ message TrafficReport {
   bool partial = 9;
   bool truncated = 10;
   repeated TrafficTouch ledger = 11;
+  // Actual collector intervals, including disjoint replica/restart coverage.
+  // Older senders omit this; consumers fall back to the scalar span.
+  repeated TrafficCoverageSpan coverage_spans = 12;
+}
+
+message TrafficCoverageSpan {
+  int64 from_unix_ms = 1;
+  int64 to_unix_ms = 2;
+  bool partial = 3; // incomplete, truncated, or invalid/unknown observation span
+  string source = 4;
+  string instance = 5;
+  string boot_id = 6;
 }
 
 // TrafficTouch is one cumulative aggregate of a subject against a lab target.
@@ -651,6 +663,7 @@ message TrafficTouch {
   int64 first_seen_unix_ms = 12;
   int64 last_seen_unix_ms = 13;
   int64 first_responded_unix_ms = 14; // 0 = the lab never answered
+  int64 lab_initiated_attempts = 15; // new permitted VPN flows started by the lab
 }
 
 // CapacityResponse is the CALLER's view of its tenant's resources; no cluster-wide numbers

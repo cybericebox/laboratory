@@ -24,7 +24,7 @@ func NewConntrackRevoker() *ConntrackRevoker { return &ConntrackRevoker{} }
 // Revoke deletes every connection RevokedFlows names and returns how many. A failure to
 // delete one entry (it ended on its own meanwhile is not a failure) is returned after the
 // rest were tried, so the reconcile that called it runs again.
-func (c *ConntrackRevoker) Revoke(labCIDRs []string, rules []AccessRule) (int, error) {
+func (c *ConntrackRevoker) Revoke(labCIDRs []string, rules []AccessRule, clientCIDRs ...[]string) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.conn == nil {
@@ -46,11 +46,11 @@ func (c *ConntrackRevoker) Revoke(labCIDRs []string, rules []AccessRule) (int, e
 		if !orig.IP.SourceAddress.IsValid() || !orig.IP.DestinationAddress.IsValid() {
 			continue
 		}
-		flows = append(flows, ConnFlow{ID: raw[i].ID, Key: i, Src: orig.IP.SourceAddress, Dst: orig.IP.DestinationAddress})
+		flows = append(flows, ConnFlow{ID: raw[i].ID, Mark: raw[i].Mark, Key: i, Src: orig.IP.SourceAddress, Dst: orig.IP.DestinationAddress})
 	}
 	deleted := 0
 	var firstErr error
-	for _, f := range RevokedFlows(flows, labCIDRs, rules) {
+	for _, f := range RevokedFlows(flows, labCIDRs, rules, clientCIDRs...) {
 		if err := c.conn.Delete(raw[f.Key]); err != nil {
 			// An entry that expired between the dump and the delete is gone, which is what we want.
 			if isNoEntry(err) {

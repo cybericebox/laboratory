@@ -7,6 +7,8 @@
 package flowacct
 
 import (
+	"fmt"
+	"math"
 	"net/netip"
 	"sort"
 	"sync"
@@ -23,6 +25,7 @@ const (
 // (client to lab) direction.
 type Flow struct {
 	ID         uint32
+	Mark       uint32
 	Proto      string
 	Src, Dst   netip.Addr
 	SrcPort    uint16
@@ -44,6 +47,7 @@ type Source interface {
 type LabNet struct {
 	Name   string
 	Prefix netip.Prefix
+	Index  uint16
 }
 
 // Topology maps addresses to identities. It is rebuilt from the cluster state.
@@ -71,23 +75,26 @@ type Key struct {
 // Touch is one cumulative aggregate. Times are Unix milliseconds.
 type Touch struct {
 	Key
-	Attempts       int64
-	PacketsOut     int64
-	PacketsIn      int64
-	BytesOut       int64
-	BytesIn        int64
-	FirstSeenMs    int64
-	LastSeenMs     int64
-	FirstRespondMs int64
+	Attempts             int64
+	LabInitiatedAttempts int64
+	PacketsOut           int64
+	PacketsIn            int64
+	BytesOut             int64
+	BytesIn              int64
+	FirstSeenMs          int64
+	LastSeenMs           int64
+	FirstRespondMs       int64
 }
 
 // Report is the state handed to the reporter.
 type Report struct {
-	BootID        string
-	CoveredFromMs int64
-	CoveredToMs   int64
-	Truncated     bool
-	Ledger        []Touch
+	BootID            string
+	CoveredFromMs     int64
+	CoveredToMs       int64
+	Truncated         bool
+	Partial           bool
+	KernelCheckpoints []PairCounters
+	Ledger            []Touch
 }
 
 type flowKey struct {
@@ -119,6 +126,9 @@ type Collector struct {
 	coveredFrom time.Time
 	lastGood    time.Time
 	truncated   bool
+	partial     bool
+	gap         bool
+	checkpoints map[string]PairCounters
 	// resumedUntil is the last moment a previous run had reported (zero on a
 	// fresh start), so flows it already counted are not counted again.
 	resumedUntil time.Time
@@ -129,43 +139,166 @@ func New(source Source, topology func() Topology, bootID string, pollEvery time.
 	return &Collector{
 		source: source, topology: topology, bootID: bootID,
 		gapAfter: 3 * pollEvery,
-		ledger:   map[Key]*Touch{}, flows: map[flowKey]*tracked{},
+		ledger:   map[Key]*Touch{}, flows: map[flowKey]*tracked{}, checkpoints: map[string]PairCounters{},
 	}
 }
 
 // Resume seeds the ledger from the totals a previous run persisted and the
 // moment it last reported. Call it before the first Poll.
-func (c *Collector) Resume(ledger []Touch, reportedUntil time.Time) {
+func (c *Collector) Resume(ledger []Touch, reportedUntil time.Time, checkpoints ...PairCounters) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, t := range ledger {
 		row := t
+		if len(c.ledger) >= MaxRows {
+			c.truncated = true
+			break
+		}
 		c.ledger[row.Key] = &row
 	}
 	c.resumedUntil = reportedUntil
+	for _, cp := range checkpoints {
+		if len(c.checkpoints) >= MaxRows {
+			c.truncated = true
+			break
+		}
+		c.checkpoints[cp.BindingID] = cp
+	}
+	if len(ledger) > 0 && len(checkpoints) == 0 {
+		c.partial = true
+		c.gap = true
+	}
 }
 
-// Poll reads the flows once and folds them into the ledger. A failed dump
-// changes nothing, so the covered span shows the hole.
+// MarkPartial keeps accumulated totals while exposing an unobserved interval.
+func (c *Collector) MarkPartial(_ time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.partial = true
+	c.gap = true
+}
+
+// ObserveCounters folds the sole packet/initiative authority. Checkpoints and
+// public totals are updated under one lock and persisted in one report write.
+func (c *Collector) ObserveCounters(snapshot CounterSnapshot) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if snapshot.Partial {
+		c.partial = true
+		c.gap = true
+	}
+	// Validate the complete sample before mutating any totals.
+	deltas := make([]PairCounters, 0, len(snapshot.Rows))
+	seen := map[string]bool{}
+	for _, cur := range snapshot.Rows {
+		if seen[cur.BindingID] {
+			c.partial = true
+			return fmt.Errorf("duplicate counter binding")
+		}
+		seen[cur.BindingID] = true
+		d, partial, err := PairCounterDelta(cur, c.checkpoints[cur.BindingID])
+		if err != nil {
+			c.partial = true
+			c.gap = true
+			return err
+		}
+		if partial {
+			c.partial = true
+			c.gap = true
+		}
+		deltas = append(deltas, d)
+	}
+	if c.lastGood.IsZero() || c.gap || snapshot.At.Sub(c.lastGood) > c.gapAfter {
+		c.coveredFrom = snapshot.At
+	}
+	c.gap = false
+	c.lastGood = snapshot.At
+	for i, d := range deltas {
+		cur := snapshot.Rows[i]
+		row := c.ledger[d.Key]
+		hasTraffic := d.PacketsOut > 0 || d.PacketsIn > 0 || d.Attempts > 0 || d.LabInitiatedAttempts > 0
+		if row == nil && hasTraffic {
+			if len(c.ledger) >= MaxRows {
+				c.truncated = true
+				continue
+			}
+			row = &Touch{Key: d.Key}
+			c.ledger[d.Key] = row
+		}
+		// Empty allowed pairs also need a checkpoint for a retained namespace.
+		if _, ok := c.checkpoints[cur.BindingID]; !ok && len(c.checkpoints) >= MaxRows {
+			c.truncated = true
+			continue
+		}
+		c.checkpoints[cur.BindingID] = cur
+		if row == nil {
+			continue
+		}
+		add := func(dst *int64, n uint64) {
+			if *dst < 0 || n > uint64(math.MaxInt64-*dst) {
+				*dst = math.MaxInt64
+				c.partial = true
+				return
+			}
+			*dst += int64(n)
+		}
+		add(&row.PacketsOut, d.PacketsOut)
+		add(&row.PacketsIn, d.PacketsIn)
+		add(&row.BytesOut, d.BytesOut)
+		add(&row.BytesIn, d.BytesIn)
+		add(&row.Attempts, d.Attempts)
+		add(&row.LabInitiatedAttempts, d.LabInitiatedAttempts)
+		if d.Attempts > 0 {
+			if row.FirstSeenMs == 0 {
+				row.FirstSeenMs = snapshot.At.UnixMilli()
+			}
+			row.LastSeenMs = snapshot.At.UnixMilli()
+		}
+	}
+	return nil
+}
+
+// ForgetBindings removes checkpoints only after their final observation has
+// been folded. Historical public totals remain; a future epoch starts anew.
+func (c *Collector) ForgetBindings(ids []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, id := range ids {
+		delete(c.checkpoints, id)
+	}
+}
+
+// Poll enriches client-origin timing only. Denied/unmarked and lab-origin
+// flows never create a ledger row or contribute packet/initiative counts.
 func (c *Collector) Poll(now time.Time) error {
+	if c.source == nil {
+		return nil
+	}
 	flows, err := c.source.Dump()
 	if err != nil {
+		c.MarkPartial(now)
 		return err
 	}
 	topo := c.topology()
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.lastGood.IsZero() || now.Sub(c.lastGood) > c.gapAfter {
-		c.coveredFrom = now
+	seen := map[flowKey]bool{}
+	allowedEndpoints := map[Key]map[netip.Addr]bool{}
+	for _, cp := range c.checkpoints {
+		prefix, err := netip.ParsePrefix(cp.ClientCIDR)
+		if err != nil || prefix.Bits() != 32 {
+			continue
+		}
+		if allowedEndpoints[cp.Key] == nil {
+			allowedEndpoints[cp.Key] = map[netip.Addr]bool{}
+		}
+		allowedEndpoints[cp.Key][prefix.Addr()] = true
 	}
-	c.lastGood = now
 
-	seen := make(map[flowKey]struct{}, len(flows))
-	for i := range flows {
-		f := &flows[i]
-		// The destination filter drops everything that is not client to lab, in
-		// particular the outer WireGuard flows that carry users' public addresses.
+	for _, f := range flows {
+		if f.Mark&0x80000000 == 0 {
+			continue
+		}
 		subject, ok := topo.Clients[f.Src]
 		if !ok {
 			continue
@@ -174,50 +307,41 @@ func (c *Collector) Poll(now time.Time) error {
 		if !ok {
 			continue
 		}
-		fk := flowKey{f.ID, f.Proto, f.Src, f.Dst, f.SrcPort, f.DstPort}
-		seen[fk] = struct{}{}
-		t := c.flows[fk]
-		if t == nil {
-			key := Key{Subject: subject, Lab: lab}
-			t = &tracked{key: key}
-			c.flows[fk] = t
-			// A flow that started before the last report of a previous run was
-			// counted by that run: keep it, add nothing.
-			counted := !f.Start.IsZero() && !c.resumedUntil.IsZero() && !f.Start.After(c.resumedUntil)
-			if counted {
-				t.counters = [4]uint64{f.PacketsOut, f.PacketsIn, f.BytesOut, f.BytesIn}
-				t.responded = f.Replied || f.PacketsIn > 0
-				continue
+		for _, l := range topo.Labs {
+			if l.Name == lab && l.Index != uint16((f.Mark&0x00ffff00)>>8) {
+				ok = false
 			}
-			row := c.row(key, firstSeen(f.Start, now))
-			if row == nil {
-				delete(c.flows, fk)
-				continue
-			}
-			row.Attempts++
 		}
-		row := c.ledger[t.key]
-		if row == nil {
+		if !ok {
 			continue
 		}
-		cur := [4]uint64{f.PacketsOut, f.PacketsIn, f.BytesOut, f.BytesIn}
-		row.PacketsOut += delta(cur[0], t.counters[0])
-		row.PacketsIn += delta(cur[1], t.counters[1])
-		row.BytesOut += delta(cur[2], t.counters[2])
-		row.BytesIn += delta(cur[3], t.counters[3])
-		t.counters = cur
-		if !t.responded && (f.Replied || f.PacketsIn > 0) {
-			t.responded = true
+		if !allowedEndpoints[Key{subject, lab}][f.Src] {
+			continue
+		}
+		fk := flowKey{f.ID, f.Proto, f.Src, f.Dst, f.SrcPort, f.DstPort}
+		seen[fk] = true
+		trackedFlow := c.flows[fk]
+		if trackedFlow == nil {
+			trackedFlow = &tracked{key: Key{subject, lab}}
+			c.flows[fk] = trackedFlow
+		}
+		row := c.ledger[trackedFlow.key]
+		if row == nil || row.Attempts == 0 {
+			continue
+		}
+		start := firstSeen(f.Start, now).UnixMilli()
+		if row.FirstSeenMs == 0 || start < row.FirstSeenMs {
+			row.FirstSeenMs = start
+		}
+		if !trackedFlow.responded && f.Replied {
+			trackedFlow.responded = true
 			if row.FirstRespondMs == 0 {
 				row.FirstRespondMs = now.UnixMilli()
 			}
 		}
-		if ms := now.UnixMilli(); ms > row.LastSeenMs {
-			row.LastSeenMs = ms
-		}
 	}
 	for fk := range c.flows {
-		if _, ok := seen[fk]; !ok {
+		if !seen[fk] {
 			delete(c.flows, fk)
 		}
 	}
@@ -244,7 +368,16 @@ func (c *Collector) row(key Key, first time.Time) *Touch {
 func (c *Collector) Snapshot(now time.Time) Report {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	report := Report{BootID: c.bootID, Truncated: c.truncated, CoveredToMs: now.UnixMilli()}
+	report := Report{BootID: c.bootID, Truncated: c.truncated, Partial: c.partial, CoveredToMs: c.lastGood.UnixMilli()}
+	if c.lastGood.IsZero() {
+		report.CoveredToMs = 0
+	}
+	for _, cp := range c.checkpoints {
+		report.KernelCheckpoints = append(report.KernelCheckpoints, cp)
+	}
+	sort.Slice(report.KernelCheckpoints, func(i, j int) bool {
+		return report.KernelCheckpoints[i].BindingID < report.KernelCheckpoints[j].BindingID
+	})
 	if !c.coveredFrom.IsZero() {
 		report.CoveredFromMs = c.coveredFrom.UnixMilli()
 	}
@@ -270,12 +403,4 @@ func firstSeen(start, now time.Time) time.Time {
 		return now
 	}
 	return start
-}
-
-// delta is a counter growth; a smaller value means the entry was replaced.
-func delta(cur, prev uint64) int64 {
-	if cur < prev {
-		return int64(cur)
-	}
-	return int64(cur - prev)
 }

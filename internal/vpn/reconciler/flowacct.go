@@ -5,6 +5,9 @@ package reconciler
 import (
 	"context"
 	"fmt"
+	"github.com/cybericebox/laboratory/internal/names"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	"net/netip"
 	"os"
 	"strings"
@@ -18,31 +21,58 @@ import (
 	"github.com/cybericebox/laboratory/internal/vpn/flowacct"
 )
 
-// RunFlowAccounting counts connections from VPN clients to the lab networks of
-// this group and publishes them as a LabTrafficReport. It only reads conntrack
-// and the cluster cache; it never touches the firewall or WireGuard, and a
-// failure here is logged and retried without affecting the data path.
-func RunFlowAccounting(ctx context.Context, mgr ctrl.Manager, cfg *vpn.Config) {
-	log := ctrl.Log.WithName("flowacct")
-	if !flowacct.AccountingEnabled() {
-		log.Info("conntrack byte accounting is off; attempts and replies are still counted, bytes stay zero")
-	}
+// prepareFlowAccounting resumes the single ledger before any controller can
+// replace surviving chains. Read/API failure leaves the startup gate closed.
+func prepareFlowAccounting(ctx context.Context, mgr ctrl.Manager, cfg *vpn.Config, ipt *vpn.IPTablesManager) (*flowacct.Reporter, *flowacct.Conntrack, error) {
 	source := flowacct.NewConntrack()
-	defer source.Close()
-
 	instance, _ := os.Hostname()
 	bootID := fmt.Sprintf("%s-%d", instance, time.Now().UnixNano())
-	reader := mgr.GetAPIReader()
-	cached := mgr.GetClient()
-	topology := func() flowacct.Topology { return buildTopology(ctx, cached, cfg.Namespace) }
-
-	reporter := &flowacct.Reporter{
-		Reader: reader, Writer: cached, Namespace: cfg.Namespace, Instance: instance,
-		Collector: flowacct.New(source, topology, bootID, flowacct.DefaultPollEvery),
+	reader, cached := mgr.GetAPIReader(), mgr.GetClient()
+	collector := flowacct.New(source, func() flowacct.Topology { return buildTopology(ctx, cached, cfg.Namespace) }, bootID, flowacct.DefaultPollEvery)
+	reporter := &flowacct.Reporter{Reader: reader, Writer: cached, Namespace: cfg.Namespace, Instance: instance, Collector: collector, CounterReader: ipt, OnResume: ipt.RestoreCounterBindings, BeforeShutdown: ipt.Quiesce}
+	reporter.OnPublish = func(ctx context.Context, report flowacct.Report) error {
+		return publishAccessTotals(ctx, cached, cfg.Namespace, report)
 	}
-	reporter.Run(ctx, flowacct.DefaultPollEvery, flowacct.DefaultReportEvery, func(err error) {
-		log.Error(err, "flow accounting")
-	})
+	if err := reporter.Resume(ctx); err != nil {
+		source.Close()
+		return nil, nil, err
+	}
+	ipt.BeforeRetire = func(snapshot flowacct.CounterSnapshot) error { return reporter.Retire(ctx, snapshot) }
+	ipt.AfterRetire = reporter.ForgetBindings
+	return reporter, source, nil
+}
+
+func accessTotals(report flowacct.Report) map[string]vpn.TrafficCounter {
+	totals := map[string]vpn.TrafficCounter{}
+	for _, row := range report.Ledger {
+		totals[vpn.AccessRule{ClientName: row.Subject, LabName: row.Lab, Action: vpn.AccessAllow}.Identifier()] = vpn.TrafficCounter{Packets: row.PacketsOut, Bytes: row.BytesOut}
+	}
+	return totals
+}
+func publishAccessTotals(ctx context.Context, c client.Client, namespace string, report flowacct.Report) error {
+	policy := &laboratoryv1alpha1.LabGroupAccessPolicy{}
+	err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: names.LabGroupAccessPolicyName}, policy)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	base := policy.DeepCopy()
+	totals := accessTotals(report)
+	for i := range policy.Status.Rules {
+		row := &policy.Status.Rules[i]
+		if row.Action != laboratoryv1alpha1.LabGroupAccessAllow {
+			row.Packets = 0
+			row.Bytes = 0
+			continue
+		}
+		counter := totals[vpn.AccessRule{ClientName: row.ClientName, LabName: row.LabName, Action: vpn.AccessAllow}.Identifier()]
+		row.Packets = counter.Packets
+		row.Bytes = counter.Bytes
+		row.CounterReset = report.Partial
+	}
+	return c.Status().Patch(ctx, policy, client.MergeFrom(base))
 }
 
 func buildTopology(ctx context.Context, c client.Client, namespace string) flowacct.Topology {
@@ -55,6 +85,13 @@ func buildTopology(ctx context.Context, c client.Client, namespace string) flowa
 			}
 		}
 	}
+	var legs laboratoryv1alpha1.LabVPNList
+	indices := map[string]uint16{}
+	if c.List(ctx, &legs, client.InNamespace(namespace)) == nil {
+		for _, leg := range legs.Items {
+			indices[leg.Spec.LabName] = uint16(leg.Spec.NetworkIndex)
+		}
+	}
 	var labs laboratoryv1alpha1.LabList
 	if c.List(ctx, &labs, client.InNamespace(namespace)) == nil {
 		for i := range labs.Items {
@@ -62,7 +99,7 @@ func buildTopology(ctx context.Context, c client.Client, namespace string) flowa
 			if err != nil {
 				continue
 			}
-			topo.Labs = append(topo.Labs, flowacct.LabNet{Name: labs.Items[i].Name, Prefix: prefix})
+			topo.Labs = append(topo.Labs, flowacct.LabNet{Name: labs.Items[i].Name, Prefix: prefix, Index: indices[labs.Items[i].Name]})
 		}
 	}
 	return topo

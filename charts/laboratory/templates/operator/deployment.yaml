@@ -64,6 +64,14 @@ spec:
             capabilities:
               drop:
                 - ALL
+          # Startup waits up to60s for CRDs and90s for admission policies before
+          # the health server starts. Keep normal liveness gated during those waits.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            periodSeconds: 5
+            failureThreshold: 36
           livenessProbe:
             httpGet:
               path: /healthz

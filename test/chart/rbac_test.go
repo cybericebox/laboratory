@@ -248,3 +248,24 @@ func TestProxyReportsRoleIsLeastPrivilege(t *testing.T) {
 		t.Fatalf("proxy reports role = %v", got)
 	}
 }
+
+func TestGatewayRoleReadsLabs(t *testing.T) {
+	out, err := helmTemplate(t, "-s", "templates/operator/clusterrole-gateway.yaml")
+	if err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	found := false
+	for _, d := range docs(t, out) {
+		for _, r := range rulesOf(t, d) {
+			if has(r.Resources, "labs") && has(r.APIGroups, "laboratory.cybericebox.com") {
+				found = has(r.Verbs, "get") && has(r.Verbs, "list") && has(r.Verbs, "watch")
+				if len(r.Verbs) != 3 {
+					t.Fatalf("unexpected Labs write permission %+v", r)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("gateway cannot read/watch lab DHCP settings")
+	}
+}

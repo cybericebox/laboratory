@@ -204,26 +204,25 @@ func TestNetnsVPNPodIsATransparentGateway(t *testing.T) {
 	})
 
 	t.Run("lab to participants works both ways", func(t *testing.T) {
-		// A device of the lab starts the connection; the participant's answer comes back by conntrack.
-		if !nstest.Reach(t, "lab", "tcp", "10.8.0.2:7200", tcpA) {
-			t.Errorf("a lab device does not reach a participant")
-		}
-		if !nstest.Reach(t, "lab", "tcp", "10.8.0.3:7100", tcpB) {
-			t.Errorf("a lab device does not reach another participant")
-		}
-		if !nstest.Ping(t, "lab", "10.8.0.2") {
-			t.Errorf("ping from the lab to a participant fails")
+		if nstest.Reach(t, "lab", "tcp", "10.8.0.2:7200", tcpA) || nstest.Reach(t, "lab", "tcp", "10.8.0.3:7100", tcpB) {
+			t.Fatal("lab initiated traffic without an assigned pair")
 		}
 		// The participant starts it: only with an access rule.
 		if nstest.Reach(t, "pa", "tcp", "10.8.100.2:7300", tcpLab) {
 			t.Errorf("a participant reached the lab without an access rule")
 		}
-		rule := AccessRule{ClientName: "a", LabName: "l", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.8.100.0/24", Action: AccessAllow}
+		rule := AccessRule{ClientName: "a", LabName: "l", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.8.100.0/24", Action: AccessAllow, LabInterface: "lab1"}
 		if err := m.ReplaceAccessRules([]AccessRule{rule}); err != nil {
 			t.Fatal(err)
 		}
 		if !nstest.Reach(t, "pa", "tcp", "10.8.100.2:7300", tcpLab) || !nstest.Ping(t, "pa", "10.8.100.2") {
 			t.Errorf("a participant with access does not reach the lab")
+		}
+		if !nstest.Reach(t, "lab", "tcp", "10.8.0.2:7200", tcpA) || !nstest.Ping(t, "lab", "10.8.0.2") {
+			t.Fatal("assigned reverse pair was blocked")
+		}
+		if nstest.Reach(t, "lab", "tcp", "10.8.0.3:7100", tcpB) {
+			t.Fatal("lab reached an unassigned participant")
 		}
 		if nstest.Reach(t, "pb", "tcp", "10.8.100.2:7300", tcpLab) {
 			t.Errorf("a participant without access reached the lab")

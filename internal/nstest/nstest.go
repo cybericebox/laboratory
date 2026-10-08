@@ -232,6 +232,10 @@ func HelperProcess() {
 			}
 			fmt.Println("hit")
 		}
+	case "echo tcp", "echo udp", "persist tcp", "persist udp":
+		helperPersistent(mode, proto, addr)
+	case "dial dhcp":
+		helperDHCP(addr)
 	case "dial tcp":
 		c, err := net.DialTimeout("tcp", addr, time.Second)
 		if err != nil {

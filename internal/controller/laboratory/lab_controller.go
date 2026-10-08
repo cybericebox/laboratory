@@ -148,12 +148,13 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	// After validation: the web host label relies on validated device names.
-	if err := r.ensureWebServices(ctx, &lab); err != nil {
+	services := r.serviceSnapshot(&lab)
+	if err := r.ensureWebServices(ctx, &lab, services); err != nil {
 		logger.Error(err, "ensure web services")
 		return ctrl.Result{}, err
 	}
 
-	if err := r.materializeDevices(ctx, &lab, resolvedInterfaces); err != nil {
+	if err := r.materializeDevices(ctx, &lab, resolvedInterfaces, services); err != nil {
 		logger.Error(err, "materialize devices")
 		return ctrl.Result{}, err
 	}
@@ -175,7 +176,7 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, err
 	}
 
-	return r.updateStatus(ctx, &lab)
+	return r.updateStatus(ctx, &lab, services)
 }
 
 // validateGraph checks device names, endpoint ports, occupancy and switch/hub cycles.
@@ -405,9 +406,9 @@ func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, sw
 	return nil
 }
 
-func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv1alpha1.Lab, resolvedInterfaces map[string][]laboratoryv1alpha1.InterfaceSpec) error {
+func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv1alpha1.Lab, resolvedInterfaces map[string][]laboratoryv1alpha1.InterfaceSpec, snapshots ...*labServiceSnapshot) error {
 	vniAllocator := poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
-	codes := r.newCodeAllocator(lab)
+	codes := r.newCodeAllocator(lab, snapshots...)
 	wantLabels := userLabels(lab.Labels)
 	ten, err := r.tenantOf(ctx, lab)
 	if err != nil {
@@ -713,7 +714,7 @@ func dnsSafeNamePart(value string) bool {
 }
 
 //nolint:gocyclo // one decision over many cases; splitting it would scatter the rule
-func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha1.Lab) (ctrl.Result, error) {
+func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha1.Lab, snapshots ...*labServiceSnapshot) (ctrl.Result, error) {
 	var deviceList laboratoryv1alpha1.DeviceList
 	if err := r.List(
 		ctx, &deviceList, client.InNamespace(lab.Namespace),
@@ -785,7 +786,7 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		newPhase = laboratoryv1alpha1.PhaseQueued
 	}
 
-	access := r.buildAccessEntries(ctx, lab)
+	access := r.buildAccessEntries(ctx, lab, snapshots...)
 
 	// Reflect readiness as a condition; on the Ready edge emit a Normal event.
 	wasReady := labstatus.IsReady(lab.Status.Conditions)
@@ -811,8 +812,8 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 	if newPhase == lab.Status.Phase &&
 		vpnReady == lab.Status.VPN.Ready &&
 		inetReady == lab.Status.Internet.Ready &&
-		reflect.DeepEqual(refs, lab.Status.Devices) &&
-		reflect.DeepEqual(connRefs, lab.Status.Connections) &&
+		sameRefsByName(refs, lab.Status.Devices, func(ref laboratoryv1alpha1.DeviceRef) string { return ref.Name }) &&
+		sameRefsByName(connRefs, lab.Status.Connections, func(ref laboratoryv1alpha1.ConnectionRef) string { return ref.Name }) &&
 		reflect.DeepEqual(access, lab.Status.Access) &&
 		wasReady == allReady {
 		if newPhase != laboratoryv1alpha1.PhaseReady {
@@ -865,11 +866,12 @@ func (r *LabReconciler) segmentReady(ctx context.Context, ns string, enabled boo
 // device in the lab. Empty if BaseDomain is unset.
 // The host is the name of the device's existing web Service, never recomputed;
 // a device whose Service does not exist yet is skipped.
-func (r *LabReconciler) buildAccessEntries(ctx context.Context, lab *laboratoryv1alpha1.Lab) []laboratoryv1alpha1.AccessEntry {
+func (r *LabReconciler) buildAccessEntries(ctx context.Context, lab *laboratoryv1alpha1.Lab, snapshots ...*labServiceSnapshot) []laboratoryv1alpha1.AccessEntry {
 	if r.BaseDomain == "" {
 		return nil
 	}
 	var out []laboratoryv1alpha1.AccessEntry
+	services := r.serviceSnapshot(lab, snapshots...)
 	for _, d := range lab.Spec.Devices {
 		if d.Exposure == nil || d.Exposure.Web == nil {
 			continue
@@ -878,7 +880,7 @@ func (r *LabReconciler) buildAccessEntries(ctx context.Context, lab *laboratoryv
 		if proto == "" {
 			proto = "http"
 		}
-		svc, err := r.findWebService(ctx, lab, d.Name)
+		svc, err := services.find(ctx, d.Name)
 		if err != nil || svc == nil {
 			continue
 		}
@@ -1225,26 +1227,7 @@ func (r *LabReconciler) ensureLabGatewayDeleted(ctx context.Context, lab *labora
 // the lab and device labels that the lab owns. Nothing else stores the name, so
 // this is how later reconciles keep the host label stable. nil if none exists.
 func (r *LabReconciler) findWebService(ctx context.Context, lab *laboratoryv1alpha1.Lab, device string) (*corev1.Service, error) {
-	var list corev1.ServiceList
-	if err := r.reader().List(
-		ctx, &list, client.InNamespace(lab.Namespace),
-		client.MatchingLabels{names.LabelLab: lab.Name, names.LabelDevice: device},
-	); err != nil {
-		return nil, err
-	}
-	var found *corev1.Service
-	for i := range list.Items {
-		svc := &list.Items[i]
-		if !ownedByLab(svc, lab) {
-			continue
-		}
-		// Duplicates are not expected; stay deterministic if one ever appears.
-		if found == nil || svc.CreationTimestamp.Before(&found.CreationTimestamp) ||
-			(svc.CreationTimestamp.Equal(&found.CreationTimestamp) && svc.Name < found.Name) {
-			found = svc
-		}
-	}
-	return found, nil
+	return r.serviceSnapshot(lab).find(ctx, device)
 }
 
 func ownedByLab(obj metav1.Object, lab *laboratoryv1alpha1.Lab) bool {
@@ -1291,8 +1274,9 @@ func (r *LabReconciler) createWebService(ctx context.Context, lab *laboratoryv1a
 	return nil, fmt.Errorf("no free web host label for device %s", device)
 }
 
-func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
-	codes := r.newCodeAllocator(lab)
+func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1alpha1.Lab, snapshots ...*labServiceSnapshot) error {
+	services := r.serviceSnapshot(lab, snapshots...)
+	codes := r.newCodeAllocator(lab, services)
 	for _, d := range lab.Spec.Devices {
 		if d.Exposure == nil || d.Exposure.Web == nil {
 			continue
@@ -1327,7 +1311,7 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 			return controllerutil.SetOwnerReference(lab, svc, r.Scheme)
 		}
 
-		existing, err := r.findWebService(ctx, lab, d.Name)
+		existing, err := services.find(ctx, d.Name)
 		if err != nil {
 			return fmt.Errorf("find Service of device %s: %w", d.Name, err)
 		}
@@ -1356,6 +1340,7 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 		if err != nil {
 			return fmt.Errorf("ensure Service of device %s: %w", d.Name, err)
 		}
+		services.remember(svc)
 		svcName := svc.Name
 
 		np := &networkingv1.NetworkPolicy{

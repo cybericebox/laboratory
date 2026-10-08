@@ -224,3 +224,28 @@ func TestSetupFilterFailsClosed(t *testing.T) {
 type failPolicy struct{ *fakeNetfilter }
 
 func (f *failPolicy) ChangePolicy(_, _, _ string) error { return fmt.Errorf("no ip6tables table") }
+
+func TestLabSourceGateClosesDuringReplacement(t *testing.T) {
+	f := newFake(t)
+	m := manager(f)
+	if err := m.SetupFilter(); err != nil {
+		t.Fatal(err)
+	}
+	_ = m.AddAntiSpoof("lab1", "10.9.1.0/24")
+	if err := m.BlockLab("lab1"); err != nil {
+		t.Fatal(err)
+	}
+	m.DelAntiSpoof("lab1", "10.9.1.0/24")
+	if got := f.chains[sourceChain]; len(got) == 0 || got[0] != "-i lab1 -j DROP" {
+		t.Fatalf("lab was left without source protection %v", got)
+	}
+	if err := m.AddAntiSpoof("lab1", "10.9.3.0/24"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.UnblockLab("lab1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.chains[sourceChain]) != 1 || !strings.Contains(f.chains[sourceChain][0], "10.9.3.0/24") {
+		t.Fatal("replacement guard not retained")
+	}
+}

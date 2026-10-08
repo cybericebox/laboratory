@@ -11,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/cybericebox/laboratory/internal/accessroute"
@@ -60,7 +61,10 @@ func TestAccessPortCheckerRestoresAndReportsOnce(t *testing.T) {
 	var calls [][]netlink.Route
 	var answer error
 	c := &AccessPortChecker{
-		Client:   fake.NewClientBuilder().WithObjects(pod).Build(),
+		Client: fake.NewClientBuilder().WithObjects(pod).
+			WithIndex(&corev1.Pod{}, "spec.nodeName", func(o client.Object) []string {
+				return []string{o.(*corev1.Pod).Spec.NodeName}
+			}).Build(),
 		NodeName: "n1",
 		Recorder: rec,
 		netnsOf:  func(context.Context, string) (string, error) { return "/proc/1/ns/net", nil },

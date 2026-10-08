@@ -93,6 +93,7 @@ func (h *Handler) observe(ctx context.Context, c *monCache) (*monState, error) {
 	}
 	labsOf, clientsOf, policiesOf, reportsOf := byNamespace(allLabs), byNamespace(allClients), byNamespace(allPolicies), byNamespace(allReports)
 	usageOf, podsOf, schedOf := c.usageByNamespace(ctx), c.podStatuses(), c.deviceSchedules()
+	proxyCoverage := c.proxyCoverage()
 
 	st := &monState{labels: map[string]map[string]string{}, labLabels: map[string]map[string]string{}}
 	upd := &protobuf.MonitoringUpdate{}
@@ -161,6 +162,7 @@ func (h *Handler) observe(ctx context.Context, c *monCache) (*monState, error) {
 			upd.Traffic = append(upd.Traffic, report)
 		}
 		if merged := mergeProxyReports(proxies); merged != nil {
+			merged.Partial = merged.Partial || proxyCoverage.incomplete(proxies, merged.GetCoveredToUnixMs())
 			upd.Traffic = append(upd.Traffic, merged)
 		}
 	}
@@ -400,7 +402,7 @@ func (r monitoringRecord) deletedKey() *protobuf.MonitoringDeletedKey {
 }
 
 func monitoringRecordIndex(update *protobuf.MonitoringUpdate) map[string]monitoringRecord {
-	records := make(map[string]monitoringRecord, len(update.Groups)+len(update.Labs)+len(update.Clients)+len(update.Policies))
+	records := make(map[string]monitoringRecord, len(update.Groups)+len(update.Labs)+len(update.Clients)+len(update.Policies)+len(update.Traffic))
 	for _, group := range update.Groups {
 		record := monitoringRecord{kind: "lab_group", groupName: group.GetName(), name: group.GetName(), value: group}
 		records[record.key()] = record

@@ -2,11 +2,52 @@ package vpn
 
 import (
 	"net/netip"
+	"slices"
 	"testing"
 )
 
 func flow(id uint32, src, dst string) ConnFlow {
 	return ConnFlow{ID: id, Key: int(id), Src: netip.MustParseAddr(src), Dst: netip.MustParseAddr(dst)}
+}
+
+func TestRevokedFlowsWithKnownClientsCoversBothDirections(t *testing.T) {
+	flows := []ConnFlow{
+		flow(1, "10.7.0.2", "10.8.1.5"),   // assigned pair
+		flow(2, "10.8.1.5", "10.7.0.2"),   // lab starts assigned pair
+		flow(3, "10.7.0.3", "10.8.1.5"),   // unauthorized client
+		flow(4, "10.8.1.5", "10.7.0.3"),   // unauthorized lab initiative
+		flow(5, "10.244.0.2", "10.8.1.5"), // pod traffic: not a VPN client
+	}
+	rules := []AccessRule{{ClientName: "a", LabName: "l1", SourceCIDR: "10.7.0.2/32", DestinationCIDR: "10.8.1.0/24", Action: AccessAllow}}
+	var ids []uint32
+	for _, f := range RevokedFlows(flows, []string{"10.8.1.0/24"}, rules, []string{"10.7.0.2/32", "10.7.0.3/32"}) {
+		ids = append(ids, f.ID)
+	}
+	if !slices.Equal(ids, []uint32{3, 4}) {
+		t.Fatalf("revoked %v, want only the unauthorized pair in both directions", ids)
+	}
+	ids = nil
+	for _, f := range RevokedFlows(flows, []string{"10.8.1.0/24"}, nil, []string{"10.7.0.2/32", "10.7.0.3/32"}) {
+		ids = append(ids, f.ID)
+	}
+	if !slices.Equal(ids, []uint32{1, 2, 3, 4}) {
+		t.Fatalf("removed policy kept a flow or revoked the pod: %v", ids)
+	}
+}
+
+func TestRevokedRoutedLabFlowUsesTrustedConntrackBinding(t *testing.T) {
+	allowed := ConnFlow{ID: 1, Src: netip.MustParseAddr("10.99.0.2"), Dst: netip.MustParseAddr("10.7.0.2"), Mark: FlowCountedMark | 1<<8}
+	other := allowed
+	other.ID = 2
+	other.Mark = FlowCountedMark | 2<<8
+	rules := []AccessRule{{ClientName: "p1", LabName: "a", SourceCIDR: "10.7.0.2/32", DestinationCIDR: "10.8.1.0/24", LabInterface: "lab1", Action: AccessAllow}}
+	got := RevokedFlows([]ConnFlow{allowed, other}, []string{"10.8.1.0/24", "10.8.2.0/24"}, rules, []string{"10.7.0.2/32"})
+	if len(got) != 1 || got[0].ID != 2 {
+		t.Fatalf("routed lab binding revoked wrongly: %+v", got)
+	}
+	if got := RevokedFlows([]ConnFlow{allowed}, []string{"10.8.1.0/24"}, nil, []string{"10.7.0.2/32"}); len(got) != 1 {
+		t.Fatal("removed permission did not revoke routed lab initiative")
+	}
 }
 
 func TestRevokedFlows(t *testing.T) {

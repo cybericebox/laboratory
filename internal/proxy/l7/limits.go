@@ -17,25 +17,22 @@ type LiveCaps struct {
 func (s *liveSet) tryAdd(e *liveEntry, caps LiveCaps) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
 	if caps.Total > 0 && len(s.entries) >= caps.Total {
 		return false
 	}
-	if caps.PerClient > 0 || caps.PerGroup > 0 {
-		perClient, perGroup := 0, 0
-		for o := range s.entries {
-			if o.group != e.group {
-				continue
-			}
-			perGroup++
-			if o.client == e.client {
-				perClient++
-			}
-		}
-		if (caps.PerClient > 0 && perClient >= caps.PerClient) || (caps.PerGroup > 0 && perGroup >= caps.PerGroup) {
-			return false
-		}
+	key := liveClientKey{e.group, e.client}
+	if caps.PerClient > 0 && s.perClient[key] >= caps.PerClient || caps.PerGroup > 0 && s.perGroup[e.group] >= caps.PerGroup {
+		return false
+	}
+	if _, exists := s.entries[e]; exists {
+		return true
 	}
 	s.entries[e] = struct{}{}
+	s.perGroup[e.group]++
+	s.perClient[key]++
 	return true
 }
 

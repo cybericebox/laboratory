@@ -34,7 +34,7 @@ type KubeCluster struct {
 // Pods implements Cluster.
 func (k *KubeCluster) Pods(ctx context.Context) ([]PodInfo, error) {
 	var pods corev1.PodList
-	if err := k.Client.List(ctx, &pods); err != nil {
+	if err := k.Client.List(ctx, &pods, client.MatchingFields{"spec.nodeName": k.NodeName}); err != nil {
 		return nil, err
 	}
 	var out []PodInfo

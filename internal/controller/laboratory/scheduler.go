@@ -341,6 +341,9 @@ func (s *Scheduler) observe(ctx context.Context, snap *clusterView, now time.Tim
 		if cur == nil {
 			continue // not initialised by the device reconciler yet
 		}
+		if cur.State != laboratoryv1alpha1.PodStarting && !(cur.State == laboratoryv1alpha1.PodFailed && d.Status.Ready) {
+			continue
+		}
 		ps := cur.DeepCopy()
 		changed := false
 		key := devicePodKey(d.Namespace, d.Spec.LabRef, d.Spec.Name)
@@ -509,6 +512,15 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 			}
 		}
 	}
+	imagesOfGroup := map[string][]string{}
+	groupImages := func(group string) []string {
+		if images, ok := imagesOfGroup[group]; ok {
+			return images
+		}
+		images := classImages(labsOfGroup[group], s.Mirror)
+		imagesOfGroup[group] = images
+		return images
+	}
 	for _, lab := range snap.labs {
 		if lab.DeletionTimestamp != nil || snap.suspended[lab.Namespace] {
 			continue
@@ -519,7 +531,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 		}
 		o.prepTenant = names.TenantOf(lab.Labels)
 		if o.group != "" {
-			o.prepKey, o.images = prepClass(o.prepTenant, "g/"+o.group), classImages(labsOfGroup[o.group], s.Mirror)
+			o.prepKey, o.images = prepClass(o.prepTenant, "g/"+o.group), groupImages(o.group)
 		} else {
 			o.prepKey, o.images = prepClass(o.prepTenant, "l/"+topologyClass(lab)), classImages([]*laboratoryv1alpha1.Lab{lab}, s.Mirror)
 		}
@@ -555,7 +567,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 		}
 		if o.group != "" {
 			o.prepTenant = names.TenantOf(g.Labels)
-			o.prepKey, o.images = prepClass(o.prepTenant, "g/"+o.group), classImages(labsOfGroup[o.group], s.Mirror)
+			o.prepKey, o.images = prepClass(o.prepTenant, "g/"+o.group), groupImages(o.group)
 		}
 		for _, name := range groupPodNames(g) {
 			key := "group/" + g.Name + "/" + name
@@ -589,6 +601,13 @@ func (s *Scheduler) tick(ctx context.Context) error {
 		s.lastWrite = map[types.UID]time.Time{}
 	}
 	now := s.now()
+	// An expired dispatch no longer affects scheduling, even if its object was
+	// deleted and never appears in the cache again. Prepared history is separate.
+	for key, at := range s.recent {
+		if now.Sub(at) >= recentDispatchTTL {
+			delete(s.recent, key)
+		}
+	}
 	snap, err := s.load(ctx)
 	if err != nil {
 		return err
@@ -878,6 +897,9 @@ func (s *Scheduler) ensurePrepared(ctx context.Context, key, tenantName string, 
 	}
 	if _, ok := s.prepared[key]; ok {
 		return true, nil
+	}
+	if s.preparing[prepullKey(key)] {
+		return false, nil
 	}
 	if !s.Config.Prepull || len(images) == 0 {
 		s.prepared[key] = struct{}{}

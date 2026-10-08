@@ -40,7 +40,14 @@ func labGroupToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.LabGroup {
 // labToProto maps a Lab custom resource to its gRPC wire representation.
 // Spec is passed through as opaque JSON since the agent is a thin wrapper.
 func labToProto(l *laboratoryv1alpha1.Lab) *protobuf.Lab {
-	specJSON, _ := json.Marshal(l.Spec)
+	return labProjection(l, true)
+}
+
+func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool) *protobuf.Lab {
+	var specJSON []byte
+	if includeSpec {
+		specJSON, _ = json.Marshal(l.Spec)
+	}
 	st := l.Status
 	status := &protobuf.LabStatus{
 		Phase:         string(st.Phase),
@@ -183,8 +190,7 @@ func quantityValue(value string) int64 {
 // labMonitoringToProto projects runtime state without exposing the Lab spec
 // or write-only device environment values through the monitoring stream.
 func labMonitoringToProto(l *laboratoryv1alpha1.Lab, labGroupName string) *protobuf.Lab {
-	p := labToProto(l)
-	p.SpecJson = nil
+	p := labProjection(l, false)
 	p.LabGroupName = labGroupName
 	return p
 }
@@ -305,17 +311,25 @@ func trafficReportToProto(report *laboratoryv1alpha1.LabTrafficReport, labGroupN
 		BootId:            report.Status.BootID,
 		CoveredFromUnixMs: report.Status.CoveredFromMs,
 		CoveredToUnixMs:   report.Status.CoveredToMs,
-		Partial:           report.Status.Partial,
+		Partial:           report.Status.Partial || report.Status.Truncated,
 		Truncated:         report.Status.Truncated,
 		Ledger:            make([]*protobuf.TrafficTouch, 0, len(report.Status.Ledger)),
 	}
 	for _, t := range report.Status.Ledger {
 		p.Ledger = append(p.Ledger, &protobuf.TrafficTouch{
 			Subject: t.Subject, LabName: t.LabName, Device: t.Device, DstIp: t.DstIP, Proto: t.Proto,
-			DstPort: uint32(t.DstPort), Attempts: t.Attempts,
+			DstPort: uint32(t.DstPort), Attempts: t.Attempts, LabInitiatedAttempts: t.LabInitiatedAttempts,
 			PacketsOut: t.PacketsOut, PacketsIn: t.PacketsIn, BytesOut: t.BytesOut, BytesIn: t.BytesIn,
 			FirstSeenUnixMs: t.FirstSeenMs, LastSeenUnixMs: t.LastSeenMs, FirstRespondedUnixMs: t.FirstRespondedMs,
 		})
 	}
+	for _, s := range report.Status.CoverageSpans {
+		p.CoverageSpans = append(p.CoverageSpans, &protobuf.TrafficCoverageSpan{FromUnixMs: s.FromMs, ToUnixMs: s.ToMs, Partial: s.Partial, Source: s.Source, Instance: s.Instance, BootId: s.BootID})
+	}
+	p.CoverageSpans = reportCoverage(p)
+	for _, s := range p.CoverageSpans {
+		p.Partial = p.Partial || s.Partial
+	}
+	p.Partial = p.Partial || coverageHistoryHasGap(p.CoverageSpans)
 	return p
 }
