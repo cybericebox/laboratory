@@ -104,7 +104,9 @@ func (r *LabReconciler) prepareLabScopes(ctx context.Context, l *lab.Lab) error 
 			}
 		}
 	}
-	bindings := []lab.OwnedVNI{}
+	// Optional empty bindings are omitted by the status API and decode as nil.
+	// Keep declarations in that shape so exact current report adoption survives.
+	var bindings []lab.OwnedVNI
 	for _, d := range devices.Items {
 		if objectOwnedBy(&d, string(l.UID)) && d.Status.VNI != nil {
 			bindings = append(bindings, lab.OwnedVNI{PoolUID: d.Status.VNILease.PoolUID, LeaseGeneration: d.Status.VNILease.Generation, OwnerUID: string(l.UID), OperationID: op, Revision: rev, Generation: l.Generation, Kind: "Device", Namespace: d.Namespace, Name: d.Name, UID: string(d.UID), VNI: *d.Status.VNI})
