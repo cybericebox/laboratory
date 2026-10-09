@@ -115,6 +115,16 @@ func (e *Engine) captureRequired(ctx context.Context, p PodInfo, req api.DeviceC
 		}
 		return fail(errors.New("prior capture is still held"))
 	}
+	// A live push can finish during lifecycle preparation, before Sync observes
+	// this request. Reserve its remaining interval under the same mutex as live
+	// snapshots, but do not freeze or publish a hold until the wait is over.
+	if err = t.waitPushInterval(sctx); err != nil {
+		result, _ = fail(err)
+		failureCtx, failureCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		_ = cl.RecordCapture(failureCtx, p, result)
+		failureCancel()
+		return result, err
+	}
 	// Strict capture always uses the successfully inspected current OCI metadata.
 	t.c = c
 	t.pod = trackingPodInfo(p)
@@ -186,6 +196,36 @@ func (e *Engine) captureRequired(ctx context.Context, p PodInfo, req api.DeviceC
 	e.holdWorkers.Add(1)
 	go e.watchHold(ctx, t, h, rt, cl, deadline)
 	return result, nil
+}
+
+// waitPushInterval holds t.mu; no ordinary push can renew the interval while a
+// Required request waits. All other push refusals remain in snapshotLocked.
+func (t *tracked) waitPushInterval(ctx context.Context) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if t.e.MinPushInterval <= 0 || len(t.pushes) == 0 {
+			return nil
+		}
+		last := t.pushes[len(t.pushes)-1].at
+		wait := t.e.MinPushInterval - t.e.now().Sub(last)
+		if wait <= 0 {
+			return nil
+		}
+		if deadline, ok := ctx.Deadline(); ok && wait >= time.Until(deadline) {
+			// Empty or unchanged Required layers need no push. Preserve that
+			// decision in the frozen diff; an actual push still fails allow().
+			return nil
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func (e *Engine) writeHold(h *requiredHold) error {

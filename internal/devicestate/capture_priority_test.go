@@ -238,7 +238,7 @@ func TestRequiredCapturePendingPriorityPreservesBudgetFailure(t *testing.T) {
 			}
 			if limit == "interval" {
 				r.e.MinPushInterval = time.Minute
-				clock.advance(time.Minute - time.Nanosecond)
+				clock.advance(29 * time.Second) // Residual cannot fit the 30s capture deadline.
 			} else {
 				r.e.PushBudget = 1
 				r.e.PushBudgetWindow = time.Hour
@@ -278,7 +278,7 @@ func TestRequiredCapturePendingFailedCurrentRequestKeepsPriorityUntilFreshClear(
 			if failure == "quota" {
 				r.pod.Policy.WriteQuota = 1
 			} else {
-				clock.advance(time.Minute - time.Nanosecond)
+				clock.advance(29 * time.Second) // Residual cannot fit the 30s capture deadline.
 			}
 			r.rt.setDiff(tarOf(map[string]string{"work": "required changed"}))
 			p := r.pod
