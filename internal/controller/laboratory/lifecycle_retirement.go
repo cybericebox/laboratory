@@ -34,10 +34,16 @@ func LifecycleRetired(l *lab.Lab) bool {
 	return valid && in.ExpectedUID == string(l.UID) && retirementMatches(in, o, l.Generation) && o.State == "Deleted" && o.RuntimeAbsent && o.CleanupComplete && o.StorageState == "Deleted" && o.Error == "" && nonzeroTime(o.ObservedAt) && o.ObservedAt.After(o.RequestedAt.Time)
 }
 func freshRetirementRows(rows []lab.OwnedRuntimeIdentity, reports []lab.OwnedRuntimeReport, in lab.LifecycleRetirementIntent) bool {
-	if !runtimeRowsReleased(rows, reports, in.ExpectedUID, in.StopOperationID, in.StopRevision) {
+	if len(rows) == 0 {
 		return false
 	}
 	for _, id := range rows {
+		// Retirement challenges cover retained original obligations as well as
+		// the current stop. Their immutable tuples must never be rebound.
+		scope := id.ScopeKind == "LabFabric" || id.ScopeKind == "GroupScope" || id.ScopeKind == "NeverMaterialized"
+		if id.OwnerUID != in.ExpectedUID || id.OperationID == "" || id.Revision < 1 || id.Revision > in.StopRevision || id.Revision == in.StopRevision && id.OperationID != in.StopOperationID || in.Generation > 0 && (id.Generation < 1 || id.Generation > in.Generation) || id.NodeName == "" || id.NodeBootID == "" || scope && (id.ScopeUID == "" || id.ScopeKind != "NeverMaterialized" && id.ScopeUID != in.ExpectedUID || !id.AttachmentsComplete) || !scope && (id.PodUID == "" || len(id.ContainerIDs) == 0 || len(id.CgroupPaths) == 0 || len(id.PortKeys) == 0 && !id.AttachmentsComplete) {
+			return false
+		}
 		found := false
 		for _, report := range reports {
 			if reflect.DeepEqual(id, report.Identity) && report.RetirementOperationID == in.OperationID && report.RetirementRevision == in.Revision && report.RuntimeState == "Released" && report.Error == "" && nonzeroTime(report.ObservedAt) && nonzeroTime(report.RuntimeAbsentAt) && nonzeroTime(report.CgroupAbsentAt) && nonzeroTime(report.AttachmentsAbsentAt) {

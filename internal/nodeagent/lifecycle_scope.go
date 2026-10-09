@@ -201,17 +201,42 @@ func (o *NativeRuntimeObserver) ObserveScope(ctx context.Context, id lab.OwnedRu
 	defer o.mu.Unlock()
 	id = runtimeWireIdentity(id)
 	var committed lab.OwnedRuntimeReport
-	if (len(fresh) == 0 || !fresh[0]) && o.readRecord("scope-fabric-released", id, &committed) == nil {
+	priorCommitted := false
+	if o.readRecord("scope-fabric-released", id, &committed) == nil {
 		committed.Identity = runtimeWireIdentity(committed.Identity)
-		if committedRuntimeReport(committed, id) {
+		priorCommitted = committedRuntimeReport(committed, id)
+		if (len(fresh) == 0 || !fresh[0]) && priorCommitted {
 			return committed
+		}
+	}
+	var retirement *lab.LifecycleRetirementIntent
+	if len(fresh) > 0 && fresh[0] && (id.ScopeKind == "LabFabric" || id.ScopeKind == "NeverMaterialized") {
+		var l lab.Lab
+		if o.Reader != nil && o.Reader.Get(ctx, client.ObjectKey{Namespace: id.Namespace, Name: id.LabName}, &l) == nil {
+			if in, valid := nativeLabRetirementChallenge(&l, id, l.Status.ScopeInventory); valid {
+				retirement = &in
+			}
 		}
 	}
 	now := metav1.Now()
 	out := lab.OwnedRuntimeReport{Identity: id, RuntimeState: "Unknown", ObservedAt: &now}
 	fail := func(err error) lab.OwnedRuntimeReport { out.Error = err.Error(); return out }
 	var persistentDebt lab.OwnedRuntimeIdentity
-	stopped, err := o.scopeCurrent(ctx, id, &persistentDebt)
+	scopeFence := func(identity lab.OwnedRuntimeIdentity) (bool, error) {
+		stopped, err := o.scopeCurrent(ctx, identity, &persistentDebt)
+		if retirement != nil {
+			if fenceErr := o.retirementScopeCurrent(ctx, identity, *retirement); fenceErr != nil {
+				return false, fenceErr
+			}
+			// The exact old certificate authorizes its original positive debt for
+			// a full fresh retirement scan, never a copied challenge acknowledgement.
+			if err != nil && priorCommitted {
+				return true, nil
+			}
+		}
+		return stopped, err
+	}
+	stopped, err := scopeFence(id)
 	if err != nil {
 		return fail(err)
 	}
@@ -494,7 +519,7 @@ func (o *NativeRuntimeObserver) ObserveScope(ctx context.Context, id lab.OwnedRu
 		}
 	}
 	for _, port := range id.FabricPorts {
-		if _, err := o.scopeCurrent(ctx, id); err != nil {
+		if _, err := scopeFence(id); err != nil {
 			return fail(err)
 		}
 		if err := o.Network.OVS.DelFabricPortOwned(port.Key, types.UID(port.OwnerUID), o.Network.Flows, port.RowUUID); err != nil {
@@ -503,7 +528,7 @@ func (o *NativeRuntimeObserver) ObserveScope(ctx context.Context, id lab.OwnedRu
 	}
 	o.Network.OVS.vethMu.Lock()
 	defer o.Network.OVS.vethMu.Unlock()
-	if _, err := o.scopeCurrent(ctx, id); err != nil {
+	if _, err := scopeFence(id); err != nil {
 		return fail(err)
 	}
 	for _, binding := range id.VNIBindings {
@@ -537,10 +562,69 @@ func (o *NativeRuntimeObserver) ObserveScope(ctx context.Context, id lab.OwnedRu
 	out.ReleasedVNIs = append([]lab.OwnedVNI(nil), id.VNIBindings...)
 	out.AttachmentsAbsentAt = &now
 	out.RuntimeState = "Released"
+	if retirement != nil {
+		if err := o.retirementScopeCurrent(ctx, id, *retirement); err != nil {
+			return fail(err)
+		}
+	}
 	if err := o.writeRecord("scope-fabric-released", id, out); err != nil {
 		return fail(err)
 	}
 	return out
+}
+
+func (o *NativeRuntimeObserver) retirementScopeCurrent(ctx context.Context, id lab.OwnedRuntimeIdentity, expected lab.LifecycleRetirementIntent) error {
+	if id.NodeName != o.NodeName || id.NodeBootID != o.BootID || o.BootID == "" {
+		return ErrPortOwnerChanged
+	}
+	var parent lab.Lab
+	if err := o.Reader.Get(ctx, client.ObjectKey{Namespace: id.Namespace, Name: id.LabName}, &parent); err != nil {
+		return err
+	}
+	valid := false
+	for _, declared := range parent.Status.ScopeInventory {
+		current, bound := nativeLabRetirementChallenge(&parent, declared, parent.Status.ScopeInventory)
+		// Intermediate scans can add physical debt and clear completion while
+		// they retire it. No original obligation or stable identity can disappear.
+		if bound && reflect.DeepEqual(current, expected) && sameDeclaredNativeScope(declared, id) && retirementDebtContains(id.ContainerIDs, declared.ContainerIDs) && retirementDebtContains(id.CgroupPaths, declared.CgroupPaths) && retirementDebtContains(id.PortKeys, declared.PortKeys) && retirementDebtContains(id.PortRows, declared.PortRows) && retirementDebtContains(id.FabricPorts, declared.FabricPorts) && retirementDebtContains(id.VNIs, declared.VNIs) && retirementDebtContains(id.VNIBindings, declared.VNIBindings) {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		return ErrPortOwnerChanged
+	}
+	if id.ScopeKind == "NeverMaterialized" {
+		var devices lab.DeviceList
+		if err := o.Reader.List(ctx, &devices, client.InNamespace(id.Namespace)); err != nil {
+			return err
+		}
+		for _, d := range devices.Items {
+			if string(d.UID) != id.ScopeUID || d.Spec.LabRef != parent.Name || d.Status.NodeName != "" && d.Status.NodeName != id.NodeName {
+				continue
+			}
+			for _, owner := range d.OwnerReferences {
+				if owner.Kind == "Lab" && owner.Name == parent.Name && owner.UID == parent.UID {
+					return nil
+				}
+			}
+		}
+		return ErrPortOwnerChanged
+	}
+	return nil
+}
+
+func retirementDebtContains[T any](observed, declared []T) bool {
+	for _, debt := range declared {
+		found := false
+		for _, actual := range observed {
+			found = found || reflect.DeepEqual(actual, debt)
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 func (o *NativeRuntimeObserver) captureScopeFabric(ctx context.Context, id *lab.OwnedRuntimeIdentity) error {
 	if id.ScopeKind == "GroupScope" || id.ScopeKind == "NeverMaterialized" {

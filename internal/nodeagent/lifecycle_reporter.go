@@ -156,8 +156,9 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 		var reports []lab.OwnedRuntimeReport
 		for _, scope := range parent.Status.ScopeInventory {
 			if scope.NodeName == r.Observer.NodeName {
-				report := r.Observer.ObserveScope(ctx, scope, nativeRetirementSample(parent.Annotations, string(parent.UID), scope))
-				if intent, ok := lab.ParseLifecycleRetirement(parent.Annotations[names.AnnotationLifecycleRetirement]); ok && intent.ExpectedUID == string(parent.UID) && intent.StopOperationID == scope.OperationID && intent.StopRevision == scope.Revision {
+				intent, fresh := nativeLabRetirementChallenge(parent, scope, parent.Status.ScopeInventory)
+				report := r.Observer.ObserveScope(ctx, scope, fresh)
+				if fresh && report.RuntimeState == "Released" && report.Error == "" {
 					report.RetirementOperationID = intent.OperationID
 					report.RetirementRevision = intent.Revision
 				}
@@ -212,8 +213,21 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 		reports := otherNodeReports(d.Status.RuntimeReports, r.Observer.NodeName)
 		for _, id := range rows {
 			if id.NodeName == r.Observer.NodeName {
-				report := r.Observer.ObserveOwnedRuntime(ctx, id, nativeRetirementSample(parent.Annotations, string(parent.UID), id))
-				if intent, ok := lab.ParseLifecycleRetirement(parent.Annotations[names.AnnotationLifecycleRetirement]); ok && intent.ExpectedUID == string(parent.UID) && intent.StopOperationID == id.OperationID && intent.StopRevision == id.Revision {
+				intent, fresh := nativeLabRetirementChallenge(&parent, id, d.Status.RuntimeInventory)
+				report := r.Observer.ObserveOwnedRuntime(ctx, id, fresh)
+				if fresh && report.RuntimeState == "Released" && report.Error == "" {
+					var live lab.Lab
+					var device lab.Device
+					if err := r.Reader.Get(ctx, client.ObjectKeyFromObject(&parent), &live); err != nil {
+						return err
+					}
+					if err := r.Reader.Get(ctx, client.ObjectKeyFromObject(d), &device); err != nil {
+						return err
+					}
+					current, valid := nativeLabRetirementChallenge(&live, id, device.Status.RuntimeInventory)
+					if live.UID != parent.UID || device.UID != d.UID || device.Generation != d.Generation || !reflect.DeepEqual(device.Spec, d.Spec) || !reflect.DeepEqual(device.OwnerReferences, d.OwnerReferences) || !valid || !reflect.DeepEqual(current, intent) {
+						return ErrPortOwnerChanged
+					}
 					report.RetirementOperationID, report.RetirementRevision = intent.OperationID, intent.Revision
 				}
 				reports = append(reports, report)
@@ -248,6 +262,12 @@ func (r *LifecycleReporter) publishLabScopes(ctx context.Context, sampled *lab.L
 			return ErrPortOwnerChanged
 		}
 		for _, report := range reports {
+			if report.RetirementOperationID != "" {
+				intent, valid := nativeLabRetirementChallenge(&live, report.Identity, live.Status.ScopeInventory)
+				if !valid || intent.OperationID != report.RetirementOperationID || intent.Revision != report.RetirementRevision {
+					return ErrPortOwnerChanged
+				}
+			}
 			declared := false
 			for _, id := range live.Status.ScopeInventory {
 				declared = declared || id.NodeName == r.Observer.NodeName && sameDeclaredNativeScope(id, report.Identity)
@@ -403,6 +423,26 @@ func (r *LifecycleReporter) nativeDevicePodOwned(ctx context.Context, d *lab.Dev
 func nativeRetirementSample(annotations map[string]string, uid string, id lab.OwnedRuntimeIdentity) bool {
 	intent, ok := lab.ParseLifecycleRetirement(annotations[names.AnnotationLifecycleRetirement])
 	return ok && intent.ExpectedUID == uid && intent.StopOperationID == id.OperationID && intent.StopRevision == id.Revision
+}
+
+func nativeLabRetirementChallenge(l *lab.Lab, id lab.OwnedRuntimeIdentity, retained []lab.OwnedRuntimeIdentity) (lab.LifecycleRetirementIntent, bool) {
+	in, valid := lab.ParseLifecycleRetirement(l.Annotations[names.AnnotationLifecycleRetirement])
+	i, o, a := l.Spec.Lifecycle, l.Status.Lifecycle, l.Status.Resources
+	if !valid || in.ExpectedUID != string(l.UID) || in.Generation != l.Generation || !l.DeletionTimestamp.IsZero() || i == nil || !i.IsStopped() || i.OperationID != in.StopOperationID || i.Revision != in.StopRevision || o == nil || o.LabUID != string(l.UID) || o.OperationID != i.OperationID || o.Revision != i.Revision || o.ObservedGeneration != l.Generation || o.ObservedState != "Stopped" || o.Error != "" || o.StoppedAt == nil || o.StoppedAt.IsZero() || a == nil || a.OperationID != i.OperationID || a.Revision != i.Revision || a.RuntimeState != "Released" || a.ObservedAt == nil || a.ObservedAt.IsZero() || a.ReleasedAt == nil || a.ReleasedAt.IsZero() || a.AllocatedRequests != (lab.ResourceAmounts{}) || i.SnapshotMode == "Required" && !o.SnapshotComplete || l.Spec.VPN.Enabled && (!o.AccessFenced || o.AccessFencedAt == nil || o.AccessFencedAt.IsZero() || o.AccessFenceVPNBootID == "") {
+		return in, false
+	}
+	if id.OwnerUID != string(l.UID) || id.Namespace != l.Namespace || id.LabName != l.Name || id.Generation < 1 || id.Generation > l.Generation || id.OperationID == "" || id.Revision < 1 || id.Revision > in.StopRevision || id.Revision == in.StopRevision && id.OperationID != in.StopOperationID || id.NodeName == "" || id.NodeBootID == "" {
+		return in, false
+	}
+	if (id.ScopeKind == "LabFabric" && id.ScopeUID != string(l.UID)) || id.ScopeKind == "NeverMaterialized" && id.ScopeUID == "" {
+		return in, false
+	}
+	for _, row := range retained {
+		if reflect.DeepEqual(runtimeWireIdentity(row), runtimeWireIdentity(id)) {
+			return in, true
+		}
+	}
+	return in, false
 }
 
 func nativeGroupOperation(g *lab.LabGroup) (string, int64) {
