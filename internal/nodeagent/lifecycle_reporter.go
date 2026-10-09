@@ -24,11 +24,13 @@ import (
 // LifecycleReporter polls direct API identities and direct native state. Every
 // mutation is an optimistic status merge limited to this node's report rows.
 type LifecycleReporter struct {
-	Owner    *os.File
-	Client   client.Client
-	Reader   client.Reader
-	Observer *NativeRuntimeObserver
-	Interval time.Duration
+	Owner               *os.File
+	Client              client.Client
+	Reader              client.Reader
+	Observer            *NativeRuntimeObserver
+	Interval            time.Duration
+	currentDeviceCursor int
+	historyDeviceCursor int
 }
 
 func (r *LifecycleReporter) Start(ctx context.Context) error {
@@ -56,11 +58,23 @@ func (r *LifecycleReporter) Start(ctx context.Context) error {
 	}
 }
 func (r *LifecycleReporter) sync(ctx context.Context) error {
-	var publicationErrors []error
 	var pods corev1.PodList
 	if err := r.Reader.List(ctx, &pods, client.MatchingFields{"spec.nodeName": r.Observer.NodeName}); err != nil {
 		return err
 	}
+	// A growing retained scope history must not consume the deadline before
+	// current Pod handshakes are published. Both passes retain finite budgets;
+	// they run serially because native observation owns the journal mutex.
+	current, cancel := context.WithTimeout(ctx, 15*time.Second)
+	currentErr := r.syncDevices(current, &pods, true)
+	cancel()
+	history, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	return errors.Join(currentErr, r.syncHistory(history, pods))
+}
+
+func (r *LifecycleReporter) syncHistory(ctx context.Context, pods corev1.PodList) error {
+	var publicationErrors []error
 	var groups lab.LabGroupList
 	if err := r.Reader.List(ctx, &groups); err != nil {
 		return err
@@ -169,14 +183,35 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 			publicationErrors = append(publicationErrors, fmt.Errorf("publish native lab %s/%s: %w", parent.Namespace, parent.Name, err))
 		}
 	}
+	if err := r.syncDevices(ctx, &pods, false); err != nil {
+		publicationErrors = append(publicationErrors, err)
+	}
+	return errors.Join(publicationErrors...)
+}
+
+func (r *LifecycleReporter) syncDevices(ctx context.Context, pods *corev1.PodList, currentOnly bool) error {
+	var publicationErrors []error
 	var devices lab.DeviceList
 	if e := r.Reader.List(ctx, &devices); e != nil {
 		return e
 	}
-	for i := range devices.Items {
+	cursor := &r.historyDeviceCursor
+	if currentOnly {
+		cursor = &r.currentDeviceCursor
+	}
+	start := *cursor
+	for offset := range devices.Items {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(append(publicationErrors, err)...)
+		}
+		i := (start + offset) % len(devices.Items)
+		// Resume after the last attempted object when its native calls time out.
+		// No object or report is discarded when a pass runs out of time.
+		*cursor = i + 1
 		d := &devices.Items[i]
 		var parent lab.Lab
 		if e := r.Reader.Get(ctx, client.ObjectKey{Namespace: d.Namespace, Name: d.Spec.LabRef}, &parent); e != nil {
+			publicationErrors = append(publicationErrors, e)
 			continue
 		}
 		operation, revision := nativeLabOperation(&parent)
@@ -188,14 +223,23 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 			continue
 		}
 		rows := append([]lab.OwnedRuntimeIdentity(nil), d.Status.RuntimeInventory...)
+		if currentOnly {
+			rows = nil
+		}
+		currentPods := map[string]bool{}
 		for j := range pods.Items {
 			p := &pods.Items[j]
 			if p.Namespace != d.Namespace || p.Labels[names.LabelDevice] != d.Spec.Name || p.Labels[names.LabelLab] != parent.Name {
 				continue
 			}
 			if owned, err := r.nativeDevicePodOwned(ctx, d, p); err != nil {
-				return err
+				publicationErrors = append(publicationErrors, err)
+				continue
 			} else if !owned {
+				continue
+			}
+			currentPods[string(p.UID)] = true
+			if !currentOnly {
 				continue
 			}
 			id := r.podIdentity(p, string(parent.UID), operation, revision)
@@ -210,11 +254,15 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 			rows = appendUniqueRow(rows, id)
 		}
 		base := d.DeepCopy()
-		reports := otherNodeReports(d.Status.RuntimeReports, r.Observer.NodeName)
+		// Merge only sampled identities. The history pass must neither resample a
+		// current Pod nor erase its fresh handshake (or another node's debt).
+		reports := append([]lab.OwnedRuntimeReport(nil), d.Status.RuntimeReports...)
 		for _, id := range rows {
-			if id.NodeName == r.Observer.NodeName {
+			if id.NodeName == r.Observer.NodeName && (currentOnly || !currentPods[id.PodUID]) {
 				intent, fresh := nativeLabRetirementChallenge(&parent, id, d.Status.RuntimeInventory)
-				report := r.Observer.ObserveOwnedRuntime(ctx, id, fresh)
+				observe, cancel := context.WithTimeout(ctx, 5*time.Second)
+				report := r.Observer.ObserveOwnedRuntime(observe, id, fresh)
+				cancel()
 				if fresh && report.RuntimeState == "Released" && report.Error == "" {
 					var live lab.Lab
 					var device lab.Device
@@ -230,6 +278,15 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 					}
 					report.RetirementOperationID, report.RetirementRevision = intent.OperationID, intent.Revision
 				}
+				merged := reports[:0]
+				for _, old := range reports {
+					if !sameRuntimeOwner(old.Identity, report.Identity) {
+						merged = append(merged, old)
+					} else if old.ObservedAt != nil && (report.ObservedAt == nil || old.ObservedAt.After(report.ObservedAt.Time)) {
+						report = old
+					}
+				}
+				reports = merged
 				reports = append(reports, report)
 			}
 		}

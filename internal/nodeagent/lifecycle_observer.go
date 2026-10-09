@@ -61,7 +61,9 @@ func (o *NativeRuntimeObserver) ObserveOwnedRuntime(ctx context.Context, id lab.
 		return fail(fmt.Errorf("native ownership incomplete or node boot changed"))
 	}
 	ctx = namespaces.WithNamespace(ctx, o.Namespace)
-	containers, err := o.Runtime.Containers(ctx)
+	// Ask containerd for this immutable Pod owner before loading metadata/specs.
+	// Returned labels are still checked below; the selector grants no authority.
+	containers, err := o.Runtime.Containers(ctx, `labels."io.kubernetes.pod.uid"==`+fmt.Sprintf("%q", id.PodUID))
 	if err != nil {
 		return fail(err)
 	}
