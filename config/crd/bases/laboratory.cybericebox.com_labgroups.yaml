@@ -39,6 +39,33 @@ spec:
           spec:
             description: LabGroupSpec defines the desired state of LabGroup.
             properties:
+              admission:
+                description: Admission serializes child creates/starts across agent
+                  replicas.
+                properties:
+                  desiredState:
+                    type: string
+                  expectedLabUID:
+                    type: string
+                  groupUID:
+                    type: string
+                  labName:
+                    type: string
+                  operationId:
+                    type: string
+                  revision:
+                    format: int64
+                    type: integer
+                  specHash:
+                    type: string
+                  token:
+                    type: string
+                required:
+                - desiredState
+                - groupUID
+                - labName
+                - token
+                type: object
               gateway:
                 description: Gateway holds the internet gateway pod's settings.
                 properties:
@@ -62,6 +89,36 @@ spec:
                     - message: the size of a group's pod is fixed
                       rule: self == oldSelf
                 type: object
+              lifecycle:
+                description: Lifecycle is independent of legacy suspension; absent
+                  means Running.
+                properties:
+                  desiredState:
+                    enum:
+                    - Running
+                    - Stopped
+                    type: string
+                  operationId:
+                    maxLength: 128
+                    minLength: 1
+                    type: string
+                  requireAllLabsStopped:
+                    type: boolean
+                  revision:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                required:
+                - desiredState
+                - operationId
+                - requireAllLabsStopped
+                - revision
+                type: object
+                x-kubernetes-validations:
+                - message: group stop requires all labs stopped
+                  rule: self.desiredState != 'Stopped' || self.requireAllLabsStopped
+                - message: group lifecycle revision must increase for changed intent
+                  rule: self.revision > oldSelf.revision || self == oldSelf
               suspended:
                 type: boolean
               vpn:
@@ -112,15 +169,112 @@ spec:
                       rule: self == oldSelf
                 type: object
             type: object
+            x-kubernetes-validations:
+            - message: explicit group lifecycle intent cannot be removed
+              rule: '!has(oldSelf.lifecycle) || has(self.lifecycle)'
           status:
             description: LabGroupStatus defines the observed state of LabGroup.
             properties:
+              creations:
+                description: Original birth metadata; bounded by actual group Lab
+                  capacity and never raw data.
+                items:
+                  description: |-
+                    LabCreationReceipt records original birth separately from lifecycle/native
+                    observations. Pending records cannot be rebound to a recreated name.
+                  properties:
+                    committed:
+                      type: boolean
+                    creationId:
+                      type: string
+                    definitionHash:
+                      type: string
+                    groupUID:
+                      type: string
+                    labName:
+                      type: string
+                    labUID:
+                      type: string
+                    namespaceUID:
+                      type: string
+                    operationId:
+                      type: string
+                    revision:
+                      format: int64
+                      type: integer
+                  required:
+                  - committed
+                  - creationId
+                  - definitionHash
+                  - groupUID
+                  - labName
+                  - namespaceUID
+                  - operationId
+                  - revision
+                  type: object
+                maxItems: 5000
+                type: array
               imageWarning:
                 description: |-
                   ImageWarning names the VPN or gateway image that could not be pinned to a
                   digest when the group's pods were created with the image cache on; the pod
                   pulls it by tag. Empty when all were pinned (or the cache was off).
                 type: string
+              lifecycle:
+                description: Reserved observation seam for later full group stop;
+                  suspension is unchanged.
+                properties:
+                  accessFenceVPNBootId:
+                    type: string
+                  accessFenced:
+                    description: AccessFenced is current-operation confirmation, never
+                      RPC acceptance.
+                    type: boolean
+                  accessFencedAt:
+                    format: date-time
+                    type: string
+                  error:
+                    type: string
+                  labUID:
+                    type: string
+                  observedGeneration:
+                    format: int64
+                    type: integer
+                  observedState:
+                    enum:
+                    - Running
+                    - Snapshotting
+                    - Stopping
+                    - Stopped
+                    - StopFailed
+                    - Starting
+                    - Unknown
+                    type: string
+                  operationId:
+                    maxLength: 128
+                    minLength: 1
+                    type: string
+                  reason:
+                    type: string
+                  requestedAt:
+                    format: date-time
+                    type: string
+                  revision:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  snapshotComplete:
+                    type: boolean
+                  stoppedAt:
+                    format: date-time
+                    type: string
+                required:
+                - labUID
+                - observedGeneration
+                - observedState
+                - operationId
+                - revision
+                type: object
               namespace:
                 type: string
               phase:
@@ -191,6 +345,198 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              resources:
+                description: |-
+                  RuntimeAllocation keeps held requests until identity-matching native absence
+                  and attachment cleanup are confirmed. Missing observations mean Unknown.
+                  Quota bytes are uncompressed accounting, not physically reclaimed storage.
+                properties:
+                  allocatedRequests:
+                    description: ResourceAmounts separates configured, held and measured
+                      compute amounts.
+                    properties:
+                      cpuMillicores:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      memoryBytes:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                    required:
+                    - cpuMillicores
+                    - memoryBytes
+                    type: object
+                  configuredLimits:
+                    description: ResourceAmounts separates configured, held and measured
+                      compute amounts.
+                    properties:
+                      cpuMillicores:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      memoryBytes:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                    required:
+                    - cpuMillicores
+                    - memoryBytes
+                    type: object
+                  configuredRequests:
+                    description: ResourceAmounts separates configured, held and measured
+                      compute amounts.
+                    properties:
+                      cpuMillicores:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      memoryBytes:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                    required:
+                    - cpuMillicores
+                    - memoryBytes
+                    type: object
+                  observedAt:
+                    format: date-time
+                    type: string
+                  operationId:
+                    type: string
+                  physicalStorageBytes:
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  physicalStorageBytesAvailable:
+                    type: boolean
+                  releasedAt:
+                    format: date-time
+                    type: string
+                  revision:
+                    format: int64
+                    type: integer
+                  runtimeState:
+                    enum:
+                    - Allocated
+                    - Releasing
+                    - Released
+                    - Unknown
+                    type: string
+                  snapshotQuotaBytes:
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  storageState:
+                    enum:
+                    - None
+                    - Retained
+                    - DeleteRequested
+                    - CleanupPending
+                    - Deleted
+                    - Unknown
+                    type: string
+                  usageAvailable:
+                    type: boolean
+                  used:
+                    description: ResourceAmounts separates configured, held and measured
+                      compute amounts.
+                    properties:
+                      cpuMillicores:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      memoryBytes:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                    required:
+                    - cpuMillicores
+                    - memoryBytes
+                    type: object
+                required:
+                - allocatedRequests
+                - configuredLimits
+                - configuredRequests
+                - runtimeState
+                - storageState
+                type: object
+              retirement:
+                description: Retirement is a fresh acknowledgement distinct from the
+                  original stop.
+                properties:
+                  cleanupComplete:
+                    type: boolean
+                  error:
+                    type: string
+                  expectedUID:
+                    type: string
+                  objects:
+                    items:
+                      description: RetirementObjectIdentity is an exact pre-cleanup
+                        object receipt, never data.
+                      properties:
+                        groupNamespaceOwned:
+                          type: boolean
+                        kind:
+                          type: string
+                        name:
+                          type: string
+                        ownerUID:
+                          type: string
+                        uid:
+                          type: string
+                      required:
+                      - kind
+                      - name
+                      - ownerUID
+                      - uid
+                      type: object
+                    type: array
+                  observedAt:
+                    format: date-time
+                    type: string
+                  observedGeneration:
+                    format: int64
+                    type: integer
+                  operationId:
+                    type: string
+                  physicalStorageBytes:
+                    format: int64
+                    type: integer
+                  physicalStorageBytesAvailable:
+                    type: boolean
+                  requestedAt:
+                    format: date-time
+                    type: string
+                  revision:
+                    format: int64
+                    type: integer
+                  runtimeAbsent:
+                    type: boolean
+                  state:
+                    type: string
+                  stopOperationId:
+                    type: string
+                  stopRevision:
+                    format: int64
+                    type: integer
+                  storageState:
+                    type: string
+                required:
+                - cleanupComplete
+                - expectedUID
+                - observedGeneration
+                - operationId
+                - physicalStorageBytes
+                - physicalStorageBytesAvailable
+                - revision
+                - runtimeAbsent
+                - state
+                - stopOperationId
+                - stopRevision
+                - storageState
+                type: object
               scheduling:
                 description: Scheduling is the place of the group in the scheduler
                   queue.
@@ -228,6 +574,444 @@ spec:
                       (Wait* constants).
                     type: string
                 type: object
+              serviceReports:
+                description: ServiceReports is node-owned matching native observation.
+                items:
+                  description: |-
+                    OwnedRuntimeReport is node-owned; identity is immutable controller inventory.
+                    Independent timestamps never impose a cross-owner clock ordering.
+                  properties:
+                    attachmentsAbsentAt:
+                      format: date-time
+                      type: string
+                    cgroupAbsentAt:
+                      format: date-time
+                      type: string
+                    error:
+                      type: string
+                    identity:
+                      description: |-
+                        OwnedRuntimeIdentity is captured before stop. An absent API Pod cannot create
+                        this inventory. NodeBootID is the kernel boot, not the node-agent process.
+                      properties:
+                        attachmentsComplete:
+                          type: boolean
+                        cgroupPaths:
+                          items:
+                            type: string
+                          type: array
+                        component:
+                          type: string
+                        containerIDs:
+                          items:
+                            type: string
+                          type: array
+                        deploymentUID:
+                          type: string
+                        epoch:
+                          format: int32
+                          type: integer
+                        fabricPorts:
+                          items:
+                            properties:
+                              key:
+                                type: string
+                              ownerUID:
+                                type: string
+                              rowUUID:
+                                type: string
+                            required:
+                            - key
+                            - ownerUID
+                            - rowUUID
+                            type: object
+                          type: array
+                        generation:
+                          format: int64
+                          type: integer
+                        incarnation:
+                          format: int32
+                          type: integer
+                        labName:
+                          type: string
+                        limits:
+                          description: ResourceAmounts separates configured, held
+                            and measured compute amounts.
+                          properties:
+                            cpuMillicores:
+                              format: int64
+                              minimum: 0
+                              type: integer
+                            memoryBytes:
+                              format: int64
+                              minimum: 0
+                              type: integer
+                          required:
+                          - cpuMillicores
+                          - memoryBytes
+                          type: object
+                        namespace:
+                          type: string
+                        nodeBootID:
+                          type: string
+                        nodeName:
+                          type: string
+                        operationId:
+                          type: string
+                        ownerUID:
+                          type: string
+                        podUID:
+                          type: string
+                        portKeys:
+                          items:
+                            type: string
+                          type: array
+                        portRows:
+                          items:
+                            properties:
+                              key:
+                                type: string
+                              ownerUID:
+                                type: string
+                              rowUUID:
+                                type: string
+                            required:
+                            - key
+                            - ownerUID
+                            - rowUUID
+                            type: object
+                          type: array
+                        requests:
+                          description: ResourceAmounts separates configured, held
+                            and measured compute amounts.
+                          properties:
+                            cpuMillicores:
+                              format: int64
+                              minimum: 0
+                              type: integer
+                            memoryBytes:
+                              format: int64
+                              minimum: 0
+                              type: integer
+                          required:
+                          - cpuMillicores
+                          - memoryBytes
+                          type: object
+                        revision:
+                          format: int64
+                          type: integer
+                        scopeKind:
+                          description: |-
+                            ScopeKind is Pod, LabFabric or NeverMaterialized. Non-Pod scopes have
+                            actual object ScopeUID, never synthetic Pod/container/cgroup identities.
+                          type: string
+                        scopeUID:
+                          type: string
+                        vniBindings:
+                          items:
+                            properties:
+                              generation:
+                                format: int64
+                                type: integer
+                              kind:
+                                type: string
+                              leaseGeneration:
+                                format: int64
+                                type: integer
+                              name:
+                                type: string
+                              namespace:
+                                type: string
+                              operationID:
+                                type: string
+                              ownerUID:
+                                type: string
+                              poolUID:
+                                type: string
+                              revision:
+                                format: int64
+                                type: integer
+                              uid:
+                                type: string
+                              vni:
+                                type: integer
+                            required:
+                            - generation
+                            - kind
+                            - leaseGeneration
+                            - name
+                            - namespace
+                            - operationID
+                            - ownerUID
+                            - poolUID
+                            - revision
+                            - uid
+                            - vni
+                            type: object
+                          type: array
+                        vnis:
+                          items:
+                            type: integer
+                          type: array
+                      required:
+                      - cgroupPaths
+                      - containerIDs
+                      - limits
+                      - nodeBootID
+                      - nodeName
+                      - operationId
+                      - ownerUID
+                      - podUID
+                      - portKeys
+                      - requests
+                      - revision
+                      type: object
+                    observedAt:
+                      format: date-time
+                      type: string
+                    releasedVNIs:
+                      description: |-
+                        ReleasedVNIs are exact object/node-owned correlated-barrier receipts.
+                        They retire a lease independently of live process allocation.
+                      items:
+                        properties:
+                          generation:
+                            format: int64
+                            type: integer
+                          kind:
+                            type: string
+                          leaseGeneration:
+                            format: int64
+                            type: integer
+                          name:
+                            type: string
+                          namespace:
+                            type: string
+                          operationID:
+                            type: string
+                          ownerUID:
+                            type: string
+                          poolUID:
+                            type: string
+                          revision:
+                            format: int64
+                            type: integer
+                          uid:
+                            type: string
+                          vni:
+                            type: integer
+                        required:
+                        - generation
+                        - kind
+                        - leaseGeneration
+                        - name
+                        - namespace
+                        - operationID
+                        - ownerUID
+                        - poolUID
+                        - revision
+                        - uid
+                        - vni
+                        type: object
+                      type: array
+                    retirementOperationId:
+                      description: Echoed only after a new native sample for this
+                        permanent retirement intent.
+                      type: string
+                    retirementRevision:
+                      format: int64
+                      type: integer
+                    runtimeAbsentAt:
+                      format: date-time
+                      type: string
+                    runtimeState:
+                      type: string
+                  required:
+                  - identity
+                  - runtimeState
+                  type: object
+                type: array
+              serviceRuntime:
+                description: ServiceRuntime is controller-owned durable pre-scale
+                  inventory.
+                items:
+                  description: |-
+                    OwnedRuntimeIdentity is captured before stop. An absent API Pod cannot create
+                    this inventory. NodeBootID is the kernel boot, not the node-agent process.
+                  properties:
+                    attachmentsComplete:
+                      type: boolean
+                    cgroupPaths:
+                      items:
+                        type: string
+                      type: array
+                    component:
+                      type: string
+                    containerIDs:
+                      items:
+                        type: string
+                      type: array
+                    deploymentUID:
+                      type: string
+                    epoch:
+                      format: int32
+                      type: integer
+                    fabricPorts:
+                      items:
+                        properties:
+                          key:
+                            type: string
+                          ownerUID:
+                            type: string
+                          rowUUID:
+                            type: string
+                        required:
+                        - key
+                        - ownerUID
+                        - rowUUID
+                        type: object
+                      type: array
+                    generation:
+                      format: int64
+                      type: integer
+                    incarnation:
+                      format: int32
+                      type: integer
+                    labName:
+                      type: string
+                    limits:
+                      description: ResourceAmounts separates configured, held and
+                        measured compute amounts.
+                      properties:
+                        cpuMillicores:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        memoryBytes:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                      required:
+                      - cpuMillicores
+                      - memoryBytes
+                      type: object
+                    namespace:
+                      type: string
+                    nodeBootID:
+                      type: string
+                    nodeName:
+                      type: string
+                    operationId:
+                      type: string
+                    ownerUID:
+                      type: string
+                    podUID:
+                      type: string
+                    portKeys:
+                      items:
+                        type: string
+                      type: array
+                    portRows:
+                      items:
+                        properties:
+                          key:
+                            type: string
+                          ownerUID:
+                            type: string
+                          rowUUID:
+                            type: string
+                        required:
+                        - key
+                        - ownerUID
+                        - rowUUID
+                        type: object
+                      type: array
+                    requests:
+                      description: ResourceAmounts separates configured, held and
+                        measured compute amounts.
+                      properties:
+                        cpuMillicores:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        memoryBytes:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                      required:
+                      - cpuMillicores
+                      - memoryBytes
+                      type: object
+                    revision:
+                      format: int64
+                      type: integer
+                    scopeKind:
+                      description: |-
+                        ScopeKind is Pod, LabFabric or NeverMaterialized. Non-Pod scopes have
+                        actual object ScopeUID, never synthetic Pod/container/cgroup identities.
+                      type: string
+                    scopeUID:
+                      type: string
+                    vniBindings:
+                      items:
+                        properties:
+                          generation:
+                            format: int64
+                            type: integer
+                          kind:
+                            type: string
+                          leaseGeneration:
+                            format: int64
+                            type: integer
+                          name:
+                            type: string
+                          namespace:
+                            type: string
+                          operationID:
+                            type: string
+                          ownerUID:
+                            type: string
+                          poolUID:
+                            type: string
+                          revision:
+                            format: int64
+                            type: integer
+                          uid:
+                            type: string
+                          vni:
+                            type: integer
+                        required:
+                        - generation
+                        - kind
+                        - leaseGeneration
+                        - name
+                        - namespace
+                        - operationID
+                        - ownerUID
+                        - poolUID
+                        - revision
+                        - uid
+                        - vni
+                        type: object
+                      type: array
+                    vnis:
+                      items:
+                        type: integer
+                      type: array
+                  required:
+                  - cgroupPaths
+                  - containerIDs
+                  - limits
+                  - nodeBootID
+                  - nodeName
+                  - operationId
+                  - ownerUID
+                  - podUID
+                  - portKeys
+                  - requests
+                  - revision
+                  type: object
+                type: array
               suspended:
                 type: boolean
               vpn:

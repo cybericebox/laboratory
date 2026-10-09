@@ -23,9 +23,10 @@ const kindLab = "Lab"
 // labVariant is a parsed LabVariant: the spec and the common variables, shared by every
 // lab of the variant.
 type labVariant struct {
-	id   string
-	spec laboratoryv1alpha1.LabSpec
-	env  deviceVars
+	id            string
+	spec          laboratoryv1alpha1.LabSpec
+	rawDefinition []byte
+	env           deviceVars
 }
 
 // parseVariants parses and validates the variants of a CreateLabs request. A variant id
@@ -47,15 +48,16 @@ func parseVariants(in []*protobuf.LabVariant, persistence bool) (map[string]*lab
 		if err := validateEnv(env, specDevices(&spec)); err != nil {
 			return nil, invalid("variant %q: %v", v.GetVariantId(), err)
 		}
-		out[v.GetVariantId()] = &labVariant{id: v.GetVariantId(), spec: spec, env: env}
+		out[v.GetVariantId()] = &labVariant{id: v.GetVariantId(), spec: spec, env: env, rawDefinition: append([]byte(nil), v.GetSpecJson()...)}
 	}
 	return out, nil
 }
 
 // CreateLabs creates Lab custom resources from variants (the spec and common variables,
 // sent once) and items. Re-sending an item whose lab exists with the same spec is
-// EXISTS (the device Secrets are rewritten with the same values, labels it lacks are
-// added: UPDATED); a lab with a different spec is FAILED for that item.
+// EXISTS (missing labels are added: UPDATED). Initial-runtime creates retain the
+// existing variable rewrite behavior; lifecycle-managed copies keep their Secrets.
+// A lab with a different immutable spec is FAILED for that item.
 func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest) (*protobuf.BatchResult, error) {
 	items := in.GetItems()
 	if err := checkItemCount(len(items)); err != nil {
@@ -109,6 +111,9 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 		if !ok {
 			return nil, invalid("item %d (%s): unknown variant_id %q", i, describeRef(refs[i]), it.GetVariantId())
 		}
+		if v.spec.Lifecycle != nil && it.GetExpectedGroupUid() == "" {
+			return nil, invalid("item %d (%s): initial lifecycle birth requires expected_group_uid", i, describeRef(refs[i]))
+		}
 		if err := validateLabels(it.GetLabels()); err != nil {
 			return nil, invalid("item %d (%s): %v", i, describeRef(refs[i]), err)
 		}
@@ -148,6 +153,8 @@ func variantEnvList(v *labVariant) []*protobuf.DeviceEnv {
 // specHash fingerprints what an idempotent create compares: the spec and the scheduling
 // metadata, as sent.
 func specHash(spec *laboratoryv1alpha1.LabSpec, dep deploySpec) string {
+	spec = spec.DeepCopy()
+	spec.Lifecycle = nil
 	raw, _ := json.Marshal(struct {
 		Spec  *laboratoryv1alpha1.LabSpec
 		Group string
@@ -158,10 +165,22 @@ func specHash(spec *laboratoryv1alpha1.LabSpec, dep deploySpec) string {
 }
 
 func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *protobuf.LabItem, v *labVariant, env deviceVars, common map[string]string) (protobuf.ItemState, error) {
+	h.lifecycleAdmissionMu.Lock()
+	defer h.lifecycleAdmissionMu.Unlock()
 	name := crName(it.GetName())
 	ns, err := resolver.namespace(ctx, it.GetLabGroup())
 	if err != nil {
 		return 0, err
+	}
+	liveGroup, err := h.getGroup(ctx, it.GetLabGroup())
+	if err != nil {
+		return 0, err
+	}
+	if it.GetExpectedGroupUid() != "" && it.GetExpectedGroupUid() != string(liveGroup.UID) {
+		return 0, fmt.Errorf("creation group UID changed")
+	}
+	if liveGroup.Status.Namespace != ns || liveGroup.Spec.Lifecycle.IsStopped() {
+		return 0, fmt.Errorf("lab group is stopped or its namespace changed")
 	}
 	want := mergeItemLabels(common, it.GetLabels())
 	dep, _ := newDeploySpec(it.GetDeployGroup(), it.GetDeployAfter())
@@ -170,9 +189,31 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 	lab.Labels, lab.Annotations = dep.stamp(stampTenant(copyLabels(want), tenantOf(ctx)), stampID(nil, it.GetName()))
 	hash := specHash(&lab.Spec, dep)
 	lab.Annotations[names.AnnotationSpecHash] = hash
+	if err := h.preflightLabCreate(ctx, liveGroup, ns, it.GetName(), hash); err != nil {
+		return 0, err
+	}
+	admission := &laboratoryv1alpha1.GroupChildAdmission{GroupUID: string(liveGroup.UID), LabName: name, DesiredState: lifecycleRunning, SpecHash: hash}
+	if err := h.claimChildAdmission(ctx, it.GetLabGroup(), admission); err != nil {
+		return 0, err
+	}
 
+	birth, err := h.prepareLabBirth(ctx, liveGroup, it, v)
+	if err != nil {
+		return 0, err
+	}
 	labs := h.cs.LaboratoryV1alpha1().Labs(ns)
+	if birth != nil {
+		raw, _ := json.Marshal(birth)
+		lab.Annotations[names.AnnotationLabCreation] = string(raw)
+	}
 	state := protobuf.ItemState_ITEM_STATE_CREATED
+	admittedGroup, err := h.getGroup(ctx, it.GetLabGroup())
+	if err != nil {
+		return 0, err
+	}
+	if string(admittedGroup.UID) != admission.GroupUID || admittedGroup.Spec.Admission == nil || admittedGroup.Spec.Admission.Token != admission.Token || admittedGroup.Spec.Lifecycle.IsStopped() {
+		return 0, fmt.Errorf("child admission group identity changed")
+	}
 	out, err := labs.Create(ctx, lab, metav1.CreateOptions{})
 	if err = createErr(err, kindLab, it.GetName(), func() (metav1.Object, error) {
 		return labs.Get(ctx, name, metav1.GetOptions{})
@@ -183,6 +224,14 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 		return 0, err
 	}
 
+	if birth != nil {
+		if err := h.commitLabBirth(ctx, it.GetLabGroup(), birth, out, state == protobuf.ItemState_ITEM_STATE_CREATED); err != nil {
+			return 0, err
+		}
+	}
+	if state != protobuf.ItemState_ITEM_STATE_CREATED && out.Spec.Lifecycle != nil {
+		return state, h.finishChildAdmission(ctx, it.GetLabGroup(), admission)
+	}
 	devices := sortedKeys(env)
 	if state != protobuf.ItemState_ITEM_STATE_CREATED {
 		// An existing lab: every device ends with the Secret of this call (or none).
@@ -194,7 +243,7 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 	if err := h.writeDeviceSecrets(ctx, out, devices, env); err != nil {
 		return 0, err
 	}
-	return state, nil
+	return state, h.finishChildAdmission(ctx, it.GetLabGroup(), admission)
 }
 
 // existingLab answers a create of a name that exists: the same spec (by hash) is fine,
@@ -210,14 +259,8 @@ func (h *Handler) existingLab(ctx context.Context, ns, id, hash string, want map
 		if cur, err = labs.Get(ctx, name, metav1.GetOptions{}); err != nil {
 			return err
 		}
-		if err := rejectTerminating(kindLab, cur); err != nil {
+		if err := validateExistingLab(cur, id, hash); err != nil {
 			return err
-		}
-		if names.IDOf(cur) != id {
-			return fmt.Errorf("%s %s: the name is taken by another id %q", kindLab, id, names.IDOf(cur))
-		}
-		if cur.Annotations[names.AnnotationSpecHash] != hash {
-			return errDifferentSpec{kindLab, id}
 		}
 		labels, changed := mergeLabels(cur.Labels, want)
 		if !changed {
@@ -272,7 +315,7 @@ func (h *Handler) ListLabs(ctx context.Context, in *protobuf.ListRequest) (*prot
 			u = h.namespaceUsage(ctx, m.lab.Namespace)
 			usage[m.lab.Namespace] = u
 		}
-		p := labToProto(m.lab)
+		p := labToProto(m.lab, h.features.Limits)
 		p.LabGroupName = m.group
 		fillLabUsage(p, u, m.lab.Name)
 		s, ok := sched[m.lab.Namespace]
@@ -366,6 +409,12 @@ func (h *Handler) updateLab(ctx context.Context, resolver *groupResolver, ref *p
 		if err := rejectTerminating(kindLab, cur); err != nil {
 			return err
 		}
+		if err := birthWriteReady(cur); err != nil {
+			return err
+		}
+		if cur.Annotations[names.AnnotationLifecycleRetirement] != "" {
+			return fmt.Errorf("retired Lab cannot mutate variables or configuration")
+		}
 		if len(p.env) > 0 {
 			if err := validateEnv(p.env, specDevices(&cur.Spec)); err != nil {
 				return invalid("%v", err)
@@ -392,7 +441,15 @@ func (h *Handler) updateLab(ctx context.Context, resolver *groupResolver, ref *p
 // same name fails with a retryable TERMINATING error.
 func (h *Handler) DeleteLabs(ctx context.Context, in *protobuf.DeleteRequest) (*protobuf.BatchResult, error) {
 	return h.deleteNamespaced(ctx, in, func(ctx context.Context, ns, name string) error {
-		return h.cs.LaboratoryV1alpha1().Labs(ns).Delete(ctx, name, metav1.DeleteOptions{})
+		cur, err := h.cs.LaboratoryV1alpha1().Labs(ns).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if err := birthWriteReady(cur); err != nil {
+			return err
+		}
+		uid, rv := cur.UID, cur.ResourceVersion
+		return h.cs.LaboratoryV1alpha1().Labs(ns).Delete(ctx, name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &rv}})
 	}, func(ctx context.Context, selector, labGroup string) ([]*protobuf.ItemRef, error) {
 		matches, err := h.listLabs(ctx, selector, labGroup)
 		refs := make([]*protobuf.ItemRef, 0, len(matches))
@@ -430,7 +487,7 @@ func (h *Handler) overLimits(ctx context.Context, items []*protobuf.LabItem, var
 			t = &tally{}
 			groups[m.group] = t
 		}
-		cpu, mem, _, _ := lim.SpecTotals(&m.lab.Spec)
+		cpu, mem := h.activeLabCompute(m.lab)
 		t.labs, t.cpu, t.mem = t.labs+1, t.cpu+cpu, t.mem+mem
 	}
 	room := lim.TenantMaxLabs - len(have)
@@ -456,4 +513,49 @@ func (h *Handler) overLimits(ctx context.Context, items []*protobuf.LabItem, var
 		t.labs, t.cpu, t.mem = t.labs+1, t.cpu+cpu, t.mem+mem
 	}
 	return over, nil
+}
+
+// Retained definitions still count toward total Lab caps. Active and pending
+// compute is separate: only an exact completed native release is zero.
+func (h *Handler) activeLabCompute(l *laboratoryv1alpha1.Lab) (int64, int64) {
+	cpu, mem, _, _ := h.features.Limits.SpecTotals(&l.Spec)
+	a := labAllocationToProto(l, h.features.Limits)
+	if a != nil && a.RuntimeState == "Released" {
+		return 0, 0
+	}
+	if a != nil && a.AllocatedRequests != nil {
+		cpu = max(cpu, a.AllocatedRequests.CpuMillicores)
+		mem = max(mem, a.AllocatedRequests.MemoryBytes)
+	}
+	return cpu, mem
+}
+
+// A deterministic existing-object rejection must not reserve a fresh group
+// admission and block unrelated children. Existing admissions remain authoritative;
+// the write path still rechecks the live group and the stored Lab after claiming.
+func (h *Handler) preflightLabCreate(ctx context.Context, group *laboratoryv1alpha1.LabGroup, namespace, id, hash string) error {
+	if group.Spec.Admission != nil || !group.DeletionTimestamp.IsZero() || group.Annotations[names.AnnotationLifecycleRetirement] != "" {
+		return nil
+	}
+	current, err := h.cs.LaboratoryV1alpha1().Labs(namespace).Get(ctx, crName(id), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return validateExistingLab(current, id, hash)
+}
+
+func validateExistingLab(cur *laboratoryv1alpha1.Lab, id, hash string) error {
+	if err := rejectTerminating(kindLab, cur); err != nil {
+		return err
+	}
+	if names.IDOf(cur) != id {
+		return fmt.Errorf("%s %s: the name is taken by another id %q", kindLab, id, names.IDOf(cur))
+	}
+	if cur.Annotations[names.AnnotationSpecHash] != hash {
+		return errDifferentSpec{kindLab, id}
+	}
+	return nil
 }

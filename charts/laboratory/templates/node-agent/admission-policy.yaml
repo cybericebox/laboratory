@@ -56,4 +56,172 @@ metadata:
 spec:
   policyName: laboratory-node-agent-label
   validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-node-agent-capture
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: [UPDATE]
+        resources: [pods, pods/status]
+  matchConditions:
+    - name: from-the-node-agent
+      expression: request.userInfo.username == {{ $nodeAgent | quote }}
+  variables:
+    - name: ownNode
+      expression: "has(request.userInfo.extra) && 'authentication.kubernetes.io/node-name' in request.userInfo.extra && size(request.userInfo.extra['authentication.kubernetes.io/node-name']) > 0 ? request.userInfo.extra['authentication.kubernetes.io/node-name'][0] : ''"
+    - name: newAnnotations
+      expression: "object.metadata.?annotations.orValue({})"
+    - name: oldAnnotations
+      expression: "oldObject.metadata.?annotations.orValue({})"
+  validations:
+    - expression: "variables.ownNode != '' && object.spec.nodeName == variables.ownNode && oldObject.spec.nodeName == variables.ownNode"
+      message: "the node-agent may patch only Pods on its bound node"
+      reason: Forbidden
+    - expression: "'state.cybericebox.com/device' in variables.oldAnnotations && oldObject.metadata.?ownerReferences.orValue([]).exists(o, o.apiVersion == 'laboratory.cybericebox.com/v1alpha1' && o.kind == 'Device' && o.name == variables.oldAnnotations['state.cybericebox.com/device'] && has(o.controller) && o.controller && o.uid != '')"
+      message: "the capture guard belongs only to platform Device-owned state Pods"
+      reason: Forbidden
+    - expression: "object.spec == oldObject.spec && object.?status.orValue({}) == oldObject.?status.orValue({})"
+      message: "the node-agent may not change Pod spec or status"
+      reason: Forbidden
+    - expression: "object.metadata.?generateName == oldObject.metadata.?generateName && object.metadata.?labels.orValue({}) == oldObject.metadata.?labels.orValue({}) && object.metadata.?finalizers.orValue([]) == oldObject.metadata.?finalizers.orValue([]) && object.metadata.?ownerReferences.orValue([]) == oldObject.metadata.?ownerReferences.orValue([]) && object.metadata.?deletionTimestamp == oldObject.metadata.?deletionTimestamp && object.metadata.?deletionGracePeriodSeconds == oldObject.metadata.?deletionGracePeriodSeconds"
+      message: "the node-agent may not change Pod labels, ownership, finalizers or deletion state"
+      reason: Forbidden
+    - expression: "variables.newAnnotations.all(k, k == 'laboratory.cybericebox.com/capture-guard' || (k in variables.oldAnnotations && variables.newAnnotations[k] == variables.oldAnnotations[k])) && variables.oldAnnotations.all(k, k == 'laboratory.cybericebox.com/capture-guard' || k in variables.newAnnotations)"
+      message: "the node-agent may change only the Pod capture-guard annotation"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-node-agent-capture
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  policyName: laboratory-node-agent-capture
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-node-agent-group-runtime
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [laboratory.cybericebox.com]
+        apiVersions: ["*"]
+        operations: [UPDATE]
+        resources: [labgroups/status]
+  matchConditions:
+    - name: from-the-node-agent
+      expression: request.userInfo.username == {{ $nodeAgent | quote }}
+  variables:
+    - name: ownNode
+      expression: "has(request.userInfo.extra) && 'authentication.kubernetes.io/node-name' in request.userInfo.extra && size(request.userInfo.extra['authentication.kubernetes.io/node-name']) > 0 ? request.userInfo.extra['authentication.kubernetes.io/node-name'][0] : ''"
+  validations:
+    - expression: "variables.ownNode != '' && object.spec == oldObject.spec && object.metadata.uid == oldObject.metadata.uid"
+      message: "native reports require the bound node and immutable object ownership"
+      reason: Forbidden
+    - expression: "object.status.?serviceRuntime.orValue([]) == oldObject.status.?serviceRuntime.orValue([])"
+      message: "the node-agent cannot mutate controller runtime inventory"
+      reason: Forbidden
+    - expression: "object.status.?creations == oldObject.status.?creations && object.status.?retirement == oldObject.status.?retirement && object.status.?lifecycle == oldObject.status.?lifecycle && object.status.?resources == oldObject.status.?resources && object.status.?phase == oldObject.status.?phase && object.status.?namespace == oldObject.status.?namespace && object.status.?suspended == oldObject.status.?suspended && object.status.?vpn == oldObject.status.?vpn && object.status.?imageWarning == oldObject.status.?imageWarning && object.status.?scheduling == oldObject.status.?scheduling && object.status.?pods == oldObject.status.?pods"
+      message: "native report patches cannot change controller or other status fields"
+      reason: Forbidden
+    - expression: "object.status.?serviceReports.orValue([]).all(r, r.identity.nodeName == variables.ownNode || oldObject.status.?serviceReports.orValue([]).exists(o, o == r)) && oldObject.status.?serviceReports.orValue([]).all(o, o.identity.nodeName == variables.ownNode || object.status.?serviceReports.orValue([]).exists(r, r == o))"
+      message: "the node-agent may replace only its own node's native reports"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-node-agent-group-runtime
+spec:
+  policyName: laboratory-node-agent-group-runtime
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-node-agent-device-runtime
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [laboratory.cybericebox.com]
+        apiVersions: ["*"]
+        operations: [UPDATE]
+        resources: [devices/status]
+  matchConditions:
+    - name: from-the-node-agent
+      expression: request.userInfo.username == {{ $nodeAgent | quote }}
+    - name: changing-native-reports
+      expression: "object.status.?runtimeReports.orValue([]) != oldObject.status.?runtimeReports.orValue([]) || object.status.?runtimeInventory.orValue([]) != oldObject.status.?runtimeInventory.orValue([])"
+  variables:
+    - name: ownNode
+      expression: "has(request.userInfo.extra) && 'authentication.kubernetes.io/node-name' in request.userInfo.extra && size(request.userInfo.extra['authentication.kubernetes.io/node-name']) > 0 ? request.userInfo.extra['authentication.kubernetes.io/node-name'][0] : ''"
+  validations:
+    - expression: "variables.ownNode != '' && object.spec == oldObject.spec && object.metadata.uid == oldObject.metadata.uid"
+      message: "native reports require the bound node and immutable object ownership"
+      reason: Forbidden
+    - expression: "object.status.?runtimeInventory.orValue([]) == oldObject.status.?runtimeInventory.orValue([])"
+      message: "the node-agent cannot mutate controller runtime inventory"
+      reason: Forbidden
+    - expression: "object.status.?ready == oldObject.status.?ready && object.status.?nodeName == oldObject.status.?nodeName && object.status.?nodeAddress == oldObject.status.?nodeAddress && object.status.?podIP == oldObject.status.?podIP && object.status.?podName == oldObject.status.?podName && object.status.?vniLease == oldObject.status.?vniLease && object.status.?vni == oldObject.status.?vni && object.status.?reason == oldObject.status.?reason && object.status.?state == oldObject.status.?state && object.status.?scheduling == oldObject.status.?scheduling"
+      message: "native report patches cannot change controller or other status fields"
+      reason: Forbidden
+    - expression: "object.status.?runtimeReports.orValue([]).all(r, r.identity.nodeName == variables.ownNode || oldObject.status.?runtimeReports.orValue([]).exists(o, o == r)) && oldObject.status.?runtimeReports.orValue([]).all(o, o.identity.nodeName == variables.ownNode || object.status.?runtimeReports.orValue([]).exists(r, r == o))"
+      message: "the node-agent may replace only its own node's native reports"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-node-agent-device-runtime
+spec:
+  policyName: laboratory-node-agent-device-runtime
+  validationActions: [Deny]
+
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-node-agent-lab-scope
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [laboratory.cybericebox.com]
+        apiVersions: ["*"]
+        operations: [UPDATE]
+        resources: [labs/status]
+  matchConditions:
+    - name: from-the-node-agent
+      expression: request.userInfo.username == {{ $nodeAgent | quote }}
+  variables:
+    - name: ownNode
+      expression: "has(request.userInfo.extra) && 'authentication.kubernetes.io/node-name' in request.userInfo.extra && size(request.userInfo.extra['authentication.kubernetes.io/node-name']) > 0 ? request.userInfo.extra['authentication.kubernetes.io/node-name'][0] : ''"
+  validations:
+    - expression: "variables.ownNode != '' && object.spec == oldObject.spec && object.metadata.uid == oldObject.metadata.uid"
+      message: "native scope report requires exact object and bound node"
+    - expression: "object.status.?scopeInventory == oldObject.status.?scopeInventory && object.status.?retirement == oldObject.status.?retirement && object.status.?lifecycle == oldObject.status.?lifecycle && object.status.?resources == oldObject.status.?resources && object.status.?phase == oldObject.status.?phase && object.status.?vpn == oldObject.status.?vpn && object.status.?internet == oldObject.status.?internet && object.status.?devices == oldObject.status.?devices && object.status.?connections == oldObject.status.?connections && object.status.?access == oldObject.status.?access && object.status.?scheduling == oldObject.status.?scheduling && object.status.?imageCache == oldObject.status.?imageCache && object.status.?imageDigests == oldObject.status.?imageDigests && object.status.?imageWarning == oldObject.status.?imageWarning && object.status.?conditions == oldObject.status.?conditions"
+      message: "native scope reporter cannot change controller status"
+    - expression: "object.status.?scopeReports.orValue([]).all(r, r.identity.nodeName == variables.ownNode ? (r.identity.ownerUID == string(object.metadata.uid) && oldObject.status.?scopeInventory.orValue([]).exists(i, i.ownerUID == r.identity.ownerUID && i.scopeUID == r.identity.scopeUID && i.nodeName == r.identity.nodeName && i.nodeBootID == r.identity.nodeBootID && i.operationId == r.identity.operationId && i.revision == r.identity.revision && i.generation == r.identity.generation)) : oldObject.status.?scopeReports.orValue([]).exists(o, o == r)) && oldObject.status.?scopeReports.orValue([]).all(o, o.identity.nodeName == variables.ownNode || object.status.?scopeReports.orValue([]).exists(r, r == o))"
+      message: "native scope reporter may replace only its declared own-node rows"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-node-agent-lab-scope
+spec:
+  policyName: laboratory-node-agent-lab-scope
+  validationActions: [Deny]
 {{- end }}

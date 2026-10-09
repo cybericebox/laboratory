@@ -11,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -52,6 +53,7 @@ func ParseNetworkAnnotation(annotation string) []NetAttachment {
 // the pod-side is moved into the pod netns and renamed to the desired interface name.
 type NetworkAttachReconciler struct {
 	client.Client
+	Reader   client.Reader
 	NodeName string
 	OVS      *OVSManager
 	Flows    *FlowManager
@@ -71,15 +73,23 @@ func (r *NetworkAttachReconciler) mayRecreate(key string) (bool, time.Duration) 
 	return r.guard.allow(key, time.Now())
 }
 
-// delVethWithFlows removes the t0 entry for a veth port BEFORE deleting the
-// port itself. OVS does not remove flows referencing a deleted port, and once
-// the port is gone its name can no longer be resolved to an ofport — the stale
-// flow would then match whichever interface OVS recycles that number to.
-func (r *NetworkAttachReconciler) delVethWithFlows(stableKey string) {
-	if r.Flows != nil {
-		_ = r.Flows.DelT0Port(stableKey)
+// DelVethWithFlowsOwned returns an error rather than a cleanup ACK when the
+// stable key belongs to another incarnation or its ownership is unknown.
+func (r *NetworkAttachReconciler) DelVethWithFlowsOwned(key string, ownerUID types.UID) error {
+	if ownerUID == "" || r.Flows == nil {
+		return ErrPortOwnerUnknown
 	}
-	_ = r.OVS.DelVethPort(stableKey)
+	r.OVS.vethMu.Lock()
+	defer r.OVS.vethMu.Unlock()
+	return r.delVethWithFlowsOwned(key, ownerUID)
+}
+
+// The reconciler and CNI already hold the Pod wiring lock.
+func (r *NetworkAttachReconciler) delVethWithFlowsOwned(key string, ownerUID types.UID) error {
+	if ownerUID == "" {
+		return ErrPortOwnerUnknown
+	}
+	return r.OVS.delVethWithFlowsOwned(key, ownerUID, r.Flows)
 }
 
 // isPlatformPod says whether a pod is one the platform made for a lab: its labels carry the lab and the device, or the component
@@ -118,6 +128,11 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
+	// Different Pod names share group stable keys. Hold the node's wiring
+	// lock through direct identity checks and all netns mutations.
+	r.OVS.vethMu.Lock()
+	defer r.OVS.vethMu.Unlock()
+
 	// The VPN and gateway pod of a group: the lab interfaces come from the group's LabVPN and LabGateway objects (see GroupPodAttachments),
 	// not from the pod's annotation, so a lab added or removed never changes the Deployment. A device pod lists its interfaces in the
 	// annotation.
@@ -125,7 +140,7 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	var attachments []NetAttachment
 	if component != "" {
 		var err error
-		if attachments, err = GroupPodAttachments(ctx, r.Client, pod.Namespace, component); err != nil {
+		if attachments, err = GroupPodAttachments(ctx, r.directReader(), pod.Namespace, component); err != nil {
 			return ctrl.Result{}, err
 		}
 	} else {
@@ -133,12 +148,36 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 	log.Info("NetAttach attachments", "component", component, "attachments", len(attachments), "phase", pod.Status.Phase)
 
-	if pod.DeletionTimestamp != nil {
+	stopped := false
+	if component == "" {
+		active, err := labRuntimeActive(ctx, r.directReader(), pod.Namespace, pod.Labels[names.LabelLab])
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		stopped = !active
+	}
+	if pod.DeletionTimestamp != nil || stopped {
 		if component != "" {
-			// The pod goes: so do all the legs it had on this node.
-			if present, err := r.OVS.PortKeys(); err == nil {
-				for _, key := range GroupPortsPresent(pod.Namespace, component, present) {
-					r.delVethWithFlows(key)
+			owners, err := r.OVS.PortOwners()
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			for _, key := range GroupPortsPresentOwned(pod.Namespace, component, pod.UID, owners) {
+				if err := r.delVethWithFlowsOwned(key, pod.UID); err != nil {
+					return ctrl.Result{}, err
+				}
+			}
+			// Legacy rows carry no incarnation. Only a direct live replacement
+			// check can authorize retiring them; uncertainty is not an ACK.
+			legacy := map[string]bool{}
+			for key, uid := range owners {
+				if uid == "" {
+					legacy[key] = true
+				}
+			}
+			for _, key := range GroupPortsPresent(pod.Namespace, component, legacy) {
+				if err := r.cleanupPodPort(ctx, &pod, key); err != nil {
+					return ctrl.Result{}, err
 				}
 			}
 			return ctrl.Result{}, nil
@@ -146,23 +185,33 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		for _, att := range attachments {
 			stableKey := r.resolveOVSPort(ctx, pod.Namespace, pod.Name, att)
 			if !ValidPortKey(stableKey) {
-				log.Info("NetAttach: not a port key of the platform, ignored", "name", stableKey)
+				log.Info("NetAttach: not a port key of the platform, ignored", cniNameKey, stableKey)
 				continue
 			}
-			r.delVethWithFlows(stableKey)
+			if err := r.cleanupPodPort(ctx, &pod, stableKey); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 		return ctrl.Result{}, nil
 	}
 
 	// A lab that is gone: its leg is taken out of the running pod (the pod keeps running).
 	if component != "" && pod.Status.Phase == corev1.PodRunning {
-		present, err := r.OVS.PortKeys()
+		owners, err := r.OVS.PortOwners()
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("list ports: %w", err)
 		}
+		present := map[string]bool{}
+		for key, uid := range owners {
+			if uid == pod.UID || uid == "" {
+				present[key] = true
+			}
+		}
 		for _, key := range StaleGroupPorts(pod.Namespace, component, attachments, present) {
 			log.Info("NetAttach: detaching the leg of a lab that is gone", "key", key)
-			r.delVethWithFlows(key)
+			if err := r.cleanupPodPort(ctx, &pod, key); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 	}
 
@@ -184,6 +233,13 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
+	var current corev1.Pod
+	if err := r.directReader().Get(ctx, client.ObjectKeyFromObject(&pod), &current); err != nil {
+		return ctrl.Result{}, err
+	}
+	if current.UID != pod.UID || !current.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, ErrPortOwnerChanged
+	}
 	netnsPath, err := PodNetNSFromCRI(ctx, r.CRISock, string(pod.UID))
 	if err != nil {
 		log.Info("NetAttach: sandbox not ready, requeueing", "uid", string(pod.UID), "err", err)
@@ -191,6 +247,7 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 	log.Info("NetAttach: got netnsPath", "netnsPath", netnsPath)
 
+	recreated := false
 	for _, att := range attachments {
 		stableKey := att.Name // a leg of a lab: its port is named by the lab's index
 		if component == "" {
@@ -198,7 +255,7 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 		if !ValidPortKey(stableKey) {
 			// "eth0" or any other name an annotation could carry: never a veth of ours.
-			log.Info("NetAttach: not a port key of the platform, ignored", "name", stableKey)
+			log.Info("NetAttach: not a port key of the platform, ignored", cniNameKey, stableKey)
 			continue
 		}
 		podSide := VethPeerName(stableKey)
@@ -207,6 +264,9 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			targetIface = stableKey
 		}
 
+		if err := r.ensurePodPortOwner(ctx, &pod, stableKey); err != nil {
+			return ctrl.Result{}, err
+		}
 		// Ensure the veth host-side is registered in OVS.
 		_, exists, err := r.OVS.FindPortByKey(stableKey)
 		if err != nil {
@@ -230,14 +290,14 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			}
 		}
 		if !exists {
-			if err := r.OVS.AddVethPort(stableKey); err != nil {
+			if err := r.OVS.AddVethPortOwned(stableKey, pod.UID); err != nil {
 				return ctrl.Result{}, fmt.Errorf("add veth port %q: %w", stableKey, err)
 			}
 			log.Info("NetAttach: created veth pair", "hostSide", stableKey, "podSide", podSide)
 		}
 
 		// Check whether pod-side veth is still in root netns.
-		podSideInRoot := WaitForLink(podSide, 200*time.Millisecond) == nil
+		podSideInRoot := peerInRoot(podSide, !exists)
 		log.Info("NetAttach: pod-side location", "podSide", podSide, "inRootNetns", podSideInRoot)
 
 		if podSideInRoot {
@@ -315,11 +375,18 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				// own interface when it has NET_ADMIN) is left alone for a while instead.
 				if ok, wait := r.mayRecreate(string(pod.UID) + "/" + stableKey); !ok {
 					log.Info("NetAttach: the veth of this pod was recreated too often, waiting", "key", stableKey, "wait", wait.String())
+					// Restore peers already retired in this pass before entering
+					// this peer's cooldown; the capped peer remains untouched.
+					if recreated {
+						return ctrl.Result{RequeueAfter: time.Second}, nil
+					}
 					return ctrl.Result{RequeueAfter: wait}, nil
 				}
 				log.Info("NetAttach: stale veth, recreating", "key", stableKey)
-				r.delVethWithFlows(stableKey)
-				return ctrl.Result{RequeueAfter: time.Second}, nil
+				if err := r.cleanupPodPort(ctx, &pod, stableKey); err != nil {
+					return ctrl.Result{}, err
+				}
+				recreated = true
 			}
 		}
 	}
@@ -329,6 +396,12 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// a real eth0 for them — only the required stub eth0. Deleting eth0 here would
 	// remove that legitimate stub.
 
+	// A replacement pod loses every peer together. Retire the entire stale
+	// batch before the one recovery requeue, instead of waiting a second per
+	// interface and rescanning all already-restored interfaces on every pass.
+	if recreated {
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
@@ -378,9 +451,52 @@ func (r *NetworkAttachReconciler) groupPodsOf(component string) handler.MapFunc 
 }
 
 func (r *NetworkAttachReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Reader = mgr.GetAPIReader()
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&corev1.Pod{}).
+		For(&corev1.Pod{}, builder.WithPredicates(networkPodInputs(r.NodeName))).
+		Watches(&laboratoryv1alpha1.Lab{}, handler.EnqueueRequestsFromMapFunc(r.podsForLab)).
 		Watches(&laboratoryv1alpha1.LabVPN{}, handler.EnqueueRequestsFromMapFunc(r.groupPodsOf(names.ComponentVPN))).
 		Watches(&laboratoryv1alpha1.LabGateway{}, handler.EnqueueRequestsFromMapFunc(r.groupPodsOf(names.ComponentGateway))).
 		Complete(reconcileutil.QuietIgnoreNotFound(r))
+}
+
+func (r *NetworkAttachReconciler) podsForLab(ctx context.Context, obj client.Object) []reconcile.Request {
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods, client.InNamespace(obj.GetNamespace())); err != nil {
+		return nil
+	}
+	var out []reconcile.Request
+	for _, p := range pods.Items {
+		if p.Spec.NodeName == r.NodeName && (GroupComponent(&p) != "" || p.Labels[names.LabelLab] == obj.GetName()) {
+			out = append(out, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&p)})
+		}
+	}
+	return out
+}
+
+func (r *NetworkAttachReconciler) directReader() client.Reader {
+	if r.Reader != nil {
+		return r.Reader
+	}
+	return r.Client
+}
+
+// DelVethWithFlowsOwnedJournaled fsyncs the physical cleanup witness while the
+// exact owner row still exists. Only its guarded row retirement follows it.
+func (r *NetworkAttachReconciler) DelVethWithFlowsOwnedJournaled(key string, uid types.UID, prepared func(string) error, expectedRow ...string) error {
+	if uid == "" || r.Flows == nil || prepared == nil {
+		return ErrPortOwnerUnknown
+	}
+	r.OVS.vethMu.Lock()
+	defer r.OVS.vethMu.Unlock()
+	return r.OVS.delVethWithFlowsOwnedJournaled(key, uid, r.Flows, prepared, expectedRow...)
+}
+
+func (r *NetworkAttachReconciler) DelVethWithFlowsExpected(key string, uid types.UID, row string) error {
+	if row == "" || uid == "" || r.OVS == nil || r.Flows == nil {
+		return ErrPortOwnerUnknown
+	}
+	r.OVS.vethMu.Lock()
+	defer r.OVS.vethMu.Unlock()
+	return r.OVS.delVethWithFlowsOwnedJournaled(key, uid, r.Flows, nil, row)
 }

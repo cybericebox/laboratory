@@ -78,3 +78,16 @@ func AssignFirstHostIPToLink(link netlink.Link, cidr string) error {
 	}
 	return nil
 }
+
+// RemoveFirstHostIP removes only the address installed for this lab binding.
+func RemoveFirstHostIP(ifaceName, cidr string) {
+	link, err := netlink.LinkByName(ifaceName)
+	if err != nil {
+		return
+	}
+	ip, subnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return
+	}
+	_ = netlink.AddrDel(link, &netlink.Addr{IPNet: &net.IPNet{IP: NextIP(ip), Mask: subnet.Mask}})
+}

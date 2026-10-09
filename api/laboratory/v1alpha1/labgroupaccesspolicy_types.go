@@ -27,6 +27,14 @@ type LabGroupAccessRule struct {
 // LabGroupAccessPolicySpec is a complete replacement desired policy. Empty is
 // intentional and means no VPN client can reach a laboratory.
 type LabGroupAccessPolicySpec struct {
+	// Empty identity retains the legacy policy replacement contract.
+	// +optional
+	OperationID string `json:"operationId,omitempty"`
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	Revision int64 `json:"revision,omitempty"`
+	// +optional
+	ExpectedGroupUID string `json:"expectedGroupUID,omitempty"`
 	// +optional
 	Rules []LabGroupAccessRule `json:"rules,omitempty"`
 }
@@ -46,6 +54,10 @@ type LabGroupAccessPolicyRuleStatus struct {
 // LabGroupAccessPolicyStatus is written only by the in-namespace VPN
 // reconciler after it has applied the matching policy generation.
 type LabGroupAccessPolicyStatus struct {
+	// The current VPN boot acknowledges the exact policy operation/revision.
+	AppliedRevision    int64                            `json:"appliedRevision,omitempty"`
+	OperationID        string                           `json:"operationId,omitempty"`
+	VPNBootID          string                           `json:"vpnBootId,omitempty"`
 	ObservedGeneration int64                            `json:"observedGeneration,omitempty"`
 	State              string                           `json:"state,omitempty"`
 	AppliedAt          metav1.Time                      `json:"appliedAt,omitempty"`

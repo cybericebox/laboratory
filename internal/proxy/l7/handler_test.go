@@ -130,7 +130,7 @@ func TestHandler_UpstreamFailureIsNotAResponse(t *testing.T) {
 		t.Fatalf("code = %d", rec.Code)
 	}
 	rows, _ := meter.Ledger(laboratoryv1alpha1.LabGroupNamespace("g1"))
-	if len(rows) != 1 || rows[0].Attempts != 1 || rows[0].RespondedMs != 0 {
+	if len(rows) != 1 || rows[0].Attempts != 1 || rows[0].RespondedMs != 0 || rows[0].BytesIn != 0 {
 		t.Fatalf("an attempt the lab never answered must not count as reached: %+v", rows)
 	}
 }

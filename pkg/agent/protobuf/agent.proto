@@ -50,6 +50,19 @@ service LabManager {
   rpc ListLabs(ListRequest) returns (LabList) {}
   rpc UpdateLabs(UpdateLabsRequest) returns (BatchResult) {}
   rpc DeleteLabs(DeleteRequest) returns (BatchResult) {}
+  // Explicit UID/revision-fenced intent, at most 5000 items, no selectors.
+  // Replies acknowledge acceptance only. Unsupported servers return UNIMPLEMENTED.
+  // Identical intent is idempotent; wrong UID, lower or conflicting equal revision
+  // is refused. Start never clears terminal and refuses it at every revision.
+  rpc StopLabs(StopLabsRequest) returns (BatchResult) {}
+  rpc StartLabs(StartLabsRequest) returns (BatchResult) {}
+  // Accepted per item only; matching lifecycle observations prove completion.
+  rpc StopLabGroups(StopLabGroupsRequest) returns (BatchResult) {}
+  rpc StartLabGroups(StartLabGroupsRequest) returns (BatchResult) {}
+  // Fenced terminal retirement; acceptance is distinct from fresh cleanup ACK.
+  // Definitions remain durable tombstones; legacy Delete* semantics are unchanged.
+  rpc RetireLabs(RetireLabsRequest) returns (BatchResult) {}
+  rpc RetireLabGroups(RetireLabGroupsRequest) returns (BatchResult) {}
 
   // Monitoring is a server-push stream. Every subscription starts with a
   // complete snapshot; subsequent messages are sequenced deltas or heartbeats.
@@ -302,6 +315,8 @@ message LabItem {
   map<string, string> labels = 5;
   string deploy_group = 6;
   repeated string deploy_after = 7;
+  // Optional legacy; managed original birth is fenced to the observed Group UID.
+  string expected_group_uid = 8;
 }
 message CreateLabsRequest {
   map<string, string> labels = 1;
@@ -356,6 +371,11 @@ message LabGroup {
   // Creation time of the LabGroup object, unix milliseconds (0 when unknown). A cleanup
   // sweep uses it to skip groups that are still being deployed.
   int64 created_unix_ms = 13;
+  string uid = 14;
+  int64 generation = 15; // live Kubernetes metadata generation, separate from observed lifecycle
+  GroupLifecycleSpec lifecycle = 18;
+  PodSize vpn_size = 16; // explicit immutable spec only; absent means unknown legacy default
+  PodSize gateway_size = 17;
 }
 message LabGroupStatus {
   string phase = 1;
@@ -367,6 +387,13 @@ message LabGroupStatus {
   string image_warning = 6;
   Scheduling scheduling = 7;
   repeated LabGroupPod pods = 8;   // absent for a group that predates the scheduler
+  LabLifecycleStatus lifecycle = 9;
+  ResourceAllocation resources = 10;
+  // Independent direct-validated current VPN process boot; never policy/traffic fallback.
+  string current_vpn_boot_id = 11;
+  bool current_vpn_boot_available = 12;
+  int64 current_vpn_boot_observed_unix_ms = 13;
+  RetirementStatus retirement = 14;
 }
 message LabGroupList {repeated LabGroup items = 1;}
 
@@ -383,6 +410,9 @@ message Lab {
   map<string, string> labels = 10;
   string deploy_group = 11;
   repeated string deploy_after = 12;
+  string uid = 13;
+  int64 generation = 14;
+  LabCreationReceipt creation_receipt = 15; // live Kubernetes metadata generation, separate from observed lifecycle
 }
 // DeviceEnv carries the variables of one device. The agent materializes them into a
 // write-only per-device Secret (the pod loads it via envFrom): they never land in the
@@ -408,6 +438,9 @@ message LabStatus {
   // Image cache: the images of the lab that could not be pinned to a digest and
   // are pulled by tag; empty when all were pinned or the lab does not use the cache.
   string image_warning = 40;
+  LabLifecycleStatus lifecycle = 41;
+  ResourceAllocation resources = 42;
+  RetirementStatus retirement = 43;
 }
 // Scheduling is the place of a Lab or LabGroup in the scheduler queue. The scheduler
 // refreshes it at a limited rate, so position can lag by seconds.
@@ -530,6 +563,12 @@ message LabGroupAccessPolicy {
 	LabGroupAccessPolicyStatus status = 3;
 	// Populated only by monitoring; mutations resolve scope from LabGroup name.
 	string namespace = 4;
+  // Optional exact ACL revision fence; zero/empty retains legacy replacement.
+  string operation_id = 5;
+  int64 desired_revision = 6;
+  int64 generation = 7;
+  string policy_uid = 8;
+  string expected_group_uid = 9;
   // Labels of the policy object. SetLabGroupAccess gives it the labels of its
   // LabGroup plus these, so a selector that matches a group matches its policy.
   map<string, string> labels = 10;
@@ -553,6 +592,9 @@ message LabGroupAccessPolicyStatus {
 	int64 applied_at_unix_ms = 3;
 	string last_error = 4;
 	repeated LabGroupAccessRuleStatistics rules = 5;
+  int64 applied_revision = 6;
+  string operation_id = 7;
+  string vpn_boot_id = 8;
 }
 message LabGroupAccessRuleStatistics {
 	string client_name = 1;
@@ -624,7 +666,7 @@ message TrafficReport {
   string source = 3;   // name of the LabTrafficReport object
   string kind = 4;     // "vpn" | "proxy"
   string instance = 5; // writing pod
-  // Changes on every collector restart; the ledger is cumulative within one boot.
+  // Identifies the observation epoch; restored cumulative totals continue across boots.
   string boot_id = 6;
   // The span the collector actually observed. Absence of a touch proves
   // nothing outside this span.
@@ -633,6 +675,18 @@ message TrafficReport {
   bool partial = 9;
   bool truncated = 10;
   repeated TrafficTouch ledger = 11;
+  // Actual collector intervals, including disjoint replica/restart coverage.
+  // Older senders omit this; consumers fall back to the scalar span.
+  repeated TrafficCoverageSpan coverage_spans = 12;
+}
+
+message TrafficCoverageSpan {
+  int64 from_unix_ms = 1;
+  int64 to_unix_ms = 2;
+  bool partial = 3; // incomplete, truncated, or invalid/unknown observation span
+  string source = 4;
+  string instance = 5;
+  string boot_id = 6;
 }
 
 // TrafficTouch is one cumulative aggregate of a subject against a lab target.
@@ -651,6 +705,7 @@ message TrafficTouch {
   int64 first_seen_unix_ms = 12;
   int64 last_seen_unix_ms = 13;
   int64 first_responded_unix_ms = 14; // 0 = the lab never answered
+  int64 lab_initiated_attempts = 15; // new permitted VPN flows started by the lab
 }
 
 // CapacityResponse is the CALLER's view of its tenant's resources; no cluster-wide numbers
@@ -702,6 +757,7 @@ message FeaturesResponse {
   DeviceConstants constants = 11;
   // The resources the cluster gives this tenant (the same quota GetCapacity reports against).
   TenantQuotaFeature tenant_quota = 12;
+  LifecycleFeature lifecycle = 13;
 }
 
 // The size of a pod is base + per_unit * units, units at most max_units; the maximum size is base + per_unit * max_units.
@@ -720,6 +776,8 @@ message GroupPodsFeature {
   // What a group's pod gets when CreateLabGroups sets no size.
   PodSize default_vpn = 3;
   PodSize default_gateway = 4;
+  // Absent until profiles have matching validation evidence; legacy sizing remains.
+  GroupPodsSizingV2 sizing_v2 = 5;
 }
 
 // Constants of the device model: the platform's, not settings. The devices of a lab are capped by LimitsFeature.lab.max_devices
@@ -997,3 +1055,172 @@ message MaintenanceWindow {
   int64 capacity_memory_bytes = 9;
 }
 message MaintenanceWindowList {repeated MaintenanceWindow items = 1;}
+
+// ---- additive lifecycle contract ------------------------------------------------------
+enum StopSnapshotMode {
+  STOP_SNAPSHOT_MODE_UNSPECIFIED = 0; // refused; policy is never guessed
+  STOP_SNAPSHOT_MODE_SKIP = 1;
+  STOP_SNAPSHOT_MODE_REQUIRED = 2;
+}
+message LabLifecycleTarget {
+  ItemRef ref = 1; // lab_group + name; lab unused
+  string operation_id = 2;
+  int64 lifecycle_revision = 3;
+  string expected_lab_uid = 4;
+}
+message StopLabItem {
+  LabLifecycleTarget target = 1;
+  StopSnapshotMode snapshot_mode = 2;
+  int64 retention_until_unix_ms = 3; // 0 = no explicit retention deadline
+  bool terminal = 4; // monotonic; no future start is allowed
+}
+message StopLabsRequest { repeated StopLabItem items = 1; }
+message StartLabsRequest { repeated LabLifecycleTarget items = 1; }
+message LabLifecycleStatus {
+  string desired_state = 1; // Running/Stopped; absent CRD intent means Running
+  string observed_state = 2; // Running/Snapshotting/Stopping/Stopped/StopFailed/Starting/Unknown
+  string operation_id = 3;
+  int64 lifecycle_revision = 4;
+  string lab_uid = 5;
+  int64 observed_generation = 6;
+  string reason = 7;
+  string error = 8;
+  int64 requested_unix_ms = 9;
+  int64 stopped_unix_ms = 10;
+  int64 retention_until_unix_ms = 11;
+  bool snapshot_complete = 12;
+  bool access_fenced = 13;
+  int64 access_fenced_unix_ms = 14;
+  string access_fence_vpn_boot_id = 15;
+  bool terminal = 16;
+}
+message ResourceAmounts {
+  int64 cpu_millicores = 1;
+  int64 memory_bytes = 2;
+}
+// Missing or stale observations mean Unknown, never zero/free capacity.
+message ResourceAllocation {
+  ResourceAmounts configured_requests = 1;
+  ResourceAmounts configured_limits = 2;
+  ResourceAmounts allocated_requests = 3;
+  string runtime_state = 4; // Allocated/Releasing/Released/Unknown
+  int64 observed_unix_ms = 5;
+  int64 released_unix_ms = 6;
+  bool usage_available = 7;
+  ResourceAmounts used = 8;
+  int64 snapshot_quota_bytes = 9; // uncompressed chain quota, not physical storage
+  string storage_state = 10; // None/Retained/DeleteRequested/CleanupPending/Deleted/Unknown
+  bool physical_storage_bytes_available = 11;
+  int64 physical_storage_bytes = 12; // only from verified registry observation
+  string operation_id = 13;
+  int64 lifecycle_revision = 14;
+}
+// These capabilities are independent and false until their native gates pass.
+message LifecycleFeature {
+  bool per_lab_stop = 1;
+  bool required_snapshot = 2;
+  bool confirmed_runtime = 3;
+  bool retained_restart = 4;
+  bool full_group_stop = 5;
+}
+
+// Frozen additive interface; no profile is implied by the presence of these types.
+message GroupPodsSizingV2 { repeated GroupPodsSizingProfile profiles = 1; }
+message GroupPodsSizingProfile {
+  string id = 1;
+  string support_state = 2; // SUPPORTED/CANDIDATE/TESTED_POINT; unknown retains legacy sizing
+  GroupSizingInputs max_inputs = 3;
+  GroupPodFormula vpn = 4;
+  GroupPodFormula gateway = 5;
+  string validation_provenance = 6;
+  string scope = 7;
+}
+message GroupSizingInputs {
+  int64 max_users = 1;
+  int64 max_active_labs = 2;
+  int64 internet_labs = 3;
+  int64 allowed_relations = 4;
+  GroupTrafficEnvelope envelope = 5;
+}
+message GroupTrafficEnvelope {
+  int64 vpn_retained_flows = 1;
+  int64 gateway_retained_flows = 2;
+  int64 vpn_new_flows_per_second = 3;
+  int64 gateway_new_flows_per_second = 4;
+  int64 vpn_packets_per_second = 5;
+  int64 gateway_packets_per_second = 6;
+  double vpn_payload_mbps = 7;
+  double gateway_payload_mbps = 8;
+}
+message GroupPodFormula {
+  PodSize base = 1;
+  PodSize per_user = 2;
+  PodSize per_active_lab = 3;
+  PodSize per_internet_lab = 4;
+  PodSize per_allowed_relation = 5;
+  PodSize per_retained_flow = 6;
+  PodSize floor = 7;
+  PodSize round_to = 8;
+}
+
+// Group operations target exact identity and monotonically increasing intent.
+message GroupTarget {
+ string group = 1;
+ string expected_uid = 2;
+ string operation_id = 3;
+ int64 revision = 4;
+}
+message StopLabGroupItem {
+ GroupTarget target = 1;
+ bool require_all_labs_stopped = 2; // must be true; no forced child stop
+}
+message StopLabGroupsRequest { repeated StopLabGroupItem items = 1; }
+message StartLabGroupsRequest { repeated GroupTarget items = 1; }
+message GroupLifecycleSpec {
+ string desired_state = 1;
+ string operation_id = 2;
+ int64 revision = 3;
+ bool require_all_labs_stopped = 4;
+}
+
+// The stop target remains immutable; retirement has a distinct new operation.
+message LabRetirementTarget {
+ LabLifecycleTarget stop_target = 1;
+ string retirement_operation_id = 2;
+ int64 retirement_revision = 3;
+}
+message GroupRetirementTarget {
+ GroupTarget stop_target = 1;
+ string retirement_operation_id = 2;
+ int64 retirement_revision = 3;
+}
+message RetireLabsRequest { repeated LabRetirementTarget items = 1; }
+message RetireLabGroupsRequest { repeated GroupRetirementTarget items = 1; }
+message RetirementStatus {
+ string expected_uid = 1;
+ string stop_operation_id = 2;
+ int64 stop_revision = 3;
+ string operation_id = 4;
+ int64 revision = 5;
+ int64 observed_generation = 6;
+ string state = 7; // Unknown/CleanupPending/Deleted
+ int64 observed_unix_ms = 8;
+ bool runtime_absent = 9;
+ string storage_state = 10;
+ bool cleanup_complete = 11;
+ bool physical_storage_bytes_available = 12;
+ int64 physical_storage_bytes = 13;
+ string error = 14;
+ int64 requested_unix_ms = 15;
+}
+
+message LabCreationReceipt {
+ string group_uid = 1;
+ string namespace_uid = 2;
+ string operation_id = 3;
+ int64 revision = 4;
+ string definition_hash = 5;
+ string creation_id = 6;
+ string lab_uid = 7;
+ bool committed = 8;
+}

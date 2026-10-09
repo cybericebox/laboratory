@@ -16,10 +16,18 @@ type PoolSpec struct {
 
 // PoolStatus holds the mutable allocation state.
 type PoolStatus struct {
+	// Lease owners and bitmap change in the same resourceVersion CAS.
+	Leases              map[string]PoolLease `json:"leases,omitempty"`
+	NextLeaseGeneration int64                `json:"nextLeaseGeneration,omitempty"`
 	// Free is the count of unallocated slots; mirrored to label pool.cybericebox.com/free.
 	Free uint `json:"free,omitempty"`
 	// BitMap is a base64-encoded bitset (one bit per slot, 1 = allocated).
 	BitMap string `json:"bitMap,omitempty"`
+}
+
+type PoolLease struct {
+	OwnerUID   string `json:"ownerUID"`
+	Generation int64  `json:"generation"`
 }
 
 // +genclient

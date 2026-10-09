@@ -1466,7 +1466,7 @@ The snapshots of a lab are not deleted with the lab. The operator runs a sweep e
 repository whose Lab no longer exists it records the time it first noticed this in the ConfigMap
 `laboratory-snapshot-retention` (namespace `laboratory-system`), and once `retention` (default 168h) has passed it deletes
 the lab's repositories. zot's garbage collection (`registry.gc.interval` and `registry.gc.delay`, both 1h by default)
-then frees the blobs, so the space comes back within about `retention` plus two hours. A lab recreated under the same
+then attempts to free unreferenced blobs. The sweep confirms manifest deletion only; physical reclaimed bytes and timing remain unavailable until separately verified GC evidence. A lab recreated under the same
 name before the deadline cancels the deletion.
 
 ### Turning it off
@@ -1857,3 +1857,35 @@ slip under a stricter check, the component that runs it clamps or ignores the ba
   before it redirects, so it is a backend change, not a proxy one.
 - **The agent and the operator refuse to start on CRDs older than the release** (they read the published OpenAPI schema and look for `Tenant.status.certificateEpoch`), retrying for a minute, then exit
   with `kubectl apply --server-side -f charts/laboratory/crds/` in the message. So Enroll can never burn a token against an old CRD. No extra permission is needed (discovery).
+
+### Lifecycle native gates and admission recovery
+
+Full group lifecycle completion requires direct UID/revision reads, durable
+pre-scale service inventory and node-owned first-success cleanup acknowledgements.
+Inventory binds Group UID, operation/revision, Deployment UID, Pod UID, node boot,
+container IDs, cgroup paths and owned port keys. Empty API inventory, node loss,
+foreign ownership or missing acknowledgements remain `Unknown` and hold capacity.
+Configure the native observer only after the final source-image fixture proves
+these boundaries. Lifecycle capability flags default false until their independent
+native gates pass. No production sizing preset or chart default is reduced here.
+
+Child create/start admission uses one durable pending token on the Group, updated
+with the same resourceVersion CAS as group stop. Busy batch items return `FAILED`
+with `retryable=true`; independent batch items still return their own result.
+Replay the identical admitted operation after an agent crash. If its exact child
+write exists, group stop can resolve that token; a never-written operation stays
+pending. No TTL silently cancels it, and no moderator recovery endpoint is added.
+Administrative recovery of an abandoned never-written operation is outside the
+supported producer path.
+
+The local five-peer source `/lab` point used 80Mi/50m for VPN and 32Mi/25m for the
+gateway with 13 VPN networks, 65 applied relations and 10 gateway/NAT networks.
+The repeat returned 8,200/8,200 during its ramp and 22,489/22,489 during a separate
+90s hold (about 249.85pps aggregate). Gateway returned 180,000/180,000 over 180s
+at 1000pps. The initial refresh burst lost 6,061 replies out of 295,200 and CPU
+throttled. VPN lifetime peak 52.301Mi includes both attempts; gateway lifetime
+peak 14.066Mi, with no OOM/max events. Retained flows overlapped up to 16,374.
+This is conditional `TESTED_POINT` evidence, not a complete supported traffic
+envelope, operator/CNI/OVS/snapshot restore proof or general capacity guarantee.
+Raw evidence remains under `local-proof/` in the owner's 2026-10-08 lifecycle
+outputs; retain both the successful repeat and failed burst.

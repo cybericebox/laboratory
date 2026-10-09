@@ -25,8 +25,9 @@ const AnnotationLayerSize = "com.cybericebox.state.size"
 // historyCreatedBy marks the history entries of snapshot layers.
 const historyCreatedBy = "cybericebox device state"
 
-// BlobSource reads blobs that are already on the node (the containerd content
-// store), so building a snapshot never pulls from an external registry.
+// BlobSource reads immutable image blobs. The native source prefers containerd
+// content and can recover missing manifest-listed packed layers from the
+// original registry when containerd discards them after unpacking.
 type BlobSource interface {
 	// ReadBlob returns the blob and its size.
 	ReadBlob(ctx context.Context, digest v1.Hash) (io.ReadCloser, int64, error)

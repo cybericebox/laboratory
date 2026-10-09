@@ -29,8 +29,9 @@ type NodeAgentServer struct {
 	ovs   *OVSManager
 	flows *FlowManager
 
-	k8sMu sync.RWMutex
-	k8s   client.Client // set via SetK8sClient after manager is ready
+	k8sMu  sync.RWMutex
+	reader client.Reader
+	k8s    client.Client // set via SetK8sClient after manager is ready
 
 }
 
@@ -44,16 +45,6 @@ func NewNodeAgentServer(ovs *OVSManager, flows *FlowManager) *NodeAgentServer {
 	}
 }
 
-// delVethWithFlows removes the t0 entry for a veth port before deleting the
-// port. OVS keeps flows referencing deleted ports, and the recycled ofport
-// number would make the stale flow match a different interface.
-func (s *NodeAgentServer) delVethWithFlows(stableKey string) {
-	if s.flows != nil {
-		_ = s.flows.DelT0Port(stableKey)
-	}
-	_ = s.ovs.DelVethPort(stableKey)
-}
-
 // SetupNetworks is called by cni-gate during CNI ADD. It waits for the pod to
 // appear in the controller-runtime cache, creates OVS veth pairs for all
 // interfaces listed in AnnotationNetworks, moves each pod-side veth into the
@@ -64,6 +55,10 @@ func (s *NodeAgentServer) SetupNetworks(
 ) (*nodev1.SetupNetworksResponse, error) {
 	s.k8sMu.RLock()
 	k8s := s.k8s
+	reader := s.reader
+	if reader == nil {
+		reader = k8s
+	}
 	s.k8sMu.RUnlock()
 	if k8s == nil {
 		return nil, fmt.Errorf("node-agent: not ready")
@@ -90,6 +85,25 @@ func (s *NodeAgentServer) SetupNetworks(
 		break
 	}
 
+	var current corev1.Pod
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(&pod), &current); err != nil {
+		return nil, err
+	}
+	if current.UID != pod.UID || !current.DeletionTimestamp.IsZero() {
+		return nil, ErrPortOwnerChanged
+	}
+	if req.PodUid != "" && req.PodUid != string(pod.UID) {
+		return nil, fmt.Errorf("pod UID changed during CNI setup")
+	}
+	if isPlatformPod(&pod) && GroupComponent(&pod) == "" {
+		active, err := labRuntimeActive(ctx, reader, pod.Namespace, pod.Labels[names.LabelLab])
+		if err != nil {
+			return nil, err
+		}
+		if !active {
+			return nil, fmt.Errorf("lab runtime is stopped or unknown")
+		}
+	}
 	defaultIface, hasAnnotation := pod.Annotations[names.AnnotationDefaultNetwork]
 	log := setupLog.WithValues(
 		"pod", req.Namespace+"/"+req.Name,
@@ -114,59 +128,20 @@ func (s *NodeAgentServer) SetupNetworks(
 		return &nodev1.SetupNetworksResponse{DefaultNetwork: "real"}, nil
 	}
 
+	s.ovs.vethMu.Lock()
+	defer s.ovs.vethMu.Unlock()
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(&pod), &current); err != nil {
+		return nil, err
+	}
+	if current.UID != pod.UID || !current.DeletionTimestamp.IsZero() {
+		return nil, ErrPortOwnerChanged
+	}
+
 	// Device pod or access-port pod: wire all OVS interfaces synchronously.
 	attachments := ParseNetworkAnnotation(pod.Annotations[names.AnnotationNetworks])
 	log.Info("wiring OVS interfaces synchronously", "count", len(attachments))
-	for _, att := range attachments {
-		stableKey := names.DevicePortKey(req.Namespace, req.Name, att.Iface)
-		podSide := VethPeerName(stableKey)
-		targetIface := att.Iface
-
-		if _, exists, err := s.ovs.FindPortByKey(stableKey); err != nil {
-			return nil, fmt.Errorf("find veth port %q: %w", stableKey, err)
-		} else if !exists {
-			if err := s.ovs.AddVethPort(stableKey); err != nil {
-				return nil, fmt.Errorf("add veth port %q: %w", stableKey, err)
-			}
-		}
-
-		podSideInRoot := WaitForLink(podSide, 200*time.Millisecond) == nil
-		if podSideInRoot {
-			if CheckInNetNS(req.NetnsPath, targetIface) == nil {
-				_ = DeleteInNetNS(req.NetnsPath, targetIface)
-			}
-			if err := MoveToNetNS(podSide, req.NetnsPath); err != nil {
-				return nil, fmt.Errorf("move %q to netns: %w", podSide, err)
-			}
-			if podSide != targetIface {
-				if err := RenameInNetNS(req.NetnsPath, podSide, targetIface); err != nil {
-					return nil, fmt.Errorf("rename %q → %q: %w", podSide, targetIface, err)
-				}
-			}
-		} else if CheckInNetNS(req.NetnsPath, targetIface) == nil {
-			// Already in pod netns under correct name — idempotent, fall through to BringUp.
-		} else if CheckInNetNS(req.NetnsPath, podSide) == nil {
-			// Moved but not yet renamed.
-			if podSide != targetIface {
-				if err := RenameInNetNS(req.NetnsPath, podSide, targetIface); err != nil {
-					return nil, fmt.Errorf("rename (recovery) %q → %q: %w", podSide, targetIface, err)
-				}
-			}
-		} else {
-			// Not in root netns and not in pod netns — veth lost, recreate.
-			s.delVethWithFlows(stableKey)
-			return nil, fmt.Errorf("veth %q lost (not in root or pod netns); recreate triggered", stableKey)
-		}
-		if att.MAC != "" {
-			if err := SetMACInNetNS(req.NetnsPath, targetIface, att.MAC); err != nil {
-				return nil, fmt.Errorf("set MAC on %q: %w", targetIface, err)
-			}
-		}
-		if err := BringUpInNetNS(req.NetnsPath, targetIface); err != nil {
-			return nil, fmt.Errorf("bring up %q: %w", targetIface, err)
-		}
-		// node-agent is L2 only: veth moved in, renamed, MAC set, link up.
-		// IP/route configuration is the device init-container's job.
+	if err := s.setupOVSAttachments(ctx, req, reader, &pod, attachments); err != nil {
+		return nil, err
 	}
 
 	if defaultIface == "" {
@@ -251,6 +226,76 @@ func secureSocketDir(dir string) error {
 	}
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return fmt.Errorf("chmod %s: %w", dir, err)
+	}
+	return nil
+}
+
+// SetK8sReader supplies the uncached lifecycle input for native CNI guards.
+func (s *NodeAgentServer) SetK8sReader(r client.Reader) {
+	s.k8sMu.Lock()
+	s.reader = r
+	s.k8sMu.Unlock()
+}
+
+func (s *NodeAgentServer) setupOVSAttachments(ctx context.Context, req *nodev1.SetupNetworksRequest, reader client.Reader, pod *corev1.Pod, attachments []NetAttachment) error {
+	for _, att := range attachments {
+		stableKey := names.DevicePortKey(req.Namespace, req.Name, att.Iface)
+		podSide := VethPeerName(stableKey)
+		targetIface := att.Iface
+
+		ownerGuard := &NetworkAttachReconciler{Reader: reader, NodeName: pod.Spec.NodeName, OVS: s.ovs, Flows: s.flows}
+		if err := ownerGuard.ensurePodPortOwner(ctx, pod, stableKey); err != nil {
+			return err
+		}
+		created := false
+		if _, exists, err := s.ovs.FindPortByKey(stableKey); err != nil {
+			return fmt.Errorf("find veth port %q: %w", stableKey, err)
+		} else if !exists {
+			if err := s.ovs.AddVethPortOwned(stableKey, pod.UID); err != nil {
+				return fmt.Errorf("add veth port %q: %w", stableKey, err)
+			}
+			created = true
+		}
+
+		podSideInRoot := peerInRoot(podSide, created)
+		if podSideInRoot {
+			if CheckInNetNS(req.NetnsPath, targetIface) == nil {
+				_ = DeleteInNetNS(req.NetnsPath, targetIface)
+			}
+			if err := MoveToNetNS(podSide, req.NetnsPath); err != nil {
+				return fmt.Errorf("move %q to netns: %w", podSide, err)
+			}
+			if podSide != targetIface {
+				if err := RenameInNetNS(req.NetnsPath, podSide, targetIface); err != nil {
+					return fmt.Errorf("rename %q → %q: %w", podSide, targetIface, err)
+				}
+			}
+		} else if CheckInNetNS(req.NetnsPath, targetIface) == nil {
+			// Already in pod netns under correct name — idempotent, fall through to BringUp.
+		} else if CheckInNetNS(req.NetnsPath, podSide) == nil {
+			// Moved but not yet renamed.
+			if podSide != targetIface {
+				if err := RenameInNetNS(req.NetnsPath, podSide, targetIface); err != nil {
+					return fmt.Errorf("rename (recovery) %q → %q: %w", podSide, targetIface, err)
+				}
+			}
+		} else {
+			// Not in root netns and not in pod netns — veth lost, recreate.
+			if err := ownerGuard.delVethWithFlowsOwned(stableKey, pod.UID); err != nil {
+				return err
+			}
+			return fmt.Errorf("veth %q lost (not in root or pod netns); recreate triggered", stableKey)
+		}
+		if att.MAC != "" {
+			if err := SetMACInNetNS(req.NetnsPath, targetIface, att.MAC); err != nil {
+				return fmt.Errorf("set MAC on %q: %w", targetIface, err)
+			}
+		}
+		if err := BringUpInNetNS(req.NetnsPath, targetIface); err != nil {
+			return fmt.Errorf("bring up %q: %w", targetIface, err)
+		}
+		// node-agent is L2 only: veth moved in, renamed, MAC set, link up.
+		// IP/route configuration is the device init-container's job.
 	}
 	return nil
 }

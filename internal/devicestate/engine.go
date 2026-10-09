@@ -16,6 +16,7 @@ import (
 	"github.com/go-logr/logr"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 
+	api "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/snapshot"
 )
@@ -52,9 +53,10 @@ func retryDelay(base, max time.Duration, n int) time.Duration {
 
 // Engine follows the snapshot-backed device containers of one node.
 type Engine struct {
-	Runtime Runtime
-	Cluster Cluster
-	Pusher  Pusher
+	Runtime        Runtime
+	NodeAgentEpoch string
+	Cluster        Cluster
+	Pusher         Pusher
 	// RegistryHost is host:port under which this node reaches the registry; an
 	// image reference starting with it is a snapshot image.
 	RegistryHost string
@@ -91,9 +93,11 @@ type Engine struct {
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 
-	mu      sync.Mutex
-	tracked map[string]*tracked // by container id
-	warned  map[string]bool
+	captureWorkers sync.WaitGroup
+	holdWorkers    sync.WaitGroup
+	mu             sync.Mutex
+	tracked        map[string]*tracked // by container id
+	warned         map[string]bool
 }
 
 // tracked is one followed container.
@@ -104,12 +108,20 @@ type tracked struct {
 
 	cancel context.CancelFunc
 
-	mu       sync.Mutex // one snapshot at a time
-	lastDiff string     // digest of the last layer published or refused
-	pushed   bool       // a snapshot of this run was published
-	lastWarn string
-	exited   bool
-	failures int // consecutive failed live snapshots (touched by the live loop only)
+	mu                sync.Mutex // one snapshot at a time
+	lastPublishedDiff string     // only a successfully recorded digest; lastDiff also remembers legacy refusals
+	lastDiff          string     // digest of the last layer published or refused
+	pushed            bool       // a snapshot of this run was published
+	lastWarn          string
+	exited            bool
+	required          *requiredHold
+	// Scheduling only, guarded by e.mu. This is never exit/hold authority.
+	pendingCapture *api.DeviceCaptureRequest
+	captureAttempt *api.DeviceCaptureRequest
+	retry          chan struct{}
+	watching       bool // a normal persistence watcher exists, rather than a recovery placeholder
+	lastSnapshot   Snapshot
+	failures       int // consecutive failed live snapshots (touched by the live loop only)
 	// prevRef is the manifest this device currently has in the registry (the one it was restored from, or its last snapshot); a
 	// new snapshot supersedes it. pushes are the recent ones, for the rate and the budget.
 	prevRef string
@@ -212,7 +224,9 @@ func (e *Engine) now() time.Time {
 // Run follows the node until ctx ends.
 func (e *Engine) Run(ctx context.Context) error {
 	e.mu.Lock()
-	e.tracked = map[string]*tracked{}
+	if e.tracked == nil {
+		e.tracked = map[string]*tracked{}
+	}
 	e.mu.Unlock()
 
 	exits, err := e.Runtime.Exits(ctx)
@@ -230,6 +244,8 @@ func (e *Engine) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			e.stopAll()
+			e.captureWorkers.Wait()
+			e.holdWorkers.Wait()
 			return nil
 		case id, ok := <-exits:
 			if !ok {
@@ -263,10 +279,29 @@ func (e *Engine) Sync(ctx context.Context) {
 	}
 	live := map[string]bool{}
 	for _, p := range pods {
-		if p.ContainerID == "" || p.Epoch != p.DeviceEpoch {
+		if p.Epoch != p.DeviceEpoch {
 			continue
 		}
 		live[p.ContainerID] = true
+		var pending *api.DeviceCaptureRequest
+		if p.CaptureRequest != nil && e.currentCaptureRequest(p, *p.CaptureRequest) {
+			pending = p.CaptureRequest
+		}
+		e.setPendingCapture(p.ContainerID, pending)
+		if p.CaptureRequest != nil {
+			req := *p.CaptureRequest
+			e.captureWorkers.Add(1)
+			go func() {
+				defer e.captureWorkers.Done()
+				if _, err := e.captureRequired(ctx, p, req, false); err != nil {
+					e.Log.Error(err, "required capture", "pod", p.Pod)
+				}
+			}()
+			continue
+		}
+		if p.ContainerID == "" {
+			continue
+		}
 		switch {
 		case p.Running && !p.Ended:
 			e.ensureTracked(ctx, p)
@@ -284,10 +319,51 @@ func (e *Engine) Sync(ctx context.Context) {
 	e.mu.Unlock()
 }
 
+func (e *Engine) setPendingCapture(id string, req *api.DeviceCaptureRequest) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if t := e.tracked[id]; t != nil {
+		wasPending := t.pendingCapture != nil || t.captureAttempt != nil
+		t.pendingCapture = req
+		if req == nil {
+			t.captureAttempt = nil // Fresh API observation supersedes an old attempt.
+		}
+		if wasPending && req == nil && t.retry != nil {
+			select {
+			case t.retry <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
+
+func (e *Engine) setCaptureAttempt(id string, req *api.DeviceCaptureRequest) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if t := e.tracked[id]; t != nil {
+		t.captureAttempt = req
+	}
+}
+
+func (e *Engine) clearPendingCapture(id string, req *api.DeviceCaptureRequest) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if t := e.tracked[id]; t != nil && t.captureAttempt == req {
+		t.captureAttempt = nil
+		if t.pendingCapture == nil && t.retry != nil {
+			select {
+			case t.retry <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
+
 func (e *Engine) ensureTracked(ctx context.Context, p PodInfo) {
 	e.mu.Lock()
-	if _, ok := e.tracked[p.ContainerID]; ok {
+	if t, ok := e.tracked[p.ContainerID]; ok {
 		e.mu.Unlock()
+		t.startWatching(ctx)
 		return
 	}
 	e.mu.Unlock()
@@ -324,31 +400,52 @@ func (e *Engine) warnOnce(ctx context.Context, p PodInfo, msg string) {
 
 // track registers the container and starts its change watcher.
 func (e *Engine) track(ctx context.Context, p PodInfo, c Container) *tracked {
-	wctx, cancel := context.WithCancel(ctx)
-	t := &tracked{e: e, pod: p, c: c, cancel: cancel, prevRef: e.snapshotRef(c.ImageRef)}
+	t := &tracked{e: e, pod: trackingPodInfo(p), c: c, cancel: func() {}, prevRef: e.snapshotRef(c.ImageRef)}
 	e.mu.Lock()
 	if old, ok := e.tracked[p.ContainerID]; ok {
-		e.mu.Unlock()
-		cancel()
-		return old
+		t = old
+	} else {
+		e.tracked[p.ContainerID] = t
 	}
-	e.tracked[p.ContainerID] = t
 	e.mu.Unlock()
+	if !t.startWatching(ctx) {
+		return nil
+	}
+	return t
+}
 
+// startWatching attaches the existing persistence pipeline to a released capture
+// placeholder without replacing its identity. An active capture owns t.mu or
+// t.required, so a normal Sync neither waits on it nor starts a second watcher.
+func (t *tracked) startWatching(ctx context.Context) bool {
+	if !t.mu.TryLock() {
+		return true
+	}
+	defer t.mu.Unlock()
+	if t.watching || t.required != nil || t.exited {
+		return true
+	}
+	e, p, c := t.e, t.pod, t.c
+	wctx, cancel := context.WithCancel(ctx)
 	changes, err := Watch(wctx, c.UpperDir, p.Policy, e.Poll, e.MaxWatchDirs)
 	if err != nil {
 		e.Log.Error(err, "watch writable layer", "upper", c.UpperDir)
 		cancel()
-		e.mu.Lock()
-		delete(e.tracked, p.ContainerID)
-		e.mu.Unlock()
-		return nil
+		return false
 	}
+	e.mu.Lock()
+	t.cancel = cancel
+	e.mu.Unlock()
+	t.watching = true
+
 	// One snapshot right away: a layer that changed while nobody watched (the
 	// node-agent restarted) must not wait for the next change.
 	in := make(chan struct{}, 1)
 	in <- struct{}{}
 	retry := make(chan struct{}, 1)
+	e.mu.Lock()
+	t.retry = retry
+	e.mu.Unlock()
 	go func() {
 		defer close(in)
 		for {
@@ -406,7 +503,7 @@ func (e *Engine) track(ctx context.Context, p PodInfo, c Container) *tracked {
 			later(retryDelay(e.retryBase(), e.retryMax(), t.failures))
 		}
 	})
-	return t
+	return true
 }
 
 // onExit handles a runtime exit event.
@@ -433,7 +530,7 @@ func (e *Engine) endOf(ctx context.Context, p PodInfo) {
 			e.markExit(ctx, p)
 			return
 		}
-		t = &tracked{e: e, pod: p, c: c, cancel: func() {}, prevRef: e.snapshotRef(c.ImageRef)}
+		t = &tracked{e: e, pod: trackingPodInfo(p), c: c, cancel: func() {}, prevRef: e.snapshotRef(c.ImageRef)}
 		e.mu.Lock()
 		e.tracked[p.ContainerID] = t
 		e.mu.Unlock()
@@ -445,7 +542,9 @@ func (e *Engine) endOf(ctx context.Context, p PodInfo) {
 // nothing is frozen, and the layer on disk is final.
 func (e *Engine) finish(ctx context.Context, t *tracked) {
 	t.mu.Lock()
-	if t.exited {
+	// CaptureRequired holds this same lock through capture, and t.required owns
+	// any quiescence retained afterward. A copied API request is not a live hold.
+	if t.exited || t.required != nil {
 		t.mu.Unlock()
 		return
 	}
@@ -479,6 +578,21 @@ func (e *Engine) markExit(ctx context.Context, p PodInfo) {
 func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.required != nil {
+		return nil
+	}
+	if freeze {
+		t.e.mu.Lock()
+		pending := t.pendingCapture != nil || t.captureAttempt != nil
+		t.e.mu.Unlock()
+		if pending {
+			return nil
+		}
+	}
+	return t.snapshotLocked(ctx, freeze, false)
+}
+
+func (t *tracked) snapshotLocked(ctx context.Context, freeze, required bool) (err error) {
 	if t.exited && freeze {
 		return nil
 	}
@@ -498,7 +612,7 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 		}
 	}()
 
-	rc, err := e.Runtime.Diff(ctx, t.c, freeze)
+	rc, err := e.Runtime.Diff(ctx, t.c, freeze, pol)
 	diffTook = e.now().Sub(started)
 	if err != nil {
 		return fmt.Errorf("diff writable layer: %w", err)
@@ -511,59 +625,29 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 	defer func() { _ = os.RemoveAll(dir) }()
 
 	layerPath := filepath.Join(dir, "layer.tar")
-	f, err := os.Create(layerPath)
-	if err != nil {
-		_ = rc.Close()
+	stats, digest, refused, err := t.filterSnapshotLayer(ctx, rc, layerPath, pol, required)
+	if refused {
 		return err
 	}
-	sum := sha256.New()
-	stats, ferr := snapshot.FilterLayerMapped(rc, io.MultiWriter(f, sum), pol, t.c.IDs)
-	_ = rc.Close()
-	if cerr := f.Close(); ferr == nil {
-		ferr = cerr
-	}
-	if errors.Is(ferr, snapshot.ErrQuota) {
-		// Over the write quota before the layer was even copied (a sparse file counts by its apparent size): the last good snapshot
-		// stays, and the same change is not diffed again for a while.
-		t.holdUntil = e.now().Add(quotaHold)
-		t.warn(ctx, ferr.Error())
-		return nil
-	}
-	if errors.Is(ferr, snapshot.ErrEntries) {
-		// Too many files: the last good snapshot stays; the next change is tried again (the layer only grows, so it will
-		// most likely be refused again, but the warning is cleared by a snapshot that fits).
-		t.warn(ctx, ferr.Error())
-		return nil
-	}
-	if ferr != nil {
-		return fmt.Errorf("filter layer: %w", ferr)
-	}
-	if stats.Unmapped > 0 {
-		e.Log.Info("owner ids outside the user namespace map were written as 0", "device", t.pod.Device, "pod", t.pod.Pod, "ids", stats.Unmapped)
-	}
-	digest := hex.EncodeToString(sum.Sum(nil))
 
 	// Files over the size limit are left out of the layer; the status names them.
 	skipMsg := stats.SkippedWarning(pol.MaxFileSize)
 	if stats.Entries == 0 {
-		if t.pushed {
-			if err := t.publishStart(ctx); err != nil {
-				return err
-			}
-		}
-		t.warnSkipped(ctx, skipMsg)
-		return nil // nothing (else) changed since the device started
+		return t.snapshotEmptyLayer(ctx, required, skipMsg)
 	}
-	if digest == t.lastDiff {
+	if t.unchangedSnapshotLayer(required, digest) {
 		return nil
 	}
 
-	run, err := e.Runtime.LoadImage(ctx, t.c.ImageRef)
+	run, err := t.loadImage(ctx)
 	if err != nil {
 		return fmt.Errorf("load image %s: %w", t.c.ImageRef, err)
 	}
 	img, chain, err := snapshot.Build(run, layerPath, stats.Bytes, pol, dir)
 	if errors.Is(err, snapshot.ErrQuota) || errors.Is(err, snapshot.ErrEntries) {
+		if required {
+			return err
+		}
 		t.lastDiff = digest // do not retry the same layer
 		t.warn(ctx, err.Error())
 		return nil
@@ -571,29 +655,20 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 	if err != nil {
 		return err
 	}
-	// The registry is shared by every tenant: all the snapshots of one tenant together stay under its quota.
-	if t.pod.TenantQuota > 0 {
-		others, qerr := e.Cluster.TenantBytes(ctx, t.pod.Tenant, t.pod.Device)
-		if qerr != nil {
-			return fmt.Errorf("tenant registry usage: %w", qerr)
-		}
-		// What the tenant still has in the repositories of labs that are gone counts too (it takes the volume until the retention ends).
-		if e.Retained != nil {
-			if live, lerr := e.Cluster.LiveRepos(ctx); lerr == nil {
-				if ret, rerr := e.Retained.RetainedBytes(ctx, t.pod.Tenant, live); rerr == nil {
-					others += ret
-				}
-			}
-		}
-		if others+chain.Bytes() > t.pod.TenantQuota {
-			t.lastDiff = digest
-			t.warn(ctx, fmt.Sprintf("%v: the snapshots of the tenant would take %d bytes of the registry, the tenant's quota is %d", snapshot.ErrQuota, others+chain.Bytes(), t.pod.TenantQuota))
-			return nil
+	if refused, err := t.refuseTenantQuota(ctx, required, digest, chain.Bytes()); refused {
+		return err
+	}
+	if required {
+		if d := t.allow(); d != nil {
+			return d
 		}
 	}
 	// The registry volume is shared by every tenant and the platform: no push while it is nearly full.
 	if e.Space != nil {
 		if serr := e.Space.Check(ctx, chain.Bytes()); serr != nil {
+			if required {
+				return serr
+			}
 			t.warn(ctx, serr.Error())
 			if freeze {
 				return &errDeferred{after: 5 * time.Minute, reason: serr.Error()}
@@ -608,12 +683,18 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 		return fmt.Errorf("push snapshot: %w", err)
 	}
 	pushTook = e.now().Sub(pushStart)
-	if err := e.Cluster.Record(ctx, t.pod, Snapshot{Image: ref, At: e.now(), SizeBytes: chain.Bytes(), Layers: int32(chain.Layers())}); err != nil {
-		return err
+	if !required {
+		if err := e.Cluster.Record(ctx, t.pod, Snapshot{Image: ref, At: e.now(), SizeBytes: chain.Bytes(), Layers: int32(chain.Layers())}); err != nil {
+			return err
+		}
 	}
+	t.lastSnapshot = Snapshot{Image: ref, At: e.now(), SizeBytes: chain.Bytes(), Layers: int32(chain.Layers())}
+	t.lastPublishedDiff = digest
 	t.lastDiff, t.pushed, t.lastWarn = digest, true, ""
 	t.pushes = append(t.pushes, pushRecord{at: e.now(), bytes: chain.Bytes()})
-	t.supersede(ref, img)
+	if !required {
+		t.supersede(ref, img)
+	}
 	t.warnSkipped(ctx, skipMsg)
 	e.Log.Info("snapshot taken", "device", t.pod.Device, "pod", t.pod.Pod, "frozen", freeze,
 		"diff", diffTook.String(), "push", pushTook.String(), "total", e.now().Sub(started).String(),
@@ -644,12 +725,19 @@ func (t *tracked) supersede(newRef string, keep v1.Image) {
 	time.AfterFunc(e.SupersededGrace, run)
 }
 
+func (t *tracked) loadImage(ctx context.Context) (v1.Image, error) {
+	if runtime, ok := t.e.Runtime.(SourceImageRuntime); ok {
+		return runtime.LoadImageForPod(ctx, t.c, t.pod)
+	}
+	return t.e.Runtime.LoadImage(ctx, t.c.ImageRef)
+}
+
 // publishStart records that the writable layer is back to what the container
 // started from: the snapshot it started from if that was one, else the base image.
 func (t *tracked) publishStart(ctx context.Context) error {
 	s := Snapshot{At: t.e.now()}
 	if t.e.RegistryHost != "" && strings.HasPrefix(t.c.ImageRef, t.e.RegistryHost+"/") {
-		run, err := t.e.Runtime.LoadImage(ctx, t.c.ImageRef)
+		run, err := t.loadImage(ctx)
 		if err != nil {
 			return fmt.Errorf("load image %s: %w", t.c.ImageRef, err)
 		}
@@ -662,6 +750,7 @@ func (t *tracked) publishStart(ctx context.Context) error {
 	if err := t.e.Cluster.Record(ctx, t.pod, s); err != nil {
 		return err
 	}
+	t.lastPublishedDiff = ""
 	t.lastDiff, t.pushed, t.lastWarn = "", false, ""
 	return nil
 }
@@ -685,4 +774,133 @@ func (t *tracked) warn(ctx context.Context, msg string) {
 	if err := t.e.Cluster.Warn(wctx, t.pod, msg); err != nil && !errors.Is(err, ErrStale) {
 		t.e.Log.Error(err, "report snapshot warning", "device", t.pod.Device)
 	}
+}
+
+// trackingPodInfo stores stable persistence metadata, not ephemeral operator
+// intent. Sync handles current requests and requiredHold owns active quiescence.
+func trackingPodInfo(p PodInfo) PodInfo {
+	p.CaptureRequest = nil
+	return p
+}
+
+// refuseFilteredLayer preserves the ordinary snapshot's quota refusal and the
+// Required capture's strict failure before checking any filtered metadata.
+func (t *tracked) refuseFilteredLayer(ctx context.Context, required bool, ferr error) (bool, error) {
+	if errors.Is(ferr, snapshot.ErrQuota) {
+		// Over the write quota before the layer was even copied (a sparse file counts by its apparent size): the last good snapshot
+		// stays, and the same change is not diffed again for a while.
+		t.holdUntil = t.e.now().Add(quotaHold)
+		t.warn(ctx, ferr.Error())
+		if required {
+			return true, ferr
+		}
+		return true, nil
+	}
+	if errors.Is(ferr, snapshot.ErrEntries) {
+		// Too many files: the last good snapshot stays; the next change is tried again (the layer only grows, so it will
+		// most likely be refused again, but the warning is cleared by a snapshot that fits).
+		t.warn(ctx, ferr.Error())
+		if required {
+			return true, ferr
+		}
+		return true, nil
+	}
+	if ferr != nil {
+		return true, fmt.Errorf("filter layer: %w", ferr)
+	}
+	return false, nil
+}
+
+func (t *tracked) snapshotEmptyLayer(ctx context.Context, required bool, skipMsg string) error {
+	if t.pushed && !required {
+		if err := t.publishStart(ctx); err != nil {
+			return err
+		}
+	}
+	t.lastSnapshot = Snapshot{Image: t.c.ImageRef, At: t.e.now()}
+	if required {
+		t.lastPublishedDiff = ""
+		t.lastDiff = ""
+		t.pushed = false
+	}
+	if required && t.e.snapshotRef(t.c.ImageRef) != "" {
+		run, err := t.loadImage(ctx)
+		if err != nil {
+			return err
+		}
+		chain, err := snapshot.ChainOf(run)
+		if err != nil {
+			return err
+		}
+		t.lastSnapshot.SizeBytes = chain.Bytes()
+		t.lastSnapshot.Layers = int32(chain.Layers())
+	}
+	t.warnSkipped(ctx, skipMsg)
+	return nil // nothing (else) changed since the device started
+}
+
+// refuseTenantQuota keeps tenant and retained accounting before push admission.
+func (t *tracked) refuseTenantQuota(ctx context.Context, required bool, digest string, chainBytes int64) (bool, error) {
+	// The registry is shared by every tenant: all the snapshots of one tenant together stay under its quota.
+	if t.pod.TenantQuota > 0 {
+		others, qerr := t.e.Cluster.TenantBytes(ctx, t.pod.Tenant, t.pod.Device)
+		if qerr != nil {
+			return true, fmt.Errorf("tenant registry usage: %w", qerr)
+		}
+		// What the tenant still has in the repositories of labs that are gone counts too (it takes the volume until the retention ends).
+		if t.e.Retained != nil {
+			if live, lerr := t.e.Cluster.LiveRepos(ctx); lerr == nil {
+				if ret, rerr := t.e.Retained.RetainedBytes(ctx, t.pod.Tenant, live); rerr == nil {
+					others += ret
+				} else if required {
+					return true, rerr
+				}
+			} else if required {
+				return true, lerr
+			}
+		}
+		if others+chainBytes > t.pod.TenantQuota {
+			if required {
+				return true, fmt.Errorf("%w: tenant quota exceeded", snapshot.ErrQuota)
+			}
+			t.lastDiff = digest
+			t.warn(ctx, fmt.Sprintf("%v: the snapshots of the tenant would take %d bytes of the registry, the tenant's quota is %d", snapshot.ErrQuota, others+chainBytes, t.pod.TenantQuota))
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// filterSnapshotLayer closes both streams before applying the unchanged filter
+// refusals and Required ownership/data completeness checks.
+func (t *tracked) filterSnapshotLayer(ctx context.Context, rc io.ReadCloser, layerPath string, pol snapshot.Policy, required bool) (snapshot.Stats, string, bool, error) {
+	f, err := os.Create(layerPath)
+	if err != nil {
+		_ = rc.Close()
+		return snapshot.Stats{}, "", true, err
+	}
+	sum := sha256.New()
+	stats, ferr := snapshot.FilterLayerMapped(rc, io.MultiWriter(f, sum), pol, t.c.IDs)
+	if cerr := rc.Close(); ferr == nil {
+		ferr = cerr
+	}
+	if cerr := f.Close(); ferr == nil {
+		ferr = cerr
+	}
+	if refused, err := t.refuseFilteredLayer(ctx, required, ferr); refused {
+		return snapshot.Stats{}, "", true, err
+	}
+	if required && (stats.Unmapped > 0 || stats.SkippedTotal > 0 || stats.RefusedEntries > 0) {
+		return snapshot.Stats{}, "", true, fmt.Errorf("required capture omits file data or ownership")
+	}
+	if stats.Unmapped > 0 {
+		t.e.Log.Info("owner ids outside the user namespace map were written as 0", "device", t.pod.Device, "pod", t.pod.Pod, "ids", stats.Unmapped)
+	}
+	digest := hex.EncodeToString(sum.Sum(nil))
+
+	return stats, digest, false, nil
+}
+
+func (t *tracked) unchangedSnapshotLayer(required bool, digest string) bool {
+	return !required && digest == t.lastDiff || required && t.pushed && digest == t.lastPublishedDiff
 }

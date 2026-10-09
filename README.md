@@ -305,3 +305,81 @@ make test-e2e        # e2e tests against a kind cluster (see test/e2e)
 ## License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
+
+### Explicit group lifecycle and retained snapshots
+
+`StopLabGroups` accepts an exact Group UID, operation ID and increasing revision.
+It requires `require_all_labs_stopped=true`; it cannot force-stop active children.
+Completion waits for every child to have matching `Stopped` and `Released`
+observations with no pending admission, then for VPN/gateway native runtime,
+cgroup and owned network attachment cleanup. API Pod absence is insufficient.
+`StartLabGroups` prepares only VPN/gateway services. Stopped and solved terminal
+children remain stopped until a permitted explicit per-Lab start; solved copies
+can never be restarted. Legacy `spec.suspended` continues to retain services.
+
+The backend owns stage sequencing, future-stage dependency protection, deployment
+lead estimates, publication modes and permissions. Before the next stage it must
+start group services, explicitly restore only required unresolved Labs, and wait
+for actual service, snapshot and network readiness before publishing tasks.
+
+A per-Lab accepted `retentionUntil` begins repository manifest retirement at expiry
+only after matching stopped/runtime-release evidence. The definition and history
+remain readable. Retirement is independent of explicit Lab deletion; the backend
+must withhold or extend the deadline for a future-stage dependency before expiry.
+A durable metadata fence prevents a newer start from racing repository deletion.
+A retired copy cannot accept new lifecycle intent. Repository deletion does not
+confirm physical blob GC: `physicalStorageBytesAvailable` remains false without
+separate verified GC evidence.
+
+Sizing v2 profiles describe users, active Labs, internet Labs, allowed relations,
+retained flows and bounded flow/packet/payload rates. Only `SUPPORTED` profiles
+with all required bounds select resources; `CANDIDATE`, `TESTED_POINT` and missing
+bounds retain legacy formulas and defaults. The five-peer 80Mi/50m VPN and
+32Mi/25m gateway point is `TESTED_POINT`. Its successful repeat and failed initial
+burst are both retained; it certifies neither general capacity nor lifecycle
+readiness. Group sizes remain immutable after creation.
+
+### Lifecycle capability qualification and durable retirement
+
+Lifecycle advertisement defaults to false. After the final native proof the owner
+may qualify `lifecycle.capabilities.perLabStop`, `confirmedRuntime`,
+`retainedRestart`, `fullGroupStop`, `requiredSnapshot` and bounded acceptance
+`lifecycle.requiredSnapshotAvailable`.
+The shared environment maps these to `LIFECYCLE_PER_LAB_STOP_AVAILABLE`,
+`LIFECYCLE_CONFIRMED_RUNTIME_AVAILABLE`, `LIFECYCLE_RETAINED_RESTART_AVAILABLE`,
+`LIFECYCLE_FULL_GROUP_STOP_AVAILABLE`, `LIFECYCLE_REQUIRED_SNAPSHOT_AVAILABLE`
+and `REQUIRED_SNAPSHOT_AVAILABLE`. Acceptance may be enabled for a bounded native
+proof while every advertisement remains false. Required advertisement additionally
+requires qualified acceptance.
+The chart and agent refuse capabilities without native observation/report
+admission, and snapshot/restart additionally requires configured persistence.
+A source snapshot, SDK build or configured switch alone is not native proof.
+
+`RetireLabs` / `RetireLabGroups` preserve the original stopped UID/operation/
+revision and accept a distinct newer retirement operation. Metadata CAS fences
+retirement without changing the original spec generation. Original native
+runtime identities are freshly observed and node reports echo the exact new
+retirement operation/revision; cross-node wall clocks cannot substitute for that
+challenge. Retirement wire request/observation timestamps are stamped and
+preserved by the operator; agent acceptance and node clocks are never ordered
+against them. Manifest deletion is confirmed separately from physical registry GC.
+Partial cleanup remains pending. Legacy name-only Delete and CR absence never
+mint this retirement certificate.
+
+On completion, tiny Lab/Group CR tombstones retain identity, stopped and retirement
+receipts and resource totals. Owned Device/Connection definitions, Lab variable
+Secrets, group client/access configuration and own namespace secrets are removed;
+Lab images/topology/network configuration and group key references are scrubbed.
+Namespace/RBAC audit metadata and backend scores/history remain. Uncompressed
+snapshot quota retires; shared/untagged registry bytes remain physically unknown
+until a separately verified GC observation. No digest/blob/cache cleanup or remote
+tag mutation is included. Final native retirement, scrub-generation, race, crash
+and retry proof is still required before capability qualification.
+
+Variable Secret writes claim a durable SHA256 admission token on the exact Lab
+resourceVersion before writing. Retirement rejects an unfinished write, and new
+writes reject the permanent retirement fence. Identical retries resume; successful
+writes clear the token only after their Lab-UID-owned Secrets finish. An abandoned
+write holds retirement conservatively until that exact write is replayed; there
+is no timeout, automatic cancellation or new moderator recovery power. Tokens
+contain no raw variable/flag values and Secret read scopes remain unchanged.

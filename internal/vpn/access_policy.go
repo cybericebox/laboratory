@@ -15,8 +15,9 @@ type ClientAccessSnapshot struct {
 // LabAccessSnapshot is the minimum observed state needed to safely permit a
 // VPN route. A not-ready laboratory must never receive an allow rule.
 type LabAccessSnapshot struct {
-	VPNCIDR string
-	Ready   bool
+	VPNCIDR   string
+	Ready     bool
+	Interface string
 }
 
 // AccessRule permits packets from one WireGuard client to one lab VPN CIDR.
@@ -26,6 +27,7 @@ type AccessRule struct {
 	LabName         string
 	SourceCIDR      string
 	DestinationCIDR string
+	LabInterface    string
 	Action          AccessAction
 }
 
@@ -104,7 +106,7 @@ func BuildAccessRules(clients []ClientAccessSnapshot, labs map[string]LabAccessS
 			if !lab.Ready || lab.VPNCIDR == "" {
 				continue
 			}
-			rule := AccessRule{ClientName: client.Name, LabName: labName, SourceCIDR: client.AssignedIP, DestinationCIDR: lab.VPNCIDR, Action: AccessDeny}
+			rule := AccessRule{ClientName: client.Name, LabName: labName, SourceCIDR: client.AssignedIP, DestinationCIDR: lab.VPNCIDR, LabInterface: lab.Interface, Action: AccessDeny}
 			allowed := false
 			denied := false
 			for _, policyRule := range policy {

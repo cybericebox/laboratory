@@ -86,6 +86,14 @@ rules:
   - update
   - watch
 - apiGroups:
+  - apps
+  resources:
+  - replicasets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - cilium.io
   resources:
   - ciliumnetworkpolicies
@@ -149,6 +157,14 @@ rules:
   verbs:
   - create
   - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - laboratory.cybericebox.com
+  resources:
+  - labtrafficreports
+  verbs:
   - get
   - list
   - watch

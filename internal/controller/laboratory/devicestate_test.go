@@ -330,7 +330,7 @@ var _ = Describe("Device state persistence: bare Pod lifecycle", func() {
 		clock = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 		reg = &fakeRegistry{}
 		r = &DeviceReconciler{
-			Client:              k8sClient,
+			Reader: standaloneRunningLabReader{k8sClient}, Client: k8sClient,
 			Scheme:              k8sClient.Scheme(),
 			Registry:            reg,
 			Now:                 func() time.Time { return clock },
@@ -377,7 +377,7 @@ var _ = Describe("Device state persistence: bare Pod lifecycle", func() {
 		p1 := startDevice()
 		Expect(p1.Name).To(Equal(dev.Name + "-1"))
 		r.Client = podBlindClient{k8sClient}
-		r.Reader = k8sClient
+		r.Reader = standaloneRunningLabReader{k8sClient}
 		res := reconcileOnce()
 		Expect(res.RequeueAfter).To(BeNumerically(">", 0))
 		_, err := getPod(2)
@@ -653,7 +653,7 @@ var _ = Describe("Device state persistence: per-device mode", func() {
 			}},
 		}
 		lr := &LabReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), State: StatePolicy{Enabled: true, MaxLayers: 10, WriteQuotaBytes: 1 << 29}}
-		dr := &DeviceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Registry: &fakeRegistry{}, Now: time.Now, ExitSnapshotTimeout: 30 * time.Second}
+		dr := &DeviceReconciler{Client: k8sClient, Reader: standaloneExactLabReader{k8sClient, lab}, Scheme: k8sClient.Scheme(), Registry: &fakeRegistry{}, Now: time.Now, ExitSnapshotTimeout: 30 * time.Second}
 
 		settle := func() {
 			Expect(lr.materializeDevices(ctx, lab, nil)).To(Succeed())

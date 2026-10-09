@@ -302,3 +302,21 @@ func TestLatestTagIsRefusedAndPullPolicyIsIfNotPresent(t *testing.T) {
 		t.Errorf("an explicit pull policy wins: %v", err)
 	}
 }
+
+// A node-agent Pod restart must retain required holds even after a force-deleted
+// workload's API guard is gone; its journal cannot be an emptyDir.
+func TestNodeAgentCaptureJournalSurvivesPodRestart(t *testing.T) {
+	spec := nodeAgent(t, "--set", "devices.statePersistence.enabled=true").Spec.Template.Spec
+	found := false
+	for _, v := range spec.Volumes {
+		if v.Name == "state-work" {
+			found = true
+			if v.HostPath == nil || v.HostPath.Path != "/var/cache/cybericebox/state" || v.HostPath.Type == nil || *v.HostPath.Type != corev1.HostPathDirectoryOrCreate {
+				t.Fatalf("capture journal not durable: %+v", v)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("state-work mount absent")
+	}
+}

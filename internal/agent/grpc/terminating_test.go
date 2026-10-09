@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -14,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
@@ -29,7 +32,24 @@ import (
 // release(resource, ns, name) then simulates the finalizer being removed.
 func newFinalizerHandler(t *testing.T, objs ...runtime.Object) (*Handler, func(resource, ns, name string)) {
 	t.Helper()
-	cs := fake.NewSimpleClientset(objs...)
+	// The fake tracker omits API-server UIDs. Identity-fenced admission needs
+	// distinct identities, including a replacement created after finalization.
+	var sequence atomic.Uint64
+	assignUID := func(obj runtime.Object) {
+		if m, ok := obj.(metav1.Object); ok && m.GetUID() == "" {
+			m.SetUID(types.UID(fmt.Sprintf("fixture-uid-%d", sequence.Add(1))))
+		}
+	}
+	seed := make([]runtime.Object, len(objs))
+	for i, obj := range objs {
+		seed[i] = obj.DeepCopyObject()
+		assignUID(seed[i])
+	}
+	cs := fake.NewSimpleClientset(seed...)
+	cs.PrependReactor("create", "*", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		assignUID(action.(clienttesting.CreateAction).GetObject())
+		return false, nil, nil
+	})
 	cs.PrependReactor("delete", "*", func(action clienttesting.Action) (bool, runtime.Object, error) {
 		del := action.(clienttesting.DeleteAction)
 		obj, err := cs.Tracker().Get(del.GetResource(), del.GetNamespace(), del.GetName())

@@ -10,10 +10,12 @@ import (
 )
 
 type Config struct {
-	NodeName string `env:"NODE_NAME,required"`
-	OVSSock  string `env:"OVS_SOCK"   envDefault:"/run/openvswitch/db.sock"`
-	GRPCSock string `env:"GRPC_SOCK"  envDefault:"/run/cybericebox/node-agent.sock"`
-	Bridge   string `env:"OVS_BRIDGE" envDefault:"br-ovs"`
+	RuntimeObservation         bool          `env:"RUNTIME_OBSERVATION_ENABLED" envDefault:"false"`
+	RuntimeObservationInterval time.Duration `env:"RUNTIME_OBSERVATION_INTERVAL" envDefault:"5s"`
+	NodeName                   string        `env:"NODE_NAME,required"`
+	OVSSock                    string        `env:"OVS_SOCK"   envDefault:"/run/openvswitch/db.sock"`
+	GRPCSock                   string        `env:"GRPC_SOCK"  envDefault:"/run/cybericebox/node-agent.sock"`
+	Bridge                     string        `env:"OVS_BRIDGE" envDefault:"br-ovs"`
 	// HealthAddr is where the readiness and liveness probes are served. The node-agent is on the host network, so it is the loopback
 	// only (the probes name host 127.0.0.1): the port is not open on the node's address.
 	HealthAddr string `env:"HEALTH_ADDR" envDefault:"127.0.0.1:9440"`

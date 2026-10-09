@@ -5,9 +5,13 @@ import (
 )
 
 // LabSpec defines the desired state of Lab.
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.lifecycle) || has(self.lifecycle)",message="explicit lifecycle intent cannot be removed"
 type LabSpec struct {
-	VPN      LabNetworkSpec `json:"vpn,omitempty"`
-	Internet LabNetworkSpec `json:"internet,omitempty"`
+	// Lifecycle is absent for legacy running laboratories.
+	// +optional
+	Lifecycle *LabLifecycleSpec `json:"lifecycle,omitempty"`
+	VPN       LabNetworkSpec    `json:"vpn,omitempty"`
+	Internet  LabNetworkSpec    `json:"internet,omitempty"`
 	// Devices of the lab, switches and hubs included. The ceiling is fixed in code (names.MaxLabDevices).
 	// +kubebuilder:validation:MaxItems=64
 	Devices     []DeviceTemplate     `json:"devices,omitempty"`
@@ -90,12 +94,21 @@ type ConnectionTemplate struct {
 
 // LabStatus defines the observed state of Lab.
 type LabStatus struct {
-	Phase       Phase            `json:"phase,omitempty"`
-	VPN         LabNetworkStatus `json:"vpn,omitempty"`
-	Internet    LabNetworkStatus `json:"internet,omitempty"`
-	Devices     []DeviceRef      `json:"devices,omitempty"`
-	Connections []ConnectionRef  `json:"connections,omitempty"`
-	Access      []AccessEntry    `json:"access,omitempty"`
+	ScopeInventory []OwnedRuntimeIdentity `json:"scopeInventory,omitempty"`
+	ScopeReports   []OwnedRuntimeReport   `json:"scopeReports,omitempty"`
+	// Retirement is a fresh acknowledgement distinct from the original stop.
+	// +optional
+	Retirement *LifecycleRetirementStatus `json:"retirement,omitempty"`
+	// +optional
+	Lifecycle *LabLifecycleStatus `json:"lifecycle,omitempty"`
+	// +optional
+	Resources   *RuntimeAllocation `json:"resources,omitempty"`
+	Phase       Phase              `json:"phase,omitempty"`
+	VPN         LabNetworkStatus   `json:"vpn,omitempty"`
+	Internet    LabNetworkStatus   `json:"internet,omitempty"`
+	Devices     []DeviceRef        `json:"devices,omitempty"`
+	Connections []ConnectionRef    `json:"connections,omitempty"`
+	Access      []AccessEntry      `json:"access,omitempty"`
 	// Scheduling is the place of the lab in the scheduler queue.
 	// +optional
 	Scheduling *SchedulingStatus `json:"scheduling,omitempty"`
@@ -170,6 +183,7 @@ type AccessEntry struct {
 // +kubebuilder:subresource:status
 
 // Lab is the Schema for the labs API.
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.spec) || !has(oldSelf.spec.lifecycle) || (has(self.spec) && has(self.spec.lifecycle))",message="explicit lifecycle intent cannot be removed with its spec"
 type Lab struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

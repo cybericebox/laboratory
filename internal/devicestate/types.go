@@ -13,6 +13,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	api "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/snapshot"
 )
 
@@ -20,8 +21,15 @@ import (
 // pod on this node.
 type PodInfo struct {
 	// Device is the Device CR the pod belongs to.
-	Device types.NamespacedName
-	Pod    string
+	Device          types.NamespacedName
+	Pod             string
+	UID             string
+	ResourceVersion string
+	CaptureRequest  *api.DeviceCaptureRequest
+	Capture         *api.DeviceCaptureResult
+	Guard           string
+	Deleting        bool
+	capturedLayers  int32
 	// Incarnation is the pod's incarnation number; only the current incarnation
 	// of a device records snapshots.
 	Incarnation int32
@@ -60,6 +68,8 @@ type Container struct {
 	// IDs are the user and group id maps of the container's user namespace (empty without one): the diff of its writable layer
 	// holds host ids, which a snapshot must not keep.
 	IDs snapshot.IDMaps
+	// OwnershipKnown distinguishes a read OCI no-userns map from missing metadata.
+	OwnershipKnown bool
 }
 
 // Runtime is the container runtime facade.
@@ -71,12 +81,18 @@ type Runtime interface {
 	// filesystem synced while the diff is computed, so the result is consistent;
 	// without it (the container has exited) nothing runs and nothing is frozen.
 	// Closing the reader releases everything the diff held.
-	Diff(ctx context.Context, c Container, freeze bool) (io.ReadCloser, error)
+	Diff(ctx context.Context, c Container, freeze bool, policy snapshot.Policy) (io.ReadCloser, error)
 	// LoadImage opens the image a container was created from out of the local
 	// image store, with the snapshot chain already on the node.
 	LoadImage(ctx context.Context, imageRef string) (v1.Image, error)
 	// Exits reports the ids of containers whose task exited, until ctx ends.
 	Exits(ctx context.Context) (<-chan string, error)
+}
+
+// SourceImageRuntime optionally binds source image reads to the current device pod.
+// Runtimes without this capability retain the local-only LoadImage behavior.
+type SourceImageRuntime interface {
+	LoadImageForPod(context.Context, Container, PodInfo) (v1.Image, error)
 }
 
 // Snapshot is the outcome of a successful snapshot.
@@ -128,4 +144,29 @@ type RetainedCounter interface {
 // Pusher publishes snapshot images; *snapshot.Registry implements it.
 type Pusher interface {
 	Push(ctx context.Context, repo string, img v1.Image, baseLayers int, sourceRepo string) (ref string, digest v1.Hash, err error)
+}
+
+// RequiredRuntime must fail when strict quiescence or task liveness cannot be established.
+type RequiredRuntime interface {
+	// Quiesce returns an owned thaw handle whenever freeze was requested, even on error.
+	Quiesce(context.Context, Container) (func() error, error)
+	// Thaw releases a known current container hold only after caller API invalidation.
+	Thaw(context.Context, Container) error
+	TaskAlive(context.Context, Container) (bool, error)
+}
+
+// CaptureCluster uses direct reads and optimistic Pod locks, independent of legacy exit markers.
+type CaptureCluster interface {
+	SetCaptureGuard(context.Context, PodInfo, api.DeviceCaptureRequest, string) error
+	RecordCapture(context.Context, PodInfo, api.DeviceCaptureResult) error
+	InvalidateCapture(context.Context, PodInfo, api.DeviceCaptureResult) error
+	CheckCapture(context.Context, PodInfo, api.DeviceCaptureResult) (bool, error)
+}
+
+// CaptureCommitCluster is the minimal durable final-capture-to-stop seam.
+// Required capture remains compatible; an operator never deletes until this
+// exact capture's committed acknowledgement is present in status and guard.
+type CaptureCommitCluster interface {
+	CaptureCommitRequested(context.Context, PodInfo, api.DeviceCaptureResult) (bool, error)
+	AcknowledgeCaptureCommit(context.Context, PodInfo, api.DeviceCaptureResult) error
 }

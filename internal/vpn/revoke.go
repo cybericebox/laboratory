@@ -7,6 +7,7 @@ type ConnFlow struct {
 	// ID is the kernel's identifier of the entry; Key is the caller's own handle
 	// (an index into the dump the flow came from).
 	ID       uint32
+	Mark     uint32
 	Key      int
 	Src, Dst netip.Addr
 }
@@ -21,12 +22,20 @@ type ConnFlow struct {
 // Connections that do not start in a client's address and go to a lab (the pod's own
 // traffic, connections between lab networks, anything the rules never covered) are left
 // alone: they were never governed by a rule.
-func RevokedFlows(flows []ConnFlow, labCIDRs []string, rules []AccessRule) []ConnFlow {
+func RevokedFlows(flows []ConnFlow, labCIDRs []string, rules []AccessRule, clientCIDRs ...[]string) []ConnFlow {
 	labs := prefixes(labCIDRs)
 	if len(labs) == 0 {
 		return nil
 	}
-	type pair struct{ src, dst netip.Prefix }
+	var clients []netip.Prefix
+	strictClients := len(clientCIDRs) > 0
+	if strictClients {
+		clients = prefixes(clientCIDRs[0])
+	}
+	type pair struct {
+		src, dst netip.Prefix
+		iface    string
+	}
 	var allowed []pair
 	for _, r := range rules {
 		if r.Action != AccessAllow {
@@ -35,17 +44,29 @@ func RevokedFlows(flows []ConnFlow, labCIDRs []string, rules []AccessRule) []Con
 		s, sok := parsePrefix(r.SourceCIDR)
 		d, dok := parsePrefix(r.DestinationCIDR)
 		if sok && dok {
-			allowed = append(allowed, pair{s, d})
+			allowed = append(allowed, pair{s, d, r.LabInterface})
 		}
 	}
 	var out []ConnFlow
 	for _, f := range flows {
-		if !inAny(labs, f.Dst) || inAny(labs, f.Src) {
+		forward := inAny(labs, f.Dst) && !inAny(labs, f.Src) && (!strictClients || inAny(clients, f.Src))
+		marked := f.Mark&FlowCountedMark != 0
+		reverse := strictClients && (inAny(labs, f.Src) || marked) && inAny(clients, f.Dst)
+		if !forward && !reverse {
 			continue
+		}
+		src, dst := f.Src, f.Dst
+		if reverse {
+			src, dst = dst, src
 		}
 		ok := false
 		for _, a := range allowed {
-			if a.src.Contains(f.Src) && a.dst.Contains(f.Dst) {
+			labMatches := a.dst.Contains(dst)
+			if reverse && marked {
+				index, err := LabInterfaceIndex(a.iface)
+				labMatches = err == nil && uint32(index) == (f.Mark&LabIdentityMask)>>8
+			}
+			if a.src.Contains(src) && labMatches {
 				ok = true
 				break
 			}

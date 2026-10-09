@@ -68,7 +68,7 @@ func sortedByName[T interface{ GetName() string }](items []T) []T {
 }
 
 // observe builds a secret-free observation covering all LabGroups (cluster-scoped) and, for each group with a provisioned
-// namespace, its Labs and LabGroupClients (namespace-scoped), reading only the caches: no call to the API server per group, and an
+// namespace, its Labs and LabGroupClients (namespace-scoped), reading topology caches plus direct current-boot identity reads; an
 // API error cannot make a record vanish from the observation (the caches keep the last objects they saw).
 func (h *Handler) observe(ctx context.Context, c *monCache) (*monState, error) {
 	groups, err := c.groups.List(labels.Everything())
@@ -93,6 +93,7 @@ func (h *Handler) observe(ctx context.Context, c *monCache) (*monState, error) {
 	}
 	labsOf, clientsOf, policiesOf, reportsOf := byNamespace(allLabs), byNamespace(allClients), byNamespace(allPolicies), byNamespace(allReports)
 	usageOf, podsOf, schedOf := c.usageByNamespace(ctx), c.podStatuses(), c.deviceSchedules()
+	proxyCoverage := c.proxyCoverage()
 
 	st := &monState{labels: map[string]map[string]string{}, labLabels: map[string]map[string]string{}}
 	upd := &protobuf.MonitoringUpdate{}
@@ -111,7 +112,7 @@ func (h *Handler) observe(ctx context.Context, c *monCache) (*monState, error) {
 			out[names.LabelTenant] = gt
 			return out
 		}
-		upd.Groups = append(upd.Groups, labGroupToProto(g))
+		upd.Groups = append(upd.Groups, h.currentLabGroupProto(ctx, g))
 		st.labels[recordKey("lab_group", gid, "", gid)] = tl(g.Labels)
 		ns := g.Status.Namespace
 		if ns == "" {
@@ -128,7 +129,7 @@ func (h *Handler) observe(ctx context.Context, c *monCache) (*monState, error) {
 		}
 		pods, sched := podsOf[ns], schedOf[ns]
 		for _, lab := range sortedByName(labsOf[ns]) {
-			p := labMonitoringToProto(lab, gid)
+			p := labMonitoringToProto(lab, gid, h.features.Limits)
 			fillLabUsage(p, usage, lab.Name)
 			fillLabPodStatus(p, pods, lab.Name)
 			fillDeviceScheduling(p, sched, lab.Name)
@@ -161,6 +162,7 @@ func (h *Handler) observe(ctx context.Context, c *monCache) (*monState, error) {
 			upd.Traffic = append(upd.Traffic, report)
 		}
 		if merged := mergeProxyReports(proxies); merged != nil {
+			merged.Partial = merged.Partial || proxyCoverage.incomplete(proxies, merged.GetCoveredToUnixMs())
 			upd.Traffic = append(upd.Traffic, merged)
 		}
 	}
@@ -400,7 +402,7 @@ func (r monitoringRecord) deletedKey() *protobuf.MonitoringDeletedKey {
 }
 
 func monitoringRecordIndex(update *protobuf.MonitoringUpdate) map[string]monitoringRecord {
-	records := make(map[string]monitoringRecord, len(update.Groups)+len(update.Labs)+len(update.Clients)+len(update.Policies))
+	records := make(map[string]monitoringRecord, len(update.Groups)+len(update.Labs)+len(update.Clients)+len(update.Policies)+len(update.Traffic))
 	for _, group := range update.Groups {
 		record := monitoringRecord{kind: "lab_group", groupName: group.GetName(), name: group.GetName(), value: group}
 		records[record.key()] = record

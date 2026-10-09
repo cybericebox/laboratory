@@ -7,6 +7,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
@@ -31,16 +32,31 @@ func labGroupToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.LabGroup {
 			ImageWarning:    g.Status.ImageWarning,
 			Scheduling:      schedulingToProto(g.Status.Scheduling, g.Annotations),
 			Pods:            groupPodsToProto(g.Status.Pods),
+			Resources:       groupAllocationToProto(g),
+			Lifecycle:       groupLifecycleToProto(g),
+			Retirement:      retirementToProto(g, g.Status.Retirement),
 		},
 		Labels:        userLabels(g.Labels),
 		CreatedUnixMs: created,
+		Uid:           string(g.UID),
+		Generation:    g.Generation,
+		Lifecycle:     groupIntentToProto(g.Spec.Lifecycle),
+		VpnSize:       immutableGroupSize(g.Spec.VPN.Size),
+		GatewaySize:   immutableGroupSize(g.Spec.Gateway.Size),
 	}
 }
 
 // labToProto maps a Lab custom resource to its gRPC wire representation.
 // Spec is passed through as opaque JSON since the agent is a thin wrapper.
-func labToProto(l *laboratoryv1alpha1.Lab) *protobuf.Lab {
-	specJSON, _ := json.Marshal(l.Spec)
+func labToProto(l *laboratoryv1alpha1.Lab, sizing ...limits.Limits) *protobuf.Lab {
+	return labProjection(l, true, sizing...)
+}
+
+func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool, sizing ...limits.Limits) *protobuf.Lab {
+	var specJSON []byte
+	if includeSpec {
+		specJSON, _ = json.Marshal(l.Spec)
+	}
 	st := l.Status
 	status := &protobuf.LabStatus{
 		Phase:         string(st.Phase),
@@ -51,6 +67,9 @@ func labToProto(l *laboratoryv1alpha1.Lab) *protobuf.Lab {
 		InternetReady: st.Internet.Ready,
 		ImageWarning:  st.ImageWarning,
 	}
+	status.Retirement = retirementToProto(l, l.Status.Retirement)
+	status.Lifecycle = lifecycleToProto(l)
+	status.Resources = retiredStorageToProto(l, labAllocationToProto(l, sizing...))
 	status.Scheduling = schedulingToProto(st.Scheduling, l.Annotations)
 	for i := range st.Devices {
 		status.Devices = append(status.Devices, &protobuf.LabDeviceStatus{
@@ -80,15 +99,30 @@ func labToProto(l *laboratoryv1alpha1.Lab) *protobuf.Lab {
 		status.Access = append(status.Access, &protobuf.LabAccessEntry{Device: a.Device, Port: a.Port, Protocol: a.Protocol, Url: a.URL})
 		status.AccessUrls = append(status.AccessUrls, a.URL)
 	}
+	// Retained configuration or an old Ready status must never expose stopped
+	// intent as accessible runtime. Keep phases/CIDRs/snapshot history intact.
+	if l.Spec.Lifecycle != nil && !exactRunningProjection(l) {
+		status.Ready, status.VpnReady, status.InternetReady = false, false, false
+		status.Access, status.AccessUrls = nil, nil
+		for _, d := range status.Devices {
+			d.Ready = false
+		}
+		for _, c := range status.Connections {
+			c.Ready = false
+		}
+	}
 	dg, da := deployOf(l.Annotations)
 	return &protobuf.Lab{
-		Namespace:   l.Namespace,
-		Name:        names.IDOf(l),
-		SpecJson:    specJSON,
-		Status:      status,
-		Labels:      userLabels(l.Labels),
-		DeployGroup: dg,
-		DeployAfter: da,
+		Namespace:       l.Namespace,
+		Uid:             string(l.UID),
+		CreationReceipt: creationReceiptToProto(l),
+		Generation:      l.Generation,
+		Name:            names.IDOf(l),
+		SpecJson:        specJSON,
+		Status:          status,
+		Labels:          userLabels(l.Labels),
+		DeployGroup:     dg,
+		DeployAfter:     da,
 	}
 }
 
@@ -182,9 +216,8 @@ func quantityValue(value string) int64 {
 
 // labMonitoringToProto projects runtime state without exposing the Lab spec
 // or write-only device environment values through the monitoring stream.
-func labMonitoringToProto(l *laboratoryv1alpha1.Lab, labGroupName string) *protobuf.Lab {
-	p := labToProto(l)
-	p.SpecJson = nil
+func labMonitoringToProto(l *laboratoryv1alpha1.Lab, labGroupName string, sizing ...limits.Limits) *protobuf.Lab {
+	p := labProjection(l, false, sizing...)
 	p.LabGroupName = labGroupName
 	return p
 }
@@ -255,13 +288,21 @@ func accessPolicyToProto(policy *laboratoryv1alpha1.LabGroupAccessPolicy, labGro
 		return n
 	}
 	p := &protobuf.LabGroupAccessPolicy{
-		LabGroupName: labGroupName,
-		Namespace:    policy.Namespace,
-		Labels:       userLabels(policy.Labels),
+		LabGroupName:     labGroupName,
+		OperationId:      policy.Spec.OperationID,
+		DesiredRevision:  policy.Spec.Revision,
+		Generation:       policy.Generation,
+		PolicyUid:        string(policy.UID),
+		ExpectedGroupUid: policy.Spec.ExpectedGroupUID,
+		Namespace:        policy.Namespace,
+		Labels:           userLabels(policy.Labels),
 		Status: &protobuf.LabGroupAccessPolicyStatus{
 			ObservedGeneration: policy.Status.ObservedGeneration,
 			State:              policy.Status.State,
 			LastError:          policy.Status.LastError,
+			AppliedRevision:    policy.Status.AppliedRevision,
+			OperationId:        policy.Status.OperationID,
+			VpnBootId:          policy.Status.VPNBootID,
 		},
 	}
 	if !policy.Status.AppliedAt.IsZero() {
@@ -305,17 +346,176 @@ func trafficReportToProto(report *laboratoryv1alpha1.LabTrafficReport, labGroupN
 		BootId:            report.Status.BootID,
 		CoveredFromUnixMs: report.Status.CoveredFromMs,
 		CoveredToUnixMs:   report.Status.CoveredToMs,
-		Partial:           report.Status.Partial,
+		Partial:           report.Status.Partial || report.Status.Truncated,
 		Truncated:         report.Status.Truncated,
 		Ledger:            make([]*protobuf.TrafficTouch, 0, len(report.Status.Ledger)),
 	}
 	for _, t := range report.Status.Ledger {
 		p.Ledger = append(p.Ledger, &protobuf.TrafficTouch{
 			Subject: t.Subject, LabName: t.LabName, Device: t.Device, DstIp: t.DstIP, Proto: t.Proto,
-			DstPort: uint32(t.DstPort), Attempts: t.Attempts,
+			DstPort: uint32(t.DstPort), Attempts: t.Attempts, LabInitiatedAttempts: t.LabInitiatedAttempts,
 			PacketsOut: t.PacketsOut, PacketsIn: t.PacketsIn, BytesOut: t.BytesOut, BytesIn: t.BytesIn,
 			FirstSeenUnixMs: t.FirstSeenMs, LastSeenUnixMs: t.LastSeenMs, FirstRespondedUnixMs: t.FirstRespondedMs,
 		})
 	}
+	for _, s := range report.Status.CoverageSpans {
+		p.CoverageSpans = append(p.CoverageSpans, &protobuf.TrafficCoverageSpan{FromUnixMs: s.FromMs, ToUnixMs: s.ToMs, Partial: s.Partial, Source: s.Source, Instance: s.Instance, BootId: s.BootID})
+	}
+	p.CoverageSpans = reportCoverage(p)
+	for _, s := range p.CoverageSpans {
+		p.Partial = p.Partial || s.Partial
+	}
+	p.Partial = p.Partial || coverageHistoryHasGap(p.CoverageSpans)
 	return p
+}
+
+// lifecycleToProto never acknowledges a newer intent using an older observation.
+// Absent legacy intent keeps the old projection exactly as before.
+func lifecycleToProto(l *laboratoryv1alpha1.Lab) *protobuf.LabLifecycleStatus {
+	intent := l.Spec.Lifecycle
+	if intent == nil {
+		return nil
+	}
+	out := &protobuf.LabLifecycleStatus{DesiredState: intent.DesiredState, ObservedState: allocationUnknown, OperationId: intent.OperationID, LifecycleRevision: intent.Revision, LabUid: string(l.UID), RetentionUntilUnixMs: ms(intent.RetentionUntil), Terminal: intent.Terminal}
+	observed := l.Status.Lifecycle
+	if observed == nil || observed.LabUID != string(l.UID) || observed.OperationID != intent.OperationID || observed.Revision != intent.Revision || observed.ObservedGeneration != l.Generation {
+		return out
+	}
+	if observed.ObservedState != "" {
+		out.ObservedState = observed.ObservedState
+	}
+	out.ObservedGeneration = observed.ObservedGeneration
+	out.Reason, out.Error = observed.Reason, observed.Error
+	out.RequestedUnixMs, out.StoppedUnixMs = ms(observed.RequestedAt), ms(observed.StoppedAt)
+	out.SnapshotComplete = observed.SnapshotComplete
+	out.AccessFenced, out.AccessFencedUnixMs, out.AccessFenceVpnBootId = observed.AccessFenced, ms(observed.AccessFencedAt), observed.AccessFenceVPNBootID
+	return out
+}
+
+func resourceAmountsToProto(a laboratoryv1alpha1.ResourceAmounts) *protobuf.ResourceAmounts {
+	return &protobuf.ResourceAmounts{CpuMillicores: a.CPUMillicores, MemoryBytes: a.MemoryBytes}
+}
+
+func allocationToProto(a *laboratoryv1alpha1.RuntimeAllocation) *protobuf.ResourceAllocation {
+	if a == nil {
+		return nil
+	}
+	out := &protobuf.ResourceAllocation{
+		ConfiguredRequests: resourceAmountsToProto(a.ConfiguredRequests), ConfiguredLimits: resourceAmountsToProto(a.ConfiguredLimits), AllocatedRequests: resourceAmountsToProto(a.AllocatedRequests),
+		RuntimeState: a.RuntimeState, ObservedUnixMs: ms(a.ObservedAt), ReleasedUnixMs: ms(a.ReleasedAt), UsageAvailable: a.UsageAvailable,
+		SnapshotQuotaBytes: a.SnapshotQuotaBytes, StorageState: a.StorageState, PhysicalStorageBytesAvailable: a.PhysicalStorageBytesAvailable, PhysicalStorageBytes: a.PhysicalStorageBytes,
+		OperationId: a.OperationID, LifecycleRevision: a.Revision,
+	}
+	if out.RuntimeState == "" {
+		out.RuntimeState = allocationUnknown
+	}
+	if out.StorageState == "" {
+		out.StorageState = allocationUnknown
+	}
+	if a.UsageAvailable && a.Used != nil {
+		out.Used = resourceAmountsToProto(*a.Used)
+	}
+	return out
+}
+
+// Unknown observations retain configured and previously held amounts. Only an
+// exact, timestamped current observation can expose measurements. Release also
+// requires a coherent Stopped/capture certificate and the VPN fence when enabled.
+func labAllocationToProto(l *laboratoryv1alpha1.Lab, sizing ...limits.Limits) *protobuf.ResourceAllocation {
+	a := l.Status.Resources
+	intent := l.Spec.Lifecycle
+	if intent == nil {
+		return allocationToProto(a)
+	}
+	out := allocationToProto(a)
+	if out == nil {
+		out = &protobuf.ResourceAllocation{RuntimeState: allocationUnknown, StorageState: allocationUnknown}
+	}
+	lim := limits.Limits{}
+	if len(sizing) > 0 {
+		lim = sizing[0]
+	}
+	cpu, mem, _, _ := lim.SpecTotals(&l.Spec)
+	if out.ConfiguredRequests == nil {
+		out.ConfiguredRequests = &protobuf.ResourceAmounts{}
+	}
+	if out.ConfiguredLimits == nil {
+		out.ConfiguredLimits = &protobuf.ResourceAmounts{}
+	}
+	out.ConfiguredRequests.CpuMillicores = max(cpu, out.ConfiguredRequests.CpuMillicores)
+	out.ConfiguredRequests.MemoryBytes = max(mem, out.ConfiguredRequests.MemoryBytes)
+	out.ConfiguredLimits.CpuMillicores = max(cpu, out.ConfiguredLimits.CpuMillicores)
+	out.ConfiguredLimits.MemoryBytes = max(mem, out.ConfiguredLimits.MemoryBytes)
+	observed := l.Status.Lifecycle
+	current := allocationObservationCurrent(a, intent, observed, l)
+	snapshotSucceeded := intent.SnapshotMode != "Required" || observed != nil && observed.SnapshotComplete && observed.Error == ""
+	accessFenced := !l.Spec.VPN.Enabled || observed != nil && observed.AccessFenced && observed.AccessFencedAt != nil && !observed.AccessFencedAt.IsZero() && observed.AccessFenceVPNBootID != ""
+	released := allocationReleaseComplete(current, intent, observed, a, snapshotSucceeded, accessFenced)
+	if !current {
+		out.StorageState = allocationUnknown
+		out.PhysicalStorageBytesAvailable = false
+		out.PhysicalStorageBytes = 0
+	}
+	if !current || out.RuntimeState == "Released" && !released {
+		out.RuntimeState = allocationUnknown
+		out.ObservedUnixMs = 0
+		out.ReleasedUnixMs = 0
+		out.UsageAvailable = false
+		out.Used = nil
+	}
+	if !released {
+		if out.AllocatedRequests == nil {
+			out.AllocatedRequests = &protobuf.ResourceAmounts{}
+		}
+		out.AllocatedRequests.CpuMillicores = max(out.AllocatedRequests.CpuMillicores, out.ConfiguredRequests.CpuMillicores)
+		out.AllocatedRequests.MemoryBytes = max(out.AllocatedRequests.MemoryBytes, out.ConfiguredRequests.MemoryBytes)
+	}
+	return out
+}
+
+// immutableGroupSize never infers a chart default or a share of aggregate resources.
+func immutableGroupSize(s *laboratoryv1alpha1.GroupPodSize) *protobuf.PodSize {
+	if s == nil || s.CPUMillicores <= 0 || s.MemoryBytes <= 0 {
+		return nil
+	}
+	return &protobuf.PodSize{CpuMillicores: s.CPUMillicores, MemoryBytes: s.MemoryBytes}
+}
+
+func exactRunningProjection(l *laboratoryv1alpha1.Lab) bool {
+	i, o := l.Spec.Lifecycle, l.Status.Lifecycle
+	return i != nil && i.DesiredState == lifecycleRunning && o != nil && o.ObservedState == lifecycleRunning && o.LabUID == string(l.UID) && o.OperationID == i.OperationID && o.Revision == i.Revision && o.ObservedGeneration == l.Generation
+}
+
+func groupAllocationToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.ResourceAllocation {
+	out := allocationToProto(g.Status.Resources)
+	i := g.Spec.Lifecycle
+	if i == nil {
+		return out
+	}
+	if out == nil {
+		out = &protobuf.ResourceAllocation{RuntimeState: allocationUnknown, StorageState: allocationUnknown}
+	}
+	if out.GetOperationId() != i.OperationID || out.GetLifecycleRevision() != i.Revision || !i.IsStopped() && out.RuntimeState == "Released" {
+		out.RuntimeState = allocationUnknown
+		out.ObservedUnixMs = 0
+		out.ReleasedUnixMs = 0
+		out.OperationId = i.OperationID
+		out.LifecycleRevision = i.Revision
+		if out.AllocatedRequests == nil {
+			out.AllocatedRequests = &protobuf.ResourceAmounts{}
+		}
+		if out.ConfiguredRequests != nil {
+			out.AllocatedRequests.CpuMillicores = max(out.AllocatedRequests.CpuMillicores, out.ConfiguredRequests.CpuMillicores)
+			out.AllocatedRequests.MemoryBytes = max(out.AllocatedRequests.MemoryBytes, out.ConfiguredRequests.MemoryBytes)
+		}
+	}
+	return out
+}
+
+func allocationObservationCurrent(a *laboratoryv1alpha1.RuntimeAllocation, intent *laboratoryv1alpha1.LabLifecycleSpec, observed *laboratoryv1alpha1.LabLifecycleStatus, l *laboratoryv1alpha1.Lab) bool {
+	return a != nil && a.ObservedAt != nil && !a.ObservedAt.IsZero() && a.OperationID == intent.OperationID && a.Revision == intent.Revision && observed != nil && observed.LabUID == string(l.UID) && observed.OperationID == intent.OperationID && observed.Revision == intent.Revision && observed.ObservedGeneration == l.Generation
+}
+
+func allocationReleaseComplete(current bool, intent *laboratoryv1alpha1.LabLifecycleSpec, observed *laboratoryv1alpha1.LabLifecycleStatus, a *laboratoryv1alpha1.RuntimeAllocation, snapshotSucceeded bool, accessFenced bool) bool {
+	return current && intent.IsStopped() && observed.ObservedState == "Stopped" && a.RuntimeState == "Released" && a.ReleasedAt != nil && !a.ReleasedAt.IsZero() && a.AllocatedRequests == (laboratoryv1alpha1.ResourceAmounts{}) && snapshotSucceeded && accessFenced
 }

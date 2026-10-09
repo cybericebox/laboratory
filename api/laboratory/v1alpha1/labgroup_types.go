@@ -6,8 +6,15 @@ import (
 )
 
 // LabGroupSpec defines the desired state of LabGroup.
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.lifecycle) || has(self.lifecycle)",message="explicit group lifecycle intent cannot be removed"
 type LabGroupSpec struct {
-	VPN LabGroupVPNSpec `json:"vpn,omitempty"`
+	// Lifecycle is independent of legacy suspension; absent means Running.
+	// +optional
+	Lifecycle *GroupLifecycleSpec `json:"lifecycle,omitempty"`
+	// Admission serializes child creates/starts across agent replicas.
+	// +optional
+	Admission *GroupChildAdmission `json:"admission,omitempty"`
+	VPN       LabGroupVPNSpec      `json:"vpn,omitempty"`
 	// Gateway holds the internet gateway pod's settings.
 	Gateway   LabGroupGatewaySpec `json:"gateway,omitempty"`
 	Suspended bool                `json:"suspended,omitempty"`
@@ -48,10 +55,27 @@ type LabGroupVPNSpec struct {
 
 // LabGroupStatus defines the observed state of LabGroup.
 type LabGroupStatus struct {
-	Phase     Phase             `json:"phase,omitempty"`
-	Namespace string            `json:"namespace,omitempty"`
-	Suspended bool              `json:"suspended,omitempty"`
-	VPN       LabGroupVPNStatus `json:"vpn,omitempty"`
+	// Original birth metadata; bounded by actual group Lab capacity and never raw data.
+	// +kubebuilder:validation:MaxItems=5000
+	Creations []LabCreationReceipt `json:"creations,omitempty"`
+	// Retirement is a fresh acknowledgement distinct from the original stop.
+	// +optional
+	Retirement *LifecycleRetirementStatus `json:"retirement,omitempty"`
+	// ServiceRuntime is controller-owned durable pre-scale inventory.
+	// +optional
+	ServiceRuntime []OwnedRuntimeIdentity `json:"serviceRuntime,omitempty"`
+	// ServiceReports is node-owned matching native observation.
+	// +optional
+	ServiceReports []OwnedRuntimeReport `json:"serviceReports,omitempty"`
+	// Reserved observation seam for later full group stop; suspension is unchanged.
+	// +optional
+	Lifecycle *LabLifecycleStatus `json:"lifecycle,omitempty"`
+	// +optional
+	Resources *RuntimeAllocation `json:"resources,omitempty"`
+	Phase     Phase              `json:"phase,omitempty"`
+	Namespace string             `json:"namespace,omitempty"`
+	Suspended bool               `json:"suspended,omitempty"`
+	VPN       LabGroupVPNStatus  `json:"vpn,omitempty"`
 	// ImageWarning names the VPN or gateway image that could not be pinned to a
 	// digest when the group's pods were created with the image cache on; the pod
 	// pulls it by tag. Empty when all were pinned (or the cache was off).

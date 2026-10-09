@@ -51,7 +51,7 @@ func buildImagePull(class, tenant string, images, nodes []string) *laboratoryv1a
 		},
 		Spec: laboratoryv1alpha1.ImagePullSpec{
 			Images: append([]string(nil), images...),
-			Nodes:  append([]string(nil), nodes...),
+			Nodes:  append([]string{}, nodes...),
 			Tenant: tenant,
 		},
 	}

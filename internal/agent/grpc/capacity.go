@@ -26,8 +26,9 @@ type capacityEntry struct {
 }
 
 type capacityCache struct {
-	mu sync.Mutex
-	m  map[string]capacityEntry
+	mu        sync.Mutex
+	m         map[string]capacityEntry
+	refreshes tenantRefreshGate
 }
 
 // SetGroupOverhead sets what the VPN and gateway pods of one LabGroup request together: the
@@ -58,6 +59,17 @@ func (h *Handler) tenantCapacity(ctx context.Context) (*protobuf.CapacityRespons
 		return e.cap, nil
 	}
 	h.capCache.mu.Unlock()
+	release, err := h.capCache.refreshes.acquire(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	h.capCache.mu.Lock()
+	if e, ok := h.capCache.m[name]; ok && time.Since(e.at) < capacityTTL {
+		h.capCache.mu.Unlock()
+		return e.cap, nil
+	}
+	h.capCache.mu.Unlock()
 	ten, err := h.tenantObject(ctx, name)
 	if err != nil {
 		return nil, err
@@ -73,6 +85,9 @@ func (h *Handler) tenantCapacity(ctx context.Context) (*protobuf.CapacityRespons
 	resp := capacityOf(name, limits, load, h.groupOverhead)
 	if v := h.room(ctx); v.ok {
 		resp.HasMaxDevice, resp.MaxDeviceCpuMillicores, resp.MaxDeviceMemoryBytes = true, v.largest.CPU, v.largest.Memory
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	h.capCache.mu.Lock()
 	if h.capCache.m == nil {

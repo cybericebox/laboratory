@@ -26,10 +26,21 @@ import (
 //
 // LabGroupStatus defines the observed state of LabGroup.
 type LabGroupStatusApplyConfiguration struct {
-	Phase     *laboratoryv1alpha1.Phase            `json:"phase,omitempty"`
-	Namespace *string                              `json:"namespace,omitempty"`
-	Suspended *bool                                `json:"suspended,omitempty"`
-	VPN       *LabGroupVPNStatusApplyConfiguration `json:"vpn,omitempty"`
+	// Original birth metadata; bounded by actual group Lab capacity and never raw data.
+	Creations []LabCreationReceiptApplyConfiguration `json:"creations,omitempty"`
+	// Retirement is a fresh acknowledgement distinct from the original stop.
+	Retirement *LifecycleRetirementStatusApplyConfiguration `json:"retirement,omitempty"`
+	// ServiceRuntime is controller-owned durable pre-scale inventory.
+	ServiceRuntime []OwnedRuntimeIdentityApplyConfiguration `json:"serviceRuntime,omitempty"`
+	// ServiceReports is node-owned matching native observation.
+	ServiceReports []OwnedRuntimeReportApplyConfiguration `json:"serviceReports,omitempty"`
+	// Reserved observation seam for later full group stop; suspension is unchanged.
+	Lifecycle *LabLifecycleStatusApplyConfiguration `json:"lifecycle,omitempty"`
+	Resources *RuntimeAllocationApplyConfiguration  `json:"resources,omitempty"`
+	Phase     *laboratoryv1alpha1.Phase             `json:"phase,omitempty"`
+	Namespace *string                               `json:"namespace,omitempty"`
+	Suspended *bool                                 `json:"suspended,omitempty"`
+	VPN       *LabGroupVPNStatusApplyConfiguration  `json:"vpn,omitempty"`
 	// ImageWarning names the VPN or gateway image that could not be pinned to a
 	// digest when the group's pods were created with the image cache on; the pod
 	// pulls it by tag. Empty when all were pinned (or the cache was off).
@@ -45,6 +56,69 @@ type LabGroupStatusApplyConfiguration struct {
 // apply.
 func LabGroupStatus() *LabGroupStatusApplyConfiguration {
 	return &LabGroupStatusApplyConfiguration{}
+}
+
+// WithCreations adds the given value to the Creations field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Creations field.
+func (b *LabGroupStatusApplyConfiguration) WithCreations(values ...*LabCreationReceiptApplyConfiguration) *LabGroupStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithCreations")
+		}
+		b.Creations = append(b.Creations, *values[i])
+	}
+	return b
+}
+
+// WithRetirement sets the Retirement field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Retirement field is set to the value of the last call.
+func (b *LabGroupStatusApplyConfiguration) WithRetirement(value *LifecycleRetirementStatusApplyConfiguration) *LabGroupStatusApplyConfiguration {
+	b.Retirement = value
+	return b
+}
+
+// WithServiceRuntime adds the given value to the ServiceRuntime field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the ServiceRuntime field.
+func (b *LabGroupStatusApplyConfiguration) WithServiceRuntime(values ...*OwnedRuntimeIdentityApplyConfiguration) *LabGroupStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithServiceRuntime")
+		}
+		b.ServiceRuntime = append(b.ServiceRuntime, *values[i])
+	}
+	return b
+}
+
+// WithServiceReports adds the given value to the ServiceReports field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the ServiceReports field.
+func (b *LabGroupStatusApplyConfiguration) WithServiceReports(values ...*OwnedRuntimeReportApplyConfiguration) *LabGroupStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithServiceReports")
+		}
+		b.ServiceReports = append(b.ServiceReports, *values[i])
+	}
+	return b
+}
+
+// WithLifecycle sets the Lifecycle field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Lifecycle field is set to the value of the last call.
+func (b *LabGroupStatusApplyConfiguration) WithLifecycle(value *LabLifecycleStatusApplyConfiguration) *LabGroupStatusApplyConfiguration {
+	b.Lifecycle = value
+	return b
+}
+
+// WithResources sets the Resources field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Resources field is set to the value of the last call.
+func (b *LabGroupStatusApplyConfiguration) WithResources(value *RuntimeAllocationApplyConfiguration) *LabGroupStatusApplyConfiguration {
+	b.Resources = value
+	return b
 }
 
 // WithPhase sets the Phase field in the declarative configuration to the given value

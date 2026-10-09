@@ -30,6 +30,8 @@ import (
 // fields are copied from the operator configuration when the Device is created
 // and never change afterwards; ResetToken and Rescue are operator controls.
 type DeviceStateSpecApplyConfiguration struct {
+	// CaptureRequest is mutable operator control, not immutable persistence policy.
+	CaptureRequest *DeviceCaptureRequestApplyConfiguration `json:"captureRequest,omitempty"`
 	// Enabled marks the device as snapshot-backed. False or absent: the device
 	// runs as a Deployment exactly as without the feature.
 	Enabled *bool `json:"enabled,omitempty"`
@@ -70,6 +72,14 @@ type DeviceStateSpecApplyConfiguration struct {
 // apply.
 func DeviceStateSpec() *DeviceStateSpecApplyConfiguration {
 	return &DeviceStateSpecApplyConfiguration{}
+}
+
+// WithCaptureRequest sets the CaptureRequest field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the CaptureRequest field is set to the value of the last call.
+func (b *DeviceStateSpecApplyConfiguration) WithCaptureRequest(value *DeviceCaptureRequestApplyConfiguration) *DeviceStateSpecApplyConfiguration {
+	b.CaptureRequest = value
+	return b
 }
 
 // WithEnabled sets the Enabled field in the declarative configuration to the given value

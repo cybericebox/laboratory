@@ -83,6 +83,9 @@ func (s DeviceSpec) StateEnabled() bool { return s.State != nil && s.State.Enabl
 // fields are copied from the operator configuration when the Device is created
 // and never change afterwards; ResetToken and Rescue are operator controls.
 type DeviceStateSpec struct {
+	// CaptureRequest is mutable operator control, not immutable persistence policy.
+	// +optional
+	CaptureRequest *DeviceCaptureRequest `json:"captureRequest,omitempty"`
 	// Enabled marks the device as snapshot-backed. False or absent: the device
 	// runs as a Deployment exactly as without the feature.
 	Enabled bool `json:"enabled,omitempty"`
@@ -133,6 +136,9 @@ type DeviceStateSpec struct {
 // ResetToken and Rescue; the node-agent owns the snapshot fields and
 // ExitSnapshotPod. Each side patches only its own fields.
 type DeviceStateStatus struct {
+	// Capture is written only by the node-agent for explicit required capture.
+	// +optional
+	Capture *DeviceCaptureResult `json:"capture,omitempty"`
 	// Epoch counts resets. A pod carries the epoch it was created in; the
 	// node-agent ignores snapshots of pods from an older epoch.
 	Epoch int32 `json:"epoch,omitempty"`
@@ -169,8 +175,12 @@ type DeviceStateStatus struct {
 
 // DeviceStatus defines the observed state of Device.
 type DeviceStatus struct {
-	Ready    bool   `json:"ready,omitempty"`
-	NodeName string `json:"nodeName,omitempty"`
+	// RuntimeInventory is controller-owned and retained through API Pod deletion.
+	RuntimeInventory []OwnedRuntimeIdentity `json:"runtimeInventory,omitempty"`
+	// RuntimeReports are patched only by the bound node-agent.
+	RuntimeReports []OwnedRuntimeReport `json:"runtimeReports,omitempty"`
+	Ready          bool                 `json:"ready,omitempty"`
+	NodeName       string               `json:"nodeName,omitempty"`
 	// NodeAddress is the node IP used as Geneve VTEP address.
 	NodeAddress string `json:"nodeAddress,omitempty"`
 	PodIP       string `json:"podIP,omitempty"`
@@ -180,8 +190,9 @@ type DeviceStatus struct {
 	// node-agent keys the device's per-pod OVS port on this stable pointer.
 	PodName string `json:"podName,omitempty"`
 	// VNI is set only for unmanaged-switch and hub device types.
-	VNI    *uint  `json:"vni,omitempty"`
-	Reason string `json:"reason,omitempty"`
+	VNILease *VNILease `json:"vniLease,omitempty"`
+	VNI      *uint     `json:"vni,omitempty"`
+	Reason   string    `json:"reason,omitempty"`
 	// State is the snapshot state of a device with spec.state.enabled.
 	// +optional
 	State *DeviceStateStatus `json:"state,omitempty"`

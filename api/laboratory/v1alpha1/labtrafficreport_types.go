@@ -21,7 +21,7 @@ type LabTrafficReportSpec struct {
 }
 
 // LabTrafficTouch is one cumulative aggregate row: what one VPN config (or one
-// proxy token) did against one lab target since the collector booted. There is
+// proxy token) did against one lab target. Durable totals survive restarts. There is
 // no time series. Times are Unix milliseconds. Only lab-internal addresses are
 // ever recorded, never the address of a user.
 type LabTrafficTouch struct {
@@ -41,6 +41,10 @@ type LabTrafficTouch struct {
 	DstPort int32 `json:"dstPort,omitempty"`
 	// Attempts counts new connections (VPN) or requests (proxy).
 	Attempts int64 `json:"attempts"`
+	// LabInitiatedAttempts counts new permitted VPN flows started by the lab.
+	// It is separate from client attempts and is not used by the proxy.
+	// +optional
+	LabInitiatedAttempts int64 `json:"labInitiatedAttempts,omitempty"`
 	// +optional
 	PacketsOut int64 `json:"packetsOut,omitempty"`
 	// +optional
@@ -57,20 +61,61 @@ type LabTrafficTouch struct {
 	FirstRespondedMs int64 `json:"firstRespondedMs,omitempty"`
 }
 
+// LabTrafficKernelCheckpoint stores private raw-counter checkpoints for resume.
+// Decimal strings preserve uint64 kernel values without JSON integer loss.
+type LabTrafficKernelCheckpoint struct {
+	Subject              string `json:"subject"`
+	LabName              string `json:"labName"`
+	BindingID            string `json:"bindingID"`
+	Epoch                string `json:"epoch"`
+	PacketsOut           string `json:"packetsOut"`
+	PacketsIn            string `json:"packetsIn"`
+	BytesOut             string `json:"bytesOut"`
+	BytesIn              string `json:"bytesIn"`
+	Attempts             string `json:"attempts"`
+	LabInitiatedAttempts string `json:"labInitiatedAttempts"`
+}
+
+// LabTrafficCoverageSpan is one actually observed collector interval. Separate
+// spans preserve restart/replica gaps instead of treating their envelope as watched.
+type LabTrafficCoverageSpan struct {
+	FromMs int64 `json:"fromMs"`
+	ToMs   int64 `json:"toMs"`
+	// Partial also covers truncation or unavailable accounting within this span.
+	// +optional
+	Partial bool `json:"partial,omitempty"`
+	// +optional
+	Source string `json:"source,omitempty"`
+	// +optional
+	Instance string `json:"instance,omitempty"`
+	// +optional
+	BootID string `json:"bootID,omitempty"`
+}
+
 // LabTrafficReportStatus is written only by the collector.
 type LabTrafficReportStatus struct {
-	// BootID changes whenever the collector restarts; the ledger is cumulative
-	// within one boot.
+	// CurrentVPNRuntime is published at startup before ACL acknowledgement.
+	// +optional
+	CurrentVPNRuntime *VPNBootRecord `json:"currentVPNRuntime,omitempty"`
+	// BootID identifies the observation epoch. Restored cumulative ledger totals
+	// continue across boots; coverage intervals retain their own epoch identity.
 	BootID string `json:"bootID,omitempty"`
 	// CoveredFromMs..CoveredToMs is the span the collector actually observed.
 	// CoveredToMs advances as a heartbeat even when nothing happened.
 	CoveredFromMs int64 `json:"coveredFromMs,omitempty"`
 	CoveredToMs   int64 `json:"coveredToMs,omitempty"`
+	// CoverageSpans preserves disjoint observed intervals across collector restarts.
+	// Absent for older writers: the agent derives one span from the scalar fields.
+	// +optional
+	CoverageSpans []LabTrafficCoverageSpan `json:"coverageSpans,omitempty"`
 	// Partial is set when part of the span could not be read.
 	Partial bool `json:"partial,omitempty"`
 	// Truncated is set when the ledger hit its size cap and rows were dropped.
 	Truncated bool              `json:"truncated,omitempty"`
 	Ledger    []LabTrafficTouch `json:"ledger,omitempty"`
+	// KernelCheckpoints are consumed by the VPN writer, never relayed to users.
+	// +optional
+	KernelCheckpoints []LabTrafficKernelCheckpoint `json:"kernelCheckpoints,omitempty"`
 }
 
 // +genclient

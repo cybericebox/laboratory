@@ -27,7 +27,10 @@ func kubeRig(t *testing.T, dev *laboratoryv1alpha1.Device, pods ...*corev1.Pod) 
 	if err := laboratoryv1alpha1.AddToScheme(s); err != nil {
 		t.Fatal(err)
 	}
-	b := fake.NewClientBuilder().WithScheme(s).WithObjects(dev).WithStatusSubresource(&laboratoryv1alpha1.Device{})
+	b := fake.NewClientBuilder().WithScheme(s).WithObjects(dev).WithStatusSubresource(&laboratoryv1alpha1.Device{}).
+		WithIndex(&corev1.Pod{}, "spec.nodeName", func(o client.Object) []string {
+			return []string{o.(*corev1.Pod).Spec.NodeName}
+		})
 	for _, p := range pods {
 		b = b.WithObjects(p)
 	}

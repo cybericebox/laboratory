@@ -74,7 +74,7 @@ func (c *AccessPortChecker) Start(ctx context.Context) error {
 func (c *AccessPortChecker) Check(ctx context.Context) {
 	log := ctrl.Log.WithName("access-port")
 	var pods corev1.PodList
-	if err := c.Client.List(ctx, &pods); err != nil {
+	if err := c.Client.List(ctx, &pods, client.MatchingFields{"spec.nodeName": c.NodeName}); err != nil {
 		log.Error(err, "list pods")
 		return
 	}

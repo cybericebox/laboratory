@@ -98,6 +98,18 @@ func (r *DeviceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, nil
 	}
 
+	if stopped, err := r.deviceStopped(ctx, &device); stopped || err != nil {
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, err
+	}
+	// Full group stop blocks provisioning/recreation only. Existing child runtime
+	// is stopped exclusively by the child's guarded lifecycle/capture owner.
+	group, groupErr := r.labGroupOfNamespace(ctx, device.Namespace)
+	if groupErr != nil {
+		return ctrl.Result{}, groupErr
+	}
+	if group != nil && group.Spec.Lifecycle.IsStopped() {
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	}
 	switch device.Spec.Type {
 	case laboratoryv1alpha1.DeviceTypeUnmanagedSwitch, laboratoryv1alpha1.DeviceTypeHub:
 		return r.reconcileSwitch(ctx, &device)
@@ -225,6 +237,19 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	// Stop retains a zero-replica Deployment. Its existence cannot bypass the
+	// new Start queue: only a dispatched current scheduling record may resume it.
+	if !suspended && dep.Spec.Replicas != nil && *dep.Spec.Replicas == 0 && device.Spec.LabRef != "" {
+		var parent laboratoryv1alpha1.Lab
+		if err := r.reader().Get(ctx, client.ObjectKey{Name: device.Spec.LabRef, Namespace: device.Namespace}, &parent); err != nil {
+			return ctrl.Result{}, err
+		}
+		if parent.Spec.Lifecycle != nil && parent.Spec.Lifecycle.DesiredState == lifecycleStateRunning {
+			if ok, gateErr := r.mayCreateWorkload(ctx, device); gateErr != nil || !ok {
+				return ctrl.Result{RequeueAfter: 2 * time.Second}, gateErr
+			}
+		}
+	}
 	// A workload that already runs needs no dispatch.
 	if err := r.initScheduling(ctx, device, true); err != nil {
 		return ctrl.Result{}, err
@@ -246,27 +271,8 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 	nodeName, podIP, podName := r.devicePodPlacement(ctx, device)
 	ready := dep.Status.AvailableReplicas >= 1
 
-	updated := false
-	if nodeName != device.Status.NodeName {
-		device.Status.NodeName = nodeName
-		updated = true
-	}
-	if podIP != device.Status.PodIP {
-		device.Status.PodIP = podIP
-		updated = true
-	}
-	if podName != device.Status.PodName {
-		device.Status.PodName = podName
-		updated = true
-	}
-	if ready != device.Status.Ready {
-		device.Status.Ready = ready
-		updated = true
-	}
-	if updated {
-		if err := r.Status().Update(ctx, device); err != nil {
-			return ctrl.Result{}, err
-		}
+	if err := r.publishDevicePlacement(ctx, device, nodeName, podIP, podName, ready); err != nil {
+		return ctrl.Result{}, err
 	}
 	// Deployment changes trigger reconcile, but a pod getting its IP does not
 	// (the pod is owned by the ReplicaSet, not the Device) — requeue until the
@@ -420,6 +426,15 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 				},
 			},
 		},
+	}
+	parentUID := ""
+	for _, owner := range device.OwnerReferences {
+		if owner.Kind == ownerKindLab {
+			parentUID = string(owner.UID)
+		}
+	}
+	for n := range podSpec.Containers {
+		podSpec.Containers[n].Env = append(podSpec.Containers[n].Env, corev1.EnvVar{Name: "LIFECYCLE_LAB_UID", Value: parentUID}, corev1.EnvVar{Name: "LIFECYCLE_DEVICE_UID", Value: string(device.UID)})
 	}
 	// Optional init-container: address static and dhcp-preset interfaces inside
 	// the pod netns (node-agent only wires the L2 veth), so those device pods
@@ -646,6 +661,7 @@ func deviceHasInImageDHCP(device *laboratoryv1alpha1.Device) bool {
 func (r *DeviceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.Device{}).
+		Watches(&laboratoryv1alpha1.Lab{}, handler.EnqueueRequestsFromMapFunc(r.devicesForLab)).
 		Owns(&appsv1.Deployment{}).
 		// Devices with state persistence run as bare Pods owned by the Device.
 		Owns(&corev1.Pod{}).
@@ -672,7 +688,7 @@ func (r *DeviceReconciler) labGroupSuspended(ctx context.Context, namespace stri
 // one whose status records the namespace; nil when the namespace has no group.
 func (r *DeviceReconciler) labGroupOfNamespace(ctx context.Context, namespace string) (*laboratoryv1alpha1.LabGroup, error) {
 	var ns corev1.Namespace
-	if err := r.Get(ctx, types.NamespacedName{Name: namespace}, &ns); err != nil {
+	if err := r.reader().Get(ctx, types.NamespacedName{Name: namespace}, &ns); err != nil {
 		if errors.IsNotFound(err) {
 			return nil, nil
 		}
@@ -680,7 +696,7 @@ func (r *DeviceReconciler) labGroupOfNamespace(ctx context.Context, namespace st
 	}
 	if owner := ns.Labels[names.LabelGroup]; owner != "" {
 		var group laboratoryv1alpha1.LabGroup
-		if err := r.Get(ctx, types.NamespacedName{Name: owner}, &group); err != nil {
+		if err := r.reader().Get(ctx, types.NamespacedName{Name: owner}, &group); err != nil {
 			if errors.IsNotFound(err) {
 				return nil, nil
 			}
@@ -689,7 +705,7 @@ func (r *DeviceReconciler) labGroupOfNamespace(ctx context.Context, namespace st
 		return &group, nil
 	}
 	var groups laboratoryv1alpha1.LabGroupList
-	if err := r.List(ctx, &groups); err != nil {
+	if err := r.reader().List(ctx, &groups); err != nil {
 		return nil, err
 	}
 	for i := range groups.Items {
@@ -737,4 +753,44 @@ func (r *DeviceReconciler) devicesForConnection(_ context.Context, obj client.Ob
 		}
 	}
 	return reqs
+}
+
+func (r *DeviceReconciler) devicesForLab(ctx context.Context, obj client.Object) []reconcile.Request {
+	var ds laboratoryv1alpha1.DeviceList
+	if err := r.List(ctx, &ds, client.InNamespace(obj.GetNamespace())); err != nil {
+		return nil
+	}
+	var out []reconcile.Request
+	for _, d := range ds.Items {
+		if d.Spec.LabRef == obj.GetName() {
+			out = append(out, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&d)})
+		}
+	}
+	return out
+}
+
+func (r *DeviceReconciler) publishDevicePlacement(ctx context.Context, device *laboratoryv1alpha1.Device, nodeName, podIP, podName string, ready bool) error {
+	updated := false
+	if nodeName != device.Status.NodeName {
+		device.Status.NodeName = nodeName
+		updated = true
+	}
+	if podIP != device.Status.PodIP {
+		device.Status.PodIP = podIP
+		updated = true
+	}
+	if podName != device.Status.PodName {
+		device.Status.PodName = podName
+		updated = true
+	}
+	if ready != device.Status.Ready {
+		device.Status.Ready = ready
+		updated = true
+	}
+	if updated {
+		if err := r.Status().Update(ctx, device); err != nil {
+			return err
+		}
+	}
+	return nil
 }

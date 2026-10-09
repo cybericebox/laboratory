@@ -7,7 +7,7 @@ metadata:
     {{- include "laboratory.labels" . | nindent 4 }}
 rules:
   - apiGroups: [ "laboratory.cybericebox.com" ]
-    resources: [ "labgroups" ]
+    resources: [ "labgroups", "labs" ]
     verbs: [ "get", "list", "watch" ]
   - apiGroups: [ "" ]
     resources: [ "services" ]

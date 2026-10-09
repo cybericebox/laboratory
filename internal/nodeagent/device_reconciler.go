@@ -48,6 +48,19 @@ func (r *DevicePortReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 			}
 		}
+		if device.Status.VNI != nil {
+			var parent laboratoryv1alpha1.Lab
+			if err := r.Get(ctx, client.ObjectKey{Namespace: device.Namespace, Name: device.Spec.LabRef}, &parent); err != nil {
+				return ctrl.Result{}, err
+			}
+			for _, scope := range parent.Status.ScopeInventory {
+				for _, binding := range scope.VNIBindings {
+					if binding.UID == string(device.UID) && binding.VNI == *device.Status.VNI && !laboratoryv1alpha1.VNILeaseReleased(&parent, binding) {
+						return ctrl.Result{RequeueAfter: time.Second}, nil
+					}
+				}
+			}
+		}
 		controllerutil.RemoveFinalizer(&device, names.FinalizerOVSCleanup)
 		return ctrl.Result{}, r.Update(ctx, &device)
 	}

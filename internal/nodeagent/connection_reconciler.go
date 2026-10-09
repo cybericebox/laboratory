@@ -8,12 +8,14 @@ import (
 	"reflect"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -42,6 +44,7 @@ import (
 // a new value, and atomically replaces the t6 flood entry for the affected VNI.
 type ConnectionReconciler struct {
 	client.Client
+	Reader      client.Reader
 	NodeName    string
 	NodeAddress string
 	OVS         *OVSManager
@@ -71,6 +74,13 @@ func (r *ConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !conn.DeletionTimestamp.IsZero() {
+		return r.reconcileDelete(ctx, &conn)
+	}
+	active, err := labRuntimeActive(ctx, r.directReader(), conn.Namespace, conn.Spec.LabRef)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !active {
 		return r.reconcileDelete(ctx, &conn)
 	}
 	return r.reconcileCreate(ctx, &conn)
@@ -178,11 +188,25 @@ func (r *ConnectionReconciler) reconcileDeviceDevice(
 				return ctrl.Result{}, err
 			}
 			localPorts = append(localPorts, pKey)
+			owner, err := r.ownedConnectionPort(ctx, conn, pKey, ep.device.Status.PodName)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			portStatus.PodUID = string(owner)
+			r.OVS.mu.Lock()
+			row, err := r.OVS.portSnapshotLocked(pKey)
+			r.OVS.mu.Unlock()
+			if err != nil || row == nil || row.ExternalIDs[portOwnerExternalID] != string(owner) {
+				return ctrl.Result{}, ErrPortOwnerChanged
+			}
+			portStatus.RowUUID = row.UUID
 			portStatus.PortID = pKey
 			portStatus.Connected = true
 		} else {
 			for _, existing := range conn.Status.Ports {
 				if existing.Device == ep.endpoint.Device && existing.Interface == ep.endpoint.Interface {
+					portStatus.PodUID = existing.PodUID
+					portStatus.RowUUID = existing.RowUUID
 					portStatus.PortID = existing.PortID
 					portStatus.Connected = existing.Connected
 					break
@@ -274,11 +298,25 @@ func (r *ConnectionReconciler) reconcileDeviceSwitch(
 			return ctrl.Result{}, err
 		}
 		currentLocalPort = pKey
+		owner, err := r.ownedConnectionPort(ctx, conn, pKey, devEp.device.Status.PodName)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		portStatus.PodUID = string(owner)
+		r.OVS.mu.Lock()
+		row, err := r.OVS.portSnapshotLocked(pKey)
+		r.OVS.mu.Unlock()
+		if err != nil || row == nil || row.ExternalIDs[portOwnerExternalID] != string(owner) {
+			return ctrl.Result{}, ErrPortOwnerChanged
+		}
+		portStatus.RowUUID = row.UUID
 		portStatus.PortID = pKey
 		portStatus.Connected = true
 	} else {
 		for _, existing := range conn.Status.Ports {
 			if existing.Device == devEp.endpoint.Device && existing.Interface == devEp.endpoint.Interface {
+				portStatus.PodUID = existing.PodUID
+				portStatus.RowUUID = existing.RowUUID
 				portStatus.PortID = existing.PortID
 				portStatus.Connected = existing.Connected
 				break
@@ -344,17 +382,11 @@ func (r *ConnectionReconciler) reconcileSwitchSwitch(
 	patchA := patchPortName(conn.Namespace, conn.Name, ep0.endpoint.Device) // registered in vni0
 	patchB := patchPortName(conn.Namespace, conn.Name, ep1.endpoint.Device) // registered in vni1
 
-	// A pair under the names of earlier versions (no namespace in them) is replaced by this one: leaving it would flood each switch's
-	// frames through two links.
-	for _, dev := range []string{ep0.endpoint.Device, ep1.endpoint.Device} {
-		old := legacyPatchPortName(conn.Name, dev)
-		if exists, err := r.OVS.PortExists(old); err == nil && exists {
-			_ = r.Flows.DelT0Port(old)
-			_ = r.OVS.DelPort(old)
-		}
+	if err := r.migrateLegacySwitchPair(ctx, conn, ep0.device, ep1.device); err != nil {
+		return ctrl.Result{}, err
 	}
 
-	if err := r.OVS.AddPatchPair(patchA, patchB); err != nil {
+	if err := r.OVS.AddPatchPairOwned(patchA, patchB, conn.UID); err != nil {
 		return ctrl.Result{}, fmt.Errorf("add patch pair: %w", err)
 	}
 
@@ -412,6 +444,13 @@ func (r *ConnectionReconciler) buildSwitchVNIFlood(
 	ctx context.Context,
 	namespace, labRef, switchLogicalName string,
 ) (localPorts, remoteVTEPs []string, _ error) {
+	active, err := labRuntimeActive(ctx, r.directReader(), namespace, labRef)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !active {
+		return nil, nil, nil
+	}
 	var connList laboratoryv1alpha1.ConnectionList
 	if err := r.List(
 		ctx, &connList,
@@ -493,51 +532,71 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 	ctrl.Result,
 	error,
 ) {
+	// A cached stop/delete may not authorize work against a replacement or a
+	// newer Running intent. Exact current reads precede each owned primitive.
+	var current laboratoryv1alpha1.Connection
+	if err := r.directReader().Get(ctx, client.ObjectKeyFromObject(conn), &current); err != nil {
+		return ctrl.Result{}, err
+	}
+	if current.UID != conn.UID || current.ResourceVersion != conn.ResourceVersion {
+		return ctrl.Result{}, ErrPortOwnerChanged
+	}
+	active, err := labRuntimeActive(ctx, r.directReader(), conn.Namespace, conn.Spec.LabRef)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	var parent laboratoryv1alpha1.Lab
+	if err := r.directReader().Get(ctx, client.ObjectKey{Namespace: conn.Namespace, Name: conn.Spec.LabRef}, &parent); err != nil {
+		return ctrl.Result{}, err
+	}
+	if current.DeletionTimestamp.IsZero() && parent.DeletionTimestamp.IsZero() && !parent.Spec.Lifecycle.IsStopped() {
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
+	if active && current.DeletionTimestamp.IsZero() {
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
 	// Remove local device ports from OVS and their t0 entries.
 	for _, port := range conn.Status.Ports {
 		if port.NodeName != r.NodeName || port.PortID == "" {
 			continue
 		}
-		_ = r.Flows.DelT0Port(port.PortID)
-		_ = r.OVS.DelPort(port.PortID)
+		if port.PodUID == "" {
+			return ctrl.Result{}, ErrPortOwnerUnknown
+		}
+		network := &NetworkAttachReconciler{OVS: r.OVS, Flows: r.Flows}
+		if err := network.DelVethWithFlowsExpected(port.PortID, types.UID(port.PodUID), port.RowUUID); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Remove t6 flood for the connection's own VNI (device↔device case).
 	if conn.Status.VNI != nil {
-		_ = r.Flows.DelT6Flood(*conn.Status.VNI)
+		binding, err := r.connectionVNIBinding(ctx, conn, ownerKindConnection, conn.Name, string(conn.UID), *conn.Status.VNI)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.OVS.RetireVNIOwned(ctx, binding, r.Flows, r.zeroVNIRetirementAuthority()); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
-	// For each switch endpoint: remove patch port + rebuild t6 from remaining connections.
-	for _, ep := range conn.Spec.Endpoints {
-		found, err := devices.Get(ctx, r.Client, conn.Namespace, conn.Spec.LabRef, ep.Device)
-		if err != nil {
-			continue
-		}
-		dev := *found
-		isSwitch := dev.Spec.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch ||
-			dev.Spec.Type == laboratoryv1alpha1.DeviceTypeHub
-		if !isSwitch {
-			continue
-		}
+	if err := r.retireSwitchEndpoints(ctx, conn); err != nil {
+		return ctrl.Result{}, err
+	}
 
-		// Remove patch port for this side (switch↔switch case).
-		pName := patchPortName(conn.Namespace, conn.Name, ep.Device)
-		_ = r.Flows.DelT0Port(pName)
-		_ = r.OVS.DelPort(pName)
-
-		// Rebuild t6 for this switch's VNI from the remaining connections.
-		if dev.Status.VNI != nil {
-			localPorts, remoteVTEPs, err := r.buildSwitchVNIFlood(ctx, conn.Namespace, conn.Spec.LabRef, ep.Device)
-			if err == nil {
-				if len(localPorts) > 0 {
-					_ = r.Flows.RebuildT6Flood(*dev.Status.VNI, localPorts, remoteVTEPs)
-				} else {
-					_ = r.Flows.DelT6Flood(*dev.Status.VNI)
+	if r.OVS.VNIRetirement != nil {
+		var parent laboratoryv1alpha1.Lab
+		if err := r.directReader().Get(ctx, client.ObjectKey{Namespace: conn.Namespace, Name: conn.Spec.LabRef}, &parent); err != nil {
+			return ctrl.Result{}, err
+		}
+		for _, scope := range parent.Status.ScopeInventory {
+			for _, binding := range scope.VNIBindings {
+				if binding.UID == string(conn.UID) && !laboratoryv1alpha1.VNILeaseReleased(&parent, binding) {
+					return ctrl.Result{RequeueAfter: time.Second}, nil
 				}
 			}
 		}
 	}
-
 	controllerutil.RemoveFinalizer(conn, names.FinalizerOVSCleanup)
 	return ctrl.Result{}, r.Update(ctx, conn)
 }
@@ -594,6 +653,7 @@ func (r *ConnectionReconciler) loadEndpoints(ctx context.Context, conn *laborato
 			pod := pods.Items[0]
 			synth := laboratoryv1alpha1.Device{}
 			synth.Spec.Type = laboratoryv1alpha1.DeviceTypeContainer
+			synth.Status.PodName = pod.Name
 			synth.Status.NodeName = pod.Spec.NodeName
 			synth.Status.NodeAddress = r.nodeAddressForNode(ctx, pod.Spec.NodeName)
 			synth.Name = fmt.Sprintf("%s-%s", conn.Spec.LabRef, ep.Device)
@@ -699,11 +759,14 @@ func (r *ConnectionReconciler) nodeAddressForNode(ctx context.Context, nodeName 
 }
 
 func (r *ConnectionReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Reader = mgr.GetAPIReader()
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&laboratoryv1alpha1.Connection{}).
+		Watches(&laboratoryv1alpha1.Lab{}, handler.EnqueueRequestsFromMapFunc(r.connectionsForLab)).
 		Watches(
 			&laboratoryv1alpha1.Device{},
 			handler.EnqueueRequestsFromMapFunc(r.connectionsForDevice),
+			builder.WithPredicates(connectionDeviceInputs()),
 		).
 		Complete(reconcileutil.QuietIgnoreNotFound(r))
 }
@@ -731,4 +794,167 @@ func (r *ConnectionReconciler) connectionsForDevice(ctx context.Context, obj cli
 		}
 	}
 	return reqs
+}
+
+func (r *ConnectionReconciler) connectionsForLab(ctx context.Context, obj client.Object) []reconcile.Request {
+	var cs laboratoryv1alpha1.ConnectionList
+	if err := r.List(ctx, &cs, client.InNamespace(obj.GetNamespace())); err != nil {
+		return nil
+	}
+	var out []reconcile.Request
+	for _, c := range cs.Items {
+		if c.Spec.LabRef == obj.GetName() {
+			out = append(out, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&c)})
+		}
+	}
+	return out
+}
+
+func (r *ConnectionReconciler) directReader() client.Reader {
+	if r.Reader != nil {
+		return r.Reader
+	}
+	return r.Client
+}
+
+func (r *ConnectionReconciler) ownedConnectionPort(ctx context.Context, conn *laboratoryv1alpha1.Connection, key, podName string) (types.UID, error) {
+	if podName == "" {
+		return "", ErrPortOwnerUnknown
+	}
+	var pod corev1.Pod
+	if err := r.directReader().Get(ctx, client.ObjectKey{Namespace: conn.Namespace, Name: podName}, &pod); err != nil {
+		return "", err
+	}
+	if pod.UID == "" {
+		return "", ErrPortOwnerChanged
+	}
+	if pod.Labels[names.LabelLab] != conn.Spec.LabRef {
+		var groups laboratoryv1alpha1.LabGroupList
+		if err := r.directReader().List(ctx, &groups); err != nil {
+			return "", err
+		}
+		owned := false
+		for _, group := range groups.Items {
+			if laboratoryv1alpha1.LabGroupNamespaceOf(&group) != conn.Namespace {
+				continue
+			}
+			for _, ref := range pod.OwnerReferences {
+				if ref.Kind == ownerKindReplicaSet {
+					var rs appsv1.ReplicaSet
+					if err := r.directReader().Get(ctx, client.ObjectKey{Namespace: conn.Namespace, Name: ref.Name}, &rs); err != nil {
+						return "", err
+					}
+					if rs.UID != ref.UID {
+						return "", ErrPortOwnerChanged
+					}
+					for _, parent := range rs.OwnerReferences {
+						if parent.Kind == "Deployment" {
+							var dep appsv1.Deployment
+							if err := r.directReader().Get(ctx, client.ObjectKey{Namespace: conn.Namespace, Name: parent.Name}, &dep); err != nil {
+								return "", err
+							}
+							owned = owned || dep.UID == parent.UID && nativeGroupDeploymentOwned(&dep, string(group.UID))
+						}
+					}
+				}
+			}
+		}
+		if !owned {
+			return "", ErrPortOwnerChanged
+		}
+	}
+	owners, err := r.OVS.PortOwners()
+	if err != nil {
+		return "", err
+	}
+	if owners[key] != pod.UID {
+		return "", ErrPortOwnerChanged
+	}
+	return pod.UID, nil
+}
+
+func (r *ConnectionReconciler) connectionVNIBinding(ctx context.Context, conn *laboratoryv1alpha1.Connection, kind, name, uid string, vni uint) (laboratoryv1alpha1.OwnedVNI, error) {
+	var parent laboratoryv1alpha1.Lab
+	if err := r.directReader().Get(ctx, client.ObjectKey{Namespace: conn.Namespace, Name: conn.Spec.LabRef}, &parent); err != nil {
+		return laboratoryv1alpha1.OwnedVNI{}, err
+	}
+	op, rev := nativeLabOperation(&parent)
+	var lease *laboratoryv1alpha1.VNILease
+	if kind == ownerKindConnection {
+		lease = conn.Status.VNILease
+	} else {
+		var d laboratoryv1alpha1.Device
+		if err := r.directReader().Get(ctx, client.ObjectKey{Namespace: conn.Namespace, Name: name}, &d); err != nil {
+			return laboratoryv1alpha1.OwnedVNI{}, err
+		}
+		lease = d.Status.VNILease
+	}
+	if r.OVS.VNIRetirement != nil && lease == nil {
+		return laboratoryv1alpha1.OwnedVNI{}, ErrPortOwnerUnknown
+	}
+	binding := laboratoryv1alpha1.OwnedVNI{Kind: kind, Name: name, Namespace: conn.Namespace, UID: uid, VNI: vni, OwnerUID: string(parent.UID), OperationID: op, Revision: rev, Generation: parent.Generation}
+	if lease != nil {
+		binding.PoolUID = lease.PoolUID
+		binding.LeaseGeneration = lease.Generation
+	}
+	return binding, nil
+}
+
+func (r *ConnectionReconciler) retireSwitchEndpoints(ctx context.Context, conn *laboratoryv1alpha1.Connection) error {
+	// For each switch endpoint: remove patch port + rebuild t6 from remaining connections.
+	for _, ep := range conn.Spec.Endpoints {
+		if ep.Device == "vpn" || ep.Device == "internet" {
+			continue
+		}
+		found, err := devices.Get(ctx, r.Client, conn.Namespace, conn.Spec.LabRef, ep.Device)
+		if err != nil {
+			return err
+		}
+		dev := *found
+		isSwitch := dev.Spec.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch ||
+			dev.Spec.Type == laboratoryv1alpha1.DeviceTypeHub
+		if !isSwitch {
+			continue
+		}
+
+		// Remove patch port for this side (switch↔switch case).
+		pName := patchPortName(conn.Namespace, conn.Name, ep.Device)
+		if len(conn.Spec.Endpoints) == 2 {
+			peer, err := devices.Get(ctx, r.directReader(), conn.Namespace, conn.Spec.LabRef, conn.Spec.Endpoints[1].Device)
+			if conn.Spec.Endpoints[1].Device == ep.Device {
+				peer, err = devices.Get(ctx, r.directReader(), conn.Namespace, conn.Spec.LabRef, conn.Spec.Endpoints[0].Device)
+			}
+			if err != nil {
+				return err
+			}
+			if peer.Spec.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch || peer.Spec.Type == laboratoryv1alpha1.DeviceTypeHub {
+				if err := r.OVS.DelFabricPortOwned(pName, conn.UID, r.Flows); err != nil {
+					return err
+				}
+			}
+		}
+
+		// Rebuild t6 for this switch's VNI from the remaining connections.
+		if dev.Status.VNI != nil {
+			localPorts, remoteVTEPs, err := r.buildSwitchVNIFlood(ctx, conn.Namespace, conn.Spec.LabRef, ep.Device)
+			if err != nil {
+				return err
+			}
+			if len(localPorts) > 0 {
+				if err := r.Flows.RebuildT6Flood(*dev.Status.VNI, localPorts, remoteVTEPs); err != nil {
+					return err
+				}
+			} else {
+				binding, err := r.connectionVNIBinding(ctx, conn, ownerKindDevice, dev.Name, string(dev.UID), *dev.Status.VNI)
+				if err != nil {
+					return err
+				}
+				if err := r.OVS.RetireVNIOwned(ctx, binding, r.Flows, r.zeroVNIRetirementAuthority()); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
 }

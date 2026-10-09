@@ -8,10 +8,15 @@
 package client
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -137,4 +142,79 @@ func NewConnection(config Config) (Client, error) {
 
 func (c *labManagerClient) Close() error {
 	return c.conn.Close()
+}
+
+// Lifecycle aliases expose the additive protocol through the public client.
+// Client embeds LabManagerClient, including StopLabs and StartLabs.
+type (
+	LabRetirementTarget    = protobuf.LabRetirementTarget
+	GroupRetirementTarget  = protobuf.GroupRetirementTarget
+	RetireLabsRequest      = protobuf.RetireLabsRequest
+	RetireLabGroupsRequest = protobuf.RetireLabGroupsRequest
+	RetirementStatus       = protobuf.RetirementStatus
+	GroupTarget            = protobuf.GroupTarget
+	StopLabGroupItem       = protobuf.StopLabGroupItem
+	StopLabGroupsRequest   = protobuf.StopLabGroupsRequest
+	StartLabGroupsRequest  = protobuf.StartLabGroupsRequest
+	GroupLifecycleSpec     = protobuf.GroupLifecycleSpec
+	StopSnapshotMode       = protobuf.StopSnapshotMode
+	LabLifecycleTarget     = protobuf.LabLifecycleTarget
+	StopLabItem            = protobuf.StopLabItem
+	StopLabsRequest        = protobuf.StopLabsRequest
+	StartLabsRequest       = protobuf.StartLabsRequest
+	LabLifecycleStatus     = protobuf.LabLifecycleStatus
+	ResourceAmounts        = protobuf.ResourceAmounts
+	ResourceAllocation     = protobuf.ResourceAllocation
+	LifecycleFeature       = protobuf.LifecycleFeature
+)
+
+const (
+	StopSnapshotMode_STOP_SNAPSHOT_MODE_UNSPECIFIED = protobuf.StopSnapshotMode_STOP_SNAPSHOT_MODE_UNSPECIFIED
+	StopSnapshotMode_STOP_SNAPSHOT_MODE_SKIP        = protobuf.StopSnapshotMode_STOP_SNAPSHOT_MODE_SKIP
+	StopSnapshotMode_STOP_SNAPSHOT_MODE_REQUIRED    = protobuf.StopSnapshotMode_STOP_SNAPSHOT_MODE_REQUIRED
+)
+
+// Sizing v2 aliases describe validated profiles without selecting one or changing defaults.
+type (
+	GroupPodsFeature       = protobuf.GroupPodsFeature
+	GroupPodsSizingV2      = protobuf.GroupPodsSizingV2
+	GroupPodsSizingProfile = protobuf.GroupPodsSizingProfile
+	GroupSizingInputs      = protobuf.GroupSizingInputs
+	GroupTrafficEnvelope   = protobuf.GroupTrafficEnvelope
+	GroupPodFormula        = protobuf.GroupPodFormula
+	PodSize                = protobuf.PodSize
+)
+
+// CreationDefinitionHash binds immutable dispatch evidence to the exact JSON
+// definition before Create. Lifecycle is separate mutable intent; environment
+// values and labels never enter this public fingerprint.
+func CreationDefinitionHash(specJSON []byte, group string, after []string) (string, error) {
+	decoder := json.NewDecoder(bytes.NewReader(specJSON))
+	decoder.UseNumber()
+	var spec map[string]any
+	if err := decoder.Decode(&spec); err != nil {
+		return "", err
+	}
+	if spec == nil {
+		return "", fmt.Errorf("definition must be a JSON object")
+	}
+	delete(spec, "lifecycle")
+	normalized := append([]string{}, after...)
+	sort.Strings(normalized)
+	unique := normalized[:0]
+	for _, value := range normalized {
+		if len(unique) == 0 || unique[len(unique)-1] != value {
+			unique = append(unique, value)
+		}
+	}
+	raw, err := json.Marshal(struct {
+		Spec  map[string]any
+		Group string
+		After []string
+	}{spec, group, unique})
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
 }

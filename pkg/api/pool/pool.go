@@ -47,7 +47,9 @@ type (
 		// rotate hands out the lowest free index AFTER the one handed out last (wrapping around), not the lowest free one: a released index
 		// is not given again until the whole pool has been walked, so something that still holds its old meaning (a flow, a cache) never
 		// meets a new owner of the number at once.
-		rotate bool
+		rotate   bool
+		ownerUID string
+		lease    Lease
 	}
 
 	labelRequests struct {
@@ -137,14 +139,25 @@ func (a *allocator) AllocateIndex(ctx context.Context) (uint, error) {
 			start = uint(n)
 		}
 	}
-	bit, found := bitmap.NextClear(start)
+	bit, found := nextClearWithinPool(bitmap, start, selected.Spec.Size)
 	if !found && start > 0 {
-		bit, found = bitmap.NextClear(0)
+		bit, found = nextClearWithinPool(bitmap, 0, selected.Spec.Size)
 	}
 	if !found {
 		return 0, fmt.Errorf("pool %s has no free slots despite state label", selected.Name)
 	}
 	bitmap.Set(bit)
+	if a.ownerUID != "" {
+		if selected.UID == "" || selected.Status.NextLeaseGeneration == int64(^uint64(0)>>1) {
+			return 0, fmt.Errorf("pool lease identity/generation unavailable")
+		}
+		selected.Status.NextLeaseGeneration++
+		if selected.Status.Leases == nil {
+			selected.Status.Leases = map[string]allocationv1alpha1.PoolLease{}
+		}
+		selected.Status.Leases[strconv.FormatUint(uint64(bit), 10)] = allocationv1alpha1.PoolLease{OwnerUID: a.ownerUID, Generation: selected.Status.NextLeaseGeneration}
+		a.lease = Lease{Index: bit + selected.Spec.Offset, PoolUID: string(selected.UID), OwnerUID: a.ownerUID, Generation: selected.Status.NextLeaseGeneration}
+	}
 	selected.Status.Free--
 	selected.Status.BitMap = encodeBitmap(bitmap)
 
@@ -165,6 +178,21 @@ func (a *allocator) AllocateIndex(ctx context.Context) (uint, error) {
 	}
 
 	return bit + selected.Spec.Offset, nil
+}
+
+// Compact bitmaps omit the unused tail. Its absent bits are free, but the
+// immutable pool size still bounds the search, including older oversized data.
+func nextClearWithinPool(bitmap *bitset.BitSet, start, size uint) (uint, bool) {
+	if start >= size {
+		return 0, false
+	}
+	if bit, found := bitmap.NextClear(start); found && bit < size {
+		return bit, true
+	}
+	if tail := max(start, bitmap.Len()); tail < size {
+		return tail, true
+	}
+	return 0, false
 }
 
 func (a *allocator) saveCursor(ctx context.Context, poolName string, cursor uint) error {
@@ -210,6 +238,9 @@ func (a *allocator) ReleaseIndex(ctx context.Context, index uint) error {
 		return fmt.Errorf("decode bitmap for pool %s: %w", pool.Name, err)
 	}
 
+	if _, owned := pool.Status.Leases[strconv.FormatUint(uint64(bit), 10)]; owned {
+		return fmt.Errorf("owned pool lease requires exact owner/generation release")
+	}
 	if !bitmap.Test(bit) {
 		log.Info("index already free, skipping release", "index", index, "pool", pool.Name)
 		return nil
@@ -397,4 +428,149 @@ func encodeBitmap(bs *bitset.BitSet) string {
 		return ""
 	}
 	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+// Lease is an immutable reservation epoch. Its UID survives caller/process
+// restart; PoolUID also fences pool deletion/recreation with a reset counter.
+type Lease struct {
+	Index             uint
+	PoolUID, OwnerUID string
+	Generation        int64
+}
+
+func FindOwnerLease(ctx context.Context, c client.Reader, prefix, namespace, uid string) (*Lease, error) {
+	var pools allocationv1alpha1.PoolList
+	if err := c.List(ctx, &pools, client.InNamespace(namespace), client.MatchingLabels{PoolGroupLabel: prefix}); err != nil {
+		return nil, err
+	}
+	var found *Lease
+	for _, p := range pools.Items {
+		for key, owner := range p.Status.Leases {
+			if owner.OwnerUID != uid {
+				continue
+			}
+			bit, err := strconv.ParseUint(key, 10, 32)
+			if err != nil {
+				return nil, err
+			}
+			if found != nil {
+				return nil, fmt.Errorf("owner has conflicting pool leases")
+			}
+			found = &Lease{Index: uint(bit) + p.Spec.Offset, PoolUID: string(p.UID), OwnerUID: uid, Generation: owner.Generation}
+		}
+	}
+	return found, nil
+}
+func AllocateOwnedIndex(ctx context.Context, c client.Client, prefix, namespace string, size uint, uid string) (*Lease, error) {
+	if uid == "" {
+		return nil, fmt.Errorf("actual lease owner UID unavailable")
+	}
+	if prior, err := FindOwnerLease(ctx, c, prefix, namespace, uid); err != nil || prior != nil {
+		return prior, err
+	}
+	a := NewRotatingAllocator(c, prefix, namespace, size).(*allocator)
+	a.ownerUID = uid
+	if _, err := a.AllocateIndex(ctx); err != nil {
+		return nil, err
+	}
+	return &a.lease, nil
+}
+func leasePool(ctx context.Context, c client.Reader, prefix, namespace string, size, index uint) (*allocationv1alpha1.Pool, uint, error) {
+	var p allocationv1alpha1.Pool
+	if err := c.Get(ctx, client.ObjectKey{Name: fmt.Sprintf("%s-%d", prefix, index/size), Namespace: namespace}, &p); err != nil {
+		return nil, 0, err
+	}
+	if index < p.Spec.Offset || index-p.Spec.Offset >= p.Spec.Size {
+		return nil, 0, fmt.Errorf("pool lease outside declared extent")
+	}
+	return &p, index - p.Spec.Offset, nil
+}
+
+// PinExistingIndex upgrades a currently held legacy reservation. It never binds
+// a clear bit or a differently owned lease; all subsequent releases are fenced.
+func PinExistingIndex(ctx context.Context, c client.Client, prefix, namespace string, size, index uint, uid string) (*Lease, error) {
+	if uid == "" {
+		return nil, fmt.Errorf("actual lease owner UID unavailable")
+	}
+	p, bit, err := leasePool(ctx, c, prefix, namespace, size, index)
+	if err != nil {
+		return nil, err
+	}
+	bitmap, err := decodeBitmap(p.Status.BitMap, p.Spec.Size)
+	if err != nil {
+		return nil, err
+	}
+	if !bitmap.Test(bit) || p.UID == "" {
+		return nil, fmt.Errorf("pool reservation is absent or identity unavailable")
+	}
+	key := strconv.FormatUint(uint64(bit), 10)
+	if prior, ok := p.Status.Leases[key]; ok {
+		if prior.OwnerUID != uid {
+			return nil, fmt.Errorf("pool slot belongs to another owner")
+		}
+		return &Lease{Index: index, PoolUID: string(p.UID), OwnerUID: uid, Generation: prior.Generation}, nil
+	}
+	if p.Status.NextLeaseGeneration == int64(^uint64(0)>>1) {
+		return nil, fmt.Errorf("pool lease generation exhausted")
+	}
+	p.Status.NextLeaseGeneration++
+	if p.Status.Leases == nil {
+		p.Status.Leases = map[string]allocationv1alpha1.PoolLease{}
+	}
+	p.Status.Leases[key] = allocationv1alpha1.PoolLease{OwnerUID: uid, Generation: p.Status.NextLeaseGeneration}
+	if err := c.Status().Update(ctx, p); err != nil {
+		return nil, err
+	}
+	return &Lease{Index: index, PoolUID: string(p.UID), OwnerUID: uid, Generation: p.Status.NextLeaseGeneration}, nil
+}
+func ValidateLease(ctx context.Context, c client.Reader, prefix, namespace string, size uint, lease Lease) error {
+	p, bit, err := leasePool(ctx, c, prefix, namespace, size, lease.Index)
+	if err != nil {
+		return err
+	}
+	owner, ok := p.Status.Leases[strconv.FormatUint(uint64(bit), 10)]
+	if !ok || string(p.UID) != lease.PoolUID || owner.OwnerUID != lease.OwnerUID || owner.Generation != lease.Generation || lease.Generation < 1 {
+		return fmt.Errorf("current pool lease owner/generation changed")
+	}
+	bitmap, err := decodeBitmap(p.Status.BitMap, p.Spec.Size)
+	if err != nil {
+		return err
+	}
+	if !bitmap.Test(bit) {
+		return fmt.Errorf("current pool reservation absent")
+	}
+	return nil
+}
+func ReleaseOwnedIndex(ctx context.Context, c client.Client, prefix, namespace string, size uint, lease Lease) error {
+	p, bit, err := leasePool(ctx, c, prefix, namespace, size, lease.Index)
+	if errors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	key := strconv.FormatUint(uint64(bit), 10)
+	owner, ok := p.Status.Leases[key]
+	// An old successful ACK is idempotent, including after a later reservation.
+	if !ok || string(p.UID) != lease.PoolUID || owner.OwnerUID != lease.OwnerUID || owner.Generation != lease.Generation {
+		return nil
+	}
+	if lease.OwnerUID == "" || lease.Generation < 1 {
+		return fmt.Errorf("incomplete pool lease")
+	}
+	bitmap, err := decodeBitmap(p.Status.BitMap, p.Spec.Size)
+	if err != nil {
+		return err
+	}
+	if bitmap.Test(bit) {
+		bitmap.Clear(bit)
+		p.Status.Free++
+	}
+	delete(p.Status.Leases, key)
+	p.Status.BitMap = encodeBitmap(bitmap)
+	if err := c.Status().Update(ctx, p); err != nil {
+		return err
+	}
+	a := NewRotatingAllocator(c, prefix, namespace, size).(*allocator)
+	return a.syncStateLabel(ctx, p.Name, p.Status.Free)
 }

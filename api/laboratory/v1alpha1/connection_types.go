@@ -18,9 +18,10 @@ type ConnectionSpec struct {
 type ConnectionStatus struct {
 	// VNI is the allocated VXLAN Network Identifier for direct (non-switch) connections.
 	// Nil for switch-to-device and switch-to-switch connections.
-	VNI   *uint                  `json:"vni,omitempty"`
-	Ports []ConnectionPortStatus `json:"ports,omitempty"`
-	Ready bool                   `json:"ready,omitempty"`
+	VNILease *VNILease              `json:"vniLease,omitempty"`
+	VNI      *uint                  `json:"vni,omitempty"`
+	Ports    []ConnectionPortStatus `json:"ports,omitempty"`
+	Ready    bool                   `json:"ready,omitempty"`
 	// Conditions surfaces reconciler progress/blocking reasons
 	// (e.g. Ready=False reason=WaitingForInterface) for kubectl and clients.
 	// +optional
@@ -33,6 +34,8 @@ type ConnectionStatus struct {
 
 // ConnectionPortStatus is written by the node-agent for each endpoint.
 type ConnectionPortStatus struct {
+	PodUID    string `json:"podUID,omitempty"`
+	RowUUID   string `json:"rowUUID,omitempty"`
 	Device    string `json:"device"`
 	Interface string `json:"interface,omitempty"`
 	// PortID is the OVS port name assigned by node-agent.
