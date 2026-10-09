@@ -168,6 +168,41 @@ func TestPodSourceKeychainAnonymousWithoutPullSecrets(t *testing.T) {
 	}
 }
 
+func restoredPodSourceFixture(t *testing.T) (client.Client, Container, PodInfo) {
+	t.Helper()
+	reader, c, p := podSourceFixture(t)
+	var pod corev1.Pod
+	key := types.NamespacedName{Namespace: p.Device.Namespace, Name: p.Pod}
+	if err := reader.Get(context.Background(), key, &pod); err != nil {
+		t.Fatal(err)
+	}
+	p.Incarnation = 2
+	pod.Annotations[names.AnnotationStateIncarnation] = "2"
+	pod.Spec.Containers[0].Image = c.ImageRef
+	pod.Status.ContainerStatuses[0].Image = "sha256:" + strings.Repeat("b", 64)
+	pod.Status.ContainerStatuses[0].ImageID = c.ImageRef
+	status := pod.Status.DeepCopy()
+	if err := reader.Update(context.Background(), &pod); err != nil {
+		t.Fatal(err)
+	}
+	pod.Status = *status
+	if err := reader.Status().Update(context.Background(), &pod); err != nil {
+		t.Fatal(err)
+	}
+	return reader, c, p
+}
+
+func TestPodSourceKeychainRestoredCRIConfigDigestUsesExactNamedManifest(t *testing.T) {
+	reader, c, p := restoredPodSourceFixture(t)
+	kc, err := NewPodSourceKeychain(reader, "node-a")(context.Background(), c, p)
+	if err != nil {
+		t.Fatalf("restored CRI config digest with exact current spec and manifest ImageID refused: %v", err)
+	}
+	if cfg := sourceAuth(t, kc, "registry.example/source/app"); cfg.Username != "pod-reader" || cfg.Password != "read-only" {
+		t.Fatal("restored owned source did not use its current Pod pull Secret")
+	}
+}
+
 func TestPodSourceKeychainRejectsStaleOwnershipAndImage(t *testing.T) {
 	for _, which := range []string{"uid", "node", "device", "epoch", "incarnation", "missing-epoch", "malformed-incarnation", "container-id", "pod-image", "status-image", "missing-status", "device-epoch"} {
 		t.Run(which, func(t *testing.T) {
@@ -275,5 +310,68 @@ func TestPodSourceKeychainPreservesPodAndSecretAPIErrors(t *testing.T) {
 		if kc, err := NewPodSourceKeychain(r, "node-a")(context.Background(), c, p); !errors.Is(err, failure) || kc != nil {
 			t.Fatal("API error became anonymous credentials")
 		}
+	}
+}
+
+func TestPodSourceKeychainRestoredCRIConfigDigestRequiresImmutableOwnership(t *testing.T) {
+	for _, which := range []string{"no-image-id", "tag-image-id", "wrong-id-digest", "wrong-id-repository", "tag-source", "tag-spec", "wrong-spec-digest", "foreign-qualified-status", "short-config-digest", "nonhex-config-digest", "foreign-status-name", "unsupported-id-prefix"} {
+		t.Run(which, func(t *testing.T) {
+			reader, c, p := restoredPodSourceFixture(t)
+			var pod corev1.Pod
+			key := types.NamespacedName{Namespace: p.Device.Namespace, Name: p.Pod}
+			if err := reader.Get(context.Background(), key, &pod); err != nil {
+				t.Fatal(err)
+			}
+			st := &pod.Status.ContainerStatuses[0]
+			switch which {
+			case "no-image-id":
+				st.ImageID = ""
+			case "tag-image-id":
+				st.ImageID = "registry.example/source/app:current"
+			case "wrong-id-digest":
+				st.ImageID = "registry.example/source/app@sha256:" + strings.Repeat("c", 64)
+			case "wrong-id-repository":
+				st.ImageID = "registry.example/foreign/app@sha256:" + strings.Repeat("a", 64)
+			case "tag-source":
+				c.ImageRef = "registry.example/source/app:current"
+			case "tag-spec":
+				pod.Spec.Containers[0].Image = "registry.example/source/app:current"
+			case "wrong-spec-digest":
+				pod.Spec.Containers[0].Image = "registry.example/source/app@sha256:" + strings.Repeat("c", 64)
+			case "foreign-qualified-status":
+				st.Image = "foreign.example/source/app@sha256:" + strings.Repeat("a", 64)
+			case "short-config-digest":
+				st.Image = "sha256:" + strings.Repeat("b", 63)
+			case "nonhex-config-digest":
+				st.Image = "sha256:" + strings.Repeat("z", 64)
+			case "foreign-status-name":
+				st.Name = "foreign"
+			case "unsupported-id-prefix":
+				st.ImageID = "unverified-runtime://" + c.ImageRef
+			}
+			status := pod.Status.DeepCopy()
+			if err := reader.Update(context.Background(), &pod); err != nil {
+				t.Fatal(err)
+			}
+			pod.Status = *status
+			if err := reader.Status().Update(context.Background(), &pod); err != nil {
+				t.Fatal(err)
+			}
+			if kc, err := NewPodSourceKeychain(reader, "node-a")(context.Background(), c, p); err == nil || kc != nil {
+				t.Fatal("bare config/status mismatch obtained source credentials")
+			}
+		})
+	}
+}
+
+func TestPodSourceKeychainNamedTagSourcePreservesLegacyBehavior(t *testing.T) {
+	reader, c, p := podSourceFixture(t)
+	c.ImageRef = "registry.example/source/app:current"
+	kc, err := NewPodSourceKeychain(reader, "node-a")(context.Background(), c, p)
+	if err != nil {
+		t.Fatal("unchanged named tag source refused:", err)
+	}
+	if cfg := sourceAuth(t, kc, "registry.example/source/app"); cfg.Username != "pod-reader" || cfg.Password != "read-only" {
+		t.Fatal("named tag source lost its owned pull credentials")
 	}
 }

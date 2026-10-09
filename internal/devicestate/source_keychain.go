@@ -2,9 +2,11 @@ package devicestate
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -54,9 +56,21 @@ func NewPodSourceKeychain(reader client.Reader, nodeName string) func(context.Co
 		if status == nil {
 			return nil, ErrStale
 		}
-		statusRef, err := name.ParseReference(status.Image)
-		if err != nil || statusRef.Context().Name() != source.Context().Name() {
-			return nil, ErrStale
+		configDigest := bareCRIConfigDigest(status.Image)
+		if configDigest {
+			// CRI may expose the config digest as Image after a retained restore.
+			// It has no repository authority; only the exact immutable manifest
+			// in the current ImageID and matching container spec can supply that.
+			manifest, immutable := source.(name.Digest)
+			imageID, err := name.NewDigest(status.ImageID)
+			if !immutable || err != nil || imageID.Name() != manifest.Name() {
+				return nil, ErrStale
+			}
+		} else {
+			statusRef, err := name.ParseReference(status.Image)
+			if err != nil || statusRef.Context().Name() != source.Context().Name() {
+				return nil, ErrStale
+			}
 		}
 		matched := false
 		for _, container := range pod.Spec.Containers {
@@ -64,7 +78,7 @@ func NewPodSourceKeychain(reader client.Reader, nodeName string) func(context.Co
 				continue
 			}
 			ref, err := name.ParseReference(container.Image)
-			if err != nil || ref.Context().Name() != source.Context().Name() || matched {
+			if err != nil || ref.Context().Name() != source.Context().Name() || matched || configDigest && ref.Name() != source.Name() {
 				return nil, ErrStale
 			}
 			matched = true
@@ -102,6 +116,14 @@ func NewPodSourceKeychain(reader client.Reader, nodeName string) func(context.Co
 		}
 		return sourceRepositoryKeychain{repo: source.Context().Name(), keychain: keychain}, nil
 	}
+}
+
+func bareCRIConfigDigest(image string) bool {
+	if len(image) != len("sha256:")+64 || !strings.HasPrefix(image, "sha256:") || image != strings.ToLower(image) {
+		return false
+	}
+	_, err := hex.DecodeString(strings.TrimPrefix(image, "sha256:"))
+	return err == nil
 }
 
 type sourceRepositoryKeychain struct {
