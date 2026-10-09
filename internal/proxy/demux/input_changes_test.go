@@ -3,10 +3,11 @@ package demux
 import (
 	"context"
 	"encoding/base64"
-	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"net"
 	"testing"
 	"time"
+
+	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
 func TestUnchangedTableDoesNotResolveAgain(t *testing.T) {

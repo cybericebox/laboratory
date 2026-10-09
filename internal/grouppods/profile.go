@@ -2,8 +2,9 @@ package grouppods
 
 import (
 	"fmt"
-	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 	"math"
+
+	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
 // EvaluateProfile returns eligible=false for every unsupported or unbounded

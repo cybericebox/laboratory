@@ -13,7 +13,7 @@ func retiredStorageToProto(l *lab.Lab, out *protobuf.ResourceAllocation) *protob
 		return out
 	}
 	if out == nil {
-		out = &protobuf.ResourceAllocation{RuntimeState: "Unknown"}
+		out = &protobuf.ResourceAllocation{RuntimeState: allocationUnknown}
 	}
 	out.StorageState = f.State
 	// Manifest deletion never certifies physical reclamation or a measured zero.

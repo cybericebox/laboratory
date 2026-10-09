@@ -1,10 +1,11 @@
 package grpc
 
 import (
+	"testing"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 	"google.golang.org/protobuf/reflect/protoreflect"
-	"testing"
 )
 
 func TestImmutableGroupSizeProjectionAndFrozenTags(t *testing.T) {

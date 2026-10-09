@@ -101,7 +101,7 @@ func SetupDeviceState(mgr ctrl.Manager, cfg *Config) error {
 		if err != nil {
 			return err
 		}
-		defer owner.Close()
+		defer func() { _ = owner.Close() }()
 		// Invalidate old required captures before any live task can thaw.
 		protected, err := engine.RecoverCaptureHolds(ctx)
 		if err != nil {

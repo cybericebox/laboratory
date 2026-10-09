@@ -189,7 +189,7 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 	lab.Labels, lab.Annotations = dep.stamp(stampTenant(copyLabels(want), tenantOf(ctx)), stampID(nil, it.GetName()))
 	hash := specHash(&lab.Spec, dep)
 	lab.Annotations[names.AnnotationSpecHash] = hash
-	admission := &laboratoryv1alpha1.GroupChildAdmission{GroupUID: string(liveGroup.UID), LabName: name, DesiredState: "Running", SpecHash: hash}
+	admission := &laboratoryv1alpha1.GroupChildAdmission{GroupUID: string(liveGroup.UID), LabName: name, DesiredState: lifecycleRunning, SpecHash: hash}
 	if err := h.claimChildAdmission(ctx, it.GetLabGroup(), admission); err != nil {
 		return 0, err
 	}

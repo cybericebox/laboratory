@@ -3,9 +3,10 @@
 package nodeagent
 
 import (
-	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"reflect"
 	"testing"
+
+	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
 func TestNativeRuntimeJournalFencesOperationAndNodeBoot(t *testing.T) {

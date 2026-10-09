@@ -1,9 +1,10 @@
 package grouppods
 
 import (
-	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 	"math"
 	"testing"
+
+	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
 func profileFixture() *protobuf.GroupPodsSizingProfile {

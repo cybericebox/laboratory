@@ -119,7 +119,6 @@ func (h *Handler) setLabGroupAccess(ctx context.Context, resolver *groupResolver
 		annotations = map[string]string{names.AnnotationIDMap: string(rawMap)}
 	}
 	state := protobuf.ItemState_ITEM_STATE_EXISTS
-	policiesAPI := h.cs.LaboratoryV1alpha1().LabGroupAccessPolicies(namespace)
 	want := laboratoryv1alpha1.LabGroupAccessPolicySpec{Rules: rules, OperationID: in.OperationId, Revision: in.DesiredRevision, ExpectedGroupUID: in.ExpectedGroupUid}
 	currentGroup := func() error {
 		live, err := h.getGroup(ctx, in.LabGroupName)
@@ -138,72 +137,7 @@ func (h *Handler) setLabGroupAccess(ctx context.Context, resolver *groupResolver
 		return nil
 	}
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		state = protobuf.ItemState_ITEM_STATE_EXISTS
-		if err := currentGroup(); err != nil {
-			return err
-		}
-		stored, err := policiesAPI.Get(ctx, names.LabGroupAccessPolicyName, metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			if in.PolicyUid != "" || in.Generation != 0 {
-				return fmt.Errorf("expected access policy does not exist")
-			}
-			if err := currentGroup(); err != nil {
-				return err
-			}
-			state = protobuf.ItemState_ITEM_STATE_CREATED
-			_, err = policiesAPI.Create(ctx, &laboratoryv1alpha1.LabGroupAccessPolicy{
-				ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: namespace, Labels: policyLabels, Annotations: copyLabels(annotations)},
-				Spec:       want,
-			}, metav1.CreateOptions{})
-			if apierrors.IsAlreadyExists(err) {
-				return apierrors.NewConflict(laboratoryv1alpha1.Resource("labgroupaccesspolicies"), names.LabGroupAccessPolicyName, err)
-			}
-			return createErr(err, kindLabGroupAccessPolicy, names.LabGroupAccessPolicyName, func() (metav1.Object, error) {
-				return policiesAPI.Get(ctx, names.LabGroupAccessPolicyName, metav1.GetOptions{})
-			})
-		}
-		if err != nil {
-			return err
-		}
-		if err := rejectTerminating(kindLabGroupAccessPolicy, stored); err != nil {
-			return err
-		}
-		if !ownedBy(tenantOf(ctx), stored) {
-			return notFoundForeign(kindLabGroupAccessPolicy, stored.Name)
-		}
-		if in.PolicyUid != "" && in.PolicyUid != string(stored.UID) {
-			return fmt.Errorf("access policy UID or generation changed")
-		}
-		if accessSpecFenced(stored.Spec) {
-			if !accessSpecFenced(want) || stored.Spec.ExpectedGroupUID != string(group.UID) {
-				return fmt.Errorf("fenced access policy requires its current group identity")
-			}
-			if want.Revision < stored.Spec.Revision || want.Revision == stored.Spec.Revision && (want.OperationID != stored.Spec.OperationID || !rulesEqual(want.Rules, stored.Spec.Rules)) {
-				return fmt.Errorf("access policy revision is stale or conflicts with the stored operation")
-			}
-		}
-		labels, labelsChanged := mergeLabels(stored.Labels, policyLabels)
-		if err := currentGroup(); err != nil {
-			return err
-		}
-		specEqual := stored.Spec.OperationID == want.OperationID && stored.Spec.Revision == want.Revision && stored.Spec.ExpectedGroupUID == want.ExpectedGroupUID && rulesEqual(stored.Spec.Rules, want.Rules)
-		if !labelsChanged && specEqual && stored.Annotations[names.AnnotationIDMap] == annotations[names.AnnotationIDMap] {
-			return nil
-		}
-		if in.Generation != 0 && in.Generation != stored.Generation {
-			return fmt.Errorf("access policy generation changed")
-		}
-		state = protobuf.ItemState_ITEM_STATE_UPDATED
-		stored.Spec = want
-		stored.Labels = labels
-		stored.Annotations = copyLabels(stored.Annotations)
-		if len(idMap) > 0 {
-			stored.Annotations = stampAnn(stored.Annotations, names.AnnotationIDMap, string(rawMap))
-		} else {
-			delete(stored.Annotations, names.AnnotationIDMap)
-		}
-		_, err = policiesAPI.Update(ctx, stored, metav1.UpdateOptions{})
-		return err
+		return h.updateGroupAccessPolicy(ctx, in, group, namespace, want, policyLabels, annotations, idMap, rawMap, currentGroup, &state)
 	})
 	return state, err
 }
@@ -249,4 +183,74 @@ func encodeNames(ids []string, idMap map[string]string) []string {
 		}
 	}
 	return out
+}
+
+func (h *Handler) updateGroupAccessPolicy(ctx context.Context, in *protobuf.LabGroupAccessPolicy, group *laboratoryv1alpha1.LabGroup, namespace string, want laboratoryv1alpha1.LabGroupAccessPolicySpec, policyLabels, annotations, idMap map[string]string, rawMap []byte, currentGroup func() error, state *protobuf.ItemState) error {
+	policiesAPI := h.cs.LaboratoryV1alpha1().LabGroupAccessPolicies(namespace)
+	*state = protobuf.ItemState_ITEM_STATE_EXISTS
+	if err := currentGroup(); err != nil {
+		return err
+	}
+	stored, err := policiesAPI.Get(ctx, names.LabGroupAccessPolicyName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		if in.PolicyUid != "" || in.Generation != 0 {
+			return fmt.Errorf("expected access policy does not exist")
+		}
+		if err := currentGroup(); err != nil {
+			return err
+		}
+		*state = protobuf.ItemState_ITEM_STATE_CREATED
+		_, err = policiesAPI.Create(ctx, &laboratoryv1alpha1.LabGroupAccessPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: namespace, Labels: policyLabels, Annotations: copyLabels(annotations)},
+			Spec:       want,
+		}, metav1.CreateOptions{})
+		if apierrors.IsAlreadyExists(err) {
+			return apierrors.NewConflict(laboratoryv1alpha1.Resource("labgroupaccesspolicies"), names.LabGroupAccessPolicyName, err)
+		}
+		return createErr(err, kindLabGroupAccessPolicy, names.LabGroupAccessPolicyName, func() (metav1.Object, error) {
+			return policiesAPI.Get(ctx, names.LabGroupAccessPolicyName, metav1.GetOptions{})
+		})
+	}
+	if err != nil {
+		return err
+	}
+	if err := rejectTerminating(kindLabGroupAccessPolicy, stored); err != nil {
+		return err
+	}
+	if !ownedBy(tenantOf(ctx), stored) {
+		return notFoundForeign(kindLabGroupAccessPolicy, stored.Name)
+	}
+	if in.PolicyUid != "" && in.PolicyUid != string(stored.UID) {
+		return fmt.Errorf("access policy UID or generation changed")
+	}
+	if accessSpecFenced(stored.Spec) {
+		if !accessSpecFenced(want) || stored.Spec.ExpectedGroupUID != string(group.UID) {
+			return fmt.Errorf("fenced access policy requires its current group identity")
+		}
+		if want.Revision < stored.Spec.Revision || want.Revision == stored.Spec.Revision && (want.OperationID != stored.Spec.OperationID || !rulesEqual(want.Rules, stored.Spec.Rules)) {
+			return fmt.Errorf("access policy revision is stale or conflicts with the stored operation")
+		}
+	}
+	labels, labelsChanged := mergeLabels(stored.Labels, policyLabels)
+	if err := currentGroup(); err != nil {
+		return err
+	}
+	specEqual := stored.Spec.OperationID == want.OperationID && stored.Spec.Revision == want.Revision && stored.Spec.ExpectedGroupUID == want.ExpectedGroupUID && rulesEqual(stored.Spec.Rules, want.Rules)
+	if !labelsChanged && specEqual && stored.Annotations[names.AnnotationIDMap] == annotations[names.AnnotationIDMap] {
+		return nil
+	}
+	if in.Generation != 0 && in.Generation != stored.Generation {
+		return fmt.Errorf("access policy generation changed")
+	}
+	*state = protobuf.ItemState_ITEM_STATE_UPDATED
+	stored.Spec = want
+	stored.Labels = labels
+	stored.Annotations = copyLabels(stored.Annotations)
+	if len(idMap) > 0 {
+		stored.Annotations = stampAnn(stored.Annotations, names.AnnotationIDMap, string(rawMap))
+	} else {
+		delete(stored.Annotations, names.AnnotationIDMap)
+	}
+	_, err = policiesAPI.Update(ctx, stored, metav1.UpdateOptions{})
+	return err
 }

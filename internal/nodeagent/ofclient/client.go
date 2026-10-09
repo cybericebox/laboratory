@@ -204,7 +204,7 @@ func (c *Client) RetirePort(no uint32) error {
 	c.writeMu.Lock()
 	first := buildFlowMod(ofpfcDeleteStrict, 0, 90, BuildMatch(no, 0, false), nil, ofppAny)
 	second := buildFlowMod(ofpfcDelete, ofpttAll, 0, BuildMatchAdvanced(0, 0, false, 0, false, 0, false, 0, false), nil, no)
-	barrier := buildHeader(20, 8)
+	barrier := buildHeader(20)
 	for _, msg := range [][]byte{first, second, barrier} {
 		c.stamp(msg)
 	}
@@ -365,7 +365,7 @@ func (c *Client) readLoop() {
 
 // handshake performs the OF 1.3 HELLO exchange synchronously, before readLoop starts.
 func (c *Client) handshake() error {
-	hello := buildHeader(ofptHello, 8)
+	hello := buildHeader(ofptHello)
 	xid := c.xid.Add(1)
 	binary.BigEndian.PutUint32(hello[4:8], xid)
 	if _, err := c.conn.Write(hello); err != nil {
@@ -532,10 +532,10 @@ func (c *Client) rawRecv() ([]byte, error) {
 
 // --- Wire encoding helpers (exported for use by openflow.go) ---
 
-// buildHeader returns an OF 1.3 header slice of totalLen bytes with version=4.
-func buildHeader(msgType uint8, totalLen int) []byte {
-	b := make([]byte, totalLen)
-	putHeader(b, msgType, totalLen)
+// buildHeader returns an OF 1.3 eight-byte header slice with version=4.
+func buildHeader(msgType uint8) []byte {
+	b := make([]byte, 8)
+	putHeader(b, msgType, 8)
 	return b
 }
 
@@ -621,7 +621,7 @@ func (c *Client) RetireVNI(vni uint64) error {
 	ch := make(chan error, 1)
 	c.writeMu.Lock()
 	flow := buildFlowMod(ofpfcDelete, ofpttAll, 0, BuildMatchAdvanced(0, vni, true, 0, false, 0, false, 0, false), nil, ofppAny)
-	barrier := buildHeader(20, 8)
+	barrier := buildHeader(20)
 	c.stamp(flow)
 	c.stamp(barrier)
 	c.pdMu.Lock()
@@ -655,7 +655,7 @@ func (c *Client) Barrier() error {
 	defer c.retireMu.Unlock()
 	ch := make(chan error, 1)
 	c.writeMu.Lock()
-	request := buildHeader(20, 8)
+	request := buildHeader(20)
 	c.stamp(request)
 	c.pdMu.Lock()
 	c.pendingRetire = ch

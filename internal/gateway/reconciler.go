@@ -89,130 +89,7 @@ func (r *LabGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		labstatus.SetReady(&next.Conditions, gw.Generation, false, "LabStopped", "lab runtime is stopped")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, r.patchStatus(ctx, &gw, next)
 	}
-	dhcpEnabled, ranges, dns, dhcpErr := labdhcp.Desired(ctx, r.Client, gw.Namespace, gw.Spec.LabName, "internet")
-	if dhcpErr != nil {
-		return r.dhcpFailure(ctx, &gw, dhcpErr)
-	}
-	if r.applied == nil {
-		r.applied = map[string]appliedNetwork{}
-	}
-
-	// Wait for lab{N} interface to appear (created by node-agent via OVS).
-	ifaceName := names.LabIfaceNameByIndex(gw.Spec.NetworkIndex)
-	link, linkErr := netlink.LinkByName(ifaceName)
-	if linkErr != nil {
-		r.DHCP.Stop(gw.Spec.LabName)
-		if old, ok := r.applied[gw.Name]; ok {
-			if err := r.clearNetwork(old); err != nil {
-				return r.networkFailure(ctx, &gw, err)
-			}
-			delete(r.applied, gw.Name)
-		}
-		next := gw.Status
-		next.Conditions = slices.Clone(next.Conditions)
-		next.Phase = laboratoryv1alpha1.LabGatewayPhaseWaitingForInterface
-		next.DHCPReady = false
-		next.NATReady = false
-		labstatus.SetReady(&next.Conditions, gw.Generation, false, labstatus.ReasonWaitingForInterface, "waiting for lab interface")
-		if err := r.patchStatus(ctx, &gw, next); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-	}
-
-	cidr, err := netutil.SubnetForIndex(r.Cfg.InetBaseNetwork, 24, gw.Spec.NetworkIndex)
-	if err != nil {
-		return r.networkFailure(ctx, &gw, fmt.Errorf("compute inet CIDR: %w", err))
-	}
-
-	desired := appliedNetwork{Iface: ifaceName, CIDR: cidr, LinkIndex: link.Attrs().Index, Hardware: link.Attrs().HardwareAddr.String()}
-	previous, known := r.applied[gw.Name]
-	if !known || previous.Iface != desired.Iface || previous.CIDR != desired.CIDR || previous.LinkIndex != desired.LinkIndex || previous.Hardware != desired.Hardware || !networkPresent(link, cidr) {
-		if err := r.IPT.BlockLab(ifaceName); err != nil {
-			return r.networkFailure(ctx, &gw, fmt.Errorf("close lab source gate: %w", err))
-		}
-
-		if known {
-			r.DHCP.Stop(gw.Spec.LabName)
-			if err := r.clearNetwork(previous); err != nil {
-				return r.networkFailure(ctx, &gw, err)
-			}
-			delete(r.applied, gw.Name)
-		}
-		// Assign first host IP of the lab's /24 to the interface (idempotent).
-		if err := netutil.AssignFirstHostIP(ifaceName, cidr); err != nil {
-			return r.networkFailure(ctx, &gw, fmt.Errorf("assign IP to %s: %w", ifaceName, err))
-		}
-
-		// The lab may ping the pod's address on its own interface, and nothing else of the pod.
-		if err := r.IPT.AllowPing(ifaceName, firstHostIP(cidr)); err != nil {
-			return r.networkFailure(ctx, &gw, fmt.Errorf("allow ping of %s: %w", ifaceName, err))
-		}
-
-		// A lab may send only from its own subnet; installed before the lab can send anything through NAT.
-		if err := r.IPT.AddAntiSpoof(ifaceName, cidr); err != nil {
-			return r.networkFailure(ctx, &gw, fmt.Errorf("add anti-spoof rule for %s: %w", ifaceName, err))
-		}
-
-		// NAT: POSTROUTING MASQUERADE for this lab's subnet.
-		if err := r.IPT.AddMasquerade(cidr); err != nil {
-			return r.networkFailure(ctx, &gw, fmt.Errorf("add masquerade %s: %w", cidr, err))
-		}
-
-		if err := r.IPT.UnblockLab(ifaceName); err != nil {
-			return r.networkFailure(ctx, &gw, fmt.Errorf("open secured lab source gate: %w", err))
-		}
-		r.applied[gw.Name] = desired
-	}
-	state := r.applied[gw.Name]
-	if dhcpEnabled {
-		gwIP := firstHostIP(cidr)
-		// The pod drops everything addressed to itself from the lab side, DHCP on this interface excepted.
-		if !state.DHCPKnown || !state.DHCP {
-			if err := r.IPT.AllowDHCP(ifaceName); err != nil {
-				return r.dhcpFailure(ctx, &gw, fmt.Errorf("open DHCP on %s: %w", ifaceName, err))
-			}
-		}
-		if err := r.DHCP.Start(
-			gw.Spec.LabName, dhcp.Config{
-				Iface:   ifaceName,
-				Subnet:  cidr,
-				Gateway: gwIP,
-				BindIP:  gwIP,
-				DNS:     dns,
-				Ranges:  ranges,
-			},
-		); err != nil {
-			return r.dhcpFailure(ctx, &gw, fmt.Errorf("start DHCP for lab %s: %w", gw.Spec.LabName, err))
-		}
-	} else {
-		r.DHCP.Stop(gw.Spec.LabName)
-		if !state.DHCPKnown || state.DHCP {
-			r.IPT.DenyDHCP(ifaceName)
-		}
-	}
-	state.DHCPKnown = true
-	state.DHCP = dhcpEnabled
-	r.applied[gw.Name] = state
-	if dhcpEnabled && !r.DHCP.Healthy(gw.Spec.LabName) {
-		return r.dhcpFailure(ctx, &gw, fmt.Errorf("DHCP socket is unavailable"))
-	}
-
-	if r.Recorder != nil && gw.Status.Phase != laboratoryv1alpha1.LabGatewayPhaseReady {
-		r.Recorder.Eventf(
-			&gw, corev1.EventTypeNormal, labstatus.ReasonReady,
-			"lab internet gateway ready on %s (NAT active)", ifaceName,
-		)
-	}
-	newStatus := laboratoryv1alpha1.LabGatewayStatus{
-		Phase:       laboratoryv1alpha1.LabGatewayPhaseReady,
-		NATReady:    true,
-		DHCPEnabled: dhcpEnabled,
-		DHCPReady:   dhcpEnabled && r.DHCP.Healthy(gw.Spec.LabName),
-		Conditions:  slices.Clone(gw.Status.Conditions),
-	}
-	labstatus.SetReady(&newStatus.Conditions, gw.Generation, true, labstatus.ReasonReady, "lab internet gateway ready")
-	return ctrl.Result{RequeueAfter: 30 * time.Second}, r.patchStatus(ctx, &gw, newStatus)
+	return r.reconcileRunning(ctx, &gw)
 }
 
 func (r *LabGatewayReconciler) reconcileDelete(ctx context.Context, gw *laboratoryv1alpha1.LabGateway) (
@@ -237,16 +114,6 @@ func (r *LabGatewayReconciler) reconcileDelete(ctx context.Context, gw *laborato
 	}
 	controllerutil.RemoveFinalizer(gw, names.FinalizerGateway)
 	return ctrl.Result{}, r.Update(ctx, gw)
-}
-
-func (r *LabGatewayReconciler) patchPhase(
-	ctx context.Context,
-	gw *laboratoryv1alpha1.LabGateway,
-	phase laboratoryv1alpha1.LabGatewayPhase,
-) error {
-	patch := client.MergeFrom(gw.DeepCopy())
-	gw.Status.Phase = phase
-	return r.Status().Patch(ctx, gw, patch)
 }
 
 func (r *LabGatewayReconciler) patchStatus(
@@ -329,4 +196,135 @@ func (r *LabGatewayReconciler) networkFailure(ctx context.Context, obj *laborato
 		return ctrl.Result{}, patchErr
 	}
 	return ctrl.Result{}, err
+}
+
+func gatewayNetworkNeedsSetup(known bool, previous appliedNetwork, desired appliedNetwork, link netlink.Link, cidr string) bool {
+	return !known || previous.Iface != desired.Iface || previous.CIDR != desired.CIDR || previous.LinkIndex != desired.LinkIndex || previous.Hardware != desired.Hardware || !networkPresent(link, cidr)
+}
+
+func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laboratoryv1alpha1.LabGateway) (ctrl.Result, error) {
+	dhcpEnabled, ranges, dns, dhcpErr := labdhcp.Desired(ctx, r.Client, gw.Namespace, gw.Spec.LabName, "internet")
+	if dhcpErr != nil {
+		return r.dhcpFailure(ctx, gw, dhcpErr)
+	}
+	if r.applied == nil {
+		r.applied = map[string]appliedNetwork{}
+	}
+
+	// Wait for lab{N} interface to appear (created by node-agent via OVS).
+	ifaceName := names.LabIfaceNameByIndex(gw.Spec.NetworkIndex)
+	link, linkErr := netlink.LinkByName(ifaceName)
+	if linkErr != nil {
+		r.DHCP.Stop(gw.Spec.LabName)
+		if old, ok := r.applied[gw.Name]; ok {
+			if err := r.clearNetwork(old); err != nil {
+				return r.networkFailure(ctx, gw, err)
+			}
+			delete(r.applied, gw.Name)
+		}
+		next := gw.Status
+		next.Conditions = slices.Clone(next.Conditions)
+		next.Phase = laboratoryv1alpha1.LabGatewayPhaseWaitingForInterface
+		next.DHCPReady = false
+		next.NATReady = false
+		labstatus.SetReady(&next.Conditions, gw.Generation, false, labstatus.ReasonWaitingForInterface, "waiting for lab interface")
+		if err := r.patchStatus(ctx, gw, next); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	cidr, err := netutil.SubnetForIndex(r.Cfg.InetBaseNetwork, 24, gw.Spec.NetworkIndex)
+	if err != nil {
+		return r.networkFailure(ctx, gw, fmt.Errorf("compute inet CIDR: %w", err))
+	}
+
+	desired := appliedNetwork{Iface: ifaceName, CIDR: cidr, LinkIndex: link.Attrs().Index, Hardware: link.Attrs().HardwareAddr.String()}
+	previous, known := r.applied[gw.Name]
+	if gatewayNetworkNeedsSetup(known, previous, desired, link, cidr) {
+		if err := r.IPT.BlockLab(ifaceName); err != nil {
+			return r.networkFailure(ctx, gw, fmt.Errorf("close lab source gate: %w", err))
+		}
+
+		if known {
+			r.DHCP.Stop(gw.Spec.LabName)
+			if err := r.clearNetwork(previous); err != nil {
+				return r.networkFailure(ctx, gw, err)
+			}
+			delete(r.applied, gw.Name)
+		}
+		// Assign first host IP of the lab's /24 to the interface (idempotent).
+		if err := netutil.AssignFirstHostIP(ifaceName, cidr); err != nil {
+			return r.networkFailure(ctx, gw, fmt.Errorf("assign IP to %s: %w", ifaceName, err))
+		}
+
+		// The lab may ping the pod's address on its own interface, and nothing else of the pod.
+		if err := r.IPT.AllowPing(ifaceName, firstHostIP(cidr)); err != nil {
+			return r.networkFailure(ctx, gw, fmt.Errorf("allow ping of %s: %w", ifaceName, err))
+		}
+
+		// A lab may send only from its own subnet; installed before the lab can send anything through NAT.
+		if err := r.IPT.AddAntiSpoof(ifaceName, cidr); err != nil {
+			return r.networkFailure(ctx, gw, fmt.Errorf("add anti-spoof rule for %s: %w", ifaceName, err))
+		}
+
+		// NAT: POSTROUTING MASQUERADE for this lab's subnet.
+		if err := r.IPT.AddMasquerade(cidr); err != nil {
+			return r.networkFailure(ctx, gw, fmt.Errorf("add masquerade %s: %w", cidr, err))
+		}
+
+		if err := r.IPT.UnblockLab(ifaceName); err != nil {
+			return r.networkFailure(ctx, gw, fmt.Errorf("open secured lab source gate: %w", err))
+		}
+		r.applied[gw.Name] = desired
+	}
+	state := r.applied[gw.Name]
+	if dhcpEnabled {
+		gwIP := firstHostIP(cidr)
+		// The pod drops everything addressed to itself from the lab side, DHCP on this interface excepted.
+		if !state.DHCPKnown || !state.DHCP {
+			if err := r.IPT.AllowDHCP(ifaceName); err != nil {
+				return r.dhcpFailure(ctx, gw, fmt.Errorf("open DHCP on %s: %w", ifaceName, err))
+			}
+		}
+		if err := r.DHCP.Start(
+			gw.Spec.LabName, dhcp.Config{
+				Iface:   ifaceName,
+				Subnet:  cidr,
+				Gateway: gwIP,
+				BindIP:  gwIP,
+				DNS:     dns,
+				Ranges:  ranges,
+			},
+		); err != nil {
+			return r.dhcpFailure(ctx, gw, fmt.Errorf("start DHCP for lab %s: %w", gw.Spec.LabName, err))
+		}
+	} else {
+		r.DHCP.Stop(gw.Spec.LabName)
+		if !state.DHCPKnown || state.DHCP {
+			r.IPT.DenyDHCP(ifaceName)
+		}
+	}
+	state.DHCPKnown = true
+	state.DHCP = dhcpEnabled
+	r.applied[gw.Name] = state
+	if dhcpEnabled && !r.DHCP.Healthy(gw.Spec.LabName) {
+		return r.dhcpFailure(ctx, gw, fmt.Errorf("DHCP socket is unavailable"))
+	}
+
+	if r.Recorder != nil && gw.Status.Phase != laboratoryv1alpha1.LabGatewayPhaseReady {
+		r.Recorder.Eventf(
+			gw, corev1.EventTypeNormal, labstatus.ReasonReady,
+			"lab internet gateway ready on %s (NAT active)", ifaceName,
+		)
+	}
+	newStatus := laboratoryv1alpha1.LabGatewayStatus{
+		Phase:       laboratoryv1alpha1.LabGatewayPhaseReady,
+		NATReady:    true,
+		DHCPEnabled: dhcpEnabled,
+		DHCPReady:   dhcpEnabled && r.DHCP.Healthy(gw.Spec.LabName),
+		Conditions:  slices.Clone(gw.Status.Conditions),
+	}
+	labstatus.SetReady(&newStatus.Conditions, gw.Generation, true, labstatus.ReasonReady, "lab internet gateway ready")
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, r.patchStatus(ctx, gw, newStatus)
 }

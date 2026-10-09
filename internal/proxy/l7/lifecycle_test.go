@@ -2,15 +2,16 @@ package l7
 
 import (
 	"context"
-	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"io"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"net"
 	"net/http"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"testing"
 	"time"
+
+	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func TestLifecycleSettlesActiveStreamBeforeFinalReport(t *testing.T) {

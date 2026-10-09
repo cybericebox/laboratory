@@ -5,7 +5,6 @@ package nodeagent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -334,7 +333,7 @@ func TestRetirementIntermediateFencePreservesEveryOriginalDebt(t *testing.T) {
 			copy.Incarnation++
 		}
 		if err := r.Observer.retirementScopeCurrent(context.Background(), copy, in); err == nil {
-			t.Fatal(fmt.Sprintf("intermediate fence dropped original %s authority", field))
+			t.Fatalf("intermediate fence dropped original %s authority", field)
 		}
 	}
 }

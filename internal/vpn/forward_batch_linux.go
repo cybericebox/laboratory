@@ -58,22 +58,8 @@ func (m *IPTablesManager) ApplyForwardPlan(ctx context.Context, plan ForwardPlan
 	if m.forwardReady && !m.retirePending && slices.Equal(m.forwardPlan.Allows, plan.Allows) {
 		return ApplyResult{}, nil
 	}
-	for _, r := range plan.Allows {
-		if _, err := LabInterfaceIndex(r.LabInterface); err != nil {
-			return ApplyResult{}, err
-		}
-		if len(r.BindingID) != 16 {
-			return ApplyResult{}, fmt.Errorf("invalid binding identity")
-		}
-		if _, err := hex.DecodeString(r.BindingID); err != nil {
-			return ApplyResult{}, err
-		}
-		if src, ok := parsePrefix(r.ClientCIDR); !ok || !src.Addr().Is4() || src.Bits() != 32 {
-			return ApplyResult{}, fmt.Errorf("invalid client address")
-		}
-		if dst, ok := parsePrefix(r.LabCIDR); !ok || !dst.Addr().Is4() {
-			return ApplyResult{}, fmt.Errorf("invalid lab prefix")
-		}
+	if err := validateForwardPlan(plan); err != nil {
+		return ApplyResult{}, err
 	}
 	saved, err := m.commands.Save(ctx)
 	if err != nil {
@@ -125,6 +111,31 @@ func (m *IPTablesManager) ApplyForwardPlan(ctx context.Context, plan ForwardPlan
 		}
 		m.bindings[id] = r
 	}
+	return m.retireForwardBindings(ctx, wanted)
+}
+
+func validateForwardPlan(plan ForwardPlan) error {
+	for _, r := range plan.Allows {
+		if _, err := LabInterfaceIndex(r.LabInterface); err != nil {
+			return err
+		}
+		if len(r.BindingID) != 16 {
+			return fmt.Errorf("invalid binding identity")
+		}
+		if _, err := hex.DecodeString(r.BindingID); err != nil {
+			return err
+		}
+		if src, ok := parsePrefix(r.ClientCIDR); !ok || !src.Addr().Is4() || src.Bits() != 32 {
+			return fmt.Errorf("invalid client address")
+		}
+		if dst, ok := parsePrefix(r.LabCIDR); !ok || !dst.Addr().Is4() {
+			return fmt.Errorf("invalid lab prefix")
+		}
+	}
+	return nil
+}
+
+func (m *IPTablesManager) retireForwardBindings(ctx context.Context, wanted map[string]ForwardRule) (ApplyResult, error) {
 	finalSaved, err := m.commands.Save(ctx)
 	if err != nil {
 		return ApplyResult{Changed: true}, err

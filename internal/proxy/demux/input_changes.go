@@ -1,8 +1,9 @@
 package demux
 
 import (
-	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"reflect"
+
+	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
 func routingInputsChanged(old, next *lab.LabGroup) bool {

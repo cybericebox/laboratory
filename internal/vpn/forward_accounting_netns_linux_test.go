@@ -5,8 +5,6 @@ package vpn
 import (
 	"context"
 	"encoding/binary"
-	"github.com/ti-mo/conntrack"
-	"golang.org/x/sys/unix"
 	"net"
 	"os"
 	"os/exec"
@@ -14,6 +12,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/ti-mo/conntrack"
+	"golang.org/x/sys/unix"
 
 	"github.com/cybericebox/laboratory/internal/nstest"
 	"github.com/cybericebox/laboratory/internal/vpn/flowacct"

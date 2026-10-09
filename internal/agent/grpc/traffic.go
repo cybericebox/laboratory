@@ -87,20 +87,7 @@ func mergeProxyReports(reports []*protobuf.TrafficReport) *protobuf.TrafficRepor
 	}
 	merged.CoveredToUnixMs = latest
 	sort.Slice(merged.CoverageSpans, func(i, j int) bool {
-		a, b := merged.CoverageSpans[i], merged.CoverageSpans[j]
-		if a.GetFromUnixMs() != b.GetFromUnixMs() {
-			return a.GetFromUnixMs() < b.GetFromUnixMs()
-		}
-		if a.GetToUnixMs() != b.GetToUnixMs() {
-			return a.GetToUnixMs() < b.GetToUnixMs()
-		}
-		if a.GetSource() != b.GetSource() {
-			return a.GetSource() < b.GetSource()
-		}
-		if a.GetInstance() != b.GetInstance() {
-			return a.GetInstance() < b.GetInstance()
-		}
-		return a.GetBootId() < b.GetBootId()
+		return coverageSpanLess(merged.CoverageSpans[i], merged.CoverageSpans[j])
 	})
 	merged.Partial = merged.Partial || coverageHasGap(merged.CoverageSpans, merged.CoveredFromUnixMs, latest)
 	for _, row := range rows {
@@ -263,4 +250,20 @@ func shareTrafficLedgers(previous, next *protobuf.MonitoringUpdate) {
 			r.Ledger = p.Ledger
 		}
 	}
+}
+
+func coverageSpanLess(a, b *protobuf.TrafficCoverageSpan) bool {
+	if a.GetFromUnixMs() != b.GetFromUnixMs() {
+		return a.GetFromUnixMs() < b.GetFromUnixMs()
+	}
+	if a.GetToUnixMs() != b.GetToUnixMs() {
+		return a.GetToUnixMs() < b.GetToUnixMs()
+	}
+	if a.GetSource() != b.GetSource() {
+		return a.GetSource() < b.GetSource()
+	}
+	if a.GetInstance() != b.GetInstance() {
+		return a.GetInstance() < b.GetInstance()
+	}
+	return a.GetBootId() < b.GetBootId()
 }

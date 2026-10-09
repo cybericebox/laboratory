@@ -62,7 +62,7 @@ func Run(t *testing.T, ns string, argv ...string) string {
 // Try runs a command in a namespace and returns its error.
 func Try(ns string, argv ...string) (string, error) {
 	if ns != "" {
-		argv = append([]string{"ip", "netns", "exec", ns}, argv...)
+		argv = append([]string{"ip", netnsSubcommand, netnsExec, ns}, argv...)
 	}
 	out, err := exec.Command(argv[0], argv[1:]...).CombinedOutput()
 	return string(out), err
@@ -71,8 +71,8 @@ func Try(ns string, argv ...string) (string, error) {
 // NS creates a namespace, removed at the end of the test.
 func NS(t *testing.T, name string) {
 	t.Helper()
-	Run(t, "", "ip", "netns", "add", name)
-	t.Cleanup(func() { _, _ = Try("", "ip", "netns", "del", name) })
+	Run(t, "", "ip", netnsSubcommand, "add", name)
+	t.Cleanup(func() { _, _ = Try("", "ip", netnsSubcommand, "del", name) })
 	Run(t, name, "ip", "link", "set", "lo", "up")
 }
 
@@ -81,11 +81,15 @@ func NS(t *testing.T, name string) {
 func Veth(t *testing.T, nsA, a, cidrA, nsB, b, cidrB string) {
 	t.Helper()
 	Run(t, "", "ip", "link", "add", a, "type", "veth", "peer", "name", b)
+	// Delete our endpoint before namespace teardown, even while a helper still holds the peer namespace.
+	endpointNS := ""
+	t.Cleanup(func() { _, _ = Try(endpointNS, "ip", "link", "del", a) })
 	if nsA != "" {
-		Run(t, "", "ip", "link", "set", a, "netns", nsA)
+		Run(t, "", "ip", "link", "set", a, netnsSubcommand, nsA)
+		endpointNS = nsA
 	}
 	if nsB != "" {
-		Run(t, "", "ip", "link", "set", b, "netns", nsB)
+		Run(t, "", "ip", "link", "set", b, netnsSubcommand, nsB)
 	}
 	for _, e := range []struct{ ns, dev, cidr string }{{nsA, a, cidrA}, {nsB, b, cidrB}} {
 		if e.cidr != "" {
@@ -112,7 +116,7 @@ func Listen(t *testing.T, ns, proto, addr string) *Listener {
 	t.Helper()
 	argv := helperArgv("listen", proto, addr)
 	if ns != "" {
-		argv = append([]string{"ip", "netns", "exec", ns}, argv...)
+		argv = append([]string{"ip", netnsSubcommand, netnsExec, ns}, argv...)
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = append(os.Environ(), helperEnv+"=1")
@@ -158,7 +162,7 @@ func Dial(t *testing.T, ns, proto, addr string) bool {
 	t.Helper()
 	argv := helperArgv("dial", proto, addr)
 	if ns != "" {
-		argv = append([]string{"ip", "netns", "exec", ns}, argv...)
+		argv = append([]string{"ip", netnsSubcommand, netnsExec, ns}, argv...)
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = append(os.Environ(), helperEnv+"=1")

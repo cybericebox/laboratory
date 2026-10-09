@@ -6,11 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"k8s.io/apimachinery/pkg/types"
 	"net"
 	"reflect"
 	"slices"
 	"time"
+
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/vishvananda/netlink"
 	corev1 "k8s.io/api/core/v1"
@@ -89,106 +90,7 @@ func (r *LabVPNReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		labstatus.SetReady(&next.Conditions, labvpn.Generation, false, "LabStopped", "lab runtime is stopped")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, r.patchStatus(ctx, &labvpn, next)
 	}
-	dhcpEnabled, ranges, _, dhcpErr := labdhcp.Desired(ctx, r.Client, labvpn.Namespace, labvpn.Spec.LabName, "vpn")
-	if dhcpErr != nil {
-		return r.dhcpFailure(ctx, &labvpn, dhcpErr)
-	}
-	if r.applied == nil {
-		r.applied = map[string]appliedNetwork{}
-	}
-
-	// Wait for lab{N} interface (created by node-agent via OVS).
-	ifaceName := names.LabIfaceNameByIndex(labvpn.Spec.NetworkIndex)
-	link, linkErr := netlink.LinkByName(ifaceName)
-	if linkErr != nil {
-		r.DHCP.Stop(labvpn.Spec.LabName)
-		if old, ok := r.applied[labvpn.Name]; ok {
-			r.clearNetwork(old)
-			delete(r.applied, labvpn.Name)
-		}
-		next := labvpn.Status
-		next.Conditions = slices.Clone(next.Conditions)
-		next.Phase = laboratoryv1alpha1.LabVPNPhaseWaitingForInterface
-		next.DHCPReady = false
-		labstatus.SetReady(&next.Conditions, labvpn.Generation, false, labstatus.ReasonWaitingForInterface, "waiting for lab interface")
-		if err := r.patchStatus(ctx, &labvpn, next); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-	}
-
-	cidr, err := netutil.SubnetForIndex(r.Cfg.VPNBaseNetwork, 24, labvpn.Spec.NetworkIndex)
-	if err != nil {
-		return r.networkFailure(ctx, &labvpn, fmt.Errorf("compute VPN CIDR: %w", err))
-	}
-
-	desired := appliedNetwork{Iface: ifaceName, CIDR: cidr, LinkIndex: link.Attrs().Index, Hardware: link.Attrs().HardwareAddr.String()}
-	previous, known := r.applied[labvpn.Name]
-	if !known || previous.Iface != desired.Iface || previous.CIDR != desired.CIDR || previous.LinkIndex != desired.LinkIndex || previous.Hardware != desired.Hardware || !networkPresent(link, cidr) {
-		if known {
-			r.DHCP.Stop(labvpn.Spec.LabName)
-			r.clearNetwork(previous)
-			delete(r.applied, labvpn.Name)
-		}
-		// Assign first host IP of the lab's /24 to the interface (idempotent).
-		if err := netutil.AssignFirstHostIP(ifaceName, cidr); err != nil {
-			return r.networkFailure(ctx, &labvpn, fmt.Errorf("assign IP to %s: %w", ifaceName, err))
-		}
-
-		// The lab may ping the pod's address on its own interface, and nothing else of the pod.
-		if err := r.IPT.AllowPing(ifaceName, firstHostIP(cidr)); err != nil {
-			return r.networkFailure(ctx, &labvpn, fmt.Errorf("allow ping of %s: %w", ifaceName, err))
-		}
-
-		r.applied[labvpn.Name] = desired
-	}
-	state := r.applied[labvpn.Name]
-	if dhcpEnabled {
-		gwIP := firstHostIP(cidr)
-		// The pod drops everything addressed to itself from the lab side, DHCP on this interface excepted.
-		if !state.DHCPKnown || !state.DHCP {
-			if err := r.IPT.AllowDHCP(ifaceName); err != nil {
-				return r.dhcpFailure(ctx, &labvpn, fmt.Errorf("open DHCP on %s: %w", ifaceName, err))
-			}
-		}
-		if err := r.DHCP.Start(
-			labvpn.Spec.LabName, dhcp.Config{
-				Iface:   ifaceName,
-				Subnet:  cidr,
-				Gateway: gwIP,
-				BindIP:  gwIP,
-				Ranges:  ranges,
-			},
-		); err != nil {
-			return r.dhcpFailure(ctx, &labvpn, fmt.Errorf("start DHCP for lab %s: %w", labvpn.Spec.LabName, err))
-		}
-	} else {
-		r.DHCP.Stop(labvpn.Spec.LabName)
-		if !state.DHCPKnown || state.DHCP {
-			r.IPT.DenyDHCP(ifaceName)
-		}
-	}
-	state.DHCPKnown = true
-	state.DHCP = dhcpEnabled
-	r.applied[labvpn.Name] = state
-	if dhcpEnabled && !r.DHCP.Healthy(labvpn.Spec.LabName) {
-		return r.dhcpFailure(ctx, &labvpn, fmt.Errorf("DHCP socket is unavailable"))
-	}
-
-	if r.Recorder != nil && labvpn.Status.Phase != laboratoryv1alpha1.LabVPNPhaseReady {
-		r.Recorder.Eventf(
-			&labvpn, corev1.EventTypeNormal, labstatus.ReasonReady,
-			"lab VPN routing ready on %s (%s)", ifaceName, cidr,
-		)
-	}
-	newStatus := laboratoryv1alpha1.LabVPNStatus{
-		Phase:       laboratoryv1alpha1.LabVPNPhaseReady,
-		DHCPEnabled: dhcpEnabled,
-		DHCPReady:   dhcpEnabled && r.DHCP.Healthy(labvpn.Spec.LabName),
-		Conditions:  slices.Clone(labvpn.Status.Conditions),
-	}
-	labstatus.SetReady(&newStatus.Conditions, labvpn.Generation, true, labstatus.ReasonReady, "lab VPN routing ready")
-	return ctrl.Result{RequeueAfter: 30 * time.Second}, r.patchStatus(ctx, &labvpn, newStatus)
+	return r.reconcileRunning(ctx, &labvpn)
 }
 
 func (r *LabVPNReconciler) reconcileDelete(ctx context.Context, labvpn *laboratoryv1alpha1.LabVPN) (
@@ -209,16 +111,6 @@ func (r *LabVPNReconciler) reconcileDelete(ctx context.Context, labvpn *laborato
 	return ctrl.Result{}, r.Update(ctx, labvpn)
 }
 
-func (r *LabVPNReconciler) patchPhase(
-	ctx context.Context,
-	labvpn *laboratoryv1alpha1.LabVPN,
-	phase laboratoryv1alpha1.LabVPNPhase,
-) error {
-	patch := client.MergeFrom(labvpn.DeepCopy())
-	labvpn.Status.Phase = phase
-	return r.Status().Patch(ctx, labvpn, patch)
-}
-
 func (r *LabVPNReconciler) patchStatus(
 	ctx context.Context,
 	labvpn *laboratoryv1alpha1.LabVPN,
@@ -231,7 +123,7 @@ func (r *LabVPNReconciler) patchStatus(
 	if reflect.DeepEqual(labvpn.Status, s) {
 		return nil
 	}
-	raw, err := json.Marshal(map[string]any{"status": map[string]any{"phase": s.Phase, "dhcpEnabled": s.DHCPEnabled, "dhcpReady": s.DHCPReady, "conditions": s.Conditions}})
+	raw, err := json.Marshal(map[string]any{statusSubresource: map[string]any{"phase": s.Phase, "dhcpEnabled": s.DHCPEnabled, "dhcpReady": s.DHCPReady, "conditions": s.Conditions}})
 	if err != nil {
 		return err
 	}
@@ -296,4 +188,111 @@ func (r *LabVPNReconciler) networkFailure(ctx context.Context, obj *laboratoryv1
 		return ctrl.Result{}, patchErr
 	}
 	return ctrl.Result{}, err
+}
+
+func vpnNetworkNeedsSetup(known bool, previous appliedNetwork, desired appliedNetwork, link netlink.Link, cidr string) bool {
+	return !known || previous.Iface != desired.Iface || previous.CIDR != desired.CIDR || previous.LinkIndex != desired.LinkIndex || previous.Hardware != desired.Hardware || !networkPresent(link, cidr)
+}
+
+func (r *LabVPNReconciler) reconcileRunning(ctx context.Context, labvpn *laboratoryv1alpha1.LabVPN) (ctrl.Result, error) {
+	dhcpEnabled, ranges, _, dhcpErr := labdhcp.Desired(ctx, r.Client, labvpn.Namespace, labvpn.Spec.LabName, "vpn")
+	if dhcpErr != nil {
+		return r.dhcpFailure(ctx, labvpn, dhcpErr)
+	}
+	if r.applied == nil {
+		r.applied = map[string]appliedNetwork{}
+	}
+
+	// Wait for lab{N} interface (created by node-agent via OVS).
+	ifaceName := names.LabIfaceNameByIndex(labvpn.Spec.NetworkIndex)
+	link, linkErr := netlink.LinkByName(ifaceName)
+	if linkErr != nil {
+		r.DHCP.Stop(labvpn.Spec.LabName)
+		if old, ok := r.applied[labvpn.Name]; ok {
+			r.clearNetwork(old)
+			delete(r.applied, labvpn.Name)
+		}
+		next := labvpn.Status
+		next.Conditions = slices.Clone(next.Conditions)
+		next.Phase = laboratoryv1alpha1.LabVPNPhaseWaitingForInterface
+		next.DHCPReady = false
+		labstatus.SetReady(&next.Conditions, labvpn.Generation, false, labstatus.ReasonWaitingForInterface, "waiting for lab interface")
+		if err := r.patchStatus(ctx, labvpn, next); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	cidr, err := netutil.SubnetForIndex(r.Cfg.VPNBaseNetwork, 24, labvpn.Spec.NetworkIndex)
+	if err != nil {
+		return r.networkFailure(ctx, labvpn, fmt.Errorf("compute VPN CIDR: %w", err))
+	}
+
+	desired := appliedNetwork{Iface: ifaceName, CIDR: cidr, LinkIndex: link.Attrs().Index, Hardware: link.Attrs().HardwareAddr.String()}
+	previous, known := r.applied[labvpn.Name]
+	if vpnNetworkNeedsSetup(known, previous, desired, link, cidr) {
+		if known {
+			r.DHCP.Stop(labvpn.Spec.LabName)
+			r.clearNetwork(previous)
+			delete(r.applied, labvpn.Name)
+		}
+		// Assign first host IP of the lab's /24 to the interface (idempotent).
+		if err := netutil.AssignFirstHostIP(ifaceName, cidr); err != nil {
+			return r.networkFailure(ctx, labvpn, fmt.Errorf("assign IP to %s: %w", ifaceName, err))
+		}
+
+		// The lab may ping the pod's address on its own interface, and nothing else of the pod.
+		if err := r.IPT.AllowPing(ifaceName, firstHostIP(cidr)); err != nil {
+			return r.networkFailure(ctx, labvpn, fmt.Errorf("allow ping of %s: %w", ifaceName, err))
+		}
+
+		r.applied[labvpn.Name] = desired
+	}
+	state := r.applied[labvpn.Name]
+	if dhcpEnabled {
+		gwIP := firstHostIP(cidr)
+		// The pod drops everything addressed to itself from the lab side, DHCP on this interface excepted.
+		if !state.DHCPKnown || !state.DHCP {
+			if err := r.IPT.AllowDHCP(ifaceName); err != nil {
+				return r.dhcpFailure(ctx, labvpn, fmt.Errorf("open DHCP on %s: %w", ifaceName, err))
+			}
+		}
+		if err := r.DHCP.Start(
+			labvpn.Spec.LabName, dhcp.Config{
+				Iface:   ifaceName,
+				Subnet:  cidr,
+				Gateway: gwIP,
+				BindIP:  gwIP,
+				Ranges:  ranges,
+			},
+		); err != nil {
+			return r.dhcpFailure(ctx, labvpn, fmt.Errorf("start DHCP for lab %s: %w", labvpn.Spec.LabName, err))
+		}
+	} else {
+		r.DHCP.Stop(labvpn.Spec.LabName)
+		if !state.DHCPKnown || state.DHCP {
+			r.IPT.DenyDHCP(ifaceName)
+		}
+	}
+	state.DHCPKnown = true
+	state.DHCP = dhcpEnabled
+	r.applied[labvpn.Name] = state
+	if dhcpEnabled && !r.DHCP.Healthy(labvpn.Spec.LabName) {
+		return r.dhcpFailure(ctx, labvpn, fmt.Errorf("DHCP socket is unavailable"))
+	}
+
+	if r.Recorder != nil && labvpn.Status.Phase != laboratoryv1alpha1.LabVPNPhaseReady {
+		r.Recorder.Eventf(
+			labvpn, corev1.EventTypeNormal, labstatus.ReasonReady,
+			"lab VPN routing ready on %s (%s)", ifaceName, cidr,
+		)
+	}
+	newStatus := laboratoryv1alpha1.LabVPNStatus{
+		Phase:       laboratoryv1alpha1.LabVPNPhaseReady,
+		DHCPEnabled: dhcpEnabled,
+		DHCPReady:   dhcpEnabled && r.DHCP.Healthy(labvpn.Spec.LabName),
+		Conditions:  slices.Clone(labvpn.Status.Conditions),
+	}
+	labstatus.SetReady(&newStatus.Conditions, labvpn.Generation, true, labstatus.ReasonReady, "lab VPN routing ready")
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, r.patchStatus(ctx, labvpn, newStatus)
 }

@@ -3,10 +3,11 @@
 package nodeagent
 
 import (
-	task "github.com/containerd/containerd/api/types/task"
 	"os"
 	"path/filepath"
 	"testing"
+
+	task "github.com/containerd/containerd/api/types/task"
 )
 
 func TestNativeTaskPresenceUsesActualListProcessID(t *testing.T) {

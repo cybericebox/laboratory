@@ -6,6 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"time"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/vpn/flowacct"
@@ -13,9 +16,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"reflect"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"time"
 )
 
 func (r *AccessReconciler) direct() client.Reader {
@@ -66,7 +67,7 @@ func (r *AccessReconciler) publishBoot(ctx context.Context, namespace string) er
 		next := *record
 		next.VPNRuntimeIdentity = current
 		next.PublishedAt = metav1.Now()
-		raw, _ := json.Marshal(map[string]any{"metadata": map[string]any{"resourceVersion": witness.ResourceVersion}, "status": map[string]any{"currentVPNRuntime": next}})
+		raw, _ := json.Marshal(map[string]any{"metadata": map[string]any{"resourceVersion": witness.ResourceVersion}, statusSubresource: map[string]any{"currentVPNRuntime": next}})
 		if err := r.Status().Patch(ctx, &witness, client.RawPatch(types.MergePatchType, raw)); err != nil {
 			return err
 		}
@@ -86,7 +87,7 @@ func (r *AccessReconciler) publishBoot(ctx context.Context, namespace string) er
 		if reflect.DeepEqual(leg.Status.Runtime, &r.Runtime) {
 			continue
 		}
-		raw, _ := json.Marshal(map[string]any{"metadata": map[string]any{"resourceVersion": leg.ResourceVersion}, "status": map[string]any{"runtime": r.Runtime, "accessFence": nil}})
+		raw, _ := json.Marshal(map[string]any{"metadata": map[string]any{"resourceVersion": leg.ResourceVersion}, statusSubresource: map[string]any{"runtime": r.Runtime, "accessFence": nil}})
 		if err := r.Status().Patch(ctx, leg, client.RawPatch(types.MergePatchType, raw)); err != nil {
 			return err
 		}
@@ -130,7 +131,7 @@ func (r *AccessReconciler) writeStoppedFences(ctx context.Context, labs []lab.La
 				continue
 			}
 		}
-		raw, _ := json.Marshal(map[string]any{"metadata": map[string]any{"resourceVersion": leg.ResourceVersion}, "status": map[string]any{"accessFence": fence}})
+		raw, _ := json.Marshal(map[string]any{"metadata": map[string]any{"resourceVersion": leg.ResourceVersion}, statusSubresource: map[string]any{"accessFence": fence}})
 		if err := r.Status().Patch(ctx, &leg, client.RawPatch(types.MergePatchType, raw)); err != nil {
 			return err
 		}
@@ -184,7 +185,7 @@ func (r *AccessReconciler) initializeCurrentBoot(ctx context.Context, namespace 
 		}
 	}
 	record := lab.VPNBootRecord{VPNRuntimeIdentity: r.Runtime, GroupUID: r.GroupUID, PublishedAt: metav1.Now()}
-	raw, _ := json.Marshal(map[string]any{"metadata": map[string]any{"resourceVersion": report.ResourceVersion}, "status": map[string]any{"currentVPNRuntime": record}})
+	raw, _ := json.Marshal(map[string]any{"metadata": map[string]any{"resourceVersion": report.ResourceVersion}, statusSubresource: map[string]any{"currentVPNRuntime": record}})
 	return r.Status().Patch(ctx, &report, client.RawPatch(types.MergePatchType, raw))
 }
 

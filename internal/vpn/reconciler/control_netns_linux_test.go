@@ -5,10 +5,11 @@ package reconciler
 import (
 	"context"
 	"fmt"
+	"testing"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"testing"
 )
 
 func TestControlTwentyPeersAndLabsIgnoreOneHundredStatsUpdates(t *testing.T) {

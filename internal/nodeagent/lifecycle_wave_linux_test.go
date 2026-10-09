@@ -5,16 +5,17 @@ package nodeagent
 import (
 	"context"
 	"errors"
+	"reflect"
+	"sync"
+	"testing"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"reflect"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"sync"
-	"testing"
 )
 
 func waveNodeClient(t *testing.T, objects ...client.Object) client.Client {

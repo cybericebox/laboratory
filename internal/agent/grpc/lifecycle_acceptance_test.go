@@ -149,7 +149,7 @@ func TestLifecycleAcceptance(t *testing.T) {
 	// Termination is checked even for an otherwise identical accepted retry.
 	after, _ = labs.Get(ctx, "l", metav1.GetOptions{})
 	after.Finalizers = []string{"test/hold"}
-	after, err = labs.Update(ctx, after, metav1.UpdateOptions{})
+	_, err = labs.Update(ctx, after, metav1.UpdateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

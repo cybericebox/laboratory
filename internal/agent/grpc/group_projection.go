@@ -16,7 +16,7 @@ func groupLifecycleToProto(g *lab.LabGroup) *protobuf.LabLifecycleStatus {
 	if s == nil {
 		return nil
 	}
-	out := &protobuf.LabLifecycleStatus{DesiredState: s.DesiredState, ObservedState: "Unknown", OperationId: s.OperationID, LifecycleRevision: s.Revision, LabUid: string(g.UID)}
+	out := &protobuf.LabLifecycleStatus{DesiredState: s.DesiredState, ObservedState: allocationUnknown, OperationId: s.OperationID, LifecycleRevision: s.Revision, LabUid: string(g.UID)}
 	o := g.Status.Lifecycle
 	if o == nil || o.LabUID != string(g.UID) || o.OperationID != s.OperationID || o.Revision != s.Revision || o.ObservedGeneration != g.Generation {
 		return out

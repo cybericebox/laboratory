@@ -3,9 +3,10 @@ package grpc
 import (
 	"context"
 	"errors"
-	"google.golang.org/protobuf/proto"
 	"reflect"
 	"testing"
+
+	"google.golang.org/protobuf/proto"
 
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	versionedfake "github.com/cybericebox/laboratory/clientset/client/versioned/fake"

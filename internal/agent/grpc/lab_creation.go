@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	labclient "github.com/cybericebox/laboratory/pkg/agent/client"
@@ -19,7 +20,7 @@ func (h *Handler) prepareLabBirth(ctx context.Context, g *lab.LabGroup, it *prot
 		return nil, nil
 	}
 	life := v.spec.Lifecycle
-	if life == nil || life.DesiredState != "Running" || life.OperationID == "" || life.Revision != 1 {
+	if life == nil || life.DesiredState != lifecycleRunning || life.OperationID == "" || life.Revision != 1 {
 		return nil, fmt.Errorf("fenced birth requires explicit initial Running revision1")
 	}
 	ns, err := h.k8s.CoreV1().Namespaces().Get(ctx, g.Status.Namespace, metav1.GetOptions{})

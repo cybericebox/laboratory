@@ -2,13 +2,14 @@ package grpc
 
 import (
 	"context"
+	"time"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/vpn/flowacct"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"time"
 )
 
 // The startup record and current Pod are direct reads: an informer retaining an

@@ -9,7 +9,9 @@ import (
 
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	versioned "github.com/cybericebox/laboratory/clientset/client/versioned"
+	typed "github.com/cybericebox/laboratory/clientset/client/versioned/typed/laboratory/v1alpha1"
 	controller "github.com/cybericebox/laboratory/internal/controller/laboratory"
+	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -79,7 +81,7 @@ func (h *Handler) StartLabs(ctx context.Context, in *protobuf.StartLabsRequest) 
 	resolver := h.newResolver(ctx)
 	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
 		t := in.Items[i]
-		intent := &lab.LabLifecycleSpec{DesiredState: "Running", OperationID: t.GetOperationId(), Revision: t.GetLifecycleRevision()}
+		intent := &lab.LabLifecycleSpec{DesiredState: lifecycleRunning, OperationID: t.GetOperationId(), Revision: t.GetLifecycleRevision()}
 		if err := h.acceptLifecycle(ctx, resolver, t, intent); err != nil {
 			return failedResult(refs[i], err)
 		}
@@ -112,14 +114,14 @@ func (h *Handler) acceptLifecycle(ctx context.Context, resolver *groupResolver, 
 	}
 	labs := h.cs.LaboratoryV1alpha1().Labs(ns)
 	var admission *lab.GroupChildAdmission
-	if intent.DesiredState == "Running" {
-		admission = &lab.GroupChildAdmission{GroupUID: string(group.UID), LabName: crName(ref.GetName()), ExpectedLabUID: target.GetExpectedLabUid(), OperationID: intent.OperationID, Revision: intent.Revision, DesiredState: "Running"}
+	if intent.DesiredState == lifecycleRunning {
+		admission = &lab.GroupChildAdmission{GroupUID: string(group.UID), LabName: crName(ref.GetName()), ExpectedLabUID: target.GetExpectedLabUid(), OperationID: intent.OperationID, Revision: intent.Revision, DesiredState: lifecycleRunning}
 		// Validate terminal/UID/revision before claiming a durable admission.
 		before, err := labs.Get(ctx, admission.LabName, metav1.GetOptions{})
 		if err != nil {
 			return err
 		}
-		if string(before.UID) != admission.ExpectedLabUID || before.Spec.Lifecycle != nil && (before.Spec.Lifecycle.Terminal || before.Spec.Lifecycle.Revision > intent.Revision || before.Spec.Lifecycle.Revision == intent.Revision && !apiequality.Semantic.DeepEqual(before.Spec.Lifecycle, intent)) || (before.Annotations[names.AnnotationSnapshotRetirement] != "" || before.Annotations[names.AnnotationLifecycleRetirement] != "") {
+		if startTargetInvalid(before, admission, intent) {
 			return fmt.Errorf("invalid or retired start target")
 		}
 		if err := h.claimChildAdmission(ctx, ref.GetLabGroup(), admission); err != nil {
@@ -127,82 +129,7 @@ func (h *Handler) acceptLifecycle(ctx context.Context, resolver *groupResolver, 
 		}
 	}
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		// Cached resolution supplies the namespace, but each retry validates its live owner.
-		live, err := h.getGroup(ctx, ref.GetLabGroup())
-		if err != nil {
-			return err
-		}
-		if err := rejectTerminating(kindLabGroup, live); err != nil {
-			return err
-		}
-		if live.UID != group.UID || live.Status.Namespace != ns {
-			return fmt.Errorf("lab group identity changed")
-		}
-		cur, err := labs.Get(ctx, crName(ref.GetName()), metav1.GetOptions{})
-		if err != nil {
-			return err
-		}
-		if !ownedBy(tenantOf(ctx), cur) {
-			return notFoundForeign(kindLab, ref.GetName())
-		}
-		if err := rejectTerminating(kindLab, cur); err != nil {
-			return err
-		}
-		if string(cur.UID) != target.GetExpectedLabUid() {
-			return fmt.Errorf("lab UID differs from expected_lab_uid")
-		}
-		if intent.DesiredState == "Running" && live.Spec.Lifecycle.IsStopped() {
-			return fmt.Errorf("lab group is stopped; explicitly start group services first")
-		}
-		old := cur.Spec.Lifecycle
-		if (cur.Annotations[names.AnnotationSnapshotRetirement] != "" || cur.Annotations[names.AnnotationLifecycleRetirement] != "") && !apiequality.Semantic.DeepEqual(old, intent) {
-			return fmt.Errorf("snapshot retirement has begun; this copy cannot accept a new lifecycle intent")
-		}
-		if old != nil {
-			if old.Terminal && (intent.DesiredState != "Stopped" || !intent.Terminal) {
-				return fmt.Errorf("terminal lab cannot be restarted or cleared")
-			}
-			if intent.Revision < old.Revision {
-				return fmt.Errorf("lifecycle revision is stale")
-			}
-			if intent.Revision == old.Revision {
-				if apiequality.Semantic.DeepEqual(old, intent) {
-					return nil
-				}
-				return fmt.Errorf("conflicting intent at equal lifecycle revision")
-			}
-		}
-		if intent.SnapshotMode == "Required" {
-			f := h.features
-			r := controller.LabReconciler{Reader: snapshotAcceptanceReader{h.cs}, RequiredSnapshotAvailable: h.requiredSnapshotAvailable, State: controller.StatePolicy{Enabled: h.statePersistence, WriteQuotaBytes: f.WriteQuota, MaxFileBytes: f.MaxFileSize, TenantQuota: f.TenantQuota, MaxEntries: int32(f.MaxEntries)}}
-			if err := r.ValidateRequiredSnapshot(ctx, cur); err != nil {
-				return err
-			}
-		}
-		if intent.DesiredState == "Running" {
-			all, e := labs.List(ctx, metav1.ListOptions{})
-			if e != nil {
-				return e
-			}
-			var cpu, mem int64
-			for i := range all.Items {
-				if all.Items[i].UID == cur.UID {
-					continue
-				}
-				c, m := h.activeLabCompute(&all.Items[i])
-				cpu += c
-				mem += m
-			}
-			addCPU, addMem, _, _ := h.features.Limits.SpecTotals(&cur.Spec)
-			// Starts add active/pending compute; retained count is unchanged.
-			lim := h.features.Limits
-			if lim.GroupMaxCPU > 0 && cpu+addCPU > lim.GroupMaxCPU || lim.GroupMaxMemory > 0 && mem+addMem > lim.GroupMaxMemory {
-				return fmt.Errorf("group active/pending compute limit exceeded")
-			}
-		}
-		cur.Spec.Lifecycle = intent.DeepCopy()
-		_, err = labs.Update(ctx, cur, metav1.UpdateOptions{})
-		return err
+		return h.updateLifecycleIntent(ctx, ref, group, ns, target, intent, labs)
 	})
 	if err != nil {
 		return err
@@ -247,4 +174,98 @@ func (r snapshotAcceptanceReader) List(ctx context.Context, out runtimeclient.Ob
 	default:
 		return fmt.Errorf("unsupported lifecycle admission list %T", out)
 	}
+}
+
+func startTargetInvalid(before *lab.Lab, admission *lab.GroupChildAdmission, intent *lab.LabLifecycleSpec) bool {
+	return string(before.UID) != admission.ExpectedLabUID || before.Spec.Lifecycle != nil && (before.Spec.Lifecycle.Terminal || before.Spec.Lifecycle.Revision > intent.Revision || before.Spec.Lifecycle.Revision == intent.Revision && !apiequality.Semantic.DeepEqual(before.Spec.Lifecycle, intent)) || (before.Annotations[names.AnnotationSnapshotRetirement] != "" || before.Annotations[names.AnnotationLifecycleRetirement] != "")
+}
+
+func activeComputeLimitExceeded(lim limits.Limits, cpu int64, addCPU int64, mem int64, addMem int64) bool {
+	return lim.GroupMaxCPU > 0 && cpu+addCPU > lim.GroupMaxCPU || lim.GroupMaxMemory > 0 && mem+addMem > lim.GroupMaxMemory
+}
+
+func (h *Handler) updateLifecycleIntent(ctx context.Context, ref *protobuf.ItemRef, group *lab.LabGroup, ns string, target *protobuf.LabLifecycleTarget, intent *lab.LabLifecycleSpec, labs typed.LabInterface) error {
+	// Cached resolution supplies the namespace, but each retry validates its live owner.
+	live, err := h.getGroup(ctx, ref.GetLabGroup())
+	if err != nil {
+		return err
+	}
+	if err := rejectTerminating(kindLabGroup, live); err != nil {
+		return err
+	}
+	if live.UID != group.UID || live.Status.Namespace != ns {
+		return fmt.Errorf("lab group identity changed")
+	}
+	cur, err := labs.Get(ctx, crName(ref.GetName()), metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	if !ownedBy(tenantOf(ctx), cur) {
+		return notFoundForeign(kindLab, ref.GetName())
+	}
+	if err := rejectTerminating(kindLab, cur); err != nil {
+		return err
+	}
+	if string(cur.UID) != target.GetExpectedLabUid() {
+		return fmt.Errorf("lab UID differs from expected_lab_uid")
+	}
+	if intent.DesiredState == lifecycleRunning && live.Spec.Lifecycle.IsStopped() {
+		return fmt.Errorf("lab group is stopped; explicitly start group services first")
+	}
+	old := cur.Spec.Lifecycle
+	if (cur.Annotations[names.AnnotationSnapshotRetirement] != "" || cur.Annotations[names.AnnotationLifecycleRetirement] != "") && !apiequality.Semantic.DeepEqual(old, intent) {
+		return fmt.Errorf("snapshot retirement has begun; this copy cannot accept a new lifecycle intent")
+	}
+	if old != nil {
+		if old.Terminal && (intent.DesiredState != "Stopped" || !intent.Terminal) {
+			return fmt.Errorf("terminal lab cannot be restarted or cleared")
+		}
+		if intent.Revision < old.Revision {
+			return fmt.Errorf("lifecycle revision is stale")
+		}
+		if intent.Revision == old.Revision {
+			if apiequality.Semantic.DeepEqual(old, intent) {
+				return nil
+			}
+			return fmt.Errorf("conflicting intent at equal lifecycle revision")
+		}
+	}
+	if intent.SnapshotMode == "Required" {
+		f := h.features
+		r := controller.LabReconciler{Reader: snapshotAcceptanceReader{h.cs}, RequiredSnapshotAvailable: h.requiredSnapshotAvailable, State: controller.StatePolicy{Enabled: h.statePersistence, WriteQuotaBytes: f.WriteQuota, MaxFileBytes: f.MaxFileSize, TenantQuota: f.TenantQuota, MaxEntries: int32(f.MaxEntries)}}
+		if err := r.ValidateRequiredSnapshot(ctx, cur); err != nil {
+			return err
+		}
+	}
+	if intent.DesiredState == lifecycleRunning {
+		if err := h.checkStartCompute(ctx, labs, cur); err != nil {
+			return err
+		}
+	}
+	cur.Spec.Lifecycle = intent.DeepCopy()
+	_, err = labs.Update(ctx, cur, metav1.UpdateOptions{})
+	return err
+}
+
+func (h *Handler) checkStartCompute(ctx context.Context, labs typed.LabInterface, cur *lab.Lab) error {
+	all, e := labs.List(ctx, metav1.ListOptions{})
+	if e != nil {
+		return e
+	}
+	var cpu, mem int64
+	for i := range all.Items {
+		if all.Items[i].UID == cur.UID {
+			continue
+		}
+		c, m := h.activeLabCompute(&all.Items[i])
+		cpu += c
+		mem += m
+	}
+	addCPU, addMem, _, _ := h.features.Limits.SpecTotals(&cur.Spec)
+	// Starts add active/pending compute; retained count is unchanged.
+	lim := h.features.Limits
+	if activeComputeLimitExceeded(lim, cpu, addCPU, mem, addMem) {
+		return fmt.Errorf("group active/pending compute limit exceeded")
+	}
+	return nil
 }

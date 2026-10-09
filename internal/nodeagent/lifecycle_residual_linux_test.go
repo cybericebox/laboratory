@@ -6,6 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"testing"
+	"time"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/ovn-org/libovsdb/ovsdb"
 	appsv1 "k8s.io/api/apps/v1"
@@ -14,8 +17,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"testing"
-	"time"
 )
 
 func residualDeploymentAncestry(t *testing.T) (client.Client, *corev1.Pod, *lab.Device, *lab.Lab) {

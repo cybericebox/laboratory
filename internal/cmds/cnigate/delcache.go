@@ -164,7 +164,7 @@ func receiptDelegateIface(cache delCache, outerIface, cniArgs string) (string, e
 		}
 	}
 	if len(sandbox) == 1 && sandbox[0].Name == outerIface {
-		if len(converted.Interfaces) == 1 && sandbox[0].Name == names.DefaultEth0 && sandbox[0].Mac == "" && len(converted.IPs) == 1 && converted.IPs[0].Interface != nil && *converted.IPs[0].Interface == 0 && converted.IPs[0].Address.String() == "127.0.0.1/32" {
+		if stubDelegateReceipt(converted, sandbox) {
 			// The original stub branch had no delegated network ADD.
 			return "", nil
 		}
@@ -172,8 +172,16 @@ func receiptDelegateIface(cache delCache, outerIface, cniArgs string) (string, e
 	}
 	// ensureEth0 prepends a logical eth0 for an access-port result. Its MAC is
 	// empty; the sole physical sandbox interface retains its delegate MAC.
-	if len(sandbox) == 2 && len(converted.Interfaces) > 0 && sandbox[0] == converted.Interfaces[0] && sandbox[0].Name == names.DefaultEth0 && sandbox[0].Mac == "" && sandbox[1].Name != names.DefaultEth0 && sandbox[1].Mac != "" && sandbox[0].Sandbox == sandbox[1].Sandbox {
+	if accessPortDelegateReceipt(sandbox, converted) {
 		return sandbox[1].Name, nil
 	}
 	return "", fmt.Errorf("ADD receipt has no unambiguous delegate interface")
+}
+
+func stubDelegateReceipt(converted *cniv1.Result, sandbox []*cniv1.Interface) bool {
+	return len(converted.Interfaces) == 1 && sandbox[0].Name == names.DefaultEth0 && sandbox[0].Mac == "" && len(converted.IPs) == 1 && converted.IPs[0].Interface != nil && *converted.IPs[0].Interface == 0 && converted.IPs[0].Address.String() == "127.0.0.1/32"
+}
+
+func accessPortDelegateReceipt(sandbox []*cniv1.Interface, converted *cniv1.Result) bool {
+	return len(sandbox) == 2 && len(converted.Interfaces) > 0 && sandbox[0] == converted.Interfaces[0] && sandbox[0].Name == names.DefaultEth0 && sandbox[0].Mac == "" && sandbox[1].Name != names.DefaultEth0 && sandbox[1].Mac != "" && sandbox[0].Sandbox == sandbox[1].Sandbox
 }

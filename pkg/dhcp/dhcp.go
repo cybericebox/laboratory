@@ -3,10 +3,11 @@
 package dhcp
 
 import (
-	"github.com/insomniacslk/dhcp/dhcpv4"
-	"github.com/insomniacslk/dhcp/dhcpv4/server4"
 	"log"
 	"net"
+
+	"github.com/insomniacslk/dhcp/dhcpv4"
+	"github.com/insomniacslk/dhcp/dhcpv4/server4"
 )
 
 func nativeServer(cfg Config, handler server4.Handler) (serverRunner, error) {

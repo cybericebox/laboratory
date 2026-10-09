@@ -13,7 +13,7 @@ import (
 func Settings(lab *laboratoryv1alpha1.Lab, network string) ([]dhcp.Range, string, error) {
 	var server *laboratoryv1alpha1.DHCPServer
 	switch network {
-	case "vpn":
+	case networkVPN:
 		server = lab.Spec.VPN.DHCPServer
 	case "internet":
 		server = lab.Spec.Internet.DHCPServer
@@ -23,7 +23,7 @@ func Settings(lab *laboratoryv1alpha1.Lab, network string) ([]dhcp.Range, string
 	if server == nil || !server.Enabled {
 		return nil, "", fmt.Errorf("%s DHCP is disabled", network)
 	}
-	if network == "vpn" && server.DNS != "" {
+	if network == networkVPN && server.DNS != "" {
 		return nil, "", fmt.Errorf("VPN DHCP cannot advertise DNS")
 	}
 	ranges := make([]dhcp.Range, 0, len(server.Ranges))

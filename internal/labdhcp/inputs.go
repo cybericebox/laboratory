@@ -3,12 +3,13 @@ package labdhcp
 import (
 	"context"
 	"fmt"
+	"reflect"
+
 	allocation "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/pkg/dhcp"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
-	"reflect"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -19,13 +20,13 @@ func InputsChanged(old, next *lab.Lab, network string) bool {
 	if !reflect.DeepEqual(old.Spec.Lifecycle, next.Spec.Lifecycle) || !reflect.DeepEqual(old.DeletionTimestamp, next.DeletionTimestamp) {
 		return true
 	}
-	if network == "vpn" {
+	if network == networkVPN {
 		return !reflect.DeepEqual(old.Spec.VPN, next.Spec.VPN)
 	}
 	return !reflect.DeepEqual(old.Spec.Internet, next.Spec.Internet)
 }
 func poolPrefix(network string) string {
-	if network == "vpn" {
+	if network == networkVPN {
 		return "dhcp-vpn"
 	}
 	return "dhcp-inet"
@@ -67,7 +68,7 @@ func Desired(ctx context.Context, c client.Reader, namespace, name, network stri
 		return false, nil, "", fmt.Errorf("DHCP pool lab incarnation mismatch")
 	}
 	segment := l.Spec.Internet
-	if network == "vpn" {
+	if network == networkVPN {
 		segment = l.Spec.VPN
 	}
 	if !pool.DeletionTimestamp.IsZero() || !l.DeletionTimestamp.IsZero() || l.Spec.Lifecycle.IsStopped() || !segment.Enabled || segment.DHCPServer == nil || !segment.DHCPServer.Enabled {

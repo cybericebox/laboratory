@@ -6,6 +6,8 @@ import (
 	"math"
 	"testing"
 
+	"time"
+
 	labv1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
@@ -14,7 +16,6 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"time"
 )
 
 func coverageSpans(t *testing.T, r *protobuf.TrafficReport) protoreflect.List {
@@ -175,8 +176,7 @@ func TestPartialTrafficSharesRowsPreservesMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &selectorFilter{sel: nil}
-	f, err = newSelectorFilter("instance=keep", "owner")
+	f, err := newSelectorFilter("instance=keep", "owner")
 	if err != nil {
 		t.Fatal(err)
 	}

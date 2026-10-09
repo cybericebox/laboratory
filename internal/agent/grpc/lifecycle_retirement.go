@@ -4,14 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"unicode/utf8"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	controller "github.com/cybericebox/laboratory/internal/controller/laboratory"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
-	"strings"
-	"unicode/utf8"
 )
 
 func retirementIntent(uid, stopOp string, stopRev, generation int64, op string, rev int64) (lab.LifecycleRetirementIntent, error) {
@@ -89,10 +90,10 @@ func (h *Handler) RetireLabs(ctx context.Context, in *protobuf.RetireLabsRequest
 				return err
 			}
 			if cur.Annotations[names.AnnotationLabVariableAdmission] != "" {
-				return fmt.Errorf("Lab variable write is pending; replay it before retirement")
+				return fmt.Errorf("lab variable write is pending; replay it before retirement")
 			}
 			if !controller.RetirementReady(cur) {
-				return fmt.Errorf("Lab must be exactly Stopped and native Released before retirement")
+				return fmt.Errorf("lab must be exactly Stopped and native Released before retirement")
 			}
 			cur.Annotations = annotations
 			_, err = h.cs.LaboratoryV1alpha1().Labs(ns).Update(ctx, cur, metav1.UpdateOptions{})
@@ -148,7 +149,7 @@ func (h *Handler) RetireLabGroups(ctx context.Context, in *protobuf.RetireLabGro
 				return err
 			}
 			if !controller.GroupRetirementReady(cur) {
-				return fmt.Errorf("Group services must be exactly Stopped and native Released before retirement")
+				return fmt.Errorf("group services must be exactly Stopped and native Released before retirement")
 			}
 			validator := controller.LabGroupReconciler{Reader: snapshotAcceptanceReader{h.cs}}
 			if err := validator.ValidateGroupStop(ctx, cur); err != nil {

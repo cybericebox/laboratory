@@ -4,11 +4,12 @@ package labdhcp
 
 import (
 	"context"
+	"reflect"
+
 	allocation "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/pkg/dhcp"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"reflect"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -22,7 +23,7 @@ import (
 
 func RequestsForLab(ctx context.Context, c client.Client, namespace, name, network string) []reconcile.Request {
 	requests := []reconcile.Request{}
-	if network == "vpn" {
+	if network == networkVPN {
 		var legs lab.LabVPNList
 		if err := c.List(ctx, &legs, client.InNamespace(namespace)); err != nil {
 			ctrl.LoggerFrom(ctx).Error(err, "list VPN DHCP legs")

@@ -4,13 +4,14 @@ package nodeagent
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
 	containerd "github.com/containerd/containerd/v2/client"
 	allocationapi "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	"golang.org/x/sys/unix"
-	"os"
-	"path/filepath"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"strings"
 )
 
 // SetupRuntimeObservation only starts an explicitly enabled native producer. It
@@ -38,12 +39,12 @@ func SetupRuntimeObservation(mgr ctrl.Manager, cfg *Config, network *NetworkAtta
 		return e
 	}
 	if e = unix.Flock(int(owner.Fd()), unix.LOCK_EX|unix.LOCK_NB); e != nil {
-		owner.Close()
+		_ = owner.Close()
 		return fmt.Errorf("native runtime journal already owned: %w", e)
 	}
 	rt, e := containerd.New(cfg.CRISock, containerd.WithDefaultNamespace(cfg.ContainerdNamespace))
 	if e != nil {
-		owner.Close()
+		_ = owner.Close()
 		return e
 	}
 	o := &NativeRuntimeObserver{Runtime: rt, Namespace: cfg.ContainerdNamespace, NodeName: cfg.NodeName, BootID: strings.TrimSpace(string(boot)), CgroupRoot: cfg.CgroupRoot, JournalDir: filepath.Join(cfg.StateWorkDir, "runtime-observations"), Network: network}

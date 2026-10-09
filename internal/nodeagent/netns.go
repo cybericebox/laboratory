@@ -95,7 +95,7 @@ func MoveToNetNS(ifaceName, netnsPath string) error {
 // RenameInNetNS renames an interface inside a target netns.
 // Does not change UP/DOWN state — interface stays UP if it was UP before the move.
 func RenameInNetNS(netnsPath, oldName, newName string) error {
-	return nsenterRun(netnsPath, "ip", "link", "set", oldName, "name", newName)
+	return nsenterRun(netnsPath, "ip", "link", "set", oldName, cniNameKey, newName)
 }
 
 // CheckInNetNS returns nil if the named interface exists inside the target netns.

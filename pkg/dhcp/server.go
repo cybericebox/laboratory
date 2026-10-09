@@ -4,12 +4,13 @@ package dhcp
 
 import (
 	"fmt"
-	"github.com/insomniacslk/dhcp/dhcpv4/server4"
 	"net"
 	"reflect"
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/insomniacslk/dhcp/dhcpv4/server4"
 )
 
 type serverRunner interface {
@@ -45,7 +46,12 @@ type Manager struct {
 }
 
 func NewManager() *Manager {
-	return &Manager{servers: map[string]*serverEntry{}, dormant: map[string]*serverEntry{}, changes: make(chan StateChange, 1), newServer: nativeServer}
+	return &Manager{
+		servers:   map[string]*serverEntry{},
+		dormant:   map[string]*serverEntry{},
+		changes:   make(chan StateChange, 1),
+		newServer: nativeServer,
+	}
 }
 func normalizeConfig(cfg Config) (Config, error) {
 	ip, subnet, err := net.ParseCIDR(cfg.Subnet)
@@ -226,7 +232,7 @@ func (m *Manager) Close() {
 	defer m.op.Unlock()
 	m.mu.Lock()
 	m.closed = true
-	names := []string{}
+	names := make([]string, 0, len(m.servers))
 	for name := range m.servers {
 		names = append(names, name)
 	}

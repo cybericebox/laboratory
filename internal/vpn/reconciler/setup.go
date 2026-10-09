@@ -5,16 +5,18 @@ package reconciler
 import (
 	"context"
 	"fmt"
-	"k8s.io/apimachinery/pkg/util/uuid"
 	"os"
+
+	"k8s.io/apimachinery/pkg/util/uuid"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
+	"time"
+
 	"github.com/cybericebox/laboratory/internal/vpn"
 	"github.com/cybericebox/laboratory/internal/vpn/flowacct"
 	"github.com/cybericebox/laboratory/pkg/dhcp"
-	"time"
 )
 
 // Setup registers VPN controllers with mgr.

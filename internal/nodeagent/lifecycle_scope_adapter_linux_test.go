@@ -7,6 +7,12 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
+	"os"
+	"path/filepath"
+	"testing"
+
 	containers "github.com/containerd/containerd/api/services/containers/v1"
 	tasks "github.com/containerd/containerd/api/services/tasks/v1"
 	task "github.com/containerd/containerd/api/types/task"
@@ -19,16 +25,11 @@ import (
 	"github.com/ovn-org/libovsdb/ovsdb"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/anypb"
-	"io"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"net"
-	"os"
-	"path/filepath"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"testing"
 )
 
 // These are explicitly native API adapters, not actual application/native

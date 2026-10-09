@@ -1,10 +1,11 @@
 package dhcp
 
 import (
-	"github.com/insomniacslk/dhcp/dhcpv4"
 	"net"
 	"testing"
 	"time"
+
+	"github.com/insomniacslk/dhcp/dhcpv4"
 )
 
 func handlerConfig() Config {

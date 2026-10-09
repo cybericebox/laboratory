@@ -58,7 +58,18 @@ type ipPool struct {
 }
 
 func newIPPool(subnet *net.IPNet, gw net.IP, ranges []Range) *ipPool {
-	return &ipPool{subnet: &net.IPNet{IP: append(net.IP(nil), subnet.IP.Mask(subnet.Mask)...), Mask: append(net.IPMask(nil), subnet.Mask...)}, gw: append(net.IP(nil), gw.To4()...), ranges: append([]Range(nil), ranges...), byMAC: map[string]lease{}, quarantine: map[string]time.Time{}, retired: map[string]lease{}, now: time.Now}
+	return &ipPool{
+		subnet: &net.IPNet{
+			IP:   append(net.IP(nil), subnet.IP.Mask(subnet.Mask)...),
+			Mask: append(net.IPMask(nil), subnet.Mask...),
+		},
+		gw:         append(net.IP(nil), gw.To4()...),
+		ranges:     append([]Range(nil), ranges...),
+		byMAC:      map[string]lease{},
+		quarantine: map[string]time.Time{},
+		retired:    map[string]lease{},
+		now:        time.Now,
+	}
 }
 func validMAC(mac net.HardwareAddr) bool {
 	if len(mac) == 0 || len(mac) > 16 {

@@ -3,6 +3,9 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"strings"
+	"unicode/utf8"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	controller "github.com/cybericebox/laboratory/internal/controller/laboratory"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -10,8 +13,6 @@ import (
 	equality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
-	"strings"
-	"unicode/utf8"
 )
 
 // StopLabGroups accepts intent; it never force-stops children or reports release.
@@ -54,7 +55,7 @@ func (h *Handler) StartLabGroups(ctx context.Context, in *protobuf.StartLabGroup
 	}
 	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
 		t := in.Items[i]
-		intent := &lab.GroupLifecycleSpec{DesiredState: "Running", OperationID: t.GetOperationId(), Revision: t.GetRevision()}
+		intent := &lab.GroupLifecycleSpec{DesiredState: lifecycleRunning, OperationID: t.GetOperationId(), Revision: t.GetRevision()}
 		if err := h.acceptGroupLifecycle(ctx, t, intent); err != nil {
 			return failedResult(refs[i], err)
 		}

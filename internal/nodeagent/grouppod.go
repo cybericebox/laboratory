@@ -2,10 +2,11 @@ package nodeagent
 
 import (
 	"context"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
 	"reflect"
 	"sort"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -162,7 +163,7 @@ func labRuntimeActive(ctx context.Context, c client.Reader, namespace, name stri
 			}
 			done := false
 			for _, report := range l.Status.ScopeReports {
-				done = done || reflect.DeepEqual(report.Identity, scope) && report.RuntimeState == "Released" && report.Error == "" && report.AttachmentsAbsentAt != nil
+				done = done || reflect.DeepEqual(report.Identity, scope) && report.RuntimeState == runtimeReleased && report.Error == "" && report.AttachmentsAbsentAt != nil
 			}
 			if !done {
 				return false, nil

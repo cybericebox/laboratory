@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
-	"sigs.k8s.io/controller-runtime/pkg/event"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"golang.org/x/crypto/blake2s"
 	ctrl "sigs.k8s.io/controller-runtime"

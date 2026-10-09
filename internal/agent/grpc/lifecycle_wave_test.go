@@ -3,12 +3,13 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"testing"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	labclient "github.com/cybericebox/laboratory/pkg/agent/client"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"testing"
 )
 
 func TestLifecycleWaveAcceptedStartMasksOldReadyAndAccess(t *testing.T) {

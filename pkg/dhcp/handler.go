@@ -2,8 +2,9 @@ package dhcp
 
 import (
 	"fmt"
-	"github.com/insomniacslk/dhcp/dhcpv4"
 	"net"
+
+	"github.com/insomniacslk/dhcp/dhcpv4"
 )
 
 func serverIP(cfg Config) net.IP {
@@ -23,16 +24,8 @@ func (p *ipPool) owns(mac net.HardwareAddr, ip net.IP, committed bool) bool {
 
 // replyForMessage follows RFC 2131 state distinctions before touching leases.
 func replyForMessage(cfg Config, pool *ipPool, msg *dhcpv4.DHCPv4) (*dhcpv4.DHCPv4, error) {
-	if msg == nil || msg.OpCode != dhcpv4.OpcodeBootRequest || !validMAC(msg.ClientHWAddr) {
-		return nil, fmt.Errorf("invalid DHCP client identity")
-	}
-	for _, code := range []dhcpv4.OptionCode{dhcpv4.OptionServerIdentifier, dhcpv4.OptionRequestedIPAddress} {
-		if raw := msg.Options.Get(code); raw != nil && len(raw) != 4 {
-			return nil, fmt.Errorf("malformed address option")
-		}
-	}
-	if len(msg.Options.Get(dhcpv4.OptionDHCPMessageType)) != 1 {
-		return nil, fmt.Errorf("malformed DHCP message type")
+	if err := validateClientMessage(msg); err != nil {
+		return nil, err
 	}
 	sid := serverIP(cfg)
 	if sid == nil {
@@ -96,7 +89,11 @@ func replyForMessage(cfg Config, pool *ipPool, msg *dhcpv4.DHCPv4) (*dhcpv4.DHCP
 	default:
 		return nil, nil
 	}
-	opts := []dhcpv4.Modifier{dhcpv4.WithMessageType(replyKind), dhcpv4.WithServerIP(sid), dhcpv4.WithOption(dhcpv4.OptServerIdentifier(sid))}
+	opts := []dhcpv4.Modifier{
+		dhcpv4.WithMessageType(replyKind),
+		dhcpv4.WithServerIP(sid),
+		dhcpv4.WithOption(dhcpv4.OptServerIdentifier(sid)),
+	}
 	if replyKind != dhcpv4.MessageTypeNak {
 		_, subnet, err := net.ParseCIDR(cfg.Subnet)
 		if err != nil {
@@ -115,4 +112,19 @@ func replyForMessage(cfg Config, pool *ipPool, msg *dhcpv4.DHCPv4) (*dhcpv4.DHCP
 		}
 	}
 	return dhcpv4.NewReplyFromRequest(msg, opts...)
+}
+
+func validateClientMessage(msg *dhcpv4.DHCPv4) error {
+	if msg == nil || msg.OpCode != dhcpv4.OpcodeBootRequest || !validMAC(msg.ClientHWAddr) {
+		return fmt.Errorf("invalid DHCP client identity")
+	}
+	for _, code := range []dhcpv4.OptionCode{dhcpv4.OptionServerIdentifier, dhcpv4.OptionRequestedIPAddress} {
+		if raw := msg.Options.Get(code); raw != nil && len(raw) != 4 {
+			return fmt.Errorf("malformed address option")
+		}
+	}
+	if len(msg.Options.Get(dhcpv4.OptionDHCPMessageType)) != 1 {
+		return fmt.Errorf("malformed DHCP message type")
+	}
+	return nil
 }

@@ -185,7 +185,7 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		for _, att := range attachments {
 			stableKey := r.resolveOVSPort(ctx, pod.Namespace, pod.Name, att)
 			if !ValidPortKey(stableKey) {
-				log.Info("NetAttach: not a port key of the platform, ignored", "name", stableKey)
+				log.Info("NetAttach: not a port key of the platform, ignored", cniNameKey, stableKey)
 				continue
 			}
 			if err := r.cleanupPodPort(ctx, &pod, stableKey); err != nil {
@@ -255,7 +255,7 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 		if !ValidPortKey(stableKey) {
 			// "eth0" or any other name an annotation could carry: never a veth of ours.
-			log.Info("NetAttach: not a port key of the platform, ignored", "name", stableKey)
+			log.Info("NetAttach: not a port key of the platform, ignored", cniNameKey, stableKey)
 			continue
 		}
 		podSide := VethPeerName(stableKey)

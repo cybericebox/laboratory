@@ -2,11 +2,12 @@ package grpc
 
 import (
 	"encoding/json"
+	"testing"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"testing"
 )
 
 func TestRetirementManifestDeletionCannotClaimPhysicalGC(t *testing.T) {

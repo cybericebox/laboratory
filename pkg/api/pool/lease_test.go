@@ -2,13 +2,14 @@ package pool
 
 import (
 	"context"
+	"testing"
+
 	api "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"testing"
 )
 
 func leaseClient(t *testing.T) client.Client {

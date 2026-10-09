@@ -2,6 +2,9 @@ package grpc
 
 import (
 	"context"
+	"testing"
+	"time"
+
 	allocation "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	versionedfake "github.com/cybericebox/laboratory/clientset/client/versioned/fake"
@@ -20,8 +23,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	cfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"testing"
-	"time"
 )
 
 // Full public Reconcile reaches updateStatus, persists the CRD status, and then

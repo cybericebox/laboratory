@@ -218,7 +218,7 @@ func (w *hijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		// connection is bounded by the live-check lifetime instead.
 		_ = conn.SetDeadline(time.Time{})
 		if w.meter != nil {
-			if flushErr := rw.Writer.Flush(); flushErr != nil {
+			if flushErr := rw.Flush(); flushErr != nil {
 				w.meter.Incomplete()
 				_ = conn.Close()
 				return nil, nil, flushErr

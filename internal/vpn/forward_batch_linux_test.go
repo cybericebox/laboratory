@@ -5,9 +5,10 @@ package vpn
 import (
 	"context"
 	"errors"
-	"github.com/cybericebox/laboratory/internal/nstest"
 	"strings"
 	"testing"
+
+	"github.com/cybericebox/laboratory/internal/nstest"
 )
 
 type recordingRuleCommand struct {

@@ -5,19 +5,20 @@ package nstest
 import (
 	"encoding/base64"
 	"fmt"
-	"github.com/insomniacslk/dhcp/dhcpv4"
-	"golang.org/x/sys/unix"
 	"net"
 	"os"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/insomniacslk/dhcp/dhcpv4"
+	"golang.org/x/sys/unix"
 )
 
 func DHCP(ns, server string, msg *dhcpv4.DHCPv4) (*dhcpv4.DHCPv4, error) {
 	args := helperArgv("dial", "dhcp", server+"|"+base64.StdEncoding.EncodeToString(msg.ToBytes()))
 	if ns != "" {
-		args = append([]string{"ip", "netns", "exec", ns}, args...)
+		args = append([]string{"ip", netnsSubcommand, netnsExec, ns}, args...)
 	}
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Env = append(os.Environ(), helperEnv+"=1")
@@ -49,7 +50,7 @@ func helperDHCP(value string) {
 		fmt.Fprint(os.Stderr, err)
 		os.Exit(3)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	sys, _ := conn.SyscallConn()
 	_ = sys.Control(func(fd uintptr) {
 		ifaces, _ := net.Interfaces()

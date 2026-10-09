@@ -5,14 +5,15 @@ package nodeagent
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"regexp"
+	"strconv"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	"github.com/ovn-org/libovsdb/ovsdb"
-	"reflect"
-	"regexp"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"strconv"
 )
 
 var nativeOutput = regexp.MustCompile(`output:([0-9]+)`)
@@ -59,33 +60,8 @@ func (r *ConnectionReconciler) migrateLegacySwitchPair(ctx context.Context, conn
 	if err != nil {
 		return err
 	}
-	for i, key := range keys {
-		no, ok := ports[key]
-		if !ok {
-			return fmt.Errorf("legacy pair native ofport unavailable")
-		}
-		expected := uint64(*a.Status.VNI)
-		if i == 1 {
-			expected = uint64(*b.Status.VNI)
-		}
-		matched := false
-		for _, flow := range flows {
-			if flow.InPort == no {
-				if !flow.HasVNI || flow.VNI != expected {
-					return fmt.Errorf("legacy ingress is in a foreign VNI domain")
-				}
-				matched = true
-			}
-			for _, out := range nativeOutput.FindAllStringSubmatch(flow.Raw, -1) {
-				number, _ := strconv.ParseUint(out[1], 10, 32)
-				if uint32(number) == no && (!flow.HasVNI || flow.VNI != expected) {
-					return fmt.Errorf("legacy output belongs to a foreign VNI domain")
-				}
-			}
-		}
-		if !matched {
-			return fmt.Errorf("legacy native flow domain unproved")
-		}
+	if err := legacyFlowDomainsProven(keys, a, b, ports, flows); err != nil {
+		return err
 	}
 	// Claim both rows and exact Interface peer snapshots in one OVS transaction.
 	if err := validate(); err != nil {
@@ -165,7 +141,7 @@ func (r *ConnectionReconciler) validateLegacyTopology(ctx context.Context, conn 
 	if err := r.directReader().Get(ctx, client.ObjectKey{Namespace: conn.Namespace, Name: conn.Spec.LabRef}, &parent); err != nil {
 		return err
 	}
-	ref, ok := nativeOwnerReference(current.OwnerReferences, "Lab")
+	ref, ok := nativeOwnerReference(current.OwnerReferences, ownerKindLab)
 	if !ok || ref.UID != parent.UID {
 		return ErrPortOwnerChanged
 	}
@@ -177,7 +153,7 @@ func (r *ConnectionReconciler) validateLegacyTopology(ctx context.Context, conn 
 		if d.UID != expected.UID || d.ResourceVersion != expected.ResourceVersion || !reflect.DeepEqual(d.Spec, expected.Spec) || !reflect.DeepEqual(d.Status.VNI, expected.Status.VNI) || !reflect.DeepEqual(d.Status.VNILease, expected.Status.VNILease) || d.Spec.LabRef != conn.Spec.LabRef {
 			return ErrPortOwnerChanged
 		}
-		ref, ok := nativeOwnerReference(d.OwnerReferences, "Lab")
+		ref, ok := nativeOwnerReference(d.OwnerReferences, ownerKindLab)
 		if !ok || ref.UID != parent.UID {
 			return ErrPortOwnerChanged
 		}
@@ -191,7 +167,7 @@ func (r *ConnectionReconciler) validateLegacyTopology(ctx context.Context, conn 
 	return nil
 }
 func (m *OVSManager) patchPeerSnapshotLocked(row *OVSPort, peer string) (ovsdb.Row, error) {
-	ops := []ovsdb.Operation{{Op: ovsdb.OperationSelect, Table: "Interface", Where: []ovsdb.Condition{ovsdb.NewCondition("name", ovsdb.ConditionEqual, row.Name)}, Columns: []string{"_uuid", "name", "type", "options"}}}
+	ops := []ovsdb.Operation{{Op: ovsdb.OperationSelect, Table: "Interface", Where: []ovsdb.Condition{ovsdb.NewCondition(cniNameKey, ovsdb.ConditionEqual, row.Name)}, Columns: []string{ovsUUIDColumn, cniNameKey, cniTypeKey, "options"}}}
 	results, err := m.client.Transact(m.ctx, ops...)
 	if err != nil {
 		return nil, err
@@ -199,7 +175,7 @@ func (m *OVSManager) patchPeerSnapshotLocked(row *OVSPort, peer string) (ovsdb.R
 	if _, err := ovsdb.CheckOperationResults(results, ops); err != nil {
 		return nil, err
 	}
-	if len(results[0].Rows) != 1 || results[0].Rows[0]["type"] != "patch" {
+	if len(results[0].Rows) != 1 || results[0].Rows[0][cniTypeKey] != "patch" {
 		return nil, ErrPortOwnerUnknown
 	}
 	found := results[0].Rows[0]
@@ -207,7 +183,7 @@ func (m *OVSManager) patchPeerSnapshotLocked(row *OVSPort, peer string) (ovsdb.R
 	if !ok || options.GoMap["peer"] != peer {
 		return nil, ErrPortOwnerChanged
 	}
-	if uuid, ok := found["_uuid"].(ovsdb.UUID); !ok || uuid.GoUUID == "" {
+	if uuid, ok := found[ovsUUIDColumn].(ovsdb.UUID); !ok || uuid.GoUUID == "" {
 		return nil, ErrPortOwnerUnknown
 	}
 	return found, nil
@@ -215,14 +191,14 @@ func (m *OVSManager) patchPeerSnapshotLocked(row *OVSPort, peer string) (ovsdb.R
 func (m *OVSManager) claimLegacyPairLocked(a, b *OVSPort, peerA, peerB ovsdb.Row, uid string) error {
 	var ops []ovsdb.Operation
 	for _, peer := range []ovsdb.Row{peerA, peerB} {
-		ops = append(ops, ovsdb.Operation{Op: ovsdb.OperationWait, Table: "Interface", Where: []ovsdb.Condition{ovsdb.NewCondition("_uuid", ovsdb.ConditionEqual, peer["_uuid"])}, Columns: []string{"_uuid", "name", "type", "options"}, Rows: []ovsdb.Row{peer}, Until: "==", Timeout: ptrZeroTimeout()})
+		ops = append(ops, ovsdb.Operation{Op: ovsdb.OperationWait, Table: "Interface", Where: []ovsdb.Condition{ovsdb.NewCondition(ovsUUIDColumn, ovsdb.ConditionEqual, peer[ovsUUIDColumn])}, Columns: []string{ovsUUIDColumn, cniNameKey, cniTypeKey, "options"}, Rows: []ovsdb.Row{peer}, Until: "==", Timeout: ptrZeroTimeout()})
 	}
 	for _, row := range []*OVSPort{a, b} {
 		if owner := row.ExternalIDs[fabricOwnerExternalID]; owner != "" && owner != uid {
 			return ErrPortOwnerChanged
 		}
 		old, _ := ovsdb.NewOvsMap(row.ExternalIDs)
-		ops = append(ops, ovsdb.Operation{Op: ovsdb.OperationWait, Table: "Port", Where: []ovsdb.Condition{ovsdb.NewCondition("_uuid", ovsdb.ConditionEqual, ovsdb.UUID{GoUUID: row.UUID})}, Columns: []string{"external_ids", "name"}, Until: "==", Rows: []ovsdb.Row{{"external_ids": old, "name": row.Name}}, Timeout: ptrZeroTimeout()})
+		ops = append(ops, ovsdb.Operation{Op: ovsdb.OperationWait, Table: ovsPortTable, Where: []ovsdb.Condition{ovsdb.NewCondition(ovsUUIDColumn, ovsdb.ConditionEqual, ovsdb.UUID{GoUUID: row.UUID})}, Columns: []string{nativeExternalIDsColumn, cniNameKey}, Until: "==", Rows: []ovsdb.Row{{nativeExternalIDsColumn: old, cniNameKey: row.Name}}, Timeout: ptrZeroTimeout()})
 		ids := map[string]string{}
 		for key, value := range row.ExternalIDs {
 			ids[key] = value
@@ -230,7 +206,7 @@ func (m *OVSManager) claimLegacyPairLocked(a, b *OVSPort, peerA, peerB ovsdb.Row
 		ids[fabricOwnerExternalID] = uid
 		ids["cice-physical-migration"] = "true"
 		updated, _ := ovsdb.NewOvsMap(ids)
-		ops = append(ops, ovsdb.Operation{Op: ovsdb.OperationUpdate, Table: "Port", Where: []ovsdb.Condition{ovsdb.NewCondition("_uuid", ovsdb.ConditionEqual, ovsdb.UUID{GoUUID: row.UUID})}, Row: ovsdb.Row{"external_ids": updated}})
+		ops = append(ops, ovsdb.Operation{Op: ovsdb.OperationUpdate, Table: ovsPortTable, Where: []ovsdb.Condition{ovsdb.NewCondition(ovsUUIDColumn, ovsdb.ConditionEqual, ovsdb.UUID{GoUUID: row.UUID})}, Row: ovsdb.Row{nativeExternalIDsColumn: updated}})
 	}
 	results, err := m.client.Transact(m.ctx, ops...)
 	if err != nil {
@@ -240,3 +216,35 @@ func (m *OVSManager) claimLegacyPairLocked(a, b *OVSPort, peerA, peerB ovsdb.Row
 	return err
 }
 func ptrZeroTimeout() *int { v := 0; return &v }
+
+func legacyFlowDomainsProven(keys []string, a, b lab.Device, ports map[string]uint32, flows []nativeFlow) error {
+	for i, key := range keys {
+		no, ok := ports[key]
+		if !ok {
+			return fmt.Errorf("legacy pair native ofport unavailable")
+		}
+		expected := uint64(*a.Status.VNI)
+		if i == 1 {
+			expected = uint64(*b.Status.VNI)
+		}
+		matched := false
+		for _, flow := range flows {
+			if flow.InPort == no {
+				if !flow.HasVNI || flow.VNI != expected {
+					return fmt.Errorf("legacy ingress is in a foreign VNI domain")
+				}
+				matched = true
+			}
+			for _, out := range nativeOutput.FindAllStringSubmatch(flow.Raw, -1) {
+				number, _ := strconv.ParseUint(out[1], 10, 32)
+				if uint32(number) == no && (!flow.HasVNI || flow.VNI != expected) {
+					return fmt.Errorf("legacy output belongs to a foreign VNI domain")
+				}
+			}
+		}
+		if !matched {
+			return fmt.Errorf("legacy native flow domain unproved")
+		}
+	}
+	return nil
+}

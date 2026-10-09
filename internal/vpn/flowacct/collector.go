@@ -107,7 +107,6 @@ type flowKey struct {
 
 type tracked struct {
 	key       Key
-	counters  [4]uint64 // packets out, packets in, bytes out, bytes in
 	responded bool
 }
 
@@ -346,22 +345,6 @@ func (c *Collector) Poll(now time.Time) error {
 		}
 	}
 	return nil
-}
-
-func (c *Collector) row(key Key, first time.Time) *Touch {
-	if row, ok := c.ledger[key]; ok {
-		if ms := first.UnixMilli(); ms < row.FirstSeenMs {
-			row.FirstSeenMs = ms
-		}
-		return row
-	}
-	if len(c.ledger) >= MaxRows {
-		c.truncated = true
-		return nil
-	}
-	row := &Touch{Key: key, FirstSeenMs: first.UnixMilli(), LastSeenMs: first.UnixMilli()}
-	c.ledger[key] = row
-	return row
 }
 
 // Snapshot copies the current ledger.

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,7 +32,7 @@ func (h *Handler) claimVariableWrite(ctx context.Context, parent *lab.Lab, token
 			return err
 		}
 		if current.UID != parent.UID || !current.DeletionTimestamp.IsZero() || current.Annotations[names.AnnotationLifecycleRetirement] != "" {
-			return fmt.Errorf("Lab is retired, terminating or identity changed")
+			return fmt.Errorf("lab is retired, terminating or identity changed")
 		}
 		if old := current.Annotations[names.AnnotationLabVariableAdmission]; old != "" {
 			if old == token {
@@ -54,7 +55,7 @@ func (h *Handler) finishVariableWrite(ctx context.Context, parent *lab.Lab, toke
 			return err
 		}
 		if current.UID != parent.UID || current.Annotations[names.AnnotationLifecycleRetirement] != "" || current.Annotations[names.AnnotationLabVariableAdmission] != token {
-			return fmt.Errorf("Lab variable admission identity changed")
+			return fmt.Errorf("lab variable admission identity changed")
 		}
 		delete(current.Annotations, names.AnnotationLabVariableAdmission)
 		_, err = h.cs.LaboratoryV1alpha1().Labs(parent.Namespace).Update(ctx, current, metav1.UpdateOptions{})

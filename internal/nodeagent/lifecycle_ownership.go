@@ -4,6 +4,7 @@ package nodeagent
 
 import (
 	"context"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -17,7 +18,7 @@ func nativePodDeviceLab(ctx context.Context, reader client.Reader, pod *corev1.P
 	refs := pod.OwnerReferences
 	for _, ref := range refs {
 		deviceRef := ref
-		if ref.Kind == "ReplicaSet" {
+		if ref.Kind == ownerKindReplicaSet {
 			var rs appsv1.ReplicaSet
 			if err := reader.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: ref.Name}, &rs); err != nil {
 				return nil, nil, err
@@ -37,11 +38,11 @@ func nativePodDeviceLab(ctx context.Context, reader client.Reader, pod *corev1.P
 				return nil, nil, ErrPortOwnerChanged
 			}
 			var found bool
-			deviceRef, found = nativeOwnerReference(dep.OwnerReferences, "Device")
+			deviceRef, found = nativeOwnerReference(dep.OwnerReferences, ownerKindDevice)
 			if !found {
 				return nil, nil, ErrPortOwnerUnknown
 			}
-		} else if ref.Kind != "Device" {
+		} else if ref.Kind != ownerKindDevice {
 			continue
 		}
 		var device lab.Device
@@ -55,7 +56,7 @@ func nativePodDeviceLab(ctx context.Context, reader client.Reader, pod *corev1.P
 		if err := reader.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: device.Spec.LabRef}, &parent); err != nil {
 			return nil, nil, err
 		}
-		owner, ok := nativeOwnerReference(device.OwnerReferences, "Lab")
+		owner, ok := nativeOwnerReference(device.OwnerReferences, ownerKindLab)
 		if !ok || owner.UID != parent.UID {
 			return nil, nil, ErrPortOwnerChanged
 		}

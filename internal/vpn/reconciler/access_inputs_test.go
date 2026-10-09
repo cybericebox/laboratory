@@ -5,10 +5,11 @@ package reconciler
 import (
 	"context"
 	"errors"
-	corev1 "k8s.io/api/core/v1"
 	"slices"
 	"testing"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -160,7 +161,7 @@ func TestAccessReconcileRevocationRetryDoesNotReapplyRules(t *testing.T) {
 		t.Fatal("revocation failure was hidden")
 	}
 	var status lab.LabGroupAccessPolicy
-	if err := r.Client.Get(context.Background(), req.NamespacedName, &status); err != nil {
+	if err := r.Get(context.Background(), req.NamespacedName, &status); err != nil {
 		t.Fatal(err)
 	}
 	if status.Status.State != "Failed" || status.Status.LastError == "" {

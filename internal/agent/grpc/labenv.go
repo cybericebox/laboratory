@@ -107,7 +107,7 @@ func parseLabSpec(raw []byte, persistence bool) (laboratoryv1alpha1.LabSpec, err
 	if err := dec.Decode(&spec); err != nil {
 		return spec, fmt.Errorf("spec_json: %w", err)
 	}
-	if life := spec.Lifecycle; life != nil && (life.DesiredState != "Running" || life.OperationID == "" || life.Revision != 1 || life.Terminal || life.SnapshotMode != "") {
+	if life := spec.Lifecycle; life != nil && (life.DesiredState != lifecycleRunning || life.OperationID == "" || life.Revision != 1 || life.Terminal || life.SnapshotMode != "") {
 		return spec, fmt.Errorf("lifecycle intent must use UID-fenced StopLabs/StartLabs; only fenced initial Running revision1 is a birth")
 	}
 	for i := range spec.Devices {

@@ -1,9 +1,10 @@
 package client
 
 import (
+	"testing"
+
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 	"google.golang.org/protobuf/proto"
-	"testing"
 )
 
 func TestLifecyclePublicAliasesRoundTrip(t *testing.T) {
@@ -19,11 +20,11 @@ func TestLifecyclePublicAliasesRoundTrip(t *testing.T) {
 	if !proto.Equal(request, &got) {
 		t.Fatal("public stop alias changed wire contract")
 	}
-	var _ *StartLabsRequest = &protobuf.StartLabsRequest{}
-	var _ *LabLifecycleStatus = &protobuf.LabLifecycleStatus{}
-	var _ *ResourceAllocation = &protobuf.ResourceAllocation{}
-	var _ *ResourceAmounts = &protobuf.ResourceAmounts{}
-	var _ *LifecycleFeature = &protobuf.LifecycleFeature{}
+	func(*StartLabsRequest) {}(&protobuf.StartLabsRequest{})
+	func(*LabLifecycleStatus) {}(&protobuf.LabLifecycleStatus{})
+	func(*ResourceAllocation) {}(&protobuf.ResourceAllocation{})
+	func(*ResourceAmounts) {}(&protobuf.ResourceAmounts{})
+	func(*LifecycleFeature) {}(&protobuf.LifecycleFeature{})
 }
 
 // Frozen public aliases must preserve fractional traffic envelopes and the nested

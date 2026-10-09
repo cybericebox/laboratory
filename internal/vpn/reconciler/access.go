@@ -109,105 +109,9 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			return ctrl.Result{}, err
 		}
 	}
-	previousRules := r.lastRules
-	changed := !r.applied || r.lastNamespace != req.Namespace || !slices.Equal(r.lastRules, rules) || r.lastFenceKey != fenceKey
-	if changed {
-		if r.revokeReissued == nil {
-			r.revokeReissued = map[string]bool{}
-		}
-		if r.RequireInitialRetirement && !r.initialChecked {
-			for _, rule := range rules {
-				if rule.Action == vpn.AccessAllow && !r.InitialBindings[rule.BindingID()] {
-					r.revokeReissued[rule.Identifier()] = true
-				}
-			}
-		}
-		for _, old := range previousRules {
-			if old.Action != vpn.AccessAllow {
-				continue
-			}
-			for _, next := range rules {
-				if next.Action != vpn.AccessAllow {
-					continue
-				}
-				if old.SourceCIDR != "" && old.SourceCIDR == next.SourceCIDR && old.ClientName != next.ClientName || old.LabInterface != "" && old.LabInterface == next.LabInterface && old.LabName != next.LabName {
-					r.revokeReissued[next.Identifier()] = true
-				}
-			}
-		}
-		for _, old := range previousRules {
-			r.revokeLabs = append(r.revokeLabs, old.DestinationCIDR)
-			r.revokeClients = append(r.revokeClients, old.SourceCIDR)
-		}
-		for _, l := range labsByName {
-			if l.VPNCIDR != "" {
-				r.revokeLabs = append(r.revokeLabs, l.VPNCIDR)
-			}
-		}
-		for _, c := range clientSnapshots {
-			r.revokeClients = append(r.revokeClients, c.AssignedIP)
-		}
-		slices.Sort(r.revokeLabs)
-		slices.Sort(r.revokeClients)
-		r.revokeLabs = slices.Compact(r.revokeLabs)
-		r.revokeClients = slices.Compact(r.revokeClients)
-		// A legacy non-atomic replacement can fail after touching the chain:
-		// invalidate the old snapshot before trying, so reverting still repairs it.
-		r.applied = false
-		safeRules := slices.Clone(rules)
-		for i := range safeRules {
-			if r.revokeReissued[safeRules[i].Identifier()] {
-				safeRules[i].Action = vpn.AccessDeny
-				r.activationPending = true
-			}
-		}
-		if err := r.IPT.ReplaceAccessRules(safeRules); err != nil {
-			if policyFound {
-				_ = r.writePolicyStatus(ctx, policy, rules, nil, "Failed", err.Error())
-			}
-			return ctrl.Result{}, err
-		}
-		r.lastRules = slices.Clone(rules)
-		r.lastFenceKey = fenceKey
-		r.lastNamespace = req.Namespace
-		r.applied = true
-		r.revokePending = true
+	if err := r.applyAccessSnapshot(ctx, req, rules, fenceKey, labsByName, clientSnapshots, policyFound, policy); err != nil {
+		return ctrl.Result{}, err
 	}
-	if r.Conntrack != nil && r.revokePending {
-		revocationRules := slices.Clone(rules)
-		for i := range revocationRules {
-			if r.revokeReissued[revocationRules[i].Identifier()] {
-				revocationRules[i].Action = vpn.AccessDeny
-			}
-		}
-		n, err := r.Conntrack.Revoke(r.revokeLabs, revocationRules, r.revokeClients)
-		if n > 0 {
-			ctrl.LoggerFrom(ctx).Info("closed connections the access rules no longer allow", "connections", n)
-		}
-		if err != nil {
-			// The rules are in place; the open connections are not all gone. Run again.
-			if policyFound {
-				counters, _ := r.accessCounters()
-				_ = r.writePolicyStatus(ctx, policy, rules, counters, "Failed", err.Error())
-			}
-			return ctrl.Result{}, err
-		}
-	}
-	if r.activationPending {
-		if r.Conntrack == nil {
-			return ctrl.Result{}, fmt.Errorf("identity activation requires conntrack retirement")
-		}
-		if err := r.IPT.ReplaceAccessRules(rules); err != nil {
-			r.applied = false
-			return ctrl.Result{}, err
-		}
-		r.activationPending = false
-	}
-	r.initialChecked = true
-	r.revokePending = false
-	r.revokeLabs = nil
-	r.revokeClients = nil
-	r.revokeReissued = nil
 	if policyIdentityError != "" {
 		if policyFound {
 			_ = r.writePolicyStatus(ctx, policy, rules, nil, "Failed", policyIdentityError)
@@ -317,4 +221,111 @@ func (r *AccessReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// another policy reconcile; specification changes still enqueue one.
 		Watches(&laboratoryv1alpha1.LabGroupAccessPolicy{}, allInNamespace, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(reconcileutil.Quiet(r))
+}
+
+func (r *AccessReconciler) prepareAccessRetirement(previousRules, rules []vpn.AccessRule, labsByName map[string]vpn.LabAccessSnapshot, clientSnapshots []vpn.ClientAccessSnapshot) {
+	if r.revokeReissued == nil {
+		r.revokeReissued = map[string]bool{}
+	}
+	if r.RequireInitialRetirement && !r.initialChecked {
+		for _, rule := range rules {
+			if rule.Action == vpn.AccessAllow && !r.InitialBindings[rule.BindingID()] {
+				r.revokeReissued[rule.Identifier()] = true
+			}
+		}
+	}
+	for _, old := range previousRules {
+		if old.Action != vpn.AccessAllow {
+			continue
+		}
+		for _, next := range rules {
+			if next.Action != vpn.AccessAllow {
+				continue
+			}
+			if old.SourceCIDR != "" && old.SourceCIDR == next.SourceCIDR && old.ClientName != next.ClientName || old.LabInterface != "" && old.LabInterface == next.LabInterface && old.LabName != next.LabName {
+				r.revokeReissued[next.Identifier()] = true
+			}
+		}
+	}
+	for _, old := range previousRules {
+		r.revokeLabs = append(r.revokeLabs, old.DestinationCIDR)
+		r.revokeClients = append(r.revokeClients, old.SourceCIDR)
+	}
+	for _, l := range labsByName {
+		if l.VPNCIDR != "" {
+			r.revokeLabs = append(r.revokeLabs, l.VPNCIDR)
+		}
+	}
+	for _, c := range clientSnapshots {
+		r.revokeClients = append(r.revokeClients, c.AssignedIP)
+	}
+	slices.Sort(r.revokeLabs)
+	slices.Sort(r.revokeClients)
+	r.revokeLabs = slices.Compact(r.revokeLabs)
+	r.revokeClients = slices.Compact(r.revokeClients)
+}
+
+func (r *AccessReconciler) applyAccessSnapshot(ctx context.Context, req ctrl.Request, rules []vpn.AccessRule, fenceKey string, labsByName map[string]vpn.LabAccessSnapshot, clientSnapshots []vpn.ClientAccessSnapshot, policyFound bool, policy *laboratoryv1alpha1.LabGroupAccessPolicy) error {
+	previousRules := r.lastRules
+	changed := !r.applied || r.lastNamespace != req.Namespace || !slices.Equal(r.lastRules, rules) || r.lastFenceKey != fenceKey
+	if changed {
+		r.prepareAccessRetirement(previousRules, rules, labsByName, clientSnapshots)
+		// A legacy non-atomic replacement can fail after touching the chain:
+		// invalidate the old snapshot before trying, so reverting still repairs it.
+		r.applied = false
+		safeRules := slices.Clone(rules)
+		for i := range safeRules {
+			if r.revokeReissued[safeRules[i].Identifier()] {
+				safeRules[i].Action = vpn.AccessDeny
+				r.activationPending = true
+			}
+		}
+		if err := r.IPT.ReplaceAccessRules(safeRules); err != nil {
+			if policyFound {
+				_ = r.writePolicyStatus(ctx, policy, rules, nil, "Failed", err.Error())
+			}
+			return err
+		}
+		r.lastRules = slices.Clone(rules)
+		r.lastFenceKey = fenceKey
+		r.lastNamespace = req.Namespace
+		r.applied = true
+		r.revokePending = true
+	}
+	if r.Conntrack != nil && r.revokePending {
+		revocationRules := slices.Clone(rules)
+		for i := range revocationRules {
+			if r.revokeReissued[revocationRules[i].Identifier()] {
+				revocationRules[i].Action = vpn.AccessDeny
+			}
+		}
+		n, err := r.Conntrack.Revoke(r.revokeLabs, revocationRules, r.revokeClients)
+		if n > 0 {
+			ctrl.LoggerFrom(ctx).Info("closed connections the access rules no longer allow", "connections", n)
+		}
+		if err != nil {
+			// The rules are in place; the open connections are not all gone. Run again.
+			if policyFound {
+				counters, _ := r.accessCounters()
+				_ = r.writePolicyStatus(ctx, policy, rules, counters, "Failed", err.Error())
+			}
+			return err
+		}
+	}
+	if r.activationPending {
+		if r.Conntrack == nil {
+			return fmt.Errorf("identity activation requires conntrack retirement")
+		}
+		if err := r.IPT.ReplaceAccessRules(rules); err != nil {
+			r.applied = false
+			return err
+		}
+		r.activationPending = false
+	}
+	r.initialChecked = true
+	r.revokePending = false
+	r.revokeLabs = nil
+	r.revokeClients = nil
+	r.revokeReissued = nil
+	return nil
 }

@@ -3,11 +3,12 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"testing"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	fakeversioned "github.com/cybericebox/laboratory/clientset/client/versioned/fake"
 	"github.com/cybericebox/laboratory/internal/names"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"testing"
 )
 
 func TestVariableAdmissionFencesRetirementAndIdenticalRetry(t *testing.T) {

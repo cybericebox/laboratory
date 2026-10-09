@@ -3,10 +3,11 @@
 package dhcp
 
 import (
-	"github.com/cybericebox/laboratory/internal/nstest"
-	"github.com/insomniacslk/dhcp/dhcpv4"
 	"net"
 	"testing"
+
+	"github.com/cybericebox/laboratory/internal/nstest"
+	"github.com/insomniacslk/dhcp/dhcpv4"
 )
 
 func TestNetnsHelperProcess(*testing.T) { nstest.HelperProcess() }

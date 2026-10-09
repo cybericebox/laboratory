@@ -53,7 +53,7 @@ func (w publicationStatus) Patch(ctx context.Context, object client.Object, patc
 			before := w.parent.before
 			w.parent.before = nil
 			var live lab.Lab
-			if err := w.parent.Client.Get(ctx, client.ObjectKeyFromObject(parent), &live); err != nil {
+			if err := w.parent.Get(ctx, client.ObjectKeyFromObject(parent), &live); err != nil {
 				w.parent.t.Fatal(err)
 			}
 			before(ctx, &live)
@@ -147,7 +147,7 @@ func TestLabScopePublicationRejectsChangedAuthorityDuringConflict(t *testing.T) 
 			c.before = func(ctx context.Context, live *lab.Lab) {
 				change(live)
 				status := live.Status.DeepCopy()
-				if err := c.Client.Update(ctx, live); err != nil {
+				if err := c.Update(ctx, live); err != nil {
 					t.Fatal(err)
 				}
 				live.Status = *status
@@ -314,7 +314,7 @@ func TestLabScopePublicationRetirementChallengeMustRemainExact(t *testing.T) {
 		intent.OperationID, intent.Revision = "new-retirement", 10
 		raw, _ := json.Marshal(intent)
 		live.Annotations[names.AnnotationLifecycleRetirement] = string(raw)
-		if err := c.Client.Update(ctx, live); err != nil {
+		if err := c.Update(ctx, live); err != nil {
 			t.Fatal(err)
 		}
 	}

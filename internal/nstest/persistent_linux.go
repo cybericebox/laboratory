@@ -26,7 +26,7 @@ func Persistent(t *testing.T, ns, proto, addr string) *Dialog {
 func startTalk(t *testing.T, ns, mode, proto, addr string) *Dialog {
 	args := helperArgv(mode, proto, addr)
 	if ns != "" {
-		args = append([]string{"ip", "netns", "exec", ns}, args...)
+		args = append([]string{"ip", netnsSubcommand, netnsExec, ns}, args...)
 	}
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Env = append(os.Environ(), helperEnv+"=1")
@@ -68,7 +68,7 @@ func helperPersistent(mode, proto, addr string) {
 				if err != nil {
 					os.Exit(2)
 				}
-				go func() { defer conn.Close(); _, _ = io.Copy(conn, conn) }()
+				go func() { defer func() { _ = conn.Close() }(); _, _ = io.Copy(conn, conn) }()
 			}
 		} else {
 			conn, err := net.ListenPacket("udp", addr)
@@ -90,7 +90,7 @@ func helperPersistent(mode, proto, addr string) {
 	if err != nil {
 		os.Exit(2)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	fmt.Println("ready")
 	scanner := bufio.NewScanner(os.Stdin)
 	buf := make([]byte, 1024)

@@ -130,7 +130,7 @@ func Run() {
 			if err != nil {
 				return err
 			}
-			defer ln.Close()
+			defer func() { _ = ln.Close() }()
 			return l7.RunLifecycle(ctx, httpsSrv, handler, reports, cfg.ReportInterval, cfg.LiveCheckInterval, func() error {
 				listening.Set()
 				return httpsSrv.ServeTLS(proxy.LimitListener(ln, cfg.MaxConnections), "", "")

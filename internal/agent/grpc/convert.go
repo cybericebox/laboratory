@@ -376,7 +376,7 @@ func lifecycleToProto(l *laboratoryv1alpha1.Lab) *protobuf.LabLifecycleStatus {
 	if intent == nil {
 		return nil
 	}
-	out := &protobuf.LabLifecycleStatus{DesiredState: intent.DesiredState, ObservedState: "Unknown", OperationId: intent.OperationID, LifecycleRevision: intent.Revision, LabUid: string(l.UID), RetentionUntilUnixMs: ms(intent.RetentionUntil), Terminal: intent.Terminal}
+	out := &protobuf.LabLifecycleStatus{DesiredState: intent.DesiredState, ObservedState: allocationUnknown, OperationId: intent.OperationID, LifecycleRevision: intent.Revision, LabUid: string(l.UID), RetentionUntilUnixMs: ms(intent.RetentionUntil), Terminal: intent.Terminal}
 	observed := l.Status.Lifecycle
 	if observed == nil || observed.LabUID != string(l.UID) || observed.OperationID != intent.OperationID || observed.Revision != intent.Revision || observed.ObservedGeneration != l.Generation {
 		return out
@@ -407,10 +407,10 @@ func allocationToProto(a *laboratoryv1alpha1.RuntimeAllocation) *protobuf.Resour
 		OperationId: a.OperationID, LifecycleRevision: a.Revision,
 	}
 	if out.RuntimeState == "" {
-		out.RuntimeState = "Unknown"
+		out.RuntimeState = allocationUnknown
 	}
 	if out.StorageState == "" {
-		out.StorageState = "Unknown"
+		out.StorageState = allocationUnknown
 	}
 	if a.UsageAvailable && a.Used != nil {
 		out.Used = resourceAmountsToProto(*a.Used)
@@ -429,7 +429,7 @@ func labAllocationToProto(l *laboratoryv1alpha1.Lab, sizing ...limits.Limits) *p
 	}
 	out := allocationToProto(a)
 	if out == nil {
-		out = &protobuf.ResourceAllocation{RuntimeState: "Unknown", StorageState: "Unknown"}
+		out = &protobuf.ResourceAllocation{RuntimeState: allocationUnknown, StorageState: allocationUnknown}
 	}
 	lim := limits.Limits{}
 	if len(sizing) > 0 {
@@ -447,17 +447,17 @@ func labAllocationToProto(l *laboratoryv1alpha1.Lab, sizing ...limits.Limits) *p
 	out.ConfiguredLimits.CpuMillicores = max(cpu, out.ConfiguredLimits.CpuMillicores)
 	out.ConfiguredLimits.MemoryBytes = max(mem, out.ConfiguredLimits.MemoryBytes)
 	observed := l.Status.Lifecycle
-	current := a != nil && a.ObservedAt != nil && !a.ObservedAt.IsZero() && a.OperationID == intent.OperationID && a.Revision == intent.Revision && observed != nil && observed.LabUID == string(l.UID) && observed.OperationID == intent.OperationID && observed.Revision == intent.Revision && observed.ObservedGeneration == l.Generation
+	current := allocationObservationCurrent(a, intent, observed, l)
 	snapshotSucceeded := intent.SnapshotMode != "Required" || observed != nil && observed.SnapshotComplete && observed.Error == ""
 	accessFenced := !l.Spec.VPN.Enabled || observed != nil && observed.AccessFenced && observed.AccessFencedAt != nil && !observed.AccessFencedAt.IsZero() && observed.AccessFenceVPNBootID != ""
-	released := current && intent.IsStopped() && observed.ObservedState == "Stopped" && a.RuntimeState == "Released" && a.ReleasedAt != nil && !a.ReleasedAt.IsZero() && a.AllocatedRequests == (laboratoryv1alpha1.ResourceAmounts{}) && snapshotSucceeded && accessFenced
+	released := allocationReleaseComplete(current, intent, observed, a, snapshotSucceeded, accessFenced)
 	if !current {
-		out.StorageState = "Unknown"
+		out.StorageState = allocationUnknown
 		out.PhysicalStorageBytesAvailable = false
 		out.PhysicalStorageBytes = 0
 	}
 	if !current || out.RuntimeState == "Released" && !released {
-		out.RuntimeState = "Unknown"
+		out.RuntimeState = allocationUnknown
 		out.ObservedUnixMs = 0
 		out.ReleasedUnixMs = 0
 		out.UsageAvailable = false
@@ -483,7 +483,7 @@ func immutableGroupSize(s *laboratoryv1alpha1.GroupPodSize) *protobuf.PodSize {
 
 func exactRunningProjection(l *laboratoryv1alpha1.Lab) bool {
 	i, o := l.Spec.Lifecycle, l.Status.Lifecycle
-	return i != nil && i.DesiredState == "Running" && o != nil && o.ObservedState == "Running" && o.LabUID == string(l.UID) && o.OperationID == i.OperationID && o.Revision == i.Revision && o.ObservedGeneration == l.Generation
+	return i != nil && i.DesiredState == lifecycleRunning && o != nil && o.ObservedState == lifecycleRunning && o.LabUID == string(l.UID) && o.OperationID == i.OperationID && o.Revision == i.Revision && o.ObservedGeneration == l.Generation
 }
 
 func groupAllocationToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.ResourceAllocation {
@@ -493,10 +493,10 @@ func groupAllocationToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.ResourceAl
 		return out
 	}
 	if out == nil {
-		out = &protobuf.ResourceAllocation{RuntimeState: "Unknown", StorageState: "Unknown"}
+		out = &protobuf.ResourceAllocation{RuntimeState: allocationUnknown, StorageState: allocationUnknown}
 	}
 	if out.GetOperationId() != i.OperationID || out.GetLifecycleRevision() != i.Revision || !i.IsStopped() && out.RuntimeState == "Released" {
-		out.RuntimeState = "Unknown"
+		out.RuntimeState = allocationUnknown
 		out.ObservedUnixMs = 0
 		out.ReleasedUnixMs = 0
 		out.OperationId = i.OperationID
@@ -510,4 +510,12 @@ func groupAllocationToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.ResourceAl
 		}
 	}
 	return out
+}
+
+func allocationObservationCurrent(a *laboratoryv1alpha1.RuntimeAllocation, intent *laboratoryv1alpha1.LabLifecycleSpec, observed *laboratoryv1alpha1.LabLifecycleStatus, l *laboratoryv1alpha1.Lab) bool {
+	return a != nil && a.ObservedAt != nil && !a.ObservedAt.IsZero() && a.OperationID == intent.OperationID && a.Revision == intent.Revision && observed != nil && observed.LabUID == string(l.UID) && observed.OperationID == intent.OperationID && observed.Revision == intent.Revision && observed.ObservedGeneration == l.Generation
+}
+
+func allocationReleaseComplete(current bool, intent *laboratoryv1alpha1.LabLifecycleSpec, observed *laboratoryv1alpha1.LabLifecycleStatus, a *laboratoryv1alpha1.RuntimeAllocation, snapshotSucceeded bool, accessFenced bool) bool {
+	return current && intent.IsStopped() && observed.ObservedState == "Stopped" && a.RuntimeState == "Released" && a.ReleasedAt != nil && !a.ReleasedAt.IsZero() && a.AllocatedRequests == (laboratoryv1alpha1.ResourceAmounts{}) && snapshotSucceeded && accessFenced
 }

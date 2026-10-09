@@ -4,6 +4,7 @@ package nodeagent
 
 import (
 	"context"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
@@ -11,7 +12,7 @@ import (
 )
 
 func completeZeroVNIBinding(b lab.OwnedVNI) bool {
-	return b.UID != "" && b.OwnerUID != "" && b.PoolUID != "" && b.LeaseGeneration > 0 && b.Namespace != "" && b.Name != "" && (b.Kind == "Device" || b.Kind == "Connection")
+	return b.UID != "" && b.OwnerUID != "" && b.PoolUID != "" && b.LeaseGeneration > 0 && b.Namespace != "" && b.Name != "" && (b.Kind == ownerKindDevice || b.Kind == ownerKindConnection)
 }
 
 // Numeric zero is valid only with the same actual Pool reservation and typed
@@ -24,7 +25,7 @@ func validateZeroVNIBinding(ctx context.Context, reader client.Reader, b lab.Own
 		return nil, err
 	}
 	var object client.Object
-	if b.Kind == "Device" {
+	if b.Kind == ownerKindDevice {
 		object = &lab.Device{}
 	} else {
 		object = &lab.Connection{}
@@ -55,7 +56,7 @@ func validateZeroVNIBinding(ctx context.Context, reader client.Reader, b lab.Own
 	if err := reader.Get(ctx, client.ObjectKey{Namespace: b.Namespace, Name: labName}, &parent); err != nil {
 		return nil, err
 	}
-	ref, ok := nativeOwnerReference(object.GetOwnerReferences(), "Lab")
+	ref, ok := nativeOwnerReference(object.GetOwnerReferences(), ownerKindLab)
 	if !ok || ref.UID != parent.UID || ref.Name != parent.Name || b.OwnerUID != string(parent.UID) {
 		return nil, ErrPortOwnerChanged
 	}

@@ -2,6 +2,8 @@ package grpc
 
 import (
 	"context"
+	"testing"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	csfake "github.com/cybericebox/laboratory/clientset/client/versioned/fake"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -10,7 +12,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
-	"testing"
 )
 
 func TestCurrentVPNBootProjectionUsesIndependentCurrentStartupRecord(t *testing.T) {
