@@ -46,9 +46,13 @@ type NativeRuntimeObserver struct {
 func (o *NativeRuntimeObserver) ObserveOwnedRuntime(ctx context.Context, id lab.OwnedRuntimeIdentity, fresh ...bool) lab.OwnedRuntimeReport {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	id = runtimeWireIdentity(id)
 	var committed lab.OwnedRuntimeReport
-	if (len(fresh) == 0 || !fresh[0]) && o.readRecord("runtime-released", id, &committed) == nil && committedRuntimeReport(committed, id) {
-		return committed
+	if (len(fresh) == 0 || !fresh[0]) && o.readRecord("runtime-released", id, &committed) == nil {
+		committed.Identity = runtimeWireIdentity(committed.Identity)
+		if committedRuntimeReport(committed, id) {
+			return committed
+		}
 	}
 	now := metav1.Now()
 	out := lab.OwnedRuntimeReport{Identity: id, RuntimeState: "Unknown", ObservedAt: &now}
@@ -116,7 +120,7 @@ func (o *NativeRuntimeObserver) ObserveOwnedRuntime(ctx context.Context, id lab.
 		if !sameRuntimeOwner(saved, id) {
 			return fail(fmt.Errorf("native inventory mismatch"))
 		}
-		id = saved
+		id = runtimeWireIdentity(saved)
 	}
 	out.Identity = id
 	if len(id.ContainerIDs) == 0 || len(id.CgroupPaths) == 0 || len(id.PortKeys) == 0 && !id.AttachmentsComplete {
@@ -664,4 +668,19 @@ func (o *NativeRuntimeObserver) recoverPhysicalCleanup(id lab.OwnedRuntimeIdenti
 
 func committedRuntimeReport(report lab.OwnedRuntimeReport, id lab.OwnedRuntimeIdentity) bool {
 	return reflect.DeepEqual(report.Identity, id) && report.RuntimeState == "Released" && report.Error == "" && report.ObservedAt != nil && !report.ObservedAt.IsZero() && report.RuntimeAbsentAt != nil && !report.RuntimeAbsentAt.IsZero() && report.CgroupAbsentAt != nil && !report.CgroupAbsentAt.IsZero() && report.AttachmentsAbsentAt != nil && !report.AttachmentsAbsentAt.IsZero()
+}
+
+// Required wire arrays distinguish empty inventory from invalid JSON null.
+// This changes no positive obligation, timestamp or native absence predicate.
+func runtimeWireIdentity(id lab.OwnedRuntimeIdentity) lab.OwnedRuntimeIdentity {
+	if id.ContainerIDs == nil {
+		id.ContainerIDs = []string{}
+	}
+	if id.CgroupPaths == nil {
+		id.CgroupPaths = []string{}
+	}
+	if id.PortKeys == nil {
+		id.PortKeys = []string{}
+	}
+	return id
 }

@@ -4,6 +4,7 @@ package nodeagent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"reflect"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sort"
 	"strings"
 	"time"
@@ -40,7 +42,9 @@ func (r *LifecycleReporter) Start(ctx context.Context) error {
 	}
 	for {
 		scan, cancel := context.WithTimeout(ctx, 30*time.Second)
-		_ = r.sync(scan)
+		if err := r.sync(scan); err != nil {
+			log.FromContext(scan).Error(err, "native lifecycle observation failed")
+		}
 		cancel()
 		select {
 		case <-ctx.Done():
@@ -50,6 +54,7 @@ func (r *LifecycleReporter) Start(ctx context.Context) error {
 	}
 }
 func (r *LifecycleReporter) sync(ctx context.Context) error {
+	var publicationErrors []error
 	var pods corev1.PodList
 	if err := r.Reader.List(ctx, &pods, client.MatchingFields{"spec.nodeName": r.Observer.NodeName}); err != nil {
 		return err
@@ -136,7 +141,7 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 		g.Status.ServiceReports = reports
 		if !reflect.DeepEqual(base.Status.ServiceReports, reports) {
 			if e := r.Client.Status().Patch(ctx, g, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); e != nil {
-				return e
+				publicationErrors = append(publicationErrors, fmt.Errorf("publish native group %s: %w", g.Name, e))
 			}
 		}
 	}
@@ -161,7 +166,7 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 		parent.Status.ScopeReports = reports
 		if !reflect.DeepEqual(base.Status.ScopeReports, reports) {
 			if err := r.Client.Status().Patch(ctx, parent, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-				return err
+				publicationErrors = append(publicationErrors, fmt.Errorf("publish native lab %s/%s: %w", parent.Namespace, parent.Name, err))
 			}
 		}
 	}
@@ -219,11 +224,11 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 		d.Status.RuntimeReports = reports
 		if !reflect.DeepEqual(base.Status.RuntimeReports, reports) {
 			if e := r.Client.Status().Patch(ctx, d, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); e != nil {
-				return e
+				publicationErrors = append(publicationErrors, fmt.Errorf("publish native device %s/%s: %w", d.Namespace, d.Name, e))
 			}
 		}
 	}
-	return nil
+	return errors.Join(publicationErrors...)
 }
 func appendUniqueRow(rows []lab.OwnedRuntimeIdentity, id lab.OwnedRuntimeIdentity) []lab.OwnedRuntimeIdentity {
 	for _, old := range rows {

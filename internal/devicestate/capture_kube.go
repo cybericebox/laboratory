@@ -149,13 +149,34 @@ func (k *KubeCluster) RecordCapture(ctx context.Context, p PodInfo, result api.D
 // InvalidateCapture first changes the current Pod RV. Any deletion using the
 // previous guard/RV now conflicts. A deleting Pod is never modified or thawed.
 func (k *KubeCluster) InvalidateCapture(ctx context.Context, p PodInfo, result api.DeviceCaptureResult) error {
+	if result.PodUID != p.UID || result.Epoch != p.Epoch || result.Incarnation != p.Incarnation || result.NodeAgentEpoch == "" || result.Result != "Failed" || result.GuardState != "Invalidated" || result.Quiesced || result.Committed {
+		return ErrStale
+	}
+	var original api.Device
+	if err := k.Reader.Get(ctx, p.Device, &original); err != nil {
+		return err
+	}
+	if original.Status.State != nil && original.Status.State.Capture != nil && !sameCapture(*original.Status.State.Capture, result) {
+		current, err := k.currentCaptureFailure(ctx, p, result)
+		if err != nil {
+			return err
+		}
+		if current.UID != original.UID {
+			return ErrStale
+		}
+	}
+	ownedGuard := false
 	err := k.patchGuard(ctx, p, func(pod *corev1.Pod) error {
 		if pod.DeletionTimestamp != nil {
 			return ErrDeleting
 		}
 		var guard api.DeviceCaptureResult
-		if json.Unmarshal([]byte(pod.Annotations[CaptureGuardAnnotation]), &guard) == nil && !sameCapture(guard, result) {
-			return ErrStale
+		ownedGuard = false
+		if raw := pod.Annotations[CaptureGuardAnnotation]; raw != "" {
+			if json.Unmarshal([]byte(raw), &guard) != nil || !sameCapture(guard, result) {
+				return ErrStale
+			}
+			ownedGuard = true
 		}
 		delete(pod.Annotations, CaptureGuardAnnotation)
 		return nil
@@ -165,11 +186,83 @@ func (k *KubeCluster) InvalidateCapture(ctx context.Context, p PodInfo, result a
 	}
 	// Status write may fail/stale after the guard is removed; that never restores
 	// authority to delete. Still fail closed and retry rather than thaw on API error.
-	return k.update(ctx, p, true, func(st *api.DeviceStateStatus) {
-		if st.Capture == nil || sameCapture(*st.Capture, result) {
-			st.Capture = result.DeepCopy()
+	for attempt := 0; attempt < 5; attempt++ {
+		var d api.Device
+		if err := k.Reader.Get(ctx, p.Device, &d); err != nil {
+			return err
 		}
-	})
+		if d.UID != original.UID || d.Status.State == nil || d.Status.State.Epoch != p.Epoch || d.Status.State.Incarnation != p.Incarnation {
+			return ErrStale
+		}
+		if d.DeletionTimestamp != nil {
+			return ErrDeleting
+		}
+		if old := d.Status.State.Capture; old != nil && !sameCapture(*old, result) {
+			current, err := k.currentCaptureFailure(ctx, p, result)
+			if err != nil {
+				return err
+			}
+			if current.UID != original.UID || current.ResourceVersion != d.ResourceVersion {
+				continue
+			}
+			// An old worker cannot replace another boot's result for the same
+			// request without its own guard, or supersede a newer request.
+			if old.LifecycleRevision > result.LifecycleRevision || old.OperationID == result.OperationID && old.LifecycleRevision == result.LifecycleRevision && (!ownedGuard || old.GuardState == "Held") {
+				return ErrStale
+			}
+		}
+		pod, err := k.currentCapturePod(ctx, p)
+		if err != nil {
+			return err
+		}
+		if pod.DeletionTimestamp != nil {
+			return ErrDeleting
+		}
+		if pod.Annotations[CaptureGuardAnnotation] != "" {
+			return ErrStale
+		}
+		before := d.DeepCopy()
+		d.Status.State.Capture = result.DeepCopy()
+		err = k.Client.Status().Patch(ctx, &d, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
+		if err == nil || !apierrors.IsConflict(err) {
+			return err
+		}
+	}
+	return ErrStale
+}
+
+// Only a current failure may replace a different capture's status. Matching old
+// captures still invalidate after cancellation/restart so their own holds thaw.
+func (k *KubeCluster) currentCaptureFailure(ctx context.Context, p PodInfo, result api.DeviceCaptureResult) (*api.Device, error) {
+	d, err := k.captureCurrent(ctx, p, requestOf(result))
+	if err != nil {
+		return nil, err
+	}
+	pod, err := k.currentCapturePod(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	owned := len(pod.OwnerReferences) == 1
+	if owned {
+		owner := pod.OwnerReferences[0]
+		owned = owner.Kind == "Device" && owner.Name == d.Name && owner.UID == d.UID && d.UID != "" && owner.Controller != nil && *owner.Controller
+	}
+	var l api.Lab
+	if err := k.Reader.Get(ctx, types.NamespacedName{Namespace: d.Namespace, Name: d.Spec.LabRef}, &l); err != nil {
+		return nil, err
+	}
+	labOwned := false
+	labOwners := 0
+	for _, owner := range d.OwnerReferences {
+		if owner.Kind == "Lab" {
+			labOwners++
+			labOwned = owner.Name == l.Name && owner.UID == l.UID && l.UID != ""
+		}
+	}
+	if !owned || !labOwned || labOwners != 1 || !l.DeletionTimestamp.IsZero() || l.Spec.Lifecycle == nil || l.Spec.Lifecycle.DesiredState != "Stopped" || l.Spec.Lifecycle.OperationID != result.OperationID || l.Spec.Lifecycle.Revision != result.LifecycleRevision {
+		return nil, ErrStale
+	}
+	return d, nil
 }
 
 func (k *KubeCluster) CheckCapture(ctx context.Context, p PodInfo, result api.DeviceCaptureResult) (bool, error) {

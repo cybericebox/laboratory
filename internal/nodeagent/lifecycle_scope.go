@@ -98,9 +98,13 @@ func envValue(env []string, key string) string {
 func (o *NativeRuntimeObserver) ObserveScope(ctx context.Context, id lab.OwnedRuntimeIdentity, fresh ...bool) lab.OwnedRuntimeReport {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	id = runtimeWireIdentity(id)
 	var committed lab.OwnedRuntimeReport
-	if (len(fresh) == 0 || !fresh[0]) && o.readRecord("scope-fabric-released", id, &committed) == nil && committedRuntimeReport(committed, id) {
-		return committed
+	if (len(fresh) == 0 || !fresh[0]) && o.readRecord("scope-fabric-released", id, &committed) == nil {
+		committed.Identity = runtimeWireIdentity(committed.Identity)
+		if committedRuntimeReport(committed, id) {
+			return committed
+		}
 	}
 	now := metav1.Now()
 	out := lab.OwnedRuntimeReport{Identity: id, RuntimeState: "Unknown", ObservedAt: &now}
@@ -142,8 +146,8 @@ func (o *NativeRuntimeObserver) ObserveScope(ctx context.Context, id lab.OwnedRu
 	for _, pod := range currentPods.Items {
 		knownPods[string(pod.UID)] = pod.Namespace
 	}
-	owned := append([]string(nil), id.ContainerIDs...)
-	cgroups := append([]string(nil), id.CgroupPaths...)
+	owned := append([]string{}, id.ContainerIDs...)
+	cgroups := append([]string{}, id.CgroupPaths...)
 	for _, container := range containers {
 		info, err := container.Info(native)
 		if err != nil {
@@ -245,8 +249,8 @@ func (o *NativeRuntimeObserver) ObserveScope(ctx context.Context, id lab.OwnedRu
 		}
 	}
 	// Save positive history before any later task/fabric/cgroup scan can fail.
-	id.ContainerIDs = append([]string(nil), owned...)
-	id.CgroupPaths = append([]string(nil), cgroups...)
+	id.ContainerIDs = append([]string{}, owned...)
+	id.CgroupPaths = append([]string{}, cgroups...)
 	id.AttachmentsComplete = false
 	if err := o.writeRecord("scope", id, id); err != nil {
 		return fail(err)
@@ -260,8 +264,8 @@ func (o *NativeRuntimeObserver) ObserveScope(ctx context.Context, id lab.OwnedRu
 			cgroups = append(cgroups, path)
 		}
 	}
-	id.ContainerIDs = append([]string(nil), owned...)
-	id.CgroupPaths = append([]string(nil), cgroups...)
+	id.ContainerIDs = append([]string{}, owned...)
+	id.CgroupPaths = append([]string{}, cgroups...)
 	out.Identity = id
 	if err := o.writeRecord("scope", id, id); err != nil {
 		return fail(err)
