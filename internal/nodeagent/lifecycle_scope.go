@@ -23,7 +23,7 @@ import (
 	"time"
 )
 
-func (o *NativeRuntimeObserver) scopeCurrent(ctx context.Context, id lab.OwnedRuntimeIdentity) (bool, error) {
+func (o *NativeRuntimeObserver) scopeCurrent(ctx context.Context, id lab.OwnedRuntimeIdentity, persistentDebt ...*lab.OwnedRuntimeIdentity) (bool, error) {
 	if o.Reader == nil || id.NodeName != o.NodeName || id.NodeBootID != o.BootID || id.ScopeUID == "" || id.ScopeKind != "NeverMaterialized" && id.ScopeUID != id.OwnerUID || id.Generation < 1 {
 		return false, ErrPortOwnerUnknown
 	}
@@ -59,6 +59,14 @@ func (o *NativeRuntimeObserver) scopeCurrent(ctx context.Context, id lab.OwnedRu
 					// Deployment materialization. A later bound native Pod proof
 					// admits only the full native observation path, never release.
 					found = found || !current && historicalNeverMaterializedPodProof(&l, &d, id, operation, revision)
+					if !current {
+						if proof, ok := persistentHistoricalNeverMaterializedPodProof(&l, &d, id, operation, revision); ok {
+							found = true
+							if len(persistentDebt) > 0 && persistentDebt[0] != nil {
+								*persistentDebt[0] = proof
+							}
+						}
+					}
 				}
 			}
 			if !found {
@@ -133,6 +141,53 @@ func historicalNeverMaterializedPodProof(l *lab.Lab, d *lab.Device, id lab.Owned
 	return false
 }
 
+// A committed persistent writer can bind its retained empty pre-Pod declaration
+// only through current capture and exact positive native release history. This
+// admits a rescan of the known physical debt; it is never an absence certificate.
+func persistentHistoricalNeverMaterializedPodProof(l *lab.Lab, d *lab.Device, id lab.OwnedRuntimeIdentity, operation string, revision int64) (lab.OwnedRuntimeIdentity, bool) {
+	var none lab.OwnedRuntimeIdentity
+	if id.ScopeKind != "NeverMaterialized" || id.Generation >= l.Generation || id.Revision >= revision || l.Spec.Lifecycle == nil || !l.Spec.Lifecycle.IsStopped() || l.Spec.Lifecycle.SnapshotMode != "Required" {
+		return none, false
+	}
+	barrier := l.Status.Lifecycle
+	if barrier == nil || !barrier.SnapshotComplete || barrier.LabUID != string(l.UID) || barrier.OperationID != operation || barrier.Revision != revision || barrier.ObservedGeneration != l.Generation {
+		return none, false
+	}
+	emptyDeclaration := false
+	for _, declared := range l.Status.ScopeInventory {
+		if !sameDeclaredNativeScope(declared, id) {
+			continue
+		}
+		if declared.PodUID != "" || declared.DeploymentUID != "" || declared.Component != "" || declared.Epoch != 0 || declared.Incarnation != 0 || len(declared.ContainerIDs) != 0 || len(declared.CgroupPaths) != 0 || len(declared.PortKeys) != 0 || len(declared.PortRows) != 0 || len(declared.FabricPorts) != 0 || len(declared.VNIs) != 0 || len(declared.VNIBindings) != 0 || declared.Requests != (lab.ResourceAmounts{}) || declared.Limits != (lab.ResourceAmounts{}) {
+			return none, false
+		}
+		emptyDeclaration = true
+	}
+	state := d.Status.State
+	if !emptyDeclaration || d.Spec.Type != lab.DeviceTypeContainer || !d.Spec.StateEnabled() || state == nil || state.Epoch != id.Epoch || state.Incarnation != 1 || d.Spec.LabRef != l.Name || d.Namespace != id.Namespace || string(d.UID) != id.ScopeUID || d.Status.NodeName != id.NodeName {
+		return none, false
+	}
+	owned := false
+	for _, parent := range d.OwnerReferences {
+		owned = owned || parent.Kind == "Lab" && parent.Name == l.Name && parent.UID == l.UID
+	}
+	capture := state.Capture
+	if !owned || capture == nil || capture.OperationID != operation || capture.LifecycleRevision != revision || capture.Epoch != state.Epoch || capture.Incarnation != state.Incarnation || capture.PodUID == "" || capture.NodeAgentEpoch == "" || capture.Result != "Succeeded" || !capture.Quiesced || capture.GuardState != "Held" || !capture.Committed {
+		return none, false
+	}
+	for _, proof := range d.Status.RuntimeInventory {
+		if proof.ScopeKind != "" && proof.ScopeKind != "Pod" || proof.OwnerUID != id.OwnerUID || proof.ScopeUID != id.ScopeUID || proof.Namespace != id.Namespace || proof.LabName != id.LabName || proof.OperationID != operation || proof.Revision != revision || proof.Generation != l.Generation || proof.NodeName != id.NodeName || proof.NodeBootID != id.NodeBootID || proof.Epoch != state.Epoch || proof.Incarnation != state.Incarnation || proof.PodUID != capture.PodUID || proof.DeploymentUID != "" || proof.Component != "" || len(proof.ContainerIDs) == 0 || len(proof.CgroupPaths) == 0 || !proof.AttachmentsComplete {
+			continue
+		}
+		for _, report := range d.Status.RuntimeReports {
+			if committedRuntimeReport(report, proof) {
+				return proof, true
+			}
+		}
+	}
+	return none, false
+}
+
 func envValue(env []string, key string) string {
 	for _, value := range env {
 		if strings.HasPrefix(value, key+"=") {
@@ -155,9 +210,15 @@ func (o *NativeRuntimeObserver) ObserveScope(ctx context.Context, id lab.OwnedRu
 	now := metav1.Now()
 	out := lab.OwnedRuntimeReport{Identity: id, RuntimeState: "Unknown", ObservedAt: &now}
 	fail := func(err error) lab.OwnedRuntimeReport { out.Error = err.Error(); return out }
-	stopped, err := o.scopeCurrent(ctx, id)
+	var persistentDebt lab.OwnedRuntimeIdentity
+	stopped, err := o.scopeCurrent(ctx, id, &persistentDebt)
 	if err != nil {
 		return fail(err)
+	}
+	if persistentDebt.PodUID != "" {
+		// Preserve the historical declaration tuple while scanning every positively
+		// bound physical obligation, even after the live Pod/journal disappeared.
+		mergeNativeScopeIdentity(&id, persistentDebt)
 	}
 
 	var saved lab.OwnedRuntimeIdentity
