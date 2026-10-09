@@ -9,6 +9,7 @@ import (
 	"fmt"
 	containers "github.com/containerd/containerd/api/services/containers/v1"
 	tasks "github.com/containerd/containerd/api/services/tasks/v1"
+	task "github.com/containerd/containerd/api/types/task"
 	containerd "github.com/containerd/containerd/v2/client"
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -49,10 +50,13 @@ func (s *scopeOCIAdapter) Get(_ context.Context, r *containers.GetContainerReque
 	return nil, fmt.Errorf("native metadata unavailable")
 }
 
-type scopeTaskAdapter struct{ tasks.UnimplementedTasksServer }
+type scopeTaskAdapter struct {
+	tasks.UnimplementedTasksServer
+	items []*task.Process
+}
 
-func (*scopeTaskAdapter) List(context.Context, *tasks.ListTasksRequest) (*tasks.ListTasksResponse, error) {
-	return &tasks.ListTasksResponse{}, nil
+func (s *scopeTaskAdapter) List(context.Context, *tasks.ListTasksRequest) (*tasks.ListTasksResponse, error) {
+	return &tasks.ListTasksResponse{Tasks: s.items}, nil
 }
 
 type scopeOVSAdapter struct {
@@ -68,7 +72,7 @@ func (s scopeOVSAdapter) Transact(_ context.Context, ops ...ovsdb.Operation) ([]
 	}
 	return out, nil
 }
-func scopeRuntimeAdapter(t *testing.T, items []*containers.Container) *containerd.Client {
+func scopeRuntimeAdapter(t *testing.T, items []*containers.Container, processes ...*task.Process) *containerd.Client {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "cice-oci-")
 	if err != nil {
@@ -82,7 +86,7 @@ func scopeRuntimeAdapter(t *testing.T, items []*containers.Container) *container
 	}
 	server := grpc.NewServer()
 	containers.RegisterContainersServer(server, &scopeOCIAdapter{items: items})
-	tasks.RegisterTasksServer(server, &scopeTaskAdapter{})
+	tasks.RegisterTasksServer(server, &scopeTaskAdapter{items: processes})
 	go server.Serve(ln)
 	t.Cleanup(server.Stop)
 	c, err := containerd.New(socket)

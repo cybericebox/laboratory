@@ -55,6 +55,10 @@ func (o *NativeRuntimeObserver) scopeCurrent(ctx context.Context, id lab.OwnedRu
 			for _, d := range devices.Items {
 				if string(d.UID) == id.ScopeUID {
 					found = d.Status.PodName == "" && d.Status.NodeName == "" && (d.Status.State == nil || d.Status.State.Incarnation == 0)
+					// An exact retained pre-Pod declaration can outlive ordinary
+					// Deployment materialization. A later bound native Pod proof
+					// admits only the full native observation path, never release.
+					found = found || !current && historicalNeverMaterializedPodProof(&l, &d, id, operation, revision)
 				}
 			}
 			if !found {
@@ -87,6 +91,48 @@ func (o *NativeRuntimeObserver) scopeCurrent(ctx context.Context, id lab.OwnedRu
 	}
 	return false, ErrPortOwnerUnknown
 }
+
+func historicalNeverMaterializedPodProof(l *lab.Lab, d *lab.Device, id lab.OwnedRuntimeIdentity, operation string, revision int64) bool {
+	// This exception is only for a genuinely empty ordinary Deployment
+	// declaration. Positive historical scopes and persistence incarnations keep
+	// their existing boundary; no native debt is discarded or rebound.
+	emptyDeclaration := false
+	for _, declared := range l.Status.ScopeInventory {
+		if !sameDeclaredNativeScope(declared, id) {
+			continue
+		}
+		// Rechecks receive native-enriched identities. The original retained
+		// declaration is the emptiness authority, including at the final fence.
+		if declared.PodUID != "" || declared.DeploymentUID != "" || declared.Component != "" || declared.Epoch != 0 || declared.Incarnation != 0 || len(declared.ContainerIDs) != 0 || len(declared.CgroupPaths) != 0 || len(declared.PortKeys) != 0 || len(declared.PortRows) != 0 || len(declared.FabricPorts) != 0 || len(declared.VNIs) != 0 || len(declared.VNIBindings) != 0 || declared.Requests != (lab.ResourceAmounts{}) || declared.Limits != (lab.ResourceAmounts{}) {
+			return false
+		}
+		emptyDeclaration = true
+	}
+	if !emptyDeclaration {
+		return false
+	}
+	if id.Generation >= l.Generation || id.Revision >= revision || d.Spec.Type != lab.DeviceTypeContainer || d.Spec.State != nil && d.Spec.State.Enabled || d.Status.State != nil || d.Spec.LabRef != l.Name || d.Namespace != id.Namespace || string(d.UID) != id.ScopeUID {
+		return false
+	}
+	owned := false
+	for _, parent := range d.OwnerReferences {
+		owned = owned || parent.Kind == "Lab" && parent.Name == l.Name && parent.UID == l.UID
+	}
+	if !owned {
+		return false
+	}
+	for _, report := range d.Status.RuntimeReports {
+		proof := report.Identity
+		if proof.ScopeKind != "" && proof.ScopeKind != "Pod" || proof.OwnerUID != id.OwnerUID || proof.ScopeUID != id.ScopeUID || proof.Namespace != id.Namespace || proof.LabName != id.LabName || proof.OperationID != operation || proof.Revision != revision || proof.Generation != l.Generation || proof.NodeName != id.NodeName || proof.NodeName != d.Status.NodeName || proof.NodeBootID != id.NodeBootID || proof.Epoch != id.Epoch || proof.Incarnation != id.Incarnation || proof.PodUID == "" || len(proof.ContainerIDs) == 0 || len(proof.CgroupPaths) == 0 || !proof.AttachmentsComplete || report.Error != "" || report.ObservedAt == nil || report.ObservedAt.IsZero() {
+			continue
+		}
+		if report.RuntimeState == "Allocated" || report.RuntimeState == "Present" || committedRuntimeReport(report, proof) {
+			return true
+		}
+	}
+	return false
+}
+
 func envValue(env []string, key string) string {
 	for _, value := range env {
 		if strings.HasPrefix(value, key+"=") {
