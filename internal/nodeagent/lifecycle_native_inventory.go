@@ -6,20 +6,23 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	"github.com/ovn-org/libovsdb/ovsdb"
 	"github.com/vishvananda/netlink"
 	"k8s.io/apimachinery/pkg/types"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"regexp"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"strconv"
-	"strings"
 )
+
+const nativeExternalIDsColumn = "external_ids"
 
 type nativeFlow struct {
 	InPort uint32
@@ -121,7 +124,7 @@ func scopeOwnsPod(scope, row lab.OwnedRuntimeIdentity) bool {
 	if row.Namespace != scope.Namespace {
 		return false
 	}
-	if scope.ScopeKind == "NeverMaterialized" {
+	if scope.ScopeKind == runtimeNeverMaterialized {
 		return row.OwnerUID == scope.OwnerUID && row.ScopeUID == scope.ScopeUID
 	}
 	return row.OwnerUID == scope.OwnerUID
@@ -198,62 +201,140 @@ func (o *NativeRuntimeObserver) captureScopeAttachments(ctx context.Context, id 
 	if err := o.Reader.List(ctx, &connections); err != nil {
 		return err
 	}
-	ops := []ovsdb.Operation{{Op: ovsdb.OperationSelect, Table: "Port", Where: []ovsdb.Condition{}, Columns: []string{"_uuid", "name", "external_ids"}}}
+	allFabric, err = o.captureNativeFabricAttachments(ctx, id, &connections, final)
+	if err != nil {
+		return err
+	}
+	if err := o.captureNativePodAttachments(id, owners, rows, final); err != nil {
+		return err
+	}
+	if err := o.verifyNativeKernelAttachments(id, owners, rows); err != nil {
+		return err
+	}
+	return o.verifyNativeFlowAttachments(ctx, id, &connections, rows, allFabric, final)
+}
+
+var nativePodCgroup = regexp.MustCompile(`pod([0-9a-fA-F]{8}[-_][0-9a-fA-F]{4}[-_][0-9a-fA-F]{4}[-_][0-9a-fA-F]{4}[-_][0-9a-fA-F]{12})(?:\.slice|/|$)`)
+
+// Namespace attribution comes from positive native metadata/API/journal UIDs.
+// A populated orphan pod cgroup cannot disappear with its container metadata.
+func (o *NativeRuntimeObserver) captureScopeCgroups(id *lab.OwnedRuntimeIdentity, known map[string]string, owners []lab.OwnedRuntimeIdentity) error {
+	return filepath.WalkDir(o.CgroupRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		match := nativePodCgroup.FindStringSubmatch(path)
+		if len(match) == 0 {
+			return nil
+		}
+		uid := strings.ReplaceAll(match[1], "_", "-")
+		namespace, attributed := known[uid]
+		owned := false
+		for _, owner := range owners {
+			if owner.PodUID == uid {
+				attributed = true
+				namespace = owner.Namespace
+				owned = owned || scopeOwnsPod(*id, owner)
+			}
+		}
+		if id.ScopeKind == scopeGroup && namespace == id.Namespace {
+			owned = true
+		}
+		populated, err := o.cgroupsPresent([]string{path})
+		if err != nil {
+			return err
+		}
+		if !attributed && populated {
+			return fmt.Errorf("populated native cgroup has no positive owner inventory")
+		}
+		if owned && !runtimeContainsID(id.CgroupPaths, path) {
+			id.CgroupPaths = append(id.CgroupPaths, path)
+		}
+		return nil
+	})
+}
+
+func attributableFlowPort(number uint32, ports map[string]uint32, rows map[string]types.UID, fabric []lab.OwnedFabricPort) bool {
+	for name, no := range ports {
+		if no != number {
+			continue
+		}
+		if rows[name] != "" {
+			return true
+		}
+		for _, row := range fabric {
+			if row.Key == name && row.OwnerUID != "" && row.RowUUID != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// captureNativeFabricAttachments checks actual fabric rows before Pod rows and
+// retains partial positive inventory in id when a later owner check fails.
+func (o *NativeRuntimeObserver) captureNativeFabricAttachments(ctx context.Context, id *lab.OwnedRuntimeIdentity, connections *lab.ConnectionList, final bool) ([]lab.OwnedFabricPort, error) {
+	ovs := o.Network.OVS
+	var allFabric []lab.OwnedFabricPort
+	ops := []ovsdb.Operation{{Op: ovsdb.OperationSelect, Table: ovsPortTable, Where: []ovsdb.Condition{}, Columns: []string{ovsUUIDColumn, cniNameKey, nativeExternalIDsColumn}}}
 	ovs.mu.Lock()
 	result, err := ovs.client.Transact(ovs.ctx, ops...)
 	ovs.mu.Unlock()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := ovsdb.CheckOperationResults(result, ops); err != nil {
-		return err
+		return nil, err
 	}
 	for _, actual := range result[0].Rows {
-		name, _ := actual["name"].(string)
-		ids, _ := actual["external_ids"].(ovsdb.OvsMap)
+		name, _ := actual[cniNameKey].(string)
+		ids, _ := actual[nativeExternalIDsColumn].(ovsdb.OvsMap)
 		uid, _ := ids.GoMap[fabricOwnerExternalID].(string)
 		if uid == "" && !strings.HasPrefix(name, "pt") {
 			continue
 		}
-		uuid, ok := actual["_uuid"].(ovsdb.UUID)
+		uuid, ok := actual[ovsUUIDColumn].(ovsdb.UUID)
 		if !ok || uid == "" {
-			return fmt.Errorf("unattributed native fabric row")
+			return nil, fmt.Errorf("unattributed native fabric row")
 		}
 		known, owned := false, false
 		for _, conn := range connections.Items {
 			if string(conn.UID) != uid {
 				continue
 			}
-			ref, ok := nativeOwnerReference(conn.OwnerReferences, "Lab")
+			ref, ok := nativeOwnerReference(conn.OwnerReferences, ownerKindLab)
 			if !ok {
-				return ErrPortOwnerUnknown
+				return nil, ErrPortOwnerUnknown
 			}
 			var parent lab.Lab
 			if err := o.Reader.Get(ctx, client.ObjectKey{Namespace: conn.Namespace, Name: conn.Spec.LabRef}, &parent); err != nil {
-				return err
+				return nil, err
 			}
 			if ref.UID != parent.UID {
-				return ErrPortOwnerChanged
+				return nil, ErrPortOwnerChanged
 			}
 			known = true
-			owned = conn.Namespace == id.Namespace && string(parent.UID) == id.OwnerUID && id.ScopeKind == "LabFabric"
+			owned = conn.Namespace == id.Namespace && string(parent.UID) == id.OwnerUID && id.ScopeKind == scopeLabFabric
 		}
 		entry := lab.OwnedFabricPort{Key: name, OwnerUID: uid, RowUUID: uuid.GoUUID}
 		for _, prior := range id.FabricPorts {
 			if prior.Key == name {
 				if prior != entry {
-					return ErrPortOwnerChanged
+					return nil, ErrPortOwnerChanged
 				}
 				known, owned = true, true
 			}
 		}
 		if !known {
-			return fmt.Errorf("unattributed native fabric owner")
+			return nil, fmt.Errorf("unattributed native fabric owner")
 		}
 		allFabric = append(allFabric, entry)
 		if owned {
 			if final {
-				return fmt.Errorf("owned native fabric row remains after retirement")
+				return nil, fmt.Errorf("owned native fabric row remains after retirement")
 			}
 			found := false
 			for _, prior := range id.FabricPorts {
@@ -264,6 +345,11 @@ func (o *NativeRuntimeObserver) captureScopeAttachments(ctx context.Context, id 
 			}
 		}
 	}
+	return allFabric, nil
+}
+
+func (o *NativeRuntimeObserver) captureNativePodAttachments(id *lab.OwnedRuntimeIdentity, owners []lab.OwnedRuntimeIdentity, rows map[string]types.UID, final bool) error {
+	ovs := o.Network.OVS
 	for key, uid := range rows {
 		known := false
 		owned := false
@@ -303,6 +389,10 @@ func (o *NativeRuntimeObserver) captureScopeAttachments(ctx context.Context, id 
 			id.PortRows = append(id.PortRows, entry)
 		}
 	}
+	return nil
+}
+
+func (o *NativeRuntimeObserver) verifyNativeKernelAttachments(id *lab.OwnedRuntimeIdentity, owners []lab.OwnedRuntimeIdentity, rows map[string]types.UID) error {
 	links, err := netlink.LinkList()
 	if err != nil {
 		return err
@@ -328,6 +418,10 @@ func (o *NativeRuntimeObserver) captureScopeAttachments(ctx context.Context, id 
 			return fmt.Errorf("owned native kernel link remains without its OVS owner row")
 		}
 	}
+	return nil
+}
+
+func (o *NativeRuntimeObserver) verifyNativeFlowAttachments(ctx context.Context, id *lab.OwnedRuntimeIdentity, connections *lab.ConnectionList, rows map[string]types.UID, allFabric []lab.OwnedFabricPort, final bool) error {
 	flows, err := o.Network.Flows.readNativeFlows(ctx)
 	if err != nil {
 		return err
@@ -395,64 +489,4 @@ func (o *NativeRuntimeObserver) captureScopeAttachments(ctx context.Context, id 
 		}
 	}
 	return nil
-}
-
-var nativePodCgroup = regexp.MustCompile(`pod([0-9a-fA-F]{8}[-_][0-9a-fA-F]{4}[-_][0-9a-fA-F]{4}[-_][0-9a-fA-F]{4}[-_][0-9a-fA-F]{12})(?:\.slice|/|$)`)
-
-// Namespace attribution comes from positive native metadata/API/journal UIDs.
-// A populated orphan pod cgroup cannot disappear with its container metadata.
-func (o *NativeRuntimeObserver) captureScopeCgroups(id *lab.OwnedRuntimeIdentity, known map[string]string, owners []lab.OwnedRuntimeIdentity) error {
-	return filepath.WalkDir(o.CgroupRoot, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if !entry.IsDir() {
-			return nil
-		}
-		match := nativePodCgroup.FindStringSubmatch(path)
-		if len(match) == 0 {
-			return nil
-		}
-		uid := strings.ReplaceAll(match[1], "_", "-")
-		namespace, attributed := known[uid]
-		owned := false
-		for _, owner := range owners {
-			if owner.PodUID == uid {
-				attributed = true
-				namespace = owner.Namespace
-				owned = owned || scopeOwnsPod(*id, owner)
-			}
-		}
-		if id.ScopeKind == "GroupScope" && namespace == id.Namespace {
-			owned = true
-		}
-		populated, err := o.cgroupsPresent([]string{path})
-		if err != nil {
-			return err
-		}
-		if !attributed && populated {
-			return fmt.Errorf("populated native cgroup has no positive owner inventory")
-		}
-		if owned && !runtimeContainsID(id.CgroupPaths, path) {
-			id.CgroupPaths = append(id.CgroupPaths, path)
-		}
-		return nil
-	})
-}
-
-func attributableFlowPort(number uint32, ports map[string]uint32, rows map[string]types.UID, fabric []lab.OwnedFabricPort) bool {
-	for name, no := range ports {
-		if no != number {
-			continue
-		}
-		if rows[name] != "" {
-			return true
-		}
-		for _, row := range fabric {
-			if row.Key == name && row.OwnerUID != "" && row.RowUUID != "" {
-				return true
-			}
-		}
-	}
-	return false
 }
