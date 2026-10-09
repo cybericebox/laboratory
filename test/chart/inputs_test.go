@@ -1,12 +1,14 @@
 package chart_test
 
 import (
+	"os"
 	"regexp"
 	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/yaml"
 )
 
 // One release tag drives every image of the chart; a per-image tag still pins one of them.
@@ -26,10 +28,34 @@ func TestOneReleaseTagDrivesEveryImage(t *testing.T) {
 			}
 		}
 	}
-	// the default is the chart appVersion
+	// Every default image follows the published chart appVersion.
+	chart, err := os.ReadFile("../../charts/laboratory/Chart.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var metadata struct {
+		AppVersion string `json:"appVersion"`
+	}
+	if err := yaml.Unmarshal(chart, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if metadata.AppVersion == "" {
+		t.Fatal("chart appVersion must be set")
+	}
 	out, err = helmTemplate(t, agentSet...)
-	if err != nil || !regexp.MustCompile(`cybericebox/laboratory-agent:0\.1\.0`).MatchString(out) {
-		t.Errorf("the default tag is the appVersion: %v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, repo := range []string{"laboratory-controller", "laboratory-agent", "laboratory-proxy", "laboratory-node", "laboratory-lab"} {
+		images := regexp.MustCompile(`cybericebox/`+repo+`:(\S+?)"?\s`).FindAllStringSubmatch(out, -1)
+		if len(images) == 0 {
+			t.Errorf("no default %s image rendered", repo)
+		}
+		for _, image := range images {
+			if image[1] != metadata.AppVersion {
+				t.Errorf("%s default tag is %s, expected chart appVersion %s", repo, image[1], metadata.AppVersion)
+			}
+		}
 	}
 	// a per-image tag wins for that image only
 	out, err = helmTemplate(t, append(agentSet, "--set", "image.tag=1.2.3", "--set", "proxy.image.tag=sha-abc")...)

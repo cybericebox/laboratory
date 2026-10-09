@@ -54,9 +54,9 @@ func (r *LabGroupReconciler) ensureGroupScheduling(ctx context.Context, lg *labo
 		var dep appsv1.Deployment
 		err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &dep)
 		switch {
-		case err == nil:
+		case err == nil && (dep.Spec.Replicas == nil || *dep.Spec.Replicas > 0):
 			entry.PodSchedule = laboratoryv1alpha1.PodSchedule{State: laboratoryv1alpha1.PodStarted, StartedAt: &now}
-		case !errors.IsNotFound(err):
+		case err != nil && !errors.IsNotFound(err):
 			return err
 		}
 		lg.Status.Pods = append(lg.Status.Pods, entry)

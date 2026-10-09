@@ -75,9 +75,11 @@ func Run() {
 		os.Exit(1)
 	}
 
+	dhcpMgr := dhcp.NewManager()
+	defer dhcpMgr.Close()
 	if err := (&gateway.LabGatewayReconciler{
 		Client:   mgr.GetClient(),
-		DHCP:     dhcp.NewManager(),
+		DHCP:     dhcpMgr,
 		IPT:      ipt,
 		Cfg:      cfg,
 		Recorder: mgr.GetEventRecorderFor("labgateway"),

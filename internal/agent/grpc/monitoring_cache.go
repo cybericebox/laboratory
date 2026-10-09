@@ -17,6 +17,7 @@ import (
 	informers "github.com/cybericebox/laboratory/clientset/informers/externalversions"
 	listers "github.com/cybericebox/laboratory/clientset/listers/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
 // usageRefresh is how often the pod metrics are read: metrics-server itself only scrapes about every 15 s.
@@ -30,13 +31,14 @@ type monCache struct {
 	h      *Handler
 	cancel context.CancelFunc
 
-	groups   listers.LabGroupLister
-	labs     listers.LabLister
-	clients  listers.LabGroupClientLister
-	policies listers.LabGroupAccessPolicyLister
-	reports  listers.LabTrafficReportLister
-	devices  listers.DeviceLister
-	pods     corelisters.PodLister // nil without a core clientset
+	groups    listers.LabGroupLister
+	labs      listers.LabLister
+	clients   listers.LabGroupClientLister
+	policies  listers.LabGroupAccessPolicyLister
+	reports   listers.LabTrafficReportLister
+	devices   listers.DeviceLister
+	pods      corelisters.PodLister // nil without a core clientset
+	proxyPods corelisters.PodLister // current L7 replica lifecycle, fixed proxy namespace
 
 	usageMu sync.Mutex
 	usage   map[string]map[usageKey]deviceUsage // namespace -> usage; nil until the first successful read
@@ -58,6 +60,7 @@ func newMonCache(ctx context.Context, h *Handler) (*monCache, error) {
 		lab.LabGroupAccessPolicies().Informer().HasSynced, lab.LabTrafficReports().Informer().HasSynced, lab.Devices().Informer().HasSynced,
 	}
 	var kf kubeinformers.SharedInformerFactory
+	var proxyFactory kubeinformers.SharedInformerFactory
 	if h.k8s != nil {
 		// Only the pods of devices (they carry the lab label) are of interest.
 		kf = kubeinformers.NewSharedInformerFactoryWithOptions(h.k8s, 0, kubeinformers.WithTweakListOptions(func(o *metav1.ListOptions) {
@@ -66,10 +69,17 @@ func newMonCache(ctx context.Context, h *Handler) (*monCache, error) {
 		pods := kf.Core().V1().Pods()
 		c.pods = pods.Lister()
 		informersToSync = append(informersToSync, pods.Informer().HasSynced)
+		proxyFactory = kubeinformers.NewSharedInformerFactoryWithOptions(h.k8s, 0, kubeinformers.WithNamespace(names.ProxyNamespace), kubeinformers.WithTweakListOptions(func(o *metav1.ListOptions) { o.LabelSelector = "app=laboratory-proxy-l7" }))
+		proxies := proxyFactory.Core().V1().Pods()
+		c.proxyPods = proxies.Lister()
+		informersToSync = append(informersToSync, proxies.Informer().HasSynced)
 	}
 	f.Start(run.Done())
 	if kf != nil {
 		kf.Start(run.Done())
+	}
+	if proxyFactory != nil {
+		proxyFactory.Start(run.Done())
 	}
 	for {
 		synced := true
@@ -89,6 +99,70 @@ func newMonCache(ctx context.Context, h *Handler) (*monCache, error) {
 }
 
 func (c *monCache) stop() { c.cancel() }
+
+// Each Ready L7 container can serve traffic. Its report must include this boot
+// through the merged observation's end; an old boot or another healthy replica
+// cannot prove absence of requests on this instance. Read cached Pods only.
+
+type proxyCoverageView struct {
+	ready       map[string]int64
+	unavailable bool
+}
+
+func (c *monCache) proxyCoverage() proxyCoverageView {
+	if c.proxyPods == nil {
+		return proxyCoverageView{}
+	} // legacy readers without a core clientset
+	pods, err := c.proxyPods.List(labels.Everything())
+	if err != nil {
+		return proxyCoverageView{unavailable: true}
+	}
+	v := proxyCoverageView{ready: map[string]int64{}}
+	for _, p := range pods {
+		for _, s := range p.Status.ContainerStatuses {
+			if s.Name != "l7" || !s.Ready {
+				continue
+			}
+			if s.State.Running == nil || s.State.Running.StartedAt.IsZero() || s.State.Running.StartedAt.UnixMilli() <= 0 {
+				v.unavailable = true
+				continue
+			}
+			v.ready[p.Name] = s.State.Running.StartedAt.UnixMilli()
+		}
+	}
+	return v
+}
+
+func (v proxyCoverageView) incomplete(reports []*protobuf.TrafficReport, to int64) bool {
+	if v.unavailable {
+		return true
+	}
+	if len(v.ready) == 0 {
+		return false
+	}
+	byInstance := make(map[string][]*protobuf.TrafficReport, len(reports))
+	for _, r := range reports {
+		byInstance[r.GetInstance()] = append(byInstance[r.GetInstance()], r)
+	}
+	for instance, started := range v.ready {
+		covered := false
+		for _, r := range byInstance[instance] {
+			for _, span := range r.GetCoverageSpans() {
+				if !span.GetPartial() && span.GetFromUnixMs() >= started && span.GetFromUnixMs() <= span.GetToUnixMs() && span.GetToUnixMs() >= to {
+					covered = true
+					break
+				}
+			}
+			if covered {
+				break
+			}
+		}
+		if !covered {
+			return true
+		}
+	}
+	return false
+}
 
 // usageByNamespace returns the live usage of the device pods, by namespace and (lab, device); nil when the metrics are not
 // available. The pod metrics are read at most every usageRefresh, in one call for the whole cluster; when a read fails the last

@@ -5,8 +5,15 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net"
+	"net/netip"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
+
+	"sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"golang.org/x/crypto/blake2s"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -20,8 +27,9 @@ import (
 type Mac1Key [32]byte
 
 type TableEntry struct {
-	UID     string
-	Mac1Key Mac1Key
+	UID       string
+	PublicKey string
+	Mac1Key   Mac1Key
 	// Backend is the in-cluster Service address (host:port) for the VPN server of this group; Resolved is it resolved, kept up to
 	// date by Table.RunResolver (the read loop never does a DNS lookup).
 	Backend  string
@@ -31,11 +39,14 @@ type TableEntry struct {
 // Table is an in-memory mac1_key→UID/backend mapping, rebuilt from LabGroup watches.
 // Brute-force scan is O(n) but handshake init is rare (~once per 2 min per peer).
 type Table struct {
-	mu      sync.RWMutex
-	entries []TableEntry
+	updates  sync.Mutex
+	OnChange func(string) // invoked under table lock; callback must not enter Table
+	resolve  func(context.Context, string) (*net.UDPAddr, error)
+	mu       sync.RWMutex
+	entries  []TableEntry
 }
 
-func NewTable() *Table { return &Table{} }
+func NewTable() *Table { return &Table{resolve: resolveBackend} }
 
 // computeMac1Key computes BLAKE2s("mac1----" || pubKeyBytes).
 // pubKeyBase64 is a WireGuard base64-encoded 32-byte public key.
@@ -57,33 +68,71 @@ func computeMac1Key(pubKeyBase64 string) (Mac1Key, error) {
 }
 
 // Update inserts or replaces the entry for uid.
-func (t *Table) Update(uid, pubKey, backend string) error {
-	k, err := computeMac1Key(pubKey)
+func resolveBackend(ctx context.Context, backend string) (*net.UDPAddr, error) {
+	host, port, err := net.SplitHostPort(backend)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	resolved, _ := net.ResolveUDPAddr("udp4", backend) // a failure leaves it nil: RunResolver tries again
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	for i, e := range t.entries {
-		if e.UID == uid {
-			t.entries[i].Mac1Key = k
-			if t.entries[i].Backend != backend || resolved != nil {
-				t.entries[i].Backend, t.entries[i].Resolved = backend, resolved
-			}
+	p, err := strconv.Atoi(port)
+	if err != nil || p < 1 || p > 65535 {
+		return nil, fmt.Errorf("invalid backend port")
+	}
+	if addr, err := netip.ParseAddr(host); err == nil && addr.Is4() {
+		return &net.UDPAddr{IP: net.IP(addr.AsSlice()), Port: p}, nil
+	}
+	addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", strings.TrimSuffix(host, ".")+".")
+	if err != nil {
+		return nil, fmt.Errorf("resolve backend: %w", err)
+	}
+	if len(addresses) == 0 {
+		return nil, fmt.Errorf("resolve backend: no IPv4 address")
+	}
+	return &net.UDPAddr{IP: net.IP(addresses[0].AsSlice()), Port: p}, nil
+}
+func (t *Table) Update(uid, pubKey, backend string) error {
+	t.updates.Lock()
+	defer t.updates.Unlock()
+	t.mu.RLock()
+	for _, e := range t.entries {
+		if e.UID == uid && e.PublicKey == pubKey && e.Backend == backend {
+			t.mu.RUnlock()
 			return nil
 		}
 	}
-	t.entries = append(t.entries, TableEntry{UID: uid, Mac1Key: k, Backend: backend, Resolved: resolved})
+	t.mu.RUnlock()
+	key, err := computeMac1Key(pubKey)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	resolved, _ := t.resolve(ctx, backend)
+	cancel()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.OnChange != nil {
+		t.OnChange(uid)
+	}
+	for i, e := range t.entries {
+		if e.UID == uid {
+			t.entries[i] = TableEntry{UID: uid, PublicKey: pubKey, Mac1Key: key, Backend: backend, Resolved: resolved}
+			return nil
+		}
+	}
+	t.entries = append(t.entries, TableEntry{UID: uid, PublicKey: pubKey, Mac1Key: key, Backend: backend, Resolved: resolved})
 	return nil
 }
 
 // Delete removes the entry for uid.
 func (t *Table) Delete(uid string) {
+	t.updates.Lock()
+	defer t.updates.Unlock()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for i, e := range t.entries {
 		if e.UID == uid {
+			if t.OnChange != nil {
+				t.OnChange(uid)
+			}
 			t.entries = append(t.entries[:i], t.entries[i+1:]...)
 			return
 		}
@@ -117,6 +166,20 @@ func (t *Table) FindByMac1(packet []byte) (uid string, backend *net.UDPAddr, fou
 // RunResolver keeps the resolved address of every backend fresh, off the read loop, until stop is closed. A backend that cannot be
 // resolved keeps its last good address.
 func (t *Table) RunResolver(stop <-chan struct{}, every time.Duration) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-stop:
+			cancel()
+		case <-done:
+		}
+	}()
+	defer close(done)
+	defer cancel()
+	t.RunResolverContext(ctx, every)
+}
+func (t *Table) RunResolverContext(ctx context.Context, every time.Duration) {
 	if every <= 0 {
 		every = 30 * time.Second
 	}
@@ -124,30 +187,56 @@ func (t *Table) RunResolver(stop <-chan struct{}, every time.Duration) {
 	defer tick.Stop()
 	for {
 		t.mu.RLock()
-		backends := make(map[string]string, len(t.entries))
+		backends := map[string]string{}
 		for _, e := range t.entries {
 			backends[e.UID] = e.Backend
 		}
 		t.mu.RUnlock()
 		for uid, backend := range backends {
-			r, err := net.ResolveUDPAddr("udp4", backend)
+			if ctx.Err() != nil {
+				return
+			}
+			lookup, cancel := context.WithTimeout(ctx, 3*time.Second)
+			resolved, err := t.resolve(lookup, backend)
+			cancel()
 			if err != nil {
 				continue
 			}
 			t.mu.Lock()
-			for i := range t.entries {
-				if t.entries[i].UID == uid && t.entries[i].Backend == backend {
-					t.entries[i].Resolved = r
+			for i, e := range t.entries {
+				if e.UID == uid && e.Backend == backend {
+					if e.Resolved != nil && !sameSocket(socketOf(e.Resolved), socketOf(resolved)) && t.OnChange != nil {
+						t.OnChange(uid)
+					}
+					t.entries[i].Resolved = resolved
 				}
 			}
 			t.mu.Unlock()
 		}
 		select {
-		case <-stop:
+		case <-ctx.Done():
 			return
 		case <-tick.C:
 		}
 	}
+}
+
+// Reserve the matched group and conntrack identity under the same table read
+// lock. A concurrent table retirement cannot leave a late old reservation.
+func (t *Table) reserve(packet []byte, ci uint32, source Socket, ct *ConnTrack) (*net.UDPAddr, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	body, mac := packet[:len(packet)-32], packet[len(packet)-32:len(packet)-16]
+	for _, e := range t.entries {
+		computed := computeMAC(e.Mac1Key[:], body)
+		if bytesEqual(computed[:], mac) {
+			if e.Resolved == nil {
+				return nil, false
+			}
+			return e.Resolved, ct.AddPartial(ci, source, socketOf(e.Resolved), e.UID)
+		}
+	}
+	return nil, false
 }
 
 // computeMAC computes BLAKE2s-128 (WireGuard "MAC" function per the spec).
@@ -215,6 +304,10 @@ func (w *LabGroupWatcher) remember(name, uid string) {
 	if w.uidOfs == nil {
 		w.uidOfs = map[string]string{}
 	}
+	old := w.uidOfs[name]
+	if old != "" && old != uid {
+		w.Table.Delete(old)
+	}
 	w.uidOfs[name] = uid
 }
 
@@ -247,7 +340,7 @@ func (w *LabGroupWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	pubKey := lg.Status.VPN.PublicKey
-	if pubKey == "" || !lg.Status.VPN.Registered {
+	if pubKey == "" || !lg.Status.VPN.Registered || lg.Spec.VPN.Disabled {
 		// VPN not yet ready — remove stale entry if present.
 		w.Table.Delete(string(lg.UID))
 		w.forget(lg.Name)
@@ -266,6 +359,10 @@ func (w *LabGroupWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 func (w *LabGroupWatcher) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&laboratoryv1alpha1.LabGroup{}).
+		For(&laboratoryv1alpha1.LabGroup{}, builder.WithPredicates(predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
+			old, a := e.ObjectOld.(*laboratoryv1alpha1.LabGroup)
+			next, b := e.ObjectNew.(*laboratoryv1alpha1.LabGroup)
+			return !a || !b || routingInputsChanged(old, next)
+		}})).
 		Complete(reconcileutil.Quiet(w))
 }

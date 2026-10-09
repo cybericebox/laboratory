@@ -53,8 +53,9 @@ func logf(format string, a ...interface{}) {
 // NetConf is the CNI config for cni-gate.
 type NetConf struct {
 	cnitypes.NetConf
-	Delegate    map[string]interface{} `json:"delegate,omitempty"`
-	AgentSocket string                 `json:"agentSocket,omitempty"`
+	Delegate             map[string]interface{} `json:"delegate,omitempty"`
+	AgentSocket          string                 `json:"agentSocket,omitempty"`
+	PreserveDelegateName bool                   `json:"preserveDelegateName,omitempty"`
 }
 
 func Run() {
@@ -180,10 +181,19 @@ func cmdDEL(args *skel.CmdArgs) error {
 	if len(conf.Delegate) == 0 {
 		return nil
 	}
+	conf, cachedIface, cached, err := delegateForDEL(conf, args)
+	if err != nil {
+		return err
+	}
 
 	// Best-effort annotation check to decide whether DelegateDel is needed.
 	// Errors are ignored: DEL must not fail the pod teardown.
-	defaultIface, hasAnnotation, _ := getPodAnnotation(conf, args.Args, names.AnnotationDefaultNetwork)
+	defaultIface, hasAnnotation := cachedIface, cached
+	if cached {
+		logf("DEL using ADD receipt container=%s outerIfName=%s delegateIfName=%s", args.ContainerID, args.IfName, cachedIface)
+	} else {
+		defaultIface, hasAnnotation, _ = getPodAnnotation(conf, args.Args, names.AnnotationDefaultNetwork)
+	}
 
 	var delErr error
 	switch {
@@ -232,7 +242,12 @@ func marshalDelegate(conf *NetConf) []byte {
 	for k, v := range conf.Delegate {
 		d[k] = v
 	}
-	d["name"] = conf.Name
+	// Only new installer configs mark the delegate name as authoritative.
+	// Legacy configs used the wrapper name even when a delegate name existed;
+	// keep that allocation domain for their cached DEL as well as ADD.
+	if name, ok := d["name"].(string); !conf.PreserveDelegateName || !ok || name == "" {
+		d["name"] = conf.Name
+	}
 	d["cniVersion"] = conf.CNIVersion
 	b, _ := json.Marshal(d)
 	return b

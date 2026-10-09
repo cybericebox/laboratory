@@ -65,6 +65,14 @@ type LabReconciler struct {
 	// State is the device state persistence policy applied to labs created
 	// while the platform switch is on.
 	State StatePolicy
+	// Same defaults and maxima used by Device and Scheduler materialization.
+	Defaults DeviceDefaults
+	// Native capability is enabled only after the Task5 proof.
+	RuntimeObservation        bool
+	RequiredSnapshotAvailable bool
+	// The same parsed placement rules used by Device/Group pods and Scheduler.
+	LabNodeSelector map[string]string
+	LabTolerations  []corev1.Toleration
 	// Mirror rewrites image references for the image cache; the zero value
 	// (cache off) rewrites nothing. The Lab records the decision once.
 	Mirror imagecache.Rewriter
@@ -76,6 +84,8 @@ type LabReconciler struct {
 	NetConfigImage string
 }
 
+// +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labtrafficreports,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=tenants,verbs=get;list;watch
@@ -97,6 +107,10 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	if err := r.releaseRecordedVNIs(ctx, &lab); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	if !lab.DeletionTimestamp.IsZero() {
 		logger.Info("lab is being deleted", "name", lab.Name)
 		return r.reconcileDelete(ctx, &lab)
@@ -107,6 +121,23 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		if err := r.Update(ctx, &lab); err != nil {
 			return ctrl.Result{}, err
 		}
+	}
+
+	if lab.Annotations[names.AnnotationLifecycleRetirement] != "" {
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+	if handled, result, err := r.reconcileLifecycle(ctx, &lab); handled || err != nil {
+		return result, err
+	}
+
+	// Full group stop blocks all child provisioning. Child stopped intent is
+	// reconciled above; group start never changes it.
+	group, groupErr := (&DeviceReconciler{Client: r.Client, Reader: r.Reader}).labGroupOfNamespace(ctx, lab.Namespace)
+	if groupErr != nil {
+		return ctrl.Result{}, groupErr
+	}
+	if group != nil && group.Spec.Lifecycle.IsStopped() {
+		return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
 	}
 
 	// The modes are fixed before anything is created, so the scheduler knows which image
@@ -148,12 +179,13 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	// After validation: the web host label relies on validated device names.
-	if err := r.ensureWebServices(ctx, &lab); err != nil {
+	services := r.serviceSnapshot(&lab)
+	if err := r.ensureWebServices(ctx, &lab, services); err != nil {
 		logger.Error(err, "ensure web services")
 		return ctrl.Result{}, err
 	}
 
-	if err := r.materializeDevices(ctx, &lab, resolvedInterfaces); err != nil {
+	if err := r.materializeDevices(ctx, &lab, resolvedInterfaces, services); err != nil {
 		logger.Error(err, "materialize devices")
 		return ctrl.Result{}, err
 	}
@@ -175,7 +207,7 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, err
 	}
 
-	return r.updateStatus(ctx, &lab)
+	return r.updateStatus(ctx, &lab, services)
 }
 
 // validateGraph checks device names, endpoint ports, occupancy and switch/hub cycles.
@@ -405,9 +437,9 @@ func (r *LabReconciler) validateBroadcastDomains(lab *laboratoryv1alpha1.Lab, sw
 	return nil
 }
 
-func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv1alpha1.Lab, resolvedInterfaces map[string][]laboratoryv1alpha1.InterfaceSpec) error {
+func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv1alpha1.Lab, resolvedInterfaces map[string][]laboratoryv1alpha1.InterfaceSpec, snapshots ...*labServiceSnapshot) error {
 	vniAllocator := poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
-	codes := r.newCodeAllocator(lab)
+	codes := r.newCodeAllocator(lab, snapshots...)
 	wantLabels := userLabels(lab.Labels)
 	ten, err := r.tenantOf(ctx, lab)
 	if err != nil {
@@ -428,8 +460,18 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 				}
 			}
 			// For switch/hub devices, ensure VNI is written even if the status update failed on a previous reconcile.
-			isSwitch := existing.Spec.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch ||
-				existing.Spec.Type == laboratoryv1alpha1.DeviceTypeHub
+			isSwitch := deviceTypeIsSwitch(existing.Spec.Type)
+			if isSwitch && !r.RuntimeObservation && existing.Status.VNI != nil && existing.UID != "" && existing.Status.VNILease == nil {
+				if err := r.ensureOwnedVNI(ctx, &existing, false); err != nil {
+					return err
+				}
+			}
+			if isSwitch && r.RuntimeObservation {
+				if err := r.ensureOwnedVNI(ctx, &existing, true); err != nil {
+					return err
+				}
+				continue
+			}
 			if !isSwitch || existing.Status.VNI != nil {
 				continue
 			}
@@ -484,7 +526,13 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 			return err
 		}
 
-		if tmpl.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch || tmpl.Type == laboratoryv1alpha1.DeviceTypeHub {
+		if deviceTypeIsSwitch(tmpl.Type) {
+			if r.RuntimeObservation {
+				if err := r.ensureOwnedVNI(ctx, d, true); err != nil {
+					return err
+				}
+				continue
+			}
 			vni, err := vniAllocator.AllocateIndex(ctx)
 			if err != nil {
 				return fmt.Errorf("allocate VNI for switch %s: %w", deviceName, err)
@@ -534,6 +582,12 @@ func (r *LabReconciler) materializeConnections(ctx context.Context, lab *laborat
 			// Repair: a direct connection whose VNI status write failed after
 			// Create would otherwise stay VNI-less forever, and the node-agent
 			// requeues indefinitely waiting for it.
+			if isDirect && r.RuntimeObservation {
+				if err := r.ensureOwnedVNI(ctx, &existing, true); err != nil {
+					return err
+				}
+				continue
+			}
 			if isDirect && existing.Status.VNI == nil {
 				vni, vniErr := vniAllocator.AllocateIndex(ctx)
 				if vniErr != nil {
@@ -566,6 +620,16 @@ func (r *LabReconciler) materializeConnections(ctx context.Context, lab *laborat
 			return err
 		}
 
+		if isDirect && r.RuntimeObservation {
+			if err := r.Create(ctx, conn); err != nil {
+				return err
+			}
+			if err := r.ensureOwnedVNI(ctx, conn, true); err != nil {
+				return err
+			}
+			continue
+		}
+		// Legacy allocation keeps its original behavior when native observation is off.
 		// Allocate VNI before Create; save it because Create() zeroes Status from server response.
 		var allocatedVNI *uint
 		if isDirect {
@@ -607,17 +671,17 @@ func (r *LabReconciler) pruneConnections(ctx context.Context, lab *laboratoryv1a
 	if err := r.List(ctx, &list, client.InNamespace(lab.Namespace), client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
 		return err
 	}
-	vniAllocator := poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
 	for i := range list.Items {
 		c := &list.Items[i]
 		if desired[c.Name] || !c.DeletionTimestamp.IsZero() {
 			continue
 		}
-		if c.Status.VNI != nil {
-			if err := vniAllocator.ReleaseIndex(ctx, *c.Status.VNI); err != nil {
+		if !r.RuntimeObservation && c.Status.VNI != nil {
+			if err := r.releaseDefaultOffVNI(ctx, *c.Status.VNI, c.Status.VNILease, string(c.UID)); err != nil {
 				return fmt.Errorf("release VNI %d for connection %s: %w", *c.Status.VNI, c.Name, err)
 			}
 			c.Status.VNI = nil
+			c.Status.VNILease = nil
 			if err := r.Status().Update(ctx, c); err != nil {
 				return err
 			}
@@ -642,17 +706,17 @@ func (r *LabReconciler) pruneDevices(ctx context.Context, lab *laboratoryv1alpha
 	if err := r.List(ctx, &list, client.InNamespace(lab.Namespace), client.MatchingLabels{names.LabelLab: lab.Name}); err != nil {
 		return err
 	}
-	vniAllocator := poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
 	for i := range list.Items {
 		d := &list.Items[i]
 		if desired[d.Spec.Name] || !d.DeletionTimestamp.IsZero() {
 			continue
 		}
-		if d.Status.VNI != nil {
-			if err := vniAllocator.ReleaseIndex(ctx, *d.Status.VNI); err != nil {
+		if !r.RuntimeObservation && d.Status.VNI != nil {
+			if err := r.releaseDefaultOffVNI(ctx, *d.Status.VNI, d.Status.VNILease, string(d.UID)); err != nil {
 				return fmt.Errorf("release switch VNI %d for device %s: %w", *d.Status.VNI, d.Name, err)
 			}
 			d.Status.VNI = nil
+			d.Status.VNILease = nil
 			if err := r.Status().Update(ctx, d); err != nil {
 				return err
 			}
@@ -713,7 +777,7 @@ func dnsSafeNamePart(value string) bool {
 }
 
 //nolint:gocyclo // one decision over many cases; splitting it would scatter the rule
-func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha1.Lab) (ctrl.Result, error) {
+func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha1.Lab, snapshots ...*labServiceSnapshot) (ctrl.Result, error) {
 	var deviceList laboratoryv1alpha1.DeviceList
 	if err := r.List(
 		ctx, &deviceList, client.InNamespace(lab.Namespace),
@@ -721,9 +785,17 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 	); err != nil {
 		return ctrl.Result{}, err
 	}
+	resources := lab.Status.Resources
+	if intent := lab.Spec.Lifecycle; intent != nil && intent.DesiredState == lifecycleStateRunning {
+		var err error
+		resources, err = r.runningLabAllocation(ctx, lab, deviceList.Items)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 
 	var refs []laboratoryv1alpha1.DeviceRef
-	allReady := len(deviceList.Items) > 0
+	allReady := len(deviceList.Items) > 0 || len(lab.Spec.Devices) == 0 && len(lab.Spec.Connections) == 0
 	pods, queuedPods := 0, 0
 	for _, d := range deviceList.Items {
 		var failure *laboratoryv1alpha1.PodFailure
@@ -731,7 +803,17 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 			failure = sc.Failure
 		}
 		refs = append(refs, laboratoryv1alpha1.DeviceRef{Name: d.Spec.Name, Ready: d.Status.Ready, State: deviceStateInfo(&d), Failure: failure})
-		if !d.Status.Ready {
+		ready := d.Status.Ready
+		if intent := lab.Spec.Lifecycle; intent != nil && intent.DesiredState == lifecycleStateRunning && d.Spec.Type == laboratoryv1alpha1.DeviceTypeContainer {
+			ready = false
+			for _, report := range d.Status.RuntimeReports {
+				if report.Identity.OwnerUID == string(lab.UID) && report.Identity.OperationID == intent.OperationID && report.Identity.Revision == intent.Revision && report.Identity.Generation == lab.Generation && report.Identity.ScopeUID == string(d.UID) && report.Identity.PodUID != "" && report.Identity.NodeName == d.Status.NodeName && report.Identity.NodeName != "" && report.Identity.NodeBootID != "" && len(report.Identity.ContainerIDs) > 0 && len(report.Identity.CgroupPaths) > 0 && nonzeroTime(report.ObservedAt) && time.Since(report.ObservedAt.Time) >= 0 && time.Since(report.ObservedAt.Time) <= 60*time.Second && report.Error == "" && report.RuntimeState == runtimeStateAllocated && d.Status.Ready {
+					ready = true
+					break
+				}
+			}
+		}
+		if !ready {
 			allReady = false
 		}
 		if d.Spec.Type == laboratoryv1alpha1.DeviceTypeContainer {
@@ -739,6 +821,25 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 			if sc := d.Status.Scheduling; sc != nil && sc.State == laboratoryv1alpha1.PodQueued {
 				queuedPods++
 			}
+		}
+	}
+	if r.RuntimeObservation && lab.Spec.Lifecycle != nil && lab.Spec.Lifecycle.DesiredState == lifecycleStateRunning {
+		scopesReady := false
+		for _, scope := range lab.Status.ScopeInventory {
+			if scope.ScopeKind != scopeKindLabFabric || scope.OperationID != lab.Spec.Lifecycle.OperationID || scope.Revision != lab.Spec.Lifecycle.Revision || scope.Generation != lab.Generation {
+				continue
+			}
+			scopesReady = true
+			found := false
+			for _, report := range lab.Status.ScopeReports {
+				found = found || sameDeclaredScope(scope, report.Identity) && report.Error == "" && report.RuntimeState == runtimeStateAllocated && nonzeroTime(report.ObservedAt)
+			}
+			if !found {
+				allReady = false
+			}
+		}
+		if !scopesReady {
+			allReady = false
 		}
 	}
 	// Every pod still waits in the scheduler queue: nothing has started.
@@ -785,7 +886,7 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		newPhase = laboratoryv1alpha1.PhaseQueued
 	}
 
-	access := r.buildAccessEntries(ctx, lab)
+	access := r.buildAccessEntries(ctx, lab, snapshots...)
 
 	// Reflect readiness as a condition; on the Ready edge emit a Normal event.
 	wasReady := labstatus.IsReady(lab.Status.Conditions)
@@ -808,11 +909,25 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		labstatus.SetReady(&lab.Status.Conditions, lab.Generation, false, reason, message)
 	}
 
-	if newPhase == lab.Status.Phase &&
+	lifecycleChanged := false
+	if intent := lab.Spec.Lifecycle; intent != nil && intent.DesiredState == lifecycleStateRunning && labStartPrepared(lab) {
+		next := lab.Status.Lifecycle.DeepCopy()
+		if next != nil {
+			state := "Starting"
+			if allReady {
+				state = lifecycleStateRunning
+			}
+			lifecycleChanged = next.ObservedState != state || next.ObservedGeneration != lab.Generation
+			next.ObservedState = state
+			next.ObservedGeneration = lab.Generation
+			lab.Status.Lifecycle = next
+		}
+	}
+	if !lifecycleChanged && reflect.DeepEqual(resources, lab.Status.Resources) && newPhase == lab.Status.Phase &&
 		vpnReady == lab.Status.VPN.Ready &&
 		inetReady == lab.Status.Internet.Ready &&
-		reflect.DeepEqual(refs, lab.Status.Devices) &&
-		reflect.DeepEqual(connRefs, lab.Status.Connections) &&
+		sameRefsByName(refs, lab.Status.Devices, func(ref laboratoryv1alpha1.DeviceRef) string { return ref.Name }) &&
+		sameRefsByName(connRefs, lab.Status.Connections, func(ref laboratoryv1alpha1.ConnectionRef) string { return ref.Name }) &&
 		reflect.DeepEqual(access, lab.Status.Access) &&
 		wasReady == allReady {
 		if newPhase != laboratoryv1alpha1.PhaseReady {
@@ -821,9 +936,10 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		if throttled {
 			return ctrl.Result{RequeueAfter: snapshotInfoInterval}, nil
 		}
-		return ctrl.Result{}, nil
+		return runningAllocationRequeue(lab), nil
 	}
 
+	lab.Status.Resources = resources
 	lab.Status.VPN.Ready = vpnReady
 	lab.Status.Internet.Ready = inetReady
 	lab.Status.Devices = refs
@@ -837,7 +953,7 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 	if newPhase != laboratoryv1alpha1.PhaseReady {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
-	return ctrl.Result{}, nil
+	return runningAllocationRequeue(lab), nil
 }
 
 // segmentReady reports whether the lab's LabVPN / LabGateway object is Ready.
@@ -865,11 +981,12 @@ func (r *LabReconciler) segmentReady(ctx context.Context, ns string, enabled boo
 // device in the lab. Empty if BaseDomain is unset.
 // The host is the name of the device's existing web Service, never recomputed;
 // a device whose Service does not exist yet is skipped.
-func (r *LabReconciler) buildAccessEntries(ctx context.Context, lab *laboratoryv1alpha1.Lab) []laboratoryv1alpha1.AccessEntry {
+func (r *LabReconciler) buildAccessEntries(ctx context.Context, lab *laboratoryv1alpha1.Lab, snapshots ...*labServiceSnapshot) []laboratoryv1alpha1.AccessEntry {
 	if r.BaseDomain == "" {
 		return nil
 	}
 	var out []laboratoryv1alpha1.AccessEntry
+	services := r.serviceSnapshot(lab, snapshots...)
 	for _, d := range lab.Spec.Devices {
 		if d.Exposure == nil || d.Exposure.Web == nil {
 			continue
@@ -878,7 +995,7 @@ func (r *LabReconciler) buildAccessEntries(ctx context.Context, lab *laboratoryv
 		if proto == "" {
 			proto = "http"
 		}
-		svc, err := r.findWebService(ctx, lab, d.Name)
+		svc, err := services.find(ctx, d.Name)
 		if err != nil || svc == nil {
 			continue
 		}
@@ -895,6 +1012,9 @@ func (r *LabReconciler) buildAccessEntries(ctx context.Context, lab *laboratoryv
 }
 
 func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1alpha1.Lab) (ctrl.Result, error) {
+	if err := r.prepareLabScopes(ctx, lab); err != nil {
+		return ctrl.Result{}, err
+	}
 	logger := log.FromContext(ctx)
 
 	var deviceList laboratoryv1alpha1.DeviceList
@@ -910,7 +1030,6 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 	// alongside devices (not after) to avoid a deadlock: DevicePortReconciler
 	// waits for Connection OVS-cleanup finalizers before removing the Device
 	// finalizer, but connections are only deleted by this function.
-	vniAllocator := poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize)
 
 	var connList laboratoryv1alpha1.ConnectionList
 	if err := r.List(
@@ -921,11 +1040,12 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 	}
 	for i := range connList.Items {
 		c := &connList.Items[i]
-		if c.Status.VNI != nil {
-			if err := vniAllocator.ReleaseIndex(ctx, *c.Status.VNI); err != nil {
+		if !r.RuntimeObservation && c.Status.VNI != nil {
+			if err := r.releaseDefaultOffVNI(ctx, *c.Status.VNI, c.Status.VNILease, string(c.UID)); err != nil {
 				logger.Error(err, "release VNI", "connection", c.Name, "vni", *c.Status.VNI)
 			}
 			c.Status.VNI = nil
+			c.Status.VNILease = nil
 			if err := r.Status().Update(ctx, c); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -940,11 +1060,12 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 	deletedAny := false
 	for i := range deviceList.Items {
 		d := &deviceList.Items[i]
-		if d.Status.VNI != nil {
-			if err := vniAllocator.ReleaseIndex(ctx, *d.Status.VNI); err != nil {
+		if !r.RuntimeObservation && d.Status.VNI != nil {
+			if err := r.releaseDefaultOffVNI(ctx, *d.Status.VNI, d.Status.VNILease, string(d.UID)); err != nil {
 				return ctrl.Result{}, fmt.Errorf("release switch VNI %d for device %s: %w", *d.Status.VNI, d.Name, err)
 			}
 			d.Status.VNI = nil
+			d.Status.VNILease = nil
 			if err := r.Status().Update(ctx, d); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -1221,35 +1342,9 @@ func (r *LabReconciler) ensureLabGatewayDeleted(ctx context.Context, lab *labora
 	return false, nil
 }
 
-// findWebService returns the web Service of a device of the lab: the one with
-// the lab and device labels that the lab owns. Nothing else stores the name, so
-// this is how later reconciles keep the host label stable. nil if none exists.
-func (r *LabReconciler) findWebService(ctx context.Context, lab *laboratoryv1alpha1.Lab, device string) (*corev1.Service, error) {
-	var list corev1.ServiceList
-	if err := r.reader().List(
-		ctx, &list, client.InNamespace(lab.Namespace),
-		client.MatchingLabels{names.LabelLab: lab.Name, names.LabelDevice: device},
-	); err != nil {
-		return nil, err
-	}
-	var found *corev1.Service
-	for i := range list.Items {
-		svc := &list.Items[i]
-		if !ownedByLab(svc, lab) {
-			continue
-		}
-		// Duplicates are not expected; stay deterministic if one ever appears.
-		if found == nil || svc.CreationTimestamp.Before(&found.CreationTimestamp) ||
-			(svc.CreationTimestamp.Equal(&found.CreationTimestamp) && svc.Name < found.Name) {
-			found = svc
-		}
-	}
-	return found, nil
-}
-
 func ownedByLab(obj metav1.Object, lab *laboratoryv1alpha1.Lab) bool {
 	for _, ref := range obj.GetOwnerReferences() {
-		if ref.UID == lab.UID && ref.Kind == "Lab" {
+		if ref.UID == lab.UID && ref.Kind == ownerKindLab {
 			return true
 		}
 	}
@@ -1291,8 +1386,9 @@ func (r *LabReconciler) createWebService(ctx context.Context, lab *laboratoryv1a
 	return nil, fmt.Errorf("no free web host label for device %s", device)
 }
 
-func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1alpha1.Lab) error {
-	codes := r.newCodeAllocator(lab)
+func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1alpha1.Lab, snapshots ...*labServiceSnapshot) error {
+	services := r.serviceSnapshot(lab, snapshots...)
+	codes := r.newCodeAllocator(lab, services)
 	for _, d := range lab.Spec.Devices {
 		if d.Exposure == nil || d.Exposure.Web == nil {
 			continue
@@ -1327,7 +1423,7 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 			return controllerutil.SetOwnerReference(lab, svc, r.Scheme)
 		}
 
-		existing, err := r.findWebService(ctx, lab, d.Name)
+		existing, err := services.find(ctx, d.Name)
 		if err != nil {
 			return fmt.Errorf("find Service of device %s: %w", d.Name, err)
 		}
@@ -1356,6 +1452,7 @@ func (r *LabReconciler) ensureWebServices(ctx context.Context, lab *laboratoryv1
 		if err != nil {
 			return fmt.Errorf("ensure Service of device %s: %w", d.Name, err)
 		}
+		services.remember(svc)
 		svcName := svc.Name
 
 		np := &networkingv1.NetworkPolicy{
@@ -1434,4 +1531,8 @@ func (r *LabReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&corev1.Service{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Watches(&networkingv1.NetworkPolicy{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Complete(reconcileutil.Quiet(r))
+}
+
+func deviceTypeIsSwitch(deviceType laboratoryv1alpha1.DeviceType) bool {
+	return deviceType == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch || deviceType == laboratoryv1alpha1.DeviceTypeHub
 }

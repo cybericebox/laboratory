@@ -30,6 +30,9 @@ type Handler struct {
 	// resource-usage reporting then degrades to zero rather than failing.
 	metrics metricsclient.Interface
 	agentID string
+	// lifecycleAdmissionMu serializes group lifecycle with child admission in this agent.
+	// Multi-agent/API admission remains a native capability gate.
+	lifecycleAdmissionMu sync.Mutex
 
 	// monitor is the shared poller and journal behind every Monitoring stream.
 	monOnce sync.Once
@@ -37,6 +40,8 @@ type Handler struct {
 
 	// statePersistence: the cluster allows devices with persistence (the chart switch).
 	statePersistence bool
+	// Native required-snapshot validation gate; false until configured after proof.
+	requiredSnapshotAvailable bool
 
 	// caCertFile/caKeyFile sign client certificates (Enroll, RenewCertificate).
 	caCertFile, caKeyFile string
@@ -116,3 +121,9 @@ func (h *Handler) SetImagePolicy(deny []string, cacheAddrs ...string) {
 }
 
 func isNotFound(err error) bool { return apierrors.IsNotFound(err) }
+
+// SetRequiredSnapshotAvailable wires the native producer gate after its proof.
+// This enables acceptance checks, not advertised lifecycle capabilities.
+func (h *Handler) SetRequiredSnapshotAvailable(available bool) {
+	h.requiredSnapshotAvailable = available
+}

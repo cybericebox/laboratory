@@ -27,6 +27,10 @@ import (
 // LabGroupAccessPolicyStatus is written only by the in-namespace VPN
 // reconciler after it has applied the matching policy generation.
 type LabGroupAccessPolicyStatusApplyConfiguration struct {
+	// The current VPN boot acknowledges the exact policy operation/revision.
+	AppliedRevision    *int64                                             `json:"appliedRevision,omitempty"`
+	OperationID        *string                                            `json:"operationId,omitempty"`
+	VPNBootID          *string                                            `json:"vpnBootId,omitempty"`
 	ObservedGeneration *int64                                             `json:"observedGeneration,omitempty"`
 	State              *string                                            `json:"state,omitempty"`
 	AppliedAt          *v1.Time                                           `json:"appliedAt,omitempty"`
@@ -38,6 +42,30 @@ type LabGroupAccessPolicyStatusApplyConfiguration struct {
 // apply.
 func LabGroupAccessPolicyStatus() *LabGroupAccessPolicyStatusApplyConfiguration {
 	return &LabGroupAccessPolicyStatusApplyConfiguration{}
+}
+
+// WithAppliedRevision sets the AppliedRevision field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the AppliedRevision field is set to the value of the last call.
+func (b *LabGroupAccessPolicyStatusApplyConfiguration) WithAppliedRevision(value int64) *LabGroupAccessPolicyStatusApplyConfiguration {
+	b.AppliedRevision = &value
+	return b
+}
+
+// WithOperationID sets the OperationID field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the OperationID field is set to the value of the last call.
+func (b *LabGroupAccessPolicyStatusApplyConfiguration) WithOperationID(value string) *LabGroupAccessPolicyStatusApplyConfiguration {
+	b.OperationID = &value
+	return b
+}
+
+// WithVPNBootID sets the VPNBootID field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the VPNBootID field is set to the value of the last call.
+func (b *LabGroupAccessPolicyStatusApplyConfiguration) WithVPNBootID(value string) *LabGroupAccessPolicyStatusApplyConfiguration {
+	b.VPNBootID = &value
+	return b
 }
 
 // WithObservedGeneration sets the ObservedGeneration field in the declarative configuration to the given value

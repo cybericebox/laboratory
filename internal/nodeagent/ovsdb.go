@@ -13,10 +13,12 @@ import (
 	"syscall"
 	"time"
 
+	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/ovn-org/libovsdb/client"
 	"github.com/ovn-org/libovsdb/model"
 	"github.com/ovn-org/libovsdb/ovsdb"
 	"github.com/vishvananda/netlink"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // portKey computes a stable OVS port name (max 15 chars) for a device interface.
@@ -35,10 +37,19 @@ const GenevePort = "ovsgnv0"
 // shared port name regardless of the remote address argument.
 // OVSManager programs the single br-ovs bridge via libovsdb (OVSDB JSON-RPC over Unix socket).
 type OVSManager struct {
-	bridge string
-	client client.Client
-	ctx    context.Context
-	mu     sync.Mutex
+	// RuntimeRetirement persists first exact physical cleanup before row loss.
+	RuntimeRetirement       func(string, types.UID, string) error
+	RuntimePrepare          func(string, types.UID, string) error
+	VNIRetirement           func(context.Context, lab.OwnedVNI, *FlowManager) error
+	FabricPrepare           func(string, types.UID, string) error
+	FabricRetirement        func(string, types.UID, string) error
+	FabricRetirementAbsent  func(string, types.UID) error
+	RuntimeRetirementAbsent func(string, types.UID) error
+	bridge                  string
+	client                  client.Client
+	ctx                     context.Context
+	mu                      sync.Mutex
+	vethMu                  sync.Mutex // serialize Pod netns wiring against replacement cleanup
 
 	// policingKbps is the rate a veth port of a device may send into the bridge (0 = unpoliced); set by SetPolicing.
 	policingKbps int
@@ -59,6 +70,10 @@ func (m *OVSManager) Ping(ctx context.Context) error { return m.client.Echo(ctx)
 func (m *OVSManager) EnsurePolicing(portName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.ensurePolicingLocked(portName)
+}
+
+func (m *OVSManager) ensurePolicingLocked(portName string) error {
 	kbps := m.policingKbps
 	ifaces := []OVSInterface{}
 	if err := m.client.List(m.ctx, &ifaces); err != nil {
@@ -94,7 +109,7 @@ func NewOVSManager(bridge, sockPath string) (*OVSManager, error) {
 		"Open_vSwitch", map[string]model.Model{
 			"Open_vSwitch": &OVSOpen_vSwitch{},
 			"Bridge":       &OVSBridge{},
-			"Port":         &OVSPort{},
+			ovsPortTable:   &OVSPort{},
 			"Interface":    &OVSInterface{},
 		},
 	)
@@ -124,7 +139,18 @@ func NewOVSManager(bridge, sockPath string) (*OVSManager, error) {
 		return nil, fmt.Errorf("connect to OVSDB %s: %w", sockPath, connErr)
 	}
 
-	if _, err := ovs.MonitorAll(ctx); err != nil {
+	// Monitor only modeled columns. A vswitchd statistics update otherwise
+	// includes an unknown column and libovsdb drops the same update's ifindex
+	// and policing changes, leaving the node-agent's cache stale.
+	root, br, port, iface := &OVSOpen_vSwitch{}, &OVSBridge{}, &OVSPort{}, &OVSInterface{}
+	monitor := ovs.NewMonitor(
+		client.WithTable(root, &root.Bridges),
+		client.WithTable(br, &br.Name, &br.Ports, &br.FailMode),
+		client.WithTable(port, &port.Name, &port.Interfaces, &port.ExternalIDs),
+		client.WithTable(iface, &iface.Name, &iface.Type, &iface.Options, &iface.Ifindex,
+			&iface.IngressPolicingRate, &iface.IngressPolicingBurst),
+	)
+	if _, err := ovs.Monitor(ctx, monitor); err != nil {
 		return nil, fmt.Errorf("OVSDB monitor: %w", err)
 	}
 
@@ -233,9 +259,41 @@ func VethPeerName(stableKey string) string {
 // Idempotent: EEXIST on kernel side is ignored; port already in OVS is a no-op.
 // Stores stableKey in external_ids so FindPortByKey can locate it.
 func (m *OVSManager) AddVethPort(stableKey string) error {
+	return m.addVethPort(stableKey, "")
+}
+
+// AddVethPortOwned never overwrites another Pod's stable port ownership.
+func (m *OVSManager) AddVethPortOwned(stableKey string, ownerUID types.UID) error {
+	if ownerUID == "" {
+		return fmt.Errorf("%w: empty Pod UID", ErrPortOwnerUnknown)
+	}
+	return m.addVethPort(stableKey, ownerUID)
+}
+
+func (m *OVSManager) addVethPort(stableKey string, ownerUID types.UID) error {
 	if !ValidPortKey(stableKey) {
 		return fmt.Errorf("%q is not a port key of the platform: refusing to create a veth under it", stableKey)
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, err := m.portSnapshotLocked(stableKey)
+	if err != nil {
+		return err
+	}
+	if p == nil && ownerUID != "" {
+		if _, err := netlink.LinkByName(stableKey); err == nil {
+			return fmt.Errorf("%w: existing kernel link %s has no OVS owner", ErrPortOwnerUnknown, stableKey)
+		} else {
+			var absent netlink.LinkNotFoundError
+			if !errors.As(err, &absent) {
+				return err
+			}
+		}
+	}
+	if p != nil && types.UID(p.ExternalIDs[portOwnerExternalID]) != ownerUID {
+		return fmt.Errorf("%w: %s belongs to %q, requested %q", ErrPortOwnerChanged, stableKey, p.ExternalIDs[portOwnerExternalID], ownerUID)
+	}
+
 	podSide := VethPeerName(stableKey)
 	veth := &netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{Name: stableKey},
@@ -255,15 +313,17 @@ func (m *OVSManager) AddVethPort(stableKey string) error {
 	if err := netlink.LinkSetUp(link); err != nil {
 		return fmt.Errorf("set up host-side veth %q: %w", stableKey, err)
 	}
-	m.mu.Lock()
-	err = m.addPort(stableKey, "system", nil, map[string]string{portKeyExternalID: stableKey})
+	ids := map[string]string{portKeyExternalID: stableKey}
+	if ownerUID != "" {
+		ids[portOwnerExternalID] = string(ownerUID)
+	}
+	err = m.addPort(stableKey, "system", nil, ids)
 	policed := m.policingKbps > 0
-	m.mu.Unlock()
 	if err != nil {
 		return err
 	}
 	if policed {
-		return m.EnsurePolicing(stableKey)
+		return m.ensurePolicingLocked(stableKey)
 	}
 	return nil
 }
@@ -305,6 +365,143 @@ func (m *OVSManager) DelVethPort(stableKey string) error {
 
 // portKeyExternalID is the external_ids key used to store the stable port key.
 const portKeyExternalID = "port-key"
+
+// The exact Pod UID is the Pod incarnation; OVS Port UUID fences row replacement.
+const portOwnerExternalID = "pod-uid"
+
+var ErrPortOwnerUnknown = errors.New("port ownership unknown")
+var ErrPortOwnerChanged = errors.New("port belongs to another Pod incarnation")
+
+// portSnapshotLocked reads the database, not a possibly delayed monitor cache.
+func (m *OVSManager) portSnapshotLocked(key string) (*OVSPort, error) {
+	keyIDs, _ := ovsdb.NewOvsMap(map[string]string{portKeyExternalID: key})
+	ops := []ovsdb.Operation{{Op: ovsdb.OperationSelect, Table: ovsPortTable, Where: []ovsdb.Condition{ovsdb.NewCondition(nativeExternalIDsColumn, ovsdb.ConditionIncludes, keyIDs)}, Columns: []string{ovsUUIDColumn, cniNameKey, nativeExternalIDsColumn}}}
+	results, err := m.client.Transact(m.ctx, ops...)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		return nil, err
+	}
+	if len(results[0].Rows) == 0 {
+		return nil, nil
+	}
+	if len(results[0].Rows) != 1 || results[0].Rows[0][cniNameKey] != key {
+		return nil, fmt.Errorf("%w: ambiguous/non-veth stable key %s", ErrPortOwnerUnknown, key)
+	}
+	row := results[0].Rows[0]
+	ids := map[string]string{}
+	if value, ok := row[nativeExternalIDsColumn].(ovsdb.OvsMap); ok {
+		for k, v := range value.GoMap {
+			ids[k.(string)] = v.(string)
+		}
+	}
+	uuid, ok := row[ovsUUIDColumn].(ovsdb.UUID)
+	if !ok || ids[portKeyExternalID] != key {
+		return nil, fmt.Errorf("%w: %s", ErrPortOwnerUnknown, key)
+	}
+	return &OVSPort{UUID: uuid.GoUUID, Name: key, ExternalIDs: ids}, nil
+}
+
+func (m *OVSManager) PortOwners() (map[string]types.UID, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.portOwnersLocked()
+}
+func (m *OVSManager) portOwnersLocked() (map[string]types.UID, error) {
+	ops := []ovsdb.Operation{{Op: ovsdb.OperationSelect, Table: ovsPortTable, Where: []ovsdb.Condition{}, Columns: []string{nativeExternalIDsColumn}}}
+	results, err := m.client.Transact(m.ctx, ops...)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		return nil, err
+	}
+	owners := map[string]types.UID{}
+	for _, row := range results[0].Rows {
+		ids, ok := row[nativeExternalIDsColumn].(ovsdb.OvsMap)
+		if !ok {
+			continue
+		}
+		key, _ := ids.GoMap[portKeyExternalID].(string)
+		uid, _ := ids.GoMap[portOwnerExternalID].(string)
+		if key != "" {
+			if _, present := owners[key]; present {
+				return nil, fmt.Errorf("%w: duplicate stable key %s", ErrPortOwnerUnknown, key)
+			}
+			owners[key] = types.UID(uid)
+		}
+	}
+	return owners, nil
+}
+
+// delVethWithFlowsOwned holds the same lock as creation for owner check, flow
+// retirement and deletion. Empty UID is allowed only by the caller's legacy fence.
+func (m *OVSManager) delVethWithFlowsOwned(key string, uid types.UID, flows *FlowManager) error {
+	return m.delVethWithFlowsOwnedJournaled(key, uid, flows, nil)
+}
+
+func (m *OVSManager) delVethWithFlowsOwnedJournaled(key string, uid types.UID, flows *FlowManager, prepared func(string) error, expectedRow ...string) error {
+	if !ValidPortKey(key) {
+		return fmt.Errorf("invalid platform port key %q", key)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if prepared == nil && flows != nil && m.RuntimeRetirement != nil {
+		prepared = func(row string) error { return m.RuntimeRetirement(key, uid, row) }
+	}
+	p, err := m.portSnapshotLocked(key)
+	if err != nil {
+		return err
+	}
+	link, linkErr := netlink.LinkByName(key)
+	if p == nil {
+		if flows != nil {
+			var absent netlink.LinkNotFoundError
+			if errors.As(linkErr, &absent) && m.RuntimeRetirementAbsent != nil {
+				return m.RuntimeRetirementAbsent(key, uid)
+			}
+			return fmt.Errorf("%w: missing owner row cannot authorize cleanup of %s", ErrPortOwnerUnknown, key)
+		}
+		if linkErr == nil {
+			return fmt.Errorf("%w: kernel link %s has no OVS owner", ErrPortOwnerUnknown, key)
+		}
+		var absent netlink.LinkNotFoundError
+		if !errors.As(linkErr, &absent) {
+			return linkErr
+		}
+		return nil
+	}
+	if len(expectedRow) > 0 && expectedRow[0] != "" && p.UUID != expectedRow[0] {
+		return ErrPortOwnerChanged
+	}
+	if types.UID(p.ExternalIDs[portOwnerExternalID]) != uid {
+		return fmt.Errorf("%w: %s", ErrPortOwnerChanged, key)
+	}
+	if linkErr == nil {
+		if err := requireVeth(link); err != nil {
+			return err
+		}
+	}
+	if flows != nil && m.RuntimePrepare != nil {
+		if err := m.RuntimePrepare(key, uid, p.UUID); err != nil {
+			return err
+		}
+	}
+	if flows != nil {
+		if err := flows.retirePort(key); err != nil {
+			return err
+		}
+	}
+	current, err := m.portSnapshotLocked(key)
+	if err != nil {
+		return err
+	}
+	if current == nil || current.UUID != p.UUID || current.ExternalIDs[portOwnerExternalID] != p.ExternalIDs[portOwnerExternalID] {
+		return fmt.Errorf("%w: port changed during flow retirement", ErrPortOwnerChanged)
+	}
+	return m.finishVethRetirement(key, p, link, linkErr, prepared)
+}
 
 // randomPortName generates a unique OVS internal port name: "ice" + 12 random hex chars = 15 chars (IFNAMSIZ max).
 // The name is used only as the kernel interface name; the stable port key is stored in external_ids.
@@ -446,8 +643,15 @@ func (m *OVSManager) findPort(name string) (*OVSPort, error) {
 }
 
 func (m *OVSManager) addPort(name, ifaceType string, options, externalIDs map[string]string) error {
-	// Idempotency: check if port already exists in cache.
-	if p, err := m.findPort(name); err != nil {
+	// Veth ownership checks use the database; other port kinds retain cache idempotency.
+	var p *OVSPort
+	var err error
+	if externalIDs[portKeyExternalID] == name && ValidPortKey(name) {
+		p, err = m.portSnapshotLocked(name)
+	} else {
+		p, err = m.findPort(name)
+	}
+	if err != nil {
 		return err
 	} else if p != nil {
 		return nil
@@ -520,6 +724,11 @@ func (m *OVSManager) delPortLocked(p *OVSPort) error {
 	}
 
 	var ops []ovsdb.Operation
+	if p.ExternalIDs[portKeyExternalID] == p.Name && ValidPortKey(p.Name) || p.ExternalIDs[fabricOwnerExternalID] != "" {
+		ids, _ := ovsdb.NewOvsMap(p.ExternalIDs)
+		timeout := 0
+		ops = append(ops, ovsdb.Operation{Op: ovsdb.OperationWait, Table: ovsPortTable, Where: []ovsdb.Condition{ovsdb.NewCondition(cniNameKey, ovsdb.ConditionEqual, p.Name)}, Columns: []string{ovsUUIDColumn, nativeExternalIDsColumn}, Rows: []ovsdb.Row{{ovsUUIDColumn: ovsdb.UUID{GoUUID: p.UUID}, nativeExternalIDsColumn: ids}}, Until: "==", Timeout: &timeout})
+	}
 	if br != nil {
 		mutOps, err := m.client.Where(br).Mutate(
 			br,
@@ -610,4 +819,190 @@ func (m *OVSManager) PortExists(name string) (bool, error) {
 		return false, err
 	}
 	return p != nil, nil
+}
+
+const fabricOwnerExternalID = "cice-fabric-owner-uid"
+
+func (m *OVSManager) AddPatchPairOwned(a, b string, owner types.UID) error {
+	if owner == "" {
+		return ErrPortOwnerUnknown
+	}
+	m.vethMu.Lock()
+	defer m.vethMu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, entry := range []struct{ name, peer string }{{a, b}, {b, a}} {
+		existing, err := m.findPort(entry.name)
+		if err != nil {
+			return err
+		}
+		if existing != nil && existing.ExternalIDs[fabricOwnerExternalID] != string(owner) {
+			return ErrPortOwnerChanged
+		}
+		if err := m.addPort(entry.name, "patch", map[string]string{"peer": entry.peer}, map[string]string{fabricOwnerExternalID: string(owner)}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+func (m *OVSManager) DelFabricPortOwned(key string, owner types.UID, flows *FlowManager, expectedRow ...string) error {
+	if owner == "" || flows == nil {
+		return ErrPortOwnerUnknown
+	}
+	m.vethMu.Lock()
+	defer m.vethMu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	row, err := m.fabricSnapshotLocked(key)
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		if m.FabricRetirementAbsent != nil {
+			return m.FabricRetirementAbsent(key, owner)
+		}
+		if m.FabricPrepare == nil && m.FabricRetirement == nil {
+			return nil
+		}
+		return ErrPortOwnerUnknown
+	}
+	if len(expectedRow) > 0 && expectedRow[0] != "" && row.UUID != expectedRow[0] {
+		return ErrPortOwnerChanged
+	}
+	if row.ExternalIDs[fabricOwnerExternalID] != string(owner) {
+		return ErrPortOwnerChanged
+	}
+	if m.FabricPrepare != nil {
+		if m.FabricRetirement == nil {
+			return ErrPortOwnerUnknown
+		}
+		if err := m.FabricPrepare(key, owner, row.UUID); err != nil {
+			return err
+		}
+	}
+	if err := flows.retirePort(key); err != nil {
+		return err
+	}
+	current, err := m.fabricSnapshotLocked(key)
+	if err != nil {
+		return err
+	}
+	if current == nil || current.UUID != row.UUID || current.ExternalIDs[fabricOwnerExternalID] != string(owner) {
+		return ErrPortOwnerChanged
+	}
+	if m.FabricRetirement != nil {
+		if err := m.FabricRetirement(key, owner, row.UUID); err != nil {
+			return err
+		}
+	}
+	return m.delPortLocked(row)
+}
+
+// RetireVNIOwned serializes the immutable lease check, correlated flow barrier
+// and durable ACK with attachment creation. Numeric VNI alone is never an owner.
+func (m *OVSManager) RetireVNIOwned(ctx context.Context, binding lab.OwnedVNI, flows *FlowManager, authority ...func(context.Context, lab.OwnedVNI) error) error {
+	if binding.UID == "" || flows == nil {
+		return ErrPortOwnerUnknown
+	}
+	if binding.VNI == 0 && !completeZeroVNIBinding(binding) {
+		return ErrPortOwnerUnknown
+	}
+	m.vethMu.Lock()
+	defer m.vethMu.Unlock()
+	if m.VNIRetirement != nil {
+		return m.VNIRetirement(ctx, binding, flows)
+	}
+	if binding.VNI != 0 {
+		return flows.RetireVNI(binding.VNI) // existing default-off nonzero legacy path
+	}
+	// Zero is a valid index, never missing authority. Without observation the
+	// direct caller must validate the actual Pool/object tuple under this lock.
+	if len(authority) == 0 || authority[0] == nil {
+		return ErrPortOwnerUnknown
+	}
+	if err := authority[0](ctx, binding); err != nil {
+		return err
+	}
+	if err := flows.RetireVNI(binding.VNI); err != nil {
+		return err
+	}
+	return authority[0](ctx, binding)
+}
+
+func (m *OVSManager) fabricSnapshotLocked(key string) (*OVSPort, error) {
+	ops := []ovsdb.Operation{{Op: ovsdb.OperationSelect, Table: ovsPortTable, Where: []ovsdb.Condition{ovsdb.NewCondition(cniNameKey, ovsdb.ConditionEqual, key)}, Columns: []string{ovsUUIDColumn, cniNameKey, nativeExternalIDsColumn}}}
+	results, err := m.client.Transact(m.ctx, ops...)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := ovsdb.CheckOperationResults(results, ops); err != nil {
+		return nil, err
+	}
+	if len(results[0].Rows) == 0 {
+		return nil, nil
+	}
+	if len(results[0].Rows) != 1 {
+		return nil, ErrPortOwnerUnknown
+	}
+	raw := results[0].Rows[0]
+	uuid, ok := raw[ovsUUIDColumn].(ovsdb.UUID)
+	if !ok {
+		return nil, ErrPortOwnerUnknown
+	}
+	ids := map[string]string{}
+	if values, ok := raw[nativeExternalIDsColumn].(ovsdb.OvsMap); ok {
+		for k, v := range values.GoMap {
+			ids[k.(string)] = v.(string)
+		}
+	}
+	return &OVSPort{UUID: uuid.GoUUID, Name: key, ExternalIDs: ids}, nil
+}
+
+func (m *OVSManager) finishVethRetirement(key string, p *OVSPort, link netlink.Link, linkErr error, prepared func(string) error) error {
+	if prepared != nil {
+		// Keep the exact owner row until the physical flow/kernel proof is fsynced.
+		if linkErr == nil {
+			currentLink, e := netlink.LinkByName(key)
+			if e != nil {
+				return e
+			}
+			if currentLink.Attrs().Index != link.Attrs().Index {
+				return ErrPortOwnerChanged
+			}
+			if e = netlink.LinkDel(currentLink); e != nil {
+				return e
+			}
+		} else {
+			var absent netlink.LinkNotFoundError
+			if !errors.As(linkErr, &absent) {
+				return linkErr
+			}
+		}
+		if e := prepared(p.UUID); e != nil {
+			return e
+		}
+		return m.delPortLocked(p)
+	}
+	if err := m.delPortLocked(p); err != nil {
+		return err
+	}
+	if linkErr != nil {
+		var absent netlink.LinkNotFoundError
+		if !errors.As(linkErr, &absent) {
+			return linkErr
+		}
+		return nil
+	}
+	currentLink, err := netlink.LinkByName(key)
+	if err != nil {
+		var absent netlink.LinkNotFoundError
+		if errors.As(err, &absent) {
+			return nil
+		}
+		return err
+	}
+	if currentLink.Attrs().Index != link.Attrs().Index {
+		return fmt.Errorf("%w: kernel link incarnation changed", ErrPortOwnerChanged)
+	}
+	return netlink.LinkDel(link)
 }

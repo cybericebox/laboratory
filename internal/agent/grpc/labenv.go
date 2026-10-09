@@ -107,6 +107,9 @@ func parseLabSpec(raw []byte, persistence bool) (laboratoryv1alpha1.LabSpec, err
 	if err := dec.Decode(&spec); err != nil {
 		return spec, fmt.Errorf("spec_json: %w", err)
 	}
+	if life := spec.Lifecycle; life != nil && (life.DesiredState != lifecycleRunning || life.OperationID == "" || life.Revision != 1 || life.Terminal || life.SnapshotMode != "") {
+		return spec, fmt.Errorf("lifecycle intent must use UID-fenced StopLabs/StartLabs; only fenced initial Running revision1 is a birth")
+	}
 	for i := range spec.Devices {
 		if err := validatePersistence(&spec.Devices[i], persistence); err != nil {
 			return spec, fmt.Errorf("spec_json: device %q: %w", spec.Devices[i].Name, err)
@@ -160,6 +163,10 @@ func validatePersistence(d *laboratoryv1alpha1.DeviceTemplate, allowed bool) err
 // For each device in devices: the Secret is written when it has variables, otherwise
 // removed. Writing the same values again is safe.
 func (h *Handler) writeDeviceSecrets(ctx context.Context, lab *laboratoryv1alpha1.Lab, devices []string, env deviceVars) error {
+	token := variableWriteToken(lab, devices, env)
+	if err := h.claimVariableWrite(ctx, lab, token); err != nil {
+		return err
+	}
 	controller := true
 	owner := metav1.OwnerReference{
 		APIVersion:         laboratoryv1alpha1.SchemeGroupVersion.String(),
@@ -199,5 +206,5 @@ func (h *Handler) writeDeviceSecrets(ctx context.Context, lab *laboratoryv1alpha
 			return err
 		}
 	}
-	return nil
+	return h.finishVariableWrite(ctx, lab, token)
 }

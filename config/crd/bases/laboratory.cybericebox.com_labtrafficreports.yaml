@@ -65,9 +65,39 @@ spec:
             properties:
               bootID:
                 description: |-
-                  BootID changes whenever the collector restarts; the ledger is cumulative
-                  within one boot.
+                  BootID identifies the observation epoch. Restored cumulative ledger totals
+                  continue across boots; coverage intervals retain their own epoch identity.
                 type: string
+              coverageSpans:
+                description: |-
+                  CoverageSpans preserves disjoint observed intervals across collector restarts.
+                  Absent for older writers: the agent derives one span from the scalar fields.
+                items:
+                  description: |-
+                    LabTrafficCoverageSpan is one actually observed collector interval. Separate
+                    spans preserve restart/replica gaps instead of treating their envelope as watched.
+                  properties:
+                    bootID:
+                      type: string
+                    fromMs:
+                      format: int64
+                      type: integer
+                    instance:
+                      type: string
+                    partial:
+                      description: Partial also covers truncation or unavailable accounting
+                        within this span.
+                      type: boolean
+                    source:
+                      type: string
+                    toMs:
+                      format: int64
+                      type: integer
+                  required:
+                  - fromMs
+                  - toMs
+                  type: object
+                type: array
               coveredFromMs:
                 description: |-
                   CoveredFromMs..CoveredToMs is the span the collector actually observed.
@@ -77,11 +107,81 @@ spec:
               coveredToMs:
                 format: int64
                 type: integer
+              currentVPNRuntime:
+                description: CurrentVPNRuntime is published at startup before ACL
+                  acknowledgement.
+                properties:
+                  bootId:
+                    type: string
+                  containerID:
+                    type: string
+                  groupUID:
+                    type: string
+                  podName:
+                    type: string
+                  podUID:
+                    type: string
+                  publishedAt:
+                    format: date-time
+                    type: string
+                  restartCount:
+                    format: int32
+                    type: integer
+                required:
+                - bootId
+                - containerID
+                - groupUID
+                - podName
+                - podUID
+                - publishedAt
+                - restartCount
+                type: object
+              kernelCheckpoints:
+                description: KernelCheckpoints are consumed by the VPN writer, never
+                  relayed to users.
+                items:
+                  description: |-
+                    LabTrafficKernelCheckpoint stores private raw-counter checkpoints for resume.
+                    Decimal strings preserve uint64 kernel values without JSON integer loss.
+                  properties:
+                    attempts:
+                      type: string
+                    bindingID:
+                      type: string
+                    bytesIn:
+                      type: string
+                    bytesOut:
+                      type: string
+                    epoch:
+                      type: string
+                    labInitiatedAttempts:
+                      type: string
+                    labName:
+                      type: string
+                    packetsIn:
+                      type: string
+                    packetsOut:
+                      type: string
+                    subject:
+                      type: string
+                  required:
+                  - attempts
+                  - bindingID
+                  - bytesIn
+                  - bytesOut
+                  - epoch
+                  - labInitiatedAttempts
+                  - labName
+                  - packetsIn
+                  - packetsOut
+                  - subject
+                  type: object
+                type: array
               ledger:
                 items:
                   description: |-
                     LabTrafficTouch is one cumulative aggregate row: what one VPN config (or one
-                    proxy token) did against one lab target since the collector booted. There is
+                    proxy token) did against one lab target. Durable totals survive restarts. There is
                     no time series. Times are Unix milliseconds. Only lab-internal addresses are
                     ever recorded, never the address of a user.
                   properties:
@@ -113,6 +213,12 @@ spec:
                     firstSeenMs:
                       description: FirstSeenMs is the first attempt, LastSeenMs the
                         last one.
+                      format: int64
+                      type: integer
+                    labInitiatedAttempts:
+                      description: |-
+                        LabInitiatedAttempts counts new permitted VPN flows started by the lab.
+                        It is separate from client attempts and is not used by the proxy.
                       format: int64
                       type: integer
                     labName:

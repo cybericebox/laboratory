@@ -124,7 +124,10 @@ func frozen(dir string) bool {
 // ThawOrphans thaws container cgroups left frozen, which happens when the
 // node-agent dies in the middle of a snapshot. Nothing else freezes them.
 // It returns the directories it thawed.
-func ThawOrphans(root string) []string {
+func ThawOrphans(root string) []string { return ThawOrphansExcept(root, nil) }
+
+// ThawOrphansExcept preserves required captures that still own live tasks.
+func ThawOrphansExcept(root string, protected map[string]bool) []string {
 	var thawed []string
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -134,7 +137,7 @@ func ThawOrphans(root string) []string {
 			return nil
 		}
 		if strings.HasPrefix(d.Name(), "cri-containerd-") || isContainerID(d.Name()) {
-			if frozen(p) {
+			if !protected[p] && frozen(p) {
 				_ = os.WriteFile(filepath.Join(p, "cgroup.freeze"), []byte("0"), 0o644)
 				thawed = append(thawed, p)
 			}
@@ -155,4 +158,34 @@ func isContainerID(s string) bool {
 		}
 	}
 	return true
+}
+
+// FreezeRequired retains ownership of the requested freeze even if confirmation
+// fails. Its caller must fence the API before thawing, or wait for actual death.
+// Ordinary snapshots keep using Freeze's automatic error cleanup.
+func FreezeRequired(ctx context.Context, dir string) (thaw func() error, err error) {
+	if dir == "" {
+		return nil, ErrNoFreezer
+	}
+	freeze := filepath.Join(dir, "cgroup.freeze")
+	if _, err := os.Stat(freeze); err != nil {
+		return nil, ErrNoFreezer
+	}
+	if err := os.WriteFile(freeze, []byte("1"), 0644); err != nil {
+		return nil, fmt.Errorf("freeze %s: %w", dir, err)
+	}
+	thaw = func() error { return os.WriteFile(freeze, []byte("0"), 0644) }
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := ctx.Err(); err != nil {
+			return thaw, fmt.Errorf("confirm required freeze %s: %w", dir, err)
+		}
+		if frozen(dir) {
+			return thaw, nil
+		}
+		if time.Now().After(deadline) {
+			return thaw, fmt.Errorf("confirm required freeze %s: not frozen after 5s", dir)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }

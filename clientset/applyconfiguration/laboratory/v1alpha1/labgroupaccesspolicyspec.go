@@ -23,13 +23,41 @@ package v1alpha1
 // LabGroupAccessPolicySpec is a complete replacement desired policy. Empty is
 // intentional and means no VPN client can reach a laboratory.
 type LabGroupAccessPolicySpecApplyConfiguration struct {
-	Rules []LabGroupAccessRuleApplyConfiguration `json:"rules,omitempty"`
+	// Empty identity retains the legacy policy replacement contract.
+	OperationID      *string                                `json:"operationId,omitempty"`
+	Revision         *int64                                 `json:"revision,omitempty"`
+	ExpectedGroupUID *string                                `json:"expectedGroupUID,omitempty"`
+	Rules            []LabGroupAccessRuleApplyConfiguration `json:"rules,omitempty"`
 }
 
 // LabGroupAccessPolicySpecApplyConfiguration constructs a declarative configuration of the LabGroupAccessPolicySpec type for use with
 // apply.
 func LabGroupAccessPolicySpec() *LabGroupAccessPolicySpecApplyConfiguration {
 	return &LabGroupAccessPolicySpecApplyConfiguration{}
+}
+
+// WithOperationID sets the OperationID field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the OperationID field is set to the value of the last call.
+func (b *LabGroupAccessPolicySpecApplyConfiguration) WithOperationID(value string) *LabGroupAccessPolicySpecApplyConfiguration {
+	b.OperationID = &value
+	return b
+}
+
+// WithRevision sets the Revision field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Revision field is set to the value of the last call.
+func (b *LabGroupAccessPolicySpecApplyConfiguration) WithRevision(value int64) *LabGroupAccessPolicySpecApplyConfiguration {
+	b.Revision = &value
+	return b
+}
+
+// WithExpectedGroupUID sets the ExpectedGroupUID field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ExpectedGroupUID field is set to the value of the last call.
+func (b *LabGroupAccessPolicySpecApplyConfiguration) WithExpectedGroupUID(value string) *LabGroupAccessPolicySpecApplyConfiguration {
+	b.ExpectedGroupUID = &value
+	return b
 }
 
 // WithRules adds the given value to the Rules field in the declarative configuration

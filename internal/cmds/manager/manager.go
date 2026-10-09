@@ -212,7 +212,13 @@ func Run() {
 		os.Exit(1)
 	}
 
+	var serviceReleaseObserver laboratorycontroller.GroupServiceReleaseObserver
+	if cfg.RuntimeObservation {
+		serviceReleaseObserver = laboratorycontroller.NativeGroupServiceReleaseObserver{Client: mgr.GetClient()}
+	}
 	if err = (&laboratorycontroller.LabGroupReconciler{
+		Reader:                  mgr.GetAPIReader(),
+		ServiceReleaseObserver:  serviceReleaseObserver,
 		Scheduled:               cfg.SchedulerEnabled,
 		Client:                  mgr.GetClient(),
 		Scheme:                  mgr.GetScheme(),
@@ -255,17 +261,23 @@ func Run() {
 		os.Exit(1)
 	}
 	if err = (&laboratorycontroller.LabReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		Recorder:         mgr.GetEventRecorderFor("lab"),
-		BaseDomain:       cfg.BaseDomain,
-		ProxySourceCIDRs: cfg.ProxySourceCIDRs,
-		VPNBaseNetwork:   cfg.VPNBaseNetwork,
-		InetBaseNetwork:  cfg.InetBaseNetwork,
-		State:            statePolicy,
-		Mirror:           mirror,
-		Resolver:         resolver,
-		NetConfigImage:   cfg.NetConfigImage,
+		Defaults:                  laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory},
+		LabNodeSelector:           labNodeSelector,
+		LabTolerations:            labTolerations,
+		Reader:                    mgr.GetAPIReader(),
+		RuntimeObservation:        cfg.RuntimeObservation,
+		RequiredSnapshotAvailable: cfg.RequiredSnapshotAvailable && cfg.State.Enabled,
+		Client:                    mgr.GetClient(),
+		Scheme:                    mgr.GetScheme(),
+		Recorder:                  mgr.GetEventRecorderFor("lab"),
+		BaseDomain:                cfg.BaseDomain,
+		ProxySourceCIDRs:          cfg.ProxySourceCIDRs,
+		VPNBaseNetwork:            cfg.VPNBaseNetwork,
+		InetBaseNetwork:           cfg.InetBaseNetwork,
+		State:                     statePolicy,
+		Mirror:                    mirror,
+		Resolver:                  resolver,
+		NetConfigImage:            cfg.NetConfigImage,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Lab")
 		os.Exit(1)
@@ -274,6 +286,7 @@ func Run() {
 		if err = mgr.Add(&laboratorycontroller.Scheduler{
 			Mirror:   mirror,
 			Client:   mgr.GetClient(),
+			Reader:   mgr.GetAPIReader(),
 			Recorder: mgr.GetEventRecorderFor("scheduler"),
 			Config: laboratorycontroller.SchedulerConfig{
 				MaxPods:                cfg.SchedulerMaxPods,
@@ -351,6 +364,12 @@ func Run() {
 			Namespace: names.SystemNamespace,
 		}); err != nil {
 			setupLog.Error(err, "unable to add snapshot retention sweep")
+			os.Exit(1)
+		}
+	}
+	if cfg.RuntimeObservation {
+		if err = mgr.Add(&laboratorycontroller.RetentionSweeper{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Registry: stateRegistry, RetirementsOnly: true, Interval: 5 * time.Second}); err != nil {
+			setupLog.Error(err, "unable to add lifecycle retirement sweep")
 			os.Exit(1)
 		}
 	}

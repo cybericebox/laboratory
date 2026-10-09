@@ -21,16 +21,34 @@ ARG TARGETOS=linux
 ARG TARGETARCH
 WORKDIR /workspace
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY cmd/ cmd/
 COPY api/ api/
 COPY clientset/ clientset/
 COPY internal/ internal/
 COPY pkg/ pkg/
 ENV CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH}
-RUN for c in manager agent proxy node lab; do \
-      go build -trimpath -ldflags="-s -w" -o /out/$c ./cmd/$c || exit 1; \
-    done
+# Build only the binary consumed by the selected runtime image. Shared module
+# and Go caches remain build-only; no cache or toolchain enters a final image.
+FROM builder AS build-controller
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    go build -trimpath -ldflags="-s -w" -o /out/manager ./cmd/manager
+
+FROM builder AS build-agent
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    go build -trimpath -ldflags="-s -w" -o /out/agent ./cmd/agent
+
+FROM builder AS build-proxy
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    go build -trimpath -ldflags="-s -w" -o /out/proxy ./cmd/proxy
+
+FROM builder AS build-node
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    go build -trimpath -ldflags="-s -w" -o /out/node ./cmd/node
+
+FROM builder AS build-lab
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    go build -trimpath -ldflags="-s -w" -o /out/lab ./cmd/lab
 
 # CNI plugins for the node image: only the ones the node-agent installs on the host. They run on
 # the HOST, which is glibc, so they must be static: the alpine package builds them against musl
@@ -53,18 +71,18 @@ RUN set -eu; \
 RUN apk add --no-cache binutils && strip --strip-unneeded /cni/*
 
 FROM ${DISTROLESS} AS controller
-COPY --from=builder /out/manager /manager
+COPY --from=build-controller /out/manager /manager
 USER 65532:65532
 ENTRYPOINT ["/manager"]
 
 FROM ${DISTROLESS} AS agent
-COPY --from=builder /out/agent /agent
+COPY --from=build-agent /out/agent /agent
 USER 65532:65532
 ENTRYPOINT ["/agent"]
 
 # Faces the internet: nothing but the binary and the CA bundle.
 FROM ${DISTROLESS} AS proxy
-COPY --from=builder /out/proxy /proxy
+COPY --from=build-proxy /out/proxy /proxy
 USER 65532:65532
 
 # The VPN and gateway pods run /lab and, through it, the iptables binaries: nothing else. The root file system is built
@@ -79,11 +97,20 @@ RUN apk add --no-cache --root /rootfs --initdb --no-scripts --keys-dir /etc/apk/
 FROM scratch AS lab
 ENV PATH=/usr/sbin:/usr/bin:/sbin:/bin
 COPY --from=lab-rootfs /rootfs/ /
-COPY --from=builder /out/lab /lab
+COPY --from=build-lab /out/lab /lab
 
-# Open vSwitch comes from the alpine package (kernel datapath).
+# nsenter needs only musl. Keep the other util-linux tools and their unrelated
+# storage/terminal libraries out of the runtime, while copying the same binary.
+FROM ${ALPINE} AS node-tools
+RUN apk add --no-cache util-linux-misc
+
+# Open vSwitch comes from the alpine package (kernel datapath). The node uses
+# the full ip executable; the other iproute2 commands (tc, ss, ...) are unused.
 FROM ${ALPINE} AS node
-RUN apk add --no-cache openvswitch iproute2 kmod bash util-linux-misc
+RUN apk add --no-cache openvswitch iproute2-minimal kmod bash && \
+    rm -f /usr/bin/nsenter
+# Remove Alpine's BusyBox symlink before COPY, which otherwise follows it.
+COPY --from=node-tools /usr/bin/nsenter /usr/bin/nsenter
 COPY --from=cni /cni/ /usr/libexec/cni/
 COPY --chmod=0755 scripts/start-ovs.sh /node-agent/bin/start-ovs.sh
-COPY --from=builder /out/node /node
+COPY --from=build-node /out/node /node

@@ -5,6 +5,7 @@ package reconciler
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -24,81 +25,119 @@ import (
 )
 
 // AccessReconciler materializes all LabGroupClient allow-lists into the VPN
-// server's packet filter. It is intentionally a full snapshot reconcile: one
-// client update, lab readiness transition, or deletion recomputes default-deny
-// rules for the whole group namespace.
+// server's packet filter. A relevant input change recomputes the desired group
+// snapshot; the kernel is changed only when that snapshot differs.
+type accessApplier interface {
+	ReplaceAccessRules([]vpn.AccessRule) error
+	AccessCounters() (map[string]vpn.TrafficCounter, error)
+}
+
+type accessRevoker interface {
+	Revoke([]string, []vpn.AccessRule, ...[]string) (int, error)
+}
+
 type AccessReconciler struct {
+	Reader                   client.Reader
+	Runtime                  laboratoryv1alpha1.VPNRuntimeIdentity
+	GroupUID                 string
+	lastFenceKey             string
+	RequireInitialRetirement bool
+	InitialBindings          map[string]bool
 	client.Client
-	IPT *vpn.IPTablesManager
-	// Conntrack removes the open connections a rule change revokes: FORWARD accepts
-	// established connections before the access chain, so replacing the chain alone
-	// would leave an open SSH session or download running. Nil: not removed (tests).
-	Conntrack *vpn.ConntrackRevoker
+	IPT      accessApplier
+	Counters func() map[string]vpn.TrafficCounter
+	// Conntrack retires flows after a permission or identity change. The gate
+	// checks both directions before established forwarding. Nil is used in tests.
+	Conntrack accessRevoker
+	// Controller-runtime serializes Reconcile calls for this controller.
+	applied           bool
+	lastNamespace     string
+	lastRules         []vpn.AccessRule
+	revokePending     bool
+	revokeLabs        []string
+	revokeClients     []string
+	revokeReissued    map[string]bool
+	activationPending bool
+	initialChecked    bool
 }
 
 func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var clients laboratoryv1alpha1.LabGroupClientList
-	if err := r.List(ctx, &clients, client.InNamespace(req.Namespace)); err != nil {
+	if err := r.direct().List(ctx, &clients, client.InNamespace(req.Namespace)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("list lab group clients: %w", err)
 	}
 	var labs laboratoryv1alpha1.LabList
-	if err := r.List(ctx, &labs, client.InNamespace(req.Namespace)); err != nil {
+	if err := r.direct().List(ctx, &labs, client.InNamespace(req.Namespace)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("list labs: %w", err)
 	}
 
-	labsByName := make(map[string]vpn.LabAccessSnapshot, len(labs.Items))
-	for i := range labs.Items {
-		lab := &labs.Items[i]
-		labsByName[lab.Name] = vpn.LabAccessSnapshot{
-			VPNCIDR: lab.Status.VPN.CIDR,
-			Ready:   lab.Status.Phase == laboratoryv1alpha1.PhaseReady && lab.Status.VPN.Ready,
-		}
+	var legs laboratoryv1alpha1.LabVPNList
+	if err := r.direct().List(ctx, &legs, client.InNamespace(req.Namespace)); err != nil {
+		return ctrl.Result{}, fmt.Errorf("list VPN lab legs: %w", err)
+	}
+	labsByName, bindingErr := buildLabAccessSnapshots(labs.Items, legs.Items)
+	if bindingErr != nil {
+		return ctrl.Result{}, bindingErr
 	}
 	clientSnapshots := make([]vpn.ClientAccessSnapshot, 0, len(clients.Items))
 	for i := range clients.Items {
 		client := &clients.Items[i]
+		if !client.DeletionTimestamp.IsZero() {
+			continue
+		}
 		clientSnapshots = append(clientSnapshots, vpn.ClientAccessSnapshot{
 			Name:       client.Name,
 			AssignedIP: client.Status.AssignedIP,
 		})
 	}
 	policy := &laboratoryv1alpha1.LabGroupAccessPolicy{}
-	err := r.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: names.LabGroupAccessPolicyName}, policy)
+	err := r.direct().Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: names.LabGroupAccessPolicyName}, policy)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, fmt.Errorf("get group access policy: %w", err)
 	}
 	policyFound := err == nil
-	rules := vpn.BuildAccessRules(clientSnapshots, labsByName, policyRules(policy))
-	if err := r.IPT.ReplaceAccessRules(rules); err != nil {
-		if policyFound {
-			_ = r.writePolicyStatus(ctx, policy, rules, nil, "Failed", err.Error())
+	desiredPolicy := policyRules(policy)
+	policyIdentityError := ""
+	if policy.Spec.ExpectedGroupUID != "" && policy.Spec.ExpectedGroupUID != r.GroupUID {
+		desiredPolicy = nil
+		policyIdentityError = "access policy group incarnation mismatch"
+	}
+	rules := vpn.BuildAccessRules(clientSnapshots, labsByName, desiredPolicy)
+	fenceKey := stoppedFenceKey(labs.Items)
+	if r.Runtime.BootID != "" {
+		if err := r.publishBoot(ctx, req.Namespace); err != nil {
+			return ctrl.Result{}, err
 		}
+	}
+	if err := r.applyAccessSnapshot(ctx, req, rules, fenceKey, labsByName, clientSnapshots, policyFound, policy); err != nil {
 		return ctrl.Result{}, err
 	}
-	if r.Conntrack != nil {
-		labCIDRs := make([]string, 0, len(labsByName))
-		for _, l := range labsByName {
-			if l.VPNCIDR != "" {
-				labCIDRs = append(labCIDRs, l.VPNCIDR)
-			}
+	if policyIdentityError != "" {
+		if policyFound {
+			_ = r.writePolicyStatus(ctx, policy, rules, nil, "Failed", policyIdentityError)
 		}
-		n, err := r.Conntrack.Revoke(labCIDRs, rules)
-		if n > 0 {
-			ctrl.LoggerFrom(ctx).Info("closed connections the access rules no longer allow", "connections", n)
-		}
-		if err != nil {
-			// The rules are in place; the open connections are not all gone. Run again.
+		return ctrl.Result{}, fmt.Errorf("%s", policyIdentityError)
+	}
+	hasStopped := false
+	for _, l := range labs.Items {
+		hasStopped = hasStopped || l.Spec.VPN.Enabled && l.Spec.Lifecycle.IsStopped()
+	}
+	if hasStopped {
+		if err := r.writeStoppedFences(ctx, labs.Items); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 	if policyFound {
-		counters, countersErr := r.IPT.AccessCounters()
+		counters, countersErr := r.accessCounters()
 		if countersErr != nil {
 			return ctrl.Result{}, r.writePolicyStatus(ctx, policy, rules, nil, "Failed", countersErr.Error())
 		}
 		if statusErr := r.writePolicyStatus(ctx, policy, rules, counters, "Applied", ""); statusErr != nil {
 			return ctrl.Result{}, statusErr
 		}
+	}
+	if r.Runtime.BootID != "" {
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
 }
@@ -128,6 +167,16 @@ func (r *AccessReconciler) writePolicyStatus(ctx context.Context, policy *labora
 	statistics := vpn.ProjectAccessStatistics(rules, counters, previous)
 	base := policy.DeepCopy()
 	policy.Status.ObservedGeneration = policy.Generation
+	policy.Status.OperationID = policy.Spec.OperationID
+	policy.Status.VPNBootID = r.Runtime.BootID
+	policy.Status.AppliedRevision = 0
+	if state == "Applied" && r.Conntrack != nil {
+		policy.Status.AppliedRevision = policy.Spec.Revision
+	}
+	if state == "Applied" && (r.Conntrack == nil || policy.Spec.OperationID != "" && r.Runtime.BootID == "") {
+		state = "Failed"
+		lastError = "physical acknowledgement requires boot and conntrack retirement"
+	}
 	policy.Status.State = state
 	policy.Status.LastError = lastError
 	policy.Status.AppliedAt = metav1.Now()
@@ -148,42 +197,11 @@ func (r *AccessReconciler) writePolicyStatus(ctx context.Context, policy *labora
 	return nil
 }
 
-// RunAccessStats refreshes firewall counters without changing the policy. The
-// history is retained on the policy CR so the agent can relay it to the
-// platform while an event is active.
-func RunAccessStats(ctx context.Context, c client.Client, ipt *vpn.IPTablesManager, cfg *vpn.Config) {
-	ticker := time.NewTicker(cfg.StatsInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			policy := &laboratoryv1alpha1.LabGroupAccessPolicy{}
-			if err := c.Get(ctx, types.NamespacedName{Namespace: cfg.Namespace, Name: names.LabGroupAccessPolicyName}, policy); err != nil {
-				continue
-			}
-			var clients laboratoryv1alpha1.LabGroupClientList
-			var labs laboratoryv1alpha1.LabList
-			if c.List(ctx, &clients, client.InNamespace(cfg.Namespace)) != nil || c.List(ctx, &labs, client.InNamespace(cfg.Namespace)) != nil {
-				continue
-			}
-			labSnapshots := make(map[string]vpn.LabAccessSnapshot, len(labs.Items))
-			for i := range labs.Items {
-				labSnapshots[labs.Items[i].Name] = vpn.LabAccessSnapshot{VPNCIDR: labs.Items[i].Status.VPN.CIDR, Ready: labs.Items[i].Status.Phase == laboratoryv1alpha1.PhaseReady && labs.Items[i].Status.VPN.Ready}
-			}
-			clientSnapshots := make([]vpn.ClientAccessSnapshot, 0, len(clients.Items))
-			for i := range clients.Items {
-				clientSnapshots = append(clientSnapshots, vpn.ClientAccessSnapshot{Name: clients.Items[i].Name, AssignedIP: clients.Items[i].Status.AssignedIP})
-			}
-			counters, err := ipt.AccessCounters()
-			if err != nil {
-				continue
-			}
-			reconciler := &AccessReconciler{Client: c, IPT: ipt}
-			_ = reconciler.writePolicyStatus(ctx, policy, vpn.BuildAccessRules(clientSnapshots, labSnapshots, policyRules(policy)), counters, "Applied", "")
-		}
+func (r *AccessReconciler) accessCounters() (map[string]vpn.TrafficCounter, error) {
+	if r.Counters != nil {
+		return r.Counters(), nil
 	}
+	return r.IPT.AccessCounters()
 }
 
 func (r *AccessReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -196,10 +214,118 @@ func (r *AccessReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// The peer reconciler also watches LabGroupClient; without its own name
 		// both derive "labgroupclient" and the manager refuses the second one.
 		Named("vpn-access").
-		For(&laboratoryv1alpha1.LabGroupClient{}).
-		Watches(&laboratoryv1alpha1.Lab{}, allInNamespace).
+		Watches(&laboratoryv1alpha1.LabGroupClient{}, allInNamespace, builder.WithPredicates(clientAccessChanges())).
+		Watches(&laboratoryv1alpha1.Lab{}, allInNamespace, builder.WithPredicates(labAccessChanges())).
+		Watches(&laboratoryv1alpha1.LabVPN{}, allInNamespace, builder.WithPredicates(labVPNAccessChanges())).
 		// Counter refreshes patch only status. Do not turn those patches into
 		// another policy reconcile; specification changes still enqueue one.
 		Watches(&laboratoryv1alpha1.LabGroupAccessPolicy{}, allInNamespace, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(reconcileutil.Quiet(r))
+}
+
+func (r *AccessReconciler) prepareAccessRetirement(previousRules, rules []vpn.AccessRule, labsByName map[string]vpn.LabAccessSnapshot, clientSnapshots []vpn.ClientAccessSnapshot) {
+	if r.revokeReissued == nil {
+		r.revokeReissued = map[string]bool{}
+	}
+	if r.RequireInitialRetirement && !r.initialChecked {
+		for _, rule := range rules {
+			if rule.Action == vpn.AccessAllow && !r.InitialBindings[rule.BindingID()] {
+				r.revokeReissued[rule.Identifier()] = true
+			}
+		}
+	}
+	for _, old := range previousRules {
+		if old.Action != vpn.AccessAllow {
+			continue
+		}
+		for _, next := range rules {
+			if next.Action != vpn.AccessAllow {
+				continue
+			}
+			if old.SourceCIDR != "" && old.SourceCIDR == next.SourceCIDR && old.ClientName != next.ClientName || old.LabInterface != "" && old.LabInterface == next.LabInterface && old.LabName != next.LabName {
+				r.revokeReissued[next.Identifier()] = true
+			}
+		}
+	}
+	for _, old := range previousRules {
+		r.revokeLabs = append(r.revokeLabs, old.DestinationCIDR)
+		r.revokeClients = append(r.revokeClients, old.SourceCIDR)
+	}
+	for _, l := range labsByName {
+		if l.VPNCIDR != "" {
+			r.revokeLabs = append(r.revokeLabs, l.VPNCIDR)
+		}
+	}
+	for _, c := range clientSnapshots {
+		r.revokeClients = append(r.revokeClients, c.AssignedIP)
+	}
+	slices.Sort(r.revokeLabs)
+	slices.Sort(r.revokeClients)
+	r.revokeLabs = slices.Compact(r.revokeLabs)
+	r.revokeClients = slices.Compact(r.revokeClients)
+}
+
+func (r *AccessReconciler) applyAccessSnapshot(ctx context.Context, req ctrl.Request, rules []vpn.AccessRule, fenceKey string, labsByName map[string]vpn.LabAccessSnapshot, clientSnapshots []vpn.ClientAccessSnapshot, policyFound bool, policy *laboratoryv1alpha1.LabGroupAccessPolicy) error {
+	previousRules := r.lastRules
+	changed := !r.applied || r.lastNamespace != req.Namespace || !slices.Equal(r.lastRules, rules) || r.lastFenceKey != fenceKey
+	if changed {
+		r.prepareAccessRetirement(previousRules, rules, labsByName, clientSnapshots)
+		// A legacy non-atomic replacement can fail after touching the chain:
+		// invalidate the old snapshot before trying, so reverting still repairs it.
+		r.applied = false
+		safeRules := slices.Clone(rules)
+		for i := range safeRules {
+			if r.revokeReissued[safeRules[i].Identifier()] {
+				safeRules[i].Action = vpn.AccessDeny
+				r.activationPending = true
+			}
+		}
+		if err := r.IPT.ReplaceAccessRules(safeRules); err != nil {
+			if policyFound {
+				_ = r.writePolicyStatus(ctx, policy, rules, nil, "Failed", err.Error())
+			}
+			return err
+		}
+		r.lastRules = slices.Clone(rules)
+		r.lastFenceKey = fenceKey
+		r.lastNamespace = req.Namespace
+		r.applied = true
+		r.revokePending = true
+	}
+	if r.Conntrack != nil && r.revokePending {
+		revocationRules := slices.Clone(rules)
+		for i := range revocationRules {
+			if r.revokeReissued[revocationRules[i].Identifier()] {
+				revocationRules[i].Action = vpn.AccessDeny
+			}
+		}
+		n, err := r.Conntrack.Revoke(r.revokeLabs, revocationRules, r.revokeClients)
+		if n > 0 {
+			ctrl.LoggerFrom(ctx).Info("closed connections the access rules no longer allow", "connections", n)
+		}
+		if err != nil {
+			// The rules are in place; the open connections are not all gone. Run again.
+			if policyFound {
+				counters, _ := r.accessCounters()
+				_ = r.writePolicyStatus(ctx, policy, rules, counters, "Failed", err.Error())
+			}
+			return err
+		}
+	}
+	if r.activationPending {
+		if r.Conntrack == nil {
+			return fmt.Errorf("identity activation requires conntrack retirement")
+		}
+		if err := r.IPT.ReplaceAccessRules(rules); err != nil {
+			r.applied = false
+			return err
+		}
+		r.activationPending = false
+	}
+	r.initialChecked = true
+	r.revokePending = false
+	r.revokeLabs = nil
+	r.revokeClients = nil
+	r.revokeReissued = nil
+	return nil
 }

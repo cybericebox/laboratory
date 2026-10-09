@@ -22,24 +22,39 @@ package v1alpha1
 //
 // LabTrafficReportStatus is written only by the collector.
 type LabTrafficReportStatusApplyConfiguration struct {
-	// BootID changes whenever the collector restarts; the ledger is cumulative
-	// within one boot.
+	// CurrentVPNRuntime is published at startup before ACL acknowledgement.
+	CurrentVPNRuntime *VPNBootRecordApplyConfiguration `json:"currentVPNRuntime,omitempty"`
+	// BootID identifies the observation epoch. Restored cumulative ledger totals
+	// continue across boots; coverage intervals retain their own epoch identity.
 	BootID *string `json:"bootID,omitempty"`
 	// CoveredFromMs..CoveredToMs is the span the collector actually observed.
 	// CoveredToMs advances as a heartbeat even when nothing happened.
 	CoveredFromMs *int64 `json:"coveredFromMs,omitempty"`
 	CoveredToMs   *int64 `json:"coveredToMs,omitempty"`
+	// CoverageSpans preserves disjoint observed intervals across collector restarts.
+	// Absent for older writers: the agent derives one span from the scalar fields.
+	CoverageSpans []LabTrafficCoverageSpanApplyConfiguration `json:"coverageSpans,omitempty"`
 	// Partial is set when part of the span could not be read.
 	Partial *bool `json:"partial,omitempty"`
 	// Truncated is set when the ledger hit its size cap and rows were dropped.
 	Truncated *bool                               `json:"truncated,omitempty"`
 	Ledger    []LabTrafficTouchApplyConfiguration `json:"ledger,omitempty"`
+	// KernelCheckpoints are consumed by the VPN writer, never relayed to users.
+	KernelCheckpoints []LabTrafficKernelCheckpointApplyConfiguration `json:"kernelCheckpoints,omitempty"`
 }
 
 // LabTrafficReportStatusApplyConfiguration constructs a declarative configuration of the LabTrafficReportStatus type for use with
 // apply.
 func LabTrafficReportStatus() *LabTrafficReportStatusApplyConfiguration {
 	return &LabTrafficReportStatusApplyConfiguration{}
+}
+
+// WithCurrentVPNRuntime sets the CurrentVPNRuntime field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the CurrentVPNRuntime field is set to the value of the last call.
+func (b *LabTrafficReportStatusApplyConfiguration) WithCurrentVPNRuntime(value *VPNBootRecordApplyConfiguration) *LabTrafficReportStatusApplyConfiguration {
+	b.CurrentVPNRuntime = value
+	return b
 }
 
 // WithBootID sets the BootID field in the declarative configuration to the given value
@@ -63,6 +78,19 @@ func (b *LabTrafficReportStatusApplyConfiguration) WithCoveredFromMs(value int64
 // If called multiple times, the CoveredToMs field is set to the value of the last call.
 func (b *LabTrafficReportStatusApplyConfiguration) WithCoveredToMs(value int64) *LabTrafficReportStatusApplyConfiguration {
 	b.CoveredToMs = &value
+	return b
+}
+
+// WithCoverageSpans adds the given value to the CoverageSpans field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the CoverageSpans field.
+func (b *LabTrafficReportStatusApplyConfiguration) WithCoverageSpans(values ...*LabTrafficCoverageSpanApplyConfiguration) *LabTrafficReportStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithCoverageSpans")
+		}
+		b.CoverageSpans = append(b.CoverageSpans, *values[i])
+	}
 	return b
 }
 
@@ -91,6 +119,19 @@ func (b *LabTrafficReportStatusApplyConfiguration) WithLedger(values ...*LabTraf
 			panic("nil value passed to WithLedger")
 		}
 		b.Ledger = append(b.Ledger, *values[i])
+	}
+	return b
+}
+
+// WithKernelCheckpoints adds the given value to the KernelCheckpoints field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the KernelCheckpoints field.
+func (b *LabTrafficReportStatusApplyConfiguration) WithKernelCheckpoints(values ...*LabTrafficKernelCheckpointApplyConfiguration) *LabTrafficReportStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithKernelCheckpoints")
+		}
+		b.KernelCheckpoints = append(b.KernelCheckpoints, *values[i])
 	}
 	return b
 }

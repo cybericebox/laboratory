@@ -3,10 +3,8 @@ package proxyl7
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -18,7 +16,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -62,32 +59,12 @@ func Run() {
 			Metrics:                metricsserver.Options{BindAddress: "0"},
 			HealthProbeBindAddress: cfg.HealthAddr,
 			// Secrets are read for the tenants' access keys only: watch that namespace, nothing else.
-			Cache: cache.Options{ByObject: map[client.Object]cache.ByObject{
-				&corev1.Secret{}: {Namespaces: map[string]cache.Config{names.AccessKeysNamespace: {}}},
-			}},
+			Cache: proxyCacheOptions(),
 		},
 	)
 	if err != nil {
 		log.Error(err, "create manager")
 		os.Exit(1)
-	}
-
-	svcResolver := func(task, namespace string) (string, error) {
-		var svc corev1.Service
-		if err := mgr.GetClient().Get(
-			context.Background(),
-			types.NamespacedName{Name: task, Namespace: namespace}, &svc,
-		); err != nil {
-			return "", fmt.Errorf("service %s not found in %s: %w", task, namespace, err)
-		}
-		if len(svc.Spec.Ports) == 0 {
-			return "", fmt.Errorf("service %s has no ports", task)
-		}
-		proto := svc.Spec.Ports[0].Name
-		if proto == "" {
-			proto = "http"
-		}
-		return proto, nil
 	}
 
 	instance := cfg.Instance
@@ -97,51 +74,21 @@ func Run() {
 	started := time.Now()
 	meter := l7.NewMeter(fmt.Sprintf("%s-%d", instance, started.UnixNano()), started)
 
-	// A request is attributed to a lab through the labels the operator puts on
-	// the web Service of every exposed device: the host label is the Service
-	// name, looked up in the namespace of the token's own group.
-	attribute := l7.ServiceAttribution(mgr.GetClient())
-	// The namespace of a group is read from the group (its status), so groups created before the namespace prefix keep working.
-	l7.UseGroupReader(mgr.GetClient())
-	// The group access policy is the same one the VPN enforces, and the client
-	// is the same LabGroupClient: it must exist in the token's group and the
-	// policy must allow it the lab, so blocking a client blocks the VPN and the
-	// web together.
-	authorize := func(groupID, clientName, lab string) bool {
-		ns := l7.GroupNamespace(groupID)
-		var lgc laboratoryv1alpha1.LabGroupClient
-		if err := mgr.GetClient().Get(context.Background(), types.NamespacedName{Name: clientName, Namespace: ns}, &lgc); err != nil {
-			return false
-		}
-		var policy laboratoryv1alpha1.LabGroupAccessPolicy
-		key := types.NamespacedName{Name: names.LabGroupAccessPolicyName, Namespace: ns}
-		if err := mgr.GetClient().Get(context.Background(), key, &policy); err != nil {
-			return false
-		}
-		return l7.PolicyAllows(policy.Spec.Rules, clientName, lab)
+	access := &l7.AccessReader{Reader: mgr.GetClient()}
+	handler := l7.NewHandler(l7.SecretKeys(mgr.GetClient()), []byte(cfg.SessionSecret), cfg.BaseDomain, cfg.CookieName, nil).
+		WithLimits(cfg.AccessTokenMaxTTL, cfg.SessionIdleTTL, cfg.SessionRenewBefore, cfg.SessionMaxTTL).
+		WithAccounting(meter, nil).WithAccessReader(access).WithLiveMaxLifetime(cfg.LiveMaxLifetime).
+		WithLiveCaps(l7.LiveCaps{PerClient: cfg.LivePerClient, PerGroup: cfg.LivePerGroup, Total: cfg.LiveTotal}).WithAuthRateLimit(cfg.AuthRate, cfg.AuthBurst)
+	// Register all required informers before the manager starts: readiness must
+	// wait for each cache used by authorization, rather than an empty cache set.
+	if err := warmProxyCache(context.Background(), mgr.GetCache()); err != nil {
+		log.Error(err, "register proxy cache")
+		os.Exit(1)
 	}
-	// The handoff links are verified with the access keys of the tenant that issued them, and the
-	// group of a link must belong to that tenant.
-	handler := l7.NewHandler(
-		l7.SecretKeys(mgr.GetClient()), []byte(cfg.SessionSecret), cfg.BaseDomain, cfg.CookieName,
-		l7.ServiceResolver(svcResolver),
-	).WithLimits(cfg.AccessTokenMaxTTL, cfg.SessionIdleTTL, cfg.SessionRenewBefore, cfg.SessionMaxTTL).WithAccounting(meter, attribute).WithAuthorizer(authorize).WithGroupTenant(l7.LabGroupTenant(mgr.GetClient())).WithLiveMaxLifetime(cfg.LiveMaxLifetime).WithLiveCaps(l7.LiveCaps{PerClient: cfg.LivePerClient, PerGroup: cfg.LivePerGroup, Total: cfg.LiveTotal}).WithAuthRateLimit(cfg.AuthRate, cfg.AuthBurst)
 
 	reports := &l7.ReportWriter{
 		Reader: mgr.GetAPIReader(), Writer: mgr.GetClient(), Meter: meter, Instance: instance,
-		Namespaces: func(ctx context.Context) []string {
-			var groups laboratoryv1alpha1.LabGroupList
-			if err := mgr.GetClient().List(ctx, &groups); err != nil {
-				return nil
-			}
-			out := make([]string, 0, len(groups.Items))
-			for i := range groups.Items {
-				if ns := groups.Items[i].Status.Namespace; ns != "" {
-					out = append(out, ns)
-				}
-			}
-			return out
-		},
+		Namespaces: func(ctx context.Context) []string { return groupNamespaces(ctx, mgr.GetClient()) },
 	}
 
 	// Ready means the proxy really serves: the HTTPS listener is bound and the caches (groups, clients, policies, access keys) have synced.
@@ -174,38 +121,21 @@ func Run() {
 		runnable manager.Runnable
 		name     string
 	}{
-		{
-			manager.RunnableFunc(func(ctx context.Context) error {
-				reports.Run(ctx, cfg.ReportInterval, l7.LogReportFailure(log))
-				return nil
-			}), "traffic-reports",
-		},
-		{
-			manager.RunnableFunc(func(ctx context.Context) error {
-				handler.RunLiveCheck(ctx, cfg.LiveCheckInterval)
-				return nil
-			}), "live-check",
-		},
 		{certWatcher, "cert-watcher"},
-		{
-			manager.RunnableFunc(
-				func(ctx context.Context) error {
-					go func() {
-						<-ctx.Done()
-						_ = httpsSrv.Shutdown(context.Background())
-					}()
-					ln, err := net.Listen("tcp", httpsSrv.Addr)
-					if err != nil {
-						return err
-					}
-					listening.Set()
-					if err := httpsSrv.ServeTLS(proxy.LimitListener(ln, cfg.MaxConnections), "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
-						return err
-					}
-					return nil
-				},
-			), "https-server",
-		},
+		{manager.RunnableFunc(func(ctx context.Context) error {
+			if !mgr.GetCache().WaitForCacheSync(ctx) {
+				return nil
+			}
+			ln, err := net.Listen("tcp", httpsSrv.Addr)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = ln.Close() }()
+			return l7.RunLifecycle(ctx, httpsSrv, handler, reports, cfg.ReportInterval, cfg.LiveCheckInterval, func() error {
+				listening.Set()
+				return httpsSrv.ServeTLS(proxy.LimitListener(ln, cfg.MaxConnections), "", "")
+			}, l7.LogReportFailure(log))
+		}), "proxy-lifecycle"},
 	} {
 		if err := mgr.Add(r.runnable); err != nil {
 			log.Error(err, "add runnable", "name", r.name)
@@ -222,4 +152,35 @@ func Run() {
 		log.Error(err, "manager error")
 		os.Exit(1)
 	}
+}
+
+func proxyCacheOptions() cache.Options {
+	return cache.Options{ReaderFailOnMissingInformer: true, ByObject: map[client.Object]cache.ByObject{
+		&corev1.Secret{}:                           {Namespaces: map[string]cache.Config{names.AccessKeysNamespace: {}}, Transform: l7.CompactCacheObject},
+		&corev1.Service{}:                          {Transform: l7.CompactCacheObject},
+		&laboratoryv1alpha1.Lab{}:                  {Transform: l7.CompactCacheObject},
+		&laboratoryv1alpha1.LabGroup{}:             {Transform: l7.CompactCacheObject},
+		&laboratoryv1alpha1.LabGroupClient{}:       {Transform: l7.CompactCacheObject},
+		&laboratoryv1alpha1.LabGroupAccessPolicy{}: {Transform: l7.CompactCacheObject},
+	}}
+}
+func warmProxyCache(ctx context.Context, c cache.Cache) error {
+	for _, object := range []client.Object{&corev1.Secret{}, &corev1.Service{}, &laboratoryv1alpha1.Lab{}, &laboratoryv1alpha1.LabGroup{}, &laboratoryv1alpha1.LabGroupClient{}, &laboratoryv1alpha1.LabGroupAccessPolicy{}} {
+		if _, err := c.GetInformer(ctx, object, cache.BlockUntilSynced(false)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func groupNamespaces(ctx context.Context, reader client.Reader) []string {
+	var groups laboratoryv1alpha1.LabGroupList
+	if err := reader.List(ctx, &groups); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(groups.Items))
+	for i := range groups.Items {
+		out = append(out, laboratoryv1alpha1.LabGroupNamespaceOf(&groups.Items[i]))
+	}
+	return out
 }

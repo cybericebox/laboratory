@@ -61,6 +61,7 @@ func (c *Conntrack) Dump() ([]Flow, error) {
 		}
 		flows = append(flows, Flow{
 			ID:         f.ID,
+			Mark:       f.Mark,
 			Proto:      protoName(orig.Proto.Protocol),
 			Src:        orig.IP.SourceAddress,
 			Dst:        orig.IP.DestinationAddress,

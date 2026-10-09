@@ -71,6 +71,7 @@ const (
 // of queued pods and runs on the leader.
 type Scheduler struct {
 	client.Client
+	Reader   client.Reader
 	Recorder record.EventRecorder
 	Config   SchedulerConfig
 	// Defaults are the device resources a device without any gets; the same the
@@ -240,7 +241,7 @@ type clusterView struct {
 func (s *Scheduler) load(ctx context.Context) (*clusterView, error) {
 	snap := &clusterView{devices: map[string]*laboratoryv1alpha1.Device{}, podsOf: map[string][]*corev1.Pod{}, suspended: map[string]bool{}, tenants: map[string]*laboratoryv1alpha1.Tenant{}}
 	var labs laboratoryv1alpha1.LabList
-	if err := s.List(ctx, &labs); err != nil {
+	if err := s.directReader().List(ctx, &labs); err != nil {
 		return nil, fmt.Errorf("list labs: %w", err)
 	}
 	for i := range labs.Items {
@@ -253,7 +254,7 @@ func (s *Scheduler) load(ctx context.Context) (*clusterView, error) {
 	for i := range groups.Items {
 		g := &groups.Items[i]
 		snap.groups = append(snap.groups, g)
-		if g.Spec.Suspended {
+		if g.Spec.Suspended || g.Spec.Lifecycle.IsStopped() {
 			snap.suspended[laboratoryv1alpha1.LabGroupNamespaceOf(g)] = true
 		}
 	}
@@ -340,6 +341,9 @@ func (s *Scheduler) observe(ctx context.Context, snap *clusterView, now time.Tim
 		cur := d.Status.Scheduling
 		if cur == nil {
 			continue // not initialised by the device reconciler yet
+		}
+		if cur.State != laboratoryv1alpha1.PodStarting && (cur.State != laboratoryv1alpha1.PodFailed || !d.Status.Ready) {
+			continue
 		}
 		ps := cur.DeepCopy()
 		changed := false
@@ -503,14 +507,23 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 	var out []*schedObject
 	labsOfGroup := map[string][]*laboratoryv1alpha1.Lab{}
 	for _, lab := range snap.labs {
-		if lab.DeletionTimestamp == nil && !snap.suspended[lab.Namespace] {
+		if lab.DeletionTimestamp == nil && !lab.Spec.Lifecycle.IsStopped() && !snap.suspended[lab.Namespace] {
 			if g := lab.Labels[names.LabelDeployGroup]; g != "" {
 				labsOfGroup[g] = append(labsOfGroup[g], lab)
 			}
 		}
 	}
+	imagesOfGroup := map[string][]string{}
+	groupImages := func(group string) []string {
+		if images, ok := imagesOfGroup[group]; ok {
+			return images
+		}
+		images := classImages(labsOfGroup[group], s.Mirror)
+		imagesOfGroup[group] = images
+		return images
+	}
 	for _, lab := range snap.labs {
-		if lab.DeletionTimestamp != nil || snap.suspended[lab.Namespace] {
+		if lab.DeletionTimestamp != nil || lab.Spec.Lifecycle.IsStopped() || snap.suspended[lab.Namespace] {
 			continue
 		}
 		o := &schedObject{
@@ -519,7 +532,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 		}
 		o.prepTenant = names.TenantOf(lab.Labels)
 		if o.group != "" {
-			o.prepKey, o.images = prepClass(o.prepTenant, "g/"+o.group), classImages(labsOfGroup[o.group], s.Mirror)
+			o.prepKey, o.images = prepClass(o.prepTenant, "g/"+o.group), groupImages(o.group)
 		} else {
 			o.prepKey, o.images = prepClass(o.prepTenant, "l/"+topologyClass(lab)), classImages([]*laboratoryv1alpha1.Lab{lab}, s.Mirror)
 		}
@@ -536,7 +549,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 				p.ref = d
 				if sc := d.Status.Scheduling; sc != nil {
 					p.state = sc.State
-					if at, ok := s.recent[key]; ok && p.state == laboratoryv1alpha1.PodQueued && now.Sub(at) < recentDispatchTTL {
+					if s.recentDispatchPending(key, p.state, now) {
 						p.state = laboratoryv1alpha1.PodStarting
 					}
 				}
@@ -546,7 +559,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 		out = append(out, o)
 	}
 	for _, g := range snap.groups {
-		if g.DeletionTimestamp != nil {
+		if g.DeletionTimestamp != nil || g.Spec.Lifecycle.IsStopped() {
 			continue
 		}
 		o := &schedObject{
@@ -555,7 +568,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 		}
 		if o.group != "" {
 			o.prepTenant = names.TenantOf(g.Labels)
-			o.prepKey, o.images = prepClass(o.prepTenant, "g/"+o.group), classImages(labsOfGroup[o.group], s.Mirror)
+			o.prepKey, o.images = prepClass(o.prepTenant, "g/"+o.group), groupImages(o.group)
 		}
 		for _, name := range groupPodNames(g) {
 			key := "group/" + g.Name + "/" + name
@@ -569,7 +582,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 					continue
 				}
 				p.state = e.State
-				if at, ok := s.recent[key]; ok && p.state == laboratoryv1alpha1.PodQueued && now.Sub(at) < recentDispatchTTL {
+				if s.recentDispatchPending(key, p.state, now) {
 					p.state = laboratoryv1alpha1.PodStarting
 				}
 			}
@@ -589,6 +602,13 @@ func (s *Scheduler) tick(ctx context.Context) error {
 		s.lastWrite = map[types.UID]time.Time{}
 	}
 	now := s.now()
+	// An expired dispatch no longer affects scheduling, even if its object was
+	// deleted and never appears in the cache again. Prepared history is separate.
+	for key, at := range s.recent {
+		if now.Sub(at) >= recentDispatchTTL {
+			delete(s.recent, key)
+		}
+	}
 	snap, err := s.load(ctx)
 	if err != nil {
 		return err
@@ -627,6 +647,10 @@ func (s *Scheduler) tick(ctx context.Context) error {
 		switch p.kind {
 		case kindDevicePod:
 			d := p.ref.(*laboratoryv1alpha1.Device)
+			var currentLab laboratoryv1alpha1.Lab
+			if getErr := s.directReader().Get(ctx, client.ObjectKey{Namespace: d.Namespace, Name: d.Spec.LabRef}, &currentLab); getErr != nil || currentLab.Spec.Lifecycle.IsStopped() || !labStartPrepared(&currentLab) {
+				continue
+			}
 			q := d.Status.Scheduling.DeepCopy()
 			q.State, q.DispatchedAt, q.Failure = laboratoryv1alpha1.PodStarting, &stamp, nil
 			err = s.setDevice(ctx, d, q)
@@ -706,10 +730,15 @@ func (e *clusterEnv) capacity() *capacity {
 		e.err = fmt.Errorf("list nodes: %w", err)
 		return nil
 	}
-	pods := make([]corev1.Pod, 0, len(e.snap.pods))
+	heldPods, _, unknown := e.s.stoppedReservations(e.snap)
+	if unknown {
+		return nil
+	}
+	pods := make([]corev1.Pod, 0, len(e.snap.pods)+len(heldPods))
 	for _, p := range e.snap.pods {
 		pods = append(pods, *p)
 	}
+	pods = append(pods, heldPods...)
 	c := snapshotCapacity(nodes.Items, pods, e.s.LabNodeSelector, e.s.LabTolerations, e.s.nodeReserve())
 	// A dispatched pod that is not on a node yet will still request its resources.
 	var reserved amount
@@ -761,7 +790,11 @@ func (e *clusterEnv) tenantFits(p *schedPod) bool {
 		return true
 	}
 	if e.tenantUsed == nil {
-		e.tenantUsed = map[string]tenant.Totals{}
+		_, held, unknown := e.s.stoppedReservations(e.snap)
+		if unknown {
+			return false
+		}
+		e.tenantUsed = held
 		for _, o := range e.objs {
 			for _, q := range o.pods {
 				if q.dispatched() {
@@ -878,6 +911,9 @@ func (s *Scheduler) ensurePrepared(ctx context.Context, key, tenantName string, 
 	}
 	if _, ok := s.prepared[key]; ok {
 		return true, nil
+	}
+	if s.preparing[prepullKey(key)] {
+		return false, nil
 	}
 	if !s.Config.Prepull || len(images) == 0 {
 		s.prepared[key] = struct{}{}
@@ -1042,4 +1078,16 @@ func systemComponentOf(p *corev1.Pod) string {
 		return app
 	}
 	return ""
+}
+
+func (s *Scheduler) directReader() client.Reader {
+	if s.Reader != nil {
+		return s.Reader
+	}
+	return s.Client
+}
+
+func (s *Scheduler) recentDispatchPending(key string, state laboratoryv1alpha1.PodScheduleState, now time.Time) bool {
+	at, ok := s.recent[key]
+	return ok && state == laboratoryv1alpha1.PodQueued && now.Sub(at) < recentDispatchTTL
 }

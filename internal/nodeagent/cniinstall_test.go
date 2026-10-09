@@ -1,8 +1,10 @@
 package nodeagent
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -67,3 +69,75 @@ func TestInstallCNIConfFallbackOnlyOnOptIn(t *testing.T) {
 }
 
 func contains(s, sub string) bool { return strings.Contains(s, sub) }
+
+func TestWriteCNIConfPreservesBaseNetworkIdentityWithoutMutatingBase(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		base string
+	}{
+		{
+			name: "conflist",
+			base: `{"cniVersion":"0.3.1","name":"kindnet","plugins":[{"type":"ptp","name":"plugin-name-is-not-the-network","mtu":1500,"ipMasq":false,"ipam":{"type":"host-local","dataDir":"/run/cni-ipam-state","ranges":[[{"subnet":"10.244.1.0/24"}]],"routes":[{"dst":"0.0.0.0/0"}]}},{"type":"portmap","capabilities":{"portMappings":true}}]}`,
+		},
+		{
+			name: "plain-conf",
+			base: `{"cniVersion":"0.3.1","name":"kindnet","type":"ptp","mtu":1500,"ipMasq":false,"ipam":{"type":"host-local","dataDir":"/run/cni-ipam-state","ranges":[[{"subnet":"10.244.1.0/24"}]],"routes":[{"dst":"0.0.0.0/0"}]}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var base map[string]interface{}
+			if err := json.Unmarshal([]byte(tc.base), &base); err != nil {
+				t.Fatal(err)
+			}
+			before, err := json.Marshal(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			if err := writeCNIConf(dir, "/run/sock", base); err != nil {
+				t.Fatal(err)
+			}
+			after, err := json.Marshal(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(before) {
+				t.Fatalf("base config mutated: before=%s after=%s", before, after)
+			}
+			data, err := os.ReadFile(filepath.Join(dir, CNIConfFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got struct {
+				Name       string `json:"name"`
+				CNIVersion string `json:"cniVersion"`
+				Plugins    []struct {
+					Type        string                 `json:"type"`
+					AgentSocket string                 `json:"agentSocket"`
+					Delegate    map[string]interface{} `json:"delegate"`
+				} `json:"plugins"`
+			}
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Name != "cybericebox" || got.CNIVersion != "0.3.1" || len(got.Plugins) != 1 {
+				t.Fatalf("wrapper identity/first-plugin behavior changed: %s", data)
+			}
+			plugin := got.Plugins[0]
+			if plugin.Type != "cni-gate" || plugin.AgentSocket != "/run/sock" {
+				t.Fatalf("wrapper settings changed: %+v", plugin)
+			}
+			var want map[string]interface{}
+			wantJSON := `{"name":"kindnet","type":"ptp","mtu":1500,"ipMasq":false,"ipam":{"type":"host-local","dataDir":"/run/cni-ipam-state","ranges":[[{"subnet":"10.244.1.0/24"}]],"routes":[{"dst":"0.0.0.0/0"}]}}`
+			if tc.name == "plain-conf" {
+				wantJSON = tc.base
+			}
+			if err := json.Unmarshal([]byte(wantJSON), &want); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(plugin.Delegate, want) {
+				t.Errorf("delegate must retain base network identity and fields: got=%v want=%v", plugin.Delegate, want)
+			}
+		})
+	}
+}

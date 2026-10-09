@@ -3,6 +3,9 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
+	"unicode/utf8"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -36,6 +39,9 @@ func (h *Handler) SetLabGroupAccess(ctx context.Context, in *protobuf.SetLabGrou
 		if err := validateLabels(p.GetLabels()); err != nil {
 			return nil, invalid("policy %d (%s): %v", i, p.GetLabGroupName(), err)
 		}
+		if err := validateAccessFence(p); err != nil {
+			return nil, invalid("policy %d (%s): %v", i, p.GetLabGroupName(), err)
+		}
 	}
 	if err := dupRefs(refs); err != nil {
 		return nil, err
@@ -55,7 +61,13 @@ func (h *Handler) setLabGroupAccess(ctx context.Context, resolver *groupResolver
 	if err != nil {
 		return 0, err
 	}
-	group, _ := resolver.get(ctx, in.LabGroupName)
+	group, err := resolver.get(ctx, in.LabGroupName)
+	if err != nil {
+		return protobuf.ItemState_ITEM_STATE_FAILED, err
+	}
+	if group.Annotations[names.AnnotationLifecycleRetirement] != "" {
+		return protobuf.ItemState_ITEM_STATE_FAILED, fmt.Errorf("retired group cannot mutate access")
+	}
 
 	labs, err := h.cs.LaboratoryV1alpha1().Labs(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -107,43 +119,43 @@ func (h *Handler) setLabGroupAccess(ctx context.Context, resolver *groupResolver
 		annotations = map[string]string{names.AnnotationIDMap: string(rawMap)}
 	}
 	state := protobuf.ItemState_ITEM_STATE_EXISTS
-	policiesAPI := h.cs.LaboratoryV1alpha1().LabGroupAccessPolicies(namespace)
-	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		state = protobuf.ItemState_ITEM_STATE_EXISTS
-		stored, err := policiesAPI.Get(ctx, names.LabGroupAccessPolicyName, metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			state = protobuf.ItemState_ITEM_STATE_CREATED
-			_, err = policiesAPI.Create(ctx, &laboratoryv1alpha1.LabGroupAccessPolicy{
-				ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: namespace, Labels: policyLabels, Annotations: copyLabels(annotations)},
-				Spec:       laboratoryv1alpha1.LabGroupAccessPolicySpec{Rules: rules},
-			}, metav1.CreateOptions{})
-			return createErr(err, kindLabGroupAccessPolicy, names.LabGroupAccessPolicyName, func() (metav1.Object, error) {
-				return policiesAPI.Get(ctx, names.LabGroupAccessPolicyName, metav1.GetOptions{})
-			})
-		}
+	want := laboratoryv1alpha1.LabGroupAccessPolicySpec{Rules: rules, OperationID: in.OperationId, Revision: in.DesiredRevision, ExpectedGroupUID: in.ExpectedGroupUid}
+	currentGroup := func() error {
+		live, err := h.getGroup(ctx, in.LabGroupName)
 		if err != nil {
 			return err
 		}
-		if err := rejectTerminating(kindLabGroupAccessPolicy, stored); err != nil {
+		if err := rejectTerminating(kindLabGroup, live); err != nil {
 			return err
 		}
-		labels, labelsChanged := mergeLabels(stored.Labels, policyLabels)
-		if !labelsChanged && rulesEqual(stored.Spec.Rules, rules) && stored.Annotations[names.AnnotationIDMap] == annotations[names.AnnotationIDMap] {
-			return nil
+		if live.UID != group.UID || live.Status.Namespace != namespace || in.ExpectedGroupUid != "" && in.ExpectedGroupUid != string(live.UID) {
+			return fmt.Errorf("access policy group identity changed")
 		}
-		state = protobuf.ItemState_ITEM_STATE_UPDATED
-		stored.Spec.Rules = rules
-		stored.Labels = labels
-		stored.Annotations = copyLabels(stored.Annotations)
-		if len(idMap) > 0 {
-			stored.Annotations = stampAnn(stored.Annotations, names.AnnotationIDMap, string(rawMap))
-		} else {
-			delete(stored.Annotations, names.AnnotationIDMap)
+		if live.Annotations[names.AnnotationLifecycleRetirement] != "" {
+			return fmt.Errorf("retired group cannot mutate access")
 		}
-		_, err = policiesAPI.Update(ctx, stored, metav1.UpdateOptions{})
-		return err
+		return nil
+	}
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		return h.updateGroupAccessPolicy(ctx, in, group, namespace, want, policyLabels, annotations, idMap, rawMap, currentGroup, &state)
 	})
 	return state, err
+}
+
+func accessSpecFenced(spec laboratoryv1alpha1.LabGroupAccessPolicySpec) bool {
+	return spec.OperationID != "" || spec.Revision != 0 || spec.ExpectedGroupUID != ""
+}
+func validateAccessFence(in *protobuf.LabGroupAccessPolicy) error {
+	if in.GetGeneration() < 0 {
+		return fmt.Errorf("policy generation cannot be negative")
+	}
+	if in.GetOperationId() == "" && in.GetDesiredRevision() == 0 && in.GetExpectedGroupUid() == "" {
+		return nil
+	}
+	if strings.TrimSpace(in.GetOperationId()) == "" || utf8.RuneCountInString(in.GetOperationId()) > 128 || in.GetDesiredRevision() < 1 || strings.TrimSpace(in.GetExpectedGroupUid()) == "" {
+		return fmt.Errorf("operation_id, positive desired_revision and expected_group_uid are required together")
+	}
+	return nil
 }
 
 func rulesEqual(a, b []laboratoryv1alpha1.LabGroupAccessRule) bool {
@@ -171,4 +183,74 @@ func encodeNames(ids []string, idMap map[string]string) []string {
 		}
 	}
 	return out
+}
+
+func (h *Handler) updateGroupAccessPolicy(ctx context.Context, in *protobuf.LabGroupAccessPolicy, group *laboratoryv1alpha1.LabGroup, namespace string, want laboratoryv1alpha1.LabGroupAccessPolicySpec, policyLabels, annotations, idMap map[string]string, rawMap []byte, currentGroup func() error, state *protobuf.ItemState) error {
+	policiesAPI := h.cs.LaboratoryV1alpha1().LabGroupAccessPolicies(namespace)
+	*state = protobuf.ItemState_ITEM_STATE_EXISTS
+	if err := currentGroup(); err != nil {
+		return err
+	}
+	stored, err := policiesAPI.Get(ctx, names.LabGroupAccessPolicyName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		if in.PolicyUid != "" || in.Generation != 0 {
+			return fmt.Errorf("expected access policy does not exist")
+		}
+		if err := currentGroup(); err != nil {
+			return err
+		}
+		*state = protobuf.ItemState_ITEM_STATE_CREATED
+		_, err = policiesAPI.Create(ctx, &laboratoryv1alpha1.LabGroupAccessPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: names.LabGroupAccessPolicyName, Namespace: namespace, Labels: policyLabels, Annotations: copyLabels(annotations)},
+			Spec:       want,
+		}, metav1.CreateOptions{})
+		if apierrors.IsAlreadyExists(err) {
+			return apierrors.NewConflict(laboratoryv1alpha1.Resource("labgroupaccesspolicies"), names.LabGroupAccessPolicyName, err)
+		}
+		return createErr(err, kindLabGroupAccessPolicy, names.LabGroupAccessPolicyName, func() (metav1.Object, error) {
+			return policiesAPI.Get(ctx, names.LabGroupAccessPolicyName, metav1.GetOptions{})
+		})
+	}
+	if err != nil {
+		return err
+	}
+	if err := rejectTerminating(kindLabGroupAccessPolicy, stored); err != nil {
+		return err
+	}
+	if !ownedBy(tenantOf(ctx), stored) {
+		return notFoundForeign(kindLabGroupAccessPolicy, stored.Name)
+	}
+	if in.PolicyUid != "" && in.PolicyUid != string(stored.UID) {
+		return fmt.Errorf("access policy UID or generation changed")
+	}
+	if accessSpecFenced(stored.Spec) {
+		if !accessSpecFenced(want) || stored.Spec.ExpectedGroupUID != string(group.UID) {
+			return fmt.Errorf("fenced access policy requires its current group identity")
+		}
+		if want.Revision < stored.Spec.Revision || want.Revision == stored.Spec.Revision && (want.OperationID != stored.Spec.OperationID || !rulesEqual(want.Rules, stored.Spec.Rules)) {
+			return fmt.Errorf("access policy revision is stale or conflicts with the stored operation")
+		}
+	}
+	labels, labelsChanged := mergeLabels(stored.Labels, policyLabels)
+	if err := currentGroup(); err != nil {
+		return err
+	}
+	specEqual := stored.Spec.OperationID == want.OperationID && stored.Spec.Revision == want.Revision && stored.Spec.ExpectedGroupUID == want.ExpectedGroupUID && rulesEqual(stored.Spec.Rules, want.Rules)
+	if !labelsChanged && specEqual && stored.Annotations[names.AnnotationIDMap] == annotations[names.AnnotationIDMap] {
+		return nil
+	}
+	if in.Generation != 0 && in.Generation != stored.Generation {
+		return fmt.Errorf("access policy generation changed")
+	}
+	*state = protobuf.ItemState_ITEM_STATE_UPDATED
+	stored.Spec = want
+	stored.Labels = labels
+	stored.Annotations = copyLabels(stored.Annotations)
+	if len(idMap) > 0 {
+		stored.Annotations = stampAnn(stored.Annotations, names.AnnotationIDMap, string(rawMap))
+	} else {
+		delete(stored.Annotations, names.AnnotationIDMap)
+	}
+	_, err = policiesAPI.Update(ctx, stored, metav1.UpdateOptions{})
+	return err
 }

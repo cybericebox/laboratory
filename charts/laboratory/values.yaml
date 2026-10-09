@@ -229,7 +229,7 @@ proxy:
   replicas: 2
   # Rollout: a new pod must be Ready for minReadySeconds before the next one is replaced (both modes). surge: true lets the Deployment start
   # a new pod before it stops an old one (maxSurge 1, maxUnavailable 0), which needs a node without a replica; empty = yes when a live install
-  # sees more nodes than replicas. A pod gets terminationGracePeriodSeconds to finish requests in flight after SIGTERM, after a preStop sleep of
+  # sees more nodes than replicas. A pod gets terminationGracePeriodSeconds to stop requests and publish settled counters after SIGTERM, after a preStop sleep of
   # preStopSleepSeconds (so the Gateway and the Service stop sending it connections first).
   minReadySeconds: 20
   surge: null
@@ -736,8 +736,9 @@ devices:
 # ============================================================
 labWorkloads:
   # nodeSelector applied to all runtime lab pods, in addition to laboratory.cybericebox.com/node-agent-ready=true, which the
-  # node-agent sets on its node: a lab pod is only placed where a ready node-agent runs. The node-agent runs on EVERY node
-  # (it tolerates all taints), so which nodes take labs is decided here and by the tolerations.
+  # node-agent sets on its node: a lab pod is only placed where a ready node-agent runs. The node-agent uses this same selector
+  # and these tolerations, plus startup/DaemonSet availability tolerations. An untolerated control-plane node gets neither labs
+  # nor a node-agent. Lifecycle scope declarations follow this placement pool while retaining all prior native obligations.
   # Example: {"lab-node": "true"} — only schedule on nodes labelled lab-node=true.
   nodeSelector: {}
   # tolerations applied to all runtime lab pods. A schedulable control-plane node (controller+worker) takes labs only when
@@ -999,3 +1000,18 @@ cert-manager:
 #
 # "default" may be listed to change its policy; unless it is, it may use persistence and has no quota.
 tenants: {}
+
+# Lifecycle acceptance stays gated until the final integrated native proof.
+# Advertised capabilities require owner-qualified native evidence and all
+# dependencies below. Source/SDK integration alone does not authorize enable.
+lifecycle:
+  capabilities:
+    requiredSnapshot: false
+    perLabStop: false
+    confirmedRuntime: false
+    retainedRestart: false
+    fullGroupStop: false
+  requiredSnapshotAvailable: false
+  runtimeObservation:
+    enabled: false
+    interval: 5s

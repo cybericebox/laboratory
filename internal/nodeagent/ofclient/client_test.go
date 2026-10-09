@@ -2,9 +2,11 @@ package ofclient
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
 	"testing"
+	"time"
 )
 
 func TestOxmInPort_Encoding(t *testing.T) {
@@ -236,5 +238,129 @@ func TestBuildMatchTunSrc_Encoding(t *testing.T) {
 	}
 	if string(BuildMatchTunSrc(5, ip)) == string(BuildMatch(5, 0, false)) {
 		t.Error("the source must make the match different from the catch-all")
+	}
+}
+
+// Cleanup must wait for switch acknowledgement, not just a successful socket write.
+func TestPortOwnerRetirementWaitsForBarrierAndRejectsFlowError(t *testing.T) {
+	for _, reject := range []bool{false, true} {
+		t.Run(fmt.Sprint(reject), func(t *testing.T) {
+			a, b := net.Pipe()
+			defer a.Close()
+			defer b.Close()
+			c := &Client{conn: a}
+			go c.readLoop()
+			done := make(chan error, 1)
+			go func() { done <- c.RetirePort(7) }()
+			read := func() []byte {
+				h := make([]byte, 8)
+				if _, err := io.ReadFull(b, h); err != nil {
+					t.Fatal(err)
+				}
+				body := make([]byte, int(binary.BigEndian.Uint16(h[2:4]))-8)
+				if _, err := io.ReadFull(b, body); err != nil {
+					t.Fatal(err)
+				}
+				return append(h, body...)
+			}
+			first, second, barrier := read(), read(), read()
+			if first[1] != 14 || first[25] != 4 || first[24] != 0 || second[1] != 14 || binary.BigEndian.Uint32(second[36:40]) != 7 || barrier[1] != 20 {
+				t.Fatalf("wrong retirement order/matches: %x %x %x", first, second, barrier)
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("cleanup acknowledged before barrier: %v", err)
+			case <-time.After(20 * time.Millisecond):
+			}
+			if reject {
+				reply := make([]byte, 12)
+				putHeader(reply, 1, 12)
+				copy(reply[4:8], first[4:8])
+				binary.BigEndian.PutUint16(reply[8:10], 3)
+				if _, err := b.Write(reply); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reply := append([]byte(nil), barrier...)
+			reply[1] = 21
+			if _, err := b.Write(reply); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-done:
+				if (err != nil) != reject {
+					t.Fatalf("reject=%t error=%v", reject, err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("barrier reply did not finish retirement")
+			}
+		})
+	}
+}
+
+func TestVNILeaseRetirementRequiresExactBarrierAndRejectsFlowError(t *testing.T) {
+	for _, reject := range []bool{false, true} {
+		t.Run(fmt.Sprint(reject), func(t *testing.T) {
+			a, b := net.Pipe()
+			defer a.Close()
+			defer b.Close()
+			c := &Client{conn: a}
+			go c.readLoop()
+			done := make(chan error, 1)
+			go func() { done <- c.RetireVNI(123) }()
+			read := func() []byte {
+				h := make([]byte, 8)
+				if _, err := io.ReadFull(b, h); err != nil {
+					t.Fatal(err)
+				}
+				body := make([]byte, int(binary.BigEndian.Uint16(h[2:4]))-8)
+				if _, err := io.ReadFull(b, body); err != nil {
+					t.Fatal(err)
+				}
+				return append(h, body...)
+			}
+			flow, barrier := read(), read()
+			if flow[1] != 14 || flow[24] != ofpttAll || flow[25] != ofpfcDelete || barrier[1] != 20 {
+				t.Fatalf("unbounded/incorrect VNI retirement: %x %x", flow, barrier)
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("ACK before correlated switch barrier: %v", err)
+			case <-time.After(20 * time.Millisecond):
+			}
+			wrong := append([]byte(nil), barrier...)
+			wrong[1] = 21
+			binary.BigEndian.PutUint32(wrong[4:8], binary.BigEndian.Uint32(barrier[4:8])+1)
+			if _, err := b.Write(wrong); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("unrelated barrier credited physical lease: %v", err)
+			case <-time.After(20 * time.Millisecond):
+			}
+			if reject {
+				reply := make([]byte, 12)
+				putHeader(reply, 1, 12)
+				copy(reply[4:8], flow[4:8])
+				binary.BigEndian.PutUint16(reply[8:10], 3)
+				if _, err := b.Write(reply); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reply := append([]byte(nil), barrier...)
+			reply[1] = 21
+			if _, err := b.Write(reply); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-done:
+				if (err != nil) != reject {
+					t.Fatalf("reject%v err%v", reject, err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("exact barrier did not resolve lease")
+			}
+		})
 	}
 }

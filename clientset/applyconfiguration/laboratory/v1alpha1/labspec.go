@@ -22,8 +22,10 @@ package v1alpha1
 //
 // LabSpec defines the desired state of Lab.
 type LabSpecApplyConfiguration struct {
-	VPN      *LabNetworkSpecApplyConfiguration `json:"vpn,omitempty"`
-	Internet *LabNetworkSpecApplyConfiguration `json:"internet,omitempty"`
+	// Lifecycle is absent for legacy running laboratories.
+	Lifecycle *LabLifecycleSpecApplyConfiguration `json:"lifecycle,omitempty"`
+	VPN       *LabNetworkSpecApplyConfiguration   `json:"vpn,omitempty"`
+	Internet  *LabNetworkSpecApplyConfiguration   `json:"internet,omitempty"`
 	// Devices of the lab, switches and hubs included. The ceiling is fixed in code (names.MaxLabDevices).
 	Devices     []DeviceTemplateApplyConfiguration     `json:"devices,omitempty"`
 	Connections []ConnectionTemplateApplyConfiguration `json:"connections,omitempty"`
@@ -33,6 +35,14 @@ type LabSpecApplyConfiguration struct {
 // apply.
 func LabSpec() *LabSpecApplyConfiguration {
 	return &LabSpecApplyConfiguration{}
+}
+
+// WithLifecycle sets the Lifecycle field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Lifecycle field is set to the value of the last call.
+func (b *LabSpecApplyConfiguration) WithLifecycle(value *LabLifecycleSpecApplyConfiguration) *LabSpecApplyConfiguration {
+	b.Lifecycle = value
+	return b
 }
 
 // WithVPN sets the VPN field in the declarative configuration to the given value

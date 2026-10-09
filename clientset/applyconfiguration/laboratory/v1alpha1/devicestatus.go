@@ -22,8 +22,12 @@ package v1alpha1
 //
 // DeviceStatus defines the observed state of Device.
 type DeviceStatusApplyConfiguration struct {
-	Ready    *bool   `json:"ready,omitempty"`
-	NodeName *string `json:"nodeName,omitempty"`
+	// RuntimeInventory is controller-owned and retained through API Pod deletion.
+	RuntimeInventory []OwnedRuntimeIdentityApplyConfiguration `json:"runtimeInventory,omitempty"`
+	// RuntimeReports are patched only by the bound node-agent.
+	RuntimeReports []OwnedRuntimeReportApplyConfiguration `json:"runtimeReports,omitempty"`
+	Ready          *bool                                  `json:"ready,omitempty"`
+	NodeName       *string                                `json:"nodeName,omitempty"`
 	// NodeAddress is the node IP used as Geneve VTEP address.
 	NodeAddress *string `json:"nodeAddress,omitempty"`
 	PodIP       *string `json:"podIP,omitempty"`
@@ -33,8 +37,9 @@ type DeviceStatusApplyConfiguration struct {
 	// node-agent keys the device's per-pod OVS port on this stable pointer.
 	PodName *string `json:"podName,omitempty"`
 	// VNI is set only for unmanaged-switch and hub device types.
-	VNI    *uint   `json:"vni,omitempty"`
-	Reason *string `json:"reason,omitempty"`
+	VNILease *VNILeaseApplyConfiguration `json:"vniLease,omitempty"`
+	VNI      *uint                       `json:"vni,omitempty"`
+	Reason   *string                     `json:"reason,omitempty"`
 	// State is the snapshot state of a device with spec.state.enabled.
 	State *DeviceStateStatusApplyConfiguration `json:"state,omitempty"`
 	// Scheduling is the pod's place on its way from the scheduler queue to Ready.
@@ -45,6 +50,32 @@ type DeviceStatusApplyConfiguration struct {
 // apply.
 func DeviceStatus() *DeviceStatusApplyConfiguration {
 	return &DeviceStatusApplyConfiguration{}
+}
+
+// WithRuntimeInventory adds the given value to the RuntimeInventory field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the RuntimeInventory field.
+func (b *DeviceStatusApplyConfiguration) WithRuntimeInventory(values ...*OwnedRuntimeIdentityApplyConfiguration) *DeviceStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithRuntimeInventory")
+		}
+		b.RuntimeInventory = append(b.RuntimeInventory, *values[i])
+	}
+	return b
+}
+
+// WithRuntimeReports adds the given value to the RuntimeReports field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the RuntimeReports field.
+func (b *DeviceStatusApplyConfiguration) WithRuntimeReports(values ...*OwnedRuntimeReportApplyConfiguration) *DeviceStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithRuntimeReports")
+		}
+		b.RuntimeReports = append(b.RuntimeReports, *values[i])
+	}
+	return b
 }
 
 // WithReady sets the Ready field in the declarative configuration to the given value
@@ -84,6 +115,14 @@ func (b *DeviceStatusApplyConfiguration) WithPodIP(value string) *DeviceStatusAp
 // If called multiple times, the PodName field is set to the value of the last call.
 func (b *DeviceStatusApplyConfiguration) WithPodName(value string) *DeviceStatusApplyConfiguration {
 	b.PodName = &value
+	return b
+}
+
+// WithVNILease sets the VNILease field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the VNILease field is set to the value of the last call.
+func (b *DeviceStatusApplyConfiguration) WithVNILease(value *VNILeaseApplyConfiguration) *DeviceStatusApplyConfiguration {
+	b.VNILease = value
 	return b
 }
 

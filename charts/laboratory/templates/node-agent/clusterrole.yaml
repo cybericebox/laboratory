@@ -6,6 +6,20 @@ metadata:
   labels:
     {{- include "laboratory.labels" . | nindent 4 }}
 rules:
+  - apiGroups: [ allocation.cybericebox.com ]
+    resources: [ pools ]
+    verbs: [ get ]
+  - apiGroups: [ apps ]
+    resources: [ replicasets, deployments ]
+    verbs: [ get ]
+  - apiGroups: [ laboratory.cybericebox.com ]
+    resources: [ labgroups ]
+    verbs: [ get, list, watch ]
+  {{- if .Values.operator.admissionPolicy.enabled }}
+  - apiGroups: [ laboratory.cybericebox.com ]
+    resources: [ labgroups/status, labs/status ]
+    verbs: [ patch ]
+  {{- end }}
   - apiGroups: [ laboratory.cybericebox.com ]
     resources: [ labs, devices, connections ]
     verbs: [ get, list, watch, update, patch ]
@@ -37,6 +51,20 @@ rules:
   - apiGroups: [ "" ]
     resources: [ pods ]
     verbs: [ get, list, watch ]
+  {{- if .Values.devices.statePersistence.enabled }}
+  # The source reader requests only pull Secrets referenced by a freshly
+  # UID/node/container-bound Pod. No Secret list/watch/write is granted.
+  - apiGroups: [ "" ]
+    resources: [ secrets ]
+    verbs: [ get ]
+  {{- end }}
+  {{- if .Values.operator.admissionPolicy.enabled }}
+  # The sibling capture policy confines this to the bound node's Device-owned
+  # Pod capture annotation. No patch privilege exists without that policy.
+  - apiGroups: [ "" ]
+    resources: [ pods ]
+    verbs: [ patch ]
+  {{- end }}
   - apiGroups: [ "" ]
     resources: [ events ]
     verbs: [ create, patch ]

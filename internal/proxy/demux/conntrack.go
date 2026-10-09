@@ -13,17 +13,22 @@ type Socket struct {
 	Port uint16
 }
 
+type sessionState struct {
+	seen, roam time.Time
+	packets    bucket
+	group      string
+	partial    bool
+}
+
 type ConnEntry struct {
+	state          *sessionState
+	clientIndex    bool
 	PeerIndex      uint32
 	SenderSocket   Socket
 	ReceiverSocket Socket
 	LastSeen       time.Time
 	// partial is a handshake in progress: the init was forwarded and no answer has completed it (Limits.PartialTTL).
 	partial bool
-	// lastRoam is when the session last changed address.
-	lastRoam time.Time
-	// pkts is the token bucket of the packets this session may send per second (Limits.SessionRate).
-	pkts bucket
 }
 
 type ConnTrack struct {
@@ -78,24 +83,31 @@ func (c *ConnTrack) removeLocked(idx uint32) { delete(c.entries, idx) }
 // Returns false (and changes nothing) when the index is already taken by a different live session (spec §4: the
 // handshake is dropped so upstream WireGuard retries with a new index, instead of overwriting a peer), or when the
 // table is full.
-func (c *ConnTrack) AddPartial(ci uint32, clientSocket, serverSocket Socket) bool {
+func (c *ConnTrack) AddPartial(ci uint32, clientSocket, serverSocket Socket, groups ...string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
+	group := ""
+	if len(groups) > 0 {
+		group = groups[0]
+	}
 	if existing, ok := c.entries[ci]; ok && !c.staleLocked(existing) {
-		if !sameClient(existing, clientSocket) {
+		if !existing.clientIndex || !sameClient(existing, clientSocket) || !sameSocket(existing.ReceiverSocket, serverSocket) || existing.state.group != group {
 			return false
 		}
 		// Same client retransmitting; refresh in place.
 		existing.SenderSocket = clientSocket
 		existing.ReceiverSocket = serverSocket
-		existing.LastSeen = now
+		c.touchLocked(existing, now)
 		return true
+	}
+	if _, ok := c.entries[ci]; ok {
+		c.evictLocked(ci)
 	}
 	if !c.roomLocked() {
 		return false
 	}
-	c.entries[ci] = &ConnEntry{SenderSocket: clientSocket, ReceiverSocket: serverSocket, LastSeen: now, lastRoam: now, partial: true}
+	c.entries[ci] = &ConnEntry{SenderSocket: clientSocket, ReceiverSocket: serverSocket, LastSeen: now, partial: true, clientIndex: true, state: &sessionState{seen: now, roam: now, group: group, partial: true}}
 	return true
 }
 
@@ -105,34 +117,50 @@ func (c *ConnTrack) AddPartial(ci uint32, clientSocket, serverSocket Socket) boo
 func (c *ConnTrack) Complete(si, ci uint32, clientSocket, serverSocket Socket) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	now := c.now()
-	if existing, ok := c.entries[si]; ok && !c.staleLocked(existing) {
-		// Same backend retransmitting type 2 for an already-completed session?
-		// Allow; otherwise drop to avoid clobbering an unrelated peer.
-		if existing.PeerIndex != ci {
-			return false
-		}
-	}
-	if _, replacing := c.entries[si]; !replacing && c.limits.MaxEntries > 0 && len(c.entries)+1 > c.limits.MaxEntries {
+	e, ok := c.entries[ci]
+	if !ok || si == ci || !e.clientIndex || c.staleLocked(e) || !sameSocket(e.SenderSocket, clientSocket) || !sameSocket(e.ReceiverSocket, serverSocket) {
 		return false
 	}
-	c.entries[si] = &ConnEntry{PeerIndex: ci, SenderSocket: serverSocket, ReceiverSocket: clientSocket, LastSeen: now, lastRoam: now}
-	if e, ok := c.entries[ci]; ok {
-		e.PeerIndex = si
-		e.partial = false
-		e.LastSeen = now
+	if existing, ok := c.entries[si]; ok {
+		if !c.staleLocked(existing) {
+			if existing.state != e.state || existing.PeerIndex != ci {
+				return false
+			}
+		} else {
+			c.evictLocked(si)
+		}
 	}
+	if _, ok := c.entries[si]; !ok && c.limits.MaxEntries > 0 && len(c.entries)+1 > c.limits.MaxEntries {
+		return false
+	}
+	if !e.partial && e.PeerIndex != si {
+		return false
+	}
+	now := c.now()
+	e.PeerIndex = si
+	e.partial = false
+	e.state.partial = false
+	c.touchLocked(e, now)
+	c.entries[si] = &ConnEntry{PeerIndex: ci, SenderSocket: serverSocket, ReceiverSocket: clientSocket, LastSeen: now, state: e.state}
 	return true
+}
+
+func (c *ConnTrack) touchLocked(e *ConnEntry, now time.Time) {
+	e.LastSeen = now
+	e.state.seen = now
+	if peer, ok := c.entries[e.PeerIndex]; ok && peer.state == e.state {
+		peer.LastSeen = now
+	}
 }
 
 // staleLocked reports whether an entry is past its TTL: PartialTTL for a handshake in progress, conntrackTTL for a session.
 // Must be called with c.mu held.
 func (c *ConnTrack) staleLocked(e *ConnEntry) bool {
 	ttl := conntrackTTL
-	if e.partial {
+	if e.state.partial {
 		ttl = c.partialTTL()
 	}
-	return c.now().Sub(e.LastSeen) > ttl
+	return c.now().Sub(e.state.seen) > ttl
 }
 
 func (c *ConnTrack) partialTTL() time.Duration {
@@ -155,10 +183,10 @@ func (c *ConnTrack) Lookup(receiverIndex uint32) (dst Socket, found bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.entries[receiverIndex]
-	if !ok {
+	if !ok || c.staleLocked(e) {
 		return Socket{}, false
 	}
-	e.LastSeen = c.now()
+	c.touchLocked(e, c.now())
 	return e.ReceiverSocket, true
 }
 
@@ -168,7 +196,7 @@ func (c *ConnTrack) LookupPartial(index uint32) (client, backend Socket, found b
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	e, ok := c.entries[index]
-	if !ok {
+	if !ok || c.staleLocked(e) {
 		return Socket{}, Socket{}, false
 	}
 	return e.SenderSocket, e.ReceiverSocket, true
@@ -179,7 +207,7 @@ func (c *ConnTrack) LookupSender(index uint32) (Socket, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	e, ok := c.entries[index]
-	if !ok {
+	if !ok || c.staleLocked(e) {
 		return Socket{}, false
 	}
 	return e.SenderSocket, true
@@ -197,26 +225,26 @@ func (c *ConnTrack) LookupForward(receiverIndex uint32, src Socket) (dst Socket,
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.entries[receiverIndex]
-	if !ok {
+	if !ok || c.staleLocked(e) {
 		return Socket{}, false
 	}
 	now := c.now()
 	if !sameSocket(e.ReceiverSocket, src) {
-		if now.Sub(e.lastRoam) < c.limits.RoamInterval {
+		if e.clientIndex || now.Sub(e.state.roam) < c.limits.RoamInterval {
 			return Socket{}, false
 		}
 		// Client (or server) has roamed — update both endpoints.
 		e.ReceiverSocket = src
-		e.lastRoam = now
-		if peer, peerOk := c.entries[e.PeerIndex]; peerOk {
+		e.state.roam = now
+		if peer, peerOk := c.entries[e.PeerIndex]; peerOk && peer.state == e.state {
 			peer.SenderSocket = src
 		}
 	}
 	// The demux is shared by everyone: a session has a packet rate of its own.
-	if !e.pkts.take(now, c.limits.SessionRate, c.limits.SessionBurst) {
+	if !e.state.packets.take(now, c.limits.SessionRate, c.limits.SessionBurst) {
 		return Socket{}, false
 	}
-	e.LastSeen = now
+	c.touchLocked(e, now)
 	return e.SenderSocket, true
 }
 
@@ -225,7 +253,7 @@ func (c *ConnTrack) Expected(index uint32) (Socket, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	e, ok := c.entries[index]
-	if !ok {
+	if !ok || c.staleLocked(e) {
 		return Socket{}, false
 	}
 	return e.ReceiverSocket, true
@@ -237,10 +265,10 @@ func (c *ConnTrack) LookupStrict(receiverIndex uint32, src Socket) (dst Socket, 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.entries[receiverIndex]
-	if !ok || !sameSocket(e.ReceiverSocket, src) {
+	if !ok || c.staleLocked(e) || !sameSocket(e.ReceiverSocket, src) {
 		return Socket{}, false
 	}
-	e.LastSeen = c.now()
+	c.touchLocked(e, c.now())
 	return e.SenderSocket, true
 }
 
@@ -253,7 +281,7 @@ func (c *ConnTrack) UpdateRoaming(receiverIndex uint32, newSender Socket) {
 		return
 	}
 	e.SenderSocket = newSender
-	if peer, ok := c.entries[e.PeerIndex]; ok {
+	if peer, ok := c.entries[e.PeerIndex]; ok && peer.state == e.state {
 		peer.ReceiverSocket = newSender
 	}
 }
@@ -266,7 +294,9 @@ func (c *ConnTrack) evictLocked(idx uint32) {
 	}
 	peer := e.PeerIndex
 	c.removeLocked(idx)
-	c.removeLocked(peer)
+	if other, ok := c.entries[peer]; !e.partial && ok && other.state == e.state && other.PeerIndex == idx {
+		c.removeLocked(peer)
+	}
 }
 
 // Cleanup removes the stale entries now and says how many it removed.
@@ -297,6 +327,17 @@ func (c *ConnTrack) RunTTLCleanup(stop <-chan struct{}) {
 			return
 		case <-ticker.C:
 			c.Cleanup()
+		}
+	}
+}
+
+// RemoveGroup retires only sessions belonging to the changed/deleted group.
+func (c *ConnTrack) RemoveGroup(group string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for index, e := range c.entries {
+		if e.state.group == group {
+			c.evictLocked(index)
 		}
 	}
 }

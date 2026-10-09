@@ -33,8 +33,17 @@ type KubeCluster struct {
 
 // Pods implements Cluster.
 func (k *KubeCluster) Pods(ctx context.Context) ([]PodInfo, error) {
+	return k.pods(ctx, k.Client)
+}
+
+// CapturePods bypasses the informer cache during crash recovery.
+func (k *KubeCluster) CapturePods(ctx context.Context) ([]PodInfo, error) {
+	return k.pods(ctx, k.Reader)
+}
+
+func (k *KubeCluster) pods(ctx context.Context, reader client.Reader) ([]PodInfo, error) {
 	var pods corev1.PodList
-	if err := k.Client.List(ctx, &pods); err != nil {
+	if err := reader.List(ctx, &pods, client.MatchingFields{"spec.nodeName": k.NodeName}); err != nil {
 		return nil, err
 	}
 	var out []PodInfo
@@ -45,7 +54,7 @@ func (k *KubeCluster) Pods(ctx context.Context) ([]PodInfo, error) {
 		}
 		var dev laboratoryv1alpha1.Device
 		key := types.NamespacedName{Namespace: p.Namespace, Name: p.Annotations[names.AnnotationStateDevice]}
-		if err := k.Client.Get(ctx, key, &dev); err != nil {
+		if err := reader.Get(ctx, key, &dev); err != nil {
 			if errors.IsNotFound(err) {
 				continue
 			}
@@ -62,8 +71,9 @@ func (k *KubeCluster) Pods(ctx context.Context) ([]PodInfo, error) {
 func podInfo(p *corev1.Pod, dev *laboratoryv1alpha1.Device) PodInfo {
 	spec, st := dev.Spec.State, dev.Status.State
 	info := PodInfo{
-		Device:      types.NamespacedName{Namespace: dev.Namespace, Name: dev.Name},
-		Pod:         p.Name,
+		Device: types.NamespacedName{Namespace: dev.Namespace, Name: dev.Name},
+		Pod:    p.Name,
+		UID:    string(p.UID), ResourceVersion: p.ResourceVersion, CaptureRequest: spec.CaptureRequest, Capture: st.Capture, Guard: p.Annotations[CaptureGuardAnnotation], Deleting: p.DeletionTimestamp != nil,
 		Incarnation: annotationInt(p, names.AnnotationStateIncarnation),
 		Epoch:       annotationInt(p, names.AnnotationStateEpoch),
 		DeviceEpoch: st.Epoch,

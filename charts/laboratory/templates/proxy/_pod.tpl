@@ -6,7 +6,7 @@ metadata:
 spec:
   serviceAccountName: laboratory-proxy
   priorityClassName: {{ include "laboratory.priorityClass.platform" . }}
-  # After SIGTERM the HTTP server stops taking connections and lets requests in flight finish (up to this long); the preStop sleep lets
+  # After SIGTERM the proxy stops admission, closes tracked HTTP/WebSocket work and saves the settled counters; the preStop sleep lets
   # the Gateway and the Service stop sending connections to the pod first.
   terminationGracePeriodSeconds: {{ .Values.proxy.terminationGracePeriodSeconds }}
   securityContext:
@@ -109,7 +109,7 @@ spec:
       containerPort: {{ include "laboratory.l7Port" . }}
     - name: health
       containerPort: {{ include "laboratory.l7HealthPort" . }}
-    # Ready means it serves: the HTTPS listener is bound and the informer caches have synced (see DEPLOY.md, "Probes").
+    # Ready means the required caches have synced, prior counters are restored and the HTTPS listener is bound.
     startupProbe:
       httpGet:
         path: /readyz

@@ -29,6 +29,12 @@ jobs:
     steps:
       - name: Clone the code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Login to Docker Hub for container tests
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: VPN and gateway pod firewalls in network namespaces (privileged docker, make test-netns)
         run: make test-netns
 
@@ -65,6 +71,12 @@ jobs:
           sudo mv ./kind /usr/local/bin/kind
       - name: Verify kind installation
         run: kind version
+      - name: Login to Docker Hub for container tests
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Create kind cluster
         run: kind create cluster
       - name: Running Test e2e

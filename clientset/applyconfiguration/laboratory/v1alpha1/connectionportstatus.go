@@ -22,6 +22,8 @@ package v1alpha1
 //
 // ConnectionPortStatus is written by the node-agent for each endpoint.
 type ConnectionPortStatusApplyConfiguration struct {
+	PodUID    *string `json:"podUID,omitempty"`
+	RowUUID   *string `json:"rowUUID,omitempty"`
 	Device    *string `json:"device,omitempty"`
 	Interface *string `json:"interface,omitempty"`
 	// PortID is the OVS port name assigned by node-agent.
@@ -35,6 +37,22 @@ type ConnectionPortStatusApplyConfiguration struct {
 // apply.
 func ConnectionPortStatus() *ConnectionPortStatusApplyConfiguration {
 	return &ConnectionPortStatusApplyConfiguration{}
+}
+
+// WithPodUID sets the PodUID field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the PodUID field is set to the value of the last call.
+func (b *ConnectionPortStatusApplyConfiguration) WithPodUID(value string) *ConnectionPortStatusApplyConfiguration {
+	b.PodUID = &value
+	return b
+}
+
+// WithRowUUID sets the RowUUID field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the RowUUID field is set to the value of the last call.
+func (b *ConnectionPortStatusApplyConfiguration) WithRowUUID(value string) *ConnectionPortStatusApplyConfiguration {
+	b.RowUUID = &value
+	return b
 }
 
 // WithDevice sets the Device field in the declarative configuration to the given value

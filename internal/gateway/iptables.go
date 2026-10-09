@@ -285,3 +285,28 @@ func (m *IPTablesManager) DelMasquerade(labCIDR string) {
 		"-s", labCIDR, "-o", m.extIface, "-j", "MASQUERADE",
 	)
 }
+
+// BlockLab closes the physical leg before removing any old source guard. It
+// stays closed through configuration failures; UnblockLab follows secured NAT.
+func (m *IPTablesManager) BlockLab(iface string) error {
+	spec := []string{"-i", iface, "-j", "DROP"}
+	exists, err := m.ipt.Exists("filter", sourceChain, spec...)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	return m.ipt.Insert("filter", sourceChain, 1, spec...)
+}
+func (m *IPTablesManager) UnblockLab(iface string) error {
+	spec := []string{"-i", iface, "-j", "DROP"}
+	exists, err := m.ipt.Exists("filter", sourceChain, spec...)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	return m.ipt.Delete("filter", sourceChain, spec...)
+}

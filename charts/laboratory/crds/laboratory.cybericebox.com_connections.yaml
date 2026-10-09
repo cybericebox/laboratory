@@ -145,8 +145,12 @@ spec:
                       type: string
                     nodeName:
                       type: string
+                    podUID:
+                      type: string
                     portID:
                       description: PortID is the OVS port name assigned by node-agent.
+                      type: string
+                    rowUUID:
                       type: string
                   required:
                   - device
@@ -155,10 +159,21 @@ spec:
               ready:
                 type: boolean
               vni:
+                type: integer
+              vniLease:
                 description: |-
                   VNI is the allocated VXLAN Network Identifier for direct (non-switch) connections.
                   Nil for switch-to-device and switch-to-switch connections.
-                type: integer
+                properties:
+                  generation:
+                    format: int64
+                    type: integer
+                  poolUID:
+                    type: string
+                required:
+                - generation
+                - poolUID
+                type: object
             type: object
         type: object
     served: true

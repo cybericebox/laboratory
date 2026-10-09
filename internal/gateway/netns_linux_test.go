@@ -83,6 +83,39 @@ func TestNetnsGatewayAnswersNothingOnTheLabSide(t *testing.T) {
 		}
 	})
 
+	t.Run("source leg stays closed while its guard is replaced", func(t *testing.T) {
+		sink := nstest.Listen(t, "net", "udp", "0.0.0.0:7450")
+		if err := m.AddMasquerade("10.9.1.0/24"); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.BlockLab("lab1"); err != nil {
+			t.Fatal(err)
+		}
+		m.DelAntiSpoof("lab1", "10.9.0.0/24")
+		if nstest.Reach(t, "lab", "udp", "203.0.113.1:7450", sink) {
+			t.Fatal("leg escaped while guard absent")
+		}
+		nstest.Run(t, "lab", "ip", "addr", "add", "10.9.1.77/24", "dev", "l0")
+		nstest.Run(t, "lab", "ip", "route", "replace", "203.0.113.1/32", "via", "10.9.0.1", "src", "10.9.1.77")
+		if nstest.Reach(t, "lab", "udp", "203.0.113.1:7450", sink) {
+			t.Fatal("spoofed another live NAT binding during replacement")
+		}
+		if err := m.AddAntiSpoof("lab1", "10.9.0.0/24"); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.UnblockLab("lab1"); err != nil {
+			t.Fatal(err)
+		}
+		if nstest.Reach(t, "lab", "udp", "203.0.113.1:7450", sink) {
+			t.Fatal("replacement source guard did not block spoof")
+		}
+		nstest.Run(t, "lab", "ip", "route", "del", "203.0.113.1/32")
+		nstest.Run(t, "lab", "ip", "addr", "del", "10.9.1.77/24", "dev", "l0")
+		if !nstest.Reach(t, "lab", "udp", "203.0.113.1:7450", sink) {
+			t.Fatal("secured replacement did not reopen legitimate traffic")
+		}
+	})
+
 	t.Run("the pod network still reaches the pod", func(t *testing.T) {
 		if !nstest.Ping(t, "net", "203.0.113.2") || !nstest.Reach(t, "net", "tcp", "203.0.113.2:7000", tcpPod) {
 			t.Errorf("the uplink does not reach the pod")

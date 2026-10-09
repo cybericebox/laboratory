@@ -109,7 +109,7 @@ var _ = Describe("Image cache: device image rewrite", func() {
 		}
 		Expect(k8sClient.Create(ctx, dev)).To(Succeed())
 		r := &DeviceReconciler{
-			Client: k8sClient, Scheme: k8sClient.Scheme(), NetConfigImage: "ghcr.io/cybericebox/laboratory-node:v1",
+			Reader: standaloneRunningLabReader{k8sClient}, Client: k8sClient, Scheme: k8sClient.Scheme(), NetConfigImage: "ghcr.io/cybericebox/laboratory-node:v1",
 			MirrorRegistries: imagecache.DefaultRegistries,
 		}
 		return r, reconcile.Request{NamespacedName: types.NamespacedName{Name: name, Namespace: ns}}

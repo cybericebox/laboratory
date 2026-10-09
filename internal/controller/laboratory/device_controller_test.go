@@ -63,7 +63,7 @@ var _ = Describe(
 			Expect(k8sClient.Create(ctx, dev)).To(Succeed())
 			DeferCleanup(func() { _ = k8sClient.Delete(ctx, dev) })
 
-			r := &DeviceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			r := &DeviceReconciler{Client: k8sClient, Reader: standaloneRunningLabReader{k8sClient}, Scheme: k8sClient.Scheme()}
 			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: dev.Name, Namespace: dev.Namespace}}
 			_, err := r.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
@@ -95,7 +95,7 @@ var _ = Describe(
 				Expect(k8sClient.Create(ctx, dev)).To(Succeed())
 				DeferCleanup(func() { _ = k8sClient.Delete(ctx, dev) })
 
-				r := &DeviceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Defaults: DeviceDefaults{CPU: "250m", Memory: "256Mi"}}
+				r := &DeviceReconciler{Client: k8sClient, Reader: standaloneRunningLabReader{k8sClient}, Scheme: k8sClient.Scheme(), Defaults: DeviceDefaults{CPU: "250m", Memory: "256Mi"}}
 				_, err := r.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{Name: "lab1-web", Namespace: "default"},
 				})
@@ -153,7 +153,7 @@ var _ = Describe(
 		ctx := context.Background()
 
 		reconcileOnce := func(name string) {
-			r := &DeviceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			r := &DeviceReconciler{Client: k8sClient, Reader: standaloneRunningLabReader{k8sClient}, Scheme: k8sClient.Scheme()}
 			_, err := r.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: name, Namespace: "default"},
 			})
@@ -246,7 +246,7 @@ var _ = Describe(
 				Expect(k8sClient.Create(ctx, sw)).To(Succeed())
 				DeferCleanup(func() { _ = k8sClient.Delete(ctx, sw) })
 
-				r := &DeviceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+				r := &DeviceReconciler{Client: k8sClient, Reader: standaloneRunningLabReader{k8sClient}, Scheme: k8sClient.Scheme()}
 				req := reconcile.Request{NamespacedName: types.NamespacedName{Name: "sw-only", Namespace: "default"}}
 				_, err := r.Reconcile(ctx, req)
 				Expect(err).NotTo(HaveOccurred())
@@ -314,7 +314,7 @@ var _ = Describe(
 					"should successfully reconcile the resource", func() {
 						By("Reconciling the created resource")
 						controllerReconciler := &DeviceReconciler{
-							Client: k8sClient,
+							Reader: standaloneRunningLabReader{k8sClient}, Client: k8sClient,
 							Scheme: k8sClient.Scheme(),
 						}
 

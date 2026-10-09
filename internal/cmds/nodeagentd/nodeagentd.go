@@ -16,10 +16,12 @@ import (
 	"syscall"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -113,7 +115,16 @@ func Run() {
 		log.Error(err, "create manager")
 		os.Exit(1)
 	}
+	// Local periodic scans use this index; keep the shared Pod cache global
+	// because connection endpoints may live on another node.
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Pod{}, "spec.nodeName", func(obj client.Object) []string {
+		return []string{obj.(*corev1.Pod).Spec.NodeName}
+	}); err != nil {
+		log.Error(err, "index pods by node")
+		os.Exit(1)
+	}
 	grpcSrv.SetK8sClient(mgr.GetClient())
+	grpcSrv.SetK8sReader(mgr.GetAPIReader())
 	okOVS := health.Func("Open vSwitch does not answer", func(ctx context.Context) bool { return pingOVS(ctx) == nil })
 	for _, c := range []struct {
 		name  string
@@ -157,13 +168,20 @@ func Run() {
 		os.Exit(1)
 	}
 
-	if err := (&nodeagent.NetworkAttachReconciler{
+	networkAttach := &nodeagent.NetworkAttachReconciler{
 		Client:   mgr.GetClient(),
 		NodeName: cfg.NodeName,
 		OVS:      ovs,
 		Flows:    flows,
 		CRISock:  cfg.CRISock,
-	}).SetupWithManager(mgr); err != nil {
+	}
+	if cfg.RuntimeObservation {
+		if err := nodeagent.SetupRuntimeObservation(mgr, cfg, networkAttach); err != nil {
+			log.Error(err, "setup native runtime observation")
+			os.Exit(1)
+		}
+	}
+	if err := networkAttach.SetupWithManager(mgr); err != nil {
 		log.Error(err, "setup NetworkAttachReconciler")
 		os.Exit(1)
 	}

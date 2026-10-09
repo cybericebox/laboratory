@@ -23,6 +23,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/errorlog"
 	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/internal/profiles"
+	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
 func Run() {
@@ -63,10 +64,17 @@ func Run() {
 	}
 	h := grpcserver.NewHandler(cs, k8s, metrics, cfg.AgentID)
 	h.SetStatePersistence(cfg.StatePersistence)
+	h.SetRequiredSnapshotAvailable(cfg.RequiredSnapshotAvailable && cfg.StatePersistence)
 	feat, err := features(cfg)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
+	feat.Lifecycle = &protobuf.LifecycleFeature{}
+	feat.Lifecycle.PerLabStop = cfg.PerLabStopAvailable
+	feat.Lifecycle.RequiredSnapshot = cfg.RequiredSnapshotAdvertised
+	feat.Lifecycle.ConfirmedRuntime = cfg.ConfirmedRuntimeAvailable
+	feat.Lifecycle.RetainedRestart = cfg.RetainedRestartAvailable
+	feat.Lifecycle.FullGroupStop = cfg.FullGroupStopAvailable
 	h.SetFeatures(feat)
 	h.SetErrorJournal(grpcserver.ErrorJournalConfig{ReleaseNamespace: cfg.ReleaseNamespace, Self: journal})
 	go h.RunErrorJournal(context.Background())

@@ -2,7 +2,11 @@ package nodeagent
 
 import (
 	"context"
+	"reflect"
 	"sort"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -51,7 +55,16 @@ func GroupPodAttachments(ctx context.Context, c client.Reader, namespace, compon
 			return nil, err
 		}
 		for i := range list.Items {
-			indexes = append(indexes, list.Items[i].Spec.NetworkIndex)
+			active, err := labRuntimeActive(ctx, c, namespace, list.Items[i].Spec.LabName)
+			if err != nil {
+				return nil, err
+			}
+			if active && !list.Items[i].DeletionTimestamp.IsZero() {
+				active = false
+			}
+			if active {
+				indexes = append(indexes, list.Items[i].Spec.NetworkIndex)
+			}
 		}
 	case names.ComponentGateway:
 		var list laboratoryv1alpha1.LabGatewayList
@@ -59,7 +72,16 @@ func GroupPodAttachments(ctx context.Context, c client.Reader, namespace, compon
 			return nil, err
 		}
 		for i := range list.Items {
-			indexes = append(indexes, list.Items[i].Spec.NetworkIndex)
+			active, err := labRuntimeActive(ctx, c, namespace, list.Items[i].Spec.LabName)
+			if err != nil {
+				return nil, err
+			}
+			if active && !list.Items[i].DeletionTimestamp.IsZero() {
+				active = false
+			}
+			if active {
+				indexes = append(indexes, list.Items[i].Spec.NetworkIndex)
+			}
 		}
 	}
 	sort.Slice(indexes, func(i, j int) bool { return indexes[i] < indexes[j] })
@@ -100,4 +122,53 @@ func GroupPortsPresent(namespace, component string, present map[string]bool) []s
 		}
 	}
 	return out
+}
+
+// GroupPortsPresentOwned selects only this exact Pod incarnation's legs.
+// Empty owners are legacy/unknown and require a separate live-replacement check.
+func GroupPortsPresentOwned(namespace, component string, podUID types.UID, owners map[string]types.UID) []string {
+	if podUID == "" {
+		return nil
+	}
+	var out []string
+	for n := uint(1); n <= maxLabIndex; n++ {
+		key := groupPortKey(component, namespace, n)
+		if owners[key] == podUID {
+			out = append(out, key)
+		}
+	}
+	return out
+}
+
+// Runtime inputs are fail closed: missing parent intent cannot authorize wiring.
+func labRuntimeActive(ctx context.Context, c client.Reader, namespace, name string) (bool, error) {
+	var l laboratoryv1alpha1.Lab
+	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &l); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !l.DeletionTimestamp.IsZero() || l.Spec.Lifecycle.IsStopped() {
+		return false, nil
+	}
+	if i := l.Spec.Lifecycle; i != nil && i.DesiredState == "Running" {
+		o := l.Status.Lifecycle
+		if o == nil || o.OperationID != i.OperationID || o.Revision != i.Revision || o.LabUID != string(l.UID) || o.ObservedGeneration != l.Generation {
+			return false, nil
+		}
+		for _, scope := range l.Status.ScopeInventory {
+			if scope.OperationID == i.OperationID && scope.Revision == i.Revision {
+				continue
+			}
+			done := false
+			for _, report := range l.Status.ScopeReports {
+				done = done || reflect.DeepEqual(report.Identity, scope) && report.RuntimeState == runtimeReleased && report.Error == "" && report.AttachmentsAbsentAt != nil
+			}
+			if !done {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
 }

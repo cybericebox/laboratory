@@ -85,6 +85,12 @@ type Client struct {
 	// pending PORT_DESC query (e.g. a rejected FLOW_MOD). Set via SetErrorHandler.
 	onError func(xid uint32, errType, errCode uint16)
 
+	retireMu      sync.Mutex
+	pendingRetire chan error // protected by pdMu
+	retireXIDs    map[uint32]bool
+	retireBarrier uint32
+	retireError   error
+
 	closeOnce sync.Once
 }
 
@@ -189,6 +195,46 @@ func (c *Client) FlowDeleteOutPort(portNo uint32) error {
 	return err
 }
 
+// RetirePort confirms t0 and flood-output removal before a port can be
+// deleted/recycled. A rejected flow or lost barrier is not a cleanup ACK.
+func (c *Client) RetirePort(no uint32) error {
+	c.retireMu.Lock()
+	defer c.retireMu.Unlock()
+	ch := make(chan error, 1)
+	c.writeMu.Lock()
+	first := buildFlowMod(ofpfcDeleteStrict, 0, 90, BuildMatch(no, 0, false), nil, ofppAny)
+	second := buildFlowMod(ofpfcDelete, ofpttAll, 0, BuildMatchAdvanced(0, 0, false, 0, false, 0, false, 0, false), nil, no)
+	barrier := buildHeader(20)
+	for _, msg := range [][]byte{first, second, barrier} {
+		c.stamp(msg)
+	}
+	c.pdMu.Lock()
+	c.pendingRetire = ch
+	c.retireXIDs = map[uint32]bool{binary.BigEndian.Uint32(first[4:8]): true, binary.BigEndian.Uint32(second[4:8]): true}
+	c.retireBarrier = binary.BigEndian.Uint32(barrier[4:8])
+	c.retireError = nil
+	c.pdMu.Unlock()
+	var writeErr error
+	for _, msg := range [][]byte{first, second, barrier} {
+		if _, writeErr = c.conn.Write(msg); writeErr != nil {
+			break
+		}
+	}
+	c.writeMu.Unlock()
+	defer func() { c.pdMu.Lock(); c.pendingRetire = nil; c.retireXIDs = nil; c.pdMu.Unlock() }()
+	if writeErr != nil {
+		return writeErr
+	}
+	timeout := time.NewTimer(5 * time.Second)
+	defer timeout.Stop()
+	select {
+	case err := <-ch:
+		return err
+	case <-timeout.C:
+		return fmt.Errorf("port retirement barrier timed out after 5s")
+	}
+}
+
 // Ports returns a copy of the port map (name to number) as of the last refresh.
 func (c *Client) Ports() map[string]uint32 {
 	c.mapMu.RLock()
@@ -231,11 +277,26 @@ func (c *Client) readLoop() {
 				default:
 				}
 			}
+			if c.pendingRetire != nil {
+				select {
+				case c.pendingRetire <- err:
+				default:
+				}
+			}
 			c.pdMu.Unlock()
 			return
 		}
 
 		switch msg[1] {
+		case 21: // OFPT_BARRIER_REPLY
+			c.pdMu.Lock()
+			if c.pendingRetire != nil && binary.BigEndian.Uint32(msg[4:8]) == c.retireBarrier {
+				select {
+				case c.pendingRetire <- c.retireError:
+				default:
+				}
+			}
+			c.pdMu.Unlock()
 		case ofptEchoRequest:
 			// Reply with same body, changing only the type byte.
 			reply := make([]byte, len(msg))
@@ -284,6 +345,9 @@ func (c *Client) readLoop() {
 				errCode := binary.BigEndian.Uint16(msg[10:12])
 				c.pdMu.Lock()
 				matchedPD := c.pendingPD != nil && errXID == c.pendingXID
+				if c.pendingRetire != nil && (c.retireXIDs[errXID] || errXID == c.retireBarrier) {
+					c.retireError = fmt.Errorf("port retirement rejected: OFPT_ERROR type=%d code=%d", errType, errCode)
+				}
 				if matchedPD {
 					select {
 					case c.pendingPD <- portDescMsg{err: fmt.Errorf("OFPT_ERROR type=%d code=%d", errType, errCode)}:
@@ -301,7 +365,7 @@ func (c *Client) readLoop() {
 
 // handshake performs the OF 1.3 HELLO exchange synchronously, before readLoop starts.
 func (c *Client) handshake() error {
-	hello := buildHeader(ofptHello, 8)
+	hello := buildHeader(ofptHello)
 	xid := c.xid.Add(1)
 	binary.BigEndian.PutUint32(hello[4:8], xid)
 	if _, err := c.conn.Write(hello); err != nil {
@@ -468,10 +532,10 @@ func (c *Client) rawRecv() ([]byte, error) {
 
 // --- Wire encoding helpers (exported for use by openflow.go) ---
 
-// buildHeader returns an OF 1.3 header slice of totalLen bytes with version=4.
-func buildHeader(msgType uint8, totalLen int) []byte {
-	b := make([]byte, totalLen)
-	putHeader(b, msgType, totalLen)
+// buildHeader returns an OF 1.3 eight-byte header slice with version=4.
+func buildHeader(msgType uint8) []byte {
+	b := make([]byte, 8)
+	putHeader(b, msgType, 8)
 	return b
 }
 
@@ -547,4 +611,70 @@ func buildInstruction(instrType uint16, actions []byte) []byte {
 	binary.BigEndian.PutUint16(instr[2:4], uint16(totalLen))
 	copy(instr[8:], actions)
 	return instr
+}
+
+// RetireVNI confirms exact VNI flood retirement with the same error/barrier
+// protocol and serialization as physical port retirement.
+func (c *Client) RetireVNI(vni uint64) error {
+	c.retireMu.Lock()
+	defer c.retireMu.Unlock()
+	ch := make(chan error, 1)
+	c.writeMu.Lock()
+	flow := buildFlowMod(ofpfcDelete, ofpttAll, 0, BuildMatchAdvanced(0, vni, true, 0, false, 0, false, 0, false), nil, ofppAny)
+	barrier := buildHeader(20)
+	c.stamp(flow)
+	c.stamp(barrier)
+	c.pdMu.Lock()
+	c.pendingRetire = ch
+	c.retireXIDs = map[uint32]bool{binary.BigEndian.Uint32(flow[4:8]): true}
+	c.retireBarrier = binary.BigEndian.Uint32(barrier[4:8])
+	c.retireError = nil
+	c.pdMu.Unlock()
+	_, err := c.conn.Write(flow)
+	if err == nil {
+		_, err = c.conn.Write(barrier)
+	}
+	c.writeMu.Unlock()
+	defer func() { c.pdMu.Lock(); c.pendingRetire = nil; c.retireXIDs = nil; c.pdMu.Unlock() }()
+	if err != nil {
+		return err
+	}
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-ch:
+		return err
+	case <-timer.C:
+		return fmt.Errorf("VNI retirement barrier timed out")
+	}
+}
+
+// Barrier confirms a native enumeration boundary without deleting any scope.
+func (c *Client) Barrier() error {
+	c.retireMu.Lock()
+	defer c.retireMu.Unlock()
+	ch := make(chan error, 1)
+	c.writeMu.Lock()
+	request := buildHeader(20)
+	c.stamp(request)
+	c.pdMu.Lock()
+	c.pendingRetire = ch
+	c.retireXIDs = map[uint32]bool{}
+	c.retireBarrier = binary.BigEndian.Uint32(request[4:8])
+	c.retireError = nil
+	c.pdMu.Unlock()
+	_, err := c.conn.Write(request)
+	c.writeMu.Unlock()
+	defer func() { c.pdMu.Lock(); c.pendingRetire = nil; c.retireXIDs = nil; c.pdMu.Unlock() }()
+	if err != nil {
+		return err
+	}
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-ch:
+		return err
+	case <-timer.C:
+		return fmt.Errorf("native enumeration barrier timed out")
+	}
 }

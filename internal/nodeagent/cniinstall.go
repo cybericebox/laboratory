@@ -88,39 +88,55 @@ func findBaseCNIConf(confDir string) (map[string]interface{}, error) {
 
 func writeCNIConf(confDir, agentSocket string, base map[string]interface{}) error {
 	delegate := extractFirstPlugin(base)
-	return writeConf(confDir, agentSocket, base["cniVersion"], delegate)
+	preserveDelegateName := false
+	if plugin, ok := delegate.(map[string]interface{}); ok {
+		if name, ok := base[cniNameKey].(string); ok && name != "" {
+			// The base network name is also the host-local allocation domain.
+			// Copy the plugin so wrapping a conflist does not mutate its source.
+			named := make(map[string]interface{}, len(plugin)+1)
+			for k, v := range plugin {
+				named[k] = v
+			}
+			named[cniNameKey] = name
+			delegate = named
+			preserveDelegateName = true
+		}
+	}
+	return writeConf(confDir, agentSocket, base["cniVersion"], delegate, preserveDelegateName)
 }
 
 // writeFallbackCNIConf writes a self-contained conflist using ptp+host-local
 // when no base CNI is available (e.g. fresh node before any other CNI is installed).
 func writeFallbackCNIConf(confDir, agentSocket string) error {
 	delegate := map[string]interface{}{
-		"type":   "ptp",
-		"ipMasq": true,
-		"mtu":    1500,
+		cniTypeKey: "ptp",
+		"ipMasq":   true,
+		"mtu":      1500,
 		"ipam": map[string]interface{}{
-			"type":    "host-local",
-			"dataDir": "/run/cni-ipam-state",
+			cniTypeKey: "host-local",
+			"dataDir":  "/run/cni-ipam-state",
 			"ranges": []interface{}{
 				[]interface{}{map[string]interface{}{"subnet": "10.244.0.0/16"}},
 			},
 			"routes": []interface{}{map[string]interface{}{"dst": "0.0.0.0/0"}},
 		},
 	}
-	return writeConf(confDir, agentSocket, "0.3.1", delegate)
+	return writeConf(confDir, agentSocket, "0.3.1", delegate, false)
 }
 
-func writeConf(confDir, agentSocket string, cniVersion, delegate interface{}) error {
+func writeConf(confDir, agentSocket string, cniVersion, delegate interface{}, preserveDelegateName bool) error {
+	gate := map[string]interface{}{
+		cniTypeKey:    "cni-gate",
+		"agentSocket": agentSocket,
+		"delegate":    delegate,
+	}
+	if preserveDelegateName {
+		gate["preserveDelegateName"] = true
+	}
 	conf := map[string]interface{}{
 		"cniVersion": cniVersion,
-		"name":       "cybericebox",
-		"plugins": []interface{}{
-			map[string]interface{}{
-				"type":        "cni-gate",
-				"agentSocket": agentSocket,
-				"delegate":    delegate,
-			},
-		},
+		cniNameKey:   "cybericebox",
+		"plugins":    []interface{}{gate},
 	}
 	data, err := json.MarshalIndent(conf, "", "  ")
 	if err != nil {
