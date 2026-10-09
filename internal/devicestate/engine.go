@@ -16,6 +16,7 @@ import (
 	"github.com/go-logr/logr"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 
+	api "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/snapshot"
 )
@@ -114,9 +115,13 @@ type tracked struct {
 	lastWarn          string
 	exited            bool
 	required          *requiredHold
-	watching          bool // a normal persistence watcher exists, rather than a recovery placeholder
-	lastSnapshot      Snapshot
-	failures          int // consecutive failed live snapshots (touched by the live loop only)
+	// Scheduling only, guarded by e.mu. This is never exit/hold authority.
+	pendingCapture *api.DeviceCaptureRequest
+	captureAttempt *api.DeviceCaptureRequest
+	retry          chan struct{}
+	watching       bool // a normal persistence watcher exists, rather than a recovery placeholder
+	lastSnapshot   Snapshot
+	failures       int // consecutive failed live snapshots (touched by the live loop only)
 	// prevRef is the manifest this device currently has in the registry (the one it was restored from, or its last snapshot); a
 	// new snapshot supersedes it. pushes are the recent ones, for the rate and the budget.
 	prevRef string
@@ -278,12 +283,17 @@ func (e *Engine) Sync(ctx context.Context) {
 			continue
 		}
 		live[p.ContainerID] = true
+		var pending *api.DeviceCaptureRequest
+		if p.CaptureRequest != nil && e.currentCaptureRequest(p, *p.CaptureRequest) {
+			pending = p.CaptureRequest
+		}
+		e.setPendingCapture(p.ContainerID, pending)
 		if p.CaptureRequest != nil {
 			req := *p.CaptureRequest
 			e.captureWorkers.Add(1)
 			go func() {
 				defer e.captureWorkers.Done()
-				if _, err := e.CaptureRequired(ctx, p, req); err != nil {
+				if _, err := e.captureRequired(ctx, p, req, false); err != nil {
 					e.Log.Error(err, "required capture", "pod", p.Pod)
 				}
 			}()
@@ -307,6 +317,46 @@ func (e *Engine) Sync(ctx context.Context) {
 		}
 	}
 	e.mu.Unlock()
+}
+
+func (e *Engine) setPendingCapture(id string, req *api.DeviceCaptureRequest) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if t := e.tracked[id]; t != nil {
+		wasPending := t.pendingCapture != nil || t.captureAttempt != nil
+		t.pendingCapture = req
+		if req == nil {
+			t.captureAttempt = nil // Fresh API observation supersedes an old attempt.
+		}
+		if wasPending && req == nil && t.retry != nil {
+			select {
+			case t.retry <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
+
+func (e *Engine) setCaptureAttempt(id string, req *api.DeviceCaptureRequest) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if t := e.tracked[id]; t != nil {
+		t.captureAttempt = req
+	}
+}
+
+func (e *Engine) clearPendingCapture(id string, req *api.DeviceCaptureRequest) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if t := e.tracked[id]; t != nil && t.captureAttempt == req {
+		t.captureAttempt = nil
+		if t.pendingCapture == nil && t.retry != nil {
+			select {
+			case t.retry <- struct{}{}:
+			default:
+			}
+		}
+	}
 }
 
 func (e *Engine) ensureTracked(ctx context.Context, p PodInfo) {
@@ -393,6 +443,9 @@ func (t *tracked) startWatching(ctx context.Context) bool {
 	in := make(chan struct{}, 1)
 	in <- struct{}{}
 	retry := make(chan struct{}, 1)
+	e.mu.Lock()
+	t.retry = retry
+	e.mu.Unlock()
 	go func() {
 		defer close(in)
 		for {
@@ -527,6 +580,14 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 	defer t.mu.Unlock()
 	if t.required != nil {
 		return nil
+	}
+	if freeze {
+		t.e.mu.Lock()
+		pending := t.pendingCapture != nil || t.captureAttempt != nil
+		t.e.mu.Unlock()
+		if pending {
+			return nil
+		}
 	}
 	return t.snapshotLocked(ctx, freeze, false)
 }

@@ -30,9 +30,19 @@ func captureResult(p PodInfo, req api.DeviceCaptureRequest, boot string) api.Dev
 	return api.DeviceCaptureResult{OperationID: req.OperationID, LifecycleRevision: req.LifecycleRevision, PodUID: req.PodUID, PodResourceVersion: req.PodResourceVersion, Epoch: req.Epoch, Incarnation: req.Incarnation, NodeAgentEpoch: boot, Result: "Pending", GuardState: "Held"}
 }
 
+func (e *Engine) currentCaptureRequest(p PodInfo, req api.DeviceCaptureRequest) bool {
+	return e.NodeAgentEpoch != "" && req.OperationID != "" && req.LifecycleRevision > 0 && req.PodUID != "" && req.PodResourceVersion != "" && req.DeadlineSeconds >= 1 && req.DeadlineSeconds <= 3600 && p.UID == req.PodUID && p.Epoch == req.Epoch && p.DeviceEpoch == req.Epoch && p.Incarnation == req.Incarnation && p.ContainerID != "" && p.Running && !p.Ended && !p.Deleting
+}
+
 // CaptureRequired explicitly captures a live incarnation and keeps it frozen until
 // actual task death or API-fenced invalidation. It never uses ExitSnapshotPod.
 func (e *Engine) CaptureRequired(ctx context.Context, p PodInfo, req api.DeviceCaptureRequest) (result api.DeviceCaptureResult, err error) {
+	return e.captureRequired(ctx, p, req, true)
+}
+
+// Sync owns the API-observed scheduling marker. A delayed Sync worker cannot
+// recreate it after a newer Sync cleared the request or started another intent.
+func (e *Engine) captureRequired(ctx context.Context, p PodInfo, req api.DeviceCaptureRequest, direct bool) (result api.DeviceCaptureResult, err error) {
 	result = captureResult(p, req, e.NodeAgentEpoch)
 	fail := func(err error) (api.DeviceCaptureResult, error) {
 		result.Result = "Failed"
@@ -44,7 +54,7 @@ func (e *Engine) CaptureRequired(ctx context.Context, p PodInfo, req api.DeviceC
 		result.SizeBytes = 0
 		return result, err
 	}
-	if e.NodeAgentEpoch == "" || req.OperationID == "" || req.LifecycleRevision < 1 || req.PodUID == "" || req.PodResourceVersion == "" || req.DeadlineSeconds < 1 || req.DeadlineSeconds > 3600 || p.UID != req.PodUID || p.Epoch != req.Epoch || p.DeviceEpoch != req.Epoch || p.Incarnation != req.Incarnation || !p.Running || p.Ended || p.Deleting {
+	if !e.currentCaptureRequest(p, req) {
 		return fail(ErrStale)
 	}
 	rt, ok := e.Runtime.(RequiredRuntime)
@@ -54,6 +64,10 @@ func (e *Engine) CaptureRequired(ctx context.Context, p PodInfo, req api.DeviceC
 	cl, ok := e.Cluster.(CaptureCluster)
 	if !ok {
 		return fail(errors.New("required capture API unavailable"))
+	}
+	if direct {
+		e.setCaptureAttempt(p.ContainerID, &req)
+		defer e.clearPendingCapture(p.ContainerID, &req)
 	}
 	sctx, cancel := context.WithTimeout(ctx, time.Duration(req.DeadlineSeconds)*time.Second)
 	defer cancel()
@@ -80,6 +94,9 @@ func (e *Engine) CaptureRequired(ctx context.Context, p PodInfo, req api.DeviceC
 	t := e.tracked[p.ContainerID]
 	if t == nil {
 		t = &tracked{e: e, pod: trackingPodInfo(p), c: c, cancel: func() {}, prevRef: e.snapshotRef(c.ImageRef)}
+		if direct {
+			t.captureAttempt = &req
+		}
 		e.tracked[p.ContainerID] = t
 	}
 	e.mu.Unlock()
