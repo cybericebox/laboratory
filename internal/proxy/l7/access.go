@@ -37,15 +37,15 @@ func (a *AccessReader) Route(ctx context.Context, task, namespace string) (Acces
 	if !svc.DeletionTimestamp.IsZero() || svc.Labels[names.LabelLab] == "" || svc.Labels[names.LabelDevice] == "" || len(svc.Spec.Ports) == 0 {
 		return AccessRoute{}, fmt.Errorf("service is not an exposed lab device")
 	}
-	protocol := svc.Spec.Ports[0].Name
+	declared := svc.Spec.Ports[0]
+	protocol := declared.Name
 	if protocol == "" {
 		protocol = "http"
 	}
-	port := 80
-	if protocol == "https" {
-		port = 443
+	if protocol != "http" && protocol != "https" || declared.Port < 1 || declared.Port > 65535 || declared.Protocol != "" && declared.Protocol != corev1.ProtocolTCP {
+		return AccessRoute{}, fmt.Errorf("service has an invalid web port")
 	}
-	return AccessRoute{fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d", protocol, task, namespace, port), svc.Labels[names.LabelLab]}, nil
+	return AccessRoute{fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d", protocol, task, namespace, declared.Port), svc.Labels[names.LabelLab]}, nil
 }
 func (a *AccessReader) Allowed(ctx context.Context, namespace, member, labName string) bool {
 	var target lab.Lab
