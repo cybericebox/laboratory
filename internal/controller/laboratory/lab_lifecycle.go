@@ -166,6 +166,9 @@ func (r *LabReconciler) reconcileLifecycle(ctx context.Context, l *lab.Lab) (boo
 	}
 	if !intent.IsStopped() {
 		if err := r.prepareLabScopes(ctx, l); err != nil {
+			if statusErr := r.publishUnknownRunningAllocation(ctx, l); statusErr != nil {
+				return true, ctrl.Result{}, statusErr
+			}
 			return true, ctrl.Result{RequeueAfter: 5 * time.Second}, err
 		}
 		return r.reconcileLifecycleStart(ctx, l)
@@ -553,7 +556,13 @@ func (r *LabReconciler) reconcileLifecycleStart(ctx context.Context, l *lab.Lab)
 		return false, ctrl.Result{}, nil
 	}
 	next := &lab.LabLifecycleStatus{ObservedState: "Starting", OperationID: l.Spec.Lifecycle.OperationID, Revision: l.Spec.Lifecycle.Revision, LabUID: string(l.UID), ObservedGeneration: l.Generation}
-	return true, ctrl.Result{RequeueAfter: time.Second}, r.patchLifecycle(ctx, l, next)
+	allocation, err := r.runningLabAllocation(ctx, l, ds.Items)
+	if err != nil {
+		return true, ctrl.Result{}, err
+	}
+	base := l.DeepCopy()
+	l.Status.Lifecycle, l.Status.Resources = next, allocation
+	return true, ctrl.Result{RequeueAfter: time.Second}, r.Status().Patch(ctx, l, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 }
 
 // Clear all requests on collective failure. Node-agent invalidation precedes
