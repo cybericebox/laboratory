@@ -209,7 +209,9 @@ func (r *LabReconciler) reconcileLifecycle(ctx context.Context, l *lab.Lab) (boo
 		}
 		return true, ctrl.Result{RequeueAfter: 2 * time.Second}, r.patchLifecycle(ctx, l, next)
 	}
-	if intent.SnapshotMode == "Required" {
+	// A current durable barrier has already accepted and committed these writers;
+	// released runtime cannot supply another live checkpoint handshake.
+	if intent.SnapshotMode == "Required" && !next.SnapshotComplete {
 		if err := r.ValidateRequiredSnapshot(ctx, l); err != nil {
 			return finish("StopFailed", "PreparationFailed", err)
 		}
