@@ -736,8 +736,9 @@ devices:
 # ============================================================
 labWorkloads:
   # nodeSelector applied to all runtime lab pods, in addition to laboratory.cybericebox.com/node-agent-ready=true, which the
-  # node-agent sets on its node: a lab pod is only placed where a ready node-agent runs. The node-agent runs on EVERY node
-  # (it tolerates all taints), so which nodes take labs is decided here and by the tolerations.
+  # node-agent sets on its node: a lab pod is only placed where a ready node-agent runs. The node-agent uses this same selector
+  # and these tolerations, plus startup/DaemonSet availability tolerations. An untolerated control-plane node gets neither labs
+  # nor a node-agent. Lifecycle scope declarations follow this placement pool while retaining all prior native obligations.
   # Example: {"lab-node": "true"} — only schedule on nodes labelled lab-node=true.
   nodeSelector: {}
   # tolerations applied to all runtime lab pods. A schedulable control-plane node (controller+worker) takes labs only when

@@ -291,7 +291,11 @@ func (r *LabGroupReconciler) PrepareGroupRelease(ctx context.Context, g *lab.Lab
 		}
 	}
 	if r.ServiceReleaseObserver != nil {
-		scopes, err := declaredScopes(ctx, r.groupReader(), string(live.UID), ns, "", live.Spec.Lifecycle.OperationID, live.Spec.Lifecycle.Revision, live.Generation, "GroupScope")
+		placement, err := r.groupNativePlacement(ctx, live, pods.Items)
+		if err != nil {
+			return false, err
+		}
+		scopes, err := declaredScopes(ctx, r.groupReader(), string(live.UID), ns, "", live.Spec.Lifecycle.OperationID, live.Spec.Lifecycle.Revision, live.Generation, "GroupScope", placement)
 		if err != nil {
 			return false, err
 		}

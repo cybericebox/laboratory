@@ -29,9 +29,9 @@ spec:
       hostNetwork: true
       hostPID: false
       dnsPolicy: ClusterFirstWithHostNet
-      # The node-agent runs on exactly the nodes that can host lab pods: the same node selector and tolerations as the lab pods
-      # (labWorkloads), so a schedulable control-plane node (controller+worker) gets one when labs tolerate its taint, and a node
-      # that labs avoid does not. It also tolerates Cilium's agent-not-ready taint, to start while the CNI comes up.
+      # The node-agent follows the configured lab placement selector and tolerations (labWorkloads). A control-plane node gets
+      # one only when labs tolerate its taint. Cilium startup and automatic DaemonSet availability tolerations keep the observer
+      # running through temporary readiness/pressure changes; these do not widen lab workload scheduling.
       {{- with .Values.labWorkloads.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

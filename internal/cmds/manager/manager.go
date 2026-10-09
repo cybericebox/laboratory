@@ -261,6 +261,8 @@ func Run() {
 		os.Exit(1)
 	}
 	if err = (&laboratorycontroller.LabReconciler{
+		LabNodeSelector:           labNodeSelector,
+		LabTolerations:            labTolerations,
 		Reader:                    mgr.GetAPIReader(),
 		RuntimeObservation:        cfg.RuntimeObservation,
 		RequiredSnapshotAvailable: cfg.RequiredSnapshotAvailable && cfg.State.Enabled,

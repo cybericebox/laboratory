@@ -14,7 +14,7 @@ import (
 
 // Runtime scopes cover every actual registered placement node, without invented
 // Pod/container identities. Old node obligations remain separately held.
-func declaredScopes(ctx context.Context, reader client.Reader, owner, namespace, name, op string, revision, generation int64, kind string) ([]lab.OwnedRuntimeIdentity, error) {
+func declaredScopes(ctx context.Context, reader client.Reader, owner, namespace, name, op string, revision, generation int64, kind string, placement ...nativePlacementPolicy) ([]lab.OwnedRuntimeIdentity, error) {
 	var nodes corev1.NodeList
 	if err := reader.List(ctx, &nodes); err != nil {
 		return nil, err
@@ -22,11 +22,22 @@ func declaredScopes(ctx context.Context, reader client.Reader, owner, namespace,
 	if len(nodes.Items) == 0 {
 		return nil, fmt.Errorf("native placement node inventory unavailable")
 	}
+	policy := nativePlacementPolicy{}
+	if len(placement) > 0 {
+		policy = placement[0]
+	}
+	byName := map[string]*corev1.Node{}
+	for i := range nodes.Items {
+		byName[nodes.Items[i].Name] = &nodes.Items[i]
+	}
+	required, err := policy.requiredHistoricalNodes(owner, namespace, byName)
+	if err != nil {
+		return nil, err
+	}
 	var scopes []lab.OwnedRuntimeIdentity
 	for _, node := range nodes.Items {
-		// Removing the ready label cannot erase an unavailable Linux placement
-		// node from an initial fabric proof, including a legacy switch-only Lab.
-		eligible := node.Status.NodeInfo.OperatingSystem == "linux" || node.Labels[corev1.LabelOSStable] == "linux" || node.Labels[names.LabelNodeAgentReady] == "true"
+		linux := node.Status.NodeInfo.OperatingSystem == "linux" || node.Labels[corev1.LabelOSStable] == "linux" || node.Labels[names.LabelNodeAgentReady] == "true"
+		eligible := required[node.Name] || linux && (configuredNativePlacement(&node, policy) || node.Labels[names.LabelNodeAgentReady] == "true")
 		if !eligible {
 			continue
 		}
@@ -59,16 +70,20 @@ func (r *LabReconciler) prepareLabScopes(ctx context.Context, l *lab.Lab) error 
 		op = i.OperationID
 		rev = i.Revision
 	}
-	declared, err := declaredScopes(ctx, r.lifecycleReader(), string(l.UID), l.Namespace, l.Name, op, rev, l.Generation, "LabFabric")
-	if err != nil {
-		return err
-	}
 	var devices lab.DeviceList
 	if err := r.lifecycleReader().List(ctx, &devices, client.InNamespace(l.Namespace)); err != nil {
 		return err
 	}
 	var connections lab.ConnectionList
 	if err := r.lifecycleReader().List(ctx, &connections, client.InNamespace(l.Namespace)); err != nil {
+		return err
+	}
+	placement, err := r.labNativePlacement(ctx, l, devices.Items, connections.Items)
+	if err != nil {
+		return err
+	}
+	declared, err := declaredScopes(ctx, r.lifecycleReader(), string(l.UID), l.Namespace, l.Name, op, rev, l.Generation, "LabFabric", placement)
+	if err != nil {
 		return err
 	}
 	// Pin legacy reservations or recover a durable allocation whose object status

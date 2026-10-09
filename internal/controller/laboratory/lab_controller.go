@@ -68,6 +68,9 @@ type LabReconciler struct {
 	// Native capability is enabled only after the Task5 proof.
 	RuntimeObservation        bool
 	RequiredSnapshotAvailable bool
+	// The same parsed placement rules used by Device/Group pods and Scheduler.
+	LabNodeSelector map[string]string
+	LabTolerations  []corev1.Toleration
 	// Mirror rewrites image references for the image cache; the zero value
 	// (cache off) rewrites nothing. The Lab records the decision once.
 	Mirror imagecache.Rewriter
