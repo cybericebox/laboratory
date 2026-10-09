@@ -683,7 +683,7 @@ func (t *tracked) snapshotLocked(ctx context.Context, freeze, required bool) (er
 			t.pushed = false
 		}
 		if required && e.snapshotRef(t.c.ImageRef) != "" {
-			run, err := e.Runtime.LoadImage(ctx, t.c.ImageRef)
+			run, err := t.loadImage(ctx)
 			if err != nil {
 				return err
 			}
@@ -701,7 +701,7 @@ func (t *tracked) snapshotLocked(ctx context.Context, freeze, required bool) (er
 		return nil
 	}
 
-	run, err := e.Runtime.LoadImage(ctx, t.c.ImageRef)
+	run, err := t.loadImage(ctx)
 	if err != nil {
 		return fmt.Errorf("load image %s: %w", t.c.ImageRef, err)
 	}
@@ -811,12 +811,19 @@ func (t *tracked) supersede(newRef string, keep v1.Image) {
 	time.AfterFunc(e.SupersededGrace, run)
 }
 
+func (t *tracked) loadImage(ctx context.Context) (v1.Image, error) {
+	if runtime, ok := t.e.Runtime.(SourceImageRuntime); ok {
+		return runtime.LoadImageForPod(ctx, t.c, t.pod)
+	}
+	return t.e.Runtime.LoadImage(ctx, t.c.ImageRef)
+}
+
 // publishStart records that the writable layer is back to what the container
 // started from: the snapshot it started from if that was one, else the base image.
 func (t *tracked) publishStart(ctx context.Context) error {
 	s := Snapshot{At: t.e.now()}
 	if t.e.RegistryHost != "" && strings.HasPrefix(t.c.ImageRef, t.e.RegistryHost+"/") {
-		run, err := t.e.Runtime.LoadImage(ctx, t.c.ImageRef)
+		run, err := t.loadImage(ctx)
 		if err != nil {
 			return fmt.Errorf("load image %s: %w", t.c.ImageRef, err)
 		}

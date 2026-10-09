@@ -89,6 +89,12 @@ type Runtime interface {
 	Exits(ctx context.Context) (<-chan string, error)
 }
 
+// SourceImageRuntime optionally binds source image reads to the current device pod.
+// Runtimes without this capability retain the local-only LoadImage behavior.
+type SourceImageRuntime interface {
+	LoadImageForPod(context.Context, Container, PodInfo) (v1.Image, error)
+}
+
 // Snapshot is the outcome of a successful snapshot.
 type Snapshot struct {
 	// Image is the pullable reference with digest; empty when the writable

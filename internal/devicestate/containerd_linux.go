@@ -24,6 +24,7 @@ import (
 	"github.com/containerd/platforms"
 	"github.com/containerd/typeurl/v2"
 	"github.com/go-logr/logr"
+	"github.com/google/go-containerregistry/pkg/authn"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -44,6 +45,8 @@ type ContainerdRuntime struct {
 	log        logr.Logger
 	seq        atomic.Uint64
 	noFreezer  atomic.Bool
+	// SourceKeychain binds fallback reads to the current pod's pull credentials.
+	SourceKeychain func(context.Context, Container, PodInfo) (authn.Keychain, error)
 }
 
 // NewContainerdRuntime connects to containerd at sock; namespace is the one the
@@ -285,6 +288,21 @@ func (d *diffReader) Close() error {
 // LoadImage implements Runtime: the image the kubelet pulled for this container
 // is read out of the content store, so no registry is contacted.
 func (r *ContainerdRuntime) LoadImage(ctx context.Context, ref string) (v1.Image, error) {
+	return r.loadImage(ctx, ref, nil)
+}
+
+func (r *ContainerdRuntime) LoadImageForPod(ctx context.Context, c Container, p PodInfo) (v1.Image, error) {
+	if r.SourceKeychain == nil {
+		return nil, fmt.Errorf("pod-owned source image credentials are unavailable")
+	}
+	keychain, err := r.SourceKeychain(ctx, c, p)
+	if err != nil {
+		return nil, err
+	}
+	return r.loadImage(ctx, c.ImageRef, keychain)
+}
+
+func (r *ContainerdRuntime) loadImage(ctx context.Context, ref string, keychain authn.Keychain) (v1.Image, error) {
 	ctx = r.ctx(ctx)
 	img, err := r.client.GetImage(ctx, ref)
 	if err != nil {
@@ -299,7 +317,7 @@ func (r *ContainerdRuntime) LoadImage(ctx context.Context, ref string) (v1.Image
 	if err != nil {
 		return nil, err
 	}
-	return snapshot.LoadImage(ctx, contentSource{cs}, h)
+	return loadRegistryBackedImage(ctx, cs, h, ref, keychain)
 }
 
 // resolveManifest finds the manifest of the node's platform below an image

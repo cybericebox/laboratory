@@ -52,6 +52,7 @@ func SetupDeviceState(mgr ctrl.Manager, cfg *Config) error {
 	if err != nil {
 		return err
 	}
+	rt.SourceKeychain = devicestate.NewPodSourceKeychain(mgr.GetAPIReader(), cfg.NodeName)
 	reg := &snapshot.Registry{Host: local}
 	if cfg.StateRegistryUser != "" {
 		reg.Auth = &authn.Basic{Username: cfg.StateRegistryUser, Password: cfg.StateRegistryPassword}
