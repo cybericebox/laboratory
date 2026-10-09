@@ -65,6 +65,8 @@ type LabReconciler struct {
 	// State is the device state persistence policy applied to labs created
 	// while the platform switch is on.
 	State StatePolicy
+	// Same defaults and maxima used by Device and Scheduler materialization.
+	Defaults DeviceDefaults
 	// Native capability is enabled only after the Task5 proof.
 	RuntimeObservation        bool
 	RequiredSnapshotAvailable bool
@@ -784,6 +786,14 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 	); err != nil {
 		return ctrl.Result{}, err
 	}
+	resources := lab.Status.Resources
+	if intent := lab.Spec.Lifecycle; intent != nil && intent.DesiredState == "Running" {
+		var err error
+		resources, err = r.runningLabAllocation(ctx, lab, deviceList.Items)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 
 	var refs []laboratoryv1alpha1.DeviceRef
 	allReady := len(deviceList.Items) > 0 || len(lab.Spec.Devices) == 0 && len(lab.Spec.Connections) == 0
@@ -914,7 +924,7 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 			lab.Status.Lifecycle = next
 		}
 	}
-	if !lifecycleChanged && newPhase == lab.Status.Phase &&
+	if !lifecycleChanged && reflect.DeepEqual(resources, lab.Status.Resources) && newPhase == lab.Status.Phase &&
 		vpnReady == lab.Status.VPN.Ready &&
 		inetReady == lab.Status.Internet.Ready &&
 		sameRefsByName(refs, lab.Status.Devices, func(ref laboratoryv1alpha1.DeviceRef) string { return ref.Name }) &&
@@ -927,9 +937,10 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		if throttled {
 			return ctrl.Result{RequeueAfter: snapshotInfoInterval}, nil
 		}
-		return ctrl.Result{}, nil
+		return runningAllocationRequeue(lab), nil
 	}
 
+	lab.Status.Resources = resources
 	lab.Status.VPN.Ready = vpnReady
 	lab.Status.Internet.Ready = inetReady
 	lab.Status.Devices = refs
@@ -943,7 +954,7 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 	if newPhase != laboratoryv1alpha1.PhaseReady {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
-	return ctrl.Result{}, nil
+	return runningAllocationRequeue(lab), nil
 }
 
 // segmentReady reports whether the lab's LabVPN / LabGateway object is Ready.

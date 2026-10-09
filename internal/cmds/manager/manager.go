@@ -261,6 +261,7 @@ func Run() {
 		os.Exit(1)
 	}
 	if err = (&laboratorycontroller.LabReconciler{
+		Defaults:                  laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory},
 		LabNodeSelector:           labNodeSelector,
 		LabTolerations:            labTolerations,
 		Reader:                    mgr.GetAPIReader(),
