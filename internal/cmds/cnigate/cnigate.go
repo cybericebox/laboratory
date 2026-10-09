@@ -181,10 +181,19 @@ func cmdDEL(args *skel.CmdArgs) error {
 	if len(conf.Delegate) == 0 {
 		return nil
 	}
+	conf, cachedIface, cached, err := delegateForDEL(conf, args)
+	if err != nil {
+		return err
+	}
 
 	// Best-effort annotation check to decide whether DelegateDel is needed.
 	// Errors are ignored: DEL must not fail the pod teardown.
-	defaultIface, hasAnnotation, _ := getPodAnnotation(conf, args.Args, names.AnnotationDefaultNetwork)
+	defaultIface, hasAnnotation := cachedIface, cached
+	if cached {
+		logf("DEL using ADD receipt container=%s outerIfName=%s delegateIfName=%s", args.ContainerID, args.IfName, cachedIface)
+	} else {
+		defaultIface, hasAnnotation, _ = getPodAnnotation(conf, args.Args, names.AnnotationDefaultNetwork)
+	}
 
 	var delErr error
 	switch {
