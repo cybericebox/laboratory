@@ -53,8 +53,9 @@ func logf(format string, a ...interface{}) {
 // NetConf is the CNI config for cni-gate.
 type NetConf struct {
 	cnitypes.NetConf
-	Delegate    map[string]interface{} `json:"delegate,omitempty"`
-	AgentSocket string                 `json:"agentSocket,omitempty"`
+	Delegate             map[string]interface{} `json:"delegate,omitempty"`
+	AgentSocket          string                 `json:"agentSocket,omitempty"`
+	PreserveDelegateName bool                   `json:"preserveDelegateName,omitempty"`
 }
 
 func Run() {
@@ -232,7 +233,12 @@ func marshalDelegate(conf *NetConf) []byte {
 	for k, v := range conf.Delegate {
 		d[k] = v
 	}
-	d["name"] = conf.Name
+	// Only new installer configs mark the delegate name as authoritative.
+	// Legacy configs used the wrapper name even when a delegate name existed;
+	// keep that allocation domain for their cached DEL as well as ADD.
+	if name, ok := d["name"].(string); !conf.PreserveDelegateName || !ok || name == "" {
+		d["name"] = conf.Name
+	}
 	d["cniVersion"] = conf.CNIVersion
 	b, _ := json.Marshal(d)
 	return b

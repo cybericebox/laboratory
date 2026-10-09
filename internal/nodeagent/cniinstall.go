@@ -88,7 +88,21 @@ func findBaseCNIConf(confDir string) (map[string]interface{}, error) {
 
 func writeCNIConf(confDir, agentSocket string, base map[string]interface{}) error {
 	delegate := extractFirstPlugin(base)
-	return writeConf(confDir, agentSocket, base["cniVersion"], delegate)
+	preserveDelegateName := false
+	if plugin, ok := delegate.(map[string]interface{}); ok {
+		if name, ok := base["name"].(string); ok && name != "" {
+			// The base network name is also the host-local allocation domain.
+			// Copy the plugin so wrapping a conflist does not mutate its source.
+			named := make(map[string]interface{}, len(plugin)+1)
+			for k, v := range plugin {
+				named[k] = v
+			}
+			named["name"] = name
+			delegate = named
+			preserveDelegateName = true
+		}
+	}
+	return writeConf(confDir, agentSocket, base["cniVersion"], delegate, preserveDelegateName)
 }
 
 // writeFallbackCNIConf writes a self-contained conflist using ptp+host-local
@@ -107,20 +121,22 @@ func writeFallbackCNIConf(confDir, agentSocket string) error {
 			"routes": []interface{}{map[string]interface{}{"dst": "0.0.0.0/0"}},
 		},
 	}
-	return writeConf(confDir, agentSocket, "0.3.1", delegate)
+	return writeConf(confDir, agentSocket, "0.3.1", delegate, false)
 }
 
-func writeConf(confDir, agentSocket string, cniVersion, delegate interface{}) error {
+func writeConf(confDir, agentSocket string, cniVersion, delegate interface{}, preserveDelegateName bool) error {
+	gate := map[string]interface{}{
+		"type":        "cni-gate",
+		"agentSocket": agentSocket,
+		"delegate":    delegate,
+	}
+	if preserveDelegateName {
+		gate["preserveDelegateName"] = true
+	}
 	conf := map[string]interface{}{
 		"cniVersion": cniVersion,
 		"name":       "cybericebox",
-		"plugins": []interface{}{
-			map[string]interface{}{
-				"type":        "cni-gate",
-				"agentSocket": agentSocket,
-				"delegate":    delegate,
-			},
-		},
+		"plugins":    []interface{}{gate},
 	}
 	data, err := json.MarshalIndent(conf, "", "  ")
 	if err != nil {
