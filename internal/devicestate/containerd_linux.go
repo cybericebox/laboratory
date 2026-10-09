@@ -304,7 +304,7 @@ func (r *ContainerdRuntime) LoadImage(ctx context.Context, ref string) (v1.Image
 
 // resolveManifest finds the manifest of the node's platform below an image
 // descriptor (a manifest itself, or an index of manifests).
-func resolveManifest(ctx context.Context, cs content.Provider, desc ocispec.Descriptor, m platforms.Matcher) (digest.Digest, error) {
+func resolveManifest(ctx context.Context, cs content.Provider, desc ocispec.Descriptor, m platforms.MatchComparer) (digest.Digest, error) {
 	switch {
 	case images.IsManifestType(desc.MediaType):
 		return desc.Digest, nil
@@ -318,13 +318,24 @@ func resolveManifest(ctx context.Context, cs content.Provider, desc ocispec.Desc
 		if err := json.NewDecoder(content.NewReader(ra)).Decode(&idx); err != nil {
 			return "", fmt.Errorf("parse index %s: %w", desc.Digest, err)
 		}
-		for _, d := range idx.Manifests {
+		var preferred *ocispec.Descriptor
+		for i := range idx.Manifests {
+			d := &idx.Manifests[i]
+			if !images.IsManifestType(d.MediaType) {
+				continue
+			}
 			if d.Platform != nil && !m.Match(*d.Platform) {
 				continue
 			}
-			if images.IsManifestType(d.MediaType) {
-				return d.Digest, nil
+			// Compatibility is not preference: an arm64 node also matches
+			// arm variants whose content the kubelet need not have pulled.
+			if preferred == nil || (preferred.Platform == nil && d.Platform != nil) ||
+				(d.Platform != nil && preferred.Platform != nil && m.Less(*d.Platform, *preferred.Platform)) {
+				preferred = d
 			}
+		}
+		if preferred != nil {
+			return preferred.Digest, nil
 		}
 	}
 	return "", fmt.Errorf("no manifest for this platform under %s", desc.Digest)
