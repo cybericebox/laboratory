@@ -612,7 +612,7 @@ func (t *tracked) snapshotLocked(ctx context.Context, freeze, required bool) (er
 		}
 	}()
 
-	rc, err := e.Runtime.Diff(ctx, t.c, freeze)
+	rc, err := e.Runtime.Diff(ctx, t.c, freeze, pol)
 	diffTook = e.now().Sub(started)
 	if err != nil {
 		return fmt.Errorf("diff writable layer: %w", err)
@@ -632,7 +632,9 @@ func (t *tracked) snapshotLocked(ctx context.Context, freeze, required bool) (er
 	}
 	sum := sha256.New()
 	stats, ferr := snapshot.FilterLayerMapped(rc, io.MultiWriter(f, sum), pol, t.c.IDs)
-	_ = rc.Close()
+	if cerr := rc.Close(); ferr == nil {
+		ferr = cerr
+	}
 	if cerr := f.Close(); ferr == nil {
 		ferr = cerr
 	}

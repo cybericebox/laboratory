@@ -2,6 +2,7 @@ package devicestate
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -110,78 +111,146 @@ func UpperDir(mounts []mount.Mount) string {
 }
 
 // Diff implements Runtime: the containerd diff service compares the container's
-// active snapshot with its parent, so whiteouts, opaque directories, xattrs and
-// ownership come out exactly as an image layer would hold them.
-func (r *ContainerdRuntime) Diff(ctx context.Context, c Container, freeze bool) (io.ReadCloser, error) {
+// active snapshot with its parent. Containerd provides whiteouts, opaque markers
+// and security.capability; rooted metadata reads preserve user.* attributes and
+// supplement attribute-only changes. Directory attribute removals fail explicitly
+// because containerd's directory merge cannot restore them faithfully.
+func (r *ContainerdRuntime) Diff(ctx context.Context, c Container, freeze bool, pol snapshot.Policy) (io.ReadCloser, error) {
 	ctx = r.ctx(ctx)
 	ctx, done, err := r.client.WithLease(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("lease: %w", err)
 	}
-	release := func() { _ = done(context.WithoutCancel(ctx)) }
-
 	sn := r.client.SnapshotService(c.Snapshotter)
+	cctx, cancel := context.WithCancel(ctx)
+	var ownedView string
+	var thaw func()
+	var closeContent func() error
+	cleanup := func() {
+		// Ordinary quiescence must not wait on content/RPC cleanup. Required
+		// capture owns a separate guard and has no thaw callback here.
+		if thaw != nil {
+			thaw()
+		}
+		if closeContent != nil {
+			_ = closeContent()
+		}
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cleanupCancel()
+		if ownedView != "" {
+			_ = sn.Remove(cleanupCtx, ownedView)
+		}
+		_ = done(cleanupCtx)
+		cancel()
+	}
 	stat, err := sn.Stat(ctx, c.SnapshotKey)
 	if err != nil {
-		release()
+		cleanup()
 		return nil, fmt.Errorf("stat snapshot %s: %w", c.SnapshotKey, err)
 	}
-	viewKey := fmt.Sprintf("cybericebox-diff-%s-%d", c.ID, r.seq.Add(1))
+	viewKey := r.diffViewKey(c.ID)
 	lower, err := sn.View(ctx, viewKey, stat.Parent)
 	if err != nil {
-		release()
+		cleanup()
 		return nil, fmt.Errorf("view parent snapshot: %w", err)
 	}
-	removeView := func() { _ = sn.Remove(context.WithoutCancel(ctx), viewKey) }
+	ownedView = viewKey
 	upper, err := sn.Mounts(ctx, c.SnapshotKey)
 	if err != nil {
-		removeView()
-		release()
+		cleanup()
 		return nil, fmt.Errorf("mounts of snapshot %s: %w", c.SnapshotKey, err)
 	}
 
-	cctx := ctx
 	if freeze {
-		var cancel context.CancelFunc
-		cctx, cancel = context.WithTimeout(ctx, freezeLimit)
-		defer cancel()
+		cancel()
+		cctx, cancel = diffFreezeContext(ctx)
 		frozenAt := time.Now()
-		thaw, ferr := r.freeze(cctx, c)
+		unfreeze, ferr := r.freeze(cctx, c)
 		if ferr != nil && !errors.Is(ferr, ErrNoFreezer) {
 			// A freezer that exists but did not freeze the container in time: the diff of a running container that was not frozen can
 			// race with its writes (a file turned into a symlink under the reader), so it is not taken. The snapshot is retried.
-			removeView()
-			release()
+			cleanup()
 			return nil, fmt.Errorf("the running container could not be frozen, so it is not snapshotted: %w", ferr)
 		}
 		if ferr == nil {
-			defer func() {
-				thaw()
+			thaw = func() {
+				unfreeze()
 				r.log.Info("container frozen for the snapshot", "container", c.ID, "frozen", time.Since(frozenAt).String())
-			}()
+			}
 		}
 	}
 	desc, err := r.client.DiffService().Compare(cctx, lower, upper, diff.WithMediaType(ocispec.MediaTypeImageLayer))
-	removeView()
 	if err != nil {
-		release()
+		cleanup()
 		return nil, fmt.Errorf("compare snapshot with its parent: %w", err)
 	}
 
 	cs := r.client.ContentStore()
 	ra, err := cs.ReaderAt(ctx, desc)
 	if err != nil {
-		release()
+		cleanup()
 		return nil, fmt.Errorf("read diff %s: %w", desc.Digest, err)
 	}
-	return &diffReader{Reader: content.NewReader(ra), close: func() {
-		_ = ra.Close()
-		// The blob is not deleted here: identical diffs of different devices have the same
-		// digest, and deleting it pulled it from under a reader that was still using it
-		// ("content digest not found"). It belongs to the lease, and containerd collects
-		// it when the last lease that holds it is gone.
-		release()
-	}}, nil
+	closeContent = ra.Close
+	return managedDiffReader(cctx, cancel, func(out io.Writer) error {
+		// Removing ID-map options makes ownership match the host ids supplied by
+		// the raw diff. The filter is the sole owner-id translation boundary.
+		return mount.WithReadonlyTempMount(cctx, mount.RemoveIDMapOption(lower), func(lowerPath string) error {
+			return mount.WithReadonlyTempMount(cctx, mount.RemoveIDMapOption(upper), func(livePath string) error {
+				up, err := os.OpenRoot(c.UpperDir)
+				if err != nil {
+					return err
+				}
+				defer up.Close()
+				live, err := os.OpenRoot(livePath)
+				if err != nil {
+					return err
+				}
+				defer live.Close()
+				lo, err := os.OpenRoot(lowerPath)
+				if err != nil {
+					return err
+				}
+				defer lo.Close()
+				return writeUserXattrLayer(cctx, content.NewReader(ra), out, up, live, lo, pol)
+			})
+		})
+	}, cleanup), nil // no shared content deletion; containerd owns garbage collection
+}
+
+func (r *ContainerdRuntime) diffViewKey(containerID string) string {
+	// A crashed process may leave its leased view behind. A nonce prevents a
+	// fresh process (whose sequence starts over) from colliding with that view,
+	// including callers that already carry a lease in their context.
+	return fmt.Sprintf("cybericebox-diff-%s-%d-%s", containerID, r.seq.Add(1), rand.Text())
+}
+
+func diffFreezeContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	// The reader/cleanup owns cancellation after Diff returns.
+	return context.WithTimeout(ctx, freezeLimit)
+}
+
+// managedDiffReader cancels a blocked producer even when a consumer abandons
+// the stream without Close. Cleanup runs once and finishes before EOF/Close is
+// reported, so ordinary snapshots do not retain a freezer through upload.
+func managedDiffReader(ctx context.Context, cancel context.CancelFunc, produce func(io.Writer) error, cleanup func()) io.ReadCloser {
+	pr, pw := io.Pipe()
+	done := make(chan struct{})
+	var producerErr error
+	stopCancellation := context.AfterFunc(ctx, func() { _ = pw.CloseWithError(ctx.Err()) })
+	go func() {
+		defer close(done)
+		producerErr = produce(pw)
+		stopCancellation()
+		cleanup()
+		_ = pw.CloseWithError(producerErr)
+	}()
+	return &diffReader{Reader: pr, close: func() error {
+		_ = pr.Close()
+		cancel()
+		<-done
+		return producerErr
+	}}
 }
 
 // freeze freezes the container and syncs its filesystem. Without a freezer at all (ErrNoFreezer: an older cgroup layout) the snapshot
@@ -206,12 +275,11 @@ func (r *ContainerdRuntime) freeze(ctx context.Context, c Container) (func(), er
 
 type diffReader struct {
 	io.Reader
-	close func()
+	close func() error
 }
 
 func (d *diffReader) Close() error {
-	d.close()
-	return nil
+	return d.close()
 }
 
 // LoadImage implements Runtime: the image the kubelet pulled for this container
