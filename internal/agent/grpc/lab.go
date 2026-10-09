@@ -189,6 +189,9 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 	lab.Labels, lab.Annotations = dep.stamp(stampTenant(copyLabels(want), tenantOf(ctx)), stampID(nil, it.GetName()))
 	hash := specHash(&lab.Spec, dep)
 	lab.Annotations[names.AnnotationSpecHash] = hash
+	if err := h.preflightLabCreate(ctx, liveGroup, ns, it.GetName(), hash); err != nil {
+		return 0, err
+	}
 	admission := &laboratoryv1alpha1.GroupChildAdmission{GroupUID: string(liveGroup.UID), LabName: name, DesiredState: lifecycleRunning, SpecHash: hash}
 	if err := h.claimChildAdmission(ctx, it.GetLabGroup(), admission); err != nil {
 		return 0, err
@@ -256,14 +259,8 @@ func (h *Handler) existingLab(ctx context.Context, ns, id, hash string, want map
 		if cur, err = labs.Get(ctx, name, metav1.GetOptions{}); err != nil {
 			return err
 		}
-		if err := rejectTerminating(kindLab, cur); err != nil {
+		if err := validateExistingLab(cur, id, hash); err != nil {
 			return err
-		}
-		if names.IDOf(cur) != id {
-			return fmt.Errorf("%s %s: the name is taken by another id %q", kindLab, id, names.IDOf(cur))
-		}
-		if cur.Annotations[names.AnnotationSpecHash] != hash {
-			return errDifferentSpec{kindLab, id}
 		}
 		labels, changed := mergeLabels(cur.Labels, want)
 		if !changed {
@@ -531,4 +528,34 @@ func (h *Handler) activeLabCompute(l *laboratoryv1alpha1.Lab) (int64, int64) {
 		mem = max(mem, a.AllocatedRequests.MemoryBytes)
 	}
 	return cpu, mem
+}
+
+// A deterministic existing-object rejection must not reserve a fresh group
+// admission and block unrelated children. Existing admissions remain authoritative;
+// the write path still rechecks the live group and the stored Lab after claiming.
+func (h *Handler) preflightLabCreate(ctx context.Context, group *laboratoryv1alpha1.LabGroup, namespace, id, hash string) error {
+	if group.Spec.Admission != nil || !group.DeletionTimestamp.IsZero() || group.Annotations[names.AnnotationLifecycleRetirement] != "" {
+		return nil
+	}
+	current, err := h.cs.LaboratoryV1alpha1().Labs(namespace).Get(ctx, crName(id), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return validateExistingLab(current, id, hash)
+}
+
+func validateExistingLab(cur *laboratoryv1alpha1.Lab, id, hash string) error {
+	if err := rejectTerminating(kindLab, cur); err != nil {
+		return err
+	}
+	if names.IDOf(cur) != id {
+		return fmt.Errorf("%s %s: the name is taken by another id %q", kindLab, id, names.IDOf(cur))
+	}
+	if cur.Annotations[names.AnnotationSpecHash] != hash {
+		return errDifferentSpec{kindLab, id}
+	}
+	return nil
 }
