@@ -180,8 +180,51 @@ func TestRunningAllocationHistoricalDebtAndNoDoubleCount(t *testing.T) {
 	}
 	stale := metav1.NewTime(time.Now().Add(-61 * time.Second))
 	d.Status.RuntimeReports[1].ObservedAt = &stale
-	if got := runningAllocation(t, r, l, d); got.RuntimeState != "Unknown" || got.AllocatedRequests.CPUMillicores != 150 {
-		t.Fatalf("stale release credited: %+v", got)
+	if got := runningAllocation(t, r, l, d); got.RuntimeState != "Allocated" || got.AllocatedRequests.CPUMillicores != 100 {
+		t.Fatalf("durable historical release expired: %+v", got)
+	}
+}
+
+func TestRunningAllocationHistoricalReleaseCertificate(t *testing.T) {
+	for name, change := range map[string]func(*lab.OwnedRuntimeReport){
+		"exact certificate":          func(_ *lab.OwnedRuntimeReport) {},
+		"new pod uid":                func(r *lab.OwnedRuntimeReport) { r.Identity.PodUID = "replacement" },
+		"new node boot":              func(r *lab.OwnedRuntimeReport) { r.Identity.NodeBootID = "replacement" },
+		"wrong owner":                func(r *lab.OwnedRuntimeReport) { r.Identity.OwnerUID = "replacement" },
+		"wrong operation":            func(r *lab.OwnedRuntimeReport) { r.Identity.OperationID = "replacement" },
+		"wrong revision":             func(r *lab.OwnedRuntimeReport) { r.Identity.Revision++ },
+		"missing observed time":      func(r *lab.OwnedRuntimeReport) { r.ObservedAt = nil },
+		"missing runtime absence":    func(r *lab.OwnedRuntimeReport) { r.RuntimeAbsentAt = nil },
+		"missing cgroup absence":     func(r *lab.OwnedRuntimeReport) { r.CgroupAbsentAt = nil },
+		"missing attachment absence": func(r *lab.OwnedRuntimeReport) { r.AttachmentsAbsentAt = nil },
+		"cleanup error":              func(r *lab.OwnedRuntimeReport) { r.Error = "cleanup unavailable" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, l, d, _, _ := runningAllocationFixture(t)
+			old := d.Status.RuntimeReports[0].Identity
+			old.PodUID, old.OperationID, old.Revision = "old-pod", "old-stop", 2
+			old.Requests = lab.ResourceAmounts{CPUMillicores: 50, MemoryBytes: 128 << 20}
+			d.Status.RuntimeInventory = []lab.OwnedRuntimeIdentity{old}
+			certificate := waveReleased(old)
+			at := metav1.NewTime(time.Now().Add(-24 * time.Hour))
+			certificate.ObservedAt, certificate.RuntimeAbsentAt, certificate.CgroupAbsentAt, certificate.AttachmentsAbsentAt = &at, &at, &at, &at
+			change(&certificate)
+			d.Status.RuntimeReports = append(d.Status.RuntimeReports, certificate)
+			legacy := aggregateRuntime([]lab.OwnedRuntimeIdentity{old}, []lab.OwnedRuntimeReport{certificate}, string(l.UID), l.Spec.Lifecycle.OperationID, l.Spec.Lifecycle.Revision)
+			a := runningAllocation(t, r, l, d)
+			if name == "exact certificate" {
+				if legacy.AllocatedRequests != (lab.ResourceAmounts{}) || a.RuntimeState != "Allocated" || a.AllocatedRequests.CPUMillicores != 100 {
+					t.Fatalf("historical certificate differs from existing aggregate semantics: old=%+v current=%+v", legacy, a)
+				}
+				stale := metav1.NewTime(time.Now().Add(-61 * time.Second))
+				d.Status.RuntimeReports[0].ObservedAt = &stale
+				if got := runningAllocation(t, r, l, d); got.RuntimeState != "Unknown" || got.AllocatedRequests.CPUMillicores != 100 {
+					t.Fatalf("historical certificate replaced current presence freshness: %+v", got)
+				}
+			} else if legacy.AllocatedRequests.CPUMillicores != 50 || a.RuntimeState != "Unknown" || a.AllocatedRequests.CPUMillicores != 150 {
+				t.Fatalf("invalid old certificate erased an obligation: old=%+v current=%+v", legacy, a)
+			}
+		})
 	}
 }
 

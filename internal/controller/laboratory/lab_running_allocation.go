@@ -50,7 +50,7 @@ func (r *LabReconciler) runningLabAllocation(ctx context.Context, l *lab.Lab, de
 		}
 		rows := append(append([]lab.OwnedRuntimeIdentity(nil), d.Status.RuntimeInventory...), reportHistory(d.Status.RuntimeReports)...)
 		for _, row := range rows {
-			if !devicePlacementIdentity(l, d, row) || freshAllocationRelease(row, d.Status.RuntimeReports) {
+			if !devicePlacementIdentity(l, d, row) || allocationRowReleased(row, d.Status.RuntimeReports) {
 				continue
 			}
 			add(allocationPhysicalKey(row), row.Requests)
@@ -60,7 +60,7 @@ func (r *LabReconciler) runningLabAllocation(ctx context.Context, l *lab.Lab, de
 			known = false
 			key := "undeclared/" + string(d.UID)
 			for _, row := range rows {
-				if devicePlacementIdentity(l, d, row) && !freshAllocationRelease(row, d.Status.RuntimeReports) {
+				if devicePlacementIdentity(l, d, row) && !allocationRowReleased(row, d.Status.RuntimeReports) {
 					key = allocationPhysicalKey(row)
 				}
 			}
@@ -159,7 +159,7 @@ func (r *LabReconciler) runningLabAllocation(ctx context.Context, l *lab.Lab, de
 			continue
 		}
 		for _, row := range append(append([]lab.OwnedRuntimeIdentity(nil), d.Status.RuntimeInventory...), reportHistory(d.Status.RuntimeReports)...) {
-			if !devicePlacementIdentity(l, &d, row) || freshAllocationRelease(row, d.Status.RuntimeReports) {
+			if !devicePlacementIdentity(l, &d, row) || allocationRowReleased(row, d.Status.RuntimeReports) {
 				continue
 			}
 			current, currentPresent := present[allocationPhysicalKey(row)]
@@ -180,7 +180,7 @@ func (r *LabReconciler) runningLabAllocation(ctx context.Context, l *lab.Lab, de
 			continue
 		}
 		if !currentAllocationIdentity(l, scope) {
-			if !freshAllocationRelease(scope, l.Status.ScopeReports) {
+			if !allocationRowReleased(scope, l.Status.ScopeReports) {
 				known = false
 				add(allocationPhysicalKey(scope), scope.Requests)
 			}
@@ -254,13 +254,10 @@ func (r *LabReconciler) publishUnknownRunningAllocation(ctx context.Context, l *
 func freshAllocationTime(t *metav1.Time) bool {
 	return nonzeroTime(t) && time.Since(t.Time) >= 0 && time.Since(t.Time) <= 60*time.Second
 }
-func freshAllocationRelease(row lab.OwnedRuntimeIdentity, reports []lab.OwnedRuntimeReport) bool {
-	for _, report := range reports {
-		if reflect.DeepEqual(row, report.Identity) && freshAllocationTime(report.ObservedAt) && runtimeRowsReleased([]lab.OwnedRuntimeIdentity{row}, []lab.OwnedRuntimeReport{report}, row.OwnerUID, row.OperationID, row.Revision) {
-			return true
-		}
-	}
-	return false
+func allocationRowReleased(row lab.OwnedRuntimeIdentity, reports []lab.OwnedRuntimeReport) bool {
+	// Immutable native death certificates retire only their exact obligation.
+	// Their durability is independent of the TTL for current live presence.
+	return runtimeRowsReleased([]lab.OwnedRuntimeIdentity{row}, reports, row.OwnerUID, row.OperationID, row.Revision)
 }
 func emptyAllocationDeclaration(id lab.OwnedRuntimeIdentity) bool {
 	return id.PodUID == "" && len(id.ContainerIDs) == 0 && len(id.CgroupPaths) == 0 && len(id.PortKeys) == 0 && len(id.PortRows) == 0 && len(id.FabricPorts) == 0 && len(id.VNIs) == 0 && len(id.VNIBindings) == 0 && id.Requests == (lab.ResourceAmounts{}) && id.Limits == (lab.ResourceAmounts{})
