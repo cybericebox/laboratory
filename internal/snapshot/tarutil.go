@@ -80,7 +80,8 @@ func FilterLayer(in io.Reader, out io.Writer, pol Policy) (Stats, error) {
 
 // FilterLayerMapped is FilterLayer for a container in a user namespace: the diff holds the host ids of the files (the shifted ids of that
 // pod's namespace), and the snapshot must hold the ids inside the container, so every owner is translated through ids. An id outside
-// the map is written as 0 and counted in Stats.Unmapped. Empty maps change nothing.
+// the map is written as 0 and counted in Stats.Unmapped. Containerd's synthetic root-owned whiteout markers already carry
+// container-relative zero ids and are not translated. Empty maps change nothing.
 func FilterLayerMapped(in io.Reader, out io.Writer, pol Policy, ids IDMaps) (Stats, error) {
 	var st Stats
 	skipped := map[string]bool{}
@@ -128,9 +129,11 @@ func FilterLayerMapped(in io.Reader, out io.Writer, pol Policy, ids IDMaps) (Sta
 			return st, fmt.Errorf("%w: more than %d entries", ErrEntries, pol.MaxEntries)
 		}
 		if len(ids.UID) > 0 || len(ids.GID) > 0 {
-			var n int
-			hdr.Uid, hdr.Gid, n = ids.translate(hdr.Uid, hdr.Gid)
-			st.Unmapped += n
+			if !syntheticWhiteout(hdr) {
+				var n int
+				hdr.Uid, hdr.Gid, n = ids.translate(hdr.Uid, hdr.Gid)
+				st.Unmapped += n
+			}
 			delete(hdr.PAXRecords, "uid")
 			delete(hdr.PAXRecords, "gid")
 		}
@@ -147,6 +150,29 @@ func FilterLayerMapped(in io.Reader, out io.Writer, pol Policy, ids IDMaps) (Sta
 		st.Entries++
 	}
 	return st, tw.Close()
+}
+
+// syntheticWhiteout recognizes the empty root-owned deletion headers generated
+// by containerd's ChangeWriter. They do not describe an inode's host ownership.
+// Payloads, links, named owners, xattrs and nonstandard metadata retain the normal
+// owner checks, even when their filename resembles a whiteout.
+func syntheticWhiteout(h *tar.Header) bool {
+	if h.Typeflag != tar.TypeReg || h.Size != 0 || h.Uid != 0 || h.Gid != 0 || h.Uname != "" || h.Gname != "" || h.Linkname != "" || h.Devmajor != 0 || h.Devminor != 0 || len(h.Xattrs) != 0 {
+		return false
+	}
+	for k := range h.PAXRecords {
+		switch k {
+		case "path", "uid", "gid", "mtime", "atime", "ctime": // ordinary tar serialization of the synthetic header
+		default:
+			return false
+		}
+	}
+	base := path.Base(h.Name)
+	if base == whiteoutOpaque {
+		return true
+	}
+	deleted, ok := strings.CutPrefix(base, whiteoutPrefix)
+	return ok && deleted != "" && deleted != "." && deleted != ".." && !strings.HasPrefix(deleted, whiteoutPrefix)
 }
 
 // headerBytes is what the names and extended attributes of an entry take.
