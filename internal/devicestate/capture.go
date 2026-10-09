@@ -14,7 +14,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-const CaptureGuardAnnotation = "laboratory.cybericebox.com/capture-guard"
+const (
+	CaptureGuardAnnotation = "laboratory.cybericebox.com/capture-guard"
+	captureFailed          = "Failed"
+	captureSucceeded       = "Succeeded"
+)
 
 var ErrDeleting = errors.New("capture Pod deletion has been accepted; quiescence must remain held")
 
@@ -26,7 +30,7 @@ type requiredHold struct {
 	journal   string
 }
 
-func captureResult(p PodInfo, req api.DeviceCaptureRequest, boot string) api.DeviceCaptureResult {
+func captureResult(req api.DeviceCaptureRequest, boot string) api.DeviceCaptureResult {
 	return api.DeviceCaptureResult{OperationID: req.OperationID, LifecycleRevision: req.LifecycleRevision, PodUID: req.PodUID, PodResourceVersion: req.PodResourceVersion, Epoch: req.Epoch, Incarnation: req.Incarnation, NodeAgentEpoch: boot, Result: "Pending", GuardState: "Held"}
 }
 
@@ -43,9 +47,9 @@ func (e *Engine) CaptureRequired(ctx context.Context, p PodInfo, req api.DeviceC
 // Sync owns the API-observed scheduling marker. A delayed Sync worker cannot
 // recreate it after a newer Sync cleared the request or started another intent.
 func (e *Engine) captureRequired(ctx context.Context, p PodInfo, req api.DeviceCaptureRequest, direct bool) (result api.DeviceCaptureResult, err error) {
-	result = captureResult(p, req, e.NodeAgentEpoch)
+	result = captureResult(req, e.NodeAgentEpoch)
 	fail := func(err error) (api.DeviceCaptureResult, error) {
-		result.Result = "Failed"
+		result.Result = captureFailed
 		result.GuardState = "Invalidated"
 		result.Error = err.Error()
 		result.Quiesced = false
@@ -110,7 +114,7 @@ func (e *Engine) captureRequired(ctx context.Context, p PodInfo, req api.DeviceC
 	defer t.mu.Unlock()
 	if t.required != nil {
 		h := t.required
-		if h.Result.OperationID == req.OperationID && h.Result.LifecycleRevision == req.LifecycleRevision && h.Result.NodeAgentEpoch == e.NodeAgentEpoch && h.Result.Result == "Succeeded" {
+		if completedCaptureMatches(h.Result, req, e.NodeAgentEpoch) {
 			return h.Result, nil
 		}
 		return fail(errors.New("prior capture is still held"))
@@ -155,7 +159,7 @@ func (e *Engine) captureRequired(ctx context.Context, p PodInfo, req api.DeviceC
 		err = sctx.Err()
 	}
 	if err == nil {
-		result.Result = "Succeeded"
+		result.Result = captureSucceeded
 		result.Image = t.lastSnapshot.Image
 		if result.Image == "" {
 			result.Image = c.ImageRef
@@ -246,7 +250,7 @@ func (e *Engine) writeHold(h *requiredHold) error {
 		return err
 	}
 	name := f.Name()
-	defer os.Remove(name)
+	defer func() { _ = os.Remove(name) }()
 	if _, err = f.Write(b); err == nil {
 		err = f.Sync()
 	}
@@ -264,7 +268,7 @@ func (e *Engine) writeHold(h *requiredHold) error {
 	if err != nil {
 		return err
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 	return dir.Sync()
 
 }
@@ -292,7 +296,7 @@ func (e *Engine) watchHold(parent context.Context, t *tracked, h *requiredHold, 
 		result := h.Result
 		t.mu.Unlock()
 		deleting, checkErr := cl.CheckCapture(ctx, h.Pod, result)
-		if err == nil && checkErr == nil && !deleting && result.Result == "Succeeded" && (result.Committed || !time.Now().After(deadline)) {
+		if err == nil && checkErr == nil && !deleting && result.Result == captureSucceeded && (result.Committed || !time.Now().After(deadline)) {
 			if commits, ok := cl.(CaptureCommitCluster); ok {
 				wanted, commitErr := commits.CaptureCommitRequested(ctx, h.Pod, result)
 				if commitErr != nil {
@@ -316,10 +320,10 @@ func (e *Engine) watchHold(parent context.Context, t *tracked, h *requiredHold, 
 				}
 			}
 		}
-		if err == nil && (checkErr == nil || errors.Is(checkErr, ErrStale)) && !deleting && (!result.Committed && (time.Now().After(deadline) || result.Result == "Failed" || parent.Err() != nil) || errors.Is(checkErr, ErrStale)) {
+		if err == nil && (checkErr == nil || errors.Is(checkErr, ErrStale)) && !deleting && (!result.Committed && (time.Now().After(deadline) || result.Result == captureFailed || parent.Err() != nil) || errors.Is(checkErr, ErrStale)) {
 			failed := result
 			failed.Committed = false
-			failed.Result = "Failed"
+			failed.Result = captureFailed
 			failed.GuardState = "Invalidated"
 			failed.Quiesced = false
 			failed.Error = "required capture expired or was superseded"
@@ -370,37 +374,9 @@ func (e *Engine) RecoverCaptureHolds(ctx context.Context) (map[string]bool, erro
 	if err != nil {
 		return nil, err
 	}
-	holds := map[string]*requiredHold{}
-	entries, err := os.ReadDir(filepath.Join(e.WorkDir, "capture-holds"))
-	if err != nil && !os.IsNotExist(err) {
+	holds, err := e.readCaptureHolds()
+	if err != nil {
 		return nil, err
-	}
-	if len(entries) > 10000 {
-		return nil, errors.New("too many required hold journals")
-	}
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".hold-") {
-			if err := os.Remove(filepath.Join(e.WorkDir, "capture-holds", entry.Name())); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		if filepath.Ext(entry.Name()) != ".json" {
-			return nil, errors.New("unknown required hold journal entry")
-		}
-		b, err := os.ReadFile(filepath.Join(e.WorkDir, "capture-holds", entry.Name()))
-		if err != nil {
-			return nil, err
-		}
-		h := &requiredHold{}
-		if err = json.Unmarshal(b, h); err != nil {
-			return nil, err
-		}
-		if h.Container.ID == "" || h.Container.Cgroup == "" || h.Pod.UID == "" || h.Result.PodUID != h.Pod.UID || h.Result.NodeAgentEpoch == "" {
-			return nil, errors.New("incomplete required hold journal")
-		}
-		h.journal = filepath.Join(e.WorkDir, "capture-holds", entry.Name())
-		holds[h.Container.ID] = h
 	}
 	for _, p := range pods {
 		if p.Guard == "" {
@@ -460,7 +436,7 @@ func (e *Engine) RecoverCaptureHolds(ctx context.Context) (map[string]bool, erro
 			continue
 		}
 		failed := h.Result
-		failed.Result = "Failed"
+		failed.Result = captureFailed
 		failed.GuardState = "Invalidated"
 		failed.Quiesced = false
 		failed.Committed = false
@@ -480,4 +456,46 @@ func (e *Engine) RecoverCaptureHolds(ctx context.Context) (map[string]bool, erro
 
 	}
 	return protected, nil
+}
+
+// completedCaptureMatches recognizes the already held result for this request.
+func completedCaptureMatches(result api.DeviceCaptureResult, req api.DeviceCaptureRequest, boot string) bool {
+	return result.OperationID == req.OperationID && result.LifecycleRevision == req.LifecycleRevision && result.NodeAgentEpoch == boot && result.Result == captureSucceeded
+}
+
+// readCaptureHolds validates every journal before recovery inspects live holds.
+func (e *Engine) readCaptureHolds() (map[string]*requiredHold, error) {
+	holds := map[string]*requiredHold{}
+	entries, err := os.ReadDir(filepath.Join(e.WorkDir, "capture-holds"))
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	if len(entries) > 10000 {
+		return nil, errors.New("too many required hold journals")
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".hold-") {
+			if err := os.Remove(filepath.Join(e.WorkDir, "capture-holds", entry.Name())); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if filepath.Ext(entry.Name()) != ".json" {
+			return nil, errors.New("unknown required hold journal entry")
+		}
+		b, err := os.ReadFile(filepath.Join(e.WorkDir, "capture-holds", entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		h := &requiredHold{}
+		if err = json.Unmarshal(b, h); err != nil {
+			return nil, err
+		}
+		if h.Container.ID == "" || h.Container.Cgroup == "" || h.Pod.UID == "" || h.Result.PodUID != h.Pod.UID || h.Result.NodeAgentEpoch == "" {
+			return nil, errors.New("incomplete required hold journal")
+		}
+		h.journal = filepath.Join(e.WorkDir, "capture-holds", entry.Name())
+		holds[h.Container.ID] = h
+	}
+	return holds, nil
 }

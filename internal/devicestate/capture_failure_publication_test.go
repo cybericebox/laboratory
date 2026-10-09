@@ -41,7 +41,7 @@ func captureFailurePublicationRig(t *testing.T) (*KubeCluster, client.Client, Po
 		t.Fatal(err)
 	}
 	info := podInfo(p, d)
-	failure := captureResult(info, req, "current-boot")
+	failure := captureResult(req, "current-boot")
 	failure.Result, failure.GuardState, failure.Error = "Failed", "Invalidated", "snapshot deferred: pushed recently"
 	return k, c, info, failure, d
 }

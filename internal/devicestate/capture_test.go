@@ -232,13 +232,13 @@ func TestRequiredCaptureOldBootCannotThawNewGuard(t *testing.T) {
 	// Emulate the new current API guard and durable journal while the old worker
 	// still has its thaw handle. Process-level ownership also prevents this overlap.
 	r.cl.mu.Lock()
-	r.cl.guard = captureResult(r.pod, req, "boot-b")
+	r.cl.guard = captureResult(req, "boot-b")
 	r.cl.mu.Unlock()
 	c, err := r.rt.Inspect(context.Background(), r.pod.ContainerID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	newer := &requiredHold{Result: captureResult(r.pod, req, "boot-b"), Pod: r.pod, Container: c}
+	newer := &requiredHold{Result: captureResult(req, "boot-b"), Pod: r.pod, Container: c}
 	if err := r.e.writeHold(newer); err != nil {
 		t.Fatal(err)
 	}

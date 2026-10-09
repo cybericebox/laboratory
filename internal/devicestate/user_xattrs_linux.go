@@ -83,31 +83,9 @@ func writeUserXattrLayer(ctx context.Context, raw io.Reader, out io.Writer, uppe
 			}
 			continue
 		}
-		var attrs map[string]string
-		if !strings.HasPrefix(path.Base(name), ".wh.") && (h.Typeflag == tar.TypeReg || h.Typeflag == tar.TypeDir || h.Typeflag == tar.TypeLink) {
-			f, info, stat, err := openXattrFile(live, name)
-			if err != nil {
-				return err
-			}
-			if int(stat.Uid) != h.Uid || int(stat.Gid) != h.Gid || h.Typeflag == tar.TypeReg && info.Size() != h.Size || h.Typeflag == tar.TypeDir && !info.IsDir() {
-				_ = f.Close()
-				return fmt.Errorf("snapshot inode metadata changed for %q", name)
-			}
-			attrs, err = readUserXattrs(ctx, f, snapshot.MaxEntryHeaderBytes-layerHeaderBytes(h))
-			if err == nil && info.IsDir() {
-				err = l.checkDirectoryRemoval(name, attrs)
-			}
-			if err == nil && !stableXattrFile(f, stat) {
-				err = fmt.Errorf("snapshot inode changed while reading attributes for %q", name)
-			}
-			if err == nil && h.Typeflag == tar.TypeReg && stat.Nlink > 1 {
-				err = l.rememberLink(stat, name)
-			}
-			_ = f.Close()
-			if err != nil {
-				return err
-			}
-			replaceUserXattrs(h, attrs)
+		attrs, err := l.changedHeaderAttrs(h, name)
+		if err != nil {
+			return err
 		}
 		if err := l.writeHeader(h, attrs); err != nil {
 			return err
@@ -243,7 +221,7 @@ func (l *userXattrLayer) parentAttrs(name string) (map[string]string, bool, erro
 	if err != nil {
 		return nil, false, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	attrs, err := readUserXattrs(l.ctx, f, snapshot.MaxEntryHeaderBytes-len(name))
 	return attrs, info.IsDir(), err
 }
@@ -286,7 +264,7 @@ func (l *userXattrLayer) walkUpper(name string, depth int) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	for {
 		entries, err := f.ReadDir(128) // never allocate an entire large directory
 		if err != nil && err != io.EOF {
@@ -308,7 +286,7 @@ func (l *userXattrLayer) supplement(name string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	attrs, err := readUserXattrs(l.ctx, f, snapshot.MaxEntryHeaderBytes-len(name))
 	if err != nil {
 		return err
@@ -381,7 +359,7 @@ func openXattrFile(root *os.Root, name string) (*os.File, os.FileInfo, unix.Stat
 	if err != nil {
 		return nil, nil, zero, err
 	}
-	defer pin.Close()
+	defer func() { _ = pin.Close() }()
 	info, err := pin.Stat()
 	if err != nil {
 		return nil, nil, zero, err
@@ -475,9 +453,9 @@ func replaceUserXattrs(h *tar.Header, attrs map[string]string) {
 			delete(h.PAXRecords, k)
 		}
 	}
-	for k := range h.Xattrs {
+	for k := range h.Xattrs { //nolint:staticcheck // tar.Writer gives legacy Xattrs precedence over PAXRecords; remove stale user values from both.
 		if strings.HasPrefix(k, "user.") {
-			delete(h.Xattrs, k)
+			delete(h.Xattrs, k) //nolint:staticcheck // Remove the legacy value too, since tar.Writer gives it precedence over PAXRecords.
 		}
 	}
 	if h.PAXRecords == nil {
@@ -507,7 +485,7 @@ func layerHeaderBytes(h *tar.Header) int {
 	for k, v := range h.PAXRecords {
 		n += len(k) + len(v)
 	}
-	for k, v := range h.Xattrs {
+	for k, v := range h.Xattrs { //nolint:staticcheck // tar.Reader populates legacy Xattrs too; retain the existing duplicate header budget accounting.
 		n += len(k) + len(v)
 	}
 	return n
@@ -523,4 +501,36 @@ func (r contextReader) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	return r.in.Read(p)
+}
+
+// changedHeaderAttrs validates the same pinned inode before enriching an
+// accepted changeset header; whiteouts and special entries stay unchanged.
+func (l *userXattrLayer) changedHeaderAttrs(h *tar.Header, name string) (map[string]string, error) {
+	var attrs map[string]string
+	if !strings.HasPrefix(path.Base(name), ".wh.") && (h.Typeflag == tar.TypeReg || h.Typeflag == tar.TypeDir || h.Typeflag == tar.TypeLink) {
+		f, info, stat, err := openXattrFile(l.live, name)
+		if err != nil {
+			return nil, err
+		}
+		if int(stat.Uid) != h.Uid || int(stat.Gid) != h.Gid || h.Typeflag == tar.TypeReg && info.Size() != h.Size || h.Typeflag == tar.TypeDir && !info.IsDir() {
+			_ = f.Close()
+			return nil, fmt.Errorf("snapshot inode metadata changed for %q", name)
+		}
+		attrs, err = readUserXattrs(l.ctx, f, snapshot.MaxEntryHeaderBytes-layerHeaderBytes(h))
+		if err == nil && info.IsDir() {
+			err = l.checkDirectoryRemoval(name, attrs)
+		}
+		if err == nil && !stableXattrFile(f, stat) {
+			err = fmt.Errorf("snapshot inode changed while reading attributes for %q", name)
+		}
+		if err == nil && h.Typeflag == tar.TypeReg && stat.Nlink > 1 {
+			err = l.rememberLink(stat, name)
+		}
+		_ = f.Close()
+		if err != nil {
+			return nil, err
+		}
+		replaceUserXattrs(h, attrs)
+	}
+	return attrs, nil
 }

@@ -4,14 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	api "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
-	corev1 "k8s.io/api/core/v1"
 	"os"
 	"path/filepath"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sync"
 	"testing"
 	"time"
+
+	api "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type committingCluster struct {
@@ -131,7 +132,7 @@ func TestRequiredCaptureCommittedRestartPreservesLiveHold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := captureResult(r.pod, req, "prior-boot")
+	result := captureResult(req, "prior-boot")
 	result.Result = "Succeeded"
 	result.Quiesced = true
 	result.Committed = true
@@ -164,7 +165,7 @@ func TestCaptureCommitKubeRequiresExactBootAndCurrentHeldGuard(t *testing.T) {
 	if err := k.SetCaptureGuard(ctx, p, req, "boot"); err != nil {
 		t.Fatal(err)
 	}
-	result := captureResult(p, req, "boot")
+	result := captureResult(req, "boot")
 	result.Result = "Succeeded"
 	result.Quiesced = true
 	result.Image = "base"

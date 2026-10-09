@@ -5,13 +5,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/cybericebox/laboratory/internal/snapshot"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/cybericebox/laboratory/internal/snapshot"
 )
 
 func TestRequiredCaptureRecoveryThawsAndResumesAfterAPIReturns(t *testing.T) {
@@ -22,7 +23,7 @@ func TestRequiredCaptureRecoveryThawsAndResumesAfterAPIReturns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &requiredHold{Container: c, Pod: r.pod, Result: captureResult(r.pod, req, "boot-a")}
+	h := &requiredHold{Container: c, Pod: r.pod, Result: captureResult(req, "boot-a")}
 	if err := r.e.writeHold(h); err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +223,7 @@ func TestRequiredCaptureRecoveryThawFailureKeepsJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &requiredHold{Container: c, Pod: r.pod, Result: captureResult(r.pod, req, "boot-a")}
+	h := &requiredHold{Container: c, Pod: r.pod, Result: captureResult(req, "boot-a")}
 	if err := r.e.writeHold(h); err != nil {
 		t.Fatal(err)
 	}

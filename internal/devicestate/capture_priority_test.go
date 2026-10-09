@@ -64,7 +64,11 @@ func requiredCapturePriority(t *testing.T, dispatch string) {
 	tr := r.e.tracked[r.pod.ContainerID]
 	r.e.mu.Unlock()
 	tr.mu.Lock() // The prior push record is complete before moving exact time.
+	priorPushes := len(tr.pushes)
 	tr.mu.Unlock()
+	if priorPushes != 1 {
+		t.Fatalf("initial snapshot push record is incomplete: %d", priorPushes)
+	}
 	// This is exact native push eligibility, including its fractional timestamp.
 	clock.advance(time.Minute)
 	gate := &priorityInspectRuntime{fakeRuntime: r.rt, entered: make(chan struct{}), release: make(chan struct{})}
@@ -145,7 +149,11 @@ func TestRequiredCapturePendingClearStaleCancelAndExitResumeExistingWatcher(t *t
 			tr := r.e.tracked[r.pod.ContainerID]
 			r.e.mu.Unlock()
 			tr.mu.Lock()
+			initiallyPushed := tr.pushed
 			tr.mu.Unlock()
+			if initiallyPushed {
+				t.Fatal("empty initial layer published a snapshot")
+			}
 			gate := &priorityInspectRuntime{fakeRuntime: r.rt, entered: make(chan struct{}), release: make(chan struct{})}
 			tr.mu.Lock()
 			r.e.Runtime = gate
@@ -168,19 +176,20 @@ func TestRequiredCapturePendingClearStaleCancelAndExitResumeExistingWatcher(t *t
 			}
 			// Let this actual change be debounced while scheduling is pending.
 			time.Sleep(60 * time.Millisecond)
-			if scenario == "exit" {
+			switch scenario {
+			case "exit":
 				r.e.onExit(context.Background(), p.ContainerID)
 				r.rt.mu.Lock()
 				r.rt.gone = true
 				r.rt.mu.Unlock()
-			} else if scenario == "cancelled" {
+			case "cancelled":
 				cancel()
 				r.e.captureWorkers.Wait()
 				r.cl.mu.Lock()
 				r.cl.pods = []PodInfo{r.pod}
 				r.cl.mu.Unlock()
 				r.e.Sync(context.Background())
-			} else {
+			default:
 				next := p
 				changed := req
 				next.CaptureRequest = &changed

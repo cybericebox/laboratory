@@ -338,12 +338,13 @@ func TestManagedDiffReaderCleanup(t *testing.T) {
 				_ = os.Remove(marker)
 				close(released)
 			})
-			if scenario == "eof" {
+			switch scenario {
+			case "eof":
 				got, err := io.ReadAll(r)
 				if err != nil || string(got) != "ok" {
 					t.Fatalf("stream completion: %q %v", got, err)
 				}
-			} else if scenario == "close" {
+			case "close":
 				if _, err := r.Read(make([]byte, 1)); err != nil {
 					t.Fatal(err)
 				}

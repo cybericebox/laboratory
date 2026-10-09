@@ -39,76 +39,13 @@ func NewPodSourceKeychain(reader client.Reader, nodeName string) func(context.Co
 				return nil, ErrStale
 			}
 		}
-		source, err := name.ParseReference(c.ImageRef)
+		source, err := podSourceReference(c, &pod)
 		if err != nil {
-			return nil, fmt.Errorf("invalid source image reference: %w", err)
+			return nil, err
 		}
-		var status *corev1.ContainerStatus
-		for i := range pod.Status.ContainerStatuses {
-			s := &pod.Status.ContainerStatuses[i]
-			if containerID(s.ContainerID) == c.ID {
-				if status != nil {
-					return nil, fmt.Errorf("ambiguous source image container")
-				}
-				status = s
-			}
-		}
-		if status == nil {
-			return nil, ErrStale
-		}
-		configDigest := bareCRIConfigDigest(status.Image)
-		if configDigest {
-			// CRI may expose the config digest as Image after a retained restore.
-			// It has no repository authority; only the exact immutable manifest
-			// in the current ImageID and matching container spec can supply that.
-			manifest, immutable := source.(name.Digest)
-			imageID, err := name.NewDigest(status.ImageID)
-			if !immutable || err != nil || imageID.Name() != manifest.Name() {
-				return nil, ErrStale
-			}
-		} else {
-			statusRef, err := name.ParseReference(status.Image)
-			if err != nil || statusRef.Context().Name() != source.Context().Name() {
-				return nil, ErrStale
-			}
-		}
-		matched := false
-		for _, container := range pod.Spec.Containers {
-			if container.Name != status.Name {
-				continue
-			}
-			ref, err := name.ParseReference(container.Image)
-			if err != nil || ref.Context().Name() != source.Context().Name() || matched || configDigest && ref.Name() != source.Name() {
-				return nil, ErrStale
-			}
-			matched = true
-		}
-		if !matched {
-			return nil, ErrStale
-		}
-		docs := make([][]byte, 0, len(pod.Spec.ImagePullSecrets))
-		for _, ref := range pod.Spec.ImagePullSecrets {
-			if ref.Name == "" {
-				return nil, fmt.Errorf("source image pull Secret name is missing")
-			}
-			var secret corev1.Secret
-			if err := reader.Get(ctx, types.NamespacedName{Namespace: pod.Namespace, Name: ref.Name}, &secret); err != nil {
-				return nil, fmt.Errorf("read source image pull Secret: %w", err)
-			}
-			if secret.Namespace != pod.Namespace || secret.Name != ref.Name {
-				return nil, ErrStale
-			}
-			doc := secret.Data[corev1.DockerConfigJsonKey]
-			if secret.Type != corev1.SecretTypeDockerConfigJson || len(doc) == 0 {
-				return nil, fmt.Errorf("source image pull Secret has no dockerconfigjson")
-			}
-			var shape struct {
-				Auths map[string]json.RawMessage `json:"auths"`
-			}
-			if err := json.Unmarshal(doc, &shape); err != nil || shape.Auths == nil {
-				return nil, fmt.Errorf("source image pull Secret has malformed dockerconfigjson")
-			}
-			docs = append(docs, doc)
+		docs, err := podSourcePullSecrets(ctx, reader, &pod)
+		if err != nil {
+			return nil, err
 		}
 		keychain, err := imagecache.NewDockerConfigKeychain(docs...)
 		if err != nil {
@@ -136,4 +73,84 @@ func (k sourceRepositoryKeychain) Resolve(resource authn.Resource) (authn.Authen
 		return authn.Anonymous, nil
 	}
 	return k.keychain.Resolve(resource)
+}
+
+// podSourceReference validates the current status and spec before credentials are read.
+func podSourceReference(c Container, pod *corev1.Pod) (name.Reference, error) {
+	source, err := name.ParseReference(c.ImageRef)
+	if err != nil {
+		return nil, fmt.Errorf("invalid source image reference: %w", err)
+	}
+	var status *corev1.ContainerStatus
+	for i := range pod.Status.ContainerStatuses {
+		s := &pod.Status.ContainerStatuses[i]
+		if containerID(s.ContainerID) == c.ID {
+			if status != nil {
+				return nil, fmt.Errorf("ambiguous source image container")
+			}
+			status = s
+		}
+	}
+	if status == nil {
+		return nil, ErrStale
+	}
+	configDigest := bareCRIConfigDigest(status.Image)
+	if configDigest {
+		// CRI may expose the config digest as Image after a retained restore.
+		// It has no repository authority; only the exact immutable manifest
+		// in the current ImageID and matching container spec can supply that.
+		manifest, immutable := source.(name.Digest)
+		imageID, err := name.NewDigest(status.ImageID)
+		if !immutable || err != nil || imageID.Name() != manifest.Name() {
+			return nil, ErrStale
+		}
+	} else {
+		statusRef, err := name.ParseReference(status.Image)
+		if err != nil || statusRef.Context().Name() != source.Context().Name() {
+			return nil, ErrStale
+		}
+	}
+	matched := false
+	for _, container := range pod.Spec.Containers {
+		if container.Name != status.Name {
+			continue
+		}
+		ref, err := name.ParseReference(container.Image)
+		if err != nil || ref.Context().Name() != source.Context().Name() || matched || configDigest && ref.Name() != source.Name() {
+			return nil, ErrStale
+		}
+		matched = true
+	}
+	if !matched {
+		return nil, ErrStale
+	}
+	return source, nil
+}
+
+func podSourcePullSecrets(ctx context.Context, reader client.Reader, pod *corev1.Pod) ([][]byte, error) {
+	docs := make([][]byte, 0, len(pod.Spec.ImagePullSecrets))
+	for _, ref := range pod.Spec.ImagePullSecrets {
+		if ref.Name == "" {
+			return nil, fmt.Errorf("source image pull Secret name is missing")
+		}
+		var secret corev1.Secret
+		if err := reader.Get(ctx, types.NamespacedName{Namespace: pod.Namespace, Name: ref.Name}, &secret); err != nil {
+			return nil, fmt.Errorf("read source image pull Secret: %w", err)
+		}
+		if secret.Namespace != pod.Namespace || secret.Name != ref.Name {
+			return nil, ErrStale
+		}
+		doc := secret.Data[corev1.DockerConfigJsonKey]
+		if secret.Type != corev1.SecretTypeDockerConfigJson || len(doc) == 0 {
+			return nil, fmt.Errorf("source image pull Secret has no dockerconfigjson")
+		}
+		var shape struct {
+			Auths map[string]json.RawMessage `json:"auths"`
+		}
+		if err := json.Unmarshal(doc, &shape); err != nil || shape.Auths == nil {
+			return nil, fmt.Errorf("source image pull Secret has malformed dockerconfigjson")
+		}
+		docs = append(docs, doc)
+	}
+	return docs, nil
 }

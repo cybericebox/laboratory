@@ -34,7 +34,7 @@ func TestCaptureGuardCurrentRVAndInvalidation(t *testing.T) {
 	if err := k.SetCaptureGuard(ctx, p, req, "boot-a"); err != nil {
 		t.Fatal(err)
 	}
-	result := captureResult(p, req, "boot-a")
+	result := captureResult(req, "boot-a")
 	result.Result = "Succeeded"
 	result.Quiesced = true
 	result.Image = "registry/lab/ns/lab/web@sha256:abc"
@@ -82,7 +82,7 @@ func TestCaptureGuardFencesNewStartAndForeignBoot(t *testing.T) {
 	if err := k.SetCaptureGuard(ctx, p, req, "boot-a"); err != nil {
 		t.Fatal(err)
 	}
-	result := captureResult(p, req, "boot-b")
+	result := captureResult(req, "boot-b")
 	result.Result = "Succeeded"
 	result.Quiesced = true
 	if err := k.RecordCapture(ctx, p, result); !errors.Is(err, ErrStale) {
@@ -102,10 +102,10 @@ func TestCaptureGuardFencesNewStartAndForeignBoot(t *testing.T) {
 }
 func TestCaptureGuardRequiresExactIncarnation(t *testing.T) {
 	req := api.DeviceCaptureRequest{OperationID: "op", LifecycleRevision: 1, PodUID: "u", Epoch: 2, Incarnation: 3}
-	r := captureResult(PodInfo{}, req, "boot-a")
+	r := captureResult(req, "boot-a")
 	r.Result = "Succeeded"
 	r.Quiesced = true
-	b, _ := json.Marshal(captureResult(PodInfo{}, req, "boot-a"))
+	b, _ := json.Marshal(captureResult(req, "boot-a"))
 	p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "u", Annotations: map[string]string{CaptureGuardAnnotation: string(b), names.AnnotationStateEpoch: "2", names.AnnotationStateIncarnation: "3"}}}
 	if !CaptureGuardMatches(p, &req, &r) {
 		t.Fatal("valid guard rejected")
@@ -118,10 +118,10 @@ func TestCaptureGuardRequiresExactIncarnation(t *testing.T) {
 
 func TestCaptureGuardDeletePreconditionsUseCurrentPod(t *testing.T) {
 	req := api.DeviceCaptureRequest{OperationID: "op", LifecycleRevision: 1, PodUID: "u", PodResourceVersion: "capture-rv", Epoch: 2, Incarnation: 3}
-	result := captureResult(PodInfo{}, req, "boot-a")
+	result := captureResult(req, "boot-a")
 	result.Result = "Succeeded"
 	result.Quiesced = true
-	b, _ := json.Marshal(captureResult(PodInfo{}, req, "boot-a"))
+	b, _ := json.Marshal(captureResult(req, "boot-a"))
 	p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "u", ResourceVersion: "current-rv", Annotations: map[string]string{CaptureGuardAnnotation: string(b), names.AnnotationStateEpoch: "2", names.AnnotationStateIncarnation: "3"}}}
 	preconditions, err := CaptureDeletePreconditions(p, &req, &result)
 	if err != nil || preconditions == nil || *preconditions.UID != "u" || *preconditions.ResourceVersion != "current-rv" {

@@ -494,7 +494,7 @@ func (f *fakeRuntime) TaskAlive(context.Context, Container) (bool, error) {
 func (c *fakeCluster) SetCaptureGuard(_ context.Context, p PodInfo, req api.DeviceCaptureRequest, boot string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.guard = captureResult(p, req, boot)
+	c.guard = captureResult(req, boot)
 	return nil
 }
 func (c *fakeCluster) RecordCapture(_ context.Context, _ PodInfo, r api.DeviceCaptureResult) error {

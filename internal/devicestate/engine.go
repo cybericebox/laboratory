@@ -625,79 +625,17 @@ func (t *tracked) snapshotLocked(ctx context.Context, freeze, required bool) (er
 	defer func() { _ = os.RemoveAll(dir) }()
 
 	layerPath := filepath.Join(dir, "layer.tar")
-	f, err := os.Create(layerPath)
-	if err != nil {
-		_ = rc.Close()
+	stats, digest, refused, err := t.filterSnapshotLayer(ctx, rc, layerPath, pol, required)
+	if refused {
 		return err
 	}
-	sum := sha256.New()
-	stats, ferr := snapshot.FilterLayerMapped(rc, io.MultiWriter(f, sum), pol, t.c.IDs)
-	if cerr := rc.Close(); ferr == nil {
-		ferr = cerr
-	}
-	if cerr := f.Close(); ferr == nil {
-		ferr = cerr
-	}
-	if errors.Is(ferr, snapshot.ErrQuota) {
-		// Over the write quota before the layer was even copied (a sparse file counts by its apparent size): the last good snapshot
-		// stays, and the same change is not diffed again for a while.
-		t.holdUntil = e.now().Add(quotaHold)
-		t.warn(ctx, ferr.Error())
-		if required {
-			return ferr
-		}
-		return nil
-	}
-	if errors.Is(ferr, snapshot.ErrEntries) {
-		// Too many files: the last good snapshot stays; the next change is tried again (the layer only grows, so it will
-		// most likely be refused again, but the warning is cleared by a snapshot that fits).
-		t.warn(ctx, ferr.Error())
-		if required {
-			return ferr
-		}
-		return nil
-	}
-	if ferr != nil {
-		return fmt.Errorf("filter layer: %w", ferr)
-	}
-	if required && (stats.Unmapped > 0 || stats.SkippedTotal > 0 || stats.RefusedEntries > 0) {
-		return fmt.Errorf("required capture omits file data or ownership")
-	}
-	if stats.Unmapped > 0 {
-		e.Log.Info("owner ids outside the user namespace map were written as 0", "device", t.pod.Device, "pod", t.pod.Pod, "ids", stats.Unmapped)
-	}
-	digest := hex.EncodeToString(sum.Sum(nil))
 
 	// Files over the size limit are left out of the layer; the status names them.
 	skipMsg := stats.SkippedWarning(pol.MaxFileSize)
 	if stats.Entries == 0 {
-		if t.pushed && !required {
-			if err := t.publishStart(ctx); err != nil {
-				return err
-			}
-		}
-		t.lastSnapshot = Snapshot{Image: t.c.ImageRef, At: e.now()}
-		if required {
-			t.lastPublishedDiff = ""
-			t.lastDiff = ""
-			t.pushed = false
-		}
-		if required && e.snapshotRef(t.c.ImageRef) != "" {
-			run, err := t.loadImage(ctx)
-			if err != nil {
-				return err
-			}
-			chain, err := snapshot.ChainOf(run)
-			if err != nil {
-				return err
-			}
-			t.lastSnapshot.SizeBytes = chain.Bytes()
-			t.lastSnapshot.Layers = int32(chain.Layers())
-		}
-		t.warnSkipped(ctx, skipMsg)
-		return nil // nothing (else) changed since the device started
+		return t.snapshotEmptyLayer(ctx, required, skipMsg)
 	}
-	if !required && digest == t.lastDiff || required && t.pushed && digest == t.lastPublishedDiff {
+	if t.unchangedSnapshotLayer(required, digest) {
 		return nil
 	}
 
@@ -717,32 +655,8 @@ func (t *tracked) snapshotLocked(ctx context.Context, freeze, required bool) (er
 	if err != nil {
 		return err
 	}
-	// The registry is shared by every tenant: all the snapshots of one tenant together stay under its quota.
-	if t.pod.TenantQuota > 0 {
-		others, qerr := e.Cluster.TenantBytes(ctx, t.pod.Tenant, t.pod.Device)
-		if qerr != nil {
-			return fmt.Errorf("tenant registry usage: %w", qerr)
-		}
-		// What the tenant still has in the repositories of labs that are gone counts too (it takes the volume until the retention ends).
-		if e.Retained != nil {
-			if live, lerr := e.Cluster.LiveRepos(ctx); lerr == nil {
-				if ret, rerr := e.Retained.RetainedBytes(ctx, t.pod.Tenant, live); rerr == nil {
-					others += ret
-				} else if required {
-					return rerr
-				}
-			} else if required {
-				return lerr
-			}
-		}
-		if others+chain.Bytes() > t.pod.TenantQuota {
-			if required {
-				return fmt.Errorf("%w: tenant quota exceeded", snapshot.ErrQuota)
-			}
-			t.lastDiff = digest
-			t.warn(ctx, fmt.Sprintf("%v: the snapshots of the tenant would take %d bytes of the registry, the tenant's quota is %d", snapshot.ErrQuota, others+chain.Bytes(), t.pod.TenantQuota))
-			return nil
-		}
+	if refused, err := t.refuseTenantQuota(ctx, required, digest, chain.Bytes()); refused {
+		return err
 	}
 	if required {
 		if d := t.allow(); d != nil {
@@ -867,4 +781,126 @@ func (t *tracked) warn(ctx context.Context, msg string) {
 func trackingPodInfo(p PodInfo) PodInfo {
 	p.CaptureRequest = nil
 	return p
+}
+
+// refuseFilteredLayer preserves the ordinary snapshot's quota refusal and the
+// Required capture's strict failure before checking any filtered metadata.
+func (t *tracked) refuseFilteredLayer(ctx context.Context, required bool, ferr error) (bool, error) {
+	if errors.Is(ferr, snapshot.ErrQuota) {
+		// Over the write quota before the layer was even copied (a sparse file counts by its apparent size): the last good snapshot
+		// stays, and the same change is not diffed again for a while.
+		t.holdUntil = t.e.now().Add(quotaHold)
+		t.warn(ctx, ferr.Error())
+		if required {
+			return true, ferr
+		}
+		return true, nil
+	}
+	if errors.Is(ferr, snapshot.ErrEntries) {
+		// Too many files: the last good snapshot stays; the next change is tried again (the layer only grows, so it will
+		// most likely be refused again, but the warning is cleared by a snapshot that fits).
+		t.warn(ctx, ferr.Error())
+		if required {
+			return true, ferr
+		}
+		return true, nil
+	}
+	if ferr != nil {
+		return true, fmt.Errorf("filter layer: %w", ferr)
+	}
+	return false, nil
+}
+
+func (t *tracked) snapshotEmptyLayer(ctx context.Context, required bool, skipMsg string) error {
+	if t.pushed && !required {
+		if err := t.publishStart(ctx); err != nil {
+			return err
+		}
+	}
+	t.lastSnapshot = Snapshot{Image: t.c.ImageRef, At: t.e.now()}
+	if required {
+		t.lastPublishedDiff = ""
+		t.lastDiff = ""
+		t.pushed = false
+	}
+	if required && t.e.snapshotRef(t.c.ImageRef) != "" {
+		run, err := t.loadImage(ctx)
+		if err != nil {
+			return err
+		}
+		chain, err := snapshot.ChainOf(run)
+		if err != nil {
+			return err
+		}
+		t.lastSnapshot.SizeBytes = chain.Bytes()
+		t.lastSnapshot.Layers = int32(chain.Layers())
+	}
+	t.warnSkipped(ctx, skipMsg)
+	return nil // nothing (else) changed since the device started
+}
+
+// refuseTenantQuota keeps tenant and retained accounting before push admission.
+func (t *tracked) refuseTenantQuota(ctx context.Context, required bool, digest string, chainBytes int64) (bool, error) {
+	// The registry is shared by every tenant: all the snapshots of one tenant together stay under its quota.
+	if t.pod.TenantQuota > 0 {
+		others, qerr := t.e.Cluster.TenantBytes(ctx, t.pod.Tenant, t.pod.Device)
+		if qerr != nil {
+			return true, fmt.Errorf("tenant registry usage: %w", qerr)
+		}
+		// What the tenant still has in the repositories of labs that are gone counts too (it takes the volume until the retention ends).
+		if t.e.Retained != nil {
+			if live, lerr := t.e.Cluster.LiveRepos(ctx); lerr == nil {
+				if ret, rerr := t.e.Retained.RetainedBytes(ctx, t.pod.Tenant, live); rerr == nil {
+					others += ret
+				} else if required {
+					return true, rerr
+				}
+			} else if required {
+				return true, lerr
+			}
+		}
+		if others+chainBytes > t.pod.TenantQuota {
+			if required {
+				return true, fmt.Errorf("%w: tenant quota exceeded", snapshot.ErrQuota)
+			}
+			t.lastDiff = digest
+			t.warn(ctx, fmt.Sprintf("%v: the snapshots of the tenant would take %d bytes of the registry, the tenant's quota is %d", snapshot.ErrQuota, others+chainBytes, t.pod.TenantQuota))
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// filterSnapshotLayer closes both streams before applying the unchanged filter
+// refusals and Required ownership/data completeness checks.
+func (t *tracked) filterSnapshotLayer(ctx context.Context, rc io.ReadCloser, layerPath string, pol snapshot.Policy, required bool) (snapshot.Stats, string, bool, error) {
+	f, err := os.Create(layerPath)
+	if err != nil {
+		_ = rc.Close()
+		return snapshot.Stats{}, "", true, err
+	}
+	sum := sha256.New()
+	stats, ferr := snapshot.FilterLayerMapped(rc, io.MultiWriter(f, sum), pol, t.c.IDs)
+	if cerr := rc.Close(); ferr == nil {
+		ferr = cerr
+	}
+	if cerr := f.Close(); ferr == nil {
+		ferr = cerr
+	}
+	if refused, err := t.refuseFilteredLayer(ctx, required, ferr); refused {
+		return snapshot.Stats{}, "", true, err
+	}
+	if required && (stats.Unmapped > 0 || stats.SkippedTotal > 0 || stats.RefusedEntries > 0) {
+		return snapshot.Stats{}, "", true, fmt.Errorf("required capture omits file data or ownership")
+	}
+	if stats.Unmapped > 0 {
+		t.e.Log.Info("owner ids outside the user namespace map were written as 0", "device", t.pod.Device, "pod", t.pod.Pod, "ids", stats.Unmapped)
+	}
+	digest := hex.EncodeToString(sum.Sum(nil))
+
+	return stats, digest, false, nil
+}
+
+func (t *tracked) unchangedSnapshotLayer(required bool, digest string) bool {
+	return !required && digest == t.lastDiff || required && t.pushed && digest == t.lastPublishedDiff
 }

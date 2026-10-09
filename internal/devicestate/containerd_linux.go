@@ -204,17 +204,17 @@ func (r *ContainerdRuntime) Diff(ctx context.Context, c Container, freeze bool, 
 				if err != nil {
 					return err
 				}
-				defer up.Close()
+				defer func() { _ = up.Close() }()
 				live, err := os.OpenRoot(livePath)
 				if err != nil {
 					return err
 				}
-				defer live.Close()
+				defer func() { _ = live.Close() }()
 				lo, err := os.OpenRoot(lowerPath)
 				if err != nil {
 					return err
 				}
-				defer lo.Close()
+				defer func() { _ = lo.Close() }()
 				return writeUserXattrLayer(cctx, content.NewReader(ra), out, up, live, lo, pol)
 			})
 		})

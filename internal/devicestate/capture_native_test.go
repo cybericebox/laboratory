@@ -150,7 +150,7 @@ func TestRequiredCaptureNativeRecoveryAfterAPIOutage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &requiredHold{Container: c, Pod: r.pod, Result: captureResult(r.pod, req, "boot-a")}
+	h := &requiredHold{Container: c, Pod: r.pod, Result: captureResult(req, "boot-a")}
 	if err := r.e.writeHold(h); err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestRequiredCaptureNativeCommittedRecoveryKeepsRealWriterFrozen(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := captureResult(r.pod, req, "prior-boot")
+	result := captureResult(req, "prior-boot")
 	result.Result = "Succeeded"
 	result.Quiesced = true
 	result.Committed = true
