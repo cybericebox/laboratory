@@ -4,12 +4,14 @@ package nodeagent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"os"
 	"reflect"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -151,8 +153,7 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 	}
 	for i := range labs.Items {
 		parent := &labs.Items[i]
-		base := parent.DeepCopy()
-		reports := otherNodeReports(parent.Status.ScopeReports, r.Observer.NodeName)
+		var reports []lab.OwnedRuntimeReport
 		for _, scope := range parent.Status.ScopeInventory {
 			if scope.NodeName == r.Observer.NodeName {
 				report := r.Observer.ObserveScope(ctx, scope, nativeRetirementSample(parent.Annotations, string(parent.UID), scope))
@@ -163,11 +164,8 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 				reports = append(reports, report)
 			}
 		}
-		parent.Status.ScopeReports = reports
-		if !reflect.DeepEqual(base.Status.ScopeReports, reports) {
-			if err := r.Client.Status().Patch(ctx, parent, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-				publicationErrors = append(publicationErrors, fmt.Errorf("publish native lab %s/%s: %w", parent.Namespace, parent.Name, err))
-			}
+		if err := r.publishLabScopes(ctx, parent, reports); err != nil {
+			publicationErrors = append(publicationErrors, fmt.Errorf("publish native lab %s/%s: %w", parent.Namespace, parent.Name, err))
 		}
 	}
 	var devices lab.DeviceList
@@ -230,6 +228,87 @@ func (r *LifecycleReporter) sync(ctx context.Context) error {
 	}
 	return errors.Join(publicationErrors...)
 }
+
+// Native scans can outlive an unrelated controller status write. Refresh only
+// the API merge, retaining the sampled intent and declarations as authority.
+func (r *LifecycleReporter) publishLabScopes(ctx context.Context, sampled *lab.Lab, reports []lab.OwnedRuntimeReport) error {
+	if len(reports) == 0 {
+		return nil
+	}
+	var last error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var live lab.Lab
+		if err := r.Reader.Get(ctx, client.ObjectKeyFromObject(sampled), &live); err != nil {
+			return err
+		}
+		if live.UID != sampled.UID || live.Generation != sampled.Generation || !reflect.DeepEqual(live.Spec.Lifecycle, sampled.Spec.Lifecycle) || !reflect.DeepEqual(live.Status.ScopeInventory, sampled.Status.ScopeInventory) || live.Annotations[names.AnnotationLifecycleRetirement] != sampled.Annotations[names.AnnotationLifecycleRetirement] || !sameScopePublicationBarrier(live.Status.Lifecycle, sampled.Status.Lifecycle) {
+			return ErrPortOwnerChanged
+		}
+		for _, report := range reports {
+			declared := false
+			for _, id := range live.Status.ScopeInventory {
+				declared = declared || id.NodeName == r.Observer.NodeName && sameDeclaredNativeScope(id, report.Identity)
+			}
+			if !declared || report.Identity.NodeName != r.Observer.NodeName {
+				return ErrPortOwnerChanged
+			}
+			if report.RuntimeState == "Released" {
+				// The producer also returns immutable historical certificates before
+				// live eligibility checks. Preserve that authority after a restore.
+				var durable lab.OwnedRuntimeReport
+				r.Observer.mu.Lock()
+				err := r.Observer.readRecord("scope-fabric-released", report.Identity, &durable)
+				r.Observer.mu.Unlock()
+				durable.Identity = runtimeWireIdentity(durable.Identity)
+				native := *report.DeepCopy()
+				native.RetirementOperationID, native.RetirementRevision = "", 0
+				// Compare the same serialized certificate representation as writeRecord.
+				// metav1.Time's journal encoding omits sub-second/monotonic clock data.
+				wire, wireErr := json.Marshal(native)
+				if wireErr != nil {
+					return wireErr
+				}
+				if wireErr := json.Unmarshal(wire, &native); wireErr != nil {
+					return wireErr
+				}
+				if err != nil || report.Identity.NodeBootID != r.Observer.BootID || !committedRuntimeReport(durable, native.Identity) || !reflect.DeepEqual(durable, native) {
+					return ErrPortOwnerChanged
+				}
+			}
+		}
+		base := live.DeepCopy()
+		for _, report := range reports {
+			merged := make([]lab.OwnedRuntimeReport, 0, len(live.Status.ScopeReports)+1)
+			for _, old := range live.Status.ScopeReports {
+				if !sameDeclaredNativeScope(old.Identity, report.Identity) {
+					merged = append(merged, old)
+				} else if old.ObservedAt != nil && (report.ObservedAt == nil || old.ObservedAt.After(report.ObservedAt.Time)) {
+					report = old
+				}
+			}
+			live.Status.ScopeReports = append(merged, report)
+		}
+		if reflect.DeepEqual(base.Status.ScopeReports, live.Status.ScopeReports) {
+			return nil
+		}
+		last = r.Client.Status().Patch(ctx, &live, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+		if !apierrors.IsConflict(last) {
+			return last
+		}
+	}
+	return last
+}
+
+func sameScopePublicationBarrier(a, b *lab.LabLifecycleStatus) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.LabUID == b.LabUID && a.OperationID == b.OperationID && a.Revision == b.Revision && a.ObservedGeneration == b.ObservedGeneration && a.SnapshotComplete == b.SnapshotComplete
+}
+
 func appendUniqueRow(rows []lab.OwnedRuntimeIdentity, id lab.OwnedRuntimeIdentity) []lab.OwnedRuntimeIdentity {
 	for _, old := range rows {
 		if sameRuntimeOwner(old, id) {
