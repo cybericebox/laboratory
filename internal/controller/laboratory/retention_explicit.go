@@ -23,6 +23,17 @@ func (s *RetentionSweeper) retireRetained(ctx context.Context, reader client.Rea
 	if !retirementReady(l) {
 		return nil
 	}
+	// Platform-managed generations have a durable owner that can extend event
+	// schedules and future-stage pins without changing the accepted stop tuple.
+	// Their storage is retired only by the explicit lifecycle protocol. The
+	// standalone expiry path must not race that owner's current deadline.
+	if raw := l.Annotations[names.AnnotationLabCreation]; raw != "" {
+		var birth lab.LabCreationReceipt
+		if json.Unmarshal([]byte(raw), &birth) != nil || !birth.Committed || birth.LabUID != string(l.UID) || birth.LabName != l.Name || birth.GroupUID == "" || birth.NamespaceUID == "" || birth.OperationID == "" || birth.Revision < 1 || birth.DefinitionHash == "" || birth.CreationID == "" {
+			return fmt.Errorf("managed birth identity unavailable for %s/%s retention", l.Namespace, l.Name)
+		}
+		return nil
+	}
 	f, ok := lab.ParseSnapshotRetirement(l.Annotations[names.AnnotationSnapshotRetirement])
 	if !ok {
 		if l.Annotations[names.AnnotationSnapshotRetirement] != "" {
