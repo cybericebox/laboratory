@@ -251,42 +251,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		proxy.ServeHTTP(w, r)
 		return
 	}
-	request := h.meter.Begin(namespace, client, lab, h.now())
-	defer func() {
-		if value := recover(); value != nil {
-			request.Incomplete()
-			request.End()
-			panic(value)
-		}
-		request.End()
-	}()
-	if r.Body != nil && r.Body != http.NoBody {
-		r.Body = &countingBody{ReadCloser: r.Body, request: request}
-	}
-	proxy.ModifyResponse = func(resp *http.Response) error {
-		deviceResponseFilter(resp.Header, h.cookieName, deviceHost, h.baseDomain)
-		request.Responded(h.now())
-		if resp.StatusCode == http.StatusSwitchingProtocols {
-			if strings.EqualFold(resp.Header.Get("Upgrade"), "websocket") {
-				compression, known := websocketCompression(resp.Header.Get("Sec-WebSocket-Extensions"))
-				if !known {
-					request.Incomplete()
-				} else {
-					upgrade.meter = request
-					upgrade.compression = compression
-				}
-			} else {
-				request.Incomplete()
-			}
-		}
-		return nil
-	}
-	rec := &countingWriter{ResponseWriter: w, request: request}
-	proxy.ErrorHandler = func(_ http.ResponseWriter, r *http.Request, _ error) {
-		// Proxy-generated error pages are not traffic from a laboratory.
-		fail(w, r, http.StatusBadGateway, pageUpstream, "bad gateway")
-	}
-	proxy.ServeHTTP(rec, r)
+	h.serveMeteredProxy(w, r, proxy, upgrade, namespace, client, lab)
 }
 
 func ns(groupID string) string { return GroupNamespace(groupID) }
@@ -428,4 +393,46 @@ func deviceResponseFilter(hdr http.Header, sessionCookie, deviceHost, baseDomain
 		// the base domain or a parent of it
 		return domain != baseDomain && !strings.HasSuffix(baseDomain, "."+domain)
 	})
+}
+
+// serveMeteredProxy runs after session, ownership, and route authorization,
+// preserving upstream progress and incomplete accounting when forwarding aborts.
+func (h *Handler) serveMeteredProxy(w http.ResponseWriter, r *http.Request, proxy *httputil.ReverseProxy, upgrade *hijackRecorder, namespace, client, lab string) {
+	deviceHost := r.Host
+	request := h.meter.Begin(namespace, client, lab, h.now())
+	defer func() {
+		if value := recover(); value != nil {
+			request.Incomplete()
+			request.End()
+			panic(value)
+		}
+		request.End()
+	}()
+	if r.Body != nil && r.Body != http.NoBody {
+		r.Body = &countingBody{ReadCloser: r.Body, request: request}
+	}
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		deviceResponseFilter(resp.Header, h.cookieName, deviceHost, h.baseDomain)
+		request.Responded(h.now())
+		if resp.StatusCode == http.StatusSwitchingProtocols {
+			if strings.EqualFold(resp.Header.Get("Upgrade"), "websocket") {
+				compression, known := websocketCompression(resp.Header.Get("Sec-WebSocket-Extensions"))
+				if !known {
+					request.Incomplete()
+				} else {
+					upgrade.meter = request
+					upgrade.compression = compression
+				}
+			} else {
+				request.Incomplete()
+			}
+		}
+		return nil
+	}
+	rec := &countingWriter{ResponseWriter: w, request: request}
+	proxy.ErrorHandler = func(_ http.ResponseWriter, r *http.Request, _ error) {
+		// Proxy-generated error pages are not traffic from a laboratory.
+		fail(w, r, http.StatusBadGateway, pageUpstream, "bad gateway")
+	}
+	proxy.ServeHTTP(rec, r)
 }

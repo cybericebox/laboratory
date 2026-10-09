@@ -56,55 +56,8 @@ func (f *frameMeter) feed(p []byte) {
 		if f.have < f.need {
 			continue
 		}
-		if f.need == 2 {
-			a, b := f.header[0], f.header[1]
-			opcode := a & 15
-			fin := a&0x80 != 0
-			if a&0x30 != 0 || (a&0x40 != 0 && (!f.compression || opcode != 1 && opcode != 2)) || (b&0x80 != 0) != f.masked {
-				f.invalid()
-				continue
-			}
-			switch opcode {
-			case 0:
-				if !f.fragmented {
-					f.invalid()
-					continue
-				}
-				f.data = true
-				if fin {
-					f.fragmented = false
-				}
-			case 1, 2:
-				if f.fragmented {
-					f.invalid()
-					continue
-				}
-				f.data = true
-				f.fragmented = !fin
-			case 8, 9, 10:
-				if !fin || b&127 > 125 {
-					f.invalid()
-					continue
-				}
-				f.data = false
-			default:
-				f.invalid()
-				continue
-			}
-			ext := 0
-			switch b & 127 {
-			case 126:
-				ext = 2
-			case 127:
-				ext = 8
-			}
-			f.need = 2 + ext
-			if f.masked {
-				f.need += 4
-			}
-			if f.have < f.need {
-				continue
-			}
+		if f.need == 2 && !f.prepareFrameHeader() {
+			continue
 		}
 		length := uint64(f.header[1] & 127)
 		switch length {
@@ -209,4 +162,58 @@ func websocketCompression(header string) (compression, known bool) {
 		}
 	}
 	return
+}
+
+// prepareFrameHeader consumes the first two header bytes while the meter lock
+// is held. False means invalid framing or more extended-header bytes are needed.
+func (f *frameMeter) prepareFrameHeader() bool {
+	a, b := f.header[0], f.header[1]
+	opcode := a & 15
+	fin := a&0x80 != 0
+	if a&0x30 != 0 || (a&0x40 != 0 && (!f.compression || opcode != 1 && opcode != 2)) || (b&0x80 != 0) != f.masked {
+		f.invalid()
+		return false
+	}
+	switch opcode {
+	case 0:
+		if !f.fragmented {
+			f.invalid()
+			return false
+		}
+		f.data = true
+		if fin {
+			f.fragmented = false
+		}
+	case 1, 2:
+		if f.fragmented {
+			f.invalid()
+			return false
+		}
+		f.data = true
+		f.fragmented = !fin
+	case 8, 9, 10:
+		if !fin || b&127 > 125 {
+			f.invalid()
+			return false
+		}
+		f.data = false
+	default:
+		f.invalid()
+		return false
+	}
+	ext := 0
+	switch b & 127 {
+	case 126:
+		ext = 2
+	case 127:
+		ext = 8
+	}
+	f.need = 2 + ext
+	if f.masked {
+		f.need += 4
+	}
+	if f.have < f.need {
+		return false
+	}
+	return true
 }
