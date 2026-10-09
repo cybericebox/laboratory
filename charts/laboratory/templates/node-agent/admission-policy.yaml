@@ -85,7 +85,7 @@ spec:
     - expression: "variables.ownNode != '' && object.spec.nodeName == variables.ownNode && oldObject.spec.nodeName == variables.ownNode"
       message: "the node-agent may patch only Pods on its bound node"
       reason: Forbidden
-    - expression: "'laboratory.cybericebox.com/state-device' in variables.oldAnnotations && oldObject.metadata.?ownerReferences.orValue([]).exists(o, o.apiVersion == 'laboratory.cybericebox.com/v1alpha1' && o.kind == 'Device' && o.name == variables.oldAnnotations['laboratory.cybericebox.com/state-device'] && has(o.controller) && o.controller && o.uid != '')"
+    - expression: "'state.cybericebox.com/device' in variables.oldAnnotations && oldObject.metadata.?ownerReferences.orValue([]).exists(o, o.apiVersion == 'laboratory.cybericebox.com/v1alpha1' && o.kind == 'Device' && o.name == variables.oldAnnotations['state.cybericebox.com/device'] && has(o.controller) && o.controller && o.uid != '')"
       message: "the capture guard belongs only to platform Device-owned state Pods"
       reason: Forbidden
     - expression: "object.spec == oldObject.spec && object.?status.orValue({}) == oldObject.?status.orValue({})"

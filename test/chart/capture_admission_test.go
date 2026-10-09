@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cybericebox/laboratory/internal/names"
+
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -74,7 +76,7 @@ func TestNodeAgentCaptureAdmission(t *testing.T) {
 		if name == "other" {
 			node = "node-b"
 		}
-		p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", Annotations: map[string]string{"laboratory.cybericebox.com/state-device": "device"}}, Spec: corev1.PodSpec{NodeName: node, Containers: []corev1.Container{{Name: "c", Image: "example:1"}}}}
+		p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", Annotations: map[string]string{names.AnnotationStateDevice: "device"}}, Spec: corev1.PodSpec{NodeName: node, Containers: []corev1.Container{{Name: "c", Image: "example:1"}}}}
 		if name != "plain" {
 			p.OwnerReferences = []metav1.OwnerReference{{APIVersion: "laboratory.cybericebox.com/v1alpha1", Kind: "Device", Name: "device", UID: types.UID("device-u"), Controller: &controller}}
 		}
