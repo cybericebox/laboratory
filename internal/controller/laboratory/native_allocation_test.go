@@ -1,10 +1,11 @@
 package laboratory
 
 import (
-	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"testing"
 	"time"
+
+	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestNativeAllocationRetainsEveryUnprovenOwner(t *testing.T) {

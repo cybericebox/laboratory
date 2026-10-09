@@ -17,211 +17,38 @@ import (
 // objects. API absence and an earlier operation's release never mint credit.
 func (r *LabReconciler) runningLabAllocation(ctx context.Context, l *lab.Lab, devices []lab.Device) (*lab.RuntimeAllocation, error) {
 	i := l.Spec.Lifecycle
-	a := &lab.RuntimeAllocation{RuntimeState: "Unknown", OperationID: i.OperationID, Revision: i.Revision, StorageState: "Unknown"}
-	known := r.RuntimeObservation && labStartPrepared(l)
-	held := map[string]lab.ResourceAmounts{}
-	add := func(key string, amount lab.ResourceAmounts) {
-		held[key] = allocationMaximum(held[key], amount)
-	}
-	observe := func(t *metav1.Time) {
-		if nonzeroTime(t) && (a.ObservedAt == nil || t.Before(a.ObservedAt)) {
-			a.ObservedAt = t.DeepCopy()
-		}
-	}
+	a := &lab.RuntimeAllocation{RuntimeState: observationStateUnknown, OperationID: i.OperationID, Revision: i.Revision, StorageState: observationStateUnknown}
+	o := &runningAllocationObservation{lab: l, allocation: a, known: r.RuntimeObservation && labStartPrepared(l), held: map[string]lab.ResourceAmounts{}, byName: map[string]*lab.Device{}, materialized: map[string]bool{}, present: map[string]lab.OwnedRuntimeIdentity{}, declared: map[string]bool{}}
 	var pods corev1.PodList
 	if err := r.lifecycleReader().List(ctx, &pods, client.InNamespace(l.Namespace)); err != nil {
 		return nil, err
 	}
-	byName := map[string]*lab.Device{}
-	materialized := map[string]bool{}
-	present := map[string]lab.OwnedRuntimeIdentity{}
-	declared := map[string]bool{}
 	for _, template := range l.Spec.Devices {
-		declared[template.Name] = true
+		o.declared[template.Name] = true
 	}
-	for n := range devices {
-		d := &devices[n]
-		if !ownedLabDevice(l, d) {
-			continue
-		}
-		byName[d.Spec.Name] = d
-		if d.Status.State != nil {
-			a.SnapshotQuotaBytes += d.Status.State.SizeBytes
-		}
-		rows := append(append([]lab.OwnedRuntimeIdentity(nil), d.Status.RuntimeInventory...), reportHistory(d.Status.RuntimeReports)...)
-		for _, row := range rows {
-			if !devicePlacementIdentity(l, d, row) || allocationRowReleased(row, d.Status.RuntimeReports) {
-				continue
-			}
-			add(allocationPhysicalKey(row), row.Requests)
-		}
-		if d.Spec.Type == lab.DeviceTypeContainer && !declared[d.Spec.Name] {
-			// Pruning an API object is not proof that its last Pod stopped.
-			known = false
-			key := "undeclared/" + string(d.UID)
-			for _, row := range rows {
-				if devicePlacementIdentity(l, d, row) && !allocationRowReleased(row, d.Status.RuntimeReports) {
-					key = allocationPhysicalKey(row)
-				}
-			}
-			for n := range pods.Items {
-				p := &pods.Items[n]
-				owned, err := r.ownedRuntimeDevicePod(ctx, d, p)
-				if err != nil {
-					return nil, err
-				}
-				if owned {
-					var node corev1.Node
-					if p.Spec.NodeName != "" {
-						if err := r.lifecycleReader().Get(ctx, client.ObjectKey{Name: p.Spec.NodeName}, &node); err != nil && !apierrors.IsNotFound(err) {
-							return nil, err
-						}
-					}
-					key = allocationPhysicalKey(lab.OwnedRuntimeIdentity{NodeName: p.Spec.NodeName, NodeBootID: node.Status.NodeInfo.BootID, PodUID: string(p.UID)})
-					amount, _ := allocationOwnedPodResources(p)
-					add(key, amount)
-				}
-			}
-			add(key, allocationAmounts(deviceResources(d, r.Defaults).Requests))
-		}
+	if err := r.observeRunningDeviceHoldings(ctx, o, devices, pods); err != nil {
+		return nil, err
 	}
-	for _, template := range l.Spec.Devices {
-		if template.Type != lab.DeviceTypeContainer {
-			continue
-		}
-		configured := deviceResources(&lab.Device{Spec: lab.DeviceSpec{Resources: template.Resources}}, r.Defaults)
-		request, limit := allocationPodResources([]corev1.Container{{Resources: configured}})
-		a.ConfiguredRequests = allocationSum(a.ConfiguredRequests, request)
-		a.ConfiguredLimits = allocationSum(a.ConfiguredLimits, limit)
-		d := byName[template.Name]
-		currentKey := "configured/" + template.Name
-		deviceKnown := false
-		if d != nil {
-			actual := deviceResources(d, r.Defaults)
-			request = allocationMaximum(request, allocationAmounts(actual.Requests))
-			limit = allocationMaximum(limit, allocationAmounts(actual.Limits))
-			// An API-lost current Pod still names one physical obligation, rather
-			// than a second configured placeholder. It cannot certify presence.
-			for _, report := range d.Status.RuntimeReports {
-				id := report.Identity
-				if currentAllocationIdentity(l, id) && id.ScopeUID == string(d.UID) && id.PodUID != "" && id.NodeName == d.Status.NodeName && deviceAllocationState(d, id) {
-					currentKey = allocationPhysicalKey(id)
-				}
-			}
-			for n := range pods.Items {
-				p := &pods.Items[n]
-				owned, err := r.ownedRuntimeDevicePod(ctx, d, p)
-				if err != nil {
-					return nil, err
-				}
-				if !owned {
-					continue
-				}
-				var node corev1.Node
-				if p.Spec.NodeName != "" {
-					err = r.lifecycleReader().Get(ctx, client.ObjectKey{Name: p.Spec.NodeName}, &node)
-				}
-				if err != nil && !apierrors.IsNotFound(err) && p.Spec.NodeName != "" {
-					return nil, err
-				}
-				key := allocationPhysicalKey(lab.OwnedRuntimeIdentity{NodeName: p.Spec.NodeName, NodeBootID: node.Status.NodeInfo.BootID, PodUID: string(p.UID)})
-				podRequest, podLimit := allocationOwnedPodResources(p)
-				add(key, podRequest)
-				if p.Name != d.Status.PodName || p.Spec.NodeName != d.Status.NodeName {
-					known = false
-					continue
-				}
-				currentKey = key
-				request = allocationMaximum(request, podRequest)
-				limit = allocationMaximum(limit, podLimit)
-				for _, report := range d.Status.RuntimeReports {
-					id := report.Identity
-					if !currentAllocationIdentity(l, id) || id.ScopeUID != string(d.UID) || id.PodUID != string(p.UID) || id.NodeName != p.Spec.NodeName || id.NodeBootID == "" || id.NodeBootID != node.Status.NodeInfo.BootID || !d.Status.Ready || !deviceAllocationState(d, id) || len(id.ContainerIDs) == 0 || len(id.CgroupPaths) == 0 || !id.AttachmentsComplete || !containsStrings(id.ContainerIDs, podContainerIDs(p)) || report.Error != "" || report.RuntimeState != "Allocated" || !freshAllocationTime(report.ObservedAt) || !p.DeletionTimestamp.IsZero() {
-						continue
-					}
-					deviceKnown = true
-					materialized[string(d.UID)] = true
-					present[key] = id
-					request = allocationMaximum(request, id.Requests)
-					limit = allocationMaximum(limit, id.Limits)
-					observe(report.ObservedAt)
-				}
-			}
-		}
-		add(currentKey, request)
-		known = known && deviceKnown
-		// Actual Pods/native reports can exceed today's clamped configuration.
-		a.ConfiguredRequests = allocationSum(a.ConfiguredRequests, allocationDifference(request, allocationAmounts(configured.Requests)))
-		a.ConfiguredLimits = allocationSum(a.ConfiguredLimits, allocationDifference(limit, allocationAmounts(configured.Limits)))
+	if err := r.observeConfiguredRunningAllocation(ctx, o, pods); err != nil {
+		return nil, err
 	}
-	for _, d := range devices {
-		if !ownedLabDevice(l, &d) {
-			continue
-		}
-		for _, row := range append(append([]lab.OwnedRuntimeIdentity(nil), d.Status.RuntimeInventory...), reportHistory(d.Status.RuntimeReports)...) {
-			if !devicePlacementIdentity(l, &d, row) || allocationRowReleased(row, d.Status.RuntimeReports) {
-				continue
-			}
-			current, currentPresent := present[allocationPhysicalKey(row)]
-			if !currentAllocationIdentity(l, row) || !materialized[string(d.UID)] || !currentPresent || row.PodUID == "" || !deviceAllocationState(&d, row) || !scopeHistoryContains(current.ContainerIDs, row.ContainerIDs) || !scopeHistoryContains(current.CgroupPaths, row.CgroupPaths) || !scopeHistoryContains(current.PortKeys, row.PortKeys) || !scopeHistoryContains(current.PortRows, row.PortRows) {
-				known = false
-			}
-		}
+	verifyRunningAllocationHistory(o, devices)
+	if err := r.observeRunningFabricAllocation(ctx, o); err != nil {
+		return nil, err
 	}
-	// Every declared placement node needs its own fresh whole-fabric sample.
-	scopes := adoptReleasedScopeHistory(l.Status.ScopeInventory, l.Status.ScopeReports)
-	haveFabric := false
-	for _, scope := range scopes {
-		if scope.OwnerUID != string(l.UID) || scope.Namespace != l.Namespace || scope.LabName != l.Name {
-			known = false
-			continue
-		}
-		if scope.ScopeKind == "NeverMaterialized" && materialized[scope.ScopeUID] && emptyAllocationDeclaration(scope) {
-			continue
-		}
-		if !currentAllocationIdentity(l, scope) {
-			if !allocationRowReleased(scope, l.Status.ScopeReports) {
-				known = false
-				add(allocationPhysicalKey(scope), scope.Requests)
-			}
-			continue
-		}
-		if scope.ScopeKind != "LabFabric" || scope.ScopeUID != string(l.UID) {
-			known = false
-			add(allocationPhysicalKey(scope), scope.Requests)
-			continue
-		}
-		haveFabric = true
-		var node corev1.Node
-		err := r.lifecycleReader().Get(ctx, client.ObjectKey{Name: scope.NodeName}, &node)
-		if err != nil && !apierrors.IsNotFound(err) {
-			return nil, err
-		}
-		found := false
-		for _, report := range l.Status.ScopeReports {
-			// Running whole-scope presence does not set AttachmentsComplete:
-			// that flag certifies absence/retirement, not live fabric presence.
-			if allocationScopeContains(scope, report.Identity) && scope.NodeBootID != "" && scope.NodeBootID == node.Status.NodeInfo.BootID && report.Error == "" && report.RuntimeState == "Allocated" && freshAllocationTime(report.ObservedAt) {
-				found = true
-				observe(report.ObservedAt)
-			}
-		}
-		known = known && found
+	for _, amount := range o.held {
+		o.allocation.AllocatedRequests = allocationSum(o.allocation.AllocatedRequests, amount)
 	}
-	known = known && haveFabric
-	for _, amount := range held {
-		a.AllocatedRequests = allocationSum(a.AllocatedRequests, amount)
-	}
-	if known {
-		a.RuntimeState = "Allocated"
+	if o.known {
+		o.allocation.RuntimeState = runtimeStateAllocated
 	} else if l.Status.Resources != nil {
 		// Lost inventories cannot erase an already published positive hold.
-		a.AllocatedRequests = allocationMaximum(a.AllocatedRequests, l.Status.Resources.AllocatedRequests)
+		o.allocation.AllocatedRequests = allocationMaximum(o.allocation.AllocatedRequests, l.Status.Resources.AllocatedRequests)
 	}
 	if l.Status.Resources != nil {
-		a.SnapshotQuotaBytes = max(a.SnapshotQuotaBytes, l.Status.Resources.SnapshotQuotaBytes)
+		o.allocation.SnapshotQuotaBytes = max(o.allocation.SnapshotQuotaBytes, l.Status.Resources.SnapshotQuotaBytes)
 	}
-	return a, nil
+	return o.allocation, nil
 }
 
 func currentAllocationIdentity(l *lab.Lab, id lab.OwnedRuntimeIdentity) bool {
@@ -243,7 +70,7 @@ func (r *LabReconciler) publishUnknownRunningAllocation(ctx context.Context, l *
 	if err != nil {
 		return err
 	}
-	a.RuntimeState = "Unknown"
+	a.RuntimeState = observationStateUnknown
 	if reflect.DeepEqual(a, l.Status.Resources) {
 		return nil
 	}
@@ -312,8 +139,222 @@ func podContainerIDs(p *corev1.Pod) []string {
 	return ids
 }
 func runningAllocationRequeue(l *lab.Lab) ctrl.Result {
-	if l.Spec.Lifecycle != nil && l.Spec.Lifecycle.DesiredState == "Running" {
+	if l.Spec.Lifecycle != nil && l.Spec.Lifecycle.DesiredState == lifecycleStateRunning {
 		return ctrl.Result{RequeueAfter: 30 * time.Second}
 	}
 	return ctrl.Result{}
+}
+
+// runningAllocationObservation retains every physical hold while collecting
+// current native presence. All phases share the same conservative ledger.
+type runningAllocationObservation struct {
+	lab          *lab.Lab
+	allocation   *lab.RuntimeAllocation
+	known        bool
+	held         map[string]lab.ResourceAmounts
+	byName       map[string]*lab.Device
+	materialized map[string]bool
+	present      map[string]lab.OwnedRuntimeIdentity
+	declared     map[string]bool
+}
+
+func (o *runningAllocationObservation) add(key string, amount lab.ResourceAmounts) {
+	o.held[key] = allocationMaximum(o.held[key], amount)
+}
+func (o *runningAllocationObservation) observe(t *metav1.Time) {
+	if nonzeroTime(t) && (o.allocation.ObservedAt == nil || t.Before(o.allocation.ObservedAt)) {
+		o.allocation.ObservedAt = t.DeepCopy()
+	}
+}
+func (r *LabReconciler) observeRunningDeviceHoldings(ctx context.Context, o *runningAllocationObservation, devices []lab.Device, pods corev1.PodList) error {
+	l := o.lab
+	for n := range devices {
+		d := &devices[n]
+		if !ownedLabDevice(l, d) {
+			continue
+		}
+		o.byName[d.Spec.Name] = d
+		if d.Status.State != nil {
+			o.allocation.SnapshotQuotaBytes += d.Status.State.SizeBytes
+		}
+		rows := append(append([]lab.OwnedRuntimeIdentity(nil), d.Status.RuntimeInventory...), reportHistory(d.Status.RuntimeReports)...)
+		for _, row := range rows {
+			if !devicePlacementIdentity(l, d, row) || allocationRowReleased(row, d.Status.RuntimeReports) {
+				continue
+			}
+			o.add(allocationPhysicalKey(row), row.Requests)
+		}
+		if d.Spec.Type == lab.DeviceTypeContainer && !o.declared[d.Spec.Name] {
+			// Pruning an API object is not proof that its last Pod stopped.
+			o.known = false
+			key := "undeclared/" + string(d.UID)
+			for _, row := range rows {
+				if devicePlacementIdentity(l, d, row) && !allocationRowReleased(row, d.Status.RuntimeReports) {
+					key = allocationPhysicalKey(row)
+				}
+			}
+			for n := range pods.Items {
+				p := &pods.Items[n]
+				owned, err := r.ownedRuntimeDevicePod(ctx, d, p)
+				if err != nil {
+					return err
+				}
+				if owned {
+					var node corev1.Node
+					if p.Spec.NodeName != "" {
+						if err := r.lifecycleReader().Get(ctx, client.ObjectKey{Name: p.Spec.NodeName}, &node); err != nil && !apierrors.IsNotFound(err) {
+							return err
+						}
+					}
+					key = allocationPhysicalKey(lab.OwnedRuntimeIdentity{NodeName: p.Spec.NodeName, NodeBootID: node.Status.NodeInfo.BootID, PodUID: string(p.UID)})
+					amount, _ := allocationOwnedPodResources(p)
+					o.add(key, amount)
+				}
+			}
+			o.add(key, allocationAmounts(deviceResources(d, r.Defaults).Requests))
+		}
+	}
+	return nil
+}
+func runningDeviceCurrentKey(l *lab.Lab, d *lab.Device, id lab.OwnedRuntimeIdentity) bool {
+	return currentAllocationIdentity(l, id) && id.ScopeUID == string(d.UID) && id.PodUID != "" && id.NodeName == d.Status.NodeName && deviceAllocationState(d, id)
+}
+func runningDeviceReportMissing(l *lab.Lab, d *lab.Device, p *corev1.Pod, node *corev1.Node, report lab.OwnedRuntimeReport) bool {
+	id := report.Identity
+	return !currentAllocationIdentity(l, id) || id.ScopeUID != string(d.UID) || id.PodUID != string(p.UID) || id.NodeName != p.Spec.NodeName || id.NodeBootID == "" || id.NodeBootID != node.Status.NodeInfo.BootID || !d.Status.Ready || !deviceAllocationState(d, id) || len(id.ContainerIDs) == 0 || len(id.CgroupPaths) == 0 || !id.AttachmentsComplete || !containsStrings(id.ContainerIDs, podContainerIDs(p)) || report.Error != "" || report.RuntimeState != runtimeStateAllocated || !freshAllocationTime(report.ObservedAt) || !p.DeletionTimestamp.IsZero()
+}
+func (r *LabReconciler) observeConfiguredRunningAllocation(ctx context.Context, o *runningAllocationObservation, pods corev1.PodList) error {
+	l := o.lab
+	for _, template := range l.Spec.Devices {
+		if template.Type != lab.DeviceTypeContainer {
+			continue
+		}
+		configured := deviceResources(&lab.Device{Spec: lab.DeviceSpec{Resources: template.Resources}}, r.Defaults)
+		request, limit := allocationPodResources([]corev1.Container{{Resources: configured}})
+		o.allocation.ConfiguredRequests = allocationSum(o.allocation.ConfiguredRequests, request)
+		o.allocation.ConfiguredLimits = allocationSum(o.allocation.ConfiguredLimits, limit)
+		d := o.byName[template.Name]
+		currentKey := "configured/" + template.Name
+		deviceKnown := false
+		if d != nil {
+			actual := deviceResources(d, r.Defaults)
+			request = allocationMaximum(request, allocationAmounts(actual.Requests))
+			limit = allocationMaximum(limit, allocationAmounts(actual.Limits))
+			// An API-lost current Pod still names one physical obligation, rather
+			// than a second configured placeholder. It cannot certify presence.
+			for _, report := range d.Status.RuntimeReports {
+				id := report.Identity
+				if runningDeviceCurrentKey(l, d, id) {
+					currentKey = allocationPhysicalKey(id)
+				}
+			}
+			for n := range pods.Items {
+				p := &pods.Items[n]
+				owned, err := r.ownedRuntimeDevicePod(ctx, d, p)
+				if err != nil {
+					return err
+				}
+				if !owned {
+					continue
+				}
+				var node corev1.Node
+				if p.Spec.NodeName != "" {
+					err = r.lifecycleReader().Get(ctx, client.ObjectKey{Name: p.Spec.NodeName}, &node)
+				}
+				if err != nil && !apierrors.IsNotFound(err) && p.Spec.NodeName != "" {
+					return err
+				}
+				key := allocationPhysicalKey(lab.OwnedRuntimeIdentity{NodeName: p.Spec.NodeName, NodeBootID: node.Status.NodeInfo.BootID, PodUID: string(p.UID)})
+				podRequest, podLimit := allocationOwnedPodResources(p)
+				o.add(key, podRequest)
+				if p.Name != d.Status.PodName || p.Spec.NodeName != d.Status.NodeName {
+					o.known = false
+					continue
+				}
+				currentKey = key
+				request = allocationMaximum(request, podRequest)
+				limit = allocationMaximum(limit, podLimit)
+				for _, report := range d.Status.RuntimeReports {
+					id := report.Identity
+					if runningDeviceReportMissing(l, d, p, &node, report) {
+						continue
+					}
+					deviceKnown = true
+					o.materialized[string(d.UID)] = true
+					o.present[key] = id
+					request = allocationMaximum(request, id.Requests)
+					limit = allocationMaximum(limit, id.Limits)
+					o.observe(report.ObservedAt)
+				}
+			}
+		}
+		o.add(currentKey, request)
+		o.known = o.known && deviceKnown
+		// Actual Pods/native reports can exceed today's clamped configuration.
+		o.allocation.ConfiguredRequests = allocationSum(o.allocation.ConfiguredRequests, allocationDifference(request, allocationAmounts(configured.Requests)))
+		o.allocation.ConfiguredLimits = allocationSum(o.allocation.ConfiguredLimits, allocationDifference(limit, allocationAmounts(configured.Limits)))
+	}
+	return nil
+}
+func verifyRunningAllocationHistory(o *runningAllocationObservation, devices []lab.Device) {
+	l := o.lab
+	for _, d := range devices {
+		if !ownedLabDevice(l, &d) {
+			continue
+		}
+		for _, row := range append(append([]lab.OwnedRuntimeIdentity(nil), d.Status.RuntimeInventory...), reportHistory(d.Status.RuntimeReports)...) {
+			if !devicePlacementIdentity(l, &d, row) || allocationRowReleased(row, d.Status.RuntimeReports) {
+				continue
+			}
+			current, currentPresent := o.present[allocationPhysicalKey(row)]
+			if !currentAllocationIdentity(l, row) || !o.materialized[string(d.UID)] || !currentPresent || row.PodUID == "" || !deviceAllocationState(&d, row) || !scopeHistoryContains(current.ContainerIDs, row.ContainerIDs) || !scopeHistoryContains(current.CgroupPaths, row.CgroupPaths) || !scopeHistoryContains(current.PortKeys, row.PortKeys) || !scopeHistoryContains(current.PortRows, row.PortRows) {
+				o.known = false
+			}
+		}
+	}
+}
+func (r *LabReconciler) observeRunningFabricAllocation(ctx context.Context, o *runningAllocationObservation) error {
+	l := o.lab
+	// Every declared placement node needs its own fresh whole-fabric sample.
+	scopes := adoptReleasedScopeHistory(l.Status.ScopeInventory, l.Status.ScopeReports)
+	haveFabric := false
+	for _, scope := range scopes {
+		if scope.OwnerUID != string(l.UID) || scope.Namespace != l.Namespace || scope.LabName != l.Name {
+			o.known = false
+			continue
+		}
+		if scope.ScopeKind == scopeKindNeverMaterialized && o.materialized[scope.ScopeUID] && emptyAllocationDeclaration(scope) {
+			continue
+		}
+		if !currentAllocationIdentity(l, scope) {
+			if !allocationRowReleased(scope, l.Status.ScopeReports) {
+				o.known = false
+				o.add(allocationPhysicalKey(scope), scope.Requests)
+			}
+			continue
+		}
+		if scope.ScopeKind != scopeKindLabFabric || scope.ScopeUID != string(l.UID) {
+			o.known = false
+			o.add(allocationPhysicalKey(scope), scope.Requests)
+			continue
+		}
+		haveFabric = true
+		var node corev1.Node
+		err := r.lifecycleReader().Get(ctx, client.ObjectKey{Name: scope.NodeName}, &node)
+		if err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		found := false
+		for _, report := range l.Status.ScopeReports {
+			// Running whole-scope presence does not set AttachmentsComplete:
+			// that flag certifies absence/retirement, not live fabric presence.
+			if allocationScopeContains(scope, report.Identity) && scope.NodeBootID != "" && scope.NodeBootID == node.Status.NodeInfo.BootID && report.Error == "" && report.RuntimeState == runtimeStateAllocated && freshAllocationTime(report.ObservedAt) {
+				found = true
+				o.observe(report.ObservedAt)
+			}
+		}
+		o.known = o.known && found
+	}
+	o.known = o.known && haveFabric
+	return nil
 }

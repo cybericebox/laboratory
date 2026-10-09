@@ -244,7 +244,7 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 		if err := r.reader().Get(ctx, client.ObjectKey{Name: device.Spec.LabRef, Namespace: device.Namespace}, &parent); err != nil {
 			return ctrl.Result{}, err
 		}
-		if parent.Spec.Lifecycle != nil && parent.Spec.Lifecycle.DesiredState == "Running" {
+		if parent.Spec.Lifecycle != nil && parent.Spec.Lifecycle.DesiredState == lifecycleStateRunning {
 			if ok, gateErr := r.mayCreateWorkload(ctx, device); gateErr != nil || !ok {
 				return ctrl.Result{RequeueAfter: 2 * time.Second}, gateErr
 			}
@@ -271,27 +271,8 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 	nodeName, podIP, podName := r.devicePodPlacement(ctx, device)
 	ready := dep.Status.AvailableReplicas >= 1
 
-	updated := false
-	if nodeName != device.Status.NodeName {
-		device.Status.NodeName = nodeName
-		updated = true
-	}
-	if podIP != device.Status.PodIP {
-		device.Status.PodIP = podIP
-		updated = true
-	}
-	if podName != device.Status.PodName {
-		device.Status.PodName = podName
-		updated = true
-	}
-	if ready != device.Status.Ready {
-		device.Status.Ready = ready
-		updated = true
-	}
-	if updated {
-		if err := r.Status().Update(ctx, device); err != nil {
-			return ctrl.Result{}, err
-		}
+	if err := r.publishDevicePlacement(ctx, device, nodeName, podIP, podName, ready); err != nil {
+		return ctrl.Result{}, err
 	}
 	// Deployment changes trigger reconcile, but a pod getting its IP does not
 	// (the pod is owned by the ReplicaSet, not the Device) — requeue until the
@@ -448,7 +429,7 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 	}
 	parentUID := ""
 	for _, owner := range device.OwnerReferences {
-		if owner.Kind == "Lab" {
+		if owner.Kind == ownerKindLab {
 			parentUID = string(owner.UID)
 		}
 	}
@@ -786,4 +767,30 @@ func (r *DeviceReconciler) devicesForLab(ctx context.Context, obj client.Object)
 		}
 	}
 	return out
+}
+
+func (r *DeviceReconciler) publishDevicePlacement(ctx context.Context, device *laboratoryv1alpha1.Device, nodeName, podIP, podName string, ready bool) error {
+	updated := false
+	if nodeName != device.Status.NodeName {
+		device.Status.NodeName = nodeName
+		updated = true
+	}
+	if podIP != device.Status.PodIP {
+		device.Status.PodIP = podIP
+		updated = true
+	}
+	if podName != device.Status.PodName {
+		device.Status.PodName = podName
+		updated = true
+	}
+	if ready != device.Status.Ready {
+		device.Status.Ready = ready
+		updated = true
+	}
+	if updated {
+		if err := r.Status().Update(ctx, device); err != nil {
+			return err
+		}
+	}
+	return nil
 }

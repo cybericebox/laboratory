@@ -2,12 +2,13 @@ package laboratory
 
 import (
 	"context"
+	"testing"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"testing"
 )
 
 func TestNativeStoppedChildFenceSurvivesGroupPauseAndRestart(t *testing.T) {

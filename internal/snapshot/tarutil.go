@@ -157,7 +157,7 @@ func FilterLayerMapped(in io.Reader, out io.Writer, pol Policy, ids IDMaps) (Sta
 // Payloads, links, named owners, xattrs and nonstandard metadata retain the normal
 // owner checks, even when their filename resembles a whiteout.
 func syntheticWhiteout(h *tar.Header) bool {
-	if h.Typeflag != tar.TypeReg || h.Size != 0 || h.Uid != 0 || h.Gid != 0 || h.Uname != "" || h.Gname != "" || h.Linkname != "" || h.Devmajor != 0 || h.Devminor != 0 || len(h.Xattrs) != 0 {
+	if h.Typeflag != tar.TypeReg || h.Size != 0 || h.Uid != 0 || h.Gid != 0 || h.Uname != "" || h.Gname != "" || h.Linkname != "" || h.Devmajor != 0 || h.Devminor != 0 {
 		return false
 	}
 	for k := range h.PAXRecords {

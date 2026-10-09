@@ -2,6 +2,8 @@ package laboratory
 
 import (
 	"context"
+	"testing"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	appsv1 "k8s.io/api/apps/v1"
@@ -10,7 +12,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"testing"
 )
 
 func residualGroupStartFixture(t *testing.T, firstAlreadyScaled bool) (*LabGroupReconciler, *lab.LabGroup, client.Client) {

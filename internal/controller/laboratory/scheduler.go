@@ -342,7 +342,7 @@ func (s *Scheduler) observe(ctx context.Context, snap *clusterView, now time.Tim
 		if cur == nil {
 			continue // not initialised by the device reconciler yet
 		}
-		if cur.State != laboratoryv1alpha1.PodStarting && !(cur.State == laboratoryv1alpha1.PodFailed && d.Status.Ready) {
+		if cur.State != laboratoryv1alpha1.PodStarting && (cur.State != laboratoryv1alpha1.PodFailed || !d.Status.Ready) {
 			continue
 		}
 		ps := cur.DeepCopy()
@@ -549,7 +549,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 				p.ref = d
 				if sc := d.Status.Scheduling; sc != nil {
 					p.state = sc.State
-					if at, ok := s.recent[key]; ok && p.state == laboratoryv1alpha1.PodQueued && now.Sub(at) < recentDispatchTTL {
+					if s.recentDispatchPending(key, p.state, now) {
 						p.state = laboratoryv1alpha1.PodStarting
 					}
 				}
@@ -582,7 +582,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 					continue
 				}
 				p.state = e.State
-				if at, ok := s.recent[key]; ok && p.state == laboratoryv1alpha1.PodQueued && now.Sub(at) < recentDispatchTTL {
+				if s.recentDispatchPending(key, p.state, now) {
 					p.state = laboratoryv1alpha1.PodStarting
 				}
 			}
@@ -1085,4 +1085,9 @@ func (s *Scheduler) directReader() client.Reader {
 		return s.Reader
 	}
 	return s.Client
+}
+
+func (s *Scheduler) recentDispatchPending(key string, state laboratoryv1alpha1.PodScheduleState, now time.Time) bool {
+	at, ok := s.recent[key]
+	return ok && state == laboratoryv1alpha1.PodQueued && now.Sub(at) < recentDispatchTTL
 }

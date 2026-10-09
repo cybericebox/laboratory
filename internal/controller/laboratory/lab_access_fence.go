@@ -2,13 +2,14 @@ package laboratory
 
 import (
 	"context"
+	"reflect"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/vpn/flowacct"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"reflect"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -22,7 +23,7 @@ func (r *LabReconciler) currentAccessFence(ctx context.Context, l *lab.Lab) (boo
 	// same child UID/op/revision/generation. Group service pauses/restarts cannot
 	// revive that child runtime. A child Start replaces lifecycle status and thus
 	// clears this certificate before a new runtime is admitted.
-	if exactStoppedRelease(l) && nonzeroTime(l.Status.Resources.ObservedAt) && nonzeroTime(l.Status.Resources.ReleasedAt) && l.Status.Resources.AllocatedRequests == (lab.ResourceAmounts{}) && l.Status.Lifecycle.AccessFenced && nonzeroTime(l.Status.Lifecycle.AccessFencedAt) && l.Status.Lifecycle.AccessFenceVPNBootID != "" {
+	if stoppedAccessFenceCertified(l) {
 		return true, l.Status.Lifecycle.AccessFencedAt, l.Status.Lifecycle.AccessFenceVPNBootID, nil
 	}
 	var leg lab.LabVPN
@@ -34,12 +35,12 @@ func (r *LabReconciler) currentAccessFence(ctx context.Context, l *lab.Lab) (boo
 	}
 	f := leg.Status.AccessFence
 	boot := leg.Status.Runtime
-	if f == nil || boot == nil || f.BootID == "" || !reflect.DeepEqual(*boot, f.VPNRuntimeIdentity) || f.LabUID != string(l.UID) || f.OperationID != l.Spec.Lifecycle.OperationID || f.Revision != l.Spec.Lifecycle.Revision || f.ObservedGeneration != l.Generation {
+	if invalidAccessFenceIdentity(l, f, boot) {
 		return false, nil, "", nil
 	}
 	owned := false
 	for _, o := range leg.OwnerReferences {
-		owned = owned || o.Kind == "Lab" && o.UID == l.UID
+		owned = owned || o.Kind == ownerKindLab && o.UID == l.UID
 	}
 	if !owned {
 		return false, nil, "", nil
@@ -59,7 +60,7 @@ func (r *LabReconciler) currentAccessFence(ctx context.Context, l *lab.Lab) (boo
 		}
 		return false, nil, "", err
 	}
-	if !witness.DeletionTimestamp.IsZero() || witness.Status.CurrentVPNRuntime == nil || witness.Status.CurrentVPNRuntime.PublishedAt.IsZero() || witness.Status.CurrentVPNRuntime.GroupUID != f.GroupUID || witness.Spec.Kind != lab.LabTrafficSurfaceVPN || witness.Spec.Instance != boot.PodName || !reflect.DeepEqual(witness.Status.CurrentVPNRuntime.VPNRuntimeIdentity, *boot) {
+	if invalidAccessFenceWitness(&witness, f, boot) {
 		return false, nil, "", nil
 	}
 	var p corev1.Pod
@@ -78,4 +79,16 @@ func (r *LabReconciler) currentAccessFence(ctx context.Context, l *lab.Lab) (boo
 		}
 	}
 	return false, nil, "", nil
+}
+
+func stoppedAccessFenceCertified(l *lab.Lab) bool {
+	return exactStoppedRelease(l) && nonzeroTime(l.Status.Resources.ObservedAt) && nonzeroTime(l.Status.Resources.ReleasedAt) && l.Status.Resources.AllocatedRequests == (lab.ResourceAmounts{}) && l.Status.Lifecycle.AccessFenced && nonzeroTime(l.Status.Lifecycle.AccessFencedAt) && l.Status.Lifecycle.AccessFenceVPNBootID != ""
+}
+
+func invalidAccessFenceIdentity(l *lab.Lab, f *lab.LabAccessFence, boot *lab.VPNRuntimeIdentity) bool {
+	return f == nil || boot == nil || f.BootID == "" || !reflect.DeepEqual(*boot, f.VPNRuntimeIdentity) || f.LabUID != string(l.UID) || f.OperationID != l.Spec.Lifecycle.OperationID || f.Revision != l.Spec.Lifecycle.Revision || f.ObservedGeneration != l.Generation
+}
+
+func invalidAccessFenceWitness(witness *lab.LabTrafficReport, f *lab.LabAccessFence, boot *lab.VPNRuntimeIdentity) bool {
+	return !witness.DeletionTimestamp.IsZero() || witness.Status.CurrentVPNRuntime == nil || witness.Status.CurrentVPNRuntime.PublishedAt.IsZero() || witness.Status.CurrentVPNRuntime.GroupUID != f.GroupUID || witness.Spec.Kind != lab.LabTrafficSurfaceVPN || witness.Spec.Instance != boot.PodName || !reflect.DeepEqual(witness.Status.CurrentVPNRuntime.VPNRuntimeIdentity, *boot)
 }

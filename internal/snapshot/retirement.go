@@ -3,6 +3,7 @@ package snapshot
 import (
 	"context"
 	"fmt"
+
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 )

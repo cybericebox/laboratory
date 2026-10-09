@@ -460,8 +460,7 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 				}
 			}
 			// For switch/hub devices, ensure VNI is written even if the status update failed on a previous reconcile.
-			isSwitch := existing.Spec.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch ||
-				existing.Spec.Type == laboratoryv1alpha1.DeviceTypeHub
+			isSwitch := deviceTypeIsSwitch(existing.Spec.Type)
 			if isSwitch && !r.RuntimeObservation && existing.Status.VNI != nil && existing.UID != "" && existing.Status.VNILease == nil {
 				if err := r.ensureOwnedVNI(ctx, &existing, false); err != nil {
 					return err
@@ -527,7 +526,7 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 			return err
 		}
 
-		if tmpl.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch || tmpl.Type == laboratoryv1alpha1.DeviceTypeHub {
+		if deviceTypeIsSwitch(tmpl.Type) {
 			if r.RuntimeObservation {
 				if err := r.ensureOwnedVNI(ctx, d, true); err != nil {
 					return err
@@ -787,7 +786,7 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		return ctrl.Result{}, err
 	}
 	resources := lab.Status.Resources
-	if intent := lab.Spec.Lifecycle; intent != nil && intent.DesiredState == "Running" {
+	if intent := lab.Spec.Lifecycle; intent != nil && intent.DesiredState == lifecycleStateRunning {
 		var err error
 		resources, err = r.runningLabAllocation(ctx, lab, deviceList.Items)
 		if err != nil {
@@ -805,10 +804,10 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		}
 		refs = append(refs, laboratoryv1alpha1.DeviceRef{Name: d.Spec.Name, Ready: d.Status.Ready, State: deviceStateInfo(&d), Failure: failure})
 		ready := d.Status.Ready
-		if intent := lab.Spec.Lifecycle; intent != nil && intent.DesiredState == "Running" && d.Spec.Type == laboratoryv1alpha1.DeviceTypeContainer {
+		if intent := lab.Spec.Lifecycle; intent != nil && intent.DesiredState == lifecycleStateRunning && d.Spec.Type == laboratoryv1alpha1.DeviceTypeContainer {
 			ready = false
 			for _, report := range d.Status.RuntimeReports {
-				if report.Identity.OwnerUID == string(lab.UID) && report.Identity.OperationID == intent.OperationID && report.Identity.Revision == intent.Revision && report.Identity.Generation == lab.Generation && report.Identity.ScopeUID == string(d.UID) && report.Identity.PodUID != "" && report.Identity.NodeName == d.Status.NodeName && report.Identity.NodeName != "" && report.Identity.NodeBootID != "" && len(report.Identity.ContainerIDs) > 0 && len(report.Identity.CgroupPaths) > 0 && nonzeroTime(report.ObservedAt) && time.Since(report.ObservedAt.Time) >= 0 && time.Since(report.ObservedAt.Time) <= 60*time.Second && report.Error == "" && report.RuntimeState == "Allocated" && d.Status.Ready {
+				if report.Identity.OwnerUID == string(lab.UID) && report.Identity.OperationID == intent.OperationID && report.Identity.Revision == intent.Revision && report.Identity.Generation == lab.Generation && report.Identity.ScopeUID == string(d.UID) && report.Identity.PodUID != "" && report.Identity.NodeName == d.Status.NodeName && report.Identity.NodeName != "" && report.Identity.NodeBootID != "" && len(report.Identity.ContainerIDs) > 0 && len(report.Identity.CgroupPaths) > 0 && nonzeroTime(report.ObservedAt) && time.Since(report.ObservedAt.Time) >= 0 && time.Since(report.ObservedAt.Time) <= 60*time.Second && report.Error == "" && report.RuntimeState == runtimeStateAllocated && d.Status.Ready {
 					ready = true
 					break
 				}
@@ -824,16 +823,16 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 			}
 		}
 	}
-	if r.RuntimeObservation && lab.Spec.Lifecycle != nil && lab.Spec.Lifecycle.DesiredState == "Running" {
+	if r.RuntimeObservation && lab.Spec.Lifecycle != nil && lab.Spec.Lifecycle.DesiredState == lifecycleStateRunning {
 		scopesReady := false
 		for _, scope := range lab.Status.ScopeInventory {
-			if scope.ScopeKind != "LabFabric" || scope.OperationID != lab.Spec.Lifecycle.OperationID || scope.Revision != lab.Spec.Lifecycle.Revision || scope.Generation != lab.Generation {
+			if scope.ScopeKind != scopeKindLabFabric || scope.OperationID != lab.Spec.Lifecycle.OperationID || scope.Revision != lab.Spec.Lifecycle.Revision || scope.Generation != lab.Generation {
 				continue
 			}
 			scopesReady = true
 			found := false
 			for _, report := range lab.Status.ScopeReports {
-				found = found || sameDeclaredScope(scope, report.Identity) && report.Error == "" && report.RuntimeState == "Allocated" && nonzeroTime(report.ObservedAt)
+				found = found || sameDeclaredScope(scope, report.Identity) && report.Error == "" && report.RuntimeState == runtimeStateAllocated && nonzeroTime(report.ObservedAt)
 			}
 			if !found {
 				allReady = false
@@ -911,12 +910,12 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 	}
 
 	lifecycleChanged := false
-	if intent := lab.Spec.Lifecycle; intent != nil && intent.DesiredState == "Running" && labStartPrepared(lab) {
+	if intent := lab.Spec.Lifecycle; intent != nil && intent.DesiredState == lifecycleStateRunning && labStartPrepared(lab) {
 		next := lab.Status.Lifecycle.DeepCopy()
 		if next != nil {
 			state := "Starting"
 			if allReady {
-				state = "Running"
+				state = lifecycleStateRunning
 			}
 			lifecycleChanged = next.ObservedState != state || next.ObservedGeneration != lab.Generation
 			next.ObservedState = state
@@ -1343,16 +1342,9 @@ func (r *LabReconciler) ensureLabGatewayDeleted(ctx context.Context, lab *labora
 	return false, nil
 }
 
-// findWebService returns the web Service of a device of the lab: the one with
-// the lab and device labels that the lab owns. Nothing else stores the name, so
-// this is how later reconciles keep the host label stable. nil if none exists.
-func (r *LabReconciler) findWebService(ctx context.Context, lab *laboratoryv1alpha1.Lab, device string) (*corev1.Service, error) {
-	return r.serviceSnapshot(lab).find(ctx, device)
-}
-
 func ownedByLab(obj metav1.Object, lab *laboratoryv1alpha1.Lab) bool {
 	for _, ref := range obj.GetOwnerReferences() {
-		if ref.UID == lab.UID && ref.Kind == "Lab" {
+		if ref.UID == lab.UID && ref.Kind == ownerKindLab {
 			return true
 		}
 	}
@@ -1539,4 +1531,8 @@ func (r *LabReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&corev1.Service{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Watches(&networkingv1.NetworkPolicy{}, labOwnerHandler(mgr.GetScheme(), mgr.GetRESTMapper())).
 		Complete(reconcileutil.Quiet(r))
+}
+
+func deviceTypeIsSwitch(deviceType laboratoryv1alpha1.DeviceType) bool {
+	return deviceType == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch || deviceType == laboratoryv1alpha1.DeviceTypeHub
 }

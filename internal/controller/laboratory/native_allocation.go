@@ -2,9 +2,10 @@ package laboratory
 
 import (
 	"context"
+	"reflect"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"reflect"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -17,7 +18,7 @@ func (o NativeGroupServiceReleaseObserver) GroupServicesReleased(ctx context.Con
 		return false, nil
 	}
 	a := aggregateRuntime(g.Status.ServiceRuntime, g.Status.ServiceReports, string(g.UID), g.Status.Lifecycle.OperationID, g.Status.Lifecycle.Revision)
-	released := a.RuntimeState == "Released"
+	released := a.RuntimeState == runtimeStateReleased
 	if o.Client != nil && !reflect.DeepEqual(g.Status.Resources, a) {
 		base := g.DeepCopy()
 		g.Status.Resources = a
@@ -32,13 +33,12 @@ func runtimeRowsReleased(rows []lab.OwnedRuntimeIdentity, reports []lab.OwnedRun
 		return false
 	}
 	for _, id := range rows {
-		scope := id.ScopeKind == "LabFabric" || id.ScopeKind == "GroupScope" || id.ScopeKind == "NeverMaterialized"
-		if id.OwnerUID != uid || id.OperationID != op || id.Revision != rev || id.NodeBootID == "" || id.NodeName == "" || scope && (id.ScopeUID == "" || id.ScopeKind != "NeverMaterialized" && id.ScopeUID != uid || id.Generation < 1 || !id.AttachmentsComplete) || !scope && (id.PodUID == "" || len(id.ContainerIDs) == 0 || len(id.CgroupPaths) == 0 || len(id.PortKeys) == 0 && !id.AttachmentsComplete) {
+		if invalidReleasedRuntimeIdentity(id, uid, op, rev) {
 			return false
 		}
 		found := false
 		for _, r := range reports {
-			if reflect.DeepEqual(id, r.Identity) && r.Error == "" && r.RuntimeState == "Released" && nonzeroTime(r.ObservedAt) && nonzeroTime(r.RuntimeAbsentAt) && nonzeroTime(r.CgroupAbsentAt) && nonzeroTime(r.AttachmentsAbsentAt) {
+			if reflect.DeepEqual(id, r.Identity) && r.Error == "" && r.RuntimeState == runtimeStateReleased && nonzeroTime(r.ObservedAt) && nonzeroTime(r.RuntimeAbsentAt) && nonzeroTime(r.CgroupAbsentAt) && nonzeroTime(r.AttachmentsAbsentAt) {
 				found = true
 				break
 			}
@@ -53,7 +53,7 @@ func nonzeroTime(t *metav1.Time) bool { return t != nil && !t.IsZero() }
 
 func aggregateRuntime(rows []lab.OwnedRuntimeIdentity, reports []lab.OwnedRuntimeReport, uid, op string, rev int64) *lab.RuntimeAllocation {
 	now := metav1.Now()
-	a := &lab.RuntimeAllocation{RuntimeState: "Unknown", OperationID: op, Revision: rev, ObservedAt: &now, StorageState: "Unknown"}
+	a := &lab.RuntimeAllocation{RuntimeState: observationStateUnknown, OperationID: op, Revision: rev, ObservedAt: &now, StorageState: observationStateUnknown}
 	// Exact historical ACKs retire only their own obligations, continuously.
 	// Multiple operation views of one physical incarnation reserve it once.
 	currentRows := make([]lab.OwnedRuntimeIdentity, 0, len(rows))
@@ -93,9 +93,14 @@ func aggregateRuntime(rows []lab.OwnedRuntimeIdentity, reports []lab.OwnedRuntim
 		a.AllocatedRequests.MemoryBytes += amount.MemoryBytes
 	}
 	if runtimeRowsReleased(currentRows, reports, uid, op, rev) {
-		a.RuntimeState = "Released"
+		a.RuntimeState = runtimeStateReleased
 		a.AllocatedRequests = lab.ResourceAmounts{}
 		a.ReleasedAt = &now
 	}
 	return a
+}
+
+func invalidReleasedRuntimeIdentity(id lab.OwnedRuntimeIdentity, uid, op string, rev int64) bool {
+	scope := id.ScopeKind == scopeKindLabFabric || id.ScopeKind == "GroupScope" || id.ScopeKind == scopeKindNeverMaterialized
+	return id.OwnerUID != uid || id.OperationID != op || id.Revision != rev || id.NodeBootID == "" || id.NodeName == "" || scope && (id.ScopeUID == "" || id.ScopeKind != scopeKindNeverMaterialized && id.ScopeUID != uid || id.Generation < 1 || !id.AttachmentsComplete) || !scope && (id.PodUID == "" || len(id.ContainerIDs) == 0 || len(id.CgroupPaths) == 0 || len(id.PortKeys) == 0 && !id.AttachmentsComplete)
 }

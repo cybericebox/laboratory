@@ -3,6 +3,8 @@ package laboratory
 import (
 	"context"
 	"encoding/json"
+	"testing"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/devicestate"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -14,7 +16,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"testing"
 )
 
 func lifecycleFixture(t *testing.T, mode string) (*LabReconciler, *lab.Lab, *lab.Device, client.Client) {

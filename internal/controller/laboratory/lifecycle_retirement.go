@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/snapshot"
@@ -11,7 +13,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"reflect"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -23,7 +24,7 @@ type retirementCatalog interface {
 
 func GroupRetirementReady(g *lab.LabGroup) bool {
 	i, o, a := g.Spec.Lifecycle, g.Status.Lifecycle, g.Status.Resources
-	return i != nil && i.IsStopped() && g.Spec.Admission == nil && o != nil && a != nil && o.LabUID == string(g.UID) && o.OperationID == i.OperationID && o.Revision == i.Revision && o.ObservedGeneration == g.Generation && o.ObservedState == "Stopped" && o.Error == "" && nonzeroTime(o.StoppedAt) && a.OperationID == i.OperationID && a.Revision == i.Revision && a.RuntimeState == "Released" && nonzeroTime(a.ObservedAt) && nonzeroTime(a.ReleasedAt) && a.AllocatedRequests == (lab.ResourceAmounts{})
+	return i != nil && i.IsStopped() && g.Spec.Admission == nil && o != nil && a != nil && o.LabUID == string(g.UID) && o.OperationID == i.OperationID && o.Revision == i.Revision && o.ObservedGeneration == g.Generation && o.ObservedState == "Stopped" && o.Error == "" && nonzeroTime(o.StoppedAt) && a.OperationID == i.OperationID && a.Revision == i.Revision && a.RuntimeState == runtimeStateReleased && nonzeroTime(a.ObservedAt) && nonzeroTime(a.ReleasedAt) && a.AllocatedRequests == (lab.ResourceAmounts{})
 }
 func retirementMatches(in lab.LifecycleRetirementIntent, status *lab.LifecycleRetirementStatus, generation int64) bool {
 	return status != nil && status.ExpectedUID == in.ExpectedUID && status.StopOperationID == in.StopOperationID && status.StopRevision == in.StopRevision && status.OperationID == in.OperationID && status.Revision == in.Revision && status.ObservedGeneration == generation && nonzeroTime(status.RequestedAt)
@@ -31,7 +32,7 @@ func retirementMatches(in lab.LifecycleRetirementIntent, status *lab.LifecycleRe
 func LifecycleRetired(l *lab.Lab) bool {
 	in, valid := lab.ParseLifecycleRetirement(l.Annotations[names.AnnotationLifecycleRetirement])
 	o := l.Status.Retirement
-	return valid && in.ExpectedUID == string(l.UID) && retirementMatches(in, o, l.Generation) && o.State == "Deleted" && o.RuntimeAbsent && o.CleanupComplete && o.StorageState == "Deleted" && o.Error == "" && nonzeroTime(o.ObservedAt) && o.ObservedAt.After(o.RequestedAt.Time)
+	return valid && in.ExpectedUID == string(l.UID) && retirementMatches(in, o, l.Generation) && o.State == retirementStateDeleted && o.RuntimeAbsent && o.CleanupComplete && o.StorageState == retirementStateDeleted && o.Error == "" && nonzeroTime(o.ObservedAt) && o.ObservedAt.After(o.RequestedAt.Time)
 }
 func freshRetirementRows(rows []lab.OwnedRuntimeIdentity, reports []lab.OwnedRuntimeReport, in lab.LifecycleRetirementIntent) bool {
 	if len(rows) == 0 {
@@ -40,13 +41,13 @@ func freshRetirementRows(rows []lab.OwnedRuntimeIdentity, reports []lab.OwnedRun
 	for _, id := range rows {
 		// Retirement challenges cover retained original obligations as well as
 		// the current stop. Their immutable tuples must never be rebound.
-		scope := id.ScopeKind == "LabFabric" || id.ScopeKind == "GroupScope" || id.ScopeKind == "NeverMaterialized"
-		if id.OwnerUID != in.ExpectedUID || id.OperationID == "" || id.Revision < 1 || id.Revision > in.StopRevision || id.Revision == in.StopRevision && id.OperationID != in.StopOperationID || in.Generation > 0 && (id.Generation < 1 || id.Generation > in.Generation) || id.NodeName == "" || id.NodeBootID == "" || scope && (id.ScopeUID == "" || id.ScopeKind != "NeverMaterialized" && id.ScopeUID != in.ExpectedUID || !id.AttachmentsComplete) || !scope && (id.PodUID == "" || len(id.ContainerIDs) == 0 || len(id.CgroupPaths) == 0 || len(id.PortKeys) == 0 && !id.AttachmentsComplete) {
+		scope := id.ScopeKind == scopeKindLabFabric || id.ScopeKind == "GroupScope" || id.ScopeKind == scopeKindNeverMaterialized
+		if id.OwnerUID != in.ExpectedUID || id.OperationID == "" || id.Revision < 1 || id.Revision > in.StopRevision || id.Revision == in.StopRevision && id.OperationID != in.StopOperationID || in.Generation > 0 && (id.Generation < 1 || id.Generation > in.Generation) || id.NodeName == "" || id.NodeBootID == "" || scope && (id.ScopeUID == "" || id.ScopeKind != scopeKindNeverMaterialized && id.ScopeUID != in.ExpectedUID || !id.AttachmentsComplete) || !scope && (id.PodUID == "" || len(id.ContainerIDs) == 0 || len(id.CgroupPaths) == 0 || len(id.PortKeys) == 0 && !id.AttachmentsComplete) {
 			return false
 		}
 		found := false
 		for _, report := range reports {
-			if reflect.DeepEqual(id, report.Identity) && report.RetirementOperationID == in.OperationID && report.RetirementRevision == in.Revision && report.RuntimeState == "Released" && report.Error == "" && nonzeroTime(report.ObservedAt) && nonzeroTime(report.RuntimeAbsentAt) && nonzeroTime(report.CgroupAbsentAt) && nonzeroTime(report.AttachmentsAbsentAt) {
+			if retirementReportMatches(id, report, in) {
 				found = true
 				break
 			}
@@ -81,7 +82,7 @@ func (s *RetentionSweeper) SweepLifecycleRetirements(ctx context.Context) error 
 		l := &labs.Items[i]
 		if l.Annotations[names.AnnotationLifecycleRetirement] != "" {
 			if err := s.retireLifecycleLab(ctx, reader, l); err != nil {
-				errs = append(errs, fmt.Errorf("Lab %s/%s retirement: %w", l.Namespace, l.Name, err))
+				errs = append(errs, fmt.Errorf("lab %s/%s retirement: %w", l.Namespace, l.Name, err))
 			}
 		}
 	}
@@ -93,7 +94,7 @@ func (s *RetentionSweeper) SweepLifecycleRetirements(ctx context.Context) error 
 		g := &groups.Items[i]
 		if g.Annotations[names.AnnotationLifecycleRetirement] != "" {
 			if err := s.retireLifecycleGroup(ctx, reader, g); err != nil {
-				errs = append(errs, fmt.Errorf("Group %s retirement: %w", g.Name, err))
+				errs = append(errs, fmt.Errorf("group %s retirement: %w", g.Name, err))
 			}
 		}
 	}
@@ -102,16 +103,16 @@ func (s *RetentionSweeper) SweepLifecycleRetirements(ctx context.Context) error 
 func (s *RetentionSweeper) retireLifecycleLab(ctx context.Context, reader client.Reader, l *lab.Lab) error {
 	in, valid := lab.ParseLifecycleRetirement(l.Annotations[names.AnnotationLifecycleRetirement])
 	if l.Annotations[names.AnnotationLabVariableAdmission] != "" {
-		return fmt.Errorf("Lab variable write is pending")
+		return fmt.Errorf("lab variable write is pending")
 	}
-	if !valid || in.ExpectedUID != string(l.UID) || !l.DeletionTimestamp.IsZero() || l.Spec.Lifecycle == nil || in.StopOperationID != l.Spec.Lifecycle.OperationID || in.StopRevision != l.Spec.Lifecycle.Revision {
+	if invalidLabRetirementIdentity(l, in, valid) {
 		return fmt.Errorf("retirement identity changed")
 	}
 	if LifecycleRetired(l) {
 		return nil
 	}
 	next := retirementObservation(in, l.Generation, l.Status.Retirement)
-	pendingCertified := l.Status.Retirement != nil && retirementMatches(in, l.Status.Retirement, l.Status.Retirement.ObservedGeneration) && l.Status.Retirement.ObservedGeneration >= in.Generation && l.Status.Retirement.ObservedGeneration <= l.Generation && l.Status.Retirement.RuntimeAbsent && l.Status.Retirement.StorageState == "Deleted" && l.Status.Retirement.Error == ""
+	pendingCertified := retirementPendingCertified(in, l.Status.Retirement, l.Generation)
 	var devices lab.DeviceList
 	if err := reader.List(ctx, &devices, client.InNamespace(l.Namespace)); err != nil {
 		return err
@@ -146,12 +147,7 @@ func (s *RetentionSweeper) retireLifecycleLab(ctx context.Context, reader client
 		if err != nil {
 			return s.patchLabRetirement(ctx, l, next, err)
 		}
-		owned := map[string]bool{}
-		for _, repo := range repos {
-			if key, ok := labKeyOf(repo); ok && key == l.Namespace+"_"+l.Name {
-				owned[repo] = true
-			}
-		}
+		owned := retirementOwnedRepos(l, repos)
 		for i := range devices.Items {
 			d := &devices.Items[i]
 			if !ownedLabDevice(l, d) {
@@ -165,20 +161,8 @@ func (s *RetentionSweeper) retireLifecycleLab(ctx context.Context, reader client
 				}
 			}
 		}
-		for repo := range owned {
-			if err := s.checkLabRetirement(ctx, reader, l, in); err != nil {
-				return err
-			}
-			if err := catalog.DeleteRepo(ctx, repo); err != nil {
-				return s.patchLabRetirement(ctx, l, next, err)
-			}
-			empty, err := catalog.RepositoryEmpty(ctx, repo)
-			if err != nil {
-				return s.patchLabRetirement(ctx, l, next, err)
-			}
-			if !empty {
-				return s.patchLabRetirement(ctx, l, next, fmt.Errorf("snapshot manifests remain"))
-			}
+		if err := s.deleteLifecycleRetirementRepos(ctx, reader, catalog, l, in, next, owned); err != nil {
+			return err
 		}
 		objects, err := s.captureRetirementObjects(ctx, reader, l.Namespace, string(l.UID), false)
 		if err != nil {
@@ -186,7 +170,7 @@ func (s *RetentionSweeper) retireLifecycleLab(ctx context.Context, reader client
 		}
 		next.Objects = objects
 		next.RuntimeAbsent = true
-		next.StorageState = "Deleted"
+		next.StorageState = retirementStateDeleted
 		// Durable intermediate receipt preserves native+manifest proof across a
 		// crash while the now-unneeded owned configuration objects are removed.
 		if err := s.patchLabRetirement(ctx, l, next, nil); err != nil {
@@ -207,8 +191,8 @@ func (s *RetentionSweeper) retireLifecycleLab(ctx context.Context, reader client
 	// from the durable NEW native challenge receipt, preserving original op/rev.
 	next = retirementObservation(in, l.Generation, l.Status.Retirement)
 	next.RuntimeAbsent = true
-	next.StorageState = "Deleted"
-	next.State = "Deleted"
+	next.StorageState = retirementStateDeleted
+	next.State = retirementStateDeleted
 	next.CleanupComplete = true
 	if !next.ObservedAt.After(next.RequestedAt.Time) {
 		return nil
@@ -219,7 +203,7 @@ func (s *RetentionSweeper) retireLifecycleLab(ctx context.Context, reader client
 		l.Status.Lifecycle.ObservedGeneration = l.Generation
 	}
 	if l.Status.Resources != nil {
-		l.Status.Resources.StorageState = "Deleted"
+		l.Status.Resources.StorageState = retirementStateDeleted
 		l.Status.Resources.SnapshotQuotaBytes = 0
 		l.Status.Resources.PhysicalStorageBytesAvailable = false
 		l.Status.Resources.PhysicalStorageBytes = 0
@@ -290,14 +274,14 @@ func objectOwnedBy(o client.Object, uid string) bool {
 }
 func (s *RetentionSweeper) retireLifecycleGroup(ctx context.Context, reader client.Reader, g *lab.LabGroup) error {
 	in, valid := lab.ParseLifecycleRetirement(g.Annotations[names.AnnotationLifecycleRetirement])
-	if !valid || in.ExpectedUID != string(g.UID) || !g.DeletionTimestamp.IsZero() || g.Spec.Lifecycle == nil || g.Spec.Lifecycle.OperationID != in.StopOperationID || g.Spec.Lifecycle.Revision != in.StopRevision {
+	if invalidGroupRetirementIdentity(g, in, valid) {
 		return fmt.Errorf("group retirement identity changed")
 	}
-	if retirementMatches(in, g.Status.Retirement, g.Generation) && g.Status.Retirement.State == "Deleted" && g.Status.Retirement.CleanupComplete {
+	if retirementMatches(in, g.Status.Retirement, g.Generation) && g.Status.Retirement.State == retirementStateDeleted && g.Status.Retirement.CleanupComplete {
 		return nil
 	}
 	next := retirementObservation(in, g.Generation, g.Status.Retirement)
-	pendingCertified := g.Status.Retirement != nil && retirementMatches(in, g.Status.Retirement, g.Status.Retirement.ObservedGeneration) && g.Status.Retirement.ObservedGeneration >= in.Generation && g.Status.Retirement.ObservedGeneration <= g.Generation && g.Status.Retirement.RuntimeAbsent && g.Status.Retirement.StorageState == "Deleted" && g.Status.Retirement.Error == ""
+	pendingCertified := retirementPendingCertified(in, g.Status.Retirement, g.Generation)
 	var children lab.LabList
 	if err := reader.List(ctx, &children, client.InNamespace(lab.LabGroupNamespaceOf(g))); err != nil {
 		return err
@@ -327,7 +311,7 @@ func (s *RetentionSweeper) retireLifecycleGroup(ctx context.Context, reader clie
 		}
 		next.Objects = objects
 		next.RuntimeAbsent = true
-		next.StorageState = "Deleted"
+		next.StorageState = retirementStateDeleted
 		if err := s.patchGroupRetirement(ctx, g, next, nil); err != nil {
 			return err
 		}
@@ -357,8 +341,8 @@ func (s *RetentionSweeper) retireLifecycleGroup(ctx context.Context, reader clie
 	}
 	next = retirementObservation(in, g.Generation, g.Status.Retirement)
 	next.RuntimeAbsent = true
-	next.StorageState = "Deleted"
-	next.State = "Deleted"
+	next.StorageState = retirementStateDeleted
+	next.State = retirementStateDeleted
 	next.CleanupComplete = true
 	if !next.ObservedAt.After(next.RequestedAt.Time) {
 		return nil
@@ -372,7 +356,7 @@ func (s *RetentionSweeper) retireLifecycleGroup(ctx context.Context, reader clie
 		g.Status.Lifecycle.ObservedGeneration = g.Generation
 	}
 	if g.Status.Resources != nil {
-		g.Status.Resources.StorageState = "Deleted"
+		g.Status.Resources.StorageState = retirementStateDeleted
 		g.Status.Resources.SnapshotQuotaBytes = 0
 		g.Status.Resources.PhysicalStorageBytesAvailable = false
 		g.Status.Resources.PhysicalStorageBytes = 0
@@ -460,7 +444,7 @@ func (s *RetentionSweeper) captureRetirementObjects(ctx context.Context, reader 
 		}
 		for i := range devices.Items {
 			if objectOwnedBy(&devices.Items[i], uid) {
-				add("Device", &devices.Items[i])
+				add(ownerKindDevice, &devices.Items[i])
 			}
 		}
 		var connections lab.ConnectionList
@@ -484,7 +468,7 @@ func (s *RetentionSweeper) cleanupRetirementObjects(ctx context.Context, reader 
 		switch id.Kind {
 		case "Secret":
 			object = &corev1.Secret{}
-		case "Device":
+		case ownerKindDevice:
 			object = &lab.Device{}
 		case "Connection":
 			object = &lab.Connection{}
@@ -526,4 +510,49 @@ func (s *RetentionSweeper) cleanupRetirementObjects(ctx context.Context, reader 
 		}
 	}
 	return nil
+}
+
+func retirementReportMatches(id lab.OwnedRuntimeIdentity, report lab.OwnedRuntimeReport, in lab.LifecycleRetirementIntent) bool {
+	return reflect.DeepEqual(id, report.Identity) && report.RetirementOperationID == in.OperationID && report.RetirementRevision == in.Revision && report.RuntimeState == runtimeStateReleased && report.Error == "" && nonzeroTime(report.ObservedAt) && nonzeroTime(report.RuntimeAbsentAt) && nonzeroTime(report.CgroupAbsentAt) && nonzeroTime(report.AttachmentsAbsentAt)
+}
+
+func retirementPendingCertified(in lab.LifecycleRetirementIntent, status *lab.LifecycleRetirementStatus, generation int64) bool {
+	return status != nil && retirementMatches(in, status, status.ObservedGeneration) && status.ObservedGeneration >= in.Generation && status.ObservedGeneration <= generation && status.RuntimeAbsent && status.StorageState == retirementStateDeleted && status.Error == ""
+}
+
+func invalidLabRetirementIdentity(l *lab.Lab, in lab.LifecycleRetirementIntent, valid bool) bool {
+	return !valid || in.ExpectedUID != string(l.UID) || !l.DeletionTimestamp.IsZero() || l.Spec.Lifecycle == nil || in.StopOperationID != l.Spec.Lifecycle.OperationID || in.StopRevision != l.Spec.Lifecycle.Revision
+}
+
+func (s *RetentionSweeper) deleteLifecycleRetirementRepos(ctx context.Context, reader client.Reader, catalog retirementCatalog, l *lab.Lab, in lab.LifecycleRetirementIntent, next *lab.LifecycleRetirementStatus, owned map[string]bool) error {
+	for repo := range owned {
+		if err := s.checkLabRetirement(ctx, reader, l, in); err != nil {
+			return err
+		}
+		if err := catalog.DeleteRepo(ctx, repo); err != nil {
+			return s.patchLabRetirement(ctx, l, next, err)
+		}
+		empty, err := catalog.RepositoryEmpty(ctx, repo)
+		if err != nil {
+			return s.patchLabRetirement(ctx, l, next, err)
+		}
+		if !empty {
+			return s.patchLabRetirement(ctx, l, next, fmt.Errorf("snapshot manifests remain"))
+		}
+	}
+	return nil
+}
+
+func invalidGroupRetirementIdentity(g *lab.LabGroup, in lab.LifecycleRetirementIntent, valid bool) bool {
+	return !valid || in.ExpectedUID != string(g.UID) || !g.DeletionTimestamp.IsZero() || g.Spec.Lifecycle == nil || g.Spec.Lifecycle.OperationID != in.StopOperationID || g.Spec.Lifecycle.Revision != in.StopRevision
+}
+
+func retirementOwnedRepos(l *lab.Lab, repos []string) map[string]bool {
+	owned := map[string]bool{}
+	for _, repo := range repos {
+		if key, ok := labKeyOf(repo); ok && key == l.Namespace+"_"+l.Name {
+			owned[repo] = true
+		}
+	}
+	return owned
 }

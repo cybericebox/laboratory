@@ -3,6 +3,9 @@ package laboratory
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
+	"testing"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/devicestate"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -10,10 +13,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"path/filepath"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
-	"testing"
 )
 
 type lifecycleConflictClient struct {

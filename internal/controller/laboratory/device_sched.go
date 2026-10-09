@@ -63,7 +63,7 @@ func (r *DeviceReconciler) mayCreateWorkload(ctx context.Context, device *labora
 			return false, err
 		}
 	}
-	if parent.Spec.Lifecycle != nil && parent.Spec.Lifecycle.DesiredState == "Running" {
+	if parent.Spec.Lifecycle != nil && parent.Spec.Lifecycle.DesiredState == lifecycleStateRunning {
 		return labStartPrepared(&parent) && current.Status.Scheduling.DispatchedAt != nil && !r.queuedByScheduler(&current), nil
 	}
 	return !r.queuedByScheduler(&current), nil

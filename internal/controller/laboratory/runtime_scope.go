@@ -3,12 +3,13 @@ package laboratory
 import (
 	"context"
 	"fmt"
+	"reflect"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"reflect"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -82,7 +83,7 @@ func (r *LabReconciler) prepareLabScopes(ctx context.Context, l *lab.Lab) error 
 	if err != nil {
 		return err
 	}
-	declared, err := declaredScopes(ctx, r.lifecycleReader(), string(l.UID), l.Namespace, l.Name, op, rev, l.Generation, "LabFabric", placement)
+	declared, err := declaredScopes(ctx, r.lifecycleReader(), string(l.UID), l.Namespace, l.Name, op, rev, l.Generation, scopeKindLabFabric, placement)
 	if err != nil {
 		return err
 	}
@@ -109,7 +110,7 @@ func (r *LabReconciler) prepareLabScopes(ctx context.Context, l *lab.Lab) error 
 	var bindings []lab.OwnedVNI
 	for _, d := range devices.Items {
 		if objectOwnedBy(&d, string(l.UID)) && d.Status.VNI != nil {
-			bindings = append(bindings, lab.OwnedVNI{PoolUID: d.Status.VNILease.PoolUID, LeaseGeneration: d.Status.VNILease.Generation, OwnerUID: string(l.UID), OperationID: op, Revision: rev, Generation: l.Generation, Kind: "Device", Namespace: d.Namespace, Name: d.Name, UID: string(d.UID), VNI: *d.Status.VNI})
+			bindings = append(bindings, lab.OwnedVNI{PoolUID: d.Status.VNILease.PoolUID, LeaseGeneration: d.Status.VNILease.Generation, OwnerUID: string(l.UID), OperationID: op, Revision: rev, Generation: l.Generation, Kind: ownerKindDevice, Namespace: d.Namespace, Name: d.Name, UID: string(d.UID), VNI: *d.Status.VNI})
 		}
 	}
 	for _, c := range connections.Items {
@@ -119,18 +120,18 @@ func (r *LabReconciler) prepareLabScopes(ctx context.Context, l *lab.Lab) error 
 	}
 	baseDeclared := append([]lab.OwnedRuntimeIdentity(nil), declared...)
 	for _, device := range devices.Items {
-		never := objectOwnedBy(&device, string(l.UID)) && device.Spec.Type == lab.DeviceTypeContainer && device.Status.PodName == "" && device.Status.NodeName == "" && (device.Status.State == nil || device.Status.State.Incarnation == 0)
+		never := deviceNeverMaterialized(l, &device)
 		if never {
 			for _, base := range baseDeclared {
 				scope := base
-				scope.ScopeKind = "NeverMaterialized"
+				scope.ScopeKind = scopeKindNeverMaterialized
 				scope.ScopeUID = string(device.UID)
 				declared = append(declared, scope)
 			}
 		}
 	}
 	for n := range declared {
-		if declared[n].ScopeKind == "NeverMaterialized" {
+		if declared[n].ScopeKind == scopeKindNeverMaterialized {
 			continue
 		}
 		declared[n].VNIBindings = bindings
@@ -138,40 +139,7 @@ func (r *LabReconciler) prepareLabScopes(ctx context.Context, l *lab.Lab) error 
 			declared[n].VNIs = append(declared[n].VNIs, binding.VNI)
 		}
 	}
-	rows := adoptReleasedScopeHistory(l.Status.ScopeInventory, l.Status.ScopeReports)
-	for _, scope := range declared {
-		for _, prior := range rows {
-			if sameDeclaredScope(scope, prior) {
-				for _, binding := range prior.VNIBindings {
-					found := false
-					for _, current := range scope.VNIBindings {
-						found = found || reflect.DeepEqual(current, binding)
-					}
-					if !found {
-						scope.VNIBindings = append(scope.VNIBindings, binding)
-					}
-				}
-				scope.FabricPorts = append([]lab.OwnedFabricPort(nil), prior.FabricPorts...)
-			}
-		}
-		for _, report := range l.Status.ScopeReports {
-			if sameDeclaredScope(scope, report.Identity) && reflect.DeepEqual(scope.VNIBindings, report.Identity.VNIBindings) && report.Identity.AttachmentsComplete {
-				scope = report.Identity
-				break
-			}
-		}
-		found := false
-		for n, old := range rows {
-			if sameDeclaredScope(scope, old) {
-				rows[n] = scope
-				found = true
-				break
-			}
-		}
-		if !found {
-			rows = append(rows, scope)
-		}
-	}
+	rows := prepareDeclaredLabScopeRows(l, declared)
 	if reflect.DeepEqual(rows, l.Status.ScopeInventory) {
 		return nil
 	}
@@ -213,20 +181,13 @@ func (r *LabReconciler) releaseRecordedVNIs(ctx context.Context, l *lab.Lab) err
 				continue
 			}
 			seen[binding] = true
-			complete := true
-			for _, history := range l.Status.ScopeInventory {
-				for _, obligation := range history.VNIBindings {
-					if obligation.UID == binding.UID && obligation.VNI == binding.VNI && obligation.PoolUID == binding.PoolUID && obligation.LeaseGeneration == binding.LeaseGeneration && !lab.VNILeaseReleased(l, obligation) {
-						complete = false
-					}
-				}
-			}
+			complete := recordedVNIComplete(l, binding)
 			if !complete {
 				continue
 			}
 			var object client.Object
 			switch binding.Kind {
-			case "Device":
+			case ownerKindDevice:
 				object = &lab.Device{}
 			case "Connection":
 				object = &lab.Connection{}
@@ -336,7 +297,7 @@ func (r *LabReconciler) releaseDefaultOffVNI(ctx context.Context, index uint, le
 func adoptReleasedScopeHistory(rows []lab.OwnedRuntimeIdentity, reports []lab.OwnedRuntimeReport) []lab.OwnedRuntimeIdentity {
 	out := append([]lab.OwnedRuntimeIdentity(nil), rows...)
 	for i, prior := range out {
-		if prior.ScopeKind != "LabFabric" && prior.ScopeKind != "GroupScope" && prior.ScopeKind != "NeverMaterialized" {
+		if prior.ScopeKind != scopeKindLabFabric && prior.ScopeKind != "GroupScope" && prior.ScopeKind != scopeKindNeverMaterialized {
 			continue
 		}
 		for _, report := range reports {
@@ -364,4 +325,57 @@ func scopeHistoryContains[T comparable](all, prior []T) bool {
 		}
 	}
 	return true
+}
+
+func prepareDeclaredLabScopeRows(l *lab.Lab, declared []lab.OwnedRuntimeIdentity) []lab.OwnedRuntimeIdentity {
+	rows := adoptReleasedScopeHistory(l.Status.ScopeInventory, l.Status.ScopeReports)
+	for _, scope := range declared {
+		for _, prior := range rows {
+			if sameDeclaredScope(scope, prior) {
+				for _, binding := range prior.VNIBindings {
+					found := false
+					for _, current := range scope.VNIBindings {
+						found = found || reflect.DeepEqual(current, binding)
+					}
+					if !found {
+						scope.VNIBindings = append(scope.VNIBindings, binding)
+					}
+				}
+				scope.FabricPorts = append([]lab.OwnedFabricPort(nil), prior.FabricPorts...)
+			}
+		}
+		for _, report := range l.Status.ScopeReports {
+			if sameDeclaredScope(scope, report.Identity) && reflect.DeepEqual(scope.VNIBindings, report.Identity.VNIBindings) && report.Identity.AttachmentsComplete {
+				scope = report.Identity
+				break
+			}
+		}
+		found := false
+		for n, old := range rows {
+			if sameDeclaredScope(scope, old) {
+				rows[n] = scope
+				found = true
+				break
+			}
+		}
+		if !found {
+			rows = append(rows, scope)
+		}
+	}
+	return rows
+}
+func recordedVNIComplete(l *lab.Lab, binding lab.OwnedVNI) bool {
+	complete := true
+	for _, history := range l.Status.ScopeInventory {
+		for _, obligation := range history.VNIBindings {
+			if obligation.UID == binding.UID && obligation.VNI == binding.VNI && obligation.PoolUID == binding.PoolUID && obligation.LeaseGeneration == binding.LeaseGeneration && !lab.VNILeaseReleased(l, obligation) {
+				complete = false
+			}
+		}
+	}
+	return complete
+}
+
+func deviceNeverMaterialized(l *lab.Lab, device *lab.Device) bool {
+	return objectOwnedBy(device, string(l.UID)) && device.Spec.Type == lab.DeviceTypeContainer && device.Status.PodName == "" && device.Status.NodeName == "" && (device.Status.State == nil || device.Status.State.Incarnation == 0)
 }

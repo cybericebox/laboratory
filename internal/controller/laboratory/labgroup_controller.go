@@ -688,7 +688,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 			if groupUID != "" {
 				hasUID := false
 				for i := range container.Env {
-					if container.Env[i].Name == "GROUP_UID" {
+					if container.Env[i].Name == groupUIDEnvironment {
 						hasUID = true
 						if container.Env[i].Value != groupUID {
 							container.Env[i].Value = groupUID
@@ -697,7 +697,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 					}
 				}
 				if !hasUID {
-					container.Env = append(container.Env, corev1.EnvVar{Name: "GROUP_UID", Value: groupUID})
+					container.Env = append(container.Env, corev1.EnvVar{Name: groupUIDEnvironment, Value: groupUID})
 					changed = true
 				}
 			}
@@ -764,7 +764,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 							},
 							{Name: "NAMESPACE", Value: ns},
 							{Name: "CLIENT_SUBNET", Value: clientSubnet},
-							{Name: "GROUP_UID", Value: groupUID},
+							{Name: groupUIDEnvironment, Value: groupUID},
 							{Name: "VPN_BASE_NETWORK", Value: r.VPNBaseNetwork},
 							{Name: "LISTEN_PORT", Value: fmt.Sprint(r.vpnPort())},
 							{Name: "SUPPORT_EMAIL", Value: r.SupportEmail},
@@ -848,7 +848,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 						Image:           gatewayImage,
 						Command:         []string{"/lab", names.ComponentGateway},
 						ImagePullPolicy: pullPolicyFor(gatewayImage),
-						Env:             append(r.gatewayEnv(ns), corev1.EnvVar{Name: "GROUP_UID", Value: groupUID}),
+						Env:             append(r.gatewayEnv(ns), corev1.EnvVar{Name: groupUIDEnvironment, Value: groupUID}),
 					}},
 				},
 			},

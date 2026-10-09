@@ -3,16 +3,17 @@ package laboratory
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"time"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"reflect"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"time"
 )
 
 // GroupServiceReleaseObserver requires exact native runtime/cgroup/attachment
@@ -52,7 +53,7 @@ func (r *LabGroupReconciler) reconcileGroupLifecycle(ctx context.Context, g *lab
 	now := metav1.Now()
 	o := g.Status.Lifecycle
 	if o == nil || o.LabUID != string(g.UID) || o.OperationID != i.OperationID || o.Revision != i.Revision || o.ObservedGeneration != g.Generation {
-		g.Status.Lifecycle = &lab.LabLifecycleStatus{LabUID: string(g.UID), OperationID: i.OperationID, Revision: i.Revision, ObservedGeneration: g.Generation, ObservedState: "Unknown", RequestedAt: &now}
+		g.Status.Lifecycle = &lab.LabLifecycleStatus{LabUID: string(g.UID), OperationID: i.OperationID, Revision: i.Revision, ObservedGeneration: g.Generation, ObservedState: observationStateUnknown, RequestedAt: &now}
 		if !i.IsStopped() {
 			// Services only. Child lifecycle, snapshots and terminal intent are untouched.
 			if r.Scheduled {
@@ -65,31 +66,7 @@ func (r *LabGroupReconciler) reconcileGroupLifecycle(ctx context.Context, g *lab
 		}
 	}
 	if !i.IsStopped() {
-		adopted := adoptReleasedScopeHistory(g.Status.ServiceRuntime, g.Status.ServiceReports)
-		if !reflect.DeepEqual(adopted, g.Status.ServiceRuntime) {
-			base := g.DeepCopy()
-			g.Status.ServiceRuntime = adopted
-			if err := r.Status().Patch(ctx, g, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-				return true, ctrl.Result{}, err
-			}
-		}
-		if err := r.observeGroupAllocation(ctx, g); err != nil {
-			return true, ctrl.Result{}, err
-		}
-		for _, row := range g.Status.ServiceRuntime {
-			if row.OperationID != i.OperationID || row.Revision != i.Revision {
-				if !runtimeRowsReleased([]lab.OwnedRuntimeIdentity{row}, g.Status.ServiceReports, row.OwnerUID, row.OperationID, row.Revision) {
-					if err := r.drainPriorGroupServices(ctx, g); err != nil {
-						return true, ctrl.Result{}, err
-					}
-					return true, ctrl.Result{RequeueAfter: 3 * time.Second}, r.groupLifecycleStatus(ctx, g, "Starting", "DrainingPriorNativeObligation")
-				}
-			}
-		}
-		if err := r.observeGroupAllocation(ctx, g); err != nil {
-			return true, ctrl.Result{}, err
-		}
-		return false, ctrl.Result{}, nil
+		return r.reconcileGroupLifecycleStart(ctx, g)
 	}
 	if !i.RequireAllLabsStopped {
 		return true, ctrl.Result{}, r.groupLifecycleStatus(ctx, g, "StopFailed", "AllLabsStoppedRequired")
@@ -109,7 +86,7 @@ func (r *LabGroupReconciler) reconcileGroupLifecycle(ctx context.Context, g *lab
 		return true, ctrl.Result{}, err
 	}
 	if !prepared {
-		return true, ctrl.Result{RequeueAfter: 3 * time.Second}, r.groupLifecycleStatus(ctx, g, "Unknown", "WaitingForNativeInventory")
+		return true, ctrl.Result{RequeueAfter: 3 * time.Second}, r.groupLifecycleStatus(ctx, g, observationStateUnknown, "WaitingForNativeInventory")
 	}
 	// Revalidate all child intents immediately before scaling; stale cached data
 	// is never enough. Start/create admission also refuses stopped groups.
@@ -125,37 +102,10 @@ func (r *LabGroupReconciler) reconcileGroupLifecycle(ctx context.Context, g *lab
 	if !all {
 		return true, ctrl.Result{RequeueAfter: 3 * time.Second}, r.groupLifecycleStatus(ctx, g, "Stopping", "WaitingForLabs")
 	}
-	ns := lab.LabGroupNamespaceOf(g)
-	for _, component := range []string{names.ComponentVPN, names.ComponentGateway} {
-		if _, err = r.currentGroup(ctx, g); err != nil {
-			return true, ctrl.Result{}, err
-		}
-		var d appsv1.Deployment
-		if err = r.groupReader().Get(ctx, client.ObjectKey{Namespace: ns, Name: component}, &d); apierrors.IsNotFound(err) {
-			continue
-		} else if err != nil {
-			return true, ctrl.Result{}, err
-		}
-		if err := checkServiceGroupUID(&d, string(g.UID)); err != nil {
-			return true, ctrl.Result{}, err
-		}
-		if d.Spec.Replicas == nil || *d.Spec.Replicas != 0 {
-			owned := false
-			for _, row := range g.Status.ServiceRuntime {
-				if row.OwnerUID == string(g.UID) && row.OperationID == g.Spec.Lifecycle.OperationID && row.Revision == g.Spec.Lifecycle.Revision && row.Component == component && row.DeploymentUID == string(d.UID) {
-					owned = true
-					break
-				}
-			}
-			if !owned {
-				return true, ctrl.Result{RequeueAfter: 3 * time.Second}, r.groupLifecycleStatus(ctx, g, "Unknown", "WaitingForNativeInventory")
-			}
-			d.Spec.Replicas = ptrInt32(0)
-			if err = r.Update(ctx, &d); err != nil {
-				return true, ctrl.Result{}, err
-			}
-		}
+	if handled, result, err := r.scaleStoppedGroupServices(ctx, g); handled {
+		return handled, result, err
 	}
+	ns := lab.LabGroupNamespaceOf(g)
 	// API Pod absence is a necessary additional check; it cannot mint release.
 	var pods corev1.PodList
 	if err = r.groupReader().List(ctx, &pods, client.InNamespace(ns)); err != nil {
@@ -174,7 +124,7 @@ func (r *LabGroupReconciler) reconcileGroupLifecycle(ctx context.Context, g *lab
 		}
 	}
 	if !released {
-		return true, ctrl.Result{RequeueAfter: 3 * time.Second}, r.groupLifecycleStatus(ctx, g, "Unknown", "WaitingForNativeServiceRelease")
+		return true, ctrl.Result{RequeueAfter: 3 * time.Second}, r.groupLifecycleStatus(ctx, g, observationStateUnknown, "WaitingForNativeServiceRelease")
 	}
 	return true, ctrl.Result{}, r.groupLifecycleStatus(ctx, g, "Stopped", "ServicesReleased")
 }
@@ -273,23 +223,7 @@ func (r *LabGroupReconciler) PrepareGroupRelease(ctx context.Context, g *lab.Lab
 	if err = r.groupReader().List(ctx, &pods, client.InNamespace(ns)); err != nil {
 		return false, err
 	}
-	rows := []lab.OwnedRuntimeIdentity{}
-	for _, old := range live.Status.ServiceRuntime {
-		if old.OperationID == live.Spec.Lifecycle.OperationID && old.Revision == live.Spec.Lifecycle.Revision {
-			rows = append(rows, old)
-			continue
-		}
-		released := false
-		for _, report := range live.Status.ServiceReports {
-			if reflect.DeepEqual(old, report.Identity) && report.RuntimeState == "Released" && report.Error == "" && report.ObservedAt != nil && !report.ObservedAt.IsZero() && report.RuntimeAbsentAt != nil && !report.RuntimeAbsentAt.IsZero() && report.CgroupAbsentAt != nil && !report.CgroupAbsentAt.IsZero() && report.AttachmentsAbsentAt != nil && !report.AttachmentsAbsentAt.IsZero() {
-				released = true
-				break
-			}
-		}
-		if !released {
-			rows = append(rows, old)
-		}
-	}
+	rows := priorGroupReleaseRows(live)
 	if r.ServiceReleaseObserver != nil {
 		placement, err := r.groupNativePlacement(ctx, live, pods.Items)
 		if err != nil {
@@ -319,56 +253,9 @@ func (r *LabGroupReconciler) PrepareGroupRelease(ctx context.Context, g *lab.Lab
 			}
 		}
 	}
-	for _, p := range pods.Items {
-		component := serviceComponent(&p)
-		if component == "" {
-			continue
-		}
-		var d appsv1.Deployment
-		if err = r.groupReader().Get(ctx, client.ObjectKey{Namespace: ns, Name: component}, &d); err != nil {
-			return false, err
-		}
-		if !r.servicePodOwned(ctx, &p, &d) {
-			return false, fmt.Errorf("foreign service Pod %s", p.Name)
-		}
-		var node corev1.Node
-		if p.Spec.NodeName == "" {
-			return false, nil
-		}
-		if err = r.groupReader().Get(ctx, client.ObjectKey{Name: p.Spec.NodeName}, &node); err != nil {
-			return false, err
-		}
-		ids := []string{}
-		for _, c := range p.Status.ContainerStatuses {
-			if c.ContainerID != "" {
-				ids = append(ids, c.ContainerID)
-			}
-		}
-		if len(ids) == 0 || node.Status.NodeInfo.BootID == "" {
-			return false, nil
-		}
-		var identity *lab.OwnedRuntimeIdentity
-		for n := range live.Status.ServiceReports {
-			report := &live.Status.ServiceReports[n]
-			candidate := &report.Identity
-			if candidate.OwnerUID == string(live.UID) && candidate.OperationID == live.Spec.Lifecycle.OperationID && candidate.Revision == live.Spec.Lifecycle.Revision && candidate.DeploymentUID == string(d.UID) && candidate.PodUID == string(p.UID) && candidate.NodeName == p.Spec.NodeName && candidate.NodeBootID == node.Status.NodeInfo.BootID && candidate.Component == component && containsStrings(candidate.ContainerIDs, ids) && len(candidate.CgroupPaths) > 0 && (len(candidate.PortKeys) > 0 || candidate.AttachmentsComplete) && report.ObservedAt != nil && report.Error == "" {
-				identity = candidate
-				break
-			}
-		}
-		if identity == nil {
-			return false, nil
-		}
-		have := false
-		for _, row := range rows {
-			if reflect.DeepEqual(row, *identity) {
-				have = true
-				break
-			}
-		}
-		if !have {
-			rows = append(rows, *identity.DeepCopy())
-		}
+	rows, complete, err := r.inventoryGroupServicePods(ctx, live, pods, rows)
+	if err != nil || !complete {
+		return false, err
 	}
 	if !reflect.DeepEqual(rows, live.Status.ServiceRuntime) {
 		live.Status.ServiceRuntime = rows
@@ -439,7 +326,7 @@ func (r *LabGroupReconciler) observeGroupStart(ctx context.Context, g *lab.LabGr
 			return r.groupLifecycleStatus(ctx, g, "Starting", "WaitingForServices")
 		}
 	}
-	return r.groupLifecycleStatus(ctx, g, "Running", "ServicesReady")
+	return r.groupLifecycleStatus(ctx, g, lifecycleStateRunning, "ServicesReady")
 }
 
 func (r *LabGroupReconciler) observeGroupAllocation(ctx context.Context, g *lab.LabGroup) error {
@@ -474,9 +361,9 @@ func (r *LabGroupReconciler) observeGroupAllocation(ctx context.Context, g *lab.
 	current.ConfiguredLimits = limits
 	current.AllocatedRequests.CPUMillicores = max(current.AllocatedRequests.CPUMillicores, configured.CPUMillicores)
 	current.AllocatedRequests.MemoryBytes = max(current.AllocatedRequests.MemoryBytes, configured.MemoryBytes)
-	current.RuntimeState = "Allocated"
+	current.RuntimeState = runtimeStateAllocated
 	if !known {
-		current.RuntimeState = "Unknown"
+		current.RuntimeState = observationStateUnknown
 		if g.Status.Resources != nil {
 			current.AllocatedRequests.CPUMillicores = max(current.AllocatedRequests.CPUMillicores, g.Status.Resources.AllocatedRequests.CPUMillicores)
 			current.AllocatedRequests.MemoryBytes = max(current.AllocatedRequests.MemoryBytes, g.Status.Resources.AllocatedRequests.MemoryBytes)
@@ -501,7 +388,7 @@ func (r *LabGroupReconciler) drainPriorGroupServices(ctx context.Context, g *lab
 	}
 	byDeployment := map[string][]lab.OwnedRuntimeIdentity{}
 	for _, row := range g.Status.ServiceRuntime {
-		if row.OwnerUID != string(g.UID) || row.OperationID == intent.OperationID && row.Revision == intent.Revision || row.DeploymentUID == "" || row.PodUID == "" || runtimeRowsReleased([]lab.OwnedRuntimeIdentity{row}, g.Status.ServiceReports, row.OwnerUID, row.OperationID, row.Revision) {
+		if skipPriorGroupServiceDebt(g, row) {
 			continue
 		}
 		byDeployment[row.Component] = append(byDeployment[row.Component], row)
@@ -538,10 +425,7 @@ func (r *LabGroupReconciler) drainPriorGroupServices(ctx context.Context, g *lab
 			if !r.servicePodOwned(ctx, pod, &dep) {
 				continue
 			}
-			known := false
-			for _, row := range rows {
-				known = known || string(pod.UID) == row.PodUID
-			}
+			known := groupServicePodRecorded(pod, rows)
 			if !known {
 				return fmt.Errorf("prior service Pod was replaced")
 			}
@@ -561,10 +445,7 @@ func (r *LabGroupReconciler) drainPriorGroupServices(ctx context.Context, g *lab
 			if !r.servicePodOwned(ctx, pod, &dep) {
 				continue
 			}
-			known := false
-			for _, row := range rows {
-				known = known || string(pod.UID) == row.PodUID
-			}
+			known := groupServicePodRecorded(pod, rows)
 			if !known {
 				return fmt.Errorf("prior service Pod changed")
 			}
@@ -578,4 +459,160 @@ func (r *LabGroupReconciler) drainPriorGroupServices(ctx context.Context, g *lab
 		}
 	}
 	return nil
+}
+
+func (r *LabGroupReconciler) reconcileGroupLifecycleStart(ctx context.Context, g *lab.LabGroup) (bool, ctrl.Result, error) {
+	i := g.Spec.Lifecycle
+	adopted := adoptReleasedScopeHistory(g.Status.ServiceRuntime, g.Status.ServiceReports)
+	if !reflect.DeepEqual(adopted, g.Status.ServiceRuntime) {
+		base := g.DeepCopy()
+		g.Status.ServiceRuntime = adopted
+		if err := r.Status().Patch(ctx, g, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+			return true, ctrl.Result{}, err
+		}
+	}
+	if err := r.observeGroupAllocation(ctx, g); err != nil {
+		return true, ctrl.Result{}, err
+	}
+	for _, row := range g.Status.ServiceRuntime {
+		if row.OperationID != i.OperationID || row.Revision != i.Revision {
+			if !runtimeRowsReleased([]lab.OwnedRuntimeIdentity{row}, g.Status.ServiceReports, row.OwnerUID, row.OperationID, row.Revision) {
+				if err := r.drainPriorGroupServices(ctx, g); err != nil {
+					return true, ctrl.Result{}, err
+				}
+				return true, ctrl.Result{RequeueAfter: 3 * time.Second}, r.groupLifecycleStatus(ctx, g, "Starting", "DrainingPriorNativeObligation")
+			}
+		}
+	}
+	if err := r.observeGroupAllocation(ctx, g); err != nil {
+		return true, ctrl.Result{}, err
+	}
+	return false, ctrl.Result{}, nil
+}
+func (r *LabGroupReconciler) scaleStoppedGroupServices(ctx context.Context, g *lab.LabGroup) (bool, ctrl.Result, error) {
+	var err error
+	ns := lab.LabGroupNamespaceOf(g)
+	for _, component := range []string{names.ComponentVPN, names.ComponentGateway} {
+		if _, err = r.currentGroup(ctx, g); err != nil {
+			return true, ctrl.Result{}, err
+		}
+		var d appsv1.Deployment
+		if err = r.groupReader().Get(ctx, client.ObjectKey{Namespace: ns, Name: component}, &d); apierrors.IsNotFound(err) {
+			continue
+		} else if err != nil {
+			return true, ctrl.Result{}, err
+		}
+		if err := checkServiceGroupUID(&d, string(g.UID)); err != nil {
+			return true, ctrl.Result{}, err
+		}
+		if d.Spec.Replicas == nil || *d.Spec.Replicas != 0 {
+			owned := false
+			for _, row := range g.Status.ServiceRuntime {
+				if row.OwnerUID == string(g.UID) && row.OperationID == g.Spec.Lifecycle.OperationID && row.Revision == g.Spec.Lifecycle.Revision && row.Component == component && row.DeploymentUID == string(d.UID) {
+					owned = true
+					break
+				}
+			}
+			if !owned {
+				return true, ctrl.Result{RequeueAfter: 3 * time.Second}, r.groupLifecycleStatus(ctx, g, observationStateUnknown, "WaitingForNativeInventory")
+			}
+			d.Spec.Replicas = ptrInt32(0)
+			if err = r.Update(ctx, &d); err != nil {
+				return true, ctrl.Result{}, err
+			}
+		}
+	}
+	return false, ctrl.Result{}, nil
+}
+func priorGroupReleaseRows(live *lab.LabGroup) []lab.OwnedRuntimeIdentity {
+	rows := []lab.OwnedRuntimeIdentity{}
+	for _, old := range live.Status.ServiceRuntime {
+		if old.OperationID == live.Spec.Lifecycle.OperationID && old.Revision == live.Spec.Lifecycle.Revision {
+			rows = append(rows, old)
+			continue
+		}
+		released := false
+		for _, report := range live.Status.ServiceReports {
+			if reflect.DeepEqual(old, report.Identity) && report.RuntimeState == runtimeStateReleased && report.Error == "" && report.ObservedAt != nil && !report.ObservedAt.IsZero() && report.RuntimeAbsentAt != nil && !report.RuntimeAbsentAt.IsZero() && report.CgroupAbsentAt != nil && !report.CgroupAbsentAt.IsZero() && report.AttachmentsAbsentAt != nil && !report.AttachmentsAbsentAt.IsZero() {
+				released = true
+				break
+			}
+		}
+		if !released {
+			rows = append(rows, old)
+		}
+	}
+	return rows
+}
+func groupReleaseReportMatches(live *lab.LabGroup, report *lab.OwnedRuntimeReport, d *appsv1.Deployment, p *corev1.Pod, node *corev1.Node, component string, ids []string) bool {
+	candidate := &report.Identity
+	return candidate.OwnerUID == string(live.UID) && candidate.OperationID == live.Spec.Lifecycle.OperationID && candidate.Revision == live.Spec.Lifecycle.Revision && candidate.DeploymentUID == string(d.UID) && candidate.PodUID == string(p.UID) && candidate.NodeName == p.Spec.NodeName && candidate.NodeBootID == node.Status.NodeInfo.BootID && candidate.Component == component && containsStrings(candidate.ContainerIDs, ids) && len(candidate.CgroupPaths) > 0 && (len(candidate.PortKeys) > 0 || candidate.AttachmentsComplete) && report.ObservedAt != nil && report.Error == ""
+}
+func (r *LabGroupReconciler) inventoryGroupServicePods(ctx context.Context, live *lab.LabGroup, pods corev1.PodList, rows []lab.OwnedRuntimeIdentity) ([]lab.OwnedRuntimeIdentity, bool, error) {
+	ns := lab.LabGroupNamespaceOf(live)
+	var err error
+	for _, p := range pods.Items {
+		component := serviceComponent(&p)
+		if component == "" {
+			continue
+		}
+		var d appsv1.Deployment
+		if err = r.groupReader().Get(ctx, client.ObjectKey{Namespace: ns, Name: component}, &d); err != nil {
+			return nil, false, err
+		}
+		if !r.servicePodOwned(ctx, &p, &d) {
+			return nil, false, fmt.Errorf("foreign service Pod %s", p.Name)
+		}
+		var node corev1.Node
+		if p.Spec.NodeName == "" {
+			return nil, false, nil
+		}
+		if err = r.groupReader().Get(ctx, client.ObjectKey{Name: p.Spec.NodeName}, &node); err != nil {
+			return nil, false, err
+		}
+		ids := []string{}
+		for _, c := range p.Status.ContainerStatuses {
+			if c.ContainerID != "" {
+				ids = append(ids, c.ContainerID)
+			}
+		}
+		if len(ids) == 0 || node.Status.NodeInfo.BootID == "" {
+			return nil, false, nil
+		}
+		var identity *lab.OwnedRuntimeIdentity
+		for n := range live.Status.ServiceReports {
+			report := &live.Status.ServiceReports[n]
+			candidate := &report.Identity
+			if groupReleaseReportMatches(live, report, &d, &p, &node, component, ids) {
+				identity = candidate
+				break
+			}
+		}
+		if identity == nil {
+			return nil, false, nil
+		}
+		have := false
+		for _, row := range rows {
+			if reflect.DeepEqual(row, *identity) {
+				have = true
+				break
+			}
+		}
+		if !have {
+			rows = append(rows, *identity.DeepCopy())
+		}
+	}
+	return rows, true, nil
+}
+func skipPriorGroupServiceDebt(g *lab.LabGroup, row lab.OwnedRuntimeIdentity) bool {
+	intent := g.Spec.Lifecycle
+	return row.OwnerUID != string(g.UID) || row.OperationID == intent.OperationID && row.Revision == intent.Revision || row.DeploymentUID == "" || row.PodUID == "" || runtimeRowsReleased([]lab.OwnedRuntimeIdentity{row}, g.Status.ServiceReports, row.OwnerUID, row.OperationID, row.Revision)
+}
+
+func groupServicePodRecorded(pod *corev1.Pod, rows []lab.OwnedRuntimeIdentity) bool {
+	known := false
+	for _, row := range rows {
+		known = known || string(pod.UID) == row.PodUID
+	}
+	return known
 }

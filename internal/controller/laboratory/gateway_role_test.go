@@ -2,6 +2,11 @@ package laboratory
 
 import (
 	"context"
+	"os/exec"
+	"path/filepath"
+	"testing"
+	"time"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	core "k8s.io/api/core/v1"
@@ -10,13 +15,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
-	"os/exec"
-	"path/filepath"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/yaml"
-	"testing"
-	"time"
 )
 
 func TestGatewayRoleReadsLabsInItsNamespace(t *testing.T) {

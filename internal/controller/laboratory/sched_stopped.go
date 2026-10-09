@@ -10,7 +10,7 @@ import (
 
 func exactStoppedRelease(l *lab.Lab) bool {
 	intent, observed, resources := l.Spec.Lifecycle, l.Status.Lifecycle, l.Status.Resources
-	return intent != nil && observed != nil && resources != nil && observed.ObservedState == "Stopped" && observed.LabUID == string(l.UID) && observed.ObservedGeneration == l.Generation && observed.OperationID == intent.OperationID && observed.Revision == intent.Revision && resources.RuntimeState == "Released" && resources.OperationID == intent.OperationID && resources.Revision == intent.Revision && intent.IsStopped() && nonzeroTime(resources.ObservedAt) && nonzeroTime(resources.ReleasedAt) && resources.AllocatedRequests == (lab.ResourceAmounts{}) && (intent.SnapshotMode != "Required" || observed.SnapshotComplete && observed.Error == "")
+	return intent != nil && observed != nil && resources != nil && observed.ObservedState == "Stopped" && observed.LabUID == string(l.UID) && observed.ObservedGeneration == l.Generation && observed.OperationID == intent.OperationID && observed.Revision == intent.Revision && resources.RuntimeState == runtimeStateReleased && resources.OperationID == intent.OperationID && resources.Revision == intent.Revision && intent.IsStopped() && nonzeroTime(resources.ObservedAt) && nonzeroTime(resources.ReleasedAt) && resources.AllocatedRequests == (lab.ResourceAmounts{}) && (intent.SnapshotMode != snapshotModeRequired || observed.SnapshotComplete && observed.Error == "")
 }
 
 // Stop removes objects from dispatch, never their held reservations. The real

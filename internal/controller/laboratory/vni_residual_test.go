@@ -2,6 +2,9 @@ package laboratory
 
 import (
 	"context"
+	"strconv"
+	"testing"
+
 	allocation "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -10,8 +13,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"strconv"
-	"testing"
 )
 
 func TestResidualDefaultOffPruneAndDeleteRespectOwnedVNILease(t *testing.T) {

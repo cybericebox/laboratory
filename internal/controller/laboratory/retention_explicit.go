@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
+
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"time"
 )
 
 // retireRetained deletes registry manifests at explicit accepted expiry, leaving
@@ -17,7 +18,7 @@ import (
 // StartLabs observes this fence, so a new start and retirement cannot both win.
 func (s *RetentionSweeper) retireRetained(ctx context.Context, reader client.Reader, l *lab.Lab, repos []string, now time.Time) error {
 	intent := l.Spec.Lifecycle
-	if intent == nil || !intent.IsStopped() || intent.RetentionUntil == nil || now.Before(intent.RetentionUntil.Time) || !l.DeletionTimestamp.IsZero() {
+	if retainedExpiryIneligible(l, now) {
 		return nil
 	}
 	if !retirementReady(l) {
@@ -29,7 +30,7 @@ func (s *RetentionSweeper) retireRetained(ctx context.Context, reader client.Rea
 	// standalone expiry path must not race that owner's current deadline.
 	if raw := l.Annotations[names.AnnotationLabCreation]; raw != "" {
 		var birth lab.LabCreationReceipt
-		if json.Unmarshal([]byte(raw), &birth) != nil || !birth.Committed || birth.LabUID != string(l.UID) || birth.LabName != l.Name || birth.GroupUID == "" || birth.NamespaceUID == "" || birth.OperationID == "" || birth.Revision < 1 || birth.DefinitionHash == "" || birth.CreationID == "" {
+		if invalidManagedRetentionBirth(raw, &birth, l) {
 			return fmt.Errorf("managed birth identity unavailable for %s/%s retention", l.Namespace, l.Name)
 		}
 		return nil
@@ -46,7 +47,7 @@ func (s *RetentionSweeper) retireRetained(ctx context.Context, reader client.Rea
 	} else if f.LabUID != string(l.UID) || f.OperationID != intent.OperationID || f.Revision != intent.Revision {
 		return fmt.Errorf("snapshot retirement identity changed")
 	}
-	if f.State == "Deleted" {
+	if f.State == retirementStateDeleted {
 		return nil
 	}
 	var deletionErr error
@@ -71,7 +72,7 @@ func (s *RetentionSweeper) retireRetained(ctx context.Context, reader client.Rea
 	if !valid || current.LabUID != f.LabUID || current.OperationID != f.OperationID || current.Revision != f.Revision {
 		return fmt.Errorf("snapshot retirement was superseded")
 	}
-	f.State = "Deleted"
+	f.State = retirementStateDeleted
 	if deletionErr != nil {
 		f.State = "CleanupPending"
 	}
@@ -85,7 +86,7 @@ func retirementReady(l *lab.Lab) bool {
 	if i == nil || !i.IsStopped() || o == nil || a == nil {
 		return false
 	}
-	return o.LabUID == string(l.UID) && o.OperationID == i.OperationID && o.Revision == i.Revision && o.ObservedGeneration == l.Generation && o.ObservedState == "Stopped" && o.Error == "" && nonzeroTime(o.StoppedAt) && a.OperationID == i.OperationID && a.Revision == i.Revision && a.RuntimeState == "Released" && nonzeroTime(a.ReleasedAt) && nonzeroTime(a.ObservedAt) && a.AllocatedRequests == (lab.ResourceAmounts{}) && (i.SnapshotMode != "Required" || o.SnapshotComplete && o.Error == "") && (!l.Spec.VPN.Enabled || o.AccessFenced && nonzeroTime(o.AccessFencedAt) && o.AccessFenceVPNBootID != "")
+	return o.LabUID == string(l.UID) && o.OperationID == i.OperationID && o.Revision == i.Revision && o.ObservedGeneration == l.Generation && o.ObservedState == "Stopped" && o.Error == "" && nonzeroTime(o.StoppedAt) && a.OperationID == i.OperationID && a.Revision == i.Revision && a.RuntimeState == runtimeStateReleased && nonzeroTime(a.ReleasedAt) && nonzeroTime(a.ObservedAt) && a.AllocatedRequests == (lab.ResourceAmounts{}) && (i.SnapshotMode != snapshotModeRequired || o.SnapshotComplete && o.Error == "") && (!l.Spec.VPN.Enabled || o.AccessFenced && nonzeroTime(o.AccessFencedAt) && o.AccessFenceVPNBootID != "")
 }
 func (s *RetentionSweeper) writeRetirement(ctx context.Context, l *lab.Lab, f lab.SnapshotRetirementFence) error {
 	raw, err := json.Marshal(f)
@@ -101,3 +102,12 @@ func (s *RetentionSweeper) writeRetirement(ctx context.Context, l *lab.Lab, f la
 
 // RetirementReady exposes the same exact stop certificate to RPC admission.
 func RetirementReady(l *lab.Lab) bool { return retirementReady(l) }
+
+func invalidManagedRetentionBirth(raw string, birth *lab.LabCreationReceipt, l *lab.Lab) bool {
+	return json.Unmarshal([]byte(raw), birth) != nil || !birth.Committed || birth.LabUID != string(l.UID) || birth.LabName != l.Name || birth.GroupUID == "" || birth.NamespaceUID == "" || birth.OperationID == "" || birth.Revision < 1 || birth.DefinitionHash == "" || birth.CreationID == ""
+}
+
+func retainedExpiryIneligible(l *lab.Lab, now time.Time) bool {
+	intent := l.Spec.Lifecycle
+	return intent == nil || !intent.IsStopped() || intent.RetentionUntil == nil || now.Before(intent.RetentionUntil.Time) || !l.DeletionTimestamp.IsZero()
+}

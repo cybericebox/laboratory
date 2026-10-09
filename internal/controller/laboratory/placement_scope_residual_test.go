@@ -2,15 +2,16 @@ package laboratory
 
 import (
 	"context"
+	"reflect"
+	"testing"
+
 	allocation "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"reflect"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"testing"
 )
 
 func residualPlacementNodes() (*corev1.Node, *corev1.Node) {

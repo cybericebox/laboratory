@@ -93,7 +93,7 @@ func TestFilterLayerMappedWhiteoutsPreserveDeletionAndMetadata(t *testing.T) {
 		if i >= 2 && (h.Uid != 123 || h.Gid != 456 || h.PAXRecords["uid"] != "" || h.PAXRecords["gid"] != "") {
 			t.Fatalf("ordinary entry ownership: %+v", h)
 		}
-		if i == 2 && h.Xattrs["user.test"] != "kept" {
+		if i == 2 && h.PAXRecords["SCHILY.xattr.user.test"] != "kept" {
 			t.Fatalf("file xattr lost: %+v", h)
 		}
 		if i == 3 && (h.Typeflag != tar.TypeLink || h.Linkname != "data/work") || i == 4 && (h.Typeflag != tar.TypeSymlink || h.Linkname != "work") {
