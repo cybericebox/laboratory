@@ -17,6 +17,7 @@ jobs:
   test:
     name: Test
     uses: ./.github/workflows/test.yml
+    secrets: inherit
 
   image:
     name: Image ${{ matrix.name }}

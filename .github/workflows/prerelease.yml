@@ -51,6 +51,7 @@ jobs:
     needs: version
     if: needs.version.outputs.skip != 'true'
     uses: ./.github/workflows/test.yml
+    secrets: inherit
 
   source:
     name: Image source
