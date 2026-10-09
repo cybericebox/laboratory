@@ -63,7 +63,7 @@ func (f *fakeRuntime) Inspect(_ context.Context, id string) (Container, error) {
 	return Container{ID: id, ImageRef: ref, UpperDir: f.upper, Cgroup: f.upper, OwnershipKnown: true}, nil
 }
 
-func (f *fakeRuntime) Diff(_ context.Context, _ Container, freeze bool) (io.ReadCloser, error) {
+func (f *fakeRuntime) Diff(_ context.Context, _ Container, freeze bool, _ snapshot.Policy) (io.ReadCloser, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.freeze = append(f.freeze, freeze)

@@ -81,7 +81,7 @@ type Runtime interface {
 	// filesystem synced while the diff is computed, so the result is consistent;
 	// without it (the container has exited) nothing runs and nothing is frozen.
 	// Closing the reader releases everything the diff held.
-	Diff(ctx context.Context, c Container, freeze bool) (io.ReadCloser, error)
+	Diff(ctx context.Context, c Container, freeze bool, policy snapshot.Policy) (io.ReadCloser, error)
 	// LoadImage opens the image a container was created from out of the local
 	// image store, with the snapshot chain already on the node.
 	LoadImage(ctx context.Context, imageRef string) (v1.Image, error)
