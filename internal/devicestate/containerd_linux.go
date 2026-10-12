@@ -29,6 +29,8 @@ import (
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/cybericebox/laboratory/internal/snapshot"
 )
@@ -388,7 +390,11 @@ func (r *ContainerdRuntime) Exits(ctx context.Context) (<-chan string, error) {
 					return
 				case err := <-errs:
 					if err != nil && ctx.Err() == nil {
-						r.log.Error(err, "containerd event stream ended; resubscribing")
+						if isTransientContainerdEventError(err) {
+							r.log.Info("containerd event stream ended; resubscribing", "error", err.Error())
+						} else {
+							r.log.Error(err, "containerd event stream ended; resubscribing")
+						}
 					}
 					break stream
 				case env, ok := <-envs:
@@ -416,6 +422,16 @@ func (r *ContainerdRuntime) Exits(ctx context.Context) (<-chan string, error) {
 		}
 	}()
 	return out, nil
+}
+
+// isTransientContainerdEventError recognizes normal stream disconnects from
+// containerd's native error mapping as well as direct gRPC subscriptions.
+func isTransientContainerdEventError(err error) bool {
+	if errors.Is(err, io.EOF) || errdefs.IsUnavailable(err) || errdefs.IsCanceled(err) {
+		return true
+	}
+	code := status.Code(err)
+	return code == codes.Unavailable || code == codes.Canceled
 }
 
 // Quiesce uses the native freezer and treats sync failures as required-capture failures.
