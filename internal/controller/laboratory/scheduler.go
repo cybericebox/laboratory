@@ -388,7 +388,7 @@ func (s *Scheduler) observe(ctx context.Context, snap *clusterView, now time.Tim
 			if ps.State != laboratoryv1alpha1.PodStarting && ps.State != laboratoryv1alpha1.PodFailed {
 				continue
 			}
-			pods := snap.podsOf[g.Name+"/"+entry.Name]
+			pods := snap.podsOf[laboratoryv1alpha1.LabGroupNamespaceOf(g)+"/"+entry.Name]
 			ready := false
 			for _, p := range pods {
 				ready = ready || podReady(p)

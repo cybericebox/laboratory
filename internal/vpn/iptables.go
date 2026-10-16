@@ -74,7 +74,7 @@ func (m *IPTablesManager) GuardWireGuardPort(uplink string, port int) (ipv6 bool
 type inputTable interface{ podinput.Table }
 
 // ProtectInput installs the INPUT policy of the pod (see internal/podinput): nothing on the lab side can talk to the pod itself,
-// the WireGuard side reaches only the status page on probeAddr:probePort, the uplink is open. It must run before any interface
+// the WireGuard side reaches only the status page on probeAddr:probePort and rate-limited ping of probeAddr, the uplink is open. It must run before any interface
 // of the pod comes up. The result says whether IPv6 is filtered (true) or switched off (false). Every failing step is an error and
 // the pod must not start.
 func (m *IPTablesManager) ProtectInput(uplink, probeAddr string, probePort int) (ipv6Filtered bool, err error) {

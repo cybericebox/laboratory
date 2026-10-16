@@ -10,7 +10,7 @@
 //     earlier rule accepted;
 //   - everything from the uplink (the pod network: the kubelet, the node, the proxy that delivers WireGuard to its UDP port,
 //     which wgguard.go narrows further);
-//   - the VPN status page, from the WireGuard interface and to the tunnel address only;
+//   - the VPN status page and rate-limited echo requests, from the WireGuard interface and to the tunnel address only;
 //   - DHCP, on the lab interfaces where the pod runs a DHCP server (AllowDHCP);
 //   - ping of the pod's own address on a lab interface, rate-limited, and only on the interface that owns the address (AllowPing):
 //     Linux answers for every local address on every interface, so without the -d match a device could ping the pod's address
@@ -54,7 +54,7 @@ const (
 // dhcpPort is the port of a DHCP server.
 const dhcpPort = "67"
 
-// Probe is the one service of the pod that a participant may reach: a TCP port on the tunnel address, from the tunnel interface.
+// Probe is the connection check a participant may reach: a TCP port and rate-limited ping of the tunnel address, from the tunnel interface.
 type Probe struct {
 	Iface string
 	Addr  string
@@ -119,6 +119,13 @@ func Install(ipt Filter, p Policy, ipv6 bool) error {
 			return err
 		}
 	}
+	if p.Probe != nil && !ipv6 {
+		// Keep the echo limit and its over-limit drop ahead of conntrack's
+		// ESTABLISHED accept, including when upgrading an existing chain.
+		if err := allowProbePing(ipt, p.Probe.Iface, p.Probe.Addr); err != nil {
+			return err
+		}
+	}
 	return ensure(ipt, "INPUT", []string{"-j", Chain}, true)
 }
 
@@ -149,7 +156,7 @@ func AllowDHCP(ipt Filter, iface string) error {
 
 func DenyDHCP(ipt Filter, iface string) { deleteAll(ipt, DHCPRule(iface)) }
 
-// pingRate is the rate limit of echo requests per lab interface: a ping to the gateway works, a flood does not.
+// pingRate bounds gateway echo replies: shared per lab interface, per source for VPN participants.
 const (
 	pingRate  = "10/second"
 	pingBurst = "20"
@@ -159,6 +166,24 @@ const (
 func PingRule(iface, addr string) []string {
 	return []string{"-i", iface, "-d", addr, "-p", "icmp", "--icmp-type", "echo-request",
 		"-m", "limit", "--limit", pingRate, "--limit-burst", pingBurst, "-j", accept}
+}
+
+// allowProbePing gives each authenticated tunnel source its own echo budget so
+// one participant cannot exhaust another's connection check. WireGuard peers
+// are bound to individual /32 sources; the current client subnet is one /24.
+// Bound the table to 256 entries and expire idle entries after ten seconds.
+// Lab-facing AllowPing keeps its existing shared limiter.
+func allowProbePing(ipt Filter, iface, addr string) error {
+	if err := ensure(ipt, Chain, pingOverLimitRule(iface, addr), true); err != nil {
+		return err
+	}
+	return ensure(ipt, Chain, []string{
+		"-i", iface, "-d", addr, "-p", "icmp", "--icmp-type", "echo-request",
+		"-m", "hashlimit", "--hashlimit-upto", pingRate, "--hashlimit-burst", pingBurst,
+		"--hashlimit-mode", "srcip", "--hashlimit-srcmask", "32", "--hashlimit-name", "cice_vpn_ping",
+		"--hashlimit-htable-size", "256", "--hashlimit-htable-max", "256",
+		"--hashlimit-htable-expire", "10000", "--hashlimit-htable-gcinterval", "1000", "-j", accept,
+	}, true)
 }
 
 // pingOverLimitRule drops the echo requests over the limit. It must be there: conntrack keeps an echo "connection" by id, so after

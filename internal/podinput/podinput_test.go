@@ -66,13 +66,14 @@ func (f *fakeFilter) Delete(_, chain string, rule ...string) error {
 
 // pkt is a packet addressed to the pod.
 type pkt struct {
-	iface string
-	dst   string
-	proto string // tcp, udp, icmp, icmpv6
-	dport int
-	icmp6 string // icmpv6 type name
-	icmp4 string // icmp type name
-	state string // NEW or ESTABLISHED
+	iface         string
+	dst           string
+	proto         string // tcp, udp, icmp, icmpv6
+	dport         int
+	icmp6         string // icmpv6 type name
+	icmp4         string // icmp type name
+	state         string // NEW or ESTABLISHED
+	pingOverLimit bool   // the kernel's limit match rejected this echo request
 }
 
 func ifaceMatch(pattern, iface string) bool {
@@ -112,6 +113,9 @@ func (f *fakeFilter) matches(r []string, p pkt) (match bool, target string) {
 			match = match && ok
 			i++
 		case "-m":
+			if (r[i+1] == "limit" || r[i+1] == "hashlimit") && p.pingOverLimit {
+				match = false
+			}
 			i++
 		case "-j":
 			target = r[i+1]
@@ -188,7 +192,7 @@ func TestLabSideGetsNoAnswerFromThePod(t *testing.T) {
 	}
 }
 
-func TestParticipantsReachOnlyTheStatusPage(t *testing.T) {
+func TestParticipantsReachOnlyTheStatusPageAndGatewayPing(t *testing.T) {
 	f := newFake(t)
 	if err := Install(f, vpnPolicy, false); err != nil {
 		t.Fatal(err)
@@ -196,12 +200,28 @@ func TestParticipantsReachOnlyTheStatusPage(t *testing.T) {
 	if v := f.verdict(pkt{iface: "wg0", dst: "10.8.0.1", proto: "tcp", dport: 8088}); v != "ACCEPT" {
 		t.Errorf("the status page from the tunnel: %s, want ACCEPT", v)
 	}
+	for _, state := range []string{"NEW", "ESTABLISHED"} {
+		for _, overLimit := range []bool{false, true} {
+			want := "ACCEPT"
+			if overLimit {
+				want = "DROP"
+			}
+			if v := f.verdict(pkt{iface: "wg0", dst: "10.8.0.1", proto: "icmp", icmp4: "echo-request", state: state, pingOverLimit: overLimit}); v != want {
+				t.Errorf("gateway echo %s overLimit=%v: %s, want %s", state, overLimit, v, want)
+			}
+		}
+	}
 	for _, p := range []pkt{
 		{iface: "wg0", dst: "10.8.0.1", proto: "tcp", dport: 22},
 		{iface: "wg0", dst: "10.8.0.1", proto: "tcp", dport: 8089},
 		{iface: "wg0", dst: "10.8.0.1", proto: "udp", dport: 8088},
 		{iface: "wg0", dst: "10.8.0.1", proto: "udp", dport: 51820},
 		{iface: "wg0", dst: "10.8.0.1", proto: "icmp"},
+		{iface: "wg0", dst: "10.8.0.1", proto: "icmp", icmp4: "timestamp-request"},
+		{iface: "wg0", dst: "10.8.0.1", proto: "icmp", icmp4: "redirect"},
+		{iface: "wg0", dst: "10.8.100.1", proto: "icmp", icmp4: "echo-request"},
+		{iface: "wg0", dst: "10.244.0.2", proto: "icmp", icmp4: "echo-request"},
+		{iface: "lab1", dst: "10.8.0.1", proto: "icmp", icmp4: "echo-request"},
 		{iface: "wg0", dst: "10.8.100.1", proto: "tcp", dport: 8088}, // the lab-side address of the pod
 		{iface: "lab1", dst: "10.8.0.1", proto: "tcp", dport: 8088},  // the page through a lab interface
 	} {
@@ -310,16 +330,41 @@ func TestInstallIsIdempotentAndKeepsTheOrder(t *testing.T) {
 	}
 	want := Rules(vpnPolicy, false)
 	got := f.chains[Chain]
-	if len(got) != len(want)+1 {
-		t.Fatalf("chain after three installs: %v, want %d accepts and the drop", got, len(want))
+	if len(got) != len(want)+3 {
+		t.Fatalf("chain after three installs: %v, want %d rules and the drop", got, len(want)+2)
 	}
 	for i, r := range want {
-		if strings.Join(got[i], " ") != strings.Join(r, " ") {
-			t.Errorf("rule %d: %v, want %v", i, got[i], r)
+		if strings.Join(got[i+2], " ") != strings.Join(r, " ") {
+			t.Errorf("rule %d: %v, want %v", i+2, got[i+2], r)
 		}
 	}
 	if n := len(f.chains["INPUT"]); n != 1 {
 		t.Errorf("INPUT has %d rules, want the one jump", n)
+	}
+}
+
+func TestInstallUpgradesExistingTunnelPolicyWithoutBypassingEchoLimit(t *testing.T) {
+	f := newFake(t)
+	// The network namespace can outlive the old VPN process, leaving the
+	// status-page-only policy (and established conntrack entries) behind.
+	if err := Install(f, Policy{Uplink: "eth0"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensure(f, Chain, []string{"-i", "wg0", "-d", "10.8.0.1", "-p", "tcp", "--dport", "8088", "-j", "ACCEPT"}, true); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := Install(f, vpnPolicy, false); err != nil {
+			t.Fatal(err)
+		}
+		echo := pkt{iface: "wg0", dst: "10.8.0.1", proto: "icmp", icmp4: "echo-request", state: "ESTABLISHED"}
+		if v := f.verdict(echo); v != "ACCEPT" {
+			t.Errorf("gateway ping after upgrade: %s, want ACCEPT", v)
+		}
+		echo.pingOverLimit = true
+		if v := f.verdict(echo); v != "DROP" {
+			t.Errorf("established over-limit echo after upgrade: %s, want DROP", v)
+		}
 	}
 }
 
@@ -341,15 +386,22 @@ func TestRemoveTakesEverythingOff(t *testing.T) {
 }
 
 func TestRulesAreTheExpectedSpecs(t *testing.T) {
+	f := newFake(t)
+	if err := Install(f, vpnPolicy, false); err != nil {
+		t.Fatal(err)
+	}
 	var got []string
-	for _, r := range Rules(vpnPolicy, false) {
+	for _, r := range f.chains[Chain] {
 		got = append(got, strings.Join(r, " "))
 	}
 	want := []string{
+		"-i wg0 -d 10.8.0.1 -p icmp --icmp-type echo-request -m hashlimit --hashlimit-upto 10/second --hashlimit-burst 20 --hashlimit-mode srcip --hashlimit-srcmask 32 --hashlimit-name cice_vpn_ping --hashlimit-htable-size 256 --hashlimit-htable-max 256 --hashlimit-htable-expire 10000 --hashlimit-htable-gcinterval 1000 -j ACCEPT",
+		"-i wg0 -d 10.8.0.1 -p icmp --icmp-type echo-request -j DROP",
 		"-i lo -j ACCEPT",
 		"-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
 		"-i eth0 -j ACCEPT",
 		"-i wg0 -d 10.8.0.1 -p tcp --dport 8088 -j ACCEPT",
+		"-j DROP",
 	}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("rules\n%v\nwant\n%v", got, want)
@@ -375,8 +427,8 @@ func TestPingOnlyTheOwnAddressOfTheInterface(t *testing.T) {
 	echo := func(iface, dst string) string {
 		return f.verdict(pkt{iface: iface, dst: dst, proto: "icmp", icmp4: "echo-request"})
 	}
-	if echo("lab1", "10.8.100.1") != "ACCEPT" || echo("lab2", "10.8.101.1") != "ACCEPT" {
-		t.Errorf("a lab must be able to ping the pod's address on its own interface")
+	if echo("lab1", "10.8.100.1") != "ACCEPT" || echo("lab2", "10.8.101.1") != "ACCEPT" || echo("wg0", "10.8.0.1") != "ACCEPT" {
+		t.Errorf("a lab or participant must be able to ping the pod's address on its own interface")
 	}
 	for _, c := range []struct{ iface, dst, why string }{
 		{"lab1", "10.8.101.1", "the address of another lab's interface"},
@@ -386,7 +438,6 @@ func TestPingOnlyTheOwnAddressOfTheInterface(t *testing.T) {
 		{"lab1", "127.0.0.1", "the loopback"},
 		{"lab3", "10.8.100.1", "an interface that has no rule"},
 		{"wg0", "10.8.100.1", "the tunnel interface"},
-		{"wg0", "10.8.0.1", "the tunnel interface, its own address"},
 	} {
 		if v := echo(c.iface, c.dst); v != "DROP" {
 			t.Errorf("echo on %s to %s (%s): %s, want DROP", c.iface, c.dst, c.why, v)
