@@ -54,28 +54,51 @@ func TestNetnsRetiredExactRowIsAcknowledged(t *testing.T) {
 	}
 }
 
-// The Pod path has nothing to clean for a port that is in neither OVS nor the kernel (a Connection finalizer already
-// retired it): it must not fail the Pod's reconcile forever. A kernel link without an OVS owner still fails.
-func TestNetnsPodCleanupSkipsAPortThatIsGone(t *testing.T) {
+// The Pod path has nothing left to clean for a port this node-agent itself retired for this Pod (a Connection
+// finalizer took it first): it must not fail the Pod's reconcile forever. A port that is gone but was never retired
+// here is not proven clean and still fails, and so does a kernel link without an OVS owner.
+func TestNetnsPodCleanupSkipsAPortRetiredHere(t *testing.T) {
 	nstest.Require(t)
-	ovs, flows, _, _ := nativeOwnerOVS(t)
+	ovs, flows, _, sock := nativeOwnerOVS(t)
 	kube, _, _ := ownerPods(t, names.ComponentVPN)
 	r := &NetworkAttachReconciler{Client: kube, Reader: kube, NodeName: "node", OVS: ovs, Flows: flows}
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "g", UID: "pod-uid"}}
-	gone := names.DevicePortKey("g", "dev", "eth0")
-	if err := r.cleanupPodPort(context.Background(), pod, gone); err != nil {
-		t.Fatalf("a port absent from OVS and the kernel needs no cleanup: %v", err)
+
+	retired := names.DevicePortKey("g", "dev", "eth0")
+	if err := ovs.AddVethPortOwned(retired, pod.UID); err != nil {
+		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = ovs.DelVethPort(retired) })
+	row := strings.TrimSpace(nstest.Run(t, "", "ovs-vsctl", "--db=unix:"+sock, "get", "Port", retired, "_uuid"))
+	if err := flows.AddT0Port(retired, 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.DelVethWithFlowsExpected(retired, pod.UID, row); err != nil { // the Connection finalizer's pass
+		t.Fatal(err)
+	}
+	if err := r.cleanupPodPort(context.Background(), pod, retired); err != nil {
+		t.Fatalf("a port this node-agent retired for this Pod needs no cleanup: %v", err)
+	}
+	other := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "g", UID: "other-uid"}}
+	if err := r.cleanupPodPort(context.Background(), other, retired); !errors.Is(err, ErrPortOwnerUnknown) {
+		t.Fatalf("another Pod incarnation must not take the receipt: %v", err)
+	}
+
+	never := names.DevicePortKey("g", "dev", "eth2")
+	if err := r.cleanupPodPort(context.Background(), pod, never); !errors.Is(err, ErrPortOwnerUnknown) {
+		t.Fatalf("a port gone without a retirement here is not proven clean: %v", err)
+	}
+
 	stray := names.DevicePortKey("g", "dev", "eth1")
-	if err := ovs.AddVethPortOwned(stray, "pod-uid"); err != nil {
+	if err := ovs.AddVethPortOwned(stray, pod.UID); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ovs.DelVethPort(stray) })
-	ops, _ := ovs.portSnapshotLocked(stray)
-	if ops == nil {
+	snapshot, _ := ovs.portSnapshotLocked(stray)
+	if snapshot == nil {
 		t.Fatal("fixture port has no row")
 	}
-	if err := ovs.delPortLocked(ops); err != nil { // the row goes, the kernel link stays
+	if err := ovs.delPortLocked(snapshot); err != nil { // the row goes, the kernel link stays
 		t.Fatal(err)
 	}
 	if err := r.cleanupPodPort(context.Background(), pod, stray); !errors.Is(err, ErrPortOwnerUnknown) {

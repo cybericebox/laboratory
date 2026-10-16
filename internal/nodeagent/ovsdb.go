@@ -93,6 +93,18 @@ func (r *retiredRows) add(row, key string, uid types.UID) {
 	}
 }
 
+// retiredKey says whether this process retired a row of this port key for this Pod incarnation (any row).
+func (r *retiredRows) retiredKey(key string, uid types.UID) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, got := range r.rows {
+		if got.key == key && got.uid == uid {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *retiredRows) has(row, key string, uid types.UID) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()

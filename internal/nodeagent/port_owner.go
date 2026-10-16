@@ -59,9 +59,9 @@ func (r *NetworkAttachReconciler) cleanupPodPort(ctx context.Context, pod *corev
 		return err
 	}
 	uid, present := owners[key]
-	if !present {
-		// In neither OVS nor the kernel: another path (a Connection finalizer) retired it, nothing is left to clean.
-		// A kernel link without an OVS owner still goes to the owned cleanup below, which refuses it.
+	if !present && r.OVS.retired.retiredKey(key, pod.UID) {
+		// This node-agent retired this Pod's port already (a Connection finalizer took it first) and the kernel link is
+		// gone: nothing is left to clean. Anything else goes to the owned cleanup below, which refuses what it cannot prove.
 		var absent netlink.LinkNotFoundError
 		if _, err := netlink.LinkByName(key); errors.As(err, &absent) {
 			return nil
