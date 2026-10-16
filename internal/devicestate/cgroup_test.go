@@ -71,8 +71,9 @@ func fakeCgroup(t *testing.T, frozenOnWrite bool) string {
 func TestFreezeWaitsForFrozenAndThaws(t *testing.T) {
 	dir := fakeCgroup(t, true)
 	// The "kernel": when freeze is requested, flip the events file.
-	stop := make(chan struct{})
+	stop, done := make(chan struct{}), make(chan struct{})
 	go func() {
+		defer close(done)
 		for {
 			select {
 			case <-stop:
@@ -87,7 +88,8 @@ func TestFreezeWaitsForFrozenAndThaws(t *testing.T) {
 			_ = os.WriteFile(filepath.Join(dir, "cgroup.events"), []byte(ev), 0o644)
 		}
 	}()
-	defer close(stop)
+	// Stop the writer and wait for it before the temp dir is removed: a write racing the cleanup leaves the dir non-empty.
+	defer func() { close(stop); <-done }()
 
 	thaw, err := Freeze(context.Background(), dir)
 	if err != nil {

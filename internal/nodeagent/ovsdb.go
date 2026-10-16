@@ -53,6 +53,63 @@ type OVSManager struct {
 
 	// policingKbps is the rate a veth port of a device may send into the bridge (0 = unpoliced); set by SetPolicing.
 	policingKbps int
+
+	// retired remembers the exact rows this process retired, so a repeated exact-row cleanup is acknowledged.
+	retired retiredRows
+}
+
+// retiredRows is a bounded memory of the OVS rows this process retired itself: row UUID → the port key and Pod
+// incarnation it belonged to. A row UUID is never reused, so "the expected row is absent and we retired it" proves the
+// cleanup without the runtime-observation journal. Only exact-row callers (a Connection finalizer) use it; a cleanup
+// that names no row still cannot be acknowledged from a missing row.
+type retiredRows struct {
+	mu    sync.Mutex
+	rows  map[string]retiredRow
+	order []string
+}
+
+type retiredRow struct {
+	key string
+	uid types.UID
+}
+
+// retiredRowsMax bounds the memory; a node holds far fewer live ports, and an older row is only asked for again by a
+// finalizer that keeps failing for other reasons.
+const retiredRowsMax = 4096
+
+func (r *retiredRows) add(row, key string, uid types.UID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.rows == nil {
+		r.rows = map[string]retiredRow{}
+	}
+	if _, ok := r.rows[row]; !ok {
+		r.order = append(r.order, row)
+	}
+	r.rows[row] = retiredRow{key: key, uid: uid}
+	for len(r.order) > retiredRowsMax {
+		delete(r.rows, r.order[0])
+		r.order = r.order[1:]
+	}
+}
+
+// retiredKey says whether this process retired a row of this port key for this Pod incarnation (any row).
+func (r *retiredRows) retiredKey(key string, uid types.UID) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, got := range r.rows {
+		if got.key == key && got.uid == uid {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *retiredRows) has(row, key string, uid types.UID) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	got, ok := r.rows[row]
+	return ok && got.key == key && got.uid == uid
 }
 
 // SetPolicing sets the storm control of the veth ports: each may send at most kbps into the bridge (burst a tenth of it). A pure flood
@@ -456,21 +513,7 @@ func (m *OVSManager) delVethWithFlowsOwnedJournaled(key string, uid types.UID, f
 	}
 	link, linkErr := netlink.LinkByName(key)
 	if p == nil {
-		if flows != nil {
-			var absent netlink.LinkNotFoundError
-			if errors.As(linkErr, &absent) && m.RuntimeRetirementAbsent != nil {
-				return m.RuntimeRetirementAbsent(key, uid)
-			}
-			return fmt.Errorf("%w: missing owner row cannot authorize cleanup of %s", ErrPortOwnerUnknown, key)
-		}
-		if linkErr == nil {
-			return fmt.Errorf("%w: kernel link %s has no OVS owner", ErrPortOwnerUnknown, key)
-		}
-		var absent netlink.LinkNotFoundError
-		if !errors.As(linkErr, &absent) {
-			return linkErr
-		}
-		return nil
+		return m.absentRowCleanup(key, uid, flows, linkErr, expectedRow...)
 	}
 	if len(expectedRow) > 0 && expectedRow[0] != "" && p.UUID != expectedRow[0] {
 		return ErrPortOwnerChanged
@@ -500,7 +543,35 @@ func (m *OVSManager) delVethWithFlowsOwnedJournaled(key string, uid types.UID, f
 	if current == nil || current.UUID != p.UUID || current.ExternalIDs[portOwnerExternalID] != p.ExternalIDs[portOwnerExternalID] {
 		return fmt.Errorf("%w: port changed during flow retirement", ErrPortOwnerChanged)
 	}
-	return m.finishVethRetirement(key, p, link, linkErr, prepared)
+	if err := m.finishVethRetirement(key, p, link, linkErr, prepared); err != nil {
+		return err
+	}
+	m.retired.add(p.UUID, key, uid)
+	return nil
+}
+
+// absentRowCleanup answers a cleanup whose port row is gone. With flows (a platform cleanup that must prove the flow
+// retirement) only the exact row this process retired, or the runtime journal, acknowledges it; without flows a port
+// absent from both OVS and the kernel needs nothing.
+func (m *OVSManager) absentRowCleanup(key string, uid types.UID, flows *FlowManager, linkErr error, expectedRow ...string) error {
+	var absent netlink.LinkNotFoundError
+	gone := errors.As(linkErr, &absent)
+	if flows != nil {
+		if gone && len(expectedRow) > 0 && expectedRow[0] != "" && m.retired.has(expectedRow[0], key, uid) {
+			return nil
+		}
+		if gone && m.RuntimeRetirementAbsent != nil {
+			return m.RuntimeRetirementAbsent(key, uid)
+		}
+		return fmt.Errorf("%w: missing owner row cannot authorize cleanup of %s", ErrPortOwnerUnknown, key)
+	}
+	if linkErr == nil {
+		return fmt.Errorf("%w: kernel link %s has no OVS owner", ErrPortOwnerUnknown, key)
+	}
+	if !gone {
+		return linkErr
+	}
+	return nil
 }
 
 // randomPortName generates a unique OVS internal port name: "ice" + 12 random hex chars = 15 chars (IFNAMSIZ max).
