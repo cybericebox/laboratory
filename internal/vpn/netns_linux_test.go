@@ -3,12 +3,15 @@
 package vpn
 
 import (
+	"bufio"
 	"net"
 	"os"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cybericebox/laboratory/internal/nstest"
 	"github.com/cybericebox/laboratory/internal/podinput"
@@ -160,15 +163,20 @@ func TestNetnsVPNPodIsATransparentGateway(t *testing.T) {
 		}
 	})
 
-	t.Run("participants reach the status page and nothing else of the pod", func(t *testing.T) {
+	t.Run("participants reach only the status page and ping of the tunnel gateway", func(t *testing.T) {
 		if !nstest.Dial(t, "pa", "tcp", "10.8.0.1:8088") {
 			t.Errorf("the status page does not answer a participant")
+		}
+		for _, ns := range []string{"pa", "pb"} {
+			if !nstest.Ping(t, ns, "10.8.0.1") {
+				t.Errorf("the tunnel gateway does not answer a ping from %s", ns)
+			}
 		}
 		if nstest.Dial(t, "pa", "tcp", "10.8.100.1:8088") || nstest.Dial(t, "pa", "tcp", "10.244.0.2:8088") {
 			t.Errorf("the status page answers on another address of the pod")
 		}
 		for _, dst := range []string{"10.8.0.1", "10.8.100.1", "10.244.0.2"} {
-			if nstest.Ping(t, "pa", dst) {
+			if dst != "10.8.0.1" && nstest.Ping(t, "pa", dst) {
 				t.Errorf("ping %s from a participant is answered", dst)
 			}
 			if nstest.Reach(t, "pa", "tcp", dst+":7000", tcpPod) {
@@ -177,6 +185,75 @@ func TestNetnsVPNPodIsATransparentGateway(t *testing.T) {
 			if nstest.Reach(t, "pa", "udp", dst+":7001", udpPod) {
 				t.Errorf("udp %s:7001 from a participant is open", dst)
 			}
+		}
+	})
+
+	t.Run("one participant's echo flood cannot suppress another's connection checks", func(t *testing.T) {
+		// One ping process reuses its ICMP id: after the first reply subsequent
+		// requests are ESTABLISHED, so the explicit over-limit DROP must still win.
+		flood := exec.Command("ip", "netns", "exec", "pa", "ping", "-c", "500", "-i", "0.01", "-W", "1", "10.8.0.1")
+		stdout, err := flood.StdoutPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := flood.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = flood.Process.Kill() })
+		ready := make(chan struct{}, 1)
+		done := make(chan string, 1)
+		go func() {
+			var output strings.Builder
+			scanner := bufio.NewScanner(stdout)
+			sequence := regexp.MustCompile(`icmp_seq=(\d+)`)
+			for scanner.Scan() {
+				output.WriteString(scanner.Text() + "\n")
+				if match := sequence.FindStringSubmatch(scanner.Text()); match != nil {
+					if n, _ := strconv.Atoi(match[1]); n >= 40 {
+						select {
+						case ready <- struct{}{}:
+						default:
+						}
+					}
+				}
+			}
+			_ = flood.Wait()
+			done <- output.String()
+		}()
+		// Start B after A has sent more requests than the burst can absorb,
+		// and keep A running throughout B's checks. A shared bucket fails this.
+		select {
+		case <-ready:
+		case out := <-done:
+			t.Fatalf("echo flood ended before concurrent checks:\n%s", out)
+		case <-time.After(10 * time.Second):
+			t.Fatal("echo flood did not become ready")
+		}
+		other := nstest.Run(t, "pb", "ping", "-c", "10", "-i", "0.1", "-W", "1", "10.8.0.1")
+		summary := regexp.MustCompile(`(\d+) received`)
+		if sum := summary.FindStringSubmatch(other); sum == nil || sum[1] != "10" {
+			t.Errorf("another participant lost gateway pings during the flood:\n%s", other)
+		}
+		if !nstest.Dial(t, "pb", "tcp", "10.8.0.1:8088") {
+			t.Error("the status page does not answer another participant during the echo flood")
+		}
+		select {
+		case out := <-done:
+			t.Fatalf("echo flood ended before the concurrent checks completed:\n%s", out)
+		default:
+		}
+		var out string
+		select {
+		case out = <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("echo flood did not finish")
+		}
+		sum := summary.FindStringSubmatch(out)
+		if sum == nil {
+			t.Fatalf("no ping summary:\n%s", out)
+		}
+		if n, _ := strconv.Atoi(sum[1]); n < 10 || n > 150 {
+			t.Errorf("%d of 500 fast participant echo requests answered, want a few (burst 20 plus 10 per second)", n)
 		}
 	})
 
