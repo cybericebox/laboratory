@@ -555,8 +555,9 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 	if active && current.DeletionTimestamp.IsZero() {
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
-	// Remove local device ports from OVS and their t0 entries.
-	for _, port := range conn.Status.Ports {
+	// Remove local device ports from OVS and their t0 entries. Each retired port is cleared from the status at once, so a
+	// repeated pass (a requeue, the finalizer after a stop, a node-agent restart) never asks for a row that is gone.
+	for i, port := range conn.Status.Ports {
 		if port.NodeName != r.NodeName || port.PortID == "" {
 			continue
 		}
@@ -565,6 +566,11 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 		}
 		network := &NetworkAttachReconciler{OVS: r.OVS, Flows: r.Flows}
 		if err := network.DelVethWithFlowsExpected(port.PortID, types.UID(port.PodUID), port.RowUUID); err != nil {
+			return ctrl.Result{}, err
+		}
+		before := conn.DeepCopy()
+		conn.Status.Ports[i].PortID, conn.Status.Ports[i].RowUUID, conn.Status.Ports[i].Connected = "", "", false
+		if err := r.Status().Patch(ctx, conn, client.MergeFrom(before)); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
