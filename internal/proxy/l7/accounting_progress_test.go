@@ -263,8 +263,18 @@ func TestNegotiatedCompressedWebSocketPreservesFragmentedPayload(t *testing.T) {
 	if !bytes.Equal(got, output) || !bytes.Equal(<-received, input) {
 		t.Fatal("compressed forwarding changed")
 	}
-	rows, _, partial := m.Snapshot(GroupNamespace("g1"))
-	if len(rows) != 1 || rows[0].BytesIn != 7 || rows[0].BytesOut != 7 || partial {
-		t.Fatal(rows, partial)
+	// The meter records each direction as its copy goes on; the inbound count can land just after the client has the
+	// answer, so wait for it instead of reading one snapshot.
+	var rows []Touch
+	var partial bool
+	for deadline := time.Now().Add(2 * time.Second); ; {
+		rows, _, partial = m.Snapshot(GroupNamespace("g1"))
+		if len(rows) == 1 && rows[0].BytesIn == 7 && rows[0].BytesOut == 7 && !partial {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal(rows, partial)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
