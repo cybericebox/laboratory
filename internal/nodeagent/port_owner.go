@@ -4,7 +4,10 @@ package nodeagent
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
+	"github.com/vishvananda/netlink"
 
 	"github.com/cybericebox/laboratory/internal/names"
 	corev1 "k8s.io/api/core/v1"
@@ -56,6 +59,14 @@ func (r *NetworkAttachReconciler) cleanupPodPort(ctx context.Context, pod *corev
 		return err
 	}
 	uid, present := owners[key]
+	if !present {
+		// In neither OVS nor the kernel: another path (a Connection finalizer) retired it, nothing is left to clean.
+		// A kernel link without an OVS owner still goes to the owned cleanup below, which refuses it.
+		var absent netlink.LinkNotFoundError
+		if _, err := netlink.LinkByName(key); errors.As(err, &absent) {
+			return nil
+		}
+	}
 	if present && uid != "" {
 		if retiring, err := connectionRetiresPort(ctx, r.directReader(), pod.Namespace, r.NodeName, key, uid); err != nil || retiring {
 			return err
