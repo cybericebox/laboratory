@@ -497,7 +497,7 @@ func TestSchedulerPodsOfALabGroup(t *testing.T) {
 
 	// The VPN pod becomes Ready: it is Started and frees its slot.
 	f.create(&corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "vpn-x", Namespace: "team", Labels: map[string]string{"app": "vpn"}},
+		ObjectMeta: metav1.ObjectMeta{Name: "vpn-x", Namespace: laboratoryv1alpha1.LabGroupNamespace("team"), Labels: map[string]string{"app": "vpn"}},
 		Status:     corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}},
 	})
 	f.tick()

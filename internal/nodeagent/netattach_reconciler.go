@@ -163,6 +163,11 @@ func (r *NetworkAttachReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				return ctrl.Result{}, err
 			}
 			for _, key := range GroupPortsPresentOwned(pod.Namespace, component, pod.UID, owners) {
+				if retiring, err := connectionRetiresPort(ctx, r.directReader(), pod.Namespace, r.NodeName, key, pod.UID); err != nil {
+					return ctrl.Result{}, err
+				} else if retiring {
+					continue
+				}
 				if err := r.delVethWithFlowsOwned(key, pod.UID); err != nil {
 					return ctrl.Result{}, err
 				}

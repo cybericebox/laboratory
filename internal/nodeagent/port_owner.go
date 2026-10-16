@@ -56,6 +56,11 @@ func (r *NetworkAttachReconciler) cleanupPodPort(ctx context.Context, pod *corev
 		return err
 	}
 	uid, present := owners[key]
+	if present && uid != "" {
+		if retiring, err := connectionRetiresPort(ctx, r.directReader(), pod.Namespace, r.NodeName, key, uid); err != nil || retiring {
+			return err
+		}
+	}
 	if !present || uid != "" {
 		return r.delVethWithFlowsOwned(key, pod.UID)
 	}

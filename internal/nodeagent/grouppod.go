@@ -10,6 +10,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -171,4 +172,44 @@ func labRuntimeActive(ctx context.Context, c client.Reader, namespace, name stri
 		}
 	}
 	return true, nil
+}
+
+// connectionRetiresPort says whether a Connection on this node will retire the port itself: it still holds the ovs-cleanup
+// finalizer for this exact Pod incarnation's port, and it or its Lab is going away (deleted, stopped or gone). The Pod paths
+// leave such a port to it: the finalizer removes the port by its exact owner row, and when another path took the row first
+// the finalizer could never prove the cleanup and the Lab stayed forever.
+func connectionRetiresPort(ctx context.Context, c client.Reader, namespace, nodeName, key string, podUID types.UID) (bool, error) {
+	var conns laboratoryv1alpha1.ConnectionList
+	if err := c.List(ctx, &conns, client.InNamespace(namespace)); err != nil {
+		return false, err
+	}
+	for i := range conns.Items {
+		conn := &conns.Items[i]
+		if !controllerutil.ContainsFinalizer(conn, names.FinalizerOVSCleanup) || !connectionHasPort(conn, nodeName, key, podUID) {
+			continue
+		}
+		if !conn.DeletionTimestamp.IsZero() {
+			return true, nil
+		}
+		var lab laboratoryv1alpha1.Lab
+		if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: conn.Spec.LabRef}, &lab); err != nil {
+			if apierrors.IsNotFound(err) {
+				return true, nil
+			}
+			return false, err
+		}
+		if !lab.DeletionTimestamp.IsZero() || lab.Spec.Lifecycle.IsStopped() {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func connectionHasPort(conn *laboratoryv1alpha1.Connection, nodeName, key string, podUID types.UID) bool {
+	for _, port := range conn.Status.Ports {
+		if port.NodeName == nodeName && port.PortID == key && types.UID(port.PodUID) == podUID {
+			return true
+		}
+	}
+	return false
 }
