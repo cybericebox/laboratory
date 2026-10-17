@@ -1,11 +1,14 @@
 package chart_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	"sigs.k8s.io/yaml"
 )
 
 func wgDemux(t *testing.T, extra ...string) (appsv1.DaemonSet, corev1.Container) {
@@ -265,6 +268,27 @@ func TestWGDemuxRBAC(t *testing.T) {
 	if len(got) != 2 || !got["labgroups"] || !got["nodes"] {
 		t.Errorf("cluster rights: %v", got)
 	}
+	wantRef := map[string]string{"ClusterRoleBinding/laboratory-proxy-wg": "ClusterRole/laboratory-proxy-wg", "RoleBinding/laboratory-proxy-wg": "Role/laboratory-proxy-wg", "RoleBinding/laboratory-proxy-wg-events": "Role/laboratory-proxy-wg-events"}
+	seen := 0
+	for _, d := range all {
+		kind, _ := d["kind"].(string)
+		if kind != "RoleBinding" && kind != "ClusterRoleBinding" {
+			continue
+		}
+		name := d["metadata"].(map[string]any)["name"].(string)
+		ref := d["roleRef"].(map[string]any)
+		if want, ok := wantRef[kind+"/"+name]; !ok || ref["kind"].(string)+"/"+ref["name"].(string) != want {
+			t.Errorf("%s/%s roleRef %v", kind, name, ref)
+		}
+		subs := d["subjects"].([]any)
+		if len(subs) != 1 || subs[0].(map[string]any)["name"] != "laboratory-proxy-wg" || subs[0].(map[string]any)["namespace"] != "laboratory-wg" || subs[0].(map[string]any)["kind"] != "ServiceAccount" {
+			t.Errorf("%s/%s subjects %v", kind, name, subs)
+		}
+		seen++
+	}
+	if seen != 3 {
+		t.Errorf("%d bindings", seen)
+	}
 	roles := ofKind(all, "Role")
 	svc, ev := roles["laboratory-proxy-wg"], roles["laboratory-proxy-wg-events"]
 	if svc == nil || ev == nil {
@@ -292,5 +316,121 @@ func TestWGOperatorKnowsTheMode(t *testing.T) {
 	out, err = helmTemplate(t, "--set", "proxy.wg.mode=userspace", "-s", "templates/operator/configmap.yaml")
 	if err != nil || !strings.Contains(out, `WG_DEMUX_MODE: "userspace"`) {
 		t.Fatalf("%v\n%s", err, out)
+	}
+}
+
+// With the demux off the operator must not admit node addresses to the VPN pods.
+func TestWGOperatorModeWithoutDemux(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "proxy.wg.enabled=false", "-s", "templates/operator/configmap.yaml")
+	if err != nil || !strings.Contains(out, `WG_DEMUX_MODE: "userspace"`) {
+		t.Fatalf("%v\n%s", err, out)
+	}
+}
+
+// tc and xdp bind the probe and metrics ports to the node address, so the node's other interfaces do not expose them.
+func TestWGHostNetworkBindsToHostIP(t *testing.T) {
+	for _, mode := range []string{"tc", "xdp"} {
+		_, c := wgDemux(t, "--set", "proxy.wg.mode="+mode)
+		env := envOf(c)
+		if env["HEALTH_ADDR"].Value != "$(HOST_IP):8082" || env["DEMUX_METRICS_ADDR"].Value != "$(HOST_IP):8083" {
+			t.Errorf("%s: %q %q", mode, env["HEALTH_ADDR"].Value, env["DEMUX_METRICS_ADDR"].Value)
+		}
+		pos := map[string]int{}
+		for i, e := range c.Env {
+			pos[e.Name] = i
+		}
+		if pos["HOST_IP"] > pos["HEALTH_ADDR"] || pos["HOST_IP"] > pos["DEMUX_METRICS_ADDR"] {
+			t.Errorf("%s: HOST_IP must be defined before it is expanded", mode)
+		}
+		if c.ReadinessProbe.HTTPGet.Port.String() != "health" {
+			t.Errorf("%s: probes use the named port", mode)
+		}
+	}
+	_, c := wgDemux(t, "--set", "proxy.wg.mode=userspace")
+	if _, set := envOf(c)["HEALTH_ADDR"]; set {
+		t.Error("userspace keeps the image defaults")
+	}
+	if _, set := envOf(c)["DEMUX_METRICS_ADDR"]; set {
+		t.Error("userspace keeps the image defaults")
+	}
+}
+
+func TestWGDemuxNetworkPolicy(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "proxy.wg.mode=userspace", "-s", "templates/netpol/wg-demux.yaml")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	var np networkingv1.NetworkPolicy
+	var cnp map[string]any
+	for _, d := range strings.Split(out, "\n---\n") {
+		if strings.Contains(d, "kind: NetworkPolicy") {
+			if err := yaml.Unmarshal([]byte(d), &np); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if strings.Contains(d, "kind: CiliumNetworkPolicy") {
+			if err := yaml.Unmarshal([]byte(d), &cnp); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if np.Namespace != "laboratory-wg" || np.Spec.PodSelector.MatchLabels["app"] != "laboratory-proxy-wg" || cnp == nil {
+		t.Fatalf("policies: %+v %v", np, cnp)
+	}
+	if len(np.Spec.Ingress) != 1 || len(np.Spec.Ingress[0].Ports) != 1 || np.Spec.Ingress[0].Ports[0].Port.IntValue() != 51820 || len(np.Spec.Ingress[0].From) != 0 {
+		t.Errorf("vanilla ingress: UDP 51820 from all: %+v", np.Spec.Ingress)
+	}
+	if len(np.Spec.Egress) != 1 || len(np.Spec.Egress[0].Ports) != 2 {
+		t.Errorf("vanilla egress: kube-dns only: %+v", np.Spec.Egress)
+	}
+	spec := cnp["spec"].(map[string]any)
+	if cnp["metadata"].(map[string]any)["namespace"] != "laboratory-wg" || spec["endpointSelector"].(map[string]any)["matchLabels"].(map[string]any)["app"] != "laboratory-proxy-wg" {
+		t.Errorf("cilium identity: %v", cnp["metadata"])
+	}
+	ing := spec["ingress"].([]any)
+	if len(ing) != 2 {
+		t.Fatalf("ingress: %v", ing)
+	}
+	all := ing[0].(map[string]any)
+	if fmt.Sprint(all["fromEntities"]) != "[all]" || fmt.Sprint(all["toPorts"]) != "[map[ports:[map[port:51820 protocol:UDP]]]]" {
+		t.Errorf("public UDP 51820: %v", all)
+	}
+	host := ing[1].(map[string]any)
+	if fmt.Sprint(host["fromEntities"]) != "[host]" || fmt.Sprint(host["toPorts"]) != "[map[ports:[map[port:8082 protocol:TCP] map[port:8083 protocol:TCP]]]]" {
+		t.Errorf("health and metrics from the host: %v", host)
+	}
+	eg := spec["egress"].([]any)
+	if len(eg) != 3 {
+		t.Fatalf("egress: %v", eg)
+	}
+	if fmt.Sprint(eg[0]) != "map[toEntities:[kube-apiserver]]" {
+		t.Errorf("apiserver: %v", eg[0])
+	}
+	if !strings.Contains(fmt.Sprint(eg[1]), "k8s-app:kube-dns") || !strings.Contains(fmt.Sprint(eg[1]), "53") {
+		t.Errorf("dns: %v", eg[1])
+	}
+	grp := fmt.Sprint(eg[2])
+	if !strings.Contains(grp, "laboratory.cybericebox.com/group") || !strings.Contains(grp, "Exists") || !strings.Contains(grp, "port:51820 protocol:UDP") {
+		t.Errorf("group endpoints on UDP 51820: %v", grp)
+	}
+
+	for _, extra := range [][]string{{}, {"--set", "proxy.wg.mode=xdp"}, {"--set", "proxy.wg.mode=userspace", "--set", "proxy.networkPolicy.enabled=false"}, {"--set", "proxy.wg.mode=userspace", "--set", "proxy.wg.enabled=false"}} {
+		if o, err := helmTemplate(t, append(extra, "-s", "templates/netpol/wg-demux.yaml")...); err == nil && strings.Contains(o, "kind:") {
+			t.Errorf("%v: no pod policy expected:\n%s", extra, o)
+		}
+	}
+}
+
+// l7 has no WireGuard rule: the demux has its own policy.
+func TestL7PolicyHasNoWireGuard(t *testing.T) {
+	out, err := helmTemplate(t, "-s", "templates/netpol/proxy-l7.yaml")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if strings.Contains(out, "51820") {
+		t.Errorf("no WireGuard port in the l7 policy:\n%s", out)
+	}
+	if strings.Contains(out, "wg-demux") {
+		t.Errorf("the header must not describe a shared pod")
 	}
 }

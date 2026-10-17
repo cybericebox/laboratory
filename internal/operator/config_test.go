@@ -217,3 +217,23 @@ func TestLoadConfigTuningKnobs(t *testing.T) {
 		t.Errorf("an endpoint with a port is advertised as it is: %q", cfg.PublicVPNEndpoint)
 	}
 }
+
+func TestLoadConfigWGDemuxMode(t *testing.T) {
+	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
+	t.Setenv("BASE_DOMAIN", "labs.example.com")
+	setRequiredEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil || cfg.WGDemuxMode != "tc" {
+		t.Fatalf("default: %v %v", cfg, err)
+	}
+	for _, mode := range []string{"userspace", "tc", "xdp"} {
+		t.Setenv("WG_DEMUX_MODE", mode)
+		if _, err := LoadConfig(); err != nil {
+			t.Errorf("%s: %v", mode, err)
+		}
+	}
+	t.Setenv("WG_DEMUX_MODE", "tcc")
+	if _, err := LoadConfig(); err == nil {
+		t.Error("a typo in WG_DEMUX_MODE must be refused")
+	}
+}

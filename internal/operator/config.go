@@ -291,6 +291,11 @@ func LoadConfig() (*Config, error) {
 	if address, err := mail.ParseAddress(cfg.SupportEmail); err != nil || address.Address != cfg.SupportEmail {
 		return nil, fmt.Errorf("SUPPORT_EMAIL %q is not a plain email address", cfg.SupportEmail)
 	}
+	switch cfg.WGDemuxMode {
+	case "userspace", "tc", "xdp":
+	default:
+		return nil, fmt.Errorf("WG_DEMUX_MODE %q is not userspace, tc or xdp", cfg.WGDemuxMode)
+	}
 	cfg.applyDefaults()
 	for name, image := range map[string]string{"VPN_IMAGE": cfg.VPNImage, "GATEWAY_IMAGE": cfg.GatewayImage, "NETCONFIG_IMAGE": cfg.NetConfigImage} {
 		if err := checkExactImage(image); err != nil {

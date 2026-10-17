@@ -82,6 +82,13 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: status.hostIP
+        {{- if $hostNet }}
+        {{- /* On the host network the ports would be open on every address of the node and no pod policy applies: bind them to the node's address. */}}
+        - name: HEALTH_ADDR
+          value: "$(HOST_IP):{{ include "laboratory.wgHealthPort" . }}"
+        - name: DEMUX_METRICS_ADDR
+          value: "$(HOST_IP):{{ include "laboratory.wgMetricsPort" . }}"
+        {{- end }}
         - name: DEMUX_SERVICE_NAME
           value: "laboratory-proxy-wg"
         - name: DEMUX_SERVICE_NAMESPACE
