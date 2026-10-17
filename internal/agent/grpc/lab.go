@@ -27,6 +27,8 @@ type labVariant struct {
 	spec          laboratoryv1alpha1.LabSpec
 	rawDefinition []byte
 	env           deviceVars
+	// creds are the pull credentials of the variant's private images; write-only.
+	creds []*protobuf.RegistryCredential
 }
 
 // parseVariants parses and validates the variants of a CreateLabs request. A variant id
@@ -48,7 +50,10 @@ func parseVariants(in []*protobuf.LabVariant, persistence bool) (map[string]*lab
 		if err := validateEnv(env, specDevices(&spec)); err != nil {
 			return nil, invalid("variant %q: %v", v.GetVariantId(), err)
 		}
-		out[v.GetVariantId()] = &labVariant{id: v.GetVariantId(), spec: spec, env: env, rawDefinition: append([]byte(nil), v.GetSpecJson()...)}
+		if err := validateRegistryCredentials(v.GetRegistryCredentials()); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "variant %q: %s", v.GetVariantId(), status.Convert(err).Message())
+		}
+		out[v.GetVariantId()] = &labVariant{id: v.GetVariantId(), spec: spec, env: env, creds: v.GetRegistryCredentials(), rawDefinition: append([]byte(nil), v.GetSpecJson()...)}
 	}
 	return out, nil
 }
@@ -186,6 +191,8 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 	dep, _ := newDeploySpec(it.GetDeployGroup(), it.GetDeployAfter())
 	lab := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
 	v.spec.DeepCopyInto(&lab.Spec)
+	// Only the agent names the pull Secret, from the credentials sent with the deploy.
+	lab.Spec.ImagePullSecret = labRegistrySecretName(name, v.creds)
 	lab.Labels, lab.Annotations = dep.stamp(stampTenant(copyLabels(want), tenantOf(ctx)), stampID(nil, it.GetName()))
 	hash := specHash(&lab.Spec, dep)
 	lab.Annotations[names.AnnotationSpecHash] = hash
@@ -230,6 +237,11 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 		}
 	}
 	if state != protobuf.ItemState_ITEM_STATE_CREATED && out.Spec.Lifecycle != nil {
+		// The device Secrets of a lifecycle-managed lab stay as they are, but its registry
+		// credentials follow the resend: a rotated token must reach a lab started later.
+		if err := h.writeRegistrySecret(ctx, out, v.creds); err != nil {
+			return 0, err
+		}
 		return state, h.finishChildAdmission(ctx, it.GetLabGroup(), admission)
 	}
 	devices := sortedKeys(env)
@@ -241,6 +253,9 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 		}
 	}
 	if err := h.writeDeviceSecrets(ctx, out, devices, env); err != nil {
+		return 0, err
+	}
+	if err := h.writeRegistrySecret(ctx, out, v.creds); err != nil {
 		return 0, err
 	}
 	return state, h.finishChildAdmission(ctx, it.GetLabGroup(), admission)

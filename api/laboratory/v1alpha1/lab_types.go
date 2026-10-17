@@ -16,6 +16,12 @@ type LabSpec struct {
 	// +kubebuilder:validation:MaxItems=64
 	Devices     []DeviceTemplate     `json:"devices,omitempty"`
 	Connections []ConnectionTemplate `json:"connections,omitempty"`
+	// ImagePullSecret names a kubernetes.io/dockerconfigjson Secret in the lab's namespace with
+	// the pull credentials of this lab's private images. Only the management agent sets it,
+	// from the credentials the platform sends with the deploy; a value in a client's spec is
+	// ignored.
+	// +optional
+	ImagePullSecret string `json:"imagePullSecret,omitempty"`
 }
 
 // LabNetworkSpec configures a network segment (VPN or internet) attached to the lab.
