@@ -40,7 +40,9 @@ func (r *LabReconciler) ensureModes(ctx context.Context, lab *laboratoryv1alpha1
 	if lab.Status.ImageCache != nil {
 		return false, nil
 	}
-	cache := r.Mirror.Prefix != ""
+	// A lab with registry credentials of its own (Spec.ImagePullSecret) pulls straight from
+	// its registry for the same reason as a tenant with its own, below.
+	cache := r.Mirror.Prefix != "" && lab.Spec.ImagePullSecret == ""
 	if cache {
 		// A tenant with registry credentials of its own pulls straight from its registries:
 		// the shared cache would fetch its private images with the platform's credentials.

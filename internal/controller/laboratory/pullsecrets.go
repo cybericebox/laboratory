@@ -2,13 +2,18 @@ package laboratory
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -68,24 +73,75 @@ func tenantPullSecret(ctx context.Context, c client.Reader, tenantName string) (
 	return t.Spec.Images.PullSecret, nil
 }
 
+// errPullSecretPending: the lab names a pull Secret that does not exist yet. The agent
+// creates it right after the Lab (its owner reference needs the Lab's UID), so this is a
+// short wait, retried, never a failure of the device.
+var errPullSecretPending = errors.New("the lab's image pull secret does not exist yet")
+
+// pullSecretRetry is how soon a device that waits for its lab's pull Secret is reconciled
+// again: the Device controller does not watch Secrets.
+const pullSecretRetry = 2 * time.Second
+
 // devicePullSecrets are the pull secrets of a device pod: the tenant's own credentials when
-// it has any (copied into the group namespace by the LabGroup controller), and never the
-// platform's. A tenant that cannot be read counts as having none: the pod then pulls
-// anonymously and fails to pull a private image, which is the safe direction.
-func (r *DeviceReconciler) devicePullSecrets(ctx context.Context, device *laboratoryv1alpha1.Device) []corev1.LocalObjectReference {
-	secret, err := tenantPullSecret(ctx, r.Client, names.TenantOf(device.Labels))
-	if err != nil || secret == "" {
-		return nil
+// it has any (copied into the group namespace by the LabGroup controller) and the lab's own
+// (written by the agent into the lab's namespace), never the platform's. A tenant that
+// cannot be read counts as having none: the pod then pulls anonymously and fails to pull a
+// private image, which is the safe direction. The lab's Secret must exist (errPullSecretPending).
+func (r *DeviceReconciler) devicePullSecrets(ctx context.Context, device *laboratoryv1alpha1.Device) ([]corev1.LocalObjectReference, error) {
+	var secrets []string
+	if secret, err := tenantPullSecret(ctx, r.Client, names.TenantOf(device.Labels)); err == nil && secret != "" {
+		secrets = append(secrets, names.TenantPullSecret)
 	}
-	return pullSecretRefs([]string{names.TenantPullSecret})
+	own, err := r.labPullSecret(ctx, device)
+	if err != nil {
+		return nil, err
+	}
+	if own != "" {
+		secrets = append(secrets, own)
+	}
+	return pullSecretRefs(secrets), nil
 }
 
-// applyPullSecrets gives a device pod the tenant's pull secrets and, when it has any, makes every container pull with IfNotPresent turned
-// into Always: an image pulled with tenant A's credentials stays on the node, and with IfNotPresent a pod of tenant B that names the exact
+// labPullSecret is the name of the registry Secret of the device's lab (Spec.ImagePullSecret,
+// set only by the agent); "" when the lab has none or is gone.
+func (r *DeviceReconciler) labPullSecret(ctx context.Context, device *laboratoryv1alpha1.Device) (string, error) {
+	if device.Spec.LabRef == "" {
+		return "", nil
+	}
+	var lab laboratoryv1alpha1.Lab
+	if err := r.reader().Get(ctx, types.NamespacedName{Namespace: device.Namespace, Name: device.Spec.LabRef}, &lab); err != nil {
+		return "", client.IgnoreNotFound(err)
+	}
+	name := lab.Spec.ImagePullSecret
+	if name == "" {
+		return "", nil
+	}
+	var secret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Namespace: device.Namespace, Name: name}, &secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", fmt.Errorf("lab %s/%s image pull secret %s: %w", device.Namespace, lab.Name, name, errPullSecretPending)
+		}
+		return "", err
+	}
+	return name, nil
+}
+
+// applyPullSecrets gives a device pod its pull secrets (devicePullSecrets).
+func (r *DeviceReconciler) applyPullSecrets(ctx context.Context, device *laboratoryv1alpha1.Device, spec *corev1.PodSpec) error {
+	refs, err := r.devicePullSecrets(ctx, device)
+	if err != nil {
+		return err
+	}
+	setPullSecrets(spec, refs)
+	return nil
+}
+
+// setPullSecrets puts the pull secrets on a pod spec and, when there are any, makes every container pull with IfNotPresent turned
+// into Always: an image pulled with tenant (or lab) A's credentials stays on the node, and with IfNotPresent a pod of B that names the exact
 // same reference would run it without any credential. Always makes the node ask the registry, which B cannot satisfy.
-func (r *DeviceReconciler) applyPullSecrets(ctx context.Context, device *laboratoryv1alpha1.Device, spec *corev1.PodSpec) {
-	spec.ImagePullSecrets = r.devicePullSecrets(ctx, device)
-	if len(spec.ImagePullSecrets) == 0 {
+func setPullSecrets(spec *corev1.PodSpec, refs []corev1.LocalObjectReference) {
+	spec.ImagePullSecrets = refs
+	if len(refs) == 0 {
 		return
 	}
 	for i := range spec.InitContainers {
@@ -94,6 +150,15 @@ func (r *DeviceReconciler) applyPullSecrets(ctx context.Context, device *laborat
 	for i := range spec.Containers {
 		spec.Containers[i].ImagePullPolicy = corev1.PullAlways
 	}
+}
+
+// pullSecretWait turns errPullSecretPending into a plain requeue; any other error stays.
+func pullSecretWait(ctx context.Context, err error) (ctrl.Result, error) {
+	if errors.Is(err, errPullSecretPending) {
+		log.FromContext(ctx).Info("waiting for the lab's image pull secret", "reason", err.Error())
+		return ctrl.Result{RequeueAfter: pullSecretRetry}, nil
+	}
+	return ctrl.Result{}, err
 }
 
 // syncTenantPullSecret makes the registry credentials of the group's tenant available in the

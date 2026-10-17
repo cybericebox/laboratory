@@ -300,7 +300,7 @@ func (r *DeviceReconciler) reconcilePod(ctx context.Context, device *laboratoryv
 		}
 	}
 	if err := r.createDevicePod(ctx, device); err != nil {
-		return ctrl.Result{}, err
+		return pullSecretWait(ctx, err)
 	}
 	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 }
@@ -485,6 +485,12 @@ func (r *DeviceReconciler) publishPlacement(ctx context.Context, device *laborat
 
 // createDevicePod starts the next incarnation of the device.
 func (r *DeviceReconciler) createDevicePod(ctx context.Context, device *laboratoryv1alpha1.Device) error {
+	// Before the incarnation moves: a device that waits for its lab's pull Secret starts
+	// the same incarnation once it is there.
+	pullSecrets, err := r.devicePullSecrets(ctx, device)
+	if err != nil {
+		return err
+	}
 	st := device.Status.State
 	spec := device.Spec.State
 	next := st.Incarnation + 1
@@ -503,7 +509,7 @@ func (r *DeviceReconciler) createDevicePod(ctx context.Context, device *laborato
 	device.Status.State.StoppedAt = nil
 
 	labels, _, annotations, podSpec := r.workloadTemplate(device, true)
-	r.applyPullSecrets(ctx, device, &podSpec)
+	setPullSecrets(&podSpec, pullSecrets)
 	annotations[names.AnnotationStateEpoch] = fmt.Sprint(st.Epoch)
 	annotations[names.AnnotationStateDevice] = device.Name
 	annotations[names.AnnotationStateIncarnation] = fmt.Sprint(next)

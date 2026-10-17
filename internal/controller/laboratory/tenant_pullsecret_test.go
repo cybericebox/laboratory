@@ -104,12 +104,12 @@ func TestDevicePodsGetTheTenantsPullSecretOnly(t *testing.T) {
 	dev := func(tenant string) *laboratoryv1alpha1.Device {
 		return &laboratoryv1alpha1.Device{ObjectMeta: metav1.ObjectMeta{Name: "d", Labels: map[string]string{names.LabelTenant: tenant}}}
 	}
-	got := r.devicePullSecrets(context.Background(), dev("acme"))
-	if len(got) != 1 || got[0].Name != names.TenantPullSecret {
+	got, err := r.devicePullSecrets(context.Background(), dev("acme"))
+	if err != nil || len(got) != 1 || got[0].Name != names.TenantPullSecret {
 		t.Fatalf("acme: %v", got)
 	}
 	for _, tn := range []string{"plain", "unknown"} {
-		if got := r.devicePullSecrets(context.Background(), dev(tn)); got != nil {
+		if got, err := r.devicePullSecrets(context.Background(), dev(tn)); err != nil || got != nil {
 			t.Errorf("%s: %v", tn, got)
 		}
 	}
@@ -159,12 +159,16 @@ func TestDevicePodWithTenantCredentialsPullsAlways(t *testing.T) {
 		return d
 	}
 	own := spec()
-	r.applyPullSecrets(ctx, dev("acme"), own)
+	if err := r.applyPullSecrets(ctx, dev("acme"), own); err != nil {
+		t.Fatal(err)
+	}
 	if len(own.ImagePullSecrets) != 1 || own.Containers[0].ImagePullPolicy != corev1.PullAlways || own.InitContainers[0].ImagePullPolicy != corev1.PullAlways {
 		t.Fatalf("a tenant with credentials pulls always: %+v", own)
 	}
 	plain := spec()
-	r.applyPullSecrets(ctx, dev("plain"), plain)
+	if err := r.applyPullSecrets(ctx, dev("plain"), plain); err != nil {
+		t.Fatal(err)
+	}
 	if len(plain.ImagePullSecrets) != 0 || plain.Containers[0].ImagePullPolicy != corev1.PullIfNotPresent {
 		t.Fatalf("a tenant without credentials keeps the default: %+v", plain)
 	}

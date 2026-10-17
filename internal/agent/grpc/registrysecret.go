@@ -137,5 +137,14 @@ func (h *Handler) writeRegistrySecret(ctx context.Context, lab *laboratoryv1alph
 		Data: map[string][]byte{corev1.DockerConfigJsonKey: raw},
 	}
 	_, err = secrets.Create(ctx, s, metav1.CreateOptions{})
+	if !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	// Another agent replica handling a resend of the same lab created it between the delete
+	// and the create: replace it once more, so this call's credentials win.
+	if err := secrets.Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	_, err = secrets.Create(ctx, s, metav1.CreateOptions{})
 	return err
 }

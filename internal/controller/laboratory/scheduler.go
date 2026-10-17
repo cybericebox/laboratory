@@ -207,6 +207,9 @@ func classImages(labs []*laboratoryv1alpha1.Lab, mirror imagecache.Rewriter) []s
 	seen := map[string]bool{}
 	var out []string
 	for _, l := range labs {
+		if l.Spec.ImagePullSecret != "" {
+			continue // pulled with its own credentials only: see objects
+		}
 		cached := l.Status.ImageCache != nil && *l.Status.ImageCache
 		for _, d := range l.Spec.Devices {
 			img := d.Image
@@ -531,9 +534,14 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 			after: deployAfter(lab), arrival: lab.CreationTimestamp.Time, priority: deployPriority(lab), ref: lab,
 		}
 		o.prepTenant = names.TenantOf(lab.Labels)
-		if o.group != "" {
+		switch {
+		case lab.Spec.ImagePullSecret != "":
+			// A lab with registry credentials of its own is not prepulled: the node-agents pull
+			// with the tenant's credentials or none, and its images stay out of its group's
+			// request (classImages), so it does not wait for that request either.
+		case o.group != "":
 			o.prepKey, o.images = prepClass(o.prepTenant, "g/"+o.group), groupImages(o.group)
-		} else {
+		default:
 			o.prepKey, o.images = prepClass(o.prepTenant, "l/"+topologyClass(lab)), classImages([]*laboratoryv1alpha1.Lab{lab}, s.Mirror)
 		}
 		for _, t := range lab.Spec.Devices {

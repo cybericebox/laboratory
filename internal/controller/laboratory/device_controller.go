@@ -232,7 +232,10 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 				return ctrl.Result{}, gateErr // the scheduler's dispatch triggers the next reconcile
 			}
 		}
-		return ctrl.Result{}, r.createDeployment(ctx, device, replicas)
+		if err := r.createDeployment(ctx, device, replicas); err != nil {
+			return pullSecretWait(ctx, err)
+		}
+		return ctrl.Result{}, nil
 	}
 	if err != nil {
 		return ctrl.Result{}, err
@@ -467,7 +470,9 @@ func (r *DeviceReconciler) deviceImage(device *laboratoryv1alpha1.Device, image 
 
 func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laboratoryv1alpha1.Device, replicas int32) error {
 	labels, selectorLabels, annotations, podSpec := r.workloadTemplate(device, false)
-	r.applyPullSecrets(ctx, device, &podSpec)
+	if err := r.applyPullSecrets(ctx, device, &podSpec); err != nil {
+		return err
+	}
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{

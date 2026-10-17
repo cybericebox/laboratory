@@ -237,6 +237,11 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 		}
 	}
 	if state != protobuf.ItemState_ITEM_STATE_CREATED && out.Spec.Lifecycle != nil {
+		// The device Secrets of a lifecycle-managed lab stay as they are, but its registry
+		// credentials follow the resend: a rotated token must reach a lab started later.
+		if err := h.writeRegistrySecret(ctx, out, v.creds); err != nil {
+			return 0, err
+		}
 		return state, h.finishChildAdmission(ctx, it.GetLabGroup(), admission)
 	}
 	devices := sortedKeys(env)
