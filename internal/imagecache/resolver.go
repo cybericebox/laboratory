@@ -183,6 +183,16 @@ func normalizeHost(h string) string {
 	return h
 }
 
+// Has says whether the keychain holds a login for the registry host, with the same
+// normalization Resolve uses (docker.io, index.docker.io and URL forms are one registry).
+func (k *DockerConfigKeychain) Has(host string) bool {
+	if k == nil {
+		return false
+	}
+	_, ok := k.auths[normalizeHost(host)]
+	return ok
+}
+
 // Resolve implements authn.Keychain.
 func (k *DockerConfigKeychain) Resolve(res authn.Resource) (authn.Authenticator, error) {
 	if k != nil {
