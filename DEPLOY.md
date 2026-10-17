@@ -583,6 +583,12 @@ For device calls the selector selects labs, and `device` names the device in eac
 Device spec. A `spec_json` that carries `env`, `flags` or similar fields on a device is rejected, as is any unknown field.
 There is no "flag" concept in the agent.
 
+**Pull credentials are secrets only, too.** `LabVariant.registry_credentials` (at most 8, one per registry host, no
+scheme or path; a password is required) become the write-only `kubernetes.io/dockerconfigjson` Secret
+`<lab>-registry` (owned by the Lab; delete-then-create on every `CreateLabs` of the lab), and the agent sets
+`Lab.spec.imagePullSecret` to its name. Without credentials the field stays empty; an `imagePullSecret` in `spec_json`
+is always ignored. Credentials are never returned, logged or put in a status.
+
 **Variants are not stored.** `CreateLabs` expands every variant into each Lab: the spec is copied into the Lab CR and
 the variant's variables are merged with the lab's own (the lab wins per device and variable name) into the Secrets.
 

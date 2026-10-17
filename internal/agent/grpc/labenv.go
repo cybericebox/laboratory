@@ -167,15 +167,7 @@ func (h *Handler) writeDeviceSecrets(ctx context.Context, lab *laboratoryv1alpha
 	if err := h.claimVariableWrite(ctx, lab, token); err != nil {
 		return err
 	}
-	controller := true
-	owner := metav1.OwnerReference{
-		APIVersion:         laboratoryv1alpha1.SchemeGroupVersion.String(),
-		Kind:               "Lab",
-		Name:               lab.Name,
-		UID:                lab.UID,
-		Controller:         &controller,
-		BlockOwnerDeletion: &controller,
-	}
+	owner := labOwner(lab)
 	secrets := h.k8s.CoreV1().Secrets(lab.Namespace)
 	for _, dev := range devices {
 		objName, err := h.deviceObjectName(ctx, lab.Namespace, lab.Name, dev)

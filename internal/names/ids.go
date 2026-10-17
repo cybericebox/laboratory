@@ -133,6 +133,18 @@ const TenantPullSecret = "tenant-registry"
 // operator removes it once done.
 const AnnotationRegenerateEnrollment = LabelPrefix + "regenerate-enrollment-token"
 
+// LabRegistrySecret is the dockerconfigjson Secret, in the lab's namespace, with the pull
+// credentials the platform sent for the lab (CR name lab): "<lab>-registry". Like the other
+// derived names it stays a DNS label of at most 63 characters: a longer name, and the lab
+// "tenant" (whose name would be TenantPullSecret), use the hash of the lab name instead.
+func LabRegistrySecret(lab string) string {
+	const suffix = "-registry"
+	if name := lab + suffix; len(name) <= 63 && name != TenantPullSecret {
+		return name
+	}
+	return hashKey(lab) + suffix
+}
+
 // AccessKeysSecret is the Secret (in AccessKeysNamespace) that holds the access public keys of a
 // tenant, one entry per key id with the PEM public key. The proxy looks keys up by this name.
 func AccessKeysSecret(tenant string) string { return "tenant-" + tenant + "-access-keys" }

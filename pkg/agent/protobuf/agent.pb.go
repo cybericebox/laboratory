@@ -1569,12 +1569,17 @@ func (x *SetLabGroupAccessRequest) GetPolicies() []*LabGroupAccessPolicy {
 // spec (devices[].persistence {enabled, debounce}), set at
 // creation and immutable; enabled=true is refused when the cluster does not allow persistence.
 type LabVariant struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	VariantId     string                 `protobuf:"bytes,1,opt,name=variant_id,json=variantId,proto3" json:"variant_id,omitempty"`
-	SpecJson      []byte                 `protobuf:"bytes,2,opt,name=spec_json,json=specJson,proto3" json:"spec_json,omitempty"` // Lab.spec serialized; the agent passes it through
-	Env           []*DeviceEnv           `protobuf:"bytes,3,rep,name=env,proto3" json:"env,omitempty"`                           // variables common to every lab of the variant
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	VariantId string                 `protobuf:"bytes,1,opt,name=variant_id,json=variantId,proto3" json:"variant_id,omitempty"`
+	SpecJson  []byte                 `protobuf:"bytes,2,opt,name=spec_json,json=specJson,proto3" json:"spec_json,omitempty"` // Lab.spec serialized; the agent passes it through
+	Env       []*DeviceEnv           `protobuf:"bytes,3,rep,name=env,proto3" json:"env,omitempty"`                           // variables common to every lab of the variant
+	// Pull credentials for the variant's private images (at most 8, one per registry host).
+	// The agent stores them in a per-lab dockerconfigjson Secret and sets
+	// Lab.spec.imagePullSecret to it; any imagePullSecret in spec_json is ignored. They
+	// are write-only: never returned, logged or put in a status.
+	RegistryCredentials []*RegistryCredential `protobuf:"bytes,4,rep,name=registry_credentials,json=registryCredentials,proto3" json:"registry_credentials,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *LabVariant) Reset() {
@@ -1624,6 +1629,13 @@ func (x *LabVariant) GetSpecJson() []byte {
 func (x *LabVariant) GetEnv() []*DeviceEnv {
 	if x != nil {
 		return x.Env
+	}
+	return nil
+}
+
+func (x *LabVariant) GetRegistryCredentials() []*RegistryCredential {
+	if x != nil {
+		return x.RegistryCredentials
 	}
 	return nil
 }
@@ -6437,9 +6449,11 @@ func (x *DeployFailure) GetAtUnixMs() int64 {
 type PrewarmImagesRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Image references as written in a lab spec ("nginx:1.25", "ghcr.io/o/app@sha256:...").
-	Images        []string `protobuf:"bytes,1,rep,name=images,proto3" json:"images,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Images []string `protobuf:"bytes,1,rep,name=images,proto3" json:"images,omitempty"`
+	// Pull credentials for private images of this request only (see LabVariant).
+	RegistryCredentials []*RegistryCredential `protobuf:"bytes,2,rep,name=registry_credentials,json=registryCredentials,proto3" json:"registry_credentials,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *PrewarmImagesRequest) Reset() {
@@ -6475,6 +6489,13 @@ func (*PrewarmImagesRequest) Descriptor() ([]byte, []int) {
 func (x *PrewarmImagesRequest) GetImages() []string {
 	if x != nil {
 		return x.Images
+	}
+	return nil
+}
+
+func (x *PrewarmImagesRequest) GetRegistryCredentials() []*RegistryCredential {
+	if x != nil {
+		return x.RegistryCredentials
 	}
 	return nil
 }
@@ -9214,6 +9235,67 @@ func (x *LabCreationReceipt) GetCommitted() bool {
 	return false
 }
 
+// RegistryCredential is a pull credential for one registry host.
+type RegistryCredential struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Registry      string                 `protobuf:"bytes,1,opt,name=registry,proto3" json:"registry,omitempty"` // registry host, optionally with a port ("index.docker.io", "ghcr.io"); no scheme, no path
+	Username      string                 `protobuf:"bytes,2,opt,name=username,proto3" json:"username,omitempty"`
+	Password      string                 `protobuf:"bytes,3,opt,name=password,proto3" json:"password,omitempty"` // a password or token; required
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RegistryCredential) Reset() {
+	*x = RegistryCredential{}
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[120]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegistryCredential) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegistryCredential) ProtoMessage() {}
+
+func (x *RegistryCredential) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_agent_protobuf_agent_proto_msgTypes[120]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegistryCredential.ProtoReflect.Descriptor instead.
+func (*RegistryCredential) Descriptor() ([]byte, []int) {
+	return file_pkg_agent_protobuf_agent_proto_rawDescGZIP(), []int{120}
+}
+
+func (x *RegistryCredential) GetRegistry() string {
+	if x != nil {
+		return x.Registry
+	}
+	return ""
+}
+
+func (x *RegistryCredential) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *RegistryCredential) GetPassword() string {
+	if x != nil {
+		return x.Password
+	}
+	return ""
+}
+
 var File_pkg_agent_protobuf_agent_proto protoreflect.FileDescriptor
 
 const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
@@ -9326,13 +9408,14 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\bpolicies\x18\x02 \x03(\v2 .labmanager.LabGroupAccessPolicyR\bpolicies\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"q\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc4\x01\n" +
 	"\n" +
 	"LabVariant\x12\x1d\n" +
 	"\n" +
 	"variant_id\x18\x01 \x01(\tR\tvariantId\x12\x1b\n" +
 	"\tspec_json\x18\x02 \x01(\fR\bspecJson\x12'\n" +
-	"\x03env\x18\x03 \x03(\v2\x15.labmanager.DeviceEnvR\x03env\"\xea\x02\n" +
+	"\x03env\x18\x03 \x03(\v2\x15.labmanager.DeviceEnvR\x03env\x12Q\n" +
+	"\x14registry_credentials\x18\x04 \x03(\v2\x1e.labmanager.RegistryCredentialR\x13registryCredentials\"\xea\x02\n" +
 	"\aLabItem\x12\x1b\n" +
 	"\tlab_group\x18\x01 \x01(\tR\blabGroup\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1d\n" +
@@ -9802,9 +9885,10 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x06device\x18\x04 \x01(\tR\x06device\x12\x18\n" +
 	"\amessage\x18\x05 \x01(\tR\amessage\x12\x1c\n" +
 	"\n" +
-	"at_unix_ms\x18\x06 \x01(\x03R\batUnixMs\".\n" +
+	"at_unix_ms\x18\x06 \x01(\x03R\batUnixMs\"\x81\x01\n" +
 	"\x14PrewarmImagesRequest\x12\x16\n" +
-	"\x06images\x18\x01 \x03(\tR\x06images\"\xb0\x01\n" +
+	"\x06images\x18\x01 \x03(\tR\x06images\x12Q\n" +
+	"\x14registry_credentials\x18\x02 \x03(\v2\x1e.labmanager.RegistryCredentialR\x13registryCredentials\"\xb0\x01\n" +
 	"\x12PrewarmImageStatus\x12\x14\n" +
 	"\x05image\x18\x01 \x01(\tR\x05image\x12.\n" +
 	"\x05state\x18\x02 \x01(\x0e2\x18.labmanager.PrewarmStateR\x05state\x12\x14\n" +
@@ -10020,7 +10104,11 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\vcreation_id\x18\x06 \x01(\tR\n" +
 	"creationId\x12\x17\n" +
 	"\alab_uid\x18\a \x01(\tR\x06labUid\x12\x1c\n" +
-	"\tcommitted\x18\b \x01(\bR\tcommitted*\xb7\x01\n" +
+	"\tcommitted\x18\b \x01(\bR\tcommitted\"h\n" +
+	"\x12RegistryCredential\x12\x1a\n" +
+	"\bregistry\x18\x01 \x01(\tR\bregistry\x12\x1a\n" +
+	"\busername\x18\x02 \x01(\tR\busername\x12\x1a\n" +
+	"\bpassword\x18\x03 \x01(\tR\bpassword*\xb7\x01\n" +
 	"\tItemState\x12\x1a\n" +
 	"\x16ITEM_STATE_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12ITEM_STATE_CREATED\x10\x01\x12\x15\n" +
@@ -10103,7 +10191,7 @@ func file_pkg_agent_protobuf_agent_proto_rawDescGZIP() []byte {
 }
 
 var file_pkg_agent_protobuf_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_pkg_agent_protobuf_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 133)
+var file_pkg_agent_protobuf_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 134)
 var file_pkg_agent_protobuf_agent_proto_goTypes = []any{
 	(ItemState)(0),                        // 0: labmanager.ItemState
 	(PodState)(0),                         // 1: labmanager.PodState
@@ -10230,19 +10318,20 @@ var file_pkg_agent_protobuf_agent_proto_goTypes = []any{
 	(*RetireLabGroupsRequest)(nil),        // 122: labmanager.RetireLabGroupsRequest
 	(*RetirementStatus)(nil),              // 123: labmanager.RetirementStatus
 	(*LabCreationReceipt)(nil),            // 124: labmanager.LabCreationReceipt
-	nil,                                   // 125: labmanager.LabelChanges.SetEntry
-	nil,                                   // 126: labmanager.LabGroupItem.LabelsEntry
-	nil,                                   // 127: labmanager.CreateLabGroupsRequest.LabelsEntry
-	nil,                                   // 128: labmanager.LabGroupClientItem.LabelsEntry
-	nil,                                   // 129: labmanager.CreateLabGroupClientsRequest.LabelsEntry
-	nil,                                   // 130: labmanager.SetLabGroupAccessRequest.LabelsEntry
-	nil,                                   // 131: labmanager.LabItem.LabelsEntry
-	nil,                                   // 132: labmanager.CreateLabsRequest.LabelsEntry
-	nil,                                   // 133: labmanager.LabGroup.LabelsEntry
-	nil,                                   // 134: labmanager.Lab.LabelsEntry
-	nil,                                   // 135: labmanager.DeviceEnv.VarsEntry
-	nil,                                   // 136: labmanager.LabGroupClient.LabelsEntry
-	nil,                                   // 137: labmanager.LabGroupAccessPolicy.LabelsEntry
+	(*RegistryCredential)(nil),            // 125: labmanager.RegistryCredential
+	nil,                                   // 126: labmanager.LabelChanges.SetEntry
+	nil,                                   // 127: labmanager.LabGroupItem.LabelsEntry
+	nil,                                   // 128: labmanager.CreateLabGroupsRequest.LabelsEntry
+	nil,                                   // 129: labmanager.LabGroupClientItem.LabelsEntry
+	nil,                                   // 130: labmanager.CreateLabGroupClientsRequest.LabelsEntry
+	nil,                                   // 131: labmanager.SetLabGroupAccessRequest.LabelsEntry
+	nil,                                   // 132: labmanager.LabItem.LabelsEntry
+	nil,                                   // 133: labmanager.CreateLabsRequest.LabelsEntry
+	nil,                                   // 134: labmanager.LabGroup.LabelsEntry
+	nil,                                   // 135: labmanager.Lab.LabelsEntry
+	nil,                                   // 136: labmanager.DeviceEnv.VarsEntry
+	nil,                                   // 137: labmanager.LabGroupClient.LabelsEntry
+	nil,                                   // 138: labmanager.LabGroupAccessPolicy.LabelsEntry
 }
 var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
 	6,   // 0: labmanager.ItemResult.ref:type_name -> labmanager.ItemRef
@@ -10251,19 +10340,19 @@ var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
 	6,   // 3: labmanager.ListRequest.items:type_name -> labmanager.ItemRef
 	10,  // 4: labmanager.DeleteRequest.by_selector:type_name -> labmanager.Selector
 	6,   // 5: labmanager.DeleteRequest.items:type_name -> labmanager.ItemRef
-	125, // 6: labmanager.LabelChanges.set:type_name -> labmanager.LabelChanges.SetEntry
-	126, // 7: labmanager.LabGroupItem.labels:type_name -> labmanager.LabGroupItem.LabelsEntry
+	126, // 6: labmanager.LabelChanges.set:type_name -> labmanager.LabelChanges.SetEntry
+	127, // 7: labmanager.LabGroupItem.labels:type_name -> labmanager.LabGroupItem.LabelsEntry
 	15,  // 8: labmanager.LabGroupItem.vpn_size:type_name -> labmanager.PodSize
 	15,  // 9: labmanager.LabGroupItem.gateway_size:type_name -> labmanager.PodSize
-	127, // 10: labmanager.CreateLabGroupsRequest.labels:type_name -> labmanager.CreateLabGroupsRequest.LabelsEntry
+	128, // 10: labmanager.CreateLabGroupsRequest.labels:type_name -> labmanager.CreateLabGroupsRequest.LabelsEntry
 	14,  // 11: labmanager.CreateLabGroupsRequest.items:type_name -> labmanager.LabGroupItem
 	12,  // 12: labmanager.LabGroupChanges.labels:type_name -> labmanager.LabelChanges
 	17,  // 13: labmanager.UpdateLabGroupItem.changes:type_name -> labmanager.LabGroupChanges
 	10,  // 14: labmanager.UpdateLabGroupsRequest.by_selector:type_name -> labmanager.Selector
 	17,  // 15: labmanager.UpdateLabGroupsRequest.changes:type_name -> labmanager.LabGroupChanges
 	18,  // 16: labmanager.UpdateLabGroupsRequest.items:type_name -> labmanager.UpdateLabGroupItem
-	128, // 17: labmanager.LabGroupClientItem.labels:type_name -> labmanager.LabGroupClientItem.LabelsEntry
-	129, // 18: labmanager.CreateLabGroupClientsRequest.labels:type_name -> labmanager.CreateLabGroupClientsRequest.LabelsEntry
+	129, // 17: labmanager.LabGroupClientItem.labels:type_name -> labmanager.LabGroupClientItem.LabelsEntry
+	130, // 18: labmanager.CreateLabGroupClientsRequest.labels:type_name -> labmanager.CreateLabGroupClientsRequest.LabelsEntry
 	20,  // 19: labmanager.CreateLabGroupClientsRequest.items:type_name -> labmanager.LabGroupClientItem
 	7,   // 20: labmanager.LabGroupClientResult.result:type_name -> labmanager.ItemResult
 	51,  // 21: labmanager.LabGroupClientResult.client:type_name -> labmanager.LabGroupClient
@@ -10272,200 +10361,202 @@ var file_pkg_agent_protobuf_agent_proto_depIdxs = []int32{
 	10,  // 24: labmanager.UpdateLabGroupClientsRequest.by_selector:type_name -> labmanager.Selector
 	12,  // 25: labmanager.UpdateLabGroupClientsRequest.labels:type_name -> labmanager.LabelChanges
 	24,  // 26: labmanager.UpdateLabGroupClientsRequest.items:type_name -> labmanager.UpdateLabGroupClientItem
-	130, // 27: labmanager.SetLabGroupAccessRequest.labels:type_name -> labmanager.SetLabGroupAccessRequest.LabelsEntry
+	131, // 27: labmanager.SetLabGroupAccessRequest.labels:type_name -> labmanager.SetLabGroupAccessRequest.LabelsEntry
 	55,  // 28: labmanager.SetLabGroupAccessRequest.policies:type_name -> labmanager.LabGroupAccessPolicy
 	40,  // 29: labmanager.LabVariant.env:type_name -> labmanager.DeviceEnv
-	40,  // 30: labmanager.LabItem.env:type_name -> labmanager.DeviceEnv
-	131, // 31: labmanager.LabItem.labels:type_name -> labmanager.LabItem.LabelsEntry
-	132, // 32: labmanager.CreateLabsRequest.labels:type_name -> labmanager.CreateLabsRequest.LabelsEntry
-	27,  // 33: labmanager.CreateLabsRequest.variants:type_name -> labmanager.LabVariant
-	28,  // 34: labmanager.CreateLabsRequest.items:type_name -> labmanager.LabItem
-	12,  // 35: labmanager.LabChanges.labels:type_name -> labmanager.LabelChanges
-	40,  // 36: labmanager.LabChanges.env:type_name -> labmanager.DeviceEnv
-	30,  // 37: labmanager.UpdateLabItem.changes:type_name -> labmanager.LabChanges
-	10,  // 38: labmanager.UpdateLabsRequest.by_selector:type_name -> labmanager.Selector
-	30,  // 39: labmanager.UpdateLabsRequest.changes:type_name -> labmanager.LabChanges
-	31,  // 40: labmanager.UpdateLabsRequest.items:type_name -> labmanager.UpdateLabItem
-	6,   // 41: labmanager.DevicesRequest.items:type_name -> labmanager.ItemRef
-	33,  // 42: labmanager.DevicesRequest.by_selector:type_name -> labmanager.DeviceSelector
-	34,  // 43: labmanager.RescueDevicesRequest.devices:type_name -> labmanager.DevicesRequest
-	37,  // 44: labmanager.LabGroup.status:type_name -> labmanager.LabGroupStatus
-	133, // 45: labmanager.LabGroup.labels:type_name -> labmanager.LabGroup.LabelsEntry
-	118, // 46: labmanager.LabGroup.lifecycle:type_name -> labmanager.GroupLifecycleSpec
-	15,  // 47: labmanager.LabGroup.vpn_size:type_name -> labmanager.PodSize
-	15,  // 48: labmanager.LabGroup.gateway_size:type_name -> labmanager.PodSize
-	42,  // 49: labmanager.LabGroupStatus.scheduling:type_name -> labmanager.Scheduling
-	45,  // 50: labmanager.LabGroupStatus.pods:type_name -> labmanager.LabGroupPod
-	105, // 51: labmanager.LabGroupStatus.lifecycle:type_name -> labmanager.LabLifecycleStatus
-	107, // 52: labmanager.LabGroupStatus.resources:type_name -> labmanager.ResourceAllocation
-	123, // 53: labmanager.LabGroupStatus.retirement:type_name -> labmanager.RetirementStatus
-	36,  // 54: labmanager.LabGroupList.items:type_name -> labmanager.LabGroup
-	41,  // 55: labmanager.Lab.status:type_name -> labmanager.LabStatus
-	134, // 56: labmanager.Lab.labels:type_name -> labmanager.Lab.LabelsEntry
-	124, // 57: labmanager.Lab.creation_receipt:type_name -> labmanager.LabCreationReceipt
-	135, // 58: labmanager.DeviceEnv.vars:type_name -> labmanager.DeviceEnv.VarsEntry
-	46,  // 59: labmanager.LabStatus.devices:type_name -> labmanager.LabDeviceStatus
-	48,  // 60: labmanager.LabStatus.connections:type_name -> labmanager.LabConnectionStatus
-	49,  // 61: labmanager.LabStatus.access:type_name -> labmanager.LabAccessEntry
-	42,  // 62: labmanager.LabStatus.scheduling:type_name -> labmanager.Scheduling
-	105, // 63: labmanager.LabStatus.lifecycle:type_name -> labmanager.LabLifecycleStatus
-	107, // 64: labmanager.LabStatus.resources:type_name -> labmanager.ResourceAllocation
-	123, // 65: labmanager.LabStatus.retirement:type_name -> labmanager.RetirementStatus
-	1,   // 66: labmanager.PodScheduling.state:type_name -> labmanager.PodState
-	44,  // 67: labmanager.PodScheduling.failure:type_name -> labmanager.PodFailure
-	43,  // 68: labmanager.LabGroupPod.scheduling:type_name -> labmanager.PodScheduling
-	47,  // 69: labmanager.LabDeviceStatus.snapshot:type_name -> labmanager.DeviceSnapshotStatus
-	43,  // 70: labmanager.LabDeviceStatus.scheduling:type_name -> labmanager.PodScheduling
-	39,  // 71: labmanager.LabList.items:type_name -> labmanager.Lab
-	52,  // 72: labmanager.LabGroupClient.status:type_name -> labmanager.LabGroupClientStatus
-	136, // 73: labmanager.LabGroupClient.labels:type_name -> labmanager.LabGroupClient.LabelsEntry
-	53,  // 74: labmanager.LabGroupClientStatus.statistics:type_name -> labmanager.LabGroupClientStatistics
-	51,  // 75: labmanager.LabGroupClientList.items:type_name -> labmanager.LabGroupClient
-	56,  // 76: labmanager.LabGroupAccessPolicy.rules:type_name -> labmanager.LabGroupAccessRule
-	57,  // 77: labmanager.LabGroupAccessPolicy.status:type_name -> labmanager.LabGroupAccessPolicyStatus
-	137, // 78: labmanager.LabGroupAccessPolicy.labels:type_name -> labmanager.LabGroupAccessPolicy.LabelsEntry
-	2,   // 79: labmanager.LabGroupAccessRule.action:type_name -> labmanager.LabGroupAccessAction
-	58,  // 80: labmanager.LabGroupAccessPolicyStatus.rules:type_name -> labmanager.LabGroupAccessRuleStatistics
-	2,   // 81: labmanager.LabGroupAccessRuleStatistics.action:type_name -> labmanager.LabGroupAccessAction
-	36,  // 82: labmanager.MonitoringUpdate.groups:type_name -> labmanager.LabGroup
-	39,  // 83: labmanager.MonitoringUpdate.labs:type_name -> labmanager.Lab
-	51,  // 84: labmanager.MonitoringUpdate.clients:type_name -> labmanager.LabGroupClient
-	60,  // 85: labmanager.MonitoringUpdate.deleted_keys:type_name -> labmanager.MonitoringDeletedKey
-	55,  // 86: labmanager.MonitoringUpdate.policies:type_name -> labmanager.LabGroupAccessPolicy
-	65,  // 87: labmanager.MonitoringUpdate.capacity:type_name -> labmanager.CapacityResponse
-	66,  // 88: labmanager.MonitoringUpdate.features:type_name -> labmanager.FeaturesResponse
-	62,  // 89: labmanager.MonitoringUpdate.traffic:type_name -> labmanager.TrafficReport
-	82,  // 90: labmanager.MonitoringUpdate.errors:type_name -> labmanager.ErrorJournal
-	64,  // 91: labmanager.TrafficReport.ledger:type_name -> labmanager.TrafficTouch
-	63,  // 92: labmanager.TrafficReport.coverage_spans:type_name -> labmanager.TrafficCoverageSpan
-	77,  // 93: labmanager.FeaturesResponse.state_persistence:type_name -> labmanager.StatePersistenceFeature
-	78,  // 94: labmanager.FeaturesResponse.image_cache:type_name -> labmanager.ImageCacheFeature
-	79,  // 95: labmanager.FeaturesResponse.scheduler:type_name -> labmanager.SchedulerFeature
-	80,  // 96: labmanager.FeaturesResponse.endpoints:type_name -> labmanager.EndpointsFeature
-	81,  // 97: labmanager.FeaturesResponse.certificate:type_name -> labmanager.CertificateFeature
-	76,  // 98: labmanager.FeaturesResponse.proxy:type_name -> labmanager.ProxyFeature
-	71,  // 99: labmanager.FeaturesResponse.limits:type_name -> labmanager.LimitsFeature
-	68,  // 100: labmanager.FeaturesResponse.group_pods:type_name -> labmanager.GroupPodsFeature
-	69,  // 101: labmanager.FeaturesResponse.constants:type_name -> labmanager.DeviceConstants
-	70,  // 102: labmanager.FeaturesResponse.tenant_quota:type_name -> labmanager.TenantQuotaFeature
-	108, // 103: labmanager.FeaturesResponse.lifecycle:type_name -> labmanager.LifecycleFeature
-	67,  // 104: labmanager.GroupPodsFeature.vpn:type_name -> labmanager.PodSizing
-	67,  // 105: labmanager.GroupPodsFeature.gateway:type_name -> labmanager.PodSizing
-	15,  // 106: labmanager.GroupPodsFeature.default_vpn:type_name -> labmanager.PodSize
-	15,  // 107: labmanager.GroupPodsFeature.default_gateway:type_name -> labmanager.PodSize
-	109, // 108: labmanager.GroupPodsFeature.sizing_v2:type_name -> labmanager.GroupPodsSizingV2
-	72,  // 109: labmanager.LimitsFeature.device:type_name -> labmanager.DeviceLimits
-	73,  // 110: labmanager.LimitsFeature.lab:type_name -> labmanager.LabLimits
-	75,  // 111: labmanager.LimitsFeature.tenant:type_name -> labmanager.TenantLimits
-	74,  // 112: labmanager.LimitsFeature.group:type_name -> labmanager.GroupLimits
-	83,  // 113: labmanager.ErrorJournal.components:type_name -> labmanager.ComponentErrors
-	85,  // 114: labmanager.ErrorJournal.deploy_failures:type_name -> labmanager.DeployFailure
-	84,  // 115: labmanager.ComponentErrors.groups:type_name -> labmanager.ErrorGroup
-	3,   // 116: labmanager.PrewarmImageStatus.state:type_name -> labmanager.PrewarmState
-	87,  // 117: labmanager.PrewarmImagesResult.images:type_name -> labmanager.PrewarmImageStatus
-	6,   // 118: labmanager.DeviceSnapshotRequest.ref:type_name -> labmanager.ItemRef
-	96,  // 119: labmanager.SnapshotChunk.meta:type_name -> labmanager.SnapshotMeta
-	97,  // 120: labmanager.SnapshotChunk.trailer:type_name -> labmanager.SnapshotTrailer
-	6,   // 121: labmanager.SnapshotMeta.ref:type_name -> labmanager.ItemRef
-	99,  // 122: labmanager.MaintenanceWindowList.items:type_name -> labmanager.MaintenanceWindow
-	6,   // 123: labmanager.LabLifecycleTarget.ref:type_name -> labmanager.ItemRef
-	101, // 124: labmanager.StopLabItem.target:type_name -> labmanager.LabLifecycleTarget
-	4,   // 125: labmanager.StopLabItem.snapshot_mode:type_name -> labmanager.StopSnapshotMode
-	102, // 126: labmanager.StopLabsRequest.items:type_name -> labmanager.StopLabItem
-	101, // 127: labmanager.StartLabsRequest.items:type_name -> labmanager.LabLifecycleTarget
-	106, // 128: labmanager.ResourceAllocation.configured_requests:type_name -> labmanager.ResourceAmounts
-	106, // 129: labmanager.ResourceAllocation.configured_limits:type_name -> labmanager.ResourceAmounts
-	106, // 130: labmanager.ResourceAllocation.allocated_requests:type_name -> labmanager.ResourceAmounts
-	106, // 131: labmanager.ResourceAllocation.used:type_name -> labmanager.ResourceAmounts
-	110, // 132: labmanager.GroupPodsSizingV2.profiles:type_name -> labmanager.GroupPodsSizingProfile
-	111, // 133: labmanager.GroupPodsSizingProfile.max_inputs:type_name -> labmanager.GroupSizingInputs
-	113, // 134: labmanager.GroupPodsSizingProfile.vpn:type_name -> labmanager.GroupPodFormula
-	113, // 135: labmanager.GroupPodsSizingProfile.gateway:type_name -> labmanager.GroupPodFormula
-	112, // 136: labmanager.GroupSizingInputs.envelope:type_name -> labmanager.GroupTrafficEnvelope
-	15,  // 137: labmanager.GroupPodFormula.base:type_name -> labmanager.PodSize
-	15,  // 138: labmanager.GroupPodFormula.per_user:type_name -> labmanager.PodSize
-	15,  // 139: labmanager.GroupPodFormula.per_active_lab:type_name -> labmanager.PodSize
-	15,  // 140: labmanager.GroupPodFormula.per_internet_lab:type_name -> labmanager.PodSize
-	15,  // 141: labmanager.GroupPodFormula.per_allowed_relation:type_name -> labmanager.PodSize
-	15,  // 142: labmanager.GroupPodFormula.per_retained_flow:type_name -> labmanager.PodSize
-	15,  // 143: labmanager.GroupPodFormula.floor:type_name -> labmanager.PodSize
-	15,  // 144: labmanager.GroupPodFormula.round_to:type_name -> labmanager.PodSize
-	114, // 145: labmanager.StopLabGroupItem.target:type_name -> labmanager.GroupTarget
-	115, // 146: labmanager.StopLabGroupsRequest.items:type_name -> labmanager.StopLabGroupItem
-	114, // 147: labmanager.StartLabGroupsRequest.items:type_name -> labmanager.GroupTarget
-	101, // 148: labmanager.LabRetirementTarget.stop_target:type_name -> labmanager.LabLifecycleTarget
-	114, // 149: labmanager.GroupRetirementTarget.stop_target:type_name -> labmanager.GroupTarget
-	119, // 150: labmanager.RetireLabsRequest.items:type_name -> labmanager.LabRetirementTarget
-	120, // 151: labmanager.RetireLabGroupsRequest.items:type_name -> labmanager.GroupRetirementTarget
-	5,   // 152: labmanager.LabManager.Ping:input_type -> labmanager.Empty
-	16,  // 153: labmanager.LabManager.CreateLabGroups:input_type -> labmanager.CreateLabGroupsRequest
-	9,   // 154: labmanager.LabManager.ListLabGroups:input_type -> labmanager.ListRequest
-	19,  // 155: labmanager.LabManager.UpdateLabGroups:input_type -> labmanager.UpdateLabGroupsRequest
-	11,  // 156: labmanager.LabManager.DeleteLabGroups:input_type -> labmanager.DeleteRequest
-	21,  // 157: labmanager.LabManager.CreateLabGroupClients:input_type -> labmanager.CreateLabGroupClientsRequest
-	9,   // 158: labmanager.LabManager.ListLabGroupClients:input_type -> labmanager.ListRequest
-	25,  // 159: labmanager.LabManager.UpdateLabGroupClients:input_type -> labmanager.UpdateLabGroupClientsRequest
-	11,  // 160: labmanager.LabManager.DeleteLabGroupClients:input_type -> labmanager.DeleteRequest
-	26,  // 161: labmanager.LabManager.SetLabGroupAccess:input_type -> labmanager.SetLabGroupAccessRequest
-	29,  // 162: labmanager.LabManager.CreateLabs:input_type -> labmanager.CreateLabsRequest
-	9,   // 163: labmanager.LabManager.ListLabs:input_type -> labmanager.ListRequest
-	32,  // 164: labmanager.LabManager.UpdateLabs:input_type -> labmanager.UpdateLabsRequest
-	11,  // 165: labmanager.LabManager.DeleteLabs:input_type -> labmanager.DeleteRequest
-	103, // 166: labmanager.LabManager.StopLabs:input_type -> labmanager.StopLabsRequest
-	104, // 167: labmanager.LabManager.StartLabs:input_type -> labmanager.StartLabsRequest
-	116, // 168: labmanager.LabManager.StopLabGroups:input_type -> labmanager.StopLabGroupsRequest
-	117, // 169: labmanager.LabManager.StartLabGroups:input_type -> labmanager.StartLabGroupsRequest
-	121, // 170: labmanager.LabManager.RetireLabs:input_type -> labmanager.RetireLabsRequest
-	122, // 171: labmanager.LabManager.RetireLabGroups:input_type -> labmanager.RetireLabGroupsRequest
-	59,  // 172: labmanager.LabManager.Monitoring:input_type -> labmanager.MonitoringRequest
-	89,  // 173: labmanager.LabManager.Enroll:input_type -> labmanager.EnrollRequest
-	90,  // 174: labmanager.LabManager.RenewCertificate:input_type -> labmanager.RenewCertificateRequest
-	92,  // 175: labmanager.LabManager.RotateAccessKey:input_type -> labmanager.RotateAccessKeyRequest
-	93,  // 176: labmanager.LabManager.RemoveAccessKey:input_type -> labmanager.RemoveAccessKeyRequest
-	5,   // 177: labmanager.LabManager.GetCapacity:input_type -> labmanager.Empty
-	5,   // 178: labmanager.LabManager.GetFeatures:input_type -> labmanager.Empty
-	98,  // 179: labmanager.LabManager.ListMaintenanceWindows:input_type -> labmanager.ListMaintenanceWindowsRequest
-	86,  // 180: labmanager.LabManager.PrewarmImages:input_type -> labmanager.PrewarmImagesRequest
-	34,  // 181: labmanager.LabManager.ResetDevices:input_type -> labmanager.DevicesRequest
-	35,  // 182: labmanager.LabManager.RescueDevices:input_type -> labmanager.RescueDevicesRequest
-	94,  // 183: labmanager.LabManager.ExportDeviceSnapshot:input_type -> labmanager.DeviceSnapshotRequest
-	5,   // 184: labmanager.LabManager.Ping:output_type -> labmanager.Empty
-	8,   // 185: labmanager.LabManager.CreateLabGroups:output_type -> labmanager.BatchResult
-	38,  // 186: labmanager.LabManager.ListLabGroups:output_type -> labmanager.LabGroupList
-	8,   // 187: labmanager.LabManager.UpdateLabGroups:output_type -> labmanager.BatchResult
-	8,   // 188: labmanager.LabManager.DeleteLabGroups:output_type -> labmanager.BatchResult
-	23,  // 189: labmanager.LabManager.CreateLabGroupClients:output_type -> labmanager.CreateLabGroupClientsResponse
-	54,  // 190: labmanager.LabManager.ListLabGroupClients:output_type -> labmanager.LabGroupClientList
-	8,   // 191: labmanager.LabManager.UpdateLabGroupClients:output_type -> labmanager.BatchResult
-	8,   // 192: labmanager.LabManager.DeleteLabGroupClients:output_type -> labmanager.BatchResult
-	8,   // 193: labmanager.LabManager.SetLabGroupAccess:output_type -> labmanager.BatchResult
-	8,   // 194: labmanager.LabManager.CreateLabs:output_type -> labmanager.BatchResult
-	50,  // 195: labmanager.LabManager.ListLabs:output_type -> labmanager.LabList
-	8,   // 196: labmanager.LabManager.UpdateLabs:output_type -> labmanager.BatchResult
-	8,   // 197: labmanager.LabManager.DeleteLabs:output_type -> labmanager.BatchResult
-	8,   // 198: labmanager.LabManager.StopLabs:output_type -> labmanager.BatchResult
-	8,   // 199: labmanager.LabManager.StartLabs:output_type -> labmanager.BatchResult
-	8,   // 200: labmanager.LabManager.StopLabGroups:output_type -> labmanager.BatchResult
-	8,   // 201: labmanager.LabManager.StartLabGroups:output_type -> labmanager.BatchResult
-	8,   // 202: labmanager.LabManager.RetireLabs:output_type -> labmanager.BatchResult
-	8,   // 203: labmanager.LabManager.RetireLabGroups:output_type -> labmanager.BatchResult
-	61,  // 204: labmanager.LabManager.Monitoring:output_type -> labmanager.MonitoringUpdate
-	91,  // 205: labmanager.LabManager.Enroll:output_type -> labmanager.CertificateResponse
-	91,  // 206: labmanager.LabManager.RenewCertificate:output_type -> labmanager.CertificateResponse
-	5,   // 207: labmanager.LabManager.RotateAccessKey:output_type -> labmanager.Empty
-	5,   // 208: labmanager.LabManager.RemoveAccessKey:output_type -> labmanager.Empty
-	65,  // 209: labmanager.LabManager.GetCapacity:output_type -> labmanager.CapacityResponse
-	66,  // 210: labmanager.LabManager.GetFeatures:output_type -> labmanager.FeaturesResponse
-	100, // 211: labmanager.LabManager.ListMaintenanceWindows:output_type -> labmanager.MaintenanceWindowList
-	88,  // 212: labmanager.LabManager.PrewarmImages:output_type -> labmanager.PrewarmImagesResult
-	8,   // 213: labmanager.LabManager.ResetDevices:output_type -> labmanager.BatchResult
-	8,   // 214: labmanager.LabManager.RescueDevices:output_type -> labmanager.BatchResult
-	95,  // 215: labmanager.LabManager.ExportDeviceSnapshot:output_type -> labmanager.SnapshotChunk
-	184, // [184:216] is the sub-list for method output_type
-	152, // [152:184] is the sub-list for method input_type
-	152, // [152:152] is the sub-list for extension type_name
-	152, // [152:152] is the sub-list for extension extendee
-	0,   // [0:152] is the sub-list for field type_name
+	125, // 30: labmanager.LabVariant.registry_credentials:type_name -> labmanager.RegistryCredential
+	40,  // 31: labmanager.LabItem.env:type_name -> labmanager.DeviceEnv
+	132, // 32: labmanager.LabItem.labels:type_name -> labmanager.LabItem.LabelsEntry
+	133, // 33: labmanager.CreateLabsRequest.labels:type_name -> labmanager.CreateLabsRequest.LabelsEntry
+	27,  // 34: labmanager.CreateLabsRequest.variants:type_name -> labmanager.LabVariant
+	28,  // 35: labmanager.CreateLabsRequest.items:type_name -> labmanager.LabItem
+	12,  // 36: labmanager.LabChanges.labels:type_name -> labmanager.LabelChanges
+	40,  // 37: labmanager.LabChanges.env:type_name -> labmanager.DeviceEnv
+	30,  // 38: labmanager.UpdateLabItem.changes:type_name -> labmanager.LabChanges
+	10,  // 39: labmanager.UpdateLabsRequest.by_selector:type_name -> labmanager.Selector
+	30,  // 40: labmanager.UpdateLabsRequest.changes:type_name -> labmanager.LabChanges
+	31,  // 41: labmanager.UpdateLabsRequest.items:type_name -> labmanager.UpdateLabItem
+	6,   // 42: labmanager.DevicesRequest.items:type_name -> labmanager.ItemRef
+	33,  // 43: labmanager.DevicesRequest.by_selector:type_name -> labmanager.DeviceSelector
+	34,  // 44: labmanager.RescueDevicesRequest.devices:type_name -> labmanager.DevicesRequest
+	37,  // 45: labmanager.LabGroup.status:type_name -> labmanager.LabGroupStatus
+	134, // 46: labmanager.LabGroup.labels:type_name -> labmanager.LabGroup.LabelsEntry
+	118, // 47: labmanager.LabGroup.lifecycle:type_name -> labmanager.GroupLifecycleSpec
+	15,  // 48: labmanager.LabGroup.vpn_size:type_name -> labmanager.PodSize
+	15,  // 49: labmanager.LabGroup.gateway_size:type_name -> labmanager.PodSize
+	42,  // 50: labmanager.LabGroupStatus.scheduling:type_name -> labmanager.Scheduling
+	45,  // 51: labmanager.LabGroupStatus.pods:type_name -> labmanager.LabGroupPod
+	105, // 52: labmanager.LabGroupStatus.lifecycle:type_name -> labmanager.LabLifecycleStatus
+	107, // 53: labmanager.LabGroupStatus.resources:type_name -> labmanager.ResourceAllocation
+	123, // 54: labmanager.LabGroupStatus.retirement:type_name -> labmanager.RetirementStatus
+	36,  // 55: labmanager.LabGroupList.items:type_name -> labmanager.LabGroup
+	41,  // 56: labmanager.Lab.status:type_name -> labmanager.LabStatus
+	135, // 57: labmanager.Lab.labels:type_name -> labmanager.Lab.LabelsEntry
+	124, // 58: labmanager.Lab.creation_receipt:type_name -> labmanager.LabCreationReceipt
+	136, // 59: labmanager.DeviceEnv.vars:type_name -> labmanager.DeviceEnv.VarsEntry
+	46,  // 60: labmanager.LabStatus.devices:type_name -> labmanager.LabDeviceStatus
+	48,  // 61: labmanager.LabStatus.connections:type_name -> labmanager.LabConnectionStatus
+	49,  // 62: labmanager.LabStatus.access:type_name -> labmanager.LabAccessEntry
+	42,  // 63: labmanager.LabStatus.scheduling:type_name -> labmanager.Scheduling
+	105, // 64: labmanager.LabStatus.lifecycle:type_name -> labmanager.LabLifecycleStatus
+	107, // 65: labmanager.LabStatus.resources:type_name -> labmanager.ResourceAllocation
+	123, // 66: labmanager.LabStatus.retirement:type_name -> labmanager.RetirementStatus
+	1,   // 67: labmanager.PodScheduling.state:type_name -> labmanager.PodState
+	44,  // 68: labmanager.PodScheduling.failure:type_name -> labmanager.PodFailure
+	43,  // 69: labmanager.LabGroupPod.scheduling:type_name -> labmanager.PodScheduling
+	47,  // 70: labmanager.LabDeviceStatus.snapshot:type_name -> labmanager.DeviceSnapshotStatus
+	43,  // 71: labmanager.LabDeviceStatus.scheduling:type_name -> labmanager.PodScheduling
+	39,  // 72: labmanager.LabList.items:type_name -> labmanager.Lab
+	52,  // 73: labmanager.LabGroupClient.status:type_name -> labmanager.LabGroupClientStatus
+	137, // 74: labmanager.LabGroupClient.labels:type_name -> labmanager.LabGroupClient.LabelsEntry
+	53,  // 75: labmanager.LabGroupClientStatus.statistics:type_name -> labmanager.LabGroupClientStatistics
+	51,  // 76: labmanager.LabGroupClientList.items:type_name -> labmanager.LabGroupClient
+	56,  // 77: labmanager.LabGroupAccessPolicy.rules:type_name -> labmanager.LabGroupAccessRule
+	57,  // 78: labmanager.LabGroupAccessPolicy.status:type_name -> labmanager.LabGroupAccessPolicyStatus
+	138, // 79: labmanager.LabGroupAccessPolicy.labels:type_name -> labmanager.LabGroupAccessPolicy.LabelsEntry
+	2,   // 80: labmanager.LabGroupAccessRule.action:type_name -> labmanager.LabGroupAccessAction
+	58,  // 81: labmanager.LabGroupAccessPolicyStatus.rules:type_name -> labmanager.LabGroupAccessRuleStatistics
+	2,   // 82: labmanager.LabGroupAccessRuleStatistics.action:type_name -> labmanager.LabGroupAccessAction
+	36,  // 83: labmanager.MonitoringUpdate.groups:type_name -> labmanager.LabGroup
+	39,  // 84: labmanager.MonitoringUpdate.labs:type_name -> labmanager.Lab
+	51,  // 85: labmanager.MonitoringUpdate.clients:type_name -> labmanager.LabGroupClient
+	60,  // 86: labmanager.MonitoringUpdate.deleted_keys:type_name -> labmanager.MonitoringDeletedKey
+	55,  // 87: labmanager.MonitoringUpdate.policies:type_name -> labmanager.LabGroupAccessPolicy
+	65,  // 88: labmanager.MonitoringUpdate.capacity:type_name -> labmanager.CapacityResponse
+	66,  // 89: labmanager.MonitoringUpdate.features:type_name -> labmanager.FeaturesResponse
+	62,  // 90: labmanager.MonitoringUpdate.traffic:type_name -> labmanager.TrafficReport
+	82,  // 91: labmanager.MonitoringUpdate.errors:type_name -> labmanager.ErrorJournal
+	64,  // 92: labmanager.TrafficReport.ledger:type_name -> labmanager.TrafficTouch
+	63,  // 93: labmanager.TrafficReport.coverage_spans:type_name -> labmanager.TrafficCoverageSpan
+	77,  // 94: labmanager.FeaturesResponse.state_persistence:type_name -> labmanager.StatePersistenceFeature
+	78,  // 95: labmanager.FeaturesResponse.image_cache:type_name -> labmanager.ImageCacheFeature
+	79,  // 96: labmanager.FeaturesResponse.scheduler:type_name -> labmanager.SchedulerFeature
+	80,  // 97: labmanager.FeaturesResponse.endpoints:type_name -> labmanager.EndpointsFeature
+	81,  // 98: labmanager.FeaturesResponse.certificate:type_name -> labmanager.CertificateFeature
+	76,  // 99: labmanager.FeaturesResponse.proxy:type_name -> labmanager.ProxyFeature
+	71,  // 100: labmanager.FeaturesResponse.limits:type_name -> labmanager.LimitsFeature
+	68,  // 101: labmanager.FeaturesResponse.group_pods:type_name -> labmanager.GroupPodsFeature
+	69,  // 102: labmanager.FeaturesResponse.constants:type_name -> labmanager.DeviceConstants
+	70,  // 103: labmanager.FeaturesResponse.tenant_quota:type_name -> labmanager.TenantQuotaFeature
+	108, // 104: labmanager.FeaturesResponse.lifecycle:type_name -> labmanager.LifecycleFeature
+	67,  // 105: labmanager.GroupPodsFeature.vpn:type_name -> labmanager.PodSizing
+	67,  // 106: labmanager.GroupPodsFeature.gateway:type_name -> labmanager.PodSizing
+	15,  // 107: labmanager.GroupPodsFeature.default_vpn:type_name -> labmanager.PodSize
+	15,  // 108: labmanager.GroupPodsFeature.default_gateway:type_name -> labmanager.PodSize
+	109, // 109: labmanager.GroupPodsFeature.sizing_v2:type_name -> labmanager.GroupPodsSizingV2
+	72,  // 110: labmanager.LimitsFeature.device:type_name -> labmanager.DeviceLimits
+	73,  // 111: labmanager.LimitsFeature.lab:type_name -> labmanager.LabLimits
+	75,  // 112: labmanager.LimitsFeature.tenant:type_name -> labmanager.TenantLimits
+	74,  // 113: labmanager.LimitsFeature.group:type_name -> labmanager.GroupLimits
+	83,  // 114: labmanager.ErrorJournal.components:type_name -> labmanager.ComponentErrors
+	85,  // 115: labmanager.ErrorJournal.deploy_failures:type_name -> labmanager.DeployFailure
+	84,  // 116: labmanager.ComponentErrors.groups:type_name -> labmanager.ErrorGroup
+	125, // 117: labmanager.PrewarmImagesRequest.registry_credentials:type_name -> labmanager.RegistryCredential
+	3,   // 118: labmanager.PrewarmImageStatus.state:type_name -> labmanager.PrewarmState
+	87,  // 119: labmanager.PrewarmImagesResult.images:type_name -> labmanager.PrewarmImageStatus
+	6,   // 120: labmanager.DeviceSnapshotRequest.ref:type_name -> labmanager.ItemRef
+	96,  // 121: labmanager.SnapshotChunk.meta:type_name -> labmanager.SnapshotMeta
+	97,  // 122: labmanager.SnapshotChunk.trailer:type_name -> labmanager.SnapshotTrailer
+	6,   // 123: labmanager.SnapshotMeta.ref:type_name -> labmanager.ItemRef
+	99,  // 124: labmanager.MaintenanceWindowList.items:type_name -> labmanager.MaintenanceWindow
+	6,   // 125: labmanager.LabLifecycleTarget.ref:type_name -> labmanager.ItemRef
+	101, // 126: labmanager.StopLabItem.target:type_name -> labmanager.LabLifecycleTarget
+	4,   // 127: labmanager.StopLabItem.snapshot_mode:type_name -> labmanager.StopSnapshotMode
+	102, // 128: labmanager.StopLabsRequest.items:type_name -> labmanager.StopLabItem
+	101, // 129: labmanager.StartLabsRequest.items:type_name -> labmanager.LabLifecycleTarget
+	106, // 130: labmanager.ResourceAllocation.configured_requests:type_name -> labmanager.ResourceAmounts
+	106, // 131: labmanager.ResourceAllocation.configured_limits:type_name -> labmanager.ResourceAmounts
+	106, // 132: labmanager.ResourceAllocation.allocated_requests:type_name -> labmanager.ResourceAmounts
+	106, // 133: labmanager.ResourceAllocation.used:type_name -> labmanager.ResourceAmounts
+	110, // 134: labmanager.GroupPodsSizingV2.profiles:type_name -> labmanager.GroupPodsSizingProfile
+	111, // 135: labmanager.GroupPodsSizingProfile.max_inputs:type_name -> labmanager.GroupSizingInputs
+	113, // 136: labmanager.GroupPodsSizingProfile.vpn:type_name -> labmanager.GroupPodFormula
+	113, // 137: labmanager.GroupPodsSizingProfile.gateway:type_name -> labmanager.GroupPodFormula
+	112, // 138: labmanager.GroupSizingInputs.envelope:type_name -> labmanager.GroupTrafficEnvelope
+	15,  // 139: labmanager.GroupPodFormula.base:type_name -> labmanager.PodSize
+	15,  // 140: labmanager.GroupPodFormula.per_user:type_name -> labmanager.PodSize
+	15,  // 141: labmanager.GroupPodFormula.per_active_lab:type_name -> labmanager.PodSize
+	15,  // 142: labmanager.GroupPodFormula.per_internet_lab:type_name -> labmanager.PodSize
+	15,  // 143: labmanager.GroupPodFormula.per_allowed_relation:type_name -> labmanager.PodSize
+	15,  // 144: labmanager.GroupPodFormula.per_retained_flow:type_name -> labmanager.PodSize
+	15,  // 145: labmanager.GroupPodFormula.floor:type_name -> labmanager.PodSize
+	15,  // 146: labmanager.GroupPodFormula.round_to:type_name -> labmanager.PodSize
+	114, // 147: labmanager.StopLabGroupItem.target:type_name -> labmanager.GroupTarget
+	115, // 148: labmanager.StopLabGroupsRequest.items:type_name -> labmanager.StopLabGroupItem
+	114, // 149: labmanager.StartLabGroupsRequest.items:type_name -> labmanager.GroupTarget
+	101, // 150: labmanager.LabRetirementTarget.stop_target:type_name -> labmanager.LabLifecycleTarget
+	114, // 151: labmanager.GroupRetirementTarget.stop_target:type_name -> labmanager.GroupTarget
+	119, // 152: labmanager.RetireLabsRequest.items:type_name -> labmanager.LabRetirementTarget
+	120, // 153: labmanager.RetireLabGroupsRequest.items:type_name -> labmanager.GroupRetirementTarget
+	5,   // 154: labmanager.LabManager.Ping:input_type -> labmanager.Empty
+	16,  // 155: labmanager.LabManager.CreateLabGroups:input_type -> labmanager.CreateLabGroupsRequest
+	9,   // 156: labmanager.LabManager.ListLabGroups:input_type -> labmanager.ListRequest
+	19,  // 157: labmanager.LabManager.UpdateLabGroups:input_type -> labmanager.UpdateLabGroupsRequest
+	11,  // 158: labmanager.LabManager.DeleteLabGroups:input_type -> labmanager.DeleteRequest
+	21,  // 159: labmanager.LabManager.CreateLabGroupClients:input_type -> labmanager.CreateLabGroupClientsRequest
+	9,   // 160: labmanager.LabManager.ListLabGroupClients:input_type -> labmanager.ListRequest
+	25,  // 161: labmanager.LabManager.UpdateLabGroupClients:input_type -> labmanager.UpdateLabGroupClientsRequest
+	11,  // 162: labmanager.LabManager.DeleteLabGroupClients:input_type -> labmanager.DeleteRequest
+	26,  // 163: labmanager.LabManager.SetLabGroupAccess:input_type -> labmanager.SetLabGroupAccessRequest
+	29,  // 164: labmanager.LabManager.CreateLabs:input_type -> labmanager.CreateLabsRequest
+	9,   // 165: labmanager.LabManager.ListLabs:input_type -> labmanager.ListRequest
+	32,  // 166: labmanager.LabManager.UpdateLabs:input_type -> labmanager.UpdateLabsRequest
+	11,  // 167: labmanager.LabManager.DeleteLabs:input_type -> labmanager.DeleteRequest
+	103, // 168: labmanager.LabManager.StopLabs:input_type -> labmanager.StopLabsRequest
+	104, // 169: labmanager.LabManager.StartLabs:input_type -> labmanager.StartLabsRequest
+	116, // 170: labmanager.LabManager.StopLabGroups:input_type -> labmanager.StopLabGroupsRequest
+	117, // 171: labmanager.LabManager.StartLabGroups:input_type -> labmanager.StartLabGroupsRequest
+	121, // 172: labmanager.LabManager.RetireLabs:input_type -> labmanager.RetireLabsRequest
+	122, // 173: labmanager.LabManager.RetireLabGroups:input_type -> labmanager.RetireLabGroupsRequest
+	59,  // 174: labmanager.LabManager.Monitoring:input_type -> labmanager.MonitoringRequest
+	89,  // 175: labmanager.LabManager.Enroll:input_type -> labmanager.EnrollRequest
+	90,  // 176: labmanager.LabManager.RenewCertificate:input_type -> labmanager.RenewCertificateRequest
+	92,  // 177: labmanager.LabManager.RotateAccessKey:input_type -> labmanager.RotateAccessKeyRequest
+	93,  // 178: labmanager.LabManager.RemoveAccessKey:input_type -> labmanager.RemoveAccessKeyRequest
+	5,   // 179: labmanager.LabManager.GetCapacity:input_type -> labmanager.Empty
+	5,   // 180: labmanager.LabManager.GetFeatures:input_type -> labmanager.Empty
+	98,  // 181: labmanager.LabManager.ListMaintenanceWindows:input_type -> labmanager.ListMaintenanceWindowsRequest
+	86,  // 182: labmanager.LabManager.PrewarmImages:input_type -> labmanager.PrewarmImagesRequest
+	34,  // 183: labmanager.LabManager.ResetDevices:input_type -> labmanager.DevicesRequest
+	35,  // 184: labmanager.LabManager.RescueDevices:input_type -> labmanager.RescueDevicesRequest
+	94,  // 185: labmanager.LabManager.ExportDeviceSnapshot:input_type -> labmanager.DeviceSnapshotRequest
+	5,   // 186: labmanager.LabManager.Ping:output_type -> labmanager.Empty
+	8,   // 187: labmanager.LabManager.CreateLabGroups:output_type -> labmanager.BatchResult
+	38,  // 188: labmanager.LabManager.ListLabGroups:output_type -> labmanager.LabGroupList
+	8,   // 189: labmanager.LabManager.UpdateLabGroups:output_type -> labmanager.BatchResult
+	8,   // 190: labmanager.LabManager.DeleteLabGroups:output_type -> labmanager.BatchResult
+	23,  // 191: labmanager.LabManager.CreateLabGroupClients:output_type -> labmanager.CreateLabGroupClientsResponse
+	54,  // 192: labmanager.LabManager.ListLabGroupClients:output_type -> labmanager.LabGroupClientList
+	8,   // 193: labmanager.LabManager.UpdateLabGroupClients:output_type -> labmanager.BatchResult
+	8,   // 194: labmanager.LabManager.DeleteLabGroupClients:output_type -> labmanager.BatchResult
+	8,   // 195: labmanager.LabManager.SetLabGroupAccess:output_type -> labmanager.BatchResult
+	8,   // 196: labmanager.LabManager.CreateLabs:output_type -> labmanager.BatchResult
+	50,  // 197: labmanager.LabManager.ListLabs:output_type -> labmanager.LabList
+	8,   // 198: labmanager.LabManager.UpdateLabs:output_type -> labmanager.BatchResult
+	8,   // 199: labmanager.LabManager.DeleteLabs:output_type -> labmanager.BatchResult
+	8,   // 200: labmanager.LabManager.StopLabs:output_type -> labmanager.BatchResult
+	8,   // 201: labmanager.LabManager.StartLabs:output_type -> labmanager.BatchResult
+	8,   // 202: labmanager.LabManager.StopLabGroups:output_type -> labmanager.BatchResult
+	8,   // 203: labmanager.LabManager.StartLabGroups:output_type -> labmanager.BatchResult
+	8,   // 204: labmanager.LabManager.RetireLabs:output_type -> labmanager.BatchResult
+	8,   // 205: labmanager.LabManager.RetireLabGroups:output_type -> labmanager.BatchResult
+	61,  // 206: labmanager.LabManager.Monitoring:output_type -> labmanager.MonitoringUpdate
+	91,  // 207: labmanager.LabManager.Enroll:output_type -> labmanager.CertificateResponse
+	91,  // 208: labmanager.LabManager.RenewCertificate:output_type -> labmanager.CertificateResponse
+	5,   // 209: labmanager.LabManager.RotateAccessKey:output_type -> labmanager.Empty
+	5,   // 210: labmanager.LabManager.RemoveAccessKey:output_type -> labmanager.Empty
+	65,  // 211: labmanager.LabManager.GetCapacity:output_type -> labmanager.CapacityResponse
+	66,  // 212: labmanager.LabManager.GetFeatures:output_type -> labmanager.FeaturesResponse
+	100, // 213: labmanager.LabManager.ListMaintenanceWindows:output_type -> labmanager.MaintenanceWindowList
+	88,  // 214: labmanager.LabManager.PrewarmImages:output_type -> labmanager.PrewarmImagesResult
+	8,   // 215: labmanager.LabManager.ResetDevices:output_type -> labmanager.BatchResult
+	8,   // 216: labmanager.LabManager.RescueDevices:output_type -> labmanager.BatchResult
+	95,  // 217: labmanager.LabManager.ExportDeviceSnapshot:output_type -> labmanager.SnapshotChunk
+	186, // [186:218] is the sub-list for method output_type
+	154, // [154:186] is the sub-list for method input_type
+	154, // [154:154] is the sub-list for extension type_name
+	154, // [154:154] is the sub-list for extension extendee
+	0,   // [0:154] is the sub-list for field type_name
 }
 
 func init() { file_pkg_agent_protobuf_agent_proto_init() }
@@ -10487,7 +10578,7 @@ func file_pkg_agent_protobuf_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_agent_protobuf_agent_proto_rawDesc), len(file_pkg_agent_protobuf_agent_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   133,
+			NumMessages:   134,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
