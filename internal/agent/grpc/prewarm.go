@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -45,8 +46,16 @@ type PrewarmConfig struct {
 	StaleAfter time.Duration
 	// CredentialedResolver builds the upstream check of an image the request brought
 	// credentials for, over a keychain made of those credentials only; nil means a
-	// RegistryResolver with that keychain. A field so tests need no registry.
+	// registry probe with that keychain. A field so tests need no registry.
 	CredentialedResolver func(kc authn.Keychain) imagecache.Resolver
+	// CredTimeout bounds the check of one credentialed image (15s); CredTotalTimeout the
+	// whole call's credentialed checks (60s).
+	CredTimeout      time.Duration
+	CredTotalTimeout time.Duration
+	// CredTransport carries the credentialed checks; nil means a transport that refuses
+	// loopback, private, link-local and unspecified addresses at dial time. A field so
+	// tests can reach an in-process registry.
+	CredTransport http.RoundTripper
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 }
@@ -63,6 +72,12 @@ func (c PrewarmConfig) withDefaults() PrewarmConfig {
 	}
 	if c.StaleAfter <= 0 {
 		c.StaleAfter = 30 * time.Minute
+	}
+	if c.CredTimeout <= 0 {
+		c.CredTimeout = 15 * time.Second
+	}
+	if c.CredTotalTimeout <= 0 {
+		c.CredTotalTimeout = time.Minute
 	}
 	if c.Now == nil {
 		c.Now = time.Now
@@ -111,7 +126,10 @@ func (h *Handler) SetPrewarm(cfg PrewarmConfig) {
 //
 // An image whose registry matches a credential of the request is only checked: the registry
 // is asked for its digest with those credentials (and nothing else) and the answer is DONE
-// with the digest, or FAILED. It is neither fetched into the cache nor remembered, so the
+// with the digest (for a tag of an image index, the index digest: informational), or FAILED.
+// A digest-pinned reference is asked for too. The checks are bounded (CredTimeout each,
+// CredTotalTimeout together), use a transport that refuses internal addresses, and fail with
+// a generic message, never the transport's error. It is neither fetched into the cache nor remembered, so the
 // credentials and the result live only as long as this call.
 func (h *Handler) PrewarmImages(ctx context.Context, in *protobuf.PrewarmImagesRequest) (*protobuf.PrewarmImagesResult, error) {
 	p := h.prewarm
@@ -151,11 +169,23 @@ func (h *Handler) PrewarmImages(ctx context.Context, in *protobuf.PrewarmImagesR
 			plain = append(plain, img)
 		}
 	}
-	out := &protobuf.PrewarmImagesResult{}
+	byImage := map[string]*protobuf.PrewarmImageStatus{}
 	if len(plain) > 0 {
-		out = p.request(plain, refuse)
+		for _, st := range p.request(plain, refuse).Images {
+			byImage[st.Image] = st
+		}
 	}
-	out.Images = append(out.Images, p.checkCredentialed(ctx, creds, kc, refuse)...)
+	for _, st := range p.checkCredentialed(ctx, creds, kc, refuse) {
+		byImage[st.Image] = st
+	}
+	out := &protobuf.PrewarmImagesResult{}
+	for _, img := range in.GetImages() { // the request's order
+		img = strings.TrimSpace(img)
+		if st := byImage[img]; st != nil {
+			out.Images = append(out.Images, st)
+			delete(byImage, img)
+		}
+	}
 	return out, nil
 }
 
@@ -201,8 +231,14 @@ func (p *prewarmer) checkCredentialed(ctx context.Context, images []string, kc a
 	if p.cfg.CredentialedResolver != nil {
 		res = p.cfg.CredentialedResolver(kc)
 	} else {
-		res = &imagecache.RegistryResolver{Keychain: kc, Timeout: p.cfg.Timeout}
+		rt := p.cfg.CredTransport
+		if rt == nil {
+			rt = guardedTransport()
+		}
+		res = probeResolver{kc: kc, rt: rt}
 	}
+	ctx, cancelAll := context.WithTimeout(ctx, p.cfg.CredTotalTimeout)
+	defer cancelAll()
 	out := make([]*protobuf.PrewarmImageStatus, len(images))
 	sem := make(chan struct{}, p.cfg.Concurrency)
 	var wg sync.WaitGroup
@@ -217,12 +253,15 @@ func (p *prewarmer) checkCredentialed(ctx context.Context, images []string, kc a
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			cctx, cancel := context.WithTimeout(ctx, p.cfg.Timeout)
+			cctx, cancel := context.WithTimeout(ctx, p.cfg.CredTimeout)
 			defer cancel()
 			digest, err := res.Resolve(cctx, img)
 			st := &protobuf.PrewarmImageStatus{Image: img, State: protobuf.PrewarmState_PREWARM_STATE_DONE, Digest: digest}
-			if err != nil {
-				st.State, st.Error = protobuf.PrewarmState_PREWARM_STATE_FAILED, fmt.Sprintf("the registry did not accept the credentials or does not have %s: %v", img, err)
+			switch {
+			case cctx.Err() != nil && err != nil:
+				st.State, st.Error = protobuf.PrewarmState_PREWARM_STATE_FAILED, "the registry did not answer in time"
+			case err != nil:
+				st.State, st.Error = protobuf.PrewarmState_PREWARM_STATE_FAILED, "registry unreachable or rejected the credentials"
 			}
 			st.UpdatedUnixMs = p.cfg.Now().UnixMilli()
 			out[i] = st

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -174,6 +175,7 @@ func NewDockerConfigKeychain(docs ...[]byte) (*DockerConfigKeychain, error) {
 
 // normalizeHost maps the forms a registry appears in (URL, index.docker.io) to one name.
 func normalizeHost(h string) string {
+	h = strings.ToLower(h)
 	h = strings.TrimPrefix(strings.TrimPrefix(h, "https://"), "http://")
 	h = strings.TrimSuffix(strings.TrimSuffix(h, "/"), "/v1")
 	switch h {
@@ -201,6 +203,25 @@ func (k *DockerConfigKeychain) Resolve(res authn.Resource) (authn.Authenticator,
 		}
 	}
 	return authn.Anonymous, nil
+}
+
+// ProbeDigest asks the registry (never a cache) for the manifest of ref, a tag or a digest,
+// with the keychain over transport (nil: the default), and returns the digest it answers
+// with. Unlike RegistryResolver.Resolve it contacts the registry for a digest reference too.
+func ProbeDigest(ctx context.Context, ref string, kc authn.Keychain, rt http.RoundTripper) (string, error) {
+	parsed, err := name.ParseReference(ref)
+	if err != nil {
+		return "", err
+	}
+	opts := []remote.Option{remote.WithContext(ctx), remote.WithAuthFromKeychain(kc)}
+	if rt != nil {
+		opts = append(opts, remote.WithTransport(rt))
+	}
+	desc, err := remote.Head(parsed, opts...)
+	if err != nil {
+		return "", err
+	}
+	return desc.Digest.String(), nil
 }
 
 // registryDigest asks the registry for the digest of a reference. For an image

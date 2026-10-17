@@ -115,15 +115,21 @@ func (r *DeviceReconciler) devicePullSecrets(ctx context.Context, device *labora
 // labPullSecret is the name of the registry Secret of the device's lab (Spec.ImagePullSecret,
 // set only by the agent); "" when the lab has none or is gone.
 func (r *DeviceReconciler) labPullSecret(ctx context.Context, device *laboratoryv1alpha1.Device) (string, error) {
+	key := client.ObjectKeyFromObject(device)
 	if device.Spec.LabRef == "" {
+		r.pullWaiting.Delete(key)
 		return "", nil
 	}
 	var lab laboratoryv1alpha1.Lab
 	if err := r.reader().Get(ctx, types.NamespacedName{Namespace: device.Namespace, Name: device.Spec.LabRef}, &lab); err != nil {
+		if apierrors.IsNotFound(err) {
+			r.pullWaiting.Delete(key)
+		}
 		return "", client.IgnoreNotFound(err)
 	}
 	name := lab.Spec.ImagePullSecret
 	if name == "" {
+		r.pullWaiting.Delete(key)
 		return "", nil
 	}
 	var secret corev1.Secret

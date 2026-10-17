@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -288,5 +289,40 @@ func TestDeviceRecordsTheMissingPullSecretOncePerWait(t *testing.T) {
 	}
 	if ev := deviceEvents(); len(ev) != 1 {
 		t.Fatalf("a new wait is told again, got %v", ev)
+	}
+}
+
+// The told-marker goes away with the wait: when the lab no longer names a Secret and when the Device is deleted.
+func TestPullWaitMarkerIsClearedWhenTheWaitEnds(t *testing.T) {
+	ctx := context.Background()
+	s := secretScheme(t)
+	dev := labDevice("l1", "team", "")
+	lab := labWithPullSecret("l1", "team", "l1-registry", nil)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(lab, dev).Build()
+	r := &DeviceReconciler{Client: c, Scheme: s}
+	key := client.ObjectKeyFromObject(dev)
+	marked := func() bool { _, ok := r.pullWaiting.Load(key); return ok }
+
+	if _, err := r.devicePullSecrets(ctx, dev); !errors.Is(err, errPullSecretPending) {
+		t.Fatal(err)
+	}
+	_, _ = r.pullSecretWait(ctx, dev, &pullSecretPendingError{secret: "l1-registry"})
+	if !marked() {
+		t.Fatal("wait not marked")
+	}
+	lab.Spec.ImagePullSecret = ""
+	if err := c.Update(ctx, lab); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.devicePullSecrets(ctx, dev); err != nil || marked() {
+		t.Fatalf("the lab names no Secret any more: %v marked=%v", err, marked())
+	}
+
+	_, _ = r.pullSecretWait(ctx, dev, &pullSecretPendingError{secret: "l1-registry"})
+	if err := c.Delete(ctx, dev); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key}); err != nil || marked() {
+		t.Fatalf("device gone: %v marked=%v", err, marked())
 	}
 }
