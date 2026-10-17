@@ -235,3 +235,62 @@ func TestNoSinkIsUserspace(t *testing.T) {
 		t.Fatal("no sink: nothing to count")
 	}
 }
+
+func TestRestoreOverStaleSessionKeepsTheDataPlaneEntries(t *testing.T) {
+	client, server := sock("1.1.1.1", 1000), sock("10.0.0.1", 51820)
+	c, now, s := sinkTrack(t)
+	session(t, c, 1, 2, client, server)
+	session(t, c, 5, 6, sock("3.3.3.3", 3), server) // 6 pairs with 5 only
+	*now = now.Add(conntrackTTL + time.Second)
+	s.deletes, s.upserts = nil, nil
+	if !c.Restore(1, 2, client, server, "g", *now) {
+		t.Fatal("Restore over a stale session")
+	}
+	if len(s.deletes) != 0 {
+		t.Fatalf("the restored indices must stay in the data plane: %v", s.deletes)
+	}
+	if got := c.Sessions(); len(got) != 2 || got[0].Index != 1 || got[1].Index != 2 {
+		t.Fatalf("sessions: %+v", got)
+	}
+	// a stale owner paired with an index outside the restore: the peer is removed and deleted from the sink
+	c, now, s = sinkTrack(t)
+	session(t, c, 1, 2, client, server)
+	*now = now.Add(conntrackTTL + time.Second)
+	s.deletes = nil
+	if !c.Restore(1, 9, client, server, "g", *now) {
+		t.Fatal("Restore")
+	}
+	if len(s.deletes) != 1 || s.deletes[0] != 2 {
+		t.Fatalf("only the abandoned peer is deleted: %v", s.deletes)
+	}
+}
+
+func TestRestoreIsAtomic(t *testing.T) {
+	client, server := sock("1.1.1.1", 1000), sock("10.0.0.1", 51820)
+	c, now, s := sinkTrack(t)
+	session(t, c, 1, 2, client, server)
+	*now = now.Add(conntrackTTL - time.Second)
+	session(t, c, 7, 8, sock("3.3.3.3", 3), server) // live
+	*now = now.Add(2 * time.Second)                 // 1/2 stale now, 7/8 live
+	s.deletes = nil
+	if c.Restore(1, 8, client, server, "g", *now) {
+		t.Fatal("a live second index refuses the restore")
+	}
+	if len(s.deletes) != 0 || c.Len() != 4 {
+		t.Fatalf("nothing changed: deletes %v len %d", s.deletes, c.Len())
+	}
+	if _, ok := c.entries[1]; !ok {
+		t.Fatal("the stale owner of the first index is untouched")
+	}
+}
+
+func TestSeenClampsAFutureTime(t *testing.T) {
+	c, now, _ := sinkTrack(t)
+	session(t, c, 1, 2, sock("1.1.1.1", 1000), sock("10.0.0.1", 51820))
+	*now = now.Add(time.Minute)
+	c.Seen(map[uint32]time.Time{2: now.Add(24 * time.Hour)})
+	*now = now.Add(conntrackTTL + time.Second)
+	if c.Cleanup() != 2 {
+		t.Fatal("a time in the future must not keep a session alive for long")
+	}
+}

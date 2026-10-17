@@ -96,7 +96,11 @@ func (c *ConnTrack) deleteLocked(idx uint32) {
 func (c *ConnTrack) Seen(at map[uint32]time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	now := c.now()
 	for idx, t := range at {
+		if t.After(now) {
+			t = now
+		}
 		e, ok := c.entries[idx]
 		if !ok || e.partial || !t.After(e.state.seen) {
 			continue
@@ -146,19 +150,31 @@ func (c *ConnTrack) Restore(clientIdx, serverIdx uint32, client, server Socket, 
 	if clientIdx == serverIdx || c.now().Sub(seen) > conntrackTTL {
 		return false
 	}
+	// Check first, change after: a refusal leaves everything as it was. The stale owners of the two indices go with
+	// their peers; the sink is told only about the peers, because the data plane holds the very indices restored here.
+	victims := map[uint32]bool{}
 	for _, idx := range []uint32{clientIdx, serverIdx} {
 		existing, ok := c.entries[idx]
 		if !ok {
 			continue
 		}
-		if c.staleLocked(existing) {
-			c.evictLocked(idx)
-			continue
+		if !c.staleLocked(existing) {
+			return false
 		}
+		victims[idx] = true
+		if other, ok := c.entries[existing.PeerIndex]; !existing.partial && ok && other.state == existing.state && other.PeerIndex == idx {
+			victims[existing.PeerIndex] = true
+		}
+	}
+	if c.limits.MaxEntries > 0 && len(c.entries)-len(victims)+2 > c.limits.MaxEntries {
 		return false
 	}
-	if c.limits.MaxEntries > 0 && len(c.entries)+2 > c.limits.MaxEntries {
-		return false
+	for idx := range victims {
+		e := c.entries[idx]
+		c.removeLocked(idx)
+		if c.sink != nil && !e.partial && idx != clientIdx && idx != serverIdx {
+			c.deleteLocked(idx)
+		}
 	}
 	st := &sessionState{seen: seen, roam: seen, group: group}
 	c.entries[clientIdx] = &ConnEntry{state: st, clientIndex: true, PeerIndex: serverIdx, SenderSocket: client, ReceiverSocket: server, LastSeen: seen}
