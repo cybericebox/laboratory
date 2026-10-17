@@ -32,6 +32,9 @@ type Config struct {
 	// Each CIDR is added as an ipBlock peer in the generated web-exposure NetworkPolicy.
 	// Format: comma-separated CIDR strings, e.g. "172.18.0.4/32".
 	ProxySourceCIDRs []string `env:"PROXY_SOURCE_CIDRS" envSeparator:","`
+	// WGDemuxMode is the mode of the WireGuard demux (userspace, tc or xdp; the chart value proxy.wg.mode). In tc and xdp the demux runs on the
+	// host network, so its packets reach the VPN pods with a node address, and the VPN pods' policy admits the nodes on the WireGuard port.
+	WGDemuxMode string `env:"WG_DEMUX_MODE" envDefault:"tc"`
 	// VPNBaseNetwork is the base address space for per-lab VPN subnets, VPN half of 10.128.0.0/9 (e.g. "10.128.0.0/10").
 	// Each lab is assigned a /24 child subnet by adding its index to the base address.
 	VPNBaseNetwork string `env:"VPN_BASE_NETWORK" envDefault:"10.128.0.0/10"`

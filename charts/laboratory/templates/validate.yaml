@@ -78,6 +78,12 @@ at install time instead of shipping a broken deployment.
 {{- if lt (int .Values.scheduler.maxPods) 0 }}
 {{- fail "scheduler.maxPods must not be negative (0 sets no limit)" }}
 {{- end }}
+{{- if not (has .Values.proxy.wg.mode (list "userspace" "tc" "xdp")) }}
+{{- fail (printf "proxy.wg.mode must be userspace, tc or xdp (got %q)" .Values.proxy.wg.mode) }}
+{{- end }}
+{{- if not (has .Values.proxy.wg.externalTrafficPolicy (list "Local" "Cluster")) }}
+{{- fail (printf "proxy.wg.externalTrafficPolicy must be Local or Cluster (got %q)" .Values.proxy.wg.externalTrafficPolicy) }}
+{{- end }}
 {{- if not (has .Values.proxy.mode (list "replicas" "daemonset")) }}
 {{- fail "proxy.mode must be replicas or daemonset" }}
 {{- end }}

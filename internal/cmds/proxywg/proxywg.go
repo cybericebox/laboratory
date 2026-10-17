@@ -47,6 +47,11 @@ func Run() {
 		os.Exit(1)
 	}
 
+	if cfg.Mode != demux.ModeUserspace {
+		log.Error(nil, "DEMUX_MODE "+string(cfg.Mode)+": the eBPF data plane is not built in yet")
+		os.Exit(1)
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: "0"},
