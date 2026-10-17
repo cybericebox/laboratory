@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/proxy/demux"
 	"github.com/cybericebox/laboratory/pkg/config"
 )
 
@@ -83,6 +84,17 @@ type WGConfig struct {
 	SessionRate  float64 `env:"DEMUX_SESSION_RATE" envDefault:"15000"`
 	SessionBurst int     `env:"DEMUX_SESSION_BURST" envDefault:"30000"`
 	Readers      int     `env:"DEMUX_READERS" envDefault:"4"`
+	// Mode is how transport packets are moved: userspace, or in the kernel by a TC or XDP program (needs NodeName).
+	Mode demux.Mode `env:"DEMUX_MODE" envDefault:"tc"`
+	// PinPath is where the BPF maps are pinned, so a restart keeps the sessions.
+	PinPath  string `env:"DEMUX_BPF_PIN_PATH" envDefault:"/sys/fs/bpf/cybericebox/wg-demux"`
+	NodeName string `env:"NODE_NAME"`
+	HostIP   string `env:"HOST_IP"`
+	// ServiceName and ServiceNamespace name the Service whose address the clients' handshakes arrive at.
+	ServiceName      string        `env:"DEMUX_SERVICE_NAME" envDefault:"laboratory-proxy-wg"`
+	ServiceNamespace string        `env:"DEMUX_SERVICE_NAMESPACE" envDefault:"laboratory-wg"`
+	MetricsAddr      string        `env:"DEMUX_METRICS_ADDR" envDefault:":8083"`
+	Resync           time.Duration `env:"DEMUX_BPF_RESYNC" envDefault:"10s"`
 }
 
 // MinSessionSecretLen is the shortest accepted SESSION_SECRET.
@@ -115,6 +127,18 @@ func LoadWGConfig() (*WGConfig, error) {
 	}
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = fmt.Sprintf(":%d", names.WireGuardPort)
+	}
+	switch cfg.Mode {
+	case demux.ModeUserspace:
+	case demux.ModeTC, demux.ModeXDP:
+		if cfg.NodeName == "" {
+			return cfg, fmt.Errorf("NODE_NAME is required in the %s mode", cfg.Mode)
+		}
+	default:
+		return cfg, fmt.Errorf("DEMUX_MODE must be userspace, tc or xdp, not %q", cfg.Mode)
+	}
+	if cfg.Resync <= 0 {
+		return cfg, fmt.Errorf("DEMUX_BPF_RESYNC must be positive")
 	}
 	if cfg.MaxEntries <= 0 || cfg.PartialTTL <= 0 || cfg.MissRate <= 0 || cfg.MissBurst <= 0 || cfg.RoamInterval <= 0 ||
 		cfg.GlobalHandshakeRate <= 0 || cfg.GlobalHandshakeBurst <= 0 || cfg.SessionRate <= 0 || cfg.SessionBurst <= 0 || cfg.Readers <= 0 {

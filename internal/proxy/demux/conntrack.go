@@ -3,6 +3,7 @@ package demux
 import (
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -36,6 +37,10 @@ type ConnTrack struct {
 	entries map[uint32]*ConnEntry
 	limits  Limits
 	now     func() time.Time
+	// sink mirrors complete sessions into a data plane (nil = userspace only); src gives it the source addresses.
+	sink       Sink
+	src        SourceFor
+	sinkErrors atomic.Uint64
 }
 
 // take refills a bucket and takes one token from it; false when it is empty. rate 0 = unlimited.
@@ -142,6 +147,7 @@ func (c *ConnTrack) Complete(si, ci uint32, clientSocket, serverSocket Socket) b
 	e.state.partial = false
 	c.touchLocked(e, now)
 	c.entries[si] = &ConnEntry{PeerIndex: ci, SenderSocket: serverSocket, ReceiverSocket: clientSocket, LastSeen: now, state: e.state}
+	c.pushLocked(ci, e)
 	return true
 }
 
@@ -239,6 +245,7 @@ func (c *ConnTrack) LookupForward(receiverIndex uint32, src Socket) (dst Socket,
 		if peer, peerOk := c.entries[e.PeerIndex]; peerOk && peer.state == e.state {
 			peer.SenderSocket = src
 		}
+		c.pushLocked(receiverIndex, e)
 	}
 	// The demux is shared by everyone: a session has a packet rate of its own.
 	if !e.state.packets.take(now, c.limits.SessionRate, c.limits.SessionBurst) {
@@ -284,6 +291,7 @@ func (c *ConnTrack) UpdateRoaming(receiverIndex uint32, newSender Socket) {
 	if peer, ok := c.entries[e.PeerIndex]; ok && peer.state == e.state {
 		peer.ReceiverSocket = newSender
 	}
+	c.pushLocked(receiverIndex, e)
 }
 
 // evictLocked removes idx and its peer from the map. Must be called with c.mu held.
@@ -294,8 +302,14 @@ func (c *ConnTrack) evictLocked(idx uint32) {
 	}
 	peer := e.PeerIndex
 	c.removeLocked(idx)
+	if c.sink != nil && !e.partial {
+		c.deleteLocked(idx)
+	}
 	if other, ok := c.entries[peer]; !e.partial && ok && other.state == e.state && other.PeerIndex == idx {
 		c.removeLocked(peer)
+		if c.sink != nil {
+			c.deleteLocked(peer)
+		}
 	}
 }
 

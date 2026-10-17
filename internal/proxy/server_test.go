@@ -121,6 +121,7 @@ func TestServerLimitsComeFromTheConfig(t *testing.T) {
 }
 
 func TestWGLimitsDefaults(t *testing.T) {
+	t.Setenv("NODE_NAME", "node-1")
 	cfg, err := LoadWGConfig()
 	if err != nil {
 		t.Fatal(err)
