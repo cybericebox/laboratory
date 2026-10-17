@@ -232,7 +232,7 @@ func TestLiveCapsPerGroupAndTotal(t *testing.T) {
 // The handoff path is limited, so a flood of invalid or valid links cannot make the proxy verify signatures without end.
 func TestAuthPathIsRateLimited(t *testing.T) {
 	h, srv, _, _ := liveFixture(t, http.NotFoundHandler())
-	h.WithAuthRateLimit(1, 2) // per peer 2 in a burst; the shared bucket is 20 times that
+	h.WithAuthRateLimit(1, 2) // per lab and session 2 in a burst; the shared bucket is 20 times that
 	hit := func() int {
 		req, _ := http.NewRequest("GET", srv.URL+AuthPath+"?token=junk", nil)
 		req.Host = "web-abc123.challenges.example.com"
@@ -251,6 +251,39 @@ func TestAuthPathIsRateLimited(t *testing.T) {
 	}
 	if limited < 3 {
 		t.Fatalf("only %d of 6 handoff attempts were limited", limited)
+	}
+}
+
+// The key is the lab and the session cookie, never the peer address (behind the gateway every client has the same one): a flood at one
+// lab, or from one cookie, does not hold back another lab or another cookie.
+func TestAuthRateLimitIsKeyedByLabAndSession(t *testing.T) {
+	h, srv, _, _ := liveFixture(t, http.NotFoundHandler())
+	h.WithAuthRateLimit(1, 2)
+	hit := func(host, cookie string) int {
+		req, _ := http.NewRequest("GET", srv.URL+AuthPath+"?token=junk", nil)
+		req.Host = host
+		if cookie != "" {
+			req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	a, b := "web-abc123.challenges.example.com", "web-def456.challenges.example.com"
+	for i := 0; i < 6; i++ {
+		hit(a, "")
+	}
+	if hit(a, "") != http.StatusTooManyRequests {
+		t.Fatal("the flooded lab is limited")
+	}
+	if hit(b, "") == http.StatusTooManyRequests {
+		t.Fatal("another lab must not be held back")
+	}
+	if hit(a, "other-session") == http.StatusTooManyRequests {
+		t.Fatal("another session at the same lab must not be held back")
 	}
 }
 
