@@ -1,0 +1,164 @@
+{{- if and .Values.proxy.enabled .Values.proxy.wg.enabled }}
+{{- $hostNet := include "laboratory.wgHostNetwork" . }}
+# The WireGuard demux: one pod on every entry node (proxy.wg.nodeSelector narrows the set). userspace runs on the pod network, unprivileged;
+# tc and xdp run on the host network as root with the BPF capabilities only and the host's bpffs, to keep the pinned maps and links across
+# restarts (see DEPLOY.md).
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: laboratory-proxy-wg
+  namespace: {{ include "laboratory.wgNamespace" . }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app: laboratory-proxy-wg
+  # The next node's pod is replaced only after this one has been Ready for minReadySeconds.
+  minReadySeconds: {{ .Values.proxy.minReadySeconds }}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: laboratory-proxy-wg
+        {{- include "laboratory.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: laboratory-proxy-wg
+      priorityClassName: {{ include "laboratory.priorityClass.platform" . }}
+      terminationGracePeriodSeconds: {{ .Values.proxy.terminationGracePeriodSeconds }}
+      {{- if $hostNet }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      securityContext:
+        runAsNonRoot: false
+        runAsUser: 0
+        seccompProfile:
+          type: RuntimeDefault
+      {{- else }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      {{- end }}
+      {{- with .Values.proxy.wg.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.proxy.wg.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: wg-demux
+        image: {{ include "laboratory.imageRef" (dict "image" .Values.proxy.image "root" $) | quote }}
+        imagePullPolicy: {{ include "laboratory.pullPolicy" (dict "policy" .Values.proxy.image.pullPolicy "tag" (include "laboratory.tag" (dict "image" .Values.proxy.image "root" $))) }}
+        command: ["/proxy", "proxy-wg"]
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ ALL ]
+            {{- if $hostNet }}
+            add: [ BPF, NET_ADMIN, PERFMON ]
+            {{- end }}
+        env:
+        {{- /* The UDP port (names.WireGuardPort), the VPN port it forwards to, the probe port (:8082) and the metrics port (:8083) are baked into the image. */}}
+        - name: DEMUX_MODE
+          value: {{ .Values.proxy.wg.mode | quote }}
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: HOST_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        - name: DEMUX_SERVICE_NAME
+          value: "laboratory-proxy-wg"
+        - name: DEMUX_SERVICE_NAMESPACE
+          value: {{ include "laboratory.wgNamespace" . | quote }}
+        - name: ERROR_JOURNAL_NAMESPACE
+          value: {{ .Release.Namespace | quote }}
+        - name: DEMUX_MAX_ENTRIES
+          value: {{ .Values.proxy.wg.limits.maxEntries | quote }}
+        - name: DEMUX_PARTIAL_TTL
+          value: {{ .Values.proxy.wg.limits.partialTTL | quote }}
+        - name: DEMUX_MISS_RATE
+          value: {{ .Values.proxy.wg.limits.missRate | quote }}
+        - name: DEMUX_MISS_BURST
+          value: {{ .Values.proxy.wg.limits.missBurst | quote }}
+        - name: DEMUX_ROAM_INTERVAL
+          value: {{ .Values.proxy.wg.limits.roamInterval | quote }}
+        - name: DEMUX_GLOBAL_HANDSHAKE_RATE
+          value: {{ .Values.proxy.wg.limits.globalHandshakeRate | quote }}
+        - name: DEMUX_GLOBAL_HANDSHAKE_BURST
+          value: {{ .Values.proxy.wg.limits.globalHandshakeBurst | quote }}
+        - name: DEMUX_SESSION_RATE
+          value: {{ .Values.proxy.wg.limits.sessionRate | quote }}
+        - name: DEMUX_SESSION_BURST
+          value: {{ .Values.proxy.wg.limits.sessionBurst | quote }}
+        - name: DEMUX_READERS
+          value: {{ .Values.proxy.wg.limits.readers | quote }}
+        {{- if .Values.proxy.kindMode }}
+        - name: KUBERNETES_SERVICE_HOST
+          value: "127.0.0.1"
+        - name: KUBERNETES_SERVICE_PORT
+          value: "6443"
+        {{- end }}
+        ports:
+        - name: wg
+          containerPort: {{ include "laboratory.wgPort" . }}
+          protocol: UDP
+        - name: health
+          containerPort: {{ include "laboratory.wgHealthPort" . }}
+        - name: metrics
+          containerPort: {{ include "laboratory.wgMetricsPort" . }}
+        # Ready means it serves: the UDP socket is bound, the caches have synced and every group is in the demux table (see DEPLOY.md, "Probes").
+        startupProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          periodSeconds: 2
+          failureThreshold: 60
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          periodSeconds: 5
+          failureThreshold: 2
+          timeoutSeconds: 3
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          periodSeconds: 20
+          failureThreshold: 3
+          timeoutSeconds: 5
+        lifecycle:
+          preStop:
+            sleep:
+              seconds: {{ .Values.proxy.preStopSleepSeconds }}
+        {{- if $hostNet }}
+        volumeMounts:
+        - name: bpffs
+          mountPath: /sys/fs/bpf
+        {{- end }}
+        resources:
+          {{- toYaml .Values.proxy.wg.resources | nindent 10 }}
+      {{- if $hostNet }}
+      volumes:
+      - name: bpffs
+        hostPath:
+          path: /sys/fs/bpf
+          type: Directory
+      {{- end }}
+{{- end }}

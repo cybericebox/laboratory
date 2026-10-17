@@ -6,6 +6,9 @@ const SystemNamespace = "laboratory-system"
 // ProxyNamespace is the Kubernetes namespace where the proxy pod runs.
 const ProxyNamespace = "laboratory-proxy"
 
+// WGNamespace is the Kubernetes namespace where the WireGuard demux runs, apart from the L7 proxy: its privileges depend on the demux mode.
+const WGNamespace = "laboratory-wg"
+
 // LabGroupAccessPolicyName is the single complete firewall-policy object in
 // every LabGroup namespace.
 const LabGroupAccessPolicyName = "access-policy"

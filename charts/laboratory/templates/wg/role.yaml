@@ -1,0 +1,61 @@
+{{- if and .Values.proxy.enabled .Values.proxy.wg.enabled }}
+{{- /*
+The demux reads its own Service (the entry address and node port the clients' handshakes arrive at) in its namespace only, and publishes
+its aggregated errors as Events in the release namespace only (the error journal).
+*/ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: laboratory-proxy-wg
+  namespace: {{ include "laboratory.wgNamespace" . }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [ "" ]
+    resources: [ services ]
+    verbs: [ get, list, watch ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: laboratory-proxy-wg
+  namespace: {{ include "laboratory.wgNamespace" . }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: laboratory-proxy-wg
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-proxy-wg
+    namespace: {{ include "laboratory.wgNamespace" . }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: laboratory-proxy-wg-events
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [ "" ]
+    resources: [ events ]
+    verbs: [ create, patch ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: laboratory-proxy-wg-events
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: laboratory-proxy-wg-events
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-proxy-wg
+    namespace: {{ include "laboratory.wgNamespace" . }}
+{{- end }}

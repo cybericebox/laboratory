@@ -1,0 +1,16 @@
+{{- if and .Values.proxy.enabled .Values.proxy.wg.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: laboratory-proxy-wg
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: laboratory-proxy-wg
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-proxy-wg
+    namespace: {{ include "laboratory.wgNamespace" . }}
+{{- end }}

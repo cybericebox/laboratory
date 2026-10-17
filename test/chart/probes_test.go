@@ -54,6 +54,14 @@ func TestEveryServiceHasProbesAndRollsOutOnReadiness(t *testing.T) {
 	for _, c := range proxy.Spec.Template.Spec.Containers {
 		byName[c.Name] = c
 	}
+	var wgDS appsv1.DaemonSet
+	render(t, "templates/wg/daemonset.yaml", &wgDS)
+	for _, c := range wgDS.Spec.Template.Spec.Containers {
+		byName[c.Name] = c
+	}
+	if _, ok := byName["wg-demux"]; !ok || len(proxy.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("l7 is alone in the Deployment, wg-demux is in its own DaemonSet: %v", byName)
+	}
 	for name, port := range map[string]int32{"l7": 8081, "wg-demux": 8082} {
 		c, ok := byName[name]
 		if !ok {
@@ -88,6 +96,10 @@ func TestEveryServiceHasProbesAndRollsOutOnReadiness(t *testing.T) {
 	render(t, "templates/proxy/deployment.yaml", &surging, "--set", "proxy.surge=true")
 	if r := surging.Spec.Strategy.RollingUpdate; r.MaxSurge.IntValue() != 1 || r.MaxUnavailable.IntValue() != 0 {
 		t.Errorf("proxy.surge=true: maxSurge 1, maxUnavailable 0: %+v", r)
+	}
+
+	if wgDS.Spec.MinReadySeconds == 0 || wgDS.Spec.UpdateStrategy.RollingUpdate == nil || wgDS.Spec.UpdateStrategy.RollingUpdate.MaxUnavailable.IntValue() != 1 {
+		t.Errorf("a demux rollout moves one node at a time and waits for Ready: %+v", wgDS.Spec.UpdateStrategy)
 	}
 
 	var ds appsv1.DaemonSet
@@ -125,6 +137,7 @@ func imageHealthAddr(t *testing.T, container string) string {
 		}
 		return cfg.HealthAddr
 	}
+	t.Setenv("DEMUX_MODE", "userspace") // the tc default also needs NODE_NAME, which the probes address does not depend on
 	cfg, err := proxy.LoadWGConfig()
 	if err != nil {
 		t.Fatal(err)

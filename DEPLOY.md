@@ -118,16 +118,20 @@ What gets installed:
 - Management agent (`agent.enabled`), the L7 proxy and WireGuard demultiplexer, and, when enabled, the platform registry
 - `laboratory-config` ConfigMap with your settings
 
-**The proxy** (`proxy.*`) is one Deployment with two containers, the L7 HTTPS proxy and the WireGuard demux, **two replicas by default**
+**The proxy** (`proxy.*`) is the L7 HTTPS proxy, an unprivileged Deployment in `laboratory-proxy`, **two replicas by default**
 (`proxy.replicas`), a PodDisruptionBudget with `minAvailable: 1` (`proxy.podDisruptionBudget`, rendered only with more than one replica) and a
 a **required** pod anti-affinity by hostname: never two replicas on one node (with more replicas than nodes the extra ones stay Pending). For larger clusters
 set `proxy.mode: daemonset`: one proxy pod on every node (`proxy.nodeSelector` and `proxy.tolerations` narrow the set; `replicas` and the budget do not apply; the default is
 `replicas`, a fixed count: on a one-node cluster set `proxy.replicas: 1`, and a live install refuses more replicas than nodes). In both modes the proxy requests are pods like any other, so the scheduler's room for lab pods on each node is what is left after them
-(see "Platform reserve"). The proxy's own session is sliding: it expires `proxy.l7.sessionIdleTTL` (24h) after the last request; the cookie is
+(see "Platform reserve"). The WireGuard demux is not in that pod: it is its own DaemonSet `laboratory-proxy-wg` in the namespace `laboratory-wg`, on the nodes
+selected by `proxy.wg.nodeSelector` and `proxy.wg.tolerations` (every node by default), with its own ServiceAccount, RBAC and the `laboratory-proxy-wg` LoadBalancer Service
+(`proxy.wg.externalTrafficPolicy`, `Local` by default). `proxy.wg.mode` (`tc` by default, `xdp`, or `userspace`) decides its privileges: `tc` and `xdp` run on the host network
+as root with the capabilities `BPF`, `NET_ADMIN` and `PERFMON` only and the host's `/sys/fs/bpf`, in a namespace that admits the privileged Pod Security level;
+`userspace` is unprivileged on the pod network in a restricted namespace. The L7 namespace stays restricted in every mode. The proxy's own session is sliding: it expires `proxy.l7.sessionIdleTTL` (24h) after the last request; the cookie is
 re-issued only when less than `proxy.l7.sessionRenewBefore` (1h) of it remains, so an active user costs about one renewal per hour; and it never
 lives past `proxy.l7.sessionMaxTTL` (168h) from the handoff or past the link's own session end. The L7 proxy is stateless (its session cookie is signed with the shared `proxy-session` secret), so a request
 may land on any replica. The demux keeps no state a restart would lose: a WireGuard client that lands on the other replica (after a reconnect, or when
-the replica it used is gone) re-handshakes within its persistent keepalive, about 15 s. Both containers are Guaranteed (requests = limits): L7 `500m`/`64Mi`,
+the replica it used is gone) re-handshakes within its persistent keepalive, about 15 s. Both pods are Guaranteed (requests = limits): L7 `500m`/`64Mi`,
 demux `250m`/`64Mi`. Measured on the local stand (kubectl top, one replica): L7 serves about 5000 requests per second for 500m of CPU (0.1 ms per request;
 p95 63 ms at 100 concurrent clients, 36Mi at 200), the demux is 1m idle and about 110m at ten active VPN peers (it relays the packets in userspace),
 and L7 load does not slow the tunnels (VPN latency p95 3-4 ms with 100 L7 clients).
@@ -1233,9 +1237,10 @@ backend that never finishes the response) and reads the process's heap and stack
 is a slow answer; a pod killed for memory cuts every request in flight on it. If you raise `maxConnections`, raise the memory by about 130 KiB per connection (the measured
 cost with 25% headroom) and keep `liveTotal` at or below it. A request in flight is also a connection for the proxy, so `liveTotal` above `maxConnections` has no effect.
 
-**To serve more clients, add proxy pods, not limits.** The L7 proxy is stateless (its session cookie is signed with the shared secret) and the demux's table is per pod: `proxy.replicas`
-(each replica takes its share of the connections the Gateway sends it; never two on one node), or `proxy.mode: daemonset` for one proxy on every node (larger clusters). A WireGuard client whose
-packets land on another demux replica re-handshakes (about 25-35 s, see the proxy rollout below), so change the replica count outside an event. Capacity is `replicas` times the numbers above.
+**To serve more clients, add proxy pods, not limits.** The L7 proxy is stateless (its session cookie is signed with the shared secret): `proxy.replicas`
+(each replica takes its share of the connections the Gateway sends it; never two on one node), or `proxy.mode: daemonset` for one proxy on every node (larger clusters). The demux's table is per pod
+and the demux is a DaemonSet, so its capacity is the number of entry nodes (`proxy.wg.nodeSelector`) times the numbers above; a WireGuard client whose packets land on another demux
+re-handshakes (about 25-35 s, see the proxy rollout below), so change the entry nodes outside an event.
 
 ### Probes and rollouts
 
@@ -1429,7 +1434,9 @@ The service pods of the laboratory are hardened without a setting:
 |---|---|---|---|---|
 | operator | non-root | | all dropped, no privilege escalation | RuntimeDefault |
 | agent | non-root (65532) | read-only (`/tmp` is an emptyDir) | all dropped, no privilege escalation | RuntimeDefault |
-| L7 proxy and wg-demux | non-root (65532) | read-only | all dropped, no privilege escalation | RuntimeDefault |
+| L7 proxy | non-root (65532) | read-only | all dropped, no privilege escalation | RuntimeDefault |
+| wg-demux, `userspace` | non-root (65532) | read-only | all dropped, no privilege escalation | RuntimeDefault |
+| wg-demux, `tc` / `xdp` (host network) | root | read-only | all dropped, then `BPF`, `NET_ADMIN`, `PERFMON`; not privileged | RuntimeDefault |
 | zot (registry) | non-root (65532, `fsGroup` for the volume) | writable | all dropped, no privilege escalation | RuntimeDefault |
 | node-agent and OVS | root, **privileged** (it drives OVS and pod networking on the host) | | | |
 
@@ -1865,7 +1872,7 @@ system for a lab:
 | Pods | Class | Value |
 |---|---|---|
 | node-agent | `system-node-critical` (built in) | |
-| operator, agent, L7 proxy with the wg-demux, registry | `laboratory-platform` | 1000000 |
+| operator, agent, L7 proxy, wg-demux, registry | `laboratory-platform` | 1000000 |
 | VPN and gateway of a group | `laboratory-group` | 10000 |
 | device | `laboratory-device`, `preemptionPolicy: Never` | 100 |
 

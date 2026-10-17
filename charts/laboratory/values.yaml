@@ -78,7 +78,7 @@ operator:
 # ============================================================
 # Priority classes: every pod the laboratory runs carries one, so the scheduler never evicts the system for a lab
 # ============================================================
-# node-agent: system-node-critical (built in). operator, agent, L7 proxy with the wg-demux, registry: platform. VPN and gateway
+# node-agent: system-node-critical (built in). operator, agent, L7 proxy, wg-demux, registry: platform. VPN and gateway
 # pods of a group: group, above the devices. Device pods: device, the lowest, with preemptionPolicy Never: a device never
 # evicts anything (a VPN or a gateway may evict a device, the system may evict both). The operator's admission policy
 # allows its pods exactly the group and device classes. Existing group pods keep what they have (no class) until recreated.
@@ -187,17 +187,17 @@ inetGateway:
     # The operator also brings the pods of existing groups to this image, one group at a time (see DEPLOY.md, "Upgrade").
 
 # ============================================================
-# Proxy: l7 + wg-demux containers in one unprivileged Deployment
+# Proxy: the L7 proxy (unprivileged Deployment or DaemonSet) and the WireGuard demux (its own DaemonSet, namespace laboratory-wg)
 # ============================================================
 proxy:
   enabled: true
 
-  # Kubernetes namespace for the proxy Deployment/Service/ServiceAccount/NetworkPolicy
-  # and its own dedicated Namespace object (l7 + wg-demux containers). Also the value
-  # exchanged with the Gateway via the mutual lbipam.cilium.io/sharing-cross-namespace
-  # annotation pair (gateway/gateway.yaml names this namespace; proxy/service-wg-lb.yaml
-  # names the Gateway's namespace via .Release.Namespace) — both must stay in sync for
-  # Cilium's LB-IPAM cross-namespace IP sharing to work.
+  # Kubernetes namespace for the L7 proxy Deployment/Service/ServiceAccount/NetworkPolicy
+  # and its own dedicated Namespace object. The demux lives in the fixed namespace
+  # laboratory-wg (templates/wg). The Gateway and the demux's VPN Service share one IP through
+  # the mutual lbipam.cilium.io/sharing-cross-namespace annotation pair (gateway/gateway.yaml
+  # names laboratory-wg; wg/service.yaml names the Gateway's namespace via .Release.Namespace) —
+  # both must stay in sync for Cilium's LB-IPAM cross-namespace IP sharing to work.
   # Must stay "laboratory-proxy": the operator's lab access key sync
   # (platform_reconciler.go) and each Lab's web-exposure NetworkPolicy peer selector
   # (lab_controller.go) use the compile-time constant internal/names.ProxyNamespace.
@@ -207,12 +207,12 @@ proxy:
   # Set true when running in Kind: overrides API server address to 127.0.0.1:6443.
   kindMode: false
 
-  # Shared image for both the l7 and wg-demux containers.
+  # Shared image for the l7 and wg-demux containers (one image, two commands).
   image:
     repository: cybericebox/laboratory-proxy
     tag: ""
     pullPolicy: ""   # empty = IfNotPresent (the tag is always an exact version)
-  # How the proxy runs.
+  # How the L7 proxy runs (the demux is always a DaemonSet, see proxy.wg).
   #   replicas (default): a Deployment of `replicas` pods, NEVER two on one node (required anti-affinity by
   #     hostname). With more replicas than schedulable nodes the extra pods stay Pending, so on a one-node
   #     cluster set replicas: 1 (the install refuses replicas > nodes when it can count them).
@@ -221,8 +221,8 @@ proxy:
   # In both modes the proxy requests count against its node like any pod, so the scheduler's room for lab
   # pods is what is left.
   mode: replicas
-  # Nodes the proxy may run on and the taints it tolerates (both modes). Empty: follows labWorkloads (and any node when that is
-  # empty too); set values win (each of the two on its own).
+  # Nodes the L7 proxy may run on and the taints it tolerates (both modes). Empty: follows labWorkloads (and any node when that is
+  # empty too); set values win (each of the two on its own). The demux has its own (proxy.wg).
   nodeSelector: {}
   tolerations: []
   # Two replicas by default: the L7 proxy is stateless (its session cookie is signed with the shared
@@ -312,11 +312,28 @@ proxy:
         cpu: 500m
         memory: 512Mi
 
-  # WireGuard demux container — plain userspace UDP, no hostNetwork/capabilities.
+  # WireGuard demux: a DaemonSet in the namespace laboratory-wg.
   wg:
     enabled: true
-    # The wg-demux binds UDP 51820 inside the pod (the VPN pods listen on 51820 too) and its probes (/readyz: the UDP socket is bound, the
-    # caches have synced and every group is in the demux table; /healthz: the process answers) are on :8082. Constants of the image.
+    # How the demux moves transport packets.
+    #   tc (default): a BPF program on the node's network device forwards them in the kernel; the handshakes stay in user space. The pod
+    #     runs on the host network, as root, with the capabilities BPF, NET_ADMIN and PERFMON only (never privileged) and the host's
+    #     /sys/fs/bpf; its namespace admits the privileged Pod Security level.
+    #   xdp: the same, attached at the driver (refuses to start if the device already has an XDP program).
+    #   userspace: the demux relays every packet itself; unprivileged, non-root, on the pod network, in a restricted namespace.
+    # There is no silent fallback: a mode that cannot start makes the pod crash loop, and the operator picks userspace by this value.
+    mode: tc
+    # The nodes that are entry points of the VPN (where the Service sends the clients' packets) and the taints the demux tolerates.
+    # Empty: every node.
+    nodeSelector: {}
+    tolerations: []
+    # externalTrafficPolicy of the VPN Service. Local (default) keeps the clients' source addresses and sends a packet only to a node
+    # that runs a demux. Cilium LB-IPAM shares one IP between this Service and the Gateway only when both have the same policy and,
+    # with Local, the same selector, so a stand where they share one address (EDGE_IP) needs Cluster.
+    externalTrafficPolicy: Local
+    # The wg-demux binds UDP 51820 (the VPN pods listen on 51820 too), its probes (/readyz: the UDP socket is bound, the
+    # caches have synced and every group is in the demux table; /healthz: the process answers) are on :8082 and its Prometheus metrics
+    # on :8083. Constants of the image.
     # publicPort is the port OUTSIDE the cluster: the UDP port the LoadBalancer Service listens on, where the clients connect (the Service
     # forwards it to 51820). It is also the port of operator.publicVPNEndpoint when that has none.
     publicPort: 51820

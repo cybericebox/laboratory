@@ -144,7 +144,7 @@ func TestRemovedValuesAreRefused(t *testing.T) {
 
 // The constants of the platform appear in the chart exactly where the images expect them.
 func TestPlatformConstantsInTheChart(t *testing.T) {
-	out, err := helmTemplate(t, "-s", "templates/proxy/service-wg-lb.yaml", "-s", "templates/proxy/service.yaml")
+	out, err := helmTemplate(t, "-s", "templates/wg/service.yaml", "-s", "templates/proxy/service.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +252,7 @@ func TestExternalWireGuardPort(t *testing.T) {
 		var cm corev1.ConfigMap
 		render(t, "templates/operator/configmap.yaml", &cm, append(append([]string{}, agentSet...), set...)...)
 		var svc corev1.Service
-		render(t, "templates/proxy/service-wg-lb.yaml", &svc, append(append([]string{}, agentSet...), set...)...)
+		render(t, "templates/wg/service.yaml", &svc, append(append([]string{}, agentSet...), set...)...)
 		var dep appsv1.Deployment
 		render(t, "templates/agent/deployment.yaml", &dep, append(append([]string{}, agentSet...), set...)...)
 		if got := envOf(dep.Spec.Template.Spec.Containers[0])["PUBLIC_VPN_ENDPOINT"].Value; got != cm.Data["PUBLIC_VPN_ENDPOINT"] {

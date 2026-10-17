@@ -1,7 +1,7 @@
 {{- if .Values.proxy.enabled }}
 {{- /*
-The error journal: the L7 proxy and the demux in its pod publish their aggregated errors as Events in the release namespace only,
-through a namespaced Role (not the ClusterRole above).
+The error journal: the L7 proxy publishes its aggregated errors as Events in the release namespace only, through a namespaced Role
+(not the ClusterRole above). The demux has its own (wg/role.yaml).
 */ -}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

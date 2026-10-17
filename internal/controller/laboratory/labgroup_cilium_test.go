@@ -1,6 +1,8 @@
 package laboratory
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -12,7 +14,7 @@ import (
 // TestVPNCiliumPolicy asserts the vpn CiliumNetworkPolicy locks egress down to
 // kube-apiserver only (never world), and selects the pods by the operator-only component label.
 func TestVPNCiliumPolicy(t *testing.T) {
-	policy := vpnCiliumPolicy("ns1", map[string]string{names.LabelComponent: "vpn"})
+	policy := vpnCiliumPolicy("ns1", map[string]string{names.LabelComponent: "vpn"}, false)
 
 	if got := policy.GetAPIVersion(); got != "cilium.io/v2" {
 		t.Fatalf("apiVersion = %q, want cilium.io/v2", got)
@@ -73,7 +75,7 @@ func TestVPNCiliumPolicy(t *testing.T) {
 	if !ok {
 		t.Fatalf("ingress[0] = %T", ingress[0])
 	}
-	// The source is the proxy's wg-demux (a pod in the proxy namespace), never "world".
+	// The source is the wg-demux (a pod in the laboratory-wg namespace), never "world".
 	if _, found := ingressRule["fromEntities"]; found {
 		t.Fatalf("VPN ingress must not use fromEntities: %#v", ingressRule["fromEntities"])
 	}
@@ -82,8 +84,8 @@ func TestVPNCiliumPolicy(t *testing.T) {
 		t.Fatalf("VPN ingress fromEndpoints = %#v, err=%v", from, err)
 	}
 	labels, _, _ := unstructured.NestedStringMap(from[0].(map[string]interface{}), "matchLabels")
-	if labels["k8s:io.kubernetes.pod.namespace"] != "laboratory-proxy" || labels["app"] != "laboratory-proxy-l7" {
-		t.Fatalf("VPN ingress must come from the proxy pod, got %v", labels)
+	if labels["k8s:io.kubernetes.pod.namespace"] != "laboratory-wg" || labels["app"] != "laboratory-proxy-wg" {
+		t.Fatalf("VPN ingress must come from the demux pod, got %v", labels)
 	}
 	toPorts, found, err := unstructured.NestedSlice(ingressRule, "toPorts")
 	if err != nil || !found || len(toPorts) != 1 {
@@ -160,7 +162,7 @@ func TestGatewayCiliumPolicy(t *testing.T) {
 
 // The VPN pod reaches the API server on its API ports only.
 func TestVPNCiliumPolicyLimitsTheAPIServerPorts(t *testing.T) {
-	egress, _, _ := unstructured.NestedSlice(vpnCiliumPolicy("ns1", map[string]string{names.LabelComponent: "vpn"}).Object, "spec", "egress")
+	egress, _, _ := unstructured.NestedSlice(vpnCiliumPolicy("ns1", map[string]string{names.LabelComponent: "vpn"}, false).Object, "spec", "egress")
 	if _, ok := egress[0].(map[string]interface{})["toPorts"]; !ok {
 		t.Fatalf("the API server entity of the VPN pod needs ports: %v", egress[0])
 	}
@@ -173,4 +175,67 @@ func contains(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// The demux of tc/xdp runs on the host network, so its packets carry a node address: the policy then also admits the host and the
+// other nodes, on the WireGuard port only. l7 never talks WireGuard.
+func TestVPNPolicyHostNetworkDemux(t *testing.T) {
+	sel := map[string]string{names.LabelComponent: "vpn"}
+	ingressOf := func(hostNetwork bool) []interface{} {
+		rules, found, err := unstructured.NestedSlice(vpnCiliumPolicy("ns1", sel, hostNetwork).Object, "spec", "ingress")
+		if err != nil || !found {
+			t.Fatalf("spec.ingress: %v %v", found, err)
+		}
+		if strings.Contains(fmt.Sprint(rules), "laboratory-proxy-l7") {
+			t.Fatalf("no rule names the l7 proxy: %v", rules)
+		}
+		return rules
+	}
+	portsOK := func(rule map[string]interface{}) {
+		toPorts, _, _ := unstructured.NestedSlice(rule, "toPorts")
+		if len(toPorts) != 1 {
+			t.Fatalf("toPorts: %v", toPorts)
+		}
+		ports, _, _ := unstructured.NestedSlice(toPorts[0].(map[string]interface{}), "ports")
+		if len(ports) != 1 || ports[0].(map[string]interface{})["port"] != "51820" || ports[0].(map[string]interface{})["protocol"] != "UDP" {
+			t.Fatalf("UDP 51820 only: %v", ports)
+		}
+	}
+
+	off := ingressOf(false)
+	if len(off) != 1 {
+		t.Fatalf("pod-network demux: one rule, got %v", off)
+	}
+	rule := off[0].(map[string]interface{})
+	if _, has := rule["fromEntities"]; has {
+		t.Fatalf("no entities: %v", rule)
+	}
+	from, _, _ := unstructured.NestedSlice(rule, "fromEndpoints")
+	if len(from) != 1 {
+		t.Fatalf("one peer: %v", from)
+	}
+	labels, _, _ := unstructured.NestedStringMap(from[0].(map[string]interface{}), "matchLabels")
+	if labels["k8s:io.kubernetes.pod.namespace"] != names.WGNamespace || labels[labelApp] != names.WGDemuxApp {
+		t.Fatalf("peer: %v", labels)
+	}
+	portsOK(rule)
+
+	on := ingressOf(true)
+	if len(on) != 2 {
+		t.Fatalf("host-network demux: the pod peer and the node entities, got %v", on)
+	}
+	first := on[0].(map[string]interface{})
+	if _, has := first["fromEntities"]; has {
+		t.Fatalf("the pod rule has no entities: %v", first)
+	}
+	portsOK(first)
+	second := on[1].(map[string]interface{})
+	ents, _, _ := unstructured.NestedStringSlice(second, "fromEntities")
+	if len(ents) != 2 || !contains(ents, "host") || !contains(ents, "remote-node") {
+		t.Fatalf("fromEntities: %v", ents)
+	}
+	if _, has := second["fromEndpoints"]; has {
+		t.Fatalf("the node rule has no endpoint peer: %v", second)
+	}
+	portsOK(second)
 }
