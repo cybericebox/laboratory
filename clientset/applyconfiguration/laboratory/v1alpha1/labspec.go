@@ -29,6 +29,11 @@ type LabSpecApplyConfiguration struct {
 	// Devices of the lab, switches and hubs included. The ceiling is fixed in code (names.MaxLabDevices).
 	Devices     []DeviceTemplateApplyConfiguration     `json:"devices,omitempty"`
 	Connections []ConnectionTemplateApplyConfiguration `json:"connections,omitempty"`
+	// ImagePullSecret names a kubernetes.io/dockerconfigjson Secret in the lab's namespace with
+	// the pull credentials of this lab's private images. Only the management agent sets it,
+	// from the credentials the platform sends with the deploy; a value in a client's spec is
+	// ignored.
+	ImagePullSecret *string `json:"imagePullSecret,omitempty"`
 }
 
 // LabSpecApplyConfiguration constructs a declarative configuration of the LabSpec type for use with
@@ -84,5 +89,13 @@ func (b *LabSpecApplyConfiguration) WithConnections(values ...*ConnectionTemplat
 		}
 		b.Connections = append(b.Connections, *values[i])
 	}
+	return b
+}
+
+// WithImagePullSecret sets the ImagePullSecret field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ImagePullSecret field is set to the value of the last call.
+func (b *LabSpecApplyConfiguration) WithImagePullSecret(value string) *LabSpecApplyConfiguration {
+	b.ImagePullSecret = &value
 	return b
 }

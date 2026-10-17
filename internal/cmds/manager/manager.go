@@ -312,6 +312,7 @@ func Run() {
 	}
 	deviceReconciler := &laboratorycontroller.DeviceReconciler{
 		Scheduled:               cfg.SchedulerEnabled,
+		Recorder:                mgr.GetEventRecorderFor("device"),
 		MirrorRegistries:        mirror.Registries,
 		Reader:                  mgr.GetAPIReader(),
 		Client:                  mgr.GetClient(),

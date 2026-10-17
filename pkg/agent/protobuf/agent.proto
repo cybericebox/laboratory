@@ -305,6 +305,11 @@ message LabVariant {
   string variant_id = 1;
   bytes spec_json = 2;            // Lab.spec serialized; the agent passes it through
   repeated DeviceEnv env = 3;     // variables common to every lab of the variant
+  // Pull credentials for the variant's private images (at most 8, one per registry host).
+  // The agent stores them in a per-lab dockerconfigjson Secret and sets
+  // Lab.spec.imagePullSecret to it; any imagePullSecret in spec_json is ignored. They
+  // are write-only: never returned, logged or put in a status.
+  repeated RegistryCredential registry_credentials = 4;
 }
 message LabItem {
   string lab_group = 1;
@@ -948,6 +953,8 @@ message DeployFailure {
 message PrewarmImagesRequest {
   // Image references as written in a lab spec ("nginx:1.25", "ghcr.io/o/app@sha256:...").
   repeated string images = 1;
+  // Pull credentials for private images of this request only (see LabVariant).
+  repeated RegistryCredential registry_credentials = 2;
 }
 
 enum PrewarmState {
@@ -1223,4 +1230,11 @@ message LabCreationReceipt {
  string creation_id = 6;
  string lab_uid = 7;
  bool committed = 8;
+}
+
+// RegistryCredential is a pull credential for one registry host.
+message RegistryCredential {
+  string registry = 1;  // registry host, optionally with a port ("index.docker.io", "ghcr.io"); no scheme, no path
+  string username = 2;
+  string password = 3;  // a password or token; required
 }

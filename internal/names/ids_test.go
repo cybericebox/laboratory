@@ -50,3 +50,18 @@ func TestValidateIDAndIDOf(t *testing.T) {
 		t.Fatal("falls back to the name")
 	}
 }
+
+func TestLabRegistrySecret(t *testing.T) {
+	if got := LabRegistrySecret("l1"); got != "l1-registry" {
+		t.Fatalf("got %q", got)
+	}
+	long := strings.Repeat("a", 63)
+	n := LabRegistrySecret(long)
+	if len(n) > 63 || !strings.HasSuffix(n, "-registry") || n != LabRegistrySecret(long) || n == LabRegistrySecret(strings.Repeat("b", 63)) {
+		t.Fatalf("long name: %q", n)
+	}
+	// A lab named "tenant" must not take over the tenant's own pull secret copy.
+	if n := LabRegistrySecret("tenant"); n == TenantPullSecret || !strings.HasSuffix(n, "-registry") || len(n) > 63 {
+		t.Fatalf("tenant: %q", n)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -16,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -54,6 +56,10 @@ type DeviceReconciler struct {
 	// Registry is the snapshot registry, nil when state persistence is off; it
 	// is used to drop a device's snapshots on reset.
 	Registry SnapshotRegistry
+	// Recorder records the events of a Device (a lab pull Secret that is missing); nil records none.
+	Recorder record.EventRecorder
+	// pullWaiting holds the devices whose wait for the lab's pull Secret was already told.
+	pullWaiting sync.Map
 	// Reader reads from the API server without the cache; nil means Client. Used
 	// where a stale cache would start a device twice.
 	Reader client.Reader
@@ -87,10 +93,14 @@ type DeviceReconciler struct {
 func (r *DeviceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var device laboratoryv1alpha1.Device
 	if err := r.Get(ctx, req.NamespacedName, &device); err != nil {
+		if errors.IsNotFound(err) {
+			r.pullWaiting.Delete(req.NamespacedName)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	if !device.DeletionTimestamp.IsZero() {
+		r.pullWaiting.Delete(req.NamespacedName)
 		if controllerutil.ContainsFinalizer(&device, names.FinalizerOVSCleanup) {
 			// node-agent removes this finalizer after OVS cleanup; poll.
 			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
@@ -232,7 +242,10 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 				return ctrl.Result{}, gateErr // the scheduler's dispatch triggers the next reconcile
 			}
 		}
-		return ctrl.Result{}, r.createDeployment(ctx, device, replicas)
+		if err := r.createDeployment(ctx, device, replicas); err != nil {
+			return r.pullSecretWait(ctx, device, err)
+		}
+		return ctrl.Result{}, nil
 	}
 	if err != nil {
 		return ctrl.Result{}, err
@@ -467,7 +480,9 @@ func (r *DeviceReconciler) deviceImage(device *laboratoryv1alpha1.Device, image 
 
 func (r *DeviceReconciler) createDeployment(ctx context.Context, device *laboratoryv1alpha1.Device, replicas int32) error {
 	labels, selectorLabels, annotations, podSpec := r.workloadTemplate(device, false)
-	r.applyPullSecrets(ctx, device, &podSpec)
+	if err := r.applyPullSecrets(ctx, device, &podSpec); err != nil {
+		return err
+	}
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{

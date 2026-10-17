@@ -28,6 +28,7 @@ const (
 	ReasonPubKeyCollision      = "PubKeyCollision"
 	ReasonProgrammingFailed    = "ProgrammingFailed"
 	ReasonPeerRegistered       = "PeerRegistered"
+	ReasonPullSecretMissing    = "PullSecretMissing"
 )
 
 // SetReady sets (or updates) the Ready condition on conds. generation is the

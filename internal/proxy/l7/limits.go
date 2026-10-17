@@ -1,7 +1,8 @@
 package l7
 
 import (
-	"net"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"sync"
 	"time"
@@ -78,8 +79,7 @@ func (b *bkt) take(now time.Time, rate, burst float64) bool {
 	return true
 }
 
-// allow takes one token from the key's bucket and one from the shared one (the key is the peer address; behind a passthrough route it is
-// the gateway's, so the shared bucket is what counts). A rate of 0 allows everything.
+// allow takes one token from the key's bucket and one from the shared one (the key is the lab and session, see authKey). A rate of 0 allows everything.
 func (b *bucketSet) allow(key string) bool {
 	if b == nil || b.rate <= 0 {
 		return true
@@ -104,17 +104,20 @@ func (b *bucketSet) allow(key string) bool {
 	return k.take(now, b.rate, b.burst)
 }
 
-// WithAuthRateLimit limits the handoff path (/_auth), which verifies a signature and may issue a session: per peer address (rate per second
-// and burst), and all peers together at twenty times that. Over it the answer is 429.
+// WithAuthRateLimit limits the handoff path (/_auth), which verifies a signature and may issue a session: per lab and session cookie (rate per second
+// and burst), and all of them together at twenty times that. Over it the answer is 429.
 func (h *Handler) WithAuthRateLimit(rate float64, burst int) *Handler {
 	h.authLimit = newBucketSet(rate, burst, 100000)
 	return h
 }
 
-func peerKey(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
+// authKey is the handoff limit key: the lab plus the session cookie presented (hashed), if any. The peer address is never used: behind
+// the gateway every client has the same one, so one client could hold back everybody.
+func (h *Handler) authKey(r *http.Request, task string) string {
+	sum := ""
+	if c, err := r.Cookie(h.cookieName); err == nil && c.Value != "" {
+		d := sha256.Sum256([]byte(c.Value))
+		sum = hex.EncodeToString(d[:8])
 	}
-	return host
+	return task + "|" + sum
 }
