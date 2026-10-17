@@ -28,7 +28,7 @@ func (p probeResolver) Resolve(ctx context.Context, ref string) (string, error) 
 	}
 	// go-containerregistry speaks plain http to localhost, *.local and private hosts: a
 	// credential never travels that way.
-	if parsed.Context().Registry.Scheme() == "http" {
+	if parsed.Context().Scheme() == "http" {
 		return "", errPlainHTTP
 	}
 	return imagecache.ProbeDigest(ctx, ref, p.kc, p.rt)
