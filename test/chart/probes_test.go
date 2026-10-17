@@ -78,7 +78,8 @@ func TestEveryServiceHasProbesAndRollsOutOnReadiness(t *testing.T) {
 			}
 		}
 		// The listen address is the image's default (proxy.LoadL7Config / LoadWGConfig), so the chart passes none and must name that port.
-		if _, set := envOf(c)["HEALTH_ADDR"]; set || declared != port || c.ReadinessProbe.HTTPGet.Port.String() != "health" {
+		// (the host-network demux binds the same port to the node address: HEALTH_ADDR=$(HOST_IP):port)
+		if addr, set := envOf(c)["HEALTH_ADDR"]; (set && addr.Value != fmt.Sprintf("$(HOST_IP):%d", port)) || declared != port || c.ReadinessProbe.HTTPGet.Port.String() != "health" {
 			t.Errorf("%s: the health port %d must be the image default (no HEALTH_ADDR passed): %d %v", name, port, declared, envOf(c)["HEALTH_ADDR"])
 		}
 		if got := imageHealthAddr(t, name); got != fmt.Sprintf(":%d", port) {

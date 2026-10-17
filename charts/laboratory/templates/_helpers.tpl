@@ -139,7 +139,8 @@ RUNTIME_OBSERVATION_ENABLED: {{ .Values.lifecycle.runtimeObservation.enabled | q
 REQUIRED_SNAPSHOT_AVAILABLE: {{ .Values.lifecycle.requiredSnapshotAvailable | quote }}
 BASE_DOMAIN: {{ required "operator.baseDomain is required" .Values.operator.baseDomain | quote }}
 PUBLIC_VPN_ENDPOINT: {{ include "laboratory.publicVPNEndpoint" . | quote }}
-WG_DEMUX_MODE: {{ .Values.proxy.wg.mode | quote }}
+{{- /* Without the demux nothing runs on the host network: the VPN pods admit no node addresses. */}}
+WG_DEMUX_MODE: {{ ternary .Values.proxy.wg.mode "userspace" (and .Values.proxy.enabled .Values.proxy.wg.enabled) | quote }}
 IMAGE_PULL_SECRETS: {{ include "laboratory.pullSecretNames" . | quote }}
 LAB_NODE_SELECTOR: {{ include "laboratory.labNodeSelector" . | quote }}
 LAB_TOLERATIONS: {{ .Values.labWorkloads.tolerations | toJson | quote }}
