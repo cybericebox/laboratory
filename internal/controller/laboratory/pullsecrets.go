@@ -17,6 +17,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	labstatus "github.com/cybericebox/laboratory/internal/status"
 )
 
 // pullSecretRefs turns the configured pull secret names into the references a
@@ -78,6 +79,15 @@ func tenantPullSecret(ctx context.Context, c client.Reader, tenantName string) (
 // short wait, retried, never a failure of the device.
 var errPullSecretPending = errors.New("the lab's image pull secret does not exist yet")
 
+// pullSecretPendingError is errPullSecretPending with the Secret it waits for.
+type pullSecretPendingError struct{ namespace, lab, secret string }
+
+func (e *pullSecretPendingError) Error() string {
+	return fmt.Sprintf("lab %s/%s image pull secret %s: %s", e.namespace, e.lab, e.secret, errPullSecretPending)
+}
+
+func (e *pullSecretPendingError) Is(target error) bool { return target == errPullSecretPending }
+
 // pullSecretRetry is how soon a device that waits for its lab's pull Secret is reconciled
 // again: the Device controller does not watch Secrets.
 const pullSecretRetry = 2 * time.Second
@@ -119,10 +129,11 @@ func (r *DeviceReconciler) labPullSecret(ctx context.Context, device *laboratory
 	var secret corev1.Secret
 	if err := r.Get(ctx, types.NamespacedName{Namespace: device.Namespace, Name: name}, &secret); err != nil {
 		if apierrors.IsNotFound(err) {
-			return "", fmt.Errorf("lab %s/%s image pull secret %s: %w", device.Namespace, lab.Name, name, errPullSecretPending)
+			return "", &pullSecretPendingError{namespace: device.Namespace, lab: lab.Name, secret: name}
 		}
 		return "", err
 	}
+	r.pullWaiting.Delete(client.ObjectKeyFromObject(device))
 	return name, nil
 }
 
@@ -152,13 +163,30 @@ func setPullSecrets(spec *corev1.PodSpec, refs []corev1.LocalObjectReference) {
 	}
 }
 
-// pullSecretWait turns errPullSecretPending into a plain requeue; any other error stays.
-func pullSecretWait(ctx context.Context, err error) (ctrl.Result, error) {
-	if errors.Is(err, errPullSecretPending) {
-		log.FromContext(ctx).Info("waiting for the lab's image pull secret", "reason", err.Error())
-		return ctrl.Result{RequeueAfter: pullSecretRetry}, nil
+// pullSecretWait turns errPullSecretPending into a plain requeue; any other error stays. The
+// wait is told once: a Warning event on the Device naming the Secret, and an Info log; the
+// repeats (every pullSecretRetry) go to V(1) only. The next wait after the Secret was found
+// is told again.
+func (r *DeviceReconciler) pullSecretWait(ctx context.Context, device *laboratoryv1alpha1.Device, err error) (ctrl.Result, error) {
+	if !errors.Is(err, errPullSecretPending) {
+		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, err
+	logger := log.FromContext(ctx)
+	if _, repeated := r.pullWaiting.LoadOrStore(client.ObjectKeyFromObject(device), struct{}{}); repeated {
+		logger.V(1).Info("waiting for the lab's image pull secret", "reason", err.Error())
+	} else {
+		logger.Info("waiting for the lab's image pull secret", "reason", err.Error())
+		if r.Recorder != nil {
+			var secret string
+			var pending *pullSecretPendingError
+			if errors.As(err, &pending) {
+				secret = pending.secret
+			}
+			r.Recorder.Eventf(device, corev1.EventTypeWarning, labstatus.ReasonPullSecretMissing,
+				"the image pull secret %s of the lab does not exist yet; waiting for it", secret)
+		}
+	}
+	return ctrl.Result{RequeueAfter: pullSecretRetry}, nil
 }
 
 // syncTenantPullSecret makes the registry credentials of the group's tenant available in the

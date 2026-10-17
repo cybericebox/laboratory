@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -16,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -54,6 +56,10 @@ type DeviceReconciler struct {
 	// Registry is the snapshot registry, nil when state persistence is off; it
 	// is used to drop a device's snapshots on reset.
 	Registry SnapshotRegistry
+	// Recorder records the events of a Device (a lab pull Secret that is missing); nil records none.
+	Recorder record.EventRecorder
+	// pullWaiting holds the devices whose wait for the lab's pull Secret was already told.
+	pullWaiting sync.Map
 	// Reader reads from the API server without the cache; nil means Client. Used
 	// where a stale cache would start a device twice.
 	Reader client.Reader
@@ -233,7 +239,7 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 			}
 		}
 		if err := r.createDeployment(ctx, device, replicas); err != nil {
-			return pullSecretWait(ctx, err)
+			return r.pullSecretWait(ctx, device, err)
 		}
 		return ctrl.Result{}, nil
 	}

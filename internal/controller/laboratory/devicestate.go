@@ -300,7 +300,7 @@ func (r *DeviceReconciler) reconcilePod(ctx context.Context, device *laboratoryv
 		}
 	}
 	if err := r.createDevicePod(ctx, device); err != nil {
-		return pullSecretWait(ctx, err)
+		return r.pullSecretWait(ctx, device, err)
 	}
 	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 }

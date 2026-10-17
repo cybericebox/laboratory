@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -223,10 +225,68 @@ func TestSchedulerDoesNotPrepullALabWithItsOwnPullSecret(t *testing.T) {
 	if err := f.c.List(context.Background(), &ips); err != nil || len(ips.Items) != 1 {
 		t.Fatalf("only the group's request: %d %v", len(ips.Items), err)
 	}
+	// Labs a and c were dispatched at once; only b waits for its group's prepull.
+	f.wantStates("a/web=S b/web=Q c/web=S")
 	if s := f.labStatus("c"); s != nil && s.Reason == laboratoryv1alpha1.WaitPreparingImages {
 		t.Fatalf("lab c waits for a prepull: %+v", s)
 	}
 	if s := f.labStatus("a"); s != nil && s.Reason == laboratoryv1alpha1.WaitPreparingImages {
 		t.Fatalf("lab a waits for its group's prepull: %+v", s)
+	}
+}
+
+// A device that waits for its lab's pull Secret tells it once: a Warning event with the
+// Secret's name, not one per 2 s retry. When the Secret appears and later vanishes again, the
+// next wait is a new one.
+func TestDeviceRecordsTheMissingPullSecretOncePerWait(t *testing.T) {
+	ctx := context.Background()
+	s := secretScheme(t)
+	if err := appsv1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	dev := labDevice("l1", "team", "")
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(labWithPullSecret("l1", "team", "l1-registry", nil), dev).
+		WithStatusSubresource(&laboratoryv1alpha1.Device{}).Build()
+	rec := record.NewFakeRecorder(10)
+	r := &DeviceReconciler{Client: c, Scheme: s, Recorder: rec}
+	deviceEvents := func() []string {
+		var out []string
+		for {
+			select {
+			case e := <-rec.Events:
+				out = append(out, e)
+			default:
+				return out
+			}
+		}
+	}
+
+	for i := 0; i < 3; i++ {
+		if res, err := r.reconcileWorkload(ctx, dev); err != nil || res.RequeueAfter <= 0 {
+			t.Fatalf("wait %d: %+v %v", i, res, err)
+		}
+	}
+	ev := deviceEvents()
+	if len(ev) != 1 || !strings.Contains(ev[0], "Warning PullSecretMissing") || !strings.Contains(ev[0], "l1-registry") {
+		t.Fatalf("one warning naming the Secret, got %v", ev)
+	}
+
+	// The Secret shows up, then goes away: a new wait is told again.
+	sec := labRegSecret("l1-registry", "team")
+	if err := c.Create(ctx, sec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.devicePullSecrets(ctx, dev); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Delete(ctx, sec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.reconcileWorkload(ctx, dev); err != nil {
+		t.Fatal(err)
+	}
+	if ev := deviceEvents(); len(ev) != 1 {
+		t.Fatalf("a new wait is told again, got %v", ev)
 	}
 }
