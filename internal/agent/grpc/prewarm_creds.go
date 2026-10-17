@@ -5,10 +5,12 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/netip"
 	"syscall"
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/name"
 
 	"github.com/cybericebox/laboratory/internal/imagecache"
 )
@@ -20,7 +22,44 @@ type probeResolver struct {
 }
 
 func (p probeResolver) Resolve(ctx context.Context, ref string) (string, error) {
+	parsed, err := name.ParseReference(ref)
+	if err != nil {
+		return "", err
+	}
+	// go-containerregistry speaks plain http to localhost, *.local and private hosts: a
+	// credential never travels that way.
+	if parsed.Context().Registry.Scheme() == "http" {
+		return "", errPlainHTTP
+	}
 	return imagecache.ProbeDigest(ctx, ref, p.kc, p.rt)
+}
+
+var errPlainHTTP = errors.New("credentialed check refused: registry would be reached over plain http")
+
+// blockedPrefixes mirrors the platform daemon's dial guard (pkg/email AddressBlocked): ranges
+// the netip predicates do not cover (this network, carrier-grade NAT, benchmarking, reserved,
+// IETF protocol, NAT64).
+var blockedPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+}
+
+func addressBlocked(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	if !ip.IsValid() || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() || ip.IsUnspecified() || ip.IsInterfaceLocalMulticast() {
+		return true
+	}
+	for _, p := range blockedPrefixes {
+		if p.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 var errInternalAddress = errors.New("dial refused: internal address")
@@ -36,9 +75,8 @@ func guardedTransport() *http.Transport {
 			if err != nil {
 				return errInternalAddress
 			}
-			ip := net.ParseIP(host)
-			if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-				ip.IsMulticast() || ip.IsUnspecified() || ip.IsInterfaceLocalMulticast() {
+			ip, err := netip.ParseAddr(host)
+			if err != nil || addressBlocked(ip) {
 				return errInternalAddress
 			}
 			return nil

@@ -248,7 +248,7 @@ func TestGuardedTransportRefusesInternalAddresses(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer srv.Close()
 	c := &http.Client{Transport: guardedTransport(), Timeout: 2 * time.Second}
-	for _, u := range []string{srv.URL, "http://10.1.2.3:80/", "http://169.254.169.254/", "http://0.0.0.0:80/", "http://[::1]:80/"} {
+	for _, u := range []string{srv.URL, "http://10.1.2.3:80/", "http://169.254.169.254/", "http://0.0.0.0:80/", "http://[::1]:80/", "http://100.64.0.1/", "http://198.18.0.1/", "http://240.0.0.1/", "http://[64:ff9b::808:808]/"} {
 		if resp, err := c.Get(u); err == nil {
 			resp.Body.Close()
 			t.Fatalf("%s was reached", u)
@@ -310,5 +310,14 @@ func TestKeychainHasIgnoresHostCase(t *testing.T) {
 	kc, err := imagecache.NewDockerConfigKeychain([]byte(`{"auths":{"GHCR.io":{"username":"u","password":"p"}}}`))
 	if err != nil || !kc.Has("ghcr.IO") || !kc.Has("GHCR.io") {
 		t.Fatalf("%v", err)
+	}
+}
+
+func TestProbeResolverRefusesPlainHTTPRegistry(t *testing.T) {
+	r := probeResolver{kc: authn.DefaultKeychain}
+	for _, ref := range []string{"localhost:5000/a/b:1", "127.0.0.1:5000/a:1", "10.0.0.5/a:1"} {
+		if _, err := r.Resolve(context.Background(), ref); !errors.Is(err, errPlainHTTP) {
+			t.Fatalf("%s: %v", ref, err)
+		}
 	}
 }
