@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
@@ -226,4 +227,69 @@ func TestGlobalHandshakeBudget(t *testing.T) {
 	if got != 2 {
 		t.Fatalf("the global burst is 2, %d handshakes reached the backend", got)
 	}
+}
+
+// The answer of the VPN pod tells which device its replies arrive on (IP_PKTINFO): the reply direction of the session
+// carries it, so the fast path can take a same-node server's replies from its veth.
+func TestType2RecordsTheArrivalDevice(t *testing.T) {
+	r := newRig(t, DefaultLimits())
+	s := &lockedSink{}
+	r.demux.conntrack.SetSink(s, fakeSource{ok: true})
+	r.handshake(t, 0x11, 0x22)
+	lo := loopbackIndex(t)
+	for _, f := range s.all() {
+		if f.ToClient && f.ReplyIfindex != lo {
+			t.Fatalf("reply device %d, want the loopback %d", f.ReplyIfindex, lo)
+		}
+	}
+	if len(s.all()) != 2 {
+		t.Fatalf("upserts: %+v", s.all())
+	}
+}
+
+// The demux counts the datagrams it takes, per WireGuard message type.
+func TestCountsPacketsPerType(t *testing.T) {
+	r := newRig(t, DefaultLimits())
+	r.handshake(t, 0x11, 0x22)
+	r.toDemux(r.client, typed(4, 0x22, 0, 64))
+	if recv(r.backend, 2*time.Second) == nil {
+		t.Fatal("transport")
+	}
+	got := r.demux.Received()
+	if got[1] != 1 || got[2] != 1 || got[3] != 0 || got[4] != 1 {
+		t.Fatalf("received per type: %v", got)
+	}
+}
+
+func loopbackIndex(t *testing.T) int {
+	t.Helper()
+	ifs, err := net.Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, i := range ifs {
+		if i.Flags&net.FlagLoopback != 0 {
+			return i.Index
+		}
+	}
+	t.Fatal("no loopback")
+	return 0
+}
+
+type lockedSink struct {
+	mu      sync.Mutex
+	upserts []Forward
+}
+
+func (s *lockedSink) Upsert(f Forward) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.upserts = append(s.upserts, f)
+	return nil
+}
+func (s *lockedSink) Delete(uint32) error { return nil }
+func (s *lockedSink) all() []Forward {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Forward(nil), s.upserts...)
 }

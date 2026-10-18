@@ -122,6 +122,13 @@ func (t *Table) Update(uid, pubKey, backend string) error {
 	return nil
 }
 
+// Entries is a copy of the table.
+func (t *Table) Entries() []TableEntry {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return append([]TableEntry(nil), t.entries...)
+}
+
 // Delete removes the entry for uid.
 func (t *Table) Delete(uid string) {
 	t.updates.Lock()

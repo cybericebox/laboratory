@@ -14,13 +14,21 @@ const (
 	ModeXDP       Mode = "xdp"
 )
 
+// SessionTTL is how long a completed session lives after its last packet; the fast path leaves it to the slow path after that too.
+const SessionTTL = conntrackTTL
+
 // Forward is one direction of a session as the fast path needs it.
 type Forward struct {
 	Index     uint32 // receiver index carried by the packets
+	Session   uint32 // the client -> server direction's index in both directions: that entry owns the session's bucket and last-seen
 	Expected  Socket // the only source accepted (else the packet goes to the slow path)
 	NewSource Socket // source written into the packet (entry addr towards the client; probe source towards the server)
 	Dest      Socket // destination written into the packet
 	ToClient  bool
+	// Towards the client only: Via is the address the server sends to (the client -> server direction's NewSource), and
+	// ReplyIfindex the device the server's answer arrived on (0 = unknown, the replies stay on the slow path).
+	Via          Socket
+	ReplyIfindex int
 }
 
 // Sink mirrors the sessions of a ConnTrack into a data plane. ConnTrack calls it with its lock held, so an
@@ -47,15 +55,17 @@ func (c *ConnTrack) SetSink(s Sink, src SourceFor) {
 func (c *ConnTrack) SinkErrors() uint64 { return c.sinkErrors.Load() }
 
 // forwardsLocked builds the two directions of a complete session. ok is false when a source address is unknown.
-func (c *ConnTrack) forwardsLocked(ci, si uint32, client, server Socket) (toServer, toClient Forward, okServer, okClient bool) {
-	toServer = Forward{Index: si, Expected: client, Dest: server}
-	toClient = Forward{Index: ci, Expected: server, Dest: client, ToClient: true}
+// The reply direction needs the source towards the server too (its Via), so it is never ok without it.
+func (c *ConnTrack) forwardsLocked(ci, si uint32, client, server Socket, st *sessionState) (toServer, toClient Forward, okServer, okClient bool) {
+	toServer = Forward{Index: si, Session: si, Expected: client, Dest: server}
+	toClient = Forward{Index: ci, Session: si, Expected: server, Dest: client, ToClient: true, ReplyIfindex: st.replyIfindex}
 	if c.src == nil {
 		return toServer, toClient, false, false
 	}
 	toServer.NewSource, okServer = c.src.TowardsServer(server)
 	toClient.NewSource, okClient = c.src.TowardsClient(client)
-	return toServer, toClient, okServer, okClient
+	toClient.Via = toServer.NewSource
+	return toServer, toClient, okServer, okClient && okServer
 }
 
 // pushLocked mirrors both directions of the complete session of an entry. Must be called with c.mu held.
@@ -71,7 +81,7 @@ func (c *ConnTrack) pushLocked(idx uint32, e *ConnEntry) {
 	if !e.clientIndex {
 		ci, si, ce = e.PeerIndex, idx, peer
 	}
-	toServer, toClient, okServer, okClient := c.forwardsLocked(ci, si, ce.SenderSocket, ce.ReceiverSocket)
+	toServer, toClient, okServer, okClient := c.forwardsLocked(ci, si, ce.SenderSocket, ce.ReceiverSocket, ce.state)
 	c.upsertLocked(toServer, okServer)
 	c.upsertLocked(toClient, okClient)
 }
@@ -126,7 +136,7 @@ func (c *ConnTrack) Sessions() []Forward {
 		if peer, ok := c.entries[si]; !ok || peer.state != e.state {
 			continue
 		}
-		toServer, toClient, _, _ := c.forwardsLocked(ci, si, e.SenderSocket, e.ReceiverSocket)
+		toServer, toClient, _, _ := c.forwardsLocked(ci, si, e.SenderSocket, e.ReceiverSocket, e.state)
 		out = append(out, toServer, toClient)
 	}
 	slices.SortFunc(out, func(a, b Forward) int {
@@ -141,10 +151,23 @@ func (c *ConnTrack) Sessions() []Forward {
 	return out
 }
 
-// Restore re-creates a completed session from the data plane after a restart (both indices, group given). The data
+// SessionCount is the number of completed live sessions.
+func (c *ConnTrack) SessionCount() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	n := 0
+	for _, e := range c.entries {
+		if e.clientIndex && !e.partial && !c.staleLocked(e) {
+			n++
+		}
+	}
+	return n
+}
+
+// Restore re-creates a completed session from the data plane after a restart (both indices, group and reply device given). The data
 // plane already holds the session, so nothing is pushed back. It refuses an index that a live different session owns,
 // a full table, and a session that is already past its TTL.
-func (c *ConnTrack) Restore(clientIdx, serverIdx uint32, client, server Socket, group string, seen time.Time) bool {
+func (c *ConnTrack) Restore(clientIdx, serverIdx uint32, client, server Socket, group string, seen time.Time, replyIfindex int) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if clientIdx == serverIdx || c.now().Sub(seen) > conntrackTTL {
@@ -176,7 +199,7 @@ func (c *ConnTrack) Restore(clientIdx, serverIdx uint32, client, server Socket, 
 			c.deleteLocked(idx)
 		}
 	}
-	st := &sessionState{seen: seen, roam: seen, group: group}
+	st := &sessionState{seen: seen, roam: seen, group: group, replyIfindex: replyIfindex}
 	c.entries[clientIdx] = &ConnEntry{state: st, clientIndex: true, PeerIndex: serverIdx, SenderSocket: client, ReceiverSocket: server, LastSeen: seen}
 	c.entries[serverIdx] = &ConnEntry{state: st, PeerIndex: clientIdx, SenderSocket: server, ReceiverSocket: client, LastSeen: seen}
 	return true
