@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -195,16 +196,81 @@ func TestEnsureOrderAfterForeignHeadAttach(t *testing.T) {
 	for _, c := range []struct {
 		dev  int
 		at   ebpf.AttachType
-		prog *ebpf.Program
+		kind string
+		old  *ebpf.Program
 	}{
-		{tp.ext, ebpf.AttachTCXIngress, f.objs.WgTcIngress},
-		{tp.ext, ebpf.AttachTCXEgress, f.objs.WgTcEgressGuard},
-		{tp.srv, ebpf.AttachTCXIngress, f.objs.WgTcReply},
+		{tp.ext, ebpf.AttachTCXIngress, kindIngress, f.objs.WgTcIngress},
+		{tp.ext, ebpf.AttachTCXEgress, kindEgress, f.objs.WgTcEgressGuard},
+		{tp.srv, ebpf.AttachTCXIngress, kindReply, f.objs.WgTcReply},
 	} {
-		got := programs(t, c.dev, c.at)
-		if len(got) != 2 || got[0] != progID(t, c.prog) {
-			t.Errorf("device %d %v: programs %v, want ours (%d) first and once", c.dev, c.at, got, progID(t, c.prog))
+		// Ours is first again, a second instance of the program (attached before the old link went), and it is the pinned link.
+		r, err := link.QueryPrograms(link.QueryOptions{Target: c.dev, Attach: c.at})
+		if err != nil {
+			t.Fatal(err)
 		}
+		pinned, err := link.LoadPinnedLink(f.linkPath(pinName(c.kind, c.dev)), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := pinned.Info()
+		_ = pinned.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		first, _ := r.Programs[0].LinkID()
+		if len(r.Programs) != 2 || first != info.ID || r.Programs[0].ID != info.Program || info.Program == progID(t, c.old) {
+			t.Errorf("device %d %v: programs %+v, pinned link %d (program %d), old program %d", c.dev, c.at, r.Programs, info.ID, info.Program, progID(t, c.old))
+		}
+	}
+	// a second run finds everything in order and changes nothing
+	before := programs(t, tp.ext, ebpf.AttachTCXIngress)
+	if err := f.EnsureOrder(); err != nil {
+		t.Fatal(err)
+	}
+	if got := programs(t, tp.ext, ebpf.AttachTCXIngress); !slices.Equal(got, before) {
+		t.Errorf("a second EnsureOrder changed %v to %v", before, got)
+	}
+}
+
+// TestUpsertDoesNotWaitForEnsureOrder: the sink runs under the ConnTrack lock, so a resync that is busy with the devices must
+// never hold it up, not even when a session names a reply device that is not attached yet.
+func TestUpsertDoesNotWaitForEnsureOrder(t *testing.T) {
+	tp := setup(t)
+	f := open(t, options(pinDir(t), demux.ModeTC))
+	toServer, toClient := sessionForwards(tp)
+	if err := f.Upsert(toServer); err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	f.query = func(o link.QueryOptions) (*link.QueryResult, error) {
+		once.Do(func() { close(entered) })
+		<-release
+		return link.QueryPrograms(o)
+	}
+	done := make(chan error, 1)
+	go func() { done <- f.EnsureOrder() }()
+	<-entered
+	upserted := make(chan error, 1)
+	go func() {
+		_, _ = f.TowardsServer(sockOf(server))
+		upserted <- f.Upsert(toClient)
+	}()
+	select {
+	case err := <-upserted:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("Upsert waited for a running EnsureOrder")
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if got := programs(t, tp.srv, ebpf.AttachTCXIngress); len(got) != 1 {
+		t.Fatalf("reply device programs %v, want ours once", got)
 	}
 }
 
@@ -312,8 +378,26 @@ func TestXDPRefusesForeignProgram(t *testing.T) {
 	if id := xdpProgram(t, tp.ext); id != progID(t, foreign) {
 		t.Fatalf("XDP program on ext0 is %d, want the foreign %d", id, progID(t, foreign))
 	}
-	// tc mode does not touch XDP
-	open(t, options(pin, demux.ModeTC))
+	// the refused Open leaves nothing of its own behind
+	for _, at := range []ebpf.AttachType{ebpf.AttachTCXIngress, ebpf.AttachTCXEgress} {
+		if got := programs(t, tp.ext, at); len(got) != 0 {
+			t.Errorf("a refused Open left programs %v on ext0 %v", got, at)
+		}
+	}
+	if pins, _ := os.ReadDir(filepath.Join(pin, linksDir)); len(pins) != 0 {
+		t.Errorf("a refused Open left pins %v", pins)
+	}
+	// tc mode does not touch XDP; a refused xdp Open keeps the links that were pinned before it
+	f := open(t, options(pin, demux.ModeTC))
+	_ = f.Close()
+	if _, err := Open(options(pin, demux.ModeXDP)); err == nil {
+		t.Fatal("xdp mode attached over a foreign XDP program")
+	}
+	for _, at := range []ebpf.AttachType{ebpf.AttachTCXIngress, ebpf.AttachTCXEgress} {
+		if got := programs(t, tp.ext, at); len(got) != 1 {
+			t.Errorf("the earlier demux's link on ext0 %v is gone: %v", at, got)
+		}
+	}
 }
 
 // TestOpenForwardsLive: the sessions written through the Sink (byte order, session, via and reply device) forward real

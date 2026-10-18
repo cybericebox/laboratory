@@ -10,14 +10,11 @@ import (
 	"github.com/cybericebox/laboratory/internal/proxy/demux/fastpath"
 )
 
-// defaultPinPath mirrors the default of DEMUX_BPF_PIN_PATH.
-const defaultPinPath = "/sys/fs/bpf/cybericebox/wg-demux"
-
 // Detach is `proxy-wg detach`: it removes the fast path's links and pins from the node, after a switch from tc or xdp back to
 // userspace (run once per node, in a one-off pod with the demux's tc privileges and the host's bpffs; see DEPLOY.md).
 func Detach() {
 	fs := flag.NewFlagSet("proxy-wg detach", flag.ExitOnError)
-	pin := defaultPinPath
+	pin := fastpath.DefaultPinPath
 	if v := os.Getenv("DEMUX_BPF_PIN_PATH"); v != "" {
 		pin = v
 	}

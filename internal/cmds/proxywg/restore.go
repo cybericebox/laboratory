@@ -43,12 +43,14 @@ func restoreSessions(fp pinnedSessions, ct *demux.ConnTrack, groups []demux.Tabl
 			orphans = append(orphans, f.Index)
 		}
 	}
+	// dropped counts the sessions (or stray records) of which at least one record was deleted.
 	drop := func(indices ...uint32) {
-		dropped++
+		deleted := false
 		for _, idx := range indices {
-			if _, live := ct.Expected(idx); !live {
-				_ = fp.Delete(idx)
-			}
+			deleted = ct.DeleteUnowned(idx, fp.Delete) || deleted
+		}
+		if deleted {
+			dropped++
 		}
 	}
 	for si, owner := range owners {

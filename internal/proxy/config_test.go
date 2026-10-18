@@ -3,6 +3,8 @@ package proxy
 import (
 	"testing"
 	"time"
+
+	"github.com/cybericebox/laboratory/internal/proxy/demux/fastpath"
 )
 
 func TestLoadL7Config_ShortSessionSecretIsRefused(t *testing.T) {
@@ -53,7 +55,7 @@ func TestWGConfigMode(t *testing.T) {
 	}
 	t.Setenv("NODE_NAME", "node-1")
 	cfg, err := LoadWGConfig()
-	if err != nil || cfg.Mode != "tc" || cfg.PinPath != "/sys/fs/bpf/cybericebox/wg-demux" || cfg.ServiceName != "laboratory-proxy-wg" ||
+	if err != nil || cfg.Mode != "tc" || cfg.PinPath != fastpath.DefaultPinPath || cfg.ServiceName != "laboratory-proxy-wg" ||
 		cfg.ServiceNamespace != "laboratory-wg" || cfg.MetricsAddr != ":8083" || cfg.Resync != 10*time.Second {
 		t.Fatalf("defaults: %+v %v", cfg, err)
 	}

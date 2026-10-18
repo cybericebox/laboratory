@@ -28,3 +28,6 @@ type Stats map[string]uint64
 // ReplyBaseDevice is where the replies of servers on other nodes arrive (after Cilium's overlay processing); the replies of
 // a same-node server arrive on its host-side veth, which the fast path learns from the session.
 const ReplyBaseDevice = "cilium_host"
+
+// DefaultPinPath is the default of DEMUX_BPF_PIN_PATH (the config test holds the two together).
+const DefaultPinPath = "/sys/fs/bpf/cybericebox/wg-demux"

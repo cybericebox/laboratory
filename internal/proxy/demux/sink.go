@@ -162,6 +162,18 @@ func (c *ConnTrack) Sessions() []Forward {
 	return out
 }
 
+// DeleteUnowned calls del for an index no live entry owns, under the table's lock, so a handshake cannot take the index
+// between the check and the delete. It says whether del was called.
+func (c *ConnTrack) DeleteUnowned(index uint32, del func(uint32) error) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.entries[index]; ok && !c.staleLocked(e) {
+		return false
+	}
+	_ = del(index)
+	return true
+}
+
 // SessionCount is the number of completed live sessions.
 func (c *ConnTrack) SessionCount() int {
 	c.mu.RLock()
