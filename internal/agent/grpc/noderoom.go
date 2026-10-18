@@ -30,7 +30,7 @@ type deviceRoomCache struct {
 }
 
 // room reads the lab nodes and the pods on them and caches the view for a few seconds: it is the same for every tenant. The
-// total is what the operator counts as room: per node the allocatable less the platform node reserve, the requests of the
+// total is what the operator counts as room: per node the allocatable less the platform reserve, the requests of the
 // non-lab pods and the packing reserve (nodecap.FreeForLabs). The largest device is the allocatable of one node.
 func (h *Handler) room(ctx context.Context) roomView {
 	c := &h.roomCache
@@ -49,7 +49,7 @@ func (h *Handler) room(ctx context.Context) roomView {
 	}
 	rooms := nodecap.Rooms(nodes.Items, nil, h.labSelector, h.labTolerations, h.nodeReserve)
 	v := roomView{largest: nodecap.LargestDevice(rooms), ok: len(rooms) > 0}
-	for _, f := range nodecap.FreeForLabs(nodes.Items, pods.Items, h.labSelector, h.labTolerations, h.nodeReserve.Node, h.packingReserve) {
+	for _, f := range nodecap.FreeForLabs(nodes.Items, pods.Items, h.labSelector, h.labTolerations, h.nodeReserve, h.packingReserve) {
 		v.total.CPU += f.CPU
 		v.total.Memory += f.Memory
 	}

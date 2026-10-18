@@ -752,7 +752,7 @@ func (e *clusterEnv) capacity() *capacitySnapshot {
 		pods = append(pods, *p)
 	}
 	pods = append(pods, heldPods...)
-	c := snapshotCapacity(nodes.Items, pods, e.s.LabNodeSelector, e.s.LabTolerations, e.s.nodeReserve(), e.s.packingReserve())
+	c := snapshotCapacity(nodes.Items, pods, e.s.LabNodeSelector, e.s.LabTolerations, e.s.nodeReserve(), e.s.Config.PlatformReservePercent, e.s.packingReserve())
 	// A dispatched pod that is not on a node yet will still request its resources.
 	var reserved amount
 	for _, o := range e.objs {

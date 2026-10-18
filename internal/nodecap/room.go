@@ -134,9 +134,9 @@ func IsLabPod(p *corev1.Pod) bool {
 }
 
 // FreeForLabs is the room labs can take on every schedulable node, in the order of nodes: the allocatable less the platform
-// node reserve and the requests of the pods that are not lab pods (finished pods hold nothing), less the packing reserve,
-// which is taken per node from what is left. The operator and the agent both use it, so they report the same room.
-func FreeForLabs(nodes []corev1.Node, pods []corev1.Pod, selector map[string]string, tolerations []corev1.Toleration, nodeReserve Amount, packing PackingReserve) []NodeFree {
+// reserve (the absolute Node part, then Percent of what is left) and the requests of the pods that are not lab pods (finished
+// pods hold nothing), less the packing reserve, which is taken per node from what is left. The operator and the agent both use it, so they report the same room.
+func FreeForLabs(nodes []corev1.Node, pods []corev1.Pod, selector map[string]string, tolerations []corev1.Toleration, reserve Reserve, packing PackingReserve) []NodeFree {
 	requested := map[string]Amount{}
 	for i := range pods {
 		p := &pods[i]
@@ -153,8 +153,11 @@ func FreeForLabs(nodes []corev1.Node, pods []corev1.Pod, selector map[string]str
 			continue
 		}
 		req := requested[n.Name]
-		cpu := max(n.Status.Allocatable.Cpu().MilliValue()-nodeReserve.CPU-req.CPU, 0)
-		mem := max(n.Status.Allocatable.Memory().Value()-nodeReserve.Memory-req.Memory, 0)
+		cpu := max(n.Status.Allocatable.Cpu().MilliValue()-reserve.Node.CPU, 0)
+		mem := max(n.Status.Allocatable.Memory().Value()-reserve.Node.Memory, 0)
+		cpu -= cpu * int64(reserve.Percent) / 100
+		mem -= mem * int64(reserve.Percent) / 100
+		cpu, mem = max(cpu-req.CPU, 0), max(mem-req.Memory, 0)
 		cpu, mem = packing.Apply(cpu, mem)
 		out = append(out, NodeFree{Name: n.Name, CPU: cpu, Memory: mem})
 	}

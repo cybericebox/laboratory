@@ -38,7 +38,7 @@ func TestSnapshotCapacityFreeIsAllocatableMinusRequests(t *testing.T) {
 	pending := testPod("", "3", "3Gi")
 	pods = append(pods, done, pending)
 
-	c := snapshotCapacity(nodes, pods, nil, nil, amount{}, nodecap.PackingReserve{})
+	c := snapshotCapacity(nodes, pods, nil, nil, amount{}, 0, nodecap.PackingReserve{})
 	if c.nodes != 2 || c.allocatable != (amount{8000, 16 << 30}) {
 		t.Fatalf("capacity = %+v", c)
 	}
@@ -51,7 +51,7 @@ func TestSnapshotCapacityFreeIsAllocatableMinusRequests(t *testing.T) {
 func TestSnapshotCapacityClampsPerNode(t *testing.T) {
 	nodes := []corev1.Node{testNode("n1", "1", "1Gi"), testNode("n2", "4", "4Gi")}
 	pods := []corev1.Pod{testPod("n1", "3", "3Gi")}
-	c := snapshotCapacity(nodes, pods, nil, nil, amount{}, nodecap.PackingReserve{})
+	c := snapshotCapacity(nodes, pods, nil, nil, amount{}, 0, nodecap.PackingReserve{})
 	if c.free != (amount{4000, 4 << 30}) {
 		t.Fatalf("free = %+v", c.free)
 	}
@@ -72,12 +72,12 @@ func TestSnapshotCapacityNodeEligibility(t *testing.T) {
 	nodes := []corev1.Node{ready, cordoned, notReady, other, tainted, soft}
 	sel := map[string]string{"lab": "yes"}
 
-	c := snapshotCapacity(nodes, nil, sel, nil, amount{}, nodecap.PackingReserve{})
+	c := snapshotCapacity(nodes, nil, sel, nil, amount{}, 0, nodecap.PackingReserve{})
 	if c.nodes != 2 { // ready + soft (PreferNoSchedule does not exclude)
 		t.Fatalf("eligible nodes = %d, want 2", c.nodes)
 	}
 	tol := []corev1.Toleration{{Key: "dedicated", Operator: corev1.TolerationOpEqual, Value: "lab", Effect: corev1.TaintEffectNoSchedule}}
-	if c := snapshotCapacity(nodes, nil, sel, tol, amount{}, nodecap.PackingReserve{}); c.nodes != 3 {
+	if c := snapshotCapacity(nodes, nil, sel, tol, amount{}, 0, nodecap.PackingReserve{}); c.nodes != 3 {
 		t.Fatalf("with the toleration nodes = %d, want 3", c.nodes)
 	}
 }
@@ -136,7 +136,7 @@ func TestPlatformReserveCountsProxyAndNodeReserve(t *testing.T) {
 	nodes := []corev1.Node{testNode("n1", "4", "8Gi"), testNode("n2", "4", "8Gi")}
 	// deployment mode: a proxy pod on each of two nodes; daemonset mode would be the same on every node.
 	proxy := []corev1.Pod{testPod("n1", "750m", "128Mi"), testPod("n2", "750m", "128Mi")}
-	c := snapshotCapacity(nodes, proxy, nil, nil, amount{cpu: 500, mem: 1 << 30}, nodecap.PackingReserve{})
+	c := snapshotCapacity(nodes, proxy, nil, nil, amount{cpu: 500, mem: 1 << 30}, 0, nodecap.PackingReserve{})
 	if c.allocatable != (amount{cpu: 7000, mem: 14 << 30}) || c.free != (amount{cpu: 5500, mem: 14<<30 - 256<<20}) {
 		t.Fatalf("capacity = %+v", c)
 	}
@@ -148,7 +148,7 @@ func TestPlatformReserveCountsProxyAndNodeReserve(t *testing.T) {
 		t.Errorf("4801m: %d", got)
 	}
 	// a node smaller than the reserve gives nothing, never a negative amount
-	small := snapshotCapacity([]corev1.Node{testNode("n1", "100m", "1Gi")}, nil, nil, nil, amount{cpu: 500, mem: 2 << 30}, nodecap.PackingReserve{})
+	small := snapshotCapacity([]corev1.Node{testNode("n1", "100m", "1Gi")}, nil, nil, nil, amount{cpu: 500, mem: 2 << 30}, 0, nodecap.PackingReserve{})
 	if small.allocatable != (amount{}) || small.free != (amount{}) {
 		t.Fatalf("small = %+v", small)
 	}
@@ -165,7 +165,7 @@ func TestRoomsSubtractNonLabAndPacking(t *testing.T) {
 	gateway.Labels = map[string]string{names.LabelComponent: names.ComponentGateway}
 	done := testPod("n2", "1", "1Gi")
 	done.Status.Phase = corev1.PodSucceeded
-	c := snapshotCapacity(nodes, []corev1.Pod{cilium, labPod, gateway, done}, nil, nil, amount{}, nodecap.PackingReserve{Percent: 15})
+	c := snapshotCapacity(nodes, []corev1.Pod{cilium, labPod, gateway, done}, nil, nil, amount{}, 0, nodecap.PackingReserve{Percent: 15})
 	// n1: (4000-100) - 585 = 3315; (8Gi-256Mi) = 8321499136, less 1248224870 = 7073274266. n2: 4000 - 600 = 3400, 8Gi less 1288490188.
 	want := []nodeRoom{{"n1", 3315, 7073274266}, {"n2", 3400, 8589934592 - 8589934592*15/100}}
 	got := c.rooms()
@@ -181,14 +181,52 @@ func TestRoomsSubtractNonLabAndPacking(t *testing.T) {
 // A fixed packing reserve replaces the percent for its resource only.
 func TestPackingFixedWinsOverPercent(t *testing.T) {
 	nodes := []corev1.Node{testNode("n1", "4", "8Gi")}
-	c := snapshotCapacity(nodes, nil, nil, nil, amount{}, nodecap.PackingReserve{Percent: 15, CPU: 500})
+	c := snapshotCapacity(nodes, nil, nil, nil, amount{}, 0, nodecap.PackingReserve{Percent: 15, CPU: 500})
 	want := nodeRoom{"n1", 3500, 8<<30 - (8<<30)*15/100}
 	if got := c.rooms(); len(got) != 1 || got[0] != want {
 		t.Fatalf("rooms = %+v, want %+v", got, want)
 	}
-	c = snapshotCapacity(nodes, nil, nil, nil, amount{}, nodecap.PackingReserve{Percent: 15, CPU: 500, Memory: 1 << 30})
+	c = snapshotCapacity(nodes, nil, nil, nil, amount{}, 0, nodecap.PackingReserve{Percent: 15, CPU: 500, Memory: 1 << 30})
 	want = nodeRoom{"n1", 3500, 7 << 30}
 	if got := c.rooms(); len(got) != 1 || got[0] != want {
 		t.Fatalf("rooms = %+v, want %+v", got, want)
+	}
+}
+
+// The percent platform reserve comes off every node before the non-lab requests: 4000m/8Gi, platform 10 %, Cilium 100m/256Mi,
+// packing 15 %: (4000-400-100)*0.85 = 2975m, (8Gi-858993459-256Mi)*0.85.
+func TestRoomsSubtractPlatformPercentPerNode(t *testing.T) {
+	nodes := []corev1.Node{testNode("n1", "4", "8Gi")}
+	c := snapshotCapacity(nodes, []corev1.Pod{testPod("n1", "100m", "256Mi")}, nil, nil, amount{}, 10, nodecap.PackingReserve{Percent: 15})
+	mem := int64(8<<30) - int64(8<<30)*10/100 - 256<<20
+	want := nodeRoom{"n1", 2975, mem - mem*15/100}
+	if got := c.rooms(); len(got) != 1 || got[0] != want {
+		t.Fatalf("rooms = %+v, want %+v", got, want)
+	}
+}
+
+// freeRooms takes the bound lab pods off the rooms, the held pods of stopped labs included; a lab pod with no node is not
+// counted.
+func TestFreeRoomsSubtractBoundLabPodsAndStopped(t *testing.T) {
+	nodes := []corev1.Node{testNode("n1", "4", "8Gi"), testNode("n2", "4", "8Gi")}
+	lab := func(node, cpu, mem string) corev1.Pod {
+		p := testPod(node, cpu, mem)
+		p.Labels = map[string]string{names.LabelLab: "lab", names.LabelDevice: "dev"}
+		return p
+	}
+	held := lab("n2", "500m", "1Gi")
+	held.Name = "held-dev"
+	pending := lab("", "2", "2Gi")
+	done := lab("n1", "1", "1Gi")
+	done.Status.Phase = corev1.PodFailed
+	pods := []corev1.Pod{testPod("n1", "100m", "256Mi"), lab("n1", "1", "1Gi"), held, pending, done}
+	c := snapshotCapacity(nodes, pods, nil, nil, amount{}, 0, nodecap.PackingReserve{})
+	want := []nodeRoom{{"n1", 4000 - 100 - 1000, 8<<30 - 256<<20 - 1<<30}, {"n2", 3500, 7 << 30}}
+	got := c.freeRooms()
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("freeRooms = %+v, want %+v", got, want)
+	}
+	if r := c.rooms(); r[0].CPU != 3900 || r[1].CPU != 4000 {
+		t.Errorf("rooms must stay before lab usage: %+v", r)
 	}
 }
