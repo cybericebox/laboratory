@@ -682,7 +682,11 @@ func (s *Scheduler) tick(ctx context.Context) error {
 		if d, ok := f.pod.ref.(*laboratoryv1alpha1.Device); ok {
 			q := d.Status.Scheduling.DeepCopy()
 			q.State = laboratoryv1alpha1.PodFailed
-			q.Failure = &laboratoryv1alpha1.PodFailure{Reason: laboratoryv1alpha1.FailureDoesNotFit, Message: f.message, At: &stamp}
+			reason := f.reason
+			if reason == "" {
+				reason = laboratoryv1alpha1.FailureDoesNotFit
+			}
+			q.Failure = &laboratoryv1alpha1.PodFailure{Reason: reason, Message: f.message, At: &stamp}
 			if err := s.setDevice(ctx, d, q); err != nil {
 				logger.Error(err, "fail pod", "pod", f.pod.key)
 			}
@@ -779,7 +783,8 @@ func (e *clusterEnv) capacity() *capacitySnapshot {
 
 // rooms is what a gang may be placed on: the free room of every node, less the pods that are dispatched but not on a node
 // yet. Those take their share from the emptiest rooms first, one by one (see subtractFromEmptiest), because the pod will
-// most likely land on the emptiest node; the aggregate deduction in capacity() is the same total.
+// most likely land on the emptiest node; what does not fit one room carries over to the next, so the total is the same as
+// the aggregate deduction in capacity().
 func (e *clusterEnv) rooms() ([]nodeRoom, bool) {
 	if !e.s.Config.ResourceCheck {
 		return nil, false
@@ -789,6 +794,18 @@ func (e *clusterEnv) rooms() ([]nodeRoom, bool) {
 		return []nodeRoom{}, true
 	}
 	return subtractFromEmptiest(c.freeRooms(), e.unbound), true
+}
+
+// emptyRooms is the room for labs on each node with no lab on it.
+func (e *clusterEnv) emptyRooms() []nodeRoom {
+	if !e.s.Config.ResourceCheck {
+		return nil
+	}
+	c := e.capacity()
+	if c == nil {
+		return nil
+	}
+	return c.rooms()
 }
 
 func (e *clusterEnv) check(p *schedPod) fit {
@@ -843,6 +860,23 @@ func (e *clusterEnv) tenantFits(p *schedPod) bool {
 	}
 	limits := tenant.ResolveQuota(ten.Spec.Quota, alloc)
 	return limits.Fits(e.tenantUsed[p.tenant], tenant.Totals{CPU: p.need.cpu, Memory: p.need.mem})
+}
+
+// tenantEverFits says whether the need fits the quota of the tenant with none of its pods running.
+func (e *clusterEnv) tenantEverFits(p *schedPod) bool {
+	ten := e.snap.tenants[p.tenant]
+	if ten == nil || ten.Spec.Quota == nil {
+		return true
+	}
+	var alloc tenant.Totals
+	if tenant.NeedsAllocatable(ten.Spec.Quota) {
+		c := e.capacity()
+		if c == nil {
+			return true
+		}
+		alloc = tenant.Totals{CPU: c.allocatable.cpu, Memory: c.allocatable.mem}
+	}
+	return tenant.ResolveQuota(ten.Spec.Quota, alloc).Fits(tenant.Totals{}, tenant.Totals{CPU: p.need.cpu, Memory: p.need.mem})
 }
 
 // writeStatuses publishes the queue place of each object. An object whose

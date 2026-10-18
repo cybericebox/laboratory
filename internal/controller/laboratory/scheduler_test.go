@@ -569,7 +569,7 @@ func TestSchedulerResourceCheckWaitsAndFails(t *testing.T) {
 	f2 := newSchedFixture(t, cfg)
 	f2.create(node("n1", "2", "4Gi"))
 	f2.addLab("huge", "g", nil, "big")
-	f2.addLab("ok", "g", nil, "p1")
+	f2.addLab("ok", "g2", nil, "p1")
 	l := &laboratoryv1alpha1.Lab{}
 	if err := f2.c.Get(context.Background(), types.NamespacedName{Namespace: "ns-huge", Name: "huge"}, l); err != nil {
 		t.Fatal(err)
