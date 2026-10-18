@@ -324,8 +324,11 @@ Each node counts with nothing on it: its allocatable less the platform reserve a
 pool counts, cordoned, NotReady and rebooting ones too (the pool is the lab node selector without the `node-agent-ready`
 label, which only says the node-agent runs now), so a drained or rebooting big node does not fail a pod; placement itself
 still needs the label. With no
-schedulable lab node at all the queue waits (`NoSchedulableNodes`). A group that already has pods out keeps the room of
-the rest on every pass; such groups go in arrival order, the first gets the room and the next waits behind it. A group
+schedulable lab node at all the queue waits (`NoSchedulableNodes`). Every pass places the pods on the nodes in one simulation,
+each pod whole on one node (its CPU and memory from the same node): first the lab pods already on a node and those dispatched
+but not on a node yet, then the rest of every group that already has pods out, in arrival order, then the new groups. Such a
+rest that places keeps that room and starts in it; one that does not place keeps nothing in that pass and waits, so it never
+holds up the groups behind it (`DoesNotFitNow` when it does not fit even on the empty nodes beside its own running pods). A group
 whose sum never fits its tenant's quota is failed at once (`TenantQuotaNeverFits`); one that fits only later waits
 (`TenantQuota`).
 

@@ -752,9 +752,7 @@ type clusterEnv struct {
 	now  time.Time
 	objs []*schedObject
 	free *capacitySnapshot
-	// unbound are the requests of the pods dispatched but not on a node yet.
-	unbound []amount
-	err     error
+	err  error
 	// tenantUsed is what each tenant's dispatched pods request, built on first use.
 	tenantUsed map[string]tenant.Totals
 }
@@ -802,7 +800,6 @@ func (e *clusterEnv) capacity() *capacitySnapshot {
 			}
 			if !onNode {
 				reserved = reserved.add(p.need)
-				e.unbound = append(e.unbound, p.need)
 			}
 		}
 	}
@@ -811,10 +808,8 @@ func (e *clusterEnv) capacity() *capacitySnapshot {
 	return e.free
 }
 
-// rooms is what a gang may be placed on: the free room of every node, less the pods that are dispatched but not on a node
-// yet. Those take their share from the emptiest rooms first, one by one (see subtractFromEmptiest), because the pod will
-// most likely land on the emptiest node; what does not fit one room carries over to the next, so the total is the same as
-// the aggregate deduction in capacity().
+// rooms is where the placement simulation of a pass starts: the room for labs on every node less the lab pods bound to it.
+// The plan places the pods that are dispatched but not on a node yet (nodeOf) itself.
 func (e *clusterEnv) rooms() ([]nodeRoom, bool) {
 	if !e.s.Config.ResourceCheck {
 		return nil, false
@@ -823,7 +818,17 @@ func (e *clusterEnv) rooms() ([]nodeRoom, bool) {
 	if c == nil {
 		return []nodeRoom{}, true
 	}
-	return subtractFromEmptiest(c.freeRooms(), e.unbound), true
+	return c.freeRooms(), true
+}
+
+// nodeOf is the node the pod of a dispatched schedPod is bound to; empty: not on a node yet.
+func (e *clusterEnv) nodeOf(p *schedPod) string {
+	for _, pod := range e.snap.podsOf[p.lookup] {
+		if pod.Spec.NodeName != "" {
+			return pod.Spec.NodeName
+		}
+	}
+	return ""
 }
 
 // emptyRooms is the room for labs on each node with no lab on it.
