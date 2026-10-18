@@ -305,6 +305,7 @@ func Run() {
 				ResourceCheck:  cfg.SchedulerResourceCheck,
 				Prepull:        cfg.SchedulerPrepull,
 				PrepullTimeout: cfg.SchedulerPrepullTimeout,
+				Aging:          time.Duration(cfg.SchedulerAgingSeconds) * time.Second,
 			},
 			Defaults:        laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory},
 			GroupPods:       cfg.GroupPods,

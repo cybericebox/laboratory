@@ -133,6 +133,9 @@ type Config struct {
 	SchedulerPrepull bool `env:"SCHEDULER_PREPULL" envDefault:"true"`
 	// SchedulerPrepullTimeout bounds the wait for the image prepull; dispatch goes on after it.
 	SchedulerPrepullTimeout time.Duration `env:"SCHEDULER_PREPULL_TIMEOUT" envDefault:"5m"`
+	// SchedulerAgingSeconds is how long a gang waits before the room it needs is kept for it (the oldest such gang only), so a
+	// stream of small gangs cannot keep a big one out; 0: no aging.
+	SchedulerAgingSeconds int `env:"SCHEDULER_AGING_SECONDS" envDefault:"120"`
 
 	// RequireAdmissionPolicy makes the operator check at start that the chart's admission policies are enforced on it and
 	// exit if they are not (the chart sets it with operator.admissionPolicy.enabled). On by default, as in the chart: an operator that
@@ -305,6 +308,9 @@ func LoadConfig() (*Config, error) {
 	}
 	if cfg.SchedulerRestartThreshold < 1 {
 		return nil, fmt.Errorf("SCHEDULER_RESTART_THRESHOLD must be at least 1")
+	}
+	if cfg.SchedulerAgingSeconds < 0 {
+		return nil, fmt.Errorf("SCHEDULER_AGING_SECONDS must not be negative (0 turns aging off)")
 	}
 	for name, v := range map[string]string{"DEVICE_DEFAULT_CPU": cfg.DeviceDefaultCPU, "DEVICE_DEFAULT_MEMORY": cfg.DeviceDefaultMemory} {
 		if v == "" {

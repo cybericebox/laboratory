@@ -97,6 +97,9 @@ at install time instead of shipping a broken deployment.
 {{- if or (lt (int .Values.scheduler.platformReservePercent) 0) (ge (int .Values.scheduler.platformReservePercent) 100) }}
 {{- fail "scheduler.platformReservePercent must be between 0 and 99" }}
 {{- end }}
+{{- if lt (int .Values.scheduler.agingSeconds) 0 }}
+{{- fail "scheduler.agingSeconds must not be negative (0 turns aging off)" }}
+{{- end }}
 {{- if lt (int .Values.scheduler.restartThreshold) 1 }}
 {{- fail "scheduler.restartThreshold must be at least 1" }}
 {{- end }}

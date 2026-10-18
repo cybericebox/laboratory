@@ -51,6 +51,8 @@ type SchedulerConfig struct {
 	Prepull bool
 	// PrepullTimeout bounds the wait for a prepull; dispatch goes on after it.
 	PrepullTimeout time.Duration
+	// Aging is how long a gang waits before the room it needs is kept for it (the oldest such gang only); zero: no aging.
+	Aging time.Duration
 	// Tick is how often the queue is processed; zero means defaultSchedulerTick.
 	Tick time.Duration
 	// StatusBudget is the largest number of queue status writes per tick; zero
@@ -539,6 +541,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 			after: deployAfter(lab), arrival: lab.CreationTimestamp.Time, priority: deployPriority(lab), ref: lab,
 		}
 		o.prepTenant = names.TenantOf(lab.Labels)
+		o.reservation, _ = names.ReservationOf(lab.Labels)
 		switch {
 		case lab.Spec.ImagePullSecret != "":
 			// A lab with registry credentials of its own is not prepulled: the node-agents pull
@@ -579,6 +582,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 			id: "group/" + g.Name, group: g.Labels[names.LabelDeployGroup],
 			after: deployAfter(g), arrival: g.CreationTimestamp.Time, priority: deployPriority(g), ref: g,
 		}
+		o.reservation, _ = names.ReservationOf(g.Labels)
 		if o.group != "" {
 			o.prepTenant = names.TenantOf(g.Labels)
 			o.prepKey, o.images = prepClass(o.prepTenant, "g/"+o.group), groupImages(o.group)
@@ -889,6 +893,11 @@ func (e *clusterEnv) tenantFits(p *schedPod) bool {
 }
 
 // tenantEverFits says whether the need fits the quota of the tenant with none of its pods running.
+// fairness: the reservation usage is not counted yet, so every reservation has used nothing.
+func (e *clusterEnv) fairness() fairness {
+	return fairness{now: e.now, aging: e.s.Config.Aging}
+}
+
 func (e *clusterEnv) tenantEverFits(p *schedPod) bool {
 	ten := e.snap.tenants[p.tenant]
 	if ten == nil || ten.Spec.Quota == nil {
