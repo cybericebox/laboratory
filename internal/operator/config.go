@@ -121,6 +121,12 @@ type Config struct {
 	SchedulerPlatformReservePercent int    `env:"SCHEDULER_PLATFORM_RESERVE_PERCENT" envDefault:"10"`
 	SchedulerPlatformReserveCPU     string `env:"SCHEDULER_PLATFORM_RESERVE_CPU" envDefault:"0"`
 	SchedulerPlatformReserveMemory  string `env:"SCHEDULER_PLATFORM_RESERVE_MEMORY" envDefault:"0"`
+	// SchedulerPackingReservePercent is the hidden packing reserve taken per node from what is free there after the non-lab
+	// pods. SchedulerPackingReserveCPU and SchedulerPackingReserveMemory, when not "0", replace the percent for that
+	// resource. The agent reads the same values, so both report the same room.
+	SchedulerPackingReservePercent int    `env:"SCHEDULER_PACKING_RESERVE_PERCENT" envDefault:"15"`
+	SchedulerPackingReserveCPU     string `env:"SCHEDULER_PACKING_RESERVE_CPU" envDefault:"0"`
+	SchedulerPackingReserveMemory  string `env:"SCHEDULER_PACKING_RESERVE_MEMORY" envDefault:"0"`
 	// SchedulerResourceCheck holds a pod back while no node has room for its requests.
 	SchedulerResourceCheck bool `env:"SCHEDULER_RESOURCE_CHECK" envDefault:"true"`
 	// SchedulerPrepull pulls the images of a group onto the nodes before its first pod starts.
@@ -291,6 +297,9 @@ func LoadConfig() (*Config, error) {
 			return nil, fmt.Errorf("%s %q is not a non-negative quantity", name, v)
 		}
 	}
+	if err := validatePackingReserve(cfg); err != nil {
+		return nil, err
+	}
 	if cfg.SchedulerStartupTimeout <= 0 {
 		return nil, fmt.Errorf("SCHEDULER_STARTUP_TIMEOUT must be positive")
 	}
@@ -357,4 +366,16 @@ func ParseLabScheduling(cfg *Config) (nodeSelector map[string]string, toleration
 		return nil, nil, fmt.Errorf("parse LAB_TOLERATIONS: %w", err)
 	}
 	return nodeSelector, tolerations, nil
+}
+
+func validatePackingReserve(cfg *Config) error {
+	if cfg.SchedulerPackingReservePercent < 0 || cfg.SchedulerPackingReservePercent >= 50 {
+		return fmt.Errorf("SCHEDULER_PACKING_RESERVE_PERCENT must be in [0,50)")
+	}
+	for name, v := range map[string]string{"SCHEDULER_PACKING_RESERVE_CPU": cfg.SchedulerPackingReserveCPU, "SCHEDULER_PACKING_RESERVE_MEMORY": cfg.SchedulerPackingReserveMemory} {
+		if q, err := resource.ParseQuantity(v); err != nil || q.Sign() < 0 {
+			return fmt.Errorf("%s %q is not a non-negative quantity", name, v)
+		}
+	}
+	return nil
 }

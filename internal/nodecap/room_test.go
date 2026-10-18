@@ -81,3 +81,24 @@ func TestLargestDeviceIsPerResourceAndEmptyForNoNode(t *testing.T) {
 		t.Errorf("no node = %+v", got)
 	}
 }
+
+func TestPackingReserveApply(t *testing.T) {
+	cases := []struct {
+		name     string
+		r        PackingReserve
+		cpu, mem int64
+		wantCPU  int64
+		wantMem  int64
+	}{
+		{"percent", PackingReserve{Percent: 15}, 3900, 1000, 3315, 850},
+		{"fixed wins", PackingReserve{Percent: 15, CPU: 500, Memory: 100}, 3900, 1000, 3400, 900},
+		{"fixed on one resource", PackingReserve{Percent: 10, CPU: 500}, 3900, 1000, 3400, 900},
+		{"never negative", PackingReserve{CPU: 500}, 300, 0, 0, 0},
+		{"none", PackingReserve{}, 3900, 1000, 3900, 1000},
+	}
+	for _, c := range cases {
+		if cpu, mem := c.r.Apply(c.cpu, c.mem); cpu != c.wantCPU || mem != c.wantMem {
+			t.Errorf("%s: %d / %d, want %d / %d", c.name, cpu, mem, c.wantCPU, c.wantMem)
+		}
+	}
+}

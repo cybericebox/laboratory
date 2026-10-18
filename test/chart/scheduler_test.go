@@ -165,6 +165,27 @@ func TestAgentMayReadMaintenanceWindows(t *testing.T) {
 	}
 }
 
+// The packing reserve is applied per node by the operator and the agent alike: both read it from laboratory.sharedEnv.
+func TestPackingReserveEnvSharedByOperatorAndAgent(t *testing.T) {
+	set := []string{"--set", "agent.enabled=true", "--set", "agent.domain=agent.example.com",
+		"--set", "scheduler.packingReservePercent=20", "--set", "scheduler.packingReserveCpu=300m", "--set", "scheduler.packingReserveMemory=1Gi"}
+	for _, tpl := range []string{"templates/operator/configmap.yaml", "templates/agent/deployment.yaml"} {
+		out, err := helmTemplate(t, append(append([]string{}, set...), "-s", tpl)...)
+		if err != nil {
+			t.Fatalf("%s: helm template: %v\n%s", tpl, err, out)
+		}
+		for _, want := range []string{"SCHEDULER_PACKING_RESERVE_PERCENT", "\"20\"", "SCHEDULER_PACKING_RESERVE_CPU", "\"300m\"", "SCHEDULER_PACKING_RESERVE_MEMORY", "\"1Gi\""} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s lacks %s:\n%s", tpl, want, out)
+			}
+		}
+	}
+	out, err := helmTemplate(t, "-s", "templates/operator/configmap.yaml")
+	if err != nil || !strings.Contains(out, "SCHEDULER_PACKING_RESERVE_PERCENT: \"15\"") || !strings.Contains(out, "SCHEDULER_PACKING_RESERVE_CPU: \"0\"") {
+		t.Errorf("the defaults are 15 %% and no fixed values: %v\n%s", err, out)
+	}
+}
+
 // The agent reports its capacity net of the hidden packing reserve: it gets the chart value.
 func TestAgentGetsThePackingReserve(t *testing.T) {
 	out, err := helmTemplate(t, "--set", "agent.enabled=true", "--set", "agent.domain=agent.example.com",

@@ -29,8 +29,9 @@ type deviceRoomCache struct {
 	view roomView
 }
 
-// room reads the lab nodes (nodecap.Rooms with no pods: only the allocatable counts) and caches the view for a few
-// seconds: it is the same for every tenant.
+// room reads the lab nodes and the pods on them and caches the view for a few seconds: it is the same for every tenant. The
+// total is what the operator counts as room: per node the allocatable less the platform node reserve, the requests of the
+// non-lab pods and the packing reserve (nodecap.FreeForLabs). The largest device is the allocatable of one node.
 func (h *Handler) room(ctx context.Context) roomView {
 	c := &h.roomCache
 	c.mu.Lock()
@@ -42,39 +43,42 @@ func (h *Handler) room(ctx context.Context) roomView {
 	if err != nil {
 		return roomView{}
 	}
+	pods, err := h.k8s.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return roomView{}
+	}
 	rooms := nodecap.Rooms(nodes.Items, nil, h.labSelector, h.labTolerations, h.nodeReserve)
 	v := roomView{largest: nodecap.LargestDevice(rooms), ok: len(rooms) > 0}
-	for _, r := range rooms {
-		v.total.CPU += r.Allocatable.CPU
-		v.total.Memory += r.Allocatable.Memory
+	for _, f := range nodecap.FreeForLabs(nodes.Items, pods.Items, h.labSelector, h.labTolerations, h.nodeReserve.Node, h.packingReserve) {
+		v.total.CPU += f.CPU
+		v.total.Memory += f.Memory
 	}
 	c.at, c.view = time.Now(), v
 	return v
 }
 
-// SetPackingReserve sets the hidden packing reserve (percent, 0-49): the capacity reported to tenants is net of it, because
-// nodes do not share memory and devices leave gaps between them, so the last part of a cluster cannot be packed full. A
-// tenant never sees the reserve.
-func (h *Handler) SetPackingReserve(percent int) { h.packingReserve = percent }
+// SetPackingReserve sets the hidden packing reserve: the room reported to tenants is net of it, because nodes do not share
+// memory and devices leave gaps between them, so the last part of a node cannot be packed full. A tenant never sees the reserve.
+func (h *Handler) SetPackingReserve(r nodecap.PackingReserve) { h.packingReserve = r }
 
-// reported is the capacity the tenant is told about: its quota, or the real room of the cluster when it has none,
-// whichever is smaller, net of the packing reserve. The quota the operator enforces is not changed: the platform plans inside
-// the smaller reported number and never reaches the hard cap in a way that leaves holes.
+// reported is the capacity the tenant is told about: its quota net of the packing reserve, or the real room of the cluster
+// (already net of it per node) when it has none, whichever is smaller. The quota the operator enforces is not changed: the
+// platform plans inside the smaller reported number and never reaches the hard cap in a way that leaves holes.
 func (h *Handler) reported(ctx context.Context, l tenant.Limits) tenant.Limits {
 	v := h.room(ctx)
-	keep := int64(100 - h.packingReserve)
-	apply := func(has bool, limit, real int64) (bool, int64) {
+	quotaCPU, quotaMem := h.packingReserve.Apply(l.CPU, l.Memory)
+	apply := func(has bool, quota, real int64) (bool, int64) {
 		switch {
 		case has && v.ok:
-			limit = min(limit, real)
+			return true, min(quota, real)
 		case !has && v.ok:
-			limit = real
+			return true, real
 		case !has:
 			return false, 0
 		}
-		return true, limit * keep / 100
+		return true, quota
 	}
-	l.HasCPU, l.CPU = apply(l.HasCPU, l.CPU, v.total.CPU)
-	l.HasMemory, l.Memory = apply(l.HasMemory, l.Memory, v.total.Memory)
+	l.HasCPU, l.CPU = apply(l.HasCPU, quotaCPU, v.total.CPU)
+	l.HasMemory, l.Memory = apply(l.HasMemory, quotaMem, v.total.Memory)
 	return l
 }

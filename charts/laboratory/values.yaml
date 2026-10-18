@@ -784,11 +784,14 @@ scheduler:
   platformReservePercent: 10
   platformReserveCpu: "0"
   platformReserveMemory: "0"
-  # Packing reserve (hidden): the share of the capacity reported to the platform (the tenant quota, or the real room of the lab
-  # nodes when it has none, whichever is smaller) that is kept unused, because nodes do not share memory and devices leave gaps
-  # between them, so the last part of a cluster can never be packed full. The agent reports its capacity net of it (0-49);
-  # tenants never see the reserve or the nodes. The quota the operator enforces is not changed.
+  # Packing reserve (hidden): the part of every node that is kept unused, because nodes do not share memory and devices leave
+  # gaps between them, so the last part of a node can never be packed full. It is taken PER NODE from what is free there after
+  # the requests of the non-lab pods and the platform node reserve, by the operator and by the agent alike. The agent reports
+  # its capacity net of it (0-49); tenants never see the reserve or the nodes. packingReserveCpu / packingReserveMemory
+  # (absolute quantities, "0" = none) replace the percent for that resource when they are not "0".
   packingReservePercent: 15
+  packingReserveCpu: "0"
+  packingReserveMemory: "0"
   # false: dispatch does not look at the free CPU and memory of the nodes.
   resourceCheck: true
   # Pull the images of a group onto the eligible nodes before its first pod starts.

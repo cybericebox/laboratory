@@ -152,6 +152,9 @@ SCHEDULER_MAX_PODS: {{ .Values.scheduler.maxPods | quote }}
 SCHEDULER_PLATFORM_RESERVE_PERCENT: {{ .Values.scheduler.platformReservePercent | quote }}
 SCHEDULER_PLATFORM_RESERVE_CPU: {{ .Values.scheduler.platformReserveCpu | quote }}
 SCHEDULER_PLATFORM_RESERVE_MEMORY: {{ .Values.scheduler.platformReserveMemory | quote }}
+SCHEDULER_PACKING_RESERVE_PERCENT: {{ .Values.scheduler.packingReservePercent | quote }}
+SCHEDULER_PACKING_RESERVE_CPU: {{ .Values.scheduler.packingReserveCpu | quote }}
+SCHEDULER_PACKING_RESERVE_MEMORY: {{ .Values.scheduler.packingReserveMemory | quote }}
 DEVICE_DEFAULT_CPU: {{ .Values.limits.device.defaultCpu | quote }}
 DEVICE_DEFAULT_MEMORY: {{ .Values.limits.device.defaultMemory | quote }}
 DEVICE_MAX_CPU: {{ .Values.limits.device.maxCpu | quote }}

@@ -24,6 +24,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/internal/tenant"
 )
 
@@ -40,6 +41,10 @@ type SchedulerConfig struct {
 	PlatformReservePercent int
 	// PlatformReserveNode is an extra absolute reserve on every schedulable node.
 	PlatformReserveNode corev1.ResourceList
+	// PackingReservePercent of what is free on a node after the non-lab pods and the platform node reserve is never given to
+	// labs. PackingReserveNode (CPU, memory), when non-zero, replaces the percent for that resource.
+	PackingReservePercent int
+	PackingReserveNode    corev1.ResourceList
 	// ResourceCheck holds a pod back while no node has room for it.
 	ResourceCheck bool
 	// Prepull pulls the images of a group onto the nodes before its first pod starts.
@@ -712,7 +717,7 @@ type clusterEnv struct {
 	snap *clusterView
 	now  time.Time
 	objs []*schedObject
-	free *capacity
+	free *capacitySnapshot
 	err  error
 	// tenantUsed is what each tenant's dispatched pods request, built on first use.
 	tenantUsed map[string]tenant.Totals
@@ -729,7 +734,7 @@ func (e *clusterEnv) prepared(o *schedObject) bool {
 	return ready
 }
 
-func (e *clusterEnv) capacity() *capacity {
+func (e *clusterEnv) capacity() *capacitySnapshot {
 	if e.free != nil || e.err != nil {
 		return e.free
 	}
@@ -747,7 +752,7 @@ func (e *clusterEnv) capacity() *capacity {
 		pods = append(pods, *p)
 	}
 	pods = append(pods, heldPods...)
-	c := snapshotCapacity(nodes.Items, pods, e.s.LabNodeSelector, e.s.LabTolerations, e.s.nodeReserve())
+	c := snapshotCapacity(nodes.Items, pods, e.s.LabNodeSelector, e.s.LabTolerations, e.s.nodeReserve(), e.s.packingReserve())
 	// A dispatched pod that is not on a node yet will still request its resources.
 	var reserved amount
 	for _, o := range e.objs {
@@ -1066,6 +1071,11 @@ func (s *Scheduler) gcPrepull(ctx context.Context, keep map[string]bool) error {
 		}
 	}
 	return nil
+}
+
+// packingReserve is the hidden packing reserve, taken per node.
+func (s *Scheduler) packingReserve() nodecap.PackingReserve {
+	return nodecap.PackingReserve{Percent: s.Config.PackingReservePercent, CPU: s.Config.PackingReserveNode.Cpu().MilliValue(), Memory: s.Config.PackingReserveNode.Memory().Value()}
 }
 
 // nodeReserve is the absolute platform reserve of every node.

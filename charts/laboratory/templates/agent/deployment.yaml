@@ -145,9 +145,6 @@ spec:
             - name: AGENT_IMAGE_DENY
               value: {{ join "," . | quote }}
           {{- end }}
-            # The hidden packing reserve: the capacity reported to the platform is net of it.
-            - name: SCHEDULER_PACKING_RESERVE_PERCENT
-              value: {{ .Values.scheduler.packingReservePercent | quote }}
             - name: AGENT_DEVICE_PROFILES
               value: {{ join "," .Values.devices.security.profiles | quote }}
             - name: AGENT_LIMIT_LAB_MAX_DEVICES

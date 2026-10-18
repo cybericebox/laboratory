@@ -283,9 +283,9 @@ func TestCapacityIsNetOfThePackingReserve(t *testing.T) {
 		newTenantTenant("small", true, &laboratoryv1alpha1.TenantQuota{CPU: "4", Memory: "8Gi"}),
 		newTenantTenant("huge", true, &laboratoryv1alpha1.TenantQuota{CPU: "100", Memory: "100Gi"}),
 		newTenantTenant("open", true, nil)}, node("n1"), node("n2"))
-	h.SetPackingReserve(15)
+	h.SetPackingReserve(nodecap.PackingReserve{Percent: 15})
 	cases := map[string][2]int64{
-		"small": {3400, 8 << 30 * 85 / 100},   // the quota is below the room: 85% of it
+		"small": {3400, 8<<30 - 8<<30*15/100}, // the quota is below the room: 85% of it
 		"huge":  {17000, 40 << 30 * 85 / 100}, // the quota is above the room (20 CPU, 40Gi): 85% of the room
 		"open":  {17000, 40 << 30 * 85 / 100}, // no quota: the room
 	}
@@ -298,5 +298,31 @@ func TestCapacityIsNetOfThePackingReserve(t *testing.T) {
 	f, err := h.GetFeatures(asClient("small"), &protobuf.Empty{})
 	if err != nil || f.TenantQuota.CpuQuotaMillicores != 3400 {
 		t.Errorf("the features quota is net of it as well: %+v %v", f.GetTenantQuota(), err)
+	}
+}
+
+// The room the agent reports is the one the operator counts (nodecap.FreeForLabs): per node the allocatable less the requests of
+// the non-lab pods (a lab pod takes nothing), less the packing reserve. The same fixture as the operator's
+// TestRoomsSubtractNonLabAndPacking: 3315m / 7073274266 bytes on the first node, 3400m / 7301444404 on the second.
+func TestReportedRoomMatchesOperator(t *testing.T) {
+	node := func(name string) *corev1.Node {
+		return &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name}, Status: corev1.NodeStatus{
+			Allocatable: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("4"), corev1.ResourceMemory: resource.MustParse("8Gi")},
+			Conditions:  []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}},
+		}}
+	}
+	pod := func(name, nodeName, cpu, mem string, labels map[string]string) *corev1.Pod {
+		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "kube-system", Labels: labels},
+			Spec: corev1.PodSpec{NodeName: nodeName, Containers: []corev1.Container{{Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
+				corev1.ResourceCPU: resource.MustParse(cpu), corev1.ResourceMemory: resource.MustParse(mem)}}}}}}
+	}
+	h := tenantHandler(t, []*laboratoryv1alpha1.Tenant{newTenantTenant("open", true, nil)}, node("n1"), node("n2"),
+		pod("cilium", "n1", "100m", "256Mi", nil),
+		pod("device", "n1", "1", "1Gi", map[string]string{"laboratory.cybericebox.com/lab": "lab"}),
+		pod("gateway", "n2", "500m", "512Mi", map[string]string{"laboratory.cybericebox.com/component": "gateway"}))
+	h.SetPackingReserve(nodecap.PackingReserve{Percent: 15})
+	got, err := h.GetCapacity(asClient("open"), &protobuf.Empty{})
+	if err != nil || !got.HasCpuQuota || got.CpuQuotaMillicores != 3315+3400 || got.MemoryQuotaBytes != 7073274266+(8<<30-(8<<30)*15/100) {
+		t.Fatalf("%+v %v", got, err)
 	}
 }

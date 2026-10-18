@@ -101,10 +101,11 @@ func Run() {
 		log.Fatalf("%v", err)
 	}
 	h.SetNodeReserve(reserve)
-	if cfg.PackingReservePercent < 0 || cfg.PackingReservePercent >= 50 {
-		log.Fatalf("SCHEDULER_PACKING_RESERVE_PERCENT must be in [0,50)")
+	packing, err := packingReserve(cfg)
+	if err != nil {
+		log.Fatalf("%v", err)
 	}
-	h.SetPackingReserve(cfg.PackingReservePercent)
+	h.SetPackingReserve(packing)
 	go h.RunTenantStatus(context.Background(), cfg.TenantStatusInterval)
 	if cfg.Cache.Enabled {
 		pw, err := prewarmConfig(cfg, k8s)
@@ -215,6 +216,29 @@ func nodeReserve(cfg *config.Config) (nodecap.Reserve, error) {
 			r.Node.CPU = q.MilliValue()
 		} else {
 			r.Node.Memory = q.Value()
+		}
+	}
+	return r, nil
+}
+
+// packingReserve is the scheduler's hidden packing reserve as the operator reads it.
+func packingReserve(cfg *config.Config) (nodecap.PackingReserve, error) {
+	if cfg.PackingReservePercent < 0 || cfg.PackingReservePercent >= 50 {
+		return nodecap.PackingReserve{}, fmt.Errorf("SCHEDULER_PACKING_RESERVE_PERCENT must be in [0,50)")
+	}
+	r := nodecap.PackingReserve{Percent: cfg.PackingReservePercent}
+	for _, c := range []struct {
+		env, val string
+		cpu      bool
+	}{{"SCHEDULER_PACKING_RESERVE_CPU", cfg.PackingReserveCPU, true}, {"SCHEDULER_PACKING_RESERVE_MEMORY", cfg.PackingReserveMemory, false}} {
+		q, err := resource.ParseQuantity(c.val)
+		if err != nil || q.Sign() < 0 {
+			return r, fmt.Errorf("%s: %q is not a non-negative quantity", c.env, c.val)
+		}
+		if c.cpu {
+			r.CPU = q.MilliValue()
+		} else {
+			r.Memory = q.Value()
 		}
 	}
 	return r, nil
