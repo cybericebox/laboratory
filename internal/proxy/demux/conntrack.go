@@ -19,6 +19,8 @@ type sessionState struct {
 	packets    bucket
 	group      string
 	partial    bool
+	// replyIfindex is the device the server's handshake answer arrived on (0 = unknown).
+	replyIfindex int
 }
 
 type ConnEntry struct {
@@ -120,6 +122,11 @@ func (c *ConnTrack) AddPartial(ci uint32, clientSocket, serverSocket Socket, gro
 // Returns false when Si collides with a live session that is not the matching peer, or the table is full: the response
 // is dropped and the handshake fails; upstream WG retries.
 func (c *ConnTrack) Complete(si, ci uint32, clientSocket, serverSocket Socket) bool {
+	return c.CompleteFrom(si, ci, clientSocket, serverSocket, 0)
+}
+
+// CompleteFrom is Complete with the device the answer arrived on, where the fast path takes the server's replies from.
+func (c *ConnTrack) CompleteFrom(si, ci uint32, clientSocket, serverSocket Socket, replyIfindex int) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.entries[ci]
@@ -145,6 +152,7 @@ func (c *ConnTrack) Complete(si, ci uint32, clientSocket, serverSocket Socket) b
 	e.PeerIndex = si
 	e.partial = false
 	e.state.partial = false
+	e.state.replyIfindex = replyIfindex
 	c.touchLocked(e, now)
 	c.entries[si] = &ConnEntry{PeerIndex: ci, SenderSocket: serverSocket, ReceiverSocket: clientSocket, LastSeen: now, state: e.state}
 	c.pushLocked(ci, e)

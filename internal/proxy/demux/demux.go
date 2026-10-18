@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
+	"golang.org/x/net/ipv4"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
@@ -29,6 +31,7 @@ type Demux struct {
 	global    *limiter // type 1, all sources together
 	strangers *limiter // packets that match no session or come from an unexpected source, all sources together
 	readers   int
+	received  [5]atomic.Uint64 // datagrams taken, by WireGuard message type (1..4)
 }
 
 func New(listenAddr string, table *Table, ct *ConnTrack) (*Demux, error) {
@@ -44,12 +47,24 @@ func NewWithLimits(listenAddr string, table *Table, ct *ConnTrack, l Limits) (*D
 	if err != nil {
 		return nil, fmt.Errorf("listen UDP %s: %w", listenAddr, err)
 	}
+	// The arrival device of a handshake answer (IP_PKTINFO) is where the fast path takes that server's replies from. Without it
+	// the replies stay on the slow path, so a failure here is not fatal.
+	_ = ipv4.NewPacketConn(conn).SetControlMessage(ipv4.FlagInterface, true)
 	return &Demux{
 		table: table, conntrack: ct, conn: conn,
 		global:    newLimiter(l.GlobalHandshakeRate, l.GlobalHandshakeBurst),
 		strangers: newLimiter(l.MissRate, l.MissBurst),
 		readers:   max(l.Readers, 1),
 	}, nil
+}
+
+// Received is how many datagrams of each WireGuard message type (index 1..4) the demux has taken.
+func (d *Demux) Received() [5]uint64 {
+	var out [5]uint64
+	for i := range out {
+		out[i] = d.received[i].Load()
+	}
+	return out
 }
 
 // LocalAddr is the address the demux listens on.
@@ -81,6 +96,7 @@ func (d *Demux) Run(stop <-chan struct{}) {
 func (d *Demux) read(stop <-chan struct{}) {
 	// A WireGuard datagram is at most 1500 bytes or so; anything the buffer cannot hold is not one.
 	buf := make([]byte, 65535)
+	oob := make([]byte, 128)
 	for {
 		select {
 		case <-stop:
@@ -88,7 +104,7 @@ func (d *Demux) read(stop <-chan struct{}) {
 			return
 		default:
 		}
-		n, _, flags, src, err := d.conn.ReadMsgUDP(buf, nil)
+		n, oobn, flags, src, err := d.conn.ReadMsgUDP(buf, oob)
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return
@@ -104,7 +120,7 @@ func (d *Demux) read(stop <-chan struct{}) {
 		if flags&syscall.MSG_TRUNC != 0 {
 			continue
 		}
-		d.handle(buf[:n], src)
+		d.handle(buf[:n], src, oob[:oobn])
 	}
 }
 
@@ -117,8 +133,8 @@ const (
 	sizeTransport = 32
 )
 
-// handle dispatches one datagram.
-func (d *Demux) handle(pkt []byte, src *net.UDPAddr) {
+// handle dispatches one datagram; oob holds its control messages (the arrival device).
+func (d *Demux) handle(pkt []byte, src *net.UDPAddr, oob []byte) {
 	// Whatever a stranger sends must never stop the demux for everyone: a panic on one packet loses that packet only.
 	defer func() {
 		if r := recover(); r != nil {
@@ -131,21 +147,37 @@ func (d *Demux) handle(pkt []byte, src *net.UDPAddr) {
 	switch pkt[0] {
 	case 1:
 		if len(pkt) == sizeInit {
+			d.received[1].Add(1)
 			d.handleType1(pkt, src)
 		}
 	case 2:
 		if len(pkt) == sizeResponse {
-			d.handleType2(pkt, src)
+			d.received[2].Add(1)
+			d.handleType2(pkt, src, arrivalIfindex(oob))
 		}
 	case 3:
 		if len(pkt) == sizeCookie {
+			d.received[3].Add(1)
 			d.handleType3(pkt, src)
 		}
 	case 4:
 		if len(pkt) >= sizeTransport {
+			d.received[4].Add(1)
 			d.handleType4Userspace(pkt, src)
 		}
 	}
+}
+
+// arrivalIfindex is the device a datagram arrived on, from its IP_PKTINFO; 0 when unknown.
+func arrivalIfindex(oob []byte) int {
+	if len(oob) == 0 {
+		return 0
+	}
+	var cm ipv4.ControlMessage
+	if cm.Parse(oob) != nil {
+		return 0
+	}
+	return cm.IfIndex
 }
 
 func socketOf(a *net.UDPAddr) Socket { return Socket{IP: a.IP, Port: uint16(a.Port)} }
@@ -171,7 +203,7 @@ func (d *Demux) handleType1(pkt []byte, src *net.UDPAddr) {
 	}
 }
 
-func (d *Demux) handleType2(pkt []byte, src *net.UDPAddr) {
+func (d *Demux) handleType2(pkt []byte, src *net.UDPAddr, ifindex int) {
 	if len(pkt) < 12 {
 		return
 	}
@@ -189,7 +221,7 @@ func (d *Demux) handleType2(pkt []byte, src *net.UDPAddr) {
 
 	// Reserve Si before forwarding to the client — if another live session owns
 	// this index, drop the response so upstream WG retries with a fresh index.
-	if !d.conntrack.Complete(si, ci, clientDst, socketOf(src)) {
+	if !d.conntrack.CompleteFrom(si, ci, clientDst, socketOf(src), ifindex) {
 		return
 	}
 

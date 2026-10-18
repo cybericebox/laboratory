@@ -189,7 +189,7 @@ func TestSeenKeepsFastPathSessionAlive(t *testing.T) {
 func TestRestoreRebuildsSession(t *testing.T) {
 	client, server := sock("1.1.1.1", 1000), sock("10.0.0.1", 51820)
 	c, now, s := sinkTrack(t)
-	if !c.Restore(1, 2, client, server, "g", *now) {
+	if !c.Restore(1, 2, client, server, "g", *now, 0) {
 		t.Fatal("Restore")
 	}
 	if len(s.upserts) != 0 {
@@ -212,7 +212,7 @@ func TestRestoreRebuildsSession(t *testing.T) {
 	// an index owned by a live different session
 	c, now, _ = sinkTrack(t)
 	session(t, c, 1, 2, client, server)
-	if c.Restore(3, 2, sock("2.2.2.2", 2), server, "g", *now) || c.Restore(1, 4, sock("2.2.2.2", 2), server, "g", *now) {
+	if c.Restore(3, 2, sock("2.2.2.2", 2), server, "g", *now, 0) || c.Restore(1, 4, sock("2.2.2.2", 2), server, "g", *now, 0) {
 		t.Fatal("a live index is not taken")
 	}
 	// a full table
@@ -220,7 +220,7 @@ func TestRestoreRebuildsSession(t *testing.T) {
 	l.MaxEntries = 2
 	c, now = clockTrack(l)
 	session(t, c, 1, 2, client, server)
-	if c.Restore(3, 4, client, server, "g", *now) {
+	if c.Restore(3, 4, client, server, "g", *now, 0) {
 		t.Fatal("a full table refuses")
 	}
 }
@@ -243,7 +243,7 @@ func TestRestoreOverStaleSessionKeepsTheDataPlaneEntries(t *testing.T) {
 	session(t, c, 5, 6, sock("3.3.3.3", 3), server) // 6 pairs with 5 only
 	*now = now.Add(conntrackTTL + time.Second)
 	s.deletes, s.upserts = nil, nil
-	if !c.Restore(1, 2, client, server, "g", *now) {
+	if !c.Restore(1, 2, client, server, "g", *now, 0) {
 		t.Fatal("Restore over a stale session")
 	}
 	if len(s.deletes) != 0 {
@@ -257,7 +257,7 @@ func TestRestoreOverStaleSessionKeepsTheDataPlaneEntries(t *testing.T) {
 	session(t, c, 1, 2, client, server)
 	*now = now.Add(conntrackTTL + time.Second)
 	s.deletes = nil
-	if !c.Restore(1, 9, client, server, "g", *now) {
+	if !c.Restore(1, 9, client, server, "g", *now, 0) {
 		t.Fatal("Restore")
 	}
 	if len(s.deletes) != 1 || s.deletes[0] != 2 {
@@ -273,7 +273,7 @@ func TestRestoreIsAtomic(t *testing.T) {
 	session(t, c, 7, 8, sock("3.3.3.3", 3), server) // live
 	*now = now.Add(2 * time.Second)                 // 1/2 stale now, 7/8 live
 	s.deletes = nil
-	if c.Restore(1, 8, client, server, "g", *now) {
+	if c.Restore(1, 8, client, server, "g", *now, 0) {
 		t.Fatal("a live second index refuses the restore")
 	}
 	if len(s.deletes) != 0 || c.Len() != 4 {
@@ -292,5 +292,89 @@ func TestSeenClampsAFutureTime(t *testing.T) {
 	*now = now.Add(conntrackTTL + time.Second)
 	if c.Cleanup() != 2 {
 		t.Fatal("a time in the future must not keep a session alive for long")
+	}
+}
+
+// The fast path's contract: both directions name the client -> server index as their session, the reply direction carries the
+// address the server sends to (the demux socket's source towards it) and the device the server's answer arrived on.
+func TestForwardsCarrySessionViaAndReplyDevice(t *testing.T) {
+	c, _, s := sinkTrack(t)
+	client, server := sock("198.51.100.7", 40000), sock("10.0.1.5", 51820)
+	if !c.AddPartial(1, client, server, "g") || !c.CompleteFrom(2, 1, client, server, 17) {
+		t.Fatal("handshake")
+	}
+	got := lastByIndex(s)
+	if got[2].Session != 2 || got[1].Session != 2 {
+		t.Fatalf("sessions: %d %d, want 2 2", got[2].Session, got[1].Session)
+	}
+	if got[1].ReplyIfindex != 17 || got[2].ReplyIfindex != 0 {
+		t.Fatalf("reply devices: %d %d", got[1].ReplyIfindex, got[2].ReplyIfindex)
+	}
+	if !sameSocket(got[1].Via, probeSrc) || got[2].Via.IP != nil {
+		t.Fatalf("via: %+v %+v", got[1].Via, got[2].Via)
+	}
+	// a roam pushes the device again; Sessions reports it too
+	s.upserts = nil
+	c.UpdateRoaming(1, sock("4.4.4.4", 4))
+	if got := lastByIndex(s); got[1].ReplyIfindex != 17 {
+		t.Fatalf("after a roam: %+v", got[1])
+	}
+	for _, f := range c.Sessions() {
+		if f.ToClient && f.ReplyIfindex != 17 {
+			t.Fatalf("sessions: %+v", f)
+		}
+	}
+}
+
+// Without the source towards the server the reply direction has no via address: neither direction is written.
+func TestServerSourceUnknownWritesNeitherDirection(t *testing.T) {
+	c, _ := clockTrack(DefaultLimits())
+	s := &fakeSink{}
+	c.SetSink(s, partialSource{})
+	session(t, c, 1, 2, sock("1.1.1.1", 1000), sock("10.0.0.1", 51820))
+	if len(s.upserts) != 0 || c.SinkErrors() != 2 {
+		t.Fatalf("upserts %v errors %d", s.upserts, c.SinkErrors())
+	}
+}
+
+type partialSource struct{}
+
+func (partialSource) TowardsServer(Socket) (Socket, bool) { return Socket{}, false }
+func (partialSource) TowardsClient(Socket) (Socket, bool) { return entrySrc, true }
+
+// A handshake refused because its index belongs to another live session writes nothing: the fast path's record of that
+// index stays the live session's.
+func TestRefusedHandshakeWritesNothing(t *testing.T) {
+	c, _, s := sinkTrack(t)
+	client, server := sock("1.1.1.1", 1000), sock("10.0.0.1", 51820)
+	session(t, c, 1, 2, client, server)
+	s.upserts, s.deletes = nil, nil
+	other := sock("2.2.2.2", 2000)
+	if c.AddPartial(1, other, server, "g") {
+		t.Fatal("a live client index is taken")
+	}
+	if !c.AddPartial(3, other, server) || c.CompleteFrom(2, 3, other, server, 9) {
+		t.Fatal("a live server index is taken")
+	}
+	if c.AddPartial(2, other, server) {
+		t.Fatal("a live server index is taken as a client index")
+	}
+	if len(s.upserts) != 0 || len(s.deletes) != 0 {
+		t.Fatalf("a refused handshake wrote upserts %v deletes %v", s.upserts, s.deletes)
+	}
+}
+
+func TestRestoreKeepsTheReplyDevice(t *testing.T) {
+	c, now, s := sinkTrack(t)
+	client, server := sock("1.1.1.1", 1000), sock("10.0.0.1", 51820)
+	if !c.Restore(1, 2, client, server, "g", *now, 23) {
+		t.Fatal("Restore")
+	}
+	c.UpdateRoaming(1, sock("4.4.4.4", 4))
+	if got := lastByIndex(s); got[1].ReplyIfindex != 23 {
+		t.Fatalf("restored reply device lost: %+v", got[1])
+	}
+	if c.SessionCount() != 1 {
+		t.Fatalf("session count %d", c.SessionCount())
 	}
 }
