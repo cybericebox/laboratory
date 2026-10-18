@@ -76,7 +76,8 @@ struct wg_addr {
 //   - exp_* is the only source accepted; new_src_* and dst_* are written into the packet.
 //   - server -> client (WG_F_TO_CLIENT) also needs reply_ifindex, the device the server's replies arrive on (0 = replies stay
 //     on the slow path), and via_*, the address the server sends to (the demux socket's source towards it, the client ->
-//     server direction's new_src); a reply to any other address is not this session's.
+//     server direction's new_src); a reply to any other address is not this session's. A reply entry is tied to its owner by
+//     these tuples too: exp_* equals the owner's dst_* and via_* the owner's new_src_*, else the reply is a miss.
 //   - The owner's last_seen_ns starts at the time of the write (CLOCK_MONOTONIC); its bucket fields start at zero (the first
 //     packet fills the bucket). Writing the owner again starts a new bucket. In the other direction these fields are unused.
 struct wg_fwd {
@@ -309,7 +310,11 @@ static __always_inline enum judgement judge(struct pkt *p, int to_client, __u32 
 			return J_SOURCE;
 		struct wg_key okey = {.index = f->session};
 		owner = bpf_map_lookup_elem(&wg_sessions, &okey);
-		if (!owner || (owner->flags & WG_F_TO_CLIENT) || owner->session != f->session)
+		// The owner must be this session's other direction (the reply comes from where the owner sends to, and goes to
+		// where the owner sends from), not another session that reuses the index: never charge or refresh a stranger.
+		if (!owner || (owner->flags & WG_F_TO_CLIENT) || owner->session != f->session ||
+		    owner->dst_ip != f->exp_ip || owner->dst_port != f->exp_port ||
+		    owner->new_src_ip != f->via_ip || owner->new_src_port != f->via_port)
 			return J_MISS;
 	} else if (f->session != p->index) {
 		return J_MISS;

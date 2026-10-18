@@ -882,6 +882,27 @@ func TestRepliesNeedTheirSession(t *testing.T) {
 		}
 		wantStats(t, objs, map[WgFastpathWgStat]uint64{WgFastpathWgStatWG_STAT_PASSED_MISS: 2})
 	})
+	t.Run("owner of another session", func(t *testing.T) {
+		// The reply entry names an index that now owns another, self-consistent session (a stale entry after index reuse):
+		// the reply must not draw from that session's bucket or keep it fresh.
+		cfg := defaultCfg(tp)
+		cfg.RatePerS, cfg.Burst = 1, 3
+		objs := load(t, cfg)
+		otherClient := netip.MustParseAddrPort("192.0.2.7:47000")
+		otherServer := netip.MustParseAddrPort("10.0.0.7:51820")
+		if err := objs.WgSessions.Put(WgFastpathWgKey{Index: serverIndex}, fwd(t, otherClient, probe, otherServer, false, 0)); err != nil {
+			t.Fatal(err)
+		}
+		if err := objs.WgSessions.Put(WgFastpathWgKey{Index: clientIndex}, fwd(t, server, entry, client, true, tp.srv)); err != nil {
+			t.Fatal(err)
+		}
+		before := owner(t, objs)
+		checkUntouched(t, "reply charged to another session", runTC(t, objs.WgTcReply, in, replyCtx(tp.srv)), in)
+		if after := owner(t, objs); after != before {
+			t.Errorf("the other session's owner changed: %+v, was %+v", after, before)
+		}
+		wantStats(t, objs, map[WgFastpathWgStat]uint64{WgFastpathWgStatWG_STAT_PASSED_MISS: 1})
+	})
 	t.Run("no owner", func(t *testing.T) {
 		objs := load(t, defaultCfg(tp))
 		if err := objs.WgSessions.Put(WgFastpathWgKey{Index: clientIndex}, fwd(t, server, entry, client, true, tp.srv)); err != nil {

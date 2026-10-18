@@ -34,7 +34,7 @@ Suites: trixie-security
 Components: main
 Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp
 SOURCES
-  apt-get -o Acquire::Check-Valid-Until=false update -qq && apt-get install -o Acquire::Retries=5 -y -qq --no-install-recommends clang llvm-19 libbpf-dev linux-libc-dev dpkg-dev >/dev/null
+  apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=5 update -qq && apt-get install -o Acquire::Retries=5 -y -qq --no-install-recommends clang llvm-19 libbpf-dev linux-libc-dev dpkg-dev >/dev/null
   ln -sfn "/usr/include/$(dpkg-architecture -q DEB_HOST_MULTIARCH)/asm" /usr/include/asm
   command -v llvm-strip >/dev/null || ln -sf "$(find /usr/bin -name "llvm-strip-*" | head -1)" /usr/local/bin/llvm-strip
   go generate ./'"$dir" >/dev/null
