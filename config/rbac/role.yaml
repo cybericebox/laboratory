@@ -145,6 +145,7 @@ rules:
   - labgroups/status
   - labs/status
   - labvpns/status
+  - reservations/status
   - tenants/status
   verbs:
   - get
@@ -164,6 +165,7 @@ rules:
   - laboratory.cybericebox.com
   resources:
   - labtrafficreports
+  - reservations
   verbs:
   - get
   - list

@@ -573,6 +573,11 @@ func reserved(id, reservation string, arrival int, mem int64) *schedObject {
 	return o
 }
 
+// active is the usage of an open reservation of the test tenant (the pods of the builders have no tenant).
+func active(used, amt amount) reservationUsage {
+	return reservationUsage{used: used, amount: amt, active: true}
+}
+
 func gangKeys(gangs []*gang) []string {
 	var out []string
 	for _, g := range gangs {
@@ -586,8 +591,8 @@ func gangKeys(gangs []*gang) []string {
 func TestLowestShareGoesFirst(t *testing.T) {
 	one := []nodeRoom{room("n1", 4000, gi)}
 	usage := map[string]reservationUsage{
-		"A": {used: amount{cpu: 100, mem: 5 * gi}, amount: amount{cpu: 1000, mem: 10 * gi}},
-		"B": {used: amount{cpu: 900, mem: 1 * gi}, amount: amount{cpu: 1000, mem: 10 * gi}},
+		"A": active(amount{cpu: 100, mem: 5 * gi}, amount{cpu: 1000, mem: 10 * gi}),
+		"B": active(amount{cpu: 900, mem: 1 * gi}, amount{cpu: 1000, mem: 10 * gi}),
 	}
 	a, b := reserved("a", "A", 1, gi), reserved("b", "B", 2, gi)
 	plan := planSchedule([]*schedObject{a, b}, 10, false, &fakeEnv{nodes: one, empty: one, fair: fairness{usage: usage}})
@@ -596,7 +601,7 @@ func TestLowestShareGoesFirst(t *testing.T) {
 		t.Fatalf("a reason = %q", r)
 	}
 	// equal memory shares: the lower CPU share goes first
-	usage["B"] = reservationUsage{used: amount{cpu: 900, mem: 5 * gi}, amount: amount{cpu: 1000, mem: 10 * gi}}
+	usage["B"] = active(amount{cpu: 900, mem: 5 * gi}, amount{cpu: 1000, mem: 10 * gi})
 	plan = planSchedule([]*schedObject{a, b}, 10, false, &fakeEnv{nodes: one, empty: one, fair: fairness{usage: usage}})
 	wantDispatch(t, plan, "a/p1")
 
@@ -622,14 +627,16 @@ func TestLowestShareGoesFirst(t *testing.T) {
 func TestUnreservedAfterReserved(t *testing.T) {
 	one := []nodeRoom{room("n1", 4000, gi)}
 	u, r := reserved("u", "", 1, gi), reserved("r", "R", 2, gi)
-	plan := planSchedule([]*schedObject{u, r}, 10, false, &fakeEnv{nodes: one, empty: one})
+	// R reserves just what r needs, so nothing of it is withheld once r is out
+	fair := fairness{usage: map[string]reservationUsage{"R": active(amount{}, amount{cpu: 100, mem: gi})}}
+	plan := planSchedule([]*schedObject{u, r}, 10, false, &fakeEnv{nodes: one, empty: one, fair: fair})
 	wantDispatch(t, plan, "r/p1")
 	if p := plan.status["lab/u"]; p.Reason != laboratoryv1alpha1.WaitInsufficient || p.Position != 1 {
 		t.Fatalf("u status = %+v", p)
 	}
 	// with room for both, both go, the reserved first
 	two := []nodeRoom{room("n1", 4000, 2*gi)}
-	wantDispatch(t, planSchedule([]*schedObject{u, r}, 10, false, &fakeEnv{nodes: two, empty: two}), "r/p1", "u/p1")
+	wantDispatch(t, planSchedule([]*schedObject{u, r}, 10, false, &fakeEnv{nodes: two, empty: two, fair: fair}), "r/p1", "u/p1")
 
 	gu1 := &gang{key: "u1", arrival: planEpoch}
 	gu2 := &gang{key: "u2", arrival: planEpoch.Add(-time.Second)}
@@ -639,11 +646,15 @@ func TestUnreservedAfterReserved(t *testing.T) {
 	}
 }
 
-// With equal shares (no usage counted yet, so every share is 0) arrival decides, then the tenant, then the key.
+// With equal shares (nothing used yet, so every share is 0) arrival decides, then the tenant, then the key. The room withheld
+// for the reservations follows the same order, so the earlier one gets the only room.
 func TestEqualShareByArrival(t *testing.T) {
 	one := []nodeRoom{room("n1", 4000, gi)}
 	late, early := reserved("late", "A", 2, gi), reserved("early", "B", 1, gi)
-	wantDispatch(t, planSchedule([]*schedObject{late, early}, 10, false, &fakeEnv{nodes: one, empty: one}), "early/p1")
+	fair := fairness{usage: map[string]reservationUsage{
+		"A": active(amount{}, amount{cpu: 1000, mem: 10 * gi}), "B": active(amount{}, amount{cpu: 1000, mem: 10 * gi}),
+	}}
+	wantDispatch(t, planSchedule([]*schedObject{late, early}, 10, false, &fakeEnv{nodes: one, empty: one, fair: fair}), "early/p1")
 
 	g1 := &gang{key: "t2/x", tenant: "t2", arrival: planEpoch, reservation: "A"}
 	g2 := &gang{key: "t1/y", tenant: "t1", arrival: planEpoch, reservation: "B"}

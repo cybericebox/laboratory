@@ -121,9 +121,13 @@ func (g *gang) waitingSince() time.Time {
 	return since
 }
 
-// reservationUsage is what the dispatched pods of a reservation request (used) against what it reserves (amount).
+// reservationUsage is what the dispatched pods of a reservation request (used) against what it reserves (amount; zero for an
+// invalid reservation), the tenant it belongs to, whether its window is open now, and how many groups have pods out under it.
 type reservationUsage struct {
 	used, amount amount
+	tenant       string
+	active       bool
+	groups       int32
 }
 
 // share is the satisfied share of a reservation, used/amount, for memory and CPU. A reservation that reserves nothing of a

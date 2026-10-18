@@ -50,6 +50,13 @@ const (
 	WaitDoesNotFit = "DoesNotFitNow"
 	// WaitTenantQuota: the tenant of the object has reached its CPU or memory quota.
 	WaitTenantQuota = "TenantQuota"
+	// WaitReservationMissing: the object names a Reservation that does not exist or belongs to another tenant.
+	WaitReservationMissing = "ReservationMissing"
+	// WaitReservationNotActive: the window of the object's Reservation has not started yet or is over.
+	WaitReservationNotActive = "ReservationNotActive"
+	// WaitReservationFull: the pods of the group do not fit what is left of the Reservation (an invalid Reservation reserves
+	// nothing).
+	WaitReservationFull = "ReservationFull"
 )
 
 // PodSchedule is the scheduling state of one pod: a Device, or the VPN or

@@ -13,6 +13,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -111,6 +112,8 @@ type Scheduler struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;create;update;delete
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs;labgroups;devices;tenants,verbs=get;list;watch
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs/status;labgroups/status;devices/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=reservations,verbs=get;list;watch
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=reservations/status,verbs=get;update;patch
 
 // NeedLeaderElection makes the manager run the scheduler on the leader only.
 func (s *Scheduler) NeedLeaderElection() bool { return true }
@@ -246,6 +249,8 @@ type clusterView struct {
 	podsOf    map[string][]*corev1.Pod
 	suspended map[string]bool // namespace of a suspended group
 	tenants   map[string]*laboratoryv1alpha1.Tenant
+	// reservations are the Reservations of all tenants.
+	reservations []laboratoryv1alpha1.Reservation
 }
 
 func (s *Scheduler) load(ctx context.Context) (*clusterView, error) {
@@ -275,6 +280,11 @@ func (s *Scheduler) load(ctx context.Context) (*clusterView, error) {
 	for i := range tenants.Items {
 		snap.tenants[tenants.Items[i].Name] = &tenants.Items[i]
 	}
+	var reservations laboratoryv1alpha1.ReservationList
+	if err := s.List(ctx, &reservations); err != nil {
+		return nil, fmt.Errorf("list reservations: %w", err)
+	}
+	snap.reservations = reservations.Items
 	var devices laboratoryv1alpha1.DeviceList
 	if err := s.List(ctx, &devices); err != nil {
 		return nil, fmt.Errorf("list devices: %w", err)
@@ -708,7 +718,7 @@ func (s *Scheduler) tick(ctx context.Context) error {
 			}
 		}
 	}
-	s.writeStatuses(ctx, objs, plan, now)
+	s.writeStatuses(ctx, objs, plan, snap.reservations, env.fairness().usage, now)
 	return nil
 }
 
@@ -765,6 +775,8 @@ type clusterEnv struct {
 	err      error
 	// tenantUsed is what each tenant's dispatched pods request, built on first use.
 	tenantUsed map[string]tenant.Totals
+	// usage is the reservation ledger of the pass, built on first use.
+	usage map[string]reservationUsage
 }
 
 func (e *clusterEnv) prepared(o *schedObject) bool {
@@ -898,10 +910,26 @@ func (e *clusterEnv) tenantFits(p *schedPod) bool {
 	return limits.Fits(e.tenantUsed[p.tenant], tenant.Totals{CPU: p.need.cpu, Memory: p.need.mem})
 }
 
-// fairness is the clock and aging threshold of the pass; the reservation usage is not counted yet, so every reservation has
-// used nothing.
+// fairness is the reservation ledger, the clock and the aging threshold of the pass. The ledger counts the dispatched pods of
+// the objects in the queue (Starting, Started or Failed: a failed pod's workload still runs); the pods of a stopped lab or of an
+// object being deleted are not in it.
 func (e *clusterEnv) fairness() fairness {
-	return fairness{now: e.now, aging: e.s.Config.Aging}
+	if e.usage == nil {
+		var pods []dispatchedPod
+		for _, o := range e.objs {
+			group := o.id
+			if o.group != "" {
+				group = groupKey(objTenant(o), o.group)
+			}
+			for _, p := range o.pods {
+				if p.dispatched() {
+					pods = append(pods, dispatchedPod{reservation: o.reservation, tenant: p.tenant, group: group, need: p.need})
+				}
+			}
+		}
+		e.usage = reservationLedger(e.snap.reservations, pods, e.now)
+	}
+	return fairness{usage: e.usage, now: e.now, aging: e.s.Config.Aging}
 }
 
 // stoppedHolds is the room the pods of stopped labs keep on each node: their pods still there and the held placeholders of
@@ -951,11 +979,11 @@ func (e *clusterEnv) tenantEverFits(p *schedPod) bool {
 	return tenant.ResolveQuota(ten.Spec.Quota, alloc).Fits(tenant.Totals{}, tenant.Totals{CPU: p.need.cpu, Memory: p.need.mem})
 }
 
-// writeStatuses publishes the queue place of each object. An object whose
-// numbers changed is written at most once per StatusInterval and at most
-// StatusBudget objects per tick, nearest the head first, so a long queue lags by
-// a few ticks instead of flooding the API server.
-func (s *Scheduler) writeStatuses(ctx context.Context, objs []*schedObject, plan schedPlan, now time.Time) {
+// writeStatuses publishes what each Reservation uses (status.used, status.groups) and the queue place of each object. An object
+// whose numbers changed is written at most once per StatusInterval and at most StatusBudget objects per tick, the reservations
+// first (they are few), then the objects nearest the head, so a long queue lags by a few ticks instead of flooding the API
+// server.
+func (s *Scheduler) writeStatuses(ctx context.Context, objs []*schedObject, plan schedPlan, reservations []laboratoryv1alpha1.Reservation, usage map[string]reservationUsage, now time.Time) {
 	logger := log.FromContext(ctx).WithName("scheduler")
 	budget := s.Config.StatusBudget
 	if budget <= 0 {
@@ -966,6 +994,7 @@ func (s *Scheduler) writeStatuses(ctx context.Context, objs []*schedObject, plan
 		interval = defaultStatusInterval
 	}
 	seen := map[types.UID]bool{}
+	budget = s.writeReservations(ctx, reservations, usage, now, interval, budget, seen)
 	type item struct {
 		o    *schedObject
 		want laboratoryv1alpha1.SchedulingStatus
@@ -1032,6 +1061,42 @@ func (s *Scheduler) writeStatuses(ctx context.Context, objs []*schedObject, plan
 		s.lastWrite[uid] = now
 		budget--
 	}
+}
+
+// writeReservations publishes what each Reservation uses (status.used, status.groups) when it changed, within the per-object
+// interval and the budget of the tick; it returns the budget left and marks the reservations seen.
+func (s *Scheduler) writeReservations(ctx context.Context, reservations []laboratoryv1alpha1.Reservation, usage map[string]reservationUsage, now time.Time, interval time.Duration, budget int, seen map[types.UID]bool) int {
+	logger := log.FromContext(ctx).WithName("scheduler")
+	for i := range reservations {
+		r := &reservations[i]
+		seen[r.UID] = true
+		u := usage[r.Name]
+		cur := r.Status
+		if cur.Used != nil && cur.Used.Cpu().MilliValue() == u.used.cpu && cur.Used.Memory().Value() == u.used.mem && cur.Groups == u.groups {
+			continue
+		}
+		if t, ok := s.lastWrite[r.UID]; ok && now.Sub(t) < interval {
+			continue
+		}
+		if budget <= 0 {
+			continue
+		}
+		orig := r.DeepCopy()
+		r.Status.Used = corev1.ResourceList{
+			corev1.ResourceCPU:    *resource.NewMilliQuantity(u.used.cpu, resource.DecimalSI),
+			corev1.ResourceMemory: *resource.NewQuantity(u.used.mem, resource.BinarySI),
+		}
+		r.Status.Groups = u.groups
+		if err := s.Status().Patch(ctx, r, client.MergeFrom(orig)); err != nil {
+			if !errors.IsNotFound(err) {
+				logger.Error(err, "write reservation usage", "reservation", r.Name)
+			}
+			continue
+		}
+		s.lastWrite[r.UID] = now
+		budget--
+	}
+	return budget
 }
 
 // ensurePrepared makes sure the images of a group are on the nodes and reports whether
