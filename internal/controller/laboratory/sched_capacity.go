@@ -60,15 +60,9 @@ type capacitySnapshot struct {
 func (c capacitySnapshot) rooms() []nodeRoom { return append([]nodeRoom(nil), c.perNode...) }
 
 // freeRooms is rooms less the requests of the lab pods bound to each node, the held pods of stopped labs included (they hold
-// resources). Lab pods that are dispatched but not on a node yet are not subtracted.
-func (c capacitySnapshot) freeRooms() []nodeRoom {
-	out := c.rooms()
-	for i := range out {
-		used := c.labUsed[out[i].Name]
-		out[i].CPU, out[i].Memory = max(out[i].CPU-used.cpu, 0), max(out[i].Memory-used.mem, 0)
-	}
-	return out
-}
+// resources): where the placement simulation of a pass starts. Lab pods that are dispatched but not on a node yet are placed
+// by the plan.
+func (c capacitySnapshot) freeRooms() []nodeRoom { return without(c.rooms(), c.labUsed) }
 
 // schedulableNode: see nodecap.Schedulable.
 func schedulableNode(node *corev1.Node, selector map[string]string, tolerations []corev1.Toleration) bool {

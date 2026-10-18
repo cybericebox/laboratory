@@ -63,6 +63,16 @@ type fakeEnv struct {
 	tenantNever map[string]bool
 	// neverOff: a fitNever in fits is only the aggregate check, not the per-node verdict (neverFits follows maxNode alone).
 	neverOff bool
+	// podNode is the node of a dispatched pod by key ("": not on a node yet); a pod not listed is bound to a node that is not
+	// in the rooms (nodes are the rooms after it already).
+	podNode map[string]string
+}
+
+func (f *fakeEnv) nodeOf(p *schedPod) string {
+	if n, ok := f.podNode[p.key]; ok {
+		return n
+	}
+	return "elsewhere"
 }
 
 func (f *fakeEnv) rooms() ([]nodeRoom, bool) { return f.nodes, f.nodes != nil }

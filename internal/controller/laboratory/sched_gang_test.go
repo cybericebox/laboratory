@@ -44,11 +44,20 @@ func TestFitsGangCPU(t *testing.T) {
 	}
 }
 
-func TestSubtractFromEmptiest(t *testing.T) {
-	rooms := []nodeRoom{room("a", 4000, 2*gi), room("b", 4000, 4*gi)}
-	out := subtractFromEmptiest(rooms, []amount{{cpu: 1000, mem: gi}})
-	if out[1].Memory != 3*gi || out[0].Memory != 2*gi {
+// Every pod goes whole onto one room, largest first; a pod that fits no room takes nothing.
+func TestPlaceEachPutsEveryPodWhole(t *testing.T) {
+	rooms := []nodeRoom{room("x", 4000, 2*gi), room("y", 1000, 4*gi)}
+	// 2 CPU / 2Gi fits only x: the CPU and the memory both come from x.
+	out := placeEach(rooms, []podNeed{{"a", 2000, 2 * gi}})
+	if out[0] != room("x", 2000, 0) || out[1] != room("y", 1000, 4*gi) {
 		t.Fatalf("out = %+v", out)
+	}
+	// a second one fits no room whole: it is left out, not split over x and y
+	if again := placeEach(out, []podNeed{{"b", 2000, 2 * gi}}); again[0] != out[0] || again[1] != out[1] {
+		t.Fatalf("again = %+v", again)
+	}
+	if rooms[0].Memory != 2*gi {
+		t.Fatal("the input must not change")
 	}
 }
 
@@ -225,14 +234,18 @@ func TestWaitingGangPullsImagesAndStatusPriority(t *testing.T) {
 	}
 }
 
-// The room of the rest of a gang that has pods out is kept: a later gang does not take it, even when the rest is held
-// for room itself.
-func TestAdmittedGangRemainderHoldsRoomAcrossTicks(t *testing.T) {
+// The rest of a gang that has pods out holds its room only when it is placed: a remainder that does not fit now holds
+// nothing, and a later gang goes past it.
+func TestAdmittedGangRemainderHoldsRoomOnlyWhenPlaced(t *testing.T) {
 	a := obj("lab/a", "g1", 1, nil, need(pods("a", "p1:S", "p2", "p3", "p4"), 100, gi)...)
 	b := obj("lab/b", "g2", 2, nil, need(pods("b", "p1"), 100, gi)...)
-	// a needs 3Gi more and 2Gi is free: it waits, and its share is not b's.
+	// a needs 3Gi more and 2Gi is free: it waits holding nothing, and b takes a Gi.
 	env := &fakeEnv{nodes: []nodeRoom{room("n1", 4000, 2*gi)}}
-	wantDispatch(t, planSchedule([]*schedObject{a, b}, 10, false, env))
+	plan := planSchedule([]*schedObject{a, b}, 10, false, env)
+	wantDispatch(t, plan, "b/p1")
+	if r := plan.status["lab/a"].Reason; r != laboratoryv1alpha1.WaitInsufficient {
+		t.Fatalf("a reason = %q", r)
+	}
 	// With 4Gi a goes, and the spare Gi is b's.
 	env = &fakeEnv{nodes: []nodeRoom{room("n1", 4000, 4*gi)}}
 	wantDispatch(t, planSchedule([]*schedObject{a, b}, 10, false, env), "a/p2", "a/p3", "a/p4", "b/p1")
@@ -371,27 +384,6 @@ func TestGangLargerThanTheTenantQuotaFails(t *testing.T) {
 	}
 }
 
-func TestSubtractCarriesTheExcessToTheNextRoom(t *testing.T) {
-	rooms := []nodeRoom{room("a", 4000, 3*gi), room("b", 4000, 2*gi)}
-	out := subtractFromEmptiest(rooms, []amount{{cpu: 100, mem: 4 * gi}})
-	if out[0].Memory != 0 || out[1].Memory != gi {
-		t.Fatalf("out = %+v", out)
-	}
-}
-
-// CPU still owed after the chosen room ran out of it is taken from a room that has CPU.
-func TestSubtractContinuesToRoomWithCPU(t *testing.T) {
-	rooms := []nodeRoom{room("a", 0, 2*gi), room("b", 1000, 0)}
-	out := subtractFromEmptiest(rooms, []amount{{cpu: 500, mem: 0}})
-	if out[1].CPU != 500 || out[0].CPU != 0 {
-		t.Fatalf("out = %+v", out)
-	}
-	out = subtractFromEmptiest(rooms, []amount{{cpu: 500, mem: gi}})
-	if out[1].CPU != 500 || out[0].Memory != gi {
-		t.Fatalf("out = %+v", out)
-	}
-}
-
 // deploy-after names a group of the same tenant: a group of that name in another tenant does not satisfy it or block it.
 func TestDeployAfterIsTenantScoped(t *testing.T) {
 	other := obj("lab/x", "g1", 1, nil, pods("x", "p1:S")...) // g1 of tenant t2, not complete
@@ -413,7 +405,7 @@ func TestDeployAfterIsTenantScoped(t *testing.T) {
 }
 
 // Two admitted gangs whose remainders do not fit the free room together never block each other: the first by arrival
-// takes the room, the next waits behind it and keeps what is left, and a gang that is not admitted gets only the rest.
+// takes the room, the next places on what is left or holds nothing, and a gang that is not admitted gets only the rest.
 func TestAdmittedGangsGoInOrder(t *testing.T) {
 	mk := func(free int64, arrivalA, arrivalB int, bNeed int64) (schedPlan, []*schedObject) {
 		a := obj("lab/a", "g1", arrivalA, nil, need(pods("a", "p1:D", "p2"), 100, gi)...)
@@ -434,9 +426,9 @@ func TestAdmittedGangsGoInOrder(t *testing.T) {
 	// The order is the arrival, not the input: b first, a waits.
 	plan, _ = mk(gi, 2, 1, gi)
 	wantDispatch(t, plan, "b/p2")
-	// b waits behind a and keeps the half Gi left for itself: c does not take it.
+	// b does not place in the half Gi a leaves, so it holds nothing: c takes it.
 	plan, _ = mk(gi+gi/2, 1, 2, gi)
-	wantDispatch(t, plan, "a/p2")
+	wantDispatch(t, plan, "a/p2", "c/p1")
 	// Room for both: both go, and c gets the half Gi nobody keeps.
 	plan, _ = mk(2*gi+gi/2, 1, 2, gi)
 	wantDispatch(t, plan, "a/p2", "b/p2", "c/p1")

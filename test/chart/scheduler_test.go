@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"sigs.k8s.io/yaml"
@@ -239,5 +240,44 @@ func TestLabPodsGetAShortTerminationGrace(t *testing.T) {
 	}
 	if got := operatorConfig(t, "--set", "operator.labPodTerminationGraceSeconds=2")["LAB_POD_TERMINATION_GRACE_SECONDS"]; got != "2" {
 		t.Errorf("the value must reach the operator: %q", got)
+	}
+}
+
+// The agent reports the per-node room and the largest device with the operator's reserves and pool: for the same chart
+// values both get the same value under every name the two read, and the agent's env sets each name once.
+func TestReservesAndPoolAreTheSameForOperatorAndAgent(t *testing.T) {
+	set := []string{"--set", "agent.enabled=true", "--set", "agent.domain=agent.example.com",
+		"--set", "scheduler.platformReservePercent=12", "--set", "scheduler.platformReserveCpu=150m", "--set", "scheduler.platformReserveMemory=384Mi",
+		"--set", "scheduler.packingReservePercent=20", "--set", "scheduler.packingReserveCpu=300m", "--set", "scheduler.packingReserveMemory=1Gi",
+		"--set", "labWorkloads.nodeSelector.lab-node=true",
+		"--set", "labWorkloads.tolerations[0].key=labs", "--set", "labWorkloads.tolerations[0].operator=Exists"}
+	op := operatorConfig(t, set...)
+	out, err := helmTemplate(t, append(append([]string{}, set...), "-s", "templates/agent/deployment.yaml")...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	var dep appsv1.Deployment
+	if err := yaml.Unmarshal([]byte(out), &dep); err != nil {
+		t.Fatalf("decode Deployment: %v\n%s", err, out)
+	}
+	agent := map[string]string{}
+	for _, e := range dep.Spec.Template.Spec.Containers[0].Env {
+		if _, dup := agent[e.Name]; dup {
+			t.Errorf("the agent env sets %s twice", e.Name)
+		}
+		agent[e.Name] = e.Value
+	}
+	for _, name := range []string{
+		"SCHEDULER_PLATFORM_RESERVE_PERCENT", "SCHEDULER_PLATFORM_RESERVE_CPU", "SCHEDULER_PLATFORM_RESERVE_MEMORY",
+		"SCHEDULER_PACKING_RESERVE_PERCENT", "SCHEDULER_PACKING_RESERVE_CPU", "SCHEDULER_PACKING_RESERVE_MEMORY",
+		"LAB_NODE_SELECTOR", "LAB_TOLERATIONS",
+	} {
+		v, ok := agent[name]
+		if !ok || v != op[name] || v == "" {
+			t.Errorf("%s: operator %q, agent %q (set %v)", name, op[name], v, ok)
+		}
+	}
+	if op["SCHEDULER_PLATFORM_RESERVE_CPU"] != "150m" || op["SCHEDULER_PACKING_RESERVE_MEMORY"] != "1Gi" || !strings.Contains(op["LAB_NODE_SELECTOR"], "lab-node") {
+		t.Errorf("the chart values do not reach the operator: %v", op)
 	}
 }

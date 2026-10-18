@@ -24,10 +24,8 @@ type gang struct {
 	arrival time.Time
 }
 
-// fitsGang tries to place every need on a node room, first-fit decreasing by memory, then CPU. It works on a copy: on
-// success it returns the rooms after the placement, on failure the rooms as they were.
-func fitsGang(rooms []nodeRoom, needs []podNeed) ([]nodeRoom, bool) {
-	left := append([]nodeRoom(nil), rooms...)
+// decreasing orders the needs largest first: by memory, then CPU (stable, so equal needs keep their order).
+func decreasing(needs []podNeed) []podNeed {
 	order := append([]podNeed(nil), needs...)
 	sort.SliceStable(order, func(i, j int) bool {
 		if order[i].Memory != order[j].Memory {
@@ -35,7 +33,15 @@ func fitsGang(rooms []nodeRoom, needs []podNeed) ([]nodeRoom, bool) {
 		}
 		return order[i].CPU > order[j].CPU
 	})
-	for _, n := range order {
+	return order
+}
+
+// fitsGang tries to place every need on a node room, first-fit decreasing by memory, then CPU. Each pod goes whole onto one
+// room: its CPU and memory come from the same node. It works on a copy: on success it returns the rooms after the placement,
+// on failure the rooms as they were.
+func fitsGang(rooms []nodeRoom, needs []podNeed) ([]nodeRoom, bool) {
+	left := append([]nodeRoom(nil), rooms...)
+	for _, n := range decreasing(needs) {
 		if n.CPU == 0 && n.Memory == 0 {
 			continue // a pod that requests nothing fits anywhere, even with no room listed
 		}
@@ -55,63 +61,25 @@ func fitsGang(rooms []nodeRoom, needs []podNeed) ([]nodeRoom, bool) {
 	return left, true
 }
 
-// subtractFromEmptiest takes the needs off the rooms one by one, each from the room with the most memory left (CPU breaks
-// the tie, then the node name): the node the kube scheduler is most likely to give a pod that is not bound yet. What a room cannot give
-// is taken from the next emptiest one.
-func subtractFromEmptiest(rooms []nodeRoom, needs []amount) []nodeRoom {
+// placeEach places the needs one by one, each whole onto one room, first-fit decreasing as fitsGang, and returns the rooms
+// after them. A need that fits no room is left out: that pod stays pending, so it takes no room yet.
+func placeEach(rooms []nodeRoom, needs []podNeed) []nodeRoom {
+	left := append([]nodeRoom(nil), rooms...)
+	for _, n := range decreasing(needs) {
+		if l, ok := fitsGang(left, []podNeed{n}); ok {
+			left = l
+		}
+	}
+	return left
+}
+
+// without takes the needs of pods bound to known nodes off the rooms of those nodes (floored at zero); a node not in rooms is
+// skipped.
+func without(rooms []nodeRoom, bound map[string]amount) []nodeRoom {
 	out := append([]nodeRoom(nil), rooms...)
-	if len(out) == 0 {
-		return out
-	}
-	order := append([]amount(nil), needs...)
-	sort.SliceStable(order, func(i, j int) bool {
-		if order[i].mem != order[j].mem {
-			return order[i].mem > order[j].mem
-		}
-		return order[i].cpu > order[j].cpu
-	})
-	// emptiest is the room with the most of the owed dimension left (memory when memory is owed, else CPU); -1: none.
-	emptiest := func(byMemory bool) int {
-		best := -1
-		for i := range out {
-			have, bestHave := out[i].CPU, int64(0)
-			if byMemory {
-				have = out[i].Memory
-			}
-			if best >= 0 {
-				bestHave = out[best].CPU
-				if byMemory {
-					bestHave = out[best].Memory
-				}
-			}
-			switch {
-			case have == 0:
-			case best < 0 || have > bestHave:
-				best = i
-			case have == bestHave && (out[i].Memory > out[best].Memory || (out[i].Memory == out[best].Memory && out[i].CPU > out[best].CPU) ||
-				(out[i].Memory == out[best].Memory && out[i].CPU == out[best].CPU && out[i].Name < out[best].Name)):
-				best = i
-			}
-		}
-		return best
-	}
-	for _, n := range order {
-		// The share a room cannot give is taken from the next emptiest one, memory and CPU each from a room that has it.
-		for rest := n; rest.cpu > 0 || rest.mem > 0; {
-			best := emptiest(rest.mem > 0)
-			if best < 0 {
-				if rest.mem > 0 {
-					rest.mem = 0 // every room is out of memory: the rest is beyond the nodes
-				} else {
-					rest.cpu = 0
-				}
-				continue
-			}
-			takeMem, takeCPU := min(rest.mem, out[best].Memory), min(rest.cpu, out[best].CPU)
-			out[best].Memory -= takeMem
-			out[best].CPU -= takeCPU
-			rest = amount{cpu: rest.cpu - takeCPU, mem: rest.mem - takeMem}
-		}
+	for i := range out {
+		used := bound[out[i].Name]
+		out[i].CPU, out[i].Memory = max(out[i].CPU-used.cpu, 0), max(out[i].Memory-used.mem, 0)
 	}
 	return out
 }

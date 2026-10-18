@@ -128,9 +128,11 @@ type schedEnv interface {
 	// tenantFits says whether the pod's tenant stays within its CPU and memory quota
 	// with the pod added to what its dispatched pods already request.
 	tenantFits(p *schedPod) bool
-	// rooms is the room labs have on each node now, for the per-node fit of a gang; false: no per-node check
-	// (the resource check is off).
+	// rooms is the room labs have on each node now less the lab pods bound to it (the start of the placement simulation);
+	// false: no per-node check (the resource check is off).
 	rooms() ([]nodeRoom, bool)
+	// nodeOf is the node a dispatched pod is bound to; empty: not on a node yet.
+	nodeOf(p *schedPod) string
 	// emptyRooms is the room labs have on each node with no lab running, for the DoesNotFit verdict of a gang; nil: no
 	// per-node verdict.
 	emptyRooms() []nodeRoom
@@ -186,9 +188,9 @@ type schedGroup struct {
 // complete; independent labs go last. A gang that waits for tenant quota, images or room does not stop the
 // others (backfill); no slot, or no node at all, stops the pass, so the order is never skipped. A gang with a
 // pod that fits no node, or that never fits its tenant's quota, is
-// failed whole: none of it starts (a gang that only fails to pack the nodes as a whole waits with DoesNotFit and is looked at on every pass). A gang that has pods out is admitted: the room of its remaining pods is kept
-// for it on every pass before any other gang is considered; admitted gangs go in arrival order, each behind the ones
-// before it only. A gang bigger than the whole in-flight limit goes
+// failed whole: none of it starts (a gang that only fails to pack the nodes as a whole waits with DoesNotFit and is looked at on every pass). A gang that has pods out is admitted: on every pass its remaining pods are
+// placed on the nodes before any other gang is considered, in arrival order among the admitted gangs, and the room they take
+// is kept for it; one that does not place holds nothing in that pass (see the placement simulation below). A gang bigger than the whole in-flight limit goes
 // in slices of the free slots, its room checked as a whole. The pods of
 // LabGroups (the team's VPN and gateway) go ahead of all labs.
 //
@@ -408,19 +410,53 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		return needs, amounts
 	}
 
-	// A gang that has pods out is admitted: the room of the pods still to dispatch (slices of a large gang, the rest of a
-	// partly started one) is kept for it on every pass, before any other gang is considered. Rooms is what is left for
-	// the gangs that are not admitted yet.
+	// The room of a pass is ONE placement simulation over the nodes, in which every pod goes whole onto one node (its CPU and
+	// memory from the same room):
+	//  1. it starts from the room labs have on each node less every lab pod bound there (env.rooms), and places the pods
+	//     that are dispatched but not on a node yet, first-fit decreasing;
+	//  2. then the remainders of the admitted gangs (a gang that has pods out), in their strict order: arrival, tenant, key.
+	//     A remainder that places is held: the rooms shrink by its placement and the gang dispatches against it. One that
+	//     does not place holds nothing in this pass and waits, so it never blocks the gangs after it;
+	//  3. new gangs are placed on what is left, in the conveyor order, with backfill (try).
 	rooms, perNode := env.rooms()
-	// Room is kept only while the gang can dispatch: its tenant within the quota (counting the room kept for the
-	// tenant's other gangs) and the remainder fits the empty nodes. Otherwise it is released for the others.
-	// Admitted gangs have a strict order among themselves: arrival, then tenant, then key (all of them are started). Each
-	// competes only with the remainders of the admitted gangs before it, so two of them never block each other when the
-	// room holds one but not both: the first goes, the next waits behind it and keeps what is left.
-	var admitted []*gang
-	rank := map[*gang]int{} // position in admitted
-	remainders := map[*gang][]amount{}
-	heldQuota := map[string]amount{}         // tenant -> the remainders kept for it
+	if perNode {
+		var unbound []podNeed
+		for _, o := range objs {
+			for _, p := range o.pods {
+				if p.state == laboratoryv1alpha1.PodStarting && env.nodeOf(p) == "" {
+					unbound = append(unbound, podNeed{Key: p.key, CPU: p.need.cpu, Memory: p.need.mem})
+				}
+			}
+		}
+		rooms = placeEach(rooms, unbound)
+	}
+	// emptyFor is the room the gang could ever have now: the empty rooms less its own dispatched pods (they stay while its
+	// lab runs), the bound ones on their nodes, the others placed as in step 1. nil: no per-node verdict.
+	emptyFor := func(gg *gang) []nodeRoom {
+		empty := env.emptyRooms()
+		if empty == nil {
+			return nil
+		}
+		bound := map[string]amount{}
+		var unbound []podNeed
+		for _, o := range gg.objs {
+			for _, p := range o.pods {
+				if !p.dispatched() {
+					continue
+				}
+				if n := env.nodeOf(p); n != "" {
+					bound[n] = bound[n].add(p.need)
+				} else if p.state == laboratoryv1alpha1.PodStarting {
+					unbound = append(unbound, podNeed{Key: p.key, CPU: p.need.cpu, Memory: p.need.mem})
+				}
+			}
+		}
+		return placeEach(without(empty, bound), unbound)
+	}
+	// A remainder is held only while the gang can dispatch: its tenant within the quota (counting the room held for the
+	// tenant's earlier gangs), and it fits the empty nodes beside its own pods.
+	held := map[*gang]bool{}                 // admitted gangs whose remainder is placed: rooms is already less it
+	heldQuota := map[string]amount{}         // tenant -> the remainders held for it
 	heldOwn := map[*gang]map[string]amount{} // the part of heldQuota that is the gang's own
 	if perNode {
 		byPriority := append([]*gang(nil), gangs...)
@@ -453,11 +489,10 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 					eligible = false
 				}
 			}
+			needs, amounts := needsOf(q)
 			// The images of a started gang are on the nodes already (an operator restart forgets that, so they are not asked
-			// again here). A remainder that does not fit even the empty nodes holds nothing: it cannot be placed, and
-			// its room would be lost to everyone else.
-			if empty := env.emptyRooms(); eligible && empty != nil {
-				needs, amounts := needsOf(q)
+			// again here).
+			if empty := emptyFor(gg); eligible && empty != nil {
 				var total amount
 				for _, a := range amounts {
 					total = total.add(a)
@@ -468,31 +503,17 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			if !eligible {
 				continue
 			}
-			_, remainders[gg] = needsOf(q)
-			rank[gg] = len(admitted)
-			admitted = append(admitted, gg)
+			left, ok := fitsGang(rooms, needs)
+			if !ok {
+				continue // holds nothing: the gangs after it go on
+			}
+			rooms = left
+			held[gg] = true
 			heldOwn[gg] = sums
 			for t, sum := range sums {
 				heldQuota[t] = heldQuota[t].add(sum)
 			}
 		}
-	}
-	baseRooms := rooms
-	for _, ag := range admitted {
-		rooms = subtractFromEmptiest(rooms, remainders[ag])
-	}
-	var spent []amount       // what the gangs dispatched in this pass take
-	sent := map[*gang]bool{} // admitted gangs dispatched in this pass: their room is in spent now
-	// roomsBefore is the room an admitted gang may take: the rooms less the remainders of the admitted gangs before it that
-	// still wait, and less what this pass dispatched.
-	roomsBefore := func(gg *gang) []nodeRoom {
-		out := baseRooms
-		for _, ag := range admitted[:rank[gg]] {
-			if !sent[ag] {
-				out = subtractFromEmptiest(out, remainders[ag])
-			}
-		}
-		return subtractFromEmptiest(out, spent)
 	}
 
 	failAll := func(pods []*schedPod, reason, message string) {
@@ -543,7 +564,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		case fitNever:
 			notFit = true
 		}
-		if empty := env.emptyRooms(); empty != nil {
+		if empty := emptyFor(gg); empty != nil {
 			if _, ok := fitsGang(empty, needs); !ok {
 				notFit = true
 			}
@@ -607,25 +628,14 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			}
 			send = queued[:min(len(queued), slots)]
 		}
-		if perNode {
-			if _, isAdmitted := remainders[gg]; isAdmitted {
-				// Its own room is already kept: it competes only with the admitted gangs before it.
-				if _, ok := fitsGang(roomsBefore(gg), needs); !ok {
-					hold(roomHeld, gg)
-					return false
-				}
-				sent[gg] = true
-				spent = append(spent, remainders[gg]...)
-			} else {
-				left, ok := fitsGang(rooms, needs)
-				if !ok {
-					hold(roomHeld, gg)
-					return false
-				}
-				rooms = left
-				_, amounts := needsOf(queued)
-				spent = append(spent, amounts...)
+		// A held remainder dispatches against its own placement; any other gang is placed on what is left.
+		if perNode && !held[gg] {
+			left, ok := fitsGang(rooms, needs)
+			if !ok {
+				hold(roomHeld, gg)
+				return false
 			}
+			rooms = left
 		}
 		for _, p := range send {
 			env.take(p)
