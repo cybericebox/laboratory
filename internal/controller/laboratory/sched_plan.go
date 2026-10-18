@@ -187,7 +187,8 @@ type schedGroup struct {
 // others (backfill); no slot, or no node at all, stops the pass, so the order is never skipped. A gang with a
 // pod that fits no node, or that never fits its tenant's quota, is
 // failed whole: none of it starts (a gang that only fails to pack the nodes as a whole waits with DoesNotFit and is looked at on every pass). A gang that has pods out is admitted: the room of its remaining pods is kept
-// for it on every pass before any other gang is considered. A gang bigger than the whole in-flight limit goes
+// for it on every pass before any other gang is considered; admitted gangs go in arrival order, each behind the ones
+// before it only. A gang bigger than the whole in-flight limit goes
 // in slices of the free slots, its room checked as a whole. The pods of
 // LabGroups (the team's VPN and gateway) go ahead of all labs.
 //
@@ -413,12 +414,27 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	rooms, perNode := env.rooms()
 	// Room is kept only while the gang can dispatch: its tenant within the quota (counting the room kept for the
 	// tenant's other gangs) and the remainder fits the empty nodes. Otherwise it is released for the others.
+	// Admitted gangs have a strict order among themselves: arrival, then tenant, then key (all of them are started). Each
+	// competes only with the remainders of the admitted gangs before it, so two of them never block each other when the
+	// room holds one but not both: the first goes, the next waits behind it and keeps what is left.
 	var admitted []*gang
+	rank := map[*gang]int{} // position in admitted
 	remainders := map[*gang][]amount{}
 	heldQuota := map[string]amount{}         // tenant -> the remainders kept for it
 	heldOwn := map[*gang]map[string]amount{} // the part of heldQuota that is the gang's own
 	if perNode {
-		for _, gg := range gangs {
+		byPriority := append([]*gang(nil), gangs...)
+		sort.SliceStable(byPriority, func(i, j int) bool {
+			a, b := byPriority[i], byPriority[j]
+			if !a.arrival.Equal(b.arrival) {
+				return a.arrival.Before(b.arrival)
+			}
+			if a.tenant != b.tenant {
+				return a.tenant < b.tenant
+			}
+			return a.key < b.key
+		})
+		for _, gg := range byPriority {
 			started := false
 			for _, o := range gg.objs {
 				started = started || o.started()
@@ -453,6 +469,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 				continue
 			}
 			_, remainders[gg] = needsOf(q)
+			rank[gg] = len(admitted)
 			admitted = append(admitted, gg)
 			heldOwn[gg] = sums
 			for t, sum := range sums {
@@ -460,19 +477,23 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			}
 		}
 	}
-	// roomsWithout is rooms less the remainder of every admitted gang but skip.
-	roomsWithout := func(base []nodeRoom, skip *gang) []nodeRoom {
-		out := base
-		for _, ag := range admitted {
-			if ag != skip {
+	baseRooms := rooms
+	for _, ag := range admitted {
+		rooms = subtractFromEmptiest(rooms, remainders[ag])
+	}
+	var spent []amount       // what the gangs dispatched in this pass take
+	sent := map[*gang]bool{} // admitted gangs dispatched in this pass: their room is in spent now
+	// roomsBefore is the room an admitted gang may take: the rooms less the remainders of the admitted gangs before it that
+	// still wait, and less what this pass dispatched.
+	roomsBefore := func(gg *gang) []nodeRoom {
+		out := baseRooms
+		for _, ag := range admitted[:rank[gg]] {
+			if !sent[ag] {
 				out = subtractFromEmptiest(out, remainders[ag])
 			}
 		}
-		return out
+		return subtractFromEmptiest(out, spent)
 	}
-	baseRooms := rooms
-	rooms = roomsWithout(baseRooms, nil)
-	var spent []amount // what the gangs admitted in this pass take
 
 	failAll := func(pods []*schedPod, reason, message string) {
 		for _, p := range pods {
@@ -487,8 +508,9 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			return false
 		}
 		// One pod that no single node can ever hold fails the whole gang: nothing of it starts, since its other pods
-		// would only burn room.
-		wait := false
+		// would only burn room. A pod over the room of the schedulable nodes together only waits: a cordoned or rebooting
+		// node of the pool may hold it once it returns (neverFits counts it).
+		wait, notFit := false, false
 		for _, p := range queued {
 			if env.neverFits(p) {
 				failAll(queued, laboratoryv1alpha1.FailureDoesNotFit, "the pod "+p.key+" requests more than any single node can give")
@@ -501,8 +523,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 				blocker = laboratoryv1alpha1.WaitNoSchedulableNodes
 				return true
 			case fitNever:
-				failAll(queued, laboratoryv1alpha1.FailureDoesNotFit, "the pod "+p.key+" requests more than any single node can give")
-				return false
+				notFit = true
 			}
 		}
 		needs, _ := needsOf(queued)
@@ -513,7 +534,6 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		}
 		// A gang that does not fit the nodes as a whole may fit later (a node returns, a rollout ends): it is kept and
 		// looked at on every pass, with the reason DoesNotFit. Only a single pod bigger than every node fails for good.
-		notFit := false
 		switch env.check(&schedPod{key: "gang/" + gg.key, tenant: gg.tenant, need: total}) {
 		case fitWait:
 			wait = true
@@ -589,11 +609,13 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		}
 		if perNode {
 			if _, isAdmitted := remainders[gg]; isAdmitted {
-				// Its own room is already kept: it competes only with the other admitted gangs.
-				if _, ok := fitsGang(subtractFromEmptiest(roomsWithout(baseRooms, gg), spent), needs); !ok {
+				// Its own room is already kept: it competes only with the admitted gangs before it.
+				if _, ok := fitsGang(roomsBefore(gg), needs); !ok {
 					hold(roomHeld, gg)
 					return false
 				}
+				sent[gg] = true
+				spent = append(spent, remainders[gg]...)
 			} else {
 				left, ok := fitsGang(rooms, needs)
 				if !ok {

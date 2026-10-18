@@ -315,8 +315,17 @@ agent's job (`PrewarmImages`), not the scheduler's.
 lab node selector, taints tolerated) have free CPU and memory for its requests: allocatable minus the
 requests of all scheduled pods, minus what already dispatched pods will still request, and with the platform
 reserve kept free (see "Platform reserve" below). Otherwise the queue waits (it does not
-fail) and the reason is in the status. A pod that requests more than the whole schedulable capacity can never
-fit: it is declared failed (`DoesNotFit`) and the queue goes on.
+fail) and the reason is in the status. The labs of one deploy group (an independent lab and each LabGroup alike) start
+whole or not at all: every pod must find room on one node at once, else none starts (`InsufficientResources`), and a
+group that waits does not hold up the others behind it. A group that does not fit even on the empty lab nodes waits with
+`DoesNotFitNow` and starts once capacity returns (a node comes back, a rollout ends). Only a pod that requests more than
+any single node can give is failed for good (`DoesNotFit`), with its whole group, and the queue goes on. That limit is the
+largest lab node with nothing on it: its allocatable less the platform reserve and the packing reserve, counted over every
+node of the pool, cordoned and NotReady ones too, so a drained big node does not fail a pod. With no
+schedulable lab node at all the queue waits (`NoSchedulableNodes`). A group that already has pods out keeps the room of
+the rest on every pass; such groups go in arrival order, the first gets the room and the next waits behind it. A group
+whose sum never fits its tenant's quota is failed at once (`TenantQuotaNeverFits`); one that fits only later waits
+(`TenantQuota`).
 
 **Platform reserve.** CPU and memory that user labs can never consume, so the platform itself always has room.
 It is `scheduler.platformReservePercent` (10) of the schedulable CPU and memory, plus an optional absolute reserve on
@@ -330,7 +339,7 @@ scheduled pods, not only lab pods.
 `scheduler.restartThreshold` times (5), is declared failed: its slot is freed, the group still completes,
 nothing else is rolled back, and the device gets a warning: `Device.status.scheduling.failure` and, on the
 Lab, `status.devices[].failure`, with the reason (`ImagePull`, `CrashLoop`, `Unschedulable`,
-`StartupTimeout`, `PodNotCreated`, `DoesNotFit`), the last error the node reported and the restart count. If the pod becomes
+`StartupTimeout`, `PodNotCreated`, `DoesNotFit`, `TenantQuotaNeverFits`), the last error the node reported and the restart count. If the pod becomes
 Ready later it is Started and the warning clears. A snapshot-backed device whose pod ended after it had started
 is recreated at once, with no slot, as without the scheduler.
 
@@ -383,8 +392,8 @@ kubectl get labs -A -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name
 
 `group` is the deploy group, `position` the place among the objects that still have pods to dispatch
 (0 when all are dispatched), `length` their number, `reason` why the next pod waits (`InFlightLimit`,
-`WaitingForGroup` with `message` "waiting for group X", `WaitingForTurn`, `PreparingImages`,
-`InsufficientResources`, `NoSchedulableNodes`), `pods`/`pending` the pod counts. A Lab is in phase `Queued`
+`WaitingForGroup` with `message` "waiting for group X", `WaitingForTurn`, `PreparingImages`, `TenantQuota`,
+`InsufficientResources`, `DoesNotFitNow`, `NoSchedulableNodes`), `pods`/`pending` the pod counts. A Lab is in phase `Queued`
 while none of its pods has been dispatched. The position is refreshed at a limited rate (at most 50 writes per
 2 s tick, one per object per 10 s), so in a long queue it lags by a few seconds. Each pod's own state is
 `Device.status.scheduling` (`Queued`, `Starting`, `Started`, `Failed`) and, for a group, `LabGroup.status.pods`.
@@ -690,12 +699,13 @@ images:
   cluster totals are exposed. The same reserved and used totals are in `Tenant.status` (refreshed by the agent):
   `kubectl get tenant platform -o yaml`.
   The one number about the cluster layout is the **largest device the agent can place** (`has_max_device`, `max_device_cpu_millicores`,
-  `max_device_memory_bytes`): per resource, the largest allocatable of a schedulable lab node (the nodes with the `node-agent-ready`
-  label) net of the scheduler's platform reserve (`scheduler.platformReserveCpu/Memory` off the node first, then
-  `platformReservePercent` of the rest, per node). It is one amount: no node list, no node names, no per-node free room reach a
+  `max_device_memory_bytes`): per resource, the largest allocatable of a lab node (the nodes with the `node-agent-ready`
+  label, cordoned and NotReady ones included) net of the scheduler's platform reserve (`scheduler.platformReserveCpu/Memory` off
+  the node first, then `platformReservePercent` of the rest, per node) and of the packing reserve. It is the same limit the
+  scheduler uses for `DoesNotFit`, so a device the platform accepts is never failed for its size. It is one amount: no node list, no node names, no per-node free room reach a
   tenant. The backend uses it to refuse planning a device that no node could hold; the per-node math stays in the agent and the
-  scheduler. The two values may come from different nodes, so it can slightly overstate a device that needs both at once; the
-  scheduler refuses what it cannot place. It is not limited by the tenant quota, and it is absent (`has_max_device` false) for an
+  scheduler. The two values may come from different nodes, so it can slightly overstate a device that needs both at once; such a
+  device then waits in the scheduler (`DoesNotFitNow`). It is not limited by the tenant quota, and it is absent (`has_max_device` false) for an
   agent that has no schedulable node or an older one.
 - **Features.** Everything the laboratory owns that the backend needs reaches it only through the agent: `GetFeatures` and the
   `features` of the `Monitoring` stream (sent with the first message and again when they change; a change shows at the next

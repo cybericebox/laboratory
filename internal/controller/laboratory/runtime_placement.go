@@ -29,19 +29,7 @@ func configuredNativePlacement(node *corev1.Node, p nativePlacementPolicy) bool 
 			selector[key] = value
 		}
 	}
-	copy := node.DeepCopy()
-	copy.Spec.Unschedulable = false
-	copy.Status.Conditions = nil
-	copy.Spec.Taints = nil
-	for _, taint := range node.Spec.Taints {
-		switch taint.Key {
-		case corev1.TaintNodeNotReady, corev1.TaintNodeUnreachable, corev1.TaintNodeUnschedulable, corev1.TaintNodeMemoryPressure, corev1.TaintNodeDiskPressure, corev1.TaintNodePIDPressure, corev1.TaintNodeNetworkUnavailable, "node.cilium.io/agent-not-ready":
-			// These express temporary availability/bootstrap, not pool membership.
-			continue
-		}
-		copy.Spec.Taints = append(copy.Spec.Taints, taint)
-	}
-	return nodecap.Schedulable(copy, selector, p.Tolerations)
+	return nodecap.InPool(node, selector, p.Tolerations)
 }
 func (p nativePlacementPolicy) requiredHistoricalNodes(owner, namespace string, nodes map[string]*corev1.Node) (map[string]bool, error) {
 	required := map[string]bool{}

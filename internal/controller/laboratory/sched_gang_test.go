@@ -411,3 +411,53 @@ func TestDeployAfterIsTenantScoped(t *testing.T) {
 		t.Fatalf("message = %q", m)
 	}
 }
+
+// Two admitted gangs whose remainders do not fit the free room together never block each other: the first by arrival
+// takes the room, the next waits behind it and keeps what is left, and a gang that is not admitted gets only the rest.
+func TestAdmittedGangsGoInOrder(t *testing.T) {
+	mk := func(free int64, arrivalA, arrivalB int, bNeed int64) (schedPlan, []*schedObject) {
+		a := obj("lab/a", "g1", arrivalA, nil, need(pods("a", "p1:D", "p2"), 100, gi)...)
+		b := obj("lab/b", "g2", arrivalB, nil, need(pods("b", "p1:D", "p2"), 100, bNeed)...)
+		c := obj("lab/c", "g3", 3, nil, need(pods("c", "p1"), 100, gi/2)...)
+		env := &fakeEnv{nodes: []nodeRoom{room("n1", 4000, free)}, empty: []nodeRoom{room("n1", 4000, 3*gi)}}
+		objs := []*schedObject{c, b, a}
+		return planSchedule(objs, 10, false, env), objs
+	}
+	// The reviewer's probe: room for one remainder. a arrived first and goes; b and c wait.
+	plan, _ := mk(gi, 1, 2, gi)
+	wantDispatch(t, plan, "a/p2")
+	for _, id := range []string{"lab/b", "lab/c"} {
+		if r := plan.status[id].Reason; r != laboratoryv1alpha1.WaitInsufficient {
+			t.Fatalf("%s reason = %q", id, r)
+		}
+	}
+	// The order is the arrival, not the input: b first, a waits.
+	plan, _ = mk(gi, 2, 1, gi)
+	wantDispatch(t, plan, "b/p2")
+	// b waits behind a and keeps the half Gi left for itself: c does not take it.
+	plan, _ = mk(gi+gi/2, 1, 2, gi)
+	wantDispatch(t, plan, "a/p2")
+	// Room for both: both go, and c gets the half Gi nobody keeps.
+	plan, _ = mk(2*gi+gi/2, 1, 2, gi)
+	wantDispatch(t, plan, "a/p2", "b/p2", "c/p1")
+	// b's remainder fits no empty node, so it keeps nothing: c backfills into the room a does not keep.
+	plan, _ = mk(gi+gi/2, 1, 2, 4*gi)
+	wantDispatch(t, plan, "a/p2", "c/p1")
+	if r := plan.status["lab/b"].Reason; r != laboratoryv1alpha1.WaitDoesNotFit {
+		t.Fatalf("b reason = %q", r)
+	}
+}
+
+// A pod over what the schedulable nodes give together, but within a cordoned node of the pool, waits: it is not failed.
+func TestPodOverSchedulableRoomButWithinThePoolWaits(t *testing.T) {
+	o := obj("lab/a", "g", 1, nil, need(pods("a", "p1"), 100, 6*gi)...)
+	small := []nodeRoom{room("n1", 4000, 2*gi), room("n2", 4000, 2*gi)}
+	env := &fakeEnv{nodes: small, empty: small, maxNode: &amount{cpu: 4000, mem: 8 * gi}, fits: map[string]fit{"gang/g": fitNever}}
+	env.fits["a/p1"] = fitNever
+	env.neverOff = true
+	plan := planSchedule([]*schedObject{o}, 10, false, env)
+	wantDispatch(t, plan)
+	if len(plan.failed) != 0 || plan.status["lab/a"].Reason != laboratoryv1alpha1.WaitDoesNotFit {
+		t.Fatalf("failed %+v, status %+v", plan.failed, plan.status["lab/a"])
+	}
+}
