@@ -25,13 +25,14 @@ func TestReservationValidation(t *testing.T) {
 	if dir == "" {
 		dirs, _ := filepath.Glob("../../../bin/k8s/*")
 		if len(dirs) == 0 {
-			t.Skip("no envtest assets")
+			t.Fatal("no envtest assets: set KUBEBUILDER_ASSETS or run make setup-envtest")
 		}
 		dir = dirs[len(dirs)-1]
 	}
 	env := &envtest.Environment{
 		BinaryAssetsDirectory: dir,
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd", "bases")},
+		ErrorIfCRDPathMissing: true,
 	}
 	cfg, err := env.Start()
 	if err != nil {
@@ -60,16 +61,23 @@ func TestReservationValidation(t *testing.T) {
 	}
 	ok := corev1.ResourceList{"cpu": resource.MustParse("4"), "memory": resource.MustParse("8Gi")}
 
-	for name, r := range map[string]*Reservation{
-		"to-equals-from": mk("a", "t1", from, ok),
-		"to-before-from": mk("b", "t1", from.Add(-time.Hour), ok),
-		"gpu":            mk("c", "t1", from.Add(time.Hour), corev1.ResourceList{"gpu": resource.MustParse("1")}),
-		"bad-tenant":     mk("d", "Not_A_Label", from.Add(time.Hour), ok),
-		"long-tenant":    mk("e", strings.Repeat("a", 64), from.Add(time.Hour), ok),
-		"long-name":      mk(strings.Repeat("n", 64), "t1", from.Add(time.Hour), ok),
+	h := from.Add(time.Hour)
+	for name, tc := range map[string]struct {
+		r    *Reservation
+		want string
+	}{
+		"to-equals-from": {mk("a", "t1", from, ok), "spec.to must be after spec.from"},
+		"to-before-from": {mk("b", "t1", from.Add(-time.Hour), ok), "spec.to must be after spec.from"},
+		"gpu":            {mk("c", "t1", h, corev1.ResourceList{"gpu": resource.MustParse("1")}), "resources names only cpu and memory"},
+		"bad-tenant":     {mk("d", "Not_A_Label", h, ok), "should match"},
+		"long-tenant":    {mk("e", strings.Repeat("a", 64), h, ok), "Too long"},
+		"long-name":      {mk(strings.Repeat("n", 64), "t1", h, ok), "at most 63 characters"},
 	} {
-		if err := c.Create(ctx, r); err == nil {
+		err := c.Create(ctx, tc.r)
+		if err == nil {
 			t.Errorf("%s: invalid Reservation accepted", name)
+		} else if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: error %q does not contain %q", name, err, tc.want)
 		}
 	}
 
