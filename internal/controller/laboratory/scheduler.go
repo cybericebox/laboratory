@@ -746,13 +746,13 @@ func (s *Scheduler) dispatchGroupPod(ctx context.Context, snap *clusterView, p *
 
 // clusterEnv answers the plan's questions from the cluster.
 type clusterEnv struct {
-	s    *Scheduler
-	ctx  context.Context
-	snap *clusterView
-	now  time.Time
-	objs []*schedObject
-	free *capacitySnapshot
-	err  error
+	s        *Scheduler
+	ctx      context.Context
+	snap     *clusterView
+	now      time.Time
+	objs     []*schedObject
+	snapshot *capacitySnapshot // the capacity of the nodes, read once per pass
+	err      error
 	// tenantUsed is what each tenant's dispatched pods request, built on first use.
 	tenantUsed map[string]tenant.Totals
 }
@@ -769,8 +769,8 @@ func (e *clusterEnv) prepared(o *schedObject) bool {
 }
 
 func (e *clusterEnv) capacity() *capacitySnapshot {
-	if e.free != nil || e.err != nil {
-		return e.free
+	if e.snapshot != nil || e.err != nil {
+		return e.snapshot
 	}
 	var nodes corev1.NodeList
 	if err := e.s.List(e.ctx, &nodes); err != nil {
@@ -787,25 +787,8 @@ func (e *clusterEnv) capacity() *capacitySnapshot {
 	}
 	pods = append(pods, heldPods...)
 	c := snapshotCapacity(nodes.Items, pods, e.s.LabNodeSelector, e.s.LabTolerations, e.s.nodeReserve(), e.s.Config.PlatformReservePercent, e.s.packingReserve())
-	// A dispatched pod that is not on a node yet will still request its resources.
-	var reserved amount
-	for _, o := range e.objs {
-		for _, p := range o.pods {
-			if p.state != laboratoryv1alpha1.PodStarting {
-				continue
-			}
-			onNode := false
-			for _, pod := range e.snap.podsOf[p.lookup] {
-				onNode = onNode || pod.Spec.NodeName != ""
-			}
-			if !onNode {
-				reserved = reserved.add(p.need)
-			}
-		}
-	}
-	c.take(reserved)
-	e.free = &c
-	return e.free
+	e.snapshot = &c
+	return e.snapshot
 }
 
 // rooms is where the placement simulation of a pass starts: the room for labs on every node less the lab pods bound to it.
@@ -855,21 +838,17 @@ func (e *clusterEnv) neverFits(p *schedPod) bool {
 	return !c.fitsOneNode(p.need)
 }
 
-func (e *clusterEnv) check(p *schedPod) fit {
+// noNodes: the resource check is on and no lab node is schedulable now.
+func (e *clusterEnv) noNodes() bool {
 	if !e.s.Config.ResourceCheck {
-		return fitOK
+		return false
 	}
 	c := e.capacity()
-	if c == nil {
-		return fitWait
-	}
-	return c.check(p.need, e.s.Config.PlatformReservePercent)
+	return c != nil && c.nodes == 0
 }
 
+// take counts a dispatched pod toward its tenant's quota for the rest of the pass.
 func (e *clusterEnv) take(p *schedPod) {
-	if e.free != nil {
-		e.free.take(p.need)
-	}
 	if e.tenantUsed != nil {
 		e.tenantUsed[p.tenant] = e.tenantUsed[p.tenant].Add(tenant.Totals{CPU: p.need.cpu, Memory: p.need.mem})
 	}

@@ -30,7 +30,7 @@ func testPod(node, cpu, mem string) corev1.Pod {
 	}
 }
 
-func TestSnapshotCapacityFreeIsAllocatableMinusRequests(t *testing.T) {
+func TestSnapshotCapacityRoomsAreAllocatableMinusRequests(t *testing.T) {
 	nodes := []corev1.Node{testNode("n1", "4", "8Gi"), testNode("n2", "4", "8Gi")}
 	pods := []corev1.Pod{testPod("n1", "1", "1Gi"), testPod("n1", "500m", "1Gi"), testPod("n2", "2", "2Gi")}
 	done := testPod("n2", "1", "1Gi")
@@ -42,8 +42,8 @@ func TestSnapshotCapacityFreeIsAllocatableMinusRequests(t *testing.T) {
 	if c.nodes != 2 || c.allocatable != (amount{8000, 16 << 30}) {
 		t.Fatalf("capacity = %+v", c)
 	}
-	if c.free != (amount{cpu: 8000 - 3500, mem: (16 - 4) << 30}) {
-		t.Fatalf("free = %+v (finished and unscheduled pods hold nothing)", c.free)
+	if r := c.rooms(); len(r) != 2 || r[0] != room("n1", 2500, 6<<30) || r[1] != room("n2", 2000, 6<<30) {
+		t.Fatalf("rooms = %+v (finished and unscheduled pods hold nothing)", r)
 	}
 }
 
@@ -52,8 +52,8 @@ func TestSnapshotCapacityClampsPerNode(t *testing.T) {
 	nodes := []corev1.Node{testNode("n1", "1", "1Gi"), testNode("n2", "4", "4Gi")}
 	pods := []corev1.Pod{testPod("n1", "3", "3Gi")}
 	c := snapshotCapacity(nodes, pods, nil, nil, amount{}, 0, nodecap.PackingReserve{})
-	if c.free != (amount{4000, 4 << 30}) {
-		t.Fatalf("free = %+v", c.free)
+	if r := c.rooms(); len(r) != 2 || r[0] != room("n1", 0, 0) || r[1] != room("n2", 4000, 4<<30) {
+		t.Fatalf("rooms = %+v", r)
 	}
 }
 
@@ -93,42 +93,6 @@ func TestPodRequestsInitAndOverhead(t *testing.T) {
 	}
 }
 
-func TestCapacityCheck(t *testing.T) {
-	c := capacitySnapshot{nodes: 2, allocatable: amount{cpu: 10000, mem: 10 << 30}, free: amount{cpu: 3000, mem: 3 << 30}}
-	// 10% headroom keeps 1 CPU and 1Gi free: 2 CPU / 2Gi may be taken.
-	cases := []struct {
-		name string
-		need amount
-		want fit
-	}{
-		{"nothing needed", amount{}, fitOK},
-		{"fits exactly", amount{2000, 2 << 30}, fitOK},
-		{"cpu over the headroom", amount{2001, 1 << 30}, fitWait},
-		{"memory over the headroom", amount{1000, 2<<30 + 1}, fitWait},
-		{"larger than the cluster", amount{9001, 1 << 30}, fitNever},
-		{"memory larger than the cluster", amount{1, 9<<30 + 1}, fitNever},
-	}
-	for _, tc := range cases {
-		if got := c.check(tc.need, 10); got != tc.want {
-			t.Errorf("%s: check = %d, want %d", tc.name, got, tc.want)
-		}
-	}
-	if got := (capacitySnapshot{}).check(amount{cpu: 1}, 10); got != fitNoNodes {
-		t.Errorf("no nodes: %d", got)
-	}
-	if got := (capacitySnapshot{}).check(amount{}, 10); got != fitOK {
-		t.Errorf("no nodes but nothing needed: %d", got)
-	}
-	c.take(amount{2000, 2 << 30})
-	if c.free != (amount{1000, 1 << 30}) {
-		t.Errorf("free after take = %+v", c.free)
-	}
-	c.take(amount{5000, 5 << 30})
-	if c.free != (amount{}) {
-		t.Errorf("free must not go negative: %+v", c.free)
-	}
-}
-
 // The platform reserve is taken after the kubelet's (allocatable is already net of it) and after every pod
 // scheduled on the node, the proxy and DaemonSet pods included, in both proxy modes; the absolute per-node
 // reserve comes off each node before the percentage is applied.
@@ -137,19 +101,13 @@ func TestPlatformReserveCountsProxyAndNodeReserve(t *testing.T) {
 	// deployment mode: a proxy pod on each of two nodes; daemonset mode would be the same on every node.
 	proxy := []corev1.Pod{testPod("n1", "750m", "128Mi"), testPod("n2", "750m", "128Mi")}
 	c := snapshotCapacity(nodes, proxy, nil, nil, amount{cpu: 500, mem: 1 << 30}, 0, nodecap.PackingReserve{})
-	if c.allocatable != (amount{cpu: 7000, mem: 14 << 30}) || c.free != (amount{cpu: 5500, mem: 14<<30 - 256<<20}) {
-		t.Fatalf("capacity = %+v", c)
-	}
-	// 10% of the schedulable 7 CPU stays out of reach on top: 5500-700 = 4800 may be taken.
-	if got := c.check(amount{cpu: 4800}, 10); got != fitOK {
-		t.Errorf("4800m: %d", got)
-	}
-	if got := c.check(amount{cpu: 4801}, 10); got != fitWait {
-		t.Errorf("4801m: %d", got)
+	want := room("n1", 4000-500-750, 8<<30-1<<30-128<<20)
+	if r := c.rooms(); c.allocatable != (amount{cpu: 7000, mem: 14 << 30}) || len(r) != 2 || r[0] != want || r[1] != room("n2", want.CPU, want.Memory) {
+		t.Fatalf("capacity = %+v, rooms = %+v", c, r)
 	}
 	// a node smaller than the reserve gives nothing, never a negative amount
 	small := snapshotCapacity([]corev1.Node{testNode("n1", "100m", "1Gi")}, nil, nil, nil, amount{cpu: 500, mem: 2 << 30}, 0, nodecap.PackingReserve{})
-	if small.allocatable != (amount{}) || small.free != (amount{}) {
+	if r := small.rooms(); small.allocatable != (amount{}) || len(r) != 1 || r[0] != room("n1", 0, 0) {
 		t.Fatalf("small = %+v", small)
 	}
 }
@@ -171,10 +129,6 @@ func TestRoomsSubtractNonLabAndPacking(t *testing.T) {
 	got := c.rooms()
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("rooms = %+v, want %+v", got, want)
-	}
-	// The aggregate view is unchanged: it still subtracts every pod.
-	if c.free.cpu != 4000-100-1000+4000-500 {
-		t.Errorf("aggregate free = %+v", c.free)
 	}
 }
 
@@ -262,7 +216,7 @@ func TestSnapshotMaxNodeIsNetOfPackingAndCountsDrainedNodes(t *testing.T) {
 	// Every node drained: no schedulable node, so nothing is failed and the scheduler waits (NoSchedulableNodes).
 	small.Spec.Unschedulable = true
 	c = snapshotCapacity([]corev1.Node{big, small}, nil, map[string]string{"lab": "yes"}, nil, amount{cpu: 500}, 10, nodecap.PackingReserve{Percent: 20})
-	if c.nodes != 0 || c.check(amount{cpu: 100, mem: gi}, 10) != fitNoNodes {
-		t.Fatalf("nodes = %d, check = %v", c.nodes, c.check(amount{cpu: 100, mem: gi}, 10))
+	if c.nodes != 0 || len(c.rooms()) != 0 {
+		t.Fatalf("nodes = %d, rooms = %+v", c.nodes, c.rooms())
 	}
 }

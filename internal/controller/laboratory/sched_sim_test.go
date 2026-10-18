@@ -5,7 +5,11 @@ import (
 	"sort"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/nodecap"
 )
 
 // The remainder of an admitted gang is placed whole: a pod that only node x can hold takes CPU and memory from x, so a new
@@ -82,7 +86,7 @@ type simEnv struct {
 }
 
 func (e *simEnv) prepared(*schedObject) bool    { return true }
-func (e *simEnv) check(*schedPod) fit           { return fitOK }
+func (e *simEnv) noNodes() bool                 { return false }
 func (e *simEnv) take(*schedPod)                {}
 func (e *simEnv) tenantFits(*schedPod) bool     { return true }
 func (e *simEnv) tenantEverFits(*schedPod) bool { return true }
@@ -137,7 +141,9 @@ func (s *splitmix) next(n int) int {
 }
 
 // For every generated scenario, the pods dispatched in a pass, the pods dispatched earlier but not on a node yet and the
-// bound pods together fit the nodes, every pod whole on one node; and a gang starts whole or not at all.
+// bound pods together fit the nodes, every pod whole on one node; a gang starts whole or not at all; and no gang holds room
+// in a pass where it does not dispatch (here nothing but room can hold a gang, so a placed remainder always dispatches): the
+// room the pass takes off the nodes is at most what the dispatched and the unbound pods request.
 func TestPlacementSimulationNeverOverAdmits(t *testing.T) {
 	const mi = int64(1) << 20
 	for seed := 1; seed <= 400; seed++ {
@@ -201,6 +207,16 @@ func TestPlacementSimulationNeverOverAdmits(t *testing.T) {
 		if !packs(without(env.empty, env.use), append(append([]*schedPod(nil), unbound...), plan.dispatch...)) {
 			t.Fatalf("seed %d: nodes %v, bound %v, unbound %v, dispatched %v do not fit", seed, env, env.use, keys(unbound), keys(plan.dispatch))
 		}
+		var taken, owed amount
+		for i, r := range without(env.empty, env.use) {
+			taken = taken.add(amount{cpu: r.CPU - plan.left[i].CPU, mem: r.Memory - plan.left[i].Memory})
+		}
+		for _, p := range append(append([]*schedPod(nil), unbound...), plan.dispatch...) {
+			owed = owed.add(p.need)
+		}
+		if taken.cpu > owed.cpu || taken.mem > owed.mem {
+			t.Fatalf("seed %d: the pass took %+v of room, the dispatched and unbound pods request %+v: a gang holds room it does not use", seed, taken, owed)
+		}
 		sent := map[string]int{}
 		for _, p := range plan.dispatch {
 			sent[p.key[:2]]++
@@ -211,4 +227,45 @@ func TestPlacementSimulationNeverOverAdmits(t *testing.T) {
 			}
 		}
 	}
+}
+
+// envFromSnapshot answers the plan from a real capacitySnapshot, as clusterEnv does, without a cluster.
+type envFromSnapshot struct {
+	simEnv
+	c capacitySnapshot
+}
+
+func (e *envFromSnapshot) rooms() ([]nodeRoom, bool) { return e.c.freeRooms(), true }
+func (e *envFromSnapshot) emptyRooms() []nodeRoom    { return e.c.rooms() }
+func (e *envFromSnapshot) neverFits(p *schedPod) bool {
+	return p.need != (amount{}) && e.c.nodes > 0 && !e.c.fitsOneNode(p.need)
+}
+func (e *envFromSnapshot) noNodes() bool { return e.c.nodes == 0 }
+
+// The reviewer's N1 probe: n1 is loaded past its platform band by a non-lab pod, so the cluster sum with the percent off
+// says "wait" while n2 holds the remainder. The per-node placement is the only room check: the held remainder dispatches
+// instead of keeping n2's room on every pass while nothing starts.
+func TestHeldRemainderIsNotHeldBackByTheClusterSum(t *testing.T) {
+	nodes := []corev1.Node{testNode("n1", "16", "16Gi"), testNode("n2", "16", "16Gi")}
+	labPod := testPod("n2", "100m", "2Gi")
+	labPod.Labels = map[string]string{names.LabelLab: "a", names.LabelDevice: "p1"}
+	c := snapshotCapacity(nodes, []corev1.Pod{testPod("n1", "1", "15Gi"), labPod}, nil, nil, amount{}, 10, nodecap.PackingReserve{})
+	env := &envFromSnapshot{simEnv: simEnv{node: map[string]string{"a/p1": "n2"}}, c: c}
+	a := obj("lab/a", "g1", 1, nil, need(pods("a", "p1:D"), 100, 2*gi)...)
+	a.pods = append(a.pods, need(pods("a", "p2"), 100, 12*gi)...)
+	cl := obj("lab/c", "g2", 2, nil, need(pods("c", "p1"), 100, gi)...)
+	plan := planSchedule([]*schedObject{a, cl}, 10, false, env)
+	wantDispatch(t, plan, "a/p2")
+	if _, waiting := plan.status["lab/a"]; waiting {
+		t.Fatalf("a still waits: %+v", plan.status["lab/a"])
+	}
+	if r := plan.status["lab/c"].Reason; r != laboratoryv1alpha1.WaitInsufficient {
+		t.Fatalf("c reason = %q", r)
+	}
+	if !packs(c.freeRooms(), plan.dispatch) {
+		t.Fatalf("the dispatched pods do not fit the nodes: %v", keys(plan.dispatch))
+	}
+	// With a gone, c alone takes the room.
+	plan = planSchedule([]*schedObject{cl}, 10, false, env)
+	wantDispatch(t, plan, "c/p1")
 }

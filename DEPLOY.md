@@ -311,11 +311,11 @@ but not failing. A prepull gates **only its own group**: while a group's images 
 dependency rules allow, and their own prepulls run meanwhile. Filling the registry cache beforehand is the
 agent's job (`PrewarmImages`), not the scheduler's.
 
-**Resource check.** A pod is dispatched only when the schedulable nodes (Ready, not cordoned, matching the
-lab node selector, taints tolerated) have free CPU and memory for its requests: allocatable minus the
-requests of all scheduled pods, minus what already dispatched pods will still request, and with the platform
-reserve kept free (see "Platform reserve" below). Otherwise the queue waits (it does not
-fail) and the reason is in the status. The labs of one deploy group (an independent lab and each LabGroup alike) start
+**Resource check.** A pod is dispatched only when one schedulable node (Ready, not cordoned, matching the
+lab node selector, taints tolerated) has room for its CPU and memory together. The room of a node is its allocatable less
+the platform reserve, the requests of the pods that are not lab pods and the packing reserve, less the lab pods on it and the
+pods already dispatched to land there (see "Platform reserve" below). No sum over the cluster is checked: only this per-node
+placement decides. Otherwise the queue waits (it does not fail) and the reason is in the status. The labs of one deploy group (an independent lab and each LabGroup alike) start
 whole or not at all: every pod must find room on one node at once, else none starts (`InsufficientResources`), and a
 group that waits does not hold up the others behind it. A group that does not fit even on the empty lab nodes waits with
 `DoesNotFitNow` and starts once capacity returns (a node comes back, a rollout ends). Only a pod that no single node can hold, its
@@ -333,12 +333,11 @@ whose sum never fits its tenant's quota is failed at once (`TenantQuotaNeverFits
 (`TenantQuota`).
 
 **Platform reserve.** CPU and memory that user labs can never consume, so the platform itself always has room.
-It is `scheduler.platformReservePercent` (10) of the schedulable CPU and memory, plus an optional absolute reserve on
-every schedulable node (`scheduler.platformReserveCpu`, `scheduler.platformReserveMemory`, `"0"` = none) that comes off the
-node first. It is applied after the kubelet's own reserve (a node's allocatable is already net of kube-reserved,
-system-reserved and eviction thresholds) and after the requests of every pod scheduled on the node: DaemonSets, the
-proxy (Deployment or DaemonSet mode alike) and system pods are counted because the check subtracts the requests of all
-scheduled pods, not only lab pods.
+It is kept on every schedulable node: an optional absolute reserve (`scheduler.platformReserveCpu`,
+`scheduler.platformReserveMemory`, `"0"` = none) comes off the node first, and `scheduler.platformReservePercent` (10) of the
+rest. It is applied after the kubelet's own reserve (a node's allocatable is already net of kube-reserved,
+system-reserved and eviction thresholds), and the requests of every other pod scheduled on the node come off as well:
+DaemonSets, the proxy (Deployment or DaemonSet mode alike) and system pods, not only lab pods.
 
 **Failed pods.** A dispatched pod that is not Ready after `scheduler.startupTimeout` (5m), or that restarted
 `scheduler.restartThreshold` times (5), is declared failed: its slot is freed, the group still completes,

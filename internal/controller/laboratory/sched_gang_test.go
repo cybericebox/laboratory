@@ -139,10 +139,11 @@ func TestGangLargerThanLimitGoesInSlices(t *testing.T) {
 	wantDispatch(t, planSchedule([]*schedObject{o}, 0, false, &fakeEnv{}))
 }
 
-// A gang bigger than the empty capacity is not failed for good: it waits with DoesNotFit.
+// A gang bigger than the empty nodes is not failed for good: it waits with DoesNotFit.
 func TestGangTooBigForEmptyLabWaits(t *testing.T) {
 	o := obj("lab/a", "g", 1, nil, need(pods("a", "p1", "p2"), 100, gi)...)
-	env := &fakeEnv{nodes: []nodeRoom{room("n1", 4000, 4*gi)}, fits: map[string]fit{"gang/g": fitNever}}
+	one := []nodeRoom{room("n1", 4000, gi+gi/2)}
+	env := &fakeEnv{nodes: one, empty: one, maxNode: &amount{cpu: 4000, mem: gi + gi/2}}
 	plan := planSchedule([]*schedObject{o}, 10, false, env)
 	wantDispatch(t, plan)
 	if len(plan.failed) != 0 || plan.status["lab/a"].Reason != laboratoryv1alpha1.WaitDoesNotFit {
@@ -200,7 +201,7 @@ func TestGangDoesNotFitRecoversWhenNodeReturns(t *testing.T) {
 // Only one pod that exceeds every node fails for good, and it takes its gang with it.
 func TestSinglePodOverAllocatableStaysFailed(t *testing.T) {
 	o := obj("lab/a", "g", 1, nil, need(pods("a", "p1", "p2"), 100, gi)...)
-	env := &fakeEnv{fits: map[string]fit{"a/p2": fitNever}}
+	env := &fakeEnv{never: map[string]bool{"a/p2": true}}
 	plan := planSchedule([]*schedObject{o}, 10, false, env)
 	wantDispatch(t, plan)
 	if len(plan.failed) != 2 || plan.failed[0].reason != laboratoryv1alpha1.FailureDoesNotFit {
@@ -263,13 +264,40 @@ func TestHeldRemainderReleasedWhenTenantAtQuota(t *testing.T) {
 	wantDispatch(t, planSchedule([]*schedObject{a, b}, 10, false, env), "b/p1")
 }
 
-// After an operator restart the images of a started gang are asked again; its room is kept meanwhile.
-func TestHeldRemainderKeptWhileImagesAreAskedAgain(t *testing.T) {
+// After an operator restart the done pulls are forgotten: the images of a started gang are not asked again, so its held
+// remainder dispatches at once instead of holding its room while a prepull runs.
+func TestStartedGangIsNotHeldByImagesAfterRestart(t *testing.T) {
 	a := obj("lab/a", "g1", 1, nil, need(pods("a", "p1:S", "p2", "p3"), 100, gi)...)
 	a.prepKey = "g/g1"
 	b := obj("lab/b", "g2", 2, nil, need(pods("b", "p1"), 100, gi)...)
+	b.prepKey = "g/g2"
 	env := &fakeEnv{nodes: []nodeRoom{room("n1", 4000, 2*gi)}, notPrepared: map[string]bool{"g/g1": true}}
-	wantDispatch(t, planSchedule([]*schedObject{a, b}, 10, false, env))
+	wantDispatch(t, planSchedule([]*schedObject{a, b}, 10, false, env), "a/p2", "a/p3")
+	if len(env.pulled) != 1 || env.pulled[0] != "g/g2" {
+		t.Fatalf("pulled %v, want only the new gang's images", env.pulled)
+	}
+}
+
+// A held gang that dispatches counts in its tenant's dispatched pods from then on, not also as held: the next gang of the
+// tenant sees it once.
+func TestDispatchedHeldGangIsNotCountedTwiceInTheQuota(t *testing.T) {
+	mk := func(id string, arrival int, ran, rest int64) *schedObject {
+		o := obj("lab/"+id, id, arrival, nil, pods(id, "p1:D", "p2")...)
+		o.pods[0].need, o.pods[1].need = amount{cpu: ran, mem: 1}, amount{cpu: rest, mem: gi}
+		for _, p := range o.pods {
+			p.tenant = "t"
+		}
+		return o
+	}
+	// 200m run, a's 400m and b's 300m: 900m of 1000m. Counting a twice (held and dispatched) would be 1300m.
+	a, b := mk("a", 1, 200, 400), mk("b", 2, 0, 300)
+	env := &fakeEnv{nodes: []nodeRoom{room("n1", 40000, 40*gi)}, tenantCPU: map[string]int64{"t": 1000}, tenantUsed: map[string]int64{"t": 200}}
+	wantDispatch(t, planSchedule([]*schedObject{a, b}, 10, false, env), "a/p2", "b/p2")
+	// a new gang after a held one: 200 + 400 + 300 = 900m
+	c := obj("lab/c", "c", 3, nil, pods("c", "p1")...)
+	c.pods[0].need, c.pods[0].tenant = amount{cpu: 300, mem: gi}, "t"
+	env = &fakeEnv{nodes: []nodeRoom{room("n1", 40000, 40*gi)}, tenantCPU: map[string]int64{"t": 1000}, tenantUsed: map[string]int64{"t": 200}}
+	wantDispatch(t, planSchedule([]*schedObject{mk("a", 1, 200, 400), c}, 10, false, env), "a/p2", "c/p1")
 }
 
 // A remainder that does not fit even the empty nodes holds no room: another tenant's lab goes.
@@ -444,9 +472,7 @@ func TestAdmittedGangsGoInOrder(t *testing.T) {
 func TestPodOverSchedulableRoomButWithinThePoolWaits(t *testing.T) {
 	o := obj("lab/a", "g", 1, nil, need(pods("a", "p1"), 100, 6*gi)...)
 	small := []nodeRoom{room("n1", 4000, 2*gi), room("n2", 4000, 2*gi)}
-	env := &fakeEnv{nodes: small, empty: small, maxNode: &amount{cpu: 4000, mem: 8 * gi}, fits: map[string]fit{"gang/g": fitNever}}
-	env.fits["a/p1"] = fitNever
-	env.neverOff = true
+	env := &fakeEnv{nodes: small, empty: small, maxNode: &amount{cpu: 4000, mem: 8 * gi}}
 	plan := planSchedule([]*schedObject{o}, 10, false, env)
 	wantDispatch(t, plan)
 	if len(plan.failed) != 0 || plan.status["lab/a"].Reason != laboratoryv1alpha1.WaitDoesNotFit {
