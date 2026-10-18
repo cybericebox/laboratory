@@ -335,3 +335,23 @@ func TestSubtractContinuesToRoomWithCPU(t *testing.T) {
 		t.Fatalf("out = %+v", out)
 	}
 }
+
+// deploy-after names a group of the same tenant: a group of that name in another tenant does not satisfy it or block it.
+func TestDeployAfterIsTenantScoped(t *testing.T) {
+	other := obj("lab/x", "g1", 1, nil, pods("x", "p1:S")...) // g1 of tenant t2, not complete
+	other.pods[0].tenant = "t2"
+	mine := obj("lab/a", "g1", 1, nil, pods("a", "p1:D")...) // g1 of tenant t1, complete
+	mine.pods[0].tenant = "t1"
+	next := obj("lab/b", "g2", 2, []string{"g1"}, pods("b", "p1")...)
+	next.pods[0].tenant = "t1"
+	plan := planSchedule([]*schedObject{other, mine, next}, 10, false, &fakeEnv{})
+	wantDispatch(t, plan, "b/p1")
+	// a tenant without its own g1 is not released by the g1 of another tenant
+	next2 := obj("lab/c", "g2", 2, []string{"g1"}, pods("c", "p1")...)
+	next2.pods[0].tenant = "t3"
+	plan = planSchedule([]*schedObject{other, mine, next2}, 10, false, &fakeEnv{})
+	wantDispatch(t, plan)
+	if m := plan.status["lab/c"].Message; m != "waiting for group g1 (not known yet)" {
+		t.Fatalf("message = %q", m)
+	}
+}

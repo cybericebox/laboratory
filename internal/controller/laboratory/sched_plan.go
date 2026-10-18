@@ -75,6 +75,10 @@ type schedObject struct {
 // isGroup says the object is a LabGroup: its pods are the VPN and gateway of a team, not lab pods.
 func (o *schedObject) isGroup() bool { return strings.HasPrefix(o.id, "group/") }
 
+// groupKey identifies a deploy group inside its tenant: the same key in two tenants is two groups, for gangs and for
+// deploy-after alike.
+func groupKey(tenant, group string) string { return tenant + "\x00" + group }
+
 // objTenant is the tenant of the object: that of its first pod (all pods of an object share it).
 func objTenant(o *schedObject) string {
 	if len(o.pods) == 0 {
@@ -160,6 +164,7 @@ type schedPlan struct {
 
 type schedGroup struct {
 	key      string
+	tenant   string
 	objs     []*schedObject
 	arrival  time.Time
 	started  bool
@@ -196,10 +201,10 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			independents = append(independents, o)
 			continue
 		}
-		g := groups[o.group]
+		g := groups[groupKey(objTenant(o), o.group)]
 		if g == nil {
-			g = &schedGroup{key: o.group, complete: true, after: map[string]bool{}, arrival: o.arrival}
-			groups[o.group] = g
+			g = &schedGroup{key: o.group, tenant: objTenant(o), complete: true, after: map[string]bool{}, arrival: o.arrival}
+			groups[groupKey(g.tenant, o.group)] = g
 		}
 		g.objs = append(g.objs, o)
 		if o.arrival.Before(g.arrival) {
@@ -225,7 +230,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		}
 		sort.Strings(deps)
 		for _, d := range deps {
-			dg := groups[d]
+			dg := groups[groupKey(g.tenant, d)]
 			if dg == nil {
 				return d, false // not known (yet)
 			}
@@ -618,7 +623,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			Position: int32(i + 1), Length: int32(len(waiting)),
 			Pods: int32(len(o.pods)), Pending: int32(remaining(o)),
 		}
-		if g := groups[o.group]; g != nil && o.group != "" {
+		if g := groups[groupKey(objTenant(o), o.group)]; g != nil && o.group != "" {
 			if dep, known := waitFor(g); dep != "" {
 				st.Reason = laboratoryv1alpha1.WaitForGroup
 				st.Message = "waiting for group " + dep
