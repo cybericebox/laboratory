@@ -175,3 +175,26 @@ func TestL7MaxConnectionsFitTheMemoryLimit(t *testing.T) {
 		t.Errorf("liveTotal %d above maxConnections %d has no effect: a request in flight holds a connection", v.Proxy.L7.LiveTotal, v.Proxy.L7.MaxConnections)
 	}
 }
+
+// LB-IPAM shares the edge address across namespaces only when both sides name each other: proxy.sharedNamespaces adds the namespaces of
+// further Services (the platform's HTTP/3 one) to the WireGuard Service and to the Gateway's Service; the default changes nothing.
+func TestEdgeServicesNameTheSharedNamespaces(t *testing.T) {
+	const key = "lbipam.cilium.io/sharing-cross-namespace: "
+	for _, c := range []struct {
+		args   []string
+		wg, gw string
+	}{
+		{nil, `laboratory-system`, `"laboratory-proxy"`},
+		{[]string{"--set", "proxy.sharedNamespaces={platform,other}"}, `laboratory-system,platform,other`, `"laboratory-proxy,platform,other"`},
+	} {
+		out, err := helmTemplate(t, append(c.args, "-s", "templates/proxy/service-wg-lb.yaml", "-s", "templates/gateway/gateway.yaml")...)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		for _, want := range []string{key + c.wg + "\n", key + c.gw + "\n"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%v: missing %q\n%s", c.args, want, out)
+			}
+		}
+	}
+}
