@@ -189,7 +189,7 @@ func TestSeenKeepsFastPathSessionAlive(t *testing.T) {
 func TestRestoreRebuildsSession(t *testing.T) {
 	client, server := sock("1.1.1.1", 1000), sock("10.0.0.1", 51820)
 	c, now, s := sinkTrack(t)
-	if !c.Restore(1, 2, client, server, "g", *now, 0) {
+	if !c.Restore(1, 2, client, server, "g", *now, 0, Socket{}) {
 		t.Fatal("Restore")
 	}
 	if len(s.upserts) != 0 {
@@ -212,7 +212,7 @@ func TestRestoreRebuildsSession(t *testing.T) {
 	// an index owned by a live different session
 	c, now, _ = sinkTrack(t)
 	session(t, c, 1, 2, client, server)
-	if c.Restore(3, 2, sock("2.2.2.2", 2), server, "g", *now, 0) || c.Restore(1, 4, sock("2.2.2.2", 2), server, "g", *now, 0) {
+	if c.Restore(3, 2, sock("2.2.2.2", 2), server, "g", *now, 0, Socket{}) || c.Restore(1, 4, sock("2.2.2.2", 2), server, "g", *now, 0, Socket{}) {
 		t.Fatal("a live index is not taken")
 	}
 	// a full table
@@ -220,7 +220,7 @@ func TestRestoreRebuildsSession(t *testing.T) {
 	l.MaxEntries = 2
 	c, now = clockTrack(l)
 	session(t, c, 1, 2, client, server)
-	if c.Restore(3, 4, client, server, "g", *now, 0) {
+	if c.Restore(3, 4, client, server, "g", *now, 0, Socket{}) {
 		t.Fatal("a full table refuses")
 	}
 }
@@ -243,7 +243,7 @@ func TestRestoreOverStaleSessionKeepsTheDataPlaneEntries(t *testing.T) {
 	session(t, c, 5, 6, sock("3.3.3.3", 3), server) // 6 pairs with 5 only
 	*now = now.Add(conntrackTTL + time.Second)
 	s.deletes, s.upserts = nil, nil
-	if !c.Restore(1, 2, client, server, "g", *now, 0) {
+	if !c.Restore(1, 2, client, server, "g", *now, 0, Socket{}) {
 		t.Fatal("Restore over a stale session")
 	}
 	if len(s.deletes) != 0 {
@@ -257,7 +257,7 @@ func TestRestoreOverStaleSessionKeepsTheDataPlaneEntries(t *testing.T) {
 	session(t, c, 1, 2, client, server)
 	*now = now.Add(conntrackTTL + time.Second)
 	s.deletes = nil
-	if !c.Restore(1, 9, client, server, "g", *now, 0) {
+	if !c.Restore(1, 9, client, server, "g", *now, 0, Socket{}) {
 		t.Fatal("Restore")
 	}
 	if len(s.deletes) != 1 || s.deletes[0] != 2 {
@@ -273,7 +273,7 @@ func TestRestoreIsAtomic(t *testing.T) {
 	session(t, c, 7, 8, sock("3.3.3.3", 3), server) // live
 	*now = now.Add(2 * time.Second)                 // 1/2 stale now, 7/8 live
 	s.deletes = nil
-	if c.Restore(1, 8, client, server, "g", *now, 0) {
+	if c.Restore(1, 8, client, server, "g", *now, 0, Socket{}) {
 		t.Fatal("a live second index refuses the restore")
 	}
 	if len(s.deletes) != 0 || c.Len() != 4 {
@@ -367,7 +367,7 @@ func TestRefusedHandshakeWritesNothing(t *testing.T) {
 func TestRestoreKeepsTheReplyDevice(t *testing.T) {
 	c, now, s := sinkTrack(t)
 	client, server := sock("1.1.1.1", 1000), sock("10.0.0.1", 51820)
-	if !c.Restore(1, 2, client, server, "g", *now, 23) {
+	if !c.Restore(1, 2, client, server, "g", *now, 23, Socket{}) {
 		t.Fatal("Restore")
 	}
 	c.UpdateRoaming(1, sock("4.4.4.4", 4))
@@ -378,3 +378,71 @@ func TestRestoreKeepsTheReplyDevice(t *testing.T) {
 		t.Fatalf("session count %d", c.SessionCount())
 	}
 }
+
+// entryOnce knows the entry address of the first client only, like the fast path, which learns it from the handshake
+// initiation: a roamed client never sent one from its new address.
+type entryOnce struct{ client Socket }
+
+func (entryOnce) TowardsServer(Socket) (Socket, bool) { return probeSrc, true }
+func (e entryOnce) TowardsClient(c Socket) (Socket, bool) {
+	return entrySrc, sameSocket(c, e.client)
+}
+
+// TestRoamKeepsTheEntryAddress: after a roam the reply direction still leaves from the entry address the session's handshake
+// arrived at, so the kernel keeps sending the replies to the client's new address.
+func TestRoamKeepsTheEntryAddress(t *testing.T) {
+	client, server := sock("1.1.1.1", 1000), sock("10.0.0.1", 51820)
+	c, now := clockTrack(DefaultLimits())
+	s := &fakeSink{}
+	c.SetSink(s, entryOnce{client: client})
+	session(t, c, 10, 20, client, server)
+	*now = now.Add(6 * time.Second)
+	s.upserts = nil
+	roamed := sock("1.1.1.1", 41000)
+	if _, ok := c.LookupForward(20, roamed); !ok {
+		t.Fatal("roam")
+	}
+	got := lastByIndex(s)
+	if len(s.upserts) != 2 || !sameSocket(got[10].Dest, roamed) || !sameSocket(got[10].NewSource, entrySrc) || c.SinkErrors() != 0 {
+		t.Fatalf("after the roam: %+v errors %d", s.upserts, c.SinkErrors())
+	}
+
+	// a restored session keeps the entry address it had in the data plane
+	c, now = clockTrack(DefaultLimits())
+	s = &fakeSink{}
+	c.SetSink(s, entryOnce{})
+	if !c.Restore(10, 20, client, server, "g", *now, 0, entrySrc) {
+		t.Fatal("Restore")
+	}
+	*now = now.Add(6 * time.Second)
+	if _, ok := c.LookupForward(20, roamed); !ok {
+		t.Fatal("roam")
+	}
+	if got := lastByIndex(s); !sameSocket(got[10].NewSource, entrySrc) || c.SinkErrors() != 0 {
+		t.Fatalf("restored, then roamed: %+v errors %d", s.upserts, c.SinkErrors())
+	}
+}
+
+// A direction that cannot be written any more is deleted from the data plane, so the kernel does not keep forwarding it to an
+// old address.
+func TestUnwritableDirectionIsDeleted(t *testing.T) {
+	client, server := sock("1.1.1.1", 1000), sock("10.0.0.1", 51820)
+	c, now := clockTrack(DefaultLimits())
+	s := &fakeSink{}
+	src := &switchSource{ok: true}
+	c.SetSink(s, src)
+	session(t, c, 10, 20, client, server)
+	src.ok = false
+	*now = now.Add(6 * time.Second)
+	if _, ok := c.LookupForward(20, sock("2.2.2.2", 2)); !ok {
+		t.Fatal("roam")
+	}
+	if len(s.deletes) != 2 {
+		t.Fatalf("deletes %v, want both directions", s.deletes)
+	}
+}
+
+type switchSource struct{ ok bool }
+
+func (s *switchSource) TowardsServer(Socket) (Socket, bool) { return probeSrc, s.ok }
+func (s *switchSource) TowardsClient(Socket) (Socket, bool) { return entrySrc, s.ok }
