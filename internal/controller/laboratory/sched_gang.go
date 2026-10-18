@@ -100,6 +100,27 @@ func (g *gang) started() bool {
 	return out && waiting
 }
 
+// waitingSince is when the gang started waiting in this queue episode: the earliest time one of its waiting pods entered the
+// queue (a lab resumed after a stop is queued again then), at the earliest its arrival; the arrival when no waiting pod has a
+// queue time.
+func (g *gang) waitingSince() time.Time {
+	var since time.Time
+	for _, o := range g.objs {
+		for _, p := range o.pods {
+			if p.dispatched() || p.queuedAt.IsZero() {
+				continue
+			}
+			if since.IsZero() || p.queuedAt.Before(since) {
+				since = p.queuedAt
+			}
+		}
+	}
+	if since.IsZero() || since.Before(g.arrival) {
+		return g.arrival
+	}
+	return since
+}
+
 // reservationUsage is what the dispatched pods of a reservation request (used) against what it reserves (amount).
 type reservationUsage struct {
 	used, amount amount

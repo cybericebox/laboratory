@@ -335,8 +335,9 @@ whose sum never fits its tenant's quota is failed at once (`TenantQuotaNeverFits
 **Fair order and aging.** Groups that already have pods out keep their order ahead of all others. Of the new groups, those
 that run under a reservation (label `laboratory.cybericebox.com/reservation`) go first, the reservation with the lowest
 satisfied share (used / reserved, memory, then CPU) first, then arrival; the unreserved groups follow in the order above. A
-group that has waited longer than `scheduler.agingSeconds` (default `120`, `0` turns it off) is aged: the oldest aged group
-that waits only for room keeps its placement on the empty nodes (beside its own running pods), and the other groups use only
+group that has waited in the queue longer than `scheduler.agingSeconds` (default `120`, `0` turns it off; counted from when its
+pods were last queued, so a resumed lab starts again from zero) is aged: the oldest aged group that waits only for room keeps
+its placement on the empty nodes (beside its own running pods and the room stopped labs keep), and the other groups use only
 the room not kept for it, so a stream of small groups cannot keep a big one out forever. One group at a time; the room is
 free again once it starts, or once it waits for anything but room (quota, images, `DoesNotFitNow`). Only lab groups age and
 are held back: the VPN and gateway pods of LabGroups are placed first and may use any room, so a new team always gets its
