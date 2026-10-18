@@ -52,9 +52,18 @@ type fakeEnv struct {
 	tenantFull  map[string]bool // by tenant
 	// nodes are the free rooms offered to gangs; nil: no per-node check.
 	nodes []nodeRoom
+	// empty are the rooms with no lab running; nil: no verdict.
+	empty []nodeRoom
+	// tenantNever marks the tenants whose quota can never hold a gang.
+	tenantNever map[string]bool
 }
 
 func (f *fakeEnv) rooms() ([]nodeRoom, bool) { return f.nodes, f.nodes != nil }
+
+// emptyRooms is nil unless a test sets it: no DoesNotFit verdict per node.
+func (f *fakeEnv) emptyRooms() []nodeRoom { return f.empty }
+
+func (f *fakeEnv) tenantEverFits(p *schedPod) bool { return !f.tenantNever[p.tenant] }
 
 func (f *fakeEnv) tenantFits(p *schedPod) bool  { return !f.tenantFull[p.tenant] }
 func (f *fakeEnv) prepared(o *schedObject) bool { return !f.notPrepared[o.prepKey] }
@@ -275,15 +284,15 @@ func TestPlanResourceCheck(t *testing.T) {
 	if r := plan.status["lab/a"].Reason; r != laboratoryv1alpha1.WaitNoSchedulableNodes {
 		t.Fatalf("reason = %q", r)
 	}
-	// A pod that fits no node ever is failed; the others go on.
+	// A pod that fits no node ever fails its whole gang: nothing of it starts. Another group goes on.
 	env = &fakeEnv{fits: map[string]fit{"a/p1": fitNever}}
-	plan = planSchedule([]*schedObject{a, b}, 10, false, env)
-	wantDispatch(t, plan, "a/p2", "b/p1")
-	if len(plan.failed) != 1 || plan.failed[0].pod.key != "a/p1" {
+	plan = planSchedule([]*schedObject{a, b, c}, 10, false, env)
+	wantDispatch(t, plan, "c/p1")
+	if len(plan.failed) != 3 || plan.failed[0].pod.key != "a/p1" || plan.failed[0].reason != laboratoryv1alpha1.FailureDoesNotFit {
 		t.Fatalf("failed = %+v", plan.failed)
 	}
-	if env.taken != 2 {
-		t.Fatalf("reserved %d pods, want the 2 dispatched", env.taken)
+	if env.taken != 1 {
+		t.Fatalf("reserved %d pods, want the 1 dispatched", env.taken)
 	}
 }
 

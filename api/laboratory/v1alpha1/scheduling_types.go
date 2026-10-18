@@ -35,8 +35,10 @@ const (
 	FailureStartupTimeout = "StartupTimeout"
 	// FailurePodNotCreated: the workload never produced a pod (the message says why: the namespace refused it, a quota, a
 	// missing ServiceAccount or secret, an admission webhook, or the workload itself is missing or scaled to zero).
-	FailurePodNotCreated   = "PodNotCreated"
-	FailureDoesNotFit      = "DoesNotFit"
+	FailurePodNotCreated = "PodNotCreated"
+	FailureDoesNotFit    = "DoesNotFit"
+	// FailureTenantQuota: the pods of a deploy group together never fit the quota of their tenant.
+	FailureTenantQuota     = "TenantQuota"
 	WaitInFlightLimit      = "InFlightLimit"
 	WaitForGroup           = "WaitingForGroup"
 	WaitForTurn            = "WaitingForTurn"

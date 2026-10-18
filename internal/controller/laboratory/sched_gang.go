@@ -36,6 +36,9 @@ func fitsGang(rooms []nodeRoom, needs []podNeed) ([]nodeRoom, bool) {
 		return order[i].CPU > order[j].CPU
 	})
 	for _, n := range order {
+		if n.CPU == 0 && n.Memory == 0 {
+			continue // a pod that requests nothing fits anywhere, even with no room listed
+		}
 		placed := false
 		for i := range left {
 			if n.Memory <= left[i].Memory && n.CPU <= left[i].CPU {
@@ -53,8 +56,8 @@ func fitsGang(rooms []nodeRoom, needs []podNeed) ([]nodeRoom, bool) {
 }
 
 // subtractFromEmptiest takes the needs off the rooms one by one, each from the room with the most memory left (CPU breaks
-// the tie, then the node name): the node the kube scheduler is most likely to give a pod that is not bound yet. A need that
-// fits no room is taken from the emptiest one anyway, down to zero.
+// the tie, then the node name): the node the kube scheduler is most likely to give a pod that is not bound yet. What a room cannot give
+// is taken from the next emptiest one.
 func subtractFromEmptiest(rooms []nodeRoom, needs []amount) []nodeRoom {
 	out := append([]nodeRoom(nil), rooms...)
 	if len(out) == 0 {
@@ -68,22 +71,31 @@ func subtractFromEmptiest(rooms []nodeRoom, needs []amount) []nodeRoom {
 		return order[i].cpu > order[j].cpu
 	})
 	for _, n := range order {
-		best := 0
-		for i := range out {
-			switch {
-			case out[i].Memory != out[best].Memory:
-				if out[i].Memory > out[best].Memory {
+		// The share a room cannot give is taken from the next emptiest one.
+		for rest := n; rest.cpu > 0 || rest.mem > 0; {
+			best := 0
+			for i := range out {
+				switch {
+				case out[i].Memory != out[best].Memory:
+					if out[i].Memory > out[best].Memory {
+						best = i
+					}
+				case out[i].CPU != out[best].CPU:
+					if out[i].CPU > out[best].CPU {
+						best = i
+					}
+				case out[i].Name < out[best].Name:
 					best = i
 				}
-			case out[i].CPU != out[best].CPU:
-				if out[i].CPU > out[best].CPU {
-					best = i
-				}
-			case out[i].Name < out[best].Name:
-				best = i
 			}
+			takeMem, takeCPU := min(rest.mem, out[best].Memory), min(rest.cpu, out[best].CPU)
+			if takeMem == 0 && takeCPU == 0 {
+				break // every room is empty: the rest is beyond the nodes
+			}
+			out[best].Memory -= takeMem
+			out[best].CPU -= takeCPU
+			rest = amount{cpu: rest.cpu - takeCPU, mem: rest.mem - takeMem}
 		}
-		out[best].Memory, out[best].CPU = max(out[best].Memory-n.mem, 0), max(out[best].CPU-n.cpu, 0)
 	}
 	return out
 }
