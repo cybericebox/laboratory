@@ -73,7 +73,7 @@ func (s *Scheduler) stoppedReservations(snap *clusterView) ([]corev1.Pod, map[st
 				continue
 			}
 			spec.NodeName = node
-			synthetic = append(synthetic, corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "held-" + d.Name, Namespace: d.Namespace}, Spec: spec})
+			synthetic = append(synthetic, corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "held-" + d.Name, Namespace: d.Namespace, Labels: map[string]string{names.LabelLab: l.Name}}, Spec: spec})
 		}
 	}
 	return synthetic, held, unknown

@@ -31,12 +31,24 @@ func podRequests(pod *corev1.Pod) amount {
 	return amount{cpu: r.CPU, mem: r.Memory}
 }
 
-// capacity is the CPU and memory of the nodes lab pods can run on.
-type capacity struct {
+// nodeRoom is what labs can still take on one node, in millicores and bytes: free after the requests of non-lab pods, the
+// platform node reserve and the packing reserve.
+type nodeRoom struct {
+	Name        string
+	CPU, Memory int64
+}
+
+// capacitySnapshot is the CPU and memory of the nodes lab pods can run on.
+type capacitySnapshot struct {
 	nodes       int
 	allocatable amount
 	free        amount
+	// perNode is the room of every schedulable node (rooms).
+	perNode []nodeRoom
 }
+
+// rooms is the room labs can take on each schedulable node, in the order of the nodes.
+func (c capacitySnapshot) rooms() []nodeRoom { return append([]nodeRoom(nil), c.perNode...) }
 
 // schedulableNode: see nodecap.Schedulable.
 func schedulableNode(node *corev1.Node, selector map[string]string, tolerations []corev1.Toleration) bool {
@@ -48,7 +60,7 @@ func schedulableNode(node *corev1.Node, selector map[string]string, tolerations 
 // included, not only lab pods). Free is summed per node
 // and never negative on a node, so an overcommitted node does not hide room
 // elsewhere. Finished pods hold no resources.
-func snapshotCapacity(nodes []corev1.Node, pods []corev1.Pod, selector map[string]string, tolerations []corev1.Toleration, nodeReserve amount) capacity {
+func snapshotCapacity(nodes []corev1.Node, pods []corev1.Pod, selector map[string]string, tolerations []corev1.Toleration, nodeReserve amount, packing nodecap.PackingReserve) capacitySnapshot {
 	requested := map[string]amount{}
 	for i := range pods {
 		p := &pods[i]
@@ -57,7 +69,10 @@ func snapshotCapacity(nodes []corev1.Node, pods []corev1.Pod, selector map[strin
 		}
 		requested[p.Spec.NodeName] = requested[p.Spec.NodeName].add(podRequests(p))
 	}
-	var c capacity
+	var c capacitySnapshot
+	for _, f := range nodecap.FreeForLabs(nodes, pods, selector, tolerations, nodecap.Amount{CPU: nodeReserve.cpu, Memory: nodeReserve.mem}, packing) {
+		c.perNode = append(c.perNode, nodeRoom{Name: f.Name, CPU: f.CPU, Memory: f.Memory})
+	}
 	for i := range nodes {
 		n := &nodes[i]
 		if !schedulableNode(n, selector, tolerations) {
@@ -89,7 +104,7 @@ const (
 // check decides whether a lab needing need can be admitted while headroomPercent
 // of the schedulable CPU and memory (the platform reserve) stays free. A lab that requests nothing
 // always fits.
-func (c capacity) check(need amount, headroomPercent int) fit {
+func (c capacitySnapshot) check(need amount, headroomPercent int) fit {
 	if need == (amount{}) {
 		return fitOK
 	}
@@ -109,6 +124,6 @@ func (c capacity) check(need amount, headroomPercent int) fit {
 }
 
 // take reserves need out of the free capacity after a lab was admitted.
-func (c *capacity) take(need amount) {
+func (c *capacitySnapshot) take(need amount) {
 	c.free = c.free.sub(need).floorZero()
 }

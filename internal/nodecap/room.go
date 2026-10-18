@@ -2,6 +2,8 @@ package nodecap
 
 import (
 	corev1 "k8s.io/api/core/v1"
+
+	"github.com/cybericebox/laboratory/internal/names"
 )
 
 // Amount is a CPU and memory quantity: millicores and bytes.
@@ -88,6 +90,73 @@ func LargestDevice(rooms []NodeRoom) Amount {
 	var out Amount
 	for _, r := range rooms {
 		out.CPU, out.Memory = max(out.CPU, r.Allocatable.CPU), max(out.Memory, r.Allocatable.Memory)
+	}
+	return out
+}
+
+// PackingReserve is the hidden share of a node that labs never use, because nodes do not share memory and devices leave gaps
+// between them. Percent (0-49) is taken from what is free on the node; a fixed CPU or Memory (millicores, bytes) replaces the
+// percent for that resource when it is non-zero.
+type PackingReserve struct {
+	Percent     int
+	CPU, Memory int64
+}
+
+// Apply is what is left of free (the CPU and memory of a node after everything else) once the reserve is kept back. Never
+// negative. The reserve is rounded down, so the result is an exact integer.
+func (r PackingReserve) Apply(freeCPU, freeMem int64) (cpu, mem int64) {
+	keep := func(free, fixed int64) int64 {
+		if fixed == 0 {
+			fixed = free * int64(r.Percent) / 100
+		}
+		return max(free-fixed, 0)
+	}
+	return keep(freeCPU, r.CPU), keep(freeMem, r.Memory)
+}
+
+// NodeFree is what labs can still take on one schedulable node.
+type NodeFree struct {
+	Name        string
+	CPU, Memory int64
+}
+
+// IsLabPod reports whether the pod belongs to a lab: a device pod or the VPN or gateway pod of a group. Every other pod
+// (DaemonSets, the proxy, system pods) is the platform's and takes room away from the labs.
+func IsLabPod(p *corev1.Pod) bool {
+	if p.Labels[names.LabelLab] != "" {
+		return true
+	}
+	c := p.Labels[names.LabelComponent]
+	if c == "" {
+		c = p.Labels["app"]
+	}
+	return c == names.ComponentVPN || c == names.ComponentGateway
+}
+
+// FreeForLabs is the room labs can take on every schedulable node, in the order of nodes: the allocatable less the platform
+// node reserve and the requests of the pods that are not lab pods (finished pods hold nothing), less the packing reserve,
+// which is taken per node from what is left. The operator and the agent both use it, so they report the same room.
+func FreeForLabs(nodes []corev1.Node, pods []corev1.Pod, selector map[string]string, tolerations []corev1.Toleration, nodeReserve Amount, packing PackingReserve) []NodeFree {
+	requested := map[string]Amount{}
+	for i := range pods {
+		p := &pods[i]
+		if p.Spec.NodeName == "" || p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed || IsLabPod(p) {
+			continue
+		}
+		r, sum := PodRequests(p), requested[p.Spec.NodeName]
+		requested[p.Spec.NodeName] = Amount{sum.CPU + r.CPU, sum.Memory + r.Memory}
+	}
+	var out []NodeFree
+	for i := range nodes {
+		n := &nodes[i]
+		if !Schedulable(n, selector, tolerations) {
+			continue
+		}
+		req := requested[n.Name]
+		cpu := max(n.Status.Allocatable.Cpu().MilliValue()-nodeReserve.CPU-req.CPU, 0)
+		mem := max(n.Status.Allocatable.Memory().Value()-nodeReserve.Memory-req.Memory, 0)
+		cpu, mem = packing.Apply(cpu, mem)
+		out = append(out, NodeFree{Name: n.Name, CPU: cpu, Memory: mem})
 	}
 	return out
 }

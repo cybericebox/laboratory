@@ -297,6 +297,11 @@ func Run() {
 					corev1.ResourceCPU:    resource.MustParse(cfg.SchedulerPlatformReserveCPU),
 					corev1.ResourceMemory: resource.MustParse(cfg.SchedulerPlatformReserveMemory),
 				},
+				PackingReservePercent: cfg.SchedulerPackingReservePercent,
+				PackingReserveNode: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse(cfg.SchedulerPackingReserveCPU),
+					corev1.ResourceMemory: resource.MustParse(cfg.SchedulerPackingReserveMemory),
+				},
 				ResourceCheck:  cfg.SchedulerResourceCheck,
 				Prepull:        cfg.SchedulerPrepull,
 				PrepullTimeout: cfg.SchedulerPrepullTimeout,

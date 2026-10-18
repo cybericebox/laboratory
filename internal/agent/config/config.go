@@ -92,7 +92,11 @@ type Config struct {
 	PlatformReserveMemory  string `env:"SCHEDULER_PLATFORM_RESERVE_MEMORY" envDefault:"0"`
 	// PackingReservePercent is the hidden packing reserve (chart scheduler.packingReservePercent): the capacity reported to the
 	// tenant is net of it. Tenants never see it.
-	PackingReservePercent int `env:"SCHEDULER_PACKING_RESERVE_PERCENT" envDefault:"15"`
+	// PackingReserveCPU and PackingReserveMemory, when not "0", replace the percent for that resource. The operator reads the same
+	// values (laboratory.sharedEnv), so both report the same room.
+	PackingReservePercent int    `env:"SCHEDULER_PACKING_RESERVE_PERCENT" envDefault:"15"`
+	PackingReserveCPU     string `env:"SCHEDULER_PACKING_RESERVE_CPU" envDefault:"0"`
+	PackingReserveMemory  string `env:"SCHEDULER_PACKING_RESERVE_MEMORY" envDefault:"0"`
 	// TenantStatusInterval is how often the status (reserved, used) of every Tenant is refreshed.
 	TenantStatusInterval time.Duration `env:"AGENT_TENANT_STATUS_INTERVAL" envDefault:"30s"`
 	// GroupPods are the resources of the VPN and gateway pods of a group (the same values as the operator's):
