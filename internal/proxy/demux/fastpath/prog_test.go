@@ -180,16 +180,30 @@ func monoNow(t *testing.T) uint64 {
 	return uint64(ts.Nano())
 }
 
+// fwd is one direction of the session client <-> server as the demux writes it: both directions name the client -> server
+// index as their session (the owner of the bucket and last_seen), and a reply must be sent to the probe source.
 func fwd(t *testing.T, exp, src, dst netip.AddrPort, toClient bool, replyIf int) WgFastpathWgFwd {
 	f := WgFastpathWgFwd{
 		ExpIp: be32(exp.Addr()), ExpPort: be16(exp.Port()),
 		NewSrcIp: be32(src.Addr()), NewSrcPort: be16(src.Port()),
 		DstIp: be32(dst.Addr()), DstPort: be16(dst.Port()),
-		ReplyIfindex: uint32(replyIf),
-		LastSeenNs:   monoNow(t),
+		Session: serverIndex,
 	}
 	if toClient {
 		f.Flags = 1
+		f.ReplyIfindex = uint32(replyIf)
+		f.ViaIp, f.ViaPort = be32(probe.Addr()), be16(probe.Port())
+	} else {
+		f.LastSeenNs = monoNow(t)
+	}
+	return f
+}
+
+func owner(t *testing.T, objs *WgFastpathObjects) WgFastpathWgFwd {
+	t.Helper()
+	var f WgFastpathWgFwd
+	if err := objs.WgSessions.Lookup(WgFastpathWgKey{Index: serverIndex}, &f); err != nil {
+		t.Fatal(err)
 	}
 	return f
 }
@@ -777,28 +791,7 @@ func TestForwardsLive(t *testing.T) {
 			tp := setup(t)
 			objs := load(t, defaultCfg(tp))
 			putSessions(t, objs, tp)
-			for _, a := range []struct {
-				prog *ebpf.Program
-				dev  int
-				at   ebpf.AttachType
-			}{
-				{objs.WgTcIngress, tp.ext, ebpf.AttachTCXIngress},
-				{objs.WgTcEgressGuard, tp.ext, ebpf.AttachTCXEgress},
-				{objs.WgTcReply, tp.srv, ebpf.AttachTCXIngress},
-			} {
-				l, err := link.AttachTCX(link.TCXOptions{Program: a.prog, Interface: a.dev, Attach: a.at, Anchor: link.Head()})
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = l.Close() })
-			}
-			if mode == "xdp" {
-				l, err := link.AttachXDP(link.XDPOptions{Program: objs.WgXdp, Interface: tp.ext, Flags: link.XDPGenericMode})
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = l.Close() })
-			}
+			attachAll(t, objs, tp, mode == "xdp")
 			cl := udpIn(t, "bpfcl", client)
 			sv := udpIn(t, "bpfsv", server)
 
@@ -817,4 +810,193 @@ func TestForwardsLive(t *testing.T) {
 			})
 		})
 	}
+}
+
+// TestSharesOneBucketPerSession: both directions draw from the session's one bucket, as in user space, and a reply keeps
+// the session fresh just like a request.
+func TestSharesOneBucketPerSession(t *testing.T) {
+	tp := setup(t)
+	cfg := defaultCfg(tp)
+	cfg.RatePerS, cfg.Burst = 1, 3
+	objs := load(t, cfg)
+	putSessions(t, objs, tp)
+	before := owner(t, objs)
+
+	req, rep := toServerFrame().bytes(), toClientFrame().bytes()
+	if r := runTC(t, objs.WgTcReply, rep, replyCtx(tp.srv)); r.ret != tcxRedirect {
+		t.Fatalf("reply 1: verdict %d, want TCX_REDIRECT", int32(r.ret))
+	}
+	if got := owner(t, objs).LastSeenNs; got <= before.LastSeenNs {
+		t.Errorf("a reply did not move the session's last_seen (%d, was %d)", got, before.LastSeenNs)
+	}
+	if r := runTC(t, objs.WgTcIngress, req, ingress(tp, 0)); r.ret != tcxRedirect {
+		t.Fatalf("request 1: verdict %d, want TCX_REDIRECT", int32(r.ret))
+	}
+	if r := runTC(t, objs.WgTcReply, rep, replyCtx(tp.srv)); r.ret != tcxRedirect {
+		t.Fatalf("reply 2: verdict %d, want TCX_REDIRECT", int32(r.ret))
+	}
+	// Three packets of the session so far: the bucket (burst 3) is empty for either direction.
+	if r := runTC(t, objs.WgTcIngress, req, ingress(tp, 0)); r.ret != tcxDrop {
+		t.Fatalf("request 2: verdict %d, want TCX_DROP", int32(r.ret))
+	}
+	if r := runTC(t, objs.WgTcReply, rep, replyCtx(tp.srv)); r.ret != tcxDrop {
+		t.Fatalf("reply 3: verdict %d, want TCX_DROP", int32(r.ret))
+	}
+	wantStats(t, objs, map[WgFastpathWgStat]uint64{
+		WgFastpathWgStatWG_STAT_FORWARDED_TO_SERVER: 1,
+		WgFastpathWgStatWG_STAT_FORWARDED_TO_CLIENT: 2,
+		WgFastpathWgStatWG_STAT_DROPPED_RATE:        2,
+	})
+	var other WgFastpathWgFwd
+	if err := objs.WgSessions.Lookup(WgFastpathWgKey{Index: clientIndex}, &other); err != nil {
+		t.Fatal(err)
+	}
+	if other.TokensX1000 != 0 || other.RefillNs != 0 || other.LastSeenNs != 0 {
+		t.Errorf("the server -> client entry keeps a bucket of its own: %+v", other)
+	}
+}
+
+// TestRepliesNeedTheirSession: a reply is fast only with a reply device, to the demux socket's address, and with the
+// session's owner (the client -> server direction) present.
+func TestRepliesNeedTheirSession(t *testing.T) {
+	tp := setup(t)
+	in := toClientFrame().bytes()
+
+	t.Run("no reply device", func(t *testing.T) {
+		objs := load(t, defaultCfg(tp))
+		putSessions(t, objs, tp)
+		if err := objs.WgSessions.Put(WgFastpathWgKey{Index: clientIndex}, fwd(t, server, entry, client, true, 0)); err != nil {
+			t.Fatal(err)
+		}
+		checkUntouched(t, "reply_ifindex 0", runTC(t, objs.WgTcReply, in, replyCtx(tp.srv)), in)
+		wantStats(t, objs, map[WgFastpathWgStat]uint64{WgFastpathWgStatWG_STAT_PASSED_MISS: 1})
+	})
+	t.Run("not to the demux socket", func(t *testing.T) {
+		objs := load(t, defaultCfg(tp))
+		putSessions(t, objs, tp)
+		for _, dst := range []string{"10.0.0.1:51821", "10.0.0.9:51820"} {
+			f := toClientFrame()
+			f.dst = netip.MustParseAddrPort(dst)
+			other := f.bytes()
+			checkUntouched(t, "reply to "+dst, runTC(t, objs.WgTcReply, other, replyCtx(tp.srv)), other)
+		}
+		wantStats(t, objs, map[WgFastpathWgStat]uint64{WgFastpathWgStatWG_STAT_PASSED_MISS: 2})
+	})
+	t.Run("no owner", func(t *testing.T) {
+		objs := load(t, defaultCfg(tp))
+		if err := objs.WgSessions.Put(WgFastpathWgKey{Index: clientIndex}, fwd(t, server, entry, client, true, tp.srv)); err != nil {
+			t.Fatal(err)
+		}
+		checkUntouched(t, "reply without its session's owner", runTC(t, objs.WgTcReply, in, replyCtx(tp.srv)), in)
+		wantStats(t, objs, map[WgFastpathWgStat]uint64{WgFastpathWgStatWG_STAT_PASSED_MISS: 1})
+	})
+}
+
+// TestXDPWithoutMetadataRoomChargesNothing: when the driver gives no room for the metadata (here: the room is already used
+// up), XDP passes the frame untouched before judging it, so tc's judgement is the only one that costs a token.
+func TestXDPWithoutMetadataRoomChargesNothing(t *testing.T) {
+	tp := setup(t)
+	cfg := defaultCfg(tp)
+	cfg.RatePerS, cfg.Burst = 1, 3
+	objs := load(t, cfg)
+	putSessions(t, objs, tp)
+	before := owner(t, objs)
+
+	// The input already carries as much metadata as the kernel takes (the limit depends on the kernel: the largest input it
+	// accepts), so there is no room for ours.
+	frameIn := toServerFrame().bytes()
+	var (
+		ret   uint32
+		room  uint32
+		opts  *ebpf.RunOptions
+		ctxIn xdpCtx
+		err   error
+	)
+	for room = 252; room >= 32; room -= 4 {
+		in := append(make([]byte, room), frameIn...)
+		ctxIn = xdpCtx{Data: room, DataEnd: uint32(len(in))}
+		var ctxOut xdpCtx
+		opts = &ebpf.RunOptions{Data: in, DataOut: make([]byte, len(in)+256), Context: ctxIn, ContextOut: &ctxOut}
+		if ret, err = objs.WgXdp.Run(opts); err == nil {
+			ctxIn = ctxOut
+			break
+		}
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ret != xdpPass || ctxIn.Data != room || !bytes.Equal(opts.DataOut[room:], frameIn) {
+		t.Fatalf("verdict %d, meta %d bytes (input %d); want XDP_PASS with the frame untouched", ret, ctxIn.Data, room)
+	}
+	after := owner(t, objs)
+	if after.TokensX1000 != before.TokensX1000 || after.RefillNs != before.RefillNs || after.LastSeenNs != before.LastSeenNs {
+		t.Errorf("the session was charged: bucket %d/%d seen %d, was %d/%d seen %d",
+			after.TokensX1000, after.RefillNs, after.LastSeenNs, before.TokensX1000, before.RefillNs, before.LastSeenNs)
+	}
+	wantStats(t, objs, map[WgFastpathWgStat]uint64{WgFastpathWgStatWG_STAT_PASSED_META: 1})
+}
+
+func TestPassesGROAggregates(t *testing.T) {
+	tp := setup(t)
+	objs := load(t, defaultCfg(tp))
+	putSessions(t, objs, tp)
+	in := toServerFrame().bytes()
+	ctx := ingress(tp, 0)
+	ctx.GsoSize, ctx.GsoSegs = 100, 1
+	checkUntouched(t, "gso to server", runTC(t, objs.WgTcIngress, in, ctx), in)
+	rep := toClientFrame().bytes()
+	ctx = replyCtx(tp.srv)
+	ctx.GsoSize, ctx.GsoSegs = 100, 1
+	checkUntouched(t, "gso to client", runTC(t, objs.WgTcReply, rep, ctx), rep)
+	wantStats(t, objs, nil)
+}
+
+func attachAll(t *testing.T, objs *WgFastpathObjects, tp topo, xdp bool) {
+	t.Helper()
+	for _, a := range []struct {
+		prog *ebpf.Program
+		dev  int
+		at   ebpf.AttachType
+	}{
+		{objs.WgTcIngress, tp.ext, ebpf.AttachTCXIngress},
+		{objs.WgTcEgressGuard, tp.ext, ebpf.AttachTCXEgress},
+		{objs.WgTcReply, tp.srv, ebpf.AttachTCXIngress},
+	} {
+		l, err := link.AttachTCX(link.TCXOptions{Program: a.prog, Interface: a.dev, Attach: a.at, Anchor: link.Head()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = l.Close() })
+	}
+	if xdp {
+		l, err := link.AttachXDP(link.XDPOptions{Program: objs.WgXdp, Interface: tp.ext, Flags: link.XDPGenericMode})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = l.Close() })
+	}
+}
+
+// TestXDPPutBackWithoutRoute: XDP rewrote a frame towards a server tc then finds no route to; tc puts it back exactly as it
+// arrived, and the demux socket on the entry address (the slow path) receives it from the client.
+func TestXDPPutBackWithoutRoute(t *testing.T) {
+	tp := setup(t)
+	objs := load(t, defaultCfg(tp))
+	nowhere := netip.MustParseAddrPort("203.0.113.9:51820")
+	if err := objs.WgSessions.Put(WgFastpathWgKey{Index: serverIndex}, fwd(t, client, probe, nowhere, false, 0)); err != nil {
+		t.Fatal(err)
+	}
+	attachAll(t, objs, tp, true)
+	demux, err := net.ListenUDP("udp4", net.UDPAddrFromAddrPort(entry))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = demux.Close() })
+	cl := udpIn(t, "bpfcl", client)
+
+	if _, err := cl.WriteToUDPAddrPort(transport(serverIndex), entry); err != nil {
+		t.Fatal(err)
+	}
+	receive(t, demux, client, transport(serverIndex))
+	wantStats(t, objs, map[WgFastpathWgStat]uint64{WgFastpathWgStatWG_STAT_PASSED_ROUTE: 1})
 }

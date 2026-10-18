@@ -5,6 +5,13 @@
 // with clang and libbpf): WgFastpathObjects holds the maps WgSessions, WgEntries, WgEntrySeen, WgCfg, WgStats and the
 // programs WgTcIngress, WgTcReply, WgTcEgressGuard, WgXdp. The map values are WgFastpathWgFwd, WgFastpathWgAddr and
 // WgFastpathWgCfg; the counters are indexed by WgFastpathWgStat.
+//
+// The contract for writing a session (struct wg_fwd in the C source has the details): both directions carry Session = the
+// receiver index of the client -> server direction, whose entry (the owner) holds the session's one token bucket and
+// LastSeenNs (CLOCK_MONOTONIC, set at the write; the bucket fields start at zero). The server -> client entry sets the flag
+// 1, ReplyIfindex (0 keeps replies on the slow path) and ViaIp/ViaPort, the address the server sends to (the client ->
+// server direction's NewSrc). Addresses and ports are stored in network byte order. Delete both entries together; a direction
+// whose owner is missing is never forwarded. A change of wg_fastpath.bpf.c needs make generate-bpf (CI compares).
 package fastpath
 
 //go:generate sh -c "MULTIARCH=$(dpkg-architecture -q DEB_HOST_MULTIARCH 2>/dev/null || echo x86_64-linux-gnu) && go run github.com/cilium/ebpf/cmd/bpf2go -go-package fastpath -type wg_stat WgFastpath ./wg_fastpath.bpf.c -- -O2 -g -Wall -Werror -target bpf -I/usr/include/$MULTIARCH -I/usr/include"

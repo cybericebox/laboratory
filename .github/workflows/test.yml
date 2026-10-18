@@ -50,6 +50,10 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: The committed objects match wg_fastpath.bpf.c (make generate-bpf is reproducible)
+        run: |
+          make generate-bpf
+          git diff --exit-code -- internal/proxy/demux/fastpath
       - name: Program tests and live forwarding in network namespaces (privileged docker, make test-bpf)
         run: make test-bpf
 

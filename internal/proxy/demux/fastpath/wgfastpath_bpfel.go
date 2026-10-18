@@ -38,13 +38,18 @@ type WgFastpathWgFwd struct {
 	NewSrcPort   uint16
 	DstPort      uint16
 	Flags        uint16
+	Session      uint32
 	ReplyIfindex uint32
+	ViaIp        uint32
+	ViaPort      uint16
+	Pad          uint16
+	Pad2         uint32
 	LastSeenNs   uint64
 	Lock         struct {
 		_   structs.HostLayout
 		Val uint32
 	}
-	Pad2        uint32
+	Pad3        uint32
 	TokensX1000 uint64
 	RefillNs    uint64
 }
