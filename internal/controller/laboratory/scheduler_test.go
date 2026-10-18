@@ -488,12 +488,12 @@ func TestSchedulerPodsOfALabGroup(t *testing.T) {
 		}
 		return out
 	}
-	// Both group pods are dispatched (the group arrived first), then one lab pod.
+	// Both group pods are dispatched (the group arrived first); the lab (two pods, one slot left) waits whole.
 	f.tick()
 	if got := grp(); got["vpn"] != laboratoryv1alpha1.PodStarting || got["gateway"] != laboratoryv1alpha1.PodStarting {
 		t.Fatalf("group pods = %v", got)
 	}
-	f.wantStates("a/db=S a/web=Q")
+	f.wantStates("a/db=Q a/web=Q")
 
 	// The VPN pod becomes Ready: it is Started and frees its slot.
 	f.create(&corev1.Pod{
@@ -545,17 +545,25 @@ func TestSchedulerResourceCheckWaitsAndFails(t *testing.T) {
 	cfg.ResourceCheck = true
 	f := newSchedFixture(t, cfg)
 	f.create(node("n1", "250m", "1Gi"))
-	f.addLab("a", "g", nil, "p1", "p2", "p3")
+	f.addLab("a", "g1", nil, "p1", "p2")
+	f.addLab("b", "g2", nil, "p1")
 	f.tick()
-	// Each pod needs 100m: two fit in 250m, the third waits and says why.
-	f.wantStates("a/p1=S a/p2=S a/p3=Q")
-	if s := f.labStatus("a"); s.Reason != laboratoryv1alpha1.WaitInsufficient || s.Pending != 1 {
+	// Each pod needs 100m: the gang of a takes 200m of 250m, the gang of b (100m) waits whole and says why.
+	f.wantStates("a/p1=S a/p2=S b/p1=Q")
+	if s := f.labStatus("b"); s.Reason != laboratoryv1alpha1.WaitInsufficient || s.Pending != 1 {
 		t.Fatalf("status = %+v", s)
 	}
 	// The dispatched pods hold their requests until they are on a node.
 	f.now = f.now.Add(time.Second)
 	f.tick()
-	f.wantStates("a/p1=S a/p2=S a/p3=Q")
+	f.wantStates("a/p1=S a/p2=S b/p1=Q")
+
+	// A group bigger than the whole node can never fit: its pods are failed, none starts partly.
+	f1 := newSchedFixture(t, cfg)
+	f1.create(node("n1", "250m", "1Gi"))
+	f1.addLab("c", "g", nil, "p1", "p2", "p3")
+	f1.tick()
+	f1.wantStates("c/p1=F c/p2=F c/p3=F")
 
 	// A pod larger than the whole node is failed, and the queue goes on.
 	f2 := newSchedFixture(t, cfg)
@@ -854,20 +862,22 @@ func TestSchedulerEnforcesTenantQuota(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	f.addLab("a", "", nil, "web", "db", "cache")
+	f.addLab("a", "", nil, "web", "db")
 	label("a", "capped")
+	f.addLab("c", "", nil, "web")
+	label("c", "capped")
 	f.addLab("b", "", nil, "web")
 	label("b", "other")
 
 	f.tick()
-	f.wantStates("a/cache=S a/db=S a/web=Q b/web=S")
-	if st := f.labStatus("a"); st == nil || st.Reason != laboratoryv1alpha1.WaitTenantQuota || st.Pending != 1 {
+	f.wantStates("a/db=S a/web=S b/web=S c/web=Q")
+	if st := f.labStatus("c"); st == nil || st.Reason != laboratoryv1alpha1.WaitTenantQuota || st.Pending != 1 {
 		t.Fatalf("status of the held lab: %+v", st)
 	}
 	// Pods that started (or failed) still count against the quota.
-	f.ready("a", "cache")
+	f.ready("a", "db")
 	f.tick()
-	f.wantStates("a/cache=D a/db=S a/web=Q b/web=S")
+	f.wantStates("a/db=D a/web=S b/web=S c/web=Q")
 }
 
 func prepullSchedCfg() SchedulerConfig {

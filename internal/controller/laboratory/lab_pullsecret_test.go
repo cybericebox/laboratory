@@ -226,13 +226,13 @@ func TestSchedulerDoesNotPrepullALabWithItsOwnPullSecret(t *testing.T) {
 	if err := f.c.List(context.Background(), &ips); err != nil || len(ips.Items) != 1 {
 		t.Fatalf("only the group's request: %d %v", len(ips.Items), err)
 	}
-	// Labs a and c were dispatched at once; only b waits for its group's prepull.
-	f.wantStates("a/web=S b/web=Q c/web=S")
+	// Lab c was dispatched at once; a and b are one gang and wait together for the prepull of their group.
+	f.wantStates("a/web=Q b/web=Q c/web=S")
 	if s := f.labStatus("c"); s != nil && s.Reason == laboratoryv1alpha1.WaitPreparingImages {
 		t.Fatalf("lab c waits for a prepull: %+v", s)
 	}
-	if s := f.labStatus("a"); s != nil && s.Reason == laboratoryv1alpha1.WaitPreparingImages {
-		t.Fatalf("lab a waits for its group's prepull: %+v", s)
+	if s := f.labStatus("a"); s == nil || s.Reason != laboratoryv1alpha1.WaitPreparingImages {
+		t.Fatalf("lab a waits with its gang for the group's prepull: %+v", s)
 	}
 }
 
