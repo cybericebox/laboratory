@@ -34,6 +34,7 @@ func TestSchedulerDefaultsReachTheOperator(t *testing.T) {
 		"SCHEDULER_RESOURCE_CHECK":  "true",
 		"SCHEDULER_PREPULL":         "true",
 		"SCHEDULER_PREPULL_TIMEOUT": "5m",
+		"SCHEDULER_AGING_SECONDS":   "120",
 		"DEVICE_DEFAULT_CPU":        "100m",
 		"DEVICE_DEFAULT_MEMORY":     "256Mi",
 	}
@@ -60,13 +61,14 @@ func TestSchedulerValuesOverride(t *testing.T) {
 		"--set", "scheduler.resourceCheck=false",
 		"--set", "scheduler.prepull.enabled=false",
 		"--set", "scheduler.prepull.timeout=10m",
+		"--set", "scheduler.agingSeconds=300",
 		"--set", "limits.device.defaultCpu=400m",
 		"--set", "limits.device.defaultMemory=1Gi",
 	)
 	want := map[string]string{
 		"SCHEDULER_ENABLED": "false", "SCHEDULER_MAX_PODS": "50", "SCHEDULER_STARTUP_TIMEOUT": "90s",
 		"SCHEDULER_RESTART_THRESHOLD": "3", "SCHEDULER_PLATFORM_RESERVE_PERCENT": "25", "SCHEDULER_PLATFORM_RESERVE_CPU": "300m", "SCHEDULER_PLATFORM_RESERVE_MEMORY": "1Gi", "SCHEDULER_RESOURCE_CHECK": "false",
-		"SCHEDULER_PREPULL": "false", "SCHEDULER_PREPULL_TIMEOUT": "10m",
+		"SCHEDULER_PREPULL": "false", "SCHEDULER_PREPULL_TIMEOUT": "10m", "SCHEDULER_AGING_SECONDS": "300",
 		"DEVICE_DEFAULT_CPU": "400m", "DEVICE_DEFAULT_MEMORY": "1Gi",
 	}
 	for k, v := range want {
@@ -77,7 +79,7 @@ func TestSchedulerValuesOverride(t *testing.T) {
 }
 
 func TestSchedulerRejectsBadValues(t *testing.T) {
-	for _, set := range []string{"scheduler.maxPods=-1", "scheduler.platformReservePercent=100", "scheduler.platformReservePercent=-5", "scheduler.headroomPercent=10", "scheduler.restartThreshold=0"} {
+	for _, set := range []string{"scheduler.maxPods=-1", "scheduler.platformReservePercent=100", "scheduler.platformReservePercent=-5", "scheduler.headroomPercent=10", "scheduler.restartThreshold=0", "scheduler.agingSeconds=-1"} {
 		out, err := helmTemplate(t, "--set", set)
 		if err == nil {
 			t.Errorf("%s must be refused", set)

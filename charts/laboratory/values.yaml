@@ -794,6 +794,9 @@ scheduler:
   packingReserveMemory: "0"
   # false: dispatch does not look at the free CPU and memory of the nodes.
   resourceCheck: true
+  # Aging: a group that has waited longer than this many seconds gets the room it needs kept for it (the oldest such group
+  # only), so a stream of small groups cannot keep a big one out forever. 0 turns aging off.
+  agingSeconds: 120
   # Pull the images of a group onto the eligible nodes before its first pod starts.
   # A short-lived DaemonSet in laboratory-system runs the images with the command
   # replaced by a sleep (no lab service starts) and uses imagePullSecrets below.

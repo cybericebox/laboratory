@@ -1,6 +1,7 @@
 package laboratory
 
 import (
+	"math"
 	"sort"
 	"time"
 )
@@ -17,7 +18,7 @@ type gang struct {
 	key    string
 	tenant string
 	// reservation names the reservation the gang runs under; empty: unreserved.
-	reservation string //nolint:unused // filled from the reservation label by the reservation accounting
+	reservation string
 	objs        []*schedObject
 	// needs are the requests of the pods still to dispatch, in dispatch order.
 	needs   []podNeed
@@ -80,6 +81,116 @@ func without(rooms []nodeRoom, bound map[string]amount) []nodeRoom {
 	for i := range out {
 		used := bound[out[i].Name]
 		out[i].CPU, out[i].Memory = max(out[i].CPU-used.cpu, 0), max(out[i].Memory-used.mem, 0)
+	}
+	return out
+}
+
+// started says some pod of the gang is out and some still waits: the gang is admitted.
+func (g *gang) started() bool {
+	out, waiting := false, false
+	for _, o := range g.objs {
+		for _, p := range o.pods {
+			if p.dispatched() {
+				out = true
+			} else {
+				waiting = true
+			}
+		}
+	}
+	return out && waiting
+}
+
+// reservationUsage is what the dispatched pods of a reservation request (used) against what it reserves (amount).
+type reservationUsage struct {
+	used, amount amount
+}
+
+// share is the satisfied share of a reservation, used/amount, for memory and CPU. A reservation that reserves nothing of a
+// resource (an invalid one counts as zero) has an infinite share of it: it goes after every valid one.
+func (u reservationUsage) share() (mem, cpu float64) {
+	ratio := func(used, amount int64) float64 {
+		if amount <= 0 {
+			return math.Inf(1)
+		}
+		return float64(used) / float64(amount)
+	}
+	return ratio(u.used.mem, u.amount.mem), ratio(u.used.cpu, u.amount.cpu)
+}
+
+// shareOf is the share of a reservation; one not in the usage has used nothing yet.
+func shareOf(usage map[string]reservationUsage, name string) (mem, cpu float64) {
+	u, ok := usage[name]
+	if !ok {
+		return 0, 0
+	}
+	return u.share()
+}
+
+// fairness is what the plan needs beyond the cluster to choose the next gang: the usage of each reservation (a reservation
+// not in it has used nothing), the clock and the aging threshold (zero: no aging).
+type fairness struct {
+	usage map[string]reservationUsage
+	now   time.Time
+	aging time.Duration
+}
+
+// byAge orders gangs by arrival, then tenant, then key.
+func byAge(a, b *gang) bool {
+	if !a.arrival.Equal(b.arrival) {
+		return a.arrival.Before(b.arrival)
+	}
+	if a.tenant != b.tenant {
+		return a.tenant < b.tenant
+	}
+	return a.key < b.key
+}
+
+// gangOrder is the order in which gangs are offered the room. Admitted gangs (some pod out, some waiting) keep their strict
+// order (arrival, tenant, key) ahead of the rest. Then the new gangs that run under a reservation, the lowest satisfied share
+// first (memory share, then CPU), then arrival, tenant, key. The unreserved gangs come last in the order they came in (the
+// conveyor: groups by arrival, tenant, key, then the independent labs by their priority and size). A gang that does not fit
+// is passed over by the plan (backfill), so the order only says who is offered the room first.
+func gangOrder(gangs []*gang, usage map[string]reservationUsage) []*gang {
+	class := func(g *gang) int {
+		switch {
+		case g.started():
+			return 0
+		case g.reservation != "":
+			return 1
+		}
+		return 2
+	}
+	out := append([]*gang(nil), gangs...)
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		ca, cb := class(a), class(b)
+		if ca != cb {
+			return ca < cb
+		}
+		switch ca {
+		case 0:
+			return byAge(a, b)
+		case 1:
+			am, ac := shareOf(usage, a.reservation)
+			bm, bc := shareOf(usage, b.reservation)
+			if am != bm {
+				return am < bm
+			}
+			if ac != bc {
+				return ac < bc
+			}
+			return byAge(a, b)
+		}
+		return false
+	})
+	return out
+}
+
+// placed is the room a placement took on each node: the rooms before it less the rooms after it.
+func placed(before, after []nodeRoom) map[string]amount {
+	out := map[string]amount{}
+	for i := range before {
+		out[before[i].Name] = out[before[i].Name].add(amount{cpu: before[i].CPU - after[i].CPU, mem: before[i].Memory - after[i].Memory})
 	}
 	return out
 }

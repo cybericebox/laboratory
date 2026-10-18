@@ -332,6 +332,14 @@ holds up the groups behind it (`DoesNotFitNow` when it does not fit even on the 
 whose sum never fits its tenant's quota is failed at once (`TenantQuotaNeverFits`); one that fits only later waits
 (`TenantQuota`).
 
+**Fair order and aging.** Groups that already have pods out keep their order ahead of all others. Of the new groups, those
+that run under a reservation (label `laboratory.cybericebox.com/reservation`) go first, the reservation with the lowest
+satisfied share (used / reserved, memory, then CPU) first, then arrival; the unreserved groups follow in the order above. A
+group that has waited longer than `scheduler.agingSeconds` (default `120`, `0` turns it off) is aged: the oldest aged group
+that waits only for room keeps its placement on the empty nodes (beside its own running pods), and the other groups use only
+the room not kept for it, so a stream of small groups cannot keep a big one out forever. One group at a time; the room is
+free again once it starts, or once it waits for anything but room (quota, images, `DoesNotFitNow`).
+
 **Platform reserve.** CPU and memory that user labs can never consume, so the platform itself always has room.
 It is kept on every schedulable node: an optional absolute reserve (`scheduler.platformReserveCpu`,
 `scheduler.platformReserveMemory`, `"0"` = none) comes off the node first, and `scheduler.platformReservePercent` (10) of the
@@ -430,6 +438,7 @@ while none of its pods has been dispatched. The position is refreshed at a limit
 | `packingReservePercent` | `15` | hidden packing reserve: the agent reports its capacity net of this share (0-49) |
 | `labScheduler.enabled` | `true` | a second kube-scheduler with the bin-packing profile for lab pods (see "Bin-packing scheduler") |
 | `resourceCheck` | `true` | `false` skips the free-resource check |
+| `agingSeconds` | `120` | a group waiting longer than this has the room it needs kept for it (the oldest one only); `0` = no aging |
 | `prepull.enabled` | `true` | prepull the images of a group |
 | `prepull.timeout` | `5m` | dispatch goes on after this long |
 

@@ -68,6 +68,8 @@ type schedObject struct {
 	images  []string
 	// prepTenant is the tenant whose registry credentials pull the images (none: anonymous).
 	prepTenant string
+	// reservation is the Reservation the object runs under (its reservation label); empty: unreserved.
+	reservation string
 	// ref is the scheduler's handle on the Lab or LabGroup (opaque to the plan).
 	ref any
 }
@@ -142,6 +144,8 @@ type schedEnv interface {
 	neverFits(p *schedPod) bool
 	// tenantEverFits says whether the pod's need fits the tenant's quota with nothing else running.
 	tenantEverFits(p *schedPod) bool
+	// fairness is the usage of the reservations, the clock and the aging threshold of the pass.
+	fairness() fairness
 }
 
 // objectStatus is what the plan reports for an object that still has pods to dispatch.
@@ -197,6 +201,10 @@ type schedGroup struct {
 // is kept for it; one that does not place holds nothing in that pass (see the placement simulation below). A gang bigger than the whole in-flight limit goes
 // in slices of the free slots, its room checked as a whole. The pods of
 // LabGroups (the team's VPN and gateway) go ahead of all labs.
+//
+// Fairness (gangOrder): after the admitted gangs, the new gangs under a reservation go first, the lowest satisfied share of
+// the reservation first, and the unreserved ones after them in the conveyor order. A gang waiting longer than the aging
+// threshold keeps its room against the others (see aging below), so backfill cannot starve it.
 //
 // Inside a group (and among the independent objects) the order is: an object already being dispatched first, then the
 // explicit priority (higher first), then the larger object (CPU, then memory), then arrival; the order inside an
@@ -317,6 +325,9 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			if ob.arrival.Before(gg.arrival) {
 				gg.arrival = ob.arrival
 			}
+			if gg.reservation == "" {
+				gg.reservation = ob.reservation
+			}
 		}
 		if o[0].isGroup() {
 			lane = append(lane, gg)
@@ -358,11 +369,8 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		split(g.key, orderObjs(g.objs))
 	}
 	split("", orderObjs(independents))
-	gangs := append(lane, rest...)
-	var sequence []*schedObject
-	for _, gg := range gangs {
-		sequence = append(sequence, gg.objs...)
-	}
+	fair := env.fairness()
+	gangs := append(gangOrder(lane, fair.usage), gangOrder(rest, fair.usage)...)
 	blockedObjs := make([]*schedObject, 0, len(blocked))
 	for _, g := range blocked {
 		blockedObjs = append(blockedObjs, orderObjs(g.objs)...)
@@ -404,14 +412,12 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		}
 		return queued
 	}
-	needsOf := func(pods []*schedPod) ([]podNeed, []amount) {
+	needsOf := func(pods []*schedPod) []podNeed {
 		needs := make([]podNeed, 0, len(pods))
-		amounts := make([]amount, 0, len(pods))
 		for _, p := range pods {
 			needs = append(needs, podNeed{Key: p.key, CPU: p.need.cpu, Memory: p.need.mem})
-			amounts = append(amounts, p.need)
 		}
-		return needs, amounts
+		return needs
 	}
 
 	// The room of a pass is ONE placement simulation over the nodes, in which every pod goes whole onto one node (its CPU and
@@ -493,7 +499,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 					eligible = false
 				}
 			}
-			needs, _ := needsOf(q)
+			needs := needsOf(q)
 			// The images of a started gang are on the nodes already (an operator restart forgets that, so they are not asked
 			// again, here or in try).
 			if empty := emptyFor(gg); eligible && empty != nil {
@@ -515,6 +521,95 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		}
 	}
 
+	// Aging: a gang that has waited (since its arrival) longer than the aging threshold is aged. The oldest aged gang that could
+	// dispatch but for the room (its tenant within the quota, its images on the nodes, it packs the empty nodes beside its own
+	// pods) keeps its placement on those empty rooms: the other gangs place only on the room not kept for it, so a stream of
+	// small gangs cannot keep taking the room it waits for. One gang at a time, placed by the same simulation; the held
+	// remainders of the admitted gangs were placed before it, so it never holds them back. It is offered the room right after
+	// the admitted gangs, and the room is free for the others again once it dispatches or turns out not eligible.
+	var aged *gang
+	var agedRoom map[string]amount // the room kept for the aged gang; nil: none
+	agedPlacement := func(gg *gang) (map[string]amount, bool) {
+		q := queuedOf(gg)
+		if len(q) == 0 {
+			return nil, false
+		}
+		sums := map[string]amount{}
+		for _, p := range q {
+			if env.neverFits(p) {
+				return nil, false
+			}
+			sums[p.tenant] = sums[p.tenant].add(p.need)
+		}
+		for t, sum := range sums {
+			sp := &schedPod{key: "gang/" + gg.key, tenant: t, need: sum}
+			if !env.tenantEverFits(sp) {
+				return nil, false
+			}
+			sp.need = sum.add(heldQuota[t])
+			if !env.tenantFits(sp) {
+				return nil, false
+			}
+		}
+		if !gg.started() {
+			for _, o := range gg.objs {
+				if !env.prepared(o) {
+					return nil, false
+				}
+			}
+		}
+		empty := emptyFor(gg)
+		if empty == nil {
+			return nil, false
+		}
+		needs := needsOf(q)
+		left, ok := fitsGang(empty, needs)
+		if !ok {
+			return nil, false
+		}
+		return placed(empty, left), true
+	}
+	if perNode && fair.aging > 0 && !env.noNodes() {
+		var candidates []*gang
+		for _, gg := range gangs {
+			if !held[gg] && fair.now.Sub(gg.arrival) >= fair.aging {
+				candidates = append(candidates, gg)
+			}
+		}
+		sort.SliceStable(candidates, func(i, j int) bool { return byAge(candidates[i], candidates[j]) })
+		for _, gg := range candidates {
+			if room, ok := agedPlacement(gg); ok {
+				aged, agedRoom = gg, room
+				break
+			}
+		}
+	}
+	order := gangs
+	if aged != nil {
+		at := 0
+		for i, gg := range gangs {
+			if gg.started() && gg != aged {
+				at = i + 1
+			}
+		}
+		order = make([]*gang, 0, len(gangs))
+		for i, gg := range gangs {
+			if i == at {
+				order = append(order, aged)
+			}
+			if gg != aged {
+				order = append(order, gg)
+			}
+		}
+		if at == len(gangs) {
+			order = append(order, aged)
+		}
+	}
+	var sequence []*schedObject
+	for _, gg := range order {
+		sequence = append(sequence, gg.objs...)
+	}
+
 	failAll := func(pods []*schedPod, reason, message string) {
 		for _, p := range pods {
 			plan.failed = append(plan.failed, failedPod{pod: p, message: message, reason: reason})
@@ -526,6 +621,15 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		queued := queuedOf(gg)
 		if len(queued) == 0 {
 			return false
+		}
+		if gg == aged {
+			defer func() {
+				// The room kept for it is free for the others again once it dispatched or turned out not eligible; it stays
+				// while the gang waits only for room, or when the pass stops at it.
+				if !stop && !roomHeld[gg.objs[0].id] {
+					agedRoom = nil
+				}
+			}()
 		}
 		// One pod that no single node can ever hold fails the whole gang: nothing of it starts, since its other pods
 		// would only burn room. Anything else is decided by the placement on the per-node rooms: a gang that does not pack
@@ -543,7 +647,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			blocker = laboratoryv1alpha1.WaitNoSchedulableNodes
 			return true
 		}
-		needs, _ := needsOf(queued)
+		needs := needsOf(queued)
 		gg.needs = needs
 		notFit := false
 		if empty := emptyFor(gg); empty != nil {
@@ -605,11 +709,17 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		// A held remainder dispatches against its own placement; any other gang is placed on what is left.
 		left := rooms
 		if perNode && !held[gg] {
-			var ok bool
-			if left, ok = fitsGang(rooms, needs); !ok {
+			// Every gang but the aged one places only on the room not kept for the aged gang.
+			free := rooms
+			if agedRoom != nil && gg != aged {
+				free = without(rooms, agedRoom)
+			}
+			l, ok := fitsGang(free, needs)
+			if !ok {
 				hold(roomHeld, gg)
 				return false
 			}
+			left = without(rooms, placed(free, l))
 		}
 		// A gang within the limit needs a slot for every pod. One larger than the whole limit could never get that: it
 		// goes in slices of the free slots, while the room is still checked for all of it.
@@ -638,7 +748,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		return false
 	}
 
-	for _, gg := range gangs {
+	for _, gg := range order {
 		if try(gg) {
 			break
 		}
