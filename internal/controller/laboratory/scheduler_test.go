@@ -43,7 +43,7 @@ func newSchedFixture(t *testing.T, cfg SchedulerConfig) *schedFixture {
 		t.Fatal(err)
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).
-		WithStatusSubresource(&laboratoryv1alpha1.Lab{}, &laboratoryv1alpha1.LabGroup{}, &laboratoryv1alpha1.Device{}, &laboratoryv1alpha1.Tenant{}, &corev1.Pod{}, &appsv1.DaemonSet{}, &corev1.Node{}, &laboratoryv1alpha1.ImagePull{}).
+		WithStatusSubresource(&laboratoryv1alpha1.Lab{}, &laboratoryv1alpha1.LabGroup{}, &laboratoryv1alpha1.Device{}, &laboratoryv1alpha1.Tenant{}, &corev1.Pod{}, &appsv1.DaemonSet{}, &corev1.Node{}, &laboratoryv1alpha1.ImagePull{}, &laboratoryv1alpha1.Reservation{}).
 		Build()
 	f := &schedFixture{t: t, c: c, now: planEpoch.Add(time.Hour)}
 	f.s = &Scheduler{

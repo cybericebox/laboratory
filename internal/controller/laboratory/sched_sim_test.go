@@ -7,6 +7,8 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -149,13 +151,36 @@ func (s *splitmix) next(n int) int {
 // in a pass where it does not dispatch (here nothing but room can hold a gang, so a placed remainder always dispatches): the
 // room the pass takes off the nodes is at most what the dispatched and the unbound pods request. Every other seed runs with
 // aging on (the gangs that arrived in the first two seconds are aged): the room kept for an aged gang is never taken.
+//
+// Two of three seeds put gangs under up to two reservations (open or not, with pods of theirs out already): no reservation
+// admits more than its amount, nothing of a reservation that is not open is admitted, the room withheld for a reservation is
+// still free on its nodes after the pass, and it shrinks only by what the reservation's own new gangs took.
 func TestPlacementSimulationNeverOverAdmits(t *testing.T) {
-	const mi = int64(1) << 20
+	reservedSeeds := 0
 	for seed := 1; seed <= 400; seed++ {
 		r := splitmix(seed)
+		rr := splitmix(seed*7919 + 1) // the reservations draw apart, so the scenarios without them stay as they were
 		env := &simEnv{node: map[string]string{}, use: map[string]amount{}}
+		env.fair.now = planEpoch.Add(3 * time.Second)
 		if seed%2 == 0 {
-			env.fair = fairness{now: planEpoch.Add(3 * time.Second), aging: 2 * time.Second}
+			env.fair.aging = 2 * time.Second
+		}
+		var res []laboratoryv1alpha1.Reservation
+		if seed%3 != 0 {
+			for i, n := 0, 1+rr.next(2); i < n; i++ {
+				from := env.fair.now.Add(-time.Minute)
+				if rr.next(4) == 0 {
+					from = env.fair.now.Add(time.Minute) // not open yet
+				}
+				res = append(res, laboratoryv1alpha1.Reservation{
+					ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("r%d", i)},
+					Spec: laboratoryv1alpha1.ReservationSpec{From: metav1.NewTime(from), To: metav1.NewTime(from.Add(time.Hour)),
+						Resources: corev1.ResourceList{
+							corev1.ResourceCPU:    *resource.NewMilliQuantity(int64(500*(1+rr.next(8))), resource.DecimalSI),
+							corev1.ResourceMemory: *resource.NewQuantity(int64(1+rr.next(8))*512*mi, resource.BinarySI),
+						}},
+				})
+			}
 		}
 		for i, n := 0, 1+r.next(3); i < n; i++ {
 			env.empty = append(env.empty, room(fmt.Sprintf("n%d", i), int64(1000+500*r.next(8)), int64(1+r.next(8))*512*mi))
@@ -167,6 +192,11 @@ func TestPlacementSimulationNeverOverAdmits(t *testing.T) {
 		for g, n := 0, 1+r.next(5); g < n; g++ {
 			id := fmt.Sprintf("g%d", g)
 			o := obj("lab/"+id, id, r.next(5), nil)
+			if len(res) > 0 {
+				if k := rr.next(len(res) + 1); k < len(res) {
+					o.reservation = res[k].Name
+				}
+			}
 			for i, k := 0, 1+r.next(3); i < k; i++ {
 				p := pods(id, fmt.Sprintf("p%d", i))[0]
 				p.need = amount{cpu: int64(100 * (1 + r.next(30))), mem: int64(1+r.next(8)) * 256 * mi}
@@ -201,16 +231,79 @@ func TestPlacementSimulationNeverOverAdmits(t *testing.T) {
 			objs = append(objs, o)
 		}
 		queued := map[*schedObject]int{}
+		var out []dispatchedPod
 		for _, o := range objs {
 			for _, p := range o.pods {
 				if p.queued() {
 					queued[o]++
+				} else {
+					out = append(out, dispatchedPod{reservation: o.reservation, group: o.id, need: p.need})
 				}
 			}
+		}
+		if len(res) > 0 {
+			env.fair.usage = reservationLedger(res, out, env.fair.now)
+			reservedSeeds++
 		}
 		plan := planSchedule(objs, 100, false, env)
 		if len(plan.failed) > 0 {
 			continue // a pod over every node: nothing of its gang starts
+		}
+		// the reservations: amounts kept, nothing for a closed one, the withheld room free and taken only by its own gangs
+		owner := map[string]string{}
+		for _, o := range objs {
+			for _, p := range o.pods {
+				owner[p.key] = o.reservation
+			}
+		}
+		sentUnder := map[string]amount{}
+		for _, p := range plan.dispatch {
+			sentUnder[owner[p.key]] = sentUnder[owner[p.key]].add(p.need)
+		}
+		for name, u := range env.fair.usage {
+			got := sentUnder[name]
+			if got == (amount{}) {
+				continue
+			}
+			if !u.active {
+				t.Fatalf("seed %d: %s is not open and admitted %+v", seed, name, got)
+			}
+			if all := u.used.add(got); all.cpu > u.amount.cpu || all.mem > u.amount.mem {
+				t.Fatalf("seed %d: %s used %+v, admitted %+v, amount %+v", seed, name, u.used, got, u.amount)
+			}
+		}
+		kept := map[string]amount{}
+		for name, w := range plan.withheldLeft {
+			for n, a := range w {
+				kept[n] = kept[n].add(a)
+			}
+			var before, after amount
+			for _, a := range plan.withheld[name] {
+				before = before.add(a)
+			}
+			for _, a := range w {
+				after = after.add(a)
+			}
+			// a held remainder of the reservation was counted before the room was withheld: only new gangs shrink it
+			var fresh amount
+			for _, o := range objs {
+				if o.reservation != name || o.started() {
+					continue
+				}
+				for _, p := range o.pods {
+					if containsPod(plan.dispatch, p) {
+						fresh = fresh.add(p.need)
+					}
+				}
+			}
+			if lost := before.sub(after); lost.cpu > fresh.cpu || lost.mem > fresh.mem {
+				t.Fatalf("seed %d: the room withheld for %s shrank by %+v, its new gangs took %+v", seed, name, lost, fresh)
+			}
+		}
+		for _, l := range plan.left {
+			if k := kept[l.Name]; k.cpu > l.CPU || k.mem > l.Memory {
+				t.Fatalf("seed %d: %+v withheld on %s, only %+v left", seed, k, l.Name, l)
+			}
 		}
 		if !packs(without(env.empty, env.use), append(append([]*schedPod(nil), unbound...), plan.dispatch...)) {
 			t.Fatalf("seed %d: nodes %v, bound %v, unbound %v, dispatched %v do not fit", seed, env, env.use, keys(unbound), keys(plan.dispatch))
@@ -235,6 +328,18 @@ func TestPlacementSimulationNeverOverAdmits(t *testing.T) {
 			}
 		}
 	}
+	if reservedSeeds < 200 {
+		t.Fatalf("only %d scenarios had reservations", reservedSeeds)
+	}
+}
+
+func containsPod(ps []*schedPod, p *schedPod) bool {
+	for _, q := range ps {
+		if q == p {
+			return true
+		}
+	}
+	return false
 }
 
 // envFromSnapshot answers the plan from a real capacitySnapshot, as clusterEnv does, without a cluster.

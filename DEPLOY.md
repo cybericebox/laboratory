@@ -343,6 +343,19 @@ free again once it starts, or once it waits for anything but room (quota, images
 are held back: the VPN and gateway pods of LabGroups are placed first and may use any room, so a new team always gets its
 network. A group still waiting for its `deploy-after` groups never keeps room; once they are complete it ages by its arrival.
 
+**Reservations.** A `Reservation` (cluster-scoped, `kubectl get res`) claims CPU and memory for a tenant from `spec.from` to
+`spec.to`. A Lab or LabGroup with the label `laboratory.cybericebox.com/reservation=<name>` starts only if that reservation
+exists for its own tenant (else it waits with `ReservationMissing`), its window is open (`ReservationNotActive`), and the
+requests of the reservation's pods already out plus the whole group stay within `spec.resources` (`ReservationFull`). A
+reservation with a resource other than `cpu` and `memory`, or with `cpu` or `memory` missing, zero or negative, reserves
+nothing. Pods already out always count and are never stopped, also when the reservation is made smaller than them. What an
+open reservation has not used yet is kept on the nodes on every pass, the emptiest node first and with its CPU to memory
+ratio: unreserved groups, the groups of other reservations and the aged group never use that room (a LabGroup's VPN and gateway
+without the reservation neither); the reservation's own groups use it first. When the nodes cannot hold all of it, the
+reservations whose groups come first in the fair order are kept first. Unreserved work (no label, e.g. the `default` tenant)
+runs as before, in the room no open reservation keeps. The scheduler writes `status.used` (the requests of the reservation's
+pods out, of its own tenant) and `status.groups` (the groups with pods out) at the same limited rate as the queue status.
+
 **Platform reserve.** CPU and memory that user labs can never consume, so the platform itself always has room.
 It is kept on every schedulable node: an optional absolute reserve (`scheduler.platformReserveCpu`,
 `scheduler.platformReserveMemory`, `"0"` = none) comes off the node first, and `scheduler.platformReservePercent` (10) of the

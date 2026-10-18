@@ -178,6 +178,12 @@ type schedPlan struct {
 	// left is the per-node room after the placement simulation of the pass: the bound and unbound lab pods, the held
 	// remainders and the gangs dispatched now are off it. nil: no per-node check.
 	left []nodeRoom
+	// withheld is the room kept for the unused part of each active reservation (reservation -> node -> room) before the new
+	// gangs of the pass were placed, and withheldLeft what of it is still kept after them (a reservation's own gangs use it).
+	// Both are in left: the room is free, the others do not get it. nil: no per-node check.
+	withheld, withheldLeft map[string]map[string]amount
+	// shortfall is what of the unused part of an active reservation the nodes have no room for now.
+	shortfall map[string]amount
 }
 
 type schedGroup struct {
@@ -210,6 +216,12 @@ type schedGroup struct {
 // Fairness (gangOrder): after the admitted gangs, the new gangs under a reservation go first, the lowest satisfied share of
 // the reservation first, and the unreserved ones after them in the conveyor order. A gang waiting longer than the aging
 // threshold keeps its room against the others (see aging below), so backfill cannot starve it.
+//
+// Reservations: a gang that carries a reservation label is admitted only if the reservation exists for the gang's tenant (else
+// ReservationMissing), its window is open (else ReservationNotActive) and what its dispatched pods, its held remainders and
+// the gangs admitted under it in the pass request, with the gang added, stays within its amount (else ReservationFull; an
+// invalid reservation reserves nothing). The unused part of every active reservation is withheld on the nodes (see below): no
+// gang of another reservation, no unreserved gang and no aged gang places on it. Pods already out are never touched.
 //
 // Inside a group (and among the independent objects) the order is: an object already being dispatched first, then the
 // explicit priority (higher first), then the larger object (CPU, then memory), then arrival; the order inside an
@@ -376,6 +388,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	split("", orderObjs(independents))
 	fair := env.fairness()
 	gangs := append(gangOrder(lane, fair.usage), gangOrder(rest, fair.usage)...)
+	res := newReservationPass(fair.usage)
 	blockedObjs := make([]*schedObject, 0, len(blocked))
 	for _, g := range blocked {
 		blockedObjs = append(blockedObjs, orderObjs(g.objs)...)
@@ -395,10 +408,11 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	}
 
 	blocker := ""
-	tenantHeld := map[string]bool{} // objects held back by their tenant's quota
-	prepHeld := map[string]bool{}   // objects whose group's images are still being pulled
-	roomHeld := map[string]bool{}   // objects whose gang does not fit now: the others go past them (backfill)
-	fitHeld := map[string]bool{}    // objects whose gang does not fit even the empty nodes (may change when nodes return)
+	tenantHeld := map[string]bool{}   // objects held back by their tenant's quota
+	prepHeld := map[string]bool{}     // objects whose group's images are still being pulled
+	roomHeld := map[string]bool{}     // objects whose gang does not fit now: the others go past them (backfill)
+	resHeld := map[string][2]string{} // objects whose gang its reservation does not admit now: the Wait reason, the reservation
+	fitHeld := map[string]bool{}      // objects whose gang does not fit even the empty nodes (may change when nodes return)
 	hold := func(held map[string]bool, gg *gang) {
 		for _, o := range gg.objs {
 			held[o.id] = true
@@ -432,7 +446,14 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	//  2. then the remainders of the admitted gangs (a gang that has pods out), in their strict order: arrival, tenant, key.
 	//     A remainder that places is held: the rooms shrink by its placement and the gang dispatches against it. One that
 	//     does not place holds nothing in this pass and waits, so it never blocks the gangs after it;
-	//  3. new gangs are placed on what is left, in the conveyor order, with backfill (try).
+	//  3. the unused part of every active reservation is withheld on what is left (reservationPass.withhold), the reservations
+	//     of the gangs in their order first: it stays in the rooms, but only the reservation's own gangs are offered it;
+	//  4. new gangs are placed on what is left, in the conveyor order, with backfill (try). A gang under a reservation is
+	//     placed on the room withheld for it alone if it fits there, else on the free room and its own withheld room together;
+	//     either way the withheld room shrinks by what the gang takes of it and to what the reservation has left.
+	//
+	// The remainders of admitted gangs come before the withheld room: their gang was admitted whole against the room offered to
+	// it then (atomicity), and a remainder under a reservation counts against that reservation's amount.
 	rooms, perNode := env.rooms()
 	if perNode {
 		var unbound []podNeed
@@ -495,10 +516,12 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 				continue
 			}
 			sums := map[string]amount{}
+			var need amount
 			for _, p := range q {
 				sums[p.tenant] = sums[p.tenant].add(p.need)
+				need = need.add(p.need)
 			}
-			eligible := true
+			eligible := res.gate(gg, need) == ""
 			for t, sum := range sums {
 				if !env.tenantFits(&schedPod{key: "gang/" + gg.key, tenant: t, need: sum.add(heldQuota[t])}) {
 					eligible = false
@@ -523,7 +546,16 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			for t, sum := range sums {
 				heldQuota[t] = heldQuota[t].add(sum)
 			}
+			res.take(gg.reservation, need)
 		}
+		var order []string
+		for _, gg := range gangs {
+			if gg.reservation != "" && fair.usage[gg.reservation].tenant == gg.tenant {
+				order = append(order, gg.reservation)
+			}
+		}
+		res.withhold(rooms, order)
+		plan.withheld, plan.shortfall = res.snapshot(), res.shortfall
 	}
 
 	// Aging: a gang that has waited (since it last entered the queue, waitingSince) longer than the aging threshold is aged.
@@ -534,7 +566,10 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	// gangs are held back: the LabGroup lane (the VPN and gateway of a team) is placed before it and uses all the room, so a new
 	// team always gets its network. A group still waiting for its deploy-after groups is not a gang yet, so it never ages
 	// into the reserver. The aged gang is offered the room right after the lane and the admitted gangs, and the room is free
-	// for the others again once it dispatches or turns out not eligible.
+	// for the others again once it dispatches or turns out not eligible. Reservations come before it: it is eligible only within
+	// its own reservation (if any), it packs beside the room withheld for the other reservations, it is placed on the free room
+	// and its own withheld room only, and what it keeps is taken from the free room the others see, never from their withheld
+	// room.
 	var aged *gang
 	var agedRoom map[string]amount // the room kept for the aged gang; nil: none
 	agedPlacement := func(gg *gang) (map[string]amount, bool) {
@@ -543,11 +578,16 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			return nil, false
 		}
 		sums := map[string]amount{}
+		var need amount
 		for _, p := range q {
 			if env.neverFits(p) {
 				return nil, false
 			}
 			sums[p.tenant] = sums[p.tenant].add(p.need)
+			need = need.add(p.need)
+		}
+		if res.gate(gg, need) != "" {
+			return nil, false
 		}
 		for t, sum := range sums {
 			sp := &schedPod{key: "gang/" + gg.key, tenant: t, need: sum}
@@ -572,6 +612,8 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		}
 		// A stopped lab keeps its room for days: room kept beside it would stay closed to everyone while the gang cannot start.
 		empty = without(empty, env.stoppedHolds())
+		// The room withheld for other reservations is not its to keep: it stays closed to it for as long as they are unused.
+		empty = without(empty, res.total(gg.reservation))
 		needs := needsOf(q)
 		left, ok := fitsGang(empty, needs)
 		if !ok {
@@ -713,6 +755,13 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 				return false
 			}
 		}
+		// A held remainder was admitted by its reservation when it was placed.
+		if why := res.gate(gg, total); why != "" && !held[gg] {
+			for _, o := range gg.objs {
+				resHeld[o.id] = [2]string{why, gg.reservation}
+			}
+			return false
+		}
 		// The images gate only the gang's own objects: the others go on, and only the order and dependency rules hold them.
 		if !ready {
 			hold(prepHeld, gg)
@@ -724,18 +773,30 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		}
 		// A held remainder dispatches against its own placement; any other gang is placed on what is left.
 		left := rooms
+		var at map[string]amount // where the gang is placed now; nil: held already, or no per-node check
 		if perNode && !held[gg] {
 			// Every lab gang but the aged one places only on the room not kept for the aged gang; the lane is never held back.
-			free := rooms
+			// No gang places on the room withheld for another reservation; a gang under a reservation takes its own first.
+			var keep map[string]amount
 			if agedRoom != nil && gg != aged && !gg.objs[0].isGroup() {
-				free = without(rooms, agedRoom)
+				keep = agedRoom
 			}
-			l, ok := fitsGang(free, needs)
-			if !ok {
-				hold(roomHeld, gg)
-				return false
+			if gg.reservation != "" {
+				mine := res.own(rooms, gg.reservation)
+				if l, ok := fitsGang(mine, needs); ok {
+					at = placed(mine, l)
+				}
 			}
-			left = without(rooms, placed(free, l))
+			if at == nil {
+				free := res.view(rooms, gg.reservation, keep)
+				l, ok := fitsGang(free, needs)
+				if !ok {
+					hold(roomHeld, gg)
+					return false
+				}
+				at = placed(free, l)
+			}
+			left = without(rooms, at)
 		}
 		// A gang within the limit needs a slot for every pod. One larger than the whole limit could never get that: it
 		// goes in slices of the free slots, while the room is still checked for all of it.
@@ -748,6 +809,10 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			send = queued[:min(len(queued), slots)]
 		}
 		rooms = left
+		if !held[gg] {
+			// The whole gang counts against its reservation, also when it goes in slices.
+			res.use(gg.reservation, at, total)
+		}
 		if held[gg] {
 			// What it sends is in the tenant's dispatched pods now (take): it no longer counts as held.
 			for _, p := range send {
@@ -771,6 +836,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	}
 	if perNode {
 		plan.left = rooms
+		plan.withheldLeft = res.snapshot()
 	}
 
 	// Queue places: eligible objects with pods still waiting, in conveyor order,
@@ -808,6 +874,19 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		}
 		if tenantHeld[o.id] {
 			st.Reason, st.Message = laboratoryv1alpha1.WaitTenantQuota, "the tenant has reached its quota"
+			plan.status[o.id] = st
+			continue
+		}
+		if why, ok := resHeld[o.id]; ok {
+			st.Reason = why[0]
+			switch why[0] {
+			case laboratoryv1alpha1.WaitReservationMissing:
+				st.Message = "the reservation " + why[1] + " does not exist for the tenant"
+			case laboratoryv1alpha1.WaitReservationNotActive:
+				st.Message = "the window of the reservation " + why[1] + " is not open now"
+			default:
+				st.Message = "the group does not fit what is left of the reservation " + why[1]
+			}
 			plan.status[o.id] = st
 			continue
 		}

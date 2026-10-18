@@ -69,6 +69,13 @@ rules:
 - apiGroups: [laboratory.cybericebox.com]
   resources: [tenants/status]
   verbs: [get, update, patch]
+# Reservations: the scheduler accounts the groups against them and writes what they use (status.used, status.groups).
+- apiGroups: [laboratory.cybericebox.com]
+  resources: [reservations]
+  verbs: [get, list, watch]
+- apiGroups: [laboratory.cybericebox.com]
+  resources: [reservations/status]
+  verbs: [get, update, patch]
 # RoleBindings of the group namespaces (its own, the VPN's, the gateway's, the agent's).
 - apiGroups: [rbac.authorization.k8s.io]
   resources: [rolebindings]
