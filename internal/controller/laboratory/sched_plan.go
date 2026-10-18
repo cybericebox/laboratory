@@ -177,8 +177,8 @@ type schedGroup struct {
 // groups that have not started, in arrival order, each only once every group it lists in deploy-after is
 // complete; independent labs go last. A gang that waits for tenant quota, images or room does not stop the
 // others (backfill); no slot, or no node at all, stops the pass, so the order is never skipped. A gang with a
-// pod that fits no node, or that cannot be placed on the empty nodes, or that never fits its tenant's quota, is
-// failed whole: none of it starts. A gang that has pods out is admitted: the room of its remaining pods is kept
+// pod that fits no node, or that never fits its tenant's quota, is
+// failed whole: none of it starts (a gang that only fails to pack the nodes as a whole waits with DoesNotFit and is looked at on every pass). A gang that has pods out is admitted: the room of its remaining pods is kept
 // for it on every pass before any other gang is considered. A gang bigger than the whole in-flight limit goes
 // in slices of the free slots, its room checked as a whole. The pods of
 // LabGroups (the team's VPN and gateway) go ahead of all labs.
@@ -367,6 +367,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	tenantHeld := map[string]bool{} // objects held back by their tenant's quota
 	prepHeld := map[string]bool{}   // objects whose group's images are still being pulled
 	roomHeld := map[string]bool{}   // objects whose gang does not fit now: the others go past them (backfill)
+	fitHeld := map[string]bool{}    // objects whose gang does not fit even the empty nodes (may change when nodes return)
 	hold := func(held map[string]bool, gg *gang) {
 		for _, o := range gg.objs {
 			held[o.id] = true
@@ -486,6 +487,9 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		for _, p := range queued {
 			total = total.add(p.need)
 		}
+		// A gang that does not fit the nodes as a whole may fit later (a node returns, a rollout ends): it is kept and
+		// looked at on every pass, with the reason DoesNotFit. Only a single pod bigger than every node fails for good.
+		notFit := false
 		switch env.check(&schedPod{key: "gang/" + gg.key, tenant: gg.tenant, need: total}) {
 		case fitWait:
 			wait = true
@@ -493,13 +497,11 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			blocker = laboratoryv1alpha1.WaitNoSchedulableNodes
 			return true
 		case fitNever:
-			failAll(queued, laboratoryv1alpha1.FailureDoesNotFit, "the group requests more than every node can give")
-			return false
+			notFit = true
 		}
 		if empty := env.emptyRooms(); empty != nil {
 			if _, ok := fitsGang(empty, needs); !ok {
-				failAll(queued, laboratoryv1alpha1.FailureDoesNotFit, "the pods of the group cannot be placed on the nodes even when they are empty")
-				return false
+				notFit = true
 			}
 		}
 		// The quota of the tenant is checked on the sum of the gang's needs.
@@ -524,6 +526,29 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 				return false
 			}
 		}
+		// A tenant at its quota waits without holding up the others: the gang is skipped.
+		for _, t := range tenants {
+			// The room kept for the tenant's other admitted gangs counts against its quota.
+			other := heldQuota[t].sub(heldOwn[gg][t])
+			if !env.tenantFits(&schedPod{key: sums[t].key, tenant: t, need: sums[t].need.add(other)}) {
+				hold(tenantHeld, gg)
+				return false
+			}
+		}
+		// The images of a group are pulled before its first pod starts, also while the gang waits for room, and that
+		// gates only its own objects: the others go on, and only the order and dependency rules hold them.
+		ready := true
+		for _, o := range gg.objs {
+			ready = env.prepared(o) && ready
+		}
+		if !ready {
+			hold(prepHeld, gg)
+			return false
+		}
+		if notFit {
+			hold(fitHeld, gg)
+			return false
+		}
 		if wait {
 			hold(roomHeld, gg)
 			return false
@@ -537,25 +562,6 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 				return true
 			}
 			send = queued[:min(len(queued), slots)]
-		}
-		// A tenant at its quota waits without holding up the others: the gang is skipped.
-		for _, t := range tenants {
-			// The room kept for the tenant's other admitted gangs counts against its quota.
-			other := heldQuota[t].sub(heldOwn[gg][t])
-			if !env.tenantFits(&schedPod{key: sums[t].key, tenant: t, need: sums[t].need.add(other)}) {
-				hold(tenantHeld, gg)
-				return false
-			}
-		}
-		// The images of a group are pulled before its first pod starts, but that gates only its
-		// own objects: the others go on, and only the order and dependency rules hold them.
-		ready := true
-		for _, o := range gg.objs {
-			ready = env.prepared(o) && ready
-		}
-		if !ready {
-			hold(prepHeld, gg)
-			return false
 		}
 		if perNode {
 			if _, isAdmitted := remainders[gg]; isAdmitted {
@@ -630,6 +636,11 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		}
 		if prepHeld[o.id] {
 			st.Reason, st.Message = laboratoryv1alpha1.WaitPreparingImages, "pulling the images of the group onto the nodes"
+			plan.status[o.id] = st
+			continue
+		}
+		if fitHeld[o.id] && !roomHeld[o.id] {
+			st.Reason, st.Message = laboratoryv1alpha1.WaitDoesNotFit, "the group does not fit even on empty nodes"
 			plan.status[o.id] = st
 			continue
 		}

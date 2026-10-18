@@ -38,13 +38,16 @@ const (
 	FailurePodNotCreated = "PodNotCreated"
 	FailureDoesNotFit    = "DoesNotFit"
 	// FailureTenantQuota: the pods of a deploy group together never fit the quota of their tenant.
-	FailureTenantQuota     = "TenantQuota"
+	FailureTenantQuota     = "TenantQuotaNeverFits"
 	WaitInFlightLimit      = "InFlightLimit"
 	WaitForGroup           = "WaitingForGroup"
 	WaitForTurn            = "WaitingForTurn"
 	WaitPreparingImages    = "PreparingImages"
 	WaitInsufficient       = "InsufficientResources"
 	WaitNoSchedulableNodes = "NoSchedulableNodes"
+	// WaitDoesNotFit: the pods of a deploy group do not fit the nodes together even when empty; it may change when nodes
+	// return or load ends.
+	WaitDoesNotFit = "DoesNotFit"
 	// WaitTenantQuota: the tenant of the object has reached its CPU or memory quota.
 	WaitTenantQuota = "TenantQuota"
 )

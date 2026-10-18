@@ -130,13 +130,14 @@ func TestGangLargerThanLimitGoesInSlices(t *testing.T) {
 	wantDispatch(t, planSchedule([]*schedObject{o}, 0, false, &fakeEnv{}))
 }
 
-func TestGangTooBigForEmptyLabIsFailed(t *testing.T) {
+// A gang bigger than the empty capacity is not failed for good: it waits with DoesNotFit.
+func TestGangTooBigForEmptyLabWaits(t *testing.T) {
 	o := obj("lab/a", "g", 1, nil, need(pods("a", "p1", "p2"), 100, gi)...)
 	env := &fakeEnv{nodes: []nodeRoom{room("n1", 4000, 4*gi)}, fits: map[string]fit{"gang/g": fitNever}}
 	plan := planSchedule([]*schedObject{o}, 10, false, env)
 	wantDispatch(t, plan)
-	if len(plan.failed) != 2 {
-		t.Fatalf("failed = %d", len(plan.failed))
+	if len(plan.failed) != 0 || plan.status["lab/a"].Reason != laboratoryv1alpha1.WaitDoesNotFit {
+		t.Fatalf("failed %d, status %+v", len(plan.failed), plan.status["lab/a"])
 	}
 }
 
@@ -146,22 +147,73 @@ func TestGangDoesNotFitOnEmptyNodes(t *testing.T) {
 	env := &fakeEnv{nodes: empty, empty: empty}
 	plan := planSchedule([]*schedObject{o}, 10, false, env)
 	wantDispatch(t, plan)
-	if len(plan.failed) != 1 || plan.failed[0].reason != laboratoryv1alpha1.FailureDoesNotFit {
+	if len(plan.failed) != 0 {
 		t.Fatalf("failed = %+v", plan.failed)
 	}
-	if _, waiting := plan.status["lab/a"]; waiting {
-		t.Fatalf("a failed gang does not wait: %+v", plan.status["lab/a"])
+	if st := plan.status["lab/a"]; st.Reason != laboratoryv1alpha1.WaitDoesNotFit || st.Message != "the group does not fit even on empty nodes" {
+		t.Fatalf("status = %+v", st)
 	}
 }
 
-// Gang of two pods that fit the empty nodes one by one but not together on them: failed whole.
-func TestGangThatFitsNoEmptyNodeCombinationFailsWhole(t *testing.T) {
+// Gang of three pods that fit the empty nodes one by one but not together on them: it waits whole.
+func TestGangThatFitsNoEmptyNodeCombinationWaits(t *testing.T) {
 	o := obj("lab/a", "g", 1, nil, need(pods("a", "p1", "p2", "p3"), 100, gi)...)
 	empty := []nodeRoom{room("n1", 4000, gi), room("n2", 4000, gi)}
 	plan := planSchedule([]*schedObject{o}, 10, false, &fakeEnv{nodes: empty, empty: empty})
 	wantDispatch(t, plan)
-	if len(plan.failed) != 3 {
+	if len(plan.failed) != 0 {
 		t.Fatalf("failed = %d", len(plan.failed))
+	}
+}
+
+// A cordoned node or a short rollout does not fail a gang for good.
+func TestGangDoesNotFitRecoversWhenNodeReturns(t *testing.T) {
+	o := obj("lab/a", "g", 1, nil, need(pods("a", "p1", "p2"), 100, gi)...)
+	one := []nodeRoom{room("n1", 4000, gi)}
+	plan := planSchedule([]*schedObject{o}, 10, false, &fakeEnv{nodes: one, empty: one})
+	wantDispatch(t, plan)
+	if plan.status["lab/a"].Reason != laboratoryv1alpha1.WaitDoesNotFit {
+		t.Fatalf("status = %+v", plan.status["lab/a"])
+	}
+	two := []nodeRoom{room("n1", 4000, gi), room("n2", 4000, gi)}
+	plan = planSchedule([]*schedObject{o}, 10, false, &fakeEnv{nodes: two, empty: two})
+	wantDispatch(t, plan, "a/p1", "a/p2")
+}
+
+// Only one pod that exceeds every node fails for good, and it takes its gang with it.
+func TestSinglePodOverAllocatableStaysFailed(t *testing.T) {
+	o := obj("lab/a", "g", 1, nil, need(pods("a", "p1", "p2"), 100, gi)...)
+	env := &fakeEnv{fits: map[string]fit{"a/p2": fitNever}}
+	plan := planSchedule([]*schedObject{o}, 10, false, env)
+	wantDispatch(t, plan)
+	if len(plan.failed) != 2 || plan.failed[0].reason != laboratoryv1alpha1.FailureDoesNotFit {
+		t.Fatalf("failed = %+v", plan.failed)
+	}
+}
+
+// Images are pulled while the gang waits for room, and the status names the first thing that holds it:
+// TenantQuota, then PreparingImages, then InsufficientResources.
+func TestWaitingGangPullsImagesAndStatusPriority(t *testing.T) {
+	mk := func() *schedObject {
+		o := obj("lab/a", "g", 1, nil, need(pods("a", "p1"), 100, 2*gi)...)
+		o.prepKey = "g/g"
+		return o
+	}
+	small := []nodeRoom{room("n1", 4000, gi)}
+	env := &fakeEnv{nodes: small}
+	plan := planSchedule([]*schedObject{mk()}, 10, false, env)
+	if len(env.pulled) == 0 || plan.status["lab/a"].Reason != laboratoryv1alpha1.WaitInsufficient {
+		t.Fatalf("pulled %v, status %+v", env.pulled, plan.status["lab/a"])
+	}
+	env = &fakeEnv{nodes: small, notPrepared: map[string]bool{"g/g": true}}
+	if r := planSchedule([]*schedObject{mk()}, 10, false, env).status["lab/a"].Reason; r != laboratoryv1alpha1.WaitPreparingImages {
+		t.Fatalf("reason = %q", r)
+	}
+	o := mk()
+	o.pods[0].tenant = "t"
+	env = &fakeEnv{nodes: small, notPrepared: map[string]bool{"g/g": true}, tenantFull: map[string]bool{"t": true}}
+	if r := planSchedule([]*schedObject{o}, 10, false, env).status["lab/a"].Reason; r != laboratoryv1alpha1.WaitTenantQuota {
+		t.Fatalf("reason = %q", r)
 	}
 }
 
@@ -267,6 +319,19 @@ func TestSubtractCarriesTheExcessToTheNextRoom(t *testing.T) {
 	rooms := []nodeRoom{room("a", 4000, 3*gi), room("b", 4000, 2*gi)}
 	out := subtractFromEmptiest(rooms, []amount{{cpu: 100, mem: 4 * gi}})
 	if out[0].Memory != 0 || out[1].Memory != gi {
+		t.Fatalf("out = %+v", out)
+	}
+}
+
+// CPU still owed after the chosen room ran out of it is taken from a room that has CPU.
+func TestSubtractContinuesToRoomWithCPU(t *testing.T) {
+	rooms := []nodeRoom{room("a", 0, 2*gi), room("b", 1000, 0)}
+	out := subtractFromEmptiest(rooms, []amount{{cpu: 500, mem: 0}})
+	if out[1].CPU != 500 || out[0].CPU != 0 {
+		t.Fatalf("out = %+v", out)
+	}
+	out = subtractFromEmptiest(rooms, []amount{{cpu: 500, mem: gi}})
+	if out[1].CPU != 500 || out[0].Memory != gi {
 		t.Fatalf("out = %+v", out)
 	}
 }
