@@ -37,6 +37,7 @@ type LaboratoryV1alpha1Interface interface {
 	LabTrafficReportsGetter
 	LabVPNsGetter
 	MaintenanceWindowsGetter
+	ReservationsGetter
 	TenantsGetter
 }
 
@@ -83,6 +84,10 @@ func (c *LaboratoryV1alpha1Client) LabVPNs(namespace string) LabVPNInterface {
 
 func (c *LaboratoryV1alpha1Client) MaintenanceWindows() MaintenanceWindowInterface {
 	return newMaintenanceWindows(c)
+}
+
+func (c *LaboratoryV1alpha1Client) Reservations() ReservationInterface {
+	return newReservations(c)
 }
 
 func (c *LaboratoryV1alpha1Client) Tenants() TenantInterface {

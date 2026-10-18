@@ -16,6 +16,8 @@ const (
 	// most 63 characters). Objects with the same key are dispatched together.
 	// Operator-internal: the scheduler reads it and no user label.
 	LabelDeployGroup = LabelPrefix + "deploy-group"
+	// LabelReservation is the name of the Reservation a Lab or LabGroup runs under. Objects without it are unreserved.
+	LabelReservation = LabelPrefix + "reservation"
 
 	// LabelNodeAgentReady is set to "true" on a node by the node-agent running there once it can serve pods, and removed when it stops.
 	// Every lab pod requires it (through the lab node selector of the chart), so no lab pod lands on a node without a working
