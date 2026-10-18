@@ -69,9 +69,13 @@ type fakeEnv struct {
 	podNode map[string]string
 	// fair is the reservation usage, the clock and the aging threshold; zero: no usage, no aging.
 	fair fairness
+	// stoppedHeld is the room stopped labs keep per node.
+	stoppedHeld map[string]amount
 }
 
 func (f *fakeEnv) fairness() fairness { return f.fair }
+
+func (f *fakeEnv) stoppedHolds() map[string]amount { return f.stoppedHeld }
 
 func (f *fakeEnv) nodeOf(p *schedPod) string {
 	if n, ok := f.podNode[p.key]; ok {

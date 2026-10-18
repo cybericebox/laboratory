@@ -3,7 +3,6 @@ package laboratory
 import (
 	"fmt"
 	"sort"
-	"strings"
 	"testing"
 	"time"
 
@@ -88,17 +87,18 @@ type simEnv struct {
 	fair  fairness
 }
 
-func (e *simEnv) prepared(*schedObject) bool    { return true }
-func (e *simEnv) noNodes() bool                 { return false }
-func (e *simEnv) take(*schedPod)                {}
-func (e *simEnv) tenantFits(*schedPod) bool     { return true }
-func (e *simEnv) tenantEverFits(*schedPod) bool { return true }
-func (e *simEnv) emptyRooms() []nodeRoom        { return append([]nodeRoom(nil), e.empty...) }
-func (e *simEnv) nodeOf(p *schedPod) string     { return e.node[p.key] }
-func (e *simEnv) neverFits(p *schedPod) bool    { return !packs(e.empty, []*schedPod{p}) }
-func (e *simEnv) rooms() ([]nodeRoom, bool)     { return without(e.empty, e.use), true }
-func (e *simEnv) fairness() fairness            { return e.fair }
-func (e *simEnv) String() string                { return fmt.Sprintf("%+v", e.empty) }
+func (e *simEnv) prepared(*schedObject) bool      { return true }
+func (e *simEnv) noNodes() bool                   { return false }
+func (e *simEnv) take(*schedPod)                  {}
+func (e *simEnv) tenantFits(*schedPod) bool       { return true }
+func (e *simEnv) tenantEverFits(*schedPod) bool   { return true }
+func (e *simEnv) emptyRooms() []nodeRoom          { return append([]nodeRoom(nil), e.empty...) }
+func (e *simEnv) nodeOf(p *schedPod) string       { return e.node[p.key] }
+func (e *simEnv) neverFits(p *schedPod) bool      { return !packs(e.empty, []*schedPod{p}) }
+func (e *simEnv) rooms() ([]nodeRoom, bool)       { return without(e.empty, e.use), true }
+func (e *simEnv) stoppedHolds() map[string]amount { return nil }
+func (e *simEnv) fairness() fairness              { return e.fair }
+func (e *simEnv) String() string                  { return fmt.Sprintf("%+v", e.empty) }
 
 // packs says whether the pods can go onto the rooms, each whole onto one, by an exhaustive search (not fitsGang).
 func packs(rooms []nodeRoom, ps []*schedPod) bool {
@@ -456,15 +456,18 @@ func assignExact(room map[string]amount, ps []*schedPod) map[string]string {
 
 // Over many passes, with small labs arriving on every pass and running a few passes each, an aged big lab is never starved:
 // it starts at the latest one pass after every lab that ran when it aged has ended (nothing new may take its room), and no
-// pass ever dispatches more than the nodes hold.
+// pass ever dispatches more than the nodes hold. Every third seed adds what may still take the kept room: LabGroups arriving
+// in the first two passes (the lane is never held back) and admitted groups with a remainder (placed before the aged gang).
+// Both are finite, so the bound grows by the life of each of them, not forever.
 func TestAgedGangDispatchesOnceItsRoomFrees(t *testing.T) {
 	const (
 		mi      = int64(1) << 20
 		maxLife = 5
 	)
-	waited := 0 // scenarios where the big lab could not start at once
+	waited, extraWaited := 0, 0 // scenarios where the big lab could not start at once
 	for seed := 1; seed <= 300; seed++ {
 		r := splitmix(seed)
+		extras := seed%3 == 0
 		env := &simEnv{node: map[string]string{}, use: map[string]amount{}}
 		for i, n := 0, 1+r.next(3); i < n; i++ {
 			env.empty = append(env.empty, room(fmt.Sprintf("n%d", i), int64(2000+500*r.next(6)), int64(2+r.next(6))*512*mi))
@@ -479,37 +482,68 @@ func TestAgedGangDispatchesOnceItsRoomFrees(t *testing.T) {
 			continue
 		}
 		life := map[*schedObject]int{}
-		running := []*schedObject{}
-		// the cluster is busy when the big lab ages: small labs fill the nodes
+		var running, queued []*schedObject
 		small := 0
-		newSmall := func(arrival time.Time) *schedObject {
+		newSmall := func(arrival time.Time, n int) *schedObject {
 			small++
 			id := fmt.Sprintf("s%d", small)
 			o := obj("lab/"+id, id, 0, nil)
 			o.arrival = arrival
-			p := pods(id, "p1")[0]
-			p.need = amount{cpu: int64(100 * (1 + r.next(5))), mem: int64(1+r.next(3)) * 256 * mi}
-			o.pods = append(o.pods, p)
+			for i := 0; i < n; i++ {
+				p := pods(id, fmt.Sprintf("p%d", i))[0]
+				p.need = amount{cpu: int64(100 * (1 + r.next(5))), mem: int64(1+r.next(3)) * 256 * mi}
+				o.pods = append(o.pods, p)
+			}
 			return o
 		}
-		for i := 0; i < 12; i++ {
-			o := newSmall(planEpoch)
-			free := without(env.empty, env.use)
-			if a := assign(free, o.pods); a != nil {
-				o.pods[0].state = laboratoryv1alpha1.PodStarted
-				env.node[o.pods[0].key] = a[o.pods[0].key]
-				env.use[a[o.pods[0].key]] = env.use[a[o.pods[0].key]].add(o.pods[0].need)
-				life[o] = 1 + r.next(maxLife)
-				running = append(running, o)
-			}
+		bind := func(p *schedPod, node string) {
+			p.state = laboratoryv1alpha1.PodStarted
+			env.node[p.key] = node
+			env.use[node] = env.use[node].add(p.need)
 		}
-		var queued []*schedObject
+		// the cluster is busy when the big lab ages: small labs fill the nodes; with extras some of them are groups with only
+		// their first pod out (admitted, a remainder waiting)
+		remainders := 0
+		for i := 0; i < 12; i++ {
+			partial := extras && i%4 == 0
+			o := newSmall(planEpoch, 1)
+			if partial {
+				o = newSmall(planEpoch.Add(9*time.Minute), 2)
+			}
+			a := assign(without(env.empty, env.use), o.pods[:1])
+			if a == nil {
+				continue
+			}
+			bind(o.pods[0], a[o.pods[0].key])
+			// a lab ends at its time, a group with a remainder too (it may never fit beside its own pod)
+			life[o] = 1 + r.next(maxLife)
+			if partial {
+				queued = append(queued, o)
+				remainders++
+				continue
+			}
+			running = append(running, o)
+		}
+		// the bound: the life of what ran when the big lab aged, plus one life per lane wave and per remainder that may take
+		// the kept room before it
+		limit := maxLife
+		if extras {
+			limit = maxLife * (2 + remainders)
+		}
+		teams := 0
 		started := -1
-		for pass := 0; pass <= maxLife && started < 0; pass++ {
+		for pass := 0; pass <= limit && started < 0; pass++ {
 			now := planEpoch.Add(10*time.Minute + time.Duration(pass)*2*time.Second)
 			env.fair = fairness{now: now, aging: 2 * time.Minute}
 			for i, k := 0, 1+r.next(3); i < k; i++ {
-				queued = append(queued, newSmall(now.Add(-time.Second)))
+				queued = append(queued, newSmall(now.Add(-time.Second), 1))
+			}
+			if extras && pass < 2 {
+				teams++
+				g := obj(fmt.Sprintf("group/t%d", teams), "", 0, nil, pods(fmt.Sprintf("group/t%d", teams), "vpn")...)
+				g.arrival = now.Add(-time.Second)
+				g.pods[0].need = amount{cpu: 100, mem: 128 * mi}
+				queued = append(queued, g)
 			}
 			objs := append(append([]*schedObject{big}, running...), queued...)
 			plan := planSchedule(objs, 100, false, env)
@@ -525,52 +559,65 @@ func TestAgedGangDispatchesOnceItsRoomFrees(t *testing.T) {
 			if at == nil {
 				t.Fatalf("seed %d pass %d: the room taken %v is not the dispatched pods %v", seed, pass, placed(free, plan.left), keys(plan.dispatch))
 			}
-			sent := map[string]bool{}
 			for _, p := range plan.dispatch {
-				p.state = laboratoryv1alpha1.PodStarted
-				env.node[p.key] = at[p.key]
-				env.use[at[p.key]] = env.use[at[p.key]].add(p.need)
-				sent[p.key[:strings.Index(p.key, "/")]] = true
+				bind(p, at[p.key])
 			}
-			if sent["big"] {
-				for _, p := range big.pods {
-					if p.state != laboratoryv1alpha1.PodStarted {
-						t.Fatalf("seed %d pass %d: the big lab started in part", seed, pass)
-					}
+			bigOut := 0
+			for _, p := range big.pods {
+				if p.state == laboratoryv1alpha1.PodStarted {
+					bigOut++
 				}
+			}
+			if bigOut != 0 && bigOut != len(big.pods) {
+				t.Fatalf("seed %d pass %d: the big lab started in part", seed, pass)
+			}
+			if bigOut != 0 {
 				started = pass
 			}
-			var still []*schedObject
+			// the labs that end now leave the nodes, those that start now run for their life
+			end := func(o *schedObject) bool {
+				if life[o]--; life[o] > 0 {
+					return false
+				}
+				for _, p := range o.pods {
+					if p.state == laboratoryv1alpha1.PodStarted {
+						env.use[env.node[p.key]] = env.use[env.node[p.key]].sub(p.need)
+					}
+				}
+				return true
+			}
+			var alive, still []*schedObject
+			for _, o := range running {
+				if !end(o) {
+					alive = append(alive, o)
+				}
+			}
 			for _, o := range queued {
-				if sent[o.group] {
-					life[o] = 1 + r.next(maxLife)
-					running = append(running, o)
-				} else {
+				switch {
+				case o.pending() == 0:
+					if life[o] <= 0 {
+						life[o] = 1 + r.next(maxLife)
+					}
+					alive = append(alive, o)
+				case life[o] > 0 && end(o): // a group with a remainder ends at its time with the rest
+				default:
 					still = append(still, o)
 				}
 			}
-			queued = still
-			// the labs that end now leave the nodes
-			var alive []*schedObject
-			for _, o := range running {
-				if life[o]--; life[o] > 0 {
-					alive = append(alive, o)
-					continue
-				}
-				p := o.pods[0]
-				env.use[env.node[p.key]] = env.use[env.node[p.key]].sub(p.need)
-			}
-			running = alive
+			running, queued = alive, still
 		}
 		if started < 0 {
-			t.Fatalf("seed %d: the aged big lab %v did not start within %d passes on nodes %v", seed, keys(big.pods), maxLife+1, env)
+			t.Fatalf("seed %d: the aged big lab %v did not start within %d passes on nodes %v", seed, keys(big.pods), limit+1, env)
 		}
 		if started > 0 {
 			waited++
+			if extras {
+				extraWaited++
+			}
 		}
 	}
-	if waited < 100 {
-		t.Fatalf("only %d scenarios made the big lab wait", waited)
+	if waited < 100 || extraWaited < 30 {
+		t.Fatalf("only %d scenarios (%d with lane and remainders) made the big lab wait", waited, extraWaited)
 	}
 }
 
@@ -615,4 +662,46 @@ func TestBlockedGangNeverAgesIntoTheReserver(t *testing.T) {
 	if r := plan.status["lab/c"].Reason; r != laboratoryv1alpha1.WaitInsufficient {
 		t.Fatalf("c reason = %q", r)
 	}
+}
+
+// The reviewer's probe: 8Gi empty, 2Gi of it kept by a stopped lab (6Gi free). A 7Gi aged gang fits only beside the stopped
+// lab's room, which may stay for days, so it keeps nothing and the small labs run. The same 2Gi used by running labs (they
+// end) still makes the gang keep its room.
+func TestAgedGangDoesNotReserveBesideStoppedLabHolds(t *testing.T) {
+	empty := []nodeRoom{room("n1", 4000, 8*gi)}
+	nodes := []nodeRoom{room("n1", 4000, 6*gi)}
+	objs := func() []*schedObject {
+		a := obj("lab/a", "", 0, nil, need(pods("a", "p1"), 100, 7*gi)...)
+		return []*schedObject{a, fresh("c", gi), fresh("d", 2*gi)}
+	}
+	env := &fakeEnv{nodes: nodes, empty: empty, fair: agingOn, stoppedHeld: map[string]amount{"n1": {cpu: 100, mem: 2 * gi}}}
+	plan := planSchedule(objs(), 10, false, env)
+	wantDispatch(t, plan, "d/p1", "c/p1")
+	if r := plan.status["lab/a"].Reason; r != laboratoryv1alpha1.WaitInsufficient {
+		t.Fatalf("a reason = %q", r)
+	}
+	if left := plan.left[0].Memory; left != 3*gi {
+		t.Fatalf("left %d, want 3Gi", left)
+	}
+	// running labs instead of the stopped one: the room is kept
+	wantDispatch(t, planSchedule(objs(), 10, false, &fakeEnv{nodes: nodes, empty: empty, fair: agingOn}))
+}
+
+// Aging counts from when the gang entered the queue, not from when its objects were created: a lab created long ago and
+// resumed now (its pods queued again) is not aged on its first pass and keeps no room.
+func TestResumedLabIsNotAgedOnItsFirstPass(t *testing.T) {
+	empty := []nodeRoom{room("n1", 4000, 4*gi)}
+	nodes := []nodeRoom{room("n1", 4000, gi)}
+	mk := func(queued time.Duration) []*schedObject {
+		a := obj("lab/a", "", 0, nil, need(pods("a", "p1"), 100, 3*gi)...)
+		a.pods[0].queuedAt = agingOn.now.Add(-queued)
+		return []*schedObject{a, fresh("c", gi)}
+	}
+	// resumed a second ago: c takes the room
+	wantDispatch(t, planSchedule(mk(time.Second), 10, false, &fakeEnv{nodes: nodes, empty: empty, fair: agingOn}), "c/p1")
+	// queued for five minutes: aged, the room is kept and c waits
+	wantDispatch(t, planSchedule(mk(5*time.Minute), 10, false, &fakeEnv{nodes: nodes, empty: empty, fair: agingOn}))
+	// no queue time recorded: the arrival counts
+	a := obj("lab/a", "", 0, nil, need(pods("a", "p1"), 100, 3*gi)...)
+	wantDispatch(t, planSchedule([]*schedObject{a, fresh("c", gi)}, 10, false, &fakeEnv{nodes: nodes, empty: empty, fair: agingOn}))
 }

@@ -565,6 +565,9 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 				p.ref = d
 				if sc := d.Status.Scheduling; sc != nil {
 					p.state = sc.State
+					if sc.QueuedAt != nil {
+						p.queuedAt = sc.QueuedAt.Time
+					}
 					if s.recentDispatchPending(key, p.state, now) {
 						p.state = laboratoryv1alpha1.PodStarting
 					}
@@ -599,6 +602,9 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 					continue
 				}
 				p.state = e.State
+				if e.QueuedAt != nil {
+					p.queuedAt = e.QueuedAt.Time
+				}
 				if s.recentDispatchPending(key, p.state, now) {
 					p.state = laboratoryv1alpha1.PodStarting
 				}
@@ -892,12 +898,43 @@ func (e *clusterEnv) tenantFits(p *schedPod) bool {
 	return limits.Fits(e.tenantUsed[p.tenant], tenant.Totals{CPU: p.need.cpu, Memory: p.need.mem})
 }
 
-// tenantEverFits says whether the need fits the quota of the tenant with none of its pods running.
-// fairness: the reservation usage is not counted yet, so every reservation has used nothing.
+// fairness is the clock and aging threshold of the pass; the reservation usage is not counted yet, so every reservation has
+// used nothing.
 func (e *clusterEnv) fairness() fairness {
 	return fairness{now: e.now, aging: e.s.Config.Aging}
 }
 
+// stoppedHolds is the room the pods of stopped labs keep on each node: their pods still there and the held placeholders of
+// those gone (stoppedReservations), as the capacity snapshot counts them.
+func (e *clusterEnv) stoppedHolds() map[string]amount {
+	if !e.s.Config.ResourceCheck {
+		return nil
+	}
+	held, _, _ := e.s.stoppedReservations(e.snap)
+	stopped := map[string]bool{}
+	for _, l := range e.snap.labs {
+		if l.Spec.Lifecycle.IsStopped() {
+			stopped[l.Namespace+"/"+l.Name] = true
+		}
+	}
+	out := map[string]amount{}
+	add := func(p *corev1.Pod) {
+		if p.Spec.NodeName != "" && p.Status.Phase != corev1.PodSucceeded && p.Status.Phase != corev1.PodFailed {
+			out[p.Spec.NodeName] = out[p.Spec.NodeName].add(podRequests(p))
+		}
+	}
+	for _, p := range e.snap.pods {
+		if l := p.Labels[names.LabelLab]; l != "" && stopped[p.Namespace+"/"+l] {
+			add(p)
+		}
+	}
+	for i := range held {
+		add(&held[i])
+	}
+	return out
+}
+
+// tenantEverFits says whether the need fits the quota of the tenant with none of its pods running.
 func (e *clusterEnv) tenantEverFits(p *schedPod) bool {
 	ten := e.snap.tenants[p.tenant]
 	if ten == nil || ten.Spec.Quota == nil {

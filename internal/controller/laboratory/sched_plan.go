@@ -34,6 +34,8 @@ type schedPod struct {
 	need amount
 	// tenant owns the pod (its object's tenant label).
 	tenant string
+	// queuedAt is when the pod last entered the queue (its scheduling record; a resumed lab is queued again); zero: unknown.
+	queuedAt time.Time
 	// ref is the scheduler's handle on the underlying object (opaque to the plan).
 	ref any
 }
@@ -146,6 +148,9 @@ type schedEnv interface {
 	tenantEverFits(p *schedPod) bool
 	// fairness is the usage of the reservations, the clock and the aging threshold of the pass.
 	fairness() fairness
+	// stoppedHolds is the room the pods of stopped labs keep on each node (they stay until the lab is resumed or deleted);
+	// nil: none.
+	stoppedHolds() map[string]amount
 }
 
 // objectStatus is what the plan reports for an object that still has pods to dispatch.
@@ -521,9 +526,9 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		}
 	}
 
-	// Aging: a gang that has waited (since its arrival) longer than the aging threshold is aged. The oldest aged gang that could
-	// dispatch but for the room (its tenant within the quota, its images on the nodes, it packs the empty nodes beside its own
-	// pods) keeps its placement on those empty rooms: the other gangs place only on the room not kept for it, so a stream of
+	// Aging: a gang that has waited (since it last entered the queue, waitingSince) longer than the aging threshold is aged.
+	// The oldest aged gang that could dispatch but for the room (its tenant within the quota, its images on the nodes, it packs
+	// the empty nodes beside its own pods and the pods stopped labs keep) keeps its placement on those rooms: the other gangs place only on the room not kept for it, so a stream of
 	// small gangs cannot keep taking the room it waits for. One gang at a time, placed by the same simulation; the held
 	// remainders of the admitted gangs were placed before it, so it never holds them back. Only lab gangs age and only lab
 	// gangs are held back: the LabGroup lane (the VPN and gateway of a team) is placed before it and uses all the room, so a new
@@ -565,6 +570,8 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		if empty == nil {
 			return nil, false
 		}
+		// A stopped lab keeps its room for days: room kept beside it would stay closed to everyone while the gang cannot start.
+		empty = without(empty, env.stoppedHolds())
 		needs := needsOf(q)
 		left, ok := fitsGang(empty, needs)
 		if !ok {
@@ -575,11 +582,17 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	if perNode && fair.aging > 0 && !env.noNodes() {
 		var candidates []*gang
 		for _, gg := range gangs {
-			if !held[gg] && !gg.objs[0].isGroup() && fair.now.Sub(gg.arrival) >= fair.aging {
+			if !held[gg] && !gg.objs[0].isGroup() && fair.now.Sub(gg.waitingSince()) >= fair.aging {
 				candidates = append(candidates, gg)
 			}
 		}
-		sort.SliceStable(candidates, func(i, j int) bool { return byAge(candidates[i], candidates[j]) })
+		sort.SliceStable(candidates, func(i, j int) bool {
+			a, b := candidates[i], candidates[j]
+			if wa, wb := a.waitingSince(), b.waitingSince(); !wa.Equal(wb) {
+				return wa.Before(wb)
+			}
+			return byAge(a, b)
+		})
 		for _, gg := range candidates {
 			if room, ok := agedPlacement(gg); ok {
 				aged, agedRoom = gg, room
