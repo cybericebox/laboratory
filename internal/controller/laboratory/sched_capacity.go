@@ -45,9 +45,12 @@ type capacitySnapshot struct {
 	free        amount
 	// perNode is the room of every schedulable node (rooms).
 	perNode []nodeRoom
-	// maxNode is the most CPU and the most memory one lab node can give a pod: allocatable less the node reserve, the
-	// platform percent and the packing reserve, whatever runs there, over every node of the pool, cordoned and NotReady ones
-	// too (nodecap.LargestDevice, the agent's largest device). A pod above it can never be placed.
+	// nodeLimits is, per node of the pool (cordoned, NotReady and rebooting ones too), the most it can give one pod:
+	// allocatable less the node reserve, the platform percent and the packing reserve, whatever runs there
+	// (nodecap.DeviceLimits). A pod that fits none of them, CPU and memory together, can never be placed.
+	nodeLimits []amount
+	// maxNode is the per-resource maximum of nodeLimits (nodecap.LargestDevice, the agent's largest device): an upper bound
+	// per resource only.
 	maxNode amount
 	// labUsed is the requests of the lab pods bound to each node (the held pods of stopped labs included).
 	labUsed map[string]amount
@@ -108,9 +111,21 @@ func snapshotCapacity(nodes []corev1.Node, pods []corev1.Pod, selector map[strin
 		c.allocatable = c.allocatable.add(alloc)
 		c.free = c.free.add(alloc.sub(requested[n.Name]).floorZero())
 	}
-	largest := nodecap.LargestDevice(nodes, selector, tolerations, reserve, packing)
-	c.maxNode = amount{cpu: largest.CPU, mem: largest.Memory}
+	for _, l := range nodecap.DeviceLimits(nodes, selector, tolerations, reserve, packing) {
+		c.nodeLimits = append(c.nodeLimits, amount{cpu: l.CPU, mem: l.Memory})
+		c.maxNode = amount{cpu: max(c.maxNode.cpu, l.CPU), mem: max(c.maxNode.mem, l.Memory)}
+	}
 	return c
+}
+
+// fitsOneNode says whether some node of the pool, empty, holds need: CPU and memory on the same node.
+func (c capacitySnapshot) fitsOneNode(need amount) bool {
+	for _, l := range c.nodeLimits {
+		if need.cpu <= l.cpu && need.mem <= l.mem {
+			return true
+		}
+	}
+	return false
 }
 
 // fit is the verdict of the resource check for one lab.

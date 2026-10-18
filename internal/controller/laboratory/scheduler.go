@@ -838,7 +838,7 @@ func (e *clusterEnv) emptyRooms() []nodeRoom {
 	return c.rooms()
 }
 
-// neverFits: the pod requests more than any single schedulable node can give.
+// neverFits: no single node of the pool, empty, can give the pod its CPU and memory together.
 func (e *clusterEnv) neverFits(p *schedPod) bool {
 	if !e.s.Config.ResourceCheck || p.need == (amount{}) {
 		return false
@@ -847,7 +847,7 @@ func (e *clusterEnv) neverFits(p *schedPod) bool {
 	if c == nil || c.nodes == 0 {
 		return false
 	}
-	return p.need.cpu > c.maxNode.cpu || p.need.mem > c.maxNode.mem
+	return !c.fitsOneNode(p.need)
 }
 
 func (e *clusterEnv) check(p *schedPod) fit {

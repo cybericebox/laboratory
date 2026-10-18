@@ -84,13 +84,12 @@ func Rooms(nodes []corev1.Node, pods []corev1.Pod, selector map[string]string, t
 	return out
 }
 
-// LargestDevice is the largest device the lab nodes can ever hold: per resource the most one node gives a lab pod with
-// nothing else on it, its allocatable less the platform reserve (as in Rooms) and less the packing reserve, which labs never
-// use (see FreeForLabs). Every node of the pool counts (InPool), cordoned and NotReady ones too, so a drained node does not
-// shrink it. The two resources may come from different nodes, so it can slightly overstate a device that needs both at
-// once. Zero for no node. The operator fails a pod above it for good, and the agent tells the platform the same number.
-func LargestDevice(nodes []corev1.Node, selector map[string]string, tolerations []corev1.Toleration, reserve Reserve, packing PackingReserve) Amount {
-	var out Amount
+// DeviceLimits is, for every node of the pool (InPool: cordoned, NotReady and rebooting ones too, so a drained node does
+// not shrink it), the most it gives one lab pod with nothing else on it: its allocatable less the platform reserve (as in
+// Rooms) and less the packing reserve, which labs never use (see FreeForLabs). A pod that fits none of them, CPU and
+// memory together, can never be placed.
+func DeviceLimits(nodes []corev1.Node, selector map[string]string, tolerations []corev1.Toleration, reserve Reserve, packing PackingReserve) []Amount {
+	var out []Amount
 	for i := range nodes {
 		n := &nodes[i]
 		if !InPool(n, selector, tolerations) {
@@ -101,7 +100,18 @@ func LargestDevice(nodes []corev1.Node, selector map[string]string, tolerations 
 		cpu -= cpu * int64(reserve.Percent) / 100
 		mem -= mem * int64(reserve.Percent) / 100
 		cpu, mem = packing.Apply(cpu, mem)
-		out.CPU, out.Memory = max(out.CPU, cpu), max(out.Memory, mem)
+		out = append(out, Amount{CPU: cpu, Memory: mem})
+	}
+	return out
+}
+
+// LargestDevice is the largest device the lab nodes can ever hold, per resource: the largest of DeviceLimits for CPU and
+// for memory, each on its own. It is an upper bound per resource: the two may come from different nodes, so a device that
+// needs both at once may still fit no node (the operator then fails it, see DeviceLimits). Zero for no node.
+func LargestDevice(nodes []corev1.Node, selector map[string]string, tolerations []corev1.Toleration, reserve Reserve, packing PackingReserve) Amount {
+	var out Amount
+	for _, l := range DeviceLimits(nodes, selector, tolerations, reserve, packing) {
+		out.CPU, out.Memory = max(out.CPU, l.CPU), max(out.Memory, l.Memory)
 	}
 	return out
 }
