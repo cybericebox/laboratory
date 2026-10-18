@@ -54,6 +54,8 @@ type fakeEnv struct {
 	nodes []nodeRoom
 	// empty are the rooms with no lab running; nil: no verdict.
 	empty []nodeRoom
+	// tenantCPU is the CPU a gang of a tenant may ask at most (with the room kept for the tenant added).
+	tenantCPU map[string]int64
 	// tenantNever marks the tenants whose quota can never hold a gang.
 	tenantNever map[string]bool
 }
@@ -65,7 +67,12 @@ func (f *fakeEnv) emptyRooms() []nodeRoom { return f.empty }
 
 func (f *fakeEnv) tenantEverFits(p *schedPod) bool { return !f.tenantNever[p.tenant] }
 
-func (f *fakeEnv) tenantFits(p *schedPod) bool  { return !f.tenantFull[p.tenant] }
+func (f *fakeEnv) tenantFits(p *schedPod) bool {
+	if c, ok := f.tenantCPU[p.tenant]; ok && p.need.cpu > c {
+		return false
+	}
+	return !f.tenantFull[p.tenant]
+}
 func (f *fakeEnv) prepared(o *schedObject) bool { return !f.notPrepared[o.prepKey] }
 func (f *fakeEnv) check(p *schedPod) fit {
 	if v, ok := f.fits[p.key]; ok {
