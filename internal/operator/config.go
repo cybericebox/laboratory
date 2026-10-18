@@ -291,9 +291,7 @@ func LoadConfig() (*Config, error) {
 	if address, err := mail.ParseAddress(cfg.SupportEmail); err != nil || address.Address != cfg.SupportEmail {
 		return nil, fmt.Errorf("SUPPORT_EMAIL %q is not a plain email address", cfg.SupportEmail)
 	}
-	switch cfg.WGDemuxMode {
-	case "userspace", "tc", "xdp":
-	default:
+	if !names.ValidDemuxMode(cfg.WGDemuxMode) {
 		return nil, fmt.Errorf("WG_DEMUX_MODE %q is not userspace, tc or xdp", cfg.WGDemuxMode)
 	}
 	cfg.applyDefaults()

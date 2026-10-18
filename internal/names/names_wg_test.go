@@ -9,3 +9,11 @@ func TestHostNetworkDemux(t *testing.T) {
 		}
 	}
 }
+
+func TestValidDemuxMode(t *testing.T) {
+	for mode, want := range map[string]bool{"tc": true, "xdp": true, "userspace": true, "": false, "TC": false, "foo": false} {
+		if got := ValidDemuxMode(mode); got != want {
+			t.Errorf("%q: %v", mode, got)
+		}
+	}
+}
