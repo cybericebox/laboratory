@@ -361,6 +361,11 @@ proxy:
   # Gateway's Service share one external IP (UDP 51820 + TCP 443 don't conflict).
   sharingKey: "laboratory-edge"
 
+  # Further namespaces whose LoadBalancer Services share the same external IP (e.g. the platform's HTTP/3 Service on 443/udp). LB-IPAM
+  # shares an IP across namespaces only when both sides list each other, so both edge Services (the WG one and the Gateway's) name these
+  # namespaces next to each other's. The other side sets the same sharing key and IP on its own Service.
+  sharedNamespaces: []
+
   networkPolicy:
     enabled: true
 
