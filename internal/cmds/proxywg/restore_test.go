@@ -91,8 +91,8 @@ func TestRestoreKeepsALiveSessionsRecord(t *testing.T) {
 	}
 	fp := &fakeFastPath{seen: map[uint32]time.Time{2: time.Now()}, pinned: pair(1, 2, sock("198.51.100.1", 40000), server, 0)}
 	groups := []demux.TableEntry{{UID: "g", Resolved: &net.UDPAddr{IP: server.IP, Port: int(server.Port)}}}
-	if restored, _, err := restoreSessions(fp, ct, groups); err != nil || restored != 0 {
-		t.Fatalf("restored %d err %v", restored, err)
+	if restored, dropped, err := restoreSessions(fp, ct, groups); err != nil || restored != 0 || dropped != 0 {
+		t.Fatalf("restored %d dropped %d err %v", restored, dropped, err)
 	}
 	if len(fp.deleted) != 0 {
 		t.Fatalf("deleted the live session's records: %v", fp.deleted)

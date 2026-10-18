@@ -5,6 +5,7 @@ package fastpath
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"net"
 	"net/netip"
@@ -34,21 +35,32 @@ const (
 )
 
 // FastPath is the loaded fast path of one demux: the programs, the pinned maps, and the links that attach the programs.
+//
+// Upsert runs under the ConnTrack lock, so mu guards only the in-memory state and is never held across a syscall; the work on
+// the devices runs outside it and publishes its result under it. work serialises that work (Open and EnsureOrder); the packet
+// path never takes it.
 type FastPath struct {
 	o    Options
+	spec *ebpf.CollectionSpec
 	objs WgFastpathObjects
 	ext  []int
 
+	work sync.Mutex
+
 	mu      sync.Mutex
 	links   map[string]link.Link      // by pin name
+	busy    map[string]bool           // pin names being attached outside mu
 	sources map[netip.Addr]netip.Addr // the kernel's preferred source towards a server, until the next EnsureOrder
 	entries bool                      // SetEntries has given at least one address
 	order   error                     // the last EnsureOrder's result
+
+	query func(link.QueryOptions) (*link.QueryResult, error) // link.QueryPrograms; a seam for the tests
 }
 
 // Open loads the programs, re-opens the maps a previous demux pinned (or creates and pins them), and attaches the programs at
 // the head of the devices: a pinned link of a previous demux gets the new program in place, so forwarding never stops. It
-// refuses xdp mode when another XDP program is attached to an external device.
+// refuses xdp mode when another XDP program is attached to an external device. A failed Open removes the links it attached
+// itself and keeps those of the demux before it.
 func Open(o Options) (*FastPath, error) {
 	if o.Mode != demux.ModeTC && o.Mode != demux.ModeXDP {
 		return nil, fmt.Errorf("the fast path runs in tc or xdp mode, not %q", o.Mode)
@@ -63,7 +75,8 @@ func Open(o Options) (*FastPath, error) {
 	if err := os.MkdirAll(filepath.Join(o.PinPath, linksDir), 0o700); err != nil {
 		return nil, fmt.Errorf("pin path: %w", err)
 	}
-	f := &FastPath{o: o, ext: ext, links: map[string]link.Link{}, sources: map[netip.Addr]netip.Addr{}}
+	f := &FastPath{o: o, ext: ext, links: map[string]link.Link{}, busy: map[string]bool{}, sources: map[netip.Addr]netip.Addr{},
+		query: link.QueryPrograms}
 	if err := f.load(); err != nil {
 		return nil, err
 	}
@@ -75,11 +88,20 @@ func Open(o Options) (*FastPath, error) {
 		_ = f.Close()
 		return nil, fmt.Errorf("write the config: %w", err)
 	}
-	if err := f.attach(); err != nil {
-		_ = f.Close()
-		return nil, err
+	created, err := f.attach()
+	if err == nil {
+		err = f.EnsureOrder()
 	}
-	if err := f.EnsureOrder(); err != nil {
+	if err != nil {
+		f.mu.Lock()
+		for _, name := range created {
+			if l, ok := f.links[name]; ok {
+				_ = l.Close()
+				delete(f.links, name)
+			}
+			removePinnedLink(f.linkPath(name))
+		}
+		f.mu.Unlock()
 		_ = f.Close()
 		return nil, err
 	}
@@ -106,6 +128,7 @@ func (f *FastPath) load() error {
 	if err != nil {
 		return fmt.Errorf("load the fast path: %w", err)
 	}
+	f.spec = spec
 	return nil
 }
 
@@ -165,63 +188,152 @@ func (f *FastPath) isExternal(ifindex int) bool {
 	return false
 }
 
-func (f *FastPath) program(kind string) (*ebpf.Program, ebpf.AttachType) {
+func programOf(kind string) (name string, at ebpf.AttachType) {
 	switch kind {
 	case kindIngress:
-		return f.objs.WgTcIngress, ebpf.AttachTCXIngress
+		return WgFastpathProgWgTcIngress, ebpf.AttachTCXIngress
 	case kindEgress:
-		return f.objs.WgTcEgressGuard, ebpf.AttachTCXEgress
+		return WgFastpathProgWgTcEgressGuard, ebpf.AttachTCXEgress
 	case kindXDP:
-		return f.objs.WgXdp, ebpf.AttachXDP
+		return WgFastpathProgWgXdp, ebpf.AttachXDP
 	default:
-		return f.objs.WgTcReply, ebpf.AttachTCXIngress
+		return WgFastpathProgWgTcReply, ebpf.AttachTCXIngress
 	}
 }
 
-// attach puts the programs on the external devices and cilium_host, takes over the reply links of earlier runs whose devices
-// still exist, and removes every other pinned link (an xdp link after a switch to tc, a device no longer external).
-func (f *FastPath) attach() error {
+func (f *FastPath) program(kind string) (*ebpf.Program, ebpf.AttachType) {
+	_, at := programOf(kind)
+	switch kind {
+	case kindIngress:
+		return f.objs.WgTcIngress, at
+	case kindEgress:
+		return f.objs.WgTcEgressGuard, at
+	case kindXDP:
+		return f.objs.WgXdp, at
+	default:
+		return f.objs.WgTcReply, at
+	}
+}
+
+// instance loads another instance of a program on the same maps: tcx holds a program once per device, so a link can only be
+// moved by attaching a second instance before the first goes.
+func (f *FastPath) instance(kind string) (*ebpf.Program, error) {
+	name, _ := programOf(kind)
+	spec := f.spec.Copy()
+	for p := range spec.Programs {
+		if p != name {
+			delete(spec.Programs, p)
+		}
+	}
+	coll, err := ebpf.NewCollectionWithOptions(spec, ebpf.CollectionOptions{MapReplacements: map[string]*ebpf.Map{
+		WgFastpathMapWgSessions: f.objs.WgSessions, WgFastpathMapWgEntries: f.objs.WgEntries,
+		WgFastpathMapWgEntrySeen: f.objs.WgEntrySeen, WgFastpathMapWgCfg: f.objs.WgCfg, WgFastpathMapWgStats: f.objs.WgStats,
+	}})
+	if err != nil {
+		return nil, fmt.Errorf("load another %s: %w", name, err)
+	}
+	defer coll.Close()
+	return coll.DetachProgram(name), nil
+}
+
+// claim reserves a pin name for an attach outside mu; false when it is attached already or being attached.
+func (f *FastPath) claim(name string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for _, ifindex := range f.ext {
-		for _, kind := range []string{kindIngress, kindEgress} {
-			if err := f.tcxLocked(kind, ifindex); err != nil {
-				return err
-			}
-		}
-		if f.o.Mode == demux.ModeXDP {
-			if err := f.xdpLocked(ifindex); err != nil {
-				return err
+	if _, ok := f.links[name]; ok || f.busy[name] {
+		return false
+	}
+	f.busy[name] = true
+	return true
+}
+
+// publish ends a claim; l (if not nil) becomes the link of the name.
+func (f *FastPath) publish(name string, l link.Link) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.busy, name)
+	if l != nil {
+		f.links[name] = l
+	}
+}
+
+// ensureLink attaches a program to a device unless it is attached already. created says the link is new (not one pinned before).
+func (f *FastPath) ensureLink(kind string, ifindex int) (created bool, err error) {
+	name := pinName(kind, ifindex)
+	if !f.claim(name) {
+		return false, nil
+	}
+	var l link.Link
+	if kind == kindXDP {
+		l, created, err = f.xdp(ifindex)
+	} else {
+		l, created, err = f.tcx(kind, ifindex)
+	}
+	f.publish(name, l)
+	return created, err
+}
+
+// attach puts the programs on the external devices and cilium_host, takes over the reply links of earlier runs whose devices
+// still exist, and removes every other pinned link (an xdp link after a switch to tc, a device no longer external). It
+// returns the links it created; a foreign XDP program is refused before anything is attached.
+func (f *FastPath) attach() (created []string, err error) {
+	f.work.Lock()
+	defer f.work.Unlock()
+	if f.o.Mode == demux.ModeXDP {
+		for _, ifindex := range f.ext {
+			if err := f.refuseForeignXDP(ifindex); err != nil {
+				return nil, err
 			}
 		}
 	}
-	f.baseReplyLocked()
-	pins, err := os.ReadDir(filepath.Join(f.o.PinPath, linksDir))
-	if err != nil {
+	add := func(kind string, ifindex int) error {
+		c, err := f.ensureLink(kind, ifindex)
+		if c {
+			created = append(created, pinName(kind, ifindex))
+		}
 		return err
 	}
+	for _, ifindex := range f.ext {
+		kinds := []string{kindIngress, kindEgress}
+		if f.o.Mode == demux.ModeXDP {
+			kinds = append(kinds, kindXDP)
+		}
+		for _, kind := range kinds {
+			if err := add(kind, ifindex); err != nil {
+				return created, err
+			}
+		}
+	}
+	if base, ok := f.baseReply(); ok {
+		_ = add(kindReply, base)
+	}
+	pins, err := os.ReadDir(filepath.Join(f.o.PinPath, linksDir))
+	if err != nil {
+		return created, err
+	}
 	for _, p := range pins {
-		if _, ours := f.links[p.Name()]; ours {
+		f.mu.Lock()
+		_, ours := f.links[p.Name()]
+		f.mu.Unlock()
+		if ours {
 			continue
 		}
 		kind, ifindex, ok := parsePinName(p.Name())
-		if ok && kind == kindReply && !f.isExternal(ifindex) && deviceExists(ifindex) && f.tcxLocked(kind, ifindex) == nil {
+		if ok && kind == kindReply && !f.isExternal(ifindex) && deviceExists(ifindex) && add(kind, ifindex) == nil {
 			continue
 		}
 		removePinnedLink(f.linkPath(p.Name()))
 	}
-	return nil
+	return created, nil
 }
 
-// baseReplyLocked attaches the reply program to cilium_host when the device exists (it may come up after the demux).
-func (f *FastPath) baseReplyLocked() {
+// baseReply is cilium_host's index when the device exists (it may come up after the demux) and is not external.
+func (f *FastPath) baseReply() (int, bool) {
 	base, err := net.InterfaceByName(ReplyBaseDevice)
 	if err != nil || f.isExternal(base.Index) {
-		return
+		return 0, false
 	}
-	if _, ok := f.links[pinName(kindReply, base.Index)]; !ok {
-		_ = f.tcxLocked(kindReply, base.Index)
-	}
+	return base.Index, true
 }
 
 func deviceExists(ifindex int) bool {
@@ -238,63 +350,82 @@ func removePinnedLink(path string) {
 	_ = os.Remove(path)
 }
 
-// tcxLocked attaches one tcx program at the head of a device, or gives a pinned link of an earlier run the new program (the
-// link keeps its place).
-func (f *FastPath) tcxLocked(kind string, ifindex int) error {
-	name := pinName(kind, ifindex)
-	path := f.linkPath(name)
+// tcx attaches one tcx program at the head of a device, or gives a pinned link of an earlier run the new program (the link
+// keeps its place).
+func (f *FastPath) tcx(kind string, ifindex int) (link.Link, bool, error) {
+	path := f.linkPath(pinName(kind, ifindex))
 	prog, at := f.program(kind)
 	if l, err := link.LoadPinnedLink(path, nil); err == nil {
 		if info, err := l.Info(); err == nil && info.TCX() != nil && int(info.TCX().Ifindex) == ifindex && l.Update(prog) == nil {
-			f.links[name] = l
-			return nil
+			return l, false, nil
 		}
 		_ = l.Close()
 		removePinnedLink(path)
 	}
 	l, err := link.AttachTCX(link.TCXOptions{Program: prog, Interface: ifindex, Attach: at, Anchor: link.Head()})
 	if err != nil {
-		return fmt.Errorf("attach %s to device %d: %w", kind, ifindex, err)
+		return nil, false, fmt.Errorf("attach %s to device %d: %w", kind, ifindex, err)
 	}
 	if err := l.Pin(path); err != nil {
 		_ = l.Close()
-		return fmt.Errorf("pin %s of device %d: %w", kind, ifindex, err)
+		return nil, false, fmt.Errorf("pin %s of device %d: %w", kind, ifindex, err)
 	}
-	f.links[name] = l
-	return nil
+	return l, true, nil
 }
 
-// xdpLocked attaches the XDP program (native, else generic), or updates the pinned link of an earlier run. Another program's
-// XDP attachment is never replaced.
-func (f *FastPath) xdpLocked(ifindex int) error {
-	name := pinName(kindXDP, ifindex)
-	path := f.linkPath(name)
-	if l, err := link.LoadPinnedLink(path, nil); err == nil {
-		if info, err := l.Info(); err == nil && info.XDP() != nil && int(info.XDP().Ifindex) == ifindex && l.Update(f.objs.WgXdp) == nil {
-			f.links[name] = l
+// pinnedXDP is our pinned XDP link of a device, if it is still attached there.
+func (f *FastPath) pinnedXDP(ifindex int) (link.Link, *link.Info) {
+	l, err := link.LoadPinnedLink(f.linkPath(pinName(kindXDP, ifindex)), nil)
+	if err != nil {
+		return nil, nil
+	}
+	if info, err := l.Info(); err == nil && info.XDP() != nil && int(info.XDP().Ifindex) == ifindex {
+		return l, info
+	}
+	_ = l.Close()
+	return nil, nil
+}
+
+// refuseForeignXDP fails when the device has an XDP program that is not ours: the xdp mode never replaces it.
+func (f *FastPath) refuseForeignXDP(ifindex int) error {
+	id, err := attachedXDP(ifindex)
+	if err != nil || id == 0 {
+		return err
+	}
+	if l, info := f.pinnedXDP(ifindex); l != nil {
+		_ = l.Close()
+		if info.Program == id {
 			return nil
 		}
-		_ = l.Close()
-		removePinnedLink(path)
 	}
-	if id, err := attachedXDP(ifindex); err != nil {
-		return err
-	} else if id != 0 {
-		return fmt.Errorf("another XDP program (id %d) is attached to device %d: the xdp mode does not replace it (use the tc mode)", id, ifindex)
+	return fmt.Errorf("another XDP program (id %d) is attached to device %d: the xdp mode does not replace it (use the tc mode)", id, ifindex)
+}
+
+// xdp attaches the XDP program (native, else generic), or updates the pinned link of an earlier run.
+func (f *FastPath) xdp(ifindex int) (link.Link, bool, error) {
+	path := f.linkPath(pinName(kindXDP, ifindex))
+	if l, _ := f.pinnedXDP(ifindex); l != nil {
+		if l.Update(f.objs.WgXdp) == nil {
+			return l, false, nil
+		}
+		_ = l.Close()
+	}
+	removePinnedLink(path)
+	if err := f.refuseForeignXDP(ifindex); err != nil {
+		return nil, false, err
 	}
 	l, err := link.AttachXDP(link.XDPOptions{Program: f.objs.WgXdp, Interface: ifindex, Flags: link.XDPDriverMode})
 	if err != nil {
 		l, err = link.AttachXDP(link.XDPOptions{Program: f.objs.WgXdp, Interface: ifindex, Flags: link.XDPGenericMode})
 	}
 	if err != nil {
-		return fmt.Errorf("attach xdp to device %d: %w", ifindex, err)
+		return nil, false, fmt.Errorf("attach xdp to device %d: %w", ifindex, err)
 	}
 	if err := l.Pin(path); err != nil {
 		_ = l.Close()
-		return fmt.Errorf("pin xdp of device %d: %w", ifindex, err)
+		return nil, false, fmt.Errorf("pin xdp of device %d: %w", ifindex, err)
 	}
-	f.links[name] = l
-	return nil
+	return l, true, nil
 }
 
 // attachedXDP is the XDP program attached to a device in any mode, 0 for none.
@@ -311,68 +442,99 @@ func attachedXDP(ifindex int) (ebpf.ProgramID, error) {
 
 // EnsureOrder puts our tcx programs back in front where another program took the head, attaches the reply program to
 // cilium_host if it came up late, and lets go of the reply links of devices that went away. An external device that went
-// away is an error (the fast path is then not attached where the clients' packets arrive).
+// away is an error (the fast path is then not attached where the clients' packets arrive). It works on a snapshot of the
+// links: the sink is never held up by it.
 func (f *FastPath) EnsureOrder() error {
+	f.work.Lock()
+	defer f.work.Unlock()
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	clear(f.sources)
-	f.baseReplyLocked()
+	f.mu.Unlock()
+
 	var errs []error
 	// A re-attach that failed last time is tried again.
 	for _, ifindex := range f.ext {
 		for _, kind := range []string{kindIngress, kindEgress} {
-			if _, ok := f.links[pinName(kind, ifindex)]; !ok {
-				if err := f.tcxLocked(kind, ifindex); err != nil {
-					errs = append(errs, err)
-				}
+			if _, err := f.ensureLink(kind, ifindex); err != nil {
+				errs = append(errs, err)
 			}
 		}
 	}
-	for name, l := range f.links {
+	if base, ok := f.baseReply(); ok {
+		_, _ = f.ensureLink(kindReply, base)
+	}
+	f.mu.Lock()
+	snapshot := maps.Clone(f.links)
+	f.mu.Unlock()
+	for name, l := range snapshot {
 		kind, ifindex, _ := parsePinName(name)
 		if kind == kindXDP {
 			continue
 		}
-		info, err := l.Info()
-		if err != nil || info.TCX() == nil || int(info.TCX().Ifindex) != ifindex {
-			if kind == kindReply {
-				_ = l.Close()
-				removePinnedLink(f.linkPath(name))
-				delete(f.links, name)
-				continue
-			}
-			errs = append(errs, fmt.Errorf("the %s link of device %d is gone", kind, ifindex))
-			continue
-		}
-		prog, at := f.program(kind)
-		r, err := link.QueryPrograms(link.QueryOptions{Target: ifindex, Attach: at})
-		if err != nil {
+		if err := f.front(name, kind, ifindex, l); err != nil {
 			errs = append(errs, err)
-			continue
 		}
-		if len(r.Programs) > 0 {
-			if id, ok := r.Programs[0].LinkID(); ok && id == info.ID {
-				continue
-			}
-		}
-		// tcx holds a program once per device, so the old link goes first. For the moment in between the packets take the
-		// slow path, which knows every session.
-		_ = l.Unpin()
-		_ = l.Detach()
-		_ = l.Close()
-		delete(f.links, name)
-		head, err := link.AttachTCX(link.TCXOptions{Program: prog, Interface: ifindex, Attach: at, Anchor: link.Head()})
-		if err != nil {
-			errs = append(errs, fmt.Errorf("re-attach %s to device %d: %w", kind, ifindex, err))
-			continue
-		}
-		if err := head.Pin(f.linkPath(name)); err != nil {
-			errs = append(errs, fmt.Errorf("pin %s of device %d: %w", kind, ifindex, err))
-		}
-		f.links[name] = head
 	}
+	f.mu.Lock()
 	f.order = errors.Join(errs...)
-	return f.order
+	f.mu.Unlock()
+	return errors.Join(errs...)
+}
+
+// front keeps one tcx link first on its device.
+func (f *FastPath) front(name, kind string, ifindex int, l link.Link) error {
+	info, err := l.Info()
+	if err != nil || info.TCX() == nil || int(info.TCX().Ifindex) != ifindex {
+		if kind != kindReply {
+			return fmt.Errorf("the %s link of device %d is gone", kind, ifindex)
+		}
+		f.mu.Lock()
+		if f.links[name] == l {
+			delete(f.links, name)
+		}
+		f.mu.Unlock()
+		_ = l.Close()
+		removePinnedLink(f.linkPath(name))
+		return nil
+	}
+	_, at := programOf(kind)
+	r, err := f.query(link.QueryOptions{Target: ifindex, Attach: at})
+	if err != nil {
+		return err
+	}
+	if len(r.Programs) > 0 {
+		if id, ok := r.Programs[0].LinkID(); ok && id == info.ID {
+			return nil
+		}
+	}
+	// Attach a second instance at the head, pin it in the old link's place, then let the old one go: the device is never
+	// without our program.
+	prog, err := f.instance(kind)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = prog.Close() }()
+	head, err := link.AttachTCX(link.TCXOptions{Program: prog, Interface: ifindex, Attach: at, Anchor: link.Head()})
+	if err != nil {
+		return fmt.Errorf("re-attach %s to device %d: %w", kind, ifindex, err)
+	}
+	path := f.linkPath(name)
+	// bpffs refuses dots in names; a leftover "-new" pin is removed by the next Open (not a valid pin name).
+	if err := head.Pin(path + "-new"); err != nil {
+		_ = head.Close()
+		return fmt.Errorf("pin %s of device %d: %w", kind, ifindex, err)
+	}
+	if err := os.Rename(path+"-new", path); err != nil {
+		_ = head.Unpin()
+		_ = head.Close()
+		return fmt.Errorf("move the pin of %s of device %d: %w", kind, ifindex, err)
+	}
+	f.mu.Lock()
+	f.links[name] = head
+	f.mu.Unlock()
+	_ = l.Detach()
+	_ = l.Close()
+	return nil
 }
 
 // Ready says whether the fast path is attached in front on every device and knows the entry addresses.
@@ -390,6 +552,8 @@ func (f *FastPath) Ready() error {
 
 // Close lets go of the programs, maps and links; the pins stay, so the kernel keeps forwarding until the next demux takes over.
 func (f *FastPath) Close() error {
+	f.work.Lock()
+	defer f.work.Unlock()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for name, l := range f.links {

@@ -446,3 +446,17 @@ type switchSource struct{ ok bool }
 
 func (s *switchSource) TowardsServer(Socket) (Socket, bool) { return probeSrc, s.ok }
 func (s *switchSource) TowardsClient(Socket) (Socket, bool) { return entrySrc, s.ok }
+
+// DeleteUnowned deletes an index from the data plane only while no live session owns it, under the table's lock.
+func TestDeleteUnowned(t *testing.T) {
+	c, _, _ := sinkTrack(t)
+	session(t, c, 1, 2, sock("1.1.1.1", 1000), sock("10.0.0.1", 51820))
+	var deleted []uint32
+	del := func(i uint32) error { deleted = append(deleted, i); return nil }
+	if c.DeleteUnowned(1, del) || c.DeleteUnowned(2, del) || !c.DeleteUnowned(3, del) {
+		t.Fatal("a live index is kept, a free one deleted")
+	}
+	if len(deleted) != 1 || deleted[0] != 3 {
+		t.Fatalf("deleted %v", deleted)
+	}
+}

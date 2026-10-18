@@ -122,16 +122,14 @@ func (f *FastPath) Upsert(fw demux.Forward) error {
 	return attachErr
 }
 
+// replyDevice attaches the reply program to a device the first time a session names it. It runs under the ConnTrack lock, so
+// it never waits for EnsureOrder: the attach runs outside the FastPath lock.
 func (f *FastPath) replyDevice(ifindex int) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
 	if f.isExternal(ifindex) {
 		return fmt.Errorf("device %d is external: its replies stay on the slow path", ifindex)
 	}
-	if _, ok := f.links[pinName(kindReply, ifindex)]; ok {
-		return nil
-	}
-	return f.tcxLocked(kindReply, ifindex)
+	_, err := f.ensureLink(kindReply, ifindex)
+	return err
 }
 
 // Delete removes one direction; a missing index is not an error.
@@ -188,11 +186,6 @@ func (f *FastPath) SetEntries(addrs []netip.AddrPort) error {
 			want[WgFastpathWgAddr{Ip: nbo32(a.Addr().Unmap()), Port: nbo16(a.Port())}] = true
 		}
 	}
-	for k := range want {
-		if err := f.objs.WgEntries.Put(k, uint8(1)); err != nil {
-			return fmt.Errorf("write entry: %w", err)
-		}
-	}
 	var stale []WgFastpathWgAddr
 	var k WgFastpathWgAddr
 	var v uint8
@@ -205,9 +198,15 @@ func (f *FastPath) SetEntries(addrs []netip.AddrPort) error {
 	if err := it.Err(); err != nil {
 		return err
 	}
+	// The stale ones go first, so the new set fits the map even when it replaces most of it.
 	for _, k := range stale {
 		if err := f.objs.WgEntries.Delete(k); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 			return err
+		}
+	}
+	for k := range want {
+		if err := f.objs.WgEntries.Put(k, uint8(1)); err != nil {
+			return fmt.Errorf("write entry: %w", err)
 		}
 	}
 	f.mu.Lock()
