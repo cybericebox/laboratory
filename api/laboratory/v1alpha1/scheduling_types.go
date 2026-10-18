@@ -47,7 +47,7 @@ const (
 	WaitNoSchedulableNodes = "NoSchedulableNodes"
 	// WaitDoesNotFit: the pods of a deploy group do not fit the nodes together even when empty; it may change when nodes
 	// return or load ends.
-	WaitDoesNotFit = "DoesNotFit"
+	WaitDoesNotFit = "DoesNotFitNow"
 	// WaitTenantQuota: the tenant of the object has reached its CPU or memory quota.
 	WaitTenantQuota = "TenantQuota"
 )
