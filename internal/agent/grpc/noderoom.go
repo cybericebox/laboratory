@@ -18,7 +18,7 @@ type roomView struct {
 	// total is the sum of the allocatable of the schedulable lab nodes net of the platform reserve.
 	total nodecap.Amount
 	// largest is the largest device: per resource the most one lab node gives with nothing on it, net of the packing reserve
-	// too (nodecap.LargestDevice, the operator's never-fits limit).
+	// too (nodecap.LargestDevice). An upper bound per resource; the operator fails a pod only when no node holds both.
 	largest nodecap.Amount
 	// ok is false when no node is schedulable or the nodes could not be read.
 	ok bool
@@ -33,7 +33,7 @@ type deviceRoomCache struct {
 // room reads the lab nodes and the pods on them and caches the view for a few seconds: it is the same for every tenant. The
 // total is what the operator counts as room: per node the allocatable less the platform reserve, the requests of the
 // non-lab pods and the packing reserve (nodecap.FreeForLabs). The largest device is what one node gives with no load, net
-// of the same reserves (nodecap.LargestDevice), so a device the platform accepts is one the operator can place.
+// of the same reserves (nodecap.LargestDevice), an upper bound per resource.
 func (h *Handler) room(ctx context.Context) roomView {
 	c := &h.roomCache
 	c.mu.Lock()

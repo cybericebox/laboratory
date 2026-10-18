@@ -1042,3 +1042,55 @@ func TestSchedulerPrepullUsesTheTenantsCredentialsOnly(t *testing.T) {
 		t.Fatalf("no credentials copied: %v %v", secrets.Items, err)
 	}
 }
+
+// A pod only a rebooting node could hold (its node-agent is down, so the node-agent-ready label is gone) waits with
+// DoesNotFitNow: the node is still in the pool, it is not failed for good.
+func TestSchedulerPodForARebootingNodeWaits(t *testing.T) {
+	cfg := schedCfg()
+	cfg.ResourceCheck = true
+	f := newSchedFixture(t, cfg)
+	f.s.LabNodeSelector = map[string]string{"pool": "labs", names.LabelNodeAgentReady: "true"}
+	small := node("small", "1", "1Gi")
+	small.Labels = map[string]string{"pool": "labs", names.LabelNodeAgentReady: "true"}
+	big := node("big", "4", "8Gi")
+	big.Labels = map[string]string{"pool": "labs"}
+	big.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionUnknown}}
+	f.create(small)
+	f.create(big)
+	f.addLab("a", "g", nil, "big")
+	setDeviceResources(t, f, "a", &laboratoryv1alpha1.DeviceResources{MemoryLimit: "4Gi"})
+	f.tick()
+	f.wantStates("a/big=Q")
+	if s := f.labStatus("a"); s.Reason != laboratoryv1alpha1.WaitDoesNotFit {
+		t.Fatalf("status = %+v", s)
+	}
+}
+
+// A pod that needs the CPU of one node and the memory of another fits no node: it is failed for good, it does not wait.
+func TestSchedulerPodOverEveryNodeInBothDimensionsFails(t *testing.T) {
+	cfg := schedCfg()
+	cfg.ResourceCheck = true
+	f := newSchedFixture(t, cfg)
+	f.create(node("a", "4", "2Gi"))
+	f.create(node("b", "1", "8Gi"))
+	f.addLab("x", "g", nil, "p1")
+	setDeviceResources(t, f, "x", &laboratoryv1alpha1.DeviceResources{CPULimit: "3", MemoryLimit: "4Gi"})
+	f.tick()
+	f.wantStates("x/p1=F")
+	if fail := f.device("x", "p1").Status.Scheduling.Failure; fail == nil || fail.Reason != laboratoryv1alpha1.FailureDoesNotFit {
+		t.Fatalf("failure = %+v", fail)
+	}
+}
+
+// setDeviceResources sets the resources of the first device of the lab.
+func setDeviceResources(t *testing.T, f *schedFixture, lab string, r *laboratoryv1alpha1.DeviceResources) {
+	t.Helper()
+	l := &laboratoryv1alpha1.Lab{}
+	if err := f.c.Get(context.Background(), types.NamespacedName{Namespace: "ns-" + lab, Name: lab}, l); err != nil {
+		t.Fatal(err)
+	}
+	l.Spec.Devices[0].Resources = r
+	if err := f.c.Update(context.Background(), l); err != nil {
+		t.Fatal(err)
+	}
+}

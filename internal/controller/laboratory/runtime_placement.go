@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
-	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/nodecap"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -23,13 +22,7 @@ type nativePlacementPolicy struct {
 }
 
 func configuredNativePlacement(node *corev1.Node, p nativePlacementPolicy) bool {
-	selector := map[string]string{}
-	for key, value := range p.Selector {
-		if key != names.LabelNodeAgentReady {
-			selector[key] = value
-		}
-	}
-	return nodecap.InPool(node, selector, p.Tolerations)
+	return nodecap.InPool(node, p.Selector, p.Tolerations)
 }
 func (p nativePlacementPolicy) requiredHistoricalNodes(owner, namespace string, nodes map[string]*corev1.Node) (map[string]bool, error) {
 	required := map[string]bool{}

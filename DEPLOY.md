@@ -318,10 +318,12 @@ reserve kept free (see "Platform reserve" below). Otherwise the queue waits (it 
 fail) and the reason is in the status. The labs of one deploy group (an independent lab and each LabGroup alike) start
 whole or not at all: every pod must find room on one node at once, else none starts (`InsufficientResources`), and a
 group that waits does not hold up the others behind it. A group that does not fit even on the empty lab nodes waits with
-`DoesNotFitNow` and starts once capacity returns (a node comes back, a rollout ends). Only a pod that requests more than
-any single node can give is failed for good (`DoesNotFit`), with its whole group, and the queue goes on. That limit is the
-largest lab node with nothing on it: its allocatable less the platform reserve and the packing reserve, counted over every
-node of the pool, cordoned and NotReady ones too, so a drained big node does not fail a pod. With no
+`DoesNotFitNow` and starts once capacity returns (a node comes back, a rollout ends). Only a pod that no single node can hold, its
+CPU and memory together on the same node, is failed for good (`DoesNotFit`), with its whole group, and the queue goes on.
+Each node counts with nothing on it: its allocatable less the platform reserve and the packing reserve. Every node of the
+pool counts, cordoned, NotReady and rebooting ones too (the pool is the lab node selector without the `node-agent-ready`
+label, which only says the node-agent runs now), so a drained or rebooting big node does not fail a pod; placement itself
+still needs the label. With no
 schedulable lab node at all the queue waits (`NoSchedulableNodes`). A group that already has pods out keeps the room of
 the rest on every pass; such groups go in arrival order, the first gets the room and the next waits behind it. A group
 whose sum never fits its tenant's quota is failed at once (`TenantQuotaNeverFits`); one that fits only later waits
@@ -699,13 +701,13 @@ images:
   cluster totals are exposed. The same reserved and used totals are in `Tenant.status` (refreshed by the agent):
   `kubectl get tenant platform -o yaml`.
   The one number about the cluster layout is the **largest device the agent can place** (`has_max_device`, `max_device_cpu_millicores`,
-  `max_device_memory_bytes`): per resource, the largest allocatable of a lab node (the nodes with the `node-agent-ready`
-  label, cordoned and NotReady ones included) net of the scheduler's platform reserve (`scheduler.platformReserveCpu/Memory` off
-  the node first, then `platformReservePercent` of the rest, per node) and of the packing reserve. It is the same limit the
-  scheduler uses for `DoesNotFit`, so a device the platform accepts is never failed for its size. It is one amount: no node list, no node names, no per-node free room reach a
+  `max_device_memory_bytes`): per resource, the largest allocatable of a lab node (the nodes of the lab node selector, cordoned,
+  NotReady and rebooting ones included, whether their node-agent runs now or not) net of the scheduler's platform reserve (`scheduler.platformReserveCpu/Memory` off
+  the node first, then `platformReservePercent` of the rest, per node) and of the packing reserve. It is an upper bound per resource: the scheduler fails a pod (`DoesNotFit`) only when
+  no single node holds its CPU and memory together. It is one amount: no node list, no node names, no per-node free room reach a
   tenant. The backend uses it to refuse planning a device that no node could hold; the per-node math stays in the agent and the
-  scheduler. The two values may come from different nodes, so it can slightly overstate a device that needs both at once; such a
-  device then waits in the scheduler (`DoesNotFitNow`). It is not limited by the tenant quota, and it is absent (`has_max_device` false) for an
+  scheduler. The two values may come from different nodes, so it can overstate a device that needs both at once; the
+  scheduler fails such a device with `DoesNotFit`. It is not limited by the tenant quota, and it is absent (`has_max_device` false) for an
   agent that has no schedulable node or an older one.
 - **Features.** Everything the laboratory owns that the backend needs reaches it only through the agent: `GetFeatures` and the
   `features` of the `Monitoring` stream (sent with the first message and again when they change; a change shows at the next

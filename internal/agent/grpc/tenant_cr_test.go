@@ -255,8 +255,9 @@ func TestCapacityReportsTheLargestPlaceableDeviceOnly(t *testing.T) {
 	if err != nil || !got.HasMaxDevice {
 		t.Fatalf("%+v %v", got, err)
 	}
-	// n3 has no ready node-agent; n1 gives the most CPU (4000-500), n2 the most memory.
-	if got.MaxDeviceCpuMillicores != 3500 || got.MaxDeviceMemoryBytes != 16<<30 {
+	// n3 has no ready node-agent now (it reboots), so it takes no pod, but it is still a lab node: an upper bound per
+	// resource, it gives the most CPU (64000-500) and memory.
+	if got.MaxDeviceCpuMillicores != 63500 || got.MaxDeviceMemoryBytes != 256<<30 {
 		t.Errorf("largest device = %dm / %d", got.MaxDeviceCpuMillicores, got.MaxDeviceMemoryBytes)
 	}
 	// Nothing of the layout is in the message: the generated type has no node fields at all.
