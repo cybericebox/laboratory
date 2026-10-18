@@ -165,22 +165,86 @@ func TestGangThatFitsNoEmptyNodeCombinationFailsWhole(t *testing.T) {
 	}
 }
 
-// The room of the rest of a gang that has pods out is kept: a later gang does not take it.
+// The room of the rest of a gang that has pods out is kept: a later gang does not take it, even when the rest is held
+// for room itself.
 func TestAdmittedGangRemainderHoldsRoomAcrossTicks(t *testing.T) {
+	a := obj("lab/a", "g1", 1, nil, need(pods("a", "p1:S", "p2", "p3", "p4"), 100, gi)...)
+	b := obj("lab/b", "g2", 2, nil, need(pods("b", "p1"), 100, gi)...)
+	// a needs 3Gi more and 2Gi is free: it waits, and its share is not b's.
+	env := &fakeEnv{nodes: []nodeRoom{room("n1", 4000, 2*gi)}}
+	wantDispatch(t, planSchedule([]*schedObject{a, b}, 10, false, env))
+	// With 4Gi a goes, and the spare Gi is b's.
+	env = &fakeEnv{nodes: []nodeRoom{room("n1", 4000, 4*gi)}}
+	wantDispatch(t, planSchedule([]*schedObject{a, b}, 10, false, env), "a/p2", "a/p3", "a/p4", "b/p1")
+}
+
+// A remainder whose tenant is at the quota cannot dispatch, so it holds no room.
+func TestHeldRemainderReleasedWhenTenantAtQuota(t *testing.T) {
 	held := need(pods("a", "p1:S", "p2", "p3"), 100, gi)
 	for _, p := range held {
 		p.tenant = "t"
 	}
 	a := obj("lab/a", "g1", 1, nil, held...)
 	b := obj("lab/b", "g2", 2, nil, need(pods("b", "p1"), 100, gi)...)
-	// a is held (its tenant is at the quota); its two pods keep 2Gi of the 2Gi, b gets nothing.
 	env := &fakeEnv{nodes: []nodeRoom{room("n1", 4000, 2*gi)}, tenantFull: map[string]bool{"t": true}}
+	wantDispatch(t, planSchedule([]*schedObject{a, b}, 10, false, env), "b/p1")
+}
+
+func TestHeldRemainderReleasedWhileImagesNotReady(t *testing.T) {
+	a := obj("lab/a", "g1", 1, nil, need(pods("a", "p1:S", "p2", "p3"), 100, gi)...)
+	a.prepKey = "g/g1"
+	b := obj("lab/b", "g2", 2, nil, need(pods("b", "p1"), 100, gi)...)
+	env := &fakeEnv{nodes: []nodeRoom{room("n1", 4000, 2*gi)}, notPrepared: map[string]bool{"g/g1": true}}
+	wantDispatch(t, planSchedule([]*schedObject{a, b}, 10, false, env), "b/p1")
+}
+
+// The room kept for a tenant's remainder counts against its quota: another gang of the tenant cannot use it.
+func TestHeldRemainderCountsTowardQuota(t *testing.T) {
+	held := need(pods("a", "p1:S", "p2", "p3"), 100, gi)
+	for _, p := range held {
+		p.tenant = "t"
+	}
+	a := obj("lab/a", "g1", 1, nil, held...)
+	mk := func(id string, n int) *schedObject {
+		names := make([]string, n)
+		for i := range names {
+			names[i] = "p" + string(rune('1'+i))
+		}
+		o := obj("lab/"+id, id, 2, nil, need(pods(id, names...), 100, gi)...)
+		for _, p := range o.pods {
+			p.tenant = "t"
+		}
+		return o
+	}
+	// the quota holds 300m: 200m are kept for a's remainder, so one more pod fits and two do not
+	env := &fakeEnv{nodes: []nodeRoom{room("n1", 40000, 40*gi)}, tenantCPU: map[string]int64{"t": 300}}
+	plan := planSchedule([]*schedObject{a, mk("b", 2)}, 10, false, env)
+	if r := plan.status["lab/b"].Reason; r != laboratoryv1alpha1.WaitTenantQuota {
+		t.Fatalf("reason = %q", r)
+	}
+	env = &fakeEnv{nodes: []nodeRoom{room("n1", 40000, 40*gi)}, tenantCPU: map[string]int64{"t": 300}}
+	wantDispatch(t, planSchedule([]*schedObject{a, mk("c", 1)}, 10, false, env), "a/p2", "a/p3", "c/p1")
+}
+
+func TestGangsNeverSpanTenants(t *testing.T) {
+	a := obj("lab/a", "g", 1, nil, need(pods("a", "p1"), 100, gi)...)
+	b := obj("lab/b", "g", 2, nil, need(pods("b", "p1"), 100, gi)...)
+	a.pods[0].tenant, b.pods[0].tenant = "t1", "t2"
+	// one gang would need 2Gi; two gangs go one after the other
+	env := &fakeEnv{nodes: []nodeRoom{room("n1", 4000, gi)}}
+	wantDispatch(t, planSchedule([]*schedObject{a, b}, 10, false, env), "a/p1")
+}
+
+func TestOtherTenantNotFailedByQuota(t *testing.T) {
+	a := obj("lab/a", "g", 1, nil, need(pods("a", "p1"), 100, gi)...)
+	b := obj("lab/b", "g", 2, nil, need(pods("b", "p1"), 100, gi)...)
+	a.pods[0].tenant, b.pods[0].tenant = "t1", "t2"
+	env := &fakeEnv{tenantNever: map[string]bool{"t1": true}}
 	plan := planSchedule([]*schedObject{a, b}, 10, false, env)
-	wantDispatch(t, plan)
-	// With 3Gi there is a spare Gi for b.
-	env = &fakeEnv{nodes: []nodeRoom{room("n1", 4000, 3*gi)}, tenantFull: map[string]bool{"t": true}}
-	plan = planSchedule([]*schedObject{a, b}, 10, false, env)
 	wantDispatch(t, plan, "b/p1")
+	if len(plan.failed) != 1 || plan.failed[0].pod.key != "a/p1" {
+		t.Fatalf("failed = %+v", plan.failed)
+	}
 }
 
 func TestGangOfZeroNeedFitsNoRooms(t *testing.T) {

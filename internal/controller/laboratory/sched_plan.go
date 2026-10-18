@@ -75,6 +75,14 @@ type schedObject struct {
 // isGroup says the object is a LabGroup: its pods are the VPN and gateway of a team, not lab pods.
 func (o *schedObject) isGroup() bool { return strings.HasPrefix(o.id, "group/") }
 
+// objTenant is the tenant of the object: that of its first pod (all pods of an object share it).
+func objTenant(o *schedObject) string {
+	if len(o.pods) == 0 {
+		return ""
+	}
+	return o.pods[0].tenant
+}
+
 // size is what the object's pods request together: larger labs are dispatched first, so the big ones are placed while the
 // nodes are still empty and the small ones fill the gaps.
 func (o *schedObject) size() amount {
@@ -283,7 +291,10 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		if len(o) == 0 {
 			return
 		}
-		gg := &gang{key: key, tenant: "", objs: o, arrival: o[0].arrival}
+		gg := &gang{key: key, tenant: objTenant(o[0]), objs: o, arrival: o[0].arrival}
+		if gg.tenant != "" {
+			gg.key = gg.tenant + "/" + key
+		}
 		for _, ob := range o {
 			if ob.arrival.Before(gg.arrival) {
 				gg.arrival = ob.arrival
@@ -308,8 +319,21 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			for _, o := range labs {
 				add(o.id, o)
 			}
-		} else {
-			add(key, labs...)
+			return
+		}
+		// A gang never spans tenants: the same deploy group key in two tenants is two gangs, so one tenant's
+		// failure or quota cannot touch the other's pods.
+		var order []string
+		byTenant := map[string][]*schedObject{}
+		for _, o := range labs {
+			t := objTenant(o)
+			if _, seen := byTenant[t]; !seen {
+				order = append(order, t)
+			}
+			byTenant[t] = append(byTenant[t], o)
+		}
+		for _, t := range order {
+			add(key, byTenant[t]...)
 		}
 	}
 	for _, g := range eligible {
@@ -375,17 +399,43 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	// partly started one) is kept for it on every pass, before any other gang is considered. Rooms is what is left for
 	// the gangs that are not admitted yet.
 	rooms, perNode := env.rooms()
+	// Room is kept only while the gang can dispatch: its tenant within the quota (counting the room kept for the
+	// tenant's other gangs) and its images on the nodes. Otherwise it is released for the others.
 	var admitted []*gang
 	remainders := map[*gang][]amount{}
+	heldQuota := map[string]amount{}         // tenant -> the remainders kept for it
+	heldOwn := map[*gang]map[string]amount{} // the part of heldQuota that is the gang's own
 	if perNode {
 		for _, gg := range gangs {
 			started := false
 			for _, o := range gg.objs {
 				started = started || o.started()
 			}
-			if q := queuedOf(gg); started && len(q) > 0 {
-				_, remainders[gg] = needsOf(q)
-				admitted = append(admitted, gg)
+			q := queuedOf(gg)
+			if !started || len(q) == 0 {
+				continue
+			}
+			sums := map[string]amount{}
+			for _, p := range q {
+				sums[p.tenant] = sums[p.tenant].add(p.need)
+			}
+			eligible := true
+			for t, sum := range sums {
+				if !env.tenantFits(&schedPod{key: "gang/" + gg.key, tenant: t, need: sum.add(heldQuota[t])}) {
+					eligible = false
+				}
+			}
+			for _, o := range gg.objs {
+				eligible = env.prepared(o) && eligible
+			}
+			if !eligible {
+				continue
+			}
+			_, remainders[gg] = needsOf(q)
+			admitted = append(admitted, gg)
+			heldOwn[gg] = sums
+			for t, sum := range sums {
+				heldQuota[t] = heldQuota[t].add(sum)
 			}
 		}
 	}
@@ -490,7 +540,9 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		}
 		// A tenant at its quota waits without holding up the others: the gang is skipped.
 		for _, t := range tenants {
-			if !env.tenantFits(sums[t]) {
+			// The room kept for the tenant's other admitted gangs counts against its quota.
+			other := heldQuota[t].sub(heldOwn[gg][t])
+			if !env.tenantFits(&schedPod{key: sums[t].key, tenant: t, need: sums[t].need.add(other)}) {
 				hold(tenantHeld, gg)
 				return false
 			}
