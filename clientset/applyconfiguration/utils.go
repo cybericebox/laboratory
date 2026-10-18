@@ -195,6 +195,12 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.PodFailureApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("PodSchedule"):
 		return &applyconfigurationlaboratoryv1alpha1.PodScheduleApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("Reservation"):
+		return &applyconfigurationlaboratoryv1alpha1.ReservationApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("ReservationSpec"):
+		return &applyconfigurationlaboratoryv1alpha1.ReservationSpecApplyConfiguration{}
+	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("ReservationStatus"):
+		return &applyconfigurationlaboratoryv1alpha1.ReservationStatusApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("ResourceAmounts"):
 		return &applyconfigurationlaboratoryv1alpha1.ResourceAmountsApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("RetirementObjectIdentity"):

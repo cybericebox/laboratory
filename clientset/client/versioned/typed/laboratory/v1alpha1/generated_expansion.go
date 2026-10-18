@@ -37,4 +37,6 @@ type LabVPNExpansion interface{}
 
 type MaintenanceWindowExpansion interface{}
 
+type ReservationExpansion interface{}
+
 type TenantExpansion interface{}

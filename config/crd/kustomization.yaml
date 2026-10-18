@@ -14,6 +14,7 @@ resources:
   - bases/laboratory.cybericebox.com_labgateways.yaml
   - bases/laboratory.cybericebox.com_labvpns.yaml
   - bases/laboratory.cybericebox.com_maintenancewindows.yaml
+  - bases/laboratory.cybericebox.com_reservations.yaml
   - bases/laboratory.cybericebox.com_tenants.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 

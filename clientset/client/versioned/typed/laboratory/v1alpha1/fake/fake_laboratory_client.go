@@ -67,6 +67,10 @@ func (c *FakeLaboratoryV1alpha1) MaintenanceWindows() v1alpha1.MaintenanceWindow
 	return newFakeMaintenanceWindows(c)
 }
 
+func (c *FakeLaboratoryV1alpha1) Reservations() v1alpha1.ReservationInterface {
+	return newFakeReservations(c)
+}
+
 func (c *FakeLaboratoryV1alpha1) Tenants() v1alpha1.TenantInterface {
 	return newFakeTenants(c)
 }
