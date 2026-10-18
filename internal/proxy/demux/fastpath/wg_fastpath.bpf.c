@@ -68,13 +68,28 @@ struct wg_addr {
 	__u16 pad;
 };
 
+// One direction of a session, keyed by the receiver index its packets carry. The demux writes both directions of a session:
+//
+//   - session is the same in both: the receiver index of the client -> server direction. That entry (the owner, where
+//     session equals its own index) holds the session's one token bucket and last_seen, as the slow path keeps one bucket and
+//     one seen per session; the server -> client entry draws from the owner's. Without its owner a direction is a miss.
+//   - exp_* is the only source accepted; new_src_* and dst_* are written into the packet.
+//   - server -> client (WG_F_TO_CLIENT) also needs reply_ifindex, the device the server's replies arrive on (0 = replies stay
+//     on the slow path), and via_*, the address the server sends to (the demux socket's source towards it, the client ->
+//     server direction's new_src); a reply to any other address is not this session's.
+//   - The owner's last_seen_ns starts at the time of the write (CLOCK_MONOTONIC); its bucket fields start at zero (the first
+//     packet fills the bucket). Writing the owner again starts a new bucket. In the other direction these fields are unused.
 struct wg_fwd {
 	__be32 exp_ip, new_src_ip, dst_ip;
 	__be16 exp_port, new_src_port, dst_port, flags;
-	__u32 reply_ifindex; // server -> client: the only device replies are taken from; 0 = replies stay on the slow path
-	__u64 last_seen_ns;  // CLOCK_MONOTONIC
-	struct bpf_spin_lock lock;
+	__u32 session;
+	__u32 reply_ifindex;
+	__be32 via_ip;
+	__be16 via_port, pad;
 	__u32 pad2;
+	__u64 last_seen_ns;
+	struct bpf_spin_lock lock;
+	__u32 pad3;
 	__u64 tokens_x1000, refill_ns;
 };
 
@@ -270,7 +285,8 @@ static __always_inline int take(struct wg_fwd *f, __u64 rate, __u64 burst, __u64
 }
 
 // judge is the slow path's LookupForward in the kernel: a known index of this direction, fresh, from exactly the expected
-// source (a roam goes to the slow path), within the session's rate. ifindex is the arrival device (replies only).
+// source (a roam goes to the slow path), within the session's rate. ifindex is the arrival device (replies only). The
+// session's bucket and last_seen are the owner's (see struct wg_fwd), so both directions draw from one bucket.
 static __always_inline enum judgement judge(struct pkt *p, int to_client, __u32 ifindex, struct wg_fwd **out,
 					    struct wg_cfg **cfg_out)
 {
@@ -282,19 +298,29 @@ static __always_inline enum judgement judge(struct pkt *p, int to_client, __u32 
 	struct wg_fwd *f = bpf_map_lookup_elem(&wg_sessions, &key);
 	if (!f || !(f->flags & WG_F_TO_CLIENT) != !to_client)
 		return J_MISS;
+	struct wg_fwd *owner = f;
 	if (to_client) {
-		if (!f->reply_ifindex)
+		if (!f->reply_ifindex || !f->via_ip)
+			return J_MISS;
+		// A reply goes to the demux socket's address only; the server's other traffic is not this session's.
+		if (p->ip->daddr != f->via_ip || p->udp->dest != f->via_port)
 			return J_MISS;
 		if (f->reply_ifindex != ifindex)
 			return J_SOURCE;
+		struct wg_key okey = {.index = f->session};
+		owner = bpf_map_lookup_elem(&wg_sessions, &okey);
+		if (!owner || (owner->flags & WG_F_TO_CLIENT) || owner->session != f->session)
+			return J_MISS;
+	} else if (f->session != p->index) {
+		return J_MISS;
 	}
 	__u64 now = bpf_ktime_get_ns();
-	__u64 seen = f->last_seen_ns;
+	__u64 seen = owner->last_seen_ns;
 	if (now > seen && now - seen > cfg->ttl_ns)
 		return J_STALE;
 	if (p->ip->saddr != f->exp_ip || p->udp->source != f->exp_port)
 		return J_SOURCE;
-	if (!take(f, cfg->rate_per_s, cfg->burst, now))
+	if (!take(owner, cfg->rate_per_s, cfg->burst, now))
 		return J_RATE;
 	*out = f;
 	*cfg_out = cfg;
@@ -386,17 +412,30 @@ static __always_inline int forward(struct __sk_buff *skb, struct pkt *p, struct 
 	return bpf_redirect(params->ifindex, 0);
 }
 
+// put_back undoes wg_xdp's rewrite, so the frame is again exactly as it arrived and the slow path can take it.
+static __always_inline void put_back(struct pkt *p, struct tuple *from, __be16 orig_check)
+{
+	rewrite(p->ip, p->udp, from, 0);
+	p->udp->check = orig_check;
+}
+
 // forward_xdp_marked finishes a frame wg_xdp rewrote: the UDP checksum, then the same route and redirect as in tc mode.
 static __always_inline int forward_xdp_marked(struct __sk_buff *skb, struct pkt *p, struct wg_meta *m)
 {
 	struct tuple from = {.saddr = m->orig_saddr, .daddr = m->orig_daddr, .sport = m->orig_sport, .dport = m->orig_dport};
 	struct tuple to = {.saddr = p->ip->saddr, .daddr = p->ip->daddr, .sport = p->udp->source, .dport = p->udp->dest};
+	__be16 orig_check = m->orig_check;
 	struct bpf_fib_lookup params;
 
+	// A GRO aggregate is not forwarded (as in tc mode); left rewritten, the kernel would drop it as a martian.
+	if (skb->gso_size) {
+		put_back(p, &from, orig_check);
+		return TCX_NEXT;
+	}
 	// XDP computed the UDP checksum as if the frame carried a full one; the skb helpers know better (a partial checksum).
-	p->udp->check = m->orig_check;
+	p->udp->check = orig_check;
 	if (!fib(skb, p, &to, skb->ingress_ifindex, 0, &params)) {
-		rewrite(p->ip, p->udp, &from, 0); // put it back as it arrived: the slow path takes it
+		put_back(p, &from, orig_check);
 		count(WG_STAT_PASSED_ROUTE);
 		return TCX_NEXT;
 	}
@@ -415,13 +454,15 @@ int wg_tc_ingress(struct __sk_buff *skb)
 {
 	struct pkt p;
 
-	if (skb->gso_size || load(skb, &p))
+	if (load(skb, &p))
 		return TCX_NEXT;
 
 	void *data = (void *)(long)skb->data;
 	struct wg_meta *m = (void *)(long)skb->data_meta;
 	if ((void *)(m + 1) <= data && m->magic == WG_META_MAGIC)
 		return forward_xdp_marked(skb, &p, m);
+	if (skb->gso_size)
+		return TCX_NEXT;
 
 	if (p.type == WG_HANDSHAKE_INIT) {
 		record_entry(&p);
@@ -501,8 +542,9 @@ int wg_tc_egress_guard(struct __sk_buff *skb)
 }
 
 // Client -> server in XDP: judge and rewrite here, drop over-rate packets early, and hand the frame to wg_tc_ingress through
-// the metadata (generic XDP cannot enter Cilium's datapath itself). Frames that are not forwarded pass untouched and
-// uncounted: wg_tc_ingress judges them again and counts them once.
+// the metadata (generic XDP cannot enter Cilium's datapath itself). The metadata room is made before the judgement, so a
+// driver without it costs no token: the frame passes untouched and wg_tc_ingress handles it as in tc mode. Frames that are
+// not forwarded pass untouched and uncounted: wg_tc_ingress judges them again and counts them once.
 SEC("xdp")
 int wg_xdp(struct xdp_md *ctx)
 {
@@ -513,15 +555,27 @@ int wg_xdp(struct xdp_md *ctx)
 	if (p.type != WG_TRANSPORT || p.len < WG_TRANSPORT_MIN_LEN || !is_entry(p.ip->daddr, p.udp->dest))
 		return XDP_PASS;
 
+	if (bpf_xdp_adjust_meta(ctx, -(int)sizeof(struct wg_meta))) {
+		count(WG_STAT_PASSED_META);
+		return XDP_PASS;
+	}
+	void *data = (void *)(long)ctx->data;
+	struct wg_meta *m = (void *)(long)ctx->data_meta;
+	if ((void *)(m + 1) > data || parse(data, (void *)(long)ctx->data_end, &p)) {
+		bpf_xdp_adjust_meta(ctx, (int)sizeof(struct wg_meta));
+		return XDP_PASS;
+	}
+
 	struct wg_fwd *f;
 	struct wg_cfg *cfg;
 	enum judgement j = judge(&p, 0, 0, &f, &cfg);
-	if (j == J_RATE) {
+	if (j != J_FORWARD) {
+		bpf_xdp_adjust_meta(ctx, (int)sizeof(struct wg_meta));
+		if (j != J_RATE)
+			return XDP_PASS;
 		count(WG_STAT_DROPPED_RATE);
 		return XDP_DROP;
 	}
-	if (j != J_FORWARD)
-		return XDP_PASS;
 
 	struct wg_meta orig = {
 		.magic = WG_META_MAGIC,
@@ -532,19 +586,6 @@ int wg_xdp(struct xdp_md *ctx)
 		.orig_check = p.udp->check,
 	};
 	struct tuple to = {.saddr = f->new_src_ip, .daddr = f->dst_ip, .sport = f->new_src_port, .dport = f->dst_port};
-
-	if (bpf_xdp_adjust_meta(ctx, -(int)sizeof(struct wg_meta))) {
-		count(WG_STAT_PASSED_META);
-		return XDP_PASS;
-	}
-	void *data = (void *)(long)ctx->data;
-	struct wg_meta *m = (void *)(long)ctx->data_meta;
-	if ((void *)(m + 1) > data)
-		return XDP_PASS;
-	if (parse(data, (void *)(long)ctx->data_end, &p)) {
-		m->magic = 0;
-		return XDP_PASS;
-	}
 	rewrite(p.ip, p.udp, &to, 1);
 	*m = orig;
 	return XDP_PASS;
