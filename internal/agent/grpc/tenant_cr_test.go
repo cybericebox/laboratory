@@ -325,4 +325,17 @@ func TestReportedRoomMatchesOperator(t *testing.T) {
 	if err != nil || !got.HasCpuQuota || got.CpuQuotaMillicores != 3315+3400 || got.MemoryQuotaBytes != 7073274266+(8<<30-(8<<30)*15/100) {
 		t.Fatalf("%+v %v", got, err)
 	}
+	// With the platform percent (10 %) the node loses it first: the operator's TestRoomsSubtractPlatformPercentPerNode gives
+	// 2975m for the first node; the second (only a lab pod on it) is (4000-400)*0.85 = 3060m.
+	h = tenantHandler(t, []*laboratoryv1alpha1.Tenant{newTenantTenant("open", true, nil)}, node("n1"), node("n2"),
+		pod("cilium", "n1", "100m", "256Mi", nil),
+		pod("gateway", "n2", "500m", "512Mi", map[string]string{"laboratory.cybericebox.com/component": "gateway"}))
+	h.SetNodeReserve(nodecap.Reserve{Percent: 10})
+	h.SetPackingReserve(nodecap.PackingReserve{Percent: 15})
+	got, err = h.GetCapacity(asClient("open"), &protobuf.Empty{})
+	mem1 := int64(8<<30) - int64(8<<30)*10/100 - 256<<20
+	mem2 := int64(8<<30) - int64(8<<30)*10/100
+	if err != nil || got.CpuQuotaMillicores != 2975+3060 || got.MemoryQuotaBytes != mem1-mem1*15/100+mem2-mem2*15/100 {
+		t.Fatalf("with the platform percent: %+v %v", got, err)
+	}
 }

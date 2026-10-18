@@ -45,10 +45,23 @@ type capacitySnapshot struct {
 	free        amount
 	// perNode is the room of every schedulable node (rooms).
 	perNode []nodeRoom
+	// labUsed is the requests of the lab pods bound to each node (the held pods of stopped labs included).
+	labUsed map[string]amount
 }
 
-// rooms is the room labs can take on each schedulable node, in the order of the nodes.
+// rooms is the room FOR labs on each schedulable node, in the order of the nodes, before the usage of the labs.
 func (c capacitySnapshot) rooms() []nodeRoom { return append([]nodeRoom(nil), c.perNode...) }
+
+// freeRooms is rooms less the requests of the lab pods bound to each node, the held pods of stopped labs included (they hold
+// resources). Lab pods that are dispatched but not on a node yet are not subtracted.
+func (c capacitySnapshot) freeRooms() []nodeRoom {
+	out := c.rooms()
+	for i := range out {
+		used := c.labUsed[out[i].Name]
+		out[i].CPU, out[i].Memory = max(out[i].CPU-used.cpu, 0), max(out[i].Memory-used.mem, 0)
+	}
+	return out
+}
 
 // schedulableNode: see nodecap.Schedulable.
 func schedulableNode(node *corev1.Node, selector map[string]string, tolerations []corev1.Toleration) bool {
@@ -60,7 +73,7 @@ func schedulableNode(node *corev1.Node, selector map[string]string, tolerations 
 // included, not only lab pods). Free is summed per node
 // and never negative on a node, so an overcommitted node does not hide room
 // elsewhere. Finished pods hold no resources.
-func snapshotCapacity(nodes []corev1.Node, pods []corev1.Pod, selector map[string]string, tolerations []corev1.Toleration, nodeReserve amount, packing nodecap.PackingReserve) capacitySnapshot {
+func snapshotCapacity(nodes []corev1.Node, pods []corev1.Pod, selector map[string]string, tolerations []corev1.Toleration, nodeReserve amount, platformPercent int, packing nodecap.PackingReserve) capacitySnapshot {
 	requested := map[string]amount{}
 	for i := range pods {
 		p := &pods[i]
@@ -69,8 +82,14 @@ func snapshotCapacity(nodes []corev1.Node, pods []corev1.Pod, selector map[strin
 		}
 		requested[p.Spec.NodeName] = requested[p.Spec.NodeName].add(podRequests(p))
 	}
-	var c capacitySnapshot
-	for _, f := range nodecap.FreeForLabs(nodes, pods, selector, tolerations, nodecap.Amount{CPU: nodeReserve.cpu, Memory: nodeReserve.mem}, packing) {
+	c := capacitySnapshot{labUsed: map[string]amount{}}
+	for i := range pods {
+		p := &pods[i]
+		if p.Spec.NodeName != "" && p.Status.Phase != corev1.PodSucceeded && p.Status.Phase != corev1.PodFailed && nodecap.IsLabPod(p) {
+			c.labUsed[p.Spec.NodeName] = c.labUsed[p.Spec.NodeName].add(podRequests(p))
+		}
+	}
+	for _, f := range nodecap.FreeForLabs(nodes, pods, selector, tolerations, nodecap.Reserve{Node: nodecap.Amount{CPU: nodeReserve.cpu, Memory: nodeReserve.mem}, Percent: platformPercent}, packing) {
 		c.perNode = append(c.perNode, nodeRoom{Name: f.Name, CPU: f.CPU, Memory: f.Memory})
 	}
 	for i := range nodes {
