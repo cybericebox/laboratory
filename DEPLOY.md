@@ -338,7 +338,9 @@ satisfied share (used / reserved, memory, then CPU) first, then arrival; the unr
 group that has waited longer than `scheduler.agingSeconds` (default `120`, `0` turns it off) is aged: the oldest aged group
 that waits only for room keeps its placement on the empty nodes (beside its own running pods), and the other groups use only
 the room not kept for it, so a stream of small groups cannot keep a big one out forever. One group at a time; the room is
-free again once it starts, or once it waits for anything but room (quota, images, `DoesNotFitNow`).
+free again once it starts, or once it waits for anything but room (quota, images, `DoesNotFitNow`). Only lab groups age and
+are held back: the VPN and gateway pods of LabGroups are placed first and may use any room, so a new team always gets its
+network. A group still waiting for its `deploy-after` groups never keeps room; once they are complete it ages by its arrival.
 
 **Platform reserve.** CPU and memory that user labs can never consume, so the platform itself always has room.
 It is kept on every schedulable node: an optional absolute reserve (`scheduler.platformReserveCpu`,

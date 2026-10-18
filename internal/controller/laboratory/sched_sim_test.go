@@ -573,3 +573,46 @@ func TestAgedGangDispatchesOnceItsRoomFrees(t *testing.T) {
 		t.Fatalf("only %d scenarios made the big lab wait", waited)
 	}
 }
+
+// The LabGroup lane (a team's VPN and gateway) is placed before the room kept for an aged lab and is never held back by it,
+// so a new team always gets its network; an old LabGroup never keeps room itself. Labs are held back as before.
+func TestAgedReservationNeverBlocksGroupLane(t *testing.T) {
+	empty := []nodeRoom{room("n1", 4000, 4*gi)}
+	nodes := []nodeRoom{room("n1", 4000, gi)}
+	a := obj("lab/a", "", 0, nil, need(pods("a", "p1"), 100, 3*gi)...)
+	team := obj("group/team", "", 0, nil, need(pods("group/team", "vpn"), 100, gi/2)...)
+	team.arrival = agingOn.now.Add(-time.Second)
+	plan := planSchedule([]*schedObject{a, team, fresh("c", gi/2)}, 10, false, &fakeEnv{nodes: nodes, empty: empty, fair: agingOn})
+	wantDispatch(t, plan, "group/team/vpn")
+	if r := plan.status["lab/c"].Reason; r != laboratoryv1alpha1.WaitInsufficient {
+		t.Fatalf("c reason = %q", r)
+	}
+	// an aged LabGroup that does not fit keeps nothing: the lab behind it takes the room
+	old := obj("group/old", "", 0, nil, need(pods("group/old", "vpn"), 100, 3*gi)...)
+	plan = planSchedule([]*schedObject{old, fresh("c", gi)}, 10, false, &fakeEnv{nodes: nodes, empty: empty, fair: agingOn})
+	wantDispatch(t, plan, "c/p1")
+}
+
+// A group still waiting for its deploy-after groups is never the aged gang that keeps room, however old; once those groups
+// are complete it ages by its arrival like any other.
+func TestBlockedGangNeverAgesIntoTheReserver(t *testing.T) {
+	empty := []nodeRoom{room("n1", 4000, 4*gi)}
+	nodes := []nodeRoom{room("n1", 4000, gi)}
+	mk := func(firstState string) []*schedObject {
+		first := obj("lab/f", "g1", 0, nil, need(pods("f", "p1:"+firstState), 100, gi)...)
+		late := obj("lab/l", "g2", 0, []string{"g1"}, need(pods("l", "p1"), 100, 3*gi)...)
+		return []*schedObject{first, late, fresh("c", gi)}
+	}
+	// g1 still starting: l waits for it and keeps nothing, c takes the room
+	plan := planSchedule(mk("S"), 10, false, &fakeEnv{nodes: nodes, empty: empty, fair: agingOn})
+	wantDispatch(t, plan, "c/p1")
+	if r := plan.status["lab/l"].Reason; r != laboratoryv1alpha1.WaitForGroup {
+		t.Fatalf("l reason = %q", r)
+	}
+	// g1 complete: l is aged and keeps its room, c waits
+	plan = planSchedule(mk("D"), 10, false, &fakeEnv{nodes: nodes, empty: empty, fair: agingOn})
+	wantDispatch(t, plan)
+	if r := plan.status["lab/c"].Reason; r != laboratoryv1alpha1.WaitInsufficient {
+		t.Fatalf("c reason = %q", r)
+	}
+}
