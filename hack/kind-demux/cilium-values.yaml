@@ -1,0 +1,18 @@
+# Cilium 1.20.2 values of the demux harness: the datapath-relevant keys of the cloud template
+# (infrastructure/cloud/ansible/roles/cluster/templates/cilium-values.yaml.j2) with the defaults it relies on written out, plus the
+# API server address of kind. Gateway API, Envoy sizing, encryption and the host firewall are left out: they do not touch the UDP path
+# of the demux.
+kubeProxyReplacement: true
+k8sServiceHost: icebox-demux-control-plane
+k8sServicePort: 6443
+routingMode: tunnel
+tunnelProtocol: vxlan
+bpf:
+  enableTCX: true
+loadBalancer:
+  acceleration: disabled
+ipam:
+  mode: cluster-pool
+l7Proxy: true
+operator:
+  replicas: 1

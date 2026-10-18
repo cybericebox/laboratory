@@ -122,6 +122,19 @@ docker-push-lab: ## Push the lab image
 .PHONY: docker-push
 docker-push: docker-push-controller docker-push-agent docker-push-proxy docker-push-node docker-push-lab ## Push all 5 images
 
+# WireGuard demux harness: its own kind cluster (icebox-demux) with Cilium 1.20.2, see hack/kind-demux/up.sh and e2e.sh.
+KIND_DEMUX_IMG ?= cybericebox/laboratory-proxy:kind-demux
+MODE           ?= userspace
+
+.PHONY: kind-demux-up kind-demux-e2e kind-demux-down
+kind-demux-up: ## Create the demux kind cluster (icebox-demux, Cilium 1.20.2, no kube-proxy) with the CRDs
+	hack/kind-demux/up.sh
+kind-demux-e2e: ## Build the proxy image and run the demux e2e on icebox-demux (MODE=userspace|tc|xdp)
+	$(MAKE) docker-build-proxy PROXY_IMG=$(KIND_DEMUX_IMG)
+	KIND_DEMUX_IMG=$(KIND_DEMUX_IMG) hack/kind-demux/e2e.sh $(MODE)
+kind-demux-down: ## Delete the demux kind cluster and its client containers
+	hack/kind-demux/down.sh
+
 .PHONY: kind-load-proxy
 kind-load-proxy: docker-build-proxy ## Build and load proxy image into Kind cluster
 	$(KIND) load docker-image $(PROXY_IMG) --name $(KIND_CLUSTER_NAME)

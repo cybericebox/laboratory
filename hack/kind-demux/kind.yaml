@@ -1,0 +1,11 @@
+# kind cluster of the WireGuard demux harness (hack/kind-demux/up.sh): one control plane and two workers, no default CNI and no
+# kube-proxy, so Cilium is the only datapath, as on the cloud nodes.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  disableDefaultCNI: true
+  kubeProxyMode: none
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker

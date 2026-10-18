@@ -1,0 +1,72 @@
+# Test WireGuard server of one group of the demux harness (e2e.sh fills the __PLACEHOLDERS__): the group namespace with the label the
+# operator stamps on it (the demux's egress policy admits only such namespaces), a kernel WireGuard pod listening on 51820 that knows
+# one client, pinned to a node, and the headless Service `vpn` the demux resolves (vpn.<namespace>.svc.cluster.local). It is not the
+# product's VPN image: only the WireGuard path through the demux is under test.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: __NS__
+  labels:
+    laboratory.cybericebox.com/group: __GROUP__
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vpn-key
+  namespace: __NS__
+stringData:
+  private: __PRIVATE_KEY__
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vpn
+  namespace: __NS__
+  labels:
+    laboratory.cybericebox.com/component: vpn
+spec:
+  nodeName: __NODE__
+  terminationGracePeriodSeconds: 1
+  containers:
+    - name: wg
+      image: icebox-demux/wg-test:1
+      imagePullPolicy: Never
+      command:
+        - sh
+        - -ec
+        - |
+          ip link add wg0 type wireguard
+          wg set wg0 private-key /keys/private listen-port 51820 peer __PEER_KEY__ allowed-ips __CLIENT_IP__/32
+          ip address add __SERVER_IP__/24 dev wg0
+          ip link set wg0 up
+          touch /tmp/ready
+          exec sleep infinity
+      readinessProbe:
+        exec:
+          command: [ test, -f, /tmp/ready ]
+        periodSeconds: 1
+      securityContext:
+        capabilities:
+          add: [ NET_ADMIN ]
+      volumeMounts:
+        - name: keys
+          mountPath: /keys
+          readOnly: true
+  volumes:
+    - name: keys
+      secret:
+        secretName: vpn-key
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vpn
+  namespace: __NS__
+spec:
+  clusterIP: None
+  selector:
+    laboratory.cybericebox.com/component: vpn
+  ports:
+    - name: wg
+      protocol: UDP
+      port: 51820
