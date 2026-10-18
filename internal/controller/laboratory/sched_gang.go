@@ -70,28 +70,44 @@ func subtractFromEmptiest(rooms []nodeRoom, needs []amount) []nodeRoom {
 		}
 		return order[i].cpu > order[j].cpu
 	})
-	for _, n := range order {
-		// The share a room cannot give is taken from the next emptiest one.
-		for rest := n; rest.cpu > 0 || rest.mem > 0; {
-			best := 0
-			for i := range out {
-				switch {
-				case out[i].Memory != out[best].Memory:
-					if out[i].Memory > out[best].Memory {
-						best = i
-					}
-				case out[i].CPU != out[best].CPU:
-					if out[i].CPU > out[best].CPU {
-						best = i
-					}
-				case out[i].Name < out[best].Name:
-					best = i
+	// emptiest is the room with the most of the owed dimension left (memory when memory is owed, else CPU); -1: none.
+	emptiest := func(byMemory bool) int {
+		best := -1
+		for i := range out {
+			have, bestHave := out[i].CPU, int64(0)
+			if byMemory {
+				have = out[i].Memory
+			}
+			if best >= 0 {
+				bestHave = out[best].CPU
+				if byMemory {
+					bestHave = out[best].Memory
 				}
 			}
-			takeMem, takeCPU := min(rest.mem, out[best].Memory), min(rest.cpu, out[best].CPU)
-			if takeMem == 0 && takeCPU == 0 {
-				break // every room is empty: the rest is beyond the nodes
+			switch {
+			case have == 0:
+			case best < 0 || have > bestHave:
+				best = i
+			case have == bestHave && (out[i].Memory > out[best].Memory || (out[i].Memory == out[best].Memory && out[i].CPU > out[best].CPU) ||
+				(out[i].Memory == out[best].Memory && out[i].CPU == out[best].CPU && out[i].Name < out[best].Name)):
+				best = i
 			}
+		}
+		return best
+	}
+	for _, n := range order {
+		// The share a room cannot give is taken from the next emptiest one, memory and CPU each from a room that has it.
+		for rest := n; rest.cpu > 0 || rest.mem > 0; {
+			best := emptiest(rest.mem > 0)
+			if best < 0 {
+				if rest.mem > 0 {
+					rest.mem = 0 // every room is out of memory: the rest is beyond the nodes
+				} else {
+					rest.cpu = 0
+				}
+				continue
+			}
+			takeMem, takeCPU := min(rest.mem, out[best].Memory), min(rest.cpu, out[best].CPU)
 			out[best].Memory -= takeMem
 			out[best].CPU -= takeCPU
 			rest = amount{cpu: rest.cpu - takeCPU, mem: rest.mem - takeMem}

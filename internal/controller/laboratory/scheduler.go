@@ -679,6 +679,12 @@ func (s *Scheduler) tick(ctx context.Context) error {
 		s.recent[p.key] = now
 	}
 	for _, f := range plan.failed {
+		if f.pod.kind == kindGroupPod {
+			if err := s.failGroupPod(ctx, snap, f, stamp); err != nil && !errors.IsNotFound(err) {
+				logger.Error(err, "fail pod", "pod", f.pod.key)
+			}
+			continue
+		}
 		if d, ok := f.pod.ref.(*laboratoryv1alpha1.Device); ok {
 			q := d.Status.Scheduling.DeepCopy()
 			q.State = laboratoryv1alpha1.PodFailed
@@ -693,6 +699,30 @@ func (s *Scheduler) tick(ctx context.Context) error {
 		}
 	}
 	s.writeStatuses(ctx, objs, plan, now)
+	return nil
+}
+
+// failGroupPod records the failure of a LabGroup pod (VPN or gateway) the plan gave up on, so it is not planned again
+// and again.
+func (s *Scheduler) failGroupPod(ctx context.Context, snap *clusterView, f failedPod, stamp metav1.Time) error {
+	name := f.pod.ref.(string)
+	for _, g := range snap.groups {
+		if "group/"+g.Name+"/"+name != f.pod.key {
+			continue
+		}
+		var ps laboratoryv1alpha1.PodSchedule
+		for _, e := range g.Status.Pods {
+			if e.Name == name {
+				ps = e.PodSchedule
+			}
+		}
+		reason := f.reason
+		if reason == "" {
+			reason = laboratoryv1alpha1.FailureDoesNotFit
+		}
+		ps.State, ps.Failure = laboratoryv1alpha1.PodFailed, &laboratoryv1alpha1.PodFailure{Reason: reason, Message: f.message, At: &stamp}
+		return s.setGroupPod(ctx, g, name, ps)
+	}
 	return nil
 }
 

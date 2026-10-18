@@ -49,6 +49,7 @@ type fakeEnv struct {
 	notPrepared map[string]bool // by prepKey
 	fits        map[string]fit  // by pod key
 	taken       int
+	pulled      []string        // prepKey of every prepared() call
 	tenantFull  map[string]bool // by tenant
 	// nodes are the free rooms offered to gangs; nil: no per-node check.
 	nodes []nodeRoom
@@ -73,7 +74,10 @@ func (f *fakeEnv) tenantFits(p *schedPod) bool {
 	}
 	return !f.tenantFull[p.tenant]
 }
-func (f *fakeEnv) prepared(o *schedObject) bool { return !f.notPrepared[o.prepKey] }
+func (f *fakeEnv) prepared(o *schedObject) bool {
+	f.pulled = append(f.pulled, o.prepKey)
+	return !f.notPrepared[o.prepKey]
+}
 func (f *fakeEnv) check(p *schedPod) fit {
 	if v, ok := f.fits[p.key]; ok {
 		return v

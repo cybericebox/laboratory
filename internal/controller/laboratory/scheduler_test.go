@@ -514,6 +514,34 @@ func TestSchedulerPodsOfALabGroup(t *testing.T) {
 	}
 }
 
+// A LabGroup pod that fits no node is failed in the status too, so it is not planned again and again.
+func TestSchedulerFailsALabGroupPodThatFitsNoNode(t *testing.T) {
+	cfg := schedCfg()
+	cfg.ResourceCheck = true
+	f := newSchedFixture(t, cfg)
+	f.create(node("n1", "250m", "1Gi"))
+	now := metav1.NewTime(f.now)
+	f.create(&laboratoryv1alpha1.LabGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "team", UID: "uid-team", CreationTimestamp: metav1.NewTime(planEpoch)},
+		Spec: laboratoryv1alpha1.LabGroupSpec{
+			VPN:     laboratoryv1alpha1.LabGroupVPNSpec{Disabled: true},
+			Gateway: laboratoryv1alpha1.LabGroupGatewaySpec{Size: &laboratoryv1alpha1.GroupPodSize{CPUMillicores: 64000, MemoryBytes: 1 << 30}},
+		},
+		Status: laboratoryv1alpha1.LabGroupStatus{Pods: []laboratoryv1alpha1.NamedPodSchedule{
+			{Name: "gateway", PodSchedule: laboratoryv1alpha1.PodSchedule{State: laboratoryv1alpha1.PodQueued, QueuedAt: &now}},
+		}},
+	})
+	f.tick()
+	var g laboratoryv1alpha1.LabGroup
+	if err := f.c.Get(context.Background(), types.NamespacedName{Name: "team"}, &g); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.Status.Pods) != 1 || g.Status.Pods[0].State != laboratoryv1alpha1.PodFailed ||
+		g.Status.Pods[0].Failure == nil || g.Status.Pods[0].Failure.Reason != laboratoryv1alpha1.FailureDoesNotFit {
+		t.Fatalf("pods = %+v", g.Status.Pods)
+	}
+}
+
 func TestSchedulerLabGroupStatusAndPodCount(t *testing.T) {
 	f := newSchedFixture(t, schedCfg())
 	f.create(&laboratoryv1alpha1.LabGroup{
@@ -558,12 +586,16 @@ func TestSchedulerResourceCheckWaitsAndFails(t *testing.T) {
 	f.tick()
 	f.wantStates("a/p1=S a/p2=S b/p1=Q")
 
-	// A group bigger than the whole node can never fit: its pods are failed, none starts partly.
+	// A group bigger than the whole node does not fit now: none starts partly, and it is looked at again on every
+	// tick (a node may return), with the reason DoesNotFit.
 	f1 := newSchedFixture(t, cfg)
 	f1.create(node("n1", "250m", "1Gi"))
 	f1.addLab("c", "g", nil, "p1", "p2", "p3")
 	f1.tick()
-	f1.wantStates("c/p1=F c/p2=F c/p3=F")
+	f1.wantStates("c/p1=Q c/p2=Q c/p3=Q")
+	if s := f1.labStatus("c"); s.Reason != laboratoryv1alpha1.WaitDoesNotFit {
+		t.Fatalf("status = %+v", s)
+	}
 
 	// A pod larger than the whole node is failed, and the queue goes on.
 	f2 := newSchedFixture(t, cfg)
