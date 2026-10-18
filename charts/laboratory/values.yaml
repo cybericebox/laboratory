@@ -780,7 +780,7 @@ scheduler:
   # kubelet's own reserve (the allocatable of a node is already net of kube-reserved, system-reserved and
   # eviction) and AFTER the requests of every pod scheduled on the node (DaemonSets and the proxy included, in
   # both proxy modes). First platformReserveCpu / platformReserveMemory come off EVERY schedulable node (absolute
-  # quantities, "0" = none), then platformReservePercent (0-99) of what is left of the sum over the nodes is kept free.
+  # quantities, "0" = none), then platformReservePercent (0-99) of what is left of each node is kept free.
   platformReservePercent: 10
   platformReserveCpu: "0"
   platformReserveMemory: "0"

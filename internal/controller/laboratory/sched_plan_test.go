@@ -47,7 +47,8 @@ func obj(id, group string, arrival int, after []string, ps ...*schedPod) *schedO
 
 type fakeEnv struct {
 	notPrepared map[string]bool // by prepKey
-	fits        map[string]fit  // by pod key
+	never       map[string]bool // by pod key: no single node can ever hold it
+	noNode      bool            // no schedulable lab node
 	taken       int
 	pulled      []string        // prepKey of every prepared() call
 	tenantFull  map[string]bool // by tenant
@@ -57,12 +58,12 @@ type fakeEnv struct {
 	empty []nodeRoom
 	// maxNode is the most one node can give a pod; nil: no per-node verdict.
 	maxNode *amount
-	// tenantCPU is the CPU a gang of a tenant may ask at most (with the room kept for the tenant added).
-	tenantCPU map[string]int64
+	// tenantCPU is the CPU quota of a tenant: what it has dispatched (tenantUsed, take adds to it) plus what a gang asks
+	// (with the room kept for the tenant added) must stay within it.
+	tenantCPU  map[string]int64
+	tenantUsed map[string]int64
 	// tenantNever marks the tenants whose quota can never hold a gang.
 	tenantNever map[string]bool
-	// neverOff: a fitNever in fits is only the aggregate check, not the per-node verdict (neverFits follows maxNode alone).
-	neverOff bool
 	// podNode is the node of a dispatched pod by key ("": not on a node yet); a pod not listed is bound to a node that is not
 	// in the rooms (nodes are the rooms after it already).
 	podNode map[string]string
@@ -81,7 +82,7 @@ func (f *fakeEnv) rooms() ([]nodeRoom, bool) { return f.nodes, f.nodes != nil }
 func (f *fakeEnv) emptyRooms() []nodeRoom { return f.empty }
 
 func (f *fakeEnv) neverFits(p *schedPod) bool {
-	if v, ok := f.fits[p.key]; ok && v == fitNever && !f.neverOff {
+	if f.never[p.key] {
 		return true
 	}
 	return f.maxNode != nil && (p.need.cpu > f.maxNode.cpu || p.need.mem > f.maxNode.mem)
@@ -90,7 +91,7 @@ func (f *fakeEnv) neverFits(p *schedPod) bool {
 func (f *fakeEnv) tenantEverFits(p *schedPod) bool { return !f.tenantNever[p.tenant] }
 
 func (f *fakeEnv) tenantFits(p *schedPod) bool {
-	if c, ok := f.tenantCPU[p.tenant]; ok && p.need.cpu > c {
+	if c, ok := f.tenantCPU[p.tenant]; ok && p.need.cpu+f.tenantUsed[p.tenant] > c {
 		return false
 	}
 	return !f.tenantFull[p.tenant]
@@ -99,13 +100,14 @@ func (f *fakeEnv) prepared(o *schedObject) bool {
 	f.pulled = append(f.pulled, o.prepKey)
 	return !f.notPrepared[o.prepKey]
 }
-func (f *fakeEnv) check(p *schedPod) fit {
-	if v, ok := f.fits[p.key]; ok {
-		return v
+func (f *fakeEnv) noNodes() bool { return f.noNode }
+func (f *fakeEnv) take(p *schedPod) {
+	f.taken++
+	if f.tenantUsed == nil {
+		f.tenantUsed = map[string]int64{}
 	}
-	return fitOK
+	f.tenantUsed[p.tenant] += p.need.cpu
 }
-func (f *fakeEnv) take(*schedPod) { f.taken++ }
 
 func keys(ps []*schedPod) []string {
 	var out []string
@@ -296,9 +298,10 @@ func TestPlanSlotsAndUnlimited(t *testing.T) {
 
 func TestPlanResourceCheck(t *testing.T) {
 	a := obj("lab/a", "g1", 1, nil, pods("a", "p1", "p2")...)
+	a.pods[1].need = amount{cpu: 100, mem: 2 * gi}
 	b := obj("lab/b", "g1", 2, nil, pods("b", "p1")...)
 	// No room now for a pod of a: the gang (a and b) stays queued (InsufficientResources).
-	env := &fakeEnv{fits: map[string]fit{"a/p2": fitWait}}
+	env := &fakeEnv{nodes: []nodeRoom{room("n1", 4000, gi)}}
 	plan := planSchedule([]*schedObject{a, b}, 10, false, env)
 	wantDispatch(t, plan)
 	// A gang of another group goes past it (backfill).
@@ -312,12 +315,12 @@ func TestPlanResourceCheck(t *testing.T) {
 		t.Fatalf("c went past the gang: %+v", plan.status["lab/c"])
 	}
 	// No node at all.
-	plan = planSchedule([]*schedObject{a}, 10, false, &fakeEnv{fits: map[string]fit{"a/p1": fitNoNodes}})
+	plan = planSchedule([]*schedObject{a}, 10, false, &fakeEnv{noNode: true})
 	if r := plan.status["lab/a"].Reason; r != laboratoryv1alpha1.WaitNoSchedulableNodes {
 		t.Fatalf("reason = %q", r)
 	}
 	// A pod that fits no node ever fails its whole gang: nothing of it starts. Another group goes on.
-	env = &fakeEnv{fits: map[string]fit{"a/p1": fitNever}}
+	env = &fakeEnv{never: map[string]bool{"a/p1": true}}
 	plan = planSchedule([]*schedObject{a, b, c}, 10, false, env)
 	wantDispatch(t, plan, "c/p1")
 	if len(plan.failed) != 3 || plan.failed[0].pod.key != "a/p1" || plan.failed[0].reason != laboratoryv1alpha1.FailureDoesNotFit {
@@ -429,7 +432,9 @@ func TestPlanGroupPodsGoAheadOfQueuedLabs(t *testing.T) {
 	grp := obj("group/new", "", 3, nil, &schedPod{key: "group/new/vpn", name: "vpn", kind: kindGroupPod, state: qd},
 		&schedPod{key: "group/new/gateway", name: "gateway", kind: kindGroupPod, state: qd})
 	// the labs do not fit; the group pods do
-	env := &fakeEnv{fits: map[string]fit{"l1/web": fitWait, "l2/web": fitWait}}
+	old.pods[0].need, old2.pods[0].need = amount{cpu: 100, mem: 2 * gi}, amount{cpu: 100, mem: 2 * gi}
+	grp.pods[0].need, grp.pods[1].need = amount{cpu: 100, mem: gi / 4}, amount{cpu: 10, mem: gi / 8}
+	env := &fakeEnv{nodes: []nodeRoom{room("n1", 4000, gi)}}
 	plan := planSchedule([]*schedObject{old, old2, grp}, 10, false, env)
 	wantDispatch(t, plan, "group/new/gateway", "group/new/vpn")
 	if r := plan.status["lab/old/l1"].Reason; r != laboratoryv1alpha1.WaitInsufficient {
@@ -439,14 +444,16 @@ func TestPlanGroupPodsGoAheadOfQueuedLabs(t *testing.T) {
 		t.Fatal("the group has nothing left to wait for")
 	}
 	// the group pods are still checked: no room for them, they stay queued and the lab goes past them
-	env = &fakeEnv{fits: map[string]fit{"group/new/gateway": fitWait}}
+	grp.pods[1].need = amount{cpu: 10, mem: 3 * gi}
+	env = &fakeEnv{nodes: []nodeRoom{room("n1", 4000, 2*gi)}}
 	plan = planSchedule([]*schedObject{old, grp}, 10, false, env)
 	wantDispatch(t, plan, "l1/web")
 	if r := plan.status["group/new"].Reason; r != laboratoryv1alpha1.WaitInsufficient {
 		t.Fatalf("reason = %q", r)
 	}
 	// a lab that does not fit stays queued and the next lab goes past it (backfill)
-	env = &fakeEnv{fits: map[string]fit{"l1/web": fitWait}}
+	old2.pods[0].need = amount{cpu: 100, mem: gi / 2}
+	env = &fakeEnv{nodes: []nodeRoom{room("n1", 4000, gi)}}
 	plan = planSchedule([]*schedObject{old, old2}, 10, false, env)
 	wantDispatch(t, plan, "l2/web")
 	// a group that depends on another group still waits for it
@@ -538,7 +545,7 @@ func TestPlanLargerLabsFirstWithinTheSamePriority(t *testing.T) {
 func TestPlanBackfillKeepsTheBigLabFirst(t *testing.T) {
 	big := sized(obj("lab/b", "g", 1, nil, pods("b", "web")...), 4000, 8<<30)
 	small := sized(obj("lab/s", "g2", 2, nil, pods("s", "web")...), 100, 64<<20)
-	plan := planSchedule([]*schedObject{small, big}, 10, false, &fakeEnv{fits: map[string]fit{"b/web": fitWait}})
+	plan := planSchedule([]*schedObject{small, big}, 10, false, &fakeEnv{nodes: []nodeRoom{room("n1", 2000, 4<<30)}})
 	wantDispatch(t, plan, "s/web")
 	if plan.status["lab/b"].Reason != laboratoryv1alpha1.WaitInsufficient || plan.status["lab/b"].Position != 1 {
 		t.Fatalf("the big lab stays at the head: %+v", plan.status["lab/b"])

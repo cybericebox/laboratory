@@ -116,14 +116,15 @@ func (o *schedObject) started() bool {
 	return false
 }
 
-// schedEnv is what the plan asks of the cluster: whether the images of an object
-// are on the nodes, and whether a node has room for a pod.
+// schedEnv is what the plan asks of the cluster: whether the images of an object are on the nodes, the room labs have on
+// each node, and the tenant quotas. Room is decided only by the placement simulation on the per-node rooms.
 type schedEnv interface {
 	// prepared reports whether the images of the object are on the nodes; it may
 	// start pulling them.
 	prepared(o *schedObject) bool
-	// check says whether the pod fits now, and take reserves its requests.
-	check(p *schedPod) fit
+	// noNodes says the resource check is on and no lab node is schedulable now: the pass waits.
+	noNodes() bool
+	// take counts a dispatched pod toward its tenant's quota for the rest of the pass.
 	take(p *schedPod)
 	// tenantFits says whether the pod's tenant stays within its CPU and memory quota
 	// with the pod added to what its dispatched pods already request.
@@ -165,6 +166,9 @@ type schedPlan struct {
 	// status holds the queue place of every object with undispatched pods; an
 	// object absent from it has nothing waiting.
 	status map[string]objectStatus
+	// left is the per-node room after the placement simulation of the pass: the bound and unbound lab pods, the held
+	// remainders and the gangs dispatched now are off it. nil: no per-node check.
+	left []nodeRoom
 }
 
 type schedGroup struct {
@@ -489,16 +493,11 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 					eligible = false
 				}
 			}
-			needs, amounts := needsOf(q)
+			needs, _ := needsOf(q)
 			// The images of a started gang are on the nodes already (an operator restart forgets that, so they are not asked
-			// again here).
+			// again, here or in try).
 			if empty := emptyFor(gg); eligible && empty != nil {
-				var total amount
-				for _, a := range amounts {
-					total = total.add(a)
-				}
-				_, packs := fitsGang(empty, needs)
-				eligible = packs && env.check(&schedPod{key: "gang/" + gg.key, need: total}) != fitNever
+				_, eligible = fitsGang(empty, needs)
 			}
 			if !eligible {
 				continue
@@ -529,41 +528,24 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			return false
 		}
 		// One pod that no single node can ever hold fails the whole gang: nothing of it starts, since its other pods
-		// would only burn room. A pod over the room of the schedulable nodes together only waits: a cordoned or rebooting
-		// node of the pool may hold it once it returns (neverFits counts it).
-		wait, notFit := false, false
+		// would only burn room. Anything else is decided by the placement on the per-node rooms: a gang that does not pack
+		// even the empty nodes (beside its own running pods) waits with DoesNotFitNow and is looked at on every pass, since a
+		// cordoned or rebooting node of the pool may return (neverFits counts it).
+		var total amount
 		for _, p := range queued {
 			if env.neverFits(p) {
 				failAll(queued, laboratoryv1alpha1.FailureDoesNotFit, "the pod "+p.key+" requests more than any single node can give")
 				return false
 			}
-			switch env.check(p) {
-			case fitWait:
-				wait = true
-			case fitNoNodes:
-				blocker = laboratoryv1alpha1.WaitNoSchedulableNodes
-				return true
-			case fitNever:
-				notFit = true
-			}
+			total = total.add(p.need)
+		}
+		if total != (amount{}) && env.noNodes() {
+			blocker = laboratoryv1alpha1.WaitNoSchedulableNodes
+			return true
 		}
 		needs, _ := needsOf(queued)
 		gg.needs = needs
-		var total amount
-		for _, p := range queued {
-			total = total.add(p.need)
-		}
-		// A gang that does not fit the nodes as a whole may fit later (a node returns, a rollout ends): it is kept and
-		// looked at on every pass, with the reason DoesNotFit. Only a single pod bigger than every node fails for good.
-		switch env.check(&schedPod{key: "gang/" + gg.key, tenant: gg.tenant, need: total}) {
-		case fitWait:
-			wait = true
-		case fitNoNodes:
-			blocker = laboratoryv1alpha1.WaitNoSchedulableNodes
-			return true
-		case fitNever:
-			notFit = true
-		}
+		notFit := false
 		if empty := emptyFor(gg); empty != nil {
 			if _, ok := fitsGang(empty, needs); !ok {
 				notFit = true
@@ -591,10 +573,16 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 				return false
 			}
 		}
-		// The images of a group are pulled before its first pod starts, also while the gang waits for quota or room.
-		ready := true
+		// The images of a group are pulled before its first pod starts, also while the gang waits for quota or room. A started
+		// gang's images are on the nodes already: they are not asked again (an operator restart forgets the done pulls).
+		started, ready := false, true
 		for _, o := range gg.objs {
-			ready = env.prepared(o) && ready
+			started = started || o.started()
+		}
+		if !started {
+			for _, o := range gg.objs {
+				ready = env.prepared(o) && ready
+			}
 		}
 		// A tenant at its quota waits without holding up the others: the gang is skipped.
 		for _, t := range tenants {
@@ -614,9 +602,14 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			hold(fitHeld, gg)
 			return false
 		}
-		if wait {
-			hold(roomHeld, gg)
-			return false
+		// A held remainder dispatches against its own placement; any other gang is placed on what is left.
+		left := rooms
+		if perNode && !held[gg] {
+			var ok bool
+			if left, ok = fitsGang(rooms, needs); !ok {
+				hold(roomHeld, gg)
+				return false
+			}
 		}
 		// A gang within the limit needs a slot for every pod. One larger than the whole limit could never get that: it
 		// goes in slices of the free slots, while the room is still checked for all of it.
@@ -628,14 +621,13 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			}
 			send = queued[:min(len(queued), slots)]
 		}
-		// A held remainder dispatches against its own placement; any other gang is placed on what is left.
-		if perNode && !held[gg] {
-			left, ok := fitsGang(rooms, needs)
-			if !ok {
-				hold(roomHeld, gg)
-				return false
+		rooms = left
+		if held[gg] {
+			// What it sends is in the tenant's dispatched pods now (take): it no longer counts as held.
+			for _, p := range send {
+				heldQuota[p.tenant] = heldQuota[p.tenant].sub(p.need)
+				heldOwn[gg][p.tenant] = heldOwn[gg][p.tenant].sub(p.need)
 			}
-			rooms = left
 		}
 		for _, p := range send {
 			env.take(p)
@@ -650,6 +642,9 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		if try(gg) {
 			break
 		}
+	}
+	if perNode {
+		plan.left = rooms
 	}
 
 	// Queue places: eligible objects with pods still waiting, in conveyor order,
