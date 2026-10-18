@@ -50,7 +50,11 @@ type fakeEnv struct {
 	fits        map[string]fit  // by pod key
 	taken       int
 	tenantFull  map[string]bool // by tenant
+	// nodes are the free rooms offered to gangs; nil: no per-node check.
+	nodes []nodeRoom
 }
+
+func (f *fakeEnv) rooms() ([]nodeRoom, bool) { return f.nodes, f.nodes != nil }
 
 func (f *fakeEnv) tenantFits(p *schedPod) bool  { return !f.tenantFull[p.tenant] }
 func (f *fakeEnv) prepared(o *schedObject) bool { return !f.notPrepared[o.prepKey] }
@@ -89,26 +93,28 @@ func wantDispatch(t *testing.T, plan schedPlan, want ...string) {
 	}
 }
 
-// An object may start with fewer slots than pods: 3 slots, 5 pods, 3 now.
-func TestPlanPartialStart(t *testing.T) {
+// A gang starts whole or not at all: 3 slots, 5 pods, 2 more in flight: it waits for the slots.
+func TestPlanGangWaitsForSlots(t *testing.T) {
 	o := obj("lab/a", "g", 1, nil, pods("a", "p1", "p2", "p3", "p4", "p5")...)
-	plan := planSchedule([]*schedObject{o}, 3, false, &fakeEnv{})
-	wantDispatch(t, plan, "a/p1", "a/p2", "a/p3")
+	busy := obj("lab/x", "", 2, nil, pods("x", "p1:S", "p2:S")...)
+	plan := planSchedule([]*schedObject{o, busy}, 3, false, &fakeEnv{})
+	wantDispatch(t, plan)
 	st := plan.status["lab/a"]
-	if st.Position != 1 || st.Length != 1 || st.Pending != 2 || st.Pods != 5 || st.Reason != laboratoryv1alpha1.WaitInFlightLimit {
+	if st.Position != 1 || st.Length != 1 || st.Pending != 5 || st.Pods != 5 || st.Reason != laboratoryv1alpha1.WaitInFlightLimit {
 		t.Fatalf("status = %+v", st)
 	}
+	plan = planSchedule([]*schedObject{o, busy}, 5, false, &fakeEnv{})
+	wantDispatch(t, plan, "a/p1", "a/p2", "a/p3", "a/p4", "a/p5")
 }
 
-// Once an object started, no other object's pods interleave with its rest.
+// The rest of a partly started group is one gang: the started object first, then the others, all or nothing.
 func TestPlanConveyorDoesNotInterleave(t *testing.T) {
 	o1 := obj("lab/a", "g", 1, nil, pods("a", "p1:S", "p2:S", "p3")...)
 	o2 := obj("lab/b", "g", 2, nil, pods("b", "p1", "p2")...)
-	plan := planSchedule([]*schedObject{o2, o1}, 1, false, &fakeEnv{})
-	wantDispatch(t, plan, "a/p3")
-	// The slot after that goes to the next object of the group.
-	plan = planSchedule([]*schedObject{o2, o1}, 2, false, &fakeEnv{})
-	wantDispatch(t, plan, "a/p3", "b/p1")
+	plan := planSchedule([]*schedObject{o2, o1}, 2, false, &fakeEnv{})
+	wantDispatch(t, plan)
+	plan = planSchedule([]*schedObject{o2, o1}, 3, false, &fakeEnv{})
+	wantDispatch(t, plan, "a/p3", "b/p1", "b/p2")
 }
 
 // Groups go in arrival order; each is dispatched completely before the next starts.
@@ -250,15 +256,19 @@ func TestPlanSlotsAndUnlimited(t *testing.T) {
 func TestPlanResourceCheck(t *testing.T) {
 	a := obj("lab/a", "g1", 1, nil, pods("a", "p1", "p2")...)
 	b := obj("lab/b", "g1", 2, nil, pods("b", "p1")...)
-	// No room now for the next pod of a: it stays queued (InsufficientResources) and b, behind it, goes past (backfill).
+	// No room now for a pod of a: the gang (a and b) stays queued (InsufficientResources).
 	env := &fakeEnv{fits: map[string]fit{"a/p2": fitWait}}
 	plan := planSchedule([]*schedObject{a, b}, 10, false, env)
-	wantDispatch(t, plan, "a/p1", "b/p1")
+	wantDispatch(t, plan)
+	// A gang of another group goes past it (backfill).
+	c := obj("lab/c", "g2", 3, nil, pods("c", "p1")...)
+	plan = planSchedule([]*schedObject{a, b, c}, 10, false, env)
+	wantDispatch(t, plan, "c/p1")
 	if r := plan.status["lab/a"].Reason; r != laboratoryv1alpha1.WaitInsufficient {
 		t.Fatalf("reason = %q", r)
 	}
-	if _, waiting := plan.status["lab/b"]; waiting {
-		t.Fatalf("b went past a: %+v", plan.status["lab/b"])
+	if _, waiting := plan.status["lab/c"]; waiting {
+		t.Fatalf("c went past the gang: %+v", plan.status["lab/c"])
 	}
 	// No node at all.
 	plan = planSchedule([]*schedObject{a}, 10, false, &fakeEnv{fits: map[string]fit{"a/p1": fitNoNodes}})
@@ -486,7 +496,7 @@ func TestPlanLargerLabsFirstWithinTheSamePriority(t *testing.T) {
 // small ones fill the gaps without losing its place for the next pass.
 func TestPlanBackfillKeepsTheBigLabFirst(t *testing.T) {
 	big := sized(obj("lab/b", "g", 1, nil, pods("b", "web")...), 4000, 8<<30)
-	small := sized(obj("lab/s", "g", 2, nil, pods("s", "web")...), 100, 64<<20)
+	small := sized(obj("lab/s", "g2", 2, nil, pods("s", "web")...), 100, 64<<20)
 	plan := planSchedule([]*schedObject{small, big}, 10, false, &fakeEnv{fits: map[string]fit{"b/web": fitWait}})
 	wantDispatch(t, plan, "s/web")
 	if plan.status["lab/b"].Reason != laboratoryv1alpha1.WaitInsufficient || plan.status["lab/b"].Position != 1 {

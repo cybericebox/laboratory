@@ -116,6 +116,9 @@ type schedEnv interface {
 	// tenantFits says whether the pod's tenant stays within its CPU and memory quota
 	// with the pod added to what its dispatched pods already request.
 	tenantFits(p *schedPod) bool
+	// rooms is the room labs have on each node now, for the per-node fit of a gang; false: no per-node check
+	// (the resource check is off).
+	rooms() ([]nodeRoom, bool)
 }
 
 // objectStatus is what the plan reports for an object that still has pods to dispatch.
@@ -152,20 +155,20 @@ type schedGroup struct {
 
 // planSchedule decides which pods start now.
 //
-// The conveyor: groups that
-// are being dispatched (some pod out, some pending) keep the slots, then groups
-// that have not started, in arrival order, each only once every group it lists in
-// deploy-after is complete; objects without a group go last. Inside a group an
-// object is dispatched completely before the next one starts, and an object may
-// start with fewer slots than pods. Dispatch stops at the first pod that cannot go
-// (no slot, images not ready, no room), so the order is never skipped; a pod that
-// fits no node at all is failed instead, and a group that is not eligible is
-// skipped without stopping the others. The pods of LabGroups (the team's VPN and
-// gateway) go ahead of all labs.
+// The conveyor: gangs. A gang is the not yet dispatched pods of one deploy group (an independent lab and
+// every LabGroup object are gangs of their own), and it starts whole or not at all: it needs a slot for every
+// pod, the tenant quota for the sum of its pods, its images on the nodes, and a placement of every pod on the
+// per-node rooms (fitsGang). Groups that are being dispatched (some pod out, some pending) go first, then
+// groups that have not started, in arrival order, each only once every group it lists in deploy-after is
+// complete; independent labs go last. A gang that waits for tenant quota, images or room does not stop the
+// others (backfill); no slot, or no node at all, stops the pass, so the order is never skipped. A pod that fits
+// no node at all is failed instead, and so is a whole gang bigger than the empty capacity. A gang bigger than
+// the whole in-flight limit goes in slices of the free slots, its room checked as a whole. The pods of
+// LabGroups (the team's VPN and gateway) go ahead of all labs.
 //
 // Inside a group (and among the independent objects) the order is: an object already being dispatched first, then the
-// explicit priority (higher first), then the larger object (CPU, then memory), then arrival. A lab that does not fit now
-// (InsufficientResources) stays queued and the objects behind it go past it (backfill); the order inside an object is kept.
+// explicit priority (higher first), then the larger object (CPU, then memory), then arrival; the order inside an
+// object is kept.
 //
 //nolint:gocyclo // one decision over many cases; splitting it would scatter the rule
 func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) schedPlan {
@@ -262,24 +265,54 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		})
 		return out
 	}
-	var sequence []*schedObject
-	for _, g := range eligible {
-		sequence = append(sequence, orderObjs(g.objs)...)
-	}
-	sequence = append(sequence, orderObjs(independents)...)
-	// The service pods of a LabGroup (VPN, gateway) have a lane of their own: they dispatch
-	// ahead of every queued lab, so a new team is not held up by a burst of labs that wait
-	// for room. They still need a slot and room like any pod; labs keep their strict order.
-	var lane, rest []*schedObject
-	for _, o := range sequence {
-		if o.isGroup() {
-			lane = append(lane, o)
+	// The unit of admission is a gang: the labs of one deploy group, an independent lab, or one LabGroup object.
+	// The service pods of a LabGroup (VPN, gateway) have a lane of their own: they dispatch ahead of every
+	// queued lab, so a new team is not held up by a burst of labs that wait for room. They still need a
+	// slot and room like any pod; labs keep their strict order.
+	var lane, rest []*gang
+	add := func(key string, o ...*schedObject) {
+		if len(o) == 0 {
+			return
+		}
+		gg := &gang{key: key, tenant: "", objs: o, arrival: o[0].arrival}
+		for _, ob := range o {
+			if ob.arrival.Before(gg.arrival) {
+				gg.arrival = ob.arrival
+			}
+		}
+		if o[0].isGroup() {
+			lane = append(lane, gg)
 		} else {
-			rest = append(rest, o)
+			rest = append(rest, gg)
 		}
 	}
-	sequence = append(lane, rest...)
-	var blockedObjs []*schedObject
+	split := func(key string, list []*schedObject) {
+		var labs []*schedObject
+		for _, o := range list {
+			if o.isGroup() {
+				add(o.id, o)
+			} else {
+				labs = append(labs, o)
+			}
+		}
+		if key == "" {
+			for _, o := range labs {
+				add(o.id, o)
+			}
+		} else {
+			add(key, labs...)
+		}
+	}
+	for _, g := range eligible {
+		split(g.key, orderObjs(g.objs))
+	}
+	split("", orderObjs(independents))
+	gangs := append(lane, rest...)
+	var sequence []*schedObject
+	for _, gg := range gangs {
+		sequence = append(sequence, gg.objs...)
+	}
+	blockedObjs := make([]*schedObject, 0, len(blocked))
 	for _, g := range blocked {
 		blockedObjs = append(blockedObjs, orderObjs(g.objs)...)
 	}
@@ -287,59 +320,155 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	plan := schedPlan{status: map[string]objectStatus{}}
 	gone := map[*schedPod]bool{} // dispatched or failed in this pass
 
+	// The in-flight limit as the plan sees it: the free slots plus the pods starting now.
+	limit := slots
+	for _, o := range objs {
+		for _, p := range o.pods {
+			if p.state == laboratoryv1alpha1.PodStarting {
+				limit++
+			}
+		}
+	}
+
 	blocker := ""
 	tenantHeld := map[string]bool{} // objects held back by their tenant's quota
 	prepHeld := map[string]bool{}   // objects whose group's images are still being pulled
-	roomHeld := map[string]bool{}   // objects whose next pod does not fit now: the others go past them (backfill)
-	try := func(p *schedPod, o *schedObject) (stop bool) {
-		if !p.queued() || gone[p] {
+	roomHeld := map[string]bool{}   // objects whose gang does not fit now: the others go past them (backfill)
+	var rooms []nodeRoom
+	var perNode, roomsLoaded bool
+	hold := func(held map[string]bool, gg *gang) {
+		for _, o := range gg.objs {
+			held[o.id] = true
+		}
+	}
+	// try admits the gang whole or not at all. It reports a stop of the pass: no slots, or no node to place on.
+	try := func(gg *gang) (stop bool) {
+		var queued []*schedPod
+		for _, o := range gg.objs {
+			pods := append([]*schedPod(nil), o.pods...)
+			sort.SliceStable(pods, func(i, j int) bool { return pods[i].name < pods[j].name })
+			for _, p := range pods {
+				if p.queued() && !gone[p] {
+					queued = append(queued, p)
+				}
+			}
+		}
+		if len(queued) == 0 {
 			return false
 		}
-		if !unlimited && slots <= 0 {
-			blocker = laboratoryv1alpha1.WaitInFlightLimit
-			return true
+		// A pod that fits no node at all is failed on its own; the rest of the gang goes on without it.
+		var live []*schedPod
+		wait := false
+		for _, p := range queued {
+			switch env.check(p) {
+			case fitWait:
+				wait = true
+				live = append(live, p)
+			case fitNoNodes:
+				blocker = laboratoryv1alpha1.WaitNoSchedulableNodes
+				return true
+			case fitNever:
+				plan.failed = append(plan.failed, failedPod{pod: p, message: "the pod requests more than every node can give"})
+				gone[p] = true
+			default:
+				live = append(live, p)
+			}
 		}
-		// A tenant at its quota waits without holding up the others: the object is skipped.
-		if !env.tenantFits(p) {
-			tenantHeld[o.id] = true
+		if len(live) == 0 {
 			return false
+		}
+		if wait {
+			hold(roomHeld, gg)
+			return false
+		}
+		// A gang within the limit needs a slot for every pod. One larger than the whole limit could never get that: it
+		// goes in slices of the free slots, while the room is still checked for all of it.
+		send := live
+		if !unlimited {
+			if slots < len(live) && (len(live) <= limit || slots <= 0) {
+				blocker = laboratoryv1alpha1.WaitInFlightLimit
+				return true
+			}
+			send = live[:min(len(live), slots)]
+		}
+		// A tenant at its quota waits without holding up the others: the gang is skipped. The quota is checked
+		// on the sum of the gang's needs.
+		sums := map[string]*schedPod{}
+		var tenants []string
+		for _, p := range live {
+			sp := sums[p.tenant]
+			if sp == nil {
+				sp = &schedPod{key: "gang/" + gg.key, tenant: p.tenant}
+				sums[p.tenant] = sp
+				tenants = append(tenants, p.tenant)
+			}
+			sp.need = sp.need.add(p.need)
+		}
+		sort.Strings(tenants)
+		if gg.tenant == "" {
+			gg.tenant = tenants[0]
+		}
+		for _, t := range tenants {
+			if !env.tenantFits(sums[t]) {
+				hold(tenantHeld, gg)
+				return false
+			}
 		}
 		// The images of a group are pulled before its first pod starts, but that gates only its
 		// own objects: the others go on, and only the order and dependency rules hold them.
-		if !env.prepared(o) {
-			prepHeld[o.id] = true
+		ready := true
+		for _, o := range gg.objs {
+			ready = env.prepared(o) && ready
+		}
+		if !ready {
+			hold(prepHeld, gg)
 			return false
 		}
-		switch env.check(p) {
+		var total amount
+		needs := make([]podNeed, 0, len(live))
+		for _, p := range live {
+			total = total.add(p.need)
+			needs = append(needs, podNeed{Key: p.key, CPU: p.need.cpu, Memory: p.need.mem})
+		}
+		gg.needs = needs
+		switch env.check(&schedPod{key: "gang/" + gg.key, tenant: gg.tenant, need: total}) {
 		case fitWait:
-			roomHeld[o.id] = true
+			hold(roomHeld, gg)
 			return false
 		case fitNoNodes:
 			blocker = laboratoryv1alpha1.WaitNoSchedulableNodes
 			return true
 		case fitNever:
-			plan.failed = append(plan.failed, failedPod{pod: p, message: "the pod requests more than every node can give"})
-			gone[p] = true
+			for _, p := range live {
+				plan.failed = append(plan.failed, failedPod{pod: p, message: "the group requests more than every node can give"})
+				gone[p] = true
+			}
 			return false
 		}
-		env.take(p)
-		plan.dispatch = append(plan.dispatch, p)
-		gone[p] = true
-		slots--
+		if !roomsLoaded {
+			rooms, perNode = env.rooms()
+			roomsLoaded = true
+		}
+		if perNode {
+			left, ok := fitsGang(rooms, needs)
+			if !ok {
+				hold(roomHeld, gg)
+				return false
+			}
+			rooms = left
+		}
+		for _, p := range send {
+			env.take(p)
+			plan.dispatch = append(plan.dispatch, p)
+			gone[p] = true
+		}
+		slots -= len(send)
 		return false
 	}
 
-conveyor:
-	for _, o := range sequence {
-		pods := append([]*schedPod(nil), o.pods...)
-		sort.SliceStable(pods, func(i, j int) bool { return pods[i].name < pods[j].name })
-		for _, p := range pods {
-			if try(p, o) {
-				break conveyor
-			}
-			if tenantHeld[o.id] || prepHeld[o.id] || roomHeld[o.id] {
-				break // the order inside an object is kept: nothing behind a held pod goes
-			}
+	for _, gg := range gangs {
+		if try(gg) {
+			break
 		}
 	}
 

@@ -474,12 +474,12 @@ func TestStoppedMissingRuntimeKeepsCapacityReservedAndLeavesKnownRoomUsable(t *t
 	d.Status.Scheduling.State = lab.PodStarted
 	_ = f.c.Status().Update(ctx, d)
 	f.tick()
-	f.wantStates("a/web=D b/db=S b/web=Q")
+	f.wantStates("a/web=D b/db=Q b/web=Q")
 	// A stale Released record is not the native observation for this operation.
 	l.Status.Resources = &lab.RuntimeAllocation{RuntimeState: "Released", OperationID: "old", Revision: 1}
 	_ = f.c.Status().Update(ctx, &l)
 	f.tick()
-	f.wantStates("a/web=D b/db=S b/web=Q")
+	f.wantStates("a/web=D b/db=Q b/web=Q")
 }
 
 func TestLifecycleOldLabOwnerCannotCreateIntoReplacementLab(t *testing.T) {
