@@ -279,6 +279,10 @@ kind-deploy: kind-load install deploy ## Full local deploy: build all + load + C
 	@echo "  $(LOCAL_K0S)/scenarios/run.sh multi-node"
 	@echo "  $(LOCAL_K0S)/scenarios/run.sh vpn"
 
+.PHONY: generate-bpf
+generate-bpf: ## Regenerate the eBPF objects of the WireGuard demux fast path (docker; clang and libbpf in the container)
+	hack/generate-bpf.sh
+
 .PHONY: fmt
 fmt: ## Run go fmt against code.
 	go fmt ./...
@@ -294,6 +298,10 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 .PHONY: test-netns
 test-netns: ## Run the real-iptables tests of the VPN and gateway pods in network namespaces (docker, privileged)
 	hack/test-netns.sh
+
+.PHONY: test-bpf
+test-bpf: ## Run the eBPF tests of the WireGuard demux fast path (docker, privileged)
+	hack/test-bpf.sh
 
 # TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
