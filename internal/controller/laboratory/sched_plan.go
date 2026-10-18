@@ -525,8 +525,11 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	// dispatch but for the room (its tenant within the quota, its images on the nodes, it packs the empty nodes beside its own
 	// pods) keeps its placement on those empty rooms: the other gangs place only on the room not kept for it, so a stream of
 	// small gangs cannot keep taking the room it waits for. One gang at a time, placed by the same simulation; the held
-	// remainders of the admitted gangs were placed before it, so it never holds them back. It is offered the room right after
-	// the admitted gangs, and the room is free for the others again once it dispatches or turns out not eligible.
+	// remainders of the admitted gangs were placed before it, so it never holds them back. Only lab gangs age and only lab
+	// gangs are held back: the LabGroup lane (the VPN and gateway of a team) is placed before it and uses all the room, so a new
+	// team always gets its network. A group still waiting for its deploy-after groups is not a gang yet, so it never ages
+	// into the reserver. The aged gang is offered the room right after the lane and the admitted gangs, and the room is free
+	// for the others again once it dispatches or turns out not eligible.
 	var aged *gang
 	var agedRoom map[string]amount // the room kept for the aged gang; nil: none
 	agedPlacement := func(gg *gang) (map[string]amount, bool) {
@@ -572,7 +575,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	if perNode && fair.aging > 0 && !env.noNodes() {
 		var candidates []*gang
 		for _, gg := range gangs {
-			if !held[gg] && fair.now.Sub(gg.arrival) >= fair.aging {
+			if !held[gg] && !gg.objs[0].isGroup() && fair.now.Sub(gg.arrival) >= fair.aging {
 				candidates = append(candidates, gg)
 			}
 		}
@@ -588,7 +591,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	if aged != nil {
 		at := 0
 		for i, gg := range gangs {
-			if gg.started() && gg != aged {
+			if (gg.started() || gg.objs[0].isGroup()) && gg != aged {
 				at = i + 1
 			}
 		}
@@ -709,9 +712,9 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		// A held remainder dispatches against its own placement; any other gang is placed on what is left.
 		left := rooms
 		if perNode && !held[gg] {
-			// Every gang but the aged one places only on the room not kept for the aged gang.
+			// Every lab gang but the aged one places only on the room not kept for the aged gang; the lane is never held back.
 			free := rooms
-			if agedRoom != nil && gg != aged {
+			if agedRoom != nil && gg != aged && !gg.objs[0].isGroup() {
 				free = without(rooms, agedRoom)
 			}
 			l, ok := fitsGang(free, needs)
