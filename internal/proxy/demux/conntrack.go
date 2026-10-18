@@ -19,8 +19,10 @@ type sessionState struct {
 	packets    bucket
 	group      string
 	partial    bool
-	// replyIfindex is the device the server's handshake answer arrived on (0 = unknown).
+	// replyIfindex is the device the server's handshake answer arrived on (0 = unknown); entry is the address the client's
+	// handshake arrived at, the source of the replies (unset until the data plane has told it).
 	replyIfindex int
+	entry        Socket
 }
 
 type ConnEntry struct {

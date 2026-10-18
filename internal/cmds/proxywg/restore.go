@@ -61,7 +61,7 @@ func restoreSessions(fp pinnedSessions, ct *demux.ConnTrack, groups []demux.Tabl
 		group, known := groupOf(owner.Dest, groups)
 		at, haveSeen := seen[si]
 		if !known || !haveSeen || !sameSocket(reply.Expected, owner.Dest) || !sameSocket(reply.Dest, owner.Expected) ||
-			!ct.Restore(reply.Index, si, owner.Expected, owner.Dest, group, at, reply.ReplyIfindex) {
+			!ct.Restore(reply.Index, si, owner.Expected, owner.Dest, group, at, reply.ReplyIfindex, reply.NewSource) {
 			drop(reply.Index, si)
 			continue
 		}

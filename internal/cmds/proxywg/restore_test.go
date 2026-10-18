@@ -68,6 +68,13 @@ func TestRestoreDropsUnknownServers(t *testing.T) {
 			t.Fatalf("the reply device was not restored: %+v", f)
 		}
 	}
+	// the session keeps its entry address: a roam (the client never sent a handshake from the new address) still writes it
+	sink := &recordingSink{}
+	ct.SetSink(sink, noEntrySource{})
+	ct.UpdateRoaming(1, sock("198.51.100.1", 41000))
+	if len(sink.upserts) != 2 || !sameSocket(sink.upserts[1].NewSource, entry) || ct.SinkErrors() != 0 {
+		t.Fatalf("after a roam: %+v errors %d", sink.upserts, ct.SinkErrors())
+	}
 	// the group of the restored session is known: retiring it removes the session
 	ct.RemoveGroup("g")
 	if ct.Len() != 0 {
@@ -91,3 +98,13 @@ func TestRestoreKeepsALiveSessionsRecord(t *testing.T) {
 		t.Fatalf("deleted the live session's records: %v", fp.deleted)
 	}
 }
+
+type recordingSink struct{ upserts []demux.Forward }
+
+func (s *recordingSink) Upsert(f demux.Forward) error { s.upserts = append(s.upserts, f); return nil }
+func (s *recordingSink) Delete(uint32) error          { return nil }
+
+type noEntrySource struct{}
+
+func (noEntrySource) TowardsServer(demux.Socket) (demux.Socket, bool) { return probe, true }
+func (noEntrySource) TowardsClient(demux.Socket) (demux.Socket, bool) { return demux.Socket{}, false }

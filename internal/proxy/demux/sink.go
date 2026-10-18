@@ -55,7 +55,8 @@ func (c *ConnTrack) SetSink(s Sink, src SourceFor) {
 func (c *ConnTrack) SinkErrors() uint64 { return c.sinkErrors.Load() }
 
 // forwardsLocked builds the two directions of a complete session. ok is false when a source address is unknown.
-// The reply direction needs the source towards the server too (its Via), so it is never ok without it.
+// The reply direction needs the source towards the server too (its Via), so it is never ok without it. Its own source is the
+// session's entry address once known: a roamed client never sent a handshake from its new address, and its endpoint is the same.
 func (c *ConnTrack) forwardsLocked(ci, si uint32, client, server Socket, st *sessionState) (toServer, toClient Forward, okServer, okClient bool) {
 	toServer = Forward{Index: si, Session: si, Expected: client, Dest: server}
 	toClient = Forward{Index: ci, Session: si, Expected: server, Dest: client, ToClient: true, ReplyIfindex: st.replyIfindex}
@@ -63,7 +64,11 @@ func (c *ConnTrack) forwardsLocked(ci, si uint32, client, server Socket, st *ses
 		return toServer, toClient, false, false
 	}
 	toServer.NewSource, okServer = c.src.TowardsServer(server)
-	toClient.NewSource, okClient = c.src.TowardsClient(client)
+	if st.entry.IP != nil {
+		toClient.NewSource, okClient = st.entry, true
+	} else {
+		toClient.NewSource, okClient = c.src.TowardsClient(client)
+	}
 	toClient.Via = toServer.NewSource
 	return toServer, toClient, okServer, okClient && okServer
 }
@@ -82,13 +87,19 @@ func (c *ConnTrack) pushLocked(idx uint32, e *ConnEntry) {
 		ci, si, ce = e.PeerIndex, idx, peer
 	}
 	toServer, toClient, okServer, okClient := c.forwardsLocked(ci, si, ce.SenderSocket, ce.ReceiverSocket, ce.state)
+	if okClient {
+		ce.state.entry = toClient.NewSource
+	}
 	c.upsertLocked(toServer, okServer)
 	c.upsertLocked(toClient, okClient)
 }
 
+// upsertLocked writes one direction. One that cannot be written is deleted: an older record of it would keep forwarding to an
+// address the session has left.
 func (c *ConnTrack) upsertLocked(f Forward, haveSource bool) {
 	if !haveSource {
 		c.sinkErrors.Add(1)
+		c.deleteLocked(f.Index)
 		return
 	}
 	if err := c.sink.Upsert(f); err != nil {
@@ -164,10 +175,11 @@ func (c *ConnTrack) SessionCount() int {
 	return n
 }
 
-// Restore re-creates a completed session from the data plane after a restart (both indices, group and reply device given). The data
-// plane already holds the session, so nothing is pushed back. It refuses an index that a live different session owns,
-// a full table, and a session that is already past its TTL.
-func (c *ConnTrack) Restore(clientIdx, serverIdx uint32, client, server Socket, group string, seen time.Time, replyIfindex int) bool {
+// Restore re-creates a completed session from the data plane after a restart (both indices, group, reply device and entry
+// address given; an unset entry is learnt again from the data plane). The data plane already holds the session, so nothing
+// is pushed back. It refuses an index that a live different session owns, a full table, and a session that is already past
+// its TTL.
+func (c *ConnTrack) Restore(clientIdx, serverIdx uint32, client, server Socket, group string, seen time.Time, replyIfindex int, entry Socket) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if clientIdx == serverIdx || c.now().Sub(seen) > conntrackTTL {
@@ -199,7 +211,7 @@ func (c *ConnTrack) Restore(clientIdx, serverIdx uint32, client, server Socket, 
 			c.deleteLocked(idx)
 		}
 	}
-	st := &sessionState{seen: seen, roam: seen, group: group, replyIfindex: replyIfindex}
+	st := &sessionState{seen: seen, roam: seen, group: group, replyIfindex: replyIfindex, entry: entry}
 	c.entries[clientIdx] = &ConnEntry{state: st, clientIndex: true, PeerIndex: serverIdx, SenderSocket: client, ReceiverSocket: server, LastSeen: seen}
 	c.entries[serverIdx] = &ConnEntry{state: st, PeerIndex: clientIdx, SenderSocket: server, ReceiverSocket: client, LastSeen: seen}
 	return true
