@@ -55,6 +55,8 @@ type fakeEnv struct {
 	nodes []nodeRoom
 	// empty are the rooms with no lab running; nil: no verdict.
 	empty []nodeRoom
+	// maxNode is the most one node can give a pod; nil: no per-node verdict.
+	maxNode *amount
 	// tenantCPU is the CPU a gang of a tenant may ask at most (with the room kept for the tenant added).
 	tenantCPU map[string]int64
 	// tenantNever marks the tenants whose quota can never hold a gang.
@@ -65,6 +67,13 @@ func (f *fakeEnv) rooms() ([]nodeRoom, bool) { return f.nodes, f.nodes != nil }
 
 // emptyRooms is nil unless a test sets it: no DoesNotFit verdict per node.
 func (f *fakeEnv) emptyRooms() []nodeRoom { return f.empty }
+
+func (f *fakeEnv) neverFits(p *schedPod) bool {
+	if f.fits[p.key] == fitNever {
+		return true
+	}
+	return f.maxNode != nil && (p.need.cpu > f.maxNode.cpu || p.need.mem > f.maxNode.mem)
+}
 
 func (f *fakeEnv) tenantEverFits(p *schedPod) bool { return !f.tenantNever[p.tenant] }
 

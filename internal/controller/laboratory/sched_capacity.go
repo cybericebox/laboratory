@@ -45,6 +45,9 @@ type capacitySnapshot struct {
 	free        amount
 	// perNode is the room of every schedulable node (rooms).
 	perNode []nodeRoom
+	// maxNode is the most CPU and the most memory one node can give a pod: allocatable less the node reserve and the
+	// platform percent, whatever runs there. A pod above it can never be placed.
+	maxNode amount
 	// labUsed is the requests of the lab pods bound to each node (the held pods of stopped labs included).
 	labUsed map[string]amount
 }
@@ -100,6 +103,8 @@ func snapshotCapacity(nodes []corev1.Node, pods []corev1.Pod, selector map[strin
 		// What the platform keeps on every node comes off first; the percentage reserve is taken from the rest.
 		alloc := amount{cpu: n.Status.Allocatable.Cpu().MilliValue(), mem: n.Status.Allocatable.Memory().Value()}.sub(nodeReserve).floorZero()
 		c.nodes++
+		usable := alloc.sub(amount{cpu: alloc.cpu * int64(platformPercent) / 100, mem: alloc.mem * int64(platformPercent) / 100})
+		c.maxNode = amount{cpu: max(c.maxNode.cpu, usable.cpu), mem: max(c.maxNode.mem, usable.mem)}
 		c.allocatable = c.allocatable.add(alloc)
 		c.free = c.free.add(alloc.sub(requested[n.Name]).floorZero())
 	}

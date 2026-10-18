@@ -230,3 +230,12 @@ func TestFreeRoomsSubtractBoundLabPodsAndStopped(t *testing.T) {
 		t.Errorf("rooms must stay before lab usage: %+v", r)
 	}
 }
+
+// maxNode is the largest usable node, whatever runs there.
+func TestSnapshotMaxNode(t *testing.T) {
+	nodes := []corev1.Node{testNode("a", "4", "4Gi"), testNode("b", "2", "8Gi")}
+	c := snapshotCapacity(nodes, nil, map[string]string{"lab": "yes"}, nil, amount{}, 10, nodecap.PackingReserve{})
+	if c.maxNode.cpu != 3600 || c.maxNode.mem != 8*(1<<30)-8*(1<<30)/10 {
+		t.Fatalf("maxNode = %+v", c.maxNode)
+	}
+}

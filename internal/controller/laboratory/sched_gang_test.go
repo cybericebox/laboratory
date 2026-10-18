@@ -141,17 +141,25 @@ func TestGangTooBigForEmptyLabWaits(t *testing.T) {
 	}
 }
 
+// A pod bigger than every single node fails for good, though the nodes together could hold it.
 func TestGangDoesNotFitOnEmptyNodes(t *testing.T) {
 	o := obj("lab/a", "g", 1, nil, need(pods("a", "p1"), 100, gi+gi/2)...)
 	empty := []nodeRoom{room("n1", 4000, gi), room("n2", 4000, gi)}
-	env := &fakeEnv{nodes: empty, empty: empty}
+	env := &fakeEnv{nodes: empty, empty: empty, maxNode: &amount{cpu: 4000, mem: gi}}
 	plan := planSchedule([]*schedObject{o}, 10, false, env)
 	wantDispatch(t, plan)
-	if len(plan.failed) != 0 {
+	if len(plan.failed) != 1 || plan.failed[0].reason != laboratoryv1alpha1.FailureDoesNotFit ||
+		plan.failed[0].message != "the pod a/p1 requests more than any single node can give" {
 		t.Fatalf("failed = %+v", plan.failed)
 	}
-	if st := plan.status["lab/a"]; st.Reason != laboratoryv1alpha1.WaitDoesNotFit || st.Message != "the group does not fit even on empty nodes" {
-		t.Fatalf("status = %+v", st)
+}
+
+func TestPodOver5GiOnTwo4GiNodesFailsForGood(t *testing.T) {
+	o := obj("lab/a", "g", 1, nil, need(pods("a", "p1"), 100, 5*gi)...)
+	empty := []nodeRoom{room("n1", 4000, 4*gi), room("n2", 4000, 4*gi)}
+	plan := planSchedule([]*schedObject{o}, 10, false, &fakeEnv{nodes: empty, empty: empty, maxNode: &amount{cpu: 4000, mem: 4 * gi}})
+	if len(plan.failed) != 1 {
+		t.Fatalf("failed = %+v", plan.failed)
 	}
 }
 
@@ -159,10 +167,10 @@ func TestGangDoesNotFitOnEmptyNodes(t *testing.T) {
 func TestGangThatFitsNoEmptyNodeCombinationWaits(t *testing.T) {
 	o := obj("lab/a", "g", 1, nil, need(pods("a", "p1", "p2", "p3"), 100, gi)...)
 	empty := []nodeRoom{room("n1", 4000, gi), room("n2", 4000, gi)}
-	plan := planSchedule([]*schedObject{o}, 10, false, &fakeEnv{nodes: empty, empty: empty})
+	plan := planSchedule([]*schedObject{o}, 10, false, &fakeEnv{nodes: empty, empty: empty, maxNode: &amount{cpu: 4000, mem: gi}})
 	wantDispatch(t, plan)
-	if len(plan.failed) != 0 {
-		t.Fatalf("failed = %d", len(plan.failed))
+	if len(plan.failed) != 0 || plan.status["lab/a"].Reason != laboratoryv1alpha1.WaitDoesNotFit {
+		t.Fatalf("failed %d, status %+v", len(plan.failed), plan.status["lab/a"])
 	}
 }
 
@@ -242,12 +250,60 @@ func TestHeldRemainderReleasedWhenTenantAtQuota(t *testing.T) {
 	wantDispatch(t, planSchedule([]*schedObject{a, b}, 10, false, env), "b/p1")
 }
 
-func TestHeldRemainderReleasedWhileImagesNotReady(t *testing.T) {
+// After an operator restart the images of a started gang are asked again; its room is kept meanwhile.
+func TestHeldRemainderKeptWhileImagesAreAskedAgain(t *testing.T) {
 	a := obj("lab/a", "g1", 1, nil, need(pods("a", "p1:S", "p2", "p3"), 100, gi)...)
 	a.prepKey = "g/g1"
 	b := obj("lab/b", "g2", 2, nil, need(pods("b", "p1"), 100, gi)...)
 	env := &fakeEnv{nodes: []nodeRoom{room("n1", 4000, 2*gi)}, notPrepared: map[string]bool{"g/g1": true}}
-	wantDispatch(t, planSchedule([]*schedObject{a, b}, 10, false, env), "b/p1")
+	wantDispatch(t, planSchedule([]*schedObject{a, b}, 10, false, env))
+}
+
+// A remainder that does not fit even the empty nodes holds no room: another tenant's lab goes.
+func TestHeldRemainderReleasedWhenItFitsNoEmptyNodes(t *testing.T) {
+	held := need(pods("a", "p1:D", "p2", "p3"), 100, gi)
+	for _, p := range held {
+		p.tenant = "t1"
+	}
+	a := obj("lab/a", "g1", 1, nil, held...)
+	b := obj("lab/b", "g2", 2, nil, need(pods("b", "p1"), 100, gi/2)...)
+	b.pods[0].tenant = "t2"
+	free := []nodeRoom{room("n1", 4000, gi)}
+	env := &fakeEnv{nodes: free, empty: free, maxNode: &amount{cpu: 4000, mem: gi}}
+	plan := planSchedule([]*schedObject{a, b}, 10, false, env)
+	wantDispatch(t, plan, "b/p1")
+	if plan.status["lab/a"].Reason != laboratoryv1alpha1.WaitDoesNotFit {
+		t.Fatalf("status = %+v", plan.status["lab/a"])
+	}
+}
+
+// A gang waiting for its tenant's quota still gets its images pulled.
+func TestTenantHeldGangPullsImages(t *testing.T) {
+	o := obj("lab/a", "g", 1, nil, need(pods("a", "p1"), 100, gi)...)
+	o.pods[0].tenant = "t"
+	o.prepKey = "g/g"
+	env := &fakeEnv{tenantFull: map[string]bool{"t": true}}
+	plan := planSchedule([]*schedObject{o}, 10, false, env)
+	if len(env.pulled) == 0 || plan.status["lab/a"].Reason != laboratoryv1alpha1.WaitTenantQuota {
+		t.Fatalf("pulled %v, status %+v", env.pulled, plan.status["lab/a"])
+	}
+}
+
+// Groups of the same name and arrival in two tenants keep a fixed order whatever the input order is.
+func TestSameNamedGroupsOrderIsDeterministic(t *testing.T) {
+	mk := func(id, tenant string) *schedObject {
+		o := obj("lab/"+id, "g", 1, nil, need(pods(id, "p1"), 100, gi)...)
+		o.pods[0].tenant = tenant
+		return o
+	}
+	for i := 0; i < 20; i++ {
+		a, b := mk("a", "t1"), mk("b", "t2")
+		in := []*schedObject{a, b}
+		if i%2 == 1 {
+			in = []*schedObject{b, a}
+		}
+		wantDispatch(t, planSchedule(in, 10, false, &fakeEnv{}), "a/p1", "b/p1")
+	}
 }
 
 // The room kept for a tenant's remainder counts against its quota: another gang of the tenant cannot use it.
