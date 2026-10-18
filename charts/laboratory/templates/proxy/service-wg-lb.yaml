@@ -4,7 +4,7 @@ kind: Service
 metadata:
   name: laboratory-proxy-wg
   namespace: {{ .Values.proxy.namespace }}
-  {{- $annotations := merge (dict "lbipam.cilium.io/sharing-key" .Values.proxy.sharingKey "lbipam.cilium.io/sharing-cross-namespace" .Release.Namespace) .Values.proxy.service.annotations }}
+  {{- $annotations := merge (dict "lbipam.cilium.io/sharing-key" .Values.proxy.sharingKey "lbipam.cilium.io/sharing-cross-namespace" (join "," (concat (list .Release.Namespace) .Values.proxy.sharedNamespaces))) .Values.proxy.service.annotations }}
   annotations:
     # lbipam.cilium.io/* is the canonical Cilium LB-IPAM annotation domain
     # (io.cilium/ works too as a legacy alias). The load-bearing part is the
