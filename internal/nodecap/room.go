@@ -84,12 +84,24 @@ func Rooms(nodes []corev1.Node, pods []corev1.Pod, selector map[string]string, t
 	return out
 }
 
-// LargestDevice is the largest device the nodes can hold: per resource the largest Allocatable of any node (the two may
-// come from different nodes, so it can slightly overstate a device that needs both at once). Zero for no node.
-func LargestDevice(rooms []NodeRoom) Amount {
+// LargestDevice is the largest device the lab nodes can ever hold: per resource the most one node gives a lab pod with
+// nothing else on it, its allocatable less the platform reserve (as in Rooms) and less the packing reserve, which labs never
+// use (see FreeForLabs). Every node of the pool counts (InPool), cordoned and NotReady ones too, so a drained node does not
+// shrink it. The two resources may come from different nodes, so it can slightly overstate a device that needs both at
+// once. Zero for no node. The operator fails a pod above it for good, and the agent tells the platform the same number.
+func LargestDevice(nodes []corev1.Node, selector map[string]string, tolerations []corev1.Toleration, reserve Reserve, packing PackingReserve) Amount {
 	var out Amount
-	for _, r := range rooms {
-		out.CPU, out.Memory = max(out.CPU, r.Allocatable.CPU), max(out.Memory, r.Allocatable.Memory)
+	for i := range nodes {
+		n := &nodes[i]
+		if !InPool(n, selector, tolerations) {
+			continue
+		}
+		cpu := max(n.Status.Allocatable.Cpu().MilliValue()-reserve.Node.CPU, 0)
+		mem := max(n.Status.Allocatable.Memory().Value()-reserve.Node.Memory, 0)
+		cpu -= cpu * int64(reserve.Percent) / 100
+		mem -= mem * int64(reserve.Percent) / 100
+		cpu, mem = packing.Apply(cpu, mem)
+		out.CPU, out.Memory = max(out.CPU, cpu), max(out.Memory, mem)
 	}
 	return out
 }

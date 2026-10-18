@@ -61,6 +61,8 @@ type fakeEnv struct {
 	tenantCPU map[string]int64
 	// tenantNever marks the tenants whose quota can never hold a gang.
 	tenantNever map[string]bool
+	// neverOff: a fitNever in fits is only the aggregate check, not the per-node verdict (neverFits follows maxNode alone).
+	neverOff bool
 }
 
 func (f *fakeEnv) rooms() ([]nodeRoom, bool) { return f.nodes, f.nodes != nil }
@@ -69,7 +71,7 @@ func (f *fakeEnv) rooms() ([]nodeRoom, bool) { return f.nodes, f.nodes != nil }
 func (f *fakeEnv) emptyRooms() []nodeRoom { return f.empty }
 
 func (f *fakeEnv) neverFits(p *schedPod) bool {
-	if f.fits[p.key] == fitNever {
+	if v, ok := f.fits[p.key]; ok && v == fitNever && !f.neverOff {
 		return true
 	}
 	return f.maxNode != nil && (p.need.cpu > f.maxNode.cpu || p.need.mem > f.maxNode.mem)

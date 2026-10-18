@@ -70,15 +70,35 @@ func TestPodRequestsTakesTheLargerOfInitAndContainers(t *testing.T) {
 }
 
 func TestLargestDeviceIsPerResourceAndEmptyForNoNode(t *testing.T) {
-	got := LargestDevice([]NodeRoom{
-		{Name: "a", Allocatable: Amount{CPU: 4000, Memory: 8 << 30}},
-		{Name: "b", Allocatable: Amount{CPU: 2000, Memory: 16 << 30}},
-	})
+	a, b := roomNode("a", "4", "8Gi", true), roomNode("b", "2", "16Gi", true)
+	selector := map[string]string{"laboratory.cybericebox.com/node-agent-ready": "true"}
+	got := LargestDevice([]corev1.Node{a, b}, selector, nil, Reserve{}, PackingReserve{})
 	if got != (Amount{CPU: 4000, Memory: 16 << 30}) {
 		t.Errorf("LargestDevice = %+v", got)
 	}
-	if got := LargestDevice(nil); got != (Amount{}) {
+	if got := LargestDevice(nil, selector, nil, Reserve{}, PackingReserve{}); got != (Amount{}) {
 		t.Errorf("no node = %+v", got)
+	}
+}
+
+// The largest device is net of the platform reserve and the packing reserve with no load, and counts the cordoned and
+// NotReady nodes of the pool (not the nodes outside it).
+func TestLargestDeviceIsLoadFreeNetOfPackingOverThePool(t *testing.T) {
+	selector := map[string]string{"laboratory.cybericebox.com/node-agent-ready": "true"}
+	cordoned := roomNode("big", "8", "16Gi", true)
+	cordoned.Spec.Unschedulable = true
+	cordoned.Spec.Taints = []corev1.Taint{{Key: corev1.TaintNodeUnschedulable, Effect: corev1.TaintEffectNoSchedule}}
+	notReady := roomNode("mid", "4", "32Gi", true)
+	notReady.Status.Conditions[0].Status = corev1.ConditionFalse
+	notReady.Spec.Taints = []corev1.Taint{{Key: corev1.TaintNodeNotReady, Effect: corev1.TaintEffectNoExecute}}
+	outside := roomNode("other", "64", "256Gi", false)
+	got := LargestDevice([]corev1.Node{cordoned, notReady, outside, roomNode("small", "2", "4Gi", true)}, selector, nil,
+		Reserve{Node: Amount{CPU: 500}, Percent: 10}, PackingReserve{Percent: 20})
+	mem := int64(32 << 30)
+	mem -= mem * 10 / 100
+	mem -= mem * 20 / 100
+	if got != (Amount{CPU: 5400, Memory: mem}) { // (8000-500) less 10% less 20%
+		t.Errorf("LargestDevice = %+v, want 5400 / %d", got, mem)
 	}
 }
 

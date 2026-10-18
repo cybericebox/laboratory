@@ -239,3 +239,30 @@ func TestSnapshotMaxNode(t *testing.T) {
 		t.Fatalf("maxNode = %+v", c.maxNode)
 	}
 }
+
+// maxNode is load-free and net of the packing reserve, and counts the cordoned and NotReady nodes of the pool: the same
+// fixture as the agent's TestLargestDeviceMatchesTheSchedulersNeverFits, with the same answer.
+func TestSnapshotMaxNodeIsNetOfPackingAndCountsDrainedNodes(t *testing.T) {
+	big := testNode("big", "8", "16Gi")
+	big.Spec.Unschedulable = true
+	mid := testNode("mid", "4", "32Gi")
+	mid.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionFalse}}
+	other := testNode("other", "64", "256Gi")
+	other.Labels = nil
+	small := testNode("small", "2", "4Gi")
+	nodes := []corev1.Node{big, mid, other, small}
+	pods := []corev1.Pod{testPod("small", "1", "1Gi")} // load does not change it
+	c := snapshotCapacity(nodes, pods, map[string]string{"lab": "yes"}, nil, amount{cpu: 500}, 10, nodecap.PackingReserve{Percent: 20})
+	mem := int64(32 << 30)
+	mem -= mem * 10 / 100
+	mem -= mem * 20 / 100
+	if c.maxNode != (amount{cpu: 5400, mem: mem}) || c.nodes != 1 {
+		t.Fatalf("maxNode = %+v, nodes = %d", c.maxNode, c.nodes)
+	}
+	// Every node drained: no schedulable node, so nothing is failed and the scheduler waits (NoSchedulableNodes).
+	small.Spec.Unschedulable = true
+	c = snapshotCapacity([]corev1.Node{big, small}, nil, map[string]string{"lab": "yes"}, nil, amount{cpu: 500}, 10, nodecap.PackingReserve{Percent: 20})
+	if c.nodes != 0 || c.check(amount{cpu: 100, mem: gi}, 10) != fitNoNodes {
+		t.Fatalf("nodes = %d, check = %v", c.nodes, c.check(amount{cpu: 100, mem: gi}, 10))
+	}
+}

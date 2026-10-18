@@ -270,6 +270,38 @@ func TestCapacityReportsTheLargestPlaceableDeviceOnly(t *testing.T) {
 	}
 }
 
+// The largest device is what one lab node gives with nothing on it, net of the platform and the packing reserve, over every
+// node of the pool, cordoned and NotReady ones too: the same fixture as the operator's
+// TestSnapshotMaxNodeIsNetOfPackingAndCountsDrainedNodes, with the same answer, so a device the platform accepts is one
+// the scheduler can place and never fails for good.
+func TestLargestDeviceMatchesTheSchedulersNeverFits(t *testing.T) {
+	node := func(name, cpu, mem string, labels map[string]string) *corev1.Node {
+		return &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels}, Status: corev1.NodeStatus{
+			Allocatable: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(cpu), corev1.ResourceMemory: resource.MustParse(mem)},
+		}}
+	}
+	lab := map[string]string{"lab": "yes"}
+	big := node("big", "8", "16Gi", lab)
+	big.Spec.Unschedulable = true
+	mid := node("mid", "4", "32Gi", lab)
+	mid.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionFalse}}
+	h := tenantHandler(t, []*laboratoryv1alpha1.Tenant{newTenantTenant("a", true, nil)},
+		big, mid, node("other", "64", "256Gi", nil), node("small", "2", "4Gi", lab))
+	h.SetLabScheduling(lab, nil)
+	h.SetNodeReserve(nodecap.Reserve{Node: nodecap.Amount{CPU: 500}, Percent: 10})
+	h.SetPackingReserve(nodecap.PackingReserve{Percent: 20})
+	got, err := h.GetCapacity(asClient("a"), &protobuf.Empty{})
+	if err != nil || !got.HasMaxDevice {
+		t.Fatalf("%+v %v", got, err)
+	}
+	mem := int64(32 << 30)
+	mem -= mem * 10 / 100
+	mem -= mem * 20 / 100
+	if got.MaxDeviceCpuMillicores != 5400 || got.MaxDeviceMemoryBytes != mem {
+		t.Errorf("largest device = %dm / %d, want 5400m / %d", got.MaxDeviceCpuMillicores, got.MaxDeviceMemoryBytes, mem)
+	}
+}
+
 // The capacity a tenant is told is net of the hidden packing reserve: its quota (or, with none, the real room of the lab nodes,
 // whichever is smaller) less the percentage. The reserve itself is never in the message.
 func TestCapacityIsNetOfThePackingReserve(t *testing.T) {
