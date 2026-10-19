@@ -156,7 +156,8 @@ func (s *splitmix) next(n int) int {
 // out already), and some deploy groups get a second lab, under the same reservation or not: no reservation admits more than
 // its amount, nothing of a reservation that is not open is admitted, a group whose labs disagree on the reservation starts
 // nothing, the room withheld for an open reservation plus its shortfall is exactly what it has left after the held remainders,
-// the withheld room is still free on its nodes after the pass, and it shrinks only by what the reservation's own new gangs took.
+// the withheld room is still free on its nodes after the pass, it never grows or moves, and it shrinks by no more than what the
+// reservation's own new gangs took (nor below what it has left).
 func TestPlacementSimulationNeverOverAdmits(t *testing.T) {
 	reservedSeeds, mixedGroups, pairsSent, otherTenant := 0, 0, 0, 0
 	for seed := 1; seed <= 800; seed++ {
@@ -391,8 +392,19 @@ func TestPlacementSimulationNeverOverAdmits(t *testing.T) {
 				after = after.add(a)
 			}
 			u := env.fair.usage[name]
-			if left := u.amount.sub(u.used).sub(sentUnder[name]).floorZero(); after.cpu > left.cpu || after.mem > left.mem {
+			left := u.amount.sub(u.used).sub(sentUnder[name]).floorZero()
+			if after.cpu > left.cpu || after.mem > left.mem {
 				t.Fatalf("seed %d: %+v still withheld for %s, it has %+v left", seed, after, name, left)
+			}
+			// and it keeps what it still needs: it shrinks by no more than its own new gangs took, nor below what it has left
+			var before amount
+			for _, a := range plan.withheld[name] {
+				before = before.add(a)
+			}
+			floor := before.sub(fresh).floorZero()
+			floor = amount{cpu: min(floor.cpu, left.cpu), mem: min(floor.mem, left.mem)}
+			if after.cpu < floor.cpu || after.mem < floor.mem {
+				t.Fatalf("seed %d: the room withheld for %s went from %+v to %+v, its new gangs took %+v, it has %+v left", seed, name, before, after, fresh, left)
 			}
 		}
 		for _, l := range plan.left {
