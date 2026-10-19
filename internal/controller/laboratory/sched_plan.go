@@ -427,6 +427,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	roomHeld := map[string]bool{}     // objects whose gang does not fit now: the others go past them (backfill)
 	resHeld := map[string][2]string{} // objects whose gang its reservation does not admit now: the Wait reason and message
 	fitHeld := map[string]bool{}      // objects whose gang does not fit even the empty nodes (may change when nodes return)
+	unsetHeld := map[string]bool{}    // objects of a gang with pods out yet that has a pod nobody initialised yet
 	hold := func(held map[string]bool, gg *gang) {
 		for _, o := range gg.objs {
 			held[o.id] = true
@@ -444,6 +445,20 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			}
 		}
 		return queued
+	}
+	// unsetOf are the pods of the gang nobody initialised yet (the reconciler has not recorded their state): they cannot be
+	// dispatched, but they belong to the gang. A gang with no pod out waits for them (it never starts without them), and the
+	// remainder of an admitted gang keeps room for them too.
+	unsetOf := func(gg *gang) []*schedPod {
+		var unset []*schedPod
+		for _, o := range gg.objs {
+			for _, p := range o.pods {
+				if p.state == "" && !gone[p] {
+					unset = append(unset, p)
+				}
+			}
+		}
+		return unset
 	}
 	needsOf := func(pods []*schedPod) []podNeed {
 		needs := make([]podNeed, 0, len(pods))
@@ -525,7 +540,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			for _, o := range gg.objs {
 				started = started || o.started()
 			}
-			q := queuedOf(gg)
+			q := append(queuedOf(gg), unsetOf(gg)...)
 			if !started || len(q) == 0 {
 				continue
 			}
@@ -589,9 +604,11 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	var agedRoom map[string]amount // the room kept for the aged gang; nil: none
 	agedPlacement := func(gg *gang) (map[string]amount, bool) {
 		q := queuedOf(gg)
-		if len(q) == 0 {
+		unset := unsetOf(gg)
+		if len(q) == 0 || (!gg.started() && len(unset) > 0) {
 			return nil, false
 		}
+		q = append(q, unset...)
 		sums := map[string]amount{}
 		var need amount
 		for _, p := range q {
@@ -695,6 +712,13 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		if len(queued) == 0 {
 			return false
 		}
+		// A gang with no pod out waits whole until every pod of it is initialised, so it never starts without some of its
+		// pods; the remainder of an admitted gang sends what is queued and keeps the room and quota of the rest.
+		unset := unsetOf(gg)
+		if len(unset) > 0 && !gg.started() {
+			hold(unsetHeld, gg)
+			return false
+		}
 		if gg == aged {
 			defer func() {
 				// The room kept for it is free for the others again once it dispatched or turned out not eligible; it stays
@@ -716,11 +740,15 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			}
 			total = total.add(p.need)
 		}
+		all := append(append([]*schedPod(nil), queued...), unset...)
+		for _, p := range unset {
+			total = total.add(p.need)
+		}
 		if total != (amount{}) && env.noNodes() {
 			blocker = laboratoryv1alpha1.WaitNoSchedulableNodes
 			return true
 		}
-		needs := needsOf(queued)
+		needs := needsOf(all)
 		gg.needs = needs
 		notFit := false
 		if empty := emptyFor(gg); empty != nil {
@@ -731,7 +759,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		// The quota of the tenant is checked on the sum of the gang's needs.
 		sums := map[string]*schedPod{}
 		var tenants []string
-		for _, p := range queued {
+		for _, p := range all {
 			sp := sums[p.tenant]
 			if sp == nil {
 				sp = &schedPod{key: "gang/" + gg.key, tenant: p.tenant}
@@ -912,6 +940,11 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		}
 		if prepHeld[o.id] {
 			st.Reason, st.Message = laboratoryv1alpha1.WaitPreparingImages, "pulling the images of the group onto the nodes"
+			plan.status[o.id] = st
+			continue
+		}
+		if unsetHeld[o.id] {
+			st.Reason, st.Message = laboratoryv1alpha1.WaitForTurn, "waiting for every pod of the group to be set up"
 			plan.status[o.id] = st
 			continue
 		}

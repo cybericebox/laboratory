@@ -64,13 +64,15 @@ func TestPeakDemandOverlap(t *testing.T) {
 }
 
 // shortFixture is a scheduler with the per-node check on one lab node of 1 CPU and 1 GiB (the devices default to 100m and
-// 100Mi), the tenant t1 and a notice of five minutes for unreserved work.
+// 100Mi), the tenant t1, a notice of five minutes for unreserved work and a tick of an hour.
 func shortFixture(t *testing.T) *schedFixture {
 	t.Helper()
 	cfg := schedCfg()
 	cfg.MaxPods = 10
 	cfg.ResourceCheck = true
 	cfg.UnreservedNotice = 5 * time.Minute
+	// the tests move the clock by minutes between two passes: with an hour's tick that is no gap in the observation
+	cfg.Tick = time.Hour
 	f := newSchedFixture(t, cfg)
 	f.create(node("n1", "1", "1Gi"))
 	f.create(&laboratoryv1alpha1.Tenant{ObjectMeta: metav1.ObjectMeta{Name: "t1", UID: "uid-t1"}})

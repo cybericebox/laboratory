@@ -355,16 +355,18 @@ func Run() {
 		setupLog.Error(err, "unable to create controller", "controller", "Connection")
 		os.Exit(1)
 	}
-	if err = (&laboratorycontroller.ReservationReconciler{
+	if served, err := (&laboratorycontroller.ReservationReconciler{
 		Client:      mgr.GetClient(),
 		Reader:      mgr.GetAPIReader(),
 		Notice:      time.Duration(cfg.ReservationEndingNoticeSeconds) * time.Second,
 		NoScheduler: !cfg.SchedulerEnabled,
 		// the scheduler runs with its default status interval
 		UsageMaxAge: laboratorycontroller.ReservationUsageMaxAge(0),
-	}).SetupWithManager(mgr); err != nil {
+	}).SetupWithManagerIfServed(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Reservation")
 		os.Exit(1)
+	} else if !served {
+		setupLog.Info("the Reservation CRD is not installed: reservations do not end and their groups are not cleaned up; apply the CRDs and restart the operator")
 	}
 	if err = (&laboratorycontroller.TenantReconciler{
 		Client: mgr.GetClient(),

@@ -134,8 +134,9 @@ type Config struct {
 	// SchedulerPrepullTimeout bounds the wait for the image prepull; dispatch goes on after it.
 	SchedulerPrepullTimeout time.Duration `env:"SCHEDULER_PREPULL_TIMEOUT" envDefault:"5m"`
 	// SchedulerAgingSeconds is how long a gang waits before the room it needs is kept for it (the oldest such gang only), so a
-	// stream of small gangs cannot keep a big one out; 0: no aging.
-	SchedulerAgingSeconds int `env:"SCHEDULER_AGING_SECONDS" envDefault:"120"`
+	// stream of small gangs cannot keep a big one out; 0: no aging. Off by default: the kept room is held against every tenant
+	// with no time limit, so enable it once the reservation scopes the aged room.
+	SchedulerAgingSeconds int `env:"SCHEDULER_AGING_SECONDS" envDefault:"0"`
 
 	// ReservationEndingNoticeSeconds is how long before the end of a Reservation its Ending condition is set (and how long a
 	// reservation whose tenant is gone still lives); at the end its groups are deleted. 0: no notice.

@@ -563,6 +563,9 @@ nodeAgent:
 # neither switch decides it, so turning one off never removes the registry or the snapshots in it.
 registry:
   # Where this component runs. Empty: it follows labWorkloads.nodeSelector / tolerations; set values win (each of the two on its own).
+  # The volume is ReadWriteOnce: once bound (WaitForFirstConsumer) it stays on that node, so moving the registry to other nodes
+  # (a new lab label or taint on labWorkloads, another lab node pool) leaves the pod Pending until the snapshots are moved to
+  # a new volume there, or pin it here to the node that holds the volume.
   nodeSelector: {}
   tolerations: []
   image:
@@ -776,14 +779,16 @@ labWorkloads:
 # The units are the top-level objects, LabGroup (its VPN and gateway pods) and Lab
 # (one pod per container device); the slots are pods. At most maxPods pods are
 # starting at once; a pod holds its slot from dispatch until it is Ready or declared
-# failed. The pods of an object are dispatched one object after another (an object
-# may start with fewer slots than pods), and objects with the same deploy group
-# (label laboratory.cybericebox.com/deploy-group) form a group: the group being
-# dispatched gets the slots first, the next group starts as soon as the current one
-# has nothing left to dispatch (it does not wait for readiness), and a group whose
-# annotation laboratory.cybericebox.com/deploy-after lists other groups starts only
-# when all of them are complete (every pod Ready or failed). Objects without a deploy
-# group are independent and go after all grouped work. The queue place and the
+# failed. Objects with the same deploy group (label laboratory.cybericebox.com/deploy-group)
+# form a group, and a group (or an independent lab) starts whole or not at all: it needs
+# a slot for every pod (a group larger than maxPods goes in slices of the free slots) and
+# a placement of every pod on the nodes, simulated per node with the reserves below, else
+# it waits and the groups behind it go past it. A group whose pods are not all set up yet
+# waits whole. The group being dispatched gets the slots first, the next group starts as
+# soon as the current one has nothing left to dispatch (it does not wait for readiness),
+# and a group whose annotation laboratory.cybericebox.com/deploy-after lists other groups
+# starts only when all of them are complete (every pod Ready or failed). Objects without a
+# deploy group are independent and go after all grouped work. The queue place and the
 # reason are in status.scheduling of the Lab and LabGroup and in the agent's LabStatus.
 scheduler:
   # false: every pod starts as soon as its object is created.
@@ -806,17 +811,19 @@ scheduler:
   platformReserveMemory: "0"
   # Packing reserve (hidden): the part of every node that is kept unused, because nodes do not share memory and devices leave
   # gaps between them, so the last part of a node can never be packed full. It is taken PER NODE from what is free there after
-  # the requests of the non-lab pods and the platform node reserve, by the operator and by the agent alike. The agent reports
-  # its capacity net of it (0-49); tenants never see the reserve or the nodes. packingReserveCpu / packingReserveMemory
-  # (absolute quantities, "0" = none) replace the percent for that resource when they are not "0".
+  # the requests of the non-lab pods and the platform node reserve, by the operator and by the agent alike: the operator admits
+  # groups only into the room of each node net of it, and the agent reports its capacity net of it (0-49); tenants never see
+  # the reserve or the nodes. packingReserveCpu / packingReserveMemory (absolute quantities, "0" = none) replace the percent
+  # for that resource when they are not "0" (the agent takes that amount once off a tenant's cluster-wide quota).
   packingReservePercent: 15
   packingReserveCpu: "0"
   packingReserveMemory: "0"
   # false: dispatch does not look at the free CPU and memory of the nodes.
   resourceCheck: true
   # Aging: a group that has waited longer than this many seconds gets the room it needs kept for it (the oldest such group
-  # only), so a stream of small groups cannot keep a big one out forever. 0 turns aging off.
-  agingSeconds: 120
+  # only), so a stream of small groups cannot keep a big one out forever. 0 turns aging off (the default): the kept room is
+  # held against every tenant without a time limit, so enable it once the reservation scopes the aged room.
+  agingSeconds: 0
   # Pull the images of a group onto the eligible nodes before its first pod starts.
   # A short-lived DaemonSet in laboratory-system runs the images with the command
   # replaced by a sleep (no lab service starts) and uses imagePullSecrets below.

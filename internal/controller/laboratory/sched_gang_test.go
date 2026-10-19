@@ -479,3 +479,36 @@ func TestPodOverSchedulableRoomButWithinThePoolWaits(t *testing.T) {
 		t.Fatalf("failed %+v, status %+v", plan.failed, plan.status["lab/a"])
 	}
 }
+
+// A gang never starts without the pods nobody initialised yet (a lab of the group whose devices the reconciler has not set
+// up): it waits whole. The remainder of an admitted gang keeps room for them too, so the late pods find it once they are set
+// up.
+func TestGangWaitsForUninitialisedPods(t *testing.T) {
+	nodes := []nodeRoom{room("n1", 4000, 4*gi)}
+	a := obj("lab/a", "g", 1, nil, need(pods("a", "p1", "p2"), 100, gi)...)
+	b := obj("lab/b", "g", 2, nil, need(pods("b", "p1:"), 100, gi)...)
+	plan := planSchedule([]*schedObject{a, b}, 10, false, &fakeEnv{nodes: nodes, empty: nodes})
+	wantDispatch(t, plan)
+	if st := plan.status["lab/a"]; st.Reason != laboratoryv1alpha1.WaitForTurn || st.Pending != 2 {
+		t.Fatalf("a status = %+v", st)
+	}
+	// set up: the whole gang goes
+	b.pods[0].state = qd
+	wantDispatch(t, planSchedule([]*schedObject{a, b}, 10, false, &fakeEnv{nodes: nodes, empty: nodes}), "a/p1", "a/p2", "b/p1")
+
+	// An admitted gang: a runs, c is queued and the late b is not set up. 1Gi free: c alone would fit, but the remainder is
+	// c and b together, so c does not go and keeps nothing.
+	run := obj("lab/a", "g", 1, nil, need(pods("a", "p1:S"), 100, gi)...)
+	c := obj("lab/c", "g", 3, nil, need(pods("c", "p1"), 100, gi)...)
+	late := obj("lab/b", "g", 2, nil, need(pods("b", "p1:"), 100, gi)...)
+	empty := []nodeRoom{room("n1", 4000, 4*gi)}
+	plan = planSchedule([]*schedObject{run, c, late}, 10, false, &fakeEnv{nodes: []nodeRoom{room("n1", 4000, gi)}, empty: empty})
+	wantDispatch(t, plan)
+	// 2Gi free: c goes and the room of b stays kept for it, so an independent lab after them does not take it.
+	other := obj("lab/x", "", 9, nil, need(pods("x", "p1"), 100, gi)...)
+	plan = planSchedule([]*schedObject{run, c, late, other}, 10, false, &fakeEnv{nodes: []nodeRoom{room("n1", 4000, 2*gi)}, empty: empty})
+	wantDispatch(t, plan, "c/p1")
+	if r := plan.status["lab/x"].Reason; r != laboratoryv1alpha1.WaitInsufficient {
+		t.Fatalf("x reason = %q", r)
+	}
+}

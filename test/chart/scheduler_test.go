@@ -34,7 +34,7 @@ func TestSchedulerDefaultsReachTheOperator(t *testing.T) {
 		"SCHEDULER_RESOURCE_CHECK":  "true",
 		"SCHEDULER_PREPULL":         "true",
 		"SCHEDULER_PREPULL_TIMEOUT": "5m",
-		"SCHEDULER_AGING_SECONDS":   "120",
+		"SCHEDULER_AGING_SECONDS":   "0",
 		"DEVICE_DEFAULT_CPU":        "100m",
 		"DEVICE_DEFAULT_MEMORY":     "256Mi",
 	}
