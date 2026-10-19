@@ -52,3 +52,11 @@ charts/laboratory/charts/
 
 .DS_Store
 .worktrees/
+
+# Agent development files (kept locally, not in git)
+/AGENTS.md
+/CLAUDE.md
+/.claude/
+/.superpowers/
+/docs/superpowers/
+/.worktrees/
