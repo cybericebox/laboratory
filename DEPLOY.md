@@ -1957,6 +1957,19 @@ silently). Fix the registry, or use `ResetDevices` to start it from the base ima
 
 ---
 
+### CPU throttling of a device
+
+A device whose container keeps hitting its CPU limit is slow because of the limit, not because of its work. Every 30 seconds the
+node-agent reads the CFS counters (`nr_periods`, `nr_throttled` of `cpu.stat`, cgroup v2) of the device containers of its node and
+keeps the last five minutes of them. The share of throttled periods, rounded to steps of 10, goes to `Device.status.cpuThrottle`
+(`percent`, `windowSeconds`, `observedAt`) when it changes; the lab controller copies it to `Lab.status.devices[].cpuThrottle`, and the
+agent sends it on in the device status of the lab (`LabDeviceStatus.cpu_throttled_percent` and `cpu_throttle_window_seconds`, in
+`ListLabs` and in the monitoring stream). The field is absent (0 on the wire) while the container is not throttled, is idle (the
+counters only run while it is busy), has no CPU limit, or ran for less than about 30 CFS periods. The platform treats a device above
+**50** as starved and may alert staff; the laboratory itself only exposes the data. Nothing is read for a container the node-agent
+cannot find in the cgroup tree (`CGROUP_ROOT`, default `/host/sys/fs/cgroup`). Existing clusters need the new CRDs (`kubectl apply`
+of the chart's `crds/`, `helm upgrade` does not apply them) and the new agent proto.
+
 ## Image cache (optional)
 
 Every lab pulls its images (device images, the VPN and gateway images, the netconfig init container) from their

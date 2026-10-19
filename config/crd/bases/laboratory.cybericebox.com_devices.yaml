@@ -383,6 +383,34 @@ spec:
           status:
             description: DeviceStatus defines the observed state of Device.
             properties:
+              cpuThrottle:
+                description: |-
+                  CPUThrottle is how much the CPU limit holds the device back. The node-agent of the pod's node keeps it; absent means
+                  not throttled (or no data yet).
+                properties:
+                  observedAt:
+                    description: ObservedAt is when the node-agent last wrote the
+                      value.
+                    format: date-time
+                    type: string
+                  percent:
+                    description: |-
+                      Percent is throttled periods out of all periods of the window, 0..100, in steps of 10 (a change smaller than a step
+                      is not reported).
+                    format: int32
+                    maximum: 100
+                    minimum: 0
+                    type: integer
+                  windowSeconds:
+                    description: WindowSeconds is the time the percentage covers,
+                      at most five minutes (less right after the pod started).
+                    format: int32
+                    type: integer
+                required:
+                - observedAt
+                - percent
+                - windowSeconds
+                type: object
               nodeAddress:
                 description: NodeAddress is the node IP used as Geneve VTEP address.
                 type: string

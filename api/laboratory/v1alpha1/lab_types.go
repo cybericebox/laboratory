@@ -157,6 +157,9 @@ type DeviceRef struct {
 	// Failure is the warning of a device pod that did not start in time.
 	// +optional
 	Failure *PodFailure `json:"failure,omitempty"`
+	// CPUThrottle is the device's CPU throttling (see DeviceStatus.CPUThrottle); absent means none.
+	// +optional
+	CPUThrottle *DeviceCPUThrottle `json:"cpuThrottle,omitempty"`
 }
 
 // DeviceStateInfo is the organizer-facing view of a device's snapshots.

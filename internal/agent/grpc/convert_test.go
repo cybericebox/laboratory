@@ -208,3 +208,18 @@ func TestPodSchedulingToProto(t *testing.T) {
 		t.Fatalf("%+v", lab.Status.Devices)
 	}
 }
+
+// The CPU throttling of a device reaches the platform in the device status of the lab.
+func TestLabToProtoCarriesCPUThrottle(t *testing.T) {
+	lab := &laboratoryv1alpha1.Lab{Status: laboratoryv1alpha1.LabStatus{Devices: []laboratoryv1alpha1.DeviceRef{
+		{Name: "slow", CPUThrottle: &laboratoryv1alpha1.DeviceCPUThrottle{Percent: 70, WindowSeconds: 240}},
+		{Name: "fine"},
+	}}}
+	devices := labToProto(lab).GetStatus().GetDevices()
+	if devices[0].GetCpuThrottledPercent() != 70 || devices[0].GetCpuThrottleWindowSeconds() != 240 {
+		t.Fatalf("throttled device: %+v", devices[0])
+	}
+	if devices[1].GetCpuThrottledPercent() != 0 || devices[1].GetCpuThrottleWindowSeconds() != 0 {
+		t.Fatalf("device without throttling: %+v", devices[1])
+	}
+}

@@ -809,7 +809,7 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		if sc := d.Status.Scheduling; sc != nil && sc.State == laboratoryv1alpha1.PodFailed {
 			failure = sc.Failure
 		}
-		refs = append(refs, laboratoryv1alpha1.DeviceRef{Name: d.Spec.Name, Ready: d.Status.Ready, State: deviceStateInfo(&d), Failure: failure})
+		refs = append(refs, laboratoryv1alpha1.DeviceRef{Name: d.Spec.Name, Ready: d.Status.Ready, State: deviceStateInfo(&d), Failure: failure, CPUThrottle: d.Status.CPUThrottle})
 		ready := d.Status.Ready
 		if intent := lab.Spec.Lifecycle; intent != nil && intent.DesiredState == lifecycleStateRunning && d.Spec.Type == laboratoryv1alpha1.DeviceTypeContainer {
 			ready = false

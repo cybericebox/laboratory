@@ -196,6 +196,11 @@ func Run() {
 		os.Exit(1)
 	}
 
+	if err := mgr.Add(&nodeagent.CPUThrottleMonitor{Client: mgr.GetClient(), NodeName: cfg.NodeName, CgroupRoot: cfg.CgroupRoot}); err != nil {
+		log.Error(err, "setup CPUThrottleMonitor")
+		os.Exit(1)
+	}
+
 	puller, err := imagepull.NewCRIPuller(cfg.CRISock)
 	if err != nil {
 		log.Error(err, "connect to the container runtime")
