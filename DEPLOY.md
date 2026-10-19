@@ -584,7 +584,8 @@ The operator knows nothing about an autoscaler. It knows two capacities of the l
 - **Maximum**: a **budget** for the autoscaled lab nodes, the nodes with the label `cybericebox.io/node-group` (infra sets it
   when a node of an autoscaled group joins). `capacity.budget.cpu` / `memory` is the room for labs those nodes may give
   together at most: the totals infra gives the cluster autoscaler (`--cores-total` / `--memory-total`) less the control plane,
-  the platform pods and the DaemonSets. The fixed nodes (the controller, any node without the label) count with their real
+  the platform pods and the DaemonSets, with no percentage taken (infra renders it as the number of nodes × (allocatable − the
+DaemonSets' requests); the operator takes its platform and packing percentages itself). The fixed nodes (the controller, any node without the label) count with their real
   room only. So:
   - maximum = the real room of the fixed nodes + the larger of the real room of the autoscaled nodes and the budget;
   - virtual room = the budget less the real room of the schedulable autoscaled nodes (allocatable less the non-lab pods), per
