@@ -2,7 +2,7 @@
 Least privilege for the operator. Cluster-wide it can only:
   - manage its own custom resources (laboratory.* and allocation.*) and Namespaces (a compromised operator that deletes
     namespaces is bad, but it does not read anything: see the admission policy that limits it to group namespaces);
-  - READ pods, nodes, services, serviceaccounts, endpoints, deployments, networkpolicies, poddisruptionbudgets and
+  - READ pods, nodes, services, serviceaccounts, endpoints, deployments, daemonsets, networkpolicies, poddisruptionbudgets and
     rolebindings (the informers of its controllers and the scheduler's view of the nodes). It reads NO Secret cluster-wide;
   - create the RoleBinding that gives it its working permissions in a namespace of a LabGroup it manages (see below).
 Everything it WRITES in a namespace (Secrets, Deployments, Services, NetworkPolicies, pods...) it can only do where a RoleBinding to
@@ -27,6 +27,10 @@ rules:
   verbs: [get, list, watch]
 - apiGroups: [apps]
   resources: [deployments, replicasets]
+  verbs: [get, list, watch]
+# The DaemonSets that would run on a lab node still to come take room from it (capacity.maxNodes).
+- apiGroups: [apps]
+  resources: [daemonsets]
   verbs: [get, list, watch]
 - apiGroups: [networking.k8s.io]
   resources: [networkpolicies]

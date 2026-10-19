@@ -867,6 +867,20 @@ reservations:
   # the room of active reservations is marked this long (at least a minute) before it is deleted.
   endingNoticeSeconds: 300
 
+# Capacity of the lab nodes (DEPLOY.md, "Maximum capacity and node autoscaling"). Current: the lab nodes that exist and are
+# schedulable. Maximum: maxNodes lab nodes in all (the existing ones included); the nodes still to come have the allocatable
+# addedNode.cpu / addedNode.memory (infra renders both from the autoscaling group's max and instance type). Admission, the
+# agent's capacity and the reservation check use the maximum: a group placed on a node still to come is sent and its pods stay
+# Pending until a node autoscaler (if infra installed one) adds a node. 0: the maximum is the current capacity.
+capacity:
+  maxNodes: 0
+  addedNode:
+    cpu: ""
+    memory: ""
+  # Gang commit (always on): when some dispatched pod of a group still has no node this many seconds after the group's last
+  # dispatch, the whole group is withdrawn (all its pods deleted, also the running ones) and queued again with a backoff.
+  nodeTimeoutSeconds: 900
+
 # ============================================================
 # Limits the cluster owns on devices, labs and tenants
 # ============================================================
