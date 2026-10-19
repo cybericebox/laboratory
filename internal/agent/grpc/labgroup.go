@@ -45,11 +45,37 @@ func (h *Handler) CreateLabGroups(ctx context.Context, in *protobuf.CreateLabGro
 		if err := h.checkPodSizes(it); err != nil {
 			return nil, invalid("item %d (%s): %v", i, it.GetName(), err)
 		}
+		if err := reservationIDError(it.GetReservationId()); err != nil {
+			return nil, invalid("item %d (%s): %v", i, it.GetName(), err)
+		}
 	}
 	if err := dupRefs(refs); err != nil {
 		return nil, err
 	}
+	fit := make([]fitItem, len(items))
+	ids := make([]string, len(items))
+	for i, it := range items {
+		ids[i] = it.GetReservationId()
+		lg := &laboratoryv1alpha1.LabGroup{}
+		lg.Spec.VPN.Disabled = it.GetVpnDisabled()
+		lg.Spec.VPN.Size, lg.Spec.Gateway.Size = podSize(it.GetVpnSize()), podSize(it.GetGatewaySize())
+		fit[i] = fitItem{reservation: it.GetReservationId(), need: h.groupNeedOf(lg), deployGroup: names.DeployKey(it.GetDeployGroup())}
+		if _, err := h.getGroup(ctx, it.GetName()); err == nil {
+			fit[i].exists = true
+		} else if !apierrors.IsNotFound(err) {
+			return nil, err
+		}
+	}
+	// held from reading what the reservations hold to the last create, so two calls of this agent cannot both take the rest
+	defer h.lockReservations(ids)()
+	refusals, err := h.reservationRefusals(ctx, tenantOf(ctx), fit)
+	if err != nil {
+		return nil, err
+	}
 	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
+		if refusals[i] != nil {
+			return failedResult(refs[i], refusals[i])
+		}
 		return h.createLabGroup(ctx, items[i], in.GetLabels())
 	})}, nil
 }
@@ -67,6 +93,11 @@ func (h *Handler) createLabGroup(ctx context.Context, it *protobuf.LabGroupItem,
 	lg.Spec.VPN.Size, lg.Spec.Gateway.Size = podSize(it.GetVpnSize()), podSize(it.GetGatewaySize())
 	tenant := tenantOf(ctx)
 	lg.Labels, lg.Annotations = dep.stamp(stampTenant(copyLabels(want), tenant), stampID(it.GetName()))
+	reservation := ""
+	if id := it.GetReservationId(); id != "" {
+		reservation = crName(id)
+		lg.Labels[names.LabelReservation] = reservation
+	}
 
 	_, err := groups.Create(ctx, lg, metav1.CreateOptions{})
 	if err == nil {
@@ -104,7 +135,14 @@ func (h *Handler) createLabGroup(ctx context.Context, it *protobuf.LabGroupItem,
 			!samePodSize(cur.Spec.VPN.Size, lg.Spec.VPN.Size) || !samePodSize(cur.Spec.Gateway.Size, lg.Spec.Gateway.Size) || !dep.matches(cur.Labels, cur.Annotations) {
 			return errDifferentSpec{kindLabGroup, it.GetName()}
 		}
-		labels, changed := mergeLabels(cur.Labels, want)
+		if err := existingReservationLabel(kindLabGroup, it.GetName(), cur.Labels, reservation); err != nil {
+			return err
+		}
+		add := want
+		if reservation != "" {
+			add = mergeItemLabels(want, map[string]string{names.LabelReservation: reservation})
+		}
+		labels, changed := mergeLabels(cur.Labels, add)
 		if !changed {
 			return nil
 		}
@@ -216,6 +254,8 @@ func (h *Handler) UpdateLabGroups(ctx context.Context, in *protobuf.UpdateLabGro
 type groupPlan struct {
 	labels                                 labelPlan
 	suspended, vpnDisabled, probeWhileSusp *bool
+	// reservation: attach to this reservation id (see attachReservation)
+	reservation *string
 }
 
 // planGroupChanges overlays the item's changes (nil in a selector call) on the
@@ -241,7 +281,20 @@ func planGroupChanges(common, item *protobuf.LabGroupChanges) (groupPlan, error)
 	p.suspended = pick(common.Suspended, item.Suspended)
 	p.vpnDisabled = pick(common.VpnDisabled, item.VpnDisabled)
 	p.probeWhileSusp = pick(common.ProbeWhileSuspended, item.ProbeWhileSuspended)
+	if p.reservation = pickString(common.ReservationId, item.ReservationId); p.reservation != nil {
+		if err := names.ValidateID(*p.reservation); err != nil {
+			return p, fmt.Errorf("reservation_id: %w", err)
+		}
+	}
 	return p, nil
+}
+
+// pickString is the item's value when it has one, else the common one.
+func pickString(c, i *string) *string {
+	if i != nil {
+		return i
+	}
+	return c
 }
 
 func (h *Handler) updateLabGroup(ctx context.Context, ref *protobuf.ItemRef, p groupPlan) *protobuf.ItemResult {
@@ -274,6 +327,17 @@ func (h *Handler) updateLabGroup(ctx context.Context, ref *protobuf.ItemRef, p g
 		set(&cur.Spec.Suspended, p.suspended)
 		set(&cur.Spec.VPN.Disabled, p.vpnDisabled)
 		set(&cur.Spec.VPN.ProbeWhileSuspended, p.probeWhileSusp)
+		if p.reservation != nil {
+			label, err := h.attachReservation(ctx, kindLabGroup, ref.GetName(), cur.Labels, *p.reservation)
+			if err != nil {
+				return err
+			}
+			if label != "" {
+				// only the label: the spec, and so the pods, stay as they are
+				cur.Labels = mergeItemLabels(cur.Labels, map[string]string{names.LabelReservation: label})
+				changed = true
+			}
+		}
 		if !changed {
 			return nil
 		}

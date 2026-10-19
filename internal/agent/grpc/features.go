@@ -51,6 +51,9 @@ type Features struct {
 	DeviceProfiles []string
 	// Limits are the caps CreateLabs enforces.
 	Limits limits.Limits
+	// DeviceDefaults are the operator's device defaults and maxima (the same chart values): a lab's need against its
+	// reservation is counted with them as the scheduler counts it.
+	DeviceDefaults limits.DeviceDefaults
 	// GroupPods is how a group's own pods are sized (the maximum CreateLabGroups accepts) and the default size without one.
 	GroupPods GroupPodsFeature
 }
