@@ -326,7 +326,8 @@ proxy:
     # There is no silent fallback: a mode that cannot start makes the pod crash loop, and the operator picks userspace by this value.
     mode: userspace
     # The nodes that are entry points of the VPN (where the Service sends the clients' packets) and the taints the demux tolerates.
-    # Empty: every node.
+    # Empty: follows labWorkloads, like the proxy did before the demux had its own pods (every node when that is empty too); set values
+    # win (each of the two on its own).
     nodeSelector: {}
     tolerations: []
     # externalTrafficPolicy of the VPN Service. Empty (default) follows the mode: Cluster for userspace (any node forwards to a demux, and

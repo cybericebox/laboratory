@@ -187,10 +187,10 @@ func TestEdgeServicesNameTheSharedNamespaces(t *testing.T) {
 		args   []string
 		wg, gw string
 	}{
-		{nil, `laboratory-system`, `"laboratory-proxy"`},
-		{[]string{"--set", "proxy.sharedNamespaces={platform,other}"}, `laboratory-system,platform,other`, `"laboratory-proxy,platform,other"`},
+		{nil, `laboratory-system`, `"laboratory-wg"`},
+		{[]string{"--set", "proxy.sharedNamespaces={platform,other}"}, `laboratory-system,platform,other`, `"laboratory-wg,platform,other"`},
 	} {
-		out, err := helmTemplate(t, append(c.args, "-s", "templates/proxy/service-wg-lb.yaml", "-s", "templates/gateway/gateway.yaml")...)
+		out, err := helmTemplate(t, append(c.args, "-s", "templates/wg/service.yaml", "-s", "templates/gateway/gateway.yaml")...)
 		if err != nil {
 			t.Fatalf("%v\n%s", err, out)
 		}
