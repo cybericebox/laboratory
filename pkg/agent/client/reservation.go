@@ -7,7 +7,8 @@ const (
 	ReasonReservationRequired = "RESERVATION_REQUIRED"
 	// ReasonReservationNotFound: no reservation with that id in the caller's tenant.
 	ReasonReservationNotFound = "RESERVATION_NOT_FOUND"
-	// ReasonReservationEnded: the reservation takes no more work (ended, being deleted, past its end, or its tenant is gone).
+	// ReasonReservationEnded: the reservation takes no more work (ended, being deleted, past its end, or its tenant is
+	// gone).
 	ReasonReservationEnded = "RESERVATION_ENDED"
 	// ReasonReservationFull: the item does not fit the rest of the reservation ("not enough room in this reservation").
 	// Retryable: room may come back.

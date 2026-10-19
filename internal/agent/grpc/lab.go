@@ -193,7 +193,7 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 	v.spec.DeepCopyInto(&lab.Spec)
 	// Only the agent names the pull Secret, from the credentials sent with the deploy.
 	lab.Spec.ImagePullSecret = labRegistrySecretName(name, v.creds)
-	lab.Labels, lab.Annotations = dep.stamp(stampTenant(copyLabels(want), tenantOf(ctx)), stampID(nil, it.GetName()))
+	lab.Labels, lab.Annotations = dep.stamp(stampTenant(copyLabels(want), tenantOf(ctx)), stampID(it.GetName()))
 	hash := specHash(&lab.Spec, dep)
 	lab.Annotations[names.AnnotationSpecHash] = hash
 	if err := h.preflightLabCreate(ctx, liveGroup, ns, it.GetName(), hash); err != nil {

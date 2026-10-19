@@ -226,6 +226,43 @@ func TestAgentMonitoringCachesAreReadOnlyClusterWide(t *testing.T) {
 	t.Fatal("no laboratory-agent-cluster ClusterRole")
 }
 
+// The agent manages the tenants' reservations (decision 8: the backend sends them through the agent), but never their status:
+// that is the operator's.
+func TestAgentMayManageReservations(t *testing.T) {
+	out, err := helmTemplate(t, append(agentSet, "-s", "templates/agent/clusterrole.yaml")...)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, d := range docs(t, out) {
+		if d["kind"] != "ClusterRole" || d["metadata"].(map[string]any)["name"] != "laboratory-agent-cluster" {
+			continue
+		}
+		verbs := map[string]bool{}
+		for _, r := range rulesOf(t, d) {
+			if !has(r.APIGroups, "laboratory.cybericebox.com") {
+				continue
+			}
+			for _, res := range r.Resources {
+				if res == "reservations/status" {
+					t.Errorf("the agent must not write the status of reservations: %+v", r)
+				}
+				if res == "reservations" {
+					for _, v := range r.Verbs {
+						verbs[v] = true
+					}
+				}
+			}
+		}
+		for _, v := range []string{"get", "list", "watch", "create", "update", "patch", "delete"} {
+			if !verbs[v] {
+				t.Errorf("reservations: %s missing (%v)", v, verbs)
+			}
+		}
+		return
+	}
+	t.Fatal("no laboratory-agent-cluster ClusterRole")
+}
+
 // The proxy writes only its own LabTrafficReports, and only what the writer does: get, create, and a status update. The role is bound
 // per group namespace by the operator, never cluster-wide.
 func TestProxyReportsRoleIsLeastPrivilege(t *testing.T) {
