@@ -40,8 +40,24 @@ hub_delete() {
   echo "deleted $1:$2"
 }
 
-# true when the image $1:$2 exists on Docker Hub
-image_exists() { docker buildx imagetools inspect "$1:$2" >/dev/null 2>&1; }
+# retry CMD...: runs the command; when it fails with a Docker Hub rate limit (429 Too Many Requests) it is run again after
+# 60, 120 and 240 seconds (RETRY_DELAYS overrides the list). Any other failure is final. The output is printed once, at the end.
+retry() {
+  local delay out rc
+  for delay in ${RETRY_DELAYS:-60 120 240} last; do
+    rc=0
+    out=$("$@" 2>&1) || rc=$?
+    if [[ "$rc" -eq 0 ]] || ! grep -qiE '429|too many requests|toomanyrequests' <<<"$out" || [[ "$delay" == last ]]; then
+      [[ -z "$out" ]] || printf '%s\n' "$out"
+      return "$rc"
+    fi
+    echo "::warning::rate limited (429), retry in ${delay}s: $*" >&2
+    sleep "$delay"
+  done
+}
+
+# true when the image $1:$2 exists on Docker Hub (a rate limit is retried, so it is not read as "missing")
+image_exists() { retry docker buildx imagetools inspect "$1:$2" >/dev/null 2>&1; }
 
 # true when $1 is a higher version than $2 (sort -V)
 ver_gt() { [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" == "$1" ]]; }
@@ -231,11 +247,12 @@ shift || true
 case "$cmd" in
   sha-tag) echo "sha-$(printf '%s' "$1" | cut -c1-7)" ;;
   exists) image_exists "$1" "$2" ;;
+  retry) retry "$@" ;;
   rc-source) rc_source "$@" ;;
   next-version) next_version ;;
   hub-tags) hub_tags "$1" ;;
   hub-delete) hub_delete "$1" "$2" ;;
   delete-rc) delete_rc "$@" ;;
   cleanup) cleanup "$@" ;;
-  *) die "usage: ci.sh sha-tag|exists|next-version|hub-tags|hub-delete|delete-rc|rc-source|cleanup" ;;
+  *) die "usage: ci.sh sha-tag|exists|retry|next-version|hub-tags|hub-delete|delete-rc|rc-source|cleanup" ;;
 esac

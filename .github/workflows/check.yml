@@ -14,13 +14,49 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Changed files
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.c.outputs.code }}
+    steps:
+      - name: Check repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      # A PR with only docs (*.md, docs/**, .gitignore, LICENSE) builds nothing. A release PR into main always runs everything.
+      # This is a job, not a paths-ignore on the workflow: the required check "Check passed" must always report.
+      - name: Is there more than docs
+        id: c
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          code=false
+          if [[ "$BASE_REF" == main ]] || ! files=$(git diff --name-only "$BASE_SHA...$HEAD_SHA"); then
+            code=true
+          else
+            while IFS= read -r f; do
+              case "$f" in
+                '' | *.md | docs/* | .gitignore | LICENSE) ;;
+                *) code=true ;;
+              esac
+            done <<<"$files"
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
   test:
     name: Test
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/test.yml
     secrets: inherit
 
   image:
     name: Image ${{ matrix.name }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -68,7 +104,7 @@ jobs:
   passed:
     name: Check passed
     if: ${{ always() }}
-    needs: [test, image]
+    needs: [changes, test, image]
     runs-on: ubuntu-latest
     steps:
       - name: Every check passed

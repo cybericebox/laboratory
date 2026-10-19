@@ -98,4 +98,19 @@ check "cleanup (release before newer commits)" "$want" "$(cleanup "$release" fal
 check "cleanup dry run deletes nothing" "" "$(cleanup "$release" true img | grep '^del')"
 check "cleanup dry run lists the cache tags" 2 "$(cleanup "$release" true img | grep -c '^  buildcache')"
 
+# retry: a 429 is retried, any other failure is final
+export RETRY_DELAYS="0 0"
+n="$tmp/n"
+: >"$n"
+# shellcheck disable=SC2329
+flaky() { echo x >>"$n"; if [[ $(wc -l <"$n") -lt $1 ]]; then echo "429 Too Many Requests"; return 1; fi; echo finished; }
+check "retry: succeeds after two 429" "finished 3" "$(retry flaky 3 | tr '\n' ' ' | sed 's/ $//') $(wc -l <"$n" | tr -d ' ')"
+: >"$n"
+rc=0; retry flaky 99 >/dev/null || rc=$?; check "retry: gives up after the delays (3 runs)" "1 3" "$rc $(wc -l <"$n" | tr -d ' ')"
+: >"$n"
+# shellcheck disable=SC2329
+broken() { echo x >>"$n"; echo "manifest unknown"; return 1; }
+rc=0; retry broken >/dev/null || rc=$?; check "retry: another error is not retried" "1 1" "$rc $(wc -l <"$n" | tr -d ' ')"
+unset RETRY_DELAYS
+
 exit $fail

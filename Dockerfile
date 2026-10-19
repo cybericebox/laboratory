@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=mirror.gcr.io/docker/dockerfile:1
 
 # One Dockerfile, five images (build targets): controller, agent, proxy, node, lab.
 # Each image carries only the code of its own domain, on a minimal base pinned by digest:
@@ -11,12 +11,12 @@
 #               no package manager (root: the pods need NET_ADMIN, which Kubernetes gives only to root)
 # Multi-component binaries pick the component by first argument, or by the name they
 # are started as (the host copy of cni-gate).
-ARG ALPINE=alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+ARG ALPINE=mirror.gcr.io/library/alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 ARG DISTROLESS=gcr.io/distroless/static:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
 
 # The Go stage always runs on the build host and cross-compiles, so multi-arch builds
 # do not go through QEMU.
-FROM --platform=$BUILDPLATFORM docker.io/golang:1.27.1@sha256:e0174e51e81218523251d85d248a90d24c3d5e81543b4f07a5d66229397db190 AS builder
+FROM --platform=$BUILDPLATFORM mirror.gcr.io/library/golang:1.27.1@sha256:e0174e51e81218523251d85d248a90d24c3d5e81543b4f07a5d66229397db190 AS builder
 ARG TARGETOS=linux
 ARG TARGETARCH
 WORKDIR /workspace
