@@ -226,8 +226,8 @@ func Run() {
 	}
 
 	// Last: once everything above is set up, the node is marked ready for lab pods (and unmarked when this process stops).
-	if err := mgr.Add(&nodeagent.NodeLabeler{Client: mgr.GetClient(), NodeName: cfg.NodeName}); err != nil {
-		log.Error(err, "setup NodeLabeler")
+	if err := nodeagent.SetupNodeReadiness(mgr, cfg); err != nil {
+		log.Error(err, "setup node readiness")
 		os.Exit(1)
 	}
 

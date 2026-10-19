@@ -1295,6 +1295,23 @@ layer-2 isolation model. Two rules keep that from happening:
 Check a node: `kubectl get nodes -L laboratory.cybericebox.com/node-agent-ready` and `kubectl -n laboratory-system get pods -l app=node-agent -o wide`. A new node takes labs only after its
 node-agent is `Running`.
 
+### The startup taint of a new lab worker
+
+A new worker turns `Ready` about 10-15 seconds before its node-agent has registered the `cybericebox.com/tun` device and set the
+`node-agent-ready` label. The Cluster Autoscaler sees a real node that cannot hold the pending lab pod and scales up once more. The fix is a
+startup taint, in this order:
+
+1. **laboratory first** (this release). The node-agent, the WireGuard demux and the proxy DaemonSet tolerate
+   `cybericebox.io/node-starting` (`NoSchedule`). The node-agent removes the taint from its own Node when the three hold: the node-agent has
+   labelled the node (`node-agent-ready=true`, set last, so the device plugin is up), the Node's allocatable shows `cybericebox.com/tun` above
+   0 (the kubelet has the plugin registered; not waited for when `TUN_SLOTS=0`), and then it patches `spec.taints` with a JSON patch
+   guarded by a test of the current list, retried when the node changed. A node without the taint is not touched, so this is safe to roll out
+   before infra adds the taint. The admission policy `laboratory-node-agent-label` lets the node-agent remove this one taint and nothing else.
+2. **infra second.** Lab workers are created with the taint `cybericebox.io/node-starting=true:NoSchedule`, and the Cluster Autoscaler runs with
+   `--startup-taint=cybericebox.io/node-starting`, so it treats the node as not ready yet instead of as a node that fits nothing.
+
+Rolled out the other way round, the node-agent of a tainted node would never start (nothing tolerates the taint) and the node would stay empty.
+
 ## Security hardening
 
 Findings of the isolation audit (`docs/security/2026-10-02-laboratory-isolation.md`) and how the laboratory answers them.
