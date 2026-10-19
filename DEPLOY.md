@@ -657,6 +657,9 @@ placed on the virtual room. The breaker lives in the operator's memory: a restar
   - `k8s.io/cluster-autoscaler/node-template/resources/cybericebox.com/tun` = the node-agent's TUN slots
     (`nodeAgent.devicePlugin.tunSlots`, default `1000`): pods of the TUN profile request `cybericebox.com/tun: 1`, the only
     extended resource lab pods request, which the node-agent's device plugin advertises only once the node runs;
+  - the node's allocatable `ephemeral-storage`, if the autoscaler does not take it from the launch template
+    (`k8s.io/cluster-autoscaler/node-template/resources/ephemeral-storage`): device pods request
+    `devices.security.ephemeralStorage` (2Gi) each;
 - `--max-node-provision-time` below the node timeout (12m for 15m), so it gives up before the operator withdraws;
 - scale-down through the `lab-group` PodDisruptionBudget: lab pods carry `cluster-autoscaler.kubernetes.io/safe-to-evict:
   "false"` (VPN and gateway pods of a group that already runs get it with their next template change), so only empty nodes

@@ -531,3 +531,34 @@ func TestWithdrawAgainKeepsAttempt(t *testing.T) {
 		t.Fatalf("due = %+v", due)
 	}
 }
+
+// An operator restart in the middle of a withdrawal (one record still Starting) withdraws the rest with the same attempt, and
+// counts the withdrawal once.
+func TestWithdrawAfterRestartKeepsAttempt(t *testing.T) {
+	f := maxFixture(t, 2)
+	f.addLab("a", "g", nil, "p1", "p2")
+	f.tick()
+	sent := f.now
+	f.noNode("a", "p1")
+	f.noNode("a", "p2")
+	f.at(sent.Add(15 * time.Minute))
+	f.tick()
+	f.wantStates("a/p1=Q a/p2=Q")
+	// the write of p2 was lost before the restart: it is still out
+	d := f.device("a", "p2")
+	stamp := metav1.NewTime(sent)
+	d.Status.Scheduling = &laboratoryv1alpha1.PodSchedule{State: st, DispatchedAt: &stamp}
+	if err := f.c.Status().Update(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+	before := metricValue(t, "laboratory_gang_withdrawals_total")
+	f.s = &Scheduler{Client: f.c, Config: f.s.Config, Defaults: f.s.Defaults, Now: f.s.Now}
+	f.tick()
+	f.wantStates("a/p1=Q a/p2=Q")
+	if sc := f.device("a", "p2").Status.Scheduling; sc.Withdrawals != 1 {
+		t.Fatalf("attempt after the restart = %d, want 1", sc.Withdrawals)
+	}
+	if got := metricValue(t, "laboratory_gang_withdrawals_total") - before; got != 0 {
+		t.Fatalf("counted again: %v", got)
+	}
+}
