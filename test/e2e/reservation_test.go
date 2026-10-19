@@ -132,6 +132,8 @@ var _ = Describe(
 						{"get", "reservations", "-o", "yaml"},
 						{"get", "labgroups,labs", "-A", "-o", "yaml"},
 						{"get", "pods", "-A", "-o", "wide"},
+						{"get", "events", "-A", "--sort-by=.lastTimestamp"},
+						{"-n", namespace, "logs", "daemonset/laboratory-node-agent", "--all-containers", "--tail=200"},
 						{"-n", namespace, "logs", "deployment/laboratory-controller-manager", "--tail=300"},
 					} {
 						out, err := utils.Run(exec.Command("kubectl", args...))
