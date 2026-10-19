@@ -84,10 +84,6 @@ var _ = Describe(
 					func() string { return kubectlJSONPath("ns", namespace, "", "{.status.phase}") },
 				).ShouldNot(Equal("Terminating"))
 
-				By("installing the stand-in for the CiliumNetworkPolicy CRD")
-				_, err = utils.Run(exec.Command("kubectl", "apply", "-f", "hack/kind/ciliumnetworkpolicy-crd.yaml"))
-				Expect(err).NotTo(HaveOccurred(), "Failed to install the CiliumNetworkPolicy stand-in")
-
 				By("installing the chart")
 				repository, tag, _ := strings.Cut(projectImage, ":")
 				_, err = utils.Run(
@@ -115,9 +111,6 @@ var _ = Describe(
 				By("uninstalling the chart")
 				_, _ = utils.Run(exec.Command("helm", "uninstall", reservationRelease, "--namespace", namespace))
 				_, _ = utils.Run(exec.Command("kubectl", "delete", "-f", "charts/laboratory/crds", "--ignore-not-found"))
-				_, _ = utils.Run(
-					exec.Command("kubectl", "delete", "-f", "hack/kind/ciliumnetworkpolicy-crd.yaml", "--ignore-not-found"),
-				)
 				// The namespace must be gone before the next test creates it again (Ginkgo runs the containers in any order).
 				_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", namespace, "--ignore-not-found", "--wait=false"))
 				Eventually(
@@ -207,6 +200,7 @@ var _ = Describe(
 						Expect(err).NotTo(HaveOccurred(), "status.noticeAt was not set with the notice")
 						Expect(parsed).To(BeTemporally("~", to.Add(-endingNotice), clockSlack))
 						Expect(endedAt).To(BeTemporally(">=", to.Add(-clockSlack)), "deleted before spec.to")
+						Expect(endedAt).To(BeTemporally("<=", to.Add(30*time.Second)), "deleted long after spec.to")
 						Expect(
 							kubectlJSONPath("reservation", reservation, "", `{.status.conditions[?(@.type=="Ending")].status}`),
 						).NotTo(BeEmpty())

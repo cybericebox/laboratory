@@ -1,7 +1,7 @@
-# Kind cluster of the e2e tests: one control plane and two lab nodes. The lab nodes carry the label of the recommended
-# lab-node placement (cybericebox.io/lab, see labWorkloads in the chart), so lab pods and the components that follow that
-# placement run only on them. They are not tainted: the scaffold's own e2e test deploys the operator with a plain manifest
-# and installs cert-manager, and those pods have no toleration.
+# Kind cluster of the e2e tests: one control plane and two lab workers (label cybericebox.io/lab of the recommended
+# lab-node placement, see labWorkloads in the chart). One lab worker is tainted cybericebox.io/lab=true:NoSchedule, so the
+# toleration path of the scheduler runs; the other is not, because the scaffold's own e2e test deploys the operator and
+# cert-manager with no tolerations and they need a node to land on.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
@@ -9,6 +9,14 @@ nodes:
   - role: worker
     labels:
       cybericebox.io/lab: "true"
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          taints:
+            - key: cybericebox.io/lab
+              value: "true"
+              effect: NoSchedule
   - role: worker
     labels:
       cybericebox.io/lab: "true"

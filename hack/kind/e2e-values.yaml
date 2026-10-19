@@ -4,8 +4,10 @@ operator:
   publicVPNEndpoint: vpn.e2e.example.com:51820
   baseDomain: e2e.example.com
   supportEmail: support@e2e.example.com
-  # Kind runs no Cilium: the policies would have nothing to apply to (the CRD of the operator's group policies is a stub)
+  # Kind runs no Cilium: the operator would apply CiliumNetworkPolicy objects to every group namespace
   networkPolicy:
+    enabled: false
+  groupNetworkPolicy:
     enabled: false
 registry:
   networkPolicy:
@@ -26,10 +28,15 @@ vpn:
 inetGateway:
   image:
     tag: e2e
-# the lab nodes of the Kind config
+# the lab nodes of the Kind config: both labelled, one tainted
 labWorkloads:
   nodeSelector:
     cybericebox.io/lab: "true"
+  tolerations:
+    - key: cybericebox.io/lab
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
 # the edge (Cilium gateway, cert-manager, proxy) is not part of the reservation tests
 labScheduler:
   enabled: false
