@@ -602,7 +602,9 @@ With no lab node at all the queue goes on while virtual room is left (scale from
 `GroupTooLarge` event come only for a group beyond the maximum. While virtual room is left no pod is failed with
 `DoesNotFit` (a single device is capped by `limits.device.*`, and every node type infra uses is larger); without it the
 per-node rule above holds as before. `CapacityShortfall`, the cleanup of unreserved work (spec decisions 6 and 19) and the
-agent's `GetCapacity` use the maximum too; the condition message says how much of the capacity is on nodes not yet present.
+agent's `GetCapacity` use the maximum too; the condition message says how much of the capacity is on nodes not yet present. A
+percentage tenant quota (`50%`) is a share of the maximum: the allocatable of the nodes that exist plus what the budget still
+allows. `GetCapacity` also reports `current_*`, the same capacity without the budget's room.
 
 **Waiting for a node.** An object whose pods are all sent and some have no node yet shows `status.scheduling.reason:
 NodeStarting` ("n pods wait for a node since T") and gets one Normal event `NodeStarting`; the gauge
@@ -628,8 +630,10 @@ node timeout. A pod whose workload never creates it (a quota, a refusal) still f
 **Breaker.** After a withdrawal, admission uses the current nodes only (no virtual room) until a lab node becomes schedulable
 that was not schedulable at the withdrawal, or one node timeout passes. A group that needs virtual room waits
 `InsufficientResources` meanwhile. The gauge `laboratory_capacity_breaker` is `1` and the `CapacityShortfall` message adds "no
-new lab node came within 15m0s: admission uses the current nodes only"; the shortfall is computed on the current nodes then.
-The agent keeps reporting the maximum. A restart of the operator forgets the breaker (one more try).
+new lab node came within 15m0s: admission uses the current nodes only". The breaker only keeps new groups off the virtual
+room: the reservations, the shortfall and the cleanup of unreserved work still count the maximum, so a temporary breaker never
+evicts unreserved work, and the agent keeps reporting the maximum. The rest of a group that already has pods out may still be
+placed on the virtual room. The breaker lives in the operator's memory: a restart forgets it, which allows one more try.
 
 **What a cluster autoscaler must have** (infra installs it; the laboratory chart has no autoscaler code or values):
 

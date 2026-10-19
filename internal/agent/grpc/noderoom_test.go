@@ -65,3 +65,13 @@ func TestCapacityMaximumOffUnchanged(t *testing.T) {
 		t.Fatalf("budget below the nodes: %+v %v", got, err)
 	}
 }
+
+// A percentage quota is a share of the maximum: the nodes that exist plus what the budget still allows.
+func TestPercentQuotaOfTheMaximum(t *testing.T) {
+	h := tenantHandler(t, []*laboratoryv1alpha1.Tenant{newTenantTenant("a", true, &laboratoryv1alpha1.TenantQuota{CPU: "50%"})}, roomTestNode("cp-1", ""))
+	h.SetMaximum(nodecap.Maximum{Budget: nodecap.Amount{CPU: 12000, Memory: 24 << 30}})
+	got, err := h.GetCapacity(asClient("a"), &protobuf.Empty{})
+	if err != nil || got.CpuQuotaMillicores != 8000 {
+		t.Fatalf("50%% of 4 + 12 CPU: %+v %v", got, err)
+	}
+}

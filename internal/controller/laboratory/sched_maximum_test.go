@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/nodecap"
 )
 
@@ -242,5 +243,38 @@ func TestShortfallMessageNamesVirtual(t *testing.T) {
 	r.short = amount{}
 	if c := r.condition(); c.Status != metav1.ConditionFalse || !strings.Contains(c.Message, "admission uses the current nodes only") {
 		t.Fatalf("fit message = %+v", c)
+	}
+}
+
+// Under the breaker the reservations, the shortfall and the cleanup of unreserved work still count the maximum: a temporary
+// breaker never evicts unreserved work. Only new gangs are kept to the nodes that exist.
+func TestBreakerKeepsShortfallOnMaximum(t *testing.T) {
+	f := shortMaxFixture(t)
+	unreservedHolding(f)
+	f.s.lastWithdrawal, f.s.breakerNodes = f.now, map[string]bool{"n1": true}
+	f.tick()
+	f.tick()
+	for _, n := range []string{"u", "v"} {
+		if got := f.evictAtOf(n); got != "" {
+			t.Fatalf("%s is marked under the breaker: %q", n, got)
+		}
+	}
+	c := shortfallCond(f.tenant("t1"))
+	if c == nil || c.Status != metav1.ConditionFalse || !strings.Contains(c.Message, "admission uses the current nodes only") {
+		t.Fatalf("t1 condition = %+v", c)
+	}
+}
+
+// A percentage tenant quota is a share of the maximum.
+func TestPercentQuotaOfTheMaximum(t *testing.T) {
+	f := maxFixture(t, 2) // budget 4 CPU, no node
+	f.create(&laboratoryv1alpha1.Tenant{ObjectMeta: metav1.ObjectMeta{Name: names.DefaultTenant}, Spec: laboratoryv1alpha1.TenantSpec{
+		Quota: &laboratoryv1alpha1.TenantQuota{CPU: "50%"}}})
+	f.addLab("a", "g1", nil, "p1", "p2")
+	f.addLab("b", "g2", nil, "p1")
+	f.tick()
+	f.wantStates("a/p1=S a/p2=S b/p1=Q")
+	if s := f.labStatus("b"); s.Reason != laboratoryv1alpha1.WaitTenantQuota {
+		t.Fatalf("b status = %+v", s)
 	}
 }

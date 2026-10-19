@@ -969,14 +969,21 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			if agedRoom != nil && gg != aged && !gg.objs[0].isGroup() {
 				keep = agedRoom
 			}
+			// Under the breaker a new gang goes on the nodes that exist only; the virtual room still counts for the rest.
+			view := func(r []nodeRoom) []nodeRoom {
+				if fair.breaker {
+					return closeVirtual(r)
+				}
+				return r
+			}
 			if gg.reservation != "" {
-				mine := res.own(rooms, gg.reservation)
+				mine := view(res.own(rooms, gg.reservation))
 				if l, ok := fitsGang(mine, needs); ok {
 					at = placed(mine, l)
 				}
 			}
 			if at == nil {
-				free := res.view(rooms, gg.reservation, keep)
+				free := view(res.view(rooms, gg.reservation, keep))
 				l, ok := fitsGang(free, needs)
 				if !ok {
 					hold(roomHeld, gg)
