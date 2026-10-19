@@ -7,6 +7,7 @@ import (
 	"time"
 
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -170,5 +171,37 @@ func TestWithdrawalKeepsNativeInventory(t *testing.T) {
 	}
 	if err := c.Get(ctx, client.ObjectKeyFromObject(pod), pod); err == nil && pod.DeletionTimestamp == nil {
 		t.Fatal("the withdrawn pod is deleted")
+	}
+}
+
+// The same for a Deployment device: before its Deployment is deleted, the identity the node-agent reported for its pod is kept.
+func TestWithdrawalKeepsNativeInventoryOfDeploymentPods(t *testing.T) {
+	r, l, d, c := lifecycleFixture(t, "Skip")
+	ctx := context.Background()
+	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: workloadName(d), Namespace: "g"}, Spec: appsv1.DeploymentSpec{Replicas: ptrInt32(1)}}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "a-web-x", Namespace: "g", UID: "pod-x", Labels: map[string]string{names.LabelLab: "a", names.LabelDevice: "web"}},
+		Spec: corev1.PodSpec{NodeName: "node", Containers: []corev1.Container{{Name: "device", Image: "base"}}}}
+	for _, o := range []client.Object{dep, pod} {
+		if err := c.Create(ctx, o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d.Status.Scheduling = withdrawnRecord()
+	d.Status.RuntimeReports = []lab.OwnedRuntimeReport{lifecycleNativeReport(l, d, pod)}
+	if err := c.Status().Update(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	dr := &DeviceReconciler{Client: c, Reader: c, Scheme: r.Scheme, Scheduled: true}
+	if err := dr.deleteWithdrawnWorkload(ctx, d, dep); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(d), d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Status.RuntimeInventory) != 1 || d.Status.RuntimeInventory[0].PodUID != "pod-x" {
+		t.Fatalf("inventory = %+v", d.Status.RuntimeInventory)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(dep), dep); err == nil {
+		t.Fatal("the withdrawn Deployment is deleted")
 	}
 }
