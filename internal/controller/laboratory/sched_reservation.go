@@ -1,6 +1,7 @@
 package laboratory
 
 import (
+	"fmt"
 	"math/bits"
 	"sort"
 	"time"
@@ -23,24 +24,36 @@ type dispatchedPod struct {
 	need  amount
 }
 
-// reservationAmount is what a reservation reserves. One that is invalid reserves nothing: a resource other than cpu and memory,
-// or cpu or memory missing, zero or negative (CEL cannot check the values within its cost budget, so the scheduler does).
+// reservationAmount is what a reservation reserves. One that is invalid reserves nothing (reservationProblem).
 func reservationAmount(r *laboratoryv1alpha1.Reservation) amount {
-	for name := range r.Spec.Resources {
-		if name != corev1.ResourceCPU && name != corev1.ResourceMemory {
-			return amount{}
-		}
-	}
-	cpu, mem := r.Spec.Resources.Cpu().MilliValue(), r.Spec.Resources.Memory().Value()
-	if cpu <= 0 || mem <= 0 {
+	if reservationProblem(r) != "" {
 		return amount{}
 	}
-	return amount{cpu: cpu, mem: mem}
+	return amount{cpu: r.Spec.Resources.Cpu().MilliValue(), mem: r.Spec.Resources.Memory().Value()}
 }
 
-// reservationActive says the window of the reservation is open: from <= now < to, and it is not being deleted.
+// reservationProblem says why the resources of a reservation are invalid, "" when they are not: a resource other than cpu and
+// memory, or cpu or memory missing, zero or negative (CEL cannot check the values within its cost budget, so the operator
+// does; the ReservationReconciler shows it as the Invalid condition).
+func reservationProblem(r *laboratoryv1alpha1.Reservation) string {
+	for name := range r.Spec.Resources {
+		if name != corev1.ResourceCPU && name != corev1.ResourceMemory {
+			return fmt.Sprintf("resources name %q; only cpu and memory are reserved", name)
+		}
+	}
+	if q, ok := r.Spec.Resources[corev1.ResourceCPU]; !ok || q.Sign() <= 0 || q.MilliValue() <= 0 {
+		return "resources.cpu must be positive"
+	}
+	if q, ok := r.Spec.Resources[corev1.ResourceMemory]; !ok || q.Sign() <= 0 {
+		return "resources.memory must be positive"
+	}
+	return ""
+}
+
+// reservationActive says the window of the reservation is open: from <= now < to, it is not being deleted and it has not
+// ended early (status.phase Ended inside the window: its tenant is gone).
 func reservationActive(r *laboratoryv1alpha1.Reservation, now time.Time) bool {
-	return r.DeletionTimestamp == nil && !now.Before(r.Spec.From.Time) && now.Before(r.Spec.To.Time)
+	return r.DeletionTimestamp == nil && r.Status.Phase != laboratoryv1alpha1.ReservationPhaseEnded && !now.Before(r.Spec.From.Time) && now.Before(r.Spec.To.Time)
 }
 
 // gangReservation is the reservation of a gang: the label all its objects carry (empty: unreserved). A gang is under one

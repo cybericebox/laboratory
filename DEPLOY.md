@@ -360,6 +360,16 @@ pods out, of its own tenant) and `status.groups` (the groups with pods out) at t
 Without the Reservation CRD (an upgrade that did not apply `crds/`) the scheduler logs one warning and runs as if there were no
 reservations: unreserved labs start, labelled ones wait with `ReservationMissing`.
 
+**End of a reservation.** The operator moves `status.phase` with the clock: `Pending` before `spec.from`, `Active`, `Ending`
+from `spec.to` minus the notice (chart `reservations.endingNoticeSeconds`, default `300`; condition `Ending=True`,
+`status.noticeAt` = when the notice was given), `Ended` at `spec.to`. At the end every LabGroup and Lab of the reservation's
+tenant with its label is deleted in one pass; labs of other reservations, unlabelled ones and other tenants' objects stay, and
+a LabGroup of the reservation that still holds such labs is kept until they are gone (deleting it would drain them). Moving
+`spec.to` past the notice calls the end off (`Ending=False`, reason `Extended`). An end that passed while the operator was down
+is processed when it starts. When the tenant of a reservation is gone, the reservation ends one notice after that is seen (or
+at `spec.to` if sooner, reason `TenantGone`) and stays ended. An ended reservation is deleted a day after its end. Resources
+that reserve nothing get the condition `Invalid=True`; the phase still follows the clock.
+
 **Platform reserve.** CPU and memory that user labs can never consume, so the platform itself always has room.
 It is kept on every schedulable node: an optional absolute reserve (`scheduler.platformReserveCpu`,
 `scheduler.platformReserveMemory`, `"0"` = none) comes off the node first, and `scheduler.platformReservePercent` (10) of the
@@ -461,6 +471,9 @@ while none of its pods has been dispatched. The position is refreshed at a limit
 | `agingSeconds` | `120` | a group waiting longer than this has the room it needs kept for it (the oldest one only); `0` = no aging |
 | `prepull.enabled` | `true` | prepull the images of a group |
 | `prepull.timeout` | `5m` | dispatch goes on after this long |
+
+`reservations.endingNoticeSeconds` (default `300`, `0` = no notice): the Ending condition comes this long before the end of a
+reservation.
 
 The operator needs `get/list/watch` on nodes and
 `create/delete/get/list/watch` on DaemonSets; the chart's ClusterRole has them.

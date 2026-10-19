@@ -137,6 +137,10 @@ type Config struct {
 	// stream of small gangs cannot keep a big one out; 0: no aging.
 	SchedulerAgingSeconds int `env:"SCHEDULER_AGING_SECONDS" envDefault:"120"`
 
+	// ReservationEndingNoticeSeconds is how long before the end of a Reservation its Ending condition is set (and how long a
+	// reservation whose tenant is gone still lives); at the end its groups are deleted. 0: no notice.
+	ReservationEndingNoticeSeconds int `env:"RESERVATION_ENDING_NOTICE_SECONDS" envDefault:"300"`
+
 	// RequireAdmissionPolicy makes the operator check at start that the chart's admission policies are enforced on it and
 	// exit if they are not (the chart sets it with operator.admissionPolicy.enabled). On by default, as in the chart: an operator that
 	// is not confined must be asked for by name (OPERATOR_REQUIRE_ADMISSION_POLICY=false: a developer's machine, where it is not the
@@ -311,6 +315,9 @@ func LoadConfig() (*Config, error) {
 	}
 	if cfg.SchedulerAgingSeconds < 0 {
 		return nil, fmt.Errorf("SCHEDULER_AGING_SECONDS must not be negative (0 turns aging off)")
+	}
+	if cfg.ReservationEndingNoticeSeconds < 0 {
+		return nil, fmt.Errorf("RESERVATION_ENDING_NOTICE_SECONDS must not be negative")
 	}
 	for name, v := range map[string]string{"DEVICE_DEFAULT_CPU": cfg.DeviceDefaultCPU, "DEVICE_DEFAULT_MEMORY": cfg.DeviceDefaultMemory} {
 		if v == "" {

@@ -165,10 +165,20 @@ rules:
   - laboratory.cybericebox.com
   resources:
   - labtrafficreports
-  - reservations
   verbs:
   - get
   - list
+  - watch
+- apiGroups:
+  - laboratory.cybericebox.com
+  resources:
+  - reservations
+  verbs:
+  - delete
+  - get
+  - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - laboratory.cybericebox.com

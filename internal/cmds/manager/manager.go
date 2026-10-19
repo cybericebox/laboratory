@@ -353,6 +353,13 @@ func Run() {
 		setupLog.Error(err, "unable to create controller", "controller", "Connection")
 		os.Exit(1)
 	}
+	if err = (&laboratorycontroller.ReservationReconciler{
+		Client: mgr.GetClient(),
+		Notice: time.Duration(cfg.ReservationEndingNoticeSeconds) * time.Second,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Reservation")
+		os.Exit(1)
+	}
 	if err = (&laboratorycontroller.TenantReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),

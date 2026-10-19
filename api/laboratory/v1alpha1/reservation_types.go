@@ -26,6 +26,22 @@ const (
 	ReservationConditionEnding = "Ending"
 	// ReservationConditionShortfall is true when the cluster cannot give the reserved resources.
 	ReservationConditionShortfall = "Shortfall"
+	// ReservationConditionInvalid is true when spec.resources reserves nothing: a resource other than cpu and memory, or cpu
+	// or memory missing, zero or negative. The phase still follows the clock.
+	ReservationConditionInvalid = "Invalid"
+)
+
+// Reasons of the Ending condition.
+const (
+	// ReservationReasonWindowClosing: the window closes at spec.to.
+	ReservationReasonWindowClosing = "WindowClosing"
+	// ReservationReasonTenantGone: the tenant of the reservation no longer exists, so the reservation ends one notice after
+	// that was seen (or at spec.to when that is sooner), and stays ended.
+	ReservationReasonTenantGone = "TenantGone"
+	// ReservationReasonExtended: spec.to was moved past the notice, the end is called off.
+	ReservationReasonExtended = "Extended"
+	// ReservationReasonEnded: the window is closed and its groups are deleted.
+	ReservationReasonEnded = "Ended"
 )
 
 // ReservationSpec claims cpu and memory of the cluster for a tenant in a time window. The groups of

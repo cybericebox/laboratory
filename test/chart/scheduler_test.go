@@ -283,3 +283,48 @@ func TestReservesAndPoolAreTheSameForOperatorAndAgent(t *testing.T) {
 		t.Errorf("the chart values do not reach the operator: %v", op)
 	}
 }
+
+// The ending notice of reservations reaches the operator (default 300 s), may be set, and is never negative.
+func TestReservationNoticeReachesTheOperator(t *testing.T) {
+	if got := operatorConfig(t)["RESERVATION_ENDING_NOTICE_SECONDS"]; got != "300" {
+		t.Errorf("RESERVATION_ENDING_NOTICE_SECONDS = %q, want 300", got)
+	}
+	if got := operatorConfig(t, "--set", "reservations.endingNoticeSeconds=600")["RESERVATION_ENDING_NOTICE_SECONDS"]; got != "600" {
+		t.Errorf("the value must reach the operator: %q", got)
+	}
+	out, err := helmTemplate(t, "--set", "reservations.endingNoticeSeconds=-1")
+	if err == nil {
+		t.Error("a negative notice must be refused")
+	} else if !strings.Contains(out, "reservations.endingNoticeSeconds") {
+		t.Errorf("the error does not name the value: %s", out)
+	}
+}
+
+// The reservation controller writes the phase, deletes the groups at the end and the ended reservation a day later.
+func TestOperatorMayEndReservations(t *testing.T) {
+	out, err := helmTemplate(t, "-s", "templates/operator/clusterrole.yaml")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	var role rbacv1.ClusterRole
+	if err := yaml.Unmarshal([]byte(out), &role); err != nil {
+		t.Fatal(err)
+	}
+	can := func(resource, verb string) bool {
+		for _, r := range role.Rules {
+			if contains(r.APIGroups, "laboratory.cybericebox.com") && contains(r.Resources, resource) && contains(r.Verbs, verb) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, c := range [][2]string{
+		{"reservations", "watch"}, {"reservations", "update"}, {"reservations", "patch"}, {"reservations", "delete"},
+		{"reservations/status", "update"}, {"reservations/status", "patch"},
+		{"labs", "delete"}, {"labgroups", "delete"}, {"tenants", "get"},
+	} {
+		if !can(c[0], c[1]) {
+			t.Errorf("operator cannot %s %s", c[1], c[0])
+		}
+	}
+}
