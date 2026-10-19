@@ -714,6 +714,10 @@ devices:
   # Device is created and never changes, whatever this switch does later.
   # false: no device can ask for persistence.
   statePersistence:
+    # On, the node-agent container also runs with appArmorProfile Unconfined: the runtime's default AppArmor profile
+    # (cri-containerd.apparmor.d on Ubuntu and other AppArmor nodes) has `deny mount`, and the snapshot filter mounts read-only
+    # overlay views of a device's layers, so under it every snapshot fails with "permission denied". The container already has
+    # SYS_ADMIN. A node-agent that still finds itself under that profile says so in its log and on every device it follows.
     enabled: false
 
     # How long a device's writable layer must stay quiet before a snapshot is taken.
