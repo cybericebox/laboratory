@@ -241,6 +241,10 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Error(err, "ensure scheduling state")
 		return ctrl.Result{}, err
 	}
+	if err = r.deleteWithdrawnGroupPods(ctx, &lg, ns); err != nil {
+		logger.Error(err, "delete the withdrawn VPN and gateway pods")
+		return ctrl.Result{}, err
+	}
 	// Suspension stops task devices only. Keep the team's tunnel and internet
 	// gateway running so participants can test their connection during a pause.
 	if !r.groupPodQueued(&lg, names.ComponentVPN) {

@@ -37,6 +37,11 @@ type PodScheduleApplyConfiguration struct {
 	StartedAt *v1.Time `json:"startedAt,omitempty"`
 	// Failure explains a Failed pod; the warning clears when the pod becomes Ready.
 	Failure *PodFailureApplyConfiguration `json:"failure,omitempty"`
+	// Withdrawals counts the withdrawals of the pod's group in a row (not every pod got a node within the node timeout); it
+	// clears when the pod becomes Ready.
+	Withdrawals *int32 `json:"withdrawals,omitempty"`
+	// RetryAfter is when a withdrawn group may be dispatched again (the backoff of its last withdrawal).
+	RetryAfter *v1.Time `json:"retryAfter,omitempty"`
 }
 
 // PodScheduleApplyConfiguration constructs a declarative configuration of the PodSchedule type for use with
@@ -82,5 +87,21 @@ func (b *PodScheduleApplyConfiguration) WithStartedAt(value v1.Time) *PodSchedul
 // If called multiple times, the Failure field is set to the value of the last call.
 func (b *PodScheduleApplyConfiguration) WithFailure(value *PodFailureApplyConfiguration) *PodScheduleApplyConfiguration {
 	b.Failure = value
+	return b
+}
+
+// WithWithdrawals sets the Withdrawals field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Withdrawals field is set to the value of the last call.
+func (b *PodScheduleApplyConfiguration) WithWithdrawals(value int32) *PodScheduleApplyConfiguration {
+	b.Withdrawals = &value
+	return b
+}
+
+// WithRetryAfter sets the RetryAfter field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the RetryAfter field is set to the value of the last call.
+func (b *PodScheduleApplyConfiguration) WithRetryAfter(value v1.Time) *PodScheduleApplyConfiguration {
+	b.RetryAfter = &value
 	return b
 }

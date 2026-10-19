@@ -181,7 +181,7 @@ func TestTenantStatusWritersCoexist(t *testing.T) {
 	write := func(from *laboratoryv1alpha1.Tenant) {
 		t.Helper()
 		f.now = f.now.Add(time.Second)
-		f.s.writeTenants(ctx, &clusterView{tenants: map[string]*laboratoryv1alpha1.Tenant{"t1": from}}, sf, f.now, time.Nanosecond, 10, map[types.UID]bool{})
+		f.s.writeTenants(ctx, &clusterView{tenants: map[string]*laboratoryv1alpha1.Tenant{"t1": from}}, sf, nil, f.now, time.Nanosecond, 10, map[types.UID]bool{})
 	}
 	agent := func(cpu string) {
 		t.Helper()

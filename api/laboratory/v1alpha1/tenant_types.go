@@ -123,6 +123,13 @@ type TenantStatus struct {
 // admin: nothing of the tenant is stopped for it.
 const TenantConditionCapacityShortfall = "CapacityShortfall"
 
+// TenantConditionGroupsWithdrawn is true on a tenant while some of its groups were withdrawn three times or more in a row
+// because not every pod got a node within the node timeout (a stuck group for the cluster admin); the message names them.
+const TenantConditionGroupsWithdrawn = "GroupsWithdrawnRepeatedly"
+
+// TenantReasonRepeatedWithdrawals is the reason of TenantConditionGroupsWithdrawn.
+const TenantReasonRepeatedWithdrawals = "RepeatedWithdrawals"
+
 // Reasons of the CapacityShortfall condition.
 const (
 	TenantReasonReservationsDoNotFit = "ReservationsDoNotFit"

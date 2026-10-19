@@ -407,10 +407,11 @@ func (e *clusterEnv) unreservedBlockers(plan schedPlan, c *capacitySnapshot) map
 const tenantMessageInterval = time.Minute
 
 // writeTenants sets the CapacityShortfall condition on every tenant with an active or future reservation and removes it from
-// the others, when it changed, within the per-object interval and the budget of the tick. The patch carries the conditions
-// and the resourceVersion as precondition: a write of the agent (status.reserved, used) in between makes it conflict and it
-// is done again on a later pass, so neither writer erases the other's fields.
-func (s *Scheduler) writeTenants(ctx context.Context, snap *clusterView, sf shortfallReport, now time.Time, interval time.Duration, budget int, seen map[types.UID]bool) int {
+// the others, and the GroupsWithdrawnRepeatedly condition on every tenant with a stuck group (stuck: tenant -> message), when
+// they changed, within the per-object interval and the budget of the tick. The patch carries the conditions and the
+// resourceVersion as precondition: a write of the agent (status.reserved, used) in between makes it conflict and it is done
+// again on a later pass, so neither writer erases the other's fields.
+func (s *Scheduler) writeTenants(ctx context.Context, snap *clusterView, sf shortfallReport, stuck map[string]string, now time.Time, interval time.Duration, budget int, seen map[types.UID]bool) int {
 	logger := log.FromContext(ctx).WithName("scheduler")
 	tenantNames := make([]string, 0, len(snap.tenants))
 	for n := range snap.tenants {
@@ -420,13 +421,15 @@ func (s *Scheduler) writeTenants(ctx context.Context, snap *clusterView, sf shor
 	for _, n := range tenantNames {
 		t := snap.tenants[n]
 		seen[t.UID] = true
-		if !sf.known || t.DeletionTimestamp != nil {
+		if t.DeletionTimestamp != nil {
 			continue
 		}
 		next := t.DeepCopy()
 		var changed bool
 		wait := interval
-		if sf.tenants[n] {
+		switch {
+		case !sf.known:
+		case sf.tenants[n]:
 			c := sf.condition()
 			c.ObservedGeneration, c.LastTransitionTime = t.Generation, metav1.NewTime(now)
 			if old := meta.FindStatusCondition(t.Status.Conditions, c.Type); old != nil && old.Status == c.Status && old.Reason == c.Reason && old.ObservedGeneration == c.ObservedGeneration {
@@ -434,8 +437,20 @@ func (s *Scheduler) writeTenants(ctx context.Context, snap *clusterView, sf shor
 				wait = max(interval, tenantMessageInterval)
 			}
 			changed = meta.SetStatusCondition(&next.Status.Conditions, c)
-		} else {
+		default:
 			changed = meta.RemoveStatusCondition(&next.Status.Conditions, laboratoryv1alpha1.TenantConditionCapacityShortfall)
+		}
+		stuckChanged := false
+		if msg, ok := stuck[n]; ok {
+			stuckChanged = meta.SetStatusCondition(&next.Status.Conditions, metav1.Condition{
+				Type: laboratoryv1alpha1.TenantConditionGroupsWithdrawn, Status: metav1.ConditionTrue, Reason: laboratoryv1alpha1.TenantReasonRepeatedWithdrawals,
+				Message: msg, ObservedGeneration: t.Generation, LastTransitionTime: metav1.NewTime(now),
+			})
+		} else {
+			stuckChanged = meta.RemoveStatusCondition(&next.Status.Conditions, laboratoryv1alpha1.TenantConditionGroupsWithdrawn)
+		}
+		if stuckChanged {
+			changed, wait = true, interval
 		}
 		if !changed {
 			continue
@@ -448,7 +463,7 @@ func (s *Scheduler) writeTenants(ctx context.Context, snap *clusterView, sf shor
 		}
 		if err := s.Status().Patch(ctx, next, client.MergeFromWithOptions(t, client.MergeFromWithOptimisticLock{})); err != nil {
 			if !errors.IsNotFound(err) && !errors.IsConflict(err) {
-				logger.Error(err, "write the capacity shortfall of the tenant", "tenant", n)
+				logger.Error(err, "write the conditions of the tenant", "tenant", n)
 			}
 			continue
 		}

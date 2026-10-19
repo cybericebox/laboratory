@@ -20,6 +20,13 @@ func (r *DeviceReconciler) queuedByScheduler(device *laboratoryv1alpha1.Device) 
 	return r.Scheduled && device.Status.Scheduling != nil && device.Status.Scheduling.State == laboratoryv1alpha1.PodQueued
 }
 
+// withdrawnByScheduler reports whether the scheduler withdrew the device's pod: its record is Queued again after a withdrawal
+// (not every pod of its group got a node in time), so the workload it has is to be deleted. A Queued record that was never
+// withdrawn (a lab being started again keeps its stopped workload) is not.
+func (r *DeviceReconciler) withdrawnByScheduler(device *laboratoryv1alpha1.Device) bool {
+	return r.queuedByScheduler(device) && device.Status.Scheduling.Withdrawals > 0
+}
+
 // initScheduling gives a device with no record its first one.
 func (r *DeviceReconciler) initScheduling(ctx context.Context, device *laboratoryv1alpha1.Device, workloadExists bool) error {
 	if !r.Scheduled || device.Status.Scheduling != nil {

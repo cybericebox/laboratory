@@ -870,6 +870,11 @@ spec:
                     description: QueuedAt is when the pod entered the queue.
                     format: date-time
                     type: string
+                  retryAfter:
+                    description: RetryAfter is when a withdrawn group may be dispatched
+                      again (the backoff of its last withdrawal).
+                    format: date-time
+                    type: string
                   startedAt:
                     description: StartedAt is when the pod was first seen Ready.
                     format: date-time
@@ -883,6 +888,12 @@ spec:
                     - Started
                     - Failed
                     type: string
+                  withdrawals:
+                    description: |-
+                      Withdrawals counts the withdrawals of the pod's group in a row (not every pod got a node within the node timeout); it
+                      clears when the pod becomes Ready.
+                    format: int32
+                    type: integer
                 type: object
               state:
                 description: State is the snapshot state of a device with spec.state.enabled.

@@ -78,6 +78,11 @@ type schedPod struct {
 	missing bool
 	// queuedAt is when the pod last entered the queue (its scheduling record; a resumed lab is queued again); zero: unknown.
 	queuedAt time.Time
+	// dispatchedAt is when the pod was last sent (zero: not sent, or unknown); withdrawals and retryAfter are those of its
+	// record: how often its gang was withdrawn in a row and when it may be sent again (zero: no wait).
+	dispatchedAt time.Time
+	withdrawals  int32
+	retryAfter   time.Time
 	// ref is the scheduler's handle on the underlying object (opaque to the plan).
 	ref any
 }
@@ -480,6 +485,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	resHeld := map[string][2]string{} // objects whose gang its reservation does not admit now: the Wait reason and message
 	fitHeld := map[string]bool{}      // objects whose gang does not fit even the empty nodes (may change when nodes return)
 	fitMsg := map[string]string{}     // the message of such an object: its gang, what it requests, the largest empty node
+	withdrawn := map[string]string{}  // objects of a withdrawn gang that waits for its retry time: the message
 	unsetHeld := map[string]string{}  // objects of a gang with no pod out that waits for a pod nobody initialised yet: whose
 	hold := func(held map[string]bool, gg *gang) {
 		for _, o := range gg.objs {
@@ -639,7 +645,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 				started = started || o.started()
 			}
 			q := append(queuedOf(gg), unsetOf(gg)...)
-			if !started || len(q) == 0 {
+			if _, _, wait := gg.retry(fair.now); !started || len(q) == 0 || wait {
 				continue
 			}
 			sums := map[string]amount{}
@@ -754,7 +760,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	if perNode && fair.aging > 0 && !env.noNodes() {
 		var candidates []*gang
 		for _, gg := range gangs {
-			if !held[gg] && !gg.objs[0].isGroup() && fair.now.Sub(gg.waitingSince()) >= fair.aging {
+			if _, _, wait := gg.retry(fair.now); !held[gg] && !wait && !gg.objs[0].isGroup() && fair.now.Sub(gg.waitingSince()) >= fair.aging {
 				candidates = append(candidates, gg)
 			}
 		}
@@ -806,6 +812,13 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	}
 	// try admits the gang whole or not at all. It reports a stop of the pass: no slots, or no node to place on.
 	try := func(gg *gang) (stop bool) {
+		// A withdrawn gang waits for its retry time whole, at its place in the order (gang commit, sched_commit.go).
+		if at, attempt, wait := gg.retry(fair.now); wait {
+			for _, o := range gg.objs {
+				withdrawn[o.id] = withdrawnMessage(fair.nodeTimeout, attempt, at)
+			}
+			return false
+		}
 		queued := queuedOf(gg)
 		// A gang with no pod out waits whole until every pod of it is initialised, so it never starts without some of its
 		// pods; the remainder of an admitted gang sends what is queued and keeps the room and quota of the rest.
@@ -1046,6 +1059,11 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 				plan.status[o.id] = st
 				continue
 			}
+		}
+		if msg, ok := withdrawn[o.id]; ok {
+			st.Reason, st.Message = laboratoryv1alpha1.WaitWithdrawn, msg
+			plan.status[o.id] = st
+			continue
 		}
 		if unsettled[o] {
 			st.Reason, st.Message = laboratoryv1alpha1.WaitForTurn, "the pods of this object are still not set up: its group goes on without it"
