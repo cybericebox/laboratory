@@ -333,3 +333,39 @@ func TestUpdateEndedReservationRefused(t *testing.T) {
 		t.Fatalf("unchanged: %v", after.Spec.To)
 	}
 }
+
+// The lock of a key serializes its holders and is dropped with the last one: no entry is left per reservation or tenant.
+func TestKeyLocksAreDroppedWhenFree(t *testing.T) {
+	h := newReservationHandler()
+	unlock := h.keyLock("reservation/a")
+	got := make(chan struct{})
+	go func() {
+		defer h.keyLock("reservation/a")()
+		close(got)
+	}()
+	select {
+	case <-got:
+		t.Fatal("the second holder must wait")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if h.resLocks.held() != 1 {
+		t.Fatalf("one key: %d", h.resLocks.held())
+	}
+	unlock()
+	<-got
+	deadline := time.Now().Add(time.Second)
+	for h.resLocks.held() != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if h.resLocks.held() != 0 {
+		t.Fatalf("entries left: %d", h.resLocks.held())
+	}
+	// the calls leave nothing behind either
+	createRes(t, h, context.Background(), resItem("r", 0, time.Hour, 1000))
+	if _, err := h.CreateLabGroups(context.Background(), &protobuf.CreateLabGroupsRequest{Items: []*protobuf.LabGroupItem{{Name: "g", ReservationId: "r"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if h.resLocks.held() != 0 {
+		t.Fatalf("entries left after the calls: %d", h.resLocks.held())
+	}
+}
