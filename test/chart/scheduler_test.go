@@ -300,7 +300,8 @@ func TestReservationNoticeReachesTheOperator(t *testing.T) {
 	}
 }
 
-// The reservation controller writes the phase, deletes the groups at the end and the ended reservation a day later.
+// The reservation controller writes the status, deletes the groups at the end and the ended reservation a day later, and
+// never writes the spec.
 func TestOperatorMayEndReservations(t *testing.T) {
 	out, err := helmTemplate(t, "-s", "templates/operator/clusterrole.yaml")
 	if err != nil {
@@ -319,12 +320,18 @@ func TestOperatorMayEndReservations(t *testing.T) {
 		return false
 	}
 	for _, c := range [][2]string{
-		{"reservations", "watch"}, {"reservations", "update"}, {"reservations", "patch"}, {"reservations", "delete"},
+		{"reservations", "watch"}, {"reservations", "delete"},
 		{"reservations/status", "update"}, {"reservations/status", "patch"},
 		{"labs", "delete"}, {"labgroups", "delete"}, {"tenants", "get"},
 	} {
 		if !can(c[0], c[1]) {
 			t.Errorf("operator cannot %s %s", c[1], c[0])
+		}
+	}
+	// the spec belongs to the agent: the operator only writes the status
+	for _, verb := range []string{"update", "patch", "create"} {
+		if can("reservations", verb) {
+			t.Errorf("operator may %s reservations", verb)
 		}
 	}
 }
