@@ -483,3 +483,26 @@ func TestOversizedGroupWarnedOnce(t *testing.T) {
 		}
 	}
 }
+
+// A lab whose reconciler never leaves a trace (it keeps failing before ensureModes) holds its gang at most unsetMaxWait from
+// its creation: held after 10 minutes, out whole with one PodsNotSetUp event after 16.
+func TestUntracedLabHeldAtMostTheCap(t *testing.T) {
+	f := newSchedFixture(t, schedCfg())
+	rec := record.NewFakeRecorder(10)
+	f.s.Recorder = rec
+	f.addLab("a", "g", nil, "p1")
+	f.bareLab("b", "g", "")
+	f.now = f.now.Add(10 * time.Minute)
+	f.tick()
+	f.wantStates("a/p1=Q")
+	f.now = f.now.Add(6 * time.Minute)
+	f.tick()
+	f.wantStates("a/p1=S")
+	f.tick()
+	if n := len(rec.Events); n != 1 {
+		t.Fatalf("%d events, want one", n)
+	}
+	if e := <-rec.Events; !strings.Contains(e, "PodsNotSetUp") {
+		t.Fatalf("event = %q", e)
+	}
+}

@@ -125,7 +125,7 @@ func groupHoldsOtherWork(g *laboratoryv1alpha1.LabGroup, name string, labs []*la
 // reservationCRDName is the CustomResourceDefinition of the Reservation kind.
 const reservationCRDName = "reservations.laboratory.cybericebox.com"
 
-// +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get
+// +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,resourceNames=reservations.laboratory.cybericebox.com,verbs=get
 
 // ReservationCRDBy asks the API server, past any cache, whether it serves the Reservation kind now (its discovery) and which
 // CustomResourceDefinition serves it (its UID; a reinstalled CRD has a new one): the Scheduler's ReservationCRD. r must read

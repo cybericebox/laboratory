@@ -13,6 +13,11 @@ import (
 // objects and the free slots, which pods start now, and what each waiting object
 // reports. Everything that touches the cluster is in scheduler.go.
 
+// unsetMaxWait bounds the wait for an object its reconciler has not left a trace on (Status.ImageCache) yet, from its creation:
+// long enough for the reconciler's queue at the start of an event (about 150 labs), short enough that one lab whose reconcile
+// keeps failing before its first trace does not hold its group for the whole event.
+const unsetMaxWait = 15 * time.Minute
+
 // oversizedGang is a gang that cannot start whole on the current lab nodes, even empty.
 type oversizedGang struct {
 	objs    []*schedObject
@@ -468,7 +473,8 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	// An object whose pods nobody initialised yet (the reconciler has not recorded their state) belongs to its gang: a gang
 	// with no pod out waits for it (it never starts without it), and the remainder of an admitted gang keeps room for it too,
 	// but only within unsetSettleWindow of when its reconciler first worked on it (settleFrom; zero: not touched yet, it is
-	// still in the reconciler's queue and is waited for with no limit). An object still not set up after that (its
+	// still in the reconciler's queue), and never longer than unsetMaxWait from its creation (a reconciler that keeps failing
+	// before it leaves a trace). An object still not set up after that (its
 	// reconciler cannot make its Devices) is out of its gang whole, all its pods not out yet, so it neither holds the others
 	// forever nor starts partly; it is reported in plan.unsettled and joins its gang as a remainder once it is set up.
 	unsettled := map[*schedObject]bool{}
@@ -476,7 +482,11 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		if unsettled[o] {
 			return true
 		}
-		if o.settleFrom.IsZero() || fair.now.IsZero() || fair.now.Sub(o.settleFrom) < unsetSettleWindow {
+		if fair.now.IsZero() {
+			return false
+		}
+		traced := !o.settleFrom.IsZero() && fair.now.Sub(o.settleFrom) >= unsetSettleWindow
+		if !traced && fair.now.Sub(o.arrival) < unsetMaxWait {
 			return false
 		}
 		for _, p := range o.pods {
