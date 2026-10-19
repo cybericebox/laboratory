@@ -65,7 +65,7 @@ type Handler struct {
 	labTolerations []corev1.Toleration
 	// nodeReserve is what the platform keeps free on the lab nodes (the scheduler's reserve), applied to the per-node room.
 	nodeReserve nodecap.Reserve
-	// maximum is the static maximum capacity of the lab nodes (SetMaximum): the room reported counts the nodes still to come.
+	// maximum is the static maximum capacity of the lab nodes (SetMaximum): the room reported counts what its budget still allows.
 	maximum nodecap.Maximum
 	// packingReserve is the hidden packing reserve, taken per node (SetPackingReserve).
 	packingReserve nodecap.PackingReserve

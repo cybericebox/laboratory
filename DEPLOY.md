@@ -572,29 +572,37 @@ while none of its pods has been dispatched. The position is refreshed at a limit
 `reservations.endingNoticeSeconds` (default `300`, `0` = no notice): the Ending condition comes this long before the end of a
 reservation.
 
-The operator needs `get/list/watch` on nodes and DaemonSets (read only: the DaemonSets that would run on a node still to
-come); the chart's ClusterRole has them.
+The operator needs `get/list/watch` on nodes; the chart's ClusterRole has them.
 
 ## Maximum capacity and node autoscaling
 
 The operator knows nothing about an autoscaler. It knows two capacities of the lab nodes:
 
-- **Current**: the lab nodes that exist and are schedulable (Ready, not cordoned, `node-agent-ready`, taints tolerated). A node
-  that boots, a node a cluster autoscaler removes (taint `ToBeDeletedByClusterAutoscaler`) and a NotReady node do not count.
-- **Maximum**: `capacity.maxNodes` lab nodes in all, the existing ones included. A node still to come has the allocatable
-  `capacity.addedNode.cpu` / `memory`; labs get that less the requests of the DaemonSets that would run there (their node
-  selector, required node affinity and tolerations against the lab labels and the lab taint), the platform reserve and the packing
-  reserve, as for a real node. `maxNodes: 0` (the default): the maximum is the current capacity. A maximum below the current
-  nodes counts as the current nodes. Infra renders the values from the autoscaling group's max and instance type.
+- **Current**: the room for labs of the lab nodes that exist and are schedulable (Ready, not cordoned, `node-agent-ready`,
+  taints tolerated). A node that boots, a node a cluster autoscaler removes (taint `ToBeDeletedByClusterAutoscaler`) and a
+  NotReady node do not count.
+- **Maximum**: a **budget** for the autoscaled lab nodes, the nodes with the label `cybericebox.io/node-group` (infra sets it
+  when a node of an autoscaled group joins). `capacity.budget.cpu` / `memory` is the room for labs those nodes may give
+  together at most: the totals infra gives the cluster autoscaler (`--cores-total` / `--memory-total`) less the control plane,
+  the platform pods and the DaemonSets. The fixed nodes (the controller, any node without the label) count with their real
+  room only. So:
+  - maximum = the real room of the fixed nodes + the larger of the real room of the autoscaled nodes and the budget;
+  - virtual room = the budget less the real room of the schedulable autoscaled nodes (allocatable less the non-lab pods), per
+    resource, never below zero; the operator then keeps its platform reserve percent and packing reserve percent on it, as on
+    a real node (the absolute per-node reserves are not taken: the number of nodes to come is not known).
 
-**Admission against the maximum.** The placement simulation of the scheduler has the real nodes first, then one virtual room
-per node still to come. A group that fits real and virtual room together is sent whole; its pods for the virtual room stay
-`Pending` (`PodScheduled=False`), and a cluster autoscaler, if infra installed one, adds a node for them. On the next passes
-these pods hold the virtual room they wait on, so no more than the maximum is ever sent. With no lab node at all the queue
-goes on while virtual room is left (scale from zero). `DoesNotFitNow` and the `GroupTooLarge` event come only for a group
-beyond the maximum; a pod is failed with `DoesNotFit` only when neither a real node nor an added node can hold it.
-`CapacityShortfall`, the cleanup of unreserved work (spec decisions 6 and 19) and the agent's `GetCapacity` use the maximum
-too; the condition message says how much of the capacity is on nodes not yet present.
+  Without a budget (both values empty, the default) the maximum is the current capacity.
+
+**Admission against the maximum.** The placement simulation of the scheduler has the real nodes first, then the virtual room
+as one aggregate room: a group may span nodes, and the cluster autoscaler picks which nodes it adds (`least-waste`), so the
+placement on the virtual room is only an admission estimate. A group that fits real and virtual room together is sent whole;
+its pods beyond the real room stay `Pending` (`PodScheduled=False`), and a cluster autoscaler, if infra installed one, adds
+nodes for them. On the next passes these pods hold the virtual room they wait on, so no more than the maximum is ever sent.
+With no lab node at all the queue goes on while virtual room is left (scale from zero). `DoesNotFitNow` and the
+`GroupTooLarge` event come only for a group beyond the maximum. While virtual room is left no pod is failed with
+`DoesNotFit` (a single device is capped by `limits.device.*`, and every node type infra uses is larger); without it the
+per-node rule above holds as before. `CapacityShortfall`, the cleanup of unreserved work (spec decisions 6 and 19) and the
+agent's `GetCapacity` use the maximum too; the condition message says how much of the capacity is on nodes not yet present.
 
 **Waiting for a node.** An object whose pods are all sent and some have no node yet shows `status.scheduling.reason:
 NodeStarting` ("n pods wait for a node since T") and gets one Normal event `NodeStarting`; the gauge
@@ -618,7 +626,7 @@ Before, such a pod was failed `Unschedulable` after `scheduler.startupTimeout`; 
 node timeout. A pod whose workload never creates it (a quota, a refusal) still fails after the startup timeout.
 
 **Breaker.** After a withdrawal, admission uses the current nodes only (no virtual room) until a lab node becomes schedulable
-that was not schedulable at the withdrawal, or one node timeout passes. A group that needs a node still to come waits
+that was not schedulable at the withdrawal, or one node timeout passes. A group that needs virtual room waits
 `InsufficientResources` meanwhile. The gauge `laboratory_capacity_breaker` is `1` and the `CapacityShortfall` message adds "no
 new lab node came within 15m0s: admission uses the current nodes only"; the shortfall is computed on the current nodes then.
 The agent keeps reporting the maximum. A restart of the operator forgets the breaker (one more try).
@@ -637,21 +645,20 @@ The agent keeps reporting the maximum. A restart of the operator forgets the bre
 
 | Value | Default | Meaning |
 |---|---|---|
-| `maxNodes` | `0` | lab nodes in all, the existing ones included; `0`: the maximum is the current capacity |
-| `addedNode.cpu` / `addedNode.memory` | `""` | allocatable of one added node; required with `maxNodes` |
+| `budget.cpu` / `budget.memory` | `""` | room for labs the autoscaled nodes (label `cybericebox.io/node-group`) may give at most; both or neither; empty: no budget |
 | `nodeTimeoutSeconds` | `900` | the gang commit: every sent pod of a group must have a node this long after the group's last dispatch |
 
 **Smoke test (AWS, desired 0 → 1 → 0).**
 
-1. Start: the lab autoscaling group is at 0; the agent's `GetCapacity` is about the controller's room plus `lab_worker_max`
-   times one added node's room.
+1. Start: the lab autoscaling groups are at 0; the agent's `GetCapacity` is about the controller's room plus the budget (less
+   the packing reserve).
 2. Start a reservation and a deploy group that does not fit the controller: the group is sent, its pods are `Pending`, the
    Lab shows `NodeStarting`, the autoscaler logs a scale-up and the group's desired capacity is 1.
 3. The node joins and gets `node-agent-ready`: the pods bind and become Ready, `NodeStarting` clears, the pods carry
    `safe-to-evict: "false"`.
 4. Delete the group: after about 10 + 10 minutes the autoscaler removes the node, the desired capacity is 0, the instance is
    terminated and the Node object is gone.
-5. A group larger than the controller plus `lab_worker_max` added nodes gets `GroupTooLarge` and no scale-up.
+5. A group larger than the controller's room plus the budget gets `GroupTooLarge` and no scale-up.
 6. Set the group's max to 0 and start a gang of two labs, one that fits the controller and one that needs a new node: at 15m
    the whole gang is withdrawn (both workloads deleted, `Withdrawn`, attempt 1), `laboratory_capacity_breaker` is 1 and a
    new group that needs a node waits. Restore the max: on retry the node comes, the gang starts whole and the breaker clears.

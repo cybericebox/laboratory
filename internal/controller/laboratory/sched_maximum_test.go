@@ -6,26 +6,22 @@ import (
 	"testing"
 	"time"
 
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/nodecap"
 )
 
-// maxFixture is a scheduler with the resource check on, devices of 1 CPU and 1Gi each, and a static maximum of nodes of
-// 2 CPU and 4Gi.
-func maxFixture(t *testing.T, maxNodes int) *schedFixture {
+// maxFixture is a scheduler with the resource check on, devices of 1 CPU and 1Gi each, and a budget of n times 2 CPU and 4Gi for
+// the autoscaled nodes.
+func maxFixture(t *testing.T, n int) *schedFixture {
 	t.Helper()
 	cfg := schedCfg()
 	cfg.MaxPods = 20
 	cfg.ResourceCheck = true
-	cfg.Maximum = nodecap.Maximum{Nodes: maxNodes, Added: nodecap.Amount{CPU: 2000, Memory: 4 << 30}}
+	cfg.Maximum = nodecap.Maximum{Budget: nodecap.Amount{CPU: int64(n) * 2000, Memory: int64(n) * 4 << 30}}
 	f := newSchedFixture(t, cfg)
 	f.s.Defaults = DeviceDefaults{CPU: "1", Memory: "1Gi"}
 	return f
@@ -51,6 +47,13 @@ func (f *schedFixture) passEnv() (*clusterEnv, schedPlan) {
 	return env, plan
 }
 
+// groupNode is a node of an autoscaled node group: its room counts against the budget.
+func groupNode(name, cpu, mem string) *corev1.Node {
+	n := node(name, cpu, mem)
+	n.Labels[nodecap.LabelNodeGroup] = "g"
+	return n
+}
+
 func roomNames(rooms []nodeRoom) []string {
 	var out []string
 	for _, r := range rooms {
@@ -59,7 +62,7 @@ func roomNames(rooms []nodeRoom) []string {
 	return out
 }
 
-// No lab node and room for two more: the pass does not stop, a gang of one and a half nodes is sent whole.
+// No lab node and a budget: the pass does not stop, a gang of one and a half nodes' worth is sent whole.
 func TestScaleFromZeroDispatches(t *testing.T) {
 	f := maxFixture(t, 2)
 	f.addLab("a", "g", nil, "p1", "p2", "p3")
@@ -70,7 +73,7 @@ func TestScaleFromZeroDispatches(t *testing.T) {
 	}
 }
 
-// The pods sent onto virtual room hold it while they wait for a node: no later gang is sent past the maximum.
+// The pods sent onto the virtual room hold it while they wait for a node: no later gang is sent past the budget.
 func TestUnboundPodsHoldVirtualRooms(t *testing.T) {
 	f := maxFixture(t, 2)
 	f.addLab("a", "g1", nil, "p1", "p2", "p3")
@@ -85,16 +88,17 @@ func TestUnboundPodsHoldVirtualRooms(t *testing.T) {
 	}
 }
 
-// A gang that fits the nodes that exist plus the ones still to come is sent; only one beyond the maximum is too large.
+// A gang that fits the maximum is sent, across nodes; only one beyond it is too large. An autoscaled node counts against the
+// budget: here the maximum is 4 CPU in all.
 func TestOversizedOnlyBeyondMaximum(t *testing.T) {
 	f := maxFixture(t, 2)
-	f.create(node("n1", "2", "4Gi"))
+	f.create(groupNode("n1", "2", "4Gi"))
 	f.addLab("a", "g", nil, "p1", "p2", "p3", "p4")
 	f.tick()
 	f.wantStates("a/p1=S a/p2=S a/p3=S a/p4=S")
 
 	f2 := maxFixture(t, 2)
-	f2.create(node("n1", "2", "4Gi"))
+	f2.create(groupNode("n1", "2", "4Gi"))
 	f2.addLab("a", "g", nil, "p1", "p2", "p3", "p4", "p5")
 	f2.tick()
 	f2.wantStates("a/p1=Q a/p2=Q a/p3=Q a/p4=Q a/p5=Q")
@@ -106,8 +110,9 @@ func TestOversizedOnlyBeyondMaximum(t *testing.T) {
 	}
 }
 
-// A pod larger than every node that exists but within an added node waits for one; without a maximum it fails.
-func TestNeverFitsUsesAddedNode(t *testing.T) {
+// With a budget left nothing is failed for good (a node still to come may be larger than every node that exists); without a
+// budget a pod larger than every node fails as before.
+func TestNoNeverFitsWithBudget(t *testing.T) {
 	for _, tc := range []struct {
 		maxNodes int
 		want     string
@@ -124,13 +129,13 @@ func TestNeverFitsUsesAddedNode(t *testing.T) {
 // The real nodes come first: a gang that fits there leaves the virtual room untouched.
 func TestRealRoomsPreferred(t *testing.T) {
 	f := maxFixture(t, 3)
-	f.create(node("n1", "2", "4Gi"))
+	f.create(groupNode("n1", "2", "4Gi"))
 	f.addLab("a", "g", nil, "p1", "p2")
 	env, plan := f.passEnv()
-	if got := roomNames(env.capacity().rooms()); len(got) != 3 || got[0] != "n1" || got[1] != "virtual/0" || got[2] != "virtual/1" {
+	if got := roomNames(env.capacity().rooms()); len(got) != 2 || got[0] != "n1" || got[1] != nodecap.VirtualRoomName {
 		t.Fatalf("rooms = %v", got)
 	}
-	if len(plan.dispatch) != 2 || plan.left[0].CPU != 0 || plan.left[1].CPU != 2000 || plan.left[2].CPU != 2000 {
+	if len(plan.dispatch) != 2 || plan.left[0].CPU != 0 || plan.left[1].CPU != 4000 {
 		t.Fatalf("dispatch %d, left %+v", len(plan.dispatch), plan.left)
 	}
 }
@@ -138,37 +143,36 @@ func TestRealRoomsPreferred(t *testing.T) {
 // A node a cluster autoscaler is removing is not schedulable: its room becomes virtual.
 func TestCATaintedNodeLeavesRooms(t *testing.T) {
 	f := maxFixture(t, 2)
-	f.create(node("n1", "2", "4Gi"))
-	leaving := node("n2", "8", "16Gi")
+	f.create(groupNode("n1", "2", "4Gi"))
+	leaving := groupNode("n2", "8", "16Gi")
 	leaving.Spec.Taints = []corev1.Taint{{Key: "ToBeDeletedByClusterAutoscaler", Effect: corev1.TaintEffectNoSchedule}}
 	f.create(leaving)
 	env, _ := f.passEnv()
 	c := env.capacity()
-	if got := roomNames(c.rooms()); c.nodes != 1 || len(got) != 2 || got[1] != "virtual/0" || c.rooms()[1].CPU != 2000 {
+	if got := roomNames(c.rooms()); c.nodes != 1 || len(got) != 2 || got[1] != nodecap.VirtualRoomName || c.rooms()[1].CPU != 2000 {
 		t.Fatalf("nodes %d, rooms %v %+v", c.nodes, got, c.rooms())
 	}
 }
 
-// The DaemonSets that would land on a node still to come take their requests off its room.
-func TestVirtualRoomLessDaemonSets(t *testing.T) {
-	f := maxFixture(t, 1)
-	ds := &appsv1.DaemonSet{}
-	ds.Name, ds.Namespace = "cilium", "kube-system"
-	ds.Spec.Template.Spec.Tolerations = []corev1.Toleration{{Operator: corev1.TolerationOpExists}}
-	ds.Spec.Template.Spec.Containers = []corev1.Container{{Name: "c", Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
-		corev1.ResourceCPU: resource.MustParse("500m"), corev1.ResourceMemory: resource.MustParse("512Mi")}}}}
-	f.createPlain(ds)
+// The budget covers the autoscaled nodes only: a fixed node (the controller) adds its room beside the budget, an autoscaled
+// node takes its room off it.
+func TestFixedNodesOutsideBudget(t *testing.T) {
+	f := maxFixture(t, 2)
+	f.create(node("cp-1", "2", "4Gi"))
 	env, _ := f.passEnv()
-	if r := env.capacity().rooms(); len(r) != 1 || r[0].CPU != 1500 || r[0].Memory != 4<<30-512<<20 {
+	if r := env.capacity().rooms(); len(r) != 2 || r[0].CPU != 2000 || r[1].CPU != 4000 || r[1].Memory != 8<<30 {
+		t.Fatalf("rooms = %+v", r)
+	}
+	f.create(groupNode("w1", "2", "4Gi"))
+	env, _ = f.passEnv()
+	if r := env.capacity().rooms(); len(r) != 3 || r[2].CPU != 2000 || r[2].Memory != 4<<30 {
 		t.Fatalf("rooms = %+v", r)
 	}
 }
 
-// With no maximum nothing changes: the rooms are the real ones, and no DaemonSet is read.
+// With no budget nothing changes: the rooms are the real ones.
 func TestMaximumOffUnchanged(t *testing.T) {
 	f := maxFixture(t, 0)
-	read := 0
-	f.s.Client = interceptorClient(f.c.(client.WithWatch), &read)
 	f.create(node("n1", "2", "4Gi"))
 	f.addLab("a", "g", nil, "p1", "p2", "p3")
 	f.tick()
@@ -177,26 +181,16 @@ func TestMaximumOffUnchanged(t *testing.T) {
 		t.Fatalf("status = %+v", s)
 	}
 	env, _ := f.passEnv()
-	if got := roomNames(env.capacity().rooms()); len(got) != 1 || got[0] != "n1" || read != 0 {
-		t.Fatalf("rooms %v, DaemonSet lists %d", got, read)
+	if got := roomNames(env.capacity().rooms()); len(got) != 1 || got[0] != "n1" {
+		t.Fatalf("rooms %v", got)
 	}
 }
 
-// interceptorClient counts the lists of DaemonSets.
-func interceptorClient(c client.WithWatch, lists *int) client.WithWatch {
-	return interceptor.NewClient(c, interceptor.Funcs{List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
-		if _, ok := list.(*appsv1.DaemonSetList); ok {
-			*lists++
-		}
-		return cl.List(ctx, list, opts...)
-	}})
-}
-
-// shortMaxFixture is shortFixture with room for one more lab node of 1 CPU and 1Gi.
+// shortMaxFixture is shortFixture with a budget of 1 CPU and 1Gi for autoscaled nodes beside its fixed node.
 func shortMaxFixture(t *testing.T) *schedFixture {
 	t.Helper()
 	f := shortFixture(t)
-	f.s.Config.Maximum = nodecap.Maximum{Nodes: 2, Added: nodecap.Amount{CPU: 1000, Memory: 1 << 30}}
+	f.s.Config.Maximum = nodecap.Maximum{Budget: nodecap.Amount{CPU: 1000, Memory: 1 << 30}}
 	return f
 }
 
@@ -238,7 +232,7 @@ func TestEvictOnlyBeyondMaximum(t *testing.T) {
 func TestShortfallMessageNamesVirtual(t *testing.T) {
 	r := shortfallReport{known: true, checked: true, peak: amount{cpu: 3000, mem: 3 << 30}, capacity: amount{cpu: 2000, mem: 2 << 30},
 		short: amount{cpu: 1000, mem: 1 << 30}, virtual: amount{cpu: 1000, mem: 1 << 30}}
-	if c := r.condition(); !strings.Contains(c.Message, "of which cpu 1000m and memory 1073741824 bytes on nodes not yet present (static maximum)") {
+	if c := r.condition(); !strings.Contains(c.Message, "of which cpu 1000m and memory 1073741824 bytes on nodes not yet present (capacity budget)") {
 		t.Fatalf("message = %q", c.Message)
 	}
 	r.breaker, r.timeout = true, 15*time.Minute

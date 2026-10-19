@@ -115,8 +115,8 @@ func TestOperatorMakesImagePullRequestsNotDaemonSets(t *testing.T) {
 	found := map[string]bool{}
 	for _, d := range docs(t, out) {
 		for _, r := range rulesOf(t, d) {
-			if has(r.Resources, "daemonsets") && (has(r.Verbs, "create") || has(r.Verbs, "update") || has(r.Verbs, "patch") || has(r.Verbs, "delete")) {
-				t.Errorf("the operator only reads DaemonSets (the room they take on a node still to come): %+v", r)
+			if has(r.Resources, "daemonsets") {
+				t.Errorf("the operator has no business with DaemonSets: %+v", r)
 			}
 			if has(r.Resources, "imagepulls") {
 				for _, v := range r.Verbs {

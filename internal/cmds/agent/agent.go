@@ -106,7 +106,7 @@ func Run() {
 		log.Fatalf("%v", err)
 	}
 	h.SetPackingReserve(packing)
-	maximum, err := nodecap.ParseMaximum(cfg.CapacityMaxNodes, cfg.CapacityAddedNodeCPU, cfg.CapacityAddedNodeMemory)
+	maximum, err := nodecap.ParseMaximum(cfg.CapacityBudgetCPU, cfg.CapacityBudgetMemory)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}

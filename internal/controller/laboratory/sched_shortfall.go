@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -139,7 +138,7 @@ type shortfallReport struct {
 	// checked: the per-node resource check is on; without it nothing is computed and no work is evicted.
 	checked bool
 	// peak is the peak overlap of the active and future reservations, capacity the room for labs on the empty nodes (with the
-	// nodes still to come up to the static maximum), virtual the part of capacity on those.
+	// virtual room the budget still allows), virtual that part of capacity.
 	peak, capacity, virtual amount
 	// breaker: admission uses the current nodes only in this pass (sched_commit.go), after a withdrawal timeout ago at most.
 	breaker bool
@@ -176,11 +175,11 @@ func (e *clusterEnv) shortfall(plan schedPlan) shortfallReport {
 	}
 	rep.known, rep.checked = true, true
 	rep.breaker, rep.timeout = e.breaker, e.s.nodeTimeout()
-	// the same rooms as the plan's: the nodes that exist and the ones still to come up to the maximum (none under the breaker)
+	// the same rooms as the plan's: the nodes that exist and the virtual room of the budget (none under the breaker)
 	empty := c.rooms()
 	for _, n := range empty {
 		rep.capacity = rep.capacity.add(amount{cpu: n.CPU, mem: n.Memory})
-		if strings.HasPrefix(n.Name, nodecap.VirtualPrefix) {
+		if n.Name == nodecap.VirtualRoomName {
 			rep.virtual = rep.virtual.add(amount{cpu: n.CPU, mem: n.Memory})
 		}
 	}
@@ -238,12 +237,12 @@ func (r shortfallReport) condition() metav1.Condition {
 	return c
 }
 
-// virtualText says what part of the capacity is on the lab nodes still to come; empty when none.
+// virtualText says what part of the capacity is the budget's room on nodes not yet present; empty when none.
 func (r shortfallReport) virtualText() string {
 	if r.virtual == (amount{}) {
 		return ""
 	}
-	return fmt.Sprintf(" (of which cpu %dm and memory %d bytes on nodes not yet present (static maximum))", r.virtual.cpu, r.virtual.mem)
+	return fmt.Sprintf(" (of which cpu %dm and memory %d bytes on nodes not yet present (capacity budget))", r.virtual.cpu, r.virtual.mem)
 }
 
 // evictable says the object is unreserved work the cleanup may take: it carries no reservation label at all (the scheduler's

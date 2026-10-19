@@ -84,15 +84,6 @@ rules:
 - apiGroups:
   - apps
   resources:
-  - daemonsets
-  - replicasets
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - apps
-  resources:
   - deployments
   verbs:
   - create
@@ -101,6 +92,14 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - replicasets
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - cilium.io

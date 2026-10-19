@@ -209,7 +209,7 @@ func (s *Scheduler) withdrawDue(ctx context.Context, snap *clusterView, due []ga
 	for _, g := range due {
 		s.withdraw(ctx, snap, g, now)
 	}
-	if s.Config.Maximum.Nodes <= 0 {
+	if !s.Config.Maximum.Set() {
 		return
 	}
 	var nodes corev1.NodeList
