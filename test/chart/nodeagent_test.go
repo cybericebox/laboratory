@@ -237,8 +237,8 @@ func TestNodeAgentFollowsLabPlacementAndLabPodsNeedItsLabel(t *testing.T) {
 		t.Errorf("default node selector: %v", ds.Spec.Template.Spec.NodeSelector)
 	}
 	tols := ds.Spec.Template.Spec.Tolerations
-	if len(tols) != 1 || tols[0].Key != "node.cilium.io/agent-not-ready" {
-		t.Errorf("by default only Cilium's agent-not-ready taint is tolerated: %v", tols)
+	if len(tols) != 2 || tols[0].Key != "node.cilium.io/agent-not-ready" || tols[1].Key != "cybericebox.io/node-starting" {
+		t.Errorf("by default only Cilium's agent-not-ready taint and the startup taint are tolerated: %v", tols)
 	}
 
 	set := []string{"--set", "labWorkloads.nodeSelector.pool=labs",

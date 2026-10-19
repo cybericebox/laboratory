@@ -40,6 +40,11 @@ spec:
         - key: node.cilium.io/agent-not-ready
           operator: Exists
           effect: NoSchedule
+        # A new lab worker carries the startup taint until this node-agent has registered the tun device and labelled the node;
+        # the node-agent itself removes it (DEPLOY.md, "The startup taint of a new lab worker").
+        - key: cybericebox.io/node-starting
+          operator: Exists
+          effect: NoSchedule
         {{- with .Values.labWorkloads.tolerations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

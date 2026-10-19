@@ -45,7 +45,7 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       {{- end }}
-      {{- with include "laboratory.placement" (dict "own" .Values.proxy.wg "root" $) }}
+      {{- with include "laboratory.placement" (dict "own" .Values.proxy.wg "root" $ "daemon" true) }}
       {{- . | nindent 6 }}
       {{- end }}
       {{- with .Values.imagePullSecrets }}

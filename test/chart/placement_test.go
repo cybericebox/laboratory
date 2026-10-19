@@ -151,7 +151,11 @@ func TestAllComponentsFollowLabNodes(t *testing.T) {
 				}
 				continue
 			}
-			if len(spec.NodeSelector) != 0 || len(spec.Tolerations) != 0 {
+			tolerations := spec.Tolerations
+			if strings.HasPrefix(name, "DaemonSet/") && len(tolerations) == 1 && tolerations[0].Key == "cybericebox.io/node-starting" {
+				tolerations = nil // a DaemonSet always tolerates the startup taint of a new lab worker
+			}
+			if len(spec.NodeSelector) != 0 || len(tolerations) != 0 {
 				t.Errorf("%s: %v %v", name, spec.NodeSelector, spec.Tolerations)
 			}
 		}
