@@ -81,10 +81,10 @@ const BudgetRetry = 30 * time.Second
 // UsableBudget is the capacity maximum to run with: m when it has no budget or the served CRDs know the fields of the gang
 // commit; none (the maximum is the current capacity) when a CRD lacks them, is missing or may not be read, with why. A read that
 // fails for another reason (the API server busy, a timeout) is retried with a growing pause for up to retry; if it still fails
-// the budget is kept, since nothing says the CRDs are old.
-func UsableBudget(ctx context.Context, get GetCRD, m nodecap.Maximum, retry time.Duration) (nodecap.Maximum, string) {
+// the budget is kept, since nothing says the CRDs are old, and kept is that last error for the caller to log.
+func UsableBudget(ctx context.Context, get GetCRD, m nodecap.Maximum, retry time.Duration) (_ nodecap.Maximum, why string, kept error) {
 	if !m.Set() {
-		return m, ""
+		return m, "", nil
 	}
 	deadline := time.Now().Add(retry)
 	pause := time.Second
@@ -92,17 +92,17 @@ func UsableBudget(ctx context.Context, get GetCRD, m nodecap.Maximum, retry time
 		missing, err := GangCommitFieldsMissing(ctx, get)
 		switch {
 		case err == nil && len(missing) == 0:
-			return m, ""
+			return m, "", nil
 		case err == nil:
-			return nodecap.Maximum{}, fmt.Sprintf("the served CRDs lack %v", missing)
+			return nodecap.Maximum{}, fmt.Sprintf("the served CRDs lack %v", missing), nil
 		case apierrors.IsNotFound(err) || apierrors.IsForbidden(err):
-			return nodecap.Maximum{}, err.Error()
+			return nodecap.Maximum{}, err.Error(), nil
 		case !time.Now().Add(pause).Before(deadline):
-			return m, ""
+			return m, "", err
 		}
 		select {
 		case <-ctx.Done():
-			return m, ""
+			return m, "", err
 		case <-time.After(pause):
 		}
 		pause = min(2*pause, 8*time.Second)
