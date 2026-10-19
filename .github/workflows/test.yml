@@ -77,8 +77,8 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Create kind cluster
-        run: kind create cluster
+      - name: Create kind cluster (1 control plane + 2 lab workers, one tainted)
+        run: kind create cluster --config hack/kind/kind-config.yaml
       - name: Running Test e2e
         run: |
           go mod tidy
