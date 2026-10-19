@@ -1283,7 +1283,9 @@ everything a stranger can make it hold or spend is capped (`proxy.wg.limits`):
   `missRate`/`missBurst` for packets, all sources together, that match no session or come from an address the session does not expect, so guessing the 32-bit
   session index is rate-limited. Per session: `sessionRate`/`sessionBurst` packets per second, so one participant cannot use the demux's CPU up.
 - **Roaming works as before**, but one session changes address at most once per `roamInterval`; a packet from a third address inside the interval is dropped and
-  moves nothing. An index a live session owns is never taken by another handshake (the handshake is dropped).
+  moves nothing. An index a live session owns is never taken by another handshake (the handshake is dropped). In `userspace` the Service's policy is `Cluster`, so
+  the new source port of a roamed client is a new flow that Cilium may hand to the demux of another node (chance (N-1)/N with N demux pods), which knows no session:
+  the client then re-handshakes, about 15 s (as with the replicas before the demux modes). Fewer demux pods (`proxy.wg.nodeSelector` on the edge nodes) make it rarer.
 - **Type 2** (the server's answer) is accepted only from the VPN pod the init was forwarded to; **type 3** (cookie reply, the peer's own load protection) is
   forwarded, only from the exact address the session expects, and never moves the session.
 
@@ -2020,6 +2022,7 @@ slip under a stricter check, the component that runs it clamps or ignores the ba
    `laboratory-wg`, and Helm creates the new one before it deletes the old one, so with a fixed `proxy.wg.nodePort` the create fails ("provided port
    is already allocated") and the upgrade stops halfway. The VPN is down from this step until the new demux pods are Ready, and every client
    re-handshakes. Once migrated the step does nothing (the kind harness checks the upgrade from `develop`: `hack/kind-demux/e2e.sh upgrade`).
+   The old Service is gone before a non-atomic `helm upgrade`: if that upgrade fails for another reason, the VPN has no Service until it is run again or rolled back.
 3. `helm upgrade` (the operator, agent, node-agent and proxy roll out together; the operator and the agent can run in either order).
 4. The notes of each item below say what, if anything, must happen in a different order. In short, before `helm upgrade`:
    - the cluster is Kubernetes 1.33 or newer (the chart refuses an older one), or `operator.admissionPolicy.enabled=false` is set on purpose (the chart refuses to skip the policies silently, and the operator exits at start when they are not enforced);

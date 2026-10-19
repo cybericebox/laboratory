@@ -165,6 +165,12 @@ func TestWGModeValidated(t *testing.T) {
 	if err == nil || !strings.Contains(out, "externalTrafficPolicy") {
 		t.Fatalf("an unknown policy must be refused: %v\n%s", err, out)
 	}
+	// null (e.g. an infra template with an empty value) means the default, as "" does.
+	var svc corev1.Service
+	render(t, "templates/wg/service.yaml", &svc, "--set", "proxy.wg.externalTrafficPolicy=null")
+	if svc.Spec.ExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyCluster {
+		t.Errorf("null policy: ETP = %q, want Cluster", svc.Spec.ExternalTrafficPolicy)
+	}
 }
 
 func TestWGServicePolicyFollowsMode(t *testing.T) {
