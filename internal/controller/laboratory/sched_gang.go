@@ -189,6 +189,8 @@ type fairness struct {
 	aging time.Duration
 	// nodeTimeout is the node timeout of the gang commit, for the message of a withdrawn gang.
 	nodeTimeout time.Duration
+	// breaker: new gangs are placed on the real room only in this pass (the virtual room of the budget is closed to them).
+	breaker bool
 }
 
 // byAge orders gangs by arrival, then tenant, then key.

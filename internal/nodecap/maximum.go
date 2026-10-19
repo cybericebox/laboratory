@@ -58,6 +58,18 @@ func ParseMaximum(cpu, mem string) (Maximum, error) {
 // still to come is not known. A booting, cordoned, NotReady node or one an autoscaler removes is not schedulable, so its room
 // stays virtual. One aggregate amount: a gang may span nodes, and the cluster autoscaler picks the nodes.
 func (m Maximum) Virtual(nodes []corev1.Node, pods []corev1.Pod, selector map[string]string, tolerations []corev1.Toleration, reserve Reserve, packing PackingReserve) Amount {
+	left := m.Remaining(nodes, pods, selector, tolerations)
+	cpu, mem := left.CPU, left.Memory
+	cpu -= cpu * int64(reserve.Percent) / 100
+	mem -= mem * int64(reserve.Percent) / 100
+	cpu, mem = PackingReserve{Percent: packing.Percent}.Apply(cpu, mem)
+	return Amount{CPU: cpu, Memory: mem}
+}
+
+// Remaining is the budget less the room of the schedulable autoscaled nodes (their allocatable less the requests of the pods
+// that are not lab pods), per resource, never below zero, before any reserve of the operator: what a percentage tenant quota
+// counts on top of the allocatable of the nodes that exist.
+func (m Maximum) Remaining(nodes []corev1.Node, pods []corev1.Pod, selector map[string]string, tolerations []corev1.Toleration) Amount {
 	if !m.Set() {
 		return Amount{}
 	}
@@ -74,9 +86,5 @@ func (m Maximum) Virtual(nodes []corev1.Node, pods []corev1.Pod, selector map[st
 			have.Memory += f.Memory
 		}
 	}
-	cpu, mem := max(m.Budget.CPU-have.CPU, 0), max(m.Budget.Memory-have.Memory, 0)
-	cpu -= cpu * int64(reserve.Percent) / 100
-	mem -= mem * int64(reserve.Percent) / 100
-	cpu, mem = PackingReserve{Percent: packing.Percent}.Apply(cpu, mem)
-	return Amount{CPU: cpu, Memory: mem}
+	return Amount{CPU: max(m.Budget.CPU-have.CPU, 0), Memory: max(m.Budget.Memory-have.Memory, 0)}
 }

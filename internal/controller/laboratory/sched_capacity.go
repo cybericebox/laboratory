@@ -55,9 +55,12 @@ type capacitySnapshot struct {
 	// labUsed is the requests of the lab pods bound to each node (the held pods of stopped labs included).
 	labUsed map[string]amount
 	// vmax is the room for labs the budget of the static maximum still allows beyond the autoscaled nodes that exist
-	// (nodecap.Maximum.Virtual), and virtual what of it admission places on in this pass (vmax, or nothing under the breaker).
-	// One aggregate room: a gang may span nodes, the cluster autoscaler picks them. Zero without a budget.
+	// (nodecap.Maximum.Virtual): one aggregate room in rooms, as a gang may span nodes and the cluster autoscaler picks them.
+	// virtual is what of it new gangs may be placed on in this pass: vmax, or nothing under the breaker (the plan closes the
+	// virtual room to them then; the reservations, the shortfall and the verdicts still count it). Zero without a budget.
 	vmax, virtual amount
+	// breaker: admission uses the nodes that exist only in this pass (sched_commit.go).
+	breaker bool
 }
 
 // virtualRoom is the aggregate room a the budget still allows, as one room named nodecap.VirtualRoomName; none when a is zero.
@@ -69,24 +72,36 @@ func virtualRoom(a amount) []nodeRoom {
 }
 
 // rooms is the room FOR labs on each schedulable node, in the order of the nodes, before the usage of the labs, and after them
-// the virtual room the budget still allows that admission may place on now: the real room is used first.
+// the virtual room the budget still allows: the maximum. The real room is used first.
 func (c capacitySnapshot) rooms() []nodeRoom {
-	return append(append([]nodeRoom(nil), c.perNode...), virtualRoom(c.virtual)...)
-}
-
-// emptyRooms is rooms with all the virtual room, the breaker or not: what a gang could ever have, for the DoesNotFit verdict.
-func (c capacitySnapshot) emptyRooms() []nodeRoom {
 	return append(append([]nodeRoom(nil), c.perNode...), virtualRoom(c.vmax)...)
 }
 
-// withMaximum adds the virtual room the budget still allows; breaker: admission places on none of it in this pass (it still
-// counts for the verdicts).
-func (c *capacitySnapshot) withMaximum(room nodecap.Amount, breaker bool) {
+// emptyRooms is rooms: what a gang could ever have, for the DoesNotFit verdict.
+func (c capacitySnapshot) emptyRooms() []nodeRoom { return c.rooms() }
+
+// withMaximum adds the virtual room the budget still allows (room, for the placement) and what the budget adds to the
+// allocatable (remaining, before the operator's reserves: the base of a percentage tenant quota is the maximum too); breaker:
+// new gangs are placed on none of the virtual room in this pass.
+func (c *capacitySnapshot) withMaximum(room, remaining nodecap.Amount, breaker bool) {
 	c.vmax = amount{cpu: room.CPU, mem: room.Memory}
 	c.virtual = c.vmax
+	c.breaker = breaker
 	if breaker {
 		c.virtual = amount{}
 	}
+	c.allocatable = c.allocatable.add(amount{cpu: remaining.CPU, mem: remaining.Memory})
+}
+
+// closeVirtual is rooms with the virtual room emptied: what a new gang may be placed on under the breaker.
+func closeVirtual(rooms []nodeRoom) []nodeRoom {
+	out := append([]nodeRoom(nil), rooms...)
+	for i := range out {
+		if out[i].Name == nodecap.VirtualRoomName {
+			out[i].CPU, out[i].Memory = 0, 0
+		}
+	}
+	return out
 }
 
 // freeRooms is rooms less the requests of the lab pods bound to each node, the held pods of stopped labs included (they hold

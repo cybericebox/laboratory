@@ -1079,7 +1079,7 @@ func (e *clusterEnv) capacity() *capacitySnapshot {
 	if m := e.s.Config.Maximum; m.Set() {
 		room := m.Virtual(nodes.Items, pods, e.s.LabNodeSelector, e.s.LabTolerations, nodecap.Reserve{Percent: e.s.Config.PlatformReservePercent}, e.s.packingReserve())
 		e.breaker = e.s.breakerOn(nodes.Items, e.now)
-		c.withMaximum(room, e.breaker)
+		c.withMaximum(room, m.Remaining(nodes.Items, pods, e.s.LabNodeSelector, e.s.LabTolerations), e.breaker)
 	}
 	e.snapshot = &c
 	return e.snapshot
@@ -1191,7 +1191,11 @@ func (e *clusterEnv) fairness() fairness {
 	if e.usage == nil {
 		e.usage = reservationLedger(e.snap.reservations, ledgerPods(e.objs), e.now)
 	}
-	return fairness{usage: e.usage, now: e.now, aging: e.s.Config.Aging, nodeTimeout: e.s.nodeTimeout()}
+	breaker := false
+	if e.s.Config.ResourceCheck && e.s.Config.Maximum.Set() {
+		breaker = e.capacity() != nil && e.breaker
+	}
+	return fairness{usage: e.usage, now: e.now, aging: e.s.Config.Aging, nodeTimeout: e.s.nodeTimeout(), breaker: breaker}
 }
 
 // stoppedHolds is the room the pods of stopped labs keep on each node: their pods still there and the held placeholders of
