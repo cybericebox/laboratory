@@ -7,6 +7,9 @@
     .ic{display:grid;place-items:center;width:56px;height:56px;margin-bottom:16px;border-radius:50%}
     .ic svg{width:28px;height:28px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
     .ic-ok{color:var(--ok);background:var(--ok-bg)}.ic-warn{color:var(--warn);background:var(--warn-bg)}.ic-danger{color:var(--danger);background:var(--danger-bg)}
+    .ic-loading{background:none}.ic-loading img{width:40px;height:40px;animation:crest 1.6s ease-in-out infinite}
+    @keyframes crest{0%,100%{opacity:.4}50%{opacity:1}}
+    @media(prefers-reduced-motion:reduce){.ic-loading img{animation:none}}
     .rule{display:block;width:40px;height:3px;margin:12px 0 4px;border-radius:2px;background:var(--brand)}
     h1{margin:0;color:var(--ink);font-size:clamp(26px,4.5vw,36px);line-height:1.2;letter-spacing:-.03em;text-wrap:balance}
     .intro{margin:10px 0 0;font-size:18px;line-height:1.45;color:var(--dim)}
