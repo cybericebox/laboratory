@@ -1031,12 +1031,24 @@ func (e *clusterEnv) capacity() *capacitySnapshot {
 	pods = append(pods, heldPods...)
 	e.heldPods = heldPods
 	c := snapshotCapacity(nodes.Items, pods, e.s.LabNodeSelector, e.s.LabTolerations, e.s.nodeReserve(), e.s.Config.PlatformReservePercent, e.s.packingReserve())
+	if m := e.s.Config.Maximum; m.Nodes > 0 {
+		// Only with a maximum: the DaemonSets that would land on a node still to come take room from it.
+		var dss appsv1.DaemonSetList
+		if err := r.List(e.ctx, &dss); err != nil {
+			e.err = fmt.Errorf("list daemonsets: %w", err)
+			return nil
+		}
+		reserve := nodecap.Reserve{Node: nodecap.Amount{CPU: e.s.nodeReserve().cpu, Memory: e.s.nodeReserve().mem}, Percent: e.s.Config.PlatformReservePercent}
+		count, room := m.Virtual(nodes.Items, dss.Items, e.s.LabNodeSelector, e.s.LabTolerations, reserve, e.s.packingReserve())
+		c.withMaximum(count, room, false)
+	}
 	e.snapshot = &c
 	return e.snapshot
 }
 
-// rooms is where the placement simulation of a pass starts: the room for labs on every node less the lab pods bound to it.
-// The plan places the pods that are dispatched but not on a node yet (nodeOf) itself.
+// rooms is where the placement simulation of a pass starts: the room for labs on every node less the lab pods bound to it, then
+// the virtual rooms of the nodes still to come up to the maximum. The plan places the pods that are dispatched but not on a node
+// yet (nodeOf) itself: real room first, then virtual room, so they hold the virtual room they wait on.
 func (e *clusterEnv) rooms() ([]nodeRoom, bool) {
 	if !e.s.Config.ResourceCheck {
 		return nil, false
@@ -1058,7 +1070,7 @@ func (e *clusterEnv) nodeOf(p *schedPod) string {
 	return ""
 }
 
-// emptyRooms is the room for labs on each node with no lab on it.
+// emptyRooms is the room for labs on each node with no lab on it, the nodes still to come up to the maximum included.
 func (e *clusterEnv) emptyRooms() []nodeRoom {
 	if !e.s.Config.ResourceCheck {
 		return nil
@@ -1067,28 +1079,28 @@ func (e *clusterEnv) emptyRooms() []nodeRoom {
 	if c == nil {
 		return nil
 	}
-	return c.rooms()
+	return c.emptyRooms()
 }
 
-// neverFits: no single node of the pool, empty, can give the pod its CPU and memory together.
+// neverFits: no single node of the pool, empty, nor a node still to come, can give the pod its CPU and memory together.
 func (e *clusterEnv) neverFits(p *schedPod) bool {
 	if !e.s.Config.ResourceCheck || p.need == (amount{}) {
 		return false
 	}
 	c := e.capacity()
-	if c == nil || c.nodes == 0 {
+	if c == nil || c.nodes == 0 && c.vmax == 0 {
 		return false
 	}
 	return !c.fitsOneNode(p.need)
 }
 
-// noNodes: the resource check is on and no lab node is schedulable now.
+// noNodes: the resource check is on, no lab node is schedulable now and admission may place on no node still to come.
 func (e *clusterEnv) noNodes() bool {
 	if !e.s.Config.ResourceCheck {
 		return false
 	}
 	c := e.capacity()
-	return c != nil && c.nodes == 0
+	return c != nil && c.nodes == 0 && c.virtual == 0
 }
 
 // take counts a dispatched pod toward its tenant's quota for the rest of the pass.

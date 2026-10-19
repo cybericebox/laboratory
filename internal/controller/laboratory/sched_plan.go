@@ -18,7 +18,7 @@ import (
 // keeps failing before its first trace does not hold its group for the whole event.
 const unsetMaxWait = 15 * time.Minute
 
-// oversizedGang is a gang that cannot start whole on the current lab nodes, even empty.
+// oversizedGang is a gang that cannot start whole on the lab nodes, even empty, with the nodes still to come up to the maximum.
 type oversizedGang struct {
 	objs    []*schedObject
 	message string
@@ -174,20 +174,21 @@ type schedEnv interface {
 	// prepared reports whether the images of the object are on the nodes; it may
 	// start pulling them.
 	prepared(o *schedObject) bool
-	// noNodes says the resource check is on and no lab node is schedulable now: the pass waits.
+	// noNodes says the resource check is on, no lab node is schedulable now and no node still to come may be placed on: the
+	// pass waits.
 	noNodes() bool
 	// take counts a dispatched pod toward its tenant's quota for the rest of the pass.
 	take(p *schedPod)
 	// tenantFits says whether the pod's tenant stays within its CPU and memory quota
 	// with the pod added to what its dispatched pods already request.
 	tenantFits(p *schedPod) bool
-	// rooms is the room labs have on each node now less the lab pods bound to it (the start of the placement simulation);
-	// false: no per-node check (the resource check is off).
+	// rooms is the room labs have on each node now less the lab pods bound to it (the start of the placement simulation), the
+	// virtual rooms of the nodes still to come up to the maximum after them; false: no per-node check (the resource check is off).
 	rooms() ([]nodeRoom, bool)
 	// nodeOf is the node a dispatched pod is bound to; empty: not on a node yet.
 	nodeOf(p *schedPod) string
-	// emptyRooms is the room labs have on each node with no lab running, for the DoesNotFit verdict of a gang; nil: no
-	// per-node verdict.
+	// emptyRooms is the room labs have on each node with no lab running, the nodes still to come up to the maximum included,
+	// for the DoesNotFit verdict of a gang; nil: no per-node verdict.
 	emptyRooms() []nodeRoom
 	// neverFits says the pod's request exceeds what any single node can give (allocatable less the reserves, whatever runs
 	// there), so waiting will not help.
@@ -566,8 +567,9 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 
 	// The room of a pass is ONE placement simulation over the nodes, in which every pod goes whole onto one node (its CPU and
 	// memory from the same room):
-	//  1. it starts from the room labs have on each node less every lab pod bound there (env.rooms), and places the pods
-	//     that are dispatched but not on a node yet, first-fit decreasing;
+	//  1. it starts from the room labs have on each node less every lab pod bound there (env.rooms: the real nodes, then the
+	//     virtual rooms of the nodes still to come up to the static maximum), and places the pods that are dispatched but not
+	//     on a node yet, first-fit decreasing: real room first, so the ones waiting for a new node hold the virtual room;
 	//  2. then the remainders of the admitted gangs (a gang that has pods out), in their strict order: arrival, tenant, key.
 	//     A remainder that places is held: the rooms shrink by its placement and the gang dispatches against it. One that
 	//     does not place holds nothing in this pass and waits, so it never blocks the gangs after it;
