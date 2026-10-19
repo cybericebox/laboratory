@@ -397,6 +397,11 @@ gateway:
   # Service and the Gateway share that one IP.
   serviceAnnotations: {}
 
+  # More listeners after tls-passthrough (443), as Gateway API listeners, e.g. a UDP listener for the platform's HTTP/3:
+  #   - {name: h3, protocol: UDP, port: 8443, allowedRoutes: {namespaces: {from: All}, kinds: [{kind: UDPRoute}]}}
+  # Cilium refuses two listeners of different protocols on one port (ProtocolConflict), so a UDP listener needs a port of its own.
+  extraListeners: []
+
 # ============================================================
 # cert-manager integration (issues TLS cert for proxy)
 # ============================================================
