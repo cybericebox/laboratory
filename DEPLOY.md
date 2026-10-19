@@ -325,7 +325,11 @@ pods already dispatched to land there (see "Platform reserve" below). No sum ove
 placement decides. Otherwise the queue waits (it does not fail) and the reason is in the status. The labs of one deploy group (an independent lab and each LabGroup alike) start
 whole or not at all: every pod must find room on one node at once, else none starts (`InsufficientResources`), and a
 group that waits does not hold up the others behind it. A group that does not fit even on the empty lab nodes waits with
-`DoesNotFitNow` and starts once capacity returns (a node comes back, a rollout ends). Only a pod that no single node can hold, its
+`DoesNotFitNow` and starts once capacity returns (a node comes back, a rollout ends); it never starts partly. Each of its labs
+gets one Warning event `GroupTooLarge` and the status message names the group, what it requests in all and the room of the
+largest empty lab node. The platform puts one deploy group on a task for all teams, so **the largest task times the number of
+teams must fit the empty room of the lab nodes** (with the reserves below), or that task does not start for anyone: the load
+test checks this before an event. Only a pod that no single node can hold, its
 CPU and memory together on the same node, is failed for good (`DoesNotFit`), with its whole group, and the queue goes on.
 Each node counts with nothing on it: its allocatable less the platform reserve and the packing reserve. Every node of the
 pool counts, cordoned, NotReady and rebooting ones too (the pool is the lab node selector without the `node-agent-ready`
@@ -478,7 +482,8 @@ quota and the real room of the lab nodes (a tenant without a quota is told the r
 `scheduler.packingReserveCpu` / `packingReserveMemory` (absolute quantities, `"0"` = none) replace the percentage for that
 resource on every node; the agent takes that fixed amount once off a tenant's quota, which is a cluster-wide number, so with
 several lab nodes the quota it reports is a little high. A tenant never sees the reserve or the nodes; the quota the operator
-enforces is unchanged. The platform adds no buffer of its own.
+enforces is unchanged. The platform adds no buffer of its own. 15 % is the default and stays so for now; the value is
+revisited from the load-test measurements (what the nodes really pack), in both roles at once.
 
 **Bin-packing scheduler.** Lab pods (devices, VPN, gateway) are placed by a **second kube-scheduler** with one profile,
 `laboratory-binpack` (chart `labScheduler.*`): `NodeResourcesFit` with `scoringStrategy: MostAllocated` (weight

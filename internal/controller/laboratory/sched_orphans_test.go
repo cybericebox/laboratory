@@ -453,3 +453,33 @@ func TestNoReservationControllerAdmitsNoReservedWork(t *testing.T) {
 		t.Fatalf("r status = %+v", st)
 	}
 }
+
+// A deploy group that cannot start whole even on the empty lab nodes waits (it never starts partly), and each of its labs
+// gets one Warning event and a status that name the group, what it requests and the largest empty node: not on every pass.
+func TestOversizedGroupWarnedOnce(t *testing.T) {
+	f := shortFixture(t) // one node of 1 CPU and 1 GiB; devices request 100m and 100Mi
+	rec := record.NewFakeRecorder(20)
+	f.s.Recorder = rec
+	devices := []string{"p1", "p2", "p3", "p4", "p5", "p6"}
+	f.addLab("a", "g", nil, devices...)
+	f.addLab("b", "g", nil, devices...) // 12 x 100Mi in all: more than the node
+	for range 3 {
+		f.tick()
+	}
+	if strings.Contains(f.states(), "=S") {
+		t.Fatalf("part of the group started: %s", f.states())
+	}
+	st := f.labStatus("a")
+	if st == nil || st.Reason != laboratoryv1alpha1.WaitDoesNotFit || !strings.Contains(st.Message, "requests cpu 1200m") ||
+		!strings.Contains(st.Message, "the largest empty one has room for") {
+		t.Fatalf("a status = %+v", st)
+	}
+	if n := len(rec.Events); n != 2 {
+		t.Fatalf("%d events over three passes, want one per lab", n)
+	}
+	for range 2 {
+		if e := <-rec.Events; !strings.Contains(e, "GroupTooLarge") {
+			t.Fatalf("event = %q", e)
+		}
+	}
+}

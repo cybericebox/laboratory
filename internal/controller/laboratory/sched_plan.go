@@ -1,6 +1,7 @@
 package laboratory
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -11,6 +12,23 @@ import (
 // This file is the pure core of the scheduler: given the pods of the top-level
 // objects and the free slots, which pods start now, and what each waiting object
 // reports. Everything that touches the cluster is in scheduler.go.
+
+// oversizedGang is a gang that cannot start whole on the current lab nodes, even empty.
+type oversizedGang struct {
+	objs    []*schedObject
+	message string
+}
+
+// largestRoom is the room with the most memory, then CPU.
+func largestRoom(rooms []nodeRoom) nodeRoom {
+	var big nodeRoom
+	for _, r := range rooms {
+		if r.Memory > big.Memory || r.Memory == big.Memory && r.CPU > big.CPU {
+			big = r
+		}
+	}
+	return big
+}
 
 // unsetSettleWindow is how long after its reconciler first worked on it a gang waits for an object whose pods nobody has set
 // up yet (its Devices not made, its scheduling state not recorded); after that the gang goes on without it.
@@ -185,6 +203,9 @@ type schedPlan struct {
 	// unsettled are the objects left out of their gang because their pods were still not set up unsetSettleWindow after
 	// they were created.
 	unsettled []*schedObject
+	// oversized are the gangs that do not fit even the empty lab nodes now (they wait with DoesNotFitNow), with the message
+	// that says so.
+	oversized []oversizedGang
 	// status holds the queue place of every object with undispatched pods; an
 	// object absent from it has nothing waiting.
 	status map[string]objectStatus
@@ -437,6 +458,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	roomHeld := map[string]bool{}     // objects whose gang does not fit now: the others go past them (backfill)
 	resHeld := map[string][2]string{} // objects whose gang its reservation does not admit now: the Wait reason and message
 	fitHeld := map[string]bool{}      // objects whose gang does not fit even the empty nodes (may change when nodes return)
+	fitMsg := map[string]string{}     // the message of such an object: its gang, what it requests, the largest empty node
 	unsetHeld := map[string]string{}  // objects of a gang with no pod out that waits for a pod nobody initialised yet: whose
 	hold := func(held map[string]bool, gg *gang) {
 		for _, o := range gg.objs {
@@ -801,10 +823,17 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		}
 		needs := needsOf(all)
 		gg.needs = needs
-		notFit := false
+		notFit, oversize := false, ""
 		if empty := emptyFor(gg); empty != nil {
 			if _, ok := fitsGang(empty, needs); !ok {
 				notFit = true
+				var sum amount
+				for _, n := range needs {
+					sum = sum.add(amount{cpu: n.CPU, mem: n.Memory})
+				}
+				big := largestRoom(empty)
+				oversize = fmt.Sprintf("the deploy group %s requests cpu %dm and memory %d bytes in all and cannot start whole on the "+
+					"current lab nodes: the largest empty one has room for cpu %dm and memory %d bytes", gg.key, sum.cpu, sum.mem, big.CPU, big.Memory)
 			}
 		}
 		// The quota of the tenant is checked on the sum of the gang's needs.
@@ -876,6 +905,10 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		}
 		if notFit {
 			hold(fitHeld, gg)
+			for _, o := range gg.objs {
+				fitMsg[o.id] = oversize
+			}
+			plan.oversized = append(plan.oversized, oversizedGang{objs: gg.objs, message: oversize})
 			return false
 		}
 		// A held remainder dispatches against its own placement; any other gang is placed on what is left.
@@ -1005,7 +1038,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			continue
 		}
 		if fitHeld[o.id] && !roomHeld[o.id] {
-			st.Reason, st.Message = laboratoryv1alpha1.WaitDoesNotFit, "the group does not fit even on empty nodes"
+			st.Reason, st.Message = laboratoryv1alpha1.WaitDoesNotFit, fitMsg[o.id]
 			plan.status[o.id] = st
 			continue
 		}
