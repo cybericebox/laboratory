@@ -12,6 +12,7 @@ import (
 	containers "github.com/containerd/containerd/api/services/containers/v1"
 	task "github.com/containerd/containerd/api/types/task"
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/protobuf/types/known/anypb"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -242,5 +243,50 @@ func TestHistoricalNeverMaterializedLiveCurrentTaskStaysAllocated(t *testing.T) 
 	report := o.ObserveScope(context.Background(), id)
 	if report.RuntimeState != "Allocated" || report.Error != "" || report.RuntimeAbsentAt != nil || report.AttachmentsAbsentAt != nil {
 		t.Fatalf("old declaration retired live current task: %+v", report)
+	}
+}
+
+// The owner of a pod is read from its labels (on the sandbox or on the container) and no longer from the environment.
+func TestHistoricalNeverMaterializedLiveTaskOwnedByPodLabels(t *testing.T) {
+	for name, sandboxLabels := range map[string]bool{"sandbox": true, "container": false} {
+		t.Run(name, func(t *testing.T) {
+			o, id, l, d := historicalNeverFixture(t)
+			l.Spec.Lifecycle.DesiredState = "Running"
+			d.Status.RuntimeReports[0].RuntimeState = "Allocated"
+			c := o.Reader.(client.Client)
+			for _, object := range []client.Object{l, d} {
+				if err := c.Update(context.Background(), object); err != nil {
+					t.Fatal(err)
+				}
+			}
+			raw, err := json.Marshal(specs.Spec{Process: &specs.Process{}, Linux: &specs.Linux{CgroupsPath: "original-owned"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			pod := map[string]string{"io.kubernetes.pod.uid": "original-pod", "io.kubernetes.pod.namespace": "ns"}
+			owner := map[string]string{names.LabelLabUID: "lab", names.LabelDeviceUID: "device"}
+			app := map[string]string{"io.kubernetes.pod.uid": "original-pod", "io.kubernetes.pod.namespace": "ns"}
+			var list []*containers.Container
+			if sandboxLabels {
+				for k, v := range owner {
+					pod[k] = v
+				}
+				list = append(list, &containers.Container{ID: "original-sandbox", Labels: pod, Spec: &anypb.Any{TypeUrl: "types.containerd.io/opencontainers/runtime-spec/1/Spec", Value: raw}})
+			} else {
+				for k, v := range owner {
+					app[k] = v
+				}
+			}
+			list = append(list, &containers.Container{ID: "original-container", Labels: app, Spec: &anypb.Any{TypeUrl: "types.containerd.io/opencontainers/runtime-spec/1/Spec", Value: raw}})
+			tasks := []*task.Process{{ID: "original-container", Pid: 42, Status: task.Status_RUNNING}}
+			if sandboxLabels {
+				tasks = append(tasks, &task.Process{ID: "original-sandbox", Pid: 41, Status: task.Status_RUNNING})
+			}
+			o.Runtime = scopeRuntimeAdapter(t, list, tasks...)
+			report := o.ObserveScope(context.Background(), id)
+			if report.RuntimeState != "Allocated" || report.Error != "" || report.RuntimeAbsentAt != nil {
+				t.Fatalf("labelled pod was not attributed: %+v", report)
+			}
+		})
 	}
 }

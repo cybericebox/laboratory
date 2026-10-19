@@ -12,6 +12,11 @@ const (
 	LabelLab    = "laboratory.cybericebox.com/lab"
 	LabelDevice = "laboratory.cybericebox.com/device"
 	LabelGroup  = "laboratory.cybericebox.com/group"
+	// LabelLabUID and LabelDeviceUID mark the pod of a device with the UIDs of its Lab and its Device. The node-agent reads them
+	// from the runtime to attribute containers; they replace the environment variables the containers used to carry (a participant
+	// sees the environment, never the labels).
+	LabelLabUID    = LabelPrefix + "lab-uid"
+	LabelDeviceUID = LabelPrefix + "device-uid"
 	// LabelDeployGroup is the scheduler group of a Lab or LabGroup (a key of at
 	// most 63 characters). Objects with the same key are dispatched together.
 	// Operator-internal: the scheduler reads it and no user label.

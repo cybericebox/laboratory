@@ -13,6 +13,7 @@ import (
 
 	tasks "github.com/containerd/containerd/api/services/tasks/v1"
 	containerd "github.com/containerd/containerd/v2/client"
+	ctrcontainers "github.com/containerd/containerd/v2/core/containers"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/devicestate"
@@ -744,11 +745,22 @@ func (o *NativeRuntimeObserver) legacyScopeContainerOwned(ctx context.Context, i
 }
 
 func (o *NativeRuntimeObserver) collectScopeContainers(ctx, native context.Context, id lab.OwnedRuntimeIdentity, owners []lab.OwnedRuntimeIdentity, containers []containerd.Container, metadata map[string]bool, knownPods map[string]string, owned, cgroups []string) ([]string, []string, error) {
-	for _, container := range containers {
+	infos := make([]ctrcontainers.Container, len(containers))
+	// The pod labels with the owner UIDs sit on the sandbox of a pod (the kubelet puts them there, not on the app containers),
+	// so the owner of a pod is gathered from any of its containers first.
+	podOwners := map[string][2]string{}
+	for i, container := range containers {
 		info, err := container.Info(native)
 		if err != nil {
 			return owned, cgroups, err
 		}
+		infos[i] = info
+		if uid := info.Labels["io.kubernetes.pod.uid"]; uid != "" && info.Labels[names.LabelLabUID] != "" {
+			podOwners[uid] = [2]string{info.Labels[names.LabelLabUID], info.Labels[names.LabelDeviceUID]}
+		}
+	}
+	for i, container := range containers {
+		info := infos[i]
 		metadata[container.ID()] = true
 		if uid := info.Labels["io.kubernetes.pod.uid"]; uid != "" {
 			knownPods[uid] = info.Labels["io.kubernetes.pod.namespace"]
@@ -760,15 +772,16 @@ func (o *NativeRuntimeObserver) collectScopeContainers(ctx, native context.Conte
 		if err != nil {
 			return owned, cgroups, err
 		}
-		owner := ""
+		// The pod labels name the owner; the environment is the legacy marker of containers started before the labels.
+		pair := podOwners[info.Labels["io.kubernetes.pod.uid"]]
+		owner, deviceOwner := pair[0], pair[1]
 		group := ""
 		if spec.Process != nil {
-			owner = envValue(spec.Process.Env, "LIFECYCLE_LAB_UID")
+			if owner == "" {
+				owner = envValue(spec.Process.Env, "LIFECYCLE_LAB_UID")
+				deviceOwner = envValue(spec.Process.Env, "LIFECYCLE_DEVICE_UID")
+			}
 			group = envValue(spec.Process.Env, "GROUP_UID")
-		}
-		deviceOwner := ""
-		if spec.Process != nil {
-			deviceOwner = envValue(spec.Process.Env, "LIFECYCLE_DEVICE_UID")
 		}
 		match := id.ScopeKind == scopeLabFabric && owner == id.OwnerUID || id.ScopeKind == scopeGroup && group == id.OwnerUID || id.ScopeKind == runtimeNeverMaterialized && owner == id.OwnerUID && deviceOwner == id.ScopeUID
 		if !match && owner == "" && group == "" {
