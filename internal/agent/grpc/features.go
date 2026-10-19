@@ -154,6 +154,8 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 				TenantQuota: &protobuf.TenantQuotaFeature{
 					HasCpuQuota: quota.HasCPU, CpuQuotaMillicores: quota.CPU, HasMemoryQuota: quota.HasMemory, MemoryQuotaBytes: quota.Memory,
 				},
+				// Every LabGroup and Lab runs under a reservation: there is no way around it on this agent (decision 17).
+				Reservations: &protobuf.ReservationsFeature{Required: true, EndingNoticeSeconds: int32(h.reservationNotice() / time.Second)},
 				Proxy: &protobuf.ProxyFeature{
 					AccessTokenMaxTtlSeconds: int64(f.ProxyAccessTokenMaxTTL.Seconds()), SessionMaxTtlSeconds: int64(f.ProxySessionMaxTTL.Seconds()), SessionIdleTtlSeconds: int64(f.ProxySessionIdleTTL.Seconds()),
 				},

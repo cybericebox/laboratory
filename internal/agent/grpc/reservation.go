@@ -35,10 +35,10 @@ const (
 
 // SetReservationNotice sets the ending notice of the reservations (the chart's reservations.endingNoticeSeconds), which the
 // operator uses too: the agent reports it and computes the end of a reservation's groups from it.
-func (h *Handler) SetReservationNotice(d time.Duration) { h.resNotice = d }
+func (h *Handler) SetReservationNotice(d time.Duration) { h.resNotice, h.resNoticeSet = d, true }
 
 func (h *Handler) reservationNotice() time.Duration {
-	if h.resNotice > 0 {
+	if h.resNoticeSet {
 		return h.resNotice
 	}
 	return defaultReservationNotice

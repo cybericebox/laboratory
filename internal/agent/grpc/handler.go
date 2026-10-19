@@ -86,8 +86,9 @@ type Handler struct {
 	// (decision 17: the id is mandatory); only tests of other behaviour do, so they need not set up reservations.
 	reservationsOptional bool
 	// resNotice is the ending notice of the reservations (SetReservationNotice); resLocks are the mutexes of keyLock.
-	resNotice time.Duration
-	resLocks  sync.Map
+	resNotice    time.Duration
+	resNoticeSet bool
+	resLocks     sync.Map
 
 	// prewarm fills the image cache ahead of time; nil until SetPrewarm.
 	prewarm *prewarmer

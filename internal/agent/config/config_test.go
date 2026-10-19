@@ -43,6 +43,13 @@ func TestFeatureDefaultsMirrorTheChart(t *testing.T) {
 		c.ProxyAccessTokenMaxTTL != 60*time.Second || c.ProxySessionIdleTTL != 24*time.Hour || c.ProxySessionMaxTTL != 168*time.Hour || c.Limits.GroupMaxLabs != 50 {
 		t.Fatalf("%+v %+v", c.State, c.Scheduler)
 	}
+	if c.ReservationEndingNoticeSeconds != 300 {
+		t.Fatalf("the ending notice mirrors the chart: %d", c.ReservationEndingNoticeSeconds)
+	}
+	t.Setenv("RESERVATION_ENDING_NOTICE_SECONDS", "-1")
+	if _, err := Load(); err == nil {
+		t.Fatal("a negative notice is refused")
+	}
 }
 
 // The monitoring sizes and the namespaces are optional environment variables with fixed defaults.

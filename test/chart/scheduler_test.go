@@ -284,6 +284,20 @@ func TestReservesAndPoolAreTheSameForOperatorAndAgent(t *testing.T) {
 	}
 }
 
+// The agent reads the same ending notice as the operator: it reports it (features.reservations) and computes from it when
+// the groups of an ending reservation are deleted.
+func TestEndingNoticeSharedWithAgent(t *testing.T) {
+	set := append(append([]string{}, agentSet...), "--set", "reservations.endingNoticeSeconds=120")
+	var cm corev1.ConfigMap
+	render(t, "templates/operator/configmap.yaml", &cm, set...)
+	var dep appsv1.Deployment
+	render(t, "templates/agent/deployment.yaml", &dep, set...)
+	env := envOf(dep.Spec.Template.Spec.Containers[0])
+	if cm.Data["RESERVATION_ENDING_NOTICE_SECONDS"] != "120" || env["RESERVATION_ENDING_NOTICE_SECONDS"].Value != "120" {
+		t.Errorf("operator %q, agent %q, want 120", cm.Data["RESERVATION_ENDING_NOTICE_SECONDS"], env["RESERVATION_ENDING_NOTICE_SECONDS"].Value)
+	}
+}
+
 // The ending notice of reservations reaches the operator (default 300 s), may be set, and is never negative.
 func TestReservationNoticeReachesTheOperator(t *testing.T) {
 	if got := operatorConfig(t)["RESERVATION_ENDING_NOTICE_SECONDS"]; got != "300" {
