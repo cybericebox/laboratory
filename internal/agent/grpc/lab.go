@@ -379,6 +379,10 @@ func (h *Handler) ListLabs(ctx context.Context, in *protobuf.ListRequest) (*prot
 			return nil, err
 		}
 	}
+	ids, err := h.reservationIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
 	usage := map[string]map[usageKey]deviceUsage{}
 	sched := map[string]map[usageKey]*laboratoryv1alpha1.PodSchedule{}
 	out := &protobuf.LabList{}
@@ -390,6 +394,7 @@ func (h *Handler) ListLabs(ctx context.Context, in *protobuf.ListRequest) (*prot
 		}
 		p := labToProto(m.lab, h.features.Limits)
 		p.LabGroupName = m.group
+		p.ReservationId = reservationIDOf(ids, p.GetReservationId())
 		fillLabUsage(p, u, m.lab.Name)
 		s, ok := sched[m.lab.Namespace]
 		if !ok {

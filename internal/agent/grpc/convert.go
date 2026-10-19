@@ -43,13 +43,17 @@ func labGroupToProto(g *laboratoryv1alpha1.LabGroup) *protobuf.LabGroup {
 		Lifecycle:     groupIntentToProto(g.Spec.Lifecycle),
 		VpnSize:       immutableGroupSize(g.Spec.VPN.Size),
 		GatewaySize:   immutableGroupSize(g.Spec.Gateway.Size),
+		// the reservation's CR name; the callers map it back to the id (reservationIDOf)
+		ReservationId: g.Labels[names.LabelReservation],
 	}
 }
 
 // labToProto maps a Lab custom resource to its gRPC wire representation.
 // Spec is passed through as opaque JSON since the agent is a thin wrapper.
 func labToProto(l *laboratoryv1alpha1.Lab, sizing ...limits.Limits) *protobuf.Lab {
-	return labProjection(l, true, sizing...)
+	p := labProjection(l, true, sizing...)
+	p.ReservationId = l.Labels[names.LabelReservation]
+	return p
 }
 
 func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool, sizing ...limits.Limits) *protobuf.Lab {
@@ -219,6 +223,7 @@ func quantityValue(value string) int64 {
 // or write-only device environment values through the monitoring stream.
 func labMonitoringToProto(l *laboratoryv1alpha1.Lab, labGroupName string, sizing ...limits.Limits) *protobuf.Lab {
 	p := labProjection(l, false, sizing...)
+	p.ReservationId = l.Labels[names.LabelReservation]
 	p.LabGroupName = labGroupName
 	return p
 }

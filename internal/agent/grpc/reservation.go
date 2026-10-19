@@ -625,3 +625,25 @@ func reservationStatusToProto(r *laboratoryv1alpha1.Reservation, notice time.Dur
 	}
 	return out
 }
+
+// reservationIDOf is the id of the reservation a group or lab runs under, from its label (the CR name): the reservation's
+// original id when it is known, else the label itself; "" for none.
+func reservationIDOf(ids map[string]string, label string) string {
+	if id := ids[label]; id != "" {
+		return id
+	}
+	return label
+}
+
+// reservationIDs maps the CR names of the caller's tenant's reservations to their ids.
+func (h *Handler) reservationIDs(ctx context.Context) (map[string]string, error) {
+	list, err := h.listReservations(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(list))
+	for i := range list {
+		out[list[i].Name] = names.IDOf(&list[i])
+	}
+	return out, nil
+}
