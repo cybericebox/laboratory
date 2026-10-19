@@ -443,3 +443,77 @@ func TestAgedGangOverItsReservationIsNotTheReserver(t *testing.T) {
 	reasonOf(t, plan, "lab/a", laboratoryv1alpha1.WaitReservationFull)
 	reasonOf(t, plan, "lab/c", laboratoryv1alpha1.WaitInsufficient)
 }
+
+// A gang is under one reservation or none: labs of one deploy group with different reservation labels (or a label on some only)
+// wait whole with ReservationMissing, take no withheld room and count against no reservation.
+func TestMixedReservationsInAGroupRefused(t *testing.T) {
+	nodes := []nodeRoom{room("n1", 4000, 8*gi)}
+	mk := func(resA, resB string) []*schedObject {
+		a := under("a", resA, "t1", 1, gi, "p1")
+		b := under("b", resB, "t1", 2, gi, "p1")
+		a.group, b.group = "g", "g"
+		return []*schedObject{a, b}
+	}
+	usage := map[string]reservationUsage{
+		"r1": open("t1", amount{}, amount{cpu: 1000, mem: 4 * gi}),
+		"r2": {amount: amount{cpu: 1000, mem: 4 * gi}, tenant: "t1"}, // not open
+	}
+	for name, objs := range map[string][]*schedObject{
+		"open and closed":  mk("r1", "r2"),
+		"labelled and not": mk("r1", ""),
+		"not and labelled": mk("", "r1"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			plan := planSchedule(objs, 10, false, &fakeEnv{nodes: nodes, empty: nodes, fair: fairness{usage: usage}})
+			wantDispatch(t, plan)
+			for _, id := range []string{"lab/a", "lab/b"} {
+				reasonOf(t, plan, id, laboratoryv1alpha1.WaitReservationMissing)
+				if m := plan.status[id].Message; m != "objects of the group belong to different reservations" {
+					t.Fatalf("%s message = %q", id, m)
+				}
+			}
+		})
+	}
+	// the same labels: the group goes under r1
+	plan := planSchedule(mk("r1", "r1"), 10, false, &fakeEnv{nodes: nodes, empty: nodes, fair: fairness{usage: usage}})
+	wantDispatch(t, plan, "a/p1", "b/p1")
+	// the ledger counts the pods of a mixed group against no reservation, those of a homogeneous one against it
+	objs := mk("r1", "")
+	for _, o := range objs {
+		o.pods[0].state = sd
+	}
+	for _, p := range ledgerPods(objs) {
+		if p.reservation != "" {
+			t.Fatalf("mixed group pod counted under %q", p.reservation)
+		}
+	}
+	objs = mk("r1", "r1")
+	for _, o := range objs {
+		o.pods[0].state = sd
+	}
+	if pods := ledgerPods(objs); len(pods) != 2 || pods[0].reservation != "r1" || pods[1].reservation != "r1" || pods[0].group != pods[1].group {
+		t.Fatalf("ledger pods = %+v", pods)
+	}
+}
+
+// When the withheld room is more than the reservation has left, what is left is withheld again inside it with its CPU to memory
+// ratio, the emptiest node first: no node keeps memory without its CPU.
+func TestTrimKeepsTheRatio(t *testing.T) {
+	r := newReservationPass(map[string]reservationUsage{"r": open("t1", amount{}, amount{cpu: 1000, mem: 4 * gi})})
+	r.withhold([]nodeRoom{room("n1", 500, 2*gi), room("n2", 500, 2*gi)}, nil)
+	if w := r.withheld["r"]; w["n1"] != (amount{cpu: 500, mem: 2 * gi}) || w["n2"] != (amount{cpu: 500, mem: 2 * gi}) {
+		t.Fatalf("withheld = %+v", w)
+	}
+	// a gang of 500m/1Gi placed on free room: 500m/3Gi left, so 1:6 on every node
+	r.use("r", nil, amount{cpu: 500, mem: gi})
+	var sum amount
+	for n, a := range r.withheld["r"] {
+		sum = sum.add(a)
+		if d := a.cpu*6*(gi/1000) - a.mem; d > 6*gi/1000 || d < -6*gi/1000 {
+			t.Fatalf("%s keeps %+v: not 500m to 3Gi", n, a)
+		}
+	}
+	if left := (amount{cpu: 500, mem: 3 * gi}); sum.cpu > left.cpu || sum.mem > left.mem || sum.mem < 3*gi-gi/100 {
+		t.Fatalf("kept %+v, left %+v", sum, left)
+	}
+}

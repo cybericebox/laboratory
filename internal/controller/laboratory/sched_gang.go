@@ -17,9 +17,11 @@ type podNeed struct {
 type gang struct {
 	key    string
 	tenant string
-	// reservation names the reservation the gang runs under; empty: unreserved.
-	reservation string
-	objs        []*schedObject
+	// reservation names the reservation the gang runs under; empty: unreserved. mixedReservation says its objects carry
+	// different reservation labels (or some none): the gang is refused whole (gangReservation).
+	reservation      string
+	mixedReservation bool
+	objs             []*schedObject
 	// needs are the requests of the pods still to dispatch, in dispatch order.
 	needs   []podNeed
 	arrival time.Time
