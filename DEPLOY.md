@@ -348,7 +348,7 @@ network. A group still waiting for its `deploy-after` groups never keeps room; o
 exists for its own tenant (else it waits with `ReservationMissing`), its window is open (`ReservationNotActive`), and the
 requests of the reservation's pods already out plus the whole group stay within `spec.resources` (`ReservationFull`). All
 labs of a deploy group must carry the same label (or none): a group whose labs disagree waits whole with `ReservationMissing`
-("objects of the group belong to different reservations") and counts against no reservation. A
+("objects of the group belong to different reservations"); its pods already out still count under their own label. A
 reservation with a resource other than `cpu` and `memory`, or with `cpu` or `memory` missing, zero or negative, reserves
 nothing. Pods already out always count and are never stopped, also when the reservation is made smaller than them. What an
 open reservation has not used yet is kept on the nodes on every pass, the emptiest node first and with its CPU to memory

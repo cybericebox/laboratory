@@ -45,7 +45,7 @@ func reservationActive(r *laboratoryv1alpha1.Reservation, now time.Time) bool {
 
 // gangReservation is the reservation of a gang: the label all its objects carry (empty: unreserved). A gang is under one
 // reservation or none: when its objects disagree (two labels, or a label on some objects only) mixed is true, and the gang is
-// refused with ReservationMissing, takes no withheld room and counts against no reservation.
+// refused with ReservationMissing and takes no withheld room; nothing new of it is counted (ledgerPods).
 func gangReservation(objs []*schedObject) (name string, mixed bool) {
 	for i, o := range objs {
 		if i == 0 {
@@ -59,7 +59,7 @@ func gangReservation(objs []*schedObject) (name string, mixed bool) {
 
 // ledgerPods are the dispatched pods of the objects as the ledger counts them: each under the reservation of its gang (the
 // objects of a deploy group within a tenant; a LabGroup and an independent lab alone), as the plan builds the gangs, so the
-// ledger and the admission gate agree. The pods of a gang with mixed labels count against no reservation.
+// ledger and the admission gate agree. The pods of a gang with mixed labels (refused whole) count under their own object's label.
 func ledgerPods(objs []*schedObject) []dispatchedPod {
 	gangOf := func(o *schedObject) string {
 		if o.isGroup() || o.group == "" {
@@ -75,7 +75,9 @@ func ledgerPods(objs []*schedObject) []dispatchedPod {
 	for _, o := range objs {
 		res, mixed := gangReservation(members[gangOf(o)])
 		if mixed {
-			res = ""
+			// refused whole, so nothing new starts; what is out counts under its own label, so a label changed late never lets
+			// a reservation admit again what already runs
+			res = o.reservation
 		}
 		// the groups of a reservation are its deploy groups (a LabGroup of the group is one with its labs)
 		group := o.id
@@ -313,9 +315,9 @@ func (r *reservationPass) own(rooms []nodeRoom, name string) []nodeRoom {
 }
 
 // use records a gang of the reservation placed now (where by node, need in all): the room withheld for the reservation shrinks by
-// what the gang took of it. When more is still withheld than the reservation has left (the gang took free room too), what is
-// left is withheld again inside that room, as withhold does: the emptiest node first, with the CPU to memory ratio of what is
-// left, so the kept room keeps its shape.
+// what the gang took of it. When more is still withheld than the reservation has left (the gang took free room too), only the
+// excess is released, per resource, from the node withheld last (the least empty) back, so the reservation keeps every unit it
+// still needs. A node may then keep an odd CPU to memory ratio: that is kept rather than releasing room the reservation needs.
 func (r *reservationPass) use(name string, where map[string]amount, need amount) {
 	if name == "" {
 		return
@@ -331,14 +333,13 @@ func (r *reservationPass) use(name string, where map[string]amount, need amount)
 		kept[n] = a
 		sum = sum.add(a)
 	}
-	if sum.sub(r.unused(name)).floorZero() == (amount{}) {
-		return
-	}
-	rem := r.unused(name)
-	for _, n := range r.order[name] {
-		t := proportional(rem, kept[n])
-		kept[n] = t
-		rem = rem.sub(t)
+	over := sum.sub(r.unused(name)).floorZero()
+	order := r.order[name]
+	for i := len(order) - 1; i >= 0 && over != (amount{}); i-- {
+		n := order[i]
+		cut := amount{cpu: min(over.cpu, kept[n].cpu), mem: min(over.mem, kept[n].mem)}
+		kept[n] = kept[n].sub(cut)
+		over = over.sub(cut)
 	}
 }
 

@@ -477,15 +477,14 @@ func TestMixedReservationsInAGroupRefused(t *testing.T) {
 	// the same labels: the group goes under r1
 	plan := planSchedule(mk("r1", "r1"), 10, false, &fakeEnv{nodes: nodes, empty: nodes, fair: fairness{usage: usage}})
 	wantDispatch(t, plan, "a/p1", "b/p1")
-	// the ledger counts the pods of a mixed group against no reservation, those of a homogeneous one against it
+	// the ledger counts the pods out of a mixed group under their own labels (a label changed late never lets r1 admit again
+	// what already runs), those of a homogeneous one under the group's
 	objs := mk("r1", "")
 	for _, o := range objs {
 		o.pods[0].state = sd
 	}
-	for _, p := range ledgerPods(objs) {
-		if p.reservation != "" {
-			t.Fatalf("mixed group pod counted under %q", p.reservation)
-		}
+	if pods := ledgerPods(objs); len(pods) != 2 || pods[0].reservation != "r1" || pods[1].reservation != "" {
+		t.Fatalf("ledger pods = %+v", pods)
 	}
 	objs = mk("r1", "r1")
 	for _, o := range objs {
@@ -496,24 +495,34 @@ func TestMixedReservationsInAGroupRefused(t *testing.T) {
 	}
 }
 
-// When the withheld room is more than the reservation has left, what is left is withheld again inside it with its CPU to memory
-// ratio, the emptiest node first: no node keeps memory without its CPU.
-func TestTrimKeepsTheRatio(t *testing.T) {
+// When the withheld room is more than the reservation has left, only the excess is released, per resource, from the node withheld
+// last back: the reservation keeps exactly what it has left, even if a node then keeps an odd ratio.
+func TestTrimNeverReleasesNeededRoom(t *testing.T) {
 	r := newReservationPass(map[string]reservationUsage{"r": open("t1", amount{}, amount{cpu: 1000, mem: 4 * gi})})
 	r.withhold([]nodeRoom{room("n1", 500, 2*gi), room("n2", 500, 2*gi)}, nil)
 	if w := r.withheld["r"]; w["n1"] != (amount{cpu: 500, mem: 2 * gi}) || w["n2"] != (amount{cpu: 500, mem: 2 * gi}) {
 		t.Fatalf("withheld = %+v", w)
 	}
-	// a gang of 500m/1Gi placed on free room: 500m/3Gi left, so 1:6 on every node
+	// a gang of 500m/1Gi placed on free room: 500m/3Gi left, all of it still kept, the excess off n2
 	r.use("r", nil, amount{cpu: 500, mem: gi})
-	var sum amount
-	for n, a := range r.withheld["r"] {
-		sum = sum.add(a)
-		if d := a.cpu*6*(gi/1000) - a.mem; d > 6*gi/1000 || d < -6*gi/1000 {
-			t.Fatalf("%s keeps %+v: not 500m to 3Gi", n, a)
-		}
+	if w := r.withheld["r"]; w["n1"] != (amount{cpu: 500, mem: 2 * gi}) || w["n2"] != (amount{mem: gi}) {
+		t.Fatalf("withheld = %+v", w)
 	}
-	if left := (amount{cpu: 500, mem: 3 * gi}); sum.cpu > left.cpu || sum.mem > left.mem || sum.mem < 3*gi-gi/100 {
-		t.Fatalf("kept %+v, left %+v", sum, left)
+}
+
+// The reviewer's probe: r's first gang spills onto free room on n1; trimming r's withheld room must not release the 1Gi r keeps
+// on n1, else C of r2 takes it in the same pass and r's next gang B, within its amount, does not fit.
+func TestSpilledGangKeepsTheReservationsRoom(t *testing.T) {
+	nodes := []nodeRoom{room("n1", 700, 2*gi), room("n2", 500, 2*gi)}
+	usage := map[string]reservationUsage{
+		"r":  open("t1", amount{}, amount{cpu: 1000, mem: 4 * gi}),
+		"r2": open("t2", amount{}, amount{cpu: 100, mem: gi}),
 	}
+	a := obj("lab/a", "", 1, nil, need(pods("a", "p1"), 600, gi)...)
+	a.reservation, a.pods[0].tenant = "r", "t1"
+	c := under("c", "r2", "t2", 2, gi, "p1")
+	b := under("b", "r", "t1", 3, gi, "p1", "p2", "p3")
+	plan := planSchedule([]*schedObject{a, c, b}, 10, false, &fakeEnv{nodes: nodes, empty: nodes, fair: fairness{usage: usage}})
+	wantDispatch(t, plan, "a/p1", "b/p1", "b/p2", "b/p3")
+	reasonOf(t, plan, "lab/c", laboratoryv1alpha1.WaitInsufficient)
 }
