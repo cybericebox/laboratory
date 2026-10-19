@@ -34,7 +34,10 @@ func CRDsFrom(r client.Reader) crdcheck.GetCRD {
 // restart the operator to turn the budget on. The agent makes the same check, so it never advertises a budget the operator
 // does not use.
 func BudgetWithCurrentCRDs(ctx context.Context, r client.Reader, recorder record.EventRecorder, m nodecap.Maximum) nodecap.Maximum {
-	got, why := crdcheck.UsableBudget(ctx, CRDsFrom(r), m, crdcheck.BudgetRetry)
+	got, why, kept := crdcheck.UsableBudget(ctx, CRDsFrom(r), m, crdcheck.BudgetRetry)
+	if kept != nil {
+		log.FromContext(ctx).Info("warning: CRD check failed, budget kept", "error", kept.Error())
+	}
 	if !m.Set() || got.Set() {
 		return got
 	}

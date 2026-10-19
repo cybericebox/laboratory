@@ -111,7 +111,10 @@ func Run() {
 		log.Fatalf("%v", err)
 	}
 	// the operator runs without a budget its CRDs cannot carry: the agent then advertises none either
-	maximum, why := crdcheck.UsableBudget(context.Background(), crdsFrom(k8s), maximum, crdcheck.BudgetRetry)
+	maximum, why, kept := crdcheck.UsableBudget(context.Background(), crdsFrom(k8s), maximum, crdcheck.BudgetRetry)
+	if kept != nil {
+		log.Printf("warning: CRD check failed, budget kept: %v", kept)
+	}
 	if why != "" {
 		log.Printf("capacity budget not advertised: %s; apply the chart CRDs (kubectl apply --server-side -f charts/laboratory/crds/) and restart", why)
 	}
