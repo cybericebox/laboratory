@@ -85,8 +85,13 @@ func (f *selectorFilter) apply(u *protobuf.MonitoringUpdate, labelsOf func(key s
 	out := &protobuf.MonitoringUpdate{Capacity: u.GetCapacity(), Features: u.GetFeatures()}
 	if f.sel == nil {
 		out.Groups, out.Labs, out.Clients, out.Policies = u.Groups, u.Labs, u.Clients, u.Policies
-		out.Traffic, out.DeletedKeys = u.Traffic, u.DeletedKeys
+		out.Traffic, out.DeletedKeys, out.Reservations = u.Traffic, u.DeletedKeys, u.Reservations
 		return out
+	}
+	for _, r := range u.Reservations {
+		if f.matches(labelsOf(recordKey(kindReservationRecord, "", "", r.GetId()))) {
+			out.Reservations = append(out.Reservations, r)
+		}
 	}
 	for _, g := range u.Groups {
 		if f.matches(labelsOf(recordKey("lab_group", g.GetName(), "", g.GetName()))) {

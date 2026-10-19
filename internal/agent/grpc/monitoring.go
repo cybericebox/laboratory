@@ -166,9 +166,48 @@ func (h *Handler) observe(ctx context.Context, c *monCache) (*monState, error) {
 			upd.Traffic = append(upd.Traffic, merged)
 		}
 	}
+	if err := h.observeReservations(c, st); err != nil {
+		return nil, err
+	}
 	sortMonitoringRecords(upd)
 	sortTraffic(upd)
 	return st, nil
+}
+
+// kindReservationRecord is the kind of a reservation's record and deleted key in the stream.
+const kindReservationRecord = kindReservation
+
+// observeReservations adds every tenant's reservations to the observation (the selector filter keeps a subscriber's own:
+// their labels carry spec.tenant as the tenant), with the usage coalesced (coalesceUsage), and maps the reservation label of
+// the groups and labs back to the ids.
+func (h *Handler) observeReservations(c *monCache, st *monState) error {
+	list, err := c.reservations.List(labels.Everything())
+	if err != nil {
+		return err
+	}
+	notice, now := h.reservationNotice(), h.now()
+	present, ids := map[string]bool{}, map[string]string{}
+	for _, r := range sortedByName(list) {
+		ids[r.Name] = names.IDOf(r)
+		p := reservationToProto(r, notice)
+		c.coalesceUsage(r.Name, p.Status, now)
+		present[r.Name] = true
+		st.update.Reservations = append(st.update.Reservations, p)
+		l := make(map[string]string, len(r.Labels)+1)
+		for k, v := range r.Labels {
+			l[k] = v
+		}
+		l[names.LabelTenant] = r.Spec.Tenant
+		st.labels[recordKey(kindReservationRecord, "", "", p.Id)] = l
+	}
+	c.forgetUsage(present)
+	for _, g := range st.update.Groups {
+		g.ReservationId = reservationIDOf(ids, g.GetReservationId())
+	}
+	for _, l := range st.update.Labs {
+		l.ReservationId = reservationIDOf(ids, l.GetReservationId())
+	}
+	return nil
 }
 
 // Monitoring streams the platform state to one subscriber. It starts with a full
@@ -382,7 +421,8 @@ func monitoringDelta(previous, next *protobuf.MonitoringUpdate) (*protobuf.Monit
 	sort.Slice(delta.DeletedKeys, func(i, j int) bool {
 		return monitoringDeletedKeyString(delta.DeletedKeys[i]) < monitoringDeletedKeyString(delta.DeletedKeys[j])
 	})
-	return delta, len(delta.Groups) > 0 || len(delta.Labs) > 0 || len(delta.Clients) > 0 || len(delta.Policies) > 0 || len(delta.Traffic) > 0 || len(delta.DeletedKeys) > 0
+	return delta, len(delta.Groups) > 0 || len(delta.Labs) > 0 || len(delta.Clients) > 0 || len(delta.Policies) > 0 || len(delta.Traffic) > 0 ||
+		len(delta.Reservations) > 0 || len(delta.DeletedKeys) > 0
 }
 
 type monitoringRecord struct {
@@ -423,6 +463,10 @@ func monitoringRecordIndex(update *protobuf.MonitoringUpdate) map[string]monitor
 		record := monitoringRecord{kind: "traffic_report", groupName: report.GetLabGroupName(), namespace: report.GetNamespace(), name: report.GetSource(), value: report}
 		records[record.key()] = record
 	}
+	for _, r := range update.Reservations {
+		record := monitoringRecord{kind: kindReservationRecord, name: r.GetId(), value: r}
+		records[record.key()] = record
+	}
 	return records
 }
 
@@ -438,6 +482,8 @@ func appendMonitoringRecord(update *protobuf.MonitoringUpdate, record monitoring
 		update.Policies = append(update.Policies, value)
 	case *protobuf.TrafficReport:
 		update.Traffic = append(update.Traffic, value)
+	case *protobuf.Reservation:
+		update.Reservations = append(update.Reservations, value)
 	}
 }
 
@@ -452,6 +498,7 @@ func sortMonitoringRecords(update *protobuf.MonitoringUpdate) {
 	sort.Slice(update.Policies, func(i, j int) bool {
 		return update.Policies[i].GetLabGroupName()+"\x00"+update.Policies[i].GetNamespace() < update.Policies[j].GetLabGroupName()+"\x00"+update.Policies[j].GetNamespace()
 	})
+	sort.Slice(update.Reservations, func(i, j int) bool { return update.Reservations[i].GetId() < update.Reservations[j].GetId() })
 }
 
 func sortTraffic(update *protobuf.MonitoringUpdate) {

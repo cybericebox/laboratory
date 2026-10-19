@@ -8,7 +8,9 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -137,6 +139,59 @@ func TestMonitoringTwoBackendsOnARealAPIServer(t *testing.T) {
 			count += len(u.Groups)
 		case <-deadline:
 			t.Fatalf("the healthy subscriber saw %d of 9 groups", count)
+		}
+	}
+}
+
+// The ending notice of a reservation reaches its tenant's stream: the snapshot carries the reservation, the notice comes as a
+// delta with the phase, the time and the reason.
+func TestMonitoringStreamsTheEndingNotice(t *testing.T) {
+	h, _ := newTestHandler(t)
+	h.SetMonitoringConfig(MonitoringConfig{PollInterval: 50 * time.Millisecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	to := time.Now().Add(4 * time.Minute).Truncate(time.Second)
+	res, err := h.CreateReservations(ctx, &protobuf.CreateReservationsRequest{Items: []*protobuf.ReservationItem{{
+		Id: "r-end", FromUnixMs: time.Now().Add(-time.Hour).UnixMilli(), ToUnixMs: to.UnixMilli(), CpuMillicores: 1000, MemoryBytes: 1 << 30}}})
+	wantStates(t, res, err, stCreated)
+	s := &fakeMonStream{ctx: ctx, sent: make(chan *protobuf.MonitoringUpdate, 16)}
+	done := make(chan error, 1)
+	go func() { done <- h.Monitoring(&protobuf.MonitoringRequest{MinIntervalMs: 1}, s) }()
+	first := receiveMonitoringUpdate(t, s.sent)
+	if !first.GetSnapshot() || len(first.GetReservations()) != 1 || first.GetReservations()[0].GetId() != "r-end" {
+		t.Fatalf("the snapshot carries the reservation: %v", first.GetReservations())
+	}
+
+	// play the operator: the notice is given
+	r, err := h.cs.LaboratoryV1alpha1().Reservations().Get(ctx, "r-end", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := metav1.NewTime(time.Now().Truncate(time.Second))
+	r.Status.Phase, r.Status.NoticeAt = laboratoryv1alpha1.ReservationPhaseEnding, &now
+	r.Status.Conditions = []metav1.Condition{{Type: laboratoryv1alpha1.ReservationConditionEnding, Status: metav1.ConditionTrue,
+		Reason: laboratoryv1alpha1.ReservationReasonWindowClosing, Message: "the reservation ends", LastTransitionTime: now}}
+	if _, err := h.cs.LaboratoryV1alpha1().Reservations().UpdateStatus(ctx, r, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case u := <-s.sent:
+			for _, got := range u.GetReservations() {
+				st := got.GetStatus()
+				if st.GetPhase() != protobuf.ReservationPhase_RESERVATION_PHASE_ENDING {
+					continue
+				}
+				if u.GetSnapshot() || st.GetEndsAtUnixMs() != to.UnixMilli() || st.GetEndingReason() != "WindowClosing" || st.GetNoticeAtUnixMs() != now.UnixMilli() {
+					t.Fatalf("the notice: %v (snapshot %t)", st, u.GetSnapshot())
+				}
+				cancel()
+				<-done
+				return
+			}
+		case <-deadline:
+			t.Fatal("the ending notice did not come")
 		}
 	}
 }

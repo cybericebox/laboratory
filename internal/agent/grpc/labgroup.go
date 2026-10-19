@@ -170,6 +170,15 @@ func (h *Handler) ListLabGroups(ctx context.Context, in *protobuf.ListRequest) (
 		return nil, err
 	}
 	out := &protobuf.LabGroupList{}
+	ids, err := h.reservationIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		for _, g := range out.Items {
+			g.ReservationId = reservationIDOf(ids, g.GetReservationId())
+		}
+	}()
 	if len(in.GetItems()) > 0 {
 		for _, ref := range in.GetItems() {
 			g, err := h.getGroup(ctx, ref.GetName())
