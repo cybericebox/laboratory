@@ -1,0 +1,22 @@
+# A stand-in for the CiliumNetworkPolicy CRD of Cilium: Kind runs no Cilium, and the operator applies these policies to the
+# namespace of every LabGroup. Nothing enforces them here.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: ciliumnetworkpolicies.cilium.io
+spec:
+  group: cilium.io
+  scope: Namespaced
+  names:
+    kind: CiliumNetworkPolicy
+    listKind: CiliumNetworkPolicyList
+    plural: ciliumnetworkpolicies
+    singular: ciliumnetworkpolicy
+  versions:
+    - name: v2
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true
