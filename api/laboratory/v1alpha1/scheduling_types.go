@@ -78,10 +78,13 @@ type PodSchedule struct {
 	// Failure explains a Failed pod; the warning clears when the pod becomes Ready.
 	Failure *PodFailure `json:"failure,omitempty"`
 	// Withdrawals counts the withdrawals of the pod's group in a row (not every pod got a node within the node timeout); it
-	// clears when the pod becomes Ready.
+	// clears when the pod becomes Ready or fails.
 	Withdrawals int32 `json:"withdrawals,omitempty"`
 	// RetryAfter is when a withdrawn group may be dispatched again (the backoff of its last withdrawal).
 	RetryAfter *metav1.Time `json:"retryAfter,omitempty"`
+	// SchedulerMessage is what the scheduler said (PodScheduled=False) about a pod of the group that got no node, recorded when
+	// the group was withdrawn; cleared on the next dispatch.
+	SchedulerMessage string `json:"schedulerMessage,omitempty"`
 }
 
 // PodFailure is the warning of a pod that did not start.

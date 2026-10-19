@@ -582,15 +582,17 @@ The operator knows nothing about an autoscaler. It knows two capacities of the l
   taints tolerated). A node that boots, a node a cluster autoscaler removes (taint `ToBeDeletedByClusterAutoscaler`) and a
   NotReady node do not count.
 - **Maximum**: a **budget** for the autoscaled lab nodes, the nodes with the label `cybericebox.io/node-group` (infra sets it
-  when a node of an autoscaled group joins). `capacity.budget.cpu` / `memory` is the room for labs those nodes may give
-  together at most: the totals infra gives the cluster autoscaler (`--cores-total` / `--memory-total`) less the control plane,
-  the platform pods and the DaemonSets, with no percentage taken (infra renders it as the number of nodes × (allocatable − the
-DaemonSets' requests); the operator takes its platform and packing percentages itself). The fixed nodes (the controller, any node without the label) count with their real
-  room only. So:
+  when a node of an autoscaled group joins). `capacity.budget.cpu` / `memory` is what those nodes may give together at most,
+  as infra renders it: **the number of nodes × (allocatable − the DaemonSets' requests)**, no percentage taken (for example
+  3 × m7i.xlarge: `9885m` and `44757612Ki`). The operator takes its platform and packing percentages itself. The fixed nodes
+  (the controller, any node without the label) count with their real room only. So:
   - maximum = the real room of the fixed nodes + the larger of the real room of the autoscaled nodes and the budget;
-  - virtual room = the budget less the real room of the schedulable autoscaled nodes (allocatable less the non-lab pods), per
-    resource, never below zero; the operator then keeps its platform reserve percent and packing reserve percent on it, as on
-    a real node (the absolute per-node reserves are not taken: the number of nodes to come is not known).
+  - virtual room = the budget less what the autoscaled nodes that exist give, counted the same way as the budget: for every
+    autoscaled node of the lab pool, cordoned, NotReady, booting and the ones the autoscaler removes included (the autoscaler
+    counts them in its totals), its allocatable less its DaemonSet pods; per resource, never below zero. A cluster at its
+    budget therefore has no virtual room, whatever platform pods run on the autoscaled nodes. The operator then keeps its
+    platform reserve percent and packing reserve percent on the virtual room, as on a real node (the absolute per-node
+    reserves are not taken: the number of nodes to come is not known).
 
   Without a budget (both values empty, the default) the maximum is the current capacity.
 
@@ -605,30 +607,37 @@ With no lab node at all the queue goes on while virtual room is left (scale from
 per-node rule above holds as before. `CapacityShortfall`, the cleanup of unreserved work (spec decisions 6 and 19) and the
 agent's `GetCapacity` use the maximum too; the condition message says how much of the capacity is on nodes not yet present. A
 percentage tenant quota (`50%`) is a share of the maximum: the allocatable of the nodes that exist plus what the budget still
-allows. `GetCapacity` also reports `current_*`, the same capacity without the budget's room.
+allows. `GetCapacity` also reports `current_*`, the same capacity without the budget's room; while there is virtual room its
+largest device is the device limit (`limits.device.maxCpu` / `maxMemory`) or the largest real node, whichever is larger.
 
-**Waiting for a node.** An object whose pods are all sent and some have no node yet shows `status.scheduling.reason:
-NodeStarting` ("n pods wait for a node since T") and gets one Normal event `NodeStarting`; the gauge
-`laboratory_pods_waiting_for_node` counts such pods. Such a pod keeps its slot, and the startup timeout does not fail it:
-once it has a node, `scheduler.startupTimeout` counts from the moment it got the node.
+**Waiting for a node.** A sent pod **waits for a node** only when a budget is set and the scheduler left it `Pending` for want
+of resources a new node brings (`PodScheduled=False` with `Insufficient cpu`, `Insufficient memory` or `Too many pods`). An
+object whose pods are all sent and some wait so shows `status.scheduling.reason: NodeStarting` ("n pods wait for a node since
+T") and gets one Normal event `NodeStarting`; the gauge `laboratory_pods_waiting_for_node` counts such pods. Such a pod holds
+**no in-flight slot** (it pulls and runs nothing yet), so a group larger than `scheduler.maxPods` goes out whole within a few
+passes and the autoscaler sees all of its demand at once; the budget still bounds it. The startup timeout does not fail it;
+once it has a node, `scheduler.startupTimeout` counts from the moment it got the node. Any other pod without a node (no
+budget, or a taint, a node selector, `cybericebox.com/tun`, a scheduler error) is failed after `scheduler.startupTimeout` as
+before, reason `Unschedulable` with what the scheduler said.
 
-**Gang commit (always on).** A group must start as one commit. When some sent pod of a group still has no node
-`capacity.nodeTimeoutSeconds` (900) after the group's last dispatch, the whole group is withdrawn: every pod record goes back
-to `Queued`, and the operator deletes every pod the group made, the running ones too. Its room, tenant quota and reservation
+**Gang commit.** A group must start as one commit. When a sent pod of a group still waits for a node (above)
+`capacity.nodeTimeoutSeconds` (900) after the commit's last dispatch, the whole commit is withdrawn: every pod record goes back
+to `Queued`, and the operator deletes every pod the commit made, the running (Ready) ones too. Its room, tenant quota and reservation
 usage are free at once. The group keeps its place in the order and waits `Withdrawn` ("not every pod got a node within 15m0s;
-withdrawn (attempt n), retry at T") for 1, 2, 4, 8 ... minutes, at most the node timeout, then it is sent again; retries do
+withdrawn (attempt n), retry at T; the scheduler said: ..."; every record keeps that in `status.scheduling.schedulerMessage`)
+for 1, 2, 4, 8 ... minutes, at most the node timeout, then it is sent again; retries do
 not end. Each withdrawal gives a Warning event `Withdrawn` and counts in `laboratory_gang_withdrawals_total`. After three
 withdrawals in a row the tenant gets the condition `GroupsWithdrawnRepeatedly` naming the groups, so the admin sees a stuck
 group; it goes once the group starts. A pod that got a node and then fails (image pull, crash loop) keeps the per-pod rules
-above, so a broken image never loops its group. A pod that was Ready once is never withdrawn: running labs are never evicted.
-A lab that joins its deploy group much later (more than the node timeout after the group's labs were sent) is a commit of its
-own: its withdrawal leaves the running labs of the group alone.
+above, so a broken image never loops its group. A Ready pod never makes its group due, and a pod that was Ready once and lost
+its node later is never withdrawn; but a Ready pod of a commit that is withdrawn goes with it. A commit is what was sent within
+one node timeout of the earliest waiting pod: a lab that joins its deploy group later neither joins it nor moves its deadline,
+and labs of the group sent long before are left alone.
 
-This is a **changed default**: without a maximum the gang commit still applies to pods that stay `Pending` on full nodes.
-Before, such a pod was failed `Unschedulable` after `scheduler.startupTimeout`; now it waits, and its group is withdrawn at the
-node timeout. A pod whose workload never creates it (a quota, a refusal) still fails after the startup timeout.
+Without a budget no pod ever waits for a node, so no group is withdrawn: the behaviour is that of the scheduler before the
+budget (a pod without a node fails `Unschedulable` after `scheduler.startupTimeout`).
 
-**Breaker.** After a withdrawal, admission uses the current nodes only (no virtual room) until a lab node becomes schedulable
+**Breaker.** After a withdrawal, new groups go on the current nodes only (no virtual room) until a lab node becomes schedulable
 that was not schedulable at the withdrawal, or one node timeout passes. A group that needs virtual room waits
 `InsufficientResources` meanwhile. The gauge `laboratory_capacity_breaker` is `1` and the `CapacityShortfall` message adds "no
 new lab node came within 15m0s: admission uses the current nodes only". The breaker only keeps new groups off the virtual
@@ -638,8 +647,16 @@ placed on the virtual room. The breaker lives in the operator's memory: a restar
 
 **What a cluster autoscaler must have** (infra installs it; the laboratory chart has no autoscaler code or values):
 
-- the node-template label `laboratory.cybericebox.com/node-agent-ready=true` on the node group (and the lab label and taint),
-  or it never adds a node for lab pods, which select that label;
+- a node template that matches the lab pods, or it never adds a node for them. On AWS, with scale from zero, these tags on
+  each lab autoscaling group (the node labels and taint themselves are set at join):
+  - `k8s.io/cluster-autoscaler/node-template/label/laboratory.cybericebox.com/node-agent-ready` = `true` (lab pods select it;
+    the node-agent sets it on the node once it runs);
+  - `k8s.io/cluster-autoscaler/node-template/label/cybericebox.io/lab` = `true` and
+    `k8s.io/cluster-autoscaler/node-template/label/cybericebox.io/node-group` = `<group name>`;
+  - `k8s.io/cluster-autoscaler/node-template/taint/cybericebox.io/lab` = `true:NoSchedule`;
+  - `k8s.io/cluster-autoscaler/node-template/resources/cybericebox.com/tun` = the node-agent's TUN slots
+    (`nodeAgent.devicePlugin.tunSlots`, default `1000`): pods of the TUN profile request `cybericebox.com/tun: 1`, the only
+    extended resource lab pods request, which the node-agent's device plugin advertises only once the node runs;
 - `--max-node-provision-time` below the node timeout (12m for 15m), so it gives up before the operator withdraws;
 - scale-down through the `lab-group` PodDisruptionBudget: lab pods carry `cluster-autoscaler.kubernetes.io/safe-to-evict:
   "false"` (VPN and gateway pods of a group that already runs get it with their next template change), so only empty nodes

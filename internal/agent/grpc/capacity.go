@@ -186,12 +186,9 @@ func (h *Handler) allocatable(ctx context.Context) (tenant.Totals, error) {
 		t.Memory += n.Status.Allocatable.Memory().Value()
 	}
 	if h.maximum.Set() {
-		// A percentage quota is a share of the maximum: what the capacity budget still allows beyond the autoscaled nodes counts.
-		pods, err := h.k8s.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return tenant.Totals{}, err
-		}
-		left := h.maximum.Remaining(nodes.Items, pods.Items, h.labSelector, h.labTolerations)
+		// A percentage quota is a share of the maximum: what the capacity budget still allows beyond the autoscaled nodes counts
+		// (read with the cached room view).
+		left := h.room(ctx).remaining
 		t.CPU, t.Memory = t.CPU+left.CPU, t.Memory+left.Memory
 	}
 	return t, nil

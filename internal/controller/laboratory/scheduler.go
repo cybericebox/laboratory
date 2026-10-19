@@ -449,7 +449,7 @@ func (s *Scheduler) observe(ctx context.Context, snap *clusterView, now time.Tim
 			changed = true
 		case cur.State == laboratoryv1alpha1.PodStarting:
 			pods, workload := snap.podsOf[key], snap.workloads[d.Namespace+"/"+workloadName(d)]
-			if nodeless(pods) {
+			if waitsForNode(pods, cfg.Maximum.Set()) {
 				break // the gang commit decides at the node timeout
 			}
 			var extra int32
@@ -459,6 +459,8 @@ func (s *Scheduler) observe(ctx context.Context, snap *clusterView, now time.Tim
 			dispatched := startupFrom(now, cur.DispatchedAt, pods)
 			if failed, f := startupVerdict(now, dispatched, pods, workload, extra, cfg.StartupTimeout, cfg.RestartThreshold); failed {
 				ps.State = laboratoryv1alpha1.PodFailed
+				// the gang got its nodes (or failed otherwise): it is no longer withdrawn in a row
+				ps.Withdrawals = 0
 				ps.Failure = &f
 				changed = true
 			}
@@ -495,14 +497,14 @@ func (s *Scheduler) observe(ctx context.Context, snap *clusterView, now time.Tim
 				ps.Withdrawals, ps.RetryAfter = 0, nil
 			case ps.State == laboratoryv1alpha1.PodStarting:
 				workload := snap.workloads[laboratoryv1alpha1.LabGroupNamespaceOf(g)+"/"+entry.Name]
-				if nodeless(pods) {
+				if waitsForNode(pods, cfg.Maximum.Set()) {
 					continue // the gang commit decides at the node timeout
 				}
 				failed, f := startupVerdict(now, startupFrom(now, ps.DispatchedAt, pods), pods, workload, 0, cfg.StartupTimeout, cfg.RestartThreshold)
 				if !failed {
 					continue
 				}
-				ps.State, ps.Failure = laboratoryv1alpha1.PodFailed, &f
+				ps.State, ps.Failure, ps.Withdrawals = laboratoryv1alpha1.PodFailed, &f, 0
 			default:
 				continue
 			}
@@ -707,7 +709,7 @@ func (p *schedPod) recordTimes(ps *laboratoryv1alpha1.PodSchedule) {
 	if ps.RetryAfter != nil {
 		p.retryAfter = ps.RetryAfter.Time
 	}
-	p.withdrawals = ps.Withdrawals
+	p.withdrawals, p.schedulerMessage = ps.Withdrawals, ps.SchedulerMessage
 }
 
 // devicePod is the schedPod of a container device of a lab; nil for another type of device, and for a not dispatched pod of
@@ -768,19 +770,22 @@ func (s *Scheduler) tick(ctx context.Context) error {
 	objs := s.objects(snap, now)
 	// The gang commit: a gang with a pod that still has no node the node timeout after its last dispatch is withdrawn whole
 	// before the plan, so the plan sees its room, quota and reservation usage free and holds it until its retry time.
-	waiting := nodeWaits(snap, objs)
+	waiting := nodeWaits(snap, objs, s.Config.Maximum.Set())
 	if due := commitDue(objs, waiting, s.nodeTimeout(), now); len(due) > 0 {
 		s.withdrawDue(ctx, snap, due, now)
-		waiting = nodeWaits(snap, objs)
+		waiting = nodeWaits(snap, objs, s.Config.Maximum.Set())
 	}
 
 	flight := 0
 	for _, o := range objs {
 		for _, p := range o.pods {
-			if p.state == laboratoryv1alpha1.PodStarting {
-				flight++
-			} else {
+			switch {
+			case p.state != laboratoryv1alpha1.PodStarting:
 				delete(s.recent, p.key)
+			case !waiting[p]:
+				// a pod that waits for a node that may come pulls and runs nothing yet: it holds no slot, so a large gang goes
+				// out whole and the autoscaler sees all of its demand at once (the budget still bounds it)
+				flight++
 			}
 		}
 	}
@@ -810,7 +815,7 @@ func (s *Scheduler) tick(ctx context.Context) error {
 				continue
 			}
 			q := d.Status.Scheduling.DeepCopy()
-			q.State, q.DispatchedAt, q.Failure, q.RetryAfter = laboratoryv1alpha1.PodStarting, &stamp, nil, nil
+			q.State, q.DispatchedAt, q.Failure, q.RetryAfter, q.SchedulerMessage = laboratoryv1alpha1.PodStarting, &stamp, nil, nil, ""
 			err = s.setDevice(ctx, d, q)
 		case kindGroupPod:
 			err = s.dispatchGroupPod(ctx, snap, p, stamp)
@@ -994,7 +999,7 @@ func (s *Scheduler) dispatchGroupPod(ctx context.Context, snap *clusterView, p *
 				ps = e.PodSchedule
 			}
 		}
-		ps.State, ps.DispatchedAt, ps.Failure, ps.RetryAfter = laboratoryv1alpha1.PodStarting, &stamp, nil, nil
+		ps.State, ps.DispatchedAt, ps.Failure, ps.RetryAfter, ps.SchedulerMessage = laboratoryv1alpha1.PodStarting, &stamp, nil, nil, ""
 		return s.setGroupPod(ctx, g, name, ps)
 	}
 	return errors.NewNotFound(schema.GroupResource{Group: laboratoryv1alpha1.SchemeGroupVersion.Group, Resource: "labgroups"}, p.key)
@@ -1079,7 +1084,7 @@ func (e *clusterEnv) capacity() *capacitySnapshot {
 	if m := e.s.Config.Maximum; m.Set() {
 		room := m.Virtual(nodes.Items, pods, e.s.LabNodeSelector, e.s.LabTolerations, nodecap.Reserve{Percent: e.s.Config.PlatformReservePercent}, e.s.packingReserve())
 		e.breaker = e.s.breakerOn(nodes.Items, e.now)
-		c.withMaximum(room, m.Remaining(nodes.Items, pods, e.s.LabNodeSelector, e.s.LabTolerations), e.breaker)
+		c.withMaximum(room, m.Remaining(nodes.Items, pods, e.s.LabNodeSelector, e.s.LabTolerations))
 	}
 	e.snapshot = &c
 	return e.snapshot
@@ -1134,13 +1139,14 @@ func (e *clusterEnv) neverFits(p *schedPod) bool {
 	return !c.fitsOneNode(p.need)
 }
 
-// noNodes: the resource check is on, no lab node is schedulable now and admission may place on no virtual room.
+// noNodes: the resource check is on, no lab node is schedulable now and the budget leaves no virtual room (under the breaker the
+// plan keeps new gangs off the virtual room itself, while the rest of an admitted gang may still go there).
 func (e *clusterEnv) noNodes() bool {
 	if !e.s.Config.ResourceCheck {
 		return false
 	}
 	c := e.capacity()
-	return c != nil && c.nodes == 0 && c.virtual == (amount{})
+	return c != nil && c.nodes == 0 && c.vmax == (amount{})
 }
 
 // take counts a dispatched pod toward its tenant's quota for the rest of the pass.

@@ -15,9 +15,9 @@ const LabelNodeGroup = "cybericebox.io/node-group"
 // VirtualRoomName is the name of the virtual room in a placement: no Node can have it (a slash is not allowed in a Node name).
 const VirtualRoomName = "virtual/budget"
 
-// Maximum is the static maximum capacity of the lab nodes (chart capacity.budget): Budget is the room for labs the autoscaled
-// nodes may give together at most (the totals infra gives the cluster autoscaler, less the control plane, the platform pods
-// and the DaemonSets). Zero: no maximum, the maximum is the current capacity.
+// Maximum is the static maximum capacity of the lab nodes (chart capacity.budget): Budget is what the autoscaled nodes may give
+// together at most, as infra renders it: the number of nodes times (allocatable less the DaemonSets' requests), no percentage.
+// Zero: no maximum, the maximum is the current capacity.
 type Maximum struct {
 	Budget Amount
 }
@@ -51,12 +51,10 @@ func ParseMaximum(cpu, mem string) (Maximum, error) {
 	return m, nil
 }
 
-// Virtual is the room for labs that the budget still allows beyond the autoscaled nodes that exist now: the budget less the
-// room of the schedulable lab nodes with LabelNodeGroup (their allocatable less the requests of the pods that are not lab pods,
-// the same terms as the budget), per resource and never below zero, then less the platform reserve percent and the packing
-// reserve percent, as the operator keeps them on a real node. The absolute per-node reserves are not taken: the number of nodes
-// still to come is not known. A booting, cordoned, NotReady node or one an autoscaler removes is not schedulable, so its room
-// stays virtual. One aggregate amount: a gang may span nodes, and the cluster autoscaler picks the nodes.
+// Virtual is the room for labs that the budget still allows beyond the autoscaled nodes that exist now (Remaining), less the
+// platform reserve percent and the packing reserve percent, as the operator keeps them on a real node. The absolute per-node
+// reserves are not taken: the number of nodes still to come is not known. One aggregate amount: a gang may span nodes, and the
+// cluster autoscaler picks the nodes.
 func (m Maximum) Virtual(nodes []corev1.Node, pods []corev1.Pod, selector map[string]string, tolerations []corev1.Toleration, reserve Reserve, packing PackingReserve) Amount {
 	left := m.Remaining(nodes, pods, selector, tolerations)
 	cpu, mem := left.CPU, left.Memory
@@ -66,25 +64,55 @@ func (m Maximum) Virtual(nodes []corev1.Node, pods []corev1.Pod, selector map[st
 	return Amount{CPU: cpu, Memory: mem}
 }
 
-// Remaining is the budget less the room of the schedulable autoscaled nodes (their allocatable less the requests of the pods
-// that are not lab pods), per resource, never below zero, before any reserve of the operator: what a percentage tenant quota
-// counts on top of the allocatable of the nodes that exist.
+// Remaining is the budget less what the autoscaled nodes that exist give, counted the way infra counts the budget: for every lab
+// node of the pool with LabelNodeGroup (cordoned, NotReady, booting and the ones an autoscaler removes too: the autoscaler counts
+// them in its totals) its allocatable less the requests of its DaemonSet pods; per resource, never below zero, before any
+// reserve of the operator. It is also what a percentage tenant quota counts on top of the allocatable of the nodes that exist.
 func (m Maximum) Remaining(nodes []corev1.Node, pods []corev1.Pod, selector map[string]string, tolerations []corev1.Toleration) Amount {
 	if !m.Set() {
 		return Amount{}
 	}
 	grouped := map[string]bool{}
-	for i := range nodes {
-		if nodes[i].Labels[LabelNodeGroup] != "" {
-			grouped[nodes[i].Name] = true
-		}
-	}
 	var have Amount
-	for _, f := range FreeForLabs(nodes, pods, selector, tolerations, Reserve{}, PackingReserve{}) {
-		if grouped[f.Name] {
-			have.CPU += f.CPU
-			have.Memory += f.Memory
+	for i := range nodes {
+		n := &nodes[i]
+		if n.Labels[LabelNodeGroup] == "" || !InPool(withoutAutoscalerTaints(n), selector, tolerations) {
+			continue
 		}
+		grouped[n.Name] = true
+		have.CPU += n.Status.Allocatable.Cpu().MilliValue()
+		have.Memory += n.Status.Allocatable.Memory().Value()
+	}
+	for i := range pods {
+		p := &pods[i]
+		if !grouped[p.Spec.NodeName] || p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed || !ownedByDaemonSet(p) {
+			continue
+		}
+		r := PodRequests(p)
+		have.CPU -= r.CPU
+		have.Memory -= r.Memory
 	}
 	return Amount{CPU: max(m.Budget.CPU-have.CPU, 0), Memory: max(m.Budget.Memory-have.Memory, 0)}
+}
+
+// withoutAutoscalerTaints is the node without the taints a cluster autoscaler puts on a node it removes.
+func withoutAutoscalerTaints(n *corev1.Node) *corev1.Node {
+	out := n.DeepCopy()
+	out.Spec.Taints = nil
+	for _, t := range n.Spec.Taints {
+		if t.Key != "ToBeDeletedByClusterAutoscaler" && t.Key != "DeletionCandidateOfClusterAutoscaler" {
+			out.Spec.Taints = append(out.Spec.Taints, t)
+		}
+	}
+	return out
+}
+
+// ownedByDaemonSet says a DaemonSet runs the pod.
+func ownedByDaemonSet(p *corev1.Pod) bool {
+	for _, o := range p.OwnerReferences {
+		if o.Kind == "DaemonSet" {
+			return true
+		}
+	}
+	return false
 }

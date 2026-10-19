@@ -33,7 +33,7 @@ func (f *schedFixture) noNode(lab, dev string) {
 	f.t.Helper()
 	f.devicePod(lab, dev, func(p *corev1.Pod) {
 		p.Status.Phase = corev1.PodPending
-		p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: "Unschedulable", Message: "0/1 nodes are available"}}
+		p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: "Unschedulable", Message: "0/1 nodes are available: 1 Insufficient cpu."}}
 	})
 }
 
@@ -134,8 +134,15 @@ func TestWithdrawWholeGang(t *testing.T) {
 	if got := metricValue(t, "laboratory_gang_withdrawals_total") - before; got != 1 {
 		t.Fatalf("withdrawals counted %v", got)
 	}
-	if s := f.labStatus("a"); s.Reason != laboratoryv1alpha1.WaitWithdrawn || !strings.Contains(s.Message, "attempt 1") || !strings.Contains(s.Message, "15m0s") {
+	if s := f.labStatus("a"); s.Reason != laboratoryv1alpha1.WaitWithdrawn || !strings.Contains(s.Message, "attempt 1") || !strings.Contains(s.Message, "15m0s") ||
+		!strings.Contains(s.Message, "the scheduler said: Unschedulable: 0/1 nodes are available: 1 Insufficient cpu.") {
 		t.Fatalf("status = %+v", s)
+	}
+	// every record of the commit carries what the scheduler said, the running ones too
+	for _, d := range []string{"p1", "p4"} {
+		if m := f.device("a", d).Status.Scheduling.SchedulerMessage; !strings.Contains(m, "Insufficient cpu") {
+			t.Fatalf("%s scheduler message = %q", d, m)
+		}
 	}
 }
 
@@ -163,7 +170,7 @@ func TestWithdrawOnlyForNoNode(t *testing.T) {
 
 // A withdrawn gang waits for its retry time, keeping its place; then it is sent again.
 func TestRetryAfterHoldsGang(t *testing.T) {
-	f := maxFixture(t, 0)
+	f := maxFixture(t, 1)
 	f.create(node("n1", "8", "16Gi"))
 	f.addLab("a", "g", nil, "p1")
 	f.tick()
@@ -190,7 +197,7 @@ func TestRetryAfterHoldsGang(t *testing.T) {
 
 // The quota and the room of a withdrawn gang are free at once: another gang of the tenant is admitted in the same pass.
 func TestWithdrawFreesQuotaAndReservation(t *testing.T) {
-	f := maxFixture(t, 0)
+	f := maxFixture(t, 1)
 	f.create(node("n1", "8", "16Gi"))
 	f.create(&laboratoryv1alpha1.Tenant{ObjectMeta: metav1.ObjectMeta{Name: "capped"},
 		Spec: laboratoryv1alpha1.TenantSpec{Quota: &laboratoryv1alpha1.TenantQuota{CPU: "3"}}})
@@ -345,7 +352,7 @@ func TestBreakerOpens(t *testing.T) {
 
 // A lab that joins a deploy group long after the group started is its own commit: its withdrawal leaves the running labs alone.
 func TestOldLabsOfGroupNotWithdrawn(t *testing.T) {
-	f := maxFixture(t, 0)
+	f := maxFixture(t, 1)
 	f.create(node("n1", "8", "16Gi"))
 	f.addLab("a", "g", nil, "p1")
 	f.tick()
@@ -363,7 +370,7 @@ func TestOldLabsOfGroupNotWithdrawn(t *testing.T) {
 	f.wantStates("a/p1=D b/p1=Q")
 }
 
-// A pod that was Ready once and lost its node later is never withdrawn: running labs are never evicted.
+// A pod that was Ready once and lost its node later never makes its gang due.
 func TestStartedPodWithoutNodeNotWithdrawn(t *testing.T) {
 	f := maxFixture(t, 0)
 	f.create(node("n1", "8", "16Gi"))
@@ -381,7 +388,7 @@ func TestStartedPodWithoutNodeNotWithdrawn(t *testing.T) {
 
 // After three withdrawals in a row the tenant shows a Warning condition naming the group; the backoff grows.
 func TestRepeatedWithdrawalsWarnTenant(t *testing.T) {
-	f := maxFixture(t, 0)
+	f := maxFixture(t, 1)
 	f.create(node("n1", "8", "16Gi"))
 	f.create(&laboratoryv1alpha1.Tenant{ObjectMeta: metav1.ObjectMeta{Name: names.DefaultTenant}})
 	f.addLab("a", "", nil, "p1")
@@ -444,5 +451,83 @@ func TestGroupPodsScaledDownWhenQueued(t *testing.T) {
 	}
 	if err := f.c.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: names.ComponentGateway}, &dep); err != nil {
 		t.Fatalf("the gateway that was never withdrawn stays: %v", err)
+	}
+}
+
+// Without a budget no node will come: a pod without a node fails after the startup timeout as before (Unschedulable, with what
+// the scheduler said), and its gang is not withdrawn.
+func TestNoBudgetUnschedulableFailsAsBefore(t *testing.T) {
+	f := maxFixture(t, 0)
+	f.create(node("n1", "8", "16Gi"))
+	f.addLab("a", "g", nil, "p1")
+	f.tick()
+	f.noNode("a", "p1")
+	f.now = f.now.Add(6 * time.Minute)
+	f.tick()
+	f.wantStates("a/p1=F")
+	if fail := f.device("a", "p1").Status.Scheduling.Failure; fail == nil || fail.Reason != laboratoryv1alpha1.FailureUnschedulable || !strings.Contains(fail.Message, "Insufficient cpu") {
+		t.Fatalf("failure = %+v", fail)
+	}
+	if s := f.labStatus("a"); s.Reason == laboratoryv1alpha1.WaitNodeStarting {
+		t.Fatalf("no node is coming without a budget: %+v", s)
+	}
+}
+
+// With a budget, a pod that has no node for a reason a new node does not fix (a taint, a selector, an extended resource) fails
+// after the startup timeout as before; it never makes its gang wait for a node.
+func TestNonResourceReasonFailsAsBefore(t *testing.T) {
+	f := maxFixture(t, 2)
+	f.addLab("a", "g", nil, "p1")
+	f.tick()
+	f.devicePod("a", "p1", func(p *corev1.Pod) {
+		p.Status.Phase = corev1.PodPending
+		p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: "Unschedulable",
+			Message: "0/1 nodes are available: 1 Insufficient cybericebox.com/tun, 1 node(s) had untolerated taint {x: y}."}}
+	})
+	f.now = f.now.Add(6 * time.Minute)
+	f.tick()
+	f.wantStates("a/p1=F")
+	if fail := f.device("a", "p1").Status.Scheduling.Failure; fail == nil || fail.Reason != laboratoryv1alpha1.FailureUnschedulable || !strings.Contains(fail.Message, "untolerated taint") {
+		t.Fatalf("failure = %+v", fail)
+	}
+}
+
+// A pod that waits for a node holds no in-flight slot: a gang larger than maxPods goes out in passes of seconds, not one
+// node start per slice.
+func TestWaitingPodsHoldNoSlot(t *testing.T) {
+	f := maxFixture(t, 10)
+	f.s.Config.MaxPods = 3
+	f.addLab("a", "g", nil, "p1", "p2", "p3", "p4", "p5", "p6")
+	f.tick()
+	f.wantStates("a/p1=S a/p2=S a/p3=S a/p4=Q a/p5=Q a/p6=Q")
+	for _, d := range []string{"p1", "p2", "p3"} {
+		f.noNode("a", d)
+	}
+	f.tick()
+	f.wantStates("a/p1=S a/p2=S a/p3=S a/p4=S a/p5=S a/p6=S")
+}
+
+// A lab that joins its deploy group after the node timeout of a stuck commit neither delays that commit's withdrawal nor is
+// withdrawn with it.
+func TestLateJoinerDoesNotDelayCommit(t *testing.T) {
+	t0 := planEpoch
+	stuck := sentAt(st, t0)
+	joiner := sentAt(st, t0.Add(16*time.Minute))
+	objs := []*schedObject{commitObj("lab/ns/a", "g", stuck), commitObj("lab/ns/b", "g", joiner)}
+	due := commitDue(objs, map[*schedPod]bool{stuck: true}, 15*time.Minute, t0.Add(17*time.Minute))
+	if len(due) != 1 || len(due[0].objs) != 1 || due[0].objs[0].id != "lab/ns/a" || !due[0].deadline.Equal(t0.Add(15*time.Minute)) {
+		t.Fatalf("due = %+v", due)
+	}
+}
+
+// A commit withdrawn already (a write failed, some records are left) is withdrawn again with the same attempt, not the next.
+func TestWithdrawAgainKeepsAttempt(t *testing.T) {
+	t0 := planEpoch
+	left := sentAt(st, t0)
+	left.withdrawals = 1
+	done := &schedPod{key: "done", state: qd, withdrawals: 2, retryAfter: t0.Add(17 * time.Minute)}
+	due := commitDue([]*schedObject{commitObj("lab/ns/a", "", left, done)}, map[*schedPod]bool{left: true}, 15*time.Minute, t0.Add(16*time.Minute))
+	if len(due) != 1 || due[0].attempt != 2 || !due[0].again {
+		t.Fatalf("due = %+v", due)
 	}
 }

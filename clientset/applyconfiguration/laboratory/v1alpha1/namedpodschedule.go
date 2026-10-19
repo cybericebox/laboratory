@@ -100,3 +100,11 @@ func (b *NamedPodScheduleApplyConfiguration) WithRetryAfter(value v1.Time) *Name
 	b.PodScheduleApplyConfiguration.RetryAfter = &value
 	return b
 }
+
+// WithSchedulerMessage sets the SchedulerMessage field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the SchedulerMessage field is set to the value of the last call.
+func (b *NamedPodScheduleApplyConfiguration) WithSchedulerMessage(value string) *NamedPodScheduleApplyConfiguration {
+	b.PodScheduleApplyConfiguration.SchedulerMessage = &value
+	return b
+}

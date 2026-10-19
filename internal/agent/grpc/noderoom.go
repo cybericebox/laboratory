@@ -25,6 +25,9 @@ type roomView struct {
 	// current and currentOK are total and ok without the virtual room of the capacity budget: the nodes that exist now.
 	current   nodecap.Amount
 	currentOK bool
+	// remaining is what the capacity budget adds to the allocatable of the nodes that exist (nodecap.Maximum.Remaining): the
+	// base of a percentage tenant quota is the maximum.
+	remaining nodecap.Amount
 }
 
 type deviceRoomCache struct {
@@ -61,10 +64,21 @@ func (h *Handler) room(ctx context.Context) roomView {
 	v.current, v.currentOK = v.total, v.ok
 	// The room the budget of the static maximum still allows beyond the autoscaled nodes that exist: the operator admits onto
 	// it (its breaker aside), so the tenants plan against it too. The largest device stays that of the real nodes.
+	v.remaining = h.maximum.Remaining(nodes.Items, pods.Items, h.labSelector, h.labTolerations)
 	if room := h.maximum.Virtual(nodes.Items, pods.Items, h.labSelector, h.labTolerations, nodecap.Reserve{Percent: h.nodeReserve.Percent}, h.packingReserve); room != (nodecap.Amount{}) {
 		v.total.CPU += room.CPU
 		v.total.Memory += room.Memory
 		v.ok = true
+		// A node still to come may be any type the budget allows, every one larger than the device limits: the operator fails no
+		// device then, so the largest device is the device limit (or, with no limit, the virtual room), never less than a real node.
+		limit := nodecap.Amount{CPU: h.features.Limits.DeviceMaxCPU, Memory: h.features.Limits.DeviceMaxMemory}
+		if limit.CPU <= 0 {
+			limit.CPU = room.CPU
+		}
+		if limit.Memory <= 0 {
+			limit.Memory = room.Memory
+		}
+		v.largest = nodecap.Amount{CPU: max(v.largest.CPU, limit.CPU), Memory: max(v.largest.Memory, limit.Memory)}
 	}
 	c.at, c.view = time.Now(), v
 	return v

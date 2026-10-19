@@ -130,6 +130,18 @@ func (g *gang) retry(now time.Time) (at time.Time, attempt int32, wait bool) {
 	return at, attempt, wait
 }
 
+// schedulerMessage is what the scheduler said about a pod of the gang that got no node, as its last withdrawal recorded it.
+func (g *gang) schedulerMessage() string {
+	for _, o := range g.objs {
+		for _, p := range o.pods {
+			if p.schedulerMessage != "" {
+				return p.schedulerMessage
+			}
+		}
+	}
+	return ""
+}
+
 // waitingSince is when the gang started waiting in this queue episode: the earliest time one of its waiting pods entered the
 // queue (a lab resumed after a stop is queued again then), at the earliest its arrival; the arrival when no waiting pod has a
 // queue time.
