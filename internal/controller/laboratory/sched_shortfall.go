@@ -51,6 +51,12 @@ func usageMaxAge(interval time.Duration) time.Duration {
 	return max(2*interval, time.Minute)
 }
 
+// ReservationUsageMaxAge is usageMaxAge for the manager: the ReservationReconciler's UsageMaxAge for a scheduler with this
+// status interval (zero: the default), so the heartbeat and the gate cannot diverge.
+func ReservationUsageMaxAge(statusInterval time.Duration) time.Duration {
+	return usageMaxAge(statusInterval)
+}
+
 // usageHeartbeat is how often the scheduler writes status.usedAt of a reservation whose usage did not change: half the
 // freshness bound, so a running scheduler always keeps it fresh.
 func usageHeartbeat(interval time.Duration) time.Duration { return usageMaxAge(interval) / 2 }
@@ -168,16 +174,16 @@ func (e *clusterEnv) shortfall(plan schedPlan) shortfallReport {
 	for _, n := range empty {
 		rep.capacity = rep.capacity.add(amount{cpu: n.CPU, mem: n.Memory})
 	}
+	byName := make(map[string]*laboratoryv1alpha1.Reservation, len(e.snap.reservations))
+	for i := range e.snap.reservations {
+		byName[e.snap.reservations[i].Name] = &e.snap.reservations[i]
+	}
 	for _, w := range demandWindows(e.snap.reservations, e.now, horizon) {
 		rep.peak = amount{cpu: max(rep.peak.cpu, w.sum.cpu), mem: max(rep.peak.mem, w.sum.mem)}
-		usage := map[string]reservationUsage{}
-		for i := range e.snap.reservations {
-			r := &e.snap.reservations[i]
-			for _, n := range w.names {
-				if r.Name == n {
-					usage[n] = reservationUsage{amount: reservationAmount(r), tenant: r.Spec.Tenant, active: true}
-				}
-			}
+		usage := make(map[string]reservationUsage, len(w.names))
+		for _, n := range w.names {
+			r := byName[n]
+			usage[n] = reservationUsage{amount: reservationAmount(r), tenant: r.Spec.Tenant, active: true}
 		}
 		pass := newReservationPass(usage)
 		pass.withhold(empty, nil)
@@ -219,16 +225,16 @@ func (r shortfallReport) condition() metav1.Condition {
 	return c
 }
 
-// evictable says the object is unreserved work the cleanup may take: it carries no reservation label at all (an empty label
-// counts as one) and is not being deleted.
+// evictable says the object is unreserved work the cleanup may take: it carries no reservation label at all (the scheduler's
+// own predicate, names.ReservationOf: an empty label is an invalid reservation, never admitted) and is not being deleted.
 func evictable(o metav1.Object) bool {
-	_, labelled := o.GetLabels()[names.LabelReservation]
+	_, labelled := names.ReservationOf(o.GetLabels())
 	return !labelled && o.GetDeletionTimestamp() == nil
 }
 
-// unreservedHolds is the room the bound pods of each tenant's unreserved objects take on each node (those of its stopped labs
-// too), as the capacity snapshot counts it.
-func (e *clusterEnv) unreservedHolds() map[string]map[string]amount {
+// unreservedHolds is the room the bound pods of each unreserved object (by objectKey) take on each node, the held pods of its
+// stopped labs too, as the capacity snapshot counts it, with the tenant of each such object.
+func (e *clusterEnv) unreservedHolds() (holds map[string]map[string]amount, tenantOf map[string]string) {
 	labs := map[string]*laboratoryv1alpha1.Lab{}
 	for _, l := range e.snap.labs {
 		labs[l.Namespace+"/"+l.Name] = l
@@ -237,12 +243,12 @@ func (e *clusterEnv) unreservedHolds() map[string]map[string]amount {
 	for _, g := range e.snap.groups {
 		groupOf[laboratoryv1alpha1.LabGroupNamespaceOf(g)] = g
 	}
-	holds := map[string]map[string]amount{}
+	holds, tenantOf = map[string]map[string]amount{}, map[string]string{}
 	add := func(p *corev1.Pod) {
 		if p.Spec.NodeName == "" || p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed || !nodecap.IsLabPod(p) {
 			return
 		}
-		var owner metav1.Object
+		var owner client.Object
 		if l := p.Labels[names.LabelLab]; l != "" {
 			if lab := labs[p.Namespace+"/"+l]; lab != nil {
 				owner = lab
@@ -253,47 +259,37 @@ func (e *clusterEnv) unreservedHolds() map[string]map[string]amount {
 		if owner == nil || !evictable(owner) {
 			return
 		}
-		t := names.TenantOf(owner.GetLabels())
-		if holds[t] == nil {
-			holds[t] = map[string]amount{}
+		k := objectKey(owner)
+		if holds[k] == nil {
+			holds[k] = map[string]amount{}
 		}
-		holds[t][p.Spec.NodeName] = holds[t][p.Spec.NodeName].add(podRequests(p))
+		holds[k][p.Spec.NodeName] = holds[k][p.Spec.NodeName].add(podRequests(p))
+		tenantOf[k] = names.TenantOf(owner.GetLabels())
 	}
 	for _, p := range e.snap.pods {
 		add(p)
 	}
-	held, _, _ := e.s.stoppedReservations(e.snap)
-	for i := range held {
-		add(&held[i])
+	for i := range e.heldPods {
+		add(&e.heldPods[i])
 	}
-	return holds
+	return holds, tenantOf
 }
 
-func objEvictable(o *schedObject) bool {
-	m, ok := o.ref.(metav1.Object)
-	return ok && evictable(m)
+// schedKey is the objectKey of the Lab or LabGroup of a plan object; "" for one without such a handle (plan tests).
+func schedKey(o *schedObject) string {
+	if c, ok := o.ref.(client.Object); ok {
+		return objectKey(c)
+	}
+	return ""
 }
 
-// gangEvictable: the gang is unreserved work (no reservation, every object without the label).
-func gangEvictable(g *gang) bool {
-	if g.reservation != "" || g.mixedReservation {
-		return false
-	}
-	for _, o := range g.objs {
-		if !objEvictable(o) {
-			return false
-		}
-	}
-	return true
-}
-
-// unboundPod is a dispatched pod not on a node yet; tenant is the tenant whose unreserved work it is (empty: not such work).
+// unboundPod is a dispatched pod not on a node yet, with the objectKey of its object.
 type unboundPod struct {
-	need   podNeed
-	tenant string
+	need podNeed
+	obj  string
 }
 
-// counterfactual runs steps 1 to 3 of the placement simulation of a pass again, with or without a tenant's unreserved work.
+// counterfactual runs steps 1 to 3 of the placement simulation of a pass again, with or without some unreserved objects.
 type counterfactual struct {
 	c       *capacitySnapshot
 	plan    schedPlan
@@ -302,24 +298,59 @@ type counterfactual struct {
 	usage   map[string]reservationUsage
 }
 
-// shortfallWithout is the shortfall of the active reservations without the unreserved work of the tenant except (its bound
-// pods, its unbound ones and its admitted remainders); "" keeps all of it, which is the pass itself.
-func (cf counterfactual) shortfallWithout(except string) amount {
+// gangIn says every object of the gang is in the set.
+func gangIn(g *gang, set map[string]bool) bool {
+	for _, o := range g.objs {
+		if !set[schedKey(o)] {
+			return false
+		}
+	}
+	return len(g.objs) > 0
+}
+
+// frees says removing the objects takes something off the nodes in steps 1 to 3: a bound pod, an unbound one or a remainder.
+func (cf counterfactual) frees(removed map[string]bool) bool {
+	for k := range removed {
+		if len(cf.holds[k]) > 0 {
+			return true
+		}
+	}
+	for _, u := range cf.unbound {
+		if removed[u.obj] {
+			return true
+		}
+	}
+	for _, r := range cf.plan.remainders {
+		if gangIn(r.g, removed) {
+			return true
+		}
+	}
+	return false
+}
+
+// shortfallWithout is the shortfall of the active reservations without the objects removed (their bound pods, their unbound
+// ones and their admitted remainders); none removed is the pass itself.
+func (cf counterfactual) shortfallWithout(removed map[string]bool) amount {
 	used := make(map[string]amount, len(cf.c.labUsed))
 	for n, a := range cf.c.labUsed {
-		used[n] = a.sub(cf.holds[except][n])
+		used[n] = a
+	}
+	for k := range removed {
+		for n, a := range cf.holds[k] {
+			used[n] = used[n].sub(a)
+		}
 	}
 	rooms := without(cf.c.rooms(), used)
 	var needs []podNeed
 	for _, u := range cf.unbound {
-		if except == "" || u.tenant != except {
+		if !removed[u.obj] {
 			needs = append(needs, u.need)
 		}
 	}
 	rooms = placeEach(rooms, needs)
 	pass := newReservationPass(cf.usage)
 	for _, r := range cf.plan.remainders {
-		if except != "" && r.g.tenant == except && gangEvictable(r.g) {
+		if gangIn(r.g, removed) {
 			continue
 		}
 		if l, ok := fitsGang(rooms, r.needs); ok {
@@ -331,12 +362,14 @@ func (cf counterfactual) shortfallWithout(except string) amount {
 	return sumOf(pass.shortfall)
 }
 
-// unreservedBlockers are the tenants whose unreserved work holds room the active reservations find no place for now: the
-// tenant blocks when the reservations' shortfall gets smaller without its unreserved work (counterfactual).
+// unreservedBlockers are the tenants whose unreserved work holds room the active reservations find no place for now: removing
+// exactly what the cleanup would take of the tenant (its targets: a LabGroup kept for a reserved or foreign lab stays) makes the
+// reservations' shortfall smaller (counterfactual). A tenant whose targets free nothing never blocks.
 func (e *clusterEnv) unreservedBlockers(plan schedPlan, c *capacitySnapshot) map[string]bool {
-	cf := counterfactual{c: c, plan: plan, holds: e.unreservedHolds(), usage: e.fairness().usage}
+	holds, tenantOf := e.unreservedHolds()
+	cf := counterfactual{c: c, plan: plan, holds: holds, usage: e.fairness().usage}
 	candidates := map[string]bool{}
-	for t := range cf.holds {
+	for _, t := range tenantOf {
 		candidates[t] = true
 	}
 	for _, o := range e.objs {
@@ -344,28 +377,34 @@ func (e *clusterEnv) unreservedBlockers(plan schedPlan, c *capacitySnapshot) map
 			if p.state != laboratoryv1alpha1.PodStarting || e.nodeOf(p) != "" {
 				continue
 			}
-			u := unboundPod{need: podNeed{Key: p.key, CPU: p.need.cpu, Memory: p.need.mem}}
-			if objEvictable(o) {
-				u.tenant = p.tenant
+			cf.unbound = append(cf.unbound, unboundPod{need: podNeed{Key: p.key, CPU: p.need.cpu, Memory: p.need.mem}, obj: schedKey(o)})
+			if m, ok := o.ref.(metav1.Object); ok && evictable(m) {
 				candidates[p.tenant] = true
 			}
-			cf.unbound = append(cf.unbound, u)
 		}
 	}
 	for _, r := range plan.remainders {
-		if gangEvictable(r.g) {
+		if r.g.reservation == "" && !r.g.mixedReservation {
 			candidates[r.g.tenant] = true
 		}
 	}
-	base := cf.shortfallWithout("")
+	base := cf.shortfallWithout(nil)
 	out := map[string]bool{}
 	for t := range candidates {
-		if s := cf.shortfallWithout(t); s.cpu < base.cpu || s.mem < base.mem {
+		removed := evictionTargets(e.snap, map[string]bool{t: true})
+		if !cf.frees(removed) {
+			continue
+		}
+		if s := cf.shortfallWithout(removed); s.cpu < base.cpu || s.mem < base.mem {
 			out[t] = true
 		}
 	}
 	return out
 }
+
+// tenantMessageInterval is the least time between two writes of a tenant's CapacityShortfall condition that change only its
+// message (the numbers).
+const tenantMessageInterval = time.Minute
 
 // writeTenants sets the CapacityShortfall condition on every tenant with an active or future reservation and removes it from
 // the others, when it changed, within the per-object interval and the budget of the tick. The patch carries the conditions
@@ -386,9 +425,14 @@ func (s *Scheduler) writeTenants(ctx context.Context, snap *clusterView, sf shor
 		}
 		next := t.DeepCopy()
 		var changed bool
+		wait := interval
 		if sf.tenants[n] {
 			c := sf.condition()
 			c.ObservedGeneration, c.LastTransitionTime = t.Generation, metav1.NewTime(now)
+			if old := meta.FindStatusCondition(t.Status.Conditions, c.Type); old != nil && old.Status == c.Status && old.Reason == c.Reason && old.ObservedGeneration == c.ObservedGeneration {
+				// only the numbers moved (they follow every dispatch): the gauge has them now, the message less often
+				wait = max(interval, tenantMessageInterval)
+			}
 			changed = meta.SetStatusCondition(&next.Status.Conditions, c)
 		} else {
 			changed = meta.RemoveStatusCondition(&next.Status.Conditions, laboratoryv1alpha1.TenantConditionCapacityShortfall)
@@ -396,7 +440,7 @@ func (s *Scheduler) writeTenants(ctx context.Context, snap *clusterView, sf shor
 		if !changed {
 			continue
 		}
-		if at, ok := s.lastWrite[t.UID]; ok && now.Sub(at) < interval {
+		if at, ok := s.lastWrite[t.UID]; ok && now.Sub(at) < wait {
 			continue
 		}
 		if budget <= 0 {
@@ -443,14 +487,18 @@ func evictionTargets(snap *clusterView, blockers map[string]bool) map[string]boo
 			out[objectKey(l)] = true
 		}
 	}
+	byNamespace := map[string][]*laboratoryv1alpha1.Lab{}
+	for _, l := range snap.labs {
+		byNamespace[l.Namespace] = append(byNamespace[l.Namespace], l)
+	}
 	for _, g := range snap.groups {
 		t := names.TenantOf(g.Labels)
 		if !evictable(g) || !blockers[t] {
 			continue
 		}
 		foreign := false
-		for _, l := range snap.labs {
-			if l.Namespace == laboratoryv1alpha1.LabGroupNamespaceOf(g) && (!evictable(l) || names.TenantOf(l.Labels) != t) {
+		for _, l := range byNamespace[laboratoryv1alpha1.LabGroupNamespaceOf(g)] {
+			if !evictable(l) || names.TenantOf(l.Labels) != t {
 				foreign = true
 			}
 		}
@@ -469,16 +517,27 @@ func objectKey(o client.Object) string {
 	return kind + "/" + o.GetNamespace() + "/" + o.GetName()
 }
 
-// evictUnreserved marks the targets with the evict-at annotation (at most the status budget of new marks per tick), removes
-// the mark from every other object that has it, and deletes the targets whose time passed, in one pass after checking past
-// the cache.
-func (s *Scheduler) evictUnreserved(ctx context.Context, snap *clusterView, blockers map[string]bool, now time.Time) {
+// evictRetryAfter is how long a due object whose deletion the live check refused, or that failed, waits before it is tried
+// again (each try reads the whole cluster past the cache).
+const evictRetryAfter = 30 * time.Second
+
+// evictUnreserved marks the targets with the evict-at annotation, removes the mark from every other object that has it, and
+// deletes the targets that are due, in one pass after checking past the cache.
+//
+// A mark alone never deletes: an object is due only when its mark time passed AND this process has seen it as a marked target
+// on every pass since at least one full notice ago (seen: the previous pass's record; any pass without a known verdict, a
+// stopped scheduler or a restart starts it again). A mark this process did not give, found with less than a full notice left,
+// is given again (now + the notice), so after any gap in observation the current shortfall always gets its own full notice.
+// New marks and renewals take at most the status budget per tick, clears four times that.
+func (s *Scheduler) evictUnreserved(ctx context.Context, snap *clusterView, blockers map[string]bool, seen map[types.UID]time.Time, now time.Time) {
 	logger := log.FromContext(ctx).WithName("scheduler")
 	targets := evictionTargets(snap, blockers)
+	notice := s.unreservedNotice()
 	budget := s.Config.StatusBudget
 	if budget <= 0 {
 		budget = defaultStatusBudget
 	}
+	clears := 4 * budget
 	objs := make([]client.Object, 0, len(snap.labs)+len(snap.groups))
 	for _, l := range snap.labs {
 		objs = append(objs, l)
@@ -486,42 +545,73 @@ func (s *Scheduler) evictUnreserved(ctx context.Context, snap *clusterView, bloc
 	for _, g := range snap.groups {
 		objs = append(objs, g)
 	}
+	next := map[types.UID]time.Time{}
 	var due []client.Object
 	marked := 0
+	mark := func(o client.Object) bool {
+		if budget <= 0 {
+			return false
+		}
+		budget--
+		when := now.Add(notice).UTC().Format(time.RFC3339)
+		if err := s.annotate(ctx, o, when); err != nil {
+			logger.Error(err, "mark unreserved work for deletion", "object", objectKey(o))
+			return false
+		}
+		marked++
+		if s.Recorder != nil {
+			s.Recorder.Eventf(o, corev1.EventTypeWarning, "UnreservedEviction",
+				"active reservations need the room the unreserved work of tenant %s holds: this object is deleted at %s unless the shortfall clears", names.TenantOf(o.GetLabels()), when)
+		}
+		return true
+	}
 	for _, o := range objs {
 		if o.GetDeletionTimestamp() != nil {
 			continue
 		}
+		uid := o.GetUID()
 		want := targets[objectKey(o)]
 		at, has, ok := evictAt(o)
 		switch {
 		case want && ok:
-			if !now.Before(at) {
+			first, known := seen[uid]
+			if !known {
+				// a mark from before a gap (or another process): this shortfall gets its own full notice
+				first = now
+				if at.Before(now.Add(notice)) && !mark(o) {
+					continue // not renewed this pass: not seen either, so it stays undue
+				}
+			}
+			next[uid] = first
+			if !now.Before(at) && !now.Before(first.Add(notice)) && !now.Before(s.evictRetry[uid]) {
 				due = append(due, o)
 			}
 		case want:
-			if budget <= 0 {
-				continue
-			}
-			budget--
-			when := now.Add(s.unreservedNotice()).UTC().Format(time.RFC3339)
-			if err := s.annotate(ctx, o, when); err != nil {
-				logger.Error(err, "mark unreserved work for deletion", "object", objectKey(o))
-				continue
-			}
-			marked++
-			if s.Recorder != nil {
-				s.Recorder.Eventf(o, corev1.EventTypeWarning, "UnreservedEviction",
-					"active reservations need the room the unreserved work of tenant %s holds: this object is deleted at %s unless the shortfall clears", names.TenantOf(o.GetLabels()), when)
+			if mark(o) {
+				next[uid] = now
 			}
 		case has:
+			if clears <= 0 {
+				continue
+			}
+			clears--
 			if err := s.annotate(ctx, o, ""); err != nil {
 				logger.Error(err, "remove the eviction mark", "object", objectKey(o))
+				continue
+			}
+			if s.Recorder != nil {
+				s.Recorder.Event(o, corev1.EventTypeNormal, "UnreservedEvictionCancelled", "the active reservations no longer need the room of this unreserved work: it is not deleted")
 			}
 		}
 	}
+	s.evictSeen = next
+	for uid := range s.evictRetry {
+		if _, ok := next[uid]; !ok {
+			delete(s.evictRetry, uid)
+		}
+	}
 	if marked > 0 {
-		logger.Info("unreserved work holds the room of active reservations: marked for deletion", "objects", marked, "notice", s.unreservedNotice())
+		logger.Info("unreserved work holds the room of active reservations: marked for deletion", "objects", marked, "notice", notice)
 	}
 	if len(due) > 0 {
 		s.deleteEvicted(ctx, due, now)
@@ -546,9 +636,17 @@ func (s *Scheduler) annotate(ctx context.Context, o client.Object, value string)
 
 // deleteEvicted deletes, in one pass, the marked objects whose time passed, once a view read past the cache says the same: a
 // dry run of the plan on it still finds the active reservations short because the object's tenant holds the room, and the live
-// object is the one marked (UID), still unreserved, still a target and still due. Each goes with its UID as precondition.
+// object is the one marked (UID), still unreserved, still a target and still due. Each goes with its UID and resourceVersion
+// as precondition. What is not deleted waits evictRetryAfter before the next try.
 func (s *Scheduler) deleteEvicted(ctx context.Context, due []client.Object, now time.Time) {
 	logger := log.FromContext(ctx).WithName("scheduler")
+	if s.evictRetry == nil {
+		s.evictRetry = map[types.UID]time.Time{}
+	}
+	// whatever is not deleted below waits before the next try
+	for _, o := range due {
+		s.evictRetry[o.GetUID()] = now.Add(evictRetryAfter)
+	}
 	live, err := s.load(ctx, true)
 	if err != nil {
 		logger.Error(err, "check the eviction of unreserved work")
@@ -590,10 +688,11 @@ func (s *Scheduler) deleteEvicted(ctx context.Context, due []client.Object, now 
 		if at, _, ok := evictAt(cur); !ok || now.Before(at) {
 			continue
 		}
-		uid := cur.GetUID()
-		if err := s.Delete(ctx, cur, client.Preconditions{UID: &uid}); err != nil {
+		// the version read: a label added since (the object adopted by a reservation) makes it conflict
+		uid, rv := cur.GetUID(), cur.GetResourceVersion()
+		if err := s.Delete(ctx, cur, client.Preconditions{UID: &uid, ResourceVersion: &rv}); err != nil {
 			if errors.IsNotFound(err) || errors.IsConflict(err) {
-				continue // gone, or another object has the name now
+				continue // gone, changed, or another object has the name now
 			}
 			logger.Error(err, "delete unreserved work", "object", key)
 			continue

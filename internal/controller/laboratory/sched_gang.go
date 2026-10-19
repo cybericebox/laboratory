@@ -27,6 +27,16 @@ type gang struct {
 	arrival time.Time
 }
 
+// emptyReservation says an object of the gang carries an empty reservation label.
+func (g *gang) emptyReservation() bool {
+	for _, o := range g.objs {
+		if o.labelled && o.reservation == "" {
+			return true
+		}
+	}
+	return false
+}
+
 // decreasing orders the needs largest first: by memory, then CPU (stable, so equal needs keep their order).
 func decreasing(needs []podNeed) []podNeed {
 	order := append([]podNeed(nil), needs...)

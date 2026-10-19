@@ -167,6 +167,31 @@ func TestTenantStatusIsRefreshed(t *testing.T) {
 	}
 }
 
+// The agent patches only its own status fields: the operator's (the scheduler's conditions, the enrollment) stay, and a usage
+// that is no longer available is removed.
+func TestTenantStatusPatchKeepsTheOperatorFields(t *testing.T) {
+	ten := newTenantTenant("a", true, nil)
+	issued := metav1.Now()
+	ten.Status = laboratoryv1alpha1.TenantStatus{
+		Used:       laboratoryv1alpha1.TenantUsage{CPU: "9", Memory: "9Gi"},
+		Enrollment: &laboratoryv1alpha1.TenantEnrollment{TokenHash: "h", IssuedAt: &issued},
+		Conditions: []metav1.Condition{{Type: laboratoryv1alpha1.TenantConditionCapacityShortfall, Status: metav1.ConditionTrue, Reason: "ReservationsDoNotFit", LastTransitionTime: issued}},
+	}
+	h := tenantHandler(t, []*laboratoryv1alpha1.Tenant{ten}, labPod("ns1", "a1", "a", "500m", "100Mi", corev1.PodRunning))
+	h.refreshTenantStatus(context.Background())
+	got, err := h.cs.LaboratoryV1alpha1().Tenants().Get(context.Background(), "a", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := got.Status
+	if st.Reserved.CPU != "500m" || st.Used != (laboratoryv1alpha1.TenantUsage{}) || st.ObservedAt == nil {
+		t.Fatalf("the agent's fields: %+v", st)
+	}
+	if len(st.Conditions) != 1 || st.Enrollment == nil || st.Enrollment.TokenHash != "h" {
+		t.Fatalf("the operator's fields were overwritten: %+v", st)
+	}
+}
+
 func TestMonitoringCapacityIsPerTenant(t *testing.T) {
 	h := tenantHandler(t, []*laboratoryv1alpha1.Tenant{
 		newTenantTenant("a", true, &laboratoryv1alpha1.TenantQuota{CPU: "1"}), newTenantTenant("b", true, nil)},
@@ -217,9 +242,18 @@ func TestTenantResourceOnARealAPIServer(t *testing.T) {
 	if err != nil || c.CpuReservedMillicores != 750 || c.CpuFreeMillicores != 1250 || !c.HasMemoryQuota {
 		t.Fatalf("capacity %+v %v", c, err)
 	}
+	// the scheduler's condition, written before: the agent's patch keeps it
+	cur, err := tenants.Get(ctx, "platform", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur.Status.Conditions = []metav1.Condition{{Type: laboratoryv1alpha1.TenantConditionCapacityShortfall, Status: metav1.ConditionFalse, Reason: "ReservationsFit", Message: "fit", LastTransitionTime: metav1.Now()}}
+	if _, err := tenants.UpdateStatus(ctx, cur, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
 	h.refreshTenantStatus(ctx)
 	got, err := tenants.Get(ctx, "platform", metav1.GetOptions{})
-	if err != nil || got.Status.Reserved.CPU != "750m" || got.Status.ObservedAt == nil {
+	if err != nil || got.Status.Reserved.CPU != "750m" || got.Status.ObservedAt == nil || len(got.Status.Conditions) != 1 {
 		t.Fatalf("status through the status subresource: %+v %v", got.Status, err)
 	}
 }

@@ -177,7 +177,11 @@ func setUsageConditions(res *laboratoryv1alpha1.Reservation, p usagePlan, set fu
 		}
 		msg := fmt.Sprintf("the reservation was made smaller than what runs under it: %s; its groups created before this notice are deleted at %s unless the usage or the reservation changes",
 			p.v.over, p.due.UTC().Format(time.RFC3339))
-		if p.stale {
+		switch {
+		case p.stale && res.Status.Used != nil && res.Status.UsedAt == nil:
+			// the scheduler always writes both: the server drops usedAt
+			msg += "; the deletion is held: usage not fresh (status.usedAt is missing: the Reservation CRD is outdated, apply the chart CRDs)"
+		case p.stale:
 			msg += "; the deletion is held: usage not fresh (the scheduler has not counted it lately)"
 		}
 		set(metav1.Condition{Type: laboratoryv1alpha1.ReservationConditionExceeded, Status: metav1.ConditionTrue, Reason: laboratoryv1alpha1.ReservationReasonAmountReduced, Message: msg})

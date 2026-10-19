@@ -360,6 +360,8 @@ func Run() {
 		Reader:      mgr.GetAPIReader(),
 		Notice:      time.Duration(cfg.ReservationEndingNoticeSeconds) * time.Second,
 		NoScheduler: !cfg.SchedulerEnabled,
+		// the scheduler runs with its default status interval
+		UsageMaxAge: laboratorycontroller.ReservationUsageMaxAge(0),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Reservation")
 		os.Exit(1)
