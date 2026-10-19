@@ -7,7 +7,7 @@
 set -euo pipefail
 
 if [[ "${1:-}" != "inside" ]]; then
-  image=${NETNS_TEST_IMAGE:-golang:1.27}
+  image=${NETNS_TEST_IMAGE:-mirror.gcr.io/library/golang:1.27}
   snapshot=$(mktemp -d)
   container="cice-netns-tests-$$-${RANDOM}"
   cleanup() {

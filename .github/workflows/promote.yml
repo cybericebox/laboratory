@@ -94,7 +94,7 @@ jobs:
             if [[ "$DRY_RUN" == true ]]; then
               echo "dry run: $image:$RC would get $VERSION and latest"
             else
-              docker buildx imagetools create -t "$image:$VERSION" -t "$image:latest" "$image:$RC"
+              .github/scripts/ci.sh retry docker buildx imagetools create -t "$image:$VERSION" -t "$image:latest" "$image:$RC"
             fi
           done
       - name: Create the GitHub release
