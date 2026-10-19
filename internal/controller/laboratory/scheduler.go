@@ -105,6 +105,12 @@ type Scheduler struct {
 	ImagesNamespace string
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
+	// ReservationKindServed asks the API server, past any cache, whether it serves the Reservation kind, before work of a
+	// reservation that is gone is deleted (ReservationKindServedBy); nil: not asked.
+	ReservationKindServed func(context.Context) (bool, error)
+	// NoReservationController: the operator runs without the ReservationReconciler (the CRD was missing at its start), so the
+	// scheduler treats the kind as not served until a restart: no reservation is admitted whose window nobody would end.
+	NoReservationController bool
 
 	prepared map[string]struct{}
 	// preparing holds the keys of the prepull requests in progress in this pass.
@@ -119,6 +125,8 @@ type Scheduler struct {
 	evictSeen passRecord
 	// evictRetry is when a due object whose deletion was refused or failed is tried again.
 	evictRetry map[types.UID]time.Time
+	// unsettledWarned holds the objects the plan left out of their gang (not set up in time) that got their warning event.
+	unsettledWarned map[types.UID]bool
 	// orphanSeen and orphanRetry are the same for the work of reservations that are gone (cleanOrphans).
 	orphanSeen  passRecord
 	orphanRetry map[types.UID]time.Time
@@ -312,7 +320,11 @@ func (s *Scheduler) load(ctx context.Context, live bool) (*clusterView, error) {
 		snap.tenants[tenants.Items[i].Name] = &tenants.Items[i]
 	}
 	var reservations laboratoryv1alpha1.ReservationList
-	switch err := r.List(ctx, &reservations); {
+	err := r.List(ctx, &reservations)
+	if s.NoReservationController && err == nil {
+		err = &meta.NoKindMatchError{GroupKind: schema.GroupKind{Group: laboratoryv1alpha1.SchemeGroupVersion.Group, Kind: "Reservation"}}
+	}
+	switch {
 	case err == nil:
 		snap.reservations = reservations.Items
 		s.noReservations = s.noReservations && live
@@ -605,27 +617,9 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 			o.prepKey, o.images = prepClass(o.prepTenant, "l/"+topologyClass(lab)), classImages([]*laboratoryv1alpha1.Lab{lab}, s.Mirror)
 		}
 		for _, t := range lab.Spec.Devices {
-			if t.Type != laboratoryv1alpha1.DeviceTypeContainer {
-				continue
+			if p := s.devicePod(snap, lab, t, now); p != nil {
+				o.pods = append(o.pods, p)
 			}
-			key := devicePodKey(lab.Namespace, lab.Name, t.Name)
-			p := &schedPod{key: key, lookup: key, name: t.Name, kind: kindDevicePod, tenant: names.TenantOf(lab.Labels)}
-			if need := guaranteedResources(t.Resources, s.Defaults); need != nil {
-				p.need = amount{cpu: need.Cpu().MilliValue(), mem: need.Memory().Value()}
-			}
-			if d := snap.devices[key]; d != nil {
-				p.ref = d
-				if sc := d.Status.Scheduling; sc != nil {
-					p.state = sc.State
-					if sc.QueuedAt != nil {
-						p.queuedAt = sc.QueuedAt.Time
-					}
-					if s.recentDispatchPending(key, p.state, now) {
-						p.state = laboratoryv1alpha1.PodStarting
-					}
-				}
-			}
-			o.pods = append(o.pods, p)
 		}
 		out = append(out, o)
 	}
@@ -666,6 +660,36 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 		out = append(out, o)
 	}
 	return out
+}
+
+// devicePod is the schedPod of a container device of a lab; nil for another type of device, and for a not dispatched pod of
+// a failed lab (its graph did not validate: it gets no Devices), which is no member of its gang: nothing of it waits or is
+// waited for, while what it already dispatched still counts.
+func (s *Scheduler) devicePod(snap *clusterView, lab *laboratoryv1alpha1.Lab, t laboratoryv1alpha1.DeviceTemplate, now time.Time) *schedPod {
+	if t.Type != laboratoryv1alpha1.DeviceTypeContainer {
+		return nil
+	}
+	key := devicePodKey(lab.Namespace, lab.Name, t.Name)
+	p := &schedPod{key: key, lookup: key, name: t.Name, kind: kindDevicePod, tenant: names.TenantOf(lab.Labels)}
+	if need := guaranteedResources(t.Resources, s.Defaults); need != nil {
+		p.need = amount{cpu: need.Cpu().MilliValue(), mem: need.Memory().Value()}
+	}
+	if d := snap.devices[key]; d != nil {
+		p.ref = d
+		if sc := d.Status.Scheduling; sc != nil {
+			p.state = sc.State
+			if sc.QueuedAt != nil {
+				p.queuedAt = sc.QueuedAt.Time
+			}
+			if s.recentDispatchPending(key, p.state, now) {
+				p.state = laboratoryv1alpha1.PodStarting
+			}
+		}
+	}
+	if lab.Status.Phase == laboratoryv1alpha1.PhaseFailed && !p.dispatched() {
+		return nil
+	}
+	return p
 }
 
 // tick runs one scheduling pass.
@@ -765,6 +789,7 @@ func (s *Scheduler) tick(ctx context.Context) error {
 			}
 		}
 	}
+	s.warnUnsettled(plan.unsettled)
 	sf := env.shortfall(plan)
 	s.writeStatuses(ctx, objs, plan, snap, env.fairness().usage, sf, now)
 	if sf.known {
@@ -774,6 +799,25 @@ func (s *Scheduler) tick(ctx context.Context) error {
 	}
 	s.cleanOrphans(ctx, snap, orphanSeen, now)
 	return nil
+}
+
+// warnUnsettled gives every object the plan left out of its gang, because its pods were still not set up unsetSettleWindow
+// after it was created, one Warning event; an object that is set up or gone may get one again later.
+func (s *Scheduler) warnUnsettled(objs []*schedObject) {
+	next := map[types.UID]bool{}
+	for _, o := range objs {
+		obj, ok := o.ref.(client.Object)
+		if !ok {
+			continue
+		}
+		next[obj.GetUID()] = true
+		if s.unsettledWarned[obj.GetUID()] || s.Recorder == nil {
+			continue
+		}
+		s.Recorder.Eventf(obj, corev1.EventTypeWarning, "PodsNotSetUp",
+			"the pods of this object are still not set up %s after it was created: its deploy group goes on without it", unsetSettleWindow)
+	}
+	s.unsettledWarned = next
 }
 
 // failGroupPod records the failure of a LabGroup pod (VPN or gateway) the plan gave up on, so it is not planned again
