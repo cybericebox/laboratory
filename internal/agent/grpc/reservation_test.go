@@ -310,3 +310,26 @@ func TestReservationAmountsCannotOverflow(t *testing.T) {
 		t.Fatalf("fit sum: %+v", got)
 	}
 }
+
+// An ended reservation is never brought back by an update: its groups are gone, a new window is a new reservation.
+func TestUpdateEndedReservationRefused(t *testing.T) {
+	h := newReservationHandler()
+	ctx := asClient("backend-1")
+	wantStates(t, createRes(t, h, ctx, resItem("done", -2*time.Hour, time.Hour, 1000)), nil, stCreated)
+	r, err := h.cs.LaboratoryV1alpha1().Reservations().Get(ctx, "done", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Status.Phase = laboratoryv1alpha1.ReservationPhaseEnded
+	if _, err := h.cs.LaboratoryV1alpha1().Reservations().UpdateStatus(ctx, r, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	to := unixMsOf(resNow.Add(3 * time.Hour))
+	res, err := h.UpdateReservations(ctx, &protobuf.UpdateReservationsRequest{Items: []*protobuf.UpdateReservationItem{{Id: "done", Changes: &protobuf.ReservationChanges{ToUnixMs: &to}}}})
+	wantStates(t, res, err, stFailed)
+	wantReason(t, res.GetResults()[0], client.ReasonReservationEnded, false)
+	after, _ := h.cs.LaboratoryV1alpha1().Reservations().Get(ctx, "done", metav1.GetOptions{})
+	if !after.Spec.To.Time.Equal(resNow.Add(time.Hour)) {
+		t.Fatalf("unchanged: %v", after.Spec.To)
+	}
+}
