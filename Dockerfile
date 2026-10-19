@@ -5,7 +5,7 @@
 #   controller  /manager                                  distroless static, non-root, no shell
 #   agent       /agent                                    distroless static, non-root, no shell
 #   proxy       /proxy  (proxy-l7, proxy-wg)              distroless static, non-root, no shell
-#   node        /node   (node-agent, install-cni, netconfig, cni-gate) + Open vSwitch    alpine (root and a shell:
+#   node        /node   (node-agent, install-cni, netconfig, cni-gate), /probe (device readiness) + Open vSwitch    alpine (root and a shell:
 #               it drives OVS and pod networking on the host, and start-ovs.sh and the init scripts are shell)
 #   lab         /lab    (vpn, gateway) + the iptables binaries only                     built from scratch: no shell,
 #               no package manager (root: the pods need NET_ADMIN, which Kubernetes gives only to root)
@@ -44,7 +44,8 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 
 FROM builder AS build-node
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    go build -trimpath -ldflags="-s -w" -o /out/node ./cmd/node
+    go build -trimpath -ldflags="-s -w" -o /out/node ./cmd/node && \
+    go build -trimpath -ldflags="-s -w" -o /out/probe ./cmd/probe
 
 FROM builder AS build-lab
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
@@ -114,3 +115,5 @@ COPY --from=node-tools /usr/bin/nsenter /usr/bin/nsenter
 COPY --from=cni /cni/ /usr/libexec/cni/
 COPY --chmod=0755 scripts/start-ovs.sh /node-agent/bin/start-ovs.sh
 COPY --from=build-node /out/node /node
+# The readiness probe of the device pods: an init container copies it into the pod (the device image may have no shell).
+COPY --from=build-node /out/probe /probe

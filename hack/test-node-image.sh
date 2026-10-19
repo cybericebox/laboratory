@@ -38,6 +38,8 @@ modprobe --version
 ldd /usr/bin/nsenter
 test -s /usr/share/openvswitch/vswitch.ovsschema
 /node netconfig
+test -x /probe
+/probe ready -file /dev/null
 mkdir -p /tmp/cni-config
 printf '%s\n' '{"cniVersion":"1.0.0","name":"base","type":"bridge"}' > /tmp/cni-config/10-base.conf
 CNI_CONF_DIR=/tmp/cni-config GRPC_SOCK=/tmp/node.sock /node install-cni

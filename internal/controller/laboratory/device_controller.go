@@ -478,6 +478,7 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 	if ic := r.netConfigInitContainer(device); ic != nil {
 		podSpec.InitContainers = append(podSpec.InitContainers, *ic)
 	}
+	r.withReadiness(device, &podSpec)
 	// The participant is root in the device: it gets no service account token, the runtime's seccomp profile, and
 	// optionally its own user namespace.
 	hardenPod(&podSpec, false, r.TerminationGraceSeconds)

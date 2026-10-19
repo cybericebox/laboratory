@@ -554,6 +554,8 @@ func (r *DeviceReconciler) createDevicePod(ctx context.Context, device *laborato
 		// shell runs a trap only between commands.
 		c.Command = []string{"/bin/sh", "-c", "trap 'exit 0' TERM INT QUIT HUP USR1 USR2; while :; do sleep 1; done"}
 		c.Args = nil
+		// The shell is not the application: nothing in it creates /run/ready or serves the port, and the pod is for repair.
+		c.ReadinessProbe = nil
 	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{

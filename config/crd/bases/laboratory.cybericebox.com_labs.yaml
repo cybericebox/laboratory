@@ -299,6 +299,11 @@ spec:
                       - unmanaged-switch
                       - hub
                       type: string
+                    waitReadyFile:
+                      description: |-
+                        WaitReadyFile makes the device Ready only once the application has created /run/ready inside the container.
+                        A port published through the web exposure is checked in any case, whatever this says. Container devices only.
+                      type: boolean
                   required:
                   - name
                   - type

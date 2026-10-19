@@ -49,6 +49,9 @@ type DeviceSpec struct {
 	// Device that predates codes: its workload keeps the name of the Device.
 	// +optional
 	Code string `json:"code,omitempty"`
+	// WaitReadyFile: the device is Ready only once /run/ready exists inside the container (see DeviceTemplate).
+	// +optional
+	WaitReadyFile bool `json:"waitReadyFile,omitempty"`
 	// Env values are NOT carried on the CR — they live only in a per-device
 	// Secret (<device>-env) the agent writes, referenced by the pod via envFrom.
 }

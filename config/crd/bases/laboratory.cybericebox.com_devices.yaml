@@ -375,6 +375,10 @@ spec:
                 - unmanaged-switch
                 - hub
                 type: string
+              waitReadyFile:
+                description: 'WaitReadyFile: the device is Ready only once /run/ready
+                  exists inside the container (see DeviceTemplate).'
+                type: boolean
             required:
             - labRef
             - name
