@@ -190,6 +190,94 @@ func TestRegistersWhenTheKubeletAppearsLater(t *testing.T) {
 	}
 }
 
+// restartKubelet simulates a kubelet restart: its socket and every other file in the directory go.
+func restartKubelet(t *testing.T, dir string, stop func()) *fakeKubelet {
+	t.Helper()
+	stop()
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		_ = os.Remove(filepath.Join(dir, e.Name()))
+	}
+	return startKubelet(t, dir)
+}
+
+func waitRegister(t *testing.T, k *fakeKubelet, what string) {
+	t.Helper()
+	select {
+	case r := <-k.got:
+		if r.ResourceName != "cybericebox.com/tun" {
+			t.Fatalf("%s: resource %q", what, r.ResourceName)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s: the plugin did not register", what)
+	}
+}
+
+// dialPlugin checks that the plugin answers on its socket.
+func dialPlugin(t *testing.T, dir string) {
+	t.Helper()
+	conn, err := grpc.NewClient("unix://"+filepath.Join(dir, "cybericebox-tun.sock"), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := pluginapi.NewDevicePluginClient(conn).GetDevicePluginOptions(ctx, &pluginapi.Empty{}); err != nil {
+		t.Fatalf("the plugin does not answer on its socket: %v", err)
+	}
+}
+
+// A kubelet restart empties the directory (the plugin socket too) and creates a new kubelet.sock: the plugin must serve again and register again.
+func TestReregistersAfterTheKubeletRestarts(t *testing.T) {
+	dir := shortDir(t)
+	p := newPlugin(dir)
+	p.Interval = time.Hour // only the directory watch can notice
+	var stopFirst func()
+	lis, err := net.Listen("unix", filepath.Join(dir, "kubelet.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := &fakeKubelet{got: make(chan *pluginapi.RegisterRequest, 4)}
+	srv := grpc.NewServer()
+	pluginapi.RegisterRegistrationServer(srv, first)
+	go func() { _ = srv.Serve(lis) }()
+	stopFirst = srv.Stop
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.Serve(ctx) }()
+	waitRegister(t, first, "first registration")
+
+	second := restartKubelet(t, dir, stopFirst)
+	waitRegister(t, second, "after the kubelet restart")
+	dialPlugin(t, dir)
+
+	third := restartKubelet(t, dir, func() {})
+	_ = third
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Serve did not return after the cancel")
+	}
+}
+
+// Removing only the plugin socket makes the plugin listen again (the kubelet would fail to dial it otherwise).
+func TestServesAgainWhenItsOwnSocketIsRemoved(t *testing.T) {
+	dir := shortDir(t)
+	kubelet := startKubelet(t, dir)
+	p := newPlugin(dir) // the poll (50ms) also covers platforms whose file watch cannot see a socket file removed (kqueue)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = p.Serve(ctx) }()
+	waitRegister(t, kubelet, "first registration")
+	if err := os.Remove(filepath.Join(dir, "cybericebox-tun.sock")); err != nil {
+		t.Fatal(err)
+	}
+	waitRegister(t, kubelet, "after the plugin socket was removed")
+	dialPlugin(t, dir)
+}
+
 // sysfsEntry is a regular file standing for /sys/class/misc/tun/dev.
 func sysfsEntry(t *testing.T) string {
 	t.Helper()
