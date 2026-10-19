@@ -283,10 +283,11 @@ The rules:
    (a group larger than `maxPods` goes in slices of the free slots, its room checked as a whole) and room for all of
    them on the nodes; it does not wait for readiness. A group with a pod the operator has not set up yet (a lab created a
    moment ago) waits whole (`WaitingForTurn`, the message names the lab) until every pod of it is set up, so it never starts
-   without some of them. A lab the operator has not worked on yet (still in its queue: no `status.imageCache`) is waited for
-   up to 15 minutes from its creation (enough for the queue at the start of an event, about 150 labs); from the operator's
-   first work on it (as the scheduler saw it; a restart starts this again) the group waits
-   at most 2 minutes. A lab still not set up then (its Devices cannot be made) gets one Warning event `PodsNotSetUp` and the
+   without some of them. Two limits bound the wait, and the earlier one decides. Every lab is waited for at most 15 minutes
+   from its creation (enough for the operator's queues at the start of an event, about 150 labs). A lab with a Device the
+   operator never made is also waited for at most 2 minutes from the operator's first work on the lab (`status.imageCache`
+   set, as the scheduler saw it; a restart starts this again); a lab not worked on yet, or whose Devices exist but are not
+   set up yet, is still in a queue and only the 15 minutes apply. A lab still not set up then gets one Warning event `PodsNotSetUp` and the
    group goes on without it, the whole lab out (none of its pods starts, also when some of them are set up); it joins later as
    the rest of its group once all its pods are set up. A lab in phase `Failed` is no member of its group at all.
 3. The order of groups is arrival order (the creation time of their first object), except that a group

@@ -24,6 +24,19 @@ type oversizedGang struct {
 	message string
 }
 
+// memText writes a memory amount for people: Mi or Gi when it is a whole number of them, else bytes.
+func memText(b int64) string {
+	switch {
+	case b != 0 && b%(1<<30) == 0:
+		return fmt.Sprintf("%dGi", b>>30)
+	case b != 0 && b%(1<<20) == 0:
+		return fmt.Sprintf("%dMi", b>>20)
+	case b >= 1<<20:
+		return fmt.Sprintf("%.1fMi", float64(b)/(1<<20))
+	}
+	return fmt.Sprintf("%d bytes", b)
+}
+
 // largestRoom is the room with the most memory, then CPU.
 func largestRoom(rooms []nodeRoom) nodeRoom {
 	var big nodeRoom
@@ -61,6 +74,8 @@ type schedPod struct {
 	need amount
 	// tenant owns the pod (its object's tenant label).
 	tenant string
+	// missing says the pod is a device pod whose Device does not exist (yet): the lab reconciler has not made it.
+	missing bool
 	// queuedAt is when the pod last entered the queue (its scheduling record; a resumed lab is queued again); zero: unknown.
 	queuedAt time.Time
 	// ref is the scheduler's handle on the underlying object (opaque to the plan).
@@ -472,9 +487,10 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	}
 	// An object whose pods nobody initialised yet (the reconciler has not recorded their state) belongs to its gang: a gang
 	// with no pod out waits for it (it never starts without it), and the remainder of an admitted gang keeps room for it too,
-	// but only within unsetSettleWindow of when its reconciler first worked on it (settleFrom; zero: not touched yet, it is
-	// still in the reconciler's queue), and never longer than unsetMaxWait from its creation (a reconciler that keeps failing
-	// before it leaves a trace). An object still not set up after that (its
+	// but never longer than unsetMaxWait from its creation, and for a pod whose Device was never made (missing) only within
+	// unsetSettleWindow of when its reconciler first worked on the object (settleFrom; zero: not touched yet, it is still in
+	// the reconciler's queue); a pod whose Device exists but has no state yet is in the Device reconciler's queue and only the
+	// cap bounds it. The earlier of the two limits that apply decides. An object still not set up after that (its
 	// reconciler cannot make its Devices) is out of its gang whole, all its pods not out yet, so it neither holds the others
 	// forever nor starts partly; it is reported in plan.unsettled and joins its gang as a remainder once it is set up.
 	unsettled := map[*schedObject]bool{}
@@ -485,12 +501,12 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		if fair.now.IsZero() {
 			return false
 		}
-		traced := !o.settleFrom.IsZero() && fair.now.Sub(o.settleFrom) >= unsetSettleWindow
-		if !traced && fair.now.Sub(o.arrival) < unsetMaxWait {
-			return false
-		}
+		capped := fair.now.Sub(o.arrival) >= unsetMaxWait
+		windowed := !o.settleFrom.IsZero() && fair.now.Sub(o.settleFrom) >= unsetSettleWindow
 		for _, p := range o.pods {
-			if p.state == "" {
+			// A pod whose Device exists but has no scheduling state yet is in the Device reconciler's queue: only the cap
+			// bounds it. One whose Device was never made is what the window after the reconciler's trace is for.
+			if p.state == "" && (capped || windowed && p.missing) {
 				unsettled[o] = true
 				plan.unsettled = append(plan.unsettled, o)
 				return true
@@ -842,8 +858,15 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 					sum = sum.add(amount{cpu: n.CPU, mem: n.Memory})
 				}
 				big := largestRoom(empty)
-				oversize = fmt.Sprintf("the deploy group %s requests cpu %dm and memory %d bytes in all and cannot start whole on the "+
-					"current lab nodes: the largest empty one has room for cpu %dm and memory %d bytes", gg.key, sum.cpu, sum.mem, big.CPU, big.Memory)
+				what := "the deploy group " + gg.objs[0].group
+				if gg.objs[0].group == "" {
+					what = "the lab " + strings.TrimPrefix(gg.objs[0].id, "lab/")
+					if gg.objs[0].isGroup() {
+						what = "the lab group " + strings.TrimPrefix(gg.objs[0].id, "group/")
+					}
+				}
+				oversize = fmt.Sprintf("%s requests cpu %dm and memory %s in all and cannot start whole on the current lab nodes: "+
+					"the largest empty one has room for cpu %dm and memory %s", what, sum.cpu, memText(sum.mem), big.CPU, memText(big.Memory))
 			}
 		}
 		// The quota of the tenant is checked on the sum of the gang's needs.

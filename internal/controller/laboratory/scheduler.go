@@ -682,6 +682,7 @@ func (s *Scheduler) devicePod(snap *clusterView, lab *laboratoryv1alpha1.Lab, t 
 	if need := guaranteedResources(t.Resources, s.Defaults); need != nil {
 		p.need = amount{cpu: need.Cpu().MilliValue(), mem: need.Memory().Value()}
 	}
+	p.missing = snap.devices[key] == nil
 	if d := snap.devices[key]; d != nil {
 		p.ref = d
 		if sc := d.Status.Scheduling; sc != nil {
