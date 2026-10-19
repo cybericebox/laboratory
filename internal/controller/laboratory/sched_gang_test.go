@@ -522,10 +522,15 @@ func TestGangStopsWaitingForAStuckObject(t *testing.T) {
 	at := func(age time.Duration) fairness { return fairness{now: planEpoch.Add(2 * time.Second).Add(age)} }
 	a := obj("lab/a", "g", 1, nil, need(pods("a", "p1"), 100, gi)...)
 	b := obj("lab/b", "g", 2, nil, need(pods("b", "p1:"), 100, gi)...)
-	// not touched yet: an hour later the gang still waits
-	wantDispatch(t, planSchedule([]*schedObject{a, b}, 10, false, &fakeEnv{nodes: nodes, empty: nodes, fair: at(time.Hour)}))
+	// not touched yet: ten minutes later the gang still waits, past unsetMaxWait from its creation it goes on without it
+	wantDispatch(t, planSchedule([]*schedObject{a, b}, 10, false, &fakeEnv{nodes: nodes, empty: nodes, fair: at(10 * time.Minute)}))
+	plan := planSchedule([]*schedObject{a, b}, 10, false, &fakeEnv{nodes: nodes, empty: nodes, fair: at(16 * time.Minute)})
+	wantDispatch(t, plan, "a/p1")
+	if len(plan.unsettled) != 1 || plan.unsettled[0] != b {
+		t.Fatalf("unsettled past the cap = %v", plan.unsettled)
+	}
 	b.settleFrom = planEpoch.Add(2 * time.Second)
-	plan := planSchedule([]*schedObject{a, b}, 10, false, &fakeEnv{nodes: nodes, empty: nodes, fair: at(unsetSettleWindow - time.Second)})
+	plan = planSchedule([]*schedObject{a, b}, 10, false, &fakeEnv{nodes: nodes, empty: nodes, fair: at(unsetSettleWindow - time.Second)})
 	wantDispatch(t, plan)
 	if st := plan.status["lab/a"]; st.Message != "waiting for the pods of lab/b to be set up" {
 		t.Fatalf("a status = %+v", st)

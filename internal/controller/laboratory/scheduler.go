@@ -840,7 +840,7 @@ func (s *Scheduler) warnUnsettled(objs, unsettled []*schedObject) {
 		s.unsettledWarned[obj.GetUID()] = true
 		if s.Recorder != nil {
 			s.Recorder.Eventf(obj, corev1.EventTypeWarning, "PodsNotSetUp",
-				"the pods of this object are still not set up %s after its reconciler first worked on it: its deploy group goes on without it", unsetSettleWindow)
+				"the pods of this object are still not set up %s after its reconciler first worked on it (or %s after it was created): its deploy group goes on without it", unsetSettleWindow, unsetMaxWait)
 		}
 	}
 }
