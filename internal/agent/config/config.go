@@ -87,9 +87,12 @@ type Config struct {
 	LabTolerations  string `env:"LAB_TOLERATIONS" envDefault:"[]"`
 	// PlatformReservePercent, PlatformReserveCPU and PlatformReserveMemory are the operator's scheduler reserve (the same chart
 	// values, scheduler.platformReserve*): the agent applies them to the per-node room it reports.
-	PlatformReservePercent int    `env:"SCHEDULER_PLATFORM_RESERVE_PERCENT" envDefault:"10"`
-	PlatformReserveCPU     string `env:"SCHEDULER_PLATFORM_RESERVE_CPU" envDefault:"0"`
-	PlatformReserveMemory  string `env:"SCHEDULER_PLATFORM_RESERVE_MEMORY" envDefault:"0"`
+	PlatformReservePercent int `env:"SCHEDULER_PLATFORM_RESERVE_PERCENT" envDefault:"10"`
+	// ReservationEndingNoticeSeconds is the operator's ending notice of reservations (the same chart value,
+	// reservations.endingNoticeSeconds): the agent reports it and computes from it when an ending reservation's groups go.
+	ReservationEndingNoticeSeconds int    `env:"RESERVATION_ENDING_NOTICE_SECONDS" envDefault:"300"`
+	PlatformReserveCPU             string `env:"SCHEDULER_PLATFORM_RESERVE_CPU" envDefault:"0"`
+	PlatformReserveMemory          string `env:"SCHEDULER_PLATFORM_RESERVE_MEMORY" envDefault:"0"`
 	// PackingReservePercent is the hidden packing reserve (chart scheduler.packingReservePercent): the capacity reported to the
 	// tenant is net of it. Tenants never see it.
 	// PackingReserveCPU and PackingReserveMemory, when not "0", replace the percent for that resource. The operator reads the same
@@ -220,6 +223,9 @@ func Load() (*Config, error) {
 	}
 	if err := c.ValidateLifecycle(); err != nil {
 		return nil, err
+	}
+	if c.ReservationEndingNoticeSeconds < 0 {
+		return nil, fmt.Errorf("RESERVATION_ENDING_NOTICE_SECONDS must not be negative")
 	}
 	return c, nil
 }

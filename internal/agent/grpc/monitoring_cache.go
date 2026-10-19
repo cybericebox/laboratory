@@ -31,18 +31,24 @@ type monCache struct {
 	h      *Handler
 	cancel context.CancelFunc
 
-	groups    listers.LabGroupLister
-	labs      listers.LabLister
-	clients   listers.LabGroupClientLister
-	policies  listers.LabGroupAccessPolicyLister
-	reports   listers.LabTrafficReportLister
-	devices   listers.DeviceLister
-	pods      corelisters.PodLister // nil without a core clientset
-	proxyPods corelisters.PodLister // current L7 replica lifecycle, fixed proxy namespace
+	groups   listers.LabGroupLister
+	labs     listers.LabLister
+	clients  listers.LabGroupClientLister
+	policies listers.LabGroupAccessPolicyLister
+	reports  listers.LabTrafficReportLister
+	devices  listers.DeviceLister
+	// reservations are every tenant's; observe keeps what each subscriber may see.
+	reservations listers.ReservationLister
+	pods         corelisters.PodLister // nil without a core clientset
+	proxyPods    corelisters.PodLister // current L7 replica lifecycle, fixed proxy namespace
 
 	usageMu sync.Mutex
 	usage   map[string]map[usageKey]deviceUsage // namespace -> usage; nil until the first successful read
 	usageAt time.Time
+
+	// shownMu guards shown: the usage of each reservation as the stream last carried it (see coalesceUsage).
+	shownMu sync.Mutex
+	shown   map[string]shownUsage
 }
 
 // newMonCache starts the informers and waits (bounded by ctx) until they have listed once.
@@ -54,10 +60,12 @@ func newMonCache(ctx context.Context, h *Handler) (*monCache, error) {
 		h: h, cancel: cancel,
 		groups: lab.LabGroups().Lister(), labs: lab.Labs().Lister(), clients: lab.LabGroupClients().Lister(),
 		policies: lab.LabGroupAccessPolicies().Lister(), reports: lab.LabTrafficReports().Lister(), devices: lab.Devices().Lister(),
+		reservations: lab.Reservations().Lister(), shown: map[string]shownUsage{},
 	}
 	informersToSync := []func() bool{
 		lab.LabGroups().Informer().HasSynced, lab.Labs().Informer().HasSynced, lab.LabGroupClients().Informer().HasSynced,
 		lab.LabGroupAccessPolicies().Informer().HasSynced, lab.LabTrafficReports().Informer().HasSynced, lab.Devices().Informer().HasSynced,
+		lab.Reservations().Informer().HasSynced,
 	}
 	var kf kubeinformers.SharedInformerFactory
 	var proxyFactory kubeinformers.SharedInformerFactory
@@ -241,4 +249,42 @@ func (c *monCache) deviceSchedules() map[string]map[usageKey]*laboratoryv1alpha1
 		out[d.Namespace][usageKey{lab: d.Spec.LabRef, device: d.Spec.Name}] = d.Status.Scheduling
 	}
 	return out
+}
+
+// reservationUsageEvery is the least time between two changes of a reservation's usage in the stream: the scheduler recounts
+// it with every dispatch, the backend needs it about as often as the operator's heartbeat.
+const reservationUsageEvery = 30 * time.Second
+
+// shownUsage is a reservation's usage as the stream last carried it, and when that changed.
+type shownUsage struct {
+	cpu, mem, usedAt int64
+	groups           int32
+	at               time.Time
+}
+
+// coalesceUsage keeps the usage of a reservation in the stream as it was shown last unless it changed and the last change is
+// reservationUsageEvery ago: a moving usage changes the record at most that often, and the operator's heartbeat of usedAt
+// alone never does. The first observation is shown as it is.
+func (c *monCache) coalesceUsage(name string, st *protobuf.ReservationStatus, now time.Time) {
+	c.shownMu.Lock()
+	defer c.shownMu.Unlock()
+	cur := shownUsage{cpu: st.GetUsedCpuMillicores(), mem: st.GetUsedMemoryBytes(), usedAt: st.GetUsedAtUnixMs(), groups: st.GetGroups(), at: now}
+	prev, ok := c.shown[name]
+	changed := !ok || prev.cpu != cur.cpu || prev.mem != cur.mem || prev.groups != cur.groups
+	if changed && (!ok || now.Sub(prev.at) >= reservationUsageEvery) {
+		c.shown[name] = cur
+		return
+	}
+	st.UsedCpuMillicores, st.UsedMemoryBytes, st.UsedAtUnixMs, st.Groups = prev.cpu, prev.mem, prev.usedAt, prev.groups
+}
+
+// forgetUsage drops what is kept for the reservations that are gone.
+func (c *monCache) forgetUsage(present map[string]bool) {
+	c.shownMu.Lock()
+	defer c.shownMu.Unlock()
+	for name := range c.shown {
+		if !present[name] {
+			delete(c.shown, name)
+		}
+	}
 }

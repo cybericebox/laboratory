@@ -323,7 +323,8 @@ test-e2e: manifests generate fmt vet ## Run the e2e tests. Expected an isolated 
 		echo "No Kind cluster is running. Please start a Kind cluster before running the e2e tests."; \
 		exit 1; \
 	}
-	go test ./test/e2e/ -v -ginkgo.v
+	# The suites install the chart several times and wait for reservation windows: far longer than go test's default 10 min.
+	go test ./test/e2e/ -v -ginkgo.v -timeout 30m
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

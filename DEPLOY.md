@@ -820,6 +820,7 @@ only**: every call takes a list, one object is a list of one. There are no singu
 | VPN clients | `CreateLabGroupClients`, `ListLabGroupClients`, `UpdateLabGroupClients`, `DeleteLabGroupClients` |
 | Access | `SetLabGroupAccess` (the policies of many groups, full replacement) |
 | Labs | `CreateLabs`, `ListLabs`, `UpdateLabs`, `DeleteLabs` |
+| Reservations | `CreateReservations`, `ListReservations`, `UpdateReservations`, `DeleteReservations` |
 | Devices | `ResetDevices`, `RescueDevices` |
 | Other | `Ping`, `Monitoring` (stream), `GetCapacity`, `GetFeatures`, `ListMaintenanceWindows`, `PrewarmImages` |
 
@@ -835,7 +836,7 @@ every answer (results, lists, `Monitoring`, access-policy rules) returns the ori
 through the same encoding (`names.EncodeName`). Two ids that would get one name (practically impossible) fail for that item.
 Namespaces keep their composed names; device and pod names follow from the CR names.
 
-**Answers.** A mutating call returns one `ItemResult{ref, state, error, retryable}` per item, in request order (selector
+**Answers.** A mutating call returns one `ItemResult{ref, state, error, retryable, reason}` per item, in request order (selector
 calls: sorted by reference). `state` is `CREATED`, `EXISTS`, `UPDATED`, `DELETED`, `NOT_FOUND` or `FAILED`. A failing item
 never fails the call; `retryable` marks failures a repetition cures (the object is still being deleted, the group
 namespace is not ready yet). The call itself fails with `INVALID_ARGUMENT` only for a malformed request: more than 5000
@@ -891,6 +892,70 @@ platform defaults from the chart. `enabled: true` is refused when `devices.state
 chart (the agent reads it as `STATE_PERSISTENCE_ENABLED`, the operator's name); `debounce` must be positive. The excluded paths and the
 quota are cluster settings of the chart (`devices.statePersistence.maxFileSize`, default `256Mi`: bigger files are skipped; `devices.statePersistence.excludePaths`, default `/tmp`, `/var/tmp`, `/run`; and `writeQuota`, default `512Mi`: the most of a
 participant's writes kept per device). They are configurable only in the chart and cannot be requested per device.
+
+### Reservations through the agent
+
+Every LabGroup and Lab created through the agent runs under a **reservation** of its tenant (spec decision 17); see
+"Reservations" in the Scheduler section for what the operator does with them. There is no switch around it:
+`GetFeatures` (and `Monitoring.features`) reports `reservations {required: true, ending_notice_seconds}`.
+
+**The calls.** A reservation is `ReservationItem{id, from_unix_ms, to_unix_ms, cpu_millicores, memory_bytes, labels}`.
+The id is any string of 1 to 64 characters, encoded into the name of the cluster-scoped `Reservation` like every other
+id (the original in the `id` annotation); the agent stamps the tenant label and `spec.tenant`. Times are kept to the
+second. `CreateReservations` with the same window and amount again is `EXISTS`, with another `FAILED`; an id another
+tenant uses is "not available". `UpdateReservations` (by id or selector) moves `to` and the amount at any time and
+`from` only while the reservation has not started; `to` must stay in the future, and the id never changes, so extending
+a window or enlarging it is always an update (an `ENDING` reservation turns `ACTIVE` again when `to` moves past the
+notice). `DeleteReservations` removes it: the groups that ran under it get the ending notice and are then deleted (the
+operator's path for a deleted reservation). `ListReservations` lists the caller's own. A window must be at most 31 days,
+`to` after `from` and in the future, cpu and memory positive and at most `MaxInt64/1024` (else `FAILED` for that item); the
+quota sums saturate, so no amount can wrap around.
+
+**The tenant's quota.** A create, or an update that enlarges or extends a reservation, is refused with reason
+`OVER_QUOTA` when the tenant's reservations would reserve more at the same time (from now on) than its quota (resolved
+against the maximum, as `GetCapacity` reports it). A tenant without a quota is not checked; a smaller amount is always
+accepted.
+
+**One agent replica for reservations.** The quota check and the fit check below are serialized inside one agent process
+(a lock per tenant, a lock per reservation), not across replicas. Two replicas that take calls of the same tenant at the
+same time may both let a reservation through the quota check, and nothing behind the agent checks the quota of
+reservations again. A backend that uses reservations therefore runs the agent with **`agent.replicas: 1`** (the chart
+default is 2 for availability; with one replica keep `podDisruptionBudget.minAvailable` at 0 or switch the budget off, or
+a node drain waits for it).
+
+**Groups and labs.** `LabGroupItem.reservation_id` and `LabItem.reservation_id` name the reservation; the agent writes
+the reserved label `laboratory.cybericebox.com/reservation` from the field (never from client labels: the prefix stays
+reserved). A lab's reservation is independent of its group's. `LabGroup` and `Lab` (lists and `Monitoring`) return the
+id. Per item, in request order (what an accepted item takes counts for the next):
+
+| Reason | When |
+| --- | --- |
+| `RESERVATION_REQUIRED` | no `reservation_id` |
+| `RESERVATION_NOT_FOUND` | no reservation with that id in the caller's tenant |
+| `RESERVATION_ENDED` | the reservation takes no more work: ended, being deleted, past `to`, or its tenant is gone (a `PENDING` one is accepted: the operator holds the work until the window opens) |
+| `RESERVATION_MISMATCH` | the item's deploy group already runs, or is created in the same call, under another reservation (one deploy group, one reservation) |
+| `RESERVATION_FULL` | the item does not fit what is left of the reservation: "not enough room in this reservation (needs ..., left ...)", `retryable` |
+
+What is left is the amount less the requests of the reservation's LabGroups (VPN and gateway, the chart's sizes when
+the group sets none) and Labs (their container devices, counted as the scheduler counts them) that are neither being
+deleted nor stopped; queued objects count too. A create of an object that exists is idempotent and is not checked again.
+The check is made by one agent replica under a lock per reservation; two replicas may let one extra item through, and
+the operator then holds it (`ReservationFull`): the operator is the guarantee, the agent only refuses early (run one
+replica, see above).
+
+**Attach.** `UpdateLabGroups` / `UpdateLabs` with `changes.reservation_id` puts an object that runs under no
+reservation under one of its tenant (not ended), without a fit check; only the label changes (no spec change, no pod
+restart). An object that already runs under another reservation is refused with `RESERVATION_MISMATCH`, also through a
+create that names another one.
+
+**Monitoring.** `MonitoringUpdate.reservations` holds `Reservation{id, from, to, amount, labels, uid, status}` records
+of the subscriber's tenant (the selector applies to their labels): the snapshot has all of them (ended ones until the
+operator removes them, a day after the end), a delta the ones whose spec, phase, notice, conditions or usage changed,
+the usage (`used_*`, `groups`, `used_at`) at most every 30 s per reservation. A removed reservation is a deleted key
+`{kind: "Reservation", name: <id>}`. `status.ends_at_unix_ms` and `ending_reason` say when the groups under it are
+deleted while an end is announced: `WindowClosing` at `to`, `TenantGone` one notice after it was given (or `to`), and
+`AmountReduced` (`exceeded`, the phase may stay `ACTIVE`) one notice after the reservation was made smaller than what
+runs under it, for the groups created before that.
 
 ### Tenancy
 
@@ -1977,7 +2042,7 @@ management agent only (the operator and the scheduler take no part), through one
 several backends at once (for example two platform instances against one cluster): each opens its own stream with its
 own selector, minimum interval and position, and all of them are fed by **one** poller and **one** in-memory journal.
 
-The poller reads **informer caches** (LabGroups, Labs, LabGroupClients, access policies, traffic reports, Devices, and the pods of devices),
+The poller reads **informer caches** (LabGroups, Labs, LabGroupClients, access policies, traffic reports, Devices, Reservations, and the pods of devices),
 not the API server: a poll costs no call to it, however many groups there are, and the pod metrics are read in one call for the whole cluster at
 most every 15 s. The informers run only while somebody is subscribed (they start with the first stream and stop with the last), and a list or watch error of the API
 never turns into a deletion: the caches keep the last objects they saw, a poll that cannot observe is skipped (and logged), and a failing metrics API keeps
@@ -1996,12 +2061,12 @@ the number of labs. An object written a few milliseconds ago may appear in the n
 
 - The **first message** is either a full **snapshot** (`snapshot = true`: replace everything you hold) or, on a successful
   resume, the merged updates you missed (`snapshot = false`). Then deltas follow. A delta holds the changed or new
-  records (`groups`, `labs`, `clients`, `policies`, `traffic`), `deleted_keys`, and `capacity` when it changed.
+  records (`groups`, `labs`, `clients`, `policies`, `traffic`, `reservations`), `deleted_keys`, and `capacity` when it changed.
 - Every message carries `agent_epoch` and `sequence`, the position of the stream up to which everything has been sent
   (or filtered out as not matching). A quiet stream sends an empty heartbeat every 30 s with the position, so that the
   stored position stays inside the journal window.
-- **Selector.** It is matched against the Kubernetes labels of the object itself: LabGroup, Lab, LabGroupClient and the
-  access policy. A deletion is delivered iff the deleted object matched (the journal keeps the labels of deleted objects).
+- **Selector.** It is matched against the Kubernetes labels of the object itself: LabGroup, Lab, LabGroupClient, the
+  access policy and the Reservation. A deletion is delivered iff the deleted object matched (the journal keeps the labels of deleted objects).
   A traffic report is cut down to the touches of labs that match, and dropped when none do (it follows the labels of
   its lab). **Capacity always goes to everyone.** A change of labels that moves an object out of the selector is not
   sent as a deletion: use labels that do not change (an instance or tenant id).

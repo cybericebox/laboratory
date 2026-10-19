@@ -80,6 +80,16 @@ type Handler struct {
 	// capCache keeps each tenant's capacity for a few seconds.
 	capCache capacityCache
 
+	// groupPods are the chart's sizes of a group's own pods (SetGroupPods): a group's need against its reservation.
+	groupPods grouppods.Config
+	// reservationsOptional lets a LabGroup or Lab without reservation_id through, unreserved. Production never sets it
+	// (decision 17: the id is mandatory); only tests of other behaviour do, so they need not set up reservations.
+	reservationsOptional bool
+	// resNotice is the ending notice of the reservations (SetReservationNotice); resLocks are the mutexes of keyLock.
+	resNotice    time.Duration
+	resNoticeSet bool
+	resLocks     keyLocks
+
 	// prewarm fills the image cache ahead of time; nil until SetPrewarm.
 	prewarm *prewarmer
 

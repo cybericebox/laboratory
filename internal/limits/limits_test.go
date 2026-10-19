@@ -195,7 +195,7 @@ func TestCheckSpecRefusesZeroLimit(t *testing.T) {
 }
 
 func TestAddSatDoesNotWrap(t *testing.T) {
-	if got := addSat(math.MaxInt64-1, 10); got != math.MaxInt64 {
+	if got := AddSat(math.MaxInt64-1, 10); got != math.MaxInt64 {
 		t.Errorf("addSat = %d", got)
 	}
 }

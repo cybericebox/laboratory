@@ -13,6 +13,11 @@ rules:
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "labgroups", "labgroups/status" ]
     verbs: [ "get", "list", "watch", "create", "update", "patch", "delete" ]
+  # Reservations (cluster-scoped): the agent creates, moves and deletes the caller's tenant's reservations; the status is the
+  # operator's.
+  - apiGroups: [ "laboratory.cybericebox.com" ]
+    resources: [ "reservations" ]
+    verbs: [ "get", "list", "watch", "create", "update", "patch", "delete" ]
   # Tenants: the caller's tenant by certificate CN, and the status the agent keeps fresh.
   - apiGroups: [ "laboratory.cybericebox.com" ]
     resources: [ "tenants" ]

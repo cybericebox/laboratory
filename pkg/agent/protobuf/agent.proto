@@ -64,6 +64,26 @@ service LabManager {
   rpc RetireLabs(RetireLabsRequest) returns (BatchResult) {}
   rpc RetireLabGroups(RetireLabGroupsRequest) returns (BatchResult) {}
 
+  // Reservations: cpu and memory the cluster keeps for the caller's tenant in a time window. Every LabGroup and Lab
+  // runs under one: CreateLabGroups and CreateLabs require reservation_id (features.reservations.required), and an item
+  // without one is FAILED with reason RESERVATION_REQUIRED. An item that does not fit the rest of its reservation is
+  // FAILED with "not enough room in this reservation" and reason RESERVATION_FULL (retryable: room may come back). The
+  // other refusals are RESERVATION_NOT_FOUND, RESERVATION_ENDED, RESERVATION_MISMATCH (the deploy group already runs
+  // under another reservation, or an object that has one is moved) and, for the reservation calls, OVER_QUOTA (the
+  // tenant's overlapping reservations would peak above its quota).
+  //
+  // A reservation id is any 1..64 character string, stable for the life of the reservation: extending the window or
+  // changing the amount is UpdateReservations with the same id. Create with the same spec again is EXISTS, with
+  // another spec FAILED. Update moves `to` and the amount at any time and `from` only while the reservation is
+  // Pending; `to` must stay in the future (DeleteReservations is the way to end now). Delete removes it: the groups
+  // that ran under it get the ending notice and are then deleted. N before `to` (features.reservations
+  // .ending_notice_seconds) the reservation turns ENDING; at `to` everything still attached is deleted. Monitoring
+  // carries every reservation of the tenant (MonitoringUpdate.reservations) and deleted keys of kind "Reservation".
+  rpc CreateReservations(CreateReservationsRequest) returns (BatchResult) {}
+  rpc ListReservations(ListRequest) returns (ReservationList) {}
+  rpc UpdateReservations(UpdateReservationsRequest) returns (BatchResult) {}
+  rpc DeleteReservations(DeleteRequest) returns (BatchResult) {}
+
   // Monitoring is a server-push stream. Every subscription starts with a
   // complete snapshot; subsequent messages are sequenced deltas or heartbeats.
   rpc Monitoring(MonitoringRequest) returns (stream MonitoringUpdate) {}
@@ -164,6 +184,9 @@ message ItemResult {
   // True when the failure is worth repeating (the object is still being deleted, the
   // LabGroup namespace is not ready yet).
   bool retryable = 4;
+  // A machine code for a FAILED item, when the failure has one: RESERVATION_REQUIRED | RESERVATION_NOT_FOUND |
+  // RESERVATION_ENDED | RESERVATION_FULL | RESERVATION_MISMATCH | OVER_QUOTA. Empty otherwise (error is the text).
+  string reason = 5;
 }
 
 message BatchResult {repeated ItemResult results = 1;}
@@ -230,6 +253,9 @@ message LabGroupItem {
   // that group_pods reports, else the item is refused (InvalidArgument).
   PodSize vpn_size = 8;
   PodSize gateway_size = 9;
+  // The reservation the group runs under (its id as given to CreateReservations); required. The group's own pods (VPN,
+  // gateway) count against it. The agent writes the reserved label laboratory.cybericebox.com/reservation from it.
+  string reservation_id = 10;
 }
 // The size of one pod: requests = limits.
 message PodSize {
@@ -246,6 +272,10 @@ message LabGroupChanges {
   optional bool suspended = 2;
   optional bool vpn_disabled = 3;
   optional bool probe_while_suspended = 4;
+  // Attach only: puts a group that runs under no reservation under this one (same tenant, not ended). No fit check
+  // (running work is never refused) and only the label changes. Another id on a group that has one is
+  // RESERVATION_MISMATCH; the same id is a no-op.
+  optional string reservation_id = 5;
 }
 message UpdateLabGroupItem {
   string name = 1;
@@ -322,6 +352,8 @@ message LabItem {
   repeated string deploy_after = 7;
   // Optional legacy; managed original birth is fenced to the observed Group UID.
   string expected_group_uid = 8;
+  // The reservation the lab runs under; required, and independent of its LabGroup's (see LabGroupItem.reservation_id).
+  string reservation_id = 9;
 }
 message CreateLabsRequest {
   map<string, string> labels = 1;
@@ -335,6 +367,8 @@ message CreateLabsRequest {
 message LabChanges {
   LabelChanges labels = 1;
   repeated DeviceEnv env = 2;
+  // Attach only, as LabGroupChanges.reservation_id: the lab's spec and pods are untouched.
+  optional string reservation_id = 3;
 }
 message UpdateLabItem {
   string lab_group = 1;
@@ -346,6 +380,75 @@ message UpdateLabsRequest {
   LabChanges changes = 2;
   repeated UpdateLabItem items = 3;
 }
+
+// ---- Reservations -------------------------------------------------------------------
+
+// ReservationItem is a reservation to create. Labels follow the rules of the other kinds.
+message ReservationItem {
+  string id = 1;                   // 1..64 characters, stable for the life of the reservation
+  int64 from_unix_ms = 2;
+  int64 to_unix_ms = 3;            // after from and in the future; to - from at most 31 days
+  int64 cpu_millicores = 4;        // > 0
+  int64 memory_bytes = 5;          // > 0
+  map<string, string> labels = 6;
+}
+message CreateReservationsRequest {
+  map<string, string> labels = 1;
+  repeated ReservationItem items = 2;
+}
+// ReservationChanges: unset fields stay as they are.
+message ReservationChanges {
+  optional int64 from_unix_ms = 1; // only while the reservation is Pending
+  optional int64 to_unix_ms = 2;
+  optional int64 cpu_millicores = 3;
+  optional int64 memory_bytes = 4;
+  LabelChanges labels = 5;
+}
+message UpdateReservationItem {
+  string id = 1;
+  ReservationChanges changes = 2;
+}
+// Selector or items. changes apply to every target; an item's own changes win.
+message UpdateReservationsRequest {
+  repeated UpdateReservationItem items = 1;
+  Selector by_selector = 2;
+  ReservationChanges changes = 3;
+}
+
+enum ReservationPhase {
+  RESERVATION_PHASE_UNSPECIFIED = 0; // not observed yet
+  RESERVATION_PHASE_PENDING = 1;     // the window has not started
+  RESERVATION_PHASE_ACTIVE = 2;
+  RESERVATION_PHASE_ENDING = 3;      // the ending notice is given
+  RESERVATION_PHASE_ENDED = 4;       // the window is over, its groups are deleted
+}
+message ReservationStatus {
+  ReservationPhase phase = 1;
+  int64 notice_at_unix_ms = 2;     // 0 = no notice
+  // When the groups under it are deleted, while an ending is announced: `to` (WindowClosing), the notice + N
+  // (TenantGone, or `to` when sooner), or the notice + N for the groups created before a shrink (AmountReduced, the
+  // phase may stay ACTIVE). 0 = no ending announced.
+  int64 ends_at_unix_ms = 3;
+  string ending_reason = 4;        // WindowClosing | TenantGone | AmountReduced | ""
+  int64 used_cpu_millicores = 5;   // what the groups under it request now
+  int64 used_memory_bytes = 6;
+  int32 groups = 7;
+  int64 used_at_unix_ms = 8;       // when the usage was counted
+  bool exceeded = 9;               // made smaller than what runs under it (see ends_at)
+  bool over_amount = 10;           // usage over the amount for another reason; nothing is deleted for it
+  bool invalid = 11;               // the amount reserves nothing
+}
+message Reservation {
+  string id = 1;
+  int64 from_unix_ms = 2;
+  int64 to_unix_ms = 3;
+  int64 cpu_millicores = 4;
+  int64 memory_bytes = 5;
+  map<string, string> labels = 6;
+  ReservationStatus status = 7;
+  string uid = 8;
+}
+message ReservationList {repeated Reservation items = 1;}
 
 // ---- Devices ------------------------------------------------------------------------
 
@@ -381,6 +484,8 @@ message LabGroup {
   GroupLifecycleSpec lifecycle = 18;
   PodSize vpn_size = 16; // explicit immutable spec only; absent means unknown legacy default
   PodSize gateway_size = 17;
+  // The reservation the group runs under, as given; empty = unreserved.
+  string reservation_id = 19;
 }
 message LabGroupStatus {
   string phase = 1;
@@ -418,6 +523,8 @@ message Lab {
   string uid = 13;
   int64 generation = 14;
   LabCreationReceipt creation_receipt = 15; // live Kubernetes metadata generation, separate from observed lifecycle
+  // The reservation the lab runs under, as given; empty = unreserved.
+  string reservation_id = 16;
 }
 // DeviceEnv carries the variables of one device. The agent materializes them into a
 // write-only per-device Secret (the pod loads it via envFrom): they never land in the
@@ -624,7 +731,7 @@ message MonitoringRequest {
   // replayed (snapshot=false); otherwise a full snapshot (snapshot=true) is sent. 0 = no resume.
   int64 resume_after_sequence = 2;
   // Kubernetes label selector ("a=b,c in (d,e),!f"). Only objects of the kinds LabGroup, Lab,
-  // LabGroupClient and access policy whose labels match are sent, in the snapshot and in the
+  // LabGroupClient, access policy and Reservation whose labels match are sent, in the snapshot and in the
   // updates, deletions included. A traffic report is cut down to the touches of matching labs.
   // Capacity is always sent. Empty = everything. An invalid selector fails the call.
   string selector = 3;
@@ -665,6 +772,11 @@ message MonitoringUpdate {
   // Identifies this agent PROCESS. Sequences are monotonic within one epoch only; a changed
   // epoch means the agent restarted and a resume is impossible (a snapshot follows).
   string agent_epoch = 20;
+  // The tenant's reservations: state records like clients. The snapshot carries all of them (ended ones too, until the
+  // operator removes them), deltas the ones whose spec, phase, notice, conditions or usage changed (usage at most every
+  // 30 s per reservation). A removed one is a deleted key of kind "Reservation" with name = its id. The selector
+  // applies to their labels as to the other kinds.
+  repeated Reservation reservations = 21;
 }
 
 // TrafficReport is the state of one collector (the VPN pod of a group, or one
@@ -774,6 +886,16 @@ message FeaturesResponse {
   // The resources the cluster gives this tenant (the same quota GetCapacity reports against).
   TenantQuotaFeature tenant_quota = 12;
   LifecycleFeature lifecycle = 13;
+  ReservationsFeature reservations = 14;
+}
+
+// How reservations work on this laboratory.
+message ReservationsFeature {
+  // CreateLabGroups and CreateLabs require reservation_id. Always true on an agent that has the reservation calls.
+  bool required = 1;
+  // How long before `to` a reservation turns ENDING (the chart's reservations.endingNoticeSeconds); also the delay
+  // after the notice for a tenant that is gone and for a reservation made smaller than what runs under it.
+  int32 ending_notice_seconds = 2;
 }
 
 // The size of a pod is base + per_unit * units, units at most max_units; the maximum size is base + per_unit * max_units.

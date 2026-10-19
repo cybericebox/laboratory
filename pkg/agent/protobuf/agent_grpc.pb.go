@@ -39,6 +39,10 @@ const (
 	LabManager_StartLabGroups_FullMethodName         = "/labmanager.LabManager/StartLabGroups"
 	LabManager_RetireLabs_FullMethodName             = "/labmanager.LabManager/RetireLabs"
 	LabManager_RetireLabGroups_FullMethodName        = "/labmanager.LabManager/RetireLabGroups"
+	LabManager_CreateReservations_FullMethodName     = "/labmanager.LabManager/CreateReservations"
+	LabManager_ListReservations_FullMethodName       = "/labmanager.LabManager/ListReservations"
+	LabManager_UpdateReservations_FullMethodName     = "/labmanager.LabManager/UpdateReservations"
+	LabManager_DeleteReservations_FullMethodName     = "/labmanager.LabManager/DeleteReservations"
 	LabManager_Monitoring_FullMethodName             = "/labmanager.LabManager/Monitoring"
 	LabManager_Enroll_FullMethodName                 = "/labmanager.LabManager/Enroll"
 	LabManager_RenewCertificate_FullMethodName       = "/labmanager.LabManager/RenewCertificate"
@@ -91,6 +95,25 @@ type LabManagerClient interface {
 	// Definitions remain durable tombstones; legacy Delete* semantics are unchanged.
 	RetireLabs(ctx context.Context, in *RetireLabsRequest, opts ...grpc.CallOption) (*BatchResult, error)
 	RetireLabGroups(ctx context.Context, in *RetireLabGroupsRequest, opts ...grpc.CallOption) (*BatchResult, error)
+	// Reservations: cpu and memory the cluster keeps for the caller's tenant in a time window. Every LabGroup and Lab
+	// runs under one: CreateLabGroups and CreateLabs require reservation_id (features.reservations.required), and an item
+	// without one is FAILED with reason RESERVATION_REQUIRED. An item that does not fit the rest of its reservation is
+	// FAILED with "not enough room in this reservation" and reason RESERVATION_FULL (retryable: room may come back). The
+	// other refusals are RESERVATION_NOT_FOUND, RESERVATION_ENDED, RESERVATION_MISMATCH (the deploy group already runs
+	// under another reservation, or an object that has one is moved) and, for the reservation calls, OVER_QUOTA (the
+	// tenant's overlapping reservations would peak above its quota).
+	//
+	// A reservation id is any 1..64 character string, stable for the life of the reservation: extending the window or
+	// changing the amount is UpdateReservations with the same id. Create with the same spec again is EXISTS, with
+	// another spec FAILED. Update moves `to` and the amount at any time and `from` only while the reservation is
+	// Pending; `to` must stay in the future (DeleteReservations is the way to end now). Delete removes it: the groups
+	// that ran under it get the ending notice and are then deleted. N before `to` (features.reservations
+	// .ending_notice_seconds) the reservation turns ENDING; at `to` everything still attached is deleted. Monitoring
+	// carries every reservation of the tenant (MonitoringUpdate.reservations) and deleted keys of kind "Reservation".
+	CreateReservations(ctx context.Context, in *CreateReservationsRequest, opts ...grpc.CallOption) (*BatchResult, error)
+	ListReservations(ctx context.Context, in *ListRequest, opts ...grpc.CallOption) (*ReservationList, error)
+	UpdateReservations(ctx context.Context, in *UpdateReservationsRequest, opts ...grpc.CallOption) (*BatchResult, error)
+	DeleteReservations(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*BatchResult, error)
 	// Monitoring is a server-push stream. Every subscription starts with a
 	// complete snapshot; subsequent messages are sequenced deltas or heartbeats.
 	Monitoring(ctx context.Context, in *MonitoringRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[MonitoringUpdate], error)
@@ -362,6 +385,46 @@ func (c *labManagerClient) RetireLabGroups(ctx context.Context, in *RetireLabGro
 	return out, nil
 }
 
+func (c *labManagerClient) CreateReservations(ctx context.Context, in *CreateReservationsRequest, opts ...grpc.CallOption) (*BatchResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BatchResult)
+	err := c.cc.Invoke(ctx, LabManager_CreateReservations_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *labManagerClient) ListReservations(ctx context.Context, in *ListRequest, opts ...grpc.CallOption) (*ReservationList, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReservationList)
+	err := c.cc.Invoke(ctx, LabManager_ListReservations_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *labManagerClient) UpdateReservations(ctx context.Context, in *UpdateReservationsRequest, opts ...grpc.CallOption) (*BatchResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BatchResult)
+	err := c.cc.Invoke(ctx, LabManager_UpdateReservations_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *labManagerClient) DeleteReservations(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*BatchResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BatchResult)
+	err := c.cc.Invoke(ctx, LabManager_DeleteReservations_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *labManagerClient) Monitoring(ctx context.Context, in *MonitoringRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[MonitoringUpdate], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &LabManager_ServiceDesc.Streams[0], LabManager_Monitoring_FullMethodName, cOpts...)
@@ -538,6 +601,25 @@ type LabManagerServer interface {
 	// Definitions remain durable tombstones; legacy Delete* semantics are unchanged.
 	RetireLabs(context.Context, *RetireLabsRequest) (*BatchResult, error)
 	RetireLabGroups(context.Context, *RetireLabGroupsRequest) (*BatchResult, error)
+	// Reservations: cpu and memory the cluster keeps for the caller's tenant in a time window. Every LabGroup and Lab
+	// runs under one: CreateLabGroups and CreateLabs require reservation_id (features.reservations.required), and an item
+	// without one is FAILED with reason RESERVATION_REQUIRED. An item that does not fit the rest of its reservation is
+	// FAILED with "not enough room in this reservation" and reason RESERVATION_FULL (retryable: room may come back). The
+	// other refusals are RESERVATION_NOT_FOUND, RESERVATION_ENDED, RESERVATION_MISMATCH (the deploy group already runs
+	// under another reservation, or an object that has one is moved) and, for the reservation calls, OVER_QUOTA (the
+	// tenant's overlapping reservations would peak above its quota).
+	//
+	// A reservation id is any 1..64 character string, stable for the life of the reservation: extending the window or
+	// changing the amount is UpdateReservations with the same id. Create with the same spec again is EXISTS, with
+	// another spec FAILED. Update moves `to` and the amount at any time and `from` only while the reservation is
+	// Pending; `to` must stay in the future (DeleteReservations is the way to end now). Delete removes it: the groups
+	// that ran under it get the ending notice and are then deleted. N before `to` (features.reservations
+	// .ending_notice_seconds) the reservation turns ENDING; at `to` everything still attached is deleted. Monitoring
+	// carries every reservation of the tenant (MonitoringUpdate.reservations) and deleted keys of kind "Reservation".
+	CreateReservations(context.Context, *CreateReservationsRequest) (*BatchResult, error)
+	ListReservations(context.Context, *ListRequest) (*ReservationList, error)
+	UpdateReservations(context.Context, *UpdateReservationsRequest) (*BatchResult, error)
+	DeleteReservations(context.Context, *DeleteRequest) (*BatchResult, error)
 	// Monitoring is a server-push stream. Every subscription starts with a
 	// complete snapshot; subsequent messages are sequenced deltas or heartbeats.
 	Monitoring(*MonitoringRequest, grpc.ServerStreamingServer[MonitoringUpdate]) error
@@ -668,6 +750,18 @@ func (UnimplementedLabManagerServer) RetireLabs(context.Context, *RetireLabsRequ
 }
 func (UnimplementedLabManagerServer) RetireLabGroups(context.Context, *RetireLabGroupsRequest) (*BatchResult, error) {
 	return nil, status.Error(codes.Unimplemented, "method RetireLabGroups not implemented")
+}
+func (UnimplementedLabManagerServer) CreateReservations(context.Context, *CreateReservationsRequest) (*BatchResult, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateReservations not implemented")
+}
+func (UnimplementedLabManagerServer) ListReservations(context.Context, *ListRequest) (*ReservationList, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListReservations not implemented")
+}
+func (UnimplementedLabManagerServer) UpdateReservations(context.Context, *UpdateReservationsRequest) (*BatchResult, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdateReservations not implemented")
+}
+func (UnimplementedLabManagerServer) DeleteReservations(context.Context, *DeleteRequest) (*BatchResult, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteReservations not implemented")
 }
 func (UnimplementedLabManagerServer) Monitoring(*MonitoringRequest, grpc.ServerStreamingServer[MonitoringUpdate]) error {
 	return status.Error(codes.Unimplemented, "method Monitoring not implemented")
@@ -1086,6 +1180,78 @@ func _LabManager_RetireLabGroups_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LabManager_CreateReservations_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateReservationsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabManagerServer).CreateReservations(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LabManager_CreateReservations_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabManagerServer).CreateReservations(ctx, req.(*CreateReservationsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LabManager_ListReservations_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabManagerServer).ListReservations(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LabManager_ListReservations_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabManagerServer).ListReservations(ctx, req.(*ListRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LabManager_UpdateReservations_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateReservationsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabManagerServer).UpdateReservations(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LabManager_UpdateReservations_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabManagerServer).UpdateReservations(ctx, req.(*UpdateReservationsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LabManager_DeleteReservations_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabManagerServer).DeleteReservations(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LabManager_DeleteReservations_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabManagerServer).DeleteReservations(ctx, req.(*DeleteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _LabManager_Monitoring_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(MonitoringRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -1374,6 +1540,22 @@ var LabManager_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RetireLabGroups",
 			Handler:    _LabManager_RetireLabGroups_Handler,
+		},
+		{
+			MethodName: "CreateReservations",
+			Handler:    _LabManager_CreateReservations_Handler,
+		},
+		{
+			MethodName: "ListReservations",
+			Handler:    _LabManager_ListReservations_Handler,
+		},
+		{
+			MethodName: "UpdateReservations",
+			Handler:    _LabManager_UpdateReservations_Handler,
+		},
+		{
+			MethodName: "DeleteReservations",
+			Handler:    _LabManager_DeleteReservations_Handler,
 		},
 		{
 			MethodName: "Enroll",

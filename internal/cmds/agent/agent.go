@@ -21,6 +21,7 @@ import (
 	grpcserver "github.com/cybericebox/laboratory/internal/agent/grpc"
 	"github.com/cybericebox/laboratory/internal/crdcheck"
 	"github.com/cybericebox/laboratory/internal/errorlog"
+	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/internal/profiles"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
@@ -81,7 +82,8 @@ func Run() {
 	if err := cfg.GroupPods.Validate(); err != nil {
 		log.Fatalf("%v", err)
 	}
-	h.SetGroupOverhead(cfg.GroupPods.Overhead())
+	h.SetGroupPods(cfg.GroupPods)
+	h.SetReservationNotice(time.Duration(cfg.ReservationEndingNoticeSeconds) * time.Second)
 	h.SetRenewMinInterval(cfg.Server.RenewMinInterval)
 	h.SetClientCA(cfg.MTLS.ClientCAFile, cfg.MTLS.ClientCAKeyFile, cfg.MTLS.ClientCertTTL)
 	h.SetRegistryAddr(cfg.RegistryAddr)
@@ -189,6 +191,7 @@ func features(cfg *config.Config) (f grpcserver.Features, err error) {
 	if f.Limits, err = cfg.Limits.Parse(); err != nil {
 		return f, err
 	}
+	f.DeviceDefaults = limits.DeviceDefaults{CPU: cfg.Limits.DeviceDefaultCPU, Memory: cfg.Limits.DeviceDefaultMemory, MaxCPU: cfg.Limits.DeviceMaxCPU, MaxMemory: cfg.Limits.DeviceMaxMemory}
 	if f.GroupPods.Sizing, err = cfg.GroupSizing.Parse(); err != nil {
 		return f, err
 	}

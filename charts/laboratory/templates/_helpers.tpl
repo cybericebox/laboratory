@@ -143,6 +143,8 @@ LIFECYCLE_RETAINED_RESTART_AVAILABLE: {{ .Values.lifecycle.capabilities.retained
 LIFECYCLE_FULL_GROUP_STOP_AVAILABLE: {{ .Values.lifecycle.capabilities.fullGroupStop | quote }}
 RUNTIME_OBSERVATION_ENABLED: {{ .Values.lifecycle.runtimeObservation.enabled | quote }}
 REQUIRED_SNAPSHOT_AVAILABLE: {{ .Values.lifecycle.requiredSnapshotAvailable | quote }}
+{{- /* The ending notice of reservations: the operator gives it, the agent reports it and computes the end of the groups. */}}
+RESERVATION_ENDING_NOTICE_SECONDS: {{ .Values.reservations.endingNoticeSeconds | quote }}
 BASE_DOMAIN: {{ required "operator.baseDomain is required" .Values.operator.baseDomain | quote }}
 PUBLIC_VPN_ENDPOINT: {{ include "laboratory.publicVPNEndpoint" . | quote }}
 {{- /* Without the demux nothing runs on the host network: the VPN pods admit no node addresses. */}}

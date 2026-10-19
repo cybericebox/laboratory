@@ -37,6 +37,13 @@ type capacityCache struct {
 // service overhead of every group, which a reservation must add to its labs.
 func (h *Handler) SetGroupOverhead(o grouppods.Overhead) { h.groupOverhead = o }
 
+// SetGroupPods sets the chart's sizes of a group's own pods: what a group without sizes of its own counts against its
+// reservation, and the service overhead (SetGroupOverhead).
+func (h *Handler) SetGroupPods(c grouppods.Config) {
+	h.groupPods = c
+	h.groupOverhead = c.Overhead()
+}
+
 // SetLabScheduling tells the agent which nodes lab pods run on, so a percentage quota
 // resolves against the same allocatable as the operator's scheduler sees.
 func (h *Handler) SetLabScheduling(selector map[string]string, tolerations []corev1.Toleration) {

@@ -133,8 +133,8 @@ func DeviceQuantity(s string, cpu bool) (int64, error) {
 	return q.Value(), nil
 }
 
-// addSat adds without wrapping around.
-func addSat(a, b int64) int64 {
+// AddSat is a + b for non-negative amounts, MaxInt64 instead of an overflow.
+func AddSat(a, b int64) int64 {
 	if a > 0 && b > math.MaxInt64-a {
 		return math.MaxInt64
 	}
@@ -202,7 +202,7 @@ func (l Limits) SpecTotals(spec *laboratoryv1alpha1.LabSpec) (cpu, mem int64, co
 		if err != nil {
 			return 0, 0, 0, fmt.Errorf("device %q: %w", d.Name, err)
 		}
-		cpu, mem, containers = addSat(cpu, c), addSat(mem, m), containers+1
+		cpu, mem, containers = AddSat(cpu, c), AddSat(mem, m), containers+1
 	}
 	return cpu, mem, containers, nil
 }
@@ -252,9 +252,9 @@ func (l Limits) GroupFits(labs int, cpu, mem, addCPU, addMem int64) error {
 	switch {
 	case l.GroupMaxLabs > 0 && labs+1 > l.GroupMaxLabs:
 		return fmt.Errorf("the lab group is at its limit of %d labs", l.GroupMaxLabs)
-	case l.GroupMaxCPU > 0 && addSat(cpu, addCPU) > l.GroupMaxCPU:
+	case l.GroupMaxCPU > 0 && AddSat(cpu, addCPU) > l.GroupMaxCPU:
 		return fmt.Errorf("the lab needs %dm of cpu and the lab group already plans %dm, the limit per group is %dm", addCPU, cpu, l.GroupMaxCPU)
-	case l.GroupMaxMemory > 0 && addSat(mem, addMem) > l.GroupMaxMemory:
+	case l.GroupMaxMemory > 0 && AddSat(mem, addMem) > l.GroupMaxMemory:
 		return fmt.Errorf("the lab needs %d bytes of memory and the lab group already plans %d, the limit per group is %d bytes", addMem, mem, l.GroupMaxMemory)
 	}
 	return nil

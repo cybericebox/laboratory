@@ -242,12 +242,8 @@ func deployOf(annotations map[string]string) (string, []string) {
 func crName(id string) string { return names.EncodeName(id) }
 
 // stampID records the original id on an object.
-func stampID(annotations map[string]string, id string) map[string]string {
-	if annotations == nil {
-		annotations = map[string]string{}
-	}
-	annotations[names.AnnotationID] = id
-	return annotations
+func stampID(id string) map[string]string {
+	return map[string]string{names.AnnotationID: id}
 }
 
 func invalid(format string, a ...any) error {

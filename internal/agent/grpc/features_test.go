@@ -150,3 +150,24 @@ func TestFeaturesReportTheDeviceModelAndGroupPodSizing(t *testing.T) {
 		t.Fatalf("tenant quota without a limit: %+v", q)
 	}
 }
+
+// Every agent with the reservation calls requires them, and says how long the ending notice is (the operator's).
+func TestFeaturesReservations(t *testing.T) {
+	h := featuresHandler(t, testFeatures)
+	f, err := h.GetFeatures(context.Background(), &protobuf.Empty{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := f.GetReservations(); !r.GetRequired() || r.GetEndingNoticeSeconds() != 300 {
+		t.Fatalf("default: %v", r)
+	}
+	h = featuresHandler(t, testFeatures)
+	h.SetReservationNotice(0)
+	f, err = h.GetFeatures(context.Background(), &protobuf.Empty{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := f.GetReservations(); !r.GetRequired() || r.GetEndingNoticeSeconds() != 0 {
+		t.Fatalf("a chart notice of 0 is reported as 0: %v", r)
+	}
+}

@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -71,7 +72,7 @@ func failedResult(ref *protobuf.ItemRef, err error) *protobuf.ItemResult {
 	if apierrors.IsNotFound(err) {
 		return &protobuf.ItemResult{Ref: ref, State: protobuf.ItemState_ITEM_STATE_NOT_FOUND, Error: msg}
 	}
-	return &protobuf.ItemResult{Ref: ref, State: protobuf.ItemState_ITEM_STATE_FAILED, Error: msg, Retryable: isRetryable(err)}
+	return &protobuf.ItemResult{Ref: ref, State: protobuf.ItemState_ITEM_STATE_FAILED, Error: msg, Retryable: isRetryable(err), Reason: reasonOf(err)}
 }
 
 // notReadyError is a LabGroup whose namespace the operator has not created yet.
@@ -83,6 +84,10 @@ func (e notReadyError) Error() string {
 
 // isRetryable tells failures a repetition can cure.
 func isRetryable(err error) bool {
+	var re reasonError
+	if errors.As(err, &re) {
+		return re.retryable
+	}
 	if _, ok := err.(pendingAdmissionError); ok {
 		return true
 	}
