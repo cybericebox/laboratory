@@ -1435,6 +1435,15 @@ Ukrainian by default) with the platform crest pulsing as the loader, `503` and `
 other client gets `503 lab is starting` as plain text. A lab that does not exist, was turned off or is refused to the client keeps the
 «not available» page (`404`), and a lab that answers wrongly (it hangs up, the response is broken) keeps the `502` card.
 
+### The access log of the L7 proxy
+
+The proxy writes one structured line (`request`, logger `proxy-l7.access`) for every request it forwards to a lab: `lab` (the lab id),
+`method`, `path` (without the query, cut at 200 characters), `status`, `upstreamMs` (until the lab answered with its headers, or failed),
+`bytes` (the body sent back to the client), `clientCancel` (the client left before the end) and `slow`. A request is slow when
+`upstreamMs` is above `SLOW_REQUEST` (default `2s`, a Go duration). No address of a client is logged. A websocket upgrade is one line with
+status `101` and no bytes; its traffic is metered, not logged. Requests the proxy refuses before the lab (no session, unknown lab, rate
+limit) are not in this log.
+
 ### Sizing the proxy
 
 The sizes in `proxy.l7` and `proxy.wg` come from measurements, repeated by two tests (`go test ./internal/proxy/...`, not in `-short`): `TestL7MemoryPerConnection` starts the
