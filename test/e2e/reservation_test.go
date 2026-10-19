@@ -221,7 +221,7 @@ var _ = Describe(
 						By("sizing the labs from the lab nodes")
 						nodes := labNodes()
 						Expect(len(nodes)).To(BeNumerically(">=", 2), "the gang test needs two lab nodes")
-						// The size of a device is capped in CPU (limits.device) but not in memory, so memory decides.
+						// The size of a device is capped in CPU (limits.device) but not in memory (e2e values), so memory decides.
 						// Each lab asks 45% of the memory of the smallest lab node: one fits an empty node (the room
 						// after the platform and packing reserves is about 76%, less the pods of the platform), two
 						// never fit on one. An unreserved lab takes half of a node, which leaves less than one lab there.
