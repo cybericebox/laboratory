@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -113,10 +114,14 @@ type Scheduler struct {
 	// noReservations says the last list of Reservations found no such kind (the warning is logged once).
 	noReservations bool
 	// evictSeen is, for every marked target of the last pass with a known verdict, when this process first saw it so
-	// (evictUnreserved); a pass without one leaves it empty, so the next marks get a new notice.
-	evictSeen map[types.UID]time.Time
+	// (evictUnreserved), with the time of that pass; a pass without one leaves it empty, and a record older than seenMaxAge is
+	// dropped, so the next marks get a new notice.
+	evictSeen passRecord
 	// evictRetry is when a due object whose deletion was refused or failed is tried again.
 	evictRetry map[types.UID]time.Time
+	// orphanSeen and orphanRetry are the same for the work of reservations that are gone (cleanOrphans).
+	orphanSeen  passRecord
+	orphanRetry map[types.UID]time.Time
 	// usedAtPruned says the server dropped status.usedAt (an old Reservation CRD); logged once.
 	usedAtPruned bool
 }
@@ -143,6 +148,8 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	}
 	t := time.NewTicker(tick)
 	defer t.Stop()
+	// what an earlier run saw says nothing about the passes in between: every notice starts again
+	s.evictSeen, s.orphanSeen = passRecord{}, passRecord{}
 	// a replica that is no longer the leader reports no shortfall
 	defer reservationShortfall.Reset()
 	for {
@@ -670,9 +677,11 @@ func (s *Scheduler) tick(ctx context.Context) error {
 		s.lastWrite = map[types.UID]time.Time{}
 	}
 	now := s.now()
-	// Only a pass with a known capacity verdict carries the eviction record on (evictUnreserved).
-	evictSeen := s.evictSeen
-	s.evictSeen = nil
+	// Only a pass with a known capacity verdict carries the eviction record on (evictUnreserved), and only a pass that ran
+	// shortly before this one gives it; the same for the work of gone reservations (cleanOrphans).
+	evictSeen := s.evictSeen.recent(now, s.seenMaxAge())
+	orphanSeen := s.orphanSeen.recent(now, s.seenMaxAge())
+	s.evictSeen, s.orphanSeen = passRecord{}, passRecord{}
 	// An expired dispatch no longer affects scheduling, even if its object was
 	// deleted and never appears in the cache again. Prepared history is separate.
 	for key, at := range s.recent {
@@ -763,6 +772,7 @@ func (s *Scheduler) tick(ctx context.Context) error {
 		reservationShortfall.WithLabelValues("memory").Set(float64(sf.short.mem))
 		s.evictUnreserved(ctx, snap, sf.blockers, evictSeen, now)
 	}
+	s.cleanOrphans(ctx, snap, orphanSeen, now)
 	return nil
 }
 
@@ -825,6 +835,22 @@ type clusterEnv struct {
 	live bool
 	// heldPods are the placeholders of the pods of stopped labs that are gone, as the capacity snapshot counts them.
 	heldPods []corev1.Pod
+	// capacityUnknown: the capacity of this pass cannot be known (what stopped labs hold is unknown); asked once per pass.
+	capacityUnknown bool
+	// stoppedDone says stoppedPods, stoppedHeld and stoppedUnknown hold stoppedReservations of the view (computed once).
+	stoppedDone    bool
+	stoppedPods    []corev1.Pod
+	stoppedHeld    map[string]tenant.Totals
+	stoppedUnknown bool
+}
+
+// stopped is stoppedReservations of the pass's view, computed once; the map is shared, callers must not change it.
+func (e *clusterEnv) stopped() ([]corev1.Pod, map[string]tenant.Totals, bool) {
+	if !e.stoppedDone {
+		e.stoppedPods, e.stoppedHeld, e.stoppedUnknown = e.s.stoppedReservations(e.snap)
+		e.stoppedDone = true
+	}
+	return e.stoppedPods, e.stoppedHeld, e.stoppedUnknown
 }
 
 func (e *clusterEnv) prepared(o *schedObject) bool {
@@ -842,7 +868,7 @@ func (e *clusterEnv) prepared(o *schedObject) bool {
 }
 
 func (e *clusterEnv) capacity() *capacitySnapshot {
-	if e.snapshot != nil || e.err != nil {
+	if e.snapshot != nil || e.err != nil || e.capacityUnknown {
 		return e.snapshot
 	}
 	var r client.Reader = e.s.Client
@@ -854,8 +880,9 @@ func (e *clusterEnv) capacity() *capacitySnapshot {
 		e.err = fmt.Errorf("list nodes: %w", err)
 		return nil
 	}
-	heldPods, _, unknown := e.s.stoppedReservations(e.snap)
+	heldPods, _, unknown := e.stopped()
 	if unknown {
+		e.capacityUnknown = true
 		return nil
 	}
 	pods := make([]corev1.Pod, 0, len(e.snap.pods)+len(heldPods))
@@ -941,11 +968,11 @@ func (e *clusterEnv) tenantFits(p *schedPod) bool {
 		return true
 	}
 	if e.tenantUsed == nil {
-		_, held, unknown := e.s.stoppedReservations(e.snap)
+		_, held, unknown := e.stopped()
 		if unknown {
 			return false
 		}
-		e.tenantUsed = held
+		e.tenantUsed = maps.Clone(held)
 		for _, o := range e.objs {
 			for _, q := range o.pods {
 				if q.dispatched() {
@@ -982,7 +1009,7 @@ func (e *clusterEnv) stoppedHolds() map[string]amount {
 	if !e.s.Config.ResourceCheck {
 		return nil
 	}
-	held, _, _ := e.s.stoppedReservations(e.snap)
+	held, _, _ := e.stopped()
 	stopped := map[string]bool{}
 	for _, l := range e.snap.labs {
 		if l.Spec.Lifecycle.IsStopped() {

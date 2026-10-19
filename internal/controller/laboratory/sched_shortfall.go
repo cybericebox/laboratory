@@ -548,12 +548,15 @@ func (s *Scheduler) evictUnreserved(ctx context.Context, snap *clusterView, bloc
 	next := map[types.UID]time.Time{}
 	var due []client.Object
 	marked := 0
+	var markedAt time.Time // when the last mark was written
 	mark := func(o client.Object) bool {
 		if budget <= 0 {
 			return false
 		}
 		budget--
-		when := now.Add(notice).UTC().Format(time.RFC3339)
+		// the notice counts from the write, not from the start of the pass
+		markedAt = s.now()
+		when := markedAt.Add(notice).UTC().Format(time.RFC3339)
 		if err := s.annotate(ctx, o, when); err != nil {
 			logger.Error(err, "mark unreserved work for deletion", "object", objectKey(o))
 			return false
@@ -577,9 +580,12 @@ func (s *Scheduler) evictUnreserved(ctx context.Context, snap *clusterView, bloc
 			first, known := seen[uid]
 			if !known {
 				// a mark from before a gap (or another process): this shortfall gets its own full notice
-				first = now
-				if at.Before(now.Add(notice)) && !mark(o) {
-					continue // not renewed this pass: not seen either, so it stays undue
+				first = s.now()
+				if at.Before(first.Add(notice)) {
+					if !mark(o) {
+						continue // not renewed this pass: not seen either, so it stays undue
+					}
+					first = markedAt
 				}
 			}
 			next[uid] = first
@@ -588,7 +594,7 @@ func (s *Scheduler) evictUnreserved(ctx context.Context, snap *clusterView, bloc
 			}
 		case want:
 			if mark(o) {
-				next[uid] = now
+				next[uid] = markedAt
 			}
 		case has:
 			if clears <= 0 {
@@ -604,7 +610,7 @@ func (s *Scheduler) evictUnreserved(ctx context.Context, snap *clusterView, bloc
 			}
 		}
 	}
-	s.evictSeen = next
+	s.evictSeen = passRecord{at: now, first: next}
 	for uid := range s.evictRetry {
 		if _, ok := next[uid]; !ok {
 			delete(s.evictRetry, uid)

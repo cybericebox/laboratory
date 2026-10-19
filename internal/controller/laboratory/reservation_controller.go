@@ -8,6 +8,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -88,6 +89,30 @@ func (r *ReservationReconciler) now() time.Time {
 		return r.Now()
 	}
 	return time.Now()
+}
+
+// ReservationServed says whether the API server serves the Reservation kind (its CRD is applied).
+func ReservationServed(mapper meta.RESTMapper) (bool, error) {
+	gk := schema.GroupKind{Group: laboratoryv1alpha1.SchemeGroupVersion.Group, Kind: "Reservation"}
+	if _, err := mapper.RESTMapping(gk, laboratoryv1alpha1.SchemeGroupVersion.Version); err != nil {
+		if meta.IsNoMatchError(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// SetupWithManagerIfServed registers the reconciler only when the Reservation kind is served: without the CRD (an upgrade
+// that did not apply crds/) a controller for it would never sync and stop the manager, while the scheduler runs as if there
+// were no reservations. It reports whether the reconciler was registered; once the CRD is applied the operator needs a
+// restart to get it.
+func (r *ReservationReconciler) SetupWithManagerIfServed(mgr ctrl.Manager) (bool, error) {
+	served, err := ReservationServed(mgr.GetRESTMapper())
+	if err != nil || !served {
+		return false, err
+	}
+	return true, r.SetupWithManager(mgr)
 }
 
 func (r *ReservationReconciler) SetupWithManager(mgr ctrl.Manager) error {
