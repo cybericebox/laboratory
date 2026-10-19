@@ -806,6 +806,14 @@ scheduler:
     timeout: 5m
 
 # ============================================================
+# Reservations (Reservation objects: cpu and memory kept for a tenant in a window)
+# ============================================================
+reservations:
+  # The Ending condition is set this many seconds before the end of a reservation; at the end every group under it is
+  # deleted. A reservation whose tenant is gone ends this long after that is seen. 0: no notice.
+  endingNoticeSeconds: 300
+
+# ============================================================
 # Limits the cluster owns on devices, labs and tenants
 # ============================================================
 # The management agent enforces them on CreateLabs (a lab over them is refused with the reason) and reports them

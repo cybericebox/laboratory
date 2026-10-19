@@ -69,10 +69,12 @@ rules:
 - apiGroups: [laboratory.cybericebox.com]
   resources: [tenants/status]
   verbs: [get, update, patch]
-# Reservations: the scheduler accounts the groups against them and writes what they use (status.used, status.groups).
+# Reservations: the scheduler accounts the groups against them and writes what they use (status.used, status.groups); the
+# reservation controller writes the phase and the Ending condition, deletes the groups at the end and the ended reservation
+# a day later.
 - apiGroups: [laboratory.cybericebox.com]
   resources: [reservations]
-  verbs: [get, list, watch]
+  verbs: [delete, get, list, patch, update, watch]
 - apiGroups: [laboratory.cybericebox.com]
   resources: [reservations/status]
   verbs: [get, update, patch]

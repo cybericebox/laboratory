@@ -100,6 +100,9 @@ at install time instead of shipping a broken deployment.
 {{- if lt (int .Values.scheduler.agingSeconds) 0 }}
 {{- fail "scheduler.agingSeconds must not be negative (0 turns aging off)" }}
 {{- end }}
+{{- if lt (int .Values.reservations.endingNoticeSeconds) 0 }}
+{{- fail "reservations.endingNoticeSeconds must not be negative" }}
+{{- end }}
 {{- if lt (int .Values.scheduler.restartThreshold) 1 }}
 {{- fail "scheduler.restartThreshold must be at least 1" }}
 {{- end }}
