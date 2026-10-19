@@ -49,3 +49,26 @@ func TestCapacityValidateFailsWithHalfABudget(t *testing.T) {
 		t.Errorf("a full budget renders: %v\n%s", err, out)
 	}
 }
+
+// The operator and the agent may read the Device and LabGroup CRDs (and only them, only get): both check them before they use
+// a capacity budget.
+func TestCapacityCRDCheckRBAC(t *testing.T) {
+	for _, tpl := range []string{"templates/operator/clusterrole.yaml", "templates/agent/clusterrole.yaml"} {
+		out, err := helmTemplate(t, append(append([]string{}, agentSet...), "-s", tpl)...)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		found := false
+		for _, d := range docs(t, out) {
+			for _, r := range rulesOf(t, d) {
+				if !has(r.Resources, "customresourcedefinitions") || !has(r.ResourceNames, "devices.laboratory.cybericebox.com") {
+					continue
+				}
+				found = has(r.ResourceNames, "labgroups.laboratory.cybericebox.com") && len(r.Verbs) == 1 && r.Verbs[0] == "get"
+			}
+		}
+		if !found {
+			t.Errorf("%s: no get on the Device and LabGroup CRDs", tpl)
+		}
+	}
+}

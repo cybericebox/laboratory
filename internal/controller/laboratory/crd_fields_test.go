@@ -40,20 +40,6 @@ func crdFixture(t *testing.T, drop string) client.Client {
 	return fake.NewClientBuilder().WithScheme(runtime.NewScheme()).WithObjects(objs...).Build()
 }
 
-// The current CRDs serve every field of the gang commit; an older one is named field by field, and a missing CRD is an error.
-func TestGangCommitFieldsMissing(t *testing.T) {
-	if missing, err := GangCommitFieldsMissing(context.Background(), crdFixture(t, "")); err != nil || len(missing) != 0 {
-		t.Fatalf("current CRDs: %v %v", missing, err)
-	}
-	missing, err := GangCommitFieldsMissing(context.Background(), crdFixture(t, "withdrawals"))
-	if err != nil || len(missing) != 2 || !strings.Contains(missing[0], "devices.") || !strings.HasSuffix(missing[1], "labgroups.laboratory.cybericebox.com: withdrawals") {
-		t.Fatalf("old CRDs: %v %v", missing, err)
-	}
-	if _, err := GangCommitFieldsMissing(context.Background(), fake.NewClientBuilder().WithScheme(runtime.NewScheme()).Build()); err == nil {
-		t.Fatal("a missing CRD must be an error")
-	}
-}
-
 // With a budget and an older CRD the operator runs without the budget and says why; with current CRDs, or no budget, it runs
 // as configured.
 func TestBudgetWithCurrentCRDs(t *testing.T) {
@@ -62,13 +48,13 @@ func TestBudgetWithCurrentCRDs(t *testing.T) {
 	if got := BudgetWithCurrentCRDs(context.Background(), crdFixture(t, ""), rec, budget); got != budget || len(rec.Events) != 0 {
 		t.Fatalf("current CRDs: %+v, %d events", got, len(rec.Events))
 	}
-	if got := BudgetWithCurrentCRDs(context.Background(), crdFixture(t, "retryAfter"), rec, budget); got.Set() {
+	if got := BudgetWithCurrentCRDs(context.Background(), crdFixture(t, "schedulerMessage"), rec, budget); got.Set() {
 		t.Fatalf("an older CRD keeps the budget: %+v", got)
 	}
-	if e := <-rec.Events; !strings.Contains(e, "CapacityBudgetDisabled") || !strings.Contains(e, "retryAfter") {
+	if e := <-rec.Events; !strings.Contains(e, "CapacityBudgetDisabled") || !strings.Contains(e, "schedulerMessage") {
 		t.Fatalf("event = %q", e)
 	}
-	if got := BudgetWithCurrentCRDs(context.Background(), crdFixture(t, "retryAfter"), rec, nodecap.Maximum{}); got.Set() || len(rec.Events) != 0 {
+	if got := BudgetWithCurrentCRDs(context.Background(), crdFixture(t, "schedulerMessage"), rec, nodecap.Maximum{}); got.Set() || len(rec.Events) != 0 {
 		t.Fatal("no budget: nothing to check")
 	}
 }

@@ -614,7 +614,11 @@ largest device is the device limit (`limits.device.maxCpu` / `maxMemory`) or the
 own placement sent its group partly onto the virtual room (recorded at dispatch, `status.scheduling.onBudget`: whatever the
 scheduler says about the nodes that exist, so also with no lab node at all or while the only new node boots), or the scheduler
 says the nodes lack resources a new node brings (`PodScheduled=False` with `Insufficient cpu`, `Insufficient memory` or `Too
-many pods`). An
+many pods`). The placement is decided per group: when a group is placed partly on the real room and partly on the virtual room,
+every pod of it is on the budget, so a pod of it that got the real room but still has no node (for any reason, a taint
+included) also waits, and the group is withdrawn at the node timeout. A pod that no node of any autoscaled group can take (a
+node selector or a taint no node template has) is withdrawn and queued again with its group at every node timeout, with the
+scheduler's message, instead of failing: the scheduler cannot tell it from a node that is still coming. An
 object whose pods are all sent and some wait so shows `status.scheduling.reason: NodeStarting` ("n pods wait for a node since
 T") and gets one Normal event `NodeStarting`; the gauge `laboratory_pods_waiting_for_node` counts such pods. Such a pod holds
 **no in-flight slot** (it pulls and runs nothing yet), so a group larger than `scheduler.maxPods` goes out whole within a few
@@ -675,11 +679,14 @@ placed on the virtual room. The breaker lives in the operator's memory: a restar
   go;
 - if it ignores pods of the `laboratory-binpack` scheduler, `--bypassed-scheduler-names=laboratory-binpack`.
 
-**Before enabling the budget, apply the chart's CRDs** (`kubectl apply -f charts/laboratory/crds/`; `helm upgrade` never
-updates `crds/`). The gang commit writes `withdrawals`, `retryAfter`, `onBudget` and `schedulerMessage` into the scheduling
+**Before enabling the budget, apply the chart's CRDs** (`kubectl apply --server-side -f charts/laboratory/crds/`; `helm
+upgrade` never updates `crds/`). The gang commit writes `withdrawals`, `retryAfter`, `onBudget` and `schedulerMessage` into the scheduling
 records of Devices and LabGroups; an older CRD prunes them, and a withdrawal then deletes nothing and holds nothing back. The
 operator checks this at start: with a budget and an older CRD it runs without the budget (as if `capacity.budget` were empty),
-logs an error and gives a Warning event `CapacityBudgetDisabled` on the Device CRD. Apply the CRDs and restart the operator.
+logs an error and gives a Warning event `CapacityBudgetDisabled` on the Device CRD; the agent makes the same check and then
+advertises no budget either, so tenants never plan against a budget the operator does not use. A read of the CRDs that fails
+for a passing reason is retried for about 30 s; only a missing field, a missing CRD or a refused read turns the budget off.
+Apply the CRDs and restart the operator and the agent.
 
 **Infra and the budget must count the same DaemonSets.** The operator compares the budget with the autoscaled nodes'
 allocatable less the requests of the DaemonSet pods that run on them (node-agent, Cilium, kube-proxy and any other). Infra
