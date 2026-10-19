@@ -99,6 +99,21 @@ const (
 	AccessPortRulePriority = 1000
 )
 
+// The readiness probe of a device (see package internal/probe). A static program is copied by an init container into an
+// emptyDir that the device container mounts read-only, because a device image may carry no shell.
+const (
+	// ProbeInitContainer installs the probe; ProbeVolume is the emptyDir it writes to.
+	ProbeInitContainer = "cib-probe"
+	ProbeVolume        = "cib-probe"
+	// ProbeDir is where the device container sees the probe; ProbeBinary is the program in it.
+	ProbeDir    = "/.cib/probe"
+	ProbeBinary = ProbeDir + "/probe"
+	// ProbeImageBinary is the probe in the node image, the image of the installing init container.
+	ProbeImageBinary = "/probe"
+	// ReadyFile is the marker an application creates when it is ready (WaitReadyFile).
+	ReadyFile = "/run/ready"
+)
+
 // DHCPImpliedCapabilities are added to any device with an in-image DHCP
 // interface (addr.type=dhcp) so its client can send raw broadcast DISCOVERs and
 // set the lease, regardless of the chosen preset.

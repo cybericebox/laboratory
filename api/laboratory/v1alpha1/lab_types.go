@@ -79,6 +79,10 @@ type DeviceTemplate struct {
 	// creation and immutable. The excluded paths and the quota are platform settings.
 	// +optional
 	Persistence *DevicePersistence `json:"persistence,omitempty"`
+	// WaitReadyFile makes the device Ready only once the application has created /run/ready inside the container.
+	// A port published through the web exposure is checked in any case, whatever this says. Container devices only.
+	// +optional
+	WaitReadyFile bool `json:"waitReadyFile,omitempty"`
 }
 
 // DevicePersistence is the per-device state-persistence request of a topology.

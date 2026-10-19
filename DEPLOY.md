@@ -1492,6 +1492,24 @@ Every long-running component says when it really serves, and a rollout waits for
 - A pod that is not Ready is taken out of its Service, so a node-agent or proxy that cannot serve gets no traffic; a pod that fails liveness is restarted by the kubelet.
 - If a probe fails on a cluster whose CNI blocks the node's own traffic to pods, allow the kubelet (host entity) to reach the probe ports; Cilium allows it by default.
 
+### When a device is Ready
+
+A device used to be Ready as soon as its container ran, even while the application inside was still starting (a participant then met the proxy's "unavailable" page). Now a container device has a **readiness probe** in two cases:
+
+- **A published web port** (`exposure.web`): the device is Ready once the application answers on that port. `http` (the default) and `https` ports get an HTTP `GET /` (any answer below 500 counts, so a page behind a login or a 404 on `/` is fine; a 5xx or a refused connection is not; the certificate is not verified); any other protocol gets a TCP connect. Nothing to configure.
+- **`waitReadyFile: true`** on a device template (exercise device editor: "Wait for the /run/ready file"): the device is Ready once the file `/run/ready` exists inside the container. With both, both must hold.
+
+A device with neither is Ready when it runs, as before. A lab is Ready only when all its devices are (this was already so; the probe makes "Ready" mean the application is up), so the L7 proxy's starting page shows until then.
+
+How it works:
+
+- The probe is an **exec** probe, not an `httpGet` from the node: it runs `/.cib/probe/probe ready ...` inside the container, so it needs neither a route from the node to the pod (the access port is wired by the node-agent; the network policy of a published device admits only the proxy) nor a shell in the image, and it decides what "answers" means (an `httpGet` counts only 200-399, so an application answering 401 or 404 on `/` would never be Ready). It tries the loopback and every other address of the container.
+- The `probe` program is a static binary of the node image (`/probe`). An init container (`cib-probe`, the node image, no capabilities, read-only root) copies it into an `emptyDir` that the device container mounts **read-only** at `/.cib/probe`, so an image without a shell works and the participant (root in the device) cannot replace it. It is the same for Deployment devices and for state Pods; the rescue pod of a device with state persistence has no probe (a shell is not the application).
+- Readiness only, nothing that kills: no liveness or startup probe, so a container is never restarted by it. Timing: no initial delay, every 2 s, up to 30 s of failures before a Ready device is marked NotReady again.
+- Only **new** devices get the probe: the Deployment of a running device is never rewritten. Without the node image (`NETCONFIG_IMAGE`) there is no probe.
+- The scheduler's start timeout (`scheduler.startupTimeout`, 5m) counts to Ready: an application that needs longer than that to open its port, or never creates `/run/ready`, is declared failed after it, and shown Started if it becomes Ready later.
+- `/run` is not part of the state snapshots (`excludePaths`), so a device restored from a snapshot has no `/run/ready` until the application creates it again.
+
 ### The WireGuard demux under hostile senders
 
 The demux (`wg-demux`) reads one public UDP port for every team. It holds no keys (the VPN pods do; WireGuard's own handshake is the security boundary), so
