@@ -18,7 +18,7 @@ IMG_lab         = $(LAB_IMG)
 KIND_CLUSTER_NAME ?= icebox
 
 # Lima/k0s dev cluster
-# Local cluster kit (Lima VMs, k0s, Kind config, lab scenarios) lives in the infrastructure repo (override LOCAL_K0S to point elsewhere).
+# Local cluster kit (Lima VMs, k0s, lab scenarios; the Kind config is hack/kind/kind-config.yaml) lives in the infrastructure repo (override LOCAL_K0S to point elsewhere).
 LOCAL_K0S      ?= ../infrastructure/local/cluster
 LIMA_CTRL      ?= lab-ctrl
 LIMA_WORKER    ?= lab-worker
