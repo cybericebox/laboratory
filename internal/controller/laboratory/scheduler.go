@@ -13,8 +13,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -105,6 +107,8 @@ type Scheduler struct {
 	preparing map[string]bool
 	recent    map[string]time.Time
 	lastWrite map[types.UID]time.Time
+	// noReservations says the last list of Reservations found no such kind (the warning is logged once).
+	noReservations bool
 }
 
 // +kubebuilder:rbac:groups="",resources=nodes;pods,verbs=get;list;watch
@@ -281,10 +285,21 @@ func (s *Scheduler) load(ctx context.Context) (*clusterView, error) {
 		snap.tenants[tenants.Items[i].Name] = &tenants.Items[i]
 	}
 	var reservations laboratoryv1alpha1.ReservationList
-	if err := s.List(ctx, &reservations); err != nil {
+	switch err := s.List(ctx, &reservations); {
+	case err == nil:
+		snap.reservations = reservations.Items
+		s.noReservations = false
+	case meta.IsNoMatchError(err) || errors.IsNotFound(err) || runtime.IsNotRegisteredError(err):
+		// The Reservation CRD is not installed (an upgrade that skipped `kubectl apply` of the CRDs): the queue runs as if there
+		// were no reservations, so unreserved labs go on and reserved ones wait with ReservationMissing. Said once until the CRD
+		// is back.
+		if !s.noReservations {
+			log.FromContext(ctx).WithName("scheduler").Info("the Reservation CRD is not installed: scheduling as if there were no reservations", "error", err.Error())
+			s.noReservations = true
+		}
+	default:
 		return nil, fmt.Errorf("list reservations: %w", err)
 	}
-	snap.reservations = reservations.Items
 	var devices laboratoryv1alpha1.DeviceList
 	if err := s.List(ctx, &devices); err != nil {
 		return nil, fmt.Errorf("list devices: %w", err)
@@ -915,19 +930,7 @@ func (e *clusterEnv) tenantFits(p *schedPod) bool {
 // object being deleted are not in it.
 func (e *clusterEnv) fairness() fairness {
 	if e.usage == nil {
-		var pods []dispatchedPod
-		for _, o := range e.objs {
-			group := o.id
-			if o.group != "" {
-				group = groupKey(objTenant(o), o.group)
-			}
-			for _, p := range o.pods {
-				if p.dispatched() {
-					pods = append(pods, dispatchedPod{reservation: o.reservation, tenant: p.tenant, group: group, need: p.need})
-				}
-			}
-		}
-		e.usage = reservationLedger(e.snap.reservations, pods, e.now)
+		e.usage = reservationLedger(e.snap.reservations, ledgerPods(e.objs), e.now)
 	}
 	return fairness{usage: e.usage, now: e.now, aging: e.s.Config.Aging}
 }

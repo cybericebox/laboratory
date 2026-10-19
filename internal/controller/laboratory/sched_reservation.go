@@ -43,6 +43,54 @@ func reservationActive(r *laboratoryv1alpha1.Reservation, now time.Time) bool {
 	return r.DeletionTimestamp == nil && !now.Before(r.Spec.From.Time) && now.Before(r.Spec.To.Time)
 }
 
+// gangReservation is the reservation of a gang: the label all its objects carry (empty: unreserved). A gang is under one
+// reservation or none: when its objects disagree (two labels, or a label on some objects only) mixed is true, and the gang is
+// refused with ReservationMissing, takes no withheld room and counts against no reservation.
+func gangReservation(objs []*schedObject) (name string, mixed bool) {
+	for i, o := range objs {
+		if i == 0 {
+			name = o.reservation
+		} else if o.reservation != name {
+			return name, true
+		}
+	}
+	return name, false
+}
+
+// ledgerPods are the dispatched pods of the objects as the ledger counts them: each under the reservation of its gang (the
+// objects of a deploy group within a tenant; a LabGroup and an independent lab alone), as the plan builds the gangs, so the
+// ledger and the admission gate agree. The pods of a gang with mixed labels count against no reservation.
+func ledgerPods(objs []*schedObject) []dispatchedPod {
+	gangOf := func(o *schedObject) string {
+		if o.isGroup() || o.group == "" {
+			return o.id
+		}
+		return groupKey(objTenant(o), o.group)
+	}
+	members := map[string][]*schedObject{}
+	for _, o := range objs {
+		members[gangOf(o)] = append(members[gangOf(o)], o)
+	}
+	var out []dispatchedPod
+	for _, o := range objs {
+		res, mixed := gangReservation(members[gangOf(o)])
+		if mixed {
+			res = ""
+		}
+		// the groups of a reservation are its deploy groups (a LabGroup of the group is one with its labs)
+		group := o.id
+		if o.group != "" {
+			group = groupKey(objTenant(o), o.group)
+		}
+		for _, p := range o.pods {
+			if p.dispatched() {
+				out = append(out, dispatchedPod{reservation: res, tenant: p.tenant, group: group, need: p.need})
+			}
+		}
+	}
+	return out
+}
+
 // reservationLedger is the usage of every reservation: the requests of the dispatched pods that run under it (a pod counts only
 // for a reservation of its own tenant), what it reserves, its tenant, whether it is active now, and how many groups have pods out
 // under it.
@@ -81,12 +129,13 @@ type reservationPass struct {
 	withheld map[string]map[string]amount
 	// shortfall is what of the unused part of a reservation found no room on the nodes.
 	shortfall map[string]amount
-	// nodes is the order of the rooms the pass started from.
-	nodes []string
+	// order is, for each reservation, the nodes in the order its room was withheld on them (the emptiest first).
+	order map[string][]string
 }
 
 func newReservationPass(usage map[string]reservationUsage) *reservationPass {
-	r := &reservationPass{usage: usage, pending: map[string]amount{}, withheld: map[string]map[string]amount{}, shortfall: map[string]amount{}}
+	r := &reservationPass{usage: usage, pending: map[string]amount{}, withheld: map[string]map[string]amount{}, shortfall: map[string]amount{},
+		order: map[string][]string{}}
 	for name, u := range usage {
 		r.pending[name] = u.used
 	}
@@ -96,12 +145,12 @@ func newReservationPass(usage map[string]reservationUsage) *reservationPass {
 // gate says why a gang under a reservation may not take more now (a Wait reason); empty: it may, the need within what is left of
 // the reservation. An unreserved gang always may.
 func (r *reservationPass) gate(gg *gang, need amount) string {
-	if gg.reservation == "" {
+	if gg.reservation == "" && !gg.mixedReservation {
 		return ""
 	}
 	u, ok := r.usage[gg.reservation]
 	switch {
-	case !ok || u.tenant != gg.tenant:
+	case gg.mixedReservation || !ok || u.tenant != gg.tenant:
 		return laboratoryv1alpha1.WaitReservationMissing
 	case !u.active:
 		return laboratoryv1alpha1.WaitReservationNotActive
@@ -134,10 +183,6 @@ func (r *reservationPass) unused(name string) amount {
 // after the ones before it: its unused part goes onto the emptiest node (memory, then CPU) as far as that node holds it, keeping
 // its CPU to memory ratio, and the rest onto the next emptiest; what no node holds is its shortfall.
 func (r *reservationPass) withhold(rooms []nodeRoom, order []string) {
-	r.nodes = make([]string, len(rooms))
-	for i := range rooms {
-		r.nodes[i] = rooms[i].Name
-	}
 	seen := map[string]bool{}
 	var names []string
 	for _, n := range order {
@@ -174,6 +219,7 @@ func (r *reservationPass) withhold(rooms []nodeRoom, order []string) {
 		})
 		kept := map[string]amount{}
 		for _, i := range byRoom {
+			r.order[name] = append(r.order[name], left[i].Name)
 			if rem == (amount{}) {
 				break
 			}
@@ -267,7 +313,9 @@ func (r *reservationPass) own(rooms []nodeRoom, name string) []nodeRoom {
 }
 
 // use records a gang of the reservation placed now (where by node, need in all): the room withheld for the reservation shrinks by
-// what the gang took of it, and is trimmed to what the reservation has left, from the last node of the rooms back.
+// what the gang took of it. When more is still withheld than the reservation has left (the gang took free room too), what is
+// left is withheld again inside that room, as withhold does: the emptiest node first, with the CPU to memory ratio of what is
+// left, so the kept room keeps its shape.
 func (r *reservationPass) use(name string, where map[string]amount, need amount) {
 	if name == "" {
 		return
@@ -283,12 +331,14 @@ func (r *reservationPass) use(name string, where map[string]amount, need amount)
 		kept[n] = a
 		sum = sum.add(a)
 	}
-	over := sum.sub(r.unused(name)).floorZero()
-	for i := len(r.nodes) - 1; i >= 0 && over != (amount{}); i-- {
-		n := r.nodes[i]
-		cut := amount{cpu: min(over.cpu, kept[n].cpu), mem: min(over.mem, kept[n].mem)}
-		kept[n] = kept[n].sub(cut)
-		over = over.sub(cut)
+	if sum.sub(r.unused(name)).floorZero() == (amount{}) {
+		return
+	}
+	rem := r.unused(name)
+	for _, n := range r.order[name] {
+		t := proportional(rem, kept[n])
+		kept[n] = t
+		rem = rem.sub(t)
 	}
 }
 

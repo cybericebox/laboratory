@@ -342,10 +342,8 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			if ob.arrival.Before(gg.arrival) {
 				gg.arrival = ob.arrival
 			}
-			if gg.reservation == "" {
-				gg.reservation = ob.reservation
-			}
 		}
+		gg.reservation, gg.mixedReservation = gangReservation(o)
 		if o[0].isGroup() {
 			lane = append(lane, gg)
 		} else {
@@ -411,7 +409,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	tenantHeld := map[string]bool{}   // objects held back by their tenant's quota
 	prepHeld := map[string]bool{}     // objects whose group's images are still being pulled
 	roomHeld := map[string]bool{}     // objects whose gang does not fit now: the others go past them (backfill)
-	resHeld := map[string][2]string{} // objects whose gang its reservation does not admit now: the Wait reason, the reservation
+	resHeld := map[string][2]string{} // objects whose gang its reservation does not admit now: the Wait reason and message
 	fitHeld := map[string]bool{}      // objects whose gang does not fit even the empty nodes (may change when nodes return)
 	hold := func(held map[string]bool, gg *gang) {
 		for _, o := range gg.objs {
@@ -550,7 +548,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		}
 		var order []string
 		for _, gg := range gangs {
-			if gg.reservation != "" && fair.usage[gg.reservation].tenant == gg.tenant {
+			if gg.reservation != "" && !gg.mixedReservation && fair.usage[gg.reservation].tenant == gg.tenant {
 				order = append(order, gg.reservation)
 			}
 		}
@@ -757,8 +755,19 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		}
 		// A held remainder was admitted by its reservation when it was placed.
 		if why := res.gate(gg, total); why != "" && !held[gg] {
+			msg := ""
+			switch {
+			case gg.mixedReservation:
+				msg = "objects of the group belong to different reservations"
+			case why == laboratoryv1alpha1.WaitReservationMissing:
+				msg = "the reservation " + gg.reservation + " does not exist for the tenant"
+			case why == laboratoryv1alpha1.WaitReservationNotActive:
+				msg = "the window of the reservation " + gg.reservation + " is not open now"
+			default:
+				msg = "the group does not fit what is left of the reservation " + gg.reservation
+			}
 			for _, o := range gg.objs {
-				resHeld[o.id] = [2]string{why, gg.reservation}
+				resHeld[o.id] = [2]string{why, msg}
 			}
 			return false
 		}
@@ -878,15 +887,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			continue
 		}
 		if why, ok := resHeld[o.id]; ok {
-			st.Reason = why[0]
-			switch why[0] {
-			case laboratoryv1alpha1.WaitReservationMissing:
-				st.Message = "the reservation " + why[1] + " does not exist for the tenant"
-			case laboratoryv1alpha1.WaitReservationNotActive:
-				st.Message = "the window of the reservation " + why[1] + " is not open now"
-			default:
-				st.Message = "the group does not fit what is left of the reservation " + why[1]
-			}
+			st.Reason, st.Message = why[0], why[1]
 			plan.status[o.id] = st
 			continue
 		}

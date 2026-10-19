@@ -152,12 +152,14 @@ func (s *splitmix) next(n int) int {
 // room the pass takes off the nodes is at most what the dispatched and the unbound pods request. Every other seed runs with
 // aging on (the gangs that arrived in the first two seconds are aged): the room kept for an aged gang is never taken.
 //
-// Two of three seeds put gangs under up to two reservations (open or not, with pods of theirs out already): no reservation
-// admits more than its amount, nothing of a reservation that is not open is admitted, the room withheld for a reservation is
-// still free on its nodes after the pass, and it shrinks only by what the reservation's own new gangs took.
+// Two of three seeds put gangs under up to two reservations (open or not, of the gangs' tenant or another, with pods of theirs
+// out already), and some deploy groups get a second lab, under the same reservation or not: no reservation admits more than
+// its amount, nothing of a reservation that is not open is admitted, a group whose labs disagree on the reservation starts
+// nothing, the room withheld for an open reservation plus its shortfall is exactly what it has left after the held remainders,
+// the withheld room is still free on its nodes after the pass, and it shrinks only by what the reservation's own new gangs took.
 func TestPlacementSimulationNeverOverAdmits(t *testing.T) {
-	reservedSeeds := 0
-	for seed := 1; seed <= 400; seed++ {
+	reservedSeeds, mixedGroups, pairsSent, otherTenant := 0, 0, 0, 0
+	for seed := 1; seed <= 800; seed++ {
 		r := splitmix(seed)
 		rr := splitmix(seed*7919 + 1) // the reservations draw apart, so the scenarios without them stay as they were
 		env := &simEnv{node: map[string]string{}, use: map[string]amount{}}
@@ -172,12 +174,16 @@ func TestPlacementSimulationNeverOverAdmits(t *testing.T) {
 				if rr.next(4) == 0 {
 					from = env.fair.now.Add(time.Minute) // not open yet
 				}
+				tenantOf := ""
+				if rr.next(3) == 0 {
+					tenantOf = "t2"
+				}
 				res = append(res, laboratoryv1alpha1.Reservation{
 					ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("r%d", i)},
-					Spec: laboratoryv1alpha1.ReservationSpec{From: metav1.NewTime(from), To: metav1.NewTime(from.Add(time.Hour)),
+					Spec: laboratoryv1alpha1.ReservationSpec{Tenant: tenantOf, From: metav1.NewTime(from), To: metav1.NewTime(from.Add(time.Hour)),
 						Resources: corev1.ResourceList{
-							corev1.ResourceCPU:    *resource.NewMilliQuantity(int64(500*(1+rr.next(8))), resource.DecimalSI),
-							corev1.ResourceMemory: *resource.NewQuantity(int64(1+rr.next(8))*512*mi, resource.BinarySI),
+							corev1.ResourceCPU:    *resource.NewMilliQuantity(int64(500*(1+rr.next(16))), resource.DecimalSI),
+							corev1.ResourceMemory: *resource.NewQuantity(int64(1+rr.next(16))*512*mi, resource.BinarySI),
 						}},
 				})
 			}
@@ -229,36 +235,118 @@ func TestPlacementSimulationNeverOverAdmits(t *testing.T) {
 				}
 			}
 			objs = append(objs, o)
+			if len(res) == 0 {
+				continue
+			}
+			// a second tenant now and then, and a second lab in the group: under the same reservation, or another, or none
+			// mostly the tenant of the gang's reservation, sometimes the other one
+			tenantOf := ""
+			for _, x := range res {
+				if x.Name == o.reservation {
+					tenantOf = x.Spec.Tenant
+				}
+			}
+			if rr.next(4) == 0 {
+				tenantOf = map[string]string{"": "t2", "t2": ""}[tenantOf]
+			}
+			if rr.next(3) == 0 {
+				b := obj("lab/"+id+"b", id, rr.next(5), nil)
+				b.reservation = o.reservation
+				if rr.next(2) == 0 {
+					b.reservation = []string{"", "r0", "r1"}[rr.next(3)]
+				}
+				for i, k := 0, 1+rr.next(2); i < k; i++ {
+					p := pods(id+"b", fmt.Sprintf("p%d", i))[0]
+					p.need = amount{cpu: int64(100 * (1 + rr.next(10))), mem: int64(1+rr.next(4)) * 256 * mi}
+					b.pods = append(b.pods, p)
+				}
+				objs = append(objs, b)
+			}
+			for _, x := range objs {
+				if x.group == id {
+					for _, p := range x.pods {
+						p.tenant = tenantOf
+					}
+				}
+			}
 		}
-		queued := map[*schedObject]int{}
-		var out []dispatchedPod
+		members := map[string][]*schedObject{}
+		for _, o := range objs {
+			members[o.group] = append(members[o.group], o)
+		}
+		queued := map[string]int{} // by group
+		groupStarted := map[string]bool{}
 		for _, o := range objs {
 			for _, p := range o.pods {
 				if p.queued() {
-					queued[o]++
+					queued[o.group]++
 				} else {
-					out = append(out, dispatchedPod{reservation: o.reservation, group: o.id, need: p.need})
+					groupStarted[o.group] = true
 				}
 			}
 		}
 		if len(res) > 0 {
-			env.fair.usage = reservationLedger(res, out, env.fair.now)
+			env.fair.usage = reservationLedger(res, ledgerPods(objs), env.fair.now)
 			reservedSeeds++
 		}
 		plan := planSchedule(objs, 100, false, env)
 		if len(plan.failed) > 0 {
 			continue // a pod over every node: nothing of its gang starts
 		}
-		// the reservations: amounts kept, nothing for a closed one, the withheld room free and taken only by its own gangs
+		sent := map[string]int{}
+		for _, p := range plan.dispatch {
+			sent[p.key[:2]]++
+		}
+		// the reservations: amounts kept, nothing for a closed one or a mixed group, the withheld room what is left, free and
+		// taken only by its own gangs
 		owner := map[string]string{}
+		heldUnder := map[string]amount{} // the remainders of started groups, placed before the room is withheld
 		for _, o := range objs {
+			name, mixed := gangReservation(members[o.group])
+			if mixed {
+				name = "mixed"
+			}
 			for _, p := range o.pods {
-				owner[p.key] = o.reservation
+				owner[p.key] = name
+				if groupStarted[o.group] && containsPod(plan.dispatch, p) {
+					heldUnder[name] = heldUnder[name].add(p.need)
+				}
 			}
 		}
 		sentUnder := map[string]amount{}
 		for _, p := range plan.dispatch {
 			sentUnder[owner[p.key]] = sentUnder[owner[p.key]].add(p.need)
+		}
+		for g, list := range members {
+			if len(list) < 2 {
+				continue
+			}
+			if _, mixed := gangReservation(list); mixed {
+				mixedGroups++
+			} else if sent[g] > 0 {
+				pairsSent++
+			}
+		}
+		for _, p := range plan.dispatch {
+			if p.tenant == "t2" && owner[p.key] != "" {
+				otherTenant++
+			}
+		}
+		if got := sentUnder["mixed"]; got != (amount{}) {
+			t.Fatalf("seed %d: a group with mixed reservations admitted %+v", seed, got)
+		}
+		for name, u := range env.fair.usage {
+			var kept amount
+			for _, a := range plan.withheld[name] {
+				kept = kept.add(a)
+			}
+			want := amount{}
+			if u.active {
+				want = u.amount.sub(u.used).sub(heldUnder[name]).floorZero()
+			}
+			if got := kept.add(plan.shortfall[name]); got != want {
+				t.Fatalf("seed %d: %s withholds %+v with shortfall %+v, it has %+v left", seed, name, kept, plan.shortfall[name], want)
+			}
 		}
 		for name, u := range env.fair.usage {
 			got := sentUnder[name]
@@ -277,17 +365,11 @@ func TestPlacementSimulationNeverOverAdmits(t *testing.T) {
 			for n, a := range w {
 				kept[n] = kept[n].add(a)
 			}
-			var before, after amount
-			for _, a := range plan.withheld[name] {
-				before = before.add(a)
-			}
-			for _, a := range w {
-				after = after.add(a)
-			}
-			// a held remainder of the reservation was counted before the room was withheld: only new gangs shrink it
+			// a held remainder of the reservation was counted before the room was withheld: only its new gangs change the room,
+			// and only downwards on every node; with no new gang of its own it is exactly as withheld
 			var fresh amount
 			for _, o := range objs {
-				if o.reservation != name || o.started() {
+				if owner[o.pods[0].key] != name || groupStarted[o.group] {
 					continue
 				}
 				for _, p := range o.pods {
@@ -296,8 +378,21 @@ func TestPlacementSimulationNeverOverAdmits(t *testing.T) {
 					}
 				}
 			}
-			if lost := before.sub(after); lost.cpu > fresh.cpu || lost.mem > fresh.mem {
-				t.Fatalf("seed %d: the room withheld for %s shrank by %+v, its new gangs took %+v", seed, name, lost, fresh)
+			for n, a := range plan.withheld[name] {
+				if b := w[n]; b.cpu > a.cpu || b.mem > a.mem || fresh == (amount{}) && b != a {
+					t.Fatalf("seed %d: the room withheld for %s on %s went from %+v to %+v, its new gangs took %+v", seed, name, n, a, b, fresh)
+				}
+			}
+			var after amount
+			for n, a := range w {
+				if _, ok := plan.withheld[name][n]; !ok && a != (amount{}) {
+					t.Fatalf("seed %d: room withheld for %s moved to %s", seed, name, n)
+				}
+				after = after.add(a)
+			}
+			u := env.fair.usage[name]
+			if left := u.amount.sub(u.used).sub(sentUnder[name]).floorZero(); after.cpu > left.cpu || after.mem > left.mem {
+				t.Fatalf("seed %d: %+v still withheld for %s, it has %+v left", seed, after, name, left)
 			}
 		}
 		for _, l := range plan.left {
@@ -318,18 +413,15 @@ func TestPlacementSimulationNeverOverAdmits(t *testing.T) {
 		if taken.cpu > owed.cpu || taken.mem > owed.mem {
 			t.Fatalf("seed %d: the pass took %+v of room, the dispatched and unbound pods request %+v: a gang holds room it does not use", seed, taken, owed)
 		}
-		sent := map[string]int{}
-		for _, p := range plan.dispatch {
-			sent[p.key[:2]]++
-		}
-		for _, o := range objs {
-			if n := sent[o.group]; n != 0 && n != queued[o] {
-				t.Fatalf("seed %d: %s dispatched %d of %d pods", seed, o.id, n, queued[o])
+		for g, n := range sent {
+			if n != queued[g] {
+				t.Fatalf("seed %d: group %s dispatched %d of %d pods", seed, g, n, queued[g])
 			}
 		}
 	}
-	if reservedSeeds < 200 {
-		t.Fatalf("only %d scenarios had reservations", reservedSeeds)
+	if reservedSeeds < 400 || mixedGroups < 60 || pairsSent < 15 || otherTenant < 20 {
+		t.Fatalf("too few scenarios: %d with reservations, %d mixed groups, %d two-lab groups started, %d reserved pods of t2 started",
+			reservedSeeds, mixedGroups, pairsSent, otherTenant)
 	}
 }
 
