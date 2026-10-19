@@ -128,6 +128,8 @@ type Scheduler struct {
 	evictRetry map[types.UID]time.Time
 	// unsettledWarned holds the objects the plan left out of their gang (not set up in time) that got their warning event.
 	unsettledWarned map[types.UID]bool
+	// oversizeWarned holds the objects of gangs that cannot start whole on the lab nodes that got their warning event.
+	oversizeWarned map[types.UID]bool
 	// traced is when this process first saw the reconciler at work on each lab (settleFrom).
 	traced map[types.UID]time.Time
 	// orphanSeen and orphanRetry are the same for the work of reservations that are gone (cleanOrphans).
@@ -796,6 +798,7 @@ func (s *Scheduler) tick(ctx context.Context) error {
 		}
 	}
 	s.warnUnsettled(objs, plan.unsettled)
+	s.warnOversized(objs, plan.oversized)
 	s.pruneTraced(snap)
 	sf := env.shortfall(plan)
 	s.writeStatuses(ctx, objs, plan, snap, env.fairness().usage, sf, now)
@@ -838,6 +841,38 @@ func (s *Scheduler) warnUnsettled(objs, unsettled []*schedObject) {
 		if s.Recorder != nil {
 			s.Recorder.Eventf(obj, corev1.EventTypeWarning, "PodsNotSetUp",
 				"the pods of this object are still not set up %s after its reconciler first worked on it: its deploy group goes on without it", unsetSettleWindow)
+		}
+	}
+}
+
+// warnOversized gives every object of a gang that cannot start whole on the current lab nodes (even empty) one Warning event
+// with the gang, what it requests and the largest empty node. The record of an object stays while it has a pod not dispatched,
+// whether or not a pass reached its gang, so the warning is not repeated on every pass.
+func (s *Scheduler) warnOversized(objs []*schedObject, oversized []oversizedGang) {
+	pending := map[types.UID]bool{}
+	for _, o := range objs {
+		if obj, ok := o.ref.(client.Object); ok && o.pending() > 0 {
+			pending[obj.GetUID()] = true
+		}
+	}
+	for uid := range s.oversizeWarned {
+		if !pending[uid] {
+			delete(s.oversizeWarned, uid)
+		}
+	}
+	if s.oversizeWarned == nil {
+		s.oversizeWarned = map[types.UID]bool{}
+	}
+	for _, g := range oversized {
+		for _, o := range g.objs {
+			obj, ok := o.ref.(client.Object)
+			if !ok || s.oversizeWarned[obj.GetUID()] {
+				continue
+			}
+			s.oversizeWarned[obj.GetUID()] = true
+			if s.Recorder != nil {
+				s.Recorder.Event(obj, corev1.EventTypeWarning, "GroupTooLarge", g.message)
+			}
 		}
 	}
 }
