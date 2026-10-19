@@ -599,8 +599,12 @@ for g in a b; do
   sleep "$ROAM_INTERVAL"
   if fast; then before="$(metrics)"; fi
   client "$g" wg set wg0 listen-port 41000
-  t="$(wait_tunnel "$g" "$(server_of "$g")" $((ROAM_INTERVAL + KEEPALIVE + 5)))" ||
-    fail "client $g: no tunnel within roamInterval + keepalive after the roam"
+  # In userspace the Service's policy is Cluster: the new source port is a new flow for Cilium, which may hand it to the demux of another
+  # node, which knows no session; the client then re-handshakes (keepalive + rekey timeout, about 15 s), as with the replicas before the
+  # modes. In tc and xdp (Local) the entry node keeps the session.
+  limit=$((ROAM_INTERVAL + KEEPALIVE + 5))
+  [[ "$DEMUX_MODE" == userspace ]] && limit=40
+  t="$(wait_tunnel "$g" "$(server_of "$g")" "$limit")" || fail "client $g: no tunnel within $limit s after the roam"
   echo "tunnel after the roam: ${t}s"
   n="$(received "$g" -c 20 -i 0.2 -W 1 "$(server_of "$g")")"
   [[ "$n" == 20 ]] || fail "client $g after the roam: lost $((20 - n)) of 20 pings"
