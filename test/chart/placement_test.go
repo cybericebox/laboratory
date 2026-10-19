@@ -98,7 +98,7 @@ func TestAllComponentsFollowLabNodes(t *testing.T) {
 	})
 	t.Run("own values win", func(t *testing.T) {
 		own := []string{}
-		for _, c := range []string{"operator", "agent", "registry", "labScheduler", "proxy"} {
+		for _, c := range []string{"operator", "agent", "registry", "labScheduler", "proxy", "proxy.wg"} {
 			own = append(own,
 				"--set-string", c+".nodeSelector.own="+c,
 				"--set", c+".tolerations[0].key=own-"+c,
@@ -108,6 +108,7 @@ func TestAllComponentsFollowLabNodes(t *testing.T) {
 		want := map[string]string{
 			"Deployment/laboratory-controller-manager": "operator",
 			"Deployment/laboratory-proxy":              "proxy",
+			"DaemonSet/laboratory-proxy-wg":            "proxy.wg",
 		}
 		checked := 0
 		for name, spec := range specs {
