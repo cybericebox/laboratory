@@ -151,7 +151,7 @@ func (h *Handler) groupNeedOf(lg *laboratoryv1alpha1.LabGroup) nodecap.Amount {
 }
 
 func addAmount(a, b nodecap.Amount) nodecap.Amount {
-	return nodecap.Amount{CPU: a.CPU + b.CPU, Memory: a.Memory + b.Memory}
+	return nodecap.Amount{CPU: limits.AddSat(a.CPU, b.CPU), Memory: limits.AddSat(a.Memory, b.Memory)}
 }
 
 // deployGroupReservations are the reservation labels ("" for none) of the tenant's live LabGroups and Labs in each of the

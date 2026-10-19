@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/clientset/client/versioned/fake"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/pkg/agent/client"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
@@ -277,5 +279,34 @@ func TestReservationStatusToProto(t *testing.T) {
 	r.Status.Phase, r.Status.NoticeAt, r.Status.Conditions = laboratoryv1alpha1.ReservationPhaseActive, nil, nil
 	if st = reservationStatusToProto(r, 5*time.Minute); st.GetEndsAtUnixMs() != 0 || st.GetEndingReason() != "" || st.GetExceeded() {
 		t.Fatalf("active: %v", st)
+	}
+}
+
+// Amounts near MaxInt64 can never wrap a sum negative and slip under a quota: one is refused outright, and the peak saturates.
+func TestReservationAmountsCannotOverflow(t *testing.T) {
+	h := newReservationHandler(quotaTenant("backend-1", "10"))
+	ctx := asClient("backend-1")
+	huge := &protobuf.ReservationItem{Id: "huge", FromUnixMs: unixMsOf(resNow), ToUnixMs: unixMsOf(resNow.Add(time.Hour)),
+		CpuMillicores: math.MaxInt64, MemoryBytes: math.MaxInt64}
+	res := createRes(t, h, ctx, huge, resItem("ok", 0, time.Hour, 1000))
+	wantStates(t, res, nil, stFailed, stCreated)
+	if res.GetResults()[0].GetReason() != "" {
+		t.Fatalf("an amount over the cap is invalid, not a quota matter: %v", res.GetResults()[0])
+	}
+	// at the cap: refused by the quota, not wrapped
+	capped := &protobuf.ReservationItem{Id: "capped", FromUnixMs: unixMsOf(resNow), ToUnixMs: unixMsOf(resNow.Add(time.Hour)),
+		CpuMillicores: maxReservationAmount, MemoryBytes: 1}
+	wantReason(t, createRes(t, h, ctx, capped).GetResults()[0], client.ReasonOverQuota, false)
+
+	// the sum of many amounts at the cap saturates instead of turning negative
+	var spans []reservationWindow
+	for range 2048 {
+		spans = append(spans, reservationWindow{from: resNow, to: resNow.Add(time.Hour), cpu: maxReservationAmount, mem: maxReservationAmount})
+	}
+	if p := peakOver(spans, resNow, resNow.Add(time.Hour)); p.CPU != math.MaxInt64 || p.Memory != math.MaxInt64 {
+		t.Fatalf("peak: %+v", p)
+	}
+	if got := addAmount(nodecap.Amount{CPU: math.MaxInt64 - 1, Memory: 1}, nodecap.Amount{CPU: 5, Memory: 1}); got.CPU != math.MaxInt64 || got.Memory != 2 {
+		t.Fatalf("fit sum: %+v", got)
 	}
 }
