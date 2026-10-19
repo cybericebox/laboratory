@@ -8,6 +8,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
@@ -35,7 +36,8 @@ func TestCapacityReportsMaximum(t *testing.T) {
 	if err != nil || got.CpuQuotaMillicores != 2*node.CPU+virtual.CPU || got.MemoryQuotaBytes != 2*node.Memory+virtual.Memory {
 		t.Fatalf("%+v %v", got, err)
 	}
-	if got.MaxDeviceCpuMillicores != 3600 {
+	// no device limit: the largest device is bounded by the virtual room only
+	if got.MaxDeviceCpuMillicores != virtual.CPU {
 		t.Fatalf("largest device %d", got.MaxDeviceCpuMillicores)
 	}
 	// the nodes that exist now, beside it
@@ -73,5 +75,23 @@ func TestPercentQuotaOfTheMaximum(t *testing.T) {
 	got, err := h.GetCapacity(asClient("a"), &protobuf.Empty{})
 	if err != nil || got.CpuQuotaMillicores != 8000 {
 		t.Fatalf("50%% of 4 + 12 CPU: %+v %v", got, err)
+	}
+}
+
+// Scale from zero: with no lab node and a budget the largest device is the device limit, never 0/0 (the operator places it).
+func TestMaxDeviceFromZeroIsTheDeviceLimit(t *testing.T) {
+	h := tenantHandler(t, []*laboratoryv1alpha1.Tenant{newTenantTenant("open", true, nil)})
+	h.SetFeatures(Features{Limits: limits.Limits{DeviceMaxCPU: 2000, DeviceMaxMemory: 4 << 30}})
+	h.SetMaximum(nodecap.Maximum{Budget: nodecap.Amount{CPU: 12000, Memory: 48 << 30}})
+	got, err := h.GetCapacity(asClient("open"), &protobuf.Empty{})
+	if err != nil || !got.HasMaxDevice || got.MaxDeviceCpuMillicores != 2000 || got.MaxDeviceMemoryBytes != 4<<30 {
+		t.Fatalf("%+v %v", got, err)
+	}
+	// a real node larger than the limit still counts
+	h = tenantHandler(t, []*laboratoryv1alpha1.Tenant{newTenantTenant("open", true, nil)}, roomTestNode("cp-1", ""))
+	h.SetFeatures(Features{Limits: limits.Limits{DeviceMaxCPU: 2000, DeviceMaxMemory: 4 << 30}})
+	h.SetMaximum(nodecap.Maximum{Budget: nodecap.Amount{CPU: 12000, Memory: 48 << 30}})
+	if got, err = h.GetCapacity(asClient("open"), &protobuf.Empty{}); err != nil || got.MaxDeviceCpuMillicores != 4000 || got.MaxDeviceMemoryBytes != 8<<30 {
+		t.Fatalf("%+v %v", got, err)
 	}
 }

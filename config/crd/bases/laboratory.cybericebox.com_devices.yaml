@@ -875,6 +875,11 @@ spec:
                       again (the backoff of its last withdrawal).
                     format: date-time
                     type: string
+                  schedulerMessage:
+                    description: |-
+                      SchedulerMessage is what the scheduler said (PodScheduled=False) about a pod of the group that got no node, recorded when
+                      the group was withdrawn; cleared on the next dispatch.
+                    type: string
                   startedAt:
                     description: StartedAt is when the pod was first seen Ready.
                     format: date-time
@@ -891,7 +896,7 @@ spec:
                   withdrawals:
                     description: |-
                       Withdrawals counts the withdrawals of the pod's group in a row (not every pod got a node within the node timeout); it
-                      clears when the pod becomes Ready.
+                      clears when the pod becomes Ready or fails.
                     format: int32
                     type: integer
                 type: object

@@ -251,7 +251,8 @@ var _ = Describe("Scheduler", func() {
 			}
 			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
 			pod.Status.Phase = corev1.PodPending
-			pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: "Unschedulable"}}
+			pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: "Unschedulable",
+				Message: "0/1 nodes are available: 1 Insufficient cpu."}}
 			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
 			Eventually(func() int {
 				var pods corev1.PodList

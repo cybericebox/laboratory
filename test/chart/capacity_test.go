@@ -37,6 +37,7 @@ func TestCapacityValidateFailsWithHalfABudget(t *testing.T) {
 	for _, set := range [][]string{
 		{"--set", "capacity.budget.cpu=48"},
 		{"--set", "capacity.budget.memory=192Gi"},
+		{"--set", "capacity.budget.cpu=0"},
 		{"--set", "capacity.nodeTimeoutSeconds=0"},
 		{"--set", "capacity.maxNodes=3"},
 	} {

@@ -392,12 +392,11 @@ func TestSchedulerReportsWhyAPodFailed(t *testing.T) {
 		{"a few restarts are tolerated", func(p *corev1.Pod) {
 			p.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 4}}
 		}, time.Minute, laboratoryv1alpha1.PodStarting, "", "", 0},
-		// a pod with no node waits for one: the gang commit withdraws its group at the node timeout (sched_commit.go)
-		{"unschedulable waits for a node", func(p *corev1.Pod) {
+		{"unschedulable", func(p *corev1.Pod) {
 			p.Status.Phase = corev1.PodPending
 			p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse,
 				Reason: "Unschedulable", Message: "0/3 nodes are available"}}
-		}, 6 * time.Minute, laboratoryv1alpha1.PodStarting, "", "", 0},
+		}, 6 * time.Minute, laboratoryv1alpha1.PodFailed, laboratoryv1alpha1.FailureUnschedulable, "0/3 nodes", 0},
 		{"running but never ready", func(p *corev1.Pod) { p.Status.Phase = corev1.PodRunning }, 6 * time.Minute,
 			laboratoryv1alpha1.PodFailed, laboratoryv1alpha1.FailureStartupTimeout, "did not become Ready", 0},
 	}

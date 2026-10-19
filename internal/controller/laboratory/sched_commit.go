@@ -74,9 +74,9 @@ func newestPod(pods []*corev1.Pod) *corev1.Pod {
 	return newest
 }
 
-// nodeless says a sent pod waits for a node: its newest pod exists, is not on a node and nothing ran in it yet. A pod that was
-// never created is not waiting for a node (its workload makes the pod whatever the nodes; a quota, a refusal or a missing
-// workload is a failure of the pod itself, which the startup timeout decides as before).
+// nodeless says a sent pod has no node: its newest pod exists, is not on a node and nothing ran in it yet. A pod that was never
+// created has no node either, but that is a failure of the pod itself (a quota, a refusal, a missing workload), which the
+// startup timeout decides as before.
 func nodeless(pods []*corev1.Pod) bool {
 	p := newestPod(pods)
 	if p == nil {
@@ -87,6 +87,34 @@ func nodeless(pods []*corev1.Pod) bool {
 		return false
 	}
 	return p.Spec.NodeName == "" && len(p.Status.ContainerStatuses) == 0 && len(p.Status.InitContainerStatuses) == 0
+}
+
+// unschedulableMessage is the message of the newest pod's PodScheduled=False condition (what the scheduler said); empty: none.
+func unschedulableMessage(pods []*corev1.Pod) string {
+	p := newestPod(pods)
+	if p == nil {
+		return ""
+	}
+	for _, c := range p.Status.Conditions {
+		if c.Type == corev1.PodScheduled && c.Status == corev1.ConditionFalse {
+			return strings.TrimSpace(c.Reason + ": " + c.Message)
+		}
+	}
+	return ""
+}
+
+// lacksResources says the scheduler left the pod without a node for want of CPU, memory or pod slots: something a node an
+// autoscaler adds can fix. A taint, a node selector, an extended resource or a scheduler error is not.
+func lacksResources(message string) bool {
+	return strings.Contains(message, "Insufficient cpu") || strings.Contains(message, "Insufficient memory") || strings.Contains(message, "Too many pods")
+}
+
+// waitsForNode says a sent pod waits for a node that may come: it has no node for want of resources, and a capacity budget is
+// set (an autoscaler may add nodes). Only such a pod is spared the startup timeout, holds no in-flight slot and makes its gang
+// due at the node timeout; any other pod without a node fails after the startup timeout as before (reason Unschedulable, with
+// the scheduler's message).
+func waitsForNode(pods []*corev1.Pod, budget bool) bool {
+	return budget && nodeless(pods) && lacksResources(unschedulableMessage(pods))
 }
 
 // scheduledAt is when the newest pod got its node (PodScheduled turned True); zero: not known.
@@ -103,15 +131,15 @@ func scheduledAt(pods []*corev1.Pod) time.Time {
 	return time.Time{}
 }
 
-// nodeWaits are the sent pods (Starting) that wait for a node.
-func nodeWaits(snap *clusterView, objs []*schedObject) map[*schedPod]bool {
+// nodeWaits are the sent pods (Starting) that wait for a node that may come (waitsForNode).
+func nodeWaits(snap *clusterView, objs []*schedObject, budget bool) map[*schedPod]bool {
 	out := map[*schedPod]bool{}
 	for _, o := range objs {
 		for _, p := range o.pods {
 			if p.state != laboratoryv1alpha1.PodStarting || p.ref == nil {
 				continue
 			}
-			if nodeless(snap.podsOf[p.lookup]) {
+			if waitsForNode(snap.podsOf[p.lookup], budget) {
 				out[p] = true
 			}
 		}
@@ -147,12 +175,17 @@ type gangCommit struct {
 	objs     []*schedObject
 	deadline time.Time
 	noNode   []*schedPod
-	// attempt is the number of this withdrawal in a row.
+	// attempt is the number of this withdrawal in a row; again: the commit was withdrawn already, only some records are left.
 	attempt int32
+	again   bool
 }
 
-// commitDue are the gangs whose deadline (their last dispatch + the node timeout) passed while some starting pod of theirs still
-// waits for a node (waiting). A pod that was Ready once never makes its gang due: a running lab is never withdrawn.
+// commitDue are the gangs one of whose commits failed: a starting pod still waits for a node (waiting) the node timeout after
+// the commit's last dispatch. A commit is what was sent within one node timeout of the earliest such pod's dispatch (before or
+// after it): a lab that joins its deploy group later neither joins that commit nor moves its deadline, and labs sent long before
+// are not withdrawn with it. A pod that was Ready once never makes a gang due (only starting pods wait), but a Ready pod of the
+// commit is withdrawn with it. A gang whose commit was withdrawn already (a pod of it waits for its retry time; some write
+// failed) is withdrawn again with the same attempt.
 func commitDue(objs []*schedObject, waiting map[*schedPod]bool, timeout time.Duration, now time.Time) []gangCommit {
 	byKey := map[string][]*schedObject{}
 	var keys []string
@@ -166,36 +199,55 @@ func commitDue(objs []*schedObject, waiting map[*schedPod]bool, timeout time.Dur
 	sort.Strings(keys)
 	var out []gangCommit
 	for _, k := range keys {
-		var latest time.Time
+		var anchor time.Time
 		var noNode []*schedPod
 		for _, o := range byKey[k] {
 			for _, p := range o.pods {
-				if p.dispatched() && p.dispatchedAt.After(latest) {
-					latest = p.dispatchedAt
+				if !waiting[p] || p.state != laboratoryv1alpha1.PodStarting || p.dispatchedAt.IsZero() {
+					continue
 				}
-				if waiting[p] && p.state == laboratoryv1alpha1.PodStarting {
-					noNode = append(noNode, p)
+				noNode = append(noNode, p)
+				if anchor.IsZero() || p.dispatchedAt.Before(anchor) {
+					anchor = p.dispatchedAt
 				}
 			}
 		}
-		if len(noNode) == 0 || latest.IsZero() || now.Before(latest.Add(timeout)) {
+		if len(noNode) == 0 {
 			continue
 		}
-		g := gangCommit{key: k, deadline: latest.Add(timeout), noNode: noNode, attempt: 1}
+		inCommit := func(p *schedPod) bool {
+			return p.dispatched() && !p.dispatchedAt.Before(anchor.Add(-timeout)) && !p.dispatchedAt.After(anchor.Add(timeout))
+		}
+		latest := anchor
+		for _, o := range byKey[k] {
+			for _, p := range o.pods {
+				if inCommit(p) && p.dispatchedAt.After(latest) {
+					latest = p.dispatchedAt
+				}
+			}
+		}
+		if now.Before(latest.Add(timeout)) {
+			continue
+		}
+		g := gangCommit{key: k, deadline: latest.Add(timeout), noNode: noNode}
+		var last int32
 		for _, o := range byKey[k] {
 			member := false
 			for _, p := range o.pods {
-				if p.state == laboratoryv1alpha1.PodStarting || p.dispatched() && !p.dispatchedAt.Before(latest.Add(-timeout)) {
-					member = true
-				}
+				member = member || inCommit(p)
 			}
 			if !member {
 				continue
 			}
 			g.objs = append(g.objs, o)
 			for _, p := range o.pods {
-				g.attempt = max(g.attempt, p.withdrawals+1)
+				last = max(last, p.withdrawals)
+				g.again = g.again || p.retryAfter.After(now)
 			}
+		}
+		g.attempt = last + 1
+		if g.again {
+			g.attempt = max(last, 1)
 		}
 		out = append(out, g)
 	}
@@ -246,11 +298,22 @@ func (s *Scheduler) withdraw(ctx context.Context, snap *clusterView, g gangCommi
 	}
 	sort.SliceStable(pods, func(i, j int) bool { return !waiting[pods[i]] && waiting[pods[j]] })
 	at := metav1.NewTime(retry)
-	reset := func(ps *laboratoryv1alpha1.PodSchedule) {
-		ps.State, ps.DispatchedAt, ps.StartedAt, ps.Failure = laboratoryv1alpha1.PodQueued, nil, nil, nil
-		ps.Withdrawals, ps.RetryAfter = g.attempt, &at
+	// the scheduler's word on the pods that got no node goes with every record of the commit
+	gangMessage := ""
+	for _, p := range g.noNode {
+		if gangMessage = unschedulableMessage(snap.podsOf[p.lookup]); gangMessage != "" {
+			break
+		}
 	}
 	for _, p := range pods {
+		message := unschedulableMessage(snap.podsOf[p.lookup])
+		if message == "" {
+			message = gangMessage
+		}
+		reset := func(ps *laboratoryv1alpha1.PodSchedule) {
+			ps.State, ps.DispatchedAt, ps.StartedAt, ps.Failure = laboratoryv1alpha1.PodQueued, nil, nil, nil
+			ps.Withdrawals, ps.RetryAfter, ps.SchedulerMessage = g.attempt, &at, message
+		}
 		var err error
 		switch p.kind {
 		case kindDevicePod:
@@ -270,8 +333,11 @@ func (s *Scheduler) withdraw(ctx context.Context, snap *clusterView, g gangCommi
 			}
 			continue
 		}
-		p.state, p.dispatchedAt, p.withdrawals, p.retryAfter = laboratoryv1alpha1.PodQueued, time.Time{}, g.attempt, retry
+		p.state, p.dispatchedAt, p.withdrawals, p.retryAfter, p.schedulerMessage = laboratoryv1alpha1.PodQueued, time.Time{}, g.attempt, retry, message
 		delete(s.recent, p.key)
+	}
+	if g.again {
+		return // counted and told when the commit was first withdrawn
 	}
 	gangWithdrawals.Inc()
 	logger.Info("withdrew a group: not every pod got a node within the node timeout", "group", g.key, "attempt", g.attempt, "retryAt", retry, "podsWithoutNode", len(g.noNode))
@@ -280,14 +346,21 @@ func (s *Scheduler) withdraw(ctx context.Context, snap *clusterView, g gangCommi
 	}
 	for _, o := range g.objs {
 		if obj, ok := o.ref.(client.Object); ok {
-			s.Recorder.Event(obj, corev1.EventTypeWarning, laboratoryv1alpha1.WaitWithdrawn, withdrawnMessage(timeout, g.attempt, retry))
+			s.Recorder.Event(obj, corev1.EventTypeWarning, laboratoryv1alpha1.WaitWithdrawn, withdrawnMessage(timeout, g.attempt, retry, gangMessage))
 		}
 	}
 }
 
-// withdrawnMessage says why a group waits after a withdrawal.
-func withdrawnMessage(timeout time.Duration, attempt int32, retry time.Time) string {
-	return fmt.Sprintf("not every pod got a node within %s; withdrawn (attempt %d), retry at %s", timeout, attempt, retry.UTC().Format(time.RFC3339))
+// withdrawnMessage says why a group waits after a withdrawal, with what the scheduler said about a pod that got no node.
+func withdrawnMessage(timeout time.Duration, attempt int32, retry time.Time, scheduler string) string {
+	msg := fmt.Sprintf("not every pod got a node within %s; withdrawn (attempt %d), retry at %s", timeout, attempt, retry.UTC().Format(time.RFC3339))
+	if scheduler != "" {
+		msg += "; the scheduler said: " + scheduler
+	}
+	if len(msg) > 500 {
+		msg = msg[:500]
+	}
+	return msg
 }
 
 // updateGroupPod changes the scheduling record of a pod of a LabGroup.

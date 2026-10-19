@@ -869,8 +869,8 @@ reservations:
 
 # Capacity of the lab nodes (DEPLOY.md, "Maximum capacity and node autoscaling"). Current: the lab nodes that exist and are
 # schedulable. Maximum: the real room of the fixed lab nodes plus, for the autoscaled ones (label cybericebox.io/node-group),
-# the larger of their real room and budget: the room for labs they may give at most (infra renders it from the cluster
-# autoscaler's --cores-total / --memory-total, less the control plane, the platform pods and the DaemonSets). Admission, the
+# the larger of their real room and budget: what they may give at most, as infra renders it: the number of nodes x
+# (allocatable - the DaemonSets' requests), no percentage (the operator takes its reserves itself). Admission, the
 # agent's capacity and the reservation check use the maximum: a group sent beyond the real room stays Pending until a node
 # autoscaler (if infra installed one) adds a node. Both empty: no budget, the maximum is the current capacity.
 capacity:

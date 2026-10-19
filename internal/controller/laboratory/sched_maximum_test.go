@@ -141,8 +141,9 @@ func TestRealRoomsPreferred(t *testing.T) {
 	}
 }
 
-// A node a cluster autoscaler is removing is not schedulable: its room becomes virtual.
-func TestCATaintedNodeLeavesRooms(t *testing.T) {
+// A node a cluster autoscaler is removing is not schedulable, but the autoscaler still counts it in its totals: it takes its
+// room off the budget, so it gives no phantom virtual room.
+func TestCATaintedNodeCountsAgainstBudget(t *testing.T) {
 	f := maxFixture(t, 2)
 	f.create(groupNode("n1", "2", "4Gi"))
 	leaving := groupNode("n2", "8", "16Gi")
@@ -150,7 +151,7 @@ func TestCATaintedNodeLeavesRooms(t *testing.T) {
 	f.create(leaving)
 	env, _ := f.passEnv()
 	c := env.capacity()
-	if got := roomNames(c.rooms()); c.nodes != 1 || len(got) != 2 || got[1] != nodecap.VirtualRoomName || c.rooms()[1].CPU != 2000 {
+	if got := roomNames(c.rooms()); c.nodes != 1 || len(got) != 1 || got[0] != "n1" {
 		t.Fatalf("nodes %d, rooms %v %+v", c.nodes, got, c.rooms())
 	}
 }

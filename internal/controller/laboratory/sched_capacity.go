@@ -56,11 +56,9 @@ type capacitySnapshot struct {
 	labUsed map[string]amount
 	// vmax is the room for labs the budget of the static maximum still allows beyond the autoscaled nodes that exist
 	// (nodecap.Maximum.Virtual): one aggregate room in rooms, as a gang may span nodes and the cluster autoscaler picks them.
-	// virtual is what of it new gangs may be placed on in this pass: vmax, or nothing under the breaker (the plan closes the
-	// virtual room to them then; the reservations, the shortfall and the verdicts still count it). Zero without a budget.
-	vmax, virtual amount
-	// breaker: admission uses the nodes that exist only in this pass (sched_commit.go).
-	breaker bool
+	// Under the breaker the plan keeps new gangs off it; the reservations, the shortfall and the verdicts still count it. Zero
+	// without a budget.
+	vmax amount
 }
 
 // virtualRoom is the aggregate room a the budget still allows, as one room named nodecap.VirtualRoomName; none when a is zero.
@@ -81,15 +79,9 @@ func (c capacitySnapshot) rooms() []nodeRoom {
 func (c capacitySnapshot) emptyRooms() []nodeRoom { return c.rooms() }
 
 // withMaximum adds the virtual room the budget still allows (room, for the placement) and what the budget adds to the
-// allocatable (remaining, before the operator's reserves: the base of a percentage tenant quota is the maximum too); breaker:
-// new gangs are placed on none of the virtual room in this pass.
-func (c *capacitySnapshot) withMaximum(room, remaining nodecap.Amount, breaker bool) {
+// allocatable (remaining, before the operator's reserves: the base of a percentage tenant quota is the maximum too).
+func (c *capacitySnapshot) withMaximum(room, remaining nodecap.Amount) {
 	c.vmax = amount{cpu: room.CPU, mem: room.Memory}
-	c.virtual = c.vmax
-	c.breaker = breaker
-	if breaker {
-		c.virtual = amount{}
-	}
 	c.allocatable = c.allocatable.add(amount{cpu: remaining.CPU, mem: remaining.Memory})
 }
 

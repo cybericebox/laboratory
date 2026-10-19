@@ -83,6 +83,8 @@ type schedPod struct {
 	dispatchedAt time.Time
 	withdrawals  int32
 	retryAfter   time.Time
+	// schedulerMessage is what the scheduler said about a pod of the gang that got no node when it was withdrawn.
+	schedulerMessage string
 	// ref is the scheduler's handle on the underlying object (opaque to the plan).
 	ref any
 }
@@ -815,7 +817,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		// A withdrawn gang waits for its retry time whole, at its place in the order (gang commit, sched_commit.go).
 		if at, attempt, wait := gg.retry(fair.now); wait {
 			for _, o := range gg.objs {
-				withdrawn[o.id] = withdrawnMessage(fair.nodeTimeout, attempt, at)
+				withdrawn[o.id] = withdrawnMessage(fair.nodeTimeout, attempt, at, gg.schedulerMessage())
 			}
 			return false
 		}

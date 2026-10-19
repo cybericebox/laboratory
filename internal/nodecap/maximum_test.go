@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var (
@@ -22,22 +23,32 @@ func labNode(name, group string) corev1.Node {
 	return n
 }
 
-var budget = Maximum{Budget: Amount{CPU: 12000, Memory: 48 << 30}}
+func dsPod(node, cpu, mem string) corev1.Pod {
+	p := roomPod(node, cpu, mem, corev1.PodRunning)
+	p.OwnerReferences = []metav1.OwnerReference{{Kind: "DaemonSet", Name: "cilium"}}
+	return p
+}
 
-// The budget covers the autoscaled nodes only: a fixed node takes nothing off it, an autoscaled one its room (allocatable less
-// the non-lab pods), and what the budget leaves is virtual.
+// The budget covers the autoscaled nodes only and is counted as infra counts it: a fixed node takes nothing off it, an
+// autoscaled one its allocatable less its DaemonSet pods. A platform pod that is not a DaemonSet's takes nothing off it (the
+// budget does not count it either), so a cluster at its budget leaves no phantom virtual room.
 func TestVirtualIsBudgetLessAutoscaledRoom(t *testing.T) {
-	nodes := []corev1.Node{labNode("cp-1", ""), labNode("w1", "m7i-xlarge")}
-	pods := []corev1.Pod{roomPod("w1", "500m", "1Gi", corev1.PodRunning), roomPod("w1", "1", "1Gi", corev1.PodSucceeded)}
-	got := budget.Virtual(nodes, pods, labSel, labTol, Reserve{}, PackingReserve{})
-	if want := (Amount{CPU: 12000 - 3500, Memory: 48<<30 - 15<<30}); got != want {
-		t.Fatalf("virtual = %+v, want %+v", got, want)
+	nodes := []corev1.Node{labNode("cp-1", ""), labNode("w1", "m7i-xlarge"), labNode("w2", "m7i-xlarge"), labNode("w3", "m7i-xlarge")}
+	pods := []corev1.Pod{dsPod("w1", "500m", "1Gi"), dsPod("w2", "500m", "1Gi"), dsPod("w3", "500m", "1Gi"), dsPod("cp-1", "500m", "1Gi"),
+		roomPod("w1", "1", "1Gi", corev1.PodRunning), dsPod("w1", "1", "1Gi")}
+	pods[len(pods)-1].Status.Phase = corev1.PodSucceeded
+	budget := Maximum{Budget: Amount{CPU: 3 * 3500, Memory: 3 * 15 << 30}}
+	if got := budget.Virtual(nodes, pods, labSel, labTol, Reserve{}, PackingReserve{}); got != (Amount{}) {
+		t.Fatalf("at the budget the virtual room is %+v, want none", got)
+	}
+	if got := budget.Remaining(nodes[:2], pods, labSel, labTol); got != (Amount{CPU: 2 * 3500, Memory: 2 * 15 << 30}) {
+		t.Fatalf("one autoscaled node of three: %+v", got)
 	}
 }
 
-// A node that is not schedulable (booting, without its node-agent, cordoned, NotReady, removed by an autoscaler) takes nothing
-// off the budget: its room is still to come.
-func TestVirtualCountsOnlySchedulableAutoscaledNodes(t *testing.T) {
+// Every autoscaled node of the pool counts against the budget, schedulable or not (booting, without its node-agent, cordoned,
+// NotReady, removed by an autoscaler): the autoscaler counts them in its totals.
+func TestVirtualCountsEveryAutoscaledNodeOfThePool(t *testing.T) {
 	notReady := labNode("not-ready", "g")
 	notReady.Status.Conditions[0].Status = corev1.ConditionFalse
 	cordoned := labNode("cordoned", "g")
@@ -46,9 +57,12 @@ func TestVirtualCountsOnlySchedulableAutoscaledNodes(t *testing.T) {
 	removing.Spec.Taints = append(removing.Spec.Taints, corev1.Taint{Key: "ToBeDeletedByClusterAutoscaler", Effect: corev1.TaintEffectNoSchedule})
 	booting := labNode("booting", "g")
 	delete(booting.Labels, "laboratory.cybericebox.com/node-agent-ready")
-	got := budget.Virtual([]corev1.Node{labNode("ok", "g"), notReady, cordoned, removing, booting}, nil, labSel, labTol, Reserve{}, PackingReserve{})
-	if want := (Amount{CPU: 8000, Memory: 32 << 30}); got != want {
-		t.Fatalf("virtual = %+v, want %+v", got, want)
+	other := labNode("other-pool", "g")
+	other.Labels["cybericebox.io/lab"] = "false"
+	small := Maximum{Budget: Amount{CPU: 24000, Memory: 96 << 30}}
+	got := small.Virtual([]corev1.Node{labNode("ok", "g"), notReady, cordoned, removing, booting, other}, nil, labSel, labTol, Reserve{}, PackingReserve{})
+	if want := (Amount{CPU: 4000, Memory: 16 << 30}); got != want {
+		t.Fatalf("virtual = %+v, want %+v (five nodes of the pool count, the other pool not)", got, want)
 	}
 }
 
