@@ -306,6 +306,8 @@ func Run() {
 				Prepull:        cfg.SchedulerPrepull,
 				PrepullTimeout: cfg.SchedulerPrepullTimeout,
 				Aging:          time.Duration(cfg.SchedulerAgingSeconds) * time.Second,
+				// the cleanup of unreserved work gives the same notice as the end of a reservation
+				UnreservedNotice: time.Duration(cfg.ReservationEndingNoticeSeconds) * time.Second,
 			},
 			Defaults:        laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory},
 			GroupPods:       cfg.GroupPods,

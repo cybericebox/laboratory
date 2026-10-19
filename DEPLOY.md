@@ -356,7 +356,8 @@ ratio: unreserved groups, the groups of other reservations and the aged group ne
 without the reservation neither); the reservation's own groups use it first. When the nodes cannot hold all of it, the
 reservations whose groups come first in the fair order are kept first. Unreserved work (no label, e.g. the `default` tenant)
 runs as before, in the room no open reservation keeps. The scheduler writes `status.used` (the requests of the reservation's
-pods out, of its own tenant) and `status.groups` (the groups with pods out) at the same limited rate as the queue status.
+pods out, of its own tenant) and `status.groups` (the groups with pods out) at the same limited rate as the queue status, and
+`status.usedAt`, when it counted them (refreshed every 30 s while the reservation has not ended, also when nothing changed).
 Without the Reservation CRD (an upgrade that did not apply `crds/`) the scheduler logs one warning and runs as if there were no
 reservations: unreserved labs start, labelled ones wait with `ReservationMissing`.
 
@@ -375,14 +376,33 @@ stays ended (an admin who resets the status by hand while a tenant of that name 
 `WithinAmount` says whether `status.used` fits `spec.resources`; its message keeps the generation and amount of the last fit
 (`last fit: generation=G cpu=Cm memory=M`). When the backend made the reservation smaller than what runs (a newer generation,
 and the amount lower than at the last fit in a resource that is over), it gets `Exceeded=True` with the deletion time; still
-so one notice later (at least one minute, checked on the API server), the groups created more than 10 s before that notice
-are deleted once, the reservation stays open, `Exceeded` turns False (`GroupsDeleted`) and the current amount becomes the
+so one notice later (at least one minute, checked on the API server, and with `status.usedAt` younger than a minute: else
+the deletion waits and the message says "usage not fresh"), the groups created more than 10 s before that notice are deleted
+once, the reservation stays open, `Exceeded` turns False (`GroupsDeleted`) and the current amount becomes the
 new baseline, so only a further shrink can delete again. A raise that brings the usage within the amount, or the usage
 dropping within it, cancels it (a raise that is still short keeps the notice). Usage over the amount for any other reason
 (device defaults changed, a Lab edited, a label moved: the scheduler recounts what runs; also usage that was already over the
 last fitting amount before a shrink), or with an `Invalid` spec, only sets `OverAmount=True` and never deletes. With `scheduler.enabled=false` the usage conditions are off.
 An ended reservation is deleted a day after its end. Resources that reserve nothing get the condition `Invalid=True`; the phase
 still follows the clock.
+
+**Capacity shortfall and unreserved work.** On every pass (with `scheduler.resourceCheck` on) the scheduler places the active
+and future reservations on the empty lab nodes the way it keeps their room (emptiest node first, CPU to memory ratio kept), for
+every stretch of time in which the same ones overlap, and adds what the active ones find no room for on the nodes now. When
+either is short, every tenant with an active or future reservation gets `CapacityShortfall=True` (reason
+`ReservationsDoNotFit`; the message has the peak, the room on the nodes and what is short); it turns False
+(`ReservationsFit`) when they fit, and the metric `laboratory_reservation_shortfall{resource="cpu"|"memory"}` (cores, bytes) has
+the same number. A warning only: nothing of a reserved tenant is stopped for it. The condition is written with the version read
+as precondition, so the agent's `status.reserved` and `status.used` are never overwritten (and the agent's write conflicts
+instead of erasing it). When the active reservations find no room now because unreserved work holds it (Labs and LabGroups
+without the reservation label, e.g. the `default` tenant), every unreserved Lab and LabGroup of each tenant whose work holds that
+room (without it the shortfall would be smaller) gets the annotation `laboratory.cybericebox.com/evict-at` (now plus
+`reservations.endingNoticeSeconds`, at least a minute) and a Warning event. The cluster cannot know which of them matter, so all
+of the tenant's unreserved objects are marked, stopped labs too. The annotation is removed as soon as the shortfall clears (or
+the tenant's work no longer holds the room); at its time the scheduler reads the cluster again past its cache, and deletes in
+one pass, each with its UID as precondition, the marked objects whose tenant still holds the room and that are still unreserved.
+Objects with a reservation label (an empty one too) are never touched, and a LabGroup whose namespace holds a reserved lab or
+another tenant's lab is kept (deleting it would drain that lab); its unreserved labs are deleted.
 
 **Platform reserve.** CPU and memory that user labs can never consume, so the platform itself always has room.
 It is kept on every schedulable node: an optional absolute reserve (`scheduler.platformReserveCpu`,

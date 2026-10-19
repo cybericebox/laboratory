@@ -35,9 +35,12 @@ type ReservationStatusApplyConfiguration struct {
 	Used *v1.ResourceList `json:"used,omitempty"`
 	// Groups is how many lab groups run under the reservation.
 	Groups *int32 `json:"groups,omitempty"`
+	// UsedAt is when the scheduler last counted Used and Groups (a heartbeat, refreshed while it runs); the Exceeded deletion
+	// waits while it is not fresh.
+	UsedAt *metav1.Time `json:"usedAt,omitempty"`
 	// NoticeAt is when the ending notice was given.
 	NoticeAt *metav1.Time `json:"noticeAt,omitempty"`
-	// Conditions are the Ending and Shortfall conditions.
+	// Conditions are written by the reservation controller only (Ending, Invalid and the usage conditions).
 	Conditions []applyconfigurationsmetav1.ConditionApplyConfiguration `json:"conditions,omitempty"`
 }
 
@@ -68,6 +71,14 @@ func (b *ReservationStatusApplyConfiguration) WithUsed(value v1.ResourceList) *R
 // If called multiple times, the Groups field is set to the value of the last call.
 func (b *ReservationStatusApplyConfiguration) WithGroups(value int32) *ReservationStatusApplyConfiguration {
 	b.Groups = &value
+	return b
+}
+
+// WithUsedAt sets the UsedAt field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the UsedAt field is set to the value of the last call.
+func (b *ReservationStatusApplyConfiguration) WithUsedAt(value metav1.Time) *ReservationStatusApplyConfiguration {
+	b.UsedAt = &value
 	return b
 }
 
