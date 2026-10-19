@@ -33,6 +33,11 @@ devices:
     # Kind on the GitHub runner cannot start a device pod in a user namespace (runc: mounting sysfs at /sys: operation
     # not permitted); the reservation tests need running devices, not the user namespace.
     userNamespaces: false
+# The gang test sizes devices from the node memory (45 % of a node); the default device cap (4Gi) would shrink them on a
+# larger runner, and then three labs fit one node.
+limits:
+  device:
+    maxMemory: "0"
 # the lab nodes of the Kind config: both labelled, one tainted
 labWorkloads:
   nodeSelector:
