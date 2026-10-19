@@ -45,6 +45,9 @@ type PodScheduleApplyConfiguration struct {
 	// SchedulerMessage is what the scheduler said (PodScheduled=False) about a pod of the group that got no node, recorded when
 	// the group was withdrawn; cleared on the next dispatch.
 	SchedulerMessage *string `json:"schedulerMessage,omitempty"`
+	// OnBudget says the scheduler sent the pod with its group placed partly on room of nodes not yet present (the capacity
+	// budget): without a node it waits for one an autoscaler adds, and the group commit decides at the node timeout.
+	OnBudget *bool `json:"onBudget,omitempty"`
 }
 
 // PodScheduleApplyConfiguration constructs a declarative configuration of the PodSchedule type for use with
@@ -114,5 +117,13 @@ func (b *PodScheduleApplyConfiguration) WithRetryAfter(value v1.Time) *PodSchedu
 // If called multiple times, the SchedulerMessage field is set to the value of the last call.
 func (b *PodScheduleApplyConfiguration) WithSchedulerMessage(value string) *PodScheduleApplyConfiguration {
 	b.SchedulerMessage = &value
+	return b
+}
+
+// WithOnBudget sets the OnBudget field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the OnBudget field is set to the value of the last call.
+func (b *PodScheduleApplyConfiguration) WithOnBudget(value bool) *PodScheduleApplyConfiguration {
+	b.OnBudget = &value
 	return b
 }

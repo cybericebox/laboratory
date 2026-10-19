@@ -473,10 +473,11 @@ func TestNoBudgetUnschedulableFailsAsBefore(t *testing.T) {
 	}
 }
 
-// With a budget, a pod that has no node for a reason a new node does not fix (a taint, a selector, an extended resource) fails
-// after the startup timeout as before; it never makes its gang wait for a node.
+// With a budget, a pod placed on the real room that has no node for a reason a new node does not fix (a taint, an extended
+// resource) fails after the startup timeout as before; it never makes its gang wait for a node.
 func TestNonResourceReasonFailsAsBefore(t *testing.T) {
 	f := maxFixture(t, 2)
+	f.create(node("n1", "8", "16Gi")) // the gang goes on the real room
 	f.addLab("a", "g", nil, "p1")
 	f.tick()
 	f.devicePod("a", "p1", func(p *corev1.Pod) {
@@ -560,5 +561,70 @@ func TestWithdrawAfterRestartKeepsAttempt(t *testing.T) {
 	}
 	if got := metricValue(t, "laboratory_gang_withdrawals_total") - before; got != 0 {
 		t.Fatalf("counted again: %v", got)
+	}
+}
+
+// pendingWith gives the device a pod with no node and the scheduler's message.
+func (f *schedFixture) pendingWith(lab, dev, message string) {
+	f.t.Helper()
+	f.devicePod(lab, dev, func(p *corev1.Pod) {
+		p.Status.Phase = corev1.PodPending
+		p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: "Unschedulable", Message: message}}
+	})
+}
+
+// Scale from zero: no lab node exists, so the scheduler's message names no missing resource ("didn't match ... selector"). The
+// pod was sent onto the budget's room, so it waits for a node whatever the message says, and its gang is withdrawn at the node
+// timeout, not failed at the startup timeout.
+func TestScaleFromZeroWaitsWhateverTheSchedulerSays(t *testing.T) {
+	f := maxFixture(t, 2)
+	f.addLab("a", "g", nil, "p1")
+	f.tick()
+	sent := f.now
+	if !f.device("a", "p1").Status.Scheduling.OnBudget {
+		t.Fatal("the dispatch onto the budget's room is recorded")
+	}
+	f.pendingWith("a", "p1", "0/1 nodes are available: 1 node(s) didn't match Pod's node affinity/selector.")
+	f.at(sent.Add(10 * time.Minute))
+	f.tick()
+	f.wantStates("a/p1=S")
+	if s := f.labStatus("a"); s.Reason != laboratoryv1alpha1.WaitNodeStarting {
+		t.Fatalf("status = %+v", s)
+	}
+	f.at(sent.Add(15 * time.Minute))
+	f.tick()
+	f.wantStates("a/p1=Q")
+}
+
+// The only new node still boots (NotReady, its not-ready taint in the message): the pod waits for it.
+func TestBootingNodeWaits(t *testing.T) {
+	f := maxFixture(t, 2)
+	booting := groupNode("w1", "2", "4Gi")
+	booting.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionFalse}}
+	f.create(booting)
+	f.addLab("a", "g", nil, "p1")
+	f.tick()
+	f.pendingWith("a", "p1", "0/2 nodes are available: 1 node(s) had untolerated taint {node.kubernetes.io/not-ready: }, 1 node(s) didn't match Pod's node affinity/selector.")
+	f.now = f.now.Add(6 * time.Minute)
+	f.tick()
+	f.wantStates("a/p1=S")
+}
+
+// With a budget, a pod placed on the real room that the scheduler refuses for a reason a new node does not fix (a selector)
+// fails after the startup timeout as before.
+func TestSelectorMismatchOnRealRoomFails(t *testing.T) {
+	f := maxFixture(t, 2)
+	f.create(node("n1", "8", "16Gi"))
+	f.addLab("a", "g", nil, "p1")
+	f.tick()
+	if f.device("a", "p1").Status.Scheduling.OnBudget {
+		t.Fatal("a gang on the real room is not on the budget")
+	}
+	f.pendingWith("a", "p1", "0/1 nodes are available: 1 node(s) didn't match Pod's node affinity/selector.")
+	f.now = f.now.Add(6 * time.Minute)
+	f.tick()
+	f.wantStates("a/p1=F")
+	if fail := f.device("a", "p1").Status.Scheduling.Failure; fail == nil || fail.Reason != laboratoryv1alpha1.FailureUnschedulable || !strings.Contains(fail.Message, "selector") {
+		t.Fatalf("failure = %+v", fail)
 	}
 }

@@ -297,6 +297,8 @@ func Run() {
 			setupLog.Error(err, "unable to read the capacity")
 			os.Exit(1)
 		}
+		// a budget needs the CRDs that keep the gang commit's fields (helm upgrade does not apply the chart's CRDs)
+		capacity = laboratorycontroller.BudgetWithCurrentCRDs(context.Background(), mgr.GetAPIReader(), mgr.GetEventRecorderFor("scheduler"), capacity)
 		scheduler = &laboratorycontroller.Scheduler{
 			ReservationCRD: laboratorycontroller.ReservationCRDBy(reservationsDC, mgr.GetAPIReader()),
 			Mirror:         mirror,

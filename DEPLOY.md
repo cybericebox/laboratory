@@ -610,8 +610,11 @@ percentage tenant quota (`50%`) is a share of the maximum: the allocatable of th
 allows. `GetCapacity` also reports `current_*`, the same capacity without the budget's room; while there is virtual room its
 largest device is the device limit (`limits.device.maxCpu` / `maxMemory`) or the largest real node, whichever is larger.
 
-**Waiting for a node.** A sent pod **waits for a node** only when a budget is set and the scheduler left it `Pending` for want
-of resources a new node brings (`PodScheduled=False` with `Insufficient cpu`, `Insufficient memory` or `Too many pods`). An
+**Waiting for a node.** A sent pod **waits for a node** only when a budget is set, it has no node, and either the operator's
+own placement sent its group partly onto the virtual room (recorded at dispatch, `status.scheduling.onBudget`: whatever the
+scheduler says about the nodes that exist, so also with no lab node at all or while the only new node boots), or the scheduler
+says the nodes lack resources a new node brings (`PodScheduled=False` with `Insufficient cpu`, `Insufficient memory` or `Too
+many pods`). An
 object whose pods are all sent and some wait so shows `status.scheduling.reason: NodeStarting` ("n pods wait for a node since
 T") and gets one Normal event `NodeStarting`; the gauge `laboratory_pods_waiting_for_node` counts such pods. Such a pod holds
 **no in-flight slot** (it pulls and runs nothing yet), so a group larger than `scheduler.maxPods` goes out whole within a few
@@ -665,6 +668,18 @@ placed on the virtual room. The breaker lives in the operator's memory: a restar
   "false"` (VPN and gateway pods of a group that already runs get it with their next template change), so only empty nodes
   go;
 - if it ignores pods of the `laboratory-binpack` scheduler, `--bypassed-scheduler-names=laboratory-binpack`.
+
+**Before enabling the budget, apply the chart's CRDs** (`kubectl apply -f charts/laboratory/crds/`; `helm upgrade` never
+updates `crds/`). The gang commit writes `withdrawals`, `retryAfter`, `onBudget` and `schedulerMessage` into the scheduling
+records of Devices and LabGroups; an older CRD prunes them, and a withdrawal then deletes nothing and holds nothing back. The
+operator checks this at start: with a budget and an older CRD it runs without the budget (as if `capacity.budget` were empty),
+logs an error and gives a Warning event `CapacityBudgetDisabled` on the Device CRD. Apply the CRDs and restart the operator.
+
+**Infra and the budget must count the same DaemonSets.** The operator compares the budget with the autoscaled nodes'
+allocatable less the requests of the DaemonSet pods that run on them (node-agent, Cilium, kube-proxy and any other). Infra
+must compute the budget from the same DaemonSets with the same chart values, and render it again when their requests change
+(a new node-agent or Cilium size): otherwise the virtual room drifts by the number of nodes times the difference. Static and
+mirror pods count in neither.
 
 **Values** (chart `capacity.*`):
 
@@ -2126,7 +2141,9 @@ slip under a stricter check, the component that runs it clamps or ignores the ba
 
 1. Apply the CRDs first: `kubectl apply --server-side -f charts/laboratory/crds/`. `helm upgrade` does not update the `crds/`
    directory, so without this step the new validation patterns below are missing on an upgraded cluster (the code does not rely on
-   them, they are the second line). A missing Reservation CRD does not stop the operator either, but reservations do not work
+   them, they are the second line), with one exception: the capacity budget relies on the scheduling fields of the gang commit,
+   so with an older CRD the operator runs without the budget (see "Maximum capacity and node autoscaling"). Apply the CRDs before
+   enabling `capacity.budget`. A missing Reservation CRD does not stop the operator either, but reservations do not work
    until it is applied and the operator restarted (see "Reservations").
    A rollback to an operator without reservations leaves the `laboratory.cybericebox.com/evict-at` annotations and the
    `CapacityShortfall` condition of the Tenants behind; the old operator ignores them. To tidy up:

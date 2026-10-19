@@ -449,7 +449,7 @@ func (s *Scheduler) observe(ctx context.Context, snap *clusterView, now time.Tim
 			changed = true
 		case cur.State == laboratoryv1alpha1.PodStarting:
 			pods, workload := snap.podsOf[key], snap.workloads[d.Namespace+"/"+workloadName(d)]
-			if waitsForNode(pods, cfg.Maximum.Set()) {
+			if waitsForNode(pods, cfg.Maximum.Set(), cur.OnBudget) {
 				break // the gang commit decides at the node timeout
 			}
 			var extra int32
@@ -497,7 +497,7 @@ func (s *Scheduler) observe(ctx context.Context, snap *clusterView, now time.Tim
 				ps.Withdrawals, ps.RetryAfter = 0, nil
 			case ps.State == laboratoryv1alpha1.PodStarting:
 				workload := snap.workloads[laboratoryv1alpha1.LabGroupNamespaceOf(g)+"/"+entry.Name]
-				if waitsForNode(pods, cfg.Maximum.Set()) {
+				if waitsForNode(pods, cfg.Maximum.Set(), ps.OnBudget) {
 					continue // the gang commit decides at the node timeout
 				}
 				failed, f := startupVerdict(now, startupFrom(now, ps.DispatchedAt, pods), pods, workload, 0, cfg.StartupTimeout, cfg.RestartThreshold)
@@ -709,7 +709,7 @@ func (p *schedPod) recordTimes(ps *laboratoryv1alpha1.PodSchedule) {
 	if ps.RetryAfter != nil {
 		p.retryAfter = ps.RetryAfter.Time
 	}
-	p.withdrawals, p.schedulerMessage = ps.Withdrawals, ps.SchedulerMessage
+	p.withdrawals, p.schedulerMessage, p.onBudget = ps.Withdrawals, ps.SchedulerMessage, ps.OnBudget
 }
 
 // devicePod is the schedPod of a container device of a lab; nil for another type of device, and for a not dispatched pod of
@@ -816,9 +816,10 @@ func (s *Scheduler) tick(ctx context.Context) error {
 			}
 			q := d.Status.Scheduling.DeepCopy()
 			q.State, q.DispatchedAt, q.Failure, q.RetryAfter, q.SchedulerMessage = laboratoryv1alpha1.PodStarting, &stamp, nil, nil, ""
+			q.OnBudget = plan.onBudget[p]
 			err = s.setDevice(ctx, d, q)
 		case kindGroupPod:
-			err = s.dispatchGroupPod(ctx, snap, p, stamp)
+			err = s.dispatchGroupPod(ctx, snap, p, stamp, plan.onBudget[p])
 		}
 		if err != nil {
 			if !errors.IsNotFound(err) {
@@ -987,7 +988,7 @@ func (s *Scheduler) failGroupPod(ctx context.Context, snap *clusterView, f faile
 	return nil
 }
 
-func (s *Scheduler) dispatchGroupPod(ctx context.Context, snap *clusterView, p *schedPod, stamp metav1.Time) error {
+func (s *Scheduler) dispatchGroupPod(ctx context.Context, snap *clusterView, p *schedPod, stamp metav1.Time, onBudget bool) error {
 	name := p.ref.(string)
 	for _, g := range snap.groups {
 		if "group/"+g.Name+"/"+name != p.key {
@@ -1000,6 +1001,7 @@ func (s *Scheduler) dispatchGroupPod(ctx context.Context, snap *clusterView, p *
 			}
 		}
 		ps.State, ps.DispatchedAt, ps.Failure, ps.RetryAfter, ps.SchedulerMessage = laboratoryv1alpha1.PodStarting, &stamp, nil, nil, ""
+		ps.OnBudget = onBudget
 		return s.setGroupPod(ctx, g, name, ps)
 	}
 	return errors.NewNotFound(schema.GroupResource{Group: laboratoryv1alpha1.SchemeGroupVersion.Group, Resource: "labgroups"}, p.key)
