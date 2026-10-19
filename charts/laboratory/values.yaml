@@ -14,6 +14,9 @@ image:
 # Operator configuration
 # ============================================================
 operator:
+  # Where this component runs. Empty: it follows labWorkloads.nodeSelector / tolerations; set values win (each of the two on its own).
+  nodeSelector: {}
+  tolerations: []
   # terminationGracePeriodSeconds of every pod of a lab (devices, VPN, gateway). They keep nothing a SIGTERM would flush, so a
   # deleted lab must not wait the Kubernetes default of 30 s. 0 = that default.
   labPodTerminationGraceSeconds: 5
@@ -117,6 +120,7 @@ labScheduler:
     limits:
       cpu: 500m
       memory: 256Mi
+  # Empty: follows labWorkloads.nodeSelector / tolerations; set values win (each of the two on its own).
   nodeSelector: {}
   tolerations: []
 
@@ -217,7 +221,8 @@ proxy:
   # In both modes the proxy requests count against its node like any pod, so the scheduler's room for lab
   # pods is what is left.
   mode: replicas
-  # Nodes the proxy may run on and the taints it tolerates (both modes). Empty: any node.
+  # Nodes the proxy may run on and the taints it tolerates (both modes). Empty: follows labWorkloads (and any node when that is
+  # empty too); set values win (each of the two on its own).
   nodeSelector: {}
   tolerations: []
   # Two replicas by default: the L7 proxy is stateless (its session cookie is signed with the shared
@@ -557,6 +562,9 @@ nodeAgent:
 # (a pull-through cache of the lab images). zot itself is ALWAYS installed (it needs nodeAgent.enabled):
 # neither switch decides it, so turning one off never removes the registry or the snapshots in it.
 registry:
+  # Where this component runs. Empty: it follows labWorkloads.nodeSelector / tolerations; set values win (each of the two on its own).
+  nodeSelector: {}
+  tolerations: []
   image:
     # The full image: the image cache needs its sync extension. Multi-arch
     # (linux/amd64 and linux/arm64); about 70 MB compressed.
@@ -744,7 +752,19 @@ labWorkloads:
   # node-agent sets on its node: a lab pod is only placed where a ready node-agent runs. The node-agent uses this same selector
   # and these tolerations, plus startup/DaemonSet availability tolerations. An untolerated control-plane node gets neither labs
   # nor a node-agent. Lifecycle scope declarations follow this placement pool while retaining all prior native obligations.
-  # Example: {"lab-node": "true"} — only schedule on nodes labelled lab-node=true.
+  # Recommended lab-node label: cybericebox.io/lab: "true", with the taint cybericebox.io/lab=true:NoSchedule so that only labs
+  # (and the components below, which follow this placement) run there. Defaults stay empty: nothing changes on an existing cluster.
+  # Example:
+  #   nodeSelector:
+  #     cybericebox.io/lab: "true"
+  #   tolerations:
+  #     - key: cybericebox.io/lab
+  #       operator: Equal
+  #       value: "true"
+  #       effect: NoSchedule
+  # The operator, agent, registry, lab-scheduler, proxy and node-agent follow this placement when their own nodeSelector /
+  # tolerations are empty (the node-agent has no own values and never needs node-agent-ready: it sets that label itself).
+  # Platform pods outside this chart (on the controller node) are tolerated by the infrastructure, not here.
   nodeSelector: {}
   # tolerations applied to all runtime lab pods. A schedulable control-plane node (controller+worker) takes labs only when
   # they tolerate its taint (node-role.kubernetes.io/control-plane or /master, whichever the cluster puts on it).
@@ -848,6 +868,9 @@ limits:
 # Management agent: optional per-cluster gRPC agent for platform ops
 # ============================================================
 agent:
+  # Where this component runs. Empty: it follows labWorkloads.nodeSelector / tolerations; set values win (each of the two on its own).
+  nodeSelector: {}
+  tolerations: []
   enabled: false
   # Namespace of the management agent (the operator binds its ServiceAccount in every LabGroup namespace).
   namespace: laboratory-agent

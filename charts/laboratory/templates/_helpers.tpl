@@ -276,3 +276,21 @@ the nodes and there are more of them than replicas (the pod anti-affinity is req
 {{- if and $nodes (gt (len $nodes) (int .Values.proxy.replicas)) -}}true{{- end -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+The nodeSelector and tolerations of a component: its own values when set, else the lab-node placement (labWorkloads).
+Renders nothing when both are empty. Call: include "laboratory.placement" (dict "own" .Values.x "root" $), own = a map with
+optional nodeSelector / tolerations keys. Each of the two falls back on its own.
+*/}}
+{{- define "laboratory.placement" -}}
+{{- $sel := .own.nodeSelector | default .root.Values.labWorkloads.nodeSelector -}}
+{{- $tol := .own.tolerations | default .root.Values.labWorkloads.tolerations -}}
+{{- if $sel }}
+nodeSelector:
+{{- toYaml $sel | nindent 2 }}
+{{- end }}
+{{- if $tol }}
+tolerations:
+{{- toYaml $tol | nindent 2 }}
+{{- end }}
+{{- end -}}

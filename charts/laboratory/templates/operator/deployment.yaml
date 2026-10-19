@@ -32,6 +32,9 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with include "laboratory.placement" (dict "own" .Values.operator "root" $) }}
+      {{- . | nindent 6 }}
+      {{- end }}
       containers:
         - name: manager
           image: {{ include "laboratory.imageRef" (dict "image" .Values.operator.image "root" $) | quote }}
