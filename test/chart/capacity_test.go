@@ -8,7 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// The budget reaches the operator and the agent under the same names; the node timeout only the operator.
+// The budget and the node timeout reach the operator and the agent under the same names.
 func TestCapacityValuesRenderEnv(t *testing.T) {
 	got := operatorConfig(t)
 	for k, want := range map[string]string{"CAPACITY_BUDGET_CPU": "", "CAPACITY_BUDGET_MEMORY": "", "CAPACITY_NODE_TIMEOUT": "900s"} {
@@ -23,7 +23,7 @@ func TestCapacityValuesRenderEnv(t *testing.T) {
 	var dep appsv1.Deployment
 	render(t, "templates/agent/deployment.yaml", &dep, set...)
 	env := envOf(dep.Spec.Template.Spec.Containers[0])
-	for k, want := range map[string]string{"CAPACITY_BUDGET_CPU": "47040m", "CAPACITY_BUDGET_MEMORY": "180Gi"} {
+	for k, want := range map[string]string{"CAPACITY_BUDGET_CPU": "47040m", "CAPACITY_BUDGET_MEMORY": "180Gi", "CAPACITY_NODE_TIMEOUT": "600s"} {
 		if cm.Data[k] != want || env[k].Value != want {
 			t.Errorf("%s: operator %q, agent %q, want %q", k, cm.Data[k], env[k].Value, want)
 		}

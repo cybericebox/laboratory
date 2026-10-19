@@ -2918,6 +2918,11 @@ type PodScheduling struct {
 	DispatchedUnixMs int64                  `protobuf:"varint,3,opt,name=dispatched_unix_ms,json=dispatchedUnixMs,proto3" json:"dispatched_unix_ms,omitempty"`
 	StartedUnixMs    int64                  `protobuf:"varint,4,opt,name=started_unix_ms,json=startedUnixMs,proto3" json:"started_unix_ms,omitempty"`
 	Failure          *PodFailure            `protobuf:"bytes,5,opt,name=failure,proto3" json:"failure,omitempty"` // set for a failed pod, cleared when it becomes Ready
+	// How often in a row the pod's group was withdrawn: not every pod got a node within the node timeout. 0 after the pod was
+	// Ready.
+	Withdrawals int32 `protobuf:"varint,6,opt,name=withdrawals,proto3" json:"withdrawals,omitempty"`
+	// When a withdrawn group may be sent again; 0 = no wait.
+	RetryAfterUnixMs int64 `protobuf:"varint,7,opt,name=retry_after_unix_ms,json=retryAfterUnixMs,proto3" json:"retry_after_unix_ms,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -2985,6 +2990,20 @@ func (x *PodScheduling) GetFailure() *PodFailure {
 		return x.Failure
 	}
 	return nil
+}
+
+func (x *PodScheduling) GetWithdrawals() int32 {
+	if x != nil {
+		return x.Withdrawals
+	}
+	return 0
+}
+
+func (x *PodScheduling) GetRetryAfterUnixMs() int64 {
+	if x != nil {
+		return x.RetryAfterUnixMs
+	}
+	return 0
 }
 
 // PodFailure explains a pod that did not start: ImagePull | CrashLoop | Unschedulable |
@@ -4853,8 +4872,14 @@ type CapacityResponse struct {
 	HasMaxDevice           bool  `protobuf:"varint,17,opt,name=has_max_device,json=hasMaxDevice,proto3" json:"has_max_device,omitempty"`
 	MaxDeviceCpuMillicores int64 `protobuf:"varint,18,opt,name=max_device_cpu_millicores,json=maxDeviceCpuMillicores,proto3" json:"max_device_cpu_millicores,omitempty"`
 	MaxDeviceMemoryBytes   int64 `protobuf:"varint,19,opt,name=max_device_memory_bytes,json=maxDeviceMemoryBytes,proto3" json:"max_device_memory_bytes,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// The capacity the lab nodes that exist now give: the same as the quota fields (has_cpu_quota .. memory_quota_bytes) but
+	// without the room the capacity budget still allows for nodes not yet present. Equal to the quota fields when the cluster
+	// has no budget. has_current is false for an older agent.
+	HasCurrent           bool  `protobuf:"varint,20,opt,name=has_current,json=hasCurrent,proto3" json:"has_current,omitempty"`
+	CurrentCpuMillicores int64 `protobuf:"varint,21,opt,name=current_cpu_millicores,json=currentCpuMillicores,proto3" json:"current_cpu_millicores,omitempty"`
+	CurrentMemoryBytes   int64 `protobuf:"varint,22,opt,name=current_memory_bytes,json=currentMemoryBytes,proto3" json:"current_memory_bytes,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *CapacityResponse) Reset() {
@@ -5002,6 +5027,27 @@ func (x *CapacityResponse) GetMaxDeviceCpuMillicores() int64 {
 func (x *CapacityResponse) GetMaxDeviceMemoryBytes() int64 {
 	if x != nil {
 		return x.MaxDeviceMemoryBytes
+	}
+	return 0
+}
+
+func (x *CapacityResponse) GetHasCurrent() bool {
+	if x != nil {
+		return x.HasCurrent
+	}
+	return false
+}
+
+func (x *CapacityResponse) GetCurrentCpuMillicores() int64 {
+	if x != nil {
+		return x.CurrentCpuMillicores
+	}
+	return 0
+}
+
+func (x *CapacityResponse) GetCurrentMemoryBytes() int64 {
+	if x != nil {
+		return x.CurrentMemoryBytes
 	}
 	return 0
 }
@@ -5956,9 +6002,12 @@ type SchedulerFeature struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	Enabled bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
 	// The most pods starting at once (0 = no limit).
-	MaxPods       int32 `protobuf:"varint,2,opt,name=max_pods,json=maxPods,proto3" json:"max_pods,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	MaxPods int32 `protobuf:"varint,2,opt,name=max_pods,json=maxPods,proto3" json:"max_pods,omitempty"`
+	// The gang commit: when some sent pod of a group has no node this long after the group's last dispatch, the whole group is
+	// withdrawn and queued again (chart capacity.nodeTimeoutSeconds).
+	NodeTimeoutSeconds int32 `protobuf:"varint,3,opt,name=node_timeout_seconds,json=nodeTimeoutSeconds,proto3" json:"node_timeout_seconds,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *SchedulerFeature) Reset() {
@@ -6001,6 +6050,13 @@ func (x *SchedulerFeature) GetEnabled() bool {
 func (x *SchedulerFeature) GetMaxPods() int32 {
 	if x != nil {
 		return x.MaxPods
+	}
+	return 0
+}
+
+func (x *SchedulerFeature) GetNodeTimeoutSeconds() int32 {
+	if x != nil {
+		return x.NodeTimeoutSeconds
 	}
 	return 0
 }
@@ -9556,13 +9612,15 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x06reason\x18\x04 \x01(\tR\x06reason\x12\x18\n" +
 	"\amessage\x18\x05 \x01(\tR\amessage\x12\x12\n" +
 	"\x04pods\x18\x06 \x01(\x05R\x04pods\x12\x18\n" +
-	"\apending\x18\a \x01(\x05R\apending\"\xe9\x01\n" +
+	"\apending\x18\a \x01(\x05R\apending\"\xba\x02\n" +
 	"\rPodScheduling\x12*\n" +
 	"\x05state\x18\x01 \x01(\x0e2\x14.labmanager.PodStateR\x05state\x12$\n" +
 	"\x0equeued_unix_ms\x18\x02 \x01(\x03R\fqueuedUnixMs\x12,\n" +
 	"\x12dispatched_unix_ms\x18\x03 \x01(\x03R\x10dispatchedUnixMs\x12&\n" +
 	"\x0fstarted_unix_ms\x18\x04 \x01(\x03R\rstartedUnixMs\x120\n" +
-	"\afailure\x18\x05 \x01(\v2\x16.labmanager.PodFailureR\afailure\"\x81\x01\n" +
+	"\afailure\x18\x05 \x01(\v2\x16.labmanager.PodFailureR\afailure\x12 \n" +
+	"\vwithdrawals\x18\x06 \x01(\x05R\vwithdrawals\x12-\n" +
+	"\x13retry_after_unix_ms\x18\a \x01(\x03R\x10retryAfterUnixMs\"\x81\x01\n" +
 	"\n" +
 	"PodFailure\x12\x16\n" +
 	"\x06reason\x18\x01 \x01(\tR\x06reason\x12\x18\n" +
@@ -9747,7 +9805,7 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x12first_seen_unix_ms\x18\f \x01(\x03R\x0ffirstSeenUnixMs\x12)\n" +
 	"\x11last_seen_unix_ms\x18\r \x01(\x03R\x0elastSeenUnixMs\x125\n" +
 	"\x17first_responded_unix_ms\x18\x0e \x01(\x03R\x14firstRespondedUnixMs\x124\n" +
-	"\x16lab_initiated_attempts\x18\x0f \x01(\x03R\x14labInitiatedAttempts\"\xcb\x06\n" +
+	"\x16lab_initiated_attempts\x18\x0f \x01(\x03R\x14labInitiatedAttempts\"\xd4\a\n" +
 	"\x10CapacityResponse\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\"\n" +
 	"\rhas_cpu_quota\x18\x02 \x01(\bR\vhasCpuQuota\x120\n" +
@@ -9766,7 +9824,11 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x1bgroup_overhead_memory_bytes\x18\x0e \x01(\x03R\x18groupOverheadMemoryBytes\x12$\n" +
 	"\x0ehas_max_device\x18\x11 \x01(\bR\fhasMaxDevice\x129\n" +
 	"\x19max_device_cpu_millicores\x18\x12 \x01(\x03R\x16maxDeviceCpuMillicores\x125\n" +
-	"\x17max_device_memory_bytes\x18\x13 \x01(\x03R\x14maxDeviceMemoryBytesJ\x04\b\x0f\x10\x10J\x04\b\x10\x10\x11\"\xf9\x05\n" +
+	"\x17max_device_memory_bytes\x18\x13 \x01(\x03R\x14maxDeviceMemoryBytes\x12\x1f\n" +
+	"\vhas_current\x18\x14 \x01(\bR\n" +
+	"hasCurrent\x124\n" +
+	"\x16current_cpu_millicores\x18\x15 \x01(\x03R\x14currentCpuMillicores\x120\n" +
+	"\x14current_memory_bytes\x18\x16 \x01(\x03R\x12currentMemoryBytesJ\x04\b\x0f\x10\x10J\x04\b\x10\x10\x11\"\xf9\x05\n" +
 	"\x10FeaturesResponse\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12P\n" +
 	"\x11state_persistence\x18\x02 \x01(\v2#.labmanager.StatePersistenceFeatureR\x10statePersistence\x12>\n" +
@@ -9842,10 +9904,11 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1e\n" +
 	"\n" +
 	"registries\x18\x02 \x03(\tR\n" +
-	"registries\"G\n" +
+	"registries\"y\n" +
 	"\x10SchedulerFeature\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x19\n" +
-	"\bmax_pods\x18\x02 \x01(\x05R\amaxPods\"V\n" +
+	"\bmax_pods\x18\x02 \x01(\x05R\amaxPods\x120\n" +
+	"\x14node_timeout_seconds\x18\x03 \x01(\x05R\x12nodeTimeoutSeconds\"V\n" +
 	"\x10EndpointsFeature\x12\x1f\n" +
 	"\vlabs_domain\x18\x01 \x01(\tR\n" +
 	"labsDomain\x12!\n" +

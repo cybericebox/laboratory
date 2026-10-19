@@ -49,7 +49,6 @@ data:
   SCHEDULER_PREPULL_TIMEOUT: {{ .Values.scheduler.prepull.timeout | quote }}
   SCHEDULER_AGING_SECONDS: {{ .Values.scheduler.agingSeconds | quote }}
   RESERVATION_ENDING_NOTICE_SECONDS: {{ .Values.reservations.endingNoticeSeconds | quote }}
-  CAPACITY_NODE_TIMEOUT: {{ printf "%ds" (int .Values.capacity.nodeTimeoutSeconds) | quote }}
   TENANT_ENROLLMENT_TTL: {{ .Values.agent.enrollment.tokenTTL | quote }}
   # The operator checks at start that the admission policies are enforced on it and exits if they are not (with them off it is told so).
   OPERATOR_REQUIRE_ADMISSION_POLICY: {{ .Values.operator.admissionPolicy.enabled | quote }}

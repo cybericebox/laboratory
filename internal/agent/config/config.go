@@ -160,6 +160,8 @@ type StateConfig struct {
 type SchedulerConfig struct {
 	Enabled bool `env:"SCHEDULER_ENABLED" envDefault:"true"`
 	MaxPods int  `env:"SCHEDULER_MAX_PODS" envDefault:"20"`
+	// NodeTimeout is the gang commit's node timeout (the operator's CAPACITY_NODE_TIMEOUT).
+	NodeTimeout time.Duration `env:"CAPACITY_NODE_TIMEOUT" envDefault:"15m"`
 }
 
 // CacheConfig configures PrewarmImages. Without Enabled the RPC fails with FailedPrecondition. The names are the operator's

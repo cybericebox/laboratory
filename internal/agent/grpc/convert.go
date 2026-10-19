@@ -152,7 +152,8 @@ func podScheduleToProto(p *laboratoryv1alpha1.PodSchedule) *protobuf.PodScheduli
 	if p == nil || p.State == "" {
 		return nil
 	}
-	out := &protobuf.PodScheduling{QueuedUnixMs: ms(p.QueuedAt), DispatchedUnixMs: ms(p.DispatchedAt), StartedUnixMs: ms(p.StartedAt)}
+	out := &protobuf.PodScheduling{QueuedUnixMs: ms(p.QueuedAt), DispatchedUnixMs: ms(p.DispatchedAt), StartedUnixMs: ms(p.StartedAt),
+		Withdrawals: p.Withdrawals, RetryAfterUnixMs: ms(p.RetryAfter)}
 	switch p.State {
 	case laboratoryv1alpha1.PodQueued:
 		out.State = protobuf.PodState_POD_STATE_QUEUED

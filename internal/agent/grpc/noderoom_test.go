@@ -38,6 +38,10 @@ func TestCapacityReportsMaximum(t *testing.T) {
 	if got.MaxDeviceCpuMillicores != 3600 {
 		t.Fatalf("largest device %d", got.MaxDeviceCpuMillicores)
 	}
+	// the nodes that exist now, beside it
+	if !got.HasCurrent || got.CurrentCpuMillicores != 2*node.CPU || got.CurrentMemoryBytes != 2*node.Memory {
+		t.Fatalf("current = %v %d / %d", got.HasCurrent, got.CurrentCpuMillicores, got.CurrentMemoryBytes)
+	}
 	// scale from zero: no lab node at all, the budget alone
 	h = tenantHandler(t, []*laboratoryv1alpha1.Tenant{newTenantTenant("open", true, nil)})
 	h.SetMaximum(nodecap.Maximum{Budget: nodecap.Amount{CPU: 8000, Memory: 16 << 30}})
@@ -51,7 +55,8 @@ func TestCapacityMaximumOffUnchanged(t *testing.T) {
 	h := tenantHandler(t, []*laboratoryv1alpha1.Tenant{newTenantTenant("open", true, nil)}, roomTestNode("n1", ""))
 	h.SetMaximum(nodecap.Maximum{})
 	got, err := h.GetCapacity(asClient("open"), &protobuf.Empty{})
-	if err != nil || got.CpuQuotaMillicores != 4000 || got.MemoryQuotaBytes != 8<<30 || got.MaxDeviceCpuMillicores != 4000 {
+	if err != nil || got.CpuQuotaMillicores != 4000 || got.MemoryQuotaBytes != 8<<30 || got.MaxDeviceCpuMillicores != 4000 ||
+		!got.HasCurrent || got.CurrentCpuMillicores != 4000 || got.CurrentMemoryBytes != 8<<30 {
 		t.Fatalf("%+v %v", got, err)
 	}
 	h = tenantHandler(t, []*laboratoryv1alpha1.Tenant{newTenantTenant("open", true, nil)}, roomTestNode("w1", "g"), roomTestNode("w2", "g"))
