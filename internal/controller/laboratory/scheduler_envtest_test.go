@@ -214,7 +214,7 @@ var _ = Describe("Scheduler", func() {
 				return k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: dev}, &d)
 			}, timeout, interval).Should(Succeed())
 			reconcileDevice(dev)
-			// A node far too small for the pod: the static maximum lets the gang go, a node autoscaler would add the node.
+			// A node far too small for the pod: the budget lets the gang go, a node autoscaler would add a node.
 			small := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("tiny-%d", schedSpecNo)}}
 			Expect(k8sClient.Create(ctx, small)).To(Succeed())
 			small.Status.Allocatable = corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("10m"), corev1.ResourceMemory: resource.MustParse("10Mi")}
@@ -225,7 +225,7 @@ var _ = Describe("Scheduler", func() {
 			sched := &Scheduler{
 				Client: k8sClient,
 				Config: SchedulerConfig{MaxPods: 5, StartupTimeout: 5 * time.Minute, RestartThreshold: 5, StatusInterval: time.Nanosecond, ResourceCheck: true,
-					Maximum: nodecap.Maximum{Nodes: 2, Added: nodecap.Amount{CPU: 4000, Memory: 8 << 30}}, NodeTimeout: 15 * time.Minute},
+					Maximum: nodecap.Maximum{Budget: nodecap.Amount{CPU: 4000, Memory: 8 << 30}}, NodeTimeout: 15 * time.Minute},
 				Defaults:        DeviceDefaults{CPU: "100m", Memory: "100Mi"},
 				LabNodeSelector: map[string]string{"kubernetes.io/hostname": small.Name},
 				Now:             func() time.Time { return clock },

@@ -31,10 +31,6 @@ rules:
   - apiGroups: [ "" ]
     resources: [ "nodes" ]
     verbs: [ "get", "list" ]
-  # The DaemonSets that would run on a lab node still to come take room from it (capacity.maxNodes).
-  - apiGroups: [ "apps" ]
-    resources: [ "daemonsets" ]
-    verbs: [ "list" ]
   # Pods are also watched: the Monitoring stream reads the pods of devices from an informer cache.
   - apiGroups: [ "" ]
     resources: [ "pods" ]

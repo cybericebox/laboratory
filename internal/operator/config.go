@@ -142,15 +142,13 @@ type Config struct {
 	// with no time limit, so enable it once the reservation scopes the aged room.
 	SchedulerAgingSeconds int `env:"SCHEDULER_AGING_SECONDS" envDefault:"0"`
 
-	// Capacity (DEPLOY.md, "Maximum capacity and node autoscaling"). CapacityMaxNodes is the most lab nodes the cluster may
-	// have, the ones that exist included (0: the maximum is the current capacity); CapacityAddedNodeCPU and
-	// CapacityAddedNodeMemory are the allocatable of one node that may still be added (required with a maximum). The agent
-	// reads the same values. CapacityNodeTimeout is how long every dispatched pod of a group has to get a node before the
-	// whole group is withdrawn and queued again (the gang commit, always on).
-	CapacityMaxNodes        int           `env:"CAPACITY_MAX_NODES" envDefault:"0"`
-	CapacityAddedNodeCPU    string        `env:"CAPACITY_ADDED_NODE_CPU"`
-	CapacityAddedNodeMemory string        `env:"CAPACITY_ADDED_NODE_MEMORY"`
-	CapacityNodeTimeout     time.Duration `env:"CAPACITY_NODE_TIMEOUT" envDefault:"15m"`
+	// Capacity (DEPLOY.md, "Maximum capacity and node autoscaling"). CapacityBudgetCPU and CapacityBudgetMemory are the room
+	// for labs the autoscaled lab nodes (label cybericebox.io/node-group) may give at most (both, or neither: no budget, the
+	// maximum is the current capacity). The agent reads the same values. CapacityNodeTimeout is how long every dispatched pod of
+	// a group has to get a node before the whole group is withdrawn and queued again (the gang commit, always on).
+	CapacityBudgetCPU    string        `env:"CAPACITY_BUDGET_CPU"`
+	CapacityBudgetMemory string        `env:"CAPACITY_BUDGET_MEMORY"`
+	CapacityNodeTimeout  time.Duration `env:"CAPACITY_NODE_TIMEOUT" envDefault:"15m"`
 
 	// ReservationEndingNoticeSeconds is how long before the end of a Reservation its Ending condition is set (and how long a
 	// reservation whose tenant is gone still lives); at the end its groups are deleted. 0: no notice.
@@ -399,12 +397,12 @@ func ParseLabScheduling(cfg *Config) (nodeSelector map[string]string, toleration
 	return nodeSelector, tolerations, nil
 }
 
-// ParseCapacity is the static maximum capacity of the lab nodes (nodecap.Maximum): none when CAPACITY_MAX_NODES is 0.
+// ParseCapacity is the static maximum capacity of the lab nodes (nodecap.Maximum): none without a budget.
 func ParseCapacity(cfg *Config) (nodecap.Maximum, error) {
-	return nodecap.ParseMaximum(cfg.CapacityMaxNodes, cfg.CapacityAddedNodeCPU, cfg.CapacityAddedNodeMemory)
+	return nodecap.ParseMaximum(cfg.CapacityBudgetCPU, cfg.CapacityBudgetMemory)
 }
 
-// validateCapacity checks the static maximum and the node timeout.
+// validateCapacity checks the budget and the node timeout.
 func validateCapacity(cfg *Config) error {
 	if _, err := ParseCapacity(cfg); err != nil {
 		return err

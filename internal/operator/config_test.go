@@ -247,34 +247,32 @@ func TestParseCapacityDefaultIsCurrent(t *testing.T) {
 		t.Fatal(err)
 	}
 	m, err := ParseCapacity(cfg)
-	if err != nil || m.Nodes != 0 || cfg.CapacityNodeTimeout != 15*time.Minute {
+	if err != nil || m.Set() || cfg.CapacityNodeTimeout != 15*time.Minute {
 		t.Fatalf("default capacity = %+v, timeout %s, %v", m, cfg.CapacityNodeTimeout, err)
 	}
-	t.Setenv("CAPACITY_MAX_NODES", "5")
-	t.Setenv("CAPACITY_ADDED_NODE_CPU", "3920m")
-	t.Setenv("CAPACITY_ADDED_NODE_MEMORY", "15Gi")
+	t.Setenv("CAPACITY_BUDGET_CPU", "47040m")
+	t.Setenv("CAPACITY_BUDGET_MEMORY", "180Gi")
 	t.Setenv("CAPACITY_NODE_TIMEOUT", "900s")
 	if cfg, err = LoadConfig(); err != nil {
 		t.Fatal(err)
 	}
-	if m, err = ParseCapacity(cfg); err != nil || m.Nodes != 5 || m.Added.CPU != 3920 || m.Added.Memory != 15<<30 {
+	if m, err = ParseCapacity(cfg); err != nil || m.Budget.CPU != 47040 || m.Budget.Memory != 180<<30 {
 		t.Fatalf("capacity = %+v %v", m, err)
 	}
 }
 
-func TestParseCapacityRejectsMissingAddedNode(t *testing.T) {
+func TestParseCapacityRejectsHalfABudget(t *testing.T) {
 	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
 	t.Setenv("BASE_DOMAIN", "labs.example.com")
 	setRequiredEnv(t)
-	t.Setenv("CAPACITY_MAX_NODES", "3")
-	t.Setenv("CAPACITY_ADDED_NODE_CPU", "4")
+	t.Setenv("CAPACITY_BUDGET_CPU", "48")
 	if _, err := LoadConfig(); err == nil {
-		t.Fatal("a maximum without the memory of an added node must be refused")
+		t.Fatal("a budget without memory must be refused")
 	}
 }
 
 func TestParseCapacityRejectsNegative(t *testing.T) {
-	for _, kv := range [][2]string{{"CAPACITY_MAX_NODES", "-1"}, {"CAPACITY_NODE_TIMEOUT", "0s"}, {"CAPACITY_NODE_TIMEOUT", "-1m"}} {
+	for _, kv := range [][2]string{{"CAPACITY_BUDGET_CPU", "-1"}, {"CAPACITY_NODE_TIMEOUT", "0s"}, {"CAPACITY_NODE_TIMEOUT", "-1m"}} {
 		t.Run(kv[0]+"="+kv[1], func(t *testing.T) {
 			t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
 			t.Setenv("BASE_DOMAIN", "labs.example.com")
