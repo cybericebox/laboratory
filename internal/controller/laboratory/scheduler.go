@@ -64,6 +64,9 @@ type SchedulerConfig struct {
 	// StatusInterval is the least time between two queue status writes of one
 	// object; zero means defaultStatusInterval.
 	StatusInterval time.Duration
+	// UnreservedNotice is how long unreserved work that holds the room of active reservations is marked before it is deleted
+	// (the reservations' ending notice; at least a minute).
+	UnreservedNotice time.Duration
 }
 
 const (
@@ -118,6 +121,8 @@ type Scheduler struct {
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs/status;labgroups/status;devices/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=reservations,verbs=get;list;watch
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=reservations/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs;labgroups,verbs=patch;delete
+// +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=tenants/status,verbs=get;update;patch
 
 // NeedLeaderElection makes the manager run the scheduler on the leader only.
 func (s *Scheduler) NeedLeaderElection() bool { return true }
@@ -257,8 +262,14 @@ type clusterView struct {
 	reservations []laboratoryv1alpha1.Reservation
 }
 
-func (s *Scheduler) load(ctx context.Context) (*clusterView, error) {
+// load reads the cluster view of a pass: the labs past the cache, the rest from it; live reads all of it past the cache (the
+// check before an eviction).
+func (s *Scheduler) load(ctx context.Context, live bool) (*clusterView, error) {
 	snap := &clusterView{devices: map[string]*laboratoryv1alpha1.Device{}, podsOf: map[string][]*corev1.Pod{}, suspended: map[string]bool{}, tenants: map[string]*laboratoryv1alpha1.Tenant{}}
+	var r client.Reader = s.Client
+	if live {
+		r = s.directReader()
+	}
 	var labs laboratoryv1alpha1.LabList
 	if err := s.directReader().List(ctx, &labs); err != nil {
 		return nil, fmt.Errorf("list labs: %w", err)
@@ -267,7 +278,7 @@ func (s *Scheduler) load(ctx context.Context) (*clusterView, error) {
 		snap.labs = append(snap.labs, &labs.Items[i])
 	}
 	var groups laboratoryv1alpha1.LabGroupList
-	if err := s.List(ctx, &groups); err != nil {
+	if err := r.List(ctx, &groups); err != nil {
 		return nil, fmt.Errorf("list lab groups: %w", err)
 	}
 	for i := range groups.Items {
@@ -278,17 +289,17 @@ func (s *Scheduler) load(ctx context.Context) (*clusterView, error) {
 		}
 	}
 	var tenants laboratoryv1alpha1.TenantList
-	if err := s.List(ctx, &tenants); err != nil {
+	if err := r.List(ctx, &tenants); err != nil {
 		return nil, fmt.Errorf("list tenants: %w", err)
 	}
 	for i := range tenants.Items {
 		snap.tenants[tenants.Items[i].Name] = &tenants.Items[i]
 	}
 	var reservations laboratoryv1alpha1.ReservationList
-	switch err := s.List(ctx, &reservations); {
+	switch err := r.List(ctx, &reservations); {
 	case err == nil:
 		snap.reservations = reservations.Items
-		s.noReservations = false
+		s.noReservations = s.noReservations && live
 	case meta.IsNoMatchError(err) || errors.IsNotFound(err) || runtime.IsNotRegisteredError(err):
 		// The Reservation CRD is not installed (an upgrade that skipped `kubectl apply` of the CRDs): the queue runs as if there
 		// were no reservations, so unreserved labs go on and reserved ones wait with ReservationMissing. Said once until the CRD
@@ -301,7 +312,7 @@ func (s *Scheduler) load(ctx context.Context) (*clusterView, error) {
 		return nil, fmt.Errorf("list reservations: %w", err)
 	}
 	var devices laboratoryv1alpha1.DeviceList
-	if err := s.List(ctx, &devices); err != nil {
+	if err := r.List(ctx, &devices); err != nil {
 		return nil, fmt.Errorf("list devices: %w", err)
 	}
 	for i := range devices.Items {
@@ -310,14 +321,14 @@ func (s *Scheduler) load(ctx context.Context) (*clusterView, error) {
 	}
 	snap.workloads = map[string]*appsv1.Deployment{}
 	var deps appsv1.DeploymentList
-	if err := s.List(ctx, &deps); err != nil {
+	if err := r.List(ctx, &deps); err != nil {
 		return nil, fmt.Errorf("list deployments: %w", err)
 	}
 	for i := range deps.Items {
 		snap.workloads[deps.Items[i].Namespace+"/"+deps.Items[i].Name] = &deps.Items[i]
 	}
 	var pods corev1.PodList
-	if err := s.List(ctx, &pods); err != nil {
+	if err := r.List(ctx, &pods); err != nil {
 		return nil, fmt.Errorf("list pods: %w", err)
 	}
 	for i := range pods.Items {
@@ -657,7 +668,7 @@ func (s *Scheduler) tick(ctx context.Context) error {
 			delete(s.recent, key)
 		}
 	}
-	snap, err := s.load(ctx)
+	snap, err := s.load(ctx, false)
 	if err != nil {
 		return err
 	}
@@ -733,7 +744,13 @@ func (s *Scheduler) tick(ctx context.Context) error {
 			}
 		}
 	}
-	s.writeStatuses(ctx, objs, plan, snap.reservations, env.fairness().usage, now)
+	sf := env.shortfall(plan)
+	s.writeStatuses(ctx, objs, plan, snap, env.fairness().usage, sf, now)
+	if sf.known {
+		reservationShortfall.WithLabelValues("cpu").Set(float64(sf.short.cpu) / 1000)
+		reservationShortfall.WithLabelValues("memory").Set(float64(sf.short.mem))
+		s.evictUnreserved(ctx, snap, sf.blockers, now)
+	}
 	return nil
 }
 
@@ -792,9 +809,14 @@ type clusterEnv struct {
 	tenantUsed map[string]tenant.Totals
 	// usage is the reservation ledger of the pass, built on first use.
 	usage map[string]reservationUsage
+	// live: the view was read past the cache to check an eviction; the plan is a dry run (no prepull is asked).
+	live bool
 }
 
 func (e *clusterEnv) prepared(o *schedObject) bool {
+	if e.live {
+		return false
+	}
 	ready, err := e.s.ensurePrepared(e.ctx, o.prepKey, o.prepTenant, o.images, e.now)
 	if err != nil {
 		// A failed prepull only costs speed: go on without it.
@@ -809,8 +831,12 @@ func (e *clusterEnv) capacity() *capacitySnapshot {
 	if e.snapshot != nil || e.err != nil {
 		return e.snapshot
 	}
+	var r client.Reader = e.s.Client
+	if e.live {
+		r = e.s.directReader()
+	}
 	var nodes corev1.NodeList
-	if err := e.s.List(e.ctx, &nodes); err != nil {
+	if err := r.List(e.ctx, &nodes); err != nil {
 		e.err = fmt.Errorf("list nodes: %w", err)
 		return nil
 	}
@@ -982,11 +1008,11 @@ func (e *clusterEnv) tenantEverFits(p *schedPod) bool {
 	return tenant.ResolveQuota(ten.Spec.Quota, alloc).Fits(tenant.Totals{}, tenant.Totals{CPU: p.need.cpu, Memory: p.need.mem})
 }
 
-// writeStatuses publishes what each Reservation uses (status.used, status.groups) and the queue place of each object. An object
-// whose numbers changed is written at most once per StatusInterval and at most StatusBudget objects per tick, the reservations
-// first (they are few), then the objects nearest the head, so a long queue lags by a few ticks instead of flooding the API
-// server.
-func (s *Scheduler) writeStatuses(ctx context.Context, objs []*schedObject, plan schedPlan, reservations []laboratoryv1alpha1.Reservation, usage map[string]reservationUsage, now time.Time) {
+// writeStatuses publishes what each Reservation uses (status.used, status.groups, the status.usedAt heartbeat), the
+// CapacityShortfall condition of the tenants and the queue place of each object. An object whose numbers changed is written at
+// most once per StatusInterval and at most StatusBudget objects per tick, the reservations and tenants first (they are few),
+// then the objects nearest the head, so a long queue lags by a few ticks instead of flooding the API server.
+func (s *Scheduler) writeStatuses(ctx context.Context, objs []*schedObject, plan schedPlan, snap *clusterView, usage map[string]reservationUsage, sf shortfallReport, now time.Time) {
 	logger := log.FromContext(ctx).WithName("scheduler")
 	budget := s.Config.StatusBudget
 	if budget <= 0 {
@@ -997,7 +1023,8 @@ func (s *Scheduler) writeStatuses(ctx context.Context, objs []*schedObject, plan
 		interval = defaultStatusInterval
 	}
 	seen := map[types.UID]bool{}
-	budget = s.writeReservations(ctx, reservations, usage, now, interval, budget, seen)
+	budget = s.writeReservations(ctx, snap.reservations, usage, now, interval, budget, seen)
+	budget = s.writeTenants(ctx, snap, sf, now, interval, budget, seen)
 	type item struct {
 		o    *schedObject
 		want laboratoryv1alpha1.SchedulingStatus
@@ -1066,7 +1093,9 @@ func (s *Scheduler) writeStatuses(ctx context.Context, objs []*schedObject, plan
 	}
 }
 
-// writeReservations publishes what each Reservation uses (status.used, status.groups) when it changed, within the per-object
+// writeReservations publishes what each Reservation uses (status.used, status.groups) when it changed, and status.usedAt, the
+// time it was counted: also unchanged usage of a reservation that has not ended is written again once usedAt is half the
+// freshness bound old (usageHeartbeat), so the Exceeded deletion knows the usage is current. All within the per-object
 // interval and the budget of the tick; it returns the budget left and marks the reservations seen.
 func (s *Scheduler) writeReservations(ctx context.Context, reservations []laboratoryv1alpha1.Reservation, usage map[string]reservationUsage, now time.Time, interval time.Duration, budget int, seen map[types.UID]bool) int {
 	logger := log.FromContext(ctx).WithName("scheduler")
@@ -1075,7 +1104,10 @@ func (s *Scheduler) writeReservations(ctx context.Context, reservations []labora
 		seen[r.UID] = true
 		u := usage[r.Name]
 		cur := r.Status
-		if cur.Used != nil && cur.Used.Cpu().MilliValue() == u.used.cpu && cur.Used.Memory().Value() == u.used.mem && cur.Groups == u.groups {
+		same := cur.Used != nil && cur.Used.Cpu().MilliValue() == u.used.cpu && cur.Used.Memory().Value() == u.used.mem && cur.Groups == u.groups
+		beat := r.DeletionTimestamp == nil && cur.Phase != laboratoryv1alpha1.ReservationPhaseEnded &&
+			(cur.UsedAt == nil || now.Sub(cur.UsedAt.Time) >= usageHeartbeat(interval))
+		if same && !beat {
 			continue
 		}
 		if t, ok := s.lastWrite[r.UID]; ok && now.Sub(t) < interval {
@@ -1090,6 +1122,8 @@ func (s *Scheduler) writeReservations(ctx context.Context, reservations []labora
 			corev1.ResourceMemory: *resource.NewQuantity(u.used.mem, resource.BinarySI),
 		}
 		r.Status.Groups = u.groups
+		at := metav1.NewTime(now)
+		r.Status.UsedAt = &at
 		if err := s.Status().Patch(ctx, r, client.MergeFrom(orig)); err != nil {
 			if !errors.IsNotFound(err) {
 				logger.Error(err, "write reservation usage", "reservation", r.Name)

@@ -2449,6 +2449,10 @@ func (in *ReservationStatus) DeepCopyInto(out *ReservationStatus) {
 			(*out)[key] = val.DeepCopy()
 		}
 	}
+	if in.UsedAt != nil {
+		in, out := &in.UsedAt, &out.UsedAt
+		*out = (*in).DeepCopy()
+	}
 	if in.NoticeAt != nil {
 		in, out := &in.NoticeAt, &out.NoticeAt
 		*out = (*in).DeepCopy()
@@ -2763,6 +2767,13 @@ func (in *TenantStatus) DeepCopyInto(out *TenantStatus) {
 	if in.CertificatesNotBefore != nil {
 		in, out := &in.CertificatesNotBefore, &out.CertificatesNotBefore
 		*out = (*in).DeepCopy()
+	}
+	if in.Conditions != nil {
+		in, out := &in.Conditions, &out.Conditions
+		*out = make([]v1.Condition, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
 	}
 }
 

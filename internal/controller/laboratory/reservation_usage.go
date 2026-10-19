@@ -120,6 +120,17 @@ type usagePlan struct {
 	// armed: Exceeded is True; its groups created before the notice go at due.
 	armed bool
 	due   time.Time
+	// stale: due, but status.usedAt is not fresh (the scheduler has not counted the usage lately): the deletion waits.
+	stale bool
+}
+
+// deleteNow says the Exceeded deletion is due and the usage it rests on is fresh.
+func (p usagePlan) deleteNow(now time.Time) bool { return p.armed && !now.Before(p.due) && !p.stale }
+
+// usageFresh says the scheduler counted status.used less than maxAge ago (status.usedAt).
+func usageFresh(res *laboratoryv1alpha1.Reservation, now time.Time, maxAge time.Duration) bool {
+	at := res.Status.UsedAt
+	return at != nil && now.Sub(at.Time) < maxAge
 }
 
 func (r *ReservationReconciler) usagePlan(res *laboratoryv1alpha1.Reservation, tl reservationTimeline, now time.Time) usagePlan {
@@ -134,6 +145,7 @@ func (r *ReservationReconciler) usagePlan(res *laboratoryv1alpha1.Reservation, t
 		if c := armedExceeded(res); c != nil {
 			p.due = c.LastTransitionTime.Add(r.lossNotice())
 		}
+		p.stale = !now.Before(p.due) && !usageFresh(res, now, r.usageMaxAge())
 	}
 	return p
 }
@@ -163,9 +175,12 @@ func setUsageConditions(res *laboratoryv1alpha1.Reservation, p usagePlan, set fu
 		if armedExceeded(res) == nil {
 			drop(laboratoryv1alpha1.ReservationConditionExceeded) // a True one of another reason: the notice starts now
 		}
-		set(metav1.Condition{Type: laboratoryv1alpha1.ReservationConditionExceeded, Status: metav1.ConditionTrue, Reason: laboratoryv1alpha1.ReservationReasonAmountReduced,
-			Message: fmt.Sprintf("the reservation was made smaller than what runs under it: %s; its groups created before this notice are deleted at %s unless the usage or the reservation changes",
-				p.v.over, p.due.UTC().Format(time.RFC3339))})
+		msg := fmt.Sprintf("the reservation was made smaller than what runs under it: %s; its groups created before this notice are deleted at %s unless the usage or the reservation changes",
+			p.v.over, p.due.UTC().Format(time.RFC3339))
+		if p.stale {
+			msg += "; the deletion is held: usage not fresh (the scheduler has not counted it lately)"
+		}
+		set(metav1.Condition{Type: laboratoryv1alpha1.ReservationConditionExceeded, Status: metav1.ConditionTrue, Reason: laboratoryv1alpha1.ReservationReasonAmountReduced, Message: msg})
 		drop(laboratoryv1alpha1.ReservationConditionOverAmount)
 		return
 	}

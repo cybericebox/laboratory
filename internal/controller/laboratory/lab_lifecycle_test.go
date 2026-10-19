@@ -135,7 +135,7 @@ func TestStoppedSchedulingExcludesOnlyTargetLab(t *testing.T) {
 	_ = f.c.Get(ctx, types.NamespacedName{Name: "a", Namespace: "ns-a"}, &target)
 	target.Spec.Lifecycle = &lab.LabLifecycleSpec{DesiredState: "Stopped", OperationID: "op", Revision: 1, SnapshotMode: "Skip"}
 	_ = f.c.Update(ctx, &target)
-	snap, err := f.s.load(ctx)
+	snap, err := f.s.load(ctx, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -902,7 +902,7 @@ func TestClusterEnvGivesStoppedHoldsAndQueueTime(t *testing.T) {
 	b.Status.Scheduling.QueuedAt = &queued
 	_ = f.c.Status().Update(ctx, b)
 
-	snap, err := f.s.load(ctx)
+	snap, err := f.s.load(ctx, false)
 	if err != nil {
 		t.Fatal(err)
 	}

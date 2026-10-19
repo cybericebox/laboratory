@@ -810,7 +810,8 @@ scheduler:
 # ============================================================
 reservations:
   # The Ending condition is set this many seconds before the end of a reservation; at the end every group under it is
-  # deleted. A reservation whose tenant is gone ends this long after that is seen. 0: no notice.
+  # deleted. A reservation whose tenant is gone ends this long after that is seen. 0: no notice. Unreserved work that holds
+  # the room of active reservations is marked this long (at least a minute) before it is deleted.
   endingNoticeSeconds: 300
 
 # ============================================================

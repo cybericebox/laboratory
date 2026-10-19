@@ -40,6 +40,11 @@ const (
 	// size; at equal priority the larger lab goes first.
 	AnnotationDeployPriority = LabelPrefix + "deploy-priority"
 
+	// AnnotationEvictAt is set by the scheduler on every unreserved Lab and LabGroup (no reservation label) of a tenant whose
+	// running work holds room that active reservations cannot get: the RFC 3339 time it is deleted at, unless the shortfall
+	// clears first (then the annotation is removed).
+	AnnotationEvictAt = LabelPrefix + "evict-at"
+
 	// AnnotationSpecHash is written by the management agent on the objects it
 	// creates; the operator ignores it.
 	AnnotationSpecHash = LabelPrefix + "spec-hash"

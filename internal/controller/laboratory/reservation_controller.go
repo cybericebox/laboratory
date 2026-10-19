@@ -49,10 +49,9 @@ func (r *ReservationReconciler) lossNotice() time.Duration {
 // spec.to minus the notice, Ended at spec.to), status.noticeAt and the Ending and Invalid conditions. At the end it deletes
 // every Lab and LabGroup of the reservation's tenant that carries its label, and 24 h later the Reservation itself. A
 // reservation whose tenant is gone ends one notice after that was seen; one the backend made smaller than what runs under it
-// gets the Exceeded condition and, still exceeded one notice later, loses the groups created before the notice, once (see
-// reservation_usage.go). status.used and
-// status.groups belong to the Scheduler: every write here is a merge patch of the fields above only, with the
-// resourceVersion as precondition. Nothing is deleted on a cached read alone: the end is committed (the status patch with
+// gets the Exceeded condition and, still exceeded one notice later with the usage freshly counted (status.usedAt), loses the
+// groups created before the notice, once (see reservation_usage.go). status.used, status.groups and status.usedAt belong to
+// the Scheduler: every write here is a merge patch of the fields above only, with the resourceVersion as precondition. Nothing is deleted on a cached read alone: the end is committed (the status patch with
 // the precondition) or confirmed on an uncached read first.
 type ReservationReconciler struct {
 	client.Client
@@ -63,8 +62,18 @@ type ReservationReconciler struct {
 	NoScheduler bool
 	// Notice is how long before the end the Ending condition is set.
 	Notice time.Duration
+	// UsageMaxAge is how old status.usedAt (the scheduler's count of status.used) may be for the Exceeded deletion; zero means
+	// usageMaxAge of the scheduler's default status interval (a minute).
+	UsageMaxAge time.Duration
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
+}
+
+func (r *ReservationReconciler) usageMaxAge() time.Duration {
+	if r.UsageMaxAge > 0 {
+		return r.UsageMaxAge
+	}
+	return usageMaxAge(0)
 }
 
 func (r *ReservationReconciler) reader() client.Reader {
@@ -170,7 +179,7 @@ func (r *ReservationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	incomplete, removed, err := r.act(ctx, &res, tl, gone, patched, up.armed && !now.Before(up.due), now)
+	incomplete, removed, err := r.act(ctx, &res, tl, gone, patched, up.deleteNow(now), now)
 	if err != nil || removed {
 		return ctrl.Result{}, err
 	}
@@ -216,8 +225,7 @@ func (r *ReservationReconciler) act(ctx context.Context, res *laboratoryv1alpha1
 		return incomplete, false, nil
 	case exceededDue:
 		live, ok, err := r.confirm(ctx, res.Name, func(live *laboratoryv1alpha1.Reservation) bool {
-			p := r.usagePlan(live, r.timeline(live, gone, now), now)
-			return p.armed && !now.Before(p.due)
+			return r.usagePlan(live, r.timeline(live, gone, now), now).deleteNow(now)
 		})
 		if err != nil || !ok {
 			return false, false, err

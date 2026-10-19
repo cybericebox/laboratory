@@ -2,6 +2,7 @@ package laboratory
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,6 +37,8 @@ type resFixture struct {
 	c   client.Client
 	r   *ReservationReconciler
 	now time.Time
+	// stopped: no scheduler counts the usage, so status.usedAt is not refreshed before each look (see at).
+	stopped bool
 }
 
 func newResFixture(t *testing.T, funcs *interceptor.Funcs) *resFixture {
@@ -109,6 +112,9 @@ func (f *resFixture) reconcile(name string) ctrl.Result {
 func (f *resFixture) at(d time.Duration, name string) (ctrl.Result, *laboratoryv1alpha1.Reservation) {
 	f.t.Helper()
 	f.now = resFrom.Add(d)
+	if !f.stopped {
+		f.heartbeat()
+	}
 	res := f.reconcile(name)
 	return res, f.get(name)
 }
@@ -712,12 +718,35 @@ func TestTenantLossConfirmedAndFloored(t *testing.T) {
 	}
 }
 
+// heartbeat stamps status.usedAt of every reservation the scheduler counts (one with status.used) with the clock, as a running
+// scheduler does.
+func (f *resFixture) heartbeat() {
+	f.t.Helper()
+	var list laboratoryv1alpha1.ReservationList
+	if err := f.c.List(context.Background(), &list); err != nil {
+		f.t.Fatal(err)
+	}
+	for i := range list.Items {
+		r := &list.Items[i]
+		if r.Status.Used == nil {
+			continue
+		}
+		orig := r.DeepCopy()
+		at := metav1.NewTime(f.now)
+		r.Status.UsedAt = &at
+		if err := f.c.Status().Patch(context.Background(), r, client.MergeFrom(orig)); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+}
+
 // setUsed writes status.used the way the scheduler does.
 func (f *resFixture) setUsed(name, cpu, mem string) {
 	f.t.Helper()
 	r := f.get(name)
 	orig := r.DeepCopy()
-	r.Status.Used = corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(cpu), corev1.ResourceMemory: resource.MustParse(mem)}
+	at := metav1.NewTime(f.now)
+	r.Status.Used, r.Status.UsedAt = corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(cpu), corev1.ResourceMemory: resource.MustParse(mem)}, &at
 	if err := f.c.Status().Patch(context.Background(), r, client.MergeFrom(orig)); err != nil {
 		f.t.Fatal(err)
 	}
@@ -819,7 +848,11 @@ func TestExceededConfirmedOnServer(t *testing.T) {
 	f.setResources("r", "500m", "2Gi")
 	f.at(10*time.Minute, "r")
 	stale = f.get("r")
+	// the cache holds the shrink with a fresh count of the usage; only the server knows of the raise
+	fresh := metav1.NewTime(resFrom.Add(10*time.Minute + resNotice))
+	stale.Status.UsedAt = &fresh
 	f.setResources("r", "2", "2Gi")
+	f.stopped = true
 	f.at(10*time.Minute+resNotice, "r")
 	if !f.groupExists("g") {
 		t.Fatal("deleted on a stale cache although the amount was raised")
@@ -1072,5 +1105,49 @@ func TestOldExceededConditionRestartsTheNotice(t *testing.T) {
 	}
 	if !f.groupExists("g") {
 		t.Fatal("deleted on the old condition's time")
+	}
+}
+
+// The Exceeded deletion rests on status.used: when the scheduler has not counted it lately (status.usedAt older than the
+// freshness bound), the deletion is held and the condition says so; the groups go once the usage is counted again.
+func TestExceededHeldWhenUsageStale(t *testing.T) {
+	f := newResFixture(t, nil)
+	f.tenant("t1")
+	f.reservation("r", nil)
+	f.group("g", "r", "t1")
+	f.setUsed("r", "1", "1Gi")
+	f.at(10*time.Minute, "r")
+	f.setResources("r", "500m", "2Gi")
+	f.at(11*time.Minute, "r")
+	f.stopped = true // the scheduler stops counting: usedAt stays at 11 min
+	res, r := f.at(11*time.Minute+resNotice, "r")
+	if !f.groupExists("g") {
+		t.Fatal("deleted on a usage the scheduler has not counted for a whole notice")
+	}
+	if c := exceededCond(r); c == nil || c.Status != metav1.ConditionTrue || !strings.Contains(c.Message, "usage not fresh") {
+		t.Fatalf("exceeded condition = %+v", c)
+	}
+	wantAfter(t, res, reservationRecheck)
+	// younger than the bound (a minute): fresh enough
+	f.stopped = false
+	f.at(11*time.Minute+resNotice+time.Second, "r")
+	if f.groupExists("g") {
+		t.Fatal("the groups survived once the usage was counted again")
+	}
+
+	// the bound: usedAt exactly one bound old is stale, a second younger is fresh
+	r = f.get("r")
+	at := metav1.NewTime(f.now.Add(-time.Minute))
+	r.Status.UsedAt = &at
+	if usageFresh(r, f.now, f.r.usageMaxAge()) {
+		t.Fatal("usedAt one bound old is fresh")
+	}
+	at = metav1.NewTime(f.now.Add(-time.Minute + time.Second))
+	if !usageFresh(r, f.now, f.r.usageMaxAge()) {
+		t.Fatal("usedAt younger than the bound is stale")
+	}
+	r.Status.UsedAt = nil
+	if usageFresh(r, f.now, f.r.usageMaxAge()) {
+		t.Fatal("no usedAt is fresh")
 	}
 }

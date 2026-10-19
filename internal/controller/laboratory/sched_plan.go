@@ -184,6 +184,19 @@ type schedPlan struct {
 	withheld, withheldLeft map[string]map[string]amount
 	// shortfall is what of the unused part of an active reservation the nodes have no room for now.
 	shortfall map[string]amount
+	// remainders are the remainders of the admitted gangs that step 2 of the placement simulation tried, in its order (placed
+	// or not), and withholdOrder the order of step 3: what sched_shortfall.go needs to run steps 1 to 3 again without a
+	// tenant's unreserved work. nil: no per-node check.
+	remainders    []remainder
+	withholdOrder []string
+}
+
+// remainder is the rest of an admitted gang that may hold room in step 2 (its reservation and tenant admit it, it fits the
+// empty nodes).
+type remainder struct {
+	g     *gang
+	needs []podNeed
+	need  amount
 }
 
 type schedGroup struct {
@@ -534,6 +547,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			if !eligible {
 				continue
 			}
+			plan.remainders = append(plan.remainders, remainder{g: gg, needs: needs, need: need})
 			left, ok := fitsGang(rooms, needs)
 			if !ok {
 				continue // holds nothing: the gangs after it go on
@@ -553,7 +567,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			}
 		}
 		res.withhold(rooms, order)
-		plan.withheld, plan.shortfall = res.snapshot(), res.shortfall
+		plan.withheld, plan.shortfall, plan.withholdOrder = res.snapshot(), res.shortfall, order
 	}
 
 	// Aging: a gang that has waited (since it last entered the queue, waitingSince) longer than the aging threshold is aged.

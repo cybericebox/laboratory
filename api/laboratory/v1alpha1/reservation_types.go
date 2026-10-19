@@ -24,8 +24,6 @@ const (
 const (
 	// ReservationConditionEnding is true from the ending notice until the window closes.
 	ReservationConditionEnding = "Ending"
-	// ReservationConditionShortfall is true when the cluster cannot give the reserved resources.
-	ReservationConditionShortfall = "Shortfall"
 	// ReservationConditionInvalid is true when spec.resources reserves nothing: a resource other than cpu and memory, or cpu
 	// or memory missing, zero or negative. The phase still follows the clock.
 	ReservationConditionInvalid = "Invalid"
@@ -90,10 +88,14 @@ type ReservationStatus struct {
 	// Groups is how many lab groups run under the reservation.
 	// +optional
 	Groups int32 `json:"groups,omitempty"`
+	// UsedAt is when the scheduler last counted Used and Groups (a heartbeat, refreshed while it runs); the Exceeded deletion
+	// waits while it is not fresh.
+	// +optional
+	UsedAt *metav1.Time `json:"usedAt,omitempty"`
 	// NoticeAt is when the ending notice was given.
 	// +optional
 	NoticeAt *metav1.Time `json:"noticeAt,omitempty"`
-	// Conditions are the Ending and Shortfall conditions.
+	// Conditions are written by the reservation controller only (Ending, Invalid and the usage conditions).
 	// +listType=map
 	// +listMapKey=type
 	// +optional

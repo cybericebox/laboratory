@@ -111,7 +111,23 @@ type TenantStatus struct {
 	// without an epoch (issued before this field existed) is refused too.
 	// +optional
 	CertificateEpoch int64 `json:"certificateEpoch,omitempty"`
+	// Conditions are written by the scheduler with the resourceVersion as precondition (CapacityShortfall).
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
+
+// TenantConditionCapacityShortfall is true on every tenant with an active or future reservation while the reservations do not
+// fit the lab nodes (at their peak overlap, or now on the nodes); its message has the numbers. A warning for the cluster
+// admin: nothing of the tenant is stopped for it.
+const TenantConditionCapacityShortfall = "CapacityShortfall"
+
+// Reasons of the CapacityShortfall condition.
+const (
+	TenantReasonReservationsDoNotFit = "ReservationsDoNotFit"
+	TenantReasonReservationsFit      = "ReservationsFit"
+)
 
 // TenantEnrollment holds the state of the tenant's enrollment token. Only its hash is
 // stored; the token itself is in the Secret tenant-<name>-enrollment of the tenants namespace

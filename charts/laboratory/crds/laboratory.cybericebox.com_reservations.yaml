@@ -96,7 +96,8 @@ spec:
             description: ReservationStatus is what the operator observed.
             properties:
               conditions:
-                description: Conditions are the Ending and Shortfall conditions.
+                description: Conditions are written by the reservation controller
+                  only (Ending, Invalid and the usage conditions).
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -180,6 +181,12 @@ spec:
                   x-kubernetes-int-or-string: true
                 description: Used is what the groups of the reservation request now.
                 type: object
+              usedAt:
+                description: |-
+                  UsedAt is when the scheduler last counted Used and Groups (a heartbeat, refreshed while it runs); the Exceeded deletion
+                  waits while it is not fresh.
+                format: date-time
+                type: string
             type: object
         type: object
         x-kubernetes-validations:
