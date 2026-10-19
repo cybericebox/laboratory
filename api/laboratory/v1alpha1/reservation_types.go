@@ -29,9 +29,16 @@ const (
 	// ReservationConditionInvalid is true when spec.resources reserves nothing: a resource other than cpu and memory, or cpu
 	// or memory missing, zero or negative. The phase still follows the clock.
 	ReservationConditionInvalid = "Invalid"
-	// ReservationConditionExceeded is true while the groups of the reservation use more than it reserves (it was made smaller
-	// than what runs); still true one notice after it was set, the groups are deleted.
+	// ReservationConditionExceeded is true while the reservation was made smaller (a newer generation with a lower amount)
+	// than what runs under it; still true one notice after it was set, the groups created before the notice are deleted and it
+	// turns False with reason GroupsDeleted.
 	ReservationConditionExceeded = "Exceeded"
+	// ReservationConditionWithinAmount says whether status.used fits the amount; its message keeps the generation and amount
+	// of the last fit ("last fit: generation=G cpu=Cm memory=M"), which tells a shrink from accounting drift.
+	ReservationConditionWithinAmount = "WithinAmount"
+	// ReservationConditionOverAmount is true while status.used is over the amount for a reason other than a shrink (the
+	// scheduler recounted what runs: device defaults, edited labs, moved labels). Informational: nothing is deleted for it.
+	ReservationConditionOverAmount = "OverAmount"
 )
 
 // Reasons of the Ending condition.
@@ -45,6 +52,10 @@ const (
 	ReservationReasonExtended = "Extended"
 	// ReservationReasonEnded: the window is closed and its groups are deleted.
 	ReservationReasonEnded = "Ended"
+	// ReservationReasonAmountReduced: Exceeded, the reservation was made smaller than what runs under it.
+	ReservationReasonAmountReduced = "AmountReduced"
+	// ReservationReasonGroupsDeleted: Exceeded is over, the groups were deleted for the shrink of this generation.
+	ReservationReasonGroupsDeleted = "GroupsDeleted"
 )
 
 // ReservationSpec claims cpu and memory of the cluster for a tenant in a time window. The groups of

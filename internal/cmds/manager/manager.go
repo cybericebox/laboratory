@@ -354,9 +354,10 @@ func Run() {
 		os.Exit(1)
 	}
 	if err = (&laboratorycontroller.ReservationReconciler{
-		Client: mgr.GetClient(),
-		Reader: mgr.GetAPIReader(),
-		Notice: time.Duration(cfg.ReservationEndingNoticeSeconds) * time.Second,
+		Client:      mgr.GetClient(),
+		Reader:      mgr.GetAPIReader(),
+		Notice:      time.Duration(cfg.ReservationEndingNoticeSeconds) * time.Second,
+		NoScheduler: !cfg.SchedulerEnabled,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Reservation")
 		os.Exit(1)

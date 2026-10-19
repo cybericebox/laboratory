@@ -46,8 +46,9 @@ func (r *ReservationReconciler) lossNotice() time.Duration {
 // ReservationReconciler drives the timeline of a Reservation: status.phase (Pending before spec.from, Active, Ending from
 // spec.to minus the notice, Ended at spec.to), status.noticeAt and the Ending and Invalid conditions. At the end it deletes
 // every Lab and LabGroup of the reservation's tenant that carries its label, and 24 h later the Reservation itself. A
-// reservation whose tenant is gone ends one notice after that was seen; one whose groups use more than it reserves (it was
-// made smaller) gets the Exceeded condition and, still exceeded one notice later, loses its groups. status.used and
+// reservation whose tenant is gone ends one notice after that was seen; one the backend made smaller than what runs under it
+// gets the Exceeded condition and, still exceeded one notice later, loses the groups created before the notice, once (see
+// reservation_usage.go). status.used and
 // status.groups belong to the Scheduler: every write here is a merge patch of the fields above only, with the
 // resourceVersion as precondition. Nothing is deleted on a cached read alone: the end is committed (the status patch with
 // the precondition) or confirmed on an uncached read first.
@@ -55,6 +56,9 @@ type ReservationReconciler struct {
 	client.Client
 	// Reader reads past the cache (the manager's API reader); nil means Client.
 	Reader client.Reader
+	// NoScheduler: the scheduler is off, so status.used means nothing and the usage conditions (and the Exceeded deletion)
+	// are off too.
+	NoScheduler bool
 	// Notice is how long before the end the Ending condition is set.
 	Notice time.Duration
 	// Now is the clock; nil means time.Now.
@@ -157,25 +161,20 @@ func (r *ReservationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 	tl := r.timeline(&res, gone, now)
-	excess, due := "", time.Time{}
-	if tl.phase == laboratoryv1alpha1.ReservationPhaseActive || tl.phase == laboratoryv1alpha1.ReservationPhaseEnding {
-		if excess = reservationExcess(&res); excess != "" {
-			due = r.exceededDue(&res, now)
-		}
-	}
+	up := r.usagePlan(&res, tl, now)
 	// The status goes first: with the resourceVersion of the copy evaluated as precondition, a newer object on the server
 	// (an extension the cache does not hold yet) makes it conflict, and nothing below runs.
-	patched, err := r.writeStatus(ctx, &res, tl, excess, due, now)
+	patched, err := r.writeStatus(ctx, &res, tl, up, now)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	incomplete, removed, err := r.act(ctx, &res, tl, gone, patched, excess != "" && !now.Before(due), now)
+	incomplete, removed, err := r.act(ctx, &res, tl, gone, patched, up.armed && !now.Before(up.due), now)
 	if err != nil || removed {
 		return ctrl.Result{}, err
 	}
 	next := tl.next
-	if excess != "" && due.After(now) && due.Before(next) {
-		next = due
+	if up.armed && up.due.After(now) && up.due.Before(next) {
+		next = up.due
 	}
 	settled := tl.phase == laboratoryv1alpha1.ReservationPhaseEnded && !now.Before(res.Spec.To.Add(reservationEndTail))
 	if !settled || incomplete {
@@ -188,13 +187,15 @@ func (r *ReservationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 // act deletes what the timeline asks for once it is sure: the groups of an ended reservation (its end committed by this
 // pass's status patch, or confirmed on the server) and, a day after the end, the reservation; the groups of a reservation
-// exceeded past its notice (confirmed on the server). incomplete asks for another look soon; removed: the reservation went.
+// exceeded past its notice (confirmed on the server), then Exceeded turns False (GroupsDeleted). incomplete asks for another
+// look soon; removed: the reservation went.
 func (r *ReservationReconciler) act(ctx context.Context, res *laboratoryv1alpha1.Reservation, tl reservationTimeline, gone, patched, exceededDue bool, now time.Time) (incomplete, removed bool, err error) {
 	switch {
 	case tl.phase == laboratoryv1alpha1.ReservationPhaseEnded:
-		ok := patched
+		// the copy whose end is committed (the patch answered with the server's object) or confirmed on the server
+		sure, ok := res, patched
 		if !ok {
-			if ok, err = r.confirm(ctx, res.Name, func(live *laboratoryv1alpha1.Reservation) bool {
+			if sure, ok, err = r.confirm(ctx, res.Name, func(live *laboratoryv1alpha1.Reservation) bool {
 				return r.timeline(live, gone, now).phase == laboratoryv1alpha1.ReservationPhaseEnded
 			}); err != nil {
 				return false, false, err
@@ -203,61 +204,43 @@ func (r *ReservationReconciler) act(ctx context.Context, res *laboratoryv1alpha1
 		if !ok {
 			return true, false, nil // the server holds a newer reservation: the cache catches up, look again
 		}
-		if incomplete, err = r.deleteGroups(ctx, res); err != nil {
+		if incomplete, err = r.deleteGroups(ctx, sure, nil); err != nil {
 			return false, false, err
 		}
 		if !now.Before(tl.end.Add(reservationRetention)) {
-			uid := res.UID
-			return false, true, client.IgnoreNotFound(r.Delete(ctx, res, client.Preconditions{UID: &uid}))
+			uid, rv := sure.UID, sure.ResourceVersion
+			return false, true, client.IgnoreNotFound(r.Delete(ctx, sure, client.Preconditions{UID: &uid, ResourceVersion: &rv}))
 		}
 		return incomplete, false, nil
 	case exceededDue:
-		ok, err := r.confirm(ctx, res.Name, func(live *laboratoryv1alpha1.Reservation) bool {
-			c := meta.FindStatusCondition(live.Status.Conditions, laboratoryv1alpha1.ReservationConditionExceeded)
-			ph := r.timeline(live, gone, now).phase
-			return c != nil && c.Status == metav1.ConditionTrue && !now.Before(c.LastTransitionTime.Add(r.lossNotice())) &&
-				reservationExcess(live) != "" && (ph == laboratoryv1alpha1.ReservationPhaseActive || ph == laboratoryv1alpha1.ReservationPhaseEnding)
+		live, ok, err := r.confirm(ctx, res.Name, func(live *laboratoryv1alpha1.Reservation) bool {
+			p := r.usagePlan(live, r.timeline(live, gone, now), now)
+			return p.armed && !now.Before(p.due)
 		})
 		if err != nil || !ok {
 			return false, false, err
 		}
-		incomplete, err = r.deleteGroups(ctx, res)
-		return incomplete, false, err
+		notice := meta.FindStatusCondition(live.Status.Conditions, laboratoryv1alpha1.ReservationConditionExceeded).LastTransitionTime
+		if incomplete, err = r.deleteGroups(ctx, live, &notice); err != nil || incomplete {
+			return incomplete, false, err // a group still holding others' labs: the same scoped pass again soon
+		}
+		orig := live.DeepCopy()
+		meta.SetStatusCondition(&live.Status.Conditions, metav1.Condition{Type: laboratoryv1alpha1.ReservationConditionExceeded, Status: metav1.ConditionFalse,
+			Reason: laboratoryv1alpha1.ReservationReasonGroupsDeleted, ObservedGeneration: live.Generation, LastTransitionTime: metav1.NewTime(now),
+			Message: fmt.Sprintf("the groups created before %s were deleted: the reservation was made smaller than what ran under it", notice.UTC().Format(time.RFC3339))})
+		return false, false, r.Status().Patch(ctx, live, client.MergeFromWithOptions(orig, client.MergeFromWithOptimisticLock{}))
 	}
 	return false, false, nil
 }
 
 // confirm reads the reservation past the cache and reports whether ok holds for the live copy (false when it is gone or
 // being deleted).
-func (r *ReservationReconciler) confirm(ctx context.Context, name string, ok func(*laboratoryv1alpha1.Reservation) bool) (bool, error) {
+func (r *ReservationReconciler) confirm(ctx context.Context, name string, ok func(*laboratoryv1alpha1.Reservation) bool) (*laboratoryv1alpha1.Reservation, bool, error) {
 	var live laboratoryv1alpha1.Reservation
 	if err := r.reader().Get(ctx, types.NamespacedName{Name: name}, &live); err != nil {
-		return false, client.IgnoreNotFound(err)
+		return nil, false, client.IgnoreNotFound(err)
 	}
-	return live.DeletionTimestamp == nil && ok(&live), nil
-}
-
-// reservationExcess says how the usage of the reservation (status.used, written by the scheduler) is over what it reserves,
-// "" when it is not: the reservation was made smaller than what already runs under it.
-func reservationExcess(res *laboratoryv1alpha1.Reservation) string {
-	u := res.Status.Used
-	if u == nil {
-		return ""
-	}
-	a := reservationAmount(res)
-	cpu, mem := u.Cpu().MilliValue(), u.Memory().Value()
-	if cpu <= a.cpu && mem <= a.mem {
-		return ""
-	}
-	return fmt.Sprintf("the groups use cpu %dm and memory %d bytes, more than the reserved cpu %dm and memory %d bytes", cpu, mem, a.cpu, a.mem)
-}
-
-// exceededDue is when the groups of an exceeded reservation are deleted: lossNotice after the excess was first seen.
-func (r *ReservationReconciler) exceededDue(res *laboratoryv1alpha1.Reservation, now time.Time) time.Time {
-	if c := meta.FindStatusCondition(res.Status.Conditions, laboratoryv1alpha1.ReservationConditionExceeded); c != nil && c.Status == metav1.ConditionTrue {
-		return c.LastTransitionTime.Add(r.lossNotice())
-	}
-	return now.Add(r.lossNotice())
+	return &live, live.DeletionTimestamp == nil && ok(&live), nil
 }
 
 // tenantGone says the reservation's tenant no longer exists (or is being deleted). What the cache says is confirmed past it:
@@ -286,10 +269,14 @@ func ownedBy(res *laboratoryv1alpha1.Reservation, labels map[string]string) bool
 	return labels[names.LabelReservation] == res.Name && names.TenantOf(labels) == res.Spec.Tenant
 }
 
-// deleteGroups deletes, in one pass, every LabGroup and Lab of the reservation that is not being deleted yet, each with its
-// UID as precondition. A LabGroup whose namespace still holds labs that are not the reservation's is left (deleting it would
+// deleteGroups deletes, in one pass, every LabGroup and Lab of the reservation that is not being deleted yet (and, with
+// before, was created before that time), each with its UID as precondition. A LabGroup whose namespace still holds labs that are not the reservation's is left (deleting it would
 // drain them): incomplete is true then, and the pass is repeated until those labs are gone.
-func (r *ReservationReconciler) deleteGroups(ctx context.Context, res *laboratoryv1alpha1.Reservation) (incomplete bool, err error) {
+func (r *ReservationReconciler) deleteGroups(ctx context.Context, res *laboratoryv1alpha1.Reservation, before *metav1.Time) (incomplete bool, err error) {
+	inScope := func(o metav1.Object) bool {
+		created := o.GetCreationTimestamp()
+		return o.GetDeletionTimestamp() == nil && ownedBy(res, o.GetLabels()) && (before == nil || created.Before(before))
+	}
 	sel := client.MatchingLabels{names.LabelReservation: res.Name}
 	var groups laboratoryv1alpha1.LabGroupList
 	if err := r.List(ctx, &groups, sel); err != nil {
@@ -297,7 +284,7 @@ func (r *ReservationReconciler) deleteGroups(ctx context.Context, res *laborator
 	}
 	for i := range groups.Items {
 		g := &groups.Items[i]
-		if g.DeletionTimestamp != nil || !ownedBy(res, g.Labels) {
+		if !inScope(g) {
 			continue
 		}
 		foreign, err := r.holdsForeignLabs(ctx, res, g)
@@ -320,7 +307,7 @@ func (r *ReservationReconciler) deleteGroups(ctx context.Context, res *laborator
 	}
 	for i := range labs.Items {
 		l := &labs.Items[i]
-		if l.DeletionTimestamp != nil || !ownedBy(res, l.Labels) {
+		if !inScope(l) {
 			continue
 		}
 		again, err := r.deleteExact(ctx, l)
@@ -360,10 +347,10 @@ func (r *ReservationReconciler) deleteExact(ctx context.Context, o client.Object
 	}
 }
 
-// writeStatus patches phase, noticeAt and the Ending, Exceeded and Invalid conditions when they changed (patched: it wrote). The merge patch carries only
+// writeStatus patches phase, noticeAt and the Ending, Invalid and usage conditions when they changed (patched: it wrote). The merge patch carries only
 // these fields and the resourceVersion, so the scheduler's status.used and status.groups are never overwritten and a write in
 // between makes this one conflict and run again.
-func (r *ReservationReconciler) writeStatus(ctx context.Context, res *laboratoryv1alpha1.Reservation, tl reservationTimeline, excess string, due time.Time, now time.Time) (patched bool, err error) {
+func (r *ReservationReconciler) writeStatus(ctx context.Context, res *laboratoryv1alpha1.Reservation, tl reservationTimeline, up usagePlan, now time.Time) (patched bool, err error) {
 	orig := res.DeepCopy()
 	st := &res.Status
 	changed := st.Phase != tl.phase || !noticeEqual(st.NoticeAt, tl.noticeAt)
@@ -394,12 +381,11 @@ func (r *ReservationReconciler) writeStatus(ctx context.Context, res *laboratory
 				Message: fmt.Sprintf("the end was called off: the reservation ends at %s", end)})
 		}
 	}
-	if excess != "" {
-		set(metav1.Condition{Type: laboratoryv1alpha1.ReservationConditionExceeded, Status: metav1.ConditionTrue, Reason: "UsageOverAmount",
-			Message: fmt.Sprintf("%s; its groups are deleted at %s unless the usage or the reservation changes", excess, due.UTC().Format(time.RFC3339))})
-	} else if meta.RemoveStatusCondition(&st.Conditions, laboratoryv1alpha1.ReservationConditionExceeded) {
-		changed = true
-	}
+	setUsageConditions(res, up, set, func(t string) {
+		if meta.RemoveStatusCondition(&st.Conditions, t) {
+			changed = true
+		}
+	})
 	if problem := reservationProblem(res); problem != "" {
 		set(metav1.Condition{Type: laboratoryv1alpha1.ReservationConditionInvalid, Status: metav1.ConditionTrue, Reason: "InvalidResources", Message: problem + "; the reservation reserves nothing"})
 	} else if meta.RemoveStatusCondition(&st.Conditions, laboratoryv1alpha1.ReservationConditionInvalid) {
