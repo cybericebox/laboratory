@@ -637,6 +637,12 @@ its node later is never withdrawn; but a Ready pod of a commit that is withdrawn
 one node timeout of the earliest waiting pod: a lab that joins its deploy group later neither joins it nor moves its deadline,
 and labs of the group sent long before are left alone.
 
+Before it deletes a withdrawn pod the operator keeps the native identity the node-agent reported for it in the device's
+`status.runtimeInventory`, as a lab stop does, so a later stop of the lab waits for its release. A withdrawn device that left
+no such identity (its pod never got a node) holds a lab stop back at most 2 minutes; the stop then goes on and the Lab gets the
+condition `WithdrawnRuntimeUnverified` naming the devices. A group stop ignores the `Queued` records of its stopped labs
+(withdrawn, or stopped before their turn): they are never dispatched and hold nothing.
+
 Without a budget no pod ever waits for a node, so no group is withdrawn: the behaviour is that of the scheduler before the
 budget (a pod without a node fails `Unschedulable` after `scheduler.startupTimeout`).
 
