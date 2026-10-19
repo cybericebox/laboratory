@@ -656,8 +656,7 @@ func (r *DeviceReconciler) netConfigInitContainer(device *laboratoryv1alpha1.Dev
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Command:         []string{"/node", "netconfig"},
 		Env:             []corev1.EnvVar{{Name: "NETCONFIG", Value: string(cfg)}},
-		// Requests equal limits, like every other container of a device pod, so that the pod stays Guaranteed (an init container
-		// without them would make it Burstable).
+		// Requests equal limits: the init container is small and fixed, it does not burst (the device container may, so the pod is Burstable).
 		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("20m"), corev1.ResourceMemory: resource.MustParse("32Mi")},
 			Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("20m"), corev1.ResourceMemory: resource.MustParse("32Mi")},

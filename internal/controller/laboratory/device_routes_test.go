@@ -35,7 +35,7 @@ func TestNetConfigStaticRoute(t *testing.T) {
 	}
 }
 
-// L-8: the init container has requests equal to limits, so a device pod stays Guaranteed.
+// L-8: the init container has requests equal to limits (it is small and fixed, it does not burst).
 func TestNetConfigInitContainerHasGuaranteedResources(t *testing.T) {
 	device := &laboratoryv1alpha1.Device{}
 	device.Spec.Interfaces = []laboratoryv1alpha1.InterfaceSpec{{Name: "eth1", Addr: &laboratoryv1alpha1.AddrSpec{Type: laboratoryv1alpha1.AddrTypeStatic, IP: "10.0.0.2/24"}}}

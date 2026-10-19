@@ -30,7 +30,7 @@ func TestLabNeedMatchesOperator(t *testing.T) {
 		}
 	}
 	cpu, mem := limits.LabNeed(&lab.Spec, defaults)
-	if op.cpu != cpu || op.mem != mem || cpu != 100+300+1000 {
+	if op.cpu != cpu || op.mem != mem || cpu != 100+200+1000 {
 		t.Fatalf("lab: operator %+v, agent cpu %d memory %d", op, cpu, mem)
 	}
 

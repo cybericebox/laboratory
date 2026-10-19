@@ -160,7 +160,7 @@ func TestSpecTotalsCountContainersAtTheProfile(t *testing.T) {
 		{Name: "sw", Type: laboratoryv1alpha1.DeviceTypeUnmanagedSwitch},
 	}}
 	cpu, mem, n, err := l.SpecTotals(spec)
-	if err != nil || n != 2 || cpu != 500 || mem != (256+64)<<20 {
+	if err != nil || n != 2 || cpu != 400 || mem != (256+64)<<20 {
 		t.Fatalf("cpu %d mem %d n %d err %v", cpu, mem, n, err)
 	}
 }
@@ -228,5 +228,50 @@ func TestCheckSpecRefusesEveryBadValueOfEveryField(t *testing.T) {
 	ok := &laboratoryv1alpha1.DeviceResources{CPULimit: "500m", CPURequest: "100m", MemoryLimit: "256Mi", MemoryRequest: "128Mi"}
 	if err := l.CheckSpec(&laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{dev("web", ok)}}); err != nil {
 		t.Fatalf("valid values refused: %v", err)
+	}
+}
+
+// A CPU limit above the request is a burst: planning, the group fit and the device maximum count the request.
+func TestPlanningCountsTheCPURequest(t *testing.T) {
+	l := chartDefaults(t)
+	burst := &laboratoryv1alpha1.DeviceResources{CPURequest: "15m", CPULimit: "60m", MemoryLimit: "128Mi"}
+	cpu, mem, err := l.DeviceResources(burst)
+	if err != nil || cpu != 15 || mem != 128<<20 {
+		t.Fatalf("cpu=%d mem=%d err=%v", cpu, mem, err)
+	}
+	spec := &laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{dev("a", burst), dev("b", burst)}}
+	if c, _, n, err := l.SpecTotals(spec); err != nil || c != 30 || n != 2 {
+		t.Fatalf("totals cpu=%d n=%d err=%v", c, n, err)
+	}
+	if cpu, mem := LabNeed(spec, DeviceDefaults{CPU: "100m", Memory: "256Mi"}); cpu != 30 || mem != 256<<20 {
+		t.Fatalf("need cpu=%d mem=%d", cpu, mem)
+	}
+	// a budget of 30m holds two such devices: with the limit counted (120m) it would not
+	g := Limits{GroupMaxLabs: 3, GroupMaxCPU: 30, DeviceDefaultCPU: 100}
+	if err := g.GroupFits(0, 0, 0, 30, 0); err != nil {
+		t.Fatalf("two 15m/60m devices must fit 30m: %v", err)
+	}
+	// the maximum per device applies to the request: a burst limit above it is only clamped on the pod
+	if err := l.CheckSpec(&laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{
+		dev("a", &laboratoryv1alpha1.DeviceResources{CPURequest: "400m", CPULimit: "1"}),
+	}}); err != nil {
+		t.Fatalf("request under the maximum: %v", err)
+	}
+}
+
+// Old objects: a limit alone plans as the request (the old behaviour), a request alone plans as itself.
+func TestPlanningBackwardCompatible(t *testing.T) {
+	l := Limits{DeviceDefaultCPU: 100, DeviceDefaultMemory: 256 << 20}
+	for name, tc := range map[string]struct {
+		r    *laboratoryv1alpha1.DeviceResources
+		want int64
+	}{
+		"limit only":   {&laboratoryv1alpha1.DeviceResources{CPULimit: "300m"}, 300},
+		"request only": {&laboratoryv1alpha1.DeviceResources{CPURequest: "200m"}, 200},
+		"neither":      {nil, 100},
+	} {
+		if cpu, _, err := l.DeviceResources(tc.r); err != nil || cpu != tc.want {
+			t.Errorf("%s: cpu=%d err=%v, want %d", name, cpu, err, tc.want)
+		}
 	}
 }
