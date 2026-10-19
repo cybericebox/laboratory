@@ -904,16 +904,21 @@ func TestExceededScopedAndOneShot(t *testing.T) {
 	if armed == nil || armed.Status != metav1.ConditionTrue {
 		t.Fatalf("not armed: %+v", armed)
 	}
-	if err := f.c.Create(context.Background(), &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{
-		Name: "late", UID: "uid-group-late", Labels: resLabels("r", "t1"), CreationTimestamp: metav1.NewTime(armed.LastTransitionTime.Add(time.Second))}}); err != nil {
-		t.Fatal(err)
+	for name, at := range map[string]time.Duration{"late": time.Second, "near": -5 * time.Second, "early": -20 * time.Second} {
+		if err := f.c.Create(context.Background(), &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{
+			Name: name, UID: types.UID("uid-group-" + name), Labels: resLabels("r", "t1"), CreationTimestamp: metav1.NewTime(armed.LastTransitionTime.Add(at))}}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	_, r = f.at(6*time.Minute+resNotice, "r")
 	if f.groupExists("g") {
 		t.Fatal("the group from before the notice survived")
 	}
-	if !f.groupExists("late") {
-		t.Fatal("a group created after the notice was deleted")
+	if !f.groupExists("late") || !f.groupExists("near") {
+		t.Fatal("a group created after (or within the margin before) the notice was deleted")
+	}
+	if f.groupExists("early") {
+		t.Fatal("a group created well before the notice survived")
 	}
 	if c := exceededCond(r); c == nil || c.Reason != laboratoryv1alpha1.ReservationReasonGroupsDeleted {
 		t.Fatalf("after the deletion: %+v", r.Status.Conditions)
@@ -970,5 +975,102 @@ func TestRemovalPreconditionedOnVersion(t *testing.T) {
 	f.reconcile("r")
 	if pre == nil || pre.UID == nil || pre.ResourceVersion == nil || *pre.ResourceVersion != rv {
 		t.Fatalf("removal preconditions = %+v, want the resourceVersion %s", pre, rv)
+	}
+}
+
+// shrunk arms Exceeded on r (fit recorded at cpu 2, used 1, then the amount lowered to 500m) and returns at the notice.
+func (f *resFixture) shrunk() *laboratoryv1alpha1.Reservation {
+	f.t.Helper()
+	f.setUsed("r", "1", "1Gi")
+	f.at(5*time.Minute, "r")
+	f.setResources("r", "500m", "2Gi")
+	_, r := f.at(6*time.Minute, "r")
+	if c := exceededCond(r); c == nil || c.Status != metav1.ConditionTrue {
+		f.t.Fatalf("not armed: %+v", r.Status.Conditions)
+	}
+	return r
+}
+
+// A served shrink is consumed: its amount is the new baseline, so a later unrelated spec change (an extension) with the usage
+// still stale and over never arms again.
+func TestShrinkServedOnce(t *testing.T) {
+	f := newResFixture(t, nil)
+	f.tenant("t1")
+	f.reservation("r", nil)
+	f.group("g", "r", "t1")
+	f.shrunk()
+	_, r := f.at(6*time.Minute+resNotice, "r")
+	if f.groupExists("g") {
+		t.Fatal("not deleted")
+	}
+	if rec, ok := lastFit(r); !ok || rec.gen != r.Generation || rec.amt != (amount{cpu: 500, mem: 2 << 30}) {
+		t.Fatalf("the baseline is not the served amount: %+v %v", rec, ok)
+	}
+	r.Spec.To = metav1.NewTime(resTo.Add(time.Hour))
+	r.Generation++
+	if err := f.c.Update(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	f.group("restarted", "r", "t1")
+	_, r = f.at(7*time.Minute+resNotice, "r")
+	if c := exceededCond(r); c != nil && c.Status == metav1.ConditionTrue {
+		t.Fatalf("re-armed by an extension on stale usage: %+v", c)
+	}
+	if overCond(r) == nil {
+		t.Fatal("the stale excess is not shown")
+	}
+	f.at(8*time.Minute+2*resNotice, "r")
+	if !f.groupExists("restarted") {
+		t.Fatal("a group made after the served shrink was deleted")
+	}
+}
+
+// Usage that was already over the last fitting amount (drift) is not the doing of a later shrink: OverAmount only.
+func TestDriftBeforeShrinkNeverArms(t *testing.T) {
+	f := newResFixture(t, nil)
+	f.tenant("t1")
+	f.reservation("r", nil)
+	f.group("g", "r", "t1")
+	f.setUsed("r", "1", "1Gi")
+	f.at(5*time.Minute, "r") // fit at cpu 2
+	f.setUsed("r", "3", "1Gi")
+	if _, r := f.at(6*time.Minute, "r"); overCond(r) == nil {
+		t.Fatal("drift not shown")
+	}
+	f.setResources("r", "1900m", "2Gi")
+	_, r := f.at(7*time.Minute, "r")
+	if exceededCond(r) != nil || overCond(r) == nil {
+		t.Fatalf("a shrink after drift armed: %+v", r.Status.Conditions)
+	}
+	f.at(7*time.Minute+resNotice, "r")
+	if !f.groupExists("g") {
+		t.Fatal("drift plus a small shrink deleted the groups")
+	}
+}
+
+// An Exceeded=True of another reason (left by an older operator) is no notice of this rule: when the rule arms, the notice
+// starts then, and nothing is deleted at once.
+func TestOldExceededConditionRestartsTheNotice(t *testing.T) {
+	f := newResFixture(t, nil)
+	f.tenant("t1")
+	f.reservation("r", nil)
+	f.group("g", "r", "t1")
+	f.setUsed("r", "1", "1Gi")
+	f.at(5*time.Minute, "r")
+	r := f.get("r")
+	orig := r.DeepCopy()
+	meta.SetStatusCondition(&r.Status.Conditions, metav1.Condition{Type: laboratoryv1alpha1.ReservationConditionExceeded, Status: metav1.ConditionTrue,
+		Reason: "UsageOverAmount", Message: "old", LastTransitionTime: metav1.NewTime(planEpoch)})
+	if err := f.c.Status().Patch(context.Background(), r, client.MergeFrom(orig)); err != nil {
+		t.Fatal(err)
+	}
+	f.setResources("r", "500m", "2Gi")
+	_, r = f.at(6*time.Minute, "r")
+	c := exceededCond(r)
+	if c == nil || c.Reason != laboratoryv1alpha1.ReservationReasonAmountReduced || !c.LastTransitionTime.Time.Equal(resFrom.Add(6*time.Minute)) {
+		t.Fatalf("exceeded = %+v", c)
+	}
+	if !f.groupExists("g") {
+		t.Fatal("deleted on the old condition's time")
 	}
 }

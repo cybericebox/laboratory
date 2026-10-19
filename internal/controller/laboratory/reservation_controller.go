@@ -35,6 +35,8 @@ const (
 	// reservationEndTail is how long after spec.to an ended reservation is still looked at every reservationRecheck: an
 	// object the cache did not hold yet at the end, or a status reset, is caught; then the next look is the removal.
 	reservationEndTail = 10 * time.Minute
+	// reservationScopeMargin: the Exceeded deletion takes only objects created this long before its notice.
+	reservationScopeMargin = 10 * time.Second
 )
 
 // lossNotice is the notice of an end that one observation starts (the tenant gone, the reservation exceeded): never shorter
@@ -220,14 +222,14 @@ func (r *ReservationReconciler) act(ctx context.Context, res *laboratoryv1alpha1
 		if err != nil || !ok {
 			return false, false, err
 		}
-		notice := meta.FindStatusCondition(live.Status.Conditions, laboratoryv1alpha1.ReservationConditionExceeded).LastTransitionTime
-		if incomplete, err = r.deleteGroups(ctx, live, &notice); err != nil || incomplete {
+		notice := armedExceeded(live).LastTransitionTime
+		// the operator's clock against the API server's creation times: a margin keeps what came near the notice
+		scope := metav1.NewTime(notice.Add(-reservationScopeMargin))
+		if incomplete, err = r.deleteGroups(ctx, live, &scope); err != nil || incomplete {
 			return incomplete, false, err // a group still holding others' labs: the same scoped pass again soon
 		}
 		orig := live.DeepCopy()
-		meta.SetStatusCondition(&live.Status.Conditions, metav1.Condition{Type: laboratoryv1alpha1.ReservationConditionExceeded, Status: metav1.ConditionFalse,
-			Reason: laboratoryv1alpha1.ReservationReasonGroupsDeleted, ObservedGeneration: live.Generation, LastTransitionTime: metav1.NewTime(now),
-			Message: fmt.Sprintf("the groups created before %s were deleted: the reservation was made smaller than what ran under it", notice.UTC().Format(time.RFC3339))})
+		servedShrink(live, notice, now)
 		return false, false, r.Status().Patch(ctx, live, client.MergeFromWithOptions(orig, client.MergeFromWithOptimisticLock{}))
 	}
 	return false, false, nil
