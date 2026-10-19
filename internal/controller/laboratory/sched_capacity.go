@@ -54,10 +54,50 @@ type capacitySnapshot struct {
 	maxNode amount
 	// labUsed is the requests of the lab pods bound to each node (the held pods of stopped labs included).
 	labUsed map[string]amount
+	// vmax is the room for labs the budget of the static maximum still allows beyond the autoscaled nodes that exist
+	// (nodecap.Maximum.Virtual): one aggregate room in rooms, as a gang may span nodes and the cluster autoscaler picks them.
+	// Under the breaker the plan keeps new gangs off it; the reservations, the shortfall and the verdicts still count it. Zero
+	// without a budget.
+	vmax amount
 }
 
-// rooms is the room FOR labs on each schedulable node, in the order of the nodes, before the usage of the labs.
-func (c capacitySnapshot) rooms() []nodeRoom { return append([]nodeRoom(nil), c.perNode...) }
+// virtualRoom is the aggregate room a the budget still allows, as one room named nodecap.VirtualRoomName; none when a is zero.
+func virtualRoom(a amount) []nodeRoom {
+	if a == (amount{}) {
+		return nil
+	}
+	return []nodeRoom{{Name: nodecap.VirtualRoomName, CPU: a.cpu, Memory: a.mem}}
+}
+
+// rooms is the room FOR labs on each schedulable node, in the order of the nodes, before the usage of the labs, and after them
+// the virtual room the budget still allows: the maximum. The real room is used first.
+func (c capacitySnapshot) rooms() []nodeRoom {
+	return append(append([]nodeRoom(nil), c.perNode...), virtualRoom(c.vmax)...)
+}
+
+// emptyRooms is rooms: what a gang could ever have, for the DoesNotFit verdict.
+func (c capacitySnapshot) emptyRooms() []nodeRoom { return c.rooms() }
+
+// withMaximum adds the virtual room the budget still allows (room, for the placement) and what the budget adds to the
+// allocatable (remaining, before the operator's reserves: the base of a percentage tenant quota is the maximum too).
+func (c *capacitySnapshot) withMaximum(room, remaining nodecap.Amount) {
+	c.vmax = amount{cpu: room.CPU, mem: room.Memory}
+	c.allocatable = c.allocatable.add(amount{cpu: remaining.CPU, mem: remaining.Memory})
+}
+
+// usesVirtual says a placement took something of the virtual room of the budget.
+func usesVirtual(at map[string]amount) bool { return at[nodecap.VirtualRoomName] != (amount{}) }
+
+// closeVirtual is rooms with the virtual room emptied: what a new gang may be placed on under the breaker.
+func closeVirtual(rooms []nodeRoom) []nodeRoom {
+	out := append([]nodeRoom(nil), rooms...)
+	for i := range out {
+		if out[i].Name == nodecap.VirtualRoomName {
+			out[i].CPU, out[i].Memory = 0, 0
+		}
+	}
+	return out
+}
 
 // freeRooms is rooms less the requests of the lab pods bound to each node, the held pods of stopped labs included (they hold
 // resources): where the placement simulation of a pass starts. Lab pods that are dispatched but not on a node yet are placed

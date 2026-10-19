@@ -245,6 +245,9 @@ func (r *DeviceReconciler) reconcilePod(ctx context.Context, device *laboratoryv
 		return ctrl.Result{}, err
 	}
 	if r.queuedByScheduler(device) {
+		if err := r.deleteWithdrawnPods(ctx, device, pods); err != nil {
+			return ctrl.Result{}, err
+		}
 		if err := r.publishPlacement(ctx, device, nil); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -303,6 +306,28 @@ func (r *DeviceReconciler) reconcilePod(ctx context.Context, device *laboratoryv
 		return r.pullSecretWait(ctx, device, err)
 	}
 	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+}
+
+// deleteWithdrawnPods deletes the pods of a device the scheduler withdrew (its group did not get every pod a node in time): the
+// stop is recorded first, so the next pod waits for this one's exit snapshot; the scheduler sends the device again later.
+func (r *DeviceReconciler) deleteWithdrawnPods(ctx context.Context, device *laboratoryv1alpha1.Device, pods []corev1.Pod) error {
+	if !r.withdrawnByScheduler(device) || len(pods) == 0 {
+		return nil
+	}
+	if err := r.inventoryWithdrawnPods(ctx, device, pods); err != nil {
+		return err
+	}
+	if err := r.markStopped(ctx, device, r.now()); err != nil {
+		return err
+	}
+	for i := range pods {
+		if pods[i].DeletionTimestamp == nil {
+			if err := r.Delete(ctx, &pods[i]); client.IgnoreNotFound(err) != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // recreateWait is how long to hold off creating the next pod: until the exit

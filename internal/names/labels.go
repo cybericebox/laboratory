@@ -69,6 +69,10 @@ const (
 	// being privileged (/proc/sys is read-only for an unprivileged container).
 	AnnotationConntrackAccounting = "network.cybericebox.com/conntrack-accounting"
 
+	// AnnotationSafeToEvict "false" on a lab pod tells a cluster autoscaler never to evict it to remove its node: a running lab
+	// is never moved (the lab-group PodDisruptionBudget says the same for a drain).
+	AnnotationSafeToEvict = "cluster-autoscaler.kubernetes.io/safe-to-evict"
+
 	// AnnotationDevice tags a pod/resource with its logical device name.
 	AnnotationDevice = "cybericebox.com/device"
 

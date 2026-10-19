@@ -250,6 +250,9 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	if r.withdrawnByScheduler(device) {
+		return ctrl.Result{}, r.deleteWithdrawnWorkload(ctx, device, &dep)
+	}
 	// Stop retains a zero-replica Deployment. Its existence cannot bypass the
 	// new Start queue: only a dispatched current scheduling record may resume it.
 	if !suspended && dep.Spec.Replicas != nil && *dep.Spec.Replicas == 0 && device.Spec.LabRef != "" {
@@ -294,6 +297,22 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+// deleteWithdrawnWorkload deletes the Deployment of a device the scheduler withdrew (its group did not get every pod a node
+// in time); the scheduler sends it again later. The native identity of what ran is kept first, for a later stop of the lab.
+func (r *DeviceReconciler) deleteWithdrawnWorkload(ctx context.Context, device *laboratoryv1alpha1.Device, dep *appsv1.Deployment) error {
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods, client.InNamespace(device.Namespace), client.MatchingLabels{names.LabelLab: device.Spec.LabRef, names.LabelDevice: device.Spec.Name}); err != nil {
+		return err
+	}
+	if err := r.inventoryWithdrawnPods(ctx, device, pods.Items); err != nil {
+		return err
+	}
+	if err := r.Delete(ctx, dep, client.PropagationPolicy(metav1.DeletePropagationBackground)); client.IgnoreNotFound(err) != nil {
+		return err
+	}
+	return r.publishDevicePlacement(ctx, device, "", "", "", false)
 }
 
 // devicePodPlacement returns the NodeName/PodIP/PodName of the device's live pod,
@@ -353,6 +372,8 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 	annotations = map[string]string{
 		names.AnnotationDevice:   device.Spec.Name,
 		names.AnnotationNetworks: networkAnnotation(device, stableMAC),
+		// a running lab is never evicted by a cluster autoscaler
+		names.AnnotationSafeToEvict: "false",
 	}
 	if device.Spec.Exposure != nil {
 		annotations[names.AnnotationDefaultNetwork] = names.AccessPortIface

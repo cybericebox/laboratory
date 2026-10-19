@@ -321,9 +321,24 @@ spec:
                       type: object
                     name:
                       type: string
+                    onBudget:
+                      description: |-
+                        OnBudget says the scheduler sent the pod with its group placed partly on room of nodes not yet present (the capacity
+                        budget): without a node it waits for one an autoscaler adds, and the group commit decides at the node timeout.
+                      type: boolean
                     queuedAt:
                       description: QueuedAt is when the pod entered the queue.
                       format: date-time
+                      type: string
+                    retryAfter:
+                      description: RetryAfter is when a withdrawn group may be dispatched
+                        again (the backoff of its last withdrawal).
+                      format: date-time
+                      type: string
+                    schedulerMessage:
+                      description: |-
+                        SchedulerMessage is what the scheduler said (PodScheduled=False) about a pod of the group that got no node, recorded when
+                        the group was withdrawn; cleared on the next dispatch.
                       type: string
                     startedAt:
                       description: StartedAt is when the pod was first seen Ready.
@@ -338,6 +353,12 @@ spec:
                       - Started
                       - Failed
                       type: string
+                    withdrawals:
+                      description: |-
+                        Withdrawals counts the withdrawals of the pod's group in a row (not every pod got a node within the node timeout); it
+                        clears when the pod becomes Ready or fails.
+                      format: int32
+                      type: integer
                   required:
                   - name
                   type: object

@@ -172,6 +172,9 @@ SCHEDULER_PLATFORM_RESERVE_MEMORY: {{ .Values.scheduler.platformReserveMemory | 
 SCHEDULER_PACKING_RESERVE_PERCENT: {{ .Values.scheduler.packingReservePercent | quote }}
 SCHEDULER_PACKING_RESERVE_CPU: {{ .Values.scheduler.packingReserveCpu | quote }}
 SCHEDULER_PACKING_RESERVE_MEMORY: {{ .Values.scheduler.packingReserveMemory | quote }}
+CAPACITY_BUDGET_CPU: {{ .Values.capacity.budget.cpu | quote }}
+CAPACITY_BUDGET_MEMORY: {{ .Values.capacity.budget.memory | quote }}
+CAPACITY_NODE_TIMEOUT: {{ printf "%ds" (int .Values.capacity.nodeTimeoutSeconds) | quote }}
 DEVICE_DEFAULT_CPU: {{ .Values.limits.device.defaultCpu | quote }}
 DEVICE_DEFAULT_MEMORY: {{ .Values.limits.device.defaultMemory | quote }}
 DEVICE_MAX_CPU: {{ .Values.limits.device.maxCpu | quote }}

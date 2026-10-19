@@ -32,6 +32,25 @@ func (r *LabGroupReconciler) groupPodQueued(lg *laboratoryv1alpha1.LabGroup, nam
 	return false
 }
 
+// deleteWithdrawnGroupPods deletes the VPN and gateway Deployments whose record the scheduler withdrew (Queued again after a
+// withdrawal: not every pod of the group got a node in time), so their pods go and their room is free; the scheduler sends them
+// again later. A Queued record that was never withdrawn (a group being started) keeps what it has.
+func (r *LabGroupReconciler) deleteWithdrawnGroupPods(ctx context.Context, lg *laboratoryv1alpha1.LabGroup, ns string) error {
+	if !r.Scheduled {
+		return nil
+	}
+	for _, p := range lg.Status.Pods {
+		if p.State != laboratoryv1alpha1.PodQueued || p.Withdrawals == 0 {
+			continue
+		}
+		dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: p.Name, Namespace: ns}}
+		if err := r.Delete(ctx, dep, client.PropagationPolicy(metav1.DeletePropagationBackground)); client.IgnoreNotFound(err) != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ensureGroupScheduling adds the record of every pod the group runs that has none.
 func (r *LabGroupReconciler) ensureGroupScheduling(ctx context.Context, lg *laboratoryv1alpha1.LabGroup) error {
 	if !r.Scheduled {

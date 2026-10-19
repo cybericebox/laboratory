@@ -292,6 +292,13 @@ func Run() {
 			setupLog.Error(err, "unable to build the discovery client")
 			os.Exit(1)
 		}
+		capacity, err := operator.ParseCapacity(cfg)
+		if err != nil {
+			setupLog.Error(err, "unable to read the capacity")
+			os.Exit(1)
+		}
+		// a budget needs the CRDs that keep the gang commit's fields (helm upgrade does not apply the chart's CRDs)
+		capacity = laboratorycontroller.BudgetWithCurrentCRDs(context.Background(), mgr.GetAPIReader(), mgr.GetEventRecorderFor("scheduler"), capacity)
 		scheduler = &laboratorycontroller.Scheduler{
 			ReservationCRD: laboratorycontroller.ReservationCRDBy(reservationsDC, mgr.GetAPIReader()),
 			Mirror:         mirror,
@@ -316,6 +323,8 @@ func Run() {
 				Prepull:        cfg.SchedulerPrepull,
 				PrepullTimeout: cfg.SchedulerPrepullTimeout,
 				Aging:          time.Duration(cfg.SchedulerAgingSeconds) * time.Second,
+				Maximum:        capacity,
+				NodeTimeout:    cfg.CapacityNodeTimeout,
 				// the cleanup of unreserved work gives the same notice as the end of a reservation
 				UnreservedNotice: time.Duration(cfg.ReservationEndingNoticeSeconds) * time.Second,
 			},

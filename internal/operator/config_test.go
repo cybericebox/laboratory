@@ -237,3 +237,50 @@ func TestLoadConfigWGDemuxMode(t *testing.T) {
 		t.Error("a typo in WG_DEMUX_MODE must be refused")
 	}
 }
+
+func TestParseCapacityDefaultIsCurrent(t *testing.T) {
+	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
+	t.Setenv("BASE_DOMAIN", "labs.example.com")
+	setRequiredEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := ParseCapacity(cfg)
+	if err != nil || m.Set() || cfg.CapacityNodeTimeout != 15*time.Minute {
+		t.Fatalf("default capacity = %+v, timeout %s, %v", m, cfg.CapacityNodeTimeout, err)
+	}
+	t.Setenv("CAPACITY_BUDGET_CPU", "47040m")
+	t.Setenv("CAPACITY_BUDGET_MEMORY", "180Gi")
+	t.Setenv("CAPACITY_NODE_TIMEOUT", "900s")
+	if cfg, err = LoadConfig(); err != nil {
+		t.Fatal(err)
+	}
+	if m, err = ParseCapacity(cfg); err != nil || m.Budget.CPU != 47040 || m.Budget.Memory != 180<<30 {
+		t.Fatalf("capacity = %+v %v", m, err)
+	}
+}
+
+func TestParseCapacityRejectsHalfABudget(t *testing.T) {
+	t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
+	t.Setenv("BASE_DOMAIN", "labs.example.com")
+	setRequiredEnv(t)
+	t.Setenv("CAPACITY_BUDGET_CPU", "48")
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("a budget without memory must be refused")
+	}
+}
+
+func TestParseCapacityRejectsNegative(t *testing.T) {
+	for _, kv := range [][2]string{{"CAPACITY_BUDGET_CPU", "-1"}, {"CAPACITY_NODE_TIMEOUT", "0s"}, {"CAPACITY_NODE_TIMEOUT", "-1m"}} {
+		t.Run(kv[0]+"="+kv[1], func(t *testing.T) {
+			t.Setenv("PUBLIC_VPN_ENDPOINT", "vpn.example.com:51820")
+			t.Setenv("BASE_DOMAIN", "labs.example.com")
+			setRequiredEnv(t)
+			t.Setenv(kv[0], kv[1])
+			if _, err := LoadConfig(); err == nil {
+				t.Fatalf("%s=%s must be refused", kv[0], kv[1])
+			}
+		})
+	}
+}

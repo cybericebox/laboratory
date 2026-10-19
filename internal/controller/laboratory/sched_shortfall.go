@@ -137,8 +137,12 @@ type shortfallReport struct {
 	known bool
 	// checked: the per-node resource check is on; without it nothing is computed and no work is evicted.
 	checked bool
-	// peak is the peak overlap of the active and future reservations, capacity the room for labs on the empty nodes.
-	peak, capacity amount
+	// peak is the peak overlap of the active and future reservations, capacity the room for labs on the empty nodes (with the
+	// virtual room the budget still allows), virtual that part of capacity.
+	peak, capacity, virtual amount
+	// breaker: admission uses the current nodes only in this pass (sched_commit.go), after a withdrawal timeout ago at most.
+	breaker bool
+	timeout time.Duration
 	// future is the most of a piece of time's reservations that the empty nodes cannot hold (placed as the plan withholds),
 	// now what the active reservations find no room for on the nodes in this pass, short the larger of the two per resource.
 	future, now, short amount
@@ -170,9 +174,14 @@ func (e *clusterEnv) shortfall(plan schedPlan) shortfallReport {
 		return shortfallReport{}
 	}
 	rep.known, rep.checked = true, true
+	rep.breaker, rep.timeout = e.breaker, e.s.nodeTimeout()
+	// the same rooms as the plan's: the nodes that exist and the virtual room of the budget (none under the breaker)
 	empty := c.rooms()
 	for _, n := range empty {
 		rep.capacity = rep.capacity.add(amount{cpu: n.CPU, mem: n.Memory})
+		if n.Name == nodecap.VirtualRoomName {
+			rep.virtual = rep.virtual.add(amount{cpu: n.CPU, mem: n.Memory})
+		}
 	}
 	byName := make(map[string]*laboratoryv1alpha1.Reservation, len(e.snap.reservations))
 	for i := range e.snap.reservations {
@@ -213,16 +222,27 @@ func (r shortfallReport) condition() metav1.Condition {
 	case !r.checked:
 		c.Reason, c.Message = "NotChecked", "the resource check of the scheduler is off: the capacity is not checked"
 	case r.short == (amount{}):
-		c.Reason, c.Message = laboratoryv1alpha1.TenantReasonReservationsFit, "the reservations fit the lab nodes"
+		c.Reason, c.Message = laboratoryv1alpha1.TenantReasonReservationsFit, "the reservations fit the lab nodes"+r.virtualText()
 	default:
 		c.Status, c.Reason = metav1.ConditionTrue, laboratoryv1alpha1.TenantReasonReservationsDoNotFit
-		c.Message = fmt.Sprintf("the reservations need up to cpu %dm and memory %d bytes at once, the lab nodes hold cpu %dm and memory %d bytes for labs: short of cpu %dm and memory %d bytes",
-			r.peak.cpu, r.peak.mem, r.capacity.cpu, r.capacity.mem, r.short.cpu, r.short.mem)
+		c.Message = fmt.Sprintf("the reservations need up to cpu %dm and memory %d bytes at once, the lab nodes hold cpu %dm and memory %d bytes for labs%s: short of cpu %dm and memory %d bytes",
+			r.peak.cpu, r.peak.mem, r.capacity.cpu, r.capacity.mem, r.virtualText(), r.short.cpu, r.short.mem)
 		if r.now != (amount{}) {
 			c.Message += fmt.Sprintf("; the open reservations find no room on the nodes now for cpu %dm and memory %d bytes", r.now.cpu, r.now.mem)
 		}
 	}
+	if r.checked && r.breaker {
+		c.Message += fmt.Sprintf("; no new lab node came within %s: admission uses the current nodes only", r.timeout)
+	}
 	return c
+}
+
+// virtualText says what part of the capacity is the budget's room on nodes not yet present; empty when none.
+func (r shortfallReport) virtualText() string {
+	if r.virtual == (amount{}) {
+		return ""
+	}
+	return fmt.Sprintf(" (of which cpu %dm and memory %d bytes on nodes not yet present (capacity budget))", r.virtual.cpu, r.virtual.mem)
 }
 
 // evictable says the object is unreserved work the cleanup may take: it carries no reservation label at all (the scheduler's
@@ -407,10 +427,11 @@ func (e *clusterEnv) unreservedBlockers(plan schedPlan, c *capacitySnapshot) map
 const tenantMessageInterval = time.Minute
 
 // writeTenants sets the CapacityShortfall condition on every tenant with an active or future reservation and removes it from
-// the others, when it changed, within the per-object interval and the budget of the tick. The patch carries the conditions
-// and the resourceVersion as precondition: a write of the agent (status.reserved, used) in between makes it conflict and it
-// is done again on a later pass, so neither writer erases the other's fields.
-func (s *Scheduler) writeTenants(ctx context.Context, snap *clusterView, sf shortfallReport, now time.Time, interval time.Duration, budget int, seen map[types.UID]bool) int {
+// the others, and the GroupsWithdrawnRepeatedly condition on every tenant with a stuck group (stuck: tenant -> message), when
+// they changed, within the per-object interval and the budget of the tick. The patch carries the conditions and the
+// resourceVersion as precondition: a write of the agent (status.reserved, used) in between makes it conflict and it is done
+// again on a later pass, so neither writer erases the other's fields.
+func (s *Scheduler) writeTenants(ctx context.Context, snap *clusterView, sf shortfallReport, stuck map[string]string, now time.Time, interval time.Duration, budget int, seen map[types.UID]bool) int {
 	logger := log.FromContext(ctx).WithName("scheduler")
 	tenantNames := make([]string, 0, len(snap.tenants))
 	for n := range snap.tenants {
@@ -420,13 +441,15 @@ func (s *Scheduler) writeTenants(ctx context.Context, snap *clusterView, sf shor
 	for _, n := range tenantNames {
 		t := snap.tenants[n]
 		seen[t.UID] = true
-		if !sf.known || t.DeletionTimestamp != nil {
+		if t.DeletionTimestamp != nil {
 			continue
 		}
 		next := t.DeepCopy()
 		var changed bool
 		wait := interval
-		if sf.tenants[n] {
+		switch {
+		case !sf.known:
+		case sf.tenants[n]:
 			c := sf.condition()
 			c.ObservedGeneration, c.LastTransitionTime = t.Generation, metav1.NewTime(now)
 			if old := meta.FindStatusCondition(t.Status.Conditions, c.Type); old != nil && old.Status == c.Status && old.Reason == c.Reason && old.ObservedGeneration == c.ObservedGeneration {
@@ -434,8 +457,20 @@ func (s *Scheduler) writeTenants(ctx context.Context, snap *clusterView, sf shor
 				wait = max(interval, tenantMessageInterval)
 			}
 			changed = meta.SetStatusCondition(&next.Status.Conditions, c)
-		} else {
+		default:
 			changed = meta.RemoveStatusCondition(&next.Status.Conditions, laboratoryv1alpha1.TenantConditionCapacityShortfall)
+		}
+		stuckChanged := false
+		if msg, ok := stuck[n]; ok {
+			stuckChanged = meta.SetStatusCondition(&next.Status.Conditions, metav1.Condition{
+				Type: laboratoryv1alpha1.TenantConditionGroupsWithdrawn, Status: metav1.ConditionTrue, Reason: laboratoryv1alpha1.TenantReasonRepeatedWithdrawals,
+				Message: msg, ObservedGeneration: t.Generation, LastTransitionTime: metav1.NewTime(now),
+			})
+		} else {
+			stuckChanged = meta.RemoveStatusCondition(&next.Status.Conditions, laboratoryv1alpha1.TenantConditionGroupsWithdrawn)
+		}
+		if stuckChanged {
+			changed, wait = true, interval
 		}
 		if !changed {
 			continue
@@ -448,7 +483,7 @@ func (s *Scheduler) writeTenants(ctx context.Context, snap *clusterView, sf shor
 		}
 		if err := s.Status().Patch(ctx, next, client.MergeFromWithOptions(t, client.MergeFromWithOptimisticLock{})); err != nil {
 			if !errors.IsNotFound(err) && !errors.IsConflict(err) {
-				logger.Error(err, "write the capacity shortfall of the tenant", "tenant", n)
+				logger.Error(err, "write the conditions of the tenant", "tenant", n)
 			}
 			continue
 		}

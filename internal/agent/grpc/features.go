@@ -38,6 +38,8 @@ type Features struct {
 	// SchedulerEnabled and SchedulerMaxPods describe the pod queue.
 	SchedulerEnabled bool
 	SchedulerMaxPods int32
+	// NodeTimeoutSeconds is the node timeout of the gang commit (chart capacity.nodeTimeoutSeconds).
+	NodeTimeoutSeconds int32
 	// LabsDomain and VPNEndpoint are the public hosts of lab endpoints and of WireGuard.
 	LabsDomain  string
 	VPNEndpoint string
@@ -124,7 +126,7 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 					ExcludedPaths:      append([]string(nil), f.ExcludePaths...),
 				},
 				ImageCache:     &protobuf.ImageCacheFeature{Enabled: f.CacheEnabled, Registries: append([]string(nil), f.CacheRegistries...)},
-				Scheduler:      &protobuf.SchedulerFeature{Enabled: f.SchedulerEnabled, MaxPods: f.SchedulerMaxPods},
+				Scheduler:      &protobuf.SchedulerFeature{Enabled: f.SchedulerEnabled, MaxPods: f.SchedulerMaxPods, NodeTimeoutSeconds: f.NodeTimeoutSeconds},
 				Endpoints:      &protobuf.EndpointsFeature{LabsDomain: f.LabsDomain, VpnEndpoint: f.VPNEndpoint},
 				DeviceProfiles: append([]string(nil), f.DeviceProfiles...),
 				Limits: &protobuf.LimitsFeature{

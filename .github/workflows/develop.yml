@@ -1,10 +1,15 @@
 name: Publish develop
 
-# A merge into develop publishes sha-<7> only (no moving develop tag). The build reads the registry cache
+# A merge into develop (not a docs-only one) publishes sha-<7> only (no moving develop tag). The build reads the registry cache
 # written by the PR check. A newer merge cancels an unfinished older one; build the older commit with "Build image".
 on:
   push:
     branches: [ develop ]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - .gitignore
+      - LICENSE
 
 concurrency:
   group: publish-develop

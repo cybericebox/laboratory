@@ -97,6 +97,10 @@ type Config struct {
 	PackingReservePercent int    `env:"SCHEDULER_PACKING_RESERVE_PERCENT" envDefault:"15"`
 	PackingReserveCPU     string `env:"SCHEDULER_PACKING_RESERVE_CPU" envDefault:"0"`
 	PackingReserveMemory  string `env:"SCHEDULER_PACKING_RESERVE_MEMORY" envDefault:"0"`
+	// CapacityBudgetCPU and CapacityBudgetMemory are the static maximum of the autoscaled lab nodes (chart capacity.budget, the
+	// operator's values): the capacity reported counts the room the budget still allows. Empty: the current nodes.
+	CapacityBudgetCPU    string `env:"CAPACITY_BUDGET_CPU"`
+	CapacityBudgetMemory string `env:"CAPACITY_BUDGET_MEMORY"`
 	// TenantStatusInterval is how often the status (reserved, used) of every Tenant is refreshed.
 	TenantStatusInterval time.Duration `env:"AGENT_TENANT_STATUS_INTERVAL" envDefault:"30s"`
 	// GroupPods are the resources of the VPN and gateway pods of a group (the same values as the operator's):
@@ -156,6 +160,8 @@ type StateConfig struct {
 type SchedulerConfig struct {
 	Enabled bool `env:"SCHEDULER_ENABLED" envDefault:"true"`
 	MaxPods int  `env:"SCHEDULER_MAX_PODS" envDefault:"20"`
+	// NodeTimeout is the gang commit's node timeout (the operator's CAPACITY_NODE_TIMEOUT).
+	NodeTimeout time.Duration `env:"CAPACITY_NODE_TIMEOUT" envDefault:"15m"`
 }
 
 // CacheConfig configures PrewarmImages. Without Enabled the RPC fails with FailedPrecondition. The names are the operator's

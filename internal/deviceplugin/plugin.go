@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/go-logr/logr"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -172,46 +173,204 @@ func (p *Plugin) GetPreferredAllocation(context.Context, *pluginapi.PreferredAll
 	return &pluginapi.PreferredAllocationResponse{}, nil
 }
 
-// Serve listens on the plugin's socket in the kubelet directory and registers with the kubelet; it registers again
-// when the kubelet restarts (its socket is replaced). It returns when ctx ends.
-func (p *Plugin) Serve(ctx context.Context) error {
-	if p.Log.GetSink() == nil {
-		p.Log = logr.Discard()
-	}
+// served is one run of the gRPC server on the plugin socket.
+type served struct {
+	srv  *grpc.Server
+	sock string
+	info os.FileInfo // the socket file as created, to tell that it was replaced or removed
+}
+
+func (p *Plugin) startServer() (*served, error) {
 	sock := filepath.Join(p.Dir, p.socketName())
 	_ = os.Remove(sock)
 	lis, err := net.Listen("unix", sock)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", sock, err)
+		return nil, fmt.Errorf("listen on %s: %w", sock, err)
+	}
+	st, err := os.Lstat(sock)
+	if err != nil {
+		_ = lis.Close()
+		return nil, fmt.Errorf("stat %s: %w", sock, err)
 	}
 	srv := grpc.NewServer()
 	pluginapi.RegisterDevicePluginServer(srv, p)
 	go func() { _ = srv.Serve(lis) }()
-	defer srv.Stop()
-	defer func() { _ = os.Remove(sock) }()
+	return &served{srv: srv, sock: sock, info: st}, nil
+}
 
-	kubeletSock := filepath.Join(p.Dir, "kubelet.sock")
-	var registeredWith os.FileInfo
-	for {
-		// The kubelet's socket is a new file after a restart: register with the new one.
-		if st, err := os.Stat(kubeletSock); err != nil {
-			if registeredWith == nil {
-				p.Log.Info("device plugin: waiting for the kubelet socket", "socket", kubeletSock)
-			}
-		} else if registeredWith == nil || !os.SameFile(st, registeredWith) {
-			if err := p.register(ctx, kubeletSock); err != nil {
-				p.Log.Error(err, "device plugin: registration with the kubelet failed (will retry)", "socket", kubeletSock)
-			} else {
-				registeredWith = st
-				p.Log.Info("device plugin: registered with the kubelet", "resource", p.Resource, "endpoint", p.socketName())
-			}
+// stop ends the server (its listener and open streams) and removes the socket file if it is still ours.
+func (s *served) stop() {
+	s.srv.Stop()
+	if st, err := os.Lstat(s.sock); err == nil && os.SameFile(st, s.info) {
+		_ = os.Remove(s.sock)
+	}
+}
+
+// lost says whether the socket file is gone or is no longer the one this server listens on.
+func (s *served) lost() bool {
+	st, err := os.Lstat(s.sock)
+	return err != nil || !os.SameFile(st, s.info)
+}
+
+// run is the state of one Serve call: the server, and whether the kubelet has our registration.
+type run struct {
+	p              *Plugin
+	cur            *served
+	kubeletSock    string
+	registeredWith os.FileInfo // the kubelet.sock registered with; nil: registration is due
+	backoff        time.Duration
+	retry          *time.Timer
+	waiting        bool
+}
+
+const maxBackoff = 30 * time.Second
+
+// restart serves again on a fresh socket and makes the registration due.
+func (r *run) restart(why string) error {
+	r.p.Log.Info("device plugin: serving again", "reason", why)
+	r.cur.stop()
+	next, err := r.p.startServer()
+	if err != nil {
+		return err
+	}
+	r.cur = next
+	r.registeredWith = nil
+	r.backoff = 0
+	resetTimer(r.retry, 0)
+	return nil
+}
+
+func (r *run) onEvent(ev fsnotify.Event) error {
+	switch {
+	case ev.Name == r.kubeletSock && ev.Has(fsnotify.Create) && r.registeredWith == nil && !r.cur.lost():
+		// Not registered yet (the first start; some backends also report files that already exist): just register now.
+		resetTimer(r.retry, 0)
+	case ev.Name == r.kubeletSock && ev.Has(fsnotify.Create) && sameFile(r.kubeletSock, r.registeredWith):
+		// a replayed event for the socket we registered with
+	case ev.Name == r.kubeletSock && ev.Has(fsnotify.Create):
+		return r.restart("the kubelet socket was created")
+	case ev.Name == r.cur.sock && (ev.Has(fsnotify.Remove) || ev.Has(fsnotify.Rename)) && r.cur.lost():
+		// (lost: the removal made by our own restart is already followed by a new socket and must not loop)
+		return r.restart("the plugin socket was removed")
+	}
+	return nil
+}
+
+// onPoll is the slow check that covers lost events (and platforms whose watch cannot see a socket file go).
+func (r *run) onPoll() error {
+	if r.cur.lost() {
+		return r.restart("the plugin socket is gone")
+	}
+	if st, err := os.Stat(r.kubeletSock); err == nil && r.registeredWith != nil && !same(st, r.registeredWith) {
+		return r.restart("the kubelet socket was replaced")
+	}
+	return nil
+}
+
+// onRetry registers when it is due, and schedules the next try (growing delay) when the kubelet does not accept.
+func (r *run) onRetry(ctx context.Context) {
+	st, err := os.Stat(r.kubeletSock)
+	if err != nil {
+		if !r.waiting {
+			r.p.Log.Info("device plugin: waiting for the kubelet socket", "socket", r.kubeletSock)
+			r.waiting = true
 		}
+		return // the Create event (or the poll) brings it back
+	}
+	r.waiting = false
+	if r.registeredWith != nil && same(st, r.registeredWith) {
+		return
+	}
+	if err := r.p.register(ctx, r.kubeletSock); err != nil {
+		if r.backoff == 0 {
+			r.backoff = 500 * time.Millisecond
+		} else if r.backoff *= 2; r.backoff > maxBackoff {
+			r.backoff = maxBackoff
+		}
+		r.p.Log.Error(err, "device plugin: registration with the kubelet failed (will retry)", "socket", r.kubeletSock, "in", r.backoff.String())
+		resetTimer(r.retry, r.backoff)
+		return
+	}
+	r.registeredWith = st
+	r.backoff = 0
+	r.p.Log.Info("device plugin: registered with the kubelet", "resource", r.p.Resource, "endpoint", r.p.socketName())
+}
+
+// Serve listens on the plugin's socket in the kubelet directory and registers with the kubelet. A restarted kubelet forgets
+// every plugin, empties the directory (our socket goes with it) and creates a new kubelet.sock, so the plugin watches the
+// directory: when kubelet.sock is created, or our own socket is removed or replaced, it restarts the server on a fresh socket
+// and registers again, retrying with a growing delay until the kubelet accepts. A slow poll covers lost events (a recreated
+// socket may reuse the inode). It returns when ctx ends, or at once if the directory cannot be used.
+func (p *Plugin) Serve(ctx context.Context) error {
+	if p.Log.GetSink() == nil {
+		p.Log = logr.Discard()
+	}
+	w, err := fsnotify.NewWatcher()
+	if err != nil {
+		return fmt.Errorf("watch %s: %w", p.Dir, err)
+	}
+	defer func() { _ = w.Close() }()
+	if err := w.Add(p.Dir); err != nil {
+		return fmt.Errorf("watch %s: %w", p.Dir, err)
+	}
+	cur, err := p.startServer()
+	if err != nil {
+		return err
+	}
+	r := &run{p: p, cur: cur, kubeletSock: filepath.Join(p.Dir, "kubelet.sock"), retry: time.NewTimer(0)}
+	defer r.retry.Stop()
+	defer func() { r.cur.stop() }()
+	poll := time.NewTicker(p.interval())
+	defer poll.Stop()
+	for {
+		var err error
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(p.interval()):
+		case ev, ok := <-w.Events:
+			if !ok {
+				return fmt.Errorf("watch %s: closed", p.Dir)
+			}
+			err = r.onEvent(ev)
+		case werr, ok := <-w.Errors:
+			if !ok {
+				return fmt.Errorf("watch %s: closed", p.Dir)
+			}
+			p.Log.Error(werr, "device plugin: watching the directory failed", "dir", p.Dir)
+		case <-poll.C:
+			err = r.onPoll()
+		case <-r.retry.C:
+			r.onRetry(ctx)
+		}
+		if err != nil {
+			return err
 		}
 	}
+}
+
+// same says whether two stats are the same socket file. The inode alone is not enough: a recreated socket often gets the
+// inode of the one just removed, so the modification time (the moment of the bind) must match too.
+func same(a, b os.FileInfo) bool {
+	return os.SameFile(a, b) && a.ModTime().Equal(b.ModTime())
+}
+
+func sameFile(path string, prev os.FileInfo) bool {
+	if prev == nil {
+		return false
+	}
+	st, err := os.Stat(path)
+	return err == nil && same(st, prev)
+}
+
+// resetTimer re-arms a timer that may have fired or not.
+func resetTimer(t *time.Timer, d time.Duration) {
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+	t.Reset(d)
 }
 
 func (p *Plugin) register(ctx context.Context, kubeletSock string) error {

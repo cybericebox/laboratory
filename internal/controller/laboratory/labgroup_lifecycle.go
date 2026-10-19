@@ -175,11 +175,13 @@ func (r *LabGroupReconciler) allGroupLabsStopped(ctx context.Context, g *lab.Lab
 	if err := r.groupReader().List(ctx, &children, client.InNamespace(lab.LabGroupNamespaceOf(g))); err != nil {
 		return false, err
 	}
+	stopped := map[string]bool{} // the stopped labs of the group: their Queued records hold nothing
 	for n := range children.Items {
 		l := &children.Items[n]
 		if !l.DeletionTimestamp.IsZero() || !retirementReady(l) {
 			return false, nil
 		}
+		stopped[l.Name] = true
 		if l.Status.Scheduling != nil && l.Status.Scheduling.Pending > 0 {
 			return false, nil
 		}
@@ -191,7 +193,14 @@ func (r *LabGroupReconciler) allGroupLabsStopped(ctx context.Context, g *lab.Lab
 		return false, err
 	}
 	for _, d := range devices.Items {
-		if d.Status.Scheduling != nil && (d.Status.Scheduling.State == lab.PodQueued || d.Status.Scheduling.State == lab.PodStarting) {
+		sc := d.Status.Scheduling
+		if sc == nil {
+			continue
+		}
+		// A Queued record of a stopped lab is not dispatched (the scheduler skips stopped labs) and holds nothing: withdrawn
+		// by the gang commit, or stopped before its turn. A Starting record, or a Queued one of a lab that is not stopped, is a
+		// pending admission.
+		if sc.State == lab.PodStarting || sc.State == lab.PodQueued && !stopped[d.Spec.LabRef] {
 			return false, nil
 		}
 	}

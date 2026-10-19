@@ -21,7 +21,7 @@ var testFeatures = Features{
 	StatePersistence: true, Debounce: 5 * time.Second, ExcludePaths: []string{"/tmp", "/run"},
 	WriteQuota: 512 << 20, MaxFileSize: 256 << 20, TenantQuota: 10 << 30, MaxEntries: 100000,
 	CacheEnabled: true, CacheRegistries: []string{"docker.io", "ghcr.io"},
-	SchedulerEnabled: true, SchedulerMaxPods: 20,
+	SchedulerEnabled: true, SchedulerMaxPods: 20, NodeTimeoutSeconds: 900,
 	LabsDomain: "labs.example.com", VPNEndpoint: "vpn.example.com:51820",
 	ProxyAccessTokenMaxTTL: 60 * time.Second, ProxySessionMaxTTL: 24 * time.Hour,
 	GroupPods: GroupPodsFeature{
@@ -54,7 +54,7 @@ func TestFeaturesReportThePlatformChoices(t *testing.T) {
 	if c := got.GetImageCache(); !c.GetEnabled() || len(c.GetRegistries()) != 2 {
 		t.Fatalf("cache: %+v", c)
 	}
-	if s := got.GetScheduler(); !s.GetEnabled() || s.GetMaxPods() != 20 {
+	if s := got.GetScheduler(); !s.GetEnabled() || s.GetMaxPods() != 20 || s.GetNodeTimeoutSeconds() != 900 {
 		t.Fatalf("scheduler: %+v", s)
 	}
 	if e := got.GetEndpoints(); e.GetLabsDomain() != "labs.example.com" || e.GetVpnEndpoint() != "vpn.example.com:51820" {

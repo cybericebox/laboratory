@@ -20,8 +20,14 @@ type roomView struct {
 	// largest is the largest device: per resource the most one lab node gives with nothing on it, net of the packing reserve
 	// too (nodecap.LargestDevice). An upper bound per resource; the operator fails a pod only when no node holds both.
 	largest nodecap.Amount
-	// ok is false when no node is schedulable or the nodes could not be read.
+	// ok is false when no node is schedulable, there is no virtual room, or the nodes could not be read.
 	ok bool
+	// current and currentOK are total and ok without the virtual room of the capacity budget: the nodes that exist now.
+	current   nodecap.Amount
+	currentOK bool
+	// remaining is what the capacity budget adds to the allocatable of the nodes that exist (nodecap.Maximum.Remaining): the
+	// base of a percentage tenant quota is the maximum.
+	remaining nodecap.Amount
 }
 
 type deviceRoomCache struct {
@@ -55,9 +61,32 @@ func (h *Handler) room(ctx context.Context) roomView {
 		v.total.CPU += f.CPU
 		v.total.Memory += f.Memory
 	}
+	v.current, v.currentOK = v.total, v.ok
+	// The room the budget of the static maximum still allows beyond the autoscaled nodes that exist: the operator admits onto
+	// it (its breaker aside), so the tenants plan against it too. The largest device stays that of the real nodes.
+	v.remaining = h.maximum.Remaining(nodes.Items, pods.Items, h.labSelector, h.labTolerations)
+	if room := h.maximum.Virtual(nodes.Items, pods.Items, h.labSelector, h.labTolerations, nodecap.Reserve{Percent: h.nodeReserve.Percent}, h.packingReserve); room != (nodecap.Amount{}) {
+		v.total.CPU += room.CPU
+		v.total.Memory += room.Memory
+		v.ok = true
+		// A node still to come may be any type the budget allows, every one larger than the device limits: the operator fails no
+		// device then, so the largest device is the device limit (or, with no limit, the virtual room), never less than a real node.
+		limit := nodecap.Amount{CPU: h.features.Limits.DeviceMaxCPU, Memory: h.features.Limits.DeviceMaxMemory}
+		if limit.CPU <= 0 {
+			limit.CPU = room.CPU
+		}
+		if limit.Memory <= 0 {
+			limit.Memory = room.Memory
+		}
+		v.largest = nodecap.Amount{CPU: max(v.largest.CPU, limit.CPU), Memory: max(v.largest.Memory, limit.Memory)}
+	}
 	c.at, c.view = time.Now(), v
 	return v
 }
+
+// SetMaximum sets the static maximum capacity of the lab nodes (the operator's budget, the same chart values): the room reported
+// to tenants counts the room the budget still allows beyond the autoscaled nodes that exist.
+func (h *Handler) SetMaximum(m nodecap.Maximum) { h.maximum = m }
 
 // SetPackingReserve sets the hidden packing reserve: the room reported to tenants is net of it, because nodes do not share
 // memory and devices leave gaps between them, so the last part of a node cannot be packed full. A tenant never sees the reserve.
@@ -68,19 +97,30 @@ func (h *Handler) SetPackingReserve(r nodecap.PackingReserve) { h.packingReserve
 // platform plans inside the smaller reported number and never reaches the hard cap in a way that leaves holes.
 func (h *Handler) reported(ctx context.Context, l tenant.Limits) tenant.Limits {
 	v := h.room(ctx)
+	return h.clampToRoom(l, v.total, v.ok)
+}
+
+// reportedCurrent is reported against the nodes that exist now, without the virtual room of the capacity budget.
+func (h *Handler) reportedCurrent(ctx context.Context, l tenant.Limits) tenant.Limits {
+	v := h.room(ctx)
+	return h.clampToRoom(l, v.current, v.currentOK)
+}
+
+// clampToRoom is the quota net of the packing reserve, limited by the room (ok: the room is known).
+func (h *Handler) clampToRoom(l tenant.Limits, room nodecap.Amount, ok bool) tenant.Limits {
 	quotaCPU, quotaMem := h.packingReserve.Apply(l.CPU, l.Memory)
 	apply := func(has bool, quota, real int64) (bool, int64) {
 		switch {
-		case has && v.ok:
+		case has && ok:
 			return true, min(quota, real)
-		case !has && v.ok:
+		case !has && ok:
 			return true, real
 		case !has:
 			return false, 0
 		}
 		return true, quota
 	}
-	l.HasCPU, l.CPU = apply(l.HasCPU, quotaCPU, v.total.CPU)
-	l.HasMemory, l.Memory = apply(l.HasMemory, quotaMem, v.total.Memory)
+	l.HasCPU, l.CPU = apply(l.HasCPU, quotaCPU, room.CPU)
+	l.HasMemory, l.Memory = apply(l.HasMemory, quotaMem, room.Memory)
 	return l
 }

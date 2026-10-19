@@ -11,6 +11,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -18,6 +19,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/nodecap"
 )
 
 var schedSpecNo int
@@ -130,6 +132,156 @@ var _ = Describe("Scheduler", func() {
 
 			// A pod that ran once and ended is a recovery: it is recreated with no slot.
 			Expect(k8sClient.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "lab-web-1", Namespace: ns}})).To(Succeed())
+		})
+	})
+
+	Describe("the gang commit", func() {
+		withdraw := func(name string) {
+			d := getDevice(name)
+			orig := d.DeepCopy()
+			now := metav1.NewTime(clock)
+			d.Status.Scheduling = &laboratoryv1alpha1.PodSchedule{State: laboratoryv1alpha1.PodQueued, QueuedAt: &now, Withdrawals: 1, RetryAfter: &now}
+			ExpectWithOffset(1, k8sClient.Status().Patch(ctx, d, client.MergeFrom(orig))).To(Succeed())
+		}
+
+		It("deletes the workload of a withdrawn device, and keeps it for a Queued record never withdrawn", func() {
+			newDevice("lab-web", nil)
+			reconcileDevice("lab-web")
+			setScheduling("lab-web", laboratoryv1alpha1.PodStarting)
+			reconcileDevice("lab-web")
+			_, err := deployment("lab-web")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Queued again without a withdrawal (a lab started again): what exists stays.
+			setScheduling("lab-web", laboratoryv1alpha1.PodQueued)
+			reconcileDevice("lab-web")
+			_, err = deployment("lab-web")
+			Expect(err).NotTo(HaveOccurred())
+
+			withdraw("lab-web")
+			reconcileDevice("lab-web")
+			Eventually(func() bool {
+				dep, err := deployment("lab-web")
+				return errors.IsNotFound(err) || err == nil && dep.DeletionTimestamp != nil
+			}, timeout, interval).Should(BeTrue(), "the withdrawn workload is deleted")
+			reconcileDevice("lab-web")
+			_, err = deployment("lab-web")
+			Expect(errors.IsNotFound(err)).To(BeTrue(), "a withdrawn device gets no new workload before it is sent again")
+		})
+
+		It("deletes the pod of a withdrawn snapshot-backed device", func() {
+			newDevice("lab-web", &laboratoryv1alpha1.DeviceStateSpec{Enabled: true, MaxLayers: 10})
+			reconcileDevice("lab-web")
+			setScheduling("lab-web", laboratoryv1alpha1.PodStarting)
+			reconcileDevice("lab-web")
+			var p corev1.Pod
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "lab-web-1"}, &p)).To(Succeed())
+			withdraw("lab-web")
+			reconcileDevice("lab-web")
+			Eventually(func() bool {
+				var p corev1.Pod
+				err := k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "lab-web-1"}, &p)
+				return errors.IsNotFound(err) || err == nil && p.DeletionTimestamp != nil
+			}, timeout, interval).Should(BeTrue(), "the withdrawn pod is deleted")
+			Expect(getDevice("lab-web").Status.State.StoppedAt).NotTo(BeNil(), "the next pod waits for the exit snapshot of this one")
+		})
+
+		It("withdraws a gang whose pod gets no node and requeues it", func() {
+			lab := &laboratoryv1alpha1.Lab{
+				ObjectMeta: metav1.ObjectMeta{Name: "w", Namespace: ns, Labels: map[string]string{names.LabelDeployGroup: "gw"}},
+				Spec: laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{
+					{Name: "web", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx:alpine"},
+				}},
+			}
+			Expect(k8sClient.Create(ctx, lab)).To(Succeed())
+			DeferCleanup(func() {
+				var devs laboratoryv1alpha1.DeviceList
+				_ = k8sClient.List(ctx, &devs, client.InNamespace(ns), client.MatchingLabels{names.LabelLab: "w"})
+				for i := range devs.Items {
+					devs.Items[i].Finalizers = nil
+					_ = k8sClient.Update(ctx, &devs.Items[i])
+				}
+				var l laboratoryv1alpha1.Lab
+				if k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "w"}, &l) == nil {
+					l.Finalizers = nil
+					_ = k8sClient.Update(ctx, &l)
+					_ = k8sClient.Delete(ctx, &l)
+				}
+			})
+			dev := devices.Name("w", "web")
+			Eventually(func() error {
+				var d laboratoryv1alpha1.Device
+				return k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: dev}, &d)
+			}, timeout, interval).Should(Succeed())
+			reconcileDevice(dev)
+			// A node far too small for the pod: the budget lets the gang go, a node autoscaler would add a node.
+			small := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("tiny-%d", schedSpecNo)}}
+			Expect(k8sClient.Create(ctx, small)).To(Succeed())
+			small.Status.Allocatable = corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("10m"), corev1.ResourceMemory: resource.MustParse("10Mi")}
+			small.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}
+			Expect(k8sClient.Status().Update(ctx, small)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, small) })
+
+			sched := &Scheduler{
+				Client: k8sClient,
+				Config: SchedulerConfig{MaxPods: 5, StartupTimeout: 5 * time.Minute, RestartThreshold: 5, StatusInterval: time.Nanosecond, ResourceCheck: true,
+					Maximum: nodecap.Maximum{Budget: nodecap.Amount{CPU: 4000, Memory: 8 << 30}}, NodeTimeout: 15 * time.Minute},
+				Defaults:        DeviceDefaults{CPU: "100m", Memory: "100Mi"},
+				LabNodeSelector: map[string]string{"kubernetes.io/hostname": small.Name},
+				Now:             func() time.Time { return clock },
+			}
+			small.Labels = map[string]string{"kubernetes.io/hostname": small.Name}
+			Expect(k8sClient.Update(ctx, small)).To(Succeed())
+			tick := func() {
+				clock = clock.Add(time.Second)
+				ExpectWithOffset(1, sched.tick(ctx)).To(Succeed())
+			}
+			Eventually(func() laboratoryv1alpha1.PodScheduleState {
+				tick()
+				return getDevice(dev).Status.Scheduling.State
+			}, timeout, interval).Should(Equal(laboratoryv1alpha1.PodStarting))
+			sent := clock
+			reconcileDevice(dev)
+			_, err := deployment(workloadName(getDevice(dev)))
+			Expect(err).NotTo(HaveOccurred())
+			// No kube-scheduler runs here: the pod the Deployment would make is Pending without a node.
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "w-web-x", Namespace: ns, Labels: map[string]string{names.LabelLab: "w", names.LabelDevice: "web"}},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "web", Image: "nginx:alpine"}}},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			pod.Status.Phase = corev1.PodPending
+			pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: "Unschedulable",
+				Message: "0/1 nodes are available: 1 Insufficient cpu."}}
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+			Eventually(func() int {
+				var pods corev1.PodList
+				_ = k8sClient.List(ctx, &pods, client.InNamespace(ns), client.MatchingLabels{names.LabelLab: "w"})
+				return len(pods.Items)
+			}, timeout, interval).Should(Equal(1))
+
+			clock = sent.Add(10 * time.Minute)
+			tick()
+			Expect(getDevice(dev).Status.Scheduling.State).To(Equal(laboratoryv1alpha1.PodStarting), "a pod waiting for a node is not failed")
+			clock = sent.Add(15 * time.Minute)
+			tick()
+			sc := getDevice(dev).Status.Scheduling
+			Expect(sc.State).To(Equal(laboratoryv1alpha1.PodQueued))
+			Expect(sc.Withdrawals).To(Equal(int32(1)))
+			Expect(sc.RetryAfter).NotTo(BeNil())
+			Eventually(func() string {
+				var l laboratoryv1alpha1.Lab
+				_ = k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "w"}, &l)
+				if l.Status.Scheduling == nil {
+					return ""
+				}
+				return l.Status.Scheduling.Reason
+			}, timeout, interval).Should(Equal(laboratoryv1alpha1.WaitWithdrawn))
+			reconcileDevice(dev)
+			Eventually(func() bool {
+				dep, err := deployment(workloadName(getDevice(dev)))
+				return errors.IsNotFound(err) || err == nil && dep.DeletionTimestamp != nil
+			}, timeout, interval).Should(BeTrue(), "the workload of the withdrawn gang is deleted")
 		})
 	})
 

@@ -18,7 +18,7 @@ import (
 // keeps failing before its first trace does not hold its group for the whole event.
 const unsetMaxWait = 15 * time.Minute
 
-// oversizedGang is a gang that cannot start whole on the current lab nodes, even empty.
+// oversizedGang is a gang that cannot start whole on the lab nodes, even empty, with the virtual room of the budget.
 type oversizedGang struct {
 	objs    []*schedObject
 	message string
@@ -78,6 +78,15 @@ type schedPod struct {
 	missing bool
 	// queuedAt is when the pod last entered the queue (its scheduling record; a resumed lab is queued again); zero: unknown.
 	queuedAt time.Time
+	// dispatchedAt is when the pod was last sent (zero: not sent, or unknown); withdrawals and retryAfter are those of its
+	// record: how often its gang was withdrawn in a row and when it may be sent again (zero: no wait).
+	dispatchedAt time.Time
+	withdrawals  int32
+	retryAfter   time.Time
+	// schedulerMessage is what the scheduler said about a pod of the gang that got no node when it was withdrawn.
+	schedulerMessage string
+	// onBudget says the pod was sent with its gang placed partly on the virtual room of the capacity budget.
+	onBudget bool
 	// ref is the scheduler's handle on the underlying object (opaque to the plan).
 	ref any
 }
@@ -174,20 +183,21 @@ type schedEnv interface {
 	// prepared reports whether the images of the object are on the nodes; it may
 	// start pulling them.
 	prepared(o *schedObject) bool
-	// noNodes says the resource check is on and no lab node is schedulable now: the pass waits.
+	// noNodes says the resource check is on, no lab node is schedulable now and no virtual room of the budget may be placed on: the
+	// pass waits.
 	noNodes() bool
 	// take counts a dispatched pod toward its tenant's quota for the rest of the pass.
 	take(p *schedPod)
 	// tenantFits says whether the pod's tenant stays within its CPU and memory quota
 	// with the pod added to what its dispatched pods already request.
 	tenantFits(p *schedPod) bool
-	// rooms is the room labs have on each node now less the lab pods bound to it (the start of the placement simulation);
-	// false: no per-node check (the resource check is off).
+	// rooms is the room labs have on each node now less the lab pods bound to it (the start of the placement simulation), the
+	// virtual room of the budget after them; false: no per-node check (the resource check is off).
 	rooms() ([]nodeRoom, bool)
 	// nodeOf is the node a dispatched pod is bound to; empty: not on a node yet.
 	nodeOf(p *schedPod) string
-	// emptyRooms is the room labs have on each node with no lab running, for the DoesNotFit verdict of a gang; nil: no
-	// per-node verdict.
+	// emptyRooms is the room labs have on each node with no lab running, the virtual room of the budget included,
+	// for the DoesNotFit verdict of a gang; nil: no per-node verdict.
 	emptyRooms() []nodeRoom
 	// neverFits says the pod's request exceeds what any single node can give (allocatable less the reserves, whatever runs
 	// there), so waiting will not help.
@@ -219,6 +229,9 @@ type failedPod struct {
 // schedPlan is the outcome of one scheduling pass.
 type schedPlan struct {
 	dispatch []*schedPod
+	// onBudget are the dispatched pods whose gang the simulation placed partly on the virtual room of the capacity budget: they
+	// may wait for a node an autoscaler adds (recorded on their scheduling record).
+	onBudget map[*schedPod]bool
 	failed   []failedPod
 	// unsettled are the objects left out of their gang because their pods were still not set up unsetSettleWindow after
 	// they were created.
@@ -459,7 +472,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		blockedObjs = append(blockedObjs, orderObjs(g.objs)...)
 	}
 
-	plan := schedPlan{status: map[string]objectStatus{}}
+	plan := schedPlan{status: map[string]objectStatus{}, onBudget: map[*schedPod]bool{}}
 	gone := map[*schedPod]bool{} // dispatched or failed in this pass
 
 	// The in-flight limit as the plan sees it: the free slots plus the pods starting now.
@@ -479,6 +492,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	resHeld := map[string][2]string{} // objects whose gang its reservation does not admit now: the Wait reason and message
 	fitHeld := map[string]bool{}      // objects whose gang does not fit even the empty nodes (may change when nodes return)
 	fitMsg := map[string]string{}     // the message of such an object: its gang, what it requests, the largest empty node
+	withdrawn := map[string]string{}  // objects of a withdrawn gang that waits for its retry time: the message
 	unsetHeld := map[string]string{}  // objects of a gang with no pod out that waits for a pod nobody initialised yet: whose
 	hold := func(held map[string]bool, gg *gang) {
 		for _, o := range gg.objs {
@@ -566,8 +580,9 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 
 	// The room of a pass is ONE placement simulation over the nodes, in which every pod goes whole onto one node (its CPU and
 	// memory from the same room):
-	//  1. it starts from the room labs have on each node less every lab pod bound there (env.rooms), and places the pods
-	//     that are dispatched but not on a node yet, first-fit decreasing;
+	//  1. it starts from the room labs have on each node less every lab pod bound there (env.rooms: the real nodes, then the
+	//     virtual room the budget of the autoscaled nodes still allows, one aggregate room), and places the pods that are dispatched but not
+	//     on a node yet, first-fit decreasing: real room first, so the ones waiting for a new node hold the virtual room;
 	//  2. then the remainders of the admitted gangs (a gang that has pods out), in their strict order: arrival, tenant, key.
 	//     A remainder that places is held: the rooms shrink by its placement and the gang dispatches against it. One that
 	//     does not place holds nothing in this pass and waits, so it never blocks the gangs after it;
@@ -617,6 +632,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	// A remainder is held only while the gang can dispatch: its tenant within the quota (counting the room held for the
 	// tenant's earlier gangs), and it fits the empty nodes beside its own pods.
 	held := map[*gang]bool{}                 // admitted gangs whose remainder is placed: rooms is already less it
+	heldVirtual := map[*gang]bool{}          // held remainders placed partly on the virtual room of the budget
 	heldQuota := map[string]amount{}         // tenant -> the remainders held for it
 	heldOwn := map[*gang]map[string]amount{} // the part of heldQuota that is the gang's own
 	if perNode {
@@ -637,7 +653,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 				started = started || o.started()
 			}
 			q := append(queuedOf(gg), unsetOf(gg)...)
-			if !started || len(q) == 0 {
+			if _, _, wait := gg.retry(fair.now); !started || len(q) == 0 || wait {
 				continue
 			}
 			sums := map[string]amount{}
@@ -666,6 +682,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			if !ok {
 				continue // holds nothing: the gangs after it go on
 			}
+			heldVirtual[gg] = usesVirtual(placed(rooms, left))
 			rooms = left
 			held[gg] = true
 			heldOwn[gg] = sums
@@ -752,7 +769,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	if perNode && fair.aging > 0 && !env.noNodes() {
 		var candidates []*gang
 		for _, gg := range gangs {
-			if !held[gg] && !gg.objs[0].isGroup() && fair.now.Sub(gg.waitingSince()) >= fair.aging {
+			if _, _, wait := gg.retry(fair.now); !held[gg] && !wait && !gg.objs[0].isGroup() && fair.now.Sub(gg.waitingSince()) >= fair.aging {
 				candidates = append(candidates, gg)
 			}
 		}
@@ -804,6 +821,13 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	}
 	// try admits the gang whole or not at all. It reports a stop of the pass: no slots, or no node to place on.
 	try := func(gg *gang) (stop bool) {
+		// A withdrawn gang waits for its retry time whole, at its place in the order (gang commit, sched_commit.go).
+		if at, attempt, wait := gg.retry(fair.now); wait {
+			for _, o := range gg.objs {
+				withdrawn[o.id] = withdrawnMessage(fair.nodeTimeout, attempt, at, gg.schedulerMessage())
+			}
+			return false
+		}
 		queued := queuedOf(gg)
 		// A gang with no pod out waits whole until every pod of it is initialised, so it never starts without some of its
 		// pods; the remainder of an admitted gang sends what is queued and keeps the room and quota of the rest.
@@ -865,7 +889,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 						what = "the lab group " + strings.TrimPrefix(gg.objs[0].id, "group/")
 					}
 				}
-				oversize = fmt.Sprintf("%s requests cpu %dm and memory %s in all and cannot start whole on the current lab nodes: "+
+				oversize = fmt.Sprintf("%s requests cpu %dm and memory %s in all and cannot start whole on the lab nodes with the room the capacity budget still allows: "+
 					"the largest empty one has room for cpu %dm and memory %s", what, sum.cpu, memText(sum.mem), big.CPU, memText(big.Memory))
 			}
 		}
@@ -954,14 +978,21 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			if agedRoom != nil && gg != aged && !gg.objs[0].isGroup() {
 				keep = agedRoom
 			}
+			// Under the breaker a new gang goes on the nodes that exist only; the virtual room still counts for the rest.
+			view := func(r []nodeRoom) []nodeRoom {
+				if fair.breaker {
+					return closeVirtual(r)
+				}
+				return r
+			}
 			if gg.reservation != "" {
-				mine := res.own(rooms, gg.reservation)
+				mine := view(res.own(rooms, gg.reservation))
 				if l, ok := fitsGang(mine, needs); ok {
 					at = placed(mine, l)
 				}
 			}
 			if at == nil {
-				free := res.view(rooms, gg.reservation, keep)
+				free := view(res.view(rooms, gg.reservation, keep))
 				l, ok := fitsGang(free, needs)
 				if !ok {
 					hold(roomHeld, gg)
@@ -970,6 +1001,10 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 				at = placed(free, l)
 			}
 			left = without(rooms, at)
+		}
+		virtual := heldVirtual[gg]
+		if at != nil {
+			virtual = usesVirtual(at)
 		}
 		// A gang within the limit needs a slot for every pod. One larger than the whole limit could never get that: it
 		// goes in slices of the free slots, while the room is still checked for all of it.
@@ -996,6 +1031,9 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		for _, p := range send {
 			env.take(p)
 			plan.dispatch = append(plan.dispatch, p)
+			if virtual {
+				plan.onBudget[p] = true
+			}
 			gone[p] = true
 		}
 		slots -= len(send)
@@ -1044,6 +1082,11 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 				plan.status[o.id] = st
 				continue
 			}
+		}
+		if msg, ok := withdrawn[o.id]; ok {
+			st.Reason, st.Message = laboratoryv1alpha1.WaitWithdrawn, msg
+			plan.status[o.id] = st
+			continue
 		}
 		if unsettled[o] {
 			st.Reason, st.Message = laboratoryv1alpha1.WaitForTurn, "the pods of this object are still not set up: its group goes on without it"

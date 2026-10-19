@@ -80,11 +80,14 @@ func (h *Handler) tenantCapacity(ctx context.Context) (*protobuf.CapacityRespons
 	if err != nil {
 		return nil, err
 	}
-	limits, err := h.tenantQuota(ctx, ten)
+	quota, err := h.resolvedQuota(ctx, ten)
 	if err != nil {
 		return nil, err
 	}
-	resp := capacityOf(name, limits, load, h.groupOverhead)
+	resp := capacityOf(name, h.reported(ctx, quota), load, h.groupOverhead)
+	// the same against the nodes that exist now, without the room the capacity budget still allows
+	current := h.reportedCurrent(ctx, quota)
+	resp.HasCurrent, resp.CurrentCpuMillicores, resp.CurrentMemoryBytes = true, current.CPU, current.Memory
 	if v := h.room(ctx); v.ok {
 		resp.HasMaxDevice, resp.MaxDeviceCpuMillicores, resp.MaxDeviceMemoryBytes = true, v.largest.CPU, v.largest.Memory
 	}
@@ -104,6 +107,16 @@ func (h *Handler) tenantCapacity(ctx context.Context) (*protobuf.CapacityRespons
 // no limit) resolved against the allocatable of the nodes lab pods run on, limited by the real room and net of the hidden
 // packing reserve (see reported).
 func (h *Handler) tenantQuota(ctx context.Context, ten *laboratoryv1alpha1.Tenant) (tenant.Limits, error) {
+	quota, err := h.resolvedQuota(ctx, ten)
+	if err != nil {
+		return tenant.Limits{}, err
+	}
+	return h.reported(ctx, quota), nil
+}
+
+// resolvedQuota is the tenant's quota (nil = the tenant has no object: no limit) resolved against the allocatable of the nodes
+// lab pods run on, before the room and the packing reserve.
+func (h *Handler) resolvedQuota(ctx context.Context, ten *laboratoryv1alpha1.Tenant) (tenant.Limits, error) {
 	var alloc tenant.Totals
 	var quota *laboratoryv1alpha1.TenantQuota
 	if ten != nil {
@@ -115,7 +128,7 @@ func (h *Handler) tenantQuota(ctx context.Context, ten *laboratoryv1alpha1.Tenan
 			return tenant.Limits{}, err
 		}
 	}
-	return h.reported(ctx, tenant.ResolveQuota(quota, alloc)), nil
+	return tenant.ResolveQuota(quota, alloc), nil
 }
 
 // load is what a tenant's pods reserve and use.
@@ -171,6 +184,12 @@ func (h *Handler) allocatable(ctx context.Context) (tenant.Totals, error) {
 		}
 		t.CPU += n.Status.Allocatable.Cpu().MilliValue()
 		t.Memory += n.Status.Allocatable.Memory().Value()
+	}
+	if h.maximum.Set() {
+		// A percentage quota is a share of the maximum: what the capacity budget still allows beyond the autoscaled nodes counts
+		// (read with the cached room view).
+		left := h.room(ctx).remaining
+		t.CPU, t.Memory = t.CPU+left.CPU, t.Memory+left.Memory
 	}
 	return t, nil
 }

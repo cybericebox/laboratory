@@ -2,6 +2,9 @@ package laboratory
 
 import (
 	"context"
+	"reflect"
+
+	corev1 "k8s.io/api/core/v1"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -18,6 +21,45 @@ import (
 // queuedByScheduler reports whether the scheduler holds the device's pod back.
 func (r *DeviceReconciler) queuedByScheduler(device *laboratoryv1alpha1.Device) bool {
 	return r.Scheduled && device.Status.Scheduling != nil && device.Status.Scheduling.State == laboratoryv1alpha1.PodQueued
+}
+
+// withdrawnByScheduler reports whether the scheduler withdrew the device's pod: its record is Queued again after a withdrawal
+// (not every pod of its group got a node in time), so the workload it has is to be deleted. A Queued record that was never
+// withdrawn (a lab being started again keeps its stopped workload) is not.
+func (r *DeviceReconciler) withdrawnByScheduler(device *laboratoryv1alpha1.Device) bool {
+	return r.queuedByScheduler(device) && device.Status.Scheduling.Withdrawals > 0
+}
+
+// inventoryWithdrawnPods keeps, before the scheduler's withdrawal deletes the pods of the device, the native identity the
+// node-agent reported for each of them (status.runtimeReports) in status.runtimeInventory, as a lab stop does before it deletes:
+// a later stop of the lab then has the inventory whose release it waits for, instead of no trace of a runtime that ran.
+func (r *DeviceReconciler) inventoryWithdrawnPods(ctx context.Context, device *laboratoryv1alpha1.Device, pods []corev1.Pod) error {
+	owner := ""
+	for _, o := range device.OwnerReferences {
+		if o.Kind == "Lab" {
+			owner = string(o.UID)
+		}
+	}
+	orig := device.DeepCopy()
+	for i := range pods {
+		for _, report := range device.Status.RuntimeReports {
+			id := report.Identity
+			if id.PodUID != string(pods[i].UID) || owner != "" && id.OwnerUID != owner || len(id.ContainerIDs) == 0 {
+				continue
+			}
+			known := false
+			for _, old := range device.Status.RuntimeInventory {
+				known = known || reflect.DeepEqual(old, id)
+			}
+			if !known {
+				device.Status.RuntimeInventory = append(device.Status.RuntimeInventory, id)
+			}
+		}
+	}
+	if reflect.DeepEqual(orig.Status.RuntimeInventory, device.Status.RuntimeInventory) {
+		return nil
+	}
+	return r.Status().Patch(ctx, device, client.MergeFromWithOptions(orig, client.MergeFromWithOptimisticLock{}))
 }
 
 // initScheduling gives a device with no record its first one.
