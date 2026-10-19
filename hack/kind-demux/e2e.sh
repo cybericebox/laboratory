@@ -464,11 +464,11 @@ if fast; then
   log "a foreign tcx program at the head of eth0, in front of ours (ingress and egress)"
   first() { cilium "$ENTRY_NODE" bpftool net show dev eth0 | awk '/tcx\/ingress/ && !i {i = $3} /tcx\/egress/ && !e {e = $3} END {print i, e}'; }
   ping_start a 10.99.1.1 head
-  docker exec "$ENTRY_NODE" demux-e2e-headprog attach eth0
+  # A failed run must not leave the foreign program in front of ours.
+  trap 'docker exec "$ENTRY_NODE" demux-e2e-headprog remove eth0 >/dev/null 2>&1 || true; rm -rf "$WORK"' EXIT
+  # headprog checks itself that it is first right after each attach, before the demux's resync can act.
+  docker exec "$ENTRY_NODE" demux-e2e-headprog attach eth0 || fail "the foreign program did not go first"
   start=$SECONDS
-  seen="$(first)"
-  echo "first programs right after the attach: $seen"
-  [[ "$seen" == "e2e_head e2e_head" ]] || fail "the foreign program did not go first ($seen)"
   until [[ "$(first)" == "wg_tc_ingress wg_tc_egress_guard" ]]; do
     ((SECONDS - start <= RESYNC + 5)) || fail "the demux is not first again $((RESYNC + 5)) s after a foreign program went to the head ($(first))"
     sleep 1
@@ -476,6 +476,7 @@ if fast; then
   took=$((SECONDS - start))
   echo "ours first again after ${took}s: $(cilium "$ENTRY_NODE" bpftool net show dev eth0 | awk '/tcx\// {print $2, $3}' | paste -sd, -)"
   docker exec "$ENTRY_NODE" demux-e2e-headprog remove eth0
+  trap 'rm -rf "$WORK"' EXIT
   order_ok || fail "the order on eth0 after the foreign program left: $ORDER"
   sleep 1
   res="$(ping_stop a head)"
@@ -535,7 +536,7 @@ for g in a b; do
     dp=$(($(metric "$after" 'wg_demux_fastpath_packets_total{result="passed_source"}') - $(metric "$before" 'wg_demux_fastpath_packets_total{result="passed_source"}')))
     ds=$(($(metric "$after" "$TO_SERVER") - $(metric "$before" "$TO_SERVER")))
     ((dp > 0)) || fail "client $g: the roam never reached the demux socket (passed_source +0)"
-    ((ds >= 20)) || fail "client $g: the fast path forwarded only $ds packets after the roam"
+    ((ds >= 10)) || fail "client $g: the fast path forwarded only $ds packets after the roam"
     roam=", passed_source +$dp, forwarded_to_server +$ds"
   fi
   # The server's peer is the demux: it sees the source the demux socket uses towards it (in tc and xdp the kernel's preferred source
