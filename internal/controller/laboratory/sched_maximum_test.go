@@ -2,12 +2,14 @@ package laboratory
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -188,4 +190,63 @@ func interceptorClient(c client.WithWatch, lists *int) client.WithWatch {
 		}
 		return cl.List(ctx, list, opts...)
 	}})
+}
+
+// shortMaxFixture is shortFixture with room for one more lab node of 1 CPU and 1Gi.
+func shortMaxFixture(t *testing.T) *schedFixture {
+	t.Helper()
+	f := shortFixture(t)
+	f.s.Config.Maximum = nodecap.Maximum{Nodes: 2, Added: nodecap.Amount{CPU: 1000, Memory: 1 << 30}}
+	return f
+}
+
+// Reservations the nodes that exist cannot hold, but the maximum can, are covered: no shortfall and no unreserved work marked.
+func TestShortfallCoveredByMaximum(t *testing.T) {
+	f := shortMaxFixture(t)
+	unreservedHolding(f)
+	f.tick()
+	f.tick()
+	for _, n := range []string{"u", "v"} {
+		if got := f.evictAtOf(n); got != "" {
+			t.Fatalf("%s is marked: %q", n, got)
+		}
+	}
+	if c := shortfallCond(f.tenant("t1")); c == nil || c.Status != metav1.ConditionFalse || !strings.Contains(c.Message, "nodes not yet present") {
+		t.Fatalf("t1 condition = %+v", c)
+	}
+}
+
+// Beyond the maximum the shortfall and the cleanup of unreserved work are as before.
+func TestEvictOnlyBeyondMaximum(t *testing.T) {
+	f := shortMaxFixture(t)
+	f.addLab("u", "", nil, "p1", "p2")
+	f.addLab("v", "", nil, "p1")
+	f.tick()
+	f.running("u", "p1")
+	f.running("u", "p2")
+	f.running("v", "p1")
+	f.addReservation("r1", "t1", "1900m", "1900Mi")
+	f.tick()
+	for _, n := range []string{"u", "v"} {
+		if got := f.evictAtOf(n); got == "" {
+			t.Fatalf("%s is not marked", n)
+		}
+	}
+}
+
+// The condition says what part of the capacity is on nodes not yet present, and when the breaker holds admission.
+func TestShortfallMessageNamesVirtual(t *testing.T) {
+	r := shortfallReport{known: true, checked: true, peak: amount{cpu: 3000, mem: 3 << 30}, capacity: amount{cpu: 2000, mem: 2 << 30},
+		short: amount{cpu: 1000, mem: 1 << 30}, virtual: amount{cpu: 1000, mem: 1 << 30}}
+	if c := r.condition(); !strings.Contains(c.Message, "of which cpu 1000m and memory 1073741824 bytes on nodes not yet present (static maximum)") {
+		t.Fatalf("message = %q", c.Message)
+	}
+	r.breaker, r.timeout = true, 15*time.Minute
+	if c := r.condition(); !strings.Contains(c.Message, "no new lab node came within 15m0s: admission uses the current nodes only") {
+		t.Fatalf("message = %q", c.Message)
+	}
+	r.short = amount{}
+	if c := r.condition(); c.Status != metav1.ConditionFalse || !strings.Contains(c.Message, "admission uses the current nodes only") {
+		t.Fatalf("fit message = %+v", c)
+	}
 }

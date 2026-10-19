@@ -106,6 +106,11 @@ func Run() {
 		log.Fatalf("%v", err)
 	}
 	h.SetPackingReserve(packing)
+	maximum, err := nodecap.ParseMaximum(cfg.CapacityMaxNodes, cfg.CapacityAddedNodeCPU, cfg.CapacityAddedNodeMemory)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	h.SetMaximum(maximum)
 	go h.RunTenantStatus(context.Background(), cfg.TenantStatusInterval)
 	if cfg.Cache.Enabled {
 		pw, err := prewarmConfig(cfg, k8s)
