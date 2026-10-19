@@ -2,6 +2,7 @@ package laboratory
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
@@ -260,4 +262,132 @@ func TestUnknownCapacityAskedOncePerPass(t *testing.T) {
 		t.Fatalf("the nodes were listed %d times in one pass", lists)
 	}
 	f.wantStates("a/p1=Q b/p1=Q s/p1=D")
+}
+
+// bareLab creates a Lab of the deploy group with one container device in its spec and no Device (its reconciler made none),
+// created now.
+func (f *schedFixture) bareLab(name, group string, phase laboratoryv1alpha1.Phase) {
+	f.t.Helper()
+	f.create(&laboratoryv1alpha1.Lab{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns-" + name, UID: types.UID("uid-" + name),
+			CreationTimestamp: metav1.NewTime(f.now), Labels: map[string]string{names.LabelDeployGroup: group}},
+		Spec: laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{
+			{Name: "p1", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "reg/" + name}}},
+		Status: laboratoryv1alpha1.LabStatus{Phase: phase},
+	})
+}
+
+// A failed lab (no Devices: its graph did not validate) is no member of its gang: the gang starts at once.
+func TestFailedLabNeverBlocksItsGang(t *testing.T) {
+	f := newSchedFixture(t, schedCfg())
+	f.addLab("a", "g", nil, "p1")
+	f.bareLab("b", "g", laboratoryv1alpha1.PhaseFailed)
+	f.tick()
+	f.wantStates("a/p1=S")
+}
+
+// A lab whose Devices never come holds its gang only within the settle window, then the gang goes on and the lab gets one
+// Warning event.
+func TestStuckLabHoldsItsGangOnlyForTheWindow(t *testing.T) {
+	f := newSchedFixture(t, schedCfg())
+	rec := record.NewFakeRecorder(10)
+	f.s.Recorder = rec
+	f.addLab("a", "g", nil, "p1")
+	f.bareLab("b", "g", "")
+	f.tick()
+	f.wantStates("a/p1=Q")
+	if st := f.labStatus("a"); st == nil || st.Message != "waiting for the pods of lab/ns-b/b to be set up" {
+		t.Fatalf("a status = %+v", st)
+	}
+	f.now = f.now.Add(unsetSettleWindow)
+	f.tick()
+	f.wantStates("a/p1=S")
+	f.tick()
+	if n := len(rec.Events); n != 1 {
+		t.Fatalf("%d events, want one warning", n)
+	}
+	if e := <-rec.Events; !strings.Contains(e, "PodsNotSetUp") {
+		t.Fatalf("event = %q", e)
+	}
+}
+
+// A deleted Reservation CRD takes every Reservation with it and makes their Get a NotFound: that is no reservation gone.
+// Before any deletion the scheduler asks discovery: the kind not served deletes nothing and drops every notice.
+func TestDeletedReservationCRDDeletesNothing(t *testing.T) {
+	f := shortFixture(t)
+	served := false
+	f.s.ReservationKindServed = func(context.Context) (bool, error) { return served, nil }
+	orphaned(f)
+	f.tick()
+	f.now = f.now.Add(5 * time.Minute)
+	f.tick()
+	if f.lab("r") == nil {
+		t.Fatal("deleted while the Reservation kind is not served")
+	}
+	if f.s.orphanSeen.first != nil {
+		t.Fatal("the notices were kept")
+	}
+	served = true
+	f.tick()
+	if f.lab("r") == nil {
+		t.Fatal("deleted at once when the kind came back")
+	}
+	f.now = f.now.Add(5 * time.Minute)
+	f.tick()
+	if f.lab("r") != nil {
+		t.Fatal("not deleted one notice after the kind came back")
+	}
+}
+
+// The labs of an orphaned LabGroup's namespace are read past the cache before it goes: a lab of another tenant that only the
+// server knows keeps the group.
+func TestOrphanedGroupChecksItsLabsUncached(t *testing.T) {
+	f := shortFixture(t)
+	ctx := context.Background()
+	orphaned(f)
+	g := &laboratoryv1alpha1.LabGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "own", UID: "uid-own", CreationTimestamp: metav1.NewTime(planEpoch),
+			Labels: map[string]string{names.LabelReservation: "r1", names.LabelTenant: "t1"}},
+		Status: laboratoryv1alpha1.LabGroupStatus{Namespace: "ns-r", Pods: []laboratoryv1alpha1.NamedPodSchedule{
+			{Name: names.ComponentGateway, PodSchedule: laboratoryv1alpha1.PodSchedule{State: laboratoryv1alpha1.PodStarted}},
+		}},
+	}
+	g.Spec.VPN.Disabled = true
+	f.create(g)
+	f.s.Reader = interceptor.NewClient(f.c.(client.WithWatch), interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if err := c.List(ctx, list, opts...); err != nil {
+				return err
+			}
+			lo := (&client.ListOptions{}).ApplyOptions(opts)
+			if ll, ok := list.(*laboratoryv1alpha1.LabList); ok && lo.Namespace == "ns-r" {
+				ll.Items = append(ll.Items, laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "new", Namespace: "ns-r",
+					Labels: map[string]string{names.LabelTenant: "t2"}}})
+			}
+			return nil
+		},
+	})
+	f.tick()
+	f.now = f.now.Add(5 * time.Minute)
+	f.tick()
+	var got laboratoryv1alpha1.LabGroup
+	if err := f.c.Get(ctx, types.NamespacedName{Name: "own"}, &got); err != nil {
+		t.Fatalf("the group that holds a lab only the server knows was deleted: %v", err)
+	}
+}
+
+// An operator that started without the Reservation controller admits nothing under a reservation until it is restarted,
+// even once the CRD is there: no window would end.
+func TestNoReservationControllerAdmitsNoReservedWork(t *testing.T) {
+	f := newSchedFixture(t, schedCfg())
+	f.s.NoReservationController = true
+	f.addReservation("r1", "t1", "1", "1Gi")
+	f.addLab("r", "", nil, "p1")
+	f.labUnder("r", "r1", "t1")
+	f.addLab("u", "", nil, "p1")
+	f.tick()
+	f.wantStates("r/p1=Q u/p1=S")
+	if st := f.labStatus("r"); st == nil || st.Reason != laboratoryv1alpha1.WaitReservationMissing {
+		t.Fatalf("r status = %+v", st)
+	}
 }

@@ -282,7 +282,10 @@ The rules:
 2. When it has **no undispatched pod left**, the next group starts once there are free slots for all its pods
    (a group larger than `maxPods` goes in slices of the free slots, its room checked as a whole) and room for all of
    them on the nodes; it does not wait for readiness. A group with a pod the operator has not set up yet (a lab created a
-   moment ago) waits whole (`WaitingForTurn`) until every pod of it is set up, so it never starts without some of them.
+   moment ago) waits whole (`WaitingForTurn`, the message names the lab) until every pod of it is set up, so it never starts
+   without some of them, but for at most 2 minutes from that lab's creation: a lab still not set up then (its Devices cannot be
+   made) gets a Warning event `PodsNotSetUp` and the group goes on without it (it joins later, if it is ever set up). A lab in
+   phase `Failed` is no member of its group at all.
 3. The order of groups is arrival order (the creation time of their first object), except that a group
    with `deploy-after` starts only when all listed groups are complete. A group that waits for another
    does not hold up the groups after it. An unknown key waits too, and the status says so
@@ -368,8 +371,9 @@ reservation: such a Lab or LabGroup waits with `ReservationMissing` ("the reserv
 unreserved work and is never taken by the cleanup below.
 Without the Reservation CRD (an upgrade that did not apply `crds/`) the operator still starts and keeps running: the scheduler
 logs one warning and runs as if there were no reservations (unreserved labs start, labelled ones wait with
-`ReservationMissing`), and the operator starts without the Reservation controller (one line in its log at start), so
-reservations neither end nor clean up. After `kubectl apply` of the CRDs restart the operator to get the controller.
+`ReservationMissing`), and the operator starts without the Reservation controller (one line in its log at start). Labelled
+work keeps waiting with `ReservationMissing` also after `kubectl apply` of the CRDs, since no window would end without the
+controller: restart the operator to get it.
 
 **A Reservation deleted by hand.** A Reservation that is deleted (by hand or by the backend) instead of ending never reaches
 its end, so the scheduler takes care of what ran under it: a Lab or LabGroup whose reservation label names a Reservation that
@@ -381,7 +385,10 @@ the deletion the Reservation (it must still be gone) and the object (the same UI
 and the object goes with its UID and resourceVersion as precondition; what is not deleted is tried again 30 s later. A
 LabGroup whose namespace holds anything but labs of its own tenant under the same gone reservation is kept. Labs of the gone
 name that never ran only wait. Without the Reservation CRD nothing is taken (the list then says nothing about what exists),
-and with `scheduler.enabled=false` nothing either.
+and with `scheduler.enabled=false` nothing either. Deleting the Reservation CRD does not delete running labs: before any
+deletion the scheduler asks the API server's discovery whether the kind is served, deletes nothing while it is not and starts
+every notice again; reinstalling the CRD restores tracking. The label alone decides: a running lab that gets the label of a
+reservation that does not exist (a wrong label set by hand) is deleted after the notice, whatever its tenant.
 
 **End of a reservation.** The operator moves `status.phase` with the clock: `Pending` before `spec.from`, `Active`, `Ending`
 from `spec.to` minus the notice (chart `reservations.endingNoticeSeconds`, default `300`; condition `Ending=True`,

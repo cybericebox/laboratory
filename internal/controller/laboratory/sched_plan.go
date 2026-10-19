@@ -12,6 +12,10 @@ import (
 // objects and the free slots, which pods start now, and what each waiting object
 // reports. Everything that touches the cluster is in scheduler.go.
 
+// unsetSettleWindow is how long after its creation a gang waits for an object whose pods nobody has set up yet (its Devices
+// not made, its scheduling state not recorded); after that the gang goes on without it.
+const unsetSettleWindow = 2 * time.Minute
+
 // Kinds of pod owner.
 const (
 	kindDevicePod = "device"
@@ -175,6 +179,9 @@ type failedPod struct {
 type schedPlan struct {
 	dispatch []*schedPod
 	failed   []failedPod
+	// unsettled are the objects left out of their gang because their pods were still not set up unsetSettleWindow after
+	// they were created.
+	unsettled []*schedObject
 	// status holds the queue place of every object with undispatched pods; an
 	// object absent from it has nothing waiting.
 	status map[string]objectStatus
@@ -427,7 +434,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	roomHeld := map[string]bool{}     // objects whose gang does not fit now: the others go past them (backfill)
 	resHeld := map[string][2]string{} // objects whose gang its reservation does not admit now: the Wait reason and message
 	fitHeld := map[string]bool{}      // objects whose gang does not fit even the empty nodes (may change when nodes return)
-	unsetHeld := map[string]bool{}    // objects of a gang with pods out yet that has a pod nobody initialised yet
+	unsetHeld := map[string]string{}  // objects of a gang with no pod out that waits for a pod nobody initialised yet: whose
 	hold := func(held map[string]bool, gg *gang) {
 		for _, o := range gg.objs {
 			held[o.id] = true
@@ -448,17 +455,39 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	}
 	// unsetOf are the pods of the gang nobody initialised yet (the reconciler has not recorded their state): they cannot be
 	// dispatched, but they belong to the gang. A gang with no pod out waits for them (it never starts without them), and the
-	// remainder of an admitted gang keeps room for them too.
+	// remainder of an admitted gang keeps room for them too, but only within unsetSettleWindow of their object's creation:
+	// an object still not set up after that (its reconciler cannot make its Devices) is left out of its gang, so it does not
+	// hold the others forever, and it is reported in plan.unsettled. It joins its gang as a remainder once it is set up.
+	unsettled := map[*schedObject]bool{}
 	unsetOf := func(gg *gang) []*schedPod {
 		var unset []*schedPod
 		for _, o := range gg.objs {
 			for _, p := range o.pods {
-				if p.state == "" && !gone[p] {
-					unset = append(unset, p)
+				if p.state != "" || gone[p] {
+					continue
 				}
+				if !fair.now.IsZero() && fair.now.Sub(o.arrival) >= unsetSettleWindow {
+					if !unsettled[o] {
+						unsettled[o] = true
+						plan.unsettled = append(plan.unsettled, o)
+					}
+					continue
+				}
+				unset = append(unset, p)
 			}
 		}
 		return unset
+	}
+	// unsetObject names the object of the gang that has the unset pod.
+	unsetObject := func(gg *gang, unset *schedPod) string {
+		for _, o := range gg.objs {
+			for _, p := range o.pods {
+				if p == unset {
+					return o.id
+				}
+			}
+		}
+		return ""
 	}
 	needsOf := func(pods []*schedPod) []podNeed {
 		needs := make([]podNeed, 0, len(pods))
@@ -709,14 +738,17 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	// try admits the gang whole or not at all. It reports a stop of the pass: no slots, or no node to place on.
 	try := func(gg *gang) (stop bool) {
 		queued := queuedOf(gg)
-		if len(queued) == 0 {
-			return false
-		}
 		// A gang with no pod out waits whole until every pod of it is initialised, so it never starts without some of its
 		// pods; the remainder of an admitted gang sends what is queued and keeps the room and quota of the rest.
 		unset := unsetOf(gg)
 		if len(unset) > 0 && !gg.started() {
-			hold(unsetHeld, gg)
+			who := unsetObject(gg, unset[0])
+			for _, o := range gg.objs {
+				unsetHeld[o.id] = who
+			}
+			return false
+		}
+		if len(queued) == 0 {
 			return false
 		}
 		if gg == aged {
@@ -943,8 +975,8 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			plan.status[o.id] = st
 			continue
 		}
-		if unsetHeld[o.id] {
-			st.Reason, st.Message = laboratoryv1alpha1.WaitForTurn, "waiting for every pod of the group to be set up"
+		if who, ok := unsetHeld[o.id]; ok {
+			st.Reason, st.Message = laboratoryv1alpha1.WaitForTurn, "waiting for the pods of "+who+" to be set up"
 			plan.status[o.id] = st
 			continue
 		}

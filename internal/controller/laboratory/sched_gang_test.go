@@ -2,6 +2,7 @@ package laboratory
 
 import (
 	"testing"
+	"time"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
@@ -511,4 +512,36 @@ func TestGangWaitsForUninitialisedPods(t *testing.T) {
 	if r := plan.status["lab/x"].Reason; r != laboratoryv1alpha1.WaitInsufficient {
 		t.Fatalf("x reason = %q", r)
 	}
+}
+
+// A gang waits for an object whose pods nobody set up only within unsetSettleWindow of its creation: after that it goes on
+// without it (the object is reported as unsettled), and an admitted remainder stops keeping room for its pods.
+func TestGangStopsWaitingForAStuckObject(t *testing.T) {
+	nodes := []nodeRoom{room("n1", 4000, 4*gi)}
+	at := func(age time.Duration) fairness { return fairness{now: planEpoch.Add(2 * time.Second).Add(age)} }
+	a := obj("lab/a", "g", 1, nil, need(pods("a", "p1"), 100, gi)...)
+	b := obj("lab/b", "g", 2, nil, need(pods("b", "p1:"), 100, gi)...)
+	plan := planSchedule([]*schedObject{a, b}, 10, false, &fakeEnv{nodes: nodes, empty: nodes, fair: at(unsetSettleWindow - time.Second)})
+	wantDispatch(t, plan)
+	if st := plan.status["lab/a"]; st.Message != "waiting for the pods of lab/b to be set up" {
+		t.Fatalf("a status = %+v", st)
+	}
+	plan = planSchedule([]*schedObject{a, b}, 10, false, &fakeEnv{nodes: nodes, empty: nodes, fair: at(unsetSettleWindow)})
+	wantDispatch(t, plan, "a/p1")
+	if len(plan.unsettled) != 1 || plan.unsettled[0] != b {
+		t.Fatalf("unsettled = %v", plan.unsettled)
+	}
+}
+
+// An admitted remainder keeps room for an object whose pods are not set up only within its settle window: 1Gi free, c queued,
+// the stuck b keeps no room once its window passed, so c goes.
+func TestRemainderReleasesTheRoomOfAStuckObject(t *testing.T) {
+	nodes := []nodeRoom{room("n1", 4000, 4*gi)}
+	at := func(age time.Duration) fairness { return fairness{now: planEpoch.Add(2 * time.Second).Add(age)} }
+	run := obj("lab/a", "g", 1, nil, need(pods("a", "p1:S"), 100, gi)...)
+	c := obj("lab/c", "g", 3, nil, need(pods("c", "p1"), 100, gi)...)
+	late := obj("lab/b", "g", 2, nil, need(pods("b", "p1:"), 100, gi)...)
+	free := []nodeRoom{room("n1", 4000, gi)}
+	wantDispatch(t, planSchedule([]*schedObject{run, c, late}, 10, false, &fakeEnv{nodes: free, empty: nodes, fair: at(time.Second)}))
+	wantDispatch(t, planSchedule([]*schedObject{run, c, late}, 10, false, &fakeEnv{nodes: free, empty: nodes, fair: at(unsetSettleWindow)}), "c/p1")
 }

@@ -282,12 +282,20 @@ func Run() {
 		setupLog.Error(err, "unable to create controller", "controller", "Lab")
 		os.Exit(1)
 	}
+	// the scheduler asks discovery itself before it deletes the work of a gone reservation (a deleted CRD is no such thing)
+	reservationsDC, err := discovery.NewDiscoveryClientForConfig(restCfg)
+	if err != nil {
+		setupLog.Error(err, "unable to build the discovery client")
+		os.Exit(1)
+	}
+	var scheduler *laboratorycontroller.Scheduler
 	if cfg.SchedulerEnabled {
-		if err = mgr.Add(&laboratorycontroller.Scheduler{
-			Mirror:   mirror,
-			Client:   mgr.GetClient(),
-			Reader:   mgr.GetAPIReader(),
-			Recorder: mgr.GetEventRecorderFor("scheduler"),
+		scheduler = &laboratorycontroller.Scheduler{
+			ReservationKindServed: laboratorycontroller.ReservationKindServedBy(reservationsDC),
+			Mirror:                mirror,
+			Client:                mgr.GetClient(),
+			Reader:                mgr.GetAPIReader(),
+			Recorder:              mgr.GetEventRecorderFor("scheduler"),
 			Config: laboratorycontroller.SchedulerConfig{
 				MaxPods:                cfg.SchedulerMaxPods,
 				StartupTimeout:         cfg.SchedulerStartupTimeout,
@@ -313,7 +321,8 @@ func Run() {
 			GroupPods:       cfg.GroupPods,
 			LabNodeSelector: labNodeSelector,
 			LabTolerations:  labTolerations,
-		}); err != nil {
+		}
+		if err = mgr.Add(scheduler); err != nil {
 			setupLog.Error(err, "unable to add the scheduler")
 			os.Exit(1)
 		}
@@ -366,7 +375,11 @@ func Run() {
 		setupLog.Error(err, "unable to create controller", "controller", "Reservation")
 		os.Exit(1)
 	} else if !served {
-		setupLog.Info("the Reservation CRD is not installed: reservations do not end and their groups are not cleaned up; apply the CRDs and restart the operator")
+		setupLog.Info("the Reservation CRD is not installed: no reservation is admitted until the CRDs are applied and the operator restarted")
+		if scheduler != nil {
+			// without the controller no window would end: the scheduler admits nothing under a reservation until a restart
+			scheduler.NoReservationController = true
+		}
 	}
 	if err = (&laboratorycontroller.TenantReconciler{
 		Client: mgr.GetClient(),

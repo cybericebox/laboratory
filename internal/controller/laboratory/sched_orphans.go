@@ -7,6 +7,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/discovery"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -99,17 +100,44 @@ func (s *Scheduler) orphanTargets(snap *clusterView) map[string]string {
 		if !ok || !ranGroup(g) {
 			continue
 		}
-		t, kept := names.TenantOf(g.Labels), false
-		for _, l := range byNamespace[laboratoryv1alpha1.LabGroupNamespaceOf(g)] {
-			if r, _ := names.ReservationOf(l.Labels); r != name || names.TenantOf(l.Labels) != t || l.DeletionTimestamp != nil {
-				kept = true
-			}
-		}
-		if !kept {
+		if !groupHoldsOtherWork(g, name, byNamespace[laboratoryv1alpha1.LabGroupNamespaceOf(g)]) {
 			out[objectKey(g)] = name
 		}
 	}
 	return out
+}
+
+// groupHoldsOtherWork says the namespace of the LabGroup holds a lab that is not of the group's tenant under the gone
+// reservation name (another tenant's, another reservation's, an unlabelled one or one being deleted): deleting the group would
+// drain it.
+func groupHoldsOtherWork(g *laboratoryv1alpha1.LabGroup, name string, labs []*laboratoryv1alpha1.Lab) bool {
+	t := names.TenantOf(g.Labels)
+	for _, l := range labs {
+		if r, _ := names.ReservationOf(l.Labels); r != name || names.TenantOf(l.Labels) != t || l.DeletionTimestamp != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// ReservationKindServedBy asks the discovery of the API server, past any cache, whether it serves the Reservation kind now:
+// the Scheduler's ReservationKindServed.
+func ReservationKindServedBy(dc discovery.DiscoveryInterface) func(context.Context) (bool, error) {
+	return func(context.Context) (bool, error) {
+		list, err := dc.ServerResourcesForGroupVersion(laboratoryv1alpha1.SchemeGroupVersion.String())
+		if errors.IsNotFound(err) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		for _, r := range list.APIResources {
+			if r.Kind == "Reservation" {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
 }
 
 // cleanOrphans gives every orphan target its notice and deletes the targets whose notice ran out. The notice is that of the
@@ -159,33 +187,68 @@ func (s *Scheduler) cleanOrphans(ctx context.Context, snap *clusterView, seen ma
 	if s.orphanRetry == nil {
 		s.orphanRetry = map[types.UID]time.Time{}
 	}
-	for _, o := range due {
-		key, name := objectKey(o), targets[objectKey(o)]
-		s.orphanRetry[o.GetUID()] = now.Add(evictRetryAfter)
-		var r laboratoryv1alpha1.Reservation
-		if err := s.directReader().Get(ctx, client.ObjectKey{Name: name}, &r); !errors.IsNotFound(err) {
-			if err != nil {
-				logger.Error(err, "check the reservation of an orphaned object", "object", key, "reservation", name)
-			}
-			continue // it exists (the cache lags) or the check failed
+	if len(due) > 0 && s.ReservationKindServed != nil {
+		// Deleting the CRD deletes every Reservation, and a Get of a kind not served is a NotFound too: that is no reservation
+		// gone, so nothing is deleted and every notice starts again once the kind is back.
+		served, err := s.ReservationKindServed(ctx)
+		if err != nil {
+			logger.Error(err, "check that the Reservation kind is served")
+			return
 		}
-		cur := o.DeepCopyObject().(client.Object)
-		if err := s.directReader().Get(ctx, client.ObjectKeyFromObject(o), cur); err != nil {
-			if !errors.IsNotFound(err) {
-				logger.Error(err, "check an orphaned object", "object", key)
-			}
-			continue
+		if !served {
+			s.orphanSeen = passRecord{}
+			return
 		}
-		if r, _ := names.ReservationOf(cur.GetLabels()); cur.GetUID() != o.GetUID() || r != name || cur.GetDeletionTimestamp() != nil {
-			continue
-		}
-		uid, rv := cur.GetUID(), cur.GetResourceVersion()
-		if err := s.Delete(ctx, cur, client.Preconditions{UID: &uid, ResourceVersion: &rv}); err != nil {
-			if !errors.IsNotFound(err) && !errors.IsConflict(err) {
-				logger.Error(err, "delete an orphaned object", "object", key)
-			}
-			continue
-		}
-		logger.Info("deleted work of a reservation that is gone", "object", key, "reservation", name, "tenant", names.TenantOf(cur.GetLabels()))
 	}
+	for _, o := range due {
+		s.orphanRetry[o.GetUID()] = now.Add(evictRetryAfter)
+		s.deleteOrphan(ctx, o, targets[objectKey(o)])
+	}
+}
+
+// deleteOrphan deletes a due object of the gone reservation name once the Reservation is confirmed gone and the object (and the
+// labs of a LabGroup's namespace) are checked past the cache, with its UID and resourceVersion as precondition.
+func (s *Scheduler) deleteOrphan(ctx context.Context, o client.Object, name string) {
+	logger := log.FromContext(ctx).WithName("scheduler")
+	key := objectKey(o)
+	var r laboratoryv1alpha1.Reservation
+	if err := s.directReader().Get(ctx, client.ObjectKey{Name: name}, &r); !errors.IsNotFound(err) {
+		if err != nil {
+			logger.Error(err, "check the reservation of an orphaned object", "object", key, "reservation", name)
+		}
+		return // it exists (the cache lags) or the check failed
+	}
+	cur := o.DeepCopyObject().(client.Object)
+	if err := s.directReader().Get(ctx, client.ObjectKeyFromObject(o), cur); err != nil {
+		if !errors.IsNotFound(err) {
+			logger.Error(err, "check an orphaned object", "object", key)
+		}
+		return
+	}
+	if r, _ := names.ReservationOf(cur.GetLabels()); cur.GetUID() != o.GetUID() || r != name || cur.GetDeletionTimestamp() != nil {
+		return
+	}
+	if g, ok := cur.(*laboratoryv1alpha1.LabGroup); ok {
+		// the labs of its namespace past the cache too: one the cache does not hold yet would be drained with it
+		var labs laboratoryv1alpha1.LabList
+		if err := s.directReader().List(ctx, &labs, client.InNamespace(laboratoryv1alpha1.LabGroupNamespaceOf(g))); err != nil {
+			logger.Error(err, "check the labs of an orphaned group", "object", key)
+			return
+		}
+		list := make([]*laboratoryv1alpha1.Lab, 0, len(labs.Items))
+		for i := range labs.Items {
+			list = append(list, &labs.Items[i])
+		}
+		if groupHoldsOtherWork(g, name, list) {
+			return
+		}
+	}
+	uid, rv := cur.GetUID(), cur.GetResourceVersion()
+	if err := s.Delete(ctx, cur, client.Preconditions{UID: &uid, ResourceVersion: &rv}); err != nil {
+		if !errors.IsNotFound(err) && !errors.IsConflict(err) {
+			logger.Error(err, "delete an orphaned object", "object", key)
+		}
+		return
+	}
+	logger.Info("deleted work of a reservation that is gone", "object", key, "reservation", name, "tenant", names.TenantOf(cur.GetLabels()))
 }
