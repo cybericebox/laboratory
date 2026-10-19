@@ -493,6 +493,10 @@ func (h *Handler) updateReservation(ctx context.Context, id string, p reservatio
 			return err
 		}
 		now := h.now()
+		// an ended reservation stays ended: its groups are gone, a new window is a new reservation
+		if reservationEnded(cur, now) {
+			return refusal(client.ReasonReservationEnded, "reservation %q has ended: make a new one", id)
+		}
 		old := windowOf(cur)
 		w := old
 		if p.from != nil && !unixMs(*p.from).Equal(old.from) {
