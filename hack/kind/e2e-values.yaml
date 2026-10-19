@@ -28,6 +28,11 @@ vpn:
 inetGateway:
   image:
     tag: e2e
+devices:
+  security:
+    # Kind on the GitHub runner cannot start a device pod in a user namespace (runc: mounting sysfs at /sys: operation
+    # not permitted); the reservation tests need running devices, not the user namespace.
+    userNamespaces: false
 # the lab nodes of the Kind config: both labelled, one tainted
 labWorkloads:
   nodeSelector:
