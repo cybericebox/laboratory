@@ -54,10 +54,44 @@ type capacitySnapshot struct {
 	maxNode amount
 	// labUsed is the requests of the lab pods bound to each node (the held pods of stopped labs included).
 	labUsed map[string]amount
+	// vmax is the number of lab nodes still to come up to the static maximum (nodecap.Maximum.Virtual), virtual the number
+	// admission places on in this pass (vmax, or 0 under the breaker) and vroom the room for labs on one of them. All zero
+	// without a maximum.
+	vmax, virtual int
+	vroom         nodeRoom
 }
 
-// rooms is the room FOR labs on each schedulable node, in the order of the nodes, before the usage of the labs.
-func (c capacitySnapshot) rooms() []nodeRoom { return append([]nodeRoom(nil), c.perNode...) }
+// virtualRooms are n rooms of the nodes still to come, named virtual/0, virtual/1, ...
+func (c capacitySnapshot) virtualRooms(n int) []nodeRoom {
+	virtual := nodecap.VirtualRooms(n, nodecap.NodeFree{CPU: c.vroom.CPU, Memory: c.vroom.Memory})
+	out := make([]nodeRoom, 0, len(virtual))
+	for _, v := range virtual {
+		out = append(out, nodeRoom{Name: v.Name, CPU: v.CPU, Memory: v.Memory})
+	}
+	return out
+}
+
+// rooms is the room FOR labs on each schedulable node, in the order of the nodes, before the usage of the labs, and after them
+// the virtual rooms of the nodes still to come that admission may place on now: the real room is used first.
+func (c capacitySnapshot) rooms() []nodeRoom {
+	return append(append([]nodeRoom(nil), c.perNode...), c.virtualRooms(c.virtual)...)
+}
+
+// emptyRooms is rooms with every node still to come up to the maximum, the breaker or not: what a gang could ever have, for
+// the DoesNotFit verdict.
+func (c capacitySnapshot) emptyRooms() []nodeRoom {
+	return append(append([]nodeRoom(nil), c.perNode...), c.virtualRooms(c.vmax)...)
+}
+
+// withMaximum adds the nodes still to come up to the static maximum: count of them with room each; breaker: admission places
+// on none of them in this pass (they still count for the verdicts).
+func (c *capacitySnapshot) withMaximum(count int, room nodecap.NodeFree, breaker bool) {
+	c.vmax, c.vroom = count, nodeRoom{CPU: room.CPU, Memory: room.Memory}
+	c.virtual = count
+	if breaker {
+		c.virtual = 0
+	}
+}
 
 // freeRooms is rooms less the requests of the lab pods bound to each node, the held pods of stopped labs included (they hold
 // resources): where the placement simulation of a pass starts. Lab pods that are dispatched but not on a node yet are placed
@@ -101,12 +135,13 @@ func snapshotCapacity(nodes []corev1.Node, pods []corev1.Pod, selector map[strin
 	return c
 }
 
-// fitsOneNode says whether some node of the pool, empty, holds need: CPU and memory on the same node.
+// fitsOneNode says whether some node of the pool, empty, holds need: CPU and memory on the same node; a node still to come up to
+// the maximum counts with its room.
 func (c capacitySnapshot) fitsOneNode(need amount) bool {
 	for _, l := range c.nodeLimits {
 		if need.cpu <= l.cpu && need.mem <= l.mem {
 			return true
 		}
 	}
-	return false
+	return c.vmax > 0 && need.cpu <= c.vroom.CPU && need.mem <= c.vroom.Memory
 }
