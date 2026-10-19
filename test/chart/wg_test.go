@@ -167,14 +167,21 @@ func TestWGModeValidated(t *testing.T) {
 	}
 }
 
-func TestWGServiceLocalByDefault(t *testing.T) {
+func TestWGServicePolicyFollowsMode(t *testing.T) {
 	var svc corev1.Service
 	render(t, "templates/wg/service.yaml", &svc)
 	if svc.Namespace != "laboratory-wg" || svc.Name != "laboratory-proxy-wg" {
 		t.Errorf("identity: %s/%s", svc.Namespace, svc.Name)
 	}
-	if svc.Spec.ExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyLocal {
-		t.Errorf("ETP = %q", svc.Spec.ExternalTrafficPolicy)
+	if svc.Spec.ExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyCluster {
+		t.Errorf("userspace (default) ETP = %q, want Cluster", svc.Spec.ExternalTrafficPolicy)
+	}
+	for _, mode := range []string{"tc", "xdp"} {
+		var fast corev1.Service
+		render(t, "templates/wg/service.yaml", &fast, "--set", "proxy.wg.mode="+mode)
+		if fast.Spec.ExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyLocal {
+			t.Errorf("%s ETP = %q, want Local", mode, fast.Spec.ExternalTrafficPolicy)
+		}
 	}
 	if svc.Spec.Selector["app"] != "laboratory-proxy-wg" {
 		t.Errorf("selector: %v", svc.Spec.Selector)
@@ -186,9 +193,14 @@ func TestWGServiceLocalByDefault(t *testing.T) {
 		t.Errorf("ports: %+v", svc.Spec.Ports)
 	}
 	var cluster corev1.Service
-	render(t, "templates/wg/service.yaml", &cluster, "--set", "proxy.wg.externalTrafficPolicy=Cluster")
+	render(t, "templates/wg/service.yaml", &cluster, "--set", "proxy.wg.mode=tc", "--set", "proxy.wg.externalTrafficPolicy=Cluster")
 	if cluster.Spec.ExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyCluster {
-		t.Errorf("ETP = %q", cluster.Spec.ExternalTrafficPolicy)
+		t.Errorf("tc with Cluster set: ETP = %q", cluster.Spec.ExternalTrafficPolicy)
+	}
+	var local corev1.Service
+	render(t, "templates/wg/service.yaml", &local, "--set", "proxy.wg.externalTrafficPolicy=Local")
+	if local.Spec.ExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyLocal {
+		t.Errorf("userspace with Local set: ETP = %q", local.Spec.ExternalTrafficPolicy)
 	}
 }
 

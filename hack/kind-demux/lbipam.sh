@@ -7,7 +7,7 @@
 # (the layout of the cloud, where laboratory-edge also carries a UDP 443 HTTP/3 Service), and records which addresses LB-IPAM hands
 # out with the demux Service's externalTrafficPolicy Local (the chart default) and with Cluster. With a shared address it checks that
 # the demux found the LoadBalancer address as an entry address (the fast path's wg_entries on the entry node). Puts everything back
-# at the end (policy Local, no pool, no second Service). Findings only: the chart defaults are not changed here.
+# at the end (the policy it had, no pool, no second Service). Findings only: the chart defaults are not changed here.
 set -euo pipefail
 
 CLUSTER="${KIND_DEMUX_CLUSTER:-icebox-demux}"
@@ -54,15 +54,16 @@ entries_ok() {
   ENTRIES_NOW="$(entries)" || fail "cannot read the fast path's entries on $ENTRY_NODE"
   grep -qx "$NODE_ENTRY" <<<"$ENTRIES_NOW" || fail "the fast path's entries on $ENTRY_NODE lack $NODE_ENTRY: $(paste -sd' ' - <<<"$ENTRIES_NOW")"
 }
-# restore: policy Local, no UDP 443 Service, no pool, and no LoadBalancer address on the demux Service (Cilium keeps a handed-out address
+# restore: the policy it had, no UDP 443 Service, no pool, and no LoadBalancer address on the demux Service (Cilium keeps a handed-out address
 # after its pool is gone; a type change clears status.loadBalancer).
 restore() {
-  k -n "$WG_NS" patch svc laboratory-proxy-wg --type=merge -p '{"spec":{"externalTrafficPolicy":"Local"}}' >/dev/null || true
+  k -n "$WG_NS" patch svc laboratory-proxy-wg --type=merge -p "{\"spec\":{\"externalTrafficPolicy\":\"$ORIG_ETP\"}}" >/dev/null || true
   k -n "$RELEASE_NS" delete svc demux-edge-h3 --ignore-not-found >/dev/null || true
   k delete ciliumloadbalancerippools.cilium.io demux-e2e --ignore-not-found >/dev/null || true
   k -n "$WG_NS" patch svc laboratory-proxy-wg --type=merge -p '{"spec":{"type":"NodePort"}}' >/dev/null || true
   k -n "$WG_NS" patch svc laboratory-proxy-wg --type=merge -p '{"spec":{"type":"LoadBalancer"}}' >/dev/null || true
 }
+ORIG_ETP=Local
 trap restore EXIT
 edge() {
   k apply -f - >/dev/null <<EOF
@@ -88,6 +89,7 @@ k -n "$WG_NS" get svc laboratory-proxy-wg >/dev/null || fail "no demux Service: 
 cilium test -e "$ENTRIES" || fail "no fast path on $ENTRY_NODE: run e2e.sh tc or xdp first"
 NODE_ENTRY="$(k get node "$ENTRY_NODE" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}'):$(k -n "$WG_NS" get svc \
   laboratory-proxy-wg -o jsonpath='{.spec.ports[0].nodePort}')"
+ORIG_ETP="$(k -n "$WG_NS" get svc laboratory-proxy-wg -o jsonpath='{.spec.externalTrafficPolicy}')"
 key="$(k -n "$WG_NS" get svc laboratory-proxy-wg -o jsonpath='{.metadata.annotations.lbipam\.cilium\.io/sharing-key}')"
 
 log "pool $POOL and a UDP 443 Service in $RELEASE_NS sharing the key $key"
@@ -133,7 +135,7 @@ summary "entry addresses in the fast path after $((SECONDS - start)) s: $(paste 
 
 restore
 trap - EXIT
-log "put back: policy Local, no pool, no UDP 443 Service, the demux Service without its LoadBalancer address"
+log "put back: the policy it had, no pool, no UDP 443 Service, the demux Service without its LoadBalancer address"
 [[ -z "$(lb_ip "$WG_NS" laboratory-proxy-wg)" ]] || fail "the demux Service still has $(lb_ip "$WG_NS" laboratory-proxy-wg)"
 start=$SECONDS
 while entries_ok && grep -q "^$d:" <<<"$ENTRIES_NOW"; do

@@ -125,7 +125,7 @@ set `proxy.mode: daemonset`: one proxy pod on every node (`proxy.nodeSelector` a
 `replicas`, a fixed count: on a one-node cluster set `proxy.replicas: 1`, and a live install refuses more replicas than nodes). In both modes the proxy requests are pods like any other, so the scheduler's room for lab pods on each node is what is left after them
 (see "Platform reserve"). The WireGuard demux is not in that pod: it is its own DaemonSet `laboratory-proxy-wg` in the namespace `laboratory-wg`, on the nodes
 selected by `proxy.wg.nodeSelector` and `proxy.wg.tolerations` (every node by default), with its own ServiceAccount, RBAC and the `laboratory-proxy-wg` LoadBalancer Service
-(`proxy.wg.externalTrafficPolicy`, `Local` by default). `proxy.wg.mode` (`userspace`, `tc` or `xdp`; `userspace` is the default; `tc` and `xdp` are opt-in, see "WireGuard demux modes") decides its privileges: `tc` and `xdp` run on the host network
+(`proxy.wg.externalTrafficPolicy`; empty by default, which follows the mode: `Cluster` for `userspace`, `Local` for `tc` and `xdp`). `proxy.wg.mode` (`userspace`, `tc` or `xdp`; `userspace` is the default; `tc` and `xdp` are opt-in, see "WireGuard demux modes") decides its privileges: `tc` and `xdp` run on the host network
 as root with the capabilities `BPF`, `NET_ADMIN` and `PERFMON` only and the host's `/sys/fs/bpf`, in a namespace that admits the privileged Pod Security level;
 `userspace` is unprivileged on the pod network in a restricted namespace. The L7 namespace stays restricted in every mode. The proxy's own session is sliding: it expires `proxy.l7.sessionIdleTTL` (24h) after the last request; the cookie is
 re-issued only when less than `proxy.l7.sessionRenewBefore` (1h) of it remains, so an active user costs about one renewal per hour; and it never
@@ -147,7 +147,7 @@ kubectl -n laboratory-system get configmap laboratory-config -o yaml
 
 ## 4. Upgrade (change config)
 
-Edit `my-values.yaml`, then:
+Edit `my-values.yaml`, then (the first upgrade to the WireGuard demux modes needs one step before it, see "Upgrade order" step 2):
 
 ```bash
 helm upgrade laboratory ./charts/laboratory \
@@ -1321,10 +1321,11 @@ holds no NAT or conntrack state for the tunnel clients (the stand checks it is e
 
 - **The server sees the node, not the client.** In `tc` and `xdp` the VPN pod sees the packets from the node's `cilium_host` address (in `userspace`, from the demux pod's address). Roaming
   still works, the demux moves the session.
-- **LB-IPAM and `externalTrafficPolicy`.** With `Local` (the default) the demux Service gets an address of its own: LB-IPAM shares an address only between Services with the same
-  policy, and the gateway's Service has no pod selector to match. With `Cluster` the two share one address, but only once the second Service is created again after the change
-  (an address already handed out is not moved). A stand or an on-prem edge that wants UDP 51820 and TCP 443 on one address therefore sets `proxy.wg.externalTrafficPolicy: Cluster`
-  (clients' source addresses are then the nodes' ones) or gives the demux Service its own address. The fast path picks the LoadBalancer address up as soon as the Service has it
+- **LB-IPAM and `externalTrafficPolicy`.** In `tc` and `xdp` the policy defaults to `Local` (a packet must reach a node whose kernel holds its session), and then the demux
+  Service gets an address of its own: LB-IPAM shares an address only between Services with the same policy, and the gateway's Service has no pod selector to match. With `Cluster`
+  (the `userspace` default, or set by `proxy.wg.externalTrafficPolicy`) the two share one address, but only once the second Service is created again after the change (an address
+  already handed out is not moved). A stand or an on-prem edge that runs `tc` or `xdp` and wants UDP 51820 and TCP 443 on one address therefore sets
+  `proxy.wg.externalTrafficPolicy: Cluster` (clients' source addresses are then the nodes' ones) or gives the demux Service its own address. The fast path picks the LoadBalancer address up as soon as the Service has it
   and drops it when the Service loses it (checked on the stand).
 
 **Limits of `xdp`.**
@@ -2014,11 +2015,16 @@ slip under a stricter check, the component that runs it clamps or ignores the ba
    `CapacityShortfall` condition of the Tenants behind; the old operator ignores them. To tidy up:
    `kubectl annotate labs,labgroups -A --all laboratory.cybericebox.com/evict-at-` and remove the condition from
    `Tenant.status.conditions` by a status patch.
-2. `helm upgrade` (the operator, agent, node-agent and proxy roll out together; the operator and the agent can run in either order).
-3. The notes of each item below say what, if anything, must happen in a different order. In short, before `helm upgrade`:
+2. Once, when upgrading from a version where the VPN Service lived in `laboratory-proxy` (before the WireGuard demux modes): delete it right before
+   `helm upgrade`, outside an event: `kubectl -n laboratory-proxy delete svc laboratory-proxy-wg --ignore-not-found`. The Service moves to
+   `laboratory-wg`, and Helm creates the new one before it deletes the old one, so with a fixed `proxy.wg.nodePort` the create fails ("provided port
+   is already allocated") and the upgrade stops halfway. The VPN is down from this step until the new demux pods are Ready, and every client
+   re-handshakes. Once migrated the step does nothing (the kind harness checks the upgrade from `develop`: `hack/kind-demux/e2e.sh upgrade`).
+3. `helm upgrade` (the operator, agent, node-agent and proxy roll out together; the operator and the agent can run in either order).
+4. The notes of each item below say what, if anything, must happen in a different order. In short, before `helm upgrade`:
    - the cluster is Kubernetes 1.33 or newer (the chart refuses an older one), or `operator.admissionPolicy.enabled=false` is set on purpose (the chart refuses to skip the policies silently, and the operator exits at start when they are not enforced);
    - the tenant `default` exists (the chart creates it): with mTLS on, every certificate, the default tenant's included, needs its Tenant object;
-   - nothing else has to be done by hand: the operator rolls the VPN and gateway pods when their template changes, the agent runs two replicas and the node-agents roll one at a time.
+   - apart from step 2, nothing else has to be done by hand: the operator rolls the VPN and gateway pods when their template changes, the agent runs two replicas and the node-agents roll one at a time.
 
 ### Device resources (R-2)
 
