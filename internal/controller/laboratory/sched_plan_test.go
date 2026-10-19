@@ -47,20 +47,75 @@ func obj(id, group string, arrival int, after []string, ps ...*schedPod) *schedO
 
 type fakeEnv struct {
 	notPrepared map[string]bool // by prepKey
-	fits        map[string]fit  // by pod key
+	never       map[string]bool // by pod key: no single node can ever hold it
+	noNode      bool            // no schedulable lab node
 	taken       int
+	pulled      []string        // prepKey of every prepared() call
 	tenantFull  map[string]bool // by tenant
+	// nodes are the free rooms offered to gangs; nil: no per-node check.
+	nodes []nodeRoom
+	// empty are the rooms with no lab running; nil: no verdict.
+	empty []nodeRoom
+	// maxNode is the most one node can give a pod; nil: no per-node verdict.
+	maxNode *amount
+	// tenantCPU is the CPU quota of a tenant: what it has dispatched (tenantUsed, take adds to it) plus what a gang asks
+	// (with the room kept for the tenant added) must stay within it.
+	tenantCPU  map[string]int64
+	tenantUsed map[string]int64
+	// tenantNever marks the tenants whose quota can never hold a gang.
+	tenantNever map[string]bool
+	// podNode is the node of a dispatched pod by key ("": not on a node yet); a pod not listed is bound to a node that is not
+	// in the rooms (nodes are the rooms after it already).
+	podNode map[string]string
+	// fair is the reservation usage, the clock and the aging threshold; zero: no usage, no aging.
+	fair fairness
+	// stoppedHeld is the room stopped labs keep per node.
+	stoppedHeld map[string]amount
 }
 
-func (f *fakeEnv) tenantFits(p *schedPod) bool  { return !f.tenantFull[p.tenant] }
-func (f *fakeEnv) prepared(o *schedObject) bool { return !f.notPrepared[o.prepKey] }
-func (f *fakeEnv) check(p *schedPod) fit {
-	if v, ok := f.fits[p.key]; ok {
-		return v
+func (f *fakeEnv) fairness() fairness { return f.fair }
+
+func (f *fakeEnv) stoppedHolds() map[string]amount { return f.stoppedHeld }
+
+func (f *fakeEnv) nodeOf(p *schedPod) string {
+	if n, ok := f.podNode[p.key]; ok {
+		return n
 	}
-	return fitOK
+	return "elsewhere"
 }
-func (f *fakeEnv) take(*schedPod) { f.taken++ }
+
+func (f *fakeEnv) rooms() ([]nodeRoom, bool) { return f.nodes, f.nodes != nil }
+
+// emptyRooms is nil unless a test sets it: no DoesNotFit verdict per node.
+func (f *fakeEnv) emptyRooms() []nodeRoom { return f.empty }
+
+func (f *fakeEnv) neverFits(p *schedPod) bool {
+	if f.never[p.key] {
+		return true
+	}
+	return f.maxNode != nil && (p.need.cpu > f.maxNode.cpu || p.need.mem > f.maxNode.mem)
+}
+
+func (f *fakeEnv) tenantEverFits(p *schedPod) bool { return !f.tenantNever[p.tenant] }
+
+func (f *fakeEnv) tenantFits(p *schedPod) bool {
+	if c, ok := f.tenantCPU[p.tenant]; ok && p.need.cpu+f.tenantUsed[p.tenant] > c {
+		return false
+	}
+	return !f.tenantFull[p.tenant]
+}
+func (f *fakeEnv) prepared(o *schedObject) bool {
+	f.pulled = append(f.pulled, o.prepKey)
+	return !f.notPrepared[o.prepKey]
+}
+func (f *fakeEnv) noNodes() bool { return f.noNode }
+func (f *fakeEnv) take(p *schedPod) {
+	f.taken++
+	if f.tenantUsed == nil {
+		f.tenantUsed = map[string]int64{}
+	}
+	f.tenantUsed[p.tenant] += p.need.cpu
+}
 
 func keys(ps []*schedPod) []string {
 	var out []string
@@ -89,26 +144,28 @@ func wantDispatch(t *testing.T, plan schedPlan, want ...string) {
 	}
 }
 
-// An object may start with fewer slots than pods: 3 slots, 5 pods, 3 now.
-func TestPlanPartialStart(t *testing.T) {
+// A gang starts whole or not at all: 3 slots, 5 pods, 2 more in flight: it waits for the slots.
+func TestPlanGangWaitsForSlots(t *testing.T) {
 	o := obj("lab/a", "g", 1, nil, pods("a", "p1", "p2", "p3", "p4", "p5")...)
-	plan := planSchedule([]*schedObject{o}, 3, false, &fakeEnv{})
-	wantDispatch(t, plan, "a/p1", "a/p2", "a/p3")
+	busy := obj("lab/x", "", 2, nil, pods("x", "p1:S", "p2:S")...)
+	plan := planSchedule([]*schedObject{o, busy}, 3, false, &fakeEnv{})
+	wantDispatch(t, plan)
 	st := plan.status["lab/a"]
-	if st.Position != 1 || st.Length != 1 || st.Pending != 2 || st.Pods != 5 || st.Reason != laboratoryv1alpha1.WaitInFlightLimit {
+	if st.Position != 1 || st.Length != 1 || st.Pending != 5 || st.Pods != 5 || st.Reason != laboratoryv1alpha1.WaitInFlightLimit {
 		t.Fatalf("status = %+v", st)
 	}
+	plan = planSchedule([]*schedObject{o, busy}, 5, false, &fakeEnv{})
+	wantDispatch(t, plan, "a/p1", "a/p2", "a/p3", "a/p4", "a/p5")
 }
 
-// Once an object started, no other object's pods interleave with its rest.
+// The rest of a partly started group is one gang: the started object first, then the others, all or nothing.
 func TestPlanConveyorDoesNotInterleave(t *testing.T) {
 	o1 := obj("lab/a", "g", 1, nil, pods("a", "p1:S", "p2:S", "p3")...)
 	o2 := obj("lab/b", "g", 2, nil, pods("b", "p1", "p2")...)
-	plan := planSchedule([]*schedObject{o2, o1}, 1, false, &fakeEnv{})
-	wantDispatch(t, plan, "a/p3")
-	// The slot after that goes to the next object of the group.
-	plan = planSchedule([]*schedObject{o2, o1}, 2, false, &fakeEnv{})
-	wantDispatch(t, plan, "a/p3", "b/p1")
+	plan := planSchedule([]*schedObject{o2, o1}, 2, false, &fakeEnv{})
+	wantDispatch(t, plan)
+	plan = planSchedule([]*schedObject{o2, o1}, 3, false, &fakeEnv{})
+	wantDispatch(t, plan, "a/p3", "b/p1", "b/p2")
 }
 
 // Groups go in arrival order; each is dispatched completely before the next starts.
@@ -249,31 +306,36 @@ func TestPlanSlotsAndUnlimited(t *testing.T) {
 
 func TestPlanResourceCheck(t *testing.T) {
 	a := obj("lab/a", "g1", 1, nil, pods("a", "p1", "p2")...)
+	a.pods[1].need = amount{cpu: 100, mem: 2 * gi}
 	b := obj("lab/b", "g1", 2, nil, pods("b", "p1")...)
-	// No room now for the next pod of a: it stays queued (InsufficientResources) and b, behind it, goes past (backfill).
-	env := &fakeEnv{fits: map[string]fit{"a/p2": fitWait}}
+	// No room now for a pod of a: the gang (a and b) stays queued (InsufficientResources).
+	env := &fakeEnv{nodes: []nodeRoom{room("n1", 4000, gi)}}
 	plan := planSchedule([]*schedObject{a, b}, 10, false, env)
-	wantDispatch(t, plan, "a/p1", "b/p1")
+	wantDispatch(t, plan)
+	// A gang of another group goes past it (backfill).
+	c := obj("lab/c", "g2", 3, nil, pods("c", "p1")...)
+	plan = planSchedule([]*schedObject{a, b, c}, 10, false, env)
+	wantDispatch(t, plan, "c/p1")
 	if r := plan.status["lab/a"].Reason; r != laboratoryv1alpha1.WaitInsufficient {
 		t.Fatalf("reason = %q", r)
 	}
-	if _, waiting := plan.status["lab/b"]; waiting {
-		t.Fatalf("b went past a: %+v", plan.status["lab/b"])
+	if _, waiting := plan.status["lab/c"]; waiting {
+		t.Fatalf("c went past the gang: %+v", plan.status["lab/c"])
 	}
 	// No node at all.
-	plan = planSchedule([]*schedObject{a}, 10, false, &fakeEnv{fits: map[string]fit{"a/p1": fitNoNodes}})
+	plan = planSchedule([]*schedObject{a}, 10, false, &fakeEnv{noNode: true})
 	if r := plan.status["lab/a"].Reason; r != laboratoryv1alpha1.WaitNoSchedulableNodes {
 		t.Fatalf("reason = %q", r)
 	}
-	// A pod that fits no node ever is failed; the others go on.
-	env = &fakeEnv{fits: map[string]fit{"a/p1": fitNever}}
-	plan = planSchedule([]*schedObject{a, b}, 10, false, env)
-	wantDispatch(t, plan, "a/p2", "b/p1")
-	if len(plan.failed) != 1 || plan.failed[0].pod.key != "a/p1" {
+	// A pod that fits no node ever fails its whole gang: nothing of it starts. Another group goes on.
+	env = &fakeEnv{never: map[string]bool{"a/p1": true}}
+	plan = planSchedule([]*schedObject{a, b, c}, 10, false, env)
+	wantDispatch(t, plan, "c/p1")
+	if len(plan.failed) != 3 || plan.failed[0].pod.key != "a/p1" || plan.failed[0].reason != laboratoryv1alpha1.FailureDoesNotFit {
 		t.Fatalf("failed = %+v", plan.failed)
 	}
-	if env.taken != 2 {
-		t.Fatalf("reserved %d pods, want the 2 dispatched", env.taken)
+	if env.taken != 1 {
+		t.Fatalf("reserved %d pods, want the 1 dispatched", env.taken)
 	}
 }
 
@@ -378,7 +440,9 @@ func TestPlanGroupPodsGoAheadOfQueuedLabs(t *testing.T) {
 	grp := obj("group/new", "", 3, nil, &schedPod{key: "group/new/vpn", name: "vpn", kind: kindGroupPod, state: qd},
 		&schedPod{key: "group/new/gateway", name: "gateway", kind: kindGroupPod, state: qd})
 	// the labs do not fit; the group pods do
-	env := &fakeEnv{fits: map[string]fit{"l1/web": fitWait, "l2/web": fitWait}}
+	old.pods[0].need, old2.pods[0].need = amount{cpu: 100, mem: 2 * gi}, amount{cpu: 100, mem: 2 * gi}
+	grp.pods[0].need, grp.pods[1].need = amount{cpu: 100, mem: gi / 4}, amount{cpu: 10, mem: gi / 8}
+	env := &fakeEnv{nodes: []nodeRoom{room("n1", 4000, gi)}}
 	plan := planSchedule([]*schedObject{old, old2, grp}, 10, false, env)
 	wantDispatch(t, plan, "group/new/gateway", "group/new/vpn")
 	if r := plan.status["lab/old/l1"].Reason; r != laboratoryv1alpha1.WaitInsufficient {
@@ -388,14 +452,16 @@ func TestPlanGroupPodsGoAheadOfQueuedLabs(t *testing.T) {
 		t.Fatal("the group has nothing left to wait for")
 	}
 	// the group pods are still checked: no room for them, they stay queued and the lab goes past them
-	env = &fakeEnv{fits: map[string]fit{"group/new/gateway": fitWait}}
+	grp.pods[1].need = amount{cpu: 10, mem: 3 * gi}
+	env = &fakeEnv{nodes: []nodeRoom{room("n1", 4000, 2*gi)}}
 	plan = planSchedule([]*schedObject{old, grp}, 10, false, env)
 	wantDispatch(t, plan, "l1/web")
 	if r := plan.status["group/new"].Reason; r != laboratoryv1alpha1.WaitInsufficient {
 		t.Fatalf("reason = %q", r)
 	}
 	// a lab that does not fit stays queued and the next lab goes past it (backfill)
-	env = &fakeEnv{fits: map[string]fit{"l1/web": fitWait}}
+	old2.pods[0].need = amount{cpu: 100, mem: gi / 2}
+	env = &fakeEnv{nodes: []nodeRoom{room("n1", 4000, gi)}}
 	plan = planSchedule([]*schedObject{old, old2}, 10, false, env)
 	wantDispatch(t, plan, "l2/web")
 	// a group that depends on another group still waits for it
@@ -486,8 +552,8 @@ func TestPlanLargerLabsFirstWithinTheSamePriority(t *testing.T) {
 // small ones fill the gaps without losing its place for the next pass.
 func TestPlanBackfillKeepsTheBigLabFirst(t *testing.T) {
 	big := sized(obj("lab/b", "g", 1, nil, pods("b", "web")...), 4000, 8<<30)
-	small := sized(obj("lab/s", "g", 2, nil, pods("s", "web")...), 100, 64<<20)
-	plan := planSchedule([]*schedObject{small, big}, 10, false, &fakeEnv{fits: map[string]fit{"b/web": fitWait}})
+	small := sized(obj("lab/s", "g2", 2, nil, pods("s", "web")...), 100, 64<<20)
+	plan := planSchedule([]*schedObject{small, big}, 10, false, &fakeEnv{nodes: []nodeRoom{room("n1", 2000, 4<<30)}})
 	wantDispatch(t, plan, "s/web")
 	if plan.status["lab/b"].Reason != laboratoryv1alpha1.WaitInsufficient || plan.status["lab/b"].Position != 1 {
 		t.Fatalf("the big lab stays at the head: %+v", plan.status["lab/b"])
@@ -498,4 +564,103 @@ func TestPlanBackfillKeepsTheBigLabFirst(t *testing.T) {
 	started := sized(obj("lab/st", "g", 3, nil, pods("st", "p1:D", "p2")...), 10, 1<<20)
 	plan = planSchedule([]*schedObject{big, started}, 10, false, &fakeEnv{})
 	wantDispatch(t, plan, "st/p2", "b/web")
+}
+
+// reserved builds a lab of one queued pod under a reservation (empty: unreserved), of the given memory and 100m.
+func reserved(id, reservation string, arrival int, mem int64) *schedObject {
+	o := obj("lab/"+id, "", arrival, nil, need(pods(id, "p1"), 100, mem)...)
+	o.reservation = reservation
+	return o
+}
+
+// active is the usage of an open reservation of the test tenant (the pods of the builders have no tenant).
+func active(used, amt amount) reservationUsage {
+	return reservationUsage{used: used, amount: amt, active: true}
+}
+
+func gangKeys(gangs []*gang) []string {
+	var out []string
+	for _, g := range gangs {
+		out = append(out, g.key)
+	}
+	return out
+}
+
+// Of two reservations with waiting work, the one with the lower satisfied share goes first: A has used 50 % of its memory,
+// B 10 %, so B's lab takes the only room although A's came first. Memory decides first, CPU only on equal memory shares.
+func TestLowestShareGoesFirst(t *testing.T) {
+	one := []nodeRoom{room("n1", 4000, gi)}
+	usage := map[string]reservationUsage{
+		"A": active(amount{cpu: 100, mem: 5 * gi}, amount{cpu: 1000, mem: 10 * gi}),
+		"B": active(amount{cpu: 900, mem: 1 * gi}, amount{cpu: 1000, mem: 10 * gi}),
+	}
+	a, b := reserved("a", "A", 1, gi), reserved("b", "B", 2, gi)
+	plan := planSchedule([]*schedObject{a, b}, 10, false, &fakeEnv{nodes: one, empty: one, fair: fairness{usage: usage}})
+	wantDispatch(t, plan, "b/p1")
+	if r := plan.status["lab/a"].Reason; r != laboratoryv1alpha1.WaitInsufficient {
+		t.Fatalf("a reason = %q", r)
+	}
+	// equal memory shares: the lower CPU share goes first
+	usage["B"] = active(amount{cpu: 900, mem: 5 * gi}, amount{cpu: 1000, mem: 10 * gi})
+	plan = planSchedule([]*schedObject{a, b}, 10, false, &fakeEnv{nodes: one, empty: one, fair: fairness{usage: usage}})
+	wantDispatch(t, plan, "a/p1")
+
+	// An admitted gang keeps its place ahead of every new one, whatever the shares; a reservation that reserves nothing
+	// (invalid) goes after the valid ones.
+	started := &gang{key: "s", arrival: planEpoch.Add(9 * time.Second), reservation: "A",
+		objs: []*schedObject{obj("lab/s", "", 9, nil, pods("s", "p1:D", "p2")...)}}
+	ga := &gang{key: "a", arrival: planEpoch.Add(time.Second), reservation: "A"}
+	gb := &gang{key: "b", arrival: planEpoch.Add(2 * time.Second), reservation: "B"}
+	gz := &gang{key: "z", arrival: planEpoch, reservation: "Z"}
+	usage = map[string]reservationUsage{
+		"A": {used: amount{mem: 5 * gi}, amount: amount{cpu: 1000, mem: 10 * gi}},
+		"B": {used: amount{mem: 1 * gi}, amount: amount{cpu: 1000, mem: 10 * gi}},
+		"Z": {},
+	}
+	if got := gangKeys(gangOrder([]*gang{gz, ga, gb, started}, usage)); !same(got, []string{"s", "b", "a", "z"}) {
+		t.Fatalf("order = %v, want [s b a z]", got)
+	}
+}
+
+// Unreserved gangs come after every reserved one, even when they arrived first; among themselves they keep the conveyor
+// order.
+func TestUnreservedAfterReserved(t *testing.T) {
+	one := []nodeRoom{room("n1", 4000, gi)}
+	u, r := reserved("u", "", 1, gi), reserved("r", "R", 2, gi)
+	// R reserves just what r needs, so nothing of it is withheld once r is out
+	fair := fairness{usage: map[string]reservationUsage{"R": active(amount{}, amount{cpu: 100, mem: gi})}}
+	plan := planSchedule([]*schedObject{u, r}, 10, false, &fakeEnv{nodes: one, empty: one, fair: fair})
+	wantDispatch(t, plan, "r/p1")
+	if p := plan.status["lab/u"]; p.Reason != laboratoryv1alpha1.WaitInsufficient || p.Position != 1 {
+		t.Fatalf("u status = %+v", p)
+	}
+	// with room for both, both go, the reserved first
+	two := []nodeRoom{room("n1", 4000, 2*gi)}
+	wantDispatch(t, planSchedule([]*schedObject{u, r}, 10, false, &fakeEnv{nodes: two, empty: two, fair: fair}), "r/p1", "u/p1")
+
+	gu1 := &gang{key: "u1", arrival: planEpoch}
+	gu2 := &gang{key: "u2", arrival: planEpoch.Add(-time.Second)}
+	gr := &gang{key: "r", arrival: planEpoch.Add(time.Hour), reservation: "R"}
+	if got := gangKeys(gangOrder([]*gang{gu1, gu2, gr}, nil)); !same(got, []string{"r", "u1", "u2"}) {
+		t.Fatalf("order = %v, want [r u1 u2]", got)
+	}
+}
+
+// With equal shares (nothing used yet, so every share is 0) arrival decides, then the tenant, then the key. The room withheld
+// for the reservations follows the same order, so the earlier one gets the only room.
+func TestEqualShareByArrival(t *testing.T) {
+	one := []nodeRoom{room("n1", 4000, gi)}
+	late, early := reserved("late", "A", 2, gi), reserved("early", "B", 1, gi)
+	fair := fairness{usage: map[string]reservationUsage{
+		"A": active(amount{}, amount{cpu: 1000, mem: 10 * gi}), "B": active(amount{}, amount{cpu: 1000, mem: 10 * gi}),
+	}}
+	wantDispatch(t, planSchedule([]*schedObject{late, early}, 10, false, &fakeEnv{nodes: one, empty: one, fair: fair}), "early/p1")
+
+	g1 := &gang{key: "t2/x", tenant: "t2", arrival: planEpoch, reservation: "A"}
+	g2 := &gang{key: "t1/y", tenant: "t1", arrival: planEpoch, reservation: "B"}
+	g3 := &gang{key: "t1/x", tenant: "t1", arrival: planEpoch, reservation: "C"}
+	g4 := &gang{key: "t0/z", tenant: "t0", arrival: planEpoch.Add(time.Second), reservation: "D"}
+	if got := gangKeys(gangOrder([]*gang{g4, g1, g2, g3}, map[string]reservationUsage{})); !same(got, []string{"t1/x", "t1/y", "t2/x", "t0/z"}) {
+		t.Fatalf("order = %v", got)
+	}
 }

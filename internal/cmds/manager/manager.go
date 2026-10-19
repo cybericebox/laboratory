@@ -282,12 +282,21 @@ func Run() {
 		setupLog.Error(err, "unable to create controller", "controller", "Lab")
 		os.Exit(1)
 	}
+	var scheduler *laboratorycontroller.Scheduler
 	if cfg.SchedulerEnabled {
-		if err = mgr.Add(&laboratorycontroller.Scheduler{
-			Mirror:   mirror,
-			Client:   mgr.GetClient(),
-			Reader:   mgr.GetAPIReader(),
-			Recorder: mgr.GetEventRecorderFor("scheduler"),
+		// the scheduler asks discovery and the CRD itself before it deletes the work of a gone reservation (a deleted or
+		// reinstalled CRD is no such thing)
+		reservationsDC, err := discovery.NewDiscoveryClientForConfig(restCfg)
+		if err != nil {
+			setupLog.Error(err, "unable to build the discovery client")
+			os.Exit(1)
+		}
+		scheduler = &laboratorycontroller.Scheduler{
+			ReservationCRD: laboratorycontroller.ReservationCRDBy(reservationsDC, mgr.GetAPIReader()),
+			Mirror:         mirror,
+			Client:         mgr.GetClient(),
+			Reader:         mgr.GetAPIReader(),
+			Recorder:       mgr.GetEventRecorderFor("scheduler"),
 			Config: laboratorycontroller.SchedulerConfig{
 				MaxPods:                cfg.SchedulerMaxPods,
 				StartupTimeout:         cfg.SchedulerStartupTimeout,
@@ -297,15 +306,24 @@ func Run() {
 					corev1.ResourceCPU:    resource.MustParse(cfg.SchedulerPlatformReserveCPU),
 					corev1.ResourceMemory: resource.MustParse(cfg.SchedulerPlatformReserveMemory),
 				},
+				PackingReservePercent: cfg.SchedulerPackingReservePercent,
+				PackingReserveNode: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse(cfg.SchedulerPackingReserveCPU),
+					corev1.ResourceMemory: resource.MustParse(cfg.SchedulerPackingReserveMemory),
+				},
 				ResourceCheck:  cfg.SchedulerResourceCheck,
 				Prepull:        cfg.SchedulerPrepull,
 				PrepullTimeout: cfg.SchedulerPrepullTimeout,
+				Aging:          time.Duration(cfg.SchedulerAgingSeconds) * time.Second,
+				// the cleanup of unreserved work gives the same notice as the end of a reservation
+				UnreservedNotice: time.Duration(cfg.ReservationEndingNoticeSeconds) * time.Second,
 			},
 			Defaults:        laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory},
 			GroupPods:       cfg.GroupPods,
 			LabNodeSelector: labNodeSelector,
 			LabTolerations:  labTolerations,
-		}); err != nil {
+		}
+		if err = mgr.Add(scheduler); err != nil {
 			setupLog.Error(err, "unable to add the scheduler")
 			os.Exit(1)
 		}
@@ -346,6 +364,23 @@ func Run() {
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Connection")
 		os.Exit(1)
+	}
+	if served, err := (&laboratorycontroller.ReservationReconciler{
+		Client:      mgr.GetClient(),
+		Reader:      mgr.GetAPIReader(),
+		Notice:      time.Duration(cfg.ReservationEndingNoticeSeconds) * time.Second,
+		NoScheduler: !cfg.SchedulerEnabled,
+		// the scheduler runs with its default status interval
+		UsageMaxAge: laboratorycontroller.ReservationUsageMaxAge(0),
+	}).SetupWithManagerIfServed(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Reservation")
+		os.Exit(1)
+	} else if !served {
+		setupLog.Info("the Reservation CRD is not installed: no reservation is admitted until the CRDs are applied and the operator restarted")
+		if scheduler != nil {
+			// without the controller no window would end: the scheduler admits nothing under a reservation until a restart
+			scheduler.NoReservationController = true
+		}
 	}
 	if err = (&laboratorycontroller.TenantReconciler{
 		Client: mgr.GetClient(),

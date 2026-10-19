@@ -16,6 +16,8 @@ const (
 	// most 63 characters). Objects with the same key are dispatched together.
 	// Operator-internal: the scheduler reads it and no user label.
 	LabelDeployGroup = LabelPrefix + "deploy-group"
+	// LabelReservation is the name of the Reservation a Lab or LabGroup runs under. Objects without it are unreserved.
+	LabelReservation = LabelPrefix + "reservation"
 
 	// LabelNodeAgentReady is set to "true" on a node by the node-agent running there once it can serve pods, and removed when it stops.
 	// Every lab pod requires it (through the lab node selector of the chart), so no lab pod lands on a node without a working
@@ -37,6 +39,11 @@ const (
 	// number): within the same deploy group (or among independent objects) a higher one is dispatched first, whatever the
 	// size; at equal priority the larger lab goes first.
 	AnnotationDeployPriority = LabelPrefix + "deploy-priority"
+
+	// AnnotationEvictAt is set by the scheduler on every unreserved Lab and LabGroup (no reservation label) of a tenant whose
+	// running work holds room that active reservations cannot get: the RFC 3339 time it is deleted at, unless the shortfall
+	// clears first (then the annotation is removed).
+	AnnotationEvictAt = LabelPrefix + "evict-at"
 
 	// AnnotationSpecHash is written by the management agent on the objects it
 	// creates; the operator ignores it.

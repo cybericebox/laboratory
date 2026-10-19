@@ -112,13 +112,8 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.labScheduler.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.labScheduler.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
+      {{- with include "laboratory.placement" (dict "own" .Values.labScheduler "root" $) }}
+      {{- . | nindent 6 }}
       {{- end }}
       containers:
         - name: kube-scheduler

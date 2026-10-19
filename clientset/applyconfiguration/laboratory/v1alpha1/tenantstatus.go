@@ -19,6 +19,7 @@ package v1alpha1
 
 import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
 // TenantStatusApplyConfiguration represents a declarative configuration of the TenantStatus type for use
@@ -44,6 +45,8 @@ type TenantStatusApplyConfiguration struct {
 	// under the same name (a new UID) does not accept the old Tenant's certificates. Once it is above zero a certificate
 	// without an epoch (issued before this field existed) is refused too.
 	CertificateEpoch *int64 `json:"certificateEpoch,omitempty"`
+	// Conditions are written by the scheduler with the resourceVersion as precondition (CapacityShortfall).
+	Conditions []metav1.ConditionApplyConfiguration `json:"conditions,omitempty"`
 }
 
 // TenantStatusApplyConfiguration constructs a declarative configuration of the TenantStatus type for use with
@@ -97,5 +100,18 @@ func (b *TenantStatusApplyConfiguration) WithCertificatesNotBefore(value v1.Time
 // If called multiple times, the CertificateEpoch field is set to the value of the last call.
 func (b *TenantStatusApplyConfiguration) WithCertificateEpoch(value int64) *TenantStatusApplyConfiguration {
 	b.CertificateEpoch = &value
+	return b
+}
+
+// WithConditions adds the given value to the Conditions field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Conditions field.
+func (b *TenantStatusApplyConfiguration) WithConditions(values ...*metav1.ConditionApplyConfiguration) *TenantStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithConditions")
+		}
+		b.Conditions = append(b.Conditions, *values[i])
+	}
 	return b
 }

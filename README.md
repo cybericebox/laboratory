@@ -292,7 +292,7 @@ make test-e2e        # e2e tests against a kind cluster (see test/e2e)
   builds them, loads them into a kind cluster and installs everything.
 - **Clients.** Typed clientset and apply configurations are generated with `hack/update-codegen.sh`.
 - **Local cluster.** The Makefile expects the local k0s/Lima cluster kit (VMs, Cilium Gateway, test scenarios) in a
-  sibling infrastructure repository, configured by `LOCAL_K0S` (default `../infrastructure/local/cluster`).
+  sibling infrastructure repository, configured by `LOCAL_K0S` (default `../infrastructure/local/cluster`). The Kind cluster of `make cluster-up` (and of the e2e tests) is configured in this repo, `hack/kind/kind-config.yaml` (`KIND_CONFIG`).
 
 ## Documentation
 

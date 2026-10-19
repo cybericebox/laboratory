@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
-	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/nodecap"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -23,25 +22,7 @@ type nativePlacementPolicy struct {
 }
 
 func configuredNativePlacement(node *corev1.Node, p nativePlacementPolicy) bool {
-	selector := map[string]string{}
-	for key, value := range p.Selector {
-		if key != names.LabelNodeAgentReady {
-			selector[key] = value
-		}
-	}
-	copy := node.DeepCopy()
-	copy.Spec.Unschedulable = false
-	copy.Status.Conditions = nil
-	copy.Spec.Taints = nil
-	for _, taint := range node.Spec.Taints {
-		switch taint.Key {
-		case corev1.TaintNodeNotReady, corev1.TaintNodeUnreachable, corev1.TaintNodeUnschedulable, corev1.TaintNodeMemoryPressure, corev1.TaintNodeDiskPressure, corev1.TaintNodePIDPressure, corev1.TaintNodeNetworkUnavailable, "node.cilium.io/agent-not-ready":
-			// These express temporary availability/bootstrap, not pool membership.
-			continue
-		}
-		copy.Spec.Taints = append(copy.Spec.Taints, taint)
-	}
-	return nodecap.Schedulable(copy, selector, p.Tolerations)
+	return nodecap.InPool(node, p.Selector, p.Tolerations)
 }
 func (p nativePlacementPolicy) requiredHistoricalNodes(owner, namespace string, nodes map[string]*corev1.Node) (map[string]bool, error) {
 	required := map[string]bool{}

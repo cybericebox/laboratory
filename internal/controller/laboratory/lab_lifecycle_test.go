@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/devicestate"
@@ -134,7 +135,7 @@ func TestStoppedSchedulingExcludesOnlyTargetLab(t *testing.T) {
 	_ = f.c.Get(ctx, types.NamespacedName{Name: "a", Namespace: "ns-a"}, &target)
 	target.Spec.Lifecycle = &lab.LabLifecycleSpec{DesiredState: "Stopped", OperationID: "op", Revision: 1, SnapshotMode: "Skip"}
 	_ = f.c.Update(ctx, &target)
-	snap, err := f.s.load(ctx)
+	snap, err := f.s.load(ctx, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,12 +475,12 @@ func TestStoppedMissingRuntimeKeepsCapacityReservedAndLeavesKnownRoomUsable(t *t
 	d.Status.Scheduling.State = lab.PodStarted
 	_ = f.c.Status().Update(ctx, d)
 	f.tick()
-	f.wantStates("a/web=D b/db=S b/web=Q")
+	f.wantStates("a/web=D b/db=Q b/web=Q")
 	// A stale Released record is not the native observation for this operation.
 	l.Status.Resources = &lab.RuntimeAllocation{RuntimeState: "Released", OperationID: "old", Revision: 1}
 	_ = f.c.Status().Update(ctx, &l)
 	f.tick()
-	f.wantStates("a/web=D b/db=S b/web=Q")
+	f.wantStates("a/web=D b/db=Q b/web=Q")
 }
 
 func TestLifecycleOldLabOwnerCannotCreateIntoReplacementLab(t *testing.T) {
@@ -876,5 +877,53 @@ func TestLifecycleLegacyZeroReplicaDeploymentResumeKeepsOriginalBehavior(t *test
 	}
 	if *dep.Spec.Replicas != 1 {
 		t.Fatal("legacy no-lifecycle resume changed")
+	}
+}
+
+// The cluster env gives the plan the room stopped labs keep per node (a held placeholder for a pod that is gone) and the
+// queue time of every waiting pod, from which aging counts.
+func TestClusterEnvGivesStoppedHoldsAndQueueTime(t *testing.T) {
+	cfg := schedCfg()
+	cfg.ResourceCheck = true
+	f := newSchedFixture(t, cfg)
+	f.create(node("n1", "2", "4Gi"))
+	f.addLab("a", "", nil, "web")
+	f.addLab("b", "", nil, "web")
+	ctx := context.Background()
+	var l lab.Lab
+	_ = f.c.Get(ctx, client.ObjectKey{Name: "a", Namespace: "ns-a"}, &l)
+	l.Spec.Lifecycle = &lab.LabLifecycleSpec{DesiredState: "Stopped", OperationID: "op", Revision: 1, SnapshotMode: "Skip"}
+	_ = f.c.Update(ctx, &l)
+	d := f.device("a", "web")
+	d.Status.NodeName, d.Status.PodName, d.Status.Scheduling.State = "n1", "force-deleted", lab.PodStarted
+	_ = f.c.Status().Update(ctx, d)
+	queued := metav1.NewTime(f.now.Add(-time.Minute).Truncate(time.Second))
+	b := f.device("b", "web")
+	b.Status.Scheduling.QueuedAt = &queued
+	_ = f.c.Status().Update(ctx, b)
+
+	snap, err := f.s.load(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.s.prepared == nil {
+		f.s.prepared, f.s.recent = map[string]struct{}{}, map[string]time.Time{}
+	}
+	objs := f.s.objects(snap, f.now)
+	env := &clusterEnv{s: f.s, ctx: ctx, snap: snap, now: f.now, objs: objs}
+	if got := env.stoppedHolds()["n1"]; got != (amount{cpu: 100, mem: 100 << 20}) {
+		t.Fatalf("stopped holds on n1 = %+v, want 100m/100Mi", got)
+	}
+	found := false
+	for _, o := range objs {
+		if o.id == "lab/ns-b/b" {
+			found = true
+			if !o.pods[0].queuedAt.Equal(queued.Time) {
+				t.Fatalf("queuedAt = %v, want %v", o.pods[0].queuedAt, queued.Time)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("lab b is not in the plan input")
 	}
 }

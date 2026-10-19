@@ -43,7 +43,7 @@ func newSchedFixture(t *testing.T, cfg SchedulerConfig) *schedFixture {
 		t.Fatal(err)
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).
-		WithStatusSubresource(&laboratoryv1alpha1.Lab{}, &laboratoryv1alpha1.LabGroup{}, &laboratoryv1alpha1.Device{}, &laboratoryv1alpha1.Tenant{}, &corev1.Pod{}, &appsv1.DaemonSet{}, &corev1.Node{}, &laboratoryv1alpha1.ImagePull{}).
+		WithStatusSubresource(&laboratoryv1alpha1.Lab{}, &laboratoryv1alpha1.LabGroup{}, &laboratoryv1alpha1.Device{}, &laboratoryv1alpha1.Tenant{}, &corev1.Pod{}, &appsv1.DaemonSet{}, &corev1.Node{}, &laboratoryv1alpha1.ImagePull{}, &laboratoryv1alpha1.Reservation{}).
 		Build()
 	f := &schedFixture{t: t, c: c, now: planEpoch.Add(time.Hour)}
 	f.s = &Scheduler{
@@ -488,12 +488,12 @@ func TestSchedulerPodsOfALabGroup(t *testing.T) {
 		}
 		return out
 	}
-	// Both group pods are dispatched (the group arrived first), then one lab pod.
+	// Both group pods are dispatched (the group arrived first); the lab (two pods, one slot left) waits whole.
 	f.tick()
 	if got := grp(); got["vpn"] != laboratoryv1alpha1.PodStarting || got["gateway"] != laboratoryv1alpha1.PodStarting {
 		t.Fatalf("group pods = %v", got)
 	}
-	f.wantStates("a/db=S a/web=Q")
+	f.wantStates("a/db=Q a/web=Q")
 
 	// The VPN pod becomes Ready: it is Started and frees its slot.
 	f.create(&corev1.Pod{
@@ -511,6 +511,34 @@ func TestSchedulerPodsOfALabGroup(t *testing.T) {
 	f.tick()
 	if got := grp(); got["gateway"] != laboratoryv1alpha1.PodFailed {
 		t.Fatalf("group pods = %v", got)
+	}
+}
+
+// A LabGroup pod that fits no node is failed in the status too, so it is not planned again and again.
+func TestSchedulerFailsALabGroupPodThatFitsNoNode(t *testing.T) {
+	cfg := schedCfg()
+	cfg.ResourceCheck = true
+	f := newSchedFixture(t, cfg)
+	f.create(node("n1", "250m", "1Gi"))
+	now := metav1.NewTime(f.now)
+	f.create(&laboratoryv1alpha1.LabGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "team", UID: "uid-team", CreationTimestamp: metav1.NewTime(planEpoch)},
+		Spec: laboratoryv1alpha1.LabGroupSpec{
+			VPN:     laboratoryv1alpha1.LabGroupVPNSpec{Disabled: true},
+			Gateway: laboratoryv1alpha1.LabGroupGatewaySpec{Size: &laboratoryv1alpha1.GroupPodSize{CPUMillicores: 64000, MemoryBytes: 1 << 30}},
+		},
+		Status: laboratoryv1alpha1.LabGroupStatus{Pods: []laboratoryv1alpha1.NamedPodSchedule{
+			{Name: "gateway", PodSchedule: laboratoryv1alpha1.PodSchedule{State: laboratoryv1alpha1.PodQueued, QueuedAt: &now}},
+		}},
+	})
+	f.tick()
+	var g laboratoryv1alpha1.LabGroup
+	if err := f.c.Get(context.Background(), types.NamespacedName{Name: "team"}, &g); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.Status.Pods) != 1 || g.Status.Pods[0].State != laboratoryv1alpha1.PodFailed ||
+		g.Status.Pods[0].Failure == nil || g.Status.Pods[0].Failure.Reason != laboratoryv1alpha1.FailureDoesNotFit {
+		t.Fatalf("pods = %+v", g.Status.Pods)
 	}
 }
 
@@ -545,23 +573,35 @@ func TestSchedulerResourceCheckWaitsAndFails(t *testing.T) {
 	cfg.ResourceCheck = true
 	f := newSchedFixture(t, cfg)
 	f.create(node("n1", "250m", "1Gi"))
-	f.addLab("a", "g", nil, "p1", "p2", "p3")
+	f.addLab("a", "g1", nil, "p1", "p2")
+	f.addLab("b", "g2", nil, "p1")
 	f.tick()
-	// Each pod needs 100m: two fit in 250m, the third waits and says why.
-	f.wantStates("a/p1=S a/p2=S a/p3=Q")
-	if s := f.labStatus("a"); s.Reason != laboratoryv1alpha1.WaitInsufficient || s.Pending != 1 {
+	// Each pod needs 100m: the gang of a takes 200m of 250m, the gang of b (100m) waits whole and says why.
+	f.wantStates("a/p1=S a/p2=S b/p1=Q")
+	if s := f.labStatus("b"); s.Reason != laboratoryv1alpha1.WaitInsufficient || s.Pending != 1 {
 		t.Fatalf("status = %+v", s)
 	}
 	// The dispatched pods hold their requests until they are on a node.
 	f.now = f.now.Add(time.Second)
 	f.tick()
-	f.wantStates("a/p1=S a/p2=S a/p3=Q")
+	f.wantStates("a/p1=S a/p2=S b/p1=Q")
+
+	// A group bigger than the whole node does not fit now: none starts partly, and it is looked at again on every
+	// tick (a node may return), with the reason DoesNotFit.
+	f1 := newSchedFixture(t, cfg)
+	f1.create(node("n1", "250m", "1Gi"))
+	f1.addLab("c", "g", nil, "p1", "p2", "p3")
+	f1.tick()
+	f1.wantStates("c/p1=Q c/p2=Q c/p3=Q")
+	if s := f1.labStatus("c"); s.Reason != laboratoryv1alpha1.WaitDoesNotFit {
+		t.Fatalf("status = %+v", s)
+	}
 
 	// A pod larger than the whole node is failed, and the queue goes on.
 	f2 := newSchedFixture(t, cfg)
 	f2.create(node("n1", "2", "4Gi"))
 	f2.addLab("huge", "g", nil, "big")
-	f2.addLab("ok", "g", nil, "p1")
+	f2.addLab("ok", "g2", nil, "p1")
 	l := &laboratoryv1alpha1.Lab{}
 	if err := f2.c.Get(context.Background(), types.NamespacedName{Namespace: "ns-huge", Name: "huge"}, l); err != nil {
 		t.Fatal(err)
@@ -854,20 +894,22 @@ func TestSchedulerEnforcesTenantQuota(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	f.addLab("a", "", nil, "web", "db", "cache")
+	f.addLab("a", "", nil, "web", "db")
 	label("a", "capped")
+	f.addLab("c", "", nil, "web")
+	label("c", "capped")
 	f.addLab("b", "", nil, "web")
 	label("b", "other")
 
 	f.tick()
-	f.wantStates("a/cache=S a/db=S a/web=Q b/web=S")
-	if st := f.labStatus("a"); st == nil || st.Reason != laboratoryv1alpha1.WaitTenantQuota || st.Pending != 1 {
+	f.wantStates("a/db=S a/web=S b/web=S c/web=Q")
+	if st := f.labStatus("c"); st == nil || st.Reason != laboratoryv1alpha1.WaitTenantQuota || st.Pending != 1 {
 		t.Fatalf("status of the held lab: %+v", st)
 	}
 	// Pods that started (or failed) still count against the quota.
-	f.ready("a", "cache")
+	f.ready("a", "db")
 	f.tick()
-	f.wantStates("a/cache=D a/db=S a/web=Q b/web=S")
+	f.wantStates("a/db=D a/web=S b/web=S c/web=Q")
 }
 
 func prepullSchedCfg() SchedulerConfig {
@@ -998,5 +1040,57 @@ func TestSchedulerPrepullUsesTheTenantsCredentialsOnly(t *testing.T) {
 	var secrets corev1.SecretList
 	if err := f2.c.List(context.Background(), &secrets, client.InNamespace(names.ImagesNamespace)); err != nil || len(secrets.Items) != 0 {
 		t.Fatalf("no credentials copied: %v %v", secrets.Items, err)
+	}
+}
+
+// A pod only a rebooting node could hold (its node-agent is down, so the node-agent-ready label is gone) waits with
+// DoesNotFitNow: the node is still in the pool, it is not failed for good.
+func TestSchedulerPodForARebootingNodeWaits(t *testing.T) {
+	cfg := schedCfg()
+	cfg.ResourceCheck = true
+	f := newSchedFixture(t, cfg)
+	f.s.LabNodeSelector = map[string]string{"pool": "labs", names.LabelNodeAgentReady: "true"}
+	small := node("small", "1", "1Gi")
+	small.Labels = map[string]string{"pool": "labs", names.LabelNodeAgentReady: "true"}
+	big := node("big", "4", "8Gi")
+	big.Labels = map[string]string{"pool": "labs"}
+	big.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionUnknown}}
+	f.create(small)
+	f.create(big)
+	f.addLab("a", "g", nil, "big")
+	setDeviceResources(t, f, "a", &laboratoryv1alpha1.DeviceResources{MemoryLimit: "4Gi"})
+	f.tick()
+	f.wantStates("a/big=Q")
+	if s := f.labStatus("a"); s.Reason != laboratoryv1alpha1.WaitDoesNotFit {
+		t.Fatalf("status = %+v", s)
+	}
+}
+
+// A pod that needs the CPU of one node and the memory of another fits no node: it is failed for good, it does not wait.
+func TestSchedulerPodOverEveryNodeInBothDimensionsFails(t *testing.T) {
+	cfg := schedCfg()
+	cfg.ResourceCheck = true
+	f := newSchedFixture(t, cfg)
+	f.create(node("a", "4", "2Gi"))
+	f.create(node("b", "1", "8Gi"))
+	f.addLab("x", "g", nil, "p1")
+	setDeviceResources(t, f, "x", &laboratoryv1alpha1.DeviceResources{CPULimit: "3", MemoryLimit: "4Gi"})
+	f.tick()
+	f.wantStates("x/p1=F")
+	if fail := f.device("x", "p1").Status.Scheduling.Failure; fail == nil || fail.Reason != laboratoryv1alpha1.FailureDoesNotFit {
+		t.Fatalf("failure = %+v", fail)
+	}
+}
+
+// setDeviceResources sets the resources of the first device of the lab.
+func setDeviceResources(t *testing.T, f *schedFixture, lab string, r *laboratoryv1alpha1.DeviceResources) {
+	t.Helper()
+	l := &laboratoryv1alpha1.Lab{}
+	if err := f.c.Get(context.Background(), types.NamespacedName{Namespace: "ns-" + lab, Name: lab}, l); err != nil {
+		t.Fatal(err)
+	}
+	l.Spec.Devices[0].Resources = r
+	if err := f.c.Update(context.Background(), l); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -39,6 +39,9 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with include "laboratory.placement" (dict "own" $r "root" $) }}
+      {{- . | nindent 6 }}
+      {{- end }}
       initContainers:
         # A volume that is not made by a provisioner that honours fsGroup (hostPath, local-path, or a volume that an earlier version
         # filled as root) keeps its owner, and zot, which is not root, could not write to it. This hands the data directory to zot's user

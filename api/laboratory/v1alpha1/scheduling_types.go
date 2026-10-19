@@ -35,16 +35,28 @@ const (
 	FailureStartupTimeout = "StartupTimeout"
 	// FailurePodNotCreated: the workload never produced a pod (the message says why: the namespace refused it, a quota, a
 	// missing ServiceAccount or secret, an admission webhook, or the workload itself is missing or scaled to zero).
-	FailurePodNotCreated   = "PodNotCreated"
-	FailureDoesNotFit      = "DoesNotFit"
+	FailurePodNotCreated = "PodNotCreated"
+	FailureDoesNotFit    = "DoesNotFit"
+	// FailureTenantQuota: the pods of a deploy group together never fit the quota of their tenant.
+	FailureTenantQuota     = "TenantQuotaNeverFits"
 	WaitInFlightLimit      = "InFlightLimit"
 	WaitForGroup           = "WaitingForGroup"
 	WaitForTurn            = "WaitingForTurn"
 	WaitPreparingImages    = "PreparingImages"
 	WaitInsufficient       = "InsufficientResources"
 	WaitNoSchedulableNodes = "NoSchedulableNodes"
+	// WaitDoesNotFit: the pods of a deploy group do not fit the nodes together even when empty; it may change when nodes
+	// return or load ends.
+	WaitDoesNotFit = "DoesNotFitNow"
 	// WaitTenantQuota: the tenant of the object has reached its CPU or memory quota.
 	WaitTenantQuota = "TenantQuota"
+	// WaitReservationMissing: the object names a Reservation that does not exist or belongs to another tenant.
+	WaitReservationMissing = "ReservationMissing"
+	// WaitReservationNotActive: the window of the object's Reservation has not started yet or is over.
+	WaitReservationNotActive = "ReservationNotActive"
+	// WaitReservationFull: the pods of the group do not fit what is left of the Reservation (an invalid Reservation reserves
+	// nothing).
+	WaitReservationFull = "ReservationFull"
 )
 
 // PodSchedule is the scheduling state of one pod: a Device, or the VPN or

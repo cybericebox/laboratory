@@ -2,11 +2,13 @@ package grpc
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/grouppods"
@@ -260,13 +262,31 @@ func (h *Handler) refreshTenantStatus(ctx context.Context) {
 		if err != nil {
 			continue
 		}
-		now := metav1.Now()
-		t.Status.Reserved = ld.reserved.Usage()
-		t.Status.Used = laboratoryv1alpha1.TenantUsage{}
+		used := laboratoryv1alpha1.TenantUsage{}
 		if ld.usageAvailable {
-			t.Status.Used = ld.used.Usage()
+			used = ld.used.Usage()
 		}
-		t.Status.ObservedAt = &now
-		_, _ = h.cs.LaboratoryV1alpha1().Tenants().UpdateStatus(ctx, t, metav1.UpdateOptions{})
+		patch, err := tenantStatusPatch(ld.reserved.Usage(), used, metav1.Now())
+		if err != nil {
+			continue
+		}
+		_, _ = h.cs.LaboratoryV1alpha1().Tenants().Patch(ctx, t.Name, types.MergePatchType, patch, metav1.PatchOptions{}, "status")
 	}
+}
+
+// tenantStatusPatch is the merge patch of the agent's own status fields (reserved, used, observedAt) and nothing else, so the
+// operator's fields (the enrollment, the scheduler's conditions) are never overwritten and the two never conflict. An empty
+// quantity goes out as null, which removes it.
+func tenantStatusPatch(reserved, used laboratoryv1alpha1.TenantUsage, at metav1.Time) ([]byte, error) {
+	usage := func(u laboratoryv1alpha1.TenantUsage) map[string]any {
+		out := map[string]any{"cpu": nil, "memory": nil}
+		if u.CPU != "" {
+			out["cpu"] = u.CPU
+		}
+		if u.Memory != "" {
+			out["memory"] = u.Memory
+		}
+		return out
+	}
+	return json.Marshal(map[string]any{"status": map[string]any{"reserved": usage(reserved), "used": usage(used), "observedAt": at}})
 }

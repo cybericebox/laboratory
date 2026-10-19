@@ -167,6 +167,31 @@ func TestTenantStatusIsRefreshed(t *testing.T) {
 	}
 }
 
+// The agent patches only its own status fields: the operator's (the scheduler's conditions, the enrollment) stay, and a usage
+// that is no longer available is removed.
+func TestTenantStatusPatchKeepsTheOperatorFields(t *testing.T) {
+	ten := newTenantTenant("a", true, nil)
+	issued := metav1.Now()
+	ten.Status = laboratoryv1alpha1.TenantStatus{
+		Used:       laboratoryv1alpha1.TenantUsage{CPU: "9", Memory: "9Gi"},
+		Enrollment: &laboratoryv1alpha1.TenantEnrollment{TokenHash: "h", IssuedAt: &issued},
+		Conditions: []metav1.Condition{{Type: laboratoryv1alpha1.TenantConditionCapacityShortfall, Status: metav1.ConditionTrue, Reason: "ReservationsDoNotFit", LastTransitionTime: issued}},
+	}
+	h := tenantHandler(t, []*laboratoryv1alpha1.Tenant{ten}, labPod("ns1", "a1", "a", "500m", "100Mi", corev1.PodRunning))
+	h.refreshTenantStatus(context.Background())
+	got, err := h.cs.LaboratoryV1alpha1().Tenants().Get(context.Background(), "a", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := got.Status
+	if st.Reserved.CPU != "500m" || st.Used != (laboratoryv1alpha1.TenantUsage{}) || st.ObservedAt == nil {
+		t.Fatalf("the agent's fields: %+v", st)
+	}
+	if len(st.Conditions) != 1 || st.Enrollment == nil || st.Enrollment.TokenHash != "h" {
+		t.Fatalf("the operator's fields were overwritten: %+v", st)
+	}
+}
+
 func TestMonitoringCapacityIsPerTenant(t *testing.T) {
 	h := tenantHandler(t, []*laboratoryv1alpha1.Tenant{
 		newTenantTenant("a", true, &laboratoryv1alpha1.TenantQuota{CPU: "1"}), newTenantTenant("b", true, nil)},
@@ -217,9 +242,18 @@ func TestTenantResourceOnARealAPIServer(t *testing.T) {
 	if err != nil || c.CpuReservedMillicores != 750 || c.CpuFreeMillicores != 1250 || !c.HasMemoryQuota {
 		t.Fatalf("capacity %+v %v", c, err)
 	}
+	// the scheduler's condition, written before: the agent's patch keeps it
+	cur, err := tenants.Get(ctx, "platform", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur.Status.Conditions = []metav1.Condition{{Type: laboratoryv1alpha1.TenantConditionCapacityShortfall, Status: metav1.ConditionFalse, Reason: "ReservationsFit", Message: "fit", LastTransitionTime: metav1.Now()}}
+	if _, err := tenants.UpdateStatus(ctx, cur, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
 	h.refreshTenantStatus(ctx)
 	got, err := tenants.Get(ctx, "platform", metav1.GetOptions{})
-	if err != nil || got.Status.Reserved.CPU != "750m" || got.Status.ObservedAt == nil {
+	if err != nil || got.Status.Reserved.CPU != "750m" || got.Status.ObservedAt == nil || len(got.Status.Conditions) != 1 {
 		t.Fatalf("status through the status subresource: %+v %v", got.Status, err)
 	}
 }
@@ -255,8 +289,9 @@ func TestCapacityReportsTheLargestPlaceableDeviceOnly(t *testing.T) {
 	if err != nil || !got.HasMaxDevice {
 		t.Fatalf("%+v %v", got, err)
 	}
-	// n3 has no ready node-agent; n1 gives the most CPU (4000-500), n2 the most memory.
-	if got.MaxDeviceCpuMillicores != 3500 || got.MaxDeviceMemoryBytes != 16<<30 {
+	// n3 has no ready node-agent now (it reboots), so it takes no pod, but it is still a lab node: an upper bound per
+	// resource, it gives the most CPU (64000-500) and memory.
+	if got.MaxDeviceCpuMillicores != 63500 || got.MaxDeviceMemoryBytes != 256<<30 {
 		t.Errorf("largest device = %dm / %d", got.MaxDeviceCpuMillicores, got.MaxDeviceMemoryBytes)
 	}
 	// Nothing of the layout is in the message: the generated type has no node fields at all.
@@ -267,6 +302,38 @@ func TestCapacityReportsTheLargestPlaceableDeviceOnly(t *testing.T) {
 	empty := tenantHandler(t, []*laboratoryv1alpha1.Tenant{newTenantTenant("a", true, nil)})
 	if got, _ = empty.GetCapacity(asClient("a"), &protobuf.Empty{}); got.HasMaxDevice {
 		t.Errorf("no node, no largest device: %+v", got)
+	}
+}
+
+// The largest device is what one lab node gives with nothing on it, net of the platform and the packing reserve, over every
+// node of the pool, cordoned and NotReady ones too: the same fixture as the operator's
+// TestSnapshotMaxNodeIsNetOfPackingAndCountsDrainedNodes, with the same answer, so a device the platform accepts is one
+// the scheduler can place and never fails for good.
+func TestLargestDeviceMatchesTheSchedulersNeverFits(t *testing.T) {
+	node := func(name, cpu, mem string, labels map[string]string) *corev1.Node {
+		return &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels}, Status: corev1.NodeStatus{
+			Allocatable: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(cpu), corev1.ResourceMemory: resource.MustParse(mem)},
+		}}
+	}
+	lab := map[string]string{"lab": "yes"}
+	big := node("big", "8", "16Gi", lab)
+	big.Spec.Unschedulable = true
+	mid := node("mid", "4", "32Gi", lab)
+	mid.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionFalse}}
+	h := tenantHandler(t, []*laboratoryv1alpha1.Tenant{newTenantTenant("a", true, nil)},
+		big, mid, node("other", "64", "256Gi", nil), node("small", "2", "4Gi", lab))
+	h.SetLabScheduling(lab, nil)
+	h.SetNodeReserve(nodecap.Reserve{Node: nodecap.Amount{CPU: 500}, Percent: 10})
+	h.SetPackingReserve(nodecap.PackingReserve{Percent: 20})
+	got, err := h.GetCapacity(asClient("a"), &protobuf.Empty{})
+	if err != nil || !got.HasMaxDevice {
+		t.Fatalf("%+v %v", got, err)
+	}
+	mem := int64(32 << 30)
+	mem -= mem * 10 / 100
+	mem -= mem * 20 / 100
+	if got.MaxDeviceCpuMillicores != 5400 || got.MaxDeviceMemoryBytes != mem {
+		t.Errorf("largest device = %dm / %d, want 5400m / %d", got.MaxDeviceCpuMillicores, got.MaxDeviceMemoryBytes, mem)
 	}
 }
 
@@ -283,9 +350,9 @@ func TestCapacityIsNetOfThePackingReserve(t *testing.T) {
 		newTenantTenant("small", true, &laboratoryv1alpha1.TenantQuota{CPU: "4", Memory: "8Gi"}),
 		newTenantTenant("huge", true, &laboratoryv1alpha1.TenantQuota{CPU: "100", Memory: "100Gi"}),
 		newTenantTenant("open", true, nil)}, node("n1"), node("n2"))
-	h.SetPackingReserve(15)
+	h.SetPackingReserve(nodecap.PackingReserve{Percent: 15})
 	cases := map[string][2]int64{
-		"small": {3400, 8 << 30 * 85 / 100},   // the quota is below the room: 85% of it
+		"small": {3400, 8<<30 - 8<<30*15/100}, // the quota is below the room: 85% of it
 		"huge":  {17000, 40 << 30 * 85 / 100}, // the quota is above the room (20 CPU, 40Gi): 85% of the room
 		"open":  {17000, 40 << 30 * 85 / 100}, // no quota: the room
 	}
@@ -298,5 +365,44 @@ func TestCapacityIsNetOfThePackingReserve(t *testing.T) {
 	f, err := h.GetFeatures(asClient("small"), &protobuf.Empty{})
 	if err != nil || f.TenantQuota.CpuQuotaMillicores != 3400 {
 		t.Errorf("the features quota is net of it as well: %+v %v", f.GetTenantQuota(), err)
+	}
+}
+
+// The room the agent reports is the one the operator counts (nodecap.FreeForLabs): per node the allocatable less the requests of
+// the non-lab pods (a lab pod takes nothing), less the packing reserve. The same fixture as the operator's
+// TestRoomsSubtractNonLabAndPacking: 3315m / 7073274266 bytes on the first node, 3400m / 7301444404 on the second.
+func TestReportedRoomMatchesOperator(t *testing.T) {
+	node := func(name string) *corev1.Node {
+		return &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name}, Status: corev1.NodeStatus{
+			Allocatable: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("4"), corev1.ResourceMemory: resource.MustParse("8Gi")},
+			Conditions:  []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}},
+		}}
+	}
+	pod := func(name, nodeName, cpu, mem string, labels map[string]string) *corev1.Pod {
+		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "kube-system", Labels: labels},
+			Spec: corev1.PodSpec{NodeName: nodeName, Containers: []corev1.Container{{Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
+				corev1.ResourceCPU: resource.MustParse(cpu), corev1.ResourceMemory: resource.MustParse(mem)}}}}}}
+	}
+	h := tenantHandler(t, []*laboratoryv1alpha1.Tenant{newTenantTenant("open", true, nil)}, node("n1"), node("n2"),
+		pod("cilium", "n1", "100m", "256Mi", nil),
+		pod("device", "n1", "1", "1Gi", map[string]string{"laboratory.cybericebox.com/lab": "lab"}),
+		pod("gateway", "n2", "500m", "512Mi", map[string]string{"laboratory.cybericebox.com/component": "gateway"}))
+	h.SetPackingReserve(nodecap.PackingReserve{Percent: 15})
+	got, err := h.GetCapacity(asClient("open"), &protobuf.Empty{})
+	if err != nil || !got.HasCpuQuota || got.CpuQuotaMillicores != 3315+3400 || got.MemoryQuotaBytes != 7073274266+(8<<30-(8<<30)*15/100) {
+		t.Fatalf("%+v %v", got, err)
+	}
+	// With the platform percent (10 %) the node loses it first: the operator's TestRoomsSubtractPlatformPercentPerNode gives
+	// 2975m for the first node; the second (only a lab pod on it) is (4000-400)*0.85 = 3060m.
+	h = tenantHandler(t, []*laboratoryv1alpha1.Tenant{newTenantTenant("open", true, nil)}, node("n1"), node("n2"),
+		pod("cilium", "n1", "100m", "256Mi", nil),
+		pod("gateway", "n2", "500m", "512Mi", map[string]string{"laboratory.cybericebox.com/component": "gateway"}))
+	h.SetNodeReserve(nodecap.Reserve{Percent: 10})
+	h.SetPackingReserve(nodecap.PackingReserve{Percent: 15})
+	got, err = h.GetCapacity(asClient("open"), &protobuf.Empty{})
+	mem1 := int64(8<<30) - int64(8<<30)*10/100 - 256<<20
+	mem2 := int64(8<<30) - int64(8<<30)*10/100
+	if err != nil || got.CpuQuotaMillicores != 2975+3060 || got.MemoryQuotaBytes != mem1-mem1*15/100+mem2-mem2*15/100 {
+		t.Fatalf("with the platform percent: %+v %v", got, err)
 	}
 }

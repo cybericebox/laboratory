@@ -31,33 +31,59 @@ func podRequests(pod *corev1.Pod) amount {
 	return amount{cpu: r.CPU, mem: r.Memory}
 }
 
-// capacity is the CPU and memory of the nodes lab pods can run on.
-type capacity struct {
-	nodes       int
-	allocatable amount
-	free        amount
+// nodeRoom is what labs can still take on one node, in millicores and bytes: free after the requests of non-lab pods, the
+// platform node reserve and the packing reserve.
+type nodeRoom struct {
+	Name        string
+	CPU, Memory int64
 }
+
+// capacitySnapshot is the CPU and memory of the nodes lab pods can run on.
+type capacitySnapshot struct {
+	nodes int
+	// allocatable is the sum over the schedulable nodes less the node reserve: what a percentage tenant quota is a percentage of.
+	allocatable amount
+	// perNode is the room of every schedulable node (rooms).
+	perNode []nodeRoom
+	// nodeLimits is, per node of the pool (cordoned, NotReady and rebooting ones too), the most it can give one pod:
+	// allocatable less the node reserve, the platform percent and the packing reserve, whatever runs there
+	// (nodecap.DeviceLimits). A pod that fits none of them, CPU and memory together, can never be placed.
+	nodeLimits []amount
+	// maxNode is the per-resource maximum of nodeLimits (nodecap.LargestDevice, the agent's largest device): an upper bound
+	// per resource only.
+	maxNode amount
+	// labUsed is the requests of the lab pods bound to each node (the held pods of stopped labs included).
+	labUsed map[string]amount
+}
+
+// rooms is the room FOR labs on each schedulable node, in the order of the nodes, before the usage of the labs.
+func (c capacitySnapshot) rooms() []nodeRoom { return append([]nodeRoom(nil), c.perNode...) }
+
+// freeRooms is rooms less the requests of the lab pods bound to each node, the held pods of stopped labs included (they hold
+// resources): where the placement simulation of a pass starts. Lab pods that are dispatched but not on a node yet are placed
+// by the plan.
+func (c capacitySnapshot) freeRooms() []nodeRoom { return without(c.rooms(), c.labUsed) }
 
 // schedulableNode: see nodecap.Schedulable.
 func schedulableNode(node *corev1.Node, selector map[string]string, tolerations []corev1.Toleration) bool {
 	return nodecap.Schedulable(node, selector, tolerations)
 }
 
-// snapshotCapacity sums the allocatable resources of the schedulable nodes (less the absolute platform reserve
-// of each) and subtracts the requests of ALL pods scheduled on them (DaemonSets, the proxy and system pods
-// included, not only lab pods). Free is summed per node
-// and never negative on a node, so an overcommitted node does not hide room
-// elsewhere. Finished pods hold no resources.
-func snapshotCapacity(nodes []corev1.Node, pods []corev1.Pod, selector map[string]string, tolerations []corev1.Toleration, nodeReserve amount) capacity {
-	requested := map[string]amount{}
+// snapshotCapacity reads the per-node room for labs (rooms: allocatable less the platform reserves, the requests of the pods
+// that are not lab pods and the packing reserve), the lab pods bound to each node (labUsed), the per-node limits of the pool
+// and the sum of the schedulable nodes' allocatable. Finished pods hold no resources.
+func snapshotCapacity(nodes []corev1.Node, pods []corev1.Pod, selector map[string]string, tolerations []corev1.Toleration, nodeReserve amount, platformPercent int, packing nodecap.PackingReserve) capacitySnapshot {
+	c := capacitySnapshot{labUsed: map[string]amount{}}
 	for i := range pods {
 		p := &pods[i]
-		if p.Spec.NodeName == "" || p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
-			continue
+		if p.Spec.NodeName != "" && p.Status.Phase != corev1.PodSucceeded && p.Status.Phase != corev1.PodFailed && nodecap.IsLabPod(p) {
+			c.labUsed[p.Spec.NodeName] = c.labUsed[p.Spec.NodeName].add(podRequests(p))
 		}
-		requested[p.Spec.NodeName] = requested[p.Spec.NodeName].add(podRequests(p))
 	}
-	var c capacity
+	reserve := nodecap.Reserve{Node: nodecap.Amount{CPU: nodeReserve.cpu, Memory: nodeReserve.mem}, Percent: platformPercent}
+	for _, f := range nodecap.FreeForLabs(nodes, pods, selector, tolerations, reserve, packing) {
+		c.perNode = append(c.perNode, nodeRoom{Name: f.Name, CPU: f.CPU, Memory: f.Memory})
+	}
 	for i := range nodes {
 		n := &nodes[i]
 		if !schedulableNode(n, selector, tolerations) {
@@ -67,48 +93,20 @@ func snapshotCapacity(nodes []corev1.Node, pods []corev1.Pod, selector map[strin
 		alloc := amount{cpu: n.Status.Allocatable.Cpu().MilliValue(), mem: n.Status.Allocatable.Memory().Value()}.sub(nodeReserve).floorZero()
 		c.nodes++
 		c.allocatable = c.allocatable.add(alloc)
-		c.free = c.free.add(alloc.sub(requested[n.Name]).floorZero())
+	}
+	for _, l := range nodecap.DeviceLimits(nodes, selector, tolerations, reserve, packing) {
+		c.nodeLimits = append(c.nodeLimits, amount{cpu: l.CPU, mem: l.Memory})
+		c.maxNode = amount{cpu: max(c.maxNode.cpu, l.CPU), mem: max(c.maxNode.mem, l.Memory)}
 	}
 	return c
 }
 
-// fit is the verdict of the resource check for one lab.
-type fit int
-
-const (
-	fitOK fit = iota
-	// fitWait: not enough is free now; it may fit once running labs settle.
-	fitWait
-	// fitNever: the lab exceeds the whole schedulable capacity (minus headroom),
-	// so waiting will not help.
-	fitNever
-	// fitNoNodes: there is no node to place the pods on.
-	fitNoNodes
-)
-
-// check decides whether a lab needing need can be admitted while headroomPercent
-// of the schedulable CPU and memory (the platform reserve) stays free. A lab that requests nothing
-// always fits.
-func (c capacity) check(need amount, headroomPercent int) fit {
-	if need == (amount{}) {
-		return fitOK
+// fitsOneNode says whether some node of the pool, empty, holds need: CPU and memory on the same node.
+func (c capacitySnapshot) fitsOneNode(need amount) bool {
+	for _, l := range c.nodeLimits {
+		if need.cpu <= l.cpu && need.mem <= l.mem {
+			return true
+		}
 	}
-	if c.nodes == 0 {
-		return fitNoNodes
-	}
-	reserve := amount{cpu: c.allocatable.cpu * int64(headroomPercent) / 100, mem: c.allocatable.mem * int64(headroomPercent) / 100}
-	usable := c.allocatable.sub(reserve)
-	if need.cpu > usable.cpu || need.mem > usable.mem {
-		return fitNever
-	}
-	avail := c.free.sub(reserve)
-	if need.cpu > avail.cpu || need.mem > avail.mem {
-		return fitWait
-	}
-	return fitOK
-}
-
-// take reserves need out of the free capacity after a lab was admitted.
-func (c *capacity) take(need amount) {
-	c.free = c.free.sub(need).floorZero()
+	return false
 }

@@ -24,13 +24,8 @@ spec:
             app: laboratory-proxy-l7
         topologyKey: kubernetes.io/hostname
   {{- end }}
-  {{- with .Values.proxy.nodeSelector }}
-  nodeSelector:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
-  {{- with .Values.proxy.tolerations }}
-  tolerations:
-    {{- toYaml . | nindent 4 }}
+  {{- with include "laboratory.placement" (dict "own" .Values.proxy "root" $) }}
+  {{- . | nindent 2 }}
   {{- end }}
   {{- with .Values.imagePullSecrets }}
   imagePullSecrets:

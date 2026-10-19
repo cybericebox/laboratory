@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"sigs.k8s.io/yaml"
@@ -33,6 +34,7 @@ func TestSchedulerDefaultsReachTheOperator(t *testing.T) {
 		"SCHEDULER_RESOURCE_CHECK":  "true",
 		"SCHEDULER_PREPULL":         "true",
 		"SCHEDULER_PREPULL_TIMEOUT": "5m",
+		"SCHEDULER_AGING_SECONDS":   "0",
 		"DEVICE_DEFAULT_CPU":        "100m",
 		"DEVICE_DEFAULT_MEMORY":     "256Mi",
 	}
@@ -59,13 +61,14 @@ func TestSchedulerValuesOverride(t *testing.T) {
 		"--set", "scheduler.resourceCheck=false",
 		"--set", "scheduler.prepull.enabled=false",
 		"--set", "scheduler.prepull.timeout=10m",
+		"--set", "scheduler.agingSeconds=300",
 		"--set", "limits.device.defaultCpu=400m",
 		"--set", "limits.device.defaultMemory=1Gi",
 	)
 	want := map[string]string{
 		"SCHEDULER_ENABLED": "false", "SCHEDULER_MAX_PODS": "50", "SCHEDULER_STARTUP_TIMEOUT": "90s",
 		"SCHEDULER_RESTART_THRESHOLD": "3", "SCHEDULER_PLATFORM_RESERVE_PERCENT": "25", "SCHEDULER_PLATFORM_RESERVE_CPU": "300m", "SCHEDULER_PLATFORM_RESERVE_MEMORY": "1Gi", "SCHEDULER_RESOURCE_CHECK": "false",
-		"SCHEDULER_PREPULL": "false", "SCHEDULER_PREPULL_TIMEOUT": "10m",
+		"SCHEDULER_PREPULL": "false", "SCHEDULER_PREPULL_TIMEOUT": "10m", "SCHEDULER_AGING_SECONDS": "300",
 		"DEVICE_DEFAULT_CPU": "400m", "DEVICE_DEFAULT_MEMORY": "1Gi",
 	}
 	for k, v := range want {
@@ -76,7 +79,7 @@ func TestSchedulerValuesOverride(t *testing.T) {
 }
 
 func TestSchedulerRejectsBadValues(t *testing.T) {
-	for _, set := range []string{"scheduler.maxPods=-1", "scheduler.platformReservePercent=100", "scheduler.platformReservePercent=-5", "scheduler.headroomPercent=10", "scheduler.restartThreshold=0"} {
+	for _, set := range []string{"scheduler.maxPods=-1", "scheduler.platformReservePercent=100", "scheduler.platformReservePercent=-5", "scheduler.headroomPercent=10", "scheduler.restartThreshold=0", "scheduler.agingSeconds=-1"} {
 		out, err := helmTemplate(t, "--set", set)
 		if err == nil {
 			t.Errorf("%s must be refused", set)
@@ -165,6 +168,27 @@ func TestAgentMayReadMaintenanceWindows(t *testing.T) {
 	}
 }
 
+// The packing reserve is applied per node by the operator and the agent alike: both read it from laboratory.sharedEnv.
+func TestPackingReserveEnvSharedByOperatorAndAgent(t *testing.T) {
+	set := []string{"--set", "agent.enabled=true", "--set", "agent.domain=agent.example.com",
+		"--set", "scheduler.packingReservePercent=20", "--set", "scheduler.packingReserveCpu=300m", "--set", "scheduler.packingReserveMemory=1Gi"}
+	for _, tpl := range []string{"templates/operator/configmap.yaml", "templates/agent/deployment.yaml"} {
+		out, err := helmTemplate(t, append(append([]string{}, set...), "-s", tpl)...)
+		if err != nil {
+			t.Fatalf("%s: helm template: %v\n%s", tpl, err, out)
+		}
+		for _, want := range []string{"SCHEDULER_PACKING_RESERVE_PERCENT", "\"20\"", "SCHEDULER_PACKING_RESERVE_CPU", "\"300m\"", "SCHEDULER_PACKING_RESERVE_MEMORY", "\"1Gi\""} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s lacks %s:\n%s", tpl, want, out)
+			}
+		}
+	}
+	out, err := helmTemplate(t, "-s", "templates/operator/configmap.yaml")
+	if err != nil || !strings.Contains(out, "SCHEDULER_PACKING_RESERVE_PERCENT: \"15\"") || !strings.Contains(out, "SCHEDULER_PACKING_RESERVE_CPU: \"0\"") {
+		t.Errorf("the defaults are 15 %% and no fixed values: %v\n%s", err, out)
+	}
+}
+
 // The agent reports its capacity net of the hidden packing reserve: it gets the chart value.
 func TestAgentGetsThePackingReserve(t *testing.T) {
 	out, err := helmTemplate(t, "--set", "agent.enabled=true", "--set", "agent.domain=agent.example.com",
@@ -218,5 +242,96 @@ func TestLabPodsGetAShortTerminationGrace(t *testing.T) {
 	}
 	if got := operatorConfig(t, "--set", "operator.labPodTerminationGraceSeconds=2")["LAB_POD_TERMINATION_GRACE_SECONDS"]; got != "2" {
 		t.Errorf("the value must reach the operator: %q", got)
+	}
+}
+
+// The agent reports the per-node room and the largest device with the operator's reserves and pool: for the same chart
+// values both get the same value under every name the two read, and the agent's env sets each name once.
+func TestReservesAndPoolAreTheSameForOperatorAndAgent(t *testing.T) {
+	set := []string{"--set", "agent.enabled=true", "--set", "agent.domain=agent.example.com",
+		"--set", "scheduler.platformReservePercent=12", "--set", "scheduler.platformReserveCpu=150m", "--set", "scheduler.platformReserveMemory=384Mi",
+		"--set", "scheduler.packingReservePercent=20", "--set", "scheduler.packingReserveCpu=300m", "--set", "scheduler.packingReserveMemory=1Gi",
+		"--set", "labWorkloads.nodeSelector.lab-node=true",
+		"--set", "labWorkloads.tolerations[0].key=labs", "--set", "labWorkloads.tolerations[0].operator=Exists"}
+	op := operatorConfig(t, set...)
+	out, err := helmTemplate(t, append(append([]string{}, set...), "-s", "templates/agent/deployment.yaml")...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	var dep appsv1.Deployment
+	if err := yaml.Unmarshal([]byte(out), &dep); err != nil {
+		t.Fatalf("decode Deployment: %v\n%s", err, out)
+	}
+	agent := map[string]string{}
+	for _, e := range dep.Spec.Template.Spec.Containers[0].Env {
+		if _, dup := agent[e.Name]; dup {
+			t.Errorf("the agent env sets %s twice", e.Name)
+		}
+		agent[e.Name] = e.Value
+	}
+	for _, name := range []string{
+		"SCHEDULER_PLATFORM_RESERVE_PERCENT", "SCHEDULER_PLATFORM_RESERVE_CPU", "SCHEDULER_PLATFORM_RESERVE_MEMORY",
+		"SCHEDULER_PACKING_RESERVE_PERCENT", "SCHEDULER_PACKING_RESERVE_CPU", "SCHEDULER_PACKING_RESERVE_MEMORY",
+		"LAB_NODE_SELECTOR", "LAB_TOLERATIONS",
+	} {
+		v, ok := agent[name]
+		if !ok || v != op[name] || v == "" {
+			t.Errorf("%s: operator %q, agent %q (set %v)", name, op[name], v, ok)
+		}
+	}
+	if op["SCHEDULER_PLATFORM_RESERVE_CPU"] != "150m" || op["SCHEDULER_PACKING_RESERVE_MEMORY"] != "1Gi" || !strings.Contains(op["LAB_NODE_SELECTOR"], "lab-node") {
+		t.Errorf("the chart values do not reach the operator: %v", op)
+	}
+}
+
+// The ending notice of reservations reaches the operator (default 300 s), may be set, and is never negative.
+func TestReservationNoticeReachesTheOperator(t *testing.T) {
+	if got := operatorConfig(t)["RESERVATION_ENDING_NOTICE_SECONDS"]; got != "300" {
+		t.Errorf("RESERVATION_ENDING_NOTICE_SECONDS = %q, want 300", got)
+	}
+	if got := operatorConfig(t, "--set", "reservations.endingNoticeSeconds=600")["RESERVATION_ENDING_NOTICE_SECONDS"]; got != "600" {
+		t.Errorf("the value must reach the operator: %q", got)
+	}
+	out, err := helmTemplate(t, "--set", "reservations.endingNoticeSeconds=-1")
+	if err == nil {
+		t.Error("a negative notice must be refused")
+	} else if !strings.Contains(out, "reservations.endingNoticeSeconds") {
+		t.Errorf("the error does not name the value: %s", out)
+	}
+}
+
+// The reservation controller writes the status, deletes the groups at the end and the ended reservation a day later, and
+// never writes the spec.
+func TestOperatorMayEndReservations(t *testing.T) {
+	out, err := helmTemplate(t, "-s", "templates/operator/clusterrole.yaml")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	var role rbacv1.ClusterRole
+	if err := yaml.Unmarshal([]byte(out), &role); err != nil {
+		t.Fatal(err)
+	}
+	can := func(resource, verb string) bool {
+		for _, r := range role.Rules {
+			if contains(r.APIGroups, "laboratory.cybericebox.com") && contains(r.Resources, resource) && contains(r.Verbs, verb) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, c := range [][2]string{
+		{"reservations", "watch"}, {"reservations", "delete"},
+		{"reservations/status", "update"}, {"reservations/status", "patch"},
+		{"labs", "delete"}, {"labgroups", "delete"}, {"tenants", "get"},
+	} {
+		if !can(c[0], c[1]) {
+			t.Errorf("operator cannot %s %s", c[1], c[0])
+		}
+	}
+	// the spec belongs to the agent: the operator only writes the status
+	for _, verb := range []string{"update", "patch", "create"} {
+		if can("reservations", verb) {
+			t.Errorf("operator may %s reservations", verb)
+		}
 	}
 }

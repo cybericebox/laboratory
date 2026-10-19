@@ -38,7 +38,7 @@ For a real cluster, skip this step and point `KUBECONFIG` at the existing config
 ---
 
 > A complete local k0s cluster (Lima VMs, Cilium Gateway, this chart, test lab and checklist) is in
-> `$(LOCAL_K0S)/README.md` in the infrastructure repo (default `../infrastructure/local/cluster`); `make cluster-up` uses the Kind config from `$(LOCAL_K0S)/kind/`.
+> `$(LOCAL_K0S)/README.md` in the infrastructure repo (default `../infrastructure/local/cluster`); `make cluster-up` uses the Kind config `hack/kind/kind-config.yaml` of this repo (`KIND_CONFIG`).
 
 ---
 
@@ -263,9 +263,9 @@ dispatched, then the **explicit priority** (annotation `laboratory.cybericebox.c
 `0` when absent; higher goes first and wins over size), then the **larger lab** (the sum of its pods' CPU, then
 memory), then arrival. The deploy groups themselves, their `deploy-after` dependencies and the group order
 (arrival, i.e. the category order the platform creates them in) are unchanged: size orders objects only inside a group. A
-lab whose next pod does not fit now stays queued (`InsufficientResources`) and the labs behind it go past it
-(**backfill**), so small labs fill the gaps while the big one waits; on the next pass the big one is first again. The order of the pods
-inside one object is kept.
+group (or an independent lab) that does not fit now as a whole stays queued (`InsufficientResources`) and the ones behind it
+go past it (**backfill**), so small labs fill the gaps while the big one waits; on the next pass the big one is first again.
+The order of the pods inside one object is kept.
 
 **Groups.** Objects with the same *deploy group* form a group (mixed kinds, one object or many). The
 agent writes two operator-internal markers on LabGroups and Labs; the operator reads only these, never
@@ -279,8 +279,17 @@ user labels (and they work when someone applies the CRs directly):
 The rules:
 
 1. The group being dispatched (some pod out, some still pending) gets the slots first.
-2. When it has **no undispatched pod left**, the next group starts on the next free slot; it does not wait
-   for readiness.
+2. When it has **no undispatched pod left**, the next group starts once there are free slots for all its pods
+   (a group larger than `maxPods` goes in slices of the free slots, its room checked as a whole) and room for all of
+   them on the nodes; it does not wait for readiness. A group with a pod the operator has not set up yet (a lab created a
+   moment ago) waits whole (`WaitingForTurn`, the message names the lab) until every pod of it is set up, so it never starts
+   without some of them. Two limits bound the wait, and the earlier one decides. Every lab is waited for at most 15 minutes
+   from its creation (enough for the operator's queues at the start of an event, about 150 labs). A lab with a Device the
+   operator never made is also waited for at most 2 minutes from the operator's first work on the lab (`status.imageCache`
+   set, as the scheduler saw it; a restart starts this again); a lab not worked on yet, or whose Devices exist but are not
+   set up yet, is still in a queue and only the 15 minutes apply. A lab still not set up then gets one Warning event `PodsNotSetUp` and the
+   group goes on without it, the whole lab out (none of its pods starts, also when some of them are set up); it joins later as
+   the rest of its group once all its pods are set up. A lab in phase `Failed` is no member of its group at all.
 3. The order of groups is arrival order (the creation time of their first object), except that a group
    with `deploy-after` starts only when all listed groups are complete. A group that waits for another
    does not hold up the groups after it. An unknown key waits too, and the status says so
@@ -311,26 +320,152 @@ but not failing. A prepull gates **only its own group**: while a group's images 
 dependency rules allow, and their own prepulls run meanwhile. Filling the registry cache beforehand is the
 agent's job (`PrewarmImages`), not the scheduler's.
 
-**Resource check.** A pod is dispatched only when the schedulable nodes (Ready, not cordoned, matching the
-lab node selector, taints tolerated) have free CPU and memory for its requests: allocatable minus the
-requests of all scheduled pods, minus what already dispatched pods will still request, and with the platform
-reserve kept free (see "Platform reserve" below). Otherwise the queue waits (it does not
-fail) and the reason is in the status. A pod that requests more than the whole schedulable capacity can never
-fit: it is declared failed (`DoesNotFit`) and the queue goes on.
+**Resource check.** A pod is dispatched only when one schedulable node (Ready, not cordoned, matching the
+lab node selector, taints tolerated) has room for its CPU and memory together. The room of a node is its allocatable less
+the platform reserve, the requests of the pods that are not lab pods and the packing reserve, less the lab pods on it and the
+pods already dispatched to land there (see "Platform reserve" below). No sum over the cluster is checked: only this per-node
+placement decides. Otherwise the queue waits (it does not fail) and the reason is in the status. The labs of one deploy group (an independent lab and each LabGroup alike) start
+whole or not at all: every pod must find room on one node at once, else none starts (`InsufficientResources`), and a
+group that waits does not hold up the others behind it. A group that does not fit even on the empty lab nodes waits with
+`DoesNotFitNow` and starts once capacity returns (a node comes back, a rollout ends); it never starts partly. Each of its labs
+gets one Warning event `GroupTooLarge` and the status message names the group, what it requests in all and the room of the
+largest empty lab node. The platform puts one deploy group on a task for all teams, so **the largest task times the number of
+teams must fit the empty room of the lab nodes** (with the reserves below), or that task does not start for anyone: the load
+test checks this before an event. Only a pod that no single node can hold, its
+CPU and memory together on the same node, is failed for good (`DoesNotFit`), with its whole group, and the queue goes on.
+Each node counts with nothing on it: its allocatable less the platform reserve and the packing reserve. Every node of the
+pool counts, cordoned, NotReady and rebooting ones too (the pool is the lab node selector without the `node-agent-ready`
+label, which only says the node-agent runs now), so a drained or rebooting big node does not fail a pod; placement itself
+still needs the label. With no
+schedulable lab node at all the queue waits (`NoSchedulableNodes`). Every pass places the pods on the nodes in one simulation,
+each pod whole on one node (its CPU and memory from the same node): first the lab pods already on a node and those dispatched
+but not on a node yet, then the rest of every group that already has pods out, in arrival order, then the new groups. Such a
+rest that places keeps that room and starts in it; one that does not place keeps nothing in that pass and waits, so it never
+holds up the groups behind it (`DoesNotFitNow` when it does not fit even on the empty nodes beside its own running pods). A group
+whose sum never fits its tenant's quota is failed at once (`TenantQuotaNeverFits`); one that fits only later waits
+(`TenantQuota`).
+
+**Fair order and aging.** Groups that already have pods out keep their order ahead of all others. Of the new groups, those
+that run under a reservation (label `laboratory.cybericebox.com/reservation`) go first, the reservation with the lowest
+satisfied share (used / reserved, memory, then CPU) first, then arrival; the unreserved groups follow in the order above. A
+group that has waited in the queue longer than `scheduler.agingSeconds` (default `0`: aging is off; counted from when its
+pods were last queued, so a resumed lab starts again from zero) is aged: the oldest aged group that waits only for room keeps
+its placement on the empty nodes (beside its own running pods and the room stopped labs keep), and the other groups use only
+the room not kept for it, so a stream of small groups cannot keep a big one out forever. One group at a time; the room is
+free again once it starts, or once it waits for anything but room (quota, images, `DoesNotFitNow`). Only lab groups age and
+are held back: the VPN and gateway pods of LabGroups are placed first and may use any room, so a new team always gets its
+network. A group still waiting for its `deploy-after` groups never keeps room; once they are complete it ages by its arrival.
+Aging is off by default: the room kept for the aged group is held against every other group of every tenant, without a time
+limit, so on a node full of labs that run for a whole event one group that does not fit would stop all new work. Turn it on
+once the reservation scopes the aged room (all work runs under reservations).
+
+**Reservations.** A `Reservation` (cluster-scoped, `kubectl get res`) claims CPU and memory for a tenant from `spec.from` to
+`spec.to`. A Lab or LabGroup with the label `laboratory.cybericebox.com/reservation=<name>` starts only if that reservation
+exists for its own tenant (else it waits with `ReservationMissing`), its window is open (`ReservationNotActive`), and the
+requests of the reservation's pods already out plus the whole group stay within `spec.resources` (`ReservationFull`). All
+labs of a deploy group must carry the same label (or none): a group whose labs disagree waits whole with `ReservationMissing`
+("objects of the group belong to different reservations"); its pods already out still count under their own label. A
+reservation with a resource other than `cpu` and `memory`, or with `cpu` or `memory` missing, zero or negative, reserves
+nothing. Pods already out always count and are never stopped, also when the reservation is made smaller than them. What an
+open reservation has not used yet is kept on the nodes on every pass, the emptiest node first and with its CPU to memory
+ratio: unreserved groups, the groups of other reservations and the aged group never use that room (a LabGroup's VPN and gateway
+without the reservation neither); the reservation's own groups use it first. When the nodes cannot hold all of it, the
+reservations whose groups come first in the fair order are kept first. Unreserved work (no label, e.g. the `default` tenant)
+runs as before, in the room no open reservation keeps. The scheduler writes `status.used` (the requests of the reservation's
+pods out, of its own tenant) and `status.groups` (the groups with pods out) at the same limited rate as the queue status, and
+`status.usedAt`, when it counted them (refreshed every 30 s while the reservation is open, also when nothing changed; these
+heartbeats have a small budget of their own per pass, the oldest first). A label that is there but empty names no
+reservation: such a Lab or LabGroup waits with `ReservationMissing` ("the reservation label is empty"), never runs as
+unreserved work and is never taken by the cleanup below.
+Without the Reservation CRD (an upgrade that did not apply `crds/`) the operator still starts and keeps running: the scheduler
+logs one warning and runs as if there were no reservations (unreserved labs start, labelled ones wait with
+`ReservationMissing`), and the operator starts without the Reservation controller (one line in its log at start). Labelled
+work keeps waiting with `ReservationMissing` also after `kubectl apply` of the CRDs, since no window would end without the
+controller: restart the operator to get it.
+
+**A Reservation deleted by hand.** A Reservation that is deleted (by hand or by the backend) instead of ending never reaches
+its end, so the scheduler takes care of what ran under it: a Lab or LabGroup whose reservation label names a Reservation that
+does not exist is never admitted (`ReservationMissing`), and one that has pods out already (a Lab also when stopped) gets the
+notice of an ended reservation (`reservations.endingNoticeSeconds`, at least a minute, counted from when the scheduler first
+saw it so, with a Warning event `ReservationGone`) and is then deleted. The scheduler must have seen it so on every pass of
+that notice: a restart or a gap in the passes starts the notice again, and a Reservation that comes back calls it off. Before
+the deletion the Reservation (it must still be gone) and the object (the same UID, the same label) are read past the cache,
+and the object goes with its UID and resourceVersion as precondition; what is not deleted is tried again 30 s later. A
+LabGroup whose namespace holds anything but labs of its own tenant under the same gone reservation is kept. Labs of the gone
+name that never ran only wait. Without the Reservation CRD nothing is taken (the list then says nothing about what exists),
+and with `scheduler.enabled=false` nothing either. Deleting the Reservation CRD deletes every Reservation with it. While the
+CRD is absent nothing is deleted and no notice runs: the scheduler asks the API server's discovery whether the kind is served
+before a notice starts and before any deletion, and reads the UID of the CRD (`get` on that one CRD). Reinstalling the CRD
+does not bring the reservations back: from then on the labs under the missing names get a full notice and are deleted unless
+the backend sends their reservations again within it (`reservations.endingNoticeSeconds`). A CRD deleted and applied again
+between two passes is caught by its new UID: the notice given under the old one deletes nothing and starts again. The label alone decides: a running lab that gets the label of a
+reservation that does not exist (a wrong label set by hand) is deleted after the notice, whatever its tenant.
+
+**End of a reservation.** The operator moves `status.phase` with the clock: `Pending` before `spec.from`, `Active`, `Ending`
+from `spec.to` minus the notice (chart `reservations.endingNoticeSeconds`, default `300`; condition `Ending=True`,
+`status.noticeAt` = when the notice was given), `Ended` at `spec.to`. At the end every LabGroup and Lab of the reservation's
+tenant with its label is deleted in one pass; labs of other reservations, unlabelled ones and other tenants' objects stay, and
+a LabGroup of the reservation that still holds such labs is kept until they are gone (deleting it would drain them). Moving
+`spec.to` past the notice calls the end off (`Ending=False`, reason `Extended`); moving `spec.to` into the past ends the
+reservation at once. The end is written to the status (with the version read as precondition) before anything is deleted,
+and later passes check it on the API server, so an extension the operator's cache does not hold yet never loses groups. An end
+that passed while the operator was down is processed when it starts; for 10 minutes after `spec.to` the operator looks again
+every minute (objects it did not see at the end go too). When the tenant of a reservation is gone (checked on the API server),
+the reservation ends one notice after that is seen, at least one minute (or at `spec.to` if sooner, reason `TenantGone`), and
+stays ended (an admin who resets the status by hand while a tenant of that name exists reopens it). The condition
+`WithinAmount` says whether `status.used` fits `spec.resources`; its message keeps the generation and amount of the last fit
+(`last fit: generation=G cpu=Cm memory=M`). When the backend made the reservation smaller than what runs (a newer generation,
+and the amount lower than at the last fit in a resource that is over), it gets `Exceeded=True` with the deletion time; still
+so one notice later (at least one minute, checked on the API server, and with `status.usedAt` younger than a minute: else
+the deletion waits and the message says "usage not fresh"; when the server drops `status.usedAt`, an outdated Reservation
+CRD, it says to apply the chart CRDs), the groups created more than 10 s before that notice are deleted
+once, the reservation stays open, `Exceeded` turns False (`GroupsDeleted`) and the current amount becomes the
+new baseline, so only a further shrink can delete again. A raise that brings the usage within the amount, or the usage
+dropping within it, cancels it (a raise that is still short keeps the notice). Usage over the amount for any other reason
+(device defaults changed, a Lab edited, a label moved: the scheduler recounts what runs; also usage that was already over the
+last fitting amount before a shrink), or with an `Invalid` spec, only sets `OverAmount=True` and never deletes. With `scheduler.enabled=false` the usage conditions are off.
+An ended reservation is deleted a day after its end. Resources that reserve nothing get the condition `Invalid=True`; the phase
+still follows the clock.
+
+**Capacity shortfall and unreserved work.** On every pass (with `scheduler.resourceCheck` on) the scheduler places the active
+and future reservations on the empty lab nodes the way it keeps their room (emptiest node first, CPU to memory ratio kept), for
+every stretch of time in which the same ones overlap, and adds what the active ones find no room for on the nodes now. When
+either is short, every tenant with an active or future reservation gets `CapacityShortfall=True` (reason
+`ReservationsDoNotFit`; the message has the peak, the room on the nodes and what is short); it turns False
+(`ReservationsFit`) when they fit, and the metric `laboratory_reservation_shortfall{resource="cpu"|"memory"}` (cores, bytes) has
+the same number. A warning only: nothing of a reserved tenant is stopped for it. The condition is written with the version read
+as precondition, so the agent's `status.reserved` and `status.used` are never overwritten (and the agent's write conflicts
+instead of erasing it). When the active reservations find no room now because unreserved work holds it (Labs and LabGroups
+without the reservation label, e.g. the `default` tenant), every unreserved Lab and LabGroup of each tenant whose work holds that
+room (without it the shortfall would be smaller) gets the annotation `laboratory.cybericebox.com/evict-at` (now plus
+`reservations.endingNoticeSeconds`, at least a minute) and a Warning event. The cluster cannot know which of them matter, so all
+of the tenant's unreserved objects are marked, stopped labs too. The annotation is removed as soon as the shortfall clears (or
+the tenant's work no longer holds the room; a Normal event `UnreservedEvictionCancelled` says so). A mark alone never deletes:
+the scheduler must also have seen the object as a marked target on every pass for one full notice. After a restart, a stopped
+scheduler or passes where the capacity was unknown, a mark found with less than a full notice left is given again (now plus
+the notice, with a new event), so the shortfall of the moment always gets its full notice. At its time the scheduler reads the
+cluster again past its cache, and deletes in one pass, each with its UID and resourceVersion as precondition, the marked
+objects whose tenant still holds the room and that are still unreserved; what is not deleted is tried again 30 s later. A
+tenant counts as holding the room only if removing exactly what the cleanup would take of it (not a LabGroup it keeps, see
+below) makes the shortfall smaller.
+Objects with a reservation label (an empty one too) are never touched, and a LabGroup whose namespace holds a reserved lab or
+another tenant's lab is kept (deleting it would drain that lab); its unreserved labs are deleted. A lab node that is NotReady
+or cordoned has no room for the reservations: a node down longer than the notice (a reboot, an upgrade) can therefore have the
+unreserved work on the other nodes deleted, as spec item 19 says (unreserved work has no guarantee). The agent writes only its
+own tenant status fields (`reserved`, `used`, `observedAt`, a merge patch), so it never conflicts with the condition.
 
 **Platform reserve.** CPU and memory that user labs can never consume, so the platform itself always has room.
-It is `scheduler.platformReservePercent` (10) of the schedulable CPU and memory, plus an optional absolute reserve on
-every schedulable node (`scheduler.platformReserveCpu`, `scheduler.platformReserveMemory`, `"0"` = none) that comes off the
-node first. It is applied after the kubelet's own reserve (a node's allocatable is already net of kube-reserved,
-system-reserved and eviction thresholds) and after the requests of every pod scheduled on the node: DaemonSets, the
-proxy (Deployment or DaemonSet mode alike) and system pods are counted because the check subtracts the requests of all
-scheduled pods, not only lab pods.
+It is kept on every schedulable node: an optional absolute reserve (`scheduler.platformReserveCpu`,
+`scheduler.platformReserveMemory`, `"0"` = none) comes off the node first, and `scheduler.platformReservePercent` (10) of the
+rest. It is applied after the kubelet's own reserve (a node's allocatable is already net of kube-reserved,
+system-reserved and eviction thresholds), and the requests of every other pod scheduled on the node come off as well:
+DaemonSets, the proxy (Deployment or DaemonSet mode alike) and system pods, not only lab pods.
 
 **Failed pods.** A dispatched pod that is not Ready after `scheduler.startupTimeout` (5m), or that restarted
 `scheduler.restartThreshold` times (5), is declared failed: its slot is freed, the group still completes,
 nothing else is rolled back, and the device gets a warning: `Device.status.scheduling.failure` and, on the
 Lab, `status.devices[].failure`, with the reason (`ImagePull`, `CrashLoop`, `Unschedulable`,
-`StartupTimeout`, `PodNotCreated`, `DoesNotFit`), the last error the node reported and the restart count. If the pod becomes
+`StartupTimeout`, `PodNotCreated`, `DoesNotFit`, `TenantQuotaNeverFits`), the last error the node reported and the restart count. If the pod becomes
 Ready later it is Started and the warning clears. A snapshot-backed device whose pod ended after it had started
 is recreated at once, with no slot, as without the scheduler.
 
@@ -340,11 +475,17 @@ a declared request and limit that differ collapse to the limit. The resources ar
 changed. Each lab group namespace has one PodDisruptionBudget `lab-group` (`maxUnavailable: 0`, all pods of
 the namespace), so node drains and the autoscaler do not evict running labs (see "Maintenance of a node" below).
 
-**Packing reserve (hidden).** `scheduler.packingReservePercent` (15, 0-49) is the share of the capacity the agent reports to
-the platform that is kept unused, because nodes do not share memory and devices leave gaps between them, so the last part of a
-cluster can never be packed full. The agent reports `GetCapacity` and the features' tenant quota **net of it**: the smaller of
-the tenant's quota and the real room of the lab nodes (a tenant without a quota is told the real room), less the percentage. A
-tenant never sees the reserve or the nodes; the quota the operator enforces is unchanged. The platform adds no buffer of its own.
+**Packing reserve (hidden).** `scheduler.packingReservePercent` (15, 0-49) is the part of every lab node that is kept
+unused, because nodes do not share memory and devices leave gaps between them, so the last part of a node can never be packed
+full. It is taken **per node**, from what is free there after the platform reserve and the requests of the non-lab pods, by
+the operator and the agent alike: the operator admits gangs only into the room of each node net of it (the placement
+simulation above), and the agent reports `GetCapacity` and the features' tenant quota net of it: the smaller of the tenant's
+quota and the real room of the lab nodes (a tenant without a quota is told the real room), each less its reserve.
+`scheduler.packingReserveCpu` / `packingReserveMemory` (absolute quantities, `"0"` = none) replace the percentage for that
+resource on every node; the agent takes that fixed amount once off a tenant's quota, which is a cluster-wide number, so with
+several lab nodes the quota it reports is a little high. A tenant never sees the reserve or the nodes; the quota the operator
+enforces is unchanged. The platform adds no buffer of its own. 15 % is the default and stays so for now; the value is
+revisited from the load-test measurements (what the nodes really pack), in both roles at once.
 
 **Bin-packing scheduler.** Lab pods (devices, VPN, gateway) are placed by a **second kube-scheduler** with one profile,
 `laboratory-binpack` (chart `labScheduler.*`): `NodeResourcesFit` with `scoringStrategy: MostAllocated` (weight
@@ -383,8 +524,8 @@ kubectl get labs -A -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name
 
 `group` is the deploy group, `position` the place among the objects that still have pods to dispatch
 (0 when all are dispatched), `length` their number, `reason` why the next pod waits (`InFlightLimit`,
-`WaitingForGroup` with `message` "waiting for group X", `WaitingForTurn`, `PreparingImages`,
-`InsufficientResources`, `NoSchedulableNodes`), `pods`/`pending` the pod counts. A Lab is in phase `Queued`
+`WaitingForGroup` with `message` "waiting for group X", `WaitingForTurn`, `PreparingImages`, `TenantQuota`,
+`InsufficientResources`, `DoesNotFitNow`, `NoSchedulableNodes`), `pods`/`pending` the pod counts. A Lab is in phase `Queued`
 while none of its pods has been dispatched. The position is refreshed at a limited rate (at most 50 writes per
 2 s tick, one per object per 10 s), so in a long queue it lags by a few seconds. Each pod's own state is
 `Device.status.scheduling` (`Queued`, `Starting`, `Started`, `Failed`) and, for a group, `LabGroup.status.pods`.
@@ -414,11 +555,16 @@ while none of its pods has been dispatched. The position is refreshed at a limit
 | `restartThreshold` | `5` | restarts after which a pod that is not Ready is declared failed |
 | `platformReservePercent` | `10` | platform reserve: share of the schedulable CPU and memory (0-99) user labs never consume |
 | `platformReserveCpu` / `platformReserveMemory` | `"0"` / `"0"` | absolute platform reserve of every schedulable node (quantities) |
-| `packingReservePercent` | `15` | hidden packing reserve: the agent reports its capacity net of this share (0-49) |
+| `packingReservePercent` | `15` | hidden packing reserve of every lab node (0-49): the operator admits and the agent reports net of it |
+| `packingReserveCpu` / `packingReserveMemory` | `"0"` / `"0"` | absolute packing reserve of every lab node; replaces the percentage for that resource when not `"0"` |
 | `labScheduler.enabled` | `true` | a second kube-scheduler with the bin-packing profile for lab pods (see "Bin-packing scheduler") |
 | `resourceCheck` | `true` | `false` skips the free-resource check |
+| `agingSeconds` | `0` | a group waiting longer than this has the room it needs kept for it (the oldest one only); `0` = no aging (the default: enable once reservations scope the aged room) |
 | `prepull.enabled` | `true` | prepull the images of a group |
 | `prepull.timeout` | `5m` | dispatch goes on after this long |
+
+`reservations.endingNoticeSeconds` (default `300`, `0` = no notice): the Ending condition comes this long before the end of a
+reservation.
 
 The operator needs `get/list/watch` on nodes and
 `create/delete/get/list/watch` on DaemonSets; the chart's ClusterRole has them.
@@ -690,12 +836,13 @@ images:
   cluster totals are exposed. The same reserved and used totals are in `Tenant.status` (refreshed by the agent):
   `kubectl get tenant platform -o yaml`.
   The one number about the cluster layout is the **largest device the agent can place** (`has_max_device`, `max_device_cpu_millicores`,
-  `max_device_memory_bytes`): per resource, the largest allocatable of a schedulable lab node (the nodes with the `node-agent-ready`
-  label) net of the scheduler's platform reserve (`scheduler.platformReserveCpu/Memory` off the node first, then
-  `platformReservePercent` of the rest, per node). It is one amount: no node list, no node names, no per-node free room reach a
+  `max_device_memory_bytes`): per resource, the largest allocatable of a lab node (the nodes of the lab node selector, cordoned,
+  NotReady and rebooting ones included, whether their node-agent runs now or not) net of the scheduler's platform reserve (`scheduler.platformReserveCpu/Memory` off
+  the node first, then `platformReservePercent` of the rest, per node) and of the packing reserve. It is an upper bound per resource: the scheduler fails a pod (`DoesNotFit`) only when
+  no single node holds its CPU and memory together. It is one amount: no node list, no node names, no per-node free room reach a
   tenant. The backend uses it to refuse planning a device that no node could hold; the per-node math stays in the agent and the
-  scheduler. The two values may come from different nodes, so it can slightly overstate a device that needs both at once; the
-  scheduler refuses what it cannot place. It is not limited by the tenant quota, and it is absent (`has_max_device` false) for an
+  scheduler. The two values may come from different nodes, so it can overstate a device that needs both at once; the
+  scheduler fails such a device with `DoesNotFit`. It is not limited by the tenant quota, and it is absent (`has_max_device` false) for an
   agent that has no schedulable node or an older one.
 - **Features.** Everything the laboratory owns that the backend needs reaches it only through the agent: `GetFeatures` and the
   `features` of the `Monitoring` stream (sent with the first message and again when they change; a change shows at the next
@@ -1208,7 +1355,9 @@ and FOWNER capabilities and a read-only root file system, and does nothing else.
 The registry volume (`laboratory-registry`, `registry.size`) holds every device snapshot. `helm.sh/resource-policy: keep` protects the claim from
 `helm uninstall` only. When the claim or the namespace is deleted, the fate of the data is decided by the **reclaim policy of the PersistentVolume**, which
 it takes from its StorageClass: `Delete` (the default of local-path and of the AWS EBS class) deletes the volume and every snapshot with it. Use a class
-with `reclaimPolicy: Retain`. The chart can create it:
+with `reclaimPolicy: Retain`. The volume is ReadWriteOnce and, bound with `WaitForFirstConsumer`, stays on the node it was made on:
+moving the registry to other nodes (a lab label or taint on `labWorkloads`, a new lab node pool) leaves its pod Pending until the
+snapshots are moved to a new volume there, or `registry.nodeSelector` pins it to the node that holds the volume. The chart can create it:
 
 ```yaml
 registry:
@@ -1784,7 +1933,12 @@ slip under a stricter check, the component that runs it clamps or ignores the ba
 
 1. Apply the CRDs first: `kubectl apply --server-side -f charts/laboratory/crds/`. `helm upgrade` does not update the `crds/`
    directory, so without this step the new validation patterns below are missing on an upgraded cluster (the code does not rely on
-   them, they are the second line).
+   them, they are the second line). A missing Reservation CRD does not stop the operator either, but reservations do not work
+   until it is applied and the operator restarted (see "Reservations").
+   A rollback to an operator without reservations leaves the `laboratory.cybericebox.com/evict-at` annotations and the
+   `CapacityShortfall` condition of the Tenants behind; the old operator ignores them. To tidy up:
+   `kubectl annotate labs,labgroups -A --all laboratory.cybericebox.com/evict-at-` and remove the condition from
+   `Tenant.status.conditions` by a status patch.
 2. `helm upgrade` (the operator, agent, node-agent and proxy roll out together; the operator and the agent can run in either order).
 3. The notes of each item below say what, if anything, must happen in a different order. In short, before `helm upgrade`:
    - the cluster is Kubernetes 1.33 or newer (the chart refuses an older one), or `operator.admissionPolicy.enabled=false` is set on purpose (the chart refuses to skip the policies silently, and the operator exits at start when they are not enforced);

@@ -43,6 +43,8 @@ type Interface interface {
 	LabVPNs() TypedLabVPNInformer
 	// MaintenanceWindows returns a MaintenanceWindowInformer.
 	MaintenanceWindows() TypedMaintenanceWindowInformer
+	// Reservations returns a ReservationInformer.
+	Reservations() TypedReservationInformer
 	// Tenants returns a TenantInformer.
 	Tenants() TypedTenantInformer
 }
@@ -106,6 +108,11 @@ func (v *version) LabVPNs() TypedLabVPNInformer {
 // MaintenanceWindows returns a TypedMaintenanceWindowInformer.
 func (v *version) MaintenanceWindows() TypedMaintenanceWindowInformer {
 	return &maintenanceWindowInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// Reservations returns a TypedReservationInformer.
+func (v *version) Reservations() TypedReservationInformer {
+	return &reservationInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }
 
 // Tenants returns a TypedTenantInformer.

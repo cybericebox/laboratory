@@ -111,6 +111,14 @@ func TenantOf(labels map[string]string) string {
 	return DefaultTenant
 }
 
+// ReservationOf is the name of the Reservation an object runs under (its reservation label); labelled says the label is there
+// at all. An object without the label is unreserved; one with an empty label names no reservation, which is invalid (the
+// scheduler never admits it, and it is not unreserved work either).
+func ReservationOf(labels map[string]string) (name string, labelled bool) {
+	name, labelled = labels[LabelReservation]
+	return name, labelled
+}
+
 // TenantsNamespace holds the per-tenant Secrets: the enrollment token and the registry credentials of a tenant (images.pullSecret).
 const TenantsNamespace = "laboratory-tenants"
 

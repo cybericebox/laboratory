@@ -74,6 +74,14 @@ rules:
   - patch
   - update
 - apiGroups:
+  - apiextensions.k8s.io
+  resourceNames:
+  - reservations.laboratory.cybericebox.com
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - get
+- apiGroups:
   - apps
   resources:
   - deployments
@@ -145,6 +153,7 @@ rules:
   - labgroups/status
   - labs/status
   - labvpns/status
+  - reservations/status
   - tenants/status
   verbs:
   - get
@@ -165,6 +174,15 @@ rules:
   resources:
   - labtrafficreports
   verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - laboratory.cybericebox.com
+  resources:
+  - reservations
+  verbs:
+  - delete
   - get
   - list
   - watch
