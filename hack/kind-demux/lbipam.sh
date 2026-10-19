@@ -49,10 +49,19 @@ for e in json.load(sys.stdin):
     print("%s:%d" % (socket.inet_ntoa(struct.pack("<I", k["ip"])), socket.ntohs(k["port"])))
 '
 }
+# entries_ok: sets ENTRIES_NOW to the entries; fails when they cannot be read or lost the node's own entry (node:nodePort).
+entries_ok() {
+  ENTRIES_NOW="$(entries)" || fail "cannot read the fast path's entries on $ENTRY_NODE"
+  grep -qx "$NODE_ENTRY" <<<"$ENTRIES_NOW" || fail "the fast path's entries on $ENTRY_NODE lack $NODE_ENTRY: $(paste -sd' ' - <<<"$ENTRIES_NOW")"
+}
+# restore: policy Local, no UDP 443 Service, no pool, and no LoadBalancer address on the demux Service (Cilium keeps a handed-out address
+# after its pool is gone; a type change clears status.loadBalancer).
 restore() {
   k -n "$WG_NS" patch svc laboratory-proxy-wg --type=merge -p '{"spec":{"externalTrafficPolicy":"Local"}}' >/dev/null || true
   k -n "$RELEASE_NS" delete svc demux-edge-h3 --ignore-not-found >/dev/null || true
   k delete ciliumloadbalancerippools.cilium.io demux-e2e --ignore-not-found >/dev/null || true
+  k -n "$WG_NS" patch svc laboratory-proxy-wg --type=merge -p '{"spec":{"type":"NodePort"}}' >/dev/null || true
+  k -n "$WG_NS" patch svc laboratory-proxy-wg --type=merge -p '{"spec":{"type":"LoadBalancer"}}' >/dev/null || true
 }
 trap restore EXIT
 edge() {
@@ -77,6 +86,8 @@ EOF
 
 k -n "$WG_NS" get svc laboratory-proxy-wg >/dev/null || fail "no demux Service: run e2e.sh tc or xdp first"
 cilium test -e "$ENTRIES" || fail "no fast path on $ENTRY_NODE: run e2e.sh tc or xdp first"
+NODE_ENTRY="$(k get node "$ENTRY_NODE" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}'):$(k -n "$WG_NS" get svc \
+  laboratory-proxy-wg -o jsonpath='{.spec.ports[0].nodePort}')"
 key="$(k -n "$WG_NS" get svc laboratory-proxy-wg -o jsonpath='{.metadata.annotations.lbipam\.cilium\.io/sharing-key}')"
 
 log "pool $POOL and a UDP 443 Service in $RELEASE_NS sharing the key $key"
@@ -113,22 +124,21 @@ summary "demux Service with externalTrafficPolicy Cluster: demux ${d:-none}, UDP
 
 log "the demux finds the LoadBalancer address $d"
 start=$SECONDS
-until entries | grep -qx "$d:51820"; do
-  ((SECONDS - start <= 30)) || fail "the fast path's entries on $ENTRY_NODE do not hold $d:51820: $(entries | paste -sd' ' -)"
+while entries_ok && ! grep -qx "$d:51820" <<<"$ENTRIES_NOW"; do
+  ((SECONDS - start <= 30)) || fail "the fast path's entries on $ENTRY_NODE do not hold $d:51820: $(paste -sd' ' - <<<"$ENTRIES_NOW")"
   sleep 1
 done
-echo "entries: $(entries | paste -sd' ' -)"
-summary "entry addresses in the fast path after $((SECONDS - start)) s: $(entries | paste -sd' ' -)"
+echo "entries: $(paste -sd' ' - <<<"$ENTRIES_NOW")"
+summary "entry addresses in the fast path after $((SECONDS - start)) s: $(paste -sd' ' - <<<"$ENTRIES_NOW")"
 
 restore
 trap - EXIT
-# Cilium keeps a handed-out address on the Service after its pool is gone; a type change clears status.loadBalancer.
 log "put back: policy Local, no pool, no UDP 443 Service, the demux Service without its LoadBalancer address"
-k -n "$WG_NS" patch svc laboratory-proxy-wg --type=merge -p '{"spec":{"type":"NodePort"}}' >/dev/null
-k -n "$WG_NS" patch svc laboratory-proxy-wg --type=merge -p '{"spec":{"type":"LoadBalancer"}}' >/dev/null
 [[ -z "$(lb_ip "$WG_NS" laboratory-proxy-wg)" ]] || fail "the demux Service still has $(lb_ip "$WG_NS" laboratory-proxy-wg)"
 start=$SECONDS
-while entries | grep -q "^$d:" && ((SECONDS - start < 30)); do sleep 1; done
-if entries | grep -q "^$d:"; then fail "the fast path still holds $d after the Service lost it"; fi
-summary "after the Service lost the address (+$((SECONDS - start)) s) the entries are: $(entries | paste -sd' ' -)"
+while entries_ok && grep -q "^$d:" <<<"$ENTRIES_NOW"; do
+  ((SECONDS - start <= 30)) || fail "the fast path still holds $d after the Service lost it: $(paste -sd' ' - <<<"$ENTRIES_NOW")"
+  sleep 1
+done
+summary "after the Service lost the address (+$((SECONDS - start)) s) the entries are: $(paste -sd' ' - <<<"$ENTRIES_NOW")"
 printf '\nDONE (lbipam)\n'
