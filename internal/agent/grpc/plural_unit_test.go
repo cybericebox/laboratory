@@ -549,3 +549,40 @@ func TestParseLabSpecValidatesInterfaces(t *testing.T) {
 		}
 	}
 }
+
+func TestReservationRPCsRegistered(t *testing.T) {
+	methods := map[string]bool{}
+	for _, m := range protobuf.LabManager_ServiceDesc.Methods {
+		methods[m.MethodName] = true
+	}
+	for _, name := range []string{"CreateReservations", "ListReservations", "UpdateReservations", "DeleteReservations"} {
+		if !methods[name] {
+			t.Errorf("%s is not on the LabManager service", name)
+		}
+	}
+	var srv protobuf.LabManagerServer = protobuf.UnimplementedLabManagerServer{}
+	ctx := context.Background()
+	_, err := srv.ListReservations(ctx, &protobuf.ListRequest{})
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("a server without the handler answers UNIMPLEMENTED, got %v", err)
+	}
+	// The reasons are the stable machine codes the backend maps.
+	for reason, want := range map[string]string{
+		client.ReasonReservationRequired: "RESERVATION_REQUIRED", client.ReasonReservationNotFound: "RESERVATION_NOT_FOUND",
+		client.ReasonReservationEnded: "RESERVATION_ENDED", client.ReasonReservationFull: "RESERVATION_FULL",
+		client.ReasonReservationMismatch: "RESERVATION_MISMATCH", client.ReasonOverQuota: "OVER_QUOTA",
+	} {
+		if reason != want {
+			t.Errorf("reason %q, want %q", reason, want)
+		}
+	}
+	if (&protobuf.ItemResult{Reason: client.ReasonReservationFull}).GetReason() != "RESERVATION_FULL" {
+		t.Fatal("ItemResult carries the reason")
+	}
+	if (&protobuf.LabGroupItem{ReservationId: "r"}).GetReservationId() != "r" || (&protobuf.LabItem{ReservationId: "r"}).GetReservationId() != "r" {
+		t.Fatal("items carry reservation_id")
+	}
+	if (&protobuf.FeaturesResponse{Reservations: &protobuf.ReservationsFeature{Required: true}}).GetReservations().GetRequired() != true {
+		t.Fatal("features carry reservations")
+	}
+}
