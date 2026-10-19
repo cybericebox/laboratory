@@ -13,6 +13,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/pkg/config"
 )
 
@@ -140,6 +141,16 @@ type Config struct {
 	// stream of small gangs cannot keep a big one out; 0: no aging. Off by default: the kept room is held against every tenant
 	// with no time limit, so enable it once the reservation scopes the aged room.
 	SchedulerAgingSeconds int `env:"SCHEDULER_AGING_SECONDS" envDefault:"0"`
+
+	// Capacity (DEPLOY.md, "Maximum capacity and node autoscaling"). CapacityMaxNodes is the most lab nodes the cluster may
+	// have, the ones that exist included (0: the maximum is the current capacity); CapacityAddedNodeCPU and
+	// CapacityAddedNodeMemory are the allocatable of one node that may still be added (required with a maximum). The agent
+	// reads the same values. CapacityNodeTimeout is how long every dispatched pod of a group has to get a node before the
+	// whole group is withdrawn and queued again (the gang commit, always on).
+	CapacityMaxNodes        int           `env:"CAPACITY_MAX_NODES" envDefault:"0"`
+	CapacityAddedNodeCPU    string        `env:"CAPACITY_ADDED_NODE_CPU"`
+	CapacityAddedNodeMemory string        `env:"CAPACITY_ADDED_NODE_MEMORY"`
+	CapacityNodeTimeout     time.Duration `env:"CAPACITY_NODE_TIMEOUT" envDefault:"15m"`
 
 	// ReservationEndingNoticeSeconds is how long before the end of a Reservation its Ending condition is set (and how long a
 	// reservation whose tenant is gone still lives); at the end its groups are deleted. 0: no notice.
@@ -311,7 +322,7 @@ func LoadConfig() (*Config, error) {
 			return nil, fmt.Errorf("%s %q is not a non-negative quantity", name, v)
 		}
 	}
-	if err := validatePackingReserve(cfg); err != nil {
+	if err := validateRoom(cfg); err != nil {
 		return nil, err
 	}
 	if cfg.SchedulerStartupTimeout <= 0 {
@@ -388,7 +399,27 @@ func ParseLabScheduling(cfg *Config) (nodeSelector map[string]string, toleration
 	return nodeSelector, tolerations, nil
 }
 
-func validatePackingReserve(cfg *Config) error {
+// ParseCapacity is the static maximum capacity of the lab nodes (nodecap.Maximum): none when CAPACITY_MAX_NODES is 0.
+func ParseCapacity(cfg *Config) (nodecap.Maximum, error) {
+	return nodecap.ParseMaximum(cfg.CapacityMaxNodes, cfg.CapacityAddedNodeCPU, cfg.CapacityAddedNodeMemory)
+}
+
+// validateCapacity checks the static maximum and the node timeout.
+func validateCapacity(cfg *Config) error {
+	if _, err := ParseCapacity(cfg); err != nil {
+		return err
+	}
+	if cfg.CapacityNodeTimeout <= 0 {
+		return fmt.Errorf("CAPACITY_NODE_TIMEOUT must be positive")
+	}
+	return nil
+}
+
+// validateRoom checks what decides the room of the lab nodes: the static maximum, the node timeout and the packing reserve.
+func validateRoom(cfg *Config) error {
+	if err := validateCapacity(cfg); err != nil {
+		return err
+	}
 	if cfg.SchedulerPackingReservePercent < 0 || cfg.SchedulerPackingReservePercent >= 50 {
 		return fmt.Errorf("SCHEDULER_PACKING_RESERVE_PERCENT must be in [0,50)")
 	}

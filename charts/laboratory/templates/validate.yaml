@@ -109,6 +109,15 @@ at install time instead of shipping a broken deployment.
 {{- if lt (int .Values.reservations.endingNoticeSeconds) 0 }}
 {{- fail "reservations.endingNoticeSeconds must not be negative" }}
 {{- end }}
+{{- if lt (int .Values.capacity.maxNodes) 0 }}
+{{- fail "capacity.maxNodes must not be negative (0: the maximum is the current capacity)" }}
+{{- end }}
+{{- if and (gt (int .Values.capacity.maxNodes) 0) (or (not .Values.capacity.addedNode.cpu) (not .Values.capacity.addedNode.memory)) }}
+{{- fail "capacity.addedNode.cpu and capacity.addedNode.memory (the allocatable of one added node) are required with capacity.maxNodes" }}
+{{- end }}
+{{- if le (int .Values.capacity.nodeTimeoutSeconds) 0 }}
+{{- fail "capacity.nodeTimeoutSeconds must be positive" }}
+{{- end }}
 {{- if lt (int .Values.scheduler.restartThreshold) 1 }}
 {{- fail "scheduler.restartThreshold must be at least 1" }}
 {{- end }}

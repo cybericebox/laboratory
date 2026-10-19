@@ -65,6 +65,12 @@ type SchedulerConfig struct {
 	// StatusInterval is the least time between two queue status writes of one
 	// object; zero means defaultStatusInterval.
 	StatusInterval time.Duration
+	// Maximum is the static maximum capacity of the lab nodes: admission places gangs on the nodes that exist and on the nodes
+	// still to come up to it (virtual rooms). Nodes 0: the maximum is the current capacity.
+	Maximum nodecap.Maximum
+	// NodeTimeout is how long every dispatched pod of a gang has to get a node before the gang is withdrawn (the gang commit);
+	// zero means 15 minutes.
+	NodeTimeout time.Duration
 	// UnreservedNotice is how long unreserved work that holds the room of active reservations is marked before it is deleted
 	// (the reservations' ending notice; at least a minute).
 	UnreservedNotice time.Duration
@@ -142,6 +148,7 @@ type Scheduler struct {
 }
 
 // +kubebuilder:rbac:groups="",resources=nodes;pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=imagepulls,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;create;update;delete
 // +kubebuilder:rbac:groups=laboratory.cybericebox.com,resources=labs;labgroups;devices;tenants,verbs=get;list;watch
