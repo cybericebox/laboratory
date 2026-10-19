@@ -4,7 +4,7 @@
 # laboratory CRDs. Idempotent: an existing cluster is reused.
 #
 #   make kind-demux-up              # or hack/kind-demux/up.sh
-#   make kind-demux-e2e MODE=userspace
+#   make kind-demux-e2e KIND_DEMUX_MODE=userspace   # or kind-demux-e2e-all: userspace, tc, xdp and detach
 #   make kind-demux-down
 #
 # Needs docker, kind, kubectl and helm. The kubectl context is kind-icebox-demux; other kind clusters are not touched.
@@ -20,9 +20,8 @@ if ! kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
   kind create cluster --name "$CLUSTER" --config "$HERE/kind.yaml" --wait 0s
 fi
 
-helm repo add cilium https://helm.cilium.io >/dev/null 2>&1 || true
-helm repo update cilium >/dev/null
-helm upgrade --install cilium cilium/cilium --version "$CILIUM_VERSION" --kube-context "kind-$CLUSTER" \
+# --repo instead of helm repo add: the user's helm repositories stay as they are.
+helm upgrade --install cilium cilium --repo https://helm.cilium.io --version "$CILIUM_VERSION" --kube-context "kind-$CLUSTER" \
   --namespace kube-system --values "$HERE/cilium-values.yaml" --wait --timeout 10m
 
 "${KUBECTL[@]}" -n kube-system rollout status ds/cilium --timeout=5m

@@ -123,15 +123,21 @@ docker-push-lab: ## Push the lab image
 docker-push: docker-push-controller docker-push-agent docker-push-proxy docker-push-node docker-push-lab ## Push all 5 images
 
 # WireGuard demux harness: its own kind cluster (icebox-demux) with Cilium 1.20.2, see hack/kind-demux/up.sh and e2e.sh.
-KIND_DEMUX_IMG ?= cybericebox/laboratory-proxy:kind-demux
-MODE           ?= userspace
+KIND_DEMUX_IMG  ?= cybericebox/laboratory-proxy:kind-demux
+KIND_DEMUX_MODE ?= userspace
 
-.PHONY: kind-demux-up kind-demux-e2e kind-demux-down
+.PHONY: kind-demux-up kind-demux-e2e kind-demux-e2e-all kind-demux-down
 kind-demux-up: ## Create the demux kind cluster (icebox-demux, Cilium 1.20.2, no kube-proxy) with the CRDs
 	hack/kind-demux/up.sh
-kind-demux-e2e: ## Build the proxy image and run the demux e2e on icebox-demux (MODE=userspace|tc|xdp)
+kind-demux-e2e: ## Build the proxy image and run the demux e2e on icebox-demux (KIND_DEMUX_MODE=userspace|tc|xdp|detach)
 	$(MAKE) docker-build-proxy PROXY_IMG=$(KIND_DEMUX_IMG)
-	KIND_DEMUX_IMG=$(KIND_DEMUX_IMG) hack/kind-demux/e2e.sh $(MODE)
+	KIND_DEMUX_IMG=$(KIND_DEMUX_IMG) hack/kind-demux/e2e.sh $(KIND_DEMUX_MODE)
+kind-demux-e2e-all: ## Build the proxy image once and run the demux e2e in userspace, tc and xdp, the LB-IPAM check, then the detach back to userspace
+	$(MAKE) docker-build-proxy PROXY_IMG=$(KIND_DEMUX_IMG)
+	@summary="$$(mktemp)"; for m in userspace tc xdp lbipam detach; do \
+		if [ $$m = lbipam ]; then run="hack/kind-demux/lbipam.sh"; else run="hack/kind-demux/e2e.sh $$m"; fi; \
+		KIND_DEMUX_IMG=$(KIND_DEMUX_IMG) KIND_DEMUX_SUMMARY="$$summary" $$run || { cat "$$summary"; rm -f "$$summary"; exit 1; }; \
+	done; printf '\n== summary\n'; cat "$$summary"; rm -f "$$summary"
 kind-demux-down: ## Delete the demux kind cluster and its client containers
 	hack/kind-demux/down.sh
 

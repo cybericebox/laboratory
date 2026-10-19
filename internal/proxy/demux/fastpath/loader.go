@@ -488,13 +488,14 @@ func (f *FastPath) front(name, kind string, ifindex int, l link.Link) error {
 		if kind != kindReply {
 			return fmt.Errorf("the %s link of device %d is gone", kind, ifindex)
 		}
+		// The pin goes first: a sink that finds the name unclaimed then pins its own link, not one this removes.
+		removePinnedLink(f.linkPath(name))
 		f.mu.Lock()
 		if f.links[name] == l {
 			delete(f.links, name)
 		}
 		f.mu.Unlock()
 		_ = l.Close()
-		removePinnedLink(f.linkPath(name))
 		return nil
 	}
 	_, at := programOf(kind)
