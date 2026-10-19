@@ -566,6 +566,9 @@ func TestReservationRPCsRegistered(t *testing.T) {
 	if status.Code(err) != codes.Unimplemented {
 		t.Fatalf("a server without the handler answers UNIMPLEMENTED, got %v", err)
 	}
+	if _, err := newReservationHandler().ListReservations(ctx, &protobuf.ListRequest{}); err != nil {
+		t.Fatalf("the agent implements ListReservations: %v", err)
+	}
 	// The reasons are the stable machine codes the backend maps.
 	for reason, want := range map[string]string{
 		client.ReasonReservationRequired: "RESERVATION_REQUIRED", client.ReasonReservationNotFound: "RESERVATION_NOT_FOUND",

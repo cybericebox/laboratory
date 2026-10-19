@@ -90,7 +90,7 @@ func (h *Handler) createLabGroupClient(ctx context.Context, resolver *groupResol
 	want := mergeItemLabels(common, it.GetLabels())
 	clients := h.cs.LaboratoryV1alpha1().LabGroupClients(ns)
 	lgc := &laboratoryv1alpha1.LabGroupClient{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: stampTenant(copyLabels(want), tenantOf(ctx)), Annotations: stampID(nil, it.GetName())},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: stampTenant(copyLabels(want), tenantOf(ctx)), Annotations: stampID(it.GetName())},
 	}
 	lgc.Spec.PublicKey = priv.PublicKey().String()
 	_, err = clients.Create(ctx, lgc, metav1.CreateOptions{})

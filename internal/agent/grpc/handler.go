@@ -80,6 +80,10 @@ type Handler struct {
 	// capCache keeps each tenant's capacity for a few seconds.
 	capCache capacityCache
 
+	// resNotice is the ending notice of the reservations (SetReservationNotice); resLocks are the mutexes of keyLock.
+	resNotice time.Duration
+	resLocks  sync.Map
+
 	// prewarm fills the image cache ahead of time; nil until SetPrewarm.
 	prewarm *prewarmer
 

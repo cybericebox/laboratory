@@ -66,7 +66,7 @@ func (h *Handler) createLabGroup(ctx context.Context, it *protobuf.LabGroupItem,
 	lg.Spec.VPN.ProbeWhileSuspended = it.GetProbeWhileSuspended()
 	lg.Spec.VPN.Size, lg.Spec.Gateway.Size = podSize(it.GetVpnSize()), podSize(it.GetGatewaySize())
 	tenant := tenantOf(ctx)
-	lg.Labels, lg.Annotations = dep.stamp(stampTenant(copyLabels(want), tenant), stampID(nil, it.GetName()))
+	lg.Labels, lg.Annotations = dep.stamp(stampTenant(copyLabels(want), tenant), stampID(it.GetName()))
 
 	_, err := groups.Create(ctx, lg, metav1.CreateOptions{})
 	if err == nil {
