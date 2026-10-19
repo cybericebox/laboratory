@@ -42,9 +42,9 @@ func wgNamespaceLevel(t *testing.T, extra ...string) string {
 	return ""
 }
 
-// The default mode is tc: the demux runs on the host network of every entry node with the three capabilities the BPF program needs.
-func TestWGDemuxDefaultIsTCDaemonSet(t *testing.T) {
-	ds, c := wgDemux(t)
+// The tc mode: the demux runs on the host network of every entry node with the three capabilities the BPF program needs.
+func TestWGDemuxTCDaemonSet(t *testing.T) {
+	ds, c := wgDemux(t, "--set", "proxy.wg.mode=tc")
 	if ds.Namespace != "laboratory-wg" || ds.Name != "laboratory-proxy-wg" {
 		t.Errorf("identity: %s/%s", ds.Namespace, ds.Name)
 	}
@@ -107,7 +107,7 @@ func TestWGDemuxDefaultIsTCDaemonSet(t *testing.T) {
 	if r := ds.Spec.UpdateStrategy.RollingUpdate; r == nil || r.MaxUnavailable.IntValue() != 1 || ds.Spec.MinReadySeconds != 20 {
 		t.Errorf("rolling update one node at a time: %+v %d", ds.Spec.UpdateStrategy, ds.Spec.MinReadySeconds)
 	}
-	if lvl := wgNamespaceLevel(t); lvl != "privileged" {
+	if lvl := wgNamespaceLevel(t, "--set", "proxy.wg.mode=tc"); lvl != "privileged" {
 		t.Errorf("the tc namespace must admit the privileged level: %q", lvl)
 	}
 	for _, mode := range []string{"xdp"} {
@@ -309,7 +309,7 @@ func TestWGDemuxRBAC(t *testing.T) {
 }
 
 func TestWGOperatorKnowsTheMode(t *testing.T) {
-	out, err := helmTemplate(t, "-s", "templates/operator/configmap.yaml")
+	out, err := helmTemplate(t, "--set", "proxy.wg.mode=tc", "-s", "templates/operator/configmap.yaml")
 	if err != nil || !strings.Contains(out, `WG_DEMUX_MODE: "tc"`) {
 		t.Fatalf("%v\n%s", err, out)
 	}
@@ -414,7 +414,7 @@ func TestWGDemuxNetworkPolicy(t *testing.T) {
 		t.Errorf("group endpoints on UDP 51820: %v", grp)
 	}
 
-	for _, extra := range [][]string{{}, {"--set", "proxy.wg.mode=xdp"}, {"--set", "proxy.wg.mode=userspace", "--set", "proxy.networkPolicy.enabled=false"}, {"--set", "proxy.wg.mode=userspace", "--set", "proxy.wg.enabled=false"}} {
+	for _, extra := range [][]string{{"--set", "proxy.wg.mode=tc"}, {"--set", "proxy.wg.mode=xdp"}, {"--set", "proxy.wg.mode=userspace", "--set", "proxy.networkPolicy.enabled=false"}, {"--set", "proxy.wg.mode=userspace", "--set", "proxy.wg.enabled=false"}} {
 		if o, err := helmTemplate(t, append(extra, "-s", "templates/netpol/wg-demux.yaml")...); err == nil && strings.Contains(o, "kind:") {
 			t.Errorf("%v: no pod policy expected:\n%s", extra, o)
 		}
@@ -432,5 +432,20 @@ func TestL7PolicyHasNoWireGuard(t *testing.T) {
 	}
 	if strings.Contains(out, "wg-demux") {
 		t.Errorf("the header must not describe a shared pod")
+	}
+}
+
+// Nothing sets the mode in production, so the default must be the unprivileged one.
+func TestWGDemuxDefaultIsUserspace(t *testing.T) {
+	ds, c := wgDemux(t)
+	if ds.Spec.Template.Spec.HostNetwork || envOf(c)["DEMUX_MODE"].Value != "userspace" || len(c.SecurityContext.Capabilities.Add) != 0 {
+		t.Errorf("default: hostNetwork %v, mode %q, caps %+v", ds.Spec.Template.Spec.HostNetwork, envOf(c)["DEMUX_MODE"].Value, c.SecurityContext.Capabilities)
+	}
+	if lvl := wgNamespaceLevel(t); lvl != "restricted" {
+		t.Errorf("the default namespace level: %q", lvl)
+	}
+	out, err := helmTemplate(t, "-s", "templates/operator/configmap.yaml")
+	if err != nil || !strings.Contains(out, `WG_DEMUX_MODE: "userspace"`) {
+		t.Fatalf("%v\n%s", err, out)
 	}
 }

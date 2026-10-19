@@ -125,7 +125,7 @@ set `proxy.mode: daemonset`: one proxy pod on every node (`proxy.nodeSelector` a
 `replicas`, a fixed count: on a one-node cluster set `proxy.replicas: 1`, and a live install refuses more replicas than nodes). In both modes the proxy requests are pods like any other, so the scheduler's room for lab pods on each node is what is left after them
 (see "Platform reserve"). The WireGuard demux is not in that pod: it is its own DaemonSet `laboratory-proxy-wg` in the namespace `laboratory-wg`, on the nodes
 selected by `proxy.wg.nodeSelector` and `proxy.wg.tolerations` (every node by default), with its own ServiceAccount, RBAC and the `laboratory-proxy-wg` LoadBalancer Service
-(`proxy.wg.externalTrafficPolicy`, `Local` by default). `proxy.wg.mode` (`userspace`, `tc` or `xdp`; the chart default is `tc`, **production sets `userspace`**, see "WireGuard demux modes") decides its privileges: `tc` and `xdp` run on the host network
+(`proxy.wg.externalTrafficPolicy`, `Local` by default). `proxy.wg.mode` (`userspace`, `tc` or `xdp`; `userspace` is the default; `tc` and `xdp` are opt-in, see "WireGuard demux modes") decides its privileges: `tc` and `xdp` run on the host network
 as root with the capabilities `BPF`, `NET_ADMIN` and `PERFMON` only and the host's `/sys/fs/bpf`, in a namespace that admits the privileged Pod Security level;
 `userspace` is unprivileged on the pod network in a restricted namespace. The L7 namespace stays restricted in every mode. The proxy's own session is sliding: it expires `proxy.l7.sessionIdleTTL` (24h) after the last request; the cookie is
 re-issued only when less than `proxy.l7.sessionRenewBefore` (1h) of it remains, so an active user costs about one renewal per hour; and it never
@@ -1300,8 +1300,7 @@ process, which is also what keeps the session table and the caps of the section 
 | `tc` | eBPF programs on the node's external devices (tcx), in front of Cilium's | host network, root, capabilities `BPF`, `NET_ADMIN`, `PERFMON` only (not privileged), the host's `/sys/fs/bpf`, namespace at the privileged level | nothing is lost (0 of 148 pings): the maps and links stay pinned and the kernel keeps forwarding |
 | `xdp` | the same, plus an XDP program that judges and rewrites the client's packets at the device | as `tc` | as `tc` |
 
-**Production runs `userspace` for now.** `tc` and `xdp` are switched on only after the load test and the XDP test, done together with the owner. The chart default is
-still `tc`, so a production values file must set `proxy.wg.mode: userspace` until then. There is no silent fallback: a `tc` or `xdp` pod that cannot start its
+**`userspace` is the default, and production runs it for now.** `tc` and `xdp` are opt-in, switched on only after the load test and the XDP test, done together with the owner. There is no silent fallback: a `tc` or `xdp` pod that cannot start its
 fast path (no `BPF` capability, a foreign XDP program on the device, ...) exits and crash loops, and the operator takes the mode from the same value
 (`WG_DEMUX_MODE`; a value other than the three fails the render and the operator start). To go back to `userspace`, see below.
 

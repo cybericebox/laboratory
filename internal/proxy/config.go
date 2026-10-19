@@ -85,7 +85,7 @@ type WGConfig struct {
 	SessionBurst int     `env:"DEMUX_SESSION_BURST" envDefault:"30000"`
 	Readers      int     `env:"DEMUX_READERS" envDefault:"4"`
 	// Mode is how transport packets are moved: userspace, or in the kernel by a TC or XDP program (needs NodeName).
-	Mode demux.Mode `env:"DEMUX_MODE" envDefault:"tc"`
+	Mode demux.Mode `env:"DEMUX_MODE" envDefault:"userspace"`
 	// PinPath is where the BPF maps are pinned, so a restart keeps the sessions.
 	PinPath  string `env:"DEMUX_BPF_PIN_PATH" envDefault:"/sys/fs/bpf/cybericebox/wg-demux"`
 	NodeName string `env:"NODE_NAME"`
