@@ -1,47 +1,76 @@
 #!/usr/bin/env bash
-# End-to-end test of the WireGuard demux on the kind cluster of up.sh, in one mode (userspace, tc or xdp):
+# End-to-end test of the WireGuard demux on the kind cluster of up.sh, in one mode (userspace, tc or xdp), or the switch back from a
+# fast path to userspace (detach):
 #
-#   make kind-demux-e2e MODE=userspace      # builds the proxy image, then runs hack/kind-demux/e2e.sh userspace
+#   make kind-demux-e2e KIND_DEMUX_MODE=tc   # builds the proxy image, then runs hack/kind-demux/e2e.sh tc
+#   make kind-demux-e2e-all                  # builds once, then e2e.sh userspace, tc, xdp and detach in turn
 #
-# It deploys the demux part of the chart (templates/wg and its network policy, rendered with helm template -s: the rest of the chart
-# needs the operator, cert-manager and the Gateway API), two groups whose VPN servers are plain kernel WireGuard pods (vpn-server.yaml),
-# one on the demux's node and one on the other worker, each with the operator's VPN pod policy (printed from vpnCiliumPolicy by
-# TestPrintVPNCiliumPolicy, not a hand copy), and LabGroups whose status says the VPN is registered. Two client containers on the kind
-# docker network connect through the node port of the demux's Service on the first worker. It checks: both clients handshake and ping
-# their server with no loss, also with 1300-byte packets; a client with an unknown key never gets a handshake; a restart of the demux pod
-# loses at most 2 s of pings in tc and xdp (userspace may re-handshake); a client that changes its source port keeps its tunnel.
+# A mode run deploys the demux part of the chart (templates/wg and its network policy, rendered with helm template -s: the rest of the
+# chart needs the operator, cert-manager and the Gateway API), two groups whose VPN servers are plain kernel WireGuard pods
+# (vpn-server.yaml), one on the demux's node and one on the other worker, each with the operator's VPN pod policy (printed from
+# vpnCiliumPolicy by TestPrintVPNCiliumPolicy, not a hand copy), LabGroups whose status says the VPN is registered, and a UDP and TCP
+# echo behind a NodePort Service of its own. Two client containers on the kind docker network connect through the node port of the
+# demux's Service on the first worker. It checks:
 #
-# Leaves everything running for inspection; the next run starts the test objects afresh. Exit status 0 = PASS.
+#   - both clients handshake and ping their server with no loss, also with 1300-byte packets; in tc and xdp the fast path counters
+#     (:8083/metrics on the node's address) take the packets and the demux socket sees next to no transport packets; in userspace the
+#     socket sees them all;
+#   - tc and xdp: our tcx programs come before Cilium's on the external device; xdp attaches in generic mode (kind's veth);
+#   - a client with an unknown key never gets a handshake; a pod outside laboratory-wg cannot reach a VPN server directly;
+#   - a restart of Cilium loses at most 2 s of pings, the order is back within DEMUX_BPF_RESYNC + 5 s, the echo still answers;
+#   - a restart of the demux pod loses at most 2 s of pings in tc and xdp (userspace may re-handshake);
+#   - a client that changes its source port keeps its tunnel, and its server sees the demux's source, never the client's address;
+#   - tc and xdp: Cilium holds no NAT entry and no conntrack entry beyond the handshakes for the clients' tunnels, and the transport
+#     packets leave its conntrack untouched.
+#
+# detach runs after a tc or xdp run: it switches the chart to userspace, runs `proxy-wg detach` in a one-off pod with the demux's tc
+# privileges on every worker, checks that our links and pins are gone and that both clients' tunnels work again on the slow path.
+#
+# Every check fails the run (exit 1). Each run appends its result lines to $KIND_DEMUX_SUMMARY when set. Leaves everything running
+# for inspection; the next run starts the test objects afresh. Exit status 0 = PASS.
 set -euo pipefail
 
-MODE="${1:-${MODE:-userspace}}"
-case "$MODE" in userspace | tc | xdp) ;; *) echo "usage: $0 userspace|tc|xdp" >&2; exit 2 ;; esac
+MODE="${1:-}"
+case "$MODE" in userspace | tc | xdp | detach) ;; *) echo "usage: $0 userspace|tc|xdp|detach" >&2; exit 2 ;; esac
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 CLUSTER="${KIND_DEMUX_CLUSTER:-icebox-demux}"
 IMG="${KIND_DEMUX_IMG:-cybericebox/laboratory-proxy:kind-demux}"
-WG_IMG="icebox-demux/wg-test:1"
+WG_IMG="icebox-demux/wg-test:2"
 RELEASE_NS="laboratory-system"
 WG_NS="laboratory-wg"
+ECHO_NS="demux-echo"
 ENTRY_NODE="$CLUSTER-worker"
 OTHER_NODE="$CLUSTER-worker2"
+WORKERS=("$ENTRY_NODE" "$OTHER_NODE")
+PIN_PATH="/sys/fs/bpf/cybericebox/wg-demux"
 KEEPALIVE=5
 ROAM_INTERVAL=5
+# DEMUX_BPF_RESYNC: the chart does not set it, so the code default.
+RESYNC=10
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 k() { kubectl --context "kind-$CLUSTER" "$@"; }
 log() { printf '\n== %s\n' "$*"; }
-fail() { printf '\nFAIL: %s\n' "$*" >&2; exit 1; }
+fail() { printf '\nFAIL (%s): %s\n' "$MODE" "$*" >&2; exit 1; }
+summary() {
+  printf 'SUMMARY %s: %s\n' "$MODE" "$*"
+  if [[ -n "${KIND_DEMUX_SUMMARY:-}" ]]; then printf '%-9s %s\n' "$MODE" "$*" >>"$KIND_DEMUX_SUMMARY"; fi
+}
+fast() { [[ "$MODE" == tc || "$MODE" == xdp ]]; }
 genkey() { docker run --rm "$WG_IMG" sh -c 'k=$(wg genkey); echo "$k $(echo "$k" | wg pubkey)"'; }
 client() { docker exec "icebox-demux-client-$1" "${@:2}"; }
+client_ip() { docker inspect -f '{{.NetworkSettings.Networks.kind.IPAddress}}' "icebox-demux-client-$1"; }
+server_of() { [[ $1 == b ]] && echo 10.99.2.1 || echo 10.99.1.1; }
 
-# received <client> <ping args...>: runs ping in the client and prints the number of replies.
+# received <client> <ping args...>: runs ping in the client and prints the number of replies (0 when ping printed no summary).
 received() {
-  local out
+  local out n
   out="$(client "$1" ping "${@:2}" 2>&1 || true)"
-  sed -n 's/.* \([0-9]*\) received.*/\1/p' <<<"$out"
+  n="$(sed -n 's/.* \([0-9]*\) received.*/\1/p' <<<"$out")"
+  echo "${n:-0}"
 }
 
 # wait_tunnel <client> <server ip> <seconds>: waits until one ping gets through; prints the seconds it took.
@@ -53,14 +82,164 @@ wait_tunnel() {
   return 1
 }
 
+# ping_start <client> <server ip> <name>: pings every 0.2 s in the background inside the client (one at a time per client).
+ping_start() { client "$1" sh -c "rm -f /tmp/$3.log; ping -i 0.2 -W 1 $2 >/tmp/$3.log 2>&1 &"; }
+# ping_stop <client> <name>: stops it and prints "<sent> <received>".
+ping_stop() {
+  local out
+  client "$1" pkill -INT ping || true
+  sleep 1
+  out="$(client "$1" cat "/tmp/$2.log")"
+  grep -q 'packets transmitted' <<<"$out" || fail "client $1: the background ping ($2) printed no summary: $(tail -3 <<<"$out")"
+  sed -n 's/^\([0-9]*\) packets transmitted, \([0-9]*\) received.*/\1 \2/p' <<<"$out"
+}
+
+cilium_pod() { k -n kube-system get pod -l k8s-app=cilium --field-selector "spec.nodeName=$1" -o jsonpath='{.items[0].metadata.name}'; }
+cilium() { k -n kube-system exec "$(cilium_pod "$1")" -c cilium-agent -- "${@:2}"; }
+
+# order_ok: on the entry node's eth0 our tcx programs come first in both directions and Cilium's right after them; sets ORDER.
+order_ok() {
+  local out ingress egress
+  out="$(cilium "$ENTRY_NODE" bpftool net show dev eth0)"
+  ingress="$(awk '/tcx\/ingress/ {print $3}' <<<"$out" | head -2 | paste -sd' ' -)"
+  egress="$(awk '/tcx\/egress/ {print $3}' <<<"$out" | head -2 | paste -sd' ' -)"
+  ORDER="ingress: $ingress; egress: $egress"
+  [[ "$ingress" == "wg_tc_ingress cil_from_netdev" && "$egress" == "wg_tc_egress_guard cil_to_netdev" ]]
+}
+
+# metrics: the demux's metrics on the entry node, read from the node itself (in userspace the pod policy admits the host only).
+metrics() { docker exec "$ENTRY_NODE" curl -sf --max-time 5 "$METRICS_URL" || fail "no metrics at $METRICS_URL"; }
+# metric <metrics> <series>: the value of one series, 0 when it is absent.
+metric() { awk -v s="$2" '$1 == s {print $2; f = 1} END {if (!f) print 0}' <<<"$1"; }
+TO_SERVER='wg_demux_fastpath_packets_total{result="forwarded_to_server"}'
+TO_CLIENT='wg_demux_fastpath_packets_total{result="forwarded_to_client"}'
+TRANSPORT='wg_demux_packets_total{type="transport"}'
+RESPONSES='wg_demux_packets_total{type="handshake_response"}'
+demux_pod() { k -n "$WG_NS" get pod -l app=laboratory-proxy-wg --field-selector "spec.nodeName=$ENTRY_NODE" -o jsonpath='{.items[0].metadata.name}'; }
+set_metrics_url() {
+  local ip="$ENTRY_IP"
+  [[ "$MODE" == userspace || "$MODE" == detach ]] && ip="$(k -n "$WG_NS" get pod "$(demux_pod)" -o jsonpath='{.status.podIP}')"
+  METRICS_URL="http://$ip:8083/metrics"
+}
+
+# echo_ok <when>: the echo Service still answers on the entry node's node ports, UDP and TCP, from a container outside the tunnels.
+echo_ok() {
+  local u t
+  u="$(client bad sh -c "echo udp-$1 | socat -t 2 -T 3 - UDP4:$ENTRY_IP:$ECHO_UDP" 2>&1 || true)"
+  t="$(client bad sh -c "echo tcp-$1 | socat -T 3 - TCP4:$ENTRY_IP:$ECHO_TCP" 2>&1 || true)"
+  [[ "$u" == "udp-$1" ]] || fail "the echo Service did not answer on UDP $ENTRY_IP:$ECHO_UDP ($1): $u"
+  [[ "$t" == "tcp-$1" ]] || fail "the echo Service did not answer on TCP $ENTRY_IP:$ECHO_TCP ($1): $t"
+  echo "echo ($1): UDP and TCP answer"
+}
+
+# deploy <mode>: the demux of the chart in that mode, restarted so the pods run the image just loaded.
+deploy() {
+  local templates show=()
+  templates=(priorityclasses.yaml wg/namespace.yaml wg/serviceaccount.yaml wg/clusterrole.yaml wg/clusterrolebinding.yaml wg/role.yaml
+    wg/service.yaml wg/daemonset.yaml)
+  # The demux's pod policy renders in userspace only (on the host network pod policies do not apply), and helm template -s refuses a
+  # template that renders nothing.
+  [[ "$1" == userspace ]] && templates+=(netpol/wg-demux.yaml)
+  for t in "${templates[@]}"; do show+=(-s "templates/$t"); done
+  helm template laboratory "$ROOT/charts/laboratory" --namespace "$RELEASE_NS" \
+    --set proxy.wg.mode="$1" --set proxy.l7.enabled=false --set proxy.wg.limits.roamInterval="${ROAM_INTERVAL}s" \
+    --set proxy.image.repository="${IMG%:*}" --set proxy.image.tag="${IMG##*:}" \
+    --set operator.baseDomain=demux.test --set operator.publicVPNEndpoint=vpn.demux.test --set operator.supportEmail=demux@demux.test \
+    "${show[@]}" >"$WORK/demux.yaml"
+  if [[ "$1" != userspace ]]; then
+    k -n "$WG_NS" delete networkpolicy,ciliumnetworkpolicy laboratory-proxy-wg --ignore-not-found >/dev/null
+  fi
+  k apply -f "$WORK/demux.yaml" >/dev/null
+  k -n "$WG_NS" rollout restart ds/laboratory-proxy-wg >/dev/null
+  k -n "$WG_NS" rollout status ds/laboratory-proxy-wg --timeout=5m
+}
+
 log "images"
-printf 'FROM alpine:3.22\nRUN apk add --no-cache wireguard-tools iproute2 iputils\n' | docker build -q -t "$WG_IMG" - >/dev/null
+printf 'FROM alpine:3.22\nRUN apk add --no-cache wireguard-tools iproute2 iputils socat\n' | docker build -q -t "$WG_IMG" - >/dev/null
 kind load docker-image "$IMG" "$WG_IMG" --name "$CLUSTER" >/dev/null
+NODE_PORT="$(k -n "$WG_NS" get svc laboratory-proxy-wg -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)"
+ENTRY_IP="$(k get node "$ENTRY_NODE" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')"
+
+if [[ "$MODE" == detach ]]; then
+  for c in a b; do docker inspect "icebox-demux-client-$c" >/dev/null 2>&1 || fail "no client $c: run e2e.sh tc or xdp first"; done
+  for node in "${WORKERS[@]}"; do
+    docker exec "$node" test -d "$PIN_PATH" || fail "nothing pinned on $node: run e2e.sh tc or xdp first"
+  done
+
+  log "switch the chart to userspace"
+  deploy userspace
+  set_metrics_url
+
+  for node in "${WORKERS[@]}"; do
+    log "proxy-wg detach on $node"
+    k -n default delete pod "demux-detach-$node" --ignore-not-found --wait >/dev/null
+    k apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: demux-detach-$node
+  namespace: default
+spec:
+  nodeName: $node
+  restartPolicy: Never
+  hostNetwork: true
+  securityContext:
+    runAsNonRoot: false
+    runAsUser: 0
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: detach
+      image: $IMG
+      imagePullPolicy: Never
+      command: [ /proxy, proxy-wg, detach ]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ ALL ]
+          add: [ BPF, NET_ADMIN, PERFMON ]
+      volumeMounts:
+        - name: bpffs
+          mountPath: /sys/fs/bpf
+  volumes:
+    - name: bpffs
+      hostPath:
+        path: /sys/fs/bpf
+        type: Directory
+EOF
+    k -n default wait --for=jsonpath='{.status.phase}'=Succeeded "pod/demux-detach-$node" --timeout=2m >/dev/null ||
+      fail "proxy-wg detach on $node did not succeed: $(k -n default logs "demux-detach-$node" 2>&1 | tail -5)"
+    k -n default logs "demux-detach-$node"
+    k -n default delete pod "demux-detach-$node" --wait=false >/dev/null
+    left="$(cilium "$node" bpftool net show | grep -E 'wg_|^eth0\([0-9]+\) (generic|driver|offload)' || true)"
+    [[ -z "$left" ]] || fail "our programs are still attached on $node: $left"
+    ! docker exec "$node" test -e "$PIN_PATH" || fail "$PIN_PATH is still there on $node"
+    echo "$node: no links, no pins"
+  done
+  summary "proxy-wg detach removed every link and pin on ${WORKERS[*]}"
+
+  before="$(metrics)"
+  for g in a b; do
+    log "client $g: tunnel on the slow path"
+    # The new userspace pod knows no session: the client re-handshakes once its data gets no answer.
+    t="$(wait_tunnel "$g" "$(server_of "$g")" 60)" || fail "client $g: no tunnel 60 s after the detach"
+    n="$(received "$g" -c 20 -i 0.2 -W 1 "$(server_of "$g")")"
+    [[ "$n" == 20 ]] || fail "client $g after the detach: lost $((20 - n)) of 20 pings"
+    echo "tunnel after ${t}s, ping 20/20"
+  done
+  after="$(metrics)"
+  d=$(($(metric "$after" "$TRANSPORT") - $(metric "$before" "$TRANSPORT")))
+  ((d >= 80)) || fail "the userspace demux saw only $d transport packets for 2 x 20 pings"
+  summary "slow path after the detach: both tunnels back, ping 20/20 each, userspace transport +$d"
+  printf '\nPASS (detach)\n'
+  exit 0
+fi
 
 log "fresh test objects"
 for c in $(docker ps -a --filter "label=icebox-demux-client" --format '{{.Names}}'); do docker rm -f "$c" >/dev/null; done
 k delete labgroups.laboratory.cybericebox.com demux-a demux-b --ignore-not-found --wait
-k delete namespace lg-demux-a lg-demux-b --ignore-not-found --wait
+k delete namespace lg-demux-a lg-demux-b "$ECHO_NS" --ignore-not-found --wait
 k create namespace "$RELEASE_NS" --dry-run=client -o yaml | k apply -f - >/dev/null
 
 # group <letter> <node> <server tunnel ip> <client tunnel ip>: the VPN server, its policy and the LabGroup of one group.
@@ -70,7 +249,7 @@ group() {
   read -r cpriv cpub <<<"$(genkey)"
   printf -v "SERVER_PUB_$g" %s "$spub"
   printf -v "CLIENT_PRIV_$g" %s "$cpriv"
-  sed -e "s|__NS__|$ns|g" -e "s|__GROUP__|demux-$g|g" -e "s|__NODE__|$2|g" -e "s|__PRIVATE_KEY__|$spriv|g" \
+  sed -e "s|__NS__|$ns|g" -e "s|__GROUP__|demux-$g|g" -e "s|__NODE__|$2|g" -e "s|__PRIVATE_KEY__|$spriv|g" -e "s|__IMAGE__|$WG_IMG|g" \
     -e "s|__PEER_KEY__|$cpub|g" -e "s|__SERVER_IP__|$3|g" -e "s|__CLIENT_IP__|$4|g" "$HERE/vpn-server.yaml" | k apply -f - >/dev/null
   (cd "$ROOT" && VPN_POLICY_NS="$ns" VPN_POLICY_MODE="$MODE" VPN_POLICY_OUT="$WORK/policy-$g.yaml" GOWORK=off \
     go test ./internal/controller/laboratory -run '^TestPrintVPNCiliumPolicy$' -count=1 >/dev/null)
@@ -84,30 +263,70 @@ log "groups: a on $ENTRY_NODE (the demux's node), b on $OTHER_NODE"
 group a "$ENTRY_NODE" 10.99.1.1 10.99.1.2
 group b "$OTHER_NODE" 10.99.2.1 10.99.2.2
 
-log "demux (mode $MODE)"
-templates=(priorityclasses.yaml wg/namespace.yaml wg/serviceaccount.yaml wg/clusterrole.yaml wg/clusterrolebinding.yaml wg/role.yaml wg/service.yaml
-  wg/daemonset.yaml)
-# The demux's pod policy renders in userspace only (on the host network pod policies do not apply), and helm template -s refuses a
-# template that renders nothing.
-[[ "$MODE" == userspace ]] && templates+=(netpol/wg-demux.yaml)
-show=()
-for t in "${templates[@]}"; do show+=(-s "templates/$t"); done
-helm template laboratory "$ROOT/charts/laboratory" --namespace "$RELEASE_NS" \
-  --set proxy.wg.mode="$MODE" --set proxy.l7.enabled=false \
-  --set proxy.image.repository="${IMG%:*}" --set proxy.image.tag="${IMG##*:}" \
-  --set operator.baseDomain=demux.test --set operator.publicVPNEndpoint=vpn.demux.test --set operator.supportEmail=demux@demux.test \
-  "${show[@]}" >"$WORK/demux.yaml"
-if [[ "$MODE" != userspace ]]; then
-  k -n "$WG_NS" delete networkpolicy,ciliumnetworkpolicy laboratory-proxy-wg --ignore-not-found >/dev/null
-fi
-k apply -f "$WORK/demux.yaml" >/dev/null
-# The image tag does not change between builds: restart so the pods run the image just loaded.
-k -n "$WG_NS" rollout restart ds/laboratory-proxy-wg >/dev/null
-k -n "$WG_NS" rollout status ds/laboratory-proxy-wg --timeout=5m
+log "echo Service (UDP and TCP) on $OTHER_NODE"
+k apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: $ECHO_NS
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: echo
+  namespace: $ECHO_NS
+  labels:
+    app: echo
+spec:
+  nodeName: $OTHER_NODE
+  terminationGracePeriodSeconds: 1
+  containers:
+    - name: echo
+      image: $WG_IMG
+      imagePullPolicy: Never
+      # A UDP child never sees an end of input: timeout ends its cat (with a plain cat the first child hangs and takes the socket).
+      command: [ sh, -ec, 'socat UDP4-RECVFROM:8080,fork SYSTEM:"timeout 1 cat" & exec socat TCP4-LISTEN:8080,fork,reuseaddr EXEC:cat' ]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo
+  namespace: $ECHO_NS
+spec:
+  type: NodePort
+  selector:
+    app: echo
+  ports:
+    - name: udp
+      protocol: UDP
+      port: 8080
+    - name: tcp
+      protocol: TCP
+      port: 8080
+EOF
+k -n "$ECHO_NS" wait --for=condition=Ready pod/echo --timeout=2m >/dev/null
+ECHO_UDP="$(k -n "$ECHO_NS" get svc echo -o jsonpath='{.spec.ports[?(@.name=="udp")].nodePort}')"
+ECHO_TCP="$(k -n "$ECHO_NS" get svc echo -o jsonpath='{.spec.ports[?(@.name=="tcp")].nodePort}')"
 
+log "demux (mode $MODE)"
+deploy "$MODE"
 NODE_PORT="$(k -n "$WG_NS" get svc laboratory-proxy-wg -o jsonpath='{.spec.ports[0].nodePort}')"
-ENTRY_IP="$(k get node "$ENTRY_NODE" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')"
-echo "entry: $ENTRY_IP:$NODE_PORT"
+set_metrics_url
+echo "entry: $ENTRY_IP:$NODE_PORT, metrics: $METRICS_URL"
+
+if fast; then
+  log "attachment on $ENTRY_NODE"
+  order_ok || fail "our tcx programs are not first on eth0 ($ORDER)"
+  echo "$ORDER"
+  xdp="$(cilium "$ENTRY_NODE" bpftool net show dev eth0 | grep -E '^eth0\([0-9]+\) (generic|driver|offload)' || true)"
+  if [[ "$MODE" == xdp ]]; then
+    grep -q ' generic ' <<<"$xdp" || fail "xdp is not attached in generic mode on eth0: ${xdp:-none}"
+    summary "xdp on eth0: $xdp"
+  else
+    [[ -z "$xdp" ]] || fail "an xdp program is attached on eth0 in tc mode: $xdp"
+  fi
+  summary "tcx order on eth0 at the start: $ORDER"
+fi
 
 # start_client <name> <private key> <tunnel ip> <server public key> <server subnet>
 start_client() {
@@ -133,17 +352,29 @@ start_client a "$CLIENT_PRIV_a" 10.99.1.2 "$SERVER_PUB_a" 10.99.1.0/24
 start_client b "$CLIENT_PRIV_b" 10.99.2.2 "$SERVER_PUB_b" 10.99.2.0/24
 read -r bad_priv _ <<<"$(genkey)"
 start_client bad "$bad_priv" 10.99.1.3 "$SERVER_PUB_a" 10.99.1.0/24
-
-server_of() { [[ $1 == b ]] && echo 10.99.2.1 || echo 10.99.1.1; }
+echo_ok start
 
 for g in a b; do
   log "client $g: handshake and ping"
   t="$(wait_tunnel "$g" "$(server_of "$g")" 30)" || fail "client $g: no tunnel within 30 s"
   echo "tunnel up after ${t}s"
   [[ "$(client "$g" wg show wg0 latest-handshakes | awk '{print $2}')" != 0 ]] || fail "client $g: no handshake"
+  before="$(metrics)"
   n="$(received "$g" -c 50 -i 0.2 -W 1 "$(server_of "$g")")"
+  after="$(metrics)"
   echo "ping: $n/50"
   [[ "$n" == 50 ]] || fail "client $g: lost $((50 - n)) of 50 pings"
+  dt=$(($(metric "$after" "$TRANSPORT") - $(metric "$before" "$TRANSPORT")))
+  if fast; then
+    ds=$(($(metric "$after" "$TO_SERVER") - $(metric "$before" "$TO_SERVER")))
+    dc=$(($(metric "$after" "$TO_CLIENT") - $(metric "$before" "$TO_CLIENT")))
+    ((ds >= 50 && dc >= 50)) || fail "client $g: the fast path forwarded only $ds to the server and $dc to the client for 50 pings"
+    ((dt <= 5)) || fail "client $g: the demux socket still saw $dt transport packets in $MODE mode"
+    summary "client $g ping 50/50: forwarded_to_server +$ds, forwarded_to_client +$dc, userspace transport +$dt"
+  else
+    ((dt >= 100)) || fail "client $g: the demux socket saw only $dt transport packets for 50 pings"
+    summary "client $g ping 50/50: userspace transport +$dt"
+  fi
 done
 
 for g in a b; do
@@ -187,27 +418,51 @@ EOF
 k wait --for=condition=Ready pod/demux-intruder --timeout=2m >/dev/null
 n="$(k exec demux-intruder -- ping -c 10 -i 0.5 -W 1 10.99.1.1 2>&1 | sed -n 's/.* \([0-9]*\) received.*/\1/p' || true)"
 hs="$(k exec demux-intruder -- wg show wg0 latest-handshakes | awk '{print $2}')"
-echo "replies: $n, latest handshake: $hs"
-[[ "$n" == 0 && "$hs" == 0 ]] || fail "a pod outside laboratory-wg reached the VPN server directly"
+echo "replies: ${n:-0}, latest handshake: $hs"
+[[ "${n:-0}" == 0 && "$hs" == 0 ]] || fail "a pod outside laboratory-wg reached the VPN server directly"
 k delete pod demux-intruder --wait=false >/dev/null
 k -n lg-demux-a exec vpn -- wg set wg0 peer "$intruder_pub" remove
 
+log "restart of Cilium"
+ping_start a 10.99.1.1 cilium
+ping_start b 10.99.2.1 cilium
+k -n kube-system rollout restart ds/cilium >/dev/null
+k -n kube-system rollout status ds/cilium --timeout=5m >/dev/null
+if fast; then
+  start=$SECONDS
+  until order_ok; do
+    ((SECONDS - start <= RESYNC + 5)) || fail "the order on eth0 is not back $((RESYNC + 5)) s after the Cilium restart ($ORDER)"
+    sleep 1
+  done
+  echo "order after the Cilium restart (after $((SECONDS - start)) s): $ORDER"
+  summary "tcx order on eth0 after the Cilium restart (+$((SECONDS - start)) s): $ORDER"
+fi
+sleep 2
+for g in a b; do
+  res="$(ping_stop "$g" cilium)"
+  read -r sent got <<<"$res"
+  lost=$((sent - got))
+  echo "client $g across the Cilium restart: $got/$sent (lost $lost)"
+  ((lost <= 10)) || fail "client $g lost $lost pings (more than 2 s) across the Cilium restart"
+  summary "client $g across the Cilium restart: $got/$sent pings, lost $lost"
+done
+echo_ok after-cilium-restart
+
 log "restart of the demux pod on $ENTRY_NODE"
-pod="$(k -n "$WG_NS" get pod -l app=laboratory-proxy-wg --field-selector "spec.nodeName=$ENTRY_NODE" -o jsonpath='{.items[0].metadata.name}')"
-client a sh -c 'rm -f /tmp/restart.log; ping -i 0.2 -W 1 10.99.1.1 >/tmp/restart.log 2>&1 &'
+before="$(metrics)"
+pod="$(demux_pod)"
+ping_start a 10.99.1.1 restart
 start=$SECONDS
 k -n "$WG_NS" delete pod "$pod" --wait >/dev/null
 k -n "$WG_NS" rollout status ds/laboratory-proxy-wg --timeout=5m >/dev/null
 echo "new pod ready after $((SECONDS - start))s"
+set_metrics_url
 t="$(wait_tunnel a 10.99.1.1 90)" || fail "client a: no tunnel 90 s after the restart"
 sleep 2
-client a pkill -INT ping || true
-sleep 1
-summary="$(client a sh -c 'grep "packets transmitted" /tmp/restart.log')"
-sent="$(sed -n 's/^\([0-9]*\) packets transmitted.*/\1/p' <<<"$summary")"
-got="$(sed -n 's/.* \([0-9]*\) received.*/\1/p' <<<"$summary")"
+res="$(ping_stop a restart)"
+read -r sent got <<<"$res"
 lost=$((sent - got))
-echo "restart: $summary (lost $lost pings = $((lost / 5)) s)"
+echo "restart: $got/$sent (lost $lost pings = $((lost / 5)) s)"
 if [[ "$MODE" == userspace ]]; then
   echo "userspace: the client re-handshakes with the new pod (allowed)"
 else
@@ -222,6 +477,9 @@ if [[ "$MODE" == userspace ]]; then
 fi
 n="$(received b -c 20 -i 0.2 -W 1 10.99.2.1)"
 [[ "$n" == 20 ]] || fail "client b after the restart: lost $((20 - n)) of 20 pings"
+after="$(metrics)"
+summary "demux restart: client a $got/$sent pings, lost $lost; the new pod: sessions $(metric "$after" wg_demux_sessions), handshake responses $(metric "$after" "$RESPONSES")"
+echo_ok after-demux-restart
 
 for g in a b; do
   log "client $g: roam (new source port)"
@@ -232,6 +490,51 @@ for g in a b; do
   echo "tunnel after the roam: ${t}s"
   n="$(received "$g" -c 20 -i 0.2 -W 1 "$(server_of "$g")")"
   [[ "$n" == 20 ]] || fail "client $g after the roam: lost $((20 - n)) of 20 pings"
+  # The server's peer is the demux: it sees the source the demux socket uses towards it (in tc and xdp the kernel's preferred source
+  # on the entry node, which the fast path uses too; in userspace the pod's address), never the client's address.
+  if fast; then
+    src="$(docker exec "$ENTRY_NODE" ip -4 route get "$(k -n "lg-demux-$g" get pod vpn -o jsonpath='{.status.podIP}')" |
+      sed -n 's/.* src \([0-9.]*\).*/\1/p')"
+  else
+    src="$(k -n "$WG_NS" get pod "$(demux_pod)" -o jsonpath='{.status.podIP}')"
+  fi
+  endpoint="$(k -n "lg-demux-$g" exec vpn -- wg show wg0 endpoints | awk '{print $2}')"
+  [[ "$endpoint" == "$src:51820" ]] || fail "server $g sees $endpoint, not the demux's source $src:51820"
+  [[ "$endpoint" != "$(client_ip "$g"):"* ]] || fail "server $g sees the client's address $endpoint"
+  summary "client $g roam: tunnel after ${t}s, ping 20/20, server endpoint $endpoint"
 done
+
+# ct_expiry <addr:port>: the expiry of each of Cilium's conntrack entries from that source on the entry node.
+ct_expiry() {
+  { cilium "$ENTRY_NODE" cilium-dbg bpf ct list global | grep -F " $1 " || true; } | sed -n 's/.* expires=\([0-9]*\).*/\1/p' | sort |
+    paste -sd, -
+}
+if fast; then
+  for g in a b; do
+    log "client $g: Cilium NAT and conntrack"
+    cip="$(client_ip "$g")"
+    re="${cip//./\\.}"
+    nat="$(cilium "$ENTRY_NODE" cilium-dbg bpf nat list | grep -F "$cip:" || true)"
+    [[ -z "$nat" ]] || fail "Cilium holds NAT entries for client $g: $nat"
+    ct="$(cilium "$ENTRY_NODE" cilium-dbg bpf ct list global | grep -F "$cip:" || true)"
+    # The handshakes pass through Cilium's node port (the service lookup and the flow to the demux socket); nothing else may be there.
+    other="$(grep -Ev "^UDP (SVC|OUT) $re:[0-9]+ -> ${ENTRY_IP//./\\.}:($NODE_PORT|51820) " <<<"$ct" || true)"
+    [[ -z "$other" ]] || fail "Cilium conntrack holds more than the handshakes of client $g: $other"
+    # The transport packets of the current tunnel do not touch its conntrack entries (they would push their expiry on).
+    port="$(client "$g" wg show wg0 listen-port)"
+    for try in 1 2; do
+      hs="$(client "$g" wg show wg0 latest-handshakes | awk '{print $2}')"
+      e1="$(ct_expiry "$cip:$port")"
+      n="$(received "$g" -c 20 -i 0.2 -W 1 "$(server_of "$g")")"
+      e2="$(ct_expiry "$cip:$port")"
+      [[ "$e1" == "$e2" ]] && break
+      # A rekey in the window passes through Cilium and moves the expiry: measure again.
+      [[ "$try" == 1 && "$(client "$g" wg show wg0 latest-handshakes | awk '{print $2}')" != "$hs" ]] ||
+        fail "client $g: 20 transport pings ($n received) moved Cilium's conntrack expiry ($e1 -> $e2)"
+    done
+    summary "client $g Cilium state: NAT 0, conntrack $(grep -c . <<<"$ct") handshake entries, untouched by 20 transport pings"
+  done
+fi
+echo_ok end
 
 printf '\nPASS (mode %s)\n' "$MODE"

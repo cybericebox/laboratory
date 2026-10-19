@@ -29,7 +29,7 @@ spec:
   terminationGracePeriodSeconds: 1
   containers:
     - name: wg
-      image: icebox-demux/wg-test:1
+      image: __IMAGE__
       imagePullPolicy: Never
       command:
         - sh
