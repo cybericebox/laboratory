@@ -211,23 +211,11 @@ func devicePodKey(ns, lab, device string) string { return ns + "/" + lab + "/" +
 // groupPodNeed is what a pod of the group requests: the size its spec carries, else the chart's group pod resources; nil for an
 // unknown pod.
 func (s *Scheduler) groupPodNeed(name string, g *laboratoryv1alpha1.LabGroup) corev1.ResourceList {
-	switch name {
-	case names.ComponentVPN:
-		return s.GroupPods.VPNFor(g.Spec.VPN.Size).Requests
-	case names.ComponentGateway:
-		return s.GroupPods.GatewayFor(g.Spec.Gateway.Size).Requests
-	}
-	return nil
+	return s.GroupPods.Requests(name, g)
 }
 
 // groupPodNames are the pods a LabGroup runs itself.
-func groupPodNames(lg *laboratoryv1alpha1.LabGroup) []string {
-	var out []string
-	if !lg.Spec.VPN.Disabled {
-		out = append(out, names.ComponentVPN)
-	}
-	return append(out, names.ComponentGateway)
-}
+func groupPodNames(lg *laboratoryv1alpha1.LabGroup) []string { return grouppods.PodNames(lg) }
 
 // deployAfter parses the deploy-after annotation.
 func deployAfter(obj metav1.Object) []string {

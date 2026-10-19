@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
 )
 
 // Config is the chart's choice (env VPN_CPU, VPN_MEMORY, GATEWAY_CPU, GATEWAY_MEMORY, shared by the operator and
@@ -91,6 +92,36 @@ func sized(size *laboratoryv1alpha1.GroupPodSize) corev1.ResourceRequirements {
 		corev1.ResourceMemory: *resource.NewQuantity(size.MemoryBytes, resource.BinarySI),
 	}
 	return corev1.ResourceRequirements{Requests: l.DeepCopy(), Limits: l}
+}
+
+// PodNames are the pods a LabGroup runs itself: the VPN (unless disabled) and the gateway.
+func PodNames(lg *laboratoryv1alpha1.LabGroup) []string {
+	var out []string
+	if !lg.Spec.VPN.Disabled {
+		out = append(out, names.ComponentVPN)
+	}
+	return append(out, names.ComponentGateway)
+}
+
+// Requests is what the named pod of the group requests (its size, else the chart's default); nil for another name.
+func (c Config) Requests(name string, lg *laboratoryv1alpha1.LabGroup) corev1.ResourceList {
+	switch name {
+	case names.ComponentVPN:
+		return c.VPNFor(lg.Spec.VPN.Size).Requests
+	case names.ComponentGateway:
+		return c.GatewayFor(lg.Spec.Gateway.Size).Requests
+	}
+	return nil
+}
+
+// Need is what the group's own pods request together, as the scheduler counts them.
+func (c Config) Need(lg *laboratoryv1alpha1.LabGroup) Overhead {
+	var o Overhead
+	for _, n := range PodNames(lg) {
+		r := c.Requests(n, lg)
+		o.CPU, o.Memory = o.CPU+r.Cpu().MilliValue(), o.Memory+r.Memory().Value()
+	}
+	return o
 }
 
 // VPNOverhead and GatewayOverhead are the default requests of the VPN and of the gateway pod.

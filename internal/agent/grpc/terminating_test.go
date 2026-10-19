@@ -73,7 +73,9 @@ func newFinalizerHandler(t *testing.T, objs ...runtime.Object) (*Handler, func(r
 			t.Fatalf("release %s/%s: %v", resource, name, err)
 		}
 	}
-	return NewHandler(cs, k8sfake.NewSimpleClientset(), nil), release
+	h := NewHandler(cs, k8sfake.NewSimpleClientset(), nil)
+	h.reservationsOptional = true // these tests are about other rules
+	return h, release
 }
 
 // onlyResult unwraps the answer to a one-item call.

@@ -122,6 +122,9 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 		if err := validateLabels(it.GetLabels()); err != nil {
 			return nil, invalid("item %d (%s): %v", i, describeRef(refs[i]), err)
 		}
+		if err := reservationIDError(it.GetReservationId()); err != nil {
+			return nil, invalid("item %d (%s): %v", i, describeRef(refs[i]), err)
+		}
 		envs[i] = mergeEnvLists(variantEnvList(v), it.GetEnv())
 		if err := validateEnv(envs[i], specDevices(&v.spec)); err != nil {
 			return nil, invalid("item %d (%s): %v", i, describeRef(refs[i]), err)
@@ -135,9 +138,26 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 		return nil, err
 	}
 	resolver := h.newResolver(ctx)
+	fit, err := h.labFitItems(ctx, resolver, items, variants, over)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(items))
+	for i, it := range items {
+		ids[i] = it.GetReservationId()
+	}
+	// held from reading what the reservations hold to the last create, so two calls of this agent cannot both take the rest
+	defer h.lockReservations(ids)()
+	refusals, err := h.reservationRefusals(ctx, tenantOf(ctx), fit)
+	if err != nil {
+		return nil, err
+	}
 	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
 		if over[i] != nil {
 			return failedResult(refs[i], status.Error(codes.ResourceExhausted, over[i].Error()))
+		}
+		if refusals[i] != nil {
+			return failedResult(refs[i], refusals[i])
 		}
 		state, err := h.createLab(ctx, resolver, items[i], variants[items[i].GetVariantId()], envs[i], in.GetLabels())
 		if err != nil {
@@ -145,6 +165,37 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 		}
 		return result(refs[i], state)
 	})}, nil
+}
+
+// labFitItems are the items of a CreateLabs call as the reservation rules see them. An item over the limits is refused
+// already and takes no room; an item whose lab exists (in a group that is ready) is idempotent.
+func (h *Handler) labFitItems(ctx context.Context, resolver *groupResolver, items []*protobuf.LabItem, variants map[string]*labVariant, over []error) ([]fitItem, error) {
+	fit := make([]fitItem, len(items))
+	existing := map[string]map[string]bool{} // group -> CR names of its labs
+	for i, it := range items {
+		fit[i] = fitItem{reservation: it.GetReservationId(), need: labNeed(&variants[it.GetVariantId()].spec, h.features.DeviceDefaults),
+			deployGroup: names.DeployKey(it.GetDeployGroup()), skip: over[i] != nil}
+		labs, ok := existing[it.GetLabGroup()]
+		if !ok {
+			labs = map[string]bool{}
+			existing[it.GetLabGroup()] = labs
+			g, err := resolver.get(ctx, it.GetLabGroup())
+			if err != nil && !apierrors.IsNotFound(err) {
+				return nil, err
+			}
+			if err == nil && g.Status.Namespace != "" {
+				list, err := h.cs.LaboratoryV1alpha1().Labs(g.Status.Namespace).List(ctx, metav1.ListOptions{})
+				if err != nil {
+					return nil, err
+				}
+				for j := range list.Items {
+					labs[list.Items[j].Name] = true
+				}
+			}
+		}
+		fit[i].exists = labs[crName(it.GetName())]
+	}
+	return fit, nil
 }
 
 func variantEnvList(v *labVariant) []*protobuf.DeviceEnv {
@@ -194,6 +245,10 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 	// Only the agent names the pull Secret, from the credentials sent with the deploy.
 	lab.Spec.ImagePullSecret = labRegistrySecretName(name, v.creds)
 	lab.Labels, lab.Annotations = dep.stamp(stampTenant(copyLabels(want), tenantOf(ctx)), stampID(it.GetName()))
+	if id := it.GetReservationId(); id != "" {
+		lab.Labels[names.LabelReservation] = crName(id)
+		want = mergeItemLabels(want, map[string]string{names.LabelReservation: crName(id)})
+	}
 	hash := specHash(&lab.Spec, dep)
 	lab.Annotations[names.AnnotationSpecHash] = hash
 	if err := h.preflightLabCreate(ctx, liveGroup, ns, it.GetName(), hash); err != nil {
@@ -277,6 +332,9 @@ func (h *Handler) existingLab(ctx context.Context, ns, id, hash string, want map
 		if err := validateExistingLab(cur, id, hash); err != nil {
 			return err
 		}
+		if err := existingReservationLabel(kindLab, id, cur.Labels, want[names.LabelReservation]); err != nil {
+			return err
+		}
 		labels, changed := mergeLabels(cur.Labels, want)
 		if !changed {
 			return nil
@@ -348,6 +406,8 @@ func (h *Handler) ListLabs(ctx context.Context, in *protobuf.ListRequest) (*prot
 type labPlan struct {
 	labels labelPlan
 	env    deviceVars
+	// reservation: attach to this reservation id (see attachReservation)
+	reservation *string
 }
 
 func planLabChanges(common, item *protobuf.LabChanges) (labPlan, error) {
@@ -357,6 +417,18 @@ func planLabChanges(common, item *protobuf.LabChanges) (labPlan, error) {
 		return p, err
 	}
 	p.env = mergeEnvLists(common.GetEnv(), item.GetEnv())
+	var c, i *string
+	if common != nil {
+		c = common.ReservationId
+	}
+	if item != nil {
+		i = item.ReservationId
+	}
+	if p.reservation = pickString(c, i); p.reservation != nil {
+		if err := names.ValidateID(*p.reservation); err != nil {
+			return p, fmt.Errorf("reservation_id: %w", err)
+		}
+	}
 	return p, validateEnv(p.env, nil)
 }
 
@@ -436,6 +508,16 @@ func (h *Handler) updateLab(ctx context.Context, resolver *groupResolver, ref *p
 			}
 		}
 		labels, changed := p.labels.apply(cur.Labels)
+		if p.reservation != nil {
+			label, err := h.attachReservation(ctx, kindLab, ref.GetName(), cur.Labels, *p.reservation)
+			if err != nil {
+				return err
+			}
+			if label != "" {
+				// only the label: the spec, and so the Devices and pods, stay as they are
+				labels, changed = mergeItemLabels(labels, map[string]string{names.LabelReservation: label}), true
+			}
+		}
 		if !changed {
 			return nil
 		}
