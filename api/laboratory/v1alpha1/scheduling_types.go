@@ -16,7 +16,7 @@ import (
 type PodScheduleState string
 
 const (
-	// PodQueued: waits for the scheduler to dispatch it; no workload exists yet.
+	// PodQueued: waits for the scheduler to dispatch it; no workload exists yet (a withdrawn pod's workload is being deleted).
 	PodQueued PodScheduleState = "Queued"
 	// PodStarting: dispatched; the workload is created and not Ready yet. It holds a slot.
 	PodStarting PodScheduleState = "Starting"
@@ -57,6 +57,12 @@ const (
 	// WaitReservationFull: the pods of the group do not fit what is left of the Reservation (an invalid Reservation reserves
 	// nothing).
 	WaitReservationFull = "ReservationFull"
+	// WaitNodeStarting: every pod of the object is sent, and some of them have no node yet (a node may be coming); the message
+	// says how many and since when.
+	WaitNodeStarting = "NodeStarting"
+	// WaitWithdrawn: not every pod of the group got a node within the node timeout, so the whole group was withdrawn (its pods
+	// deleted) and waits until its retry time; the message has the attempt and the retry time.
+	WaitWithdrawn = "Withdrawn"
 )
 
 // PodSchedule is the scheduling state of one pod: a Device, or the VPN or
@@ -71,6 +77,11 @@ type PodSchedule struct {
 	StartedAt *metav1.Time `json:"startedAt,omitempty"`
 	// Failure explains a Failed pod; the warning clears when the pod becomes Ready.
 	Failure *PodFailure `json:"failure,omitempty"`
+	// Withdrawals counts the withdrawals of the pod's group in a row (not every pod got a node within the node timeout); it
+	// clears when the pod becomes Ready.
+	Withdrawals int32 `json:"withdrawals,omitempty"`
+	// RetryAfter is when a withdrawn group may be dispatched again (the backoff of its last withdrawal).
+	RetryAfter *metav1.Time `json:"retryAfter,omitempty"`
 }
 
 // PodFailure is the warning of a pod that did not start.

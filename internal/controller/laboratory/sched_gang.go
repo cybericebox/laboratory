@@ -112,6 +112,24 @@ func (g *gang) started() bool {
 	return out && waiting
 }
 
+// retry says the gang was withdrawn and waits for its retry time: the latest retry time of its waiting pods while it is after
+// now, with the attempt of the withdrawal.
+func (g *gang) retry(now time.Time) (at time.Time, attempt int32, wait bool) {
+	for _, o := range g.objs {
+		for _, p := range o.pods {
+			if p.dispatched() || !p.retryAfter.After(now) {
+				continue
+			}
+			wait = true
+			if p.retryAfter.After(at) {
+				at = p.retryAfter
+			}
+			attempt = max(attempt, p.withdrawals)
+		}
+	}
+	return at, attempt, wait
+}
+
 // waitingSince is when the gang started waiting in this queue episode: the earliest time one of its waiting pods entered the
 // queue (a lab resumed after a stop is queued again then), at the earliest its arrival; the arrival when no waiting pod has a
 // queue time.
@@ -169,6 +187,8 @@ type fairness struct {
 	usage map[string]reservationUsage
 	now   time.Time
 	aging time.Duration
+	// nodeTimeout is the node timeout of the gang commit, for the message of a withdrawn gang.
+	nodeTimeout time.Duration
 }
 
 // byAge orders gangs by arrival, then tenant, then key.

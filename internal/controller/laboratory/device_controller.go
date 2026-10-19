@@ -250,6 +250,13 @@ func (r *DeviceReconciler) reconcileWorkload(ctx context.Context, device *labora
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	if r.withdrawnByScheduler(device) {
+		// The group was withdrawn: its pod goes, and the scheduler sends it again later.
+		if err := r.Delete(ctx, &dep, client.PropagationPolicy(metav1.DeletePropagationBackground)); client.IgnoreNotFound(err) != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, r.publishDevicePlacement(ctx, device, "", "", "", false)
+	}
 	// Stop retains a zero-replica Deployment. Its existence cannot bypass the
 	// new Start queue: only a dispatched current scheduling record may resume it.
 	if !suspended && dep.Spec.Replicas != nil && *dep.Spec.Replicas == 0 && device.Spec.LabRef != "" {

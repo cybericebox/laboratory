@@ -145,6 +145,12 @@ type Scheduler struct {
 	orphanCRD types.UID
 	// usedAtPruned says the server dropped status.usedAt (an old Reservation CRD); logged once.
 	usedAtPruned bool
+	// lastWithdrawal is when a gang was last withdrawn for the node timeout and breakerNodes the lab nodes schedulable then:
+	// the breaker (breakerOn). In memory only.
+	lastWithdrawal time.Time
+	breakerNodes   map[string]bool
+	// nodeStartingTold holds the objects with pods waiting for a node that got their NodeStarting event.
+	nodeStartingTold map[types.UID]bool
 }
 
 // +kubebuilder:rbac:groups="",resources=nodes;pods,verbs=get;list;watch
@@ -440,17 +446,19 @@ func (s *Scheduler) observe(ctx context.Context, snap *clusterView, now time.Tim
 		switch {
 		case (cur.State == laboratoryv1alpha1.PodStarting || cur.State == laboratoryv1alpha1.PodFailed) && d.Status.Ready:
 			ps.State, ps.Failure, ps.StartedAt = laboratoryv1alpha1.PodStarted, nil, &stamp
+			ps.Withdrawals, ps.RetryAfter = 0, nil
 			changed = true
 		case cur.State == laboratoryv1alpha1.PodStarting:
+			pods, workload := snap.podsOf[key], snap.workloads[d.Namespace+"/"+workloadName(d)]
+			if nodeless(pods) {
+				break // the gang commit decides at the node timeout
+			}
 			var extra int32
 			if d.Status.State != nil && d.Status.State.Incarnation > 1 {
 				extra = d.Status.State.Incarnation - 1
 			}
-			dispatched := now
-			if cur.DispatchedAt != nil {
-				dispatched = cur.DispatchedAt.Time
-			}
-			if failed, f := startupVerdict(now, dispatched, snap.podsOf[key], snap.workloads[d.Namespace+"/"+workloadName(d)], extra, cfg.StartupTimeout, cfg.RestartThreshold); failed {
+			dispatched := startupFrom(now, cur.DispatchedAt, pods)
+			if failed, f := startupVerdict(now, dispatched, pods, workload, extra, cfg.StartupTimeout, cfg.RestartThreshold); failed {
 				ps.State = laboratoryv1alpha1.PodFailed
 				ps.Failure = &f
 				changed = true
@@ -485,12 +493,13 @@ func (s *Scheduler) observe(ctx context.Context, snap *clusterView, now time.Tim
 			switch {
 			case ready:
 				ps.State, ps.Failure, ps.StartedAt = laboratoryv1alpha1.PodStarted, nil, &stamp
+				ps.Withdrawals, ps.RetryAfter = 0, nil
 			case ps.State == laboratoryv1alpha1.PodStarting:
-				dispatched := now
-				if ps.DispatchedAt != nil {
-					dispatched = ps.DispatchedAt.Time
+				workload := snap.workloads[laboratoryv1alpha1.LabGroupNamespaceOf(g)+"/"+entry.Name]
+				if nodeless(pods) {
+					continue // the gang commit decides at the node timeout
 				}
-				failed, f := startupVerdict(now, dispatched, pods, snap.workloads[laboratoryv1alpha1.LabGroupNamespaceOf(g)+"/"+entry.Name], 0, cfg.StartupTimeout, cfg.RestartThreshold)
+				failed, f := startupVerdict(now, startupFrom(now, ps.DispatchedAt, pods), pods, workload, 0, cfg.StartupTimeout, cfg.RestartThreshold)
 				if !failed {
 					continue
 				}
@@ -507,6 +516,19 @@ func (s *Scheduler) observe(ctx context.Context, snap *clusterView, now time.Tim
 			}
 		}
 	}
+}
+
+// startupFrom is when the startup timeout of a sent pod starts: when its newest pod got a node, or the dispatch if that was
+// later (or unknown), so the time a pod waited for a node is not counted (the gang commit bounds that wait).
+func startupFrom(now time.Time, dispatchedAt *metav1.Time, pods []*corev1.Pod) time.Time {
+	from := now
+	if dispatchedAt != nil {
+		from = dispatchedAt.Time
+	}
+	if at := scheduledAt(pods); at.After(from) {
+		from = at
+	}
+	return from
 }
 
 // noPodReason says why a dispatched workload has no pod. The Deployment carries the answer: its ReplicaFailure condition holds
@@ -663,9 +685,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 					continue
 				}
 				p.state = e.State
-				if e.QueuedAt != nil {
-					p.queuedAt = e.QueuedAt.Time
-				}
+				p.recordTimes(&e.PodSchedule)
 				if s.recentDispatchPending(key, p.state, now) {
 					p.state = laboratoryv1alpha1.PodStarting
 				}
@@ -675,6 +695,20 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 		out = append(out, o)
 	}
 	return out
+}
+
+// recordTimes copies the times and the withdrawals of the pod's scheduling record.
+func (p *schedPod) recordTimes(ps *laboratoryv1alpha1.PodSchedule) {
+	if ps.QueuedAt != nil {
+		p.queuedAt = ps.QueuedAt.Time
+	}
+	if ps.DispatchedAt != nil {
+		p.dispatchedAt = ps.DispatchedAt.Time
+	}
+	if ps.RetryAfter != nil {
+		p.retryAfter = ps.RetryAfter.Time
+	}
+	p.withdrawals = ps.Withdrawals
 }
 
 // devicePod is the schedPod of a container device of a lab; nil for another type of device, and for a not dispatched pod of
@@ -694,9 +728,7 @@ func (s *Scheduler) devicePod(snap *clusterView, lab *laboratoryv1alpha1.Lab, t 
 		p.ref = d
 		if sc := d.Status.Scheduling; sc != nil {
 			p.state = sc.State
-			if sc.QueuedAt != nil {
-				p.queuedAt = sc.QueuedAt.Time
-			}
+			p.recordTimes(sc)
 			if s.recentDispatchPending(key, p.state, now) {
 				p.state = laboratoryv1alpha1.PodStarting
 			}
@@ -735,6 +767,13 @@ func (s *Scheduler) tick(ctx context.Context) error {
 	}
 	s.observe(ctx, snap, now)
 	objs := s.objects(snap, now)
+	// The gang commit: a gang with a pod that still has no node the node timeout after its last dispatch is withdrawn whole
+	// before the plan, so the plan sees its room, quota and reservation usage free and holds it until its retry time.
+	waiting := nodeWaits(snap, objs)
+	if due := commitDue(objs, waiting, s.nodeTimeout(), now); len(due) > 0 {
+		s.withdrawDue(ctx, snap, due, now)
+		waiting = nodeWaits(snap, objs)
+	}
 
 	flight := 0
 	for _, o := range objs {
@@ -772,7 +811,7 @@ func (s *Scheduler) tick(ctx context.Context) error {
 				continue
 			}
 			q := d.Status.Scheduling.DeepCopy()
-			q.State, q.DispatchedAt, q.Failure = laboratoryv1alpha1.PodStarting, &stamp, nil
+			q.State, q.DispatchedAt, q.Failure, q.RetryAfter = laboratoryv1alpha1.PodStarting, &stamp, nil, nil
 			err = s.setDevice(ctx, d, q)
 		case kindGroupPod:
 			err = s.dispatchGroupPod(ctx, snap, p, stamp)
@@ -809,7 +848,12 @@ func (s *Scheduler) tick(ctx context.Context) error {
 	s.warnOversized(objs, plan.oversized)
 	s.pruneTraced(snap)
 	sf := env.shortfall(plan)
-	s.writeStatuses(ctx, objs, plan, snap, env.fairness().usage, sf, now)
+	s.reportNodeWaits(objs, waiting)
+	capacityBreaker.Set(0)
+	if env.breaker {
+		capacityBreaker.Set(1)
+	}
+	s.writeStatuses(ctx, objs, plan, snap, env.fairness().usage, sf, waiting, stuckGangs(objs, s.nodeTimeout()), now)
 	if sf.known {
 		reservationShortfall.WithLabelValues("cpu").Set(float64(sf.short.cpu) / 1000)
 		reservationShortfall.WithLabelValues("memory").Set(float64(sf.short.mem))
@@ -951,7 +995,7 @@ func (s *Scheduler) dispatchGroupPod(ctx context.Context, snap *clusterView, p *
 				ps = e.PodSchedule
 			}
 		}
-		ps.State, ps.DispatchedAt, ps.Failure = laboratoryv1alpha1.PodStarting, &stamp, nil
+		ps.State, ps.DispatchedAt, ps.Failure, ps.RetryAfter = laboratoryv1alpha1.PodStarting, &stamp, nil, nil
 		return s.setGroupPod(ctx, g, name, ps)
 	}
 	return errors.NewNotFound(schema.GroupResource{Group: laboratoryv1alpha1.SchemeGroupVersion.Group, Resource: "labgroups"}, p.key)
@@ -976,6 +1020,8 @@ type clusterEnv struct {
 	heldPods []corev1.Pod
 	// capacityUnknown: the capacity of this pass cannot be known (what stopped labs hold is unknown); asked once per pass.
 	capacityUnknown bool
+	// breaker: admission uses the nodes that exist only in this pass (Scheduler.breakerOn), known once the capacity is read.
+	breaker bool
 	// stoppedDone says stoppedPods, stoppedHeld and stoppedUnknown hold stoppedReservations of the view (computed once).
 	stoppedDone    bool
 	stoppedPods    []corev1.Pod
@@ -1040,7 +1086,8 @@ func (e *clusterEnv) capacity() *capacitySnapshot {
 		}
 		reserve := nodecap.Reserve{Node: nodecap.Amount{CPU: e.s.nodeReserve().cpu, Memory: e.s.nodeReserve().mem}, Percent: e.s.Config.PlatformReservePercent}
 		count, room := m.Virtual(nodes.Items, dss.Items, e.s.LabNodeSelector, e.s.LabTolerations, reserve, e.s.packingReserve())
-		c.withMaximum(count, room, false)
+		e.breaker = e.s.breakerOn(nodes.Items, e.now)
+		c.withMaximum(count, room, e.breaker)
 	}
 	e.snapshot = &c
 	return e.snapshot
@@ -1151,7 +1198,7 @@ func (e *clusterEnv) fairness() fairness {
 	if e.usage == nil {
 		e.usage = reservationLedger(e.snap.reservations, ledgerPods(e.objs), e.now)
 	}
-	return fairness{usage: e.usage, now: e.now, aging: e.s.Config.Aging}
+	return fairness{usage: e.usage, now: e.now, aging: e.s.Config.Aging, nodeTimeout: e.s.nodeTimeout()}
 }
 
 // stoppedHolds is the room the pods of stopped labs keep on each node: their pods still there and the held placeholders of
@@ -1205,7 +1252,7 @@ func (e *clusterEnv) tenantEverFits(p *schedPod) bool {
 // CapacityShortfall condition of the tenants and the queue place of each object. An object whose numbers changed is written at
 // most once per StatusInterval and at most StatusBudget objects per tick, the reservations and tenants first (they are few),
 // then the objects nearest the head, so a long queue lags by a few ticks instead of flooding the API server.
-func (s *Scheduler) writeStatuses(ctx context.Context, objs []*schedObject, plan schedPlan, snap *clusterView, usage map[string]reservationUsage, sf shortfallReport, now time.Time) {
+func (s *Scheduler) writeStatuses(ctx context.Context, objs []*schedObject, plan schedPlan, snap *clusterView, usage map[string]reservationUsage, sf shortfallReport, nodeWaits map[*schedPod]bool, stuck map[string]string, now time.Time) {
 	logger := log.FromContext(ctx).WithName("scheduler")
 	budget := s.Config.StatusBudget
 	if budget <= 0 {
@@ -1217,7 +1264,7 @@ func (s *Scheduler) writeStatuses(ctx context.Context, objs []*schedObject, plan
 	}
 	seen := map[types.UID]bool{}
 	budget = s.writeReservations(ctx, snap.reservations, usage, now, interval, budget, seen)
-	budget = s.writeTenants(ctx, snap, sf, now, interval, budget, seen)
+	budget = s.writeTenants(ctx, snap, sf, stuck, now, interval, budget, seen)
 	type item struct {
 		o    *schedObject
 		want laboratoryv1alpha1.SchedulingStatus
@@ -1231,6 +1278,9 @@ func (s *Scheduler) writeStatuses(ctx context.Context, objs []*schedObject, plan
 		if waiting {
 			want.Position, want.Length, want.Reason, want.Message, want.Pending = st.Position, st.Length, st.Reason, st.Message, st.Pending
 			pos = st.Position
+		} else if msg, ok := nodeStarting(o, nodeWaits); ok {
+			// everything is sent, and some pods wait for a node
+			want.Reason, want.Message = laboratoryv1alpha1.WaitNodeStarting, msg
 		}
 		var cur *laboratoryv1alpha1.SchedulingStatus
 		var uid types.UID
