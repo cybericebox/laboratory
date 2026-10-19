@@ -547,6 +547,33 @@ spec:
                 items:
                   description: DeviceRef summarises a materialised Device's readiness.
                   properties:
+                    cpuThrottle:
+                      description: CPUThrottle is the device's CPU throttling (see
+                        DeviceStatus.CPUThrottle); absent means none.
+                      properties:
+                        observedAt:
+                          description: ObservedAt is when the node-agent last wrote
+                            the value.
+                          format: date-time
+                          type: string
+                        percent:
+                          description: |-
+                            Percent is throttled periods out of all periods of the window, 0..100, in steps of 10 (a change smaller than a step
+                            is not reported).
+                          format: int32
+                          maximum: 100
+                          minimum: 0
+                          type: integer
+                        windowSeconds:
+                          description: WindowSeconds is the time the percentage covers,
+                            at most five minutes (less right after the pod started).
+                          format: int32
+                          type: integer
+                      required:
+                      - observedAt
+                      - percent
+                      - windowSeconds
+                      type: object
                     failure:
                       description: Failure is the warning of a device pod that did
                         not start in time.

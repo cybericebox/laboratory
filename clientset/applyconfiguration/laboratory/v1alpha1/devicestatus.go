@@ -44,6 +44,9 @@ type DeviceStatusApplyConfiguration struct {
 	State *DeviceStateStatusApplyConfiguration `json:"state,omitempty"`
 	// Scheduling is the pod's place on its way from the scheduler queue to Ready.
 	Scheduling *PodScheduleApplyConfiguration `json:"scheduling,omitempty"`
+	// CPUThrottle is how much the CPU limit holds the device back. The node-agent of the pod's node keeps it; absent means
+	// not throttled (or no data yet).
+	CPUThrottle *DeviceCPUThrottleApplyConfiguration `json:"cpuThrottle,omitempty"`
 }
 
 // DeviceStatusApplyConfiguration constructs a declarative configuration of the DeviceStatus type for use with
@@ -155,5 +158,13 @@ func (b *DeviceStatusApplyConfiguration) WithState(value *DeviceStateStatusApply
 // If called multiple times, the Scheduling field is set to the value of the last call.
 func (b *DeviceStatusApplyConfiguration) WithScheduling(value *PodScheduleApplyConfiguration) *DeviceStatusApplyConfiguration {
 	b.Scheduling = value
+	return b
+}
+
+// WithCPUThrottle sets the CPUThrottle field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the CPUThrottle field is set to the value of the last call.
+func (b *DeviceStatusApplyConfiguration) WithCPUThrottle(value *DeviceCPUThrottleApplyConfiguration) *DeviceStatusApplyConfiguration {
+	b.CPUThrottle = value
 	return b
 }
