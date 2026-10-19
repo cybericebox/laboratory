@@ -1135,6 +1135,23 @@ func TestExceededHeldWhenUsageStale(t *testing.T) {
 		t.Fatal("the groups survived once the usage was counted again")
 	}
 
+	// an old CRD drops status.usedAt: the hold says to apply the chart CRDs
+	f.group("g2", "r", "t1")
+	f.setResources("r", "400m", "2Gi")
+	f.setUsed("r", "500m", "1Gi")
+	f.at(20*time.Minute, "r")
+	r = f.get("r")
+	orig := r.DeepCopy()
+	r.Status.UsedAt = nil
+	if err := f.c.Status().Patch(context.Background(), r, client.MergeFrom(orig)); err != nil {
+		t.Fatal(err)
+	}
+	f.stopped = true
+	_, r = f.at(20*time.Minute+resNotice, "r")
+	if c := exceededCond(r); c == nil || !strings.Contains(c.Message, "CRD is outdated") || !f.groupExists("g2") {
+		t.Fatalf("exceeded condition = %+v, group kept %v", c, f.groupExists("g2"))
+	}
+
 	// the bound: usedAt exactly one bound old is stale, a second younger is fresh
 	r = f.get("r")
 	at := metav1.NewTime(f.now.Add(-time.Minute))

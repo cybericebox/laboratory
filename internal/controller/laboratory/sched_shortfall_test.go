@@ -2,6 +2,7 @@ package laboratory
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -167,9 +168,9 @@ func TestShortfallConditionOnAllTenants(t *testing.T) {
 	}
 }
 
-// The scheduler's patch of the tenant conditions and the agent's write of status.reserved/used (UpdateStatus of the whole
-// status from the copy it listed) never erase each other: each carries the resourceVersion, so the one that comes second on a
-// stale copy conflicts and is done again from a fresh read.
+// The scheduler's patch of the tenant conditions and the agent's patch of status.reserved/used/observedAt (a merge patch of
+// its own fields, as RunTenantStatus sends it) never erase each other: the agent never touches the conditions and needs no
+// version, and the scheduler's patch from a copy older than the agent's write conflicts and is done again from a fresh read.
 func TestTenantStatusWritersCoexist(t *testing.T) {
 	f := shortFixture(t)
 	f.s.lastWrite = map[types.UID]time.Time{}
@@ -180,35 +181,35 @@ func TestTenantStatusWritersCoexist(t *testing.T) {
 		f.now = f.now.Add(time.Second)
 		f.s.writeTenants(ctx, &clusterView{tenants: map[string]*laboratoryv1alpha1.Tenant{"t1": from}}, sf, f.now, time.Nanosecond, 10, map[types.UID]bool{})
 	}
-	agent := func(from *laboratoryv1alpha1.Tenant, cpu string) error {
-		from.Status.Reserved = laboratoryv1alpha1.TenantUsage{CPU: cpu, Memory: "1Gi"}
-		return f.c.Status().Update(ctx, from)
+	agent := func(cpu string) {
+		t.Helper()
+		patch := []byte(`{"status":{"reserved":{"cpu":"` + cpu + `","memory":"1Gi"},"used":{"cpu":null,"memory":null},"observedAt":"2026-10-01T13:00:00Z"}}`)
+		if err := f.c.Status().Patch(ctx, &laboratoryv1alpha1.Tenant{ObjectMeta: metav1.ObjectMeta{Name: "t1"}}, client.RawPatch(types.MergePatchType, patch)); err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	// the agent read before the scheduler wrote: its update conflicts, and the next one keeps the condition
-	stale := f.tenant("t1")
+	// the agent writes after the scheduler: the condition stays
 	write(f.tenant("t1"))
-	if err := agent(stale, "1"); !apierrors.IsConflict(err) {
-		t.Fatalf("the agent's update over a newer status must conflict, got %v", err)
-	}
-	if err := agent(f.tenant("t1"), "1"); err != nil {
-		t.Fatal(err)
-	}
+	agent("1")
 	if got := f.tenant("t1"); shortfallCond(got) == nil || got.Status.Reserved.CPU != "1" {
 		t.Fatalf("status = %+v", got.Status)
 	}
 
 	// the scheduler writes from a copy older than the agent's write: no write, and the agent's numbers stay
-	stale = f.tenant("t1")
-	if err := agent(f.tenant("t1"), "2"); err != nil {
-		t.Fatal(err)
-	}
+	stale := f.tenant("t1")
+	agent("2")
 	sf.short = amount{cpu: 300, mem: mi}
 	write(stale)
 	got := f.tenant("t1")
 	if got.Status.Reserved.CPU != "2" || !strings.Contains(shortfallCond(got).Message, "short of cpu 100m") {
 		t.Fatalf("a stale scheduler write went through: %+v", got.Status)
 	}
+	write(f.tenant("t1"))
+	if !strings.Contains(shortfallCond(f.tenant("t1")).Message, "short of cpu 100m") {
+		t.Fatal("a change of the numbers only was written within the message interval")
+	}
+	f.now = f.now.Add(tenantMessageInterval)
 	write(f.tenant("t1"))
 	got = f.tenant("t1")
 	if got.Status.Reserved.CPU != "2" || !strings.Contains(shortfallCond(got).Message, "short of cpu 300m") {
@@ -345,8 +346,12 @@ func TestEvictNeverTouchesReservedOrOtherTenant(t *testing.T) {
 		Status:     laboratoryv1alpha1.LabGroupStatus{Namespace: "ns-solo"},
 	})
 	f.tick()
-	f.wantStates("e/p1=S u/p1=S u/p2=S w/p1=S x/p1=Q y/p1=S")
-	for _, p := range []string{"e/p1", "u/p1", "u/p2", "y/p1"} {
+	// an empty reservation label names no reservation: never admitted (and never unreserved work)
+	f.wantStates("e/p1=Q u/p1=S u/p2=S w/p1=S x/p1=Q y/p1=S")
+	if st := f.labStatus("e"); st == nil || st.Reason != laboratoryv1alpha1.WaitReservationMissing || !strings.Contains(st.Message, "label is empty") {
+		t.Fatalf("e status = %+v", st)
+	}
+	for _, p := range []string{"u/p1", "u/p2", "y/p1"} {
 		lab, dev, _ := strings.Cut(p, "/")
 		f.running(lab, dev)
 	}
@@ -456,6 +461,11 @@ func TestEvictRechecksUncached(t *testing.T) {
 	}
 	shrunk = false
 	f.tick()
+	if f.lab("u") == nil {
+		t.Fatal("tried again before the retry time")
+	}
+	f.now = f.now.Add(evictRetryAfter)
+	f.tick()
 	if f.lab("u") != nil || f.lab("v") != nil {
 		t.Fatal("not deleted once the server agrees")
 	}
@@ -492,5 +502,185 @@ func TestUsedAtHeartbeat(t *testing.T) {
 	f.tick()
 	if got := f.reservation("r1").Status.UsedAt; !got.Time.Equal(f.now) {
 		t.Fatalf("heartbeat missing: %v at %v", got, f.now)
+	}
+}
+
+// A mark from before a gap never deletes without a full notice in the current shortfall: here the scheduler was off while
+// the shortfall cleared and came back, and a new process finds the mark long past its time.
+func TestEvictFreshNoticeAfterSchedulerOff(t *testing.T) {
+	f := shortFixture(t)
+	unreservedHolding(f)
+	f.tick()
+	old := f.evictAtOf("u")
+	if old == "" {
+		t.Fatal("not marked")
+	}
+	// the scheduler is off for an hour (no passes): the mark stays although the shortfall is gone for a while and returns
+	f.now = f.now.Add(time.Hour)
+	f.s = &Scheduler{Client: f.c, Config: f.s.Config, Defaults: f.s.Defaults, Now: f.s.Now}
+	f.tick()
+	if f.lab("u") == nil || f.lab("v") == nil {
+		t.Fatal("deleted at once on a mark from before the gap")
+	}
+	renewed := f.now.Add(5 * time.Minute).UTC().Format(time.RFC3339)
+	if got := f.evictAtOf("u"); got != renewed {
+		t.Fatalf("evict-at = %q, want the new notice %q (was %q)", got, renewed, old)
+	}
+	f.now = f.now.Add(5*time.Minute - 2*time.Second)
+	f.tick()
+	if f.lab("u") == nil {
+		t.Fatal("deleted before the new notice ran out")
+	}
+	f.tick()
+	if f.lab("u") != nil || f.lab("v") != nil {
+		t.Fatal("not deleted after the new notice")
+	}
+}
+
+// An operator restart in the middle of the notice gives a new full notice too.
+func TestEvictFreshNoticeAfterRestart(t *testing.T) {
+	f := shortFixture(t)
+	unreservedHolding(f)
+	f.tick()
+	first := f.now.Add(5 * time.Minute)
+	f.now = f.now.Add(3 * time.Minute)
+	f.s = &Scheduler{Client: f.c, Config: f.s.Config, Defaults: f.s.Defaults, Now: f.s.Now}
+	f.tick()
+	if got, want := f.evictAtOf("u"), f.now.Add(5*time.Minute).UTC().Format(time.RFC3339); got != want {
+		t.Fatalf("evict-at = %q, want %q", got, want)
+	}
+	f.now = first.Add(time.Second)
+	f.tick()
+	if f.lab("u") == nil {
+		t.Fatal("deleted at the old time after a restart")
+	}
+}
+
+// Passes without a known verdict (here the node list fails) break the observation: the first known pass after them, past the
+// mark's time, gives a new notice instead of deleting.
+func TestEvictFreshNoticeAfterUnknownPasses(t *testing.T) {
+	f := shortFixture(t)
+	unreservedHolding(f)
+	f.tick()
+	fail := true
+	healthy := f.s.Client
+	f.s.Client = interceptor.NewClient(f.c.(client.WithWatch), interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*corev1.NodeList); ok && fail {
+				return apierrors.NewServiceUnavailable("nodes")
+			}
+			return c.List(ctx, list, opts...)
+		},
+	})
+	for range 3 {
+		f.now = f.now.Add(2 * time.Minute)
+		_ = f.s.tick(context.Background()) // the pass fails at the capacity
+	}
+	fail = false
+	f.s.Client = healthy
+	f.tick()
+	if f.lab("u") == nil {
+		t.Fatal("deleted on the first known pass after unknown ones")
+	}
+	if got, want := f.evictAtOf("u"), f.now.Add(5*time.Minute).UTC().Format(time.RFC3339); got != want {
+		t.Fatalf("evict-at = %q, want %q", got, want)
+	}
+}
+
+// The counterfactual removes only what the cleanup would take: the VPN/gateway room of a LabGroup that is kept (its namespace
+// holds a reserved lab) never makes its tenant a blocker, so the tenant's lab whose room cannot help is not marked.
+func TestKeptGroupRoomNeverMakesABlocker(t *testing.T) {
+	f := shortFixture(t)
+	ctx := context.Background()
+	f.create(node("n2", "1", "100Mi"))
+	f.addReservation("rd", "default", "100m", "100Mi")
+	f.addLab("u", "", nil, "p1")
+	f.addLab("x", "", nil, "p1")
+	f.labUnder("x", "rd", "default")
+	f.create(&laboratoryv1alpha1.LabGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "team", UID: "uid-team", CreationTimestamp: metav1.NewTime(planEpoch)},
+		Status:     laboratoryv1alpha1.LabGroupStatus{Namespace: "ns-x"},
+	})
+	f.tick()
+	f.wantStates("u/p1=S x/p1=S")
+	f.runningOn("u", "p1", "n2", "500m", "0")
+	f.runningOn("x", "p1", "n2", "0", "100Mi")
+	f.createPlain(&corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "gateway-1", Namespace: "ns-x", Labels: map[string]string{names.LabelComponent: names.ComponentGateway}},
+		Spec: corev1.PodSpec{NodeName: "n1", Containers: []corev1.Container{{Name: "gateway", Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("500m"), corev1.ResourceMemory: resource.MustParse("500Mi")}}}}},
+	})
+	f.addReservation("r1", "t1", "900m", "900Mi")
+	f.tick()
+	if c := shortfallCond(f.tenant("t1")); c == nil || c.Status != metav1.ConditionTrue {
+		t.Fatalf("no shortfall: %+v", c)
+	}
+	if got := f.evictAtOf("u"); got != "" {
+		t.Fatalf("u was marked for room only the kept group holds: %q", got)
+	}
+	var g laboratoryv1alpha1.LabGroup
+	if err := f.c.Get(ctx, types.NamespacedName{Name: "team"}, &g); err != nil || g.Annotations[names.AnnotationEvictAt] != "" {
+		t.Fatalf("the kept group: %v %+v", err, g.Annotations)
+	}
+}
+
+// The deletion carries the resourceVersion read by the live check: an object adopted by a reservation between that read and
+// the Delete is kept.
+func TestEvictDeleteKeepsAnObjectChangedSinceTheCheck(t *testing.T) {
+	f := shortFixture(t)
+	unreservedHolding(f)
+	f.tick()
+	f.s.Client = interceptor.NewClient(f.c.(client.WithWatch), interceptor.Funcs{
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			if obj.GetName() == "u" {
+				f.labUnder("u", "r1", "t1") // the backend adopts the lab just now
+			}
+			return c.Delete(ctx, obj, opts...)
+		},
+	})
+	f.now = f.now.Add(5 * time.Minute)
+	f.tick()
+	if f.lab("u") == nil {
+		t.Fatal("an object changed after the live check was deleted")
+	}
+	if f.lab("v") != nil {
+		t.Fatal("v should go")
+	}
+}
+
+// Heartbeats have a budget of their own (the oldest usedAt first) and leave the status budget to the queue.
+func TestHeartbeatsHaveTheirOwnBudget(t *testing.T) {
+	cfg := schedCfg()
+	cfg.StatusInterval = 10 * time.Second
+	cfg.StatusBudget = 1
+	f := newSchedFixture(t, cfg)
+	ctx := context.Background()
+	for i := range heartbeatBudget + 5 {
+		name := fmt.Sprintf("r%02d", i)
+		f.addReservation(name, "t1", "1", "1Gi")
+		r := f.reservation(name)
+		at := metav1.NewTime(f.now.Add(-time.Hour - time.Duration(i)*time.Second)) // r14 the oldest
+		r.Status.Used = corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("0"), corev1.ResourceMemory: resource.MustParse("0")}
+		r.Status.UsedAt = &at
+		if err := f.c.Status().Update(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.addLab("a", "", nil, "p1")
+	f.tick()
+	fresh := 0
+	for i := range heartbeatBudget + 5 {
+		if f.reservation(fmt.Sprintf("r%02d", i)).Status.UsedAt.Time.Equal(f.now) {
+			fresh++
+			if i < 5 {
+				t.Fatalf("r%02d is not among the oldest", i)
+			}
+		}
+	}
+	if fresh != heartbeatBudget {
+		t.Fatalf("%d heartbeats, want %d", fresh, heartbeatBudget)
+	}
+	if f.labStatus("a") == nil {
+		t.Fatal("the heartbeats took the status budget of the queue")
 	}
 }

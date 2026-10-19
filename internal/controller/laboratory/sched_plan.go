@@ -70,8 +70,11 @@ type schedObject struct {
 	images  []string
 	// prepTenant is the tenant whose registry credentials pull the images (none: anonymous).
 	prepTenant string
-	// reservation is the Reservation the object runs under (its reservation label); empty: unreserved.
+	// reservation is the Reservation the object runs under (its reservation label); empty: unreserved, unless labelled.
 	reservation string
+	// labelled says the object carries the reservation label; with an empty reservation the label names none, which is
+	// invalid: the object's gang is refused with ReservationMissing (gangReservation).
+	labelled bool
 	// ref is the scheduler's handle on the Lab or LabGroup (opaque to the plan).
 	ref any
 }
@@ -771,6 +774,8 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		if why := res.gate(gg, total); why != "" && !held[gg] {
 			msg := ""
 			switch {
+			case gg.emptyReservation():
+				msg = "the reservation label is empty: it names no reservation"
 			case gg.mixedReservation:
 				msg = "objects of the group belong to different reservations"
 			case why == laboratoryv1alpha1.WaitReservationMissing:

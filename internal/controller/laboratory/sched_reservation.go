@@ -59,8 +59,12 @@ func reservationActive(r *laboratoryv1alpha1.Reservation, now time.Time) bool {
 // gangReservation is the reservation of a gang: the label all its objects carry (empty: unreserved). A gang is under one
 // reservation or none: when its objects disagree (two labels, or a label on some objects only) mixed is true, and the gang is
 // refused with ReservationMissing and takes no withheld room; nothing new of it is counted (ledgerPods).
+// An object whose label is empty names no reservation: its gang counts as mixed too (refused, never unreserved work).
 func gangReservation(objs []*schedObject) (name string, mixed bool) {
 	for i, o := range objs {
+		if o.labelled && o.reservation == "" {
+			return "", true
+		}
 		if i == 0 {
 			name = o.reservation
 		} else if o.reservation != name {

@@ -112,6 +112,13 @@ type Scheduler struct {
 	lastWrite map[types.UID]time.Time
 	// noReservations says the last list of Reservations found no such kind (the warning is logged once).
 	noReservations bool
+	// evictSeen is, for every marked target of the last pass with a known verdict, when this process first saw it so
+	// (evictUnreserved); a pass without one leaves it empty, so the next marks get a new notice.
+	evictSeen map[types.UID]time.Time
+	// evictRetry is when a due object whose deletion was refused or failed is tried again.
+	evictRetry map[types.UID]time.Time
+	// usedAtPruned says the server dropped status.usedAt (an old Reservation CRD); logged once.
+	usedAtPruned bool
 }
 
 // +kubebuilder:rbac:groups="",resources=nodes;pods,verbs=get;list;watch
@@ -136,6 +143,8 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	}
 	t := time.NewTicker(tick)
 	defer t.Stop()
+	// a replica that is no longer the leader reports no shortfall
+	defer reservationShortfall.Reset()
 	for {
 		select {
 		case <-ctx.Done():
@@ -577,7 +586,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 			after: deployAfter(lab), arrival: lab.CreationTimestamp.Time, priority: deployPriority(lab), ref: lab,
 		}
 		o.prepTenant = names.TenantOf(lab.Labels)
-		o.reservation, _ = names.ReservationOf(lab.Labels)
+		o.reservation, o.labelled = names.ReservationOf(lab.Labels)
 		switch {
 		case lab.Spec.ImagePullSecret != "":
 			// A lab with registry credentials of its own is not prepulled: the node-agents pull
@@ -621,7 +630,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 			id: "group/" + g.Name, group: g.Labels[names.LabelDeployGroup],
 			after: deployAfter(g), arrival: g.CreationTimestamp.Time, priority: deployPriority(g), ref: g,
 		}
-		o.reservation, _ = names.ReservationOf(g.Labels)
+		o.reservation, o.labelled = names.ReservationOf(g.Labels)
 		if o.group != "" {
 			o.prepTenant = names.TenantOf(g.Labels)
 			o.prepKey, o.images = prepClass(o.prepTenant, "g/"+o.group), groupImages(o.group)
@@ -661,6 +670,9 @@ func (s *Scheduler) tick(ctx context.Context) error {
 		s.lastWrite = map[types.UID]time.Time{}
 	}
 	now := s.now()
+	// Only a pass with a known capacity verdict carries the eviction record on (evictUnreserved).
+	evictSeen := s.evictSeen
+	s.evictSeen = nil
 	// An expired dispatch no longer affects scheduling, even if its object was
 	// deleted and never appears in the cache again. Prepared history is separate.
 	for key, at := range s.recent {
@@ -749,7 +761,7 @@ func (s *Scheduler) tick(ctx context.Context) error {
 	if sf.known {
 		reservationShortfall.WithLabelValues("cpu").Set(float64(sf.short.cpu) / 1000)
 		reservationShortfall.WithLabelValues("memory").Set(float64(sf.short.mem))
-		s.evictUnreserved(ctx, snap, sf.blockers, now)
+		s.evictUnreserved(ctx, snap, sf.blockers, evictSeen, now)
 	}
 	return nil
 }
@@ -811,6 +823,8 @@ type clusterEnv struct {
 	usage map[string]reservationUsage
 	// live: the view was read past the cache to check an eviction; the plan is a dry run (no prepull is asked).
 	live bool
+	// heldPods are the placeholders of the pods of stopped labs that are gone, as the capacity snapshot counts them.
+	heldPods []corev1.Pod
 }
 
 func (e *clusterEnv) prepared(o *schedObject) bool {
@@ -849,6 +863,7 @@ func (e *clusterEnv) capacity() *capacitySnapshot {
 		pods = append(pods, *p)
 	}
 	pods = append(pods, heldPods...)
+	e.heldPods = heldPods
 	c := snapshotCapacity(nodes.Items, pods, e.s.LabNodeSelector, e.s.LabTolerations, e.s.nodeReserve(), e.s.Config.PlatformReservePercent, e.s.packingReserve())
 	e.snapshot = &c
 	return e.snapshot
@@ -1093,29 +1108,18 @@ func (s *Scheduler) writeStatuses(ctx context.Context, objs []*schedObject, plan
 	}
 }
 
-// writeReservations publishes what each Reservation uses (status.used, status.groups) when it changed, and status.usedAt, the
-// time it was counted: also unchanged usage of a reservation that has not ended is written again once usedAt is half the
-// freshness bound old (usageHeartbeat), so the Exceeded deletion knows the usage is current. All within the per-object
-// interval and the budget of the tick; it returns the budget left and marks the reservations seen.
+// heartbeatBudget is the most status.usedAt heartbeats (writes of unchanged usage) per tick: a budget of their own, so they
+// never take the queue status's, and the oldest go first.
+const heartbeatBudget = 10
+
+// writeReservations publishes what each Reservation uses (status.used, status.groups) when it changed, with status.usedAt,
+// the time it was counted, within the per-object interval and the budget of the tick; it returns the budget left and marks
+// the reservations seen. The unchanged usage of an open reservation is written again once usedAt is half the freshness bound
+// old (usageHeartbeat), so the Exceeded deletion knows the usage is current: at most heartbeatBudget a tick, the oldest
+// usedAt first, outside the budget.
 func (s *Scheduler) writeReservations(ctx context.Context, reservations []laboratoryv1alpha1.Reservation, usage map[string]reservationUsage, now time.Time, interval time.Duration, budget int, seen map[types.UID]bool) int {
 	logger := log.FromContext(ctx).WithName("scheduler")
-	for i := range reservations {
-		r := &reservations[i]
-		seen[r.UID] = true
-		u := usage[r.Name]
-		cur := r.Status
-		same := cur.Used != nil && cur.Used.Cpu().MilliValue() == u.used.cpu && cur.Used.Memory().Value() == u.used.mem && cur.Groups == u.groups
-		beat := r.DeletionTimestamp == nil && cur.Phase != laboratoryv1alpha1.ReservationPhaseEnded &&
-			(cur.UsedAt == nil || now.Sub(cur.UsedAt.Time) >= usageHeartbeat(interval))
-		if same && !beat {
-			continue
-		}
-		if t, ok := s.lastWrite[r.UID]; ok && now.Sub(t) < interval {
-			continue
-		}
-		if budget <= 0 {
-			continue
-		}
+	write := func(r *laboratoryv1alpha1.Reservation, u reservationUsage) bool {
 		orig := r.DeepCopy()
 		r.Status.Used = corev1.ResourceList{
 			corev1.ResourceCPU:    *resource.NewMilliQuantity(u.used.cpu, resource.DecimalSI),
@@ -1128,10 +1132,44 @@ func (s *Scheduler) writeReservations(ctx context.Context, reservations []labora
 			if !errors.IsNotFound(err) {
 				logger.Error(err, "write reservation usage", "reservation", r.Name)
 			}
-			continue
+			return false
+		}
+		if r.Status.UsedAt == nil && !s.usedAtPruned {
+			// the answer of the server lost the field: its CRD is older than the operator
+			logger.Info("the Reservation CRD prunes status.usedAt: apply the chart CRDs (the Exceeded deletion waits until then)")
+			s.usedAtPruned = true
 		}
 		s.lastWrite[r.UID] = now
-		budget--
+		return true
+	}
+	var beats []*laboratoryv1alpha1.Reservation
+	for i := range reservations {
+		r := &reservations[i]
+		seen[r.UID] = true
+		u := usage[r.Name]
+		cur := r.Status
+		if t, ok := s.lastWrite[r.UID]; ok && now.Sub(t) < interval {
+			continue
+		}
+		if cur.Used != nil && cur.Used.Cpu().MilliValue() == u.used.cpu && cur.Used.Memory().Value() == u.used.mem && cur.Groups == u.groups {
+			if reservationActive(r, now) && (cur.UsedAt == nil || now.Sub(cur.UsedAt.Time) >= usageHeartbeat(interval)) {
+				beats = append(beats, r)
+			}
+			continue
+		}
+		if budget > 0 && write(r, u) {
+			budget--
+		}
+	}
+	sort.SliceStable(beats, func(i, j int) bool {
+		a, b := beats[i].Status.UsedAt, beats[j].Status.UsedAt
+		return a == nil && b != nil || a != nil && b != nil && a.Before(b)
+	})
+	for i, r := range beats {
+		if i >= heartbeatBudget {
+			break
+		}
+		write(r, usage[r.Name])
 	}
 	return budget
 }
