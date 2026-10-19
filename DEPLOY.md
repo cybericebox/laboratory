@@ -375,11 +375,12 @@ stays ended (an admin who resets the status by hand while a tenant of that name 
 `WithinAmount` says whether `status.used` fits `spec.resources`; its message keeps the generation and amount of the last fit
 (`last fit: generation=G cpu=Cm memory=M`). When the backend made the reservation smaller than what runs (a newer generation,
 and the amount lower than at the last fit in a resource that is over), it gets `Exceeded=True` with the deletion time; still
-so one notice later (at least one minute, checked on the API server), the groups created before that notice are deleted
-once, the reservation stays open and `Exceeded` turns False (`GroupsDeleted`); the same generation never deletes again.
-Raising `spec.resources` or a usage back within it calls it off. Usage over the amount for any other reason (device defaults
-changed, a Lab edited, a label moved: the scheduler recounts what runs), or with an `Invalid` spec, only sets `OverAmount=True`
-and never deletes. With `scheduler.enabled=false` the usage conditions are off.
+so one notice later (at least one minute, checked on the API server), the groups created more than 10 s before that notice
+are deleted once, the reservation stays open, `Exceeded` turns False (`GroupsDeleted`) and the current amount becomes the
+new baseline, so only a further shrink can delete again. A raise that brings the usage within the amount, or the usage
+dropping within it, cancels it (a raise that is still short keeps the notice). Usage over the amount for any other reason
+(device defaults changed, a Lab edited, a label moved: the scheduler recounts what runs; also usage that was already over the
+last fitting amount before a shrink), or with an `Invalid` spec, only sets `OverAmount=True` and never deletes. With `scheduler.enabled=false` the usage conditions are off.
 An ended reservation is deleted a day after its end. Resources that reserve nothing get the condition `Invalid=True`; the phase
 still follows the clock.
 

@@ -16,7 +16,8 @@ import (
 // reason (device defaults changed, a Lab edited, a label moved, all recounted by the scheduler) is shown, never acted on.
 
 // fitPrefix starts the record of the last fit in the message of the WithinAmount condition: the generation of the reservation
-// and its amount when status.used was last seen within it. The status has no other field to carry it.
+// and its amount when status.used was last seen within it, or when a shrink was served (its groups deleted: that amount is the
+// new baseline). The status has no other field to carry it.
 const fitPrefix = "last fit: "
 
 // fitRecord is the generation and amount at which the usage was last within the amount.
@@ -60,8 +61,9 @@ func usedOf(res *laboratoryv1alpha1.Reservation) amount {
 type usageView struct {
 	// over says what is over the amount; "" when the usage fits.
 	over string
-	// shrunk: over because the backend made the amount smaller since the last fit (a newer generation, and the amount went
-	// down in a resource that is over). Never for an invalid reservation (its spec is wrong, it was not made smaller).
+	// shrunk: over because the backend made the amount smaller since the last fit (a newer generation, and in a resource that
+	// is over the amount went down while the usage still fits the recorded amount: usage over the recorded amount was drift
+	// before the shrink and is never its doing). Never for an invalid reservation (its spec is wrong, it was not made smaller).
 	shrunk bool
 	last   fitRecord
 	known  bool
@@ -76,7 +78,7 @@ func usageOf(res *laboratoryv1alpha1.Reservation) usageView {
 	}
 	v.over = fmt.Sprintf("the groups use cpu %dm and memory %d bytes, more than the reserved cpu %dm and memory %d bytes", u.cpu, u.mem, a.cpu, a.mem)
 	v.shrunk = reservationProblem(res) == "" && v.known && res.Generation > v.last.gen &&
-		((u.cpu > a.cpu && a.cpu < v.last.amt.cpu) || (u.mem > a.mem && a.mem < v.last.amt.mem))
+		((u.cpu > a.cpu && a.cpu < v.last.amt.cpu && u.cpu <= v.last.amt.cpu) || (u.mem > a.mem && a.mem < v.last.amt.mem && u.mem <= v.last.amt.mem))
 	return v
 }
 
@@ -85,6 +87,29 @@ func usageOf(res *laboratoryv1alpha1.Reservation) usageView {
 func groupsDeleted(res *laboratoryv1alpha1.Reservation) bool {
 	c := meta.FindStatusCondition(res.Status.Conditions, laboratoryv1alpha1.ReservationConditionExceeded)
 	return c != nil && c.Status == metav1.ConditionFalse && c.Reason == laboratoryv1alpha1.ReservationReasonGroupsDeleted && c.ObservedGeneration == res.Generation
+}
+
+// armedExceeded is the Exceeded condition when it is armed by this rule (True, AmountReduced); an older True one (another
+// reason) is not: its time is not a notice of this rule.
+func armedExceeded(res *laboratoryv1alpha1.Reservation) *metav1.Condition {
+	c := meta.FindStatusCondition(res.Status.Conditions, laboratoryv1alpha1.ReservationConditionExceeded)
+	if c == nil || c.Status != metav1.ConditionTrue || c.Reason != laboratoryv1alpha1.ReservationReasonAmountReduced {
+		return nil
+	}
+	return c
+}
+
+// servedShrink marks the shrink of the reservation served after its groups were deleted: Exceeded False (GroupsDeleted) and
+// the WithinAmount record moved to the current generation and amount, so the same excess (stale usage, a later unrelated
+// spec change) never arms again; only a further shrink does.
+func servedShrink(res *laboratoryv1alpha1.Reservation, notice metav1.Time, now time.Time) {
+	t := metav1.NewTime(now)
+	meta.SetStatusCondition(&res.Status.Conditions, metav1.Condition{Type: laboratoryv1alpha1.ReservationConditionExceeded, Status: metav1.ConditionFalse,
+		Reason: laboratoryv1alpha1.ReservationReasonGroupsDeleted, ObservedGeneration: res.Generation, LastTransitionTime: t,
+		Message: fmt.Sprintf("the groups created before %s were deleted: the reservation was made smaller than what ran under it", notice.UTC().Format(time.RFC3339))})
+	meta.SetStatusCondition(&res.Status.Conditions, metav1.Condition{Type: laboratoryv1alpha1.ReservationConditionWithinAmount, Status: metav1.ConditionFalse,
+		Reason: "OverAmount", ObservedGeneration: res.Generation, LastTransitionTime: t,
+		Message: "the usage is over the amount; " + fitRecord{gen: res.Generation, amt: reservationAmount(res)}.String()})
 }
 
 // usagePlan is what the usage conditions say in this pass.
@@ -106,7 +131,7 @@ func (r *ReservationReconciler) usagePlan(res *laboratoryv1alpha1.Reservation, t
 	if open && p.v.shrunk && !groupsDeleted(res) {
 		p.armed = true
 		p.due = now.Add(r.lossNotice())
-		if c := meta.FindStatusCondition(res.Status.Conditions, laboratoryv1alpha1.ReservationConditionExceeded); c != nil && c.Status == metav1.ConditionTrue {
+		if c := armedExceeded(res); c != nil {
 			p.due = c.LastTransitionTime.Add(r.lossNotice())
 		}
 	}
@@ -135,6 +160,9 @@ func setUsageConditions(res *laboratoryv1alpha1.Reservation, p usagePlan, set fu
 	set(metav1.Condition{Type: laboratoryv1alpha1.ReservationConditionWithinAmount, Status: metav1.ConditionFalse, Reason: "OverAmount",
 		Message: "the usage is over the amount; " + last})
 	if p.armed {
+		if armedExceeded(res) == nil {
+			drop(laboratoryv1alpha1.ReservationConditionExceeded) // a True one of another reason: the notice starts now
+		}
 		set(metav1.Condition{Type: laboratoryv1alpha1.ReservationConditionExceeded, Status: metav1.ConditionTrue, Reason: laboratoryv1alpha1.ReservationReasonAmountReduced,
 			Message: fmt.Sprintf("the reservation was made smaller than what runs under it: %s; its groups created before this notice are deleted at %s unless the usage or the reservation changes",
 				p.v.over, p.due.UTC().Format(time.RFC3339))})
