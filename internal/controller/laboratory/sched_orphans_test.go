@@ -470,8 +470,8 @@ func TestOversizedGroupWarnedOnce(t *testing.T) {
 		t.Fatalf("part of the group started: %s", f.states())
 	}
 	st := f.labStatus("a")
-	if st == nil || st.Reason != laboratoryv1alpha1.WaitDoesNotFit || !strings.Contains(st.Message, "requests cpu 1200m") ||
-		!strings.Contains(st.Message, "the largest empty one has room for") {
+	if st == nil || st.Reason != laboratoryv1alpha1.WaitDoesNotFit || !strings.HasPrefix(st.Message, "the deploy group g requests cpu 1200m and memory 1200Mi") ||
+		!strings.Contains(st.Message, "the largest empty one has room for cpu ") || strings.Contains(st.Message, "bytes") {
 		t.Fatalf("a status = %+v", st)
 	}
 	if n := len(rec.Events); n != 2 {
@@ -504,5 +504,44 @@ func TestUntracedLabHeldAtMostTheCap(t *testing.T) {
 	}
 	if e := <-rec.Events; !strings.Contains(e, "PodsNotSetUp") {
 		t.Fatalf("event = %q", e)
+	}
+}
+
+// A lab whose Device exists but has no scheduling state yet is in the Device reconciler's queue, not stuck: the window after
+// the lab's trace does not apply to it, only the cap from its creation does.
+func TestDeviceWithoutStateBoundOnlyByTheCap(t *testing.T) {
+	f := newSchedFixture(t, schedCfg())
+	f.addLab("a", "g", nil, "p1")
+	f.bareLab("b", "g", "")
+	b := f.lab("b")
+	traced := false
+	b.Status.ImageCache = &traced
+	if err := f.c.Status().Update(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	f.createPlain(&laboratoryv1alpha1.Device{
+		ObjectMeta: metav1.ObjectMeta{Name: "b-p1", Namespace: "ns-b", UID: "uid-b-p1"},
+		Spec:       laboratoryv1alpha1.DeviceSpec{LabRef: "b", Name: "p1", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "x"},
+	})
+	f.tick()
+	f.now = f.now.Add(10 * time.Minute) // far past the window after the trace
+	f.tick()
+	if got := f.state("a", "p1"); got != laboratoryv1alpha1.PodQueued {
+		t.Fatalf("a/p1 = %s within the cap", got)
+	}
+	f.now = f.now.Add(5 * time.Minute) // 15 minutes after its creation
+	f.tick()
+	if got := f.state("a", "p1"); got != laboratoryv1alpha1.PodStarting {
+		t.Fatalf("a/p1 = %s past the cap", got)
+	}
+}
+
+// A standalone lab too large for the empty lab nodes is named as a lab, not as a deploy group.
+func TestOversizedStandaloneLabNamedALab(t *testing.T) {
+	f := shortFixture(t)
+	f.addLab("big", "", nil, "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10", "p11")
+	f.tick()
+	if st := f.labStatus("big"); st == nil || !strings.HasPrefix(st.Message, "the lab ns-big/big requests cpu 1100m and memory 1100Mi") {
+		t.Fatalf("status = %+v", st)
 	}
 }

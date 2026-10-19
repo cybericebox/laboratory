@@ -14,7 +14,8 @@ import (
 
 // operatorGrants renders every Role and ClusterRole the operator is bound to (its cluster role, the namespaced role that is
 // bound in each group namespace and in the release namespace, the leader-election role, the tenants and images roles) and returns
-// the set "group|resource|verb" they grant.
+// the set they grant: "group|resource|verb" for a rule on every object, "group|resource|verb|name" for a rule limited by
+// resourceNames.
 func operatorGrants(t *testing.T) map[string]bool {
 	t.Helper()
 	out, err := helmTemplate(t, "-s", "templates/operator/clusterrole.yaml", "-s", "templates/operator/clusterrole-namespaced.yaml",
@@ -31,7 +32,12 @@ func operatorGrants(t *testing.T) map[string]bool {
 			for _, g := range r.APIGroups {
 				for _, res := range r.Resources {
 					for _, v := range r.Verbs {
-						granted[g+"|"+res+"|"+v] = true
+						if len(r.ResourceNames) == 0 {
+							granted[g+"|"+res+"|"+v] = true
+						}
+						for _, n := range r.ResourceNames {
+							granted[g+"|"+res+"|"+v+"|"+n] = true
+						}
 					}
 				}
 			}
@@ -40,11 +46,22 @@ func operatorGrants(t *testing.T) map[string]bool {
 	return granted
 }
 
-var markerRE = regexp.MustCompile(`^//\s*\+kubebuilder:rbac:groups=([^,]*),resources=([^,]*),verbs=(\S+)`)
+var markerRE = regexp.MustCompile(`^//\s*\+kubebuilder:rbac:groups=([^,]*),resources=([^,]*)(?:,resourceNames=([^,]*))?,verbs=(\S+)`)
+
+// grants says the roles grant the verb on the resource: on every object, or (name not empty) on that named one.
+func grants(granted map[string]bool, group, res, verb, name string) bool {
+	return granted[group+"|"+res+"|"+verb] || name != "" && granted[group+"|"+res+"|"+verb+"|"+name]
+}
 
 // Every rule of the kubebuilder markers in the controllers (what the code says it needs) is granted by the chart's roles.
 func TestChartRolesCoverTheRBACMarkers(t *testing.T) {
 	granted := operatorGrants(t)
+	named := 0
+	defer func() {
+		if named == 0 {
+			t.Error("no marker with resourceNames was checked: the marker pattern lost them")
+		}
+	}()
 	files, _ := filepath.Glob("../../internal/controller/laboratory/*.go")
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") {
@@ -57,10 +74,17 @@ func TestChartRolesCoverTheRBACMarkers(t *testing.T) {
 				continue
 			}
 			group := strings.Trim(m[1], `"`)
+			resNames := []string{""}
+			if m[3] != "" {
+				resNames = strings.Split(m[3], ";")
+				named++
+			}
 			for _, res := range strings.Split(m[2], ";") {
-				for _, verb := range strings.Split(m[3], ";") {
-					if !granted[group+"|"+res+"|"+verb] {
-						t.Errorf("%s: the marker wants %s %s/%s, no chart role grants it", filepath.Base(f), verb, group, res)
+				for _, verb := range strings.Split(m[4], ";") {
+					for _, name := range resNames {
+						if !grants(granted, group, res, verb, name) {
+							t.Errorf("%s: the marker wants %s %s/%s %s, no chart role grants it", filepath.Base(f), verb, group, res, name)
+						}
 					}
 				}
 			}

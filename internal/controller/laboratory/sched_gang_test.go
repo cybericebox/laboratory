@@ -522,6 +522,7 @@ func TestGangStopsWaitingForAStuckObject(t *testing.T) {
 	at := func(age time.Duration) fairness { return fairness{now: planEpoch.Add(2 * time.Second).Add(age)} }
 	a := obj("lab/a", "g", 1, nil, need(pods("a", "p1"), 100, gi)...)
 	b := obj("lab/b", "g", 2, nil, need(pods("b", "p1:"), 100, gi)...)
+	b.pods[0].missing = true // no Device made
 	// not touched yet: ten minutes later the gang still waits, past unsetMaxWait from its creation it goes on without it
 	wantDispatch(t, planSchedule([]*schedObject{a, b}, 10, false, &fakeEnv{nodes: nodes, empty: nodes, fair: at(10 * time.Minute)}))
 	plan := planSchedule([]*schedObject{a, b}, 10, false, &fakeEnv{nodes: nodes, empty: nodes, fair: at(16 * time.Minute)})
@@ -551,6 +552,7 @@ func TestRemainderReleasesTheRoomOfAStuckObject(t *testing.T) {
 	c := obj("lab/c", "g", 3, nil, need(pods("c", "p1"), 100, gi)...)
 	late := obj("lab/b", "g", 2, nil, need(pods("b", "p1:"), 100, gi)...)
 	late.settleFrom = planEpoch.Add(2 * time.Second)
+	late.pods[0].missing = true
 	free := []nodeRoom{room("n1", 4000, gi)}
 	wantDispatch(t, planSchedule([]*schedObject{run, c, late}, 10, false, &fakeEnv{nodes: free, empty: nodes, fair: at(time.Second)}))
 	wantDispatch(t, planSchedule([]*schedObject{run, c, late}, 10, false, &fakeEnv{nodes: free, empty: nodes, fair: at(unsetSettleWindow)}), "c/p1")
@@ -563,6 +565,7 @@ func TestStuckObjectIsOutWhole(t *testing.T) {
 	a := obj("lab/a", "g", 1, nil, need(pods("a", "p1"), 100, gi)...)
 	b := obj("lab/b", "g", 2, nil, need(pods("b", "p1", "p2:"), 100, gi)...)
 	b.settleFrom = planEpoch
+	b.pods[1].missing = true
 	plan := planSchedule([]*schedObject{a, b}, 10, false, &fakeEnv{nodes: nodes, empty: nodes, fair: fairness{now: planEpoch.Add(unsetSettleWindow)}})
 	wantDispatch(t, plan, "a/p1")
 	if st := plan.status["lab/b"]; st.Pending != 2 || st.Message != "the pods of this object are still not set up: its group goes on without it" {
