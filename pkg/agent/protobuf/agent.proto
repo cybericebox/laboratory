@@ -477,6 +477,11 @@ message PodScheduling {
   int64 dispatched_unix_ms = 3;
   int64 started_unix_ms = 4;
   PodFailure failure = 5;   // set for a failed pod, cleared when it becomes Ready
+  // How often in a row the pod's group was withdrawn: not every pod got a node within the node timeout. 0 after the pod was
+  // Ready.
+  int32 withdrawals = 6;
+  // When a withdrawn group may be sent again; 0 = no wait.
+  int64 retry_after_unix_ms = 7;
 }
 
 // PodFailure explains a pod that did not start: ImagePull | CrashLoop | Unschedulable |
@@ -742,6 +747,12 @@ message CapacityResponse {
   bool has_max_device = 17;
   int64 max_device_cpu_millicores = 18;
   int64 max_device_memory_bytes = 19;
+  // The capacity the lab nodes that exist now give: the same as the quota fields (has_cpu_quota .. memory_quota_bytes) but
+  // without the room the capacity budget still allows for nodes not yet present. Equal to the quota fields when the cluster
+  // has no budget. has_current is false for an older agent.
+  bool has_current = 20;
+  int64 current_cpu_millicores = 21;
+  int64 current_memory_bytes = 22;
 }
 
 message FeaturesResponse {
@@ -880,6 +891,9 @@ message SchedulerFeature {
   bool enabled = 1;
   // The most pods starting at once (0 = no limit).
   int32 max_pods = 2;
+  // The gang commit: when some sent pod of a group has no node this long after the group's last dispatch, the whole group is
+  // withdrawn and queued again (chart capacity.nodeTimeoutSeconds).
+  int32 node_timeout_seconds = 3;
 }
 
 // Hosts the backend shows or hands out.

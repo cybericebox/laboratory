@@ -20,8 +20,11 @@ type roomView struct {
 	// largest is the largest device: per resource the most one lab node gives with nothing on it, net of the packing reserve
 	// too (nodecap.LargestDevice). An upper bound per resource; the operator fails a pod only when no node holds both.
 	largest nodecap.Amount
-	// ok is false when no node is schedulable or the nodes could not be read.
+	// ok is false when no node is schedulable, there is no virtual room, or the nodes could not be read.
 	ok bool
+	// current and currentOK are total and ok without the virtual room of the capacity budget: the nodes that exist now.
+	current   nodecap.Amount
+	currentOK bool
 }
 
 type deviceRoomCache struct {
@@ -55,6 +58,7 @@ func (h *Handler) room(ctx context.Context) roomView {
 		v.total.CPU += f.CPU
 		v.total.Memory += f.Memory
 	}
+	v.current, v.currentOK = v.total, v.ok
 	// The room the budget of the static maximum still allows beyond the autoscaled nodes that exist: the operator admits onto
 	// it (its breaker aside), so the tenants plan against it too. The largest device stays that of the real nodes.
 	if room := h.maximum.Virtual(nodes.Items, pods.Items, h.labSelector, h.labTolerations, nodecap.Reserve{Percent: h.nodeReserve.Percent}, h.packingReserve); room != (nodecap.Amount{}) {
@@ -79,19 +83,30 @@ func (h *Handler) SetPackingReserve(r nodecap.PackingReserve) { h.packingReserve
 // platform plans inside the smaller reported number and never reaches the hard cap in a way that leaves holes.
 func (h *Handler) reported(ctx context.Context, l tenant.Limits) tenant.Limits {
 	v := h.room(ctx)
+	return h.clampToRoom(l, v.total, v.ok)
+}
+
+// reportedCurrent is reported against the nodes that exist now, without the virtual room of the capacity budget.
+func (h *Handler) reportedCurrent(ctx context.Context, l tenant.Limits) tenant.Limits {
+	v := h.room(ctx)
+	return h.clampToRoom(l, v.current, v.currentOK)
+}
+
+// clampToRoom is the quota net of the packing reserve, limited by the room (ok: the room is known).
+func (h *Handler) clampToRoom(l tenant.Limits, room nodecap.Amount, ok bool) tenant.Limits {
 	quotaCPU, quotaMem := h.packingReserve.Apply(l.CPU, l.Memory)
 	apply := func(has bool, quota, real int64) (bool, int64) {
 		switch {
-		case has && v.ok:
+		case has && ok:
 			return true, min(quota, real)
-		case !has && v.ok:
+		case !has && ok:
 			return true, real
 		case !has:
 			return false, 0
 		}
 		return true, quota
 	}
-	l.HasCPU, l.CPU = apply(l.HasCPU, quotaCPU, v.total.CPU)
-	l.HasMemory, l.Memory = apply(l.HasMemory, quotaMem, v.total.Memory)
+	l.HasCPU, l.CPU = apply(l.HasCPU, quotaCPU, room.CPU)
+	l.HasMemory, l.Memory = apply(l.HasMemory, quotaMem, room.Memory)
 	return l
 }

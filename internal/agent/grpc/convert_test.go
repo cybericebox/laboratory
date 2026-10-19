@@ -188,6 +188,10 @@ func TestPodSchedulingToProto(t *testing.T) {
 		p.Failure.Reason != "ImagePull" || p.Failure.Message != "denied" || p.Failure.RestartCount != 2 || p.Failure.AtUnixMs != 1_700_000_000_000 {
 		t.Fatalf("%+v", p)
 	}
+	w := podScheduleToProto(&laboratoryv1alpha1.PodSchedule{State: laboratoryv1alpha1.PodQueued, Withdrawals: 2, RetryAfter: &at})
+	if w.Withdrawals != 2 || w.RetryAfterUnixMs != 1_700_000_000_000 {
+		t.Fatalf("withdrawn: %+v", w)
+	}
 	if podScheduleToProto(nil) != nil || podScheduleToProto(&laboratoryv1alpha1.PodSchedule{}) != nil {
 		t.Fatal("untracked pods have no message")
 	}

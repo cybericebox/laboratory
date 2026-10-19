@@ -168,7 +168,8 @@ func features(cfg *config.Config) (f grpcserver.Features, err error) {
 		StatePersistence: cfg.StatePersistence, Debounce: cfg.State.Debounce, ExcludePaths: cfg.State.ExcludePaths,
 		CacheEnabled: cfg.Cache.Enabled, CacheRegistries: cfg.Cache.Registries,
 		SchedulerEnabled: cfg.Scheduler.Enabled, SchedulerMaxPods: int32(cfg.Scheduler.MaxPods),
-		LabsDomain: cfg.BaseDomain, VPNEndpoint: cfg.PublicVPNEndpoint,
+		NodeTimeoutSeconds: int32(cfg.Scheduler.NodeTimeout / time.Second),
+		LabsDomain:         cfg.BaseDomain, VPNEndpoint: cfg.PublicVPNEndpoint,
 		ProxyAccessTokenMaxTTL: cfg.ProxyAccessTokenMaxTTL, ProxySessionIdleTTL: cfg.ProxySessionIdleTTL, ProxySessionMaxTTL: cfg.ProxySessionMaxTTL,
 	}
 	if f.DeviceProfiles, err = profiles.Enabled(cfg.DeviceProfiles); err != nil {
