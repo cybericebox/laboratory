@@ -248,6 +248,11 @@ spec:
                   key: password
           {{- end }}
           securityContext:
+            {{- if .Values.devices.statePersistence.enabled }}
+            {{- /* The snapshot filter mounts read-only overlays; the runtime's default AppArmor profile has `deny mount` (values.yaml). */}}
+            appArmorProfile:
+              type: Unconfined
+            {{- end }}
             capabilities:
               {{- /* DAC_READ_SEARCH: the snapshot watcher reads writable layers owned by the container's own users. */}}
               add:  [ NET_ADMIN, SYS_ADMIN{{ if .Values.devices.statePersistence.enabled }}, DAC_READ_SEARCH{{ end }} ]

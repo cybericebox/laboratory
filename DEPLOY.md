@@ -1865,7 +1865,19 @@ Requirements on the nodes (nothing has to be installed or configured on the host
 - TCP port 5035 free on `127.0.0.1` of every node (a constant of the images: the relay port of the registry);
 - the node-agent DaemonSet mounts `containerdRoot` read-only and the host cgroup tree, and gets the
   `DAC_READ_SEARCH` capability. Set `containerdRoot` to the containerd root of your distribution (k0s:
-  `/var/lib/k0s/containerd`; stock containerd: `/var/lib/containerd`).
+  `/var/lib/k0s/containerd`; stock containerd: `/var/lib/containerd`);
+- the node-agent container runs with `appArmorProfile: Unconfined`. On nodes with AppArmor (Ubuntu, Debian) containerd
+  otherwise puts every non-privileged container under its default profile `cri-containerd.apparmor.d`, which has
+  `deny mount`; the snapshot filter mounts read-only overlay views of a device's layers, so every snapshot would fail with
+  `failed to mount /tmp/containerd-mount...: permission denied`. The container already has `SYS_ADMIN`, so this adds no
+  capability. Kubernetes 1.30 or newer is needed for the field. On nodes without AppArmor (kind, SELinux distributions) it
+  changes nothing, which is also why kind never shows the failure.
+
+A node-agent that still runs under an enforced `cri-containerd` profile (a chart older than this fix, or a policy that
+overrides the profile) checks it at startup: it logs one error `state persistence is on but snapshots cannot be taken on
+this node` (it reaches the error journal), puts `AppArmor blocks snapshots: ...` on every device it follows, and takes
+no snapshots there (it never freezes the containers for a snapshot that cannot work). The devices keep running; their
+state is not saved until the node-agent restarts under the right profile.
 
 ### How it works
 
@@ -1975,6 +1987,34 @@ Size the volume for the base images plus (devices x `writeQuota`) in the worst c
 not mounted. A device whose snapshot image cannot be pulled stays in `ImagePullBackOff` and its status warning says
 `snapshot image unavailable`; the operator never falls back to the base image on its own (that would lose state
 silently). Fix the registry, or use `ResetDevices` to start it from the base image.
+
+If a device's warning says `AppArmor blocks snapshots` (or `snapshot failed: filter layer: failed to mount ...:
+permission denied`), the node-agent runs under the runtime's default AppArmor profile: see "Enable" above. Check it with
+
+```bash
+kubectl -n laboratory-system exec <node-agent-pod> -c node-agent -- cat /proc/1/attr/current   # must say: unconfined
+```
+
+### Testing it on a real node
+
+kind does not apply AppArmor, so the end-to-end suite cannot catch a profile that blocks the snapshot mounts. Before a
+release that touches the snapshot path, and on every new node image (distribution, kernel, containerd), run this on a
+real lab node of a test cluster with AppArmor on (for example Ubuntu with k0s):
+
+1. Deploy the chart with `devices.statePersistence.enabled: true`. `cat /proc/1/attr/current` in the node-agent
+   container says `unconfined`, and its log has no `snapshots cannot be taken` error.
+2. Create a lab with a persistent device. Inside it: write a file, change a file's mode and owner, delete a file that
+   comes from the image, make a symlink and a sparse file.
+3. Within the debounce the node-agent logs `container frozen for the snapshot` with no `snapshot` error after it; the
+   Device's `status.state` has a snapshot (image, size, layers) and no warning; the image is in the registry.
+4. Delete the device's Pod. The operator recreates it with the next incarnation from the snapshot, and every change of
+   step 2 is there, with the same owners and modes.
+5. Stop and start the lab: the exit snapshot is taken (`mark exit`, no `exit snapshot` error) and the state comes back.
+6. Limits: write past `writeQuota` (a warning, the last snapshot stays), past `maxEntries` (the same), and run a
+   required capture (it succeeds and records its image).
+7. With more than one lab node: drain the node, the device starts on another node and restores from the registry.
+8. Afterwards: the kernel log has no overlayfs or AppArmor errors from the node-agent, and `mount | grep
+   containerd-mount` in the node-agent container is empty (no mount is left behind).
 
 ---
 

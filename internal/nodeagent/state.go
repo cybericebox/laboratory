@@ -96,6 +96,14 @@ func SetupDeviceState(mgr ctrl.Manager, cfg *Config) error {
 		MaxWatchDirs: cfg.StateMaxWatchDirs,
 		Log:          log,
 	}
+	if label := devicestate.AppArmorLabel(); devicestate.AppArmorBlocksSnapshots(label) {
+		// The runtime's default profile has `deny mount` and the snapshot filter mounts read-only overlays: every snapshot would
+		// fail with "permission denied". Said once here and on every device, instead of a failure per snapshot.
+		engine.SnapshotsBlocked = fmt.Sprintf("AppArmor blocks snapshots: the node-agent runs under the AppArmor profile %q, "+
+			"which denies mount, so device state is not saved (the node-agent container needs appArmorProfile Unconfined, see DEPLOY.md)", label)
+		log.Error(devicestate.ErrSnapshotsBlocked, "state persistence is on but snapshots cannot be taken on this node",
+			"apparmor", label, "fix", "appArmorProfile Unconfined on the node-agent container (chart: devices.statePersistence.enabled)")
+	}
 	return mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		owner, err := devicestate.AcquireCaptureOwner(cfg.StateWorkDir)
 		if err != nil {

@@ -91,6 +91,14 @@ func (e *Engine) captureRequired(ctx context.Context, p PodInfo, req api.DeviceC
 		_ = cl.RecordCapture(failureCtx, p, result)
 		return result, errors.New(result.Error)
 	}
+	if e.SnapshotsBlocked != "" {
+		// Refused before anything is frozen: the snapshot mounts would be denied anyway.
+		result, _ = fail(errors.New(e.SnapshotsBlocked))
+		failureCtx, failureCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		_ = cl.RecordCapture(failureCtx, p, result)
+		failureCancel()
+		return result, ErrSnapshotsBlocked
+	}
 	e.mu.Lock()
 	if e.tracked == nil {
 		e.tracked = map[string]*tracked{}

@@ -40,7 +40,7 @@ func TestStatePersistenceOffByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	for _, unwanted := range []string{"STATE_REGISTRY_CAPACITY", "STATE_PERSISTENCE", "containerd-root", "DAC_READ_SEARCH"} {
+	for _, unwanted := range []string{"STATE_REGISTRY_CAPACITY", "STATE_PERSISTENCE", "containerd-root", "DAC_READ_SEARCH", "appArmorProfile"} {
 		if strings.Contains(out, unwanted) {
 			t.Errorf("with state persistence off the chart must render nothing about it, found %q", unwanted)
 		}
@@ -494,5 +494,29 @@ func TestNodeLossForceDeleteAfterReachesOperator(t *testing.T) {
 		if got := cm.Data["STATE_NODE_LOSS_FORCE_DELETE_AFTER"]; got != tc.want {
 			t.Errorf("set %q: STATE_NODE_LOSS_FORCE_DELETE_AFTER = %q, want %q", tc.set, got, tc.want)
 		}
+	}
+}
+
+func TestStatePersistenceNodeAgentAppArmor(t *testing.T) {
+	nodeAgent := func(extra ...string) corev1.Container {
+		t.Helper()
+		var ds appsv1.DaemonSet
+		render(t, "templates/node-agent/daemonset.yaml", &ds, extra...)
+		for _, c := range ds.Spec.Template.Spec.Containers {
+			if c.Name == "node-agent" {
+				return c
+			}
+		}
+		t.Fatal("no node-agent container")
+		return corev1.Container{}
+	}
+	// On: the default cri-containerd profile has `deny mount`, and the snapshot filter mounts read-only overlays.
+	on := nodeAgent("--set", statePath+"enabled=true")
+	if sc := on.SecurityContext; sc == nil || sc.AppArmorProfile == nil || sc.AppArmorProfile.Type != corev1.AppArmorProfileTypeUnconfined {
+		t.Errorf("with state persistence on the node-agent must run AppArmor-unconfined, got %+v", on.SecurityContext)
+	}
+	// Off: nothing mounts, so the node-agent keeps the runtime default.
+	if off := nodeAgent(); off.SecurityContext != nil && off.SecurityContext.AppArmorProfile != nil {
+		t.Errorf("with state persistence off the node-agent keeps the default AppArmor profile, got %+v", off.SecurityContext.AppArmorProfile)
 	}
 }
