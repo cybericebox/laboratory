@@ -6,6 +6,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/discovery"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -120,24 +122,70 @@ func groupHoldsOtherWork(g *laboratoryv1alpha1.LabGroup, name string, labs []*la
 	return false
 }
 
-// ReservationKindServedBy asks the discovery of the API server, past any cache, whether it serves the Reservation kind now:
-// the Scheduler's ReservationKindServed.
-func ReservationKindServedBy(dc discovery.DiscoveryInterface) func(context.Context) (bool, error) {
-	return func(context.Context) (bool, error) {
+// reservationCRDName is the CustomResourceDefinition of the Reservation kind.
+const reservationCRDName = "reservations.laboratory.cybericebox.com"
+
+// +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get
+
+// ReservationCRDBy asks the API server, past any cache, whether it serves the Reservation kind now (its discovery) and which
+// CustomResourceDefinition serves it (its UID; a reinstalled CRD has a new one): the Scheduler's ReservationCRD. r must read
+// past the cache (the manager's API reader).
+func ReservationCRDBy(dc discovery.DiscoveryInterface, r client.Reader) func(context.Context) (types.UID, bool, error) {
+	return func(ctx context.Context) (types.UID, bool, error) {
 		list, err := dc.ServerResourcesForGroupVersion(laboratoryv1alpha1.SchemeGroupVersion.String())
 		if errors.IsNotFound(err) {
-			return false, nil
+			return "", false, nil
 		}
 		if err != nil {
-			return false, err
+			return "", false, err
 		}
-		for _, r := range list.APIResources {
-			if r.Kind == "Reservation" {
-				return true, nil
+		served := false
+		for _, res := range list.APIResources {
+			served = served || res.Kind == "Reservation"
+		}
+		if !served {
+			return "", false, nil
+		}
+		crd := &metav1.PartialObjectMetadata{}
+		crd.SetGroupVersionKind(schema.GroupVersionKind{Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition"})
+		if err := r.Get(ctx, client.ObjectKey{Name: reservationCRDName}, crd); err != nil {
+			if errors.IsNotFound(err) {
+				return "", false, nil
 			}
+			return "", false, err
 		}
-		return false, nil
+		return crd.UID, true, nil
 	}
+}
+
+// orphanCRDCheck asks ReservationCRD whether the Reservation kind is served by the CRD the sightings started under. A kind not
+// served (the CRD deleted: every Reservation went with it, and a Get of the kind is a NotFound too) or served by another CRD
+// (deleted and applied again: the reservations did not come back by themselves) is no reservation gone: it clears the
+// sightings, so every object starts a new full notice once the kind is back. start: a new chain of sightings begins, under
+// the CRD served now. It reports whether the pass may go on.
+func (s *Scheduler) orphanCRDCheck(ctx context.Context, start bool) bool {
+	if s.ReservationCRD == nil {
+		return true
+	}
+	uid, served, err := s.ReservationCRD(ctx)
+	switch {
+	case err != nil:
+		log.FromContext(ctx).WithName("scheduler").Error(err, "check the Reservation CRD")
+		if start {
+			s.orphanSeen = passRecord{}
+		}
+		return false
+	case !served:
+		s.orphanSeen = passRecord{}
+		return false
+	case start:
+		s.orphanCRD = uid
+	case uid != s.orphanCRD:
+		log.FromContext(ctx).WithName("scheduler").Info("the Reservation CRD was installed again: the notices of the work of gone reservations start again")
+		s.orphanSeen, s.orphanCRD = passRecord{}, uid
+		return false
+	}
+	return true
 }
 
 // cleanOrphans gives every orphan target its notice and deletes the targets whose notice ran out. The notice is that of the
@@ -147,8 +195,10 @@ func ReservationKindServedBy(dc discovery.DiscoveryInterface) func(context.Conte
 // still be gone) and so is the object (the same UID, still labelled with that name); it goes with its UID and resourceVersion
 // as precondition. What is not deleted waits evictRetryAfter before the next try.
 func (s *Scheduler) cleanOrphans(ctx context.Context, snap *clusterView, seen map[types.UID]time.Time, now time.Time) {
-	logger := log.FromContext(ctx).WithName("scheduler")
 	targets := s.orphanTargets(snap)
+	if len(targets) > 0 && len(seen) == 0 && !s.orphanCRDCheck(ctx, true) {
+		return
+	}
 	notice := s.unreservedNotice()
 	next := map[types.UID]time.Time{}
 	var due []client.Object
@@ -187,18 +237,8 @@ func (s *Scheduler) cleanOrphans(ctx context.Context, snap *clusterView, seen ma
 	if s.orphanRetry == nil {
 		s.orphanRetry = map[types.UID]time.Time{}
 	}
-	if len(due) > 0 && s.ReservationKindServed != nil {
-		// Deleting the CRD deletes every Reservation, and a Get of a kind not served is a NotFound too: that is no reservation
-		// gone, so nothing is deleted and every notice starts again once the kind is back.
-		served, err := s.ReservationKindServed(ctx)
-		if err != nil {
-			logger.Error(err, "check that the Reservation kind is served")
-			return
-		}
-		if !served {
-			s.orphanSeen = passRecord{}
-			return
-		}
+	if len(due) > 0 && !s.orphanCRDCheck(ctx, false) {
+		return
 	}
 	for _, o := range due {
 		s.orphanRetry[o.GetUID()] = now.Add(evictRetryAfter)

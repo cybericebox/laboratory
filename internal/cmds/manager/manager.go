@@ -282,20 +282,21 @@ func Run() {
 		setupLog.Error(err, "unable to create controller", "controller", "Lab")
 		os.Exit(1)
 	}
-	// the scheduler asks discovery itself before it deletes the work of a gone reservation (a deleted CRD is no such thing)
-	reservationsDC, err := discovery.NewDiscoveryClientForConfig(restCfg)
-	if err != nil {
-		setupLog.Error(err, "unable to build the discovery client")
-		os.Exit(1)
-	}
 	var scheduler *laboratorycontroller.Scheduler
 	if cfg.SchedulerEnabled {
+		// the scheduler asks discovery and the CRD itself before it deletes the work of a gone reservation (a deleted or
+		// reinstalled CRD is no such thing)
+		reservationsDC, err := discovery.NewDiscoveryClientForConfig(restCfg)
+		if err != nil {
+			setupLog.Error(err, "unable to build the discovery client")
+			os.Exit(1)
+		}
 		scheduler = &laboratorycontroller.Scheduler{
-			ReservationKindServed: laboratorycontroller.ReservationKindServedBy(reservationsDC),
-			Mirror:                mirror,
-			Client:                mgr.GetClient(),
-			Reader:                mgr.GetAPIReader(),
-			Recorder:              mgr.GetEventRecorderFor("scheduler"),
+			ReservationCRD: laboratorycontroller.ReservationCRDBy(reservationsDC, mgr.GetAPIReader()),
+			Mirror:         mirror,
+			Client:         mgr.GetClient(),
+			Reader:         mgr.GetAPIReader(),
+			Recorder:       mgr.GetEventRecorderFor("scheduler"),
 			Config: laboratorycontroller.SchedulerConfig{
 				MaxPods:                cfg.SchedulerMaxPods,
 				StartupTimeout:         cfg.SchedulerStartupTimeout,
