@@ -36,4 +36,7 @@ spec:
       allowedRoutes:
         namespaces:
           from: All
+    {{- with .Values.gateway.extraListeners }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 {{- end }}
