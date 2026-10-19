@@ -59,6 +59,9 @@ type LabGroupReconciler struct {
 	// PublicVPNEndpoint is the publicly reachable host:port that clients dial
 	// (host of the WireGuard demux). Written verbatim to LabGroup.Status.VPN.Endpoint.
 	PublicVPNEndpoint string
+	// WGDemuxMode is the mode of the WireGuard demux (userspace, tc or xdp). tc and xdp run it on the host network, which the VPN pods'
+	// policy must admit.
+	WGDemuxMode string
 	// VPNBaseNetwork is the base address space for all VPN subnets (e.g. "10.8.0.0/10").
 	VPNBaseNetwork string
 	// InetBaseNetwork is the base address space for per-lab internet/gateway subnets (e.g. "10.9.0.0/10").
@@ -1018,11 +1021,42 @@ func matchLabelsOf(in map[string]string) map[string]interface{} {
 
 // vpnCiliumPolicy builds the CiliumNetworkPolicy locking down the vpn pod's
 // egress to kube-apiserver only (its reconciler needs the API; no DNS, no
-// world). Ingress allows WireGuard UDP only from the proxy pod: its wg-demux
-// container receives every client packet on the shared edge IP and forwards
-// it to the group's vpn pod, so that pod (not "world") is the source. Replies
-// go back through conntrack.
-func vpnCiliumPolicy(ns string, selector map[string]string) *unstructured.Unstructured {
+// world). Ingress allows WireGuard UDP only from the wg-demux pods: they
+// receive every client packet on the shared edge IP and forward it to the
+// group's vpn pod, so that pod (not "world") is the source. Replies go back
+// through conntrack. A demux in tc or xdp mode runs on the host network, so
+// its packets carry a node address: hostNetworkDemux adds the host and the
+// other nodes as sources, on the WireGuard port only.
+func vpnCiliumPolicy(ns string, selector map[string]string, hostNetworkDemux bool) *unstructured.Unstructured {
+	wgPorts := []interface{}{
+		map[string]interface{}{
+			"ports": []interface{}{
+				map[string]interface{}{
+					"port":     strconv.Itoa(names.WireGuardPort),
+					"protocol": "UDP",
+				},
+			},
+		},
+	}
+	ingress := []interface{}{
+		map[string]interface{}{
+			"fromEndpoints": []interface{}{
+				map[string]interface{}{
+					"matchLabels": map[string]interface{}{
+						"k8s:io.kubernetes.pod.namespace": names.WGNamespace,
+						labelApp:                          names.WGDemuxApp,
+					},
+				},
+			},
+			"toPorts": wgPorts,
+		},
+	}
+	if hostNetworkDemux {
+		ingress = append(ingress, map[string]interface{}{
+			"fromEntities": []interface{}{"host", "remote-node"},
+			"toPorts":      wgPorts,
+		})
+	}
 	return &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "cilium.io/v2",
@@ -1035,29 +1069,8 @@ func vpnCiliumPolicy(ns string, selector map[string]string) *unstructured.Unstru
 				"endpointSelector": map[string]interface{}{
 					"matchLabels": matchLabelsOf(selector),
 				},
-				"egress": []interface{}{apiServerEgress()},
-				"ingress": []interface{}{
-					map[string]interface{}{
-						"fromEndpoints": []interface{}{
-							map[string]interface{}{
-								"matchLabels": map[string]interface{}{
-									"k8s:io.kubernetes.pod.namespace": names.ProxyNamespace,
-									labelApp:                          "laboratory-proxy-l7",
-								},
-							},
-						},
-						"toPorts": []interface{}{
-							map[string]interface{}{
-								"ports": []interface{}{
-									map[string]interface{}{
-										"port":     strconv.Itoa(names.WireGuardPort),
-										"protocol": "UDP",
-									},
-								},
-							},
-						},
-					},
-				},
+				"egress":  []interface{}{apiServerEgress()},
+				"ingress": ingress,
 			},
 		},
 	}
@@ -1135,7 +1148,7 @@ func (r *LabGroupReconciler) ensureVPNGatewayPolicies(ctx context.Context, ns st
 	if err != nil {
 		return err
 	}
-	for _, desired := range []*unstructured.Unstructured{vpnCiliumPolicy(ns, vpnSel), gatewayCiliumPolicy(ns, gwSel)} {
+	for _, desired := range []*unstructured.Unstructured{vpnCiliumPolicy(ns, vpnSel, names.HostNetworkDemux(r.WGDemuxMode)), gatewayCiliumPolicy(ns, gwSel)} {
 		spec, found, err := unstructured.NestedMap(desired.Object, "spec")
 		if err != nil || !found {
 			return fmt.Errorf("cilium policy %s missing spec", desired.GetName())

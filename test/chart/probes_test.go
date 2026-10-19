@@ -54,6 +54,14 @@ func TestEveryServiceHasProbesAndRollsOutOnReadiness(t *testing.T) {
 	for _, c := range proxy.Spec.Template.Spec.Containers {
 		byName[c.Name] = c
 	}
+	var wgDS appsv1.DaemonSet
+	render(t, "templates/wg/daemonset.yaml", &wgDS)
+	for _, c := range wgDS.Spec.Template.Spec.Containers {
+		byName[c.Name] = c
+	}
+	if _, ok := byName["wg-demux"]; !ok || len(proxy.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("l7 is alone in the Deployment, wg-demux is in its own DaemonSet: %v", byName)
+	}
 	for name, port := range map[string]int32{"l7": 8081, "wg-demux": 8082} {
 		c, ok := byName[name]
 		if !ok {
@@ -70,7 +78,8 @@ func TestEveryServiceHasProbesAndRollsOutOnReadiness(t *testing.T) {
 			}
 		}
 		// The listen address is the image's default (proxy.LoadL7Config / LoadWGConfig), so the chart passes none and must name that port.
-		if _, set := envOf(c)["HEALTH_ADDR"]; set || declared != port || c.ReadinessProbe.HTTPGet.Port.String() != "health" {
+		// (the host-network demux binds the same port to the node address: HEALTH_ADDR=$(HOST_IP):port)
+		if addr, set := envOf(c)["HEALTH_ADDR"]; (set && addr.Value != fmt.Sprintf("$(HOST_IP):%d", port)) || declared != port || c.ReadinessProbe.HTTPGet.Port.String() != "health" {
 			t.Errorf("%s: the health port %d must be the image default (no HEALTH_ADDR passed): %d %v", name, port, declared, envOf(c)["HEALTH_ADDR"])
 		}
 		if got := imageHealthAddr(t, name); got != fmt.Sprintf(":%d", port) {
@@ -88,6 +97,10 @@ func TestEveryServiceHasProbesAndRollsOutOnReadiness(t *testing.T) {
 	render(t, "templates/proxy/deployment.yaml", &surging, "--set", "proxy.surge=true")
 	if r := surging.Spec.Strategy.RollingUpdate; r.MaxSurge.IntValue() != 1 || r.MaxUnavailable.IntValue() != 0 {
 		t.Errorf("proxy.surge=true: maxSurge 1, maxUnavailable 0: %+v", r)
+	}
+
+	if wgDS.Spec.MinReadySeconds == 0 || wgDS.Spec.UpdateStrategy.RollingUpdate == nil || wgDS.Spec.UpdateStrategy.RollingUpdate.MaxUnavailable.IntValue() != 1 {
+		t.Errorf("a demux rollout moves one node at a time and waits for Ready: %+v", wgDS.Spec.UpdateStrategy)
 	}
 
 	var ds appsv1.DaemonSet
@@ -125,6 +138,7 @@ func imageHealthAddr(t *testing.T, container string) string {
 		}
 		return cfg.HealthAddr
 	}
+	t.Setenv("DEMUX_MODE", "userspace") // the tc default also needs NODE_NAME, which the probes address does not depend on
 	cfg, err := proxy.LoadWGConfig()
 	if err != nil {
 		t.Fatal(err)

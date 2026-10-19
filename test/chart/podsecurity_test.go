@@ -269,12 +269,12 @@ func TestZotDataDirectoryIsOwnedByAnInitContainer(t *testing.T) {
 // The error journal needs no log access: the components write Events (the proxy gets that in a Role of the release namespace), the agent reads those
 // of the release namespace with a read-only Role, and each component knows where to publish.
 func TestErrorJournalPermissionsAndWiring(t *testing.T) {
-	out, err := helmTemplate(t, append(agentSet, "-s", "templates/agent/role-events.yaml", "-s", "templates/proxy/role-events.yaml", "-s", "templates/proxy/clusterrole.yaml",
-		"-s", "templates/agent/deployment.yaml", "-s", "templates/proxy/deployment.yaml", "-s", "templates/node-agent/daemonset.yaml")...)
+	out, err := helmTemplate(t, append(agentSet, "-s", "templates/agent/role-events.yaml", "-s", "templates/proxy/role-events.yaml", "-s", "templates/proxy/clusterrole.yaml", "-s", "templates/wg/role.yaml",
+		"-s", "templates/agent/deployment.yaml", "-s", "templates/proxy/deployment.yaml", "-s", "templates/wg/daemonset.yaml", "-s", "templates/node-agent/daemonset.yaml")...)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	var agentRole, proxyRole map[string]any
+	var agentRole, proxyRole, wgRole map[string]any
 	for _, d := range docs(t, out) {
 		md, _ := d["metadata"].(map[string]any)
 		switch md["name"] {
@@ -289,6 +289,10 @@ func TestErrorJournalPermissionsAndWiring(t *testing.T) {
 					t.Error("the proxy events Role is namespaced")
 				}
 			}
+		case "laboratory-proxy-wg-events":
+			if d["kind"] == "Role" {
+				wgRole = d
+			}
 		case "laboratory-proxy":
 			if d["kind"] == "ClusterRole" {
 				for _, r := range rulesOf(t, d) {
@@ -299,8 +303,8 @@ func TestErrorJournalPermissionsAndWiring(t *testing.T) {
 			}
 		}
 	}
-	if agentRole == nil || proxyRole == nil {
-		t.Fatalf("roles: %v %v", agentRole != nil, proxyRole != nil)
+	if agentRole == nil || proxyRole == nil || wgRole == nil {
+		t.Fatalf("roles: %v %v %v", agentRole != nil, proxyRole != nil, wgRole != nil)
 	}
 	for _, r := range rulesOf(t, agentRole) {
 		if !has(r.Resources, "events") || has(r.Verbs, "create") || has(r.Verbs, "update") || has(r.Verbs, "delete") || !has(r.Verbs, "list") {
@@ -313,6 +317,13 @@ func TestErrorJournalPermissionsAndWiring(t *testing.T) {
 	}
 	if !creates {
 		t.Error("the proxy publishes its errors as events")
+	}
+	creates = false
+	for _, r := range rulesOf(t, wgRole) {
+		creates = creates || (has(r.Resources, "events") && has(r.Verbs, "create") && has(r.Verbs, "patch"))
+	}
+	if !creates {
+		t.Error("the demux publishes its errors as events")
 	}
 	// The proxy and the node-agent are told the release namespace as ERROR_JOURNAL_NAMESPACE, the agent as AGENT_RELEASE_NAMESPACE.
 	if !strings.Contains(out, "name: ERROR_JOURNAL_NAMESPACE") || !strings.Contains(out, "name: AGENT_RELEASE_NAMESPACE") {

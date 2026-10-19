@@ -1,0 +1,16 @@
+{{- if and .Values.proxy.enabled .Values.proxy.wg.enabled }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "laboratory.wgNamespace" . }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+    {{- if include "laboratory.wgHostNetwork" . }}
+    # tc and xdp: the demux runs on the host network as root with the BPF capabilities and a hostPath, which only the privileged level
+    # admits. Nothing else runs here.
+    pod-security.kubernetes.io/enforce: privileged
+    {{- else }}
+    # userspace: the pod is non-root, drops every capability, uses the runtime's seccomp profile and a read-only root filesystem.
+    pod-security.kubernetes.io/enforce: restricted
+    {{- end }}
+{{- end }}

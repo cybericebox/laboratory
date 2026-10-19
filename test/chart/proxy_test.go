@@ -28,8 +28,8 @@ func TestProxyRunsTwoReplicasWithABudgetAndMeasuredLimits(t *testing.T) {
 			t.Errorf("missing %q", want)
 		}
 	}
-	// requests = limits for l7 (500m/512Mi) and wg-demux (250m/128Mi)
-	for _, want := range []string{"cpu: 500m", "cpu: 250m", "memory: 512Mi", "memory: 128Mi"} {
+	// requests = limits for l7 (500m/512Mi); the demux is its own DaemonSet now (wg_test.go)
+	for _, want := range []string{"cpu: 500m", "memory: 512Mi"} {
 		if strings.Count(out, want) < 2 {
 			t.Errorf("%q should appear as a request and a limit", want)
 		}
@@ -55,13 +55,16 @@ func TestProxyDaemonSetMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for _, want := range []string{"kind: DaemonSet", "name: laboratory-proxy", "app: laboratory-proxy-l7", "nodeSelector:", "tolerations:", "operator: Exists", "lab: \"true\"", "name: l7", "name: wg-demux"} {
+	for _, want := range []string{"kind: DaemonSet", "name: laboratory-proxy", "app: laboratory-proxy-l7", "nodeSelector:", "tolerations:", "operator: Exists", "lab: \"true\"", "name: l7"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q\n%s", want, out)
 		}
 	}
 	if strings.Contains(out, "podAntiAffinity") {
 		t.Errorf("a DaemonSet needs no anti-affinity")
+	}
+	if strings.Contains(out, "wg-demux") {
+		t.Errorf("the demux is not in the l7 pod")
 	}
 	for _, tpl := range []string{"templates/proxy/deployment.yaml", "templates/proxy/pdb.yaml"} {
 		if o, err := helmTemplate(t, "--set", "proxy.mode=daemonset", "-s", tpl); err == nil && strings.Contains(o, "kind:") {
@@ -124,7 +127,7 @@ func TestProxyServerLimitsAreValues(t *testing.T) {
 }
 
 func TestDemuxLimitsAreValues(t *testing.T) {
-	out, err := helmTemplate(t, "-s", "templates/proxy/deployment.yaml", "--set", "proxy.wg.limits.partialTTL=7s", "--set", "proxy.wg.limits.roamInterval=9s")
+	out, err := helmTemplate(t, "-s", "templates/wg/daemonset.yaml", "--set", "proxy.wg.limits.partialTTL=7s", "--set", "proxy.wg.limits.roamInterval=9s")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
@@ -184,10 +187,10 @@ func TestEdgeServicesNameTheSharedNamespaces(t *testing.T) {
 		args   []string
 		wg, gw string
 	}{
-		{nil, `laboratory-system`, `"laboratory-proxy"`},
-		{[]string{"--set", "proxy.sharedNamespaces={platform,other}"}, `laboratory-system,platform,other`, `"laboratory-proxy,platform,other"`},
+		{nil, `laboratory-system`, `"laboratory-wg"`},
+		{[]string{"--set", "proxy.sharedNamespaces={platform,other}"}, `laboratory-system,platform,other`, `"laboratory-wg,platform,other"`},
 	} {
-		out, err := helmTemplate(t, append(c.args, "-s", "templates/proxy/service-wg-lb.yaml", "-s", "templates/gateway/gateway.yaml")...)
+		out, err := helmTemplate(t, append(c.args, "-s", "templates/wg/service.yaml", "-s", "templates/gateway/gateway.yaml")...)
 		if err != nil {
 			t.Fatalf("%v\n%s", err, out)
 		}

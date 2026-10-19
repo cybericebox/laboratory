@@ -7,8 +7,13 @@ import (
 	_ "github.com/cybericebox/laboratory/pkg/runtime"
 
 	"context"
+	"errors"
+	"net"
+	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -27,6 +32,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/names"
 	proxy "github.com/cybericebox/laboratory/internal/proxy"
 	"github.com/cybericebox/laboratory/internal/proxy/demux"
+	"github.com/cybericebox/laboratory/internal/proxy/demux/fastpath"
 )
 
 var scheme = runtime.NewScheme()
@@ -47,11 +53,18 @@ func Run() {
 		os.Exit(1)
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	fast := cfg.Mode != demux.ModeUserspace
+
+	opts := ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: "0"},
 		HealthProbeBindAddress: cfg.HealthAddr,
-	})
+	}
+	if fast {
+		// The entry addresses come from this demux's Service and Node only (the LabGroups stay cluster-wide).
+		opts.Cache = demux.CacheOptions(cfg.ServiceNamespace, cfg.ServiceName, cfg.NodeName)
+	}
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), opts)
 	if err != nil {
 		log.Error(err, "create manager")
 		os.Exit(1)
@@ -78,6 +91,34 @@ func Run() {
 		os.Exit(1)
 	}
 
+	// tc and xdp: the kernel forwards the transport packets of the sessions mirrored into it. A fast path that cannot start is
+	// fatal (no silent fallback: the operator picks DEMUX_MODE=userspace by value).
+	var fp *fastpath.FastPath
+	if fast {
+		fp, err = openFastPath(cfg)
+		if err != nil {
+			log.Error(err, "start the "+string(cfg.Mode)+" fast path (DEMUX_MODE=userspace runs without it)")
+			os.Exit(1)
+		}
+		defer func() { _ = fp.Close() }()
+		ct.SetSink(fp, fp)
+		entries := &demux.EntryWatcher{
+			Client: mgr.GetClient(), NodeName: cfg.NodeName, HostIP: cfg.HostIP,
+			ServiceName: cfg.ServiceName, ServiceNamespace: cfg.ServiceNamespace,
+			OnChange: func(addrs []netip.AddrPort) {
+				if err := fp.SetEntries(addrs); err != nil {
+					log.Error(err, "write the entry addresses")
+					return
+				}
+				log.Info("entry addresses", "addresses", addrs)
+			},
+		}
+		if err := entries.SetupWithManager(mgr); err != nil {
+			log.Error(err, "setup EntryWatcher")
+			os.Exit(1)
+		}
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 	stop := make(chan struct{})
@@ -94,10 +135,15 @@ func Run() {
 		log.Error(err, "add health check")
 		os.Exit(1)
 	}
-	for name, check := range map[string]healthz.Checker{
+	checks := map[string]healthz.Checker{
 		"caches": health.CacheSynced(mgr.GetCache()),
 		"table":  health.Func("the demux table is not filled from the groups yet", watcher.Synced),
-	} {
+	}
+	if fast {
+		// Attached in front on every device, and the entry addresses known.
+		checks["fastpath"] = func(*http.Request) error { return fp.Ready() }
+	}
+	for name, check := range checks {
 		if err := mgr.AddReadyzCheck(name, check); err != nil {
 			log.Error(err, "add ready check")
 			os.Exit(1)
@@ -108,8 +154,15 @@ func Run() {
 		<-ctx.Done()
 		close(stop)
 	}()
+	var stats func() map[string]uint64
+	runs := []func(){func() { ct.RunTTLCleanup(stop) }, func() { table.RunResolverContext(ctx, 30*time.Second) }, func() { dmx.Run(stop) }}
+	if fast {
+		stats = func() map[string]uint64 { return fp.Stats() }
+		runs = append(runs, func() { restoreOnce(ctx, mgr, watcher, fp, ct, table) }, func() { resync(ctx, cfg.Resync, fp, ct) })
+	}
+	runs = append(runs, func() { serveMetrics(ctx, cfg.MetricsAddr, demux.MetricsHandler(cfg.Mode, dmx, stats)) })
 	var workers sync.WaitGroup
-	for _, run := range []func(){func() { ct.RunTTLCleanup(stop) }, func() { table.RunResolverContext(ctx, 30*time.Second) }, func() { dmx.Run(stop) }} {
+	for _, run := range runs {
 		workers.Add(1)
 		go func(run func()) { defer workers.Done(); run() }(run)
 	}
@@ -120,5 +173,77 @@ func Run() {
 	if err := mgr.Start(ctx); err != nil {
 		log.Error(err, "manager error")
 		os.Exit(1)
+	}
+}
+
+func openFastPath(cfg *proxy.WGConfig) (*fastpath.FastPath, error) {
+	_, p, err := net.SplitHostPort(cfg.ListenAddr)
+	if err != nil {
+		return nil, err
+	}
+	port, err := strconv.ParseUint(p, 10, 16)
+	if err != nil {
+		return nil, err
+	}
+	return fastpath.Open(fastpath.Options{
+		Mode: cfg.Mode, PinPath: cfg.PinPath, HostIP: cfg.HostIP, SourcePort: uint16(port),
+		MaxEntries: cfg.MaxEntries, TTL: demux.SessionTTL, Rate: cfg.SessionRate, Burst: cfg.SessionBurst,
+	})
+}
+
+// restoreOnce takes the sessions of the previous demux back into the table as soon as the table knows every group.
+func restoreOnce(ctx context.Context, mgr ctrl.Manager, watcher *demux.LabGroupWatcher, fp *fastpath.FastPath, ct *demux.ConnTrack, table *demux.Table) {
+	log := ctrl.Log.WithName("proxy-wg")
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
+		if mgr.GetCache().WaitForCacheSync(ctx) && watcher.Synced(ctx) {
+			restored, dropped, err := restoreSessions(fp, ct, table.Entries())
+			if err != nil {
+				log.Error(err, "restore the sessions of the fast path")
+			} else {
+				log.Info("restored the sessions of the fast path", "restored", restored, "dropped", dropped)
+			}
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+// resync brings the fast path's last-seen times into the table (so a session the kernel forwards does not expire there) and
+// keeps our programs in front on every device.
+func resync(ctx context.Context, every time.Duration, fp *fastpath.FastPath, ct *demux.ConnTrack) {
+	log := ctrl.Log.WithName("proxy-wg")
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		if seen, err := fp.LastSeen(); err != nil {
+			log.Error(err, "read the last-seen times of the fast path")
+		} else {
+			ct.Seen(seen)
+		}
+		if err := fp.EnsureOrder(); err != nil {
+			log.Error(err, "keep the fast path in front")
+		}
+	}
+}
+
+func serveMetrics(ctx context.Context, addr string, h http.Handler) {
+	srv := &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		<-ctx.Done()
+		_ = srv.Close()
+	}()
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		ctrl.Log.WithName("proxy-wg").Error(err, "metrics server", "addr", addr)
 	}
 }

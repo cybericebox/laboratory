@@ -122,6 +122,25 @@ docker-push-lab: ## Push the lab image
 .PHONY: docker-push
 docker-push: docker-push-controller docker-push-agent docker-push-proxy docker-push-node docker-push-lab ## Push all 5 images
 
+# WireGuard demux harness: its own kind cluster (icebox-demux) with Cilium 1.20.2, see hack/kind-demux/up.sh and e2e.sh.
+KIND_DEMUX_IMG  ?= cybericebox/laboratory-proxy:kind-demux
+KIND_DEMUX_MODE ?= userspace
+
+.PHONY: kind-demux-up kind-demux-e2e kind-demux-e2e-all kind-demux-down
+kind-demux-up: ## Create the demux kind cluster (icebox-demux, Cilium 1.20.2, no kube-proxy) with the CRDs
+	hack/kind-demux/up.sh
+kind-demux-e2e: ## Build the proxy image and run the demux e2e on icebox-demux (KIND_DEMUX_MODE=upgrade|userspace|tc|xdp|detach)
+	$(MAKE) docker-build-proxy PROXY_IMG=$(KIND_DEMUX_IMG)
+	KIND_DEMUX_IMG=$(KIND_DEMUX_IMG) hack/kind-demux/e2e.sh $(KIND_DEMUX_MODE)
+kind-demux-e2e-all: ## Build the proxy image once and run the demux e2e: upgrade from develop, userspace, tc, xdp, LB-IPAM, detach back to userspace
+	$(MAKE) docker-build-proxy PROXY_IMG=$(KIND_DEMUX_IMG)
+	@summary="$$(mktemp)"; for m in upgrade userspace tc xdp lbipam detach; do \
+		if [ $$m = lbipam ]; then run="hack/kind-demux/lbipam.sh"; else run="hack/kind-demux/e2e.sh $$m"; fi; \
+		KIND_DEMUX_IMG=$(KIND_DEMUX_IMG) KIND_DEMUX_SUMMARY="$$summary" $$run || { cat "$$summary"; rm -f "$$summary"; exit 1; }; \
+	done; printf '\n== summary\n'; cat "$$summary"; rm -f "$$summary"
+kind-demux-down: ## Delete the demux kind cluster and its client containers
+	hack/kind-demux/down.sh
+
 .PHONY: kind-load-proxy
 kind-load-proxy: docker-build-proxy ## Build and load proxy image into Kind cluster
 	$(KIND) load docker-image $(PROXY_IMG) --name $(KIND_CLUSTER_NAME)
@@ -266,6 +285,10 @@ kind-deploy: kind-load install deploy ## Full local deploy: build all + load + C
 	@echo "  $(LOCAL_K0S)/scenarios/run.sh multi-node"
 	@echo "  $(LOCAL_K0S)/scenarios/run.sh vpn"
 
+.PHONY: generate-bpf
+generate-bpf: ## Regenerate the eBPF objects of the WireGuard demux fast path (docker; clang and libbpf in the container)
+	hack/generate-bpf.sh
+
 .PHONY: fmt
 fmt: ## Run go fmt against code.
 	go fmt ./...
@@ -281,6 +304,10 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 .PHONY: test-netns
 test-netns: ## Run the real-iptables tests of the VPN and gateway pods in network namespaces (docker, privileged)
 	hack/test-netns.sh
+
+.PHONY: test-bpf
+test-bpf: ## Run the eBPF tests of the WireGuard demux fast path (docker, privileged)
+	hack/test-bpf.sh
 
 # TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.

@@ -1,0 +1,101 @@
+{{/*
+NetworkPolicy + CiliumNetworkPolicy for the WireGuard demux (DaemonSet laboratory-proxy-wg, namespace laboratory-wg, pod label
+app: laboratory-proxy-wg, internal/names/labels.go:WGDemuxApp). Rendered in the userspace mode only: in tc and xdp the pod runs on the
+host network, where pod policies do not apply. There the chart binds the probe and metrics ports to the node's address instead
+(wg/daemonset.yaml: HEALTH_ADDR, DEMUX_METRICS_ADDR), and a host firewall is the cluster's decision, not the chart's.
+
+Ingress:
+  - UDP 51820: admitted from any identity (`all`). This is the public WireGuard endpoint by design: external VPN clients reach it via the
+    shared LoadBalancer Service, and the source the pod sees may be the client (`world`) or a node (`host`/`remote-node`), so identity
+    filtering is not meaningful; WireGuard's own handshake is the security boundary for this port.
+  - TCP 8082 (probes) and 8083 (metrics): from the `host` entity only (the kubelet).
+
+Egress: kube-dns, kube-apiserver (the LabGroup and Service watches, leases) and endpoints in LabGroup namespaces on UDP 51820 only (the
+demux forwards to the group's VPN pod). The namespaces are dynamic, but the operator stamps each with the label
+laboratory.cybericebox.com/group (internal/names/labels.go:LabelGroup), which Cilium folds into every endpoint identity as
+k8s:io.cilium.k8s.namespace.labels.laboratory.cybericebox.com/group. Everything else is denied.
+*/}}
+{{- if and .Values.proxy.enabled .Values.proxy.wg.enabled .Values.proxy.networkPolicy.enabled (not (include "laboratory.wgHostNetwork" .)) }}
+{{- $wgPort := include "laboratory.wgPort" . | int }}
+{{- $healthPort := include "laboratory.wgHealthPort" . | int }}
+{{- $metricsPort := include "laboratory.wgMetricsPort" . | int }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: laboratory-proxy-wg
+  namespace: {{ include "laboratory.wgNamespace" . }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: laboratory-proxy-wg
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - protocol: UDP
+          port: {{ $wgPort }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: laboratory-proxy-wg
+  namespace: {{ include "laboratory.wgNamespace" . }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app: laboratory-proxy-wg
+  ingress:
+    - fromEntities:
+        - all
+      toPorts:
+        - ports:
+            - port: {{ $wgPort | quote }}
+              protocol: UDP
+    - fromEntities:
+        - host
+      toPorts:
+        - ports:
+            - port: {{ $healthPort | quote }}
+              protocol: TCP
+            - port: {{ $metricsPort | quote }}
+              protocol: TCP
+  egress:
+    - toEntities:
+        - kube-apiserver
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchExpressions:
+            - key: k8s:io.cilium.k8s.namespace.labels.laboratory.cybericebox.com/group
+              operator: Exists
+      toPorts:
+        - ports:
+            - port: {{ $wgPort | quote }}
+              protocol: UDP
+{{- end }}

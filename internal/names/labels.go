@@ -116,6 +116,9 @@ var ReservedDeviceNames = []string{"vpn", "gateway", "internet"}
 // from the old "proxy").
 const ProxyL7App = "laboratory-proxy-l7"
 
+// WGDemuxApp is the `app` label value on the WireGuard demux pods (namespace WGNamespace); the VPN pods admit WireGuard from them.
+const WGDemuxApp = "laboratory-proxy-wg"
+
 // RBAC resource names created per LabGroup namespace.
 const (
 	RoleVPNName     = "laboratory-vpn-role"

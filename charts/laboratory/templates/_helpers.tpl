@@ -104,6 +104,21 @@ names no port.
 {{- define "laboratory.l7Port" -}}8443{{- end }}
 {{- define "laboratory.l7HealthPort" -}}8081{{- end }}
 {{- define "laboratory.wgHealthPort" -}}8082{{- end }}
+
+{{- /* The Prometheus port of the demux (DEMUX_METRICS_ADDR), a constant of the image. */}}
+{{- define "laboratory.wgMetricsPort" -}}8083{{- end }}
+
+{{- /* The namespace of the demux: the compile-time constant internal/names.WGNamespace. */}}
+{{- define "laboratory.wgNamespace" -}}laboratory-wg{{- end }}
+
+{{- /* The demux modes that run on the host network with BPF capabilities. */}}
+{{- define "laboratory.wgHostNetwork" -}}{{- if has .Values.proxy.wg.mode (list "tc" "xdp") -}}true{{- end -}}{{- end }}
+{{- define "laboratory.wgExternalTrafficPolicy" -}}
+{{- if .Values.proxy.wg.externalTrafficPolicy -}}{{ .Values.proxy.wg.externalTrafficPolicy }}
+{{- else if include "laboratory.wgHostNetwork" . -}}Local
+{{- else -}}Cluster
+{{- end -}}
+{{- end }}
 {{- define "laboratory.priorityClass.platform" -}}{{ .Values.priorityClasses.platform.name }}{{- end }}
 {{- define "laboratory.priorityClass.group" -}}{{ .Values.priorityClasses.group.name }}{{- end }}
 {{- define "laboratory.priorityClass.device" -}}{{ .Values.priorityClasses.device.name }}{{- end }}
@@ -130,6 +145,8 @@ RUNTIME_OBSERVATION_ENABLED: {{ .Values.lifecycle.runtimeObservation.enabled | q
 REQUIRED_SNAPSHOT_AVAILABLE: {{ .Values.lifecycle.requiredSnapshotAvailable | quote }}
 BASE_DOMAIN: {{ required "operator.baseDomain is required" .Values.operator.baseDomain | quote }}
 PUBLIC_VPN_ENDPOINT: {{ include "laboratory.publicVPNEndpoint" . | quote }}
+{{- /* Without the demux nothing runs on the host network: the VPN pods admit no node addresses. */}}
+WG_DEMUX_MODE: {{ ternary .Values.proxy.wg.mode "userspace" (and .Values.proxy.enabled .Values.proxy.wg.enabled) | quote }}
 IMAGE_PULL_SECRETS: {{ include "laboratory.pullSecretNames" . | quote }}
 LAB_NODE_SELECTOR: {{ include "laboratory.labNodeSelector" . | quote }}
 LAB_TOLERATIONS: {{ .Values.labWorkloads.tolerations | toJson | quote }}

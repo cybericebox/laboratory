@@ -118,18 +118,22 @@ What gets installed:
 - Management agent (`agent.enabled`), the L7 proxy and WireGuard demultiplexer, and, when enabled, the platform registry
 - `laboratory-config` ConfigMap with your settings
 
-**The proxy** (`proxy.*`) is one Deployment with two containers, the L7 HTTPS proxy and the WireGuard demux, **two replicas by default**
+**The proxy** (`proxy.*`) is the L7 HTTPS proxy, an unprivileged Deployment in `laboratory-proxy`, **two replicas by default**
 (`proxy.replicas`), a PodDisruptionBudget with `minAvailable: 1` (`proxy.podDisruptionBudget`, rendered only with more than one replica) and a
 a **required** pod anti-affinity by hostname: never two replicas on one node (with more replicas than nodes the extra ones stay Pending). For larger clusters
 set `proxy.mode: daemonset`: one proxy pod on every node (`proxy.nodeSelector` and `proxy.tolerations` narrow the set; `replicas` and the budget do not apply; the default is
 `replicas`, a fixed count: on a one-node cluster set `proxy.replicas: 1`, and a live install refuses more replicas than nodes). In both modes the proxy requests are pods like any other, so the scheduler's room for lab pods on each node is what is left after them
-(see "Platform reserve"). The proxy's own session is sliding: it expires `proxy.l7.sessionIdleTTL` (24h) after the last request; the cookie is
+(see "Platform reserve"). The WireGuard demux is not in that pod: it is its own DaemonSet `laboratory-proxy-wg` in the namespace `laboratory-wg`, on the nodes
+selected by `proxy.wg.nodeSelector` and `proxy.wg.tolerations` (empty: they follow `labWorkloads`, every node when that is empty too), with its own ServiceAccount, RBAC and the `laboratory-proxy-wg` LoadBalancer Service
+(`proxy.wg.externalTrafficPolicy`; empty by default, which follows the mode: `Cluster` for `userspace`, `Local` for `tc` and `xdp`). `proxy.wg.mode` (`userspace`, `tc` or `xdp`; `userspace` is the default; `tc` and `xdp` are opt-in, see "WireGuard demux modes") decides its privileges: `tc` and `xdp` run on the host network
+as root with the capabilities `BPF`, `NET_ADMIN` and `PERFMON` only and the host's `/sys/fs/bpf`, in a namespace that admits the privileged Pod Security level;
+`userspace` is unprivileged on the pod network in a restricted namespace. The L7 namespace stays restricted in every mode. The proxy's own session is sliding: it expires `proxy.l7.sessionIdleTTL` (24h) after the last request; the cookie is
 re-issued only when less than `proxy.l7.sessionRenewBefore` (1h) of it remains, so an active user costs about one renewal per hour; and it never
 lives past `proxy.l7.sessionMaxTTL` (168h) from the handoff or past the link's own session end. The L7 proxy is stateless (its session cookie is signed with the shared `proxy-session` secret), so a request
-may land on any replica. The demux keeps no state a restart would lose: a WireGuard client that lands on the other replica (after a reconnect, or when
-the replica it used is gone) re-handshakes within its persistent keepalive, about 15 s. Both containers are Guaranteed (requests = limits): L7 `500m`/`64Mi`,
-demux `250m`/`64Mi`. Measured on the local stand (kubectl top, one replica): L7 serves about 5000 requests per second for 500m of CPU (0.1 ms per request;
-p95 63 ms at 100 concurrent clients, 36Mi at 200), the demux is 1m idle and about 110m at ten active VPN peers (it relays the packets in userspace),
+may land on any replica. In `userspace` mode the demux keeps no state a restart would lose: a WireGuard client that lands on the other replica (after a reconnect, or when
+the replica it used is gone) re-handshakes within its persistent keepalive, about 15 s. In `tc` and `xdp` the kernel keeps the sessions across a restart of the pod. Both pods are Guaranteed (requests = limits): L7 `500m`/`64Mi`,
+demux `250m`/`128Mi`. Measured on the local stand (kubectl top, one replica): L7 serves about 5000 requests per second for 500m of CPU (0.1 ms per request;
+p95 63 ms at 100 concurrent clients, 36Mi at 200), the demux in `userspace` mode is 1m idle and about 110m at ten active VPN peers (it relays the packets in userspace; `tc` and `xdp` are not measured under load yet),
 and L7 load does not slow the tunnels (VPN latency p95 3-4 ms with 100 L7 clients).
 
 Verify:
@@ -143,7 +147,7 @@ kubectl -n laboratory-system get configmap laboratory-config -o yaml
 
 ## 4. Upgrade (change config)
 
-Edit `my-values.yaml`, then:
+Edit `my-values.yaml`, then (the first upgrade to the WireGuard demux modes needs one step before it, see "Upgrade order" step 2):
 
 ```bash
 helm upgrade laboratory ./charts/laboratory \
@@ -879,7 +883,7 @@ settings, the lab node selector and tolerations, the pod sizes, the pull secrets
 (`laboratory.sharedEnv`) under the operator's names (`SCHEDULER_*`, `DEVICE_*`, `STATE_*`, `IMAGE_CACHE_*`, `LAB_NODE_SELECTOR`, ...), and the agent
 reads the proxy's limits under the proxy's names (`ACCESS_TOKEN_MAX_TTL`, `SESSION_IDLE_TTL`, `SESSION_MAX_TTL`).
 **Constants of the platform** are only ports INSIDE the cluster network, baked into the images and not values: the WireGuard port 51820 (the
-VPN pods, the wg-demux and the `targetPort` of its LoadBalancer Service), the HTTPS port 8443 and the probe ports of the proxy (8081, 8082), and
+VPN pods, the wg-demux and the `targetPort` of its LoadBalancer Service), the HTTPS port 8443, the probe ports of the proxy (8081 for L7, 8082 for the wg-demux), the metrics port of the wg-demux (8083), and
 the registry relay port 5035 on every node. Everything else that is a tuning knob stays an **optional value** (and an optional environment
 variable of the image with the same default, so it can be overridden without a rebuild): the agent's monitoring sizes (`agent.monitoring.*`),
 `vpn.statsInterval`, the node-agent's host paths, socket, bridge, health port and device-plugin directory (`nodeAgent.ovsSocket`,
@@ -1233,9 +1237,10 @@ backend that never finishes the response) and reads the process's heap and stack
 is a slow answer; a pod killed for memory cuts every request in flight on it. If you raise `maxConnections`, raise the memory by about 130 KiB per connection (the measured
 cost with 25% headroom) and keep `liveTotal` at or below it. A request in flight is also a connection for the proxy, so `liveTotal` above `maxConnections` has no effect.
 
-**To serve more clients, add proxy pods, not limits.** The L7 proxy is stateless (its session cookie is signed with the shared secret) and the demux's table is per pod: `proxy.replicas`
-(each replica takes its share of the connections the Gateway sends it; never two on one node), or `proxy.mode: daemonset` for one proxy on every node (larger clusters). A WireGuard client whose
-packets land on another demux replica re-handshakes (about 25-35 s, see the proxy rollout below), so change the replica count outside an event. Capacity is `replicas` times the numbers above.
+**To serve more clients, add proxy pods, not limits.** The L7 proxy is stateless (its session cookie is signed with the shared secret): `proxy.replicas`
+(each replica takes its share of the connections the Gateway sends it; never two on one node), or `proxy.mode: daemonset` for one proxy on every node (larger clusters). The demux's table is per pod
+and the demux is a DaemonSet, so its capacity is the number of entry nodes (`proxy.wg.nodeSelector`) times the numbers above; a WireGuard client whose packets land on another demux
+re-handshakes (about 25-35 s, see the proxy rollout below), so change the entry nodes outside an event.
 
 ### Probes and rollouts
 
@@ -1246,7 +1251,7 @@ Every long-running component says when it really serves, and a rollout waits for
 | operator | the informer caches have synced (`/readyz` on :8081) | `/healthz` | one pod, leader election |
 | agent | the mTLS port is bound: it is opened only after the CRD check and the setup (TCP probe; a startup probe waits up to 3 minutes for the CRDs) | the port answers | `maxSurge 1`, `maxUnavailable 0`, `agent.minReadySeconds` (10) |
 | L7 proxy (`l7` container) | the HTTPS listener is bound and the caches (groups, clients, policies, access keys) have synced (`/readyz` on :8081) | `/healthz` | see below |
-| wg-demux (`wg-demux` container) | the UDP socket is bound, the caches have synced and every LabGroup has been put in the demux table (`/readyz` on :8082) | `/healthz` | see below |
+| wg-demux (`wg-demux` container) | the UDP socket is bound, the caches have synced and every LabGroup has been put in the demux table; in `tc` and `xdp` also: the programs are attached in front on every device and the entry addresses are known (`/readyz` on :8082) | `/healthz` | see below |
 | node-agent | Open vSwitch answers over both channels (database and OpenFlow) and the caches have synced (`/readyz` on `127.0.0.1:9440`; loopback only, it is on the host network) | `/healthz`: Open vSwitch answers (a node-agent whose channels hang is restarted; the watchdog still exits when they are lost) | one node at a time (`maxUnavailable 1`), `nodeAgent.minReadySeconds` (20) |
 
 - **Proxy rollout.** A new proxy pod must stay Ready for `proxy.minReadySeconds` (20) before the next one is replaced, so the replicas never go together: the demux keeps one replica's table while the other
@@ -1278,11 +1283,82 @@ everything a stranger can make it hold or spend is capped (`proxy.wg.limits`):
   `missRate`/`missBurst` for packets, all sources together, that match no session or come from an address the session does not expect, so guessing the 32-bit
   session index is rate-limited. Per session: `sessionRate`/`sessionBurst` packets per second, so one participant cannot use the demux's CPU up.
 - **Roaming works as before**, but one session changes address at most once per `roamInterval`; a packet from a third address inside the interval is dropped and
-  moves nothing. An index a live session owns is never taken by another handshake (the handshake is dropped).
+  moves nothing. An index a live session owns is never taken by another handshake (the handshake is dropped). In `userspace` the Service's policy is `Cluster`, so
+  the new source port of a roamed client is a new flow that Cilium may hand to the demux of another node (chance (N-1)/N with N demux pods), which knows no session:
+  the client then re-handshakes, about 15 s (as with the replicas before the demux modes). Fewer demux pods (`proxy.wg.nodeSelector` on the edge nodes) make it rarer.
 - **Type 2** (the server's answer) is accepted only from the VPN pod the init was forwarded to; **type 3** (cookie reply, the peer's own load protection) is
   forwarded, only from the exact address the session expects, and never moves the session.
 
 One overloaded VPN pod only hurts its own team: the demux caps are shared, the pods are not.
+
+### WireGuard demux modes
+
+`proxy.wg.mode` decides how the demux moves the WireGuard transport packets. The handshakes (and everything the fast path does not know) always go through the demux
+process, which is also what keeps the session table and the caps of the section above.
+
+| Mode | What moves the transport packets | Pod | Restart of the demux pod |
+|---|---|---|---|
+| `userspace` | the demux process, packet by packet | pod network, non-root (65532), no capabilities, namespace `laboratory-wg` at the restricted level | the clients re-handshake: about 15 s lost (measured on the stand: 74 of 149 pings) |
+| `tc` | eBPF programs on the node's external devices (tcx), in front of Cilium's | host network, root, capabilities `BPF`, `NET_ADMIN`, `PERFMON` only (not privileged), the host's `/sys/fs/bpf`, namespace at the privileged level | nothing is lost (0 of 148 pings): the maps and links stay pinned and the kernel keeps forwarding |
+| `xdp` | the same, plus an XDP program that judges and rewrites the client's packets at the device | as `tc` | as `tc` |
+
+**`userspace` is the default, and production runs it for now.** `tc` and `xdp` are opt-in, switched on only after the load test and the XDP test, done together with the owner. There is no silent fallback: a `tc` or `xdp` pod that cannot start its
+fast path (no `BPF` capability, a foreign XDP program on the device, ...) exits and crash loops, and the operator takes the mode from the same value
+(`WG_DEMUX_MODE`; a value other than the three fails the render and the operator start). To go back to `userspace`, see below.
+
+**What the fast path does.** A transport packet of a session the demux has completed is rewritten and forwarded in the kernel: client to server on the node's
+network device, server to client on `cilium_host` (servers on other nodes) or on the host-side veth of the server's pod (a server on this node).
+Everything else is passed on to the demux process unchanged, and `wg_demux_fastpath_packets_total` counts why: no session (`passed_miss`), a packet from another
+address than the session's (`passed_source`, a roam: the process moves the session), an idle session (`passed_stale`), no route or no metadata
+(`passed_route`, `passed_meta`). The per-session rate (`sessionRate`/`sessionBurst`) is enforced in the kernel with one bucket per session for both directions
+(`dropped_rate`). Over-rate packets are dropped there. IPv6 stays on the slow path.
+
+**Entry discovery.** The kernel judges only packets sent to the demux's entry addresses: each node address with the Service's UDP nodePort, and the Service's
+LoadBalancer and external IPs with the UDP port (IPv4). Each demux pod watches its own Service and Node and keeps the set current; the entry set is what `/readyz` waits for.
+A change of `proxy.wg.nodePort` or of the Service's address needs no restart.
+
+**Cilium.** The programs sit in front of Cilium's on the device (tcx), and a demux resync (`DEMUX_BPF_RESYNC`, 10 s) puts them back in front when another
+program takes the head: on the stand, a foreign program inserted at the head was ahead for 1-6 s and then ours were first again, with no pings lost. Cilium
+holds no NAT or conntrack state for the tunnel clients (the stand checks it is empty), so the Cilium agent can restart without touching the tunnels (0 pings lost). Two consequences:
+
+- **The server sees the node, not the client.** In `tc` and `xdp` the VPN pod sees the packets from the node's `cilium_host` address (in `userspace`, from the demux pod's address). Roaming
+  still works, the demux moves the session.
+- **LB-IPAM and `externalTrafficPolicy`.** In `tc` and `xdp` the policy defaults to `Local` (a packet must reach a node whose kernel holds its session), and then the demux
+  Service gets an address of its own: LB-IPAM shares an address only between Services with the same policy, and the gateway's Service has no pod selector to match. With `Cluster`
+  (the `userspace` default, or set by `proxy.wg.externalTrafficPolicy`) the two share one address, but only once the second Service is created again after the change (an address
+  already handed out is not moved). A stand or an on-prem edge that runs `tc` or `xdp` and wants UDP 51820 and TCP 443 on one address therefore sets
+  `proxy.wg.externalTrafficPolicy: Cluster` (clients' source addresses are then the nodes' ones) or gives the demux Service its own address. The fast path picks the LoadBalancer address up as soon as the Service has it
+  and drops it when the Service loses it (checked on the stand).
+
+**Limits of `xdp`.**
+
+- It attaches in native (driver) mode and falls back to generic mode when the driver refuses: on the stand's veth devices it attaches generic (`bpftool net show` says `generic`).
+- It refuses to start when the device already has an XDP program of someone else: Cilium's XDP acceleration (`loadBalancer.acceleration`) must be off on the entry devices. Use `tc` there.
+- A driver without XDP metadata room costs nothing: the frame passes untouched and the `tc` program handles it as in `tc` mode (`passed_meta`).
+- On AWS, the ENA driver takes native XDP only with an MTU up to 3498. This is a driver limit, not a check of ours, and it is not tested here: the load test must confirm it.
+
+**Metrics.** `:8083` of the demux (bound to the node's address in `tc`/`xdp`; in `userspace` the network policy admits the host entity only): `wg_demux_mode{mode}`, `wg_demux_sessions`,
+`wg_demux_sink_errors_total` (sessions that could not be written into the fast path; the slow path keeps forwarding them), `wg_demux_packets_total{type}` (what the demux socket took, by message type)
+and, in `tc`/`xdp`, `wg_demux_fastpath_packets_total{result}`. In `tc` and `xdp` the transport packets the process still sees stay near zero.
+
+**Pins.** The maps and links of `tc`/`xdp` are pinned under `/sys/fs/bpf/cybericebox/wg-demux` on the node (`DEMUX_BPF_PIN_PATH`). A new demux pod takes the pinned state over and restores the
+sessions of the old one as soon as it knows every group. Stopping the pod leaves the pins: the kernel keeps forwarding until the next pod takes over.
+
+**Switching back to `userspace`.**
+
+1. Set `proxy.wg.mode: userspace` and upgrade. The rollout replaces the pods one node at a time.
+2. A `userspace` pod does not remove the pins, so the old programs keep forwarding. On every node that ran `tc` or `xdp`, run `/proxy proxy-wg detach` of the same image as a one-off
+   pod: `nodeName` set, `hostNetwork: true`, root, `seccompProfile: RuntimeDefault`, capabilities `BPF`, `NET_ADMIN` and `PERFMON` only, the host's `/sys/fs/bpf` mounted, in a namespace that admits that
+   (`laboratory-wg` is restricted in `userspace`; use another). The manifest is in `hack/kind-demux/e2e.sh`, the `detach` step.
+3. It removes every link and pin of the fast path (`bpftool net show` has no `wg_` program, and `xdp` leaves the device). The clients come back on the slow path: on the stand both tunnels were back within 60 s.
+
+**What the load test must measure** before `tc` or `xdp` goes to production:
+
+- The CPU of the demux and of the node at the event's number of peers and at the peak rate, in each mode, against the `userspace` numbers above (`userspace` costs about 110m at ten active peers).
+- The throughput and latency of a tunnel, and `dropped_rate`, `passed_*` and `wg_demux_sink_errors_total` under load: the share of packets that stay on the slow path.
+- A demux pod restart and a Cilium agent restart with the clients busy: the loss, and the tcx order afterwards.
+- `xdp` on the real NIC: native or generic mode, the metadata, and the ENA MTU limit above.
+- The LB-IPAM setup of the real edge (the address of the demux Service, the nodePort path behind the load balancer).
 
 ### Revoking client certificates: the enrollment epoch
 
@@ -1429,7 +1505,9 @@ The service pods of the laboratory are hardened without a setting:
 |---|---|---|---|---|
 | operator | non-root | | all dropped, no privilege escalation | RuntimeDefault |
 | agent | non-root (65532) | read-only (`/tmp` is an emptyDir) | all dropped, no privilege escalation | RuntimeDefault |
-| L7 proxy and wg-demux | non-root (65532) | read-only | all dropped, no privilege escalation | RuntimeDefault |
+| L7 proxy | non-root (65532) | read-only | all dropped, no privilege escalation | RuntimeDefault |
+| wg-demux, `userspace` | non-root (65532) | read-only | all dropped, no privilege escalation | RuntimeDefault |
+| wg-demux, `tc` / `xdp` (host network) | root | read-only | all dropped, then `BPF`, `NET_ADMIN`, `PERFMON`; not privileged | RuntimeDefault |
 | zot (registry) | non-root (65532, `fsGroup` for the volume) | writable | all dropped, no privilege escalation | RuntimeDefault |
 | node-agent and OVS | root, **privileged** (it drives OVS and pod networking on the host) | | | |
 
@@ -1865,7 +1943,7 @@ system for a lab:
 | Pods | Class | Value |
 |---|---|---|
 | node-agent | `system-node-critical` (built in) | |
-| operator, agent, L7 proxy with the wg-demux, registry | `laboratory-platform` | 1000000 |
+| operator, agent, L7 proxy, wg-demux, registry | `laboratory-platform` | 1000000 |
 | VPN and gateway of a group | `laboratory-group` | 10000 |
 | device | `laboratory-device`, `preemptionPolicy: Never` | 100 |
 
@@ -1939,11 +2017,17 @@ slip under a stricter check, the component that runs it clamps or ignores the ba
    `CapacityShortfall` condition of the Tenants behind; the old operator ignores them. To tidy up:
    `kubectl annotate labs,labgroups -A --all laboratory.cybericebox.com/evict-at-` and remove the condition from
    `Tenant.status.conditions` by a status patch.
-2. `helm upgrade` (the operator, agent, node-agent and proxy roll out together; the operator and the agent can run in either order).
-3. The notes of each item below say what, if anything, must happen in a different order. In short, before `helm upgrade`:
+2. Once, when upgrading from a version where the VPN Service lived in `laboratory-proxy` (before the WireGuard demux modes): delete it right before
+   `helm upgrade`, outside an event: `kubectl -n laboratory-proxy delete svc laboratory-proxy-wg --ignore-not-found`. The Service moves to
+   `laboratory-wg`, and Helm creates the new one before it deletes the old one, so with a fixed `proxy.wg.nodePort` the create fails ("provided port
+   is already allocated") and the upgrade stops halfway. The VPN is down from this step until the new demux pods are Ready, and every client
+   re-handshakes. Once migrated the step does nothing (the kind harness checks the upgrade from `develop`: `hack/kind-demux/e2e.sh upgrade`).
+   The old Service is gone before a non-atomic `helm upgrade`: if that upgrade fails for another reason, the VPN has no Service until it is run again or rolled back.
+3. `helm upgrade` (the operator, agent, node-agent and proxy roll out together; the operator and the agent can run in either order).
+4. The notes of each item below say what, if anything, must happen in a different order. In short, before `helm upgrade`:
    - the cluster is Kubernetes 1.33 or newer (the chart refuses an older one), or `operator.admissionPolicy.enabled=false` is set on purpose (the chart refuses to skip the policies silently, and the operator exits at start when they are not enforced);
    - the tenant `default` exists (the chart creates it): with mTLS on, every certificate, the default tenant's included, needs its Tenant object;
-   - nothing else has to be done by hand: the operator rolls the VPN and gateway pods when their template changes, the agent runs two replicas and the node-agents roll one at a time.
+   - apart from step 2, nothing else has to be done by hand: the operator rolls the VPN and gateway pods when their template changes, the agent runs two replicas and the node-agents roll one at a time.
 
 ### Device resources (R-2)
 

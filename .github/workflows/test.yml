@@ -38,6 +38,25 @@ jobs:
       - name: VPN and gateway pod firewalls in network namespaces (privileged docker, make test-netns)
         run: make test-netns
 
+  bpf:
+    name: eBPF fast path of the WireGuard demux
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Login to Docker Hub for container tests
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: The committed objects match wg_fastpath.bpf.c (make generate-bpf is reproducible)
+        run: |
+          make generate-bpf
+          git diff --exit-code -- internal/proxy/demux/fastpath
+      - name: Program tests and live forwarding in network namespaces (privileged docker, make test-bpf)
+        run: make test-bpf
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -77,6 +96,8 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Allow user namespaces (device pods run with hostUsers false; Ubuntu's AppArmor restricts them)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Create kind cluster (1 control plane + 2 lab workers, one tainted)
         run: kind create cluster --config hack/kind/kind-config.yaml
       - name: Running Test e2e

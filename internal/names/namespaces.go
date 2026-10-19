@@ -6,6 +6,15 @@ const SystemNamespace = "laboratory-system"
 // ProxyNamespace is the Kubernetes namespace where the proxy pod runs.
 const ProxyNamespace = "laboratory-proxy"
 
+// WGNamespace is the Kubernetes namespace where the WireGuard demux runs, apart from the L7 proxy: its privileges depend on the demux mode.
+const WGNamespace = "laboratory-wg"
+
+// HostNetworkDemux reports whether the WireGuard demux of that mode (tc or xdp) runs on the host network, so that its packets carry a node address.
+func HostNetworkDemux(mode string) bool { return mode == "tc" || mode == "xdp" }
+
+// ValidDemuxMode reports whether mode is one of the WireGuard demux modes: userspace, tc or xdp.
+func ValidDemuxMode(mode string) bool { return mode == "userspace" || HostNetworkDemux(mode) }
+
 // LabGroupAccessPolicyName is the single complete firewall-policy object in
 // every LabGroup namespace.
 const LabGroupAccessPolicyName = "access-policy"

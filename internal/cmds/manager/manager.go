@@ -224,6 +224,7 @@ func Run() {
 		Scheme:                  mgr.GetScheme(),
 		Recorder:                mgr.GetEventRecorderFor("labgroup"),
 		PublicVPNEndpoint:       cfg.PublicVPNEndpoint,
+		WGDemuxMode:             cfg.WGDemuxMode,
 		VPNBaseNetwork:          cfg.VPNBaseNetwork,
 		InetBaseNetwork:         cfg.InetBaseNetwork,
 		VPNImage:                cfg.VPNImage,
