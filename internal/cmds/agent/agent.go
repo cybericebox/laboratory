@@ -83,6 +83,7 @@ func Run() {
 		log.Fatalf("%v", err)
 	}
 	h.SetGroupPods(cfg.GroupPods)
+	h.SetReservationNotice(time.Duration(cfg.ReservationEndingNoticeSeconds) * time.Second)
 	h.SetRenewMinInterval(cfg.Server.RenewMinInterval)
 	h.SetClientCA(cfg.MTLS.ClientCAFile, cfg.MTLS.ClientCAKeyFile, cfg.MTLS.ClientCertTTL)
 	h.SetRegistryAddr(cfg.RegistryAddr)

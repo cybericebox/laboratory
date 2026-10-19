@@ -1070,11 +1070,9 @@ func (e *clusterEnv) capacity() *capacitySnapshot {
 	}
 	pods = append(pods, heldPods...)
 	e.heldPods = heldPods
-	c := snapshotCapacity(nodes.Items, pods, e.s.LabNodeSelector, e.s.LabTolerations, e.s.nodeReserve(), e.s.Config.PlatformReservePercent, e.s.packingReserve())
-	if m := e.s.Config.Maximum; m.Set() {
-		room := m.Virtual(nodes.Items, pods, e.s.LabNodeSelector, e.s.LabTolerations, nodecap.Reserve{Percent: e.s.Config.PlatformReservePercent}, e.s.packingReserve())
+	c := capacityWithMaximum(nodes.Items, pods, e.s.LabNodeSelector, e.s.LabTolerations, e.s.nodeReserve(), e.s.Config.PlatformReservePercent, e.s.packingReserve(), e.s.Config.Maximum)
+	if e.s.Config.Maximum.Set() {
 		e.breaker = e.s.breakerOn(nodes.Items, e.now)
-		c.withMaximum(room, m.Remaining(nodes.Items, pods, e.s.LabNodeSelector, e.s.LabTolerations))
 	}
 	e.snapshot = &c
 	return e.snapshot

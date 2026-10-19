@@ -8,6 +8,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	laboratorycontroller "github.com/cybericebox/laboratory/internal/controller/laboratory"
 	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
@@ -93,5 +94,30 @@ func TestMaxDeviceFromZeroIsTheDeviceLimit(t *testing.T) {
 	h.SetMaximum(nodecap.Maximum{Budget: nodecap.Amount{CPU: 12000, Memory: 48 << 30}})
 	if got, err = h.GetCapacity(asClient("open"), &protobuf.Empty{}); err != nil || got.MaxDeviceCpuMillicores != 4000 || got.MaxDeviceMemoryBytes != 8<<30 {
 		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+// The capacity the agent reports to a tenant without a quota is exactly the room the operator's scheduler starts a pass from:
+// the same nodes, pods, reserves and budget give the same number (the real nodes plus the virtual room of the budget).
+func TestCapacityEqualsOperatorRoomsWithBudget(t *testing.T) {
+	sys := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "cilium", Namespace: "kube-system"}, Spec: corev1.PodSpec{NodeName: "w1",
+		Containers: []corev1.Container{{Name: "c", Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
+			corev1.ResourceCPU: resource.MustParse("250m"), corev1.ResourceMemory: resource.MustParse("300Mi")}}}}}, Status: corev1.PodStatus{Phase: corev1.PodRunning}}
+	n1, n2 := roomTestNode("cp-1", ""), roomTestNode("w1", "m7i")
+	reserve := nodecap.Reserve{Node: nodecap.Amount{CPU: 100, Memory: 256 << 20}, Percent: 5}
+	packing := nodecap.PackingReserve{Percent: 10}
+	for _, m := range []nodecap.Maximum{{}, {Budget: nodecap.Amount{CPU: 20000, Memory: 40 << 30}}} {
+		h := tenantHandler(t, []*laboratoryv1alpha1.Tenant{newTenantTenant("open", true, nil)}, n1, n2, sys)
+		h.SetNodeReserve(reserve)
+		h.SetPackingReserve(packing)
+		h.SetMaximum(m)
+		got, err := h.GetCapacity(asClient("open"), &protobuf.Empty{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := laboratorycontroller.RoomForLabs([]corev1.Node{*n1, *n2}, []corev1.Pod{*sys}, nil, nil, reserve, packing, m)
+		if got.CpuQuotaMillicores != want.CPU || got.MemoryQuotaBytes != want.Memory {
+			t.Fatalf("budget %+v: agent cpu %d memory %d, operator %+v", m.Budget, got.CpuQuotaMillicores, got.MemoryQuotaBytes, want)
+		}
 	}
 }

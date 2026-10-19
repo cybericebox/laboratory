@@ -141,6 +141,29 @@ func snapshotCapacity(nodes []corev1.Node, pods []corev1.Pod, selector map[strin
 	return c
 }
 
+// capacityWithMaximum is snapshotCapacity with the virtual room the static maximum still allows (none without a budget).
+func capacityWithMaximum(nodes []corev1.Node, pods []corev1.Pod, selector map[string]string, tolerations []corev1.Toleration, nodeReserve amount,
+	platformPercent int, packing nodecap.PackingReserve, m nodecap.Maximum) capacitySnapshot {
+	c := snapshotCapacity(nodes, pods, selector, tolerations, nodeReserve, platformPercent, packing)
+	if m.Set() {
+		room := m.Virtual(nodes, pods, selector, tolerations, nodecap.Reserve{Percent: platformPercent}, packing)
+		c.withMaximum(room, m.Remaining(nodes, pods, selector, tolerations))
+	}
+	return c
+}
+
+// RoomForLabs is the sum of the rooms a scheduler pass starts from with this configuration (the real nodes, then the virtual
+// room of the budget), before any lab runs: the capacity the agent reports must be exactly this (its parity test).
+func RoomForLabs(nodes []corev1.Node, pods []corev1.Pod, selector map[string]string, tolerations []corev1.Toleration, reserve nodecap.Reserve,
+	packing nodecap.PackingReserve, m nodecap.Maximum) nodecap.Amount {
+	c := capacityWithMaximum(nodes, pods, selector, tolerations, amount{cpu: reserve.Node.CPU, mem: reserve.Node.Memory}, reserve.Percent, packing, m)
+	var sum nodecap.Amount
+	for _, r := range c.rooms() {
+		sum.CPU, sum.Memory = sum.CPU+r.CPU, sum.Memory+r.Memory
+	}
+	return sum
+}
+
 // fitsOneNode says whether some node of the pool, empty, holds need: CPU and memory on the same node.
 func (c capacitySnapshot) fitsOneNode(need amount) bool {
 	for _, l := range c.nodeLimits {
