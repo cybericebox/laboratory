@@ -115,7 +115,9 @@ func lacksResources(message string) bool {
 // scheduler says the nodes lack CPU, memory or pod slots (a node an autoscaler adds fixes that). Only such a pod is spared the
 // startup timeout, holds no in-flight slot and makes its gang due at the node timeout; any other pod without a node (no budget,
 // or placed on real room and refused for a taint, a selector, an extended resource) fails after the startup timeout as before
-// (reason Unschedulable, with the scheduler's message).
+// (reason Unschedulable, with the scheduler's message). onBudget is per gang: a pod of a gang placed partly on the real room and
+// partly on the virtual room waits too, whatever kept it off the real node. A pod no autoscaled node can ever take (a selector or
+// a taint no node template has) is therefore withdrawn and queued again at every node timeout, not failed.
 func waitsForNode(pods []*corev1.Pod, budget, onBudget bool) bool {
 	return budget && nodeless(pods) && (onBudget || lacksResources(unschedulableMessage(pods)))
 }

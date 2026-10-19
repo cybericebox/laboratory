@@ -110,6 +110,11 @@ func Run() {
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
+	// the operator runs without a budget its CRDs cannot carry: the agent then advertises none either
+	maximum, why := crdcheck.UsableBudget(context.Background(), crdsFrom(k8s), maximum, crdcheck.BudgetRetry)
+	if why != "" {
+		log.Printf("capacity budget not advertised: %s; apply the chart CRDs (kubectl apply --server-side -f charts/laboratory/crds/) and restart", why)
+	}
 	h.SetMaximum(maximum)
 	go h.RunTenantStatus(context.Background(), cfg.TenantStatusInterval)
 	if cfg.Cache.Enabled {
@@ -225,6 +230,21 @@ func nodeReserve(cfg *config.Config) (nodecap.Reserve, error) {
 		}
 	}
 	return r, nil
+}
+
+// crdsFrom reads a CustomResourceDefinition with the agent's client (the agent may get the laboratory's Device and LabGroup CRDs).
+func crdsFrom(k8s kubernetes.Interface) crdcheck.GetCRD {
+	return func(ctx context.Context, name string) (map[string]any, error) {
+		raw, err := k8s.Discovery().RESTClient().Get().AbsPath("/apis/apiextensions.k8s.io/v1/customresourcedefinitions", name).DoRaw(ctx)
+		if err != nil {
+			return nil, err
+		}
+		var crd map[string]any
+		if err := json.Unmarshal(raw, &crd); err != nil {
+			return nil, err
+		}
+		return crd, nil
+	}
 }
 
 // packingReserve is the scheduler's hidden packing reserve as the operator reads it.

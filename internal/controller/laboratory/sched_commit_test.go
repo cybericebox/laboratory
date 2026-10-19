@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/names"
 )
 
@@ -594,6 +595,9 @@ func TestScaleFromZeroWaitsWhateverTheSchedulerSays(t *testing.T) {
 	f.at(sent.Add(15 * time.Minute))
 	f.tick()
 	f.wantStates("a/p1=Q")
+	if f.device("a", "p1").Status.Scheduling.OnBudget {
+		t.Fatal("a withdrawn record is not on the budget any more")
+	}
 }
 
 // The only new node still boots (NotReady, its not-ready taint in the message): the pod waits for it.
@@ -627,4 +631,53 @@ func TestSelectorMismatchOnRealRoomFails(t *testing.T) {
 	if fail := f.device("a", "p1").Status.Scheduling.Failure; fail == nil || fail.Reason != laboratoryv1alpha1.FailureUnschedulable || !strings.Contains(fail.Message, "selector") {
 		t.Fatalf("failure = %+v", fail)
 	}
+}
+
+// The VPN and gateway pods of a LabGroup sent onto the budget's room carry it in their records too.
+func TestGroupPodsOnBudget(t *testing.T) {
+	f := maxFixture(t, 2)
+	f.s.GroupPods = grouppods.Config{VPNCPU: "500m", VPNMemory: "256Mi", GatewayCPU: "500m", GatewayMemory: "256Mi"}
+	now := metav1.NewTime(f.now)
+	queued := laboratoryv1alpha1.PodSchedule{State: laboratoryv1alpha1.PodQueued, QueuedAt: &now}
+	f.create(&laboratoryv1alpha1.LabGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "team", UID: "uid-team", CreationTimestamp: metav1.NewTime(planEpoch)},
+		Status: laboratoryv1alpha1.LabGroupStatus{Pods: []laboratoryv1alpha1.NamedPodSchedule{
+			{Name: "vpn", PodSchedule: queued}, {Name: "gateway", PodSchedule: queued},
+		}},
+	})
+	f.tick()
+	var g laboratoryv1alpha1.LabGroup
+	if err := f.c.Get(context.Background(), types.NamespacedName{Name: "team"}, &g); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range g.Status.Pods {
+		if p.State != st || !p.OnBudget {
+			t.Fatalf("%s = %+v", p.Name, p.PodSchedule)
+		}
+	}
+}
+
+// A gang placed partly on the real room and partly on the budget's room is on the budget as a whole: a pod of it that the
+// scheduler leaves without a node for any reason (here a taint on the node that exists) waits for a node, and the gang is
+// withdrawn at the node timeout instead of the pod failing at the startup timeout.
+func TestMixedGangWaitsForANode(t *testing.T) {
+	f := maxFixture(t, 2)
+	f.create(node("n1", "1", "2Gi"))
+	f.addLab("a", "g", nil, "p1", "p2")
+	f.tick()
+	sent := f.now
+	f.wantStates("a/p1=S a/p2=S")
+	for _, d := range []string{"p1", "p2"} {
+		if !f.device("a", d).Status.Scheduling.OnBudget {
+			t.Fatalf("%s is not on the budget", d)
+		}
+	}
+	f.pendingWith("a", "p1", "0/1 nodes are available: 1 node(s) had untolerated taint {x: y}.")
+	f.pendingWith("a", "p2", "0/1 nodes are available: 1 Insufficient cpu.")
+	f.now = f.now.Add(6 * time.Minute)
+	f.tick()
+	f.wantStates("a/p1=S a/p2=S")
+	f.at(sent.Add(15 * time.Minute))
+	f.tick()
+	f.wantStates("a/p1=Q a/p2=Q")
 }
