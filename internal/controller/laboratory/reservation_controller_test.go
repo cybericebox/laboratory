@@ -81,7 +81,7 @@ func (f *resFixture) reservation(name string, res corev1.ResourceList) {
 		res = corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("2Gi")}
 	}
 	if err := f.c.Create(context.Background(), &laboratoryv1alpha1.Reservation{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Generation: 1},
 		Spec:       laboratoryv1alpha1.ReservationSpec{Tenant: "t1", From: metav1.NewTime(resFrom), To: metav1.NewTime(resTo), Resources: res},
 	}); err != nil {
 		f.t.Fatal(err)
@@ -723,9 +723,12 @@ func (f *resFixture) setUsed(name, cpu, mem string) {
 	}
 }
 
+// setResources changes the amount as the backend does; the fake client does not count generations, so it is bumped here as
+// the API server would.
 func (f *resFixture) setResources(name, cpu, mem string) {
 	f.t.Helper()
 	r := f.get(name)
+	r.Generation++
 	r.Spec.Resources = corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(cpu), corev1.ResourceMemory: resource.MustParse(mem)}
 	if err := f.c.Update(context.Background(), r); err != nil {
 		f.t.Fatal(err)
@@ -736,8 +739,8 @@ func exceededCond(r *laboratoryv1alpha1.Reservation) *metav1.Condition {
 	return meta.FindStatusCondition(r.Status.Conditions, laboratoryv1alpha1.ReservationConditionExceeded)
 }
 
-// A reservation made smaller than what runs under it gets Exceeded with the deletion time; still exceeded one notice later,
-// its groups go (the reservation stays open). Raising the amount, or the usage dropping, during the notice calls it off.
+// A reservation the backend made smaller than what runs under it gets Exceeded with the deletion time; still exceeded one
+// notice later, its groups go (the reservation stays open) and Exceeded turns False, GroupsDeleted.
 func TestExceededReservationLosesGroups(t *testing.T) {
 	f := newResFixture(t, nil)
 	f.tenant("t1")
@@ -766,6 +769,9 @@ func TestExceededReservationLosesGroups(t *testing.T) {
 		t.Fatal("the groups of an exceeded reservation survived the notice")
 	}
 	wantPhase(t, r, laboratoryv1alpha1.ReservationPhaseActive)
+	if c := exceededCond(r); c == nil || c.Status != metav1.ConditionFalse || c.Reason != laboratoryv1alpha1.ReservationReasonGroupsDeleted {
+		t.Fatalf("exceeded after the deletion = %+v", c)
+	}
 	f.setUsed("r", "0", "0")
 	if _, r = f.at(12*time.Minute+resNotice, "r"); exceededCond(r) != nil {
 		t.Fatal("the condition stays once the usage is within the amount")
@@ -783,6 +789,7 @@ func TestExceededCancelledWhenRaised(t *testing.T) {
 			f.reservation("r", nil)
 			f.group("g", "r", "t1")
 			f.setUsed("r", "1", "1Gi")
+			f.at(5*time.Minute, "r") // fits: the last fit is recorded
 			f.setResources("r", "500m", "2Gi")
 			if _, r := f.at(10*time.Minute, "r"); exceededCond(r) == nil {
 				t.Fatal("not exceeded")
@@ -808,6 +815,7 @@ func TestExceededConfirmedOnServer(t *testing.T) {
 	f.reservation("r", nil)
 	f.group("g", "r", "t1")
 	f.setUsed("r", "1", "1Gi")
+	f.at(5*time.Minute, "r")
 	f.setResources("r", "500m", "2Gi")
 	f.at(10*time.Minute, "r")
 	stale = f.get("r")
@@ -815,5 +823,152 @@ func TestExceededConfirmedOnServer(t *testing.T) {
 	f.at(10*time.Minute+resNotice, "r")
 	if !f.groupExists("g") {
 		t.Fatal("deleted on a stale cache although the amount was raised")
+	}
+}
+
+func overCond(r *laboratoryv1alpha1.Reservation) *metav1.Condition {
+	return meta.FindStatusCondition(r.Status.Conditions, laboratoryv1alpha1.ReservationConditionOverAmount)
+}
+
+// Usage over an amount the backend did not lower (the scheduler recounted what runs: device defaults changed, a Lab edited, a
+// label moved) is shown as OverAmount and never deletes, also when the spec changes otherwise (an extension).
+func TestOverAmountWithoutShrinkNeverDeletes(t *testing.T) {
+	f := newResFixture(t, nil)
+	f.tenant("t1")
+	f.reservation("r", nil)
+	f.group("g", "r", "t1")
+	f.setUsed("r", "1", "1Gi")
+	_, r := f.at(5*time.Minute, "r")
+	if c := meta.FindStatusCondition(r.Status.Conditions, laboratoryv1alpha1.ReservationConditionWithinAmount); c == nil || c.Status != metav1.ConditionTrue {
+		t.Fatalf("within amount = %+v", c)
+	}
+	f.setUsed("r", "3", "1Gi") // same generation: drift
+	_, r = f.at(6*time.Minute, "r")
+	if c := overCond(r); c == nil || c.Status != metav1.ConditionTrue {
+		t.Fatalf("over amount = %+v", c)
+	}
+	if exceededCond(r) != nil {
+		t.Fatalf("drift armed a deletion: %+v", exceededCond(r))
+	}
+	r.Spec.To = metav1.NewTime(resTo.Add(time.Hour))
+	r.Generation++
+	if err := f.c.Update(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	_, r = f.at(7*time.Minute, "r")
+	if exceededCond(r) != nil {
+		t.Fatal("an extension armed a deletion")
+	}
+	f.at(7*time.Minute+resNotice, "r")
+	f.at(8*time.Minute+resNotice, "r")
+	if !f.groupExists("g") {
+		t.Fatal("drift deleted the groups")
+	}
+	f.setUsed("r", "1", "1Gi")
+	if _, r = f.at(9*time.Minute+resNotice, "r"); overCond(r) != nil {
+		t.Fatal("OverAmount stays once the usage fits")
+	}
+}
+
+// A malformed spec (it reserves nothing) is Invalid, not a shrink: never Exceeded, nothing deleted.
+func TestInvalidNeverArmsExceeded(t *testing.T) {
+	f := newResFixture(t, nil)
+	f.tenant("t1")
+	f.reservation("r", nil)
+	f.group("g", "r", "t1")
+	f.setUsed("r", "1", "1Gi")
+	f.at(5*time.Minute, "r")
+	f.setResources("r", "0", "2Gi")
+	_, r := f.at(6*time.Minute, "r")
+	if meta.FindStatusCondition(r.Status.Conditions, laboratoryv1alpha1.ReservationConditionInvalid) == nil || exceededCond(r) != nil || overCond(r) == nil {
+		t.Fatalf("conditions = %+v", r.Status.Conditions)
+	}
+	f.at(6*time.Minute+resNotice, "r")
+	if !f.groupExists("g") {
+		t.Fatal("an invalid spec deleted the groups")
+	}
+}
+
+// The Exceeded deletion takes only what was created before the notice, once: a group made after it stays, also on the next
+// passes while status.used stays stale over the amount.
+func TestExceededScopedAndOneShot(t *testing.T) {
+	f := newResFixture(t, nil)
+	f.tenant("t1")
+	f.reservation("r", nil)
+	f.group("g", "r", "t1")
+	f.setUsed("r", "1", "1Gi")
+	f.at(5*time.Minute, "r")
+	f.setResources("r", "500m", "2Gi")
+	_, r := f.at(6*time.Minute, "r")
+	armed := exceededCond(r)
+	if armed == nil || armed.Status != metav1.ConditionTrue {
+		t.Fatalf("not armed: %+v", armed)
+	}
+	if err := f.c.Create(context.Background(), &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{
+		Name: "late", UID: "uid-group-late", Labels: resLabels("r", "t1"), CreationTimestamp: metav1.NewTime(armed.LastTransitionTime.Add(time.Second))}}); err != nil {
+		t.Fatal(err)
+	}
+	_, r = f.at(6*time.Minute+resNotice, "r")
+	if f.groupExists("g") {
+		t.Fatal("the group from before the notice survived")
+	}
+	if !f.groupExists("late") {
+		t.Fatal("a group created after the notice was deleted")
+	}
+	if c := exceededCond(r); c == nil || c.Reason != laboratoryv1alpha1.ReservationReasonGroupsDeleted {
+		t.Fatalf("after the deletion: %+v", r.Status.Conditions)
+	}
+	// status.used stays stale (no scheduler write): nothing more is deleted, on any later pass
+	f.group("later", "r", "t1")
+	for _, d := range []time.Duration{7 * time.Minute, 8 * time.Minute, 20 * time.Minute} {
+		_, r = f.at(d+resNotice, "r")
+	}
+	if !f.groupExists("late") || !f.groupExists("later") {
+		t.Fatal("a second pass deleted groups")
+	}
+	if c := exceededCond(r); c == nil || c.Status != metav1.ConditionFalse || overCond(r) == nil {
+		t.Fatalf("re-armed on stale usage, or the excess not shown: %+v", r.Status.Conditions)
+	}
+}
+
+// Without a scheduler status.used means nothing: no usage conditions and no deletion for it.
+func TestExceededOffWithoutScheduler(t *testing.T) {
+	f := newResFixture(t, nil)
+	f.r.NoScheduler = true
+	f.tenant("t1")
+	f.reservation("r", nil)
+	f.group("g", "r", "t1")
+	f.setUsed("r", "1", "1Gi")
+	f.at(5*time.Minute, "r")
+	f.setResources("r", "500m", "2Gi")
+	_, r := f.at(6*time.Minute, "r")
+	if exceededCond(r) != nil || overCond(r) != nil {
+		t.Fatalf("usage conditions without a scheduler: %+v", r.Status.Conditions)
+	}
+	f.at(6*time.Minute+resNotice, "r")
+	if !f.groupExists("g") {
+		t.Fatal("deleted without a scheduler")
+	}
+}
+
+// The 24 h removal names the resourceVersion of the copy it checked: a change in between keeps the reservation.
+func TestRemovalPreconditionedOnVersion(t *testing.T) {
+	var pre *metav1.Preconditions
+	f := newResFixture(t, &interceptor.Funcs{Delete: func(ctx context.Context, c client.WithWatch, o client.Object, opts ...client.DeleteOption) error {
+		if _, ok := o.(*laboratoryv1alpha1.Reservation); ok {
+			do := &client.DeleteOptions{}
+			do.ApplyOptions(opts)
+			pre = do.Preconditions
+		}
+		return c.Delete(ctx, o, opts...)
+	}})
+	f.tenant("t1")
+	f.reservation("r", nil)
+	f.at(time.Hour, "r")
+	rv := f.get("r").ResourceVersion
+	f.now = resTo.Add(reservationRetention)
+	f.reconcile("r")
+	if pre == nil || pre.UID == nil || pre.ResourceVersion == nil || *pre.ResourceVersion != rv {
+		t.Fatalf("removal preconditions = %+v, want the resourceVersion %s", pre, rv)
 	}
 }

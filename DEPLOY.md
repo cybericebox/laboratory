@@ -371,9 +371,15 @@ and later passes check it on the API server, so an extension the operator's cach
 that passed while the operator was down is processed when it starts; for 10 minutes after `spec.to` the operator looks again
 every minute (objects it did not see at the end go too). When the tenant of a reservation is gone (checked on the API server),
 the reservation ends one notice after that is seen, at least one minute (or at `spec.to` if sooner, reason `TenantGone`), and
-stays ended. When the groups use more than the reservation reserves (`status.used` over `spec.resources`: it was made
-smaller), it gets `Exceeded=True` with the deletion time; still exceeded one notice later (at least one minute), all its groups
-are deleted as at the end and the reservation stays open. Raising `spec.resources` or a usage back within it calls that off.
+stays ended (an admin who resets the status by hand while a tenant of that name exists reopens it). The condition
+`WithinAmount` says whether `status.used` fits `spec.resources`; its message keeps the generation and amount of the last fit
+(`last fit: generation=G cpu=Cm memory=M`). When the backend made the reservation smaller than what runs (a newer generation,
+and the amount lower than at the last fit in a resource that is over), it gets `Exceeded=True` with the deletion time; still
+so one notice later (at least one minute, checked on the API server), the groups created before that notice are deleted
+once, the reservation stays open and `Exceeded` turns False (`GroupsDeleted`); the same generation never deletes again.
+Raising `spec.resources` or a usage back within it calls it off. Usage over the amount for any other reason (device defaults
+changed, a Lab edited, a label moved: the scheduler recounts what runs), or with an `Invalid` spec, only sets `OverAmount=True`
+and never deletes. With `scheduler.enabled=false` the usage conditions are off.
 An ended reservation is deleted a day after its end. Resources that reserve nothing get the condition `Invalid=True`; the phase
 still follows the clock.
 
