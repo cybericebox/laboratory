@@ -85,6 +85,9 @@ type PodSchedule struct {
 	// SchedulerMessage is what the scheduler said (PodScheduled=False) about a pod of the group that got no node, recorded when
 	// the group was withdrawn; cleared on the next dispatch.
 	SchedulerMessage string `json:"schedulerMessage,omitempty"`
+	// OnBudget says the scheduler sent the pod with its group placed partly on room of nodes not yet present (the capacity
+	// budget): without a node it waits for one an autoscaler adds, and the group commit decides at the node timeout.
+	OnBudget bool `json:"onBudget,omitempty"`
 }
 
 // PodFailure is the warning of a pod that did not start.

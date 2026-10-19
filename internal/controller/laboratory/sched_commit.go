@@ -109,12 +109,15 @@ func lacksResources(message string) bool {
 	return strings.Contains(message, "Insufficient cpu") || strings.Contains(message, "Insufficient memory") || strings.Contains(message, "Too many pods")
 }
 
-// waitsForNode says a sent pod waits for a node that may come: it has no node for want of resources, and a capacity budget is
-// set (an autoscaler may add nodes). Only such a pod is spared the startup timeout, holds no in-flight slot and makes its gang
-// due at the node timeout; any other pod without a node fails after the startup timeout as before (reason Unschedulable, with
-// the scheduler's message).
-func waitsForNode(pods []*corev1.Pod, budget bool) bool {
-	return budget && nodeless(pods) && lacksResources(unschedulableMessage(pods))
+// waitsForNode says a sent pod waits for a node that may come: a capacity budget is set, it has no node, and either the
+// scheduler's own simulation sent it onto room of nodes not yet present (onBudget, recorded at dispatch: true whatever the
+// scheduler says about the nodes that exist, so also with no lab node at all or while the only new node boots), or the
+// scheduler says the nodes lack CPU, memory or pod slots (a node an autoscaler adds fixes that). Only such a pod is spared the
+// startup timeout, holds no in-flight slot and makes its gang due at the node timeout; any other pod without a node (no budget,
+// or placed on real room and refused for a taint, a selector, an extended resource) fails after the startup timeout as before
+// (reason Unschedulable, with the scheduler's message).
+func waitsForNode(pods []*corev1.Pod, budget, onBudget bool) bool {
+	return budget && nodeless(pods) && (onBudget || lacksResources(unschedulableMessage(pods)))
 }
 
 // scheduledAt is when the newest pod got its node (PodScheduled turned True); zero: not known.
@@ -139,7 +142,7 @@ func nodeWaits(snap *clusterView, objs []*schedObject, budget bool) map[*schedPo
 			if p.state != laboratoryv1alpha1.PodStarting || p.ref == nil {
 				continue
 			}
-			if waitsForNode(snap.podsOf[p.lookup], budget) {
+			if waitsForNode(snap.podsOf[p.lookup], budget, p.onBudget) {
 				out[p] = true
 			}
 		}
@@ -312,7 +315,7 @@ func (s *Scheduler) withdraw(ctx context.Context, snap *clusterView, g gangCommi
 		}
 		reset := func(ps *laboratoryv1alpha1.PodSchedule) {
 			ps.State, ps.DispatchedAt, ps.StartedAt, ps.Failure = laboratoryv1alpha1.PodQueued, nil, nil, nil
-			ps.Withdrawals, ps.RetryAfter, ps.SchedulerMessage = g.attempt, &at, message
+			ps.Withdrawals, ps.RetryAfter, ps.SchedulerMessage, ps.OnBudget = g.attempt, &at, message, false
 		}
 		var err error
 		switch p.kind {
@@ -333,7 +336,7 @@ func (s *Scheduler) withdraw(ctx context.Context, snap *clusterView, g gangCommi
 			}
 			continue
 		}
-		p.state, p.dispatchedAt, p.withdrawals, p.retryAfter, p.schedulerMessage = laboratoryv1alpha1.PodQueued, time.Time{}, g.attempt, retry, message
+		p.state, p.dispatchedAt, p.withdrawals, p.retryAfter, p.schedulerMessage, p.onBudget = laboratoryv1alpha1.PodQueued, time.Time{}, g.attempt, retry, message, false
 		delete(s.recent, p.key)
 	}
 	if g.again {

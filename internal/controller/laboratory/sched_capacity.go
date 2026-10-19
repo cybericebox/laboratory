@@ -85,6 +85,9 @@ func (c *capacitySnapshot) withMaximum(room, remaining nodecap.Amount) {
 	c.allocatable = c.allocatable.add(amount{cpu: remaining.CPU, mem: remaining.Memory})
 }
 
+// usesVirtual says a placement took something of the virtual room of the budget.
+func usesVirtual(at map[string]amount) bool { return at[nodecap.VirtualRoomName] != (amount{}) }
+
 // closeVirtual is rooms with the virtual room emptied: what a new gang may be placed on under the breaker.
 func closeVirtual(rooms []nodeRoom) []nodeRoom {
 	out := append([]nodeRoom(nil), rooms...)

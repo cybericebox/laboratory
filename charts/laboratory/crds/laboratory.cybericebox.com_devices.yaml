@@ -866,6 +866,11 @@ spec:
                         format: int32
                         type: integer
                     type: object
+                  onBudget:
+                    description: |-
+                      OnBudget says the scheduler sent the pod with its group placed partly on room of nodes not yet present (the capacity
+                      budget): without a node it waits for one an autoscaler adds, and the group commit decides at the node timeout.
+                    type: boolean
                   queuedAt:
                     description: QueuedAt is when the pod entered the queue.
                     format: date-time

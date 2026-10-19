@@ -84,6 +84,12 @@ rules:
   resources: [customresourcedefinitions]
   resourceNames: [reservations.laboratory.cybericebox.com]
   verbs: [get]
+# With a capacity budget the operator checks at start that the Device and LabGroup CRDs serve the fields of the gang commit
+# (helm upgrade does not apply the chart's CRDs); an older CRD turns the budget off.
+- apiGroups: [apiextensions.k8s.io]
+  resources: [customresourcedefinitions]
+  resourceNames: [devices.laboratory.cybericebox.com, labgroups.laboratory.cybericebox.com]
+  verbs: [get]
 # RoleBindings of the group namespaces (its own, the VPN's, the gateway's, the agent's).
 - apiGroups: [rbac.authorization.k8s.io]
   resources: [rolebindings]

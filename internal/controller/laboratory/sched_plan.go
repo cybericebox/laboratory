@@ -85,6 +85,8 @@ type schedPod struct {
 	retryAfter   time.Time
 	// schedulerMessage is what the scheduler said about a pod of the gang that got no node when it was withdrawn.
 	schedulerMessage string
+	// onBudget says the pod was sent with its gang placed partly on the virtual room of the capacity budget.
+	onBudget bool
 	// ref is the scheduler's handle on the underlying object (opaque to the plan).
 	ref any
 }
@@ -227,6 +229,9 @@ type failedPod struct {
 // schedPlan is the outcome of one scheduling pass.
 type schedPlan struct {
 	dispatch []*schedPod
+	// onBudget are the dispatched pods whose gang the simulation placed partly on the virtual room of the capacity budget: they
+	// may wait for a node an autoscaler adds (recorded on their scheduling record).
+	onBudget map[*schedPod]bool
 	failed   []failedPod
 	// unsettled are the objects left out of their gang because their pods were still not set up unsetSettleWindow after
 	// they were created.
@@ -467,7 +472,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		blockedObjs = append(blockedObjs, orderObjs(g.objs)...)
 	}
 
-	plan := schedPlan{status: map[string]objectStatus{}}
+	plan := schedPlan{status: map[string]objectStatus{}, onBudget: map[*schedPod]bool{}}
 	gone := map[*schedPod]bool{} // dispatched or failed in this pass
 
 	// The in-flight limit as the plan sees it: the free slots plus the pods starting now.
@@ -627,6 +632,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 	// A remainder is held only while the gang can dispatch: its tenant within the quota (counting the room held for the
 	// tenant's earlier gangs), and it fits the empty nodes beside its own pods.
 	held := map[*gang]bool{}                 // admitted gangs whose remainder is placed: rooms is already less it
+	heldVirtual := map[*gang]bool{}          // held remainders placed partly on the virtual room of the budget
 	heldQuota := map[string]amount{}         // tenant -> the remainders held for it
 	heldOwn := map[*gang]map[string]amount{} // the part of heldQuota that is the gang's own
 	if perNode {
@@ -676,6 +682,7 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			if !ok {
 				continue // holds nothing: the gangs after it go on
 			}
+			heldVirtual[gg] = usesVirtual(placed(rooms, left))
 			rooms = left
 			held[gg] = true
 			heldOwn[gg] = sums
@@ -995,6 +1002,10 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			}
 			left = without(rooms, at)
 		}
+		virtual := heldVirtual[gg]
+		if at != nil {
+			virtual = usesVirtual(at)
+		}
 		// A gang within the limit needs a slot for every pod. One larger than the whole limit could never get that: it
 		// goes in slices of the free slots, while the room is still checked for all of it.
 		send := queued
@@ -1020,6 +1031,9 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		for _, p := range send {
 			env.take(p)
 			plan.dispatch = append(plan.dispatch, p)
+			if virtual {
+				plan.onBudget[p] = true
+			}
 			gone[p] = true
 		}
 		slots -= len(send)
