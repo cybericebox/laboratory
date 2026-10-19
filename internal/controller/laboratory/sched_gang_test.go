@@ -514,13 +514,17 @@ func TestGangWaitsForUninitialisedPods(t *testing.T) {
 	}
 }
 
-// A gang waits for an object whose pods nobody set up only within unsetSettleWindow of its creation: after that it goes on
-// without it (the object is reported as unsettled), and an admitted remainder stops keeping room for its pods.
+// A gang waits for an object whose pods nobody set up only within unsetSettleWindow of when its reconciler first worked on it:
+// after that it goes on without it (the object is reported as unsettled). An object its reconciler has not touched yet is
+// still in that reconciler's queue: it is waited for with no limit.
 func TestGangStopsWaitingForAStuckObject(t *testing.T) {
 	nodes := []nodeRoom{room("n1", 4000, 4*gi)}
 	at := func(age time.Duration) fairness { return fairness{now: planEpoch.Add(2 * time.Second).Add(age)} }
 	a := obj("lab/a", "g", 1, nil, need(pods("a", "p1"), 100, gi)...)
 	b := obj("lab/b", "g", 2, nil, need(pods("b", "p1:"), 100, gi)...)
+	// not touched yet: an hour later the gang still waits
+	wantDispatch(t, planSchedule([]*schedObject{a, b}, 10, false, &fakeEnv{nodes: nodes, empty: nodes, fair: at(time.Hour)}))
+	b.settleFrom = planEpoch.Add(2 * time.Second)
 	plan := planSchedule([]*schedObject{a, b}, 10, false, &fakeEnv{nodes: nodes, empty: nodes, fair: at(unsetSettleWindow - time.Second)})
 	wantDispatch(t, plan)
 	if st := plan.status["lab/a"]; st.Message != "waiting for the pods of lab/b to be set up" {
@@ -541,7 +545,22 @@ func TestRemainderReleasesTheRoomOfAStuckObject(t *testing.T) {
 	run := obj("lab/a", "g", 1, nil, need(pods("a", "p1:S"), 100, gi)...)
 	c := obj("lab/c", "g", 3, nil, need(pods("c", "p1"), 100, gi)...)
 	late := obj("lab/b", "g", 2, nil, need(pods("b", "p1:"), 100, gi)...)
+	late.settleFrom = planEpoch.Add(2 * time.Second)
 	free := []nodeRoom{room("n1", 4000, gi)}
 	wantDispatch(t, planSchedule([]*schedObject{run, c, late}, 10, false, &fakeEnv{nodes: free, empty: nodes, fair: at(time.Second)}))
 	wantDispatch(t, planSchedule([]*schedObject{run, c, late}, 10, false, &fakeEnv{nodes: free, empty: nodes, fair: at(unsetSettleWindow)}), "c/p1")
+}
+
+// An object out of its gang is out whole: past its window a lab with one pod set up and one not starts no pod at all, while
+// the rest of the gang goes.
+func TestStuckObjectIsOutWhole(t *testing.T) {
+	nodes := []nodeRoom{room("n1", 4000, 4*gi)}
+	a := obj("lab/a", "g", 1, nil, need(pods("a", "p1"), 100, gi)...)
+	b := obj("lab/b", "g", 2, nil, need(pods("b", "p1", "p2:"), 100, gi)...)
+	b.settleFrom = planEpoch
+	plan := planSchedule([]*schedObject{a, b}, 10, false, &fakeEnv{nodes: nodes, empty: nodes, fair: fairness{now: planEpoch.Add(unsetSettleWindow)}})
+	wantDispatch(t, plan, "a/p1")
+	if st := plan.status["lab/b"]; st.Pending != 2 || st.Message != "the pods of this object are still not set up: its group goes on without it" {
+		t.Fatalf("b status = %+v", st)
+	}
 }

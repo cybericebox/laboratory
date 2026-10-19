@@ -286,20 +286,30 @@ func TestFailedLabNeverBlocksItsGang(t *testing.T) {
 	f.wantStates("a/p1=S")
 }
 
-// A lab whose Devices never come holds its gang only within the settle window, then the gang goes on and the lab gets one
-// Warning event.
+// A lab whose Devices never come holds its gang while its reconciler has not touched it (however old it is), and from its
+// first trace (Status.ImageCache) only within the settle window; then the gang goes on and the lab gets one Warning event.
 func TestStuckLabHoldsItsGangOnlyForTheWindow(t *testing.T) {
 	f := newSchedFixture(t, schedCfg())
 	rec := record.NewFakeRecorder(10)
 	f.s.Recorder = rec
 	f.addLab("a", "g", nil, "p1")
 	f.bareLab("b", "g", "")
+	f.now = f.now.Add(10 * time.Minute) // the reconciler's queue is long
 	f.tick()
 	f.wantStates("a/p1=Q")
 	if st := f.labStatus("a"); st == nil || st.Message != "waiting for the pods of lab/ns-b/b to be set up" {
 		t.Fatalf("a status = %+v", st)
 	}
-	f.now = f.now.Add(unsetSettleWindow)
+	b := f.lab("b")
+	traced := false
+	b.Status.ImageCache = &traced
+	if err := f.c.Status().Update(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	f.tick()
+	f.now = f.now.Add(unsetSettleWindow - 2*time.Second)
+	f.tick()
+	f.wantStates("a/p1=Q")
 	f.tick()
 	f.wantStates("a/p1=S")
 	f.tick()
@@ -311,12 +321,14 @@ func TestStuckLabHoldsItsGangOnlyForTheWindow(t *testing.T) {
 	}
 }
 
-// A deleted Reservation CRD takes every Reservation with it and makes their Get a NotFound: that is no reservation gone.
-// Before any deletion the scheduler asks discovery: the kind not served deletes nothing and drops every notice.
+// A deleted Reservation CRD takes every Reservation with it and makes their Get a NotFound: that is no reservation gone. While
+// the kind is not served nothing is deleted and no notice runs. Once it is served again (a reinstall) the reservations are not
+// back by themselves: the labs under the missing names get a full notice from then and go unless the backend sends their
+// reservations again within it.
 func TestDeletedReservationCRDDeletesNothing(t *testing.T) {
 	f := shortFixture(t)
-	served := false
-	f.s.ReservationKindServed = func(context.Context) (bool, error) { return served, nil }
+	crd := types.UID("")
+	f.s.ReservationCRD = func(context.Context) (types.UID, bool, error) { return crd, crd != "", nil }
 	orphaned(f)
 	f.tick()
 	f.now = f.now.Add(5 * time.Minute)
@@ -325,17 +337,67 @@ func TestDeletedReservationCRDDeletesNothing(t *testing.T) {
 		t.Fatal("deleted while the Reservation kind is not served")
 	}
 	if f.s.orphanSeen.first != nil {
-		t.Fatal("the notices were kept")
+		t.Fatal("a notice runs while the kind is not served")
 	}
-	served = true
+	crd = "crd-2"
+	f.tick()
+	f.now = f.now.Add(5*time.Minute - 2*time.Second)
 	f.tick()
 	if f.lab("r") == nil {
-		t.Fatal("deleted at once when the kind came back")
+		t.Fatal("deleted before a full notice after the reinstall")
 	}
-	f.now = f.now.Add(5 * time.Minute)
 	f.tick()
 	if f.lab("r") != nil {
-		t.Fatal("not deleted one notice after the kind came back")
+		t.Fatal("not deleted one notice after the reinstall")
+	}
+}
+
+// A CRD deleted and applied again between two passes (the kind never seen unserved) is caught by its UID: the notice that ran
+// under the old CRD deletes nothing and starts again.
+func TestReinstalledReservationCRDStartsTheNoticeAgain(t *testing.T) {
+	f := shortFixture(t)
+	crd := types.UID("crd-1")
+	f.s.ReservationCRD = func(context.Context) (types.UID, bool, error) { return crd, true, nil }
+	orphaned(f)
+	f.tick()
+	crd = "crd-2"
+	f.now = f.now.Add(5 * time.Minute)
+	f.tick()
+	if f.lab("r") == nil {
+		t.Fatal("deleted on a notice given under the old CRD")
+	}
+	f.tick()
+	f.now = f.now.Add(5*time.Minute - 2*time.Second)
+	f.tick()
+	if f.lab("r") == nil {
+		t.Fatal("deleted before a full notice under the new CRD")
+	}
+	f.tick()
+	if f.lab("r") != nil {
+		t.Fatal("not deleted one notice after the reinstall")
+	}
+}
+
+// The PodsNotSetUp warning is given once while the object exists with a pod not set up, also when a pass stops before its
+// gang (it is then not reported as unsettled), and again only after it was set up and got stuck anew.
+func TestPodsNotSetUpWarnedOnce(t *testing.T) {
+	rec := record.NewFakeRecorder(10)
+	s := &Scheduler{Recorder: rec}
+	lab := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: "ns-b", UID: "uid-b"}}
+	o := &schedObject{id: "lab/ns-b/b", ref: lab, pods: []*schedPod{{key: "b/p1"}}}
+	s.warnUnsettled([]*schedObject{o}, []*schedObject{o})
+	s.warnUnsettled([]*schedObject{o}, nil) // the pass stopped before its gang
+	s.warnUnsettled([]*schedObject{o}, []*schedObject{o})
+	if n := len(rec.Events); n != 1 {
+		t.Fatalf("%d events, want one", n)
+	}
+	<-rec.Events
+	o.pods[0].state = qd
+	s.warnUnsettled([]*schedObject{o}, nil) // set up
+	o.pods[0].state = ""
+	s.warnUnsettled([]*schedObject{o}, []*schedObject{o})
+	if n := len(rec.Events); n != 1 {
+		t.Fatalf("%d events after it got stuck again, want one", n)
 	}
 }
 

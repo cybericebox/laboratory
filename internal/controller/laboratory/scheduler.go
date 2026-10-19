@@ -105,9 +105,10 @@ type Scheduler struct {
 	ImagesNamespace string
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
-	// ReservationKindServed asks the API server, past any cache, whether it serves the Reservation kind, before work of a
-	// reservation that is gone is deleted (ReservationKindServedBy); nil: not asked.
-	ReservationKindServed func(context.Context) (bool, error)
+	// ReservationCRD asks the API server, past any cache, whether it serves the Reservation kind and the UID of the CRD that
+	// serves it, when the sightings of work of gone reservations start and before such work is deleted (ReservationCRDBy);
+	// nil: not asked.
+	ReservationCRD func(context.Context) (types.UID, bool, error)
 	// NoReservationController: the operator runs without the ReservationReconciler (the CRD was missing at its start), so the
 	// scheduler treats the kind as not served until a restart: no reservation is admitted whose window nobody would end.
 	NoReservationController bool
@@ -127,9 +128,13 @@ type Scheduler struct {
 	evictRetry map[types.UID]time.Time
 	// unsettledWarned holds the objects the plan left out of their gang (not set up in time) that got their warning event.
 	unsettledWarned map[types.UID]bool
+	// traced is when this process first saw the reconciler at work on each lab (settleFrom).
+	traced map[types.UID]time.Time
 	// orphanSeen and orphanRetry are the same for the work of reservations that are gone (cleanOrphans).
 	orphanSeen  passRecord
 	orphanRetry map[types.UID]time.Time
+	// orphanCRD is the UID of the Reservation CRD under which the sightings in orphanSeen started.
+	orphanCRD types.UID
 	// usedAtPruned says the server dropped status.usedAt (an old Reservation CRD); logged once.
 	usedAtPruned bool
 }
@@ -605,6 +610,7 @@ func (s *Scheduler) objects(snap *clusterView, now time.Time) []*schedObject {
 			after: deployAfter(lab), arrival: lab.CreationTimestamp.Time, priority: deployPriority(lab), ref: lab,
 		}
 		o.prepTenant = names.TenantOf(lab.Labels)
+		o.settleFrom = s.settleFrom(lab, now)
 		o.reservation, o.labelled = names.ReservationOf(lab.Labels)
 		switch {
 		case lab.Spec.ImagePullSecret != "":
@@ -789,7 +795,8 @@ func (s *Scheduler) tick(ctx context.Context) error {
 			}
 		}
 	}
-	s.warnUnsettled(plan.unsettled)
+	s.warnUnsettled(objs, plan.unsettled)
+	s.pruneTraced(snap)
 	sf := env.shortfall(plan)
 	s.writeStatuses(ctx, objs, plan, snap, env.fairness().usage, sf, now)
 	if sf.known {
@@ -803,21 +810,66 @@ func (s *Scheduler) tick(ctx context.Context) error {
 
 // warnUnsettled gives every object the plan left out of its gang, because its pods were still not set up unsetSettleWindow
 // after it was created, one Warning event; an object that is set up or gone may get one again later.
-func (s *Scheduler) warnUnsettled(objs []*schedObject) {
-	next := map[types.UID]bool{}
+// The record of an object stays while it exists with a pod not set up (objs, the plan input), whether or not the pass reached
+// its gang.
+func (s *Scheduler) warnUnsettled(objs, unsettled []*schedObject) {
+	pending := map[types.UID]bool{}
 	for _, o := range objs {
-		obj, ok := o.ref.(client.Object)
-		if !ok {
-			continue
+		for _, p := range o.pods {
+			if obj, ok := o.ref.(client.Object); ok && p.state == "" {
+				pending[obj.GetUID()] = true
+			}
 		}
-		next[obj.GetUID()] = true
-		if s.unsettledWarned[obj.GetUID()] || s.Recorder == nil {
-			continue
-		}
-		s.Recorder.Eventf(obj, corev1.EventTypeWarning, "PodsNotSetUp",
-			"the pods of this object are still not set up %s after it was created: its deploy group goes on without it", unsetSettleWindow)
 	}
-	s.unsettledWarned = next
+	for uid := range s.unsettledWarned {
+		if !pending[uid] {
+			delete(s.unsettledWarned, uid)
+		}
+	}
+	if s.unsettledWarned == nil {
+		s.unsettledWarned = map[types.UID]bool{}
+	}
+	for _, o := range unsettled {
+		obj, ok := o.ref.(client.Object)
+		if !ok || s.unsettledWarned[obj.GetUID()] {
+			continue
+		}
+		s.unsettledWarned[obj.GetUID()] = true
+		if s.Recorder != nil {
+			s.Recorder.Eventf(obj, corev1.EventTypeWarning, "PodsNotSetUp",
+				"the pods of this object are still not set up %s after its reconciler first worked on it: its deploy group goes on without it", unsetSettleWindow)
+		}
+	}
+}
+
+// settleFrom is when this process first saw the lab's reconciler at work on it (Status.ImageCache, which ensureModes writes
+// first); zero while it has not. A restart starts it again, which only lengthens the wait.
+func (s *Scheduler) settleFrom(lab *laboratoryv1alpha1.Lab, now time.Time) time.Time {
+	if lab.Status.ImageCache == nil {
+		return time.Time{}
+	}
+	if s.traced == nil {
+		s.traced = map[types.UID]time.Time{}
+	}
+	at, ok := s.traced[lab.UID]
+	if !ok {
+		at = now
+		s.traced[lab.UID] = at
+	}
+	return at
+}
+
+// pruneTraced drops the traces of labs that are gone.
+func (s *Scheduler) pruneTraced(snap *clusterView) {
+	live := make(map[types.UID]bool, len(snap.labs))
+	for _, l := range snap.labs {
+		live[l.UID] = true
+	}
+	for uid := range s.traced {
+		if !live[uid] {
+			delete(s.traced, uid)
+		}
+	}
 }
 
 // failGroupPod records the failure of a LabGroup pod (VPN or gateway) the plan gave up on, so it is not planned again

@@ -12,8 +12,8 @@ import (
 // objects and the free slots, which pods start now, and what each waiting object
 // reports. Everything that touches the cluster is in scheduler.go.
 
-// unsetSettleWindow is how long after its creation a gang waits for an object whose pods nobody has set up yet (its Devices
-// not made, its scheduling state not recorded); after that the gang goes on without it.
+// unsetSettleWindow is how long after its reconciler first worked on it a gang waits for an object whose pods nobody has set
+// up yet (its Devices not made, its scheduling state not recorded); after that the gang goes on without it.
 const unsetSettleWindow = 2 * time.Minute
 
 // Kinds of pod owner.
@@ -72,6 +72,9 @@ type schedObject struct {
 	// starts: the images of the whole deploy group (or of the independent lab).
 	prepKey string
 	images  []string
+	// settleFrom is when the object's reconciler first worked on it, from which unsetSettleWindow counts; zero: not yet (no
+	// limit on waiting for its pods to be set up).
+	settleFrom time.Time
 	// prepTenant is the tenant whose registry credentials pull the images (none: anonymous).
 	prepTenant string
 	// reservation is the Reservation the object runs under (its reservation label); empty: unreserved, unless labelled.
@@ -440,9 +443,35 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 			held[o.id] = true
 		}
 	}
+	// An object whose pods nobody initialised yet (the reconciler has not recorded their state) belongs to its gang: a gang
+	// with no pod out waits for it (it never starts without it), and the remainder of an admitted gang keeps room for it too,
+	// but only within unsetSettleWindow of when its reconciler first worked on it (settleFrom; zero: not touched yet, it is
+	// still in the reconciler's queue and is waited for with no limit). An object still not set up after that (its
+	// reconciler cannot make its Devices) is out of its gang whole, all its pods not out yet, so it neither holds the others
+	// forever nor starts partly; it is reported in plan.unsettled and joins its gang as a remainder once it is set up.
+	unsettled := map[*schedObject]bool{}
+	out := func(o *schedObject) bool {
+		if unsettled[o] {
+			return true
+		}
+		if o.settleFrom.IsZero() || fair.now.IsZero() || fair.now.Sub(o.settleFrom) < unsetSettleWindow {
+			return false
+		}
+		for _, p := range o.pods {
+			if p.state == "" {
+				unsettled[o] = true
+				plan.unsettled = append(plan.unsettled, o)
+				return true
+			}
+		}
+		return false
+	}
 	queuedOf := func(gg *gang) []*schedPod {
 		var queued []*schedPod
 		for _, o := range gg.objs {
+			if out(o) {
+				continue
+			}
 			pods := append([]*schedPod(nil), o.pods...)
 			sort.SliceStable(pods, func(i, j int) bool { return pods[i].name < pods[j].name })
 			for _, p := range pods {
@@ -453,27 +482,17 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 		}
 		return queued
 	}
-	// unsetOf are the pods of the gang nobody initialised yet (the reconciler has not recorded their state): they cannot be
-	// dispatched, but they belong to the gang. A gang with no pod out waits for them (it never starts without them), and the
-	// remainder of an admitted gang keeps room for them too, but only within unsetSettleWindow of their object's creation:
-	// an object still not set up after that (its reconciler cannot make its Devices) is left out of its gang, so it does not
-	// hold the others forever, and it is reported in plan.unsettled. It joins its gang as a remainder once it is set up.
-	unsettled := map[*schedObject]bool{}
+	// unsetOf are the pods of the gang nobody initialised yet, of its objects that are not out of it.
 	unsetOf := func(gg *gang) []*schedPod {
 		var unset []*schedPod
 		for _, o := range gg.objs {
+			if out(o) {
+				continue
+			}
 			for _, p := range o.pods {
-				if p.state != "" || gone[p] {
-					continue
+				if p.state == "" && !gone[p] {
+					unset = append(unset, p)
 				}
-				if !fair.now.IsZero() && fair.now.Sub(o.arrival) >= unsetSettleWindow {
-					if !unsettled[o] {
-						unsettled[o] = true
-						plan.unsettled = append(plan.unsettled, o)
-					}
-					continue
-				}
-				unset = append(unset, p)
 			}
 		}
 		return unset
@@ -959,6 +978,11 @@ func planSchedule(objs []*schedObject, slots int, unlimited bool, env schedEnv) 
 				plan.status[o.id] = st
 				continue
 			}
+		}
+		if unsettled[o] {
+			st.Reason, st.Message = laboratoryv1alpha1.WaitForTurn, "the pods of this object are still not set up: its group goes on without it"
+			plan.status[o.id] = st
+			continue
 		}
 		if tenantHeld[o.id] {
 			st.Reason, st.Message = laboratoryv1alpha1.WaitTenantQuota, "the tenant has reached its quota"
