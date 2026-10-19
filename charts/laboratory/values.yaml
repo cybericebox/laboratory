@@ -948,7 +948,8 @@ agent:
   # Replicas of the agent. Two by default: the agent is the one door every tenant uses, and one replica that is restarted (or
   # killed by an oversized request) takes every tenant's API and monitoring down with it. Each replica serves any call; the
   # state that lives in memory (the image-prewarm progress, the Monitoring journal) is per replica and rebuilt when a client
-  # reconnects to the other one.
+  # reconnects to the other one. A backend that uses reservations runs 1: the quota and fit checks of reservations are
+  # serialized inside one agent process only (DEPLOY.md, "Reservations through the agent").
   replicas: 2
   podDisruptionBudget:
     enabled: true

@@ -916,6 +916,13 @@ quota sums saturate, so no amount can wrap around.
 against the maximum, as `GetCapacity` reports it). A tenant without a quota is not checked; a smaller amount is always
 accepted.
 
+**One agent replica for reservations.** The quota check and the fit check below are serialized inside one agent process
+(a lock per tenant, a lock per reservation), not across replicas. Two replicas that take calls of the same tenant at the
+same time may both let a reservation through the quota check, and nothing behind the agent checks the quota of
+reservations again. A backend that uses reservations therefore runs the agent with **`agent.replicas: 1`** (the chart
+default is 2 for availability; with one replica keep `podDisruptionBudget.minAvailable` at 0 or switch the budget off, or
+a node drain waits for it).
+
 **Groups and labs.** `LabGroupItem.reservation_id` and `LabItem.reservation_id` name the reservation; the agent writes
 the reserved label `laboratory.cybericebox.com/reservation` from the field (never from client labels: the prefix stays
 reserved). A lab's reservation is independent of its group's. `LabGroup` and `Lab` (lists and `Monitoring`) return the
@@ -933,7 +940,8 @@ What is left is the amount less the requests of the reservation's LabGroups (VPN
 the group sets none) and Labs (their container devices, counted as the scheduler counts them) that are neither being
 deleted nor stopped; queued objects count too. A create of an object that exists is idempotent and is not checked again.
 The check is made by one agent replica under a lock per reservation; two replicas may let one extra item through, and
-the operator then holds it (`ReservationFull`): the operator is the guarantee, the agent only refuses early.
+the operator then holds it (`ReservationFull`): the operator is the guarantee, the agent only refuses early (run one
+replica, see above).
 
 **Attach.** `UpdateLabGroups` / `UpdateLabs` with `changes.reservation_id` puts an object that runs under no
 reservation under one of its tenant (not ended), without a fit check; only the label changes (no spec change, no pod
