@@ -316,15 +316,15 @@ proxy:
   wg:
     enabled: true
     # How the demux moves transport packets.
-    #   tc (default): a BPF program on the node's network device forwards them in the kernel; the handshakes stay in user space. The pod
+    #   tc: a BPF program on the node's network device forwards them in the kernel; the handshakes stay in user space. The pod
     #     runs on the host network, as root, with the capabilities BPF, NET_ADMIN and PERFMON only (never privileged) and the host's
     #     /sys/fs/bpf; its namespace admits the privileged Pod Security level.
     #   xdp: the same, plus an XDP program (native mode, generic when the driver refuses); it refuses to start if the device already has an XDP program.
-    #   userspace: the demux relays every packet itself; unprivileged, non-root, on the pod network, in a restricted namespace.
-    #   The chart default is tc, but PRODUCTION SETS userspace for now: tc and xdp are switched on only after the load test and the XDP test
+    #   userspace (default): the demux relays every packet itself; unprivileged, non-root, on the pod network, in a restricted namespace.
+    #   The default is userspace: tc and xdp are opt-in, switched on only after the load test and the XDP test
     #   (DEPLOY.md, "WireGuard demux modes", also for the xdp limits, the restart behaviour and the way back: `/proxy proxy-wg detach`).
     # There is no silent fallback: a mode that cannot start makes the pod crash loop, and the operator picks userspace by this value.
-    mode: tc
+    mode: userspace
     # The nodes that are entry points of the VPN (where the Service sends the clients' packets) and the taints the demux tolerates.
     # Empty: every node.
     nodeSelector: {}

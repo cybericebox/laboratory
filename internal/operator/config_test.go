@@ -223,7 +223,7 @@ func TestLoadConfigWGDemuxMode(t *testing.T) {
 	t.Setenv("BASE_DOMAIN", "labs.example.com")
 	setRequiredEnv(t)
 	cfg, err := LoadConfig()
-	if err != nil || cfg.WGDemuxMode != "tc" {
+	if err != nil || cfg.WGDemuxMode != "userspace" {
 		t.Fatalf("default: %v %v", cfg, err)
 	}
 	for _, mode := range []string{"userspace", "tc", "xdp"} {
