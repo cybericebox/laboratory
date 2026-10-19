@@ -15,4 +15,13 @@ type Config struct {
 	DNS     string
 	BindIP  string
 	Ranges  []Range
+	// Routes are classless static routes (RFC 3442, option 121) sent to every client. A client that gets the option
+	// ignores the router option, so the reply then carries the default route via Gateway as well.
+	Routes []Route
+}
+
+// Route is a classless static route: Dst (an IPv4 CIDR) reachable via the IPv4 address Via.
+type Route struct {
+	Dst string
+	Via string
 }

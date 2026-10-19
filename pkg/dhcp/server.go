@@ -89,6 +89,16 @@ func normalizeConfig(cfg Config) (Config, error) {
 	if err := ValidateRanges(cfg.Ranges); err != nil {
 		return cfg, err
 	}
+	routes := make([]Route, 0, len(cfg.Routes))
+	for _, r := range cfg.Routes {
+		_, dst, err := net.ParseCIDR(r.Dst)
+		via := net.ParseIP(r.Via).To4()
+		if err != nil || dst.IP.To4() == nil || via == nil || !subnet.Contains(via) {
+			return cfg, fmt.Errorf("invalid DHCP route")
+		}
+		routes = append(routes, Route{Dst: dst.String(), Via: via.String()})
+	}
+	cfg.Routes = routes
 	cfg.Ranges = append([]Range(nil), cfg.Ranges...)
 	sort.Slice(cfg.Ranges, func(i, j int) bool { return cfg.Ranges[i].Start < cfg.Ranges[j].Start })
 	return cfg, nil

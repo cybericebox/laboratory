@@ -113,3 +113,26 @@ func TestMalformedAndForeignRequestedAddressDoNotAllocate(t *testing.T) {
 		}
 	}
 }
+
+// The routes of the config reach the client as option 121 together with the default route, which the option replaces.
+func TestReplyCarriesClasslessStaticRoutes(t *testing.T) {
+	cfg := handlerConfig()
+	cfg.Routes = []Route{{Dst: "10.128.0.0/24", Via: "10.9.4.1"}}
+	offer, e := replyForMessage(cfg, smallPool(), message(t, dhcpv4.MessageTypeDiscover, macA))
+	if e != nil {
+		t.Fatal(e)
+	}
+	decoded, e := dhcpv4.FromBytes(offer.ToBytes())
+	if e != nil {
+		t.Fatal(e)
+	}
+	got := decoded.ClasslessStaticRoute()
+	if len(got) != 2 || got[0].Dest.String() != "0.0.0.0/0" || got[0].Router.String() != "10.9.4.1" || got[1].Dest.String() != "10.128.0.0/24" || got[1].Router.String() != "10.9.4.1" {
+		t.Fatalf("option 121 = %v", got)
+	}
+	cfg.Routes = nil
+	offer, _ = replyForMessage(cfg, smallPool(), message(t, dhcpv4.MessageTypeDiscover, macA))
+	if offer.Options.Get(dhcpv4.OptionClasslessStaticRoute) != nil {
+		t.Fatal("option 121 without routes")
+	}
+}

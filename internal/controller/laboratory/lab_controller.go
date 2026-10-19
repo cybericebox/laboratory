@@ -163,6 +163,13 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	if validationErr == nil {
 		resolvedInterfaces, validationErr = resolveLabDeviceInterfaces(&lab)
 	}
+	if validationErr == nil {
+		clients, err := vpnClientSubnet(r.VPNBaseNetwork)
+		if err != nil {
+			validationErr = fmt.Errorf("derive VPN client subnet: %w", err)
+		}
+		addVPNReturnRoutes(&lab, resolvedInterfaces, clients)
+	}
 	if validationErr != nil {
 		// Surface the specific validation reason — it was previously discarded,
 		// leaving the Lab in Failed with no user-visible cause.
