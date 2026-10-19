@@ -18,10 +18,13 @@
 #   - tc and xdp: our tcx programs come before Cilium's on the external device; xdp attaches in generic mode (kind's veth);
 #   - a client with an unknown key never gets a handshake; a pod outside laboratory-wg cannot reach a VPN server directly;
 #   - a restart of Cilium loses at most 2 s of pings, the order is back within DEMUX_BPF_RESYNC + 5 s, the echo still answers;
+#   - tc and xdp: a foreign tcx program put at the head of eth0 (headprog) has ours first again within DEMUX_BPF_RESYNC + 5 s;
 #   - a restart of the demux pod loses at most 2 s of pings in tc and xdp (userspace may re-handshake);
 #   - a client that changes its source port keeps its tunnel, and its server sees the demux's source, never the client's address;
 #   - tc and xdp: Cilium holds no NAT entry and no conntrack entry beyond the handshakes for the clients' tunnels, and the transport
 #     packets leave its conntrack untouched.
+#
+# A tc run expects no xdp program on eth0: after an xdp run, run detach first (kind-demux-e2e-all runs userspace, tc, xdp in that order).
 #
 # detach runs after a tc or xdp run: it switches the chart to userspace, runs `proxy-wg detach` in a one-off pod with the demux's tc
 # privileges on every worker, checks that our links and pins are gone and that both clients' tunnels work again on the slow path.
@@ -70,6 +73,7 @@ received() {
   local out n
   out="$(client "$1" ping "${@:2}" 2>&1 || true)"
   n="$(sed -n 's/.* \([0-9]*\) received.*/\1/p' <<<"$out")"
+  [[ -n "$n" ]] || printf 'client %s: ping printed no summary: %s\n' "$1" "$(tail -3 <<<"$out")" >&2
   echo "${n:-0}"
 }
 
@@ -78,6 +82,7 @@ wait_tunnel() {
   local start=$SECONDS
   while ((SECONDS - start < $3)); do
     if client "$1" ping -c 1 -W 1 "$2" >/dev/null 2>&1; then echo $((SECONDS - start)); return 0; fi
+    sleep 0.2
   done
   return 1
 }
@@ -157,6 +162,12 @@ deploy() {
 log "images"
 printf 'FROM alpine:3.22\nRUN apk add --no-cache wireguard-tools iproute2 iputils socat\n' | docker build -q -t "$WG_IMG" - >/dev/null
 kind load docker-image "$IMG" "$WG_IMG" --name "$CLUSTER" >/dev/null
+if fast; then
+  case "$(docker exec "$ENTRY_NODE" uname -m)" in aarch64) arch=arm64 ;; x86_64) arch=amd64 ;; *) fail "unknown node architecture" ;; esac
+  (cd "$ROOT" && GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -o "$WORK/headprog" ./hack/kind-demux/headprog)
+  docker cp "$WORK/headprog" "$ENTRY_NODE:/usr/local/bin/demux-e2e-headprog" >/dev/null
+  docker exec "$ENTRY_NODE" demux-e2e-headprog remove eth0
+fi
 NODE_PORT="$(k -n "$WG_NS" get svc laboratory-proxy-wg -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)"
 ENTRY_IP="$(k get node "$ENTRY_NODE" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')"
 
@@ -435,6 +446,7 @@ if fast; then
     sleep 1
   done
   echo "order after the Cilium restart (after $((SECONDS - start)) s): $ORDER"
+  # Cilium updates its links in place, so this alone does not exercise the demux's resync; the foreign program below does.
   summary "tcx order on eth0 after the Cilium restart (+$((SECONDS - start)) s): $ORDER"
 fi
 sleep 2
@@ -447,6 +459,31 @@ for g in a b; do
   summary "client $g across the Cilium restart: $got/$sent pings, lost $lost"
 done
 echo_ok after-cilium-restart
+
+if fast; then
+  log "a foreign tcx program at the head of eth0, in front of ours (ingress and egress)"
+  first() { cilium "$ENTRY_NODE" bpftool net show dev eth0 | awk '/tcx\/ingress/ && !i {i = $3} /tcx\/egress/ && !e {e = $3} END {print i, e}'; }
+  ping_start a 10.99.1.1 head
+  docker exec "$ENTRY_NODE" demux-e2e-headprog attach eth0
+  start=$SECONDS
+  seen="$(first)"
+  echo "first programs right after the attach: $seen"
+  [[ "$seen" == "e2e_head e2e_head" ]] || fail "the foreign program did not go first ($seen)"
+  until [[ "$(first)" == "wg_tc_ingress wg_tc_egress_guard" ]]; do
+    ((SECONDS - start <= RESYNC + 5)) || fail "the demux is not first again $((RESYNC + 5)) s after a foreign program went to the head ($(first))"
+    sleep 1
+  done
+  took=$((SECONDS - start))
+  echo "ours first again after ${took}s: $(cilium "$ENTRY_NODE" bpftool net show dev eth0 | awk '/tcx\// {print $2, $3}' | paste -sd, -)"
+  docker exec "$ENTRY_NODE" demux-e2e-headprog remove eth0
+  order_ok || fail "the order on eth0 after the foreign program left: $ORDER"
+  sleep 1
+  res="$(ping_stop a head)"
+  read -r sent got <<<"$res"
+  lost=$((sent - got))
+  ((lost <= 10)) || fail "client a lost $lost pings (more than 2 s) while the demux re-anchored"
+  summary "foreign tcx program at the head: ours first again after ${took} s (resync ${RESYNC} s), client a $got/$sent pings, lost $lost; after its removal: $ORDER"
+fi
 
 log "restart of the demux pod on $ENTRY_NODE"
 before="$(metrics)"
@@ -484,12 +521,23 @@ echo_ok after-demux-restart
 for g in a b; do
   log "client $g: roam (new source port)"
   sleep "$ROAM_INTERVAL"
+  if fast; then before="$(metrics)"; fi
   client "$g" wg set wg0 listen-port 41000
   t="$(wait_tunnel "$g" "$(server_of "$g")" $((ROAM_INTERVAL + KEEPALIVE + 5)))" ||
     fail "client $g: no tunnel within roamInterval + keepalive after the roam"
   echo "tunnel after the roam: ${t}s"
   n="$(received "$g" -c 20 -i 0.2 -W 1 "$(server_of "$g")")"
   [[ "$n" == 20 ]] || fail "client $g after the roam: lost $((20 - n)) of 20 pings"
+  roam=""
+  if fast; then
+    # The new port first misses the fast path (passed_source: the demux socket takes the roam), then the session moves to it.
+    after="$(metrics)"
+    dp=$(($(metric "$after" 'wg_demux_fastpath_packets_total{result="passed_source"}') - $(metric "$before" 'wg_demux_fastpath_packets_total{result="passed_source"}')))
+    ds=$(($(metric "$after" "$TO_SERVER") - $(metric "$before" "$TO_SERVER")))
+    ((dp > 0)) || fail "client $g: the roam never reached the demux socket (passed_source +0)"
+    ((ds >= 20)) || fail "client $g: the fast path forwarded only $ds packets after the roam"
+    roam=", passed_source +$dp, forwarded_to_server +$ds"
+  fi
   # The server's peer is the demux: it sees the source the demux socket uses towards it (in tc and xdp the kernel's preferred source
   # on the entry node, which the fast path uses too; in userspace the pod's address), never the client's address.
   if fast; then
@@ -501,7 +549,7 @@ for g in a b; do
   endpoint="$(k -n "lg-demux-$g" exec vpn -- wg show wg0 endpoints | awk '{print $2}')"
   [[ "$endpoint" == "$src:51820" ]] || fail "server $g sees $endpoint, not the demux's source $src:51820"
   [[ "$endpoint" != "$(client_ip "$g"):"* ]] || fail "server $g sees the client's address $endpoint"
-  summary "client $g roam: tunnel after ${t}s, ping 20/20, server endpoint $endpoint"
+  summary "client $g roam: tunnel after ${t}s, ping 20/20$roam, server endpoint $endpoint"
 done
 
 # ct_expiry <addr:port>: the expiry of each of Cilium's conntrack entries from that source on the entry node.
