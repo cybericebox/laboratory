@@ -473,9 +473,12 @@ Lab, `status.devices[].failure`, with the reason (`ImagePull`, `CrashLoop`, `Uns
 Ready later it is Started and the warning clears. A snapshot-backed device whose pod ended after it had started
 is recreated at once, with no slot, as without the scheduler.
 
-**Guaranteed resources.** Every device container gets requests equal to limits, so its pod is Guaranteed.
-Per resource the limit wins, then the request, then `limits.device.defaultCpu` / `defaultMemory` (100m CPU and 256Mi memory);
-a declared request and limit that differ collapse to the limit. The resources are applied when a device is created; running devices are not
+**Device resources and QoS.** Memory: request = limit (the limit wins, then the request, then `limits.device.defaultMemory`, 256Mi).
+CPU may burst: the container requests `cpuRequest` (else `cpuLimit`, else `limits.device.defaultCpu`, 100m) and is limited to `cpuLimit` (else
+the request), never below the request. Both are clamped to `limits.device.maxCpu`. A device with only a limit behaves as before (request = limit), one
+with only a request has limit = request. The pod is therefore Burstable, not Guaranteed (the VPN and gateway pods stay Guaranteed). Everything that
+plans counts the REQUEST: the scheduler, `SpecTotals`/`CheckSpec`, the group caps, the tenant quota and the reservation fit and budget; the CPU limit above
+the request is a burst that nothing reserves (a 15m/60m device consumes 15m). The resources are applied when a device is created; running devices are not
 changed. Each lab group namespace has one PodDisruptionBudget `lab-group` (`maxUnavailable: 0`, all pods of
 the namespace), so node drains and the autoscaler do not evict running labs (see "Maintenance of a node" below).
 
@@ -1070,8 +1073,8 @@ images:
   enforces it: `limits.device.maxCpu` (2000m) and `maxMemory` (4Gi) per device; `limits.lab.maxDevices` (20 devices; switches and
   hubs count, see "Lab ceilings" below); per LabGroup `limits.group.maxLabs` (50) and the optional sums over all its labs `limits.group.maxCpu` / `maxMemory`
   (`"0"` = unlimited); `limits.tenant.maxLabs` (0 = unlimited; the tenant's resource quota still applies). There is no per-lab resource
-  cap. Devices are Guaranteed (request = limit, no CPU overcommit), so a group's sum is what it reserves. A device's resources are its
-  limit, else its request, else the planning profile `limits.device.defaultCpu` (100m) / `defaultMemory` (256Mi), which is also what the
+  cap. Devices are planned at their requests (the CPU limit above the request is a burst and is not counted), so a group's sum is what it reserves. A device's resources are its
+  CPU request, else its CPU limit, else the planning profile `limits.device.defaultCpu` (100m) / `defaultMemory` (256Mi) (memory: limit, else request), which is also what the
   scheduler gives a device without resources. A variant over a device or lab cap is `InvalidArgument` naming the variant, the device and both
   numbers. Over a group or tenant cap the new items are `FAILED` (`ResourceExhausted` reason, not retryable); an item whose lab exists is
   not new. The counts are checked when the call arrives. Labs created directly with kubectl are not checked.

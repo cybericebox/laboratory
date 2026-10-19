@@ -1082,6 +1082,18 @@ func TestSchedulerPodOverEveryNodeInBothDimensionsFails(t *testing.T) {
 	}
 }
 
+// A device with a burst (15m request, 60m limit) is counted at its request: it fits a node of 50m, which the limit would not.
+func TestSchedulerCountsTheCPURequestNotTheBurst(t *testing.T) {
+	cfg := schedCfg()
+	cfg.ResourceCheck = true
+	f := newSchedFixture(t, cfg)
+	f.create(node("a", "50m", "2Gi"))
+	f.addLab("x", "g", nil, "p1")
+	setDeviceResources(t, f, "x", &laboratoryv1alpha1.DeviceResources{CPURequest: "15m", CPULimit: "60m", MemoryLimit: "64Mi"})
+	f.tick()
+	f.wantStates("x/p1=S")
+}
+
 // setDeviceResources sets the resources of the first device of the lab.
 func setDeviceResources(t *testing.T, f *schedFixture, lab string, r *laboratoryv1alpha1.DeviceResources) {
 	t.Helper()

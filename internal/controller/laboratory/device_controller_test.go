@@ -82,7 +82,7 @@ var _ = Describe(
 		})
 
 		It(
-			"creates a Guaranteed Deployment with lab co-location affinity and drops the legacy PDB", func() {
+			"creates a Deployment with lab co-location affinity and drops the legacy PDB", func() {
 				dev := &laboratoryv1alpha1.Device{
 					ObjectMeta: metav1.ObjectMeta{Name: "lab1-web", Namespace: "default"},
 					Spec: laboratoryv1alpha1.DeviceSpec{
@@ -118,7 +118,7 @@ var _ = Describe(
 				Expect(terms[1].PodAffinityTerm.LabelSelector.MatchLabels).To(BeEmpty())
 				Expect(aff.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution).To(BeEmpty())
 
-				// The container is Guaranteed: requests equal limits, defaults applied.
+				// Without declared resources the defaults apply, request = limit.
 				res := dep.Spec.Template.Spec.Containers[0].Resources
 				Expect(res.Requests).To(Equal(res.Limits))
 				Expect(res.Requests.Cpu().String()).To(Equal("250m"))

@@ -886,8 +886,8 @@ capacity:
 # ============================================================
 # The management agent enforces them on CreateLabs (a lab over them is refused with the reason) and reports them
 # in GetFeatures and the Monitoring stream; the backend keeps no copy. CPU and memory are Kubernetes quantities.
-# A device's resources are its limit, else its request, else the default; requests always equal limits (Guaranteed
-# pods), so the scheduler and the quotas count the real load. The maxima are a sanity ceiling, not a sizing
+# A device is planned at its requests (CPU: request, else limit, else the default; memory: limit, else request, else the
+# default); the CPU limit may sit above the request (a burst, the pod is Burstable) and is not counted by the scheduler or the quotas. The maxima are a sanity ceiling, not a sizing
 # profile. 0 / "0" = no limit.
 limits:
   device:
@@ -903,7 +903,7 @@ limits:
     maxDevices: 32
   group:
     # Labs of one LabGroup, and the sum of the planned resources of the devices of all its labs
-    # ("0" = no limit on the sum). Devices are Guaranteed, so a group's sum is what it reserves.
+    # ("0" = no limit on the sum). Devices count at their requests, so a group's sum is what it reserves.
     maxLabs: 50
     maxCpu: "0"
     maxMemory: "0"

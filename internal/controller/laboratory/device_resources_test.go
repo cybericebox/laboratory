@@ -39,17 +39,46 @@ func TestDeviceResourcesNoDefaults(t *testing.T) {
 	}
 }
 
-// Declared requests and limits collapse to the limit, so the pod is Guaranteed.
-func TestDeviceResourcesRequestsEqualLimits(t *testing.T) {
+// A CPU limit above the request is a burst: the pod requests the request, may use the limit, and is Burstable. Memory
+// stays request = limit (the limit wins).
+func TestDeviceResourcesCPUBursts(t *testing.T) {
 	d := &laboratoryv1alpha1.Device{}
 	d.Spec.Resources = &laboratoryv1alpha1.DeviceResources{
-		CPURequest: "250m", MemoryRequest: "256Mi", CPULimit: "500m", MemoryLimit: "512Mi",
+		CPURequest: "15m", MemoryRequest: "256Mi", CPULimit: "60m", MemoryLimit: "512Mi",
 	}
 	rr := deviceResources(d, testDefaults)
-	for _, list := range []corev1.ResourceList{rr.Requests, rr.Limits} {
-		wantQty(t, list, corev1.ResourceCPU, "500m")
-		wantQty(t, list, corev1.ResourceMemory, "512Mi")
-	}
+	wantQty(t, rr.Requests, corev1.ResourceCPU, "15m")
+	wantQty(t, rr.Limits, corev1.ResourceCPU, "60m")
+	wantQty(t, rr.Requests, corev1.ResourceMemory, "512Mi")
+	wantQty(t, rr.Limits, corev1.ResourceMemory, "512Mi")
+}
+
+// The CPU limit never drops below the request, and both are clamped to the chart maximum.
+func TestDeviceResourcesCPULimitNeverBelowRequest(t *testing.T) {
+	d := &laboratoryv1alpha1.Device{}
+	d.Spec.Resources = &laboratoryv1alpha1.DeviceResources{CPURequest: "200m", CPULimit: "100m"}
+	rr := deviceResources(d, testDefaults)
+	wantQty(t, rr.Requests, corev1.ResourceCPU, "200m")
+	wantQty(t, rr.Limits, corev1.ResourceCPU, "200m")
+
+	d.Spec.Resources = &laboratoryv1alpha1.DeviceResources{CPURequest: "100m", CPULimit: "9"}
+	rr = deviceResources(d, DeviceDefaults{CPU: "250m", MaxCPU: "2"})
+	wantQty(t, rr.Requests, corev1.ResourceCPU, "100m")
+	wantQty(t, rr.Limits, corev1.ResourceCPU, "2")
+}
+
+// Old objects: only a limit gives request = limit (the old behaviour), only a request gives limit = request.
+func TestDeviceResourcesBackwardCompatible(t *testing.T) {
+	d := &laboratoryv1alpha1.Device{}
+	d.Spec.Resources = &laboratoryv1alpha1.DeviceResources{CPULimit: "500m"}
+	rr := deviceResources(d, testDefaults)
+	wantQty(t, rr.Requests, corev1.ResourceCPU, "500m")
+	wantQty(t, rr.Limits, corev1.ResourceCPU, "500m")
+
+	d.Spec.Resources = &laboratoryv1alpha1.DeviceResources{CPURequest: "300m"}
+	rr = deviceResources(d, testDefaults)
+	wantQty(t, rr.Requests, corev1.ResourceCPU, "300m")
+	wantQty(t, rr.Limits, corev1.ResourceCPU, "300m")
 }
 
 // A request alone becomes the limit too; a missing resource falls back to the

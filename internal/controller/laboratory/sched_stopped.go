@@ -56,7 +56,7 @@ func (s *Scheduler) stoppedReservations(snap *clusterView) ([]corev1.Pod, map[st
 			case dep != nil:
 				spec = dep.Spec.Template.Spec
 			default:
-				resources := guaranteedResources(d.Spec.Resources, s.Defaults)
+				resources := deviceRequests(d.Spec.Resources, s.Defaults)
 				if resources == nil {
 					unknown = true
 					continue
