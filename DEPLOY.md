@@ -1426,6 +1426,15 @@ namespace from the group name must read `status.namespace` instead.
 - **The session cookie belongs to the proxy.** Any `Set-Cookie` of the session cookie's name in a device's response is removed, so a device cannot set,
   replace or clear it; the device's own cookies pass.
 
+### The lab that is starting
+
+A request to a lab whose service cannot be reached yet (the connection is refused because the pod is not Ready, there is no route, the
+connect times out) is not answered with an error. A browser gets a small page «Лабораторія запускається…» (in the browser language,
+Ukrainian by default) with the platform crest pulsing as the loader, `503` and `Retry-After: 4`; the page asks again by itself every
+4 seconds (`<meta http-equiv="refresh">`, no script) and the lab opens as soon as it answers. Only a `GET` or `HEAD` is repeated; any
+other client gets `503 lab is starting` as plain text. A lab that does not exist, was turned off or is refused to the client keeps the
+«not available» page (`404`), and a lab that answers wrongly (it hangs up, the response is broken) keeps the `502` card.
+
 ### Sizing the proxy
 
 The sizes in `proxy.l7` and `proxy.wg` come from measurements, repeated by two tests (`go test ./internal/proxy/...`, not in `-short`): `TestL7MemoryPerConnection` starts the

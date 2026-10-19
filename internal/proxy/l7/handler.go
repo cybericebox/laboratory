@@ -245,8 +245,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Count only what a client did to a known lab device, keyed by (group,
 	// client, lab); the platform decides which groups are event traffic.
 	if h.meter == nil || lab == "" {
-		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, _ error) {
-			fail(w, r, http.StatusBadGateway, pageUpstream, "bad gateway")
+		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			upstreamFailed(w, r, err)
 		}
 		proxy.ServeHTTP(w, r)
 		return
@@ -430,9 +430,9 @@ func (h *Handler) serveMeteredProxy(w http.ResponseWriter, r *http.Request, prox
 		return nil
 	}
 	rec := &countingWriter{ResponseWriter: w, request: request}
-	proxy.ErrorHandler = func(_ http.ResponseWriter, r *http.Request, _ error) {
+	proxy.ErrorHandler = func(_ http.ResponseWriter, r *http.Request, err error) {
 		// Proxy-generated error pages are not traffic from a laboratory.
-		fail(w, r, http.StatusBadGateway, pageUpstream, "bad gateway")
+		upstreamFailed(w, r, err)
 	}
 	proxy.ServeHTTP(rec, r)
 }

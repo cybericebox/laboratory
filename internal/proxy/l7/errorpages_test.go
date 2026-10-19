@@ -86,7 +86,8 @@ func TestErrorPages_PlainForNonHTMLClients(t *testing.T) {
 	}
 }
 
-func TestErrorPages_BadGatewayCard(t *testing.T) {
+// A lab that cannot be reached (its pod is not Ready) gets the starting page, not an error card.
+func TestErrorPages_UnreachableLabIsStarting(t *testing.T) {
 	dead := httptest.NewServer(http.NotFoundHandler())
 	url := dead.URL
 	dead.Close()
@@ -97,14 +98,14 @@ func TestErrorPages_BadGatewayCard(t *testing.T) {
 			WithAccounting(NewMeter("b", time.Now()), func(string, string) (string, bool) { return "c-1", true }),
 	} {
 		rec := errCall(t, h, errHost, "text/html", "")
-		if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "Сервіс завдання ще запускається або недоступний. Спробуйте за хвилину.") {
+		if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "Лабораторія запускається…") {
 			t.Fatalf("%s: %d %s", name, rec.Code, rec.Body.String())
 		}
 		if strings.Contains(rec.Body.String(), url) {
 			t.Fatalf("%s leaks the upstream address", name)
 		}
 		rec = errCall(t, h, errHost, "application/json", "")
-		if rec.Code != http.StatusBadGateway || strings.TrimSpace(rec.Body.String()) != "bad gateway" {
+		if rec.Code != http.StatusServiceUnavailable || strings.TrimSpace(rec.Body.String()) != "lab is starting" {
 			t.Fatalf("%s plain: %d %q", name, rec.Code, rec.Body.String())
 		}
 	}
@@ -133,7 +134,7 @@ func TestErrorPages_HaveInlineFavicon(t *testing.T) {
 }
 
 func TestErrorPages_CleanCopy(t *testing.T) {
-	for _, p := range []page{pageExpired, pageGone, pageUpstream, pageBusy, pageFailed} {
+	for _, p := range []page{pageExpired, pageGone, pageUpstream, pageStarting, pageBusy, pageFailed} {
 		for _, c := range []cardText{p.uk, p.en} {
 			if strings.HasSuffix(c.title, ".") || strings.Contains(c.title+c.hint, "..") || !strings.HasSuffix(c.hint, ".") || strings.Count(c.hint, ". ") > 1 {
 				t.Fatalf("copy: %+v", c)
@@ -150,6 +151,7 @@ func TestErrorPages_StateClassPerCard(t *testing.T) {
 		"expired":  {pageExpired, "ic-warn"},
 		"busy":     {pageBusy, "ic-warn"},
 		"upstream": {pageUpstream, "ic-warn"},
+		"starting": {pageStarting, "ic-loading"},
 		"gone":     {pageGone, "ic-danger"},
 		"failed":   {pageFailed, "ic-danger"},
 	} {

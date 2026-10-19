@@ -126,7 +126,7 @@ func TestHandler_UpstreamFailureIsNotAResponse(t *testing.T) {
 	req.AddCookie(&http.Cookie{Name: "challenge", Value: signCookie(t, jwtClaims{GroupID: "g1", Client: "p-user-1", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}})})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadGateway {
+	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("code = %d", rec.Code)
 	}
 	rows, _ := meter.Ledger(laboratoryv1alpha1.LabGroupNamespace("g1"))

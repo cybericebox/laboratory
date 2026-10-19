@@ -53,6 +53,9 @@ const (
 	// StateUnavailable is a card for something that is not there or broke (task not available, bad host,
 	// internal error): red slashed circle.
 	StateUnavailable State = "danger"
+	// StateLoading is a card for something that is on its way (a lab that is starting): the platform crest, softly
+	// pulsing, in place of a glyph. The page refreshes itself, the crest is the loader.
+	StateLoading State = "loading"
 )
 
 var glyphs = map[State]string{
@@ -63,6 +66,10 @@ var glyphs = map[State]string{
 
 // Icon is the state icon (56px circle, 28px glyph); the title is the caller's and the brand Rule goes under it.
 func Icon(s State) template.HTML {
+	if s == StateLoading {
+		return template.HTML(`<span class="ic ic-loading"><img src="` + string(Favicon()) +
+			`" alt="" width="40" height="40"></span>`)
+	}
 	g, ok := glyphs[s]
 	if !ok {
 		s, g = StateUnavailable, glyphs[StateUnavailable]
