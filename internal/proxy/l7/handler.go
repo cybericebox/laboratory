@@ -55,6 +55,8 @@ type Handler struct {
 	// caps bound the requests in flight (see LiveCaps); authLimit limits the handoff path.
 	caps      LiveCaps
 	authLimit *bucketSet
+	// accessLog, when set, writes a line per proxied request (see accesslog.go).
+	accessLog *accessLog
 }
 
 // upstreamTransport skips certificate verification for in-cluster backends
@@ -220,7 +222,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.Header.Set("X-Forwarded-Proto", "https")
 
 	// Track the request: when the client loses access, CheckLive cancels it or closes its upgraded connection.
-	ctx, cancel := context.WithCancel(r.Context())
+	clientCtx := r.Context()
+	ctx, cancel := context.WithCancel(clientCtx)
 	defer cancel()
 	r = r.WithContext(ctx)
 	entry := &liveEntry{group: claims.GroupID, client: client, lab: lab, tenant: claims.Tenant, deadline: h.liveDeadline(claims.Abs), cancel: cancel}
@@ -230,12 +233,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer h.live.remove(entry)
+	transport := h.transport
+	if h.accessLog != nil {
+		rec := &accessRecorder{ResponseWriter: w}
+		w = rec
+		transport = &timedTransport{base: h.transport, rec: rec}
+		defer h.accessLog.emit(rec, r, lab, clientCtx)
+	}
 	upgrade := &hijackRecorder{ResponseWriter: w, entry: entry, cookieName: h.cookieName, host: r.Host, baseDomain: h.baseDomain}
 	w = upgrade
 
 	deviceHost := r.Host
 	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.Transport = h.transport
+	proxy.Transport = transport
 	// A device must not set (or reset) the proxy's own session cookie: drop any Set-Cookie of that name from its responses.
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		deviceResponseFilter(resp.Header, h.cookieName, deviceHost, h.baseDomain)
