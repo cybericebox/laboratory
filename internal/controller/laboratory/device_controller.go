@@ -360,6 +360,8 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 	annotations = map[string]string{
 		names.AnnotationDevice:   device.Spec.Name,
 		names.AnnotationNetworks: networkAnnotation(device, stableMAC),
+		// a running lab is never evicted by a cluster autoscaler
+		names.AnnotationSafeToEvict: "false",
 	}
 	if device.Spec.Exposure != nil {
 		annotations[names.AnnotationDefaultNetwork] = names.AccessPortIface
