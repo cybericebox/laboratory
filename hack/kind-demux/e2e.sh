@@ -3,7 +3,7 @@
 # fast path to userspace (detach):
 #
 #   make kind-demux-e2e KIND_DEMUX_MODE=tc   # builds the proxy image, then runs hack/kind-demux/e2e.sh tc
-#   make kind-demux-e2e-all                  # builds once, then e2e.sh userspace, tc, xdp and detach in turn
+#   make kind-demux-e2e-all                  # builds once, then e2e.sh upgrade, userspace, tc, xdp, lbipam.sh and e2e.sh detach
 #
 # A mode run deploys the demux part of the chart (templates/wg and its network policy, rendered with helm template -s: the rest of the
 # chart needs the operator, cert-manager and the Gateway API), two groups whose VPN servers are plain kernel WireGuard pods
@@ -26,6 +26,11 @@
 #
 # A tc run expects no xdp program on eth0: after an xdp run, run detach first (kind-demux-e2e-all runs userspace, tc, xdp in that order).
 #
+# upgrade (on a cluster where no release laboratory exists, or one this step made) installs the chart of KIND_DEMUX_UPGRADE_FROM
+# (origin/develop) with most components off and the VPN Service on the cloud's fixed node port, checks that a plain helm upgrade to this
+# tree fails on that node port, deletes the old Service as DEPLOY.md says and upgrades again, checks the chart's default mode (userspace)
+# and policy (Cluster), runs the userspace checks and uninstalls the release.
+#
 # detach runs after a tc or xdp run: it switches the chart to userspace, runs `proxy-wg detach` in a one-off pod with the demux's tc
 # privileges on every worker, checks that our links and pins are gone and that both clients' tunnels work again on the slow path.
 #
@@ -34,7 +39,11 @@
 set -euo pipefail
 
 MODE="${1:-}"
-case "$MODE" in userspace | tc | xdp | detach) ;; *) echo "usage: $0 userspace|tc|xdp|detach" >&2; exit 2 ;; esac
+case "$MODE" in upgrade | userspace | tc | xdp | detach) ;; *) echo "usage: $0 upgrade|userspace|tc|xdp|detach" >&2; exit 2 ;; esac
+# upgrade installs the chart of KIND_DEMUX_UPGRADE_FROM (origin/develop), upgrades it to this tree with the chart's default mode, then runs
+# the userspace checks.
+DEMUX_MODE="$MODE"
+[[ "$MODE" == upgrade ]] && DEMUX_MODE=userspace
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -112,8 +121,13 @@ order_ok() {
   [[ "$ingress" == "wg_tc_ingress cil_from_netdev" && "$egress" == "wg_tc_egress_guard cil_to_netdev" ]]
 }
 
-# metrics: the demux's metrics on the entry node, read from the node itself (in userspace the pod policy admits the host only).
-metrics() { docker exec "$ENTRY_NODE" curl -sf --max-time 5 "$METRICS_URL" || fail "no metrics at $METRICS_URL"; }
+# metrics: the demux's metrics summed over METRICS_URLS (<node>=<url>), each read from its own node (in userspace the pod policy admits
+# that node's host only). In userspace the Service's policy is Cluster, so a client may be served by the demux of any node.
+metrics() {
+  local u
+  for u in $METRICS_URLS; do docker exec "${u%%=*}" curl -sf --max-time 5 "${u#*=}" || fail "no metrics at ${u#*=} from ${u%%=*}"; done |
+    awk '/^wg_/ {v[$1] += $2} END {for (s in v) printf "%s %d\n", s, v[s]}'
+}
 # metric <metrics> <series>: the value of one series, 0 when it is absent.
 metric() { awk -v s="$2" '$1 == s {print $2; f = 1} END {if (!f) print 0}' <<<"$1"; }
 TO_SERVER='wg_demux_fastpath_packets_total{result="forwarded_to_server"}'
@@ -121,10 +135,13 @@ TO_CLIENT='wg_demux_fastpath_packets_total{result="forwarded_to_client"}'
 TRANSPORT='wg_demux_packets_total{type="transport"}'
 RESPONSES='wg_demux_packets_total{type="handshake_response"}'
 demux_pod() { k -n "$WG_NS" get pod -l app=laboratory-proxy-wg --field-selector "spec.nodeName=$ENTRY_NODE" -o jsonpath='{.items[0].metadata.name}'; }
+demux_ips() { k -n "$WG_NS" get pod -l app=laboratory-proxy-wg -o jsonpath='{.items[*].status.podIP}'; }
 set_metrics_url() {
-  local ip="$ENTRY_IP"
-  [[ "$MODE" == userspace || "$MODE" == detach ]] && ip="$(k -n "$WG_NS" get pod "$(demux_pod)" -o jsonpath='{.status.podIP}')"
-  METRICS_URL="http://$ip:8083/metrics"
+  METRICS_URLS="$ENTRY_NODE=http://$ENTRY_IP:8083/metrics"
+  if [[ "$DEMUX_MODE" == userspace || "$MODE" == detach ]]; then
+    METRICS_URLS="$(k -n "$WG_NS" get pod -l app=laboratory-proxy-wg \
+      -o jsonpath='{range .items[*]}{.spec.nodeName}=http://{.status.podIP}:8083/metrics{" "}{end}')"
+  fi
 }
 
 # echo_ok <when>: the echo Service still answers on the entry node's node ports, UDP and TCP, from a container outside the tunnels.
@@ -137,8 +154,9 @@ echo_ok() {
   echo "echo ($1): UDP and TCP answer"
 }
 
-# deploy <mode>: the demux of the chart in that mode, restarted so the pods run the image just loaded.
-deploy() {
+# deploy_render <mode>: the demux part of the chart in that mode, into $WORK/demux.yaml.
+# deploy <mode>: applies it, restarted so the pods run the image just loaded.
+deploy_render() {
   local templates show=()
   templates=(priorityclasses.yaml wg/namespace.yaml wg/serviceaccount.yaml wg/clusterrole.yaml wg/clusterrolebinding.yaml wg/role.yaml
     wg/service.yaml wg/daemonset.yaml)
@@ -151,12 +169,65 @@ deploy() {
     --set proxy.image.repository="${IMG%:*}" --set proxy.image.tag="${IMG##*:}" \
     --set operator.baseDomain=demux.test --set operator.publicVPNEndpoint=vpn.demux.test --set operator.supportEmail=demux@demux.test \
     "${show[@]}" >"$WORK/demux.yaml"
+}
+deploy() {
+  deploy_render "$1"
   if [[ "$1" != userspace ]]; then
     k -n "$WG_NS" delete networkpolicy,ciliumnetworkpolicy laboratory-proxy-wg --ignore-not-found >/dev/null
   fi
   k apply -f "$WORK/demux.yaml" >/dev/null
   k -n "$WG_NS" rollout restart ds/laboratory-proxy-wg >/dev/null
   k -n "$WG_NS" rollout status ds/laboratory-proxy-wg --timeout=5m
+}
+
+# The chart values of the upgrade step: everything that needs a controller kind does not have (Gateway API, cert-manager, the lab
+# scheduler) is off, the images of the other components point at a tag that does not exist (their pods only wait), and the VPN Service has
+# the fixed node port of the cloud.
+UPGRADE_NODE_PORT=31820
+upgrade_values=(--set operator.baseDomain=demux.test --set operator.publicVPNEndpoint=vpn.demux.test --set operator.supportEmail=demux@demux.test
+  --set gateway.enabled=false --set certManager.enabled=false --set labScheduler.enabled=false --set scheduler.enabled=false
+  --set image.tag=kind-demux-absent --set proxy.wg.nodePort="$UPGRADE_NODE_PORT")
+helm_k() { helm --kube-context "kind-$CLUSTER" "$@"; }
+
+# upgrade: a release of the chart of KIND_DEMUX_UPGRADE_FROM, then helm upgrade to this tree with no proxy.wg.mode. A plain upgrade must
+# fail while the old Service holds the fixed node port; after the documented step (DEPLOY.md, "Upgrade order") it must succeed, with the
+# chart's default mode (userspace) and policy (Cluster).
+upgrade() {
+  local from="${KIND_DEMUX_UPGRADE_FROM:-origin/develop}" out np
+  log "clean slate: the demux of earlier steps was applied without Helm"
+  helm_k -n "$RELEASE_NS" uninstall laboratory --ignore-not-found --wait >/dev/null
+  deploy_render userspace
+  k delete -f "$WORK/demux.yaml" --ignore-not-found --wait >/dev/null
+  k delete namespace laboratory-proxy --ignore-not-found --wait >/dev/null
+
+  log "helm install the chart of $from"
+  mkdir -p "$WORK/from"
+  git -C "$ROOT" archive "$from" charts/laboratory | tar -x -C "$WORK/from"
+  helm_k install laboratory "$WORK/from/charts/laboratory" -n "$RELEASE_NS" --create-namespace "${upgrade_values[@]}" >/dev/null
+  np="$(k -n laboratory-proxy get svc laboratory-proxy-wg -o jsonpath='{.spec.ports[0].nodePort}')" ||
+    fail "the chart of $from has no VPN Service in laboratory-proxy"
+  [[ "$np" == "$UPGRADE_NODE_PORT" ]] || fail "the old VPN Service has node port $np"
+  summary "installed the chart of $from ($(git -C "$ROOT" rev-parse --short "$from")): VPN Service laboratory-proxy/laboratory-proxy-wg on node port $np"
+
+  local up=(upgrade laboratory "$ROOT/charts/laboratory" -n "$RELEASE_NS" "${upgrade_values[@]}" --set proxy.wg.limits.roamInterval="${ROAM_INTERVAL}s"
+    --set proxy.image.repository="${IMG%:*}" --set proxy.image.tag="${IMG##*:}")
+  log "helm upgrade to this tree without the step"
+  if out="$(helm_k "${up[@]}" 2>&1)"; then fail "the plain upgrade succeeded while the old Service held the node port (DEPLOY.md says it fails)"; fi
+  grep -q "already allocated" <<<"$out" || fail "the plain upgrade failed for another reason: $out"
+  summary "plain helm upgrade fails as documented: $(grep -o '[^:]*already allocated' <<<"$out" | head -1)"
+
+  log "the documented step, then helm upgrade"
+  k -n laboratory-proxy delete svc laboratory-proxy-wg --ignore-not-found >/dev/null
+  out="$(helm_k "${up[@]}" 2>&1)" || fail "helm upgrade after the step failed: $out"
+  k -n "$WG_NS" rollout status ds/laboratory-proxy-wg --timeout=5m
+  local mode etp
+  mode="$(k -n "$WG_NS" get ds laboratory-proxy-wg -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="DEMUX_MODE")].value}')"
+  etp="$(k -n "$WG_NS" get svc laboratory-proxy-wg -o jsonpath='{.spec.externalTrafficPolicy}')"
+  np="$(k -n "$WG_NS" get svc laboratory-proxy-wg -o jsonpath='{.spec.ports[0].nodePort}')"
+  [[ "$mode" == userspace && "$etp" == Cluster && "$np" == "$UPGRADE_NODE_PORT" ]] ||
+    fail "after the upgrade: mode $mode, externalTrafficPolicy $etp, node port $np (want userspace, Cluster, $UPGRADE_NODE_PORT)"
+  ! k -n laboratory-proxy get svc laboratory-proxy-wg >/dev/null 2>&1 || fail "the old VPN Service is back"
+  summary "after the step helm upgrade succeeds: $(helm_k -n "$RELEASE_NS" status laboratory -o json | jq -r '"revision \(.version) \(.info.status)"'), mode $mode, externalTrafficPolicy $etp, node port $np"
 }
 
 log "images"
@@ -262,7 +333,7 @@ group() {
   printf -v "CLIENT_PRIV_$g" %s "$cpriv"
   sed -e "s|__NS__|$ns|g" -e "s|__GROUP__|demux-$g|g" -e "s|__NODE__|$2|g" -e "s|__PRIVATE_KEY__|$spriv|g" -e "s|__IMAGE__|$WG_IMG|g" \
     -e "s|__PEER_KEY__|$cpub|g" -e "s|__SERVER_IP__|$3|g" -e "s|__CLIENT_IP__|$4|g" "$HERE/vpn-server.yaml" | k apply -f - >/dev/null
-  (cd "$ROOT" && VPN_POLICY_NS="$ns" VPN_POLICY_MODE="$MODE" VPN_POLICY_OUT="$WORK/policy-$g.yaml" GOWORK=off \
+  (cd "$ROOT" && VPN_POLICY_NS="$ns" VPN_POLICY_MODE="$DEMUX_MODE" VPN_POLICY_OUT="$WORK/policy-$g.yaml" GOWORK=off \
     go test ./internal/controller/laboratory -run '^TestPrintVPNCiliumPolicy$' -count=1 >/dev/null)
   k apply -f "$WORK/policy-$g.yaml" >/dev/null
   printf 'apiVersion: laboratory.cybericebox.com/v1alpha1\nkind: LabGroup\nmetadata:\n  name: demux-%s\nspec: {}\n' "$g" | k apply -f - >/dev/null
@@ -319,11 +390,15 @@ k -n "$ECHO_NS" wait --for=condition=Ready pod/echo --timeout=2m >/dev/null
 ECHO_UDP="$(k -n "$ECHO_NS" get svc echo -o jsonpath='{.spec.ports[?(@.name=="udp")].nodePort}')"
 ECHO_TCP="$(k -n "$ECHO_NS" get svc echo -o jsonpath='{.spec.ports[?(@.name=="tcp")].nodePort}')"
 
-log "demux (mode $MODE)"
-deploy "$MODE"
+if [[ "$MODE" == upgrade ]]; then
+  upgrade
+else
+  log "demux (mode $MODE)"
+  deploy "$MODE"
+fi
 NODE_PORT="$(k -n "$WG_NS" get svc laboratory-proxy-wg -o jsonpath='{.spec.ports[0].nodePort}')"
 set_metrics_url
-echo "entry: $ENTRY_IP:$NODE_PORT, metrics: $METRICS_URL"
+echo "entry: $ENTRY_IP:$NODE_PORT, metrics: $METRICS_URLS"
 
 if fast; then
   log "attachment on $ENTRY_NODE"
@@ -501,14 +576,14 @@ res="$(ping_stop a restart)"
 read -r sent got <<<"$res"
 lost=$((sent - got))
 echo "restart: $got/$sent (lost $lost pings = $((lost / 5)) s)"
-if [[ "$MODE" == userspace ]]; then
+if [[ "$DEMUX_MODE" == userspace ]]; then
   echo "userspace: the client re-handshakes with the new pod (allowed)"
 else
   ((lost <= 10)) || fail "lost $lost pings (more than 2 s) across the restart"
 fi
 n="$(received a -c 20 -i 0.2 -W 1 10.99.1.1)"
 [[ "$n" == 20 ]] || fail "client a after the restart: lost $((20 - n)) of 20 pings"
-if [[ "$MODE" == userspace ]]; then
+if [[ "$DEMUX_MODE" == userspace ]]; then
   # An idle client (keepalives only) re-handshakes only once it sends data and gets no answer (15 s).
   t="$(wait_tunnel b 10.99.2.1 60)" || fail "client b: no tunnel 60 s after the restart"
   echo "client b: tunnel again after ${t}s of pinging"
@@ -540,15 +615,16 @@ for g in a b; do
     roam=", passed_source +$dp, forwarded_to_server +$ds"
   fi
   # The server's peer is the demux: it sees the source the demux socket uses towards it (in tc and xdp the kernel's preferred source
-  # on the entry node, which the fast path uses too; in userspace the pod's address), never the client's address.
+  # on the entry node, which the fast path uses too; in userspace the address of the demux pod that serves the client, on any node with the
+  # policy Cluster), never the client's address.
   if fast; then
-    src="$(docker exec "$ENTRY_NODE" ip -4 route get "$(k -n "lg-demux-$g" get pod vpn -o jsonpath='{.status.podIP}')" |
+    srcs="$(docker exec "$ENTRY_NODE" ip -4 route get "$(k -n "lg-demux-$g" get pod vpn -o jsonpath='{.status.podIP}')" |
       sed -n 's/.* src \([0-9.]*\).*/\1/p')"
   else
-    src="$(k -n "$WG_NS" get pod "$(demux_pod)" -o jsonpath='{.status.podIP}')"
+    srcs="$(demux_ips)"
   fi
   endpoint="$(k -n "lg-demux-$g" exec vpn -- wg show wg0 endpoints | awk '{print $2}')"
-  [[ "$endpoint" == "$src:51820" ]] || fail "server $g sees $endpoint, not the demux's source $src:51820"
+  [[ " $srcs " == *" ${endpoint%:51820} "* && "$endpoint" == *:51820 ]] || fail "server $g sees $endpoint, not a demux source ($srcs, port 51820)"
   [[ "$endpoint" != "$(client_ip "$g"):"* ]] || fail "server $g sees the client's address $endpoint"
   summary "client $g roam: tunnel after ${t}s, ping 20/20$roam, server endpoint $endpoint"
 done
@@ -586,4 +662,8 @@ if fast; then
 fi
 echo_ok end
 
+if [[ "$MODE" == upgrade ]]; then
+  # The next steps apply the demux without Helm.
+  helm_k -n "$RELEASE_NS" uninstall laboratory --wait >/dev/null
+fi
 printf '\nPASS (mode %s)\n' "$MODE"

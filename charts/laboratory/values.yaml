@@ -329,10 +329,11 @@ proxy:
     # Empty: every node.
     nodeSelector: {}
     tolerations: []
-    # externalTrafficPolicy of the VPN Service. Local (default) keeps the clients' source addresses and sends a packet only to a node
-    # that runs a demux. Cilium LB-IPAM shares one IP between this Service and the Gateway only when both have the same policy and,
-    # with Local, the same selector, so a stand where they share one address (EDGE_IP) needs Cluster.
-    externalTrafficPolicy: Local
+    # externalTrafficPolicy of the VPN Service. Empty (default) follows the mode: Cluster for userspace (any node forwards to a demux, and
+    # the Service shares the Gateway's address), Local for tc and xdp (a packet must reach a node whose kernel holds its session; it keeps
+    # the clients' source addresses). Cilium LB-IPAM shares one IP between this Service and the Gateway only when both have the same
+    # policy and, with Local, the same selector, so tc or xdp on a stand where they share one address (EDGE_IP) sets Cluster here.
+    externalTrafficPolicy: ""
     # The wg-demux binds UDP 51820 (the VPN pods listen on 51820 too), its probes (/readyz: the UDP socket is bound, the
     # caches have synced and every group is in the demux table; /healthz: the process answers) are on :8082 and its Prometheus metrics
     # on :8083. Constants of the image.

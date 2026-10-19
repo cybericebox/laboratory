@@ -18,10 +18,10 @@ metadata:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
   type: LoadBalancer
-  # Local (default) keeps the clients' source addresses and sends a packet only to a node that runs a demux. LB-IPAM shares an IP between
-  # services with an identical policy only, and with Local it also wants the same pod selector, which the Gateway's selector-less Service
-  # cannot have: a stand where the two share one address sets proxy.wg.externalTrafficPolicy: Cluster.
-  externalTrafficPolicy: {{ .Values.proxy.wg.externalTrafficPolicy }}
+  # Empty follows the mode: Cluster for userspace (as before the modes; it shares the Gateway's address), Local for tc and xdp (a packet
+  # must reach a node whose kernel holds its session). LB-IPAM shares an IP between services with an identical policy only, and with Local
+  # it also wants the same pod selector, which the Gateway's selector-less Service cannot have.
+  externalTrafficPolicy: {{ include "laboratory.wgExternalTrafficPolicy" . }}
   selector:
     app: laboratory-proxy-wg
   ports:

@@ -113,6 +113,12 @@ names no port.
 
 {{- /* The demux modes that run on the host network with BPF capabilities. */}}
 {{- define "laboratory.wgHostNetwork" -}}{{- if has .Values.proxy.wg.mode (list "tc" "xdp") -}}true{{- end -}}{{- end }}
+{{- define "laboratory.wgExternalTrafficPolicy" -}}
+{{- if .Values.proxy.wg.externalTrafficPolicy -}}{{ .Values.proxy.wg.externalTrafficPolicy }}
+{{- else if include "laboratory.wgHostNetwork" . -}}Local
+{{- else -}}Cluster
+{{- end -}}
+{{- end }}
 {{- define "laboratory.priorityClass.platform" -}}{{ .Values.priorityClasses.platform.name }}{{- end }}
 {{- define "laboratory.priorityClass.group" -}}{{ .Values.priorityClasses.group.name }}{{- end }}
 {{- define "laboratory.priorityClass.device" -}}{{ .Values.priorityClasses.device.name }}{{- end }}
