@@ -91,6 +91,7 @@ func TestReservationFitRules(t *testing.T) {
 		{"ReservationLabelFromFieldNotLabels", fitReservationLabelFromFieldNotLabels},
 		{"AttachReservationToRunningLab", fitAttachReservationToRunningLab},
 		{"AttachMoveRefused", fitAttachMoveRefused},
+		{"OtherTenantReservationNotFound", fitOtherTenantReservationNotFound},
 	} {
 		prefix := fmt.Sprintf("c%d-", i)
 		t.Run(c.name, func(t *testing.T) { c.run(t, h, k8s, func(s string) string { return prefix + s }) })
@@ -288,6 +289,42 @@ func fitAttachMoveRefused(t *testing.T, h *Handler, k8s kubernetes.Interface, n 
 	g, _ := h.cs.LaboratoryV1alpha1().LabGroups().Get(ctx, n("g1"), metav1.GetOptions{})
 	if g.Labels[names.LabelReservation] != n("r1") {
 		t.Fatalf("still under r1: %v", g.Labels)
+	}
+}
+
+func fitOtherTenantReservationNotFound(t *testing.T, h *Handler, k8s kubernetes.Interface, n func(string) string) {
+	ctx := context.Background()
+	// another tenant's reservation, under its own id
+	now := time.Now()
+	res, err := h.CreateReservations(asClient("other"), &protobuf.CreateReservationsRequest{Items: []*protobuf.ReservationItem{{
+		Id: n("theirs"), FromUnixMs: now.Add(-time.Hour).UnixMilli(), ToUnixMs: now.Add(time.Hour).UnixMilli(), CpuMillicores: 4000, MemoryBytes: 1 << 30}}})
+	wantStates(t, res, err, stCreated)
+	reserve(t, h, n("mine"), 4000, -time.Hour)
+
+	res, err = h.CreateLabGroups(ctx, &protobuf.CreateLabGroupsRequest{Items: []*protobuf.LabGroupItem{{Name: n("g1"), ReservationId: n("theirs")}}})
+	wantStates(t, res, err, stFailed)
+	wantReason(t, res.GetResults()[0], client.ReasonReservationNotFound, false)
+
+	reservedGroup(t, h, k8s, n("g2"), n("mine"))
+	res, err = h.CreateLabs(ctx, &protobuf.CreateLabsRequest{
+		Variants: []*protobuf.LabVariant{{VariantId: "v", SpecJson: cpuSpec("100m")}},
+		Items:    []*protobuf.LabItem{{LabGroup: n("g2"), Name: n("l1"), VariantId: "v", ReservationId: n("theirs")}},
+	})
+	wantStates(t, res, err, stFailed)
+	wantReason(t, res.GetResults()[0], client.ReasonReservationNotFound, false)
+
+	// attach: a group that runs under none cannot be put under another tenant's reservation
+	h.reservationsOptional = true
+	res, err = h.CreateLabGroups(ctx, &protobuf.CreateLabGroupsRequest{Items: []*protobuf.LabGroupItem{{Name: n("g3")}}})
+	h.reservationsOptional = false
+	wantStates(t, res, err, stCreated)
+	res, err = h.UpdateLabGroups(ctx, &protobuf.UpdateLabGroupsRequest{Items: []*protobuf.UpdateLabGroupItem{
+		{Name: n("g3"), Changes: &protobuf.LabGroupChanges{ReservationId: proto.String(n("theirs"))}}}})
+	wantStates(t, res, err, stFailed)
+	wantReason(t, res.GetResults()[0], client.ReasonReservationNotFound, false)
+	g, _ := h.cs.LaboratoryV1alpha1().LabGroups().Get(ctx, n("g3"), metav1.GetOptions{})
+	if _, has := names.ReservationOf(g.Labels); has {
+		t.Fatalf("no label written: %v", g.Labels)
 	}
 }
 
