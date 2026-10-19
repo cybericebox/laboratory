@@ -509,7 +509,8 @@ capacity allows, which makes a node empty sooner when you take it out for mainte
 
 **Maintenance of a node.** The `lab-group` budget blocks every voluntary eviction in a group namespace, the VPN and gateway pods included, so
 `kubectl drain`, an autopilot upgrade or the autoscaler's scale-down wait on a node that still has lab pods. That is intended: a running lab is
-never cut for maintenance. The flow is:
+never cut for maintenance (a cluster autoscaler too: lab pods also carry `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`,
+see "Maximum capacity and node autoscaling"). The flow is:
 
 1. `kubectl cordon <node>`: new lab pods go elsewhere (the operator's scheduler skips unschedulable nodes). Running labs are not touched.
 2. Wait until the labs on the node end: `kubectl get pods -A -o wide --field-selector spec.nodeName=<node>` (lab pods carry the label
@@ -529,7 +530,8 @@ kubectl get labs -A -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name
 `group` is the deploy group, `position` the place among the objects that still have pods to dispatch
 (0 when all are dispatched), `length` their number, `reason` why the next pod waits (`InFlightLimit`,
 `WaitingForGroup` with `message` "waiting for group X", `WaitingForTurn`, `PreparingImages`, `TenantQuota`,
-`InsufficientResources`, `DoesNotFitNow`, `NoSchedulableNodes`), `pods`/`pending` the pod counts. A Lab is in phase `Queued`
+`InsufficientResources`, `DoesNotFitNow`, `NoSchedulableNodes`, `Withdrawn`; and `NodeStarting` when every pod is sent and
+some wait for a node, see "Maximum capacity and node autoscaling"), `pods`/`pending` the pod counts. A Lab is in phase `Queued`
 while none of its pods has been dispatched. The position is refreshed at a limited rate (at most 50 writes per
 2 s tick, one per object per 10 s), so in a long queue it lags by a few seconds. Each pod's own state is
 `Device.status.scheduling` (`Queued`, `Starting`, `Started`, `Failed`) and, for a group, `LabGroup.status.pods`.
@@ -570,8 +572,89 @@ while none of its pods has been dispatched. The position is refreshed at a limit
 `reservations.endingNoticeSeconds` (default `300`, `0` = no notice): the Ending condition comes this long before the end of a
 reservation.
 
-The operator needs `get/list/watch` on nodes and
-`create/delete/get/list/watch` on DaemonSets; the chart's ClusterRole has them.
+The operator needs `get/list/watch` on nodes and DaemonSets (read only: the DaemonSets that would run on a node still to
+come); the chart's ClusterRole has them.
+
+## Maximum capacity and node autoscaling
+
+The operator knows nothing about an autoscaler. It knows two capacities of the lab nodes:
+
+- **Current**: the lab nodes that exist and are schedulable (Ready, not cordoned, `node-agent-ready`, taints tolerated). A node
+  that boots, a node a cluster autoscaler removes (taint `ToBeDeletedByClusterAutoscaler`) and a NotReady node do not count.
+- **Maximum**: `capacity.maxNodes` lab nodes in all, the existing ones included. A node still to come has the allocatable
+  `capacity.addedNode.cpu` / `memory`; labs get that less the requests of the DaemonSets that would run there (their node
+  selector, required node affinity and tolerations against the lab labels and the lab taint), the platform reserve and the packing
+  reserve, as for a real node. `maxNodes: 0` (the default): the maximum is the current capacity. A maximum below the current
+  nodes counts as the current nodes. Infra renders the values from the autoscaling group's max and instance type.
+
+**Admission against the maximum.** The placement simulation of the scheduler has the real nodes first, then one virtual room
+per node still to come. A group that fits real and virtual room together is sent whole; its pods for the virtual room stay
+`Pending` (`PodScheduled=False`), and a cluster autoscaler, if infra installed one, adds a node for them. On the next passes
+these pods hold the virtual room they wait on, so no more than the maximum is ever sent. With no lab node at all the queue
+goes on while virtual room is left (scale from zero). `DoesNotFitNow` and the `GroupTooLarge` event come only for a group
+beyond the maximum; a pod is failed with `DoesNotFit` only when neither a real node nor an added node can hold it.
+`CapacityShortfall`, the cleanup of unreserved work (spec decisions 6 and 19) and the agent's `GetCapacity` use the maximum
+too; the condition message says how much of the capacity is on nodes not yet present.
+
+**Waiting for a node.** An object whose pods are all sent and some have no node yet shows `status.scheduling.reason:
+NodeStarting` ("n pods wait for a node since T") and gets one Normal event `NodeStarting`; the gauge
+`laboratory_pods_waiting_for_node` counts such pods. Such a pod keeps its slot, and the startup timeout does not fail it:
+once it has a node, `scheduler.startupTimeout` counts from the moment it got the node.
+
+**Gang commit (always on).** A group must start as one commit. When some sent pod of a group still has no node
+`capacity.nodeTimeoutSeconds` (900) after the group's last dispatch, the whole group is withdrawn: every pod record goes back
+to `Queued`, and the operator deletes every pod the group made, the running ones too. Its room, tenant quota and reservation
+usage are free at once. The group keeps its place in the order and waits `Withdrawn` ("not every pod got a node within 15m0s;
+withdrawn (attempt n), retry at T") for 1, 2, 4, 8 ... minutes, at most the node timeout, then it is sent again; retries do
+not end. Each withdrawal gives a Warning event `Withdrawn` and counts in `laboratory_gang_withdrawals_total`. After three
+withdrawals in a row the tenant gets the condition `GroupsWithdrawnRepeatedly` naming the groups, so the admin sees a stuck
+group; it goes once the group starts. A pod that got a node and then fails (image pull, crash loop) keeps the per-pod rules
+above, so a broken image never loops its group. A pod that was Ready once is never withdrawn: running labs are never evicted.
+A lab that joins its deploy group much later (more than the node timeout after the group's labs were sent) is a commit of its
+own: its withdrawal leaves the running labs of the group alone.
+
+This is a **changed default**: without a maximum the gang commit still applies to pods that stay `Pending` on full nodes.
+Before, such a pod was failed `Unschedulable` after `scheduler.startupTimeout`; now it waits, and its group is withdrawn at the
+node timeout. A pod whose workload never creates it (a quota, a refusal) still fails after the startup timeout.
+
+**Breaker.** After a withdrawal, admission uses the current nodes only (no virtual room) until a lab node becomes schedulable
+that was not schedulable at the withdrawal, or one node timeout passes. A group that needs a node still to come waits
+`InsufficientResources` meanwhile. The gauge `laboratory_capacity_breaker` is `1` and the `CapacityShortfall` message adds "no
+new lab node came within 15m0s: admission uses the current nodes only"; the shortfall is computed on the current nodes then.
+The agent keeps reporting the maximum. A restart of the operator forgets the breaker (one more try).
+
+**What a cluster autoscaler must have** (infra installs it; the laboratory chart has no autoscaler code or values):
+
+- the node-template label `laboratory.cybericebox.com/node-agent-ready=true` on the node group (and the lab label and taint),
+  or it never adds a node for lab pods, which select that label;
+- `--max-node-provision-time` below the node timeout (12m for 15m), so it gives up before the operator withdraws;
+- scale-down through the `lab-group` PodDisruptionBudget: lab pods carry `cluster-autoscaler.kubernetes.io/safe-to-evict:
+  "false"` (VPN and gateway pods of a group that already runs get it with their next template change), so only empty nodes
+  go;
+- if it ignores pods of the `laboratory-binpack` scheduler, `--bypassed-scheduler-names=laboratory-binpack`.
+
+**Values** (chart `capacity.*`):
+
+| Value | Default | Meaning |
+|---|---|---|
+| `maxNodes` | `0` | lab nodes in all, the existing ones included; `0`: the maximum is the current capacity |
+| `addedNode.cpu` / `addedNode.memory` | `""` | allocatable of one added node; required with `maxNodes` |
+| `nodeTimeoutSeconds` | `900` | the gang commit: every sent pod of a group must have a node this long after the group's last dispatch |
+
+**Smoke test (AWS, desired 0 → 1 → 0).**
+
+1. Start: the lab autoscaling group is at 0; the agent's `GetCapacity` is about the controller's room plus `lab_worker_max`
+   times one added node's room.
+2. Start a reservation and a deploy group that does not fit the controller: the group is sent, its pods are `Pending`, the
+   Lab shows `NodeStarting`, the autoscaler logs a scale-up and the group's desired capacity is 1.
+3. The node joins and gets `node-agent-ready`: the pods bind and become Ready, `NodeStarting` clears, the pods carry
+   `safe-to-evict: "false"`.
+4. Delete the group: after about 10 + 10 minutes the autoscaler removes the node, the desired capacity is 0, the instance is
+   terminated and the Node object is gone.
+5. A group larger than the controller plus `lab_worker_max` added nodes gets `GroupTooLarge` and no scale-up.
+6. Set the group's max to 0 and start a gang of two labs, one that fits the controller and one that needs a new node: at 15m
+   the whole gang is withdrawn (both workloads deleted, `Withdrawn`, attempt 1), `laboratory_capacity_breaker` is 1 and a
+   new group that needs a node waits. Restore the max: on retry the node comes, the gang starts whole and the breaker clears.
 
 ---
 
