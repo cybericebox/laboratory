@@ -16,6 +16,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -670,6 +671,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 		if err := checkServiceGroupUID(&existing, groupUID); err != nil {
 			return err
 		}
+		before := existing.Spec.Template.DeepCopy()
 		changed := existing.Spec.Replicas == nil || *existing.Spec.Replicas != replicas
 		existing.Spec.Replicas = ptrInt32(replicas)
 		// The configured image reaches the VPN pods that already run, one group at a time (a rolling update); their size stays.
@@ -725,6 +727,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 			}
 		}
 		if changed {
+			markSafeToEvictOnRollout(before, &existing.Spec.Template)
 			return r.Update(ctx, &existing)
 		}
 		return nil
@@ -744,7 +747,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      map[string]string{labelApp: names.ComponentVPN, names.LabelComponent: names.ComponentVPN},
-					Annotations: map[string]string{names.AnnotationDefaultNetwork: "eth0", names.AnnotationConntrackAccounting: valueTrue},
+					Annotations: map[string]string{names.AnnotationDefaultNetwork: "eth0", names.AnnotationConntrackAccounting: valueTrue, names.AnnotationSafeToEvict: "false"},
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: names.ComponentVPN,
@@ -785,6 +788,18 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 	return r.Create(ctx, d)
 }
 
+// markSafeToEvictOnRollout gives a VPN or gateway pod template that changes anyway (its pods are replaced) the annotation that
+// keeps a cluster autoscaler from evicting them; a group that runs is never rolled out for it alone.
+func markSafeToEvictOnRollout(before, tpl *corev1.PodTemplateSpec) {
+	if equality.Semantic.DeepEqual(before, tpl) {
+		return
+	}
+	if tpl.Annotations == nil {
+		tpl.Annotations = map[string]string{}
+	}
+	tpl.Annotations[names.AnnotationSafeToEvict] = "false"
+}
+
 // ensureGatewayDeployment creates the per-LabGroup internet-gateway pod.
 // One replica per group, namespace-scoped, mirrors the VPN deployment shape so
 // node-agent's LabIfaceReconciler attaches a gw-<labname> OVS port into its
@@ -807,6 +822,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 		if err := checkServiceGroupUID(&existing, groupUID); err != nil {
 			return err
 		}
+		before := existing.Spec.Template.DeepCopy()
 		changed := bindServiceGroupUID(&existing, groupUID)
 		changed = changed || existing.Spec.Replicas == nil || *existing.Spec.Replicas != replicas
 		existing.Spec.Replicas = ptrInt32(replicas)
@@ -827,6 +843,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 		if !changed {
 			return nil
 		}
+		markSafeToEvictOnRollout(before, &existing.Spec.Template)
 		return r.Update(ctx, &existing)
 	} else if !errors.IsNotFound(err) {
 		return err
@@ -840,7 +857,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      map[string]string{labelApp: names.ComponentGateway, names.LabelComponent: names.ComponentGateway},
-					Annotations: map[string]string{names.AnnotationDefaultNetwork: "eth0"},
+					Annotations: map[string]string{names.AnnotationDefaultNetwork: "eth0", names.AnnotationSafeToEvict: "false"},
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: names.ComponentGateway,

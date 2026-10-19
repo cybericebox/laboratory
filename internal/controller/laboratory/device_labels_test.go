@@ -55,3 +55,15 @@ func TestTenantStampReachesDeviceAndPod(t *testing.T) {
 		t.Fatalf("pod labels: %v", podLabels)
 	}
 }
+
+// A running lab is never moved by a cluster autoscaler: its pods say they are not safe to evict.
+func TestDevicePodSafeToEvictFalse(t *testing.T) {
+	device := &laboratoryv1alpha1.Device{
+		ObjectMeta: metav1.ObjectMeta{Name: "ctf-web"},
+		Spec:       laboratoryv1alpha1.DeviceSpec{LabRef: "ctf", Name: "web", Type: laboratoryv1alpha1.DeviceTypeContainer, Image: "nginx"},
+	}
+	_, _, annotations, _ := (&DeviceReconciler{}).workloadTemplate(device, false)
+	if annotations[names.AnnotationSafeToEvict] != "false" {
+		t.Fatalf("annotations: %v", annotations)
+	}
+}
