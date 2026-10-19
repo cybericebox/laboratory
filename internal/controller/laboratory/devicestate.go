@@ -314,6 +314,9 @@ func (r *DeviceReconciler) deleteWithdrawnPods(ctx context.Context, device *labo
 	if !r.withdrawnByScheduler(device) || len(pods) == 0 {
 		return nil
 	}
+	if err := r.inventoryWithdrawnPods(ctx, device, pods); err != nil {
+		return err
+	}
 	if err := r.markStopped(ctx, device, r.now()); err != nil {
 		return err
 	}

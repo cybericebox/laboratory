@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
@@ -12,9 +13,11 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func (r *LabReconciler) lifecycleReader() client.Reader {
@@ -459,8 +462,62 @@ func (r *LabReconciler) lifecycleStopTargets(ctx context.Context, l *lab.Lab) ([
 	}
 	return targets, nil
 }
+
+// withdrawnStopGrace is how long a lab stop waits for the native inventory of a device the scheduler withdrew before it goes on
+// without it.
+const withdrawnStopGrace = 2 * time.Minute
+
+// withdrawnDevice says the scheduler withdrew the device's runtime (its record is Queued again after a withdrawal).
+func withdrawnDevice(d *lab.Device) bool {
+	return d.Status.Scheduling != nil && d.Status.Scheduling.State == lab.PodQueued && d.Status.Scheduling.Withdrawals > 0
+}
+
+// withdrawnStopGraceOver says the current stop of the lab was asked withdrawnStopGrace ago or more.
+func withdrawnStopGraceOver(l *lab.Lab) bool {
+	old := l.Status.Lifecycle
+	return currentLifecycleStopObservation(l, old) && old.RequestedAt != nil && time.Since(old.RequestedAt.Time) >= withdrawnStopGrace
+}
+
+// noRuntimeTrace decides on a device with no pod and no native inventory at a stop: missing, the stop waits for its inventory;
+// skip, the scheduler withdrew its runtime and no native identity of it was kept (its pod never got a node, or no report came
+// before the withdrawal), and the bounded wait is over: the stop goes on without it, and the lab says so. Neither: a device that
+// never materialized, which the native scope report decides.
+func (r *LabReconciler) noRuntimeTrace(l *lab.Lab, d *lab.Device) (skip, missing bool) {
+	never := d.Status.PodName == "" && d.Status.NodeName == "" && (d.Status.State == nil || d.Status.State.Incarnation == 0) && d.Status.Scheduling != nil && d.Status.Scheduling.State == lab.PodQueued
+	switch {
+	case withdrawnDevice(d) && withdrawnStopGraceOver(l):
+		return true, false
+	case !r.RuntimeObservation || !never:
+		return false, true
+	}
+	return false, false
+}
+
+// conditionWithdrawnRuntimeUnverified is set on a lab whose stop went on without the native inventory of withdrawn devices.
+const conditionWithdrawnRuntimeUnverified = "WithdrawnRuntimeUnverified"
+
+// markWithdrawnUnverified sets the WithdrawnRuntimeUnverified condition on the lab, naming the devices.
+func (r *LabReconciler) markWithdrawnUnverified(ctx context.Context, l *lab.Lab, devices []string) {
+	base := l.DeepCopy()
+	if !meta.SetStatusCondition(&l.Status.Conditions, metav1.Condition{
+		Type: conditionWithdrawnRuntimeUnverified, Status: metav1.ConditionTrue, Reason: "WithdrawnWithoutInventory", ObservedGeneration: l.Generation,
+		Message: fmt.Sprintf("the stop went on without the native inventory of the withdrawn devices %s (none was kept within %s)", strings.Join(devices, ", "), withdrawnStopGrace),
+	}) {
+		return
+	}
+	if err := r.Status().Patch(ctx, l, client.MergeFrom(base)); err != nil {
+		log.FromContext(ctx).Error(err, "mark the withdrawn devices of a stopped lab", "lab", client.ObjectKeyFromObject(l))
+	}
+}
+
 func (r *LabReconciler) inventoryLifecycleStop(ctx context.Context, l *lab.Lab, targets []lifecycleStopRuntime, finish lifecycleStopFinish) (bool, ctrl.Result, error) {
 	intent := l.Spec.Lifecycle
+	var unverified []string // withdrawn devices that left no native inventory
+	defer func() {
+		if len(unverified) > 0 {
+			r.markWithdrawnUnverified(ctx, l, unverified)
+		}
+	}()
 	// Capture the complete native identity in controller-owned durable inventory
 	// before any scale/delete. Unknown and force-deleted Pods keep prior holdings.
 	for _, target := range targets {
@@ -490,9 +547,12 @@ func (r *LabReconciler) inventoryLifecycleStop(ctx context.Context, l *lab.Lab, 
 			}
 		}
 		if len(target.pods) == 0 && len(d.Status.RuntimeInventory) == 0 {
-			never := d.Status.PodName == "" && d.Status.NodeName == "" && (d.Status.State == nil || d.Status.State.Incarnation == 0) && d.Status.Scheduling != nil && d.Status.Scheduling.State == lab.PodQueued
-			if !r.RuntimeObservation || !never {
+			skip, missing := r.noRuntimeTrace(l, d)
+			if missing {
 				return finish(observationStateUnknown, "MissingNativeInventory", nil)
+			}
+			if skip {
+				unverified = append(unverified, d.Spec.Name)
 			}
 		}
 		if !reflect.DeepEqual(base.Status.RuntimeInventory, d.Status.RuntimeInventory) {
