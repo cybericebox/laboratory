@@ -50,11 +50,48 @@ func (h *Handler) reservationNotice() time.Duration {
 }
 
 // keyLock serializes the work on one key (a tenant's reservations, one reservation's fit) inside this agent process.
+// The entry of a key lives only while somebody holds or waits for it, so the map does not grow with every reservation and
+// tenant ever seen.
 func (h *Handler) keyLock(key string) (unlock func()) {
-	v, _ := h.resLocks.LoadOrStore(key, &sync.Mutex{})
-	m := v.(*sync.Mutex)
-	m.Lock()
-	return m.Unlock
+	l := &h.resLocks
+	l.mu.Lock()
+	if l.m == nil {
+		l.m = map[string]*keyMutex{}
+	}
+	e := l.m[key]
+	if e == nil {
+		e = &keyMutex{}
+		l.m[key] = e
+	}
+	e.users++
+	l.mu.Unlock()
+	e.mu.Lock()
+	return func() {
+		e.mu.Unlock()
+		l.mu.Lock()
+		if e.users--; e.users == 0 {
+			delete(l.m, key)
+		}
+		l.mu.Unlock()
+	}
+}
+
+// keyLocks are the mutexes of keyLock, by key, with how many hold or wait for each.
+type keyLocks struct {
+	mu sync.Mutex
+	m  map[string]*keyMutex
+}
+
+type keyMutex struct {
+	mu    sync.Mutex
+	users int
+}
+
+// held is how many keys have an entry (tests).
+func (l *keyLocks) held() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.m)
 }
 
 // reasonError is a refusal with a machine code: ItemResult.reason.

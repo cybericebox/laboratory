@@ -88,7 +88,7 @@ type Handler struct {
 	// resNotice is the ending notice of the reservations (SetReservationNotice); resLocks are the mutexes of keyLock.
 	resNotice    time.Duration
 	resNoticeSet bool
-	resLocks     sync.Map
+	resLocks     keyLocks
 
 	// prewarm fills the image cache ahead of time; nil until SetPrewarm.
 	prewarm *prewarmer
