@@ -112,6 +112,18 @@ func applyDHCPPreset(link netlink.Link, c ifaceConfig) error {
 	if err := addAddr(link, fmt.Sprintf("%s/%d", ack.YourIPAddr.String(), ones)); err != nil {
 		return err
 	}
+	// RFC 3442: with classless routes the router option is ignored (the default route is among them when the server wants one)
+	if routes := ack.ClasslessStaticRoute(); len(routes) > 0 {
+		for _, r := range routes {
+			if r.Dest == nil || r.Router == nil {
+				continue
+			}
+			if err := netlink.RouteReplace(&netlink.Route{LinkIndex: link.Attrs().Index, Dst: defaultAsNil(r.Dest), Gw: r.Router}); err != nil {
+				return fmt.Errorf("dhcp route %s: %w", r.Dest, err)
+			}
+		}
+		return nil
+	}
 	// only the first router is used
 	if routers := ack.Router(); len(routers) > 0 {
 		if err := addDefaultRoute(link, routers[0].String()); err != nil {
@@ -119,6 +131,14 @@ func applyDHCPPreset(link netlink.Link, c ifaceConfig) error {
 		}
 	}
 	return nil
+}
+
+// defaultAsNil is the destination netlink expects for the default route.
+func defaultAsNil(dst *net.IPNet) *net.IPNet {
+	if ones, _ := dst.Mask.Size(); ones == 0 {
+		return nil
+	}
+	return dst
 }
 
 func addAddr(link netlink.Link, cidr string) error {

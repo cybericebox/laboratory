@@ -2192,6 +2192,21 @@ ceiling of 64 devices per lab; the chart's `limits.lab.maxDevices`, 32 by defaul
 | `inetBaseNetwork`   | `10.192.0.0/10` | Internet-gateway subnets                                           |
 | Per-lab inet subnet | `10.192.N.0/24` | Mirrors VPN lab index                                              |
 
+### The return route to the participants
+
+The replies of a device reach a participant only through the VPN pod (host .1 of the lab's VPN network), so a device interface
+connected to the VPN network (directly or through switches and hubs) needs a route to the client subnet via that gateway. The
+operator adds it, the author writes nothing:
+
+- **static addresses**: the operator adds `<client subnet> via <lab VPN .1>` to the interface routes it renders (the Lab template is
+  not changed). The client subnet is the first /24 of `vpnBaseNetwork` (`10.128.0.0/24`), where the WireGuard clients live. Nothing
+  is added when the interface already has a route that covers the client subnet or already uses the VPN gateway as its default
+  gateway. An existing lab gets the route (and its device pods restart) at the first reconcile after the operator upgrade.
+- **`dhcp-preset`**: the lab VPN DHCP server sends the route as a classless static route (option 121), together with the default
+  route via .1 (RFC 3442: a client that understands option 121 ignores the router option). The netconfig init-container applies it.
+- **`dhcp` (the image's own client)**: works only when the image's client applies option 121 (dhclient and `udhcpc` with the
+  routes option do, many minimal clients do not). Otherwise the image has to add the route itself, or use a static address.
+
 ---
 
 ## Troubleshooting
