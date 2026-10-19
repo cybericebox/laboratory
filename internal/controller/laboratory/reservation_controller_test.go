@@ -47,13 +47,16 @@ func newResFixture(t *testing.T, funcs *interceptor.Funcs) *resFixture {
 	if err := laboratoryv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	b := fake.NewClientBuilder().WithScheme(scheme).
-		WithStatusSubresource(&laboratoryv1alpha1.Reservation{}, &laboratoryv1alpha1.Tenant{}, &laboratoryv1alpha1.Lab{}, &laboratoryv1alpha1.LabGroup{})
+	base := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&laboratoryv1alpha1.Reservation{}, &laboratoryv1alpha1.Tenant{}, &laboratoryv1alpha1.Lab{}, &laboratoryv1alpha1.LabGroup{}).
+		Build()
+	f := &resFixture{t: t, c: base, now: planEpoch}
+	// funcs stand for the cache (and the writes) of the reconciler; Reader is always the server itself.
+	var cached client.Client = base
 	if funcs != nil {
-		b = b.WithInterceptorFuncs(*funcs)
+		cached = interceptor.NewClient(base, *funcs)
 	}
-	f := &resFixture{t: t, c: b.Build(), now: planEpoch}
-	f.r = &ReservationReconciler{Client: f.c, Notice: resNotice, Now: func() time.Time { return f.now }}
+	f.r = &ReservationReconciler{Client: cached, Reader: base, Notice: resNotice, Now: func() time.Time { return f.now }}
 	return f
 }
 
@@ -217,7 +220,7 @@ func TestPhaseMilestones(t *testing.T) {
 
 	res, r = f.at(time.Hour, "r")
 	wantPhase(t, r, laboratoryv1alpha1.ReservationPhaseEnded)
-	wantAfter(t, res, reservationRetention)
+	wantAfter(t, res, reservationRecheck) // the tail: a missed object or a reset status is caught
 	if c := endingCond(r); c == nil || c.Status != metav1.ConditionFalse || c.Reason != laboratoryv1alpha1.ReservationReasonEnded {
 		t.Fatalf("ending condition after the end = %+v", c)
 	}
@@ -228,6 +231,8 @@ func TestPhaseMilestones(t *testing.T) {
 	if _, r = f.at(time.Hour+time.Minute, "r"); r.ResourceVersion != rv {
 		t.Fatal("an unchanged status was written again")
 	}
+	res, _ = f.at(time.Hour+reservationEndTail, "r")
+	wantAfter(t, res, reservationRetention-reservationEndTail)
 
 	// A window shorter than the notice: the notice comes before from, so Pending waits for it, not for from.
 	short := newResFixture(t, nil)
@@ -456,14 +461,14 @@ func TestEndKeepsOtherReservationsObjects(t *testing.T) {
 	if err := f.c.Delete(context.Background(), &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Namespace: mixed, Name: "theirs"}}); err != nil {
 		t.Fatal(err)
 	}
-	res, _ = f.at(time.Hour+time.Minute, "r")
+	res, _ = f.at(time.Hour+reservationEndTail, "r")
 	if f.groupExists("mixed") {
 		t.Fatal("the group was kept after the others' labs went")
 	}
 	if !f.groupExists("other") || !f.groupExists("alien") {
 		t.Fatal("another reservation's or tenant's group was deleted")
 	}
-	wantAfter(t, res, reservationRetention-time.Minute)
+	wantAfter(t, res, reservationRetention-reservationEndTail)
 }
 
 // A reservation whose tenant is gone ends: first the notice (Ending, reason TenantGone, from the moment it is seen), then,
@@ -480,7 +485,7 @@ func TestTenantGoneEndsReservation(t *testing.T) {
 	seen := resFrom.Add(20 * time.Minute)
 	res, r := f.at(20*time.Minute, "r")
 	wantPhase(t, r, laboratoryv1alpha1.ReservationPhaseEnding)
-	wantAfter(t, res, resNotice)
+	wantAfter(t, res, reservationRecheck)
 	if c := endingCond(r); c == nil || c.Status != metav1.ConditionTrue || c.Reason != laboratoryv1alpha1.ReservationReasonTenantGone {
 		t.Fatalf("ending condition = %+v", c)
 	}
@@ -506,8 +511,11 @@ func TestTenantGoneEndsReservation(t *testing.T) {
 	}
 
 	f.tenant("t1")
-	res, r = f.at(30*time.Minute, "r")
+	_, r = f.at(30*time.Minute, "r")
 	wantPhase(t, r, laboratoryv1alpha1.ReservationPhaseEnded)
+	// inside the window it is looked at every minute (a reset status would reopen the scheduler's gate); after the tail of
+	// spec.to the next look is the removal, a day after the early end
+	res, _ = f.at(time.Hour+reservationEndTail, "r")
 	wantAfter(t, res, seen.Add(resNotice+reservationRetention).Sub(f.now))
 
 	// back during the notice: the end is called off
@@ -598,5 +606,214 @@ func TestSchedulerAndReconcilerStatusFieldsCoexist(t *testing.T) {
 	check(laboratoryv1alpha1.ReservationPhaseEnded, 300)
 	if c := endingCond(sf.reservation("r")); c == nil || c.Reason != laboratoryv1alpha1.ReservationReasonEnded {
 		t.Fatalf("ending condition = %+v", c)
+	}
+}
+
+// staleCache makes the reconciler's cache answer with a fixed copy of one reservation (what the informer still holds), while
+// the server and the API reader have the newer one.
+func staleCache(stale **laboratoryv1alpha1.Reservation) *interceptor.Funcs {
+	return &interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, o client.Object, opts ...client.GetOption) error {
+		if r, ok := o.(*laboratoryv1alpha1.Reservation); ok && *stale != nil && key.Name == (*stale).Name {
+			(*stale).DeepCopyInto(r)
+			return nil
+		}
+		return c.Get(ctx, key, o, opts...)
+	}}
+}
+
+// An extension that is on the server but not yet in the cache at the end deletes nothing: the end is committed with the
+// cached resourceVersion as precondition first, which conflicts. After the end is committed, a later pass on a stale cache
+// confirms the end on the server before it deletes (an extension after the end reopens and its new groups stay).
+func TestEndCommittedBeforeDeletion(t *testing.T) {
+	var stale *laboratoryv1alpha1.Reservation
+	f := newResFixture(t, staleCache(&stale))
+	f.tenant("t1")
+	f.reservation("r", nil)
+	f.group("g", "r", "t1")
+	f.at(time.Hour-time.Minute, "r") // Ending
+	stale = f.get("r")
+	extended := f.get("r")
+	extended.Spec.To = metav1.NewTime(resTo.Add(time.Hour))
+	if err := f.c.Update(context.Background(), extended); err != nil {
+		t.Fatal(err)
+	}
+	f.now = resTo
+	if _, err := f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "r"}}); !apierrors.IsConflict(err) {
+		t.Fatalf("the end on a stale copy must conflict, got %v", err)
+	}
+	if !f.groupExists("g") {
+		t.Fatal("the group was deleted although the reservation was extended in time")
+	}
+	wantPhase(t, f.get("r"), laboratoryv1alpha1.ReservationPhaseEnding)
+
+	// the cache catches up; the reservation ends at the new end and is extended again right after
+	stale = nil
+	f.now = resTo.Add(time.Hour)
+	f.reconcile("r")
+	wantPhase(t, f.get("r"), laboratoryv1alpha1.ReservationPhaseEnded)
+	stale = f.get("r")
+	again := f.get("r")
+	again.Spec.To = metav1.NewTime(resTo.Add(3 * time.Hour))
+	if err := f.c.Update(context.Background(), again); err != nil {
+		t.Fatal(err)
+	}
+	f.group("new", "r", "t1")
+	f.now = resTo.Add(time.Hour + time.Minute)
+	res := f.reconcile("r") // the cache still says Ended with the old end: nothing to write, the server says open
+	if !f.groupExists("new") {
+		t.Fatal("a group of the reopened reservation was deleted on a stale cache")
+	}
+	wantAfter(t, res, reservationRecheck)
+}
+
+// After the end the reservation is looked at every minute for a while: a lab the cache did not hold at the end goes too.
+func TestEndTailCatchesMissedObjects(t *testing.T) {
+	f := newResFixture(t, nil)
+	f.tenant("t1")
+	f.reservation("r", nil)
+	f.at(time.Hour, "r")
+	f.lab("ns-late", "late", "r", "t1")
+	res, _ := f.at(time.Hour+time.Minute, "r")
+	if f.labExists("ns-late", "late") {
+		t.Fatal("a lab seen after the end pass survived the tail")
+	}
+	wantAfter(t, res, reservationRecheck)
+}
+
+// A tenant missing from the cache only is not a loss, even with no notice; a real loss with no notice still waits a minute,
+// so one look never deletes.
+func TestTenantLossConfirmedAndFloored(t *testing.T) {
+	f := newResFixture(t, &interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, o client.Object, opts ...client.GetOption) error {
+		if _, ok := o.(*laboratoryv1alpha1.Tenant); ok {
+			return apierrors.NewNotFound(schema.GroupResource{Group: "laboratory.cybericebox.com", Resource: "tenants"}, key.Name)
+		}
+		return c.Get(ctx, key, o, opts...)
+	}})
+	f.r.Notice = 0
+	f.tenant("t1")
+	f.reservation("r", nil)
+	f.group("g", "r", "t1")
+	_, r := f.at(10*time.Minute, "r")
+	wantPhase(t, r, laboratoryv1alpha1.ReservationPhaseActive)
+	if endingCond(r) != nil {
+		t.Fatalf("a cache miss gave a notice: %+v", endingCond(r))
+	}
+
+	f.dropTenant("t1")
+	_, r = f.at(11*time.Minute, "r")
+	wantPhase(t, r, laboratoryv1alpha1.ReservationPhaseEnding)
+	if !f.groupExists("g") {
+		t.Fatal("a tenant loss with no notice deleted at the first look")
+	}
+	_, r = f.at(12*time.Minute, "r")
+	wantPhase(t, r, laboratoryv1alpha1.ReservationPhaseEnded)
+	if f.groupExists("g") {
+		t.Fatal("the group of a gone tenant survived")
+	}
+}
+
+// setUsed writes status.used the way the scheduler does.
+func (f *resFixture) setUsed(name, cpu, mem string) {
+	f.t.Helper()
+	r := f.get(name)
+	orig := r.DeepCopy()
+	r.Status.Used = corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(cpu), corev1.ResourceMemory: resource.MustParse(mem)}
+	if err := f.c.Status().Patch(context.Background(), r, client.MergeFrom(orig)); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *resFixture) setResources(name, cpu, mem string) {
+	f.t.Helper()
+	r := f.get(name)
+	r.Spec.Resources = corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(cpu), corev1.ResourceMemory: resource.MustParse(mem)}
+	if err := f.c.Update(context.Background(), r); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func exceededCond(r *laboratoryv1alpha1.Reservation) *metav1.Condition {
+	return meta.FindStatusCondition(r.Status.Conditions, laboratoryv1alpha1.ReservationConditionExceeded)
+}
+
+// A reservation made smaller than what runs under it gets Exceeded with the deletion time; still exceeded one notice later,
+// its groups go (the reservation stays open). Raising the amount, or the usage dropping, during the notice calls it off.
+func TestExceededReservationLosesGroups(t *testing.T) {
+	f := newResFixture(t, nil)
+	f.tenant("t1")
+	f.reservation("r", nil)
+	f.group("g", "r", "t1")
+	f.lab("ns-solo", "solo", "r", "t1")
+	f.setUsed("r", "1", "1Gi")
+	_, r := f.at(10*time.Minute, "r")
+	if exceededCond(r) != nil {
+		t.Fatal("exceeded within the amount")
+	}
+	f.setResources("r", "500m", "2Gi")
+	res, r := f.at(11*time.Minute, "r")
+	c := exceededCond(r)
+	if c == nil || c.Status != metav1.ConditionTrue || c.Message == "" {
+		t.Fatalf("exceeded condition = %+v", c)
+	}
+	wantAfter(t, res, reservationRecheck)
+	res, _ = f.at(11*time.Minute+resNotice-time.Second, "r")
+	wantAfter(t, res, time.Second)
+	if !f.groupExists("g") {
+		t.Fatal("deleted before the notice ran out")
+	}
+	_, r = f.at(11*time.Minute+resNotice, "r")
+	if f.groupExists("g") || f.labExists("ns-solo", "solo") {
+		t.Fatal("the groups of an exceeded reservation survived the notice")
+	}
+	wantPhase(t, r, laboratoryv1alpha1.ReservationPhaseActive)
+	f.setUsed("r", "0", "0")
+	if _, r = f.at(12*time.Minute+resNotice, "r"); exceededCond(r) != nil {
+		t.Fatal("the condition stays once the usage is within the amount")
+	}
+}
+
+func TestExceededCancelledWhenRaised(t *testing.T) {
+	for name, fix := range map[string]func(f *resFixture){
+		"raised":     func(f *resFixture) { f.setResources("r", "2", "2Gi") },
+		"usage-drop": func(f *resFixture) { f.setUsed("r", "500m", "1Gi") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newResFixture(t, nil)
+			f.tenant("t1")
+			f.reservation("r", nil)
+			f.group("g", "r", "t1")
+			f.setUsed("r", "1", "1Gi")
+			f.setResources("r", "500m", "2Gi")
+			if _, r := f.at(10*time.Minute, "r"); exceededCond(r) == nil {
+				t.Fatal("not exceeded")
+			}
+			fix(f)
+			if _, r := f.at(12*time.Minute, "r"); exceededCond(r) != nil {
+				t.Fatalf("the condition stays after the fix: %+v", exceededCond(r))
+			}
+			f.at(10*time.Minute+resNotice, "r")
+			if !f.groupExists("g") {
+				t.Fatal("deleted after the excess was called off")
+			}
+		})
+	}
+}
+
+// The deletion of an exceeded reservation's groups is confirmed on the server: a raise the cache does not hold yet deletes
+// nothing.
+func TestExceededConfirmedOnServer(t *testing.T) {
+	var stale *laboratoryv1alpha1.Reservation
+	f := newResFixture(t, staleCache(&stale))
+	f.tenant("t1")
+	f.reservation("r", nil)
+	f.group("g", "r", "t1")
+	f.setUsed("r", "1", "1Gi")
+	f.setResources("r", "500m", "2Gi")
+	f.at(10*time.Minute, "r")
+	stale = f.get("r")
+	f.setResources("r", "2", "2Gi")
+	f.at(10*time.Minute+resNotice, "r")
+	if !f.groupExists("g") {
+		t.Fatal("deleted on a stale cache although the amount was raised")
 	}
 }

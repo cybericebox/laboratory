@@ -29,6 +29,9 @@ const (
 	// ReservationConditionInvalid is true when spec.resources reserves nothing: a resource other than cpu and memory, or cpu
 	// or memory missing, zero or negative. The phase still follows the clock.
 	ReservationConditionInvalid = "Invalid"
+	// ReservationConditionExceeded is true while the groups of the reservation use more than it reserves (it was made smaller
+	// than what runs); still true one notice after it was set, the groups are deleted.
+	ReservationConditionExceeded = "Exceeded"
 )
 
 // Reasons of the Ending condition.

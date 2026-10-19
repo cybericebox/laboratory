@@ -70,11 +70,11 @@ rules:
   resources: [tenants/status]
   verbs: [get, update, patch]
 # Reservations: the scheduler accounts the groups against them and writes what they use (status.used, status.groups); the
-# reservation controller writes the phase and the Ending condition, deletes the groups at the end and the ended reservation
-# a day later.
+# reservation controller writes the phase and the conditions, deletes the groups at the end and the ended reservation a day
+# later. It never writes the spec (the agent owns it).
 - apiGroups: [laboratory.cybericebox.com]
   resources: [reservations]
-  verbs: [delete, get, list, patch, update, watch]
+  verbs: [delete, get, list, watch]
 - apiGroups: [laboratory.cybericebox.com]
   resources: [reservations/status]
   verbs: [get, update, patch]

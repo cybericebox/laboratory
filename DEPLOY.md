@@ -365,10 +365,17 @@ from `spec.to` minus the notice (chart `reservations.endingNoticeSeconds`, defau
 `status.noticeAt` = when the notice was given), `Ended` at `spec.to`. At the end every LabGroup and Lab of the reservation's
 tenant with its label is deleted in one pass; labs of other reservations, unlabelled ones and other tenants' objects stay, and
 a LabGroup of the reservation that still holds such labs is kept until they are gone (deleting it would drain them). Moving
-`spec.to` past the notice calls the end off (`Ending=False`, reason `Extended`). An end that passed while the operator was down
-is processed when it starts. When the tenant of a reservation is gone, the reservation ends one notice after that is seen (or
-at `spec.to` if sooner, reason `TenantGone`) and stays ended. An ended reservation is deleted a day after its end. Resources
-that reserve nothing get the condition `Invalid=True`; the phase still follows the clock.
+`spec.to` past the notice calls the end off (`Ending=False`, reason `Extended`); moving `spec.to` into the past ends the
+reservation at once. The end is written to the status (with the version read as precondition) before anything is deleted,
+and later passes check it on the API server, so an extension the operator's cache does not hold yet never loses groups. An end
+that passed while the operator was down is processed when it starts; for 10 minutes after `spec.to` the operator looks again
+every minute (objects it did not see at the end go too). When the tenant of a reservation is gone (checked on the API server),
+the reservation ends one notice after that is seen, at least one minute (or at `spec.to` if sooner, reason `TenantGone`), and
+stays ended. When the groups use more than the reservation reserves (`status.used` over `spec.resources`: it was made
+smaller), it gets `Exceeded=True` with the deletion time; still exceeded one notice later (at least one minute), all its groups
+are deleted as at the end and the reservation stays open. Raising `spec.resources` or a usage back within it calls that off.
+An ended reservation is deleted a day after its end. Resources that reserve nothing get the condition `Invalid=True`; the phase
+still follows the clock.
 
 **Platform reserve.** CPU and memory that user labs can never consume, so the platform itself always has room.
 It is kept on every schedulable node: an optional absolute reserve (`scheduler.platformReserveCpu`,
