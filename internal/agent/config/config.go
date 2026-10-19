@@ -97,6 +97,11 @@ type Config struct {
 	PackingReservePercent int    `env:"SCHEDULER_PACKING_RESERVE_PERCENT" envDefault:"15"`
 	PackingReserveCPU     string `env:"SCHEDULER_PACKING_RESERVE_CPU" envDefault:"0"`
 	PackingReserveMemory  string `env:"SCHEDULER_PACKING_RESERVE_MEMORY" envDefault:"0"`
+	// CapacityMaxNodes, CapacityAddedNodeCPU and CapacityAddedNodeMemory are the static maximum capacity of the lab nodes (chart
+	// capacity.*, the operator's values): the capacity reported counts the nodes still to come up to it. 0: the current nodes.
+	CapacityMaxNodes        int    `env:"CAPACITY_MAX_NODES" envDefault:"0"`
+	CapacityAddedNodeCPU    string `env:"CAPACITY_ADDED_NODE_CPU"`
+	CapacityAddedNodeMemory string `env:"CAPACITY_ADDED_NODE_MEMORY"`
 	// TenantStatusInterval is how often the status (reserved, used) of every Tenant is refreshed.
 	TenantStatusInterval time.Duration `env:"AGENT_TENANT_STATUS_INTERVAL" envDefault:"30s"`
 	// GroupPods are the resources of the VPN and gateway pods of a group (the same values as the operator's):

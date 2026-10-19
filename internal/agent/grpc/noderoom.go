@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/cybericebox/laboratory/internal/nodecap"
@@ -51,13 +52,39 @@ func (h *Handler) room(ctx context.Context) roomView {
 	}
 	rooms := nodecap.Rooms(nodes.Items, nil, h.labSelector, h.labTolerations, h.nodeReserve)
 	v := roomView{largest: nodecap.LargestDevice(nodes.Items, h.labSelector, h.labTolerations, h.nodeReserve, h.packingReserve), ok: len(rooms) > 0}
-	for _, f := range nodecap.FreeForLabs(nodes.Items, pods.Items, h.labSelector, h.labTolerations, h.nodeReserve, h.packingReserve) {
+	free := nodecap.FreeForLabs(nodes.Items, pods.Items, h.labSelector, h.labTolerations, h.nodeReserve, h.packingReserve)
+	if count, room, ok := h.virtualRoom(ctx, nodes.Items); ok && count > 0 {
+		// The nodes still to come up to the static maximum: the operator admits onto them (its breaker aside), so the tenants
+		// plan against them too.
+		free = append(free, nodecap.VirtualRooms(count, room)...)
+		v.largest = nodecap.Amount{CPU: max(v.largest.CPU, room.CPU), Memory: max(v.largest.Memory, room.Memory)}
+		v.ok = true
+	}
+	for _, f := range free {
 		v.total.CPU += f.CPU
 		v.total.Memory += f.Memory
 	}
 	c.at, c.view = time.Now(), v
 	return v
 }
+
+// virtualRoom is the number of lab nodes still to come up to the static maximum and the room for labs on one of them; ok false
+// without a maximum, or when the DaemonSets could not be read (the room of the nodes that exist is reported then).
+func (h *Handler) virtualRoom(ctx context.Context, nodes []corev1.Node) (count int, room nodecap.NodeFree, ok bool) {
+	if h.maximum.Nodes <= 0 {
+		return 0, nodecap.NodeFree{}, false
+	}
+	dss, err := h.k8s.AppsV1().DaemonSets(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return 0, nodecap.NodeFree{}, false
+	}
+	count, room = h.maximum.Virtual(nodes, dss.Items, h.labSelector, h.labTolerations, h.nodeReserve, h.packingReserve)
+	return count, room, true
+}
+
+// SetMaximum sets the static maximum capacity of the lab nodes (the operator's, the same chart values): the room reported to
+// tenants counts the nodes still to come up to it.
+func (h *Handler) SetMaximum(m nodecap.Maximum) { h.maximum = m }
 
 // SetPackingReserve sets the hidden packing reserve: the room reported to tenants is net of it, because nodes do not share
 // memory and devices leave gaps between them, so the last part of a node cannot be packed full. A tenant never sees the reserve.
