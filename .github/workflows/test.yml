@@ -77,6 +77,8 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Allow user namespaces (device pods run with hostUsers false; Ubuntu's AppArmor restricts them)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Create kind cluster (1 control plane + 2 lab workers, one tainted)
         run: kind create cluster --config hack/kind/kind-config.yaml
       - name: Running Test e2e
