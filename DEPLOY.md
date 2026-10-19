@@ -908,7 +908,8 @@ tenant uses is "not available". `UpdateReservations` (by id or selector) moves `
 a window or enlarging it is always an update (an `ENDING` reservation turns `ACTIVE` again when `to` moves past the
 notice). `DeleteReservations` removes it: the groups that ran under it get the ending notice and are then deleted (the
 operator's path for a deleted reservation). `ListReservations` lists the caller's own. A window must be at most 31 days,
-`to` after `from` and in the future, cpu and memory positive (else `FAILED` for that item).
+`to` after `from` and in the future, cpu and memory positive and at most `MaxInt64/1024` (else `FAILED` for that item); the
+quota sums saturate, so no amount can wrap around.
 
 **The tenant's quota.** A create, or an update that enlarges or extends a reservation, is refused with reason
 `OVER_QUOTA` when the tenant's reservations would reserve more at the same time (from now on) than its quota (resolved

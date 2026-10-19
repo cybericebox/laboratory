@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"k8s.io/client-go/util/retry"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/tenant"
 	"github.com/cybericebox/laboratory/pkg/agent/client"
@@ -26,6 +28,9 @@ const (
 	kindReservation = "Reservation"
 	// maxReservationWindow is the longest window of one reservation.
 	maxReservationWindow = 31 * 24 * time.Hour
+	// maxReservationAmount bounds cpu_millicores and memory_bytes of one reservation far above any cluster (about 9 * 10^15:
+	// 9 * 10^12 cores, 8 PiB) and far below an overflow; the sums are saturating as well.
+	maxReservationAmount = math.MaxInt64 / 1024
 	// defaultReservationNotice is the chart's reservations.endingNoticeSeconds, for an agent not told otherwise.
 	defaultReservationNotice = 300 * time.Second
 	// reservationLossFloor is the operator's floor of the notice of an end that one observation starts (the tenant gone, a
@@ -143,6 +148,8 @@ func validateReservationWindow(w reservationWindow, now time.Time) error {
 		return fmt.Errorf("the window is longer than %s", maxReservationWindow)
 	case w.cpu <= 0 || w.mem <= 0:
 		return fmt.Errorf("cpu_millicores and memory_bytes must be positive")
+	case w.cpu > maxReservationAmount || w.mem > maxReservationAmount:
+		return fmt.Errorf("cpu_millicores and memory_bytes must be at most %d", int64(maxReservationAmount))
 	}
 	return nil
 }
@@ -213,7 +220,8 @@ func peakOver(spans []reservationWindow, from, to time.Time) tenant.Totals {
 		var sum tenant.Totals
 		for _, s := range spans {
 			if !s.from.After(p) && s.to.After(p) {
-				sum.CPU, sum.Memory = sum.CPU+s.cpu, sum.Memory+s.mem
+				// saturating: a sum that would overflow is MaxInt64, which no quota holds
+				sum.CPU, sum.Memory = limits.AddSat(sum.CPU, s.cpu), limits.AddSat(sum.Memory, s.mem)
 			}
 		}
 		peak.CPU, peak.Memory = max(peak.CPU, sum.CPU), max(peak.Memory, sum.Memory)
