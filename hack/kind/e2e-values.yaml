@@ -1,0 +1,45 @@
+# Chart values of the e2e tests on Kind (hack/kind/kind-config.yaml). The images are built and loaded by the tests; the
+# operator image and the ending notice are set by them on the command line.
+operator:
+  publicVPNEndpoint: vpn.e2e.example.com:51820
+  baseDomain: e2e.example.com
+  supportEmail: support@e2e.example.com
+  # Kind runs no Cilium: the policies would have nothing to apply to (the CRD of the operator's group policies is a stub)
+  networkPolicy:
+    enabled: false
+registry:
+  networkPolicy:
+    enabled: false
+nodeAgent:
+  image:
+    tag: e2e
+  # the containerd of a Kind node
+  criSocket: /run/containerd/containerd.sock
+  hostPrep:
+    # The Kind node's kernel does not offer these (a read-only /sys/module, no net.core.fb_tunnels_only_for_init_net).
+    conntrackAccounting: false
+    sysctls:
+      net.core.fb_tunnels_only_for_init_net: null
+vpn:
+  image:
+    tag: e2e
+inetGateway:
+  image:
+    tag: e2e
+# the lab nodes of the Kind config
+labWorkloads:
+  nodeSelector:
+    cybericebox.io/lab: "true"
+# the edge (Cilium gateway, cert-manager, proxy) is not part of the reservation tests
+labScheduler:
+  enabled: false
+proxy:
+  enabled: false
+gateway:
+  enabled: false
+certManager:
+  enabled: false
+scheduler:
+  prepull:
+    # no registry to pull from ahead of time: the images are on the nodes already
+    enabled: false

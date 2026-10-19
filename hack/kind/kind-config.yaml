@@ -1,0 +1,14 @@
+# Kind cluster of the e2e tests: one control plane and two lab nodes. The lab nodes carry the label of the recommended
+# lab-node placement (cybericebox.io/lab, see labWorkloads in the chart), so lab pods and the components that follow that
+# placement run only on them. They are not tainted: the scaffold's own e2e test deploys the operator with a plain manifest
+# and installs cert-manager, and those pods have no toleration.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
+    labels:
+      cybericebox.io/lab: "true"
+  - role: worker
+    labels:
+      cybericebox.io/lab: "true"

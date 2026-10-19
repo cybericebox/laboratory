@@ -81,9 +81,11 @@ generate-api:
 
 ##@ Kind (local testing)
 
+KIND_CONFIG    ?= hack/kind/kind-config.yaml
+
 .PHONY: cluster-up
-cluster-up: ## Create 3-node Kind cluster (1 control-plane + 2 workers)
-	$(KIND) create cluster --config $(LOCAL_K0S)/kind/kind-config.yaml --name $(KIND_CLUSTER_NAME)
+cluster-up: ## Create 3-node Kind cluster (1 control-plane + 2 lab workers); for test-e2e name it kind: make cluster-up KIND_CLUSTER_NAME=kind
+	$(KIND) create cluster --config $(KIND_CONFIG) --name $(KIND_CLUSTER_NAME)
 	$(KUBECTL) create namespace lab-system --dry-run=client -o yaml | $(KUBECTL) apply -f -
 
 .PHONY: cluster-down
