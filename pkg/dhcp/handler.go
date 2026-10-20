@@ -107,6 +107,9 @@ func replyForMessage(cfg Config, pool *ipPool, msg *dhcpv4.DHCPv4) (*dhcpv4.DHCP
 			}
 			opts = append(opts, dhcpv4.WithDNS(ip))
 		}
+		if option := classlessRoutesOption(cfg); option != nil {
+			opts = append(opts, option)
+		}
 		if leaseReply {
 			opts = append(opts, dhcpv4.WithYourIP(assigned), dhcpv4.WithLeaseTime(uint32(leaseDuration.Seconds())))
 		}
@@ -127,4 +130,23 @@ func validateClientMessage(msg *dhcpv4.DHCPv4) error {
 		return fmt.Errorf("malformed DHCP message type")
 	}
 	return nil
+}
+
+// classlessRoutesOption is the option 121 of the server, nil without routes. The clients that understand it take
+// its routes instead of the router option, so the default route via the gateway comes first. The routes were
+// validated when the server started; an entry that does not parse is left out.
+func classlessRoutesOption(cfg Config) dhcpv4.Modifier {
+	if len(cfg.Routes) == 0 {
+		return nil
+	}
+	anywhere := &net.IPNet{IP: net.IPv4zero.To4(), Mask: net.CIDRMask(0, 32)}
+	routes := []*dhcpv4.Route{{Dest: anywhere, Router: net.ParseIP(cfg.Gateway).To4()}}
+	for _, r := range cfg.Routes {
+		_, dst, err := net.ParseCIDR(r.Dst)
+		via := net.ParseIP(r.Via).To4()
+		if err == nil && via != nil {
+			routes = append(routes, &dhcpv4.Route{Dest: dst, Router: via})
+		}
+	}
+	return dhcpv4.WithOption(dhcpv4.OptClasslessStaticRoute(routes...))
 }

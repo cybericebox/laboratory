@@ -196,6 +196,11 @@ func Run() {
 		os.Exit(1)
 	}
 
+	if err := mgr.Add(&nodeagent.CPUThrottleMonitor{Client: mgr.GetClient(), NodeName: cfg.NodeName, CgroupRoot: cfg.CgroupRoot}); err != nil {
+		log.Error(err, "setup CPUThrottleMonitor")
+		os.Exit(1)
+	}
+
 	puller, err := imagepull.NewCRIPuller(cfg.CRISock)
 	if err != nil {
 		log.Error(err, "connect to the container runtime")
@@ -221,8 +226,8 @@ func Run() {
 	}
 
 	// Last: once everything above is set up, the node is marked ready for lab pods (and unmarked when this process stops).
-	if err := mgr.Add(&nodeagent.NodeLabeler{Client: mgr.GetClient(), NodeName: cfg.NodeName}); err != nil {
-		log.Error(err, "setup NodeLabeler")
+	if err := nodeagent.SetupNodeReadiness(mgr, cfg); err != nil {
+		log.Error(err, "setup node readiness")
 		os.Exit(1)
 	}
 

@@ -80,6 +80,10 @@ func labProjection(l *laboratoryv1alpha1.Lab, includeSpec bool, sizing ...limits
 			Name: st.Devices[i].Name, Ready: st.Devices[i].Ready,
 			Snapshot: snapshotStatusToProto(st.Devices[i].State),
 		})
+		if t := st.Devices[i].CPUThrottle; t != nil {
+			last := status.Devices[len(status.Devices)-1]
+			last.CpuThrottledPercent, last.CpuThrottleWindowSeconds = t.Percent, t.WindowSeconds
+		}
 	}
 	for _, device := range l.Spec.Devices {
 		if device.Resources == nil {

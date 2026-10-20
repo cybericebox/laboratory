@@ -141,8 +141,9 @@ func AddSat(a, b int64) int64 {
 	return a + b
 }
 
-// DeviceResources is what a device is planned with: its limit, else its request, else the default. A quantity
-// that does not parse is an error.
+// DeviceResources is what a device is planned with. Memory: its limit, else its request, else the default. CPU: its request,
+// else its limit, else the default (a CPU limit above the request is a burst and is not planned). A quantity that does not
+// parse is an error.
 func (l Limits) DeviceResources(r *laboratoryv1alpha1.DeviceResources) (cpu, mem int64, err error) {
 	cpu, mem = l.DeviceDefaultCPU, l.DeviceDefaultMemory
 	if r == nil {
@@ -173,7 +174,7 @@ func (l Limits) DeviceResources(r *laboratoryv1alpha1.DeviceResources) (cpu, mem
 		}
 		return 0, false, nil
 	}
-	if v, ok, err := pick("cpuLimit/cpuRequest", true, r.CPULimit, r.CPURequest); err != nil {
+	if v, ok, err := pick("cpuRequest/cpuLimit", true, r.CPURequest, r.CPULimit); err != nil {
 		return 0, 0, err
 	} else if ok {
 		cpu = v

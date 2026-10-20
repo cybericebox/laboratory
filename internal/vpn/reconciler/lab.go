@@ -251,6 +251,12 @@ func (r *LabVPNReconciler) reconcileRunning(ctx context.Context, labvpn *laborat
 	state := r.applied[labvpn.Name]
 	if dhcpEnabled {
 		gwIP := firstHostIP(cidr)
+		// The way back to the participants (the WireGuard clients) goes through this pod: the leases carry it as a classless
+		// static route, so a DHCP device needs no route set by hand.
+		clientSubnet, err := netutil.SubnetForIndex(r.Cfg.VPNBaseNetwork, 24, 0)
+		if err != nil {
+			return r.networkFailure(ctx, labvpn, fmt.Errorf("compute VPN client subnet: %w", err))
+		}
 		// The pod drops everything addressed to itself from the lab side, DHCP on this interface excepted.
 		if !state.DHCPKnown || !state.DHCP {
 			if err := r.IPT.AllowDHCP(ifaceName); err != nil {
@@ -264,6 +270,7 @@ func (r *LabVPNReconciler) reconcileRunning(ctx context.Context, labvpn *laborat
 				Gateway: gwIP,
 				BindIP:  gwIP,
 				Ranges:  ranges,
+				Routes:  []dhcp.Route{{Dst: clientSubnet, Via: gwIP}},
 			},
 		); err != nil {
 			return r.dhcpFailure(ctx, labvpn, fmt.Errorf("start DHCP for lab %s: %w", labvpn.Spec.LabName, err))

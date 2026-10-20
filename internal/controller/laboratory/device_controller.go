@@ -467,9 +467,10 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 			parentUID = string(owner.UID)
 		}
 	}
-	for n := range podSpec.Containers {
-		podSpec.Containers[n].Env = append(podSpec.Containers[n].Env, corev1.EnvVar{Name: "LIFECYCLE_LAB_UID", Value: parentUID}, corev1.EnvVar{Name: "LIFECYCLE_DEVICE_UID", Value: string(device.UID)})
-	}
+	// The owner is marked on the pod, never in the environment the participant can read. The runtime exposes pod labels to the
+	// node-agent, which reads them to attribute the containers.
+	labels[names.LabelLabUID] = parentUID
+	labels[names.LabelDeviceUID] = string(device.UID)
 	// Optional init-container: address static and dhcp-preset interfaces inside
 	// the pod netns (node-agent only wires the L2 veth), so those device pods
 	// need no capabilities of their own. addr.type=dhcp interfaces are handled by
@@ -477,6 +478,7 @@ func (r *DeviceReconciler) workloadTemplate(device *laboratoryv1alpha1.Device, s
 	if ic := r.netConfigInitContainer(device); ic != nil {
 		podSpec.InitContainers = append(podSpec.InitContainers, *ic)
 	}
+	r.withReadiness(device, &podSpec)
 	// The participant is root in the device: it gets no service account token, the runtime's seccomp profile, and
 	// optionally its own user namespace.
 	hardenPod(&podSpec, false, r.TerminationGraceSeconds)
@@ -654,8 +656,7 @@ func (r *DeviceReconciler) netConfigInitContainer(device *laboratoryv1alpha1.Dev
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Command:         []string{"/node", "netconfig"},
 		Env:             []corev1.EnvVar{{Name: "NETCONFIG", Value: string(cfg)}},
-		// Requests equal limits, like every other container of a device pod, so that the pod stays Guaranteed (an init container
-		// without them would make it Burstable).
+		// Requests equal limits: the init container is small and fixed, it does not burst (the device container may, so the pod is Burstable).
 		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("20m"), corev1.ResourceMemory: resource.MustParse("32Mi")},
 			Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("20m"), corev1.ResourceMemory: resource.MustParse("32Mi")},

@@ -163,6 +163,13 @@ func (r *LabReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	if validationErr == nil {
 		resolvedInterfaces, validationErr = resolveLabDeviceInterfaces(&lab)
 	}
+	if validationErr == nil {
+		clients, err := vpnClientSubnet(r.VPNBaseNetwork)
+		if err != nil {
+			validationErr = fmt.Errorf("derive VPN client subnet: %w", err)
+		}
+		addVPNReturnRoutes(&lab, resolvedInterfaces, clients)
+	}
 	if validationErr != nil {
 		// Surface the specific validation reason — it was previously discarded,
 		// leaving the Lab in Failed with no user-visible cause.
@@ -513,6 +520,7 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 				Interfaces:     resolvedInterfaces[tmpl.Name],
 				Exposure:       tmpl.Exposure,
 				Resources:      tmpl.Resources,
+				WaitReadyFile:  tmpl.WaitReadyFile,
 				State:          r.deviceStateSpec(ten, tmpl),
 				ImageMirror:    r.deviceMirror(lab, tmpl.Type),
 				ImageDigests:   r.deviceDigests(lab, tmpl),
@@ -802,7 +810,7 @@ func (r *LabReconciler) updateStatus(ctx context.Context, lab *laboratoryv1alpha
 		if sc := d.Status.Scheduling; sc != nil && sc.State == laboratoryv1alpha1.PodFailed {
 			failure = sc.Failure
 		}
-		refs = append(refs, laboratoryv1alpha1.DeviceRef{Name: d.Spec.Name, Ready: d.Status.Ready, State: deviceStateInfo(&d), Failure: failure})
+		refs = append(refs, laboratoryv1alpha1.DeviceRef{Name: d.Spec.Name, Ready: d.Status.Ready, State: deviceStateInfo(&d), Failure: failure, CPUThrottle: d.Status.CPUThrottle})
 		ready := d.Status.Ready
 		if intent := lab.Spec.Lifecycle; intent != nil && intent.DesiredState == lifecycleStateRunning && d.Spec.Type == laboratoryv1alpha1.DeviceTypeContainer {
 			ready = false

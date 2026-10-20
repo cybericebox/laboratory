@@ -328,6 +328,7 @@ func fitOtherTenantReservationNotFound(t *testing.T, h *Handler, k8s kubernetes.
 	}
 }
 
+// The CPU limit above the request is a burst: the lab needs the request.
 func TestLabNeedUsesTheOperatorFunction(t *testing.T) {
 	d := limits.DeviceDefaults{CPU: "100m", Memory: "128Mi", MaxCPU: "2", MaxMemory: "4Gi"}
 	spec := laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{
@@ -335,7 +336,7 @@ func TestLabNeedUsesTheOperatorFunction(t *testing.T) {
 		{Name: "b", Type: laboratoryv1alpha1.DeviceTypeContainer, Resources: &laboratoryv1alpha1.DeviceResources{CPURequest: "250m", CPULimit: "500m", MemoryRequest: "1Gi"}},
 		{Name: "sw", Type: laboratoryv1alpha1.DeviceTypeHub},
 	}}
-	if got := labNeed(&spec, d); got.CPU != 600 || got.Memory != 128<<20+1<<30 {
+	if got := labNeed(&spec, d); got.CPU != 350 || got.Memory != 128<<20+1<<30 {
 		t.Fatalf("need: %+v", got)
 	}
 }

@@ -79,6 +79,10 @@ type DeviceTemplate struct {
 	// creation and immutable. The excluded paths and the quota are platform settings.
 	// +optional
 	Persistence *DevicePersistence `json:"persistence,omitempty"`
+	// WaitReadyFile makes the device Ready only once the application has created /run/ready inside the container.
+	// A port published through the web exposure is checked in any case, whatever this says. Container devices only.
+	// +optional
+	WaitReadyFile bool `json:"waitReadyFile,omitempty"`
 }
 
 // DevicePersistence is the per-device state-persistence request of a topology.
@@ -157,6 +161,9 @@ type DeviceRef struct {
 	// Failure is the warning of a device pod that did not start in time.
 	// +optional
 	Failure *PodFailure `json:"failure,omitempty"`
+	// CPUThrottle is the device's CPU throttling (see DeviceStatus.CPUThrottle); absent means none.
+	// +optional
+	CPUThrottle *DeviceCPUThrottle `json:"cpuThrottle,omitempty"`
 }
 
 // DeviceStateInfo is the organizer-facing view of a device's snapshots.

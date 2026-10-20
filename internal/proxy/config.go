@@ -40,6 +40,8 @@ type L7Config struct {
 	// open ones are checked against the access policy again, so a lock cuts them within about that time.
 	LiveMaxLifetime   time.Duration `env:"LIVE_MAX_LIFETIME" envDefault:"12h"`
 	LiveCheckInterval time.Duration `env:"LIVE_CHECK_INTERVAL" envDefault:"10s"`
+	// SlowRequest is the upstream latency above which the access log flags a request as slow.
+	SlowRequest time.Duration `env:"SLOW_REQUEST" envDefault:"2s"`
 	// HTTP server limits (before any routing or authentication, so they stop slow-header and slow-body clients that
 	// would otherwise hold a connection and a goroutine forever): ReadHeaderTimeout bounds the request headers, ReadTimeout
 	// the whole request including the body, IdleTimeout a kept-alive connection with no request, MaxHeaderBytes the headers.

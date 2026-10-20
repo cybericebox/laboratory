@@ -24,7 +24,7 @@ spec:
             app: laboratory-proxy-l7
         topologyKey: kubernetes.io/hostname
   {{- end }}
-  {{- with include "laboratory.placement" (dict "own" .Values.proxy "root" $) }}
+  {{- with include "laboratory.placement" (dict "own" .Values.proxy "root" $ "daemon" (eq .Values.proxy.mode "daemonset")) }}
   {{- . | nindent 2 }}
   {{- end }}
   {{- with .Values.imagePullSecrets }}

@@ -11,18 +11,18 @@ import (
 // limits.DeviceDefaults).
 type DeviceDefaults = limits.DeviceDefaults
 
-// guaranteedResources is the one amount a device container gets for both its requests and its limits (see
-// limits.GuaranteedResources): the agent counts a lab against its reservation with the same function.
-func guaranteedResources(spec *laboratoryv1alpha1.DeviceResources, defaults DeviceDefaults) corev1.ResourceList {
-	return limits.GuaranteedResources(spec, defaults)
+// deviceRequests is what a device container counts for the scheduler and the quotas (see limits.DeviceRequests): the agent
+// counts a lab against its reservation with the same function.
+func deviceRequests(spec *laboratoryv1alpha1.DeviceResources, defaults DeviceDefaults) corev1.ResourceList {
+	return limits.DeviceRequests(spec, defaults)
 }
 
-// deviceResources builds the container resource requirements of a device:
-// requests equal limits (see guaranteedResources).
+// deviceResources builds the container resource requirements of a device: memory requests equal limits, CPU may burst
+// above its request (see limits.DevicePodResources), so the pod is Burstable.
 func deviceResources(device *laboratoryv1alpha1.Device, defaults DeviceDefaults) corev1.ResourceRequirements {
-	list := guaranteedResources(device.Spec.Resources, defaults)
-	if list == nil {
+	requests, lims := limits.DevicePodResources(device.Spec.Resources, defaults)
+	if requests == nil {
 		return corev1.ResourceRequirements{}
 	}
-	return corev1.ResourceRequirements{Requests: list, Limits: list.DeepCopy()}
+	return corev1.ResourceRequirements{Requests: requests, Limits: lims}
 }

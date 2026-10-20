@@ -92,3 +92,23 @@ func TestNetnsTwoDHCPServersHotUpdateAndRelease(t *testing.T) {
 		t.Fatal("deleted lab ready")
 	}
 }
+
+// The real server sends the return route to the participants as option 121 on the wire.
+func TestNetnsDHCPServerSendsClasslessRoutes(t *testing.T) {
+	nstest.Require(t)
+	nstest.NS(t, "a")
+	nstest.Veth(t, "", "lab1", "10.9.4.1/24", "a", "a0", "10.9.4.99/24")
+	t.Cleanup(func() { _, _ = nstest.Try("", "ip", "link", "del", "lab1") })
+	mgr := NewManager()
+	t.Cleanup(mgr.Close)
+	cfg := handlerConfig()
+	cfg.Routes = []Route{{Dst: "10.128.0.0/24", Via: "10.9.4.1"}}
+	if err := mgr.Start("a", cfg); err != nil {
+		t.Fatal(err)
+	}
+	offer := exchange(t, "a", cfg, dhcpv4.MessageTypeDiscover, nil, true)
+	got := offer.ClasslessStaticRoute()
+	if len(got) != 2 || got[0].Dest.String() != "0.0.0.0/0" || got[1].Dest.String() != "10.128.0.0/24" || got[1].Router.String() != "10.9.4.1" {
+		t.Fatalf("option 121 on the wire = %v", got)
+	}
+}

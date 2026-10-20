@@ -49,6 +49,9 @@ type DeviceSpec struct {
 	// Device that predates codes: its workload keeps the name of the Device.
 	// +optional
 	Code string `json:"code,omitempty"`
+	// WaitReadyFile: the device is Ready only once /run/ready exists inside the container (see DeviceTemplate).
+	// +optional
+	WaitReadyFile bool `json:"waitReadyFile,omitempty"`
 	// Env values are NOT carried on the CR — they live only in a per-device
 	// Secret (<device>-env) the agent writes, referenced by the pod via envFrom.
 }
@@ -199,6 +202,24 @@ type DeviceStatus struct {
 	// Scheduling is the pod's place on its way from the scheduler queue to Ready.
 	// +optional
 	Scheduling *PodSchedule `json:"scheduling,omitempty"`
+	// CPUThrottle is how much the CPU limit holds the device back. The node-agent of the pod's node keeps it; absent means
+	// not throttled (or no data yet).
+	// +optional
+	CPUThrottle *DeviceCPUThrottle `json:"cpuThrottle,omitempty"`
+}
+
+// DeviceCPUThrottle is the share of the CFS periods in which the device container was throttled (it used up its CPU limit
+// and had to wait) over the last few minutes. A device above 50 is starved: it is slow because of its limit, not its load.
+type DeviceCPUThrottle struct {
+	// Percent is throttled periods out of all periods of the window, 0..100, in steps of 10 (a change smaller than a step
+	// is not reported).
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
+	Percent int32 `json:"percent"`
+	// WindowSeconds is the time the percentage covers, at most five minutes (less right after the pod started).
+	WindowSeconds int32 `json:"windowSeconds"`
+	// ObservedAt is when the node-agent last wrote the value.
+	ObservedAt metav1.Time `json:"observedAt"`
 }
 
 // +genclient

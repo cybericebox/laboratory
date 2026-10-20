@@ -618,6 +618,11 @@ message LabDeviceStatus {
 	string pod_phase = 10;
 	string pod_reason = 11;
 	int32 restart_count = 12;
+	// CPU throttling: the share of the CFS periods in which the device container hit its CPU limit and had to wait, over the last
+	// cpu_throttle_window_seconds (at most five minutes), in steps of 10. Above 50 the device is starved by its limit. Both are
+	// 0 when there is no data (the pod has not run long enough, or is not throttled).
+	int32 cpu_throttled_percent = 13;
+	int32 cpu_throttle_window_seconds = 14;
 	// Set only for a device with state persistence.
 	DeviceSnapshotStatus snapshot = 30;
 	// Scheduler state of the device pod; absent when the scheduler does not track it.

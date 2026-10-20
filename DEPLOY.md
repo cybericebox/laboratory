@@ -473,9 +473,12 @@ Lab, `status.devices[].failure`, with the reason (`ImagePull`, `CrashLoop`, `Uns
 Ready later it is Started and the warning clears. A snapshot-backed device whose pod ended after it had started
 is recreated at once, with no slot, as without the scheduler.
 
-**Guaranteed resources.** Every device container gets requests equal to limits, so its pod is Guaranteed.
-Per resource the limit wins, then the request, then `limits.device.defaultCpu` / `defaultMemory` (100m CPU and 256Mi memory);
-a declared request and limit that differ collapse to the limit. The resources are applied when a device is created; running devices are not
+**Device resources and QoS.** Memory: request = limit (the limit wins, then the request, then `limits.device.defaultMemory`, 256Mi).
+CPU may burst: the container requests `cpuRequest` (else `cpuLimit`, else `limits.device.defaultCpu`, 100m) and is limited to `cpuLimit` (else
+the request), never below the request. Both are clamped to `limits.device.maxCpu`. A device with only a limit behaves as before (request = limit), one
+with only a request has limit = request. The pod is therefore Burstable, not Guaranteed (the VPN and gateway pods stay Guaranteed). Everything that
+plans counts the REQUEST: the scheduler, `SpecTotals`/`CheckSpec`, the group caps, the tenant quota and the reservation fit and budget; the CPU limit above
+the request is a burst that nothing reserves (a 15m/60m device consumes 15m). The resources are applied when a device is created; running devices are not
 changed. Each lab group namespace has one PodDisruptionBudget `lab-group` (`maxUnavailable: 0`, all pods of
 the namespace), so node drains and the autoscaler do not evict running labs (see "Maintenance of a node" below).
 
@@ -1070,8 +1073,8 @@ images:
   enforces it: `limits.device.maxCpu` (2000m) and `maxMemory` (4Gi) per device; `limits.lab.maxDevices` (20 devices; switches and
   hubs count, see "Lab ceilings" below); per LabGroup `limits.group.maxLabs` (50) and the optional sums over all its labs `limits.group.maxCpu` / `maxMemory`
   (`"0"` = unlimited); `limits.tenant.maxLabs` (0 = unlimited; the tenant's resource quota still applies). There is no per-lab resource
-  cap. Devices are Guaranteed (request = limit, no CPU overcommit), so a group's sum is what it reserves. A device's resources are its
-  limit, else its request, else the planning profile `limits.device.defaultCpu` (100m) / `defaultMemory` (256Mi), which is also what the
+  cap. Devices are planned at their requests (the CPU limit above the request is a burst and is not counted), so a group's sum is what it reserves. A device's resources are its
+  CPU request, else its CPU limit, else the planning profile `limits.device.defaultCpu` (100m) / `defaultMemory` (256Mi) (memory: limit, else request), which is also what the
   scheduler gives a device without resources. A variant over a device or lab cap is `InvalidArgument` naming the variant, the device and both
   numbers. Over a group or tenant cap the new items are `FAILED` (`ResourceExhausted` reason, not retryable); an item whose lab exists is
   not new. The counts are checked when the call arrives. Labs created directly with kubectl are not checked.
@@ -1292,6 +1295,23 @@ layer-2 isolation model. Two rules keep that from happening:
 Check a node: `kubectl get nodes -L laboratory.cybericebox.com/node-agent-ready` and `kubectl -n laboratory-system get pods -l app=node-agent -o wide`. A new node takes labs only after its
 node-agent is `Running`.
 
+### The startup taint of a new lab worker
+
+A new worker turns `Ready` about 10-15 seconds before its node-agent has registered the `cybericebox.com/tun` device and set the
+`node-agent-ready` label. The Cluster Autoscaler sees a real node that cannot hold the pending lab pod and scales up once more. The fix is a
+startup taint, in this order:
+
+1. **laboratory first** (this release). The node-agent, the WireGuard demux and the proxy DaemonSet tolerate
+   `cybericebox.io/node-starting` (`NoSchedule`). The node-agent removes the taint from its own Node when the three hold: the node-agent has
+   labelled the node (`node-agent-ready=true`, set last, so the device plugin is up), the Node's allocatable shows `cybericebox.com/tun` above
+   0 (the kubelet has the plugin registered; not waited for when `TUN_SLOTS=0`), and then it patches `spec.taints` with a JSON patch
+   guarded by a test of the current list, retried when the node changed. A node without the taint is not touched, so this is safe to roll out
+   before infra adds the taint. The admission policy `laboratory-node-agent-label` lets the node-agent remove this one taint and nothing else.
+2. **infra second.** Lab workers are created with the taint `cybericebox.io/node-starting=true:NoSchedule`, and the Cluster Autoscaler runs with
+   `--startup-taint=cybericebox.io/node-starting`, so it treats the node as not ready yet instead of as a node that fits nothing.
+
+Rolled out the other way round, the node-agent of a tainted node would never start (nothing tolerates the taint) and the node would stay empty.
+
 ## Security hardening
 
 Findings of the isolation audit (`docs/security/2026-10-02-laboratory-isolation.md`) and how the laboratory answers them.
@@ -1426,6 +1446,24 @@ namespace from the group name must read `status.namespace` instead.
 - **The session cookie belongs to the proxy.** Any `Set-Cookie` of the session cookie's name in a device's response is removed, so a device cannot set,
   replace or clear it; the device's own cookies pass.
 
+### The lab that is starting
+
+A request to a lab whose service cannot be reached yet (the connection is refused because the pod is not Ready, there is no route, the
+connect times out) is not answered with an error. A browser gets a small page «Лабораторія запускається…» (in the browser language,
+Ukrainian by default) with the platform crest pulsing as the loader, `503` and `Retry-After: 4`; the page asks again by itself every
+4 seconds (`<meta http-equiv="refresh">`, no script) and the lab opens as soon as it answers. Only a `GET` or `HEAD` is repeated; any
+other client gets `503 lab is starting` as plain text. A lab that does not exist, was turned off or is refused to the client keeps the
+«not available» page (`404`), and a lab that answers wrongly (it hangs up, the response is broken) keeps the `502` card.
+
+### The access log of the L7 proxy
+
+The proxy writes one structured line (`request`, logger `proxy-l7.access`) for every request it forwards to a lab: `lab` (the lab id),
+`method`, `path` (without the query, cut at 200 characters), `status`, `upstreamMs` (until the lab answered with its headers, or failed),
+`bytes` (the body sent back to the client), `clientCancel` (the client left before the end) and `slow`. A request is slow when
+`upstreamMs` is above `SLOW_REQUEST` (default `2s`, a Go duration). No address of a client is logged. A websocket upgrade is one line with
+status `101` and no bytes; its traffic is metered, not logged. Requests the proxy refuses before the lab (no session, unknown lab, rate
+limit) are not in this log.
+
 ### Sizing the proxy
 
 The sizes in `proxy.l7` and `proxy.wg` come from measurements, repeated by two tests (`go test ./internal/proxy/...`, not in `-short`): `TestL7MemoryPerConnection` starts the
@@ -1473,6 +1511,24 @@ Every long-running component says when it really serves, and a rollout waits for
   closed, and its client resumes. `agent.terminationGracePeriodSeconds` (45) is above the preStop sleep plus the grace.
 - A pod that is not Ready is taken out of its Service, so a node-agent or proxy that cannot serve gets no traffic; a pod that fails liveness is restarted by the kubelet.
 - If a probe fails on a cluster whose CNI blocks the node's own traffic to pods, allow the kubelet (host entity) to reach the probe ports; Cilium allows it by default.
+
+### When a device is Ready
+
+A device used to be Ready as soon as its container ran, even while the application inside was still starting (a participant then met the proxy's "unavailable" page). Now a container device has a **readiness probe** in two cases:
+
+- **A published web port** (`exposure.web`): the device is Ready once the application answers on that port. `http` (the default) and `https` ports get an HTTP `GET /` (any answer below 500 counts, so a page behind a login or a 404 on `/` is fine; a 5xx or a refused connection is not; the certificate is not verified); any other protocol gets a TCP connect. Nothing to configure.
+- **`waitReadyFile: true`** on a device template (exercise device editor: "Wait for the /run/ready file"): the device is Ready once the file `/run/ready` exists inside the container. With both, both must hold.
+
+A device with neither is Ready when it runs, as before. A lab is Ready only when all its devices are (this was already so; the probe makes "Ready" mean the application is up), so the L7 proxy's starting page shows until then.
+
+How it works:
+
+- The probe is an **exec** probe, not an `httpGet` from the node: it runs `/.cib/probe/probe ready ...` inside the container, so it needs neither a route from the node to the pod (the access port is wired by the node-agent; the network policy of a published device admits only the proxy) nor a shell in the image, and it decides what "answers" means (an `httpGet` counts only 200-399, so an application answering 401 or 404 on `/` would never be Ready). It tries the loopback and every other address of the container.
+- The `probe` program is a static binary of the node image (`/probe`). An init container (`cib-probe`, the node image, no capabilities, read-only root) copies it into an `emptyDir` that the device container mounts **read-only** at `/.cib/probe`, so an image without a shell works and the participant (root in the device) cannot replace it. It is the same for Deployment devices and for state Pods; the rescue pod of a device with state persistence has no probe (a shell is not the application).
+- Readiness only, nothing that kills: no liveness or startup probe, so a container is never restarted by it. Timing: no initial delay, every 2 s, up to 30 s of failures before a Ready device is marked NotReady again.
+- Only **new** devices get the probe: the Deployment of a running device is never rewritten. Without the node image (`NETCONFIG_IMAGE`) there is no probe.
+- The scheduler's start timeout (`scheduler.startupTimeout`, 5m) counts to Ready: an application that needs longer than that to open its port, or never creates `/run/ready`, is declared failed after it, and shown Started if it becomes Ready later.
+- `/run` is not part of the state snapshots (`excludePaths`), so a device restored from a snapshot has no `/run/ready` until the application creates it again.
 
 ### The WireGuard demux under hostile senders
 
@@ -1826,7 +1882,19 @@ Requirements on the nodes (nothing has to be installed or configured on the host
 - TCP port 5035 free on `127.0.0.1` of every node (a constant of the images: the relay port of the registry);
 - the node-agent DaemonSet mounts `containerdRoot` read-only and the host cgroup tree, and gets the
   `DAC_READ_SEARCH` capability. Set `containerdRoot` to the containerd root of your distribution (k0s:
-  `/var/lib/k0s/containerd`; stock containerd: `/var/lib/containerd`).
+  `/var/lib/k0s/containerd`; stock containerd: `/var/lib/containerd`);
+- the node-agent container runs with `appArmorProfile: Unconfined`. On nodes with AppArmor (Ubuntu, Debian) containerd
+  otherwise puts every non-privileged container under its default profile `cri-containerd.apparmor.d`, which has
+  `deny mount`; the snapshot filter mounts read-only overlay views of a device's layers, so every snapshot would fail with
+  `failed to mount /tmp/containerd-mount...: permission denied`. The container already has `SYS_ADMIN`, so this adds no
+  capability. Kubernetes 1.30 or newer is needed for the field. On nodes without AppArmor (kind, SELinux distributions) it
+  changes nothing, which is also why kind never shows the failure.
+
+A node-agent that still runs under an enforced `cri-containerd` profile (a chart older than this fix, or a policy that
+overrides the profile) checks it at startup: it logs one error `state persistence is on but snapshots cannot be taken on
+this node` (it reaches the error journal), puts `AppArmor blocks snapshots: ...` on every device it follows, and takes
+no snapshots there (it never freezes the containers for a snapshot that cannot work). The devices keep running; their
+state is not saved until the node-agent restarts under the right profile.
 
 ### How it works
 
@@ -1937,7 +2005,48 @@ not mounted. A device whose snapshot image cannot be pulled stays in `ImagePullB
 `snapshot image unavailable`; the operator never falls back to the base image on its own (that would lose state
 silently). Fix the registry, or use `ResetDevices` to start it from the base image.
 
+If a device's warning says `AppArmor blocks snapshots` (or `snapshot failed: filter layer: failed to mount ...:
+permission denied`), the node-agent runs under the runtime's default AppArmor profile: see "Enable" above. Check it with
+
+```bash
+kubectl -n laboratory-system exec <node-agent-pod> -c node-agent -- cat /proc/1/attr/current   # must say: unconfined
+```
+
+### Testing it on a real node
+
+kind does not apply AppArmor, so the end-to-end suite cannot catch a profile that blocks the snapshot mounts. Before a
+release that touches the snapshot path, and on every new node image (distribution, kernel, containerd), run this on a
+real lab node of a test cluster with AppArmor on (for example Ubuntu with k0s):
+
+1. Deploy the chart with `devices.statePersistence.enabled: true`. `cat /proc/1/attr/current` in the node-agent
+   container says `unconfined`, and its log has no `snapshots cannot be taken` error.
+2. Create a lab with a persistent device. Inside it: write a file, change a file's mode and owner, delete a file that
+   comes from the image, make a symlink and a sparse file.
+3. Within the debounce the node-agent logs `container frozen for the snapshot` with no `snapshot` error after it; the
+   Device's `status.state` has a snapshot (image, size, layers) and no warning; the image is in the registry.
+4. Delete the device's Pod. The operator recreates it with the next incarnation from the snapshot, and every change of
+   step 2 is there, with the same owners and modes.
+5. Stop and start the lab: the exit snapshot is taken (`mark exit`, no `exit snapshot` error) and the state comes back.
+6. Limits: write past `writeQuota` (a warning, the last snapshot stays), past `maxEntries` (the same), and run a
+   required capture (it succeeds and records its image).
+7. With more than one lab node: drain the node, the device starts on another node and restores from the registry.
+8. Afterwards: the kernel log has no overlayfs or AppArmor errors from the node-agent, and `mount | grep
+   containerd-mount` in the node-agent container is empty (no mount is left behind).
+
 ---
+
+### CPU throttling of a device
+
+A device whose container keeps hitting its CPU limit is slow because of the limit, not because of its work. Every 30 seconds the
+node-agent reads the CFS counters (`nr_periods`, `nr_throttled` of `cpu.stat`, cgroup v2) of the device containers of its node and
+keeps the last five minutes of them. The share of throttled periods, rounded to steps of 10, goes to `Device.status.cpuThrottle`
+(`percent`, `windowSeconds`, `observedAt`) when it changes; the lab controller copies it to `Lab.status.devices[].cpuThrottle`, and the
+agent sends it on in the device status of the lab (`LabDeviceStatus.cpu_throttled_percent` and `cpu_throttle_window_seconds`, in
+`ListLabs` and in the monitoring stream). The field is absent (0 on the wire) while the container is not throttled, is idle (the
+counters only run while it is busy), has no CPU limit, or ran for less than about 30 CFS periods. The platform treats a device above
+**50** as starved and may alert staff; the laboratory itself only exposes the data. Nothing is read for a container the node-agent
+cannot find in the cgroup tree (`CGROUP_ROOT`, default `/host/sys/fs/cgroup`). Existing clusters need the new CRDs (`kubectl apply`
+of the chart's `crds/`, `helm upgrade` does not apply them) and the new agent proto.
 
 ## Image cache (optional)
 
@@ -2191,6 +2300,21 @@ ceiling of 64 devices per lab; the chart's `limits.lab.maxDevices`, 32 by defaul
 | Per-lab VPN subnet  | `10.128.N.0/24` | N>=1 carved from vpnBaseNetwork                                |
 | `inetBaseNetwork`   | `10.192.0.0/10` | Internet-gateway subnets                                           |
 | Per-lab inet subnet | `10.192.N.0/24` | Mirrors VPN lab index                                              |
+
+### The return route to the participants
+
+The replies of a device reach a participant only through the VPN pod (host .1 of the lab's VPN network), so a device interface
+connected to the VPN network (directly or through switches and hubs) needs a route to the client subnet via that gateway. The
+operator adds it, the author writes nothing:
+
+- **static addresses**: the operator adds `<client subnet> via <lab VPN .1>` to the interface routes it renders (the Lab template is
+  not changed). The client subnet is the first /24 of `vpnBaseNetwork` (`10.128.0.0/24`), where the WireGuard clients live. Nothing
+  is added when the interface already has a route that covers the client subnet or already uses the VPN gateway as its default
+  gateway. An existing lab gets the route (and its device pods restart) at the first reconcile after the operator upgrade.
+- **`dhcp-preset`**: the lab VPN DHCP server sends the route as a classless static route (option 121), together with the default
+  route via .1 (RFC 3442: a client that understands option 121 ignores the router option). The netconfig init-container applies it.
+- **`dhcp` (the image's own client)**: works only when the image's client applies option 121 (dhclient and `udhcpc` with the
+  routes option do, many minimal clients do not). Otherwise the image has to add the route itself, or use a static address.
 
 ---
 

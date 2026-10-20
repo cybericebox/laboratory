@@ -92,6 +92,9 @@ type Engine struct {
 	Log      logr.Logger
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
+	// SnapshotsBlocked, when set, is why no snapshot can be taken on this node (an AppArmor profile that denies mount): devices are
+	// still followed, but each gets it as its warning and no snapshot is attempted.
+	SnapshotsBlocked string
 
 	captureWorkers sync.WaitGroup
 	holdWorkers    sync.WaitGroup
@@ -378,6 +381,12 @@ func (e *Engine) ensureTracked(ctx context.Context, p PodInfo) {
 		return
 	}
 	e.Log.Info("following device", "device", p.Device, "pod", p.Pod, "container", p.ContainerID, "upper", c.UpperDir)
+	if e.SnapshotsBlocked != "" {
+		// Shown at once, not only after the first write: the participant must not rely on state that is never saved.
+		t.mu.Lock()
+		t.warn(ctx, e.SnapshotsBlocked)
+		t.mu.Unlock()
+	}
 }
 
 // warnOnce reports a warning for a pod that cannot be followed, once per message.
@@ -497,6 +506,8 @@ func (t *tracked) startWatching(ctx context.Context) bool {
 			e.Log.Info("snapshot deferred", "device", p.Device, "pod", p.Pod, "reason", def.reason, "after", def.after.String())
 			later(def.after)
 		case errors.Is(err, context.Canceled) || errors.Is(err, ErrStale):
+		case errors.Is(err, ErrSnapshotsBlocked):
+			// Logged once at startup and shown on the device; a retry would fail the same way.
 		default:
 			e.Log.Error(err, "snapshot", "device", p.Device, "pod", p.Pod)
 			t.failures++
@@ -558,7 +569,7 @@ func (e *Engine) finish(ctx context.Context, t *tracked) {
 	}
 	sctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	if err := t.snapshot(sctx, false); err != nil {
+	if err := t.snapshot(sctx, false); err != nil && !errors.Is(err, ErrSnapshotsBlocked) {
 		e.Log.Error(err, "exit snapshot", "device", t.pod.Device, "pod", t.pod.Pod)
 	}
 	e.markExit(ctx, t.pod)
@@ -588,6 +599,10 @@ func (t *tracked) snapshot(ctx context.Context, freeze bool) (err error) {
 		if pending {
 			return nil
 		}
+	}
+	if t.e.SnapshotsBlocked != "" {
+		t.warn(ctx, t.e.SnapshotsBlocked)
+		return ErrSnapshotsBlocked
 	}
 	return t.snapshotLocked(ctx, freeze, false)
 }
