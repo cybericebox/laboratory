@@ -191,7 +191,7 @@ func TestHandoff_NextStaysOnDeviceOrigin(t *testing.T) {
 		{"relative", "panel", "/"},
 		{"leading whitespace", " /panel", "/"},
 		{"backslash authority", `/\evil.example`, "/"},
-		{"path backslash", `/panel\other`, "/"},
+		{"path backslash", `/panel\docs`, "/"},
 		{"query backslash", `/panel?x=\evil`, "/"},
 		{"CRLF", "/panel\r\nLocation: https://evil.example", "/"},
 		{"tab authority", "/\t/evil.example", "/"},
