@@ -1409,8 +1409,7 @@ The gateway forwards to the **public internet only**:
 
 - **Device security profiles** are a fixed catalog in the code (`internal/profiles`), each with a stable ID. The settings only say which catalog profiles
   are enabled (`devices.security.profiles`, default both); the agent reports the enabled IDs (`device_profiles` in the features) and refuses a lab whose
-  device asks for another one (`InvalidArgument`, naming the device). The spec field is still `securityPreset`; an empty value is `standard`, and the old names
-  are aliases: `basic` and `service` mean `standard`, `net` and `debug` mean `extended`. Never in any profile: SYS_ADMIN, SYS_MODULE, SYS_RAWIO,
+  device asks for another one (`InvalidArgument`, naming the device). The spec field is still `securityPreset`; an empty value is `standard`; the only other value is `extended`. Never in any profile: SYS_ADMIN, SYS_MODULE, SYS_RAWIO,
   SYS_TIME, SYS_BOOT, DAC_READ_SEARCH, BPF, PERFMON, SYSLOG, AUDIT_CONTROL, MAC_ADMIN, MAC_OVERRIDE, MKNOD, privileged, host network, PID and IPC, hostPath.
 
   | ID | Adds to the base set | Covers |
@@ -1434,7 +1433,7 @@ The gateway forwards to the **public internet only**:
   the node's disk and DiskPressure evicts other pods. The PID limit is a node setting: set the kubelet's `podPidsLimit` (`--pod-max-pids`) in the
   cluster configuration (not a pod field).
 - Not done here: a sandbox RuntimeClass (gVisor, Kata) for hostile images, and Pod Security Admission on the group namespaces (the lab pods need NET_ADMIN,
-  which `baseline` allows, but the `net` preset adds more; the admission policy below is the guard that matters for the operator).
+  which `baseline` allows, but the `extended` profile adds more; the admission policy below is the guard that matters for the operator).
 
 ### Namespaces of the lab groups
 
