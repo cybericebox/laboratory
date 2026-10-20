@@ -132,6 +132,135 @@ func TestHandoff_SetsTheProxyCookieAndRedirects(t *testing.T) {
 	}
 }
 
+// A saved device link must reach its authored destination after authentication.
+func TestHandoff_NextPreservesDestination(t *testing.T) {
+	f := newHandoffFixture(t)
+	token := f.link(t, nil)
+	baseline := f.open(token)
+	next := "/panel?x=1#anchor"
+	req := httptest.NewRequest(http.MethodGet, "https://"+labHost+AuthPath+"?"+url.Values{"t": {token}, "next": {next}}.Encode(), nil)
+	rec := httptest.NewRecorder()
+	f.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != next {
+		t.Fatalf("code = %d location = %q, want 303 %q", rec.Code, rec.Header().Get("Location"), next)
+	}
+	if strings.Contains(rec.Header().Get("Location"), token) || strings.Contains(rec.Body.String(), token) {
+		t.Fatal("handoff token leaked in redirect")
+	}
+	if rec.Header().Get("Set-Cookie") != baseline.Header().Get("Set-Cookie") {
+		t.Fatal("destination changed session cookie policy or lifetime")
+	}
+	if rec.Header().Get("Referrer-Policy") != "no-referrer" || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("handoff response lost token-leak protections")
+	}
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(r.URL.RequestURI()))
+	}))
+	defer backend.Close()
+	f.handler.resolver = func(task, groupID string) (string, error) { return backend.URL, nil }
+	location, err := req.URL.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Browsers retain the fragment locally and omit it from the HTTP request.
+	location.Fragment, location.RawFragment = "", ""
+	follow := httptest.NewRequest(http.MethodGet, location.String(), nil)
+	follow.AddCookie(rec.Result().Cookies()[0])
+	out := httptest.NewRecorder()
+	f.handler.ServeHTTP(out, follow)
+	if out.Code != http.StatusOK || out.Body.String() != "/panel?x=1" {
+		t.Fatalf("device received %d %q, want /panel?x=1", out.Code, out.Body.String())
+	}
+}
+
+func TestHandoff_NextStaysOnDeviceOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		name, next, want string
+	}{
+		{"default", "", "/"},
+		{"root", "/", "/"},
+		{"path query fragment", "/panel?x=1&y=2#anchor", "/panel?x=1&y=2#anchor"},
+		{"encoded path", "/panel%20name?x=%26#part", "/panel%20name?x=%26#part"},
+		{"external query value", "/panel?return=https%3A%2F%2Fevil.example%2F", "/panel?return=https%3A%2F%2Fevil.example%2F"},
+		{"absolute", "https://evil.example/panel", "/"},
+		{"same origin absolute", "https://" + labHost + "/panel", "/"},
+		{"scheme relative", "//evil.example", "/"},
+		{"triple slash", "///evil.example", "/"},
+		{"dot normalized authority", "/a/..//evil.example/path", "/"},
+		{"relative", "panel", "/"},
+		{"leading whitespace", " /panel", "/"},
+		{"backslash authority", `/\evil.example`, "/"},
+		{"path backslash", `/panel\other`, "/"},
+		{"query backslash", `/panel?x=\evil`, "/"},
+		{"CRLF", "/panel\r\nLocation: https://evil.example", "/"},
+		{"tab authority", "/\t/evil.example", "/"},
+		{"control", "/panel\x00", "/"},
+		{"DEL", "/panel\x7f", "/"},
+		{"encoded slash", "/%2fevil.example", "/"},
+		{"encoded authority", "%2f%2fevil.example", "/"},
+		{"encoded backslash", "/%5cevil.example", "/"},
+		{"encoded CRLF", "/panel?x=%0d%0aLocation:https://evil.example", "/"},
+		{"encoded tab", "/%09/evil.example", "/"},
+		{"encoded DEL", "/panel#%7f", "/"},
+		{"double encoded slash", "/%252fevil.example", "/"},
+		{"double encoded backslash", "/%255cevil.example", "/"},
+		{"double encoded control", "/panel?x=%250a", "/"},
+		{"excess nested encoding", "/%252525252fexample", "/"},
+		{"malformed escape", "/panel%zz", "/"},
+		{"malformed query escape", "/panel?x=%zz", "/"},
+		{"auth loop", "/_auth?t=other", "/"},
+		{"encoded auth loop", "/%5fauth?t=other", "/"},
+		{"dot normalized auth loop", "/panel/../_auth?t=other", "/"},
+		{"encoded dot auth loop", "/panel/%2e%2e/_auth?t=other", "/"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newHandoffFixture(t)
+			token := f.link(t, nil)
+			req := httptest.NewRequest(http.MethodGet, "https://"+labHost+AuthPath+"?"+url.Values{"t": {token}, "next": {tc.next}}.Encode(), nil)
+			rec := httptest.NewRecorder()
+			f.handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != tc.want {
+				t.Fatalf("code = %d location = %q, want 303 %q", rec.Code, rec.Header().Get("Location"), tc.want)
+			}
+			location, err := req.URL.Parse(rec.Header().Get("Location"))
+			if err != nil || location.Scheme != "https" || location.Host != labHost || location.User != nil {
+				t.Fatalf("redirect changed device origin: %v (%v)", location, err)
+			}
+			if strings.Contains(location.String(), token) || len(rec.Result().Cookies()) != 1 {
+				t.Fatal("handoff leaked token or failed to issue its session cookie")
+			}
+		})
+	}
+}
+
+func TestHandoff_NextDoesNotBypassTokenVerification(t *testing.T) {
+	for _, invalid := range []string{"missing", "bad", "expired"} {
+		t.Run(invalid, func(t *testing.T) {
+			f := newHandoffFixture(t)
+			token := ""
+			switch invalid {
+			case "bad":
+				token = "bad-token"
+			case "expired":
+				token = f.link(t, nil)
+				f.now = f.now.Add(2 * time.Minute)
+			}
+			baseline := f.open(token)
+			req := httptest.NewRequest(http.MethodGet, "https://"+labHost+AuthPath+"?"+url.Values{"t": {token}, "next": {"/panel?x=1#anchor"}}.Encode(), nil)
+			req.AddCookie(&http.Cookie{Name: "challenge", Value: "existing-session"})
+			rec := httptest.NewRecorder()
+			f.handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnauthorized || rec.Header().Get("Location") != "" || len(rec.Result().Cookies()) != 0 {
+				t.Fatalf("code = %d location = %q cookies = %v", rec.Code, rec.Header().Get("Location"), rec.Result().Cookies())
+			}
+			if rec.Body.String() != baseline.Body.String() || rec.Header().Get("Set-Cookie") != baseline.Header().Get("Set-Cookie") {
+				t.Fatal("next changed invalid handoff behavior")
+			}
+		})
+	}
+}
+
 func TestHandoff_Refusals(t *testing.T) {
 	cases := []struct {
 		name   string
