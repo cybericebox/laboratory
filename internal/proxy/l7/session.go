@@ -2,7 +2,11 @@ package l7
 
 import (
 	"net/http"
+	"net/url"
+	"path"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -13,7 +17,7 @@ import (
 const AuthPath = "/_auth"
 
 // handoff turns a platform link into the proxy's own cookie and sends the
-// browser to the site root, so the token leaves the URL.
+// browser to a safe device destination, so the token leaves the URL.
 func (h *Handler) handoff(w http.ResponseWriter, r *http.Request, host string) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Cache-Control", "no-store")
@@ -43,7 +47,35 @@ func (h *Handler) handoff(w http.ResponseWriter, r *http.Request, host string) {
 		return
 	}
 	h.setSessionCookie(w, value, end, now)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, handoffDestination(r.URL.Query().Get("next")), http.StatusSeeOther)
+}
+
+// handoffDestination accepts only an unambiguous root-relative device URL.
+// Recheck decoded forms too: encoded separators, controls and dot segments must
+// not become an authority or return to the handoff endpoint after normalization.
+// Deep or malformed encoding falls back to the root instead of guessing intent.
+func handoffDestination(target string) string {
+	candidate := target
+	for range 4 {
+		if !strings.HasPrefix(candidate, "/") || strings.HasPrefix(candidate, "//") ||
+			strings.Contains(candidate, "\\") || strings.IndexFunc(candidate, unicode.IsControl) >= 0 {
+			return "/"
+		}
+		u, err := url.Parse(candidate)
+		if err != nil || u.IsAbs() || u.Host != "" || u.User != nil || u.Opaque != "" ||
+			strings.Contains(u.Path, "//") || path.Clean(u.Path) == AuthPath {
+			return "/"
+		}
+		decoded, err := url.PathUnescape(candidate)
+		if err != nil {
+			return "/"
+		}
+		if decoded == candidate {
+			return target
+		}
+		candidate = decoded
+	}
+	return "/"
 }
 
 // sessionCookie signs the cookie of c, valid for sessionIdle from now and not past c.Abs.
