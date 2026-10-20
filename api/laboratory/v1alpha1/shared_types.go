@@ -83,19 +83,12 @@ const (
 //     SSH, privilege escalation, cracking, forensics, gdb and strace.
 //   - extended: standard plus NET_RAW, NET_ADMIN and /dev/net/tun. Raw scans, sniffing, spoofing, routers, VPNs, tunnels.
 //
-// The old names stay accepted as aliases: basic and service mean standard, net and debug mean extended.
-//
-// +kubebuilder:validation:Enum=standard;extended;basic;service;net;debug
+// +kubebuilder:validation:Enum=standard;extended
 type SecurityPreset string
 
 const (
 	SecurityPresetStandard SecurityPreset = "standard"
 	SecurityPresetExtended SecurityPreset = "extended"
-	// Deprecated aliases.
-	SecurityPresetBasic   SecurityPreset = "basic"
-	SecurityPresetService SecurityPreset = "service"
-	SecurityPresetNet     SecurityPreset = "net"
-	SecurityPresetDebug   SecurityPreset = "debug"
 )
 
 // EndpointSpec references a device interface in a Connection.

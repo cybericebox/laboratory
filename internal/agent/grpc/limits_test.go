@@ -149,8 +149,8 @@ func specWithProfile(preset string) []byte {
 	return raw
 }
 
-// The agent reports the enabled profiles and refuses a device that asks for one that is not enabled; the old names
-// are aliases (basic and service mean standard, net and debug mean extended).
+// The agent reports the enabled profiles and refuses a device that asks for one that is not enabled; an empty name is
+// standard, the old names (basic, service, net, debug) are unknown.
 func TestProfilesAreReportedAndEnforced(t *testing.T) {
 	h, k8s := newTestHandler(t)
 	f := testFeatures
@@ -173,20 +173,26 @@ func TestProfilesAreReportedAndEnforced(t *testing.T) {
 		}
 		return err
 	}
-	for _, ok := range []string{"", "standard", "basic", "service"} {
+	for _, ok := range []string{"", "standard"} {
 		if err := create(specWithProfile(ok)); err != nil {
 			t.Errorf("%q must be accepted: %v", ok, err)
 		}
 	}
-	for _, refused := range []string{"extended", "net", "debug"} {
+	for _, refused := range []string{"extended"} {
 		err := create(specWithProfile(refused))
 		if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "is not enabled on this cluster") || !strings.Contains(err.Error(), `device "box"`) {
 			t.Errorf("%q must be refused with the reason: %v", refused, err)
 		}
 	}
+	for _, old := range []string{"basic", "service", "net", "debug"} {
+		err := create(specWithProfile(old))
+		if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "unknown security profile") {
+			t.Errorf("%q must be refused as unknown: %v", old, err)
+		}
+	}
 	f.DeviceProfiles = []string{"standard", "extended"}
 	h.SetFeatures(f)
-	for _, ok := range []string{"extended", "net", "debug"} {
+	for _, ok := range []string{"extended"} {
 		if err := create(specWithProfile(ok)); err != nil {
 			t.Errorf("%q must be accepted when extended is enabled: %v", ok, err)
 		}

@@ -64,8 +64,7 @@ type DeviceTemplate struct {
 	// +kubebuilder:validation:Required
 	Type  DeviceType `json:"type"`
 	Image string     `json:"image,omitempty"`
-	// SecurityPreset names a device security profile (standard or extended; the old names basic, service,
-	// net and debug are aliases). Only the name is exposed here; the concrete Linux capabilities behind it
+	// SecurityPreset names a device security profile (standard or extended). Only the name is exposed here; the concrete Linux capabilities behind it
 	// are an internal platform decision. Empty means standard.
 	SecurityPreset SecurityPreset `json:"securityPreset,omitempty"`
 	// Interfaces of the device: at most 16 on a container (names.MaxContainerInterfaces), 48 on a switch or hub.

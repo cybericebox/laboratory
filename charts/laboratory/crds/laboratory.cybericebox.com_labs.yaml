@@ -281,16 +281,11 @@ spec:
                       type: object
                     securityPreset:
                       description: |-
-                        SecurityPreset names a device security profile (standard or extended; the old names basic, service,
-                        net and debug are aliases). Only the name is exposed here; the concrete Linux capabilities behind it
+                        SecurityPreset names a device security profile (standard or extended). Only the name is exposed here; the concrete Linux capabilities behind it
                         are an internal platform decision. Empty means standard.
                       enum:
                       - standard
                       - extended
-                      - basic
-                      - service
-                      - net
-                      - debug
                       type: string
                     type:
                       description: DeviceType distinguishes network device kinds.

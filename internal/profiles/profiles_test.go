@@ -5,14 +5,16 @@ import (
 	"testing"
 )
 
-func TestAliasesResolveToTheCatalog(t *testing.T) {
-	for name, want := range map[string]string{"": Standard, "basic": Standard, "service": Standard, "standard": Standard, "net": Extended, "debug": Extended, "extended": Extended} {
+func TestResolveKnowsOnlyTheCatalog(t *testing.T) {
+	for name, want := range map[string]string{"": Standard, "standard": Standard, "extended": Extended} {
 		if got, ok := Resolve(name); !ok || got != want {
 			t.Errorf("Resolve(%q) = %q %v, want %q", name, got, ok, want)
 		}
 	}
-	if _, ok := Resolve("root"); ok {
-		t.Error("an unknown name must not resolve")
+	for _, old := range []string{"root", "basic", "service", "net", "debug"} {
+		if _, ok := Resolve(old); ok {
+			t.Errorf("%q must not resolve", old)
+		}
 	}
 }
 
@@ -51,7 +53,7 @@ func TestEnabled(t *testing.T) {
 	if _, err := Enabled([]string{"standard", "root"}); err == nil {
 		t.Fatal("an unknown ID must be refused")
 	}
-	if !IsEnabled("net", []string{Extended}) || IsEnabled("basic", []string{Extended}) || IsEnabled("nope", []string{Standard}) {
-		t.Error("IsEnabled follows the aliases")
+	if !IsEnabled("extended", []string{Extended}) || !IsEnabled("", []string{Standard}) || IsEnabled("standard", []string{Extended}) || IsEnabled("net", []string{Extended}) || IsEnabled("basic", []string{Standard}) {
+		t.Error("IsEnabled follows the catalog IDs and the empty default only")
 	}
 }

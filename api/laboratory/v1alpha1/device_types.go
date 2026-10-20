@@ -15,8 +15,7 @@ type DeviceSpec struct {
 	// +kubebuilder:validation:Required
 	Type  DeviceType `json:"type"`
 	Image string     `json:"image,omitempty"`
-	// SecurityPreset names a device security profile (standard/extended, or the old aliases
-	// basic/service/net/debug); the concrete capabilities are resolved internally by the operator.
+	// SecurityPreset names a device security profile (standard or extended); the concrete capabilities are resolved internally by the operator.
 	SecurityPreset SecurityPreset `json:"securityPreset,omitempty"`
 	// +kubebuilder:validation:MaxItems=48
 	Interfaces []InterfaceSpec `json:"interfaces,omitempty"`
