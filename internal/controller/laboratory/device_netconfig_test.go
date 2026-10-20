@@ -86,13 +86,12 @@ func TestDeviceSecurityContext(t *testing.T) {
 	if std.AllowPrivilegeEscalation != nil || std.Privileged != nil {
 		t.Errorf("unexpected escalation settings: %+v", std)
 	}
-	// The old names are aliases: basic and service are standard, net and debug are extended.
-	for _, old := range []laboratoryv1alpha1.SecurityPreset{laboratoryv1alpha1.SecurityPresetBasic, laboratoryv1alpha1.SecurityPresetService, laboratoryv1alpha1.SecurityPresetStandard} {
+	for _, old := range []laboratoryv1alpha1.SecurityPreset{"", laboratoryv1alpha1.SecurityPresetStandard} {
 		if g := capSet(deviceSecurityContext(devWith(old, nil))); len(g) != len(got) || g["NET_RAW"] {
 			t.Errorf("%s must mean standard: %v", old, g)
 		}
 	}
-	for _, ext := range []laboratoryv1alpha1.SecurityPreset{laboratoryv1alpha1.SecurityPresetNet, laboratoryv1alpha1.SecurityPresetDebug, laboratoryv1alpha1.SecurityPresetExtended} {
+	for _, ext := range []laboratoryv1alpha1.SecurityPreset{laboratoryv1alpha1.SecurityPresetExtended} {
 		g := capSet(deviceSecurityContext(devWith(ext, nil)))
 		if !g["NET_ADMIN"] || !g["NET_RAW"] || !g["SYS_PTRACE"] || !g["CHOWN"] || len(g) != len(base)+5 {
 			t.Errorf("%s must mean extended: %v", ext, g)

@@ -192,7 +192,7 @@ func callerCertNotAfter(ctx context.Context) int64 {
 }
 
 // checkProfiles refuses a device whose security profile is not in the catalog or not enabled on this cluster. The
-// old names (basic, service, net, debug) are aliases of the catalog IDs. Without a configured list nothing is checked.
+// empty name means standard. Without a configured list nothing is checked.
 func (h *Handler) checkProfiles(spec *laboratoryv1alpha1.LabSpec) error {
 	enabled := h.features.DeviceProfiles
 	if len(enabled) == 0 {

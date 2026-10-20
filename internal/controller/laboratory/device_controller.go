@@ -669,7 +669,7 @@ func (r *DeviceReconciler) netConfigInitContainer(device *laboratoryv1alpha1.Dev
 	}
 }
 
-// deviceSecurityContext resolves the device's profile (profiles.Standard or Extended, or an old alias) to concrete
+// deviceSecurityContext resolves the device's profile (profiles.Standard or Extended; empty is Standard) to concrete
 // capabilities and adds the DHCP-implied caps when the image runs its own DHCP client (addr.type=dhcp), whatever the
 // profile. Every capability is dropped first; only the base set, the profile's and the DHCP ones are added back.
 // Privilege escalation stays allowed on purpose: lab images run sudo and setuid binaries.

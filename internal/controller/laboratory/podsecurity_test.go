@@ -133,7 +133,7 @@ func TestGatewayKeepsTheCapabilitiesItNeeds(t *testing.T) {
 
 // The extended profile requests the tun device from the node-agent's device plugin, request and limit.
 func TestExtendedDeviceRequestsTun(t *testing.T) {
-	for _, preset := range []laboratoryv1alpha1.SecurityPreset{laboratoryv1alpha1.SecurityPresetExtended, laboratoryv1alpha1.SecurityPresetNet, laboratoryv1alpha1.SecurityPresetDebug} {
+	for _, preset := range []laboratoryv1alpha1.SecurityPreset{laboratoryv1alpha1.SecurityPresetExtended} {
 		d := newDeviceForPod()
 		d.Spec.SecurityPreset = preset
 		r := &DeviceReconciler{}

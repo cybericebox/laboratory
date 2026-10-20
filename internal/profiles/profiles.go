@@ -48,18 +48,15 @@ var catalog = map[string]Profile{
 	Extended: {ID: Extended, Caps: append(append([]string{}, standardCaps...), "NET_RAW", "NET_ADMIN"), TUN: true},
 }
 
-// aliases are the old preset names the specs of existing exercises carry.
-var aliases = map[string]string{
-	"": Standard, "basic": Standard, "service": Standard, "net": Extended, "debug": Extended,
-}
-
-// Resolve maps a name from a spec (a catalog ID, an old alias or empty) to a catalog ID.
+// Resolve maps a name from a spec (a catalog ID or empty, which means standard) to a catalog ID.
 func Resolve(name string) (string, bool) {
+	if name == "" {
+		return Standard, true
+	}
 	if _, ok := catalog[name]; ok {
 		return name, true
 	}
-	id, ok := aliases[name]
-	return id, ok
+	return "", false
 }
 
 // Get is the profile of a name from a spec; an unknown name gets the standard profile (the CRD refuses it anyway).
@@ -105,7 +102,7 @@ type UnknownError struct{ ID string }
 
 func (e *UnknownError) Error() string { return "unknown device profile " + e.ID }
 
-// IsEnabled says whether the profile a spec names (an ID or an alias) is among the enabled IDs.
+// IsEnabled says whether the profile a spec names (an ID or empty) is among the enabled IDs.
 func IsEnabled(name string, enabled []string) bool {
 	id, ok := Resolve(name)
 	if !ok {
