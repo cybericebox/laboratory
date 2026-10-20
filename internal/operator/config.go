@@ -143,7 +143,7 @@ type Config struct {
 	SchedulerAgingSeconds int `env:"SCHEDULER_AGING_SECONDS" envDefault:"0"`
 
 	// Capacity (DEPLOY.md, "Maximum capacity and node autoscaling"). CapacityBudgetCPU and CapacityBudgetMemory are the room
-	// for labs the autoscaled lab nodes (label cybericebox.io/node-group) may give at most (both, or neither: no budget, the
+	// for labs the autoscaled lab nodes (label cybericebox.com/node-group) may give at most (both, or neither: no budget, the
 	// maximum is the current capacity). The agent reads the same values. CapacityNodeTimeout is how long every dispatched pod of
 	// a group has to get a node before the whole group is withdrawn and queued again (the gang commit, always on).
 	CapacityBudgetCPU    string        `env:"CAPACITY_BUDGET_CPU"`

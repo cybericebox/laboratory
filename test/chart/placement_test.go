@@ -58,8 +58,8 @@ func hasToleration(spec corev1.PodSpec, key string) bool {
 }
 
 var labPlacement = []string{
-	"--set-string", "labWorkloads.nodeSelector.cybericebox\\.io/lab=true",
-	"--set", "labWorkloads.tolerations[0].key=cybericebox.io/lab",
+	"--set-string", "labWorkloads.nodeSelector.cybericebox\\.com/lab=true",
+	"--set", "labWorkloads.tolerations[0].key=cybericebox.com/lab",
 	"--set", "labWorkloads.tolerations[0].operator=Equal",
 	"--set-string", "labWorkloads.tolerations[0].value=true",
 	"--set", "labWorkloads.tolerations[0].effect=NoSchedule",
@@ -78,10 +78,10 @@ func TestAllComponentsFollowLabNodes(t *testing.T) {
 			t.Fatalf("expected the operator, agent, registry, lab-scheduler, proxy and node-agent, got %v", keys(specs))
 		}
 		for name, spec := range specs {
-			if spec.NodeSelector["cybericebox.io/lab"] != "true" {
+			if spec.NodeSelector["cybericebox.com/lab"] != "true" {
 				t.Errorf("%s: nodeSelector %v", name, spec.NodeSelector)
 			}
-			if !hasToleration(spec, "cybericebox.io/lab") {
+			if !hasToleration(spec, "cybericebox.com/lab") {
 				t.Errorf("%s: tolerations %v", name, spec.Tolerations)
 			}
 			if _, bad := spec.NodeSelector["laboratory.cybericebox.com/node-agent-ready"]; bad {
@@ -92,7 +92,7 @@ func TestAllComponentsFollowLabNodes(t *testing.T) {
 	t.Run("proxy daemonset follows too", func(t *testing.T) {
 		specs := placementSpecs(t, append([]string{"--set", "proxy.mode=daemonset"}, labPlacement...)...)
 		spec, ok := specs["DaemonSet/laboratory-proxy"]
-		if !ok || spec.NodeSelector["cybericebox.io/lab"] != "true" || !hasToleration(spec, "cybericebox.io/lab") {
+		if !ok || spec.NodeSelector["cybericebox.com/lab"] != "true" || !hasToleration(spec, "cybericebox.com/lab") {
 			t.Fatalf("proxy daemonset: %v %+v", ok, spec.NodeSelector)
 		}
 	})
@@ -113,7 +113,7 @@ func TestAllComponentsFollowLabNodes(t *testing.T) {
 		checked := 0
 		for name, spec := range specs {
 			if strings.HasPrefix(name, "DaemonSet/laboratory-node-agent") {
-				if spec.NodeSelector["cybericebox.io/lab"] != "true" {
+				if spec.NodeSelector["cybericebox.com/lab"] != "true" {
 					t.Errorf("%s keeps the lab placement: %v", name, spec.NodeSelector)
 				}
 				continue
@@ -128,10 +128,10 @@ func TestAllComponentsFollowLabNodes(t *testing.T) {
 				t.Errorf("%s: own selector missing: %v", name, spec.NodeSelector)
 				continue
 			}
-			if _, mixed := spec.NodeSelector["cybericebox.io/lab"]; mixed {
+			if _, mixed := spec.NodeSelector["cybericebox.com/lab"]; mixed {
 				t.Errorf("%s: own selector must replace the lab one: %v", name, spec.NodeSelector)
 			}
-			if !hasToleration(spec, "own-"+comp) || hasToleration(spec, "cybericebox.io/lab") {
+			if !hasToleration(spec, "own-"+comp) || hasToleration(spec, "cybericebox.com/lab") {
 				t.Errorf("%s: tolerations %v", name, spec.Tolerations)
 			}
 			if w, ok := want[name]; ok && w != comp {
@@ -152,7 +152,7 @@ func TestAllComponentsFollowLabNodes(t *testing.T) {
 				continue
 			}
 			tolerations := spec.Tolerations
-			if strings.HasPrefix(name, "DaemonSet/") && len(tolerations) == 1 && tolerations[0].Key == "cybericebox.io/node-starting" {
+			if strings.HasPrefix(name, "DaemonSet/") && len(tolerations) == 1 && tolerations[0].Key == "cybericebox.com/node-starting" {
 				tolerations = nil // a DaemonSet always tolerates the startup taint of a new lab worker
 			}
 			if len(spec.NodeSelector) != 0 || len(tolerations) != 0 {

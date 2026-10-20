@@ -41,9 +41,9 @@ limits:
 # the lab nodes of the Kind config: both labelled, one tainted
 labWorkloads:
   nodeSelector:
-    cybericebox.io/lab: "true"
+    cybericebox.com/lab: "true"
   tolerations:
-    - key: cybericebox.io/lab
+    - key: cybericebox.com/lab
       operator: Equal
       value: "true"
       effect: NoSchedule

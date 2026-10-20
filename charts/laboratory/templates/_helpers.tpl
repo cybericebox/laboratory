@@ -303,7 +303,7 @@ the nodes and there are more of them than replicas (the pod anti-affinity is req
 The nodeSelector and tolerations of a component: its own values when set, else the lab-node placement (labWorkloads).
 Renders nothing when both are empty. Call: include "laboratory.placement" (dict "own" .Values.x "root" $), own = a map with
 optional nodeSelector / tolerations keys. Each of the two falls back on its own. A DaemonSet passes daemon=true: its pods also
-tolerate the startup taint of a new lab worker (cybericebox.io/node-starting, see DEPLOY.md), because they have to be there for
+tolerate the startup taint of a new lab worker (cybericebox.com/node-starting, see DEPLOY.md), because they have to be there for
 the node to become usable, which is what removes that taint.
 */}}
 {{- define "laboratory.placement" -}}
@@ -319,7 +319,7 @@ tolerations:
 {{- toYaml $tol | nindent 2 }}
 {{- end }}
 {{- if .daemon }}
-  - key: cybericebox.io/node-starting
+  - key: cybericebox.com/node-starting
     operator: Exists
     effect: NoSchedule
 {{- end }}
