@@ -785,13 +785,13 @@ labWorkloads:
   # node-agent sets on its node: a lab pod is only placed where a ready node-agent runs. The node-agent uses this same selector
   # and these tolerations, plus startup/DaemonSet availability tolerations. An untolerated control-plane node gets neither labs
   # nor a node-agent. Lifecycle scope declarations follow this placement pool while retaining all prior native obligations.
-  # Recommended lab-node label: cybericebox.io/lab: "true", with the taint cybericebox.io/lab=true:NoSchedule so that only labs
+  # Recommended lab-node label: cybericebox.com/lab: "true", with the taint cybericebox.com/lab=true:NoSchedule so that only labs
   # (and the components below, which follow this placement) run there. Defaults stay empty: nothing changes on an existing cluster.
   # Example:
   #   nodeSelector:
-  #     cybericebox.io/lab: "true"
+  #     cybericebox.com/lab: "true"
   #   tolerations:
-  #     - key: cybericebox.io/lab
+  #     - key: cybericebox.com/lab
   #       operator: Equal
   #       value: "true"
   #       effect: NoSchedule
@@ -872,7 +872,7 @@ reservations:
   endingNoticeSeconds: 300
 
 # Capacity of the lab nodes (DEPLOY.md, "Maximum capacity and node autoscaling"). Current: the lab nodes that exist and are
-# schedulable. Maximum: the real room of the fixed lab nodes plus, for the autoscaled ones (label cybericebox.io/node-group),
+# schedulable. Maximum: the real room of the fixed lab nodes plus, for the autoscaled ones (label cybericebox.com/node-group),
 # the larger of their real room and budget: what they may give at most, as infra renders it: the number of nodes x
 # (allocatable - the DaemonSets' requests), no percentage (the operator takes its reserves itself). Admission, the
 # agent's capacity and the reservation check use the maximum: a group sent beyond the real room stays Pending until a node

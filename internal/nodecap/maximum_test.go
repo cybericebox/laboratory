@@ -8,18 +8,18 @@ import (
 )
 
 var (
-	labSel = map[string]string{"cybericebox.io/lab": "true", "laboratory.cybericebox.com/node-agent-ready": "true"}
-	labTol = []corev1.Toleration{{Key: "cybericebox.io/lab", Operator: corev1.TolerationOpEqual, Value: "true", Effect: corev1.TaintEffectNoSchedule}}
+	labSel = map[string]string{"cybericebox.com/lab": "true", "laboratory.cybericebox.com/node-agent-ready": "true"}
+	labTol = []corev1.Toleration{{Key: "cybericebox.com/lab", Operator: corev1.TolerationOpEqual, Value: "true", Effect: corev1.TaintEffectNoSchedule}}
 )
 
 // labNode is a schedulable lab node of 4 CPU and 16Gi; group "" is a fixed node.
 func labNode(name, group string) corev1.Node {
 	n := roomNode(name, "4", "16Gi", true)
-	n.Labels["cybericebox.io/lab"] = "true"
+	n.Labels["cybericebox.com/lab"] = "true"
 	if group != "" {
 		n.Labels[LabelNodeGroup] = group
 	}
-	n.Spec.Taints = []corev1.Taint{{Key: "cybericebox.io/lab", Value: "true", Effect: corev1.TaintEffectNoSchedule}}
+	n.Spec.Taints = []corev1.Taint{{Key: "cybericebox.com/lab", Value: "true", Effect: corev1.TaintEffectNoSchedule}}
 	return n
 }
 
@@ -58,7 +58,7 @@ func TestVirtualCountsEveryAutoscaledNodeOfThePool(t *testing.T) {
 	booting := labNode("booting", "g")
 	delete(booting.Labels, "laboratory.cybericebox.com/node-agent-ready")
 	other := labNode("other-pool", "g")
-	other.Labels["cybericebox.io/lab"] = "false"
+	other.Labels["cybericebox.com/lab"] = "false"
 	small := Maximum{Budget: Amount{CPU: 24000, Memory: 96 << 30}}
 	got := small.Virtual([]corev1.Node{labNode("ok", "g"), notReady, cordoned, removing, booting, other}, nil, labSel, labTol, Reserve{}, PackingReserve{})
 	if want := (Amount{CPU: 4000, Memory: 16 << 30}); got != want {

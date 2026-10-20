@@ -19,7 +19,7 @@ import (
 // StartingTaintKey is the startup taint of a new lab worker. Infra puts it on the node when it is created (and tells the cluster
 // autoscaler it is a startup taint, so the node counts as not usable yet instead of as a real node that fits nothing); the
 // node-agent removes it once the node can take lab pods.
-const StartingTaintKey = "cybericebox.io/node-starting"
+const StartingTaintKey = "cybericebox.com/node-starting"
 
 const labelValueTrue = "true"
 
