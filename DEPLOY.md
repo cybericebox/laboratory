@@ -584,7 +584,7 @@ The operator knows nothing about an autoscaler. It knows two capacities of the l
 - **Current**: the room for labs of the lab nodes that exist and are schedulable (Ready, not cordoned, `node-agent-ready`,
   taints tolerated). A node that boots, a node a cluster autoscaler removes (taint `ToBeDeletedByClusterAutoscaler`) and a
   NotReady node do not count.
-- **Maximum**: a **budget** for the autoscaled lab nodes, the nodes with the label `cybericebox.io/node-group` (infra sets it
+- **Maximum**: a **budget** for the autoscaled lab nodes, the nodes with the label `cybericebox.com/node-group` (infra sets it
   when a node of an autoscaled group joins). `capacity.budget.cpu` / `memory` is what those nodes may give together at most,
   as infra renders it: **the number of nodes × (allocatable − the DaemonSets' requests)**, no percentage taken (for example
   3 × m7i.xlarge: `9885m` and `44757612Ki`). The operator takes its platform and packing percentages itself. The fixed nodes
@@ -667,9 +667,9 @@ placed on the virtual room. The breaker lives in the operator's memory: a restar
   each lab autoscaling group (the node labels and taint themselves are set at join):
   - `k8s.io/cluster-autoscaler/node-template/label/laboratory.cybericebox.com/node-agent-ready` = `true` (lab pods select it;
     the node-agent sets it on the node once it runs);
-  - `k8s.io/cluster-autoscaler/node-template/label/cybericebox.io/lab` = `true` and
-    `k8s.io/cluster-autoscaler/node-template/label/cybericebox.io/node-group` = `<group name>`;
-  - `k8s.io/cluster-autoscaler/node-template/taint/cybericebox.io/lab` = `true:NoSchedule`;
+  - `k8s.io/cluster-autoscaler/node-template/label/cybericebox.com/lab` = `true` and
+    `k8s.io/cluster-autoscaler/node-template/label/cybericebox.com/node-group` = `<group name>`;
+  - `k8s.io/cluster-autoscaler/node-template/taint/cybericebox.com/lab` = `true:NoSchedule`;
   - `k8s.io/cluster-autoscaler/node-template/resources/cybericebox.com/tun` = the node-agent's TUN slots
     (`nodeAgent.devicePlugin.tunSlots`, default `1000`): pods of the TUN profile request `cybericebox.com/tun: 1`, the only
     extended resource lab pods request, which the node-agent's device plugin advertises only once the node runs;
@@ -701,7 +701,7 @@ mirror pods count in neither.
 
 | Value | Default | Meaning |
 |---|---|---|
-| `budget.cpu` / `budget.memory` | `""` | room for labs the autoscaled nodes (label `cybericebox.io/node-group`) may give at most; both or neither; empty: no budget |
+| `budget.cpu` / `budget.memory` | `""` | room for labs the autoscaled nodes (label `cybericebox.com/node-group`) may give at most; both or neither; empty: no budget |
 | `nodeTimeoutSeconds` | `900` | the gang commit: every sent pod of a group must have a node this long after the group's last dispatch |
 
 **Smoke test (AWS, desired 0 → 1 → 0).**
@@ -1295,6 +1295,18 @@ layer-2 isolation model. Two rules keep that from happening:
 Check a node: `kubectl get nodes -L laboratory.cybericebox.com/node-agent-ready` and `kubectl -n laboratory-system get pods -l app=node-agent -o wide`. A new node takes labs only after its
 node-agent is `Running`.
 
+### Label keys
+
+Every key we own is under our domain `cybericebox.com`; the retired `cybericebox.io/*` is not ours and nothing here reads or tolerates it.
+The chart and the code use `cybericebox.com/lab` (node label and the taint `=true:NoSchedule`), `cybericebox.com/edge`,
+`cybericebox.com/node-group` (the budget of the autoscaled nodes) and the startup taint `cybericebox.com/node-starting`. The laboratory's
+own keys stay: `laboratory.cybericebox.com/*` (node-agent-ready, lab-uid, device-uid) and the resource `cybericebox.com/tun`. The full table
+is in `docs/specs/LABEL-KEYS.md` of the platform repository.
+
+This is a clean switch, with no old-key compatibility, done while no labs run: infra moves the node labels, the taints and the autoscaler's
+`--startup-taint` to the new keys in the same pass, right before the laboratory upgrade, and `labWorkloads.nodeSelector` and
+`labWorkloads.tolerations` use `cybericebox.com/lab`. A lab node still labelled or tainted with the old keys takes no labs.
+
 ### The startup taint of a new lab worker
 
 A new worker turns `Ready` about 10-15 seconds before its node-agent has registered the `cybericebox.com/tun` device and set the
@@ -1302,13 +1314,13 @@ A new worker turns `Ready` about 10-15 seconds before its node-agent has registe
 startup taint, in this order:
 
 1. **laboratory first** (this release). The node-agent, the WireGuard demux and the proxy DaemonSet tolerate
-   `cybericebox.io/node-starting` (`NoSchedule`). The node-agent removes the taint from its own Node when the three hold: the node-agent has
+   `cybericebox.com/node-starting` (`NoSchedule`). The node-agent removes the taint from its own Node when the three hold: the node-agent has
    labelled the node (`node-agent-ready=true`, set last, so the device plugin is up), the Node's allocatable shows `cybericebox.com/tun` above
    0 (the kubelet has the plugin registered; not waited for when `TUN_SLOTS=0`), and then it patches `spec.taints` with a JSON patch
    guarded by a test of the current list, retried when the node changed. A node without the taint is not touched, so this is safe to roll out
    before infra adds the taint. The admission policy `laboratory-node-agent-label` lets the node-agent remove this one taint and nothing else.
-2. **infra second.** Lab workers are created with the taint `cybericebox.io/node-starting=true:NoSchedule`, and the Cluster Autoscaler runs with
-   `--startup-taint=cybericebox.io/node-starting`, so it treats the node as not ready yet instead of as a node that fits nothing.
+2. **infra second.** Lab workers are created with the taint `cybericebox.com/node-starting=true:NoSchedule`, and the Cluster Autoscaler runs with
+   `--startup-taint=cybericebox.com/node-starting`, so it treats the node as not ready yet instead of as a node that fits nothing.
 
 Rolled out the other way round, the node-agent of a tainted node would never start (nothing tolerates the taint) and the node would stay empty.
 

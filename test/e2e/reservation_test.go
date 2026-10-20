@@ -51,7 +51,7 @@ const (
 	// pauseImage is on every Kind node already (the pause image of the sandbox), so a device needs no pull.
 	pauseImage = "registry.k8s.io/pause:3.10"
 
-	labNodeLabel = "cybericebox.io/lab=true"
+	labNodeLabel = "cybericebox.com/lab=true"
 
 	// labCPU is the CPU of a device of the gang test: small, memory is what fills a node there.
 	labCPU = "100m"

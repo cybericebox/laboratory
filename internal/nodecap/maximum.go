@@ -10,7 +10,7 @@ import (
 // LabelNodeGroup marks a lab node of an autoscaled node group (infra sets it when the node joins); its value is the group. The
 // budget of the static maximum covers these nodes only: a node without it (a fixed node such as the controller) counts with
 // its real room alone.
-const LabelNodeGroup = "cybericebox.io/node-group"
+const LabelNodeGroup = "cybericebox.com/node-group"
 
 // VirtualRoomName is the name of the virtual room in a placement: no Node can have it (a slash is not allowed in a Node name).
 const VirtualRoomName = "virtual/budget"
