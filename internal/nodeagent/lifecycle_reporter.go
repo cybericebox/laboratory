@@ -152,6 +152,12 @@ func (r *LifecycleReporter) syncDevices(ctx context.Context, pods *corev1.PodLis
 	if currentOnly {
 		cursor = &r.currentDeviceCursor
 	}
+	// The current pass samples only this node's Pods: a device in a namespace
+	// without one has nothing to observe here and costs no API reads.
+	local := map[string]bool{}
+	for i := range pods.Items {
+		local[pods.Items[i].Namespace] = true
+	}
 	start := *cursor
 	for offset := range devices.Items {
 		if err := ctx.Err(); err != nil {
@@ -162,6 +168,9 @@ func (r *LifecycleReporter) syncDevices(ctx context.Context, pods *corev1.PodLis
 		// No object or report is discarded when a pass runs out of time.
 		*cursor = i + 1
 		d := &devices.Items[i]
+		if currentOnly && !local[d.Namespace] {
+			continue
+		}
 		var parent lab.Lab
 		if e := r.Reader.Get(ctx, client.ObjectKey{Namespace: d.Namespace, Name: d.Spec.LabRef}, &parent); e != nil {
 			publicationErrors = append(publicationErrors, e)
