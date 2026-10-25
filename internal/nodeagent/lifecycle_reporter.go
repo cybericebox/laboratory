@@ -142,6 +142,22 @@ func (r *LifecycleReporter) syncHistory(ctx context.Context, pods corev1.PodList
 	return errors.Join(publicationErrors...)
 }
 
+// devicesWithLocalPods keeps the devices of namespaces with a Pod on this node:
+// the current pass samples only those Pods, so the rest cost API reads for nothing.
+func devicesWithLocalPods(devices []lab.Device, pods []corev1.Pod) []lab.Device {
+	local := map[string]bool{}
+	for i := range pods {
+		local[pods[i].Namespace] = true
+	}
+	kept := devices[:0]
+	for _, d := range devices {
+		if local[d.Namespace] {
+			kept = append(kept, d)
+		}
+	}
+	return kept
+}
+
 func (r *LifecycleReporter) syncDevices(ctx context.Context, pods *corev1.PodList, currentOnly bool) error {
 	var publicationErrors []error
 	var devices lab.DeviceList
@@ -151,6 +167,9 @@ func (r *LifecycleReporter) syncDevices(ctx context.Context, pods *corev1.PodLis
 	cursor := &r.historyDeviceCursor
 	if currentOnly {
 		cursor = &r.currentDeviceCursor
+	}
+	if currentOnly {
+		devices.Items = devicesWithLocalPods(devices.Items, pods.Items)
 	}
 	start := *cursor
 	for offset := range devices.Items {

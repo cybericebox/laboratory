@@ -101,8 +101,14 @@ func Run() {
 		os.Exit(1)
 	}
 
+	// The runtime reporter reads through the uncached API reader and patches every
+	// device on the node each interval; the default client-side rate limit (5 QPS,
+	// burst 10) lets the reports go stale on a node with tens of labs.
+	restCfg := ctrl.GetConfigOrDie()
+	restCfg.QPS = 100
+	restCfg.Burst = 200
 	mgr, err := ctrl.NewManager(
-		ctrl.GetConfigOrDie(), ctrl.Options{
+		restCfg, ctrl.Options{
 			Scheme: scheme,
 			// No metrics endpoint: the node-agent is on the host network, so it would be open on the node's address.
 			Metrics: metricsserver.Options{BindAddress: "0"},
