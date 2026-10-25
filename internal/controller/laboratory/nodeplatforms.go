@@ -3,6 +3,7 @@ package laboratory
 import (
 	"context"
 	"sort"
+	"sync"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -11,13 +12,33 @@ import (
 
 // NodePlatforms returns a function listing the distinct OS/architecture pairs
 // of the nodes lab pods may run on (those matching the lab node selector).
+// Lab nodes come and go with the autoscaler: with none, the last pairs seen are
+// kept, and before any were seen the pairs of every Linux node stand in, so an
+// image is not pinned to its index while the lab nodes are at zero and then
+// re-pinned to the platform manifest (a template change that restarts every
+// group pod) when the first one joins.
 func NodePlatforms(reader client.Reader, nodeSelector map[string]string) func(context.Context) []v1.Platform {
+	var mu sync.Mutex
+	var last []v1.Platform
 	return func(ctx context.Context) []v1.Platform {
 		var nodes corev1.NodeList
 		if err := reader.List(ctx, &nodes, client.MatchingLabels(nodeSelector)); err != nil {
 			return nil
 		}
-		return platformsOf(nodes.Items)
+		mu.Lock()
+		defer mu.Unlock()
+		if got := platformsOf(nodes.Items); len(got) > 0 {
+			last = got
+			return got
+		}
+		if len(last) > 0 {
+			return last
+		}
+		var all corev1.NodeList
+		if err := reader.List(ctx, &all, client.MatchingLabels{corev1.LabelOSStable: "linux"}); err != nil {
+			return nil
+		}
+		return platformsOf(all.Items)
 	}
 }
 
