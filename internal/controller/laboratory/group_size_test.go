@@ -13,7 +13,7 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
-// A group created with an explicit size gets its pods Guaranteed at exactly that size; one without gets the chart's default. A later
+// A group created with an explicit size gets its pods at exactly that size (requests); one without gets the chart's default. A later
 // reconcile with another size in the spec changes nothing: the pods are never resized.
 func TestGroupPodsAreCreatedAtTheSizeOfTheSpec(t *testing.T) {
 	ctx := context.Background()
@@ -45,8 +45,10 @@ func TestGroupPodsAreCreatedAtTheSizeOfTheSpec(t *testing.T) {
 		if got.Requests.Cpu().MilliValue() != tc.cpu || got.Requests.Memory().Value() != tc.mem {
 			t.Errorf("%s/%s: requests %v, want %dm %d", tc.ns, tc.name, got.Requests, tc.cpu, tc.mem)
 		}
-		if got.Limits.Cpu().Cmp(*got.Requests.Cpu()) != 0 || got.Limits.Memory().Cmp(*got.Requests.Memory()) != 0 {
-			t.Errorf("%s/%s: limits %v differ from requests %v: the pod must be Guaranteed", tc.ns, tc.name, got.Limits, got.Requests)
+		// the shape the autosizer resizes in place: memory request = limit, CPU limit above the request by the headroom
+		atMax := got.Requests.Cpu().MilliValue() >= 140 // the VPN sizing maximum: nothing above it to grow into
+		if got.Limits.Memory().Cmp(*got.Requests.Memory()) != 0 || !atMax && got.Limits.Cpu().MilliValue() != got.Requests.Cpu().MilliValue()+10 {
+			t.Errorf("%s/%s: limits %v, requests %v", tc.ns, tc.name, got.Limits, got.Requests)
 		}
 	}
 	// the spec's size changed (it is fixed by the CRD, but the operator must not act on it anyway)

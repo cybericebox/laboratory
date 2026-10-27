@@ -43,13 +43,13 @@ func newAutosizeFixture(t *testing.T, qos corev1.PodQOSClass) *autosizeFixture {
 	f.lg = &laboratoryv1alpha1.LabGroup{
 		ObjectMeta: metav1.ObjectMeta{Name: "g"},
 		Spec: laboratoryv1alpha1.LabGroupSpec{
-			VPN:     laboratoryv1alpha1.LabGroupVPNSpec{Size: gp(20, 64<<20), MaxSize: gp(140, 480<<20)},
+			VPN:     laboratoryv1alpha1.LabGroupVPNSpec{Size: gp(20, 64<<20)},
 			Gateway: laboratoryv1alpha1.LabGroupGatewaySpec{},
 		},
 		Status: laboratoryv1alpha1.LabGroupStatus{Namespace: "g-ns"},
 	}
 	requests := corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("20m"), corev1.ResourceMemory: resource.MustParse("64Mi")}
-	limits := corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("30m"), corev1.ResourceMemory: resource.MustParse("80Mi")}
+	limits := corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("30m"), corev1.ResourceMemory: resource.MustParse("64Mi")}
 	if qos == corev1.PodQOSGuaranteed {
 		limits = requests.DeepCopy()
 	}
@@ -68,6 +68,7 @@ func newAutosizeFixture(t *testing.T, qos corev1.PodQOSClass) *autosizeFixture {
 			live := p.DeepCopy()
 			live.Spec.Containers[0].Resources.Limits = corev1.ResourceList{
 				corev1.ResourceCPU: *resource.NewMilliQuantity(cpu, resource.DecimalSI), corev1.ResourceMemory: *resource.NewQuantity(mem, resource.BinarySI)}
+			live.Spec.Containers[0].Resources.Requests[corev1.ResourceMemory] = *resource.NewQuantity(mem, resource.BinarySI)
 			return f.c.Update(context.Background(), live)
 		},
 		nodeFree: func(context.Context, string) (int64, int64, error) { return f.freeCPU, f.freeMem, nil },
@@ -103,7 +104,8 @@ func (f *autosizeFixture) sweep() laboratoryv1alpha1.GroupPodSizeStatus {
 	return lg.Status.PodSizing[0]
 }
 
-// The limits follow the clients: base 20m/64Mi + 6m/20Mi per client, rounded up to 5m/8Mi, never above the max, no restart.
+// The size follows the clients: base 20m/64Mi + 6m/20Mi per client, rounded up to 5m/8Mi, never above the sizing maximum
+// (140m / 464Mi), no restart; the memory request grows with the limit.
 func TestAutosizerGrowsTheLimitsWithTheClients(t *testing.T) {
 	f := newAutosizeFixture(t, corev1.PodQOSBurstable)
 	f.addClients(5) // 20+30 = 50m, 64+100 = 164Mi
@@ -111,9 +113,9 @@ func TestAutosizerGrowsTheLimitsWithTheClients(t *testing.T) {
 	if st.State != podSizeApplied || st.CPULimitMillicores != 50 || st.MemoryLimitBytes != 168<<20 || st.Units != 5 || len(f.resizes) != 1 {
 		t.Fatalf("5 clients: %+v resizes=%v", st, f.resizes)
 	}
-	f.addClients(30) // far above the max: 140m / 480Mi
+	f.addClients(30) // far above the maximum: 140m / 464Mi
 	st = f.sweep()
-	if st.CPULimitMillicores != 140 || st.MemoryLimitBytes != 480<<20 || len(f.resizes) != 2 {
+	if st.CPULimitMillicores != 140 || st.MemoryLimitBytes != 464<<20 || len(f.resizes) != 2 {
 		t.Fatalf("35 clients: %+v", st)
 	}
 	f.sweep()
@@ -152,10 +154,10 @@ func TestAutosizerShrinksOnlyTheCPUAndOnlyAfterTheDelay(t *testing.T) {
 // A node without room for the whole growth gives what it has, and the status says why; no restart.
 func TestAutosizerGrowsToWhatTheNodeHas(t *testing.T) {
 	f := newAutosizeFixture(t, corev1.PodQOSBurstable)
-	f.freeCPU, f.freeMem = 12, 20<<20
-	f.addClients(10) // wants 80m/264Mi, has +12m (-> 40m with 5m steps down: 30+10) and +20Mi (-> +16Mi)
+	f.freeMem = 20 << 20
+	f.addClients(10) // wants 80m / 264Mi; the node has +20Mi for the memory request (-> +16Mi with 8Mi steps down)
 	st := f.sweep()
-	if st.State != podSizeLimited || st.CPULimitMillicores != 40 || st.MemoryLimitBytes != 96<<20 || !strings.Contains(st.Message, "node n1") {
+	if st.State != podSizeLimited || st.CPULimitMillicores != 80 || st.MemoryLimitBytes != 80<<20 || !strings.Contains(st.Message, "node n1") {
 		t.Fatalf("%+v", st)
 	}
 }
@@ -183,35 +185,36 @@ func TestAutosizerReportsARefusedResize(t *testing.T) {
 
 func TestLimitFormula(t *testing.T) {
 	sz := grouppods.PodSizing{BaseCPU: 20, BaseMemory: 64 << 20, PerUnitCPU: 6, PerUnitMemory: 20 << 20}
-	req, max, head := grouppods.Overhead{CPU: 20, Memory: 64 << 20}, grouppods.Overhead{CPU: 140, Memory: 480 << 20}, grouppods.Overhead{CPU: 10, Memory: 16 << 20}
+	req, max := grouppods.Overhead{CPU: 20, Memory: 64 << 20}, grouppods.Overhead{CPU: 140, Memory: 480 << 20}
 	for _, c := range []struct {
 		units    int
 		cpu, mem int64
-	}{{0, 30, 80 << 20}, {1, 30, 88 << 20}, {5, 50, 168 << 20}, {20, 140, 464 << 20}, {100, 140, 480 << 20}} {
-		got := grouppods.Limit(sz, req, max, c.units, head)
+	}{{0, 30, 64 << 20}, {1, 30, 88 << 20}, {5, 50, 168 << 20}, {20, 140, 464 << 20}, {100, 140, 480 << 20}} {
+		got := grouppods.Limit(sz, req, max, c.units, 10)
 		if got.CPU != c.cpu || got.Memory != c.mem {
 			t.Errorf("units %d: %dm %dMi, want %dm %dMi", c.units, got.CPU, got.Memory>>20, c.cpu, c.mem>>20)
 		}
 	}
-	// A max not above the request is fixed at the request.
-	if got := grouppods.Limit(sz, req, req, 9, head); got != req {
+	// A maximum not above the request is fixed at the request.
+	if got := grouppods.Limit(sz, req, req, 9, 10); got != req {
 		t.Errorf("fixed pod: %+v", got)
 	}
 }
 
-// A pod with a max size is created Burstable (requests = the size, limits above), and counted at the max by the scheduler.
-func TestPodWithAMaxSizeIsBurstableAndCountedAtTheMax(t *testing.T) {
+// A new pod of a group is created in the shape that can be resized in place: CPU limit above the request, memory request = limit;
+// the scheduler counts the size (the requests), as before.
+func TestGroupPodIsCreatedInTheResizableShape(t *testing.T) {
 	cfg := grouppods.Config{}
-	res := cfg.PodFor(names.ComponentVPN, gp(20, 64<<20), gp(140, 480<<20), 0)
-	if res.Requests.Cpu().MilliValue() != 20 || res.Limits.Cpu().MilliValue() != 30 || res.Limits.Memory().Value() != 80<<20 {
+	res := cfg.PodFor(names.ComponentVPN, gp(20, 64<<20), 0)
+	if res.Requests.Cpu().MilliValue() != 20 || res.Limits.Cpu().MilliValue() != 30 || res.Requests.Memory().Value() != 64<<20 || res.Limits.Memory().Value() != 64<<20 {
 		t.Fatalf("%v / %v", res.Requests, res.Limits)
 	}
-	fixed := cfg.PodFor(names.ComponentVPN, gp(20, 64<<20), nil, 0)
-	if fixed.Limits.Cpu().MilliValue() != 20 {
-		t.Fatalf("no max size: fixed, Guaranteed: %v", fixed.Limits)
+	def := cfg.PodFor(names.ComponentGateway, nil, 0)
+	if def.Requests.Cpu().MilliValue() != 10 || def.Limits.Cpu().MilliValue() != 20 || def.Limits.Memory().Cmp(*def.Requests.Memory()) != 0 {
+		t.Fatalf("the chart's default size too: %v / %v", def.Requests, def.Limits)
 	}
-	lg := &laboratoryv1alpha1.LabGroup{Spec: laboratoryv1alpha1.LabGroupSpec{VPN: laboratoryv1alpha1.LabGroupVPNSpec{Size: gp(20, 64<<20), MaxSize: gp(140, 480<<20)}}}
-	if n := cfg.Requests(names.ComponentVPN, lg); n.Cpu().MilliValue() != 140 || n.Memory().Value() != 480<<20 {
-		t.Fatalf("the scheduler counts the max: %v", n)
+	lg := &laboratoryv1alpha1.LabGroup{Spec: laboratoryv1alpha1.LabGroupSpec{VPN: laboratoryv1alpha1.LabGroupVPNSpec{Size: gp(20, 64<<20)}}}
+	if n := cfg.Requests(names.ComponentVPN, lg); n.Cpu().MilliValue() != 20 || n.Memory().Value() != 64<<20 {
+		t.Fatalf("the scheduler counts the size: %v", n)
 	}
 }

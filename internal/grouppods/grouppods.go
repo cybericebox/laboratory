@@ -111,13 +111,7 @@ func PodNames(lg *laboratoryv1alpha1.LabGroup) []string {
 }
 
 // Requests is what the named pod of the group requests (its size, else the chart's default); nil for another name.
-//
-// A pod with a MaxSize is counted at the MaxSize: it may grow up to it, so the scheduler and the reservations keep that room
-// for it (its real requests are the smaller Size).
 func (c Config) Requests(name string, lg *laboratoryv1alpha1.LabGroup) corev1.ResourceList {
-	if max := MaxSizeOf(name, lg); max != nil && (name == names.ComponentVPN || name == names.ComponentGateway) {
-		return sized(max).Requests
-	}
 	switch name {
 	case names.ComponentVPN:
 		return c.VPNFor(lg.Spec.VPN.Size).Requests

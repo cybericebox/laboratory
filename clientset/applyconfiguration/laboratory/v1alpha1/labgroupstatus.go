@@ -50,7 +50,7 @@ type LabGroupStatusApplyConfiguration struct {
 	// Pods is the scheduling state of the group's own pods ("vpn", "gateway").
 	// Absent for a group that predates the scheduler: its pods are not queued.
 	Pods []NamedPodScheduleApplyConfiguration `json:"pods,omitempty"`
-	// PodSizing is the autosizing state of the group's pods that have a MaxSize.
+	// PodSizing is the autosizing state of the group's pods.
 	PodSizing []GroupPodSizeStatusApplyConfiguration `json:"podSizing,omitempty"`
 }
 

@@ -899,17 +899,17 @@ vni:
 # ============================================================
 # Autosizing of the VPN and gateway pods of a group
 # ============================================================
-# A group created with a max size (CreateLabGroups vpn_max_size / gateway_max_size) keeps its size as the pod's request, and the
-# operator raises the pod's CPU and memory LIMITS in place (no restart, WireGuard sessions and NAT stay) with the load of the group:
-# limit = base + per-unit * units, with base and per-unit from vpn.sizing (units = VPN clients) and inetGateway.sizing (units = labs
-# that use the internet), rounded up to 5m / 8Mi, never above the max size. The scheduler and the reservation count the max size.
-# Growth is immediate; only the CPU limit goes down, after the lower need lasted shrinkAfter; the memory limit of a live pod never does.
+# The operator alone sizes the pods a group runs itself, after they are created and without restarting them (WireGuard sessions and
+# NAT stay): from the VPN clients of the group (vpn.sizing) and the labs that use the internet (inetGateway.sizing), with
+# size = base + per-unit * units, rounded up to 5m / 8Mi, never above the maximum of the sizing. Memory: request = limit, so the
+# node's own accounting guarantees it and a pod never uses more than it requested (it is last in line for eviction); a node without
+# room defers the resize, the pod stays as it is. CPU: the request stays, the limit follows the load (CPU is compressible). Growth is
+# immediate; only the CPU shrinks, after the lower need lasted shrinkAfter; the memory of a live pod never does. New pods are created
+# in this shape (CPU limit above the request by headroomCpu); pods that exist as Guaranteed (requests = limits) grow when recreated.
 groupAutosize:
   interval: 15s
   shrinkAfter: 30m
-  # The least a limit sits above the request (keeps the pod Burstable, which the kubelet needs to resize it in place).
   headroomCpu: 10m
-  headroomMemory: 16Mi
 
 # ============================================================
 # Limits the cluster owns on devices, labs and tenants
