@@ -5839,11 +5839,14 @@ type FeaturesResponse struct {
 	// Fixed limits of the model (not settings).
 	Constants *DeviceConstants `protobuf:"bytes,11,opt,name=constants,proto3" json:"constants,omitempty"`
 	// The resources the cluster gives this tenant (the same quota GetCapacity reports against).
-	TenantQuota   *TenantQuotaFeature  `protobuf:"bytes,12,opt,name=tenant_quota,json=tenantQuota,proto3" json:"tenant_quota,omitempty"`
-	Lifecycle     *LifecycleFeature    `protobuf:"bytes,13,opt,name=lifecycle,proto3" json:"lifecycle,omitempty"`
-	Reservations  *ReservationsFeature `protobuf:"bytes,14,opt,name=reservations,proto3" json:"reservations,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	TenantQuota  *TenantQuotaFeature  `protobuf:"bytes,12,opt,name=tenant_quota,json=tenantQuota,proto3" json:"tenant_quota,omitempty"`
+	Lifecycle    *LifecycleFeature    `protobuf:"bytes,13,opt,name=lifecycle,proto3" json:"lifecycle,omitempty"`
+	Reservations *ReservationsFeature `protobuf:"bytes,14,opt,name=reservations,proto3" json:"reservations,omitempty"`
+	// The API contract version of this agent (pkg/agent/client ContractVersion, "major.minor"): the same major, and a minor not
+	// below the one the caller was built against, means every call of the caller exists. Empty = an agent older than the field.
+	ContractVersion string `protobuf:"bytes,15,opt,name=contract_version,json=contractVersion,proto3" json:"contract_version,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *FeaturesResponse) Reset() {
@@ -5972,6 +5975,13 @@ func (x *FeaturesResponse) GetReservations() *ReservationsFeature {
 		return x.Reservations
 	}
 	return nil
+}
+
+func (x *FeaturesResponse) GetContractVersion() string {
+	if x != nil {
+		return x.ContractVersion
+	}
+	return ""
 }
 
 // How reservations work on this laboratory.
@@ -10744,7 +10754,7 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\vhas_current\x18\x14 \x01(\bR\n" +
 	"hasCurrent\x124\n" +
 	"\x16current_cpu_millicores\x18\x15 \x01(\x03R\x14currentCpuMillicores\x120\n" +
-	"\x14current_memory_bytes\x18\x16 \x01(\x03R\x12currentMemoryBytesJ\x04\b\x0f\x10\x10J\x04\b\x10\x10\x11\"\xbe\x06\n" +
+	"\x14current_memory_bytes\x18\x16 \x01(\x03R\x12currentMemoryBytesJ\x04\b\x0f\x10\x10J\x04\b\x10\x10\x11\"\xe9\x06\n" +
 	"\x10FeaturesResponse\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12P\n" +
 	"\x11state_persistence\x18\x02 \x01(\v2#.labmanager.StatePersistenceFeatureR\x10statePersistence\x12>\n" +
@@ -10762,7 +10772,8 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\tconstants\x18\v \x01(\v2\x1b.labmanager.DeviceConstantsR\tconstants\x12A\n" +
 	"\ftenant_quota\x18\f \x01(\v2\x1e.labmanager.TenantQuotaFeatureR\vtenantQuota\x12:\n" +
 	"\tlifecycle\x18\r \x01(\v2\x1c.labmanager.LifecycleFeatureR\tlifecycle\x12C\n" +
-	"\freservations\x18\x0e \x01(\v2\x1f.labmanager.ReservationsFeatureR\freservations\"e\n" +
+	"\freservations\x18\x0e \x01(\v2\x1f.labmanager.ReservationsFeatureR\freservations\x12)\n" +
+	"\x10contract_version\x18\x0f \x01(\tR\x0fcontractVersion\"e\n" +
 	"\x13ReservationsFeature\x12\x1a\n" +
 	"\brequired\x18\x01 \x01(\bR\brequired\x122\n" +
 	"\x15ending_notice_seconds\x18\x02 \x01(\x05R\x13endingNoticeSeconds\"\xee\x01\n" +

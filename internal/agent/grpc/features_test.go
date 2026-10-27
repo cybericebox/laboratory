@@ -14,6 +14,7 @@ import (
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/grouppods"
+	"github.com/cybericebox/laboratory/pkg/agent/client"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -169,5 +170,17 @@ func TestFeaturesReservations(t *testing.T) {
 	}
 	if r := f.GetReservations(); !r.GetRequired() || r.GetEndingNoticeSeconds() != 0 {
 		t.Fatalf("a chart notice of 0 is reported as 0: %v", r)
+	}
+}
+
+// The agent reports the API contract it implements, so a caller checks compatibility by contract and not by image tag.
+func TestFeaturesReportTheContractVersion(t *testing.T) {
+	h := featuresHandler(t, testFeatures, newTenantTenant("a", true, nil))
+	got, err := h.GetFeatures(asClient("a"), &protobuf.Empty{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetContractVersion() != client.ContractVersion {
+		t.Fatalf("contract_version = %q, want %q", got.GetContractVersion(), client.ContractVersion)
 	}
 }

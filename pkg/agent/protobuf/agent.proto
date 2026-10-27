@@ -896,6 +896,9 @@ message FeaturesResponse {
   TenantQuotaFeature tenant_quota = 12;
   LifecycleFeature lifecycle = 13;
   ReservationsFeature reservations = 14;
+  // The API contract version of this agent (pkg/agent/client ContractVersion, "major.minor"): the same major, and a minor not
+  // below the one the caller was built against, means every call of the caller exists. Empty = an agent older than the field.
+  string contract_version = 15;
 }
 
 // How reservations work on this laboratory.

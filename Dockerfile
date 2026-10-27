@@ -77,6 +77,8 @@ USER 65532:65532
 ENTRYPOINT ["/manager"]
 
 FROM ${DISTROLESS} AS agent
+# The API contract of pkg/agent/client.ContractVersion; a test keeps the two equal.
+LABEL com.cybericebox.laboratory.api-contract="1.1"
 COPY --from=build-agent /out/agent /agent
 USER 65532:65532
 ENTRYPOINT ["/agent"]

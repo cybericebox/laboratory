@@ -38,3 +38,10 @@ The same rule applies to GitHub release pages and published images, in every rep
 ## The chart
 
 Promoting an rc also packages the Helm chart (`version` `X.Y.Z`, `appVersion` `vX.Y.Z`), pushes it to `oci://registry-1.docker.io/cybericebox/laboratory` and attaches it to the GitHub release. The daemon picks up a laboratory release with `make dev-push LAB=vX.Y.Z` in daemon.
+
+## API contract version
+
+The agent API has a contract version (`pkg/agent/client/contract.go`, `ContractVersion`, "major.minor"). Callers (the daemon, the
+infrastructure check) compare it with `client.Compatible`, not the image tag: a laboratory release that changes no call must not
+stop a daemon. Any change of `agent.proto` fails `TestContractLock` until the version is bumped (minor for an additive change,
+major for a break), the Dockerfile `agent` label is updated and `pkg/agent/protobuf/contract.lock` gets the new line.
