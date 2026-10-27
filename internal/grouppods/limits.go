@@ -46,21 +46,25 @@ func (l Limits) Resolve(users, labs int) (int, int, error) {
 }
 
 // The formulas that size the pods of a group from the users (VPN clients) and the labs it is made for. The coefficients are
-// MEASURED on kind (2026-10-27, laboratory v1.7.x + this branch, an idle control plane: the data path of WireGuard and of the NAT is
-// the kernel's and is not in the pod's cgroup), with 50 % added, and they live in code, not in the chart:
+// MEASURED on kind (2026-10-27, laboratory v1.7.x + this branch), with 50 % added, and they live in code, not in the chart. First
+// without traffic (an idle control plane), then with live traffic (10 real WireGuard clients through the VPN pod to 50 labs: iperf3 TCP 1 and
+// 4 streams, UDP, a SYN scan of every port, and 25 of the labs through the gateway NAT to an outside host; see the report):
 //
-//	VPN pod:     memory 9 Mi at no clients; +0.6 Mi per client; +0.1 Mi per lab; +0.016 Mi per access rule (clients x labs)
-//	             CPU    2m idle; +0.3m per client; +0.1m per lab; a burst of about 0.12m per access rule while the rules are applied
-//	             (10 clients x 50 labs = 480 rules: 27 Mi steady, 72m for the minute the rules were applied, then 1m)
-//	gateway pod: memory 8 Mi at no labs, +0.15 Mi per lab that uses the internet (50 labs: 15 Mi); CPU 1m idle, 7-9m while labs attach
+//	VPN pod:     idle     memory 9 Mi at no clients; +0.1 Mi per lab; +0.016 Mi per access rule; CPU 2m, a burst of about 0.12m per rule
+//	                      while the rules are applied (10 clients x 50 labs = 480 rules: 27 Mi, 72m for the minute of applying, then 1m)
+//	             traffic  at 10 clients x 50 labs: peak 42 Mi (anon 32, kernel 4-6; socket memory under 0.1 Mi: the WireGuard and the
+//	                      forwarding memory is not charged to the pod) and peak 129m CPU at 4 TCP streams per client (about 2 Gbit/s in all);
+//	                      folded in as +1.5 Mi and +5.6m per client on top of the idle figures
+//	gateway pod: idle 8 Mi, 1m; with traffic and NAT of 20 000 connections at peak 19.6 Mi and 6m: +0.23 Mi per lab (50 labs);
+//	             the conntrack entries of the NAT (20 000) are not in the pod's cgroup either
 //
 // The sizes are floors-and-steps: never below a floor that keeps the Go process safe from its own allocator, rounded up to a step.
 const (
-	vpnMemBase, vpnMemPerUser, vpnMemPerLab, vpnMemPerRule = 9 << 20, 614 << 10, 102 << 10, 16 << 10 // bytes
-	vpnCPUBase, vpnCPUPerUser, vpnCPUPerLab, vpnCPUPerRule = 5000, 300, 100, 120                     // micro-millicores (1/1000 m)
-	gwMemBase, gwMemPerLab                                 = 8 << 20, 154 << 10                      // bytes
-	gwCPUBase, gwCPUPerLab                                 = 5000, 250                               // micro-millicores
-	sizeMarginNum, sizeMarginDen                           = 3, 2                                    // +50 %
+	vpnMemBase, vpnMemPerUser, vpnMemPerLab, vpnMemPerRule = 9 << 20, 2150 << 10, 102 << 10, 16 << 10 // bytes
+	vpnCPUBase, vpnCPUPerUser, vpnCPUPerLab, vpnCPUPerRule = 5000, 5900, 100, 120                     // micro-millicores (1/1000 m)
+	gwMemBase, gwMemPerLab                                 = 8 << 20, 240 << 10                       // bytes
+	gwCPUBase, gwCPUPerLab                                 = 5000, 250                                // micro-millicores
+	sizeMarginNum, sizeMarginDen                           = 3, 2                                     // +50 %
 	memFloorVPN, memFloorGateway                           = 24 << 20, 16 << 20
 	cpuFloor                                               = 10 // millicores
 	memStep                                                = 4 << 20
