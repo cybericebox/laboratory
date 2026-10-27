@@ -183,94 +183,30 @@ func nftConcatKey(raw json.RawMessage) (string, error) {
 // parseNFTCounters reads the accounting sets of the table in the shape the iptables backend returns: one row per binding with the
 // totals of both directions and the counts of the attempts, the epoch of every binding, and the element keys to delete when it is retired.
 func parseNFTCounters(list []byte, bindings map[string]ForwardRule, tolerateMissing ...bool) (nftState, error) {
+	tolerate := len(tolerateMissing) > 0 && tolerateMissing[0]
 	st := nftState{snapshot: flowacct.CounterSnapshot{At: time.Now()}, epochs: map[string]string{}, keys: map[string]map[string][]string{}}
-	if len(bytes.TrimSpace(list)) == 0 {
-		for id := range bindings {
-			if len(tolerateMissing) == 0 || !tolerateMissing[0] {
-				return st, fmt.Errorf("missing VPN counter binding %s", id)
-			}
-			st.snapshot.Partial = true
-		}
-		return st, nil
-	}
-	var doc struct {
-		Nftables []struct {
-			Set *struct {
-				Name string            `json:"name"`
-				Elem []json.RawMessage `json:"elem"`
-			} `json:"set"`
-		} `json:"nftables"`
-	}
-	if err := json.Unmarshal(list, &doc); err != nil {
-		return st, fmt.Errorf("parse nft list: %w", err)
-	}
 	rows := map[string]*flowacct.PairCounters{}
 	seen := map[string]map[string]bool{}
-	for _, item := range doc.Nftables {
-		if item.Set == nil {
-			continue
+	if len(bytes.TrimSpace(list)) != 0 {
+		var doc struct {
+			Nftables []struct {
+				Set *struct {
+					Name string            `json:"name"`
+					Elem []json.RawMessage `json:"elem"`
+				} `json:"set"`
+			} `json:"nftables"`
 		}
-		var dir, kind string
-		for _, s := range accountingSets {
-			if s.name == item.Set.Name {
-				dir, kind = s.direction, s.kind
-			}
+		if err := json.Unmarshal(list, &doc); err != nil {
+			return st, fmt.Errorf("parse nft list: %w", err)
 		}
-		if dir == "" {
-			continue
-		}
-		for _, rawElem := range item.Set.Elem {
-			var wrapper struct {
-				Elem nftElem `json:"elem"`
-			}
-			if err := json.Unmarshal(rawElem, &wrapper); err != nil || len(wrapper.Elem.Val) == 0 {
-				return st, fmt.Errorf("malformed owned VPN counter")
-			}
-			e := wrapper.Elem
-			match := nftComment.FindStringSubmatch(e.Comment)
-			if match == nil {
-				return st, fmt.Errorf("malformed owned VPN counter")
-			}
-			id, epoch := match[1], match[2]
-			if old := st.epochs[id]; old != "" && old != epoch {
-				return st, fmt.Errorf("mixed VPN counter epochs")
-			}
-			st.epochs[id] = epoch
-			key, err := nftConcatKey(e.Val)
-			if err != nil {
-				return st, err
-			}
-			if st.keys[id] == nil {
-				st.keys[id] = map[string][]string{}
-			}
-			st.keys[id][item.Set.Name] = append(st.keys[id][item.Set.Name], key)
-			if seen[id] == nil {
-				seen[id] = map[string]bool{}
-			}
-			k := dir + kind
-			if seen[id][k] {
-				return st, fmt.Errorf("duplicate owned VPN counter")
-			}
-			seen[id][k] = true
-			binding, ok := bindings[id]
-			if !ok {
-				st.snapshot.Partial = true
+		for _, item := range doc.Nftables {
+			if item.Set == nil {
 				continue
 			}
-			row := rows[id]
-			if row == nil {
-				row = &flowacct.PairCounters{Key: flowacct.Key{Subject: binding.ClientName, Lab: binding.LabName}, BindingID: id, Epoch: epoch, ClientCIDR: binding.ClientCIDR}
-				rows[id] = row
-			}
-			switch k {
-			case "FT":
-				row.PacketsOut, row.BytesOut = e.Counter.Packets, e.Counter.Bytes
-			case "RT":
-				row.PacketsIn, row.BytesIn = e.Counter.Packets, e.Counter.Bytes
-			case "FN":
-				row.Attempts = e.Counter.Packets
-			case "RN":
-				row.LabInitiatedAttempts = e.Counter.Packets
+			for _, rawElem := range item.Set.Elem {
+				if err := st.fold(item.Set.Name, rawElem, bindings, rows, seen); err != nil {
+					return st, err
+				}
 			}
 		}
 	}
@@ -281,11 +217,10 @@ func parseNFTCounters(list []byte, bindings map[string]ForwardRule, tolerateMiss
 	}
 	for id := range bindings {
 		if len(seen[id]) != 4 {
-			if len(tolerateMissing) > 0 && tolerateMissing[0] {
-				st.snapshot.Partial = true
-				continue
+			if !tolerate {
+				return st, fmt.Errorf("missing VPN counter binding %s", id)
 			}
-			return st, fmt.Errorf("missing VPN counter binding %s", id)
+			st.snapshot.Partial = true
 		}
 	}
 	for _, row := range rows {
@@ -293,6 +228,72 @@ func parseNFTCounters(list []byte, bindings map[string]ForwardRule, tolerateMiss
 	}
 	sort.Slice(st.snapshot.Rows, func(i, j int) bool { return st.snapshot.Rows[i].BindingID < st.snapshot.Rows[j].BindingID })
 	return st, nil
+}
+
+// fold reads one element of an accounting set into the state.
+func (st *nftState) fold(set string, rawElem json.RawMessage, bindings map[string]ForwardRule, rows map[string]*flowacct.PairCounters, seen map[string]map[string]bool) error {
+	var dir, kind string
+	for _, s := range accountingSets {
+		if s.name == set {
+			dir, kind = s.direction, s.kind
+		}
+	}
+	if dir == "" {
+		return nil // a permission set or a set of the notrack hook
+	}
+	var wrapper struct {
+		Elem nftElem `json:"elem"`
+	}
+	if err := json.Unmarshal(rawElem, &wrapper); err != nil || len(wrapper.Elem.Val) == 0 {
+		return fmt.Errorf("malformed owned VPN counter")
+	}
+	e := wrapper.Elem
+	match := nftComment.FindStringSubmatch(e.Comment)
+	if match == nil {
+		return fmt.Errorf("malformed owned VPN counter")
+	}
+	id, epoch := match[1], match[2]
+	if old := st.epochs[id]; old != "" && old != epoch {
+		return fmt.Errorf("mixed VPN counter epochs")
+	}
+	st.epochs[id] = epoch
+	key, err := nftConcatKey(e.Val)
+	if err != nil {
+		return err
+	}
+	if st.keys[id] == nil {
+		st.keys[id] = map[string][]string{}
+	}
+	st.keys[id][set] = append(st.keys[id][set], key)
+	if seen[id] == nil {
+		seen[id] = map[string]bool{}
+	}
+	k := dir + kind
+	if seen[id][k] {
+		return fmt.Errorf("duplicate owned VPN counter")
+	}
+	seen[id][k] = true
+	binding, ok := bindings[id]
+	if !ok {
+		st.snapshot.Partial = true
+		return nil
+	}
+	row := rows[id]
+	if row == nil {
+		row = &flowacct.PairCounters{Key: flowacct.Key{Subject: binding.ClientName, Lab: binding.LabName}, BindingID: id, Epoch: epoch, ClientCIDR: binding.ClientCIDR}
+		rows[id] = row
+	}
+	switch k {
+	case "FT":
+		row.PacketsOut, row.BytesOut = e.Counter.Packets, e.Counter.Bytes
+	case "RT":
+		row.PacketsIn, row.BytesIn = e.Counter.Packets, e.Counter.Bytes
+	case "FN":
+		row.Attempts = e.Counter.Packets
+	case "RN":
+		row.LabInitiatedAttempts = e.Counter.Packets
+	}
+	return nil
 }
 
 func (m *IPTablesManager) nftRead(ctx context.Context, bindings map[string]ForwardRule, tolerate ...bool) (nftState, error) {
