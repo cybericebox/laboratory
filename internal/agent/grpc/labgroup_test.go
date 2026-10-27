@@ -154,8 +154,8 @@ func TestCreateLabGroupsPodSizes(t *testing.T) {
 		t.Fatalf("gateway size: %+v", g)
 	}
 	// neither a size nor a count: the group is made for the default counts (1 user, 5 labs)
-	wv, wg := grouppods.VPNSize(1, 5), grouppods.GatewaySize(5)
-	if v, g := b.Spec.VPN.Size, b.Spec.Gateway.Size; v == nil || g == nil || v.CPUMillicores != wv.CPU || v.MemoryBytes != wv.Memory || g.CPUMillicores != wg.CPU || g.MemoryBytes != wg.Memory {
+	// not yet measured with live traffic: the chart's default sizes are the floor (100m / 320Mi, 10m / 32Mi)
+	if v, g := b.Spec.VPN.Size, b.Spec.Gateway.Size; v == nil || g == nil || v.CPUMillicores != 100 || v.MemoryBytes != 320<<20 || g.CPUMillicores != 10 || g.MemoryBytes != 32<<20 {
 		t.Fatalf("default counts: %+v %+v", v, g)
 	}
 	res, err = h.CreateLabGroups(ctx, req)
@@ -188,7 +188,9 @@ func TestCreateLabGroupsPodSizes(t *testing.T) {
 func TestCreateLabGroupSizedFromExpectedCounts(t *testing.T) {
 	h, _ := newTestHandler(t)
 	h.reservationsOptional = true
-	h.SetFeatures(testFeatures)
+	measured := testFeatures
+	measured.GroupLimits.Measured = true
+	h.SetFeatures(measured)
 	ctx := context.Background()
 	create := func(name string, it *protobuf.LabGroupItem) (*protobuf.BatchResult, error) {
 		it.Name = name
@@ -241,4 +243,23 @@ func TestCreateLabGroupSizedFromExpectedCounts(t *testing.T) {
 	// repeated create with the same counts is the same group
 	res, err = create("explicit", &protobuf.LabGroupItem{ExpectedUsers: 5, ExpectedLabs: 40})
 	wantStates(t, res, err, stExists)
+}
+
+// Until the formulas are measured with live traffic (groupSizing.measured) no pod is made smaller than the chart's default size; a
+// bigger group still grows past it.
+func TestExpectedCountsNeverBelowTheDefaultSizesUntilMeasured(t *testing.T) {
+	h, _ := newTestHandler(t)
+	h.reservationsOptional = true
+	h.SetFeatures(testFeatures)
+	ctx := context.Background()
+	res, err := h.CreateLabGroups(ctx, &protobuf.CreateLabGroupsRequest{Items: []*protobuf.LabGroupItem{{Name: "floor-a", ExpectedUsers: 1, ExpectedLabs: 1}, {Name: "floor-b", ExpectedUsers: 10, ExpectedLabs: 50}}})
+	wantStates(t, res, err, stCreated, stCreated)
+	small, big := res.Results[0], res.Results[1]
+	if small.GetVpnSize().GetCpuMillicores() != 100 || small.GetVpnSize().GetMemoryBytes() != 320<<20 || small.GetGatewaySize().GetMemoryBytes() != 32<<20 {
+		t.Errorf("a small group gets the old default sizes: %+v", small)
+	}
+	f := grouppods.VPNSize(10, 50)
+	if big.GetVpnSize().GetCpuMillicores() != max(100, f.CPU) || big.GetVpnSize().GetMemoryBytes() != max(320<<20, f.Memory) {
+		t.Errorf("a big group is at least the formula: %+v vs %+v", big.GetVpnSize(), f)
+	}
 }

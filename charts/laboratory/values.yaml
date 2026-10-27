@@ -896,6 +896,10 @@ capacity:
 # labs it is made for (CreateLabGroups expected_users / expected_labs; formulas in code from measurements, internal/grouppods/limits.go;
 # vpn.sizing and inetGateway.sizing only serve the old way, sizes sent by the caller). The pods are not resized afterwards: more users or labs than expected still run within the
 # margin of the formula. A request for more than the maximum is refused. A group that says nothing gets the defaults.
+# groupSizing.measured: the formulas that size a pod from the counts (internal/grouppods/limits.go) were measured without live traffic. While this
+# is false no pod is made smaller than its chart default (vpn.resources, inetGateway.resources); set it true after the load test with traffic.
+groupSizing:
+  measured: false
 groupLimits:
   maxUsers: 10
   maxLabs: 50

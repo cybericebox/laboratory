@@ -9,6 +9,9 @@ type Limits struct {
 	MaxLabs      int `env:"GROUP_MAX_LABS" envDefault:"50"`
 	DefaultUsers int `env:"GROUP_DEFAULT_USERS" envDefault:"1"`
 	DefaultLabs  int `env:"GROUP_DEFAULT_LABS" envDefault:"5"`
+	// Measured: the formulas (VPNSize, GatewaySize) are trusted to size a pod. Until it is true they are measured without live traffic only, and
+	// no pod is made smaller than the chart's default size (vpn.resources, inetGateway.resources) (GROUP_SIZING_MEASURED, chart groupSizing.measured).
+	Measured bool `env:"GROUP_SIZING_MEASURED" envDefault:"false"`
 }
 
 // Validate checks that the maxima are positive and the defaults within them.

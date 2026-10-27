@@ -480,6 +480,12 @@ func (h *Handler) applyExpectedCounts(it *protobuf.LabGroupItem) (bool, error) {
 		return false, err
 	}
 	vpn, gw := grouppods.VPNSize(users, labs), grouppods.GatewaySize(labs)
+	if !h.features.GroupLimits.Measured {
+		// not yet measured with live traffic: never below the sizes the chart gave a pod before
+		floorVPN, floorGW := h.groupPods.VPNOverhead(), h.groupPods.GatewayOverhead()
+		vpn = grouppods.Overhead{CPU: max(vpn.CPU, floorVPN.CPU), Memory: max(vpn.Memory, floorVPN.Memory)}
+		gw = grouppods.Overhead{CPU: max(gw.CPU, floorGW.CPU), Memory: max(gw.Memory, floorGW.Memory)}
+	}
 	it.VpnSize = &protobuf.PodSize{CpuMillicores: vpn.CPU, MemoryBytes: vpn.Memory}
 	it.GatewaySize = &protobuf.PodSize{CpuMillicores: gw.CPU, MemoryBytes: gw.Memory}
 	return true, nil
