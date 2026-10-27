@@ -29,3 +29,8 @@ const (
 	// generation, or no generation to compare). Not retryable; the caller must delete the Lab or choose another name.
 	ReasonLabNameConflict = "LAB_NAME_CONFLICT"
 )
+
+// ReasonLabNotInGroup: an access policy names Labs that are not in the LabGroup (removed, never created, or of another
+// group). Not retryable. The text lists every such lab id as `lab "id"` / `labs "id1", "id2"`; the caller drops them from the
+// policy and sends it again.
+const ReasonLabNotInGroup = "LAB_NOT_IN_GROUP"

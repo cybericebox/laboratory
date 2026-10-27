@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -100,4 +101,24 @@ func TestDifferentSpecCarriesNameConflictReason(t *testing.T) {
 		t.Fatalf("got %+v", res.Results[0])
 	}
 	_ = lab.Lab{}
+}
+
+// A policy naming a Lab the group no longer has (the destroy of a test lab sends the rest of the author's labs) is refused
+// with LAB_NOT_IN_GROUP naming every such lab; the policy the caller sends without them applies.
+func TestAccessPolicyWithMissingLabsHasReason(t *testing.T) {
+	h, k := newTestHandler(t)
+	ctx := context.Background()
+	readyGroup(t, h, k, "g", "g", nil)
+	res, err := h.CreateLabs(ctx, &protobuf.CreateLabsRequest{Variants: []*protobuf.LabVariant{{VariantId: "v", SpecJson: specJSON("web")}}, Items: []*protobuf.LabItem{{Name: "alive", LabGroup: "g", VariantId: "v"}}})
+	wantStates(t, res, err, stCreated)
+	policy := func(labsIn ...string) *protobuf.SetLabGroupAccessRequest {
+		return &protobuf.SetLabGroupAccessRequest{Policies: []*protobuf.LabGroupAccessPolicy{{LabGroupName: "g", Rules: []*protobuf.LabGroupAccessRule{{Action: protobuf.LabGroupAccessAction_LAB_GROUP_ACCESS_ACTION_ALLOW, ClientNames: []string{"c1"}, LabNames: labsIn}}}}}
+	}
+	res, err = h.SetLabGroupAccess(ctx, policy("alive", "gone1", "gone2"))
+	wantStates(t, res, err, stFailed)
+	if r := res.Results[0]; r.Reason != client.ReasonLabNotInGroup || r.Retryable || !strings.Contains(r.Error, `"gone1", "gone2"`) {
+		t.Fatalf("got %+v", r)
+	}
+	res, err = h.SetLabGroupAccess(ctx, policy("alive"))
+	wantStates(t, res, err, stCreated)
 }
