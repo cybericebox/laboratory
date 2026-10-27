@@ -3868,6 +3868,10 @@ type LabDeviceStatus struct {
 	// 0 when there is no data (the pod has not run long enough, or is not throttled).
 	CpuThrottledPercent      int32 `protobuf:"varint,13,opt,name=cpu_throttled_percent,json=cpuThrottledPercent,proto3" json:"cpu_throttled_percent,omitempty"`
 	CpuThrottleWindowSeconds int32 `protobuf:"varint,14,opt,name=cpu_throttle_window_seconds,json=cpuThrottleWindowSeconds,proto3" json:"cpu_throttle_window_seconds,omitempty"`
+	// Why the device container last restarted in place (the kubelet's last termination of a container: OOMKilled, Error, ...) and
+	// when. Empty / 0 when it never restarted. restart_count counts the restarts; only the device restarts, never the lab.
+	LastRestartReason string `protobuf:"bytes,15,opt,name=last_restart_reason,json=lastRestartReason,proto3" json:"last_restart_reason,omitempty"`
+	LastRestartUnixMs int64  `protobuf:"varint,16,opt,name=last_restart_unix_ms,json=lastRestartUnixMs,proto3" json:"last_restart_unix_ms,omitempty"`
 	// Set only for a device with state persistence.
 	Snapshot *DeviceSnapshotStatus `protobuf:"bytes,30,opt,name=snapshot,proto3" json:"snapshot,omitempty"`
 	// Scheduler state of the device pod; absent when the scheduler does not track it.
@@ -4000,6 +4004,20 @@ func (x *LabDeviceStatus) GetCpuThrottledPercent() int32 {
 func (x *LabDeviceStatus) GetCpuThrottleWindowSeconds() int32 {
 	if x != nil {
 		return x.CpuThrottleWindowSeconds
+	}
+	return 0
+}
+
+func (x *LabDeviceStatus) GetLastRestartReason() string {
+	if x != nil {
+		return x.LastRestartReason
+	}
+	return ""
+}
+
+func (x *LabDeviceStatus) GetLastRestartUnixMs() int64 {
+	if x != nil {
+		return x.LastRestartUnixMs
 	}
 	return 0
 }
@@ -10525,7 +10543,7 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x129\n" +
 	"\n" +
 	"scheduling\x18\x02 \x01(\v2\x19.labmanager.PodSchedulingR\n" +
-	"scheduling\"\xc3\x05\n" +
+	"scheduling\"\xa4\x06\n" +
 	"\x0fLabDeviceStatus\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05ready\x18\x02 \x01(\bR\x05ready\x12%\n" +
@@ -10542,7 +10560,9 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"pod_reason\x18\v \x01(\tR\tpodReason\x12#\n" +
 	"\rrestart_count\x18\f \x01(\x05R\frestartCount\x122\n" +
 	"\x15cpu_throttled_percent\x18\r \x01(\x05R\x13cpuThrottledPercent\x12=\n" +
-	"\x1bcpu_throttle_window_seconds\x18\x0e \x01(\x05R\x18cpuThrottleWindowSeconds\x12<\n" +
+	"\x1bcpu_throttle_window_seconds\x18\x0e \x01(\x05R\x18cpuThrottleWindowSeconds\x12.\n" +
+	"\x13last_restart_reason\x18\x0f \x01(\tR\x11lastRestartReason\x12/\n" +
+	"\x14last_restart_unix_ms\x18\x10 \x01(\x03R\x11lastRestartUnixMs\x12<\n" +
 	"\bsnapshot\x18\x1e \x01(\v2 .labmanager.DeviceSnapshotStatusR\bsnapshot\x129\n" +
 	"\n" +
 	"scheduling\x18\x1f \x01(\v2\x19.labmanager.PodSchedulingR\n" +

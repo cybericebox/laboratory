@@ -230,7 +230,8 @@ func (c *monCache) podStatuses() map[string]map[usageKey]devicePodStatus {
 		if out[pod.Namespace] == nil {
 			out[pod.Namespace] = map[usageKey]devicePodStatus{}
 		}
-		out[pod.Namespace][key] = devicePodStatus{phase: string(pod.Status.Phase), reason: podReason(pod), restartCount: podRestartCount(pod)}
+		lastReason, lastAt := podLastRestart(pod)
+		out[pod.Namespace][key] = devicePodStatus{phase: string(pod.Status.Phase), reason: podReason(pod), restartCount: podRestartCount(pod), lastRestartReason: lastReason, lastRestartAt: lastAt}
 	}
 	return out
 }

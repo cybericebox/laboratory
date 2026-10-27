@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,6 +30,9 @@ type devicePodStatus struct {
 	phase        string
 	reason       string
 	restartCount int32
+	// lastRestart is why and when a container of the pod last restarted in place (OOMKilled, Error, ...); "" / zero if never.
+	lastRestartReason string
+	lastRestartAt     time.Time
 }
 
 // namespaceUsage returns live per-device usage for a namespace, keyed by
@@ -118,6 +122,10 @@ func fillLabPodStatus(lab *protobuf.Lab, pods map[usageKey]devicePodStatus, crNa
 		device.PodPhase = status.phase
 		device.PodReason = status.reason
 		device.RestartCount = status.restartCount
+		device.LastRestartReason = status.lastRestartReason
+		if !status.lastRestartAt.IsZero() {
+			device.LastRestartUnixMs = status.lastRestartAt.UnixMilli()
+		}
 	}
 }
 
@@ -134,6 +142,27 @@ func podReason(pod *corev1.Pod) string {
 		}
 	}
 	return ""
+}
+
+// podLastRestart is the newest termination the kubelet recorded for a container that was restarted in place: a device that
+// was OOM-killed or crashed runs again (restart count above zero) while its current state looks healthy.
+func podLastRestart(pod *corev1.Pod) (string, time.Time) {
+	var reason string
+	var at time.Time
+	statuses := append(append([]corev1.ContainerStatus(nil), pod.Status.InitContainerStatuses...), pod.Status.ContainerStatuses...)
+	for _, status := range statuses {
+		t := status.LastTerminationState.Terminated
+		if status.RestartCount == 0 || t == nil {
+			continue
+		}
+		if reason == "" || t.FinishedAt.Time.After(at) {
+			reason, at = t.Reason, t.FinishedAt.Time
+			if reason == "" {
+				reason = "Error"
+			}
+		}
+	}
+	return reason, at
 }
 
 func podRestartCount(pod *corev1.Pod) int32 {

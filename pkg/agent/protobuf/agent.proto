@@ -623,6 +623,10 @@ message LabDeviceStatus {
 	// 0 when there is no data (the pod has not run long enough, or is not throttled).
 	int32 cpu_throttled_percent = 13;
 	int32 cpu_throttle_window_seconds = 14;
+	// Why the device container last restarted in place (the kubelet's last termination of a container: OOMKilled, Error, ...) and
+	// when. Empty / 0 when it never restarted. restart_count counts the restarts; only the device restarts, never the lab.
+	string last_restart_reason = 15;
+	int64 last_restart_unix_ms = 16;
 	// Set only for a device with state persistence.
 	DeviceSnapshotStatus snapshot = 30;
 	// Scheduler state of the device pod; absent when the scheduler does not track it.
