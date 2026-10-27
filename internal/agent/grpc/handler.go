@@ -29,7 +29,11 @@ type Handler struct {
 	// metrics is optional: nil when metrics-server is not installed. Live
 	// resource-usage reporting then degrades to zero rather than failing.
 	metrics metricsclient.Interface
-	agentID string
+	// usageAll is the last read of the pod metrics of the whole cluster (see clusterUsage).
+	usageMu  sync.Mutex
+	usageAll map[string]map[usageKey]deviceUsage
+	usageAt  time.Time
+	agentID  string
 	// lifecycleAdmissionMu serializes group lifecycle with child admission in this agent.
 	// Multi-agent/API admission remains a native capability gate.
 	lifecycleAdmissionMu sync.Mutex

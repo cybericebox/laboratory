@@ -44,15 +44,36 @@ func (h *Handler) namespaceUsage(ctx context.Context, ns string) map[usageKey]de
 	if h.metrics == nil {
 		return nil
 	}
-	list, err := h.metrics.MetricsV1beta1().PodMetricses(ns).List(ctx, metav1.ListOptions{})
-	if err != nil {
+	all, ok := h.clusterUsage(ctx)
+	if !ok {
 		return nil
 	}
-	u := foldUsage(list.Items)[ns]
+	u := all[ns]
 	if u == nil {
 		u = map[usageKey]deviceUsage{}
 	}
 	return u
+}
+
+// usageFailureRetry is how soon a failed metrics read is tried again (a slow or failing metrics API must not stall every call).
+const usageFailureRetry = 5 * time.Second
+
+// clusterUsage is the usage of all device pods of the cluster, read in one metrics call at most every usageRefresh and shared by
+// every caller (a readiness poll of one lab per call used to ask the metrics API once per call). A failed read keeps the last good
+// answer for usageFailureRetry; ok is false when there is none.
+func (h *Handler) clusterUsage(ctx context.Context) (map[string]map[usageKey]deviceUsage, bool) {
+	h.usageMu.Lock()
+	defer h.usageMu.Unlock()
+	if !h.usageAt.IsZero() && time.Since(h.usageAt) < usageRefresh {
+		return h.usageAll, h.usageAll != nil
+	}
+	usage, err := h.fetchUsage(ctx)
+	if err != nil {
+		h.usageAt = time.Now().Add(usageFailureRetry - usageRefresh)
+		return h.usageAll, h.usageAll != nil
+	}
+	h.usageAll, h.usageAt = usage, time.Now()
+	return usage, true
 }
 
 // foldUsage sums the containers of each pod metric into the usage of its device, by namespace and (lab, device).

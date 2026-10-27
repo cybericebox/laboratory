@@ -153,3 +153,31 @@ func TestFillLabUsageNil(t *testing.T) {
 		t.Errorf("usage must be marked unavailable without metrics API")
 	}
 }
+
+// A readiness poll asks for one lab per call. The pod metrics are read for the whole cluster at most once per refresh and
+// shared by the calls, not once per call (the slow metrics API made the poll ~10 labs a minute).
+func TestNamespaceUsageIsSharedBetweenCalls(t *testing.T) {
+	calls := 0
+	fake := metricsfake.NewSimpleClientset()
+	fake.PrependReactor("list", "*", func(k8stesting.Action) (bool, runtime.Object, error) {
+		calls++
+		return true, &metricsv1beta1.PodMetricsList{Items: []metricsv1beta1.PodMetrics{
+			*podMetrics("team-a", "p1", "l1", "d", rl("100m", "64Mi")),
+			*podMetrics("team-b", "p2", "l2", "d", rl("200m", "64Mi")),
+		}}, nil
+	})
+	h := &Handler{metrics: fake}
+	ctx := context.Background()
+	for i := 0; i < 20; i++ {
+		ns := []string{"team-a", "team-b"}[i%2]
+		if u := h.namespaceUsage(ctx, ns); len(u) != 1 {
+			t.Fatalf("call %d: %+v", i, u)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("want one metrics read for 20 calls, got %d", calls)
+	}
+	if u := h.namespaceUsage(ctx, "empty"); u == nil || len(u) != 0 {
+		t.Fatalf("a namespace without pods has an empty, non-nil usage: %+v", u)
+	}
+}
