@@ -22,8 +22,8 @@ const (
 
 // Reasons of a FAILED Lab create item whose name is taken by a Lab of another generation.
 const (
-	// ReasonStaleLabReplacing: the name was taken by a Lab of an older generation (an older creation operation of the same
-	// tenant and group); the agent has started deleting it. Retryable: repeat the same create until it succeeds.
+	// ReasonStaleLabReplacing: the name was taken by a Lab of an older generation (an older creation operation of the
+	// same tenant and group); the agent has started deleting it. Retryable: repeat the same create until it succeeds.
 	ReasonStaleLabReplacing = "STALE_LAB_REPLACING"
 	// ReasonLabNameConflict: the name is taken by a Lab the agent will not replace on its own (a newer or an unrelated
 	// generation, or no generation to compare). Not retryable; the caller must delete the Lab or choose another name.
@@ -31,11 +31,11 @@ const (
 )
 
 // ReasonLabNotInGroup: an access policy names Labs that are not in the LabGroup (removed, never created, or of another
-// group). Not retryable. The text lists every such lab id as `lab "id"` / `labs "id1", "id2"`; the caller drops them from the
-// policy and sends it again.
+// group). Not retryable. The text lists every such lab id as `lab "id"` / `labs "id1", "id2"`; the caller drops them
+// from the policy and sends it again.
 const ReasonLabNotInGroup = "LAB_NOT_IN_GROUP"
 
-// ReasonUnsupported: the agent does not advertise the capability the call needs (GetFeatures.lifecycle: per_lab_stop for
-// StopLabs, retained_restart for StartLabs, full_group_stop for StopLabGroups and StartLabGroups). Not retryable; nothing
-// was changed. The caller must check the capability before it dispatches.
+// ReasonUnsupported: the agent does not advertise the capability the call needs (GetFeatures.lifecycle: per_lab_stop
+// for StopLabs, retained_restart for StartLabs, full_group_stop for StopLabGroups and StartLabGroups). Not retryable;
+// nothing was changed. The caller must check the capability before it dispatches.
 const ReasonUnsupported = "UNSUPPORTED"

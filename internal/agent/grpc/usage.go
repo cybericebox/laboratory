@@ -176,7 +176,7 @@ func podLastRestart(pod *corev1.Pod) (string, time.Time) {
 		if status.RestartCount == 0 || t == nil {
 			continue
 		}
-		if reason == "" || t.FinishedAt.Time.After(at) {
+		if reason == "" || t.FinishedAt.After(at) {
 			reason, at = t.Reason, t.FinishedAt.Time
 			if reason == "" {
 				reason = "Error"
