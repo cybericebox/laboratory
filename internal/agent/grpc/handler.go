@@ -40,6 +40,9 @@ type Handler struct {
 
 	// statePersistence: the cluster allows devices with persistence (the chart switch).
 	statePersistence bool
+	// capabilitiesEnforced: the lifecycle calls refuse (UNSUPPORTED) what GetFeatures does not advertise. Set with the
+	// features the agent runs with (SetFeatures); a bare Handler accepts every lifecycle intent.
+	capabilitiesEnforced bool
 	// Native required-snapshot validation gate; false until configured after proof.
 	requiredSnapshotAvailable bool
 

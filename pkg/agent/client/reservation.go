@@ -34,3 +34,8 @@ const (
 // group). Not retryable. The text lists every such lab id as `lab "id"` / `labs "id1", "id2"`; the caller drops them from the
 // policy and sends it again.
 const ReasonLabNotInGroup = "LAB_NOT_IN_GROUP"
+
+// ReasonUnsupported: the agent does not advertise the capability the call needs (GetFeatures.lifecycle: per_lab_stop for
+// StopLabs, retained_restart for StartLabs, full_group_stop for StopLabGroups and StartLabGroups). Not retryable; nothing
+// was changed. The caller must check the capability before it dispatches.
+const ReasonUnsupported = "UNSUPPORTED"

@@ -78,6 +78,7 @@ type featuresEntry struct {
 // SetFeatures sets the platform features the agent reports (GetFeatures, Monitoring).
 func (h *Handler) SetFeatures(f Features) {
 	h.features = f
+	h.capabilitiesEnforced = true
 	h.statePersistence = f.StatePersistence
 }
 
