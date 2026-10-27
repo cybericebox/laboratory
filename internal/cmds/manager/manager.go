@@ -262,7 +262,7 @@ func Run() {
 		os.Exit(1)
 	}
 	if err = (&laboratorycontroller.LabReconciler{
-		Defaults:                  laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory},
+		Defaults:                  laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory, NoCPULimit: cfg.DeviceNoCPULimit},
 		LabNodeSelector:           labNodeSelector,
 		LabTolerations:            labTolerations,
 		Reader:                    mgr.GetAPIReader(),
@@ -328,7 +328,7 @@ func Run() {
 				// the cleanup of unreserved work gives the same notice as the end of a reservation
 				UnreservedNotice: time.Duration(cfg.ReservationEndingNoticeSeconds) * time.Second,
 			},
-			Defaults:        laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory},
+			Defaults:        laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory, NoCPULimit: cfg.DeviceNoCPULimit},
 			GroupPods:       cfg.GroupPods,
 			LabNodeSelector: labNodeSelector,
 			LabTolerations:  labTolerations,
@@ -351,7 +351,7 @@ func Run() {
 		SchedulerName:           cfg.LabSchedulerName,
 		TerminationGraceSeconds: cfg.LabPodTerminationGraceSeconds,
 		NetConfigImage:          cfg.NetConfigImage,
-		Defaults:                laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory},
+		Defaults:                laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory, NoCPULimit: cfg.DeviceNoCPULimit},
 		Security: laboratorycontroller.PodSecurity{
 			UserNamespaces: cfg.DeviceUserNamespaces, EphemeralStorage: cfg.DeviceEphemeralStorage,
 		},

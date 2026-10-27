@@ -171,6 +171,8 @@ type Config struct {
 	// device object that asks for more (it predates the agent's check, or was made by hand) is clamped to them.
 	DeviceMaxCPU    string `env:"DEVICE_MAX_CPU" envDefault:"2000m"`
 	DeviceMaxMemory string `env:"DEVICE_MAX_MEMORY" envDefault:"4Gi"`
+	// DeviceNoCPULimit runs devices that declare no cpuLimit with a CPU request only (limits.device.noCpuLimit).
+	DeviceNoCPULimit bool `env:"DEVICE_NO_CPU_LIMIT" envDefault:"false"`
 
 	// DeviceUserNamespaces runs device pods with hostUsers: false (default on; a hidden setting, not shown in any UI).
 	// DeviceEphemeralStorage limits the writable layer, logs and emptyDirs of a device ("" or "0" = no limit).
