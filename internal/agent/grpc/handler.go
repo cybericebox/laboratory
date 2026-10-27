@@ -30,6 +30,8 @@ type Handler struct {
 	// resource-usage reporting then degrades to zero rather than failing.
 	metrics metricsclient.Interface
 	// usageAll is the last read of the pod metrics of the whole cluster (see clusterUsage).
+	// reads serves the read-only calls from informers (see readCache).
+	reads    readCache
 	usageMu  sync.Mutex
 	usageAll map[string]map[usageKey]deviceUsage
 	usageAt  time.Time

@@ -835,35 +835,34 @@ func (r *ConnectionReconciler) ownedConnectionPort(ctx context.Context, conn *la
 		return "", ErrPortOwnerChanged
 	}
 	if pod.Labels[names.LabelLab] != conn.Spec.LabRef {
-		var groups laboratoryv1alpha1.LabGroupList
-		if err := r.directReader().List(ctx, &groups); err != nil {
-			return "", err
-		}
-		owned := false
-		for _, group := range groups.Items {
-			if laboratoryv1alpha1.LabGroupNamespaceOf(&group) != conn.Namespace {
-				continue
-			}
-			for _, ref := range pod.OwnerReferences {
-				if ref.Kind == ownerKindReplicaSet {
-					var rs appsv1.ReplicaSet
-					if err := r.directReader().Get(ctx, client.ObjectKey{Namespace: conn.Namespace, Name: ref.Name}, &rs); err != nil {
-						return "", err
-					}
-					if rs.UID != ref.UID {
-						return "", ErrPortOwnerChanged
-					}
-					for _, parent := range rs.OwnerReferences {
-						if parent.Kind == "Deployment" {
-							var dep appsv1.Deployment
-							if err := r.directReader().Get(ctx, client.ObjectKey{Namespace: conn.Namespace, Name: parent.Name}, &dep); err != nil {
-								return "", err
+		owned, err := groupsOfNamespace(ctx, r.Client, r.directReader(), conn.Namespace, func(groups []laboratoryv1alpha1.LabGroup) (bool, error) {
+			owned := false
+			for _, group := range groups {
+				for _, ref := range pod.OwnerReferences {
+					if ref.Kind == ownerKindReplicaSet {
+						var rs appsv1.ReplicaSet
+						if err := r.directReader().Get(ctx, client.ObjectKey{Namespace: conn.Namespace, Name: ref.Name}, &rs); err != nil {
+							return false, err
+						}
+						if rs.UID != ref.UID {
+							return false, ErrPortOwnerChanged
+						}
+						for _, parent := range rs.OwnerReferences {
+							if parent.Kind == "Deployment" {
+								var dep appsv1.Deployment
+								if err := r.directReader().Get(ctx, client.ObjectKey{Namespace: conn.Namespace, Name: parent.Name}, &dep); err != nil {
+									return false, err
+								}
+								owned = owned || dep.UID == parent.UID && nativeGroupDeploymentOwned(&dep, string(group.UID))
 							}
-							owned = owned || dep.UID == parent.UID && nativeGroupDeploymentOwned(&dep, string(group.UID))
 						}
 					}
 				}
 			}
+			return owned, nil
+		})
+		if err != nil {
+			return "", err
 		}
 		if !owned {
 			return "", ErrPortOwnerChanged

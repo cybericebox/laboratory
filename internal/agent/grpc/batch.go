@@ -128,7 +128,7 @@ func (r *groupResolver) get(ctx context.Context, name string) (*laboratoryv1alph
 	}
 	r.mu.Unlock()
 	e.once.Do(func() {
-		e.group, e.err = r.h.getGroup(ctx, name)
+		e.group, e.err = r.h.readGroup(ctx, name)
 	})
 	return e.group, e.err
 }
@@ -155,7 +155,7 @@ func (r *groupResolver) namespace(ctx context.Context, name string) (string, err
 // one, or every one.
 func (h *Handler) scopedGroups(ctx context.Context, labGroup string) ([]laboratoryv1alpha1.LabGroup, error) {
 	if labGroup != "" {
-		g, err := h.getGroup(ctx, labGroup)
+		g, err := h.readGroup(ctx, labGroup)
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}
@@ -164,7 +164,7 @@ func (h *Handler) scopedGroups(ctx context.Context, labGroup string) ([]laborato
 		}
 		return []laboratoryv1alpha1.LabGroup{*g}, nil
 	}
-	return h.listGroups(ctx, "")
+	return h.readGroups(ctx, "")
 }
 
 // parseSelector validates a label selector; empty is allowed only when allowEmpty.

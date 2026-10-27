@@ -5,7 +5,6 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	metricsv1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
@@ -200,13 +199,13 @@ func podRestartCount(pod *corev1.Pod) int32 {
 // namespaceDeviceScheduling returns the scheduler state of the Devices of a namespace,
 // keyed by (lab CR name, device name). Best effort: nil when the list fails.
 func (h *Handler) namespaceDeviceScheduling(ctx context.Context, ns string) map[usageKey]*laboratoryv1alpha1.PodSchedule {
-	list, err := h.cs.LaboratoryV1alpha1().Devices(ns).List(ctx, metav1.ListOptions{})
+	items, err := h.readDevices(ctx, ns)
 	if err != nil {
 		return nil
 	}
-	out := make(map[usageKey]*laboratoryv1alpha1.PodSchedule, len(list.Items))
-	for i := range list.Items {
-		d := &list.Items[i]
+	out := make(map[usageKey]*laboratoryv1alpha1.PodSchedule, len(items))
+	for i := range items {
+		d := &items[i]
 		out[usageKey{lab: d.Spec.LabRef, device: d.Spec.Name}] = d.Status.Scheduling
 	}
 	return out

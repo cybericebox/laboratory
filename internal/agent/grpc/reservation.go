@@ -690,7 +690,7 @@ func reservationIDOf(ids map[string]string, label string) string {
 
 // reservationIDs maps the CR names of the caller's tenant's reservations to their ids.
 func (h *Handler) reservationIDs(ctx context.Context) (map[string]string, error) {
-	list, err := h.listReservations(ctx, "")
+	list, err := h.readReservations(ctx)
 	if err != nil {
 		return nil, err
 	}

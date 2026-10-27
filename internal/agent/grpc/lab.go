@@ -369,7 +369,7 @@ func (h *Handler) ListLabs(ctx context.Context, in *protobuf.ListRequest) (*prot
 			if err != nil {
 				return nil, err
 			}
-			lab, err := h.cs.LaboratoryV1alpha1().Labs(g.Status.Namespace).Get(ctx, crName(ref.GetName()), metav1.GetOptions{})
+			lab, err := h.readLab(ctx, g.Status.Namespace, crName(ref.GetName()))
 			if apierrors.IsNotFound(err) {
 				continue
 			}

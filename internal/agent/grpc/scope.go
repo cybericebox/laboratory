@@ -63,13 +63,13 @@ func (h *Handler) listLabs(ctx context.Context, selector, labGroup string) ([]la
 		return nil, err
 	}
 	return perGroup(ctx, groups, func(group, ns string) ([]labMatch, error) {
-		list, err := h.cs.LaboratoryV1alpha1().Labs(ns).List(ctx, metav1.ListOptions{LabelSelector: selector})
+		items, err := h.readLabs(ctx, ns, selector)
 		if err != nil {
 			return nil, err
 		}
-		out := make([]labMatch, 0, len(list.Items))
-		for i := range list.Items {
-			out = append(out, labMatch{group: group, lab: &list.Items[i]})
+		out := make([]labMatch, 0, len(items))
+		for i := range items {
+			out = append(out, labMatch{group: group, lab: &items[i]})
 		}
 		return out, nil
 	})
