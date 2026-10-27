@@ -249,3 +249,49 @@ func TestLabSourceGateClosesDuringReplacement(t *testing.T) {
 		t.Fatal("replacement guard not retained")
 	}
 }
+
+// With limits the NEW connections of a lab are sent to their own chain before the accepting rules, and the chain holds the connection
+// count and the rate per /24; without limits nothing changes.
+func TestSetupFilterLimitsNewConnectionsPerLab(t *testing.T) {
+	f := newFake(t)
+	m := manager(f)
+	m.MaxConnectionsPerLab, m.NewConnectionsPerSecondPerLab = 4096, 100
+	if err := m.SetupFilter(); err != nil {
+		t.Fatal(err)
+	}
+	fw := f.chains["FORWARD"]
+	jump := "-i lab+ -o eth0 -m conntrack --ctstate NEW -j LABLIMIT"
+	at := func(rule string) int {
+		for i, r := range fw {
+			if r == rule {
+				return i
+			}
+		}
+		return -1
+	}
+	if at(jump) < 0 || at(jump) > at("-i lab+ -o eth0 -j ACCEPT") {
+		t.Fatalf("the NEW limit jump comes before the accepting rule: %v", fw)
+	}
+	chain := strings.Join(f.chains[limitChain], "\n")
+	for _, want := range []string{"--connlimit-above 4096 --connlimit-mask 24 --connlimit-saddr -j DROP", "--hashlimit-mode srcip --hashlimit-srcmask 24 --hashlimit-above 100/second --hashlimit-burst 100 -j DROP"} {
+		if !strings.Contains(chain, want) {
+			t.Errorf("the limit chain lacks %q:\n%s", want, chain)
+		}
+	}
+	// a restart with other values rebuilds the chain, not duplicates it
+	m.MaxConnectionsPerLab = 10
+	if err := m.SetupFilter(); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.chains[limitChain]; len(got) != 2 || !strings.Contains(got[0], "--connlimit-above 10 ") {
+		t.Errorf("the limits were not replaced: %v", got)
+	}
+	plain := newFake(t)
+	pm := manager(plain)
+	if err := pm.SetupFilter(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := plain.chains[limitChain]; ok {
+		t.Error("no limits, no limit chain")
+	}
+}

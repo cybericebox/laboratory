@@ -19,6 +19,10 @@ import (
 
 type Config struct {
 	RuntimeObservation bool `env:"RUNTIME_OBSERVATION_ENABLED" envDefault:"false"`
+	// GatewayMaxConnectionsPerLab and GatewayNewConnectionsPerSecondPerLab: the limits of a lab's connections to the outside, for the
+	// gateway pods created from now on (chart inetGateway.limits).
+	GatewayMaxConnectionsPerLab          int `env:"GATEWAY_MAX_CONNECTIONS_PER_LAB" envDefault:"0"`
+	GatewayNewConnectionsPerSecondPerLab int `env:"GATEWAY_NEW_CONNECTIONS_PER_SECOND_PER_LAB" envDefault:"0"`
 	// VPNFirewall: "iptables" (the relation chains with connection tracking) or "nft" (nftables sets, no connection tracking) for the
 	// VPN pods created from now on (VPN_FIREWALL, chart vpn.firewall).
 	VPNFirewall string `env:"VPN_FIREWALL" envDefault:"iptables"`

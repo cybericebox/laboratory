@@ -51,6 +51,7 @@ func Run() {
 		log.Error(err, "init iptables")
 		os.Exit(1)
 	}
+	ipt.MaxConnectionsPerLab, ipt.NewConnectionsPerSecondPerLab = cfg.MaxConnectionsPerLab, cfg.NewConnectionsPerSecondPerLab
 	defer ipt.RemoveInput()
 	if err := ipt.SetupFilter(); err != nil {
 		log.Error(err, "setup the forwarding filter")

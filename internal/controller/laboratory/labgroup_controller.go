@@ -51,6 +51,8 @@ const labSubnetPrefixLen = 24
 
 // LabGroupReconciler reconciles a LabGroup object.
 type LabGroupReconciler struct {
+	// GatewayMaxConnectionsPerLab and GatewayNewConnectionsPerSecondPerLab limit a lab's connections to the outside through a NEW gateway pod (0 = none).
+	GatewayMaxConnectionsPerLab, GatewayNewConnectionsPerSecondPerLab int
 	// VPNFirewall is how the VPN pods created from now on forward: "nft" (no connection tracking) or "" / "iptables".
 	VPNFirewall string
 	client.Client
@@ -880,7 +882,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 						Image:           gatewayImage,
 						Command:         []string{"/lab", names.ComponentGateway},
 						ImagePullPolicy: pullPolicyFor(gatewayImage),
-						Env:             append(r.gatewayEnv(ns), corev1.EnvVar{Name: groupUIDEnvironment, Value: groupUID}),
+						Env:             append(append(r.gatewayEnv(ns), r.gatewayLimitsEnv()...), corev1.EnvVar{Name: groupUIDEnvironment, Value: groupUID}),
 					}},
 				},
 			},
@@ -1331,6 +1333,19 @@ func (r *LabGroupReconciler) gatewayEnv(ns string) []corev1.EnvVar {
 		{Name: "NAMESPACE", Value: ns},
 		{Name: "INET_BASE_NETWORK", Value: r.InetBaseNetwork},
 	}
+}
+
+// gatewayLimitsEnv is the per-lab limits of a NEW gateway pod. They are not part of gatewayEnv, which also brings the gateways that exist to
+// the current environment: a change of the environment of a running gateway would restart it and cut the NAT connections of its labs.
+func (r *LabGroupReconciler) gatewayLimitsEnv() []corev1.EnvVar {
+	var env []corev1.EnvVar
+	if r.GatewayMaxConnectionsPerLab > 0 {
+		env = append(env, corev1.EnvVar{Name: "GATEWAY_MAX_CONNECTIONS_PER_LAB", Value: fmt.Sprint(r.GatewayMaxConnectionsPerLab)})
+	}
+	if r.GatewayNewConnectionsPerSecondPerLab > 0 {
+		env = append(env, corev1.EnvVar{Name: "GATEWAY_NEW_CONNECTIONS_PER_SECOND_PER_LAB", Value: fmt.Sprint(r.GatewayNewConnectionsPerSecondPerLab)})
+	}
+	return env
 }
 
 // convergeGateway brings the security settings of an existing gateway Deployment to the current ones and says

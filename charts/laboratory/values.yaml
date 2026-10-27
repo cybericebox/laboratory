@@ -166,6 +166,12 @@ vpn:
 # Gateway pod image (created at runtime by operator per LabGroup)
 # ============================================================
 inetGateway:
+  # What one lab may do towards the outside through the gateway (its /24): the most connections held open, the most NEW connections in a
+  # second. Only a NEW connection is looked at, after the established traffic has passed; 0 = no limit. Applied to the gateway pods created
+  # after the change (a pod that exists would be restarted by a change of its environment).
+  limits:
+    maxConnectionsPerLab: 4096
+    newConnectionsPerSecondPerLab: 100
   # Resources of the internet gateway pod of a NEW LabGroup (requests = limits). Measured idle: about 1m CPU and 8Mi
   # (traffic of labs through it is not measured yet).
   resources:

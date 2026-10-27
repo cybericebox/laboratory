@@ -29,7 +29,7 @@ fi
 
 export GOWORK=off CICE_NETNS_TESTS=1
 if ! command -v iptables >/dev/null || ! command -v ip >/dev/null || ! command -v ping >/dev/null || ! command -v conntrack >/dev/null || ! command -v ovsdb-server >/dev/null || ! command -v ovsdb-tool >/dev/null || ! command -v ovs-vsctl >/dev/null || ! command -v nft >/dev/null; then
-  apt-get update -qq && apt-get install -y -qq iptables iproute2 iputils-ping conntrack openvswitch-switch nftables >/dev/null
+  apt-get update -qq && apt-get install -y -qq iptables iproute2 iputils-ping conntrack openvswitch-switch nftables python3 >/dev/null
 fi
 out=$(mktemp -d)
 pkgs="vpn vpn/reconciler gateway accessroute cmds/cnigate nodeagent"
