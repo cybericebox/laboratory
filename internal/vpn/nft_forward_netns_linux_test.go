@@ -32,6 +32,8 @@ func TestNetnsNFTForwardGatesBothDirectionsWithoutConntrack(t *testing.T) {
 		nstest.Run(t, e[0], "ip", "route", "add", "default", "via", e[1])
 	}
 	nstest.Run(t, "", "sysctl", "-w", "net.ipv4.ip_forward=1")
+	// the tests of this package share the network namespace: the entries of an earlier test are not the subject of the check below
+	_, _ = nstest.Try("", "conntrack", "-F")
 	targetA := nstest.Listen(t, "a", "udp", "0.0.0.0:7900")
 	targetP := nstest.Listen(t, "pa", "udp", "0.0.0.0:7901")
 	targetB := nstest.Listen(t, "b", "udp", "0.0.0.0:7903")

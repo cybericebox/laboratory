@@ -18,7 +18,7 @@ import (
 // A measurement, not a test: CICE_PERF=1 runs the iptables relation chains with connection tracking and the nft sets without it, at
 // 10 participants x 50 labs (500 permitted pairs), through the same pod: the throughput of one TCP flow, the connections per second a
 // scan opens, and the CPU the host spent (all CPUs, user + system + softirq) while it ran. The numbers are printed (go test -v).
-func TestNetnsPerfIptablesAgainstNFT(t *testing.T) {
+func TestPerfNetnsIptablesAgainstNFT(t *testing.T) {
 	if os.Getenv("CICE_PERF") == "" {
 		t.Skip("set CICE_PERF=1")
 	}
