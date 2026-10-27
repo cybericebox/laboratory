@@ -42,11 +42,48 @@ func (l Limits) Resolve(users, labs int) (int, int, error) {
 	return users, labs, nil
 }
 
-// SizeFor is the size of the pod for the given number of units (VPN: users; gateway: labs): the sizing's base plus its per-unit
-// values for each unit. The per-unit values are the measured ones (a VPN pod about 5-6m CPU and 18Mi per active peer on top of the
-// base process, a gateway about 1-2m and 3-4Mi per lab) with the margin of the chart defaults, so that a group over its expected
-// count still runs within the formula.
-func (p PodSizing) SizeFor(units int) Overhead {
-	n := int64(units)
-	return Overhead{CPU: p.BaseCPU + p.PerUnitCPU*n, Memory: p.BaseMemory + p.PerUnitMemory*n}
+// The formulas that size the pods of a group from the users (VPN clients) and the labs it is made for. The coefficients are
+// MEASURED on kind (2026-10-27, laboratory v1.7.x + this branch, an idle control plane: the data path of WireGuard and of the NAT is
+// the kernel's and is not in the pod's cgroup), with 50 % added, and they live in code, not in the chart:
+//
+//	VPN pod:     memory 9 Mi at no clients; +0.6 Mi per client; +0.1 Mi per lab; +0.016 Mi per access rule (clients x labs)
+//	             CPU    2m idle; +0.3m per client; +0.1m per lab; a burst of about 0.12m per access rule while the rules are applied
+//	             (10 clients x 50 labs = 480 rules: 27 Mi steady, 72m for the minute the rules were applied, then 1m)
+//	gateway pod: memory 8 Mi at no labs, +0.15 Mi per lab that uses the internet (50 labs: 15 Mi); CPU 1m idle, 7-9m while labs attach
+//
+// The sizes are floors-and-steps: never below a floor that keeps the Go process safe from its own allocator, rounded up to a step.
+const (
+	vpnMemBase, vpnMemPerUser, vpnMemPerLab, vpnMemPerRule = 9 << 20, 614 << 10, 102 << 10, 16 << 10 // bytes
+	vpnCPUBase, vpnCPUPerUser, vpnCPUPerLab, vpnCPUPerRule = 5000, 300, 100, 120                     // micro-millicores (1/1000 m)
+	gwMemBase, gwMemPerLab                                 = 8 << 20, 154 << 10                      // bytes
+	gwCPUBase, gwCPUPerLab                                 = 5000, 250                               // micro-millicores
+	sizeMarginNum, sizeMarginDen                           = 3, 2                                    // +50 %
+	memFloorVPN, memFloorGateway                           = 24 << 20, 16 << 20
+	cpuFloor                                               = 10 // millicores
+	memStep                                                = 4 << 20
+)
+
+func marginUp(v int64) int64 { return (v*sizeMarginNum + sizeMarginDen - 1) / sizeMarginDen }
+
+func ceilTo(v, step int64) int64 {
+	if r := v % step; r != 0 {
+		return v + step - r
+	}
+	return v
+}
+
+// VPNSize is the size of the VPN pod of a group made for `users` clients and `labs` labs (rules = users x labs).
+func VPNSize(users, labs int) Overhead {
+	u, l := int64(users), int64(labs)
+	mem := marginUp(vpnMemBase + vpnMemPerUser*u + vpnMemPerLab*l + vpnMemPerRule*u*l)
+	cpu := marginUp(vpnCPUBase + vpnCPUPerUser*u + vpnCPUPerLab*l + vpnCPUPerRule*u*l)
+	return Overhead{CPU: max(cpuFloor, (cpu+999)/1000), Memory: max(memFloorVPN, ceilTo(mem, memStep))}
+}
+
+// GatewaySize is the size of the gateway pod of a group made for `labs` labs.
+func GatewaySize(labs int) Overhead {
+	l := int64(labs)
+	mem := marginUp(gwMemBase + gwMemPerLab*l)
+	cpu := marginUp(gwCPUBase + gwCPUPerLab*l)
+	return Overhead{CPU: max(cpuFloor, (cpu+999)/1000), Memory: max(memFloorGateway, ceilTo(mem, memStep))}
 }

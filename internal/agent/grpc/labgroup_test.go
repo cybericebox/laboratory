@@ -10,6 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/client"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
@@ -152,8 +153,9 @@ func TestCreateLabGroupsPodSizes(t *testing.T) {
 	if g := a.Spec.Gateway.Size; g == nil || g.CPUMillicores != 15 || g.MemoryBytes != 24<<20 {
 		t.Fatalf("gateway size: %+v", g)
 	}
-	// neither a size nor a count: the group is made for the default counts (1 user, 5 labs): 20m+6m = 26m, 64Mi+20Mi = 84Mi; 5m+5*2m = 15m, 16Mi+5*4Mi = 36Mi
-	if v, g := b.Spec.VPN.Size, b.Spec.Gateway.Size; v == nil || g == nil || v.CPUMillicores != 26 || v.MemoryBytes != 84<<20 || g.CPUMillicores != 15 || g.MemoryBytes != 36<<20 {
+	// neither a size nor a count: the group is made for the default counts (1 user, 5 labs)
+	wv, wg := grouppods.VPNSize(1, 5), grouppods.GatewaySize(5)
+	if v, g := b.Spec.VPN.Size, b.Spec.Gateway.Size; v == nil || g == nil || v.CPUMillicores != wv.CPU || v.MemoryBytes != wv.Memory || g.CPUMillicores != wg.CPU || g.MemoryBytes != wg.Memory {
 		t.Fatalf("default counts: %+v %+v", v, g)
 	}
 	res, err = h.CreateLabGroups(ctx, req)
@@ -200,7 +202,6 @@ func TestCreateLabGroupSizedFromExpectedCounts(t *testing.T) {
 		}
 		return *g.Spec.VPN.Size, *g.Spec.Gateway.Size
 	}
-	sizing := testFeatures.GroupPods.Sizing
 	for _, c := range []struct {
 		name        string
 		item        *protobuf.LabGroupItem
@@ -214,7 +215,7 @@ func TestCreateLabGroupSizedFromExpectedCounts(t *testing.T) {
 		res, err := create(c.name, c.item)
 		wantStates(t, res, err, stCreated)
 		vpn, gw := sizeOf(c.name)
-		wantVPN, wantGW := sizing.VPN.SizeFor(c.users), sizing.Gateway.SizeFor(c.labs)
+		wantVPN, wantGW := grouppods.VPNSize(c.users, c.labs), grouppods.GatewaySize(c.labs)
 		if r := res.Results[0]; r.GetVpnSize().GetCpuMillicores() != wantVPN.CPU || r.GetGatewaySize().GetMemoryBytes() != wantGW.Memory {
 			t.Errorf("%s: the response must carry the assigned sizes: %+v", c.name, r)
 		}
