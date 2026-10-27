@@ -187,6 +187,10 @@ message ItemResult {
   // A machine code for a FAILED item, when the failure has one: RESERVATION_REQUIRED | RESERVATION_NOT_FOUND |
   // RESERVATION_ENDED | RESERVATION_FULL | RESERVATION_MISMATCH | OVER_QUOTA. Empty otherwise (error is the text).
   string reason = 5;
+  // Set by CreateLabGroups for an item that was created or exists: the sizes assigned to the group's own pods (from expected_users /
+  // expected_labs, the defaults, or the sizes sent), so the caller sees what the counts became.
+  PodSize vpn_size = 6;
+  PodSize gateway_size = 7;
 }
 
 message BatchResult {repeated ItemResult results = 1;}

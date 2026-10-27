@@ -215,6 +215,9 @@ func TestCreateLabGroupSizedFromExpectedCounts(t *testing.T) {
 		wantStates(t, res, err, stCreated)
 		vpn, gw := sizeOf(c.name)
 		wantVPN, wantGW := sizing.VPN.SizeFor(c.users), sizing.Gateway.SizeFor(c.labs)
+		if r := res.Results[0]; r.GetVpnSize().GetCpuMillicores() != wantVPN.CPU || r.GetGatewaySize().GetMemoryBytes() != wantGW.Memory {
+			t.Errorf("%s: the response must carry the assigned sizes: %+v", c.name, r)
+		}
 		if vpn.CPUMillicores != wantVPN.CPU || vpn.MemoryBytes != wantVPN.Memory || gw.CPUMillicores != wantGW.CPU || gw.MemoryBytes != wantGW.Memory {
 			t.Errorf("%s: vpn %+v gateway %+v, want %+v %+v", c.name, vpn, gw, wantVPN, wantGW)
 		}

@@ -185,3 +185,17 @@ func TestFeaturesReportTheContractVersion(t *testing.T) {
 		t.Fatalf("contract_version = %q, want %q", got.GetContractVersion(), client.ContractVersion)
 	}
 }
+
+// GetFeatures tells the group limits of this agent (the chart's groupLimits): a client reads them, it does not know them.
+func TestFeaturesReportTheGroupLimits(t *testing.T) {
+	f := testFeatures
+	f.GroupLimits = grouppods.Limits{MaxUsers: 7, MaxLabs: 33, DefaultUsers: 2, DefaultLabs: 4}
+	h := featuresHandler(t, f, newTenantTenant("a", true, nil))
+	got, err := h.GetFeatures(asClient("a"), &protobuf.Empty{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := got.GetGroupLimits(); l.GetMaxUsers() != 7 || l.GetMaxLabs() != 33 || l.GetDefaultUsers() != 2 || l.GetDefaultLabs() != 4 {
+		t.Fatalf("group_limits = %+v", l)
+	}
+}

@@ -80,7 +80,12 @@ func (h *Handler) CreateLabGroups(ctx context.Context, in *protobuf.CreateLabGro
 		if refusals[i] != nil {
 			return failedResult(refs[i], refusals[i])
 		}
-		return h.createLabGroup(ctx, items[i], in.GetLabels())
+		res := h.createLabGroup(ctx, items[i], in.GetLabels())
+		if res.GetState() != protobuf.ItemState_ITEM_STATE_FAILED {
+			// the sizes the counts became (applyExpectedCounts), for the caller to see
+			res.VpnSize, res.GatewaySize = items[i].GetVpnSize(), items[i].GetGatewaySize()
+		}
+		return res
 	})}, nil
 }
 
