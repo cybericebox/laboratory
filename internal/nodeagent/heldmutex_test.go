@@ -92,7 +92,9 @@ func TestHeldMutexNamesTheHolderOfASlowLock(t *testing.T) {
 	go func() { holdLockForTest(&m, slowLockHold+200*time.Millisecond); close(done) }()
 	time.Sleep(50 * time.Millisecond)
 	m.Lock()
+	waited := time.Now()
 	m.Unlock()
+	_ = waited
 	<-done
 	got := c.text()
 	if !strings.Contains(got, "lock held long") || !strings.Contains(got, "holdLockForTest") {
