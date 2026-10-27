@@ -27,6 +27,8 @@ type PoolStatusApplyConfiguration struct {
 	// Retired are the slots waiting out their quarantine.
 	Retired             map[string]PoolRetiredApplyConfiguration `json:"retired,omitempty"`
 	NextLeaseGeneration *int64                                   `json:"nextLeaseGeneration,omitempty"`
+	// Cursor is where a forward-only allocator hands out next.
+	Cursor *uint `json:"cursor,omitempty"`
 	// Free is the count of unallocated slots; mirrored to label pool.cybericebox.com/free.
 	Free *uint `json:"free,omitempty"`
 	// BitMap is a base64-encoded bitset (one bit per slot, 1 = allocated).
@@ -88,5 +90,13 @@ func (b *PoolStatusApplyConfiguration) WithRetired(entries map[string]PoolRetire
 	for k, v := range entries {
 		b.Retired[k] = v
 	}
+	return b
+}
+
+// WithCursor sets the Cursor field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Cursor field is set to the value of the last call.
+func (b *PoolStatusApplyConfiguration) WithCursor(value uint) *PoolStatusApplyConfiguration {
+	b.Cursor = &value
 	return b
 }

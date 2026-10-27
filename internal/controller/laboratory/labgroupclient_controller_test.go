@@ -134,7 +134,7 @@ var _ = Describe(
 		)
 
 		It(
-			"releases the IP back to the pool on DELETE", func() {
+			"does not give the IP back on DELETE: the pool of a group only moves forward", func() {
 				lgc := &laboratoryv1alpha1.LabGroupClient{
 					ObjectMeta: metav1.ObjectMeta{Name: "client-d", Namespace: lgNS},
 					Spec:       laboratoryv1alpha1.LabGroupClientSpec{PublicKey: "pk-d"},
@@ -176,10 +176,9 @@ var _ = Describe(
 					}, timeout, interval,
 				).Should(BeTrue())
 
-				// Free count must increase by 1 (the released slot).
-				Expect(poolFreeCount(lgNS)).To(Equal(freeBefore + 1))
+				// Nothing is returned: the pool goes with the group, and the next client gets a later address.
+				Expect(poolFreeCount(lgNS)).To(Equal(freeBefore))
 
-				// The same IP must be reallocatable.
 				lgc2 := &laboratoryv1alpha1.LabGroupClient{
 					ObjectMeta: metav1.ObjectMeta{Name: "client-d2", Namespace: lgNS},
 					Spec:       laboratoryv1alpha1.LabGroupClientSpec{PublicKey: "pk-d2"},
@@ -197,7 +196,7 @@ var _ = Describe(
 						_ = k8sClient.Get(ctx, types.NamespacedName{Name: "client-d2", Namespace: lgNS}, &updated2)
 						return updated2.Status.AssignedIP
 					}, timeout, interval,
-				).Should(Equal(assignedIP))
+				).ShouldNot(Or(BeEmpty(), Equal(assignedIP)))
 			},
 		)
 	},

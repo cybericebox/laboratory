@@ -23,6 +23,8 @@ type PoolStatus struct {
 	// +optional
 	Retired             map[string]PoolRetired `json:"retired,omitempty"`
 	NextLeaseGeneration int64                  `json:"nextLeaseGeneration,omitempty"`
+	// Cursor is where a forward-only allocator hands out next (see pkg/api/pool ForwardAllocator).
+	Cursor uint `json:"cursor,omitempty"`
 	// Free is the count of unallocated slots; mirrored to label pool.cybericebox.com/free.
 	Free uint `json:"free,omitempty"`
 	// BitMap is a base64-encoded bitset (one bit per slot, 1 = allocated).

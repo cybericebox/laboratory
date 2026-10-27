@@ -58,6 +58,10 @@ spec:
                 description: BitMap is a base64-encoded bitset (one bit per slot,
                   1 = allocated).
                 type: string
+              cursor:
+                description: Cursor is where a forward-only allocator hands out next
+                  (see pkg/api/pool ForwardAllocator).
+                type: integer
               free:
                 description: Free is the count of unallocated slots; mirrored to label
                   pool.cybericebox.com/free.

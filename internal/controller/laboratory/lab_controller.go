@@ -1112,19 +1112,7 @@ func (r *LabReconciler) reconcileDelete(ctx context.Context, lab *laboratoryv1al
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 
-	// Release lab subnet index if allocated.
-	if lab.Status.VPN.CIDR != "" || lab.Status.Internet.CIDR != "" {
-		cidr := lab.Status.VPN.CIDR
-		if cidr == "" {
-			cidr = lab.Status.Internet.CIDR
-		}
-		if n, ok := indexFromCIDR(cidr); ok {
-			subnetAllocator := poolpkg.NewAllocator(r.Client, names.PoolLabSubnets, lab.Namespace, 254)
-			if releaseErr := subnetAllocator.ReleaseIndex(ctx, n); releaseErr != nil {
-				logger.Error(releaseErr, "release lab subnet", "n", n)
-			}
-		}
-	}
+	// The lab subnet index is not given back: the pool of a group only moves forward and goes with the group (see ForwardAllocator).
 
 	controllerutil.RemoveFinalizer(lab, names.FinalizerLab)
 	return ctrl.Result{}, r.Update(ctx, lab)
@@ -1143,7 +1131,7 @@ func (r *LabReconciler) ensureSubnetAllocation(ctx context.Context, lab *laborat
 		return false, nil
 	}
 
-	subnetAllocator := poolpkg.NewAllocator(r.Client, names.PoolLabSubnets, lab.Namespace, 254)
+	subnetAllocator := &poolpkg.ForwardAllocator{Client: r.Client, Prefix: names.PoolLabSubnets, Namespace: lab.Namespace, Size: 254, InUse: r.subnetsInUse(lab.Namespace)}
 	n, err := subnetAllocator.AllocateIndex(ctx)
 	if err != nil {
 		return false, fmt.Errorf("allocate lab subnet: %w", err)
@@ -1551,4 +1539,25 @@ func (r *LabReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 func deviceTypeIsSwitch(deviceType laboratoryv1alpha1.DeviceType) bool {
 	return deviceType == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch || deviceType == laboratoryv1alpha1.DeviceTypeHub
+}
+
+// subnetsInUse is the subnet indexes the labs of a namespace refer to, read straight from the API server (the insurance of the
+// forward-only pool: see poolpkg.ForwardAllocator).
+func (r *LabReconciler) subnetsInUse(namespace string) func(context.Context) (map[uint]bool, error) {
+	return func(ctx context.Context) (map[uint]bool, error) {
+		reader := r.lifecycleReader()
+		var labs laboratoryv1alpha1.LabList
+		if err := reader.List(ctx, &labs, client.InNamespace(namespace)); err != nil {
+			return nil, err
+		}
+		used := map[uint]bool{}
+		for i := range labs.Items {
+			for _, cidr := range []string{labs.Items[i].Status.VPN.CIDR, labs.Items[i].Status.Internet.CIDR} {
+				if n, ok := indexFromCIDR(cidr); ok && cidr != "" {
+					used[n] = true
+				}
+			}
+		}
+		return used, nil
+	}
 }
