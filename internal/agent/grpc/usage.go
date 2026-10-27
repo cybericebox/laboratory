@@ -8,6 +8,7 @@ import (
 	metricsv1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
@@ -209,4 +210,40 @@ func (h *Handler) namespaceDeviceScheduling(ctx context.Context, ns string) map[
 		out[usageKey{lab: d.Spec.LabRef, device: d.Spec.Name}] = d.Status.Scheduling
 	}
 	return out
+}
+
+// fillGroupPodUsage puts the live usage, the size and the load on the VPN and gateway entries of a group's status (adding an entry
+// for a pod the scheduler has no record of). usage is nil when the metrics are not available.
+func (h *Handler) fillGroupPodUsage(g *laboratoryv1alpha1.LabGroup, p *protobuf.LabGroup, usage map[string]deviceUsage, clients, internetLabs int) {
+	if p.GetStatus() == nil {
+		return
+	}
+	for _, component := range grouppods.PodNames(g) {
+		var entry *protobuf.LabGroupPod
+		for _, e := range p.Status.Pods {
+			if e.Name == component {
+				entry = e
+			}
+		}
+		if entry == nil {
+			entry = &protobuf.LabGroupPod{Name: component}
+			p.Status.Pods = append(p.Status.Pods, entry)
+		}
+		var res corev1.ResourceRequirements
+		units := clients
+		if component == names.ComponentVPN {
+			res = h.groupPods.VPNFor(g.Spec.VPN.Size)
+		} else {
+			res = h.groupPods.GatewayFor(g.Spec.Gateway.Size)
+			units = internetLabs
+		}
+		entry.CpuLimitMillicores, entry.MemoryLimitBytes = res.Limits.Cpu().MilliValue(), res.Limits.Memory().Value()
+		entry.Units = int32(units)
+		if usage != nil {
+			entry.UsageAvailable = true
+			if u, ok := usage[component]; ok {
+				entry.CpuMillicores, entry.MemoryBytes = u.cpuMillicores, u.memoryBytes
+			}
+		}
+	}
 }

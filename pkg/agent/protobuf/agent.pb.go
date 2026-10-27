@@ -3838,11 +3838,20 @@ func (x *PodFailure) GetAtUnixMs() int64 {
 
 // LabGroupPod is the scheduling state of a pod the LabGroup runs itself ("vpn", "gateway").
 type LabGroupPod struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Scheduling    *PodScheduling         `protobuf:"bytes,2,opt,name=scheduling,proto3" json:"scheduling,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Name       string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Scheduling *PodScheduling         `protobuf:"bytes,2,opt,name=scheduling,proto3" json:"scheduling,omitempty"`
+	// Live usage of the pod (Monitoring, ListLabGroups): CPU and memory now, the size it runs with (requests = limits) and the load
+	// it serves: VPN clients of the group (vpn) or labs that use the internet (gateway). usage_available is false when the metrics
+	// are not available (cpu_millicores and memory_bytes are then 0).
+	CpuMillicores      int64 `protobuf:"varint,3,opt,name=cpu_millicores,json=cpuMillicores,proto3" json:"cpu_millicores,omitempty"`
+	MemoryBytes        int64 `protobuf:"varint,4,opt,name=memory_bytes,json=memoryBytes,proto3" json:"memory_bytes,omitempty"`
+	UsageAvailable     bool  `protobuf:"varint,5,opt,name=usage_available,json=usageAvailable,proto3" json:"usage_available,omitempty"`
+	CpuLimitMillicores int64 `protobuf:"varint,6,opt,name=cpu_limit_millicores,json=cpuLimitMillicores,proto3" json:"cpu_limit_millicores,omitempty"`
+	MemoryLimitBytes   int64 `protobuf:"varint,7,opt,name=memory_limit_bytes,json=memoryLimitBytes,proto3" json:"memory_limit_bytes,omitempty"`
+	Units              int32 `protobuf:"varint,8,opt,name=units,proto3" json:"units,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *LabGroupPod) Reset() {
@@ -3887,6 +3896,48 @@ func (x *LabGroupPod) GetScheduling() *PodScheduling {
 		return x.Scheduling
 	}
 	return nil
+}
+
+func (x *LabGroupPod) GetCpuMillicores() int64 {
+	if x != nil {
+		return x.CpuMillicores
+	}
+	return 0
+}
+
+func (x *LabGroupPod) GetMemoryBytes() int64 {
+	if x != nil {
+		return x.MemoryBytes
+	}
+	return 0
+}
+
+func (x *LabGroupPod) GetUsageAvailable() bool {
+	if x != nil {
+		return x.UsageAvailable
+	}
+	return false
+}
+
+func (x *LabGroupPod) GetCpuLimitMillicores() int64 {
+	if x != nil {
+		return x.CpuLimitMillicores
+	}
+	return 0
+}
+
+func (x *LabGroupPod) GetMemoryLimitBytes() int64 {
+	if x != nil {
+		return x.MemoryLimitBytes
+	}
+	return 0
+}
+
+func (x *LabGroupPod) GetUnits() int32 {
+	if x != nil {
+		return x.Units
+	}
+	return 0
 }
 
 type LabDeviceStatus struct {
@@ -10670,12 +10721,18 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12#\n" +
 	"\rrestart_count\x18\x03 \x01(\x05R\frestartCount\x12\x1c\n" +
 	"\n" +
-	"at_unix_ms\x18\x04 \x01(\x03R\batUnixMs\"\\\n" +
+	"at_unix_ms\x18\x04 \x01(\x03R\batUnixMs\"\xc5\x02\n" +
 	"\vLabGroupPod\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x129\n" +
 	"\n" +
 	"scheduling\x18\x02 \x01(\v2\x19.labmanager.PodSchedulingR\n" +
-	"scheduling\"\xa4\x06\n" +
+	"scheduling\x12%\n" +
+	"\x0ecpu_millicores\x18\x03 \x01(\x03R\rcpuMillicores\x12!\n" +
+	"\fmemory_bytes\x18\x04 \x01(\x03R\vmemoryBytes\x12'\n" +
+	"\x0fusage_available\x18\x05 \x01(\bR\x0eusageAvailable\x120\n" +
+	"\x14cpu_limit_millicores\x18\x06 \x01(\x03R\x12cpuLimitMillicores\x12,\n" +
+	"\x12memory_limit_bytes\x18\a \x01(\x03R\x10memoryLimitBytes\x12\x14\n" +
+	"\x05units\x18\b \x01(\x05R\x05units\"\xa4\x06\n" +
 	"\x0fLabDeviceStatus\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05ready\x18\x02 \x01(\bR\x05ready\x12%\n" +

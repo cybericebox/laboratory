@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	metricsv1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 	"sync"
 	"time"
 
@@ -43,8 +44,11 @@ type monCache struct {
 	proxyPods    corelisters.PodLister // current L7 replica lifecycle, fixed proxy namespace
 
 	usageMu sync.Mutex
-	usage   map[string]map[usageKey]deviceUsage // namespace -> usage; nil until the first successful read
-	usageAt time.Time
+	// groupUsage is the live usage of the pods the groups run themselves (VPN, gateway): namespace -> component -> usage.
+	groupUsage   map[string]map[string]deviceUsage
+	groupUsageAt time.Time
+	usage        map[string]map[usageKey]deviceUsage // namespace -> usage; nil until the first successful read
+	usageAt      time.Time
 
 	// shownMu guards shown: the usage of each reservation as the stream last carried it (see coalesceUsage).
 	shownMu sync.Mutex
@@ -288,4 +292,44 @@ func (c *monCache) forgetUsage(present map[string]bool) {
 			delete(c.shown, name)
 		}
 	}
+}
+
+// groupPodUsage returns the live usage of the VPN and gateway pods of the groups, by namespace and component; nil when the metrics
+// are not available. Read at most every usageRefresh, in one call for the whole cluster; a failed read keeps the last answer.
+func (c *monCache) groupPodUsage(ctx context.Context) map[string]map[string]deviceUsage {
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
+	if c.h.metrics == nil || (!c.groupUsageAt.IsZero() && time.Since(c.groupUsageAt) < usageRefresh) {
+		return c.groupUsage
+	}
+	c.groupUsageAt = time.Now()
+	list, err := c.h.metrics.MetricsV1beta1().PodMetricses(metav1.NamespaceAll).List(ctx, metav1.ListOptions{LabelSelector: "app in (" + names.ComponentVPN + "," + names.ComponentGateway + ")"})
+	if err != nil {
+		ctrl.Log.WithName("monitoring").Error(err, "read the metrics of the group pods; keeping the last ones")
+		return c.groupUsage
+	}
+	c.groupUsage = foldGroupPodUsage(list.Items)
+	return c.groupUsage
+}
+
+// foldGroupPodUsage sums the containers of each pod metric into the usage of its component, by namespace.
+func foldGroupPodUsage(items []metricsv1beta1.PodMetrics) map[string]map[string]deviceUsage {
+	out := map[string]map[string]deviceUsage{}
+	for i := range items {
+		pm := &items[i]
+		component := pm.Labels["app"]
+		if component == "" {
+			continue
+		}
+		var u deviceUsage
+		for j := range pm.Containers {
+			u.cpuMillicores += pm.Containers[j].Usage.Cpu().MilliValue()
+			u.memoryBytes += pm.Containers[j].Usage.Memory().Value()
+		}
+		if out[pm.Namespace] == nil {
+			out[pm.Namespace] = map[string]deviceUsage{}
+		}
+		out[pm.Namespace][component] = u
+	}
+	return out
 }

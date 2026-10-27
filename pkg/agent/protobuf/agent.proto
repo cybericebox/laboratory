@@ -616,6 +616,15 @@ message PodFailure {
 message LabGroupPod {
   string name = 1;
   PodScheduling scheduling = 2;
+  // Live usage of the pod (Monitoring, ListLabGroups): CPU and memory now, the size it runs with (requests = limits) and the load
+  // it serves: VPN clients of the group (vpn) or labs that use the internet (gateway). usage_available is false when the metrics
+  // are not available (cpu_millicores and memory_bytes are then 0).
+  int64 cpu_millicores = 3;
+  int64 memory_bytes = 4;
+  bool usage_available = 5;
+  int64 cpu_limit_millicores = 6;
+  int64 memory_limit_bytes = 7;
+  int32 units = 8;
 }
 message LabDeviceStatus {
 	string name = 1;
