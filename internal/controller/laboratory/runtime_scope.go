@@ -7,6 +7,7 @@ import (
 
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -21,7 +22,7 @@ func declaredScopes(ctx context.Context, reader client.Reader, owner, namespace,
 		return nil, err
 	}
 	if len(nodes.Items) == 0 {
-		return nil, fmt.Errorf("native placement node inventory unavailable")
+		return nil, reconcileutil.Waiting(fmt.Errorf("native placement node inventory unavailable"), 0)
 	}
 	policy := nativePlacementPolicy{}
 	if len(placement) > 0 {
@@ -43,19 +44,19 @@ func declaredScopes(ctx context.Context, reader client.Reader, owner, namespace,
 			continue
 		}
 		if node.Labels[names.LabelNodeAgentReady] != "true" {
-			return nil, fmt.Errorf("native placement node observer unavailable")
+			return nil, reconcileutil.Waiting(fmt.Errorf("native placement node observer unavailable"), 0)
 		}
 		ready := false
 		for _, condition := range node.Status.Conditions {
 			ready = ready || condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue
 		}
 		if !ready || node.Status.NodeInfo.BootID == "" {
-			return nil, fmt.Errorf("native placement node unavailable")
+			return nil, reconcileutil.Waiting(fmt.Errorf("native placement node unavailable"), 0)
 		}
 		scopes = append(scopes, lab.OwnedRuntimeIdentity{ContainerIDs: []string{}, CgroupPaths: []string{}, PortKeys: []string{}, ScopeKind: kind, ScopeUID: owner, OwnerUID: owner, Namespace: namespace, LabName: name, OperationID: op, Revision: revision, Generation: generation, NodeName: node.Name, NodeBootID: node.Status.NodeInfo.BootID})
 	}
 	if len(scopes) == 0 {
-		return nil, fmt.Errorf("native Linux placement scope unavailable")
+		return nil, reconcileutil.Waiting(fmt.Errorf("native Linux placement scope unavailable"), 0)
 	}
 	return scopes, nil
 }

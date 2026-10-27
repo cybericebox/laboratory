@@ -14,6 +14,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/cybericebox/laboratory/internal/nodeagent/ofclient"
+	"github.com/cybericebox/laboratory/internal/reconcileutil"
 )
 
 // FlowManager programs tables 0 and 6 of the OVS pipeline on br-ovs. The bridge is fail-secure (see
@@ -236,7 +237,7 @@ func (f *FlowManager) AddT0Port(portName string, vni uint) error {
 	}
 	portNo, err := f.portNo(portName)
 	if err != nil {
-		return fmt.Errorf("resolve port %q: %w", portName, err)
+		return reconcileutil.Waiting(fmt.Errorf("resolve port %q: %w", portName, err), 0)
 	}
 	match := ofclient.BuildMatch(portNo, 0, false)
 	actions := make([]byte, 0, 128)
@@ -267,7 +268,7 @@ func (f *FlowManager) retirePort(name string) error {
 	}
 	no, err := f.portNo(name)
 	if err != nil {
-		return fmt.Errorf("port retirement cannot resolve %q: %w", name, err)
+		return reconcileutil.Waiting(fmt.Errorf("port retirement cannot resolve %q: %w", name, err), 0)
 	}
 	return f.client.RetirePort(no)
 }
