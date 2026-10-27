@@ -22,6 +22,9 @@ type Config struct {
 	VPNMemory     string `env:"VPN_MEMORY" envDefault:"320Mi"`
 	GatewayCPU    string `env:"GATEWAY_CPU" envDefault:"10m"`
 	GatewayMemory string `env:"GATEWAY_MEMORY" envDefault:"32Mi"`
+	// Sizing and Autosize size a pod that has a MaxSize (see Autosize); Sizing is the platform's own sizing values.
+	Sizing   Sizing
+	Autosize Autosize
 }
 
 // Overhead is the CPU (millicores) and memory (bytes) a group's own pods request.
@@ -37,7 +40,11 @@ func (c Config) Validate() error {
 			return fmt.Errorf("%s %q is not a positive quantity", name, v)
 		}
 	}
-	return nil
+	if err := c.Autosize.Validate(); err != nil {
+		return err
+	}
+	_, err := c.Sizing.withDefaults().Parse()
+	return err
 }
 
 // Defaults of the chart, used for a value left empty (a reconciler built without a config).
@@ -104,7 +111,13 @@ func PodNames(lg *laboratoryv1alpha1.LabGroup) []string {
 }
 
 // Requests is what the named pod of the group requests (its size, else the chart's default); nil for another name.
+//
+// A pod with a MaxSize is counted at the MaxSize: it may grow up to it, so the scheduler and the reservations keep that room
+// for it (its real requests are the smaller Size).
 func (c Config) Requests(name string, lg *laboratoryv1alpha1.LabGroup) corev1.ResourceList {
+	if max := MaxSizeOf(name, lg); max != nil && (name == names.ComponentVPN || name == names.ComponentGateway) {
+		return sized(max).Requests
+	}
 	switch name {
 	case names.ComponentVPN:
 		return c.VPNFor(lg.Spec.VPN.Size).Requests

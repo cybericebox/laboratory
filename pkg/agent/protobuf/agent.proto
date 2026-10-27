@@ -253,6 +253,13 @@ message LabGroupItem {
   // that group_pods reports, else the item is refused (InvalidArgument).
   PodSize vpn_size = 8;
   PodSize gateway_size = 9;
+  // Autosizing (optional, per pod). A max size makes the pod's size a floor: vpn_size / gateway_size stay its requests, and the
+  // operator raises the pod's CPU and memory limits in place (no restart, WireGuard sessions and NAT stay) with the load of the
+  // group (VPN clients, labs using the internet), never above this size. The reservation and the scheduler count the MAX size,
+  // so growth always fits. Must be at least the size (or the chart's default size without one) and at most the cluster maximum
+  // (group_pods). Unset = the pod is fixed at its size, as before.
+  PodSize vpn_max_size = 11;
+  PodSize gateway_max_size = 12;
   // The reservation the group runs under (its id as given to CreateReservations); required. The group's own pods (VPN,
   // gateway) count against it. The agent writes the reserved label laboratory.cybericebox.com/reservation from it.
   string reservation_id = 10;
@@ -484,6 +491,8 @@ message LabGroup {
   GroupLifecycleSpec lifecycle = 18;
   PodSize vpn_size = 16; // explicit immutable spec only; absent means unknown legacy default
   PodSize gateway_size = 17;
+  PodSize vpn_max_size = 20;      // set when the VPN pod autosizes; absent = fixed at vpn_size
+  PodSize gateway_max_size = 21;
   // The reservation the group runs under, as given; empty = unreserved.
   string reservation_id = 19;
 }
