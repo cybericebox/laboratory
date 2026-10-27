@@ -44,7 +44,8 @@ func (h *Handler) claimChildAdmission(ctx context.Context, group string, a *lab.
 			// A leftover of a call nobody repeats must not block the group for good: one whose child write is durable (only its
 			// clearing is missing), or a create admission for the very Lab this claim creates (a newer attempt supersedes an older one that
 			// wrote nothing). Anything else waits for its own identical retry.
-			if !h.childAdmissionWritten(ctx, g, old) && !(old.SpecHash != "" && a.SpecHash != "" && old.GroupUID == a.GroupUID && old.LabName == a.LabName) {
+			supersedes := old.SpecHash != "" && a.SpecHash != "" && old.GroupUID == a.GroupUID && old.LabName == a.LabName
+			if !supersedes && !h.childAdmissionWritten(ctx, g, old) {
 				return pendingAdmissionError{group: group, token: old.Token}
 			}
 			g.Spec.Admission = nil
