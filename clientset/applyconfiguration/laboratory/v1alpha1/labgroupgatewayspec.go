@@ -24,8 +24,6 @@ package v1alpha1
 type LabGroupGatewaySpecApplyConfiguration struct {
 	// Size is the size of the gateway pod; absent = the chart's default. Fixed once set.
 	Size *GroupPodSizeApplyConfiguration `json:"size,omitempty"`
-	// MaxSize switches the pod to autosizing (limits raised in place up to MaxSize).
-	MaxSize *GroupPodSizeApplyConfiguration `json:"maxSize,omitempty"`
 }
 
 // LabGroupGatewaySpecApplyConfiguration constructs a declarative configuration of the LabGroupGatewaySpec type for use with
@@ -39,13 +37,5 @@ func LabGroupGatewaySpec() *LabGroupGatewaySpecApplyConfiguration {
 // If called multiple times, the Size field is set to the value of the last call.
 func (b *LabGroupGatewaySpecApplyConfiguration) WithSize(value *GroupPodSizeApplyConfiguration) *LabGroupGatewaySpecApplyConfiguration {
 	b.Size = value
-	return b
-}
-
-// WithMaxSize sets the MaxSize field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the MaxSize field is set to the value of the last call.
-func (b *LabGroupGatewaySpecApplyConfiguration) WithMaxSize(value *GroupPodSizeApplyConfiguration) *LabGroupGatewaySpecApplyConfiguration {
-	b.MaxSize = value
 	return b
 }

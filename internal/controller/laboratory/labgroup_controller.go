@@ -758,7 +758,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 					Tolerations:        r.LabTolerations,
 					Containers: []corev1.Container{{
 						Name:            names.ComponentVPN,
-						Resources:       r.GroupPods.PodFor(names.ComponentVPN, size, grouppods.MaxSizeOf(names.ComponentVPN, group), 0),
+						Resources:       r.GroupPods.VPNFor(size),
 						Image:           vpnImage,
 						Command:         []string{"/lab", names.ComponentVPN},
 						ImagePullPolicy: pullPolicyFor(vpnImage),
@@ -868,7 +868,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 					Tolerations:        r.LabTolerations,
 					Containers: []corev1.Container{{
 						Name:            names.ComponentGateway,
-						Resources:       r.GroupPods.PodFor(names.ComponentGateway, size, grouppods.MaxSizeOf(names.ComponentGateway, group), 0),
+						Resources:       r.GroupPods.GatewayFor(size),
 						Image:           gatewayImage,
 						Command:         []string{"/lab", names.ComponentGateway},
 						ImagePullPolicy: pullPolicyFor(gatewayImage),

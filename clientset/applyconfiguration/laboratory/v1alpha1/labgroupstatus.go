@@ -50,8 +50,6 @@ type LabGroupStatusApplyConfiguration struct {
 	// Pods is the scheduling state of the group's own pods ("vpn", "gateway").
 	// Absent for a group that predates the scheduler: its pods are not queued.
 	Pods []NamedPodScheduleApplyConfiguration `json:"pods,omitempty"`
-	// PodSizing is the autosizing state of the group's pods that have a MaxSize.
-	PodSizing []GroupPodSizeStatusApplyConfiguration `json:"podSizing,omitempty"`
 }
 
 // LabGroupStatusApplyConfiguration constructs a declarative configuration of the LabGroupStatus type for use with
@@ -180,19 +178,6 @@ func (b *LabGroupStatusApplyConfiguration) WithPods(values ...*NamedPodScheduleA
 			panic("nil value passed to WithPods")
 		}
 		b.Pods = append(b.Pods, *values[i])
-	}
-	return b
-}
-
-// WithPodSizing adds the given value to the PodSizing field in the declarative configuration
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, values provided by each call will be appended to the PodSizing field.
-func (b *LabGroupStatusApplyConfiguration) WithPodSizing(values ...*GroupPodSizeStatusApplyConfiguration) *LabGroupStatusApplyConfiguration {
-	for i := range values {
-		if values[i] == nil {
-			panic("nil value passed to WithPodSizing")
-		}
-		b.PodSizing = append(b.PodSizing, *values[i])
 	}
 	return b
 }

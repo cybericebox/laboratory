@@ -885,6 +885,7 @@ capacity:
   nodeTimeoutSeconds: 900
 
 # ============================================================
+<<<<<<< HEAD
 # VNI pool: retirement, quarantine, sweep
 # ============================================================
 # A VNI is not returned to the pool one write at a time: a release only retires it (a mark in the pool's status, queued and written
@@ -912,6 +913,8 @@ groupAutosize:
   headroomMemory: 16Mi
 
 # ============================================================
+=======
+>>>>>>> parent of 99ad2a8 (Autosizing of the VPN and gateway pods: MaxSize in the group spec and the agent contract (1.2), limits raised in place by the operator with the load, scheduler and reservation count the max)
 # Limits the cluster owns on devices, labs and tenants
 # ============================================================
 # The management agent enforces them on CreateLabs (a lab over them is refused with the reason) and reports them

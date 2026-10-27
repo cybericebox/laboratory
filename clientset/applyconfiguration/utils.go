@@ -99,8 +99,6 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationlaboratoryv1alpha1.GroupChildAdmissionApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("GroupLifecycleSpec"):
 		return &applyconfigurationlaboratoryv1alpha1.GroupLifecycleSpecApplyConfiguration{}
-	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("GroupPodSizeStatus"):
-		return &applyconfigurationlaboratoryv1alpha1.GroupPodSizeStatusApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("GroupPodSize"):
 		return &applyconfigurationlaboratoryv1alpha1.GroupPodSizeApplyConfiguration{}
 	case laboratoryv1alpha1.SchemeGroupVersion.WithKind("InterfaceSpec"):

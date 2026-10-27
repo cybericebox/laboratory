@@ -35,12 +35,6 @@ type LabGroupGatewaySpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="the size of a group's pod is fixed"
 	// +optional
 	Size *GroupPodSize `json:"size,omitempty"`
-	// MaxSize switches the pod to autosizing: the pod keeps Size as its request and the operator raises its limits in place
-	// (no restart) with the load of the group, never above MaxSize. The scheduler and the reservation count MaxSize, so the
-	// growth always fits. Absent = the pod is fixed at Size (requests = limits). Fixed once set; at least Size.
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="the maximum size of a group's pod is fixed"
-	// +optional
-	MaxSize *GroupPodSize `json:"maxSize,omitempty"`
 }
 
 // LabGroupVPNSpec holds VPN server configuration.
@@ -57,29 +51,6 @@ type LabGroupVPNSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="the size of a group's pod is fixed"
 	// +optional
 	Size *GroupPodSize `json:"size,omitempty"`
-	// MaxSize: see LabGroupGatewaySpec.MaxSize; the VPN grows with the VPN clients of the group.
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="the maximum size of a group's pod is fixed"
-	// +optional
-	MaxSize *GroupPodSize `json:"maxSize,omitempty"`
-}
-
-// GroupPodSizeStatus is what the autosizer did with the limits of one of the group's pods.
-type GroupPodSizeStatus struct {
-	// Name is the pod: "vpn" or "gateway".
-	Name string `json:"name"`
-	// Units is the load the limits were computed for: VPN clients (vpn) or labs using the internet (gateway).
-	Units int32 `json:"units"`
-	// CPULimitMillicores and MemoryLimitBytes are the limits the live pod runs with.
-	CPULimitMillicores int64 `json:"cpuLimitMillicores,omitempty"`
-	MemoryLimitBytes   int64 `json:"memoryLimitBytes,omitempty"`
-	// State is Applied (the live pod has the wanted limits), Limited (the node has no more room: the pod grew to what is
-	// available), Pending (the kubelet has not applied the resize: Deferred or Infeasible), Fixed (no MaxSize, or no room above the
-	// request) or Recreate (the pod is Guaranteed and cannot be resized in place).
-	State string `json:"state"`
-	// Message says why when the state is not Applied.
-	Message string `json:"message,omitempty"`
-	// At is when the state last changed.
-	At *metav1.Time `json:"at,omitempty"`
 }
 
 // LabGroupStatus defines the observed state of LabGroup.
@@ -101,13 +72,10 @@ type LabGroupStatus struct {
 	Lifecycle *LabLifecycleStatus `json:"lifecycle,omitempty"`
 	// +optional
 	Resources *RuntimeAllocation `json:"resources,omitempty"`
-	// PodSizing is the autosizing state of the group's pods that have a MaxSize.
-	// +optional
-	PodSizing []GroupPodSizeStatus `json:"podSizing,omitempty"`
-	Phase     Phase                `json:"phase,omitempty"`
-	Namespace string               `json:"namespace,omitempty"`
-	Suspended bool                 `json:"suspended,omitempty"`
-	VPN       LabGroupVPNStatus    `json:"vpn,omitempty"`
+	Phase     Phase              `json:"phase,omitempty"`
+	Namespace string             `json:"namespace,omitempty"`
+	Suspended bool               `json:"suspended,omitempty"`
+	VPN       LabGroupVPNStatus  `json:"vpn,omitempty"`
 	// ImageWarning names the VPN or gateway image that could not be pinned to a
 	// digest when the group's pods were created with the image cache on; the pod
 	// pulls it by tag. Empty when all were pinned (or the cache was off).

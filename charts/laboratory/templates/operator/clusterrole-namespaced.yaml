@@ -17,10 +17,6 @@ rules:
 - apiGroups: [""]
   resources: [pods]
   verbs: [create, delete, get, list, patch, watch]
-# Autosizing of the VPN and gateway pods: limits raised in place (the kubelet's pods/resize), never a restart.
-- apiGroups: [""]
-  resources: [pods/resize]
-  verbs: [patch, update]
 - apiGroups: [apps]
   resources: [replicasets]
   verbs: [get]

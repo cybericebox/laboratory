@@ -36,8 +36,6 @@ type LabGroupVPNSpecApplyConfiguration struct {
 	KeypairSecretRef *v1.SecretReference `json:"keypairSecretRef,omitempty"`
 	// Size is the size of the VPN pod; absent = the chart's default. Fixed once set.
 	Size *GroupPodSizeApplyConfiguration `json:"size,omitempty"`
-	// MaxSize switches the pod to autosizing (limits raised in place up to MaxSize).
-	MaxSize *GroupPodSizeApplyConfiguration `json:"maxSize,omitempty"`
 }
 
 // LabGroupVPNSpecApplyConfiguration constructs a declarative configuration of the LabGroupVPNSpec type for use with
@@ -75,13 +73,5 @@ func (b *LabGroupVPNSpecApplyConfiguration) WithKeypairSecretRef(value v1.Secret
 // If called multiple times, the Size field is set to the value of the last call.
 func (b *LabGroupVPNSpecApplyConfiguration) WithSize(value *GroupPodSizeApplyConfiguration) *LabGroupVPNSpecApplyConfiguration {
 	b.Size = value
-	return b
-}
-
-// WithMaxSize sets the MaxSize field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the MaxSize field is set to the value of the last call.
-func (b *LabGroupVPNSpecApplyConfiguration) WithMaxSize(value *GroupPodSizeApplyConfiguration) *LabGroupVPNSpecApplyConfiguration {
-	b.MaxSize = value
 	return b
 }
