@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	metricsv1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 	"sync"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	kubeinformers "k8s.io/client-go/informers"
 	corelisters "k8s.io/client-go/listers/core/v1"
+	metricsv1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
