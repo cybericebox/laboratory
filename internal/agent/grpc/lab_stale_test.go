@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/client"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
@@ -121,4 +122,81 @@ func TestAccessPolicyWithMissingLabsHasReason(t *testing.T) {
 	}
 	res, err = h.SetLabGroupAccess(ctx, policy("alive"))
 	wantStates(t, res, err, stCreated)
+}
+
+// A pending child admission nobody repeats must not block the group for good: a newer create of the same Lab supersedes
+// the older attempt that wrote nothing, and a leftover whose Lab write is durable is cleared by the next claim.
+func TestPendingAdmissionLeftoverDoesNotBlockGroup(t *testing.T) {
+	h, k := newTestHandler(t)
+	ctx := context.Background()
+	readyGroup(t, h, k, "g", "g", nil)
+	group, _ := h.getGroup(ctx, "g")
+	mk := func(name string, devs ...string) *protobuf.CreateLabsRequest {
+		return &protobuf.CreateLabsRequest{Variants: []*protobuf.LabVariant{{VariantId: "v", SpecJson: specJSON(devs...)}}, Items: []*protobuf.LabItem{{Name: name, LabGroup: "g", VariantId: "v"}}}
+	}
+	setPending := func(a *lab.GroupChildAdmission) {
+		t.Helper()
+		g, err := h.getGroup(ctx, "g")
+		if err != nil {
+			t.Fatal(err)
+		}
+		a.Token = admissionToken(a)
+		g.Spec.Admission = a
+		if _, err := h.cs.LaboratoryV1alpha1().LabGroups().Update(ctx, g, metav1.UpdateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Never written, for the same Lab name: superseded.
+	setPending(&lab.GroupChildAdmission{GroupUID: string(group.UID), LabName: "a", DesiredState: lifecycleRunning, SpecHash: "old-hash"})
+	res, err := h.CreateLabs(ctx, mk("a", "web"))
+	wantStates(t, res, err, stCreated)
+
+	// Never written, for another Lab: it keeps waiting for its own retry.
+	setPending(&lab.GroupChildAdmission{GroupUID: string(group.UID), LabName: "ghost", DesiredState: lifecycleRunning, SpecHash: "ghost-hash"})
+	res, err = h.CreateLabs(ctx, mk("b", "web"))
+	wantStates(t, res, err, stFailed)
+	if !res.Results[0].Retryable {
+		t.Fatalf("pending admission is retryable: %+v", res.Results[0])
+	}
+
+	// Written (the Lab "a" exists with that hash) but never cleared: cleared by the next claim.
+	cur, err := h.cs.LaboratoryV1alpha1().Labs("g").Get(ctx, "a", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setPending(&lab.GroupChildAdmission{GroupUID: string(group.UID), LabName: "a", DesiredState: lifecycleRunning, SpecHash: cur.Annotations[names.AnnotationSpecHash]})
+	res, err = h.CreateLabs(ctx, mk("b", "web"))
+	wantStates(t, res, err, stCreated)
+}
+
+// A Lab whose birth receipt was never committed (the creator died after the Create) can be deleted once the grace has
+// passed; until then the delete is refused, because the commit may still come.
+func TestDeleteLabWithUncommittedBirthAfterGrace(t *testing.T) {
+	h, k := newTestHandler(t)
+	ctx := context.Background()
+	readyGroup(t, h, k, "g", "g", nil)
+	group, _ := h.getGroup(ctx, "g")
+	res, err := h.CreateLabs(ctx, birthRequest(t, string(group.UID), "0198c0a4-7a41-7000-8000-000000000001", "web"))
+	wantStates(t, res, err, stCreated)
+	labs := h.cs.LaboratoryV1alpha1().Labs("g")
+	cur, _ := labs.Get(ctx, "a", metav1.GetOptions{})
+	var receipt lab.LabCreationReceipt
+	if err := json.Unmarshal([]byte(cur.Annotations[names.AnnotationLabCreation]), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	receipt.Committed = false
+	raw, _ := json.Marshal(receipt)
+	cur.Annotations[names.AnnotationLabCreation] = string(raw)
+	if _, err := labs.Update(ctx, cur, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	del := &protobuf.DeleteRequest{Items: []*protobuf.ItemRef{{LabGroup: "g", Name: "a"}}}
+	res, err = h.DeleteLabs(ctx, del)
+	wantStates(t, res, err, stFailed)
+
+	old := birthCommitGrace
+	birthCommitGrace = 0
+	t.Cleanup(func() { birthCommitGrace = old })
+	res, err = h.DeleteLabs(ctx, del)
+	wantStates(t, res, err, stDeleted)
 }

@@ -41,7 +41,13 @@ func (h *Handler) claimChildAdmission(ctx context.Context, group string, a *lab.
 			if equality.Semantic.DeepEqual(old, a) {
 				return nil
 			}
-			return pendingAdmissionError{group: group, token: old.Token}
+			// A leftover of a call nobody repeats must not block the group for good: one whose child write is durable (only its
+			// clearing is missing), or a create admission for the very Lab this claim creates (a newer attempt supersedes an older one that
+			// wrote nothing). Anything else waits for its own identical retry.
+			if !h.childAdmissionWritten(ctx, g, old) && !(old.SpecHash != "" && a.SpecHash != "" && old.GroupUID == a.GroupUID && old.LabName == a.LabName) {
+				return pendingAdmissionError{group: group, token: old.Token}
+			}
+			g.Spec.Admission = nil
 		}
 		g.Spec.Admission = a.DeepCopy()
 		_, err = h.cs.LaboratoryV1alpha1().LabGroups().Update(ctx, g, metav1.UpdateOptions{})

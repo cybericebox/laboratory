@@ -552,7 +552,7 @@ func (h *Handler) DeleteLabs(ctx context.Context, in *protobuf.DeleteRequest) (*
 		if err != nil {
 			return err
 		}
-		if err := birthWriteReady(cur); err != nil {
+		if err := birthDeleteReady(cur); err != nil {
 			return err
 		}
 		uid, rv := cur.UID, cur.ResourceVersion
