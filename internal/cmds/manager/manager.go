@@ -419,6 +419,10 @@ func Run() {
 			os.Exit(1)
 		}
 	}
+	if err = mgr.Add(&laboratorycontroller.VNICollector{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Interval: 5 * time.Minute, Grace: 10 * time.Minute}); err != nil {
+		setupLog.Error(err, "unable to add the VNI lease collector")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
