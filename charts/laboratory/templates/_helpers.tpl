@@ -188,6 +188,7 @@ VNI_RETIRE_FLUSH: {{ .Values.vni.retireFlush | quote }}
 GROUP_AUTOSIZE_INTERVAL: {{ .Values.groupAutosize.interval | quote }}
 GROUP_AUTOSIZE_SHRINK_AFTER: {{ .Values.groupAutosize.shrinkAfter | quote }}
 GROUP_AUTOSIZE_HEADROOM_CPU: {{ .Values.groupAutosize.headroomCpu | quote }}
+GROUP_AUTOSIZE_HEADROOM_MEMORY: {{ .Values.groupAutosize.headroomMemory | quote }}
 STATE_PERSISTENCE_ENABLED: {{ .Values.devices.statePersistence.enabled | quote }}
 STATE_DEBOUNCE: {{ .Values.devices.statePersistence.debounce | quote }}
 STATE_EXCLUDE_PATHS: {{ join "," .Values.devices.statePersistence.excludePaths | quote }}

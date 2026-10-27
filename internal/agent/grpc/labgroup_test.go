@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -176,5 +177,40 @@ func TestCreateLabGroupsPodSizes(t *testing.T) {
 		if _, err := groups.Get(ctx, it.Name, metav1.GetOptions{}); err == nil {
 			t.Errorf("%s: the group must not be created", name)
 		}
+	}
+}
+
+// A max size makes the pod autosizing: it is stored (and reported), must be at least the size and within the cluster maximum,
+// and a repeated create with another max is a different spec.
+func TestCreateLabGroupWithAMaxSize(t *testing.T) {
+	h, _ := newTestHandler(t)
+	h.reservationsOptional = true
+	ctx := context.Background()
+	h.SetFeatures(testFeatures)
+	size := func(cpu, mem int64) *protobuf.PodSize { return &protobuf.PodSize{CpuMillicores: cpu, MemoryBytes: mem} }
+	item := func(name string, vpn, max *protobuf.PodSize) *protobuf.CreateLabGroupsRequest {
+		return &protobuf.CreateLabGroupsRequest{Items: []*protobuf.LabGroupItem{{Name: name, VpnSize: vpn, VpnMaxSize: max}}}
+	}
+	if _, err := h.CreateLabGroups(ctx, item("g1", size(50, 80<<20), size(40, 80<<20))); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("a max below the size is refused: %v", err)
+	}
+	if _, err := h.CreateLabGroups(ctx, item("g1", nil, size(1<<20, 1<<40))); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("a max over the cluster maximum is refused: %v", err)
+	}
+	res, err := h.CreateLabGroups(ctx, item("g1", size(20, 64<<20), size(100, 300<<20)))
+	wantStates(t, res, err, stCreated)
+	got, err := h.cs.LaboratoryV1alpha1().LabGroups().Get(ctx, "g1", metav1.GetOptions{})
+	if err != nil || got.Spec.VPN.MaxSize == nil || got.Spec.VPN.MaxSize.CPUMillicores != 100 || got.Spec.VPN.Size.CPUMillicores != 20 {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if p := labGroupToProto(got); p.GetVpnMaxSize().GetCpuMillicores() != 100 {
+		t.Fatalf("the max size is reported: %+v", p.GetVpnMaxSize())
+	}
+	res, err = h.CreateLabGroups(ctx, item("g1", size(20, 64<<20), size(100, 300<<20)))
+	wantStates(t, res, err, stExists)
+	res, err = h.CreateLabGroups(ctx, item("g1", size(20, 64<<20), size(120, 300<<20)))
+	wantStates(t, res, err, stFailed)
+	if res.Results[0].Reason != client.ReasonLabNameConflict && !strings.Contains(res.Results[0].Error, "different spec") {
+		t.Fatalf("%+v", res.Results[0])
 	}
 }

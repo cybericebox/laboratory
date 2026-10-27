@@ -67,12 +67,9 @@ var _ = Describe("LabGroup suspension", func() {
 		vpn, gw := resOf("vpn"), resOf("gateway")
 		Expect(quantity(vpn.Requests, corev1.ResourceCPU)).To(Equal("120m"))
 		Expect(quantity(vpn.Limits, corev1.ResourceMemory)).To(Equal("80Mi"))
-		// created in the shape that is resized in place: memory request = limit, CPU limit above the request by the headroom
-		Expect(vpn.Requests.Memory().Cmp(*vpn.Limits.Memory())).To(Equal(0))
-		Expect(vpn.Limits.Cpu().MilliValue()).To(Equal(vpn.Requests.Cpu().MilliValue() + 10))
+		Expect(vpn.Requests).To(Equal(vpn.Limits))
 		Expect(quantity(gw.Requests, corev1.ResourceCPU)).To(Equal("60m"))
-		Expect(gw.Requests.Memory().Cmp(*gw.Limits.Memory())).To(Equal(0))
-		Expect(gw.Limits.Cpu().MilliValue()).To(Equal(gw.Requests.Cpu().MilliValue() + 10))
+		Expect(gw.Requests).To(Equal(gw.Limits))
 		// A later change of the chart value reaches new groups only: the pods of a group keep the size they were created with.
 		r.GroupPods = grouppods.Config{VPNCPU: "500m", VPNMemory: "512Mi", GatewayCPU: "500m", GatewayMemory: "512Mi"}
 		Expect(r.ensureVPNDeployment(ctx, namespace, false, nil)).To(Succeed())

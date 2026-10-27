@@ -30,11 +30,11 @@ const (
 	podSizeRecreate = "Recreate"
 )
 
-// GroupAutosizer sizes the VPN and gateway pods of every group in place, with the load of the group (see grouppods.Autosize for
-// the formula and the hysteresis). It never restarts a pod: a resize the node cannot give is left as it is and the reason goes to
-// the group's status and its events. Memory is raised as request = limit, so the kubelet itself admits it only when the node has
-// room (otherwise the resize stays Deferred) and a pod never uses more than it requested; the CPU request stays and only the CPU
-// limit follows the load. The room of the node is checked before a memory growth, and a growth larger than the room is cut to it.
+// GroupAutosizer raises the CPU and memory limits of the VPN and gateway pods of groups that have a MaxSize, in place, with the
+// load of the group (see grouppods.Autosize for the formula and the hysteresis). It never restarts a pod: a resize the node
+// cannot give is left as it is and the reason goes to the group's status and its events. The pods' requests do not change, so the
+// kubelet admits every resize that only raises limits; the room the node really has is checked before a growth, and a growth
+// larger than the room is cut to the room.
 type GroupAutosizer struct {
 	Client    client.Client
 	Reader    client.Reader
@@ -44,7 +44,7 @@ type GroupAutosizer struct {
 	Now func() time.Time
 
 	// resize applies the limits to the live pod (the pods/resize subresource); nil means the API server.
-	resize func(ctx context.Context, pod *corev1.Pod, container string, cpuLimitMillicores, memoryBytes int64) error
+	resize func(ctx context.Context, pod *corev1.Pod, container string, cpuMillicores, memoryBytes int64) error
 	// nodeFree is the CPU (millicores) and memory (bytes) a node has left above the requests of its pods; nil means the API server.
 	nodeFree func(ctx context.Context, node string) (cpu, memory int64, err error)
 
@@ -104,6 +104,9 @@ func (a *GroupAutosizer) Sweep(ctx context.Context) error {
 		if lg.DeletionTimestamp != nil || lg.Status.Namespace == "" || lg.Spec.Suspended {
 			continue
 		}
+		if lg.Spec.VPN.MaxSize == nil && lg.Spec.Gateway.MaxSize == nil {
+			continue
+		}
 		if err := a.SizeGroup(ctx, lg); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("group %s: %w", lg.Name, err)
 		}
@@ -118,6 +121,9 @@ func (a *GroupAutosizer) SizeGroup(ctx context.Context, lg *laboratoryv1alpha1.L
 	}
 	var results []laboratoryv1alpha1.GroupPodSizeStatus
 	for _, component := range []string{names.ComponentVPN, names.ComponentGateway} {
+		if grouppods.MaxSizeOf(component, lg) == nil {
+			continue
+		}
 		if component == names.ComponentVPN && lg.Spec.VPN.Disabled {
 			continue
 		}
@@ -208,11 +214,10 @@ func (a *GroupAutosizer) sizePod(ctx context.Context, lg *laboratoryv1alpha1.Lab
 	if err != nil {
 		return nil, err
 	}
+	maximum := grouppods.MaxSizeOf(component, lg)
 	request := overheadOf(c.Resources.Requests)
 	cur := overheadOf(c.Resources.Limits)
-	// What the pod has now is the floor of memory: its request (= its limit) is never lowered.
-	floor := grouppods.Overhead{CPU: request.CPU, Memory: max(request.Memory, cur.Memory)}
-	want := grouppods.Limit(sizing, floor, sizing.Max(), units, a.GroupPods.Autosize.Headroom())
+	want := grouppods.Limit(sizing, request, grouppods.Overhead{CPU: maximum.CPUMillicores, Memory: maximum.MemoryBytes}, units, a.GroupPods.Autosize.Headroom())
 	out := &laboratoryv1alpha1.GroupPodSizeStatus{Name: component, Units: int32(units), CPULimitMillicores: cur.CPU, MemoryLimitBytes: cur.Memory, State: podSizeApplied}
 
 	guaranteed := pod.Status.QOSClass == corev1.PodQOSGuaranteed || pod.Status.QOSClass == "" && cur == request
@@ -241,7 +246,7 @@ func (a *GroupAutosizer) sizePod(ctx context.Context, lg *laboratoryv1alpha1.Lab
 	default:
 		delete(a.lowerSince, key)
 	}
-	if want.Memory > cur.Memory { // the memory of a live pod is never lowered
+	if want.Memory > cur.Memory { // the memory limit of a live pod is never lowered
 		target.Memory = want.Memory
 	}
 	if target == cur {
@@ -250,14 +255,18 @@ func (a *GroupAutosizer) sizePod(ctx context.Context, lg *laboratoryv1alpha1.Lab
 	}
 
 	limitedBy := ""
-	if target.Memory > cur.Memory {
-		_, freeMemory, err := a.free(ctx, pod.Spec.NodeName)
+	if growsCPU, growsMemory := target.CPU > cur.CPU, target.Memory > cur.Memory; growsCPU || growsMemory {
+		freeCPU, freeMemory, err := a.free(ctx, pod.Spec.NodeName)
 		if err != nil {
 			return nil, err
 		}
-		if target.Memory-cur.Memory > freeMemory {
+		if growsCPU && target.CPU-cur.CPU > freeCPU {
+			target.CPU = cur.CPU + max(freeCPU, 0)/grouppods.StepCPU*grouppods.StepCPU
+			limitedBy = fmt.Sprintf("cpu: the node %s has %dm free", pod.Spec.NodeName, max(freeCPU, 0))
+		}
+		if growsMemory && target.Memory-cur.Memory > freeMemory {
 			target.Memory = cur.Memory + max(freeMemory, 0)/grouppods.StepMemory*grouppods.StepMemory
-			limitedBy = fmt.Sprintf("memory: the node %s has %d MiB free", pod.Spec.NodeName, max(freeMemory, 0)>>20)
+			limitedBy = joinReason(limitedBy, fmt.Sprintf("memory: the node %s has %d MiB free", pod.Spec.NodeName, max(freeMemory, 0)>>20))
 		}
 	}
 	if target != cur {
@@ -267,13 +276,20 @@ func (a *GroupAutosizer) sizePod(ctx context.Context, lg *laboratoryv1alpha1.Lab
 			return out, nil
 		}
 		out.CPULimitMillicores, out.MemoryLimitBytes = target.CPU, target.Memory
-		a.event(lg, corev1.EventTypeNormal, "PodResized", "%s pod %dm limit / %dMi -> %dm limit / %dMi for %d unit(s), no restart", component, cur.CPU, cur.Memory>>20, target.CPU, target.Memory>>20, units)
+		a.event(lg, corev1.EventTypeNormal, "PodResized", "%s pod limits %dm/%dMi -> %dm/%dMi for %d unit(s), no restart", component, cur.CPU, cur.Memory>>20, target.CPU, target.Memory>>20, units)
 	}
 	if limitedBy != "" {
 		out.State, out.Message = podSizeLimited, "grown to what the node has room for; "+limitedBy
 		a.event(lg, corev1.EventTypeWarning, "PodResizeLimited", "%s pod: %s", component, out.Message)
 	}
 	return out, nil
+}
+
+func joinReason(a, b string) string {
+	if a == "" {
+		return b
+	}
+	return a + "; " + b
 }
 
 func (a *GroupAutosizer) describePending(pod *corev1.Pod, out *laboratoryv1alpha1.GroupPodSizeStatus) {
@@ -296,13 +312,10 @@ func (a *GroupAutosizer) applyResize(ctx context.Context, pod *corev1.Pod, conta
 	}
 	patch := map[string]any{"spec": map[string]any{"containers": []any{map[string]any{
 		"name": container,
-		"resources": map[string]any{
-			"requests": map[string]any{"memory": fmt.Sprintf("%d", target.Memory)},
-			"limits": map[string]any{
-				"cpu":    fmt.Sprintf("%dm", target.CPU),
-				"memory": fmt.Sprintf("%d", target.Memory),
-			},
-		},
+		"resources": map[string]any{"limits": map[string]any{
+			"cpu":    fmt.Sprintf("%dm", target.CPU),
+			"memory": fmt.Sprintf("%d", target.Memory),
+		}},
 	}}}}
 	raw, _ := json.Marshal(patch)
 	return a.Client.SubResource("resize").Patch(ctx, pod, client.RawPatch(types.StrategicMergePatchType, raw))

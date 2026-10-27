@@ -69,6 +69,27 @@ spec:
               gateway:
                 description: Gateway holds the internet gateway pod's settings.
                 properties:
+                  maxSize:
+                    description: |-
+                      MaxSize switches the pod to autosizing: the pod keeps Size as its request and the operator raises its limits in place
+                      (no restart) with the load of the group, never above MaxSize. The scheduler and the reservation count MaxSize, so the
+                      growth always fits. Absent = the pod is fixed at Size (requests = limits). Fixed once set; at least Size.
+                    properties:
+                      cpuMillicores:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      memoryBytes:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                    required:
+                    - cpuMillicores
+                    - memoryBytes
+                    type: object
+                    x-kubernetes-validations:
+                    - message: the maximum size of a group's pod is fixed
+                      rule: self == oldSelf
                   size:
                     description: Size is the size of the gateway pod; absent = the
                       chart's default. Fixed once set.
@@ -143,6 +164,25 @@ spec:
                         type: string
                     type: object
                     x-kubernetes-map-type: atomic
+                  maxSize:
+                    description: 'MaxSize: see LabGroupGatewaySpec.MaxSize; the VPN
+                      grows with the VPN clients of the group.'
+                    properties:
+                      cpuMillicores:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      memoryBytes:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                    required:
+                    - cpuMillicores
+                    - memoryBytes
+                    type: object
+                    x-kubernetes-validations:
+                    - message: the maximum size of a group's pod is fixed
+                      rule: self == oldSelf
                   probeWhileSuspended:
                     description: |-
                       Deprecated: suspension now always keeps WireGuard and the internet
@@ -289,18 +329,19 @@ spec:
                 - Error
                 type: string
               podSizing:
-                description: PodSizing is the autosizing state of the group's pods.
+                description: PodSizing is the autosizing state of the group's pods
+                  that have a MaxSize.
                 items:
                   description: GroupPodSizeStatus is what the autosizer did with the
-                    size of one of the group's pods.
+                    limits of one of the group's pods.
                   properties:
                     at:
                       description: At is when the state last changed.
                       format: date-time
                       type: string
                     cpuLimitMillicores:
-                      description: CPULimitMillicores is the CPU limit and MemoryLimitBytes
-                        the memory (request = limit) the live pod runs with.
+                      description: CPULimitMillicores and MemoryLimitBytes are the
+                        limits the live pod runs with.
                       format: int64
                       type: integer
                     memoryLimitBytes:
@@ -315,7 +356,8 @@ spec:
                     state:
                       description: |-
                         State is Applied (the live pod has the wanted limits), Limited (the node has no more room: the pod grew to what is
-                        available), Pending (the kubelet has not applied the resize: Deferred or Infeasible), Fixed (the pod is at its largest) or Recreate (the pod is Guaranteed and cannot be resized in place).
+                        available), Pending (the kubelet has not applied the resize: Deferred or Infeasible), Fixed (no MaxSize, or no room above the
+                        request) or Recreate (the pod is Guaranteed and cannot be resized in place).
                       type: string
                     units:
                       description: 'Units is the load the limits were computed for:

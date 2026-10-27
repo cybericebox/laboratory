@@ -60,6 +60,7 @@ func (h *Handler) CreateLabGroups(ctx context.Context, in *protobuf.CreateLabGro
 		lg := &laboratoryv1alpha1.LabGroup{}
 		lg.Spec.VPN.Disabled = it.GetVpnDisabled()
 		lg.Spec.VPN.Size, lg.Spec.Gateway.Size = podSize(it.GetVpnSize()), podSize(it.GetGatewaySize())
+		lg.Spec.VPN.MaxSize, lg.Spec.Gateway.MaxSize = podSize(it.GetVpnMaxSize()), podSize(it.GetGatewayMaxSize())
 		fit[i] = fitItem{reservation: it.GetReservationId(), need: h.groupNeedOf(lg), deployGroup: names.DeployKey(it.GetDeployGroup())}
 		if _, err := h.getGroup(ctx, it.GetName()); err == nil {
 			fit[i].exists = true
@@ -92,6 +93,7 @@ func (h *Handler) createLabGroup(ctx context.Context, it *protobuf.LabGroupItem,
 	lg.Spec.VPN.Disabled = it.GetVpnDisabled()
 	lg.Spec.VPN.ProbeWhileSuspended = it.GetProbeWhileSuspended()
 	lg.Spec.VPN.Size, lg.Spec.Gateway.Size = podSize(it.GetVpnSize()), podSize(it.GetGatewaySize())
+	lg.Spec.VPN.MaxSize, lg.Spec.Gateway.MaxSize = podSize(it.GetVpnMaxSize()), podSize(it.GetGatewayMaxSize())
 	tenant := tenantOf(ctx)
 	lg.Labels, lg.Annotations = dep.stamp(stampTenant(copyLabels(want), tenant), stampID(it.GetName()))
 	reservation := ""
@@ -133,7 +135,8 @@ func (h *Handler) createLabGroup(ctx context.Context, it *protobuf.LabGroupItem,
 		}
 		if cur.Spec.Suspended != lg.Spec.Suspended || cur.Spec.VPN.Disabled != lg.Spec.VPN.Disabled ||
 			cur.Spec.VPN.ProbeWhileSuspended != lg.Spec.VPN.ProbeWhileSuspended ||
-			!samePodSize(cur.Spec.VPN.Size, lg.Spec.VPN.Size) || !samePodSize(cur.Spec.Gateway.Size, lg.Spec.Gateway.Size) || !dep.matches(cur.Labels, cur.Annotations) {
+			!samePodSize(cur.Spec.VPN.Size, lg.Spec.VPN.Size) || !samePodSize(cur.Spec.Gateway.Size, lg.Spec.Gateway.Size) ||
+			!samePodSize(cur.Spec.VPN.MaxSize, lg.Spec.VPN.MaxSize) || !samePodSize(cur.Spec.Gateway.MaxSize, lg.Spec.Gateway.MaxSize) || !dep.matches(cur.Labels, cur.Annotations) {
 			return errDifferentSpec{kindLabGroup, it.GetName()}
 		}
 		if err := existingReservationLabel(kindLabGroup, it.GetName(), cur.Labels, reservation); err != nil {
@@ -424,15 +427,31 @@ func deleteResult(ref *protobuf.ItemRef, err error) *protobuf.ItemResult {
 func (h *Handler) checkPodSizes(it *protobuf.LabGroupItem) error {
 	g := h.features.GroupPods.Sizing
 	for _, c := range []struct {
-		what   string
-		size   *protobuf.PodSize
-		sizing grouppods.PodSizing
-	}{{"vpn_size", it.GetVpnSize(), g.VPN}, {"gateway_size", it.GetGatewaySize(), g.Gateway}} {
-		if c.size == nil {
+		what, maxWhat string
+		size, max     *protobuf.PodSize
+		sizing        grouppods.PodSizing
+		def           grouppods.Overhead
+	}{
+		{"vpn_size", "vpn_max_size", it.GetVpnSize(), it.GetVpnMaxSize(), g.VPN, h.groupPods.VPNOverhead()},
+		{"gateway_size", "gateway_max_size", it.GetGatewaySize(), it.GetGatewayMaxSize(), g.Gateway, h.groupPods.GatewayOverhead()},
+	} {
+		if c.size != nil {
+			if err := c.sizing.Check(c.size.GetCpuMillicores(), c.size.GetMemoryBytes()); err != nil {
+				return fmt.Errorf("%s: %w", c.what, err)
+			}
+		}
+		if c.max == nil {
 			continue
 		}
-		if err := c.sizing.Check(c.size.GetCpuMillicores(), c.size.GetMemoryBytes()); err != nil {
-			return fmt.Errorf("%s: %w", c.what, err)
+		if err := c.sizing.Check(c.max.GetCpuMillicores(), c.max.GetMemoryBytes()); err != nil {
+			return fmt.Errorf("%s: %w", c.maxWhat, err)
+		}
+		floor := c.def
+		if c.size != nil {
+			floor = grouppods.Overhead{CPU: c.size.GetCpuMillicores(), Memory: c.size.GetMemoryBytes()}
+		}
+		if c.max.GetCpuMillicores() < floor.CPU || c.max.GetMemoryBytes() < floor.Memory {
+			return fmt.Errorf("%s must be at least the size of the pod (%dm, %d bytes)", c.maxWhat, floor.CPU, floor.Memory)
 		}
 	}
 	return nil
