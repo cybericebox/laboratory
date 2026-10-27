@@ -115,6 +115,9 @@ type Config struct {
 	// StatePersistence is the platform switch for device state persistence: a topology
 	// with devices[].persistence.enabled is refused when it is off.
 	StatePersistence bool `env:"STATE_PERSISTENCE_ENABLED" envDefault:"false"`
+	// AdmissionStaleAfter is how long a pending child admission of another lab that wrote nothing blocks its group before the
+	// next claim clears it (ADMISSION_STALE_AFTER).
+	AdmissionStaleAfter time.Duration `env:"ADMISSION_STALE_AFTER" envDefault:"10m"`
 	// State are the cluster values of state persistence (the chart's devices.statePersistence, the same as the
 	// operator's): GetFeatures reports them, a tenant's own limits are capped by them.
 	State StateConfig

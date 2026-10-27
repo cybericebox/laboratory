@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -158,6 +159,27 @@ func TestPendingAdmissionLeftoverDoesNotBlockGroup(t *testing.T) {
 	if !res.Results[0].Retryable {
 		t.Fatalf("pending admission is retryable: %+v", res.Results[0])
 	}
+
+	// Still pending after the stale age without a repeat: abandoned, cleared with a warning.
+	clock := time.Now()
+	h.clock = func() time.Time { return clock }
+	h.SetAdmissionStaleAfter(10 * time.Minute)
+	res, err = h.CreateLabs(ctx, mk("b", "web"))
+	wantStates(t, res, err, stFailed)
+	clock = clock.Add(9 * time.Minute)
+	res, err = h.CreateLabs(ctx, mk("b", "web"))
+	wantStates(t, res, err, stFailed)
+	clock = clock.Add(2 * time.Minute)
+	res, err = h.CreateLabs(ctx, mk("b", "web"))
+	wantStates(t, res, err, stCreated)
+	h.clock = nil
+	if _, err := h.cs.LaboratoryV1alpha1().Labs("g").Get(ctx, "b", metav1.GetOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.cs.LaboratoryV1alpha1().Labs("g").Delete(ctx, "b", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	setPending(&lab.GroupChildAdmission{GroupUID: string(group.UID), LabName: "ghost", DesiredState: lifecycleRunning, SpecHash: "ghost-hash"})
 
 	// Written (the Lab "a" exists with that hash) but never cleared: cleared by the next claim.
 	cur, err := h.cs.LaboratoryV1alpha1().Labs("g").Get(ctx, "a", metav1.GetOptions{})

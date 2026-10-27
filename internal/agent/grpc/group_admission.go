@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
+	"time"
 
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -45,7 +47,7 @@ func (h *Handler) claimChildAdmission(ctx context.Context, group string, a *lab.
 			// clearing is missing), or a create admission for the very Lab this claim creates (a newer attempt supersedes an older one that
 			// wrote nothing). Anything else waits for its own identical retry.
 			supersedes := old.SpecHash != "" && a.SpecHash != "" && old.GroupUID == a.GroupUID && old.LabName == a.LabName
-			if !supersedes && !h.childAdmissionWritten(ctx, g, old) {
+			if !supersedes && !h.childAdmissionWritten(ctx, g, old) && !h.admissionAbandoned(group, old) {
 				return pendingAdmissionError{group: group, token: old.Token}
 			}
 			g.Spec.Admission = nil
@@ -103,4 +105,42 @@ type pendingAdmissionError struct{ group, token string }
 
 func (e pendingAdmissionError) Error() string {
 	return fmt.Sprintf("group %q has pending child admission %s; retry the same admitted create/start", e.group, e.token)
+}
+
+// defaultAdmissionStaleAfter is how long another Lab's never-written admission may block a group before it counts as abandoned.
+const defaultAdmissionStaleAfter = 10 * time.Minute
+
+// SetAdmissionStaleAfter sets how long a pending admission of another Lab that wrote nothing blocks its group (0 = default).
+func (h *Handler) SetAdmissionStaleAfter(d time.Duration) { h.admissionStaleAfter = d }
+
+// admissionAbandoned says that the pending admission has blocked the group for longer than the stale age without a repeat of
+// its call: whoever made it is not coming back (the caller dropped the row), and the group must not wait for good. The age
+// is counted by this agent from when it first met the admission; a replica of the agent that is still working on it has had
+// that long to finish. It is logged as a warning when it is cleared.
+func (h *Handler) admissionAbandoned(group string, a *lab.GroupChildAdmission) bool {
+	after := h.admissionStaleAfter
+	if after <= 0 {
+		after = defaultAdmissionStaleAfter
+	}
+	now := time.Now()
+	if h.clock != nil {
+		now = h.clock()
+	}
+	key := group + "/" + a.Token
+	h.admissionSeenMu.Lock()
+	defer h.admissionSeenMu.Unlock()
+	if h.admissionSeen == nil {
+		h.admissionSeen = map[string]time.Time{}
+	}
+	first, ok := h.admissionSeen[key]
+	if !ok {
+		h.admissionSeen[key] = now
+		return false
+	}
+	if now.Sub(first) < after {
+		return false
+	}
+	delete(h.admissionSeen, key)
+	log.Printf("group %q: clearing the pending admission of lab %q, unrepeated for %s", group, a.LabName, now.Sub(first).Round(time.Second))
+	return true
 }

@@ -31,11 +31,15 @@ type Handler struct {
 	metrics metricsclient.Interface
 	// usageAll is the last read of the pod metrics of the whole cluster (see clusterUsage).
 	// reads serves the read-only calls from informers (see readCache).
-	reads    readCache
-	usageMu  sync.Mutex
-	usageAll map[string]map[usageKey]deviceUsage
-	usageAt  time.Time
-	agentID  string
+	reads readCache
+	// admissionStaleAfter, admissionSeen: see admissionAbandoned. clock is the test clock (nil = time.Now).
+	admissionStaleAfter time.Duration
+	admissionSeenMu     sync.Mutex
+	admissionSeen       map[string]time.Time
+	usageMu             sync.Mutex
+	usageAll            map[string]map[usageKey]deviceUsage
+	usageAt             time.Time
+	agentID             string
 	// lifecycleAdmissionMu serializes group lifecycle with child admission in this agent.
 	// Multi-agent/API admission remains a native capability gate.
 	lifecycleAdmissionMu sync.Mutex
