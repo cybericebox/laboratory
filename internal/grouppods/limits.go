@@ -53,15 +53,15 @@ func (l Limits) Resolve(users, labs int) (int, int, error) {
 //	VPN pod:     idle     memory 9 Mi at no clients; +0.1 Mi per lab; +0.016 Mi per access rule; CPU 2m, a burst of about 0.12m per rule
 //	                      while the rules are applied (10 clients x 50 labs = 480 rules: 27 Mi, 72m for the minute of applying, then 1m)
 //	             traffic  at 10 clients x 50 labs: peak 42 Mi (anon 32, kernel 4-6; socket memory under 0.1 Mi: the WireGuard and the
-//	                      forwarding memory is not charged to the pod) and peak 129m CPU at 4 TCP streams per client (about 2 Gbit/s in all);
-//	                      folded in as +1.5 Mi and +5.6m per client on top of the idle figures
+//	                      forwarding memory is not charged to the pod) and peak 146m CPU at 4 TCP streams per client (about 1.8 Gbit/s in all; the
+//	                      peak of four runs, CPU varies 100-146m from run to run); folded in as +1.5 Mi and +7.6m per client on top of the idle figures
 //	gateway pod: idle 8 Mi, 1m; with traffic and NAT of 20 000 connections at peak 19.6 Mi and 6m: +0.23 Mi per lab (50 labs);
 //	             the conntrack entries of the NAT (20 000) are not in the pod's cgroup either
 //
 // The sizes are floors-and-steps: never below a floor that keeps the Go process safe from its own allocator, rounded up to a step.
 const (
 	vpnMemBase, vpnMemPerUser, vpnMemPerLab, vpnMemPerRule = 9 << 20, 2150 << 10, 102 << 10, 16 << 10 // bytes
-	vpnCPUBase, vpnCPUPerUser, vpnCPUPerLab, vpnCPUPerRule = 5000, 5900, 100, 120                     // micro-millicores (1/1000 m)
+	vpnCPUBase, vpnCPUPerUser, vpnCPUPerLab, vpnCPUPerRule = 5000, 7600, 100, 120                     // micro-millicores (1/1000 m)
 	gwMemBase, gwMemPerLab                                 = 8 << 20, 240 << 10                       // bytes
 	gwCPUBase, gwCPUPerLab                                 = 5000, 250                                // micro-millicores
 	sizeMarginNum, sizeMarginDen                           = 3, 2                                     // +50 %
