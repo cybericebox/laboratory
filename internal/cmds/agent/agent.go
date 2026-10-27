@@ -200,6 +200,12 @@ func features(cfg *config.Config) (f grpcserver.Features, err error) {
 	if err = cfg.GroupPods.CheckWithin(f.GroupPods.Sizing); err != nil {
 		return f, err
 	}
+	if err = cfg.GroupLimits.Validate(); err != nil {
+		return f, err
+	}
+	f.GroupLimits = cfg.GroupLimits
+	// the pods are sized for at most this many users and labs
+	f.GroupPods.Sizing.VPN.MaxUnits, f.GroupPods.Sizing.Gateway.MaxUnits = cfg.GroupLimits.MaxUsers, cfg.GroupLimits.MaxLabs
 	f.GroupPods.DefaultVPN, f.GroupPods.DefaultGateway = cfg.GroupPods.VPNOverhead(), cfg.GroupPods.GatewayOverhead()
 	f.MaxEntries = cfg.State.MaxEntries
 	for _, c := range []struct {

@@ -112,6 +112,8 @@ type Config struct {
 	// GroupSizing is how the pods of a group are sized (the chart's vpn.sizing and inetGateway.sizing): reported in GetFeatures, and the
 	// maximum of the sizes CreateLabGroups accepts.
 	GroupSizing grouppods.Sizing
+	// GroupLimits are the chart's groupLimits (the most a group may be made for, and the defaults).
+	GroupLimits grouppods.Limits
 	// StatePersistence is the platform switch for device state persistence: a topology
 	// with devices[].persistence.enabled is refused when it is off.
 	StatePersistence bool `env:"STATE_PERSISTENCE_ENABLED" envDefault:"false"`

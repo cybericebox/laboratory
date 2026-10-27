@@ -253,6 +253,14 @@ message LabGroupItem {
   // that group_pods reports, else the item is refused (InvalidArgument).
   PodSize vpn_size = 8;
   PodSize gateway_size = 9;
+  // The simple way to size the group's own pods: how many VPN users and how many labs (at the same time) the group is made for. The
+  // agent computes the sizes (formulas in code, from measurements) and the pods are created at exactly that size and not changed;
+  // more than expected still works, within the margin of the formula. Over the maximum (FeaturesResponse.group_limits) the item is
+  // refused (InvalidArgument). Setting either one means the counts are used (the sizes above are then ignored); a group that sets
+  // neither count nor size gets the default counts (group_limits.default_users, default_labs). Only vpn_size / gateway_size
+  // (and no count): the old behaviour, as before.
+  int32 expected_users = 11;
+  int32 expected_labs = 12;
   // The reservation the group runs under (its id as given to CreateReservations); required. The group's own pods (VPN,
   // gateway) count against it. The agent writes the reserved label laboratory.cybericebox.com/reservation from it.
   string reservation_id = 10;
@@ -899,6 +907,16 @@ message FeaturesResponse {
   // The API contract version of this agent (pkg/agent/client ContractVersion, "major.minor"): the same major, and a minor not
   // below the one the caller was built against, means every call of the caller exists. Empty = an agent older than the field.
   string contract_version = 15;
+  GroupLimitsFeature group_limits = 16;
+}
+
+// The limits on the groups of this cluster (the chart's groupLimits): the most users and labs a group may be made for, and the
+// counts a group gets when its item sets none.
+message GroupLimitsFeature {
+  int32 max_users = 1;
+  int32 max_labs = 2;
+  int32 default_users = 3;
+  int32 default_labs = 4;
 }
 
 // How reservations work on this laboratory.

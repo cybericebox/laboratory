@@ -32,6 +32,7 @@ var testFeatures = Features{
 		},
 		DefaultVPN: grouppods.Overhead{CPU: 100, Memory: 320 << 20}, DefaultGateway: grouppods.Overhead{CPU: 10, Memory: 32 << 20},
 	},
+	GroupLimits: grouppods.Limits{MaxUsers: 10, MaxLabs: 50, DefaultUsers: 1, DefaultLabs: 5},
 }
 
 func featuresHandler(t *testing.T, f Features, tenants ...*laboratoryv1alpha1.Tenant) *Handler {

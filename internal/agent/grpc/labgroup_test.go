@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/pkg/agent/client"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
@@ -151,8 +152,9 @@ func TestCreateLabGroupsPodSizes(t *testing.T) {
 	if g := a.Spec.Gateway.Size; g == nil || g.CPUMillicores != 15 || g.MemoryBytes != 24<<20 {
 		t.Fatalf("gateway size: %+v", g)
 	}
-	if b.Spec.VPN.Size != nil || b.Spec.Gateway.Size != nil {
-		t.Fatal("no size asked, none stored: the operator uses the chart's default")
+	// neither a size nor a count: the group is made for the default counts (1 user, 5 labs): 20m+6m = 26m, 64Mi+20Mi = 84Mi; 5m+5*2m = 15m, 16Mi+5*4Mi = 36Mi
+	if v, g := b.Spec.VPN.Size, b.Spec.Gateway.Size; v == nil || g == nil || v.CPUMillicores != 26 || v.MemoryBytes != 84<<20 || g.CPUMillicores != 15 || g.MemoryBytes != 36<<20 {
+		t.Fatalf("default counts: %+v %+v", v, g)
 	}
 	res, err = h.CreateLabGroups(ctx, req)
 	wantStates(t, res, err, stExists, stExists)
@@ -177,4 +179,62 @@ func TestCreateLabGroupsPodSizes(t *testing.T) {
 			t.Errorf("%s: the group must not be created", name)
 		}
 	}
+}
+
+// A group is sized from the counts it is made for: the defaults (1 user, 5 labs) when it says nothing, the asked counts, a refusal
+// over the maximum (10 users, 50 labs), and the old sizes when only sizes are sent.
+func TestCreateLabGroupSizedFromExpectedCounts(t *testing.T) {
+	h, _ := newTestHandler(t)
+	h.reservationsOptional = true
+	h.SetFeatures(testFeatures)
+	ctx := context.Background()
+	create := func(name string, it *protobuf.LabGroupItem) (*protobuf.BatchResult, error) {
+		it.Name = name
+		return h.CreateLabGroups(ctx, &protobuf.CreateLabGroupsRequest{Items: []*protobuf.LabGroupItem{it}})
+	}
+	sizeOf := func(name string) (vpn, gw laboratoryv1alpha1.GroupPodSize) {
+		t.Helper()
+		g, err := h.cs.LaboratoryV1alpha1().LabGroups().Get(ctx, name, metav1.GetOptions{})
+		if err != nil || g.Spec.VPN.Size == nil || g.Spec.Gateway.Size == nil {
+			t.Fatalf("%s: %+v %v", name, g, err)
+		}
+		return *g.Spec.VPN.Size, *g.Spec.Gateway.Size
+	}
+	sizing := testFeatures.GroupPods.Sizing
+	for _, c := range []struct {
+		name        string
+		item        *protobuf.LabGroupItem
+		users, labs int
+	}{
+		{"defaults", &protobuf.LabGroupItem{}, 1, 5},
+		{"explicit", &protobuf.LabGroupItem{ExpectedUsers: 5, ExpectedLabs: 40}, 5, 40},
+		{"only-users", &protobuf.LabGroupItem{ExpectedUsers: 10}, 10, 5},
+		{"max", &protobuf.LabGroupItem{ExpectedUsers: 10, ExpectedLabs: 50}, 10, 50},
+	} {
+		res, err := create(c.name, c.item)
+		wantStates(t, res, err, stCreated)
+		vpn, gw := sizeOf(c.name)
+		wantVPN, wantGW := sizing.VPN.SizeFor(c.users), sizing.Gateway.SizeFor(c.labs)
+		if vpn.CPUMillicores != wantVPN.CPU || vpn.MemoryBytes != wantVPN.Memory || gw.CPUMillicores != wantGW.CPU || gw.MemoryBytes != wantGW.Memory {
+			t.Errorf("%s: vpn %+v gateway %+v, want %+v %+v", c.name, vpn, gw, wantVPN, wantGW)
+		}
+	}
+	for name, it := range map[string]*protobuf.LabGroupItem{
+		"too-many-users": {ExpectedUsers: 11},
+		"too-many-labs":  {ExpectedLabs: 51},
+		"negative":       {ExpectedUsers: -1},
+	} {
+		if _, err := create(name, it); status.Code(err) != codes.InvalidArgument {
+			t.Errorf("%s must be refused with InvalidArgument: %v", name, err)
+		}
+	}
+	// the old way: only sizes, kept as sent
+	res, err := create("legacy", &protobuf.LabGroupItem{VpnSize: &protobuf.PodSize{CpuMillicores: 33, MemoryBytes: 70 << 20}, GatewaySize: &protobuf.PodSize{CpuMillicores: 9, MemoryBytes: 20 << 20}})
+	wantStates(t, res, err, stCreated)
+	if vpn, gw := sizeOf("legacy"); vpn.CPUMillicores != 33 || gw.MemoryBytes != 20<<20 {
+		t.Errorf("legacy sizes changed: %+v %+v", vpn, gw)
+	}
+	// repeated create with the same counts is the same group
+	res, err = create("explicit", &protobuf.LabGroupItem{ExpectedUsers: 5, ExpectedLabs: 40})
+	wantStates(t, res, err, stExists)
 }

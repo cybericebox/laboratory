@@ -43,6 +43,9 @@ func (h *Handler) CreateLabGroups(ctx context.Context, in *protobuf.CreateLabGro
 		if _, err := newDeploySpec(it.GetDeployGroup(), it.GetDeployAfter()); err != nil {
 			return nil, invalid("item %d (%s): %v", i, it.GetName(), err)
 		}
+		if err := h.applyExpectedCounts(it); err != nil {
+			return nil, invalid("item %d (%s): %v", i, it.GetName(), err)
+		}
 		if err := h.checkPodSizes(it); err != nil {
 			return nil, invalid("item %d (%s): %v", i, it.GetName(), err)
 		}
@@ -450,4 +453,26 @@ func samePodSize(a, b *laboratoryv1alpha1.GroupPodSize) bool {
 		return a == b
 	}
 	return *a == *b
+}
+
+// applyExpectedCounts turns the counts a group is made for into the sizes of its pods (formulas in code). An item that sets a count,
+// or neither a count nor a size, is sized from the counts (the defaults fill what it leaves out); an item that sets only sizes keeps
+// them, as before.
+func (h *Handler) applyExpectedCounts(it *protobuf.LabGroupItem) error {
+	if h.features.GroupLimits.MaxUsers == 0 { // an agent without the group limits (not configured): the sizes as sent
+		return nil
+	}
+	counts := it.GetExpectedUsers() != 0 || it.GetExpectedLabs() != 0
+	if !counts && (it.GetVpnSize() != nil || it.GetGatewaySize() != nil) {
+		return nil
+	}
+	users, labs, err := h.features.GroupLimits.Resolve(int(it.GetExpectedUsers()), int(it.GetExpectedLabs()))
+	if err != nil {
+		return err
+	}
+	g := h.features.GroupPods.Sizing
+	vpn, gw := g.VPN.SizeFor(users), g.Gateway.SizeFor(labs)
+	it.VpnSize = &protobuf.PodSize{CpuMillicores: vpn.CPU, MemoryBytes: vpn.Memory}
+	it.GatewaySize = &protobuf.PodSize{CpuMillicores: gw.CPU, MemoryBytes: gw.Memory}
+	return nil
 }

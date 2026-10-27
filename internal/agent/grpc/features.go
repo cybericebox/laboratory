@@ -57,6 +57,8 @@ type Features struct {
 	DeviceDefaults limits.DeviceDefaults
 	// GroupPods is how a group's own pods are sized (the maximum CreateLabGroups accepts) and the default size without one.
 	GroupPods GroupPodsFeature
+	// GroupLimits are the most users and labs a group may be made for and the counts it gets by default.
+	GroupLimits grouppods.Limits
 }
 
 // GroupPodsFeature is grouppods.Sizings plus the chart's default sizes.
@@ -121,6 +123,7 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 			base = &protobuf.FeaturesResponse{
 				Tenant:          name,
 				ContractVersion: client.ContractVersion,
+				GroupLimits:     &protobuf.GroupLimitsFeature{MaxUsers: int32(f.GroupLimits.MaxUsers), MaxLabs: int32(f.GroupLimits.MaxLabs), DefaultUsers: int32(f.GroupLimits.DefaultUsers), DefaultLabs: int32(f.GroupLimits.DefaultLabs)},
 				Lifecycle:       cloneLifecycleFeature(f.Lifecycle),
 				StatePersistence: &protobuf.StatePersistenceFeature{
 					Available:          p.Allowed,

@@ -885,6 +885,19 @@ capacity:
   nodeTimeoutSeconds: 900
 
 # ============================================================
+# Groups: what a group is made for
+# ============================================================
+# A group (the VPN and internet gateway pods it runs itself) is sized once, when it is created, from the number of VPN users and of
+# labs it is made for (CreateLabGroups expected_users / expected_labs; formulas in code from measurements, the per-unit values are
+# vpn.sizing and inetGateway.sizing). The pods are not resized afterwards: more users or labs than expected still run within the
+# margin of the formula. A request for more than the maximum is refused. A group that says nothing gets the defaults.
+groupLimits:
+  maxUsers: 10
+  maxLabs: 50
+  defaultUsers: 1
+  defaultLabs: 5
+
+# ============================================================
 # VNI pool: retirement, quarantine, sweep
 # ============================================================
 # A VNI is not returned to the pool one write at a time: a release only retires it (a mark in the pool's status, queued and written
