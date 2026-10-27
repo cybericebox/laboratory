@@ -182,3 +182,121 @@ func TestNetnsNFTForwardGatesBothDirectionsWithoutConntrack(t *testing.T) {
 		t.Fatalf("a retired pair left accounting elements: %s %v", list, err)
 	}
 }
+
+// failingNFT applies a script that cannot be valid: the transaction is refused whole.
+type failingNFT struct{ NFTCommand }
+
+func (f failingNFT) Apply(ctx context.Context, _ []byte) error {
+	return f.NFTCommand.Apply(ctx, []byte("add rule ip cicevpn forward this is not a rule\n"))
+}
+
+// Nothing passes without a pair in the set in ANY phase of the nft forwarding: before the setup, after it, with the plan applied, after a
+// refused (crashed) transaction, after the nft table is lost behind the pod's back, after a restart and after the cleanup. The iptables
+// FORWARD chain is DROP throughout and accepts only what the nft gate marked, so no state of the nft table can open it.
+func TestNetnsNFTNeverFailsOpen(t *testing.T) {
+	nstest.Require(t)
+	for _, ns := range []string{"pa", "a", "b"} {
+		nstest.NS(t, ns)
+	}
+	nstest.Veth(t, "", "wg0", "10.8.0.1/24", "pa", "p0", "10.8.0.2/24")
+	nstest.Veth(t, "", "lab1", "10.8.1.1/24", "a", "a0", "10.8.1.2/24")
+	nstest.Veth(t, "", "lab2", "10.8.2.1/24", "b", "b0", "10.8.2.2/24")
+	t.Cleanup(func() {
+		for _, dev := range []string{"wg0", "lab1", "lab2"} {
+			_, _ = nstest.Try("", "ip", "link", "del", dev)
+		}
+	})
+	for _, e := range [][2]string{{"pa", "10.8.0.1"}, {"a", "10.8.1.1"}, {"b", "10.8.2.1"}} {
+		nstest.Run(t, e[0], "ip", "route", "add", "default", "via", e[1])
+	}
+	nstest.Run(t, "", "sysctl", "-w", "net.ipv4.ip_forward=1")
+	_, _ = nstest.Try("", "conntrack", "-F")
+	targetA := nstest.Listen(t, "a", "udp", "0.0.0.0:7900")
+	targetP := nstest.Listen(t, "pa", "udp", "0.0.0.0:7901")
+	targetB := nstest.Listen(t, "b", "udp", "0.0.0.0:7903")
+	closed := func(phase string) {
+		t.Helper()
+		if nstest.Reach(t, "pa", "udp", "10.8.1.2:7900", targetA) || nstest.Reach(t, "a", "udp", "10.8.0.2:7901", targetP) ||
+			nstest.Reach(t, "pa", "udp", "10.8.2.2:7903", targetB) || nstest.Reach(t, "b", "udp", "10.8.0.2:7901", targetP) {
+			t.Fatalf("%s: a packet without a pair in the set was forwarded", phase)
+		}
+	}
+	paired := func(phase string) {
+		t.Helper()
+		if !nstest.Reach(t, "pa", "udp", "10.8.1.2:7900", targetA) || !nstest.Reach(t, "a", "udp", "10.8.0.2:7901", targetP) {
+			t.Fatalf("%s: the permitted pair does not work", phase)
+		}
+		if nstest.Reach(t, "pa", "udp", "10.8.2.2:7903", targetB) || nstest.Reach(t, "b", "udp", "10.8.0.2:7901", targetP) {
+			t.Fatalf("%s: a lab without a pair was reachable", phase)
+		}
+	}
+	m, err := NewIPTablesManager("wg0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.UseNFT(nativeNFT{})
+	// before the setup: ProtectInput's first step is FORWARD DROP, and the VPN never starts without it
+	if err := m.ipt.ChangePolicy("filter", "FORWARD", "DROP"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(m.Cleanup)
+	closed("before the setup")
+	if err := m.SetupForwardPolicy(); err != nil {
+		t.Fatal(err)
+	}
+	closed("after the setup, before a plan")
+	plan, err := CompileForwardPlan([]ClientAccessSnapshot{{Name: "p1", AssignedIP: "10.8.0.2/32"}}, map[string]LabAccessSnapshot{"a": {VPNCIDR: "10.8.1.0/24", Ready: true, Interface: "lab1"}}, []AccessPolicyRule{{Action: AccessAllow}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.ApplyForwardPlan(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	paired("with the plan applied")
+
+	// a transaction that fails (the process killed in the middle of an apply leaves the same: the batch is all or nothing)
+	broken := &IPTablesManager{ipt: m.ipt, wgIface: "wg0", nft: failingNFT{nativeNFT{}}, bindings: m.bindings, forwardPlan: m.forwardPlan, forwardReady: true}
+	other, err := forwardBinding(AccessRule{ClientName: "p1", LabName: "b", SourceCIDR: "10.8.0.2/32", DestinationCIDR: "10.8.2.0/24", LabInterface: "lab2", Action: AccessAllow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broken.ApplyForwardPlan(context.Background(), ForwardPlan{Allows: append(append([]ForwardRule(nil), plan.Allows...), other)}); err == nil {
+		t.Fatal("the broken transaction was accepted")
+	}
+	paired("after a refused transaction")
+
+	// the nft table lost behind the pod's back (a crash of whatever manages it): FORWARD must not become open
+	if out, err := nstest.Try("", "nft", "delete", "table", "ip", nftTable); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	closed("after the nft table was lost")
+	if out, _ := nstest.Try("", "iptables", "-S", "FORWARD"); !strings.Contains(out, "-P FORWARD DROP") {
+		t.Fatalf("FORWARD must stay DROP:\n%s", out)
+	}
+
+	// a restart of the pod's process (the network namespace survives): closed until the plan is applied again
+	restarted, err := NewIPTablesManager("wg0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted.UseNFT(nativeNFT{})
+	if err := restarted.SetupForwardPolicy(); err != nil {
+		t.Fatal(err)
+	}
+	closed("after a restart, before the plan")
+	if _, err := restarted.ApplyForwardPlan(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	paired("after a restart, with the plan")
+
+	// the cleanup: the gate goes, FORWARD stays DROP
+	restarted.Cleanup()
+	closed("after the cleanup")
+	if out, _ := nstest.Try("", "iptables", "-S", "FORWARD"); !strings.Contains(out, "-P FORWARD DROP") || strings.Contains(out, "ACCEPT") {
+		t.Fatalf("after the cleanup FORWARD must be DROP with no accept rule:\n%s", out)
+	}
+	if out, _ := nstest.Try("", "nft", "list", "table", "ip", nftTable); strings.Contains(out, "forward") {
+		t.Fatalf("the nft table stayed after the cleanup:\n%s", out)
+	}
+	m.nft = nil // the first manager has nothing left to clean
+}

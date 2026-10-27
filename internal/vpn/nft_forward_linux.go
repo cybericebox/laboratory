@@ -40,6 +40,11 @@ import (
 // the accounting sets carries the comment "cibacct:<binding>:<epoch>", the identity that survives a restart of the VPN process.
 const nftTable = "cicevpn"
 
+// nftAcceptMark is what the nft gate puts on a packet it lets through. The iptables FORWARD chain keeps its policy DROP and accepts ONLY a
+// packet that carries this mark: whatever happens to the nft table (not yet installed, deleted by a cleanup or a crash, emptied) nothing is
+// marked and nothing is forwarded. The mark exists only inside the pod's kernel; no packet arrives with it.
+const nftAcceptMark = "0x00ce0000"
+
 // NFTCommand is the nft binary (a stand-in in the tests).
 type NFTCommand interface {
 	// Apply runs a batch (one transaction).
@@ -96,32 +101,36 @@ func (m *IPTablesManager) nftBaseScript() string {
 		fmt.Fprintf(&b, "add chain ip %s %s\nflush chain ip %s %s\n", nftTable, chain, nftTable, chain)
 	}
 	fmt.Fprintf(&b, "add rule ip %s count_fwd tcp flags & (syn | ack) == syn oifname . ip saddr . ip daddr @new_fwd\n", nftTable)
-	fmt.Fprintf(&b, "add rule ip %s count_fwd oifname . ip saddr . ip daddr @acct_fwd accept\n", nftTable)
+	fmt.Fprintf(&b, "add rule ip %s count_fwd oifname . ip saddr . ip daddr @acct_fwd meta mark set %s accept\n", nftTable, nftAcceptMark)
 	fmt.Fprintf(&b, "add rule ip %s count_rev tcp flags & (syn | ack) == syn iifname . ip saddr . ip daddr @new_rev\n", nftTable)
-	fmt.Fprintf(&b, "add rule ip %s count_rev iifname . ip saddr . ip daddr @acct_rev accept\n", nftTable)
+	fmt.Fprintf(&b, "add rule ip %s count_rev iifname . ip saddr . ip daddr @acct_rev meta mark set %s accept\n", nftTable, nftAcceptMark)
 	// raw hook: the traffic between the participants and the labs is not tracked; what is addressed to the pod itself (its status page, its ping) is
 	fmt.Fprintf(&b, "add chain ip %s prerouting { type filter hook prerouting priority -300; policy accept; }\nflush chain ip %s prerouting\n", nftTable, nftTable)
 	fmt.Fprintf(&b, "add rule ip %s prerouting iifname %q ip daddr @labnets notrack\n", nftTable, m.wgIface)
 	fmt.Fprintf(&b, "add rule ip %s prerouting iifname \"lab*\" ip daddr @clients notrack\n", nftTable)
 	// the gate: closed by policy; participants never reach each other through the pod
-	fmt.Fprintf(&b, "add chain ip %s forward { type filter hook forward priority 0; policy drop; }\nflush chain ip %s forward\n", nftTable, nftTable)
+	fmt.Fprintf(&b, "add chain ip %s forward { type filter hook forward priority -1; policy drop; }\nflush chain ip %s forward\n", nftTable, nftTable)
 	fmt.Fprintf(&b, "add rule ip %s forward iifname %q oifname %q drop\n", nftTable, m.wgIface, m.wgIface)
 	fmt.Fprintf(&b, "add rule ip %s forward iifname %q oifname . ip saddr . ip daddr @allow_fwd jump count_fwd\n", nftTable, m.wgIface)
 	fmt.Fprintf(&b, "add rule ip %s forward oifname %q iifname . ip saddr . ip daddr @allow_rev jump count_rev\n", nftTable, m.wgIface)
 	return b.String()
 }
 
-// nftSetupForward closes the gate (the permission sets are emptied) and installs the rules; the accounting sets survive, as the relation
-// chains did, so the counters of a surviving network namespace are not lost. Nothing is forwarded by the iptables FORWARD chain any more:
-// it accepts, and the nft gate decides.
+// nftSetupForward installs the nft gate and then lets the iptables FORWARD chain trust it. The order never leaves a window: FORWARD is DROP
+// from the first moment (ProtectInput sets it and this keeps it), the nft gate is installed closed (the permission sets are emptied; the
+// accounting sets survive, as the relation chains did, so the counters of a surviving network namespace are not lost), and only then
+// FORWARD gets its one rule: accept what the gate marked.
 func (m *IPTablesManager) nftSetupForward() error {
-	if err := m.nft.Apply(context.Background(), []byte(m.nftBaseScript())); err != nil {
+	if err := m.ipt.ChangePolicy("filter", "FORWARD", "DROP"); err != nil {
 		return err
 	}
 	if err := m.ipt.ClearChain("filter", "FORWARD"); err != nil {
 		return err
 	}
-	return m.ipt.ChangePolicy("filter", "FORWARD", "ACCEPT")
+	if err := m.nft.Apply(context.Background(), []byte(m.nftBaseScript())); err != nil {
+		return err
+	}
+	return m.ipt.AppendUnique("filter", "FORWARD", "-m", "mark", "--mark", nftAcceptMark+"/"+nftAcceptMark, "-j", "ACCEPT")
 }
 
 // nftElementKeys are the element keys of a binding in the permission and accounting sets.
@@ -434,6 +443,9 @@ func (m *IPTablesManager) nftQuiesce(ctx context.Context) error {
 }
 
 func (m *IPTablesManager) nftCleanup() {
+	// FORWARD stops trusting the gate before the gate goes: the policy is DROP and nothing is accepted
+	_ = m.ipt.ClearChain("filter", "FORWARD")
+	_ = m.ipt.ChangePolicy("filter", "FORWARD", "DROP")
 	_ = m.nft.Apply(context.Background(), []byte(fmt.Sprintf("add table ip %s\ndelete table ip %s\n", nftTable, nftTable)))
 	m.forwardMu.Lock()
 	m.forwardReady = false
