@@ -885,7 +885,6 @@ capacity:
   nodeTimeoutSeconds: 900
 
 # ============================================================
-<<<<<<< HEAD
 # VNI pool: retirement, quarantine, sweep
 # ============================================================
 # A VNI is not returned to the pool one write at a time: a release only retires it (a mark in the pool's status, queued and written
@@ -898,23 +897,6 @@ vni:
   retireFlush: 2s
 
 # ============================================================
-# Autosizing of the VPN and gateway pods of a group
-# ============================================================
-# A group created with a max size (CreateLabGroups vpn_max_size / gateway_max_size) keeps its size as the pod's request, and the
-# operator raises the pod's CPU and memory LIMITS in place (no restart, WireGuard sessions and NAT stay) with the load of the group:
-# limit = base + per-unit * units, with base and per-unit from vpn.sizing (units = VPN clients) and inetGateway.sizing (units = labs
-# that use the internet), rounded up to 5m / 8Mi, never above the max size. The scheduler and the reservation count the max size.
-# Growth is immediate; only the CPU limit goes down, after the lower need lasted shrinkAfter; the memory limit of a live pod never does.
-groupAutosize:
-  interval: 15s
-  shrinkAfter: 30m
-  # The least a limit sits above the request (keeps the pod Burstable, which the kubelet needs to resize it in place).
-  headroomCpu: 10m
-  headroomMemory: 16Mi
-
-# ============================================================
-=======
->>>>>>> parent of 99ad2a8 (Autosizing of the VPN and gateway pods: MaxSize in the group spec and the agent contract (1.2), limits raised in place by the operator with the load, scheduler and reservation count the max)
 # Limits the cluster owns on devices, labs and tenants
 # ============================================================
 # The management agent enforces them on CreateLabs (a lab over them is refused with the reason) and reports them

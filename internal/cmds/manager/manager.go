@@ -425,17 +425,8 @@ func Run() {
 			os.Exit(1)
 		}
 	}
-<<<<<<< HEAD
-	if err = mgr.Add(&laboratorycontroller.GroupAutosizer{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), GroupPods: cfg.GroupPods, Recorder: mgr.GetEventRecorderFor("group-autosizer")}); err != nil {
-		setupLog.Error(err, "unable to add the group pod autosizer")
-		os.Exit(1)
-	}
 	if err = mgr.Add(&laboratorycontroller.VNISweeper{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Interval: cfg.VNISweepInterval, Quarantine: cfg.VNIQuarantine, Grace: cfg.VNISweepInterval, RuntimeObservation: cfg.RuntimeObservation, Retirer: vniRetirer}); err != nil {
 		setupLog.Error(err, "unable to add the VNI sweeper")
-=======
-	if err = mgr.Add(&laboratorycontroller.VNICollector{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Interval: 5 * time.Minute, Grace: 10 * time.Minute}); err != nil {
-		setupLog.Error(err, "unable to add the VNI lease collector")
->>>>>>> parent of 99ad2a8 (Autosizing of the VPN and gateway pods: MaxSize in the group spec and the agent contract (1.2), limits raised in place by the operator with the load, scheduler and reservation count the max)
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
