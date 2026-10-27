@@ -113,6 +113,10 @@ func reasonOf(err error) string {
 	if errors.As(err, &re) {
 		return re.reason
 	}
+	var coded interface{ Reason() string }
+	if errors.As(err, &coded) {
+		return coded.Reason()
+	}
 	return ""
 }
 

@@ -19,3 +19,13 @@ const (
 	// ReasonOverQuota: the tenant's overlapping reservations would peak above its quota.
 	ReasonOverQuota = "OVER_QUOTA"
 )
+
+// Reasons of a FAILED Lab create item whose name is taken by a Lab of another generation.
+const (
+	// ReasonStaleLabReplacing: the name was taken by a Lab of an older generation (an older creation operation of the same
+	// tenant and group); the agent has started deleting it. Retryable: repeat the same create until it succeeds.
+	ReasonStaleLabReplacing = "STALE_LAB_REPLACING"
+	// ReasonLabNameConflict: the name is taken by a Lab the agent will not replace on its own (a newer or an unrelated
+	// generation, or no generation to compare). Not retryable; the caller must delete the Lab or choose another name.
+	ReasonLabNameConflict = "LAB_NAME_CONFLICT"
+)

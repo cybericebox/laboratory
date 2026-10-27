@@ -238,6 +238,11 @@ func (h *Handler) createLab(ctx context.Context, resolver *groupResolver, it *pr
 	if liveGroup.Status.Namespace != ns || liveGroup.Spec.Lifecycle.IsStopped() {
 		return 0, fmt.Errorf("lab group is stopped or its namespace changed")
 	}
+	if v.spec.Lifecycle != nil {
+		if err := h.replaceStaleLab(ctx, ns, it.GetName(), v.spec.Lifecycle.OperationID); err != nil {
+			return 0, err
+		}
+	}
 	want := mergeItemLabels(common, it.GetLabels())
 	dep, _ := newDeploySpec(it.GetDeployGroup(), it.GetDeployAfter())
 	lab := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}

@@ -12,6 +12,7 @@ import (
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/pkg/agent/client"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
 )
 
@@ -159,6 +160,14 @@ func (h *Handler) createLabGroup(ctx context.Context, it *protobuf.LabGroupItem,
 
 // errDifferentSpec is an existing object whose spec differs from the one sent.
 type errDifferentSpec struct{ kind, name string }
+
+// Reason is the machine code of the item (LAB_NAME_CONFLICT); the text stays as it was.
+func (e errDifferentSpec) Reason() string {
+	if e.kind == kindLab {
+		return client.ReasonLabNameConflict
+	}
+	return ""
+}
 
 func (e errDifferentSpec) Error() string {
 	return fmt.Sprintf("%s %s already exists with a different spec", e.kind, e.name)
