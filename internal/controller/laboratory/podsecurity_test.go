@@ -209,3 +209,38 @@ func TestAdmissionPolicyCapabilitiesAreWhatTheCodeAdds(t *testing.T) {
 		}
 	}
 }
+
+// What keeps a hostile device (a fork bomb, a memory hog, a disk filler) inside its own lab: a memory limit equal to the request,
+// an ephemeral-storage limit, a CPU request (the share against the neighbours, with or without a cap), no host namespaces and no
+// privileged container (setuid stays possible: the labs teach it). The PID limit is the kubelet's (podPidsLimit, infrastructure KUBELET_POD_MAX_PIDS); the network rate is the OVS port
+// policing. Each pod is its own cgroup, so one device's OOM or storm restarts only that device.
+func TestDevicePodStaysInsideItsOwnLab(t *testing.T) {
+	for _, noCPULimit := range []bool{false, true} {
+		r := &DeviceReconciler{Security: PodSecurity{EphemeralStorage: "2Gi", UserNamespaces: true}, Defaults: DeviceDefaults{CPU: "100m", Memory: "256Mi", MaxCPU: "2", MaxMemory: "4Gi", NoCPULimit: noCPULimit}}
+		_, _, _, spec := r.workloadTemplate(newDeviceForPod(), false)
+		c := spec.Containers[0]
+		if spec.HostNetwork || spec.HostPID || spec.HostIPC {
+			t.Error("a device never shares the host's namespaces")
+		}
+		if spec.HostUsers == nil || *spec.HostUsers {
+			t.Error("root in a device is not root on the node")
+		}
+		if sc := c.SecurityContext; sc == nil || sc.Privileged != nil && *sc.Privileged || sc.Capabilities == nil || sc.Capabilities.Drop[0] != "ALL" {
+			t.Errorf("security context: %+v", sc)
+		}
+		mem, memLim := c.Resources.Requests[corev1.ResourceMemory], c.Resources.Limits[corev1.ResourceMemory]
+		if memLim.IsZero() || mem.Cmp(memLim) != 0 {
+			t.Errorf("memory request %v must equal a set limit %v", mem, memLim)
+		}
+		if c.Resources.Requests.Cpu().IsZero() {
+			t.Error("a CPU request is the device's share against its neighbours")
+		}
+		_, capped := c.Resources.Limits[corev1.ResourceCPU]
+		if noCPULimit == capped {
+			t.Errorf("noCPULimit=%v but cpu limit present=%v", noCPULimit, capped)
+		}
+		if lim := c.Resources.Limits[corev1.ResourceEphemeralStorage]; lim.IsZero() {
+			t.Error("the writable layer, logs and emptyDirs are limited")
+		}
+	}
+}
