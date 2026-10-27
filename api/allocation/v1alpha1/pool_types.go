@@ -17,12 +17,24 @@ type PoolSpec struct {
 // PoolStatus holds the mutable allocation state.
 type PoolStatus struct {
 	// Lease owners and bitmap change in the same resourceVersion CAS.
-	Leases              map[string]PoolLease `json:"leases,omitempty"`
-	NextLeaseGeneration int64                `json:"nextLeaseGeneration,omitempty"`
+	Leases map[string]PoolLease `json:"leases,omitempty"`
+	// Retired are the slots whose owner is done with them: the bit stays set (the slot is not given out) until the quarantine has
+	// passed, then the sweep clears the bits of many slots in one update. Keyed like Leases.
+	// +optional
+	Retired             map[string]PoolRetired `json:"retired,omitempty"`
+	NextLeaseGeneration int64                  `json:"nextLeaseGeneration,omitempty"`
 	// Free is the count of unallocated slots; mirrored to label pool.cybericebox.com/free.
 	Free uint `json:"free,omitempty"`
 	// BitMap is a base64-encoded bitset (one bit per slot, 1 = allocated).
 	BitMap string `json:"bitMap,omitempty"`
+}
+
+// PoolRetired is a slot waiting out its quarantine. OwnerUID and Generation are the lease it had (empty for a slot that never
+// had one); RetiredAt starts the quarantine.
+type PoolRetired struct {
+	OwnerUID   string      `json:"ownerUID,omitempty"`
+	Generation int64       `json:"generation,omitempty"`
+	RetiredAt  metav1.Time `json:"retiredAt"`
 }
 
 type PoolLease struct {

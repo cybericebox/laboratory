@@ -261,7 +261,13 @@ func Run() {
 		setupLog.Error(err, "unable to create controller", "controller", "LabGroupClient")
 		os.Exit(1)
 	}
+	vniRetirer := &laboratorycontroller.VNIRetirer{Client: mgr.GetClient(), Interval: cfg.VNIRetireFlush}
+	if err = mgr.Add(vniRetirer); err != nil {
+		setupLog.Error(err, "unable to add the VNI retirer")
+		os.Exit(1)
+	}
 	if err = (&laboratorycontroller.LabReconciler{
+		VNI:                       vniRetirer,
 		Defaults:                  laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory, NoCPULimit: cfg.DeviceNoCPULimit},
 		LabNodeSelector:           labNodeSelector,
 		LabTolerations:            labTolerations,
@@ -423,8 +429,8 @@ func Run() {
 		setupLog.Error(err, "unable to add the group pod autosizer")
 		os.Exit(1)
 	}
-	if err = mgr.Add(&laboratorycontroller.VNICollector{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Interval: 5 * time.Minute, Grace: 10 * time.Minute}); err != nil {
-		setupLog.Error(err, "unable to add the VNI lease collector")
+	if err = mgr.Add(&laboratorycontroller.VNISweeper{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Interval: cfg.VNISweepInterval, Quarantine: cfg.VNIQuarantine, Grace: cfg.VNISweepInterval, RuntimeObservation: cfg.RuntimeObservation, Retirer: vniRetirer}); err != nil {
+		setupLog.Error(err, "unable to add the VNI sweeper")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

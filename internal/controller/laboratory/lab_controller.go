@@ -40,6 +40,8 @@ import (
 // LabReconciler reconciles a Lab object.
 type LabReconciler struct {
 	client.Client
+	// VNI batches the retirement of VNIs (nil: each one is retired at once).
+	VNI      *VNIRetirer
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 	// BaseDomain is the public DNS suffix under which task URLs are advertised,
@@ -603,7 +605,11 @@ func (r *LabReconciler) materializeConnections(ctx context.Context, lab *laborat
 				}
 				existing.Status.VNI = &vni
 				if err := r.Status().Update(ctx, &existing); err != nil {
-					_ = vniAllocator.ReleaseIndex(ctx, vni)
+					// Nothing records the index: retire it (the error of the status write stays the one returned, and a retirement
+					// that cannot be made is still caught by the sweep, which finds a held slot nobody references).
+					if retireErr := r.retireIndex(ctx, vni); retireErr != nil {
+						ctrl.LoggerFrom(ctx).Error(retireErr, "retire the unrecorded VNI", "vni", vni)
+					}
 					return err
 				}
 			}
@@ -652,7 +658,9 @@ func (r *LabReconciler) materializeConnections(ctx context.Context, lab *laborat
 			// Return the VNI: the Connection does not exist, so nothing records
 			// this index and the delete path would never release it.
 			if allocatedVNI != nil {
-				_ = vniAllocator.ReleaseIndex(ctx, *allocatedVNI)
+				if retireErr := r.retireIndex(ctx, *allocatedVNI); retireErr != nil {
+					ctrl.LoggerFrom(ctx).Error(retireErr, "retire the unrecorded VNI", "vni", *allocatedVNI)
+				}
 			}
 			return err
 		}

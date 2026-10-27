@@ -182,6 +182,9 @@ DEVICE_DEFAULT_MEMORY: {{ .Values.limits.device.defaultMemory | quote }}
 DEVICE_MAX_CPU: {{ .Values.limits.device.maxCpu | quote }}
 DEVICE_MAX_MEMORY: {{ .Values.limits.device.maxMemory | quote }}
 DEVICE_NO_CPU_LIMIT: {{ .Values.limits.device.noCpuLimit | quote }}
+VNI_QUARANTINE: {{ .Values.vni.quarantine | quote }}
+VNI_SWEEP_INTERVAL: {{ .Values.vni.sweepInterval | quote }}
+VNI_RETIRE_FLUSH: {{ .Values.vni.retireFlush | quote }}
 GROUP_AUTOSIZE_INTERVAL: {{ .Values.groupAutosize.interval | quote }}
 GROUP_AUTOSIZE_SHRINK_AFTER: {{ .Values.groupAutosize.shrinkAfter | quote }}
 GROUP_AUTOSIZE_HEADROOM_CPU: {{ .Values.groupAutosize.headroomCpu | quote }}

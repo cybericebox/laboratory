@@ -19,6 +19,12 @@ import (
 
 type Config struct {
 	RuntimeObservation bool `env:"RUNTIME_OBSERVATION_ENABLED" envDefault:"false"`
+	// VNIQuarantine is how long a retired VNI is not given out again (VNI_QUARANTINE), VNISweepInterval how often the sweep
+	// retires leases that lost their owner and returns the VNIs that passed the quarantine (VNI_SWEEP_INTERVAL), VNIRetireFlush how
+	// often the VNIs queued for retirement are written to the pool (VNI_RETIRE_FLUSH).
+	VNIQuarantine    time.Duration `env:"VNI_QUARANTINE" envDefault:"10m"`
+	VNISweepInterval time.Duration `env:"VNI_SWEEP_INTERVAL" envDefault:"5m"`
+	VNIRetireFlush   time.Duration `env:"VNI_RETIRE_FLUSH" envDefault:"2s"`
 	// Acceptance gate stays false until final native proof; advertising remains false.
 	RequiredSnapshotAvailable bool `env:"REQUIRED_SNAPSHOT_AVAILABLE" envDefault:"false"`
 	// PublicVPNEndpoint is the host:port advertised to WireGuard clients (demux public address); a host alone gets the default port.

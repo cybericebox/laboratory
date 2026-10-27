@@ -3,6 +3,7 @@ package laboratory
 import (
 	"context"
 	"testing"
+	"time"
 
 	allocation "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	lab "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
@@ -134,8 +135,16 @@ func TestLifecycleWaveDeletionReturnsVNIOnlyAfterAllNativeNodeACKs(t *testing.T)
 		t.Fatal(err)
 	}
 	_ = c.List(ctx, &pools)
-	if pools.Items[0].Status.Free != before+1 {
+	if len(pools.Items[0].Status.Retired) != 1 || pools.Items[0].Status.Free != before {
 		t.Fatal("all native ACKs failed to retire original lease")
+	}
+	// the retired VNI waits out its quarantine, then comes back with the sweep
+	if n, err := pool.ReturnMatured(ctx, c, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, 0, time.Now().Add(time.Second)); err != nil || n != 1 {
+		t.Fatalf("the quarantined VNI must come back: %d %v", n, err)
+	}
+	_ = c.List(ctx, &pools)
+	if pools.Items[0].Status.Free != before+1 {
+		t.Fatal("returned VNI not free")
 	}
 	// Once recycled, the old ACK cannot free the new object's allocation.
 	replacement := &lab.Connection{ObjectMeta: metav1.ObjectMeta{Name: "replacement", Namespace: "other", UID: "replacement"}, Status: lab.ConnectionStatus{VNI: &vni}}

@@ -212,7 +212,7 @@ func (r *LabReconciler) releaseRecordedVNIs(ctx context.Context, l *lab.Lab) err
 			if reused {
 				continue
 			}
-			if err := poolpkg.ReleaseOwnedIndex(ctx, r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, poolpkg.Lease{Index: binding.VNI, PoolUID: binding.PoolUID, OwnerUID: binding.UID, Generation: binding.LeaseGeneration}); err != nil {
+			if err := r.retireLease(ctx, poolpkg.Lease{Index: binding.VNI, PoolUID: binding.PoolUID, OwnerUID: binding.UID, Generation: binding.LeaseGeneration}); err != nil {
 				return err
 			}
 		}
@@ -274,22 +274,27 @@ func (r *LabReconciler) releaseDefaultOffVNI(ctx context.Context, index uint, le
 		if uid == "" {
 			return fmt.Errorf("actual VNI owner UID missing")
 		}
-		var parents lab.LabList
-		if err := r.lifecycleReader().List(ctx, &parents); err != nil {
-			return err
-		}
-		for _, parent := range parents.Items {
-			for _, scope := range parent.Status.ScopeInventory {
-				for _, binding := range scope.VNIBindings {
-					if binding.UID == uid && !lab.VNILeaseReleased(&parent, binding) {
-						return fmt.Errorf("retained native VNI obligation is unresolved")
+		// A native obligation (a node still has to confirm that it dropped the fabric of the VNI) can only be resolved by
+		// runtime observation. With the observation off nobody resolves it, and waiting for it left the lease held for good
+		// (the 223 leaked VNIs): the quarantine of the retirement is what protects the number then.
+		if r.RuntimeObservation {
+			var parents lab.LabList
+			if err := r.lifecycleReader().List(ctx, &parents); err != nil {
+				return err
+			}
+			for _, parent := range parents.Items {
+				for _, scope := range parent.Status.ScopeInventory {
+					for _, binding := range scope.VNIBindings {
+						if binding.UID == uid && !lab.VNILeaseReleased(&parent, binding) {
+							return fmt.Errorf("retained native VNI obligation is unresolved")
+						}
 					}
 				}
 			}
 		}
-		return poolpkg.ReleaseOwnedIndex(ctx, r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, poolpkg.Lease{Index: index, PoolUID: lease.PoolUID, OwnerUID: uid, Generation: lease.Generation})
+		return r.retireLease(ctx, poolpkg.Lease{Index: index, PoolUID: lease.PoolUID, OwnerUID: uid, Generation: lease.Generation})
 	}
-	return poolpkg.NewRotatingAllocator(r.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize).ReleaseIndex(ctx, index)
+	return r.retireIndex(ctx, index)
 }
 
 // Historical declarations may gain positive native inventory after Start was

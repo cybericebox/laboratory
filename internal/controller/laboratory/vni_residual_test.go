@@ -99,7 +99,7 @@ func TestResidualDefaultOffPruneAndDeleteRespectOwnedVNILease(t *testing.T) {
 		}
 	}
 }
-func TestResidualDefaultOffOwnedReleaseKeepsUnresolvedNativeDebt(t *testing.T) {
+func TestResidualDefaultOffRetiresDespiteUnresolvedNativeDebt(t *testing.T) {
 	ctx := context.Background()
 	s := runtime.NewScheme()
 	_ = lab.AddToScheme(s)
@@ -117,10 +117,29 @@ func TestResidualDefaultOffOwnedReleaseKeepsUnresolvedNativeDebt(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := &LabReconciler{Client: c, Reader: c}
-	if err := r.releaseDefaultOffVNI(ctx, lease.Index, &lab.VNILease{PoolUID: lease.PoolUID, Generation: lease.Generation}, lease.OwnerUID); err == nil {
-		t.Fatal("disabled observation bypassed retained native debt")
+	// Without runtime observation nobody can resolve a native obligation (it kept 223 VNIs leased for good): the lease is retired
+	// and the quarantine protects the number.
+	if err := r.releaseDefaultOffVNI(ctx, lease.Index, &lab.VNILease{PoolUID: lease.PoolUID, Generation: lease.Generation}, lease.OwnerUID); err != nil {
+		t.Fatal("an obligation nobody can resolve must not block the retirement:", err)
 	}
-	if err := poolpkg.ValidateLease(ctx, c, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, *lease); err != nil {
-		t.Fatal("unresolved native debt freed pool reservation", err)
+	if err := poolpkg.ValidateLease(ctx, c, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, *lease); err == nil {
+		t.Fatal("the retired lease is still current")
+	}
+	var current allocation.Pool
+	if err := c.Get(ctx, client.ObjectKeyFromObject(p), &current); err != nil || len(current.Status.Retired) != 1 || current.Status.Free != free-1 {
+		t.Fatalf("the VNI waits out its quarantine, not free yet: retired=%d free=%d/%d %v", len(current.Status.Retired), current.Status.Free, free, err)
+	}
+	// With the observation on, the unresolved obligation still holds the lease back.
+	on := &LabReconciler{Client: c, Reader: c, RuntimeObservation: true}
+	lease2, err := poolpkg.AllocateOwnedIndex(ctx, c, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, "second-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent.Status.ScopeInventory = []lab.OwnedRuntimeIdentity{{ScopeKind: "LabFabric", OwnerUID: "lab", ScopeUID: "lab", VNIBindings: []lab.OwnedVNI{{UID: "second-owner", VNI: lease2.Index, PoolUID: lease2.PoolUID, LeaseGeneration: lease2.Generation}}}}
+	if err := c.Status().Update(ctx, parent); err != nil {
+		t.Fatal(err)
+	}
+	if err := on.releaseDefaultOffVNI(ctx, lease2.Index, &lab.VNILease{PoolUID: lease2.PoolUID, Generation: lease2.Generation}, lease2.OwnerUID); err == nil {
+		t.Fatal("with observation on the unresolved native debt holds the lease")
 	}
 }

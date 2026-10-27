@@ -885,6 +885,18 @@ capacity:
   nodeTimeoutSeconds: 900
 
 # ============================================================
+# VNI pool: retirement, quarantine, sweep
+# ============================================================
+# A VNI is not returned to the pool one write at a time: a release only retires it (a mark in the pool's status, queued and written
+# in batches every retireFlush), the VNI is not given out for quarantine (a flow of its old owner may still be on a node), and
+# the sweep, every sweepInterval, returns all that passed the quarantine in one update per pool. The sweep also retires leases whose
+# owner is gone and held VNIs nobody references (a release that never ran).
+vni:
+  quarantine: 10m
+  sweepInterval: 5m
+  retireFlush: 2s
+
+# ============================================================
 # Autosizing of the VPN and gateway pods of a group
 # ============================================================
 # A group created with a max size (CreateLabGroups vpn_max_size / gateway_max_size) keeps its size as the pod's request, and the

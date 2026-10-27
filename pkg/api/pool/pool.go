@@ -504,6 +504,9 @@ func PinExistingIndex(ctx context.Context, c client.Client, prefix, namespace st
 		return nil, fmt.Errorf("pool reservation is absent or identity unavailable")
 	}
 	key := strconv.FormatUint(uint64(bit), 10)
+	if _, retired := p.Status.Retired[key]; retired {
+		return nil, fmt.Errorf("pool slot is retired and waits out its quarantine")
+	}
 	if prior, ok := p.Status.Leases[key]; ok {
 		if prior.OwnerUID != uid {
 			return nil, fmt.Errorf("pool slot belongs to another owner")
