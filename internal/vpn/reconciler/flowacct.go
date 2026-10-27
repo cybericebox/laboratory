@@ -24,20 +24,30 @@ import (
 // prepareFlowAccounting resumes the single ledger before any controller can
 // replace surviving chains. Read/API failure leaves the startup gate closed.
 func prepareFlowAccounting(ctx context.Context, mgr ctrl.Manager, cfg *vpn.Config, ipt *vpn.IPTablesManager, bootID string) (*flowacct.Reporter, *flowacct.Conntrack, error) {
-	source := flowacct.NewConntrack()
+	// With the nft forwarding there is no connection tracking to read: the totals and the attempts come from the counters of the pairs.
+	var source *flowacct.Conntrack
+	var dump flowacct.Source
+	if cfg.Firewall != "nft" {
+		source = flowacct.NewConntrack()
+		dump = source
+	}
 	instance, _ := os.Hostname()
 	if bootID == "" {
-		source.Close()
+		if source != nil {
+			source.Close()
+		}
 		return nil, nil, fmt.Errorf("current VPN boot is unknown")
 	}
 	reader, cached := mgr.GetAPIReader(), mgr.GetClient()
-	collector := flowacct.New(source, func() flowacct.Topology { return buildTopology(ctx, cached, cfg.Namespace) }, bootID, flowacct.DefaultPollEvery)
+	collector := flowacct.New(dump, func() flowacct.Topology { return buildTopology(ctx, cached, cfg.Namespace) }, bootID, flowacct.DefaultPollEvery)
 	reporter := &flowacct.Reporter{Reader: reader, Writer: cached, Namespace: cfg.Namespace, Instance: instance, Collector: collector, CounterReader: ipt, OnResume: ipt.RestoreCounterBindings, BeforeShutdown: ipt.Quiesce}
 	reporter.OnPublish = func(ctx context.Context, report flowacct.Report) error {
 		return publishAccessTotals(ctx, cached, cfg.Namespace, report)
 	}
 	if err := reporter.Resume(ctx); err != nil {
-		source.Close()
+		if source != nil {
+			source.Close()
+		}
 		return nil, nil, err
 	}
 	ipt.BeforeRetire = func(snapshot flowacct.CounterSnapshot) error { return reporter.Retire(ctx, snapshot) }
@@ -113,4 +123,17 @@ func parseAddr(value string) (netip.Addr, bool) {
 	value, _, _ = strings.Cut(value, "/")
 	addr, err := netip.ParseAddr(value)
 	return addr, err == nil
+}
+
+// statelessRevoker is the revoker of the nft forwarding: nothing is tracked, a revoked pair stops with its next packet because its
+// element left the set, so there is nothing to close.
+type statelessRevoker struct{}
+
+func (statelessRevoker) Revoke([]string, []vpn.AccessRule, ...[]string) (int, error) { return 0, nil }
+
+func accessRevokerFor(cfg *vpn.Config) accessRevoker {
+	if cfg.Firewall == "nft" {
+		return statelessRevoker{}
+	}
+	return vpn.NewConntrackRevoker()
 }

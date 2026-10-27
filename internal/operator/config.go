@@ -19,6 +19,9 @@ import (
 
 type Config struct {
 	RuntimeObservation bool `env:"RUNTIME_OBSERVATION_ENABLED" envDefault:"false"`
+	// VPNFirewall: "iptables" (the relation chains with connection tracking) or "nft" (nftables sets, no connection tracking) for the
+	// VPN pods created from now on (VPN_FIREWALL, chart vpn.firewall).
+	VPNFirewall string `env:"VPN_FIREWALL" envDefault:"iptables"`
 	// VNIQuarantine is how long a retired VNI is not given out again (VNI_QUARANTINE), VNISweepInterval how often the sweep
 	// retires leases that lost their owner and returns the VNIs that passed the quarantine (VNI_SWEEP_INTERVAL), VNIRetireFlush how
 	// often the VNIs queued for retirement are written to the pool (VNI_RETIRE_FLUSH).

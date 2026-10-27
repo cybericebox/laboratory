@@ -253,6 +253,19 @@ func (c *Collector) ObserveCounters(snapshot CounterSnapshot) error {
 			}
 			row.LastSeenMs = snapshot.At.UnixMilli()
 		}
+		if c.source == nil {
+			// No connection tracking (the nft forwarding): the moments come from the counters, as precise as the poll. A pair that
+			// moved packets without a counted attempt (UDP, ICMP) is seen too, and the lab answered when packets came back.
+			if d.PacketsOut > 0 || d.PacketsIn > 0 {
+				if row.FirstSeenMs == 0 {
+					row.FirstSeenMs = snapshot.At.UnixMilli()
+				}
+				row.LastSeenMs = snapshot.At.UnixMilli()
+			}
+			if d.PacketsIn > 0 && row.PacketsOut > 0 && row.FirstRespondMs == 0 {
+				row.FirstRespondMs = snapshot.At.UnixMilli()
+			}
+		}
 	}
 	return nil
 }

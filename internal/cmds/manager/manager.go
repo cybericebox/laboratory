@@ -226,6 +226,7 @@ func Run() {
 		PublicVPNEndpoint:       cfg.PublicVPNEndpoint,
 		WGDemuxMode:             cfg.WGDemuxMode,
 		VPNBaseNetwork:          cfg.VPNBaseNetwork,
+		VPNFirewall:             cfg.VPNFirewall,
 		InetBaseNetwork:         cfg.InetBaseNetwork,
 		VPNImage:                cfg.VPNImage,
 		Mirror:                  mirror,

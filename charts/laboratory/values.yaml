@@ -128,6 +128,11 @@ labScheduler:
 # VPN pod image (created at runtime by operator per LabGroup)
 # ============================================================
 vpn:
+  # How the VPN pod forwards between the participants and the labs. iptables: the relation chains with connection tracking. nft: nftables sets
+  # without connection tracking (a pair is allowed in both directions at once, statelessly; one lookup per packet whatever the number of pairs;
+  # a revoked pair stops with its next packet; the counters of the pair's set elements are the accounting). Only the VPN pods created after the
+  # change use it; a pod that exists keeps its firewall.
+  firewall: iptables
   # Resources of the VPN pod of a NEW LabGroup (requests = limits: a Guaranteed pod). Measured on the local stand:
   # idle 1m CPU / 16Mi; with 5 active peers pulling pages in a loop up to 48m CPU and 155Mi (the memory grows with the
   # peers and their traffic, so it is the limit that matters; 195Mi was seen with 10 peers: 320Mi leaves about 50% room). The data path is the

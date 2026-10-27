@@ -30,7 +30,7 @@ func Setup(ctx context.Context, mgr ctrl.Manager, wg *vpn.WGManager, ipt *vpn.IP
 	if err != nil {
 		return fmt.Errorf("identify VPN boot: %w", err)
 	}
-	access := &AccessReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Runtime: runtimeID, GroupUID: os.Getenv("GROUP_UID"), IPT: ipt, RequireInitialRetirement: true, InitialBindings: ipt.KnownBindingIDs(), Conntrack: vpn.NewConntrackRevoker()}
+	access := &AccessReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Runtime: runtimeID, GroupUID: os.Getenv("GROUP_UID"), IPT: ipt, RequireInitialRetirement: true, InitialBindings: ipt.KnownBindingIDs(), Conntrack: accessRevokerFor(cfg)}
 	if access.GroupUID == "" {
 		return fmt.Errorf("current VPN group UID is unknown")
 	}
@@ -72,11 +72,15 @@ func Setup(ctx context.Context, mgr ctrl.Manager, wg *vpn.WGManager, ipt *vpn.IP
 
 	go RunStats(ctx, mgr.GetClient(), wg, cfg)
 	if err := mgr.Add(manager.RunnableFunc(func(runCtx context.Context) error {
-		defer source.Close()
+		if source != nil {
+			defer source.Close()
+		}
 		reporter.Run(runCtx, flowacct.DefaultPollEvery, flowacct.DefaultReportEvery, func(err error) { ctrl.Log.WithName("flowacct").Error(err, "flow accounting") })
 		return nil
 	})); err != nil {
-		source.Close()
+		if source != nil {
+			source.Close()
+		}
 		return fmt.Errorf("register VPN traffic reporter: %w", err)
 	}
 

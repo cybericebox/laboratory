@@ -30,6 +30,13 @@ func InitServer(cfg *Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("init iptables: %w", err)
 	}
+	switch cfg.Firewall {
+	case "", "iptables":
+	case "nft":
+		ipt.UseNFT(nativeNFT{})
+	default:
+		return nil, fmt.Errorf("VPN_FIREWALL %q is neither iptables nor nft", cfg.Firewall)
+	}
 	ipv6Covered, err := ipt.ProtectInput(cfg.ExternalInterface, probeAddr, ProbePort)
 	if err != nil {
 		ipt.Cleanup()

@@ -36,6 +36,8 @@ type IPTablesManager struct {
 	AfterRetire   func([]string)
 	retirePending bool
 	quiesced      bool
+	// nft, when set, replaces the iptables relation chains: the forwarding is nftables without connection tracking (nft_forward_linux.go).
+	nft NFTCommand
 }
 
 const accessChain = "CYBERICEBOX_VPN_ACCESS"
@@ -152,6 +154,9 @@ func (m *IPTablesManager) forwardRules() [][]string {
 // FORWARD chain in one commit. An empty access chain must never fall through
 // to established forwarding during a surviving-network-namespace restart.
 func (m *IPTablesManager) SetupForwardPolicy() error {
+	if m.nftOn() {
+		return m.nftSetupForward()
+	}
 	m.forwardMu.Lock()
 	defer m.forwardMu.Unlock()
 	if err := m.ipt.ChangePolicy("filter", "FORWARD", "DROP"); err != nil {
@@ -198,6 +203,9 @@ var accessCounterPattern = regexp.MustCompile(`(?:^|\s)-c\s+(\d+)\s+(\d+)(?:\s|$
 // AccessCounters reads cumulative packet/byte counters from the dedicated
 // chain and associates them with stable relation IDs.
 func (m *IPTablesManager) AccessCounters() (map[string]TrafficCounter, error) {
+	if m.nftOn() && !m.nftReady() {
+		return map[string]TrafficCounter{}, nil
+	}
 	m.forwardMu.Lock()
 	ready := m.forwardReady
 	m.forwardMu.Unlock()
@@ -245,6 +253,11 @@ func (m *IPTablesManager) AccessCounters() (map[string]TrafficCounter, error) {
 }
 
 func (m *IPTablesManager) Cleanup() {
+	if m.nftOn() {
+		m.nftCleanup()
+		m.cleanupGuards()
+		return
+	}
 	_ = m.ipt.ClearChain("filter", "FORWARD")
 	_ = m.ipt.ClearAndDeleteChain("filter", accessChain)
 	m.forwardMu.Lock()
@@ -262,6 +275,10 @@ func (m *IPTablesManager) Cleanup() {
 	m.forwardReady = false
 	m.bindings = nil
 	m.forwardMu.Unlock()
+	m.cleanupGuards()
+}
+
+func (m *IPTablesManager) cleanupGuards() {
 	if m.uplink != "" {
 		removeWGGuard(m.ipt, m.uplink, m.wgPort)
 		if m.ipt6 != nil {

@@ -104,6 +104,10 @@ func parseKernelCounters(saved []byte, bindings map[string]ForwardRule, tolerate
 func (m *IPTablesManager) ReadPairCounters(ctx context.Context) (flowacct.CounterSnapshot, error) {
 	m.forwardMu.Lock()
 	defer m.forwardMu.Unlock()
+	if m.nftOn() {
+		st, err := m.nftRead(ctx, m.bindings)
+		return st.snapshot, err
+	}
 	saved, err := m.commands.Save(ctx)
 	if err != nil {
 		return flowacct.CounterSnapshot{}, err
@@ -129,6 +133,13 @@ func (m *IPTablesManager) RestoreCounterBindings(rows []flowacct.PairCounters) {
 func (m *IPTablesManager) WithPairCounters(ctx context.Context, observe func(flowacct.CounterSnapshot) error) error {
 	m.forwardMu.Lock()
 	defer m.forwardMu.Unlock()
+	if m.nftOn() {
+		st, err := m.nftRead(ctx, m.bindings)
+		if err != nil {
+			return err
+		}
+		return observe(st.snapshot)
+	}
 	saved, err := m.commands.Save(ctx)
 	if err != nil {
 		return err
@@ -149,8 +160,17 @@ func (m *IPTablesManager) KnownBindingIDs() map[string]bool {
 	return ids
 }
 func (m *IPTablesManager) Quiesce(ctx context.Context) error {
+	if m.nftOn() {
+		return m.nftQuiesce(ctx)
+	}
 	m.forwardMu.Lock()
 	defer m.forwardMu.Unlock()
 	m.quiesced = true
 	return m.commands.Restore(ctx, []byte("*filter\n-F "+accessChain+"\n-A "+accessChain+" -j DROP\nCOMMIT\n"))
+}
+
+func (m *IPTablesManager) nftReady() bool {
+	m.forwardMu.Lock()
+	defer m.forwardMu.Unlock()
+	return m.forwardReady
 }

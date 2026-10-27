@@ -51,6 +51,8 @@ const labSubnetPrefixLen = 24
 
 // LabGroupReconciler reconciles a LabGroup object.
 type LabGroupReconciler struct {
+	// VPNFirewall is how the VPN pods created from now on forward: "nft" (no connection tracking) or "" / "iptables".
+	VPNFirewall string
 	client.Client
 	// Reader provides direct identity reads for lifecycle side effects.
 	Reader                 client.Reader
@@ -783,6 +785,12 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 				},
 			},
 		},
+	}
+	if r.VPNFirewall == "nft" {
+		// Only a NEW VPN pod is made with the nft forwarding: a pod that exists keeps the firewall it runs (a change of its environment would
+		// restart it and drop the WireGuard sessions of the group).
+		c := &d.Spec.Template.Spec.Containers[0]
+		c.Env = append(c.Env, corev1.EnvVar{Name: "VPN_FIREWALL", Value: "nft"})
 	}
 	hardenGroupPod(&d.Spec.Template.Spec, names.ComponentVPN, vpnCaps, r.TerminationGraceSeconds)
 	return r.Create(ctx, d)

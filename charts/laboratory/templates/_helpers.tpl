@@ -186,6 +186,7 @@ GROUP_MAX_USERS: {{ .Values.groupLimits.maxUsers | quote }}
 GROUP_MAX_LABS: {{ .Values.groupLimits.maxLabs | quote }}
 GROUP_DEFAULT_USERS: {{ .Values.groupLimits.defaultUsers | quote }}
 GROUP_DEFAULT_LABS: {{ .Values.groupLimits.defaultLabs | quote }}
+VPN_FIREWALL: {{ .Values.vpn.firewall | quote }}
 VNI_QUARANTINE: {{ .Values.vni.quarantine | quote }}
 VNI_SWEEP_INTERVAL: {{ .Values.vni.sweepInterval | quote }}
 VNI_RETIRE_FLUSH: {{ .Values.vni.retireFlush | quote }}
