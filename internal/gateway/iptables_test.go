@@ -295,3 +295,39 @@ func TestSetupFilterLimitsNewConnectionsPerLab(t *testing.T) {
 		t.Error("no limits, no limit chain")
 	}
 }
+
+// A pod whose rules survive a restart already holds the accepting rules: with limits the jump to them is put before the accept, and
+// switching the limits off takes the jump away.
+func TestSetupFilterPutsTheLimitJumpBeforeSurvivingAcceptRules(t *testing.T) {
+	f := newFake(t)
+	m := manager(f)
+	if err := m.SetupFilter(); err != nil { // an earlier run, without limits
+		t.Fatal(err)
+	}
+	m.MaxConnectionsPerLab = 5
+	if err := m.SetupFilter(); err != nil {
+		t.Fatal(err)
+	}
+	fw := f.chains["FORWARD"]
+	jump, accept := -1, -1
+	for i, r := range fw {
+		switch r {
+		case "-i lab+ -o eth0 -m conntrack --ctstate NEW -j LABLIMIT":
+			jump = i
+		case "-i lab+ -o eth0 -j ACCEPT":
+			accept = i
+		}
+	}
+	if jump < 0 || accept < 0 || jump > accept {
+		t.Fatalf("the limit jump must stand before the accepting rule: %v", fw)
+	}
+	m.MaxConnectionsPerLab = 0
+	if err := m.SetupFilter(); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range f.chains["FORWARD"] {
+		if strings.Contains(r, "LABLIMIT") {
+			t.Fatalf("limits are off, the jump must go: %v", f.chains["FORWARD"])
+		}
+	}
+}

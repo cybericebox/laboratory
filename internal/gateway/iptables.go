@@ -206,6 +206,33 @@ func (m *IPTablesManager) setupForwardRules() error {
 		// return traffic from internet -> lab{N}
 		[]string{"-i", m.extIface, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"},
 	)
+	jump := []string{"-i", labIfaces, "-o", m.extIface, "-m", "conntrack", "--ctstate", "NEW", "-j", limitChain}
+	if !limited {
+		// limits switched off (or never on): a jump left by an earlier run in a surviving network namespace goes
+		for {
+			ok, err := m.ipt.Exists("filter", "FORWARD", jump...)
+			if err != nil || !ok {
+				break
+			}
+			if err := m.ipt.Delete("filter", "FORWARD", jump...); err != nil {
+				return fmt.Errorf("remove the old limit jump: %w", err)
+			}
+		}
+	} else {
+		// A pod whose rules survive a restart may already hold the accepting rules, and the jump must stand before them: take the accepting
+		// rules out and put them back after it. The filter is closed for that moment (the policy is DROP), never open.
+		for _, r := range rules[1:] {
+			for {
+				ok, err := m.ipt.Exists("filter", "FORWARD", r...)
+				if err != nil || !ok {
+					break
+				}
+				if err := m.ipt.Delete("filter", "FORWARD", r...); err != nil {
+					return fmt.Errorf("reorder the FORWARD rules: %w", err)
+				}
+			}
+		}
+	}
 	for _, r := range rules {
 		if err := m.ipt.AppendUnique("filter", "FORWARD", r...); err != nil {
 			return fmt.Errorf("iptables FORWARD %v: %w", r, err)
