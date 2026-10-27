@@ -128,7 +128,10 @@ func (s *NodeAgentServer) SetupNetworks(
 		return &nodev1.SetupNetworksResponse{DefaultNetwork: "real"}, nil
 	}
 
-	s.ovs.vethMu.Lock()
+	// The hook gives up when kubelet does (its CNI call is cancelled): kubelet retries, and a stuck hook is not left waiting for good.
+	if err := s.ovs.vethMu.LockCtx(ctx); err != nil {
+		return nil, err
+	}
 	defer s.ovs.vethMu.Unlock()
 	if err := reader.Get(ctx, client.ObjectKeyFromObject(&pod), &current); err != nil {
 		return nil, err
