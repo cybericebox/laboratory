@@ -2,6 +2,7 @@ package ofclient
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -362,5 +363,158 @@ func TestVNILeaseRetirementRequiresExactBarrierAndRejectsFlowError(t *testing.T)
 				t.Fatal("exact barrier did not resolve lease")
 			}
 		})
+	}
+}
+
+// exchangePeer runs a checked exchange against a fake switch: it reads the messages, and answers each with the error given
+// for it (an OFPT_ERROR of that type and code) before the barrier reply.
+func exchangePeer(t *testing.T, b net.Conn, errs map[int][2]uint16, count int) [][]byte {
+	t.Helper()
+	read := func() []byte {
+		h := make([]byte, 8)
+		if _, err := io.ReadFull(b, h); err != nil {
+			t.Fatal(err)
+		}
+		body := make([]byte, int(binary.BigEndian.Uint16(h[2:4]))-8)
+		if _, err := io.ReadFull(b, body); err != nil {
+			t.Fatal(err)
+		}
+		return append(h, body...)
+	}
+	var msgs [][]byte
+	for i := 0; i < count; i++ {
+		msgs = append(msgs, read())
+	}
+	barrier := read()
+	if barrier[1] != 20 {
+		t.Fatalf("no barrier after %d messages: %x", count, barrier)
+	}
+	for i, m := range msgs {
+		if e, ok := errs[i]; ok {
+			reply := make([]byte, 12)
+			putHeader(reply, 1, 12)
+			copy(reply[4:8], m[4:8])
+			binary.BigEndian.PutUint16(reply[8:10], e[0])
+			binary.BigEndian.PutUint16(reply[10:12], e[1])
+			if _, err := b.Write(reply); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	reply := append([]byte(nil), barrier...)
+	reply[1] = 21
+	if _, err := b.Write(reply); err != nil {
+		t.Fatal(err)
+	}
+	return msgs
+}
+
+func meterClient(t *testing.T) (*Client, net.Conn) {
+	a, b := net.Pipe()
+	t.Cleanup(func() { a.Close(); b.Close() })
+	c := &Client{conn: a}
+	go c.readLoop()
+	return c, b
+}
+
+func TestBuildMeterMod_Encoding(t *testing.T) {
+	m := buildMeterMod(ofpmcAdd, 77, 200000, 20000)
+	if len(m) != 32 || m[0] != 4 || m[1] != ofptMeterMod || binary.BigEndian.Uint16(m[2:4]) != 32 {
+		t.Fatalf("header: %x", m)
+	}
+	if binary.BigEndian.Uint16(m[8:10]) != ofpmcAdd || binary.BigEndian.Uint16(m[10:12]) != ofpmfKbps|ofpmfBurst|ofpmfStats || binary.BigEndian.Uint32(m[12:16]) != 77 {
+		t.Fatalf("command/flags/id: %x", m[8:16])
+	}
+	if binary.BigEndian.Uint16(m[16:18]) != ofpmbtDrop || binary.BigEndian.Uint16(m[18:20]) != 16 || binary.BigEndian.Uint32(m[20:24]) != 200000 || binary.BigEndian.Uint32(m[24:28]) != 20000 {
+		t.Fatalf("drop band: %x", m[16:32])
+	}
+	d := buildMeterMod(ofpmcDelete, 77, 0, 0)
+	if len(d) != 16 || binary.BigEndian.Uint16(d[8:10]) != ofpmcDelete {
+		t.Fatalf("delete carries no band: %x", d)
+	}
+}
+
+func TestInstructionsAreInTheOrderTheProtocolRequires(t *testing.T) {
+	ins := Instructions{Meter: 9, Actions: BuildActionsOutput(3), GotoTable: 8}.encode()
+	if binary.BigEndian.Uint16(ins[0:2]) != ofpitMeter || binary.BigEndian.Uint32(ins[4:8]) != 9 {
+		t.Fatalf("the meter comes first: %x", ins)
+	}
+	if binary.BigEndian.Uint16(ins[8:10]) != ofpitApplyActions {
+		t.Fatalf("then the actions: %x", ins)
+	}
+	last := ins[len(ins)-8:]
+	if binary.BigEndian.Uint16(last[0:2]) != ofpitGotoTable || last[4] != 8 {
+		t.Fatalf("then the next table: %x", last)
+	}
+	if got := (Instructions{Actions: BuildActionsOutput(3)}).encode(); len(got) != 8+16 {
+		t.Fatalf("actions only: %d", len(got))
+	}
+}
+
+func TestMeterSetModifiesFirstAndAddsWhenTheSwitchHasNone(t *testing.T) {
+	c, b := meterClient(t)
+	done := make(chan error, 1)
+	go func() { done <- c.MeterSet(5, 1000, 100) }()
+	first := exchangePeer(t, b, map[int][2]uint16{0: {ofpetMeterModFailed, ofpmmfcUnknownMeter}}, 1)
+	if binary.BigEndian.Uint16(first[0][8:10]) != ofpmcModify {
+		t.Fatalf("a modify goes first: %x", first[0])
+	}
+	second := exchangePeer(t, b, nil, 1)
+	if binary.BigEndian.Uint16(second[0][8:10]) != ofpmcAdd {
+		t.Fatalf("then an add: %x", second[0])
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMeterSetWhenItExistsIsOneModify(t *testing.T) {
+	c, b := meterClient(t)
+	done := make(chan error, 1)
+	go func() { done <- c.MeterSet(5, 1000, 100) }()
+	exchangePeer(t, b, nil, 1)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("MeterSet did not finish")
+	}
+}
+
+func TestMeterSetReportsOtherErrors(t *testing.T) {
+	c, b := meterClient(t)
+	done := make(chan error, 1)
+	go func() { done <- c.MeterSet(5, 1000, 100) }()
+	exchangePeer(t, b, map[int][2]uint16{0: {ofpetMeterModFailed, 6}}, 1) // BAD_RATE
+	err := <-done
+	var e *OFError
+	if !errors.As(err, &e) || e.Code != 6 {
+		t.Fatalf("want the switch's error, got %v", err)
+	}
+}
+
+func TestMeterDeleteOfAnUnknownMeterIsNotAnError(t *testing.T) {
+	c, b := meterClient(t)
+	done := make(chan error, 1)
+	go func() { done <- c.MeterDelete(5) }()
+	exchangePeer(t, b, map[int][2]uint16{0: {ofpetMeterModFailed, ofpmmfcUnknownMeter}}, 1)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFlowAddInstrIsConfirmedAndRejectsAMissingMeter(t *testing.T) {
+	c, b := meterClient(t)
+	done := make(chan error, 1)
+	match := BuildMatchAdvanced(0, 100, true, 0, false, 0, false, 0, false)
+	go func() { done <- c.FlowAddInstr(7, 100, match, Instructions{Meter: 3, GotoTable: 8}) }()
+	msgs := exchangePeer(t, b, map[int][2]uint16{0: {5, 9}}, 1) // OFPET_BAD_INSTRUCTION-ish: any error is a refusal
+	if msgs[0][1] != 14 || msgs[0][24] != 7 {
+		t.Fatalf("a flow mod for table 7: %x", msgs[0])
+	}
+	if err := <-done; err == nil {
+		t.Fatal("a rejected flow must be reported")
 	}
 }
