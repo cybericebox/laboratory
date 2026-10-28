@@ -787,6 +787,37 @@ kind that is filtered by a tenant list would complicate its deltas for little ga
 
 ---
 
+## Bandwidth protection
+
+Off by default (`bandwidth.enabled`). On, no participant, lab or group can saturate a node or the cluster network. Per node and per direction
+
+    U = the node's bandwidth - the system reserve - the reserves of the platform pods that run on that node
+
+and U is divided into classes: the **entry** (the WireGuard demux and the L7 proxy) gets 50 %, the **internet** (the gateways) 25 %, **Geneve** (traffic between nodes) 25 % (`bandwidth.shares`). Inside a class everyone gets a fair share, never more than a cap: a participant 50, a lab's internet 50, a lab's Geneve traffic 100 Mbit/s (`bandwidth.caps`). **Nothing inside a node is limited**; only what crosses nodes and what goes to the internet:
+
+| What | Where | How |
+|---|---|---|
+| Geneve between nodes | the node-agent, on the OVS bridge | an OVS meter per lab that is split between nodes (table 7) and one meter for the node (table 8), chained: `t6 (local delivery) -> t7 meter(lab) -> t8 meter(node) + tunnel outputs`. Local delivery is never metered |
+| the entry (participants of the VPN and of the web) | the demux (userspace: bytes per session, both directions; tc and xdp: the packet rate of the kernel fast path) and the L7 proxy (paced reads and writes, WebSockets too) | a token bucket per participant and one for the class; the share is the class divided by the participants active in the last seconds, up to the cap |
+| the internet | the gateway pod, on each lab interface | a token bucket filter on the egress (to the lab) and a police on the ingress (to the internet) |
+
+The label `cybericebox.com/node-bandwidth` gives a node's bandwidth in Mbit/s (`1562`, or `1562M`, `10G`); the cloud code sets it from the instance type, the Proxmox inventory from the NIC. A node without it is `bandwidth.defaultMbit` (1000). A platform pod keeps bandwidth for itself with the annotation `cybericebox.com/bandwidth-reserve` (Mbit/s), taken off the node it runs on and no other. This chart annotates the registry (100) and the agent (20); the backend and the frontends declare theirs in the platform chart. All numbers are estimates until the load test.
+
+Who computes what: the **operator** works the gateways' ceilings out when something changes (a node's label, a pod that appears, moves or goes, a lab's gateway) and writes them as the annotation `cybericebox.com/bandwidth-limits` of each gateway pod, and the entry limits of every node into the ConfigMap `laboratory-bandwidth` in the namespaces of the demux and the L7 proxy (one key per node). The pods read them from mounted files and apply them themselves. The **node-agent** works the Geneve ceilings of its own node out from the same numbers (it already reads its node and the pods on it), on events only; it touches an OVS meter only when a rate changes (`mod-meter`; a delete would delete the flows that use the meter). The operator needs no right to write to nodes, and none to patch the demux or L7 pods.
+
+Switching on: a pod made before has no volume for its limits, so the **gateway pods that exist keep no ceiling until they are recreated** (changing the template of a Deployment would restart a team's gateway). The demux and L7 pods get the ConfigMap volume at the next rollout of their DaemonSet/Deployment. Switching off: set the shares and caps to 0, the pods then limit nothing; the meters of the node are removed when the node-agent sees zero limits.
+
+Checks on a node (the bridge is `br-ovs`):
+
+    ovs-ofctl -O OpenFlow13 dump-meters br-ovs          # meter 1 = the node, 16 + VNI = a lab
+    ovs-ofctl -O OpenFlow13 meter-stats br-ovs          # packet_count / byte_count of the dropped band
+    ovs-ofctl -O OpenFlow13 dump-flows br-ovs table=7   # the lab meters
+    ovs-ofctl -O OpenFlow13 dump-flows br-ovs table=8   # the node meter and the tunnel outputs
+    kubectl -n <group namespace> get pod -l laboratory.cybericebox.com/component=gateway -o jsonpath='{.items[*].metadata.annotations}'
+    kubectl -n laboratory-wg get configmap laboratory-bandwidth -o yaml
+
+Known limits (see `docs/research/2026-10-28-lab-bandwidth-plan.md`, "Open for owner"): the OVS meter counts the frame before the Geneve headers, so the Geneve class is scaled by `bandwidth.geneveOverheadFactor` (0.85); a flooded frame is copied to every remote node while the meter counts it once, so a lab's rate is divided by the number of remote nodes; the xdp mode of the demux bypasses queueing disciplines, so the kernel fast path limits by packet rate (the packets of a session are assumed 1500 bytes), not by bytes, and has no class bucket; the userspace demux adds a hop that is not counted. Nothing here is a guarantee: it is a ceiling.
+
 ## 6. Uninstall
 
 ```bash
