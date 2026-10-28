@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"github.com/cybericebox/laboratory/internal/bandwidth"
 	"io"
 	"net/http"
 	"net/http/httputil"
@@ -57,6 +58,8 @@ type Handler struct {
 	authLimit *bucketSet
 	// accessLog, when set, writes a line per proxied request (see accesslog.go).
 	accessLog *accessLog
+	// throttle paces each participant to its fair share of the bandwidth class of this proxy (see pace.go); no limits until set.
+	throttle *bandwidth.Throttle[string]
 }
 
 // upstreamTransport skips certificate verification for in-cluster backends
@@ -84,6 +87,7 @@ func NewHandler(keys KeyLookup, secret []byte, baseDomain, cookieName string, re
 		transport:  upstreamTransport,
 		now:        time.Now,
 		live:       newLiveSet(),
+		throttle:   bandwidth.NewThrottle[string](5 * time.Second),
 		handoffMax: DefaultHandoffLifetime, sessionIdle: DefaultSessionIdleTTL, sessionRenew: DefaultSessionRenewBefore, sessionMax: DefaultSessionMaxTTL,
 	}
 }
@@ -301,9 +305,14 @@ func UseGroupReader(r client.Reader) {
 type countingWriter struct {
 	http.ResponseWriter
 	request *RequestMeter
+	pace    *pacer
 }
 
 func (w *countingWriter) Write(b []byte) (int, error) {
+	if err := w.pace.wait(len(b)); err != nil {
+		w.request.Incomplete()
+		return 0, err
+	}
 	n, err := w.ResponseWriter.Write(b)
 	w.request.AddIn(int64(n))
 	if err != nil {
@@ -317,10 +326,14 @@ func (w *countingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter 
 type countingBody struct {
 	io.ReadCloser
 	request *RequestMeter
+	pace    *pacer
 }
 
 func (b *countingBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
+	if werr := b.pace.wait(n); werr != nil && err == nil {
+		err = werr
+	}
 	b.request.AddOut(int64(n))
 	if err != nil && err != io.EOF {
 		b.request.Incomplete()
@@ -418,8 +431,10 @@ func (h *Handler) serveMeteredProxy(w http.ResponseWriter, r *http.Request, prox
 		}
 		request.End()
 	}()
+	pace := h.pacerFor(r.Context(), namespace, client)
+	upgrade.pace = pace
 	if r.Body != nil && r.Body != http.NoBody {
-		r.Body = &countingBody{ReadCloser: r.Body, request: request}
+		r.Body = &countingBody{ReadCloser: r.Body, request: request, pace: pace}
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		deviceResponseFilter(resp.Header, h.cookieName, deviceHost, h.baseDomain)
@@ -439,7 +454,7 @@ func (h *Handler) serveMeteredProxy(w http.ResponseWriter, r *http.Request, prox
 		}
 		return nil
 	}
-	rec := &countingWriter{ResponseWriter: w, request: request}
+	rec := &countingWriter{ResponseWriter: w, request: request, pace: pace}
 	proxy.ErrorHandler = func(_ http.ResponseWriter, r *http.Request, err error) {
 		// Proxy-generated error pages are not traffic from a laboratory.
 		upstreamFailed(w, r, err)

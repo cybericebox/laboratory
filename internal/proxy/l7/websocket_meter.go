@@ -93,6 +93,7 @@ func (f *frameMeter) finish() {
 type meteredUpgrade struct {
 	net.Conn
 	reader      *bufio.Reader
+	pace        *pacer
 	in, out     *frameMeter
 	writeMu     sync.Mutex
 	readMu      sync.Mutex
@@ -106,11 +107,17 @@ func (c *meteredUpgrade) Read(p []byte) (int, error) {
 	defer c.readMu.Unlock()
 	n, err := c.reader.Read(p)
 	c.out.feed(p[:n])
+	if werr := c.pace.wait(n); werr != nil && err == nil {
+		err = werr
+	}
 	return n, err
 }
 func (c *meteredUpgrade) Write(p []byte) (int, error) {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+	if err := c.pace.wait(len(p)); err != nil {
+		return 0, err
+	}
 	n, err := c.Conn.Write(p)
 	actual := p[:n]
 	if !c.headers {

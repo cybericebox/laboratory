@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"github.com/cybericebox/laboratory/internal/bandwidth"
 	"net"
 	"os"
 	"os/signal"
@@ -146,6 +147,20 @@ func Run() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
+
+	// The bandwidth limits of this node come from the annotation of the pod (a downward API volume): the class of the proxy and the
+	// ceiling of one participant. A pod made without the volume has no limits.
+	go func() {
+		err := bandwidth.Watch(ctx, bandwidth.AnnotationsFile,
+			func(l bandwidth.Limits) {
+				handler.Throttle().SetLimits(l.ClassKbps, l.CapKbps)
+				log.Info("bandwidth limits", "classKbps", l.ClassKbps, "participantKbps", l.CapKbps)
+			},
+			func(err error) { log.Error(err, "read the bandwidth annotation") })
+		if err != nil {
+			log.Error(err, "watch the bandwidth annotation")
+		}
+	}()
 
 	log.Info("starting l7 proxy", "listen", cfg.Listen)
 	errorlog.Start(ctx, journal, ctrl.GetConfigOrDie(), errorlog.Namespace("laboratory-system"), ctrl.Log.WithName("error-journal"))

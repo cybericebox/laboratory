@@ -201,6 +201,8 @@ type hijackRecorder struct {
 	compression      bool
 	cookieName       string
 	host, baseDomain string
+	// pace holds an upgraded connection to the participant's share of the bandwidth class (nil: not limited).
+	pace *pacer
 }
 
 // WriteHeader strips the session cookie from the headers of an informational response before they go out.
@@ -217,13 +219,18 @@ func (w *hijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		// The server's read and write deadlines (the HTTP timeouts) were set on the connection for the request; an upgraded
 		// connection is bounded by the live-check lifetime instead.
 		_ = conn.SetDeadline(time.Time{})
+		if w.meter == nil && w.pace != nil {
+			// what the server already read of the connection is delivered first, then the socket
+			conn = &pacedConn{Conn: conn, r: rw.Reader, pace: w.pace}
+			rw = bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
+		}
 		if w.meter != nil {
 			if flushErr := rw.Flush(); flushErr != nil {
 				w.meter.Incomplete()
 				_ = conn.Close()
 				return nil, nil, flushErr
 			}
-			wrapped := &meteredUpgrade{Conn: conn, reader: rw.Reader, in: newFrameMeter(w.meter.AddIn, w.meter.Incomplete, false, w.compression), out: newFrameMeter(w.meter.AddOut, w.meter.Incomplete, true, w.compression)}
+			wrapped := &meteredUpgrade{Conn: conn, pace: w.pace, reader: rw.Reader, in: newFrameMeter(w.meter.AddIn, w.meter.Incomplete, false, w.compression), out: newFrameMeter(w.meter.AddOut, w.meter.Incomplete, true, w.compression)}
 			conn = wrapped
 			rw = bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 		}
