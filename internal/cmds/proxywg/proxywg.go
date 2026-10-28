@@ -156,11 +156,11 @@ func Run() {
 		close(stop)
 	}()
 	var stats func() map[string]uint64
-	// The bandwidth limits of this node come from the annotation of the pod (a downward API volume): the class and the ceiling of one
+	// The bandwidth limits of this node come from the operator's ConfigMap (a volume, the key of this node): the class and the ceiling of one
 	// participant. The userspace relay throttles every session by them; the kernel fast path gets the matching packet rate. A pod made
 	// without the volume has no limits.
 	runs := []func(){func() {
-		err := bandwidth.Watch(ctx, bandwidth.AnnotationsFile,
+		err := bandwidth.WatchNode(ctx, bandwidth.ConfigMapDir, cfg.NodeName,
 			func(l bandwidth.Limits) {
 				ct.Throttle().SetLimits(l.ClassKbps, l.CapKbps)
 				if fast {

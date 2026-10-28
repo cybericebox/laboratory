@@ -271,7 +271,7 @@ func Run() {
 			setupLog.Error(err, "bandwidth config")
 			os.Exit(1)
 		}
-		if err = (&laboratorycontroller.BandwidthReconciler{Client: mgr.GetClient(), Config: bw}).SetupWithManager(mgr); err != nil {
+		if err = (&laboratorycontroller.BandwidthReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Config: bw, EntryNamespaces: cfg.BandwidthEntryNamespaces}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Bandwidth")
 			os.Exit(1)
 		}

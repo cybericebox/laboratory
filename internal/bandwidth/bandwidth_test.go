@@ -238,3 +238,36 @@ func TestSettingsReadFromTheEnvironment(t *testing.T) {
 		t.Fatalf("from the environment: %+v", cfg.Bandwidth)
 	}
 }
+
+func TestWatchNodeReadsTheKeyOfItsNode(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "n1"), []byte(`{"v":1,"classKbps":300000,"capKbps":50000}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "n2"), []byte(`{"v":1,"classKbps":1,"capKbps":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	got := make(chan Limits, 4)
+	go func() { _ = WatchNode(ctx, dir, "n1", func(l Limits) { got <- l }, nil) }()
+	if l := recv(t, got); l.ClassKbps != 300000 || l.CapKbps != 50000 {
+		t.Fatalf("the key of n1: %+v", l)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "n1"), []byte(`{"v":1,"classKbps":100000,"capKbps":20000}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if l := recv(t, got); l.ClassKbps != 100000 {
+		t.Fatalf("after the change: %+v", l)
+	}
+}
+
+func TestWatchWithoutTheDirectoryAppliesNothingOnce(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	got := make(chan Limits, 2)
+	go func() { _ = WatchNode(ctx, filepath.Join(t.TempDir(), "absent"), "n1", func(l Limits) { got <- l }, nil) }()
+	if l := recv(t, got); !l.Zero() {
+		t.Fatalf("%+v", l)
+	}
+	cancel()
+}

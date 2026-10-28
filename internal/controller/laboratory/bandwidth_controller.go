@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -21,16 +24,26 @@ import (
 	"github.com/cybericebox/laboratory/internal/reconcileutil"
 )
 
-// BandwidthReconciler writes the bandwidth ceilings (names.AnnotationBandwidthLimits) onto the pods that apply them themselves: the
-// gateways of the groups, the WireGuard demux and the L7 proxy. See package bandwidth for the numbers. It runs on events only: a
-// node's label, a pod that appears, moves or goes (a reserve, a gateway, a proxy), a lab's gateway that is made or removed. All of
-// them are one key, so a burst of events is one pass; a pass writes only the annotations that differ.
+// BandwidthConfigMap is the ConfigMap of the entry limits: one in the namespace of the WireGuard demux and one in that of the L7 proxy,
+// a key per node (the value is what the pod on that node applies). A pod reads the key of its own node from the mounted file.
+const BandwidthConfigMap = "laboratory-bandwidth"
+
+// BandwidthReconciler writes the bandwidth ceilings the pods apply themselves. See package bandwidth for the numbers. The gateways
+// of the groups get theirs as an annotation (names.AnnotationBandwidthLimits) of the pod, which the pod reads from a downward API file;
+// the WireGuard demux and the L7 proxy get the limits of every node in a ConfigMap of their namespace (a pod of those namespaces is
+// outside what the operator may patch: the demux may run on the host network). It runs on events only: a node's label, a pod that
+// appears, moves or goes (a reserve, a gateway), a lab's gateway that is made or removed. All of them are one key, so a burst of
+// events is one pass; a pass writes only what differs.
 //
 // The Geneve ceilings of a node are not written here: the node-agent works them out from the same numbers (see nodeagent.BandwidthReconciler),
 // so the operator needs no right to write to nodes.
 type BandwidthReconciler struct {
 	Client client.Client
+	// Reader reads the ConfigMaps without a cache: the operator reads no ConfigMap cluster-wide.
+	Reader client.Reader
 	Config bandwidth.Config
+	// EntryNamespaces are the namespaces of the WireGuard demux and the L7 proxy.
+	EntryNamespaces []string
 }
 
 // Reconcile computes the plan and writes the annotations that are not as planned.
@@ -56,18 +69,50 @@ func (r *BandwidthReconciler) Reconcile(ctx context.Context, _ reconcile.Request
 	plan := bandwidthPlan(r.Config, nodes.Items, pods.Items, labs)
 
 	var first error
+	remember := func(err error) {
+		if err != nil && first == nil {
+			first = err
+		}
+	}
 	for i := range pods.Items {
 		p := &pods.Items[i]
-		want, ok := plan[types.NamespacedName{Namespace: p.Namespace, Name: p.Name}]
+		want, ok := plan.gateways[types.NamespacedName{Namespace: p.Namespace, Name: p.Name}]
 		if !ok || p.Annotations[names.AnnotationBandwidthLimits] == want {
 			continue
 		}
 		patch, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]string{names.AnnotationBandwidthLimits: want}}})
-		if err := r.Client.Patch(ctx, p, client.RawPatch(types.MergePatchType, patch)); client.IgnoreNotFound(err) != nil && first == nil {
-			first = fmt.Errorf("annotate pod %s/%s: %w", p.Namespace, p.Name, err)
+		if err := r.Client.Patch(ctx, p, client.RawPatch(types.MergePatchType, patch)); client.IgnoreNotFound(err) != nil {
+			remember(fmt.Errorf("annotate pod %s/%s: %w", p.Namespace, p.Name, err))
 		}
 	}
+	for _, ns := range r.EntryNamespaces {
+		remember(r.writeEntryLimits(ctx, ns, plan.entry))
+	}
 	return ctrl.Result{}, first
+}
+
+// writeEntryLimits makes the ConfigMap of a namespace hold the limits of every node.
+func (r *BandwidthReconciler) writeEntryLimits(ctx context.Context, ns string, entry map[string]string) error {
+	var cm corev1.ConfigMap
+	err := r.Reader.Get(ctx, types.NamespacedName{Namespace: ns, Name: BandwidthConfigMap}, &cm)
+	switch {
+	case apierrors.IsNotFound(err):
+		cm = corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: BandwidthConfigMap}, Data: entry}
+		if err := r.Client.Create(ctx, &cm); err != nil && !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("create the bandwidth ConfigMap in %s: %w", ns, err)
+		}
+		return nil
+	case err != nil:
+		return fmt.Errorf("read the bandwidth ConfigMap in %s: %w", ns, err)
+	}
+	if maps.Equal(cm.Data, entry) {
+		return nil
+	}
+	cm.Data = entry
+	if err := r.Client.Update(ctx, &cm); err != nil {
+		return fmt.Errorf("update the bandwidth ConfigMap in %s: %w", ns, err)
+	}
+	return nil
 }
 
 // relevantBandwidthPod says a pod takes part: it carries a ceiling or declares a reserve.
@@ -76,7 +121,7 @@ func relevantBandwidthPod(o client.Object) bool {
 	if !ok {
 		return false
 	}
-	return p.Annotations[names.AnnotationBandwidthReserve] != "" || bandwidthKindOf(p) != notBandwidthPod
+	return p.Annotations[names.AnnotationBandwidthReserve] != "" || isBandwidthGateway(p)
 }
 
 // SetupWithManager reconciles one fixed key on the events that change the plan.

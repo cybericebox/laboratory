@@ -148,10 +148,10 @@ func Run() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
-	// The bandwidth limits of this node come from the annotation of the pod (a downward API volume): the class of the proxy and the
+	// The bandwidth limits of this node come from the operator's ConfigMap (a volume, the key of this node): the class of the proxy and the
 	// ceiling of one participant. A pod made without the volume has no limits.
 	go func() {
-		err := bandwidth.Watch(ctx, bandwidth.AnnotationsFile,
+		err := bandwidth.WatchNode(ctx, bandwidth.ConfigMapDir, os.Getenv("NODE_NAME"),
 			func(l bandwidth.Limits) {
 				handler.Throttle().SetLimits(l.ClassKbps, l.CapKbps)
 				log.Info("bandwidth limits", "classKbps", l.ClassKbps, "participantKbps", l.CapKbps)
