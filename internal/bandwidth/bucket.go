@@ -71,6 +71,21 @@ func (b *Bucket) Reserve(now time.Time, n int) time.Duration {
 // Limited says the bucket has a rate.
 func (b *Bucket) Limited() bool { return b.rate > 0 }
 
+// Prime sets the tokens a bucket starts with (a newcomer gets a small burst, not a full one, so a flood of fresh keys cannot each
+// spend a full burst).
+func (b *Bucket) Prime(now time.Time, tokens float64) {
+	b.at = now
+	b.tokens = min(tokens, b.burst)
+}
+
+// DefaultMaxKeys bounds the participants a Throttle tracks. The keys come from sessions and clients the caller has accepted, but a
+// bound is still what keeps the memory and the rescans of a throttle from growing with whatever reaches it; the participants past
+// it share one bucket.
+const DefaultMaxKeys = 65536
+
+// newcomerBurst is the tokens a new participant starts with: a few full-size packets.
+const newcomerBurst = 16384
+
 // Throttle keeps participants to their fair share of a class: every participant has a bucket of its own, all of them also take
 // from one bucket of the class, and the rate of each is the class divided by the number of participants that were active lately,
 // never more than the cap. Participants are named by a key (a session, a client); one that sends nothing for the window stops
@@ -83,6 +98,8 @@ type Throttle[K comparable] struct {
 	capKbps  int64
 	class    Bucket
 	parts    map[K]*part
+	maxKeys  int
+	overflow *part // shared by the participants past maxKeys
 	active   int
 	nextScan time.Time
 }
@@ -98,7 +115,14 @@ func NewThrottle[K comparable](window time.Duration) *Throttle[K] {
 	if window <= 0 {
 		window = 5 * time.Second
 	}
-	return &Throttle[K]{now: time.Now, window: window, parts: map[K]*part{}}
+	return &Throttle[K]{now: time.Now, window: window, parts: map[K]*part{}, maxKeys: DefaultMaxKeys}
+}
+
+// SetMaxKeys changes the bound on the participants tracked (the rest share one bucket).
+func (t *Throttle[K]) SetMaxKeys(n int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.maxKeys = max(n, 1)
 }
 
 // SetLimits sets the class and the cap of one participant in kbit/s; 0 is no limit of that kind. Both 0 turns the throttle off.
@@ -138,7 +162,8 @@ func (t *Throttle[K]) rateLocked() int64 {
 	return FairShare(t.classKbp, t.capKbps, t.active)
 }
 
-// rescanLocked counts the active participants, forgets the long silent ones and gives everyone the new rate.
+// rescanLocked counts the active participants, forgets the long silent ones and gives everyone the new rate. It runs at most once
+// a second (and when the limits change): a newcomer is counted at once, the others meet the new share at the next scan.
 func (t *Throttle[K]) rescanLocked(now time.Time) {
 	t.nextScan = now.Add(time.Second)
 	t.active = 0
@@ -150,25 +175,51 @@ func (t *Throttle[K]) rescanLocked(now time.Time) {
 			delete(t.parts, key)
 		}
 	}
+	if t.overflow != nil {
+		if silent := now.Sub(t.overflow.last); silent <= t.window {
+			t.active++
+		} else if silent > 4*t.window {
+			t.overflow = nil
+		}
+	}
 	rate := t.rateLocked()
 	for _, p := range t.parts {
 		p.b.SetRate(rate)
 	}
+	if t.overflow != nil {
+		t.overflow.b.SetRate(rate)
+	}
 }
 
 func (t *Throttle[K]) partLocked(key K, now time.Time) *part {
-	p, ok := t.parts[key]
-	if !ok {
-		p = &part{}
-		t.parts[key] = p
-		p.last = now
-		t.rescanLocked(now) // a newcomer changes everybody's share at once
-		return p
+	p, known := t.parts[key]
+	if known {
+		p.last = now // before the scan, so the caller counts as active in it
 	}
-	p.last = now
 	if now.After(t.nextScan) {
 		t.rescanLocked(now)
 	}
+	if known {
+		return p
+	}
+	if len(t.parts) >= t.maxKeys {
+		if t.overflow == nil {
+			t.overflow = t.newPartLocked(now)
+		}
+		t.overflow.last = now
+		return t.overflow
+	}
+	p = t.newPartLocked(now)
+	t.parts[key] = p
+	return p
+}
+
+// newPartLocked makes a participant: counted at once, at the current share, with a small first burst.
+func (t *Throttle[K]) newPartLocked(now time.Time) *part {
+	p := &part{last: now}
+	t.active++
+	p.b.SetRate(t.rateLocked())
+	p.b.Prime(now, newcomerBurst)
 	return p
 }
 

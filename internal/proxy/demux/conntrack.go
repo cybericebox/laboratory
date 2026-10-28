@@ -281,7 +281,9 @@ func (c *ConnTrack) LookupForwardSized(receiverIndex uint32, src Socket, size in
 	if !e.state.packets.take(now, c.limits.SessionRate, c.limits.SessionBurst) {
 		return Socket{}, false
 	}
-	if size > 0 {
+	// Only a completed session is a participant: a handshake in progress is unauthenticated, anyone can start one, and it must not
+	// make state in the throttle.
+	if size > 0 && !e.partial && !e.state.partial {
 		if e.state.id == 0 {
 			e.state.id = sessionIDs.Add(1)
 		}

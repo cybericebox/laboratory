@@ -143,7 +143,81 @@ func TestThrottleDelayPaces(t *testing.T) {
 	th := newTestThrottle(c)
 	th.SetLimits(0, 8000) // 1 MB/s
 	th.Delay("a", 100_000)
-	if d := th.Delay("a", 500_000); d < 490*time.Millisecond || d > 510*time.Millisecond {
+	// a newcomer starts with a small burst (16 kB): the first 100 kB is already 84 kB in debt, and 500 kB more is 584 kB of waiting
+	if d := th.Delay("a", 500_000); d < 570*time.Millisecond || d > 600*time.Millisecond {
 		t.Fatalf("delay %v", d)
+	}
+}
+
+func TestThrottleKeysAreBounded(t *testing.T) {
+	c := &clock{time.Unix(1000, 0)}
+	th := newTestThrottle(c)
+	th.SetMaxKeys(100)
+	th.SetLimits(8000, 800)
+	for i := 0; i < 10000; i++ {
+		th.Allow(string(rune('a'+i%26))+string(rune(i)), 100)
+	}
+	th.mu.Lock()
+	n := len(th.parts)
+	over := th.overflow != nil
+	th.mu.Unlock()
+	if n > 100 || !over {
+		t.Fatalf("tracked %d keys (max 100), overflow bucket %v", n, over)
+	}
+}
+
+func TestThrottleOverflowKeysShareOneBucket(t *testing.T) {
+	c := &clock{time.Unix(1000, 0)}
+	th := newTestThrottle(c)
+	th.SetMaxKeys(1)
+	th.SetLimits(0, 800) // 100 kB/s each
+	th.Allow("known", 1)
+	passed := 0
+	for tick := 0; tick < 100; tick++ { // 1 s: a hundred strangers each try 20 kB
+		c.t = c.t.Add(10 * time.Millisecond)
+		for i := 0; i < 100; i++ {
+			if th.Allow(string(rune(1000+i)), 20000) {
+				passed += 20000
+			}
+		}
+	}
+	// one shared bucket: about 100 kB/s plus its small first burst, not a hundred of them
+	if passed > 300_000 {
+		t.Fatalf("100 unknown keys passed %d bytes in a second: they must share one bucket", passed)
+	}
+}
+
+func TestThrottleNewcomersDoNotTriggerARescan(t *testing.T) {
+	c := &clock{time.Unix(1000, 0)}
+	th := newTestThrottle(c)
+	th.SetLimits(8000, 0)
+	th.Allow("a", 1)
+	th.mu.Lock()
+	next := th.nextScan
+	th.mu.Unlock()
+	for i := 0; i < 1000; i++ {
+		th.Allow(string(rune(2000+i)), 1)
+	}
+	th.mu.Lock()
+	same := th.nextScan.Equal(next)
+	active := th.active
+	th.mu.Unlock()
+	if !same {
+		t.Fatal("a newcomer must not rescan every participant")
+	}
+	if active != 1001 {
+		t.Fatalf("a newcomer is counted at once: %d", active)
+	}
+}
+
+func TestThrottleNewcomerStartsWithASmallBurst(t *testing.T) {
+	c := &clock{time.Unix(1000, 0)}
+	th := newTestThrottle(c)
+	th.SetLimits(0, 80000) // 10 MB/s: burst would be 1 MB
+	if !th.Allow("new", 10000) {
+		t.Fatal("a few packets pass")
+	}
+	if th.Allow("new", 1_000_000) {
+		t.Fatal("a newcomer must not spend a full burst at once")
 	}
 }
