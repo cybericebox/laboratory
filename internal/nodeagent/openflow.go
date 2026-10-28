@@ -343,7 +343,7 @@ func (f *FlowManager) rebuildT6Locked(vni uint) error {
 	if limited {
 		// the meters are there before the flows that name them
 		if err := f.meters.Split(vni, len(ves)); err != nil {
-			return fmt.Errorf("Geneve meters of VNI %d: %w", vni, err)
+			return fmt.Errorf("the Geneve meters of VNI %d: %w", vni, err)
 		}
 	}
 	plan := planT6(vni, localNos, ves, geneveNo, limited)
@@ -367,7 +367,7 @@ func (f *FlowManager) rebuildT6Locked(vni uint) error {
 // dropMetersLocked removes the meter of a VNI that no longer floods to a remote node (its flows are already built without it).
 func (f *FlowManager) dropMetersLocked(vni uint) error {
 	if err := f.meters.Unsplit(vni); err != nil {
-		return fmt.Errorf("Geneve meters of VNI %d: %w", vni, err)
+		return fmt.Errorf("the Geneve meters of VNI %d: %w", vni, err)
 	}
 	return nil
 }

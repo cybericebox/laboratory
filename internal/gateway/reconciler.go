@@ -283,13 +283,7 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 		}
 		r.applied[gw.Name] = desired
 	}
-	if r.Shaper != nil {
-		// A lab whose bandwidth ceiling cannot be set is still served (its internet is the point), but not silently: the event says so,
-		// and the next reconcile tries again.
-		if err := r.Shaper.Track(ifaceName); err != nil && r.Recorder != nil {
-			r.Recorder.Eventf(gw, corev1.EventTypeWarning, "BandwidthLimitFailed", "the bandwidth ceiling of %s is not applied: %v", ifaceName, err)
-		}
-	}
+	r.shape(gw, ifaceName)
 	state := r.applied[gw.Name]
 	if dhcpEnabled {
 		gwIP := firstHostIP(cidr)
@@ -339,4 +333,15 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 	}
 	labstatus.SetReady(&newStatus.Conditions, gw.Generation, true, labstatus.ReasonReady, "lab internet gateway ready")
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, r.patchStatus(ctx, gw, newStatus)
+}
+
+// shape puts the bandwidth ceiling of the pod on a lab interface. A lab whose ceiling cannot be set is still served (its internet is
+// the point), but not silently: the event says so, and the next reconcile tries again.
+func (r *LabGatewayReconciler) shape(gw *laboratoryv1alpha1.LabGateway, iface string) {
+	if r.Shaper == nil {
+		return
+	}
+	if err := r.Shaper.Track(iface); err != nil && r.Recorder != nil {
+		r.Recorder.Eventf(gw, corev1.EventTypeWarning, "BandwidthLimitFailed", "the bandwidth ceiling of %s is not applied: %v", iface, err)
+	}
 }

@@ -15,11 +15,11 @@ type t6Flow struct {
 // planT6 lists the flows of a VNI's flood: the local outputs, and the Geneve outputs either in t6 itself or, limited, behind
 // the lab meter (t7) and the node meter (t8).
 func planT6(vni uint, localNos, remoteVTEPs []uint32, geneveNo uint32, limited bool) []t6Flow {
-	var localActions []byte
+	localActions := make([]byte, 0, 16*len(localNos))
 	for _, no := range localNos {
 		localActions = append(localActions, ofclient.BuildActionsOutput(no)...)
 	}
-	var tunnel []byte
+	tunnel := make([]byte, 0, 48*len(remoteVTEPs))
 	for _, ipBE := range remoteVTEPs {
 		tunnel = append(tunnel, ofclient.BuildActionsSetFieldTunnelID(uint64(vni))...)
 		tunnel = append(tunnel, ofclient.BuildActionsSetTunDst(ipBE)...)

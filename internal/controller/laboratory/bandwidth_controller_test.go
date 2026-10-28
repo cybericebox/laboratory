@@ -35,8 +35,6 @@ func bwPod(ns, name, node string, labels map[string]string, reserve string) core
 
 var (
 	gatewayLabels = map[string]string{names.LabelComponent: names.ComponentGateway}
-	demuxLabels   = map[string]string{"app": names.WGDemuxApp}
-	l7Labels      = map[string]string{"app": names.ProxyL7App}
 )
 
 func limitsOf(t *testing.T, plan bandwidthPlanResult, ns, name string) bandwidth.Limits {

@@ -48,7 +48,7 @@ func TestPlanT6LimitedSendsOnlyWhatLeavesTheNodeThroughTheMeters(t *testing.T) {
 		t.Fatalf("remote origin stays local: %+v", remote)
 	}
 	// the tables behind the t6 hand-off exist before t6 points at them
-	if !(plan[0].table == geneveTable2 && plan[1].table == geneveTable1 && plan[2].table == 6) {
+	if plan[0].table != geneveTable2 || plan[1].table != geneveTable1 || plan[2].table != 6 {
 		t.Fatal("the flows must be added back to front")
 	}
 }

@@ -4,12 +4,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/cybericebox/laboratory/internal/names"
-	"github.com/cybericebox/laboratory/pkg/config"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/pkg/config"
 
 	"context"
 )

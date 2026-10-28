@@ -1,11 +1,12 @@
 package demux
 
 import (
-	"github.com/cybericebox/laboratory/internal/bandwidth"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/cybericebox/laboratory/internal/bandwidth"
 )
 
 const conntrackTTL = 3 * time.Minute

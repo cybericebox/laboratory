@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"github.com/cybericebox/laboratory/internal/bandwidth"
 	"io"
 	"net/http"
 	"net/http/httputil"
@@ -12,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/cybericebox/laboratory/internal/bandwidth"
 
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"

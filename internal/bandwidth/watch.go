@@ -84,7 +84,7 @@ func watchFile(ctx context.Context, dir string, read func() (Limits, error), app
 	if err != nil {
 		return err
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 	if err := w.Add(dir); err != nil {
 		apply(Limits{})
 		<-ctx.Done()

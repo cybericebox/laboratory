@@ -4,12 +4,13 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"github.com/cybericebox/laboratory/internal/bandwidth"
 	"net"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/cybericebox/laboratory/internal/bandwidth"
 
 	"github.com/cybericebox/laboratory/internal/errorlog"
 

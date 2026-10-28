@@ -114,7 +114,7 @@ func (g *geneveMeters) refreshLocked() error {
 		}
 		if err := g.be.MeterSet(labMeterID(vni), uint32(want), burstFor(want)); err != nil {
 			delete(g.lab, vni)
-			remember(fmt.Errorf("Geneve meter of VNI %d: %w", vni, err))
+			remember(fmt.Errorf("the Geneve meter of VNI %d: %w", vni, err))
 		} else {
 			g.lab[vni] = want
 		}

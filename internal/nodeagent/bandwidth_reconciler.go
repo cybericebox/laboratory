@@ -17,6 +17,9 @@ import (
 	"github.com/cybericebox/laboratory/internal/names"
 )
 
+// podNodeNameIndex is the field index of pods by node that the node-agent registers.
+const podNodeNameIndex = "spec.nodeName"
+
 // GeneveLimiter is what the reconciler drives: the flow manager.
 type GeneveLimiter interface {
 	SetGeneveLimits(bandwidth.Limits) error
@@ -44,7 +47,7 @@ func (r *BandwidthReconciler) Reconcile(ctx context.Context, req reconcile.Reque
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	var pods corev1.PodList
-	if err := r.Client.List(ctx, &pods, client.MatchingFields{"spec.nodeName": r.NodeName}); err != nil {
+	if err := r.Client.List(ctx, &pods, client.MatchingFields{podNodeNameIndex: r.NodeName}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("list the pods of the node: %w", err)
 	}
 	limits := r.Config.NodeGeneveLimits(r.Config.ForNode(&node, pods.Items))

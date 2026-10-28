@@ -162,17 +162,7 @@ func Run() {
 		os.Exit(1)
 	}
 
-	if cfg.Bandwidth.Enabled {
-		bw := cfg.Bandwidth.Config()
-		if err := bw.Validate(); err != nil {
-			log.Error(err, "bandwidth config")
-			os.Exit(1)
-		}
-		if err := (&nodeagent.BandwidthReconciler{Client: mgr.GetClient(), NodeName: cfg.NodeName, Config: bw, Flows: flows}).SetupWithManager(mgr); err != nil {
-			log.Error(err, "setup BandwidthReconciler")
-			os.Exit(1)
-		}
-	}
+	setupBandwidth(mgr, cfg, flows)
 
 	if err := (&nodeagent.ConnectionReconciler{
 		Client:      mgr.GetClient(),
@@ -313,4 +303,21 @@ func nodeAddress() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no non-loopback IPv4 address found; set NODE_ADDRESS env")
+}
+
+// setupBandwidth holds the Geneve traffic of this node to its class with OVS meters (package bandwidth); off by default.
+func setupBandwidth(mgr ctrl.Manager, cfg *nodeagent.Config, flows *nodeagent.FlowManager) {
+	if !cfg.Bandwidth.Enabled {
+		return
+	}
+	log := ctrl.Log.WithName("node-agent")
+	bw := cfg.Bandwidth.Config()
+	if err := bw.Validate(); err != nil {
+		log.Error(err, "bandwidth config")
+		os.Exit(1)
+	}
+	if err := (&nodeagent.BandwidthReconciler{Client: mgr.GetClient(), NodeName: cfg.NodeName, Config: bw, Flows: flows}).SetupWithManager(mgr); err != nil {
+		log.Error(err, "setup BandwidthReconciler")
+		os.Exit(1)
+	}
 }
