@@ -182,7 +182,6 @@ DEVICE_DEFAULT_MEMORY: {{ .Values.limits.device.defaultMemory | quote }}
 DEVICE_MAX_CPU: {{ .Values.limits.device.maxCpu | quote }}
 DEVICE_MAX_MEMORY: {{ .Values.limits.device.maxMemory | quote }}
 DEVICE_NO_CPU_LIMIT: {{ .Values.limits.device.noCpuLimit | quote }}
-GROUP_SIZING_MEASURED: {{ .Values.groupSizing.measured | quote }}
 GROUP_MAX_USERS: {{ .Values.groupLimits.maxUsers | quote }}
 GROUP_MAX_LABS: {{ .Values.groupLimits.maxLabs | quote }}
 GROUP_DEFAULT_USERS: {{ .Values.groupLimits.defaultUsers | quote }}
