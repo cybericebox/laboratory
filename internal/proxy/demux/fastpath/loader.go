@@ -108,6 +108,23 @@ func Open(o Options) (*FastPath, error) {
 	return f, nil
 }
 
+// SetRate changes the packet rate of one session (both directions together) in the running fast path; rate 0 = unlimited. Sessions
+// already forwarded keep their tokens and meet the new rate at their next refill.
+func (f *FastPath) SetRate(rate float64, burst int) error {
+	var cfg WgFastpathWgCfg
+	if err := f.objs.WgCfg.Lookup(uint32(0), &cfg); err != nil {
+		return fmt.Errorf("read the config: %w", err)
+	}
+	cfg.RatePerS, cfg.Burst = 0, 0
+	if rate > 0 {
+		cfg.RatePerS, cfg.Burst = uint64(math.Ceil(rate)), uint64(max(burst, 1))
+	}
+	if err := f.objs.WgCfg.Put(uint32(0), cfg); err != nil {
+		return fmt.Errorf("write the config: %w", err)
+	}
+	return nil
+}
+
 func (f *FastPath) load() error {
 	spec, err := LoadWgFastpath()
 	if err != nil {

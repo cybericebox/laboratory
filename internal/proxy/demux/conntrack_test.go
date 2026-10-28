@@ -269,3 +269,63 @@ func TestSessionPacketRate(t *testing.T) {
 		t.Fatalf("the second session has its own burst of 3, %d passed", ok)
 	}
 }
+
+// The bandwidth throttle holds each session to its fair share of the class, in bytes, both directions together.
+func TestSessionBandwidthThrottle(t *testing.T) {
+	c, now := clockTrack(DefaultLimits())
+	c.Throttle().SetClock(func() time.Time { return *now })
+	client, backend := sock("1.1.1.1", 1000), sock("10.0.0.1", 51820)
+	session(t, c, 10, 20, client, backend)
+	// no limits set: every sized packet passes
+	for i := 0; i < 100; i++ {
+		if _, ok := c.LookupForwardSized(20, client, 1400); !ok {
+			t.Fatal("a throttle without limits must pass everything")
+		}
+	}
+	c.Throttle().SetLimits(0, 8000) // 8 Mbit/s = 1 MB/s for the one session
+	passed := 0
+	for tick := 0; tick < 1000; tick++ { // 10 s, 100 packets of 1400 bytes offered every 10 ms
+		*now = now.Add(10 * time.Millisecond)
+		for i := 0; i < 100; i++ {
+			if _, ok := c.LookupForwardSized(20, client, 1400); ok {
+				passed += 1400
+			}
+		}
+	}
+	if passed < 9_500_000 || passed > 10_500_000 {
+		t.Fatalf("a session held to 1 MB/s passed %d bytes in 10 s", passed)
+	}
+	// an unsized lookup (size 0) is not counted and not refused
+	if _, ok := c.LookupForward(20, client); !ok {
+		t.Fatal("size 0 passes")
+	}
+}
+
+func TestTwoSessionsShareTheClass(t *testing.T) {
+	c, now := clockTrack(DefaultLimits())
+	c.Throttle().SetClock(func() time.Time { return *now })
+	c.Throttle().SetLimits(8000, 0) // one class of 1 MB/s
+	a, b := sock("1.1.1.1", 1000), sock("2.2.2.2", 2000)
+	backend := sock("10.0.0.1", 51820)
+	session(t, c, 10, 20, a, backend)
+	session(t, c, 11, 21, b, backend)
+	got := map[uint32]int{}
+	for tick := 0; tick < 1000; tick++ {
+		*now = now.Add(10 * time.Millisecond)
+		for i := 0; i < 100; i++ {
+			if _, ok := c.LookupForwardSized(20, a, 1400); ok {
+				got[20] += 1400
+			}
+			if _, ok := c.LookupForwardSized(21, b, 1400); ok {
+				got[21] += 1400
+			}
+		}
+	}
+	total := got[20] + got[21]
+	if total < 9_300_000 || total > 10_800_000 {
+		t.Fatalf("the class is 1 MB/s, the two sessions passed %d bytes in 10 s", total)
+	}
+	if got[20] < 3_500_000 || got[21] < 3_500_000 {
+		t.Fatalf("each session gets about half: %d and %d", got[20], got[21])
+	}
+}

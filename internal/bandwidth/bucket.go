@@ -75,14 +75,14 @@ func (b *Bucket) Limited() bool { return b.rate > 0 }
 // from one bucket of the class, and the rate of each is the class divided by the number of participants that were active lately,
 // never more than the cap. Participants are named by a key (a session, a client); one that sends nothing for the window stops
 // counting and is forgotten later.
-type Throttle struct {
+type Throttle[K comparable] struct {
 	mu       sync.Mutex
 	now      func() time.Time
 	window   time.Duration
 	classKbp int64
 	capKbps  int64
 	class    Bucket
-	parts    map[string]*part
+	parts    map[K]*part
 	active   int
 	nextScan time.Time
 }
@@ -94,15 +94,15 @@ type part struct {
 
 // NewThrottle makes a throttle with no limits; SetLimits turns it on. window is how long a silent participant still counts as
 // active (5 s when zero).
-func NewThrottle(window time.Duration) *Throttle {
+func NewThrottle[K comparable](window time.Duration) *Throttle[K] {
 	if window <= 0 {
 		window = 5 * time.Second
 	}
-	return &Throttle{now: time.Now, window: window, parts: map[string]*part{}}
+	return &Throttle[K]{now: time.Now, window: window, parts: map[K]*part{}}
 }
 
 // SetLimits sets the class and the cap of one participant in kbit/s; 0 is no limit of that kind. Both 0 turns the throttle off.
-func (t *Throttle) SetLimits(classKbps, capKbps int64) {
+func (t *Throttle[K]) SetLimits(classKbps, capKbps int64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.classKbp, t.capKbps = classKbps, capKbps
@@ -111,27 +111,27 @@ func (t *Throttle) SetLimits(classKbps, capKbps int64) {
 }
 
 // Enabled says some limit is set.
-func (t *Throttle) Enabled() bool {
+func (t *Throttle[K]) Enabled() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.classKbp > 0 || t.capKbps > 0
 }
 
 // Active is how many participants counted as active at the last scan.
-func (t *Throttle) Active() int {
+func (t *Throttle[K]) Active() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.active
 }
 
 // Rate is the rate of one participant now, in kbit/s (0 = unlimited).
-func (t *Throttle) Rate() int64 {
+func (t *Throttle[K]) Rate() int64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.rateLocked()
 }
 
-func (t *Throttle) rateLocked() int64 {
+func (t *Throttle[K]) rateLocked() int64 {
 	if t.classKbp <= 0 && t.capKbps <= 0 {
 		return 0
 	}
@@ -139,7 +139,7 @@ func (t *Throttle) rateLocked() int64 {
 }
 
 // rescanLocked counts the active participants, forgets the long silent ones and gives everyone the new rate.
-func (t *Throttle) rescanLocked(now time.Time) {
+func (t *Throttle[K]) rescanLocked(now time.Time) {
 	t.nextScan = now.Add(time.Second)
 	t.active = 0
 	for key, p := range t.parts {
@@ -156,7 +156,7 @@ func (t *Throttle) rescanLocked(now time.Time) {
 	}
 }
 
-func (t *Throttle) partLocked(key string, now time.Time) *part {
+func (t *Throttle[K]) partLocked(key K, now time.Time) *part {
 	p, ok := t.parts[key]
 	if !ok {
 		p = &part{}
@@ -174,7 +174,7 @@ func (t *Throttle) partLocked(key string, now time.Time) *part {
 
 // Allow takes n bytes of a participant: false when its bucket or the class is empty (the packet is dropped). Nothing is taken from
 // the class when the participant's own bucket refuses.
-func (t *Throttle) Allow(key string, n int) bool {
+func (t *Throttle[K]) Allow(key K, n int) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.classKbp <= 0 && t.capKbps <= 0 {
@@ -190,7 +190,7 @@ func (t *Throttle) Allow(key string, n int) bool {
 
 // Delay takes n bytes of a participant and returns how long the sender has to wait (the stream is paced). The longer of the
 // participant's and the class's wait counts.
-func (t *Throttle) Delay(key string, n int) time.Duration {
+func (t *Throttle[K]) Delay(key K, n int) time.Duration {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.classKbp <= 0 && t.capKbps <= 0 {
@@ -199,4 +199,11 @@ func (t *Throttle) Delay(key string, n int) time.Duration {
 	now := t.now()
 	p := t.partLocked(key, now)
 	return max(p.b.Reserve(now, n), t.class.Reserve(now, n))
+}
+
+// SetClock replaces the clock (tests move it by hand).
+func (t *Throttle[K]) SetClock(now func() time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.now = now
 }

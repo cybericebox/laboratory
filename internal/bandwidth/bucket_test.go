@@ -53,8 +53,8 @@ type clock struct{ t time.Time }
 
 func (c *clock) now() time.Time { return c.t }
 
-func newTestThrottle(c *clock) *Throttle {
-	th := NewThrottle(5 * time.Second)
+func newTestThrottle(c *clock) *Throttle[string] {
+	th := NewThrottle[string](5 * time.Second)
 	th.now = c.now
 	return th
 }

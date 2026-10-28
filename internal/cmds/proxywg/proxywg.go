@@ -28,6 +28,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/bandwidth"
 	"github.com/cybericebox/laboratory/internal/health"
 	"github.com/cybericebox/laboratory/internal/names"
 	proxy "github.com/cybericebox/laboratory/internal/proxy"
@@ -155,7 +156,26 @@ func Run() {
 		close(stop)
 	}()
 	var stats func() map[string]uint64
-	runs := []func(){func() { ct.RunTTLCleanup(stop) }, func() { table.RunResolverContext(ctx, 30*time.Second) }, func() { dmx.Run(stop) }}
+	// The bandwidth limits of this node come from the annotation of the pod (a downward API volume): the class and the ceiling of one
+	// participant. The userspace relay throttles every session by them; the kernel fast path gets the matching packet rate. A pod made
+	// without the volume has no limits.
+	runs := []func(){func() {
+		err := bandwidth.Watch(ctx, bandwidth.AnnotationsFile,
+			func(l bandwidth.Limits) {
+				ct.Throttle().SetLimits(l.ClassKbps, l.CapKbps)
+				if fast {
+					pps := demux.PacketRateFor(cfg.SessionRate, l)
+					if err := fp.SetRate(pps, demux.PacketBurstFor(pps, cfg.SessionBurst)); err != nil {
+						log.Error(err, "set the packet rate of the fast path")
+					}
+				}
+				log.Info("bandwidth limits", "classKbps", l.ClassKbps, "participantKbps", l.CapKbps)
+			},
+			func(err error) { log.Error(err, "read the bandwidth annotation") })
+		if err != nil {
+			log.Error(err, "watch the bandwidth annotation")
+		}
+	}, func() { ct.RunTTLCleanup(stop) }, func() { table.RunResolverContext(ctx, 30*time.Second) }, func() { dmx.Run(stop) }}
 	if fast {
 		stats = func() map[string]uint64 { return fp.Stats() }
 		runs = append(runs, func() { restoreOnce(ctx, mgr, watcher, fp, ct, table) }, func() { resync(ctx, cfg.Resync, fp, ct) })

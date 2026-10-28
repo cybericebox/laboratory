@@ -259,7 +259,7 @@ func (d *Demux) handleType4Userspace(pkt []byte, src *net.UDPAddr) {
 			return
 		}
 	}
-	dst, found := d.conntrack.LookupForward(receiverIndex, from)
+	dst, found := d.conntrack.LookupForwardSized(receiverIndex, from, len(pkt))
 	if !found {
 		return
 	}

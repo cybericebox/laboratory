@@ -1,6 +1,7 @@
 package demux
 
 import (
+	"github.com/cybericebox/laboratory/internal/bandwidth"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -14,7 +15,13 @@ type Socket struct {
 	Port uint16
 }
 
+// sessionIDs numbers the sessions for the bandwidth throttle (a number is cheaper to hash than a string, and the demux is the hot path).
+var sessionIDs atomic.Uint64
+
 type sessionState struct {
+	// id names the session to the bandwidth throttle (0 = not numbered yet); both entries of a session share the state, so the
+	// two directions are one participant.
+	id         uint64
 	seen, roam time.Time
 	packets    bucket
 	group      string
@@ -45,6 +52,8 @@ type ConnTrack struct {
 	sink       Sink
 	src        SourceFor
 	sinkErrors atomic.Uint64
+	// throttle holds each session to its fair share of the entry class (see package bandwidth); it does nothing until limits are set.
+	throttle *bandwidth.Throttle[uint64]
 }
 
 // take refills a bucket and takes one token from it; false when it is empty. rate 0 = unlimited.
@@ -70,8 +79,12 @@ func (b *bucket) take(now time.Time, rate float64, burst int) bool {
 func NewConnTrack() *ConnTrack { return NewConnTrackWithLimits(DefaultLimits()) }
 
 func NewConnTrackWithLimits(l Limits) *ConnTrack {
-	return &ConnTrack{entries: make(map[uint32]*ConnEntry), limits: l, now: time.Now}
+	return &ConnTrack{entries: make(map[uint32]*ConnEntry), limits: l, now: time.Now, throttle: bandwidth.NewThrottle[uint64](5 * time.Second)}
 }
+
+// Throttle is the bandwidth throttle of the sessions: SetLimits turns it on, with the class of the demux and the ceiling of one
+// participant.
+func (c *ConnTrack) Throttle() *bandwidth.Throttle[uint64] { return c.throttle }
 
 // Len is the number of entries.
 func (c *ConnTrack) Len() int {
@@ -238,6 +251,12 @@ func (c *ConnTrack) LookupSender(index uint32) (Socket, bool) {
 // roaming, which is allowed, but at most once per RoamInterval for a session: a packet from a third address within the
 // interval is not forwarded and moves nothing (so a spoofed packet cannot keep dragging the session around).
 func (c *ConnTrack) LookupForward(receiverIndex uint32, src Socket) (dst Socket, found bool) {
+	return c.LookupForwardSized(receiverIndex, src, 0)
+}
+
+// LookupForwardSized is LookupForward for a packet of size bytes, which also has to fit the session's share of the bandwidth class
+// (a packet over it is not forwarded, like one over the packet rate). Size 0 is not counted.
+func (c *ConnTrack) LookupForwardSized(receiverIndex uint32, src Socket, size int) (dst Socket, found bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.entries[receiverIndex]
@@ -260,6 +279,14 @@ func (c *ConnTrack) LookupForward(receiverIndex uint32, src Socket) (dst Socket,
 	// The demux is shared by everyone: a session has a packet rate of its own.
 	if !e.state.packets.take(now, c.limits.SessionRate, c.limits.SessionBurst) {
 		return Socket{}, false
+	}
+	if size > 0 {
+		if e.state.id == 0 {
+			e.state.id = sessionIDs.Add(1)
+		}
+		if !c.throttle.Allow(e.state.id, size) {
+			return Socket{}, false
+		}
 	}
 	c.touchLocked(e, now)
 	return e.SenderSocket, true
