@@ -115,10 +115,15 @@ func (c Config) LabInternetKbps(n NodeLimits, labs int) int64 {
 // LabGeneveKbps is the rate of the OVS meter of one lab that is split between nodes, when splitLabs such labs are on the node and
 // the lab's frames go to vteps remote nodes (a flooded frame is copied to each, the meter counts it once, so the rate is divided).
 func (c Config) LabGeneveKbps(n NodeLimits, splitLabs, vteps int) int64 {
+	return LabGeneveRate(n.GeneveKbps, c.LabGeneveCapMbit*1000, splitLabs, vteps)
+}
+
+// LabGeneveRate is LabGeneveKbps from the class and the cap in kbit/s, which is all the node-agent is given.
+func LabGeneveRate(classKbps, labCapKbps int64, splitLabs, vteps int) int64 {
 	if vteps < 1 {
 		vteps = 1
 	}
-	return max(FairShare(n.GeneveKbps, c.LabGeneveCapMbit*1000, splitLabs)/int64(vteps), 1)
+	return max(FairShare(classKbps, labCapKbps, splitLabs)/int64(vteps), 1)
 }
 
 // NodeGeneveKbps is the rate of the node meter, the one every split lab goes through: the class divided by the most remote nodes
