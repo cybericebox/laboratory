@@ -34,7 +34,9 @@ type meterBackend interface {
 	MeterDelete(id uint32) error
 }
 
-func burstFor(kbps int64) uint32 { return uint32(max(kbps/10, minBurstKbit)) }
+// burstFor is half a second of the rate (kbit). A drop meter makes a single TCP flow back off hard: with a tenth of a second of burst a lone
+// flow reached half of its ceiling on AWS (101 of 200 Mbit/s), with half a second all of it. The ceiling still holds over any longer time.
+func burstFor(kbps int64) uint32 { return uint32(max(kbps/2, minBurstKbit)) }
 
 // geneveMeters keeps the rates of the lab meters and the node meter. All methods are safe for concurrent use.
 type geneveMeters struct {

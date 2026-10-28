@@ -188,7 +188,7 @@ func TestAFailedMeterIsRetriedAtTheNextChange(t *testing.T) {
 }
 
 func TestBurstCoversASegment(t *testing.T) {
-	if burstFor(100) < 2048 || burstFor(1_000_000) != 100000 {
+	if burstFor(100) < 2048 || burstFor(1_000_000) != 500000 {
 		t.Fatalf("burst: %d %d", burstFor(100), burstFor(1_000_000))
 	}
 }
