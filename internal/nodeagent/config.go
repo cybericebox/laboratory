@@ -13,7 +13,7 @@ import (
 type Config struct {
 	// Bandwidth are the chart's bandwidth values (BANDWIDTH_*): with it on, the Geneve traffic of the node is held to its class by
 	// OVS meters (see package bandwidth).
-	Bandwidth bandwidth.Settings
+	Bandwidth                  bandwidth.Settings
 	RuntimeObservation         bool          `env:"RUNTIME_OBSERVATION_ENABLED" envDefault:"false"`
 	RuntimeObservationInterval time.Duration `env:"RUNTIME_OBSERVATION_INTERVAL" envDefault:"5s"`
 	NodeName                   string        `env:"NODE_NAME,required"`
