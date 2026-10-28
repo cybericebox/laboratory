@@ -21,12 +21,22 @@ type WgFastpathWgAddr struct {
 }
 
 type WgFastpathWgCfg struct {
-	_          structs.HostLayout
-	TtlNs      uint64
-	RatePerS   uint64
-	Burst      uint64
-	ExtIfindex uint32
-	Pad        uint32
+	_                structs.HostLayout
+	TtlNs            uint64
+	RatePerS         uint64
+	Burst            uint64
+	ExtIfindex       uint32
+	Pad              uint32
+	ByteRate         uint64
+	ByteBurst        uint64
+	ClassWindowNs    uint64
+	ClassWindowBytes uint64
+}
+
+type WgFastpathWgClass struct {
+	_             structs.HostLayout
+	WindowStartNs uint64
+	Used          uint64
 }
 
 type WgFastpathWgFwd struct {
@@ -49,9 +59,11 @@ type WgFastpathWgFwd struct {
 		_   structs.HostLayout
 		Val uint32
 	}
-	Pad3        uint32
-	TokensX1000 uint64
-	RefillNs    uint64
+	Pad3         uint32
+	TokensX1000  uint64
+	RefillNs     uint64
+	ByteTokens   uint64
+	ByteRefillNs uint64
 }
 
 type WgFastpathWgKey struct {
@@ -78,6 +90,7 @@ const (
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
 	WgFastpathMapWgCfg            = "wg_cfg"
+	WgFastpathMapWgClass          = "wg_class"
 	WgFastpathMapWgEntries        = "wg_entries"
 	WgFastpathMapWgEntrySeen      = "wg_entry_seen"
 	WgFastpathMapWgSessions       = "wg_sessions"
@@ -86,6 +99,7 @@ const (
 	WgFastpathProgWgTcIngress     = "wg_tc_ingress"
 	WgFastpathProgWgTcReply       = "wg_tc_reply"
 	WgFastpathProgWgXdp           = "wg_xdp"
+	WgFastpathVarByteLimiter      = "byte_limiter"
 )
 
 // LoadWgFastpath returns the embedded CollectionSpec for WgFastpath.
@@ -141,6 +155,7 @@ type WgFastpathProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type WgFastpathMapSpecs struct {
 	WgCfg       *ebpf.MapSpec `ebpf:"wg_cfg"`
+	WgClass     *ebpf.MapSpec `ebpf:"wg_class"`
 	WgEntries   *ebpf.MapSpec `ebpf:"wg_entries"`
 	WgEntrySeen *ebpf.MapSpec `ebpf:"wg_entry_seen"`
 	WgSessions  *ebpf.MapSpec `ebpf:"wg_sessions"`
@@ -151,6 +166,7 @@ type WgFastpathMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type WgFastpathVariableSpecs struct {
+	ByteLimiter *ebpf.VariableSpec `ebpf:"byte_limiter"`
 }
 
 // WgFastpathObjects contains all objects after they have been loaded into the kernel.
@@ -174,6 +190,7 @@ func (o *WgFastpathObjects) Close() error {
 // It can be passed to LoadWgFastpathObjects or ebpf.CollectionSpec.LoadAndAssign.
 type WgFastpathMaps struct {
 	WgCfg       *ebpf.Map `ebpf:"wg_cfg"`
+	WgClass     *ebpf.Map `ebpf:"wg_class"`
 	WgEntries   *ebpf.Map `ebpf:"wg_entries"`
 	WgEntrySeen *ebpf.Map `ebpf:"wg_entry_seen"`
 	WgSessions  *ebpf.Map `ebpf:"wg_sessions"`
@@ -183,6 +200,7 @@ type WgFastpathMaps struct {
 func (m *WgFastpathMaps) Close() error {
 	return _WgFastpathClose(
 		m.WgCfg,
+		m.WgClass,
 		m.WgEntries,
 		m.WgEntrySeen,
 		m.WgSessions,
@@ -194,6 +212,7 @@ func (m *WgFastpathMaps) Close() error {
 //
 // It can be passed to LoadWgFastpathObjects or ebpf.CollectionSpec.LoadAndAssign.
 type WgFastpathVariables struct {
+	ByteLimiter *ebpf.Variable `ebpf:"byte_limiter"`
 }
 
 // WgFastpathPrograms contains all programs after they have been loaded into the kernel.

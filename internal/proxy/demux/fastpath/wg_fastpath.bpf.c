@@ -10,6 +10,11 @@
 //   wg_tc_egress_guard  tcx egress, external device: lets our replies skip Cilium's NodePort NAT
 //   wg_xdp              xdp, external device: client -> server rewrite, handed to wg_tc_ingress through XDP metadata
 //
+// Bandwidth: besides the packet bucket every session has a byte bucket (rate and burst from wg_cfg, set by the demux to the session's
+// fair share of the entry class), and all sessions together draw from one class window (wg_class): at most class_window_bytes in
+// each window of class_window_ns. Both are off while their numbers are zero, and the whole byte limiter compiles away when the demux
+// loads the program with byte_limiter = 0 (the fallback when the verifier of a kernel refuses it: the packet bucket stays).
+//
 // See the decision section "Datapath decisions (Task 4 spike)" of the demux modes plan for why packets move this way.
 
 #include <linux/bpf.h>
@@ -55,6 +60,9 @@
 #define PKT_LEN (sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct udphdr) + 8)
 #define UDP_CSUM_OFF (sizeof(struct ethhdr) + sizeof(struct iphdr) + offsetof(struct udphdr, check))
 
+// Set by the loader before the program is loaded (a read-only constant, so the verifier drops the byte limiter's code when it is 0).
+volatile const __u32 byte_limiter = 1;
+
 // The refill of the token bucket counts at most this much idle time at once (keeps elapsed * rate within 64 bits).
 #define MAX_REFILL_NS 10000000000ULL
 
@@ -92,12 +100,22 @@ struct wg_fwd {
 	struct bpf_spin_lock lock;
 	__u32 pad3;
 	__u64 tokens_x1000, refill_ns;
+	__u64 byte_tokens, byte_refill_ns; // the byte bucket, same rules; bytes, not thousandths
 };
 
 struct wg_cfg {
 	__u64 ttl_ns, rate_per_s, burst; // rate 0 = unlimited
 	__u32 ext_ifindex;               // the external device replies leave through
 	__u32 pad;
+	__u64 byte_rate, byte_burst;                 // per session, both directions together, bytes per second and bytes; rate 0 = unlimited
+	__u64 class_window_ns, class_window_bytes;   // the node's entry class: at most this many bytes in a window; bytes 0 = unlimited
+};
+
+// The class window: the bytes taken in the window that began at window_start_ns. Updated without a lock (atomic adds): a reset
+// that two CPUs race to do costs at most one window of slack.
+struct wg_class {
+	__u64 window_start_ns;
+	__u64 used;
 };
 
 struct wg_meta {
@@ -149,6 +167,14 @@ struct {
 	__type(value, struct wg_cfg);
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } wg_cfg SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct wg_class);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+} wg_class SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -247,12 +273,14 @@ static __always_inline void record_entry(struct pkt *p)
 	bpf_map_update_elem(&wg_entry_seen, &client, &entry, BPF_ANY);
 }
 
-// take refills the session's bucket and takes one packet from it (the userspace bucket of conntrack.go, in thousandths of a
-// token), and stamps last_seen when the packet may go.
-static __always_inline int take(struct wg_fwd *f, __u64 rate, __u64 burst, __u64 now)
+// take refills the session's buckets and takes one packet and len bytes from them (the userspace bucket of conntrack.go, in
+// thousandths of a token for the packets), and stamps last_seen when the packet may go. A packet that does not fit one of the buckets
+// takes nothing from the other.
+static __always_inline int take(struct wg_fwd *f, struct wg_cfg *cfg, __u64 len, __u64 now)
 {
+	__u64 rate = cfg->rate_per_s;
+	__u64 full = cfg->burst * 1000;
 	int ok = 1;
-	__u64 full = burst * 1000;
 
 	bpf_spin_lock(&f->lock);
 	if (rate) {
@@ -276,13 +304,60 @@ static __always_inline int take(struct wg_fwd *f, __u64 rate, __u64 burst, __u64
 		}
 		if (f->tokens_x1000 < 1000)
 			ok = 0;
-		else
-			f->tokens_x1000 -= 1000;
 	}
-	if (ok)
+	if (byte_limiter && cfg->byte_rate) {
+		__u64 brate = cfg->byte_rate;
+		if (!f->byte_refill_ns) {
+			f->byte_tokens = cfg->byte_burst;
+			f->byte_refill_ns = now;
+		}
+		if (now > f->byte_refill_ns) {
+			__u64 elapsed = now - f->byte_refill_ns;
+			if (elapsed > MAX_REFILL_NS)
+				elapsed = MAX_REFILL_NS;
+			__u64 add = elapsed * brate / 1000000000ULL;
+			f->byte_tokens += add;
+			if (f->byte_tokens >= cfg->byte_burst) {
+				f->byte_tokens = cfg->byte_burst;
+				f->byte_refill_ns = now;
+			} else {
+				f->byte_refill_ns += add * 1000000000ULL / brate;
+			}
+		}
+		if (f->byte_tokens < len)
+			ok = 0;
+	}
+	if (ok) {
+		if (rate)
+			f->tokens_x1000 -= 1000;
+		if (byte_limiter && cfg->byte_rate)
+			f->byte_tokens -= len;
 		f->last_seen_ns = now;
+	}
 	bpf_spin_unlock(&f->lock);
 	return ok;
+}
+
+// class_take counts len bytes in the node's class window and says whether they fit (the bytes of a packet that does not fit are
+// given back, so a refused packet does not eat into the window).
+static __always_inline int class_take(struct wg_cfg *cfg, __u64 len, __u64 now)
+{
+	if (!byte_limiter || !cfg->class_window_bytes)
+		return 1;
+	__u32 zero = 0;
+	struct wg_class *c = bpf_map_lookup_elem(&wg_class, &zero);
+	if (!c)
+		return 1;
+	if (now < c->window_start_ns || now - c->window_start_ns >= cfg->class_window_ns) {
+		c->used = 0;
+		c->window_start_ns = now;
+	}
+	__sync_fetch_and_add(&c->used, len);
+	if (c->used > cfg->class_window_bytes) {
+		__sync_fetch_and_add(&c->used, (__u64)0 - len);
+		return 0;
+	}
+	return 1;
 }
 
 // judge is the slow path's LookupForward in the kernel: a known index of this direction, fresh, from exactly the expected
@@ -325,7 +400,10 @@ static __always_inline enum judgement judge(struct pkt *p, int to_client, __u32 
 		return J_STALE;
 	if (p->ip->saddr != f->exp_ip || p->udp->source != f->exp_port)
 		return J_SOURCE;
-	if (!take(owner, cfg->rate_per_s, cfg->burst, now))
+	__u64 len = bpf_ntohs(p->ip->tot_len);
+	if (!take(owner, cfg, len, now))
+		return J_RATE;
+	if (!class_take(cfg, len, now))
 		return J_RATE;
 	*out = f;
 	*cfg_out = cfg;

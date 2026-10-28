@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -54,6 +55,9 @@ type FastPath struct {
 	entries bool                      // SetEntries has given at least one address
 	order   error                     // the last EnsureOrder's result
 
+	byteLimiter bool  // the programs were loaded with the byte limiter (false: the verifier refused it, only the packet bucket limits)
+	limiterErr  error // why the byte limiter did not load
+
 	query func(link.QueryOptions) (*link.QueryResult, error) // link.QueryPrograms; a seam for the tests
 }
 
@@ -77,7 +81,15 @@ func Open(o Options) (*FastPath, error) {
 	}
 	f := &FastPath{o: o, ext: ext, links: map[string]link.Link{}, busy: map[string]bool{}, sources: map[netip.Addr]netip.Addr{},
 		query: link.QueryPrograms}
-	if err := f.load(); err != nil {
+	// The byte limiter is tried first; a kernel whose verifier refuses it gets the programs without it (the packet bucket of the
+	// session stays the only limit, see SetRate), and the reason is kept for the caller to log.
+	err = f.load(true)
+	var verifier *ebpf.VerifierError
+	if errors.As(err, &verifier) {
+		f.limiterErr = err
+		err = f.load(false)
+	}
+	if err != nil {
 		return nil, err
 	}
 	cfg := WgFastpathWgCfg{TtlNs: uint64(o.TTL), ExtIfindex: uint32(ext[0])}
@@ -125,13 +137,29 @@ func (f *FastPath) SetRate(rate float64, burst int) error {
 	return nil
 }
 
-func (f *FastPath) load() error {
+// newSpec reads the programs; byteLimiter sets the constant the programs read, and with 0 the verifier drops the limiter's code.
+func (f *FastPath) newSpec(byteLimiter bool) (*ebpf.CollectionSpec, error) {
 	spec, err := LoadWgFastpath()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if f.o.MaxEntries > 0 {
 		spec.Maps[WgFastpathMapWgSessions].MaxEntries = uint32(f.o.MaxEntries)
+	}
+	v := uint32(0)
+	if byteLimiter {
+		v = 1
+	}
+	if err := spec.Variables[WgFastpathVarByteLimiter].Set(v); err != nil {
+		return nil, fmt.Errorf("set the byte limiter: %w", err)
+	}
+	return spec, nil
+}
+
+func (f *FastPath) load(byteLimiter bool) error {
+	spec, err := f.newSpec(byteLimiter)
+	if err != nil {
+		return err
 	}
 	opts := &ebpf.CollectionOptions{Maps: ebpf.MapOptions{PinPath: f.o.PinPath}}
 	err = spec.LoadAndAssign(&f.objs, opts)
@@ -140,13 +168,58 @@ func (f *FastPath) load() error {
 		for name := range spec.Maps {
 			_ = os.Remove(filepath.Join(f.o.PinPath, name))
 		}
+		if spec, err = f.newSpec(byteLimiter); err != nil {
+			return err
+		}
 		err = spec.LoadAndAssign(&f.objs, opts)
 	}
 	if err != nil {
 		return fmt.Errorf("load the fast path: %w", err)
 	}
 	f.spec = spec
+	f.byteLimiter = byteLimiter
 	return nil
+}
+
+// ByteLimiter says the programs limit by bytes (SetBandwidth works); false is the fallback with the packet bucket only, and
+// LimiterError says why.
+func (f *FastPath) ByteLimiter() bool { return f.byteLimiter }
+
+// LimiterError is why the byte limiter did not load (nil when it did).
+func (f *FastPath) LimiterError() error { return f.limiterErr }
+
+// SetBandwidth sets the byte limits of the fast path: sessionKbps is what one session may send (both directions together; 0 =
+// no limit of the session), classKbps what all sessions of the node may send (0 = none). It returns ErrNoByteLimiter when the programs
+// were loaded without the limiter. Sessions meet a new rate at their next packet.
+func (f *FastPath) SetBandwidth(sessionKbps, classKbps int64) error {
+	if !f.byteLimiter {
+		return ErrNoByteLimiter
+	}
+	var cfg WgFastpathWgCfg
+	if err := f.objs.WgCfg.Lookup(uint32(0), &cfg); err != nil {
+		return fmt.Errorf("read the config: %w", err)
+	}
+	l := byteLimits(sessionKbps, classKbps)
+	cfg.ByteRate, cfg.ByteBurst, cfg.ClassWindowNs, cfg.ClassWindowBytes = l.byteRate, l.byteBurst, l.windowNs, l.windowBytes
+	if err := f.objs.WgCfg.Put(uint32(0), cfg); err != nil {
+		return fmt.Errorf("write the config: %w", err)
+	}
+	return nil
+}
+
+// ActiveSessions counts the sessions that sent something within the window.
+func (f *FastPath) ActiveSessions(window time.Duration) (int, error) {
+	seen, err := f.LastSeen()
+	if err != nil {
+		return 0, err
+	}
+	n, cut := 0, time.Now().Add(-window)
+	for _, at := range seen {
+		if at.After(cut) {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // externalDevices are the configured devices, or the one that holds the node's address.

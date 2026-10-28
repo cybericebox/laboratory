@@ -102,6 +102,9 @@ func Run() {
 			os.Exit(1)
 		}
 		defer func() { _ = fp.Close() }()
+		if !fp.ByteLimiter() {
+			log.Error(fp.LimiterError(), "the kernel refused the byte limiter of the fast path: sessions are limited by packet rate only")
+		}
 		ct.SetSink(fp, fp)
 		entries := &demux.EntryWatcher{
 			Client: mgr.GetClient(), NodeName: cfg.NodeName, HostIP: cfg.HostIP,
@@ -157,25 +160,25 @@ func Run() {
 	}()
 	var stats func() map[string]uint64
 	// The bandwidth limits of this node come from the operator's ConfigMap (a volume, the key of this node): the class and the ceiling of one
-	// participant. The userspace relay throttles every session by them; the kernel fast path gets the matching packet rate. A pod made
-	// without the volume has no limits.
+	// participant. The userspace relay throttles every session by them. The kernel fast path limits by bytes (a bucket per session at its
+	// fair share, and one window for the class), the share following the sessions that are active; where the verifier refused the byte
+	// limiter it gets the matching packet rate instead. A pod made without the volume has no limits.
+	shaper := &fastShaper{base: cfg.SessionRate, burst: cfg.SessionBurst, log: log}
+	if fp != nil {
+		shaper.fp = fp
+	}
 	runs := []func(){func() {
 		err := bandwidth.WatchNode(ctx, bandwidth.ConfigMapDir, cfg.NodeName,
 			func(l bandwidth.Limits) {
 				ct.Throttle().SetLimits(l.ClassKbps, l.CapKbps)
-				if fast {
-					pps := demux.PacketRateFor(cfg.SessionRate, l)
-					if err := fp.SetRate(pps, demux.PacketBurstFor(pps, cfg.SessionBurst)); err != nil {
-						log.Error(err, "set the packet rate of the fast path")
-					}
-				}
+				shaper.set(l)
 				log.Info("bandwidth limits", "classKbps", l.ClassKbps, "participantKbps", l.CapKbps)
 			},
 			func(err error) { log.Error(err, "read the bandwidth annotation") })
 		if err != nil {
 			log.Error(err, "watch the bandwidth annotation")
 		}
-	}, func() { ct.RunTTLCleanup(stop) }, func() { table.RunResolverContext(ctx, 30*time.Second) }, func() { dmx.Run(stop) }}
+	}, func() { shaper.run(ctx) }, func() { ct.RunTTLCleanup(stop) }, func() { table.RunResolverContext(ctx, 30*time.Second) }, func() { dmx.Run(stop) }}
 	if fast {
 		stats = func() map[string]uint64 { return fp.Stats() }
 		runs = append(runs, func() { restoreOnce(ctx, mgr, watcher, fp, ct, table) }, func() { resync(ctx, cfg.Resync, fp, ct) })

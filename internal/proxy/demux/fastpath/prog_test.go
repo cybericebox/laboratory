@@ -597,6 +597,113 @@ func TestDropsOverRate(t *testing.T) {
 	})
 }
 
+// The byte bucket of a session: 92-byte packets (20 IP + 8 UDP + 64 WireGuard), a burst of 200 bytes and a rate too small to refill
+// within the test pass two packets and drop the third, both in tc and in XDP.
+func TestDropsOverByteRate(t *testing.T) {
+	tp := setup(t)
+	cfg := defaultCfg(tp)
+	cfg.ByteRate, cfg.ByteBurst = 1, 200
+
+	t.Run("tc", func(t *testing.T) {
+		objs := load(t, cfg)
+		putSessions(t, objs, tp)
+		in := toServerFrame().bytes()
+		for i, want := range []uint32{tcxRedirect, tcxRedirect, tcxDrop} {
+			if r := runTC(t, objs.WgTcIngress, in, ingress(tp, 0)); r.ret != want {
+				t.Fatalf("packet %d: verdict %d, want %d", i+1, int32(r.ret), int32(want))
+			}
+		}
+		wantStats(t, objs, map[WgFastpathWgStat]uint64{
+			WgFastpathWgStatWG_STAT_FORWARDED_TO_SERVER: 2,
+			WgFastpathWgStatWG_STAT_DROPPED_RATE:        1,
+		})
+	})
+	t.Run("xdp", func(t *testing.T) {
+		objs := load(t, cfg)
+		putSessions(t, objs, tp)
+		in := toServerFrame().bytes()
+		for i, want := range []uint32{xdpPass, xdpPass, xdpDrop} {
+			if x := runXDP(t, objs.WgXdp, in); x.ret != want {
+				t.Fatalf("packet %d: verdict %d, want %d", i+1, x.ret, want)
+			}
+		}
+	})
+}
+
+// A packet over the byte bucket takes nothing from the packet bucket (and the other way round), and both directions of a session
+// draw from the same byte bucket.
+func TestByteBucketIsSharedByBothDirections(t *testing.T) {
+	tp := setup(t)
+	cfg := defaultCfg(tp)
+	cfg.ByteRate, cfg.ByteBurst = 1, 200
+	objs := load(t, cfg)
+	putSessions(t, objs, tp)
+	if r := runTC(t, objs.WgTcIngress, toServerFrame().bytes(), ingress(tp, 0)); r.ret != tcxRedirect {
+		t.Fatalf("to server: verdict %d", int32(r.ret))
+	}
+	if r := runTC(t, objs.WgTcReply, toClientFrame().bytes(), replyCtx(tp.srv)); r.ret != tcxRedirect {
+		t.Fatalf("to client: verdict %d", int32(r.ret))
+	}
+	if r := runTC(t, objs.WgTcReply, toClientFrame().bytes(), replyCtx(tp.srv)); r.ret != tcxDrop {
+		t.Fatalf("the third packet of the session, in either direction, is over its 200 bytes: verdict %d", int32(r.ret))
+	}
+}
+
+// The node's class window: all sessions together, 200 bytes in a window that does not end during the test.
+func TestDropsOverTheClassWindow(t *testing.T) {
+	tp := setup(t)
+	cfg := defaultCfg(tp)
+	cfg.ClassWindowNs, cfg.ClassWindowBytes = uint64(time.Hour), 200
+	objs := load(t, cfg)
+	putSessions(t, objs, tp)
+	in := toServerFrame().bytes()
+	for i, want := range []uint32{tcxRedirect, tcxRedirect, tcxDrop} {
+		if r := runTC(t, objs.WgTcIngress, in, ingress(tp, 0)); r.ret != want {
+			t.Fatalf("packet %d: verdict %d, want %d", i+1, int32(r.ret), int32(want))
+		}
+	}
+	var c WgFastpathWgClass
+	if err := objs.WgClass.Lookup(uint32(0), &c); err != nil || c.Used != 184 {
+		t.Fatalf("a refused packet gives its bytes back: used %d (%v)", c.Used, err)
+	}
+}
+
+// Loaded with byte_limiter = 0 (the fallback), the byte settings do nothing and the packet bucket is the only limit.
+func TestByteLimiterOffIgnoresTheByteSettings(t *testing.T) {
+	tp := setup(t)
+	cfg := defaultCfg(tp)
+	cfg.ByteRate, cfg.ByteBurst = 1, 1
+	cfg.ClassWindowNs, cfg.ClassWindowBytes = uint64(time.Hour), 1
+	spec, err := LoadWgFastpath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range spec.Maps {
+		m.Pinning = ebpf.PinNone
+	}
+	if err := spec.Variables[WgFastpathVarByteLimiter].Set(uint32(0)); err != nil {
+		t.Fatal(err)
+	}
+	var objs WgFastpathObjects
+	if err := spec.LoadAndAssign(&objs, nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = objs.Close() })
+	if err := objs.WgCfg.Put(uint32(0), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := objs.WgEntries.Put(addr(entry), uint8(1)); err != nil {
+		t.Fatal(err)
+	}
+	putSessions(t, &objs, tp)
+	in := toServerFrame().bytes()
+	for i := 0; i < 5; i++ {
+		if r := runTC(t, objs.WgTcIngress, in, ingress(tp, 0)); r.ret != tcxRedirect {
+			t.Fatalf("packet %d: verdict %d, the limiter is off", i+1, int32(r.ret))
+		}
+	}
+}
+
 func TestRecordsEntryOfHandshake(t *testing.T) {
 	tp := setup(t)
 	objs := load(t, defaultCfg(tp))
