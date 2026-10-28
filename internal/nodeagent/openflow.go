@@ -282,7 +282,40 @@ func (f *FlowManager) retirePort(name string) error {
 	if err != nil {
 		return reconcileutil.Waiting(fmt.Errorf("port retirement cannot resolve %q: %w", name, err), 0)
 	}
-	return f.client.RetirePort(no)
+	if err := f.client.RetirePort(no); err != nil {
+		return err
+	}
+	return f.forgetPort(name)
+}
+
+// forgetPort takes a retired local port out of the floods that name it. Retiring a port deletes every flow that outputs to it, which
+// takes the t6 flood of a VNI whose last local port it was, but not the t7 and t8 flows behind it, nor the meter of the lab: those
+// would stay, and the dead lab would go on counting as a split lab in the fair share of the others. The flood is built again from the
+// ports that are left (none: its flows and its meter go).
+func (f *FlowManager) forgetPort(name string) error {
+	f.bwmu.Lock()
+	defer f.bwmu.Unlock()
+	var first error
+	for vni, fl := range f.floods {
+		keep := make([]string, 0, len(fl.localPorts))
+		for _, p := range fl.localPorts {
+			if p != name {
+				keep = append(keep, p)
+			}
+		}
+		if len(keep) == len(fl.localPorts) {
+			continue
+		}
+		fl.localPorts = keep
+		f.floods[vni] = fl
+		if err := f.rebuildT6Locked(vni); err != nil && first == nil {
+			first = err
+		}
+		if len(keep) == 0 {
+			delete(f.floods, vni)
+		}
+	}
+	return first
 }
 
 // RebuildT6Flood atomically replaces the t6 flood entries for vni:

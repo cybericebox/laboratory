@@ -111,3 +111,58 @@ func TestNetnsGeneveMetersProgramOpenVSwitch(t *testing.T) {
 		t.Fatalf("limits off:\n%s\n%s\n%s", meters(), ofctl("dump-flows", "table=7"), ofctl("dump-flows", "table=6"))
 	}
 }
+
+// A lab whose last local port is retired (the lab is deleted) leaves no meter and no flow behind, and no longer counts as a split lab.
+// Found on AWS: the retirement of a port deletes the t6 flow that outputs to it, but not the t7 and t8 flows nor the meter.
+func TestNetnsRetiredPortTakesTheMeterOfItsLabWithIt(t *testing.T) {
+	nstest.Require(t)
+	ovs, flows, dir, sock := nativeOwnerOVS(t)
+	for _, port := range []string{"p1", "p2", "p3"} {
+		nstest.Run(t, "", "ovs-vsctl", "--db=unix:"+sock, "add-port", "t6-br", port, "--", "set", "interface", port, "type=internal")
+	}
+	if err := ovs.AddGenevePort("", ""); err != nil {
+		t.Fatal(err)
+	}
+	bridge := "unix:" + filepath.Join(dir, "t6-br.mgmt")
+	ofctl := func(args ...string) string {
+		return nstest.Run(t, "", append([]string{"ovs-ofctl", "-O", "OpenFlow13", args[0], bridge}, args[1:]...)...)
+	}
+	if err := flows.SetGeneveLimits(bandwidth.Limits{GeneveKbps: 120000, LabCapKbps: 100000}); err != nil {
+		t.Fatal(err)
+	}
+	// lab 100 has two local ports, lab 101 one; both flood to another node
+	if err := flows.RebuildT6Flood(100, []string{"p1", "p2"}, []string{"10.99.0.2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := flows.RebuildT6Flood(101, []string{"p3"}, []string{"10.99.0.2"}); err != nil {
+		t.Fatal(err)
+	}
+	if m := ofctl("dump-meters"); strings.Count(m, "rate=60000") != 2 {
+		t.Fatalf("two split labs share the class:\n%s", m)
+	}
+	// one of the two ports of lab 100 goes: the lab stays split with the port that is left
+	if err := flows.retirePort("p1"); err != nil {
+		t.Fatal(err)
+	}
+	if m := ofctl("dump-meters"); !strings.Contains(m, "meter=116 ") || !strings.Contains(m, "meter=117 ") {
+		t.Fatalf("lab 100 still has p2:\n%s", m)
+	}
+	if t6 := ofctl("dump-flows", "table=6"); !strings.Contains(t6, "goto_table:7") {
+		t.Fatalf("the flood of lab 100 is built again without p1:\n%s", t6)
+	}
+	// its last port goes: its meter and its flows go, the other lab takes the whole class
+	if err := flows.retirePort("p2"); err != nil {
+		t.Fatal(err)
+	}
+	m := ofctl("dump-meters")
+	if strings.Contains(m, "meter=116 ") {
+		t.Fatalf("the meter of the dead lab is still there:\n%s", m)
+	}
+	if strings.Contains(ofctl("dump-flows", "table=7"), "meter:116") || strings.Contains(ofctl("dump-flows", "table=8"), "tun_id=100") {
+		t.Fatalf("the flows of the dead lab are still there:\n%s\n%s", ofctl("dump-flows", "table=7"), ofctl("dump-flows", "table=8"))
+	}
+	if !strings.Contains(m, "meter=117 kbps") || strings.Count(m, "rate=100000") != 1 {
+		t.Fatalf("the lab that is left is held to the lab cap (the class is 120000 for one lab):\n%s", m)
+	}
+}
+
