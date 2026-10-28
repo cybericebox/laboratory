@@ -21,8 +21,11 @@ import (
 type Config struct {
 	// Bandwidth are the chart's bandwidth values (BANDWIDTH_*): with it on, the operator writes the bandwidth ceilings onto the
 	// gateway, demux and L7 proxy pods (see package bandwidth).
-	Bandwidth          bandwidth.Settings
-	RuntimeObservation bool `env:"RUNTIME_OBSERVATION_ENABLED" envDefault:"false"`
+	Bandwidth bandwidth.Settings
+	// BandwidthEntryNamespaces are the namespaces of the WireGuard demux and the L7 proxy: each gets the ConfigMap with the entry
+	// limits of every node (BANDWIDTH_ENTRY_NAMESPACES, comma separated).
+	BandwidthEntryNamespaces []string `env:"BANDWIDTH_ENTRY_NAMESPACES" envSeparator:","`
+	RuntimeObservation       bool     `env:"RUNTIME_OBSERVATION_ENABLED" envDefault:"false"`
 	// GatewayMaxConnectionsPerLab and GatewayNewConnectionsPerSecondPerLab: the limits of a lab's connections to the outside, for the
 	// gateway pods created from now on (chart inetGateway.limits).
 	GatewayMaxConnectionsPerLab          int `env:"GATEWAY_MAX_CONNECTIONS_PER_LAB" envDefault:"0"`

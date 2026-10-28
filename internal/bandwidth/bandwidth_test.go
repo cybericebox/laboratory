@@ -265,7 +265,9 @@ func TestWatchNodeReadsTheKeyOfItsNode(t *testing.T) {
 func TestWatchWithoutTheDirectoryAppliesNothingOnce(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	got := make(chan Limits, 2)
-	go func() { _ = WatchNode(ctx, filepath.Join(t.TempDir(), "absent"), "n1", func(l Limits) { got <- l }, nil) }()
+	go func() {
+		_ = WatchNode(ctx, filepath.Join(t.TempDir(), "absent"), "n1", func(l Limits) { got <- l }, nil)
+	}()
 	if l := recv(t, got); !l.Zero() {
 		t.Fatalf("%+v", l)
 	}
