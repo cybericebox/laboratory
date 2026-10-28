@@ -191,6 +191,7 @@ struct pkt {
 	__u32 type;  // WireGuard message type with the reserved bytes
 	__u32 index; // receiver index (transport) / sender index (initiation): bytes 4..7
 	__u32 len;   // UDP payload length
+	__u32 bytes; // the packet's real length without the Ethernet header: what the byte limiters charge
 };
 
 struct tuple {
@@ -227,8 +228,11 @@ static __always_inline void count_judgement(enum judgement j)
 	}
 }
 
-// parse accepts Ethernet + IPv4 without options, not a fragment, + UDP with at least the 8 bytes of a WireGuard header.
-static __always_inline int parse(void *data, void *data_end, struct pkt *p)
+// parse accepts Ethernet + IPv4 without options, not a fragment, + UDP with at least the 8 bytes of a WireGuard header. real_len is
+// what the device really delivered after the Ethernet header (skb->len, or the frame in XDP): the lengths in the headers are the
+// sender's word, so a packet whose IP or UDP length is not the real length (trailing bytes, a short header) is not parsed and
+// goes to the slow path, and what the limiters charge is the real length, never the claimed one.
+static __always_inline int parse(void *data, void *data_end, __u32 real_len, struct pkt *p)
 {
 	struct ethhdr *eth = data;
 	struct iphdr *ip = (void *)(eth + 1);
@@ -244,7 +248,7 @@ static __always_inline int parse(void *data, void *data_end, struct pkt *p)
 	if (ip->frag_off & bpf_htons(IP_MF | IP_OFFSET))
 		return -1;
 	__u32 ulen = bpf_ntohs(udp->len);
-	if (ulen < sizeof(*udp) + 8 || ulen + sizeof(*ip) > bpf_ntohs(ip->tot_len))
+	if (bpf_ntohs(ip->tot_len) != real_len || ulen < sizeof(*udp) + 8 || ulen + sizeof(*ip) != real_len)
 		return -1;
 
 	p->eth = eth;
@@ -253,7 +257,14 @@ static __always_inline int parse(void *data, void *data_end, struct pkt *p)
 	p->type = (__u32)wg[0] | ((__u32)wg[1] << 8) | ((__u32)wg[2] << 16) | ((__u32)wg[3] << 24);
 	p->index = (__u32)wg[4] | ((__u32)wg[5] << 8) | ((__u32)wg[6] << 16) | ((__u32)wg[7] << 24);
 	p->len = ulen - sizeof(*udp);
+	p->bytes = real_len;
 	return 0;
+}
+
+// frame_len is the length of an XDP frame after the Ethernet header.
+static __always_inline __u32 frame_len(struct xdp_md *ctx)
+{
+	return (__u32)((long)ctx->data_end - (long)ctx->data) - sizeof(struct ethhdr);
 }
 
 static __always_inline int is_entry(__be32 ip, __be16 port)
@@ -400,7 +411,7 @@ static __always_inline enum judgement judge(struct pkt *p, int to_client, __u32 
 		return J_STALE;
 	if (p->ip->saddr != f->exp_ip || p->udp->source != f->exp_port)
 		return J_SOURCE;
-	__u64 len = bpf_ntohs(p->ip->tot_len);
+	__u64 len = p->bytes;
 	if (!take(owner, cfg, len, now))
 		return J_RATE;
 	if (!class_take(cfg, len, now))
@@ -479,7 +490,7 @@ static __always_inline int load(struct __sk_buff *skb, struct pkt *p)
 {
 	if ((void *)(long)skb->data + PKT_LEN > (void *)(long)skb->data_end)
 		bpf_skb_pull_data(skb, PKT_LEN);
-	return parse((void *)(long)skb->data, (void *)(long)skb->data_end, p);
+	return parse((void *)(long)skb->data, (void *)(long)skb->data_end, skb->len - sizeof(struct ethhdr), p);
 }
 
 // forward rewrites a matched packet (UDP checksum through the helpers), sets the next hop's MACs and the mark, and
@@ -633,7 +644,7 @@ int wg_xdp(struct xdp_md *ctx)
 {
 	struct pkt p;
 
-	if (parse((void *)(long)ctx->data, (void *)(long)ctx->data_end, &p))
+	if (parse((void *)(long)ctx->data, (void *)(long)ctx->data_end, frame_len(ctx), &p))
 		return XDP_PASS;
 	if (p.type != WG_TRANSPORT || p.len < WG_TRANSPORT_MIN_LEN || !is_entry(p.ip->daddr, p.udp->dest))
 		return XDP_PASS;
@@ -644,7 +655,7 @@ int wg_xdp(struct xdp_md *ctx)
 	}
 	void *data = (void *)(long)ctx->data;
 	struct wg_meta *m = (void *)(long)ctx->data_meta;
-	if ((void *)(m + 1) > data || parse(data, (void *)(long)ctx->data_end, &p)) {
+	if ((void *)(m + 1) > data || parse(data, (void *)(long)ctx->data_end, frame_len(ctx), &p)) {
 		bpf_xdp_adjust_meta(ctx, (int)sizeof(struct wg_meta));
 		return XDP_PASS;
 	}

@@ -630,6 +630,52 @@ func TestDropsOverByteRate(t *testing.T) {
 	})
 }
 
+// The lengths in the headers are the sender's word. A packet whose IP or UDP length is not the length it really has (trailing bytes
+// the limiters would not see, a header that claims less) is not forwarded and is charged nothing; the slow path gets it and counts
+// the bytes it really reads.
+func TestLengthMismatchIsNotForwardedOrCharged(t *testing.T) {
+	tp := setup(t)
+	cfg := defaultCfg(tp)
+	cfg.ByteRate, cfg.ByteBurst = 1, 1000
+	cfg.ClassWindowNs, cfg.ClassWindowBytes = uint64(time.Hour), 1000
+	good := toServerFrame().bytes()
+	trailing := append(append([]byte{}, good...), make([]byte, 600)...)
+	ipShort := append([]byte{}, good...)
+	binary.BigEndian.PutUint16(ipShort[16:], uint16(len(good)-14-10)) // IP total length: 10 bytes less than the packet has
+	udpShort := append([]byte{}, good...)
+	binary.BigEndian.PutUint16(udpShort[14+20+4:], uint16(len(good)-14-20-10)) // UDP length: 10 bytes less
+	udpLong := append([]byte{}, good...)
+	binary.BigEndian.PutUint16(udpLong[14+20+4:], uint16(len(good)-14-20+10))
+	for name, in := range map[string][]byte{"trailing bytes": trailing, "short IP length": ipShort, "short UDP length": udpShort, "long UDP length": udpLong} {
+		t.Run(name, func(t *testing.T) {
+			objs := load(t, cfg)
+			putSessions(t, objs, tp)
+			checkUntouched(t, "tc", runTC(t, objs.WgTcIngress, in, ingress(tp, 0)), in)
+			if x := runXDP(t, objs.WgXdp, in); x.ret != xdpPass || len(x.meta) != 0 {
+				t.Fatalf("xdp: verdict %d with %d bytes of meta, the frame must pass untouched", x.ret, len(x.meta))
+			}
+			if o := owner(t, objs); o.ByteTokens != 0 || o.ByteRefillNs != 0 {
+				t.Fatalf("a refused packet was charged to the session: %+v", o)
+			}
+			var c WgFastpathWgClass
+			if err := objs.WgClass.Lookup(uint32(0), &c); err != nil || c.Used != 0 {
+				t.Fatalf("a refused packet was charged to the class: used %d (%v)", c.Used, err)
+			}
+			wantStats(t, objs, map[WgFastpathWgStat]uint64{})
+		})
+	}
+	// the same packet with honest lengths goes, and is charged its real length (92 bytes)
+	objs := load(t, cfg)
+	putSessions(t, objs, tp)
+	if r := runTC(t, objs.WgTcIngress, good, ingress(tp, 0)); r.ret != tcxRedirect {
+		t.Fatalf("the honest packet: verdict %d", int32(r.ret))
+	}
+	var c WgFastpathWgClass
+	if err := objs.WgClass.Lookup(uint32(0), &c); err != nil || c.Used != uint64(len(good)-14) {
+		t.Fatalf("charged %d, the packet has %d bytes after the Ethernet header (%v)", c.Used, len(good)-14, err)
+	}
+}
+
 // A packet over the byte bucket takes nothing from the packet bucket (and the other way round), and both directions of a session
 // draw from the same byte bucket.
 func TestByteBucketIsSharedByBothDirections(t *testing.T) {
