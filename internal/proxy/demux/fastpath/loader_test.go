@@ -493,7 +493,7 @@ func TestSetBandwidthWritesTheConfig(t *testing.T) {
 	if err := f.objs.WgCfg.Lookup(uint32(0), &cfg); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ByteRate != 6_250_000 || cfg.ByteBurst != 625_000 || cfg.ClassWindowNs != 1_000_000 || cfg.ClassWindowBytes != 42_500 {
+	if cfg.ByteRate != 6_250_000 || cfg.ByteBurst != 2_500_000 || cfg.ClassWindowNs != 1_000_000 || cfg.ClassWindowBytes != 42_500 {
 		t.Fatalf("%+v", cfg)
 	}
 	if cfg.TtlNs == 0 || cfg.ExtIfindex == 0 {

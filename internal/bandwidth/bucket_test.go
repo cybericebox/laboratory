@@ -11,8 +11,8 @@ func TestBucketAllowAndRefill(t *testing.T) {
 	if !b.Allow(t0, 1<<30) {
 		t.Fatal("a bucket without a rate is unlimited")
 	}
-	b.SetRate(8000) // 1 MB/s, burst 100 kB
-	if !b.Allow(t0, 100_000) {
+	b.SetRate(8000) // 1 MB/s, burst 400 kB
+	if !b.Allow(t0, 400_000) {
 		t.Fatal("the first burst must pass")
 	}
 	if b.Allow(t0, 1) {
@@ -30,21 +30,22 @@ func TestBucketReservePacesALargeWrite(t *testing.T) {
 	if d := b.Reserve(t0, 100_000); d != 0 {
 		t.Fatalf("within the burst: %v", d)
 	}
-	if d := b.Reserve(t0, 1_000_000); d < 990*time.Millisecond || d > 1010*time.Millisecond {
-		t.Fatalf("1 MB on top of an empty bucket waits about a second, waits %v", d)
+	// 400 kB of burst, 100 kB spent: 1 MB leaves 700 kB in debt, which is 700 ms at 1 MB/s
+	if d := b.Reserve(t0, 1_000_000); d < 690*time.Millisecond || d > 710*time.Millisecond {
+		t.Fatalf("1 MB on top of 300 kB of tokens waits about 700 ms, waits %v", d)
 	}
 }
 
 func TestBucketRateChangeKeepsTokensCapped(t *testing.T) {
 	var b Bucket
-	b.SetRate(80000) // burst 1 MB
+	b.SetRate(80000) // burst 4 MB
 	t0 := time.Unix(1000, 0)
 	b.Allow(t0, 1)
-	b.SetRate(800) // burst 16384 (the floor)
-	if b.Allow(t0, 20000) {
+	b.SetRate(800) // 100 kB/s, burst 40 kB
+	if b.Allow(t0, 50000) {
 		t.Fatal("tokens must be cut to the new burst")
 	}
-	if !b.Allow(t0, 16000) {
+	if !b.Allow(t0, 39000) {
 		t.Fatal("the new burst is there")
 	}
 }

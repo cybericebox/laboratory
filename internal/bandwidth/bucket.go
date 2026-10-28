@@ -25,9 +25,10 @@ func (b *Bucket) SetRate(kbps int64) {
 	}
 }
 
-// burstFor is a tenth of a second of the rate, at least enough for a few full-size packets.
+// burstFor is 400 ms of the rate, at least enough for a few full-size packets. A bucket that drops what is over (no queue) makes TCP
+// back off: with 100 ms of burst a lone flow reached under half of its rate, with 400 ms nearly all of it (measured with a police on AWS).
 func burstFor(rate float64) float64 {
-	return max(rate/10, 16384)
+	return max(rate*0.4, 16384)
 }
 
 func (b *Bucket) refill(now time.Time) {

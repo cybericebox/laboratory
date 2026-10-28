@@ -6,8 +6,8 @@ func TestByteLimits(t *testing.T) {
 	if got := byteLimits(0, 0); got != (limitValues{}) {
 		t.Fatalf("no limits: %+v", got)
 	}
-	// a participant at 50 Mbit/s: 6.25 MB/s, a tenth of a second of burst
-	if got := byteLimits(50_000, 0); got.byteRate != 6_250_000 || got.byteBurst != 625_000 || got.windowBytes != 0 {
+	// a participant at 50 Mbit/s: 6.25 MB/s, 400 ms of burst
+	if got := byteLimits(50_000, 0); got.byteRate != 6_250_000 || got.byteBurst != 2_500_000 || got.windowBytes != 0 {
 		t.Fatalf("session only: %+v", got)
 	}
 	// a class of 340 Mbit/s: 42.5 MB/s, a 1 ms window holds 42.5 kB
