@@ -317,7 +317,7 @@ func (f *FastPath) instance(kind string) (*ebpf.Program, error) {
 	}
 	coll, err := ebpf.NewCollectionWithOptions(spec, ebpf.CollectionOptions{MapReplacements: map[string]*ebpf.Map{
 		WgFastpathMapWgSessions: f.objs.WgSessions, WgFastpathMapWgEntries: f.objs.WgEntries,
-		WgFastpathMapWgEntrySeen: f.objs.WgEntrySeen, WgFastpathMapWgCfg: f.objs.WgCfg, WgFastpathMapWgStats: f.objs.WgStats,
+		WgFastpathMapWgEntrySeen: f.objs.WgEntrySeen, WgFastpathMapWgCfg: f.objs.WgCfg, WgFastpathMapWgStats: f.objs.WgStats, WgFastpathMapWgClass: f.objs.WgClass,
 	}})
 	if err != nil {
 		return nil, fmt.Errorf("load another %s: %w", name, err)
