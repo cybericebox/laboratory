@@ -118,6 +118,8 @@ type LabGroupReconciler struct {
 	// ImagePullSecrets names registry Secrets of the operator namespace. They are
 	// copied into every group namespace and referenced by the VPN and gateway pods.
 	ImagePullSecrets []string
+	// BandwidthEnabled gives the gateway pods made from now on the file with their bandwidth ceiling (see mountOwnAnnotations).
+	BandwidthEnabled bool
 	// Scheduled makes the group's VPN and gateway pods wait for the scheduler to
 	// dispatch them (see labgroup_sched.go). Off: they start as soon as the group is created.
 	Scheduled bool
@@ -889,6 +891,9 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 		},
 	}
 	hardenGroupPod(&d.Spec.Template.Spec, names.ComponentGateway, gatewayCaps, r.TerminationGraceSeconds)
+	if r.BandwidthEnabled {
+		mountOwnAnnotations(&d.Spec.Template.Spec, names.ComponentGateway)
+	}
 	return r.Create(ctx, d)
 }
 

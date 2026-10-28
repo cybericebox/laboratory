@@ -220,6 +220,7 @@ func Run() {
 		Reader:                      mgr.GetAPIReader(),
 		ServiceReleaseObserver:      serviceReleaseObserver,
 		Scheduled:                   cfg.SchedulerEnabled,
+		BandwidthEnabled:            cfg.Bandwidth.Enabled,
 		Client:                      mgr.GetClient(),
 		Scheme:                      mgr.GetScheme(),
 		Recorder:                    mgr.GetEventRecorderFor("labgroup"),

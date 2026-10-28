@@ -12,8 +12,11 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-// AnnotationsFile is where the chart mounts the pod's own annotations (a downward API volume at /etc/podinfo).
-const AnnotationsFile = "/etc/podinfo/annotations"
+// AnnotationsDir and AnnotationsFile are where the pod's own annotations are mounted (a downward API volume).
+const (
+	AnnotationsDir  = "/etc/podinfo"
+	AnnotationsFile = AnnotationsDir + "/annotations"
+)
 
 // ParseAnnotations reads the downward API file: one `key="value"` per line, the value in Go quoting.
 func ParseAnnotations(data string) map[string]string {
