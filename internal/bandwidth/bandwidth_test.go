@@ -1,6 +1,10 @@
 package bandwidth
 
 import (
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/cybericebox/laboratory/internal/names"
 	"os"
 	"path/filepath"
 	"testing"
@@ -172,5 +176,40 @@ func recv(t *testing.T, ch <-chan Limits) Limits {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no limits applied in time")
 		return Limits{}
+	}
+}
+
+func TestForNodeCountsOnlyThePodsOfThatNode(t *testing.T) {
+	c := DefaultConfig()
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n1", Labels: map[string]string{names.LabelNodeBandwidth: "1562"}}}
+	pod := func(node, reserve string, phase corev1.PodPhase) corev1.Pod {
+		p := corev1.Pod{Spec: corev1.PodSpec{NodeName: node}, Status: corev1.PodStatus{Phase: phase}}
+		if reserve != "" {
+			p.Annotations = map[string]string{names.AnnotationBandwidthReserve: reserve}
+		}
+		return p
+	}
+	pods := []corev1.Pod{
+		pod("n1", "50", corev1.PodRunning),
+		pod("n1", "20", corev1.PodPending),
+		pod("n2", "500", corev1.PodRunning),   // another node: not subtracted here
+		pod("n1", "300", corev1.PodSucceeded), // finished
+		pod("n1", "", corev1.PodRunning),      // declares nothing
+		pod("n1", "junk", corev1.PodRunning),
+	}
+	if got := c.ForNode(node, pods).UKbps; got != (1562-100-50-20)*1000 {
+		t.Fatalf("U = %d", got)
+	}
+	bare := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n3"}}
+	if got := c.ForNode(bare, nil).UKbps; got != 900_000 {
+		t.Fatalf("a node without the label is 1 Gbit/s: %d", got)
+	}
+}
+
+func TestNodeGeneveLimits(t *testing.T) {
+	c := DefaultConfig()
+	l := c.NodeGeneveLimits(c.Compute(1562, nil))
+	if l.GeneveKbps != 310_675 || l.LabCapKbps != 100_000 || l.V != Version {
+		t.Fatalf("%+v", l)
 	}
 }

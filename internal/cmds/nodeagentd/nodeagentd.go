@@ -162,6 +162,18 @@ func Run() {
 		os.Exit(1)
 	}
 
+	if cfg.Bandwidth.Enabled {
+		bw := cfg.Bandwidth.Config()
+		if err := bw.Validate(); err != nil {
+			log.Error(err, "bandwidth config")
+			os.Exit(1)
+		}
+		if err := (&nodeagent.BandwidthReconciler{Client: mgr.GetClient(), NodeName: cfg.NodeName, Config: bw, Flows: flows}).SetupWithManager(mgr); err != nil {
+			log.Error(err, "setup BandwidthReconciler")
+			os.Exit(1)
+		}
+	}
+
 	if err := (&nodeagent.ConnectionReconciler{
 		Client:      mgr.GetClient(),
 		NodeName:    cfg.NodeName,
