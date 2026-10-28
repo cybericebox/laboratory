@@ -298,6 +298,7 @@ func (f *FlowManager) retirePort(name string) error {
 func (f *FlowManager) RebuildT6Flood(vni uint, localPorts, remoteVTEPs []string) error {
 	f.bwmu.Lock()
 	defer f.bwmu.Unlock()
+	f.initBandwidthLocked()
 	f.floods[vni] = t6Flood{localPorts: append([]string(nil), localPorts...), remoteVTEPs: append([]string(nil), remoteVTEPs...)}
 	return f.rebuildT6Locked(vni)
 }
@@ -364,8 +365,21 @@ func (f *FlowManager) rebuildT6Locked(vni uint) error {
 	return nil
 }
 
+// initBandwidthLocked makes the bandwidth state of a FlowManager that was not built by NewFlowManager (the tests build bare ones).
+func (f *FlowManager) initBandwidthLocked() {
+	if f.floods == nil {
+		f.floods = map[uint]t6Flood{}
+	}
+	if f.meters == nil {
+		f.meters = newGeneveMeters(f.client)
+	}
+}
+
 // dropMetersLocked removes the meter of a VNI that no longer floods to a remote node (its flows are already built without it).
 func (f *FlowManager) dropMetersLocked(vni uint) error {
+	if f.meters == nil {
+		return nil // no limits were ever set on this manager
+	}
 	if err := f.meters.Unsplit(vni); err != nil {
 		return fmt.Errorf("the Geneve meters of VNI %d: %w", vni, err)
 	}
@@ -400,6 +414,7 @@ func (f *FlowManager) DelT6Flood(vni uint) error {
 func (f *FlowManager) SetGeneveLimits(l bandwidth.Limits) error {
 	f.bwmu.Lock()
 	defer f.bwmu.Unlock()
+	f.initBandwidthLocked()
 	toggled, err := f.meters.SetLimits(l)
 	if err != nil {
 		return err
