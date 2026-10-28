@@ -85,7 +85,7 @@ func applyShaping(iface string, kbps int64) error {
 	if err != nil {
 		return fmt.Errorf("shape %s: %w", iface, err)
 	}
-	rate, burst, limit := shapeParams(kbps)
+	rate, burst, limit, policeBurst := shapeParams(kbps)
 	if err := netlink.QdiscReplace(&netlink.Tbf{
 		QdiscAttrs: netlink.QdiscAttrs{LinkIndex: link.Attrs().Index, Handle: rootHandle, Parent: netlink.HANDLE_ROOT},
 		Rate:       rate,
@@ -104,7 +104,7 @@ func applyShaping(iface string, kbps int64) error {
 	}
 	police := netlink.NewPoliceAction()
 	police.Rate = uint32(min(rate, 1<<32-1))
-	police.Burst = burst
+	police.Burst = policeBurst
 	police.Mtu = shapeMTU
 	police.ExceedAction = netlink.TC_POLICE_SHOT
 	police.NotExceedAction = netlink.TC_POLICE_OK
@@ -121,7 +121,7 @@ func applyShaping(iface string, kbps int64) error {
 		FilterAttrs: netlink.FilterAttrs{LinkIndex: link.Attrs().Index, Parent: ingressHandle, Priority: 1, Protocol: unix.ETH_P_ALL},
 		Actions:     []netlink.Action{police},
 	}); err != nil {
-		return fmt.Errorf("add the police filter of %s (rate %d, burst %d): %w", iface, rate, burst, err)
+		return fmt.Errorf("add the police filter of %s (rate %d, burst %d): %w", iface, rate, policeBurst, err)
 	}
 	return nil
 }

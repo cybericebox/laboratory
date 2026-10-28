@@ -11,6 +11,11 @@ const (
 	shapeBurstTime = 100 * time.Millisecond
 	// shapeMinBurst covers a segmentation-offloaded frame (64 kB) with room to spare.
 	shapeMinBurst = 128 * 1024
+	// policeBurstTime and policeMinBurst are the burst of the police on the ingress. A police does not queue, it drops what is over: with
+	// a burst of a tenth of a second TCP with large segments reached under half of the ceiling (measured: 9.6 of 20 Mbit/s), with
+	// 1 MB it reaches 19.4. The ceiling still holds over any longer time.
+	policeBurstTime = 400 * time.Millisecond
+	policeMinBurst  = 1 << 20
 	// shapeQueueTime is the longest the shaped direction queues a packet before it is dropped.
 	shapeQueueTime = 50 * time.Millisecond
 	// shapeMTU is the largest frame the police accepts (a segmentation-offloaded one).
@@ -18,10 +23,11 @@ const (
 )
 
 // shapeParams turns a ceiling in kbit/s into the numbers the kernel takes: the rate in bytes per second, the burst in bytes, and the
-// queue limit of the shaped direction in bytes.
-func shapeParams(kbps int64) (rate uint64, burst, limit uint32) {
+// queue limit of the shaped direction in bytes, and the burst of the police.
+func shapeParams(kbps int64) (rate uint64, burst, limit, policeBurst uint32) {
 	rate = uint64(kbps) * 125
 	b := max(uint64(float64(rate)*shapeBurstTime.Seconds()), shapeMinBurst)
 	l := b + uint64(float64(rate)*shapeQueueTime.Seconds())
-	return rate, uint32(min(b, 1<<31)), uint32(min(l, 1<<31))
+	pb := max(uint64(float64(rate)*policeBurstTime.Seconds()), policeMinBurst)
+	return rate, uint32(min(b, 1<<31)), uint32(min(l, 1<<31)), uint32(min(pb, 1<<31))
 }
