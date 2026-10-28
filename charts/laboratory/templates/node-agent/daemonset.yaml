@@ -173,6 +173,13 @@ spec:
             # The probes' address: the loopback only (the node-agent is on the host network).
             - name: HEALTH_ADDR
               value: {{ printf "127.0.0.1:%d" (.Values.nodeAgent.healthPort | int) | quote }}
+            {{- if .Values.bandwidth.enabled }}
+            # The bandwidth protection: the Geneve traffic of the node is held to its class by OVS meters (package bandwidth).
+            {{- range $name, $value := include "laboratory.bandwidthEnv" . | fromYaml }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- end }}
             # Storm control of the shared switch, and the watchdog that restarts the node-agent when OVS is lost.
             - name: PORT_POLICING_KBPS
               value: {{ .Values.nodeAgent.portPolicingKbps | quote }}

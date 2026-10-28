@@ -25,6 +25,11 @@ spec:
       labels:
         app: laboratory-agent
         {{- include "laboratory.selectorLabels" . | nindent 8 }}
+      {{- if and .Values.bandwidth.enabled .Values.bandwidth.reserves.agentMbit }}
+      annotations:
+        # What the agent keeps of its node's bandwidth for itself (Mbit/s), taken off that node only.
+        cybericebox.com/bandwidth-reserve: {{ .Values.bandwidth.reserves.agentMbit | quote }}
+      {{- end }}
     spec:
       serviceAccountName: laboratory-agent
       priorityClassName: {{ include "laboratory.priorityClass.platform" . }}

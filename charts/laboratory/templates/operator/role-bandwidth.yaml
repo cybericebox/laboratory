@@ -1,0 +1,42 @@
+{{- if .Values.bandwidth.enabled }}
+{{- /*
+The operator writes the entry limits of every node into a ConfigMap in the namespace of the WireGuard demux and of the L7 proxy
+(whose pods are outside what the operator may patch). It may read, make and change that one ConfigMap there, and nothing else.
+*/ -}}
+{{- $namespaces := list .Values.proxy.namespace }}
+{{- if and .Values.proxy.enabled .Values.proxy.wg.enabled }}{{ $namespaces = append $namespaces (include "laboratory.wgNamespace" .) }}{{ end }}
+{{- range $ns := $namespaces | uniq }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: laboratory-operator-bandwidth
+  namespace: {{ $ns }}
+  labels:
+    {{- include "laboratory.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: [ "" ]
+    resources: [ configmaps ]
+    verbs: [ create ]
+  - apiGroups: [ "" ]
+    resources: [ configmaps ]
+    resourceNames: [ laboratory-bandwidth ]
+    verbs: [ get, update ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: laboratory-operator-bandwidth
+  namespace: {{ $ns }}
+  labels:
+    {{- include "laboratory.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: laboratory-operator-bandwidth
+subjects:
+  - kind: ServiceAccount
+    name: laboratory-controller-manager
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}

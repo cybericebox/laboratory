@@ -93,6 +93,12 @@ spec:
       valueFrom:
         fieldRef:
           fieldPath: metadata.name
+    {{- if .Values.bandwidth.enabled }}
+    - name: NODE_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nodeName
+    {{- end }}
     {{- if .Values.proxy.kindMode }}
     - name: KUBERNETES_SERVICE_HOST
       value: "127.0.0.1"
@@ -133,6 +139,11 @@ spec:
     - name: tls
       mountPath: /etc/proxy/tls
       readOnly: true
+    {{- if .Values.bandwidth.enabled }}
+    - name: bandwidth
+      mountPath: /etc/bandwidth
+      readOnly: true
+    {{- end }}
     resources:
       {{- toYaml .Values.proxy.l7.resources | nindent 6 }}
   {{- end }}
@@ -141,5 +152,13 @@ spec:
   - name: tls
     secret:
       secretName: proxy-tls
+  {{- if .Values.bandwidth.enabled }}
+  # The bandwidth limits of every node, written by the operator; the proxy reads the key of its own node. Optional: the pod starts
+  # before the operator has made the ConfigMap, and has no limit until it exists.
+  - name: bandwidth
+    configMap:
+      name: laboratory-bandwidth
+      optional: true
+  {{- end }}
   {{- end }}
 {{- end }}

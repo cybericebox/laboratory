@@ -14,6 +14,13 @@ data:
   {{- end }}
   {{- end }}
   # Only the operator reads these.
+  {{- range $name, $value := include "laboratory.bandwidthEnv" . | fromYaml }}
+  {{ $name }}: {{ $value | quote }}
+  {{- end }}
+  {{- if .Values.bandwidth.enabled }}
+  # The namespaces whose pods read the entry limits of their node from the operator's ConfigMap (the demux and the L7 proxy).
+  BANDWIDTH_ENTRY_NAMESPACES: {{ without (list .Values.proxy.namespace (ternary (include "laboratory.wgNamespace" .) "" (and .Values.proxy.enabled .Values.proxy.wg.enabled))) "" | uniq | join "," | quote }}
+  {{- end }}
   VPN_BASE_NETWORK: {{ .Values.operator.vpnBaseNetwork | quote }}
   INET_BASE_NETWORK: {{ .Values.operator.inetBaseNetwork | quote }}
   PROXY_SOURCE_CIDRS: {{ .Values.operator.proxySourceCIDRs | quote }}

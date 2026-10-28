@@ -921,6 +921,41 @@ vni:
   retireFlush: 2s
 
 # ============================================================
+# Bandwidth protection
+# ============================================================
+# No participant, lab or group can saturate a node or the cluster network. Per node and per direction:
+#   U = the node's bandwidth - systemReserveMbit - the reserves of the platform pods that run on that node
+# and of U the entry (the WireGuard demux and the L7 proxy) gets shares.entry percent, the internet (the gateways) shares.internet,
+# and Geneve (the traffic between nodes) shares.geneve. Inside a class everyone gets a fair share, never more than its cap. Nothing
+# inside a node is limited; only what crosses nodes (Geneve: an OVS meter per lab and one for the node; VXLAN: the demux and the L7 proxy
+# per participant) and what goes to the internet (the gateway, per lab).
+# A node's bandwidth is its label cybericebox.com/node-bandwidth in Mbit/s (the cloud code sets it from the instance type, the Proxmox
+# inventory from the NIC); a node without it is defaultMbit. A platform pod declares what it keeps for itself with the annotation
+# cybericebox.com/bandwidth-reserve (Mbit/s); it is taken off the node the pod runs on and no other.
+# Off: nothing is limited. Switching it on gives the pods made from then on their limits (existing gateway pods keep none until
+# they are recreated); switching it off again: set the shares and caps to 0, the pods then limit nothing.
+bandwidth:
+  enabled: false
+  defaultMbit: 1000
+  systemReserveMbit: 100
+  shares:
+    entry: 50
+    internet: 25
+    geneve: 25
+  caps:
+    participantMbit: 50
+    labInternetMbit: 50
+    labGeneveMbit: 100
+  # The OVS meter counts the frame before the Geneve headers (about 50 bytes) are added; the Geneve class is scaled by this so that
+  # small packets do not push the node over its class.
+  geneveOverheadFactor: 0.85
+  # What the pods of this chart keep for themselves (the annotation above). The backend and the frontends declare theirs in the
+  # platform chart.
+  reserves:
+    registryMbit: 100
+    agentMbit: 20
+
+# ============================================================
 # Limits the cluster owns on devices, labs and tenants
 # ============================================================
 # The management agent enforces them on CreateLabs (a lab over them is refused with the reason) and reports them

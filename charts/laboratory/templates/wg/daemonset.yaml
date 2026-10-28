@@ -149,18 +149,35 @@ spec:
           preStop:
             sleep:
               seconds: {{ .Values.proxy.preStopSleepSeconds }}
-        {{- if $hostNet }}
+        {{- if or $hostNet .Values.bandwidth.enabled }}
         volumeMounts:
+        {{- if $hostNet }}
         - name: bpffs
           mountPath: /sys/fs/bpf
         {{- end }}
+        {{- if .Values.bandwidth.enabled }}
+        - name: bandwidth
+          mountPath: /etc/bandwidth
+          readOnly: true
+        {{- end }}
+        {{- end }}
         resources:
           {{- toYaml .Values.proxy.wg.resources | nindent 10 }}
-      {{- if $hostNet }}
+      {{- if or $hostNet .Values.bandwidth.enabled }}
       volumes:
+      {{- if $hostNet }}
       - name: bpffs
         hostPath:
           path: /sys/fs/bpf
           type: Directory
+      {{- end }}
+      {{- if .Values.bandwidth.enabled }}
+      # The bandwidth limits of every node, written by the operator; the demux reads the key of its own node. Optional: the pod starts
+      # before the operator has made the ConfigMap, and has no limit until it exists.
+      - name: bandwidth
+        configMap:
+          name: laboratory-bandwidth
+          optional: true
+      {{- end }}
       {{- end }}
 {{- end }}
