@@ -165,4 +165,3 @@ func TestNetnsRetiredPortTakesTheMeterOfItsLabWithIt(t *testing.T) {
 		t.Fatalf("the lab that is left is held to the lab cap (the class is 120000 for one lab):\n%s", m)
 	}
 }
-
