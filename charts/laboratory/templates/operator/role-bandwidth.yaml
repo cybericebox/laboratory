@@ -1,9 +1,9 @@
 {{- if .Values.bandwidth.enabled }}
 {{- /*
-The operator writes the entry limits of every node into a ConfigMap in the namespace of the WireGuard demux and of the L7 proxy
-(whose pods are outside what the operator may patch). It may read, make and change that one ConfigMap there, and nothing else.
+The operator writes the limits of every node into a ConfigMap in the namespace of the WireGuard demux, of the L7 proxy and of the
+node-agent (whose pods are outside what the operator may patch). It may read, make and change that one ConfigMap there, and nothing else.
 */ -}}
-{{- $namespaces := list .Values.proxy.namespace }}
+{{- $namespaces := list .Release.Namespace .Values.proxy.namespace }}
 {{- if and .Values.proxy.enabled .Values.proxy.wg.enabled }}{{ $namespaces = append $namespaces (include "laboratory.wgNamespace" .) }}{{ end }}
 {{- range $ns := $namespaces | uniq }}
 ---

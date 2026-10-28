@@ -24,25 +24,26 @@ import (
 	"github.com/cybericebox/laboratory/internal/reconcileutil"
 )
 
-// BandwidthConfigMap is the ConfigMap of the entry limits: one in the namespace of the WireGuard demux and one in that of the L7 proxy,
-// a key per node (the value is what the pod on that node applies). A pod reads the key of its own node from the mounted file.
+// BandwidthConfigMap is the ConfigMap of the per-node limits: one in the namespace of the WireGuard demux, one in that of the L7 proxy
+// and one in that of the node-agent, a key per node (the value is what the pods on that node apply: the entry limits for the demux and the
+// L7 proxy, the Geneve ceilings for the node-agent). A pod reads the key of its own node from the mounted file.
 const BandwidthConfigMap = "laboratory-bandwidth"
 
 // BandwidthReconciler writes the bandwidth ceilings the pods apply themselves. See package bandwidth for the numbers. The gateways
 // of the groups get theirs as an annotation (names.AnnotationBandwidthLimits) of the pod, which the pod reads from a downward API file;
-// the WireGuard demux and the L7 proxy get the limits of every node in a ConfigMap of their namespace (a pod of those namespaces is
-// outside what the operator may patch: the demux may run on the host network). It runs on events only: a node's label, a pod that
+// the WireGuard demux, the L7 proxy and the node-agent get the limits of every node in a ConfigMap of their namespace (the demux may
+// run on the host network and the node-agent is privileged, both are outside what the operator may patch). It runs on events only: a node's label, a pod that
 // appears, moves or goes (a reserve, a gateway), a lab's gateway that is made or removed. All of them are one key, so a burst of
 // events is one pass; a pass writes only what differs.
 //
-// The Geneve ceilings of a node are not written here: the node-agent works them out from the same numbers (see nodeagent.BandwidthReconciler),
-// so the operator needs no right to write to nodes.
+// The Geneve ceilings of a node are in the same ConfigMap (see nodeagent.BandwidthWatcher): the operator already knows the node's label, the
+// reserves of the platform pods and the labs, so the node-agent computes nothing, watches no pod, and the operator needs no right to write to nodes.
 type BandwidthReconciler struct {
 	Client client.Client
 	// Reader reads the ConfigMaps without a cache: the operator reads no ConfigMap cluster-wide.
 	Reader client.Reader
 	Config bandwidth.Config
-	// EntryNamespaces are the namespaces of the WireGuard demux and the L7 proxy.
+	// EntryNamespaces are the namespaces that get the ConfigMap: those of the WireGuard demux, the L7 proxy and the node-agent.
 	EntryNamespaces []string
 }
 
@@ -86,18 +87,18 @@ func (r *BandwidthReconciler) Reconcile(ctx context.Context, _ reconcile.Request
 		}
 	}
 	for _, ns := range r.EntryNamespaces {
-		remember(r.writeEntryLimits(ctx, ns, plan.entry))
+		remember(r.writeNodeLimits(ctx, ns, plan.nodes))
 	}
 	return ctrl.Result{}, first
 }
 
-// writeEntryLimits makes the ConfigMap of a namespace hold the limits of every node.
-func (r *BandwidthReconciler) writeEntryLimits(ctx context.Context, ns string, entry map[string]string) error {
+// writeNodeLimits makes the ConfigMap of a namespace hold the limits of every node.
+func (r *BandwidthReconciler) writeNodeLimits(ctx context.Context, ns string, nodes map[string]string) error {
 	var cm corev1.ConfigMap
 	err := r.Reader.Get(ctx, types.NamespacedName{Namespace: ns, Name: BandwidthConfigMap}, &cm)
 	switch {
 	case apierrors.IsNotFound(err):
-		cm = corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: BandwidthConfigMap}, Data: entry}
+		cm = corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: BandwidthConfigMap}, Data: nodes}
 		if err := r.Client.Create(ctx, &cm); err != nil && !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("create the bandwidth ConfigMap in %s: %w", ns, err)
 		}
@@ -105,10 +106,10 @@ func (r *BandwidthReconciler) writeEntryLimits(ctx context.Context, ns string, e
 	case err != nil:
 		return fmt.Errorf("read the bandwidth ConfigMap in %s: %w", ns, err)
 	}
-	if maps.Equal(cm.Data, entry) {
+	if maps.Equal(cm.Data, nodes) {
 		return nil
 	}
-	cm.Data = entry
+	cm.Data = nodes
 	if err := r.Client.Update(ctx, &cm); err != nil {
 		return fmt.Errorf("update the bandwidth ConfigMap in %s: %w", ns, err)
 	}

@@ -305,19 +305,14 @@ func nodeAddress() (string, error) {
 	return "", fmt.Errorf("no non-loopback IPv4 address found; set NODE_ADDRESS env")
 }
 
-// setupBandwidth holds the Geneve traffic of this node to its class with OVS meters (package bandwidth); off by default.
+// setupBandwidth holds the Geneve traffic of this node to its class with OVS meters (package bandwidth); off by default. The ceilings
+// are the operator's, read from the key of this node in the mounted ConfigMap.
 func setupBandwidth(mgr ctrl.Manager, cfg *nodeagent.Config, flows *nodeagent.FlowManager) {
 	if !cfg.Bandwidth.Enabled {
 		return
 	}
-	log := ctrl.Log.WithName("node-agent")
-	bw := cfg.Bandwidth.Config()
-	if err := bw.Validate(); err != nil {
-		log.Error(err, "bandwidth config")
-		os.Exit(1)
-	}
-	if err := (&nodeagent.BandwidthReconciler{Client: mgr.GetClient(), NodeName: cfg.NodeName, Config: bw, Flows: flows}).SetupWithManager(mgr); err != nil {
-		log.Error(err, "setup BandwidthReconciler")
+	if err := mgr.Add(&nodeagent.BandwidthWatcher{NodeName: cfg.NodeName, Flows: flows}); err != nil {
+		ctrl.Log.WithName("node-agent").Error(err, "setup BandwidthWatcher")
 		os.Exit(1)
 	}
 }

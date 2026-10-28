@@ -52,9 +52,9 @@ func limitsOf(t *testing.T, plan bandwidthPlanResult, ns, name string) bandwidth
 
 func entryOf(t *testing.T, plan bandwidthPlanResult, node string) bandwidth.Limits {
 	t.Helper()
-	l, err := bandwidth.Decode(plan.entry[node])
-	if err != nil || plan.entry[node] == "" {
-		t.Fatalf("no entry limits for node %s: %v %v", node, plan.entry, err)
+	l, err := bandwidth.Decode(plan.nodes[node])
+	if err != nil || plan.nodes[node] == "" {
+		t.Fatalf("no entry limits for node %s: %v %v", node, plan.nodes, err)
 	}
 	return l
 }
@@ -70,8 +70,13 @@ func TestPlanDividesTheNodeBetweenEntryAndInternet(t *testing.T) {
 	// 5 labs in group a, 5 in group b: ten labs share the internet class of the node
 	plan := bandwidthPlan(cfg, nodes, pods, map[string]int{"lg-a": 5, "lg-b": 5})
 	// U = 1562 - 100 system - 100 registry = 1362 Mbit/s; entry 681, halved between the demux and the L7 proxy
-	if l := entryOf(t, plan, "n1"); l.ClassKbps != 340_500 || l.CapKbps != 50_000 {
+	l := entryOf(t, plan, "n1")
+	if l.ClassKbps != 340_500 || l.CapKbps != 50_000 {
 		t.Errorf("entry: %+v", l)
+	}
+	// Geneve 25% of 1362 Mbit/s = 340.5, scaled by 0.85; the lab cap as configured
+	if l.GeneveKbps != 289_425 || l.LabCapKbps != 100_000 {
+		t.Errorf("Geneve: %+v", l)
 	}
 	// internet 25% of 1362 = 340.5 Mbit/s over ten labs = 34 Mbit/s each, under the 50 Mbit/s cap
 	if l := limitsOf(t, plan, "lg-a", "gateway-a"); l.CapKbps != 34_050 || l.ClassKbps != 0 {

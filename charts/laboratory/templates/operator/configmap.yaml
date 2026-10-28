@@ -18,8 +18,8 @@ data:
   {{ $name }}: {{ $value | quote }}
   {{- end }}
   {{- if .Values.bandwidth.enabled }}
-  # The namespaces whose pods read the entry limits of their node from the operator's ConfigMap (the demux and the L7 proxy).
-  BANDWIDTH_ENTRY_NAMESPACES: {{ without (list .Values.proxy.namespace (ternary (include "laboratory.wgNamespace" .) "" (and .Values.proxy.enabled .Values.proxy.wg.enabled))) "" | uniq | join "," | quote }}
+  # The namespaces whose pods read the limits of their node from the operator's ConfigMap: the demux, the L7 proxy and the node-agent.
+  BANDWIDTH_ENTRY_NAMESPACES: {{ without (list .Release.Namespace .Values.proxy.namespace (ternary (include "laboratory.wgNamespace" .) "" (and .Values.proxy.enabled .Values.proxy.wg.enabled))) "" | uniq | join "," | quote }}
   {{- end }}
   VPN_BASE_NETWORK: {{ .Values.operator.vpnBaseNetwork | quote }}
   INET_BASE_NETWORK: {{ .Values.operator.inetBaseNetwork | quote }}

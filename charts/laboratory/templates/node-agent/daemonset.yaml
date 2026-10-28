@@ -174,11 +174,9 @@ spec:
             - name: HEALTH_ADDR
               value: {{ printf "127.0.0.1:%d" (.Values.nodeAgent.healthPort | int) | quote }}
             {{- if .Values.bandwidth.enabled }}
-            # The bandwidth protection: the Geneve traffic of the node is held to its class by OVS meters (package bandwidth).
-            {{- range $name, $value := include "laboratory.bandwidthEnv" . | fromYaml }}
-            - name: {{ $name }}
-              value: {{ $value | quote }}
-            {{- end }}
+            # The bandwidth protection: the Geneve traffic of the node is held to the ceilings the operator wrote for it (the ConfigMap volume).
+            - name: BANDWIDTH_ENABLED
+              value: "true"
             {{- end }}
             # Storm control of the shared switch, and the watchdog that restarts the node-agent when OVS is lost.
             - name: PORT_POLICING_KBPS
@@ -295,6 +293,11 @@ spec:
             failureThreshold: 3
             timeoutSeconds: 8
           volumeMounts:
+            {{- if .Values.bandwidth.enabled }}
+            - name: bandwidth
+              mountPath: /etc/bandwidth
+              readOnly: true
+            {{- end }}
             - name: ovs-run
               mountPath: /run/openvswitch
             - name: grpc-dir
@@ -328,6 +331,14 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
       volumes:
+        {{- if .Values.bandwidth.enabled }}
+        # The limits of every node, written by the operator; the node-agent reads the key of its own node. Optional: the pod starts before
+        # the operator has made the ConfigMap, and has no limit until it exists.
+        - name: bandwidth
+          configMap:
+            name: laboratory-bandwidth
+            optional: true
+        {{- end }}
         - name: cni-bin
           hostPath:
             path: /opt/cni/bin

@@ -140,20 +140,25 @@ func TestChartBandwidthOffChangesNoPod(t *testing.T) {
 			t.Errorf("%s carries a reserve annotation with the protection off: its pods would restart on upgrade", k)
 		}
 	}
-	if env := envOf(podSpec(objs["DaemonSet/laboratory-node-agent"]), "node-agent"); env["BANDWIDTH_ENABLED"] != "" {
-		t.Errorf("the node-agent is given bandwidth settings with the protection off: %v", env)
+	na := podSpec(objs["DaemonSet/laboratory-node-agent"])
+	if env := envOf(na, "node-agent"); env["BANDWIDTH_ENABLED"] != "" || has(volumeNames(na), "bandwidth") {
+		t.Errorf("the node-agent is given bandwidth settings with the protection off: %v %v", env, volumeNames(na))
 	}
 }
 
 func TestChartBandwidthOn(t *testing.T) {
 	objs := renderAll(t, "--set", "bandwidth.enabled=true", "--set", "bandwidth.caps.participantMbit=30")
 	cm := objs["ConfigMap/laboratory-config"]["data"].(map[string]any)
-	if cm["BANDWIDTH_ENABLED"] != "true" || cm["BANDWIDTH_PARTICIPANT_CAP_MBIT"] != "30" || cm["BANDWIDTH_ENTRY_NAMESPACES"] != "laboratory-proxy,laboratory-wg" {
+	if cm["BANDWIDTH_ENABLED"] != "true" || cm["BANDWIDTH_PARTICIPANT_CAP_MBIT"] != "30" || cm["BANDWIDTH_ENTRY_NAMESPACES"] != "laboratory-system,laboratory-proxy,laboratory-wg" {
 		t.Fatalf("operator settings: %v", cm)
 	}
-	env := envOf(podSpec(objs["DaemonSet/laboratory-node-agent"]), "node-agent")
-	if env["BANDWIDTH_ENABLED"] != "true" || env["BANDWIDTH_GENEVE_SHARE"] != "25" || env["BANDWIDTH_LAB_GENEVE_CAP_MBIT"] != "100" {
-		t.Fatalf("node-agent settings: %v", env)
+	na := podSpec(objs["DaemonSet/laboratory-node-agent"])
+	env := envOf(na, "node-agent")
+	if env["BANDWIDTH_ENABLED"] != "true" || env["BANDWIDTH_GENEVE_SHARE"] != "" {
+		t.Fatalf("the node-agent is only told the protection is on; the numbers are the operator's: %v", env)
+	}
+	if !has(volumeNames(na), "bandwidth") {
+		t.Fatalf("the node-agent reads its Geneve ceilings from the ConfigMap volume: %v", volumeNames(na))
 	}
 	wg := podSpec(objs["DaemonSet/laboratory-proxy-wg"])
 	if !has(volumeNames(wg), "bandwidth") {
@@ -168,7 +173,7 @@ func TestChartBandwidthOn(t *testing.T) {
 	if l7 == nil || !has(volumeNames(l7), "bandwidth") || !hasEnv(l7, "l7", "NODE_NAME") {
 		t.Fatalf("the L7 proxy reads its limits from the ConfigMap volume")
 	}
-	for _, ns := range []string{"laboratory-proxy", "laboratory-wg"} {
+	for _, ns := range []string{"laboratory-system", "laboratory-proxy", "laboratory-wg"} {
 		if objs["Role/laboratory-operator-bandwidth@"+ns] == nil || objs["RoleBinding/laboratory-operator-bandwidth@"+ns] == nil {
 			t.Errorf("the operator has no right to write the ConfigMap in %s", ns)
 		}
@@ -182,7 +187,7 @@ func TestChartBandwidthOn(t *testing.T) {
 
 func TestChartBandwidthWithoutTheDemuxHasOneNamespace(t *testing.T) {
 	objs := renderAll(t, "--set", "bandwidth.enabled=true", "--set", "proxy.wg.enabled=false")
-	if got := objs["ConfigMap/laboratory-config"]["data"].(map[string]any)["BANDWIDTH_ENTRY_NAMESPACES"]; got != "laboratory-proxy" {
+	if got := objs["ConfigMap/laboratory-config"]["data"].(map[string]any)["BANDWIDTH_ENTRY_NAMESPACES"]; got != "laboratory-system,laboratory-proxy" {
 		t.Fatalf("namespaces: %v", got)
 	}
 }

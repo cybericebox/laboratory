@@ -17,8 +17,9 @@ func isBandwidthGateway(p *corev1.Pod) bool {
 type bandwidthPlanResult struct {
 	// gateways is the annotation each gateway pod should carry, by pod.
 	gateways map[types.NamespacedName]string
-	// entry is the limits of the WireGuard demux and the L7 proxy of each node, by node name (the value a pod reads from the ConfigMap).
-	entry map[string]string
+	// nodes is what each node's pods read from the ConfigMap, by node name: the entry limits of the WireGuard demux and the L7 proxy, and the
+	// Geneve ceilings the node-agent applies.
+	nodes map[string]string
 }
 
 // bandwidthPlan works the plan out.
@@ -35,12 +36,13 @@ func bandwidthPlan(cfg bandwidth.Config, nodes []corev1.Node, pods []corev1.Pod,
 			byNode[p.Spec.NodeName] = append(byNode[p.Spec.NodeName], *p)
 		}
 	}
-	plan := bandwidthPlanResult{gateways: map[types.NamespacedName]string{}, entry: map[string]string{}}
+	plan := bandwidthPlanResult{gateways: map[types.NamespacedName]string{}, nodes: map[string]string{}}
 	for i := range nodes {
 		node := &nodes[i]
 		onNode := byNode[node.Name]
 		limits := cfg.ForNode(node, onNode)
-		plan.entry[node.Name] = bandwidth.Limits{ClassKbps: limits.EntryKbps / 2, CapKbps: cfg.ParticipantCapMbit * 1000}.Encode()
+		geneve := cfg.NodeGeneveLimits(limits)
+		plan.nodes[node.Name] = bandwidth.Limits{ClassKbps: limits.EntryKbps / 2, CapKbps: cfg.ParticipantCapMbit * 1000, GeneveKbps: geneve.GeneveKbps, LabCapKbps: geneve.LabCapKbps}.Encode()
 		labs := 0
 		for j := range onNode {
 			if isBandwidthGateway(&onNode[j]) {
