@@ -60,6 +60,14 @@ spec:
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
+          {{- if $hostNet }}
+          # The container runtime's default AppArmor profile (Ubuntu) denies writes under /sys/fs/bpf, where the demux pins its maps and
+          # links: without this the tc and xdp modes cannot start ("pin path: mkdir /sys/fs/bpf/cybericebox: permission denied", found on
+          # Ubuntu 24.04, kernel 7.0). The container stays confined by its capabilities (BPF, NET_ADMIN, PERFMON, nothing else), the
+          # read-only root file system and the seccomp profile.
+          appArmorProfile:
+            type: Unconfined
+          {{- end }}
           capabilities:
             drop: [ ALL ]
             {{- if $hostNet }}
