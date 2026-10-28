@@ -3,7 +3,10 @@
 package gateway
 
 import (
+	"encoding/json"
+	"os/exec"
 	"testing"
+	"time"
 
 	"github.com/vishvananda/netlink"
 
@@ -76,5 +79,67 @@ func TestNetnsShaperKeepsALabInterfaceToItsCeiling(t *testing.T) {
 	s.Forget("lab1")
 	if rate, ing, pol := state(); rate != 0 || ing || pol {
 		t.Fatalf("forgotten: rate %d ingress %v police %v", rate, ing, pol)
+	}
+}
+
+// Real traffic through a shaped lab interface: TCP between the pod and a lab, in both directions, comes out near the ceiling, and
+// unshaped it is far above it. Needs iperf3 (the CI image of make test-netns has it).
+func TestNetnsShaperHoldsTrafficToTheCeiling(t *testing.T) {
+	nstest.Require(t)
+	if _, err := exec.LookPath("iperf3"); err != nil {
+		t.Skip("iperf3 is not installed")
+	}
+	nstest.NS(t, "lab")
+	nstest.Veth(t, "", "lab1", "10.9.0.1/24", "lab", "l0", "10.9.0.2/24")
+	srv := exec.Command("iperf3", "-s", "-B", "10.9.0.1", "-p", "5201")
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.Process.Kill(); _, _ = srv.Process.Wait() })
+	time.Sleep(500 * time.Millisecond)
+
+	measure := func(reverse bool) float64 {
+		args := []string{"iperf3", "-c", "10.9.0.1", "-p", "5201", "-t", "6", "-O", "2", "-J"}
+		if reverse {
+			args = append(args, "-R")
+		}
+		out, err := nstest.Try("lab", args...)
+		if err != nil {
+			t.Fatalf("iperf3: %v\n%s", err, out)
+		}
+		var r struct {
+			End struct {
+				SumReceived struct {
+					BitsPerSecond float64 `json:"bits_per_second"`
+				} `json:"sum_received"`
+			} `json:"end"`
+		}
+		if err := json.Unmarshal([]byte(out), &r); err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		return r.End.SumReceived.BitsPerSecond / 1e6
+	}
+	free := measure(false)
+	if free < 200 {
+		t.Fatalf("control: an unshaped veth carries only %.0f Mbit/s", free)
+	}
+	s := NewShaper()
+	if err := s.Track("lab1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetLimit(20_000); err != nil {
+		t.Fatal(err)
+	}
+	for name, got := range map[string]float64{"lab to pod (policed)": measure(false), "pod to lab (shaped)": measure(true)} {
+		if got < 12 || got > 22 {
+			t.Errorf("%s: %.1f Mbit/s under a ceiling of 20", name, got)
+		}
+		t.Logf("%s: %.1f Mbit/s (unshaped %.0f)", name, got, free)
+	}
+	if err := s.SetLimit(60_000); err != nil {
+		t.Fatal(err)
+	}
+	if got := measure(true); got < 40 || got > 66 {
+		t.Errorf("after the ceiling went to 60: %.1f Mbit/s", got)
 	}
 }

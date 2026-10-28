@@ -94,10 +94,13 @@ func applyShaping(iface string, kbps int64) error {
 	}); err != nil {
 		return fmt.Errorf("shape the egress of %s: %w", iface, err)
 	}
-	if err := netlink.QdiscReplace(&netlink.Ingress{
-		QdiscAttrs: netlink.QdiscAttrs{LinkIndex: link.Attrs().Index, Handle: ingressHandle, Parent: netlink.HANDLE_INGRESS},
-	}); err != nil {
-		return fmt.Errorf("police the ingress of %s: %w", iface, err)
+	// The ingress qdisc cannot be replaced by itself (the kernel answers "invalid argument"): it is added when it is not there.
+	if !hasIngress(link) {
+		if err := netlink.QdiscAdd(&netlink.Ingress{
+			QdiscAttrs: netlink.QdiscAttrs{LinkIndex: link.Attrs().Index, Handle: ingressHandle, Parent: netlink.HANDLE_INGRESS},
+		}); err != nil {
+			return fmt.Errorf("add the ingress qdisc of %s: %w", iface, err)
+		}
 	}
 	police := netlink.NewPoliceAction()
 	police.Rate = uint32(min(rate, 1<<32-1))
@@ -118,9 +121,22 @@ func applyShaping(iface string, kbps int64) error {
 		FilterAttrs: netlink.FilterAttrs{LinkIndex: link.Attrs().Index, Parent: ingressHandle, Priority: 1, Protocol: unix.ETH_P_ALL},
 		Actions:     []netlink.Action{police},
 	}); err != nil {
-		return fmt.Errorf("police the ingress of %s: %w", iface, err)
+		return fmt.Errorf("add the police filter of %s (rate %d, burst %d): %w", iface, rate, burst, err)
 	}
 	return nil
+}
+
+func hasIngress(link netlink.Link) bool {
+	qdiscs, err := netlink.QdiscList(link)
+	if err != nil {
+		return false
+	}
+	for _, q := range qdiscs {
+		if _, ok := q.(*netlink.Ingress); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // clearShaping removes what applyShaping put on the interface; an interface that is gone or was never shaped is fine.
