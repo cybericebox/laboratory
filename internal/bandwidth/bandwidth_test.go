@@ -5,6 +5,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/pkg/config"
 	"os"
 	"path/filepath"
 	"testing"
@@ -211,5 +212,29 @@ func TestNodeGeneveLimits(t *testing.T) {
 	l := c.NodeGeneveLimits(c.Compute(1562, nil))
 	if l.GeneveKbps != 310_675 || l.LabCapKbps != 100_000 || l.V != Version {
 		t.Fatalf("%+v", l)
+	}
+}
+
+func TestSettingsReadFromTheEnvironment(t *testing.T) {
+	var cfg struct {
+		Bandwidth Settings
+	}
+	if err := config.Load(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Bandwidth.Enabled || cfg.Bandwidth.DefaultMbit != 1000 || cfg.Bandwidth.GeneveOverhead != 0.85 {
+		t.Fatalf("defaults: %+v", cfg.Bandwidth)
+	}
+	if cfg.Bandwidth.Config().Validate() != nil || cfg.Bandwidth.Config() != DefaultConfig() {
+		t.Fatalf("the defaults are the default config: %+v", cfg.Bandwidth.Config())
+	}
+	t.Setenv("BANDWIDTH_ENABLED", "true")
+	t.Setenv("BANDWIDTH_GENEVE_SHARE", "10")
+	t.Setenv("BANDWIDTH_PARTICIPANT_CAP_MBIT", "20")
+	if err := config.Load(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Bandwidth.Enabled || cfg.Bandwidth.GeneveShare != 10 || cfg.Bandwidth.ParticipantCapMbit != 20 {
+		t.Fatalf("from the environment: %+v", cfg.Bandwidth)
 	}
 }

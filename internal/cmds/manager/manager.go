@@ -264,6 +264,17 @@ func Run() {
 		setupLog.Error(err, "unable to create controller", "controller", "LabGroupClient")
 		os.Exit(1)
 	}
+	if cfg.Bandwidth.Enabled {
+		bw := cfg.Bandwidth.Config()
+		if err := bw.Validate(); err != nil {
+			setupLog.Error(err, "bandwidth config")
+			os.Exit(1)
+		}
+		if err = (&laboratorycontroller.BandwidthReconciler{Client: mgr.GetClient(), Config: bw}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "Bandwidth")
+			os.Exit(1)
+		}
+	}
 	vniRetirer := &laboratorycontroller.VNIRetirer{Client: mgr.GetClient(), Interval: cfg.VNIRetireFlush}
 	if err = mgr.Add(vniRetirer); err != nil {
 		setupLog.Error(err, "unable to add the VNI retirer")
