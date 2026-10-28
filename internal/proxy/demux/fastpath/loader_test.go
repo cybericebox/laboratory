@@ -478,3 +478,70 @@ func xdpProgram(t *testing.T, ifindex int) ebpf.ProgramID {
 	}
 	return id
 }
+
+// SetBandwidth writes the byte limits into the config the programs read.
+func TestSetBandwidthWritesTheConfig(t *testing.T) {
+	setup(t)
+	f := open(t, options(pinDir(t), demux.ModeTC))
+	if !f.ByteLimiter() || f.LimiterError() != nil {
+		t.Fatalf("the byte limiter loads on this kernel: %v", f.LimiterError())
+	}
+	if err := f.SetBandwidth(50_000, 340_000); err != nil {
+		t.Fatal(err)
+	}
+	var cfg WgFastpathWgCfg
+	if err := f.objs.WgCfg.Lookup(uint32(0), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ByteRate != 6_250_000 || cfg.ByteBurst != 625_000 || cfg.ClassWindowNs != 1_000_000 || cfg.ClassWindowBytes != 42_500 {
+		t.Fatalf("%+v", cfg)
+	}
+	if cfg.TtlNs == 0 || cfg.ExtIfindex == 0 {
+		t.Fatalf("the other settings are kept: %+v", cfg)
+	}
+	if err := f.SetBandwidth(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.objs.WgCfg.Lookup(uint32(0), &cfg)
+	if cfg.ByteRate != 0 || cfg.ClassWindowBytes != 0 {
+		t.Fatalf("no limits: %+v", cfg)
+	}
+}
+
+// The fallback: loaded without the byte limiter, SetBandwidth says so, the packet bucket still takes a rate, and the programs attach
+// and forward like the others.
+func TestFallbackWithoutTheByteLimiter(t *testing.T) {
+	tp := setup(t)
+	o := options(pinDir(t), demux.ModeTC)
+	o.NoByteLimiter = true
+	f := open(t, o)
+	if f.ByteLimiter() {
+		t.Fatal("the byte limiter was asked off")
+	}
+	if err := f.SetBandwidth(1, 1); !errors.Is(err, ErrNoByteLimiter) {
+		t.Fatalf("want ErrNoByteLimiter, got %v", err)
+	}
+	if err := f.SetRate(4000, 400); err != nil {
+		t.Fatal(err)
+	}
+	var cfg WgFastpathWgCfg
+	if err := f.objs.WgCfg.Lookup(uint32(0), &cfg); err != nil || cfg.RatePerS != 4000 || cfg.Burst != 400 {
+		t.Fatalf("%+v %v", cfg, err)
+	}
+	upsertSession(t, f, tp)
+	if err := f.EnsureOrder(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestActiveSessionsCountsTheRecentOnes(t *testing.T) {
+	tp := setup(t)
+	f := open(t, options(pinDir(t), demux.ModeTC))
+	upsertSession(t, f, tp)
+	if n, err := f.ActiveSessions(time.Minute); err != nil || n != 1 {
+		t.Fatalf("one session just written: %d %v", n, err)
+	}
+	if n, err := f.ActiveSessions(0); err != nil || n != 0 {
+		t.Fatalf("nothing within a zero window: %d %v", n, err)
+	}
+}

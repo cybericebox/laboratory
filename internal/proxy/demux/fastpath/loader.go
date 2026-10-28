@@ -83,9 +83,9 @@ func Open(o Options) (*FastPath, error) {
 		query: link.QueryPrograms}
 	// The byte limiter is tried first; a kernel whose verifier refuses it gets the programs without it (the packet bucket of the
 	// session stays the only limit, see SetRate), and the reason is kept for the caller to log.
-	err = f.load(true)
+	err = f.load(!o.NoByteLimiter)
 	var verifier *ebpf.VerifierError
-	if errors.As(err, &verifier) {
+	if err != nil && !o.NoByteLimiter && errors.As(err, &verifier) {
 		f.limiterErr = err
 		err = f.load(false)
 	}
