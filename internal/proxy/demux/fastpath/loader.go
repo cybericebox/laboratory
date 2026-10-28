@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -54,6 +53,9 @@ type FastPath struct {
 	sources map[netip.Addr]netip.Addr // the kernel's preferred source towards a server, until the next EnsureOrder
 	entries bool                      // SetEntries has given at least one address
 	order   error                     // the last EnsureOrder's result
+
+	activityMu sync.Mutex
+	activity   map[uint32]uint64 // the byte total of each session at the last ActiveSessions
 
 	byteLimiter bool  // the programs were loaded with the byte limiter (false: the verifier refused it, only the packet bucket limits)
 	limiterErr  error // why the byte limiter did not load
@@ -207,19 +209,28 @@ func (f *FastPath) SetBandwidth(sessionKbps, classKbps int64) error {
 	return nil
 }
 
-// ActiveSessions counts the sessions that sent something within the window.
-func (f *FastPath) ActiveSessions(window time.Duration) (int, error) {
-	seen, err := f.LastSeen()
+// ActiveSessions counts the sessions that let at least minBytes through since the last call (the first call has nothing to compare with
+// and counts none). A session that only keeps its connection alive sends a few bytes now and then and is not counted: it would cut
+// the fair share of those who send.
+func (f *FastPath) ActiveSessions(minBytes uint64) (int, error) {
+	f.activityMu.Lock()
+	defer f.activityMu.Unlock()
+	next := map[uint32]uint64{}
+	active := 0
+	err := f.sessions(func(index uint32, v *WgFastpathWgFwd) {
+		if v.Flags&toClientFlag != 0 || v.Session != index {
+			return
+		}
+		next[index] = v.ByteTotal
+		if before, ok := f.activity[index]; ok && v.ByteTotal-before >= minBytes {
+			active++
+		}
+	})
 	if err != nil {
 		return 0, err
 	}
-	n, cut := 0, time.Now().Add(-window)
-	for _, at := range seen {
-		if at.After(cut) {
-			n++
-		}
-	}
-	return n, nil
+	f.activity = next
+	return active, nil
 }
 
 // externalDevices are the configured devices, or the one that holds the node's address.

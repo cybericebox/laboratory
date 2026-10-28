@@ -68,35 +68,75 @@ func TestThrottleDisabledAllowsEverything(t *testing.T) {
 	}
 }
 
+// send makes a participant look busy: a few full packets.
+func send(th *Throttle[string], key string) {
+	for i := 0; i < 4; i++ {
+		th.Allow(key, 1400)
+	}
+}
+
 func TestThrottleFairShareFollowsActiveParticipants(t *testing.T) {
 	c := &clock{time.Unix(1000, 0)}
 	th := newTestThrottle(c)
 	th.SetLimits(100_000, 50_000) // class 100 Mbit/s, cap 50 Mbit/s
-	th.Allow("a", 1)
+	send(th, "a")
 	if got := th.Rate(); got != 50_000 {
 		t.Fatalf("one participant gets the cap, got %d", got)
 	}
 	for _, k := range []string{"b", "c", "d"} {
-		th.Allow(k, 1)
+		send(th, k)
 	}
 	if got, active := th.Rate(), th.Active(); active != 4 || got != 25_000 {
 		t.Fatalf("four active share the class: active %d rate %d", active, got)
 	}
-	// 6 s of silence from a..c: only d sends, the others stop counting
-	c.t = c.t.Add(6 * time.Second)
-	th.Allow("d", 1)
-	th.Allow("d", 1)
+	// they keep sending for a few seconds: they stay counted
+	for s := 0; s < 4; s++ {
+		c.t = c.t.Add(time.Second)
+		for _, k := range []string{"a", "b", "c", "d"} {
+			send(th, k)
+		}
+	}
+	if th.Active() != 4 {
+		t.Fatalf("four busy participants: %d", th.Active())
+	}
+	// 12 s of silence from a..c: only d sends, the others stop counting
+	c.t = c.t.Add(12 * time.Second)
+	send(th, "d")
+	send(th, "d")
 	if got, active := th.Rate(), th.Active(); active != 1 || got != 50_000 {
 		t.Fatalf("after the others went quiet: active %d rate %d", active, got)
 	}
 	// 30 s later the silent ones are forgotten
 	c.t = c.t.Add(30 * time.Second)
-	th.Allow("d", 1)
+	send(th, "d")
 	th.mu.Lock()
 	n := len(th.parts)
 	th.mu.Unlock()
 	if n != 1 {
 		t.Fatalf("%d participants kept", n)
+	}
+}
+
+// A VPN session that only keeps its connection alive (32 bytes now and then) is not an active participant: ten of them must not
+// cut the share of the one who sends.
+func TestThrottleKeepaliveOnlySessionsDoNotCount(t *testing.T) {
+	c := &clock{time.Unix(1000, 0)}
+	th := newTestThrottle(c)
+	th.SetLimits(100_000, 50_000)
+	for s := 0; s < 30; s++ {
+		c.t = c.t.Add(time.Second)
+		send(th, "busy")
+		if s%10 == 0 {
+			for i := 0; i < 10; i++ {
+				th.Allow(string(rune('A'+i)), 32) // a keepalive
+			}
+		}
+	}
+	if got := th.Rate(); got != 50_000 {
+		t.Fatalf("ten idle sessions left the busy one %d kbit/s of 50000 (active %d)", got, th.Active())
+	}
+	if th.Active() != 1 {
+		t.Fatalf("active %d, want only the busy one", th.Active())
 	}
 }
 

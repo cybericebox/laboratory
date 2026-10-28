@@ -534,14 +534,33 @@ func TestFallbackWithoutTheByteLimiter(t *testing.T) {
 	}
 }
 
-func TestActiveSessionsCountsTheRecentOnes(t *testing.T) {
+// A session counts as active when it let bytes through since the last call; the first call has nothing to compare with.
+func TestActiveSessionsCountsTheSessionsThatSend(t *testing.T) {
 	tp := setup(t)
 	f := open(t, options(pinDir(t), demux.ModeTC))
 	upsertSession(t, f, tp)
-	if n, err := f.ActiveSessions(time.Minute); err != nil || n != 1 {
-		t.Fatalf("one session just written: %d %v", n, err)
+	if n, err := f.ActiveSessions(1); err != nil || n != 0 {
+		t.Fatalf("the first call counts none: %d %v", n, err)
 	}
-	if n, err := f.ActiveSessions(0); err != nil || n != 0 {
-		t.Fatalf("nothing within a zero window: %d %v", n, err)
+	if n, err := f.ActiveSessions(1); err != nil || n != 0 {
+		t.Fatalf("a session that sent nothing is not active: %d %v", n, err)
+	}
+	var owner WgFastpathWgFwd
+	if err := f.objs.WgSessions.Lookup(WgFastpathWgKey{Index: serverIndex}, &owner); err != nil {
+		t.Fatal(err)
+	}
+	owner.ByteTotal += 10_000 // what the programs add as packets pass
+	if err := f.objs.WgSessions.Put(WgFastpathWgKey{Index: serverIndex}, owner); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := f.ActiveSessions(4096); err != nil || n != 1 {
+		t.Fatalf("10 kB passed: %d %v", n, err)
+	}
+	owner.ByteTotal += 32 // a keepalive
+	if err := f.objs.WgSessions.Put(WgFastpathWgKey{Index: serverIndex}, owner); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := f.ActiveSessions(4096); err != nil || n != 0 {
+		t.Fatalf("a keepalive does not make a session active: %d %v", n, err)
 	}
 }

@@ -11,9 +11,10 @@ import (
 	"github.com/cybericebox/laboratory/internal/proxy/demux"
 )
 
-// activeWindow is how long a session that sent nothing still counts for the fair share.
 const (
-	activeWindow  = 5 * time.Second
+	// activeBytes is what a session must let through between two refreshes to count for the fair share (about 16 kbit/s): the keepalive of a
+	// connection that sends nothing is far below it.
+	activeBytes   = 4096
 	shaperRefresh = 2 * time.Second
 )
 
@@ -22,7 +23,7 @@ type kernelPath interface {
 	ByteLimiter() bool
 	SetRate(rate float64, burst int) error
 	SetBandwidth(sessionKbps, classKbps int64) error
-	ActiveSessions(window time.Duration) (int, error)
+	ActiveSessions(minBytes uint64) (int, error)
 }
 
 // fastShaper carries the bandwidth limits of the node into the kernel fast path (nil fp: userspace mode, nothing to do). The fair share
@@ -94,7 +95,7 @@ func (s *fastShaper) refresh() {
 	if l.ClassKbps > 0 || l.CapKbps > 0 {
 		active := 1
 		if l.ClassKbps > 0 {
-			n, err := s.fp.ActiveSessions(activeWindow)
+			n, err := s.fp.ActiveSessions(activeBytes)
 			if err != nil {
 				s.log.Error(err, "count the active sessions of the fast path")
 				return

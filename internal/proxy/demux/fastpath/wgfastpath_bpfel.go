@@ -64,6 +64,7 @@ type WgFastpathWgFwd struct {
 	RefillNs     uint64
 	ByteTokens   uint64
 	ByteRefillNs uint64
+	ByteTotal    uint64
 }
 
 type WgFastpathWgKey struct {

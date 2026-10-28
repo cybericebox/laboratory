@@ -1,6 +1,7 @@
 package bandwidth
 
 import (
+	"math"
 	"sync"
 	"time"
 )
@@ -103,12 +104,25 @@ type Throttle[K comparable] struct {
 	overflow *part // shared by the participants past maxKeys
 	active   int
 	nextScan time.Time
+	lastScan time.Time
 }
 
 type part struct {
 	b    Bucket
 	last time.Time
+	// bytes is what the participant offered since the last scan; heat is its decaying sum. A participant that only keeps a connection
+	// alive (a few bytes every tens of seconds) never gets warm, so it does not dilute the fair share of those who send.
+	bytes int64
+	heat  float64
 }
+
+const (
+	// heatDecay is the share of the heat that is left after a second.
+	heatDecay = 0.8
+	// activeHeat is the heat a participant needs to count as active: a steady stream of about 800 bytes a second (6.5 kbit/s), far above the
+	// keepalive of a VPN session and far below anything a person's traffic is.
+	activeHeat = 4096
+)
 
 // NewThrottle makes a throttle with no limits; SetLimits turns it on. window is how long a silent participant still counts as
 // active (5 s when zero).
@@ -166,20 +180,30 @@ func (t *Throttle[K]) rateLocked() int64 {
 // rescanLocked counts the active participants, forgets the long silent ones and gives everyone the new rate. It runs at most once
 // a second (and when the limits change): a newcomer is counted at once, the others meet the new share at the next scan.
 func (t *Throttle[K]) rescanLocked(now time.Time) {
+	decay := 1.0
+	if !t.lastScan.IsZero() {
+		decay = math.Pow(heatDecay, max(now.Sub(t.lastScan).Seconds(), 0))
+	}
+	t.lastScan = now
 	t.nextScan = now.Add(time.Second)
 	t.active = 0
+	warm := func(p *part) bool {
+		p.heat = p.heat*decay + float64(p.bytes)
+		p.bytes = 0
+		return now.Sub(p.last) <= t.window && p.heat >= activeHeat
+	}
 	for key, p := range t.parts {
 		switch silent := now.Sub(p.last); {
-		case silent <= t.window:
+		case warm(p):
 			t.active++
 		case silent > 4*t.window:
 			delete(t.parts, key)
 		}
 	}
 	if t.overflow != nil {
-		if silent := now.Sub(t.overflow.last); silent <= t.window {
+		if warm(t.overflow) {
 			t.active++
-		} else if silent > 4*t.window {
+		} else if now.Sub(t.overflow.last) > 4*t.window {
 			t.overflow = nil
 		}
 	}
@@ -234,6 +258,7 @@ func (t *Throttle[K]) Allow(key K, n int) bool {
 	}
 	now := t.now()
 	p := t.partLocked(key, now)
+	p.bytes += int64(n)
 	if !p.b.Allow(now, n) {
 		return false
 	}
@@ -250,6 +275,7 @@ func (t *Throttle[K]) Delay(key K, n int) time.Duration {
 	}
 	now := t.now()
 	p := t.partLocked(key, now)
+	p.bytes += int64(n)
 	return max(p.b.Reserve(now, n), t.class.Reserve(now, n))
 }
 

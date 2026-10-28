@@ -101,6 +101,7 @@ struct wg_fwd {
 	__u32 pad3;
 	__u64 tokens_x1000, refill_ns;
 	__u64 byte_tokens, byte_refill_ns; // the byte bucket, same rules; bytes, not thousandths
+	__u64 byte_total;                  // the bytes the owner has let through, both directions: the demux reads it to tell the sessions that send from those that only keep the connection alive
 };
 
 struct wg_cfg {
@@ -343,6 +344,7 @@ static __always_inline int take(struct wg_fwd *f, struct wg_cfg *cfg, __u64 len,
 			f->tokens_x1000 -= 1000;
 		if (byte_limiter && cfg->byte_rate)
 			f->byte_tokens -= len;
+		f->byte_total += len;
 		f->last_seen_ns = now;
 	}
 	bpf_spin_unlock(&f->lock);

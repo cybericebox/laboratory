@@ -2,7 +2,6 @@ package proxywg
 
 import (
 	"testing"
-	"time"
 
 	"github.com/go-logr/logr"
 
@@ -29,7 +28,7 @@ func (f *fakePath) SetBandwidth(s, c int64) error {
 	f.bandwidths++
 	return nil
 }
-func (f *fakePath) ActiveSessions(time.Duration) (int, error) { return f.active, nil }
+func (f *fakePath) ActiveSessions(uint64) (int, error) { return f.active, nil }
 
 func newShaper(f *fakePath) *fastShaper {
 	return &fastShaper{fp: f, base: 0, burst: 0, log: logr.Discard()}
