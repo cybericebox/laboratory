@@ -81,6 +81,20 @@ const (
 	// AnnotationDevice tags a pod/resource with its logical device name.
 	AnnotationDevice = "cybericebox.com/device"
 
+	// LabelNodeBandwidth is the label of a node with the bandwidth of its network in Mbit/s ("1562"; a trailing M or G is
+	// accepted). A node without it is taken as the chart default. AWS sets it from the launch template of the node group, Proxmox
+	// from the inventory.
+	LabelNodeBandwidth = "cybericebox.com/node-bandwidth"
+
+	// AnnotationBandwidthReserve on a platform pod is the bandwidth in Mbit/s the pod keeps for itself; it is taken off the bandwidth
+	// of the node the pod runs on, and of no other node.
+	AnnotationBandwidthReserve = "cybericebox.com/bandwidth-reserve"
+
+	// AnnotationBandwidthLimits is what the operator writes for the bandwidth protection: on a node the Geneve ceilings the
+	// node-agent applies, on a gateway, demux or L7 proxy pod the class and per-participant (per-lab) ceilings the pod applies
+	// itself. See package bandwidth for the format.
+	AnnotationBandwidthLimits = "cybericebox.com/bandwidth-limits"
+
 	// DefaultEth0 is the standard container ethernet interface name.
 	DefaultEth0 = "eth0"
 
