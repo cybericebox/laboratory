@@ -105,7 +105,16 @@ func applyShaping(iface string, kbps int64) error {
 	police.Mtu = shapeMTU
 	police.ExceedAction = netlink.TC_POLICE_SHOT
 	police.NotExceedAction = netlink.TC_POLICE_OK
-	if err := netlink.FilterReplace(&netlink.MatchAll{
+	// A matchall filter cannot be changed in place (the kernel answers "file exists"): the old one goes, the new one comes. For the moment
+	// between the two the ingress is not policed.
+	if old, err := netlink.FilterList(link, ingressHandle); err == nil {
+		for _, f := range old {
+			if err := netlink.FilterDel(f); err != nil {
+				return fmt.Errorf("police the ingress of %s: %w", iface, err)
+			}
+		}
+	}
+	if err := netlink.FilterAdd(&netlink.MatchAll{
 		FilterAttrs: netlink.FilterAttrs{LinkIndex: link.Attrs().Index, Parent: ingressHandle, Priority: 1, Protocol: unix.ETH_P_ALL},
 		Actions:     []netlink.Action{police},
 	}); err != nil {
