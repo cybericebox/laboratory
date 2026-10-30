@@ -28,6 +28,9 @@ type Config struct {
 	// GeneveOverhead is the share of the Geneve class an inner frame may use: the OVS meter counts the frame before the
 	// encapsulation, and the outer headers (about 50 bytes) come on top. 0.85 leaves room for packets down to a few hundred bytes.
 	GeneveOverhead float64
+	// EntryOverhead is the share of the entry class that payload may use on the way to a VPN pod: the VXLAN of the cluster network adds
+	// about 50 bytes to every packet the demux and the L7 proxy forward to another node.
+	EntryOverhead float64
 }
 
 // DefaultConfig mirrors the chart values.
@@ -36,7 +39,7 @@ func DefaultConfig() Config {
 		DefaultMbit: 1000, SystemReserveMbit: 100,
 		EntryShare: 50, InternetShare: 25, GeneveShare: 25,
 		ParticipantCapMbit: 50, LabInternetCapMbit: 50, LabGeneveCapMbit: 100,
-		GeneveOverhead: 0.85,
+		GeneveOverhead: 0.85, EntryOverhead: 0.85,
 	}
 }
 
@@ -54,7 +57,25 @@ func (c Config) Validate() error {
 	if c.GeneveOverhead <= 0 || c.GeneveOverhead > 1 {
 		return fmt.Errorf("bandwidth: the Geneve overhead factor must be in (0, 1], got %v", c.GeneveOverhead)
 	}
+	if c.EntryOverhead <= 0 || c.EntryOverhead > 1 {
+		return fmt.Errorf("bandwidth: the entry overhead factor must be in (0, 1], got %v", c.EntryOverhead)
+	}
 	return nil
+}
+
+// EntryClassKbps is the entry class one demux (or L7 proxy) may use, given the smallest entry class of the nodes it can send to and
+// the number of nodes that can send. The demux of every lab node may forward to a VPN pod on one node, so each gets a 1/senders share
+// of the half of the receiving node's entry class that is for the demux, scaled by the overhead factor: all of them sending to one node
+// together stay within what that node was given. senders < 1 counts as one.
+func (c Config) EntryClassKbps(minEntryKbps int64, senders int) int64 {
+	if senders < 1 {
+		senders = 1
+	}
+	factor := c.EntryOverhead
+	if factor <= 0 || factor > 1 {
+		factor = 1
+	}
+	return max(int64(float64(minEntryKbps)*factor)/2/int64(senders), 1)
 }
 
 // NodeLimits are the classes of one node in kbit/s, for each direction (the same number both ways).

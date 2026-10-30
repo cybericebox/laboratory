@@ -225,6 +225,7 @@ BANDWIDTH_PARTICIPANT_CAP_MBIT: {{ .Values.bandwidth.caps.participantMbit | quot
 BANDWIDTH_LAB_INTERNET_CAP_MBIT: {{ .Values.bandwidth.caps.labInternetMbit | quote }}
 BANDWIDTH_LAB_GENEVE_CAP_MBIT: {{ .Values.bandwidth.caps.labGeneveMbit | quote }}
 BANDWIDTH_GENEVE_OVERHEAD_FACTOR: {{ .Values.bandwidth.geneveOverheadFactor | quote }}
+BANDWIDTH_ENTRY_OVERHEAD_FACTOR: {{ .Values.bandwidth.entryOverheadFactor | quote }}
 {{- end }}
 
 {{/*

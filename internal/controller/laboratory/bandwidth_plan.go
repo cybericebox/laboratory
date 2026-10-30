@@ -37,12 +37,28 @@ func bandwidthPlan(cfg bandwidth.Config, nodes []corev1.Node, pods []corev1.Pod,
 		}
 	}
 	plan := bandwidthPlanResult{gateways: map[types.NamespacedName]string{}, nodes: map[string]string{}}
+	// Every demux and L7 proxy of a lab node may forward to a VPN pod on one node: the entry class of a sender is the share of the
+	// smallest receiver (cfg.EntryClassKbps).
+	senders, minEntry := 0, int64(0)
+	for i := range nodes {
+		if nodes[i].Labels[names.LabelNodeAgentReady] != "true" {
+			continue
+		}
+		senders++
+		if e := cfg.ForNode(&nodes[i], byNode[nodes[i].Name]).EntryKbps; minEntry == 0 || e < minEntry {
+			minEntry = e
+		}
+	}
 	for i := range nodes {
 		node := &nodes[i]
 		onNode := byNode[node.Name]
 		limits := cfg.ForNode(node, onNode)
 		geneve := cfg.NodeGeneveLimits(limits)
-		plan.nodes[node.Name] = bandwidth.Limits{ClassKbps: limits.EntryKbps / 2, CapKbps: cfg.ParticipantCapMbit * 1000, GeneveKbps: geneve.GeneveKbps, LabCapKbps: geneve.LabCapKbps}.Encode()
+		entry := limits.EntryKbps / 2
+		if senders > 0 {
+			entry = cfg.EntryClassKbps(minEntry, senders)
+		}
+		plan.nodes[node.Name] = bandwidth.Limits{ClassKbps: entry, CapKbps: cfg.ParticipantCapMbit * 1000, GeneveKbps: geneve.GeneveKbps, LabCapKbps: geneve.LabCapKbps}.Encode()
 		labs := 0
 		for j := range onNode {
 			if isBandwidthGateway(&onNode[j]) {

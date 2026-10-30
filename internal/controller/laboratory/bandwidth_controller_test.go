@@ -207,3 +207,30 @@ func TestReconcileWritesOnlyWhatDiffers(t *testing.T) {
 		t.Fatalf("after the label changed: %+v", e)
 	}
 }
+
+// The demux of every lab node may forward to a VPN pod on one node, so the entry class of a sender is a share of the smallest receiver:
+// all of them sending to one node together stay within what that node was given. Nodes that are not lab nodes (no node-agent) neither
+// send nor count.
+func TestPlanDividesTheEntryClassBetweenTheSendingNodes(t *testing.T) {
+	lab := func(n corev1.Node) corev1.Node {
+		if n.Labels == nil {
+			n.Labels = map[string]string{}
+		}
+		n.Labels[names.LabelNodeAgentReady] = "true"
+		return n
+	}
+	cfg := bandwidth.DefaultConfig()
+	nodes := []corev1.Node{lab(bwNode("n1", "1100")), lab(bwNode("n2", "2100")), lab(bwNode("n3", "1100")), bwNode("cp", "")}
+	plan := bandwidthPlan(cfg, nodes, nil, nil)
+	// smallest receiver: (1100-100) Mbit/s, entry half of it, the factor 0.85, half for the demux, three senders:
+	// 1000_000 * 0.5 = 500_000 -> 425_000 / 2 / 3 = 70_833
+	for _, n := range []string{"n1", "n2", "n3", "cp"} {
+		if l := entryOf(t, plan, n); l.ClassKbps != 70_833 {
+			t.Errorf("%s: class = %d", n, l.ClassKbps)
+		}
+	}
+	// the worst case: all three demux nodes send at their class to one node, and the L7 proxies likewise: within the entry class of that node
+	if sum := 3 * 70_833 * 2; sum > 500_000 {
+		t.Errorf("the senders together exceed the entry class: %d", sum)
+	}
+}

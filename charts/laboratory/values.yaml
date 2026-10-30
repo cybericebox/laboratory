@@ -981,6 +981,10 @@ bandwidth:
   # The OVS meter counts the frame before the Geneve headers (about 50 bytes) are added; the Geneve class is scaled by this so that
   # small packets do not push the node over its class.
   geneveOverheadFactor: 0.85
+  # The cluster network (VXLAN) adds about 50 bytes to every packet the demux and the L7 proxy forward to another node; the entry class
+  # of a demux is scaled by this and divided by the number of lab nodes that can send to one VPN node, so that all of them sending to
+  # one node together stay within that node's entry class (the U invariant).
+  entryOverheadFactor: 0.85
   # What the pods of this chart keep for themselves (the annotation above). The backend and the frontends declare theirs in the
   # platform chart.
   reserves:

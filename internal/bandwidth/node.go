@@ -19,6 +19,7 @@ type Settings struct {
 	LabInternetCapMbit int64   `env:"BANDWIDTH_LAB_INTERNET_CAP_MBIT" envDefault:"50"`
 	LabGeneveCapMbit   int64   `env:"BANDWIDTH_LAB_GENEVE_CAP_MBIT" envDefault:"100"`
 	GeneveOverhead     float64 `env:"BANDWIDTH_GENEVE_OVERHEAD_FACTOR" envDefault:"0.85"`
+	EntryOverhead      float64 `env:"BANDWIDTH_ENTRY_OVERHEAD_FACTOR" envDefault:"0.85"`
 }
 
 // Config is the Settings as a Config.
@@ -27,7 +28,7 @@ func (s Settings) Config() Config {
 		DefaultMbit: s.DefaultMbit, SystemReserveMbit: s.SystemReserveMbit,
 		EntryShare: s.EntryShare, InternetShare: s.InternetShare, GeneveShare: s.GeneveShare,
 		ParticipantCapMbit: s.ParticipantCapMbit, LabInternetCapMbit: s.LabInternetCapMbit, LabGeneveCapMbit: s.LabGeneveCapMbit,
-		GeneveOverhead: s.GeneveOverhead,
+		GeneveOverhead: s.GeneveOverhead, EntryOverhead: s.EntryOverhead,
 	}
 }
 

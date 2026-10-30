@@ -274,3 +274,24 @@ func TestWatchWithoutTheDirectoryAppliesNothingOnce(t *testing.T) {
 	}
 	cancel()
 }
+
+func TestEntryClassKbps(t *testing.T) {
+	c := DefaultConfig()
+	if got := c.EntryClassKbps(500_000, 5); got != 500_000*85/100/2/5 {
+		t.Errorf("five senders: %d", got)
+	}
+	if got := c.EntryClassKbps(500_000, 0); got != 212_500 {
+		t.Errorf("no sender counts as one: %d", got)
+	}
+	c.EntryOverhead = 1
+	if got := c.EntryClassKbps(500_000, 1); got != 250_000 {
+		t.Errorf("factor 1: %d", got)
+	}
+	c.EntryOverhead = 0
+	if err := c.Validate(); err == nil {
+		t.Error("a zero overhead factor must fail validation")
+	}
+	if got := c.EntryClassKbps(1, 1000); got != 1 {
+		t.Errorf("never below 1 kbit/s: %d", got)
+	}
+}
