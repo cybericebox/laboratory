@@ -181,7 +181,6 @@ DEVICE_DEFAULT_CPU: {{ .Values.limits.device.defaultCpu | quote }}
 DEVICE_DEFAULT_MEMORY: {{ .Values.limits.device.defaultMemory | quote }}
 DEVICE_MAX_CPU: {{ .Values.limits.device.maxCpu | quote }}
 DEVICE_MAX_MEMORY: {{ .Values.limits.device.maxMemory | quote }}
-DEVICE_NO_CPU_LIMIT: {{ .Values.limits.device.noCpuLimit | quote }}
 PROFILE_LABELS_ENABLED: {{ .Values.profileLabels.enabled | quote }}
 MICROVM_ENABLED: {{ .Values.microvm.enabled | quote }}
 MICROVM_RUNTIME_CLASS: {{ .Values.microvm.runtimeClassName | quote }}

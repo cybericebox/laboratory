@@ -16,10 +16,6 @@ type DeviceDefaults struct {
 	// object is clamped to them. Empty or "0" = no maximum beyond the absolute bound of the limits package.
 	MaxCPU    string
 	MaxMemory string
-	// NoCPULimit runs a device that declares no CPU limit of its own with a CPU request only: no hard cap, so it bursts to the
-	// free CPU of its node and is never throttled, while the request still gives it its share against the neighbours. A device
-	// that declares a cpuLimit keeps it.
-	NoCPULimit bool
 	// MicroVMOverheadCPU and MicroVMOverheadMemory are the RuntimeClass overhead of a microVM pod: added to the requests of every
 	// device of that profile wherever the platform sums them (scheduler, quotas, reservations). Empty: none.
 	MicroVMOverheadCPU    string
@@ -66,7 +62,7 @@ func pick(isCPU bool, maxQ string, candidates ...string) (resource.Quantity, boo
 
 // DevicePodResources returns the requests and the limits of a device container. Memory is one amount for both (limit,
 // else request, else the default). CPU may burst: the request is cpuRequest (else cpuLimit, else the default) and the
-// limit is cpuLimit (else the request, or none with defaults.NoCPULimit), never below the request. A quantity that does not parse, is zero or negative
+// limit is cpuLimit (else the request), never below the request. A quantity that does not parse, is zero or negative
 // (it would remove the limit) or is beyond the absolute bound is skipped, and one above the chart maximum is clamped to
 // it, so an object that predates the validation cannot run a pod without limits. Both nil when nothing is set.
 func DevicePodResources(spec *laboratoryv1alpha1.DeviceResources, defaults DeviceDefaults) (requests, limits corev1.ResourceList) {
@@ -82,18 +78,10 @@ func DevicePodResources(spec *laboratoryv1alpha1.DeviceResources, defaults Devic
 	}
 	if req, ok := pick(true, defaults.MaxCPU, cpuReq, cpuLim, defaults.CPU); ok {
 		lim, ok := pick(true, defaults.MaxCPU, cpuLim)
-		switch {
-		case !ok && defaults.NoCPULimit:
-			if requests == nil {
-				requests, limits = corev1.ResourceList{}, corev1.ResourceList{}
-			}
-			requests[corev1.ResourceCPU] = req
-		default:
-			if !ok || lim.Cmp(req) < 0 {
-				lim = req.DeepCopy()
-			}
-			add(corev1.ResourceCPU, req, lim)
+		if !ok || lim.Cmp(req) < 0 {
+			lim = req.DeepCopy()
 		}
+		add(corev1.ResourceCPU, req, lim)
 	}
 	if mem, ok := pick(false, defaults.MaxMemory, memLim, memReq, defaults.Memory); ok {
 		add(corev1.ResourceMemory, mem, mem.DeepCopy())

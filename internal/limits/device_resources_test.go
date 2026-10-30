@@ -3,8 +3,6 @@ package limits
 import (
 	"testing"
 
-	corev1 "k8s.io/api/core/v1"
-
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 )
 
@@ -29,38 +27,21 @@ func TestDeviceRequestsAreTheRequestsOfThePod(t *testing.T) {
 	}
 }
 
-// NoCPULimit: a device without a cpuLimit of its own gets a CPU request and no CPU limit (it bursts to the free CPU of the
-// node); memory keeps request = limit; a declared cpuLimit is kept; the default off keeps limit = request.
-func TestNoCPULimitLeavesTheBurstUncapped(t *testing.T) {
+// A device keeps exactly the CPU request and limit its author set; with only one of them the limit equals the request. There is no burst
+// above the limit and no way to switch the limit off.
+func TestCPULimitIsAlwaysSet(t *testing.T) {
 	spec := &laboratoryv1alpha1.DeviceResources{CPURequest: "50m", MemoryLimit: "128Mi"}
-	req, lim := DevicePodResources(spec, DeviceDefaults{CPU: "100m", Memory: "256Mi", NoCPULimit: true})
-	if req.Cpu().MilliValue() != 50 {
-		t.Errorf("request cpu = %v", req.Cpu())
+	req, lim := DevicePodResources(spec, DeviceDefaults{CPU: "100m", Memory: "256Mi"})
+	if req.Cpu().MilliValue() != 50 || lim.Cpu().MilliValue() != 50 {
+		t.Errorf("limit = request when only one is given: %v / %v", req, lim)
 	}
-	if _, has := lim[corev1.ResourceCPU]; has {
-		t.Errorf("a cpu limit was set: %v", lim)
-	}
-	if lim.Memory().Value() != 128<<20 || req.Memory().Value() != 128<<20 {
-		t.Errorf("memory %v / %v", req.Memory(), lim.Memory())
-	}
-	// The default profile too.
-	req, lim = DevicePodResources(nil, DeviceDefaults{CPU: "100m", Memory: "256Mi", NoCPULimit: true})
-	if _, has := lim[corev1.ResourceCPU]; has || req.Cpu().MilliValue() != 100 {
+	req, lim = DevicePodResources(nil, DeviceDefaults{CPU: "100m", Memory: "256Mi"})
+	if req.Cpu().MilliValue() != 100 || lim.Cpu().MilliValue() != 100 {
 		t.Errorf("default profile: %v / %v", req, lim)
 	}
-	// An explicit limit stays, clamped to the maximum as before.
 	spec.CPULimit = "400m"
-	if _, lim = DevicePodResources(spec, DeviceDefaults{NoCPULimit: true, MaxCPU: "300m"}); lim.Cpu().MilliValue() != 300 {
-		t.Errorf("declared limit lost: %v", lim)
-	}
-	// Off: limit = request.
-	spec.CPULimit = ""
-	if _, lim = DevicePodResources(spec, DeviceDefaults{}); lim.Cpu().MilliValue() != 50 {
-		t.Errorf("default must cap at the request: %v", lim)
-	}
-	// What the scheduler counts is the request either way.
-	if got := DeviceRequests(spec, DeviceDefaults{NoCPULimit: true}); got.Cpu().MilliValue() != 50 {
-		t.Errorf("DeviceRequests = %v", got.Cpu())
+	if _, lim = DevicePodResources(spec, DeviceDefaults{MaxCPU: "300m"}); lim.Cpu().MilliValue() != 300 {
+		t.Errorf("a declared limit is kept, clamped to the maximum: %v", lim)
 	}
 }
 
