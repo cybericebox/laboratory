@@ -62,6 +62,10 @@ type L7Config struct {
 	LiveTotal      int     `env:"LIVE_TOTAL" envDefault:"2500"`
 	AuthRate       float64 `env:"AUTH_RATE" envDefault:"5"`
 	AuthBurst      int     `env:"AUTH_BURST" envDefault:"20"`
+	// ProxyProtocolFrom lists the peers (IPs or CIDRs) whose connections may start with a PROXY protocol header (v1 or v2): the edge
+	// that carries the client's address. For such a peer the header is optional and, when present, gives the connection's address;
+	// every other peer's header is read and ignored, so nobody can claim an address. Empty: the feature is off.
+	ProxyProtocolFrom []string `env:"L7_PROXY_PROTOCOL_FROM" envSeparator:","`
 }
 
 type WGConfig struct {

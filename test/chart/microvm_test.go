@@ -28,7 +28,7 @@ func TestMicroVMRuntimeClass(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	for _, want := range []string{
-		"kind: RuntimeClass", "name: cybericebox-microvm", `handler: "kata-clh"`, `memory: "200Mi"`, `cpu: "50m"`,
+		"kind: RuntimeClass", "name: cybericebox-microvm", `handler: "kata-clh-runtime-rs"`, `memory: "200Mi"`, `cpu: "50m"`,
 		`cybericebox.com/profile-microvm: "true"`, `cybericebox.com/runtime-kata-clh: "true"`,
 	} {
 		if !strings.Contains(out, want) {
@@ -44,5 +44,22 @@ func TestMicroVMRuntimeClass(t *testing.T) {
 		if cfg[k] != want {
 			t.Errorf("%s = %q, want %q", k, cfg[k], want)
 		}
+	}
+}
+
+func TestL7ProxyProtocolTrustList(t *testing.T) {
+	off, err := helmTemplate(t, "-s", "templates/proxy/deployment.yaml")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, off)
+	}
+	if strings.Contains(off, "L7_PROXY_PROTOCOL_FROM") {
+		t.Error("the PROXY protocol is off by default")
+	}
+	on, err := helmTemplate(t, "--set", "proxy.l7.proxyProtocol.trustedFrom={10.0.0.1/32,10.0.0.2/32}", "-s", "templates/proxy/deployment.yaml")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, on)
+	}
+	if !strings.Contains(on, "L7_PROXY_PROTOCOL_FROM") || !strings.Contains(on, `"10.0.0.1/32,10.0.0.2/32"`) {
+		t.Errorf("the trust list does not reach the proxy:\n%s", on)
 	}
 }

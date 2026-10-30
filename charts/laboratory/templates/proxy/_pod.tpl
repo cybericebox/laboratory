@@ -46,6 +46,11 @@ spec:
     {{- /* The listen address (:8443), the probe port (:8081) and the TLS files (/etc/proxy/tls) are baked into the image. */}}
     - name: BASE_DOMAIN
       value: {{ required "operator.baseDomain is required" .Values.operator.baseDomain | quote }}
+  {{- with .Values.proxy.l7.proxyProtocol.trustedFrom }}
+    # The peers (the edge nodes) whose connections may begin with a PROXY protocol header; any other peer's header is ignored.
+    - name: L7_PROXY_PROTOCOL_FROM
+      value: {{ join "," . | quote }}
+  {{- end }}
     - name: SESSION_COOKIE_NAME
       value: {{ .Values.proxy.l7.sessionCookieName | quote }}
     - name: SESSION_SECRET

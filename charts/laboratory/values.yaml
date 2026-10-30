@@ -113,7 +113,7 @@ microvm:
   enabled: false
   runtimeClassName: cybericebox-microvm
   # The containerd runtime handler of the implementation (Kata with Cloud Hypervisor).
-  handler: kata-clh
+  handler: kata-clh-runtime-rs
   # The node label of the implementation the RuntimeClass selects; stays inside the laboratory.
   implementationLabel: cybericebox.com/runtime-kata-clh
   # RuntimeClass overhead.podFixed: what the guest kernel, the agent and the VMM cost per pod (a first guess, set after the measurement).
@@ -287,6 +287,11 @@ proxy:
     enabled: true
     # The HTTPS listener is :8443 and the probes (/readyz: the listener is bound and the informer caches have synced; /healthz: the
     # process answers) are on :8081; the TLS files are where proxy-tls is mounted. All constants of the image.
+    # PROXY protocol (v1/v2) in front of the TLS on :8443, for an edge that carries the client's address. trustedFrom lists the peers (IPs or
+    # CIDRs: the edge nodes) whose header is believed (optional for them, never required); the header of any other peer is read and
+    # ignored. Empty (default): off, as before. The address is used only inside the proxy (its limits) and never reaches a device.
+    proxyProtocol:
+      trustedFrom: []
     # Name of the proxy's own session cookie (SESSION_COOKIE_NAME).
     sessionCookieName: "challenge"
     # HMAC-SHA256 key (32+ bytes) of the proxy's own session cookie, set on /_auth

@@ -200,3 +200,71 @@ func TestL7LimitsDefaults(t *testing.T) {
 		t.Fatalf("%+v", cfg)
 	}
 }
+
+func proxyHeaderV1(src string) string { return "PROXY TCP4 " + src + " 10.0.0.1 5555 443\r\n" }
+
+// A listed peer's PROXY header gives the connection's address, and the header is optional for it; the header of any other peer is
+// consumed and ignored (nobody can claim an address); an empty list changes nothing.
+func TestProxyProtocolListener(t *testing.T) {
+	remote := func(trusted []string, send string) string {
+		t.Helper()
+		raw, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ln, err := ProxyProtocolListener(raw, trusted, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+		got := make(chan string, 1)
+		go func() {
+			c, err := ln.Accept()
+			if err != nil {
+				got <- "accept: " + err.Error()
+				return
+			}
+			defer c.Close()
+			buf := make([]byte, 5)
+			if _, err := io.ReadFull(c, buf); err != nil {
+				got <- "read: " + err.Error()
+				return
+			}
+			host, _, _ := net.SplitHostPort(c.RemoteAddr().String())
+			got <- host + " " + string(buf)
+		}()
+		c, err := net.Dial("tcp", raw.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		_, _ = io.WriteString(c, send+"hello")
+		select {
+		case v := <-got:
+			return v
+		case <-time.After(3 * time.Second):
+			t.Fatal("no connection")
+			return ""
+		}
+	}
+	if got := remote([]string{"127.0.0.0/8"}, proxyHeaderV1("198.51.100.7")); got != "198.51.100.7 hello" {
+		t.Errorf("trusted peer with a header: %q", got)
+	}
+	if got := remote([]string{"127.0.0.1"}, ""); got != "127.0.0.1 hello" {
+		t.Errorf("trusted peer without a header (optional): %q", got)
+	}
+	if got := remote([]string{"10.0.0.0/8"}, proxyHeaderV1("198.51.100.7")); got != "127.0.0.1 hello" {
+		t.Errorf("an untrusted peer's header must be consumed and ignored: %q", got)
+	}
+	if got := remote(nil, ""); got != "127.0.0.1 hello" {
+		t.Errorf("feature off: %q", got)
+	}
+	raw, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer raw.Close()
+	if ln, err := ProxyProtocolListener(raw, nil, time.Second); err != nil || ln != raw {
+		t.Errorf("an empty list must return the listener unchanged: %v", err)
+	}
+	if _, err := ProxyProtocolListener(raw, []string{"not-an-ip"}, time.Second); err == nil {
+		t.Error("a bad entry must fail")
+	}
+}

@@ -224,6 +224,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	r.Header.Set("Cookie", strings.Join(kept, "; "))
+	stripClientAddress(r.Header)
 	r.Header.Set("X-Forwarded-Proto", "https")
 
 	// Track the request: when the client loses access, CheckLive cancels it or closes its upgraded connection.
@@ -461,4 +462,20 @@ func (h *Handler) serveMeteredProxy(w http.ResponseWriter, r *http.Request, prox
 		upstreamFailed(w, r, err)
 	}
 	proxy.ServeHTTP(rec, r)
+}
+
+// clientAddressHeaders are the request headers that carry the address of a client (or of a hop on its way) under the common names.
+var clientAddressHeaders = []string{
+	"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Port", "X-Real-Ip", "X-Client-Ip", "True-Client-Ip",
+	"Cf-Connecting-Ip", "X-Cluster-Client-Ip", "X-Originating-Ip",
+}
+
+// stripClientAddress makes sure no address of a client reaches a task device: what the client sent under those names is dropped, and
+// X-Forwarded-For is set to nil, which tells the reverse proxy not to add the peer address itself (a nil entry, not an empty one).
+// X-Forwarded-Proto stays.
+func stripClientAddress(h http.Header) {
+	for _, name := range clientAddressHeaders {
+		h.Del(name)
+	}
+	h["X-Forwarded-For"] = nil
 }

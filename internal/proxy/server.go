@@ -2,9 +2,14 @@ package proxy
 
 import (
 	"crypto/tls"
+	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
+	"time"
+
+	proxyproto "github.com/pires/go-proxyproto"
 )
 
 // NewHTTPServer is the L7 proxy's HTTPS server with the limits that apply before any routing or authentication: a client
@@ -69,4 +74,24 @@ func (c *limitConn) Close() error {
 	err := c.Conn.Close()
 	c.once.Do(c.release)
 	return err
+}
+
+// ProxyProtocolListener wraps the listener so that a connection from one of the trusted peers may begin with a PROXY protocol header,
+// whose address becomes the connection's RemoteAddr (policy USE: optional, never required). A connection from any other peer has its
+// header consumed and ignored (policy IGNORE) and keeps the peer address. An empty list returns the listener unchanged.
+func ProxyProtocolListener(l net.Listener, trusted []string, headerTimeout time.Duration) (net.Listener, error) {
+	var from []string
+	for _, t := range trusted {
+		if t = strings.TrimSpace(t); t != "" {
+			from = append(from, t)
+		}
+	}
+	if len(from) == 0 {
+		return l, nil
+	}
+	policy, err := proxyproto.PolicyFromRanges(from, proxyproto.USE, proxyproto.IGNORE)
+	if err != nil {
+		return nil, fmt.Errorf("L7_PROXY_PROTOCOL_FROM: %w", err)
+	}
+	return &proxyproto.Listener{Listener: l, ReadHeaderTimeout: headerTimeout, ConnPolicy: policy}, nil
 }

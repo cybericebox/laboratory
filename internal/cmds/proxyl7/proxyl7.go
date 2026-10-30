@@ -134,6 +134,10 @@ func Run() {
 				return err
 			}
 			defer func() { _ = ln.Close() }()
+			// The edge may put the client's address in a PROXY header in front of the TLS; only the listed peers are believed.
+			if ln, err = proxy.ProxyProtocolListener(ln, cfg.ProxyProtocolFrom, cfg.ReadHeaderTimeout); err != nil {
+				return err
+			}
 			return l7.RunLifecycle(ctx, httpsSrv, handler, reports, cfg.ReportInterval, cfg.LiveCheckInterval, func() error {
 				listening.Set()
 				return httpsSrv.ServeTLS(proxy.LimitListener(ln, cfg.MaxConnections), "", "")
