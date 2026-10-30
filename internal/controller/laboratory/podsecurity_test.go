@@ -211,12 +211,12 @@ func TestAdmissionPolicyCapabilitiesAreWhatTheCodeAdds(t *testing.T) {
 }
 
 // What keeps a hostile device (a fork bomb, a memory hog, a disk filler) inside its own lab: a memory limit equal to the request,
-// an ephemeral-storage limit, a CPU request (the share against the neighbours) and a CPU limit, no host namespaces and no
+// an ephemeral-storage limit, a CPU request (the share against the neighbours, with or without a cap), no host namespaces and no
 // privileged container (setuid stays possible: the labs teach it). The PID limit is the kubelet's (podPidsLimit, infrastructure KUBELET_POD_MAX_PIDS); the network rate is the OVS port
 // policing. Each pod is its own cgroup, so one device's OOM or storm restarts only that device.
 func TestDevicePodStaysInsideItsOwnLab(t *testing.T) {
-	{
-		r := &DeviceReconciler{Security: PodSecurity{EphemeralStorage: "2Gi", UserNamespaces: true}, Defaults: DeviceDefaults{CPU: "100m", Memory: "256Mi", MaxCPU: "2", MaxMemory: "4Gi"}}
+	for _, noCPULimit := range []bool{false, true} {
+		r := &DeviceReconciler{Security: PodSecurity{EphemeralStorage: "2Gi", UserNamespaces: true}, Defaults: DeviceDefaults{CPU: "100m", Memory: "256Mi", MaxCPU: "2", MaxMemory: "4Gi", NoCPULimit: noCPULimit}}
 		_, _, _, spec := r.workloadTemplate(newDeviceForPod(), false)
 		c := spec.Containers[0]
 		if spec.HostNetwork || spec.HostPID || spec.HostIPC {
@@ -235,8 +235,9 @@ func TestDevicePodStaysInsideItsOwnLab(t *testing.T) {
 		if c.Resources.Requests.Cpu().IsZero() {
 			t.Error("a CPU request is the device's share against its neighbours")
 		}
-		if lim := c.Resources.Limits[corev1.ResourceCPU]; lim.IsZero() {
-			t.Error("a device always has a CPU limit: no burst above it")
+		_, capped := c.Resources.Limits[corev1.ResourceCPU]
+		if noCPULimit == capped {
+			t.Errorf("noCPULimit=%v but cpu limit present=%v", noCPULimit, capped)
 		}
 		if lim := c.Resources.Limits[corev1.ResourceEphemeralStorage]; lim.IsZero() {
 			t.Error("the writable layer, logs and emptyDirs are limited")

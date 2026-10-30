@@ -191,6 +191,8 @@ type Config struct {
 	// device object that asks for more (it predates the agent's check, or was made by hand) is clamped to them.
 	DeviceMaxCPU    string `env:"DEVICE_MAX_CPU" envDefault:"2000m"`
 	DeviceMaxMemory string `env:"DEVICE_MAX_MEMORY" envDefault:"4Gi"`
+	// DeviceNoCPULimit runs devices that declare no cpuLimit with a CPU request only (limits.device.noCpuLimit).
+	DeviceNoCPULimit bool `env:"DEVICE_NO_CPU_LIMIT" envDefault:"false"`
 
 	// Profiles are the device profiles this cluster offers and how they map to nodes (chart microvm.*, profileLabels.*).
 	Profiles nodecap.ProfileConfig

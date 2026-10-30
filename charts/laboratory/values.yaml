@@ -1013,6 +1013,10 @@ limits:
     # The planning profile: what a device that declares no resources gets (and counts as).
     defaultCpu: 100m
     defaultMemory: 256Mi
+    # true: a device that declares no cpuLimit runs with a CPU request only, no hard cap (CFS shares by request: it bursts to the
+    # free CPU of its node, is never throttled, and cannot take a neighbour's requested share). A device with its own cpuLimit
+    # keeps it. false: the limit equals the request (the old behaviour; short spikes are throttled).
+    noCpuLimit: false
   lab:
     # Devices of one lab, every type counted (container, switch, hub). The platform has a ceiling of 64 that this can only lower (0 = the
     # ceiling); the chart refuses a larger value. A container device has at most 16 interfaces, a switch or hub 48 ports.
