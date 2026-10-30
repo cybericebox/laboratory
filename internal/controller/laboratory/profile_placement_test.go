@@ -1,11 +1,15 @@
 package laboratory
 
 import (
+	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -99,5 +103,44 @@ func TestSchedulerRoomsFollowTheProfile(t *testing.T) {
 	// a container pod does not take the micro-only node
 	if _, ok := fitsGang(rooms[2:3], []podNeed{{Key: "c", CPU: 1000, Memory: 1 << 30}}); ok {
 		t.Fatal("with the profile labels on a container pod needs the container label")
+	}
+}
+
+// An unrunnable profile never starts, on any path that makes a pod, and never falls back to a plain container: microvm without its
+// RuntimeClass, microvm switched off, vm. The isolation exemptions follow the RuntimeClass actually applied, not the profile asked for.
+func TestUnrunnableProfileFailsClosedOnEveryPodPath(t *testing.T) {
+	ctx := context.Background()
+	for name, r := range map[string]*DeviceReconciler{
+		"microvm requested, no RuntimeClass configured": {Profiles: nodecap.ProfilePolicy{MicroVM: true}},
+		"microvm requested, profile off":                {MicroVMRuntimeClass: "cybericebox-microvm"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := record.NewFakeRecorder(10)
+			r.Recorder = rec
+			d := deviceOf(laboratoryv1alpha1.DeviceProfileMicroVM)
+			if err := r.createDeployment(ctx, d, 1); !errors.Is(err, errProfileUnsupported) {
+				t.Errorf("createDeployment: %v", err)
+			}
+			if err := r.createDevicePod(ctx, d); !errors.Is(err, errProfileUnsupported) {
+				t.Errorf("createDevicePod (state persistence): %v", err)
+			}
+			if ev := <-rec.Events; !strings.Contains(ev, "ProfileUnsupported") {
+				t.Errorf("event: %q", ev)
+			}
+			// the spec itself never gets weaker: no RuntimeClass, so the user namespace and the TUN resource stay
+			r.Security.UserNamespaces = true
+			_, _, _, spec := r.workloadTemplate(d, false)
+			if spec.RuntimeClassName != nil || spec.HostUsers == nil || *spec.HostUsers {
+				t.Errorf("without a RuntimeClass the pod keeps its user namespace: %v %v", spec.RuntimeClassName, spec.HostUsers)
+			}
+		})
+	}
+	r := &DeviceReconciler{Recorder: record.NewFakeRecorder(10)}
+	if err := r.createDeployment(ctx, deviceOf("vm"), 1); !errors.Is(err, errProfileUnsupported) {
+		t.Errorf("vm: %v", err)
+	}
+	ok := &DeviceReconciler{Profiles: nodecap.ProfilePolicy{MicroVM: true}, MicroVMRuntimeClass: "c"}
+	if !ok.profileRunnable("microvm") || !ok.profileRunnable("") {
+		t.Error("microvm with its RuntimeClass, and a container, run")
 	}
 }

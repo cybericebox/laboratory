@@ -18,8 +18,8 @@ permissions:
   contents: read
 
 env:
-  # The Kata release the kernel config is taken from; moves with the Kata version the nodes run.
-  KATA_REF: "3.20.0"
+  # The Kata release the kernel config is taken from: the one infrastructure installs with kata-deploy (4.2.0); it moves with it.
+  KATA_REF: "4.2.0"
 
 jobs:
   build:
