@@ -29,6 +29,13 @@ const (
 	// node-agent (a pod there would have no cni-gate and no OVS wiring).
 	LabelNodeAgentReady = LabelPrefix + "node-agent-ready"
 
+	// LabelProfileContainer and LabelProfileMicroVM are set on a node for every device profile it can run (a KVM node usually
+	// carries both). LabelRuntimeKataCLH is the implementation label: the node has Kata with Cloud Hypervisor. It stays inside the
+	// laboratory; the microVM RuntimeClass selects it.
+	LabelProfileContainer = "cybericebox.com/profile-container"
+	LabelProfileMicroVM   = "cybericebox.com/profile-microvm"
+	LabelRuntimeKataCLH   = "cybericebox.com/runtime-kata-clh"
+
 	// TopologyKeyHostname is the well-known node label used as the topology key
 	// for per-node scheduling constraints (device co-location).
 	TopologyKeyHostname = "kubernetes.io/hostname"

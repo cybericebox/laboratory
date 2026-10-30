@@ -194,6 +194,9 @@ type Config struct {
 	// DeviceNoCPULimit runs devices that declare no cpuLimit with a CPU request only (limits.device.noCpuLimit).
 	DeviceNoCPULimit bool `env:"DEVICE_NO_CPU_LIMIT" envDefault:"false"`
 
+	// Profiles are the device profiles this cluster offers and how they map to nodes (chart microvm.*, profileLabels.*).
+	Profiles nodecap.ProfileConfig
+
 	// DeviceUserNamespaces runs device pods with hostUsers: false (default on; a hidden setting, not shown in any UI).
 	// DeviceEphemeralStorage limits the writable layer, logs and emptyDirs of a device ("" or "0" = no limit).
 	DeviceUserNamespaces   bool   `env:"DEVICE_USER_NAMESPACES" envDefault:"true"`

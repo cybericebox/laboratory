@@ -216,7 +216,17 @@ func Run() {
 	if cfg.RuntimeObservation {
 		serviceReleaseObserver = laboratorycontroller.NativeGroupServiceReleaseObserver{Client: mgr.GetClient()}
 	}
+	profilePolicy, err := cfg.Profiles.Policy()
+	if err != nil {
+		setupLog.Error(err, "device profiles config")
+		os.Exit(1)
+	}
+	var profilePolicyOverheadCPU, profilePolicyOverheadMemory string
+	if profilePolicy.MicroVM {
+		profilePolicyOverheadCPU, profilePolicyOverheadMemory = cfg.Profiles.MicroVMOverheadCPU, cfg.Profiles.MicroVMOverheadMemory
+	}
 	if err = (&laboratorycontroller.LabGroupReconciler{
+		Profiles:                    profilePolicy,
 		Reader:                      mgr.GetAPIReader(),
 		ServiceReleaseObserver:      serviceReleaseObserver,
 		Scheduled:                   cfg.SchedulerEnabled,
@@ -283,7 +293,7 @@ func Run() {
 	}
 	if err = (&laboratorycontroller.LabReconciler{
 		VNI:                       vniRetirer,
-		Defaults:                  laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory, NoCPULimit: cfg.DeviceNoCPULimit},
+		Defaults:                  laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory, NoCPULimit: cfg.DeviceNoCPULimit, MicroVMOverheadCPU: profilePolicyOverheadCPU, MicroVMOverheadMemory: profilePolicyOverheadMemory},
 		LabNodeSelector:           labNodeSelector,
 		LabTolerations:            labTolerations,
 		Reader:                    mgr.GetAPIReader(),
@@ -345,11 +355,12 @@ func Run() {
 				PrepullTimeout: cfg.SchedulerPrepullTimeout,
 				Aging:          time.Duration(cfg.SchedulerAgingSeconds) * time.Second,
 				Maximum:        capacity,
+				Profiles:       profilePolicy,
 				NodeTimeout:    cfg.CapacityNodeTimeout,
 				// the cleanup of unreserved work gives the same notice as the end of a reservation
 				UnreservedNotice: time.Duration(cfg.ReservationEndingNoticeSeconds) * time.Second,
 			},
-			Defaults:        laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory, NoCPULimit: cfg.DeviceNoCPULimit},
+			Defaults:        laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory, NoCPULimit: cfg.DeviceNoCPULimit, MicroVMOverheadCPU: profilePolicyOverheadCPU, MicroVMOverheadMemory: profilePolicyOverheadMemory},
 			GroupPods:       cfg.GroupPods,
 			LabNodeSelector: labNodeSelector,
 			LabTolerations:  labTolerations,
@@ -358,6 +369,10 @@ func Run() {
 			setupLog.Error(err, "unable to add the scheduler")
 			os.Exit(1)
 		}
+	}
+	microVMRuntimeClass := ""
+	if profilePolicy.MicroVM {
+		microVMRuntimeClass = cfg.Profiles.MicroVMRuntimeClass
 	}
 	deviceReconciler := &laboratorycontroller.DeviceReconciler{
 		Scheduled:               cfg.SchedulerEnabled,
@@ -370,9 +385,11 @@ func Run() {
 		LabTolerations:          labTolerations,
 		PriorityClass:           cfg.DevicePriorityClass,
 		SchedulerName:           cfg.LabSchedulerName,
+		Profiles:                profilePolicy,
+		MicroVMRuntimeClass:     microVMRuntimeClass,
 		TerminationGraceSeconds: cfg.LabPodTerminationGraceSeconds,
 		NetConfigImage:          cfg.NetConfigImage,
-		Defaults:                laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory, NoCPULimit: cfg.DeviceNoCPULimit},
+		Defaults:                laboratorycontroller.DeviceDefaults{CPU: cfg.DeviceDefaultCPU, Memory: cfg.DeviceDefaultMemory, MaxCPU: cfg.DeviceMaxCPU, MaxMemory: cfg.DeviceMaxMemory, NoCPULimit: cfg.DeviceNoCPULimit, MicroVMOverheadCPU: profilePolicyOverheadCPU, MicroVMOverheadMemory: profilePolicyOverheadMemory},
 		Security: laboratorycontroller.PodSecurity{
 			UserNamespaces: cfg.DeviceUserNamespaces, EphemeralStorage: cfg.DeviceEphemeralStorage,
 		},

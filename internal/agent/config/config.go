@@ -9,6 +9,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/nodecap"
 )
 
 // ServerTLSConfig is the agent's own TLS identity — a key pair only, no CA. TLS is always on; the files are where the chart mounts the
@@ -133,6 +134,8 @@ type Config struct {
 	// DeviceProfiles are the catalog profile IDs this cluster offers (internal/profiles). The agent reports them in
 	// GetFeatures and refuses a lab whose device asks for another.
 	DeviceProfiles []string `env:"AGENT_DEVICE_PROFILES" envSeparator:"," envDefault:"standard,extended"`
+	// Profiles are the device profiles this cluster offers and how they map to nodes (chart microvm.*, profileLabels.*).
+	Profiles nodecap.ProfileConfig
 	// Limits are the caps on devices, labs and tenants the agent enforces on CreateLabs and reports.
 	Limits limits.Config
 	// BaseDomain is the domain of the lab web endpoints; PublicVPNEndpoint is host:port of WireGuard. The operator's names and the

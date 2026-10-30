@@ -140,6 +140,8 @@ func (r PackingReserve) Apply(freeCPU, freeMem int64) (cpu, mem int64) {
 type NodeFree struct {
 	Name        string
 	CPU, Memory int64
+	// Labels are the labels of the node (the device profiles it can run).
+	Labels map[string]string
 }
 
 // IsLabPod reports whether the pod belongs to a lab: a device pod or the VPN or gateway pod of a group. Every other pod
@@ -181,7 +183,7 @@ func FreeForLabs(nodes []corev1.Node, pods []corev1.Pod, selector map[string]str
 		mem -= mem * int64(reserve.Percent) / 100
 		cpu, mem = max(cpu-req.CPU, 0), max(mem-req.Memory, 0)
 		cpu, mem = packing.Apply(cpu, mem)
-		out = append(out, NodeFree{Name: n.Name, CPU: cpu, Memory: mem})
+		out = append(out, NodeFree{Name: n.Name, CPU: cpu, Memory: mem, Labels: n.Labels})
 	}
 	return out
 }

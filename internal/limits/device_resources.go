@@ -20,6 +20,24 @@ type DeviceDefaults struct {
 	// free CPU of its node and is never throttled, while the request still gives it its share against the neighbours. A device
 	// that declares a cpuLimit keeps it.
 	NoCPULimit bool
+	// MicroVMOverheadCPU and MicroVMOverheadMemory are the RuntimeClass overhead of a microVM pod: added to the requests of every
+	// device of that profile wherever the platform sums them (scheduler, quotas, reservations). Empty: none.
+	MicroVMOverheadCPU    string
+	MicroVMOverheadMemory string
+}
+
+// ProfileOverhead is the CPU (millicores) and memory (bytes) the profile adds to a device pod on top of its own requests.
+func ProfileOverhead(profile laboratoryv1alpha1.DeviceProfile, defaults DeviceDefaults) (cpu, mem int64) {
+	if profile != laboratoryv1alpha1.DeviceProfileMicroVM {
+		return 0, 0
+	}
+	if q, err := resource.ParseQuantity(defaults.MicroVMOverheadCPU); err == nil {
+		cpu = q.MilliValue()
+	}
+	if q, err := resource.ParseQuantity(defaults.MicroVMOverheadMemory); err == nil {
+		mem = q.Value()
+	}
+	return cpu, mem
 }
 
 // pick is the first usable candidate: a quantity that parses, is positive and within the absolute bound, clamped to the
@@ -101,6 +119,8 @@ func LabNeed(spec *laboratoryv1alpha1.LabSpec, defaults DeviceDefaults) (cpu, me
 		if r := DeviceRequests(d.Resources, defaults); r != nil {
 			cpu, mem = cpu+r.Cpu().MilliValue(), mem+r.Memory().Value()
 		}
+		oc, om := ProfileOverhead(d.Profile, defaults)
+		cpu, mem = cpu+oc, mem+om
 	}
 	return cpu, mem
 }

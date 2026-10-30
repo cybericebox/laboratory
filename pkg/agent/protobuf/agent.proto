@@ -895,6 +895,19 @@ message CapacityResponse {
   bool has_current = 20;
   int64 current_cpu_millicores = 21;
   int64 current_memory_bytes = 22;
+  // The device profiles this laboratory offers and whether they can run (container, microvm; never vm for now). A profile
+  // that is switched off is absent; an empty list is an older agent (the caller takes container as available).
+  repeated NodeProfileCapacity node_profiles = 23;
+}
+
+// One device profile as the nodes of this laboratory can run it. No node names or counts: the cluster layout stays private.
+message NodeProfileCapacity {
+  string profile = 1;                 // "container" | "microvm"
+  bool available_now = 2;             // a running, schedulable node can run it
+  bool scale_up_known = 3;            // the chart told which profiles its autoscaler node groups can add
+  bool available_after_scale_up = 4;  // meaningful only with scale_up_known
+  int64 overhead_cpu_millicores = 5;  // added to every pod of the profile (RuntimeClass overhead); 0 for container
+  int64 overhead_memory_bytes = 6;
 }
 
 message FeaturesResponse {

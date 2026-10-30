@@ -1,0 +1,19 @@
+{{- if .Values.microvm.enabled }}
+# The RuntimeClass of the microVM device profile. The node selector keeps its pods on the nodes that have the profile and the implementation;
+# the overhead is added to the pod by the API server and counted by the scheduler.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: {{ .Values.microvm.runtimeClassName }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+handler: {{ .Values.microvm.handler | quote }}
+overhead:
+  podFixed:
+    cpu: {{ .Values.microvm.overhead.cpu | quote }}
+    memory: {{ .Values.microvm.overhead.memory | quote }}
+scheduling:
+  nodeSelector:
+    cybericebox.com/profile-microvm: "true"
+    {{ .Values.microvm.implementationLabel }}: "true"
+{{- end }}

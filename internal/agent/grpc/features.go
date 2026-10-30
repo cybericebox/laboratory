@@ -15,6 +15,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/limits"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/internal/profiles"
 	"github.com/cybericebox/laboratory/internal/tenant"
 	"github.com/cybericebox/laboratory/pkg/agent/client"
@@ -55,6 +56,8 @@ type Features struct {
 	// DeviceDefaults are the operator's device defaults and maxima (the same chart values): a lab's need against its
 	// reservation is counted with them as the scheduler counts it.
 	DeviceDefaults limits.DeviceDefaults
+	// Profiles says which device profiles are offered and how they map to nodes (the chart's microvm and profileLabels values).
+	Profiles nodecap.ProfilePolicy
 	// GroupPods is how a group's own pods are sized (the maximum CreateLabGroups accepts) and the default size without one.
 	GroupPods GroupPodsFeature
 	// GroupLimits are the most users and labs a group may be made for and the counts it gets by default.

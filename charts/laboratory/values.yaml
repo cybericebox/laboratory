@@ -102,6 +102,29 @@ priorityClasses:
 # (NodeResourcesFit, scoringStrategy MostAllocated) instead of spreading, so no hole is left on every node that a big device
 # cannot use. Nothing is repacked during a running event, so placement must avoid holes from the start. System pods keep the
 # cluster's own scheduler. false: lab pods use the cluster's default scheduler.
+# Device profiles (docs/specs/MICROVM.md in the platform repo). A container device runs anywhere on the lab nodes unless the profile labels
+# are turned on; a microVM device always needs a node with cybericebox.com/profile-microvm=true and the implementation label.
+profileLabels:
+  # On: container devices (and the VPN and gateway pods) select cybericebox.com/profile-container=true. Off (default): scheduling as before,
+  # so a cluster whose nodes carry no profile labels is unchanged. Turn it on only after every container node carries the label.
+  enabled: false
+microvm:
+  # Offer the microVM profile. Needs Kata Containers with Cloud Hypervisor on KVM nodes (infrastructure installs it and labels the nodes).
+  enabled: false
+  runtimeClassName: cybericebox-microvm
+  # The containerd runtime handler of the implementation (Kata with Cloud Hypervisor).
+  handler: kata-clh
+  # The node label of the implementation the RuntimeClass selects; stays inside the laboratory.
+  implementationLabel: cybericebox.com/runtime-kata-clh
+  # RuntimeClass overhead.podFixed: what the guest kernel, the agent and the VMM cost per pod (a first guess, set after the measurement).
+  # The scheduler adds it to every microVM pod; the agent reports it, the backend adds it to a reservation.
+  overhead:
+    cpu: 50m
+    memory: 120Mi
+# The device profiles the autoscaler node groups can add a node for (container, microvm); empty = not known, so the agent reports no
+# "available after scale-up" and refuses a profile that no running node can run.
+scaleUpProfiles: []
+
 labScheduler:
   enabled: true
   # The profile name the operator puts into the pods of labs (schedulerName).

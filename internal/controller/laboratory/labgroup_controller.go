@@ -40,6 +40,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/grouppods"
 	"github.com/cybericebox/laboratory/internal/imagecache"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/nodecap"
 	"github.com/cybericebox/laboratory/internal/reconcileutil"
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
@@ -99,6 +100,8 @@ type LabGroupReconciler struct {
 	SupportEmail string
 	// LabNodeSelector is applied to VPN and gateway pod specs.
 	LabNodeSelector map[string]string
+	// Profiles: with the profile labels on, the VPN and gateway pods select the container profile label like a container device.
+	Profiles nodecap.ProfilePolicy
 	// LabTolerations is applied to VPN and gateway pod specs.
 	LabTolerations []corev1.Toleration
 	// AgentEnabled gates creation of the management-agent RoleBinding in each
@@ -760,7 +763,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 					PriorityClassName:  r.PriorityClass,
 					SchedulerName:      r.SchedulerName,
 					ImagePullSecrets:   pullSecretRefs(r.ImagePullSecrets),
-					NodeSelector:       r.LabNodeSelector,
+					NodeSelector:       r.groupNodeSelector(),
 					Tolerations:        r.LabTolerations,
 					Affinity:           groupPodAffinity(),
 					Containers: []corev1.Container{{
@@ -877,7 +880,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 					PriorityClassName:  r.PriorityClass,
 					SchedulerName:      r.SchedulerName,
 					ImagePullSecrets:   pullSecretRefs(r.ImagePullSecrets),
-					NodeSelector:       r.LabNodeSelector,
+					NodeSelector:       r.groupNodeSelector(),
 					Tolerations:        r.LabTolerations,
 					Affinity:           groupPodAffinity(),
 					Containers: []corev1.Container{{
@@ -1424,4 +1427,16 @@ func (r *LabGroupReconciler) ensureOperatorBinding(ctx context.Context, ns strin
 		RoleRef:    want,
 		Subjects:   []rbacv1.Subject{subject},
 	})
+}
+
+// groupNodeSelector is the lab node selector plus, with the profile labels on, the container profile label.
+func (r *LabGroupReconciler) groupNodeSelector() map[string]string {
+	extra := r.Profiles.Selector(nodecap.ProfileContainer)
+	if len(extra) == 0 {
+		return r.LabNodeSelector
+	}
+	out := make(map[string]string, len(r.LabNodeSelector)+len(extra))
+	maps.Copy(out, r.LabNodeSelector)
+	maps.Copy(out, extra)
+	return out
 }

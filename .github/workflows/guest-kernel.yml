@@ -1,0 +1,44 @@
+name: Guest kernel
+
+# The guest kernel of the microVM device profile (docs/specs/MICROVM.md in the platform repo): the Kata Containers kernel config plus
+# kernel/microvm/cybericebox.fragment, built here, one kernel for every microVM implementation. The job only builds and checks the
+# options; the image/asset that ships it is a separate step. Manual, and on a change of the kernel files.
+on:
+  workflow_dispatch:
+    inputs:
+      kata_ref:
+        description: Tag of kata-containers whose kernel config is used
+        default: ""
+  pull_request:
+    paths:
+      - kernel/microvm/**
+      - .github/workflows/guest-kernel.yml
+
+permissions:
+  contents: read
+
+env:
+  # The Kata release the kernel config is taken from; moves with the Kata version the nodes run.
+  KATA_REF: "3.20.0"
+
+jobs:
+  build:
+    name: Build the guest kernel
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential flex bison bc libelf-dev libssl-dev git curl
+      - name: Build
+        env:
+          KATA_REF: ${{ inputs.kata_ref || env.KATA_REF }}
+          OUT: ${{ github.workspace }}/out
+        run: kernel/microvm/build.sh
+      - name: Keep the kernel
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: guest-kernel
+          path: out/
+          if-no-files-found: error

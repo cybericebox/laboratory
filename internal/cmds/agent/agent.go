@@ -193,7 +193,13 @@ func features(cfg *config.Config) (f grpcserver.Features, err error) {
 	if f.Limits, err = cfg.Limits.Parse(); err != nil {
 		return f, err
 	}
+	if f.Profiles, err = cfg.Profiles.Policy(); err != nil {
+		return f, err
+	}
 	f.DeviceDefaults = limits.DeviceDefaults{CPU: cfg.Limits.DeviceDefaultCPU, Memory: cfg.Limits.DeviceDefaultMemory, MaxCPU: cfg.Limits.DeviceMaxCPU, MaxMemory: cfg.Limits.DeviceMaxMemory}
+	if f.Profiles.MicroVM {
+		f.DeviceDefaults.MicroVMOverheadCPU, f.DeviceDefaults.MicroVMOverheadMemory = cfg.Profiles.MicroVMOverheadCPU, cfg.Profiles.MicroVMOverheadMemory
+	}
 	if f.GroupPods.Sizing, err = cfg.GroupSizing.Parse(); err != nil {
 		return f, err
 	}

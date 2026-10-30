@@ -518,6 +518,7 @@ func (r *LabReconciler) materializeDevices(ctx context.Context, lab *laboratoryv
 				Code:           code,
 				Type:           tmpl.Type,
 				Image:          tmpl.Image,
+				Profile:        tmpl.Profile,
 				SecurityPreset: tmpl.SecurityPreset,
 				Interfaces:     resolvedInterfaces[tmpl.Name],
 				Exposure:       tmpl.Exposure,

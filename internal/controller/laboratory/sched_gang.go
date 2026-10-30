@@ -10,6 +10,8 @@ import (
 type podNeed struct {
 	Key         string
 	CPU, Memory int64
+	// Profile is the device profile of the pod ("" = container): it can only go to a room that runs it.
+	Profile string
 }
 
 // gang is what admission decides on as one: the not yet dispatched pods of one deploy group (an independent Lab is its own
@@ -60,7 +62,7 @@ func fitsGang(rooms []nodeRoom, needs []podNeed) ([]nodeRoom, bool) {
 		}
 		placed := false
 		for i := range left {
-			if n.Memory <= left[i].Memory && n.CPU <= left[i].CPU {
+			if left[i].runs(n.Profile) && n.Memory <= left[i].Memory && n.CPU <= left[i].CPU {
 				left[i].Memory -= n.Memory
 				left[i].CPU -= n.CPU
 				placed = true

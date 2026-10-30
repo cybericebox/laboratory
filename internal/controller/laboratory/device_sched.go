@@ -83,6 +83,13 @@ func (r *DeviceReconciler) mayCreateWorkload(ctx context.Context, device *labora
 	if stopped, err := r.deviceStopped(ctx, device); stopped || err != nil {
 		return false, err
 	}
+	// A profile this laboratory does not run (vm, or microvm switched off) never starts, rather than running as a plain container.
+	if !r.Profiles.Supported(string(device.Spec.Profile.Effective())) || device.Spec.Profile.Effective() == laboratoryv1alpha1.DeviceProfileMicroVM && r.MicroVMRuntimeClass == "" {
+		if r.Recorder != nil {
+			r.Recorder.Eventf(device, corev1.EventTypeWarning, "ProfileUnsupported", "the profile %q is not supported by this laboratory; the device does not start", device.Spec.Profile.Effective())
+		}
+		return false, nil
+	}
 	if !r.Scheduled {
 		return true, nil
 	}

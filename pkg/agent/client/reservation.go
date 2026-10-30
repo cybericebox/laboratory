@@ -39,3 +39,21 @@ const ReasonLabNotInGroup = "LAB_NOT_IN_GROUP"
 // for StopLabs, retained_restart for StartLabs, full_group_stop for StopLabGroups and StartLabGroups). Not retryable;
 // nothing was changed. The caller must check the capability before it dispatches.
 const ReasonUnsupported = "UNSUPPORTED"
+
+// Device profiles (devices[].profile of a lab spec; empty is container).
+const (
+	ProfileContainer = "container"
+	ProfileMicroVM   = "microvm"
+	// ProfileVM is reserved: the agent refuses it.
+	ProfileVM = "vm"
+)
+
+// Reasons of a FAILED Lab create item whose devices ask for a profile that cannot run.
+const (
+	// ReasonProfileUnsupported: the profile is vm, unknown, or switched off in this laboratory. Not retryable.
+	ReasonProfileUnsupported = "PROFILE_UNSUPPORTED"
+	// ReasonProfileUnavailable: the profile is supported but no running node can run it, and no autoscaler node group is
+	// known to add one (CapacityResponse.node_profiles: available_now false and not available_after_scale_up).
+	// Not retryable now.
+	ReasonProfileUnavailable = "PROFILE_UNAVAILABLE"
+)

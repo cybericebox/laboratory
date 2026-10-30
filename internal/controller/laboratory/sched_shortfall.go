@@ -397,7 +397,7 @@ func (e *clusterEnv) unreservedBlockers(plan schedPlan, c *capacitySnapshot) map
 			if p.state != laboratoryv1alpha1.PodStarting || e.nodeOf(p) != "" {
 				continue
 			}
-			cf.unbound = append(cf.unbound, unboundPod{need: podNeed{Key: p.key, CPU: p.need.cpu, Memory: p.need.mem}, obj: schedKey(o)})
+			cf.unbound = append(cf.unbound, unboundPod{need: podNeed{Key: p.key, CPU: p.need.cpu, Memory: p.need.mem, Profile: p.profile}, obj: schedKey(o)})
 			if m, ok := o.ref.(metav1.Object); ok && evictable(m) {
 				candidates[p.tenant] = true
 			}

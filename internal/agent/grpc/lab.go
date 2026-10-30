@@ -133,7 +133,7 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 	if err := dupRefs(refs); err != nil {
 		return nil, err
 	}
-	over, err := h.overLimits(ctx, items, variants)
+	over, err := h.refusedBeforeCreate(ctx, items, variants)
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +154,7 @@ func (h *Handler) CreateLabs(ctx context.Context, in *protobuf.CreateLabsRequest
 	}
 	return &protobuf.BatchResult{Results: forEachItem(ctx, refs, func(i int) *protobuf.ItemResult {
 		if over[i] != nil {
-			return failedResult(refs[i], status.Error(codes.ResourceExhausted, over[i].Error()))
+			return overResult(refs[i], over[i])
 		}
 		if refusals[i] != nil {
 			return failedResult(refs[i], refusals[i])
@@ -665,4 +665,22 @@ func validateExistingLab(cur *laboratoryv1alpha1.Lab, id, hash string) error {
 		return errDifferentSpec{kindLab, id}
 	}
 	return nil
+}
+
+// overResult is the failed result of an item refused before its create: one with a machine reason (an unsupported profile) keeps it,
+// the rest are over a limit.
+func overResult(ref *protobuf.ItemRef, err error) *protobuf.ItemResult {
+	if _, ok := err.(reasonError); ok {
+		return failedResult(ref, err)
+	}
+	return failedResult(ref, status.Error(codes.ResourceExhausted, err.Error()))
+}
+
+// refusedBeforeCreate is the per-item refusals made before anything is created: over a limit, or a profile that cannot run.
+func (h *Handler) refusedBeforeCreate(ctx context.Context, items []*protobuf.LabItem, variants map[string]*labVariant) ([]error, error) {
+	over, err := h.overLimits(ctx, items, variants)
+	if err != nil {
+		return nil, err
+	}
+	return h.profileRefusals(ctx, items, variants, over)
 }

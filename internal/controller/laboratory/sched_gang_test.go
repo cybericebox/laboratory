@@ -22,7 +22,7 @@ func room(name string, cpu, mem int64) nodeRoom { return nodeRoom{Name: name, CP
 func TestFitsGangDecreasing(t *testing.T) {
 	rooms := []nodeRoom{room("a", 4000, 4*gi), room("b", 4000, 2*gi)}
 	// First-fit in input order would put the 1Gi pods on a and strand the 3Gi pod; decreasing keeps it whole.
-	needs := []podNeed{{"s1", 100, gi}, {"s2", 100, gi}, {"big", 100, 3 * gi}}
+	needs := []podNeed{{Key: "s1", CPU: 100, Memory: gi}, {Key: "s2", CPU: 100, Memory: gi}, {Key: "big", CPU: 100, Memory: 3 * gi}}
 	left, ok := fitsGang(rooms, needs)
 	if !ok {
 		t.Fatal("must fit")
@@ -33,14 +33,14 @@ func TestFitsGangDecreasing(t *testing.T) {
 	if rooms[0].Memory != 4*gi {
 		t.Fatal("the input must not change")
 	}
-	if _, ok := fitsGang(rooms, append(needs, podNeed{"x", 1, 2 * gi})); ok {
+	if _, ok := fitsGang(rooms, append(needs, podNeed{Key: "x", CPU: 1, Memory: 2 * gi})); ok {
 		t.Fatal("no room left for one more")
 	}
 }
 
 func TestFitsGangCPU(t *testing.T) {
 	rooms := []nodeRoom{room("a", 1000, 8*gi)}
-	if _, ok := fitsGang(rooms, []podNeed{{"a", 600, gi}, {"b", 600, gi}}); ok {
+	if _, ok := fitsGang(rooms, []podNeed{{Key: "a", CPU: 600, Memory: gi}, {Key: "b", CPU: 600, Memory: gi}}); ok {
 		t.Fatal("CPU does not add up")
 	}
 }
@@ -49,12 +49,12 @@ func TestFitsGangCPU(t *testing.T) {
 func TestPlaceEachPutsEveryPodWhole(t *testing.T) {
 	rooms := []nodeRoom{room("x", 4000, 2*gi), room("y", 1000, 4*gi)}
 	// 2 CPU / 2Gi fits only x: the CPU and the memory both come from x.
-	out := placeEach(rooms, []podNeed{{"a", 2000, 2 * gi}})
+	out := placeEach(rooms, []podNeed{{Key: "a", CPU: 2000, Memory: 2 * gi}})
 	if out[0] != room("x", 2000, 0) || out[1] != room("y", 1000, 4*gi) {
 		t.Fatalf("out = %+v", out)
 	}
 	// a second one fits no room whole: it is left out, not split over x and y
-	if again := placeEach(out, []podNeed{{"b", 2000, 2 * gi}}); again[0] != out[0] || again[1] != out[1] {
+	if again := placeEach(out, []podNeed{{Key: "b", CPU: 2000, Memory: 2 * gi}}); again[0] != out[0] || again[1] != out[1] {
 		t.Fatalf("again = %+v", again)
 	}
 	if rooms[0].Memory != 2*gi {

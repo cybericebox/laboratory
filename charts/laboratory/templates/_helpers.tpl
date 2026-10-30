@@ -182,6 +182,13 @@ DEVICE_DEFAULT_MEMORY: {{ .Values.limits.device.defaultMemory | quote }}
 DEVICE_MAX_CPU: {{ .Values.limits.device.maxCpu | quote }}
 DEVICE_MAX_MEMORY: {{ .Values.limits.device.maxMemory | quote }}
 DEVICE_NO_CPU_LIMIT: {{ .Values.limits.device.noCpuLimit | quote }}
+PROFILE_LABELS_ENABLED: {{ .Values.profileLabels.enabled | quote }}
+MICROVM_ENABLED: {{ .Values.microvm.enabled | quote }}
+MICROVM_RUNTIME_CLASS: {{ .Values.microvm.runtimeClassName | quote }}
+MICROVM_IMPLEMENTATION_LABEL: {{ .Values.microvm.implementationLabel | quote }}
+MICROVM_OVERHEAD_CPU: {{ .Values.microvm.overhead.cpu | quote }}
+MICROVM_OVERHEAD_MEMORY: {{ .Values.microvm.overhead.memory | quote }}
+SCALE_UP_PROFILES: {{ join "," .Values.scaleUpProfiles | quote }}
 GROUP_MAX_USERS: {{ .Values.groupLimits.maxUsers | quote }}
 GROUP_MAX_LABS: {{ .Values.groupLimits.maxLabs | quote }}
 GROUP_DEFAULT_USERS: {{ .Values.groupLimits.defaultUsers | quote }}

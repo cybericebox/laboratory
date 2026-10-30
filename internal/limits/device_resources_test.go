@@ -63,3 +63,22 @@ func TestNoCPULimitLeavesTheBurstUncapped(t *testing.T) {
 		t.Errorf("DeviceRequests = %v", got.Cpu())
 	}
 }
+
+// A microVM device costs its own requests plus the RuntimeClass overhead wherever the platform sums a lab's devices (the reservation
+// check of the agent uses LabNeed); a container device and an overhead-less configuration add nothing.
+func TestLabNeedAddsTheMicroVMOverhead(t *testing.T) {
+	defaults := DeviceDefaults{CPU: "100m", Memory: "256Mi", MicroVMOverheadCPU: "50m", MicroVMOverheadMemory: "120Mi"}
+	spec := &laboratoryv1alpha1.LabSpec{Devices: []laboratoryv1alpha1.DeviceTemplate{
+		{Name: "a", Type: laboratoryv1alpha1.DeviceTypeContainer},
+		{Name: "b", Type: laboratoryv1alpha1.DeviceTypeContainer, Profile: laboratoryv1alpha1.DeviceProfileContainer},
+		{Name: "c", Type: laboratoryv1alpha1.DeviceTypeContainer, Profile: laboratoryv1alpha1.DeviceProfileMicroVM},
+	}}
+	cpu, mem := LabNeed(spec, defaults)
+	if cpu != 3*100+50 || mem != 3*(256<<20)+120<<20 {
+		t.Fatalf("need = %dm %d", cpu, mem)
+	}
+	cpu, mem = LabNeed(spec, DeviceDefaults{CPU: "100m", Memory: "256Mi"})
+	if cpu != 300 || mem != 3*(256<<20) {
+		t.Fatalf("no overhead configured: %dm %d", cpu, mem)
+	}
+}

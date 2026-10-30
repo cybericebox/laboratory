@@ -514,6 +514,16 @@ that exist keep what they have). The lab scheduler scores these preferences with
 comes from the autoscaler only when a pod fits no running node. Nothing guarantees one node per group or per lab: a lab with a
 fixed-speed wire that must stay whole needs a field of the Lab API and is not built yet.
 
+**Device profiles (container, microVM).** A device has a profile (`devices[].profile`, empty = container). A microVM device is the same pod with
+`runtimeClassName` set to the chart's RuntimeClass (`microvm.*`: Kata Containers with Cloud Hypervisor, `overhead.podFixed` 50m / 120Mi as a first guess),
+and runs only on nodes labelled `cybericebox.com/profile-microvm=true` and `cybericebox.com/runtime-kata-clh=true` (infrastructure installs Kata on
+`/dev/kvm` nodes and labels them). `microvm.enabled` is off by default; `profileLabels.enabled` (off) makes container devices and the VPN and
+gateway pods select `cybericebox.com/profile-container=true`, for clusters with nodes meant for microVMs only: turn it on after every container node
+carries the label. The operator adds the overhead to the pod's need in the placement simulation and to the reservation check, and places a profile
+only in a room that runs it; `scaleUpProfiles` tells which profiles the autoscaler node groups can add. The agent reports every offered profile
+(running now, after scale-up, overhead) in `GetCapacity.node_profiles` and refuses a lab with `PROFILE_UNSUPPORTED` / `PROFILE_UNAVAILABLE`. The guest
+kernel is built by `.github/workflows/guest-kernel.yml` from `kernel/microvm/cybericebox.fragment`. A microVM pod sets no `hostUsers: false` and no TUN resource.
+
 **Maintenance of a node.** The `lab-group` budget blocks every voluntary eviction in a group namespace, the VPN and gateway pods included, so
 `kubectl drain`, an autopilot upgrade or the autoscaler's scale-down wait on a node that still has lab pods. That is intended: a running lab is
 never cut for maintenance (a cluster autoscaler too: lab pods also carry `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`,
