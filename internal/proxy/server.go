@@ -143,7 +143,7 @@ type secretConn struct {
 func (c *secretConn) RemoteAddr() net.Addr {
 	c.once.Do(func() {
 		c.addr = c.Raw().RemoteAddr()
-		if h := c.Conn.ProxyHeader(); h != nil && c.l.proves(h) {
+		if h := c.ProxyHeader(); h != nil && c.l.proves(h) {
 			c.addr = c.Conn.RemoteAddr()
 		}
 	})
