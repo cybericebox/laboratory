@@ -66,6 +66,13 @@ type L7Config struct {
 	// that carries the client's address. For such a peer the header is optional and, when present, gives the connection's address;
 	// every other peer's header is read and ignored, so nobody can claim an address. Empty: the feature is off.
 	ProxyProtocolFrom []string `env:"L7_PROXY_PROTOCOL_FROM" envSeparator:","`
+	// ProxyProtocolSecret and ProxyProtocolSecretNext are the shared secrets the edge puts in the TLV of type ProxyProtocolTLVType of
+	// its PROXY v2 header (the next one is accepted too, so a rotation needs no gap). When ProxyProtocolSecret is set, a header's
+	// address is believed only if its TLV equals one of them; any other connection keeps the peer address. Empty: no secret required.
+	// They are credentials: never logged.
+	ProxyProtocolSecret     string `env:"L7_PROXY_PROTOCOL_SECRET"`
+	ProxyProtocolSecretNext string `env:"L7_PROXY_PROTOCOL_SECRET_NEXT"`
+	ProxyProtocolTLVType    uint8  `env:"L7_PROXY_PROTOCOL_TLV_TYPE" envDefault:"225"`
 }
 
 type WGConfig struct {

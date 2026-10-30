@@ -46,10 +46,26 @@ spec:
     {{- /* The listen address (:8443), the probe port (:8081) and the TLS files (/etc/proxy/tls) are baked into the image. */}}
     - name: BASE_DOMAIN
       value: {{ required "operator.baseDomain is required" .Values.operator.baseDomain | quote }}
-  {{- with .Values.proxy.l7.proxyProtocol.trustedFrom }}
+  {{- if .Values.proxy.l7.proxyProtocol.trustedFrom }}
     # The peers (the edge nodes) whose connections may begin with a PROXY protocol header; any other peer's header is ignored.
     - name: L7_PROXY_PROTOCOL_FROM
-      value: {{ join "," . | quote }}
+      value: {{ join "," .Values.proxy.l7.proxyProtocol.trustedFrom | quote }}
+    # The shared secret the edge puts in a TLV of its PROXY v2 header: the header's address is believed only with it. The Secret is made by
+    # infrastructure (keys current, and next during a rotation); absent or empty: no secret is required.
+    - name: L7_PROXY_PROTOCOL_TLV_TYPE
+      value: {{ .Values.proxy.l7.proxyProtocol.tlvType | quote }}
+    - name: L7_PROXY_PROTOCOL_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: {{ .Values.proxy.l7.proxyProtocol.secretName }}
+          key: current
+          optional: true
+    - name: L7_PROXY_PROTOCOL_SECRET_NEXT
+      valueFrom:
+        secretKeyRef:
+          name: {{ .Values.proxy.l7.proxyProtocol.secretName }}
+          key: next
+          optional: true
   {{- end }}
     - name: SESSION_COOKIE_NAME
       value: {{ .Values.proxy.l7.sessionCookieName | quote }}

@@ -59,6 +59,11 @@ func TestL7ProxyProtocolTrustList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, on)
 	}
+	for _, want := range []string{"L7_PROXY_PROTOCOL_SECRET\n", "L7_PROXY_PROTOCOL_SECRET_NEXT", "name: l7-proxy-protocol", "key: current", "key: next", "optional: true", `"225"`} {
+		if !strings.Contains(on, want) {
+			t.Errorf("the secret wiring lacks %q", want)
+		}
+	}
 	if !strings.Contains(on, "L7_PROXY_PROTOCOL_FROM") || !strings.Contains(on, `"10.0.0.1/32,10.0.0.2/32"`) {
 		t.Errorf("the trust list does not reach the proxy:\n%s", on)
 	}

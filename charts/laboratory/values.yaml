@@ -292,6 +292,12 @@ proxy:
     # ignored. Empty (default): off, as before. The address is used only inside the proxy (its limits) and never reaches a device.
     proxyProtocol:
       trustedFrom: []
+      # The edge adds a TLV of this type (0xE0-0xEF is free for applications; 225 = 0xE1) with a shared secret to its PROXY v2 header. The
+      # secret is in the Secret secretName of the proxy namespace: key current, and key next while rotating (both are accepted). With a
+      # current secret the header's address is used only if its TLV equals one of them; without one nothing is required (a warning is
+      # logged at start when trustedFrom is set without it).
+      tlvType: 225
+      secretName: l7-proxy-protocol
     # Name of the proxy's own session cookie (SESSION_COOKIE_NAME).
     sessionCookieName: "challenge"
     # HMAC-SHA256 key (32+ bytes) of the proxy's own session cookie, set on /_auth
