@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/go-logr/logr"
+
 	"github.com/cybericebox/laboratory/internal/bandwidth"
 )
 
@@ -182,4 +184,36 @@ func (g *geneveMeters) Rates() (node int64, labs map[uint]int64) {
 		labs[k] = v
 	}
 	return g.node, labs
+}
+
+// meterLister is what the cleanup of the meters left in the switch needs of the OpenFlow connection.
+type meterLister interface {
+	MeterIDs() ([]uint32, error)
+	MeterDelete(id uint32) error
+}
+
+// deleteStaleMeters deletes the meters an earlier run left in the switch. It runs right after resetPipeline, when no flow uses a
+// meter any more: a lab that is still on the node gets its meter back (made before its flows) when the reconcilers rebuild its
+// flood, and the meter of a lab that was deleted while the agent was down would otherwise keep its id until OVS restarts. Only the
+// ids this agent makes are touched; a failure is logged, since the agent works without the cleanup.
+func deleteStaleMeters(be meterLister, log logr.Logger) {
+	ids, err := be.MeterIDs()
+	if err != nil {
+		log.Error(err, "cannot list the OVS meters; stale ones stay")
+		return
+	}
+	removed := 0
+	for _, id := range ids {
+		if id != nodeMeterID && id < labMeterBase {
+			continue
+		}
+		if err := be.MeterDelete(id); err != nil {
+			log.Error(err, "cannot delete a stale OVS meter", "meter", id)
+			continue
+		}
+		removed++
+	}
+	if removed > 0 {
+		log.Info("deleted the OVS meters left by an earlier run", "count", removed)
+	}
 }

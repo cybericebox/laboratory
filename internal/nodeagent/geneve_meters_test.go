@@ -3,7 +3,10 @@ package nodeagent
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"testing"
+
+	"github.com/go-logr/logr"
 
 	"github.com/cybericebox/laboratory/internal/bandwidth"
 )
@@ -190,5 +193,39 @@ func TestAFailedMeterIsRetriedAtTheNextChange(t *testing.T) {
 func TestBurstCoversASegment(t *testing.T) {
 	if burstFor(100) < 2048 || burstFor(1_000_000) != 500000 {
 		t.Fatalf("burst: %d %d", burstFor(100), burstFor(1_000_000))
+	}
+}
+
+type fakeSwitch struct {
+	ids     []uint32
+	listErr error
+	failDel map[uint32]bool
+	deleted []uint32
+}
+
+func (f *fakeSwitch) MeterIDs() ([]uint32, error) { return f.ids, f.listErr }
+func (f *fakeSwitch) MeterDelete(id uint32) error {
+	if f.failDel[id] {
+		return errors.New("refused")
+	}
+	f.deleted = append(f.deleted, id)
+	return nil
+}
+
+// The meters of labs deleted while the agent was down are removed at start; ids that are not ours stay, and a failure of one
+// delete or of the listing does not stop the rest or the agent.
+func TestDeleteStaleMetersRemovesOnlyOurIDs(t *testing.T) {
+	sw := &fakeSwitch{ids: []uint32{nodeMeterID, 2, 15, labMeterBase + 7, labMeterBase + 900, 70000}, failDel: map[uint32]bool{labMeterBase + 900: true}}
+	deleteStaleMeters(sw, logr.Discard())
+	sort.Slice(sw.deleted, func(i, j int) bool { return sw.deleted[i] < sw.deleted[j] })
+	want := []uint32{nodeMeterID, labMeterBase + 7, 70000}
+	if fmt.Sprint(sw.deleted) != fmt.Sprint(want) {
+		t.Fatalf("deleted %v, want %v", sw.deleted, want)
+	}
+
+	sw = &fakeSwitch{ids: []uint32{nodeMeterID}, listErr: errors.New("no multipart")}
+	deleteStaleMeters(sw, logr.Discard())
+	if len(sw.deleted) != 0 {
+		t.Fatalf("nothing is deleted when the list is unknown: %v", sw.deleted)
 	}
 }

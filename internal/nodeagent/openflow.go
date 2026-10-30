@@ -76,6 +76,7 @@ func NewFlowManager(ovsRunDir, bridge string) (*FlowManager, error) {
 		_ = c.Close()
 		return nil, err
 	}
+	deleteStaleMeters(c, log)
 	return fm, nil
 }
 

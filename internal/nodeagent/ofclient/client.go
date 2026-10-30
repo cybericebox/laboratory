@@ -80,6 +80,7 @@ type Client struct {
 	pdMu       sync.Mutex
 	pendingPD  chan portDescMsg // non-nil while queryPortDesc is active
 	pendingXID uint32           // xid of the in-flight PORT_DESC request
+	pendingMP  uint16           // multipart type the in-flight query waits for (PORT_DESC or METER_CONFIG)
 
 	// onError, if set, is invoked for every OFPT_ERROR not consumed by a
 	// pending PORT_DESC query (e.g. a rejected FLOW_MOD). Set via SetErrorHandler.
@@ -311,7 +312,10 @@ func (c *Client) readLoop() {
 			if len(msg) < 12 {
 				continue
 			}
-			if binary.BigEndian.Uint16(msg[8:10]) != ofpmpPortDesc {
+			c.pdMu.Lock()
+			want := c.pendingMP
+			c.pdMu.Unlock()
+			if binary.BigEndian.Uint16(msg[8:10]) != want {
 				continue
 			}
 			var body []byte
@@ -408,6 +412,7 @@ func (c *Client) queryPortDesc() error {
 	c.pdMu.Lock()
 	c.pendingPD = ch
 	c.pendingXID = xid
+	c.pendingMP = ofpmpPortDesc
 	c.pdMu.Unlock()
 	_, writeErr := c.conn.Write(req)
 	c.writeMu.Unlock()

@@ -518,3 +518,52 @@ func TestFlowAddInstrIsConfirmedAndRejectsAMissingMeter(t *testing.T) {
 		t.Fatal("a rejected flow must be reported")
 	}
 }
+
+// MeterIDs sends OFPMP_METER_CONFIG for all meters and collects the ids from every chunk of the reply.
+func TestMeterIDsCollectsEveryChunk(t *testing.T) {
+	c, b := meterClient(t)
+	type result struct {
+		ids []uint32
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ids, err := c.MeterIDs()
+		done <- result{ids, err}
+	}()
+	req := read(t, b)
+	if req[1] != ofptMultipartRequest || binary.BigEndian.Uint16(req[8:10]) != ofpmpMeterConfig || binary.BigEndian.Uint32(req[16:20]) != ofpmAll {
+		t.Fatalf("not a METER_CONFIG request for all meters: %x", req)
+	}
+	entry := func(id uint32) []byte { // one drop band: 16 bytes of meter config header + band
+		e := make([]byte, 8+16)
+		binary.BigEndian.PutUint16(e[0:2], uint16(len(e)))
+		binary.BigEndian.PutUint16(e[2:4], ofpmfKbps)
+		binary.BigEndian.PutUint32(e[4:8], id)
+		return e
+	}
+	reply := func(flags uint16, ids ...uint32) {
+		body := []byte{}
+		for _, id := range ids {
+			body = append(body, entry(id)...)
+		}
+		m := make([]byte, 16, 16+len(body))
+		putHeader(m, ofptMultipartReply, 16+len(body))
+		copy(m[4:8], req[4:8])
+		binary.BigEndian.PutUint16(m[8:10], ofpmpMeterConfig)
+		binary.BigEndian.PutUint16(m[10:12], flags)
+		if _, err := b.Write(append(m, body...)); err != nil {
+			t.Error(err)
+		}
+	}
+	reply(1, 1, 23)
+	reply(0, 4096)
+	select {
+	case r := <-done:
+		if r.err != nil || len(r.ids) != 3 || r.ids[0] != 1 || r.ids[1] != 23 || r.ids[2] != 4096 {
+			t.Fatalf("got %v, %v", r.ids, r.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("MeterIDs did not finish")
+	}
+}

@@ -185,3 +185,65 @@ func (c *Client) MeterDelete(id uint32) error {
 func (c *Client) FlowAddInstr(tableID uint8, priority uint16, match []byte, ins Instructions) error {
 	return c.exchange("flow add", buildFlowModInstr(ofpfcAdd, tableID, priority, match, ins.encode(), ofppAny))
 }
+
+// ofpmpMeterConfig is the multipart type that lists the configuration (not the statistics) of the meters.
+const ofpmpMeterConfig = 10
+
+// ofpmAll addresses every meter in a METER_CONFIG request.
+const ofpmAll = 0xffffffff
+
+// MeterIDs lists the ids of the meters the switch has now (OFPMP_METER_CONFIG for all meters).
+func (c *Client) MeterIDs() ([]uint32, error) {
+	c.queryMu.Lock()
+	defer c.queryMu.Unlock()
+
+	ch := make(chan portDescMsg, 64)
+	req := make([]byte, 24) // 8 header + 4 type+flags + 4 pad + 4 meter_id + 4 pad
+	putHeader(req, ofptMultipartRequest, len(req))
+	binary.BigEndian.PutUint16(req[8:10], ofpmpMeterConfig)
+	binary.BigEndian.PutUint32(req[16:20], ofpmAll)
+
+	c.writeMu.Lock()
+	xid := c.xid.Add(1)
+	binary.BigEndian.PutUint32(req[4:8], xid)
+	c.pdMu.Lock()
+	c.pendingPD, c.pendingXID, c.pendingMP = ch, xid, ofpmpMeterConfig
+	c.pdMu.Unlock()
+	_, writeErr := c.conn.Write(req)
+	c.writeMu.Unlock()
+	defer func() {
+		c.pdMu.Lock()
+		c.pendingPD = nil
+		c.pdMu.Unlock()
+	}()
+	if writeErr != nil {
+		return nil, fmt.Errorf("send METER_CONFIG request: %w", writeErr)
+	}
+
+	var ids []uint32
+	timeout := time.NewTimer(checkedExchangeTimeout)
+	defer timeout.Stop()
+	for {
+		var m portDescMsg
+		select {
+		case m = <-ch:
+		case <-timeout.C:
+			return nil, fmt.Errorf("ofclient: METER_CONFIG reply timed out after %s", checkedExchangeTimeout)
+		}
+		if m.err != nil {
+			return nil, fmt.Errorf("recv METER_CONFIG reply: %w", m.err)
+		}
+		body := m.body
+		for len(body) >= 8 {
+			n := int(binary.BigEndian.Uint16(body[0:2]))
+			if n < 8 || n > len(body) {
+				return nil, fmt.Errorf("ofclient: malformed METER_CONFIG entry of length %d", n)
+			}
+			ids = append(ids, binary.BigEndian.Uint32(body[4:8]))
+			body = body[n:]
+		}
+		if !m.more {
+			return ids, nil
+		}
+	}
+}
