@@ -24,6 +24,8 @@ data:
             enabled:
               - name: NodeResourcesFit
                 weight: {{ .Values.labScheduler.fitWeight }}
+              - name: InterPodAffinity
+                weight: {{ .Values.labScheduler.affinityWeight }}
         pluginConfig:
           - name: NodeResourcesFit
             args:

@@ -109,6 +109,10 @@ labScheduler:
   replicas: 2
   # Weight of the bin-packing score against the soft co-location preferences of device pods (the same lab, the same group).
   fitWeight: 3
+  # Weight of the co-location preferences (the same lab, the same group) among the running nodes. It must stay above 3 x fitWeight, so that a
+  # node with a better match wins over any difference in fullness and the fuller node only breaks a tie between equal matches (the
+  # preference terms differ by a third of the normalised range at least, and the fit score is at most 100 x fitWeight).
+  affinityWeight: 12
   image:
     repository: registry.k8s.io/kube-scheduler
     # Empty = the cluster's own version (a scheduler must not be newer than the API server).

@@ -19,6 +19,31 @@ import (
 // does not exist yet, Started when it does, so a group that predates the
 // scheduler is left alone) and the scheduler moves it on.
 
+// groupPodAffinity is the soft placement of the VPN and gateway pods of a group, among the nodes that run: first a node that already
+// has a lab of the group (a pod of a device carries the lab label), then a node with any other pod of the group (the VPN and the
+// gateway end together, and the labs that come later follow them: see the device pods). Never required, so a full node does not
+// block the pod, and a new node is never asked for because of it. It is set on a pod when its Deployment is made; the Deployments of
+// groups that exist keep what they have.
+func groupPodAffinity() *corev1.Affinity {
+	return &corev1.Affinity{PodAffinity: &corev1.PodAffinity{PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
+		{
+			Weight: 100,
+			PodAffinityTerm: corev1.PodAffinityTerm{
+				LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: names.LabelLab, Operator: metav1.LabelSelectorOpExists}}},
+				TopologyKey:   names.TopologyKeyHostname,
+			},
+		},
+		{
+			Weight: 50,
+			PodAffinityTerm: corev1.PodAffinityTerm{
+				// An empty selector matches every pod of the namespace, and the namespace is the group's.
+				LabelSelector: &metav1.LabelSelector{},
+				TopologyKey:   names.TopologyKeyHostname,
+			},
+		},
+	}}}
+}
+
 // groupPodQueued reports whether the scheduler still holds the named pod back.
 func (r *LabGroupReconciler) groupPodQueued(lg *laboratoryv1alpha1.LabGroup, name string) bool {
 	if !r.Scheduled {

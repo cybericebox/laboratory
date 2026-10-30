@@ -505,10 +505,14 @@ not reachable from a chart); it runs in the release namespace with a lease of it
 `labScheduler.image` for an air-gapped registry). `labScheduler.enabled: false` leaves lab pods to the default scheduler. If the
 lab scheduler is down, new lab pods stay Pending until it is back (running labs are not affected).
 
-**Placement of a group.** Pod placement is the lab scheduler's (or the default one's), with two soft preferences on device pods (never required, so a full
-node never blocks a lab): the node of another device of the same lab (weight 100: a lab's traffic stays node-local), then a node that already
-runs any pod of the same group, i.e. its VPN, gateway and other labs (weight 50). A group's labs therefore end up together on as few nodes as
-capacity allows, which makes a node empty sooner when you take it out for maintenance. Nothing guarantees one node per group.
+**Placement of a group.** Pod placement is the lab scheduler's (or the default one's), with soft preferences only (never required, so a full
+node never blocks a lab and no node is added for them): a device pod prefers the node of another device of the same lab (weight 100: a
+lab's traffic stays node-local), then a node that runs any pod of the same group (weight 50); the VPN and gateway pods prefer a node
+with a lab of the group (weight 100), then a node with any pod of the group (weight 50; set when their Deployment is made, so groups
+that exist keep what they have). The lab scheduler scores these preferences with `labScheduler.affinityWeight` (12), above
+3 x `fitWeight`, so among the nodes that run the best match wins and the fuller node (MostAllocated) only breaks a tie. A new node
+comes from the autoscaler only when a pod fits no running node. Nothing guarantees one node per group or per lab: a lab with a
+fixed-speed wire that must stay whole needs a field of the Lab API and is not built yet.
 
 **Maintenance of a node.** The `lab-group` budget blocks every voluntary eviction in a group namespace, the VPN and gateway pods included, so
 `kubectl drain`, an autopilot upgrade or the autoscaler's scale-down wait on a node that still has lab pods. That is intended: a running lab is

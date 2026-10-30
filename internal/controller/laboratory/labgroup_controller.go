@@ -762,6 +762,7 @@ func (r *LabGroupReconciler) ensureVPNDeployment(ctx context.Context, ns string,
 					ImagePullSecrets:   pullSecretRefs(r.ImagePullSecrets),
 					NodeSelector:       r.LabNodeSelector,
 					Tolerations:        r.LabTolerations,
+					Affinity:           groupPodAffinity(),
 					Containers: []corev1.Container{{
 						Name:            names.ComponentVPN,
 						Resources:       r.GroupPods.VPNFor(size),
@@ -878,6 +879,7 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 					ImagePullSecrets:   pullSecretRefs(r.ImagePullSecrets),
 					NodeSelector:       r.LabNodeSelector,
 					Tolerations:        r.LabTolerations,
+					Affinity:           groupPodAffinity(),
 					Containers: []corev1.Container{{
 						Name:            names.ComponentGateway,
 						Resources:       r.GroupPods.GatewayFor(size),
