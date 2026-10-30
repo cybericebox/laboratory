@@ -296,7 +296,7 @@ func TestProxyProtocolSecret(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ln, err := ProxyProtocolListener(raw, ProxyProtocol{Trusted: []string{"127.0.0.1"}, Secret: cur, Next: next, TLVType: 0xE1, HeaderTimeout: time.Second})
+		ln, err := ProxyProtocolListener(raw, ProxyProtocol{Trusted: []string{"127.0.0.1"}, Secrets: []string{cur, next}, TLVType: 0xE0, HeaderTimeout: time.Second})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -335,12 +335,12 @@ func TestProxyProtocolSecret(t *testing.T) {
 		payload []byte
 		want    string
 	}{
-		"current secret":     {proxyHeaderV2(t, "198.51.100.7", 0xE1, cur), "198.51.100.7"},
-		"next secret":        {proxyHeaderV2(t, "198.51.100.7", 0xE1, next), "198.51.100.7"},
-		"wrong secret":       {proxyHeaderV2(t, "198.51.100.7", 0xE1, "guess"), "127.0.0.1"},
-		"secret of a prefix": {proxyHeaderV2(t, "198.51.100.7", 0xE1, cur[:10]), "127.0.0.1"},
+		"current secret":     {proxyHeaderV2(t, "198.51.100.7", 0xE0, cur), "198.51.100.7"},
+		"next secret":        {proxyHeaderV2(t, "198.51.100.7", 0xE0, next), "198.51.100.7"},
+		"wrong secret":       {proxyHeaderV2(t, "198.51.100.7", 0xE0, "guess"), "127.0.0.1"},
+		"secret of a prefix": {proxyHeaderV2(t, "198.51.100.7", 0xE0, cur[:10]), "127.0.0.1"},
 		"another TLV type":   {proxyHeaderV2(t, "198.51.100.7", 0xE2, cur), "127.0.0.1"},
-		"no TLV":             {proxyHeaderV2(t, "198.51.100.7", 0xE1, ""), "127.0.0.1"},
+		"no TLV":             {proxyHeaderV2(t, "198.51.100.7", 0xE0, ""), "127.0.0.1"},
 		"no header":          {nil, "127.0.0.1"},
 	} {
 		if got := remote(tc.payload); got != tc.want {
@@ -352,7 +352,7 @@ func TestProxyProtocolSecret(t *testing.T) {
 func TestProxyProtocolSecretIsNeverInAnError(t *testing.T) {
 	raw, _ := net.Listen("tcp", "127.0.0.1:0")
 	defer raw.Close()
-	_, err := ProxyProtocolListener(raw, ProxyProtocol{Trusted: []string{"bad"}, Secret: "super-secret-value", Next: "next-secret-value"})
+	_, err := ProxyProtocolListener(raw, ProxyProtocol{Trusted: []string{"bad"}, Secrets: []string{"super-secret-value", "next-secret-value"}})
 	if err == nil || strings.Contains(err.Error(), "secret-value") {
 		t.Fatalf("an error must name the setting, not a secret: %v", err)
 	}

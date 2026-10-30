@@ -81,9 +81,9 @@ func (c *limitConn) Close() error {
 type ProxyProtocol struct {
 	// Trusted are the peers (IPs or CIDRs) whose PROXY header may be used; empty: the feature is off.
 	Trusted []string
-	// Secret and Next are the values of the TLV of type TLVType that prove the header comes from our edge: the header's address is
-	// used only when the TLV equals one of them (compared in constant time). An empty Secret requires no TLV.
-	Secret, Next  string
+	// Secrets are the accepted values (current, next) of the TLV of type TLVType that prove the header comes from our edge: the
+	// header's address is used only when the TLV equals one of them (compared in constant time). No secret requires no TLV.
+	Secrets       []string
 	TLVType       byte
 	HeaderTimeout time.Duration
 }
@@ -107,16 +107,22 @@ func ProxyProtocolListener(l net.Listener, o ProxyProtocol) (net.Listener, error
 		return nil, fmt.Errorf("L7_PROXY_PROTOCOL_FROM: %w", err)
 	}
 	var inner net.Listener = &proxyproto.Listener{Listener: l, ReadHeaderTimeout: o.HeaderTimeout, ConnPolicy: policy}
-	if o.Secret == "" {
+	var secrets [][]byte
+	for _, s := range o.Secrets {
+		if s = strings.TrimSpace(s); s != "" {
+			secrets = append(secrets, []byte(s))
+		}
+	}
+	if len(secrets) == 0 {
 		return inner, nil
 	}
-	return &secretListener{Listener: inner, secrets: [][]byte{[]byte(o.Secret), []byte(o.Next)}, tlv: proxyproto.PP2Type(o.TLVType)}, nil
+	return &secretListener{Listener: inner, secrets: secrets, tlv: proxyproto.PP2Type(o.TLVType)}, nil
 }
 
 // secretListener gives a connection the address of its PROXY header only when the header carries the secret.
 type secretListener struct {
 	net.Listener
-	secrets [][]byte // current, next ("" = none)
+	secrets [][]byte // current, next
 	tlv     proxyproto.PP2Type
 }
 

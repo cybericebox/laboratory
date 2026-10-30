@@ -109,8 +109,8 @@ func Run() {
 		os.Exit(1)
 	}
 
-	if len(cfg.ProxyProtocolFrom) > 0 && cfg.ProxyProtocolSecret == "" {
-		log.Info("WARNING: L7_PROXY_PROTOCOL_FROM is set without L7_PROXY_PROTOCOL_SECRET: a PROXY header from a listed peer is believed without proof that it comes from the edge")
+	if len(cfg.ProxyProtocolFrom) > 0 && len(cfg.ProxyProtocolSecrets) == 0 {
+		log.Info("WARNING: L7_PROXY_PROTOCOL_FROM is set without L7_PROXY_PROTOCOL_SECRETS: a PROXY header from a listed peer is believed without proof that it comes from the edge")
 	}
 	certWatcher, err := certwatcher.New(cfg.TLSCertPath, cfg.TLSKeyPath)
 	if err != nil {
@@ -139,7 +139,7 @@ func Run() {
 			defer func() { _ = ln.Close() }()
 			// The edge may put the client's address in a PROXY header in front of the TLS; only the listed peers are believed.
 			if ln, err = proxy.ProxyProtocolListener(ln, proxy.ProxyProtocol{
-				Trusted: cfg.ProxyProtocolFrom, Secret: cfg.ProxyProtocolSecret, Next: cfg.ProxyProtocolSecretNext,
+				Trusted: cfg.ProxyProtocolFrom, Secrets: cfg.ProxyProtocolSecrets,
 				TLVType: cfg.ProxyProtocolTLVType, HeaderTimeout: cfg.ReadHeaderTimeout}); err != nil {
 				return err
 			}
