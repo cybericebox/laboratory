@@ -222,3 +222,53 @@ func TestDeleteLabWithUncommittedBirthAfterGrace(t *testing.T) {
 	res, err = h.DeleteLabs(ctx, del)
 	wantStates(t, res, err, stDeleted)
 }
+
+// A create that was interrupted after the Lab was written but before its birth receipt and its admission were cleared
+// leaves a pending Spec.Admission on the group. The create of the same Lab under a newer operation must not wait for it:
+// the stale Lab is replaced and the admission is superseded.
+func TestInterruptedCreateDoesNotBlockNewerOperation(t *testing.T) {
+	h, k := newTestHandler(t)
+	ctx := context.Background()
+	readyGroup(t, h, k, "g", "g", nil)
+	group, _ := h.getGroup(ctx, "g")
+	oldOp, newOp := "0198c0a4-7a41-7000-8000-000000000001", "0198c0a4-7a41-7000-8000-000000000002"
+	res, err := h.CreateLabs(ctx, birthRequest(t, string(group.UID), oldOp, "web"))
+	wantStates(t, res, err, stCreated)
+
+	labs := h.cs.LaboratoryV1alpha1().Labs("g")
+	cur, _ := labs.Get(ctx, "a", metav1.GetOptions{})
+	var receipt lab.LabCreationReceipt
+	if err := json.Unmarshal([]byte(cur.Annotations[names.AnnotationLabCreation]), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	receipt.Committed = false
+	raw, _ := json.Marshal(receipt)
+	cur.Annotations[names.AnnotationLabCreation] = string(raw)
+	if _, err := labs.Update(ctx, cur, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	g, _ := h.getGroup(ctx, "g")
+	g.Spec.Admission = &lab.GroupChildAdmission{GroupUID: string(g.UID), LabName: "a", DesiredState: lifecycleRunning, SpecHash: cur.Annotations[names.AnnotationSpecHash]}
+	g.Spec.Admission.Token = admissionToken(g.Spec.Admission)
+	if _, err := h.cs.LaboratoryV1alpha1().LabGroups().Update(ctx, g, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := birthRequest(t, string(group.UID), newOp, "web", "db")
+	res, err = h.CreateLabs(ctx, req)
+	wantStates(t, res, err, stFailed)
+	if r := res.Results[0]; !r.Retryable || r.Reason != client.ReasonStaleLabReplacing {
+		t.Fatalf("want a retryable stale-replacing answer, got %+v", r)
+	}
+	if cur, err := labs.Get(ctx, "a", metav1.GetOptions{}); err == nil {
+		cur.Finalizers = nil
+		if _, err := labs.Update(ctx, cur, metav1.UpdateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, err = h.CreateLabs(ctx, req)
+	wantStates(t, res, err, stCreated)
+	if g, _ := h.getGroup(ctx, "g"); g.Spec.Admission != nil {
+		t.Fatalf("the admission must be cleared after the create: %+v", g.Spec.Admission)
+	}
+}
