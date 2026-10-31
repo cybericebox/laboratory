@@ -1630,7 +1630,7 @@ fast path (no `BPF` capability, a foreign XDP program on the device, ...) exits 
 network device, server to client on `cilium_host` (servers on other nodes) or on the host-side veth of the server's pod (a server on this node).
 Everything else is passed on to the demux process unchanged, and `wg_demux_fastpath_packets_total` counts why: no session (`passed_miss`), a packet from another
 address than the session's (`passed_source`, a roam: the process moves the session), an idle session (`passed_stale`), no route or no metadata
-(`passed_route`, `passed_meta`). The per-session rate (`sessionRate`/`sessionBurst`) is enforced in the kernel with one bucket per session for both directions
+(`passed_route`, `passed_meta`; why a route lookup failed: `fib_no_neigh`, `fib_not_forwarded`, `fib_no_route`, `fib_other`). A route whose next hop has no neighbour entry yet (`fib_no_neigh`, for example the pod subnet routed via the node's own `cilium_host` address) is not left to the slow path: the packet is redirected with `bpf_redirect_neigh` and the kernel resolves the next hop (`neigh_redirected`). The per-session rate (`sessionRate`/`sessionBurst`) is enforced in the kernel with one bucket per session for both directions
 (`dropped_rate`). Over-rate packets are dropped there. IPv6 stays on the slow path.
 
 **Entry discovery.** The kernel judges only packets sent to the demux's entry addresses: each node address with the Service's UDP nodePort, and the Service's

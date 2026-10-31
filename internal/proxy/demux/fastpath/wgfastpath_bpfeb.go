@@ -83,7 +83,12 @@ const (
 	WgFastpathWgStatWG_STAT_DROPPED_RATE        WgFastpathWgStat = 5
 	WgFastpathWgStatWG_STAT_PASSED_ROUTE        WgFastpathWgStat = 6
 	WgFastpathWgStatWG_STAT_PASSED_META         WgFastpathWgStat = 7
-	WgFastpathWgStatWG_STAT_MAX                 WgFastpathWgStat = 8
+	WgFastpathWgStatWG_STAT_FIB_NO_NEIGH        WgFastpathWgStat = 8
+	WgFastpathWgStatWG_STAT_FIB_NOT_FWDED       WgFastpathWgStat = 9
+	WgFastpathWgStatWG_STAT_FIB_NO_ROUTE        WgFastpathWgStat = 10
+	WgFastpathWgStatWG_STAT_FIB_OTHER           WgFastpathWgStat = 11
+	WgFastpathWgStatWG_STAT_NEIGH_REDIRECTED    WgFastpathWgStat = 12
+	WgFastpathWgStatWG_STAT_MAX                 WgFastpathWgStat = 13
 )
 
 // Names of all BPF objects in the ELF.

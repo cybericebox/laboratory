@@ -562,7 +562,7 @@ func TestPassesWithoutRoute(t *testing.T) {
 	}
 	in := toServerFrame().bytes()
 	checkUntouched(t, "to server", runTC(t, objs.WgTcIngress, in, ingress(tp, 0)), in)
-	wantStats(t, objs, map[WgFastpathWgStat]uint64{WgFastpathWgStatWG_STAT_PASSED_ROUTE: 1})
+	wantStats(t, objs, map[WgFastpathWgStat]uint64{WgFastpathWgStatWG_STAT_PASSED_ROUTE: 1, WgFastpathWgStatWG_STAT_FIB_NOT_FWDED: 1})
 }
 
 func TestDropsOverRate(t *testing.T) {
@@ -965,6 +965,39 @@ func TestForwardsLive(t *testing.T) {
 	}
 }
 
+// TestForwardsWithoutNeighbourEntry: the route is known but the next hop has no neighbour entry (as on a Cilium node, where the pod
+// subnet is routed via the node's own cilium_host address). bpf_fib_lookup answers NO_NEIGH; the packet is not left to the slow path
+// but redirected with bpf_redirect_neigh, and the kernel resolves the next hop. Both directions.
+func TestForwardsWithoutNeighbourEntry(t *testing.T) {
+	tp := setup(t)
+	objs := load(t, defaultCfg(tp))
+	putSessions(t, objs, tp)
+	attachAll(t, objs, tp, false)
+	ip(t, "neigh", "del", "10.0.0.2", "dev", "srv0")
+	ip(t, "neigh", "del", "192.0.2.2", "dev", "ext0")
+	cl := udpIn(t, "bpfcl", client)
+	sv := udpIn(t, "bpfsv", server)
+
+	if _, err := cl.WriteToUDPAddrPort(transport(serverIndex), entry); err != nil {
+		t.Fatal(err)
+	}
+	receive(t, sv, probe, transport(serverIndex))
+	if _, err := sv.WriteToUDPAddrPort(transport(clientIndex), probe); err != nil {
+		t.Fatal(err)
+	}
+	receive(t, cl, entry, transport(clientIndex))
+
+	// The kernel may learn an entry from the first packet's exchange, so the second direction can find it: at least one lookup
+	// needed the redirect, every such lookup was redirected, and nothing was left to the slow path.
+	noNeigh := stat(t, objs, WgFastpathWgStatWG_STAT_FIB_NO_NEIGH)
+	if noNeigh < 1 || stat(t, objs, WgFastpathWgStatWG_STAT_NEIGH_REDIRECTED) != noNeigh {
+		t.Errorf("no_neigh = %d, neigh_redirected = %d", noNeigh, stat(t, objs, WgFastpathWgStatWG_STAT_NEIGH_REDIRECTED))
+	}
+	if stat(t, objs, WgFastpathWgStatWG_STAT_FORWARDED_TO_SERVER) != 1 || stat(t, objs, WgFastpathWgStatWG_STAT_FORWARDED_TO_CLIENT) != 1 || stat(t, objs, WgFastpathWgStatWG_STAT_PASSED_ROUTE) != 0 {
+		t.Errorf("forwarded %d/%d, passed_route %d", stat(t, objs, WgFastpathWgStatWG_STAT_FORWARDED_TO_SERVER), stat(t, objs, WgFastpathWgStatWG_STAT_FORWARDED_TO_CLIENT), stat(t, objs, WgFastpathWgStatWG_STAT_PASSED_ROUTE))
+	}
+}
+
 // TestSharesOneBucketPerSession: both directions draw from the session's one bucket, as in user space, and a reply keeps
 // the session fresh just like a request.
 func TestSharesOneBucketPerSession(t *testing.T) {
@@ -1172,5 +1205,5 @@ func TestXDPPutBackWithoutRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	receive(t, demux, client, transport(serverIndex))
-	wantStats(t, objs, map[WgFastpathWgStat]uint64{WgFastpathWgStatWG_STAT_PASSED_ROUTE: 1})
+	wantStats(t, objs, map[WgFastpathWgStat]uint64{WgFastpathWgStatWG_STAT_PASSED_ROUTE: 1, WgFastpathWgStatWG_STAT_FIB_NOT_FWDED: 1})
 }

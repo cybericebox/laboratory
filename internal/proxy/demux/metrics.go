@@ -11,6 +11,8 @@ import (
 var FastPathResults = []string{
 	"forwarded_to_server", "forwarded_to_client", "passed_miss", "passed_source", "passed_stale", "dropped_rate",
 	"passed_route", "passed_meta",
+	// why the route lookup failed, and the packets a missing neighbour entry did not stop (the kernel resolved the next hop)
+	"fib_no_neigh", "fib_not_forwarded", "fib_no_route", "fib_other", "neigh_redirected",
 }
 
 var messageTypes = [5]string{1: "handshake_initiation", 2: "handshake_response", 3: "cookie_reply", 4: "transport"}
