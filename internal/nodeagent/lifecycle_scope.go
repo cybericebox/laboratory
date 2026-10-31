@@ -90,10 +90,11 @@ func neverMaterializedHereDeviceElsewhere(l *lab.Lab, d *lab.Device, id lab.Owne
 
 // neverMaterializedOfADeletedDevice admits the empty pre-Pod declaration of a Device that is being deleted together with its Lab (a Lab deleted
 // while it was running has no stop revision, so the ordinary proof of an older declaration does not apply). Neither can make a Pod any
-// more: the Lab and the Device both carry a deletion time. The release is still only by the native scan of this node, which must find no
-// container, cgroup, port or attachment of the Device: a Pod that is still there keeps the scope Unknown. The state of a persistent Device
-// is discarded by the deletion of its Lab.
-func neverMaterializedOfADeletedDevice(l *lab.Lab, d *lab.Device, id lab.OwnedRuntimeIdentity) bool {
+// more: the Lab and the Device both carry a deletion time. Two more things must hold, read from the API without the cache: no Pod of the
+// Device is on this node (none labelled with the Device, or all on other nodes: a Pod that is still being made or terminated here keeps
+// the scope Unknown, whatever the native scan sees at that moment), and the release is still only by the native scan of this node, which
+// must find no container, cgroup, port or attachment of the Device. The state of a persistent Device is discarded by the deletion of its Lab.
+func (o *NativeRuntimeObserver) neverMaterializedOfADeletedDevice(ctx context.Context, l *lab.Lab, d *lab.Device, id lab.OwnedRuntimeIdentity) bool {
 	if !labDeleting(l) || d.DeletionTimestamp.IsZero() || d.Spec.LabRef != l.Name || string(d.UID) != id.ScopeUID || d.Namespace != id.Namespace {
 		return false
 	}
@@ -114,7 +115,30 @@ func neverMaterializedOfADeletedDevice(l *lab.Lab, d *lab.Device, id lab.OwnedRu
 		}
 		empty = true
 	}
-	return empty
+	return empty && !o.devicePodOnThisNode(ctx, d, id.NodeName)
+}
+
+// devicePodOnThisNode says a Pod of the Device is, or may be, on the node: one labelled with the Device that sits on it or has no node yet, the
+// Pod the Device's status names (when the status puts it on this node), or any API error (the answer is then "may be").
+func (o *NativeRuntimeObserver) devicePodOnThisNode(ctx context.Context, d *lab.Device, node string) bool {
+	var pods corev1.PodList
+	if err := o.Reader.List(ctx, &pods, client.InNamespace(d.Namespace), client.MatchingLabels{names.LabelDeviceUID: string(d.UID)}); err != nil {
+		return true
+	}
+	for _, p := range pods.Items {
+		if p.Spec.NodeName == "" || p.Spec.NodeName == node {
+			return true
+		}
+	}
+	if d.Status.PodName != "" && (d.Status.NodeName == "" || d.Status.NodeName == node) {
+		var pod corev1.Pod
+		err := o.Reader.Get(ctx, client.ObjectKey{Namespace: d.Namespace, Name: d.Status.PodName}, &pod)
+		if err == nil {
+			return pod.Spec.NodeName == "" || pod.Spec.NodeName == node
+		}
+		return !apierrors.IsNotFound(err)
+	}
+	return false
 }
 
 func historicalNeverMaterializedPodProof(l *lab.Lab, d *lab.Device, id lab.OwnedRuntimeIdentity, operation string, revision int64) bool {
@@ -857,7 +881,7 @@ func (o *NativeRuntimeObserver) labScopeCurrent(ctx context.Context, id lab.Owne
 				// admits only the full native observation path, never release.
 				found = found || !current && historicalNeverMaterializedPodProof(&l, &d, id, operation, revision)
 				found = found || neverMaterializedHereDeviceElsewhere(&l, &d, id)
-				found = found || neverMaterializedOfADeletedDevice(&l, &d, id)
+				found = found || o.neverMaterializedOfADeletedDevice(ctx, &l, &d, id)
 				if !current {
 					if proof, ok := persistentHistoricalNeverMaterializedPodProof(&l, &d, id, operation, revision); ok {
 						found = true

@@ -15,6 +15,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/names"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/protobuf/types/known/anypb"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -398,6 +399,10 @@ func TestNeverMaterializedOfALabDeletedWhileRunningIsReleasedByNativeAbsence(t *
 		{"device not deleted", true, false, false, false},
 		{"lab not deleted", false, true, false, false},
 		{"filled declaration", true, true, true, false},
+		{"pod of the device still on this node", true, true, false, false},
+		{"pod of the device being made, no node yet", true, true, false, false},
+		{"pod of the device on another node", true, true, false, true},
+		{"status names a pod that no longer exists here", true, true, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o, id, l, d := historicalNeverFixture(t)
@@ -408,6 +413,16 @@ func TestNeverMaterializedOfALabDeletedWhileRunningIsReleasedByNativeAbsence(t *
 			l.Finalizers = []string{"test/hold"}
 			d.Finalizers = []string{"test/hold"}
 			d.Status.RuntimeReports = nil
+			switch tc.name {
+			case "pod of the device still on this node", "pod of the device being made, no node yet", "pod of the device on another node":
+				node := map[string]string{"pod of the device still on this node": "node", "pod of the device being made, no node yet": "", "pod of the device on another node": "other-node"}[tc.name]
+				pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns", Labels: map[string]string{names.LabelDeviceUID: string(d.UID)}}, Spec: corev1.PodSpec{NodeName: node}}
+				if err := c.Create(ctx, pod); err != nil {
+					t.Fatal(err)
+				}
+			case "status names a pod that no longer exists here":
+				d.Status.PodName, d.Status.NodeName = "gone-pod", "node"
+			}
 			if tc.filled {
 				id.ContainerIDs = []string{"prior"}
 				l.Status.ScopeInventory = []lab.OwnedRuntimeIdentity{id}
