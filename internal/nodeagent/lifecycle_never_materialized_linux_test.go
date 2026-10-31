@@ -336,3 +336,50 @@ func TestNeverMaterializedDeclarationOfAnotherNodeIsReleasedByItsNativeAbsence(t
 		})
 	}
 }
+
+// Deleting a Lab ends the reservation and discards the state of its persistent Devices: the empty pre-Pod declaration is released like an
+// ordinary Device's, whatever the generation the deletion raised the Lab to. A stop without deletion keeps the capture boundary.
+func TestNeverMaterializedOfAPersistentDeviceIsReleasedOnDeletionOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		deleting   bool
+		generation int64
+		persistent bool
+		reportGen  int64
+		release    bool
+	}{
+		{"persistent, Lab deleted, generation raised by the deletion", true, 3, true, 2, true},
+		{"persistent, Lab stopped and not deleted", false, 2, true, 2, false},
+		{"ordinary, Lab deleted, generation raised by the deletion", true, 3, false, 2, true},
+		{"persistent, deleted, report of a later generation than the Lab", true, 3, true, 5, false},
+		{"persistent, deleted, report older than the declaration", true, 3, true, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o, id, l, d := historicalNeverFixture(t)
+			c := o.Reader.(client.Client)
+			ctx := context.Background()
+			if tc.persistent {
+				d.Spec.State = &lab.DeviceStateSpec{Enabled: true}
+				d.Status.State = &lab.DeviceStateStatus{Incarnation: 1}
+			}
+			d.Status.RuntimeReports[0].Identity.Generation = tc.reportGen
+			l.Generation = tc.generation
+			l.Finalizers = []string{"test/hold"}
+			if err := c.Update(ctx, l); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Update(ctx, d); err != nil {
+				t.Fatal(err)
+			}
+			if tc.deleting {
+				if err := c.Delete(ctx, l); err != nil {
+					t.Fatal(err)
+				}
+			}
+			report := o.ObserveScope(ctx, id)
+			if released := report.RuntimeState == "Released" && report.Error == ""; released != tc.release {
+				t.Fatalf("released = %v, want %v: %+v", released, tc.release, report)
+			}
+		})
+	}
+}

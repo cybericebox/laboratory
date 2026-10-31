@@ -63,8 +63,8 @@ func (o *NativeRuntimeObserver) scopeCurrent(ctx context.Context, id lab.OwnedRu
 // elsewhere, so the API cannot say "not yet scheduled" about it any more. That is not an absence certificate: the release still needs the
 // native scan of this node to find no container, cgroup, port or attachment of the Device, as for any other scope.
 func neverMaterializedHereDeviceElsewhere(l *lab.Lab, d *lab.Device, id lab.OwnedRuntimeIdentity) bool {
-	// Persistent devices keep their existing boundary.
-	if d.Status.NodeName == "" || d.Status.NodeName == id.NodeName || d.Spec.LabRef != l.Name || string(d.UID) != id.ScopeUID || d.Spec.State != nil && d.Spec.State.Enabled || d.Status.State != nil {
+	// Persistent devices keep their existing boundary, except on the deletion of the Lab (the state is discarded then).
+	if d.Status.NodeName == "" || d.Status.NodeName == id.NodeName || d.Spec.LabRef != l.Name || string(d.UID) != id.ScopeUID || persistentDevice(d) && !labDeleting(l) {
 		return false
 	}
 	owned := false
@@ -643,11 +643,30 @@ func scopeDeclarationHasRuntime(declared lab.OwnedRuntimeIdentity) bool {
 }
 
 func historicalOrdinaryDeviceInvalid(id lab.OwnedRuntimeIdentity, l *lab.Lab, revision int64, d *lab.Device) bool {
-	return id.Generation >= l.Generation || id.Revision >= revision || d.Spec.Type != lab.DeviceTypeContainer || d.Spec.State != nil && d.Spec.State.Enabled || d.Status.State != nil || d.Spec.LabRef != l.Name || d.Namespace != id.Namespace || string(d.UID) != id.ScopeUID
+	return id.Generation >= l.Generation || id.Revision >= revision || d.Spec.Type != lab.DeviceTypeContainer || persistentDevice(d) && !labDeleting(l) || d.Spec.LabRef != l.Name || d.Namespace != id.Namespace || string(d.UID) != id.ScopeUID
+}
+
+// persistentDevice is a Device that keeps state (a state spec or a state status).
+func persistentDevice(d *lab.Device) bool {
+	return d.Spec.State != nil && d.Spec.State.Enabled || d.Status.State != nil
+}
+
+// labDeleting: the end of the reservation. Deleting a Lab discards the state of its persistent Devices (everything goes), so no snapshot barrier
+// is waited for. A stop without deletion keeps its boundary: persistent Devices need the committed capture there.
+func labDeleting(l *lab.Lab) bool { return !l.DeletionTimestamp.IsZero() }
+
+// reportGenerationInvalid: a report must be of the Lab's current generation. Deleting a Lab raises its generation, so for a deleting Lab a
+// report of an earlier generation (but not earlier than the declaration it releases) stands: the proof does not depend on the generation
+// that existed before the deletion.
+func reportGenerationInvalid(report, declared int64, l *lab.Lab) bool {
+	if labDeleting(l) {
+		return report < declared || report > l.Generation
+	}
+	return report != l.Generation
 }
 
 func historicalOrdinaryReportInvalid(proof lab.OwnedRuntimeIdentity, id lab.OwnedRuntimeIdentity, operation string, revision int64, l *lab.Lab, d *lab.Device, report lab.OwnedRuntimeReport) bool {
-	return proof.ScopeKind != "" && proof.ScopeKind != "Pod" || proof.OwnerUID != id.OwnerUID || proof.ScopeUID != id.ScopeUID || proof.Namespace != id.Namespace || proof.LabName != id.LabName || proof.OperationID != operation || proof.Revision != revision || proof.Generation != l.Generation || proof.NodeName != id.NodeName || proof.NodeName != d.Status.NodeName || proof.NodeBootID != id.NodeBootID || proof.Epoch != id.Epoch || proof.Incarnation != id.Incarnation || proof.PodUID == "" || len(proof.ContainerIDs) == 0 || len(proof.CgroupPaths) == 0 || !proof.AttachmentsComplete || report.Error != "" || report.ObservedAt == nil || report.ObservedAt.IsZero()
+	return proof.ScopeKind != "" && proof.ScopeKind != "Pod" || proof.OwnerUID != id.OwnerUID || proof.ScopeUID != id.ScopeUID || proof.Namespace != id.Namespace || proof.LabName != id.LabName || proof.OperationID != operation || proof.Revision != revision || reportGenerationInvalid(proof.Generation, id.Generation, l) || proof.NodeName != id.NodeName || proof.NodeName != d.Status.NodeName || proof.NodeBootID != id.NodeBootID || proof.Epoch != id.Epoch || proof.Incarnation != id.Incarnation || proof.PodUID == "" || len(proof.ContainerIDs) == 0 || len(proof.CgroupPaths) == 0 || !proof.AttachmentsComplete || report.Error != "" || report.ObservedAt == nil || report.ObservedAt.IsZero()
 }
 
 func historicalPersistentIntentInvalid(id lab.OwnedRuntimeIdentity, l *lab.Lab, revision int64) bool {
