@@ -10,6 +10,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
@@ -532,6 +533,30 @@ func (r *ConnectionReconciler) buildSwitchVNIFlood(
 }
 
 func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *laboratoryv1alpha1.Connection) (
+	ctrl.Result,
+	error,
+) {
+	res, err := r.cleanup(ctx, conn)
+	if err == nil {
+		return res, nil
+	}
+	// A cleanup that cannot finish says why on the Connection (condition Wired, reason CleanupBlocked) instead of staying silent: a
+	// NotFound and a Waiting error are swallowed by the controller wrapper, and the finalizer would stay with no word of what it waits for.
+	msg := err.Error()
+	if len(msg) > 300 {
+		msg = msg[:300]
+	}
+	if mErr := markWired(ctx, r.Client, ctrl.Log.WithName("connection"), conn, false, WaitCleanupBlocked, msg); mErr != nil && !apierrors.IsNotFound(mErr) {
+		ctrl.Log.WithName("connection").Info("cannot publish what the cleanup waits for", "connection", conn.Namespace+"/"+conn.Name, "error", mErr.Error())
+	}
+	if apierrors.IsNotFound(err) || reconcileutil.IsWaiting(err) {
+		return ctrl.Result{RequeueAfter: wiredRetryOnWait}, nil
+	}
+	return res, err
+}
+
+// cleanup is the removal of the Connection's ports, flows and VNI, and of its finalizer (see reconcileDelete).
+func (r *ConnectionReconciler) cleanup(ctx context.Context, conn *laboratoryv1alpha1.Connection) (
 	ctrl.Result,
 	error,
 ) {

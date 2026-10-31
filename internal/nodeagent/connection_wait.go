@@ -26,6 +26,7 @@ const (
 	WaitDevicePod         = "WaitingForDevicePod"     // the device's pod is not published yet
 	WaitOVSPort           = "WaitingForOVSPort"       // the port of an endpoint does not exist on this node yet
 	WaitVNIRelease        = "WaitingForVNIRelease"    // deleting: the nodes have not acknowledged the release of the lab's VNI yet
+	WaitCleanupBlocked    = "CleanupBlocked"          // deleting: a step of the cleanup cannot finish yet (the message says which error)
 	ReasonProgrammed      = "Programmed"              // the ports are programmed
 	wiredRetryOnWait      = 3 * time.Second
 	wiredRetryOnWaitSlow  = 5 * time.Second
