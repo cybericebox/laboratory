@@ -541,17 +541,21 @@ func ValidateLease(ctx context.Context, c client.Reader, prefix, namespace strin
 	}
 	owner, ok := p.Status.Leases[strconv.FormatUint(uint64(bit), 10)]
 	if !ok || string(p.UID) != lease.PoolUID || owner.OwnerUID != lease.OwnerUID || owner.Generation != lease.Generation || lease.Generation < 1 {
-		return fmt.Errorf("current pool lease owner/generation changed")
+		return ErrLeaseNotHeld
 	}
 	bitmap, err := decodeBitmap(p.Status.BitMap, p.Spec.Size)
 	if err != nil {
 		return err
 	}
 	if !bitmap.Test(bit) {
-		return fmt.Errorf("current pool reservation absent")
+		return fmt.Errorf("%w: the reservation is absent", ErrLeaseNotHeld)
 	}
 	return nil
 }
+
+// ErrLeaseNotHeld is what ValidateLease says of a lease the pool does not hold as recorded: no record, another owner or generation, another
+// pool, a clear bit. Other errors (the pool cannot be read, a bad extent) are failures of the question, not its answer.
+var ErrLeaseNotHeld = stderrors.New("current pool lease owner/generation changed")
 
 // LeaseReleased says the exact lease has been retired and nothing holds its slot: the slot has no lease record and its retirement
 // record names this very owner and generation (it waits out its quarantine, and the sweep does not return it while a node still owes the

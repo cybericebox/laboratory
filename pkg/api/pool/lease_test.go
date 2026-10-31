@@ -231,8 +231,8 @@ func TestValidateOrReleasedAndTheReissueRace(t *testing.T) {
 		p.Status.Retired = nil
 		p.Status.Leases = map[string]api.PoolLease{"1": {OwnerUID: "new-owner", Generation: 4}}
 	})
-	if err := ValidateOrReleased(ctx, c, "lease", "owned", 2, lease); err == nil {
-		t.Fatal("a slot issued to another owner must never be dropped for the old lease")
+	if err := ValidateOrReleased(ctx, c, "lease", "owned", 2, lease); !stderrors.Is(err, ErrLeaseNotHeld) {
+		t.Fatalf("a slot issued to another owner must never be dropped for the old lease, and says so with ErrLeaseNotHeld: %v", err)
 	}
 	// back in the pool without a record: not provable either
 	set(func(p *api.Pool) { p.Status.Leases = nil })
