@@ -7,6 +7,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
@@ -44,4 +45,30 @@ func TestPinOwnedVNIOfAReleasedLeaseDoesNotBlockTheDeletion(t *testing.T) {
 	if err := r.pinOwnedVNI(context.Background(), device, true); err != nil {
 		t.Fatalf("a Lab being deleted goes on: %v", err)
 	}
+
+	// the stop of the lab has retired the lease (the slot waits out its quarantine): a live Lab still sees the error, a deleted one goes on
+	var q allocationv1alpha1.Pool
+	if err := c.Get(context.Background(), client.ObjectKey{Name: names.VNIPoolPrefix + "-0", Namespace: names.SystemNamespace}, &q); err != nil {
+		t.Fatal(err)
+	}
+	q.Status.BitMap, q.Status.Free = setBitsForPin(t, q.Status.BitMap, q.Status.Free, 7)
+	q.Status.Retired = map[string]allocationv1alpha1.PoolRetired{"7": {OwnerUID: "device-uid", Generation: 1}}
+	if err := c.Status().Update(context.Background(), &q); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.pinOwnedVNI(context.Background(), device, false); !errors.Is(err, poolpkg.ErrLeaseRetired) {
+		t.Fatalf("a live Lab with a retired lease must see the error, got %v", err)
+	}
+	if err := r.pinOwnedVNI(context.Background(), device, true); err != nil {
+		t.Fatalf("a deleted Lab with a retired lease goes on: %v", err)
+	}
+}
+
+func setBitsForPin(t *testing.T, encoded string, free uint, bits ...uint) (string, uint) {
+	t.Helper()
+	out, f, err := poolpkg.SetBitsForTest(encoded, free, bits...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out, f
 }

@@ -95,3 +95,49 @@ func setBits(t *testing.T, encoded string, free uint, bits ...uint) (string, uin
 	}
 	return out, f
 }
+
+// A retired VNI whose release no node has acknowledged yet stays out of the pool after its quarantine (another lab must not get a number a
+// node may still carry flows of); once the Lab no longer records the obligation (acknowledged, or the Lab gone) it comes back.
+func TestVNISweeperKeepsAReleaseThatIsNotAcknowledged(t *testing.T) {
+	ctx := context.Background()
+	s := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(s)
+	_ = allocationv1alpha1.AddToScheme(s)
+	_ = laboratoryv1alpha1.AddToScheme(s)
+	binding := laboratoryv1alpha1.OwnedVNI{PoolUID: "pool-uid", LeaseGeneration: 2, OwnerUID: "lab-uid", Kind: "Device", Namespace: "ns", Name: "d", UID: "uid-gone", VNI: 7}
+	parent := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "lab", Namespace: "ns", UID: "lab-uid"},
+		Status: laboratoryv1alpha1.LabStatus{ScopeInventory: []laboratoryv1alpha1.OwnedRuntimeIdentity{{OwnerUID: "lab-uid", VNIBindings: []laboratoryv1alpha1.OwnedVNI{binding}}}}}
+	bitmap, free := poolpkg.InitBitmap(names.VNIPoolSize, 0)
+	pool := &allocationv1alpha1.Pool{
+		ObjectMeta: metav1.ObjectMeta{Name: "vni-0", Namespace: names.SystemNamespace, UID: "pool-uid", Labels: map[string]string{poolpkg.PoolGroupLabel: names.VNIPoolPrefix}},
+		Spec:       allocationv1alpha1.PoolSpec{Size: names.VNIPoolSize},
+		Status: allocationv1alpha1.PoolStatus{BitMap: bitmap, Free: free, Retired: map[string]allocationv1alpha1.PoolRetired{
+			"7": {OwnerUID: "uid-gone", Generation: 2, RetiredAt: metav1.NewTime(time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC))}}},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(parent, pool).WithStatusSubresource(pool, parent).Build()
+	p := allocationv1alpha1.Pool{}
+	if err := c.Get(ctx, client.ObjectKey{Name: "vni-0", Namespace: names.SystemNamespace}, &p); err != nil {
+		t.Fatal(err)
+	}
+	p.Status.BitMap, p.Status.Free = setBits(t, p.Status.BitMap, p.Status.Free, 7)
+	if err := c.Status().Update(ctx, &p); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 31, 14, 0, 0, 0, time.UTC) // two hours after the retirement: far past the quarantine
+	sw := &VNISweeper{Client: c, Grace: time.Minute, Quarantine: 10 * time.Minute, RuntimeObservation: true, Now: func() time.Time { return now }}
+
+	if _, returned, err := sw.Sweep(ctx); err != nil || returned != 0 {
+		t.Fatalf("an unacknowledged release must stay: returned %d, %v", returned, err)
+	}
+	var kept allocationv1alpha1.Pool
+	if err := c.Get(ctx, client.ObjectKey{Name: "vni-0", Namespace: names.SystemNamespace}, &kept); err != nil || len(kept.Status.Retired) != 1 {
+		t.Fatalf("the retirement record must stay: %+v %v", kept.Status.Retired, err)
+	}
+	// the Lab is gone: no obligation, the slot comes back
+	if err := c.Delete(ctx, parent); err != nil {
+		t.Fatal(err)
+	}
+	if _, returned, err := sw.Sweep(ctx); err != nil || returned != 1 {
+		t.Fatalf("with no obligation the slot comes back: returned %d, %v", returned, err)
+	}
+}

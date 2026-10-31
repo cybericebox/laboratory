@@ -485,6 +485,11 @@ func (o *NativeRuntimeObserver) vniReleased(binding lab.OwnedVNI) bool {
 
 // Caller holds the common physical creation/retirement lock. Recovery consumes
 // a completed old lease receipt without deleting any later owner's numeric VNI.
+// leaseStillTheirs says the VNI may be dropped for this lease (poolpkg.ValidateOrReleased, with the uncached reader of the observer).
+func (o *NativeRuntimeObserver) leaseStillTheirs(ctx context.Context, lease poolpkg.Lease) error {
+	return poolpkg.ValidateOrReleased(ctx, o.Reader, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, lease)
+}
+
 func (o *NativeRuntimeObserver) retireVNI(ctx context.Context, binding lab.OwnedVNI, flows *FlowManager) error {
 	if binding.VNI == 0 && !completeZeroVNIBinding(binding) {
 		return ErrPortOwnerUnknown
@@ -498,13 +503,8 @@ func (o *NativeRuntimeObserver) retireVNI(ctx context.Context, binding lab.Owned
 		}
 	}
 	lease := poolpkg.Lease{Index: binding.VNI, PoolUID: binding.PoolUID, OwnerUID: binding.UID, Generation: binding.LeaseGeneration}
-	if err := poolpkg.ValidateLease(ctx, o.Reader, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, lease); err != nil {
-		// A lease the controller has already retired (or the quarantine has returned) and that nobody holds now is not a reason to keep the
-		// flows of the VNI and the release unacknowledged for ever: the owner is done with the number. A slot held by anyone is.
-		released, rerr := poolpkg.LeaseReleased(ctx, o.Reader, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, lease)
-		if rerr != nil || !released {
-			return err
-		}
+	if err := o.leaseStillTheirs(ctx, lease); err != nil {
+		return err
 	}
 	if o.Reader == nil || binding.UID == "" {
 		return ErrPortOwnerUnknown
@@ -553,7 +553,16 @@ func (o *NativeRuntimeObserver) retireVNI(ctx context.Context, binding lab.Owned
 	if err := o.writeRecord("vni-inventory", o.vniIdentity(binding), receipt); err != nil {
 		return err
 	}
+	// Checked again right before the flows go: the number is dropped only while it is still this owner's (held, or retired by this very
+	// lease and kept from the pool until this acknowledgement).
+	if err := o.leaseStillTheirs(ctx, lease); err != nil {
+		return err
+	}
 	if err := flows.RetireVNI(binding.VNI); err != nil {
+		return err
+	}
+	// And after: if the slot was given to someone else meanwhile the release is not acknowledged.
+	if err := o.leaseStillTheirs(ctx, lease); err != nil {
 		return err
 	}
 	// API object replacement during a barrier cannot authorize a completed ACK.

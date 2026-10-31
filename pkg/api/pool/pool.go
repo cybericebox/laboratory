@@ -553,10 +553,11 @@ func ValidateLease(ctx context.Context, c client.Reader, prefix, namespace strin
 	return nil
 }
 
-// LeaseReleased says the exact lease is no longer held by anyone: the slot has no lease record and either waits out its quarantine
-// (retired) or is back in the pool (bit clear). A slot that still has a lease record (this lease, or another owner's after a reuse) is
-// not released, and neither is a legacy hold (bit set, no lease record, not retired). It is what a node that has to drop the flows of a VNI
-// needs to know when the controller has already retired the lease: the owner is done with the number and nobody else has it yet.
+// LeaseReleased says the exact lease has been retired and nothing holds its slot: the slot has no lease record and its retirement
+// record names this very owner and generation (it waits out its quarantine, and the sweep does not return it while a node still owes the
+// acknowledgement). Anything else is not "released": a slot back in the pool (the proof of whose lease it was is gone, and it may be
+// someone else's now), a slot with a lease record (this lease, or another owner's after a reuse), a retirement of another owner or
+// generation, a legacy hold. The pool is read by the caller; for a decision that drops flows it must be an uncached reader.
 func LeaseReleased(ctx context.Context, c client.Reader, prefix, namespace string, size uint, lease Lease) (bool, error) {
 	p, bit, err := leasePool(ctx, c, prefix, namespace, size, lease.Index)
 	if err != nil {
@@ -569,14 +570,23 @@ func LeaseReleased(ctx context.Context, c client.Reader, prefix, namespace strin
 	if _, held := p.Status.Leases[key]; held {
 		return false, nil
 	}
-	if _, retired := p.Status.Retired[key]; retired {
-		return true, nil
+	r, retired := p.Status.Retired[key]
+	return retired && r.OwnerUID == lease.OwnerUID && r.Generation == lease.Generation, nil
+}
+
+// ValidateOrReleased is the question a node asks before it drops the flows of a VNI for a lease: is the number still this owner's? Yes
+// when the lease is held as recorded, or when it has been retired with exactly this owner and generation (LeaseReleased). A slot that
+// was given back and issued to someone else, a retirement of another lease and a pool that cannot be read are errors, never an answer.
+// Ask it with an uncached reader, before the flows go and again after.
+func ValidateOrReleased(ctx context.Context, c client.Reader, prefix, namespace string, size uint, lease Lease) error {
+	err := ValidateLease(ctx, c, prefix, namespace, size, lease)
+	if err == nil {
+		return nil
 	}
-	bitmap, err := decodeBitmap(p.Status.BitMap, p.Spec.Size)
-	if err != nil {
-		return false, err
+	if released, rerr := LeaseReleased(ctx, c, prefix, namespace, size, lease); rerr == nil && released {
+		return nil
 	}
-	return !bitmap.Test(bit), nil
+	return err
 }
 func ReleaseOwnedIndex(ctx context.Context, c client.Client, prefix, namespace string, size uint, lease Lease) error {
 	p, bit, err := leasePool(ctx, c, prefix, namespace, size, lease.Index)

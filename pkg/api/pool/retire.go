@@ -103,6 +103,13 @@ func retirePool(ctx context.Context, c client.Client, namespace, name string, rs
 
 // ReturnMatured gives back, in one update per pool, every retired slot whose quarantine has passed, and returns how many.
 func ReturnMatured(ctx context.Context, c client.Client, prefix, namespace string, size uint, quarantine time.Duration, now time.Time) (int, error) {
+	return ReturnMaturedUnless(ctx, c, prefix, namespace, size, quarantine, now, nil)
+}
+
+// ReturnMaturedUnless is ReturnMatured except for the slots hold names: hold(index, ownerUID, generation) says the retired lease still
+// has an obligation (a node has not yet acknowledged that it dropped the flows of the VNI), so the slot stays retired and is not given
+// out until the obligation is gone. A slot is never handed to another owner while a node may still carry the old owner's flows.
+func ReturnMaturedUnless(ctx context.Context, c client.Client, prefix, namespace string, size uint, quarantine time.Duration, now time.Time, hold func(index uint, ownerUID string, generation int64) bool) (int, error) {
 	var pools allocationv1alpha1.PoolList
 	if err := c.List(ctx, &pools, client.InNamespace(namespace), client.MatchingLabels{PoolGroupLabel: prefix}); err != nil {
 		return 0, err
@@ -133,6 +140,9 @@ func ReturnMatured(ctx context.Context, c client.Client, prefix, namespace strin
 				bit, err := strconv.ParseUint(key, 10, 32)
 				if err != nil {
 					delete(p.Status.Retired, key)
+					continue
+				}
+				if hold != nil && hold(uint(bit)+p.Spec.Offset, r.OwnerUID, r.Generation) {
 					continue
 				}
 				if bitmap.Test(uint(bit)) {

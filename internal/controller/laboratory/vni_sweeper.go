@@ -175,8 +175,42 @@ func (c *VNISweeper) Sweep(ctx context.Context) (retired, returned int, err erro
 			return retired, 0, err
 		}
 	}
-	returned, err = poolpkg.ReturnMatured(ctx, c.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, quarantine, now)
+	hold, err := c.unacknowledgedReleases(ctx)
+	if err != nil {
+		return retired, 0, err
+	}
+	returned, err = poolpkg.ReturnMaturedUnless(ctx, c.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, quarantine, now, hold)
 	return retired, returned, err
+}
+
+// unacknowledgedReleases says, for a retired lease, whether a Lab still records a VNI binding of it that no node has acknowledged as
+// released (the node has not yet dropped the flows of the VNI). Such a slot stays retired past its quarantine: the number must not go to
+// another lab while a node may carry the old owner's flows. Without runtime observation nobody acknowledges, so nothing is held.
+func (c *VNISweeper) unacknowledgedReleases(ctx context.Context) (func(uint, string, int64) bool, error) {
+	if !c.RuntimeObservation {
+		return nil, nil
+	}
+	var labs laboratoryv1alpha1.LabList
+	if err := c.reader().List(ctx, &labs); err != nil {
+		return nil, err
+	}
+	type slot struct {
+		index      uint
+		owner      string
+		generation int64
+	}
+	pending := map[slot]bool{}
+	for i := range labs.Items {
+		parent := &labs.Items[i]
+		for _, scope := range parent.Status.ScopeInventory {
+			for _, binding := range scope.VNIBindings {
+				if !laboratoryv1alpha1.VNILeaseReleased(parent, binding) {
+					pending[slot{binding.VNI, binding.UID, binding.LeaseGeneration}] = true
+				}
+			}
+		}
+	}
+	return func(index uint, owner string, generation int64) bool { return pending[slot{index, owner, generation}] }, nil
 }
 
 // liveOwners is the set of UIDs that may still own a VNI lease (every Device and Connection, and the owner of every native
