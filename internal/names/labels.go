@@ -1,6 +1,10 @@
 package names
 
-import "strings"
+import (
+	"strings"
+
+	pubnames "github.com/cybericebox/laboratory/pkg/names"
+)
 
 // LabelPrefix is the prefix of every operator-internal label and annotation of
 // this platform. Labels with it are never copied from a Lab or LabGroup onto its
@@ -151,9 +155,8 @@ const (
 // also set on device pods from the device name, and the platform prefix keeps a tenant from setting this one.
 const LabelComponent = LabelPrefix + "component"
 
-// ReservedDeviceNames are the names of the endpoints the platform provides in every lab (the VPN, the internet gateway)
-// and of its pods; a device may not have them.
-var ReservedDeviceNames = []string{"vpn", "gateway", "internet"}
+// ReservedDeviceNames are the names of the endpoints the platform provides in every lab; the list is public (pkg/names) so that callers share it.
+var ReservedDeviceNames = pubnames.ReservedDeviceNames
 
 // ProxyL7App is the `app` label value on the L7 proxy pod that terminates
 // external HTTPS and connects to exposed device Services. The web-exposure
