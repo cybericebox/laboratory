@@ -483,7 +483,14 @@ log "client with an unknown key"
 n="$(received bad -c 10 -i 0.5 -W 1 10.99.1.1)"
 hs="$(client bad wg show wg0 latest-handshakes | awk '{print $2}')"
 echo "replies: $n, latest handshake: $hs"
-[[ "$n" == 0 && "$hs" == 0 ]] || fail "the client with an unknown key got through"
+if [[ "$n" != 0 || "$hs" != 0 ]]; then
+  # What decides between a dirty harness and a leak: who knows the key (the server's peers), what the client has, what the demux counted.
+  echo "--- client bad: wg show"; client bad wg show wg0 || true
+  echo "--- server a: wg show"; k -n lg-demux-a exec vpn -- wg show wg0 || true
+  echo "--- server b: wg show"; k -n lg-demux-b exec vpn -- wg show wg0 || true
+  echo "--- demux metrics"; metrics 2>/dev/null | grep -E 'wg_demux_(sessions|fastpath_packets_total|packets_total)' || true
+  fail "the client with an unknown key got through"
+fi
 
 log "the VPN pod policy: a pod outside laboratory-wg that the server knows cannot reach it directly"
 read -r intruder_priv intruder_pub <<<"$(genkey)"
