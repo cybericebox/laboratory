@@ -203,7 +203,10 @@ upgrade() {
   log "helm install the chart of $from"
   mkdir -p "$WORK/from"
   git -C "$ROOT" archive "$from" charts/laboratory | tar -x -C "$WORK/from"
-  helm_k install laboratory "$WORK/from/charts/laboratory" -n "$RELEASE_NS" --create-namespace "${upgrade_values[@]}" >/dev/null
+  # CRDs are applied by kubectl, as DEPLOY.md says (helm never updates crds/): up.sh applied the CRDs of this tree with server-side apply,
+  # so put the CRDs of the old chart in their place first (forced: the field manager is kubectl either way) and tell helm to leave them.
+  k apply --server-side --force-conflicts -f "$WORK/from/charts/laboratory/crds" >/dev/null
+  helm_k install laboratory "$WORK/from/charts/laboratory" -n "$RELEASE_NS" --create-namespace --skip-crds "${upgrade_values[@]}" >/dev/null
   np="$(k -n laboratory-proxy get svc laboratory-proxy-wg -o jsonpath='{.spec.ports[0].nodePort}')" ||
     fail "the chart of $from has no VPN Service in laboratory-proxy"
   [[ "$np" == "$UPGRADE_NODE_PORT" ]] || fail "the old VPN Service has node port $np"
@@ -227,6 +230,9 @@ upgrade() {
   [[ "$mode" == userspace && "$etp" == Cluster && "$np" == "$UPGRADE_NODE_PORT" ]] ||
     fail "after the upgrade: mode $mode, externalTrafficPolicy $etp, node port $np (want userspace, Cluster, $UPGRADE_NODE_PORT)"
   ! k -n laboratory-proxy get svc laboratory-proxy-wg >/dev/null 2>&1 || fail "the old VPN Service is back"
+  log "the CRDs of this tree (helm upgrade does not update crds/)"
+  k apply --server-side --force-conflicts -f "$ROOT/charts/laboratory/crds" >/dev/null
+  k wait --for=condition=Established crd --all --timeout=2m >/dev/null
   summary "after the step helm upgrade succeeds: $(helm_k -n "$RELEASE_NS" status laboratory -o json | jq -r '"revision \(.version) \(.info.status)"'), mode $mode, externalTrafficPolicy $etp, node port $np"
 }
 
