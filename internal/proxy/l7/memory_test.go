@@ -134,7 +134,8 @@ func TestL7MemoryPerConnection(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				c := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, DisableKeepAlives: true}}
+				c := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, DisableKeepAlives: true,
+					DialContext: (&net.Dialer{Timeout: 3 * time.Second}).DialContext}}
 				req, _ := http.NewRequest("GET", "https://"+l7addr+"/", nil)
 				req.Host = "web-abc123.challenges.example.com"
 				req.AddCookie(&http.Cookie{Name: "challenge", Value: cookie})
@@ -163,7 +164,7 @@ func TestL7MemoryPerConnection(t *testing.T) {
 		wg.Wait()
 	}
 	waitInflight := func(n int64) {
-		for deadline := time.Now().Add(30 * time.Second); inflight.Load() < n; {
+		for deadline := time.Now().Add(2 * time.Minute); inflight.Load() < n; { // 2000 TLS handshakes take long under the race detector
 			if time.Now().After(deadline) {
 				t.Fatalf("only %d of %d requests reached the backend", inflight.Load(), n)
 			}
@@ -197,9 +198,9 @@ func TestL7MemoryPerConnection(t *testing.T) {
 	}
 }
 
-// connectRefused says the request never got a connection: the dial was reset or refused (a full accept queue) or found no free local
+// connectRefused says the request never got a connection: the dial was reset, refused or timed out (a full accept queue drops the SYN) or found no free local
 // port (the TIME_WAIT sockets of a run just before).
 func connectRefused(err error) bool {
 	var op *net.OpError
-	return errors.As(err, &op) && op.Op == "dial" && (errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EADDRNOTAVAIL))
+	return errors.As(err, &op) && op.Op == "dial" && (op.Timeout() || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EADDRNOTAVAIL))
 }
