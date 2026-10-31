@@ -12,8 +12,8 @@ import (
 // the size against the maximum here. Measured: the VPN about 16Mi idle, about 195Mi and 55m with 10 active peers; the gateway about
 // 1m and 8Mi idle.
 type Sizing struct {
-	VPNBaseCPU        string `env:"VPN_BASE_CPU" envDefault:"20m"`
-	VPNBaseMemory     string `env:"VPN_BASE_MEMORY" envDefault:"64Mi"`
+	VPNBaseCPU        string `env:"VPN_BASE_CPU" envDefault:"40m"`
+	VPNBaseMemory     string `env:"VPN_BASE_MEMORY" envDefault:"120Mi"`
 	VPNPerUserCPU     string `env:"VPN_PER_USER_CPU" envDefault:"6m"`
 	VPNPerUserMemory  string `env:"VPN_PER_USER_MEMORY" envDefault:"20Mi"`
 	VPNMaxUsers       int    `env:"VPN_MAX_USERS" envDefault:"20"`

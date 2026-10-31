@@ -1,8 +1,12 @@
 package chart_test
 
 import (
+	"os"
 	"strings"
 	"testing"
+
+	"k8s.io/apimachinery/pkg/api/resource"
+	"sigs.k8s.io/yaml"
 )
 
 // The device profiles are off by default: no RuntimeClass, no profile labels, microVM not offered, so a cluster that upgrades keeps
@@ -93,4 +97,44 @@ func TestBandwidthWithoutTheProxyNamesNoProxyNamespace(t *testing.T) {
 	if !strings.Contains(on["BANDWIDTH_ENTRY_NAMESPACES"], "laboratory-proxy") {
 		t.Errorf("with the proxy on its namespace is an entry namespace: %q", on["BANDWIDTH_ENTRY_NAMESPACES"])
 	}
+}
+
+// The same for the values.yaml of the chart: vpn.resources and inetGateway.resources (the size of a group made with no size) are within
+// base + perUnit * groupLimits.maxUsers / maxLabs, the maximum the agent reports. The agent refuses to start otherwise, and
+// the daemon plans no group at the default size.
+func TestChartDefaultPodSizesFitTheReportedMaximum(t *testing.T) {
+	raw, err := os.ReadFile("../../charts/laboratory/values.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v struct {
+		VPN struct {
+			Resources struct{ CPU, Memory string }
+			Sizing    struct{ BaseCpu, BaseMemory, PerUserCpu, PerUserMemory string }
+		}
+		InetGateway struct {
+			Resources struct{ CPU, Memory string }
+			Sizing    struct{ BaseCpu, BaseMemory, PerLabCpu, PerLabMemory string }
+		}
+		GroupLimits struct{ MaxUsers, MaxLabs int }
+	}
+	if err := yaml.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
+	q := func(s string) *resource.Quantity {
+		r, err := resource.ParseQuantity(s)
+		if err != nil {
+			t.Fatalf("%q: %v", s, err)
+		}
+		return &r
+	}
+	check := func(name, defCPU, defMem, baseCPU, baseMem, perCPU, perMem string, units int) {
+		maxCPU := q(baseCPU).MilliValue() + q(perCPU).MilliValue()*int64(units)
+		maxMem := q(baseMem).Value() + q(perMem).Value()*int64(units)
+		if q(defCPU).MilliValue() > maxCPU || q(defMem).Value() > maxMem {
+			t.Errorf("%s: the default size (%s, %s) is over the maximum at %d units (%dm, %d bytes)", name, defCPU, defMem, units, maxCPU, maxMem)
+		}
+	}
+	check("vpn", v.VPN.Resources.CPU, v.VPN.Resources.Memory, v.VPN.Sizing.BaseCpu, v.VPN.Sizing.BaseMemory, v.VPN.Sizing.PerUserCpu, v.VPN.Sizing.PerUserMemory, v.GroupLimits.MaxUsers)
+	check("gateway", v.InetGateway.Resources.CPU, v.InetGateway.Resources.Memory, v.InetGateway.Sizing.BaseCpu, v.InetGateway.Sizing.BaseMemory, v.InetGateway.Sizing.PerLabCpu, v.InetGateway.Sizing.PerLabMemory, v.GroupLimits.MaxLabs)
 }

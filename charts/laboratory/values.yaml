@@ -173,10 +173,11 @@ vpn:
   # event's largest team (users = WireGuard peers) and passes it to CreateLabGroups; the agent refuses a size over the maximum,
   # and the operator creates the pod Guaranteed at exactly that size, never resizing it. Measured: about 16Mi idle, about 55m and
   # 195Mi with 10 active peers. `resources` above is the size of a group created without an explicit one and must not exceed the
-  # maximum (the agent refuses to start otherwise).
+  # maximum, which is the size at groupLimits.maxUsers users (not at sizing.maxUsers below: the agent reports the former), so
+  # base + perUser * groupLimits.maxUsers must be at least `resources` (the agent refuses to start otherwise).
   sizing:
-    baseCpu: 20m
-    baseMemory: 64Mi
+    baseCpu: 40m
+    baseMemory: 120Mi
     perUserCpu: 6m
     perUserMemory: 20Mi
     maxUsers: 20
