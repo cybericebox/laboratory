@@ -5,14 +5,32 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 )
+
+var (
+	vniHeldSlots = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "laboratory_vni_held_unacknowledged_slots",
+		Help: "Retired VNI slots kept out of the pool past their quarantine because a node has not yet acknowledged dropping their flows.",
+	})
+	vniHeldOldest = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "laboratory_vni_held_oldest_seconds",
+		Help: "Seconds since the oldest held unacknowledged VNI slot was retired (0 when none is held).",
+	})
+)
+
+func init() { metrics.Registry.MustRegister(vniHeldSlots, vniHeldOldest) }
+
+// defaultHeldWarnAfter is how long a slot may stay held for a missing node acknowledgement before the sweeper logs it.
+const defaultHeldWarnAfter = 15 * time.Minute
 
 // VNISweeper is the one way a VNI comes back to the pool. Normal releases only retire the VNI (VNIRetirer: a mark in the pool's
 // status, many in one update); the sweeper, every Interval,
@@ -36,6 +54,8 @@ type VNISweeper struct {
 	RuntimeObservation bool
 	// Retirer, when set, is flushed first so that what the controller queued is in the pool before the sweep looks.
 	Retirer *VNIRetirer
+	// HeldWarnAfter is how long a slot may wait for a node acknowledgement before the sweeper logs it (default 15 minutes).
+	HeldWarnAfter time.Duration
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 
@@ -180,7 +200,44 @@ func (c *VNISweeper) Sweep(ctx context.Context) (retired, returned int, err erro
 		return retired, 0, err
 	}
 	returned, err = poolpkg.ReturnMaturedUnless(ctx, c.Client, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, quarantine, now, hold)
-	return retired, returned, err
+	if err != nil {
+		return retired, returned, err
+	}
+	c.reportHeld(ctx, quarantine, now, hold)
+	return retired, returned, nil
+}
+
+// reportHeld makes the price of the hold visible: how many retired slots past their quarantine wait for a node acknowledgement, and
+// how long the oldest has waited (metrics), plus one log line when that is longer than HeldWarnAfter. It never fails the sweep.
+func (c *VNISweeper) reportHeld(ctx context.Context, quarantine time.Duration, now time.Time, hold func(uint, string, int64) bool) {
+	count, oldest := 0, time.Duration(0)
+	if hold != nil {
+		var pools allocationv1alpha1.PoolList
+		if err := c.reader().List(ctx, &pools, client.InNamespace(names.SystemNamespace), client.MatchingLabels{poolpkg.PoolGroupLabel: names.VNIPoolPrefix}); err != nil {
+			return
+		}
+		for i := range pools.Items {
+			p := &pools.Items[i]
+			for key, r := range p.Status.Retired {
+				bit, err := strconv.ParseUint(key, 10, 32)
+				age := now.Sub(r.RetiredAt.Time)
+				if err != nil || age < quarantine || !hold(uint(bit)+p.Spec.Offset, r.OwnerUID, r.Generation) {
+					continue
+				}
+				count++
+				oldest = max(oldest, age)
+			}
+		}
+	}
+	vniHeldSlots.Set(float64(count))
+	vniHeldOldest.Set(oldest.Seconds())
+	warn := c.HeldWarnAfter
+	if warn <= 0 {
+		warn = defaultHeldWarnAfter
+	}
+	if count > 0 && oldest >= warn {
+		ctrl.Log.WithName("vni-sweeper").Info("VNI slots held for a missing node acknowledgement", "slots", count, "oldest", oldest.Round(time.Second).String())
+	}
 }
 
 // unacknowledgedReleases says, for a retired lease, whether a Lab still records a VNI binding of it that no node has acknowledged as

@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -133,6 +135,13 @@ func TestVNISweeperKeepsAReleaseThatIsNotAcknowledged(t *testing.T) {
 	if err := c.Get(ctx, client.ObjectKey{Name: "vni-0", Namespace: names.SystemNamespace}, &kept); err != nil || len(kept.Status.Retired) != 1 {
 		t.Fatalf("the retirement record must stay: %+v %v", kept.Status.Retired, err)
 	}
+	// the price of the hold is visible: one held slot, retired two hours ago
+	if got := gaugeValue(vniHeldSlots); got != 1 {
+		t.Fatalf("held slots metric = %v, want 1", got)
+	}
+	if got := gaugeValue(vniHeldOldest); got != (2 * time.Hour).Seconds() {
+		t.Fatalf("oldest held metric = %v, want 7200", got)
+	}
 	// the Lab is gone: no obligation, the slot comes back
 	if err := c.Delete(ctx, parent); err != nil {
 		t.Fatal(err)
@@ -140,4 +149,13 @@ func TestVNISweeperKeepsAReleaseThatIsNotAcknowledged(t *testing.T) {
 	if _, returned, err := sw.Sweep(ctx); err != nil || returned != 1 {
 		t.Fatalf("with no obligation the slot comes back: returned %d, %v", returned, err)
 	}
+	if gaugeValue(vniHeldSlots) != 0 || gaugeValue(vniHeldOldest) != 0 {
+		t.Fatalf("nothing is held any more: %v %v", gaugeValue(vniHeldSlots), gaugeValue(vniHeldOldest))
+	}
+}
+
+func gaugeValue(g prometheus.Gauge) float64 {
+	var m dto.Metric
+	_ = g.Write(&m)
+	return m.GetGauge().GetValue()
 }
