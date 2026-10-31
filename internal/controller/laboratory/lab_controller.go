@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -1323,7 +1324,42 @@ func (r *LabReconciler) ensureLabVPNDeleted(ctx context.Context, lab *laboratory
 		controllerutil.RemoveFinalizer(&obj, names.FinalizerController)
 		return false, r.Update(ctx, &obj)
 	}
-	return false, nil
+	return r.releaseFinalizerOfAbsentGroupPod(ctx, &obj, names.FinalizerVPN, names.ComponentVPN)
+}
+
+// releaseFinalizerOfAbsentGroupPod strips the finalizer of the group pod's binary (it cleans inside the pod: DHCP, firewall rules, the lab
+// network) when the pod is gone for good: a suspended group, or one being deleted, runs no VPN or gateway pod, and with the pod went
+// everything the cleanup would have cleaned. Without this a Lab deleted in a suspended group waits forever for a binary that is not there.
+func (r *LabReconciler) releaseFinalizerOfAbsentGroupPod(ctx context.Context, obj client.Object, finalizer, component string) (bool, error) {
+	if !controllerutil.ContainsFinalizer(obj, finalizer) {
+		return false, nil
+	}
+	absent, err := r.groupPodAbsent(ctx, obj.GetNamespace(), component)
+	if err != nil || !absent {
+		return false, err
+	}
+	log.FromContext(ctx).Info("the pod of the group is gone: releasing the finalizer of its binary", "object", client.ObjectKeyFromObject(obj), "finalizer", finalizer)
+	controllerutil.RemoveFinalizer(obj, finalizer)
+	return false, r.Update(ctx, obj)
+}
+
+// groupPodAbsent says the pod of a component of the group (the VPN, the gateway) is not there and will not be: its Deployment is missing or
+// scaled to zero, and no pod of the component is left (read without the cache).
+func (r *LabReconciler) groupPodAbsent(ctx context.Context, namespace, component string) (bool, error) {
+	reader := r.lifecycleReader()
+	var dep appsv1.Deployment
+	err := reader.Get(ctx, types.NamespacedName{Name: component, Namespace: namespace}, &dep)
+	if err == nil && (dep.Spec.Replicas == nil || *dep.Spec.Replicas > 0) {
+		return false, nil
+	}
+	if err != nil && !errors.IsNotFound(err) {
+		return false, err
+	}
+	var pods corev1.PodList
+	if err := reader.List(ctx, &pods, client.InNamespace(namespace), client.MatchingLabels{names.LabelComponent: component}); err != nil {
+		return false, err
+	}
+	return len(pods.Items) == 0, nil
 }
 
 // ensureLabGatewayDeleted is ensureLabVPNDeleted's counterpart for LabGateway.
@@ -1344,7 +1380,7 @@ func (r *LabReconciler) ensureLabGatewayDeleted(ctx context.Context, lab *labora
 		controllerutil.RemoveFinalizer(&obj, names.FinalizerController)
 		return false, r.Update(ctx, &obj)
 	}
-	return false, nil
+	return r.releaseFinalizerOfAbsentGroupPod(ctx, &obj, names.FinalizerGateway, names.ComponentGateway)
 }
 
 func ownedByLab(obj metav1.Object, lab *laboratoryv1alpha1.Lab) bool {
