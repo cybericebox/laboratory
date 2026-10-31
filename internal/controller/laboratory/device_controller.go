@@ -339,16 +339,28 @@ func (r *DeviceReconciler) devicePodPlacement(ctx context.Context, device *labor
 	); err != nil {
 		return "", "", ""
 	}
+	running := false
 	for i := range pods.Items {
 		p := &pods.Items[i]
 		if p.DeletionTimestamp != nil {
 			continue
 		}
-		if p.Status.Phase == corev1.PodRunning {
+		switch {
+		case p.Status.Phase == corev1.PodRunning:
+			nodeName, podIP, podName, running = p.Spec.NodeName, p.Status.PodIP, p.Name, true
+		case !running && startingWithNetwork(p):
 			nodeName, podIP, podName = p.Spec.NodeName, p.Status.PodIP, p.Name
 		}
 	}
 	return nodeName, podIP, podName
+}
+
+// startingWithNetwork says the pod is placed and its sandbox is up (the CNI ran, so its OVS ports exist) but it is still in its init
+// containers. Its node is published already: the netconfig init container of a device with a dhcp-preset interface asks the lab's DHCP
+// server for its address through the port, and the port gets its flows only when the Connection is bound, which needs the node and the
+// pod. Waiting for Running would be a deadlock for such a device. Only Ready (the Deployment's availability) says the device works.
+func startingWithNetwork(p *corev1.Pod) bool {
+	return p.Spec.NodeName != "" && p.Status.PodIP != "" && p.Status.Phase == corev1.PodPending && len(p.Spec.InitContainers) > 0
 }
 
 // networkAnnotation builds the network.cybericebox.com/networks annotation value.

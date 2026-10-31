@@ -9,7 +9,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
@@ -142,5 +144,51 @@ func TestUnrunnableProfileFailsClosedOnEveryPodPath(t *testing.T) {
 	ok := &DeviceReconciler{Profiles: nodecap.ProfilePolicy{MicroVM: true}, MicroVMRuntimeClass: "c"}
 	if !ok.profileRunnable("microvm") || !ok.profileRunnable("") {
 		t.Error("microvm with its RuntimeClass, and a container, run")
+	}
+}
+
+func placementPod(name string, phase corev1.PodPhase, ip string, init bool) *corev1.Pod {
+	p := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns", Labels: map[string]string{names.LabelLab: "lab", names.LabelDevice: "client"}},
+		Spec:       corev1.PodSpec{NodeName: "worker", Containers: []corev1.Container{{Name: "c"}}},
+		Status:     corev1.PodStatus{Phase: phase, PodIP: ip},
+	}
+	if init {
+		p.Spec.InitContainers = []corev1.Container{{Name: "netconfig"}}
+	}
+	return p
+}
+
+// A device whose netconfig init container asks the DHCP server for its address (dhcp-preset) is Pending until it has it, and the port
+// gets its flows only when the Connection knows the pod's node: the node is published as soon as the sandbox is up, not at Running.
+func TestDevicePlacementIsPublishedWhileTheInitContainerRuns(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	dev := deviceOf("")
+	dev.Namespace, dev.Spec.LabRef, dev.Spec.Name = "ns", "lab", "client"
+	pick := func(pods ...*corev1.Pod) (string, string, string) {
+		b := fake.NewClientBuilder().WithScheme(scheme)
+		for _, p := range pods {
+			b = b.WithObjects(p)
+		}
+		return (&DeviceReconciler{Client: b.Build()}).devicePodPlacement(context.Background(), dev)
+	}
+	if node, ip, name := pick(placementPod("p1", corev1.PodPending, "10.0.0.5", true)); node != "worker" || ip != "10.0.0.5" || name != "p1" {
+		t.Errorf("a pod in its init container: %q %q %q", node, ip, name)
+	}
+	if node, _, _ := pick(placementPod("p1", corev1.PodPending, "", true)); node != "" {
+		t.Errorf("no sandbox yet (no pod IP): no placement, got %q", node)
+	}
+	if node, _, _ := pick(placementPod("p1", corev1.PodPending, "10.0.0.5", false)); node != "" {
+		t.Errorf("a Pending pod with no init container is not starting with a network: %q", node)
+	}
+	// during a replacement the Running pod wins over a starting one, whatever the order
+	for _, order := range [][]*corev1.Pod{
+		{placementPod("old", corev1.PodRunning, "10.0.0.1", false), placementPod("new", corev1.PodPending, "10.0.0.2", true)},
+		{placementPod("new", corev1.PodPending, "10.0.0.2", true), placementPod("old", corev1.PodRunning, "10.0.0.1", false)},
+	} {
+		if _, _, name := pick(order...); name != "old" {
+			t.Errorf("the Running pod must win, got %q", name)
+		}
 	}
 }
