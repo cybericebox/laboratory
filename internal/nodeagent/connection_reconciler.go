@@ -97,7 +97,7 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 		return ctrl.Result{}, err
 	}
 	if needsRequeue {
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		return r.wait(ctx, conn, WaitEndpointNode, "an endpoint device has no node yet", wiredRetryOnWaitSlow)
 	}
 
 	if !controllerutil.ContainsFinalizer(conn, names.FinalizerOVSCleanup) {
@@ -135,6 +135,9 @@ func (r *ConnectionReconciler) reconcileCreate(ctx context.Context, conn *labora
 	// Nothing requeues this Connection on such events, so periodically re-program
 	// t0/t6 (idempotent) to converge flows onto the current numbers.
 	if err == nil && res.IsZero() {
+		if err = markWired(ctx, r.Client, ctrl.Log.WithName("connection"), conn, true, ReasonProgrammed, "the ports are programmed"); err != nil {
+			return ctrl.Result{}, err
+		}
 		res.RequeueAfter = 60 * time.Second
 	}
 	return res, err
@@ -152,7 +155,7 @@ func (r *ConnectionReconciler) reconcileDeviceDevice(
 		vni = *conn.Status.VNI
 	}
 	if vni == 0 {
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		return r.wait(ctx, conn, WaitVNI, "the VNI is not allocated yet", wiredRetryOnWaitSlow)
 	}
 
 	desired := make([]laboratoryv1alpha1.ConnectionPortStatus, 0, len(eps))
@@ -169,19 +172,19 @@ func (r *ConnectionReconciler) reconcileDeviceDevice(
 		}
 
 		if ep.device.Status.NodeName == r.NodeName {
-			pKey, requeue, err := r.resolveLocalPortKey(ctx, conn, ep)
+			pKey, waitFor, err := r.resolveLocalPortKey(ctx, conn, ep)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
-			if requeue {
-				return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+			if waitFor != "" {
+				return r.wait(ctx, conn, waitFor, "endpoint "+ep.endpoint.Device+"/"+ep.endpoint.Interface+": "+waitMessage(waitFor), wiredRetryOnWait)
 			}
 			exists, err := r.OVS.PortExists(pKey)
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("check port %q: %w", pKey, err)
 			}
 			if !exists {
-				return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+				return r.wait(ctx, conn, WaitOVSPort, "endpoint "+ep.endpoint.Device+"/"+ep.endpoint.Interface+": "+waitMessage(WaitOVSPort), wiredRetryOnWait)
 			}
 
 			if err := r.Flows.AddT0Port(pKey, vni); err != nil {
@@ -257,7 +260,7 @@ func (r *ConnectionReconciler) reconcileDeviceSwitch(
 		vni = *swEp.device.Status.VNI
 	}
 	if vni == 0 {
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		return r.wait(ctx, conn, WaitVNI, "the VNI is not allocated yet", wiredRetryOnWaitSlow)
 	}
 
 	desired := make([]laboratoryv1alpha1.ConnectionPortStatus, 0, 2)
@@ -279,19 +282,19 @@ func (r *ConnectionReconciler) reconcileDeviceSwitch(
 	var currentLocalPort string
 
 	if devEp.device.Status.NodeName == r.NodeName {
-		pKey, requeue, err := r.resolveLocalPortKey(ctx, conn, devEp)
+		pKey, waitFor, err := r.resolveLocalPortKey(ctx, conn, devEp)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		if requeue {
-			return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+		if waitFor != "" {
+			return r.wait(ctx, conn, waitFor, "endpoint "+devEp.endpoint.Device+"/"+devEp.endpoint.Interface+": "+waitMessage(waitFor), wiredRetryOnWait)
 		}
 		exists, err := r.OVS.PortExists(pKey)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("check port %q: %w", pKey, err)
 		}
 		if !exists {
-			return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+			return r.wait(ctx, conn, WaitOVSPort, "endpoint "+devEp.endpoint.Device+"/"+devEp.endpoint.Interface+": "+waitMessage(WaitOVSPort), wiredRetryOnWait)
 		}
 
 		if err := r.Flows.AddT0Port(pKey, vni); err != nil {
@@ -695,7 +698,7 @@ func (r *ConnectionReconciler) resolveLocalPortKey(
 	ctx context.Context,
 	conn *laboratoryv1alpha1.Connection,
 	ep epInfo,
-) (pKey string, requeue bool, err error) {
+) (pKey string, waitFor string, err error) {
 	switch ep.endpoint.Device {
 	case "vpn":
 		var labvpn laboratoryv1alpha1.LabVPN
@@ -706,11 +709,14 @@ func (r *ConnectionReconciler) resolveLocalPortKey(
 			}, &labvpn,
 		); err != nil {
 			if client.IgnoreNotFound(err) != nil {
-				return "", false, err
+				return "", "", err
 			}
-			return "", true, nil
+			return "", WaitNetworkObject, nil
 		}
-		return names.VPNHostPortKey(conn.Namespace, labvpn.Spec.NetworkIndex), false, nil
+		if !validLabIndex(labvpn.Spec.NetworkIndex) {
+			return "", WaitInvalidNetworkIdx, nil
+		}
+		return names.VPNHostPortKey(conn.Namespace, labvpn.Spec.NetworkIndex), "", nil
 	case "internet":
 		var labgw laboratoryv1alpha1.LabGateway
 		if err := r.Get(
@@ -720,19 +726,29 @@ func (r *ConnectionReconciler) resolveLocalPortKey(
 			}, &labgw,
 		); err != nil {
 			if client.IgnoreNotFound(err) != nil {
-				return "", false, err
+				return "", "", err
 			}
-			return "", true, nil
+			return "", WaitNetworkObject, nil
 		}
-		return names.GWHostPortKey(conn.Namespace, labgw.Spec.NetworkIndex), false, nil
+		if !validLabIndex(labgw.Spec.NetworkIndex) {
+			return "", WaitInvalidNetworkIdx, nil
+		}
+		return names.GWHostPortKey(conn.Namespace, labgw.Spec.NetworkIndex), "", nil
 	default:
-		// The device's pod must exist before its port can be wired; requeue until
-		// the operator publishes the current pod name.
+		// The device's pod must exist before its port can be wired; wait until the operator publishes the current pod name.
 		if ep.device.Status.PodName == "" {
-			return "", true, nil
+			return "", WaitDevicePod, nil
 		}
-		return names.DevicePortKey(conn.Namespace, ep.device.Status.PodName, ep.endpoint.Interface), false, nil
+		return names.DevicePortKey(conn.Namespace, ep.device.Status.PodName, ep.endpoint.Interface), "", nil
 	}
+}
+
+// wait records why the Connection is not programmed yet (condition Wired, one log line per change of reason) and asks for a retry.
+func (r *ConnectionReconciler) wait(ctx context.Context, conn *laboratoryv1alpha1.Connection, reason, message string, after time.Duration) (ctrl.Result, error) {
+	if err := markWired(ctx, r.Client, ctrl.Log.WithName("connection"), conn, false, reason, message); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: after}, nil
 }
 
 // nodeAddressForNode returns the Geneve VTEP address for the given node name:
