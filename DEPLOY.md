@@ -2458,7 +2458,7 @@ slip under a stricter check, the component that runs it clamps or ignores the ba
    `helm upgrade`, outside an event: `kubectl -n laboratory-proxy delete svc laboratory-proxy-wg --ignore-not-found`. The Service moves to
    `laboratory-wg`, and Helm creates the new one before it deletes the old one, so with a fixed `proxy.wg.nodePort` the create fails ("provided port
    is already allocated") and the upgrade stops halfway. The VPN is down from this step until the new demux pods are Ready, and every client
-   re-handshakes. Once migrated the step does nothing (the kind harness checks the upgrade from `develop`: `hack/kind-demux/e2e.sh upgrade`).
+   re-handshakes. Once migrated the step does nothing: every release tag so far already has the Service in `laboratory-wg`, so an upgrade from a release needs no step (`hack/kind-demux/e2e.sh upgrade` checks the plain upgrade from the last release; with `KIND_DEMUX_UPGRADE_FROM` naming an older base that still has the Service in `laboratory-proxy` it checks the step too).
    The old Service is gone before a non-atomic `helm upgrade`: if that upgrade fails for another reason, the VPN has no Service until it is run again or rolled back.
 3. `helm upgrade` (the operator, agent, node-agent and proxy roll out together; the operator and the agent can run in either order).
 4. The notes of each item below say what, if anything, must happen in a different order. In short, before `helm upgrade`:

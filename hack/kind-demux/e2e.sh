@@ -189,12 +189,12 @@ upgrade_values=(--set operator.baseDomain=demux.test --set operator.publicVPNEnd
   --set image.tag=kind-demux-absent --set proxy.wg.nodePort="$UPGRADE_NODE_PORT")
 helm_k() { helm --kube-context "kind-$CLUSTER" "$@"; }
 
-# upgrade: a release of the chart of KIND_DEMUX_UPGRADE_FROM, then helm upgrade to this tree with no proxy.wg.mode. A plain upgrade must
-# fail while the old Service holds the fixed node port; after the documented step (DEPLOY.md, "Upgrade order") it must succeed, with the
-# chart's default mode (userspace) and policy (Cluster).
+# upgrade: a release of the chart of KIND_DEMUX_UPGRADE_FROM, then helm upgrade to this tree with no proxy.wg.mode. From a base that still has
+# the VPN Service in laboratory-proxy a plain upgrade must fail while the old Service holds the fixed node port, and after the documented step
+# (DEPLOY.md, "Upgrade order") it must succeed; from a base that has it in laboratory-wg already (every release tag so far) the plain upgrade
+# must succeed. Either way the result has the chart's default mode (userspace) and policy (Cluster).
 upgrade() {
-  # The last RELEASE: develop's chart already has the VPN Service in laboratory-wg, where this tree has it, so only a release shows the
-  # move out of laboratory-proxy that the documented step is about.
+  # The last RELEASE (the harness handles a base on either side of the move of the Service, see below).
   local from="${KIND_DEMUX_UPGRADE_FROM:-$(git -C "$ROOT" tag --list 'v*' | grep -v -- '-rc' | sort -V | tail -1)}" out np
   [[ -n "$from" ]] || fail "no release tag to upgrade from (set KIND_DEMUX_UPGRADE_FROM)"
   log "clean slate: the demux of earlier steps was applied without Helm"
@@ -210,21 +210,30 @@ upgrade() {
   # so put the CRDs of the old chart in their place first (forced: the field manager is kubectl either way) and tell helm to leave them.
   k apply --server-side --force-conflicts -f "$WORK/from/charts/laboratory/crds" >/dev/null
   helm_k install laboratory "$WORK/from/charts/laboratory" -n "$RELEASE_NS" --create-namespace --skip-crds "${upgrade_values[@]}" >/dev/null
-  np="$(k -n laboratory-proxy get svc laboratory-proxy-wg -o jsonpath='{.spec.ports[0].nodePort}')" ||
-    fail "the chart of $from has no VPN Service in laboratory-proxy"
+  # Where the old chart put the VPN Service: every release tag so far already has it in laboratory-wg (the move out of laboratory-proxy is
+  # older than all of them), so a release shows no move; a base that still has it in laboratory-proxy (KIND_DEMUX_UPGRADE_FROM may name
+  # one) shows the move that the documented step is about.
+  local old_ns=""
+  for ns in laboratory-proxy "$WG_NS"; do
+    if np="$(k -n "$ns" get svc laboratory-proxy-wg -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)" && [[ -n "$np" ]]; then old_ns="$ns"; break; fi
+  done
+  [[ -n "$old_ns" ]] || fail "the chart of $from has no VPN Service in laboratory-proxy or $WG_NS"
   [[ "$np" == "$UPGRADE_NODE_PORT" ]] || fail "the old VPN Service has node port $np"
-  summary "installed the chart of $from ($(git -C "$ROOT" rev-parse --short "$from")): VPN Service laboratory-proxy/laboratory-proxy-wg on node port $np"
+  summary "installed the chart of $from ($(git -C "$ROOT" rev-parse --short "$from")): VPN Service $old_ns/laboratory-proxy-wg on node port $np"
 
   local up=(upgrade laboratory "$ROOT/charts/laboratory" -n "$RELEASE_NS" "${upgrade_values[@]}" --set proxy.wg.limits.roamInterval="${ROAM_INTERVAL}s"
     --set proxy.image.repository="${IMG%:*}" --set proxy.image.tag="${IMG##*:}")
-  log "helm upgrade to this tree without the step"
-  if out="$(helm_k "${up[@]}" 2>&1)"; then fail "the plain upgrade succeeded while the old Service held the node port (DEPLOY.md says it fails)"; fi
-  grep -q "already allocated" <<<"$out" || fail "the plain upgrade failed for another reason: $out"
-  summary "plain helm upgrade fails as documented: $(grep -o '[^:]*already allocated' <<<"$out" | head -1)"
-
-  log "the documented step, then helm upgrade"
-  k -n laboratory-proxy delete svc laboratory-proxy-wg --ignore-not-found >/dev/null
-  out="$(helm_k "${up[@]}" 2>&1)" || fail "helm upgrade after the step failed: $out"
+  if [[ "$old_ns" == laboratory-proxy ]]; then
+    log "helm upgrade to this tree without the step"
+    if out="$(helm_k "${up[@]}" 2>&1)"; then fail "the plain upgrade succeeded while the old Service held the node port (DEPLOY.md says it fails)"; fi
+    grep -q "already allocated" <<<"$out" || fail "the plain upgrade failed for another reason: $out"
+    summary "plain helm upgrade fails as documented: $(grep -o '[^:]*already allocated' <<<"$out" | head -1)"
+    log "the documented step, then helm upgrade"
+    k -n laboratory-proxy delete svc laboratory-proxy-wg --ignore-not-found >/dev/null
+  else
+    log "the Service is already in $WG_NS (no move, no step): the plain helm upgrade must succeed"
+  fi
+  out="$(helm_k "${up[@]}" 2>&1)" || fail "helm upgrade failed: $out"
   k -n "$WG_NS" rollout status ds/laboratory-proxy-wg --timeout=5m
   local mode etp
   mode="$(k -n "$WG_NS" get ds laboratory-proxy-wg -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="DEMUX_MODE")].value}')"
