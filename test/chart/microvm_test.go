@@ -75,3 +75,22 @@ func TestL7ProxyProtocolTrustList(t *testing.T) {
 		t.Errorf("the trust list does not reach the proxy:\n%s", on)
 	}
 }
+
+// The bandwidth protection with the proxy off must not name the proxy namespace: it does not exist, and the Role there fails the install.
+func TestBandwidthWithoutTheProxyNamesNoProxyNamespace(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "bandwidth.enabled=true", "--set", "proxy.enabled=false", "-s", "templates/operator/role-bandwidth.yaml")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "namespace: laboratory-proxy") {
+		t.Errorf("a Role in the proxy namespace with the proxy off:\n%s", out)
+	}
+	cfg := operatorConfig(t, "--set", "bandwidth.enabled=true", "--set", "proxy.enabled=false")
+	if strings.Contains(cfg["BANDWIDTH_ENTRY_NAMESPACES"], "laboratory-proxy") {
+		t.Errorf("entry namespaces: %q", cfg["BANDWIDTH_ENTRY_NAMESPACES"])
+	}
+	on := operatorConfig(t, "--set", "bandwidth.enabled=true")
+	if !strings.Contains(on["BANDWIDTH_ENTRY_NAMESPACES"], "laboratory-proxy") {
+		t.Errorf("with the proxy on its namespace is an entry namespace: %q", on["BANDWIDTH_ENTRY_NAMESPACES"])
+	}
+}
