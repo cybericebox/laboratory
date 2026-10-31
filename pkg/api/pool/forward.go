@@ -127,13 +127,15 @@ func (a *ForwardAllocator) AllocateIndex(ctx context.Context) (uint, error) {
 		if err := a.Client.Status().Update(ctx, p); err != nil {
 			return err
 		}
-		out = bit
+		// The pool may start above 0 (the group's lab-subnets pool has Spec.Offset 1: bit 0 is index 1, as in the allocator that also
+		// serves the other pools); a pool that starts at 0 keeps bit 0 for the network address.
+		out = bit + p.Spec.Offset
 		return nil
 	})
 	if err != nil {
 		return 0, err
 	}
-	forwardRecent[a.recentKey(out)] = a.now()
+	forwardRecent[a.recentKey(out)] = a.now() // by the index handed out
 	return out, nil
 }
 
@@ -148,15 +150,20 @@ func (a *ForwardAllocator) reclaim(ctx context.Context, p *allocationv1alpha1.Po
 	}
 	now := a.now()
 	freed := uint(0)
-	for bit := uint(1); bit < p.Spec.Size; bit++ {
-		if !bitmap.Test(bit) || used[bit] {
+	first := uint(0) // a pool that starts at 0 keeps bit 0 (the network address) taken
+	if p.Spec.Offset == 0 {
+		first = 1
+	}
+	for bit := first; bit < p.Spec.Size; bit++ {
+		index := bit + p.Spec.Offset // what something refers to is the index, not the bit
+		if !bitmap.Test(bit) || used[index] {
 			continue
 		}
-		if at, ok := forwardRecent[a.recentKey(bit)]; ok && now.Sub(at) < Recent {
+		if at, ok := forwardRecent[a.recentKey(index)]; ok && now.Sub(at) < Recent {
 			continue
 		}
 		bitmap.Clear(bit)
-		delete(forwardRecent, a.recentKey(bit))
+		delete(forwardRecent, a.recentKey(index))
 		freed++
 	}
 	p.Status.Free += freed

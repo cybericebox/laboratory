@@ -9,6 +9,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -109,5 +110,60 @@ func TestForwardAllocatorFullPoolRefuses(t *testing.T) {
 	}
 	if _, err := a.AllocateIndex(ctx); err == nil {
 		t.Fatal("a full pool of live indexes must refuse")
+	}
+}
+
+// The pool of a group is made by the group's controller with Spec.Offset 1 (lab-subnets) and its bitmap untouched: the first lab gets
+// index 1, never 0. Index 0 is not a lab network (the VPN and gateway pods wire the interfaces lab1..lab254 only), so a lab on it
+// would never get its VPN leg.
+func TestForwardAllocatorHonoursThePoolOffset(t *testing.T) {
+	ctx := context.Background()
+	var w writeCounter
+	a := forwardFixture(t, &w)
+	bitmap, free := InitBitmap(254, 1)
+	p := &allocationv1alpha1.Pool{
+		ObjectMeta: metav1.ObjectMeta{Name: "lab-subnets-0", Namespace: "g"},
+		Spec:       allocationv1alpha1.PoolSpec{Size: 254, Offset: 1},
+		Status:     allocationv1alpha1.PoolStatus{BitMap: bitmap, Free: free},
+	}
+	if err := a.Client.Create(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Client.Status().Update(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	var got []uint
+	for i := 0; i < 5; i++ {
+		n, err := a.AllocateIndex(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, n)
+	}
+	for i, n := range got {
+		if n != uint(i)+1 {
+			t.Fatalf("with offset 1 the indexes are 1,2,3,...: got %v", got)
+		}
+	}
+	// the whole pool is 1..254
+	for i := 5; i < 254; i++ {
+		if n, err := a.AllocateIndex(ctx); err != nil || n == 0 || n > 254 {
+			t.Fatalf("allocation %d: %d %v", i, n, err)
+		}
+	}
+	if _, err := a.AllocateIndex(ctx); err == nil {
+		t.Fatal("a full pool of 254 must refuse the 255th")
+	}
+}
+
+// A pool that starts at 0 keeps index 0 to itself (the first index is 1).
+func TestForwardAllocatorPoolFromZeroNeverGivesZero(t *testing.T) {
+	ctx := context.Background()
+	var w writeCounter
+	a := forwardFixture(t, &w)
+	for i := 0; i < 10; i++ {
+		if n, err := a.AllocateIndex(ctx); err != nil || n == 0 {
+			t.Fatalf("%d %v", n, err)
+		}
 	}
 }
