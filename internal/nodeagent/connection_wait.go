@@ -25,6 +25,7 @@ const (
 	WaitInvalidNetworkIdx = "InvalidNetworkIndex"     // the lab network index is 0 or out of 1..254: the pod has no interface for it
 	WaitDevicePod         = "WaitingForDevicePod"     // the device's pod is not published yet
 	WaitOVSPort           = "WaitingForOVSPort"       // the port of an endpoint does not exist on this node yet
+	WaitVNIRelease        = "WaitingForVNIRelease"    // deleting: the nodes have not acknowledged the release of the lab's VNI yet
 	ReasonProgrammed      = "Programmed"              // the ports are programmed
 	wiredRetryOnWait      = 3 * time.Second
 	wiredRetryOnWaitSlow  = 5 * time.Second
@@ -61,6 +62,8 @@ func waitMessage(reason string) string {
 		return "the lab network index is not in 1..254, so the pod has no interface for it"
 	case WaitDevicePod:
 		return "the pod of the device is not published yet"
+	case WaitVNIRelease:
+		return "the nodes have not acknowledged the release of the VNI of the lab yet (see status.scopeReports of the Lab)"
 	case WaitOVSPort:
 		return "the OVS port does not exist on this node yet"
 	}

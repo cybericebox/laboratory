@@ -86,7 +86,7 @@ func TestLabNetworkIndexRange(t *testing.T) {
 			t.Errorf("validLabIndex(%d) = %v", n, !want)
 		}
 	}
-	for _, r := range []string{WaitEndpointNode, WaitVNI, WaitNetworkObject, WaitInvalidNetworkIdx, WaitDevicePod, WaitOVSPort} {
+	for _, r := range []string{WaitEndpointNode, WaitVNI, WaitNetworkObject, WaitInvalidNetworkIdx, WaitDevicePod, WaitOVSPort, WaitVNIRelease} {
 		if waitMessage(r) == "" || strings.ContainsAny(r, " /:") {
 			t.Errorf("reason %q must be a code", r)
 		}

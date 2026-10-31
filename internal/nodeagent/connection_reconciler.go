@@ -601,7 +601,7 @@ func (r *ConnectionReconciler) reconcileDelete(ctx context.Context, conn *labora
 		for _, scope := range parent.Status.ScopeInventory {
 			for _, binding := range scope.VNIBindings {
 				if binding.UID == string(conn.UID) && !laboratoryv1alpha1.VNILeaseReleased(&parent, binding) {
-					return ctrl.Result{RequeueAfter: time.Second}, nil
+					return r.wait(ctx, conn, WaitVNIRelease, waitMessage(WaitVNIRelease), time.Second)
 				}
 			}
 		}
