@@ -43,24 +43,33 @@ func (l Limits) Resolve(users, labs int) (int, int, error) {
 }
 
 // The formulas that size the pods of a group from the users (VPN clients) and the labs it is made for. Their coefficients are a property
-// of this binary, not of the cluster, so they live here and not in the chart. Each coefficient already holds the +50 % margin over what was
-// measured on kind (2026-10-27, 10 real WireGuard clients, 50 labs, 500 access rules; live peaks: VPN 43 Mi and 146m, with the idle
-// figures below them; gateway 19.6 Mi and 6m), and the base is the size a pod had before the formulas (VPN 100m / 320Mi, gateway
-// 10m / 32Mi), so a group is never smaller than it used to be.
+// of this binary, not of the cluster, so they live here and not in the chart.
 //
-// Until the load test with traffic is repeated on the platform only the base comes down: what was measured is about 14 Mi and 8m for the
-// VPN base and about 12 Mi and 8m for the gateway base.
+// What was measured, and the margin (never below 35 %):
 //
-//	VPN pod:     memory 320 Mi + 3.2 Mi per client + 0.15 Mi per lab + 0.024 Mi per access rule (clients x labs)
-//	             CPU    100m   + 11.4m per client   + 0.15m per lab   + 0.18m per access rule
-//	gateway pod: memory 32 Mi + 0.36 Mi per lab that uses the internet; CPU 10m + 0.375m per lab
+//   - kind 2026-10-27, 10 real WireGuard clients, 50 labs, 500 access rules, with traffic: live peaks of the VPN pod 43 Mi and 146m. The
+//     per-lab, per-rule and CPU per-client coefficients below are the per-unit costs of that run with +50 % on top (CPU per client 7.6m ->
+//     11.4m, per lab 0.1m -> 0.15m, per rule 0.12m -> 0.18m; memory per lab 0.1 Mi -> 0.15 Mi, per rule 0.016 Mi -> 0.024 Mi).
+//   - the older local stand, clients pulling pages in a loop: 5 clients 48m and 155 Mi, 10 clients 55m and 195 Mi. That is a line of 8 Mi
+//     per client on a base of 115 Mi (the traffic of the clients, not the idle pod); the line that keeps +35 % over both points is 156 Mi +
+//     10.8 Mi per client (5 clients 209 Mi, 10 clients 263 Mi): base 156 Mi, 11 Mi per client.
+//   - AWS vpn-pooling-20261007, 20 connected clients per group, under UDP/TCP load: 2-6m and 14-25 Mi per VPN pod; an empty group 1.1m
+//     and 10 Mi. The memory base is far over it on purpose: the pod is Guaranteed, its limit is its request, and the OOM killer takes the
+//     whole VPN of a group; the kind and AWS runs did not push the traffic the local stand did.
+//   - CPU: the idle base measured on kind was 8m; the base is 1.5 x that, 12m.
 //
-// Memory is rounded up to a step.
+// The formulas:
+//
+//	VPN pod:     memory 156 Mi + 11 Mi per client + 0.15 Mi per lab + 0.024 Mi per access rule (clients x labs)
+//	             CPU    12m    + 11.4m per client  + 0.15m per lab   + 0.18m per access rule
+//	gateway pod: memory 32 Mi + 0.36 Mi per lab that uses the internet; CPU 10m + 0.375m per lab (unchanged: base = what it had)
+//
+// Memory is rounded up to a step. (10 clients, 50 labs): 288 Mi (195 Mi seen, +48 %) and 224m (146m seen, +53 %).
 const (
-	vpnMemBase, vpnMemPerUser, vpnMemPerLab, vpnMemPerRule = 320 << 20, 3355444, 157287, 25166 // bytes
-	vpnCPUBase, vpnCPUPerUser, vpnCPUPerLab, vpnCPUPerRule = 100000, 11400, 150, 180           // micro-millicores (1/1000 m)
-	gwMemBase, gwMemPerLab                                 = 32 << 20, 377488                  // bytes
-	gwCPUBase, gwCPUPerLab                                 = 10000, 375                        // micro-millicores
+	vpnMemBase, vpnMemPerUser, vpnMemPerLab, vpnMemPerRule = 156 << 20, 11534336, 157287, 25166 // bytes
+	vpnCPUBase, vpnCPUPerUser, vpnCPUPerLab, vpnCPUPerRule = 12000, 11400, 150, 180             // micro-millicores (1/1000 m)
+	gwMemBase, gwMemPerLab                                 = 32 << 20, 377488                   // bytes
+	gwCPUBase, gwCPUPerLab                                 = 10000, 375                         // micro-millicores
 	memStep                                                = 4 << 20
 )
 

@@ -243,9 +243,9 @@ func TestCreateLabGroupSizedFromExpectedCounts(t *testing.T) {
 	wantStates(t, res, err, stExists)
 }
 
-// The default group (nothing said) and a small group are not smaller than the size a pod had before the formulas (VPN 100m / 320Mi,
-// gateway 10m / 32Mi); a bigger group is bigger.
-func TestExpectedCountsNeverBelowTheOldDefaultSizes(t *testing.T) {
+// The default group (nothing said) and a small group get the size of the formulas for their counts (VPN base 12m / 156Mi, gateway
+// 10m / 32Mi at least); a bigger group is bigger.
+func TestExpectedCountsGiveTheFormulaSizes(t *testing.T) {
 	h, _ := newTestHandler(t)
 	h.reservationsOptional = true
 	h.SetFeatures(testFeatures)
@@ -253,8 +253,8 @@ func TestExpectedCountsNeverBelowTheOldDefaultSizes(t *testing.T) {
 	res, err := h.CreateLabGroups(ctx, &protobuf.CreateLabGroupsRequest{Items: []*protobuf.LabGroupItem{{Name: "dflt"}, {Name: "floor-a", ExpectedUsers: 1, ExpectedLabs: 1}, {Name: "floor-b", ExpectedUsers: 10, ExpectedLabs: 50}}})
 	wantStates(t, res, err, stCreated, stCreated, stCreated)
 	for _, r := range res.Results[:2] {
-		if r.GetVpnSize().GetCpuMillicores() < 100 || r.GetVpnSize().GetMemoryBytes() < 320<<20 || r.GetGatewaySize().GetCpuMillicores() < 10 || r.GetGatewaySize().GetMemoryBytes() < 32<<20 {
-			t.Errorf("a small group is not smaller than the old default: %+v", r)
+		if r.GetVpnSize().GetCpuMillicores() < 12 || r.GetVpnSize().GetMemoryBytes() < 156<<20 || r.GetGatewaySize().GetCpuMillicores() < 10 || r.GetGatewaySize().GetMemoryBytes() < 32<<20 {
+			t.Errorf("a small group is not smaller than the formula base: %+v", r)
 		}
 	}
 	big := res.Results[2]
