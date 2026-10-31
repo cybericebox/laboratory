@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
@@ -24,7 +25,7 @@ func forwardFixture(t *testing.T, w *writeCounter) *ForwardAllocator {
 }
 
 // An allocation is one write of the pool (the first one also creates it), and the indexes only go forward; the insurance does not run
-// before the pool has come to its end.
+// before the pool has come to its end (the guard against an index in use asks once per allocation).
 func TestForwardAllocatorWritesOnceAndGoesForward(t *testing.T) {
 	ctx := context.Background()
 	var w writeCounter
@@ -49,8 +50,9 @@ func TestForwardAllocatorWritesOnceAndGoesForward(t *testing.T) {
 	if got := w.writes.Load() - before; got != 100 {
 		t.Fatalf("one write per allocation, got %d for 100", got)
 	}
-	if inUseCalls.Load() != 0 {
-		t.Fatal("the insurance must not run before the pool has come to its end")
+	// the guard asks what is in use once per allocation; the reclaim of old indexes still does not run before the pool's end
+	if got := inUseCalls.Load(); got != 101 {
+		t.Fatalf("InUse is asked once per allocation, got %d for 101", got)
 	}
 }
 
@@ -165,5 +167,52 @@ func TestForwardAllocatorPoolFromZeroNeverGivesZero(t *testing.T) {
 		if n, err := a.AllocateIndex(ctx); err != nil || n == 0 {
 			t.Fatalf("%d %v", n, err)
 		}
+	}
+}
+
+// A pool written under another mapping of bit to index (or by hand) must not hand out an index that something refers to: the bit of such
+// an index is marked taken and the next one is used. Here the labs hold the indexes 2, 3 and 5 while the bitmap knows only bit 0.
+func TestForwardAllocatorSkipsAnIndexInUse(t *testing.T) {
+	ctx := context.Background()
+	var w writeCounter
+	a := forwardFixture(t, &w)
+	bitmap, free := InitBitmap(254, 1)
+	p := &allocationv1alpha1.Pool{
+		ObjectMeta: metav1.ObjectMeta{Name: "lab-subnets-0", Namespace: "g"},
+		Spec:       allocationv1alpha1.PoolSpec{Size: 254, Offset: 1},
+		Status:     allocationv1alpha1.PoolStatus{BitMap: bitmap, Free: free},
+	}
+	if err := a.Client.Create(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Client.Status().Update(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	live := map[uint]bool{1: true, 2: true, 3: true, 5: true}
+	a.InUse = func(context.Context) (map[uint]bool, error) { return live, nil }
+	var got []uint
+	for i := 0; i < 4; i++ {
+		n, err := a.AllocateIndex(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if live[n] {
+			t.Fatalf("index %d is in use and was handed out", n)
+		}
+		live[n] = true
+		got = append(got, n)
+	}
+	want := []uint{4, 6, 7, 8}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+	var after allocationv1alpha1.Pool
+	if err := a.Client.Get(ctx, client.ObjectKey{Name: "lab-subnets-0", Namespace: "g"}, &after); err != nil {
+		t.Fatal(err)
+	}
+	if after.Status.Free != free-8 { // 4 handed out, 4 skipped bits marked taken (indexes 1,2,3,5 of the first pass: bits 0,1,2,4)
+		t.Fatalf("free %d, want %d", after.Status.Free, free-8)
 	}
 }

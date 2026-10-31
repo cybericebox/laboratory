@@ -113,15 +113,33 @@ func (a *ForwardAllocator) AllocateIndex(ctx context.Context) (uint, error) {
 		if start >= p.Spec.Size {
 			start = 0
 		}
-		bit, found := nextClearWithinPool(bitmap, start, p.Spec.Size)
-		if !found {
-			bit, found = nextClearWithinPool(bitmap, 0, p.Spec.Size)
+		// Whatever the bitmap says, an index that something refers to is never handed out: a pool written under another mapping of
+		// bit to index (or by hand) must not give two labs one subnet. The bit of such an index is marked taken and the search goes on.
+		var used map[uint]bool
+		if a.InUse != nil {
+			if used, err = a.InUse(ctx); err != nil {
+				return err
+			}
 		}
-		if !found {
-			return fmt.Errorf("pool %s/%s has no free index despite its count", a.Namespace, a.poolName())
+		var bit uint
+		for {
+			var found bool
+			if bit, found = nextClearWithinPool(bitmap, start, p.Spec.Size); !found {
+				bit, found = nextClearWithinPool(bitmap, 0, p.Spec.Size)
+			}
+			if !found || p.Status.Free == 0 {
+				return fmt.Errorf("pool %s/%s has no free index that nothing refers to", a.Namespace, a.poolName())
+			}
+			bitmap.Set(bit)
+			p.Status.Free--
+			if !used[bit+p.Spec.Offset] {
+				break
+			}
+			start = bit + 1
+			if start >= p.Spec.Size {
+				start = 0
+			}
 		}
-		bitmap.Set(bit)
-		p.Status.Free--
 		p.Status.Cursor = bit + 1
 		p.Status.BitMap = encodeBitmap(bitmap)
 		if err := a.Client.Status().Update(ctx, p); err != nil {
