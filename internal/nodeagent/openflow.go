@@ -47,6 +47,26 @@ type FlowManager struct {
 	bwmu   sync.Mutex
 	meters *geneveMeters
 	floods map[uint]t6Flood
+
+	// Ledger, when set, records the VNIs this node has flows for (internal/vniledger): written before the first flow of a VNI is
+	// installed, taken out after RetireVNI confirms the flows gone. The operator does not return a VNI to the pool while it is there.
+	Ledger VNILedger
+}
+
+// VNILedger is the node's record of the VNIs it carries flows of. Note stores before it returns (an error means: install nothing).
+type VNILedger interface {
+	Note(vni uint) error
+	Clear(vni uint) error
+}
+
+func (f *FlowManager) noteVNI(vni uint) error {
+	if f.Ledger == nil {
+		return nil
+	}
+	if err := f.Ledger.Note(vni); err != nil {
+		return reconcileutil.Waiting(fmt.Errorf("record VNI %d of this node: %w", vni, err), 0)
+	}
+	return nil
 }
 
 // t6Flood is what RebuildT6Flood was last given for a VNI.
@@ -252,6 +272,9 @@ func (f *FlowManager) AddT0Port(portName string, vni uint) error {
 	if err != nil {
 		return reconcileutil.Waiting(fmt.Errorf("resolve port %q: %w", portName, err), 0)
 	}
+	if err := f.noteVNI(vni); err != nil {
+		return err
+	}
 	match := ofclient.BuildMatch(portNo, 0, false)
 	actions := make([]byte, 0, 128)
 	actions = append(actions, ofclient.BuildActionsSetReg0(0)...)
@@ -330,6 +353,9 @@ func (f *FlowManager) forgetPort(name string) error {
 // With the Geneve limits on and a remote VTEP, the Geneve outputs move out of t6 into two more tables, each behind a meter
 // (see geneve_meters.go): local delivery stays unmetered, only what leaves the node is counted.
 func (f *FlowManager) RebuildT6Flood(vni uint, localPorts, remoteVTEPs []string) error {
+	if err := f.noteVNI(vni); err != nil {
+		return err
+	}
 	f.bwmu.Lock()
 	defer f.bwmu.Unlock()
 	f.initBandwidthLocked()
@@ -520,5 +546,12 @@ func (f *FlowManager) RetireVNI(vni uint) error {
 	if err := f.client.RetireVNI(uint64(vni)); err != nil {
 		return err
 	}
-	return f.dropMetersLocked(vni)
+	if err := f.dropMetersLocked(vni); err != nil {
+		return err
+	}
+	// The flows are confirmed gone: only now the node stops vouching that it may carry this VNI.
+	if f.Ledger != nil {
+		return f.Ledger.Clear(vni)
+	}
+	return nil
 }

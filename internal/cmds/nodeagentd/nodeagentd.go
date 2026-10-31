@@ -37,6 +37,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/nodeagent"
 	"github.com/cybericebox/laboratory/internal/profiles"
+	"github.com/cybericebox/laboratory/internal/vniledger"
 )
 
 var scheme = runtime.NewScheme()
@@ -71,7 +72,7 @@ func Run() {
 		log.Error(err, "init flow manager")
 		os.Exit(1)
 	}
-	defer func() { _ = flows.Close() }()
+	ledger := attachVNILedger(flows, cfg, log)
 
 	pingOVS := func(ctx context.Context) error {
 		if err := ovs.Ping(ctx); err != nil {
@@ -167,6 +168,8 @@ func Run() {
 	}
 
 	setupBandwidth(mgr, cfg, flows)
+
+	setupVNIOrphans(mgr, cfg, ovs, flows, ledger, log)
 
 	if err := (&nodeagent.ConnectionReconciler{
 		Client:      mgr.GetClient(),
@@ -278,6 +281,35 @@ var containerIfacePrefixes = []string{"docker", "cni", "flannel", "weave", "veth
 
 // nodeAddress returns the first non-loopback, non-container-bridge IPv4 of this host (Geneve VTEP).
 // Can be overridden with NODE_ADDRESS env var.
+// setupVNIOrphans runs, at start and then every two minutes, the pass that removes the flows of a VNI no lease holds (a node that was away
+// while its labs were deleted, a release that never ran). Whatever a lease holds, and whatever cannot be judged, is left alone.
+func setupVNIOrphans(mgr ctrl.Manager, cfg *nodeagent.Config, ovs *nodeagent.OVSManager, flows *nodeagent.FlowManager, ledger *vniledger.Ledger, log logr.Logger) {
+	if err := mgr.Add(&nodeagent.VNIOrphanReconciler{
+		Reader:   mgr.GetAPIReader(),
+		OVS:      ovs,
+		Flows:    flows,
+		Ledger:   ledger,
+		Recorder: mgr.GetEventRecorderFor("node-agent-vni-orphans"),
+		NodeName: cfg.NodeName,
+	}); err != nil {
+		log.Error(err, "setup VNIOrphanReconciler")
+		os.Exit(1)
+	}
+}
+
+// attachVNILedger gives the flow manager the ledger of the VNIs this node carries flows of (the operator keeps a VNI from the pool while it
+// is in any node's ledger). It is attached before anything can program a flow; a flow is installed only after its VNI is recorded.
+func attachVNILedger(flows *nodeagent.FlowManager, cfg *nodeagent.Config, log logr.Logger) *vniledger.Ledger {
+	c, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
+	if err != nil {
+		log.Error(err, "create the client of the VNI ledger")
+		os.Exit(1)
+	}
+	ledger := &vniledger.Ledger{Client: c, Reader: c, Namespace: names.SystemNamespace, Node: cfg.NodeName}
+	flows.Ledger = ledger
+	return ledger
+}
+
 func nodeAddress() (string, error) {
 	if addr := os.Getenv("NODE_ADDRESS"); addr != "" {
 		return addr, nil

@@ -7,6 +7,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -17,6 +18,7 @@ import (
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/vniledger"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 )
 
@@ -158,4 +160,68 @@ func gaugeValue(g prometheus.Gauge) float64 {
 	var m dto.Metric
 	_ = g.Write(&m)
 	return m.GetGauge().GetValue()
+}
+
+// A Lab that is gone owes nobody an acknowledgement, but a node whose ledger still has the number may carry its flows: the slot stays
+// until that node takes the number out, whether or not the node still exists. A node that is not in the cluster is counted.
+func TestVNISweeperKeepsASlotWhileANodeLedgerHasIt(t *testing.T) {
+	ctx := context.Background()
+	s := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(s)
+	_ = allocationv1alpha1.AddToScheme(s)
+	_ = laboratoryv1alpha1.AddToScheme(s)
+	bitmap, free := poolpkg.InitBitmap(names.VNIPoolSize, 0)
+	pool := &allocationv1alpha1.Pool{
+		ObjectMeta: metav1.ObjectMeta{Name: "vni-0", Namespace: names.SystemNamespace, UID: "pool-uid", Labels: map[string]string{poolpkg.PoolGroupLabel: names.VNIPoolPrefix}},
+		Spec:       allocationv1alpha1.PoolSpec{Size: names.VNIPoolSize},
+		Status: allocationv1alpha1.PoolStatus{BitMap: bitmap, Free: free, Retired: map[string]allocationv1alpha1.PoolRetired{
+			"7": {OwnerUID: "uid-gone", Generation: 2, RetiredAt: metav1.NewTime(time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC))}}},
+	}
+	ledger := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: vniledger.ConfigMapName("gone-node"), Namespace: names.SystemNamespace,
+			Labels: map[string]string{vniledger.Label: "true"}, Annotations: map[string]string{vniledger.NodeAnnotation: "gone-node"}},
+		Data: map[string]string{"7": "2026-10-31T12:00:00Z"},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(pool, ledger).WithStatusSubresource(pool).Build()
+	p := allocationv1alpha1.Pool{}
+	if err := c.Get(ctx, client.ObjectKey{Name: "vni-0", Namespace: names.SystemNamespace}, &p); err != nil {
+		t.Fatal(err)
+	}
+	p.Status.BitMap, p.Status.Free = setBits(t, p.Status.BitMap, p.Status.Free, 7)
+	if err := c.Status().Update(ctx, &p); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 31, 14, 0, 0, 0, time.UTC)
+	// no Lab at all, runtime observation off: only the ledger can hold the slot
+	sw := &VNISweeper{Client: c, Grace: time.Minute, Quarantine: 10 * time.Minute, Now: func() time.Time { return now }}
+	if _, returned, err := sw.Sweep(ctx); err != nil || returned != 0 {
+		t.Fatalf("a slot in a node ledger must stay: returned %d, %v", returned, err)
+	}
+	if got := gaugeValue(vniHeldSlots); got != 1 {
+		t.Fatalf("held slots metric = %v, want 1", got)
+	}
+	if got := gaugeValue(vniLedgerMissingNodes); got != 1 {
+		t.Fatalf("missing node metric = %v, want 1 (the node is not in the cluster)", got)
+	}
+	// a ledger with a key that is not a number cannot be understood: the sweep fails, nothing comes back
+	broken := ledger.DeepCopy()
+	broken.Data = map[string]string{"x": "y"}
+	if err := c.Update(ctx, broken); err != nil {
+		t.Fatal(err)
+	}
+	if _, returned, err := sw.Sweep(ctx); err == nil || returned != 0 {
+		t.Fatalf("an unreadable ledger must stop the sweep: returned %d, %v", returned, err)
+	}
+	// the node took the number out (its flows are confirmed gone): the slot comes back
+	var cur corev1.ConfigMap
+	if err := c.Get(ctx, client.ObjectKeyFromObject(ledger), &cur); err != nil {
+		t.Fatal(err)
+	}
+	cur.Data = nil
+	if err := c.Update(ctx, &cur); err != nil {
+		t.Fatal(err)
+	}
+	if _, returned, err := sw.Sweep(ctx); err != nil || returned != 1 {
+		t.Fatalf("with the ledger empty the slot comes back: returned %d, %v", returned, err)
+	}
 }

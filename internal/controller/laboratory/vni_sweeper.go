@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
@@ -13,6 +14,7 @@ import (
 	allocationv1alpha1 "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
+	"github.com/cybericebox/laboratory/internal/vniledger"
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 )
 
@@ -27,7 +29,12 @@ var (
 	})
 )
 
-func init() { metrics.Registry.MustRegister(vniHeldSlots, vniHeldOldest) }
+var vniLedgerMissingNodes = prometheus.NewGauge(prometheus.GaugeOpts{
+	Name: "laboratory_vni_ledger_missing_nodes",
+	Help: "Nodes that are not in the cluster any more and whose VNI ledger still has entries; their VNIs stay held until someone settles the ledger by hand.",
+})
+
+func init() { metrics.Registry.MustRegister(vniHeldSlots, vniHeldOldest, vniLedgerMissingNodes) }
 
 // defaultHeldWarnAfter is how long a slot may stay held for a missing node acknowledgement before the sweeper logs it.
 const defaultHeldWarnAfter = 15 * time.Minute
@@ -244,6 +251,46 @@ func (c *VNISweeper) reportHeld(ctx context.Context, quarantine time.Duration, n
 // released (the node has not yet dropped the flows of the VNI). Such a slot stays retired past its quarantine: the number must not go to
 // another lab while a node may carry the old owner's flows. Without runtime observation nobody acknowledges, so nothing is held.
 func (c *VNISweeper) unacknowledgedReleases(ctx context.Context) (func(uint, string, int64) bool, error) {
+	// The nodes' own ledgers: a slot stays while any node still records flows of its number, whatever became of the Lab that owned it.
+	// A ledger that cannot be read fails the sweep: nothing is returned on a doubt.
+	ledger, err := vniledger.Read(ctx, c.reader(), names.SystemNamespace)
+	if err != nil {
+		return nil, err
+	}
+	c.reportMissingLedgerNodes(ctx, ledger)
+	labHold, err := c.labObligations(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if labHold == nil && len(ledger.Held) == 0 {
+		return nil, nil
+	}
+	return func(index uint, owner string, generation int64) bool {
+		return len(ledger.Held[index]) > 0 || (labHold != nil && labHold(index, owner, generation))
+	}, nil
+}
+
+// reportMissingLedgerNodes counts the nodes that left the cluster with VNIs still in their ledger. Nothing here clears them.
+func (c *VNISweeper) reportMissingLedgerNodes(ctx context.Context, ledger *vniledger.Snapshot) {
+	var nodes corev1.NodeList
+	if err := c.reader().List(ctx, &nodes); err != nil {
+		return
+	}
+	present := map[string]bool{}
+	for i := range nodes.Items {
+		present[nodes.Items[i].Name] = true
+	}
+	missing := 0
+	for _, n := range ledger.Nodes {
+		if !present[n] {
+			missing++
+			ctrl.Log.WithName("vni-sweeper").Info("a node that is not in the cluster still has VNIs in its ledger; they stay held until it is settled by hand (delete the ConfigMap "+vniledger.ConfigMapName(n)+" once the node is certainly gone)", "node", n)
+		}
+	}
+	vniLedgerMissingNodes.Set(float64(missing))
+}
+
+func (c *VNISweeper) labObligations(ctx context.Context) (func(uint, string, int64) bool, error) {
 	if !c.RuntimeObservation {
 		return nil, nil
 	}

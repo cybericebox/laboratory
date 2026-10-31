@@ -1494,8 +1494,24 @@ Two ValidatingAdmissionPolicies (`operator.admissionPolicy.enabled`, template `o
 - `laboratory-network-pods`: a pod (and the template of a Deployment, StatefulSet, DaemonSet, ReplicaSet, Job or CronJob) with one of the annotations
   `network.cybericebox.com/networks`, `default-network` or `conntrack-accounting` is refused outside `lg-*`.
 
-A LabGroup made with the old naming (the bare group name as its namespace, kept in `status.namespace`) is not an `lg-*` namespace: its pods go to the real CNI without OVS wiring.
-Recreate such a group (there is no old data on a fresh platform).
+A LabGroup recorded under the old naming (the bare group name as its namespace, kept in `status.namespace`) is not provisioned any more: the operator raises the Warning event
+`LegacyNamespace` and does nothing (deleting it works). Its pods could not be wired, and the policies would refuse the network annotations there. Recreate such a group.
+`nodeAgent.enabled` (always on) requires `operator.admissionPolicy.enabled=true`; the chart refuses to render without it.
+
+### Which nodes carry the flows of a VNI
+
+Each node-agent keeps the ConfigMap `vni-ledger-<node>` (release namespace) with the VNIs its node has flows for. A number is written there **before** the first flow of it is
+installed (no record, no flow) and taken out **after** the removal of its flows is confirmed. The operator's sweeper does not return a retired VNI to the pool while any node's
+ledger has it, **whether or not the Lab that owned it still exists**; an unreadable ledger stops the sweep. Metrics of the operator: `laboratory_vni_held_unacknowledged_slots`,
+`laboratory_vni_held_oldest_seconds` (with a log line after 15 minutes), `laboratory_vni_ledger_missing_nodes`.
+
+A node that has left the cluster keeps its ledger, and its VNIs stay held (the log names the node). When the node is certainly gone, settle it by hand:
+`kubectl -n laboratory-system delete configmap vni-ledger-<node>`. Nothing clears it by itself.
+
+At start and every two minutes the node-agent compares the VNIs in its flows and its ledger with the pool (`VNIOrphanReconciler`). A VNI whose slot is retired, or back in the pool with
+no Device or Connection naming it, has its flows removed (under the lock of the pod wiring, the slot read again under it) and leaves the ledger; the node-agent logs it and raises a
+`VNIOrphanRemoved` event on the Node. A VNI whose slot is held by a lease, and any VNI whose slot cannot be judged, is never touched. Flows of a VNI the ledger did not know
+(from before the ledger) are written into it first. The node-agent may write only its own node's ledger ConfigMap (policy `laboratory-node-agent-ledger`).
 
 ### Namespaces of the lab groups
 
