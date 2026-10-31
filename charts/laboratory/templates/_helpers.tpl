@@ -135,7 +135,28 @@ The settings that more than one binary reads, as ONE map under ONE name each (en
 ConfigMap, the management agent as its env. Each chart value is written here once, so the two can never disagree. A binary reads only the
 names it knows. The map is YAML: consumers use `include ... | fromYaml`.
 */}}
+{{- /*
+lifecycle.profile: full switches on, with ONE value, what a cluster needs to stop and restart labs: the snapshots of device state, the native
+runtime observation and the capabilities per-lab stop, confirmed runtime, retained restart and full group stop (not the required snapshot).
+It sets the values every template reads, so each template that reads them includes this first; setting twice is harmless. Empty (the
+default): the individual values below are used as they are.
+*/ -}}
+{{- define "laboratory.lifecycleProfile" -}}
+{{- $p := .Values.lifecycle.profile | default "" -}}
+{{- if eq $p "full" -}}
+{{- $_ := set .Values.devices.statePersistence "enabled" true -}}
+{{- $_ := set .Values.lifecycle.runtimeObservation "enabled" true -}}
+{{- $_ := set .Values.lifecycle.capabilities "perLabStop" true -}}
+{{- $_ := set .Values.lifecycle.capabilities "confirmedRuntime" true -}}
+{{- $_ := set .Values.lifecycle.capabilities "retainedRestart" true -}}
+{{- $_ := set .Values.lifecycle.capabilities "fullGroupStop" true -}}
+{{- else if ne $p "" -}}
+{{- fail (printf "lifecycle.profile must be empty or \"full\", got %q" $p) -}}
+{{- end -}}
+{{- end }}
+
 {{- define "laboratory.sharedEnv" -}}
+{{- include "laboratory.lifecycleProfile" . -}}
 LIFECYCLE_REQUIRED_SNAPSHOT_AVAILABLE: {{ .Values.lifecycle.capabilities.requiredSnapshot | quote }}
 LIFECYCLE_PER_LAB_STOP_AVAILABLE: {{ .Values.lifecycle.capabilities.perLabStop | quote }}
 LIFECYCLE_CONFIRMED_RUNTIME_AVAILABLE: {{ .Values.lifecycle.capabilities.confirmedRuntime | quote }}

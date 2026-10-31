@@ -169,6 +169,12 @@ func (h *Handler) tenantFeatures(ctx context.Context) (*protobuf.FeaturesRespons
 					AccessTokenMaxTtlSeconds: int64(f.ProxyAccessTokenMaxTTL.Seconds()), SessionMaxTtlSeconds: int64(f.ProxySessionMaxTTL.Seconds()), SessionIdleTtlSeconds: int64(f.ProxySessionIdleTTL.Seconds()),
 				},
 			}
+			// the chart says what is configured; the nodes say what they can do
+			verdict, err := h.nodeVerdict(ctx, f.StatePersistence, lifecycleConfigured(f.Lifecycle))
+			if err != nil {
+				return nil, err
+			}
+			applyNodeSupport(base, verdict)
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}

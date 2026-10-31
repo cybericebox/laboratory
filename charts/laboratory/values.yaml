@@ -1219,6 +1219,13 @@ tenants: {}
 # Advertised capabilities require owner-qualified native evidence and all
 # dependencies below. Source/SDK integration alone does not authorize enable.
 lifecycle:
+  # "full" switches on with one value what a cluster needs to stop and restart labs: devices.statePersistence.enabled,
+  # runtimeObservation.enabled and the capabilities perLabStop, confirmedRuntime, retainedRestart and fullGroupStop (not requiredSnapshot).
+  # Set devices.statePersistence.containerdRoot to the containerd root of the cluster. The node-agents check their node at start (the
+  # containerd root and its snapshotter, the container runtime, the cgroup tree, the snapshot registry); what a node cannot do is switched
+  # off there, told in an Event on the Node and in its annotations, and GetFeatures reports the lifecycle capabilities and persistence as
+  # available only when every ready lab node confirms them, with the reason otherwise. Empty (default): the values below as they are.
+  profile: ""
   capabilities:
     requiredSnapshot: false
     perLabStop: false

@@ -2494,6 +2494,18 @@ slip under a stricter check, the component that runs it clamps or ignores the ba
 
 ### Lifecycle native gates and admission recovery
 
+**`lifecycle.profile: full`.** One value switches on what a cluster needs to stop and restart labs: `devices.statePersistence.enabled`,
+`lifecycle.runtimeObservation.enabled` and the capabilities `perLabStop`, `confirmedRuntime`, `retainedRestart`, `fullGroupStop` (not
+`requiredSnapshot`); the default is empty (all as set one by one). Set `devices.statePersistence.containerdRoot` to the containerd root of the
+cluster (`/var/lib/containerd`; `/var/lib/k0s/containerd` is the default). The node-agent checks its node at start (the containerd root and
+its snapshotter, the container runtime socket, the snapshot registry; the host cgroup v2 tree) and never hangs or exits for a failure: it
+switches the feature off in its process, logs it, puts the result in the Node annotations `cybericebox.com/state-persistence` and
+`cybericebox.com/runtime-observation` (`ready`, `disabled` or `unavailable: <reason>`) and tells it in a Warning Event on the Node
+(`LifecyclePreflightFailed`). The containerd root volume has no hostPath type check, so a wrong path reaches this check. `GetFeatures` reports
+persistence and the lifecycle capabilities as available only when every lab node that is ready for pods confirms them, and puts the reason in
+`state_persistence.unavailable_reason` and `lifecycle.unavailable_reason`; a node without a result (an older node-agent) holds them back, and
+with no ready node the configured values stand. The check runs once at the start of the node-agent: restart it after fixing the path.
+
 Full group lifecycle completion requires direct UID/revision reads, durable
 pre-scale service inventory and node-owned first-success cleanup acknowledgements.
 Inventory binds Group UID, operation/revision, Deployment UID, Pod UID, node boot,

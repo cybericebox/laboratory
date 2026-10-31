@@ -5,6 +5,7 @@ package nodeagentd
 import (
 	"github.com/cybericebox/laboratory/internal/errorlog"
 	_ "github.com/cybericebox/laboratory/pkg/runtime"
+	"github.com/go-logr/logr"
 
 	"context"
 	"fmt"
@@ -183,6 +184,7 @@ func Run() {
 		Flows:    flows,
 		CRISock:  cfg.CRISock,
 	}
+	pre := preflightNode(cfg, log)
 	if cfg.RuntimeObservation {
 		if err := nodeagent.SetupRuntimeObservation(mgr, cfg, networkAttach); err != nil {
 			log.Error(err, "setup native runtime observation")
@@ -234,7 +236,7 @@ func Run() {
 	}
 
 	// Last: once everything above is set up, the node is marked ready for lab pods (and unmarked when this process stops).
-	if err := nodeagent.SetupNodeReadiness(mgr, cfg); err != nil {
+	if err := nodeagent.SetupNodeReadiness(mgr, cfg, pre); err != nil {
 		log.Error(err, "setup node readiness")
 		os.Exit(1)
 	}
@@ -315,4 +317,15 @@ func setupBandwidth(mgr ctrl.Manager, cfg *nodeagent.Config, flows *nodeagent.Fl
 		ctrl.Log.WithName("node-agent").Error(err, "setup BandwidthWatcher")
 		os.Exit(1)
 	}
+}
+
+// preflightNode checks what the node can do for the lifecycle of a lab. A feature that cannot work here is switched off in this process
+// and published on the Node (and told in an Event): the node-agent goes on serving pod networking, it never hangs or exits for it.
+func preflightNode(cfg *nodeagent.Config, log logr.Logger) nodeagent.PreflightResult {
+	pre := nodeagent.Preflight(context.Background(), cfg.PreflightInput())
+	for _, f := range pre.Failures() {
+		log.Info("WARNING: not available on this node, switched off", "reason", f)
+	}
+	cfg.Apply(pre)
+	return pre
 }

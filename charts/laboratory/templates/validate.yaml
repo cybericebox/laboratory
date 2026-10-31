@@ -1,3 +1,4 @@
+{{- include "laboratory.lifecycleProfile" . -}}
 {{- /*
 The operator hardcodes its system namespace as "laboratory-system"
 (internal/names/namespaces.go): it reads the platform lab access key secret from there and

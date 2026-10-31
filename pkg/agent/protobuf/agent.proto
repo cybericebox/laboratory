@@ -1055,6 +1055,10 @@ message StatePersistenceFeature {
   int64 registry_quota_bytes = 6;
   // The most entries (files, directories, links) one snapshot layer may hold.
   int32 max_entries = 7;
+  // Why `available` is false although the cluster is configured for persistence: the node-agents check their node at start (the
+  // containerd root, the container runtime, the snapshot registry) and the answer is what the nodes REALLY support. Empty when
+  // available, when persistence is off by configuration, or when no node has reported yet.
+  string unavailable_reason = 8;
 }
 
 // The platform image cache (PrewarmImages works only when it is enabled).
@@ -1321,6 +1325,10 @@ message LifecycleFeature {
   bool confirmed_runtime = 3;
   bool retained_restart = 4;
   bool full_group_stop = 5;
+  // Why a capability the cluster is configured for is false: the node-agents check their node at start and the answer is what the
+  // nodes REALLY support (runtime observation: the cgroup tree and the container runtime; retained restart: persistence too). Empty
+  // when nothing configured is held back.
+  string unavailable_reason = 6;
 }
 
 // Frozen additive interface; no profile is implied by the presence of these types.

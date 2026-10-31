@@ -40,6 +40,12 @@ const (
 	LabelProfileMicroVM   = "cybericebox.com/profile-microvm"
 	LabelRuntimeKataCLH   = "cybericebox.com/runtime-kata-clh"
 
+	// AnnotationStatePersistence and AnnotationRuntimeObservation are set on a node by its node-agent with the result of the check it made at
+	// start: "ready", "disabled" (not asked for) or "unavailable: <reason>". The management agent reports what the cluster really
+	// supports from them, not from the chart values.
+	AnnotationStatePersistence   = "cybericebox.com/state-persistence"
+	AnnotationRuntimeObservation = "cybericebox.com/runtime-observation"
+
 	// TopologyKeyHostname is the well-known node label used as the topology key
 	// for per-node scheduling constraints (device co-location).
 	TopologyKeyHostname = "kubernetes.io/hostname"

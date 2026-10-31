@@ -1,3 +1,4 @@
+{{- include "laboratory.lifecycleProfile" . -}}
 {{- if .Values.nodeAgent.enabled }}
 apiVersion: apps/v1
 kind: DaemonSet
@@ -220,6 +221,9 @@ spec:
               value: {{ .Values.devices.statePersistence.enabled | quote }}
             - name: CONTAINERD_NAMESPACE
               value: {{ .Values.devices.statePersistence.containerdNamespace | quote }}
+            # Checked at start (the node-agent tells what its node can do on the Node and in an Event; a wrong path does not hang the pod).
+            - name: CONTAINERD_ROOT
+              value: {{ .Values.devices.statePersistence.containerdRoot | quote }}
             - name: STATE_MAX_WATCH_DIRS
               value: {{ .Values.devices.statePersistence.maxWatchedDirs | quote }}
             # What one device may push, and when the registry is too full to take a push (see DEPLOY.md, "Device state under abuse").
@@ -381,7 +385,9 @@ spec:
         - name: containerd-root
           hostPath:
             path: {{ .Values.devices.statePersistence.containerdRoot | quote }}
-            type: Directory
+            # No type check on purpose: a wrong path must reach the node-agent's own check (which says so clearly) and not leave the pod
+            # waiting for a volume, with every other pod of the node blocked behind it.
+            type: ""
         - name: host-cgroup
           hostPath:
             path: /sys/fs/cgroup

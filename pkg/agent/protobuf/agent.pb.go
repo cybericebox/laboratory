@@ -6966,9 +6966,13 @@ type StatePersistenceFeature struct {
 	// the cluster's); 0 = no limit.
 	RegistryQuotaBytes int64 `protobuf:"varint,6,opt,name=registry_quota_bytes,json=registryQuotaBytes,proto3" json:"registry_quota_bytes,omitempty"`
 	// The most entries (files, directories, links) one snapshot layer may hold.
-	MaxEntries    int32 `protobuf:"varint,7,opt,name=max_entries,json=maxEntries,proto3" json:"max_entries,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	MaxEntries int32 `protobuf:"varint,7,opt,name=max_entries,json=maxEntries,proto3" json:"max_entries,omitempty"`
+	// Why `available` is false although the cluster is configured for persistence: the node-agents check their node at start (the
+	// containerd root, the container runtime, the snapshot registry) and the answer is what the nodes REALLY support. Empty when
+	// available, when persistence is off by configuration, or when no node has reported yet.
+	UnavailableReason string `protobuf:"bytes,8,opt,name=unavailable_reason,json=unavailableReason,proto3" json:"unavailable_reason,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *StatePersistenceFeature) Reset() {
@@ -7048,6 +7052,13 @@ func (x *StatePersistenceFeature) GetMaxEntries() int32 {
 		return x.MaxEntries
 	}
 	return 0
+}
+
+func (x *StatePersistenceFeature) GetUnavailableReason() string {
+	if x != nil {
+		return x.UnavailableReason
+	}
+	return ""
 }
 
 // The platform image cache (PrewarmImages works only when it is enabled).
@@ -9174,8 +9185,12 @@ type LifecycleFeature struct {
 	ConfirmedRuntime bool                   `protobuf:"varint,3,opt,name=confirmed_runtime,json=confirmedRuntime,proto3" json:"confirmed_runtime,omitempty"`
 	RetainedRestart  bool                   `protobuf:"varint,4,opt,name=retained_restart,json=retainedRestart,proto3" json:"retained_restart,omitempty"`
 	FullGroupStop    bool                   `protobuf:"varint,5,opt,name=full_group_stop,json=fullGroupStop,proto3" json:"full_group_stop,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Why a capability the cluster is configured for is false: the node-agents check their node at start and the answer is what the
+	// nodes REALLY support (runtime observation: the cgroup tree and the container runtime; retained restart: persistence too). Empty
+	// when nothing configured is held back.
+	UnavailableReason string `protobuf:"bytes,6,opt,name=unavailable_reason,json=unavailableReason,proto3" json:"unavailable_reason,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *LifecycleFeature) Reset() {
@@ -9241,6 +9256,13 @@ func (x *LifecycleFeature) GetFullGroupStop() bool {
 		return x.FullGroupStop
 	}
 	return false
+}
+
+func (x *LifecycleFeature) GetUnavailableReason() string {
+	if x != nil {
+		return x.UnavailableReason
+	}
+	return ""
 }
 
 // Frozen additive interface; no profile is implied by the presence of these types.
@@ -11109,7 +11131,7 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\fProxyFeature\x12>\n" +
 	"\x1caccess_token_max_ttl_seconds\x18\x01 \x01(\x03R\x18accessTokenMaxTtlSeconds\x127\n" +
 	"\x18session_idle_ttl_seconds\x18\x03 \x01(\x03R\x15sessionIdleTtlSeconds\x125\n" +
-	"\x17session_max_ttl_seconds\x18\x02 \x01(\x03R\x14sessionMaxTtlSeconds\"\xbc\x02\n" +
+	"\x17session_max_ttl_seconds\x18\x02 \x01(\x03R\x14sessionMaxTtlSeconds\"\xeb\x02\n" +
 	"\x17StatePersistenceFeature\x12\x1c\n" +
 	"\tavailable\x18\x01 \x01(\bR\tavailable\x12.\n" +
 	"\x13default_debounce_ms\x18\x02 \x01(\x03R\x11defaultDebounceMs\x12*\n" +
@@ -11118,7 +11140,8 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	"\x0eexcluded_paths\x18\x05 \x03(\tR\rexcludedPaths\x120\n" +
 	"\x14registry_quota_bytes\x18\x06 \x01(\x03R\x12registryQuotaBytes\x12\x1f\n" +
 	"\vmax_entries\x18\a \x01(\x05R\n" +
-	"maxEntries\"M\n" +
+	"maxEntries\x12-\n" +
+	"\x12unavailable_reason\x18\b \x01(\tR\x11unavailableReason\"M\n" +
 	"\x11ImageCacheFeature\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1e\n" +
 	"\n" +
@@ -11286,14 +11309,15 @@ const file_pkg_agent_protobuf_agent_proto_rawDesc = "" +
 	" physical_storage_bytes_available\x18\v \x01(\bR\x1dphysicalStorageBytesAvailable\x124\n" +
 	"\x16physical_storage_bytes\x18\f \x01(\x03R\x14physicalStorageBytes\x12!\n" +
 	"\foperation_id\x18\r \x01(\tR\voperationId\x12-\n" +
-	"\x12lifecycle_revision\x18\x0e \x01(\x03R\x11lifecycleRevision\"\xe1\x01\n" +
+	"\x12lifecycle_revision\x18\x0e \x01(\x03R\x11lifecycleRevision\"\x90\x02\n" +
 	"\x10LifecycleFeature\x12 \n" +
 	"\fper_lab_stop\x18\x01 \x01(\bR\n" +
 	"perLabStop\x12+\n" +
 	"\x11required_snapshot\x18\x02 \x01(\bR\x10requiredSnapshot\x12+\n" +
 	"\x11confirmed_runtime\x18\x03 \x01(\bR\x10confirmedRuntime\x12)\n" +
 	"\x10retained_restart\x18\x04 \x01(\bR\x0fretainedRestart\x12&\n" +
-	"\x0ffull_group_stop\x18\x05 \x01(\bR\rfullGroupStop\"S\n" +
+	"\x0ffull_group_stop\x18\x05 \x01(\bR\rfullGroupStop\x12-\n" +
+	"\x12unavailable_reason\x18\x06 \x01(\tR\x11unavailableReason\"S\n" +
 	"\x11GroupPodsSizingV2\x12>\n" +
 	"\bprofiles\x18\x01 \x03(\v2\".labmanager.GroupPodsSizingProfileR\bprofiles\"\xbc\x02\n" +
 	"\x16GroupPodsSizingProfile\x12\x0e\n" +
