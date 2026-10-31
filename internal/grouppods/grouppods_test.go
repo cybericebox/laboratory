@@ -47,7 +47,7 @@ func TestDefaultsAreTheMeasuredOnes(t *testing.T) {
 	if err := env.Parse(&c); err != nil {
 		t.Fatal(err)
 	}
-	if c.VPNCPU != "100m" || c.VPNMemory != "320Mi" || c.GatewayCPU != "10m" || c.GatewayMemory != "32Mi" {
+	if c.VPNCPU != "80m" || c.VPNMemory != "264Mi" || c.GatewayCPU != "10m" || c.GatewayMemory != "32Mi" {
 		t.Fatalf("defaults %+v", c)
 	}
 }
