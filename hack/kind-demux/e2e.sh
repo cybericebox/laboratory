@@ -27,7 +27,7 @@
 # A tc run expects no xdp program on eth0: after an xdp run, run detach first (kind-demux-e2e-all runs userspace, tc, xdp in that order).
 #
 # upgrade (on a cluster where no release laboratory exists, or one this step made) installs the chart of KIND_DEMUX_UPGRADE_FROM
-# (origin/develop) with most components off and the VPN Service on the cloud's fixed node port, checks that a plain helm upgrade to this
+# (the last release tag) with most components off and the VPN Service on the cloud's fixed node port, checks that a plain helm upgrade to this
 # tree fails on that node port, deletes the old Service as DEPLOY.md says and upgrades again, checks the chart's default mode (userspace)
 # and policy (Cluster), runs the userspace checks and uninstalls the release.
 #
@@ -40,7 +40,7 @@ set -euo pipefail
 
 MODE="${1:-}"
 case "$MODE" in upgrade | userspace | tc | xdp | detach) ;; *) echo "usage: $0 upgrade|userspace|tc|xdp|detach" >&2; exit 2 ;; esac
-# upgrade installs the chart of KIND_DEMUX_UPGRADE_FROM (origin/develop), upgrades it to this tree with the chart's default mode, then runs
+# upgrade installs the chart of KIND_DEMUX_UPGRADE_FROM (the last release tag), upgrades it to this tree with the chart's default mode, then runs
 # the userspace checks.
 DEMUX_MODE="$MODE"
 [[ "$MODE" == upgrade ]] && DEMUX_MODE=userspace
@@ -193,7 +193,10 @@ helm_k() { helm --kube-context "kind-$CLUSTER" "$@"; }
 # fail while the old Service holds the fixed node port; after the documented step (DEPLOY.md, "Upgrade order") it must succeed, with the
 # chart's default mode (userspace) and policy (Cluster).
 upgrade() {
-  local from="${KIND_DEMUX_UPGRADE_FROM:-origin/develop}" out np
+  # The last RELEASE: develop's chart already has the VPN Service in laboratory-wg, where this tree has it, so only a release shows the
+  # move out of laboratory-proxy that the documented step is about.
+  local from="${KIND_DEMUX_UPGRADE_FROM:-$(git -C "$ROOT" tag --list 'v*' | grep -v -- '-rc' | sort -V | tail -1)}" out np
+  [[ -n "$from" ]] || fail "no release tag to upgrade from (set KIND_DEMUX_UPGRADE_FROM)"
   log "clean slate: the demux of earlier steps was applied without Helm"
   helm_k -n "$RELEASE_NS" uninstall laboratory --ignore-not-found --wait >/dev/null
   deploy_render userspace
