@@ -88,6 +88,35 @@ func neverMaterializedHereDeviceElsewhere(l *lab.Lab, d *lab.Device, id lab.Owne
 	return empty
 }
 
+// neverMaterializedOfADeletedDevice admits the empty pre-Pod declaration of a Device that is being deleted together with its Lab (a Lab deleted
+// while it was running has no stop revision, so the ordinary proof of an older declaration does not apply). Neither can make a Pod any
+// more: the Lab and the Device both carry a deletion time. The release is still only by the native scan of this node, which must find no
+// container, cgroup, port or attachment of the Device: a Pod that is still there keeps the scope Unknown. The state of a persistent Device
+// is discarded by the deletion of its Lab.
+func neverMaterializedOfADeletedDevice(l *lab.Lab, d *lab.Device, id lab.OwnedRuntimeIdentity) bool {
+	if !labDeleting(l) || d.DeletionTimestamp.IsZero() || d.Spec.LabRef != l.Name || string(d.UID) != id.ScopeUID || d.Namespace != id.Namespace {
+		return false
+	}
+	owned := false
+	for _, parent := range d.OwnerReferences {
+		owned = owned || parent.Kind == ownerKindLab && parent.Name == l.Name && parent.UID == l.UID
+	}
+	if !owned {
+		return false
+	}
+	empty := false
+	for _, declared := range l.Status.ScopeInventory {
+		if !sameDeclaredNativeScope(declared, id) {
+			continue
+		}
+		if scopeDeclarationHasRuntime(declared) {
+			return false
+		}
+		empty = true
+	}
+	return empty
+}
+
 func historicalNeverMaterializedPodProof(l *lab.Lab, d *lab.Device, id lab.OwnedRuntimeIdentity, operation string, revision int64) bool {
 	// This exception is only for a genuinely empty ordinary Deployment
 	// declaration. Positive historical scopes and persistence incarnations keep
@@ -828,6 +857,7 @@ func (o *NativeRuntimeObserver) labScopeCurrent(ctx context.Context, id lab.Owne
 				// admits only the full native observation path, never release.
 				found = found || !current && historicalNeverMaterializedPodProof(&l, &d, id, operation, revision)
 				found = found || neverMaterializedHereDeviceElsewhere(&l, &d, id)
+				found = found || neverMaterializedOfADeletedDevice(&l, &d, id)
 				if !current {
 					if proof, ok := persistentHistoricalNeverMaterializedPodProof(&l, &d, id, operation, revision); ok {
 						found = true

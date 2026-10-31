@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/devices"
 )
 
 // A cleanup that cannot finish says so: a NotFound (swallowed by the controller wrapper) becomes a retry with the condition CleanupBlocked
@@ -39,5 +40,28 @@ func TestConnectionCleanupBlockedIsVisible(t *testing.T) {
 	cond := meta.FindStatusCondition(got.Status.Conditions, ConditionWired)
 	if cond == nil || cond.Reason != WaitCleanupBlocked || !strings.Contains(cond.Message, "gone-lab") {
 		t.Fatalf("condition %+v", cond)
+	}
+}
+
+// A switch connected to the VPN has no patch pair: the VPN is not a Device, and looking it up as one (a NotFound) kept the finalizer of every
+// such Connection. A switch whose own Device is gone is not retired here either: its cleanup took its ports and flows.
+func TestRetireSwitchEndpointsDoesNotLookUpTheVirtualPeerAsADevice(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := laboratoryv1alpha1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	sw := &laboratoryv1alpha1.Device{ObjectMeta: metav1.ObjectMeta{Name: devices.Name("l", "sw-1"), Namespace: "ns"},
+		Spec: laboratoryv1alpha1.DeviceSpec{LabRef: "l", Name: "sw-1", Type: laboratoryv1alpha1.DeviceTypeUnmanagedSwitch}}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(sw).Build()
+	r := &ConnectionReconciler{Client: c, Reader: c, NodeName: "node"}
+	conn := &laboratoryv1alpha1.Connection{ObjectMeta: metav1.ObjectMeta{Name: "c", Namespace: "ns"}, Spec: laboratoryv1alpha1.ConnectionSpec{LabRef: "l",
+		Endpoints: []laboratoryv1alpha1.EndpointSpec{{Device: "vpn", Interface: "eth0"}, {Device: "sw-1", Interface: "g0"}}}}
+	if err := r.retireSwitchEndpoints(context.Background(), conn); err != nil {
+		t.Fatalf("a switch connected to the VPN must retire cleanly: %v", err)
+	}
+	gone := conn.DeepCopy()
+	gone.Spec.Endpoints[1].Device = "sw-deleted"
+	if err := r.retireSwitchEndpoints(context.Background(), gone); err != nil {
+		t.Fatalf("an endpoint device that is gone has nothing left to retire: %v", err)
 	}
 }

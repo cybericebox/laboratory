@@ -383,3 +383,55 @@ func TestNeverMaterializedOfAPersistentDeviceIsReleasedOnDeletionOnly(t *testing
 		})
 	}
 }
+
+// A Lab deleted while it was running has no stop revision. Its Devices are deleted with it, so none can make a Pod any more: the empty
+// pre-Pod declaration is released by the native absence of this node, and only then. A Pod that is still there, a Device that is not being
+// deleted, a Lab that is not being deleted and a filled declaration keep the scope Unknown.
+func TestNeverMaterializedOfALabDeletedWhileRunningIsReleasedByNativeAbsence(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		labDeleting, devDelete bool
+		filled                 bool
+		release                bool
+	}{
+		{"lab and device deleted", true, true, false, true},
+		{"device not deleted", true, false, false, false},
+		{"lab not deleted", false, true, false, false},
+		{"filled declaration", true, true, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o, id, l, d := historicalNeverFixture(t)
+			c := o.Reader.(client.Client)
+			ctx := context.Background()
+			l.Spec.Lifecycle = nil // never stopped: the revision of the declaration is the current one
+			l.Generation = 2
+			l.Finalizers = []string{"test/hold"}
+			d.Finalizers = []string{"test/hold"}
+			d.Status.RuntimeReports = nil
+			if tc.filled {
+				id.ContainerIDs = []string{"prior"}
+				l.Status.ScopeInventory = []lab.OwnedRuntimeIdentity{id}
+			}
+			if err := c.Update(ctx, l); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Update(ctx, d); err != nil {
+				t.Fatal(err)
+			}
+			if tc.labDeleting {
+				if err := c.Delete(ctx, l); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.devDelete {
+				if err := c.Delete(ctx, d); err != nil {
+					t.Fatal(err)
+				}
+			}
+			report := o.ObserveScope(ctx, id)
+			if released := report.RuntimeState == "Released" && report.Error == ""; released != tc.release {
+				t.Fatalf("released = %v, want %v: %+v", released, tc.release, report)
+			}
+		})
+	}
+}

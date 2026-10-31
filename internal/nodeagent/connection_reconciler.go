@@ -29,6 +29,9 @@ import (
 	labstatus "github.com/cybericebox/laboratory/internal/status"
 )
 
+// virtualEndpoint says an endpoint of a Connection is not a Device: the VPN and the internet gateway are served by the pods of the group.
+func virtualEndpoint(name string) bool { return name == "vpn" || name == "internet" }
+
 // ConnectionReconciler programs br-ovs based on Connection CRDs.
 //
 // Three connection scenarios (spec §8):
@@ -648,7 +651,7 @@ func (r *ConnectionReconciler) loadEndpoints(ctx context.Context, conn *laborato
 
 	for _, ep := range conn.Spec.Endpoints {
 		// Virtual singletons (vpn, internet) have no Device CRD — synthesize.
-		if ep.Device == "vpn" || ep.Device == "internet" {
+		if virtualEndpoint(ep.Device) {
 			// The "internet" endpoint is served by the gateway Deployment,
 			// whose pods carry the gateway component label.
 			component := ep.Device
@@ -949,10 +952,13 @@ func (r *ConnectionReconciler) connectionVNIBinding(ctx context.Context, conn *l
 func (r *ConnectionReconciler) retireSwitchEndpoints(ctx context.Context, conn *laboratoryv1alpha1.Connection) error {
 	// For each switch endpoint: remove patch port + rebuild t6 from remaining connections.
 	for _, ep := range conn.Spec.Endpoints {
-		if ep.Device == "vpn" || ep.Device == "internet" {
+		if virtualEndpoint(ep.Device) {
 			continue
 		}
 		found, err := devices.Get(ctx, r.Client, conn.Namespace, conn.Spec.LabRef, ep.Device)
+		if apierrors.IsNotFound(err) {
+			continue // the endpoint device is gone: its own cleanup took its ports and flows, there is nothing of it to retire here
+		}
 		if err != nil {
 			return err
 		}
@@ -966,16 +972,21 @@ func (r *ConnectionReconciler) retireSwitchEndpoints(ctx context.Context, conn *
 		// Remove patch port for this side (switch↔switch case).
 		pName := patchPortName(conn.Namespace, conn.Name, ep.Device)
 		if len(conn.Spec.Endpoints) == 2 {
-			peer, err := devices.Get(ctx, r.directReader(), conn.Namespace, conn.Spec.LabRef, conn.Spec.Endpoints[1].Device)
-			if conn.Spec.Endpoints[1].Device == ep.Device {
-				peer, err = devices.Get(ctx, r.directReader(), conn.Namespace, conn.Spec.LabRef, conn.Spec.Endpoints[0].Device)
+			peerName := conn.Spec.Endpoints[1].Device
+			if peerName == ep.Device {
+				peerName = conn.Spec.Endpoints[0].Device
 			}
-			if err != nil {
-				return err
-			}
-			if peer.Spec.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch || peer.Spec.Type == laboratoryv1alpha1.DeviceTypeHub {
-				if err := r.OVS.DelFabricPortOwned(pName, conn.UID, r.Flows); err != nil {
+			// The virtual endpoints (the VPN, the internet gateway) are not Devices and not switches: there is no patch pair with them.
+			if !virtualEndpoint(peerName) {
+				peer, err := devices.Get(ctx, r.directReader(), conn.Namespace, conn.Spec.LabRef, peerName)
+				// A peer that is gone may have been the other half of a patch pair: this side's port, owned by this Connection, is removed.
+				if err != nil && !apierrors.IsNotFound(err) {
 					return err
+				}
+				if err != nil || peer.Spec.Type == laboratoryv1alpha1.DeviceTypeUnmanagedSwitch || peer.Spec.Type == laboratoryv1alpha1.DeviceTypeHub {
+					if err := r.OVS.DelFabricPortOwned(pName, conn.UID, r.Flows); err != nil {
+						return err
+					}
 				}
 			}
 		}
