@@ -511,10 +511,31 @@ func (r *LabGroupReconciler) drainGroupWorkloads(ctx context.Context, ns string)
 	if err := r.List(ctx, &clients, client.InNamespace(ns)); err != nil {
 		return false, client.IgnoreNotFound(err)
 	}
+	podAbsent := false // the VPN pod of the group is gone for good (decided once, when a client needs it)
+	checked := false
 	for i := range clients.Items {
-		if clients.Items[i].DeletionTimestamp.IsZero() {
-			if err := r.Delete(ctx, &clients.Items[i]); err != nil && !errors.IsNotFound(err) {
+		c := &clients.Items[i]
+		if c.DeletionTimestamp.IsZero() {
+			if err := r.Delete(ctx, c); err != nil && !errors.IsNotFound(err) {
 				return false, err
+			}
+			continue
+		}
+		// The finalizer of the VPN binary removes the client's WireGuard peer inside the pod. With no pod (a suspended group, the Deployment
+		// at zero) the peer went with it, and nobody is left to strip the finalizer: the group would never be deleted.
+		if controllerutil.ContainsFinalizer(c, names.FinalizerVPN) {
+			if !checked {
+				var err error
+				if podAbsent, err = groupPodAbsent(ctx, r.groupReader(), ns, names.ComponentVPN); err != nil {
+					return false, err
+				}
+				checked = true
+			}
+			if podAbsent {
+				controllerutil.RemoveFinalizer(c, names.FinalizerVPN)
+				if err := r.Update(ctx, c); err != nil && !errors.IsNotFound(err) {
+					return false, err
+				}
 			}
 		}
 	}

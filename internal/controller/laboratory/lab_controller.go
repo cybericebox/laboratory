@@ -1334,7 +1334,7 @@ func (r *LabReconciler) releaseFinalizerOfAbsentGroupPod(ctx context.Context, ob
 	if !controllerutil.ContainsFinalizer(obj, finalizer) {
 		return false, nil
 	}
-	absent, err := r.groupPodAbsent(ctx, obj.GetNamespace(), component)
+	absent, err := groupPodAbsent(ctx, r.lifecycleReader(), obj.GetNamespace(), component)
 	if err != nil || !absent {
 		return false, err
 	}
@@ -1345,8 +1345,7 @@ func (r *LabReconciler) releaseFinalizerOfAbsentGroupPod(ctx context.Context, ob
 
 // groupPodAbsent says the pod of a component of the group (the VPN, the gateway) is not there and will not be: its Deployment is missing or
 // scaled to zero, and no pod of the component is left (read without the cache).
-func (r *LabReconciler) groupPodAbsent(ctx context.Context, namespace, component string) (bool, error) {
-	reader := r.lifecycleReader()
+func groupPodAbsent(ctx context.Context, reader client.Reader, namespace, component string) (bool, error) {
 	var dep appsv1.Deployment
 	err := reader.Get(ctx, types.NamespacedName{Name: component, Namespace: namespace}, &dep)
 	if err == nil && (dep.Spec.Replicas == nil || *dep.Spec.Replicas > 0) {

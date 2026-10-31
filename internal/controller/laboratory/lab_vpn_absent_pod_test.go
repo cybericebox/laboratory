@@ -63,3 +63,40 @@ func TestLabVPNDeletionDoesNotWaitForAPodThatIsGone(t *testing.T) {
 func vpnDeployment(replicas *int32) *appsv1.Deployment {
 	return &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: names.ComponentVPN, Namespace: "g"}, Spec: appsv1.DeploymentSpec{Replicas: replicas}}
 }
+
+// The same for the clients of a group being deleted: the finalizer of the VPN binary removes the client's peer inside the pod; with no pod
+// the group would wait for it forever.
+func TestGroupDrainDoesNotWaitForTheVPNPodOfAClientThatIsGone(t *testing.T) {
+	zero, one := int32(0), int32(1)
+	for _, tc := range []struct {
+		name     string
+		objects  func() []client.Object
+		released bool
+	}{
+		{"no vpn pod", func() []client.Object { return []client.Object{vpnDeployment(&zero)} }, true},
+		{"vpn pod running", func() []client.Object { return []client.Object{vpnDeployment(&one)} }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := runtime.NewScheme()
+			_ = clientgoscheme.AddToScheme(s)
+			_ = laboratoryv1alpha1.AddToScheme(s)
+			lgc := &laboratoryv1alpha1.LabGroupClient{ObjectMeta: metav1.ObjectMeta{Name: "u", Namespace: "g", Finalizers: []string{names.FinalizerVPN}}}
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(append(tc.objects(), lgc)...).Build()
+			r := &LabGroupReconciler{Client: c, Reader: c}
+			ctx := context.Background()
+			if err := c.Delete(ctx, lgc); err != nil { // sets the deletion time (the finalizer holds it)
+				t.Fatal(err)
+			}
+			drained := false
+			for i := 0; i < 2; i++ {
+				var err error
+				if drained, err = r.drainGroupWorkloads(ctx, "g"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if drained != tc.released {
+				t.Fatalf("drained = %v, want %v", drained, tc.released)
+			}
+		})
+	}
+}
