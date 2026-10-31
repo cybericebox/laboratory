@@ -364,6 +364,31 @@ func (o *NativeRuntimeObserver) gonePoolOwned(ctx context.Context, binding lab.O
 	return o.leaseStillTheirs(ctx, poolpkg.Lease{Index: binding.VNI, PoolUID: binding.PoolUID, OwnerUID: binding.UID, Generation: binding.LeaseGeneration}) == nil
 }
 
+// bindingOwnerState: the Device or Connection of the binding is the current holder of its VNI (gone false), or it no longer exists and the
+// pool still holds its lease (gone true), or the scope cannot be trusted (an error). Bindings of other kinds are not judged here.
+func (o *NativeRuntimeObserver) bindingOwnerState(ctx context.Context, binding lab.OwnedVNI, devices []lab.Device, connections []lab.Connection) (gone bool, err error) {
+	current := false
+	switch binding.Kind {
+	case ownerKindDevice:
+		for _, d := range devices {
+			current = current || deviceBindingCurrent(d, binding)
+		}
+	case ownerKindConnection:
+		for _, c := range connections {
+			current = current || connectionBindingCurrent(c, binding)
+		}
+	default:
+		return false, nil
+	}
+	if current {
+		return false, nil
+	}
+	if o.gonePoolOwned(ctx, binding) {
+		return true, nil
+	}
+	return false, fmt.Errorf("original %s VNI lease owner unavailable or replaced", binding.Kind)
+}
+
 func (o *NativeRuntimeObserver) captureScopeFabric(ctx context.Context, id *lab.OwnedRuntimeIdentity) error {
 	if id.ScopeKind == scopeGroup || id.ScopeKind == runtimeNeverMaterialized {
 		return nil
@@ -380,45 +405,22 @@ func (o *NativeRuntimeObserver) captureScopeFabric(ctx context.Context, id *lab.
 		}
 		id.VNIs = append(id.VNIs, vni)
 	}
+	var connections lab.ConnectionList
+	if err := o.Reader.List(ctx, &connections, client.InNamespace(id.Namespace)); err != nil {
+		return err
+	}
 	gone := map[string]bool{} // owners that no longer exist but whose lease the pool still holds (see vniOwnerGone)
 	for _, binding := range id.VNIBindings {
 		if o.vniReleased(binding) {
 			continue
 		}
-		found := false
+		isGone, err := o.bindingOwnerState(ctx, binding, devices.Items, connections.Items)
+		if err != nil {
+			return err
+		}
+		gone[binding.UID] = isGone
 		if binding.Kind == ownerKindDevice {
-			for _, d := range devices.Items {
-				if deviceBindingCurrent(d, binding) {
-					found = true
-				}
-			}
-		}
-		if binding.Kind == ownerKindDevice && !found {
-			if !o.gonePoolOwned(ctx, binding) {
-				return fmt.Errorf("original Device VNI lease owner unavailable or replaced")
-			}
-			gone[binding.UID] = true
-		}
-		add(binding.VNI)
-	}
-	var connections lab.ConnectionList
-	if err := o.Reader.List(ctx, &connections, client.InNamespace(id.Namespace)); err != nil {
-		return err
-	}
-	for _, binding := range id.VNIBindings {
-		if binding.Kind == ownerKindConnection && !o.vniReleased(binding) {
-			found := false
-			for _, c := range connections.Items {
-				if connectionBindingCurrent(c, binding) {
-					found = true
-				}
-			}
-			if !found {
-				if !o.gonePoolOwned(ctx, binding) {
-					return fmt.Errorf("original Connection VNI lease owner unavailable or replaced")
-				}
-				gone[binding.UID] = true
-			}
+			add(binding.VNI)
 		}
 	}
 	if err := o.captureConnectionFabric(id, connections.Items); err != nil {
@@ -439,7 +441,7 @@ func (o *NativeRuntimeObserver) captureScopeFabric(ctx context.Context, id *lab.
 				count++
 			}
 		}
-		if count != 1 && !(count == 0 && gone[binding.UID]) {
+		if count != 1 && (count != 0 || !gone[binding.UID]) {
 			return fmt.Errorf("VNI lease owner is not unique")
 		}
 	}
@@ -603,6 +605,26 @@ func (o *NativeRuntimeObserver) retireVNIOfGoneOwner(ctx context.Context, bindin
 	return o.writeRecord("vni-released", o.vniIdentity(binding), receipt)
 }
 
+// loadVNIOwner reads the Device or Connection of the binding; one with another UID is a replacement.
+func (o *NativeRuntimeObserver) loadVNIOwner(ctx context.Context, binding lab.OwnedVNI) (client.Object, error) {
+	var object client.Object
+	switch binding.Kind {
+	case ownerKindConnection:
+		object = &lab.Connection{}
+	case ownerKindDevice:
+		object = &lab.Device{}
+	default:
+		return nil, ErrPortOwnerUnknown
+	}
+	if err := o.Reader.Get(ctx, client.ObjectKey{Namespace: binding.Namespace, Name: binding.Name}, object); err != nil {
+		return nil, err
+	}
+	if string(object.GetUID()) != binding.UID {
+		return nil, ErrPortOwnerChanged
+	}
+	return object, nil
+}
+
 func (o *NativeRuntimeObserver) retireVNI(ctx context.Context, binding lab.OwnedVNI, flows *FlowManager) error {
 	if binding.VNI == 0 && !completeZeroVNIBinding(binding) {
 		return ErrPortOwnerUnknown
@@ -622,23 +644,12 @@ func (o *NativeRuntimeObserver) retireVNI(ctx context.Context, binding lab.Owned
 	if o.Reader == nil || binding.UID == "" {
 		return ErrPortOwnerUnknown
 	}
-	var object client.Object
-	switch binding.Kind {
-	case ownerKindConnection:
-		object = &lab.Connection{}
-	case ownerKindDevice:
-		object = &lab.Device{}
-	default:
-		return ErrPortOwnerUnknown
+	object, err := o.loadVNIOwner(ctx, binding)
+	if apierrors.IsNotFound(err) && binding.VNI != 0 {
+		return o.retireVNIOfGoneOwner(ctx, binding, lease, flows)
 	}
-	if err := o.Reader.Get(ctx, client.ObjectKey{Namespace: binding.Namespace, Name: binding.Name}, object); err != nil {
-		if apierrors.IsNotFound(err) && binding.VNI != 0 {
-			return o.retireVNIOfGoneOwner(ctx, binding, lease, flows)
-		}
+	if err != nil {
 		return err
-	}
-	if string(object.GetUID()) != binding.UID {
-		return ErrPortOwnerChanged
 	}
 	var actual *uint
 	var labName string
