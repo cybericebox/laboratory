@@ -150,6 +150,8 @@ default): the individual values below are used as they are.
 {{- $_ := set .Values.lifecycle.capabilities "confirmedRuntime" true -}}
 {{- $_ := set .Values.lifecycle.capabilities "retainedRestart" true -}}
 {{- $_ := set .Values.lifecycle.capabilities "fullGroupStop" true -}}
+{{- $_ := set .Values.lifecycle.capabilities "requiredSnapshot" true -}}
+{{- $_ := set .Values.lifecycle "requiredSnapshotAvailable" true -}}
 {{- else if ne $p "" -}}
 {{- fail (printf "lifecycle.profile must be empty or \"full\", got %q" $p) -}}
 {{- end -}}

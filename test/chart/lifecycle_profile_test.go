@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-// lifecycle.profile=full is one switch for persistence, the native observation and the four lifecycle capabilities; the default is off.
+// lifecycle.profile=full is one switch for persistence, the native observation and the five lifecycle capabilities (the required snapshot included); the default is off.
 func TestLifecycleProfileFullSwitchesOnWhatTheLifecycleNeeds(t *testing.T) {
 	off := operatorConfig(t)
-	for _, k := range []string{"LIFECYCLE_PER_LAB_STOP_AVAILABLE", "LIFECYCLE_CONFIRMED_RUNTIME_AVAILABLE", "LIFECYCLE_RETAINED_RESTART_AVAILABLE", "LIFECYCLE_FULL_GROUP_STOP_AVAILABLE", "RUNTIME_OBSERVATION_ENABLED", "STATE_PERSISTENCE_ENABLED"} {
+	for _, k := range []string{"LIFECYCLE_PER_LAB_STOP_AVAILABLE", "LIFECYCLE_CONFIRMED_RUNTIME_AVAILABLE", "LIFECYCLE_RETAINED_RESTART_AVAILABLE", "LIFECYCLE_FULL_GROUP_STOP_AVAILABLE", "LIFECYCLE_REQUIRED_SNAPSHOT_AVAILABLE", "RUNTIME_OBSERVATION_ENABLED", "STATE_PERSISTENCE_ENABLED"} {
 		if off[k] == "true" {
 			t.Errorf("the default must be off: %s = %q", k, off[k])
 		}
@@ -17,7 +17,7 @@ func TestLifecycleProfileFullSwitchesOnWhatTheLifecycleNeeds(t *testing.T) {
 	for k, want := range map[string]string{
 		"LIFECYCLE_PER_LAB_STOP_AVAILABLE": "true", "LIFECYCLE_CONFIRMED_RUNTIME_AVAILABLE": "true", "LIFECYCLE_RETAINED_RESTART_AVAILABLE": "true",
 		"LIFECYCLE_FULL_GROUP_STOP_AVAILABLE": "true", "RUNTIME_OBSERVATION_ENABLED": "true", "STATE_PERSISTENCE_ENABLED": "true",
-		"LIFECYCLE_REQUIRED_SNAPSHOT_AVAILABLE": "false",
+		"LIFECYCLE_REQUIRED_SNAPSHOT_AVAILABLE": "true", "REQUIRED_SNAPSHOT_AVAILABLE": "true",
 	} {
 		if on[k] != want {
 			t.Errorf("profile full: %s = %q, want %q", k, on[k], want)
@@ -52,7 +52,7 @@ func TestLifecycleProfileRefusesAnUnknownValueAndKeepsTheDependencies(t *testing
 		t.Errorf("an unknown profile must fail: %v\n%s", err, out)
 	}
 	// the profile does not bypass the checks of the dependencies
-	if out, err := helmTemplate(t, "--set", "lifecycle.profile=full", "--set", "operator.admissionPolicy.enabled=false", "-s", "templates/operator/configmap.yaml"); err == nil || !strings.Contains(out, "require admission protection") {
+	if out, err := helmTemplate(t, "--set", "lifecycle.profile=full", "--set", "operator.admissionPolicy.enabled=false", "-s", "templates/operator/configmap.yaml"); err == nil || !strings.Contains(out, "admission protection") {
 		t.Errorf("the profile without the admission policy must fail the existing validation: %v\n%s", err, out)
 	}
 	if out, err := helmTemplate(t, "--set", "lifecycle.profile=full", "--set", "devices.statePersistence.containerdRoot=relative", "-s", "templates/operator/configmap.yaml"); err == nil || !strings.Contains(out, "containerdRoot must be an absolute") {

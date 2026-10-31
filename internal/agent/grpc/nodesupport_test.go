@@ -29,7 +29,7 @@ func readyNode(name string, persistence, observation string) corev1.Node {
 func fullFeatures() *protobuf.FeaturesResponse {
 	return &protobuf.FeaturesResponse{
 		StatePersistence: &protobuf.StatePersistenceFeature{Available: true},
-		Lifecycle:        &protobuf.LifecycleFeature{PerLabStop: true, ConfirmedRuntime: true, RetainedRestart: true, FullGroupStop: true},
+		Lifecycle:        &protobuf.LifecycleFeature{PerLabStop: true, ConfirmedRuntime: true, RetainedRestart: true, FullGroupStop: true, RequiredSnapshot: true},
 	}
 }
 
@@ -44,7 +44,7 @@ func TestVerifyNodesConfirmsWhatEveryReadyNodeConfirms(t *testing.T) {
 	}
 	f := fullFeatures()
 	applyNodeSupport(f, v)
-	if !f.StatePersistence.Available || !f.Lifecycle.RetainedRestart || f.Lifecycle.UnavailableReason != "" {
+	if !f.StatePersistence.Available || !f.Lifecycle.RetainedRestart || !f.Lifecycle.RequiredSnapshot || f.Lifecycle.UnavailableReason != "" {
 		t.Fatalf("a confirmed cluster keeps its features: %v %v", f.StatePersistence, f.Lifecycle)
 	}
 }
@@ -59,8 +59,8 @@ func TestPersistenceFailureHoldsBackPersistenceAndRetainedRestartWithTheReason(t
 		t.Fatalf("persistence: %v", f.StatePersistence)
 	}
 	l := f.Lifecycle
-	if l.RetainedRestart || !l.PerLabStop || !l.ConfirmedRuntime || !l.FullGroupStop {
-		t.Fatalf("only retained restart needs the snapshots: %v", l)
+	if l.RetainedRestart || l.RequiredSnapshot || !l.PerLabStop || !l.ConfirmedRuntime || !l.FullGroupStop {
+		t.Fatalf("only the restart from state and the required snapshot need the snapshot engine: %v", l)
 	}
 	if l.UnavailableReason != "CONTAINERD_ROOT_MISSING:1/2" {
 		t.Errorf("reason: %q", l.UnavailableReason)
@@ -73,7 +73,7 @@ func TestObservationFailureHoldsBackEveryLifecycleCapability(t *testing.T) {
 	f := fullFeatures()
 	applyNodeSupport(f, verifyNodes(nodes, nil, nil, true, true))
 	l := f.Lifecycle
-	if l.PerLabStop || l.ConfirmedRuntime || l.RetainedRestart || l.FullGroupStop || l.UnavailableReason != "CGROUP_V2_MISSING:2/2" {
+	if l.PerLabStop || l.ConfirmedRuntime || l.RetainedRestart || l.FullGroupStop || l.RequiredSnapshot || l.UnavailableReason != "CGROUP_V2_MISSING:2/2" {
 		t.Fatalf("%v", l)
 	}
 	if !f.StatePersistence.Available {

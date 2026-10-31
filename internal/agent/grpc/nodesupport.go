@@ -109,7 +109,9 @@ func applyNodeSupport(base *protobuf.FeaturesResponse, v nodeVerdict) {
 			base.StatePersistence.UnavailableReason = v.persistenceReason
 		}
 		if base.Lifecycle != nil {
+			// a required snapshot is written through the same snapshot engine and registry as a restart from state
 			base.Lifecycle.RetainedRestart = false
+			base.Lifecycle.RequiredSnapshot = false
 			base.Lifecycle.UnavailableReason = v.persistenceReason
 		}
 	}

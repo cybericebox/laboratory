@@ -2531,8 +2531,12 @@ slip under a stricter check, the component that runs it clamps or ignores the ba
 ### Lifecycle native gates and admission recovery
 
 **`lifecycle.profile: full`.** One value switches on what a cluster needs to stop and restart labs: `devices.statePersistence.enabled`,
-`lifecycle.runtimeObservation.enabled` and the capabilities `perLabStop`, `confirmedRuntime`, `retainedRestart`, `fullGroupStop` (not
-`requiredSnapshot`); the default is empty (all as set one by one). Set `devices.statePersistence.containerdRoot` to the containerd root of the
+`lifecycle.runtimeObservation.enabled` and the capabilities `perLabStop`, `confirmedRuntime`, `retainedRestart`, `fullGroupStop` and
+`requiredSnapshot` (with `lifecycle.requiredSnapshotAvailable`); the default is empty (all as set one by one). A required snapshot is reported
+as available only while persistence is confirmed by every ready lab node (the same preflight as `retainedRestart`; otherwise it is false
+with the code of the reason). **Required means a snapshot for the devices that keep state**: a lab with a persistent database and an ordinary
+web server stops waiting for the snapshot of the database only, the other devices stop without one and never make the request fail; a lab with
+writable devices and none that keeps state has nothing to snapshot, and the request is refused. Set `devices.statePersistence.containerdRoot` to the containerd root of the
 cluster (`/var/lib/containerd`; `/var/lib/k0s/containerd` is the default). The node-agent checks its node at start (the containerd root and
 its snapshotter, the container runtime socket, the snapshot registry; the host cgroup v2 tree) and never hangs or exits for a failure: it
 switches the feature off in its process, logs it, puts the result in the Node annotations `cybericebox.com/state-persistence` and

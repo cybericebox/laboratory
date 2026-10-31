@@ -27,21 +27,40 @@ func (r *LabReconciler) lifecycleReader() client.Reader {
 	return r.Client
 }
 
-// ValidateRequiredSnapshot is the preparation/acceptance seam. Task4 must call it
-// before writing Required intent. Capability stays off until the native proof.
-func (r *LabReconciler) ValidateRequiredSnapshot(ctx context.Context, l *lab.Lab) error {
-	hasWritableDevice := false
+// requiredTemplates says which devices of the lab keep state (by name). Required means a snapshot for those; the other devices of the lab stop
+// without one and never make the request fail. A lab with writable devices and none that keeps state has nothing to snapshot, which is a
+// mistaken request; a device that keeps state must be a container, and the snapshot capability must be there for it.
+func (r *LabReconciler) requiredTemplates(l *lab.Lab) (map[string]bool, error) {
+	writable := 0
+	persistent := map[string]bool{}
 	for _, d := range l.Spec.Devices {
 		if d.Type == lab.DeviceTypeHub || d.Type == lab.DeviceTypeUnmanagedSwitch {
 			continue
 		}
-		hasWritableDevice = true
-		if d.Type != lab.DeviceTypeContainer || d.Persistence == nil || !d.Persistence.Enabled {
-			return fmt.Errorf("device %s does not support required persistence", d.Name)
+		writable++
+		if d.Persistence == nil || !d.Persistence.Enabled {
+			continue
 		}
+		if d.Type != lab.DeviceTypeContainer {
+			return nil, fmt.Errorf("device %s does not support required persistence", d.Name)
+		}
+		persistent[d.Name] = true
 	}
-	if hasWritableDevice && !r.RequiredSnapshotAvailable {
-		return fmt.Errorf("required snapshot freezer/registry capability is unavailable")
+	if writable > 0 && len(persistent) == 0 {
+		return nil, fmt.Errorf("no device of the lab keeps state: there is nothing to snapshot")
+	}
+	if len(persistent) > 0 && !r.RequiredSnapshotAvailable {
+		return nil, fmt.Errorf("required snapshot freezer/registry capability is unavailable")
+	}
+	return persistent, nil
+}
+
+// ValidateRequiredSnapshot is the preparation/acceptance seam. Task4 must call it
+// before writing Required intent. Capability stays off until the native proof.
+func (r *LabReconciler) ValidateRequiredSnapshot(ctx context.Context, l *lab.Lab) error {
+	templatePersistent, err := r.requiredTemplates(l)
+	if err != nil {
+		return err
 	}
 	var ds lab.DeviceList
 	if err := r.lifecycleReader().List(ctx, &ds, client.InNamespace(l.Namespace)); err != nil {
@@ -57,6 +76,9 @@ func (r *LabReconciler) ValidateRequiredSnapshot(ctx context.Context, l *lab.Lab
 			continue
 		}
 		materialized[d.Spec.Name] = true
+		if !templatePersistent[d.Spec.Name] {
+			continue // a device that keeps no state has no checkpoint to wait for
+		}
 		complete, err := requiredNeverCreatedScope(l, d)
 		if err != nil {
 			return err
@@ -82,7 +104,7 @@ func (r *LabReconciler) ValidateRequiredSnapshot(ctx context.Context, l *lab.Lab
 	tenantName := names.TenantOf(l.Labels)
 	var tenantPolicy *lab.Tenant
 	for _, template := range l.Spec.Devices {
-		if template.Type != lab.DeviceTypeContainer || materialized[template.Name] {
+		if template.Type != lab.DeviceTypeContainer || materialized[template.Name] || !templatePersistent[template.Name] {
 			continue
 		}
 		if tenantPolicy == nil {
@@ -570,8 +592,8 @@ func (r *LabReconciler) prepareLifecycleCaptures(ctx context.Context, l *lab.Lab
 	pending := false
 	for _, target := range targets {
 		d := target.d
-		if d.Spec.Type != lab.DeviceTypeContainer {
-			continue
+		if d.Spec.Type != lab.DeviceTypeContainer || !deviceStateEnabled(d) {
+			continue // a device that keeps no state is not captured
 		}
 		for i := range target.pods {
 			p := &target.pods[i]
@@ -618,8 +640,8 @@ func (r *LabReconciler) commitLifecycleCaptures(ctx context.Context, l *lab.Lab,
 	commitsPending := false
 	for _, target := range targets {
 		d := target.d
-		if d.Spec.Type != lab.DeviceTypeContainer {
-			continue
+		if d.Spec.Type != lab.DeviceTypeContainer || !deviceStateEnabled(d) {
+			continue // a device that keeps no state is not captured
 		}
 		for i := range target.pods {
 			p := &target.pods[i]
@@ -681,7 +703,7 @@ func (r *LabReconciler) deleteLifecycleDevicePods(ctx context.Context, l *lab.La
 			continue
 		}
 		pre := &metav1.Preconditions{UID: &pod.UID, ResourceVersion: &pod.ResourceVersion}
-		if intent.SnapshotMode == snapshotModeRequired {
+		if intent.SnapshotMode == snapshotModeRequired && deviceStateEnabled(&fresh) {
 			if fresh.Status.State == nil || fresh.Spec.State == nil {
 				return finish(observationStateUnknown, "CaptureMissing", nil)
 			}
