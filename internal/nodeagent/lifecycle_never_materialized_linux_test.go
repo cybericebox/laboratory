@@ -290,3 +290,49 @@ func TestHistoricalNeverMaterializedLiveTaskOwnedByPodLabels(t *testing.T) {
 		})
 	}
 }
+
+// The live case of the stuck teardown: the empty pre-Pod declaration of node B, for a Device whose Pod was placed on node A. The API no longer
+// says "not scheduled" about the Device, but B has nothing of it: the native scan of B finds no container, cgroup, port or attachment, and the
+// scope is released. Every fence of the declaration stays: a filled declaration, another Lab's Device, a persistent Device and a Device that
+// sits on this very node (it may have a Pod here) are not released by it.
+func TestNeverMaterializedDeclarationOfAnotherNodeIsReleasedByItsNativeAbsence(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		edit    func(*lab.OwnedRuntimeIdentity, *lab.Lab, *lab.Device)
+		release bool
+	}{
+		{"device on another node", func(_ *lab.OwnedRuntimeIdentity, _ *lab.Lab, d *lab.Device) { d.Status.NodeName = "other-node" }, true},
+		{"device on this node", func(_ *lab.OwnedRuntimeIdentity, _ *lab.Lab, d *lab.Device) {}, false},
+		{"device owned by another lab", func(_ *lab.OwnedRuntimeIdentity, _ *lab.Lab, d *lab.Device) {
+			d.Status.NodeName = "other-node"
+			d.OwnerReferences[0].UID = "replacement-lab"
+		}, false},
+		{"filled declaration", func(id *lab.OwnedRuntimeIdentity, l *lab.Lab, d *lab.Device) {
+			d.Status.NodeName = "other-node"
+			id.ContainerIDs = []string{"prior"}
+			l.Status.ScopeInventory = []lab.OwnedRuntimeIdentity{*id}
+		}, false},
+		{"persistent device", func(_ *lab.OwnedRuntimeIdentity, _ *lab.Lab, d *lab.Device) {
+			d.Status.NodeName = "other-node"
+			d.Status.State = &lab.DeviceStateStatus{}
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o, id, l, d := historicalNeverFixture(t)
+			c := o.Reader.(client.Client)
+			ctx := context.Background()
+			d.Status.RuntimeReports = nil // no per-node proof of an earlier Pod: only the declaration and the API
+			tc.edit(&id, l, d)
+			if err := c.Update(ctx, l); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Update(ctx, d); err != nil {
+				t.Fatal(err)
+			}
+			report := o.ObserveScope(ctx, id)
+			if released := report.RuntimeState == "Released" && report.Error == ""; released != tc.release {
+				t.Fatalf("released = %v, want %v: %+v", released, tc.release, report)
+			}
+		})
+	}
+}

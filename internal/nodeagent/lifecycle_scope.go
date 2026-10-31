@@ -58,6 +58,35 @@ func (o *NativeRuntimeObserver) scopeCurrent(ctx context.Context, id lab.OwnedRu
 	return false, ErrPortOwnerUnknown
 }
 
+// neverMaterializedHereDeviceElsewhere admits the empty pre-Pod declaration of this node for a Device whose Pod was placed on ANOTHER node:
+// the declaration was never filled here (a retained, genuinely empty one), the Device belongs to this very Lab, and its Pod lives (or lived)
+// elsewhere, so the API cannot say "not yet scheduled" about it any more. That is not an absence certificate: the release still needs the
+// native scan of this node to find no container, cgroup, port or attachment of the Device, as for any other scope.
+func neverMaterializedHereDeviceElsewhere(l *lab.Lab, d *lab.Device, id lab.OwnedRuntimeIdentity) bool {
+	// Persistent devices keep their existing boundary.
+	if d.Status.NodeName == "" || d.Status.NodeName == id.NodeName || d.Spec.LabRef != l.Name || string(d.UID) != id.ScopeUID || d.Spec.State != nil && d.Spec.State.Enabled || d.Status.State != nil {
+		return false
+	}
+	owned := false
+	for _, parent := range d.OwnerReferences {
+		owned = owned || parent.Kind == ownerKindLab && parent.Name == l.Name && parent.UID == l.UID
+	}
+	if !owned {
+		return false
+	}
+	empty := false
+	for _, declared := range l.Status.ScopeInventory {
+		if !sameDeclaredNativeScope(declared, id) {
+			continue
+		}
+		if scopeDeclarationHasRuntime(declared) {
+			return false
+		}
+		empty = true
+	}
+	return empty
+}
+
 func historicalNeverMaterializedPodProof(l *lab.Lab, d *lab.Device, id lab.OwnedRuntimeIdentity, operation string, revision int64) bool {
 	// This exception is only for a genuinely empty ordinary Deployment
 	// declaration. Positive historical scopes and persistence incarnations keep
@@ -681,6 +710,7 @@ func (o *NativeRuntimeObserver) labScopeCurrent(ctx context.Context, id lab.Owne
 				// Deployment materialization. A later bound native Pod proof
 				// admits only the full native observation path, never release.
 				found = found || !current && historicalNeverMaterializedPodProof(&l, &d, id, operation, revision)
+				found = found || neverMaterializedHereDeviceElsewhere(&l, &d, id)
 				if !current {
 					if proof, ok := persistentHistoricalNeverMaterializedPodProof(&l, &d, id, operation, revision); ok {
 						found = true
