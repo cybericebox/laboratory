@@ -74,6 +74,38 @@ func (l *Ledger) loadLocked(ctx context.Context) error {
 	return nil
 }
 
+// Resync makes the stored ConfigMap agree with what this process knows: an entry this process holds that the ConfigMap lost (it was deleted
+// or edited by hand) is written back, and an entry only the ConfigMap has (written by an earlier run) is taken in. Nothing is ever dropped
+// here: entries leave only through Clear, after the flows are confirmed gone.
+func (l *Ledger) Resync(ctx context.Context) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	known := l.set
+	l.loaded, l.set = false, nil
+	if err := l.loadLocked(ctx); err != nil {
+		l.loaded, l.set = true, known
+		if known == nil {
+			l.loaded = false
+		}
+		return err
+	}
+	for v := range known {
+		if l.set[v] {
+			continue
+		}
+		patch := fmt.Sprintf(`{"data":{%q:%q}}`, l.key(v), time.Now().UTC().Format(time.RFC3339))
+		cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: ConfigMapName(l.Node), Namespace: l.Namespace}}
+		if err := l.Client.Patch(ctx, cm, client.RawPatch(types.MergePatchType, []byte(patch))); err != nil {
+			for k := range known {
+				l.set[k] = true
+			}
+			return err
+		}
+		l.set[v] = true
+	}
+	return nil
+}
+
 // Load reads (and, on a fresh node, creates) the ledger. Note and Clear load it on first use, so calling Load is only to fail early.
 func (l *Ledger) Load(ctx context.Context) error {
 	l.mu.Lock()

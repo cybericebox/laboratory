@@ -118,6 +118,10 @@ func (r *VNIOrphanReconciler) orphan(ctx context.Context, vni uint) (bool, error
 
 // Sweep does one pass; it returns how many VNIs it removed the flows of and how many it could not judge.
 func (r *VNIOrphanReconciler) Sweep(ctx context.Context) (dropped, undecided int, err error) {
+	// The ledger the operator reads must agree with what this node knows it carries: a ConfigMap edited or deleted by hand is restored.
+	if err := r.Ledger.Resync(ctx); err != nil {
+		return 0, 0, err
+	}
 	flows, err := r.Flows.readNativeFlows(ctx)
 	if err != nil {
 		return 0, 0, err
