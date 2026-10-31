@@ -682,5 +682,8 @@ func (h *Handler) refusedBeforeCreate(ctx context.Context, items []*protobuf.Lab
 	if err != nil {
 		return nil, err
 	}
-	return h.profileRefusals(ctx, items, variants, over)
+	if over, err = h.profileRefusals(ctx, items, variants, over); err != nil {
+		return nil, err
+	}
+	return h.persistenceRefusals(ctx, items, variants, over)
 }

@@ -1056,8 +1056,11 @@ message StatePersistenceFeature {
   // The most entries (files, directories, links) one snapshot layer may hold.
   int32 max_entries = 7;
   // Why `available` is false although the cluster is configured for persistence: the node-agents check their node at start (the
-  // containerd root, the container runtime, the snapshot registry) and the answer is what the nodes REALLY support. Empty when
-  // available, when persistence is off by configuration, or when no node has reported yet.
+  // containerd root, the container runtime, the snapshot registry) and the answer is what the nodes REALLY support. Grammar:
+  // "<CODE>:<n>/<m>" with CODE one of CONTAINERD_ROOT_MISSING, SNAPSHOTTER_MISSING, RUNTIME_SOCKET_UNAVAILABLE,
+  // SNAPSHOT_REGISTRY_UNREACHABLE, PERSISTENCE_DISABLED, NODE_UNCONFIRMED (the code most nodes give), n the lab nodes that do not
+  // confirm and m the lab nodes asked. Never a node name, a path or an error text. Empty when available, when persistence is off by
+  // configuration, or when no node has reported yet.
   string unavailable_reason = 8;
 }
 
@@ -1326,8 +1329,10 @@ message LifecycleFeature {
   bool retained_restart = 4;
   bool full_group_stop = 5;
   // Why a capability the cluster is configured for is false: the node-agents check their node at start and the answer is what the
-  // nodes REALLY support (runtime observation: the cgroup tree and the container runtime; retained restart: persistence too). Empty
-  // when nothing configured is held back.
+  // nodes REALLY support (runtime observation: the cgroup tree and the container runtime; retained restart: persistence too). Same
+  // grammar as StatePersistenceFeature.unavailable_reason, with CGROUP_V2_MISSING, RUNTIME_SOCKET_UNAVAILABLE, OBSERVATION_DISABLED and
+  // NODE_UNCONFIRMED for the observation. The observation's reason wins when both fail (it holds back every capability). Empty when
+  // nothing configured is held back.
   string unavailable_reason = 6;
 }
 

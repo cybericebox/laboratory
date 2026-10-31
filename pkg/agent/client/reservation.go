@@ -57,3 +57,9 @@ const (
 	// Not retryable now.
 	ReasonProfileUnavailable = "PROFILE_UNAVAILABLE"
 )
+
+// ReasonPersistenceUnavailable: the lab asks for state persistence (devices[].persistence.enabled) and the lab
+// nodes do not confirm that they can keep it (GetFeatures: state_persistence.available false, with an
+// unavailable_reason). Nothing is created or started; the text carries only the fixed reason (`<CODE>:<n>/<m>`).
+// Not retryable until the cluster is repaired.
+const ReasonPersistenceUnavailable = "PERSISTENCE_UNAVAILABLE"

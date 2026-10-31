@@ -2,6 +2,7 @@ package nodeagent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -24,13 +25,61 @@ const (
 	preflightUnavailable = "unavailable: "
 )
 
-// Unavailable is the annotation value for a check that failed.
-func Unavailable(reason string) string { return preflightUnavailable + reason }
+// Unavailable is the annotation value for a check that failed: "unavailable: CODE: detail".
+func Unavailable(code, detail string) string { return preflightUnavailable + code + ": " + detail }
 
-// IsUnavailable says the value is a failed check, and gives its reason.
+// IsUnavailable says the value is a failed check, and gives its detail (for the operator of the cluster).
 func IsUnavailable(v string) (string, bool) {
 	r, ok := strings.CutPrefix(v, preflightUnavailable)
-	return r, ok
+	if !ok {
+		return "", false
+	}
+	if _, detail, found := strings.Cut(r, ": "); found {
+		return detail, true
+	}
+	return r, true
+}
+
+// CodeOf is the reason code of an annotation value that is a failed check; a value that carries none (an older node-agent) is
+// NODE_UNCONFIRMED.
+func CodeOf(v string) (string, bool) {
+	r, ok := strings.CutPrefix(v, preflightUnavailable)
+	if !ok {
+		return "", false
+	}
+	code, _, _ := strings.Cut(r, ": ")
+	for _, c := range AllCodes {
+		if code == c {
+			return code, true
+		}
+	}
+	return CodeNodeUnconfirmed, true
+}
+
+// The fixed reason codes of a failed check. They are what leaves the cluster (GetFeatures): no node names, paths or error text. The detail
+// stays in the Node annotation ("unavailable: CODE: detail"), the Event and the log, for the operator of the cluster.
+const (
+	CodeContainerdRootMissing = "CONTAINERD_ROOT_MISSING"
+	CodeSnapshotterMissing    = "SNAPSHOTTER_MISSING"
+	CodeRuntimeSocket         = "RUNTIME_SOCKET_UNAVAILABLE"
+	CodeSnapshotRegistry      = "SNAPSHOT_REGISTRY_UNREACHABLE"
+	CodeCgroupV2Missing       = "CGROUP_V2_MISSING"
+	CodePersistenceDisabled   = "PERSISTENCE_DISABLED"
+	CodeObservationDisabled   = "OBSERVATION_DISABLED"
+	CodeNodeUnconfirmed       = "NODE_UNCONFIRMED"
+)
+
+// AllCodes is the list of codes (the allow-list of a caller).
+var AllCodes = []string{CodeContainerdRootMissing, CodeSnapshotterMissing, CodeRuntimeSocket, CodeSnapshotRegistry, CodeCgroupV2Missing,
+	CodePersistenceDisabled, CodeObservationDisabled, CodeNodeUnconfirmed}
+
+// checkError is a failed check: a code and the detail for the cluster's operator.
+type checkError struct{ code, detail string }
+
+func (e *checkError) Error() string { return e.detail }
+
+func fail(code, format string, a ...any) error {
+	return &checkError{code: code, detail: fmt.Sprintf(format, a...)}
 }
 
 // PreflightInput is what the check needs of the node-agent's configuration.
@@ -64,7 +113,11 @@ func Preflight(ctx context.Context, cfg PreflightInput) PreflightResult {
 
 func statusOf(err error) string {
 	if err != nil {
-		return Unavailable(err.Error())
+		var ce *checkError
+		if errors.As(err, &ce) {
+			return Unavailable(ce.code, ce.detail)
+		}
+		return Unavailable(CodeNodeUnconfirmed, err.Error())
 	}
 	return PreflightReady
 }
@@ -72,25 +125,25 @@ func statusOf(err error) string {
 func checkSocket(path string) error {
 	fi, err := os.Stat(path)
 	if err != nil {
-		return fmt.Errorf("the container runtime socket %s is not there (%v)", path, err)
+		return fail(CodeRuntimeSocket, "the container runtime socket %s is not there (%v)", path, err)
 	}
 	if fi.Mode()&os.ModeSocket == 0 {
-		return fmt.Errorf("%s is not a socket", path)
+		return fail(CodeRuntimeSocket, "%s is not a socket", path)
 	}
 	return nil
 }
 
 func checkPersistence(ctx context.Context, cfg PreflightInput) error {
 	if cfg.ContainerdRoot == "" {
-		return fmt.Errorf("CONTAINERD_ROOT is not set (devices.statePersistence.containerdRoot)")
+		return fail(CodeContainerdRootMissing, "CONTAINERD_ROOT is not set (devices.statePersistence.containerdRoot)")
 	}
 	fi, err := os.Stat(cfg.ContainerdRoot)
 	if err != nil || !fi.IsDir() {
-		return fmt.Errorf("the containerd root %s does not exist on this node: set devices.statePersistence.containerdRoot to the containerd root of the cluster (for example /var/lib/containerd, or /var/lib/k0s/containerd on k0s)", cfg.ContainerdRoot)
+		return fail(CodeContainerdRootMissing, "the containerd root %s does not exist on this node: set devices.statePersistence.containerdRoot to the containerd root of the cluster (for example /var/lib/containerd, or /var/lib/k0s/containerd on k0s)", cfg.ContainerdRoot)
 	}
 	snap, _ := filepath.Glob(filepath.Join(cfg.ContainerdRoot, "io.containerd.snapshotter.v1.*"))
 	if len(snap) == 0 {
-		return fmt.Errorf("the containerd root %s has no snapshotter (io.containerd.snapshotter.v1.*): it is not the containerd root of this node", cfg.ContainerdRoot)
+		return fail(CodeSnapshotterMissing, "the containerd root %s has no snapshotter (io.containerd.snapshotter.v1.*): it is not the containerd root of this node", cfg.ContainerdRoot)
 	}
 	if err := checkSocket(cfg.CRISock); err != nil {
 		return err
@@ -102,28 +155,28 @@ func checkPersistence(ctx context.Context, cfg PreflightInput) error {
 // the registry asking for the credentials the node-agent has).
 func checkRegistry(ctx context.Context, addr string) error {
 	if addr == "" {
-		return fmt.Errorf("the snapshot registry address is not set")
+		return fail(CodeSnapshotRegistry, "the snapshot registry address is not set")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/v2/", nil)
 	if err != nil {
-		return fmt.Errorf("the snapshot registry address %q: %v", addr, err)
+		return fail(CodeSnapshotRegistry, "the snapshot registry address %q: %v", addr, err)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("the snapshot registry %s cannot be reached from this node: %v", addr, err)
+		return fail(CodeSnapshotRegistry, "the snapshot registry %s cannot be reached from this node: %v", addr, err)
 	}
 	_ = resp.Body.Close()
 	if resp.StatusCode >= 500 {
-		return fmt.Errorf("the snapshot registry %s answers %d", addr, resp.StatusCode)
+		return fail(CodeSnapshotRegistry, "the snapshot registry %s answers %d", addr, resp.StatusCode)
 	}
 	return nil
 }
 
 func checkObservation(cfg PreflightInput) error {
 	if _, err := os.Stat(filepath.Join(cfg.CgroupRoot, "cgroup.controllers")); err != nil {
-		return fmt.Errorf("the host cgroup v2 tree is not at %s (CGROUP_ROOT): %v", cfg.CgroupRoot, err)
+		return fail(CodeCgroupV2Missing, "the host cgroup v2 tree is not at %s (CGROUP_ROOT): %v", cfg.CgroupRoot, err)
 	}
 	return checkSocket(cfg.CRISock)
 }
@@ -140,10 +193,12 @@ func (r PreflightResult) Annotations() map[string]string {
 func (r PreflightResult) Failures() []string {
 	var out []string
 	if why, bad := IsUnavailable(r.StatePersistence); bad {
-		out = append(out, "state persistence: "+why)
+		code, _ := CodeOf(r.StatePersistence)
+		out = append(out, "state persistence: "+code+": "+why)
 	}
 	if why, bad := IsUnavailable(r.RuntimeObservation); bad {
-		out = append(out, "runtime observation: "+why)
+		code, _ := CodeOf(r.RuntimeObservation)
+		out = append(out, "runtime observation: "+code+": "+why)
 	}
 	return out
 }

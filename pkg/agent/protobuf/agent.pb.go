@@ -6968,8 +6968,11 @@ type StatePersistenceFeature struct {
 	// The most entries (files, directories, links) one snapshot layer may hold.
 	MaxEntries int32 `protobuf:"varint,7,opt,name=max_entries,json=maxEntries,proto3" json:"max_entries,omitempty"`
 	// Why `available` is false although the cluster is configured for persistence: the node-agents check their node at start (the
-	// containerd root, the container runtime, the snapshot registry) and the answer is what the nodes REALLY support. Empty when
-	// available, when persistence is off by configuration, or when no node has reported yet.
+	// containerd root, the container runtime, the snapshot registry) and the answer is what the nodes REALLY support. Grammar:
+	// "<CODE>:<n>/<m>" with CODE one of CONTAINERD_ROOT_MISSING, SNAPSHOTTER_MISSING, RUNTIME_SOCKET_UNAVAILABLE,
+	// SNAPSHOT_REGISTRY_UNREACHABLE, PERSISTENCE_DISABLED, NODE_UNCONFIRMED (the code most nodes give), n the lab nodes that do not
+	// confirm and m the lab nodes asked. Never a node name, a path or an error text. Empty when available, when persistence is off by
+	// configuration, or when no node has reported yet.
 	UnavailableReason string `protobuf:"bytes,8,opt,name=unavailable_reason,json=unavailableReason,proto3" json:"unavailable_reason,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
@@ -9186,8 +9189,10 @@ type LifecycleFeature struct {
 	RetainedRestart  bool                   `protobuf:"varint,4,opt,name=retained_restart,json=retainedRestart,proto3" json:"retained_restart,omitempty"`
 	FullGroupStop    bool                   `protobuf:"varint,5,opt,name=full_group_stop,json=fullGroupStop,proto3" json:"full_group_stop,omitempty"`
 	// Why a capability the cluster is configured for is false: the node-agents check their node at start and the answer is what the
-	// nodes REALLY support (runtime observation: the cgroup tree and the container runtime; retained restart: persistence too). Empty
-	// when nothing configured is held back.
+	// nodes REALLY support (runtime observation: the cgroup tree and the container runtime; retained restart: persistence too). Same
+	// grammar as StatePersistenceFeature.unavailable_reason, with CGROUP_V2_MISSING, RUNTIME_SOCKET_UNAVAILABLE, OBSERVATION_DISABLED and
+	// NODE_UNCONFIRMED for the observation. The observation's reason wins when both fail (it holds back every capability). Empty when
+	// nothing configured is held back.
 	UnavailableReason string `protobuf:"bytes,6,opt,name=unavailable_reason,json=unavailableReason,proto3" json:"unavailable_reason,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache

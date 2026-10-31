@@ -145,6 +145,9 @@ func (h *Handler) acceptLifecycle(ctx context.Context, resolver *groupResolver, 
 		if startTargetInvalid(before, admission, intent) {
 			return fmt.Errorf("invalid or retired start target")
 		}
+		if err := h.refuseStartWithoutPersistence(ctx, before); err != nil {
+			return err
+		}
 		if err := h.claimChildAdmission(ctx, ref.GetLabGroup(), admission); err != nil {
 			return err
 		}

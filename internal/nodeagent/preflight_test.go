@@ -55,31 +55,32 @@ func TestPreflightPassesOnAGoodNode(t *testing.T) {
 
 func TestPreflightSaysWhatIsWrong(t *testing.T) {
 	for name, tc := range map[string]struct {
-		mod       func(*PreflightInput)
-		persist   string // substring of the reason, "" = ready
-		observe   string
-		notAsked  bool
-		wantAnnot string
+		mod     func(*PreflightInput)
+		persist string // the code, "" = ready
+		observe string
 	}{
-		"containerd root missing (the k0s default on kind)": {mod: func(i *PreflightInput) { i.ContainerdRoot = "/var/lib/k0s/containerd-nope" }, persist: "set devices.statePersistence.containerdRoot"},
-		"containerd root without a snapshotter":             {mod: func(i *PreflightInput) { i.ContainerdRoot = t.TempDir() }, persist: "has no snapshotter"},
-		"no root configured":                                {mod: func(i *PreflightInput) { i.ContainerdRoot = "" }, persist: "CONTAINERD_ROOT is not set"},
-		"CRI socket missing":                                {mod: func(i *PreflightInput) { i.CRISock = "/nonexistent.sock" }, persist: "socket", observe: "socket"},
-		"registry down":                                     {mod: func(i *PreflightInput) { i.RegistryAddr = "127.0.0.1:1" }, persist: "cannot be reached"},
-		"registry broken":                                   {mod: func(i *PreflightInput) { i.RegistryAddr = registry(t, 503) }, persist: "answers 503"},
-		"no cgroup v2 tree":                                 {mod: func(i *PreflightInput) { i.CgroupRoot = t.TempDir() }, observe: "cgroup v2 tree"},
+		"containerd root missing (the k0s default on kind)": {mod: func(i *PreflightInput) { i.ContainerdRoot = "/var/lib/k0s/containerd-nope" }, persist: CodeContainerdRootMissing},
+		"containerd root without a snapshotter":             {mod: func(i *PreflightInput) { i.ContainerdRoot = t.TempDir() }, persist: CodeSnapshotterMissing},
+		"no root configured":                                {mod: func(i *PreflightInput) { i.ContainerdRoot = "" }, persist: CodeContainerdRootMissing},
+		"CRI socket missing":                                {mod: func(i *PreflightInput) { i.CRISock = "/nonexistent.sock" }, persist: CodeRuntimeSocket, observe: CodeRuntimeSocket},
+		"registry down":                                     {mod: func(i *PreflightInput) { i.RegistryAddr = "127.0.0.1:1" }, persist: CodeSnapshotRegistry},
+		"registry broken":                                   {mod: func(i *PreflightInput) { i.RegistryAddr = registry(t, 503) }, persist: CodeSnapshotRegistry},
+		"no cgroup v2 tree":                                 {mod: func(i *PreflightInput) { i.CgroupRoot = t.TempDir() }, observe: CodeCgroupV2Missing},
 	} {
 		t.Run(name, func(t *testing.T) {
 			in := goodInput(t)
 			tc.mod(&in)
 			r := Preflight(context.Background(), in)
 			check := func(what, got, want string) {
-				why, bad := IsUnavailable(got)
+				code, bad := CodeOf(got)
 				switch {
 				case want == "" && got != PreflightReady:
 					t.Errorf("%s: want ready, got %q", what, got)
-				case want != "" && (!bad || !strings.Contains(why, want)):
-					t.Errorf("%s: want a reason with %q, got %q", what, want, got)
+				case want != "" && (!bad || code != want):
+					t.Errorf("%s: want the code %s, got %q", what, want, got)
+				}
+				if why, _ := IsUnavailable(got); want != "" && why == "" {
+					t.Errorf("%s: the detail for the operator is missing in %q", what, got)
 				}
 			}
 			check("persistence", r.StatePersistence, tc.persist)
@@ -94,8 +95,15 @@ func TestPreflightOnlyChecksWhatIsAskedFor(t *testing.T) {
 	if r.StatePersistence != PreflightDisabled || r.RuntimeObservation != PreflightDisabled || len(r.Failures()) != 0 {
 		t.Fatalf("%+v", r)
 	}
-	a := Unavailable("x")
+	a := Unavailable(CodeRuntimeSocket, "x")
 	if why, bad := IsUnavailable(a); !bad || why != "x" {
 		t.Fatal(a)
+	}
+	if code, _ := CodeOf(a); code != CodeRuntimeSocket {
+		t.Fatal(code)
+	}
+	// a value of an older node-agent, with no code, is unconfirmed
+	if code, bad := CodeOf("unavailable: some old text"); !bad || code != CodeNodeUnconfirmed {
+		t.Fatalf("%q %v", code, bad)
 	}
 }

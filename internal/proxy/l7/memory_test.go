@@ -125,6 +125,10 @@ func TestL7MemoryPerConnection(t *testing.T) {
 	var clients []*http.Client
 	var mu sync.Mutex
 	var failures atomic.Int64
+	// At most this many connections are being set up (dial, TLS handshake, request) at once: the accept queue of a loopback listener is
+	// short, and a burst of thousands that a loaded machine cannot serve in time is reset or timed out by the kernel. The connections
+	// themselves stay open, so the number in flight still reaches the thousands.
+	setup := make(chan struct{}, 64)
 	open := func(n int) {
 		var wg sync.WaitGroup
 		for i := 0; i < n; i++ {
@@ -145,7 +149,10 @@ func TestL7MemoryPerConnection(t *testing.T) {
 				var resp *http.Response
 				var err error
 				for attempt := 0; attempt < 100; attempt++ {
-					if resp, err = c.Do(req); err == nil || !connectRefused(err) {
+					setup <- struct{}{}
+					resp, err = c.Do(req)
+					<-setup
+					if err == nil || !connectRefused(err) {
 						break
 					}
 					time.Sleep(50 * time.Millisecond)

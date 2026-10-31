@@ -2502,9 +2502,12 @@ its snapshotter, the container runtime socket, the snapshot registry; the host c
 switches the feature off in its process, logs it, puts the result in the Node annotations `cybericebox.com/state-persistence` and
 `cybericebox.com/runtime-observation` (`ready`, `disabled` or `unavailable: <reason>`) and tells it in a Warning Event on the Node
 (`LifecyclePreflightFailed`). The containerd root volume has no hostPath type check, so a wrong path reaches this check. `GetFeatures` reports
-persistence and the lifecycle capabilities as available only when every lab node that is ready for pods confirms them, and puts the reason in
-`state_persistence.unavailable_reason` and `lifecycle.unavailable_reason`; a node without a result (an older node-agent) holds them back, and
-with no ready node the configured values stand. The check runs once at the start of the node-agent: restart it after fixing the path.
+persistence and the lifecycle capabilities as available only when every lab node that is ready for pods confirms them, and gives the reason
+as a fixed code and a count in `state_persistence.unavailable_reason` and `lifecycle.unavailable_reason`: `<CODE>:<n>/<m>` (CODE one of
+`CONTAINERD_ROOT_MISSING`, `SNAPSHOTTER_MISSING`, `RUNTIME_SOCKET_UNAVAILABLE`, `SNAPSHOT_REGISTRY_UNREACHABLE`, `CGROUP_V2_MISSING`,
+`PERSISTENCE_DISABLED`, `OBSERVATION_DISABLED`, `NODE_UNCONFIRMED`; n lab nodes do not confirm, m were asked). No node names, paths or error
+text leave the cluster; the detail is in the Node annotation (`unavailable: CODE: detail`), the Event and the node-agent log. A node without a
+result (an older node-agent) holds them back (`NODE_UNCONFIRMED`), and with no ready node the configured values stand. The check runs once at the start of the node-agent: restart it after fixing the path.
 
 Full group lifecycle completion requires direct UID/revision reads, durable
 pre-scale service inventory and node-owned first-success cleanup acknowledgements.

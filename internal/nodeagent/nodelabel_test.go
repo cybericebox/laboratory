@@ -64,7 +64,7 @@ func TestNodeLabelerMarksItsNodeAndClearsItOnStop(t *testing.T) {
 func TestNodeLabelerPublishesThePreflightWithTheLabel(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).WithObjects(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n1"}}).Build()
 	rec := record.NewFakeRecorder(10)
-	pre := PreflightResult{StatePersistence: Unavailable("no containerd root"), RuntimeObservation: PreflightReady}
+	pre := PreflightResult{StatePersistence: Unavailable(CodeContainerdRootMissing, "no containerd root"), RuntimeObservation: PreflightReady}
 	l := &NodeLabeler{Client: c, NodeName: "n1", Interval: 10 * time.Millisecond, Annotations: pre.Annotations(), Recorder: rec}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -83,7 +83,7 @@ func TestNodeLabelerPublishesThePreflightWithTheLabel(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if n.Annotations[names.AnnotationStatePersistence] != "unavailable: no containerd root" || n.Annotations[names.AnnotationRuntimeObservation] != "ready" {
+	if n.Annotations[names.AnnotationStatePersistence] != "unavailable: CONTAINERD_ROOT_MISSING: no containerd root" || n.Annotations[names.AnnotationRuntimeObservation] != "ready" {
 		t.Fatalf("annotations %v", n.Annotations)
 	}
 	cancel()

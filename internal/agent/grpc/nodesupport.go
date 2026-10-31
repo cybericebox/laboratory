@@ -3,8 +3,6 @@ package grpc
 import (
 	"context"
 	"fmt"
-	"sort"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,7 +19,9 @@ import (
 // feature as available only when every lab node that serves pods confirms it, and says why not otherwise, so a caller knows what it can
 // ask of this cluster.
 
-// nodeVerdict is what the lab nodes say about the features the chart is configured for. An empty reason is "confirmed (or not asked)".
+// nodeVerdict is what the lab nodes say about the features the chart is configured for. A reason is a fixed code and a count, never a
+// node name, a path or an error text: "CODE:n/m" with n the lab nodes that do not confirm the feature and m the lab nodes asked. An empty
+// reason is "confirmed (or not asked)". The detail is on the Node (annotation, Event) for the operator of the cluster.
 type nodeVerdict struct {
 	checked                              int
 	persistenceReason, observationReason string
@@ -32,7 +32,7 @@ type nodeVerdict struct {
 // nothing to ask: checked is 0 and the configured values stand.
 func verifyNodes(nodes []corev1.Node, selector map[string]string, tolerations []corev1.Toleration, wantPersistence, wantObservation bool) nodeVerdict {
 	var v nodeVerdict
-	var persistence, observation []string
+	persistence, observation := map[string]int{}, map[string]int{}
 	for i := range nodes {
 		n := &nodes[i]
 		if n.Labels[names.LabelNodeAgentReady] != "true" || !nodecap.Schedulable(n, selector, tolerations) {
@@ -40,47 +40,50 @@ func verifyNodes(nodes []corev1.Node, selector map[string]string, tolerations []
 		}
 		v.checked++
 		if wantPersistence {
-			if why := annotationProblem(n, names.AnnotationStatePersistence); why != "" {
-				persistence = append(persistence, fmt.Sprintf("node %s: %s", n.Name, why))
+			if code := annotationCode(n, names.AnnotationStatePersistence, nodeagent.CodePersistenceDisabled); code != "" {
+				persistence[code]++
 			}
 		}
 		if wantObservation {
-			if why := annotationProblem(n, names.AnnotationRuntimeObservation); why != "" {
-				observation = append(observation, fmt.Sprintf("node %s: %s", n.Name, why))
+			if code := annotationCode(n, names.AnnotationRuntimeObservation, nodeagent.CodeObservationDisabled); code != "" {
+				observation[code]++
 			}
 		}
 	}
-	v.persistenceReason, v.observationReason = joinReasons(persistence), joinReasons(observation)
+	v.persistenceReason, v.observationReason = codeReason(persistence, v.checked), codeReason(observation, v.checked)
 	return v
 }
 
-// annotationProblem is "" for a confirmed feature, else what the node says.
-func annotationProblem(n *corev1.Node, key string) string {
-	switch v, ok := n.Annotations[key]; {
+// annotationCode is "" for a confirmed feature, else the code of what the node says.
+func annotationCode(n *corev1.Node, key, disabled string) string {
+	v, ok := n.Annotations[key]
+	switch {
 	case !ok:
-		return "its node-agent has not reported (not started yet, or an older version)"
+		return nodeagent.CodeNodeUnconfirmed
 	case v == nodeagent.PreflightReady:
 		return ""
 	case v == nodeagent.PreflightDisabled:
-		return "not enabled on the node (the node-agent is configured without it)"
-	default:
-		if why, bad := nodeagent.IsUnavailable(v); bad {
-			return why
-		}
-		return "unknown state " + v
+		return disabled
 	}
+	if code, bad := nodeagent.CodeOf(v); bad {
+		return code
+	}
+	return nodeagent.CodeNodeUnconfirmed
 }
 
-// joinReasons names the first failing node in full and counts the rest.
-func joinReasons(r []string) string {
-	sort.Strings(r)
-	switch len(r) {
-	case 0:
-		return ""
-	case 1:
-		return r[0]
+// codeReason is "CODE:n/m" for the code most nodes give (the first by name on a tie), where n counts all the nodes that fail.
+func codeReason(byCode map[string]int, total int) string {
+	failing, best, bestN := 0, "", 0
+	for code, n := range byCode {
+		failing += n
+		if n > bestN || n == bestN && code < best {
+			best, bestN = code, n
+		}
 	}
-	return fmt.Sprintf("%s (and %d more nodes)", r[0], len(r)-1)
+	if failing == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s:%d/%d", best, failing, total)
 }
 
 // nodeVerdict reads the nodes for the features the chart configured.
@@ -100,24 +103,21 @@ func applyNodeSupport(base *protobuf.FeaturesResponse, v nodeVerdict) {
 	if v.checked == 0 {
 		return
 	}
-	var reasons []string
 	if v.persistenceReason != "" {
 		if base.StatePersistence != nil {
 			base.StatePersistence.Available = false
-			base.StatePersistence.UnavailableReason = "state persistence: " + v.persistenceReason
+			base.StatePersistence.UnavailableReason = v.persistenceReason
 		}
 		if base.Lifecycle != nil {
 			base.Lifecycle.RetainedRestart = false
+			base.Lifecycle.UnavailableReason = v.persistenceReason
 		}
-		reasons = append(reasons, "state persistence: "+v.persistenceReason)
 	}
+	// the observation holds back every capability, so its reason is the one a caller needs to see first
 	if v.observationReason != "" && base.Lifecycle != nil {
 		l := base.Lifecycle
 		l.PerLabStop, l.RequiredSnapshot, l.ConfirmedRuntime, l.RetainedRestart, l.FullGroupStop = false, false, false, false, false
-		reasons = append(reasons, "runtime observation: "+v.observationReason)
-	}
-	if base.Lifecycle != nil && len(reasons) > 0 {
-		base.Lifecycle.UnavailableReason = strings.Join(reasons, "; ")
+		l.UnavailableReason = v.observationReason
 	}
 }
 

@@ -35,7 +35,7 @@ func fullFeatures() *protobuf.FeaturesResponse {
 func TestVerifyNodesConfirmsWhatEveryReadyNodeConfirms(t *testing.T) {
 	ok := nodeagent.PreflightReady
 	nodes := []corev1.Node{readyNode("a", ok, ok), readyNode("b", ok, ok)}
-	notReady := readyNode("c", nodeagent.Unavailable("broken"), nodeagent.Unavailable("broken"))
+	notReady := readyNode("c", nodeagent.Unavailable(nodeagent.CodeRuntimeSocket, "broken"), nodeagent.Unavailable(nodeagent.CodeRuntimeSocket, "broken"))
 	delete(notReady.Labels, names.LabelNodeAgentReady) // a node whose node-agent is not serving is not asked
 	v := verifyNodes(append(nodes, notReady), nil, nil, true, true)
 	if v.checked != 2 || v.persistenceReason != "" || v.observationReason != "" {
@@ -50,29 +50,29 @@ func TestVerifyNodesConfirmsWhatEveryReadyNodeConfirms(t *testing.T) {
 
 func TestPersistenceFailureHoldsBackPersistenceAndRetainedRestartWithTheReason(t *testing.T) {
 	ok := nodeagent.PreflightReady
-	nodes := []corev1.Node{readyNode("a", ok, ok), readyNode("b", nodeagent.Unavailable("the containerd root /x does not exist on this node"), ok)}
+	nodes := []corev1.Node{readyNode("a", ok, ok), readyNode("b", nodeagent.Unavailable(nodeagent.CodeContainerdRootMissing, "the containerd root /secret/path does not exist on this node"), ok)}
 	v := verifyNodes(nodes, nil, nil, true, true)
 	f := fullFeatures()
 	applyNodeSupport(f, v)
-	if f.StatePersistence.Available || !strings.Contains(f.StatePersistence.UnavailableReason, "node b: the containerd root /x") {
+	if f.StatePersistence.Available || f.StatePersistence.UnavailableReason != "CONTAINERD_ROOT_MISSING:1/2" {
 		t.Fatalf("persistence: %v", f.StatePersistence)
 	}
 	l := f.Lifecycle
 	if l.RetainedRestart || !l.PerLabStop || !l.ConfirmedRuntime || !l.FullGroupStop {
 		t.Fatalf("only retained restart needs the snapshots: %v", l)
 	}
-	if !strings.Contains(l.UnavailableReason, "state persistence") {
+	if l.UnavailableReason != "CONTAINERD_ROOT_MISSING:1/2" {
 		t.Errorf("reason: %q", l.UnavailableReason)
 	}
 }
 
 func TestObservationFailureHoldsBackEveryLifecycleCapability(t *testing.T) {
 	ok := nodeagent.PreflightReady
-	nodes := []corev1.Node{readyNode("a", ok, nodeagent.Unavailable("no cgroup tree")), readyNode("b", ok, nodeagent.Unavailable("no cgroup tree"))}
+	nodes := []corev1.Node{readyNode("a", ok, nodeagent.Unavailable(nodeagent.CodeCgroupV2Missing, "no cgroup tree at /host/sys/fs/cgroup")), readyNode("b", ok, nodeagent.Unavailable(nodeagent.CodeCgroupV2Missing, "no cgroup tree at /host/sys/fs/cgroup"))}
 	f := fullFeatures()
 	applyNodeSupport(f, verifyNodes(nodes, nil, nil, true, true))
 	l := f.Lifecycle
-	if l.PerLabStop || l.ConfirmedRuntime || l.RetainedRestart || l.FullGroupStop || !strings.Contains(l.UnavailableReason, "node a: no cgroup tree (and 1 more nodes)") {
+	if l.PerLabStop || l.ConfirmedRuntime || l.RetainedRestart || l.FullGroupStop || l.UnavailableReason != "CGROUP_V2_MISSING:2/2" {
 		t.Fatalf("%v", l)
 	}
 	if !f.StatePersistence.Available {
@@ -91,6 +91,9 @@ func TestUnreportedAndDisabledNodesHoldFeaturesBack(t *testing.T) {
 		if f.StatePersistence.Available || f.StatePersistence.UnavailableReason == "" {
 			t.Errorf("%s: %v", name, f.StatePersistence)
 		}
+		if got := f.StatePersistence.UnavailableReason; got != "NODE_UNCONFIRMED:1/1" && got != "PERSISTENCE_DISABLED:1/1" {
+			t.Errorf("%s: a fixed code, got %q", name, got)
+		}
 	}
 }
 
@@ -102,7 +105,7 @@ func TestNothingToVerifyKeepsTheConfiguredFeatures(t *testing.T) {
 		t.Fatalf("%v %v", f.StatePersistence, f.Lifecycle)
 	}
 	ok := nodeagent.PreflightReady
-	v := verifyNodes([]corev1.Node{readyNode("a", nodeagent.Unavailable("x"), nodeagent.Unavailable("y"))}, nil, nil, false, false)
+	v := verifyNodes([]corev1.Node{readyNode("a", nodeagent.Unavailable(nodeagent.CodeRuntimeSocket, "x"), nodeagent.Unavailable(nodeagent.CodeRuntimeSocket, "y"))}, nil, nil, false, false)
 	if v.persistenceReason != "" || v.observationReason != "" {
 		t.Errorf("a feature the chart does not configure is not judged: %+v", v)
 	}
@@ -131,15 +134,42 @@ func TestGetFeaturesFollowsTheNodes(t *testing.T) {
 		}
 	}
 	addNode(t, k, "w1", map[string]string{})
-	setAnn("w1", map[string]string{names.AnnotationStatePersistence: nodeagent.Unavailable("the containerd root /var/lib/k0s/containerd does not exist on this node"), names.AnnotationRuntimeObservation: nodeagent.PreflightReady})
+	setAnn("w1", map[string]string{names.AnnotationStatePersistence: nodeagent.Unavailable(nodeagent.CodeContainerdRootMissing, "the containerd root /var/lib/k0s/containerd does not exist on this node"), names.AnnotationRuntimeObservation: nodeagent.PreflightReady})
 	f, err := h.GetFeatures(ctx, &protobuf.Empty{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f.GetStatePersistence().GetAvailable() || !strings.Contains(f.GetStatePersistence().GetUnavailableReason(), "/var/lib/k0s/containerd") {
+	if f.GetStatePersistence().GetAvailable() || f.GetStatePersistence().GetUnavailableReason() != "CONTAINERD_ROOT_MISSING:1/1" {
 		t.Fatalf("persistence: %v", f.GetStatePersistence())
+	}
+	// nothing of the cluster's inside leaves it: no node name, no path, no error text, in any field of the answer
+	for _, leak := range []string{"w1", "/var/lib", "k0s", "does not exist on this node", "containerd root /"} {
+		if strings.Contains(f.String(), leak) {
+			t.Errorf("GetFeatures leaks %q: %s", leak, f.String())
+		}
 	}
 	if f.GetLifecycle().GetRetainedRestart() || !f.GetLifecycle().GetPerLabStop() {
 		t.Fatalf("lifecycle: %v", f.GetLifecycle())
+	}
+}
+
+// With several failing nodes the code most of them give is reported with the count of failing nodes out of the nodes asked; the reason
+// is always one of the fixed codes.
+func TestReasonIsAFixedCodeWithACount(t *testing.T) {
+	ok := nodeagent.PreflightReady
+	nodes := []corev1.Node{
+		readyNode("n1", nodeagent.Unavailable(nodeagent.CodeSnapshotRegistry, "http://registry.internal:5000 refused"), ok),
+		readyNode("n2", nodeagent.Unavailable(nodeagent.CodeSnapshotRegistry, "x"), ok),
+		readyNode("n3", nodeagent.Unavailable(nodeagent.CodeContainerdRootMissing, "y"), ok),
+		readyNode("n4", ok, ok),
+	}
+	v := verifyNodes(nodes, nil, nil, true, true)
+	if v.persistenceReason != "SNAPSHOT_REGISTRY_UNREACHABLE:3/4" {
+		t.Fatalf("%q", v.persistenceReason)
+	}
+	for _, c := range nodeagent.AllCodes {
+		if strings.ToUpper(c) != c || strings.ContainsAny(c, " :/") {
+			t.Errorf("code %q must be upper case with no separators", c)
+		}
 	}
 }
