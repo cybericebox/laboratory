@@ -1,0 +1,94 @@
+{{- if .Values.operator.admissionPolicy.enabled }}
+{{- /*
+cni-gate sends the pods of the namespaces named lg-* to the node-agent and every other pod straight to the real CNI. These two policies keep that
+boundary true for everyone (the rules apply to all users, not only the operator):
+  1. a Namespace may carry the LabGroup label only with the name prefix lg-, and only the operator's ServiceAccount may add, change or
+     remove the label;
+  2. a pod that needs the node-agent (the network, default-network or conntrack-accounting annotation) may live only in an lg-* namespace.
+     Workload templates (Deployment, StatefulSet, DaemonSet, ReplicaSet, Job, CronJob) are checked too, so the pod is refused before a
+     controller makes it. See DEPLOY.md, "Which pods the node-agent wires".
+*/ -}}
+{{- $operator := printf "system:serviceaccount:%s:laboratory-controller-manager" .Release.Namespace }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-group-namespace-label
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [namespaces]
+  variables:
+    - name: newLabeled
+      expression: "object.metadata.?labels.orValue({}).exists(k, k == 'laboratory.cybericebox.com/group')"
+    - name: oldLabeled
+      expression: "request.operation == 'UPDATE' && oldObject.metadata.?labels.orValue({}).exists(k, k == 'laboratory.cybericebox.com/group')"
+    - name: changed
+      expression: "variables.newLabeled != variables.oldLabeled || (variables.newLabeled && object.metadata.labels['laboratory.cybericebox.com/group'] != oldObject.metadata.labels['laboratory.cybericebox.com/group'])"
+  validations:
+    - expression: {{ printf "!variables.changed || request.userInfo.username == '%s'" $operator | quote }}
+      message: "only the operator may add, change or remove the label laboratory.cybericebox.com/group of a namespace"
+      reason: Forbidden
+    - expression: "!variables.newLabeled || object.metadata.name.startsWith('lg-') || !variables.changed"
+      message: "a namespace of a LabGroup is named lg-*: the label laboratory.cybericebox.com/group is not allowed on another name"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-group-namespace-label
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  policyName: laboratory-group-namespace-label
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-network-pods
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+      - apiGroups: [apps]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [deployments, statefulsets, daemonsets, replicasets]
+      - apiGroups: [batch]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [jobs, cronjobs]
+  variables:
+    - name: annotations
+      expression: >-
+        request.resource.resource == 'pods' ? object.metadata.?annotations.orValue({}) :
+        request.resource.resource == 'cronjobs' ? object.spec.jobTemplate.spec.template.?metadata.?annotations.orValue({}) :
+        object.spec.template.?metadata.?annotations.orValue({})
+  validations:
+    - expression: "!variables.annotations.exists(k, k in ['network.cybericebox.com/networks', 'network.cybericebox.com/default-network', 'network.cybericebox.com/conntrack-accounting']) || namespaceObject.metadata.name.startsWith('lg-')"
+      message: "a pod with a network annotation of the laboratory (network.cybericebox.com/networks, default-network, conntrack-accounting) may live only in a namespace named lg-*"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-network-pods
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  policyName: laboratory-network-pods
+  validationActions: [Deny]
+{{- end }}

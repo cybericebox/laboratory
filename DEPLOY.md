@@ -1480,6 +1480,23 @@ The gateway forwards to the **public internet only**:
 - Not done here: a sandbox RuntimeClass (gVisor, Kata) for hostile images, and Pod Security Admission on the group namespaces (the lab pods need NET_ADMIN,
   which `baseline` allows, but the `extended` profile adds more; the admission policy below is the guard that matters for the operator).
 
+### Which pods the node-agent wires
+
+`cni-gate` looks at the namespace of the pod only. A pod in a namespace named `lg-*` (the namespaces of the LabGroups) goes through the node-agent (`SetupNetworks`);
+if the node-agent does not answer, the ADD is refused and the kubelet retries it: a lab pod never reaches Cilium on its own. A pod of **any other namespace** goes straight to the
+real CNI and the node-agent is not called, so the system pods of a node (Cilium, CoreDNS, kube-proxy, the node-agent itself) start with the node-agent down or not yet up. DEL
+always reaches the real CNI; for a pod outside `lg-*` it does not ask the node-agent. No taint is added: `node-starting` and `node-agent-ready` keep lab pods off a node without a node-agent.
+
+Two ValidatingAdmissionPolicies (`operator.admissionPolicy.enabled`, template `operator/lab-namespace-policy.yaml`) keep the prefix true for everyone:
+
+- `laboratory-group-namespace-label`: the label `laboratory.cybericebox.com/group` may be added, changed or removed on a Namespace only by the operator's ServiceAccount,
+  and only on a name starting with `lg-`.
+- `laboratory-network-pods`: a pod (and the template of a Deployment, StatefulSet, DaemonSet, ReplicaSet, Job or CronJob) with one of the annotations
+  `network.cybericebox.com/networks`, `default-network` or `conntrack-accounting` is refused outside `lg-*`.
+
+A LabGroup made with the old naming (the bare group name as its namespace, kept in `status.namespace`) is not an `lg-*` namespace: its pods go to the real CNI without OVS wiring.
+Recreate such a group (there is no old data on a fresh platform).
+
 ### Namespaces of the lab groups
 
 The namespace of a **new** LabGroup is `lg-<name, at most 40 characters>-<8 hex of the SHA-256 of the whole name>` (at most 52 characters), never the bare group

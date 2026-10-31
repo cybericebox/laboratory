@@ -21,6 +21,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/names"
 	nodev1 "github.com/cybericebox/laboratory/pkg/rpc/node/v1"
 )
@@ -58,6 +59,14 @@ type NetConf struct {
 	PreserveDelegateName bool                   `json:"preserveDelegateName,omitempty"`
 }
 
+// labNamespace says whether a pod of this namespace is a lab pod: only those go through the node-agent. Every other pod (the system's,
+// the platform's, anyone's) goes straight to the real CNI (Cilium) and does not depend on the node-agent at all, so a node whose
+// node-agent is not up yet (or is down) still starts its system pods. The prefix is the one the operator gives the namespaces of its
+// LabGroups, and an admission policy (chart) keeps it so: only the operator may label a namespace as a LabGroup's, and only with it.
+func labNamespace(ns string) bool {
+	return strings.HasPrefix(ns, laboratoryv1alpha1.LabGroupNamespacePrefix)
+}
+
 func Run() {
 	skel.PluginMainFuncs(skel.CNIFuncs{
 		Add:    cmdADD,
@@ -79,6 +88,10 @@ func cmdADD(args *skel.CmdArgs) error {
 	logf("ADD pod=%s/%s uid=%s netns=%s ifname=%s", ns, name, uid, args.Netns, args.IfName)
 	if ns == "" || name == "" {
 		logf("ADD no pod args → delegateReal")
+		return delegateReal(conf)
+	}
+	if !labNamespace(ns) {
+		logf("ADD pod=%s/%s is not a lab pod → delegateReal", ns, name)
 		return delegateReal(conf)
 	}
 
@@ -191,7 +204,7 @@ func cmdDEL(args *skel.CmdArgs) error {
 	defaultIface, hasAnnotation := cachedIface, cached
 	if cached {
 		logf("DEL using ADD receipt container=%s outerIfName=%s delegateIfName=%s", args.ContainerID, args.IfName, cachedIface)
-	} else {
+	} else if ns, _, _ := parsePodArgs(args.Args); labNamespace(ns) {
 		defaultIface, hasAnnotation, _ = getPodAnnotation(conf, args.Args, names.AnnotationDefaultNetwork)
 	}
 
