@@ -95,3 +95,39 @@ func TestNodeLabelerPublishesThePreflightWithTheLabel(t *testing.T) {
 		t.Errorf("event %q", ev)
 	}
 }
+
+// The retry of a failed check changes the annotation through the labeler: the next assertion of the label does not put the start-up
+// result ("unavailable") back over the newer "ready" (a patch of the node alone would be undone within a minute).
+func TestNodeLabelerKeepsANewerCheckResult(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).WithObjects(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n1"}}).Build()
+	pre := PreflightResult{StatePersistence: Unavailable(CodeSnapshotRegistry, "registry not up yet"), RuntimeObservation: PreflightReady}
+	l := &NodeLabeler{Client: c, NodeName: "n1", Interval: 5 * time.Millisecond, Annotations: pre.Annotations()}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- l.Start(ctx) }()
+	persistence := func() string {
+		var n corev1.Node
+		if err := c.Get(context.Background(), types.NamespacedName{Name: "n1"}, &n); err != nil {
+			t.Fatal(err)
+		}
+		return n.Annotations[names.AnnotationStatePersistence]
+	}
+	wait := func(want string) {
+		deadline := time.Now().Add(5 * time.Second)
+		for persistence() != want {
+			if time.Now().After(deadline) {
+				t.Fatalf("annotation = %q, want %q", persistence(), want)
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+	wait(Unavailable(CodeSnapshotRegistry, "registry not up yet"))
+	l.SetAnnotation(names.AnnotationStatePersistence, PreflightReady)
+	wait(PreflightReady)
+	time.Sleep(100 * time.Millisecond) // many assertions later it is still ready
+	if got := persistence(); got != PreflightReady {
+		t.Fatalf("the labeler put the start-up result back: %q", got)
+	}
+	cancel()
+	<-done
+}

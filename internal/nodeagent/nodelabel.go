@@ -3,6 +3,7 @@ package nodeagent
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -28,6 +29,31 @@ type NodeLabeler struct {
 	Annotations map[string]string
 	Recorder    record.EventRecorder
 	told        bool
+
+	// mu guards Annotations: the retry of the start-up check changes a value (SetAnnotation) while Start asserts the others again.
+	mu sync.Mutex
+}
+
+// SetAnnotation changes one of the annotations the labeler keeps asserting. Whoever learns a newer result of a check puts it here (and
+// on the node); a value patched on the node alone would be put back to the start-up result at the next assertion.
+func (l *NodeLabeler) SetAnnotation(key, value string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.Annotations == nil {
+		l.Annotations = map[string]string{}
+	}
+	l.Annotations[key] = value
+}
+
+// annotations is a copy of the annotations to assert now.
+func (l *NodeLabeler) annotations() map[string]string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make(map[string]string, len(l.Annotations))
+	for k, v := range l.Annotations {
+		out[k] = v
+	}
+	return out
 }
 
 // NeedLeaderElection: every node-agent labels its own node.
@@ -69,8 +95,9 @@ func (l *NodeLabeler) set(ctx context.Context, ready bool) error {
 		value = "true"
 	}
 	meta := map[string]any{"labels": map[string]any{names.LabelNodeAgentReady: value}}
-	if ready && len(l.Annotations) > 0 {
-		meta["annotations"] = l.Annotations
+	annotations := l.annotations()
+	if ready && len(annotations) > 0 {
+		meta["annotations"] = annotations
 	}
 	patch, _ := json.Marshal(map[string]any{"metadata": meta})
 	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: l.NodeName}}
@@ -79,7 +106,7 @@ func (l *NodeLabeler) set(ctx context.Context, ready bool) error {
 	}
 	if ready && !l.told && l.Recorder != nil {
 		l.told = true
-		for k, v := range l.Annotations {
+		for k, v := range annotations {
 			if why, bad := IsUnavailable(v); bad {
 				l.Recorder.Eventf(node, corev1.EventTypeWarning, "LifecyclePreflightFailed", "%s: %s", k, why)
 			}

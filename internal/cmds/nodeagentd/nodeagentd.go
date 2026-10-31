@@ -367,7 +367,7 @@ func preflightNode(cfg *nodeagent.Config, log logr.Logger) nodeagent.PreflightRe
 }
 
 // addPersistenceRetry repeats the failed check of state persistence and starts the snapshot engine in this process when it passes.
-func addPersistenceRetry(mgr ctrl.Manager, cfg *nodeagent.Config, first string, log logr.Logger) error {
+func addPersistenceRetry(mgr ctrl.Manager, cfg *nodeagent.Config, first string, labeler *nodeagent.NodeLabeler, log logr.Logger) error {
 	input := cfg.PreflightInput()
 	input.Persistence = true
 	rec := mgr.GetEventRecorderFor("node-agent-preflight")
@@ -383,6 +383,7 @@ func addPersistenceRetry(mgr ctrl.Manager, cfg *nodeagent.Config, first string, 
 			return nil
 		},
 		Annotate: func(ctx context.Context, value string) error {
+			labeler.SetAnnotation(names.AnnotationStatePersistence, value) // the labeler asserts it again every minute
 			patch, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]string{names.AnnotationStatePersistence: value}}})
 			return mgr.GetClient().Patch(ctx, node.DeepCopy(), client.RawPatch(types.MergePatchType, patch))
 		},
@@ -391,17 +392,18 @@ func addPersistenceRetry(mgr ctrl.Manager, cfg *nodeagent.Config, first string, 
 }
 
 // retryFailedPersistence repeats a persistence check that failed at the start: the registry of a fresh cluster is often not up yet.
-func retryFailedPersistence(mgr ctrl.Manager, cfg *nodeagent.Config, pre nodeagent.PreflightResult, asked bool, log logr.Logger) error {
+func retryFailedPersistence(mgr ctrl.Manager, cfg *nodeagent.Config, pre nodeagent.PreflightResult, asked bool, labeler *nodeagent.NodeLabeler, log logr.Logger) error {
 	if _, bad := nodeagent.IsUnavailable(pre.StatePersistence); !bad || !asked {
 		return nil
 	}
-	return addPersistenceRetry(mgr, cfg, pre.StatePersistence, log)
+	return addPersistenceRetry(mgr, cfg, pre.StatePersistence, labeler, log)
 }
 
 // setupReadiness repeats a persistence check that failed at the start, then makes the node usable for labs.
 func setupReadiness(mgr ctrl.Manager, cfg *nodeagent.Config, pre nodeagent.PreflightResult, askedPersistence bool, log logr.Logger) error {
-	if err := retryFailedPersistence(mgr, cfg, pre, askedPersistence, log); err != nil {
+	labeler := nodeagent.NewNodeLabeler(mgr, cfg, pre)
+	if err := retryFailedPersistence(mgr, cfg, pre, askedPersistence, labeler, log); err != nil {
 		return fmt.Errorf("persistence check retry: %w", err)
 	}
-	return nodeagent.SetupNodeReadiness(mgr, cfg, pre)
+	return nodeagent.SetupNodeReadiness(mgr, cfg, labeler)
 }
