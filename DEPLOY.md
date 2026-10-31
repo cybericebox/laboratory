@@ -1506,12 +1506,15 @@ ledger has it, **whether or not the Lab that owned it still exists**; an unreada
 `laboratory_vni_held_oldest_seconds` (with a log line after 15 minutes), `laboratory_vni_ledger_missing_nodes`.
 
 A node that has left the cluster keeps its ledger, and its VNIs stay held (the log names the node). When the node is certainly gone, settle it by hand:
-`kubectl -n laboratory-system delete configmap vni-ledger-<node>`. Nothing clears it by itself.
+remove the policy `laboratory-vni-ledger-guard` (and its binding), then `kubectl -n laboratory-system delete configmap vni-ledger-<node>`, then `helm upgrade` to restore the policy. Nothing clears it by itself.
 
 At start and every two minutes the node-agent compares the VNIs in its flows and its ledger with the pool (`VNIOrphanReconciler`). A VNI whose slot is retired, or back in the pool with
 no Device or Connection naming it, has its flows removed (under the lock of the pod wiring, the slot read again under it) and leaves the ledger; the node-agent logs it and raises a
 `VNIOrphanRemoved` event on the Node. A VNI whose slot is held by a lease, and any VNI whose slot cannot be judged, is never touched. Flows of a VNI the ledger did not know
-(from before the ledger) are written into it first. The node-agent may write only its own node's ledger ConfigMap (policy `laboratory-node-agent-ledger`).
+(from before the ledger) are written into it first. The node-agent may write only its own node's ledger ConfigMap (policy `laboratory-node-agent-ledger`). Nobody else may change or delete a ledger ConfigMap, a cluster administrator included
+(policy `laboratory-vni-ledger-guard`; the namespace controller may delete it only while its namespace is being deleted). Settling the ledger of a node that is certainly gone means
+removing that policy first, deleting the ConfigMap, and installing the policy again (`helm upgrade`). Keys are VNIs only (0 to 16777215); an entry that is not a VNI is ignored and counted
+in `laboratory_vni_ledger_invalid_entries`.
 
 ### Namespaces of the lab groups
 

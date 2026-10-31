@@ -122,6 +122,33 @@ func TestLabNamespaceAdmission(t *testing.T) {
 		allow(t, operator.Update(ctx, &ok))
 	})
 
+	t.Run("subresources", func(t *testing.T) {
+		// the label through namespaces/status, the annotation through pods/status and pods/ephemeralcontainers: same verdict as the main resource
+		var plain corev1.Namespace
+		allow(t, admin.Get(ctx, client.ObjectKey{Name: "plain"}, &plain))
+		plain.Labels = map[string]string{groupLabel: "x"}
+		forbid(t, other.SubResource("status").Update(ctx, &plain))
+		var ok corev1.Namespace
+		allow(t, admin.Get(ctx, client.ObjectKey{Name: "lg-ok-0123456789ab"}, &ok))
+		ok.Labels[groupLabel] = "other"
+		forbid(t, other.SubResource("status").Update(ctx, &ok))
+		allow(t, admin.Create(ctx, ns("sub-ns", nil)))
+		p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "sub", Namespace: "sub-ns"}, Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "busybox"}}}}
+		allow(t, other.Create(ctx, p))
+		allow(t, admin.Get(ctx, client.ObjectKeyFromObject(p), p))
+		p.Annotations = map[string]string{networksAnn: "eth1@net"}
+		forbid(t, other.SubResource("status").Update(ctx, p))
+		// the API server keeps from an ephemeralcontainers update only the ephemeral containers, so the annotation is not persisted at all
+		_ = other.SubResource("ephemeralcontainers").Update(ctx, p)
+		var stored corev1.Pod
+		allow(t, admin.Get(ctx, client.ObjectKeyFromObject(p), &stored))
+		if _, there := stored.Annotations[networksAnn]; there {
+			t.Fatal("the network annotation was stored through pods/ephemeralcontainers")
+		}
+		p.Annotations = map[string]string{"unrelated": "x"}
+		allow(t, other.SubResource("status").Update(ctx, p))
+	})
+
 	pod := func(namespace string, ann map[string]string) *corev1.Pod {
 		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{GenerateName: "p-", Namespace: namespace, Annotations: ann}, Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "busybox"}}}}
 	}

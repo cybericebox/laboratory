@@ -103,4 +103,58 @@ func TestNodeAgentLedgerAdmission(t *testing.T) {
 			t.Errorf("%s must be forbidden: %v", name, err)
 		}
 	}
+
+	// Nobody else touches a ledger: not a cluster administrator, not the operator. The namespace controller may delete it only while its
+	// namespace is being deleted.
+	const nsController = "system:serviceaccount:kube-system:namespace-controller"
+	if err := admin.Create(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "ledger-nsc"}, RoleRef: rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "cluster-admin"}, Subjects: []rbacv1.Subject{{Kind: "User", APIGroup: "rbac.authorization.k8s.io", Name: nsController}}}); err != nil {
+		t.Fatal(err)
+	}
+	impNsc := rest.CopyConfig(cfg)
+	impNsc.Impersonate = rest.ImpersonationConfig{UserName: nsController}
+	nsc, err := client.New(impNsc, client.Options{Scheme: scheme.Scheme})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger := func() *corev1.ConfigMap {
+		return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "vni-ledger-node-a", Namespace: "laboratory-system"}}
+	}
+	for who, c := range map[string]client.Client{"the administrator": admin, "the namespace controller outside a deleted namespace": nsc} {
+		if err := c.Delete(ctx, ledger()); !apierrors.IsForbidden(err) {
+			t.Errorf("%s must not delete a ledger: %v", who, err)
+		}
+	}
+	if err := admin.Patch(ctx, ledger(), client.RawPatch(types.MergePatchType, []byte(`{"data":{"5":"x"}}`))); !apierrors.IsForbidden(err) {
+		t.Errorf("the administrator must not edit a ledger: %v", err)
+	}
+	if err := admin.Create(ctx, mk("vni-ledger-node-x", "node-x", nil)); !apierrors.IsForbidden(err) {
+		t.Errorf("the administrator must not make a ledger: %v", err)
+	}
+	if err := admin.Patch(ctx, ledger(), client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"labels":{"laboratory.cybericebox.com/vni-ledger":null}}}`))); !apierrors.IsForbidden(err) {
+		t.Errorf("the label of a ledger must not be removable by hand: %v", err)
+	}
+	if err := agent.Delete(ctx, ledger()); !apierrors.IsForbidden(err) {
+		t.Errorf("even the node-agent does not delete its ledger: %v", err)
+	}
+	if err := patch("vni-ledger-node-a", `{"data":{"7":"x"}}`); err != nil {
+		t.Errorf("the node-agent must still write its own ledger: %v", err)
+	}
+	// a namespace on its way out: the namespace controller may empty it
+	if err := admin.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "dying"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.Create(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "vni-ledger-node-a", Namespace: "dying",
+		Labels: map[string]string{"laboratory.cybericebox.com/vni-ledger": "true"}, Annotations: map[string]string{"laboratory.cybericebox.com/node": "node-a"}}}); err != nil {
+		t.Fatal(err)
+	}
+	dying := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "vni-ledger-node-a", Namespace: "dying"}}
+	if err := nsc.Delete(ctx, dying); !apierrors.IsForbidden(err) {
+		t.Errorf("a namespace that is not being deleted keeps its ledger: %v", err)
+	}
+	if err := admin.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "dying"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := nsc.Delete(ctx, dying); err != nil {
+		t.Errorf("the namespace controller must empty a namespace that is being deleted: %v", err)
+	}
 }

@@ -282,4 +282,46 @@ metadata:
 spec:
   policyName: laboratory-node-agent-ledger
   validationActions: [Deny]
+---
+# Nobody but the node-agent of a node touches that node's VNI ledger ConfigMap: not even a cluster administrator (a ledger that is changed or
+# deleted by hand stops holding the VNIs of the flows its node still carries). The one exception is the namespace controller, only while the
+# namespace is being deleted. A deliberate removal means removing this policy first.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: laboratory-vni-ledger-guard
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [configmaps]
+  matchConditions:
+    - name: a-ledger
+      expression: "(request.operation == 'DELETE' ? oldObject : object).metadata.name.startsWith('vni-ledger-') || 'laboratory.cybericebox.com/vni-ledger' in (request.operation == 'DELETE' ? oldObject : object).metadata.?labels.orValue({}) || (request.operation == 'UPDATE' && 'laboratory.cybericebox.com/vni-ledger' in oldObject.metadata.?labels.orValue({}))"
+  variables:
+    - name: ownNode
+      expression: "has(request.userInfo.extra) && 'authentication.kubernetes.io/node-name' in request.userInfo.extra && size(request.userInfo.extra['authentication.kubernetes.io/node-name']) > 0 ? request.userInfo.extra['authentication.kubernetes.io/node-name'][0] : ''"
+    - name: name
+      expression: "(request.operation == 'DELETE' ? oldObject : object).metadata.name"
+  validations:
+    - expression: >-
+        (request.userInfo.username == {{ $nodeAgent | quote }} && request.operation != 'DELETE' && variables.ownNode != '' && variables.name == 'vni-ledger-' + variables.ownNode)
+        || (request.operation == 'DELETE' && request.userInfo.username == 'system:serviceaccount:kube-system:namespace-controller' && namespaceObject.status.phase == 'Terminating')
+      message: "a VNI ledger ConfigMap is written only by the node-agent of its node and is never deleted by hand (remove the policy laboratory-vni-ledger-guard first)"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: laboratory-vni-ledger-guard
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+spec:
+  policyName: laboratory-vni-ledger-guard
+  validationActions: [Deny]
 {{- end }}

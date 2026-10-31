@@ -23,7 +23,8 @@ spec:
       - apiGroups: [""]
         apiVersions: ["*"]
         operations: [CREATE, UPDATE]
-        resources: [namespaces]
+        # the subresources too: namespaces/status and namespaces/finalize carry the same metadata
+        resources: [namespaces, namespaces/*]
   variables:
     - name: newLabeled
       expression: "object.metadata.?labels.orValue({}).exists(k, k == 'laboratory.cybericebox.com/group')"
@@ -62,15 +63,17 @@ spec:
       - apiGroups: [""]
         apiVersions: ["*"]
         operations: [CREATE, UPDATE]
-        resources: [pods]
+        # every subresource of a pod (status, ephemeralcontainers, resize...) carries the pod's metadata
+        resources: [pods, pods/*]
       - apiGroups: [apps]
         apiVersions: ["*"]
         operations: [CREATE, UPDATE]
-        resources: [deployments, statefulsets, daemonsets, replicasets]
+        # /scale is left out on purpose: its object is a Scale, which has no pod template
+        resources: [deployments, deployments/status, statefulsets, statefulsets/status, daemonsets, daemonsets/status, replicasets, replicasets/status]
       - apiGroups: [batch]
         apiVersions: ["*"]
         operations: [CREATE, UPDATE]
-        resources: [jobs, cronjobs]
+        resources: [jobs, jobs/status, cronjobs, cronjobs/status]
   variables:
     - name: annotations
       expression: >-
