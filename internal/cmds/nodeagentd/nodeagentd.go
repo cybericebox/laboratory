@@ -8,6 +8,7 @@ import (
 	"github.com/go-logr/logr"
 
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -18,7 +19,9 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -184,6 +187,7 @@ func Run() {
 		Flows:    flows,
 		CRISock:  cfg.CRISock,
 	}
+	askedPersistence := cfg.StatePersistence
 	pre := preflightNode(cfg, log)
 	if cfg.RuntimeObservation {
 		if err := nodeagent.SetupRuntimeObservation(mgr, cfg, networkAttach); err != nil {
@@ -236,7 +240,7 @@ func Run() {
 	}
 
 	// Last: once everything above is set up, the node is marked ready for lab pods (and unmarked when this process stops).
-	if err := nodeagent.SetupNodeReadiness(mgr, cfg, pre); err != nil {
+	if err := setupReadiness(mgr, cfg, pre, askedPersistence, log); err != nil {
 		log.Error(err, "setup node readiness")
 		os.Exit(1)
 	}
@@ -328,4 +332,44 @@ func preflightNode(cfg *nodeagent.Config, log logr.Logger) nodeagent.PreflightRe
 	}
 	cfg.Apply(pre)
 	return pre
+}
+
+// addPersistenceRetry repeats the failed check of state persistence and starts the snapshot engine in this process when it passes.
+func addPersistenceRetry(mgr ctrl.Manager, cfg *nodeagent.Config, first string, log logr.Logger) error {
+	input := cfg.PreflightInput()
+	input.Persistence = true
+	rec := mgr.GetEventRecorderFor("node-agent-preflight")
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: cfg.NodeName}}
+	return mgr.Add(&nodeagent.PreflightRetry{
+		Log: log.WithName("preflight-retry"), Input: input, First: first,
+		Enable: func() error {
+			cfg.StatePersistence = true
+			if err := nodeagent.SetupStateEngine(mgr, cfg); err != nil {
+				cfg.StatePersistence = false
+				return err
+			}
+			return nil
+		},
+		Annotate: func(ctx context.Context, value string) error {
+			patch, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]string{names.AnnotationStatePersistence: value}}})
+			return mgr.GetClient().Patch(ctx, node.DeepCopy(), client.RawPatch(types.MergePatchType, patch))
+		},
+		Told: func(message string) { rec.Event(node, corev1.EventTypeNormal, "LifecyclePreflightRecovered", message) },
+	})
+}
+
+// retryFailedPersistence repeats a persistence check that failed at the start: the registry of a fresh cluster is often not up yet.
+func retryFailedPersistence(mgr ctrl.Manager, cfg *nodeagent.Config, pre nodeagent.PreflightResult, asked bool, log logr.Logger) error {
+	if _, bad := nodeagent.IsUnavailable(pre.StatePersistence); !bad || !asked {
+		return nil
+	}
+	return addPersistenceRetry(mgr, cfg, pre.StatePersistence, log)
+}
+
+// setupReadiness repeats a persistence check that failed at the start, then makes the node usable for labs.
+func setupReadiness(mgr ctrl.Manager, cfg *nodeagent.Config, pre nodeagent.PreflightResult, askedPersistence bool, log logr.Logger) error {
+	if err := retryFailedPersistence(mgr, cfg, pre, askedPersistence, log); err != nil {
+		return fmt.Errorf("persistence check retry: %w", err)
+	}
+	return nodeagent.SetupNodeReadiness(mgr, cfg, pre)
 }

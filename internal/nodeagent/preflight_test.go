@@ -8,7 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/go-logr/logr"
 )
 
 func registry(t *testing.T, status int) string {
@@ -105,5 +109,72 @@ func TestPreflightOnlyChecksWhatIsAskedFor(t *testing.T) {
 	// a value of an older node-agent, with no code, is unconfirmed
 	if code, bad := CodeOf("unavailable: some old text"); !bad || code != CodeNodeUnconfirmed {
 		t.Fatalf("%q %v", code, bad)
+	}
+}
+
+// The check is repeated while it fails: when it passes, the engine is started once, the annotation turns ready and the recovery is told;
+// while it fails the annotation follows the reason and nothing is started.
+func TestPreflightRetryBringsPersistenceUpWhenTheCheckPasses(t *testing.T) {
+	var mu sync.Mutex
+	var rounds, enabled, told int
+	var annotations []string
+	results := []string{Unavailable(CodeSnapshotRegistry, "down"), Unavailable(CodeSnapshotRegistry, "down"), Unavailable(CodeRuntimeSocket, "no socket"), PreflightReady}
+	r := &PreflightRetry{
+		Log: logr.Discard(), Interval: time.Millisecond, First: Unavailable(CodeSnapshotRegistry, "down"),
+		Check: func(context.Context, PreflightInput) PreflightResult {
+			mu.Lock()
+			defer mu.Unlock()
+			v := results[min(rounds, len(results)-1)]
+			rounds++
+			return PreflightResult{StatePersistence: v, RuntimeObservation: PreflightDisabled}
+		},
+		Enable: func() error { mu.Lock(); defer mu.Unlock(); enabled++; return nil },
+		Annotate: func(_ context.Context, v string) error {
+			mu.Lock()
+			defer mu.Unlock()
+			annotations = append(annotations, v)
+			return nil
+		},
+		Told: func(string) { mu.Lock(); defer mu.Unlock(); told++ },
+	}
+	done := make(chan error, 1)
+	go func() { done <- r.Start(context.Background()) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the retry did not finish")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if enabled != 1 || told != 1 || rounds != 4 {
+		t.Fatalf("enabled %d, told %d, rounds %d", enabled, told, rounds)
+	}
+	// the annotation followed the change of reason (the same reason is not written again) and ended ready
+	if len(annotations) != 2 || annotations[0] != Unavailable(CodeRuntimeSocket, "no socket") || annotations[1] != PreflightReady {
+		t.Fatalf("annotations %v", annotations)
+	}
+}
+
+// With a context that ends first nothing is started.
+func TestPreflightRetryStopsWithItsContext(t *testing.T) {
+	enabled := 0
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &PreflightRetry{
+		Log: logr.Discard(), Interval: time.Millisecond, First: Unavailable(CodeSnapshotRegistry, "down"),
+		Check: func(context.Context, PreflightInput) PreflightResult {
+			return PreflightResult{StatePersistence: Unavailable(CodeSnapshotRegistry, "down")}
+		},
+		Enable:   func() error { enabled++; return nil },
+		Annotate: func(context.Context, string) error { return nil },
+	}
+	done := make(chan error, 1)
+	go func() { done <- r.Start(ctx) }()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	if err := <-done; err != nil || enabled != 0 {
+		t.Fatalf("%v %d", err, enabled)
 	}
 }

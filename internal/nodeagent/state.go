@@ -31,7 +31,6 @@ func SetupDeviceState(mgr ctrl.Manager, cfg *Config) error {
 	if err := os.MkdirAll(cfg.StateWorkDir, 0o700); err != nil {
 		return fmt.Errorf("state work dir: %w", err)
 	}
-	local := fmt.Sprintf("localhost:%d", cfg.StateForwardPort)
 
 	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		log.Info("registry forwarder", "listen", "127.0.0.1", "port", cfg.StateForwardPort, "target", cfg.StateRegistryAddr)
@@ -48,6 +47,14 @@ func SetupDeviceState(mgr ctrl.Manager, cfg *Config) error {
 	if !cfg.StatePersistence {
 		return nil // the forwarder alone: the registry serves the image cache
 	}
+	return SetupStateEngine(mgr, cfg)
+}
+
+// SetupStateEngine adds the snapshot engine that follows the snapshot-backed device containers of this node. SetupDeviceState calls it
+// when persistence is on; PreflightRetry calls it later when the start-up check passes after it failed (the registry came up).
+func SetupStateEngine(mgr ctrl.Manager, cfg *Config) error {
+	log := ctrl.Log.WithName("device-state")
+	local := fmt.Sprintf("localhost:%d", cfg.StateForwardPort)
 	rt, err := devicestate.NewContainerdRuntime(cfg.CRISock, cfg.ContainerdNamespace, cfg.CgroupRoot, log)
 	if err != nil {
 		return err

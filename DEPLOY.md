@@ -2507,7 +2507,7 @@ as a fixed code and a count in `state_persistence.unavailable_reason` and `lifec
 `CONTAINERD_ROOT_MISSING`, `SNAPSHOTTER_MISSING`, `RUNTIME_SOCKET_UNAVAILABLE`, `SNAPSHOT_REGISTRY_UNREACHABLE`, `CGROUP_V2_MISSING`,
 `PERSISTENCE_DISABLED`, `OBSERVATION_DISABLED`, `NODE_UNCONFIRMED`; n lab nodes do not confirm, m were asked). No node names, paths or error
 text leave the cluster; the detail is in the Node annotation (`unavailable: CODE: detail`), the Event and the node-agent log. A node without a
-result (an older node-agent) holds them back (`NODE_UNCONFIRMED`), and with no ready node the configured values stand. The check runs once at the start of the node-agent: restart it after fixing the path.
+result (an older node-agent) holds them back (`NODE_UNCONFIRMED`), and with no ready node the configured values stand. The persistence check is repeated every 30 s while it fails (the registry of a fresh cluster is often not up yet): when it passes, the snapshot engine starts in the running node-agent and the annotation turns `ready`; the other checks (and a changed `containerdRoot`) need a restart of the node-agent. The node-agent's right to annotate its node is limited by the admission policy `laboratory-node-agent-label` to the two check annotations (`ready`, `disabled` or `unavailable: CODE: detail`).
 
 Full group lifecycle completion requires direct UID/revision reads, durable
 pre-scale service inventory and node-owned first-success cleanup acknowledgements.

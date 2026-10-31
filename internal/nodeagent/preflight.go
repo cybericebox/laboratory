@@ -27,7 +27,14 @@ const (
 )
 
 // Unavailable is the annotation value for a check that failed: "unavailable: CODE: detail".
-func Unavailable(code, detail string) string { return preflightUnavailable + code + ": " + detail }
+func Unavailable(code, detail string) string {
+	// one line, at most 500 characters: the admission policy of the node accepts nothing else
+	detail = strings.Join(strings.Fields(detail), " ")
+	if r := []rune(detail); len(r) > 500 {
+		detail = string(r[:500])
+	}
+	return preflightUnavailable + code + ": " + detail
+}
 
 // IsUnavailable says the value is a failed check, and gives its detail (for the operator of the cluster).
 func IsUnavailable(v string) (string, bool) {

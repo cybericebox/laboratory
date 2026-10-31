@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/cybericebox/laboratory/internal/names"
@@ -40,8 +41,17 @@ func (l *NodeLabeler) Start(ctx context.Context) error {
 	}
 	t := time.NewTicker(interval)
 	defer t.Stop()
+	var lastErr string
 	for {
-		_ = l.set(ctx, true)
+		if err := l.set(ctx, true); err != nil {
+			// not silent: a node that is never marked ready takes no lab (an admission policy that refuses the patch, a missing right)
+			if msg := err.Error(); msg != lastErr {
+				lastErr = msg
+				ctrl.Log.WithName("node-labeler").Error(err, "cannot mark the node ready for labs; retrying")
+			}
+		} else {
+			lastErr = ""
+		}
 		select {
 		case <-ctx.Done():
 			rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
