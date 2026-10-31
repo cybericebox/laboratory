@@ -169,6 +169,16 @@ func (r *LabGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	ns := laboratoryv1alpha1.LabGroupNamespaceOf(&lg)
+	// Only lg-* namespaces are wired by the node-agent (cni-gate sends every other namespace to the real CNI, and the admission policies refuse
+	// the group label and the network annotations elsewhere). A group recorded under the old naming (the bare group name) is not served: it
+	// would run without the layer-2 isolation. It can be deleted; it is not provisioned.
+	if !strings.HasPrefix(ns, laboratoryv1alpha1.LabGroupNamespacePrefix) {
+		logger.Info("LabGroup namespace has no lg- prefix: the group is not provisioned", "namespace", ns)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(&lg, corev1.EventTypeWarning, "LegacyNamespace", "namespace %s is not an lg-* namespace: this group is not provisioned (delete it and create it again)", ns)
+		}
+		return ctrl.Result{}, nil
+	}
 	r.rollout.begin(ns)
 	clientSubnet, err := netutil.SubnetForIndex(r.VPNBaseNetwork, labSubnetPrefixLen, 0)
 	if err != nil {

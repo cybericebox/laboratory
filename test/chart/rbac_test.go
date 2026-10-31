@@ -332,18 +332,9 @@ func TestNodeAgentRBACCapturePatchOnly(t *testing.T) {
 }
 
 func TestNodeAgentRBACNoCapturePatchWithoutAdmission(t *testing.T) {
+	// without the admission policies the node-agent is not installed at all (no unguarded Pod patch authority can exist)
 	out, err := helmTemplate(t, "-s", "templates/node-agent/clusterrole.yaml", "--set", "operator.admissionPolicy.enabled=false")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, d := range docs(t, out) {
-		if d["kind"] != "ClusterRole" {
-			continue
-		}
-		for _, r := range rulesOf(t, d) {
-			if has(r.Resources, "pods") && has(r.Verbs, "patch") {
-				t.Fatal("unguarded Pod patch authority")
-			}
-		}
+	if err == nil || !strings.Contains(out, "nodeAgent.enabled needs operator.admissionPolicy.enabled=true") {
+		t.Fatalf("a node-agent without the admission policies must be refused: %v\n%s", err, out)
 	}
 }

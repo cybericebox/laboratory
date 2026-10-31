@@ -103,6 +103,21 @@ var _ = Describe("LabGroup namespaces", func() {
 		}
 	})
 
+	// A group recorded under the old naming (its namespace is the bare name) is never provisioned: outside lg-* the node-agent does not
+	// wire a pod, so such a group would run without the layer-2 isolation.
+	It("does not provision a group whose namespace has no lg- prefix", func() {
+		const name, legacy = "legacy-bare", "legacy-bare-ns"
+		group := &laboratoryv1alpha1.LabGroup{ObjectMeta: metav1.ObjectMeta{Name: name}}
+		Expect(k8sClient.Create(ctx, group)).To(Succeed())
+		Eventually(func(g Gomega) {
+			var current laboratoryv1alpha1.LabGroup
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name}, &current)).To(Succeed())
+			current.Status.Namespace = legacy
+			g.Expect(k8sClient.Status().Update(ctx, &current)).To(Succeed())
+		}, 20*time.Second, 250*time.Millisecond).Should(Succeed())
+		Consistently(func() bool { return exists(legacy) }, 3*time.Second, 250*time.Millisecond).Should(BeFalse(), "the operator must not create a namespace without the prefix")
+	})
+
 	// A namespace that already exists under the name a group would get, without the group's label, is never adopted
 	// and never deleted.
 	It("refuses to adopt or delete a namespace without its label", func() {
