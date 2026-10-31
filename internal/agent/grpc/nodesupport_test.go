@@ -11,6 +11,7 @@ import (
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/nodeagent"
 	"github.com/cybericebox/laboratory/pkg/agent/protobuf"
+	pubnames "github.com/cybericebox/laboratory/pkg/names"
 )
 
 func readyNode(name string, persistence, observation string) corev1.Node {
@@ -166,6 +167,10 @@ func TestReasonIsAFixedCodeWithACount(t *testing.T) {
 	v := verifyNodes(nodes, nil, nil, true, true)
 	if v.persistenceReason != "SNAPSHOT_REGISTRY_UNREACHABLE:3/4" {
 		t.Fatalf("%q", v.persistenceReason)
+	}
+	// what leaves the agent is what a caller parses with the public allow-list
+	if code, n, m, err := pubnames.ParseUnavailableReason(v.persistenceReason); err != nil || code != pubnames.ReasonSnapshotRegistry || n != 3 || m != 4 {
+		t.Fatalf("%q %d %d %v", code, n, m, err)
 	}
 	for _, c := range nodeagent.AllCodes {
 		if strings.ToUpper(c) != c || strings.ContainsAny(c, " :/") {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cybericebox/laboratory/internal/names"
+	pubnames "github.com/cybericebox/laboratory/pkg/names"
 )
 
 // What a node can do for the lifecycle of a lab is checked once, at the start of its node-agent, and published on the Node (the
@@ -59,19 +60,18 @@ func CodeOf(v string) (string, bool) {
 // The fixed reason codes of a failed check. They are what leaves the cluster (GetFeatures): no node names, paths or error text. The detail
 // stays in the Node annotation ("unavailable: CODE: detail"), the Event and the log, for the operator of the cluster.
 const (
-	CodeContainerdRootMissing = "CONTAINERD_ROOT_MISSING"
-	CodeSnapshotterMissing    = "SNAPSHOTTER_MISSING"
-	CodeRuntimeSocket         = "RUNTIME_SOCKET_UNAVAILABLE"
-	CodeSnapshotRegistry      = "SNAPSHOT_REGISTRY_UNREACHABLE"
-	CodeCgroupV2Missing       = "CGROUP_V2_MISSING"
-	CodePersistenceDisabled   = "PERSISTENCE_DISABLED"
-	CodeObservationDisabled   = "OBSERVATION_DISABLED"
-	CodeNodeUnconfirmed       = "NODE_UNCONFIRMED"
+	CodeContainerdRootMissing = pubnames.ReasonContainerdRootMissing
+	CodeSnapshotterMissing    = pubnames.ReasonSnapshotterMissing
+	CodeRuntimeSocket         = pubnames.ReasonRuntimeSocket
+	CodeSnapshotRegistry      = pubnames.ReasonSnapshotRegistry
+	CodeCgroupV2Missing       = pubnames.ReasonCgroupV2Missing
+	CodePersistenceDisabled   = pubnames.ReasonPersistenceDisabled
+	CodeObservationDisabled   = pubnames.ReasonObservationDisabled
+	CodeNodeUnconfirmed       = pubnames.ReasonNodeUnconfirmed
 )
 
-// AllCodes is the list of codes (the allow-list of a caller).
-var AllCodes = []string{CodeContainerdRootMissing, CodeSnapshotterMissing, CodeRuntimeSocket, CodeSnapshotRegistry, CodeCgroupV2Missing,
-	CodePersistenceDisabled, CodeObservationDisabled, CodeNodeUnconfirmed}
+// AllCodes is the list of codes (the allow-list of a caller; public as pkg/names.UnavailableReasonCodes).
+var AllCodes = pubnames.UnavailableReasonCodes
 
 // checkError is a failed check: a code and the detail for the cluster's operator.
 type checkError struct{ code, detail string }
