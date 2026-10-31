@@ -21,6 +21,7 @@ import (
 	poolpkg "github.com/cybericebox/laboratory/pkg/api/pool"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -351,6 +352,18 @@ func retirementDebtContains[T any](observed, declared []T) bool {
 	}
 	return true
 }
+
+// gonePoolOwned: the owner of the binding is gone (vniOwnerGone) and the pool still says the number is its lease's (held, or retired by it).
+func (o *NativeRuntimeObserver) gonePoolOwned(ctx context.Context, binding lab.OwnedVNI) bool {
+	if binding.VNI == 0 || binding.UID == "" {
+		return false
+	}
+	if _, err := o.vniOwnerGone(ctx, binding); err != nil {
+		return false
+	}
+	return o.leaseStillTheirs(ctx, poolpkg.Lease{Index: binding.VNI, PoolUID: binding.PoolUID, OwnerUID: binding.UID, Generation: binding.LeaseGeneration}) == nil
+}
+
 func (o *NativeRuntimeObserver) captureScopeFabric(ctx context.Context, id *lab.OwnedRuntimeIdentity) error {
 	if id.ScopeKind == scopeGroup || id.ScopeKind == runtimeNeverMaterialized {
 		return nil
@@ -367,6 +380,7 @@ func (o *NativeRuntimeObserver) captureScopeFabric(ctx context.Context, id *lab.
 		}
 		id.VNIs = append(id.VNIs, vni)
 	}
+	gone := map[string]bool{} // owners that no longer exist but whose lease the pool still holds (see vniOwnerGone)
 	for _, binding := range id.VNIBindings {
 		if o.vniReleased(binding) {
 			continue
@@ -380,7 +394,10 @@ func (o *NativeRuntimeObserver) captureScopeFabric(ctx context.Context, id *lab.
 			}
 		}
 		if binding.Kind == ownerKindDevice && !found {
-			return fmt.Errorf("original Device VNI lease owner unavailable or replaced")
+			if !o.gonePoolOwned(ctx, binding) {
+				return fmt.Errorf("original Device VNI lease owner unavailable or replaced")
+			}
+			gone[binding.UID] = true
 		}
 		add(binding.VNI)
 	}
@@ -397,7 +414,10 @@ func (o *NativeRuntimeObserver) captureScopeFabric(ctx context.Context, id *lab.
 				}
 			}
 			if !found {
-				return fmt.Errorf("original Connection VNI lease owner unavailable or replaced")
+				if !o.gonePoolOwned(ctx, binding) {
+					return fmt.Errorf("original Connection VNI lease owner unavailable or replaced")
+				}
+				gone[binding.UID] = true
 			}
 		}
 	}
@@ -419,7 +439,7 @@ func (o *NativeRuntimeObserver) captureScopeFabric(ctx context.Context, id *lab.
 				count++
 			}
 		}
-		if count != 1 {
+		if count != 1 && !(count == 0 && gone[binding.UID]) {
 			return fmt.Errorf("VNI lease owner is not unique")
 		}
 	}
@@ -519,6 +539,70 @@ func (o *NativeRuntimeObserver) leaseStillTheirs(ctx context.Context, lease pool
 	return poolpkg.ValidateOrReleased(ctx, o.Reader, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, lease)
 }
 
+// vniOwnerGone says the Device or Connection that held the lease is gone for good: no Device and no Connection of the cluster has its UID,
+// no object names the number as its VNI, and the Lab that owned the lease (binding.OwnerUID) exists in the namespace. The pool still says
+// whose the number is (the caller asks it): an object that was deleted before its Lab (a direct link, a switch) leaves its lease and its
+// flows behind, and nothing else can release them. It returns that Lab. An object that exists under the UID, with another name or VNI,
+// is a replacement, not a gone owner.
+func (o *NativeRuntimeObserver) vniOwnerGone(ctx context.Context, binding lab.OwnedVNI) (*lab.Lab, error) {
+	var ds lab.DeviceList
+	var cs lab.ConnectionList
+	if err := o.Reader.List(ctx, &ds); err != nil {
+		return nil, err
+	}
+	if err := o.Reader.List(ctx, &cs); err != nil {
+		return nil, err
+	}
+	for _, d := range ds.Items {
+		if string(d.UID) == binding.UID || d.Status.VNI != nil && *d.Status.VNI == binding.VNI {
+			return nil, ErrPortOwnerChanged
+		}
+	}
+	for _, c := range cs.Items {
+		if string(c.UID) == binding.UID || c.Status.VNI != nil && *c.Status.VNI == binding.VNI {
+			return nil, ErrPortOwnerChanged
+		}
+	}
+	var labs lab.LabList
+	if err := o.Reader.List(ctx, &labs, client.InNamespace(binding.Namespace)); err != nil {
+		return nil, err
+	}
+	for i := range labs.Items {
+		if string(labs.Items[i].UID) == binding.OwnerUID {
+			return &labs.Items[i], nil
+		}
+	}
+	return nil, ErrPortOwnerChanged
+}
+
+// retireVNIOfGoneOwner is retireVNI for a lease whose Device or Connection no longer exists (see vniOwnerGone). The lease is checked
+// before the flows go and after, exactly as for a present owner: the number is dropped only while the pool still says it is this owner's.
+func (o *NativeRuntimeObserver) retireVNIOfGoneOwner(ctx context.Context, binding lab.OwnedVNI, lease poolpkg.Lease, flows *FlowManager) error {
+	parent, err := o.vniOwnerGone(ctx, binding)
+	if err != nil {
+		return err
+	}
+	op, rev := nativeLabOperation(parent)
+	receipt := vniReceipt{Binding: binding, LabUID: string(parent.UID), OperationID: op, Revision: rev, Generation: parent.Generation}
+	if err := o.writeRecord("vni-inventory", o.vniIdentity(binding), receipt); err != nil {
+		return err
+	}
+	if err := o.leaseStillTheirs(ctx, lease); err != nil {
+		return err
+	}
+	if err := flows.RetireVNI(binding.VNI); err != nil {
+		return err
+	}
+	if err := o.leaseStillTheirs(ctx, lease); err != nil {
+		return err
+	}
+	if _, err := o.vniOwnerGone(ctx, binding); err != nil { // nobody took the number meanwhile
+		return err
+	}
+	receipt.Complete = true
+	return o.writeRecord("vni-released", o.vniIdentity(binding), receipt)
+}
+
 func (o *NativeRuntimeObserver) retireVNI(ctx context.Context, binding lab.OwnedVNI, flows *FlowManager) error {
 	if binding.VNI == 0 && !completeZeroVNIBinding(binding) {
 		return ErrPortOwnerUnknown
@@ -548,6 +632,9 @@ func (o *NativeRuntimeObserver) retireVNI(ctx context.Context, binding lab.Owned
 		return ErrPortOwnerUnknown
 	}
 	if err := o.Reader.Get(ctx, client.ObjectKey{Namespace: binding.Namespace, Name: binding.Name}, object); err != nil {
+		if apierrors.IsNotFound(err) && binding.VNI != 0 {
+			return o.retireVNIOfGoneOwner(ctx, binding, lease, flows)
+		}
 		return err
 	}
 	if string(object.GetUID()) != binding.UID {
