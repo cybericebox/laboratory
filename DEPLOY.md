@@ -1516,6 +1516,16 @@ no Device or Connection naming it, has its flows removed (under the lock of the 
 removing that policy first, deleting the ConfigMap, and installing the policy again (`helm upgrade`). Keys are VNIs only (0 to 16777215); an entry that is not a VNI is ignored and counted
 in `laboratory_vni_ledger_invalid_entries`.
 
+### Finalizers: who removes them, and what happens when that component is gone
+
+| Finalizer | On | Removed by | Component gone |
+|---|---|---|---|
+| `cybericebox.com/vpn` | LabVPN, LabGroupClient | the VPN process in the group's VPN pod (DHCP, firewall rules, the lab network, the client's WireGuard peer: all of it lives in the pod) | the operator removes it when the group's `vpn` Deployment is missing or at zero **and** no VPN pod is left (read without the cache): a suspended group, a group being deleted. A running Deployment or a living pod keeps the finalizer |
+| `cybericebox.com/gateway` | LabGateway | the gateway process in the group's gateway pod | the same rule with the `gateway` Deployment |
+| `cybericebox.com/ovs-cleanup` | Device, Connection | the node-agent of the node (ports, flows, VNI in Open vSwitch **on the node**) | **not removed by anyone**: the state outlives the node-agent pod (it is in the node's switch), so a node-agent that is down only delays the release; a node that left the cluster holds its VNIs and scopes until it is settled by hand (see "Which nodes carry the flows of a VNI") |
+| `cybericebox.com/controller` | LabVPN, LabGateway | the operator, after the pod's own finalizer | n/a |
+| `cybericebox.com/lab`, `labgroup`, `labgroupclient` | Lab, LabGroup, LabGroupClient | the operator | n/a |
+
 ### Namespaces of the lab groups
 
 The namespace of a **new** LabGroup is `lg-<name, at most 40 characters>-<8 hex of the SHA-256 of the whole name>` (at most 52 characters), never the bare group

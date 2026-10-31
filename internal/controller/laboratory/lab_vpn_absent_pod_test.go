@@ -100,3 +100,46 @@ func TestGroupDrainDoesNotWaitForTheVPNPodOfAClientThatIsGone(t *testing.T) {
 		})
 	}
 }
+
+// The same for the internet gateway of a lab.
+func TestLabGatewayDeletionDoesNotWaitForAPodThatIsGone(t *testing.T) {
+	zero, one := int32(0), int32(1)
+	deploy := func(replicas *int32) *appsv1.Deployment {
+		return &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: names.ComponentGateway, Namespace: "g"}, Spec: appsv1.DeploymentSpec{Replicas: replicas}}
+	}
+	for _, tc := range []struct {
+		name     string
+		objects  []client.Object
+		released bool
+	}{
+		{"scaled to zero, no pod", []client.Object{deploy(&zero)}, true},
+		{"no deployment, no pod", nil, true},
+		{"running", []client.Object{deploy(&one)}, false},
+		{"a pod is still there", []client.Object{deploy(&zero), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "gw-x", Namespace: "g", Labels: map[string]string{names.LabelComponent: names.ComponentGateway}}}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := runtime.NewScheme()
+			_ = clientgoscheme.AddToScheme(s)
+			_ = laboratoryv1alpha1.AddToScheme(s)
+			parent := &laboratoryv1alpha1.Lab{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "g"}}
+			parent.Spec.Internet.Enabled = true
+			gw := &laboratoryv1alpha1.LabGateway{ObjectMeta: metav1.ObjectMeta{Name: names.LabGatewayObjectName("a"), Namespace: "g", Finalizers: []string{names.FinalizerController, names.FinalizerGateway}}}
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(append(tc.objects, parent, gw)...).Build()
+			r := &LabReconciler{Client: c, Reader: c, Scheme: s}
+			ctx := context.Background()
+			if err := c.Delete(ctx, gw); err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < 3; i++ {
+				if _, err := r.ensureLabGatewayDeleted(ctx, parent); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var got laboratoryv1alpha1.LabGateway
+			gone := c.Get(ctx, client.ObjectKeyFromObject(gw), &got) != nil
+			if gone != tc.released {
+				t.Fatalf("released = %v, want %v (%v)", gone, tc.released, got.Finalizers)
+			}
+		})
+	}
+}
