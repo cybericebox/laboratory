@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	stderrors "errors"
 	"testing"
 
 	api "github.com/cybericebox/laboratory/api/allocation/v1alpha1"
@@ -101,5 +102,88 @@ func TestOwnedPoolIdentityAndMissingLegacyReservationStayHeld(t *testing.T) {
 	}
 	if err := ValidateLease(ctx, c, "lease", "owned", 2, *lease); err != nil {
 		t.Fatal("different Pool UID released actual lease", err)
+	}
+}
+
+// PinExistingIndex tells a slot that is no longer held apart from other failures, with errors a caller can test.
+func TestPinExistingIndexNamesAReleasedSlot(t *testing.T) {
+	ctx := context.Background()
+	c := leaseClient(t)
+	// bit 1 is clear: the slot was returned to the pool
+	if _, err := PinExistingIndex(ctx, c, "lease", "owned", 2, 1, "owner"); !stderrors.Is(err, ErrLeaseAbsent) {
+		t.Fatalf("a clear bit: %v", err)
+	}
+	// set the bit and retire it: waiting out its quarantine
+	var p api.Pool
+	if err := c.Get(ctx, client.ObjectKey{Name: "lease-0", Namespace: "owned"}, &p); err != nil {
+		t.Fatal(err)
+	}
+	bm, err := decodeBitmap(p.Status.BitMap, p.Spec.Size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bm.Set(1)
+	p.Status.BitMap = encodeBitmap(bm)
+	p.Status.Retired = map[string]api.PoolRetired{"1": {}}
+	if err := c.Status().Update(ctx, &p); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PinExistingIndex(ctx, c, "lease", "owned", 2, 1, "owner"); !stderrors.Is(err, ErrLeaseRetired) {
+		t.Fatalf("a retired slot: %v", err)
+	}
+}
+
+// A lease is released when nobody holds its slot: retired, or back in the pool; not while any lease record or a legacy hold is there.
+func TestLeaseReleased(t *testing.T) {
+	ctx := context.Background()
+	c := leaseClient(t)
+	lease := Lease{Index: 1, PoolUID: "actual-pool", OwnerUID: "owner", Generation: 3}
+	update := func(f func(p *api.Pool, set func(bool))) {
+		var p api.Pool
+		if err := c.Get(ctx, client.ObjectKey{Name: "lease-0", Namespace: "owned"}, &p); err != nil {
+			t.Fatal(err)
+		}
+		bm, err := decodeBitmap(p.Status.BitMap, p.Spec.Size)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f(&p, func(on bool) {
+			if on {
+				bm.Set(1)
+			} else {
+				bm.Clear(1)
+			}
+			p.Status.BitMap = encodeBitmap(bm)
+		})
+		if err := c.Status().Update(ctx, &p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := func(name string, released bool) {
+		t.Helper()
+		got, err := LeaseReleased(ctx, c, "lease", "owned", 2, lease)
+		if err != nil || got != released {
+			t.Fatalf("%s: released %v err %v, want %v", name, got, err, released)
+		}
+	}
+	want("bit clear: back in the pool", true)
+	update(func(p *api.Pool, set func(bool)) { set(true) })
+	want("a legacy hold: bit set, no lease record", false)
+	update(func(p *api.Pool, set func(bool)) {
+		p.Status.Retired = map[string]api.PoolRetired{"1": {OwnerUID: "owner", Generation: 3}}
+	})
+	want("retired, waiting out the quarantine", true)
+	update(func(p *api.Pool, set func(bool)) {
+		p.Status.Leases = map[string]api.PoolLease{"1": {OwnerUID: "someone-else", Generation: 4}}
+	})
+	want("held by another owner after a reuse", false)
+	update(func(p *api.Pool, set func(bool)) {
+		p.Status.Leases = map[string]api.PoolLease{"1": {OwnerUID: "owner", Generation: 3}}
+	})
+	want("still held by this lease", false)
+	other := lease
+	other.PoolUID = "another-pool"
+	if got, _ := LeaseReleased(ctx, c, "lease", "owned", 2, other); got {
+		t.Fatal("a lease of another pool is never released here")
 	}
 }

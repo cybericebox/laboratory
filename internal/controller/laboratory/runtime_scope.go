@@ -2,6 +2,7 @@ package laboratory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 
@@ -93,7 +94,7 @@ func (r *LabReconciler) prepareLabScopes(ctx context.Context, l *lab.Lab) error 
 	for n := range devices.Items {
 		d := &devices.Items[n]
 		if objectOwnedBy(d, string(l.UID)) {
-			if err := r.ensureOwnedVNI(ctx, d, false); err != nil {
+			if err := r.pinOwnedVNI(ctx, d, !l.DeletionTimestamp.IsZero()); err != nil {
 				return err
 			}
 		}
@@ -101,7 +102,7 @@ func (r *LabReconciler) prepareLabScopes(ctx context.Context, l *lab.Lab) error 
 	for n := range connections.Items {
 		c := &connections.Items[n]
 		if objectOwnedBy(c, string(l.UID)) {
-			if err := r.ensureOwnedVNI(ctx, c, false); err != nil {
+			if err := r.pinOwnedVNI(ctx, c, !l.DeletionTimestamp.IsZero()); err != nil {
 				return err
 			}
 		}
@@ -218,6 +219,17 @@ func (r *LabReconciler) releaseRecordedVNIs(ctx context.Context, l *lab.Lab) err
 		}
 	}
 	return nil
+}
+
+// pinOwnedVNI pins the lease of an owner of a live Lab for the lifecycle observation (ensureOwnedVNI without allocating). For a Lab that
+// is being deleted a lease that is already retired, or already back in the pool, is a lease that has been released (the stop of the lab,
+// the sweeper, a repeated pass): there is nothing to pin and the deletion goes on instead of failing for ever on it.
+func (r *LabReconciler) pinOwnedVNI(ctx context.Context, object client.Object, deleting bool) error {
+	err := r.ensureOwnedVNI(ctx, object, false)
+	if deleting && (errors.Is(err, poolpkg.ErrLeaseAbsent) || errors.Is(err, poolpkg.ErrLeaseRetired)) {
+		return nil
+	}
+	return err
 }
 
 func (r *LabReconciler) ensureOwnedVNI(ctx context.Context, object client.Object, allocate bool) error {

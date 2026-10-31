@@ -497,8 +497,14 @@ func (o *NativeRuntimeObserver) retireVNI(ctx context.Context, binding lab.Owned
 			return err
 		}
 	}
-	if err := poolpkg.ValidateLease(ctx, o.Reader, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, poolpkg.Lease{Index: binding.VNI, PoolUID: binding.PoolUID, OwnerUID: binding.UID, Generation: binding.LeaseGeneration}); err != nil {
-		return err
+	lease := poolpkg.Lease{Index: binding.VNI, PoolUID: binding.PoolUID, OwnerUID: binding.UID, Generation: binding.LeaseGeneration}
+	if err := poolpkg.ValidateLease(ctx, o.Reader, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, lease); err != nil {
+		// A lease the controller has already retired (or the quarantine has returned) and that nobody holds now is not a reason to keep the
+		// flows of the VNI and the release unacknowledged for ever: the owner is done with the number. A slot held by anyone is.
+		released, rerr := poolpkg.LeaseReleased(ctx, o.Reader, names.VNIPoolPrefix, names.SystemNamespace, names.VNIPoolSize, lease)
+		if rerr != nil || !released {
+			return err
+		}
 	}
 	if o.Reader == nil || binding.UID == "" {
 		return ErrPortOwnerUnknown
