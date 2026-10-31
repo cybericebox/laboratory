@@ -269,8 +269,8 @@ spec:
     - expression: "'laboratory.cybericebox.com/vni-ledger' in object.metadata.?labels.orValue({}) && object.metadata.?labels.orValue({})['laboratory.cybericebox.com/vni-ledger'] == 'true' && 'laboratory.cybericebox.com/node' in object.metadata.?annotations.orValue({}) && object.metadata.?annotations.orValue({})['laboratory.cybericebox.com/node'] == variables.ownNode"
       message: "the VNI ledger ConfigMap carries its label and the name of its node"
       reason: Forbidden
-    - expression: "!has(object.data) || object.data.all(k, k.matches('^[0-9]{1,10}$'))"
-      message: "a VNI ledger has only VNI numbers as keys"
+    - expression: "!has(object.data) || object.data.all(k, k.matches('^[0-9]{1,8}$') && int(k) <= 16777215)"
+      message: "a VNI ledger has only VNI numbers (0 to 16777215) as keys"
       reason: Forbidden
 ---
 apiVersion: admissionregistration.k8s.io/v1

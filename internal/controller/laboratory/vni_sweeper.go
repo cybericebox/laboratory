@@ -29,12 +29,19 @@ var (
 	})
 )
 
+var vniLedgerInvalid = prometheus.NewGauge(prometheus.GaugeOpts{
+	Name: "laboratory_vni_ledger_invalid_entries",
+	Help: "Entries of the nodes' VNI ledgers that are not a VNI (ignored, but someone wrote them).",
+})
+
 var vniLedgerMissingNodes = prometheus.NewGauge(prometheus.GaugeOpts{
 	Name: "laboratory_vni_ledger_missing_nodes",
 	Help: "Nodes that are not in the cluster any more and whose VNI ledger still has entries; their VNIs stay held until someone settles the ledger by hand.",
 })
 
-func init() { metrics.Registry.MustRegister(vniHeldSlots, vniHeldOldest, vniLedgerMissingNodes) }
+func init() {
+	metrics.Registry.MustRegister(vniHeldSlots, vniHeldOldest, vniLedgerMissingNodes, vniLedgerInvalid)
+}
 
 // defaultHeldWarnAfter is how long a slot may stay held for a missing node acknowledgement before the sweeper logs it.
 const defaultHeldWarnAfter = 15 * time.Minute
@@ -258,6 +265,10 @@ func (c *VNISweeper) unacknowledgedReleases(ctx context.Context) (func(uint, str
 		return nil, err
 	}
 	c.reportMissingLedgerNodes(ctx, ledger)
+	vniLedgerInvalid.Set(float64(len(ledger.Invalid)))
+	if len(ledger.Invalid) > 0 {
+		ctrl.Log.WithName("vni-sweeper").Info("entries of a VNI ledger that are not a VNI are ignored", "entries", ledger.Invalid)
+	}
 	labHold, err := c.labObligations(ctx)
 	if err != nil {
 		return nil, err

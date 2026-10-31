@@ -4,8 +4,10 @@ package nodeagent
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -234,3 +236,48 @@ type failingNote struct{}
 
 func (failingNote) Note(uint) error  { return context.DeadlineExceeded }
 func (failingNote) Clear(uint) error { return nil }
+
+// A RetireVNI that starts after an install has recorded its VNI waits until the install is done; it cannot take the record out from
+// between the Note and the flows (that would leave flows the ledger does not know).
+func TestRetireWaitsForAnInstallThatHasRecordedItsVNI(t *testing.T) {
+	f := orphanTest(t, "held", nil)
+	noted, release := make(chan struct{}), make(chan struct{})
+	f.r.Flows.Ledger = &pausingLedger{VNILedger: f.r.Ledger, noted: noted, release: release}
+	installed, retired := make(chan error, 1), make(chan error, 1)
+	go func() { installed <- f.r.Flows.RebuildT6Flood(901, nil, nil) }()
+	<-noted
+	go func() { retired <- f.r.Flows.RetireVNI(901) }()
+	select {
+	case <-retired:
+		t.Fatal("RetireVNI finished between the record and the flows of an install")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	if err := <-installed; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-retired; err != nil {
+		t.Fatal(err)
+	}
+	if e := f.entries(t); len(e) != 0 {
+		t.Fatalf("the retire ran after the install: the ledger must be empty, has %v", e)
+	}
+}
+
+// pausingLedger tells when a VNI is recorded and holds the install there until released.
+type pausingLedger struct {
+	VNILedger
+	noted, release chan struct{}
+	once           sync.Once
+}
+
+func (l *pausingLedger) Note(vni uint) error {
+	if err := l.VNILedger.Note(vni); err != nil {
+		return err
+	}
+	l.once.Do(func() {
+		close(l.noted)
+		<-l.release
+	})
+	return nil
+}

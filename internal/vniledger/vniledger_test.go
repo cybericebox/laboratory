@@ -119,3 +119,24 @@ func TestLedgerResyncRestoresALostConfigMap(t *testing.T) {
 		t.Fatalf("entries = %v", got)
 	}
 }
+
+func TestReadSkipsAndReportsEntriesThatAreNotAVNI(t *testing.T) {
+	s := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(s)
+	bad := &corev1.ConfigMap{}
+	bad.Name, bad.Namespace = ConfigMapName("evil"), "ns"
+	bad.Labels = map[string]string{Label: "true"}
+	bad.Data = map[string]string{"x": "1", "16777216": "1", "5": "ok"}
+	good := &corev1.ConfigMap{}
+	good.Name, good.Namespace = ConfigMapName("fine"), "ns"
+	good.Labels = map[string]string{Label: "true"}
+	good.Data = map[string]string{"16777215": "ok"}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(bad, good).Build()
+	snap, err := Read(context.Background(), c, "ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Held[5]) != 1 || len(snap.Held[MaxVNI]) != 1 || len(snap.Invalid) != 2 {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+}

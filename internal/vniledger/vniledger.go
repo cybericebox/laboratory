@@ -27,8 +27,20 @@ const (
 	// NamePrefix + the node name is the name of the ConfigMap; the node-agent may write that one only (admission policy).
 	NamePrefix = "vni-ledger-"
 
+	// MaxVNI is the largest Geneve VNI (24 bits); a key above it is not a VNI.
+	MaxVNI = 1<<24 - 1
+
 	callTimeout = 15 * time.Second
 )
+
+// parseKey reads a ledger key: a VNI, or an error.
+func parseKey(k string) (uint, error) {
+	n, err := strconv.ParseUint(k, 10, 32)
+	if err != nil || n > MaxVNI {
+		return 0, fmt.Errorf("%q is not a VNI", k)
+	}
+	return uint(n), nil
+}
 
 // ConfigMapName is the ledger of a node.
 func ConfigMapName(node string) string { return NamePrefix + node }
@@ -64,11 +76,12 @@ func (l *Ledger) loadLocked(ctx context.Context) error {
 	}
 	set := map[uint]bool{}
 	for k := range cm.Data {
-		n, perr := strconv.ParseUint(k, 10, 32)
+		n, perr := parseKey(k)
 		if perr != nil {
-			return fmt.Errorf("VNI ledger of the node has a key that is not a number: %q", k)
+			// Not ours (the policy lets only VNIs in): it is left in the ConfigMap, and the operator reports it.
+			continue
 		}
-		set[uint(n)] = true
+		set[n] = true
 	}
 	l.set, l.loaded = set, true
 	return nil
@@ -186,10 +199,12 @@ type Snapshot struct {
 	Held map[uint][]string
 	// Nodes are the nodes that have a ledger with at least one entry.
 	Nodes []string
+	// Invalid are the entries that are not a VNI ("<ConfigMap>/<key>"). They hold nothing and are reported; one node's bad entry never
+	// stops the reading of the others (that would let one writer stop every sweep).
+	Invalid []string
 }
 
-// Read lists the ledgers. A key that is not a number fails the read (fail-closed: nothing is returned to the pool on a record that
-// cannot be understood).
+// Read lists the ledgers. An entry that is not a VNI is reported in Invalid and skipped.
 func Read(ctx context.Context, r client.Reader, namespace string) (*Snapshot, error) {
 	var cms corev1.ConfigMapList
 	if err := r.List(ctx, &cms, client.InNamespace(namespace), client.MatchingLabels{Label: "true"}); err != nil {
@@ -206,11 +221,12 @@ func Read(ctx context.Context, r client.Reader, namespace string) (*Snapshot, er
 			s.Nodes = append(s.Nodes, node)
 		}
 		for k := range cm.Data {
-			n, err := strconv.ParseUint(k, 10, 32)
+			n, err := parseKey(k)
 			if err != nil {
-				return nil, fmt.Errorf("VNI ledger %s has a key that is not a number: %q", cm.Name, k)
+				s.Invalid = append(s.Invalid, cm.Name+"/"+k)
+				continue
 			}
-			s.Held[uint(n)] = append(s.Held[uint(n)], node)
+			s.Held[n] = append(s.Held[n], node)
 		}
 	}
 	return s, nil

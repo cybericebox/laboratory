@@ -83,7 +83,10 @@ func TestNodeAgentLedgerAdmission(t *testing.T) {
 	if err := patch("vni-ledger-node-a", `{"data":{"901":"2026-10-31T12:00:00Z"}}`); err != nil {
 		t.Fatalf("a VNI entry must be allowed: %v", err)
 	}
-	if err := patch("vni-ledger-node-a", `{"data":{"901":null}}`); err != nil {
+	if err := patch("vni-ledger-node-a", `{"data":{"16777215":"2026-10-31T12:00:00Z","0":"x"}}`); err != nil {
+		t.Fatalf("the largest VNI and VNI 0 must be allowed: %v", err)
+	}
+	if err := patch("vni-ledger-node-a", `{"data":{"901":null,"16777215":null,"0":null}}`); err != nil {
 		t.Fatalf("taking an entry out must be allowed: %v", err)
 	}
 	for name, err := range map[string]error{
@@ -91,6 +94,8 @@ func TestNodeAgentLedgerAdmission(t *testing.T) {
 		"a foreign ConfigMap":        agent.Create(ctx, mk("anything", "node-a", nil)),
 		"a ledger claiming a node":   agent.Create(ctx, mk("vni-ledger-node-a2", "node-a", nil)),
 		"a key that is not a number": patch("vni-ledger-node-a", `{"data":{"evil":"x"}}`),
+		"a key above the VNI range":  patch("vni-ledger-node-a", `{"data":{"16777216":"x"}}`),
+		"a key of 99999999":          patch("vni-ledger-node-a", `{"data":{"99999999":"x"}}`),
 		"the label removed":          patch("vni-ledger-node-a", `{"metadata":{"labels":{"laboratory.cybericebox.com/vni-ledger":null}}}`),
 		"the node annotation moved":  patch("vni-ledger-node-a", `{"metadata":{"annotations":{"laboratory.cybericebox.com/node":"node-b"}}}`),
 	} {

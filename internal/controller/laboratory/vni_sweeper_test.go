@@ -203,14 +203,17 @@ func TestVNISweeperKeepsASlotWhileANodeLedgerHasIt(t *testing.T) {
 	if got := gaugeValue(vniLedgerMissingNodes); got != 1 {
 		t.Fatalf("missing node metric = %v, want 1 (the node is not in the cluster)", got)
 	}
-	// a ledger with a key that is not a number cannot be understood: the sweep fails, nothing comes back
+	// an entry that is not a VNI holds nothing and is reported; it never stops the sweep for the other nodes
 	broken := ledger.DeepCopy()
-	broken.Data = map[string]string{"x": "y"}
+	broken.Data = map[string]string{"x": "y", "7": "z", "99999999": "big"}
 	if err := c.Update(ctx, broken); err != nil {
 		t.Fatal(err)
 	}
-	if _, returned, err := sw.Sweep(ctx); err == nil || returned != 0 {
-		t.Fatalf("an unreadable ledger must stop the sweep: returned %d, %v", returned, err)
+	if _, returned, err := sw.Sweep(ctx); err != nil || returned != 0 {
+		t.Fatalf("a bad entry must not stop the sweep, and the good one still holds: returned %d, %v", returned, err)
+	}
+	if got := gaugeValue(vniLedgerInvalid); got != 2 {
+		t.Fatalf("invalid entries metric = %v, want 2", got)
 	}
 	// the node took the number out (its flows are confirmed gone): the slot comes back
 	var cur corev1.ConfigMap

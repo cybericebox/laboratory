@@ -51,6 +51,10 @@ type FlowManager struct {
 	// Ledger, when set, records the VNIs this node has flows for (internal/vniledger): written before the first flow of a VNI is
 	// installed, taken out after RetireVNI confirms the flows gone. The operator does not return a VNI to the pool while it is there.
 	Ledger VNILedger
+	// vniMu orders the recording of a VNI and the installing of its flows (read side: many installs at once) against RetireVNI and the
+	// Clear that follows it (write side). Without it a RetireVNI could take the record out between an install's Note and its flows,
+	// leaving flows the ledger does not know.
+	vniMu sync.RWMutex
 }
 
 // VNILedger is the node's record of the VNIs it carries flows of. Note stores before it returns (an error means: install nothing).
@@ -272,6 +276,8 @@ func (f *FlowManager) AddT0Port(portName string, vni uint) error {
 	if err != nil {
 		return reconcileutil.Waiting(fmt.Errorf("resolve port %q: %w", portName, err), 0)
 	}
+	f.vniMu.RLock()
+	defer f.vniMu.RUnlock()
 	if err := f.noteVNI(vni); err != nil {
 		return err
 	}
@@ -353,6 +359,8 @@ func (f *FlowManager) forgetPort(name string) error {
 // With the Geneve limits on and a remote VTEP, the Geneve outputs move out of t6 into two more tables, each behind a meter
 // (see geneve_meters.go): local delivery stays unmetered, only what leaves the node is counted.
 func (f *FlowManager) RebuildT6Flood(vni uint, localPorts, remoteVTEPs []string) error {
+	f.vniMu.RLock()
+	defer f.vniMu.RUnlock()
 	if err := f.noteVNI(vni); err != nil {
 		return err
 	}
@@ -540,6 +548,8 @@ func (f *FlowManager) DelFlowsByVNI(vni uint, _ string) error { return f.DelT6Fl
 // RetireVNI removes every flow of the VNI in every table, confirmed, and then the Geneve meter of the lab (the flows that used it
 // are gone by then).
 func (f *FlowManager) RetireVNI(vni uint) error {
+	f.vniMu.Lock()
+	defer f.vniMu.Unlock()
 	f.bwmu.Lock()
 	defer f.bwmu.Unlock()
 	delete(f.floods, vni)
