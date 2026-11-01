@@ -1424,8 +1424,27 @@ entry.
 
 ### What a lab can reach through its internet gateway
 
-A lab with `internet.enabled` leaves through the gateway pod of its group, so the lab inherits whatever the gateway may reach.
-The gateway forwards to the **public internet only**:
+A lab with `internet.enabled` leaves through the gateway pod of its group, and **only through services inside that pod** (design:
+`docs/specs/LAB-INTERNET-EGRESS.md` of the platform repository):
+
+- The lab's TCP 80 and 443 end in a transparent **web proxy** (the name comes from the TLS server name or the HTTP `Host`, the address the
+  lab chose is never used, no TLS termination). It refuses a bare IP, no name, Encrypted ClientHello, a name without a public address, and a
+  small list of tunnel services (ngrok, trycloudflare, localtunnel, Tailscale, ZeroTier ...: `internetEgress.proxy.tunnelSuffixes`). A connection lives at most 10 minutes;
+  one host name takes at most 5 new connections per second through a gateway.
+- Every port 53 of the lab (any address, UDP and TCP) ends in a small **DNS answerer**: A records for public IPv4 addresses, empty answers for
+  AAAA/HTTPS/SVCB (no ECH keys), 50 queries a second per lab. The upstream resolvers are `internetEgress.dns.upstreams` (public ones).
+- ICMP echo is forwarded (5 a second per lab); every other TCP, UDP and protocol (SMTP, SSH, VPN, QUIC, DoT) is **dropped**. Traceroute shows
+  the gateway as its last internal hop: ICMP errors from internal addresses never reach the lab (use `traceroute -I`; UDP probes are dropped).
+- Per lab: download `bandwidth.caps.labInternetMbit` (50 Mbit/s), upload `bandwidth.caps.labUploadKbps` (2 Mbit/s, pure ACKs not counted), and
+  a cluster-wide upload total `bandwidth.caps.uploadTotalMbit` (100; a static share, with `bandwidth.enabled`).
+- The proxy keeps per-minute summaries (lab, host name, connections, bytes, refusals; no content, no user address). The operator pulls them
+  every minute from the gateways (port `internetEgress.statsPort`, opened to the operator by the network policy), writes the connection log
+  to its log (logger `egress-log`) and, with `internetEgress.log.dir` (a volume you mount), to daily files kept `internetEgress.log.retentionDays` days.
+  It flags a lab (condition `EgressAttention` and a Warning Event) when `hostLabs` labs reach one host name within ten minutes or the lab sits
+  at its caps in `capMinutes` of the ten. Metrics: `laboratory_egress_labs_flagged`, `laboratory_egress_minutes_pulled_total`, `laboratory_egress_pull_failures_total`.
+  Check a running cluster with `hack/egress-check.sh` (from a device of a lab with the internet).
+
+What the gateway may reach itself, and what the proxy connects to, is limited to the **public internet only**:
 
 - The denied ranges are **a constant of the code** (`internal/egress`), not a setting, and there is no allow-list exception: a lab needs no
   internal service and must not learn where it runs. They are: `10/8`, `172.16/12`, `192.168/16` (so the node, VPC, pod and service networks of a
@@ -1434,7 +1453,7 @@ The gateway forwards to the **public internet only**:
   IPv4-mapped and NAT64, `fc00::/7`, `fe80::/10`, `ff00::/8`, discard and documentation). Public addresses of nodes are not listed: protect them with
   the cloud firewall (security groups).
 - Its iptables chain `LABEGRESS` (first in FORWARD for traffic leaving the pod) drops what a lab sends to those ranges (IPv6 through ip6tables
-  where the pod has it).
+  where the pod has it); the web proxy and the DNS answerer drop those ranges from the answers and refuse to connect there.
 - Its `CiliumNetworkPolicy` allows egress to the world **except** the same ranges (`toCIDRSet` with `except`, for `0.0.0.0/0` and `::/0`), and
   to the API server entity on ports 6443 and 443 only (the gateway's own reconciler; the entity covers every port of a node the API server
   runs on, so the ports are what limits it). The VPN pod's policy has the same port limit. The labs themselves can reach the API server
