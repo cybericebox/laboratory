@@ -350,23 +350,25 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, r.patchStatus(ctx, gw, newStatus)
 }
 
-// shape puts the bandwidth ceiling of the pod on a lab interface. A lab whose ceiling cannot be set is still served (its internet is
-// the point), but not silently: the event says so, and the next reconcile tries again.
-// enableEgress makes the web proxy and the DNS answerer of the gateway the lab's way out: the redirects stand, and the lab is known by its
-// subnet, before the lab is let through.
+// enableEgress makes the web proxy and the DNS answerer of the gateway the lab's way out: the lab is known by its subnet, then the redirects
+// stand, before the lab is let through.
 func (r *LabGatewayReconciler) enableEgress(iface, cidr, lab string) error {
 	if r.Labs == nil {
 		return nil
 	}
-	if err := r.IPT.AddEgressServices(iface); err != nil {
-		return fmt.Errorf("redirect the egress of %s: %w", iface, err)
-	}
+	// The lab is known before the first connection can be redirected: a connection that reaches the proxy from an unknown subnet is refused.
 	if err := r.Labs.Set(cidr, lab); err != nil {
 		return fmt.Errorf("register %s for the egress: %w", cidr, err)
+	}
+	if err := r.IPT.AddEgressServices(iface); err != nil {
+		r.Labs.Delete(cidr)
+		return fmt.Errorf("redirect the egress of %s: %w", iface, err)
 	}
 	return nil
 }
 
+// shape puts the bandwidth ceiling of the pod on a lab interface. A lab whose ceiling cannot be set is still served (its internet is
+// the point), but not silently: the event says so, and the next reconcile tries again.
 func (r *LabGatewayReconciler) shape(gw *laboratoryv1alpha1.LabGateway, iface string) {
 	if r.Shaper == nil {
 		return
