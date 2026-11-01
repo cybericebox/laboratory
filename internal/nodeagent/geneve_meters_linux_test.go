@@ -123,6 +123,7 @@ func TestNetnsRetiredPortTakesTheMeterOfItsLabWithIt(t *testing.T) {
 	if err := ovs.AddGenevePort("", ""); err != nil {
 		t.Fatal(err)
 	}
+	waitOFPorts(t, flows, "p1", "p2", "p3", GenevePort) // vswitchd makes the ports after the transaction returns
 	bridge := "unix:" + filepath.Join(dir, "t6-br.mgmt")
 	ofctl := func(args ...string) string {
 		return nstest.Run(t, "", append([]string{"ovs-ofctl", "-O", "OpenFlow13", args[0], bridge}, args[1:]...)...)
