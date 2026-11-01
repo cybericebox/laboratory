@@ -103,10 +103,11 @@ func GroupPodAttachments(ctx context.Context, c client.Reader, namespace, compon
 
 // groupLegMAC is the hardware address of a lab leg of a group pod, fixed by the leg's port key: a replacement pod gets the address the old
 // one had, so the ARP entry that a lab's device keeps for the gateway (30 s and longer) stays true and the lab is not cut off for as long
-// when the pod is replaced. A locally administered unicast address.
+// when the pod is replaced. A locally administered unicast address in a range of its own (netattach.GroupLegMACPrefix), which
+// a device cannot be given: the address of a leg can never be a device's on the same segment.
 func groupLegMAC(key string) string {
 	h := sha256.Sum256([]byte(key))
-	return fmt.Sprintf("02:%02x:%02x:%02x:%02x:%02x", h[0], h[1], h[2], h[3], h[4])
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", netattach.GroupLegMACPrefix, h[0], h[1], h[2], h[3], h[4])
 }
 
 // StaleGroupPorts returns the ports among present that belong to the group's VPN or gateway pod (any lab index) and are not in wanted:

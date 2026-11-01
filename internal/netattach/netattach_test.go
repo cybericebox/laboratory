@@ -24,7 +24,7 @@ func TestValidateMAC(t *testing.T) {
 			t.Errorf("%q: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"ff:ff:ff:ff:ff:ff", "01:00:5e:00:00:01", "33:33:00:00:00:01", "00:00:00:00:00:00", "xx", "aa:bb:cc:dd:ee", "aa:bb:cc:dd:ee:ff:00:11", "random|x", "aa:bb:cc:dd:ee:ff,eth0@y"} {
+	for _, bad := range []string{"ff:ff:ff:ff:ff:ff", "01:00:5e:00:00:01", "33:33:00:00:00:01", "00:00:00:00:00:00", "0a:11:22:33:44:55", "xx", "aa:bb:cc:dd:ee", "aa:bb:cc:dd:ee:ff:00:11", "random|x", "aa:bb:cc:dd:ee:ff,eth0@y"} {
 		if ValidateMAC(bad) == nil {
 			t.Errorf("%q must be rejected", bad)
 		}

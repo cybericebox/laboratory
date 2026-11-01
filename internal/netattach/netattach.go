@@ -39,6 +39,10 @@ func ValidateInterfaceName(n string) error {
 	return nil
 }
 
+// GroupLegMACPrefix is the first byte of the hardware addresses of the lab legs of the VPN and gateway pods of a group (locally administered,
+// unicast). It is reserved: a device may not be given an address that starts with it.
+const GroupLegMACPrefix = 0x0a
+
 // ValidateMAC checks an interface MAC: empty, "random", or a unicast hardware address
 // that is not all zeros.
 func ValidateMAC(m string) error {
@@ -51,6 +55,9 @@ func ValidateMAC(m string) error {
 	}
 	if hw[0]&1 == 1 {
 		return fmt.Errorf("mac %q is a multicast address", m)
+	}
+	if hw[0] == GroupLegMACPrefix {
+		return fmt.Errorf("mac %q is in the range of the gateway and VPN legs", m)
 	}
 	if hw.String() == "00:00:00:00:00:00" {
 		return fmt.Errorf("mac %q is the zero address", m)
