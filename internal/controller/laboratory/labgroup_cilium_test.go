@@ -104,7 +104,7 @@ func TestVPNCiliumPolicy(t *testing.T) {
 
 // The gateway reaches the API server on its API ports only, and the world minus the internal ranges (v4 and v6).
 func TestGatewayCiliumPolicy(t *testing.T) {
-	policy := gatewayCiliumPolicy("ns1", map[string]string{names.LabelComponent: "gateway"})
+	policy := gatewayCiliumPolicy("ns1", map[string]string{names.LabelComponent: "gateway"}, 9188)
 
 	if policy.GetKind() != "CiliumNetworkPolicy" || policy.GetName() != "gateway-egress" || policy.GetNamespace() != "ns1" {
 		t.Fatalf("identity: %s %s %s", policy.GetKind(), policy.GetName(), policy.GetNamespace())
@@ -134,6 +134,21 @@ func TestGatewayCiliumPolicy(t *testing.T) {
 		t.Fatalf("API ports = %v", got)
 	}
 
+	// the operator pulls the per-minute summaries of the gateway on one port, and nothing else gets in
+	ingress, _, _ := unstructured.NestedSlice(policy.Object, "spec", "ingress")
+	if len(ingress) != 1 {
+		t.Fatalf("ingress = %v, want one rule for the operator", ingress)
+	}
+	in := ingress[0].(map[string]interface{})
+	from, _, _ := unstructured.NestedSlice(in, "fromEndpoints")
+	if len(from) != 1 || from[0].(map[string]interface{})["matchLabels"].(map[string]interface{})["k8s:io.kubernetes.pod.namespace"] != names.SystemNamespace {
+		t.Fatalf("the operator namespace is the only source: %v", in)
+	}
+	inPorts, _, _ := unstructured.NestedSlice(in, "toPorts")
+	if pp := inPorts[0].(map[string]interface{})["ports"].([]interface{}); len(pp) != 1 || pp[0].(map[string]interface{})["port"] != "9188" {
+		t.Fatalf("the summaries port is the only port: %v", inPorts)
+	}
+
 	world := egressRules[1].(map[string]interface{})
 	if _, ok := world["toEntities"]; ok {
 		t.Fatal("no entity world: it has no exceptions")
@@ -154,9 +169,6 @@ func TestGatewayCiliumPolicy(t *testing.T) {
 		if len(except) != len(want.except) {
 			t.Fatalf("%s except = %v", want.cidr, except)
 		}
-	}
-	if _, found, _ := unstructured.NestedSlice(policy.Object, "spec", "ingress"); found {
-		t.Fatalf("the gateway policy must not define ingress")
 	}
 }
 

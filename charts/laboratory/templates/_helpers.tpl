@@ -221,6 +221,18 @@ GATEWAY_NEW_CONNECTIONS_PER_SECOND_PER_LAB: {{ .Values.inetGateway.limits.newCon
 VPN_FIREWALL: {{ .Values.vpn.firewall | quote }}
 VNI_QUARANTINE: {{ .Values.vni.quarantine | quote }}
 VNI_SWEEP_INTERVAL: {{ .Values.vni.sweepInterval | quote }}
+EGRESS_MONITOR_ENABLED: {{ .Values.internetEgress.monitor.enabled | quote }}
+EGRESS_STATS_PORT: {{ .Values.internetEgress.statsPort | quote }}
+EGRESS_LOG_DIR: {{ .Values.internetEgress.log.dir | quote }}
+EGRESS_LOG_RETENTION: {{ printf "%dh" (mul (int .Values.internetEgress.log.retentionDays) 24) | quote }}
+EGRESS_SIGNAL_HOST_LABS: {{ .Values.internetEgress.monitor.hostLabs | quote }}
+EGRESS_SIGNAL_CAP_MINUTES: {{ .Values.internetEgress.monitor.capMinutes | quote }}
+EGRESS_DNS_UPSTREAMS: {{ .Values.internetEgress.dns.upstreams | quote }}
+EGRESS_DNS_QUERIES_PER_SECOND: {{ .Values.internetEgress.dns.queriesPerSecond | quote }}
+EGRESS_HOST_NEW_PER_SECOND: {{ .Values.internetEgress.proxy.hostNewPerSecond | quote }}
+EGRESS_MAX_CONN_SECONDS: {{ .Values.internetEgress.proxy.maxConnSeconds | quote }}
+EGRESS_TUNNEL_SUFFIXES: {{ .Values.internetEgress.proxy.tunnelSuffixes | quote }}
+EGRESS_ICMP_PER_SECOND: {{ .Values.internetEgress.icmpPerSecond | quote }}
 VNI_RETIRE_FLUSH: {{ .Values.vni.retireFlush | quote }}
 STATE_PERSISTENCE_ENABLED: {{ .Values.devices.statePersistence.enabled | quote }}
 STATE_DEBOUNCE: {{ .Values.devices.statePersistence.debounce | quote }}
@@ -247,6 +259,8 @@ BANDWIDTH_GENEVE_SHARE: {{ .Values.bandwidth.shares.geneve | quote }}
 BANDWIDTH_PARTICIPANT_CAP_MBIT: {{ .Values.bandwidth.caps.participantMbit | quote }}
 BANDWIDTH_LAB_INTERNET_CAP_MBIT: {{ .Values.bandwidth.caps.labInternetMbit | quote }}
 BANDWIDTH_LAB_GENEVE_CAP_MBIT: {{ .Values.bandwidth.caps.labGeneveMbit | quote }}
+BANDWIDTH_LAB_UPLOAD_KBPS: {{ .Values.bandwidth.caps.labUploadKbps | quote }}
+BANDWIDTH_UPLOAD_TOTAL_MBIT: {{ .Values.bandwidth.caps.uploadTotalMbit | quote }}
 BANDWIDTH_GENEVE_OVERHEAD_FACTOR: {{ .Values.bandwidth.geneveOverheadFactor | quote }}
 BANDWIDTH_ENTRY_OVERHEAD_FACTOR: {{ .Values.bandwidth.entryOverheadFactor | quote }}
 {{- end }}
@@ -383,3 +397,10 @@ tolerations:
 {{- end }}
 {{- end }}
 {{- end -}}
+
+{{/*
+The labels that select the gateway pods of the groups (any namespace).
+*/}}
+{{- define "laboratory.gatewayComponentLabels" -}}
+laboratory.cybericebox.com/component: gateway
+{{- end }}

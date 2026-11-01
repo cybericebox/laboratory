@@ -23,6 +23,7 @@ import (
 	"context"
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 	"time"
 
@@ -239,6 +240,7 @@ func Run() {
 		VPNBaseNetwork:              cfg.VPNBaseNetwork,
 		VPNFirewall:                 cfg.VPNFirewall,
 		GatewayMaxConnectionsPerLab: cfg.GatewayMaxConnectionsPerLab, GatewayNewConnectionsPerSecondPerLab: cfg.GatewayNewConnectionsPerSecondPerLab,
+		GatewayEgressEnv:        gatewayEgressEnv(cfg),
 		InetBaseNetwork:         cfg.InetBaseNetwork,
 		VPNImage:                cfg.VPNImage,
 		Mirror:                  mirror,
@@ -461,6 +463,16 @@ func Run() {
 		setupLog.Error(err, "unable to add the VNI sweeper")
 		os.Exit(1)
 	}
+	if cfg.EgressMonitorEnabled {
+		if err = mgr.Add(&laboratorycontroller.EgressMonitor{
+			Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Recorder: mgr.GetEventRecorderFor("egress"), Log: ctrl.Log.WithName("egress-monitor"),
+			Port: cfg.EgressStatsPort, LogDir: cfg.EgressLogDir, LogRetention: cfg.EgressLogRetention,
+			HostLabsThreshold: cfg.EgressSignalHostLabs, CapMinutes: cfg.EgressSignalCapMinutes,
+		}); err != nil {
+			setupLog.Error(err, "unable to add the egress monitor")
+			os.Exit(1)
+		}
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
@@ -484,4 +496,26 @@ func Run() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// gatewayEgressEnv are the egress settings (and the per-lab ceilings the gateway keeps when the bandwidth protection is off) of a NEW gateway.
+func gatewayEgressEnv(cfg *operator.Config) []corev1.EnvVar {
+	var env []corev1.EnvVar
+	for _, e := range []struct{ name, value string }{
+		{"EGRESS_DNS_UPSTREAMS", cfg.EgressDNSUpstreams}, {"EGRESS_DNS_QUERIES_PER_SECOND", cfg.EgressDNSQueriesPerSecond},
+		{"EGRESS_HOST_NEW_PER_SECOND", cfg.EgressHostNewPerSecond}, {"EGRESS_MAX_CONN_SECONDS", cfg.EgressMaxConnSeconds},
+		{"EGRESS_TUNNEL_SUFFIXES", cfg.EgressTunnelSuffixes}, {"EGRESS_ICMP_PER_SECOND", cfg.EgressICMPPerSecond},
+		{"EGRESS_STATS_PORT", fmt.Sprint(cfg.EgressStatsPort)},
+	} {
+		if e.value != "" {
+			env = append(env, corev1.EnvVar{Name: e.name, Value: e.value})
+		}
+	}
+	if cfg.Bandwidth.LabInternetCapMbit > 0 {
+		env = append(env, corev1.EnvVar{Name: "GATEWAY_DOWNLOAD_KBPS", Value: fmt.Sprint(cfg.Bandwidth.LabInternetCapMbit * 1000)})
+	}
+	if cfg.Bandwidth.LabUploadKbps > 0 {
+		env = append(env, corev1.EnvVar{Name: "GATEWAY_UPLOAD_KBPS", Value: fmt.Sprint(cfg.Bandwidth.LabUploadKbps)})
+	}
+	return env
 }

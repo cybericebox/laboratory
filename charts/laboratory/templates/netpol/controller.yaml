@@ -41,6 +41,17 @@ spec:
             - port: "443"
               protocol: TCP
 {{- end }}
+    # The gateways of the groups: the per-minute egress summaries (plain HTTP, one port).
+    - toEndpoints:
+        - matchLabels:
+            {{- include "laboratory.gatewayComponentLabels" . | nindent 12 }}
+          matchExpressions:
+            - key: k8s:io.kubernetes.pod.namespace
+              operator: Exists
+      toPorts:
+        - ports:
+            - port: {{ .Values.internetEgress.statsPort | quote }}
+              protocol: TCP
     # DNS lookups of the registry Service and of the upstream registries.
     - toEndpoints:
         - matchLabels:

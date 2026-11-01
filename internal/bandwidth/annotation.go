@@ -12,13 +12,15 @@ const Version = 1
 //
 //	node:                       GeneveKbps (the class, already scaled), LabCapKbps (the ceiling of one lab's Geneve traffic)
 //	demux, L7 proxy pod:        ClassKbps (the part of the entry class of this component), CapKbps (the ceiling of one participant)
-//	gateway pod:                CapKbps (the ceiling of one lab's internet traffic, the fair share is already in it)
+//	gateway pod:                CapKbps (the ceiling of one lab's internet traffic, the fair share is already in it), UpKbps (the ceiling of what
+//	                            one lab sends to the internet: the lab cap, scaled down when the labs of the cluster together would pass the total)
 type Limits struct {
 	V          int   `json:"v"`
 	ClassKbps  int64 `json:"classKbps,omitempty"`
 	CapKbps    int64 `json:"capKbps,omitempty"`
 	GeneveKbps int64 `json:"geneveKbps,omitempty"`
 	LabCapKbps int64 `json:"labCapKbps,omitempty"`
+	UpKbps     int64 `json:"upKbps,omitempty"`
 }
 
 // Encode writes the annotation value.

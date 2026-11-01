@@ -36,9 +36,18 @@ type IPTablesManager struct {
 	// inputInstalled is true once the INPUT policy stands.
 	inputInstalled bool
 	// MaxConnectionsPerLab is the most connections a lab (its /24) may hold open to the outside, NewConnectionsPerSecondPerLab the most it may
-	// open in a second; 0 = no limit. Only a NEW connection is looked at, after the established traffic has passed.
+	// open in a second; 0 = no limit. They are the caps of the web proxy (a lab's TCP 80 and 443 end there); the chain that once counted
+	// forwarded connections is gone.
 	MaxConnectionsPerLab, NewConnectionsPerSecondPerLab int
+	// Egress are the local ports of the web proxy and the DNS answerer that a lab's traffic is redirected to.
+	Egress EgressPorts
+	// ICMPPerSecond is the most echo requests a lab may send to the outside in a second (default 5).
+	ICMPPerSecond int
 }
+
+// EgressPorts are the local ports of the egress services of the gateway: the transparent web proxy (HTTP for the lab's port 80, TLS for its
+// port 443) and the DNS answerer (UDP and TCP) that every port 53 of a lab is redirected to.
+type EgressPorts struct{ HTTP, TLS, DNS int }
 
 func NewIPTablesManager(extIface string) (*IPTablesManager, error) {
 	ipt, err := iptables.New()
@@ -51,12 +60,16 @@ func NewIPTablesManager(extIface string) (*IPTablesManager, error) {
 }
 
 const (
+	protoTCP = "tcp"
 	// labIfaces matches every lab interface of the gateway pod (lab<N>).
 	labIfaces = "lab+"
 	// sourceChain holds one rule per lab that drops what a lab interface sends with a source outside the lab's own subnet.
 	sourceChain = "LABSRC"
-	// limitChain holds the per-lab limits of NEW connections to the outside (see IPTablesManager.MaxConnectionsPerLab).
+	// limitChain held the per-lab limits of NEW forwarded connections; it is removed when found (the caps moved to the web proxy).
 	limitChain = "LABLIMIT"
+	// icmpChain drops the ICMP errors (time exceeded, unreachable, parameter problem) that come from an internal address, so a traceroute
+	// shows the gateway as its last visible hop and no address of the node, the pod network or the cloud.
+	icmpChain = "LABICMP"
 )
 
 // egressChains are the two names the egress filter alternates between, so a rebuild never empties the chain in use.
@@ -178,60 +191,46 @@ func ensureFirst(ipt netfilter, rule ...string) error {
 	return nil
 }
 
-// setupForwardRules installs the rules that let lab traffic leave and its replies return. They come after the filters, and
-// only lab interfaces may use them.
+// setupForwardRules installs what a lab may send through the gateway to the outside, and its replies. A lab's TCP 80 and 443 and its port 53
+// never get here: they are redirected to the proxy and the DNS answerer of the gateway (AddEgressServices) and end in the pod. What is left
+// to forward is ICMP echo (small, a few a second), and the replies. Every other packet of a lab towards the outside (other TCP, UDP, other
+// protocols) meets the DROP policy of FORWARD. ICMP errors from an internal address are dropped on their way back.
 func (m *IPTablesManager) setupForwardRules() error {
-	// The rule of earlier versions: it accepted whatever left through the external interface, from any interface.
-	for {
-		ok, err := m.ipt.Exists("filter", "FORWARD", "-o", m.extIface, "-j", "ACCEPT")
-		if err != nil || !ok {
-			break
-		}
-		if err := m.ipt.Delete("filter", "FORWARD", "-o", m.extIface, "-j", "ACCEPT"); err != nil {
-			return fmt.Errorf("remove the open FORWARD rule: %w", err)
-		}
+	// The rules of earlier versions: they accepted whatever left through the external interface, from any lab interface or from any
+	// interface at all, and counted new connections of a lab in a chain.
+	old := [][]string{
+		{"-o", m.extIface, "-j", "ACCEPT"},
+		{"-i", labIfaces, "-o", m.extIface, "-j", "ACCEPT"},
+		{"-i", labIfaces, "-o", m.extIface, "-m", "conntrack", "--ctstate", "NEW", "-j", limitChain},
 	}
-	limited, err := m.setupLimitChain()
-	if err != nil {
-		return err
-	}
-	var rules [][]string
-	if limited {
-		// a NEW connection of a lab is checked against its limits; whatever is not NEW goes on to the accepting rules
-		rules = append(rules, []string{"-i", labIfaces, "-o", m.extIface, "-m", "conntrack", "--ctstate", "NEW", "-j", limitChain})
-	}
-	rules = append(rules,
-		// lab{N} -> internet
-		[]string{"-i", labIfaces, "-o", m.extIface, "-j", "ACCEPT"},
-		// return traffic from internet -> lab{N}
-		[]string{"-i", m.extIface, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"},
-	)
-	jump := []string{"-i", labIfaces, "-o", m.extIface, "-m", "conntrack", "--ctstate", "NEW", "-j", limitChain}
-	if !limited {
-		// limits switched off (or never on): a jump left by an earlier run in a surviving network namespace goes
+	for _, r := range old {
 		for {
-			ok, err := m.ipt.Exists("filter", "FORWARD", jump...)
+			ok, err := m.ipt.Exists("filter", "FORWARD", r...)
 			if err != nil || !ok {
 				break
 			}
-			if err := m.ipt.Delete("filter", "FORWARD", jump...); err != nil {
-				return fmt.Errorf("remove the old limit jump: %w", err)
+			if err := m.ipt.Delete("filter", "FORWARD", r...); err != nil {
+				return fmt.Errorf("remove the old FORWARD rule %v: %w", r, err)
 			}
 		}
-	} else {
-		// A pod whose rules survive a restart may already hold the accepting rules, and the jump must stand before them: take the accepting
-		// rules out and put them back after it. The filter is closed for that moment (the policy is DROP), never open.
-		for _, r := range rules[1:] {
-			for {
-				ok, err := m.ipt.Exists("filter", "FORWARD", r...)
-				if err != nil || !ok {
-					break
-				}
-				if err := m.ipt.Delete("filter", "FORWARD", r...); err != nil {
-					return fmt.Errorf("reorder the FORWARD rules: %w", err)
-				}
-			}
-		}
+	}
+	if ok, err := m.ipt.ChainExists("filter", limitChain); err == nil && ok {
+		_ = m.ipt.ClearAndDeleteChain("filter", limitChain)
+	}
+	if err := m.setupICMPErrorChain(); err != nil {
+		return err
+	}
+	perSecond := m.ICMPPerSecond
+	if perSecond <= 0 {
+		perSecond = 5
+	}
+	rules := [][]string{
+		// lab{N} -> internet: an echo request, small, a few a second for the whole lab (its /24)
+		{"-i", labIfaces, "-o", m.extIface, "-p", "icmp", "--icmp-type", "echo-request", "-m", "length", "--length", "28:128",
+			"-m", "hashlimit", "--hashlimit-name", "cice_lab_icmp", "--hashlimit-mode", "srcip", "--hashlimit-srcmask", "24",
+			"--hashlimit-upto", fmt.Sprintf("%d/second", perSecond), "--hashlimit-burst", fmt.Sprint(perSecond), "-j", "ACCEPT"},
+		// return traffic from internet -> lab{N}: the echo reply, and ICMP errors the filter above has not dropped
+		{"-i", m.extIface, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"},
 	}
 	for _, r := range rules {
 		if err := m.ipt.AppendUnique("filter", "FORWARD", r...); err != nil {
@@ -241,31 +240,32 @@ func (m *IPTablesManager) setupForwardRules() error {
 	return nil
 }
 
-// setupLimitChain (re)builds the chain of the per-lab limits and says whether there is anything in it. The lab is the /24 of the source address
-// (every lab of a group has its own /24 of the internet network): one rule counts the connections of all labs, each against its own prefix.
-func (m *IPTablesManager) setupLimitChain() (bool, error) {
-	if m.MaxConnectionsPerLab <= 0 && m.NewConnectionsPerSecondPerLab <= 0 {
-		return false, nil
+// icmpErrorTypes are the ICMP messages that report a failure along the path.
+var icmpErrorTypes = []string{"time-exceeded", "destination-unreachable", "parameter-problem"}
+
+// setupICMPErrorChain makes FORWARD send ICMP errors that arrive from the uplink for a lab through a chain that drops those whose source is
+// an internal address (the same ranges a lab never reaches): a hop inside the cluster or the cloud stays invisible. The jumps are put at the
+// top of FORWARD, in front of the accept of ESTABLISHED,RELATED, to which such an error would otherwise belong.
+func (m *IPTablesManager) setupICMPErrorChain() error {
+	if err := m.ensureChain(icmpChain); err != nil {
+		return err
 	}
-	if err := m.ensureChain(limitChain); err != nil {
-		return false, err
+	if err := m.ipt.ClearChain("filter", icmpChain); err != nil {
+		return fmt.Errorf("prepare chain %s: %w", icmpChain, err)
 	}
-	if err := m.ipt.ClearChain("filter", limitChain); err != nil {
-		return false, fmt.Errorf("prepare chain %s: %w", limitChain, err)
-	}
-	if m.MaxConnectionsPerLab > 0 {
-		if err := m.ipt.Append("filter", limitChain, "-m", "connlimit", "--connlimit-above", fmt.Sprint(m.MaxConnectionsPerLab), "--connlimit-mask", "24", "--connlimit-saddr", "-j", "DROP"); err != nil {
-			return false, fmt.Errorf("connection limit: %w", err)
+	for _, c := range egress.DenyV4 {
+		if err := m.ipt.Append("filter", icmpChain, "-s", c, "-j", "DROP"); err != nil {
+			return fmt.Errorf("deny ICMP errors from %s: %w", c, err)
 		}
 	}
-	if m.NewConnectionsPerSecondPerLab > 0 {
-		rate := fmt.Sprintf("%d/second", m.NewConnectionsPerSecondPerLab)
-		if err := m.ipt.Append("filter", limitChain, "-m", "hashlimit", "--hashlimit-name", "cice_lab_new", "--hashlimit-mode", "srcip", "--hashlimit-srcmask", "24",
-			"--hashlimit-above", rate, "--hashlimit-burst", fmt.Sprint(m.NewConnectionsPerSecondPerLab), "-j", "DROP"); err != nil {
-			return false, fmt.Errorf("new connection rate limit: %w", err)
+	// The address of the pod itself on the uplink is internal too (public node addresses are not in the list: protect them with the
+	// cloud firewall, as DEPLOY.md says).
+	for _, t := range icmpErrorTypes {
+		if err := ensureFirst(m.ipt, "-i", m.extIface, "-o", labIfaces, "-p", "icmp", "--icmp-type", t, "-j", icmpChain); err != nil {
+			return err
 		}
 	}
-	return true, nil
+	return nil
 }
 
 // setupEgressChain builds the destination filter of the traffic the gateway forwards to the outside: every range of deny is
@@ -352,6 +352,55 @@ func (m *IPTablesManager) DelMasquerade(labCIDR string) {
 		"nat", "POSTROUTING",
 		"-s", labCIDR, "-o", m.extIface, "-j", "MASQUERADE",
 	)
+}
+
+// AddEgressServices makes the web proxy and the DNS answerer of the gateway the only way out of one lab interface: its TCP 80 and 443 go to
+// the proxy (whatever address the lab chose), every port 53 to the DNS answerer, and the INPUT policy lets those local ports in on that
+// interface and no other. Run it before the lab is let through (UnblockLab).
+func (m *IPTablesManager) AddEgressServices(iface string) error {
+	if m.Egress.HTTP == 0 || m.Egress.TLS == 0 || m.Egress.DNS == 0 {
+		return fmt.Errorf("the egress ports are not set")
+	}
+	for _, r := range m.egressRedirects(iface) {
+		if err := m.ipt.AppendUnique("nat", "PREROUTING", r...); err != nil {
+			return fmt.Errorf("redirect for %s: %w", iface, err)
+		}
+	}
+	for _, p := range m.egressInputs(iface) {
+		if err := podinput.AllowPort(m.ipt, iface, p.proto, p.port); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DelEgressServices takes the redirects and the INPUT accepts of a lab interface away.
+func (m *IPTablesManager) DelEgressServices(iface string) {
+	for _, r := range m.egressRedirects(iface) {
+		_ = m.ipt.Delete("nat", "PREROUTING", r...)
+	}
+	for _, p := range m.egressInputs(iface) {
+		podinput.DenyPort(m.ipt, iface, p.proto, p.port)
+	}
+}
+
+func (m *IPTablesManager) egressRedirects(iface string) [][]string {
+	return [][]string{
+		{"-i", iface, "-p", protoTCP, "--dport", "80", "-j", "REDIRECT", "--to-ports", fmt.Sprint(m.Egress.HTTP)},
+		{"-i", iface, "-p", protoTCP, "--dport", "443", "-j", "REDIRECT", "--to-ports", fmt.Sprint(m.Egress.TLS)},
+		{"-i", iface, "-p", "udp", "--dport", "53", "-j", "REDIRECT", "--to-ports", fmt.Sprint(m.Egress.DNS)},
+		{"-i", iface, "-p", protoTCP, "--dport", "53", "-j", "REDIRECT", "--to-ports", fmt.Sprint(m.Egress.DNS)},
+	}
+}
+
+type protoPort struct {
+	proto string
+	port  int
+}
+
+func (m *IPTablesManager) egressInputs(iface string) []protoPort {
+	_ = iface
+	return []protoPort{{protoTCP, m.Egress.HTTP}, {protoTCP, m.Egress.TLS}, {protoTCP, m.Egress.DNS}, {"udp", m.Egress.DNS}}
 }
 
 // BlockLab closes the physical leg before removing any old source guard. It

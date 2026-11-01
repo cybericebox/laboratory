@@ -37,6 +37,12 @@ func bandwidthPlan(cfg bandwidth.Config, nodes []corev1.Node, pods []corev1.Pod,
 		}
 	}
 	plan := bandwidthPlanResult{gateways: map[types.NamespacedName]string{}, nodes: map[string]string{}}
+	// The labs of the whole cluster that use the internet share the total upload cap.
+	allLabs := 0
+	for _, n := range gatewayLabs {
+		allLabs += n
+	}
+	up := cfg.LabUploadKbpsFor(allLabs)
 	// Every demux and L7 proxy of a lab node may forward to a VPN pod on one node: the entry class of a sender is the share of the
 	// smallest receiver (cfg.EntryClassKbps).
 	senders, minEntry := 0, int64(0)
@@ -65,7 +71,7 @@ func bandwidthPlan(cfg bandwidth.Config, nodes []corev1.Node, pods []corev1.Pod,
 				labs += gatewayLabs[onNode[j].Namespace]
 			}
 		}
-		inet := bandwidth.Limits{CapKbps: cfg.LabInternetKbps(limits, labs)}.Encode()
+		inet := bandwidth.Limits{CapKbps: cfg.LabInternetKbps(limits, labs), UpKbps: up}.Encode()
 		for j := range onNode {
 			if p := &onNode[j]; isBandwidthGateway(p) {
 				plan.gateways[types.NamespacedName{Namespace: p.Namespace, Name: p.Name}] = inet

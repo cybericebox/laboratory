@@ -228,6 +228,42 @@ inetGateway:
     # The operator also brings the pods of existing groups to this image, one group at a time (see DEPLOY.md, "Upgrade").
 
 # ============================================================
+# The internet of the labs (docs/specs/lab-internet-egress.md)
+# ============================================================
+# A lab with internet.enabled leaves through the gateway of its group, and only through services inside the gateway: its TCP 80 and 443 end
+# in a transparent web proxy (the name comes from the TLS server name or the HTTP Host; the address the lab chose is never used; no TLS
+# termination), every port 53 ends in a small DNS answerer, ICMP echo is the only thing forwarded (a few a second), and every other packet is
+# dropped. The ceilings per lab are bandwidth.caps.labInternetMbit (download) and bandwidth.caps.labUploadKbps (upload).
+internetEgress:
+  # The port of the page the operator pulls the per-minute summaries from.
+  statsPort: 9188
+  dns:
+    # The resolvers the gateway asks, comma separated. Public ones: the gateway reaches the public internet only, and the lab must never
+    # learn names of the cluster.
+    upstreams: "1.1.1.1,9.9.9.9"
+    # The most DNS questions a lab may ask in a second ("" = 50).
+    queriesPerSecond: ""
+  proxy:
+    # The most new connections per second to one host name through one gateway ("" = 5), and the longest a connection lives in seconds ("" = 600).
+    hostNewPerSecond: ""
+    maxConnSeconds: ""
+    # Replaces the built-in list of tunnel services the proxy refuses (comma separated suffixes; "-" = none; "" = the built-in list).
+    tunnelSuffixes: ""
+  # The most echo requests per second a lab may send out ("" = 5).
+  icmpPerSecond: ""
+  monitor:
+    # The operator pulls the summaries every minute, writes the connection log, and flags a lab (condition EgressAttention, an Event) when
+    # hostLabs different labs reach one host name within ten minutes, or the lab sits at its caps in capMinutes of the ten.
+    enabled: true
+    hostLabs: 20
+    capMinutes: 3
+  log:
+    # With a directory (a volume mounted into the operator pod) the connection log is also written in daily files kept for retentionDays;
+    # without, it is in the operator's log (logger egress-log) only, kept as long as the cluster's log collection keeps it.
+    dir: ""
+    retentionDays: 30
+
+# ============================================================
 # Proxy: the L7 proxy (unprivileged Deployment or DaemonSet) and the WireGuard demux (its own DaemonSet, namespace laboratory-wg)
 # ============================================================
 proxy:
@@ -987,6 +1023,10 @@ bandwidth:
     participantMbit: 50
     labInternetMbit: 50
     labGeneveMbit: 100
+    # What one lab may SEND to the internet (kbit/s, payload; the ACKs of what it downloads are not counted), and what all the labs of the
+    # cluster together may send (Mbit/s; a lab's upload shrinks when they would pass it; 0 = no total). The download of a lab is labInternetMbit.
+    labUploadKbps: 2048
+    uploadTotalMbit: 100
   # The OVS meter counts the frame before the Geneve headers (about 50 bytes) are added; the Geneve class is scaled by this so that
   # small packets do not push the node over its class.
   geneveOverheadFactor: 0.85
