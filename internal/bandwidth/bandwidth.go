@@ -25,6 +25,9 @@ type Config struct {
 	// ParticipantCapMbit, LabInternetCapMbit and LabGeneveCapMbit are the most one participant, one lab's internet and one lab's
 	// Geneve traffic may take, whatever is free.
 	ParticipantCapMbit, LabInternetCapMbit, LabGeneveCapMbit int64
+	// LabUploadKbps is the most one lab may send to the internet (payload; the ACKs of what it downloads are not counted). UploadTotalMbit is the
+	// most all the labs of the cluster together may send; a lab's upload is scaled down when they would pass it (0 = no total).
+	LabUploadKbps, UploadTotalMbit int64
 	// GeneveOverhead is the share of the Geneve class an inner frame may use: the OVS meter counts the frame before the
 	// encapsulation, and the outer headers (about 50 bytes) come on top. 0.85 leaves room for packets down to a few hundred bytes.
 	GeneveOverhead float64
@@ -40,6 +43,7 @@ func DefaultConfig() Config {
 		EntryShare: 50, InternetShare: 25, GeneveShare: 25,
 		ParticipantCapMbit: 50, LabInternetCapMbit: 50, LabGeneveCapMbit: 100,
 		GeneveOverhead: 0.85, EntryOverhead: 0.85,
+		LabUploadKbps: 2048, UploadTotalMbit: 100,
 	}
 }
 
@@ -48,7 +52,7 @@ func (c Config) Validate() error {
 	if c.DefaultMbit <= 0 {
 		return fmt.Errorf("bandwidth: the default node bandwidth must be positive")
 	}
-	if c.SystemReserveMbit < 0 || c.ParticipantCapMbit < 0 || c.LabInternetCapMbit < 0 || c.LabGeneveCapMbit < 0 {
+	if c.SystemReserveMbit < 0 || c.ParticipantCapMbit < 0 || c.LabInternetCapMbit < 0 || c.LabGeneveCapMbit < 0 || c.LabUploadKbps < 0 || c.UploadTotalMbit < 0 {
 		return fmt.Errorf("bandwidth: reserves and caps cannot be negative")
 	}
 	if c.EntryShare < 0 || c.InternetShare < 0 || c.GeneveShare < 0 || c.EntryShare+c.InternetShare+c.GeneveShare > 100 {
@@ -61,6 +65,16 @@ func (c Config) Validate() error {
 		return fmt.Errorf("bandwidth: the entry overhead factor must be in (0, 1], got %v", c.EntryOverhead)
 	}
 	return nil
+}
+
+// LabUploadKbpsFor is the upload ceiling of one lab when labs labs of the cluster use the internet: the lab cap, or the total divided by the
+// labs when that is less (never below 64 kbit/s: a lab always keeps a trickle). 0 means no limit.
+func (c Config) LabUploadKbpsFor(labs int) int64 {
+	up := c.LabUploadKbps
+	if up <= 0 || c.UploadTotalMbit <= 0 || labs < 1 {
+		return up
+	}
+	return max(min(up, c.UploadTotalMbit*1000/int64(labs)), 64)
 }
 
 // EntryClassKbps is the entry class one demux (or L7 proxy) may use, given the smallest entry class of the nodes it can send to and

@@ -88,6 +88,15 @@ func TestPlanDividesTheNodeBetweenEntryAndInternet(t *testing.T) {
 	if len(plan.gateways) != 2 {
 		t.Errorf("a reserve pod gets no ceiling, it only gives up bandwidth: %v", plan.gateways)
 	}
+	// the upload ceiling of a lab: its cap while ten labs stay under the total
+	if l := limitsOf(t, plan, "lg-a", "gateway-a"); l.UpKbps != 2048 {
+		t.Errorf("upload: %+v", l)
+	}
+	// 1000 labs of the cluster would pass the total of 100 Mbit/s: it is divided, and they all get the same
+	big := bandwidthPlan(cfg, nodes, pods, map[string]int{"lg-a": 500, "lg-b": 500})
+	if l := limitsOf(t, big, "lg-a", "gateway-a"); l.UpKbps != 100 {
+		t.Errorf("upload with the total divided: %+v", l)
+	}
 }
 
 func TestPlanGivesEveryNodeItsEntryLimits(t *testing.T) {

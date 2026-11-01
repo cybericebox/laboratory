@@ -156,6 +156,20 @@ func AllowDHCP(ipt Filter, iface string) error {
 
 func DenyDHCP(ipt Filter, iface string) { deleteAll(ipt, DHCPRule(iface)) }
 
+// PortRule accepts a connection (TCP) or a datagram (UDP) to one local port that arrives on one lab interface: a service of the pod that
+// the lab is meant to reach (the web proxy and the DNS answerer of the gateway), and nothing else of the pod.
+func PortRule(iface, proto string, port int) []string {
+	return []string{"-i", iface, "-p", proto, "--dport", strconv.Itoa(port), "-j", accept}
+}
+
+// AllowPort opens one local port on one lab interface; DenyPort closes it.
+func AllowPort(ipt Filter, iface, proto string, port int) error {
+	return ensure(ipt, Chain, PortRule(iface, proto, port), true)
+}
+func DenyPort(ipt Filter, iface, proto string, port int) {
+	deleteAll(ipt, PortRule(iface, proto, port))
+}
+
 // pingRate bounds gateway echo replies: shared per lab interface, per source for VPN participants.
 const (
 	pingRate  = "10/second"

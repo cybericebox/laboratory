@@ -62,6 +62,13 @@ func NewResolver(upstreams []string) (*Resolver, error) {
 	return res, nil
 }
 
+// SetStatic fixes the answer for a name (it does not expire): for a deployment that pins a name, and for tests.
+func (r *Resolver) SetStatic(name string, ips ...netip.Addr) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cache[name] = cacheEntry{ips: ips, expires: time.Now().Add(100 * 365 * 24 * time.Hour)}
+}
+
 // Denied says an address is in a range a lab never reaches.
 func (r *Resolver) Denied(a netip.Addr) bool {
 	a = a.Unmap()

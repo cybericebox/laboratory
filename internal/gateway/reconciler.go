@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
+	"github.com/cybericebox/laboratory/internal/egressproxy"
 	"github.com/cybericebox/laboratory/internal/labdhcp"
 	"github.com/cybericebox/laboratory/internal/names"
 	"github.com/cybericebox/laboratory/internal/reconcileutil"
@@ -33,7 +34,9 @@ type LabGatewayReconciler struct {
 	Cfg      *Config
 	Recorder record.EventRecorder
 	// Shaper keeps the lab interfaces to the bandwidth ceiling of the pod (nil: no shaping).
-	Shaper  *Shaper
+	Shaper *Shaper
+	// Labs tells the web proxy and the DNS answerer which lab an address belongs to (nil: no egress services).
+	Labs    *egressproxy.LabMap
 	applied map[string]appliedNetwork
 }
 
@@ -107,6 +110,10 @@ func (r *LabGatewayReconciler) reconcileDelete(ctx context.Context, gw *laborato
 		r.IPT.DelMasquerade(cidr)
 		r.IPT.DenyPing(names.LabIfaceNameByIndex(gw.Spec.NetworkIndex), firstHostIP(cidr))
 		r.IPT.DelAntiSpoof(names.LabIfaceNameByIndex(gw.Spec.NetworkIndex), cidr)
+		if r.Labs != nil {
+			r.IPT.DelEgressServices(names.LabIfaceNameByIndex(gw.Spec.NetworkIndex))
+			r.Labs.Delete(cidr)
+		}
 	}
 	if old, ok := r.applied[gw.Name]; ok {
 		if err := r.clearNetwork(old); err != nil {
@@ -147,6 +154,10 @@ func (r *LabGatewayReconciler) clearNetwork(old appliedNetwork) error {
 	removeNetworkAddress(old)
 	r.IPT.DelMasquerade(old.CIDR)
 	r.IPT.DelAntiSpoof(old.Iface, old.CIDR)
+	if r.Labs != nil {
+		r.IPT.DelEgressServices(old.Iface)
+		r.Labs.Delete(old.CIDR)
+	}
 	if r.Shaper != nil {
 		r.Shaper.Forget(old.Iface)
 	}
@@ -278,6 +289,10 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 			return r.networkFailure(ctx, gw, fmt.Errorf("add masquerade %s: %w", cidr, err))
 		}
 
+		if err := r.enableEgress(ifaceName, cidr, gw.Spec.LabName); err != nil {
+			return r.networkFailure(ctx, gw, err)
+		}
+
 		if err := r.IPT.UnblockLab(ifaceName); err != nil {
 			return r.networkFailure(ctx, gw, fmt.Errorf("open secured lab source gate: %w", err))
 		}
@@ -337,6 +352,21 @@ func (r *LabGatewayReconciler) reconcileRunning(ctx context.Context, gw *laborat
 
 // shape puts the bandwidth ceiling of the pod on a lab interface. A lab whose ceiling cannot be set is still served (its internet is
 // the point), but not silently: the event says so, and the next reconcile tries again.
+// enableEgress makes the web proxy and the DNS answerer of the gateway the lab's way out: the redirects stand, and the lab is known by its
+// subnet, before the lab is let through.
+func (r *LabGatewayReconciler) enableEgress(iface, cidr, lab string) error {
+	if r.Labs == nil {
+		return nil
+	}
+	if err := r.IPT.AddEgressServices(iface); err != nil {
+		return fmt.Errorf("redirect the egress of %s: %w", iface, err)
+	}
+	if err := r.Labs.Set(cidr, lab); err != nil {
+		return fmt.Errorf("register %s for the egress: %w", cidr, err)
+	}
+	return nil
+}
+
 func (r *LabGatewayReconciler) shape(gw *laboratoryv1alpha1.LabGateway, iface string) {
 	if r.Shaper == nil {
 		return

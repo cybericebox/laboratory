@@ -295,3 +295,28 @@ func TestEntryClassKbps(t *testing.T) {
 		t.Errorf("never below 1 kbit/s: %d", got)
 	}
 }
+
+// A lab's upload is its cap; when the labs of the cluster together would pass the total, the total is divided between them, and a lab always keeps a trickle.
+func TestLabUploadKbpsFor(t *testing.T) {
+	c := DefaultConfig() // 2048 kbit/s a lab, 100 Mbit/s in all
+	for labs, want := range map[int]int64{0: 2048, 1: 2048, 40: 2048, 48: 2048, 49: 2040, 100: 1000, 1000: 100, 100000: 64} {
+		if got := c.LabUploadKbpsFor(labs); got != want {
+			t.Errorf("%d labs: %d, want %d", labs, got, want)
+		}
+	}
+	c.UploadTotalMbit = 0
+	if got := c.LabUploadKbpsFor(100000); got != 2048 {
+		t.Errorf("no total, no division: %d", got)
+	}
+	c.LabUploadKbps = 0
+	if got := c.LabUploadKbpsFor(10); got != 0 {
+		t.Errorf("no lab cap, no limit: %d", got)
+	}
+	if (Limits{UpKbps: 777, CapKbps: 5}).Encode() == "" {
+		t.Fatal("encode")
+	}
+	back, err := Decode(Limits{UpKbps: 777, CapKbps: 5}.Encode())
+	if err != nil || back.UpKbps != 777 {
+		t.Fatalf("the upload ceiling must survive the annotation: %+v %v", back, err)
+	}
+}
