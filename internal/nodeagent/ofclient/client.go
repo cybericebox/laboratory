@@ -6,6 +6,7 @@ package ofclient
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -145,13 +146,16 @@ func (c *Client) Close() error {
 	return err
 }
 
+// ErrPortNotFound is what PortNo answers for a port that OpenFlow does not list.
+var ErrPortNotFound = errors.New("ofclient: port not found")
+
 // PortNo returns the OpenFlow port number for a named port, or error if unknown.
 func (c *Client) PortNo(name string) (uint32, error) {
 	c.mapMu.RLock()
 	defer c.mapMu.RUnlock()
 	no, ok := c.portMap[name]
 	if !ok {
-		return 0, fmt.Errorf("ofclient: port %q not found; known ports: %v", name, c.portMap)
+		return 0, fmt.Errorf("%w: %q; known ports: %v", ErrPortNotFound, name, c.portMap)
 	}
 	return no, nil
 }
