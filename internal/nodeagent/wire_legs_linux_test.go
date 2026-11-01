@@ -68,6 +68,7 @@ func TestNetnsPortGoneFromOpenFlowIsRetiredForTheReplacement(t *testing.T) {
 	if err := ovs.AddVethPortOwned(key, old.UID); err != nil {
 		t.Fatal(err)
 	}
+	waitOFPorts(t, flows, key)
 	if err := flows.AddT0Port(key, 22); err != nil {
 		t.Fatal(err)
 	}
@@ -122,6 +123,7 @@ func TestNetnsFlowsOfAVanishedPortDoNotMeetAReusedNumber(t *testing.T) {
 			}
 			add(gone, "old-uid", 7)
 			add(sibling, "sibling-uid", 8)
+			waitOFPorts(t, flows, gone, sibling)
 			ownerFixtureBind(t, flows, gone, sibling, 33)
 			dump := func(f *FlowManager) string {
 				return nstest.Run(t, "", "ovs-ofctl", "-O", "OpenFlow13", "dump-flows", "unix:"+f.proofSocket)
@@ -143,12 +145,36 @@ func TestNetnsFlowsOfAVanishedPortDoNotMeetAReusedNumber(t *testing.T) {
 				t.Cleanup(func() { _ = flows.Close() })
 			}
 			add(reused, "new-uid", 7)
-			if err := flows.refreshPorts(); err != nil {
-				t.Fatal(err)
-			}
+			waitOFPorts(t, flows, reused)
 			if out := dump(flows); strings.Contains(out, "in_port=7") || strings.Contains(out, "output:7") {
 				t.Fatalf("a flow of the vanished port meets the port that reuses its number:\n%s", out)
 			}
 		})
+	}
+}
+
+// waitOFPorts waits until OpenFlow lists the ports: a port added through OVSDB is there when ovs-vswitchd has made it, not when the
+// transaction returns.
+func waitOFPorts(t *testing.T, flows *FlowManager, ports ...string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if err := flows.refreshPorts(); err != nil {
+			t.Fatal(err)
+		}
+		missing := ""
+		for _, p := range ports {
+			if _, err := flows.client.PortNo(p); err != nil {
+				missing = p
+				break
+			}
+		}
+		if missing == "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("OpenFlow does not list %s after 10 s", missing)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
