@@ -1,0 +1,20 @@
+{{- if and .Values.internetEgress.monitor.enabled .Values.internetEgress.log.persistence.enabled (not .Values.internetEgress.log.dir) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: laboratory-egress-log
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "laboratory.labels" . | nindent 4 }}
+  annotations:
+    # The connection log outlives an upgrade and an uninstall by a decision of the administrator, not of helm.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.internetEgress.log.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.internetEgress.log.persistence.size | quote }}
+{{- end }}

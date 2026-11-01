@@ -503,7 +503,7 @@ func gatewayEgressEnv(cfg *operator.Config) []corev1.EnvVar {
 	var env []corev1.EnvVar
 	for _, e := range []struct{ name, value string }{
 		{"EGRESS_DNS_UPSTREAMS", cfg.EgressDNSUpstreams}, {"EGRESS_DNS_QUERIES_PER_SECOND", cfg.EgressDNSQueriesPerSecond},
-		{"EGRESS_HOST_NEW_PER_SECOND", cfg.EgressHostNewPerSecond}, {"EGRESS_MAX_CONN_SECONDS", cfg.EgressMaxConnSeconds},
+		{"EGRESS_HOST_NEW_PER_SECOND", cfg.EgressHostNewPerSecond}, {"EGRESS_HOST_GATEWAY_NEW_PER_SECOND", cfg.EgressHostGatewayNewPerSecond}, {"EGRESS_MAX_CONN_SECONDS", cfg.EgressMaxConnSeconds},
 		{"EGRESS_TUNNEL_SUFFIXES", cfg.EgressTunnelSuffixes}, {"EGRESS_ICMP_PER_SECOND", cfg.EgressICMPPerSecond},
 		{"EGRESS_STATS_PORT", fmt.Sprint(cfg.EgressStatsPort)},
 	} {

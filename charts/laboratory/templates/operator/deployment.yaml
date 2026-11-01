@@ -9,6 +9,11 @@ metadata:
     {{- include "laboratory.labels" . | nindent 4 }}
 spec:
   replicas: 1
+  {{- if include "laboratory.egressLogPVC" . }}
+  # The connection log volume is ReadWriteOnce: the old operator stops before the new one starts.
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       control-plane: controller-manager
@@ -26,6 +31,9 @@ spec:
       priorityClassName: {{ include "laboratory.priorityClass.platform" . }}
       securityContext:
         runAsNonRoot: true
+        {{- if include "laboratory.egressLogPVC" . }}
+        fsGroup: 65532
+        {{- end }}
         seccompProfile:
           type: RuntimeDefault
       terminationGracePeriodSeconds: 10
@@ -90,3 +98,12 @@ spec:
             periodSeconds: 10
           resources:
             {{- toYaml .Values.operator.resources | nindent 12 }}
+        {{- if include "laboratory.egressLogPVC" . }}
+          volumeMounts:
+            - name: egress-log
+              mountPath: /var/lib/egress-log
+      volumes:
+        - name: egress-log
+          persistentVolumeClaim:
+            claimName: laboratory-egress-log
+        {{- end }}

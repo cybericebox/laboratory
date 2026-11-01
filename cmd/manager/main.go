@@ -1,6 +1,15 @@
 // manager is the operator image's binary.
 package main
 
-import "github.com/cybericebox/laboratory/internal/cmds/manager"
+import (
+	"os"
 
-func main() { manager.Run() }
+	"github.com/cybericebox/laboratory/internal/cmds/manager"
+)
+
+func main() {
+	if len(os.Args) > 1 && os.Args[1] == "egress-log" {
+		os.Exit(manager.RunEgressLog(os.Args[2:]))
+	}
+	manager.Run()
+}

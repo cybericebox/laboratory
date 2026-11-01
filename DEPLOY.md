@@ -1430,7 +1430,7 @@ A lab with `internet.enabled` leaves through the gateway pod of its group, and *
 - The lab's TCP 80 and 443 end in a transparent **web proxy** (the name comes from the TLS server name or the HTTP `Host`, the address the
   lab chose is never used, no TLS termination). It refuses a bare IP, no name, Encrypted ClientHello, a name without a public address, and a
   small list of tunnel services (ngrok, trycloudflare, localtunnel, Tailscale, ZeroTier ...: `internetEgress.proxy.tunnelSuffixes`). A connection lives at most 10 minutes;
-  one host name takes at most 5 new connections per second through a gateway.
+  one host name takes at most 5 new connections per second from one lab, and at most 20 per second from all the labs of a gateway together (`internetEgress.proxy.hostNewPerSecond`, `hostGatewayNewPerSecond`).
 - Every port 53 of the lab (any address, UDP and TCP) ends in a small **DNS answerer**: A records for public IPv4 addresses, empty answers for
   AAAA/HTTPS/SVCB (no ECH keys), 50 queries a second per lab. The upstream resolvers are `internetEgress.dns.upstreams` (public ones).
 - ICMP echo is forwarded (5 a second per lab); every other TCP, UDP and protocol (SMTP, SSH, VPN, QUIC, DoT) is **dropped**. Traceroute shows
@@ -1438,8 +1438,15 @@ A lab with `internet.enabled` leaves through the gateway pod of its group, and *
 - Per lab: download `bandwidth.caps.labInternetMbit` (50 Mbit/s), upload `bandwidth.caps.labUploadKbps` (2 Mbit/s, pure ACKs not counted), and
   a cluster-wide upload total `bandwidth.caps.uploadTotalMbit` (100; a static share, with `bandwidth.enabled`).
 - The proxy keeps per-minute summaries (lab, host name, connections, bytes, refusals; no content, no user address). The operator pulls them
-  every minute from the gateways (port `internetEgress.statsPort`, opened to the operator by the network policy), writes the connection log
-  to its log (logger `egress-monitor.egress-log`) and, with `internetEgress.log.dir` (a volume you mount), to daily files kept `internetEgress.log.retentionDays` days.
+  every minute from the gateways (port `internetEgress.statsPort`, opened to the operator by the network policy) and keeps the **connection
+  log** for the cluster's administrator only (it is never sent to the daemon or any other client): by default on a PersistentVolumeClaim of
+  the operator (`internetEgress.log.persistence`: 10Gi, `helm.sh/resource-policy: keep`; ReadWriteOnce, so the operator Deployment is `Recreate`), in daily files
+  `egress-YYYY-MM-DD.jsonl`, gzipped when the day (UTC) is over and deleted after `internetEgress.log.retentionDays` (30) days. A restarted
+  operator goes on where the log ends (the gateways keep the last hour; a longer outage leaves a gap). Search it with
+  `kubectl -n laboratory-system exec deploy/laboratory-controller-manager -- /manager egress-log --host pypi.org [--lab L] [--namespace N] [--from 2026-11-01] [--to 2026-11-03] [--limit N]`
+  (`--host '*.example.com'` for a name and everything under it; one JSON row per line: minute, namespace, lab, host, conns, up, down, denied). With
+  `persistence.enabled=false` and no `log.dir` the rows go to the operator's own log (logger `egress-monitor.egress-log`) instead. The operator also reports to the administrator
+  only: the monitor logs once per change what it sees (`egress monitor sees`).
   It flags a lab (condition `EgressAttention` and a Warning Event) when `hostLabs` labs reach one host name within ten minutes or the lab sits
   at its caps in `capMinutes` of the ten. The operator's metrics endpoint is off by default (`--metrics-bind-address`), so the metrics below exist only where it is on. Metrics: `laboratory_egress_labs_flagged`, `laboratory_egress_minutes_pulled_total`, `laboratory_egress_pull_failures_total`.
   A device gets an address on the internet network from the gateway only when the lab asks for it (`internet.dhcpServer.enabled` with ranges); otherwise give the

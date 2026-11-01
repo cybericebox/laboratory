@@ -32,8 +32,9 @@ type Proxy struct {
 
 	// MaxConnAge is the longest a connection lives (default 10 minutes).
 	MaxConnAge time.Duration
-	// HostNewPerSecond is the most new connections per second to one host name through this gateway (default 5; 0 = no limit).
-	HostNewPerSecond float64
+	// HostNewPerSecond is the most new connections per second one lab opens to one host name (0 = no limit); HostGatewayNewPerSecond the most
+	// all the labs of this gateway together open to it (0 = no limit).
+	HostNewPerSecond, HostGatewayNewPerSecond float64
 	// LabMaxConns is the most connections a lab holds open, LabNewPerSecond the most it opens in a second (0 = no limit).
 	LabMaxConns, LabNewPerSecond int
 	// DialTimeout is how long a connection to the server may take (default 10 s).
@@ -43,11 +44,12 @@ type Proxy struct {
 	// Dial replaces the dialer (tests); it must refuse what Resolver.Denied refuses.
 	Dial func(ctx context.Context, addr string) (net.Conn, error)
 
-	once  sync.Once
-	mu    sync.Mutex
-	hosts map[string]*rate.Limiter
-	labs  map[string]*labLimits
-	last  time.Time
+	once     sync.Once
+	mu       sync.Mutex
+	hosts    map[string]*rate.Limiter // per host name of the gateway
+	labHosts map[string]*rate.Limiter // per lab and host name
+	labs     map[string]*labLimits
+	last     time.Time
 }
 
 type labLimits struct {
@@ -127,27 +129,37 @@ func (p *Proxy) admit(lab string) (func(), string) {
 	}, ""
 }
 
-// hostAllowed counts a new connection to a host name against the per-name rate of the gateway.
-func (p *Proxy) hostAllowed(name string) bool {
-	if p.HostNewPerSecond <= 0 {
-		return true
+// hostAllowed counts a new connection of a lab to a host name against the lab's own rate for the name and then against the rate of the
+// whole gateway for it. It says why not ("" = allowed).
+func (p *Proxy) hostAllowed(lab, name string) string {
+	if p.HostNewPerSecond <= 0 && p.HostGatewayNewPerSecond <= 0 {
+		return ""
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.hosts == nil {
-		p.hosts = map[string]*rate.Limiter{}
-	}
 	now := time.Now()
-	if now.Sub(p.last) > time.Minute || len(p.hosts) > 10000 { // limiters that refilled long ago are as good as new ones
-		p.hosts, p.last = map[string]*rate.Limiter{}, now
+	if now.Sub(p.last) > time.Minute || len(p.hosts)+len(p.labHosts) > 10000 { // limiters that refilled long ago are as good as new ones
+		p.hosts, p.labHosts, p.last = map[string]*rate.Limiter{}, map[string]*rate.Limiter{}, now
 	}
-	l := p.hosts[name]
+	if p.hosts == nil {
+		p.hosts, p.labHosts = map[string]*rate.Limiter{}, map[string]*rate.Limiter{}
+	}
+	if p.HostNewPerSecond > 0 && !limiterFor(p.labHosts, lab+"\x00"+name, p.HostNewPerSecond).Allow() {
+		return ReasonHostRate
+	}
+	if p.HostGatewayNewPerSecond > 0 && !limiterFor(p.hosts, name, p.HostGatewayNewPerSecond).Allow() {
+		return ReasonHostGatewayRate
+	}
+	return ""
+}
+
+func limiterFor(m map[string]*rate.Limiter, key string, perSecond float64) *rate.Limiter {
+	l := m[key]
 	if l == nil {
-		burst := max(int(p.HostNewPerSecond), 1)
-		l = rate.NewLimiter(rate.Limit(p.HostNewPerSecond), burst)
-		p.hosts[name] = l
+		l = rate.NewLimiter(rate.Limit(perSecond), max(int(perSecond), 1))
+		m[key] = l
 	}
-	return l.Allow()
+	return l
 }
 
 func (p *Proxy) deny(c net.Conn, lab, host, reason string, http bool) {
@@ -211,11 +223,11 @@ func (p *Proxy) handle(ctx context.Context, c net.Conn, isTLS bool) {
 		p.deny(c, lab, name, ReasonDenied, !isTLS)
 		return
 	}
-	if !p.hostAllowed(name) {
-		if p.Stats != nil {
-			p.Stats.Cap(lab, ReasonHostRate)
+	if reason := p.hostAllowed(lab, name); reason != "" {
+		if p.Stats != nil && reason == ReasonHostRate { // the lab's own rate is the lab's cap; the gateway's is shared and not held against it
+			p.Stats.Cap(lab, reason)
 		}
-		p.deny(c, lab, name, ReasonHostRate, !isTLS)
+		p.deny(c, lab, name, reason, !isTLS)
 		return
 	}
 	ips, err := p.Resolver.LookupIPv4(ctx, name)
