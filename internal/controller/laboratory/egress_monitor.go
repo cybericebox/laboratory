@@ -95,6 +95,7 @@ type EgressMonitor struct {
 	minutes []monitorMinute
 	flagged map[labKey]string // labs that carry the condition, with its message
 	primed  bool
+	seen    string // what the last pull saw (gateways, skipped pods); logged when it changes
 }
 
 type labKey struct{ ns, lab string }
@@ -149,9 +150,37 @@ const (
 // gatewayPods are the running pods of the gateway Deployments that the operator itself made, in the namespaces of its LabGroups: a pod that
 // carries the label but is not owned (through its ReplicaSet) by the Deployment "gateway" in a namespace labelled as a group's is not asked.
 func (m *EgressMonitor) gatewayPods(ctx context.Context) ([]corev1.Pod, error) {
+	pods, skipped, err := m.selectGatewayPods(ctx)
+	m.noteSeen(len(pods), skipped)
+	return pods, err
+}
+
+// noteSeen logs, once per change, how many gateways the monitor found and why the other pods with the gateway label were passed over, so
+// a monitor that sees nothing says so.
+func (m *EgressMonitor) noteSeen(found int, skipped map[string]int) {
+	keys := make([]string, 0, len(skipped))
+	for k := range skipped {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	state := fmt.Sprintf("gateways=%d", found)
+	for _, k := range keys {
+		state += fmt.Sprintf(" %s=%d", k, skipped[k])
+	}
+	m.mu.Lock()
+	changed := state != m.seen
+	m.seen = state
+	m.mu.Unlock()
+	if changed {
+		m.Log.Info("egress monitor sees", "gateways", found, "skipped", skipped)
+	}
+}
+
+func (m *EgressMonitor) selectGatewayPods(ctx context.Context) ([]corev1.Pod, map[string]int, error) {
+	skipped := map[string]int{}
 	var nss corev1.NamespaceList
 	if err := m.Reader.List(ctx, &nss, client.HasLabels{names.LabelGroup}); err != nil {
-		return nil, err
+		return nil, skipped, err
 	}
 	groups := map[string]bool{}
 	for i := range nss.Items {
@@ -159,16 +188,22 @@ func (m *EgressMonitor) gatewayPods(ctx context.Context) ([]corev1.Pod, error) {
 	}
 	var pods corev1.PodList
 	if err := m.Reader.List(ctx, &pods, client.MatchingLabels{names.LabelComponent: names.ComponentGateway}); err != nil {
-		return nil, err
+		return nil, skipped, err
 	}
 	var out []corev1.Pod
 	owned := map[string]bool{} // ReplicaSet (namespace/name) -> owned by the gateway Deployment
 	for _, p := range pods.Items {
-		if !groups[p.Namespace] || p.Status.Phase != corev1.PodRunning || p.Status.PodIP == "" || !p.DeletionTimestamp.IsZero() {
+		switch {
+		case !groups[p.Namespace]:
+			skipped["not-a-group-namespace"]++
+			continue
+		case p.Status.Phase != corev1.PodRunning || p.Status.PodIP == "" || !p.DeletionTimestamp.IsZero():
+			skipped["not-running"]++
 			continue
 		}
 		rs := controllerRef(p.OwnerReferences, "ReplicaSet")
 		if rs == nil {
+			skipped["no-replicaset-owner"]++
 			continue
 		}
 		key := p.Namespace + "/" + rs.Name + "/" + string(rs.UID)
@@ -176,17 +211,20 @@ func (m *EgressMonitor) gatewayPods(ctx context.Context) ([]corev1.Pod, error) {
 		if !seen {
 			var r appsv1.ReplicaSet
 			if err := m.Reader.Get(ctx, client.ObjectKey{Namespace: p.Namespace, Name: rs.Name}, &r); err != nil {
+				skipped["replicaset-unreadable"]++
 				continue
 			}
 			d := controllerRef(r.OwnerReferences, "Deployment")
 			ok = r.UID == rs.UID && d != nil && d.Name == gatewayDeployment
 			owned[key] = ok
 		}
-		if ok {
-			out = append(out, p)
+		if !ok {
+			skipped["not-the-gateway-deployment"]++
+			continue
 		}
+		out = append(out, p)
 	}
-	return out, nil
+	return out, skipped, nil
 }
 
 func controllerRef(refs []metav1.OwnerReference, kind string) *metav1.OwnerReference {
