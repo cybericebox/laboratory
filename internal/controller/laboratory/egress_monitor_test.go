@@ -60,7 +60,7 @@ func newMonitorFixture(t *testing.T, labs ...string) *monitorFixture {
 	yes := true
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "lg-a", Labels: map[string]string{names.LabelGroup: "g"}}}
 	rs := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: "gateway-abc", Namespace: "lg-a", UID: "rs-uid", OwnerReferences: []metav1.OwnerReference{{Kind: "Deployment", Name: names.ComponentGateway, Controller: &yes}}}}
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "gateway-x", Namespace: "lg-a", UID: "gw-uid", Labels: map[string]string{names.LabelComponent: names.ComponentGateway},
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "gateway-x", Namespace: "lg-a", UID: "gw-uid", Labels: map[string]string{labelApp: names.ComponentGateway, names.LabelComponent: names.ComponentGateway},
 		OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "gateway-abc", UID: "rs-uid", Controller: &yes}}},
 		Status: corev1.PodStatus{Phase: corev1.PodRunning, PodIP: host}}
 	objs := []client.Object{ns, rs, pod}
@@ -179,7 +179,7 @@ func TestEgressMonitorAsksOnlyItsOwnGateways(t *testing.T) {
 		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, UID: types.UID(name), Labels: labels, OwnerReferences: owners},
 			Status: corev1.PodStatus{Phase: corev1.PodRunning, PodIP: host}}
 	}
-	gw := map[string]string{names.LabelComponent: names.ComponentGateway}
+	gw := map[string]string{labelApp: names.ComponentGateway, names.LabelComponent: names.ComponentGateway}
 	foreign := []client.Object{
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "not-a-group"}},
 		&appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: "other-rs", Namespace: "lg-a", UID: "other-uid", OwnerReferences: []metav1.OwnerReference{{Kind: "Deployment", Name: "something-else", Controller: &yes}}}},
@@ -196,6 +196,14 @@ func TestEgressMonitorAsksOnlyItsOwnGateways(t *testing.T) {
 	pods, err := f.m.gatewayPods(context.Background())
 	if err != nil || len(pods) != 1 || pods[0].Name != "gateway-x" {
 		t.Fatalf("only the operator's own gateway is asked: %v %v", names2(pods), err)
+	}
+	// a gateway pod made before the component label existed is still the operator's own
+	old := mk("gateway-old", "lg-a", map[string]string{labelApp: names.ComponentGateway}, []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "gateway-abc", UID: "rs-uid", Controller: &yes}})
+	if err := f.c.Create(context.Background(), old); err != nil {
+		t.Fatal(err)
+	}
+	if pods, err = f.m.gatewayPods(context.Background()); err != nil || len(pods) != 2 {
+		t.Fatalf("a gateway pod without the component label is asked too: %v %v", names2(pods), err)
 	}
 	_, skipped, err := f.m.selectGatewayPods(context.Background())
 	if err != nil || skipped["no-replicaset-owner"] != 1 || skipped["not-a-group-namespace"] != 1 || skipped["not-the-gateway-deployment"] != 2 {

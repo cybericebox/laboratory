@@ -187,7 +187,7 @@ func (m *EgressMonitor) selectGatewayPods(ctx context.Context) ([]corev1.Pod, ma
 		groups[nss.Items[i].Name] = true
 	}
 	var pods corev1.PodList
-	if err := m.Reader.List(ctx, &pods, client.MatchingLabels{names.LabelComponent: names.ComponentGateway}); err != nil {
+	if err := m.Reader.List(ctx, &pods, client.MatchingLabels{labelApp: names.ComponentGateway}); err != nil {
 		return nil, skipped, err
 	}
 	var out []corev1.Pod
