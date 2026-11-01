@@ -163,8 +163,8 @@ nodes on different images and a rollout cannot tell the versions apart. A releas
 pull policy is `IfNotPresent` when `pullPolicy` is empty.
 
 **The VPN and gateway pods of existing groups.** They run `vpn.image` and `inetGateway.image` (the binary with the gateway egress filter, the anti-spoof check and the
-WireGuard handling), so after a chart upgrade the operator brings every existing group's VPN and gateway Deployment to the configured image and pull policy, and to nothing else: a group's pods keep the size (CPU and memory) and the command they were created with, a changed
-`vpn.resources` or `inetGateway.resources` reaches only new groups. It does that **one group at a time**: a group's two pods restart together (its tunnels drop and the clients
+WireGuard handling), so after a chart upgrade the operator brings every existing group's VPN and gateway Deployment to the configured image and pull policy, and to nothing else: a group's VPN keeps the size (CPU and memory) and the command it was created with, and a changed
+`vpn.resources` reaches only new groups. The gateway is the same until it is rolled: a gateway that restarts anyway (the image, a security setting) takes the size of the day in that same roll (a group created with a size of its own gets that size again), so the proxy and DNS code of a new image never runs at the old forwarding-only size; a changed `inetGateway.resources` alone restarts nothing and reaches new groups and the next roll of the old ones. It does that **one group at a time**: a group's two pods restart together (its tunnels drop and the clients
 re-handshake), and the next group starts when the previous one's pods are rolled out and available, or after 10 minutes if they never become so (a bad image does not
 hold up the cluster, but it does reach the next group). Watch it with `kubectl get deploy -A -l app -o wide` (the `vpn` and `gateway` Deployments) and the operator log.
 With the image cache on, the image is the pinned reference the operator resolves (`registry.cache.pinTTL`).

@@ -14,6 +14,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	laboratoryv1alpha1 "github.com/cybericebox/laboratory/api/laboratory/v1alpha1"
 	"github.com/cybericebox/laboratory/internal/grouppods"
 )
 
@@ -129,8 +130,8 @@ func TestRolloutTurnGoesStale(t *testing.T) {
 	}
 }
 
-// B-3: an upgrade converges the image and the pull policy of an existing VPN or gateway Deployment and nothing else: the size a group's
-// pods were created with (and its command) stay, whatever the chart says now.
+// B-3: an upgrade converges the image and the pull policy of an existing VPN or gateway Deployment and nothing else: the size of the VPN
+// (and the command) stay, whatever the chart says now. A gateway that is rolled for the image takes the size of the day in the same roll.
 func TestImageUpdateKeepsTheSizeOfAGroup(t *testing.T) {
 	ctx := context.Background()
 	small := corev1.ResourceRequirements{
@@ -170,11 +171,89 @@ func TestImageUpdateKeepsTheSizeOfAGroup(t *testing.T) {
 		if ct.Image != "lab:v2" || ct.ImagePullPolicy != corev1.PullIfNotPresent {
 			t.Errorf("%s: image %s, policy %s: the image and the pull policy must converge", n, ct.Image, ct.ImagePullPolicy)
 		}
-		if !apiequality.Semantic.DeepEqual(ct.Resources, small) {
-			t.Errorf("%s: resources %v: a group's pods keep the size they were created with", n, ct.Resources)
+		want := small
+		if n == "gateway" {
+			want = r.GroupPods.GatewayFor(nil)
+		}
+		if !apiequality.Semantic.DeepEqual(ct.Resources, want) {
+			t.Errorf("%s: resources %v, want %v", n, ct.Resources, want)
 		}
 		if len(ct.Command) != 3 || ct.Command[2] != "--old" {
 			t.Errorf("%s: command %v: it must not be touched", n, ct.Command)
 		}
+	}
+}
+
+// A pure change of the size in the chart restarts no running gateway; one with a size of its own keeps it when it is rolled.
+func TestGatewaySizeFollowsTheChartOnlyWithARoll(t *testing.T) {
+	ctx := context.Background()
+	old := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("10m"), corev1.ResourceMemory: resource.MustParse("32Mi")},
+		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("10m"), corev1.ResourceMemory: resource.MustParse("32Mi")},
+	}
+	dep := func(ns, image string) *appsv1.Deployment {
+		return &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: ns, Generation: 1},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: ptrInt32(1),
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "gateway"}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "gateway", "laboratory.cybericebox.com/component": "gateway"}},
+					Spec: corev1.PodSpec{Containers: []corev1.Container{{
+						Name: "gateway", Image: image, ImagePullPolicy: corev1.PullIfNotPresent, Resources: old, Command: []string{"/lab", "gateway"},
+					}}},
+				},
+			},
+		}
+	}
+	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).WithObjects(dep("a", "lab:v2"), dep("b", "lab:v2")).Build()
+	r := &LabGroupReconciler{Client: c, GatewayImage: "lab:v2", GroupPods: grouppods.Config{GatewayCPU: "100m", GatewayMemory: "96Mi"}}
+	own := &laboratoryv1alpha1.GroupPodSize{CPUMillicores: 55, MemoryBytes: 64 << 20}
+	ensure := func(ns string, size *laboratoryv1alpha1.GroupPodSize) {
+		t.Helper()
+		r.rollout.begin(ns)
+		r.rollout.release(ns)
+		if err := r.ensureGatewayDeployment(ctx, ns, false, size); err != nil {
+			t.Fatal(err)
+		}
+		r.rollout.release(ns) // the roll is done: the next group may have its turn
+	}
+	resources := func(ns string) corev1.ResourceRequirements {
+		var d appsv1.Deployment
+		if err := c.Get(ctx, types.NamespacedName{Name: "gateway", Namespace: ns}, &d); err != nil {
+			t.Fatal(err)
+		}
+		return d.Spec.Template.Spec.Containers[0].Resources
+	}
+	setOld := func(ns string) {
+		t.Helper()
+		var d appsv1.Deployment
+		if err := c.Get(ctx, types.NamespacedName{Name: "gateway", Namespace: ns}, &d); err != nil {
+			t.Fatal(err)
+		}
+		d.Spec.Template.Spec.Containers[0].Resources = old
+		if err := c.Update(ctx, &d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// the first pass brings the fixtures to the template of the day (they are rolled once)
+	ensure("a", nil)
+	ensure("b", own)
+	setOld("a")
+	setOld("b")
+
+	ensure("a", nil)
+	if !apiequality.Semantic.DeepEqual(resources("a"), old) {
+		t.Errorf("a gateway that is not rolled keeps its size: %v", resources("a"))
+	}
+	// the image changes: both groups are rolled
+	r.GatewayImage = "lab:v3"
+	ensure("a", nil)
+	ensure("b", own)
+	if !apiequality.Semantic.DeepEqual(resources("a"), r.GroupPods.Gateway()) {
+		t.Errorf("a gateway that is rolled takes the size of the day: %v", resources("a"))
+	}
+	if !apiequality.Semantic.DeepEqual(resources("b"), r.GroupPods.GatewayFor(own)) {
+		t.Errorf("a gateway with a size of its own is rolled to that size: %v", resources("b"))
 	}
 }
