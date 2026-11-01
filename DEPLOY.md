@@ -1439,10 +1439,11 @@ A lab with `internet.enabled` leaves through the gateway pod of its group, and *
   a cluster-wide upload total `bandwidth.caps.uploadTotalMbit` (100; a static share, with `bandwidth.enabled`).
 - The proxy keeps per-minute summaries (lab, host name, connections, bytes, refusals; no content, no user address). The operator pulls them
   every minute from the gateways (port `internetEgress.statsPort`, opened to the operator by the network policy), writes the connection log
-  to its log (logger `egress-log`) and, with `internetEgress.log.dir` (a volume you mount), to daily files kept `internetEgress.log.retentionDays` days.
+  to its log (logger `egress-monitor.egress-log`) and, with `internetEgress.log.dir` (a volume you mount), to daily files kept `internetEgress.log.retentionDays` days.
   It flags a lab (condition `EgressAttention` and a Warning Event) when `hostLabs` labs reach one host name within ten minutes or the lab sits
-  at its caps in `capMinutes` of the ten. Metrics: `laboratory_egress_labs_flagged`, `laboratory_egress_minutes_pulled_total`, `laboratory_egress_pull_failures_total`.
-  Check a running cluster with `hack/egress-check.sh` (from a device of a lab with the internet).
+  at its caps in `capMinutes` of the ten. The operator's metrics endpoint is off by default (`--metrics-bind-address`), so the metrics below exist only where it is on. Metrics: `laboratory_egress_labs_flagged`, `laboratory_egress_minutes_pulled_total`, `laboratory_egress_pull_failures_total`.
+  A device gets an address on the internet network from the gateway only when the lab asks for it (`internet.dhcpServer.enabled` with ranges); otherwise give the
+  device a static address on that network. Check a running cluster with `hack/egress-check.sh` (from a device of a lab with the internet).
 
 What the gateway may reach itself, and what the proxy connects to, is limited to the **public internet only**:
 

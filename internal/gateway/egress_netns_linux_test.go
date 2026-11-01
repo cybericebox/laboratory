@@ -293,14 +293,14 @@ except Exception as e:
 		if secs, _ := strconv.ParseFloat(dl[2], 64); secs > 4 {
 			t.Errorf("6 MB download took %.1f s, ceiling 50 Mbit/s", secs)
 		}
-		// the upload of 3 MB: the first MB goes in the burst of the police, the other 2 MB take 8 s at 2 Mbit/s
+		// the upload of 3 MB: the first quarter of a MB goes in the burst of the police, the other 2.75 MB take 11 s at 2 Mbit/s
 		ul := strings.Fields(labGo(t, labClient, "1.2.3.4", "allowed.test", "POST", "3000000"))
 		if len(ul) < 4 || ul[0] != "200" {
 			t.Fatalf("upload: %v", ul)
 		}
 		secs, _ := strconv.ParseFloat(ul[2], 64)
-		if secs < 5 || secs > 16 {
-			t.Errorf("3 MB upload took %.1f s; at 2 Mbit/s with a 1 MB burst it should take about 8", secs)
+		if secs < 8 || secs > 17 {
+			t.Errorf("3 MB upload took %.1f s; at 2 Mbit/s with a 256 kB burst it should take about 11", secs)
 		}
 		// with an upload ceiling of 64 kbit/s the pure ACKs of a download would be starved if they were counted
 		if err := sh.SetLimits(50_000, 64); err != nil {
