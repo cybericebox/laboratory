@@ -44,6 +44,7 @@ func init() {
 }
 
 func Run() {
+	began := time.Now()
 	journalLog, journal := errorlog.Setup("gateway", errorlog.Instance(), zap.New())
 	ctrl.SetLogger(journalLog)
 	log := ctrl.Log.WithName("gateway")
@@ -67,6 +68,7 @@ func Run() {
 		log.Error(err, "setup the forwarding filter")
 		os.Exit(1)
 	}
+	log.Info("startup: the forwarding filter stands", "took", time.Since(began).String())
 	if !ipt.IPv6Filtered {
 		log.Info("no ip6tables in this pod: the gateway forwards no IPv6")
 	}
@@ -86,6 +88,7 @@ func Run() {
 		os.Exit(1)
 	}
 
+	log.Info("startup: the manager is created", "took", time.Since(began).String())
 	dhcpMgr := dhcp.NewManager()
 	defer dhcpMgr.Close()
 	labs := egressproxy.NewLabMap()
@@ -137,7 +140,7 @@ func Run() {
 		}
 	}()
 
-	log.Info("starting gateway manager", "namespace", cfg.Namespace)
+	log.Info("starting gateway manager", "namespace", cfg.Namespace, "startup", time.Since(began).String())
 	errorlog.Start(ctx, journal, ctrl.GetConfigOrDie(), cfg.Namespace, ctrl.Log.WithName("error-journal"))
 	if err := mgr.Start(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "manager error: %v\n", err)
