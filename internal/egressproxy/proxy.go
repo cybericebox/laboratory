@@ -1,0 +1,421 @@
+package egressproxy
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/netip"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	"github.com/go-logr/logr"
+	"golang.org/x/time/rate"
+)
+
+// Proxy is the transparent web proxy of the gateway. The gateway redirects the TCP 80 and 443 of a lab to it (whatever address the lab
+// chose); it reads the name from the TLS server name or the HTTP Host, looks the name up itself, and connects there. The address the lab
+// chose is never used, so a name in /etc/hosts, a DNS server of the lab's own or a bare address change nothing. TLS is not terminated.
+type Proxy struct {
+	Labs     *LabMap
+	Resolver *Resolver
+	Deny     *Denylist
+	Stats    *Collector
+	Log      logr.Logger
+
+	// MaxConnAge is the longest a connection lives (default 10 minutes).
+	MaxConnAge time.Duration
+	// HostNewPerSecond is the most new connections per second one lab opens to one host name (0 = no limit); HostGatewayNewPerSecond the most
+	// all the labs of this gateway together open to it (0 = no limit).
+	HostNewPerSecond, HostGatewayNewPerSecond float64
+	// LabMaxConns is the most connections a lab holds open, LabNewPerSecond the most it opens in a second (0 = no limit).
+	LabMaxConns, LabNewPerSecond int
+	// DialTimeout is how long a connection to the server may take (default 10 s).
+	DialTimeout time.Duration
+	// HelloTimeout is how long a client may take to send its first flight (default 10 s).
+	HelloTimeout time.Duration
+	// Dial replaces the dialer (tests); it must refuse what Resolver.Denied refuses.
+	Dial func(ctx context.Context, addr string) (net.Conn, error)
+
+	once     sync.Once
+	mu       sync.Mutex
+	hosts    map[string]*rate.Limiter // per host name of the gateway
+	labHosts map[string]*rate.Limiter // per lab and host name
+	labs     map[string]*labLimits
+	last     time.Time
+}
+
+type labLimits struct {
+	open int
+	new  *rate.Limiter
+}
+
+func (p *Proxy) defaults() { p.once.Do(p.setDefaults) }
+
+func (p *Proxy) setDefaults() {
+	if p.MaxConnAge <= 0 {
+		p.MaxConnAge = 10 * time.Minute
+	}
+	if p.DialTimeout <= 0 {
+		p.DialTimeout = 10 * time.Second
+	}
+	if p.HelloTimeout <= 0 {
+		p.HelloTimeout = 10 * time.Second
+	}
+}
+
+// Serve accepts connections on the listener (tls: the listener of port 443) until ctx ends.
+func (p *Proxy) Serve(ctx context.Context, l net.Listener, tls bool) error {
+	p.defaults()
+	go func() { <-ctx.Done(); _ = l.Close() }()
+	for {
+		c, err := l.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
+				continue
+			}
+			return err
+		}
+		go p.handle(ctx, c, tls)
+	}
+}
+
+func remoteAddr(c net.Conn) netip.Addr {
+	if t, ok := c.RemoteAddr().(*net.TCPAddr); ok {
+		if a, ok := netip.AddrFromSlice(t.IP); ok {
+			return a.Unmap()
+		}
+	}
+	return netip.Addr{}
+}
+
+// admit counts a new connection of a lab against its caps. It returns the release function, or false when the lab is at a cap.
+func (p *Proxy) admit(lab string) (func(), string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.labs == nil {
+		p.labs = map[string]*labLimits{}
+	}
+	l := p.labs[lab]
+	if l == nil {
+		l = &labLimits{}
+		if p.LabNewPerSecond > 0 {
+			l.new = rate.NewLimiter(rate.Limit(p.LabNewPerSecond), p.LabNewPerSecond)
+		}
+		p.labs[lab] = l
+	}
+	if p.LabMaxConns > 0 && l.open >= p.LabMaxConns {
+		return nil, "lab-conns"
+	}
+	if l.new != nil && !l.new.Allow() {
+		return nil, "lab-rate"
+	}
+	l.open++
+	return func() {
+		p.mu.Lock()
+		l.open--
+		p.mu.Unlock()
+	}, ""
+}
+
+// hostAllowed counts a new connection of a lab to a host name against the lab's own rate for the name and then against the rate of the
+// whole gateway for it. It says why not ("" = allowed).
+func (p *Proxy) hostAllowed(lab, name string) string {
+	if p.HostNewPerSecond <= 0 && p.HostGatewayNewPerSecond <= 0 {
+		return ""
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	if now.Sub(p.last) > time.Minute || len(p.hosts)+len(p.labHosts) > 10000 { // limiters that refilled long ago are as good as new ones
+		p.hosts, p.labHosts, p.last = map[string]*rate.Limiter{}, map[string]*rate.Limiter{}, now
+	}
+	if p.hosts == nil {
+		p.hosts, p.labHosts = map[string]*rate.Limiter{}, map[string]*rate.Limiter{}
+	}
+	if p.HostNewPerSecond > 0 && !limiterFor(p.labHosts, lab+"\x00"+name, p.HostNewPerSecond).Allow() {
+		return ReasonHostRate
+	}
+	if p.HostGatewayNewPerSecond > 0 && !limiterFor(p.hosts, name, p.HostGatewayNewPerSecond).Allow() {
+		return ReasonHostGatewayRate
+	}
+	return ""
+}
+
+func limiterFor(m map[string]*rate.Limiter, key string, perSecond float64) *rate.Limiter {
+	l := m[key]
+	if l == nil {
+		l = rate.NewLimiter(rate.Limit(perSecond), max(int(perSecond), 1))
+		m[key] = l
+	}
+	return l
+}
+
+func (p *Proxy) deny(c net.Conn, lab, host, reason string, http bool) {
+	if p.Stats != nil {
+		p.Stats.Denied(lab, host, reason)
+	}
+	p.Log.V(1).Info("refused", "lab", lab, "host", host, "reason", reason)
+	if http {
+		_, _ = io.WriteString(c, "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+	}
+	_ = c.Close()
+}
+
+func (p *Proxy) handle(ctx context.Context, c net.Conn, isTLS bool) {
+	defer func() { _ = c.Close() }()
+	lab, ok := p.Labs.Lookup(remoteAddr(c))
+	if !ok {
+		p.deny(c, "", "", ReasonUnknown, false)
+		return
+	}
+	release, capReason := p.admit(lab)
+	if release == nil {
+		if p.Stats != nil {
+			p.Stats.Cap(lab, capReason)
+		}
+		_ = c.Close()
+		return
+	}
+	defer release()
+
+	_ = c.SetReadDeadline(time.Now().Add(p.HelloTimeout))
+	var raw []byte
+	var name, reason string
+	if isTLS {
+		h, err := ReadClientHello(c)
+		switch {
+		case err != nil:
+			p.deny(c, lab, "", ReasonNotTLS, false)
+			return
+		case h.ECH:
+			p.deny(c, lab, "", ReasonECH, false)
+			return
+		}
+		raw = h.Raw
+		name, reason = NormalizeName(h.ServerName)
+	} else {
+		head, host, err := readHTTPHead(c)
+		if err != nil {
+			p.deny(c, lab, "", ReasonNotHTTP, false)
+			return
+		}
+		raw = head
+		name, reason = NormalizeName(host)
+	}
+	_ = c.SetReadDeadline(time.Time{})
+	if reason != "" {
+		p.deny(c, lab, "", reason, !isTLS)
+		return
+	}
+	if p.Deny.Denied(name) {
+		p.deny(c, lab, name, ReasonDenied, !isTLS)
+		return
+	}
+	if reason := p.hostAllowed(lab, name); reason != "" {
+		if p.Stats != nil && reason == ReasonHostRate { // the lab's own rate is the lab's cap; the gateway's is shared and not held against it
+			p.Stats.Cap(lab, reason)
+		}
+		p.deny(c, lab, name, reason, !isTLS)
+		return
+	}
+	ips, err := p.Resolver.LookupIPv4(ctx, name)
+	if err != nil {
+		p.deny(c, lab, name, ReasonResolve, !isTLS)
+		return
+	}
+	port := "80"
+	if isTLS {
+		port = "443"
+	}
+	up, err := p.dial(ctx, ips, port)
+	if err != nil {
+		p.deny(c, lab, name, ReasonResolve, !isTLS)
+		return
+	}
+	defer func() { _ = up.Close() }()
+	if p.Stats != nil {
+		p.Stats.Start(lab, name)
+	}
+	var sent, got int64
+	defer func() {
+		if p.Stats != nil {
+			p.Stats.End(lab, name, atomic.LoadInt64(&sent), atomic.LoadInt64(&got))
+		}
+	}()
+	if _, err := up.Write(raw); err != nil {
+		return
+	}
+	atomic.AddInt64(&sent, int64(len(raw)))
+	p.splice(ctx, c, up, &sent, &got)
+}
+
+// splice copies both ways until either side ends or the connection is as old as MaxConnAge.
+func (p *Proxy) splice(ctx context.Context, a, b net.Conn, sent, got *int64) {
+	ctx, cancel := context.WithTimeout(ctx, p.MaxConnAge)
+	defer cancel()
+	go func() { <-ctx.Done(); _ = a.Close(); _ = b.Close() }()
+	done := make(chan struct{}, 2)
+	cp := func(dst, src net.Conn, n *int64) {
+		buf := make([]byte, 32<<10)
+		for {
+			r, err := src.Read(buf)
+			if r > 0 {
+				atomic.AddInt64(n, int64(r))
+				if _, werr := dst.Write(buf[:r]); werr != nil {
+					break
+				}
+			}
+			if err != nil {
+				break
+			}
+		}
+		if t, ok := dst.(*net.TCPConn); ok {
+			_ = t.CloseWrite()
+		}
+		done <- struct{}{}
+	}
+	go cp(b, a, sent)
+	go cp(a, b, got)
+	<-done
+	<-done
+}
+
+// dial connects to the first of the addresses that answers. The control function refuses an address in a denied range even if the
+// resolver let it through, so a rebinding between the lookup and the connect cannot reach the inside.
+func (p *Proxy) dial(ctx context.Context, ips []netip.Addr, port string) (net.Conn, error) {
+	var last error
+	for _, ip := range ips {
+		addr := net.JoinHostPort(ip.String(), port)
+		var c net.Conn
+		var err error
+		if p.Dial != nil {
+			c, err = p.Dial(ctx, addr)
+		} else {
+			d := net.Dialer{Timeout: p.DialTimeout, Control: func(_, address string, _ syscall.RawConn) error {
+				host, _, _ := net.SplitHostPort(address)
+				if a, err := netip.ParseAddr(host); err != nil || p.Resolver.Denied(a) {
+					return fmt.Errorf("address %s is not public", host)
+				}
+				return nil
+			}}
+			c, err = d.DialContext(ctx, "tcp4", addr)
+		}
+		if err == nil {
+			return c, nil
+		}
+		last = err
+	}
+	if last == nil {
+		last = ErrNoPublicAddress
+	}
+	return nil, last
+}
+
+// maxHTTPHead is the most the proxy reads before the end of a request head: a bigger head is refused, and nothing is buffered beyond it
+// (the read itself is bounded, not only the check after it).
+const maxHTTPHead = 16 << 10
+
+var errBadHTTP = errors.New("not an acceptable HTTP request")
+
+// readHTTPHead reads the head of one HTTP/1.x request (up to 16 kB, CRLF line ends) and returns what is to be sent on to the server and the
+// host name the proxy decided on. The head is checked the way a server would read it, so that the name the proxy judges is the name the
+// server serves: one Host only, an absolute-form target must carry the same host, no obsolete line folding, no space before a colon, no
+// CONNECT. The request is forwarded with "Connection: close" and without Upgrade / Proxy-Connection / Keep-Alive: one request per
+// connection, so the checks above are the checks of every request that is served.
+func readHTTPHead(r io.Reader) (forward []byte, host string, err error) {
+	buf := make([]byte, 0, 4096)
+	chunk := make([]byte, 2048)
+	end := -1
+	lr := io.LimitReader(r, maxHTTPHead+int64(len(chunk))) // never more than a head and one read past it
+	for end < 0 {
+		n, rerr := lr.Read(chunk)
+		buf = append(buf, chunk[:n]...)
+		if i := bytes.Index(buf, []byte("\r\n\r\n")); i >= 0 {
+			end = i + 4
+			break
+		}
+		if len(buf) > maxHTTPHead {
+			return nil, "", errBadHTTP
+		}
+		if rerr != nil {
+			return nil, "", rerr
+		}
+	}
+	if end > maxHTTPHead+len(chunk) {
+		return nil, "", errBadHTTP
+	}
+	head, rest := buf[:end-4], buf[end:]
+	lines := strings.Split(string(head), "\r\n")
+	f := strings.Fields(lines[0])
+	if len(f) != 3 || !strings.HasPrefix(f[2], "HTTP/1.") || strings.EqualFold(f[0], "CONNECT") {
+		return nil, "", errBadHTTP
+	}
+	hostHeader, hosts := "", 0
+	var out []string
+	for _, l := range lines[1:] {
+		if l == "" || l[0] == ' ' || l[0] == '\t' { // empty line inside the head, or obsolete line folding
+			return nil, "", errBadHTTP
+		}
+		i := strings.IndexByte(l, ':')
+		if i <= 0 {
+			return nil, "", errBadHTTP
+		}
+		name := l[:i]
+		if strings.ContainsAny(name, " \t") { // "Host : x" is read as Host by some servers and not by others
+			return nil, "", errBadHTTP
+		}
+		switch strings.ToLower(name) {
+		case "host":
+			hosts++
+			hostHeader = strings.TrimSpace(l[i+1:])
+			out = append(out, l)
+		case "connection", "proxy-connection", "keep-alive", "upgrade":
+			// dropped: the request goes on with Connection: close
+		default:
+			out = append(out, l)
+		}
+	}
+	if hosts > 1 {
+		return nil, "", errBadHTTP
+	}
+	host = hostHeader
+	if t := f[1]; strings.HasPrefix(strings.ToLower(t), "http://") || strings.HasPrefix(strings.ToLower(t), "https://") {
+		u, uerr := url.Parse(t)
+		if uerr != nil || u.Host == "" || u.User != nil {
+			return nil, "", errBadHTTP
+		}
+		a, ar := NormalizeName(u.Host)
+		if host == "" {
+			host = u.Host
+		} else if h, hr := NormalizeName(host); ar != "" || hr != "" || a != h {
+			return nil, "", errBadHTTP // the target and the Host name different hosts
+		}
+	} else if !strings.HasPrefix(t, "/") && t != "*" {
+		return nil, "", errBadHTTP
+	}
+	var b bytes.Buffer
+	b.WriteString(lines[0] + "\r\n")
+	for _, l := range out {
+		b.WriteString(l + "\r\n")
+	}
+	b.WriteString("Connection: close\r\n\r\n")
+	b.Write(rest)
+	return b.Bytes(), host, nil
+}
+
+// Listen opens a TCP listener on all addresses of the pod.
+func Listen(port int) (net.Listener, error) {
+	return net.Listen("tcp4", ":"+strconv.Itoa(port))
+}

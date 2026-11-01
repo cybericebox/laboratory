@@ -39,6 +39,26 @@ type Config struct {
 	VNIQuarantine    time.Duration `env:"VNI_QUARANTINE" envDefault:"10m"`
 	VNISweepInterval time.Duration `env:"VNI_SWEEP_INTERVAL" envDefault:"5m"`
 	VNIRetireFlush   time.Duration `env:"VNI_RETIRE_FLUSH" envDefault:"2s"`
+
+	// The egress monitor pulls the per-minute summaries of the gateways (EGRESS_MONITOR_ENABLED), on their summaries port (EGRESS_STATS_PORT),
+	// keeps the connection log in the operator log and, with EGRESS_LOG_DIR, in daily files for EGRESS_LOG_RETENTION, and flags a lab when
+	// EGRESS_SIGNAL_HOST_LABS labs hit one host name or it sat at its caps for EGRESS_SIGNAL_CAP_MINUTES minutes of ten.
+	// The egress settings a NEW gateway pod gets (empty = the default of the gateway): EGRESS_DNS_UPSTREAMS (comma separated),
+	// EGRESS_DNS_QUERIES_PER_SECOND, EGRESS_HOST_NEW_PER_SECOND, EGRESS_HOST_GATEWAY_NEW_PER_SECOND, EGRESS_MAX_CONN_SECONDS, EGRESS_TUNNEL_SUFFIXES ("-" = none),
+	// EGRESS_ICMP_PER_SECOND (chart internetEgress).
+	EgressDNSUpstreams            string        `env:"EGRESS_DNS_UPSTREAMS"`
+	EgressDNSQueriesPerSecond     string        `env:"EGRESS_DNS_QUERIES_PER_SECOND"`
+	EgressHostNewPerSecond        string        `env:"EGRESS_HOST_NEW_PER_SECOND"`
+	EgressHostGatewayNewPerSecond string        `env:"EGRESS_HOST_GATEWAY_NEW_PER_SECOND"`
+	EgressMaxConnSeconds          string        `env:"EGRESS_MAX_CONN_SECONDS"`
+	EgressTunnelSuffixes          string        `env:"EGRESS_TUNNEL_SUFFIXES"`
+	EgressICMPPerSecond           string        `env:"EGRESS_ICMP_PER_SECOND"`
+	EgressMonitorEnabled          bool          `env:"EGRESS_MONITOR_ENABLED" envDefault:"true"`
+	EgressStatsPort               int           `env:"EGRESS_STATS_PORT" envDefault:"9188"`
+	EgressLogDir                  string        `env:"EGRESS_LOG_DIR"`
+	EgressLogRetention            time.Duration `env:"EGRESS_LOG_RETENTION" envDefault:"720h"`
+	EgressSignalHostLabs          int           `env:"EGRESS_SIGNAL_HOST_LABS" envDefault:"20"`
+	EgressSignalCapMinutes        int           `env:"EGRESS_SIGNAL_CAP_MINUTES" envDefault:"3"`
 	// Acceptance gate stays false until final native proof; advertising remains false.
 	RequiredSnapshotAvailable bool `env:"REQUIRED_SNAPSHOT_AVAILABLE" envDefault:"false"`
 	// PublicVPNEndpoint is the host:port advertised to WireGuard clients (demux public address); a host alone gets the default port.

@@ -5,6 +5,7 @@ package nodeagent
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"path/filepath"
@@ -309,6 +310,12 @@ func (f *FlowManager) retirePort(name string) error {
 		return err
 	}
 	no, err := f.portNo(name)
+	if errors.Is(err, ofclient.ErrPortNotFound) {
+		// The port is gone from OpenFlow although its row may still be in OVSDB (the veth died with its pod's netns). refreshPorts has just
+		// purged the flows of the number it had, so nothing is left to confirm: the port is retired, and the leg of a replacement pod that
+		// takes its key can go on.
+		return f.forgetPort(name)
+	}
 	if err != nil {
 		return reconcileutil.Waiting(fmt.Errorf("port retirement cannot resolve %q: %w", name, err), 0)
 	}

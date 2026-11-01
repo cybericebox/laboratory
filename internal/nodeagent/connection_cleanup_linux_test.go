@@ -4,8 +4,11 @@ package nodeagent
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -63,5 +66,23 @@ func TestRetireSwitchEndpointsDoesNotLookUpTheVirtualPeerAsADevice(t *testing.T)
 	gone.Spec.Endpoints[1].Device = "sw-deleted"
 	if err := r.retireSwitchEndpoints(context.Background(), gone); err != nil {
 		t.Fatalf("an endpoint device that is gone has nothing left to retire: %v", err)
+	}
+}
+
+// A port that still belongs to the replaced pod is waited for on a short timer, not failed into the exponential back-off of the controller
+// (which kept the labs of a rolled gateway cut off for tens of seconds after their legs were wired).
+func TestPortOwnerPendingIsAWaitNotAnError(t *testing.T) {
+	for _, err := range []error{ErrPortOwnerChanged, ErrPortOwnerUnknown, fmt.Errorf("wrapped: %w", ErrPortOwnerChanged)} {
+		if !portOwnerPending(err) {
+			t.Errorf("%v must be waited for", err)
+		}
+	}
+	for _, err := range []error{nil, errors.New("ovs is down")} {
+		if portOwnerPending(err) {
+			t.Errorf("%v must stay an error", err)
+		}
+	}
+	if waitMessage(WaitPortOwner) == WaitPortOwner || wiredRetryOnWait > 5*time.Second {
+		t.Error("the wait needs a message and a short timer")
 	}
 }

@@ -202,18 +202,20 @@ inetGateway:
   limits:
     maxConnectionsPerLab: 4096
     newConnectionsPerSecondPerLab: 100
-  # Resources of the internet gateway pod of a NEW LabGroup (requests = limits). Measured idle: about 1m CPU and 8Mi
-  # (traffic of labs through it is not measured yet).
+  # Resources of the internet gateway pod of a NEW LabGroup (requests = limits). The gateway is a web proxy and a DNS answerer:
+  # measured on kind with each lab downloading 50 Mbit/s, uploading 2 Mbit/s and asking 50 DNS q/s: about 1m CPU per Mbit/s
+  # (5 labs ~100 Mbit/s: 102m average, 149m peak; 10 labs: 113m, 208m peak, the test link was the limit), memory 60-80Mi
+  # (page cache included) whatever the load, a start under 10m CPU takes ~20 s.
   resources:
-    cpu: 10m
-    memory: 32Mi
+    cpu: 100m
+    memory: 96Mi
   # How the platform sizes the gateway pod of a group: base + perLab * labs that use the internet, at most maxLabs labs (see vpn.sizing).
-  # Measured idle: about 1m and 8Mi.
+  # With headroom over the measurement above: the CPU follows the traffic of the labs, the memory hardly grows.
   sizing:
-    baseCpu: 5m
-    baseMemory: 16Mi
-    perLabCpu: 2m
-    perLabMemory: 4Mi
+    baseCpu: 20m
+    baseMemory: 96Mi
+    perLabCpu: 40m
+    perLabMemory: 2Mi
     maxLabs: 50
   # The labs of a group reach only the public internet through its gateway. The denied internal ranges (the private
   # ranges, link-local and the cloud metadata service, loopback, CGNAT, multicast and reserved, and the IPv6
@@ -226,6 +228,55 @@ inetGateway:
     # No pullPolicy key here (unlike operator/proxy/nodeAgent/agent): the operator builds this Pod spec itself
     # and the pull policy is IfNotPresent (the tag is always an exact version).
     # The operator also brings the pods of existing groups to this image, one group at a time (see DEPLOY.md, "Upgrade").
+
+# ============================================================
+# The internet of the labs (docs/specs/lab-internet-egress.md)
+# ============================================================
+# A lab with internet.enabled leaves through the gateway of its group, and only through services inside the gateway: its TCP 80 and 443 end
+# in a transparent web proxy (the name comes from the TLS server name or the HTTP Host; the address the lab chose is never used; no TLS
+# termination), every port 53 ends in a small DNS answerer, ICMP echo is the only thing forwarded (a few a second), and every other packet is
+# dropped. The ceilings per lab are bandwidth.caps.labInternetMbit (download) and bandwidth.caps.labUploadKbps (upload).
+internetEgress:
+  # The port of the page the operator pulls the per-minute summaries from.
+  statsPort: 9188
+  dns:
+    # The resolvers the gateway asks, comma separated. Public ones: the gateway reaches the public internet only, and the lab must never
+    # learn names of the cluster.
+    upstreams: "1.1.1.1,9.9.9.9"
+    # The most DNS questions a lab may ask in a second ("" = 50).
+    queriesPerSecond: ""
+  proxy:
+    # The most new connections per second one lab opens to one host name ("" = 5), the most all the labs of one gateway open to it together
+    # ("" = 20), and the longest a connection lives in seconds ("" = 600).
+    hostNewPerSecond: ""
+    hostGatewayNewPerSecond: ""
+    maxConnSeconds: ""
+    # Replaces the built-in list of tunnel services the proxy refuses (comma separated suffixes; "-" = none; "" = the built-in list).
+    tunnelSuffixes: ""
+  # The most echo requests per second a lab may send out ("" = 5).
+  icmpPerSecond: ""
+  monitor:
+    # The operator pulls the summaries every minute, writes the connection log, and flags a lab (condition EgressAttention, an Event) when
+    # hostLabs different labs reach one host name within ten minutes, or the lab sits at its caps in capMinutes of the ten.
+    enabled: true
+    hostLabs: 20
+    capMinutes: 3
+  log:
+    # The connection log (lab, host name, minute, connections, bytes up/down, denied) is for the cluster's administrator only: it is kept in
+    # daily files on a volume of the operator, gzipped when the day is over, for retentionDays. With persistence the chart makes the volume
+    # (a PersistentVolumeClaim, ReadWriteOnce, so the operator Deployment is Recreate: an upgrade stops the old operator before it starts the
+    # new one) and the operator goes on where the log ends after a restart (the gateways keep the last hour). Search it with
+    #   kubectl -n <ns> exec deploy/laboratory-controller-manager -- /manager egress-log --host pypi.org --lab <lab> --from 2026-11-01
+    # Size: a row is ~150 bytes, one per lab and host name a minute; 100 labs that reach 10 names each fill ~150 MB a day before gzip (~15 MB
+    # after), 30 days ~0.6 GB: the default has room for ten times that.
+    persistence:
+      enabled: true
+      size: 10Gi
+      storageClass: ""     # empty = the cluster's default class
+    # Instead of persistence: a directory the operator already has (a volume you mount yourself). Empty without persistence: the log is then
+    # in the operator's own log only (logger egress-log), kept as long as the cluster's log collection keeps it.
+    dir: ""
+    retentionDays: 30
 
 # ============================================================
 # Proxy: the L7 proxy (unprivileged Deployment or DaemonSet) and the WireGuard demux (its own DaemonSet, namespace laboratory-wg)
@@ -987,6 +1038,10 @@ bandwidth:
     participantMbit: 50
     labInternetMbit: 50
     labGeneveMbit: 100
+    # What one lab may SEND to the internet (kbit/s, payload; the ACKs of what it downloads are not counted), and what all the labs of the
+    # cluster together may send (Mbit/s; a lab's upload shrinks when they would pass it; 0 = no total). The download of a lab is labInternetMbit.
+    labUploadKbps: 2048
+    uploadTotalMbit: 100
   # The OVS meter counts the frame before the Geneve headers (about 50 bytes) are added; the Geneve class is scaled by this so that
   # small packets do not push the node over its class.
   geneveOverheadFactor: 0.85

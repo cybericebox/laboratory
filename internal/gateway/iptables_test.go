@@ -120,14 +120,27 @@ func TestSetupFilterOrderAndContent(t *testing.T) {
 	if f.policy != "DROP" {
 		t.Errorf("policy = %s", f.policy)
 	}
+	has := func(r string) bool { ok, _ := f.Exists("filter", "FORWARD", strings.Fields(r)...); return ok }
 	fw := f.chains["FORWARD"]
-	if fw[len(fw)-2] != "-i lab+ -o eth0 -j ACCEPT" || !strings.Contains(fw[len(fw)-1], "ESTABLISHED") {
-		t.Errorf("the accepting rules come last and only for lab interfaces: %v", fw)
+	if !strings.Contains(fw[len(fw)-2], "-p icmp --icmp-type echo-request") || !strings.HasSuffix(fw[len(fw)-2], "-j ACCEPT") || !strings.Contains(fw[len(fw)-1], "ESTABLISHED") {
+		t.Errorf("the accepting rules come last: an ICMP echo of a lab interface, and the replies: %v", fw)
+	}
+	for _, r := range fw {
+		if strings.Contains(r, "-p tcp") || strings.Contains(r, "-p udp") || r == "-i lab+ -o eth0 -j ACCEPT" {
+			t.Errorf("no TCP, UDP or blanket accept may be forwarded to the outside: %q", r)
+		}
+	}
+	for _, typ := range icmpErrorTypes {
+		if !has("-i eth0 -o lab+ -p icmp --icmp-type " + typ + " -j LABICMP") {
+			t.Errorf("ICMP errors of type %s must pass the internal-source filter: %v", typ, fw)
+		}
+	}
+	if got := len(f.chains[icmpChain]); got != len(egress.DenyV4) {
+		t.Errorf("ICMP error filter rules = %d, want %d", got, len(egress.DenyV4))
 	}
 	if got := len(f.chains["LABEGRESS"]); got != len(egress.DenyV4) {
 		t.Errorf("deny rules = %d, want %d", got, len(egress.DenyV4))
 	}
-	has := func(r string) bool { ok, _ := f.Exists("filter", "FORWARD", strings.Fields(r)...); return ok }
 	if !has("-i lab+ -j LABSRC") {
 		t.Errorf("FORWARD must pass lab interfaces through the source check: %v", fw)
 	}
@@ -250,84 +263,54 @@ func TestLabSourceGateClosesDuringReplacement(t *testing.T) {
 	}
 }
 
-// With limits the NEW connections of a lab are sent to their own chain before the accepting rules, and the chain holds the connection
-// count and the rate per /24; without limits nothing changes.
-func TestSetupFilterLimitsNewConnectionsPerLab(t *testing.T) {
+// Earlier versions accepted everything a lab sent to the outside, and counted its new connections in a chain: a pod whose rules survive a
+// restart loses both, and keeps the filter closed while it does.
+func TestSetupFilterRemovesTheOldOpenRuleAndTheLimitChain(t *testing.T) {
 	f := newFake(t)
 	m := manager(f)
-	m.MaxConnectionsPerLab, m.NewConnectionsPerSecondPerLab = 4096, 100
 	if err := m.SetupFilter(); err != nil {
 		t.Fatal(err)
 	}
-	fw := f.chains["FORWARD"]
-	jump := "-i lab+ -o eth0 -m conntrack --ctstate NEW -j LABLIMIT"
-	at := func(rule string) int {
-		for i, r := range fw {
-			if r == rule {
-				return i
-			}
-		}
-		return -1
-	}
-	if at(jump) < 0 || at(jump) > at("-i lab+ -o eth0 -j ACCEPT") {
-		t.Fatalf("the NEW limit jump comes before the accepting rule: %v", fw)
-	}
-	chain := strings.Join(f.chains[limitChain], "\n")
-	for _, want := range []string{"--connlimit-above 4096 --connlimit-mask 24 --connlimit-saddr -j DROP", "--hashlimit-mode srcip --hashlimit-srcmask 24 --hashlimit-above 100/second --hashlimit-burst 100 -j DROP"} {
-		if !strings.Contains(chain, want) {
-			t.Errorf("the limit chain lacks %q:\n%s", want, chain)
-		}
-	}
-	// a restart with other values rebuilds the chain, not duplicates it
-	m.MaxConnectionsPerLab = 10
-	if err := m.SetupFilter(); err != nil {
-		t.Fatal(err)
-	}
-	if got := f.chains[limitChain]; len(got) != 2 || !strings.Contains(got[0], "--connlimit-above 10 ") {
-		t.Errorf("the limits were not replaced: %v", got)
-	}
-	plain := newFake(t)
-	pm := manager(plain)
-	if err := pm.SetupFilter(); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := plain.chains[limitChain]; ok {
-		t.Error("no limits, no limit chain")
-	}
-}
-
-// A pod whose rules survive a restart already holds the accepting rules: with limits the jump to them is put before the accept, and
-// switching the limits off takes the jump away.
-func TestSetupFilterPutsTheLimitJumpBeforeSurvivingAcceptRules(t *testing.T) {
-	f := newFake(t)
-	m := manager(f)
-	if err := m.SetupFilter(); err != nil { // an earlier run, without limits
-		t.Fatal(err)
-	}
-	m.MaxConnectionsPerLab = 5
-	if err := m.SetupFilter(); err != nil {
-		t.Fatal(err)
-	}
-	fw := f.chains["FORWARD"]
-	jump, accept := -1, -1
-	for i, r := range fw {
-		switch r {
-		case "-i lab+ -o eth0 -m conntrack --ctstate NEW -j LABLIMIT":
-			jump = i
-		case "-i lab+ -o eth0 -j ACCEPT":
-			accept = i
-		}
-	}
-	if jump < 0 || accept < 0 || jump > accept {
-		t.Fatalf("the limit jump must stand before the accepting rule: %v", fw)
-	}
-	m.MaxConnectionsPerLab = 0
+	f.chains[limitChain] = []string{"-m connlimit --connlimit-above 5 -j DROP"}
+	f.chains["FORWARD"] = append(f.chains["FORWARD"], "-i lab+ -o eth0 -m conntrack --ctstate NEW -j LABLIMIT", "-i lab+ -o eth0 -j ACCEPT")
 	if err := m.SetupFilter(); err != nil {
 		t.Fatal(err)
 	}
 	for _, r := range f.chains["FORWARD"] {
-		if strings.Contains(r, "LABLIMIT") {
-			t.Fatalf("limits are off, the jump must go: %v", f.chains["FORWARD"])
+		if r == "-i lab+ -o eth0 -j ACCEPT" || strings.Contains(r, "LABLIMIT") {
+			t.Fatalf("an old rule survived: %v", f.chains["FORWARD"])
 		}
+	}
+	if _, ok := f.chains[limitChain]; ok {
+		t.Error("the old limit chain must go")
+	}
+}
+
+func TestEgressServicesRedirectOnlyTheLabsOwnInterface(t *testing.T) {
+	f := newFake(t)
+	m := manager(f)
+	m.Egress = EgressPorts{HTTP: 3180, TLS: 3443, DNS: 5353}
+	if err := m.AddEgressServices("lab3"); err != nil {
+		t.Fatal(err)
+	}
+	nat := f.chains["PREROUTING"]
+	for _, want := range []string{
+		"-i lab3 -p tcp --dport 80 -j REDIRECT --to-ports 3180", "-i lab3 -p tcp --dport 443 -j REDIRECT --to-ports 3443",
+		"-i lab3 -p udp --dport 53 -j REDIRECT --to-ports 5353", "-i lab3 -p tcp --dport 53 -j REDIRECT --to-ports 5353",
+	} {
+		found := false
+		for _, r := range nat {
+			found = found || r == want
+		}
+		if !found {
+			t.Errorf("missing redirect %q in %v", want, nat)
+		}
+	}
+	m.DelEgressServices("lab3")
+	if len(f.chains["PREROUTING"]) != 0 {
+		t.Errorf("the redirects must go with the interface: %v", f.chains["PREROUTING"])
+	}
+	if err := (&IPTablesManager{ipt: f, extIface: "eth0"}).AddEgressServices("lab3"); err == nil {
+		t.Error("without ports there is nothing to redirect to")
 	}
 }

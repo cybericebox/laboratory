@@ -163,8 +163,8 @@ nodes on different images and a rollout cannot tell the versions apart. A releas
 pull policy is `IfNotPresent` when `pullPolicy` is empty.
 
 **The VPN and gateway pods of existing groups.** They run `vpn.image` and `inetGateway.image` (the binary with the gateway egress filter, the anti-spoof check and the
-WireGuard handling), so after a chart upgrade the operator brings every existing group's VPN and gateway Deployment to the configured image and pull policy, and to nothing else: a group's pods keep the size (CPU and memory) and the command they were created with, a changed
-`vpn.resources` or `inetGateway.resources` reaches only new groups. It does that **one group at a time**: a group's two pods restart together (its tunnels drop and the clients
+WireGuard handling), so after a chart upgrade the operator brings every existing group's VPN and gateway Deployment to the configured image and pull policy, and to nothing else: a group's VPN keeps the size (CPU and memory) and the command it was created with, and a changed
+`vpn.resources` reaches only new groups. The gateway is the same until it is rolled: a gateway that restarts anyway (the image, a security setting) takes the size of the day in that same roll (a group created with a size of its own gets that size again), so the proxy and DNS code of a new image never runs at the old forwarding-only size; a changed `inetGateway.resources` alone restarts nothing and reaches new groups and the next roll of the old ones. It does that **one group at a time**: a group's two pods restart together (its tunnels drop and the clients
 re-handshake), and the next group starts when the previous one's pods are rolled out and available, or after 10 minutes if they never become so (a bad image does not
 hold up the cluster, but it does reach the next group). Watch it with `kubectl get deploy -A -l app -o wide` (the `vpn` and `gateway` Deployments) and the operator log.
 With the image cache on, the image is the pinned reference the operator resolves (`registry.cache.pinTTL`).
@@ -1083,8 +1083,8 @@ images:
   stamped on the Device when it is created, like the persistence choice itself: changing a Tenant later affects new devices only.
 - **Group overhead.** Every LabGroup runs a VPN pod and an internet gateway pod of its own. Their resources are chart values
   (`vpn.resources`, `inetGateway.resources`: `cpu` and `memory`, requests = limits, so the pods are Guaranteed). The defaults are
-  `100m`/`320Mi` for the VPN and `10m`/`32Mi` for the gateway. Measured on the local stand (kubectl top every 10 s): an idle VPN pod uses
-  1m CPU (p95 4m) and 16Mi; with ten active peers pulling pages in a loop it peaks at 55m CPU and 195Mi, so 320Mi leaves about half as headroom; an idle gateway uses 1m and 8Mi. The data path is the kernel's WireGuard and the pod only manages peers and firewall rules. The operator
+  `100m`/`320Mi` for the VPN and `100m`/`96Mi` for the gateway. Measured on the local stand (kubectl top every 10 s): an idle VPN pod uses
+  1m CPU (p95 4m) and 16Mi; with ten active peers pulling pages in a loop it peaks at 55m CPU and 195Mi, so 320Mi leaves about half as headroom; the gateway is a web proxy and a DNS answerer, so its CPU follows the traffic of the labs: about 1m per Mbit/s (kind, each lab 50 Mbit/s down, 2 Mbit/s up, 50 DNS q/s: 5 labs 102m average and 149m peak, 10 labs 113m and 208m peak; the test link, not the gateway, was the limit), memory 60-80Mi whatever the load, and a start under 10m CPU takes about 20 s. The VPN's data path is the kernel's WireGuard and its pod only manages peers and firewall rules. The operator
   uses them for a group created without an explicit size (see "Sizing of a group's own pods"); existing groups keep what they have (changing a value never restarts a live VPN). `GetCapacity`
   reports their sum as `group_overhead_cpu_millicores` and `group_overhead_memory_bytes`: what one group adds to its labs, for sizing a reservation.
 - **Resource quota.** The scheduler caps the sum of the CPU and memory requests of the tenant's dispatched pods (started, starting
@@ -1424,8 +1424,35 @@ entry.
 
 ### What a lab can reach through its internet gateway
 
-A lab with `internet.enabled` leaves through the gateway pod of its group, so the lab inherits whatever the gateway may reach.
-The gateway forwards to the **public internet only**:
+A lab with `internet.enabled` leaves through the gateway pod of its group, and **only through services inside that pod** (design:
+`docs/specs/LAB-INTERNET-EGRESS.md` of the platform repository):
+
+- The lab's TCP 80 and 443 end in a transparent **web proxy** (the name comes from the TLS server name or the HTTP `Host`, the address the
+  lab chose is never used, no TLS termination). It refuses a bare IP, no name, Encrypted ClientHello, a name without a public address, and a
+  small list of tunnel services (ngrok, trycloudflare, localtunnel, Tailscale, ZeroTier ...: `internetEgress.proxy.tunnelSuffixes`). A connection lives at most 10 minutes;
+  one host name takes at most 5 new connections per second from one lab, and at most 20 per second from all the labs of a gateway together (`internetEgress.proxy.hostNewPerSecond`, `hostGatewayNewPerSecond`).
+- Every port 53 of the lab (any address, UDP and TCP) ends in a small **DNS answerer**: A records for public IPv4 addresses, empty answers for
+  AAAA/HTTPS/SVCB (no ECH keys), 50 queries a second per lab. The upstream resolvers are `internetEgress.dns.upstreams` (public ones).
+- ICMP echo is forwarded (5 a second per lab); every other TCP, UDP and protocol (SMTP, SSH, VPN, QUIC, DoT) is **dropped**. Traceroute shows
+  the gateway as its last internal hop: ICMP errors from internal addresses never reach the lab (use `traceroute -I`; UDP probes are dropped).
+- Per lab: download `bandwidth.caps.labInternetMbit` (50 Mbit/s), upload `bandwidth.caps.labUploadKbps` (2 Mbit/s, pure ACKs not counted), and
+  a cluster-wide upload total `bandwidth.caps.uploadTotalMbit` (100; a static share, with `bandwidth.enabled`).
+- The proxy keeps per-minute summaries (lab, host name, connections, bytes, refusals; no content, no user address). The operator pulls them
+  every minute from the gateways (port `internetEgress.statsPort`, opened to the operator by the network policy) and keeps the **connection
+  log** for the cluster's administrator only (it is never sent to the daemon or any other client): by default on a PersistentVolumeClaim of
+  the operator (`internetEgress.log.persistence`: 10Gi, `helm.sh/resource-policy: keep`; ReadWriteOnce, so the operator Deployment is `Recreate`), in daily files
+  `egress-YYYY-MM-DD.jsonl`, gzipped when the day (UTC) is over and deleted after `internetEgress.log.retentionDays` (30) days. A restarted
+  operator goes on where the log ends (the gateways keep the last hour; a longer outage leaves a gap). Search it with
+  `kubectl -n laboratory-system exec deploy/laboratory-controller-manager -- /manager egress-log --host pypi.org [--lab L] [--namespace N] [--from 2026-11-01] [--to 2026-11-03] [--limit N]`
+  (`--host '*.example.com'` for a name and everything under it; one JSON row per line: minute, namespace, lab, host, conns, up, down, denied). With
+  `persistence.enabled=false` and no `log.dir` the rows go to the operator's own log (logger `egress-monitor.egress-log`) instead. The operator also reports to the administrator
+  only: the monitor logs once per change what it sees (`egress monitor sees`).
+  It flags a lab (condition `EgressAttention` and a Warning Event) when `hostLabs` labs reach one host name within ten minutes or the lab sits
+  at its caps in `capMinutes` of the ten. The operator's metrics endpoint is off by default (`--metrics-bind-address`), so the metrics below exist only where it is on. Metrics: `laboratory_egress_labs_flagged`, `laboratory_egress_minutes_pulled_total`, `laboratory_egress_pull_failures_total`.
+  A device gets an address on the internet network from the gateway only when the lab asks for it (`internet.dhcpServer.enabled` with ranges); otherwise give the
+  device a static address on that network. Check a running cluster with `hack/egress-check.sh` (from a device of a lab with the internet).
+
+What the gateway may reach itself, and what the proxy connects to, is limited to the **public internet only**:
 
 - The denied ranges are **a constant of the code** (`internal/egress`), not a setting, and there is no allow-list exception: a lab needs no
   internal service and must not learn where it runs. They are: `10/8`, `172.16/12`, `192.168/16` (so the node, VPC, pod and service networks of a
@@ -1434,7 +1461,7 @@ The gateway forwards to the **public internet only**:
   IPv4-mapped and NAT64, `fc00::/7`, `fe80::/10`, `ff00::/8`, discard and documentation). Public addresses of nodes are not listed: protect them with
   the cloud firewall (security groups).
 - Its iptables chain `LABEGRESS` (first in FORWARD for traffic leaving the pod) drops what a lab sends to those ranges (IPv6 through ip6tables
-  where the pod has it).
+  where the pod has it); the web proxy and the DNS answerer drop those ranges from the answers and refuse to connect there.
 - Its `CiliumNetworkPolicy` allows egress to the world **except** the same ranges (`toCIDRSet` with `except`, for `0.0.0.0/0` and `::/0`), and
   to the API server entity on ports 6443 and 443 only (the gateway's own reconciler; the entity covers every port of a node the API server
   runs on, so the ports are what limits it). The VPN pod's policy has the same port limit. The labs themselves can reach the API server
@@ -2381,7 +2408,7 @@ The VPN and the gateway pod of a group are sized by the platform, not by the cha
   `base + per_unit * labs` that use the internet, at most `max_labs` labs; CPU and memory both; the maximum size is the base plus the per-unit
   value times the maximum. Values: `vpn.sizing` (`baseCpu`, `baseMemory`, `perUserCpu`, `perUserMemory`, `maxUsers`) and `inetGateway.sizing`
   (`baseCpu`, `baseMemory`, `perLabCpu`, `perLabMemory`, `maxLabs`). Measured: a VPN about 16Mi idle and about 195Mi and 55m with 10 active peers,
-  a gateway about 8Mi idle. `group_pods` also carries the default size (`vpn.resources`, `inetGateway.resources`), which must not exceed the maximum
+  a gateway 60-80Mi (page cache included) and about 1m CPU per Mbit/s of lab traffic; defaults `baseCpu: 20m`, `perLabCpu: 40m`, `baseMemory: 96Mi`, `perLabMemory: 2Mi`. `group_pods` also carries the default size (`vpn.resources`, `inetGateway.resources`), which must not exceed the maximum
   (the agent refuses to start otherwise).
 - **The backend computes the size** for the group it plans (the VPN for the event's largest team, the gateway for the group's internet labs) and
   passes it in `CreateLabGroups` (`vpn_size`, `gateway_size`: `cpu_millicores`, `memory_bytes`). The agent refuses a size that is not positive in both

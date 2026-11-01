@@ -220,7 +220,7 @@ func (r *LabVPNReconciler) reconcileRunning(ctx context.Context, labvpn *laborat
 		if err := r.patchStatus(ctx, labvpn, next); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
 	cidr, err := netutil.SubnetForIndex(r.Cfg.VPNBaseNetwork, 24, labvpn.Spec.NetworkIndex)

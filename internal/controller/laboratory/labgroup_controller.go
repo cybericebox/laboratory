@@ -54,6 +54,8 @@ const labSubnetPrefixLen = 24
 type LabGroupReconciler struct {
 	// GatewayMaxConnectionsPerLab and GatewayNewConnectionsPerSecondPerLab limit a lab's connections to the outside through a NEW gateway pod (0 = none).
 	GatewayMaxConnectionsPerLab, GatewayNewConnectionsPerSecondPerLab int
+	// GatewayEgressEnv are the egress settings and ceilings of a NEW gateway pod (see gatewayLimitsEnv).
+	GatewayEgressEnv []corev1.EnvVar
 	// VPNFirewall is how the VPN pods created from now on forward: "nft" (no connection tracking) or "" / "iptables".
 	VPNFirewall string
 	client.Client
@@ -887,6 +889,11 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 		if hardenGroupPod(&existing.Spec.Template.Spec, names.ComponentGateway, gatewayCaps, r.TerminationGraceSeconds) {
 			changed = true
 		}
+		// A gateway that restarts anyway takes the size of the day with the restart (the proxy and the DNS answerer need more than the old
+		// forwarding-only size); a size alone never restarts a running gateway, and a size set for the group stays what it is.
+		if !equality.Semantic.DeepEqual(before, &existing.Spec.Template) && setGatewayResources(&existing.Spec.Template, r.GroupPods.GatewayFor(size)) {
+			changed = true
+		}
 		if !changed {
 			return nil
 		}
@@ -931,6 +938,19 @@ func (r *LabGroupReconciler) ensureGatewayDeployment(ctx context.Context, ns str
 		mountOwnAnnotations(&d.Spec.Template.Spec, names.ComponentGateway)
 	}
 	return r.Create(ctx, d)
+}
+
+// setGatewayResources puts a size on the gateway container of a pod template; it reports whether it changed anything.
+func setGatewayResources(t *corev1.PodTemplateSpec, want corev1.ResourceRequirements) bool {
+	for i := range t.Spec.Containers {
+		c := &t.Spec.Containers[i]
+		if c.Name != names.ComponentGateway || equality.Semantic.DeepEqual(c.Resources, want) {
+			continue
+		}
+		c.Resources = want
+		return true
+	}
+	return false
 }
 
 // setComponentLabel puts LabelComponent on a pod template; it reports whether it changed anything. The Deployment's
@@ -1166,7 +1186,7 @@ func apiServerEgress() map[string]interface{} {
 // the private ranges, CGNAT, the cluster and node networks). Never in-cluster pods, no DNS. The kube-apiserver entity is
 // not a way out for the labs: they leave through this pod, and the gateway's own filter drops what they send to those
 // ranges. No ingress rule is needed; replies flow back via conntrack.
-func gatewayCiliumPolicy(ns string, selector map[string]string) *unstructured.Unstructured {
+func gatewayCiliumPolicy(ns string, selector map[string]string, statsPort int) *unstructured.Unstructured {
 	toAny := func(list []string) []interface{} {
 		out := make([]interface{}, len(list))
 		for i, c := range list {
@@ -1194,9 +1214,31 @@ func gatewayCiliumPolicy(ns string, selector map[string]string) *unstructured.Un
 					"matchLabels": matchLabelsOf(selector),
 				},
 				"egress": egressRules,
+				// The operator pulls the per-minute egress summaries of the gateway on one port, and nothing else reaches the pod.
+				"ingress": []interface{}{map[string]interface{}{
+					"fromEndpoints": []interface{}{map[string]interface{}{"matchLabels": map[string]interface{}{
+						"k8s:io.kubernetes.pod.namespace": names.SystemNamespace,
+						"control-plane":                   "controller-manager",
+					}}},
+					"toPorts": []interface{}{map[string]interface{}{"ports": []interface{}{
+						map[string]interface{}{"port": strconv.Itoa(statsPort), "protocol": "TCP"},
+					}}},
+				}},
 			},
 		},
 	}
+}
+
+// egressStatsPort is the port of the summaries page of the gateways (default 9188).
+func (r *LabGroupReconciler) egressStatsPort() int {
+	for _, e := range r.GatewayEgressEnv {
+		if e.Name == "EGRESS_STATS_PORT" {
+			if p, err := strconv.Atoi(e.Value); err == nil && p > 0 {
+				return p
+			}
+		}
+	}
+	return 9188
 }
 
 // ensureVPNGatewayPolicies applies the vpn-egress and gateway-egress
@@ -1220,7 +1262,7 @@ func (r *LabGroupReconciler) ensureVPNGatewayPolicies(ctx context.Context, ns st
 	if err != nil {
 		return err
 	}
-	for _, desired := range []*unstructured.Unstructured{vpnCiliumPolicy(ns, vpnSel, names.HostNetworkDemux(r.WGDemuxMode)), gatewayCiliumPolicy(ns, gwSel)} {
+	for _, desired := range []*unstructured.Unstructured{vpnCiliumPolicy(ns, vpnSel, names.HostNetworkDemux(r.WGDemuxMode)), gatewayCiliumPolicy(ns, gwSel, r.egressStatsPort())} {
 		spec, found, err := unstructured.NestedMap(desired.Object, "spec")
 		if err != nil || !found {
 			return fmt.Errorf("cilium policy %s missing spec", desired.GetName())
@@ -1386,7 +1428,7 @@ func (r *LabGroupReconciler) gatewayLimitsEnv() []corev1.EnvVar {
 	if r.GatewayNewConnectionsPerSecondPerLab > 0 {
 		env = append(env, corev1.EnvVar{Name: "GATEWAY_NEW_CONNECTIONS_PER_SECOND_PER_LAB", Value: fmt.Sprint(r.GatewayNewConnectionsPerSecondPerLab)})
 	}
-	return env
+	return append(env, r.GatewayEgressEnv...)
 }
 
 // convergeGateway brings the security settings of an existing gateway Deployment to the current ones and says
