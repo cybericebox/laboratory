@@ -197,6 +197,10 @@ func TestEgressMonitorAsksOnlyItsOwnGateways(t *testing.T) {
 	if err != nil || len(pods) != 1 || pods[0].Name != "gateway-x" {
 		t.Fatalf("only the operator's own gateway is asked: %v %v", names2(pods), err)
 	}
+	_, skipped, err := f.m.selectGatewayPods(context.Background())
+	if err != nil || skipped["no-replicaset-owner"] != 1 || skipped["not-a-group-namespace"] != 1 || skipped["not-the-gateway-deployment"] != 2 {
+		t.Fatalf("the monitor must say why it passed pods over: %v %v", skipped, err)
+	}
 }
 
 func names2(pods []corev1.Pod) []string {
