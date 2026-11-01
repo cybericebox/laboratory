@@ -17,7 +17,7 @@ func TestShapeParams(t *testing.T) {
 		t.Fatalf("the police burst is 400 ms: %d", policeBurst)
 	}
 	// a very low rate still has room for a 64 kB segment
-	if _, burst, _, pb := shapeParams(100); burst < 65535 || pb < 1<<20 {
+	if _, burst, _, pb := shapeParams(100); burst < 65535 || pb < 256<<10 {
 		t.Fatalf("burst %d cannot hold one segment", burst)
 	}
 }

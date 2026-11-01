@@ -15,7 +15,9 @@ const (
 	// a burst of a tenth of a second TCP with large segments reached under half of the ceiling (measured: 9.6 of 20 Mbit/s), with
 	// 1 MB it reaches 19.4. The ceiling still holds over any longer time.
 	policeBurstTime = 400 * time.Millisecond
-	policeMinBurst  = 1 << 20
+	// policeMinBurst is the least burst of the police: a few segment-offloaded frames. Below about 6 Mbit/s the burst is this, so a short upload
+	// of a lab is free only up to a quarter of a megabyte (at 2 Mbit/s a 1 MB burst was four seconds of line-rate sending); sustained, the ceiling holds.
+	policeMinBurst = 256 << 10
 	// shapeQueueTime is the longest the shaped direction queues a packet before it is dropped.
 	shapeQueueTime = 50 * time.Millisecond
 	// shapeMTU is the largest frame the police accepts (a segmentation-offloaded one).
