@@ -2,6 +2,7 @@ package nodeagent
 
 import (
 	"context"
+	"net"
 	"reflect"
 	"testing"
 
@@ -67,6 +68,17 @@ func TestGroupPodAttachmentsFollowTheLabObjects(t *testing.T) {
 	gws, _ := GroupPodAttachments(ctx, c, "ns-a", names.ComponentGateway)
 	if len(gws) != 1 || gws[0].Iface != "lab2" || gws[0].Name != names.GWHostPortKey("ns-a", 2) {
 		t.Fatalf("gateway attachments: %+v", gws)
+	}
+	// a replacement pod gets the hardware address its predecessor had on the same leg (the devices keep an ARP entry for it), and no two legs share one
+	again, _ := GroupPodAttachments(ctx, c, "ns-a", names.ComponentGateway)
+	if again[0].MAC == "" || again[0].MAC != gws[0].MAC || again[0].MAC != groupLegMAC(gws[0].Name) {
+		t.Fatalf("the MAC of a leg must be fixed by its key: %q %q", gws[0].MAC, again[0].MAC)
+	}
+	if hw, err := net.ParseMAC(gws[0].MAC); err != nil || hw[0]&0x02 == 0 || hw[0]&0x01 != 0 {
+		t.Fatalf("a locally administered unicast address is wanted: %q %v", gws[0].MAC, err)
+	}
+	if got[0].MAC == got[1].MAC || got[0].MAC == gws[0].MAC {
+		t.Fatalf("legs must not share an address: %q %q %q", got[0].MAC, got[1].MAC, gws[0].MAC)
 	}
 	if other, _ := GroupPodAttachments(ctx, c, "ns-c", names.ComponentVPN); len(other) != 0 {
 		t.Fatalf("another namespace has none: %+v", other)

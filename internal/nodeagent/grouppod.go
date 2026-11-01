@@ -2,6 +2,8 @@ package nodeagent
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"reflect"
 	"sort"
 
@@ -93,9 +95,18 @@ func GroupPodAttachments(ctx context.Context, c client.Reader, namespace, compon
 			continue
 		}
 		seen[n] = true
-		out = append(out, netattach.Attachment{Iface: names.LabIfaceNameByIndex(n), Name: groupPortKey(component, namespace, n)})
+		key := groupPortKey(component, namespace, n)
+		out = append(out, netattach.Attachment{Iface: names.LabIfaceNameByIndex(n), Name: key, MAC: groupLegMAC(key)})
 	}
 	return out, nil
+}
+
+// groupLegMAC is the hardware address of a lab leg of a group pod, fixed by the leg's port key: a replacement pod gets the address the old
+// one had, so the ARP entry that a lab's device keeps for the gateway (30 s and longer) stays true and the lab is not cut off for as long
+// when the pod is replaced. A locally administered unicast address.
+func groupLegMAC(key string) string {
+	h := sha256.Sum256([]byte(key))
+	return fmt.Sprintf("02:%02x:%02x:%02x:%02x:%02x", h[0], h[1], h[2], h[3], h[4])
 }
 
 // StaleGroupPorts returns the ports among present that belong to the group's VPN or gateway pod (any lab index) and are not in wanted:

@@ -9,6 +9,7 @@ import (
 	"net"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -326,6 +327,13 @@ func TestNetnsGroupReplacementRecovery(t *testing.T) {
 				time.Sleep(res.RequeueAfter)
 			}
 			t.Logf("replacement recovery: ports=%d passes=%d scheduled_wait=%s elapsed=%s", count, passes, scheduledWait, time.Since(start))
+			// the replacement's legs have the addresses of the legs they replace, so the devices' ARP entries for the pod stay true
+			for n := 1; n <= count; n++ {
+				want := groupLegMAC(names.VPNHostPortKey(pod.Namespace, uint(n)))
+				if got := strings.TrimSpace(nstest.Run(t, "cice-new", "cat", "/sys/class/net/"+names.LabIfaceNameByIndex(uint(n))+"/address")); got != want {
+					t.Fatalf("leg %d has MAC %s, want %s", n, got, want)
+				}
+			}
 			// Owned takeover can retire and replace the old incarnation in
 			// this pass; a delayed monitor still converges in the next pass.
 			if passes > 2 || scheduledWait > time.Second {
